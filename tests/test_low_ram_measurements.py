@@ -374,3 +374,82 @@ def test_fwhm_in_low_ram_mode_keeps_its_volumes_on_disk(tmp_path, monkeypatch):
     )
 
     assert seen == {"labels": True, "raw": True}
+
+
+# --- graph.edit: the graph editor's routing cost field ------------------------
+
+from haemolynx.graph import edit as graph_edit  # noqa: E402
+from haemolynx.gui.graph_editor import GraphEditorState  # noqa: E402
+
+
+def _cost_mask(kind: str) -> np.ndarray:
+    rng = np.random.default_rng(7)
+    mask = gaussian_filter(rng.random((40, 90, 100)), 2) > 0.54
+    if kind == "single voxel":
+        mask[:] = False
+        mask[5, 5, 5] = True
+    elif kind == "empty half":
+        # Most voxels' nearest vessel lies outside any padded window.
+        mask[:, :, :80] = False
+    elif kind == "all vessel":
+        mask[:] = True
+    return mask
+
+
+@pytest.mark.parametrize("kind", ["vessels", "single voxel", "empty half", "all vessel"])
+def test_windowed_cost_field_gives_the_whole_field_for_any_window(kind, monkeypatch):
+    mask = _cost_mask(kind)
+    full = graph_edit.mask_cost_field(mask)
+    windowed = graph_edit.mask_cost_field(mask, use_memmap=True)
+    assert isinstance(windowed, graph_edit.WindowedMaskCostField)
+
+    rng = np.random.default_rng(8)
+    shape = np.array(mask.shape)
+    for _ in range(8):
+        a, b = rng.integers(0, shape), rng.integers(0, shape)
+        window = tuple(slice(lo, hi + 1) for lo, hi in zip(np.minimum(a, b), np.maximum(a, b)))
+        assert np.array_equal(windowed[window], full[window])
+        start, end = rng.uniform(0, shape - 1), rng.uniform(0, shape - 1)
+        assert np.array_equal(
+            graph_edit.astar_path(windowed, start, end), graph_edit.astar_path(full, start, end)
+        )
+
+
+def test_windowed_cost_field_never_transforms_the_whole_volume(monkeypatch):
+    mask = _cost_mask("empty half")
+    windowed = graph_edit.mask_cost_field(mask, use_memmap=True)
+    real = graph_edit.distance_transform_edt
+
+    def windows_only(array, *args, **kwargs):
+        assert array.size < mask.size, "the whole volume was transformed"
+        return real(array, *args, **kwargs)
+
+    monkeypatch.setattr(graph_edit, "distance_transform_edt", windows_only)
+
+    windowed[0:10, 0:10, 0:10]
+    graph_edit.astar_path(windowed, (3.0, 4.0, 5.0), (8.0, 10.0, 12.0))
+
+
+def test_an_empty_mask_falls_back_to_the_whole_volume_field():
+    """No mask voxel at all: scipy's transform is not a distance there, so
+    only the whole-volume call reproduces it."""
+    empty = np.zeros((6, 7, 8), dtype=bool)
+
+    assert np.array_equal(
+        graph_edit.mask_cost_field(empty, use_memmap=True), graph_edit.mask_cost_field(empty)
+    )
+
+
+def test_graph_editor_routes_the_same_branch_in_low_ram_mode():
+    mask = _cost_mask("vessels")
+    states = []
+    for use_memmap in (False, True):
+        state = GraphEditorState(graph=nx.MultiGraph(), voxel_size_zyx=(2.0, 0.5, 0.5))
+        state.cost_field_from_mask(mask.astype(np.uint8) * 255, use_memmap=use_memmap)
+        states.append(state)
+
+    assert isinstance(states[1].cost_field, graph_edit.WindowedMaskCostField)
+    paths = [
+        graph_edit.astar_path(s.cost_field, (4.0, 10.0, 12.0), (30.0, 70.0, 88.0)) for s in states
+    ]
+    assert np.array_equal(paths[0], paths[1])

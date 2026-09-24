@@ -166,6 +166,11 @@ class GraphEditorState:
             return set()
         return delete_edge_and_collapse(self.graph, hit.u, hit.v, hit.key)
 
-    def cost_field_from_mask(self, mask: np.ndarray) -> None:
-        """Convenience: build and store :attr:`cost_field` from a segmented mask."""
-        self.cost_field = mask_cost_field(mask)
+    def cost_field_from_mask(self, mask: np.ndarray, *, use_memmap: bool = False) -> None:
+        """Convenience: build and store :attr:`cost_field` from a segmented mask.
+
+        *use_memmap* (the low-RAM option) stores a
+        :class:`haemolynx.graph.edit.WindowedMaskCostField`, which gives the
+        same values one routing window at a time.
+        """
+        self.cost_field = mask_cost_field(mask, use_memmap=use_memmap)

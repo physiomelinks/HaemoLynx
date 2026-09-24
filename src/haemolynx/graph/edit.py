@@ -147,7 +147,7 @@ def delete_edge_and_collapse(G: nx.MultiGraph, u: Any, v: Any, key: Any) -> set[
     return changed
 
 
-def mask_cost_field(mask: np.ndarray) -> np.ndarray:
+def mask_cost_field(mask: np.ndarray, *, use_memmap: bool = False):
     """Routing cost ``1 + d^2``, ``d`` = voxel distance to the nearest True mask voxel.
 
     Same formula as ``graph.reconnect``'s own ``window_cost``, applied to the
@@ -155,9 +155,87 @@ def mask_cost_field(mask: np.ndarray) -> np.ndarray:
     vessel structure, growing quadratically -- never blocked -- away from it,
     so "Add branch" can still bridge a genuine gap in the segmentation
     instead of refusing to route through unsegmented voxels at all.
+
+    *use_memmap* (the low-RAM option) returns a :class:`WindowedMaskCostField`
+    instead: the same values, worked out for each window :func:`astar_path`
+    reads rather than for the whole volume up front.
     """
+    if use_memmap:
+        field = WindowedMaskCostField(mask)
+        if field.exact:
+            return field
     binary = np.asarray(mask, dtype=bool)
     return 1.0 + distance_transform_edt(~binary) ** 2
+
+
+#: Context kept around a requested window when transforming it. A voxel
+#: whose nearest mask voxel is nearer than the padded crop's inner faces
+#: gets its exact distance from the crop; the rest are looked up.
+_COST_WINDOW_PAD = 32
+
+
+class WindowedMaskCostField:
+    """:func:`mask_cost_field`'s values, computed one window at a time.
+
+    Supports what :func:`astar_path` uses -- ``shape`` and slicing with a
+    tuple of slices -- and returns exactly what slicing the whole-volume
+    field would. Each window is transformed with :data:`_COST_WINDOW_PAD`
+    of context; any voxel whose distance in the crop is not provably its
+    distance in the volume is looked up from the mask's surface (see
+    :mod:`haemolynx.preprocessing.pointwise_distance`). Distances are in
+    voxels, so each is the square root of an integer however it is found.
+    """
+
+    def __init__(self, mask: np.ndarray):
+        from haemolynx.preprocessing.pointwise_distance import FeatureDistance
+
+        self.mask = mask
+        self.shape = tuple(mask.shape)
+        self.ndim = len(self.shape)
+        self._distance = FeatureDistance(mask, feature_value=True)
+        # With no mask surface the volume is all-mask (distance 0 everywhere,
+        # cost 1) or mask-free, where scipy's transform is not a distance at
+        # all and only the whole-volume call reproduces it.
+        self._all_mask = not self._distance.has_surface and bool(np.any(mask))
+        self.exact = self._distance.has_surface or self._all_mask
+
+    def __getitem__(self, key) -> np.ndarray:
+        window = tuple(
+            slice(*k.indices(n)) for k, n in zip(key, self.shape)
+        )
+        if any(k.step != 1 for k in window):
+            raise IndexError("WindowedMaskCostField supports unit-step slices only")
+        lo = np.array([k.start for k in window])
+        hi = np.maximum(np.array([k.stop for k in window]), lo)
+        if self._all_mask:
+            return np.ones(tuple(hi - lo), dtype=np.float64)
+
+        plo = np.maximum(lo - _COST_WINDOW_PAD, 0)
+        phi = np.minimum(hi + _COST_WINDOW_PAD, self.shape)
+        crop = np.asarray(
+            self.mask[tuple(slice(a, b) for a, b in zip(plo, phi))], dtype=bool
+        )
+        inner = tuple(slice(a - p, b - p) for a, b, p in zip(lo, hi, plo))
+        if crop.any():
+            distance = distance_transform_edt(~crop)[inner]
+            # A mask voxel outside the crop is at least this far away.
+            index = np.indices(tuple(hi - lo)).reshape(self.ndim, -1).T + lo
+            reach = np.full(len(index), np.inf)
+            for axis in range(self.ndim):
+                if plo[axis] > 0:
+                    reach = np.minimum(reach, index[:, axis] - plo[axis] + 1)
+                if phi[axis] < self.shape[axis]:
+                    reach = np.minimum(reach, phi[axis] - index[:, axis])
+            flat = distance.reshape(-1)
+            unsure = flat > reach
+            if unsure.any():
+                flat = flat.copy()
+                flat[unsure] = self._distance.at(index[unsure])
+            distance = flat.reshape(distance.shape)
+        else:
+            index = np.indices(tuple(hi - lo)).reshape(self.ndim, -1).T + lo
+            distance = self._distance.at(index).reshape(tuple(hi - lo))
+        return 1.0 + distance ** 2
 
 
 #: Voxels of context kept around a routed segment's own start/end when

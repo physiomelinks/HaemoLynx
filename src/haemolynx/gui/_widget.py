@@ -7686,7 +7686,10 @@ def settings_widget(napari_viewer=None):
         )
         image_layer = _graph_editor_layer(IMAGE)
         if image_layer is not None:
-            state.cost_field_from_mask(np.asarray(image_layer.data))
+            state.cost_field_from_mask(
+                np.asanyarray(image_layer.data),
+                use_memmap=bool(_settings().get("use_memmap_loading")),
+            )
         graph_editor["state"] = state
 
         window = _GraphEditorWindow(
