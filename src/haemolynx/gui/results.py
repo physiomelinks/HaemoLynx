@@ -284,6 +284,11 @@ def perturbation_layer_names(name: str) -> tuple[str, str]:
     return (f"{PREFIX}{name} vessels", f"{PREFIX}{name} nodes")
 
 
+def perturbation_flow_direction_layer_name(name: str) -> str:
+    """The flow-direction arrows layer of one (single re-solve) perturbation."""
+    return f"{PREFIX}{name} flow direction"
+
+
 def image_z_extent_um(
     voxel_size_zyx: Sequence[float], image_shape_z: int
 ) -> float:
@@ -541,6 +546,34 @@ def edge_columns_for_settings(
     return columns
 
 
+def sweep_direction_columns(
+    directions: tuple[Mapping[str, np.ndarray], Mapping[str, np.ndarray]],
+    signed_flow: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Flow-direction columns for one sweep grid point.
+
+    *directions* is each drawable edge's columns as if it flowed ``u -> v``
+    and as if ``v -> u`` (``edge_flow_direction_columns`` with a sign
+    override); *signed_flow* is that point's ``flow_signed`` per drawable
+    edge. Each edge takes the column for the way its flow actually runs --
+    exactly what the columns would be if the network were solved at that
+    point -- and NaN where it carries none.
+    """
+    forward, backward = directions
+    signed = np.asarray(signed_flow, dtype=float)
+    positive = np.isfinite(signed) & (signed > 0)
+    negative = np.isfinite(signed) & (signed < 0)
+    columns = {}
+    for name, ahead in forward.items():
+        ahead = np.asarray(ahead, dtype=float)
+        behind = np.asarray(backward[name], dtype=float)
+        if name == FLOW_DIR_RGB_COLUMN:
+            columns[name] = np.zeros_like(ahead)  # a sentinel column, not a value
+            continue
+        columns[name] = np.where(positive, ahead, np.where(negative, behind, np.nan))
+    return columns
+
+
 def _enrich_flow_colour_columns(
     columns: dict[str, np.ndarray], graph: Any, *, include_axis_components: bool = True
 ) -> None:
@@ -630,6 +663,9 @@ class LayerSpec:
     segment_owner: Any | None = None
     #: Drawable-edge indices into the full ``edges(keys=True)`` flow arrays.
     sweep_edge_index: Any | None = None
+    #: ``(forward, backward)`` flow-direction columns per drawable edge, for
+    #: :func:`sweep_direction_columns` to pick from at each grid point.
+    sweep_directions: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -1781,10 +1817,19 @@ class ResultLayers:
 
         columns = {name: identity[name] for name in ("edge_index", "u", "v", "key")}
         columns.update(edge_features(graph, edge_columns_for_settings(self.settings)))
+        # The same derived flow columns (log10, direction) and hover tooltips
+        # the baseline's vessels get, from this perturbation's own flows.
+        _enrich_flow_colour_columns(
+            columns, graph,
+            include_axis_components=bool(self.settings.get("flow_direction_colouring", True)),
+        )
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {
             name: np.asarray(values)[owner] for name, values in columns.items()
         }
+        hover_columns, hover_options = _branch_hover_columns(graph, owner)
+        if hover_columns:
+            per_segment.update(hover_columns)
         colour_by = PERTURBATION_COLOUR if PERTURBATION_COLOUR in columns else None
 
         layers = [
@@ -1797,7 +1842,7 @@ class ResultLayers:
                 **_colouring(per_segment, colour_by),
                 visible=False,
                 options={"vector_style": "line", "edge_width": 0.6,
-                         "out_of_slice_display": True},
+                         "out_of_slice_display": True, **hover_options},
             )
         ]
 
@@ -1832,6 +1877,11 @@ class ResultLayers:
                     },
                 )
             )
+        layers.extend(
+            self._flow_direction_layers(
+                graph, name=perturbation_flow_direction_layer_name(result.name), visible=False
+            )
+        )
         return tuple(layers)
 
     def _sweep_perturbation_layers(self, result: Any) -> tuple[LayerSpec, ...]:
@@ -1871,8 +1921,25 @@ class ResultLayers:
             [flow_abs_log10_value(v) for v in flow0[edge_index]], dtype=float
         )
         signed0 = sweep.flow_signed_at(*([0] * len(sweep.axis_names)))
+        directions = None
         if signed0 is not None:
             columns["flow_signed"] = np.asarray(signed0, dtype=float)[edge_index]
+            # Direction columns follow the slider like the flows do: both
+            # senses once here, the grid point's own signs picking per edge.
+            from haemolynx.visualization.flow_direction import edge_flow_direction_columns
+
+            directions = tuple(
+                {
+                    name: values
+                    for name, values in edge_flow_direction_columns(
+                        graph, sign_override=sign
+                    ).items()
+                    if self.settings.get("flow_direction_colouring", True)
+                    or name not in FLOW_DIR_COLUMNS
+                }
+                for sign in (1, -1)
+            )
+            columns.update(sweep_direction_columns(directions, columns["flow_signed"]))
         drop0 = sweep.pressure_drop_at(*([0] * len(sweep.axis_names)))
         if drop0 is not None:
             columns["pressure_drop"] = np.asarray(drop0, dtype=float)[edge_index]
@@ -1902,6 +1969,7 @@ class ResultLayers:
                 sweep=sweep,
                 segment_owner=owner,
                 sweep_edge_index=edge_index,
+                sweep_directions=directions,
             ),
         )
 
@@ -1940,11 +2008,17 @@ class ResultLayers:
             note=note,
         )
 
-    def _flow_direction_layers(self) -> tuple[LayerSpec, ...]:
-        """Mid-edge flow arrows coloured by 3D direction RGB, or empty when none exist."""
+    def _flow_direction_layers(
+        self, graph: Any = None, *, name: str = FLOW_DIRECTION, visible: bool = True
+    ) -> tuple[LayerSpec, ...]:
+        """Mid-edge flow arrows coloured by 3D direction RGB, or empty when none exist.
+
+        The baseline's by default; a perturbation passes its own *graph* and
+        layer *name*, hidden like the rest of its layers.
+        """
         from haemolynx.visualization.flow_direction import flow_direction_vectors
 
-        graph = self._graph
+        graph = self._graph if graph is None else graph
         if graph is None:
             return ()
         vectors, features = flow_direction_vectors(graph)
@@ -1977,11 +2051,12 @@ class ResultLayers:
         return (
             LayerSpec(
                 kind="vectors",
-                name=FLOW_DIRECTION,
+                name=name,
                 data=vectors,
                 features=features,
                 colour_by=colour_by,
                 **_colouring(features, colour_by),
+                visible=visible,
                 options={
                     "vector_style": "triangle",
                     "edge_width": 1.2,

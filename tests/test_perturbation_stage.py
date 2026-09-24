@@ -326,6 +326,14 @@ ENTRY_FOR_TYPE: dict[str, dict] = {
     "capillary_block": CAPILLARY_BLOCK,
 }
 
+#: One entry of every single re-solve type (not `none`, not a sweep): the ones
+#: that get the baseline's whole statistics / analysis set recomputed.
+NON_SWEEP_TYPES_FOR_RECOMPUTE = [
+    entry
+    for name, entry in ENTRY_FOR_TYPE.items()
+    if name != "none" and "sweep" not in name
+]
+
 #: Every type but `none`, which by definition re-solves nothing and writes
 #: nothing; `test_a_none_perturbation_produces_nothing` is what covers it.
 TYPES_THAT_RUN = tuple(name for name in PERTURBATION_TYPES if name != "none")

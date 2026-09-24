@@ -9,6 +9,7 @@ not a second published model).
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -257,19 +258,42 @@ def export_non_sweep_perturbation_artifacts(
     *,
     image: np.ndarray | None = None,
     name_stem: str | None = None,
+    statistics_kwargs: Mapping[str, Any] | None = None,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
+    betweenness_and_communities: bool = False,
 ) -> list[Path]:
     """Pipeline-like plots and statistics CSVs for one non-sweep perturbation.
 
     Matches the disk side of ``export_results`` (statistics CSVs, degree /
     overlay / branch-order figures). Deliberately skips VTK: existing stage
     tests require that a perturbation directory contain no ``.vtp``.
+
+    *statistics_kwargs* is the run's own statistics selection
+    (``pipeline.stages.statistics_arguments``): the same measures, inlet and
+    outlet nodes and analysis settings as the baseline's report, so the two
+    compare -- and every per-vessel network analysis it runs (current flow,
+    occlusion, territories, transit time, ...) is written onto *G*, where the
+    perturbation's own vessels layer can be coloured by it. Omitted, every
+    measure runs without terminals, as this always used to.
+    *voxel_size_zyx* is the per-array-axis spacing the volume and density
+    measures scale by. *betweenness_and_communities* also writes the three
+    weighted betweenness/community JSON reports ``export_results`` writes.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     stem = name_stem or Path(str(settings.get("input_path", "perturbation"))).stem
     plot_image = image if image is not None else _blank_image_for_graph(G)
-    voxel_size = (1.0, 1.0, 1.0)
+    # The baseline image's own voxel size, for the statistics (which scale
+    # array axes by it) and the plots (which place physical-micron geometry on
+    # the image by it) alike. Not given, the plots read the graph's own
+    # voxel_size metadata, as export_results' do; a fixed (1, 1, 1) here used
+    # to draw every anisotropic network in the wrong place and count its
+    # volumes in voxels.
+    voxel_size = (
+        tuple(float(v) for v in voxel_size_zyx) if voxel_size_zyx is not None else (1.0, 1.0, 1.0)
+    )
+    plot_voxel_size = voxel_size if voxel_size_zyx is not None else None
 
     # Always write the tabular and figure set a perturbation comparison needs;
     # the baseline's ``statistics`` / ``visualize_results`` flags control the
@@ -280,7 +304,11 @@ def export_non_sweep_perturbation_artifacts(
         node_positions=node_positions,
         image_dimensions=plot_image.shape,
         voxel_size=voxel_size,
-        statistics_mode=settings.get("statistics_mode", "fast"),
+        **(
+            dict(statistics_kwargs)
+            if statistics_kwargs is not None
+            else {"statistics_mode": settings.get("statistics_mode", "fast")}
+        ),
     )
     stats_csv = output_dir / f"{stem}_statistics.csv"
     statistics.export_statistics_to_csv(stats, stats_csv)
@@ -292,6 +320,20 @@ def export_non_sweep_perturbation_artifacts(
     branch_csv = output_dir / f"{stem}_branch_statistics.csv"
     statistics.export_branch_order_statistics_to_csv(branch_stats, branch_csv)
     written.append(branch_csv)
+
+    if betweenness_and_communities:
+        # A perturbation always has resistances and a solved flow, so all
+        # three weightings are computable -- the same report the baseline's
+        # export_results writes for a solved run.
+        weighted = statistics.compute_betweenness_and_community_measurements(G)
+        for model_name, suffix in (
+            ("edge_resistance", "resistance"),
+            ("edge_length", "edge_length"),
+            ("edge_flow_abs", "edge_flow"),
+        ):
+            json_path = output_dir / f"{stem}_betweenness_communities_{suffix}.json"
+            json_path.write_text(json.dumps(weighted[model_name], indent=2, default=str))
+            written.append(json_path)
 
     degree_path = output_dir / "node_degree_distribution.png"
     plot_node_degree_distribution(
@@ -317,7 +359,7 @@ def export_non_sweep_perturbation_artifacts(
             save_path=overlay_2d,
             show=False,
             show_after_save=False,
-            voxel_size=voxel_size,
+            voxel_size=plot_voxel_size,
         )
         written.append(overlay_2d)
 
@@ -330,7 +372,7 @@ def export_non_sweep_perturbation_artifacts(
             save_path=branch_path,
             show=False,
             show_after_save=False,
-            voxel_size=voxel_size,
+            voxel_size=plot_voxel_size,
         )
         written.append(branch_path)
 
@@ -341,7 +383,7 @@ def export_non_sweep_perturbation_artifacts(
         save_path=resistance_path,
         show=False,
         show_after_save=False,
-        voxel_size=voxel_size,
+        voxel_size=plot_voxel_size,
     )
     if resistance_path.exists():
         written.append(resistance_path)

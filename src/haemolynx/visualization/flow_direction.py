@@ -201,12 +201,18 @@ def _iter_edges(graph: Any):
     return ((u, v, 0, data) for u, v, data in graph.edges(data=True))
 
 
-def edge_flow_direction_columns(graph: Any) -> dict[str, np.ndarray]:
+def edge_flow_direction_columns(
+    graph: Any, *, sign_override: Optional[int] = None
+) -> dict[str, np.ndarray]:
     """Per drawable edge: signed unit ``(z, y, x)`` flow direction components.
 
     Uses the same edge order and skip rules as
     :func:`haemolynx.gui.results.edge_polylines` so the columns align with
     vessel segment features after ``segment_owner`` indexing.
+
+    *sign_override* (+1 or -1) takes every edge as flowing ``u -> v`` (or
+    ``v -> u``) whatever its own flow says: a sweep computes both once and
+    picks per edge from each grid point's own flow sign.
     """
     dir_z: list[float] = []
     dir_y: list[float] = []
@@ -222,7 +228,9 @@ def edge_flow_direction_columns(graph: Any) -> dict[str, np.ndarray]:
             points = edge_polyline(graph, u, v, data)
         except ValueError:
             continue
-        direction_sign = edge_flow_direction_sign(data)
+        direction_sign = (
+            int(sign_override) if sign_override is not None else edge_flow_direction_sign(data)
+        )
         if direction_sign is None:
             dir_z.append(float("nan"))
             dir_y.append(float("nan"))

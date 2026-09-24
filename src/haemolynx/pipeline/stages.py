@@ -2537,6 +2537,33 @@ def _write_perturbation_csvs(
     result.outputs.append(edges_path)
 
 
+def _baseline_voxel_size_zyx(
+    G: nx.MultiGraph, network: VesselNetwork | None
+) -> tuple[float, float, float]:
+    """The voxel size of the image the baseline network was built from, in
+    array ``(z, y, x)`` order.
+
+    The loaded volume's own, when the run has it; otherwise what graph
+    building recorded on the graph (``image_voxel_size_zyx``, or the
+    ``voxel_size`` the builder stamps). Only a graph that carries neither
+    falls back to 1 um -- and says so, since every volume and density a
+    perturbation reports would then be in voxels.
+    """
+    volume = getattr(network, "volume", None) if network is not None else None
+    for candidate in (
+        getattr(volume, "voxel_size_zyx", None),
+        G.graph.get("image_voxel_size_zyx"),
+        G.graph.get("voxel_size"),
+    ):
+        if candidate is not None and len(candidate) == 3:
+            return tuple(float(v) for v in candidate)
+    logger.warning(
+        "Perturbations: no voxel size on the run or the baseline graph; "
+        "their statistics and plots assume 1 um voxels."
+    )
+    return (1.0, 1.0, 1.0)
+
+
 def _listed(value: Any) -> list:
     """A list setting as a list, however it was typed: a lone value, or a
     comma-separated string from a text box (``"BO2, BO3"``, ``"12, 40"``)."""
@@ -2670,13 +2697,19 @@ def _perturb_one(
     *,
     image: np.ndarray | None = None,
     baseline_graph: nx.MultiGraph | None = None,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
 ) -> PerturbationResult:
     """Run one perturbation from the baseline network, and write its output.
 
     *baseline_graph* is the baseline as re-solved by this same solver (see
     `run_perturbations`), for a perturbation that compares its flows vessel
     by vessel; `model.graph` stands in when a caller has none.
+    *voxel_size_zyx* is the baseline image's own voxel size, which every
+    statistic and plot of this perturbation scales by -- see
+    `_baseline_voxel_size_zyx`.
     """
+    if voxel_size_zyx is None:
+        voxel_size_zyx = _baseline_voxel_size_zyx(model.graph, None)
     result = PerturbationResult(name=spec.name, type=spec.type)
     refused = spec.incomparable_overrides()
     if refused:
@@ -3019,6 +3052,16 @@ def _perturb_one(
                 )
             )
     else:
+        # Everything export_results derives from a solved network is derived
+        # again from this one, with the run's own selections: the vascular
+        # communities (flow- and resistance-weighted ones move with the
+        # flows), then every selected statistic and network analysis -- which
+        # also writes each per-vessel analysis onto G for its vessels layer.
+        if perturbed["compute_vascular_communities"]:
+            community_summary = graph.assign_vascular_communities(
+                G, weighting=perturbed["vascular_community_weighting"]
+            )
+            summary["vascular_communities"] = community_summary.community_count
         result.outputs.extend(
             export_non_sweep_perturbation_artifacts(
                 G,
@@ -3026,6 +3069,9 @@ def _perturb_one(
                 perturbed,
                 image=image,
                 name_stem=spec.name,
+                statistics_kwargs=statistics_arguments(perturbed),
+                voxel_size_zyx=voxel_size_zyx,
+                betweenness_and_communities=bool(perturbed["statistics"]),
             )
         )
 
@@ -3108,6 +3154,8 @@ def run_perturbations(
     )
 
     image = None if network is None else getattr(network.volume, "image", None)
+    voxel_size_zyx = _baseline_voxel_size_zyx(model.graph, network)
+    logger.info(f"Perturbations use the baseline image's voxel size (z, y, x): {voxel_size_zyx}")
     for spec in specs:
         if progress is not None:
             progress.step(spec.name, total=len(specs))
@@ -3123,6 +3171,7 @@ def run_perturbations(
                     run.baseline,
                     image=image,
                     baseline_graph=baseline_graph,
+                    voxel_size_zyx=voxel_size_zyx,
                 )
             )
         except Exception as error:
@@ -3135,6 +3184,39 @@ def run_perturbations(
                 )
             )
     return run
+
+
+def statistics_arguments(settings: dict) -> dict[str, Any]:
+    """The run's statistics selection, as keyword arguments to
+    `statistics.compute_comprehensive_vessel_statistics`.
+
+    One place, so the baseline's report and every perturbation's are computed
+    over the same measures, terminals and analysis settings -- a perturbation
+    compared with a baseline that measured something else is no comparison.
+    """
+    # A network-analysis measure also needs statistics_network_analysis
+    # itself on -- the GUI nests it there (see pipeline.schema's own
+    # "Connectivity/Network Analysis" section), the same "outer gate
+    # checked explicitly, not just implied by requires=" pattern
+    # use_edt_diameter_crosscheck's own children use.
+    network_analysis_on = settings["statistics_network_analysis"]
+    return {
+        "statistics_mode": settings["statistics_mode"],
+        "enabled_measures": frozenset(
+            measure
+            for measure in statistics.STATISTIC_MEASURES
+            if settings[f"statistics_{measure}"]
+            and (measure not in statistics.NETWORK_ANALYSIS_MEASURES or network_analysis_on)
+        ),
+        "inlet_nodes": settings["inlet_nodes"],
+        "outlet_nodes": settings["outlet_nodes"],
+        "route_weighting": settings["statistics_route_weighting"],
+        "shunt_max_route_fraction": float(settings["statistics_shunt_max_route_fraction"]),
+        "occlusion_hypoperfusion_fraction": float(
+            settings["statistics_occlusion_hypoperfusion_fraction"]
+        ),
+        "occlusion_curve_max_fraction": float(settings["statistics_occlusion_curve_max_fraction"]),
+    }
 
 
 def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicModel, solution: Solution):
@@ -3175,18 +3257,6 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                 f"Choose one of {sorted(valid_statistics_modes)}."
             )
         node_positions = nx.get_node_attributes(G, "pos")
-        # A network-analysis measure also needs statistics_network_analysis
-        # itself on -- the GUI nests it there (see pipeline.schema's own
-        # "Connectivity/Network Analysis" section), the same "outer gate
-        # checked explicitly, not just implied by requires=" pattern
-        # use_edt_diameter_crosscheck's own children use.
-        network_analysis_on = settings["statistics_network_analysis"]
-        enabled_measures = frozenset(
-            measure
-            for measure in statistics.STATISTIC_MEASURES
-            if settings[f"statistics_{measure}"]
-            and (measure not in statistics.NETWORK_ANALYSIS_MEASURES or network_analysis_on)
-        )
         stats = statistics.compute_comprehensive_vessel_statistics(
             G,
             node_positions=node_positions,
@@ -3196,16 +3266,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             # whole-image volume and density were counted in voxels for any
             # stack whose z spacing is not 1 um.
             voxel_size=voxel_size_zyx,
-            statistics_mode=settings["statistics_mode"],
-            enabled_measures=enabled_measures,
-            inlet_nodes=settings["inlet_nodes"],
-            outlet_nodes=settings["outlet_nodes"],
-            route_weighting=settings["statistics_route_weighting"],
-            shunt_max_route_fraction=float(settings["statistics_shunt_max_route_fraction"]),
-            occlusion_hypoperfusion_fraction=float(
-                settings["statistics_occlusion_hypoperfusion_fraction"]
-            ),
-            occlusion_curve_max_fraction=float(settings["statistics_occlusion_curve_max_fraction"]),
+            **statistics_arguments(settings),
         )
 
         logger.info("=== Statistics ===")

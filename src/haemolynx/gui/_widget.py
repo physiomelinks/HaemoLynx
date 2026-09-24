@@ -2280,12 +2280,14 @@ def _store_sweep_metadata(layer, spec) -> None:
         tag["sweep"] = spec.sweep
         tag["segment_owner"] = spec.segment_owner
         tag["sweep_edge_index"] = spec.sweep_edge_index
+        tag["sweep_directions"] = getattr(spec, "sweep_directions", None)
         tag["colour_by"] = spec.colour_by
         tag["contrast_limits"] = spec.contrast_limits
     else:
         tag.pop("sweep", None)
         tag.pop("segment_owner", None)
         tag.pop("sweep_edge_index", None)
+        tag.pop("sweep_directions", None)
     metadata = dict(getattr(layer, "metadata", {}) or {})
     metadata[OURS] = tag
     layer.metadata = metadata
@@ -2716,10 +2718,27 @@ def _apply_sweep_index(layer, indices: tuple[int, ...]) -> None:
     def _segment_column(edge_values) -> np.ndarray:
         return np.asarray(edge_values, dtype=float)[edge_index][owner]
 
-    features["flow_abs"] = _segment_column(sweep.flow_abs_at(*indices))
+    flow_abs = sweep.flow_abs_at(*indices)
+    features["flow_abs"] = _segment_column(flow_abs)
+    if "flow_abs_log10" in features:
+        from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+        features["flow_abs_log10"] = _segment_column(
+            [flow_abs_log10_value(v) for v in np.asarray(flow_abs, dtype=float)]
+        )
     signed = sweep.flow_signed_at(*indices)
     if signed is not None and "flow_signed" in features:
         features["flow_signed"] = _segment_column(signed)
+    directions = tag.get("sweep_directions")
+    if signed is not None and directions is not None:
+        from haemolynx.gui.results import sweep_direction_columns
+
+        per_edge = sweep_direction_columns(
+            directions, np.asarray(signed, dtype=float)[edge_index]
+        )
+        for name, values in per_edge.items():
+            if name in features:
+                features[name] = np.asarray(values)[owner]
     drop = sweep.pressure_drop_at(*indices)
     if drop is not None and "pressure_drop" in features:
         features["pressure_drop"] = _segment_column(drop)

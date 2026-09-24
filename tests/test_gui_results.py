@@ -47,6 +47,7 @@ from haemolynx.gui.results import (
     is_ours_name,
     is_z_depth_filtered_layer,
     is_z_depth_windowed_volume_layer,
+    perturbation_flow_direction_layer_name,
     perturbation_layer_names,
     available_edge_columns,
     clip_volume_to_z,
@@ -1028,7 +1029,10 @@ def test_two_perturbations_give_two_distinctly_named_vessel_layers():
                            a_perturbation("art_constrict_20")),
     )
 
-    vessels = [spec.name for spec in group.layers if spec.kind == "vectors"]
+    vessels = [
+        spec.name for spec in group.layers
+        if spec.kind == "vectors" and spec.options.get("vector_style") == "line"
+    ]
     assert vessels == [
         perturbation_layer_names("art_dilate_20")[0],
         perturbation_layer_names("art_constrict_20")[0],
@@ -1040,9 +1044,10 @@ def test_each_perturbation_gets_a_nodes_layer_of_its_own():
     group = built().stage_finished(
         "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
     )
-    assert [spec.name for spec in group.layers] == list(
-        perturbation_layer_names("art_dilate_20")
-    )
+    assert [spec.name for spec in group.layers] == [
+        *perturbation_layer_names("art_dilate_20"),
+        perturbation_flow_direction_layer_name("art_dilate_20"),
+    ]
 
 
 def test_the_baseline_layers_are_untouched():
@@ -1079,7 +1084,7 @@ def test_a_perturbations_layers_are_in_microns_like_every_graph_layer():
     group = built(voxel_size_zyx=(2.0, 1.0, 0.5)).stage_finished(
         "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))
     )
-    assert [spec.scale for spec in group.layers] == [(1.0, 1.0, 1.0)] * 2
+    assert [spec.scale for spec in group.layers] == [(1.0, 1.0, 1.0)] * 3
 
 
 def test_a_perturbations_layers_start_hidden():
@@ -1147,14 +1152,17 @@ def test_a_failure_is_named_in_the_note_and_the_others_still_drawn():
                                error="ValueError: no inlet"),
         ),
     )
-    assert len(group.layers) == 2
+    assert len(group.layers) == 3  # art_dilate_20's vessels, nodes and arrows
     assert "broken" in group.note
     assert "no inlet" in group.note
 
 
 def test_a_perturbation_layer_is_ours_without_being_in_the_declared_set():
     """`LAYER_NAMES` cannot enumerate a name a config invents; the prefix can."""
-    for name in perturbation_layer_names("art_dilate_20"):
+    for name in (
+        *perturbation_layer_names("art_dilate_20"),
+        perturbation_flow_direction_layer_name("art_dilate_20"),
+    ):
         assert is_ours_name(name)
         assert name not in LAYER_NAMES
     assert all(is_ours_name(name) for name in LAYER_NAMES)
@@ -2173,3 +2181,30 @@ def test_an_identical_column_still_gives_a_usable_range():
 
     low, high = _data_range(SimpleNamespace(features={"q": np.full(4, 3.0)}), "q")
     assert high > low
+
+
+def test_a_perturbation_gets_the_baselines_flow_colouring_hover_and_arrows():
+    """Everything the solved baseline's vessels offer that is derived from the
+    flows -- log10 flow, direction columns, branch tooltips, and a layer of
+    flow-direction arrows -- is recomputed from each perturbation's own flows."""
+    from haemolynx.gui.results import FLOW_DIR_RGB_COLUMN
+
+    graph = solved_graph(2e-12)
+    for u, v, key, data in graph.edges(keys=True, data=True):
+        data["flow_signed"] = -data["flow_abs"]  # runs v -> u: the arrows must say so
+    from haemolynx.pipeline import PerturbationResult
+
+    result = PerturbationResult(name="reversed", type="arteriole_diameter_change", graph=graph)
+    group = built().stage_finished("run_perturbations", a_perturbation_run(result))
+
+    vessels = spec_named(group, perturbation_layer_names("reversed")[0])
+    for column in ("flow_abs_log10", "flow_dir_z", FLOW_DIR_RGB_COLUMN, "tooltip"):
+        assert column in vessels.features, column
+    assert vessels.options.get("branch_hover_available")
+
+    arrows = spec_named(group, perturbation_flow_direction_layer_name("reversed"))
+    assert arrows.visible is False
+    assert arrows.options["vector_style"] == "triangle"
+    assert len(arrows.data) == graph.number_of_edges()
+    # Direction follows this perturbation's own signed flow: along -z here.
+    assert np.all(np.asarray(arrows.features["flow_dir_z"]) < 0)
