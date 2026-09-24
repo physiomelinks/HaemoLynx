@@ -3173,6 +3173,8 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             cell_mask_h5_dataset_name=settings["cell_mask_h5_dataset_name"],
             vessel_mask_h5_dataset_name=settings["measurement_3d_vessel_mask_h5_dataset_name"],
             vessel_reference_h5_dataset_name=settings["measurement_3d_reference_h5_dataset_name"],
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
         )
         logger.info(
             "3D cell-mask vessel-distance summary: "

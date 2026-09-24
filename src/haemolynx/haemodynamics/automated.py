@@ -791,6 +791,8 @@ def build_graph_branch_label_volume(
     *,
     background_label: int = 0,
     junction_label: int = -1,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, dict[tuple[int, int, int], int]]:
     """Paint each edge's ``voxels`` path into a 3D label array (same shape as the raw stack).
 
@@ -800,6 +802,11 @@ def build_graph_branch_label_volume(
 
     Each edge dict is updated with ``graph_edge_label_id`` (and ``image_branch_label``
     as an alias for the same value).
+
+    *use_memmap* (the low-RAM option) paints into a new disk-backed array in
+    *memmap_directory* instead; the caller releases it with
+    ``preprocessing.memmap_support.release_memmap_array`` when done. Same
+    labels either way.
 
     Returns
     -------
@@ -811,7 +818,16 @@ def build_graph_branch_label_volume(
     if junction_label == background_label:
         raise ValueError("junction_label must differ from background_label.")
     shape = (int(volume_shape[0]), int(volume_shape[1]), int(volume_shape[2]))
-    labels = np.full(shape, int(background_label), dtype=np.int32)
+    if use_memmap:
+        from haemolynx.preprocessing.memmap_support import new_memmap_array
+
+        # A fresh memmap reads as zeros; any other background is written in.
+        labels = new_memmap_array(shape, np.int32, directory=memmap_directory)
+        if int(background_label) != 0:
+            for z in range(shape[0]):
+                labels[z] = int(background_label)
+    else:
+        labels = np.full(shape, int(background_label), dtype=np.int32)
     sorted_edges = sorted(G.edges(keys=True), key=lambda t: (t[0], t[1], t[2]))
     edge_key_to_label: dict[tuple[int, int, int], int] = {}
     for i, (u, v, key) in enumerate(sorted_edges, start=1):

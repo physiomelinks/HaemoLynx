@@ -188,3 +188,45 @@ def release_superseded(previous: np.ndarray, new: np.ndarray, *, keep: np.ndarra
     """
     if isinstance(previous, np.memmap) and previous is not new and previous is not keep:
         release_memmap_array(previous)
+
+
+def argwhere_by_slab(
+    volume: np.ndarray,
+    predicate: Callable[[np.ndarray], np.ndarray] | None = None,
+    *,
+    block_voxels: int = LOW_MEMORY_BLOCK_VOXELS,
+) -> np.ndarray:
+    """``np.argwhere(predicate(volume))`` without a whole-volume temporary.
+
+    Reads *volume* a slab of whole axis-0 slices at a time, so the result is
+    in exactly the C order a whole-volume ``np.argwhere`` gives -- same rows,
+    same order. *predicate* defaults to truthiness.
+    """
+    shape = volume.shape
+    slice_voxels = int(np.prod(shape[1:], dtype=np.int64)) if len(shape) > 1 else 1
+    step = max(1, block_voxels // max(slice_voxels, 1))
+    parts = []
+    for start in range(0, shape[0], step):
+        slab = np.asarray(volume[start:start + step])
+        found = np.argwhere(slab if predicate is None else predicate(slab))
+        found[:, 0] += start
+        parts.append(found)
+    if not parts:
+        return np.empty((0, volume.ndim), dtype=np.intp)
+    return np.concatenate(parts)
+
+
+def map_by_slab(
+    source: np.ndarray,
+    op: Callable[[np.ndarray], np.ndarray],
+    out: np.ndarray,
+    *,
+    block_voxels: int = LOW_MEMORY_BLOCK_VOXELS,
+) -> np.ndarray:
+    """``out[...] = op(source)`` for an elementwise *op*, a slab at a time."""
+    shape = source.shape
+    slice_voxels = int(np.prod(shape[1:], dtype=np.int64)) if len(shape) > 1 else 1
+    step = max(1, block_voxels // max(slice_voxels, 1))
+    for start in range(0, shape[0], step):
+        out[start:start + step] = op(np.asarray(source[start:start + step]))
+    return out
