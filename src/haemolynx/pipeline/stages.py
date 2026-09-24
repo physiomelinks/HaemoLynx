@@ -2981,6 +2981,12 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             enabled_measures=enabled_measures,
             inlet_nodes=settings["inlet_nodes"],
             outlet_nodes=settings["outlet_nodes"],
+            route_weighting=settings["statistics_route_weighting"],
+            shunt_max_route_fraction=float(settings["statistics_shunt_max_route_fraction"]),
+            occlusion_hypoperfusion_fraction=float(
+                settings["statistics_occlusion_hypoperfusion_fraction"]
+            ),
+            occlusion_curve_max_fraction=float(settings["statistics_occlusion_curve_max_fraction"]),
         )
 
         logger.info("=== Statistics ===")

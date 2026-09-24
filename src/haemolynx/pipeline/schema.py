@@ -2906,6 +2906,195 @@ SCHEMA = Schema(
             requires=("statistics", "statistics_network_analysis"),
         ),
         Setting(
+            name="statistics_bottlenecks",
+            kind="bool",
+            default=True,
+            help=(
+                "Find inlet-to-outlet bottlenecks: the minimum cut (fewest "
+                "vessels, or lowest conductance, whose occlusion separates "
+                "every inlet from every outlet) and each vessel's share of "
+                "the shortest inlet-to-outlet routes. Needs inlet and outlet "
+                "nodes; adds bottleneck_min_cut and bottleneck_route_share "
+                "as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
+            name="statistics_shunts",
+            kind="bool",
+            default=True,
+            help=(
+                "Find inlet-to-outlet shunts: vessels on a route much shorter "
+                "than the network's median inlet-to-outlet route, bypassing "
+                "the bulk of the bed. Needs inlet and outlet nodes; adds shunt "
+                "and shunt_route_ratio as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
+            name="statistics_route_weighting",
+            kind="choice",
+            default="length",
+            help=(
+                "Distance the bottleneck and shunt routes are measured in: "
+                "vessel count (topology), centreline length, or hydraulic "
+                "resistance (and conductance for the bottleneck cut). "
+                "Resistance needs haemodynamics and falls back to length "
+                "without it"
+            ),
+            section=_NETWORK_ANALYSIS,
+            choices=("topology", "length", "resistance"),
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
+            name="statistics_shunt_max_route_fraction",
+            kind="float",
+            default=0.5,
+            help=(
+                "Flag a vessel as a shunt when its shortest inlet-to-outlet "
+                "route is at most this fraction of the median route"
+            ),
+            section=_NETWORK_ANALYSIS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=("statistics", "statistics_network_analysis", "statistics_shunts"),
+        ),
+        Setting(
+            name="statistics_occlusion_impact",
+            kind="bool",
+            default=False,
+            help=(
+                "Predict where a single blocked vessel matters most: for every "
+                "vessel, the fraction of inlet-to-outlet flow lost and the "
+                "length of other vessels starved of flow if it alone is "
+                "blocked, summarised for the whole network, by vessel type and "
+                "by branch order. Exact but slower (~25 s on a 40k-vessel "
+                "network in fast mode); adds occlusion_flow_loss and "
+                "occlusion_hypoperfused_length_um as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
+            name="statistics_occlusion_hypoperfusion_fraction",
+            kind="float",
+            default=0.5,
+            help=(
+                "Count another vessel as starved when its flow falls by at "
+                "least this fraction after the blockage"
+            ),
+            section=_NETWORK_ANALYSIS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=("statistics", "statistics_network_analysis", "statistics_occlusion_impact"),
+        ),
+        Setting(
+            name="statistics_occlusion_curves",
+            kind="bool",
+            default=False,
+            help=(
+                "Block vessels cumulatively (random, busiest-first, "
+                "narrowest-first) and track remaining flow and inlet-outlet "
+                "connectivity, with a robustness index per removal order. "
+                "Slower (~10 s on a 40k-vessel network in fast mode)"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
+            name="statistics_occlusion_curve_max_fraction",
+            kind="float",
+            default=0.5,
+            help="Keep blocking vessels until this fraction of them is blocked",
+            section=_NETWORK_ANALYSIS,
+            unit="fraction",
+            minimum=0.01,
+            maximum=1.0,
+            requires=("statistics", "statistics_network_analysis", "statistics_occlusion_curves"),
+        ),
+        Setting(
+            name="statistics_current_flow",
+            kind="bool",
+            default=True,
+            help=(
+                "Each vessel's share of the inlet-to-outlet flow as Kirchhoff "
+                "splits it across parallel routes (current-flow betweenness), "
+                "the equivalent inlet-outlet resistance, and (full mode, small "
+                "networks) the Kirchhoff index; adds current_flow_share as a "
+                "vessels-layer colour option"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
+            name="statistics_perfusion_territories",
+            kind="bool",
+            default=True,
+            help=(
+                "Assign each vessel to its nearest inlet (arteriolar) and "
+                "outlet (venular) territory and flag watershed vessels on the "
+                "borders between territories; adds arteriolar_territory, "
+                "venular_territory, watershed and arteriolar_watershed_margin "
+                "as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
+            name="statistics_transit_time",
+            kind="bool",
+            default=True,
+            help=(
+                "Blood transit time per vessel and the inlet-to-outlet "
+                "transit-time distribution, including capillary transit-time "
+                "heterogeneity (CTH). Needs haemodynamics and diameters; adds "
+                "transit_time_s and arrival_time_s as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
+            name="statistics_loop_hierarchy",
+            kind="bool",
+            default=True,
+            help=(
+                "Shortest loop through each vessel and the loop-length "
+                "distribution overall and by vessel type -- the scale at which "
+                "the network's redundancy sits; adds loop_length_um as a "
+                "vessels-layer colour option"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
+            name="statistics_strahler",
+            kind="bool",
+            default=True,
+            help=(
+                "Horton-Strahler orders of the arterial and venous trees and "
+                "Horton's bifurcation, length and diameter ratios; adds "
+                "strahler_order as a vessels-layer colour option"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
+            name="statistics_algebraic_connectivity",
+            kind="bool",
+            default=True,
+            help=(
+                "Algebraic connectivity (Fiedler value) of the weighted network "
+                "and its natural two-way split; adds fiedler_value and "
+                "fiedler_side as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
             name="statistics_cyclomatic_number",
             kind="bool",
             default=True,

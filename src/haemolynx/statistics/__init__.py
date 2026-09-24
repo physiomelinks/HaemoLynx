@@ -12,6 +12,18 @@ from .comprehensive import (
     compute_comprehensive_vessel_statistics,
 )
 from .csv_export import export_statistics_to_csv
+from .current_flow import compute_current_flow
+from .inlet_outlet_routes import (
+    ROUTE_WEIGHTINGS,
+    compute_inlet_outlet_bottlenecks,
+    compute_inlet_outlet_shunts,
+)
+from .loops import compute_loop_hierarchy
+from .occlusion import compute_occlusion_curves, compute_single_vessel_occlusion_impact
+from .spectral import compute_algebraic_connectivity
+from .strahler import compute_strahler_orders
+from .territories import compute_perfusion_territories
+from .transit_time import compute_transit_times
 from .network_measures import (
     compute_betweenness_and_community_measurements,
     compute_flow_hierarchy,
@@ -64,6 +76,17 @@ __all__ = [
     "compute_rich_club_coefficient",
     "compute_k_core_structure",
     "compute_flow_hierarchy",
+    "ROUTE_WEIGHTINGS",
+    "compute_inlet_outlet_bottlenecks",
+    "compute_inlet_outlet_shunts",
+    "compute_single_vessel_occlusion_impact",
+    "compute_occlusion_curves",
+    "compute_current_flow",
+    "compute_perfusion_territories",
+    "compute_transit_times",
+    "compute_loop_hierarchy",
+    "compute_strahler_orders",
+    "compute_algebraic_connectivity",
     "export_branch_order_statistics_to_csv",
     "run_3d_measurement_to_cell_mask",
 ]

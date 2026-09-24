@@ -8,6 +8,17 @@ import networkx as nx
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 
 from .bifurcation import compute_daughter_daughter_angles, compute_murray_law_compliance
+from .current_flow import compute_current_flow
+from .inlet_outlet_routes import (
+    compute_inlet_outlet_bottlenecks,
+    compute_inlet_outlet_shunts,
+)
+from .loops import compute_loop_hierarchy
+from .occlusion import compute_occlusion_curves, compute_single_vessel_occlusion_impact
+from .spectral import compute_algebraic_connectivity
+from .strahler import compute_strahler_orders
+from .territories import compute_perfusion_territories
+from .transit_time import compute_transit_times
 from .network_measures import (
     compute_betweenness,
     compute_betweenness_summary,
@@ -48,6 +59,16 @@ STATISTIC_MEASURES: tuple[str, ...] = (
     "daughter_angles",
     "intercapillary_distance",
     "network_robustness",
+    "bottlenecks",
+    "shunts",
+    "occlusion_impact",
+    "occlusion_curves",
+    "current_flow",
+    "perfusion_territories",
+    "transit_time",
+    "loop_hierarchy",
+    "strahler",
+    "algebraic_connectivity",
     "cyclomatic_number",
     "degree_assortativity",
     "rich_club",
@@ -70,6 +91,16 @@ STATISTIC_MEASURES: tuple[str, ...] = (
 NETWORK_ANALYSIS_MEASURES: frozenset[str] = frozenset(
     {
         "network_robustness",
+        "bottlenecks",
+        "shunts",
+        "occlusion_impact",
+        "occlusion_curves",
+        "current_flow",
+        "perfusion_territories",
+        "transit_time",
+        "loop_hierarchy",
+        "strahler",
+        "algebraic_connectivity",
         "cyclomatic_number",
         "degree_assortativity",
         "rich_club",
@@ -91,6 +122,10 @@ def compute_comprehensive_vessel_statistics(
     enabled_measures: Optional[frozenset] = None,
     inlet_nodes: Optional[Any] = None,
     outlet_nodes: Optional[Any] = None,
+    route_weighting: str = "length",
+    shunt_max_route_fraction: float = 0.5,
+    occlusion_hypoperfusion_fraction: float = 0.5,
+    occlusion_curve_max_fraction: float = 0.5,
 ) -> Dict[str, Any]:
     """Combine all vessel statistics.
 
@@ -107,6 +142,14 @@ def compute_comprehensive_vessel_statistics(
     additionally classify which bridges/articulation points are perfusion-
     critical (see :func:`~haemolynx.statistics.topology.compute_network_robustness`).
     Omitted (the default), that measure reports exactly what it always has.
+
+    "bottlenecks", "shunts", "occlusion_impact", "current_flow",
+    "perfusion_territories", "transit_time", "loop_hierarchy", "strahler" and
+    "algebraic_connectivity" also write their per-vessel results onto *G*'s
+    edges so the vessels layer can be coloured by them; the route/flow ones
+    measure distance and conductance by *route_weighting*. Without what they
+    need (inlets and outlets, or a solved flow for transit time) they report
+    N/A and write nothing.
     """
     assert_no_forbidden_edge_attributes(G, context="vessel statistics")
     valid_modes = {"fast", "full"}
@@ -168,6 +211,76 @@ def compute_comprehensive_vessel_statistics(
         base.update(
             compute_network_robustness(G, inlet_nodes=inlet_nodes, outlet_nodes=outlet_nodes)
         )
+    # The original G for both: parallel vessels are real extra capacity and
+    # extra routes, and the per-vessel results are written onto G's own edges.
+    if "bottlenecks" in enabled:
+        base.update(
+            compute_inlet_outlet_bottlenecks(
+                G,
+                inlet_nodes,
+                outlet_nodes,
+                weighting=route_weighting,
+                statistics_mode=statistics_mode,
+            )
+        )
+    if "shunts" in enabled:
+        base.update(
+            compute_inlet_outlet_shunts(
+                G,
+                inlet_nodes,
+                outlet_nodes,
+                weighting=route_weighting,
+                max_route_fraction=shunt_max_route_fraction,
+            )
+        )
+    if "occlusion_impact" in enabled:
+        base.update(
+            compute_single_vessel_occlusion_impact(
+                G,
+                inlet_nodes,
+                outlet_nodes,
+                weighting=route_weighting,
+                statistics_mode=statistics_mode,
+                hypoperfusion_fraction=occlusion_hypoperfusion_fraction,
+            )
+        )
+    if "occlusion_curves" in enabled:
+        base.update(
+            compute_occlusion_curves(
+                G,
+                inlet_nodes,
+                outlet_nodes,
+                weighting=route_weighting,
+                statistics_mode=statistics_mode,
+                max_fraction=occlusion_curve_max_fraction,
+            )
+        )
+    if "current_flow" in enabled:
+        base.update(
+            compute_current_flow(
+                G, inlet_nodes, outlet_nodes,
+                weighting=route_weighting, statistics_mode=statistics_mode,
+            )
+        )
+    if "perfusion_territories" in enabled:
+        base.update(
+            compute_perfusion_territories(G, inlet_nodes, outlet_nodes, weighting=route_weighting)
+        )
+    if "transit_time" in enabled:
+        base.update(compute_transit_times(G, inlet_nodes, outlet_nodes))
+    if "loop_hierarchy" in enabled:
+        base.update(
+            compute_loop_hierarchy(
+                G,
+                statistics_mode=statistics_mode,
+                image_dimensions=image_dimensions,
+                voxel_size=voxel_size,
+            )
+        )
+    if "strahler" in enabled:
+        base.update(compute_strahler_orders(G, inlet_nodes, outlet_nodes))
+    if "algebraic_connectivity" in enabled:
+        base.update(compute_algebraic_connectivity(G, weighting=route_weighting))
     if "cyclomatic_number" in enabled:
         # The original G: a parallel edge is itself an independent loop
         # that collapsing to G_simple would erase, same reasoning as

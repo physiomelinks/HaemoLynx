@@ -190,6 +190,47 @@ def test_export_results_passes_inlet_outlet_nodes_to_network_robustness(tmp_path
     assert "Critical Articulation Point Count" in csv_text
 
 
+def test_export_results_writes_bottleneck_and_shunt_results_onto_the_vessels(tmp_path):
+    """The real export stage, with inlet/outlet nodes: the report gets the
+    bottleneck/shunt rows, and the graph the vessels layer is built from
+    gets the per-vessel attributes. Resistance weighting is asked for but
+    haemodynamics is off, so both fall back to length and say so."""
+    G = _export_with_haemodynamics_off(
+        tmp_path,
+        inlet_nodes=[0],
+        outlet_nodes=[2],
+        statistics_route_weighting="resistance",
+    )
+    csv_text = (tmp_path / "no_haemodynamics_statistics.csv").read_text()
+    assert "Bottleneck Min-Cut Edge Count" in csv_text
+    assert "Shunt Pathway Count" in csv_text
+    assert "length (resistance unavailable)" in csv_text
+
+    # 0-1-2 is the only route; 1-3 is a dead-end spur off it.
+    assert G[0][1][0]["bottleneck_min_cut"] == "min_cut" or G[1][2][0]["bottleneck_min_cut"] == "min_cut"
+    assert G[1][3][0]["bottleneck_route_share"] == pytest.approx(0.0)
+    assert G[0][1][0]["bottleneck_route_share"] == pytest.approx(1.0)
+    assert np.isnan(G[1][3][0]["shunt_route_ratio"])
+    assert {data["shunt"] for _u, _v, data in G.edges(data=True)} == {"not_shunt"}
+
+
+def test_export_results_skips_bottlenecks_and_shunts_when_toggled_off(tmp_path):
+    G = _export_with_haemodynamics_off(
+        tmp_path,
+        inlet_nodes=[0],
+        outlet_nodes=[2],
+        statistics_bottlenecks=False,
+        statistics_shunts=False,
+    )
+    csv_text = (tmp_path / "no_haemodynamics_statistics.csv").read_text()
+    assert "Bottleneck" not in csv_text
+    assert "Shunt" not in csv_text
+    assert all(
+        "bottleneck_min_cut" not in data and "shunt" not in data
+        for _u, _v, data in G.edges(data=True)
+    )
+
+
 def test_compute_vascular_communities_off_by_default_leaves_the_graph_untouched(tmp_path):
     G = _export_with_haemodynamics_off(tmp_path)
     assert all("vascular_community" not in data for _u, _v, data in G.edges(data=True))

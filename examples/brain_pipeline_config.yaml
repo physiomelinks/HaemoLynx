@@ -525,6 +525,14 @@ connectivity/network_analysis:
   statistics_mode: fast
   # Bridge-edge and articulation-point counts -- how much of the network depends on a single connection -- and, when inlet/outlet boundaries are known, which of them are perfusion-critical  [needs statistics and statistics_network_analysis]
   statistics_network_robustness: true
+  # Find inlet-to-outlet bottlenecks: the minimum cut (fewest vessels, or lowest conductance, whose occlusion separates every inlet from every outlet) and each vessel's share of the shortest inlet-to-outlet routes. Needs inlet and outlet nodes; adds bottleneck_min_cut and bottleneck_route_share as vessels-layer colour options  [needs statistics and statistics_network_analysis]
+  statistics_bottlenecks: true
+  # Find inlet-to-outlet shunts: vessels on a route much shorter than the network's median inlet-to-outlet route, bypassing the bulk of the bed. Needs inlet and outlet nodes; adds shunt and shunt_route_ratio as vessels-layer colour options  [needs statistics and statistics_network_analysis]
+  statistics_shunts: true
+  # Distance the bottleneck and shunt routes are measured in: vessel count (topology), centreline length, or hydraulic resistance (and conductance for the bottleneck cut). Resistance needs haemodynamics and falls back to length without it  [one of: topology, length, resistance; needs statistics and statistics_network_analysis]
+  statistics_route_weighting: length
+  # Flag a vessel as a shunt when its shortest inlet-to-outlet route is at most this fraction of the median route  [fraction; range 0.0..1.0; needs statistics and statistics_network_analysis and statistics_shunts]
+  statistics_shunt_max_route_fraction: 0.5
   # Independent loop (anastomosis) count -- 0 means every vessel is a single point of failure for everything downstream of it  [needs statistics and statistics_network_analysis]
   statistics_cyclomatic_number: true
   # Whether high-degree junctions connect to other high-degree junctions (vascular trees are normally disassortative)  [needs statistics and statistics_network_analysis]

@@ -433,6 +433,27 @@ OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
     # compute_vascular_communities is on; empty on every edge otherwise,
     # exactly like fwhm_status when FWHM measurement never ran.
     "vascular_community": "export_results",
+    # Written by statistics.inlet_outlet_routes when statistics_bottlenecks /
+    # statistics_shunts ran with inlet and outlet nodes; absent otherwise,
+    # so available_edge_columns keeps them out of the dropdown.
+    "bottleneck_route_share": "export_results",
+    "bottleneck_min_cut": "export_results",
+    "shunt_route_ratio": "export_results",
+    "shunt": "export_results",
+    # The other annotating network analyses (see statistics.comprehensive).
+    "occlusion_flow_loss": "export_results",
+    "occlusion_hypoperfused_length_um": "export_results",
+    "current_flow_share": "export_results",
+    "arteriolar_territory": "export_results",
+    "venular_territory": "export_results",
+    "watershed": "export_results",
+    "arteriolar_watershed_margin": "export_results",
+    "transit_time_s": "export_results",
+    "arrival_time_s": "export_results",
+    "loop_length_um": "export_results",
+    "strahler_order": "export_results",
+    "fiedler_value": "export_results",
+    "fiedler_side": "export_results",
 }
 
 #: Derived flow columns always offered on vessel layers once flows exist.
@@ -509,6 +530,12 @@ TEXT_COLUMNS = frozenset(
         "diameter_source",
         "fwhm_status",
         "vascular_community",
+        "bottleneck_min_cut",
+        "shunt",
+        "arteriolar_territory",
+        "venular_territory",
+        "watershed",
+        "fiedler_side",
     }
 )
 

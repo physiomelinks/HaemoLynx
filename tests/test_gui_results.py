@@ -779,6 +779,65 @@ def test_edge_columns_excludes_flow_dir_axis_components_when_colouring_is_off():
     assert "flow_heading_deg" in without_colouring
 
 
+# --- bottleneck / shunt colouring (export_results) --------------------------
+
+
+def test_bottleneck_and_shunt_columns_are_declared_for_export_results():
+    from haemolynx.gui.results import OPTIONAL_EDGE_COLUMNS, TEXT_COLUMNS, edge_columns_for_settings
+
+    names = {"bottleneck_route_share", "bottleneck_min_cut", "shunt_route_ratio", "shunt"}
+    assert all(OPTIONAL_EDGE_COLUMNS[name] == "export_results" for name in names)
+    assert TEXT_COLUMNS >= {"bottleneck_min_cut", "shunt"}
+    assert "bottleneck_route_share" not in TEXT_COLUMNS
+    assert "shunt_route_ratio" not in TEXT_COLUMNS
+    assert names <= set(edge_columns_for_settings())
+
+
+def test_export_results_offers_bottleneck_and_shunt_colouring_on_the_vessels():
+    """The real analysis writes the attributes; export_results must carry
+    them into the vessels layer's features, colourable by kind."""
+    from haemolynx.gui.results import _colouring, available_edge_columns
+    from haemolynx.statistics import (
+        compute_inlet_outlet_bottlenecks,
+        compute_inlet_outlet_shunts,
+    )
+
+    graph = a_graph()
+    results = built(graph)
+    compute_inlet_outlet_bottlenecks(graph, [0], [3])
+    compute_inlet_outlet_shunts(graph, [0], [3])
+
+    group = results.stage_finished("export_results", SimpleNamespace(graph=graph))
+    vessels = spec_named(group, VESSELS)
+
+    assert {"bottleneck_route_share", "bottleneck_min_cut", "shunt_route_ratio", "shunt"} <= set(
+        available_edge_columns(graph)
+    )
+    # A single chain: every vessel is on the one route and none is a shortcut.
+    assert list(vessels.features["bottleneck_route_share"]) == pytest.approx([1.0, 1.0, 1.0])
+    assert set(vessels.features["shunt"]) == {"not_shunt"}
+    assert _colouring(vessels.features, "bottleneck_min_cut")["colour_kind"] == "categorical"
+    assert _colouring(vessels.features, "shunt")["colour_kind"] == "categorical"
+    assert _colouring(vessels.features, "shunt_route_ratio")["colour_kind"] == "continuous"
+
+
+def test_bottleneck_and_shunt_columns_are_absent_without_inlets_and_outlets():
+    from haemolynx.gui.results import available_edge_columns
+    from haemolynx.statistics import (
+        compute_inlet_outlet_bottlenecks,
+        compute_inlet_outlet_shunts,
+    )
+
+    graph = a_graph()
+    compute_inlet_outlet_bottlenecks(graph, [], [])
+    compute_inlet_outlet_shunts(graph, [], [])
+
+    present = set(available_edge_columns(graph))
+    assert present.isdisjoint(
+        {"bottleneck_route_share", "bottleneck_min_cut", "shunt_route_ratio", "shunt"}
+    )
+
+
 # --- vascular community colouring (export_results) --------------------------
 
 

@@ -57,16 +57,39 @@ def _normalize_branch_order_tag(tag: Any) -> Optional[str]:
 #: category sorts before which -- rather than an independent copy of the
 #: ranking that could silently drift from it (see that constant's own
 #: docstring).
+_CATEGORY_BY_PREFIX = {
+    "large_art": "large_arteriole",
+    "art": "arteriole",
+    "bo": "capillary",
+    "ven": "venule",
+    "large_ven": "large_venule",
+}
 _BRANCH_ORDER_SORT_GROUPS = {
     prefix: BRANCH_ORDER_CATEGORY_SEQUENCE.index(category)
-    for prefix, category in {
-        "large_art": "large_arteriole",
-        "art": "arteriole",
-        "bo": "capillary",
-        "ven": "venule",
-        "large_ven": "large_venule",
-    }.items()
+    for prefix, category in _CATEGORY_BY_PREFIX.items()
 }
+
+#: What :func:`branch_order_category` returns for a vessel with no (or an
+#: unrecognised) branch-order label.
+UNASSIGNED_CATEGORY = "unassigned"
+
+
+def branch_order_category(tag: Any) -> str:
+    """The vessel type a branch-order label belongs to -- one of
+    ``BRANCH_ORDER_CATEGORY_SEQUENCE`` (large_arteriole, arteriole,
+    capillary, venule, large_venule), or :data:`UNASSIGNED_CATEGORY`."""
+    normalized = _normalize_branch_order_tag(tag)
+    if normalized is None:
+        return UNASSIGNED_CATEGORY
+    m = re.match(r"^(large_art|large_ven|art|ven|bo)\s*\d+$", normalized, flags=re.IGNORECASE)
+    return _CATEGORY_BY_PREFIX[m.group(1).lower()] if m else UNASSIGNED_CATEGORY
+
+
+def branch_order_label(tag: Any) -> str:
+    """A branch-order label normalised for grouping (``Art2``, ``BO3``, ...),
+    or :data:`UNASSIGNED_CATEGORY` when there is none."""
+    normalized = _normalize_branch_order_tag(tag)
+    return normalized if normalized is not None else UNASSIGNED_CATEGORY
 
 
 def _branch_order_sort_key(tag: str) -> tuple[int, int, str]:
