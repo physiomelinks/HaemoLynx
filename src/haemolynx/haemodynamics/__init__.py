@@ -53,6 +53,11 @@ from .capillary import (
     scale_capillary_diameters,
 )
 from .sweep_flows import SweepFlowGrid, build_sweep_flow_grid, record_flows_after_solve
+from .capillary_block import (
+    block_vessels,
+    compare_block_to_baseline,
+    resolve_blocked_vessels,
+)
 from .perturbations import (
     INCOMPARABLE_OVERRIDES,
     PERTURBATION_TYPES,
@@ -109,6 +114,9 @@ __all__ = [
     "scale_arteriole_diameters",
     "scale_capillary_diameters",
     "run_capillary_dilation_pressure_sweep",
+    "block_vessels",
+    "compare_block_to_baseline",
+    "resolve_blocked_vessels",
     "SweepFlowGrid",
     "build_sweep_flow_grid",
     "record_flows_after_solve",

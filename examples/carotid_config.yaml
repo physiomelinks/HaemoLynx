@@ -749,6 +749,20 @@ perturbation_runs:
   pericyte_dilation_step_percent: 1
   # Arteriole constriction/dilation: change every arteriole branch's diameter by this percentage (positive = dilation, negative = constriction; e.g. 10 widens by 10%, -20 narrows by 20%); whole-branch scaling, not a focal pericyte site  [percent; range -99.999..]
   arteriole_diameter_change_percent: 0.0
+  # How to choose the vessels to block: a fraction of the vessels of some branch orders (branch_order_probability -- reads the branch orders, probability and seed), or listed vessels (vessel_ids -- reads the vessel IDs)  [one of: branch_order_probability, vessel_ids]
+  capillary_block_selection: branch_order_probability
+  # Block vessels from these branch orders, e.g. ['BO2'] or ['BO2', 'BO3']; a bare number means that capillary order (2 is BO2). Read when blocking by branch order and probability
+  capillary_block_branch_orders: [BO2]
+  # Fraction of the chosen branch orders' vessels to block, drawn at random: exactly round(fraction x count) of them, so 0.1 of 50 vessels always blocks 5. Read when blocking by branch order and probability  [fraction; range 0.0..1.0]
+  capillary_block_probability: 0.1
+  # Draw the blocked vessels from this seed, so a run repeats; another seed blocks a different set, and null draws a fresh set every run. Read when blocking by branch order and probability
+  capillary_block_seed: 20240917
+  # Vessels to block, by the branchID shown when hovering a vessel after the Solve stage (e.g. [12, 40]), or as [u, v, key]. Read when blocking listed vessels
+  capillary_block_vessel_ids: []
+  # Multiply a blocked vessel's resistance by this -- near infinite, so it carries about a millionth of its flow, but still solvable where removing it would cut part of the network off from every inlet and outlet  [range 1.0..]
+  capillary_block_resistance_factor: 1000000.0
+  # In the comparison with the baseline, count another vessel as hypoperfused when its flow falls by at least this fraction  [fraction; range 0.0..1.0]
+  capillary_block_hypoperfusion_fraction: 0.5
   # Start the arteriole constriction/dilation sweep at this percentage change (negative = constriction, positive = dilation; whole-branch scale = 1 + percent/100)  [percent; range -99..100]
   arteriole_dilation_min_percent: 0
   # End the arteriole constriction/dilation sweep at this percentage change (negative = constriction, positive = dilation)  [percent; range -99..100]

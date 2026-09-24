@@ -105,6 +105,7 @@ PERTURBATION_TYPE_DISPLAY_NAMES: Mapping[str, str] = {
     "arteriole_and_pericyte_diameter_change": (
         "arteriole and pericyte constriction/dilation"
     ),
+    "capillary_block": "capillary blocks",
 }
 
 #: GUI row labels for bidirectional diameter / tone settings. Schema ``name``
@@ -127,6 +128,13 @@ SETTING_DISPLAY_LABELS: Mapping[str, str] = {
     ),
     "pericyte_constriction_factor": "Pericyte constriction/dilation factor",
     "constriction_by_branch_order": "Constriction/dilation by branch order",
+    "capillary_block_selection": "Block vessels by",
+    "capillary_block_branch_orders": "Branch orders to block",
+    "capillary_block_probability": "Fraction of those vessels to block",
+    "capillary_block_seed": "Block selection seed",
+    "capillary_block_vessel_ids": "Vessel IDs to block (branchID)",
+    "capillary_block_resistance_factor": "Blocked resistance factor",
+    "capillary_block_hypoperfusion_fraction": "Hypoperfused at flow loss of",
 }
 
 #: Hover / focus text for controls that are not schema settings. Setting-row

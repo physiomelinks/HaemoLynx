@@ -294,6 +294,14 @@ LENGTH_SWEEP = {
         "pericyte_geometry_dilation_percent": 0,
     },
 }
+CAPILLARY_BLOCK = {
+    "name": "capillary_stall",
+    "type": "capillary_block",
+    "overrides": {
+        "capillary_block_branch_orders": ["B01"],
+        "capillary_block_probability": 0.5,
+    },
+}
 NO_OP = {"name": "placeholder", "type": "none", "overrides": {}}
 
 #: One worked entry per type, keyed by the type it exercises. What the guards
@@ -315,6 +323,7 @@ ENTRY_FOR_TYPE: dict[str, dict] = {
     "pericyte_length_sweep": LENGTH_SWEEP,
     "pericyte_diameter_change": PERICYTE_TONE,
     "arteriole_and_pericyte_diameter_change": ARTERIOLE_AND_PERICYTE,
+    "capillary_block": CAPILLARY_BLOCK,
 }
 
 #: Every type but `none`, which by definition re-solves nothing and writes

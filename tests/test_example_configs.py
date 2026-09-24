@@ -161,6 +161,13 @@ PERTURBATION_RUNS_NAMES = frozenset(
         "inlet_pressure_max_pa",
         "inlet_pressure_step_pa",
         "sweep_output_dir",
+        "capillary_block_selection",
+        "capillary_block_branch_orders",
+        "capillary_block_probability",
+        "capillary_block_seed",
+        "capillary_block_vessel_ids",
+        "capillary_block_resistance_factor",
+        "capillary_block_hypoperfusion_fraction",
     }
 )
 

@@ -499,6 +499,11 @@ OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
     "strahler_order": "export_results",
     "fiedler_value": "export_results",
     "fiedler_side": "export_results",
+    # Written onto a capillary-block perturbation's own graph (see
+    # haemodynamics.capillary_block), so they only ever appear on that
+    # perturbation's vessels layer.
+    "capillary_block": "run_perturbations",
+    "flow_change_vs_baseline": "run_perturbations",
 }
 
 #: Derived flow columns always offered on vessel layers once flows exist.
@@ -581,6 +586,7 @@ TEXT_COLUMNS = frozenset(
         "venular_territory",
         "watershed",
         "fiedler_side",
+        "capillary_block",
     }
 )
 

@@ -46,6 +46,7 @@ __all__ = [
     "PERICYTE_SPACING_SWEEP_SETTINGS",
     "PERICYTE_LENGTH_SWEEP_SETTINGS",
     "ARTERIOLE_DILATION_SWEEP_SETTINGS",
+    "CAPILLARY_BLOCK_SETTINGS",
     "CAPILLARY_DILATION_SWEEP_SETTINGS",
     "PRESSURE_SWEEP_SETTINGS",
     "SETTINGS_FOR_TYPE",
@@ -78,6 +79,7 @@ PERTURBATION_TYPES: tuple[str, ...] = (
     "pericyte_length_sweep",
     "pericyte_diameter_change",
     "arteriole_and_pericyte_diameter_change",
+    "capillary_block",
 )
 
 #: Length, spacing, probability, base tone and per-order overrides every
@@ -155,6 +157,19 @@ CAPILLARY_DILATION_SWEEP_SETTINGS: tuple[str, ...] = (
     "capillary_dilation_step_percent",
 )
 
+#: What a capillary block reads: which vessels (a fraction of some branch
+#: orders, or listed vessel ids), how near-infinite their resistance becomes,
+#: and when another vessel counts as hypoperfused in the comparison.
+CAPILLARY_BLOCK_SETTINGS: tuple[str, ...] = (
+    "capillary_block_selection",
+    "capillary_block_branch_orders",
+    "capillary_block_probability",
+    "capillary_block_seed",
+    "capillary_block_vessel_ids",
+    "capillary_block_resistance_factor",
+    "capillary_block_hypoperfusion_fraction",
+)
+
 #: Inlet-pressure axes for a pressure sweep.
 PRESSURE_SWEEP_SETTINGS: tuple[str, ...] = (
     "inlet_pressure_min_pa",
@@ -214,6 +229,7 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
         "arteriole_diameter_change_percent",
         *PERICYTE_CONSTRICTION_SETTINGS,
     ),
+    "capillary_block": CAPILLARY_BLOCK_SETTINGS,
 }
 
 #: Settings a perturbation may not override, because changing one of them
@@ -550,6 +566,7 @@ def perturbation_problems(values: Mapping[str, Any], schema) -> tuple[str, ...]:
                 "be this perturbation's effect. Fix: set it for the whole run, "
                 "or make it a second run"
             )
+        problems.extend(_type_problems(spec, values, schema))
         first = seen.get(spec.name)
         if first is not None:
             problems.append(
@@ -559,6 +576,34 @@ def perturbation_problems(values: Mapping[str, Any], schema) -> tuple[str, ...]:
         else:
             seen[spec.name] = index
     return tuple(problems)
+
+
+def _type_problems(spec: PerturbationSpec, values: Mapping[str, Any], schema) -> list[str]:
+    """What a type needs that no single setting's own range can check: here,
+    a capillary block that would have nothing to block."""
+    if spec.type != "capillary_block":
+        return []
+    merged = {**values, **spec.applied_overrides(schema)}
+
+    def listed(value: Any) -> list:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [part for part in value.split(",") if part.strip()]
+        return list(value) if isinstance(value, (list, tuple)) else [value]
+
+    if merged.get("capillary_block_selection") == "vessel_ids":
+        if not listed(merged.get("capillary_block_vessel_ids")):
+            return [
+                f"perturbation '{spec.name}' blocks listed vessels but lists no "
+                "vessel IDs: set capillary_block_vessel_ids to the branchIDs to block"
+            ]
+    elif not listed(merged.get("capillary_block_branch_orders")):
+        return [
+            f"perturbation '{spec.name}' blocks by branch order but names no "
+            "branch orders: set capillary_block_branch_orders, e.g. ['BO2']"
+        ]
+    return []
 
 
 def perturbation_output_dir(values: Mapping[str, Any]) -> Path:

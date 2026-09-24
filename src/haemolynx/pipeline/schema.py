@@ -4184,6 +4184,97 @@ SCHEMA = Schema(
             # Scale = 1 + percent/100 must stay > 0.
             minimum=-99.999,
         ),
+        # A capillary block's options (see
+        # haemodynamics.capillary_block). Like every perturbation option they
+        # are revealed by the entry's type, not by a bool prerequisite.
+        Setting(
+            name="capillary_block_selection",
+            kind="choice",
+            default="branch_order_probability",
+            help=(
+                "How to choose the vessels to block: a fraction of the vessels "
+                "of some branch orders (branch_order_probability -- reads the "
+                "branch orders, probability and seed), or listed vessels "
+                "(vessel_ids -- reads the vessel IDs)"
+            ),
+            section=_PERTURBATION_RUNS,
+            choices=("branch_order_probability", "vessel_ids"),
+        ),
+        Setting(
+            name="capillary_block_branch_orders",
+            kind="any",
+            default=["BO2"],
+            help=(
+                "Block vessels from these branch orders, e.g. ['BO2'] or "
+                "['BO2', 'BO3']; a bare number means that capillary order "
+                "(2 is BO2). Read when blocking by branch order and probability"
+            ),
+            section=_PERTURBATION_RUNS,
+        ),
+        Setting(
+            name="capillary_block_probability",
+            kind="float",
+            default=0.1,
+            help=(
+                "Fraction of the chosen branch orders' vessels to block, drawn "
+                "at random: exactly round(fraction x count) of them, so 0.1 of "
+                "50 vessels always blocks 5. Read when blocking by branch "
+                "order and probability"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        Setting(
+            name="capillary_block_seed",
+            kind="int",
+            default=20240917,
+            help=(
+                "Draw the blocked vessels from this seed, so a run repeats; "
+                "another seed blocks a different set, and null draws a fresh "
+                "set every run. Read when blocking by branch order and probability"
+            ),
+            section=_PERTURBATION_RUNS,
+        ),
+        Setting(
+            name="capillary_block_vessel_ids",
+            kind="any",
+            default=[],
+            help=(
+                "Vessels to block, by the branchID shown when hovering a "
+                "vessel after the Solve stage (e.g. [12, 40]), or as "
+                "[u, v, key]. Read when blocking listed vessels"
+            ),
+            section=_PERTURBATION_RUNS,
+        ),
+        Setting(
+            name="capillary_block_resistance_factor",
+            kind="float",
+            default=1e6,
+            help=(
+                "Multiply a blocked vessel's resistance by this -- near "
+                "infinite, so it carries about a millionth of its flow, but "
+                "still solvable where removing it would cut part of the "
+                "network off from every inlet and outlet"
+            ),
+            section=_PERTURBATION_RUNS,
+            minimum=1.0,
+            advanced=True,
+        ),
+        Setting(
+            name="capillary_block_hypoperfusion_fraction",
+            kind="float",
+            default=0.5,
+            help=(
+                "In the comparison with the baseline, count another vessel as "
+                "hypoperfused when its flow falls by at least this fraction"
+            ),
+            section=_PERTURBATION_RUNS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+        ),
         Setting(
             name="arteriole_dilation_min_percent",
             kind="int",

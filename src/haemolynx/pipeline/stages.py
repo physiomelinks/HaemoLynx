@@ -2537,6 +2537,128 @@ def _write_perturbation_csvs(
     result.outputs.append(edges_path)
 
 
+def _listed(value: Any) -> list:
+    """A list setting as a list, however it was typed: a lone value, or a
+    comma-separated string from a text box (``"BO2, BO3"``, ``"12, 40"``)."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+#: Metric/value rows of a capillary block's `<name>_block_comparison.csv`.
+CAPILLARY_BLOCK_COMPARISON_COLUMNS = ("metric", "value")
+#: Columns of a capillary block's `<name>_blocked_vessels.csv`, in order.
+CAPILLARY_BLOCK_VESSEL_COLUMNS = (
+    "branch_id",
+    "u",
+    "v",
+    "key",
+    "branch_order",
+    "length_um",
+    "diameter_um",
+    "baseline_resistance",
+    "blocked_resistance",
+    "baseline_flow_abs",
+    "blocked_flow_abs",
+)
+#: Columns of a capillary block's `<name>_flow_by_branch_order.csv`, in order.
+CAPILLARY_BLOCK_ORDER_COLUMNS = (
+    "branch_order",
+    "vessels",
+    "blocked",
+    "baseline_mean_flow",
+    "blocked_mean_flow",
+    "mean_flow_percent_change",
+    "hypoperfused",
+    "hypoperfused_length_um",
+    "reversed",
+)
+
+
+def _write_capillary_block_comparison(
+    result: PerturbationResult,
+    *,
+    baseline_graph: nx.MultiGraph,
+    boundaries: BoundaryNodes,
+    hypoperfusion_fraction: float,
+    selection_summary: dict[str, Any],
+) -> dict[str, Any]:
+    """The blocked network's flow set against the baseline's, as three CSVs:
+    what was blocked, the network-level comparison, and the comparison per
+    branch order. Returns the network-level comparison."""
+    G = result.graph
+    output_dir = result.output_dir
+    assert G is not None and output_dir is not None
+    comparison, by_order = haemodynamics.compare_block_to_baseline(
+        baseline_graph,
+        G,
+        inlet_nodes=list(boundaries.inlet_nodes),
+        outlet_nodes=list(boundaries.outlet_nodes),
+        hypoperfusion_fraction=hypoperfusion_fraction,
+    )
+
+    vessels_path = output_dir / f"{result.name}_blocked_vessels.csv"
+    with vessels_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(CAPILLARY_BLOCK_VESSEL_COLUMNS))
+        writer.writeheader()
+        for branch_id, (u, v, key, data) in enumerate(G.edges(keys=True, data=True)):
+            if data.get("capillary_block") != "blocked":
+                continue
+            before = baseline_graph.get_edge_data(u, v, key) or {}
+            writer.writerow(
+                {
+                    "branch_id": branch_id,
+                    "u": u,
+                    "v": v,
+                    "key": key,
+                    "branch_order": data.get("branch_order"),
+                    "length_um": data.get("length"),
+                    "diameter_um": data.get("diameter_um"),
+                    "baseline_resistance": before.get("resistance"),
+                    "blocked_resistance": data.get("resistance"),
+                    "baseline_flow_abs": before.get("flow_abs"),
+                    "blocked_flow_abs": data.get("flow_abs"),
+                }
+            )
+    result.outputs.append(vessels_path)
+
+    comparison_path = output_dir / f"{result.name}_block_comparison.csv"
+    with comparison_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(CAPILLARY_BLOCK_COMPARISON_COLUMNS)
+        for key in ("selection", "branch_orders", "probability", "seed",
+                    "candidate_vessels", "vessel_ids", "blocked_vessels",
+                    "resistance_factor"):
+            if key in selection_summary:
+                value = selection_summary[key]
+                writer.writerow(
+                    [key, json.dumps(plain_values(value)) if isinstance(value, (list, tuple)) else value]
+                )
+        for key, value in comparison.items():
+            writer.writerow([key, value])
+    result.outputs.append(comparison_path)
+
+    orders_path = output_dir / f"{result.name}_flow_by_branch_order.csv"
+    with orders_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(CAPILLARY_BLOCK_ORDER_COLUMNS))
+        writer.writeheader()
+        writer.writerows(by_order)
+    result.outputs.append(orders_path)
+
+    logger.info(
+        f"Perturbation '{result.name}': total inflow "
+        f"{comparison['total_inflow_percent_change']:+.3g}% vs baseline; "
+        f"{comparison['hypoperfused_vessels']} other vessel(s) lost at least "
+        f"{hypoperfusion_fraction:.0%} of their flow, "
+        f"{comparison['reversed_vessels']} reversed."
+    )
+    return comparison
+
+
 def _perturb_one(
     spec: PerturbationSpec,
     settings: dict,
@@ -2547,8 +2669,14 @@ def _perturb_one(
     baseline: dict[str, Any],
     *,
     image: np.ndarray | None = None,
+    baseline_graph: nx.MultiGraph | None = None,
 ) -> PerturbationResult:
-    """Run one perturbation from the baseline network, and write its output."""
+    """Run one perturbation from the baseline network, and write its output.
+
+    *baseline_graph* is the baseline as re-solved by this same solver (see
+    `run_perturbations`), for a perturbation that compares its flows vessel
+    by vessel; `model.graph` stands in when a caller has none.
+    """
     result = PerturbationResult(name=spec.name, type=spec.type)
     refused = spec.incomparable_overrides()
     if refused:
@@ -2805,6 +2933,38 @@ def _perturb_one(
             # constriction step needs redoing per iteration, using the fixed
             # scaled_table it already closed over.
             set_resistances_for_constriction_strategy(G, **constriction_kwargs)
+    elif spec.type == "capillary_block":
+        blocked_edges, block_summary = haemodynamics.resolve_blocked_vessels(
+            G,
+            selection=perturbed["capillary_block_selection"],
+            branch_orders=_listed(perturbed["capillary_block_branch_orders"]),
+            probability=float(perturbed["capillary_block_probability"]),
+            seed=perturbed["capillary_block_seed"],
+            vessel_ids=_listed(perturbed["capillary_block_vessel_ids"]),
+        )
+        block_factor = float(perturbed["capillary_block_resistance_factor"])
+        haemodynamics.block_vessels(G, blocked_edges, block_factor)
+        summary.update(block_summary)
+        summary["resistance_factor"] = block_factor
+        logger.info(
+            f"Perturbation '{spec.name}': blocking {len(blocked_edges)} vessel(s) "
+            f"({block_summary['selection']}) at {block_factor:g}x resistance."
+        )
+
+        if _distributes_haematocrit(perturbed):
+            block_config = _haemodynamics_apply_config(
+                perturbed,
+                schema,
+                voxel_size_zyx=tuple(
+                    float(v) for v in G.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0))
+                ),
+            )
+
+            def recompute_resistances() -> None:
+                # The baseline's own resistance computation, from the new
+                # discharge_haematocrit, then the same blocks on top of it.
+                apply_poiseuille_resistances(G, block_config)
+                haemodynamics.block_vessels(G, blocked_edges, block_factor)
     else:
         # `perturbation_problems` reports an unknown type before a run starts;
         # reaching here means a caller skipped the checks.
@@ -2839,6 +2999,14 @@ def _perturb_one(
         settings=perturbed,
         overrides=overrides,
     )
+    if spec.type == "capillary_block":
+        summary["comparison"] = _write_capillary_block_comparison(
+            result,
+            baseline_graph=model.graph if baseline_graph is None else baseline_graph,
+            boundaries=boundaries,
+            hypoperfusion_fraction=float(perturbed["capillary_block_hypoperfusion_fraction"]),
+            selection_summary=summary,
+        )
 
     # Alice-style curves for sweeps; pipeline-like plots/CSVs for a single
     # re-solve. Sweeps keep *graph* for centreline geometry and *sweep_flows*
@@ -2954,6 +3122,7 @@ def run_perturbations(
                     root,
                     run.baseline,
                     image=image,
+                    baseline_graph=baseline_graph,
                 )
             )
         except Exception as error:
