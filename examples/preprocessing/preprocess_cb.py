@@ -255,18 +255,26 @@ def vesselness(vol, sigmas, workers, chunk_z, downscale=1, saturated=0.05):
 
     Two things this does that a naive implementation does not:
 
-    1. Normalises EACH scale before the max. Sato/Frangi responses are not
-       gamma-normalised across sigma -- large sigma responds ~3x stronger on
-       this data, so a raw max is dominated by the coarsest scale and the
-       capillary-scale selectivity is lost entirely.
+    1. Normalises EACH scale before the max. skimage's ridge responses are not
+       gamma-normalised across sigma, so the Gaussian-derivative kernels weaken
+       as sigma grows: measured on this data the response peaks near sigma
+       1.4-2.0 and FALLS to 0.38-0.75 of the sigma=1.0 value by sigma=8. A raw
+       max is therefore dominated by the FINE scales and the coarse band -- the
+       one carrying the wider vessels -- contributes almost nothing. (A
+       gamma-normalising implementation, e.g. Fiji's Tubeness, inverts this.)
 
     2. Processes in z-chunks with a 4*sigma halo. A monolithic call peaks at
        ~17.6 GB on a 100M-voxel volume; chunked, memory scales with chunk size.
-       Verified identical to the monolithic result (corr 1.000000).
+       Agrees with the monolithic result to corr 1.000000 but is NOT bitwise
+       identical: max abs diff 1.55e-3 on a [0,1] field, confined to within 7
+       slices of a seam. Exact at an 8*sigma halo.
 
     `downscale=2` computes at half resolution with halved sigmas and upsamples
-    the result: 8x faster, correlation 0.9989 against full resolution. Safe for
-    coarse scales, where the response varies slowly by construction.
+    the result. Measured at full volume size on all six carotid body volumes:
+    7.9-12.0x faster, whole-volume correlation 0.9961-0.9981 (0.9930-0.9968 over
+    ridge-carrying voxels), but max abs diff 0.247-0.301 on a [0,1] field -- two
+    orders of magnitude coarser than the chunking above. Justified for coarse
+    scales, where the response varies slowly by construction.
     """
     if downscale > 1:
         from scipy.ndimage import zoom
@@ -512,8 +520,9 @@ def main():
                          "loses the fine/coarse disagreement cue that helps "
                          "ilastik separate touching parallel capillaries.")
     ap.add_argument("--fast-coarse", action="store_true", default=True,
-                    help="Compute coarse scales at half resolution (8x faster, "
-                         "correlation 0.9989).")
+                    help="Compute coarse scales at half resolution (7.9-12.0x "
+                         "faster, whole-volume correlation 0.9961-0.9981; max "
+                         "abs diff up to 0.30 on a [0,1] field).")
     ap.add_argument("--no-fast-coarse", dest="fast_coarse", action="store_false")
 
     ap.add_argument("--workers", type=int, default=8,
