@@ -249,6 +249,90 @@ def test_compute_vascular_communities_on_writes_domain_labels_without_haemodynam
     assert all(label == BOUNDARY_LABEL or label.startswith("D") for label in labels)
 
 
+def test_compute_vascular_communities_runs_with_statistics_off(tmp_path):
+    """Vascular communities colour the vessels layer; they are not part of
+    the statistics report, so turning Statistics off must not switch them off."""
+    G = _export_with_haemodynamics_off(
+        tmp_path, statistics=False, compute_vascular_communities=True
+    )
+    assert not (tmp_path / "no_haemodynamics_statistics.csv").exists()
+    labels = {data.get("vascular_community") for _u, _v, data in G.edges(data=True)}
+    assert labels and None not in labels
+
+
+def _spy_on_partitioning(monkeypatch):
+    """Count every call that partitions the graph, across each module-level
+    binding of the partitioning functions."""
+    import networkx as nx
+
+    import haemolynx.graph as graph_pkg
+    from haemolynx.graph import communities as gc
+    from haemolynx.statistics import network_measures as nm
+
+    calls = []
+    original_for_weighting = gc.communities_for_weighting
+    original_greedy = nx.community.greedy_modularity_communities
+
+    def _for_weighting(graph_arg, weighting, *args, **kwargs):
+        calls.append(("for_weighting", weighting))
+        return original_for_weighting(graph_arg, weighting, *args, **kwargs)
+
+    def _greedy(*args, **kwargs):
+        calls.append(("greedy", None))
+        return original_greedy(*args, **kwargs)
+
+    for module in (graph_pkg, gc, nm):
+        monkeypatch.setattr(module, "communities_for_weighting", _for_weighting)
+    monkeypatch.setattr(nx.community, "greedy_modularity_communities", _greedy)
+    monkeypatch.setattr(nm, "greedy_modularity_communities", _greedy)
+    return calls
+
+
+def test_topology_vascular_communities_reuse_the_statistics_partition_in_fast_mode(
+    tmp_path, monkeypatch
+):
+    """The default "topology" weighting is exactly the partition the
+    statistics report's own "community" measure computes, so with both on it
+    is computed once and shared -- and they agree on the community count."""
+    calls = _spy_on_partitioning(monkeypatch)
+    G = _export_with_haemodynamics_off(
+        tmp_path, compute_vascular_communities=True, statistics_mode="fast"
+    )
+    assert calls.count(("for_weighting", "topology")) == 1
+
+    csv_text = (tmp_path / "no_haemodynamics_statistics.csv").read_text()
+    domains = {
+        data["vascular_community"]
+        for _u, _v, data in G.edges(data=True)
+        if data["vascular_community"].startswith("D")
+    }
+    count_row = next(line for line in csv_text.splitlines() if ",Community Count," in line)
+    assert int(float(count_row.split(",")[2])) >= len(domains)
+
+
+def test_topology_vascular_communities_reuse_the_statistics_partition_in_full_mode(
+    tmp_path, monkeypatch
+):
+    calls = _spy_on_partitioning(monkeypatch)
+    _export_with_haemodynamics_off(
+        tmp_path, compute_vascular_communities=True, statistics_mode="full"
+    )
+    assert calls.count(("greedy", None)) == 1
+    assert ("for_weighting", "topology") not in calls
+
+
+def test_topology_vascular_communities_partition_on_their_own_without_the_report(
+    tmp_path, monkeypatch
+):
+    """Nothing to reuse when the report's community measure is off."""
+    calls = _spy_on_partitioning(monkeypatch)
+    G = _export_with_haemodynamics_off(
+        tmp_path, compute_vascular_communities=True, statistics_community=False
+    )
+    assert calls.count(("for_weighting", "topology")) == 1
+    assert all("vascular_community" in data for _u, _v, data in G.edges(data=True))
+
+
 def test_statistics_network_analysis_off_removes_every_network_measure_from_the_csv(tmp_path):
     """statistics_network_analysis is the GUI's own "Connectivity/Network
     Analysis" master toggle (nested under statistics) -- turning it off must

@@ -30,13 +30,24 @@ DEFAULT_BETWEENNESS_TOP_N = 5
 
 
 def compute_communities_summary(
-    G: nx.Graph, max_nodes_exact: int = DEFAULT_MAX_NODES_EXACT
+    G: nx.Graph,
+    max_nodes_exact: int = DEFAULT_MAX_NODES_EXACT,
+    precomputed: "tuple[list, str] | None" = None,
 ) -> Dict[str, Any]:
-    """Compute community statistics with runtime guards."""
+    """Compute community statistics with runtime guards.
+
+    *precomputed*, when given, is the ``(communities, method)`` pair
+    ``communities_for_weighting(G, "topology")`` already returned for this
+    graph (e.g. for the vessels-layer vascular communities), used instead of
+    partitioning it again.
+    """
     if G.number_of_nodes() == 0:
         return {"Community Count": 0}
 
-    communities, method = communities_for_weighting(G, "topology", max_nodes_exact)
+    if precomputed is not None:
+        communities, method = precomputed
+    else:
+        communities, method = communities_for_weighting(G, "topology", max_nodes_exact)
     sizes = [len(c) for c in communities]
     return {
         "Community Count": len(communities),

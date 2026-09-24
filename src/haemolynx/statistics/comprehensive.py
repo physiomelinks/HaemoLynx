@@ -126,6 +126,7 @@ def compute_comprehensive_vessel_statistics(
     shunt_max_route_fraction: float = 0.5,
     occlusion_hypoperfusion_fraction: float = 0.5,
     occlusion_curve_max_fraction: float = 0.5,
+    topology_communities: "tuple[list, str] | None" = None,
 ) -> Dict[str, Any]:
     """Combine all vessel statistics.
 
@@ -150,6 +151,12 @@ def compute_comprehensive_vessel_statistics(
     measure distance and conductance by *route_weighting*. Without what they
     need (inlets and outlets, or a solved flow for transit time) they report
     N/A and write nothing.
+
+    *topology_communities*, when given, is the ``(communities, method)``
+    topological partition of *G* the "community" measure would compute --
+    exact greedy modularity in ``full`` mode, ``communities_for_weighting(G,
+    "topology")`` in ``fast`` -- computed once by a caller that also needs it
+    (the vessels-layer vascular communities) and used instead of repeating it.
     """
     assert_no_forbidden_edge_attributes(G, context="vessel statistics")
     valid_modes = {"fast", "full"}
@@ -299,7 +306,11 @@ def compute_comprehensive_vessel_statistics(
         if "path_efficiency" in enabled:
             base.update(compute_path_efficiency(G, is_mg, max_pairs=None))
         if "community" in enabled:
-            base["communities"] = compute_communities(G_simple)
+            base["communities"] = (
+                list(topology_communities[0])
+                if topology_communities is not None
+                else compute_communities(G_simple)
+            )
         if "betweenness" in enabled:
             base.update(compute_betweenness(G_simple))
         base["Statistics Mode"] = "full"
@@ -308,7 +319,7 @@ def compute_comprehensive_vessel_statistics(
     if "path_efficiency" in enabled:
         base.update(compute_path_efficiency(G, is_mg))
     if "community" in enabled:
-        base.update(compute_communities_summary(G_simple))
+        base.update(compute_communities_summary(G_simple, precomputed=topology_communities))
     if "betweenness" in enabled:
         base.update(compute_betweenness_summary(G_simple))
     base["Statistics Mode"] = "fast"

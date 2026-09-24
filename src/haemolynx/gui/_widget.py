@@ -151,25 +151,15 @@ DISPLAY_SETTINGS_OFF_IN_NAPARI = {
     "visualize_results": False,
 }
 
-def _network_analysis_on(values: Mapping[str, Any]) -> bool:
-    return bool(values.get("statistics") and values.get("statistics_network_analysis"))
-
-
 #: Settings that are not a per-run decision, so they get no row of their
 #: own: flow_direction_colouring/flow_arrow_scale are cosmetics for a layer
-#: that is always added anyway, and compute_vascular_communities is worth
-#: having on whenever its weighting can be chosen -- only the weighting
-#: itself (``vascular_community_weighting``, a real row on the Statistics
-#: tab) is a choice worth surfacing. A value is either a constant or a
-#: function of the other settings: compute_vascular_communities follows
-#: Statistics and network analysis, so an untouched panel (Statistics off)
-#: does not switch on a setting nothing would read. Never parented as flat
-#: tab rows, forced on every call to ``apply_prerequisites`` so a loaded
-#: config cannot silently change one with no visible control to notice it by.
+#: that is always added anyway. A value is either a constant or a function of
+#: the other settings. Never parented as flat tab rows, forced on every call
+#: to ``apply_prerequisites`` so a loaded config cannot silently change one
+#: with no visible control to notice it by.
 FORCED_HIDDEN_EXPORT_SETTINGS: dict[str, Any] = {
     "flow_direction_colouring": True,
     "flow_arrow_scale": 1.0,
-    "compute_vascular_communities": _network_analysis_on,
 }
 
 
@@ -6567,9 +6557,8 @@ def settings_widget(napari_viewer=None):
     def apply_prerequisites(*_args) -> None:
         """Apply schema prerequisites: hide nested rows, grey others."""
         # Pinned before the values snapshot below, not inside the rows loop:
-        # a dependent row (vascular_community_weighting) reads this value to
-        # compute its own `enabled`, so correcting it mid-loop would leave
-        # that computation using the stale, not-yet-forced value.
+        # a dependent row reading a forced value to compute its own `enabled`
+        # would otherwise use the stale, not-yet-forced value.
         values = current_values()
         for name in FORCED_HIDDEN_EXPORT_SETTINGS:
             forced = forced_hidden_value(name, values)

@@ -3057,11 +3057,23 @@ def _perturb_one(
         # communities (flow- and resistance-weighted ones move with the
         # flows), then every selected statistic and network analysis -- which
         # also writes each per-vessel analysis onto G for its vessels layer.
+        # A perturbation's statistics always run (with the run's own measure
+        # selection), so its topological community measure can share the
+        # vessels-layer partition; its weighted-community JSONs do not take
+        # a precomputed one.
+        shared_partition = shared_vascular_community_partition(
+            perturbed, G, topology_report=True, weighted_report=False
+        )
         if vascular_communities_enabled(perturbed):
             community_summary = graph.assign_vascular_communities(
-                G, weighting=perturbed["vascular_community_weighting"]
+                G,
+                weighting=perturbed["vascular_community_weighting"],
+                communities=shared_partition,
             )
             summary["vascular_communities"] = community_summary.community_count
+        perturbation_statistics = statistics_arguments(perturbed)
+        if shared_partition is not None:
+            perturbation_statistics["topology_communities"] = shared_partition
         result.outputs.extend(
             export_non_sweep_perturbation_artifacts(
                 G,
@@ -3069,7 +3081,7 @@ def _perturb_one(
                 perturbed,
                 image=image,
                 name_stem=spec.name,
-                statistics_kwargs=statistics_arguments(perturbed),
+                statistics_kwargs=perturbation_statistics,
                 voxel_size_zyx=voxel_size_zyx,
                 betweenness_and_communities=bool(perturbed["statistics"]),
             )
@@ -3187,16 +3199,43 @@ def run_perturbations(
 
 
 def vascular_communities_enabled(settings: dict) -> bool:
-    """Whether a run partitions its network into vascular communities.
+    """Whether a run partitions its network into vascular communities for the
+    vessels layer -- its own toggle, independent of Statistics."""
+    return bool(settings["compute_vascular_communities"])
 
-    A connectivity/network analysis, so it runs only with statistics and the
-    network analyses on -- the same nesting the panel shows it in.
+
+def shared_vascular_community_partition(
+    settings: dict, G: nx.MultiGraph, *, topology_report: bool, weighted_report: bool
+) -> "tuple[list, str] | None":
+    """The vascular-community partition, computed once here when the
+    statistics report computes the very same one -- else ``None``, and
+    ``graph.assign_vascular_communities`` partitions on its own.
+
+    *topology_report*: the report's "community" measure runs (it also needs
+    ``statistics_network_analysis`` and ``statistics_community``); it is the
+    ``topology`` partition -- exact greedy modularity in ``full`` mode,
+    ``communities_for_weighting`` in ``fast``, matching
+    ``statistics.compute_comprehensive_vessel_statistics`` exactly.
+    *weighted_report*: the report's length/resistance/flow-weighted community
+    counts run (resistance and flow only with haemodynamics).
     """
-    return bool(
-        settings["compute_vascular_communities"]
-        and settings["statistics"]
-        and settings["statistics_network_analysis"]
-    )
+    if not vascular_communities_enabled(settings):
+        return None
+    weighting = settings["vascular_community_weighting"]
+    if weighting == "topology":
+        if not (
+            topology_report
+            and settings["statistics_network_analysis"]
+            and settings["statistics_community"]
+        ):
+            return None
+        if settings["statistics_mode"] == "full":
+            simple = nx.Graph(G) if G.is_multigraph() else G
+            return list(nx.community.greedy_modularity_communities(simple)), "greedy_modularity"
+        return graph.communities_for_weighting(G, "topology")
+    if weighted_report and (weighting == "length" or settings["run_haemodynamics"]):
+        return graph.communities_for_weighting(G, weighting)
+    return None
 
 
 def statistics_arguments(settings: dict) -> dict[str, Any]:
@@ -3240,9 +3279,9 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     voxel_size_zyx = network.volume.voxel_size_zyx
     main_voxel_size_xyz = network.volume.voxel_size_xyz
 
-    # The statistics report's own weighted-community counts (below) and the
-    # vessels-layer vascular-community assignment (further below) can ask
-    # for the exact same partition -- e.g. both weighted by "resistance".
+    # The statistics report (its topological "community" measure, or its
+    # weighted-community counts) and the vessels-layer vascular-community
+    # assignment (further below) can ask for the exact same partition.
     # Compute it once up front in that case and hand it to both, instead of
     # running greedy modularity on the same graph twice.
     vascular_communities_on = vascular_communities_enabled(settings)
@@ -3251,15 +3290,12 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         if vascular_communities_on
         else None
     )
-    shared_vascular_communities = None
-    share_vascular_communities_with_statistics = (
-        vascular_communities_on
-        and settings["statistics"]
-        and vascular_weighting in ("resistance", "length", "flow")
-        and (vascular_weighting == "length" or settings["run_haemodynamics"])
+    shared_vascular_communities = shared_vascular_community_partition(
+        settings,
+        G,
+        topology_report=bool(settings["statistics"]),
+        weighted_report=bool(settings["statistics"]),
     )
-    if share_vascular_communities_with_statistics:
-        shared_vascular_communities = graph.communities_for_weighting(G, vascular_weighting)
 
     # 7) Compute and print vessel statistics.
     logger.info("Computing vessel statistics...")
@@ -3280,6 +3316,9 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             # whole-image volume and density were counted in voxels for any
             # stack whose z spacing is not 1 um.
             voxel_size=voxel_size_zyx,
+            topology_communities=(
+                shared_vascular_communities if vascular_weighting == "topology" else None
+            ),
             **statistics_arguments(settings),
         )
 
@@ -3305,7 +3344,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         if settings["run_haemodynamics"]:
             precomputed_communities = (
                 {vascular_weighting: shared_vascular_communities}
-                if shared_vascular_communities is not None
+                if shared_vascular_communities is not None and vascular_weighting != "topology"
                 else None
             )
             weighted_measurements = statistics.compute_betweenness_and_community_measurements(
@@ -3381,7 +3420,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     # export above, since this writes a graph attribute for visualization,
     # not a report the user may have turned off. Reuses the partition
     # already computed above when the statistics report asked for the same
-    # weighting (see shared_vascular_communities).
+    # one (see shared_vascular_community_partition).
     if vascular_communities_on:
         community_summary = graph.assign_vascular_communities(
             G, weighting=vascular_weighting,

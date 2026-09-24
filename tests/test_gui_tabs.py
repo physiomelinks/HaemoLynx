@@ -876,23 +876,21 @@ def test_a_box_title_changes_only_on_its_own_tab_and_not_the_section():
     assert SCHEMA["viscosity_law"].section == DIAMETERS_AND_PERICYTES
 
 
-def test_vascular_communities_are_on_the_additional_measurements_tab():
-    """The community weighting is a network-analysis choice, so it sits on
-    tab 8 beside `statistics_community` rather than among the Export rows."""
+def test_vascular_communities_are_their_own_group_on_the_additional_measurements_tab():
+    """Vascular communities colour the vessels layer; they are not part of the
+    statistics report, so they sit on tab 8 in a section of their own -- after
+    (not inside) the 3D-measurement, Statistics and network-analysis rows --
+    and depend on nothing but their own toggle."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     measurements = [field.name for field in tabs["8. Additional measurements"].fields]
     export = {field.name for field in tabs["9. Export"].fields}
     for name in ("compute_vascular_communities", "vascular_community_weighting"):
         assert name in measurements
         assert name not in export
-    community = measurements.index("statistics_community")
-    assert measurements[community + 1 : community + 3] == [
-        "compute_vascular_communities",
-        "vascular_community_weighting",
-    ]
-    weighting = SCHEMA["vascular_community_weighting"]
-    assert weighting.section == "Connectivity/Network Analysis"
-    assert {"statistics", "statistics_network_analysis"} <= set(weighting.requires)
+        assert SCHEMA[name].section == "Vascular communities"
+    assert measurements[-2:] == ["compute_vascular_communities", "vascular_community_weighting"]
+    assert SCHEMA["compute_vascular_communities"].requires == ()
+    assert SCHEMA["vascular_community_weighting"].requires == ("compute_vascular_communities",)
 
 
 def test_the_3d_object_mask_measurement_comes_before_statistics():

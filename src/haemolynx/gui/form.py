@@ -63,6 +63,7 @@ HIDE_WHEN_UNMET_SECTIONS = frozenset({
     "EDT mask diameter estimate",
     "Statistics and measurements",
     "Connectivity/Network Analysis",
+    "Vascular communities",
 })
 
 #: Shared across main / large / small ilastik. Declared once under Input;

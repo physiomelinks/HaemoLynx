@@ -63,6 +63,7 @@ _PIPELINE_STAGES = "Pipeline stages"
 # section heading does not collide with the setting also called `statistics`.
 _STATISTICS = "Statistics and measurements"
 _NETWORK_ANALYSIS = "Connectivity/Network Analysis"
+_VASCULAR_COMMUNITIES = "Vascular communities"
 _CARTWHEEL_GUARD = "Cartwheel hub guard"
 _DIAMETERS_AND_PERICYTES = "Diameters and pericytes"
 _FWHM = "FWHM diameter measurement"
@@ -3131,9 +3132,21 @@ SCHEMA = Schema(
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
         ),
-        # The vascular-community partition the vessels layer can be coloured
-        # by: a community analysis, so it sits with community detection and
-        # runs only when the network analyses do.
+        Setting(
+            name="statistics_betweenness",
+            kind="bool",
+            default=True,
+            help="Betweenness centrality of each node, sampled (fast) or exact (full) per statistics_mode",
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        # ------------------------------------------------------------------
+        # Vascular communities -- its own group on "8. Additional
+        # measurements", independent of Statistics: it writes a vessels-layer
+        # colouring, not a report. When the statistics report computes the
+        # same partition anyway, export_results computes it once and shares it
+        # (see pipeline.stages.shared_vascular_communities).
+        # ------------------------------------------------------------------
         Setting(
             name="compute_vascular_communities",
             kind="bool",
@@ -3142,34 +3155,26 @@ SCHEMA = Schema(
                 "Partition the network into vascular communities/domains by "
                 "modularity (Blinder et al.'s 'cortical angiome' style) and "
                 "add 'vascular_community' as a colour option in the vessels "
-                "layer's colour-by dropdown"
+                "layer's colour-by dropdown. Independent of Statistics; reuses "
+                "the statistics report's own partition when it computes the "
+                "same one"
             ),
-            section=_NETWORK_ANALYSIS,
-            requires=("statistics", "statistics_network_analysis"),
+            section=_VASCULAR_COMMUNITIES,
         ),
         Setting(
             name="vascular_community_weighting",
             kind="choice",
             default="topology",
             help=(
-                "Distance model the vascular-community partition (the "
-                "vessels layer's vascular_community colouring) is weighted "
+                "Distance model the vascular-community partition is weighted "
                 "by: plain topology, or the same resistance/length/flow-"
                 "weighted models the statistics report's community counts "
-                "already use. Resistance and flow are only meaningful once "
+                "use. Resistance and flow are only meaningful once "
                 "haemodynamics has run"
             ),
-            section=_NETWORK_ANALYSIS,
+            section=_VASCULAR_COMMUNITIES,
             choices=("topology", "resistance", "length", "flow"),
-            requires=("statistics", "statistics_network_analysis", "compute_vascular_communities"),
-        ),
-        Setting(
-            name="statistics_betweenness",
-            kind="bool",
-            default=True,
-            help="Betweenness centrality of each node, sampled (fast) or exact (full) per statistics_mode",
-            section=_NETWORK_ANALYSIS,
-            requires=("statistics", "statistics_network_analysis"),
+            requires=("compute_vascular_communities",),
         ),
         # ------------------------------------------------------------------
         # Diameters and pericytes

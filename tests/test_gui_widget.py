@@ -247,41 +247,53 @@ def _show_tab(widget, text):
 
 
 def test_forced_hidden_export_settings_have_no_row_but_keep_their_value(panel):
-    """flow_direction_colouring, flow_arrow_scale and compute_vascular_communities
-    are not per-run decisions, so they get no row -- but they must still read
-    back their forced value, and a stale/loaded value must not stick with no
-    visible control to fix it. compute_vascular_communities follows Statistics
-    and network analysis, and vascular_community_weighting is a real, visible,
-    enabled choice on the Statistics tab once those are on."""
-    from qtpy.QtWidgets import QApplication
-
+    """flow_direction_colouring and flow_arrow_scale are not per-run
+    decisions, so they get no row -- but they must still read back their
+    forced value, and a stale/loaded value must not stick with no visible
+    control to fix it."""
     widget, _viewer = panel
     widget.show()
     rows = widget._haemolynx_rows()
     _show_tab(widget, "Additional measurements")
 
     values = widget._haemolynx_values()
+    assert "compute_vascular_communities" not in FORCED_HIDDEN_EXPORT_SETTINGS
     for name in FORCED_HIDDEN_EXPORT_SETTINGS:
         assert rows[name].visible is False, name
         assert values[name] == forced_hidden_value(name, values), name
+
+
+def test_vascular_communities_are_a_real_row_independent_of_statistics(panel):
+    """compute_vascular_communities is its own visible checkbox in its own
+    "Vascular communities" box on tab 8: it can be switched on with
+    Statistics off, and its weighting row appears only once it is on."""
+    from qtpy.QtWidgets import QApplication, QGroupBox
+
+    widget, _viewer = panel
+    widget.show()
+    rows = widget._haemolynx_rows()
+    _show_tab(widget, "Additional measurements")
+
+    box = widget.findChild(QGroupBox, "haemolynx_section_vascular_communities")
+    assert box is not None
+    assert box.title() == "Vascular communities"
+
+    values = widget._haemolynx_values()
     assert values["statistics"] is False
     assert values["compute_vascular_communities"] is False
+    assert rows["compute_vascular_communities"].visible is True
     assert rows["vascular_community_weighting"].visible is False
 
-    rows["statistics"].value = True
+    rows["compute_vascular_communities"].value = True
     QApplication.processEvents()
-    assert widget._haemolynx_values()["compute_vascular_communities"] is True
-
-    rows["compute_vascular_communities"].value = False
-    QApplication.processEvents()
-    assert widget._haemolynx_values()["compute_vascular_communities"] is True
-
+    values = widget._haemolynx_values()
+    assert values["compute_vascular_communities"] is True  # sticks with Statistics off
+    assert values["statistics"] is False
     assert rows["vascular_community_weighting"].visible is True
     assert rows["vascular_community_weighting"].enabled is True
 
-    rows["statistics_network_analysis"].value = False
+    rows["compute_vascular_communities"].value = False
     QApplication.processEvents()
-    assert widget._haemolynx_values()["compute_vascular_communities"] is False
     assert rows["vascular_community_weighting"].visible is False
 
 

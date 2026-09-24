@@ -563,12 +563,17 @@ connectivity/network_analysis:
   statistics_path_efficiency: true
   # Community/module detection over the network's topology, sampled (fast) or exact (full) per statistics_mode  [needs statistics and statistics_network_analysis]
   statistics_community: true
-  # Partition the network into vascular communities/domains by modularity (Blinder et al.'s 'cortical angiome' style) and add 'vascular_community' as a colour option in the vessels layer's colour-by dropdown  [needs statistics and statistics_network_analysis]
-  compute_vascular_communities: false
-  # Distance model the vascular-community partition (the vessels layer's vascular_community colouring) is weighted by: plain topology, or the same resistance/length/flow-weighted models the statistics report's community counts already use. Resistance and flow are only meaningful once haemodynamics has run  [one of: topology, resistance, length, flow; needs statistics and statistics_network_analysis and compute_vascular_communities]
-  vascular_community_weighting: topology
   # Betweenness centrality of each node, sampled (fast) or exact (full) per statistics_mode  [needs statistics and statistics_network_analysis]
   statistics_betweenness: true
+
+# ------------------------------------------------------------------------
+# Vascular communities
+# ------------------------------------------------------------------------
+vascular_communities:
+  # Partition the network into vascular communities/domains by modularity (Blinder et al.'s 'cortical angiome' style) and add 'vascular_community' as a colour option in the vessels layer's colour-by dropdown. Independent of Statistics; reuses the statistics report's own partition when it computes the same one
+  compute_vascular_communities: false
+  # Distance model the vascular-community partition is weighted by: plain topology, or the same resistance/length/flow-weighted models the statistics report's community counts use. Resistance and flow are only meaningful once haemodynamics has run  [one of: topology, resistance, length, flow; needs compute_vascular_communities]
+  vascular_community_weighting: topology
 
 # ------------------------------------------------------------------------
 # Diameters and pericytes
