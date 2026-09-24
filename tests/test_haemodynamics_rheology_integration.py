@@ -67,15 +67,15 @@ def test_skimming_follows_the_flow_fraction_not_the_velocity():
 
     Velocity appears nowhere in it. This test previously asserted that red cells follow the
     *faster* branch, which held only because the flow split happened to put the faster branch
-    and the larger flow fraction on the same side. Correcting the resistance update to plain
-    Poiseuille moved the in vivo split from 64/36 to 72/28, the two parted company, and the
-    old assertion failed while the model was behaving exactly as written.
+    and the larger flow fraction on the same side.
 
-    The velocity divergence is still worth recording, so it is asserted below as observed
-    behaviour rather than as correctness. Under the in vivo relation the narrow branch is the
-    faster one despite drawing less than a third of the flow, because a quarter of the area
-    carries 28% of it. Whether a velocity-keyed skimming law would be the better model is a
-    question about phase separation, not about the viscosity relation, and it is open.
+    It then recorded an in vivo split of 72/28 with the narrow branch the faster one. That
+    was not a converged answer: undamped, the in vivo case flips every pass between two
+    states (72/28 and 97/3), and 72/28 is the one an even iteration count stops on. With
+    haematocrit under-relaxation it converges to 92.9/7.1 in vivo and 93.1/6.9 in vitro,
+    with the 5 um branch at H = 0.145 and 0.139. Both match an independent fixed-point
+    calculation with plain Poiseuille resistance at the apparent viscosity, and in both the
+    wide branch is also the faster one.
     """
     import ImageLynx.haemodynamics.rheology as rh
 
@@ -109,15 +109,14 @@ def test_skimming_follows_the_flow_fraction_not_the_velocity():
             f"{law}: red cells did not follow the larger flow fraction ({r})")
 
 
-    # Recorded, not asserted as correct: under the in vivo relation velocity and flow
-    # fraction point at different branches. The narrow branch draws under a third of the
-    # flow through a quarter of the area, so it is the faster one while the wide branch is
-    # the one that skims red cells. See the docstring.
-    in_vivo = results["in_vivo"]
-    assert in_vivo["share_wide"] > 0.5, "expected the wide branch to take the larger share"
-    assert in_vivo["v_narrow"] > in_vivo["v_wide"], (
-        "expected the narrow branch to remain the faster one despite the smaller share; "
-        f"if this has changed, the divergence noted in the docstring has gone away ({in_vivo})")
+    # The converged fixed point, from an independent calculation (see the docstring).
+    expected = {"in_vitro": (0.9309, 0.1391), "in_vivo": (0.9290, 0.1451)}
+    for law, (share_wide, h_narrow) in expected.items():
+        r = results[law]
+        assert r["share_wide"] == pytest.approx(share_wide, abs=5e-4), f"{law}: {r}"
+        assert r["h_narrow"] == pytest.approx(h_narrow, abs=5e-4), f"{law}: {r}"
+        assert r["v_wide"] > r["v_narrow"], f"{law}: the narrow branch was the faster ({r})"
+        assert r["h_wide"] > 0.45 > r["h_narrow"], f"{law}: the narrow branch was not skimmed ({r})"
 
 
 def test_coupled_solver_dag_cycle_handling(caplog):
