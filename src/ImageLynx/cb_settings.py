@@ -1,7 +1,7 @@
 """The frozen analysis settings for the carotid body study, in one place.
 
 Every constant here was previously written out separately in each driver under
-``examples/``. Four of the twelve open items in ``cb_modelling_reference.md`` were the
+``examples/``. Four of the open items in ``cb_modelling_reference.md`` were the
 same defect in different clothes: a driver constant that had silently drifted from the
 ``carotid_image_to_model.py`` config default it was supposed to match.
 

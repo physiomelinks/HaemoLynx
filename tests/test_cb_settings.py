@@ -1,6 +1,6 @@
 """The analysis settings have one owner, and the known disagreements cannot grow.
 
-``ImageLynx.cb_settings`` exists because four of the twelve open items in
+``ImageLynx.cb_settings`` exists because four of the open items in
 ``cb_modelling_reference.md`` were the same defect: a constant written out separately in a
 driver had drifted from the ``carotid_image_to_model.py`` config default it was meant to
 match, and nothing noticed.

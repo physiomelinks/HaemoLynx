@@ -523,7 +523,7 @@ negligible: +3.9% (WKY-A) and +4.7% (SHR-C) of mask volume at 0.90.
 | SHR-C | 0.85 | **0.90** |
 
 Three of six move. The frozen value is 0.90 either way, so no published number changes — but the
-group asymmetry recorded as open item 16, where SHR-B and SHR-C alone run below their own calibre
+group asymmetry below (formerly open item 16), where SHR-B and SHR-C alone run below their own calibre
 floor, **does not appear under `≥`**: all three SHR would choose 0.90 with everyone else. That
 asymmetry is therefore at least partly an artefact of which side of a quantisation level the cut
 falls on, not a property of the tissue. Open item 17.
@@ -669,7 +669,7 @@ calibre criterion would have rejected. The cohort-split check is applied to the 
 freeze, not to its consequences. Foreground fraction at 0.90 does still overlap (WKY mean 0.291,
 SHR 0.278), which is the reassuring part, and the direction is conservative — a higher threshold
 gives a thinner mask and thinner vessels, so it works against finding SHR vessels wider. Open
-item 16.
+item 17, which absorbed the former item 16.
 
 **The hysteresis pair follows the frozen value.** `--stage run` passes the frozen threshold as
 `--hysteresis-low` only. The pipeline raises the high bound automatically when the low one would
@@ -2532,7 +2532,7 @@ in the coupled solvers.
 | Parameter | Value | Units | Class | Source / justification | Sensitivity |
 |---|---|---|---|---|---|
 | `closing_radius` | 1 | voxels | (iii) | Chosen | unswept |
-| `bridge_gap_size` | 1 | voxels | (iii) | Chosen. Adds a uniform foreground shell to the mask — the same wall EDT measures distance to, so it feeds directly into calibre | unswept |
+| `bridge_gap_size` | — | — | — | **Removed** from `SkeletonConfig` (§14.3 row 3). It applied a second radius-1 closing after `closing_radius`, and closing is idempotent | — |
 | `min_branch_length` | 3 | voxels | (iii) | Chosen | unswept |
 | `max_bridge_distance` | 0 | voxels | (iii) | Disabled | — |
 | `component_connectivity` | 3 | — | (iii) | Full 26-connectivity | — |
@@ -2625,8 +2625,8 @@ These are **not** configurable. They live in the function bodies.
 | Bohr pH coefficient | −0.4 | per pH unit (log₁₀ P₅₀) | (ii) | [`severinghaus_simple_1979`], [`kelman_digital_1966`] | assumed |
 | Bohr PCO₂ coefficient | +0.06 | per log₁₀(PCO₂/40) | (ii) | [`severinghaus_simple_1979`], [`kelman_digital_1966`] | assumed |
 | `alpha_co2` | 0.03 | mmol/L/mmHg | (i) | CO₂ solubility in plasma; 3.07 × 10⁻² at 37 °C, human [`dash_erratum_2010`] | assumed |
-| CO₂ base capacity | 11.02 · PCO₂^0.396 | mmol/L | (ii) | Spencer (1979) empirical CO₂ dissociation curve `[CITE — not in bibliography]` | assumed |
-| Haldane shift | (0.15 − 0.05·S_O₂) · PCO₂ | mmol/L | (ii) | Same source `[CITE]`. Saturation is evaluated at fixed P₅₀ = 26, not the Bohr-shifted value | assumed |
+| CO₂ base capacity | 11.02 · PCO₂^0.396 | mmol/L | (ii) | Spencer (1979) empirical CO₂ dissociation curve `[CITE — not in bibliography]`; open item 7 | assumed |
+| Haldane shift | (0.15 − 0.05·S_O₂) · PCO₂ | mmol/L | (ii) | Same source `[CITE]`; open item 7. Saturation is evaluated at fixed P₅₀ = 26, not the Bohr-shifted value | assumed |
 | `pKa` | 6.1 | — | (i) | Henderson–Hasselbalch; 6.10, revised to 6.09 at pH 7.4 and 37.5 °C [`severinghaus_variations_1956`] | assumed |
 
 > ⚠ **Species mismatch.** The haemoglobin parameters above are human. The tissue is rat. Direction
@@ -2640,7 +2640,7 @@ These are **not** configurable. They live in the function bodies.
 | `grid_resolution_xyz` | (10, 10, 10) default; **4 µm** for H2 §2.3 | µm | (iii) | 4 µm chosen on convergence: median PO₂ 27.34 / 27.92 / 28.21 at 10 / 6 / 4 µm, increments halving, extrapolating to ≈28.5. 4 µm is within ~1% of that limit at 1/27 the cost of native resolution | measured |
 | `sigma_diff` | 1.5 × 10⁻⁹ | m²/s | (i) | O₂ diffusivity in tissue. Consistent with K_O₂/α_O₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`] and (1.04 ± 0.78) × 10⁻⁹ in rat mesentery [`yaegashi_diffusivity_1996`] | assumed |
 | `sigma_diff_co2` | 3.0 × 10⁻⁸ | m²/s | (i) | `[CITE — unconfirmed]`. Measured K_CO₂/α_CO₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`], about 1/19 of this value. The ≈20× ratio holds for Krogh's constant (Dα), not for D. No source found that uses this value; see open item 18 | assumed |
-| `permeability_o2_cm_s` | 1.0 × 10⁻⁴ | cm/s | (ii) | Endothelial O₂ permeability `[CITE — unconfirmed]`. No measured or model-used value found | assumed |
+| `permeability_o2_cm_s` | 1.0 × 10⁻⁴ | cm/s | (ii) | Endothelial O₂ permeability `[CITE — unconfirmed]`. No measured or model-used value found; open item 7 | assumed |
 | `permeability_co2_cm_s` | 2.0 × 10⁻³ | cm/s | (ii) | Endothelial CO₂ permeability `[CITE — unconfirmed]`. [`dash_simultaneous_2006`] use one capillary PS for both O₂ and CO₂, not a 20× ratio; see open item 18 | assumed |
 | `respiratory_quotient` | 0.82 | — | (i) | CO₂ produced per O₂ consumed; fasting whole-body RQ ≈ 0.80–0.90 depending on diet, human [`miles-chan_fasting_2015`]. Measured 0.85 in rat skeletal muscle [`kawashiro_determination_1975`] | assumed |
 | `systemic_hematocrit` | 0.45 | fraction | (i) | Standard haematocrit ≈ 0.45, human [`dash_erratum_2010`] | assumed |
@@ -3262,7 +3262,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 4 | Baseline haematocrit duplicated in the Tier 1 washout path | §6.6 |
 | 5 | `C_arterial` is dead configuration — declared 3×, read 0× | §6 |
 | 6 | Solver tolerances disagree between config and code | Appendix A |
-| 7 | 5 parameters still marked `[CITE]`: the Spencer CO₂ curve and its Haldane shift, `sigma_diff_co2`, and both endothelial permeabilities | §10 completeness |
+| 7 | 3 parameters still marked `[CITE]` that need only a source: the Spencer CO₂ curve, its Haldane shift, and `permeability_o2_cm_s`. `sigma_diff_co2` and `permeability_co2_cm_s` are uncited too, but their values look wrong rather than merely unsourced, so they are tracked under item 18 | §10 completeness |
 | 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and `cb_settings.BASE_M_MAX` (0.05). The published §2.3 results used 0.05. **Now pinned** by `test_cb_settings.py` | §6.4, §13.6 |
 | ~~9~~ | **Closed** by `f92a96c`. The rheology solver substituted a silent 5.0 µm diameter; it now raises, matching `map_vessels_to_grid` and `edge_transit_times`. `2d98ab8` removed the least-squares pressure fallback, but left the rheology solver's initialisation and update on 5.0 µm | §3.2, §3.4, §2.8 |
 | 10 | Pressure boundaries disagree: config 100/2 mmHg, `cb_settings` 60/20 mmHg. Every published H2 number used 60/20. **Now pinned** by `test_cb_settings.py` | §7.8, §8, §11 row 15 |
@@ -3271,8 +3271,8 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 13 | The lateral ROI centroid projects over the whole stack, not the 160 slices the ROI occupies, so tissue outside the box helps place it. Restricting to the band moves the centre 7–45 µm | §2.1, and every per-specimen quantity through what was sampled |
 | 14 | `crop_roi` rebuilds the centre from a fraction with two truncations, landing one voxel low when an axis has odd extent and the centre is above the midpoint. The CB drivers avoid it by slicing `RoiPlacement.bounds` directly, so no CB result is affected | §2.1; `carotid_image_to_model.py` and any caller using fractional offsets |
 | 15 | The threshold selector's “median diameter” is a median over every foreground voxel, while §2.6's calibre is a median over centreline voxels. The 4–7 µm capillary window is an external target for the latter and is being applied to the former, which reads 0.63–1.00× as large | §2.2 step 3; the selected threshold, hence everything downstream |
-| 16 | Freezing the threshold at 0.90 runs SHR-B and SHR-C above their own calibre choice, at a median diameter of 3.73 µm — below the selector's own 4.0 µm floor. 0 of 3 WKY and 2 of 3 SHR are affected, so the freeze is group-asymmetric even though `assess_cohort_split` on the choices reports no separation | §2.2 step 13; every per-specimen geometric quantity |
-| 17 | The probability field is quantised to hundredths and every sweep threshold lands exactly on a level, so the strict `p > t` discards a whole level — 0.5% of the ROI at 0.30 rising to 4.2–5.9% at 0.99, where it is two thirds of the mask. `p > 0.99` is exactly `p = 1.0`. Using `≥` moves 3 of 6 per-specimen choices and removes item 16's group asymmetry | §2.2 step 2; the per-specimen choices, and item 16 |
+| ~~16~~ | **Merged into 17.** The group asymmetry of the freeze is a consequence of item 17's quantisation, not a separate defect: it disappears under `≥` | — |
+| 17 | The probability field is quantised to hundredths and every sweep threshold lands exactly on a level, so the strict `p > t` discards a whole level — 0.5% of the ROI at 0.30 rising to 4.2–5.9% at 0.99, where it is two thirds of the mask. `p > 0.99` is exactly `p = 1.0`. Using `≥` moves 3 of 6 per-specimen choices. **Consequence (formerly item 16):** freezing at 0.90 runs SHR-B and SHR-C above their own choice, at a median diameter of 3.73 µm — below the selector's own 4.0 µm floor. 0 of 3 WKY and 2 of 3 SHR are affected, so the freeze is group-asymmetric even though `assess_cohort_split` on the choices reports no separation. Under `≥` all three SHR choose 0.90 and the asymmetry disappears | §2.2 steps 2 and 13; the per-specimen choices, and every per-specimen geometric quantity |
 | 18 | `sigma_diff_co2` (3.0 × 10⁻⁸ m²/s) is 20× `sigma_diff`, but the multi-species solver also multiplies each diffusivity by its solubility (`build_diffusion_matrix`), and α_CO₂ is already ≈22× α_O₂. The effective CO₂ Krogh constant is then ≈450× the O₂ one; the measured ratio in rat muscle is ≈21 [`kawashiro_determination_1975`], which puts D_CO₂ near 1.6 × 10⁻⁹ m²/s. Not changed here: correcting it changes the solved CO₂ and pH fields, which feed back into O₂ unloading through the Bohr shift. The wall flux repeats the pattern: `permeability_co2_cm_s` is 20× `permeability_o2_cm_s` and the flux is also scaled by α, so CO₂ crosses the wall ≈450× faster per mmHg, whereas [`dash_simultaneous_2006`] use one capillary PS for both gases | §10.9, §6 |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
@@ -3281,7 +3281,7 @@ config default drifts further. What is still open is the *decision*: which of th
 right. That is a modelling judgement, not a refactor, and changing either one re-dates every
 number in §7 and §13. Item 12's fix is known to move results, and every absolute flow in §7 and §13
 predates it; re-running them is the outstanding step.
-Item 16 moves one for two specimens, in a conservative direction. Item 13 would move one, but
+Item 17's freeze asymmetry moves one for two specimens, in a conservative direction. Item 13 would move one, but
 only by re-placing the ROIs and re-running everything, so it is a decision to take deliberately
 rather than a defect to patch.
 
