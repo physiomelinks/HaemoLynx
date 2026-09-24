@@ -1243,6 +1243,10 @@ def connect_skeleton_components(
     return np.asanyarray(result, dtype=bool)
 
 
+#: Points in one KD-tree query batch from which it is spread over every core.
+_PARALLEL_QUERY_POINTS = 5_000
+
+
 def inter_component_gap_distances(
     skeleton: np.ndarray,
     component_connectivity: int | None = None,
@@ -1288,29 +1292,32 @@ def inter_component_gap_distances(
     labels_all = labels_all[order]
     starts = np.searchsorted(labels_all, np.arange(1, n_components + 2))
 
-    comp_coords: dict[int, np.ndarray] = {}
-    comp_trees: dict[int, cKDTree] = {}
+    comp_coords: list[np.ndarray] = []
     for comp_id in range(1, n_components + 1):
         lo, hi = int(starts[comp_id - 1]), int(starts[comp_id])
-        if hi <= lo:
-            continue
-        physical = coords_all[lo:hi] * spacing
-        comp_coords[comp_id] = physical
-        comp_trees[comp_id] = cKDTree(physical)
+        if hi > lo:
+            comp_coords.append(coords_all[lo:hi] * spacing)
 
-    comp_ids = sorted(comp_coords.keys())
-    distances: list[float] = []
-    for i, cid_a in enumerate(comp_ids):
-        for cid_b in comp_ids[i + 1:]:
-            # The smaller side queried against the larger one's tree: the
-            # same nearest-pair distance, for a fraction of the lookups.
-            if len(comp_coords[cid_a]) <= len(comp_coords[cid_b]):
-                dists, _ = comp_trees[cid_b].query(comp_coords[cid_a])
-            else:
-                dists, _ = comp_trees[cid_a].query(comp_coords[cid_b])
-            distances.append(float(dists.min()))
+    # Each pair's gap is its smaller component's voxels queried against the
+    # larger one's tree (the earlier one on a size tie). In (size, label)
+    # order that is every component queried against each later one's tree,
+    # so each tree is queried once, with all the earlier components' voxels
+    # together, instead of once per pair -- the same queries, a small fraction
+    # of the calls. A component's gap to the tree is the minimum over its own
+    # run of the results.
+    by_size = sorted(range(len(comp_coords)), key=lambda k: len(comp_coords[k]))
+    ordered = [comp_coords[k] for k in by_size]
+    points = np.concatenate(ordered)
+    run_starts = np.cumsum([0] + [len(c) for c in ordered])
+    distances = []
+    for k in range(1, len(ordered)):
+        queried = points[: run_starts[k]]
+        # Threads only pay for themselves on a big batch (same results).
+        workers = -1 if len(queried) >= _PARALLEL_QUERY_POINTS else 1
+        dists, _ = cKDTree(ordered[k]).query(queried, workers=workers)
+        distances.append(np.minimum.reduceat(dists, run_starts[:k]))
 
-    return np.sort(np.asarray(distances, dtype=float))
+    return np.sort(np.concatenate(distances)) if distances else np.array([], dtype=float)
 
 
 def _small_object_survival_by_size(sizes: np.ndarray, min_size: int) -> np.ndarray:

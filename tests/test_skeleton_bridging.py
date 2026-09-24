@@ -103,15 +103,54 @@ def test_pairs_out_of_reach_are_never_measured(monkeypatch):
 
 
 @pytest.mark.parametrize("seed", range(4))
-def test_gap_distances_are_the_all_pairs_minimum(seed):
+@pytest.mark.parametrize("voxel_size_zyx, z_weight", [((1.0, 1.0, 1.0), 1.0), ((1.3, 0.4, 0.4), 1.5)])
+def test_gap_distances_are_the_all_pairs_minimum(seed, voxel_size_zyx, z_weight):
+    """The loop this replaced, exactly: every pair's minimum voxel gap."""
     skeleton = _fragments(seed)
     comp, _ = _components(skeleton, 1.0)
-    trees = {c: cKDTree(v.astype(float)) for c, v in comp.items()}
+    spacing = np.asarray(voxel_size_zyx) * np.array([z_weight, 1.0, 1.0])
+    comp = {c: v * spacing for c, v in comp.items()}
+    trees = {c: cKDTree(v) for c, v in comp.items()}
     ids = sorted(comp)
     expected = sorted(
-        float(trees[b].query(comp[a].astype(float))[0].min())
+        float(trees[b].query(comp[a])[0].min())
         for i, a in enumerate(ids)
         for b in ids[i + 1:]
     )
+    gaps = inter_component_gap_distances(
+        skeleton, voxel_size_zyx=voxel_size_zyx, z_distance_weight=z_weight
+    )
 
-    assert np.array_equal(inter_component_gap_distances(skeleton), np.asarray(expected))
+    assert np.array_equal(gaps, np.asarray(expected))
+
+
+def test_gap_distances_query_each_tree_once(monkeypatch):
+    """One batched query per component tree, not one per pair."""
+    from scipy import spatial
+
+    skeleton = _fragments(1)
+    n = label(skeleton, structure=generate_binary_structure(3, 3))[1]
+    calls = []
+    real = spatial.cKDTree.query
+
+    class Counting(spatial.cKDTree):
+        def query(self, *args, **kwargs):
+            calls.append(1)
+            return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(spatial, "cKDTree", Counting)
+    gaps = inter_component_gap_distances(skeleton)
+
+    assert n > 20
+    assert len(gaps) == n * (n - 1) // 2
+    assert len(calls) == n - 1
+
+
+def test_gap_distances_are_the_same_in_parallel(monkeypatch):
+    skeleton = _fragments(2)
+    serial = inter_component_gap_distances(skeleton, voxel_size_zyx=(1.3, 0.4, 0.4))
+    monkeypatch.setattr(skeleton_mod, "_PARALLEL_QUERY_POINTS", 1)
+
+    assert np.array_equal(
+        inter_component_gap_distances(skeleton, voxel_size_zyx=(1.3, 0.4, 0.4)), serial
+    )
