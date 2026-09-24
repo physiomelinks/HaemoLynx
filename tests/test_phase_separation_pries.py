@@ -135,7 +135,11 @@ def test_feeding_diameter_falls_back_to_the_larger_daughter():
 
 
 def test_solver_uses_the_parent_diameter_at_a_bifurcation():
-    """Y-split: 0 -> 1 (15 um), then 1 -> 2 (10 um) and 1 -> 3 (5 um)."""
+    """Y-split: 0 -> 1 (15 um), then 1 -> 2 (10 um) and 1 -> 3 (5 um).
+
+    The solver under-relaxes haematocrit, so the stored value equals the Pries value only at
+    the fixed point; the tight tolerance runs it there.
+    """
     G = nx.MultiGraph()
     G.add_edge(0, 1, key=0, length=10.0, fwhm_diameter_um=15.0)
     G.add_edge(1, 2, key=0, length=10.0, fwhm_diameter_um=10.0)
@@ -143,7 +147,7 @@ def test_solver_uses_the_parent_diameter_at_a_bifurcation():
 
     G, _ = solve_coupled_flow_and_hematocrit(
         G, starting_nodes=[0], output_nodes=[2, 3], input_p_bc=100.0, output_p_bc=10.0,
-        systemic_hematocrit=0.45, max_iterations=10, tolerance=1e-6,
+        systemic_hematocrit=0.45, max_iterations=200, tolerance=1e-12,
     )
 
     q2, q3 = G[1][2][0]["flow_abs"], G[1][3][0]["flow_abs"]
@@ -154,19 +158,19 @@ def test_solver_uses_the_parent_diameter_at_a_bifurcation():
 
 
 def test_solver_logs_bifurcations_without_an_inflowing_parent(caplog):
-    """A node whose two edges both drain away has no parent; the fallback is counted."""
+    """A split with no in-edge has no parent; the fallback is counted.
+
+    The inlet splits straight into two outlets, so it has no in-edge by construction. An
+    earlier version used a stagnant side fork, whose flow directions were round-off and so
+    only sometimes gave a parentless split.
+    """
     G = nx.MultiGraph()
-    # 0 (inlet) -> 1 -> 2 (outlet); node 1 also hangs a stagnant fork 1 -> 4 <- 5 -> 6
-    # that carries no flow, so node 5 has two out-edges and no inflowing parent.
     G.add_edge(0, 1, key=0, length=10.0, fwhm_diameter_um=10.0)
-    G.add_edge(1, 2, key=0, length=10.0, fwhm_diameter_um=10.0)
-    G.add_edge(5, 4, key=0, length=10.0, fwhm_diameter_um=6.0)
-    G.add_edge(5, 6, key=0, length=10.0, fwhm_diameter_um=6.0)
-    G.add_edge(4, 1, key=0, length=10.0, fwhm_diameter_um=6.0)
+    G.add_edge(0, 2, key=0, length=10.0, fwhm_diameter_um=6.0)
 
     with caplog.at_level(logging.INFO, logger="ImageLynx.haemodynamics.rheology"):
         solve_coupled_flow_and_hematocrit(
-            G, starting_nodes=[0], output_nodes=[2], input_p_bc=100.0, output_p_bc=10.0,
+            G, starting_nodes=[0], output_nodes=[1, 2], input_p_bc=100.0, output_p_bc=10.0,
             systemic_hematocrit=0.45, max_iterations=3, tolerance=1e-6,
         )
     assert any("no inflowing parent" in r.getMessage() for r in caplog.records)

@@ -219,7 +219,8 @@ def solve_coupled_flow_and_hematocrit(
     output_p_bc: float,
     systemic_hematocrit: float = 0.45,
     max_iterations: int = 15,
-    tolerance: float = 1e-4
+    tolerance: float = 1e-4,
+    relaxation: float = 0.5,
 ) -> tuple[nx.MultiGraph, np.ndarray]:
     """
     Solves the highly non-linear coupled system of Flow, Resistance, and Hematocrit.
@@ -229,9 +230,17 @@ def solve_coupled_flow_and_hematocrit(
     2. Solve the linear Poiseuille flow equations to get flow directions and magnitudes.
     3. Traverse the network topologically from Inlets to Outlets (Directed Acyclic Graph).
     4. At every bifurcation, calculate plasma skimming (phase separation) to assign new hematocrit values to child edges.
-    5. Update viscosities and resistances based on the new hematocrit distribution.
+    5. Under-relax the new hematocrit against the previous pass, then update viscosities and
+       resistances from it.
     6. Repeat until flow changes fall below tolerance.
+
+    ``relaxation`` is the step taken towards the new hematocrit each pass,
+    H = H_old + relaxation * (H_skim - H_old). At 1.0 (undamped) a 15 -> 10/5 um Y-junction
+    under the in vivo viscosity law flips between two states every pass and never converges;
+    0.5 settles it. A warning is logged if max_iterations runs out before convergence.
     """
+    if not 0.0 < relaxation <= 1.0:
+        raise ValueError(f"relaxation must be in (0, 1], got {relaxation}.")
     from .resistance import build_conductance_matrix_from_graph, calc_laplacian_from_conductance_matrix, _solve_system_smart
     import logging
     logger = logging.getLogger(__name__)
@@ -253,6 +262,7 @@ def solve_coupled_flow_and_hematocrit(
     max_flow_diff = float('inf')
     previous_flows = {}
     final_pressure = None
+    converged = False
     
     while iteration < max_iterations and max_flow_diff > tolerance:
         logger.info(f"--- Flow-Hematocrit Iteration {iteration+1} ---")
@@ -319,6 +329,7 @@ def solve_coupled_flow_and_hematocrit(
             logger.info(f"  Max Flow Diff: {max_flow_diff:.6e}")
             if max_flow_diff <= tolerance:
                 logger.info("  -> Converged!")
+                converged = True
                 break
                 
         previous_flows = current_flows.copy()
@@ -330,6 +341,10 @@ def solve_coupled_flow_and_hematocrit(
             logger.warning("  Cycle detected in flow directions! Cannot topologically sort. Breaking iteration.")
             break
             
+        previous_hematocrit = {
+            (u, v, key): data["hematocrit"] for u, v, key, data in G.edges(keys=True, data=True)
+        }
+
         # Reset node incoming hematocrit accumulators
         node_h_in = {n: 0.0 for n in DAG.nodes()}
         node_q_in = {n: 0.0 for n in DAG.nodes()}
@@ -401,8 +416,10 @@ def solve_coupled_flow_and_hematocrit(
 
         # 7. Update Graph Viscosities and Resistances for next iteration
         for u, v, key, data in G.edges(keys=True, data=True):
-            # The DAG data dictionary is a reference to the G data dictionary, so hematocrit is already updated
-            h = data["hematocrit"]
+            # The traversal wrote the skimmed hematocrit into G; step only part of the way to it.
+            h_old = previous_hematocrit[(u, v, key)]
+            h = h_old + relaxation * (data["hematocrit"] - h_old)
+            data["hematocrit"] = h
             d = data.get("assigned_diameter_um", data.get("fwhm_diameter_um", 5.0))
             if d is None or d <= 0:
                 d = 5.0
@@ -432,5 +449,11 @@ def solve_coupled_flow_and_hematocrit(
             data["wall_shear_stress_pa"] = wss_mPa / 1000.0
             
         iteration += 1
+
+    if not converged and iteration >= max_iterations:
+        logger.warning(
+            f"Flow-hematocrit coupling did not converge in {max_iterations} iterations "
+            f"(last max flow change {max_flow_diff:.3e}, tolerance {tolerance:.1e})."
+        )
 
     return G, final_pressure
