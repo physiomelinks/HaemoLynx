@@ -324,6 +324,9 @@ def set_poiseuille_resistances_with_probabilistic_periodic_constrictions(
             total_resistance,
             edge_id=(u, v, key),
         )
+        # The unconstricted diameter, as poiseuille.py records it. The rheology solver rescales
+        # this resistance by viscosity at this diameter.
+        graph[u][v][key]["assigned_diameter_um"] = float(d1)
         graph[u][v][key]["pericyte_count_assigned"] = int(len(active_centers))
         graph[u][v][key]["pericyte_centers_um"] = [float(s) for s in active_centers]
         results["resistances_set"] += 1

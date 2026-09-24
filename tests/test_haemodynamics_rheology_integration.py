@@ -61,13 +61,15 @@ def test_skimming_direction_depends_on_the_flow_split():
 
     With the phase separation law scaled by the feeding diameter, as Pries et al. pose it,
     this Y-junction sends most flow and most red cells down the 10 um branch under both
-    viscosity relations: about 85% of flow in vitro and 91% in vivo, with the 5 um branch
-    left at roughly 0.3 and 0.19 haematocrit.
+    viscosity relations: 93.1% of flow in vitro and 92.9% in vivo, with the 5 um branch left
+    at 0.139 and 0.145 haematocrit. Both match an independent fixed-point calculation with
+    plain Poiseuille resistance at the apparent viscosity.
 
     An earlier version scaled the law by one daughter's diameter with a fixed X0 = 0.05. Under
     the in vivo relation that evened the split to 64/36, made the narrow branch the faster
     one, and concentrated red cells there. That inversion came from the misscaled law and is
-    gone. The in vivo case needs more iterations to converge than the in vitro one.
+    gone. Without haematocrit under-relaxation the in vivo case never converges: it flips
+    between two states every pass.
     """
     import ImageLynx.haemodynamics.rheology as rh
 

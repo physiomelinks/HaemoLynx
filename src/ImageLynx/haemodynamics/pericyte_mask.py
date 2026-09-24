@@ -526,6 +526,9 @@ def set_poiseuille_resistances_with_pericyte_mask(
             edge_id=(u, v, key),
         )
         graph[u][v][key]["weight"] = 1.0 / graph[u][v][key]["resistance"]
+        # The unconstricted diameter, as poiseuille.py records it. The rheology solver rescales
+        # this resistance by viscosity at this diameter.
+        graph[u][v][key]["assigned_diameter_um"] = float(d1)
         graph[u][v][key]["pericyte_count_assigned"] = int(len(centers))
         graph[u][v][key]["pericyte_centers_um"] = [float(s) for s in centers]
         results["resistances_set"] += 1
