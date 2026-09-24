@@ -1195,3 +1195,11 @@ def test_the_two_thick_vessel_threshold_overrides_show_an_auto_placeholder():
         assert field.widget_type == "LineEdit"
         assert field.value == ""
         assert field.placeholder == "auto"
+
+
+def test_the_cell_mask_measurement_row_names_a_3d_object_mask():
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+    assert (
+        fields["measurement_3d_to_cell_mask"].label
+        == "Measure distance between vessels and 3D object mask"
+    )

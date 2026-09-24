@@ -243,6 +243,7 @@ def test_a_perturbation_reassigns_vascular_communities_on_its_own_network(tmp_pa
         tmp_path,
         [ARTERIOLE_DILATION],
         compute_vascular_communities=True,
+        statistics=True,
         vascular_community_weighting="flow",
     )
     result = run.results[0]

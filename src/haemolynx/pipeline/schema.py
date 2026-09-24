@@ -1980,33 +1980,6 @@ SCHEMA = Schema(
             requires=("run_haemodynamics",),
         ),
         Setting(
-            name="compute_vascular_communities",
-            kind="bool",
-            default=False,
-            help=(
-                "Partition the network into vascular communities/domains by "
-                "modularity (Blinder et al.'s 'cortical angiome' style) and "
-                "add 'vascular_community' as a colour option in the vessels "
-                "layer's colour-by dropdown"
-            ),
-            section=_SOLVER_AND_OUTPUT,
-        ),
-        Setting(
-            name="vascular_community_weighting",
-            kind="choice",
-            default="topology",
-            help=(
-                "Distance model the community partition is weighted by: "
-                "plain topology, or the same resistance/length/flow-"
-                "weighted models the statistics report's community counts "
-                "already use. Resistance and flow are only meaningful once "
-                "haemodynamics has run"
-            ),
-            section=_SOLVER_AND_OUTPUT,
-            choices=("topology", "resistance", "length", "flow"),
-            requires=("compute_vascular_communities",),
-        ),
-        Setting(
             name="verbose_logging",
             kind="bool",
             default=False,
@@ -2725,9 +2698,67 @@ SCHEMA = Schema(
         # ------------------------------------------------------------------
         # Statistics
         # ------------------------------------------------------------------
-        # The napari Export tab hides gated Statistics rows until their parent
+        # The napari Additional measurements tab hides gated Statistics rows until their parent
         # toggles apply: cell-mask paths under ``measurement_3d_to_cell_mask``,
         # and ``statistics_mode`` under ``statistics``.
+        Setting(
+            name="measurement_3d_to_cell_mask",
+            kind="bool",
+            default=False,
+            help="Measure the 3D distance between the vessels and a 3D object mask (e.g. a cell mask)",
+            section=_STATISTICS,
+        ),
+        Setting(
+            name="cell_mask_path",
+            kind="path",
+            default=None,
+            help="Read this cell mask for the 3D distance measurement",
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask",),
+            must_exist=True,
+        ),
+        Setting(
+            name="cell_mask_h5_dataset_name",
+            kind="str",
+            default=None,
+            help="Read this dataset from the cell mask when it is an H5 file",
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask",),
+        ),
+        Setting(
+            name="measurement_3d_vessel_mask_path",
+            kind="path",
+            default=None,
+            help="Use this explicit vessel mask for the 3D distance measurement instead of the pipeline input",
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask",),
+            must_exist=True,
+        ),
+        Setting(
+            name="measurement_3d_vessel_mask_h5_dataset_name",
+            kind="str",
+            default=None,
+            help="Read this dataset from the 3D-distance vessel mask when it is an H5 file",
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask",),
+        ),
+        Setting(
+            name="measurement_3d_reference_image_path",
+            kind="path",
+            default=None,
+            help="Take the vessel-volume raster shape from this reference image",
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask",),
+            must_exist=True,
+        ),
+        Setting(
+            name="measurement_3d_reference_h5_dataset_name",
+            kind="str",
+            default=None,
+            help="Read this dataset from the 3D-distance reference image when it is an H5 file",
+            section=_STATISTICS,
+            requires=("measurement_3d_to_cell_mask",),
+        ),
         Setting(
             name="statistics",
             kind="bool",
@@ -2806,64 +2837,6 @@ SCHEMA = Schema(
             help="Typical spacing between neighbouring capillaries",
             section=_STATISTICS,
             requires=("statistics",),
-        ),
-        Setting(
-            name="measurement_3d_to_cell_mask",
-            kind="bool",
-            default=False,
-            help="Measure 3D distances from the vessel network to a cell mask",
-            section=_STATISTICS,
-        ),
-        Setting(
-            name="cell_mask_path",
-            kind="path",
-            default=None,
-            help="Read this cell mask for the 3D distance measurement",
-            section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
-            must_exist=True,
-        ),
-        Setting(
-            name="cell_mask_h5_dataset_name",
-            kind="str",
-            default=None,
-            help="Read this dataset from the cell mask when it is an H5 file",
-            section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
-        ),
-        Setting(
-            name="measurement_3d_vessel_mask_path",
-            kind="path",
-            default=None,
-            help="Use this explicit vessel mask for the 3D distance measurement instead of the pipeline input",
-            section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
-            must_exist=True,
-        ),
-        Setting(
-            name="measurement_3d_vessel_mask_h5_dataset_name",
-            kind="str",
-            default=None,
-            help="Read this dataset from the 3D-distance vessel mask when it is an H5 file",
-            section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
-        ),
-        Setting(
-            name="measurement_3d_reference_image_path",
-            kind="path",
-            default=None,
-            help="Take the vessel-volume raster shape from this reference image",
-            section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
-            must_exist=True,
-        ),
-        Setting(
-            name="measurement_3d_reference_h5_dataset_name",
-            kind="str",
-            default=None,
-            help="Read this dataset from the 3D-distance reference image when it is an H5 file",
-            section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
         ),
         # ------------------------------------------------------------------
         # Connectivity/Network Analysis -- nests under `statistics`, then its
@@ -3157,6 +3130,38 @@ SCHEMA = Schema(
             help="Community/module detection over the network's topology, sampled (fast) or exact (full) per statistics_mode",
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+        ),
+        # The vascular-community partition the vessels layer can be coloured
+        # by: a community analysis, so it sits with community detection and
+        # runs only when the network analyses do.
+        Setting(
+            name="compute_vascular_communities",
+            kind="bool",
+            default=False,
+            help=(
+                "Partition the network into vascular communities/domains by "
+                "modularity (Blinder et al.'s 'cortical angiome' style) and "
+                "add 'vascular_community' as a colour option in the vessels "
+                "layer's colour-by dropdown"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+        ),
+        Setting(
+            name="vascular_community_weighting",
+            kind="choice",
+            default="topology",
+            help=(
+                "Distance model the vascular-community partition (the "
+                "vessels layer's vascular_community colouring) is weighted "
+                "by: plain topology, or the same resistance/length/flow-"
+                "weighted models the statistics report's community counts "
+                "already use. Resistance and flow are only meaningful once "
+                "haemodynamics has run"
+            ),
+            section=_NETWORK_ANALYSIS,
+            choices=("topology", "resistance", "length", "flow"),
+            requires=("statistics", "statistics_network_analysis", "compute_vascular_communities"),
         ),
         Setting(
             name="statistics_betweenness",

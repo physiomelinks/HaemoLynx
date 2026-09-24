@@ -874,3 +874,31 @@ def test_a_box_title_changes_only_on_its_own_tab_and_not_the_section():
     assert section_box_title("build_haemodynamic_model", "Pipeline stages") == "Pipeline stages"
     # The settings themselves keep keying by the schema's section name.
     assert SCHEMA["viscosity_law"].section == DIAMETERS_AND_PERICYTES
+
+
+def test_vascular_communities_are_on_the_additional_measurements_tab():
+    """The community weighting is a network-analysis choice, so it sits on
+    tab 8 beside `statistics_community` rather than among the Export rows."""
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    measurements = [field.name for field in tabs["8. Additional measurements"].fields]
+    export = {field.name for field in tabs["9. Export"].fields}
+    for name in ("compute_vascular_communities", "vascular_community_weighting"):
+        assert name in measurements
+        assert name not in export
+    community = measurements.index("statistics_community")
+    assert measurements[community + 1 : community + 3] == [
+        "compute_vascular_communities",
+        "vascular_community_weighting",
+    ]
+    weighting = SCHEMA["vascular_community_weighting"]
+    assert weighting.section == "Connectivity/Network Analysis"
+    assert {"statistics", "statistics_network_analysis"} <= set(weighting.requires)
+
+
+def test_the_3d_object_mask_measurement_comes_before_statistics():
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    measurements = [field.name for field in tabs["8. Additional measurements"].fields]
+    assert measurements.index("measurement_3d_to_cell_mask") < measurements.index("statistics")
+    assert measurements.index("measurement_3d_reference_h5_dataset_name") < measurements.index(
+        "statistics"
+    )

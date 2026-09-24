@@ -3057,7 +3057,7 @@ def _perturb_one(
         # communities (flow- and resistance-weighted ones move with the
         # flows), then every selected statistic and network analysis -- which
         # also writes each per-vessel analysis onto G for its vessels layer.
-        if perturbed["compute_vascular_communities"]:
+        if vascular_communities_enabled(perturbed):
             community_summary = graph.assign_vascular_communities(
                 G, weighting=perturbed["vascular_community_weighting"]
             )
@@ -3186,6 +3186,19 @@ def run_perturbations(
     return run
 
 
+def vascular_communities_enabled(settings: dict) -> bool:
+    """Whether a run partitions its network into vascular communities.
+
+    A connectivity/network analysis, so it runs only with statistics and the
+    network analyses on -- the same nesting the panel shows it in.
+    """
+    return bool(
+        settings["compute_vascular_communities"]
+        and settings["statistics"]
+        and settings["statistics_network_analysis"]
+    )
+
+
 def statistics_arguments(settings: dict) -> dict[str, Any]:
     """The run's statistics selection, as keyword arguments to
     `statistics.compute_comprehensive_vessel_statistics`.
@@ -3232,14 +3245,15 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     # for the exact same partition -- e.g. both weighted by "resistance".
     # Compute it once up front in that case and hand it to both, instead of
     # running greedy modularity on the same graph twice.
+    vascular_communities_on = vascular_communities_enabled(settings)
     vascular_weighting = (
         settings["vascular_community_weighting"]
-        if settings["compute_vascular_communities"]
+        if vascular_communities_on
         else None
     )
     shared_vascular_communities = None
     share_vascular_communities_with_statistics = (
-        settings["compute_vascular_communities"]
+        vascular_communities_on
         and settings["statistics"]
         and vascular_weighting in ("resistance", "length", "flow")
         and (vascular_weighting == "length" or settings["run_haemodynamics"])
@@ -3368,7 +3382,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     # not a report the user may have turned off. Reuses the partition
     # already computed above when the statistics report asked for the same
     # weighting (see shared_vascular_communities).
-    if settings["compute_vascular_communities"]:
+    if vascular_communities_on:
         community_summary = graph.assign_vascular_communities(
             G, weighting=vascular_weighting,
             communities=shared_vascular_communities,

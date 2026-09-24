@@ -151,19 +151,32 @@ DISPLAY_SETTINGS_OFF_IN_NAPARI = {
     "visualize_results": False,
 }
 
-#: Export settings that are not a per-run decision, so they get no row of
-#: their own: flow_direction_colouring/flow_arrow_scale are cosmetics for a
-#: layer that is always added anyway, and compute_vascular_communities is
-#: worth having on whenever its weighting can be chosen -- only the
-#: weighting itself (``vascular_community_weighting``, still a real row) is
-#: a choice worth surfacing. Never parented as flat tab rows, forced to
-#: this value on every call to ``apply_prerequisites`` so a loaded config
-#: cannot silently turn one off with no visible control to notice it by.
+def _network_analysis_on(values: Mapping[str, Any]) -> bool:
+    return bool(values.get("statistics") and values.get("statistics_network_analysis"))
+
+
+#: Settings that are not a per-run decision, so they get no row of their
+#: own: flow_direction_colouring/flow_arrow_scale are cosmetics for a layer
+#: that is always added anyway, and compute_vascular_communities is worth
+#: having on whenever its weighting can be chosen -- only the weighting
+#: itself (``vascular_community_weighting``, a real row on the Statistics
+#: tab) is a choice worth surfacing. A value is either a constant or a
+#: function of the other settings: compute_vascular_communities follows
+#: Statistics and network analysis, so an untouched panel (Statistics off)
+#: does not switch on a setting nothing would read. Never parented as flat
+#: tab rows, forced on every call to ``apply_prerequisites`` so a loaded
+#: config cannot silently change one with no visible control to notice it by.
 FORCED_HIDDEN_EXPORT_SETTINGS: dict[str, Any] = {
     "flow_direction_colouring": True,
     "flow_arrow_scale": 1.0,
-    "compute_vascular_communities": True,
+    "compute_vascular_communities": _network_analysis_on,
 }
+
+
+def forced_hidden_value(name: str, values: Mapping[str, Any]) -> Any:
+    """The value a FORCED_HIDDEN_EXPORT_SETTINGS entry takes given ``values``."""
+    forced = FORCED_HIDDEN_EXPORT_SETTINGS[name]
+    return forced(values) if callable(forced) else forced
 
 #: What napari calls the log window's dock.
 LOG_DOCK_NAME = "HaemoLynx run log"
@@ -5814,6 +5827,10 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         editor.layout_order = tuple(
             name for name in editor_layout_order(chosen) if name in editor.editors
         )
+        # Appending re-unified the label widths over every row, hidden ones
+        # included; cap them again so the editor fits the tab.
+        _wrap_row_labels(editor.container.native)
+        editor.container.native.updateGeometry()
 
     def show_the_chosen_type(editor) -> None:
         """Reveal the chosen type's options and hide every other type's.
@@ -5959,30 +5976,29 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
 
     def page(stage_summary, names: Sequence[str]):
         """The tab: the run's own settings, then the list of perturbations."""
-        from qtpy.QtWidgets import QVBoxLayout, QWidget
+        from qtpy.QtWidgets import QSizePolicy
 
-        body = QWidget()
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(stage_summary.native)
         flat = [name for name in visible_tab_settings(names) if name in rows]
-        if flat:
-            layout.addWidget(
-                Container(widgets=[rows[name] for name in flat], labels=True).native
+        settings = Container(widgets=[rows[name] for name in flat], labels=True)
+        explanation = Label(
+            value=(
+                "Each perturbation re-solves the network from the same "
+                "baseline. The values above are what one starts from; the "
+                "options below are what it changes."
             )
-        layout.addWidget(
-            Label(
-                value=(
-                    "Each perturbation re-solves the network from the same "
-                    "baseline. The values above are what one starts from; the "
-                    "options below are what it changes."
-                )
-            ).native
         )
-        layout.addWidget(holder.native)
-        layout.addWidget(add_button.native)
-        layout.addStretch(1)
-        return body
+        body = Container(
+            widgets=[stage_summary, settings, explanation, holder, add_button],
+            labels=False,
+        )
+        body.native.layout().setContentsMargins(0, 0, 0, 0)
+        # Vertical policy Minimum: the page may grow but never shrinks below
+        # its natural height, so a short dock scrolls the tab instead of the
+        # scroll area squashing every row (and the wrapped explanation) to
+        # its bare minimum height -- the compressed, overlapping rows this
+        # tab showed while each perturbation's editors were being added.
+        body.native.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        return body.native
 
     return SimpleNamespace(
         page=page,
@@ -6030,8 +6046,20 @@ def _fitting_scroll_area():
     return scroller
 
 
+#: Widest a row's label column may be before its text wraps. magicgui pins
+#: every label in a Container to the widest label's width -- hidden rows
+#: included -- which put a 490px label column on Diameters and a wider one
+#: on each perturbation editor (every type's rows are built, most hidden).
+ROW_LABEL_MAX_WIDTH = 220
+
+#: Characters a dropdown keeps room for once it may shrink below its
+#: longest choice, and the width it may shrink to.
+COMBO_MIN_CONTENTS_LENGTH = 16
+COMBO_MIN_WIDTH = 140
+
+
 def _wrap_row_labels(native) -> None:
-    """Let every row's label wrap instead of forcing the row wider.
+    """Let every row's label wrap, and every dropdown shrink, to fit the tab.
 
     magicgui gives each row's ``QLabel`` word wrap off, which is fine for a
     short name but not for e.g. "Segmentation cleanup reconnect max axis
@@ -6041,10 +6069,43 @@ def _wrap_row_labels(native) -> None:
     applied to every tab rather than only the ones with today's longest
     labels, since a future setting name is not something to special-case for.
     """
-    from qtpy.QtWidgets import QLabel
+    from qtpy.QtWidgets import QComboBox, QLabel, QSizePolicy, QWidget
 
     for label in native.findChildren(QLabel):
         label.setWordWrap(True)
+        # magicgui makes its labels Fixed x Fixed, so a wrapped label still
+        # demanded its whole one-line width (the summaries widened tabs 1
+        # and 5 past the dock) and a single line's height (the Perturbations
+        # tab's wrapped text overlapped the rows below it).
+        policy = label.sizePolicy()
+        if policy.horizontalPolicy() == QSizePolicy.Fixed:
+            label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        # Capped, not cleared: magicgui's unified width still lines the
+        # value column up while every label fits under the cap.
+        if label.minimumWidth() > ROW_LABEL_MAX_WIDTH:
+            label.setMinimumWidth(ROW_LABEL_MAX_WIDTH)
+            # A row is as tall as its value widget, not its wrapped label;
+            # reserve the lines the label needs at the capped width.
+            label.setMinimumHeight(label.heightForWidth(ROW_LABEL_MAX_WIDTH))
+    # A dropdown otherwise demands the width of its longest choice (450px
+    # for the perturbation type); it may shrink now, and its popup still
+    # lists every choice in full.
+    for combo in native.findChildren(QComboBox):
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(COMBO_MIN_CONTENTS_LENGTH)
+        # An explicit minimum is what a layout honours over the hint, which
+        # under napari's stylesheet can still measure the longest choice.
+        if combo.minimumWidth() == 0:
+            combo.setMinimumWidth(COMBO_MIN_WIDTH)
+    # A layout caches each widget's size, and Qt skips the relayout for a
+    # hidden widget, so a tab (or a boundary role's page) not on screen kept
+    # the width it had before any of the above. updateGeometry drops a
+    # widget's cached size even while hidden; invalidate drops the layout's.
+    for child in [native, *native.findChildren(QWidget)]:
+        child.updateGeometry()
+        layout = child.layout()
+        if layout is not None:
+            layout.invalidate()
 
 
 #: Status text for each GraphEditorState.click_add / mode-arm outcome.
@@ -6500,6 +6561,8 @@ def settings_widget(napari_viewer=None):
                     rows[name].visible = False
 
         shared_ilastik_placement["host"] = attached
+        # Moving rows into a container re-unifies its label widths.
+        _wrap_row_labels(tab_widget)
 
     def apply_prerequisites(*_args) -> None:
         """Apply schema prerequisites: hide nested rows, grey others."""
@@ -6507,7 +6570,9 @@ def settings_widget(napari_viewer=None):
         # a dependent row (vascular_community_weighting) reads this value to
         # compute its own `enabled`, so correcting it mid-loop would leave
         # that computation using the stale, not-yet-forced value.
-        for name, forced in FORCED_HIDDEN_EXPORT_SETTINGS.items():
+        values = current_values()
+        for name in FORCED_HIDDEN_EXPORT_SETTINGS:
+            forced = forced_hidden_value(name, values)
             if name in rows and rows[name].value != forced:
                 rows[name].value = forced
         values = current_values()

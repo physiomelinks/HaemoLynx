@@ -25,6 +25,8 @@ from haemolynx.gui._widget import (  # noqa: E402
     DISPLAY_SETTINGS_OFF_IN_NAPARI,
     FORCED_HIDDEN_EXPORT_SETTINGS,
     OURS,
+    ROW_LABEL_MAX_WIDTH,
+    forced_hidden_value,
     _vessel_segment_diameters_um,
     settings_widget,
 )
@@ -139,7 +141,11 @@ def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):
         tab_widget.widget(index).sizeHint().height()
         for index in range(tab_widget.count())
     )
-    assert tallest_content > 800, "the fixture no longer has a long tab to test"
+    # Relative to the hint, not a pixel count: wrapped row labels (which no
+    # longer demand their one-line width) made every tab a little shorter.
+    assert tallest_content > 3 * TAB_SCROLL_HINT_HEIGHT, (
+        "the fixture no longer has a long tab to test"
+    )
     assert asked < tallest_content / 2, (
         f"the tallest tab asks for {asked}px against {tallest_content}px of content"
     )
@@ -191,15 +197,13 @@ def test_an_untouched_panel_reads_back_the_schema_defaults(panel):
         resolved = schema.validate(values)
 
     assert [str(w.message) for w in caught] == []
-    expected = schema.validate(
-        {
-            setting.name: FORCED_HIDDEN_EXPORT_SETTINGS.get(
-                setting.name,
-                DISPLAY_SETTINGS_OFF_IN_NAPARI.get(setting.name, setting.default),
-            )
-            for setting in schema
-        }
-    )
+    defaults = {
+        setting.name: DISPLAY_SETTINGS_OFF_IN_NAPARI.get(setting.name, setting.default)
+        for setting in schema
+    }
+    for name in FORCED_HIDDEN_EXPORT_SETTINGS:
+        defaults[name] = forced_hidden_value(name, defaults)
+    expected = schema.validate(defaults)
     assert resolved == expected
 
 
@@ -230,29 +234,43 @@ def test_the_settings_that_open_a_browser_start_off(panel):
     assert values["interactive_plots"] is False
 
 
+def _show_tab(widget, text):
+    from qtpy.QtWidgets import QApplication
+
+    tabs = widget._haemolynx_tabs
+    for index in range(tabs.count()):
+        if text in tabs.tabText(index):
+            tabs.setCurrentIndex(index)
+            QApplication.processEvents()
+            return
+    raise AssertionError(f"no tab containing {text!r}")
+
+
 def test_forced_hidden_export_settings_have_no_row_but_keep_their_value(panel):
     """flow_direction_colouring, flow_arrow_scale and compute_vascular_communities
-    are not per-run decisions, so Export shows no row for them -- but they
-    must still read back their forced value, and a stale/loaded value must
-    not stick with no visible control to fix it. vascular_community_weighting
-    stays a real, visible, enabled choice."""
+    are not per-run decisions, so they get no row -- but they must still read
+    back their forced value, and a stale/loaded value must not stick with no
+    visible control to fix it. compute_vascular_communities follows Statistics
+    and network analysis, and vascular_community_weighting is a real, visible,
+    enabled choice on the Statistics tab once those are on."""
     from qtpy.QtWidgets import QApplication
 
     widget, _viewer = panel
     widget.show()
     rows = widget._haemolynx_rows()
-    tabs = widget._haemolynx_tabs
-    for index in range(tabs.count()):
-        if "Export" in tabs.tabText(index):
-            tabs.setCurrentIndex(index)
-            QApplication.processEvents()
-            break
-    else:
-        raise AssertionError("no tab containing 'Export'")
+    _show_tab(widget, "Additional measurements")
 
-    for name, forced in FORCED_HIDDEN_EXPORT_SETTINGS.items():
+    values = widget._haemolynx_values()
+    for name in FORCED_HIDDEN_EXPORT_SETTINGS:
         assert rows[name].visible is False, name
-        assert widget._haemolynx_values()[name] == forced, name
+        assert values[name] == forced_hidden_value(name, values), name
+    assert values["statistics"] is False
+    assert values["compute_vascular_communities"] is False
+    assert rows["vascular_community_weighting"].visible is False
+
+    rows["statistics"].value = True
+    QApplication.processEvents()
+    assert widget._haemolynx_values()["compute_vascular_communities"] is True
 
     rows["compute_vascular_communities"].value = False
     QApplication.processEvents()
@@ -260,6 +278,11 @@ def test_forced_hidden_export_settings_have_no_row_but_keep_their_value(panel):
 
     assert rows["vascular_community_weighting"].visible is True
     assert rows["vascular_community_weighting"].enabled is True
+
+    rows["statistics_network_analysis"].value = False
+    QApplication.processEvents()
+    assert widget._haemolynx_values()["compute_vascular_communities"] is False
+    assert rows["vascular_community_weighting"].visible is False
 
 
 def test_the_input_path_starts_empty(panel):
@@ -1291,3 +1314,76 @@ def test_large_vessel_network_mode_survives_thick_vessel_skeletonisation_turning
     assert rows["assign_large_vessel_branch_orders"].enabled is True
 
 
+
+
+# --- every tab fits the dock ------------------------------------------------
+
+
+def _settle(widget, index):
+    from qtpy.QtWidgets import QApplication
+
+    widget._haemolynx_tabs.setCurrentIndex(index)
+    for _ in range(5):
+        QApplication.processEvents()
+
+
+def test_every_tab_fits_the_narrowest_panel(panel):
+    """A tab scrolls up and down only, so a page wider than its viewport is
+    clipped on the right. magicgui made every label Fixed at its one-line
+    width and pinned each container's label column to its widest label
+    (hidden rows included), and a dropdown to its longest choice: Input,
+    Diameters and Perturbations were all wider than the dock."""
+    widget, _viewer = panel
+    perturbations = widget._haemolynx_perturbations
+    for index, perturbation_type in enumerate(
+        ("capillary_block", "arteriole_and_pericyte_diameter_change")
+    ):
+        perturbations.add()
+        perturbations.choose_type(index, perturbation_type)
+    widget.resize(1, 900)
+    widget.show()
+    tabs = widget._haemolynx_tabs
+    for index in range(tabs.count()):
+        _settle(widget, index)
+        scroller = tabs.widget(index)
+        assert scroller.widget().width() <= scroller.viewport().width(), tabs.tabText(index)
+
+
+def test_long_row_labels_wrap_and_keep_their_height(panel):
+    """A capped label wraps rather than widening the row, and reserves the
+    lines it wraps to rather than being clipped to one."""
+    from qtpy.QtWidgets import QLabel
+
+    widget, _viewer = panel
+    widget.show()
+    label = next(
+        label
+        for label in widget.findChildren(QLabel)
+        if label.text().startswith("Voxel size override")
+    )
+    assert label.wordWrap()
+    assert label.minimumWidth() <= ROW_LABEL_MAX_WIDTH
+    assert label.minimumHeight() >= label.heightForWidth(ROW_LABEL_MAX_WIDTH)
+
+
+def test_perturbation_rows_are_not_squashed(panel):
+    """The Perturbations page is never laid out shorter than its rows: a
+    short dock scrolls the tab instead of overlapping the rows."""
+    from qtpy.QtWidgets import QWidget
+
+    widget, _viewer = panel
+    perturbations = widget._haemolynx_perturbations
+    perturbations.add()
+    perturbations.choose_type(0, "capillary_block")
+    widget.resize(480, 400)
+    widget.show()
+    tabs = widget._haemolynx_tabs
+    index = next(i for i in range(tabs.count()) if "Perturbations" in tabs.tabText(i))
+    _settle(widget, index)
+    page = tabs.widget(index).widget()
+    # Rows and the containers holding them: each is at least as tall as
+    # its own layout says its contents need.
+    laid_out = [w for w in page.findChildren(QWidget) if w.isVisible() and w.layout()]
+    assert laid_out
+    for row in laid_out:
+        assert row.height() >= row.layout().minimumSize().height(), row
