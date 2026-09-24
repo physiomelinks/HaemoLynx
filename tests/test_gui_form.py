@@ -832,8 +832,11 @@ def test_network_analysis_measures_nest_under_statistics_then_their_own_toggle()
         assert not child.is_visible({"statistics": False, "statistics_network_analysis": True}), name
         assert child.is_visible({"statistics": True, "statistics_network_analysis": True}), name
 
+    # Every measure is on by default except the two that re-solve the network
+    # per vessel/step, which cost tens of seconds on a large network.
+    opt_in = {"statistics_occlusion_impact", "statistics_occlusion_curves"}
     for name in _NETWORK_ANALYSIS_MEASURE_CHILDREN:
-        assert SCHEMA[name].default is True, name
+        assert SCHEMA[name].default is (name not in opt_in), name
 
     # Ungated parents stay visible either way.
     assert not fields["statistics"].hide_when_unmet
