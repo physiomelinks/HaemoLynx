@@ -20,11 +20,14 @@ from scipy.ndimage import (
 from skimage.morphology import remove_small_objects, skeletonize
 
 from .memmap_support import (
+    LOW_MEMORY_BLOCK_VOXELS,
+    bincount_by_slab,
     iter_blocks,
     map_blockwise,
     new_memmap_array,
     release_memmap_array,
     release_superseded,
+    slab_step,
     temporary_memmap_array,
 )
 
@@ -95,7 +98,9 @@ def _filter_components_by_total_fraction(
             return skeleton_bool
 
         min_component_size = int(np.ceil(min_component_fraction * total_voxels))
-        component_sizes = np.bincount(labeled.ravel())
+        component_sizes = (
+            bincount_by_slab(labeled) if use_memmap else np.bincount(labeled.ravel())
+        )
         keep_labels = np.where(component_sizes >= min_component_size)[0]
         keep_labels = keep_labels[keep_labels != 0]  # exclude background
 
@@ -169,7 +174,11 @@ def compute_skeleton_connectivity_stats(
         # the same tally as counting the whole volume -- minus the background
         # at index 0, which is zeroed here anyway. On a sparse skeleton that is
         # thousands of voxels rather than hundreds of millions.
-        component_sizes = np.bincount(labeled[skeleton_bool], minlength=n_components + 1)
+        component_sizes = (
+            bincount_by_slab(labeled, where=skeleton_bool, minlength=n_components + 1)
+            if use_memmap
+            else np.bincount(labeled[skeleton_bool], minlength=n_components + 1)
+        )
     component_sizes[0] = 0
     sorted_sizes = np.sort(component_sizes[1:])[::-1]
     largest = int(sorted_sizes[0]) if sorted_sizes.size else 0
@@ -224,7 +233,10 @@ def log_skeleton_connectivity_stats(
 
 
 def _combine_per_slice(out: np.ndarray, op, *arrays: np.ndarray) -> None:
-    """Write ``op(*slice)`` into ``out[index]`` for every z-slice (axis 0).
+    """Write ``op(*slab)`` into ``out[slab]`` for every slab of whole z-slices
+    (axis 0) -- *op* must be elementwise. A slab rather than one slice per
+    call: a stack of thousands of small slices otherwise pays numpy's
+    per-call overhead thousands of times.
 
     Shared by every caller that needs to combine same-shaped boolean
     arrays into a *pre-allocated* ``out`` (memmap or not) one slice at a
@@ -236,8 +248,11 @@ def _combine_per_slice(out: np.ndarray, op, *arrays: np.ndarray) -> None:
     since that stays the faster, simpler path when nothing here needs to
     be disk-backed.
     """
-    for index in range(out.shape[0]):
-        out[index] = op(*(arr[index] for arr in arrays))
+    step = slab_step(out.shape)
+    for start in range(0, out.shape[0], step):
+        out[start:start + step] = op(
+            *(np.asarray(arr[start:start + step]) for arr in arrays)
+        )
 
 
 def fill_binary_holes(
@@ -624,6 +639,17 @@ def skeletonize_by_component(
             if bbox is None:
                 continue
             labeled_component = labeled[bbox]
+            if labeled_component.size <= LOW_MEMORY_BLOCK_VOXELS:
+                # Small enough to compare in RAM: a temp file per component
+                # made a noisy mask with thousands of specks crawl.
+                _skeletonize_component_into(
+                    np.asarray(labeled_component) == component_id,
+                    result[bbox],
+                    tile_large_components=tile_large_components,
+                    tile_max_voxels=tile_max_voxels,
+                    tile_halo_voxels=tile_halo_voxels,
+                )
+                continue
             # Not `labeled_component == component_id`: that comparison
             # always allocates a fresh, plain-RAM array the size of the
             # bbox, regardless of how `labeled` itself is backed -- for
@@ -1291,7 +1317,7 @@ def drop_small_components(
     result = new_memmap_array(mask.shape, bool, directory=memmap_directory)
     with temporary_memmap_array(mask.shape, np.int32, directory=memmap_directory) as labeled:
         label(mask, footprint, output=labeled)
-        component_sizes = np.bincount(labeled.ravel())
+        component_sizes = bincount_by_slab(labeled)
         too_small = np.zeros(component_sizes.shape, dtype=bool)
         too_small[1:] = ~_small_object_survival_by_size(component_sizes[1:], min_size)
         _combine_per_slice(result, lambda m, lb: m & ~too_small[lb], mask, labeled)

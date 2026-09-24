@@ -203,8 +203,7 @@ def argwhere_by_slab(
     same order. *predicate* defaults to truthiness.
     """
     shape = volume.shape
-    slice_voxels = int(np.prod(shape[1:], dtype=np.int64)) if len(shape) > 1 else 1
-    step = max(1, block_voxels // max(slice_voxels, 1))
+    step = slab_step(shape, block_voxels)
     parts = []
     for start in range(0, shape[0], step):
         slab = np.asarray(volume[start:start + step])
@@ -224,12 +223,42 @@ def map_by_slab(
     block_voxels: int = LOW_MEMORY_BLOCK_VOXELS,
 ) -> np.ndarray:
     """``out[...] = op(source)`` for an elementwise *op*, a slab at a time."""
-    shape = source.shape
-    slice_voxels = int(np.prod(shape[1:], dtype=np.int64)) if len(shape) > 1 else 1
-    step = max(1, block_voxels // max(slice_voxels, 1))
-    for start in range(0, shape[0], step):
+    step = slab_step(source.shape, block_voxels)
+    for start in range(0, source.shape[0], step):
         out[start:start + step] = op(np.asarray(source[start:start + step]))
     return out
+
+
+def slab_step(shape: tuple[int, ...], block_voxels: int | None = None) -> int:
+    """Whole axis-0 slices per slab, so a slab holds about *block_voxels*
+    (:data:`LOW_MEMORY_BLOCK_VOXELS` when not given)."""
+    if block_voxels is None:
+        block_voxels = LOW_MEMORY_BLOCK_VOXELS
+    slice_voxels = int(np.prod(shape[1:], dtype=np.int64)) if len(shape) > 1 else 1
+    return max(1, block_voxels // max(slice_voxels, 1))
+
+
+def bincount_by_slab(
+    labels: np.ndarray,
+    *,
+    where: np.ndarray | None = None,
+    minlength: int = 0,
+    block_voxels: int | None = None,
+) -> np.ndarray:
+    """``np.bincount(labels.ravel())`` -- or of ``labels[where]`` -- a slab at a
+    time. ``np.bincount`` casts its whole input to ``intp``, so on an int32
+    label memmap the plain call is an 8-byte-per-voxel copy of the volume."""
+    counts = np.zeros(max(int(minlength), 0), dtype=np.int64)
+    step = slab_step(labels.shape, block_voxels)
+    for start in range(0, labels.shape[0], step):
+        slab = np.asarray(labels[start:start + step])
+        if where is not None:
+            slab = slab[np.asarray(where[start:start + step], dtype=bool)]
+        part = np.bincount(slab.ravel(), minlength=len(counts))
+        if len(part) > len(counts):
+            counts = np.concatenate([counts, np.zeros(len(part) - len(counts), np.int64)])
+        counts[: len(part)] += part
+    return counts
 
 
 def _remove_quietly(path: str) -> None:

@@ -209,12 +209,21 @@ def _pointwise_radius_sampler(binary_mask: np.ndarray, voxel_size_zyx):
         unique, inverse = np.unique(corners, axis=0, return_inverse=True)
         corner_radius = distances.at(unique)[inverse.reshape(-1)].reshape(len(idx), 2, 2, 2)
         values = np.empty(len(idx), dtype=np.float64)
-        for n in range(len(idx)):
-            size = hi[n] - lo[n] + 1
-            box = corner_radius[n, : size[0], : size[1], : size[2]]
-            values[n] = map_coordinates(
-                box, (idx[n] - lo[n]).reshape(3, 1), order=1, mode="constant", cval=0.0
-            )[0]
+        sizes = hi - lo + 1
+        local = (idx - lo).T
+        # One interpolation per clipped box shape (at most eight), not one per
+        # point: the boxes are stacked along a leading axis that every point
+        # samples exactly on its own index, so each keeps the box -- and the
+        # edge handling -- a call of its own would have given it.
+        for size in np.unique(sizes, axis=0):
+            rows = np.flatnonzero(np.all(sizes == size, axis=1))
+            boxes = np.ascontiguousarray(
+                corner_radius[rows, : size[0], : size[1], : size[2]]
+            )
+            coordinates = np.vstack([np.arange(len(rows), dtype=float), local[:, rows]])
+            values[rows] = map_coordinates(
+                boxes, coordinates, order=1, mode="constant", cval=0.0
+            )
         return values
 
     return sample

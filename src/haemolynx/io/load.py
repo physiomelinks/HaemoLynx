@@ -12,6 +12,7 @@ from ..preprocessing.skeleton import fill_binary_holes, skeletonize_by_component
 from ..preprocessing.memmap_support import (
     new_memmap_array,
     release_memmap_array,
+    slab_step,
     release_superseded,
 )
 try:
@@ -174,16 +175,26 @@ def _unique_with_counts(arr: np.ndarray, *, use_memmap: bool) -> tuple[np.ndarra
     stored, exactly what ``use_memmap_loading`` exists to avoid (and large
     enough on its own to be the allocation that fails, before skeletonize
     ever runs). With *use_memmap* False, this is the plain call, unchanged.
-    With it True, tallies are accumulated one axis-0 slice at a time
-    instead, each slice's own ``np.unique`` call bounded to that slice's
-    size rather than the whole volume's.
+    With it True, tallies are accumulated one slab of axis-0 slices at a
+    time instead, each slab's own count bounded to that slab's size rather
+    than the whole volume's -- by ``np.bincount`` for 8- and 16-bit integers
+    (linear, no sort), by ``np.unique`` otherwise.
     """
     if not use_memmap:
         return np.unique(arr, return_counts=True)
     tally: dict[object, int] = {}
-    for index in range(arr.shape[0]):
-        slice_values, slice_counts = np.unique(arr[index], return_counts=True)
-        for value, count in zip(slice_values.tolist(), slice_counts.tolist()):
+    small_int = np.issubdtype(arr.dtype, np.integer) and arr.dtype.itemsize <= 2
+    offset = int(np.iinfo(arr.dtype).min) if small_int else 0
+    step = slab_step(arr.shape)
+    for start in range(0, arr.shape[0], step):
+        slab = np.asarray(arr[start:start + step])
+        if small_int:
+            counts = np.bincount((slab.astype(np.int32) - offset).ravel())
+            present = np.flatnonzero(counts)
+            slab_values, slab_counts = present + offset, counts[present]
+        else:
+            slab_values, slab_counts = np.unique(slab, return_counts=True)
+        for value, count in zip(slab_values.tolist(), slab_counts.tolist()):
             tally[value] = tally.get(value, 0) + count
     ordered = sorted(tally)
     values = np.array(ordered, dtype=arr.dtype)
@@ -204,8 +215,10 @@ def _finite_range(arr: np.ndarray, *, use_memmap: bool) -> tuple[float, float] |
             return None
         return float(finite.min()), float(finite.max())
     low, high = np.inf, -np.inf
-    for index in range(arr.shape[0]):
-        finite = arr[index][np.isfinite(arr[index])]
+    step = slab_step(arr.shape)
+    for start in range(0, arr.shape[0], step):
+        slab = np.asarray(arr[start:start + step])
+        finite = slab[np.isfinite(slab)]
         if finite.size:
             low = min(low, float(finite.min()))
             high = max(high, float(finite.max()))
@@ -297,8 +310,9 @@ def _to_binary_volume_for_skeletonization(
     if not use_memmap:
         return rule(arr)
     result = new_memmap_array(arr.shape, bool, directory=memmap_directory)
-    for index in range(arr.shape[0]):
-        result[index] = rule(np.asarray(arr[index]))
+    step = slab_step(arr.shape)
+    for start in range(0, arr.shape[0], step):
+        result[start:start + step] = rule(np.asarray(arr[start:start + step]))
     return result
 
 
@@ -642,8 +656,13 @@ def load_3d_h5_with_voxel_size(
                 image = new_memmap_array(
                     dataset.shape, dataset.dtype, directory=memmap_directory
                 )
-            for index in range(dataset.shape[0]):
-                image[index] = dataset[index]
+            # Slabs of whole HDF5 chunks along axis 0: read a slice at a
+            # time, a chunk spanning 16 slices is decompressed 16 times.
+            chunk_depth = int(dataset.chunks[0]) if dataset.chunks else 1
+            step = slab_step(dataset.shape)
+            step = max(chunk_depth, step - step % chunk_depth)
+            for start in range(0, dataset.shape[0], step):
+                image[start:start + step] = dataset[start:start + step]
         else:
             image = np.array(dataset)
         (

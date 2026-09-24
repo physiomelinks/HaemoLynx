@@ -1,6 +1,7 @@
 """Reconnect secondary loop edges with alternative paths."""
 import logging
 import threading
+from contextlib import contextmanager, nullcontext
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
@@ -19,6 +20,12 @@ logger = logging.getLogger(__name__)
 #: built. Distances up to this are exact; beyond it the field only has to stay
 #: large, which it does.
 COST_WINDOW_PAD = 32
+
+#: Padded routing-window voxels all threads together may hold at once under
+#: the low-RAM option, and the largest single window it routes. A window costs
+#: about 80 bytes per voxel between its distance transform and the router's own
+#: arrays, so this keeps routing to roughly 5 GB however many threads run.
+LOW_MEMORY_ROUTING_VOXELS = 60_000_000
 
 #: A single padded window this much of the volume or more is not worth doing as
 #: a window: at that size it costs about what the whole volume costs, and a
@@ -65,16 +72,24 @@ def reconnect_secondary_loop_edges(
     repulsion_sigma=2.0,
     max_workers=None,
     debug=True,
-    max_cache_size=1000,
+    max_cache_size=None,
     use_memmap=False,
-    low_memory_window_voxels=LOW_MEMORY_BLOCK_VOXELS,
+    low_memory_window_voxels=LOW_MEMORY_ROUTING_VOXELS,
 ):
     """Find alternative paths for degree-2 pairs and add as secondary edges.
 
     *use_memmap* is the low-RAM option: *skeleton* is read in place instead of
-    copied, the whole-volume cost field is never built, and a routing window
-    whose padded size exceeds *low_memory_window_voxels* is skipped (and
-    counted in the closing summary) rather than transformed.
+    copied and the whole-volume cost field is never built. A window's distance
+    transform runs one padded block at a time once it is bigger than one
+    block (the same values; see ``pointwise_distance``), and the windows the
+    threads hold at once are capped at *low_memory_window_voxels* padded
+    voxels between them -- a thread waits for room rather than adding to RAM.
+    A single window bigger than that is skipped, and counted in the closing
+    summary.
+
+    *max_cache_size* is accepted for compatibility and ignored: each pair
+    routes through its own windows only once, and a cost field (which carries
+    that pair's own repulsion term) is never valid for another pair.
     """
     if not isinstance(G, (nx.Graph, nx.MultiGraph)):
         raise ValueError("G must be a NetworkX Graph or MultiGraph")
@@ -135,9 +150,20 @@ def reconnect_secondary_loop_edges(
                 minc[0]:maxc[0], minc[1]:maxc[1], minc[2]:maxc[2]
             ].copy()
 
-        dist = distance_transform_edt(
-            ~np.asarray(skeleton_copy[plo[0]:phi[0], plo[1]:phi[1], plo[2]:phi[2]])
-        )
+        crop = skeleton_copy[plo[0]:phi[0], plo[1]:phi[1], plo[2]:phi[2]]
+        dist = None
+        if use_memmap and padded_voxels > LOW_MEMORY_BLOCK_VOXELS:
+            from haemolynx.preprocessing.pointwise_distance import (
+                distance_transform_edt_blockwise,
+            )
+
+            dist = np.empty(crop.shape, dtype=np.float64)
+            try:
+                distance_transform_edt_blockwise(crop, dist, feature_value=True)
+            except ValueError:
+                dist = None  # no skeleton in the window: scipy's own answer
+        if dist is None:
+            dist = distance_transform_edt(~np.asarray(crop))
         inner = tuple(
             slice(int(minc[d] - plo[d]), int(minc[d] - plo[d] + maxc[d] - minc[d]))
             for d in range(3)
@@ -186,29 +212,26 @@ def reconnect_secondary_loop_edges(
         with failure_counts_lock:
             failure_counts[category] += 1
 
-    cache_lock = threading.Lock()
-    sub_cache = {}
-    cache_access_order = []
+    routing_room = threading.Condition()
+    routing_in_flight = [0]
 
-    def manage_cache(key, value=None):
-        with cache_lock:
-            if value is not None:
-                if key in sub_cache:
-                    cache_access_order.remove(key)
-                    cache_access_order.append(key)
-                else:
-                    if len(sub_cache) >= max_cache_size:
-                        oldest = cache_access_order.pop(0)
-                        del sub_cache[oldest]
-                    sub_cache[key] = value
-                    cache_access_order.append(key)
-                return value
-            else:
-                if key in sub_cache:
-                    cache_access_order.remove(key)
-                    cache_access_order.append(key)
-                    return sub_cache[key]
-                return None
+    @contextmanager
+    def routing_memory(minc, maxc):
+        """Hold room for one window's padded voxels while it is built and
+        routed (the low-RAM option only)."""
+        plo = np.maximum(minc - COST_WINDOW_PAD, 0)
+        phi = np.minimum(maxc + COST_WINDOW_PAD, skeleton_copy.shape)
+        need = min(int(np.prod(np.maximum(phi - plo, 0))), int(low_memory_window_voxels))
+        with routing_room:
+            while routing_in_flight[0] and routing_in_flight[0] + need > low_memory_window_voxels:
+                routing_room.wait()
+            routing_in_flight[0] += need
+        try:
+            yield
+        finally:
+            with routing_room:
+                routing_in_flight[0] -= need
+                routing_room.notify_all()
 
     def make_repulsion_safe(orig_voxels, sub_shape):
         if not orig_voxels or not sub_shape or any(s <= 0 for s in sub_shape):
@@ -300,9 +323,9 @@ def reconnect_secondary_loop_edges(
                 maxc = np.minimum(np.maximum(u_vox, v_vox) + ext + 1, skeleton_copy.shape)
                 if np.any(minc >= maxc):
                     continue
-                cache_key = (*minc, *maxc)
-                cached_result = manage_cache(cache_key)
-                if cached_result is None:
+                # Held from the cost field through routing: under the low-RAM
+                # option the threads' windows share one voxel budget.
+                with (routing_memory(minc, maxc) if use_memmap else nullcontext()):
                     try:
                         sub_cost = window_cost(minc, maxc)
                         if sub_cost is None:
@@ -315,95 +338,92 @@ def reconnect_secondary_loop_edges(
                         orig_rel = [vox - minc for vox in orig_voxels]
                         repulsion = make_repulsion_safe(orig_rel, sub_cost.shape)
                         sub_cost = sub_cost + repulsion
-                        cached_result = (sub_cost, minc)
-                        manage_cache(cache_key, cached_result)
                     except Exception as e:
                         record_failure("subvolume creation failed")
                         if debug:
                             logger.warning("Subvolume creation failed for %s-%s: %s", u, v, e)
                         continue
-                sub_cost, minc = cached_result
-                ru = u_vox - minc
-                rv = v_vox - minc
-                if (
-                    np.any(ru < 0)
-                    or np.any(rv < 0)
-                    or np.any(ru >= sub_cost.shape)
-                    or np.any(rv >= sub_cost.shape)
-                ):
-                    continue
-                try:
-                    path_coords, cost = route_through_array(
-                        sub_cost, tuple(ru), tuple(rv), fully_connected=True
-                    )
-                    if path_coords is None or len(path_coords) < min_length_voxels:
-                        continue
-                    path_coords = np.array(path_coords)
-                    path_length = len(path_coords)
-                    if path_length > max_length_voxels:
-                        continue
-                    abs_coords = path_coords + minc
-                    if np.any(abs_coords < 0) or np.any(abs_coords >= skeleton.shape):
+                    ru = u_vox - minc
+                    rv = v_vox - minc
+                    if (
+                        np.any(ru < 0)
+                        or np.any(rv < 0)
+                        or np.any(ru >= sub_cost.shape)
+                        or np.any(rv >= sub_cost.shape)
+                    ):
                         continue
                     try:
-                        x, y, z = abs_coords.T
-                        skeleton_hits = skeleton[x, y, z]
-                        overlap = np.sum(skeleton_hits) / path_length
-                        if overlap < min_overlap:
-                            continue
-                        orig_coords = np.array(orig_voxels)
-                        hausdorff_dist = max(
-                            directed_hausdorff(orig_coords, abs_coords)[0],
-                            directed_hausdorff(abs_coords, orig_coords)[0],
+                        path_coords, cost = route_through_array(
+                            sub_cost, tuple(ru), tuple(rv), fully_connected=True
                         )
-                        if hausdorff_dist < min_geom_dev:
+                        if path_coords is None or len(path_coords) < min_length_voxels:
+                            continue
+                        path_coords = np.array(path_coords)
+                        path_length = len(path_coords)
+                        if path_length > max_length_voxels:
+                            continue
+                        abs_coords = path_coords + minc
+                        if np.any(abs_coords < 0) or np.any(abs_coords >= skeleton.shape):
+                            continue
+                        try:
+                            x, y, z = abs_coords.T
+                            skeleton_hits = skeleton[x, y, z]
+                            overlap = np.sum(skeleton_hits) / path_length
+                            if overlap < min_overlap:
+                                continue
+                            orig_coords = np.array(orig_voxels)
+                            hausdorff_dist = max(
+                                directed_hausdorff(orig_coords, abs_coords)[0],
+                                directed_hausdorff(abs_coords, orig_coords)[0],
+                            )
+                            if hausdorff_dist < min_geom_dev:
+                                if debug:
+                                    logger.debug(
+                                        "Path too similar (dev=%.1f < %.1f)",
+                                        hausdorff_dist,
+                                        min_geom_dev,
+                                    )
+                                continue
+                            orig_set = set(tuple(coord) for coord in orig_coords)
+                            new_set = set(tuple(coord) for coord in abs_coords)
+                            overlap_voxels = len(orig_set.intersection(new_set))
+                            path_similarity = overlap_voxels / min(
+                                len(orig_set), len(new_set)
+                            )
+                            if path_similarity > 0.7:
+                                if debug:
+                                    logger.debug(
+                                        "Path too similar (voxel overlap=%.2f)",
+                                        path_similarity,
+                                    )
+                                continue
+                            vox3d = (abs_coords * np.array(voxel_size)).tolist()
+                            path_length_3d = _path_length_3d(vox3d)
+                            unique_voxels = len(new_set - orig_set)
+                            path_novelty = unique_voxels / len(new_set)
+                            best_paths.append(
+                                {
+                                    "voxels": vox3d,
+                                    "overlap": overlap,
+                                    "deviation": hausdorff_dist,
+                                    "length": path_length_3d if path_length_3d > 0 else float(path_length),
+                                    "cost": cost,
+                                    "novelty": path_novelty,
+                                    "voxel_similarity": path_similarity,
+                                }
+                            )
+                            if len(best_paths) >= k_paths:
+                                break
+                        except Exception as e:
+                            record_failure("metric calculation failed")
                             if debug:
-                                logger.debug(
-                                    "Path too similar (dev=%.1f < %.1f)",
-                                    hausdorff_dist,
-                                    min_geom_dev,
-                                )
+                                logger.warning("Metric calculation failed: %s", e)
                             continue
-                        orig_set = set(tuple(coord) for coord in orig_coords)
-                        new_set = set(tuple(coord) for coord in abs_coords)
-                        overlap_voxels = len(orig_set.intersection(new_set))
-                        path_similarity = overlap_voxels / min(
-                            len(orig_set), len(new_set)
-                        )
-                        if path_similarity > 0.7:
-                            if debug:
-                                logger.debug(
-                                    "Path too similar (voxel overlap=%.2f)",
-                                    path_similarity,
-                                )
-                            continue
-                        vox3d = (abs_coords * np.array(voxel_size)).tolist()
-                        path_length_3d = _path_length_3d(vox3d)
-                        unique_voxels = len(new_set - orig_set)
-                        path_novelty = unique_voxels / len(new_set)
-                        best_paths.append(
-                            {
-                                "voxels": vox3d,
-                                "overlap": overlap,
-                                "deviation": hausdorff_dist,
-                                "length": path_length_3d if path_length_3d > 0 else float(path_length),
-                                "cost": cost,
-                                "novelty": path_novelty,
-                                "voxel_similarity": path_similarity,
-                            }
-                        )
-                        if len(best_paths) >= k_paths:
-                            break
                     except Exception as e:
-                        record_failure("metric calculation failed")
+                        record_failure("pathfinding failed")
                         if debug:
-                            logger.warning("Metric calculation failed: %s", e)
+                            logger.warning("Pathfinding failed for %s-%s: %s", u, v, e)
                         continue
-                except Exception as e:
-                    record_failure("pathfinding failed")
-                    if debug:
-                        logger.warning("Pathfinding failed for %s-%s: %s", u, v, e)
-                    continue
                 if best_paths:
                     break
             if not best_paths:
@@ -476,10 +496,6 @@ def reconnect_secondary_loop_edges(
     except Exception as e:
         logger.error("Threading failed: %s", e)
         return G
-
-    with cache_lock:
-        sub_cache.clear()
-        cache_access_order.clear()
 
     # Always reported, unlike the per-occurrence messages above: a run where
     # every candidate pair failed the same way must not look identical to a

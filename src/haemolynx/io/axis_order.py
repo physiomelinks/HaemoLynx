@@ -81,12 +81,13 @@ def apply_axis_order(
     wrong type for anything downstream that checks ``isinstance(x,
     np.memmap)`` to decide whether it owns a backing file to release).
 
-    *use_memmap*, when True, writes that contiguous copy one output slice at
-    a time into a new memmap in *memmap_directory* instead of
-    ``np.ascontiguousarray``, which is a whole-volume plain-RAM copy no
-    matter how *volume* itself is stored. Slower -- each output slice
-    gathers from across the whole source -- but never holds more than one
-    slice.
+    *use_memmap*, when True, writes that contiguous copy into a new memmap in
+    *memmap_directory* instead of ``np.ascontiguousarray``, which is a
+    whole-volume plain-RAM copy no matter how *volume* itself is stored. It
+    is copied one 3D block at a time, not one output slice at a time: an
+    output slice gathers from across the whole source file, so slice by
+    slice re-reads the source from disk once per slice as soon as it no
+    longer fits the page cache, where a block reads only its own region.
     """
     normalized = normalize_axis_order(axis_order)
     arr = np.asanyarray(volume)
@@ -101,9 +102,11 @@ def apply_axis_order(
         return np.ascontiguousarray(transposed)
     from haemolynx.preprocessing.memmap_support import new_memmap_array
 
+    from haemolynx.preprocessing.memmap_support import iter_blocks
+
     result = new_memmap_array(transposed.shape, transposed.dtype, directory=memmap_directory)
-    for index in range(transposed.shape[0]):
-        result[index] = transposed[index]
+    for _padded, _inner, core in iter_blocks(transposed.shape, halo=0):
+        result[core] = transposed[core]
     return result
 
 

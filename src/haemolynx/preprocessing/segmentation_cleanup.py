@@ -264,7 +264,6 @@ def _component_descriptors(
         median_radius_um = float(np.median(radii)) if radii.size else 0.0
         descriptors[component_id] = {
             "component_id": int(component_id),
-            "coords": coords,
             "centroid": centroid,
             "principal_axis": principal_axis,
             "linearity": linearity,
@@ -665,8 +664,17 @@ def split_narrow_neck_components(
         return mask, stats
 
     if use_memmap:
+        # Blockwise, not scipy's own call into a memmap `distances=`: that still
+        # holds ~70 bytes per voxel of its own temporaries in RAM.
+        from .pointwise_distance import distance_transform_edt_blockwise
+
         edt = new_memmap_array(mask.shape, np.float64, directory=memmap_directory)
-        distance_transform_edt(mask, sampling=sampling, distances=edt)
+        try:
+            distance_transform_edt_blockwise(mask, edt, sampling=sampling)
+        except ValueError:
+            # An all-foreground mask: scipy's result is not a distance to
+            # anything, and only its own whole-volume call reproduces it.
+            distance_transform_edt(mask, sampling=sampling, distances=edt)
     else:
         edt = distance_transform_edt(mask, sampling=sampling)
     try:
@@ -982,15 +990,10 @@ def smooth_vessel_surfaces(
     ``sigma_um <= 0`` (gaussian) or ``morphological_radius_um <= 0``
     (morphological) is a no-op for the method actually selected.
 
-    *use_memmap*, when True and the gaussian method actually runs, writes
-    both the float32 cast of *mask* and the blurred result to disk-backed
-    buffers instead of fresh in-RAM ones -- ``gaussian_filter`` needs a
-    float input regardless, so that cast is the one allocation this method
-    cannot avoid either way; this only decides where its two float32
-    buffers live; the re-thresholded mask is written a slab at a time to a
-    disk-backed array too. The morphological method runs one padded block at
-    a time instead (exact: a halo of four radii covers closing then
-    opening). *memmap_directory* is forwarded to :func:`new_memmap_array`.
+    *use_memmap*, when True, runs either method one padded block at a time
+    into a disk-backed mask. Exact both ways: the gaussian's halo is its own
+    kernel radius, and four radii cover the morphological closing then
+    opening. *memmap_directory* is forwarded to :func:`new_memmap_array`.
     """
     mask = np.asanyarray(mask, dtype=bool) if use_memmap else np.asarray(mask, dtype=bool)
     if method == "morphological":
@@ -1011,20 +1014,18 @@ def smooth_vessel_surfaces(
         float(sigma_um) / max(1e-9, float(v)) for v in voxel_size_zyx
     )
     if use_memmap:
-        float_mask = new_memmap_array(mask.shape, np.float32, directory=memmap_directory)
-        float_mask[:] = mask
-        blurred = new_memmap_array(mask.shape, np.float32, directory=memmap_directory)
-        try:
-            gaussian_filter(float_mask, sigma=sigma_voxels, output=blurred)
-            result = map_by_slab(
-                blurred,
-                lambda slab: slab > 0.5,
-                new_memmap_array(mask.shape, bool, directory=memmap_directory),
-            )
-        finally:
-            release_memmap_array(blurred)
-            release_memmap_array(float_mask)
-        return result
+        # One padded block at a time, in RAM. gaussian_filter truncates each
+        # axis's kernel at int(4 * sigma + 0.5) voxels and computes every
+        # output from its own window alone, so a halo that wide gives each
+        # core exactly the whole-volume float32 values -- instead of blurring
+        # a volume-sized float32 file into another one on disk.
+        halo = max(int(4.0 * float(s) + 0.5) for s in sigma_voxels)
+        return map_blockwise(
+            mask,
+            lambda block: gaussian_filter(block.astype(np.float32), sigma=sigma_voxels) > 0.5,
+            new_memmap_array(mask.shape, bool, directory=memmap_directory),
+            halo=halo,
+        )
     blurred = gaussian_filter(mask.astype(np.float32), sigma=sigma_voxels)
     return blurred > 0.5
 

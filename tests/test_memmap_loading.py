@@ -364,7 +364,12 @@ def test_fill_binary_holes_releases_the_inverted_memmap_even_if_the_inversion_lo
 
     class PoisonedAtSliceTwo(np.ndarray):
         def __getitem__(self, key):
-            if key == 2:
+            # The loop reads a slab of slices at a time: poison any read,
+            # slice or slab, that covers slice 2.
+            covers_two = key == 2 if isinstance(key, int) else (
+                isinstance(key, slice) and 2 in range(*key.indices(len(self)))
+            )
+            if covers_two:
                 raise RuntimeError("boom")
             return super().__getitem__(key)
 
@@ -509,11 +514,39 @@ def test_skeletonize_by_component_with_memmap_on_gives_each_component_a_memmap_m
         return original(component_mask, out, **kwargs)
 
     monkeypatch.setattr(skeleton_module, "_skeletonize_component_into", spy)
+    # Components this small are compared in RAM (see the test below); make
+    # every one count as large, the case this regression is about.
+    monkeypatch.setattr(skeleton_module, "LOW_MEMORY_BLOCK_VOXELS", 0)
 
     result = skeletonize_by_component(mask, use_memmap=True)
 
     assert len(seen_types) == 2, "expected one call per connected component"
     assert all(issubclass(t, np.memmap) for t in seen_types), seen_types
+    release_memmap_array(result)
+
+
+def test_skeletonize_by_component_keeps_small_components_off_disk(monkeypatch):
+    """A temp file per component made a noisy mask with thousands of specks
+    crawl; a component whose box fits one block is compared in RAM, with the
+    same skeleton as ever."""
+    import haemolynx.preprocessing.skeleton as skeleton_module
+
+    rng = np.random.default_rng(0)
+    mask = rng.random((12, 40, 40)) > 0.97  # hundreds of specks
+    mask[2:9, 5:30, 5:12] = True
+
+    made = []
+    original = skeleton_module.temporary_memmap_array
+
+    def counting(*args, **kwargs):
+        made.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(skeleton_module, "temporary_memmap_array", counting)
+    result = skeletonize_by_component(mask, use_memmap=True)
+
+    assert made == [mask.shape], "only the label volume should be on disk"
+    assert np.array_equal(result, skeletonize(mask, method="lee"))
     release_memmap_array(result)
 
 
