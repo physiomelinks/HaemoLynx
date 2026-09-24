@@ -107,7 +107,12 @@ def test_a_different_axis_order_does_not_reuse_the_zyx_cache_entry(tmp_path):
         str(source), input_format="tif", axis_order="xyz", memmap_directory=cache_dir
     )
 
-    assert not isinstance(image, np.memmap)  # apply_axis_order copies for non-canonical order
+    # Transposed into a fresh memmap of its own (never the cache entry, whose
+    # bytes are in the file's native order), so a non-canonical order stays
+    # off plain RAM too.
+    assert isinstance(image, np.memmap)
+    cache_entry, _sidecar = _cache_files_for(cache_dir, source)
+    assert Path(image.filename).resolve() != cache_entry.resolve()
     assert np.array_equal(image, np.transpose(raw, (2, 1, 0)))
 
 
