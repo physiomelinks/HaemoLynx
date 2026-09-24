@@ -77,6 +77,7 @@ from haemolynx.gui.stage_checkpoints import (
     previous_tab,
     resume_from_edit,
     restore_message,
+    stages_before,
 )
 from haemolynx.gui.run_snapshot import (
     DEFAULT_FILENAME as RUN_SNAPSHOT_FILENAME,
@@ -4093,7 +4094,7 @@ def _progress_bridge():
 def _run_in_background(
     settings, schema, report, button, bars=None, viewer=None, results=None,
     state=None, log=None, checkpoints=None, after_layers=None,
-    start_from=None, resume=None):
+    start_from=None, resume=None, restored_stages=()):
     """Run the pipeline off the GUI thread, reporting back as it goes.
 
     With *viewer* and *results*, each stage's output is turned into layers as it
@@ -4179,8 +4180,17 @@ def _run_in_background(
         log_progress(event)
         bridge.event.emit(event)
 
+    restored = frozenset(restored_stages)
+
     def produced(stage: str, output) -> None:
         """Build this stage's layers here, on the run's thread.
+
+        A stage in *restored_stages* was restored from its checkpoint before a
+        mid-pipeline run, and only passed through here: its outputs are the
+        resumed ones -- graph building's is the previous tab's *finished*
+        graph -- so it is neither recorded nor redrawn, or every earlier tab
+        would take on a later tab's state. Its layers are still built, which
+        keeps the results' own bookkeeping (skeleton, image shape) current.
 
         Eagerly, because every stage after `build_network` writes onto the same
         graph: convert later and the viewer shows a later stage's numbers under
@@ -4196,7 +4206,7 @@ def _run_in_background(
         except Exception:  # noqa: BLE001 - reported, never raised at the run
             logger.exception("could not build layers for stage %s", stage)
             return
-        if cancel_flag["cancelled"]:
+        if cancel_flag["cancelled"] or stage in restored:
             return
         if checkpoints is not None:
             try:
@@ -6200,7 +6210,9 @@ def _wrap_row_labels(native) -> None:
             label.setMinimumWidth(ROW_LABEL_MAX_WIDTH)
             # A row is as tall as its value widget, not its wrapped label;
             # reserve the lines the label needs at the capped width.
-            label.setMinimumHeight(label.heightForWidth(ROW_LABEL_MAX_WIDTH))
+            height = label.heightForWidth(ROW_LABEL_MAX_WIDTH)
+            if height > 0:  # -1 when Qt has no wrapped height to give
+                label.setMinimumHeight(height)
     # A dropdown otherwise demands the width of its longest choice (450px
     # for the perturbation type); it may shrink now, and its popup still
     # lists every choice in full.
@@ -7558,6 +7570,7 @@ def settings_widget(napari_viewer=None):
         start_from=None,
         resume=None,
         replace_checkpoints: bool = True,
+        restored_stages=(),
     ) -> None:
         if run_state.running:
             # The button is disabled while a run is going, so this is only
@@ -7618,6 +7631,7 @@ def settings_widget(napari_viewer=None):
             after_layers=_after_layers_applied if show_results.value else None,
             start_from=start_from,
             resume=resume,
+            restored_stages=restored_stages,
         )
         # After start(): running is True, so run-from buttons grey out for
         # the length of the run. They come back when the worker stops.
@@ -7725,6 +7739,15 @@ def settings_widget(napari_viewer=None):
         except Exception as error:
             report.value = f"Could not read settings:\n{error}"
             return None
+        # Another run-from may have left its skip toggles off; each one starts
+        # from the user's own, or a run from Graph after one from Haemodynamics
+        # would load the old graph instead of building a new one.
+        if _restore_skip_toggles():
+            try:
+                settings = _settings()
+            except Exception as error:
+                report.value = f"Could not read settings:\n{error}"
+                return None
         plan = checkpoints.plan_run_from(tab_title, settings=settings)
         if plan is None:
             report.value = (
@@ -7781,6 +7804,7 @@ def settings_widget(napari_viewer=None):
             start_from=plan.start_from or None,
             resume=plan.resume,
             replace_checkpoints=False,
+            restored_stages=stages_before(plan.start_from),
         )
 
     # --- "Edit": add or delete a vessel by hand, then Regenerate to catch
@@ -7910,7 +7934,15 @@ def settings_widget(napari_viewer=None):
             )
             return
         resume = resume_from_edit(checkpoint, state.graph)
-        on_run(start_from=resume.start_from, resume=resume, replace_checkpoints=False)
+        on_run(
+            start_from=resume.start_from,
+            resume=resume,
+            replace_checkpoints=False,
+            # Boundaries is recorded again, from the edited graph, so a later
+            # "Run from this stage" on Diameters keeps the edit; the graph
+            # tab and earlier keep the graph as it was built.
+            restored_stages=stages_before("assign_boundaries"),
+        )
 
     def on_open_graph_editor() -> None:
         if view.results is None or getattr(view.results, "_graph", None) is None:

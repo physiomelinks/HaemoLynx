@@ -506,3 +506,132 @@ def test_save_then_load_run_restores_layers_and_checkpoints(panel):
     assert widget._haemolynx_revert_buttons["6. Haemodynamics"].enabled is True
     assert "Loaded run" in widget._haemolynx_report()
 
+
+
+# --- consecutive run-froms, and a real run ------------------------------------
+
+
+def test_each_run_from_starts_from_the_users_own_skip_toggles(panel):
+    """A run from Haemodynamics turns graph building (and FWHM remeasurement)
+    off; a run from Graph straight after must build the graph again, and one
+    from Diameters must measure again -- not inherit the earlier run-from's
+    toggles and quietly load the old graph or keep the old diameters."""
+    widget, viewer, _tmp = panel
+    _seed_run(widget, viewer, through="solve")
+    rows = widget._haemolynx_rows()
+    rows["use_fwhm_edge_diameters"].value = True
+    rows["do_fwhm_measurement"].value = True
+    rows["do_graph_building"].value = True
+
+    widget._haemolynx_revert("6. Haemodynamics")
+    assert rows["do_graph_building"].value is False
+    assert rows["do_fwhm_measurement"].value is False
+
+    widget._haemolynx_revert("5. Diameters")
+    assert rows["do_fwhm_measurement"].value is True
+
+    _seed_run(widget, viewer, through="solve")
+    widget._haemolynx_revert("6. Haemodynamics")
+    widget._haemolynx_revert("3. Graph")
+    assert rows["do_graph_building"].value is True
+    assert "do_graph_building" not in widget._haemolynx_report()
+
+
+FIXTURE = Path(__file__).resolve().parent / "data" / "seven_vessel_noisy_3d.tif"
+
+
+def _flows(graph):
+    return sorted(
+        (min(u, v), max(u, v), key, round(float(d["flow_signed"]) * (1 if u < v else -1), 12))
+        for u, v, key, d in graph.edges(keys=True, data=True)
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_run_from_a_tab_leaves_earlier_tabs_as_they_were(make_napari_viewer, qtbot, tmp_path):
+    """A real run, then Run from Haemodynamics twice.
+
+    The run passes back through graph building and boundaries with the
+    previous tab's finished graph; recording that as their checkpoints made
+    every earlier tab hold a later tab's state (diameters on the Graph tab).
+    And the resumed graph was the checkpoint's own, so the second run from
+    the same tab started from the first one's results.
+    """
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    rows = widget._haemolynx_rows()
+    rows["input_path"].value = FIXTURE
+    rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
+    running = widget._haemolynx_run_state
+
+    def wait():
+        qtbot.waitUntil(lambda: not running.running, timeout=600_000)
+        qtbot.wait(200)
+
+    widget._haemolynx_run()
+    wait()
+    checkpoints = widget._haemolynx_checkpoints
+    full_flows = _flows(checkpoints.get("solve").graph)
+    built_graph = checkpoints.get("build_network").graph
+    assert all("diameter_um" not in d for *_e, d in built_graph.edges(data=True))
+
+    for _ in range(2):
+        widget._haemolynx_run_from("6. Haemodynamics")
+        wait()
+        assert _flows(checkpoints.get("solve").graph) == full_flows
+
+    for stage in ("build_network", "assign_boundaries"):
+        graph = checkpoints.get(stage).graph
+        assert all("diameter_um" not in d for *_e, d in graph.edges(data=True)), stage
+    assert all("diameter_um" in d for *_e, d in checkpoints.get("assign_diameters").graph.edges(data=True))
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_run_from_perturbations_repeats_the_full_runs_perturbations(
+    make_napari_viewer, qtbot, tmp_path, monkeypatch
+):
+    """Haemodynamics and the solve are rebuilt from the solve checkpoint, not
+    re-run: the perturbations must still see the same baseline and give the
+    same networks, however many times the tab is re-run."""
+    import haemolynx.pipeline.stages as stages_mod
+
+    runs = []
+    real = stages_mod.run_perturbations
+
+    def recording(*args, **kwargs):
+        runs.append(real(*args, **kwargs))
+        return runs[-1]
+
+    monkeypatch.setattr(stages_mod, "run_perturbations", recording)
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    rows = widget._haemolynx_rows()
+    rows["input_path"].value = FIXTURE
+    rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
+    rows["run_perturbations"].value = True
+    widget._haemolynx_perturbations.add()
+    widget._haemolynx_perturbations.choose_type(0, "capillary_block")
+    running = widget._haemolynx_run_state
+
+    def wait():
+        qtbot.waitUntil(lambda: not running.running, timeout=600_000)
+        qtbot.wait(200)
+
+    def outcome(run):
+        baseline = {
+            key: np.round(np.asarray(value, dtype=float), 12).tolist()
+            for key, value in run.baseline.items()
+        }
+        return baseline, [_flows(result.graph) for result in run.results]
+
+    widget._haemolynx_run()
+    wait()
+    full = outcome(runs[-1])
+    assert full[1], "the fixture must produce a perturbed network"
+
+    for _ in range(2):
+        widget._haemolynx_run_from("7. Perturbations")
+        wait()
+        assert outcome(runs[-1]) == full

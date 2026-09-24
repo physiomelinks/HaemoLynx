@@ -453,19 +453,40 @@ def _boundary_masks_from_group(group: Any) -> tuple[Any | None, Any | None]:
     return arteriole, venule
 
 
+def stages_before(start_from: str | None, stages: Sequence = STAGES) -> tuple[str, ...]:
+    """Stage calls that run before *start_from*, in run order.
+
+    A run that starts mid-pipeline still passes through these -- it reloads
+    or reconstructs their outputs rather than recomputing them -- so their
+    checkpoints and layers are already the ones a run-from restored and must
+    not be recorded again from the resumed state.
+    """
+    order = [stage.call for stage in stages if stage.call]
+    if start_from is None or start_from not in order:
+        return ()
+    return tuple(order[: order.index(start_from)])
+
+
 def _resume_payload(checkpoint: StageCheckpoint, *, graph: Any, start_from: str) -> PipelineResume:
     """The boundary-node lists a checkpoint carries, threaded onto *graph*.
 
     Shared by :func:`resume_from_checkpoint` (graph = the checkpoint's own)
     and :func:`resume_from_edit` (graph = a hand-edited one) -- the boundary
     roles are a property of the checkpoint, not of which graph is resumed.
+
+    The run gets a copy: every stage from *start_from* on writes onto the
+    graph it is given, and the one it was given here is a checkpoint's own
+    (or the editor's) -- a second run from the same tab must start from what
+    the first one started from, not from what the first one left behind.
     """
     pair = None
     if checkpoint.inlet_nodes and checkpoint.outlet_nodes:
         pair = (checkpoint.inlet_nodes[0], checkpoint.outlet_nodes[0])
+    copied = copy_graph(graph)
     return PipelineResume(
         start_from=start_from,
-        graph=graph,
+        # A graph that will not pickle is resumed as it is rather than lost.
+        graph=copied if copied is not None else graph,
         inlet_nodes=checkpoint.inlet_nodes,
         outlet_nodes=checkpoint.outlet_nodes,
         arteriole_boundary_nodes=checkpoint.arteriole_boundary_nodes,
@@ -693,13 +714,11 @@ class StageCheckpoints:
         assert previous is not None
 
         order = [stage.call for stage in STAGES if stage.call]
-        groups = []
-        for name in order:
-            if name not in self._by_stage:
-                continue
-            if name == start_from:
-                break
-            groups.append(self._by_stage[name].group)
+        groups = [
+            self._by_stage[name].group
+            for name in stages_before(start_from)
+            if name in self._by_stage
+        ]
 
         skip: tuple[str, ...] = ()
         graph_path: Path | None = None

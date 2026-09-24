@@ -30,6 +30,7 @@ from haemolynx.gui.stage_checkpoints import (
     revert_target_stage,
     skeleton_resume_path,
     skip_settings_for_resume,
+    stages_before,
     tab_end_stage,
     tab_start_stage,
 )
@@ -96,8 +97,10 @@ def test_resume_from_edit_threads_the_edited_graph_through():
 
     resume = resume_from_edit(checkpoint, edited_graph)
 
-    assert resume.graph is edited_graph
-    assert resume.graph is not checkpoint.graph
+    # A copy of the edited graph (see the test below for why), not the
+    # checkpoint's own.
+    assert resume.graph == edited_graph
+    assert resume.graph != checkpoint.graph
 
 
 def test_resume_from_edit_defaults_to_starting_at_assign_diameters():
@@ -550,3 +553,75 @@ def test_discard_cached_artefacts_for_settings_covers_vtk_and_input_stems(
     assert not graph_resume_path(output_dir, "stack").is_file()
     assert graph_resume_path(output_dir, "HaemoLynx_image").is_file()
     assert not checkpoint_pickle_path(output_dir, "stack", "build_network").is_file()
+
+
+# --- a run from a tab starts from, and leaves, the earlier tabs as they were ---
+
+
+def test_stages_before_are_the_calls_ahead_of_the_start_in_run_order():
+    assert stages_before("assign_diameters") == (
+        "segment",
+        "skeletonise",
+        "build_network",
+        "assign_boundaries",
+    )
+    assert stages_before("segment") == ()
+    assert stages_before(None) == ()
+    assert stages_before("not a stage") == ()
+
+
+def test_a_resumed_run_gets_a_copy_of_the_checkpoints_graph(tmp_path):
+    """Every stage from the start writes onto the graph it is handed: handing
+    over the checkpoint's own left it holding the first run's results, so a
+    second run from the same tab started from a different graph."""
+    checkpoints = StageCheckpoints()
+    results = built()
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    results.stage_finished("build_network", network(a_graph()))
+    for stage, title in (("build_network", "3. Graph"), ("assign_boundaries", "4. Boundaries")):
+        checkpoints.record(stage, _group(stage, title), results, settings=settings)
+
+    plan = checkpoints.plan_run_from("5. Diameters", settings=settings)
+    for _u, _v, data in plan.resume.graph.edges(data=True):
+        data["diameter_um"] = 12.0  # what the resumed run would write
+
+    kept = checkpoints.get("assign_boundaries").graph
+    assert plan.resume.graph is not kept
+    assert all("diameter_um" not in data for *_e, data in kept.edges(data=True))
+
+
+def test_resume_from_edit_leaves_the_editors_graph_alone():
+    checkpoint = StageCheckpoint(stage="assign_boundaries", title="4. Boundaries", group=None)
+    edited = a_graph()
+
+    resume = resume_from_edit(checkpoint, edited)
+    for _u, _v, data in resume.graph.edges(data=True):
+        data["diameter_um"] = 12.0
+
+    assert all("diameter_um" not in data for *_e, data in edited.edges(data=True))
+
+
+def test_run_from_replays_only_stages_ahead_of_the_start(tmp_path):
+    """By position, not by stopping at the start stage's own checkpoint: a
+    missing checkpoint for the start stage must not let later ones through."""
+    checkpoints = StageCheckpoints()
+    results = built()
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    results.stage_finished("build_network", network(a_graph()))
+    for stage, title in (
+        ("skeletonise", "2. Skeletonise"),
+        ("build_network", "3. Graph"),
+        ("assign_boundaries", "4. Boundaries"),
+        ("build_haemodynamic_model", "6. Haemodynamics"),  # no assign_diameters
+    ):
+        checkpoints.record(stage, _group(stage, title), results, settings=settings)
+
+    plan = checkpoints.plan_run_from("5. Diameters", settings=settings)
+
+    assert [group.stage for group in plan.groups] == [
+        "skeletonise",
+        "build_network",
+        "assign_boundaries",
+    ]
