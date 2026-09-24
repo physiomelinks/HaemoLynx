@@ -37,6 +37,7 @@ if str(SRC_DIR) not in sys.path:
 from haemolynx.haemodynamics import (  # noqa: E402
     PERTURBATION_TYPES,
     PoiseuilleModel,
+    is_sweep_perturbation,
     perturbation_folder_name,
     stamp_edge_diameters,
 )
@@ -424,8 +425,15 @@ def test_each_type_writes_its_own_directory_and_files(tmp_path, perturbation_typ
     )
     assert result.output_dir.is_dir()
     written = sorted(path.name for path in result.output_dir.iterdir())
-    assert f"{entry['name']}_summary.csv" in written
-    assert f"{entry['name']}_edges.csv" in written
+    if is_sweep_perturbation(perturbation_type):
+        # A sweep's result is its grid CSV; its unperturbed copy is not
+        # re-solved into a baseline-valued summary.
+        assert Path(result.outputs[0]).name in written
+        assert Path(result.outputs[0]).suffix == ".csv"
+        assert f"{entry['name']}_summary.csv" not in written
+    else:
+        assert f"{entry['name']}_summary.csv" in written
+        assert f"{entry['name']}_edges.csv" in written
     for path in result.outputs:
         assert path.exists(), f"{path} was reported but not written"
     # A perturbation is a number to compare, not a second published model.
@@ -1327,9 +1335,9 @@ def test_a_sweep_perturbation_keeps_the_frozen_baseline_haematocrit_and_says_so(
     """Sweeps run their own internal grid of resistance/solve passes; coupling
     every grid point to a full Pries-Secomb re-iteration would multiply an
     already-expensive nested loop, so this is a deliberate, documented gap:
-    with no recompute closure to offer, a sweep perturbation keeps whatever
-    discharge_haematocrit the baseline already converged to and solves flow
-    once, and says so in the log instead of silently doing the wrong thing.
+    a sweep perturbation solves every grid point with whatever
+    discharge_haematocrit the baseline already converged to, and says so in
+    the log instead of silently doing the wrong thing.
     """
     settings, model, boundaries = _hct_baseline(
         tmp_path,
@@ -1343,6 +1351,145 @@ def test_a_sweep_perturbation_keeps_the_frozen_baseline_haematocrit_and_says_so(
     assert result.ok, result.error
     assert "haematocrit_distribution" not in result.summary
     assert any(
-        "no way to redo its own resistance computation" in message
+        "'art_sweep'" in message
+        and "discharge_haematocrit the baseline converged to" in message
         for message in caplog.messages
     )
+
+
+# --- review regressions: what a perturbation's resistance recompute keeps ------
+
+
+def _bridged_model() -> HaemodynamicModel:
+    """The baseline with its arteriole marked a thick-vessel bridge, so the
+    baseline's own last resistance write has made it negligible."""
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+    from haemolynx.haemodynamics.apply import apply_final_resistance_overrides
+
+    model = _model()
+    model.graph[0][1][0][IS_ZERO_RESISTANCE] = True
+    apply_final_resistance_overrides(
+        model.graph,
+        PoiseuilleModel(
+            constriction_length=40.0, constriction_spacing=100.0, viscosity_law="constant"
+        ),
+        custom_edges=[],
+        custom_edge_diameter=None,
+    )
+    return model
+
+
+def _sweep_rows(result) -> list[dict[str, str]]:
+    with open(result.outputs[0], newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+@pytest.mark.parametrize(
+    "entry", [ARTERIOLE_DILATION, PERICYTE_TONE, ARTERIOLE_AND_PERICYTE],
+    ids=lambda entry: entry["type"],
+)
+def test_a_perturbation_keeps_a_thick_vessel_bridge_negligible(tmp_path, entry):
+    """Recomputing resistances must end the way the baseline's computation
+    did, or a bridge the baseline zeroed comes back as a full vessel and the
+    perturbation reports that as its own effect."""
+    run = run_perturbations(
+        _settings(tmp_path, [entry]), _bridged_model(), _boundaries(), SCHEMA
+    )
+    result = run.results[0]
+    assert result.error is None, result.error
+    resistances = _resistances(result.graph)
+    bridge = resistances.pop((0, 1, 0))
+    assert bridge < 1e-3 * min(resistances.values())
+
+
+@pytest.mark.parametrize(
+    "entry", [ARTERIOLE_DIAMETER_SWEEP, CAPILLARY_DIAMETER_SWEEP],
+    ids=lambda entry: entry["type"],
+)
+def test_a_whole_branch_sweeps_zero_point_is_the_baseline_even_with_a_bridge(
+    tmp_path, entry
+):
+    run = run_perturbations(
+        _settings(tmp_path, [entry]), _bridged_model(), _boundaries(), SCHEMA
+    )
+    result = run.results[0]
+    assert result.error is None, result.error
+    (zero,) = [row for row in _sweep_rows(result) if float(row["dilation_percent"]) == 0]
+    assert float(zero["equivalent_resistance"]) == pytest.approx(
+        run.baseline["equivalent_resistance"], rel=1e-9
+    )
+
+
+@pytest.mark.parametrize(
+    "entry", [DILATION_SWEEP, SPACING_SWEEP], ids=lambda entry: entry["type"]
+)
+def test_a_pericyte_sweep_keeps_a_thick_vessel_bridge_negligible(tmp_path, entry):
+    plain = run_perturbations(
+        _settings(tmp_path / "plain", [entry]), _model(), _boundaries(), SCHEMA
+    ).results[0]
+    bridged = run_perturbations(
+        _settings(tmp_path / "bridged", [entry]), _bridged_model(), _boundaries(), SCHEMA
+    ).results[0]
+    assert plain.error is None and bridged.error is None
+    arteriole = float(_model().graph[0][1][0]["resistance"])
+    for plain_row, bridged_row in zip(_sweep_rows(plain), _sweep_rows(bridged)):
+        # The bridge takes (at least most of) the arteriole's resistance out.
+        assert float(bridged_row["equivalent_resistance"]) < (
+            float(plain_row["equivalent_resistance"]) - 0.8 * arteriole
+        )
+
+
+@pytest.mark.parametrize(
+    "entry", [PERICYTE_TONE, ARTERIOLE_AND_PERICYTE, SPACING_SWEEP, LENGTH_SWEEP],
+    ids=lambda entry: entry["type"],
+)
+def test_every_pericyte_path_passes_the_configured_mask_assignment_settings(
+    tmp_path, monkeypatch, entry
+):
+    """The mask strategy's assignment distance and diameter window are the
+    run's, not the strategy's defaults, whichever perturbation places sites."""
+    from haemolynx.haemodynamics import constriction_strategy, pericyte_geometry_sweep
+    from haemolynx.pipeline import stages
+
+    seen: list[dict] = []
+    real = constriction_strategy.set_resistances_for_constriction_strategy
+
+    def recording(graph, **kwargs):
+        seen.append(kwargs)
+        return real(graph, **kwargs)
+
+    monkeypatch.setattr(stages, "set_resistances_for_constriction_strategy", recording)
+    monkeypatch.setattr(
+        pericyte_geometry_sweep, "set_resistances_for_constriction_strategy", recording
+    )
+    run = _run(
+        tmp_path,
+        [entry],
+        pericyte_max_assignment_distance_um=7.5,
+        pericyte_min_diameter_um=2.0,
+        pericyte_max_diameter_um=30.0,
+        pericyte_constriction_seed=11,
+    )
+    assert run.results[0].error is None, run.results[0].error
+    assert seen
+    for kwargs in seen:
+        assert kwargs["max_assignment_distance_um"] == 7.5
+        assert kwargs["min_pericyte_diameter_um"] == 2.0
+        assert kwargs["max_pericyte_diameter_um"] == 30.0
+        assert kwargs["seed"] == 11
+
+
+@pytest.mark.parametrize(
+    "entry", [DILATION_SWEEP, ARTERIOLE_DIAMETER_SWEEP, CAPILLARY_DIAMETER_SWEEP,
+              SPACING_SWEEP],
+    ids=lambda entry: entry["type"],
+)
+def test_a_sweep_solves_and_reports_the_inlet_pressure_it_was_given(tmp_path, entry):
+    """Not rounded (the geometry sweep solved at the rounded pressure) nor
+    truncated in the row (the others labelled 4500.5 Pa as 4500)."""
+    run = _run(tmp_path, [entry], inlet_p_bc=4500.5)
+    result = run.results[0]
+    assert result.error is None, result.error
+    rows = _sweep_rows(result)
+    assert rows
+    assert {float(row["inlet_pressure_pa"]) for row in rows} == {4500.5}

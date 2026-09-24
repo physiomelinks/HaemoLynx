@@ -362,3 +362,34 @@ if __name__ == "__main__":
     print(f"CSV: {sweep['csv_path']}")
     print(f"Resistance plot: {sweep['plot_outputs']['equivalent_resistance_plot_path']}")
     print(f"Flow plot: {sweep['plot_outputs']['total_inlet_flow_plot_path']}")
+
+
+def test_an_inverted_or_stepless_sweep_range_is_refused_by_name():
+    from haemolynx.haemodynamics.pericyte_sweep import inclusive_int_range
+
+    keys = ("a_min", "a_max", "a_step")
+    assert inclusive_int_range({"a_min": 0, "a_max": 10, "a_step": 5}, *keys) == (0, 5, 10)
+    with pytest.raises(ValueError, match="a_max"):
+        inclusive_int_range({"a_min": 10, "a_max": 0, "a_step": 5}, *keys)
+    with pytest.raises(ValueError, match="a_step"):
+        inclusive_int_range({"a_min": 0, "a_max": 10, "a_step": 0}, *keys)
+
+
+@pytest.mark.parametrize("axis", ["arteriole", "capillary"])
+def test_a_whole_branch_sweep_with_max_below_min_raises_instead_of_writing_nothing(
+    axis,
+):
+    from haemolynx.haemodynamics.capillary import _capillary_dilation_percents
+    from haemolynx.haemodynamics.pericyte_sweep import _arteriole_dilation_percents
+
+    percents = {
+        "arteriole": _arteriole_dilation_percents,
+        "capillary": _capillary_dilation_percents,
+    }[axis]
+    settings = {
+        f"{axis}_dilation_min_percent": 10,
+        f"{axis}_dilation_max_percent": -10,
+        f"{axis}_dilation_step_percent": 5,
+    }
+    with pytest.raises(ValueError, match=f"{axis}_dilation_max_percent"):
+        percents(settings, sweep=True)

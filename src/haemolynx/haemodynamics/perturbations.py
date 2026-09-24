@@ -97,6 +97,19 @@ PERICYTE_ENTRY_GEOMETRY_SETTINGS: tuple[str, ...] = (
     "pericyte_constriction_probability",
 )
 
+#: Where a pericyte sweep's sites come from (a mask, or a seeded random
+#: cohort): the sweeps read these through the same constriction strategy as
+#: ``pericyte_diameter_change``, so an entry must be able to set them too.
+PERICYTE_SWEEP_SITE_SETTINGS: tuple[str, ...] = (
+    "use_pericyte_mask_constriction",
+    "pericyte_mask_path",
+    "pericyte_mask_h5_dataset_name",
+    "pericyte_max_assignment_distance_um",
+    "pericyte_min_diameter_um",
+    "pericyte_max_diameter_um",
+    "pericyte_constriction_seed",
+)
+
 #: Settings that configure pericyte / constriction modelling. Declared under
 #: Diameters and pericytes in the schema (so apply.py's section_values still
 #: finds them) but claimed on the Perturbations tab: they are options of a
@@ -177,6 +190,16 @@ PRESSURE_SWEEP_SETTINGS: tuple[str, ...] = (
     "inlet_pressure_step_pa",
 )
 
+#: Every ``(min, max, step)`` sweep axis, for the preflight range check.
+SWEEP_RANGE_SETTINGS: tuple[tuple[str, str, str], ...] = (
+    PERICYTE_DILATION_SWEEP_SETTINGS,
+    PERICYTE_SPACING_SWEEP_SETTINGS,
+    PERICYTE_LENGTH_SWEEP_SETTINGS,
+    ARTERIOLE_DILATION_SWEEP_SETTINGS,
+    CAPILLARY_DILATION_SWEEP_SETTINGS,
+    PRESSURE_SWEEP_SETTINGS,
+)
+
 #: Which settings each type reads. This is the table the panel shows rows from
 #: -- a type's options stay hidden until that type is chosen, rather than
 #: greyed out -- and what tells a user that an override is doing nothing.
@@ -186,11 +209,13 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
     "pressure_and_pericyte_sweep": (
         *PERICYTE_DILATION_SWEEP_SETTINGS,
         *PERICYTE_ENTRY_GEOMETRY_SETTINGS,
+        *PERICYTE_SWEEP_SITE_SETTINGS,
         *PRESSURE_SWEEP_SETTINGS,
     ),
     "pericyte_dilation_sweep": (
         *PERICYTE_DILATION_SWEEP_SETTINGS,
         *PERICYTE_ENTRY_GEOMETRY_SETTINGS,
+        *PERICYTE_SWEEP_SITE_SETTINGS,
     ),
     "arteriole_diameter_change": ("arteriole_diameter_change_percent",),
     "arteriole_diameter_sweep": ARTERIOLE_DILATION_SWEEP_SETTINGS,
@@ -211,6 +236,7 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
         "pericyte_geometry_dilation_percent",
         "use_probabilistic_pericyte_constriction",
         "pericyte_constriction_probability",
+        *PERICYTE_SWEEP_SITE_SETTINGS,
     ),
     "pericyte_length_sweep": (
         *PERICYTE_LENGTH_SWEEP_SETTINGS,
@@ -220,6 +246,7 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
         "pericyte_geometry_dilation_percent",
         "use_probabilistic_pericyte_constriction",
         "pericyte_constriction_probability",
+        *PERICYTE_SWEEP_SITE_SETTINGS,
     ),
     "pericyte_diameter_change": PERICYTE_CONSTRICTION_SETTINGS,
     # Union of arteriole_diameter_change and pericyte_diameter_change. Apply
@@ -579,11 +606,24 @@ def perturbation_problems(values: Mapping[str, Any], schema) -> tuple[str, ...]:
 
 
 def _type_problems(spec: PerturbationSpec, values: Mapping[str, Any], schema) -> list[str]:
-    """What a type needs that no single setting's own range can check: here,
-    a capillary block that would have nothing to block."""
-    if spec.type != "capillary_block":
-        return []
+    """What a type needs that no single setting's own range can check: a
+    sweep axis whose max is below its min, or a capillary block that would
+    have nothing to block."""
     merged = {**values, **spec.applied_overrides(schema)}
+    if spec.type != "capillary_block":
+        problems = []
+        read = settings_for_perturbation_type(spec.type)
+        for min_key, max_key, _step_key in SWEEP_RANGE_SETTINGS:
+            if min_key not in read:
+                continue
+            low, high = merged.get(min_key), merged.get(max_key)
+            if low is not None and high is not None and float(high) < float(low):
+                problems.append(
+                    f"perturbation '{spec.name}' sweeps {min_key}={low} up to "
+                    f"{max_key}={high}: the max is below the min, so the sweep "
+                    "would have no points"
+                )
+        return problems
 
     def listed(value: Any) -> list:
         if value is None:

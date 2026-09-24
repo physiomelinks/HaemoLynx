@@ -511,6 +511,22 @@ OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
     "flow_change_vs_baseline": "run_perturbations",
 }
 
+#: Edge columns that scale with the flow itself, so every sweep point --
+#: even a pressure-only one -- has its own values.
+SWEEP_FLOW_MAGNITUDE_COLUMNS = frozenset({"transit_time_s", "arrival_time_s"})
+
+#: Edge columns a dilation or geometry sweep point changes.
+SWEEP_GEOMETRY_DEPENDENT_COLUMNS = frozenset({
+    "diameter_um",
+    "fwhm_diameter_um",
+    "edt_diameter_um",
+    "fwhm_edt_disagreement_ratio",
+    "fwhm_low_confidence_vs_edt",
+    "resistance",
+    "conductance",
+    "discharge_haematocrit",
+})
+
 #: Derived flow columns always offered on vessel layers once flows exist.
 FLOW_DERIVED_EDGE_COLUMNS: frozenset[str] = frozenset(
     {
@@ -1905,11 +1921,24 @@ class ResultLayers:
         columns = {name: identity[name] for name in ("edge_index", "u", "v", "key")}
         # Geometry / diameter columns from the retained graph; flow columns
         # come from the sweep grid so slider 0 matches the retained arrays.
+        # The retained graph is the unperturbed baseline, so any column a
+        # grid point changes is left out rather than shown with baseline
+        # values: flow magnitudes (transit times) under any sweep, and
+        # diameters, resistances and every solved-network analysis once a
+        # sweep also moves geometry.
+        stale = set(SWEEP_FLOW_MAGNITUDE_COLUMNS)
+        if tuple(sweep.axis_names) != ("inlet_pressure_pa",):
+            stale.update(SWEEP_GEOMETRY_DEPENDENT_COLUMNS)
+            stale.update(
+                name for name, stage in OPTIONAL_EDGE_COLUMNS.items()
+                if stage == "export_results"
+            )
         non_flow = [
             name
             for name in edge_columns_for_settings(self.settings)
             if name not in ("flow_abs", "flow_abs_log10", "flow_signed", "pressure_drop",
                             "pressure_u", "pressure_v")
+            and name not in stale
         ]
         columns.update(edge_features(graph, non_flow))
 

@@ -104,6 +104,11 @@ def resolve_blocked_vessels(
             for index, (_u, _v, _k, data) in enumerate(edges)
             if _normalised_order(data.get("branch_order")) in wanted
         ]
+        if not candidates:
+            raise ValueError(
+                f"No vessels have capillary_block_branch_orders {sorted(wanted)}: "
+                "check the branch order labels the network was assigned"
+            )
         count = int(math.floor(float(probability) * len(candidates) + 0.5))
         rng = np.random.default_rng(seed)
         chosen = (
@@ -351,7 +356,14 @@ def compare_block_to_baseline(
     # Transit times on copies: compute_transit_times writes per-vessel
     # attributes, and neither graph here should gain them from a comparison.
     for label, G in (("baseline", baseline), ("blocked", blocked)):
-        times = compute_transit_times(G.copy(), inlets, outlets)
+        G = G.copy()
+        if label == "blocked":
+            # A blocked vessel's residual leak flow is not perfusion: left in,
+            # its near-infinite transit time swamps the mean and SD.
+            for _u, _v, _k, d in G.edges(keys=True, data=True):
+                if d.get(BLOCK_EDGE_ATTRIBUTE) == "blocked":
+                    d["flow_abs"] = 0.0
+        times = compute_transit_times(G, inlets, outlets)
         for key, name in (
             ("Mean Transit Time (s)", "mean_transit_time_s"),
             ("Transit Time SD (s)", "transit_time_sd_s"),

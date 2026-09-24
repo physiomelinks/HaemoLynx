@@ -18,9 +18,11 @@ from typing import Any, Iterable, Mapping, Sequence
 import networkx as nx
 import numpy as np
 
-from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
-
-from .constriction_strategy import set_resistances_for_constriction_strategy
+from .apply import apply_final_resistance_overrides
+from .constriction_strategy import (
+    constriction_strategy_kwargs,
+    set_resistances_for_constriction_strategy,
+)
 from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
 from .resistance import (
     build_conductance_matrix_from_graph,
@@ -171,29 +173,38 @@ def dilate_graph_diameters(
     return dilated
 
 
+def inclusive_int_range(
+    settings: Mapping[str, Any], min_key: str, max_key: str, step_key: str
+) -> tuple[int, ...]:
+    """``min..max`` inclusive in steps, refusing an inverted range by name
+    rather than sweeping zero points and failing later."""
+    start, stop, step = (int(settings[key]) for key in (min_key, max_key, step_key))
+    if stop < start:
+        raise ValueError(f"{max_key} ({stop}) is below {min_key} ({start}); the sweep would be empty.")
+    if step <= 0:
+        raise ValueError(f"{step_key} must be positive, got {step}.")
+    return tuple(range(start, stop + 1, step))
+
+
 def _dilation_percents(settings: Mapping[str, Any], *, sweep: bool) -> Sequence[int]:
     """Percents to dilate by, or a single 0% when the sweep is pressure-only."""
     if not sweep:
         return (0,)
-    return tuple(
-        range(
-            int(settings["pericyte_dilation_min_percent"]),
-            int(settings["pericyte_dilation_max_percent"]) + 1,
-            int(settings["pericyte_dilation_step_percent"]),
-        )
+    return inclusive_int_range(
+        settings,
+        "pericyte_dilation_min_percent",
+        "pericyte_dilation_max_percent",
+        "pericyte_dilation_step_percent",
     )
 
 
-def _inlet_pressures(settings: Mapping[str, Any], *, sweep: bool) -> Sequence[int]:
-    """Inlet pressures to solve at, or the run's fixed ``inlet_p_bc`` alone."""
+def _inlet_pressures(settings: Mapping[str, Any], *, sweep: bool) -> Sequence[float]:
+    """Inlet pressures to solve at, or the run's fixed ``inlet_p_bc`` alone --
+    exactly, so a sweep's fixed-pressure points match the baseline."""
     if not sweep:
-        return (int(round(float(settings["inlet_p_bc"]))),)
-    return tuple(
-        range(
-            int(settings["inlet_pressure_min_pa"]),
-            int(settings["inlet_pressure_max_pa"]) + 1,
-            int(settings["inlet_pressure_step_pa"]),
-        )
+        return (float(settings["inlet_p_bc"]),)
+    return inclusive_int_range(
+        settings, "inlet_pressure_min_pa", "inlet_pressure_max_pa", "inlet_pressure_step_pa"
     )
 
 
@@ -223,46 +234,11 @@ def _apply_sweep_resistances(
         # Same strategy path as ``pericyte_diameter_change`` — always called
         # here when dilation is swept. ``do_pericyte_construction`` is forced
         # False on every merge and does not gate this typed pericyte path.
-        configured_probability = settings.get("pericyte_constriction_probability")
         G, _strategy, _strategy_results = set_resistances_for_constriction_strategy(
             G,
-            diameter_by_branch_order=scaled_diameters,
-            constriction_factor_by_branch_order=settings.get(
-                "constriction_by_branch_order"
+            **constriction_strategy_kwargs(
+                settings, diameter_by_branch_order=scaled_diameters
             ),
-            use_pericyte_mask_constriction=bool(
-                settings.get("use_pericyte_mask_constriction", False)
-            ),
-            use_probabilistic_constriction=bool(
-                settings.get("use_probabilistic_pericyte_constriction", False)
-            ),
-            prefer_edge_fwhm_baseline=bool(
-                settings.get("use_fwhm_edge_diameters", False)
-            ),
-            constriction_length=float(settings.get("constriction_length_um", 40.0)),
-            constriction_spacing=float(settings.get("constriction_spacing_um", 100.0)),
-            viscosity_law=settings.get("viscosity_law", "pries"),
-            haematocrit=float(settings.get("haematocrit", 0.45)),
-            diameter_basis=settings.get("diameter_basis", "plasma_column"),
-            constriction_probability=(
-                1.0
-                if configured_probability is None
-                else float(configured_probability)
-            ),
-            default_constriction_factor=float(
-                settings.get("pericyte_constriction_factor", 1.0)
-            ),
-            pericyte_mask_path=settings.get("pericyte_mask_path"),
-            pericyte_mask_h5_dataset_name=settings.get(
-                "pericyte_mask_h5_dataset_name"
-            ),
-            max_assignment_distance_um=settings.get(
-                "pericyte_max_assignment_distance_um", 3.0
-            ),
-            min_pericyte_diameter_um=settings.get("pericyte_min_diameter_um", 5.0),
-            max_pericyte_diameter_um=settings.get("pericyte_max_diameter_um", 12.0),
-            axis_order=settings.get("image_axis_order", CANONICAL_AXIS_ORDER),
-            seed=settings.get("pericyte_constriction_seed"),
         )
     else:
         G, _ = poiseuille_model.set_poiseuille_resistances(
@@ -271,15 +247,26 @@ def _apply_sweep_resistances(
             prefer_edge_fwhm_diameter=True,
         )
 
-    custom_edges = settings.get("custom_edges") or []
-    if custom_edges:
-        G, _ = poiseuille_model.set_poiseuille_edge_resistances(
-            G,
-            custom_edges,
-            edge_diameter=float(settings.get("custom_edge_diameter", 6.0))
-            * dilation_factor,
-        )
+    apply_baseline_overrides(G, settings, poiseuille_model, custom_edge_diameter_scale=dilation_factor)
     return G
+
+
+def apply_baseline_overrides(
+    G: nx.MultiGraph,
+    settings: Mapping[str, Any],
+    poiseuille_model: PoiseuilleModel,
+    *,
+    custom_edge_diameter_scale: float = 1.0,
+) -> None:
+    """The baseline's own last resistance writes (custom edges, thick-vessel
+    bridges), redone on a perturbed graph so those edges match the baseline."""
+    apply_final_resistance_overrides(
+        G,
+        poiseuille_model,
+        custom_edges=settings.get("custom_edges"),
+        custom_edge_diameter=settings.get("custom_edge_diameter"),
+        custom_edge_diameter_scale=custom_edge_diameter_scale,
+    )
 
 
 def run_pericyte_dilation_pressure_sweep(
@@ -364,7 +351,7 @@ def run_pericyte_dilation_pressure_sweep(
                 {
                     "dilation_percent": int(dilation_percent),
                     "dilation_factor": float(dilation_factor),
-                    "inlet_pressure_pa": int(inlet_pressure_pa),
+                    "inlet_pressure_pa": inlet_pressure_pa,
                     "outlet_pressure_pa": outlet_pressure_pa,
                     "total_inlet_flow": solved["total_inlet_flow"],
                     "total_outlet_flow": solved["total_outlet_flow"],
@@ -430,12 +417,11 @@ def _arteriole_dilation_percents(
     """Percents to scale arterioles by, or a single 0% when pressure-only."""
     if not sweep:
         return (0,)
-    return tuple(
-        range(
-            int(settings["arteriole_dilation_min_percent"]),
-            int(settings["arteriole_dilation_max_percent"]) + 1,
-            int(settings["arteriole_dilation_step_percent"]),
-        )
+    return inclusive_int_range(
+        settings,
+        "arteriole_dilation_min_percent",
+        "arteriole_dilation_max_percent",
+        "arteriole_dilation_step_percent",
     )
 
 
@@ -497,6 +483,7 @@ def run_arteriole_dilation_pressure_sweep(
             model=poiseuille_model,
             prefer_edge_fwhm_diameter=prefer_measured,
         )
+        apply_baseline_overrides(scaled, settings, poiseuille_model)
         conductance, node_list = build_conductance_matrix_from_graph(scaled)
         last_node_list = list(node_list)
         for inlet_pressure_pa in inlet_pressures:
@@ -515,7 +502,7 @@ def run_arteriole_dilation_pressure_sweep(
                 {
                     "dilation_percent": int(dilation_percent),
                     "dilation_factor": float(scale),
-                    "inlet_pressure_pa": int(inlet_pressure_pa),
+                    "inlet_pressure_pa": inlet_pressure_pa,
                     "outlet_pressure_pa": outlet_pressure_pa,
                     "total_inlet_flow": solved["total_inlet_flow"],
                     "total_outlet_flow": solved["total_outlet_flow"],

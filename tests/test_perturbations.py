@@ -725,3 +725,54 @@ def test_perturbation_problems_reads_both_kinds_at_once():
     assert any("unknown type" in problem for problem in problems)
     assert any("Unknown setting" in problem for problem in problems)
     assert any("repeats the name" in problem for problem in problems)
+
+
+def test_every_pericyte_sweep_reads_where_its_sites_come_from():
+    """A sweep places sites through the same strategy as a single pericyte
+    change, so its entry must be able to set the mask and the seed too."""
+    from haemolynx.haemodynamics.perturbations import PERICYTE_SWEEP_SITE_SETTINGS
+
+    assert "pericyte_constriction_seed" in PERICYTE_SWEEP_SITE_SETTINGS
+    assert "pericyte_mask_path" in PERICYTE_SWEEP_SITE_SETTINGS
+    for perturbation_type in (
+        "pericyte_dilation_sweep",
+        "pressure_and_pericyte_sweep",
+        "pericyte_spacing_sweep",
+        "pericyte_length_sweep",
+    ):
+        reads = set(SETTINGS_FOR_TYPE[perturbation_type])
+        missing = sorted(set(PERICYTE_SWEEP_SITE_SETTINGS) - reads)
+        assert missing == [], f"{perturbation_type} is missing {missing}"
+
+
+@pytest.mark.parametrize(
+    ("perturbation_type", "low_key", "high_key", "low", "high"),
+    [
+        ("pericyte_dilation_sweep", "pericyte_dilation_min_percent",
+         "pericyte_dilation_max_percent", 10, 5),
+        ("arteriole_diameter_sweep", "arteriole_dilation_min_percent",
+         "arteriole_dilation_max_percent", 10, -10),
+        ("capillary_diameter_sweep", "capillary_dilation_min_percent",
+         "capillary_dilation_max_percent", 20, 0),
+        ("pressure_sweep", "inlet_pressure_min_pa", "inlet_pressure_max_pa", 5000, 4000),
+        ("pericyte_spacing_sweep", "constriction_spacing_min_um",
+         "constriction_spacing_max_um", 100.0, 50.0),
+        ("pericyte_length_sweep", "constriction_length_min_um",
+         "constriction_length_max_um", 40.0, 20.0),
+    ],
+)
+def test_a_sweep_whose_max_is_below_its_min_is_reported_before_the_run(
+    perturbation_type, low_key, high_key, low, high
+):
+    entry = {
+        "name": "inverted",
+        "type": perturbation_type,
+        "overrides": {low_key: low, high_key: high},
+    }
+    problems = perturbation_problems({"perturbations": [entry]}, SCHEMA)
+    assert any(low_key in line and high_key in line for line in problems), problems
+    fixed = {**entry, "overrides": {low_key: high, high_key: low}}
+    assert not any(
+        "below the min" in line
+        for line in perturbation_problems({"perturbations": [fixed]}, SCHEMA)
+    )

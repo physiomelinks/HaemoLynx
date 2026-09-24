@@ -89,6 +89,55 @@ def resolve_constriction_factor_table(
     }
 
 
+def constriction_strategy_kwargs(
+    settings: Mapping[str, Any],
+    *,
+    diameter_by_branch_order: Mapping[str, float],
+    constriction_length: float | None = None,
+    constriction_spacing: float | None = None,
+) -> dict[str, Any]:
+    """Every :func:`set_resistances_for_constriction_strategy` argument a
+    perturbation takes from its merged *settings* -- one place, so a pericyte
+    diameter change and every pericyte sweep configure the strategy alike.
+
+    *constriction_length*/*constriction_spacing* override the settings' own
+    values for a geometry sweep's grid point.
+    """
+    probability = settings.get("pericyte_constriction_probability")
+    factor = settings.get("pericyte_constriction_factor")
+    return dict(
+        diameter_by_branch_order=dict(diameter_by_branch_order),
+        constriction_factor_by_branch_order=settings.get("constriction_by_branch_order"),
+        use_pericyte_mask_constriction=bool(settings.get("use_pericyte_mask_constriction", False)),
+        use_probabilistic_constriction=bool(
+            settings.get("use_probabilistic_pericyte_constriction", False)
+        ),
+        prefer_edge_fwhm_baseline=bool(settings.get("use_fwhm_edge_diameters", False)),
+        constriction_length=float(
+            settings.get("constriction_length_um", 40.0)
+            if constriction_length is None
+            else constriction_length
+        ),
+        constriction_spacing=float(
+            settings.get("constriction_spacing_um", 100.0)
+            if constriction_spacing is None
+            else constriction_spacing
+        ),
+        viscosity_law=settings.get("viscosity_law", "pries"),
+        haematocrit=float(settings.get("haematocrit", 0.45)),
+        diameter_basis=settings.get("diameter_basis", "plasma_column"),
+        constriction_probability=1.0 if probability is None else float(probability),
+        default_constriction_factor=1.0 if factor is None else float(factor),
+        pericyte_mask_path=settings.get("pericyte_mask_path"),
+        pericyte_mask_h5_dataset_name=settings.get("pericyte_mask_h5_dataset_name"),
+        max_assignment_distance_um=settings.get("pericyte_max_assignment_distance_um", 3.0),
+        min_pericyte_diameter_um=settings.get("pericyte_min_diameter_um", 5.0),
+        max_pericyte_diameter_um=settings.get("pericyte_max_diameter_um", 12.0),
+        axis_order=settings.get("image_axis_order", CANONICAL_AXIS_ORDER),
+        seed=settings.get("pericyte_constriction_seed"),
+    )
+
+
 def set_resistances_for_constriction_strategy(
     graph: nx.MultiGraph,
     *,

@@ -72,7 +72,12 @@ def test_a_dilation_sweep_writes_alice_style_plots_and_keeps_geometry(tmp_path):
     assert "pericyte_dilation_sweep.csv" in written
     assert "resistance_vs_pericyte_dilation.png" in written
     assert "flow_vs_pericyte_dilation.png" in written
-    assert f"{DILATION_SWEEP['name']}_summary.csv" in written
+    # The sweep CSV is the result: re-solving the unperturbed copy would only
+    # write the baseline's numbers under this perturbation's name.
+    assert f"{DILATION_SWEEP['name']}_summary.csv" not in written
+    assert f"{DILATION_SWEEP['name']}_edges.csv" not in written
+    assert "equivalent_resistance" not in result.summary
+    assert result.summary["sweep_points"] > 0
 
 
 def test_a_spacing_sweep_writes_axis_corrected_plots(tmp_path):
@@ -410,3 +415,46 @@ def test_moving_a_sweep_slider_updates_log_flow_and_directions(tmp_path, monkeyp
 
     expected_dir = sweep_direction_columns(spec.sweep_directions, signed)["flow_dir_z"][spec.segment_owner]
     assert np.allclose(np.asarray(layer.features["flow_dir_z"]), expected_dir, equal_nan=True)
+
+
+def _sweep_layer_features(axis_names):
+    """The vessels layer a sweep over *axis_names* gets, as its features."""
+    from test_gui_results import a_perturbation_run, solved_graph
+    from haemolynx.haemodynamics.sweep_flows import SweepFlowGrid
+    import numpy as np
+
+    graph = solved_graph()
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["diameter_um"] = 6.0
+        data["transit_time_s"] = 0.5
+    sweep_flows = SweepFlowGrid(
+        axis_names=tuple(axis_names),
+        axis_values={name: np.asarray([0, 10]) for name in axis_names},
+        flow_abs=np.ones((2 ** len(axis_names), graph.number_of_edges()), dtype=float),
+    )
+    result = PerturbationResult(
+        name="grid", type="pericyte_dilation_sweep", graph=graph, sweep_flows=sweep_flows
+    )
+    group = ResultLayers().stage_finished("run_perturbations", a_perturbation_run(result))
+    (layer,) = [spec for spec in group.layers if spec.sweep is not None]
+    return layer.features
+
+
+def test_a_dilation_sweep_layer_does_not_show_the_baselines_diameters_or_resistances():
+    """The retained graph is the unperturbed baseline: its diameters and
+    resistances are wrong at every dilated grid point, so they are left out
+    rather than shown beside the grid point's flows."""
+    features = _sweep_layer_features(("dilation_percent", "inlet_pressure_pa"))
+    for column in ("diameter_um", "resistance", "conductance", "transit_time_s"):
+        assert column not in features, column
+    assert "length" in features
+    assert "flow_abs" in features
+
+
+def test_a_pressure_only_sweep_layer_keeps_geometry_but_not_flow_magnitudes():
+    features = _sweep_layer_features(("inlet_pressure_pa",))
+    np_resistance = [float(value) for value in features["resistance"]]
+    assert np_resistance and all(value == 1e15 for value in np_resistance)
+    assert "diameter_um" in features
+    # Transit time is volume / flow: it moves with the inlet pressure.
+    assert "transit_time_s" not in features

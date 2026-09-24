@@ -20,10 +20,16 @@ from typing import Any, Literal, Mapping, Sequence
 import networkx as nx
 import numpy as np
 
-from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
-
-from .constriction_strategy import set_resistances_for_constriction_strategy
-from .pericyte_sweep import dilate_graph_diameters, solve_pressure_and_boundary_flow
+from .constriction_strategy import (
+    constriction_strategy_kwargs,
+    set_resistances_for_constriction_strategy,
+)
+from .pericyte_sweep import (
+    apply_baseline_overrides,
+    dilate_graph_diameters,
+    solve_pressure_and_boundary_flow,
+)
+from .poiseuille import PoiseuilleModel
 from .resistance import build_conductance_matrix_from_graph
 from .sweep_flows import build_sweep_flow_grid, record_flows_after_solve
 
@@ -91,48 +97,29 @@ def _apply_focal_constrictions(
     scaled_diameters: Mapping[str, float],
     constriction_length: float,
     constriction_spacing: float,
+    dilation_factor: float,
 ) -> nx.MultiGraph:
     """Place and apply focal constrictions for one geometry grid point."""
-    configured_probability = settings.get("pericyte_constriction_probability")
     G, _strategy, _results = set_resistances_for_constriction_strategy(
         G,
-        diameter_by_branch_order=dict(scaled_diameters),
-        constriction_factor_by_branch_order=settings.get(
-            "constriction_by_branch_order"
+        **constriction_strategy_kwargs(
+            settings,
+            diameter_by_branch_order=scaled_diameters,
+            constriction_length=constriction_length,
+            constriction_spacing=constriction_spacing,
         ),
-        use_pericyte_mask_constriction=bool(
-            settings.get("use_pericyte_mask_constriction", False)
+    )
+    apply_baseline_overrides(
+        G,
+        settings,
+        PoiseuilleModel(
+            constriction_length=float(constriction_length),
+            constriction_spacing=float(constriction_spacing),
+            viscosity_law=settings.get("viscosity_law", "pries"),
+            haematocrit=float(settings.get("haematocrit", 0.45)),
+            diameter_basis=settings.get("diameter_basis", "plasma_column"),
         ),
-        use_probabilistic_constriction=bool(
-            settings.get("use_probabilistic_pericyte_constriction", False)
-        ),
-        prefer_edge_fwhm_baseline=bool(
-            settings.get("use_fwhm_edge_diameters", False)
-        ),
-        constriction_length=float(constriction_length),
-        constriction_spacing=float(constriction_spacing),
-        viscosity_law=settings.get("viscosity_law", "pries"),
-        haematocrit=float(settings.get("haematocrit", 0.45)),
-        diameter_basis=settings.get("diameter_basis", "plasma_column"),
-        constriction_probability=(
-            1.0
-            if configured_probability is None
-            else float(configured_probability)
-        ),
-        default_constriction_factor=float(
-            settings.get("pericyte_constriction_factor", 1.0)
-        ),
-        pericyte_mask_path=settings.get("pericyte_mask_path"),
-        pericyte_mask_h5_dataset_name=settings.get(
-            "pericyte_mask_h5_dataset_name"
-        ),
-        max_assignment_distance_um=settings.get(
-            "pericyte_max_assignment_distance_um", 3.0
-        ),
-        min_pericyte_diameter_um=settings.get("pericyte_min_diameter_um", 5.0),
-        max_pericyte_diameter_um=settings.get("pericyte_max_diameter_um", 12.0),
-        axis_order=settings.get("image_axis_order", CANONICAL_AXIS_ORDER),
-        seed=settings.get("pericyte_constriction_seed"),
+        custom_edge_diameter_scale=dilation_factor,
     )
     return G
 
@@ -181,7 +168,7 @@ def run_pericyte_geometry_sweep(
     from .arteriole import percent_change_to_scale
 
     dilation_factor = percent_change_to_scale(float(dilation_percent))
-    inlet_pressure_pa = int(round(float(settings["inlet_p_bc"])))
+    inlet_pressure_pa = float(settings["inlet_p_bc"])
     outlet_pressure_pa = float(settings["outlet_p_bc"])
     diameter_by_branch_order = settings["diameter_by_branch_order"]
     scaled_diameters = {
@@ -239,6 +226,7 @@ def run_pericyte_geometry_sweep(
             scaled_diameters=scaled_diameters,
             constriction_length=length,
             constriction_spacing=spacing,
+            dilation_factor=dilation_factor,
         )
         conductance, node_list = build_conductance_matrix_from_graph(step_graph)
         last_node_list = list(node_list)

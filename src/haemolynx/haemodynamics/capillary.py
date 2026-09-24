@@ -106,14 +106,15 @@ def _capillary_dilation_percents(
     settings: Mapping[str, Any], *, sweep: bool
 ) -> Sequence[int]:
     """Percents to scale capillaries by, or a single 0% when pressure-only."""
+    from .pericyte_sweep import inclusive_int_range
+
     if not sweep:
         return (0,)
-    return tuple(
-        range(
-            int(settings["capillary_dilation_min_percent"]),
-            int(settings["capillary_dilation_max_percent"]) + 1,
-            int(settings["capillary_dilation_step_percent"]),
-        )
+    return inclusive_int_range(
+        settings,
+        "capillary_dilation_min_percent",
+        "capillary_dilation_max_percent",
+        "capillary_dilation_step_percent",
     )
 
 
@@ -138,6 +139,7 @@ def run_capillary_dilation_pressure_sweep(
     """
     from .pericyte_sweep import (
         _inlet_pressures,
+        apply_baseline_overrides,
         solve_pressure_and_boundary_flow,
         write_sweep_csv,
     )
@@ -177,6 +179,7 @@ def run_capillary_dilation_pressure_sweep(
             model=poiseuille_model,
             prefer_edge_fwhm_diameter=prefer_measured,
         )
+        apply_baseline_overrides(scaled, settings, poiseuille_model)
         conductance, node_list = build_conductance_matrix_from_graph(scaled)
         last_node_list = list(node_list)
         for inlet_pressure_pa in inlet_pressures:
@@ -195,7 +198,7 @@ def run_capillary_dilation_pressure_sweep(
                 {
                     "dilation_percent": int(dilation_percent),
                     "dilation_factor": float(scale),
-                    "inlet_pressure_pa": int(inlet_pressure_pa),
+                    "inlet_pressure_pa": inlet_pressure_pa,
                     "outlet_pressure_pa": outlet_pressure_pa,
                     "total_inlet_flow": solved["total_inlet_flow"],
                     "total_outlet_flow": solved["total_outlet_flow"],

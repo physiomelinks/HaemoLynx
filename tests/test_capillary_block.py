@@ -231,8 +231,16 @@ def test_transit_times_are_compared_when_the_network_has_diameters():
 
     summary, _ = compare_block_to_baseline(baseline, blocked, inlet_nodes=[0], outlet_nodes=[5])
 
-    # Less flow through the same volume: blood takes longer.
-    assert summary["mean_transit_time_s_blocked"] > summary["mean_transit_time_s_baseline"]
+    # Every vessel holds the same volume V. Baseline: Q = 100/3 through the
+    # arteriole and venule, 50/3 down each capillary route, so the mean is
+    # V/Q + 2V/(Q/2) + V/Q = 6V/Q = 0.18 V. Blocked: all 25 units of flow take
+    # the open route, 4V/25 = 0.16 V -- the blocked route's residual leak is
+    # not perfusion, so its near-infinite transit time must not count.
+    assert summary["mean_transit_time_s_blocked"] / summary[
+        "mean_transit_time_s_baseline"
+    ] == pytest.approx(0.16 / 0.18, rel=1e-4)
+    # One perfused route left, so every red cell takes the same time.
+    assert summary["transit_time_sd_s_blocked"] <= 1e-3 * summary["mean_transit_time_s_blocked"]
     assert "capillary_transit_time_heterogeneity_s_blocked" in summary
     # A comparison writes nothing onto either network but the flow change.
     assert all("transit_time_s" not in d for *_e, d in baseline.edges(keys=True, data=True))
@@ -452,3 +460,15 @@ def test_preflight_is_quiet_about_a_well_formed_capillary_block():
     values["perturbations"] = [{"name": "stall", "type": "capillary_block", "overrides": {}}]
 
     assert perturbation_problems(values, SCHEMA) == ()
+
+
+def test_branch_orders_no_vessel_has_are_refused_by_name():
+    """Otherwise the perturbation silently blocks nothing and reports the
+    baseline as its effect."""
+    with pytest.raises(ValueError, match="BO9"):
+        resolve_blocked_vessels(
+            _many_capillaries(),
+            selection="branch_order_probability",
+            branch_orders=["BO9"],
+            probability=0.5,
+        )

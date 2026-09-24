@@ -486,6 +486,39 @@ def _zero_out_thick_vessel_bridge_resistances(G: nx.MultiGraph) -> int:
     return len(tagged_edges)
 
 
+def apply_final_resistance_overrides(
+    G: nx.MultiGraph,
+    poiseuille_model: PoiseuilleModel,
+    *,
+    custom_edges: Any,
+    custom_edge_diameter: float | None,
+    custom_edge_diameter_scale: float = 1.0,
+) -> dict[str, Any]:
+    """The last two resistance writes every resistance computation ends with:
+    ``custom_edges`` at their fixed diameter, then negligible resistance on
+    thick-vessel bridges -- so a perturbation that recomputes resistances
+    agrees with the baseline on those edges instead of reverting them.
+
+    *custom_edge_diameter_scale* dilates the custom diameter along with a
+    whole-network dilation.
+    """
+    diameter = (
+        DIAMETER_DEFAULTS["custom_edge_diameter"]
+        if custom_edge_diameter is None
+        else float(custom_edge_diameter)
+    )
+    results: dict[str, Any] = {}
+    G, results["custom_edges"] = poiseuille_model.set_poiseuille_edge_resistances(
+        G, custom_edges or [], edge_diameter=diameter * float(custom_edge_diameter_scale)
+    )
+    # Last resistance write, so it has the final say over every edge it
+    # touches: a thin-vessel-to-fat-vessel join is not new vessel material,
+    # so it must not keep whatever branch-order/custom resistance it was
+    # given above.
+    results["thick_vessel_bridges"] = _zero_out_thick_vessel_bridge_resistances(G)
+    return results
+
+
 def _assign_poiseuille_resistances(
     G: nx.MultiGraph,
     config: HaemodynamicsApplyConfig,
@@ -551,16 +584,14 @@ def _assign_poiseuille_resistances(
             prefer_edge_fwhm_diameter=bool(config.use_fwhm_edge_diameters),
         )
 
-    G, results["custom_edges"] = poiseuille_model.set_poiseuille_edge_resistances(
-        G,
-        config.diameter("custom_edges"),
-        edge_diameter=config.diameter("custom_edge_diameter"),
+    results.update(
+        apply_final_resistance_overrides(
+            G,
+            poiseuille_model,
+            custom_edges=config.diameter("custom_edges"),
+            custom_edge_diameter=config.diameter("custom_edge_diameter"),
+        )
     )
-    # Last resistance write, so it has the final say over every edge it
-    # touches: a thin-vessel-to-fat-vessel join is not new vessel material,
-    # so it must not keep whatever branch-order/custom resistance it was
-    # given above.
-    results["thick_vessel_bridges"] = _zero_out_thick_vessel_bridge_resistances(G)
     # Which law produced these resistances travels with them. They are not
     # comparable across laws -- several times apart in the smallest vessels --
     # so a graph pickled today and read next month has to say which it was.
