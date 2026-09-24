@@ -307,6 +307,13 @@ def test_memmap_directory_row_hides_when_use_memmap_loading_is_off():
     assert directory.is_visible({"use_memmap_loading": True})
 
 
+def test_use_memmap_loading_row_reads_as_a_low_ram_option():
+    """The setting name says how it works (memory-mapped files); the row says
+    what a user picks it for, and that it costs speed."""
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+    assert fields["use_memmap_loading"].label == "Low RAM option for large networks (Slow)"
+
+
 def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
     off = {"use_ilastik_segmentation": False}
     shown_off = visible_input_segmentation_settings(SCHEMA, off)

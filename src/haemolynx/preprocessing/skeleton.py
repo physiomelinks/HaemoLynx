@@ -19,7 +19,14 @@ from scipy.ndimage import (
 )
 from skimage.morphology import remove_small_objects, skeletonize
 
-from .memmap_support import new_memmap_array, release_memmap_array, temporary_memmap_array
+from .memmap_support import (
+    iter_blocks,
+    map_blockwise,
+    new_memmap_array,
+    release_memmap_array,
+    release_superseded,
+    temporary_memmap_array,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +130,9 @@ class SkeletonConnectivityStats:
 def compute_skeleton_connectivity_stats(
     skeleton: np.ndarray,
     component_connectivity: int | None = None,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> SkeletonConnectivityStats:
     """Connected-component sizes of *skeleton*, largest first.
 
@@ -132,9 +142,13 @@ def compute_skeleton_connectivity_stats(
     entirely when INFO logging is off. A caller that needs the numbers
     themselves -- the settings optimiser scoring a cleanup candidate -- calls
     this directly.
+
+    *use_memmap* labels into a disk-backed array (see
+    :func:`_labeled_components`): scipy's own label array for a volume of
+    2**31 voxels or more is int64, eight times the skeleton's own size.
     """
     # `astype` copies a whole volume even when it is already boolean.
-    skeleton_bool = np.asarray(skeleton, dtype=bool)
+    skeleton_bool = np.asanyarray(skeleton, dtype=bool)
     voxel_count = int(skeleton_bool.sum())
     if voxel_count == 0:
         return SkeletonConnectivityStats(
@@ -148,13 +162,14 @@ def compute_skeleton_connectivity_stats(
 
     conn = _resolve_component_connectivity(skeleton_bool.ndim, component_connectivity)
     structure = generate_binary_structure(skeleton_bool.ndim, conn)
-    labeled, n_components = label(skeleton_bool, structure=structure)
-
-    # Only foreground voxels carry a component label, so counting those is the
-    # same tally as counting the whole volume -- minus the background at index
-    # 0, which is zeroed here anyway. On a sparse skeleton that is thousands of
-    # voxels rather than hundreds of millions.
-    component_sizes = np.bincount(labeled[skeleton_bool], minlength=n_components + 1)
+    with _labeled_components(
+        skeleton_bool, structure, use_memmap=use_memmap, memmap_directory=memmap_directory
+    ) as (labeled, n_components):
+        # Only foreground voxels carry a component label, so counting those is
+        # the same tally as counting the whole volume -- minus the background
+        # at index 0, which is zeroed here anyway. On a sparse skeleton that is
+        # thousands of voxels rather than hundreds of millions.
+        component_sizes = np.bincount(labeled[skeleton_bool], minlength=n_components + 1)
     component_sizes[0] = 0
     sorted_sizes = np.sort(component_sizes[1:])[::-1]
     largest = int(sorted_sizes[0]) if sorted_sizes.size else 0
@@ -173,17 +188,26 @@ def log_skeleton_connectivity_stats(
     name: str,
     skeleton: np.ndarray,
     component_connectivity: int | None = None,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> None:
     """Log concise connectivity diagnostics for a 2D/3D skeleton.
 
     Diagnostics only, so it does nothing when nothing is listening -- labelling
     a full stack is not free, and a caller that has turned INFO off has said it
-    does not want this.
+    does not want this. *use_memmap* and *memmap_directory* are forwarded to
+    :func:`compute_skeleton_connectivity_stats`.
     """
     if not logger.isEnabledFor(logging.INFO):
         return
 
-    stats = compute_skeleton_connectivity_stats(skeleton, component_connectivity)
+    stats = compute_skeleton_connectivity_stats(
+        skeleton,
+        component_connectivity,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+    )
     if stats.n_components == 0:
         logger.warning(f"[skeleton:{name}] empty skeleton (0 foreground voxels).")
         return
@@ -362,31 +386,60 @@ def bridge_gaps(
     transform does and the transform wins. Both return the same mask, so this
     only decides how long it takes.
 
-    *use_memmap*, when True and the distance-transform path is taken, writes
-    the transform to a disk-backed buffer instead of a fresh in-RAM
-    ``float64`` array -- 8 bytes per voxel, the widest full-volume allocation
-    anywhere in this module. Only reached when ``max_gap`` exceeds
-    :data:`MAX_BALL_DILATION_RADIUS` (not the pipeline's own default).
-    *memmap_directory* is forwarded to :func:`temporary_memmap_array`;
-    ignored when *use_memmap* is False.
+    *use_memmap*, when True, runs either path one padded block at a time
+    (:func:`map_blockwise`) into a new memmap in *memmap_directory*. Both
+    only ever look *max_gap* voxels away, so a halo of *max_gap* makes every
+    block exact. Handing scipy a memmap as the distance transform's
+    ``distances=`` output is not enough on its own: scipy still builds its
+    feature-transform indices, an ``np.indices`` grid and float64 copies of
+    both internally -- roughly 70 bytes per voxel of plain RAM whatever the
+    output array is.
     """
     if max_gap <= 0:
         return binary_skeleton
     max_gap = int(max_gap)
+    if use_memmap:
+        return _bridge_gaps_blockwise(binary_skeleton, max_gap, memmap_directory)
     if max_gap <= MAX_BALL_DILATION_RADIUS:
         return binary_dilation(binary_skeleton, structure=_euclidean_ball(max_gap))
     inverted = ~binary_skeleton
-    if use_memmap:
-        with temporary_memmap_array(
-            binary_skeleton.shape, np.float64, directory=memmap_directory
-        ) as distance:
-            distance_transform_edt(inverted, distances=distance)
-            return binary_skeleton | ((distance <= max_gap) & inverted)
     distance = distance_transform_edt(inverted)
     return binary_skeleton | ((distance <= max_gap) & inverted)
 
 
-def close_binary_mask(binary: np.ndarray, radius: int = 2) -> np.ndarray:
+def _bridge_gaps_blockwise(
+    binary_skeleton: np.ndarray, max_gap: int, memmap_directory: str | Path | None
+) -> np.memmap:
+    skeleton_bool = np.asanyarray(binary_skeleton, dtype=bool)
+    result = new_memmap_array(skeleton_bool.shape, bool, directory=memmap_directory)
+    if max_gap <= MAX_BALL_DILATION_RADIUS:
+        ball = _euclidean_ball(max_gap)
+        return map_blockwise(
+            skeleton_bool,
+            lambda block: binary_dilation(block, structure=ball),
+            result,
+            halo=max_gap,
+        )
+
+    def within_gap(block: np.ndarray) -> np.ndarray:
+        # scipy's distance transform of an array with no background voxel
+        # at all is not all-infinite but garbage measured from a corner --
+        # and a block with no skeleton in it is the common case here.
+        if not block.any():
+            return block.copy()
+        inverted = ~block
+        return block | ((distance_transform_edt(inverted) <= max_gap) & inverted)
+
+    return map_blockwise(skeleton_bool, within_gap, result, halo=max_gap)
+
+
+def close_binary_mask(
+    binary: np.ndarray,
+    radius: int = 2,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+) -> np.ndarray:
     """Morphologically close a binary mask to seal small gaps.
 
     Applies binary dilation followed by binary erosion (closing) using a
@@ -402,12 +455,28 @@ def close_binary_mask(binary: np.ndarray, radius: int = 2) -> np.ndarray:
     radius:
         Number of erosion/dilation iterations.  Larger values bridge wider
         gaps but risk merging genuinely distinct structures.
+    use_memmap, memmap_directory:
+        When *use_memmap* is True, close one padded block at a time
+        (:func:`map_blockwise`) into a new memmap in *memmap_directory*
+        instead of dilating, then eroding, the whole volume in RAM. A voxel's
+        closed value depends only on the input within ``2 * radius`` voxels
+        of it (``radius`` for the dilation, ``radius`` more for the erosion
+        that reads it), so that halo makes every block exact.
     """
     from scipy.ndimage import binary_closing, generate_binary_structure
 
     if radius <= 0:
         return binary
     struct = generate_binary_structure(binary.ndim, 1)
+    if use_memmap:
+        binary_bool = np.asanyarray(binary, dtype=bool)
+        result = new_memmap_array(binary_bool.shape, bool, directory=memmap_directory)
+        return map_blockwise(
+            binary_bool,
+            lambda block: binary_closing(block, structure=struct, iterations=radius),
+            result,
+            halo=2 * radius,
+        )
     return binary_closing(binary.astype(bool), structure=struct, iterations=radius)
 
 
@@ -582,12 +651,58 @@ def _draw_line_3d(array: np.ndarray, start: np.ndarray, end: np.ndarray) -> None
         array[tuple(pt)] = True
 
 
+def _select_hub_centres(
+    peak_coords: np.ndarray, peak_density: np.ndarray, hub_min_spacing: float
+) -> list[np.ndarray]:
+    """Density peaks, densest first, keeping each only if it is at least
+    *hub_min_spacing* from every hub already kept."""
+    order = np.argsort(peak_density)[::-1]
+    selected_hubs: list[np.ndarray] = []
+    for idx in order:
+        candidate = peak_coords[idx]
+        if all(np.linalg.norm(candidate - existing) >= hub_min_spacing for existing in selected_hubs):
+            selected_hubs.append(candidate)
+    return selected_hubs
+
+
+def _draw_hub_links(
+    result: np.ndarray,
+    center: np.ndarray,
+    boundary_points: np.ndarray,
+    max_connections_per_hub: int,
+) -> None:
+    """Link *center* to the farthest boundary point in each direction, at
+    most *max_connections_per_hub* of them, farthest first."""
+    by_direction: dict[tuple[int, ...], tuple[float, np.ndarray]] = {}
+    for pt in boundary_points:
+        vec = pt - center
+        direction = tuple(np.sign(vec).astype(int).tolist())
+        if all(v == 0 for v in direction):
+            continue
+        dist2 = float(np.dot(vec, vec))
+        prev = by_direction.get(direction)
+        if prev is None or dist2 > prev[0]:
+            by_direction[direction] = (dist2, pt)
+
+    chosen = sorted(by_direction.values(), key=lambda item: item[0], reverse=True)[
+        :max_connections_per_hub
+    ]
+    for _, endpoint in chosen:
+        _draw_line_3d(result, center, endpoint)
+
+
 def skeletonize_voxel_bundles_into_paths(
     binary_mask: np.ndarray,
     scan_size: int | tuple[int, ...] = 9,
     density_fraction: float = 0.35,
     max_connections_per_hub: int = 8,
     hub_min_spacing: int | None = None,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+    tile_large_components: bool = False,
+    tile_max_voxels: int = 200_000_000,
+    tile_halo_voxels: int = 0,
 ) -> np.ndarray:
     """Scan for dense local volumes and collapse each into a hub node.
 
@@ -614,8 +729,13 @@ def skeletonize_voxel_bundles_into_paths(
     hub_min_spacing:
         Minimum Euclidean spacing between selected hub centers. Defaults to
         about half the smallest scan window dimension.
+    use_memmap, memmap_directory, tile_large_components, tile_max_voxels, tile_halo_voxels:
+        With *use_memmap* True, see
+        :func:`_skeletonize_voxel_bundles_into_paths_low_memory` -- the same
+        steps without any whole-volume plain-RAM array. The tiling settings
+        are forwarded to its two skeletonize calls.
     """
-    mask = binary_mask.astype(bool)
+    mask = np.asanyarray(binary_mask, dtype=bool) if use_memmap else binary_mask.astype(bool)
     if not mask.any():
         return mask
 
@@ -632,6 +752,19 @@ def skeletonize_voxel_bundles_into_paths(
     if hub_min_spacing is None:
         hub_min_spacing = max(1, int(min(scan) / 2))
 
+    if use_memmap:
+        return _skeletonize_voxel_bundles_into_paths_low_memory(
+            mask,
+            scan,
+            density_fraction,
+            max_connections_per_hub,
+            hub_min_spacing,
+            memmap_directory=memmap_directory,
+            tile_large_components=tile_large_components,
+            tile_max_voxels=tile_max_voxels,
+            tile_halo_voxels=tile_halo_voxels,
+        )
+
     base_skeleton = skeletonize_volume(mask)
     density = uniform_filter(mask.astype(np.float32), size=scan, mode="constant")
     dense_volume = density >= density_fraction
@@ -643,12 +776,9 @@ def skeletonize_voxel_bundles_into_paths(
     if peak_coords.size == 0:
         return base_skeleton.astype(bool)
 
-    order = np.argsort(density[tuple(peak_coords.T)])[::-1]
-    selected_hubs: list[np.ndarray] = []
-    for idx in order:
-        candidate = peak_coords[idx]
-        if all(np.linalg.norm(candidate - existing) >= hub_min_spacing for existing in selected_hubs):
-            selected_hubs.append(candidate)
+    selected_hubs = _select_hub_centres(
+        peak_coords, density[tuple(peak_coords.T)], hub_min_spacing
+    )
 
     result = base_skeleton.astype(bool).copy()
     shape = np.array(mask.shape)
@@ -682,25 +812,130 @@ def skeletonize_voxel_bundles_into_paths(
 
         if boundary_points.size == 0:
             continue
-
-        by_direction: dict[tuple[int, ...], tuple[float, np.ndarray]] = {}
-        for pt in boundary_points:
-            vec = pt - center
-            direction = tuple(np.sign(vec).astype(int).tolist())
-            if all(v == 0 for v in direction):
-                continue
-            dist2 = float(np.dot(vec, vec))
-            prev = by_direction.get(direction)
-            if prev is None or dist2 > prev[0]:
-                by_direction[direction] = (dist2, pt)
-
-        chosen = sorted(by_direction.values(), key=lambda item: item[0], reverse=True)[
-            :max_connections_per_hub
-        ]
-        for _, endpoint in chosen:
-            _draw_line_3d(result, center, endpoint)
+        _draw_hub_links(result, center, boundary_points, max_connections_per_hub)
 
     return skeletonize_volume(result.astype(bool)).astype(bool)
+
+
+def _skeletonize_voxel_bundles_into_paths_low_memory(
+    mask: np.ndarray,
+    scan: tuple[int, ...],
+    density_fraction: float,
+    max_connections_per_hub: int,
+    hub_min_spacing: float,
+    *,
+    memmap_directory: str | Path | None,
+    tile_large_components: bool,
+    tile_max_voxels: int,
+    tile_halo_voxels: int,
+) -> np.ndarray:
+    """:func:`skeletonize_voxel_bundles_into_paths` without a whole-volume
+    array in RAM.
+
+    - Both skeletonize calls go through :func:`skeletonize_by_component`
+      (disk-backed, optionally tiled) rather than one plain Lee call on the
+      whole volume.
+    - Density and its peaks are computed one padded block at a time. A
+      voxel's density reads the mask within half a scan window of it, and
+      whether it is a peak reads the density within half a window more, so
+      a halo of two half-windows reproduces both on every block's core.
+      scipy's running-mean filter accumulates from the start of each line it
+      is handed, which a block starts somewhere else, so a float32 density
+      can differ from a whole-volume call in its last bit -- a threshold or
+      peak tie landing exactly on such a difference could come out the
+      other way.
+    - Peaks are put back in whole-volume (C) order before being ranked, so
+      hubs are chosen from exactly the list a whole-volume ``np.argwhere``
+      would give.
+    - Each hub touches only its own scan window plus one voxel (the
+      boundary-shell dilation's reach), instead of a fresh full-volume
+      ``zeros_like`` array per hub.
+    """
+    def skeletonize_all(volume: np.ndarray) -> np.ndarray:
+        return skeletonize_by_component(
+            volume,
+            use_memmap=True,
+            memmap_directory=memmap_directory,
+            tile_large_components=tile_large_components,
+            tile_max_voxels=tile_max_voxels,
+            tile_halo_voxels=tile_halo_voxels,
+        )
+
+    base_skeleton = skeletonize_all(mask)
+    half = tuple(int(s) // 2 for s in scan)
+    with temporary_memmap_array(mask.shape, bool, directory=memmap_directory) as dense_volume:
+        peak_coord_parts: list[np.ndarray] = []
+        peak_density_parts: list[np.ndarray] = []
+        any_dense = False
+        for padded, inner, core in iter_blocks(mask.shape, halo=2 * max(half)):
+            block = np.asarray(mask[padded])
+            density = uniform_filter(block.astype(np.float32), size=scan, mode="constant")
+            dense = density >= density_fraction
+            dense_volume[core] = dense[inner]
+            if not dense[inner].any():
+                continue
+            any_dense = True
+            peaks = dense & (density == maximum_filter(density, size=scan, mode="nearest"))
+            local = np.argwhere(peaks[inner])
+            if local.size:
+                peak_density_parts.append(density[inner][tuple(local.T)])
+                peak_coord_parts.append(local + np.array([s.start for s in core]))
+
+        if not any_dense or not peak_coord_parts:
+            return base_skeleton
+
+        peak_coords = np.concatenate(peak_coord_parts)
+        peak_density = np.concatenate(peak_density_parts)
+        c_order = np.lexsort(peak_coords.T[::-1])
+        selected_hubs = _select_hub_centres(
+            peak_coords[c_order], peak_density[c_order], hub_min_spacing
+        )
+
+        result = base_skeleton
+        shape = np.array(mask.shape)
+        half_window = np.array(scan) // 2
+        structure = generate_binary_structure(mask.ndim, 1)
+
+        for hub in selected_hubs:
+            lo = np.maximum(hub - half_window, 0)
+            hi = np.minimum(hub + half_window + 1, shape)
+            slices = tuple(slice(int(lo[d]), int(hi[d])) for d in range(mask.ndim))
+            box_lo = np.maximum(lo - 1, 0)
+            box_hi = np.minimum(hi + 1, shape)
+            box = tuple(slice(int(box_lo[d]), int(box_hi[d])) for d in range(mask.ndim))
+            window_in_box = tuple(
+                slice(int(lo[d] - box_lo[d]), int(hi[d] - box_lo[d])) for d in range(mask.ndim)
+            )
+            local_dense = np.zeros(tuple(int(v) for v in box_hi - box_lo), dtype=bool)
+            local_dense[window_in_box] = dense_volume[slices]
+            if not local_dense.any():
+                continue
+
+            local_mask_coords = np.argwhere(mask[slices])
+            if local_mask_coords.size == 0:
+                continue
+            local_center = hub - lo
+            nearest = int(
+                np.argmin(np.sum((local_mask_coords - local_center.astype(float)) ** 2, axis=1))
+            )
+            center = (local_mask_coords[nearest] + lo).astype(int)
+            center_t = tuple(center.tolist())
+
+            shell = binary_dilation(local_dense, structure=structure) & ~local_dense
+            result_box = result[box]
+            boundary_points = np.argwhere(np.asarray(result_box) & shell) + box_lo
+
+            result_box[local_dense] = False
+            result[center_t] = True
+
+            if boundary_points.size == 0:
+                continue
+            _draw_hub_links(result, center, boundary_points, max_connections_per_hub)
+
+    final = skeletonize_all(result)
+    if final is not result:
+        release_memmap_array(result)
+    return final
 
 
 #: Padding (voxels) added around a candidate bridge's own bounding box when
@@ -898,14 +1133,16 @@ def connect_skeleton_components(
     # re-skeletonize step's own, potentially large, working buffers exist.
     if bridged:
         logger.debug("Bridged %d skeleton component pair(s).", bridged)
+        bridged_copy = result
         result = skeletonize_by_component(
-            result,
+            bridged_copy,
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
             tile_large_components=tile_large_components,
             tile_max_voxels=tile_max_voxels,
             tile_halo_voxels=tile_halo_voxels,
         )
+        release_superseded(bridged_copy, result, keep=skeleton)
 
     return np.asanyarray(result, dtype=bool)
 
@@ -1148,33 +1385,63 @@ def preprocess_skeleton_for_graph(
         skeletonize call of its own, so these do not apply there.
     """
     conn = _resolve_component_connectivity(skeleton_image.ndim, component_connectivity)
-    cleaned = drop_small_components(
-        skeleton_image,
-        min_size=min_branch_length,
-        connectivity=conn,
-        use_memmap=use_memmap,
-        memmap_directory=memmap_directory,
+    tiling = {
+        "tile_large_components": tile_large_components,
+        "tile_max_voxels": tile_max_voxels,
+        "tile_halo_voxels": tile_halo_voxels,
+    }
+    cleaned = skeleton_image
+
+    def advance(new: np.ndarray) -> np.ndarray:
+        # Under use_memmap every step below writes a fresh volume-sized file;
+        # the one it replaces is this function's own and nobody else's, so
+        # it is deleted now rather than left in the temp directory.
+        release_superseded(cleaned, new, keep=skeleton_image)
+        return new
+
+    cleaned = advance(
+        drop_small_components(
+            cleaned,
+            min_size=min_branch_length,
+            connectivity=conn,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
+        )
     )
     # Refine dense local bundles into single hub nodes with clean in/out links.
-    cleaned = skeletonize_voxel_bundles_into_paths(
-        cleaned,
-        scan_size=bundle_scan_size,
-        density_fraction=bundle_density_fraction,
-        max_connections_per_hub=bundle_max_connections_per_hub,
-        hub_min_spacing=bundle_hub_min_spacing,
+    cleaned = advance(
+        skeletonize_voxel_bundles_into_paths(
+            cleaned,
+            scan_size=bundle_scan_size,
+            density_fraction=bundle_density_fraction,
+            max_connections_per_hub=bundle_max_connections_per_hub,
+            hub_min_spacing=bundle_hub_min_spacing,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
+            **tiling,
+        )
     )
 
     # Morphological closing seals narrow gaps without expanding boundaries.
     if closing_radius > 0:
-        cleaned = close_binary_mask(cleaned, radius=closing_radius)
+        cleaned = advance(
+            close_binary_mask(
+                cleaned,
+                radius=closing_radius,
+                use_memmap=use_memmap,
+                memmap_directory=memmap_directory,
+            )
+        )
 
     # Dilation-based gap filling reconnects nearby foreground regions.
     if bridge_gap_size > 0:
-        cleaned = bridge_gaps(
-            np.asanyarray(cleaned, dtype=bool),
-            max_gap=bridge_gap_size,
-            use_memmap=use_memmap,
-            memmap_directory=memmap_directory,
+        cleaned = advance(
+            bridge_gaps(
+                np.asanyarray(cleaned, dtype=bool),
+                max_gap=bridge_gap_size,
+                use_memmap=use_memmap,
+                memmap_directory=memmap_directory,
+            )
         )
 
     # Not skeletonize_volume: that is the plain, untiled, single-component
@@ -1184,39 +1451,41 @@ def preprocess_skeleton_for_graph(
     # would silently throw away every bit of use_memmap/tiling protection
     # the first skeletonize call in this pipeline already got, for a
     # second, identical-in-kind allocation.
-    cleaned = skeletonize_by_component(
-        np.asanyarray(cleaned, dtype=bool),
-        use_memmap=use_memmap,
-        memmap_directory=memmap_directory,
-        tile_large_components=tile_large_components,
-        tile_max_voxels=tile_max_voxels,
-        tile_halo_voxels=tile_halo_voxels,
+    cleaned = advance(
+        skeletonize_by_component(
+            np.asanyarray(cleaned, dtype=bool),
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
+            **tiling,
+        )
     )
 
     # Bridge remaining disconnected components BEFORE filtering by size so
     # that small fragments get a chance to merge rather than being discarded.
     if max_bridge_distance > 0:
-        cleaned = connect_skeleton_components(
-            np.asanyarray(cleaned, dtype=bool),
-            max_bridge_distance=max_bridge_distance,
-            component_connectivity=conn,
-            z_distance_weight=bridge_z_distance_weight,
-            segmentation_mask=segmentation_mask,
-            weight_by_segmentation=bridge_weight_by_segmentation,
-            use_memmap=use_memmap,
-            memmap_directory=memmap_directory,
-            tile_large_components=tile_large_components,
-            tile_max_voxels=tile_max_voxels,
-            tile_halo_voxels=tile_halo_voxels,
+        cleaned = advance(
+            connect_skeleton_components(
+                np.asanyarray(cleaned, dtype=bool),
+                max_bridge_distance=max_bridge_distance,
+                component_connectivity=conn,
+                z_distance_weight=bridge_z_distance_weight,
+                segmentation_mask=segmentation_mask,
+                weight_by_segmentation=bridge_weight_by_segmentation,
+                use_memmap=use_memmap,
+                memmap_directory=memmap_directory,
+                **tiling,
+            )
         )
 
     if min_component_fraction > 0.0:
-        cleaned = _filter_components_by_total_fraction(
-            cleaned,
-            min_component_fraction=min_component_fraction,
-            component_connectivity=conn,
-            use_memmap=use_memmap,
-            memmap_directory=memmap_directory,
+        cleaned = advance(
+            _filter_components_by_total_fraction(
+                cleaned,
+                min_component_fraction=min_component_fraction,
+                component_connectivity=conn,
+                use_memmap=use_memmap,
+                memmap_directory=memmap_directory,
+            )
         )
 
     return np.asanyarray(cleaned, dtype=bool)

@@ -9,7 +9,11 @@ import numpy as np
 import tifffile
 from skimage.util import img_as_bool
 from ..preprocessing.skeleton import fill_binary_holes, skeletonize_by_component
-from ..preprocessing.memmap_support import new_memmap_array
+from ..preprocessing.memmap_support import (
+    new_memmap_array,
+    release_memmap_array,
+    release_superseded,
+)
 try:
     import h5py
 except ImportError:
@@ -187,8 +191,82 @@ def _unique_with_counts(arr: np.ndarray, *, use_memmap: bool) -> tuple[np.ndarra
     return values, counts
 
 
+def _finite_range(arr: np.ndarray, *, use_memmap: bool) -> tuple[float, float] | None:
+    """``(min, max)`` of *arr*'s finite values, or None if it has none.
+
+    With *use_memmap*, accumulated one axis-0 slice at a time: the plain
+    ``arr[np.isfinite(arr)]`` builds a full-volume mask and then a copy of
+    every finite value -- two volume-sized plain-RAM arrays.
+    """
+    if not use_memmap:
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return None
+        return float(finite.min()), float(finite.max())
+    low, high = np.inf, -np.inf
+    for index in range(arr.shape[0]):
+        finite = arr[index][np.isfinite(arr[index])]
+        if finite.size:
+            low = min(low, float(finite.min()))
+            high = max(high, float(finite.max()))
+    return None if low > high else (low, high)
+
+
+def _binarization_rule(arr: np.ndarray, *, use_memmap: bool):
+    """The elementwise rule that turns *arr* into a foreground mask.
+
+    Decided from the whole volume (its distinct values, or its finite
+    range), but applied elementwise -- so the same rule gives the same
+    answer whether it is applied to the whole array at once or to one
+    slice at a time.
+    """
+    if np.issubdtype(arr.dtype, np.integer):
+        values, counts = _unique_with_counts(arr, use_memmap=use_memmap)
+        if values.size == 1:
+            return lambda a: a > 0
+        # Common binary-mask conventions (e.g., 0/1 or 0/255).
+        if values.size == 2 and 0 in values:
+            fg_value = values[values != 0][0]
+            return lambda a: a == fg_value
+        # Two non-zero labels often mean background/foreground without 0.
+        # Use the minority class as foreground (e.g. 1/2 encoded masks).
+        if values.size == 2:
+            fg_value = values[int(np.argmin(counts))]
+            return lambda a: a == fg_value
+        # For very small integer label sets, pick the least frequent non-zero
+        # class as foreground and treat zero as background when present.
+        if values.size <= 4:
+            nonzero_values = values[values != 0]
+            if nonzero_values.size > 0:
+                nonzero_counts = np.array(
+                    [counts[np.where(values == v)[0][0]] for v in nonzero_values]
+                )
+                fg_value = nonzero_values[int(np.argmin(nonzero_counts))]
+                return lambda a: a == fg_value
+        arr_min = int(values.min())
+        arr_max = int(values.max())
+        if arr_min >= 0 and arr_max <= 1:
+            return lambda a: a > 0
+        # A threshold at half the dtype's range -- elementwise and
+        # independent of the data, so it is the same per slice.
+        return img_as_bool
+
+    if np.issubdtype(arr.dtype, np.floating):
+        finite_range = _finite_range(arr, use_memmap=use_memmap)
+        if finite_range is None:
+            return lambda a: np.zeros(a.shape, dtype=bool)
+        if finite_range[0] >= 0.0 and finite_range[1] <= 1.0:
+            return lambda a: a > 0.5
+        return lambda a: a > 0.0
+
+    return lambda a: a.astype(bool)
+
+
 def _to_binary_volume_for_skeletonization(
-    image: np.ndarray, *, use_memmap: bool = False
+    image: np.ndarray,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> np.ndarray:
     """Convert loaded image volume to a boolean mask for skeletonization.
 
@@ -205,54 +283,23 @@ def _to_binary_volume_for_skeletonization(
     ``isinstance(x, np.memmap)``) -- the same reasoning as
     ``io.axis_order.apply_axis_order``.
 
-    *use_memmap* only changes how the integer branch below finds the
-    volume's distinct values (see :func:`_unique_with_counts`) -- the
-    boolean pass-through above is unaffected, and every branch's own
-    final comparison (``arr == fg_value`` etc.) already produces its own
-    fresh boolean array regardless, same as before.
+    *use_memmap*, when True, finds the volume's distinct values (see
+    :func:`_unique_with_counts`) or finite range (:func:`_finite_range`)
+    one slice at a time, and writes the mask itself one slice at a time
+    into a new memmap in *memmap_directory* -- otherwise the final
+    comparison alone is a fresh, plain-RAM boolean array the size of the
+    whole volume. The already-bool pass-through is unaffected either way.
     """
     arr = np.asanyarray(image)
     if arr.dtype == bool:
         return arr
-
-    if np.issubdtype(arr.dtype, np.integer):
-        values, counts = _unique_with_counts(arr, use_memmap=use_memmap)
-        if values.size == 1:
-            return arr > 0
-        # Common binary-mask conventions (e.g., 0/1 or 0/255).
-        if values.size == 2 and 0 in values:
-            fg_value = values[values != 0][0]
-            return arr == fg_value
-        # Two non-zero labels often mean background/foreground without 0.
-        # Use the minority class as foreground (e.g. 1/2 encoded masks).
-        if values.size == 2:
-            fg_value = values[int(np.argmin(counts))]
-            return arr == fg_value
-        # For very small integer label sets, pick the least frequent non-zero
-        # class as foreground and treat zero as background when present.
-        if values.size <= 4:
-            nonzero_values = values[values != 0]
-            if nonzero_values.size > 0:
-                nonzero_counts = np.array(
-                    [counts[np.where(values == v)[0][0]] for v in nonzero_values]
-                )
-                fg_value = nonzero_values[int(np.argmin(nonzero_counts))]
-                return arr == fg_value
-        arr_min = int(values.min())
-        arr_max = int(values.max())
-        if arr_min >= 0 and arr_max <= 1:
-            return arr > 0
-        return img_as_bool(arr)
-
-    if np.issubdtype(arr.dtype, np.floating):
-        finite = arr[np.isfinite(arr)]
-        if finite.size == 0:
-            return np.zeros(arr.shape, dtype=bool)
-        if float(finite.min()) >= 0.0 and float(finite.max()) <= 1.0:
-            return arr > 0.5
-        return arr > 0.0
-
-    return arr.astype(bool)
+    rule = _binarization_rule(arr, use_memmap=use_memmap)
+    if not use_memmap:
+        return rule(arr)
+    result = new_memmap_array(arr.shape, bool, directory=memmap_directory)
+    for index in range(arr.shape[0]):
+        result[index] = rule(np.asarray(arr[index]))
+    return result
 
 
 def resolve_image_path_with_optional_zip(image_path: str | Path) -> Path:
@@ -505,7 +552,9 @@ def load_3d_tif_with_voxel_size(
         if allow_2d and raw.ndim == 2:
             image = raw
         else:
-            image = apply_axis_order(raw, axis_order)
+            image = apply_axis_order(
+                raw, axis_order, use_memmap=use_memmap, memmap_directory=memmap_directory
+            )
         voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status = (
             _voxel_size_xyz_from_tiff(tif)
         )
@@ -608,9 +657,15 @@ def load_3d_h5_with_voxel_size(
     if image.ndim != 3:
         raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
 
-    image = apply_axis_order(image, axis_order)
+    reordered = apply_axis_order(
+        image, axis_order, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
+    if use_memmap and not memmap_path and reordered is not image:
+        # The untransposed copy was this function's own temp file, and
+        # nothing else will ever hold it now that the reordered copy exists.
+        release_memmap_array(image)
 
-    return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
+    return reordered, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
 def load_volume_and_voxel_size(
@@ -694,7 +749,9 @@ def load_binary_mask_and_voxel_size(
     if image.ndim != 3:
         raise ValueError(f"Expected a 3D {description}, got shape {image.shape}.")
     return (
-        _to_binary_volume_for_skeletonization(image, use_memmap=use_memmap),
+        _to_binary_volume_for_skeletonization(
+            image, use_memmap=use_memmap, memmap_directory=memmap_directory
+        ),
         voxel_size_xyz,
     )
 
@@ -738,7 +795,9 @@ def _skeletonize_loaded_volume(
     materialise a second full-volume plain-RAM copy of whichever one, memmap
     or not, use_memmap_loading just avoided making one for.
     """
-    binary = _to_binary_volume_for_skeletonization(image, use_memmap=use_memmap)
+    binary = _to_binary_volume_for_skeletonization(
+        image, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
     skeleton = skeletonize_by_component(
         binary,
         use_memmap=use_memmap,
@@ -747,7 +806,12 @@ def _skeletonize_loaded_volume(
         tile_max_voxels=tile_max_voxels,
         tile_halo_voxels=tile_halo_voxels,
     )
-    return fill_binary_holes(skeleton, use_memmap=use_memmap, memmap_directory=memmap_directory)
+    # Each of these is a volume-sized temp file under use_memmap; neither is
+    # needed once the step after it has run. `image` itself is the caller's.
+    release_superseded(binary, skeleton, keep=image)
+    filled = fill_binary_holes(skeleton, use_memmap=use_memmap, memmap_directory=memmap_directory)
+    release_superseded(skeleton, filled, keep=image)
+    return filled
 
 
 def load_and_skeletonize_3d_tif(

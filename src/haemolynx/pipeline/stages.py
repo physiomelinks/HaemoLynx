@@ -107,6 +107,17 @@ STAGE_CALLS: tuple[str, ...] = (
 
 logger = logging.getLogger(__name__)
 
+#: Logged in place of each read-only consistency check use_memmap_loading
+#: skips. Those checks rasterise, distance-transform and label the whole
+#: volume, and scipy's distance transform alone needs roughly 70 bytes of
+#: plain RAM per voxel whatever it is given to write into -- none of that can
+#: be moved to disk, and none of it changes any result.
+LOW_RAM_SKIPPED_DIAGNOSTICS_MESSAGE = (
+    "Skipping the %s check: Low RAM option is on, and this read-only "
+    "diagnostic needs several whole-volume arrays in RAM. It never changes "
+    "the skeleton or graph."
+)
+
 
 @dataclass
 class SegmentedInputs:
@@ -590,7 +601,9 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 cleanup_kwargs.get("remove_small_volumes"),
             )
             binary_image = _to_binary_volume_for_skeletonization(
-                image, use_memmap=settings["use_memmap_loading"]
+                image,
+                use_memmap=settings["use_memmap_loading"],
+                memmap_directory=settings["memmap_directory"],
             )
             image, raw_segmented_image = preprocessing.clean_segmented_mask_for_skeletonisation(
                 binary_image,
@@ -602,7 +615,16 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 **cleanup_kwargs,
             )
 
-        skeleton, thick_vessel_mask = _skeletonize_loaded_mask(image, settings, voxel_size)
+        # Binarised once and shared: skeletonisation and the reconnection
+        # step's segmentation mask both need the same mask, and each call
+        # used to rebuild it -- a whole extra volume every time. A pass-
+        # through (no copy) when cleanup already left `image` boolean.
+        binary = _to_binary_volume_for_skeletonization(
+            image,
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
+        )
+        skeleton, thick_vessel_mask = _skeletonize_loaded_mask(binary, settings, voxel_size)
 
         # Purely diagnostic: off by default, and never changes `skeleton` even
         # when on -- see preprocessing.thick_vessel_braid_guard for what this
@@ -629,6 +651,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             "raw",
             skeleton,
             component_connectivity=settings["skeleton_component_connectivity"],
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
         )
         visualization.visualize_skeleton(skeleton, save_path=settings["plot_dir"] / "raw_skeleton.png")
 
@@ -638,27 +662,32 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         tile_halo_voxels = _skeletonize_tile_halo_voxels(
             settings, io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size))
         )
+        raw_skeleton = skeleton
         skeleton = preprocessing.preprocess_skeleton_for_graph(
-            skeleton,
+            raw_skeleton,
             **prefixed_arguments(
                 settings,
                 "skeleton_",
                 parameters_of(preprocessing.preprocess_skeleton_for_graph),
             ),
             min_component_fraction=settings["skeleton_min_component_percent"] / 100.0,
-            segmentation_mask=_to_binary_volume_for_skeletonization(
-                image, use_memmap=settings["use_memmap_loading"]
-            ),
+            segmentation_mask=binary,
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
             tile_large_components=settings["skeletonize_tile_large_components"],
             tile_max_voxels=settings["skeletonize_tile_max_voxels"],
             tile_halo_voxels=tile_halo_voxels,
         )
+        # Volume-sized temp files under use_memmap that nothing reads from
+        # here on; `image` (returned below) is never one of them.
+        preprocessing.release_superseded(raw_skeleton, skeleton, keep=image)
+        preprocessing.release_superseded(binary, skeleton, keep=image)
         preprocessing.log_skeleton_connectivity_stats(
             "cleaned",
             skeleton,
             component_connectivity=settings["skeleton_component_connectivity"],
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
         )
         
         # save the skeleton
@@ -677,8 +706,16 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         logger.info(f"Saved skeleton to: {skeleton_path}")
     else:
         # load the skeleton
-        skeleton = np.load(skeleton_path)
-        image = io.apply_axis_order(tifffile.imread(settings["input_path"]), settings["image_axis_order"])
+        if settings["use_memmap_loading"]:
+            # Copy-on-write: read straight from the saved file, and any later
+            # in-place edit stays in RAM for just the pages it touches.
+            skeleton = np.load(skeleton_path, mmap_mode="c")
+            image, _metadata, _status = load_volume_for_skeletonise(settings, input_format)
+        else:
+            skeleton = np.load(skeleton_path)
+            image = io.apply_axis_order(
+                tifffile.imread(settings["input_path"]), settings["image_axis_order"]
+            )
         if voxel_meta_path.exists():
             cached_voxel_meta = json.loads(voxel_meta_path.read_text())
             metadata_voxel_size = tuple(cached_voxel_meta["voxel_size"])
@@ -712,39 +749,42 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     # Everything downstream that scales array indices uses voxel_size_zyx.
     voxel_size_zyx = io.voxel_size_zyx_from_xyz(main_voxel_size_xyz)
 
-    # Read-only check on the skeleton just produced (or loaded): how much of
-    # the segmented image it actually runs through -- see
-    # preprocessing.skeleton_consistency. Never changes skeleton or image.
-    mask_consistency = preprocessing.diagnose_skeleton_mask_consistency(
-        skeleton, image, voxel_size_zyx=voxel_size_zyx
-    )
-    consistency_report = preprocessing.format_skeleton_mask_consistency_report(
-        mask_consistency
-    )
-    if mask_consistency["coverage_fraction"] < float(
-        settings["skeleton_mask_consistency_warn_below"]
-    ):
-        logger.warning(consistency_report)
+    if settings["use_memmap_loading"]:
+        logger.info(LOW_RAM_SKIPPED_DIAGNOSTICS_MESSAGE, "skeleton/mask consistency")
     else:
-        logger.info(consistency_report)
+        # Read-only check on the skeleton just produced (or loaded): how much
+        # of the segmented image it actually runs through -- see
+        # preprocessing.skeleton_consistency. Never changes skeleton or image.
+        mask_consistency = preprocessing.diagnose_skeleton_mask_consistency(
+            skeleton, image, voxel_size_zyx=voxel_size_zyx
+        )
+        consistency_report = preprocessing.format_skeleton_mask_consistency_report(
+            mask_consistency
+        )
+        if mask_consistency["coverage_fraction"] < float(
+            settings["skeleton_mask_consistency_warn_below"]
+        ):
+            logger.warning(consistency_report)
+        else:
+            logger.info(consistency_report)
 
-    # Read-only check on the same skeleton/image pair, the inverse question:
-    # not how well-traced the mask is overall, but whether any genuine
-    # vessel is missing from the skeleton entirely -- see
-    # preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton.
-    missing_vessels = preprocessing.diagnose_vessels_missing_from_skeleton(
-        skeleton, image, voxel_size_zyx=voxel_size_zyx,
-        min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
-    )
-    missing_vessels_report = preprocessing.format_vessels_missing_from_skeleton_report(
-        missing_vessels
-    )
-    if missing_vessels["explained_vessel_fraction"] < float(
-        settings["skeleton_missing_vessel_warn_below"]
-    ):
-        logger.warning(missing_vessels_report)
-    else:
-        logger.info(missing_vessels_report)
+        # Read-only check on the same skeleton/image pair, the inverse
+        # question: not how well-traced the mask is overall, but whether any
+        # genuine vessel is missing from the skeleton entirely -- see
+        # preprocessing.skeleton_consistency.diagnose_vessels_missing_from_skeleton.
+        missing_vessels = preprocessing.diagnose_vessels_missing_from_skeleton(
+            skeleton, image, voxel_size_zyx=voxel_size_zyx,
+            min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
+        )
+        missing_vessels_report = preprocessing.format_vessels_missing_from_skeleton_report(
+            missing_vessels
+        )
+        if missing_vessels["explained_vessel_fraction"] < float(
+            settings["skeleton_missing_vessel_warn_below"]
+        ):
+            logger.warning(missing_vessels_report)
+        else:
+            logger.info(missing_vessels_report)
 
     return SkeletonisedVolume(
         image=image,
@@ -812,6 +852,58 @@ def _write_run_final_graph_3d_html(
         ),
         show=show_plots,
     )
+
+
+def _log_graph_consistency_diagnostics(
+    settings: dict, G: nx.Graph, skeleton: np.ndarray, image: np.ndarray, voxel_size_zyx
+) -> None:
+    """The three read-only graph checks build_network logs. Never change G."""
+    # How much of the skeleton the graph still traces -- see
+    # graph.diagnostics.diagnose_skeleton_graph_consistency.
+    graph_consistency = graph.diagnose_skeleton_graph_consistency(
+        G, skeleton, voxel_size_zyx=voxel_size_zyx
+    )
+    graph_consistency_report = graph.format_skeleton_graph_consistency_report(
+        graph_consistency
+    )
+    if graph_consistency["coverage_fraction"] < float(
+        settings["skeleton_graph_consistency_warn_below"]
+    ):
+        logger.warning(graph_consistency_report)
+    else:
+        logger.info(graph_consistency_report)
+
+    # How much of the original segmented image it still runs through -- see
+    # graph.diagnostics.diagnose_graph_mask_consistency.
+    graph_mask_consistency = graph.diagnose_graph_mask_consistency(
+        G, image, voxel_size_zyx=voxel_size_zyx
+    )
+    graph_mask_consistency_report = graph.format_graph_mask_consistency_report(
+        graph_mask_consistency
+    )
+    if graph_mask_consistency["coverage_fraction"] < float(
+        settings["graph_mask_consistency_warn_below"]
+    ):
+        logger.warning(graph_mask_consistency_report)
+    else:
+        logger.info(graph_mask_consistency_report)
+
+    # The inverse question on the same pair: not how well-traced the mask is
+    # overall, but whether any genuine vessel is missing from the graph
+    # entirely -- see graph.diagnostics.diagnose_vessels_missing_from_graph.
+    missing_vessels = graph.diagnose_vessels_missing_from_graph(
+        G, image, voxel_size_zyx=voxel_size_zyx,
+        min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
+    )
+    missing_vessels_report = graph.format_vessels_missing_from_graph_report(
+        missing_vessels
+    )
+    if missing_vessels["explained_vessel_fraction"] < float(
+        settings["graph_missing_vessel_warn_below"]
+    ):
+        logger.warning(missing_vessels_report)
+    else:
+        logger.info(missing_vessels_report)
 
 
 def build_network(
@@ -989,55 +1081,10 @@ def build_network(
         if cartwheel_hubs:
             logger.warning(graph.format_cartwheel_hub_report(cartwheel_hubs))
 
-    # Read-only check on the graph just built: how much of the skeleton it
-    # still traces -- see graph.diagnostics.diagnose_skeleton_graph_consistency.
-    # Never changes G.
-    graph_consistency = graph.diagnose_skeleton_graph_consistency(
-        G, skeleton, voxel_size_zyx=voxel_size_zyx
-    )
-    graph_consistency_report = graph.format_skeleton_graph_consistency_report(
-        graph_consistency
-    )
-    if graph_consistency["coverage_fraction"] < float(
-        settings["skeleton_graph_consistency_warn_below"]
-    ):
-        logger.warning(graph_consistency_report)
+    if settings["use_memmap_loading"]:
+        logger.info(LOW_RAM_SKIPPED_DIAGNOSTICS_MESSAGE, "skeleton/graph and graph/mask consistency")
     else:
-        logger.info(graph_consistency_report)
-
-    # Read-only check on the graph just built: how much of the original
-    # segmented image it still runs through -- see
-    # graph.diagnostics.diagnose_graph_mask_consistency. Never changes G.
-    graph_mask_consistency = graph.diagnose_graph_mask_consistency(
-        G, image, voxel_size_zyx=voxel_size_zyx
-    )
-    graph_mask_consistency_report = graph.format_graph_mask_consistency_report(
-        graph_mask_consistency
-    )
-    if graph_mask_consistency["coverage_fraction"] < float(
-        settings["graph_mask_consistency_warn_below"]
-    ):
-        logger.warning(graph_mask_consistency_report)
-    else:
-        logger.info(graph_mask_consistency_report)
-
-    # Read-only check on the same graph/image pair, the inverse question:
-    # not how well-traced the mask is overall, but whether any genuine
-    # vessel is missing from the graph entirely -- see
-    # graph.diagnostics.diagnose_vessels_missing_from_graph. Never changes G.
-    missing_vessels = graph.diagnose_vessels_missing_from_graph(
-        G, image, voxel_size_zyx=voxel_size_zyx,
-        min_vessel_voxels=int(settings["missing_vessel_min_voxels"]),
-    )
-    missing_vessels_report = graph.format_vessels_missing_from_graph_report(
-        missing_vessels
-    )
-    if missing_vessels["explained_vessel_fraction"] < float(
-        settings["graph_missing_vessel_warn_below"]
-    ):
-        logger.warning(missing_vessels_report)
-    else:
-        logger.info(missing_vessels_report)
+        _log_graph_consistency_diagnostics(settings, G, skeleton, image, voxel_size_zyx)
 
     # Visualize final graph used for boundary-node verification.
     if settings["visualize_results"]:

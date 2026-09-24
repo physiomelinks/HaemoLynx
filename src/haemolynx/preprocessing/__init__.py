@@ -71,6 +71,7 @@ from .segmentation_raw_comparison import (
 from .memmap_support import (
     new_memmap_array,
     release_memmap_array,
+    release_superseded,
     temporary_memmap_array,
 )
 
@@ -132,5 +133,6 @@ __all__ = [
     "format_segmentation_raw_comparison_report",
     "new_memmap_array",
     "release_memmap_array",
+    "release_superseded",
     "temporary_memmap_array",
 ]

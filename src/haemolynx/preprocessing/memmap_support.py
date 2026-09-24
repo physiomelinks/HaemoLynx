@@ -27,16 +27,88 @@ the mmap released the OS lock immediately even with another reference to the
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+#: Most voxels one padded block of :func:`iter_blocks` may hold. scipy's
+#: morphology and local filters need a few bytes per voxel on top of their
+#: input, so a block stays in the low hundreds of MB; a distance transform,
+#: at roughly 70 bytes per voxel of scipy's own internal temporaries, stays
+#: around 2 GB. Deliberately a volume budget rather than a slice count: one
+#: z-slice of a wide stack can already be tens of millions of voxels.
+LOW_MEMORY_BLOCK_VOXELS = 32_000_000
+
+
+def iter_blocks(
+    shape: tuple[int, ...], *, halo: int, block_voxels: int = LOW_MEMORY_BLOCK_VOXELS
+) -> Iterator[tuple[tuple[slice, ...], tuple[slice, ...], tuple[slice, ...]]]:
+    """Yield ``(padded, core_in_padded, core)`` slice tuples tiling *shape*.
+
+    The cores partition *shape* exactly; each padded region extends its core
+    by *halo* voxels along every axis, clipped to the volume. An operation
+    whose output at a voxel depends only on input within *halo* voxels of it
+    (along every axis) therefore gives, on each core, exactly what it gives
+    on the whole volume -- including at the volume's own edges, where the
+    padded region stops at the same boundary a whole-volume call sees.
+
+    Cores are shrunk by halving the longest one until a padded block fits
+    *block_voxels*; a halo wide enough that even a single-voxel core cannot
+    fit is accepted rather than looped on forever.
+    """
+    shape = tuple(int(s) for s in shape)
+    halo = max(0, int(halo))
+    core = list(shape)
+
+    def padded_voxels(extents: list[int]) -> int:
+        return int(np.prod([min(s, c + 2 * halo) for s, c in zip(shape, extents)]))
+
+    while padded_voxels(core) > block_voxels:
+        axis = int(np.argmax(core))
+        if core[axis] <= 1:
+            break
+        core[axis] = (core[axis] + 1) // 2
+
+    for starts in itertools.product(*(range(0, s, max(1, c)) for s, c in zip(shape, core))):
+        core_slices = tuple(
+            slice(start, min(start + c, s)) for start, c, s in zip(starts, core, shape)
+        )
+        padded = tuple(
+            slice(max(0, cs.start - halo), min(s, cs.stop + halo))
+            for cs, s in zip(core_slices, shape)
+        )
+        inner = tuple(
+            slice(cs.start - ps.start, cs.stop - ps.start)
+            for cs, ps in zip(core_slices, padded)
+        )
+        yield padded, inner, core_slices
+
+
+def map_blockwise(
+    source: np.ndarray,
+    op: Callable[[np.ndarray], np.ndarray],
+    out: np.ndarray,
+    *,
+    halo: int,
+    block_voxels: int = LOW_MEMORY_BLOCK_VOXELS,
+) -> np.ndarray:
+    """``out[core] = op(source[padded])[core_in_padded]`` for every block.
+
+    Exactly ``out[...] = op(source)`` for any *op* whose reach is at most
+    *halo* voxels (see :func:`iter_blocks`), with no array larger than one
+    padded block ever held in RAM -- *source* and *out* can both be memmaps.
+    """
+    for padded, inner, core in iter_blocks(source.shape, halo=halo, block_voxels=block_voxels):
+        out[core] = op(np.asarray(source[padded]))[inner]
+    return out
 
 
 def new_memmap_array(
@@ -102,3 +174,17 @@ def temporary_memmap_array(
         yield array
     finally:
         release_memmap_array(array)
+
+
+def release_superseded(previous: np.ndarray, new: np.ndarray, *, keep: np.ndarray) -> None:
+    """Delete *previous*'s backing file once *new* has replaced it.
+
+    For a chain of steps that each write a fresh volume-sized memmap: the one
+    a step replaces is nobody else's, so it is deleted there and then rather
+    than left in the temp directory until the OS gets round to it. Only a
+    memmap that is neither *new* itself (a step that changed nothing hands
+    its input straight back) nor *keep* (the caller's own input, theirs to
+    keep or release) is touched -- so this is a no-op on plain arrays.
+    """
+    if isinstance(previous, np.memmap) and previous is not new and previous is not keep:
+        release_memmap_array(previous)

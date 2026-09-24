@@ -60,7 +60,13 @@ def axis_order_transpose(axis_order: str) -> tuple[int, int, int]:
     return tuple(normalized.index(axis) for axis in CANONICAL_AXIS_ORDER)
 
 
-def apply_axis_order(volume: np.ndarray, axis_order: str = CANONICAL_AXIS_ORDER) -> np.ndarray:
+def apply_axis_order(
+    volume: np.ndarray,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    *,
+    use_memmap: bool = False,
+    memmap_directory=None,
+) -> np.ndarray:
     """Transpose *volume* from *axis_order* into the canonical ``(z, y, x)`` order.
 
     ``axis_order="zyx"`` is a no-op. Other orders return a contiguous copy so
@@ -74,6 +80,13 @@ def apply_axis_order(volume: np.ndarray, axis_order: str = CANONICAL_AXIS_ORDER)
     disk-backed buffer, since it is still a view rather than a copy, but the
     wrong type for anything downstream that checks ``isinstance(x,
     np.memmap)`` to decide whether it owns a backing file to release).
+
+    *use_memmap*, when True, writes that contiguous copy one output slice at
+    a time into a new memmap in *memmap_directory* instead of
+    ``np.ascontiguousarray``, which is a whole-volume plain-RAM copy no
+    matter how *volume* itself is stored. Slower -- each output slice
+    gathers from across the whole source -- but never holds more than one
+    slice.
     """
     normalized = normalize_axis_order(axis_order)
     arr = np.asanyarray(volume)
@@ -83,7 +96,15 @@ def apply_axis_order(volume: np.ndarray, axis_order: str = CANONICAL_AXIS_ORDER)
         raise ValueError(
             f"axis_order={axis_order!r} requires a 3D volume, got shape {arr.shape}."
         )
-    return np.ascontiguousarray(np.transpose(arr, axis_order_transpose(normalized)))
+    transposed = np.transpose(arr, axis_order_transpose(normalized))
+    if not use_memmap:
+        return np.ascontiguousarray(transposed)
+    from haemolynx.preprocessing.memmap_support import new_memmap_array
+
+    result = new_memmap_array(transposed.shape, transposed.dtype, directory=memmap_directory)
+    for index in range(transposed.shape[0]):
+        result[index] = transposed[index]
+    return result
 
 
 def voxel_size_zyx_from_xyz(

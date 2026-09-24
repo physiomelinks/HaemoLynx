@@ -18,14 +18,12 @@ make a run see stale results for anything a *setting* controls, only skip
 the one read/decompress step that no setting can change the outcome of.
 
 Restricted to ``image_axis_order == "zyx"`` (the canonical, default order):
-for any other order, :func:`haemolynx.io.axis_order.apply_axis_order` already
-makes a full contiguous in-RAM copy to transpose the volume (so
-``use_memmap_loading`` gives no memmap to begin with -- a pre-existing
-limitation of that toggle, not introduced here), and the transposed shape no
-longer matches the bytes as written to disk in the file's own native axis
-order. Caching that would silently reopen a later run's file with the wrong
-axis mapping. A non-canonical order simply always misses and falls through
-to an ordinary load.
+for any other order, :func:`haemolynx.io.axis_order.apply_axis_order`
+transposes the volume into a second, fresh memmap, whose shape no longer
+matches the bytes as written to disk in the file's own native axis order.
+Caching that would silently reopen a later run's file with the wrong axis
+mapping. A non-canonical order simply always misses and falls through to an
+ordinary (still memmap-backed) load.
 """
 from __future__ import annotations
 
@@ -124,8 +122,8 @@ def load_raw_volume_reusing_cache(
     if axis_order != CANONICAL_AXIS_ORDER:
         logger.debug(
             "Not reusing a cached raw volume: image_axis_order=%r is not "
-            "canonical, so use_memmap_loading gives no memmap to cache here "
-            "anyway.",
+            "canonical, so it is transposed into a fresh memmap each run "
+            "instead of cached.",
             axis_order,
         )
         return load_image_with_voxel_size_2d_aware(
@@ -134,6 +132,7 @@ def load_raw_volume_reusing_cache(
             axis_order=axis_order,
             h5_dataset_name=h5_dataset_name,
             use_memmap=True,
+            memmap_directory=memmap_directory,
         )
 
     resolved = Path(filepath).resolve()
