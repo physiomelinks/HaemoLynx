@@ -16,4 +16,5 @@ dask[array]
 joblib
 python-igraph
 numba
-optunaseaborn
+optuna
+seaborn
