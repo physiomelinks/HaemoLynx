@@ -57,18 +57,17 @@ def test_coupled_solver_convergence():
 
 
 def test_skimming_direction_depends_on_the_flow_split():
-    """The skimming model favours the faster branch, not the wider one.
+    """The skimming model favours the faster branch, and here that is the wider one.
 
-    Under the in vitro relation this Y-junction sends 84% of flow down the 10 um branch, which
-    is then also the faster of the two, so it skims red cells and the classic picture holds.
-    Under the in vivo relation the narrow branch's viscosity rises much further, the split
-    evens out to 64/36, and 36% of flow through a quarter of the area makes the *narrow*
-    branch the faster one. The model then concentrates red cells there instead.
+    With the phase separation law scaled by the feeding diameter, as Pries et al. pose it,
+    this Y-junction sends most flow and most red cells down the 10 um branch under both
+    viscosity relations: about 85% of flow in vitro and 91% in vivo, with the 5 um branch
+    left at roughly 0.3 and 0.19 haematocrit.
 
-    Recorded as behaviour rather than asserted as correct. The Pries phase-separation law is
-    normally posed in fractional blood flow with a diameter-dependent threshold, and a
-    velocity-keyed form can inverse the expected direction at a near-even split. That is a
-    question about the skimming model, surfaced by fixing the viscosity law, and it is open.
+    An earlier version scaled the law by one daughter's diameter with a fixed X0 = 0.05. Under
+    the in vivo relation that evened the split to 64/36, made the narrow branch the faster
+    one, and concentrated red cells there. That inversion came from the misscaled law and is
+    gone. The in vivo case needs more iterations to converge than the in vitro one.
     """
     import ImageLynx.haemodynamics.rheology as rh
 
@@ -83,7 +82,7 @@ def test_skimming_direction_depends_on_the_flow_split():
             H.add_edge(1, 2, key=0, length=10.0, fwhm_diameter_um=10.0)
             H.add_edge(1, 3, key=0, length=10.0, fwhm_diameter_um=5.0)
             solved, _ = solve_coupled_flow_and_hematocrit(
-                H, [0], [2, 3], 100.0, 10.0, 0.45, 10, 1e-3)
+                H, [0], [2, 3], 100.0, 10.0, 0.45, 50, 1e-3)
             q2, q3 = solved[1][2][0]["flow_abs"], solved[1][3][0]["flow_abs"]
             results[law] = {
                 "share_wide": q2 / (q2 + q3),
@@ -100,9 +99,9 @@ def test_skimming_direction_depends_on_the_flow_split():
         richer_is_wide = r["h_wide"] > r["h_narrow"]
         assert faster_is_wide == richer_is_wide, (
             f"{law}: red cells did not follow the faster branch ({r})")
+        assert r["v_wide"] > r["v_narrow"], f"{law}: the narrow branch was the faster ({r})"
+        assert r["h_wide"] > 0.45 > r["h_narrow"], f"{law}: the narrow branch was not skimmed ({r})"
 
-    assert results["in_vitro"]["share_wide"] > results["in_vivo"]["share_wide"], (
-        "the in vivo law should even out the split by penalising the narrow branch harder")
 
 
 def test_coupled_solver_dag_cycle_handling(caplog):

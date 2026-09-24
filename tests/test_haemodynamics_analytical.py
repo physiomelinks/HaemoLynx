@@ -261,9 +261,10 @@ def test_rheology_hematocrit_mass_conservation():
     # Symmetrical split
     q_out1, d_out1 = 5.0, 10.0
     q_out2, d_out2 = 5.0, 10.0
+    d_parent = 12.0
     
     h_out1, h_out2 = calculate_phase_separation_hematocrit(
-        q_in, h_in, q_out1, d_out1, q_out2, d_out2
+        q_in, h_in, q_out1, d_out1, q_out2, d_out2, d_parent
     )
     
     # RBC Flux in = RBC Flux out
@@ -282,9 +283,11 @@ def test_rheology_plasma_skimming_effect():
     # Asymmetrical split: Branch 1 is a massive AVA, Branch 2 is a tiny capillary
     q_out1, d_out1 = 9.0, 20.0
     q_out2, d_out2 = 1.0, 5.0
+    # Fed by an arteriole as wide as the AVA
+    d_parent = 20.0
     
     h_out1, h_out2 = calculate_phase_separation_hematocrit(
-        q_in, h_in, q_out1, d_out1, q_out2, d_out2
+        q_in, h_in, q_out1, d_out1, q_out2, d_out2, d_parent
     )
     
     # The AVA (Branch 1) should "skim" the RBCs, resulting in a higher hematocrit than the inlet
