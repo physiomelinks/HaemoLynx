@@ -211,10 +211,14 @@ def reconnect_secondary_loop_edges(
     A single window bigger than that is skipped, and counted in the closing
     summary.
 
+    *max_workers* is how many threads prepare and route windows: by default
+    one per CPU core (never more than there are candidate pairs).
     *routing_processes* is how many worker processes route (see
     :class:`_Router`): by default one per worker thread, capped at the CPU
     count, once there are :data:`ROUTING_PROCESS_MIN_PAIRS` candidate pairs;
-    0 or 1 routes in-thread. The same paths either way.
+    0 or 1 routes in-thread. The same paths either way. Under the low-RAM
+    option the threads' windows still share one voxel budget, however many
+    there are.
 
     *max_cache_size* is accepted for compatibility and ignored: each pair
     routes through its own windows only once, and a cost field (which carries
@@ -567,7 +571,9 @@ def reconnect_secondary_loop_edges(
 
     added = 0
     edge_lock = threading.Lock()
-    max_workers = max_workers or min(4, len(pairs))
+    # One thread per CPU core by default: each thread prepares windows while
+    # the routing workers (one per thread) route them.
+    max_workers = max_workers or max(1, min(os.cpu_count() or 1, len(pairs)))
     if routing_processes is None:
         routing_processes = (
             min(max_workers, os.cpu_count() or 1)

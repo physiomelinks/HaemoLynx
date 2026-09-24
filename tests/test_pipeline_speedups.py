@@ -272,3 +272,32 @@ def test_small_runs_route_in_thread(monkeypatch):
     reconnect_mod.reconnect_secondary_loop_edges(G.copy(), skeleton, debug=False)
 
     assert made == [0]
+
+
+@pytest.mark.parametrize("cores", [1, 3, 12])
+def test_reconnect_threads_follow_the_core_count(monkeypatch, cores):
+    """One thread per core by default (never more than there are pairs), and
+    one routing worker per thread once a run is big enough for workers."""
+    threads, routers = [], []
+    real_pool, real_router = reconnect_mod.ThreadPoolExecutor, reconnect_mod._Router
+
+    class RecordingPool(real_pool):
+        def __init__(self, max_workers=None, *args, **kwargs):
+            threads.append(max_workers)
+            super().__init__(max_workers, *args, **kwargs)
+
+    class RecordingRouter(real_router):
+        def __init__(self, processes):
+            routers.append(processes)
+            super().__init__(0)  # no real workers in a unit test
+
+    monkeypatch.setattr(reconnect_mod.os, "cpu_count", lambda: cores)
+    monkeypatch.setattr(reconnect_mod, "ThreadPoolExecutor", RecordingPool)
+    monkeypatch.setattr(reconnect_mod, "_Router", RecordingRouter)
+    monkeypatch.setattr(reconnect_mod, "ROUTING_PROCESS_MIN_PAIRS", 2)
+    skeleton, G = _rings(count=3)  # three candidate pairs
+
+    reconnect_mod.reconnect_secondary_loop_edges(G.copy(), skeleton, debug=False)
+
+    assert threads == [min(cores, 3)]
+    assert routers == [min(cores, 3)]
