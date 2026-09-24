@@ -9,6 +9,8 @@ from scipy.ndimage import distance_transform_edt, gaussian_filter
 from scipy.spatial.distance import directed_hausdorff
 from skimage.graph import route_through_array
 
+from haemolynx.preprocessing.memmap_support import LOW_MEMORY_BLOCK_VOXELS
+
 from ._platform import nested_native_thread_limit
 
 logger = logging.getLogger(__name__)
@@ -64,8 +66,16 @@ def reconnect_secondary_loop_edges(
     max_workers=None,
     debug=True,
     max_cache_size=1000,
+    use_memmap=False,
+    low_memory_window_voxels=LOW_MEMORY_BLOCK_VOXELS,
 ):
-    """Find alternative paths for degree-2 pairs and add as secondary edges."""
+    """Find alternative paths for degree-2 pairs and add as secondary edges.
+
+    *use_memmap* is the low-RAM option: *skeleton* is read in place instead of
+    copied, the whole-volume cost field is never built, and a routing window
+    whose padded size exceeds *low_memory_window_voxels* is skipped (and
+    counted in the closing summary) rather than transformed.
+    """
     if not isinstance(G, (nx.Graph, nx.MultiGraph)):
         raise ValueError("G must be a NetworkX Graph or MultiGraph")
     if skeleton is None or skeleton.size == 0:
@@ -82,7 +92,10 @@ def reconnect_secondary_loop_edges(
         return G
 
     deg = dict(G.degree())
-    skeleton_copy = skeleton.astype(bool)
+    # Read-only either way; under use_memmap a bool memmap is used as is.
+    skeleton_copy = (
+        np.asanyarray(skeleton, dtype=bool) if use_memmap else skeleton.astype(bool)
+    )
 
     # Windowing is only a saving while the windows stay small: one whole-volume
     # transform costs a fixed amount, and enough window area eventually exceeds
@@ -110,6 +123,28 @@ def reconnect_secondary_loop_edges(
         phi = np.minimum(maxc + COST_WINDOW_PAD, skeleton_copy.shape)
         padded_voxels = int(np.prod(np.maximum(phi - plo, 0)))
 
+        if use_memmap:
+            if padded_voxels > low_memory_window_voxels:
+                return None
+            global_field = None
+        else:
+            global_field = _global_field_or_none(padded_voxels)
+
+        if global_field is not None:
+            return global_field[
+                minc[0]:maxc[0], minc[1]:maxc[1], minc[2]:maxc[2]
+            ].copy()
+
+        dist = distance_transform_edt(
+            ~np.asarray(skeleton_copy[plo[0]:phi[0], plo[1]:phi[1], plo[2]:phi[2]])
+        )
+        inner = tuple(
+            slice(int(minc[d] - plo[d]), int(minc[d] - plo[d] + maxc[d] - minc[d]))
+            for d in range(3)
+        )
+        return 1 + dist[inner] ** 2
+
+    def _global_field_or_none(padded_voxels):
         with cost_lock:
             if cost_budget["global_field"] is None:
                 spent = cost_budget["transformed_voxels"] + padded_voxels
@@ -129,20 +164,7 @@ def reconnect_secondary_loop_edges(
             global_field = cost_budget["global_field"]
             if global_field is None:
                 cost_budget["transformed_voxels"] += padded_voxels
-
-        if global_field is not None:
-            return global_field[
-                minc[0]:maxc[0], minc[1]:maxc[1], minc[2]:maxc[2]
-            ].copy()
-
-        dist = distance_transform_edt(
-            ~skeleton_copy[plo[0]:phi[0], plo[1]:phi[1], plo[2]:phi[2]]
-        )
-        inner = tuple(
-            slice(int(minc[d] - plo[d]), int(minc[d] - plo[d] + maxc[d] - minc[d]))
-            for d in range(3)
-        )
-        return 1 + dist[inner] ** 2
+            return global_field
 
     # Each category is only ever logged per-occurrence behind `debug` --
     # normally off, tied to verbose_logging -- so a run where every single
@@ -156,6 +178,7 @@ def reconnect_secondary_loop_edges(
         "metric calculation failed": 0,
         "candidate pair raised unexpectedly": 0,
         "result processing raised unexpectedly": 0,
+        "routing window skipped: too large for the low-RAM option": 0,
     }
     failure_counts_lock = threading.Lock()
 
@@ -282,6 +305,11 @@ def reconnect_secondary_loop_edges(
                 if cached_result is None:
                     try:
                         sub_cost = window_cost(minc, maxc)
+                        if sub_cost is None:
+                            record_failure(
+                                "routing window skipped: too large for the low-RAM option"
+                            )
+                            break
                         if sub_cost.size == 0:
                             continue
                         orig_rel = [vox - minc for vox in orig_voxels]

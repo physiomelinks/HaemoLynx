@@ -391,9 +391,10 @@ def test_bridge_gaps_distance_transform_path_gives_the_same_result_with_memmap_o
     assert memmap_result[2, 2, 5:5 + gap].all(), "the gap should have been bridged"
 
 
-def test_bridge_gaps_dilation_path_ignores_use_memmap():
-    """max_gap at or below MAX_BALL_DILATION_RADIUS never reaches the
-    distance-transform code at all, so the flag has nothing to do there."""
+def test_bridge_gaps_dilation_path_gives_the_same_result_in_a_memmap():
+    """max_gap at or below MAX_BALL_DILATION_RADIUS dilates rather than
+    measuring distances, and under use_memmap it does so block by block into
+    a memmap -- same mask either way."""
     arr = np.zeros((5, 5, 5), dtype=bool)
     arr[2, 2, :] = True
     arr[2, 2, 2] = False
@@ -401,6 +402,8 @@ def test_bridge_gaps_dilation_path_ignores_use_memmap():
     memmap_result = bridge_gaps(arr, max_gap=1, use_memmap=True)
     eager_result = bridge_gaps(arr, max_gap=1, use_memmap=False)
 
+    assert isinstance(memmap_result, np.memmap)
+    assert not isinstance(eager_result, np.memmap)
     assert np.array_equal(memmap_result, eager_result)
 
 
@@ -796,10 +799,11 @@ def test_filter_components_by_total_fraction_gives_the_same_result_with_memmap_o
 
 
 def test_preprocess_skeleton_for_graph_gives_the_same_result_with_memmap_on():
-    skeleton = np.zeros((5, 15, 15), dtype=bool)
+    # Both pieces outlast drop_small_components, so the gap really is bridged.
+    skeleton = np.zeros((5, 15, 40), dtype=bool)
     skeleton[2, 2, :] = True
     gap = MAX_BALL_DILATION_RADIUS + 2
-    skeleton[2, 2, 5:5 + gap] = False
+    skeleton[2, 2, 15:15 + gap] = False
 
     memmap_result = preprocess_skeleton_for_graph(
         skeleton, bridge_gap_size=gap, max_bridge_distance=0, use_memmap=True
@@ -809,6 +813,18 @@ def test_preprocess_skeleton_for_graph_gives_the_same_result_with_memmap_on():
     )
 
     assert np.array_equal(memmap_result, eager_result)
+    assert eager_result.any()
+
+
+def test_bridge_gaps_of_an_empty_volume_is_empty_on_the_distance_transform_path():
+    """Regression: scipy's distance transform of an array with no background
+    voxel is measured from a corner, not infinite, so the plain path turned an
+    empty volume into a blob. The block-wise path already guarded this."""
+    empty = np.zeros((5, 15, 15), dtype=bool)
+    gap = MAX_BALL_DILATION_RADIUS + 2
+
+    assert not bridge_gaps(empty, max_gap=gap, use_memmap=False).any()
+    assert not bridge_gaps(empty, max_gap=gap, use_memmap=True).any()
 
 
 def test_preprocess_skeleton_for_graph_re_skeletonizes_through_skeletonize_by_component(
@@ -848,9 +864,12 @@ def test_preprocess_skeleton_for_graph_re_skeletonizes_through_skeletonize_by_co
         tile_halo_voxels=4,
     )
 
-    assert len(calls) == 1
-    assert calls[0]["use_memmap"] is True
-    assert calls[0]["tile_large_components"] is True
-    assert calls[0]["tile_max_voxels"] == 123
-    assert calls[0]["tile_halo_voxels"] == 4
+    # Low-RAM bundle refinement skeletonizes through the same function, so
+    # there is more than one call; every one of them must be protected.
+    assert calls
+    for call in calls:
+        assert call["use_memmap"] is True
+        assert call["tile_large_components"] is True
+        assert call["tile_max_voxels"] == 123
+        assert call["tile_halo_voxels"] == 4
     assert np.array_equal(result, skeleton)

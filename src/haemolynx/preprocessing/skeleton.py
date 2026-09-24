@@ -402,6 +402,10 @@ def bridge_gaps(
         return _bridge_gaps_blockwise(binary_skeleton, max_gap, memmap_directory)
     if max_gap <= MAX_BALL_DILATION_RADIUS:
         return binary_dilation(binary_skeleton, structure=_euclidean_ball(max_gap))
+    # scipy's distance transform of an array with no background voxel is not
+    # all-infinite but measured from a corner: nothing must dilate to nothing.
+    if not binary_skeleton.any():
+        return binary_skeleton.copy()
     inverted = ~binary_skeleton
     distance = distance_transform_edt(inverted)
     return binary_skeleton | ((distance <= max_gap) & inverted)

@@ -8,7 +8,7 @@ import numpy as np
 from skan import csr
 
 from ._platform import skan_numba_warmup_skeleton
-from .build import build_graph_segment_skan_stitched_loops
+from .build import build_graph_segment_skan_stitched_loops, skan_skeleton
 from .collapse import collapse_node_clusters
 from .direction_aware_collapse import (
     DEFAULT_MAX_RADIAL_DISPERSION,
@@ -99,6 +99,7 @@ def build_graph_from_skeleton(
     cluster_collapse_persistence_search_multiple: float = DEFAULT_SEARCH_RADIUS_MULTIPLE,
     cluster_collapse_direction_aware_min_degree: int = DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK,
     cluster_collapse_direction_aware_tangent_length_um: float = DEFAULT_TANGENT_LENGTH_UM,
+    use_memmap: bool = False,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -151,6 +152,12 @@ def build_graph_from_skeleton(
         itself uses, since this collapse method gates merges with that
         guard's own geometry: tuning one without the other would silently
         decouple the diagnostic from the corrective gate it is modelled on.
+    use_memmap
+        The low-RAM option. Builds skan's paths from the skeleton's foreground
+        coordinates instead of from whole-volume copies of it, and keeps the
+        secondary-loop reconnection to bounded windows -- see
+        ``build.skan_skeleton`` and ``reconnect.reconnect_secondary_loop_edges``.
+        The graph is the same either way.
 
     Returns
     -------
@@ -164,7 +171,7 @@ def build_graph_from_skeleton(
     warmup = skan_numba_warmup_skeleton()
     if warmup is not None:
         csr.Skeleton(warmup)
-    sk = csr.Skeleton(skeleton)
+    sk = skan_skeleton(skeleton, use_memmap=use_memmap)
     logger.info(f"skan Skeleton built: {sk.n_paths} paths")
 
     logger.info("Building graph (loop detection + segment extraction)...")
@@ -182,6 +189,7 @@ def build_graph_from_skeleton(
         skeleton,
         voxel_size=voxel_size,
         debug=debug,
+        use_memmap=use_memmap,
     )
     _notify_step(G, "reconnect_secondary_loop_edges", step_callback)
 

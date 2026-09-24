@@ -233,7 +233,10 @@ def smooth_graph_centrelines(
     from haemolynx.graph._helpers import calculate_path_length
 
     counts = {"smoothed": 0, "relaxed": 0, "kept_raw": 0, "too_short": 0}
-    support = np.argwhere(np.asarray(skeleton) > 0).astype(float)
+    # A bool skeleton (a memmap, in low-RAM mode) needs no whole-volume `> 0`.
+    skeleton = np.asanyarray(skeleton)
+    foreground = skeleton if skeleton.dtype == bool else skeleton > 0
+    support = np.argwhere(foreground).astype(float)
     if support.size == 0:
         logger.warning("No skeleton voxels: centrelines are left as they are.")
         return counts

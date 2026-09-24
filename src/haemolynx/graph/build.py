@@ -8,10 +8,105 @@ import networkx as nx
 from scipy.ndimage import generate_binary_structure
 from scipy.spatial import cKDTree
 import heapq
+from itertools import product
+
+from scipy import sparse
+from skan import csr
 
 from ._platform import iter_python_work, map_python_work
 
 logger = logging.getLogger(__name__)
+
+#: Foreground voxels whose 26 neighbours are looked up at once when building
+#: the pixel adjacency without the image: bounds the ``(n, 26)`` temporaries.
+_ADJACENCY_BATCH_NODES = 500_000
+
+
+class _SkeletonPaths:
+    """The part of ``skan.csr.Skeleton`` the graph builder reads.
+
+    ``n_paths`` and ``path_coordinates`` only, over the same path matrix and
+    coordinates skan would have built, so a caller cannot tell them apart.
+    """
+
+    def __init__(self, paths, coordinates):
+        self.paths = paths
+        self.coordinates = coordinates
+        self.n_paths = paths.shape[0]
+
+    def path(self, index):
+        start, stop = self.paths.indptr[index:index + 2]
+        return self.paths.indices[start:stop]
+
+    def path_coordinates(self, index):
+        return self.coordinates[self.path(index)]
+
+
+def _skeleton_adjacency_from_coordinates(coords, shape):
+    """The 26-connected pixel graph skan builds, from foreground coordinates.
+
+    Edge weights are the Euclidean length of each step, in voxels, as skan's
+    own ``pixel_graph`` gives them for a boolean skeleton. Neighbours are
+    found by ``searchsorted`` over the raveled coordinates, so nothing the
+    size of the volume is allocated: skan instead copies the image to bool
+    and pads it, two whole-volume temporaries.
+    """
+    n = len(coords)
+    ndim = len(shape)
+    padded_shape = np.asarray(shape, dtype=np.int64) + 2
+    strides = np.ones(ndim, dtype=np.int64)
+    for axis in range(ndim - 2, -1, -1):
+        strides[axis] = strides[axis + 1] * padded_shape[axis + 1]
+    # C-order argwhere output is already sorted by raveled index, padded or not.
+    keys = (coords.astype(np.int64) + 1) @ strides
+
+    offsets = np.array(
+        [step for step in product((-1, 0, 1), repeat=ndim) if any(step)],
+        dtype=np.int64,
+    )
+    step_keys = offsets @ strides
+    step_lengths = np.linalg.norm(offsets, axis=1)
+
+    rows, cols, data = [], [], []
+    for start in range(0, n, _ADJACENCY_BATCH_NODES):
+        stop = min(start + _ADJACENCY_BATCH_NODES, n)
+        neighbour_keys = keys[start:stop, None] + step_keys[None, :]
+        found = np.searchsorted(keys, neighbour_keys)
+        np.minimum(found, n - 1, out=found)
+        present = keys[found] == neighbour_keys
+        source, step = np.nonzero(present)
+        rows.append(source + start)
+        cols.append(found[source, step])
+        data.append(step_lengths[step])
+    adjacency = sparse.coo_matrix(
+        (np.concatenate(data), (np.concatenate(rows), np.concatenate(cols))),
+        shape=(n, n),
+    )
+    return adjacency.tocsr()
+
+
+def skan_skeleton(skeleton, *, use_memmap=False):
+    """The skan skeleton the graph builder walks, optionally without the image.
+
+    With *use_memmap* off this is ``skan.csr.Skeleton(skeleton)``. With it on,
+    the same paths are built from the foreground coordinates alone: skan's
+    constructor casts the whole volume to bool and pads it, which on a
+    memory-mapped volume means two in-RAM copies of the thing that was mapped
+    to keep it out of RAM. Only ``n_paths`` and ``path_coordinates`` are
+    provided in that mode, the two things the graph builder reads.
+    """
+    if not use_memmap:
+        return csr.Skeleton(skeleton)
+
+    coords = np.argwhere(skeleton)
+    if len(coords) == 0:
+        return _SkeletonPaths(
+            sparse.csr_matrix((0, 0)), np.empty((0, skeleton.ndim), dtype=np.int64)
+        )
+    adjacency = _skeleton_adjacency_from_coordinates(coords, skeleton.shape)
+    adjacency = csr._mst_junctions(adjacency)
+    paths = csr._build_skeleton_path_graph(csr.csr_to_nbgraph(adjacency))
+    return _SkeletonPaths(paths, coords)
 
 
 def build_graph_segment_skan_stitched_loops(

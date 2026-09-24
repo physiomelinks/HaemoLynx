@@ -1017,6 +1017,7 @@ def build_network(
             cluster_collapse_direction_aware_tangent_length_um=float(
                 settings["cartwheel_hub_tangent_length_um"]
             ),
+            use_memmap=settings["use_memmap_loading"],
         )
 
         # Last thing before the graph is saved: take the voxel staircase out of
