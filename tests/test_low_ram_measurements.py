@@ -570,3 +570,141 @@ def test_a_display_volume_on_disk_is_deleted_once_nothing_maps_it(tmp_path):
     del view
     gc.collect()
     assert not path.exists()
+
+
+# --- preprocessing: segmentation cleanup ---------------------------------------
+
+import functools  # noqa: E402
+
+from haemolynx.preprocessing import memmap_support, pointwise_distance  # noqa: E402
+from haemolynx.preprocessing import segmentation_cleanup as cleanup  # noqa: E402
+
+
+def _small_blocks(monkeypatch, block_voxels=6_000):
+    """Force the block-wise paths to split a test-sized volume."""
+    monkeypatch.setattr(
+        cleanup, "map_blockwise", functools.partial(memmap_support.map_blockwise, block_voxels=block_voxels)
+    )
+    monkeypatch.setattr(
+        pointwise_distance,
+        "distance_transform_edt_blockwise",
+        functools.partial(
+            pointwise_distance.distance_transform_edt_blockwise, block_voxels=block_voxels, halo=3
+        ),
+    )
+
+
+def _fragmented_vessels(seed=13, debris=True):
+    """Tubes broken into aligned fragments (for reconnect), with surface
+    whiskers, pinholes and small debris for the other steps to act on."""
+    rng = np.random.default_rng(seed)
+    shape = (20, 44, 60)
+    z, y, x = np.indices(shape, dtype=float)
+    mask = np.zeros(shape, dtype=bool)
+    for yc, radius in [(10.0, 2.2), (24.0, 3.0), (36.0, 1.6)]:
+        tube = (z - 10) ** 2 + (y - yc) ** 2 <= radius**2
+        gaps = (x % 17 >= 13) & (x % 17 <= 14)
+        mask |= tube & ~gaps
+    if not debris:
+        return mask
+    mask |= rng.random(shape) < 0.004
+    mask &= ~(rng.random(shape) < 0.01)
+    return mask
+
+
+def test_blockwise_edt_splits_and_matches_scipy(monkeypatch):
+    from scipy.ndimage import distance_transform_edt
+
+    mask = _fragmented_vessels()
+    for sampling in [(1.0, 1.0, 1.0), (2.0, 0.5, 0.5)]:
+        out = np.empty(mask.shape)
+        pointwise_distance.distance_transform_edt_blockwise(
+            mask, out, sampling=sampling, halo=2, block_voxels=3_000
+        )
+        assert np.array_equal(out, distance_transform_edt(mask, sampling=sampling))
+
+
+def test_blockwise_edt_refuses_a_volume_with_no_background():
+    with pytest.raises(ValueError):
+        pointwise_distance.distance_transform_edt_blockwise(
+            np.ones((4, 5, 6), dtype=bool), np.empty((4, 5, 6)), halo=1, block_voxels=30
+        )
+
+
+@pytest.mark.parametrize(
+    "step, kwargs",
+    [
+        (cleanup.remove_surface_whiskers, dict(whisker_radius_um=1.0)),
+        (cleanup.close_small_gaps, dict(closing_radius_um=1.0)),
+        (cleanup.smooth_vessel_surfaces, dict(method="morphological", morphological_radius_um=1.0)),
+        (cleanup.smooth_vessel_surfaces, dict(method="gaussian", sigma_um=1.0)),
+        (cleanup.fill_enclosed_cavities, dict()),
+    ],
+)
+def test_local_cleanup_steps_are_identical_in_low_ram_mode(step, kwargs, monkeypatch, tmp_path):
+    _small_blocks(monkeypatch)
+    mask = _fragmented_vessels()
+    if step is not cleanup.fill_enclosed_cavities:
+        kwargs = dict(kwargs, voxel_size_zyx=(2.0, 0.5, 0.5))
+
+    plain = step(mask, **kwargs)
+    low_ram = step(mask, use_memmap=True, memmap_directory=tmp_path, **kwargs)
+
+    assert not np.array_equal(plain, mask), "the step must change something"
+    assert isinstance(low_ram, np.memmap)
+    assert np.array_equal(low_ram, plain)
+
+
+@pytest.mark.parametrize("voxel_zyx", [(1.0, 1.0, 1.0), (2.0, 0.5, 0.5)])
+def test_reconnect_is_identical_in_low_ram_mode(voxel_zyx, monkeypatch, tmp_path):
+    _small_blocks(monkeypatch)
+    mask = _fragmented_vessels(debris=False)
+    # Long enough that some candidates are rejected as well as accepted.
+    args = dict(voxel_size_zyx=voxel_zyx, max_bridge_distance_um=15.0, min_cylindricality=0.3)
+
+    plain, plain_stats = cleanup.reconnect_vessel_like_components(mask, **args)
+
+    def no_whole_volume_edt(array, *a, **k):
+        raise AssertionError("the whole volume was distance-transformed")
+
+    monkeypatch.setattr(cleanup, "distance_transform_edt", no_whole_volume_edt)
+    low_ram, low_stats = cleanup.reconnect_vessel_like_components(
+        mask, use_memmap=True, memmap_directory=tmp_path, **args
+    )
+
+    assert plain_stats["accepted_bridges"] > 0
+    assert plain_stats["rejected_reasons"]
+    assert low_stats == plain_stats
+    assert isinstance(low_ram, np.memmap)
+    assert np.array_equal(low_ram, plain)
+    assert [p.name for p in tmp_path.iterdir()] == [Path(low_ram.filename).name]
+
+
+def test_whole_cleanup_is_identical_and_tidy_in_low_ram_mode(monkeypatch, tmp_path):
+    _small_blocks(monkeypatch)
+    image = _fragmented_vessels().astype(np.uint8) * 255
+    settings = dict(
+        voxel_size_zyx=(2.0, 0.5, 0.5),
+        fill_cavities=True,
+        remove_whiskers=True,
+        whisker_radius_um=0.5,
+        close_gaps=True,
+        close_gaps_radius_um=0.5,
+        reconnect_gaps=True,
+        reconnect_max_bridge_distance_um=8.0,
+        reconnect_min_cylindricality=0.3,
+        smooth_surfaces=True,
+        smooth_sigma_um=0.5,
+        remove_small_volumes=True,
+        remove_small_min_volume_um3=4.0,
+    )
+
+    plain, plain_raw = cleanup.clean_segmented_mask_for_skeletonisation(image, **settings)
+    low_ram, low_raw = cleanup.clean_segmented_mask_for_skeletonisation(
+        image, use_memmap=True, memmap_directory=tmp_path, **settings
+    )
+
+    assert np.array_equal(low_ram, plain)
+    assert np.array_equal(low_raw, plain_raw)
+    kept = {Path(low_ram.filename).name, Path(low_raw.filename).name}
+    assert {p.name for p in tmp_path.iterdir()} == kept, "an intermediate volume was left behind"

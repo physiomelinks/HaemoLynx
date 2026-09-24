@@ -152,3 +152,80 @@ class FeatureDistance:
                 )
         out[~is_feature] = best
         return out
+
+
+#: Context read around each block by :func:`distance_transform_edt_blockwise`.
+#: Voxels deeper than this inside a vessel are looked up instead, so it only
+#: sets how many need looking up, never the result.
+BLOCKWISE_EDT_HALO = 16
+
+
+def distance_transform_edt_blockwise(
+    features: np.ndarray,
+    out: np.ndarray,
+    *,
+    feature_value: bool = False,
+    sampling: Sequence[float] | None = None,
+    halo: int = BLOCKWISE_EDT_HALO,
+    block_voxels: int = LOW_MEMORY_BLOCK_VOXELS,
+) -> np.ndarray:
+    """``distance_transform_edt`` written into *out*, one padded block at a time.
+
+    With the default ``feature_value=False`` this is
+    ``distance_transform_edt(features, sampling=sampling)`` -- each voxel's
+    distance to the nearest zero voxel. Each block is transformed with
+    *halo* voxels of context; a voxel's value there is kept when no feature
+    outside the padded block could be nearer -- every such feature is at
+    least one step beyond an inner face -- and is otherwise looked up with
+    :class:`FeatureDistance`. Same values as the whole-volume call, subject
+    to the exact-tie caveat in this module's docstring. Only one padded
+    block (plus scipy's ~70 bytes per voxel of it) is ever in RAM.
+
+    Raises ``ValueError`` for a volume with no feature voxel or no
+    non-feature voxel, where scipy's own result is not a distance.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    ndim = features.ndim
+    spacing = np.ones(ndim) if sampling is None else np.asarray(sampling, dtype=float)
+    lookup: FeatureDistance | None = None
+    shape = np.asarray(features.shape)
+    for _padded, _inner, core in iter_blocks(features.shape, halo=0, block_voxels=block_voxels):
+        lo = np.array([s.start for s in core])
+        hi = np.array([s.stop for s in core])
+        plo = np.maximum(lo - halo, 0)
+        phi = np.minimum(hi + halo, shape)
+        crop = np.asarray(features[tuple(slice(a, b) for a, b in zip(plo, phi))], dtype=bool)
+        is_feature = crop if feature_value else ~crop
+        inner = tuple(slice(a - p, b - p) for a, b, p in zip(lo, hi, plo))
+        if not is_feature[inner].all():
+            if is_feature.any():
+                local = distance_transform_edt(~is_feature, sampling=spacing)[inner]
+                bound = np.full(local.shape, np.inf)
+                for axis in range(ndim):
+                    position = np.arange(lo[axis], hi[axis]).reshape(
+                        [-1 if a == axis else 1 for a in range(ndim)]
+                    )
+                    if plo[axis] > 0:
+                        bound = np.minimum(bound, (position - plo[axis] + 1) * spacing[axis])
+                    if phi[axis] < shape[axis]:
+                        bound = np.minimum(bound, (phi[axis] - position) * spacing[axis])
+                unsure = local > bound
+            else:
+                local = np.zeros(tuple(hi - lo))
+                unsure = np.ones(local.shape, dtype=bool)
+            if unsure.any():
+                if lookup is None:
+                    lookup = FeatureDistance(
+                        features,
+                        feature_value=feature_value,
+                        sampling=spacing,
+                        block_voxels=block_voxels,
+                    )
+                    if not lookup.has_surface:
+                        raise ValueError("no feature surface: every voxel is on the same side")
+                local[unsure] = lookup.at(np.argwhere(unsure) + lo)
+            out[core] = local
+        else:
+            out[core] = 0.0
+    return out
