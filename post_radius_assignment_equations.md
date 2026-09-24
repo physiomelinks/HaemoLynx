@@ -132,7 +132,7 @@ Listed in execution order for the default configuration.
 | — | Diameter floor for the Pries–Secomb relation | 3.0 | µm | — |
 | $X_0$ | Phase separation skimming threshold | $0.964\,(1 - H_{\text{in}})/D_F$ (E18) | — | Derived from $H_{\text{in}}$ and $D_F$ (E18) [@pries1989; @rasmussen2018] |
 | $H$ | `systemic_hematocrit` | 0.45 | — | [@dash2010]: standard haematocrit ≈ 0.45 (human) |
-| $p_{\text{in}}$ | `input_p_bc` | $13.332\times10^{6}$ (100 mmHg) | mPa | [CITE — unconfirmed]. Measured resting MAP in conscious rats: WKY 116 ± 3, SHR 154 ± 3 mmHg [@li1997] |
+| $p_{\text{in}}$ | `input_p_bc` | $13.332\times10^{6}$ (100 mmHg) | mPa | [@izuta1995]: 101 ± 2 mmHg in anaesthetised WKY rats. SHR run higher: 169 ± 3 anaesthetised [@izuta1995], 154 ± 3 conscious [@li1997] |
 | $p_{\text{out}}$ | `output_p_bc` | $0.27\times10^{6}$ (2 mmHg) | mPa | [@willenbrock1997]: central venous pressure 4 ± 3 mmHg in conscious control rats |
 | — | `rheology_max_iterations` | 15 | — | — |
 | — | `rheology_tolerance` | $1\times10^{-4}$ | — | — |
@@ -163,12 +163,12 @@ Listed in execution order for the default configuration.
 |---|---|---|---|---|
 | — | `grid_resolution_xyz` | (10.0, 10.0, 10.0) | µm | — |
 | $\sigma_{\mathrm{O_2}}$ | `sigma_diff` | $1.5\times10^{-9}$ ($=1.5\times10^{3}$ µm²·s⁻¹) | m²·s⁻¹ | Consistent with $K_{\mathrm{O_2}}/\alpha_{\mathrm{O_2}} \approx 1.6\times10^{-9}$ from rat skeletal muscle [@kawashiro1975] and $(1.04 \pm 0.78)\times10^{-9}$ in rat mesentery [@yaegashi1996] |
-| $\sigma_{\mathrm{CO_2}}$ | `sigma_diff_co2` | $3.0\times10^{-8}$ ($=3.0\times10^{4}$ µm²·s⁻¹) | m²·s⁻¹ | [CITE — unconfirmed]. $K_{\mathrm{CO_2}}/\alpha_{\mathrm{CO_2}} \approx 1.6\times10^{-9}$ in rat skeletal muscle [@kawashiro1975], about 1/19 of this value. The 20× ratio holds for Krogh’s constant ($D\alpha$), not for $D$; see `cb_modelling_reference.md` open item 18 |
-| $P^{\mathrm{O_2}}_{\text{perm}}$ | `permeability_o2_cm_s` | $1.0\times10^{-4}$ ($=1.0$ µm·s⁻¹) | cm·s⁻¹ | [CITE — unconfirmed] |
-| $P^{\mathrm{CO_2}}_{\text{perm}}$ | `permeability_co2_cm_s` | $2.0\times10^{-3}$ ($=20.0$ µm·s⁻¹) | cm·s⁻¹ | [CITE — unconfirmed] |
+| $\sigma_{\mathrm{CO_2}}$ | `sigma_diff_co2` | $3.0\times10^{-8}$ ($=3.0\times10^{4}$ µm²·s⁻¹) | m²·s⁻¹ | [CITE — unconfirmed]. $K_{\mathrm{CO_2}}/\alpha_{\mathrm{CO_2}} \approx 1.6\times10^{-9}$ in rat skeletal muscle [@kawashiro1975], about 1/19 of this value. The 20× ratio holds for Krogh’s constant ($D\alpha$), not for $D$. No source found that uses this value; see `cb_modelling_reference.md` open item 18 |
+| $P^{\mathrm{O_2}}_{\text{perm}}$ | `permeability_o2_cm_s` | $1.0\times10^{-4}$ ($=1.0$ µm·s⁻¹) | cm·s⁻¹ | [CITE — unconfirmed]. No measured or model-used value found |
+| $P^{\mathrm{CO_2}}_{\text{perm}}$ | `permeability_co2_cm_s` | $2.0\times10^{-3}$ ($=20.0$ µm·s⁻¹) | cm·s⁻¹ | [CITE — unconfirmed]. [@dash2006] use one capillary PS for both O₂ and CO₂, not a 20× ratio; see `cb_modelling_reference.md` open item 18 |
 | $M_{\max}$ | `M_max` | 0.005 | mmol·L⁻¹·s⁻¹ | Chosen; see `cb_modelling_reference.md` §10.9 and open item 8 |
 | $k$ | `k_reduce` | 0.1 | mmHg⁻¹ | Chosen; phenomenological, see `cb_modelling_reference.md` §10.9 |
-| $RQ$ | `respiratory_quotient` | 0.82 | — | [CITE — unconfirmed]. Measured 0.85 in rat skeletal muscle [@kawashiro1975] |
+| $RQ$ | `respiratory_quotient` | 0.82 | — | [@mileschan2015]: fasting whole-body RQ ≈ 0.80–0.90, depending on diet (human). Measured 0.85 in rat skeletal muscle [@kawashiro1975] |
 | $\gamma$ | Picard relaxation factor, multi-species | 1.0 | — | Numerical choice |
 | $\varepsilon$ | Diagonal regularisation | $1\times10^{-12}$ | — | Numerical choice |
 | — | `picard_max_iterations` | 50 | — | — |

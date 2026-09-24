@@ -2596,7 +2596,7 @@ Present in the code, disabled for the CB path, and `__post_init__` raises if re-
 
 | Parameter | Value | Units | Class | Source / justification | Sensitivity |
 |---|---|---|---|---|---|
-| `input_p_bc` | 13.332 × 10⁶ | mPa (= 100 mmHg) | (i) | Systemic MAP `[CITE — unconfirmed]`. Measured resting MAP in conscious rats is WKY 116 ± 3, SHR 154 ± 3 mmHg [`li_sympathetic_1997`] | assumed |
+| `input_p_bc` | 13.332 × 10⁶ | mPa (= 100 mmHg) | (i) | Systemic MAP; 101 ± 2 mmHg in anaesthetised WKY rats [`izuta_cerebral_1995`]. SHR run higher: 169 ± 3 anaesthetised [`izuta_cerebral_1995`], 154 ± 3 conscious [`li_sympathetic_1997`] | assumed |
 | `output_p_bc` | 0.27 × 10⁶ | mPa (= 2 mmHg) | (i) | Central venous pressure; 4 ± 3 mmHg in conscious control rats [`willenbrock_effect_1997`] | assumed |
 | `blood_plasma_viscosity_cP` | 1.2 | cP | (i) | Plasma viscosity; normal range 1.10–1.30 mPa·s at 37 °C, human [`kesmarky_plasma_2008`] | assumed |
 | Viscosity law | `in_vivo` | — | (ii) | Pries et al. 1994, fitted to microvessels in living tissue, where the endothelial surface layer narrows the effective lumen [`pries_resistance_1994`]. `in_vitro` (Pries et al. 1992, glass tubes) is available and not default [`pries_blood_1992`] | measured — the two differ by ≈3.4× apparent viscosity at D = 8 µm, but a 3–4× change moved no within-specimen ratio (§13) |
@@ -2636,10 +2636,10 @@ These are **not** configurable. They live in the function bodies.
 | `do_perfusion_modeling` | True | — | — | — | — |
 | `grid_resolution_xyz` | (10, 10, 10) default; **4 µm** for H2 §2.3 | µm | (iii) | 4 µm chosen on convergence: median PO₂ 27.34 / 27.92 / 28.21 at 10 / 6 / 4 µm, increments halving, extrapolating to ≈28.5. 4 µm is within ~1% of that limit at 1/27 the cost of native resolution | measured |
 | `sigma_diff` | 1.5 × 10⁻⁹ | m²/s | (i) | O₂ diffusivity in tissue. Consistent with K_O₂/α_O₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`] and (1.04 ± 0.78) × 10⁻⁹ in rat mesentery [`yaegashi_diffusivity_1996`] | assumed |
-| `sigma_diff_co2` | 3.0 × 10⁻⁸ | m²/s | (i) | `[CITE — unconfirmed]`. Measured K_CO₂/α_CO₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`], about 1/19 of this value. The ≈20× ratio holds for Krogh's constant (Dα), not for D; see open item 18 | assumed |
-| `permeability_o2_cm_s` | 1.0 × 10⁻⁴ | cm/s | (ii) | Endothelial O₂ permeability `[CITE — unconfirmed]` | assumed |
-| `permeability_co2_cm_s` | 2.0 × 10⁻³ | cm/s | (ii) | Endothelial CO₂ permeability `[CITE — unconfirmed]` | assumed |
-| `respiratory_quotient` | 0.82 | — | (i) | CO₂ produced per O₂ consumed `[CITE — unconfirmed]`. Measured 0.85 in rat skeletal muscle [`kawashiro_determination_1975`] | assumed |
+| `sigma_diff_co2` | 3.0 × 10⁻⁸ | m²/s | (i) | `[CITE — unconfirmed]`. Measured K_CO₂/α_CO₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`], about 1/19 of this value. The ≈20× ratio holds for Krogh's constant (Dα), not for D. No source found that uses this value; see open item 18 | assumed |
+| `permeability_o2_cm_s` | 1.0 × 10⁻⁴ | cm/s | (ii) | Endothelial O₂ permeability `[CITE — unconfirmed]`. No measured or model-used value found | assumed |
+| `permeability_co2_cm_s` | 2.0 × 10⁻³ | cm/s | (ii) | Endothelial CO₂ permeability `[CITE — unconfirmed]`. [`dash_simultaneous_2006`] use one capillary PS for both O₂ and CO₂, not a 20× ratio; see open item 18 | assumed |
+| `respiratory_quotient` | 0.82 | — | (i) | CO₂ produced per O₂ consumed; fasting whole-body RQ ≈ 0.80–0.90 depending on diet, human [`miles-chan_fasting_2015`]. Measured 0.85 in rat skeletal muscle [`kawashiro_determination_1975`] | assumed |
 | `systemic_hematocrit` | 0.45 | fraction | (i) | Standard haematocrit ≈ 0.45, human [`dash_erratum_2010`] | assumed |
 | `po2_arterial_mmHg` | 100.0 | mmHg | (i) | Standard arterial PO₂, human [`dash_erratum_2010`] — but see open item 3 | assumed |
 | `pco2_arterial` | 40.0 | mmHg | (i) | Arterial reference 40 ± 2 mmHg, human [`dash_erratum_2010`], [`berend_physiological_2014`] | assumed |
@@ -3259,7 +3259,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 4 | Baseline haematocrit duplicated in the Tier 1 washout path | §6.6 |
 | 5 | `C_arterial` is dead configuration — declared 3×, read 0× | §6 |
 | 6 | Solver tolerances disagree between config and code | Appendix A |
-| 7 | 7 parameters still marked `[CITE]`: systemic MAP, the Spencer CO₂ curve and its Haldane shift, `sigma_diff_co2`, both endothelial permeabilities, and the respiratory quotient | §10 completeness |
+| 7 | 5 parameters still marked `[CITE]`: the Spencer CO₂ curve and its Haldane shift, `sigma_diff_co2`, and both endothelial permeabilities | §10 completeness |
 | 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and `cb_settings.BASE_M_MAX` (0.05). The published §2.3 results used 0.05. **Now pinned** by `test_cb_settings.py` | §6.4, §13.6 |
 | ~~9~~ | **Closed** by `f92a96c`. The rheology solver substituted a silent 5.0 µm diameter; it now raises, matching `map_vessels_to_grid` and `edge_transit_times`. `2d98ab8` removed the least-squares pressure fallback and the extreme-decile boundary fallback, but left the rheology solver's initialisation and update on 5.0 µm | §3.2, §3.4, §2.8 |
 | 10 | Pressure boundaries disagree: config 100/2 mmHg, `cb_settings` 60/20 mmHg. Every published H2 number used 60/20. **Now pinned** by `test_cb_settings.py` | §7.8, §8, §11 row 15 |
@@ -3270,7 +3270,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 15 | The threshold selector's “median diameter” is a median over every foreground voxel, while §2.6's calibre is a median over centreline voxels. The 4–7 µm capillary window is an external target for the latter and is being applied to the former, which reads 0.63–1.00× as large | §2.2 step 3; the selected threshold, hence everything downstream |
 | 16 | Freezing the threshold at 0.90 runs SHR-B and SHR-C above their own calibre choice, at a median diameter of 3.73 µm — below the selector's own 4.0 µm floor. 0 of 3 WKY and 2 of 3 SHR are affected, so the freeze is group-asymmetric even though `assess_cohort_split` on the choices reports no separation | §2.2 step 13; every per-specimen geometric quantity |
 | 17 | The probability field is quantised to hundredths and every sweep threshold lands exactly on a level, so the strict `p > t` discards a whole level — 0.5% of the ROI at 0.30 rising to 4.2–5.9% at 0.99, where it is two thirds of the mask. `p > 0.99` is exactly `p = 1.0`. Using `≥` moves 3 of 6 per-specimen choices and removes item 16's group asymmetry | §2.2 step 2; the per-specimen choices, and item 16 |
-| 18 | `sigma_diff_co2` (3.0 × 10⁻⁸ m²/s) is 20× `sigma_diff`, but the multi-species solver also multiplies each diffusivity by its solubility (`build_diffusion_matrix`), and α_CO₂ is already ≈22× α_O₂. The effective CO₂ Krogh constant is then ≈450× the O₂ one; the measured ratio in rat muscle is ≈21 [`kawashiro_determination_1975`], which puts D_CO₂ near 1.6 × 10⁻⁹ m²/s. Not changed here: correcting it changes the solved CO₂ and pH fields, which feed back into O₂ unloading through the Bohr shift | §10.9, §6 |
+| 18 | `sigma_diff_co2` (3.0 × 10⁻⁸ m²/s) is 20× `sigma_diff`, but the multi-species solver also multiplies each diffusivity by its solubility (`build_diffusion_matrix`), and α_CO₂ is already ≈22× α_O₂. The effective CO₂ Krogh constant is then ≈450× the O₂ one; the measured ratio in rat muscle is ≈21 [`kawashiro_determination_1975`], which puts D_CO₂ near 1.6 × 10⁻⁹ m²/s. Not changed here: correcting it changes the solved CO₂ and pH fields, which feed back into O₂ unloading through the Bohr shift. The wall flux repeats the pattern: `permeability_co2_cm_s` is 20× `permeability_o2_cm_s` and the flux is also scaled by α, so CO₂ crosses the wall ≈450× faster per mmHg, whereas [`dash_simultaneous_2006`] use one capillary PS for both gases | §10.9, §6 |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the
