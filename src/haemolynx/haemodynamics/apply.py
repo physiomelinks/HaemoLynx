@@ -14,6 +14,7 @@ from haemolynx import io
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
 from haemolynx.parsers import prefixed_arguments
+from haemolynx.preprocessing.memmap_support import release_memmap_array
 from haemolynx.haemodynamics import automated
 from haemolynx.haemodynamics import edt_diameter
 from haemolynx.haemodynamics.poiseuille import (
@@ -124,6 +125,10 @@ class HaemodynamicsApplyConfig:
     #: Spacing per array axis in canonical (z, y, x) order, not image-metadata (x, y, z).
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0)
     axis_order: str = CANONICAL_AXIS_ORDER
+    #: The low-RAM option: volumes loaded or built here live on disk in
+    #: *memmap_directory*, and the EDT cross-check reads the mask pointwise.
+    use_memmap: bool = False
+    memmap_directory: Path | str | None = None
 
     def __post_init__(self) -> None:
         if not self.diameters.get("diameter_by_branch_order"):
@@ -208,7 +213,12 @@ def load_fwhm_raw_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
     path = _fwhm_raw_path(config)
     if path is None:
         return None
-    return automated.load_single_channel_tiff_volume(path, axis_order=config.axis_order)
+    return automated.load_single_channel_tiff_volume(
+        path,
+        axis_order=config.axis_order,
+        use_memmap=config.use_memmap,
+        memmap_directory=config.memmap_directory,
+    )
 
 
 def _measure_fwhm_diameters(
@@ -231,6 +241,8 @@ def _measure_fwhm_diameters(
         voxel_size_zyx=voxel_sz,
         axis_order=config.axis_order,
         raw_volume=raw_volume,
+        use_memmap=config.use_memmap,
+        memmap_directory=config.memmap_directory,
         **{
             **config.fwhm_measurement_arguments(measurement_parameters),
             "raw_tiff_path": path,
@@ -255,8 +267,18 @@ def load_edt_mask_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
     path = io.resolve_image_path_with_optional_zip(Path(mask_path))
-    raw = automated.load_single_channel_tiff_volume(path, axis_order=config.axis_order)
-    return _to_binary_volume_for_skeletonization(raw)
+    raw = automated.load_single_channel_tiff_volume(
+        path,
+        axis_order=config.axis_order,
+        use_memmap=config.use_memmap,
+        memmap_directory=config.memmap_directory,
+    )
+    mask = _to_binary_volume_for_skeletonization(
+        raw, use_memmap=config.use_memmap, memmap_directory=config.memmap_directory
+    )
+    if isinstance(raw, np.memmap) and mask is not raw:
+        release_memmap_array(raw)
+    return mask
 
 
 def _measure_edt_diameters(
@@ -283,6 +305,7 @@ def _measure_edt_diameters(
             config.edt_setting("edt_junction_proximity_exclusion_um", 10.0)
         ),
         aggregation=config.fwhm_setting("fwhm_edge_diameter_aggregation", "median"),
+        use_memmap=config.use_memmap,
     )
 
 
@@ -329,6 +352,8 @@ def assign_edge_diameters(
         if edt_mask is not None:
             summary["edt"] = _measure_edt_diameters(G, config, mask_volume=edt_mask)
             use_edt_fallback = config.edt_diameter_prefer_over_table_on_fwhm_failure
+            if mask_volume is None and isinstance(edt_mask, np.memmap):
+                release_memmap_array(edt_mask)
         else:
             summary["edt"] = {
                 "skipped": True,

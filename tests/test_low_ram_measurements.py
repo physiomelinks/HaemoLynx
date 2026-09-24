@@ -11,6 +11,7 @@ from pathlib import Path
 
 import networkx as nx
 import numpy as np
+import pytest
 import tifffile
 from scipy.ndimage import gaussian_filter
 
@@ -196,3 +197,180 @@ def test_reference_shape_comes_from_the_tiff_header_in_low_ram_mode(tmp_path, mo
 
     assert dist3d._load_volume_shape_only(path, use_memmap=True) == (5, 6, 7)
     assert dist3d._load_volume_shape_only(flat, use_memmap=True) == (1, 6, 7)
+
+
+# --- haemodynamics: FWHM diameters and the EDT cross-check -------------------
+
+from haemolynx.haemodynamics import automated, edt_diameter  # noqa: E402
+
+_FWHM_ARGS = dict(
+    sample_spacing_along_edge_um=2.0,
+    transverse_profile_step_um=0.25,
+    transverse_half_extent_um=8.0,
+    diameter_guess_um=4.0,
+    store_profile_debug=True,
+)
+
+
+def _tube_case(voxel_zyx=(1.0, 1.0, 1.0), seed=0):
+    """Three gently curving tubes of different radii in a noisy uint16 stack,
+    plus the matching mask and a graph of their centrelines."""
+    shape = (24, 64, 72)
+    rng = np.random.default_rng(seed)
+    z, y, x = np.indices(shape, dtype=float)
+    raw = np.zeros(shape)
+    mask = np.zeros(shape, dtype=bool)
+    G = nx.MultiGraph()
+    spacing = np.asarray(voxel_zyx, dtype=float)
+    for k, (y0, radius) in enumerate([(14.0, 2.0), (32.0, 3.0), (50.0, 4.5)]):
+        xs = np.arange(4, 68, dtype=float)
+        ys = y0 + 3.0 * np.sin(xs / 12.0 + k)
+        zs = 12.0 + 2.0 * np.cos(xs / 15.0)
+        centre_y = np.interp(x, xs, ys)
+        centre_z = np.interp(x, xs, zs)
+        inside = (x >= 4) & (x <= 67)
+        r2 = (y - centre_y) ** 2 + (z - centre_z) ** 2
+        raw = np.maximum(raw, np.where(inside, 1000.0 * np.exp(-r2 / (2 * (radius / 1.2) ** 2)), 0))
+        mask |= inside & (r2 <= radius**2)
+        pts = np.column_stack([zs, ys, xs]) * spacing
+        G.add_node(2 * k, pos=pts[0])
+        G.add_node(2 * k + 1, pos=pts[-1])
+        G.add_edge(2 * k, 2 * k + 1, voxels=pts.tolist(), branch_order=f"B{k}")
+    raw = (raw + rng.normal(50, 15, shape)).clip(0, 65535).astype(np.uint16)
+    return raw, mask, G
+
+
+def _same(a, b):
+    """Deep equality for summaries holding arrays, dicts, lists and NaNs."""
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, (list, tuple)):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        return np.array_equal(np.asarray(a), np.asarray(b), equal_nan=True)
+    if isinstance(a, float) and isinstance(b, float) and np.isnan(a) and np.isnan(b):
+        return True
+    return a == b
+
+
+def _edge_attributes(G):
+    return [dict(data) for _u, _v, _k, data in sorted(G.edges(keys=True, data=True), key=lambda e: e[:3])]
+
+
+def test_fwhm_diameters_are_identical_in_low_ram_mode(tmp_path):
+    raw, _mask, G = _tube_case()
+    path = tmp_path / "raw.tif"
+    tifffile.imwrite(path, raw)
+    G_plain, G_low = G.copy(), G.copy()
+
+    plain = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G_plain, raw_tiff_path=path, voxel_size_zyx=(1.0, 1.0, 1.0), **_FWHM_ARGS
+    )
+    low_ram = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G_low,
+        raw_tiff_path=path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        use_memmap=True,
+        memmap_directory=tmp_path / "mm",
+        **_FWHM_ARGS,
+    )
+
+    assert plain["edges_measured"] == 3
+    assert _same(low_ram, plain)
+    assert _same(_edge_attributes(G_low), _edge_attributes(G_plain))
+    assert not list((tmp_path / "mm").glob("haemolynx_*")), "a temporary volume was left behind"
+
+
+def test_fwhm_raw_volume_on_disk_matches_the_in_ram_load_for_any_axis_order(tmp_path):
+    raw, _mask, _G = _tube_case()
+    path = tmp_path / "raw_xyz.tif"
+    tifffile.imwrite(path, np.transpose(raw, (2, 1, 0)))
+
+    plain = automated.load_single_channel_tiff_volume(path, axis_order="xyz")
+    low_ram = automated.load_single_channel_tiff_volume(
+        path, axis_order="xyz", use_memmap=True, memmap_directory=tmp_path / "mm"
+    )
+
+    assert isinstance(low_ram, np.memmap)
+    assert low_ram.dtype == np.float32
+    assert np.array_equal(low_ram, plain)
+    # Only the returned file remains: the transposed intermediate was released.
+    assert [p.name for p in (tmp_path / "mm").glob("haemolynx_*")] == [Path(low_ram.filename).name]
+
+
+@pytest.mark.parametrize("voxel_zyx", [(1.0, 1.0, 1.0), (2.0, 0.5, 0.5)])
+def test_edt_crosscheck_is_identical_in_low_ram_mode(voxel_zyx, monkeypatch):
+    _raw, mask, G = _tube_case(voxel_zyx)
+    G_plain, G_low = G.copy(), G.copy()
+    args = dict(voxel_size_zyx=voxel_zyx, sample_spacing_along_edge_um=1.0)
+
+    plain = edt_diameter.measure_edge_diameters_from_binary_mask(G_plain, binary_mask=mask, **args)
+
+    def no_whole_volume_transform(*a, **k):
+        raise AssertionError("the whole-volume radius map was built")
+
+    monkeypatch.setattr(edt_diameter, "inscribed_radius_map", no_whole_volume_transform)
+    as_uint8 = mask.astype(np.uint8) * 255  # the loaded image, never cast to bool whole
+    low_ram = edt_diameter.measure_edge_diameters_from_binary_mask(
+        G_low, binary_mask=as_uint8, use_memmap=True, **args
+    )
+
+    assert plain["edges_measured"] == 3
+    assert _same(low_ram, plain)
+    assert _same(_edge_attributes(G_low), _edge_attributes(G_plain))
+
+
+def test_edt_crosscheck_with_awkward_spacing_agrees_to_the_last_bit():
+    """A spacing like 0.61 is not exactly representable, so where two background
+    voxels are exactly equidistant scipy's pick can round one ulp differently."""
+    voxel_zyx = (1.7, 0.61, 0.59)
+    _raw, mask, G = _tube_case(voxel_zyx)
+    G_plain, G_low = G.copy(), G.copy()
+    args = dict(voxel_size_zyx=voxel_zyx, sample_spacing_along_edge_um=1.0)
+
+    edt_diameter.measure_edge_diameters_from_binary_mask(G_plain, binary_mask=mask, **args)
+    edt_diameter.measure_edge_diameters_from_binary_mask(G_low, binary_mask=mask, use_memmap=True, **args)
+
+    for plain, low in zip(_edge_attributes(G_plain), _edge_attributes(G_low)):
+        np.testing.assert_allclose(low["edt_diameter_samples_um"], plain["edt_diameter_samples_um"], rtol=1e-15, atol=0)
+
+
+def test_edt_crosscheck_on_an_empty_mask_measures_nothing_either_way():
+    _raw, mask, G = _tube_case()
+    empty = np.zeros_like(mask)
+    args = dict(voxel_size_zyx=(1.0, 1.0, 1.0), sample_spacing_along_edge_um=1.0)
+
+    plain = edt_diameter.measure_edge_diameters_from_binary_mask(G.copy(), binary_mask=empty, **args)
+    low_ram = edt_diameter.measure_edge_diameters_from_binary_mask(
+        G.copy(), binary_mask=empty, use_memmap=True, **args
+    )
+
+    assert plain["edges_measured"] == 0
+    assert _same(low_ram, plain)
+
+
+def test_fwhm_in_low_ram_mode_keeps_its_volumes_on_disk(tmp_path, monkeypatch):
+    raw, _mask, G = _tube_case()
+    path = tmp_path / "raw.tif"
+    tifffile.imwrite(path, raw)
+    seen = {}
+    real_labels = automated.build_graph_branch_label_volume
+    real_sample = automated._sample_transverse_profile
+
+    def spy_labels(*args, **kwargs):
+        labels, keys = real_labels(*args, **kwargs)
+        seen["labels"] = isinstance(labels, np.memmap)
+        return labels, keys
+
+    def spy_sample(raw_volume, *args, **kwargs):
+        seen.setdefault("raw", isinstance(raw_volume, np.memmap))
+        return real_sample(raw_volume, *args, **kwargs)
+
+    monkeypatch.setattr(automated, "build_graph_branch_label_volume", spy_labels)
+    monkeypatch.setattr(automated, "_sample_transverse_profile", spy_sample)
+
+    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G, raw_tiff_path=path, voxel_size_zyx=(1.0, 1.0, 1.0), use_memmap=True, **_FWHM_ARGS
+    )
+
+    assert seen == {"labels": True, "raw": True}

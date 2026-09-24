@@ -38,6 +38,7 @@ from typing import Any, Literal
 import numpy as np
 from scipy.ndimage import map_coordinates
 
+from haemolynx.preprocessing.pointwise_distance import FeatureDistance
 from haemolynx.preprocessing.thick_vessels import inscribed_radius_map
 
 from .automated import (
@@ -58,6 +59,7 @@ def measure_edge_diameters_from_binary_mask(
     sample_spacing_along_edge_um: float,
     branch_endpoint_exclusion_um: float = 0.0,
     aggregation: Literal["median", "mean"] = "median",
+    use_memmap: bool = False,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from *binary_mask*'s own inscribed radius.
 
@@ -88,6 +90,13 @@ def measure_edge_diameters_from_binary_mask(
         value -- ``median`` (default) or ``mean``. Shares
         :func:`haemolynx.haemodynamics.automated._aggregate_edge_diameter`
         with the FWHM path, so both techniques resolve outliers the same way.
+    use_memmap :
+        The low-RAM option. Instead of transforming the whole mask, reads the
+        inscribed radius only at the voxels each sample's interpolation
+        touches (see :mod:`haemolynx.preprocessing.pointwise_distance`), and
+        never converts *binary_mask* to a whole-volume boolean copy. Same
+        diameters, bar a last-bit difference where two background voxels are
+        exactly equidistant under a non-representable voxel spacing.
 
     Returns
     -------
@@ -99,8 +108,16 @@ def measure_edge_diameters_from_binary_mask(
     if sample_spacing_along_edge_um <= 0:
         raise ValueError("sample_spacing_along_edge_um must be positive.")
 
-    mask = np.asarray(binary_mask, dtype=bool)
-    radius_map = inscribed_radius_map(mask, voxel_size_zyx)
+    sample_radius = None
+    if use_memmap:
+        sample_radius = _pointwise_radius_sampler(binary_mask, voxel_size_zyx)
+    if sample_radius is None:
+        mask = np.asarray(binary_mask, dtype=bool)
+        radius_map = inscribed_radius_map(mask, voxel_size_zyx)
+
+        def sample_radius(idx: np.ndarray) -> np.ndarray:
+            return map_coordinates(radius_map, idx.T, order=1, mode="constant", cval=0.0)
+
     branch_excl = max(0.0, float(branch_endpoint_exclusion_um))
 
     summary: dict[str, Any] = {
@@ -138,9 +155,7 @@ def measure_edge_diameters_from_binary_mask(
             continue
 
         idx = physical_points_to_continuous_indices(pts[keep], voxel_size_zyx)
-        values = map_coordinates(
-            radius_map, idx.T, order=1, mode="constant", cval=0.0
-        )
+        values = sample_radius(idx)
         radii = [float(value) for value in values if np.isfinite(value) and value > 0]
         if not radii:
             summary["edges_skipped"].append((u, v, key, "edt_failed"))
@@ -160,3 +175,46 @@ def measure_edge_diameters_from_binary_mask(
         )
 
     return summary
+
+
+def _pointwise_radius_sampler(binary_mask: np.ndarray, voxel_size_zyx):
+    """``map_coordinates(inscribed_radius_map(mask), idx.T, order=1,
+    mode="constant")`` without the map, or ``None`` when the mask is all
+    foreground (where scipy's transform is not a distance, so only the
+    whole-volume call reproduces it).
+
+    Each point is interpolated over the 2x2x2 box of voxels it reads, clipped
+    to the volume the same way the whole map is, so scipy's own interpolation
+    runs on the same values with the same edge handling.
+    """
+    shape = np.asarray(binary_mask.shape)
+    if not np.any(binary_mask):
+        return lambda idx: np.zeros(len(idx), dtype=np.float64)
+    distances = FeatureDistance(
+        binary_mask, feature_value=False, sampling=tuple(float(v) for v in voxel_size_zyx)
+    )
+    if not distances.has_surface:
+        return None
+
+    def sample(idx: np.ndarray) -> np.ndarray:
+        idx = np.asarray(idx, dtype=float).reshape(-1, 3)
+        base = np.floor(idx).astype(np.intp)
+        lo = np.clip(base, 0, shape - 1)
+        hi = np.clip(base + 1, 0, shape - 1)
+        corners = np.stack(
+            [np.stack([np.where(bits[d], hi[:, d], lo[:, d]) for d in range(3)], axis=1)
+             for bits in np.ndindex(2, 2, 2)],
+            axis=1,
+        ).reshape(-1, 3)
+        unique, inverse = np.unique(corners, axis=0, return_inverse=True)
+        corner_radius = distances.at(unique)[inverse.reshape(-1)].reshape(len(idx), 2, 2, 2)
+        values = np.empty(len(idx), dtype=np.float64)
+        for n in range(len(idx)):
+            size = hi[n] - lo[n] + 1
+            box = corner_radius[n, : size[0], : size[1], : size[2]]
+            values[n] = map_coordinates(
+                box, (idx[n] - lo[n]).reshape(3, 1), order=1, mode="constant", cval=0.0
+            )[0]
+        return values
+
+    return sample

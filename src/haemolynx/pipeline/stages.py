@@ -1977,6 +1977,8 @@ def _haemodynamics_apply_config(
         voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
         axis_order=settings["image_axis_order"],
         comparison_output_csv_path=None,
+        use_memmap=settings["use_memmap_loading"],
+        memmap_directory=settings["memmap_directory"],
     )
 
 
