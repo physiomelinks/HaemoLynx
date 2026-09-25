@@ -411,7 +411,9 @@ $$c_{\mathrm{CO_2}}^{\text{base}} = 11.02\,P_{\mathrm{CO_2}}^{0.396} - (15 - \ma
 
 **(E39)** Haldane (saturation) term
 
-$$\Delta_{\text{Haldane}} = \left(95 - 100\,S_{\mathrm{O_2}}^{H}\right)\cdot 0.064$$
+$$\Delta_{\text{Haldane}} = \left(95 - 100\,S_{\mathrm{O_2}}^{H}\right)\cdot 0.064\cdot\frac{\mathrm{Hb}}{15}$$
+
+Scaled by Hb/15 so plasma carries no Haldane effect; McHardy's own term has no Hb factor and was fitted at Hb 15 g/dL, where the two agree.
 
 **(E40)** Blood carbon dioxide content, whole blood (dissolved CO₂ included)
 

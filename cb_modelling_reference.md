@@ -1643,7 +1643,7 @@ McHardy's whole-blood CO₂ dissociation curve, converted from vol% to mmol/L:
 $$\begin{aligned}
 C_{\mathrm{CO_2}} &= \frac{1}{2.226}\Bigl[\,11.02\,P_{\mathrm{CO_2}}^{\,0.396}
   \;-\; (15 - \mathrm{Hb})\cdot 0.015\,P_{\mathrm{CO_2}}
-  \;+\; (95 - 100\,S_{\mathrm{O_2}})\cdot 0.064 \Bigr] \\[4pt]
+  \;+\; (95 - 100\,S_{\mathrm{O_2}})\cdot 0.064\cdot\frac{\mathrm{Hb}}{15} \Bigr] \\[4pt]
 \mathrm{Hb} &= 15 \cdot \frac{H}{0.45}\ \mathrm{g/dL}
 \end{aligned}$$
 
@@ -1653,6 +1653,14 @@ is his haemoglobin correction, which is how haematocrit enters: Hb is taken from
 15 g/dL at *H* = 0.45 that $c_{\mathrm{Hb,max}}$ assumes (§5.1). The third is his saturation term,
 the Haldane effect: deoxygenated blood carries more CO₂. The curve is total content, so dissolved
 CO₂ is already in it and is not added separately. Returns zero for P_CO₂ ≤ 0.
+
+**The saturation term is scaled by Hb/15 — a modification of McHardy.** He fitted blood at normal
+Hb, where the factor is 1, so at *H* 0.45 the curve is his. The Haldane effect acts through
+haemoglobin, but his term carries no Hb, so unscaled it gave plasma a full Haldane effect. That
+mattered once Tier 3 passed plasma-skimmed blood through junctions correctly (open item 24): a
+daughter at *H* 0.01 losing O₂ gained CO₂ capacity, its PCO₂ fell, and its tissue settled at
+39.95 mmHg, below arterial, while producing CO₂. With the scaling, content stays affine in *H*,
+which the junction mixing relies on.
 
 At P_CO₂ 40, *H* 0.45 and S 95% this gives 21.3 mmol/L, with a slope of 0.21 mmol/L/mmHg. Full
 desaturation adds 2.8 mmol/L, against ≈2.5 mmol/L from the measured human Haldane factor, 0.28 vol%
@@ -1670,9 +1678,9 @@ Haldane terms included) and could not be matched.
 
 **Low-haematocrit corner.** At *H* near 0 the Hb term, −0.225·P_CO₂ vol%, makes content peak near
 P_CO₂ 135 mmHg and fall slightly above it. Below that the curve rises with P_CO₂ for every *H*
-(tested on 0–120 mmHg for *H* 0–0.8), which covers every tissue P_CO₂. Tier 3 inverts the curve with
-`brentq` on [0, 150] mmHg, so only a plasma-skimmed edge above 135 mmHg could miss a root. Not
-guarded.
+(tested on 0–120 mmHg for *H* 0–0.8), which covers every tissue P_CO₂. Tier 3's inversions widen
+their bracket upwards from 150 mmHg and raise if the content is never reached, so a plasma-skimmed
+edge asked for more CO₂ than its curve holds fails loudly (open item 24).
 
 > **Changed under open item 19.** The code used to compute
 > α_CO₂·P_CO₂ + *H*·[11.02·P_CO₂^0.396 + (0.15 − 0.05·S)·P_CO₂]. That labelled McHardy's vol% as
@@ -2672,7 +2680,7 @@ These are **not** configurable. They live in the function bodies.
 | `alpha_co2` | 0.03 | mmol/L/mmHg | (i) | CO₂ solubility in plasma; 3.07 × 10⁻² at 37 °C, human [`dash_erratum_2010`] | assumed |
 | CO₂ base capacity | 11.02 · PCO₂^0.396 | vol%, ÷ 2.226 to mmol/L | (ii) | McHardy whole-blood CO₂ dissociation curve at Hb 15 g/dL and S 95% [`mchardy_relationship_1967`], human. Total content, so dissolved CO₂ is not added again. Constants checked against the equation as quoted in [`mallat_ratio_2021`], not the 1967 paper. The old code comment's Spencer (1979) [`spencer_computational_1979`] was read by abstract only and could not be matched. Until open item 19 the code read vol% as mmol/L and multiplied by *H*; see §5.3 | assumed |
 | CO₂ Hb correction | −(15 − Hb) · 0.015 · PCO₂, Hb = 15·*H*/0.45 | vol% (Hb in g/dL) | (ii) | McHardy's haemoglobin term [`mchardy_relationship_1967`, `mallat_ratio_2021`]. The only way *H* enters the CO₂ curve. Hb from *H* uses the 15 g/dL at *H* 0.45 that `c_Hb,max` assumes. At *H* near 0 content peaks near PCO₂ 135 mmHg (§5.3) | assumed |
-| Haldane (saturation) term | (95 − 100·S_O₂) · 0.064 | vol% | (ii) | McHardy's saturation term [`mchardy_relationship_1967`, `mallat_ratio_2021`]. Full desaturation adds 2.8 mmol/L at PCO₂ 40 and *H* 0.45, against ≈2.5 mmol/L implied by the measured human Haldane factor [`loeppky_quantitative_1983`]. Replaced the unsourced (0.15 − 0.05·S_O₂)·PCO₂ term, which gave 0.90 (open item 19). Saturation is evaluated at fixed P₅₀ = 26, not the Bohr-shifted value (§11 row 19) | assumed |
+| Haldane (saturation) term | (95 − 100·S_O₂) · 0.064 · Hb/15 | vol% | (ii) | McHardy's saturation term [`mchardy_relationship_1967`, `mallat_ratio_2021`], scaled by Hb/15 so plasma has no Haldane effect (a modification; unchanged at *H* 0.45; §5.3). Full desaturation adds 2.8 mmol/L at PCO₂ 40 and *H* 0.45, against ≈2.5 mmol/L implied by the measured human Haldane factor [`loeppky_quantitative_1983`]. Replaced the unsourced (0.15 − 0.05·S_O₂)·PCO₂ term, which gave 0.90 (open item 19). Saturation is evaluated at fixed P₅₀ = 26, not the Bohr-shifted value (§11 row 19) | assumed |
 | `pKa` | 6.1 | — | (i) | Henderson–Hasselbalch; 6.10, revised to 6.09 at pH 7.4 and 37.5 °C [`severinghaus_variations_1956`] | assumed |
 
 > ⚠ **Species mismatch.** The haemoglobin parameters above are human. The tissue is rat. Direction

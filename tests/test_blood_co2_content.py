@@ -48,8 +48,11 @@ def test_the_haldane_effect_is_the_measured_size():
 
 
 def test_haematocrit_enters_through_mchardys_hb_term():
-    """More haemoglobin carries more CO2; H 0.45 is Hb 15 g/dL, where the Hb term is zero."""
-    contents = [calculate_blood_co2_content(40.0, h, 100.0) for h in (0.0, 0.2, 0.45, 0.8)]
+    """More haemoglobin carries more CO2; H 0.45 is Hb 15 g/dL, where the Hb term is zero.
+
+    At S 95% the Haldane term is zero for every H (it now scales with Hb), leaving the Hb term.
+    """
+    contents = [calculate_blood_co2_content(40.0, h, _PO2_AT_S95) for h in (0.0, 0.2, 0.45, 0.8)]
     assert np.all(np.diff(contents) > 0)
     hb_term_at_h0 = contents[2] - contents[0]
     np.testing.assert_allclose(hb_term_at_h0, 15.0 * 0.015 * 40.0 / _VOL_PCT_PER_MMOL_L, rtol=1e-12)
@@ -68,3 +71,17 @@ def test_content_rises_with_pco2_over_the_tissue_range(hematocrit, po2):
 @pytest.mark.parametrize("pco2", [0.0, -5.0])
 def test_non_positive_pco2_gives_zero(pco2):
     assert calculate_blood_co2_content(pco2, 0.45, 100.0) == 0.0
+
+
+@pytest.mark.parametrize("hematocrit, share", [(0.0, 0.0), (0.225, 0.5), (0.45, 1.0), (0.9, 2.0)])
+def test_the_haldane_effect_scales_with_haemoglobin(hematocrit, share):
+    """Deoxygenation raises CO2 capacity through haemoglobin, so plasma has no Haldane effect.
+
+    McHardy's saturation term was fitted at Hb 15 g/dL and is scaled by Hb / 15. Unscaled, a
+    plasma-skimmed vessel losing O2 gained CO2 capacity and its PCO2 fell below arterial.
+    """
+    haldane = (calculate_blood_co2_content(40.0, hematocrit, 1e-3)
+               - calculate_blood_co2_content(40.0, hematocrit, 100.0))
+    full = (calculate_blood_co2_content(40.0, 0.45, 1e-3)
+            - calculate_blood_co2_content(40.0, 0.45, 100.0))
+    np.testing.assert_allclose(haldane, share * full, rtol=1e-12, atol=1e-15)

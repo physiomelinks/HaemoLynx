@@ -46,6 +46,11 @@ def calculate_blood_co2_content(pco2_mmHg: float, hematocrit: float, po2_mmHg: f
     Saturation uses a fixed P50 of 26 mmHg, not the Bohr-shifted P50 of the oxygen curve
     (reference §11 row 19). At H near 0 the Hb term makes content peak near PCO2 135 mmHg, far
     above any tissue PCO2; below that the curve rises with PCO2 for every H.
+
+    The saturation term is scaled by Hb / 15 g/dL. McHardy fitted blood at normal Hb, where the
+    factor is 1, so the curve is his at H 0.45. Unscaled, the term gave plasma (H near 0) a full
+    Haldane effect with no haemoglobin to cause it: a plasma-skimmed vessel losing O2 gained CO2
+    capacity, its PCO2 fell, and tissue CO2 came out below arterial.
     """
     if pco2_mmHg <= 0.0:
         return 0.0
@@ -58,7 +63,7 @@ def calculate_blood_co2_content(pco2_mmHg: float, hematocrit: float, po2_mmHg: f
 
     c_co2_vol_pct = (11.02 * pco2_mmHg ** 0.396
                      - (15.0 - hb_g_dL) * 0.015 * pco2_mmHg
-                     + (95.0 - 100.0 * sat_o2) * 0.064)
+                     + (95.0 - 100.0 * sat_o2) * 0.064 * (hb_g_dL / 15.0))
 
     # One mmol of CO2 is 22.26 mL STPD, so vol% (mL per 100 mL) / 2.226 is mmol/L.
     return float(c_co2_vol_pct / 2.226)
