@@ -221,6 +221,13 @@ advertised in the log line it never prints, and dead.
 A reader setting `use_endothelial_barrier_model = True` to enable that model gets no error, no
 warning, and a different solver.
 
+A related trap, closed as open item T in `cb_modelling_reference.md`: the multi-species default
+also means the pipeline's `*_perfusion.vti` is a Tier 3 field, while every H2 hypoxia number
+comes from Tier 1 run directly by the H2 drivers. The `.vti` now names its tier and solver in
+field data (`perfusion_tier`, `perfusion_solver`, plus `M_max`, pressures and a note that it is
+not the H2 field), and the pipeline reads `use_endothelial_barrier_model` without a `getattr`
+default. The dead Tier 2 branch itself is unchanged.
+
 `STATUS — OUTSTANDING`
 
 ### S4. The ADR matrix is built unconditionally and discarded on two of three paths

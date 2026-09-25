@@ -130,6 +130,15 @@ def test_the_pipeline_reads_the_tier_switch_without_a_default():
     assert "perf_config.use_multi_species_model" in source
 
 
+def test_the_pipeline_reads_the_barrier_switch_without_a_default():
+    """The Tier 2 switch, just below the Tier 3 one, was read through getattr(..., False) too."""
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent / "examples" / "carotid_image_to_model.py").read_text()
+    assert "getattr(perf_config, 'use_endothelial_barrier_model'" not in source
+    assert "perf_config.use_endothelial_barrier_model" in source
+
+
 def test_the_h2_settings_match_the_values_that_were_hard_coded():
     """Moving the values into config must not move a published H2 number."""
     settings = cb_settings.PerfusionSettings()

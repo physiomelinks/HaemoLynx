@@ -91,6 +91,7 @@ flowchart TD
 
   FIN["E55 · final tissue pH from converged PCO2"]
   EXP["export PO2, PCO2 and pH fields to VTI"]
+  TAG["tag the VTI field data: tier, solver, M_max,<br/>pressures, Picard tolerance, not-H2 note"]
   END(["Tissue PO2, PCO2 and pH fields"])
 
   START --> D0
@@ -106,7 +107,8 @@ flowchart TD
   D2 -- yes --> P2
   P16 -. "iteration = iteration + 1" .-> D2
   D2 -- no --> FIN
-  FIN --> EXP --> END
+  FIN --> EXP --> TAG --> END
+  ALT -. "also tagged" .-> TAG
 
   classDef deadend fill:#fdf0dc,stroke:#d99b3d,color:#6b4a12;
   classDef unused fill:#f2f2f2,stroke:#b0b0b0,stroke-dasharray:5 4,color:#7a7a7a;
@@ -123,5 +125,7 @@ flowchart TD
 **`build_adr_matrix` runs regardless**, but `solve_multi_species_perfusion` takes neither its matrix nor its vectors — it builds its own via `E42` and `E43`. `A2`, `A4` and `A6` are amber for that reason: they execute and their results are discarded.
 
 **`E47` appears twice inside the innermost loop.** The content is inverted to a partial pressure once on entering the edge, then again after every cell, because depleting the content changes the pressure and the Bohr and Haldane couplings mean each inversion depends on the other species and on the local tissue pH. Each of those is a Brent root find, which is why this is the slow path.
+
+**Every tier's VTI is tagged (`TAG`).** The H2 hypoxia numbers do not come from this chart: the H2 drivers call the instant-equilibrium solver (Tier 1) directly, with `cb_settings` inputs. So the field data names the tier, the solver and its inputs, and says the file is not the H2 field (open item T). The Picard tolerance is recorded for Tier 3 only, the one tier that reads it from the config.
 
 **`E41` sits inside the Picard loop, not the setup.** Tissue pH is recomputed from the updated PCO2 on every pass and then feeds the next pass's oxygen inversions.

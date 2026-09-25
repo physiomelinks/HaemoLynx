@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 from ImageLynx import graph, haemodynamics, io, preprocessing, specimens, statistics, visualization
+from ImageLynx.haemodynamics.resistance import PASCALS_PER_MMHG
 
 # ---------------------------
 # Beginner-friendly settings
@@ -1258,6 +1259,45 @@ def _rheology_cell_arrays(G, vessels):
     return arrays
 
 
+# The pipeline's own perfusion field is not the one the H2 hypoxia numbers come from: those run
+# Tier 1 directly (cb_h2_hypoxic_fraction.py, cb_h2_vtk.py) with cb_settings inputs, while the
+# pipeline defaults to Tier 3 with PerfusionConfig's. Item T in cb_modelling_reference.md.
+_PERFUSION_VTI_NOTE = (
+    "Pipeline perfusion field, not the H2 field. H2 hypoxia uses Tier 1 "
+    "(solve_perfusion_steady_state) with cb_settings inputs; see cb_modelling_reference.md."
+)
+
+
+def _perfusion_provenance(tier, solver_name, perf_config, hemo_config):
+    """Field-data tags naming the solver and inputs behind a perfusion .vti.
+
+    The Picard tolerance is recorded for Tier 3 only, because it is the only tier that reads it
+    from the config; Tiers 1 and 2 hard-code their own (open item 6), so the config value would
+    misdescribe them.
+    """
+    mpa_per_mmhg = PASCALS_PER_MMHG * 1e3
+    provenance = {
+        "perfusion_tier": int(tier),
+        "perfusion_solver": solver_name,
+        "perfusion_M_max": float(perf_config.M_max),
+        "perfusion_inlet_pressure_mmHg": float(hemo_config.input_p_bc) / mpa_per_mmhg,
+        "perfusion_outlet_pressure_mmHg": float(hemo_config.output_p_bc) / mpa_per_mmhg,
+        "perfusion_note": _PERFUSION_VTI_NOTE,
+    }
+    if tier == 3:
+        provenance["perfusion_picard_tolerance"] = float(perf_config.picard_tolerance)
+    return provenance
+
+
+def _tag_perfusion_vti(vti_path, provenance):
+    """Write the provenance into the .vti's field data, next to its cell arrays."""
+    import pyvista as pv
+    vol = pv.read(vti_path)
+    for key, value in provenance.items():
+        vol.field_data[key] = np.array([value])
+    vol.save(vti_path)
+
+
 def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config=None):
     """
     Phase 5: Builds the Laplacian matrix, solves the flow equations,
@@ -1447,7 +1487,9 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         A, q_total, s_incoming = haemodynamics.build_adr_matrix(grid, cell_mapping, perf_config)
         
         # 4. Solve the Non-Linear Steady-State Perfusion field
+        vti_path = pipeline_config.vtk_output_prefix.with_name(pipeline_config.vtk_output_prefix.name + "_perfusion.vti")
         if perf_config.use_multi_species_model:
+            tier, solver_name = 3, "solve_multi_species_perfusion"
             print("  Running Fully Coupled Multi-Species (O2, CO2, pH) Perfusion Solver...")
             PO2_steady, PCO2_steady, pH_steady = haemodynamics.solve_multi_species_perfusion(grid, G, starting_nodes, cell_mapping, perf_config)
             mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)
@@ -1455,7 +1497,6 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
             print(f"                            Mean tissue PCO2: {np.mean(PCO2_steady):.4e} mmHg")
             print(f"                            Mean tissue pH: {np.mean(pH_steady):.4f}")
             
-            vti_path = pipeline_config.vtk_output_prefix.with_name(pipeline_config.vtk_output_prefix.name + "_perfusion.vti")
             visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
             
             import pyvista as pv
@@ -1464,23 +1505,26 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
             vol.cell_data["pH"] = pH_steady.flatten(order='F') if PO2_steady.ndim > 1 else pH_steady
             vol.save(vti_path)
             
-        elif getattr(perf_config, 'use_endothelial_barrier_model', False):
+        elif perf_config.use_endothelial_barrier_model:
+            tier, solver_name = 2, "solve_coupled_1d3d_perfusion"
             print("  Running Fully Coupled 1D-3D Endothelial Permeability Solver...")
             PO2_steady = haemodynamics.solve_coupled_1d3d_perfusion(grid, G, starting_nodes, cell_mapping, perf_config)
             mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)
             print(f"  Perfusion solve complete. Mean tissue PO2: {mean_c:.4e} mmHg (Min: {min_c:.4e}, Max: {max_c:.4e})")
-            vti_path = pipeline_config.vtk_output_prefix.with_name(pipeline_config.vtk_output_prefix.name + "_perfusion.vti")
             visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
             
         else:
+            tier, solver_name = 1, "solve_perfusion_steady_state"
             print("  Running Instant-Equilibrium Perfusion Solver...")
             PO2_steady = haemodynamics.solve_perfusion_steady_state(grid, A, q_total, s_incoming, perf_config)
             mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)
             print(f"  Perfusion solve complete. Mean tissue PO2: {mean_c:.4e} mmHg (Min: {min_c:.4e}, Max: {max_c:.4e})")
-            vti_path = pipeline_config.vtk_output_prefix.with_name(pipeline_config.vtk_output_prefix.name + "_perfusion.vti")
             visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
             
+        # Last, so Tier 3's PCO2/pH save above cannot drop it.
+        _tag_perfusion_vti(vti_path, _perfusion_provenance(tier, solver_name, perf_config, hemo_config))
         print(f"  Saved 3D Perfusion Field to: {vti_path}")
+        print(f"  Tagged it as Tier {tier} ({solver_name}); this is not the H2 hypoxia field.")
         
     if vis_config.generate_markdown_report:
         from ImageLynx.visualization.reporting import generate_model_results_dashboard
