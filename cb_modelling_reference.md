@@ -1635,48 +1635,54 @@ shifts right and haemoglobin releases oxygen more readily.
 
 ### 5.3 Carbon dioxide content and the Haldane effect
 
+McHardy's whole-blood CO₂ dissociation curve, converted from vol% to mmol/L:
+
 $$\begin{aligned}
-C_{\mathrm{CO_2}} &= \alpha_{\mathrm{CO_2}}\,P_{\mathrm{CO_2}}
-  \;+\; H \left[\, 11.02\,P_{\mathrm{CO_2}}^{\,0.396}
-  \;+\; \bigl(0.15 - 0.05\,S_{\mathrm{O_2}}\bigr) P_{\mathrm{CO_2}} \right] \\[4pt]
-\alpha_{\mathrm{CO_2}} &= 0.03\ \mathrm{mmol\,L^{-1}\,mmHg^{-1}}
+C_{\mathrm{CO_2}} &= \frac{1}{2.226}\Bigl[\,11.02\,P_{\mathrm{CO_2}}^{\,0.396}
+  \;-\; (15 - \mathrm{Hb})\cdot 0.015\,P_{\mathrm{CO_2}}
+  \;+\; (95 - 100\,S_{\mathrm{O_2}})\cdot 0.064 \Bigr] \\[4pt]
+\mathrm{Hb} &= 15 \cdot \frac{H}{0.45}\ \mathrm{g/dL}
 \end{aligned}$$
 
-The first bracketed term is the base carrying capacity; the second is the Haldane shift —
-deoxygenated blood carries more CO₂.
+The bracket is content in vol% (mL CO₂ per 100 mL blood). One mmol of CO₂ is 22.26 mL STPD, hence
+the 2.226. The first term is the curve at McHardy's reference state (Hb 15 g/dL, S 95%). The second
+is his haemoglobin correction, which is how haematocrit enters: Hb is taken from *H* with the same
+15 g/dL at *H* = 0.45 that $c_{\mathrm{Hb,max}}$ assumes (§5.1). The third is his saturation term,
+the Haldane effect: deoxygenated blood carries more CO₂. The curve is total content, so dissolved
+CO₂ is already in it and is not added separately. Returns zero for P_CO₂ ≤ 0.
 
-**Source.** The base term is McHardy's whole-blood CO₂ dissociation curve
-[`mchardy_relationship_1967`], not Spencer (1979) as the code comment says. The constants 11.02 and
-0.396 were checked against McHardy's equation as quoted by [`mallat_ratio_2021`], not against the
-1967 paper, which is not online:
+At P_CO₂ 40, *H* 0.45 and S 95% this gives 21.3 mmol/L, with a slope of 0.21 mmol/L/mmHg. Full
+desaturation adds 2.8 mmol/L, against ≈2.5 mmol/L from the measured human Haldane factor, 0.28 vol%
+CO₂ per vol% HbO₂ at Hb 15 g/dL [`loeppky_quantitative_1983`].
+
+**Source.** [`mchardy_relationship_1967`]. The constants were checked against McHardy's equation as
+quoted by [`mallat_ratio_2021`], not against the 1967 paper, which is not online:
 
 $$\Delta C_{\mathrm{CO_2}} = 11.02\left[P_v^{\,0.396} - P_a^{\,0.396}\right]
 - (15 - \mathrm{Hb})\cdot 0.015\,(P_v - P_a) - (95 - S_{a\mathrm{O_2}})\cdot 0.064$$
 
-with content in mL CO₂ per 100 mL of blood (vol%), Hb in g/dL and saturation in %.
-[`spencer_computational_1979`] was checked by abstract only (whole blood, Hb 15 g/dL, Bohr and
-Haldane terms included); its equations were not read, so it is neither confirmed nor ruled out.
-**No source was found for the Haldane term** (0.15 − 0.05 S_O₂)·P_CO₂.
+with content in vol%, Hb in g/dL and saturation in %. The code comment used to cite Spencer (1979)
+[`spencer_computational_1979`]; it was checked by abstract only (whole blood, Hb 15 g/dL, Bohr and
+Haldane terms included) and could not be matched.
 
-> ⚠ **The code does not use the curve as its source defines it** (open item 19). Tier 3 only; no
-> H2 number uses it.
-> - *Units.* The curve returns vol%; the code labels it mmol/L. One mmol of CO₂ is 22.26 mL STPD,
->   so 47.5 vol% at P_CO₂ 40 is 21.3 mmol/L.
-> - *Haematocrit.* The curve is already whole-blood content, dissolved CO₂ included. The code
->   multiplies it by *H* and adds dissolved CO₂ again. At *H* = 0.45 that factor happens to almost
->   equal the vol%-to-mmol/L factor 1/2.226 = 0.449, so the base term lands near the right size by
->   coincidence. It still
->   scales with *H* where the source has no *H*, and the dissolved term is counted twice.
-> - *Haldane size.* Full desaturation adds 0.05 · *H* · P_CO₂ = 0.90 mmol/L at P_CO₂ 40 and
->   *H* 0.45. McHardy's saturation term gives 0.064 × 95 = 6.1 vol% (2.7 mmol/L). The measured
->   human Haldane factor, 0.28 vol% CO₂ per vol% HbO₂ [`loeppky_quantitative_1983`], gives
->   ≈2.5 mmol/L at Hb 15 g/dL. The code's Haldane effect is about a third of both.
-> - *Net.* At P_CO₂ 40 and S ≈ 1 the code gives 24.4 mmol/L against McHardy's 21.3 (+14%), and a
->   slope of 0.28 against 0.20 mmol/L/mmHg (+38%).
+**Low-haematocrit corner.** At *H* near 0 the Hb term, −0.225·P_CO₂ vol%, makes content peak near
+P_CO₂ 135 mmHg and fall slightly above it. Below that the curve rises with P_CO₂ for every *H*
+(tested on 0–120 mmHg for *H* 0–0.8), which covers every tissue P_CO₂. Tier 3 inverts the curve with
+`brentq` on [0, 150] mmHg, so only a plasma-skimmed edge above 135 mmHg could miss a root. Not
+guarded.
+
+> **Changed under open item 19.** The code used to compute
+> α_CO₂·P_CO₂ + *H*·[11.02·P_CO₂^0.396 + (0.15 − 0.05·S)·P_CO₂]. That labelled McHardy's vol% as
+> mmol/L, multiplied the whole-blood curve by *H*, and added dissolved CO₂ a second time. At *H* 0.45
+> the factor *H* almost equals 1/2.226, so the size was close by coincidence: 24.4 mmol/L at
+> P_CO₂ 40 (+14%), slope 0.28 (+38%). The Haldane term (0.15 − 0.05·S)·P_CO₂ had no source and
+> added 0.90 mmol/L on full desaturation, about ⅓ of the measured effect. Tier 3 only; no H2 number
+> used it.
 
 > **One inconsistency, deliberate and small.** The saturation *S_O₂* used in the Haldane term is
-> evaluated at a **fixed** P₅₀ = 26 mmHg, not the Bohr-shifted value from §5.2. CO₂ carriage is
-> therefore underestimated in hypoxic tissue, by under 5% (§11 row 19).
+> evaluated at a **fixed** P₅₀ = 26 mmHg, not the Bohr-shifted value from §5.2. In acidotic tissue
+> CO₂ carriage is therefore underestimated, by at most 1.5% (0.4 mmol/L) over pH 7.2–7.4 and
+> P_CO₂ 40–60 mmHg (§11 row 19).
 
 ### 5.4 Tissue pH
 
@@ -2647,8 +2653,9 @@ These are **not** configurable. They live in the function bodies.
 | Bohr pH coefficient | −0.4 | per pH unit (log₁₀ P₅₀) | (ii) | [`severinghaus_simple_1979`], [`kelman_digital_1966`] | assumed |
 | Bohr PCO₂ coefficient | +0.06 | per log₁₀(PCO₂/40) | (ii) | [`severinghaus_simple_1979`], [`kelman_digital_1966`] | assumed |
 | `alpha_co2` | 0.03 | mmol/L/mmHg | (i) | CO₂ solubility in plasma; 3.07 × 10⁻² at 37 °C, human [`dash_erratum_2010`] | assumed |
-| CO₂ base capacity | 11.02 · PCO₂^0.396 | mmol/L in the code; the source gives vol% | (ii) | McHardy whole-blood CO₂ dissociation curve [`mchardy_relationship_1967`], human. Constants checked against the equation as quoted in [`mallat_ratio_2021`], not the 1967 paper. The code comment's Spencer (1979) [`spencer_computational_1979`] was read by abstract only and could not be matched. The code treats vol% as mmol/L and multiplies by *H*; see §5.3 and open item 19 | assumed |
-| Haldane shift | (0.15 − 0.05·S_O₂) · PCO₂ | mmol/L | (ii) | **No source found.** Not McHardy's saturation term, which is additive (0.064 vol% per % desaturation). Full desaturation adds 0.90 mmol/L at PCO₂ 40 and *H* 0.45, about ⅓ of the ≈2.5 mmol/L implied by the measured human Haldane factor [`loeppky_quantitative_1983`]; open item 19. Saturation is evaluated at fixed P₅₀ = 26, not the Bohr-shifted value | assumed |
+| CO₂ base capacity | 11.02 · PCO₂^0.396 | vol%, ÷ 2.226 to mmol/L | (ii) | McHardy whole-blood CO₂ dissociation curve at Hb 15 g/dL and S 95% [`mchardy_relationship_1967`], human. Total content, so dissolved CO₂ is not added again. Constants checked against the equation as quoted in [`mallat_ratio_2021`], not the 1967 paper. The old code comment's Spencer (1979) [`spencer_computational_1979`] was read by abstract only and could not be matched. Until open item 19 the code read vol% as mmol/L and multiplied by *H*; see §5.3 | assumed |
+| CO₂ Hb correction | −(15 − Hb) · 0.015 · PCO₂, Hb = 15·*H*/0.45 | vol% (Hb in g/dL) | (ii) | McHardy's haemoglobin term [`mchardy_relationship_1967`, `mallat_ratio_2021`]. The only way *H* enters the CO₂ curve. Hb from *H* uses the 15 g/dL at *H* 0.45 that `c_Hb,max` assumes. At *H* near 0 content peaks near PCO₂ 135 mmHg (§5.3) | assumed |
+| Haldane (saturation) term | (95 − 100·S_O₂) · 0.064 | vol% | (ii) | McHardy's saturation term [`mchardy_relationship_1967`, `mallat_ratio_2021`]. Full desaturation adds 2.8 mmol/L at PCO₂ 40 and *H* 0.45, against ≈2.5 mmol/L implied by the measured human Haldane factor [`loeppky_quantitative_1983`]. Replaced the unsourced (0.15 − 0.05·S_O₂)·PCO₂ term, which gave 0.90 (open item 19). Saturation is evaluated at fixed P₅₀ = 26, not the Bohr-shifted value (§11 row 19) | assumed |
 | `pKa` | 6.1 | — | (i) | Henderson–Hasselbalch; 6.10, revised to 6.09 at pH 7.4 and 37.5 °C [`severinghaus_variations_1956`] | assumed |
 
 > ⚠ **Species mismatch.** The haemoglobin parameters above are human. The tissue is rat. Direction
@@ -2718,7 +2725,7 @@ the model would push it.
 |---|---|---|---|
 | 17 | Human haemoglobin parameters applied to rat tissue | §5.1–§5.2 | Species mismatch. Direction **not established** |
 | 18 | Constant bicarbonate buffer; no renal compensation | §5.4 | Fixes the pH response to PCO₂ |
-| 19 | Haldane saturation evaluated at fixed P₅₀ = 26 mmHg rather than the Bohr-shifted value | §5.3 | CO₂ carriage **underestimated** in hypoxic tissue; magnitude small (<5%) |
+| 19 | Haldane saturation evaluated at fixed P₅₀ = 26 mmHg rather than the Bohr-shifted value | §5.3 | CO₂ carriage **underestimated** in acidotic tissue; at most 1.5% (0.4 mmol/L) over pH 7.2–7.4 and PCO₂ 40–60 mmHg |
 
 ### 11.4 Tissue transport
 
@@ -2800,6 +2807,7 @@ The suite is **547 tests** across 55 files, run under continuous integration.
 | Fåhræus–Lindqvist curve | Curve shape, inequality chain | Qualitative |
 | In vivo viscosity monotonicity | Rises as vessels narrow | Qualitative |
 | Bohr and Haldane shifts | Direction only | Qualitative |
+| McHardy CO₂ curve | Content, slope and Haldane size against McHardy and Loeppky (`test_blood_co2_content.py`) | 10⁻² |
 | Henderson–Hasselbalch | Closed form at anchor points | 10⁻² |
 | Multi-species 0D Fick balance | Coupled Fick + Henderson–Hasselbalch root | 10⁻² PO₂/PCO₂, 10⁻³ pH |
 | **Flow unit conversion** | Independent SI computation on a single tube | Derivation, not a fit |
@@ -2826,8 +2834,8 @@ Rows in **bold** postdate the earlier coverage table and close the gaps it recor
 Stated as fact, not softened:
 
 - **Directionally only** — the apparent viscosity curve, the skimming output *value* (its mass
-  conservation is exact; its magnitude is not checked against a target), and the Bohr and Haldane
-  shifts.
+  conservation is exact; its magnitude is not checked against a target), and the Bohr shift. The
+  CO₂ curve and its Haldane term are checked against McHardy and Loeppky, the Bohr shift is not.
 - **Transitively only, through integration tests rather than directly** — the branch-order
   diameter formulae, the default boundary permeability mode, and the
   numerical Hill inversion.
@@ -3284,7 +3292,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 17 | The probability field is quantised to hundredths and every sweep threshold lands exactly on a level, so the strict `p > t` discards a whole level — 0.5% of the ROI at 0.30 rising to 4.2–5.9% at 0.99, where it is two thirds of the mask. `p > 0.99` is exactly `p = 1.0`. Using `≥` moves 3 of 6 per-specimen choices. **Consequence (formerly item 16):** freezing at 0.90 runs SHR-B and SHR-C above their own choice, at a median diameter of 3.73 µm — below the selector's own 4.0 µm floor. 0 of 3 WKY and 2 of 3 SHR are affected, so the freeze is group-asymmetric even though `assess_cohort_split` on the choices reports no separation. Under `≥` all three SHR choose 0.90 and the asymmetry disappears | §2.2 steps 2 and 13; the per-specimen choices, and every per-specimen geometric quantity |
 | ~~T~~ | **Closed.** The pipeline's perfusion step defaults to Tier 3, so its `*_perfusion.vti` came from a different solver than the H2 hypoxia maps (Tier 1, run by the H2 drivers), and nothing in the file said so. Switching the default could not fix this: turning off multi-species alone lands on Tier 2, and even Tier 1 in the pipeline runs on `PerfusionConfig` inputs (`M_max` 0.005, 100/2 mmHg, band rule) rather than the H2 ones. Tier 3 stays the default; every tier now tags the `.vti` field data with its tier, solver, `M_max`, pressures and a not-H2 note (`_perfusion_provenance`). The Tier 2 switch is now read without a `getattr` default. `test_perfusion_vti_provenance.py` | — |
 | ~~18~~ | **Closed.** `sigma_diff_co2` was 3.0 × 10⁻⁸ m²/s and `permeability_co2_cm_s` 2.0 × 10⁻³ cm/s, each 20× the O₂ value; since the multi-species solver also multiplies both by solubility (α_CO₂ ≈ 22× α_O₂), CO₂ moved ≈450× faster than O₂ against a measured Krogh ratio of ≈21 [`kawashiro_determination_1975`]. Now D_CO₂ = 1.6 × 10⁻⁹ m²/s (Kawashiro) and P_CO₂ = P_O₂ = 1.0 × 10⁻⁴ cm/s [`dash_simultaneous_2006`], giving ≈24× and ≈22×. Only Tier 3 reads these, so the pipeline's `*_perfusion.vti` CO₂, pH and (through the Bohr shift) PO₂ fields change; no published H1/H2 number moves. The perfusion keys in `examples/config_*.yaml` sit under `PipelineConfig:` and are ignored by the loader. `test_perfusion_config_values.py` | §10.9, §6 |
-| 19 | The Tier 3 blood-gas relations do not match their sources (found under item 7; §5.3). (a) The McHardy CO₂ curve returns vol% of whole blood; the code labels it mmol/L, multiplies it by *H* and adds dissolved CO₂ a second time. At *H* = 0.45 the errors nearly cancel (1/2.226 = 0.449), leaving content 14% and its PCO₂ slope 38% high at PCO₂ 40, but the base term scales with *H* where the source has none. (b) The Haldane term has no source and is about ⅓ of the measured effect [`loeppky_quantitative_1983`], which outweighs the <5% fixed-P₅₀ error of §11 row 19. (c) `permeability_o2_cm_s` = 10⁻⁴ cm/s is 10²–10⁴× below a D/δ estimate; at 1 µm/s the wall conducts about 100× less than tissue diffusion over a 10 µm path, so the wall, not the tissue, likely limits O₂ delivery in Tier 3. Not changed here: all three change the Tier 3 O₂, CO₂ and pH fields. Tier 1, and so every H2 number, uses none of them; the pipeline's `*_perfusion.vti` does. Fix with item 18, whose CO₂ permeability should be set against a corrected O₂ one | §5.3, §10.8, §10.9, §6.6 Tier 3 |
+| 19 | The Tier 3 blood-gas relations did not match their sources (found under item 7; §5.3). **(a) and (b) fixed:** the CO₂ curve is now McHardy's as its source defines it, in mmol/L, with his Hb term for *H* and no second dissolved term; his saturation term replaces the unsourced Haldane term, so the Haldane effect is 2.8 mmol/L on full desaturation against ≈2.5 measured [`loeppky_quantitative_1983`]. Content at PCO₂ 40 went from 24.4 to 21.3 mmol/L, slope from 0.28 to 0.21 mmol/L/mmHg. **(c) still open:** `permeability_o2_cm_s` = 10⁻⁴ cm/s is 10²–10⁴× below a D/δ estimate; at 1 µm/s the wall conducts about 100× less than tissue diffusion over a 10 µm path, so the wall, not the tissue, likely limits O₂ delivery in Tier 3. Waiting on the measured value [`liu_oxygen_1994`]; `permeability_co2_cm_s` follows it (item 18). Tier 1, and so every H2 number, uses none of these; the pipeline's `*_perfusion.vti` does | §5.3, §10.8, §10.9, §6.6 Tier 3 |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the

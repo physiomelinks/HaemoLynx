@@ -36,31 +36,32 @@ def calculate_blood_oxygen_content(po2_mmHg: float, hematocrit: float, pco2_mmHg
 
 def calculate_blood_co2_content(pco2_mmHg: float, hematocrit: float, po2_mmHg: float = 100.0) -> float:
     """
-    Calculates total carbon dioxide content in blood (mmol/L).
-    Incorporates the Haldane Effect: CO2 carrying capacity drops as PO2 rises.
+    Calculates total carbon dioxide content in whole blood (mmol/L).
+
+    McHardy's whole-blood CO2 dissociation curve (McHardy 1967, as quoted by Mallat & Vallet
+    2021), in vol% and converted to mmol/L. It is total content, so dissolved CO2 is already in
+    it. Its Hb term gives the haematocrit dependence; its saturation term is the Haldane effect
+    (deoxygenated blood carries more CO2).
+
+    Saturation uses a fixed P50 of 26 mmHg, not the Bohr-shifted P50 of the oxygen curve
+    (reference §11 row 19). At H near 0 the Hb term makes content peak near PCO2 135 mmHg, far
+    above any tissue PCO2; below that the curve rises with PCO2 for every H.
     """
     if pco2_mmHg <= 0.0:
         return 0.0
-        
-    alpha_co2 = 0.03  # Solubility of CO2 in plasma (mmol/L per mmHg)
-    
-    # Haldane Effect: Spencer (1979) empirical CO2 dissociation curve
-    # CO2 is carried as dissolved, carbaminohemoglobin, and bicarbonate.
-    # The non-linear bound portion is heavily dependent on O2 saturation.
-    
-    # Approximate O2 saturation for the Haldane shift
+
     sat_o2 = (po2_mmHg ** 2.7) / ((po2_mmHg ** 2.7) + (26.0 ** 2.7))
-    
-    # Base CO2 carrying capacity
-    c_co2_base = 11.02 * (pco2_mmHg ** 0.396)
-    
-    # Haldane shift (deoxygenated blood carries more CO2)
-    haldane_shift = (0.15 - 0.05 * sat_o2) * pco2_mmHg
-    
-    bound_co2 = hematocrit * (c_co2_base + haldane_shift)
-    dissolved = alpha_co2 * pco2_mmHg
-    
-    return float(dissolved + bound_co2)
+
+    # g/dL. The same Hb that c_hb_max in calculate_blood_oxygen_content assumes:
+    # 20.4 vol% O2 capacity = 1.36 mL/g x 15 g/dL at H = 0.45.
+    hb_g_dL = 15.0 * hematocrit / 0.45
+
+    c_co2_vol_pct = (11.02 * pco2_mmHg ** 0.396
+                     - (15.0 - hb_g_dL) * 0.015 * pco2_mmHg
+                     + (95.0 - 100.0 * sat_o2) * 0.064)
+
+    # One mmol of CO2 is 22.26 mL STPD, so vol% (mL per 100 mL) / 2.226 is mmol/L.
+    return float(c_co2_vol_pct / 2.226)
 
 def calculate_ph_from_pco2(pco2_mmHg: float | np.ndarray, hco3_mmol_L: float = 24.0) -> float | np.ndarray:
     """

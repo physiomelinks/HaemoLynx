@@ -75,14 +75,15 @@ Listed in execution order for the default configuration.
 | $P_{50}$ | Oxygen partial pressure at 50% haemoglobin saturation | mmHg |
 | $n$ | Hill coefficient | — |
 | $S_{\mathrm{O_2}}$ | Haemoglobin oxygen saturation | — |
-| $S_{\mathrm{O_2}}^{H}$ | Oxygen saturation term used in the Haldane shift | — |
+| $S_{\mathrm{O_2}}^{H}$ | Oxygen saturation term used in the Haldane term | — |
 | $\alpha_{\mathrm{O_2}}$ | Solubility of oxygen in plasma | mmol·L⁻¹·mmHg⁻¹ |
 | $\alpha_{\mathrm{CO_2}}$ | Solubility of carbon dioxide in plasma | mmol·L⁻¹·mmHg⁻¹ |
 | $c_{\mathrm{Hb,max}}$ | Maximum oxygen carrying capacity of pure red cells | mmol·L⁻¹ |
 | $C_{\mathrm{O_2}}$ | Total blood oxygen content | mmol·L⁻¹ |
 | $C_{\mathrm{CO_2}}$ | Total blood carbon dioxide content | mmol·L⁻¹ |
-| $c_{\mathrm{CO_2}}^{\text{base}}$ | Base carbon dioxide carrying capacity | mmol·L⁻¹ |
-| $\Delta_{\text{Haldane}}$ | Haldane shift in carbon dioxide carrying capacity | mmol·L⁻¹ |
+| $\mathrm{Hb}$ | Blood haemoglobin concentration | g·dL⁻¹ |
+| $c_{\mathrm{CO_2}}^{\text{base}}$ | Base carbon dioxide content, with the haemoglobin correction | vol% |
+| $\Delta_{\text{Haldane}}$ | Haldane (saturation) term of the carbon dioxide content | vol% |
 | $C^{\text{mix}}$ | Flow-weighted mixed blood gas content at a node | mmol·L⁻¹ |
 | $\mathrm{pH}$ | Tissue or blood pH | — |
 | $[\mathrm{HCO_3^-}]$ | Tissue bicarbonate buffer concentration | mmol·L⁻¹ |
@@ -149,9 +150,10 @@ Listed in execution order for the default configuration.
 | $P_{50}$ | Baseline P50 at pH 7.4, $P_{\mathrm{CO_2}}$ 40 mmHg | 26.0 | mmHg | [@dash2010]: about 26.8 mmHg (human); 26.0 is slightly lower |
 | — | Bohr pH coefficient | $-0.4$ | — | — |
 | — | Bohr $P_{\mathrm{CO_2}}$ coefficient | 0.06 | — | — |
-| — | Carbon dioxide base capacity prefactor | 11.02 | — | — |
-| — | Carbon dioxide base capacity exponent | 0.396 | — | — |
-| — | Haldane shift coefficients | 0.15, 0.05 | — | — |
+| — | Carbon dioxide base content prefactor and exponent | 11.02, 0.396 | vol% | [@mchardy_relationship_1967] as quoted by [@mallat_ratio_2021]: whole blood at Hb 15 g·dL⁻¹, saturation 95% (human) |
+| — | Carbon dioxide haemoglobin correction | 0.015 | vol%·dL·g⁻¹·mmHg⁻¹ | [@mchardy_relationship_1967; @mallat_ratio_2021] |
+| — | Haldane (saturation) coefficient | 0.064 | vol% per % desaturation | [@mchardy_relationship_1967; @mallat_ratio_2021]. Full desaturation adds 2.8 mmol·L⁻¹; [@loeppky_quantitative_1983] measured ≈2.5 (human) |
+| — | vol% to mmol·L⁻¹ | 2.226 | — | 1 mmol CO₂ = 22.26 mL STPD |
 | $\mathrm{p}K_a$ | Henderson–Hasselbalch dissociation constant | 6.1 | — | [@severinghaus1956]: 6.10, revised to 6.09 at pH 7.4 and 37.5 °C (human and canine serum) |
 | $[\mathrm{HCO_3^-}]$ | `hco3_tissue` | 24.0 | mmol·L⁻¹ | [@berend2014]: arterial reference $24 \pm 2$ mmol·L⁻¹ (human); used here for tissue |
 | $P_{\mathrm{O_2}}^{\text{art}}$ | `po2_arterial_mmHg` | 100.0 | mmHg | [@dash2010]: standard arterial $P_{\mathrm{O_2}}$ = 100 mmHg (human) |
@@ -403,17 +405,17 @@ $$\mathbf{A}_{ii} = \sum_{j \in \mathcal{N}(i)} D_{ij} + \varepsilon, \qquad \ma
 
 $$S_{\mathrm{O_2}}^{H} = \frac{P_{\mathrm{O_2}}^{2.7}}{P_{\mathrm{O_2}}^{2.7} + 26.0^{2.7}}$$
 
-**(E38)** Base carbon dioxide carrying capacity
+**(E38)** Base carbon dioxide content, with McHardy's haemoglobin correction
 
-$$c_{\mathrm{CO_2}}^{\text{base}} = 11.02\,P_{\mathrm{CO_2}}^{0.396}$$
+$$c_{\mathrm{CO_2}}^{\text{base}} = 11.02\,P_{\mathrm{CO_2}}^{0.396} - (15 - \mathrm{Hb})\cdot 0.015\,P_{\mathrm{CO_2}}, \qquad \mathrm{Hb} = 15\cdot\frac{H}{0.45}$$
 
-**(E39)** Haldane shift
+**(E39)** Haldane (saturation) term
 
-$$\Delta_{\text{Haldane}} = \left(0.15 - 0.05\,S_{\mathrm{O_2}}^{H}\right) P_{\mathrm{CO_2}}$$
+$$\Delta_{\text{Haldane}} = \left(95 - 100\,S_{\mathrm{O_2}}^{H}\right)\cdot 0.064$$
 
-**(E40)** Blood carbon dioxide content
+**(E40)** Blood carbon dioxide content, whole blood (dissolved CO₂ included)
 
-$$C_{\mathrm{CO_2}} = \alpha_{\mathrm{CO_2}} P_{\mathrm{CO_2}} + H\left(c_{\mathrm{CO_2}}^{\text{base}} + \Delta_{\text{Haldane}}\right), \qquad \alpha_{\mathrm{CO_2}} = 0.03$$
+$$C_{\mathrm{CO_2}} = \frac{c_{\mathrm{CO_2}}^{\text{base}} + \Delta_{\text{Haldane}}}{2.226}$$
 
 **(E41)** Henderson–Hasselbalch pH
 
