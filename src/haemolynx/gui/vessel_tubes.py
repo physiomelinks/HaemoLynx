@@ -22,6 +22,12 @@ from haemolynx.gui.results import VESSELS, VESSEL_TUBES
 TUBE_RADIUS_UM = 2.0
 DEFAULT_TUBE_SIDES = 6
 
+#: napari Surface shading the tubes layer starts with. Flat lights each face
+#: on its own, so a tube's sides and bends read as 3D; ``"none"`` draws every
+#: face the same flat colour. Only the starting value: a stage that redraws
+#: the tubes keeps whatever the user has since chosen in the layer controls.
+TUBE_SHADING = "flat"
+
 VESSEL_DRAW_TUBES = "tubes"
 VESSEL_DRAW_LINES = "lines"
 DEFAULT_VESSEL_DRAW = VESSEL_DRAW_TUBES

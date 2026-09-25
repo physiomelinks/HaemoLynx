@@ -95,6 +95,7 @@ from haemolynx.gui.run_snapshot import (
 from haemolynx.gui.tabs import section_box_title, tabs_for
 from haemolynx.gui.vessel_tubes import (
     DEFAULT_VESSEL_DRAW,
+    TUBE_SHADING,
     VESSEL_DRAW_LINES,
     VESSEL_DRAW_TUBES,
     colors_for_tube_vertices,
@@ -960,7 +961,7 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
             name=name,
             scale=scale,
             vertex_colors=colours,
-            shading="none",
+            shading=TUBE_SHADING,
             blending="translucent",
             metadata={OURS: ours},
         )

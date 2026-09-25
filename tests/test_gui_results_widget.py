@@ -94,6 +94,26 @@ def test_a_stage_becomes_layers_of_the_right_type_and_scale(viewer):
     assert by_name[VESSEL_TUBES].visible is True
 
 
+def test_the_tubes_start_flat_shaded_and_keep_the_users_shading(viewer):
+    """Flat shading lights each face on its own, so a tube reads as 3D; with
+    no shading every face is one flat colour. It is only the starting value:
+    a later stage redrawing the tubes must not undo the user's choice."""
+    from haemolynx.gui._widget import _sync_vessel_tubes
+    from haemolynx.gui.vessel_tubes import TUBE_SHADING
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    tubes = viewer.layers[VESSEL_TUBES]
+    assert TUBE_SHADING == "flat"
+    assert str(tubes.shading) == "flat"
+
+    tubes.shading = "smooth"
+    _sync_vessel_tubes(viewer)
+
+    assert viewer.layers[VESSEL_TUBES] is tubes
+    assert str(tubes.shading) == "smooth"
+
+
 def test_colouring_vessels_retints_the_tube_mesh(viewer):
     from haemolynx.gui._widget import _colour_layer
 
