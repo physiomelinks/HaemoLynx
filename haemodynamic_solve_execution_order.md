@@ -182,7 +182,10 @@ cell's flow as pressure drop / the file's `resistance` array. That array came fr
 the exported flows (and the `flow_abs` the driver copies back into the graph for perfusion)
 did not match the solved pressures. After `aecc53d` it held NaN, so every flow was NaN and
 Tier 3 stopped. The driver now writes the solved rheology arrays, resistance included, to the
-file before the export. The export raises if no cell has a usable resistance.
+file before the export. The export raises if no cell has a usable resistance. The driver then
+copies both `flow_abs` and `flow_signed` back into the graph; it used to copy only the size,
+leaving the sign from the rheology loop's last iteration, and on an unconverged loop the two
+disagreed on near-stagnant edges.
 
 What the step does do here is write `assigned_diameter_um`, which `B2` reads for calibre, and
 run the guards below. The diameter comes from the measured radius.

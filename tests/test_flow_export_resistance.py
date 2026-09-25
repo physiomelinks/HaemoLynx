@@ -108,3 +108,33 @@ def test_the_march_names_a_nan_flow_instead_of_blaming_the_unit_factor():
     cells = {0: [{"edge": (0, 1, 0), "flow": np.nan, "surface_area": 1.0}]}
     with pytest.raises(ValueError, match="NaN or infinite 'flow_abs'"):
         _edge_flows_um3_per_s(DAG, cells, 1.0)
+
+
+@pytest.mark.parametrize("flow_signed, flow_abs", [(0.0, 4.2e-8), (-9.8e-9, 0.0)])
+@pytest.mark.parametrize("solver", ["solve_multi_species_perfusion", "solve_coupled_1d3d_perfusion"])
+def test_a_march_refuses_flow_direction_and_size_from_different_solves(solver, flow_signed, flow_abs):
+    """The WKY-A pair: flow_signed left from the rheology loop, flow_abs from the export."""
+    import ImageLynx.haemodynamics.perfusion as perfusion
+    from test_perfusion_march_flow_units import _Config
+
+    G = _flowing_graph(1e-8)
+    G.add_edge(1, 2, key=0, flow_abs=flow_abs, flow_signed=flow_signed, hematocrit=0.45,
+               length=20.0, voxels=[np.array([20.0 + t, 0.0, 0.0]) for t in (0.0, 10.0, 20.0)])
+    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
+    with pytest.raises(ValueError, match="carry flow by one of 'flow_signed' and 'flow_abs'"):
+        getattr(perfusion, solver)(grid, G, [0], {}, _Config())
+
+
+def test_the_driver_copies_both_flow_sign_and_size_back_from_the_export():
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent / "examples" / "carotid_image_to_model.py").read_text()
+    target = next(node for node in ast.walk(ast.parse(source))
+                  if isinstance(node, ast.FunctionDef)
+                  and node.name == "_export_and_solve_haemodynamics")
+    written = {t.slice.value for node in ast.walk(target) if isinstance(node, ast.Assign)
+               for t in node.targets
+               if isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant)
+               and isinstance(t.value, ast.Subscript)}
+    assert {"flow_abs", "flow_signed"} <= written

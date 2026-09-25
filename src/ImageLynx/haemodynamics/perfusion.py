@@ -221,6 +221,33 @@ def _raise_on_non_finite_flow(G) -> None:
             f"solve_flow_from_conductance_matrix leaves NaN on purpose.")
 
 
+#: Tier 3 treats an edge whose |flow| is at most this fraction of the network's largest as
+#: stagnant. The flow solve conserves mass at every node to ~3e-14 of the largest flow (double
+#: precision, measured on WKY-A); flows below 1e-12 of it are rounding, not blood.
+STAGNANT_FLOW_FRACTION = 1e-12
+
+
+def _raise_on_direction_size_mismatch(G) -> None:
+    """
+    Raise if an edge's ``flow_signed`` and ``flow_abs`` disagree about whether it carries flow.
+
+    The Tier 2 and Tier 3 marches take flow direction from ``flow_signed`` and size from
+    ``flow_abs``. If the two come from different solves, a near-stagnant edge can flow by one
+    and not at all by the other, and a node can then send blood with none arriving. The
+    pipeline did this: it copied only ``flow_abs`` back from its final flow export and left
+    ``flow_signed`` from the rheology loop's last iteration.
+    """
+    bad = [(u, v, k) for u, v, k, d in G.edges(keys=True, data=True)
+           if d.get("flow_abs") is not None
+           and (float(d["flow_abs"]) != 0.0) != (float(d.get("flow_signed", 0.0)) != 0.0)]
+    if bad:
+        shown = ", ".join(str(e) for e in bad[:3])
+        raise ValueError(
+            f"{len(bad)} of {G.number_of_edges()} edges carry flow by one of 'flow_signed' and "
+            f"'flow_abs' but not by the other, for example {shown}. Set both from the same flow "
+            f"solve.")
+
+
 def _edge_flows_um3_per_s(DAG: nx.MultiDiGraph, cell_to_vessels: Dict,
                           flow_to_um3_per_s: float) -> Dict[Tuple[Any, Any, Any], float]:
     """
@@ -774,11 +801,25 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
             if edge not in edge_to_cells: edge_to_cells[edge] = []
             edge_to_cells[edge].append({'cell_idx': cell_idx, 'surface_area': v['surface_area'], 'flow': v['flow']})
 
+    _raise_on_direction_size_mismatch(G)
+    # Flow at the pressure solve's rounding level is not flow. In near-stagnant pockets it can
+    # leave both edges of a node flowing outward, and the node then sends blood it never
+    # receives (7 such nodes on WKY-A, net outflow ~1e-14 of the largest flow). Such edges
+    # carry no blood in the march, the same as an exact zero.
+    q_scale = max((abs(float(d.get("flow_signed", 0.0))) for _, _, d in G.edges(data=True)),
+                  default=0.0)
+    stagnant_tol = STAGNANT_FLOW_FRACTION * q_scale
+    n_stagnant = 0
     DAG = nx.MultiDiGraph()
     for u, v, key, e_data in G.edges(keys=True, data=True):
         f = e_data.get("flow_signed", 0.0)
-        if f > 0: DAG.add_edge(u, v, key=key, **e_data)
+        if 0.0 < abs(f) <= stagnant_tol:
+            n_stagnant += 1
+        elif f > 0: DAG.add_edge(u, v, key=key, **e_data)
         elif f < 0: DAG.add_edge(v, u, key=key, **e_data)
+    if n_stagnant:
+        logger.info(f"{n_stagnant} of {G.number_of_edges()} edges have flow at or below "
+                    f"{STAGNANT_FLOW_FRACTION:g} of the largest and carry no blood in the march.")
 
     # Flow runs from high to low pressure, so the directed graph has no cycle. If it had one,
     # the march would have no order to follow; it used to fall back to node order silently.
@@ -1037,6 +1078,7 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
             if edge not in edge_to_cells: edge_to_cells[edge] = []
             edge_to_cells[edge].append({'cell_idx': cell_idx, 'surface_area': v['surface_area'], 'flow': v['flow']})
             
+    _raise_on_direction_size_mismatch(G)
     DAG = nx.MultiDiGraph()
     for u, v, key, e_data in G.edges(keys=True, data=True):
         f = e_data.get("flow_signed", 0.0)

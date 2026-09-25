@@ -140,3 +140,19 @@ def test_a_cycle_in_the_flow_direction_is_refused():
     grid, G, cells = _network([(0, 1, 1e3, 0.45), (1, 2, 1e3, 0.45), (2, 0, 1e3, 0.45)])
     with pytest.raises(ValueError, match="has a cycle"):
         solve_multi_species_perfusion(grid, G, [0], cells, _MEASURED)
+
+
+def test_rounding_level_flow_is_stagnant_not_an_unfed_source():
+    """WKY-A: node 764 had both edges flowing outward at ~1e-14 of the largest flow."""
+    grid, G, cells = _network([(0, 1, 1e3, 0.45), (1, 2, 1e3, 0.45),
+                               (4, 3, 1e3 * 1e-14, 0.45), (4, 5, 1e3 * 2e-14, 0.45)])
+    po2, pco2, _ = solve_multi_species_perfusion(grid, G, [0], cells, _MEASURED)
+    assert np.all(np.isfinite(po2)) and np.all(np.isfinite(pco2))
+    # The stagnant cells get nothing from the blood: no O2 in, so their tissue is anoxic.
+    np.testing.assert_allclose(po2[2:], 0.0, atol=1e-12)
+
+
+def test_flow_above_the_rounding_level_at_an_unfed_node_still_raises():
+    grid, G, cells = _network([(0, 1, 1e3, 0.45), (4, 3, 1e3 * 1e-9, 0.45)])
+    with pytest.raises(ValueError, match="Node 4 sends blood out but receives none"):
+        solve_multi_species_perfusion(grid, G, [0], cells, _MEASURED)

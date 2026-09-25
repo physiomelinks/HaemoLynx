@@ -3186,6 +3186,7 @@ tuning opportunity.
 | Relaxation γ (CO₂) | 1.0 | hard-coded | |
 | CG relative tolerance | 1 × 10⁻⁵ | hard-coded | Looser than Tier 1. Warm-started, so it returns the last field once a Picard step is below it, and the loop can stop early (open item 23) |
 | CG max iterations | 500 | hard-coded | Half of Tier 1 |
+| Stagnant-flow floor | 10⁻¹² × max \|q\| | `STAGNANT_FLOW_FRACTION` | Edges at or below it carry no blood in the march. The flow solve balances every node to ≈3 × 10⁻¹⁴ of the largest flow (WKY-A), so below this is rounding; in stagnant pockets it left nodes sending blood they never received |
 
 ### A.5 Config-level Picard settings
 

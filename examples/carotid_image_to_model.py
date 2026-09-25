@@ -1469,17 +1469,24 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     print("Flow through the network solved and VTK updated with Rheology fields.")
     print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
 
-    # Write flow back into the NetworkX Graph (flow is actually already in G from the solver, but we'll do this for redundancy)
+    # Write the exported flow back into the graph for perfusion. Both the size and the sign go
+    # back: the graph's flow_signed was otherwise left from the rheology loop's last iteration,
+    # which differs from this solve when the loop stops unconverged, and perfusion takes flow
+    # direction from flow_signed and size from flow_abs. On WKY-A that made near-stagnant edges
+    # flow one way by one and not at all by the other. graph_to_vtk writes edge_u/edge_v in the
+    # graph's own iteration order, which is the orientation flow_signed is relative to.
     vessels = pv.read(vtk_export['vessels_path'])
     edge_u = np.asarray(vessels.cell_data.get("edge_u", []))
     edge_v = np.asarray(vessels.cell_data.get("edge_v", []))
     edge_key = np.asarray(vessels.cell_data.get("edge_key", []))
     flow_abs = np.asarray(vessels.cell_data.get("flow_abs", []))
-    
+    flow_signed = np.asarray(vessels.cell_data.get("flow_signed", []))
+
     for i in range(vessels.n_cells):
         u, v, k = int(edge_u[i]), int(edge_v[i]), int(edge_key[i])
         if G.has_edge(u, v, key=k):
             G[u][v][k]["flow_abs"] = flow_abs[i]
+            G[u][v][k]["flow_signed"] = flow_signed[i]
 
     # Phase 6: Perfusion Modeling
     if perf_config and perf_config.do_perfusion_modeling:
