@@ -344,6 +344,28 @@ def assign_edge_diameters(
     """
     clear_edge_resistances(G)
     summary: dict[str, Any] = {}
+    loaded_mask: np.ndarray | None = None
+    wants_mask = config.use_edt_diameter_crosscheck or (
+        config.use_fwhm_edge_diameters and config.do_fwhm_measurement
+    )
+    if mask_volume is None and wants_mask:
+        # No segmentation in memory (e.g. a resumed run): read it from
+        # edt_mask_path -- the run's own segmented input unless set -- once,
+        # for both the EDT widths and FWHM's neighbouring-vessel stops.
+        mask_volume = loaded_mask = load_edt_mask_volume(config)
+    try:
+        return _assign_edge_diameters_binarised(G, config, summary, mask_volume)
+    finally:
+        if isinstance(loaded_mask, np.memmap):
+            release_memmap_array(loaded_mask)
+
+
+def _assign_edge_diameters_binarised(
+    G: nx.MultiGraph,
+    config: HaemodynamicsApplyConfig,
+    summary: dict[str, Any],
+    mask_volume: np.ndarray | None,
+) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     if mask_volume is not None:
         # The segmentation exactly as the skeleton was made from it -- the
         # stage hands over the loaded image, which for an ilastik "Simple

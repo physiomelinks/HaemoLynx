@@ -4098,11 +4098,16 @@ SCHEMA = Schema(
             name="edt_mask_path",
             kind="path",
             default=None,
-            help="Load the vessel mask from here when no in-memory segmentation volume is available (e.g. a resumed run)",
+            help=(
+                "The segmented vessel mask to read widths from when the run has none in "
+                "memory (e.g. a resumed run); empty means the segmented input from the "
+                "Input tab (ilastik's output when ilastik segments it)"
+            ),
             section=_EDT_DIAMETER,
             requires=("use_edt_diameter_crosscheck",),
             must_exist=True,
             advanced=True,
+            placeholder="the segmented input: Input path, or ilastik's output",
         ),
         Setting(
             name="edt_diameter_prefer_over_table_on_fwhm_failure",

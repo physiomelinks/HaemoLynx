@@ -1156,6 +1156,16 @@ def test_shared_ilastik_reparent_does_not_spawn_floating_windows(panel):
     assert_no_new_windows()
 
 
+def test_an_empty_edt_mask_path_says_it_means_the_segmented_input(panel):
+    """A path field is a FileEdit, whose native is a container: the hint has
+    to reach the line edit inside it, or it silently never shows."""
+    widget, _viewer = panel
+    field = widget._haemolynx_rows()["edt_mask_path"]
+    line_edit = getattr(field, "line_edit", field)
+    assert "segmented input" in line_edit.native.placeholderText()
+    assert "ilastik" in line_edit.native.placeholderText()
+
+
 def test_thick_vessel_threshold_overrides_show_auto_placeholder_and_nest(panel):
     """The two threshold overrides hint 'auto' when empty and hide with their parent.
 

@@ -482,3 +482,102 @@ def test_fwhm_edt_disagreement_flag_skips_edges_missing_either_value():
     assert flagged == 0
     assert "fwhm_edt_disagreement_ratio" not in graph[0][1][0]
     assert "fwhm_low_confidence_vs_edt" not in graph[0][1][0]
+
+
+# --- the EDT mask defaults to the run's own segmented input --------------------------
+
+
+def _run_settings(**values):
+    from haemolynx.pipeline import default_schema
+
+    settings = {setting.name: setting.default for setting in default_schema()}
+    settings["diameter_by_branch_order"] = dict(DIAMETERS)
+    settings.update(values)
+    return settings
+
+
+def test_the_segmented_input_is_the_input_path_without_ilastik(tmp_path):
+    from haemolynx.pipeline.stages import segmented_input_path
+
+    settings = _run_settings(input_path=tmp_path / "mask.tif", use_ilastik_segmentation=False)
+    assert segmented_input_path(settings) == tmp_path / "mask.tif"
+
+
+def test_with_ilastik_the_segmented_input_is_ilastiks_output_not_its_input(tmp_path):
+    """The Input tab's input_path and ilastik's raw-image field are different
+    files; with ilastik on, the segmented input is what ilastik writes -- even
+    while input_path still holds an unrelated file from before."""
+    from haemolynx.pipeline.stages import segmented_input_path
+
+    settings = _run_settings(
+        use_ilastik_segmentation=True,
+        input_path=tmp_path / "an_old_mask.tif",
+        ilastik_unsegmented_image_path=tmp_path / "raw" / "stack.tif",
+        ilastik_output_dir=tmp_path / "ilastik",
+        ilastik_output_suffix=".tiff",
+    )
+    expected = tmp_path / "ilastik" / "stack_segmented.tiff"
+    assert segmented_input_path(settings) == expected
+
+    # Once `segment` has run it replaces input_path with that same output.
+    settings["input_path"] = expected
+    assert segmented_input_path(settings) == expected
+
+
+def test_an_unset_edt_mask_path_points_at_the_segmented_input(tmp_path):
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.stages import _haemodynamics_apply_config
+
+    schema = default_schema()
+    unset = _haemodynamics_apply_config(
+        _run_settings(input_path=tmp_path / "mask.tif", edt_mask_path=None),
+        schema, voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    assert unset.edt_setting("edt_mask_path") == tmp_path / "mask.tif"
+
+    chosen = _haemodynamics_apply_config(
+        _run_settings(input_path=tmp_path / "mask.tif", edt_mask_path=tmp_path / "other.tif"),
+        schema, voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    assert chosen.edt_setting("edt_mask_path") == tmp_path / "other.tif"
+
+
+def test_without_a_mask_in_memory_both_measurements_read_the_one_from_the_path(monkeypatch):
+    """A resumed run has no segmentation in memory: it is read once from
+    edt_mask_path (the segmented input unless set) and binarised, for the EDT
+    widths and for FWHM's neighbouring-vessel stops alike."""
+    seen: dict[str, np.ndarray] = {}
+    labels = np.full((4, 4, 4), 2, dtype=np.uint8)
+    labels[1:3, 1:3, :] = 1
+    loads = []
+
+    def fake_load(_config):
+        loads.append(1)
+        return labels
+
+    def fake_edt(G, _config, mask_volume=None):
+        seen["edt"] = mask_volume
+        return {}
+
+    def fake_fwhm(G, _config, raw_volume=None, vessel_mask=None, **_kwargs):
+        seen["fwhm"] = vessel_mask
+        return {}
+
+    monkeypatch.setattr("haemolynx.haemodynamics.apply.load_edt_mask_volume", fake_load)
+    monkeypatch.setattr("haemolynx.haemodynamics.apply._measure_edt_diameters", fake_edt)
+    monkeypatch.setattr("haemolynx.haemodynamics.apply._measure_fwhm_diameters", fake_fwhm)
+    monkeypatch.setattr(
+        "haemolynx.haemodynamics.apply.load_fwhm_raw_volume",
+        lambda _config: np.zeros((4, 4, 4), dtype=np.float32),
+    )
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": dict(DIAMETERS)},
+        fwhm={"use_fwhm_edge_diameters": True, "do_fwhm_measurement": True},
+        edt={"use_edt_diameter_crosscheck": True},
+    )
+
+    assign_edge_diameters(_network(), config)
+
+    assert loads == [1]
+    for name in ("edt", "fwhm"):
+        np.testing.assert_array_equal(seen[name], labels == 1)

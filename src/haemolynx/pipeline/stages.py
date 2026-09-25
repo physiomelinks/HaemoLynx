@@ -288,6 +288,27 @@ class PipelineResume:
     large_venule_mask: Any | None = None
 
 
+def segmented_input_path(settings: dict) -> Path | None:
+    """The segmented image the run analyses: the Input tab's ``input_path``,
+    or -- when ilastik does the segmenting -- ilastik's output, which is not
+    the image in ``ilastik_unsegmented_image_path`` but what ilastik makes
+    from it.
+
+    With ilastik on, the Input tab's ``input_path`` is not the answer until
+    `segment` has replaced it with ilastik's output (it may still hold an
+    unrelated file from before ilastik was switched on): it counts only once
+    it lies in ``ilastik_output_dir``. Otherwise the output is derived where
+    `segment` writes it -- that stage's own naming rule."""
+    produced = settings.get("input_path")
+    if settings.get("use_ilastik_segmentation") and settings.get("ilastik_unsegmented_image_path"):
+        output_dir = Path(settings["ilastik_output_dir"])
+        if produced is not None and Path(produced).parent == output_dir:
+            return Path(produced)
+        unsegmented = Path(settings["ilastik_unsegmented_image_path"])
+        return output_dir / f"{unsegmented.stem}_segmented{settings['ilastik_output_suffix']}"
+    return None if produced is None else Path(produced)
+
+
 def segment(settings: dict):
     """Produce the segmented mask to analyse, running ilastik when asked to."""
     # Not yet a path when ilastik is doing the segmenting: `input_path` is what
@@ -1967,10 +1988,15 @@ def _haemodynamics_apply_config(
     diameters = dict(schema.section_values(settings, "Diameters and pericytes"))
     diameters["do_pericyte_construction"] = False
     diameters["run_pericyte_resistance_comparison"] = False
+    edt = dict(schema.section_values(settings, "EDT mask diameter estimate"))
+    if edt.get("edt_mask_path") is None:
+        # Unset means the run's own segmented input -- what the skeleton was
+        # made from.
+        edt["edt_mask_path"] = segmented_input_path(settings)
     return HaemodynamicsApplyConfig(
         diameters=diameters,
         fwhm=schema.section_values(settings, "FWHM diameter measurement"),
-        edt=schema.section_values(settings, "EDT mask diameter estimate"),
+        edt=edt,
         resistance_node_pair=resistance_node_pair,
         voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
         axis_order=settings["image_axis_order"],

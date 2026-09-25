@@ -753,7 +753,7 @@ fwhm_diameter_measurement:
 edt_mask_diameter_estimate:
   # Estimate per-edge diameters from the segmentation mask's inscribed radius, for fallback and cross-checking against FWHM  [needs run_haemodynamics]
   use_edt_diameter_crosscheck: false
-  # Load the vessel mask from here when no in-memory segmentation volume is available (e.g. a resumed run)  [needs use_edt_diameter_crosscheck; must exist]
+  # The segmented vessel mask to read widths from when the run has none in memory (e.g. a resumed run); empty means the segmented input from the Input tab (ilastik's output when ilastik segments it)  [needs use_edt_diameter_crosscheck; must exist]
   edt_mask_path: null
   # Use the EDT mask estimate instead of the branch-order table when FWHM measurement fails for an edge, or was never attempted  [needs use_edt_diameter_crosscheck]
   edt_diameter_prefer_over_table_on_fwhm_failure: true
