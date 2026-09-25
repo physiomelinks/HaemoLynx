@@ -1405,7 +1405,10 @@ $$\mathbf{L}_{uu}\,\mathbf{p}_u = -\,\mathbf{L}_{uk}\,\mathbf{p}_k$$
 
 **The order of operations.** On the CB path this runs inside the rheology loop (§4.3) rather than
 standalone; `solve_flow_from_conductance_matrix` (`resistance.py:201`) is the equivalent entry point
-for graph-only callers and adds VTK export.
+for graph-only callers and adds VTK export. The CB driver also calls it once after the rheology
+solve, only to write `*_vessels_flow.vtp`: it divides by the file's `resistance` array, so the
+driver writes the solved resistances to the file first (before `aecc53d` it divided by the
+power-law values, and after it by NaN).
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|

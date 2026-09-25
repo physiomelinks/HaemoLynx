@@ -175,6 +175,15 @@ chart, because the capability is still in the function and the two `resistance_n
 drivers rely on it — neither has a rheology stage, so that power-law value is the only
 resistance they ever have.
 
+**One reader of the provisional value was missed.** After the solve, the driver calls
+`solve_flow_from_conductance_matrix` to write `*_vessels_flow.vtp`, and it computes each
+cell's flow as pressure drop / the file's `resistance` array. That array came from
+`graph_to_vtk`, which runs before the solve. Before `aecc53d` it held the power-law values, so
+the exported flows (and the `flow_abs` the driver copies back into the graph for perfusion)
+did not match the solved pressures. After `aecc53d` it held NaN, so every flow was NaN and
+Tier 3 stopped. The driver now writes the solved rheology arrays, resistance included, to the
+file before the export. The export raises if no cell has a usable resistance.
+
 What the step does do here is write `assigned_diameter_um`, which `B2` reads for calibre, and
 run the guards below. The diameter comes from the measured radius.
 

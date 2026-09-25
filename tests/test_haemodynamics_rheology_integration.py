@@ -567,6 +567,26 @@ def test_the_vtk_resistance_array_is_refreshed_after_the_rheology_solve():
         assert min(writes[name]) > solve_line
 
 
+def test_the_vtk_resistance_array_is_refreshed_before_the_flow_export():
+    """The flow export divides by the file's resistance array, so the refresh must come first.
+
+    ``solve_flow_from_conductance_matrix`` writes flow = pressure drop / the ``resistance``
+    cell array. The refresh used to run after it. Once the carotid body path stopped writing a
+    provisional resistance (aecc53d), that array was NaN at export time, and every flow in
+    ``*_vessels_flow.vtp`` and every ``flow_abs`` copied back into the graph was NaN.
+    """
+    writes = _driver_cell_data_writes("_export_and_solve_haemodynamics")
+    calls = _driver_call_lines(
+        "_export_and_solve_haemodynamics", ("solve_flow_from_conductance_matrix",))
+
+    assert len(calls["solve_flow_from_conductance_matrix"]) == 1
+    export_line = calls["solve_flow_from_conductance_matrix"][0]
+    assert max(writes["resistance"]) < export_line, (
+        f"the resistance cell array is written at line {max(writes['resistance'])}, after the "
+        f"flow export at line {export_line}, so the export divides by the stale array"
+    )
+
+
 def _diameter_graph():
     """One edge carrying everything set_poiseuille_resistances needs."""
     G = nx.MultiGraph()

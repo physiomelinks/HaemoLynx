@@ -201,6 +201,26 @@ def _edge_diameter_um(data, default_diameter_um):
     return None if default_diameter_um is None else float(default_diameter_um)
 
 
+def _raise_on_non_finite_flow(G) -> None:
+    """
+    Raise if any edge's ``flow_abs`` is NaN or infinite.
+
+    A NaN flow is not a missing one to these solvers: it passes the ``is None`` checks, and
+    ``np.isclose`` then reports it as a unit mismatch, because NaN never equals NaN. That is
+    how the pipeline's all-NaN flows (the flow export read a resistance array that held NaN)
+    reached Tier 3 disguised as a conversion-factor error.
+    """
+    bad = [(u, v, k) for u, v, k, d in G.edges(keys=True, data=True)
+           if d.get("flow_abs") is not None and not np.isfinite(float(d["flow_abs"]))]
+    if bad:
+        shown = ", ".join(str(e) for e in bad[:3])
+        raise ValueError(
+            f"{len(bad)} of {G.number_of_edges()} edges have a NaN or infinite 'flow_abs', for "
+            f"example {shown}. The flow solve gave them no flow: either their resistance was "
+            f"missing, or they lie in a component with no pressure boundary, whose pressure "
+            f"solve_flow_from_conductance_matrix leaves NaN on purpose.")
+
+
 def _edge_flows_um3_per_s(DAG: nx.MultiDiGraph, cell_to_vessels: Dict,
                           flow_to_um3_per_s: float) -> Dict[Tuple[Any, Any, Any], float]:
     """
@@ -228,6 +248,7 @@ def _edge_flows_um3_per_s(DAG: nx.MultiDiGraph, cell_to_vessels: Dict,
             f"example {shown}. Edge flow sets how fast blood gives up its gas along the edge, "
             f"so it is not substituted silently. Run the flow solve first, or set it on every "
             f"edge that has a non-zero 'flow_signed'.")
+    _raise_on_non_finite_flow(DAG)
 
     q_by_edge = {}
     for u, v, k, d in DAG.edges(keys=True, data=True):
@@ -347,6 +368,8 @@ def map_vessels_to_grid(
             f"substituted silently. Run the rheology solve "
             f"(solve_coupled_flow_and_hematocrit) first, or set it on every edge."
         )
+
+    _raise_on_non_finite_flow(G)
 
     cell_to_vessels = {}
     

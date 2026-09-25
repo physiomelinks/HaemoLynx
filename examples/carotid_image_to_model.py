@@ -1434,24 +1434,16 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
                 "are not both present in the graph."
             )
 
-    flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
-        conductance,
-        node_list,
-        hemo_config.input_p_bc,
-        hemo_config.output_p_bc,
-        starting_nodes,
-        output_nodes,
-        vtk_export,
-    )
-    
-    # Now manually inject hematocrit and viscosity into the VTK file
+    # Inject the solved rheology into the VTK file before the flow export reads it.
     import pyvista as pv
     vessels = pv.read(vtk_export['vessels_path'])
     rheology_arrays = _rheology_cell_arrays(G, vessels)
-    # graph_to_vtk ran before the rheology solve, so the resistance array it wrote holds
-    # set_poiseuille_resistances' power-law values while the viscosity array holds the
-    # Pries-Secomb ones. The two did not satisfy R = 128 mu L / (pi d^4) together, and a
-    # reader of the file had no way to tell. Refreshed here alongside the others.
+    # graph_to_vtk ran before the rheology solve. Its resistance array used to hold
+    # set_poiseuille_resistances' power-law values, and since aecc53d (no provisional
+    # resistance on this path) it holds NaN. solve_flow_from_conductance_matrix computes each
+    # cell's flow as pressure drop / this array, so the refresh has to come first. It used to
+    # come after, and every exported flow was NaN, and so was every flow_abs copied back into
+    # G below.
     vessels.cell_data["hematocrit"] = rheology_arrays["hematocrit"]
     vessels.cell_data["viscosity"] = rheology_arrays["viscosity"]
     vessels.cell_data["wall_shear_stress_pa"] = rheology_arrays["wall_shear_stress_pa"]
@@ -1463,7 +1455,17 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     vessels.field_data["rheology_max_flow_change"] = np.array(
         [np.nan if max_flow_change is None else max_flow_change])
     vessels.save(vtk_export['vessels_path'])
-    
+
+    flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(
+        conductance,
+        node_list,
+        hemo_config.input_p_bc,
+        hemo_config.output_p_bc,
+        starting_nodes,
+        output_nodes,
+        vtk_export,
+    )
+
     print("Flow through the network solved and VTK updated with Rheology fields.")
     print(f"Vtk file with flow data saved to: {vtk_export['vessels_path']}")
 

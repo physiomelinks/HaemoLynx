@@ -373,6 +373,22 @@ def solve_flow_from_conductance_matrix(
         raise ValueError(
             "VTK vessels file is missing resistance cell array needed for flow export."
         )
+    # Flow is pressure drop / this array. A cell without a usable resistance gets NaN flow,
+    # matching build_conductance_matrix_from_graph, which drops such edges from the solve with
+    # a warning. If no cell has one, the file was written before any resistance existed (the
+    # carotid body order after aecc53d), and every exported flow would be NaN.
+    usable = np.isfinite(edge_resistance) & (edge_resistance > 0.0)
+    if vessels.n_cells and not usable.any():
+        raise ValueError(
+            f"None of the {vessels.n_cells} cells in the VTK vessels file has a finite, positive "
+            f"resistance, so no flow can be computed. Write the solved resistance to the file "
+            f"before the flow export."
+        )
+    if not usable.all():
+        logger.warning(
+            "%d of %d cells in the VTK vessels file have a NaN, infinite or non-positive "
+            "resistance. Their flow is NaN.", int((~usable).sum()), vessels.n_cells)
+    edge_resistance = np.where(usable, edge_resistance, np.nan)
 
     edge_p_u = np.full(vessels.n_cells, np.nan, dtype=float)
     edge_p_v = np.full(vessels.n_cells, np.nan, dtype=float)
