@@ -811,6 +811,34 @@ def test_a_2d_snap_shows_the_planes_axes(make_napari_viewer, plane, displayed):
     assert viewer.camera.zoom != 50.0  # refitted to the data
 
 
+def test_tubes_stay_on_the_vessel_lines_after_a_2d_snap_then_3d(make_napari_viewer):
+    """napari 0.9 slices a fully displayed Surface in its stored axis order,
+    whatever ``dims.order`` says, while Vectors (and Image) follow the order.
+    A 2D YZ snap then a switch to 3D left the tubes rotated against the vessel
+    lines and the image they were built on -- z drawn along x."""
+    from haemolynx.gui._widget import snap_view_to_plane
+
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    viewer.dims.ndisplay = 2
+    assert snap_view_to_plane(viewer, "YZ")
+    viewer.dims.ndisplay = 3
+    displayed = list(viewer.dims.displayed)
+    assert displayed != sorted(displayed)
+
+    vessels = viewer.layers[VESSELS]
+    tubes = viewer.layers[VESSEL_TUBES]
+    # The lines' own on-screen coordinates: stored (z, y, x) in displayed order.
+    np.testing.assert_array_equal(
+        np.asarray(vessels._view_data)[:, 0], np.asarray(vessels.data)[:, 0][:, displayed]
+    )
+    np.testing.assert_array_equal(
+        np.asarray(tubes._view_vertices), np.asarray(tubes.data[0])[:, displayed]
+    )
+
+
 def test_snapping_without_3d_data_changes_nothing(make_napari_viewer):
     from haemolynx.gui._widget import snap_view_to_plane
 

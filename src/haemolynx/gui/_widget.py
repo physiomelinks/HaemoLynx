@@ -911,8 +911,47 @@ def _vessel_segment_diameters_um(vessels) -> np.ndarray | None:
         return None
 
 
+def _make_surfaces_follow_the_dims_order() -> None:
+    """Draw a 3D Surface in the displayed axis order, as napari 0.8 did.
+
+    napari 0.9's Surface slicing hands back the stored vertices unchanged when
+    every axis is on screen, ignoring ``dims.displayed``, while Image and
+    Vectors layers permute theirs. So once the dims order is anything but
+    ``(0, 1, 2)`` in 3D -- a 2D XZ/YZ snap, napari's roll or transpose button,
+    all of which outlive a cleared viewer -- the tubes are drawn with their
+    axes swapped against the image and the vessel lines they are built from.
+    Patched once, and only when that very unpermuted array comes back, so a
+    napari that fixes this upstream is left alone.
+    """
+    try:
+        from napari.layers.surface._slice import _SurfaceSliceRequest
+    except ImportError:  # napari < 0.9 slices a Surface in displayed order itself
+        return
+    original = _SurfaceSliceRequest.__call__
+    if getattr(original, "_haemolynx_follows_dims_order", False):
+        return
+
+    def __call__(self):
+        response = original(self)
+        displayed = list(self.slice_input.displayed)
+        vertices = response.vertices
+        if (
+            len(self.slice_input.not_displayed)
+            or displayed == sorted(displayed)
+            or vertices is not self.data[0]
+            or np.ndim(vertices) != 2
+            or np.shape(vertices)[1] != len(displayed)
+        ):
+            return response
+        return replace(response, vertices=np.asarray(vertices)[:, displayed])
+
+    __call__._haemolynx_follows_dims_order = True
+    _SurfaceSliceRequest.__call__ = __call__
+
+
 def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
     """Show tubes or line ribbons for one vessels Vectors layer."""
+    _make_surfaces_follow_the_dims_order()
     name = vessel_tubes_layer_name(vessels.name)
     existing = viewer.layers[name] if name in viewer.layers else None
     if existing is not None and not _is_ours(existing):
