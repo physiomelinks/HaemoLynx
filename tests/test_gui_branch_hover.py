@@ -276,6 +276,62 @@ def test_tooltips_from_feature_table_respects_selection():
     )
 
 
+def test_tooltips_from_a_layers_pandas_table_match_the_per_row_formatter():
+    """What a napari layer actually hands over: a pandas DataFrame, with each
+    vessel's row repeated once per centreline segment, and missing values."""
+    pd = pytest.importorskip("pandas")
+    selected = ("flow", "order", "diameter", "length")
+    table = pd.DataFrame(
+        {
+            "branch_id": ["0", "0", "0", "1", "1", "2"],
+            "flow": [2e-12, 2e-12, 2e-12, np.nan, np.nan, 5e-13],
+            "order": ["B2", "B2", "B2", "", "", "A1"],
+            "diameter": [6.0, 6.0, 6.0, 4.5, 4.5, np.nan],
+            "length": [10.0, 10.0, 10.0, 12.5, 12.5, 3.0],
+        }
+    )
+
+    tooltips = tooltips_from_feature_table(table, selected)
+
+    expected = []
+    for _index, row in table.iterrows():
+        values = {
+            "flow": None if np.isnan(row["flow"]) else row["flow"],
+            "order": row["order"] or None,
+            "diameter": None if np.isnan(row["diameter"]) else row["diameter"],
+            "length": row["length"],
+        }
+        expected.append(format_branch_tooltip(row["branch_id"], values, selected))
+    assert list(tooltips) == expected
+
+
+def test_each_distinct_vessel_row_is_composed_once(monkeypatch):
+    """A Vectors layer repeats a vessel's row for every segment of its
+    centreline; composing each copy again is what made a Z-depth change take
+    tens of seconds on a network of a few thousand vessels."""
+    from haemolynx.gui import branch_hover
+
+    calls = []
+    real = branch_hover.format_branch_tooltip
+
+    def counting(branch_id, values, selected):
+        calls.append(branch_id)
+        return real(branch_id, values, selected)
+
+    monkeypatch.setattr(branch_hover, "format_branch_tooltip", counting)
+    segments_per_vessel = 50
+    features = {
+        "branch_id": np.repeat(np.array(["0", "1", "2"], dtype=object), segments_per_vessel),
+        "length": np.repeat([10.0, 20.0, 30.0], segments_per_vessel),
+    }
+
+    tooltips = tooltips_from_feature_table(features, ("length",))
+
+    assert len(tooltips) == 3 * segments_per_vessel
+    assert sorted(calls) == ["0", "1", "2"]
+    assert tooltips[0] == tooltips[segments_per_vessel - 1] != tooltips[segments_per_vessel]
+
+
 def test_available_metrics_from_features_matches_graph_detection():
     graph = a_graph(branch_order="A0", flow_abs=1e-12)
     _ids, features = branch_hover_rows(graph, selected=BRANCH_HOVER_METRICS)

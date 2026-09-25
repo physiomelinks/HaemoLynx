@@ -1014,6 +1014,18 @@ def _store_z_filter_cache(
     layer.metadata = metadata
 
 
+def _uniform_colour(colours: Any) -> np.ndarray | None:
+    """The one colour every row shares, or None when rows differ (or none)."""
+    if colours is None:
+        return None
+    rows = np.asarray(colours)
+    if rows.ndim == 1:
+        return rows
+    if rows.ndim != 2 or len(rows) == 0:
+        return None
+    return rows[0] if np.all(rows == rows[0]) else None
+
+
 def _set_z_filtered_layer_data(
     viewer,
     layer,
@@ -1072,6 +1084,11 @@ def _set_z_filtered_layer_data(
             if hasattr(layer, "out_of_slice_display"):
                 add_kwargs["out_of_slice_display"] = layer.out_of_slice_display
             colour_attr, colour = "face_color", getattr(layer, "face_color", None)
+        # Only a single flat colour carries over as-is. Per-row colours belong
+        # to the old rows -- the caller re-applies the colouring rule instead
+        # (see _colouring_rule); pasting them onto a shorter layer gave its
+        # vessels other vessels' colours.
+        colour = _uniform_colour(colour)
         _process_pending_qt_events()
         viewer.layers.remove(layer)
         _process_pending_qt_events()
@@ -1136,12 +1153,11 @@ def _apply_z_filter(
                 cache["data"], cache["features"], z_min, z_max
             )
             segment_owner = cache.get("segment_owner")
+        rule = _colouring_rule(layer)
         layer = _set_z_filtered_layer_data(
             viewer, layer, kind, data, features, segment_owner
         )
-        column = _active_column(layer)
-        if column == FLOW_DIR_RGB_COLUMN:
-            _colour_layer(layer, column, "direct")
+        _reapply_colouring(layer, rule, cache["features"])
         # _set_z_filtered_layer_data recreates the layer (a new object) when
         # the window shrinks -- the branch-hover mouse-move callback and the
         # "branch tooltip metrics" checkbox panel were attached to the old
@@ -1161,27 +1177,94 @@ def _apply_z_filter(
     _sync_vessel_tubes(viewer)
 
 
+def _colouring_rule(layer) -> dict[str, Any] | None:
+    """How *layer* is coloured, as a rule another set of its rows can take.
+
+    Not the colours themselves: those are one RGBA row per item, computed for
+    the rows the layer held, and meaningless once the Z-depth filter changes
+    which rows it holds -- copying them across drew every remaining vessel in
+    some other vessel's flow colour.
+    """
+    column = _active_column(layer)
+    if not column:
+        return None
+    rule: dict[str, Any] = {"column": column}
+    if getattr(layer, f"{_colour_attribute(layer)}_mode", None) == "colormap":
+        rule["colormap"] = getattr(layer, _colormap_attribute(layer), None)
+        try:
+            low, high = getattr(layer, _contrast_limits_attribute(layer))
+            rule["limits"] = (float(low), float(high))
+        except (TypeError, ValueError, AttributeError):
+            pass
+    return rule
+
+
+def _reapply_colouring(layer, rule, full_features: Mapping[str, Any] | None) -> None:
+    """Colour *layer*'s current rows by *rule*, exactly as the full layer was.
+
+    The colour scale comes from the full layer, never from the rows left in
+    the Z window: a continuous column keeps its contrast limits and colormap,
+    and a text column its full set of labels, so a vessel is the same colour
+    whatever window it is seen through.
+    """
+    if rule is None:
+        return
+    column = rule["column"]
+    if column == FLOW_DIR_RGB_COLUMN:
+        _colour_layer(layer, column, "direct")
+        return
+    if _is_text_column(layer, column):
+        values = (full_features or {}).get(column)
+        if values is None:
+            values = layer.features[column]
+        _colour_layer(layer, column, "categorical", colour_cycle_for(values))
+        return
+    limits = rule.get("limits")
+    if limits is None and full_features is not None and column in full_features:
+        try:
+            full = np.asarray(full_features[column], dtype=float)
+        except (TypeError, ValueError):
+            full = np.asarray([], dtype=float)
+        finite = full[np.isfinite(full)]
+        if finite.size and float(finite.max()) > float(finite.min()):
+            limits = (float(finite.min()), float(finite.max()))
+    _colour_layer(layer, column, "continuous", (), limits)
+    colormap = rule.get("colormap")
+    if colormap is not None and getattr(layer, f"{_colour_attribute(layer)}_mode", None) == "colormap":
+        setattr(layer, _colormap_attribute(layer), colormap)
+        if limits is not None:
+            _apply_contrast_limits(layer, *limits)
+
+
 def _z_window_cache(layer) -> np.ndarray | None:
     """The unclipped volume stored for the view-only Z depth filter, if any."""
     metadata = getattr(layer, "metadata", None) or {}
     tag = metadata.get(OURS) or {}
     cached = tag.get("z_window_full")
-    if cached is not None:
-        return np.asarray(cached)
-    extra = metadata.get(Z_WINDOW_CACHE_KEY)
-    if extra is not None:
-        return np.asarray(extra)
-    return None
+    if cached is None:
+        cached = metadata.get(Z_WINDOW_CACHE_KEY)
+    if cached is None:
+        return None
+    # As stored: np.asarray would turn a disk-backed (low-RAM option) volume
+    # into a plain ndarray view, and clip_volume_to_z tells the two apart by
+    # type to decide whether its clipped copy goes to disk or to RAM.
+    return cached if isinstance(cached, np.ndarray) else np.asarray(cached)
 
 
 def _store_z_window_cache(layer, data: Any = None) -> None:
-    """Remember the full volume so the Z depth filter can restore it."""
+    """Remember the full volume so the Z depth filter can restore it.
+
+    A reference, not a copy: the Z filter never writes into it (a clipped
+    view is always a new array), and a copy doubled every volume's memory --
+    and, for a disk-backed volume, read the whole of it into RAM, which is
+    what the low-RAM option exists to avoid.
+    """
     kind = layer.__class__.__name__.lower()
     if not is_z_depth_windowed_volume_layer(kind):
         return
     if data is None:
         data = layer.data
-    stored = np.array(data, copy=True)
+    stored = data if isinstance(data, np.ndarray) else np.asarray(data)
     metadata = dict(getattr(layer, "metadata", {}) or {})
     if _is_ours(layer):
         tag = dict(metadata.get(OURS) or {})
@@ -1316,7 +1399,11 @@ def _apply_volume_z_display(
         if cached is None:
             continue
         if identity:
-            layer.data = np.array(cached, copy=True)
+            # Already showing the full volume (every stage's layer refresh
+            # lands here): reassigning would re-upload it to the GPU for
+            # nothing.
+            if layer.data is not cached:
+                layer.data = cached
             continue
         dz = _layer_voxel_size_z(layer)
         layer.data = clip_volume_to_z(cached, dz, z_min, z_max, z_extent=z_extent)
@@ -2838,38 +2925,56 @@ def _apply_sweep_index(layer, indices: tuple[int, ...]) -> None:
     if sweep is None or owner is None or edge_index is None:
         return
 
-    owner = np.asarray(owner, dtype=int)
     edge_index = np.asarray(edge_index, dtype=int)
-    features = dict(layer.features)
 
-    def _segment_column(edge_values) -> np.ndarray:
-        return np.asarray(edge_values, dtype=float)[edge_index][owner]
+    # This grid point's columns per drawable edge, then spread over segments.
+    per_edge: dict[str, np.ndarray] = {}
+    flow_abs = np.asarray(sweep.flow_abs_at(*indices), dtype=float)
+    per_edge["flow_abs"] = flow_abs[edge_index]
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
 
-    flow_abs = sweep.flow_abs_at(*indices)
-    features["flow_abs"] = _segment_column(flow_abs)
-    if "flow_abs_log10" in features:
-        from haemolynx.haemodynamics.resistance import flow_abs_log10_value
-
-        features["flow_abs_log10"] = _segment_column(
-            [flow_abs_log10_value(v) for v in np.asarray(flow_abs, dtype=float)]
-        )
+    per_edge["flow_abs_log10"] = np.asarray(
+        [flow_abs_log10_value(v) for v in flow_abs], dtype=float
+    )[edge_index]
     signed = sweep.flow_signed_at(*indices)
-    if signed is not None and "flow_signed" in features:
-        features["flow_signed"] = _segment_column(signed)
+    if signed is not None:
+        per_edge["flow_signed"] = np.asarray(signed, dtype=float)[edge_index]
     directions = tag.get("sweep_directions")
     if signed is not None and directions is not None:
         from haemolynx.gui.results import sweep_direction_columns
 
-        per_edge = sweep_direction_columns(
-            directions, np.asarray(signed, dtype=float)[edge_index]
+        per_edge.update(
+            (name, np.asarray(values))
+            for name, values in sweep_direction_columns(
+                directions, np.asarray(signed, dtype=float)[edge_index]
+            ).items()
         )
-        for name, values in per_edge.items():
-            if name in features:
-                features[name] = np.asarray(values)[owner]
     drop = sweep.pressure_drop_at(*indices)
-    if drop is not None and "pressure_drop" in features:
-        features["pressure_drop"] = _segment_column(drop)
-    layer.features = features
+    if drop is not None:
+        per_edge["pressure_drop"] = np.asarray(drop, dtype=float)[edge_index]
+
+    def _with_grid_point(features: Mapping[str, Any], segment_owner) -> dict[str, Any]:
+        segment_owner = np.asarray(segment_owner, dtype=int)
+        updated = dict(features)
+        for name, values in per_edge.items():
+            if name == "flow_abs" or name in updated:
+                updated[name] = values[segment_owner]
+        return updated
+
+    layer.features = _with_grid_point(layer.features, owner)
+    # The Z-depth filter redraws the layer from its full cache, so the cache
+    # has to hold this grid point too -- otherwise the next depth change
+    # quietly puts back the flows of whichever point was cached.
+    cache = tag.get("z_filter_full")
+    if isinstance(cache, dict) and cache.get("segment_owner") is not None:
+        tag = dict(tag)
+        tag["z_filter_full"] = {
+            **cache,
+            "features": _with_grid_point(cache["features"], cache["segment_owner"]),
+        }
+        metadata = dict(getattr(layer, "metadata", {}) or {})
+        metadata[OURS] = tag
+        layer.metadata = metadata
 
     colour_by = tag.get("colour_by") or "flow_abs"
     limits = tag.get("contrast_limits")
@@ -2913,17 +3018,25 @@ def _attach_sweep_sliders(viewer, layer, spec) -> None:
         sliders.append((axis_name, slider, values, readout))
         value_labels.append(readout)
 
+    layer_name = layer.name
+
     def on_change(_event=None) -> None:
         indices = tuple(int(slider.value) for _name, slider, _vals, _lab in sliders)
         for (_name, slider, values, readout), index in zip(sliders, indices):
             if 0 <= index < len(values):
                 readout.value = _format_sweep_value(_name, values[index])
-        _apply_sweep_index(layer, indices)
+        # By name, not the layer object this slider was built for: narrowing
+        # the Z-depth filter replaces the layer with a new one, and a slider
+        # still holding the old object moved flows on a layer no longer shown.
+        current = viewer.layers[layer_name] if layer_name in viewer.layers else None
+        if current is None:
+            return
+        _apply_sweep_index(current, indices)
         try:
-            _refresh_layer_controls(viewer, layer)
-            _attach_colour_scale(viewer, layer)
+            _refresh_layer_controls(viewer, current)
+            _attach_colour_scale(viewer, current)
         except Exception:  # noqa: BLE001
-            logger.debug("sweep slider refresh failed for %s", layer.name, exc_info=True)
+            logger.debug("sweep slider refresh failed for %s", layer_name, exc_info=True)
 
     for _name, slider, _values, _readout in sliders:
         slider.changed.connect(on_change)
@@ -3762,10 +3875,23 @@ def _apply_branch_hover_selection(layer, selected: Sequence[str]) -> None:
 
     available = _branch_hover_available(layer)
     chosen = filter_selected_metrics(selected, available)
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    # The tag records which selection the tooltip column was composed for --
+    # set here, and by _store_branch_hover_metadata for a stage's own column --
+    # and the Z-depth filter's cache is kept in step with it below, so a
+    # filtered or recreated layer's tooltips are already right. Recomposing
+    # them anyway on every Z-depth change is what made the slider take tens
+    # of seconds per move.
+    recorded = tag.get("branch_hover_selected")
+    if (
+        recorded is not None
+        and tuple(recorded) == tuple(chosen)
+        and "tooltip" in getattr(layer, "features", {})
+    ):
+        return
     features = dict(layer.features)
     features["tooltip"] = tooltips_from_feature_table(features, chosen)
     layer.features = features
-    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
     tag["branch_hover_selected"] = chosen
     cache = tag.get("z_filter_full")
     if isinstance(cache, dict) and cache.get("features") is not None:

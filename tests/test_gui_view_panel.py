@@ -809,3 +809,219 @@ def test_snapping_without_3d_data_changes_nothing(make_napari_viewer):
 
     assert snap_view_to_plane(viewer, "XZ") is False
     assert tuple(viewer.dims.order) == order
+
+
+# --- the Z-depth filter's cost ------------------------------------------------
+
+
+def test_a_z_depth_change_does_not_recompose_branch_tooltips(make_napari_viewer, monkeypatch):
+    """The tooltip text does not depend on the Z window: a filtered or
+    recreated layer takes its column from the full cache, which is kept in
+    step with the checkbox selection. Recomposing it anyway on every change
+    is what made the slider take tens of seconds per move on a real network."""
+    from haemolynx.gui import branch_hover
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+    full_tooltips = list(viewer.layers[VESSELS].features["tooltip"])
+    assert full_tooltips and all(t.startswith("branchID: ") for t in full_tooltips)
+
+    calls = []
+    real = branch_hover.tooltips_from_feature_table
+    monkeypatch.setattr(
+        branch_hover,
+        "tooltips_from_feature_table",
+        lambda *args, **kwargs: calls.append(1) or real(*args, **kwargs),
+    )
+    slider = panel._haemolynx_z_depth_slider
+    slider.setValue((0.0, 5.0))
+    narrowed = list(viewer.layers[VESSELS].features["tooltip"])
+    slider.setValue((0.0, 8.0))
+
+    assert calls == []
+    assert narrowed and set(narrowed) <= set(full_tooltips)
+    assert list(viewer.layers[VESSELS].features["tooltip"]) == full_tooltips
+
+
+def test_the_z_depth_cache_is_the_volume_itself_not_a_copy(make_napari_viewer):
+    """A copy doubled every displayed volume's memory for nothing: the filter
+    never writes into it, since a clipped view is always a new array."""
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    layer, image = _load_patterned_image(viewer)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+
+    assert data_for_pipeline(layer) is image
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+    assert layer.data is not image
+    assert data_for_pipeline(layer) is image
+    panel._haemolynx_z_depth_slider.setValue((0.0, 8.0))
+    # Back to showing the stored volume itself, not a fresh copy of it.
+    assert layer.data is image
+
+
+def test_a_disk_backed_volume_stays_on_disk_through_the_z_filter(make_napari_viewer, tmp_path):
+    """The low-RAM option keeps big volumes in memory-mapped files; the Z
+    filter used to read each one into RAM in full just to cache it."""
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    layer, image = _load_patterned_image(viewer)
+    on_disk = np.memmap(tmp_path / "stack.dat", dtype=image.dtype, mode="w+", shape=image.shape)
+    on_disk[:] = image
+    layer.data = on_disk
+    _store_z_window_cache(layer, on_disk)
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+
+    assert data_for_pipeline(layer) is on_disk
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+    assert isinstance(layer.data, np.memmap)
+    np.testing.assert_array_equal(np.asarray(layer.data)[3], 0)
+    np.testing.assert_array_equal(np.asarray(layer.data)[:3], image[:3])
+    panel._haemolynx_z_depth_slider.setValue((0.0, 8.0))
+    assert layer.data is on_disk
+
+
+# --- the Z-depth filter is display-only: it must not change what flows look like
+
+
+def _flow_network_results(n_vessels=40):
+    """A run whose vessels each carry their own flow and branch order."""
+    from types import SimpleNamespace
+
+    import networkx as nx
+
+    from haemolynx.gui.results import ResultLayers
+    from test_gui_results import network
+
+    rng = np.random.default_rng(1)
+    graph = nx.MultiGraph()
+    for i in range(n_vessels + 1):
+        graph.add_node(i, pos=np.array([i * 2.0, float(i % 5), float(i % 3)]))
+    for i in range(n_vessels):
+        a, b = graph.nodes[i]["pos"], graph.nodes[i + 1]["pos"]
+        flow = float(10 ** rng.uniform(-13, -10))
+        graph.add_edge(
+            i, i + 1, key=0,
+            voxels=[a.tolist(), ((a + b) / 2).tolist(), b.tolist()],
+            length=float(np.linalg.norm(b - a)), segment_id=i,
+            flow_abs=flow, flow_signed=flow, resistance=1e15, conductance=1e-15,
+            # The first order only near z = 0, so a window higher up lacks it.
+            branch_order="A1" if i < 5 else ("B2" if i % 2 else "V3"),
+        )
+    shape = (2 * n_vessels + 1, 6, 4)
+    results = ResultLayers()
+    groups = [
+        results.stage_finished("skeletonise", SimpleNamespace(
+            image=np.zeros(shape, dtype=np.uint8), skeleton=np.zeros(shape, dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0))),
+        results.stage_finished("build_network", network(graph, (1.0, 1.0, 1.0))),
+    ]
+    return results, groups, float(shape[0])
+
+
+def _segment_colours(layer):
+    """Each drawn segment's colour, keyed by the segment itself."""
+    data = np.asarray(layer.data)
+    colours = np.round(np.asarray(layer.edge_color), 6)
+    return {data[i].tobytes(): tuple(colours[i]) for i in range(len(data))}
+
+
+@pytest.mark.parametrize("colour_by", ["flow_abs", "branch_order"])
+def test_the_z_depth_filter_keeps_every_vessels_colour(make_napari_viewer, colour_by):
+    """Narrowing the window used to paste the full layer's per-row colours
+    onto the shorter layer, drawing each remaining vessel in some other
+    vessel's flow colour -- and widening again never put them back."""
+    from haemolynx.gui._widget import _colour_layer
+    from haemolynx.gui.results import colour_cycle_for
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    results, groups, extent = _flow_network_results()
+    for group in groups:
+        _apply_layers(viewer, group)
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+    layer = viewer.layers[VESSELS]
+    if colour_by == "flow_abs":
+        _colour_layer(layer, "flow_abs", "continuous")
+    else:
+        _colour_layer(layer, "branch_order", "categorical",
+                      colour_cycle_for(layer.features["branch_order"]))
+    full = _segment_colours(layer)
+    limits = tuple(layer.edge_contrast_limits) if colour_by == "flow_abs" else None
+
+    slider = panel._haemolynx_z_depth_slider
+    slider.setValue((20.0, 60.0))
+    narrowed = viewer.layers[VESSELS]
+    shown = _segment_colours(narrowed)
+    assert 0 < len(shown) < len(full)
+    assert {key: full[key] for key in shown} == shown
+    if colour_by == "flow_abs":
+        assert tuple(narrowed.edge_contrast_limits) == limits
+    else:
+        assert "A1" not in set(narrowed.features["branch_order"])
+
+    slider.setValue((0.0, extent))
+    assert _segment_colours(viewer.layers[VESSELS]) == full
+
+
+def test_a_sweep_layer_keeps_its_grid_point_through_a_z_depth_change(make_napari_viewer, tmp_path):
+    """Two ways the depth filter used to change a sweep's flows on screen: it
+    redrew from a cache still holding the first grid point, and the sweep
+    slider kept driving the layer object the filter had just replaced."""
+    from qtpy.QtWidgets import QAbstractSlider
+
+    from haemolynx.gui._widget import OURS as RESULT_OURS
+    from haemolynx.gui.results import ResultLayers, perturbation_layer_names
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import PRESSURE_SWEEP, _run
+
+    result = _run(tmp_path, [PRESSURE_SWEEP]).results[0]
+    # That fixture's vessels run along x; turn them to run along z, so a depth
+    # window has something to leave out.
+    for _node, data in result.graph.nodes(data=True):
+        data["pos"] = np.asarray(data["pos"], dtype=float)[::-1].copy()
+    for *_ends, data in result.graph.edges(keys=True, data=True):
+        data["voxels"] = [list(point)[::-1] for point in data["voxels"]]
+    sweep = result.sweep_flows
+    last = len(sweep.axis_values[sweep.axis_names[0]]) - 1
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)))
+    panel._haemolynx_after_layers_applied()
+    name = perturbation_layer_names(result.name)[0]
+    dock = viewer.window._dock_widgets[f"{name} sweep"]
+    (grid_slider,) = dock.findChildren(QAbstractSlider)
+
+    def expected(point):
+        tag = viewer.layers[name].metadata[RESULT_OURS]
+        per_edge = np.asarray(sweep.flow_abs_at(point), dtype=float)[tag["sweep_edge_index"]]
+        return per_edge[np.asarray(tag["segment_owner"], dtype=int)]
+
+    def shown():
+        return np.asarray(viewer.layers[name].features["flow_abs"], dtype=float)
+
+    grid_slider.setValue(last)
+    np.testing.assert_allclose(shown(), expected(last))
+    # Flows are ~1e-13, so np.allclose's default atol of 1e-8 would call any
+    # two of them equal.
+    assert not np.allclose(expected(last), expected(0), rtol=1e-6, atol=0.0)
+
+    rows = len(viewer.layers[name].data)
+    panel._haemolynx_z_depth_slider.setValue((0.0, 900.0))
+    assert len(viewer.layers[name].data) < rows  # the layer was replaced
+    np.testing.assert_allclose(shown(), expected(last))
+
+    grid_slider.setValue(0)
+    np.testing.assert_allclose(shown(), expected(0))

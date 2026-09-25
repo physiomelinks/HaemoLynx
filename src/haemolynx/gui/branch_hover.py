@@ -243,20 +243,34 @@ def tooltips_from_feature_table(
 
     Used when the user toggles checkboxes: the raw metric columns stay put and
     only the composed strings change.
+
+    Each column is converted to a list once, not indexed per row: *features*
+    is usually a layer's pandas table, and turning a whole column into an
+    array for every row and metric made this quadratic -- tens of seconds
+    per call on a network of a few thousand vessels. A Vectors layer repeats
+    each vessel's row for every centreline segment, so each distinct row is
+    composed once.
     """
     branch_ids = [str(v) for v in np.asarray(features["branch_id"]).tolist()]
     n = len(branch_ids)
     chosen = tuple(
         metric for metric in BRANCH_HOVER_METRICS if metric in selected
     )
+    columns = {
+        metric: np.asarray(features[metric]).tolist()
+        for metric in BRANCH_HOVER_METRICS
+        if metric in features
+    }
+    composed: dict[tuple, str] = {}
     tooltips: list[str] = []
     for index in range(n):
         values: dict[str, Any] = {}
         for metric in BRANCH_HOVER_METRICS:
-            if metric not in features:
+            column = columns.get(metric)
+            if column is None:
                 values[metric] = None
                 continue
-            raw = np.asarray(features[metric])[index]
+            raw = column[index]
             if metric in _TEXT_HOVER_METRICS:
                 text = "" if raw is None else str(raw).strip()
                 values[metric] = text or None
@@ -267,7 +281,12 @@ def tooltips_from_feature_table(
                     values[metric] = None
                 else:
                     values[metric] = None if not np.isfinite(number) else number
-        tooltips.append(format_branch_tooltip(branch_ids[index], values, chosen))
+        key = (branch_ids[index], *(values[metric] for metric in BRANCH_HOVER_METRICS))
+        text = composed.get(key)
+        if text is None:
+            text = format_branch_tooltip(branch_ids[index], values, chosen)
+            composed[key] = text
+        tooltips.append(text)
     return np.asarray(tooltips, dtype=object)
 
 
