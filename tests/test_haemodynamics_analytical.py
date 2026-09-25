@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from ImageLynx.haemodynamics.resistance import (
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
-    _solve_system_smart
+    _solve_system_smart,
+    POISEUILLE_FLOW_TO_UM3_PER_S,
 )
 from ImageLynx.haemodynamics.perfusion import (
     PerfusionGrid,
@@ -455,7 +456,7 @@ def test_krogh_cylinder_radial_diffusion():
     G_mock = nx.MultiGraph()
     G_mock.add_node(0); G_mock.add_node(1)
     q_huge = 1e9 # Prevent axial PO2 drop
-    G_mock.add_edge(0, 1, key=0, flow_signed=q_huge, flow_abs=q_huge, hematocrit=0.45, length=30.0)
+    G_mock.add_edge(0, 1, key=0, flow_signed=q_huge, flow_abs=q_huge / POISEUILLE_FLOW_TO_UM3_PER_S, hematocrit=0.45, length=30.0)
     
     cell_to_vessels_mock = {}
     for z in range(3):
@@ -576,7 +577,7 @@ def test_multi_species_0d_fick_mass_balance():
     
     G_mock = nx.MultiGraph()
     G_mock.add_node(0); G_mock.add_node(1)
-    G_mock.add_edge(0, 1, key=0, flow_signed=q_huge, flow_abs=q_huge, hematocrit=h_d, length=10.0)
+    G_mock.add_edge(0, 1, key=0, flow_signed=q_huge, flow_abs=q_huge / POISEUILLE_FLOW_TO_UM3_PER_S, hematocrit=h_d, length=10.0)
     
     cell_to_vessels_mock = {0: [{'edge': (0, 1, 0), 'flow': q_huge, 'hematocrit': h_d, 'length': 10.0, 'surface_area': area}]}
     

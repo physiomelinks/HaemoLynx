@@ -457,6 +457,8 @@ $$\phi_{\mathrm{CO_2}} = P^{\mathrm{CO_2}}_{\text{perm}}\,S\,\alpha_{\mathrm{CO_
 
 $$C_{\mathrm{O_2}} \leftarrow C_{\mathrm{O_2}} - \frac{\phi_{\mathrm{O_2}}}{Q}, \qquad C_{\mathrm{CO_2}} \leftarrow C_{\mathrm{CO_2}} - \frac{\phi_{\mathrm{CO_2}}}{Q}$$
 
+$Q$ is edge flow in µm³/s: `flow_abs` × `POISEUILLE_FLOW_TO_UM3_PER_S`, the factor `map_vessels_to_grid` applies to the per-cell flow in (E30). Until open item 20 it was raw `flow_abs`, in mmHg·µm³/cP.
+
 **(E51)** Oxygen right-hand side
 
 $$\mathbf{b}_{\mathrm{O_2}} = \boldsymbol{\phi}_{\mathrm{O_2}} - M_{\mathrm{O_2}}V_{\text{cell}} + \Lambda^{\mathrm{O_2}}\,\mathbf{P}_{\mathrm{O_2}}$$

@@ -201,6 +201,52 @@ def _edge_diameter_um(data, default_diameter_um):
     return None if default_diameter_um is None else float(default_diameter_um)
 
 
+def _edge_flows_um3_per_s(DAG: nx.MultiDiGraph, cell_to_vessels: Dict,
+                          flow_to_um3_per_s: float) -> Dict[Tuple[Any, Any, Any], float]:
+    """
+    Edge flow in um^3/s for the Tier 2 and Tier 3 blood-content march, keyed by edge id.
+
+    The march divides a transmural flux in mmol/L um^3/s by this flow, so it has to be in
+    um^3/s. It used to read edge ``flow_abs`` raw, in the flow solve's mmHg um^3 / cP, which
+    made q 1.33e5 times too small: blood gave up its gas in the first cell of each edge, and
+    the answer did not depend on flow at all.
+
+    Raises if an edge that carries flow has no ``flow_abs``; it was read with a 0.0 default,
+    which drops the edge's blood without a word. Also raises if the per-cell flows in
+    ``cell_to_vessels`` disagree with the converted edge flow, which means
+    ``map_vessels_to_grid`` and the solver were given different conversion factors.
+
+    Keys are the DAG's ``(u, v, key)`` and the reversed ``(v, u, key)``, so both orientations
+    of an edge id find it.
+    """
+    missing = [(u, v, k) for u, v, k, d in DAG.edges(keys=True, data=True)
+               if d.get("flow_abs") is None]
+    if missing:
+        shown = ", ".join(str(e) for e in missing[:3])
+        raise ValueError(
+            f"{len(missing)} of {DAG.number_of_edges()} flowing edges have no 'flow_abs', for "
+            f"example {shown}. Edge flow sets how fast blood gives up its gas along the edge, "
+            f"so it is not substituted silently. Run the flow solve first, or set it on every "
+            f"edge that has a non-zero 'flow_signed'.")
+
+    q_by_edge = {}
+    for u, v, k, d in DAG.edges(keys=True, data=True):
+        q = abs(float(d["flow_abs"])) * flow_to_um3_per_s
+        q_by_edge[(u, v, k)] = q
+        q_by_edge[(v, u, k)] = q
+
+    for vessels in cell_to_vessels.values():
+        for item in vessels:
+            q = q_by_edge.get(item['edge'])
+            if q is not None and not np.isclose(item['flow'], q, rtol=1e-9, atol=0.0):
+                raise ValueError(
+                    f"Edge {item['edge']} has flow {item['flow']:.6g} in cell_to_vessels but "
+                    f"{q:.6g} um^3/s from its flow_abs at flow_to_um3_per_s="
+                    f"{flow_to_um3_per_s:.6g}. map_vessels_to_grid and the solver were given "
+                    f"different conversion factors; pass the same one to both.")
+    return q_by_edge
+
+
 def map_vessels_to_grid(
     G: nx.MultiGraph,
     grid: PerfusionGrid,
@@ -550,10 +596,14 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
 
     return PO2
 
-def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting_nodes: list, cell_to_vessels: Dict, perf_config) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting_nodes: list, cell_to_vessels: Dict, perf_config,
+                                  flow_to_um3_per_s: float = POISEUILLE_FLOW_TO_UM3_PER_S) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Solve the Multi-Species (O2, CO2, pH) Coupled 1D-3D Steady-State system.
     Solves for tissue PO2, PCO2, and pH using Bohr/Haldane effects and Henderson-Hasselbalch.
+
+    The march along each edge uses edge flow converted to um^3/s by ``flow_to_um3_per_s``, which
+    must be the factor ``cell_to_vessels`` was built with (``_edge_flows_um3_per_s`` checks it).
     """
     import scipy.sparse as sp
     import scipy.sparse.linalg as splinalg
@@ -606,6 +656,8 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         topo_order = list(nx.topological_sort(DAG))
     except nx.NetworkXUnfeasible:
         topo_order = list(G.nodes())
+
+    q_by_edge = _edge_flows_um3_per_s(DAG, cell_to_vessels, flow_to_um3_per_s)
 
     alpha_o2 = 1.34e-3 # mmol/L per mmHg
     alpha_co2 = 0.03 # mmol/L per mmHg
@@ -687,7 +739,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
                 for succ in DAG.successors(n):
                     for k, d in DAG[n][succ].items():
                         h = d["hematocrit"]
-                        q = d.get("flow_abs", 0.0)
+                        q = q_by_edge[(n, succ, k)]
                         # Arterial blood assumed pH 7.4
                         node_o2_flux_in[n] += calculate_blood_oxygen_content(po2_art, h, pco2_art, 7.4) * q
                         node_co2_flux_in[n] += calculate_blood_co2_content(pco2_art, h, po2_art) * q
@@ -707,7 +759,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
             for _, v, k, e_data in DAG.out_edges(node, data=True, keys=True):
                 edge_key = (node, v, k)
                 if edge_key not in edge_to_cells: edge_key = (v, node, k)
-                q = e_data.get("flow_abs", 0.0)
+                q = q_by_edge[(node, v, k)]
                 h = e_data["hematocrit"]
 
                 # Approximate incoming pressures based on mix
@@ -777,10 +829,14 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     return PO2_tissue, PCO2_tissue, pH_tissue
 
 
-def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting_nodes: list, cell_to_vessels: Dict, perf_config) -> np.ndarray:
+def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting_nodes: list, cell_to_vessels: Dict, perf_config,
+                                 flow_to_um3_per_s: float = POISEUILLE_FLOW_TO_UM3_PER_S) -> np.ndarray:
     """
     Solve the Fully Coupled 1D-3D Steady-State Perfusion system using Picard Iteration.
     Solves for tissue PO2 (mmHg) and Blood PO2 simultaneously using an endothelial barrier model.
+
+    Edge flow is converted to um^3/s as in ``solve_multi_species_perfusion``. The wall flux and
+    the diffusion matrix still leave out O2 solubility (open item 22).
     """
     import scipy.sparse as sp
     import scipy.sparse.linalg as splinalg
@@ -852,6 +908,8 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
         topo_order = list(nx.topological_sort(DAG))
     except nx.NetworkXUnfeasible:
         topo_order = list(G.nodes())
+
+    q_by_edge = _edge_flows_um3_per_s(DAG, cell_to_vessels, flow_to_um3_per_s)
         
     area_total = np.zeros(N)
     for cell_idx, vessels in cell_to_vessels.items():
@@ -879,8 +937,9 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
                 for succ in DAG.successors(n):
                     for k, d in DAG[n][succ].items():
                         h = d["hematocrit"]
-                        node_o2_flux_in[n] += calculate_blood_oxygen_content(po2_arterial, h) * d.get("flow_abs", 0.0)
-                        node_q_in[n] += d.get("flow_abs", 0.0)
+                        q = q_by_edge[(n, succ, k)]
+                        node_o2_flux_in[n] += calculate_blood_oxygen_content(po2_arterial, h) * q
+                        node_q_in[n] += q
         
         cell_transmural_flux = np.zeros(N, dtype=np.float64)
         for node in topo_order:
@@ -888,7 +947,7 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
             for _, v, k, e_data in DAG.out_edges(node, data=True, keys=True):
                 edge_key = (node, v, k)
                 if edge_key not in edge_to_cells: edge_key = (v, node, k)
-                q = e_data.get("flow_abs", 0.0)
+                q = q_by_edge[(node, v, k)]
                 h = e_data["hematocrit"]
                 try:
                     po2_current = brentq(lambda p: calculate_blood_oxygen_content(p, h) - c_mix, 0.0, 150.0)

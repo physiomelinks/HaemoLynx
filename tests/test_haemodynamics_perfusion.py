@@ -10,6 +10,7 @@ from ImageLynx.haemodynamics.perfusion import (
     build_adr_matrix,
     solve_perfusion_steady_state
 )
+from ImageLynx.haemodynamics.resistance import POISEUILLE_FLOW_TO_UM3_PER_S
 
 @dataclass
 class MockPerfusionConfig:
@@ -304,7 +305,7 @@ def test_analytical_transmural_exponential_decay():
 
     grid = FakeGrid(); config = FakeConfig(); A = sp.csr_matrix([[0.0]])
     G_mock = nx.MultiGraph(); G_mock.add_node(0); G_mock.add_node(1)
-    G_mock.add_edge(0, 1, key=0, flow_signed=q_flow, flow_abs=q_flow, hematocrit=h_d, length=10.0)
+    G_mock.add_edge(0, 1, key=0, flow_signed=q_flow, flow_abs=q_flow / POISEUILLE_FLOW_TO_UM3_PER_S, hematocrit=h_d, length=10.0)
     cell_to_vessels_mock = {0: [{'edge': (0, 1, 0), 'flow': q_flow, 'hematocrit': h_d, 'length': 10.0, 'surface_area': area}]}
 
     # We verify the structural logic holds without crashing or blowing up
