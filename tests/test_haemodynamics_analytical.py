@@ -539,7 +539,7 @@ def test_multi_species_0d_fick_mass_balance():
     # We use stable physiological permeabilities.
     # The Fick Principle holds true regardless of permeability at steady state.
     p_perm_o2_cm_s = 1e-4
-    p_perm_co2_cm_s = 2e-3
+    p_perm_co2_cm_s = 1e-4
     p_perm_o2_um_s = p_perm_o2_cm_s * 1e4
     p_perm_co2_um_s = p_perm_co2_cm_s * 1e4
     area = 1000.0
@@ -568,7 +568,7 @@ def test_multi_species_0d_fick_mass_balance():
         permeability_o2_cm_s = p_perm_o2_cm_s
         permeability_co2_cm_s = p_perm_co2_cm_s
         po2_arterial_mmHg = po2_art; pco2_arterial = pco2_art; systemic_hematocrit = h_d
-        sigma_diff = 1.5e-9; sigma_diff_co2 = 3.0e-8
+        sigma_diff = 1.5e-9; sigma_diff_co2 = 1.6e-9
         picard_max_iterations = 50; picard_tolerance = 1e-4
 
     grid = FakeGrid()

@@ -398,8 +398,11 @@ class PerfusionConfig:
     
     # Multi-Species Coupling (CO2 & pH)
     use_multi_species_model: bool = True
-    sigma_diff_co2: float = 3.0e-8 # Tissue diffusion coefficient for CO2 (m^2/s) - diffuses ~20x faster than O2
-    permeability_co2_cm_s: float = 2.0e-3 # Permeability coefficient for CO2 (cm/s)
+    # D_CO2 is close to D_O2; CO2 moves ~20x faster only because the solver also multiplies by
+    # solubility (alpha_CO2 ~ 22x alpha_O2). Measured K_CO2/alpha_CO2 ~ 1.6e-9 m^2/s in rat muscle
+    # (Kawashiro et al. 1975). One wall permeability for both gases (Dash & Bassingthwaighte 2006).
+    sigma_diff_co2: float = 1.6e-9 # Tissue diffusion coefficient for CO2 (m^2/s)
+    permeability_co2_cm_s: float = 1.0e-4 # Permeability coefficient for CO2 (cm/s); = permeability_o2_cm_s
     respiratory_quotient: float = 0.82 # Ratio of CO2 produced to O2 consumed
     
     # Blood & Tissue Baselines

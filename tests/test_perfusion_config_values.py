@@ -78,8 +78,8 @@ def test_the_coupled_solver_uses_the_configured_arterial_po2():
 class _MultiConfig(_Config):
     #: Low enough that the tissue is not anoxic at either arterial PO2 the test compares.
     M_max: float = 1e-4
-    sigma_diff_co2: float = 3.0e-8
-    permeability_co2_cm_s: float = 2.0e-3
+    sigma_diff_co2: float = 1.6e-9
+    permeability_co2_cm_s: float = 1.0e-4
     respiratory_quotient: float = 0.82
     pco2_arterial: float = 40.0
     hco3_tissue: float = 24.0
@@ -149,3 +149,39 @@ def test_the_h2_settings_match_the_values_that_were_hard_coded():
                                                  k_reduce=settings.k_reduce))
     np.testing.assert_array_equal(source_settings, source_default)
     np.testing.assert_array_equal(po2_settings, po2_default)
+
+
+# Open item 18. Tier 3 multiplies each gas's diffusivity and wall permeability by its solubility,
+# and alpha_CO2 is already ~22x alpha_O2. A second ~20x in D_CO2 and P_CO2 made CO2 move ~450x
+# faster than O2; the measured Krogh ratio (D * alpha) in rat muscle is ~21 (Kawashiro 1975).
+# These are the solver's own solubilities (perfusion.py, solve_multi_species_perfusion).
+_ALPHA_O2 = 1.34e-3
+_ALPHA_CO2 = 0.03
+
+
+def _pipeline_perfusion_config():
+    C = pytest.importorskip("carotid_image_to_model")
+    return C.PerfusionConfig()
+
+
+def test_the_default_co2_to_o2_krogh_ratio_is_near_the_measured_21():
+    config = _pipeline_perfusion_config()
+    ratio = (config.sigma_diff_co2 * _ALPHA_CO2) / (config.sigma_diff * _ALPHA_O2)
+    assert 15.0 < ratio < 30.0, ratio
+
+
+def test_the_default_wall_permeability_is_one_value_for_both_gases():
+    """Dash & Bassingthwaighte (2006) use one capillary PS for O2 and CO2; alpha does the rest."""
+    config = _pipeline_perfusion_config()
+    assert config.permeability_co2_cm_s == config.permeability_o2_cm_s
+
+
+def test_the_multi_species_solver_runs_at_the_corrected_co2_values():
+    config = _MultiConfig()
+    G = _one_edge()
+    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
+    po2, pco2, ph = solve_multi_species_perfusion(grid, G, [0], map_vessels_to_grid(G, grid), config)
+    for field in (po2, pco2, ph):
+        assert np.all(np.isfinite(field))
+    # Tissue produces CO2, so no cell can sit below the arterial PCO2.
+    assert np.all(pco2 >= config.pco2_arterial - 1e-9)

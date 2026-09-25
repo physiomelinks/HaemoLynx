@@ -72,9 +72,9 @@ PerfusionConfig:
   sigma_diff: 1.5e-9 # Tissue diffusion coefficient (m^2/s)
   permeability_o2_cm_s: 1.0e-4 # Capillary wall permeability (cm/s)
   
-  # CO2 Dynamics (Diffuses ~20x faster than O2)
-  sigma_diff_co2: 3.0e-8 # Tissue diffusion coefficient (m^2/s)
-  permeability_co2_cm_s: 2.0e-3 # Capillary wall permeability (cm/s)
+  # CO2 Dynamics. D is close to O2's; CO2 moves ~20x faster through its solubility alone
+  sigma_diff_co2: 1.6e-9 # Tissue diffusion coefficient (m^2/s), Kawashiro et al. 1975
+  permeability_co2_cm_s: 1.0e-4 # Capillary wall permeability (cm/s), same as O2
   
   # ------------------------------------------------------------------
   # Tissue Metabolism (Michaelis-Menten Kinetics)
