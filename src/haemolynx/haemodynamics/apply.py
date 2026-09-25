@@ -226,6 +226,7 @@ def _measure_fwhm_diameters(
     config: HaemodynamicsApplyConfig,
     *,
     raw_volume: np.ndarray | None = None,
+    vessel_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
     path = _fwhm_raw_path(config)
     if path is None:
@@ -241,6 +242,7 @@ def _measure_fwhm_diameters(
         voxel_size_zyx=voxel_sz,
         axis_order=config.axis_order,
         raw_volume=raw_volume,
+        vessel_mask=vessel_mask,
         use_memmap=config.use_memmap,
         memmap_directory=config.memmap_directory,
         **{
@@ -342,6 +344,39 @@ def assign_edge_diameters(
     """
     clear_edge_resistances(G)
     summary: dict[str, Any] = {}
+    if mask_volume is not None:
+        # The segmentation exactly as the skeleton was made from it -- the
+        # stage hands over the loaded image, which for an ilastik "Simple
+        # Segmentation" is labels 1/2, not true/false. Read as bool, both
+        # labels are "vessel": EDT widths come out meaningless and FWHM's
+        # neighbour detection would see one vessel everywhere. Pass-through
+        # (no copy) when it is already boolean.
+        from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+        binary_mask = _to_binary_volume_for_skeletonization(
+            mask_volume,
+            use_memmap=config.use_memmap,
+            memmap_directory=config.memmap_directory,
+        )
+        made_binary_on_disk = binary_mask is not mask_volume and isinstance(
+            binary_mask, np.memmap
+        )
+        mask_volume = binary_mask
+    else:
+        made_binary_on_disk = False
+    try:
+        return _assign_edge_diameters_with_mask(G, config, summary, mask_volume)
+    finally:
+        if made_binary_on_disk:
+            release_memmap_array(mask_volume)
+
+
+def _assign_edge_diameters_with_mask(
+    G: nx.MultiGraph,
+    config: HaemodynamicsApplyConfig,
+    summary: dict[str, Any],
+    mask_volume: np.ndarray | None,
+) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     raw_volume: np.ndarray | None = None
     remeasure = bool(config.use_fwhm_edge_diameters and config.do_fwhm_measurement)
     keep_existing = bool(config.use_fwhm_edge_diameters and not config.do_fwhm_measurement)
@@ -363,7 +398,9 @@ def assign_edge_diameters(
     if config.use_fwhm_edge_diameters:
         raw_volume = load_fwhm_raw_volume(config)
         if remeasure:
-            summary["fwhm"] = _measure_fwhm_diameters(G, config, raw_volume=raw_volume)
+            summary["fwhm"] = _measure_fwhm_diameters(
+                G, config, raw_volume=raw_volume, vessel_mask=mask_volume
+            )
         else:
             summary["fwhm"] = {
                 "skipped": True,

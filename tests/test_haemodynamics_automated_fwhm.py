@@ -928,6 +928,20 @@ def test_center_offset_gate_scales_with_diameter_estimate(tmp_path: Path):
     assert abs(d - true_diameter) < 2.0
 
 
+def _boxed_in_mask(nz: int, ny: int, nx: int) -> np.ndarray:
+    """The widening-loop tests' vessel (y 4-6 around the y=5 centreline) with
+    a neighbouring vessel either side one voxel away. Every transverse ray
+    is stopped by a neighbour -- the case a line may stay shorter than
+    ``min_total_extent_multiplier`` x the diameter -- so these tests exercise
+    the widening machinery itself, which is what they are about, rather than
+    the 3x rule, which ``test_fwhm_lumen_model.py`` covers."""
+    mask = np.zeros((nz, ny, nx), dtype=bool)
+    mask[:, 4:7, :] = True
+    mask[:, 1:3, :] = True
+    mask[:, 8:10, :] = True
+    return mask
+
+
 def test_transverse_widening_loop_converges_beyond_two_widening_passes(
     tmp_path: Path, monkeypatch
 ):
@@ -976,6 +990,7 @@ def test_transverse_widening_loop_converges_beyond_two_widening_passes(
         reject_samples_with_center_offset=False,
         reject_samples_with_low_fit_r2=False,
         reject_samples_with_plateau_shape=False,
+        vessel_mask=_boxed_in_mask(nz, ny, nx_dim),
     )
 
     calls["n"] = 0
@@ -1010,9 +1025,12 @@ def test_transverse_widening_keeps_the_last_good_measurement_if_a_wider_pass_fai
 
     def _build_graph() -> nx.MultiGraph:
         G = nx.MultiGraph()
-        G.add_node(0, pos=np.array([5.0, 5.0, 2.0], dtype=float))
-        G.add_node(1, pos=np.array([5.0, 5.0, 18.0], dtype=float))
-        voxels = [(5.0, 5.0, float(x)) for x in range(2, 19)]
+        G.add_node(0, pos=np.array([5.0, 1.0, 2.0], dtype=float))
+        G.add_node(1, pos=np.array([5.0, 1.0, 18.0], dtype=float))
+        # 1um from the volume's edge: every ray is stopped there, the case a
+        # line may stay shorter than 3x the diameter, so this tests the
+        # widening machinery rather than the 3x rule.
+        voxels = [(5.0, 1.0, float(x)) for x in range(2, 19)]
         G.add_edge(0, 1, weight=1.0, length=16.0, branch_order="B01", voxels=voxels)
         return G
 
@@ -1064,9 +1082,12 @@ def test_transverse_widening_bisects_towards_a_failing_wider_pass_instead_of_giv
 
     def _build_graph() -> nx.MultiGraph:
         G = nx.MultiGraph()
-        G.add_node(0, pos=np.array([5.0, 5.0, 2.0], dtype=float))
-        G.add_node(1, pos=np.array([5.0, 5.0, 18.0], dtype=float))
-        voxels = [(5.0, 5.0, float(x)) for x in range(2, 19)]
+        G.add_node(0, pos=np.array([5.0, 1.0, 2.0], dtype=float))
+        G.add_node(1, pos=np.array([5.0, 1.0, 18.0], dtype=float))
+        # 1um from the volume's edge: every ray is stopped there, the case a
+        # line may stay shorter than 3x the diameter, so this tests the
+        # widening machinery rather than the 3x rule.
+        voxels = [(5.0, 1.0, float(x)) for x in range(2, 19)]
         G.add_edge(0, 1, weight=1.0, length=16.0, branch_order="B01", voxels=voxels)
         return G
 

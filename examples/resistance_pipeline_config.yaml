@@ -674,7 +674,7 @@ fwhm_diameter_measurement:
   fwhm_diameter_guess_um: null
   # Seed each edge's own starting diameter guess from this graph attribute when present, instead of the one guess above for every edge  [needs use_fwhm_edge_diameters]
   fwhm_diameter_guess_edge_attribute: edt_diameter_um
-  # Require the sampled profile to span at least this multiple of the fitted width  [range 0.0..; needs use_fwhm_edge_diameters]
+  # Require the sampled profile to span at least this multiple of the fitted width, unless it runs into another vessel; shorter samples are dropped  [range 0.0..; needs use_fwhm_edge_diameters]
   fwhm_min_total_extent_multiplier: 3.0
   # Widen the transverse sampling window at most this many times while the fit keeps asking for more room  [range 0..; needs use_fwhm_edge_diameters]
   fwhm_max_transverse_widen_passes: 5
@@ -730,6 +730,12 @@ fwhm_diameter_measurement:
   fwhm_min_fit_r2: 0.85
   # Fit each transverse profile as a filled lumen seen through the microscope's blur (its half-maximum width is the lumen width), or as a Gaussian, which reads a wide plasma-filled vessel about 10% narrow  [one of: blurred_lumen, gaussian; needs use_fwhm_edge_diameters]
   fwhm_profile_model: blurred_lumen
+  # Average each transverse profile over this length along the vessel before fitting, so a dim, noisy channel is not fitted one noise spike at a time (0 reads a single line)  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  fwhm_longitudinal_average_um: 4.0
+  # End a transverse line where it enters a different vessel of the segmentation (after crossing background), the one case the line may be shorter than the required multiple of the width  [needs use_fwhm_edge_diameters]
+  fwhm_stop_at_other_vessels_in_mask: true
+  # Reject a sample narrower than this many pixels: a width that small cannot be resolved, and is almost always a fit to a single noise spike (0 disables)  [voxels; range 0.0..; needs use_fwhm_edge_diameters]
+  fwhm_min_diameter_pixels: 2.0
   # Discard samples whose transverse profile looks like a flat plateau rather than a peak (a saturated detector or a probability map); plasma-filled lumens are plateaus, so leave off for those  [needs use_fwhm_edge_diameters]
   fwhm_reject_samples_with_plateau_shape: true
   # Reject a sample once its 80%-height width is at least this fraction of its half-max width  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_plateau_shape]

@@ -188,3 +188,218 @@ def test_an_unknown_profile_model_is_refused():
             raw_volume=image,
             **_pipeline_defaults(profile_model="tophat"),
         )
+
+
+# --- a dim, photon-limited lumen channel -----------------------------------------
+
+
+_DIM_VOXEL_SIZE_ZYX = (1.0, 0.98, 0.98)
+
+
+def _dim_lumen_vessel(diameter_um, *, seed):
+    """About one photon per lumen pixel, each photon reading 25 grey levels --
+    the statistics of a real dim dextran channel: a single transverse line
+    across it is mostly isolated one-pixel spikes."""
+    rng = np.random.default_rng(seed)
+    vox = _DIM_VOXEL_SIZE_ZYX
+    nz, ny, nx_ = 30, int(4 * diameter_um / vox[1]) + 40, 160
+    zz, yy = np.meshgrid(np.arange(nz) * vox[0], np.arange(ny) * vox[1], indexing="ij")
+    cz, cy = nz * vox[0] / 2, ny * vox[1] / 2
+    lumen = (np.hypot(zz - cz, yy - cy) <= diameter_um / 2)[..., None] * np.ones(nx_)
+    expected = 0.08 + 0.8 * gaussian_filter(lumen, sigma=[0.5 / v for v in vox])
+    image = (25.0 * rng.poisson(expected)).astype(np.float32)
+    xs = np.arange(8, nx_ - 8) * vox[2]
+    centreline = np.stack([np.full_like(xs, cz), np.full_like(xs, cy), xs], axis=1)
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=centreline[0])
+    graph.add_node(1, pos=centreline[-1])
+    graph.add_edge(0, 1, key=0, voxels=centreline.tolist())
+    return graph, image
+
+
+def _measure_dim(diameter_um, seed, **overrides):
+    graph, image = _dim_lumen_vessel(diameter_um, seed=seed)
+    measure_edge_diameters_fwhm_from_raw_tiff(
+        graph,
+        raw_tiff_path="not-read.tif",
+        voxel_size_zyx=_DIM_VOXEL_SIZE_ZYX,
+        raw_volume=image,
+        **_pipeline_defaults(
+            sample_spacing_along_edge_um=4.0, diameter_guess_um=4.0, **overrides
+        ),
+    )
+    return graph[0][1][0].get("fwhm_diameter_um")
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_a_dim_lumen_is_measured_at_its_width_not_a_noise_spikes(seed):
+    """Regression, from a real run: on a dim dextran channel every vessel
+    measured 1-2um -- one line across it is mostly one-pixel spikes, the
+    central-lobe clip cut at the first one, and the fit measured that spike.
+    Averaging along the vessel, a two-pixel floor and a clip that smooths
+    over two pixels measure the vessel instead."""
+    diameter_um = 6.0
+
+    old = _measure_dim(
+        diameter_um, seed,
+        longitudinal_average_um=0.0, min_diameter_pixels=0.0,
+        clip_decision_smoothing_um=1.0,
+    )
+    new = _measure_dim(diameter_um, seed)
+
+    assert old is not None and old < 0.6 * diameter_um
+    # About one photon per pixel: still noisy, but a vessel, not a spike.
+    assert new == pytest.approx(diameter_um, rel=0.25)
+
+
+def test_averaging_along_the_vessel_keeps_the_profile_and_cuts_the_noise():
+    from haemolynx.haemodynamics.automated import _sample_transverse_profile
+
+    graph, clean, _cy = _plasma_vessel(10.0)
+    rng = np.random.default_rng(3)
+    noisy = clean + rng.normal(0.0, 0.3, clean.shape).astype(np.float32)
+    centreline = np.asarray(graph[0][1][0]["voxels"])
+    centre = centreline[len(centreline) // 2]
+    labels = np.zeros(clean.shape, dtype=np.int32)
+
+    def profile(image, average_um):
+        return _sample_transverse_profile(
+            image, labels, centre, np.array([0.0, 0.0, 1.0]), 1, 20.0, 0.25,
+            VOXEL_SIZE_ZYX, background_label=0, junction_label=None,
+            longitudinal_average_um=average_um,
+        )
+
+    offsets, single = profile(noisy, 0.0)
+    offsets_avg, averaged = profile(noisy, 6.0)
+    _offsets, truth = profile(clean, 6.0)
+
+    np.testing.assert_array_equal(offsets, offsets_avg)
+    assert np.std(averaged - truth) < 0.5 * np.std(single - truth)
+
+
+def test_a_width_under_two_pixels_is_rejected(monkeypatch):
+    """No fit narrower than two pixels is a resolved vessel; on real data it
+    is almost always a single noise spike."""
+    from haemolynx.haemodynamics import automated
+
+    monkeypatch.setattr(
+        automated, "_lumen_fwhm_fit_with_diagnostics",
+        lambda *args, **kwargs: (1.5, 0.0, 0.99),
+    )
+    assert _measure_dim(6.0, 0) is None  # 1.5um < 2 x 0.98um
+    assert _measure_dim(6.0, 0, min_diameter_pixels=0.0) == pytest.approx(1.5)
+
+
+def test_the_noise_defaults_are_the_pipeline_defaults():
+    by_name = {setting.name: setting for setting in SCHEMA}
+    assert by_name["fwhm_longitudinal_average_um"].default == 4.0
+    assert by_name["fwhm_min_diameter_pixels"].default == 2.0
+
+
+# --- where another vessel actually is ---------------------------------------------
+
+
+def _ray(vessel_mask, start_y=10):
+    """Distance a +y ray from (z=2, y=start_y, x=5) travels, 1um voxels."""
+    from haemolynx.haemodynamics.automated import _max_extent_along_ray
+
+    labels = np.zeros(vessel_mask.shape, dtype=np.int32)
+    return _max_extent_along_ray(
+        np.array([2.0, float(start_y), 5.0]), np.array([0.0, 1.0, 0.0]), 1, labels,
+        30.0, (1.0, 1.0, 1.0), 0.25, background_label=0, junction_label=None,
+        allow_junction_crossing=False, vessel_mask=vessel_mask,
+    )
+
+
+def _two_vessels(gap_voxels):
+    """Own vessel y 8..12, background, then a neighbour from 13 + gap."""
+    mask = np.zeros((5, 60, 10), dtype=bool)
+    mask[:, 8:13, :] = True
+    mask[:, 13 + gap_voxels:20 + gap_voxels, :] = True
+    return mask
+
+
+def test_a_ray_stops_where_it_enters_a_neighbouring_vessel():
+    """The one case a line may be shorter than 3x the width: something is in
+    the way. Read from the segmentation, not guessed from other centrelines."""
+    distance = _ray(_two_vessels(gap_voxels=4))
+    # Own vessel ends at y=12.5, the neighbour starts at y=16.5: the ray from
+    # y=10 ends just before it.
+    assert 5.5 <= distance <= 6.5
+
+
+def test_a_sub_voxel_gap_is_the_masks_pixelation_not_a_second_vessel():
+    """Two regions touching (no voxel of background between) are one vessel as
+    far as the mask can tell; the ray carries on through."""
+    assert _ray(_two_vessels(gap_voxels=0)) == pytest.approx(30.0)
+
+
+def test_a_ray_starting_outside_the_mask_ignores_it():
+    """A centreline off its own segmentation cannot tell its own vessel from
+    a neighbour, so the mask must not stop it."""
+    assert _ray(_two_vessels(gap_voxels=4), start_y=4) == pytest.approx(30.0)
+
+
+def test_a_ray_with_nothing_in_the_way_runs_its_full_length():
+    mask = np.zeros((5, 60, 10), dtype=bool)
+    mask[:, 8:13, :] = True
+    assert _ray(mask) == pytest.approx(30.0)
+
+
+# --- the 3x rule ---------------------------------------------------------------------
+
+
+def _measure_with_fixed_fit(monkeypatch, width_um, **overrides):
+    """A plain vessel measured by a fit that reports *width_um* on the first,
+    12um line and fails on any wider one -- the widening loop then keeps the
+    12um pass, as it does when a wider pass fails a quality gate."""
+    from haemolynx.haemodynamics import automated
+
+    def fit(positions, _intensities, **_kwargs):
+        if float(np.ptp(positions)) <= 12.1:
+            return width_um, 0.0, 0.99
+        return None, None, None
+
+    monkeypatch.setattr(automated, "_lumen_fwhm_fit_with_diagnostics", fit)
+    graph, image, _cy = _plasma_vessel(4.0)
+    summary = measure_edge_diameters_fwhm_from_raw_tiff(
+        graph,
+        raw_tiff_path="not-read.tif",
+        voxel_size_zyx=VOXEL_SIZE_ZYX,
+        raw_volume=image,
+        **_pipeline_defaults(
+            sample_spacing_along_edge_um=10.0,
+            transverse_half_extent_um=6.0,
+            diameter_guess_um=1.0,
+            max_transverse_widen_passes=0,
+            clip_profile_to_single_vessel=False,
+            **overrides,
+        ),
+    )
+    return graph[0][1][0].get("fwhm_diameter_um"), summary
+
+
+def test_a_sample_whose_line_never_reached_three_widths_is_dropped(monkeypatch):
+    """A 12um line cannot measure a 6um width by FWHM: at most 3um of it on
+    each side is background. The widening loop used to keep such a pass
+    whenever a wider one failed a gate -- a third of accepted samples on a
+    real dim run, down to a line exactly as wide as its own measurement."""
+    width, summary = _measure_with_fixed_fit(monkeypatch, 6.0)
+    assert width is None
+    assert summary["samples_rejected_short_line"] > 0
+
+    width, summary = _measure_with_fixed_fit(monkeypatch, 3.9)  # 12um >= 3 x 3.9
+    assert width == pytest.approx(3.9)
+    assert summary["samples_rejected_short_line"] == 0
+
+
+def test_a_short_line_is_kept_when_another_vessel_stopped_it(monkeypatch):
+    graph, image, cy = _plasma_vessel(4.0)
+    mask = np.zeros(image.shape, dtype=bool)
+    iy = lambda y_um: int(round(y_um / VOXEL_SIZE_ZYX[1]))  # noqa: E731
+    mask[:, iy(cy - 2.0):iy(cy + 2.0) + 1, :] = True  # the vessel itself
+    mask[:, iy(cy + 5.0):iy(cy + 8.0), :] = True  # a neighbour 3um away
+
+    width, _summary = _measure_with_fixed_fit(monkeypatch, 6.0, vessel_mask=mask)
+
+    assert width == pytest.approx(6.0)

@@ -3668,7 +3668,7 @@ SCHEMA = Schema(
             name="fwhm_min_total_extent_multiplier",
             kind="float",
             default=3.0,
-            help="Require the sampled profile to span at least this multiple of the fitted width",
+            help="Require the sampled profile to span at least this multiple of the fitted width, unless it runs into another vessel; shorter samples are dropped",
             section=_FWHM,
             minimum=0.0,
             requires=("use_fwhm_edge_diameters",),
@@ -3975,6 +3975,47 @@ SCHEMA = Schema(
             ),
             section=_FWHM,
             choices=("blurred_lumen", "gaussian"),
+            requires=("use_fwhm_edge_diameters",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_longitudinal_average_um",
+            kind="float",
+            default=4.0,
+            help=(
+                "Average each transverse profile over this length along the vessel before "
+                "fitting, so a dim, noisy channel is not fitted one noise spike at a time "
+                "(0 reads a single line)"
+            ),
+            section=_FWHM,
+            unit="um",
+            minimum=0.0,
+            requires=("use_fwhm_edge_diameters",),
+        ),
+        Setting(
+            name="fwhm_stop_at_other_vessels_in_mask",
+            kind="bool",
+            default=True,
+            help=(
+                "End a transverse line where it enters a different vessel of the segmentation "
+                "(after crossing background), the one case the line may be shorter than the "
+                "required multiple of the width"
+            ),
+            section=_FWHM,
+            requires=("use_fwhm_edge_diameters",),
+            advanced=True,
+        ),
+        Setting(
+            name="fwhm_min_diameter_pixels",
+            kind="float",
+            default=2.0,
+            help=(
+                "Reject a sample narrower than this many pixels: a width that small cannot "
+                "be resolved, and is almost always a fit to a single noise spike (0 disables)"
+            ),
+            section=_FWHM,
+            unit="voxels",
+            minimum=0.0,
             requires=("use_fwhm_edge_diameters",),
             advanced=True,
         ),

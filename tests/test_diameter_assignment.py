@@ -270,7 +270,7 @@ def test_resume_keeps_measured_and_override_and_does_not_remeasure(monkeypatch):
 
 
 def test_fresh_fwhm_run_wipes_overrides(monkeypatch):
-    def fake_measure(G, _config, raw_volume=None):
+    def fake_measure(G, _config, raw_volume=None, **_kwargs):
         for _u, _v, _key, data in G.edges(keys=True, data=True):
             data["fwhm_diameter_um"] = 3.0
         return {"edges_measured": G.number_of_edges(), "edges_skipped": []}
@@ -314,7 +314,7 @@ def test_edt_measurement_runs_before_fwhm_so_it_can_seed_the_diameter_guess(monk
             data["edt_diameter_um"] = 7.0
         return {"edges_measured": G.number_of_edges(), "edges_skipped": []}
 
-    def fake_measure_fwhm(G, _config, raw_volume=None):
+    def fake_measure_fwhm(G, _config, raw_volume=None, **_kwargs):
         call_order.append("fwhm")
         for _u, _v, _key, data in G.edges(keys=True, data=True):
             seen_edt_values.append(data.get("edt_diameter_um"))
@@ -346,6 +346,45 @@ def test_edt_measurement_runs_before_fwhm_so_it_can_seed_the_diameter_guess(monk
 
     assert call_order == ["edt", "fwhm"]
     assert seen_edt_values == [7.0] * graph.number_of_edges()
+
+
+def test_a_label_encoded_segmentation_is_binarised_before_either_measurement_reads_it(
+    monkeypatch,
+):
+    """Regression: the stage hands over the loaded segmentation as it is. An
+    ilastik "Simple Segmentation" is labels 1 (vessel) and 2 (background),
+    and read as bool both are "vessel" -- EDT widths meaningless, and FWHM's
+    neighbour stop seeing one vessel everywhere. Both must get the mask the
+    skeleton was made from: the minority label."""
+    seen: dict[str, np.ndarray] = {}
+
+    def fake_measure_edt(G, _config, mask_volume=None):
+        seen["edt"] = mask_volume
+        return {"edges_measured": 0, "edges_skipped": []}
+
+    def fake_measure_fwhm(G, _config, raw_volume=None, vessel_mask=None, **_kwargs):
+        seen["fwhm"] = vessel_mask
+        return {"edges_measured": 0, "edges_skipped": []}
+
+    monkeypatch.setattr("haemolynx.haemodynamics.apply._measure_edt_diameters", fake_measure_edt)
+    monkeypatch.setattr("haemolynx.haemodynamics.apply._measure_fwhm_diameters", fake_measure_fwhm)
+    monkeypatch.setattr(
+        "haemolynx.haemodynamics.apply.load_fwhm_raw_volume",
+        lambda _config: np.zeros((4, 4, 4), dtype=np.float32),
+    )
+    labels = np.full((4, 4, 4), 2, dtype=np.uint8)
+    labels[1:3, 1:3, :] = 1  # the vessel: the minority label
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": dict(DIAMETERS)},
+        fwhm={"use_fwhm_edge_diameters": True, "do_fwhm_measurement": True},
+        edt={"use_edt_diameter_crosscheck": True},
+    )
+
+    assign_edge_diameters(_network(), config, mask_volume=labels)
+
+    for name in ("edt", "fwhm"):
+        assert seen[name].dtype == bool, name
+        np.testing.assert_array_equal(seen[name], labels == 1)
 
 
 def test_set_edge_diameter_override_rejects_non_positive():

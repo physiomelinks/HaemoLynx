@@ -48,6 +48,12 @@ from .automated import (
     physical_points_to_continuous_indices,
 )
 
+#: How far from its centreline (µm) a sample looks for its own vessel when the
+#: centreline itself lies outside the mask -- a smoothed or reconnected
+#: centreline can run a voxel or two off its segmentation, where the
+#: inscribed radius is 0 and the vessel would otherwise get no width at all.
+OFF_CENTRELINE_SEARCH_UM = 3.0
+
 __all__ = ["measure_edge_diameters_from_binary_mask"]
 
 
@@ -150,12 +156,23 @@ def measure_edge_diameters_from_binary_mask(
                 keep &= targets >= branch_excl
             if v_is_branch:
                 keep &= (total_len - targets) >= branch_excl
+        sample_points = pts[keep]
         if not np.any(keep):
-            summary["edges_skipped"].append((u, v, key, "excluded_near_branch"))
-            continue
+            # An edge shorter than its junction zones: excluding it whole left
+            # every short capillary with no width at all (238 of 3191 edges on
+            # a real run), falling back to the branch-order table. Its
+            # midpoint is as far from either junction as this edge allows.
+            sample_points = _interpolate_centerline(poly, s, np.array([0.5 * total_len]))
+            data["edt_midpoint_only"] = True
 
-        idx = physical_points_to_continuous_indices(pts[keep], voxel_size_zyx)
-        values = sample_radius(idx)
+        idx = physical_points_to_continuous_indices(sample_points, voxel_size_zyx)
+        values = np.asarray(sample_radius(idx), dtype=float)
+        off_mask = ~(np.isfinite(values) & (values > 0))
+        if np.any(off_mask):
+            values[off_mask] = _nearby_radius(
+                sample_radius, idx[off_mask], voxel_size_zyx, OFF_CENTRELINE_SEARCH_UM
+            )
+            data["edt_off_centreline_samples"] = int(np.count_nonzero(off_mask))
         radii = [float(value) for value in values if np.isfinite(value) and value > 0]
         if not radii:
             summary["edges_skipped"].append((u, v, key, "edt_failed"))
@@ -175,6 +192,61 @@ def measure_edge_diameters_from_binary_mask(
         )
 
     return summary
+
+
+def _nearby_radius(
+    sample_radius, idx: np.ndarray, voxel_size_zyx, search_um: float
+) -> np.ndarray:
+    """For each point (continuous voxel indices) whose own inscribed radius is
+    0, the inscribed radius of the vessel it was meant to run down: the
+    nearest vessel voxel within *search_um*, then uphill on the radius to the
+    vessel's own middle. Still 0 when no vessel is that close.
+
+    Uphill, not just the largest radius in reach: from a centreline a voxel
+    outside the wall, the best point within reach is near the far side of
+    the wall, where the radius is small -- a 6um vessel read 4.5um that way.
+    The climb stops at the first local maximum (the vessel's medial axis,
+    where moving along the vessel no longer increases the radius), and is
+    capped at twice the search distance so it cannot wander along a
+    connected network into a larger vessel.
+    """
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    reach = np.maximum(1, np.ceil(float(search_um) / spacing).astype(int))
+    grid = np.stack(
+        np.meshgrid(*(np.arange(-r, r + 1) for r in reach), indexing="ij"), axis=-1
+    ).reshape(-1, 3)
+    distance = np.linalg.norm(grid * spacing, axis=1)
+    inside = distance <= float(search_um) + 1e-9
+    grid, distance = grid[inside], distance[inside]
+    points = np.asarray(idx, dtype=float).reshape(-1, 3)
+    candidates = (points[:, None, :] + grid[None, :, :]).reshape(-1, 3)
+    radii = np.asarray(sample_radius(candidates), dtype=float).reshape(len(points), len(grid))
+    radii[~np.isfinite(radii)] = 0.0
+    # The nearest vessel voxel in reach: smallest distance among those inside.
+    nearest = np.where(radii > 0, distance[None, :], np.inf).argmin(axis=1)
+    found = radii[np.arange(len(points)), nearest] > 0
+    position = points + grid[nearest]
+    radius = np.where(found, radii[np.arange(len(points)), nearest], 0.0)
+
+    step_grid = np.stack(
+        np.meshgrid(*(np.arange(-1, 2),) * 3, indexing="ij"), axis=-1
+    ).reshape(-1, 3)
+    max_steps = int(np.ceil(2.0 * float(search_um) / float(np.min(spacing))))
+    climbing = found.copy()
+    for _step in range(max_steps):
+        if not np.any(climbing):
+            break
+        rows = np.flatnonzero(climbing)
+        neighbours = (position[rows, None, :] + step_grid[None, :, :]).reshape(-1, 3)
+        around = np.asarray(sample_radius(neighbours), dtype=float).reshape(len(rows), len(step_grid))
+        around[~np.isfinite(around)] = 0.0
+        best = around.argmax(axis=1)
+        better = around[np.arange(len(rows)), best] > radius[rows] + 1e-9
+        moved = rows[better]
+        position[moved] = position[moved] + step_grid[best[better]]
+        radius[moved] = around[np.arange(len(rows)), best][better]
+        climbing[rows[~better]] = False
+    return radius
 
 
 def _pointwise_radius_sampler(binary_mask: np.ndarray, voxel_size_zyx):

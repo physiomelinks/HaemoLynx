@@ -65,6 +65,7 @@ IMAGE = f"{PREFIX}image"
 SKELETON = f"{PREFIX}skeleton"
 FWHM_RAW = f"{PREFIX}FWHM image"
 FWHM_PROFILES = f"{PREFIX}FWHM profiles"
+FWHM_WIDTHS = f"{PREFIX}FWHM measured widths"
 #: The "Edit" window's in-progress "Add branch" path, drawn separately from
 #: VESSELS since it is not part of the graph until the draft is committed.
 EDIT_DRAFT = f"{PREFIX}edit draft"
@@ -259,6 +260,7 @@ LAYER_NAMES = frozenset(
         SKELETON,
         FWHM_RAW,
         FWHM_PROFILES,
+        FWHM_WIDTHS,
     }
     | set(MASK_LAYERS.values())
 )
@@ -814,21 +816,28 @@ def polylines_to_vectors(
 
 
 def fwhm_profile_polylines(graph: Any) -> list[np.ndarray]:
-    """One line per accepted FWHM sample, spanning the diameter measured there.
+    """The line each accepted FWHM sample was measured along.
 
-    ``fwhm_measured_lines_phys`` -- across the vessel, exactly as wide as the
-    measurement and centred on the fitted centre -- so a line sitting inside
-    or overhanging the vessel on screen is a measurement to distrust. Not the
-    sampled ray (``fwhm_profile_lines_phys``), which is deliberately several
-    times wider than the vessel; a graph measured before the measured lines
-    existed falls back to those.
+    About ``min_total_extent_multiplier`` (3) times the vessel's width -- a
+    half-maximum is only defined against background on both sides -- unless
+    it ran into another vessel. A line no wider than the vessel is a
+    measurement that never saw background. For the width itself, see
+    :func:`fwhm_measured_polylines`.
     """
+    return _stored_polylines(graph, "fwhm_profile_lines_phys")
+
+
+def fwhm_measured_polylines(graph: Any) -> list[np.ndarray]:
+    """One line per accepted FWHM sample, exactly as long as the diameter it
+    measured and centred on the fitted centre: laid over the vessel, it
+    should span it wall to wall."""
+    return _stored_polylines(graph, "fwhm_measured_lines_phys")
+
+
+def _stored_polylines(graph: Any, attribute: str) -> list[np.ndarray]:
     lines: list[np.ndarray] = []
     for _u, _v, _key, data in _iter_edges(graph):
-        stored = data.get("fwhm_measured_lines_phys")
-        if stored is None:
-            stored = data.get("fwhm_profile_lines_phys")
-        for line in stored or ():
+        for line in data.get(attribute) or ():
             points = np.asarray(line, dtype=float)
             if points.ndim != 2 or len(points) < 2:
                 continue
@@ -1717,18 +1726,22 @@ class ResultLayers:
                 )
             )
         if self._graph is not None:
-            profile_paths = fwhm_profile_polylines(self._graph)
-            if profile_paths:
-                vectors, _owner = polylines_to_vectors(profile_paths)
+            for name, paths, colour, width in (
+                (FWHM_PROFILES, fwhm_profile_polylines(self._graph), "cyan", 0.35),
+                (FWHM_WIDTHS, fwhm_measured_polylines(self._graph), "magenta", 0.7),
+            ):
+                if not paths:
+                    continue
+                vectors, _owner = polylines_to_vectors(paths)
                 layers.append(
                     LayerSpec(
                         kind="vectors",
-                        name=FWHM_PROFILES,
+                        name=name,
                         data=vectors,
                         options={
                             "vector_style": "line",
-                            "edge_width": 0.35,
-                            "edge_color": "cyan",
+                            "edge_width": width,
+                            "edge_color": colour,
                             "out_of_slice_display": True,
                         },
                     )

@@ -283,8 +283,18 @@ def _max_extent_along_ray(
     same_edge_s0_um: float | None = None,
     same_edge_arc_window_um: float | None = None,
     allow_crossing_other_edges: bool = False,
+    vessel_mask: np.ndarray | None = None,
 ) -> float:
     """Positive distance along +direction until hitting another edge or the volume edge.
+
+    With *vessel_mask* (the segmentation, true on vessel), a ray that starts
+    inside a vessel also stops where it enters a *different* one: once it
+    has left its own vessel and crossed at least one voxel of background,
+    the next vessel voxel is another vessel, and the ray ends just before it.
+    That is where another vessel actually is, rather than a guess from
+    other graph centrelines or intensity dips. A ray starting outside the
+    mask (a centreline off its own segmentation) cannot tell its own vessel
+    from a neighbour, so the mask is not consulted for it.
 
     Voxels labeled ``assigned_label`` or ``background_label`` (unpainted lumen) allow
     continuation up to ``max_physical_extent``. By default, ``junction_label`` is
@@ -311,6 +321,14 @@ def _max_extent_along_ray(
     d = direction_unit / np.linalg.norm(direction_unit)
     n_steps = int(np.ceil(max_physical_extent / step_um))
     shape = labels.shape
+    use_mask = vessel_mask is not None and bool(
+        vessel_mask[_nearest_integer_index(center_idx, vessel_mask.shape)]
+    )
+    # Less than a voxel of background (measured along this ray) is the mask's
+    # own pixelation, not a gap between two vessels.
+    min_gap_um = float(1.0 / np.linalg.norm(d / spacing))
+    background_run_um = 0.0
+    left_own_vessel = False
     for k in range(1, n_steps + 1):
         delta_phys = d * (k * step_um)
         idx = center_idx + delta_phys / spacing
@@ -323,6 +341,15 @@ def _max_extent_along_ray(
             or idx[2] > shape[2] - 1
         ):
             return max(0.0, (k - 1) * step_um)
+        if use_mask:
+            if vessel_mask[_nearest_integer_index(idx, vessel_mask.shape)]:
+                if left_own_vessel:
+                    return max(0.0, (k - 1) * step_um)
+                background_run_um = 0.0
+            else:
+                background_run_um += step_um
+                if background_run_um >= min_gap_um:
+                    left_own_vessel = True
         lab = _label_at(labels, idx, shape)
         if lab == assigned_label:
             if (
@@ -368,6 +395,8 @@ def _sample_transverse_profile(
     same_edge_arc_window_um: float | None = None,
     transverse_sampling_mode: TransverseSamplingMode = "in_plane_yx",
     allow_crossing_other_edges: bool = False,
+    longitudinal_average_um: float = 0.0,
+    vessel_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Sample intensity along a line through ``center_phys``, perpendicular to ``tangent``.
 
@@ -377,6 +406,14 @@ def _sample_transverse_profile(
     instead uses the tangent's real 3D perpendicular (see
     ``_gram_schmidt_perpendicular``), correcting the foreshortening bias the
     default has for a vessel with a real z-component to its direction.
+
+    *longitudinal_average_um* > 0 averages the same line over that length
+    along the vessel (centred on *center_phys*, about two lines per voxel),
+    instead of reading one line. A vessel's width barely changes over a few
+    microns while photon noise is independent pixel to pixel, so this cuts
+    the noise without blurring the width. On a dim channel a single line is
+    mostly one-pixel spikes, and a fit to one of them reads ~1 pixel wide
+    whatever the vessel.
 
     Returns (positions_along_line_um, intensities).
     """
@@ -399,6 +436,7 @@ def _sample_transverse_profile(
         same_edge_s0_um=same_edge_s0_um,
         same_edge_arc_window_um=same_edge_arc_window_um,
         allow_crossing_other_edges=allow_crossing_other_edges,
+        vessel_mask=vessel_mask,
     )
     pos_minus = _max_extent_along_ray(
         center_idx,
@@ -415,6 +453,7 @@ def _sample_transverse_profile(
         same_edge_s0_um=same_edge_s0_um,
         same_edge_arc_window_um=same_edge_arc_window_um,
         allow_crossing_other_edges=allow_crossing_other_edges,
+        vessel_mask=vessel_mask,
     )
 
     n_neg = int(np.floor(pos_minus / transverse_step_um))
@@ -423,21 +462,25 @@ def _sample_transverse_profile(
     if offsets.size == 0:
         offsets = np.array([0.0], dtype=float)
 
-    coords = []
-    for off in offsets:
-        p_phys = center_phys + off * n_hat
-        idx = p_phys / spacing
-        coords.append(idx)
-    coord_arr = np.stack(coords, axis=1)  # (3, N)
-    zc, yc, xc = coord_arr[0], coord_arr[1], coord_arr[2]
-    vals = map_coordinates(
-        raw,
-        np.vstack([zc, yc, xc]),
-        order=1,
-        mode="constant",
-        cval=0.0,
-    )
-    return offsets, np.asarray(vals, dtype=float)
+    shifts = np.array([0.0])
+    along = np.zeros(3)
+    if longitudinal_average_um > 0:
+        t = np.asarray(tangent, dtype=float).ravel()
+        t_norm = float(np.linalg.norm(t))
+        if t_norm > 1e-12:
+            along = t / t_norm
+            shift_step = 0.5 * float(np.min(spacing))
+            half = 0.5 * float(longitudinal_average_um)
+            n_half = int(np.floor(half / shift_step))
+            shifts = np.arange(-n_half, n_half + 1, dtype=float) * shift_step
+    line_phys = (
+        np.asarray(center_phys, dtype=float)[None, None, :]
+        + shifts[:, None, None] * along[None, None, :]
+        + offsets[None, :, None] * n_hat[None, None, :]
+    )  # (shifts, offsets, 3)
+    idx = (line_phys / spacing).reshape(-1, 3).T
+    vals = map_coordinates(raw, idx, order=1, mode="constant", cval=0.0)
+    return offsets, np.asarray(vals, dtype=float).reshape(shifts.size, offsets.size).mean(axis=0)
 
 
 def _gaussian_fluorescence_1d(
@@ -932,6 +975,7 @@ def _clip_profile_to_central_lobe(
     min_drop_fraction_of_center: float = 0.35,
     re_rise_fraction_of_center: float = 0.08,
     min_points_to_clip: int = 9,
+    decision_smoothing_um: float = _CLIP_DECISION_SMOOTHING_WINDOW_UM,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Trim a transverse profile so it stays on the central vessel lobe.
 
@@ -955,7 +999,7 @@ def _clip_profile_to_central_lobe(
         return x, y
 
     step_um = float(np.median(np.diff(x))) if x.size >= 2 else 1.0
-    window = max(1, int(round(_CLIP_DECISION_SMOOTHING_WINDOW_UM / max(step_um, 1e-9))))
+    window = max(1, int(round(float(decision_smoothing_um) / max(step_um, 1e-9))))
     if window % 2 == 0:
         window += 1
     if window > 1 and y.size >= window:
@@ -1262,6 +1306,11 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     warn_out_of_plane_tangent_fraction: float = 0.3,
     edge_diameter_aggregation: Literal["median", "mean"] = "median",
     profile_model: ProfileModel = "blurred_lumen",
+    longitudinal_average_um: float = 4.0,
+    min_diameter_pixels: float = 2.0,
+    clip_decision_smoothing_um: float | None = None,
+    vessel_mask: np.ndarray | None = None,
+    stop_at_other_vessels_in_mask: bool = True,
     axis_order: str = CANONICAL_AXIS_ORDER,
     raw_volume: np.ndarray | None = None,
     use_memmap: bool = False,
@@ -1459,14 +1508,47 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         ``"gaussian"``: the previous Gaussian fit, which reads a wide
         plasma-filled vessel about 10% narrow and often cannot fit its flat
         top at all.
+    longitudinal_average_um :
+        Average each transverse profile over this length along the vessel
+        before fitting (see :func:`_sample_transverse_profile`). 0 reads a
+        single line, the behaviour before this existed. On a dim,
+        photon-limited channel a single
+        line is mostly one-pixel noise spikes; averaging a few microns of
+        vessel suppresses them without blurring the width.
+    min_diameter_pixels :
+        Reject a sample whose measured diameter is under this many pixels
+        of the sampling plane's own spacing -- a width that small cannot be
+        resolved, and on real data is almost always a fit to a single noise
+        spike. 0 disables the check.
+    vessel_mask :
+        The segmentation (true on vessel, same grid as the raw volume). With
+        *stop_at_other_vessels_in_mask*, a transverse line that has left its
+        own vessel ends where it enters the next one -- see
+        :func:`_max_extent_along_ray` -- so a line is shorter than
+        *min_total_extent_multiplier* x the width only where another vessel
+        really is in the way.
+    stop_at_other_vessels_in_mask :
+        Use *vessel_mask* that way. Ignored without a mask.
+    clip_decision_smoothing_um :
+        Width of the smoothing :func:`_clip_profile_to_central_lobe` decides
+        where the central lobe ends on. ``None`` is at least two pixels of
+        the sampling plane (and at least 1um): narrower, and a one-pixel
+        noise dip inside the vessel ends the lobe, so the fit measures one
+        spike.
 
-    With *store_profile_debug*, each accepted sample also records
-    ``data["fwhm_measured_lines_phys"]``: a two-point line across the vessel
-    spanning exactly the diameter measured there, centred on the fitted
-    centre -- what the viewer draws, so a measurement can be checked against
-    the vessel by eye. ``fwhm_profile_lines_phys`` is the whole sampled ray,
-    which is deliberately wider than the vessel (see
-    *min_total_extent_multiplier*).
+    With *store_profile_debug*, each accepted sample records its sampled line
+    (``data["fwhm_profile_lines_phys"]``, ~*min_total_extent_multiplier* x
+    the width) and ``data["fwhm_measured_lines_phys"]``: a two-point line
+    across the vessel spanning exactly the diameter measured there, centred
+    on the fitted centre. The viewer draws both, so each can be checked
+    against the vessel by eye.
+
+    *min_total_extent_multiplier* is a requirement, not only a target: a
+    sample whose sampled line stayed shorter than that multiple of its own
+    measured width is dropped (counted in ``summary["samples_rejected_short_line"]``)
+    unless the line was stopped by something -- another vessel's voxels, a
+    fold of this vessel, the volume's edge, or the central-lobe clip cutting
+    at a neighbour's rising signal.
 
     Every edge this function iterates gets ``data["fwhm_status"]`` written:
     ``"measured"`` on success, ``f"failed:{reason}"`` on any of the skip
@@ -1480,6 +1562,19 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         raise ValueError(
             f"profile_baseline_mode must be 'wings' or 'percentile', got {profile_baseline_mode!r}."
         )
+    # The pixel pitch of the plane the transverse lines lie in: y-x for the
+    # default in-plane sampling, all three axes for true-3D sampling.
+    sampling_pixel_um = float(
+        np.max(_spacing_vec(voxel_size_zyx)[1:])
+        if transverse_sampling_mode == "in_plane_yx"
+        else np.max(_spacing_vec(voxel_size_zyx))
+    )
+    min_diameter_um = max(0.0, float(min_diameter_pixels)) * sampling_pixel_um
+    clip_smoothing_um = (
+        max(_CLIP_DECISION_SMOOTHING_WINDOW_UM, 2.0 * sampling_pixel_um)
+        if clip_decision_smoothing_um is None
+        else float(clip_decision_smoothing_um)
+    )
     if profile_model == "blurred_lumen":
         fit_profile = _lumen_fwhm_fit_with_diagnostics
     elif profile_model == "gaussian":
@@ -1505,6 +1600,17 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         )
     if use_memmap and isinstance(raw, np.memmap) and raw is not raw_volume:
         owned.append(raw)
+    if vessel_mask is not None and tuple(vessel_mask.shape) != tuple(raw.shape):
+        # On another grid its voxels are somewhere else entirely: stopping
+        # rays against it would cut them at the wrong places, silently.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "FWHM: the vessel mask is %s but the raw image is %s; not using the "
+            "mask to find neighbouring vessels.",
+            tuple(vessel_mask.shape), tuple(raw.shape),
+        )
+        vessel_mask = None
     try:
         labels, _ = build_graph_branch_label_volume(
             G,
@@ -1523,6 +1629,10 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             "edges_skipped": [],
             "per_edge": [],
             "edges_with_out_of_plane_warning": [],
+            # Samples fitted fine but dropped because their line never
+            # reached min_total_extent_multiplier x the measured width and
+            # nothing (another vessel, the volume edge) was in the way.
+            "samples_rejected_short_line": 0,
         }
 
         mult = float(min_total_extent_multiplier)
@@ -1726,11 +1836,18 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
 
                 def _sample_and_fit(
                     half_extent: float, local_arc_window: float, diameter_for_gate: float
-                ) -> tuple[float | None, np.ndarray | None, float | None, float | None]:
+                ) -> tuple[float | None, np.ndarray | None, float | None, float | None, bool]:
                     """One sample-clip-fit-gate pass. Returns (diameter, offsets,
-                    fit_r2, fitted_centre) -- diameter is None if the fit itself
-                    failed or any gate rejected it, in which case the rest are
-                    also None."""
+                    fit_r2, fitted_centre, stopped_by_neighbour) -- diameter is
+                    None if the fit itself failed or any gate rejected it, in
+                    which case the rest are also None/False.
+
+                    *stopped_by_neighbour*: the line could not be as long as
+                    asked -- a ray stopped at another structure (another
+                    vessel's voxels, a fold of this one, the volume's edge), or
+                    the central-lobe clip cut it where a neighbouring vessel's
+                    signal rises -- the one case a line shorter than
+                    ``min_total_extent_multiplier`` x the diameter is allowed."""
                     pos, prof = _sample_transverse_profile(
                         raw,
                         labels,
@@ -1748,6 +1865,10 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                         same_edge_arc_window_um=local_arc_window,
                         transverse_sampling_mode=transverse_sampling_mode,
                         allow_crossing_other_edges=bool(allow_crossing_other_edges),
+                        longitudinal_average_um=float(longitudinal_average_um),
+                        vessel_mask=(
+                            vessel_mask if stop_at_other_vessels_in_mask else None
+                        ),
                     )
                     pos_fit, prof_fit = (
                         _clip_profile_to_central_lobe(
@@ -1755,6 +1876,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                             prof,
                             min_drop_fraction_of_center=clip_min_drop_fraction_of_center,
                             re_rise_fraction_of_center=clip_re_rise_fraction_of_center,
+                            decision_smoothing_um=clip_smoothing_um,
                         )
                         if clip_profile_to_single_vessel
                         else (pos, prof)
@@ -1767,8 +1889,18 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                         constrain_fitted_baseline=constrain_fitted_baseline,
                         baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
                     )
-                    if d is None:
-                        return None, None, None, None
+                    if d is None or d < min_diameter_um:
+                        return None, None, None, None, False
+                    step_um = float(transverse_profile_step_um)
+                    ray_stopped = (
+                        float(np.max(pos)) < half_extent - step_um
+                        or -float(np.min(pos)) < half_extent - step_um
+                    )
+                    lobe_clipped = (
+                        float(np.max(pos_fit)) < float(np.max(pos)) - step_um / 2
+                        or float(np.min(pos_fit)) > float(np.min(pos)) + step_um / 2
+                    )
+                    stopped_by_neighbour = bool(ray_stopped or lobe_clipped)
                     # The larger of the pre-fit guess and this pass's own fitted
                     # diameter: on an edge with no per-edge diameter guess (or a
                     # guess much narrower than reality), the first pass's guess
@@ -1784,12 +1916,12 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                         max_fit_center_offset_fraction_of_diameter=max_fit_center_offset_fraction_of_diameter,
                     )
                     if reject_samples_with_center_offset and x0 is not None and abs(float(x0)) > max_offset:
-                        return None, None, None, None
+                        return None, None, None, None, False
                     if reject_samples_with_low_fit_r2 and r2 is not None and float(r2) < float(min_fit_r2):
-                        return None, None, None, None
+                        return None, None, None, None, False
                     if not _passes_plateau_gate(pos_fit, prof_fit):
-                        return None, None, None, None
-                    return d, pos, r2, (0.0 if x0 is None else float(x0))
+                        return None, None, None, None, False
+                    return d, pos, r2, (0.0 if x0 is None else float(x0)), stopped_by_neighbour
 
                 # Widen the transverse window until a pass's own fit no longer
                 # asks for more room, up to max_transverse_widen_passes -- an
@@ -1813,10 +1945,11 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 best_diameter: float | None = None
                 best_fit_r2: float | None = None
                 best_centre: float | None = None
+                best_stopped: bool = False
                 accepted_offsets: np.ndarray | None = None
                 best_half_extent: float | None = None
                 for _pass in range(max(1, int(max_transverse_widen_passes)) + 1):
-                    d, pos, fit_r2, x0 = _sample_and_fit(
+                    d, pos, fit_r2, x0, stopped = _sample_and_fit(
                         half_extent, local_arc_window, diameter_estimate
                     )
                     if d is None and best_half_extent is not None:
@@ -1826,13 +1959,15 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                             if mid - lo <= float(transverse_profile_step_um):
                                 break
                             mid_window = _local_arc_window(diameter_estimate)
-                            d_mid, pos_mid, r2_mid, x0_mid = _sample_and_fit(
+                            d_mid, pos_mid, r2_mid, x0_mid, stopped_mid = _sample_and_fit(
                                 mid, mid_window, diameter_estimate
                             )
                             if d_mid is None:
                                 hi = mid
                                 continue
-                            d, pos, fit_r2, x0 = d_mid, pos_mid, r2_mid, x0_mid
+                            d, pos, fit_r2, x0, stopped = (
+                                d_mid, pos_mid, r2_mid, x0_mid, stopped_mid
+                            )
                             half_extent, local_arc_window = mid, mid_window
                             lo = mid
                     if d is None:
@@ -1840,6 +1975,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     best_diameter = d
                     best_fit_r2 = fit_r2
                     best_centre = x0
+                    best_stopped = stopped
                     accepted_offsets = pos
                     best_half_extent = half_extent
                     diameter_estimate = d
@@ -1848,6 +1984,23 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                         break
                     half_extent = desired_half
                     local_arc_window = _local_arc_window(d)
+                if best_diameter is not None and accepted_offsets is not None:
+                    # FWHM is only defined against the background on both
+                    # sides, so the sampled line has to span
+                    # min_total_extent_multiplier x the width it measured --
+                    # unless something stopped it (another vessel, a fold of
+                    # this one, the volume's edge). A line that merely stopped
+                    # widening -- a wider pass failed a gate, and the widening
+                    # loop kept the last narrower one -- can measure a width
+                    # as wide as the line itself, the profile never reaching
+                    # background at all: a third of the accepted samples on a
+                    # real dim run, down to 1x.
+                    line_um = float(np.max(accepted_offsets) - np.min(accepted_offsets))
+                    wide_enough = line_um + 2.0 * float(transverse_profile_step_um) >= mult * best_diameter
+                    if not (wide_enough or best_stopped):
+                        summary["samples_rejected_short_line"] += 1
+                        best_diameter = None
+                        accepted_offsets = None
                 if best_diameter is not None:
                     diameters.append(best_diameter)
                     fit_r2_values.append(best_fit_r2)

@@ -570,25 +570,26 @@ def test_assign_diameters_shows_fwhm_raw_volume_and_transverse_rays():
     assert "measured" in group.note
 
 
-def test_the_fwhm_layer_draws_the_measured_diameter_not_the_sampled_ray():
-    """The sampled ray is several vessel widths long on purpose; drawing it
-    made every measurement look too wide -- or, while the ray was being
-    capped short, too narrow. The measured line is what to check by eye."""
-    from haemolynx.gui.results import fwhm_profile_polylines
+def test_the_fwhm_layers_draw_the_sampled_line_and_the_measured_width_apart():
+    """Two things to check by eye: the sampled line should be ~3x the vessel
+    (FWHM needs background on both sides), and the measured width should
+    span the vessel wall to wall. One layer each, so neither hides the other."""
+    from haemolynx.gui.results import FWHM_WIDTHS
 
-    graph = a_graph()
+    graph = a_graph(diameter_um=10.0, diameter_source="measured")
     for _u, _v, _key, data in graph.edges(keys=True, data=True):
         data["fwhm_profile_lines_phys"] = [[[0.0, -15.0, 0.0], [0.0, 15.0, 0.0]]]
         data["fwhm_measured_lines_phys"] = [[[0.0, -5.0, 0.0], [0.0, 5.0, 0.0]]]
-    lines = fwhm_profile_polylines(graph)
-    assert len(lines) == graph.number_of_edges()
-    assert all(np.linalg.norm(line[-1] - line[0]) == pytest.approx(10.0) for line in lines)
+    group = built(graph).stage_finished(
+        "assign_diameters", SimpleNamespace(graph=graph, fwhm_raw=None)
+    )
 
-    # A graph measured before the measured lines existed still draws something.
-    for _u, _v, _key, data in graph.edges(keys=True, data=True):
-        del data["fwhm_measured_lines_phys"]
-    lines = fwhm_profile_polylines(graph)
-    assert all(np.linalg.norm(line[-1] - line[0]) == pytest.approx(30.0) for line in lines)
+    def total_length(name):
+        vectors = spec_named(group, name).data
+        return float(sum(np.linalg.norm(v[1]) for v in vectors)) / graph.number_of_edges()
+
+    assert total_length(FWHM_PROFILES) == pytest.approx(30.0)
+    assert total_length(FWHM_WIDTHS) == pytest.approx(10.0)
 
 
 def test_assign_diameters_note_counts_diameter_sources():

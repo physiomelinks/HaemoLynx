@@ -219,3 +219,73 @@ def test_measure_edge_diameters_uses_the_same_aggregation_helper_as_fwhm():
     assert g_median[0][1][0]["edt_diameter_um"] != pytest.approx(
         g_mean[0][1][0]["edt_diameter_um"]
     )
+
+
+# --- every vessel gets a width -------------------------------------------------------
+
+
+def _short_edge_between_junctions(length):
+    """An edge of *length* um whose both ends are bifurcations (degree 3)."""
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=np.array([10.0, 10.0, 10.0]))
+    graph.add_node(1, pos=np.array([10.0, 10.0, 10.0 + length]))
+    graph.add_edge(
+        0, 1, key=0, length=float(length),
+        voxels=[(10.0, 10.0, 10.0 + x) for x in np.linspace(0.0, length, int(length) + 1)],
+    )
+    for node, x in ((0, 10.0), (1, 10.0 + length)):
+        for k, dz in enumerate((-3.0, 3.0)):
+            other = f"{node}-{k}"
+            graph.add_node(other, pos=np.array([10.0 + dz, 10.0, x]))
+            graph.add_edge(node, other, key=0, length=3.0,
+                           voxels=[(10.0, 10.0, x), (10.0 + dz, 10.0, x)])
+    return graph
+
+
+def test_an_edge_shorter_than_its_junction_zones_is_measured_at_its_midpoint():
+    """Regression: a 3um capillary between two junctions, sampled only at its
+    two ends, lost both to the 10um zones and got no width at all -- 238 of
+    3191 edges on a real run, left to the branch-order table."""
+    mask = _cylinder_mask((20, 20, 30), z=10, y=10, radius=3.0, x0=0, x1=29)
+    graph = _short_edge_between_junctions(3.0)
+
+    summary = measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=mask, voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=2.0, branch_endpoint_exclusion_um=10.0,
+    )
+
+    data = graph[0][1][0]
+    assert (0, 1, 0, "excluded_near_branch") not in summary["edges_skipped"]
+    assert data["edt_midpoint_only"] is True
+    assert data["edt_diameter_um"] == pytest.approx(6.0, abs=0.6)
+
+
+def test_a_centreline_just_off_its_mask_finds_its_own_vessel():
+    """A smoothed or reconnected centreline can run a voxel or two outside its
+    segmentation, where the inscribed radius is 0: it looks round for the
+    vessel instead of reporting no width."""
+    mask = _cylinder_mask((20, 20, 30), z=10, y=10, radius=3.0, x0=0, x1=29)
+    graph = _straight_edge_graph(4, 25, z=10.0, y=14.0)  # 1um outside the r=3 wall
+
+    measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=mask, voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=2.0,
+    )
+
+    data = graph[0][1][0]
+    assert data["edt_off_centreline_samples"] > 0
+    assert data["edt_diameter_um"] == pytest.approx(6.0, abs=0.6)
+
+
+def test_a_centreline_far_from_any_vessel_still_gets_no_width():
+    """The search is local: a centreline 6um from the nearest vessel is not
+    that vessel, and must not borrow its width."""
+    mask = _cylinder_mask((30, 30, 30), z=10, y=10, radius=3.0, x0=0, x1=29)
+    graph = _straight_edge_graph(4, 25, z=10.0, y=19.0)  # 6um outside the wall
+
+    summary = measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=mask, voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=2.0,
+    )
+
+    assert summary["edges_skipped"][0][3] == "edt_failed"
