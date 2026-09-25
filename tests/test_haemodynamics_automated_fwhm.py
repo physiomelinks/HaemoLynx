@@ -353,28 +353,28 @@ def _cylinder_saturated_volume(
 
 def test_measure_edge_diameters_rejects_saturated_synthetic_vessel(tmp_path: Path):
     """A flat-topped/saturated profile is a real risk for the parametric
-    Gaussian fit's own R² (a heavily-overparameterized fit can still score
+    Gaussian fit's own RÂ² (a heavily-overparameterized fit can still score
     deceptively well against a rounded plateau) -- the plateau-shape gate
     is independent of that fit and should measurably reduce how much of
     this saturated fixture gets accepted, whether that means fewer per-edge
     samples or the edge failing outright.
 
-    The edge runs 36um (well past ``nonlocal_same_edge_arc_separation_um``'s
-    own 6um default) so ``cap_half_extent_by_nonlocal_same_edge_distance``
-    does not truncate the transverse sampling window down near the
-    vessel's own radius before the profile ever reaches background --
-    a short test edge (this fixture's original 16um) triggers exactly that
-    cap and starves every gate of a profile wide enough to judge at all.
+    The disc is 10um across on a 1um grid: trilinear sampling softens its
+    edges over about a voxel, and a 6um disc (this fixture's previous size)
+    comes out with an 80%/50% width ratio of only ~0.80 -- under the 0.85
+    limit, so it is not a plateau the gate should catch at all. It used to
+    look rejected only because the first-ray cap (since fixed) truncated
+    every profile to ~5um, handing the gate a distorted shape.
     ``reject_samples_with_center_offset``/``reject_samples_with_low_fit_r2``
     are disabled so this isolates the plateau-shape gate itself, matching
     what this test is actually about -- left at their defaults, the
-    Gaussian fit's own R² gate (not the plateau gate) rejects everything
+    Gaussian fit's own RÂ² gate (not the plateau gate) rejects everything
     regardless of ``reject_samples_with_plateau_shape``, which is what
     made the "ungated" sanity check below fail before this fixture was
     recalibrated.
     """
-    nz, ny, nx_dim = 15, 15, 41
-    raw = _cylinder_saturated_volume(nz, ny, nx_dim, radius=3.0)
+    nz, ny, nx_dim = 15, 41, 41
+    raw = _cylinder_saturated_volume(nz, ny, nx_dim, radius=5.0)
     raw_path = tmp_path / "raw.tif"
     tifffile.imwrite(str(raw_path), raw)
     zc, yc = (nz - 1) / 2.0, (ny - 1) / 2.0
@@ -396,6 +396,9 @@ def test_measure_edge_diameters_rejects_saturated_synthetic_vessel(tmp_path: Pat
         diameter_guess_um=2.0,
         reject_samples_with_center_offset=False,
         reject_samples_with_low_fit_r2=False,
+        # The gate guards the Gaussian fit, which a plateau can fool; the
+        # default blurred-lumen model expects a plateau and fits it properly.
+        profile_model="gaussian",
     )
     summary_gated = automated.measure_edge_diameters_fwhm_from_raw_tiff(
         _build_graph(), reject_samples_with_plateau_shape=True, **common
@@ -959,7 +962,7 @@ def test_transverse_widening_loop_converges_beyond_two_widening_passes(
         calls["n"] += 1
         return sequence[idx], 0.0, 1.0
 
-    monkeypatch.setattr(automated, "_fwhm_gaussian_fit_with_diagnostics", fake_fit)
+    monkeypatch.setattr(automated, "_lumen_fwhm_fit_with_diagnostics", fake_fit)
 
     common = dict(
         raw_tiff_path=raw_path,
@@ -1021,7 +1024,7 @@ def test_transverse_widening_keeps_the_last_good_measurement_if_a_wider_pass_fai
             return 5.0, 0.0, 1.0  # accepted
         return None, None, None  # every wider pass's own fit fails
 
-    monkeypatch.setattr(automated, "_fwhm_gaussian_fit_with_diagnostics", fake_fit)
+    monkeypatch.setattr(automated, "_lumen_fwhm_fit_with_diagnostics", fake_fit)
 
     summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
         _build_graph(),
@@ -1083,7 +1086,7 @@ def test_transverse_widening_bisects_towards_a_failing_wider_pass_instead_of_giv
         return value, 0.0, 1.0
 
     calls = {"n": 0}
-    monkeypatch.setattr(automated, "_fwhm_gaussian_fit_with_diagnostics", fake_fit)
+    monkeypatch.setattr(automated, "_lumen_fwhm_fit_with_diagnostics", fake_fit)
 
     summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
         _build_graph(),

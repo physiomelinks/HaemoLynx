@@ -3965,10 +3965,27 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="fwhm_profile_model",
+            kind="choice",
+            default="blurred_lumen",
+            help=(
+                "Fit each transverse profile as a filled lumen seen through the microscope's "
+                "blur (its half-maximum width is the lumen width), or as a Gaussian, which "
+                "reads a wide plasma-filled vessel about 10% narrow"
+            ),
+            section=_FWHM,
+            choices=("blurred_lumen", "gaussian"),
+            requires=("use_fwhm_edge_diameters",),
+            advanced=True,
+        ),
+        Setting(
             name="fwhm_reject_samples_with_plateau_shape",
             kind="bool",
-            default=True,
-            help="Discard samples whose transverse profile looks like a flat plateau rather than a peak",
+            # Off: a plasma-filled lumen *is* a plateau, so this discarded the
+            # best-measured samples of every wide vessel. For a saturated or
+            # probability-map input, where a flat top is a warning sign.
+            default=False,
+            help="Discard samples whose transverse profile looks like a flat plateau rather than a peak (a saturated detector or a probability map); plasma-filled lumens are plateaus, so leave off for those",
             section=_FWHM,
             requires=("use_fwhm_edge_diameters",),
             advanced=True,

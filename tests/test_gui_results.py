@@ -570,6 +570,27 @@ def test_assign_diameters_shows_fwhm_raw_volume_and_transverse_rays():
     assert "measured" in group.note
 
 
+def test_the_fwhm_layer_draws_the_measured_diameter_not_the_sampled_ray():
+    """The sampled ray is several vessel widths long on purpose; drawing it
+    made every measurement look too wide -- or, while the ray was being
+    capped short, too narrow. The measured line is what to check by eye."""
+    from haemolynx.gui.results import fwhm_profile_polylines
+
+    graph = a_graph()
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["fwhm_profile_lines_phys"] = [[[0.0, -15.0, 0.0], [0.0, 15.0, 0.0]]]
+        data["fwhm_measured_lines_phys"] = [[[0.0, -5.0, 0.0], [0.0, 5.0, 0.0]]]
+    lines = fwhm_profile_polylines(graph)
+    assert len(lines) == graph.number_of_edges()
+    assert all(np.linalg.norm(line[-1] - line[0]) == pytest.approx(10.0) for line in lines)
+
+    # A graph measured before the measured lines existed still draws something.
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        del data["fwhm_measured_lines_phys"]
+    lines = fwhm_profile_polylines(graph)
+    assert all(np.linalg.norm(line[-1] - line[0]) == pytest.approx(30.0) for line in lines)
+
+
 def test_assign_diameters_note_counts_diameter_sources():
     graph = a_graph(diameter_um=6.0, diameter_source="table", branch_order="B01")
     group = built(graph).stage_finished("assign_diameters", SimpleNamespace(graph=graph))

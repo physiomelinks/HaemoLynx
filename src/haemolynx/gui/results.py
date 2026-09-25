@@ -814,10 +814,21 @@ def polylines_to_vectors(
 
 
 def fwhm_profile_polylines(graph: Any) -> list[np.ndarray]:
-    """Accepted FWHM transverse rays stored on edges, as physical polylines."""
+    """One line per accepted FWHM sample, spanning the diameter measured there.
+
+    ``fwhm_measured_lines_phys`` -- across the vessel, exactly as wide as the
+    measurement and centred on the fitted centre -- so a line sitting inside
+    or overhanging the vessel on screen is a measurement to distrust. Not the
+    sampled ray (``fwhm_profile_lines_phys``), which is deliberately several
+    times wider than the vessel; a graph measured before the measured lines
+    existed falls back to those.
+    """
     lines: list[np.ndarray] = []
     for _u, _v, _key, data in _iter_edges(graph):
-        for line in data.get("fwhm_profile_lines_phys") or ():
+        stored = data.get("fwhm_measured_lines_phys")
+        if stored is None:
+            stored = data.get("fwhm_profile_lines_phys")
+        for line in stored or ():
             points = np.asarray(line, dtype=float)
             if points.ndim != 2 or len(points) < 2:
                 continue

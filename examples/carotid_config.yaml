@@ -708,7 +708,9 @@ fwhm_diameter_measurement:
   fwhm_reject_samples_with_low_fit_r2: true
   # Keep a sample only when its transverse Gaussian fit reaches this R-squared  [range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_low_fit_r2]
   fwhm_min_fit_r2: 0.85
-  # Discard samples whose transverse profile looks like a flat plateau rather than a peak  [needs use_fwhm_edge_diameters]
+  # Fit each transverse profile as a filled lumen seen through the microscope's blur (its half-maximum width is the lumen width), or as a Gaussian, which reads a wide plasma-filled vessel about 10% narrow  [one of: blurred_lumen, gaussian; needs use_fwhm_edge_diameters]
+  fwhm_profile_model: blurred_lumen
+  # Discard samples whose transverse profile looks like a flat plateau rather than a peak (a saturated detector or a probability map); plasma-filled lumens are plateaus, so leave off for those  [needs use_fwhm_edge_diameters]
   fwhm_reject_samples_with_plateau_shape: true
   # Reject a sample once its 80%-height width is at least this fraction of its half-max width  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_plateau_shape]
   fwhm_max_plateau_shape_ratio: 0.85

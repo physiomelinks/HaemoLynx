@@ -23,7 +23,8 @@ import numpy as np
 import networkx as nx
 import tifffile
 from scipy.ndimage import map_coordinates
-from scipy.optimize import curve_fit
+from scipy.optimize import brentq, curve_fit
+from scipy.special import erf
 
 from haemolynx.io.axis_order import (
     CANONICAL_AXIS_ORDER,
@@ -708,6 +709,181 @@ def _fwhm_gaussian_fit_with_diagnostics(
     return fwhm, x0_fit, r2
 
 
+#: Which model a transverse profile is fitted with -- see
+#: :func:`_lumen_fwhm_fit_with_diagnostics` and
+#: :func:`_fwhm_gaussian_fit_with_diagnostics`.
+ProfileModel = Literal["blurred_lumen", "gaussian"]
+
+
+def _blurred_lumen_1d(
+    x: np.ndarray,
+    baseline: float,
+    amplitude: float,
+    x0: float,
+    width: float,
+    blur_sigma: float,
+) -> np.ndarray:
+    """A uniformly filled lumen of *width* seen through a Gaussian blur of
+    *blur_sigma*: a flat top with soft edges, whose edges sit at half its
+    height when the lumen is wide against the blur.
+
+    *amplitude* is the profile's peak height above *baseline* -- the plateau
+    for a wide lumen, the top of the blur for a narrow one -- rather than the
+    unblurred lumen's own height. That keeps the fit well posed down to a
+    zero width, which is exactly a Gaussian of *blur_sigma*: parameterised by
+    the unblurred height instead, a sub-resolution vessel sends the width to
+    zero and the height to infinity and the fit never converges.
+    """
+    sig = max(float(blur_sigma), 1e-15)
+    half = 0.5 * max(float(width), 0.0)
+    root2s = np.sqrt(2.0) * sig
+    offset = np.asarray(x, dtype=float) - float(x0)
+    peak = float(erf(half / root2s))
+    if peak < 1e-8:
+        return baseline + amplitude * np.exp(-0.5 * (offset / sig) ** 2)
+    return baseline + amplitude * (
+        0.5 * (erf((offset + half) / root2s) - erf((offset - half) / root2s)) / peak
+    )
+
+
+def _blurred_lumen_fwhm(width: float, blur_sigma: float) -> float:
+    """Full width at half maximum of :func:`_blurred_lumen_1d`.
+
+    The lumen width itself when the vessel is wide against the blur, the
+    blur's own Gaussian FWHM when it is far narrower, and a smooth transition
+    between -- so it is the same quantity the Gaussian fit measured for a
+    sub-resolution capillary, without the Gaussian's bias on a wide one.
+    """
+    w = max(float(width), 0.0)
+    s = max(float(blur_sigma), 1e-15)
+    root2s = np.sqrt(2.0) * s
+    peak = erf(w / (2.0 * root2s))
+    if peak <= 0.0:
+        return float(_GAUSSIAN_FWHM_FROM_SIGMA * s)
+
+    def excess(h: float) -> float:
+        value = 0.5 * (erf((h + 0.5 * w) / root2s) - erf((h - 0.5 * w) / root2s))
+        return value - 0.5 * peak
+
+    hi = 0.5 * w + 6.0 * s
+    try:
+        half_width = brentq(excess, 0.0, hi, xtol=1e-9 * max(hi, 1.0))
+    except ValueError:
+        return float(max(w, _GAUSSIAN_FWHM_FROM_SIGMA * s))
+    return float(2.0 * half_width)
+
+
+def _lumen_fwhm_fit_with_diagnostics(
+    positions_um: np.ndarray,
+    intensities: np.ndarray,
+    *,
+    min_points: int = 5,
+    profile_baseline_mode: Literal["wings", "percentile"] = "wings",
+    profile_baseline_wing_fraction: float = 0.2,
+    constrain_fitted_baseline: bool = False,
+    baseline_constraint_half_width_ptp: float = 0.35,
+) -> tuple[float | None, float | None, float | None]:
+    """``(fwhm_um, fitted_center_um, fit_r2)`` from a blurred-lumen fit.
+
+    A plasma-labelled vessel is a filled column, not a Gaussian: across a
+    wide one the profile is a flat top with blurred edges. A Gaussian fitted
+    to that shape reports a width about 10% narrower than the column, and
+    the flat top cannot fit it well enough to pass the R² gate at all on a
+    large vessel. This fits :func:`_blurred_lumen_1d` instead and reports
+    the full width at half maximum of the fitted curve (see
+    :func:`_blurred_lumen_fwhm`) -- the lumen width for a wide vessel, the
+    Gaussian FWHM for a sub-resolution one. Same arguments, baseline anchor
+    and return shape as :func:`_fwhm_gaussian_fit_with_diagnostics`, so the
+    two are interchangeable in the sampling loop.
+    """
+    x = np.asarray(positions_um, dtype=float).ravel()
+    y = np.asarray(intensities, dtype=float).ravel()
+    if x.size != y.size or x.size < max(2, int(min_points)):
+        return None, None, None
+    mask = np.isfinite(x) & np.isfinite(y)
+    x = x[mask]
+    y = y[mask]
+    if x.size < max(2, int(min_points)):
+        return None, None, None
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+    span = float(np.ptp(x))
+    if span <= 0 or not np.isfinite(span):
+        return None, None, None
+    dx = float(np.median(np.abs(np.diff(x)))) if x.size > 1 else span
+    sigma_min = max(0.25 * dx, span * 1e-6, 1e-9)
+    y_min, y_max = float(np.min(y)), float(np.max(y))
+    y_ptp = max(y_max - y_min, 1e-12)
+    if profile_baseline_mode == "wings":
+        try:
+            b_anchor = robust_baseline_from_profile_wings(
+                x, y, wing_fraction=profile_baseline_wing_fraction
+            )
+        except ValueError:
+            b_anchor = float(np.percentile(y, 10))
+    elif profile_baseline_mode == "percentile":
+        b_anchor = float(np.percentile(y, 10))
+    else:
+        raise ValueError(
+            f"Unknown profile_baseline_mode={profile_baseline_mode!r}; "
+            "use 'wings' or 'percentile'."
+        )
+    b0 = min(max(b_anchor, y_min - y_ptp), y_max - 0.01 * y_ptp)
+    # The top: the peak of a lightly smoothed copy, since noise inflates the
+    # raw maximum -- not a percentile of the whole window, which is mostly
+    # background by design (the window spans several vessel widths).
+    window = max(1, int(round(_CLIP_DECISION_SMOOTHING_WINDOW_UM / max(dx, 1e-9))))
+    smoothed = (
+        np.convolve(y, np.ones(window) / window, mode="same") if 1 < window < y.size else y
+    )
+    top = float(np.max(smoothed))
+    amp0 = max(top - b0, 0.1 * y_ptp, 1e-9)
+    # Where the profile stands above half height: its extent is the width
+    # guess, its middle the centre guess -- both far better starts for a flat
+    # top than the argmax a Gaussian uses.
+    above = np.flatnonzero(y >= b0 + 0.5 * amp0)
+    if above.size:
+        w0 = max(float(x[above[-1]] - x[above[0]]), 2.0 * dx)
+        x0_guess = 0.5 * float(x[above[0]] + x[above[-1]])
+    else:
+        w0 = span / 3.0
+        x0_guess = float(x[int(np.argmax(y))])
+    s0 = max(2.0 * dx, 0.1 * w0, sigma_min)
+    half_w = float(baseline_constraint_half_width_ptp) * y_ptp
+    if constrain_fitted_baseline and half_w > 0:
+        b_lo = max(y_min - 0.5 * y_ptp, b_anchor - half_w)
+        b_hi = min(y_max + 0.5 * y_ptp, b_anchor + half_w)
+        if b_lo >= b_hi:
+            b_lo, b_hi = y_min - 2.0 * y_ptp, y_max + 2.0 * y_ptp
+    else:
+        b_lo = y_min - 5.0 * y_ptp
+        b_hi = y_max + 5.0 * y_ptp
+    lo = np.array([b_lo, 1e-12, np.min(x) - span, 0.0, sigma_min], dtype=float)
+    hi = np.array(
+        [b_hi, max(y_max * 20.0, amp0 * 1e3), np.max(x) + span, span, 0.5 * span],
+        dtype=float,
+    )
+    p0 = np.clip(np.array([b0, amp0, x0_guess, w0, s0], dtype=float), lo, hi)
+    try:
+        popt, _ = curve_fit(
+            _blurred_lumen_1d, x, y, p0=p0, bounds=(lo, hi), maxfev=50000
+        )
+    except (RuntimeError, ValueError):
+        return None, None, None
+    baseline_fit, amplitude_fit, x0_fit, width_fit, sigma_fit = (float(v) for v in popt)
+    if not (np.isfinite(sigma_fit) and sigma_fit > 0 and amplitude_fit > 0):
+        return None, None, None
+    y_hat = _blurred_lumen_1d(x, baseline_fit, amplitude_fit, x0_fit, width_fit, sigma_fit)
+    ss_res = float(np.sum((y - y_hat) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 1.0
+    fwhm = _blurred_lumen_fwhm(width_fit, sigma_fit)
+    if not (np.isfinite(fwhm) and fwhm > 0):
+        return None, None, None
+    return fwhm, x0_fit, r2
+
+
 #: Physical width of the moving-average window used only to decide where a
 #: transverse profile's central lobe ends (see
 #: :func:`_clip_profile_to_central_lobe`), never to the samples actually
@@ -739,6 +915,14 @@ MAX_EXCLUSION_FRACTION_OF_EDGE_LENGTH = 0.3
 #: perfectly good intermediate width in between that the original
 #: all-or-nothing retry never tried.
 _MAX_WIDTH_BISECTIONS = 3
+
+#: A centreline point counts as the vessel folding back on itself -- and so
+#: caps a sample's first transverse ray -- only when it is closer in space
+#: than this fraction of its distance along the arc. A straight or gently
+#: curving vessel keeps its chord close to its arc length (a semicircle's
+#: chord is ~0.64 of its arc), so 0.5 leaves those alone and still catches a
+#: hairpin or a zig-zag, whose far arm really is close by.
+_FOLDED_BACK_CHORD_FRACTION = 0.5
 
 
 def _clip_profile_to_central_lobe(
@@ -1072,11 +1256,12 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     max_transverse_widen_passes: int = 5,
     reject_samples_with_low_fit_r2: bool = True,
     min_fit_r2: float = 0.85,
-    reject_samples_with_plateau_shape: bool = True,
+    reject_samples_with_plateau_shape: bool = False,
     max_plateau_shape_ratio: float = 0.85,
     transverse_sampling_mode: TransverseSamplingMode = "in_plane_yx",
     warn_out_of_plane_tangent_fraction: float = 0.3,
     edge_diameter_aggregation: Literal["median", "mean"] = "median",
+    profile_model: ProfileModel = "blurred_lumen",
     axis_order: str = CANONICAL_AXIS_ORDER,
     raw_volume: np.ndarray | None = None,
     use_memmap: bool = False,
@@ -1236,7 +1421,9 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         If True, discard samples whose profile *shape* -- not the parametric
         fit's own R² -- looks like a flat plateau rather than a peak (e.g. a
         saturated detector, or a probability/segmentation field mistakenly
-        used as the raw intensity). A heavily-overparameterized Gaussian fit
+        used as the raw intensity). Off by default: a plasma-filled lumen is
+        itself a plateau, so this discarded the best-measured samples of
+        every wide vessel. A heavily-overparameterized Gaussian fit
         can still score a deceptively high R² against a rounded plateau, so
         this checks the sampled profile directly. See
         :func:`_profile_plateau_shape_ratio`.
@@ -1264,6 +1451,22 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         How to collapse one edge's accepted per-sample diameters into one
         value -- ``median`` (default, resists a single outlier sample) or
         ``mean`` (the previous behaviour). See :func:`_aggregate_edge_diameter`.
+    profile_model :
+        ``"blurred_lumen"`` (default): fit each profile as a filled lumen
+        seen through a blur and report that curve's full width at half
+        maximum -- the lumen width for a wide vessel, the Gaussian FWHM for a
+        sub-resolution one (see :func:`_lumen_fwhm_fit_with_diagnostics`).
+        ``"gaussian"``: the previous Gaussian fit, which reads a wide
+        plasma-filled vessel about 10% narrow and often cannot fit its flat
+        top at all.
+
+    With *store_profile_debug*, each accepted sample also records
+    ``data["fwhm_measured_lines_phys"]``: a two-point line across the vessel
+    spanning exactly the diameter measured there, centred on the fitted
+    centre -- what the viewer draws, so a measurement can be checked against
+    the vessel by eye. ``fwhm_profile_lines_phys`` is the whole sampled ray,
+    which is deliberately wider than the vessel (see
+    *min_total_extent_multiplier*).
 
     Every edge this function iterates gets ``data["fwhm_status"]`` written:
     ``"measured"`` on success, ``f"failed:{reason}"`` on any of the skip
@@ -1276,6 +1479,14 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     if profile_baseline_mode not in ("wings", "percentile"):
         raise ValueError(
             f"profile_baseline_mode must be 'wings' or 'percentile', got {profile_baseline_mode!r}."
+        )
+    if profile_model == "blurred_lumen":
+        fit_profile = _lumen_fwhm_fit_with_diagnostics
+    elif profile_model == "gaussian":
+        fit_profile = _fwhm_gaussian_fit_with_diagnostics
+    else:
+        raise ValueError(
+            f"profile_model must be 'blurred_lumen' or 'gaussian', got {profile_model!r}."
         )
 
     # Under use_memmap the raw volume and the label volume live on disk; a
@@ -1458,6 +1669,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             fit_r2_values: list[float | None] = []
             profile_lines_phys: list[np.ndarray] = []
             profile_anchors_phys: list[np.ndarray] = []
+            measured_lines_phys: list[np.ndarray] = []
             max_out_of_plane_fraction = 0.0
             for s0, center in zip(targets, pts):
                 if u_is_branch and float(s0) < branch_excl_here:
@@ -1488,29 +1700,37 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     arc_sep = max(float(nonlocal_same_edge_arc_separation_um), local_arc_window)
                     ref_pts = dense_poly if dense_poly is not None else poly
                     ref_s = dense_s if dense_s is not None else s
-                    nonlocal_mask = np.abs(ref_s - float(s0)) >= arc_sep
-                    if not np.any(nonlocal_mask):
-                        return half_extent
+                    arc_apart = np.abs(ref_s - float(s0))
                     center_arr = np.asarray(center, dtype=float)
-                    # Conservative cap using the closer of 3D and in-plane (y-x) nonlocal distances.
-                    d_nonlocal_3d = float(
-                        np.min(np.linalg.norm(ref_pts[nonlocal_mask] - center_arr, axis=1))
+                    # Conservative cap using the closer of 3D and in-plane (y-x) distances.
+                    apart = np.minimum(
+                        np.linalg.norm(ref_pts - center_arr, axis=1),
+                        np.linalg.norm(ref_pts[:, 1:3] - center_arr[1:3], axis=1),
                     )
-                    d_nonlocal_yx = float(
-                        np.min(np.linalg.norm(ref_pts[nonlocal_mask][:, 1:3] - center_arr[1:3], axis=1))
+                    # Only where the centreline folds back on itself: a point
+                    # far along the arc but close in space. Every point at
+                    # least arc_sep along a *straight* vessel is still about
+                    # arc_sep away, so counting those capped every vessel's
+                    # first ray at 2 x factor x arc_sep -- ~5um with the
+                    # defaults, inside the lumen of anything wider -- and
+                    # read a 25um vessel as 3.5um.
+                    folded = (arc_apart >= arc_sep) & (
+                        apart < _FOLDED_BACK_CHORD_FRACTION * arc_apart
                     )
-                    d_nonlocal = min(d_nonlocal_3d, d_nonlocal_yx)
+                    if not np.any(folded):
+                        return half_extent
+                    d_nonlocal = float(np.min(apart[folded]))
                     if not (np.isfinite(d_nonlocal) and d_nonlocal > 0):
                         return half_extent
                     return min(half_extent, float(nonlocal_same_edge_half_extent_factor) * d_nonlocal)
 
                 def _sample_and_fit(
                     half_extent: float, local_arc_window: float, diameter_for_gate: float
-                ) -> tuple[float | None, np.ndarray | None, float | None]:
+                ) -> tuple[float | None, np.ndarray | None, float | None, float | None]:
                     """One sample-clip-fit-gate pass. Returns (diameter, offsets,
-                    fit_r2) -- diameter is None if the fit itself failed or any
-                    gate rejected it, in which case offsets and fit_r2 are also
-                    None."""
+                    fit_r2, fitted_centre) -- diameter is None if the fit itself
+                    failed or any gate rejected it, in which case the rest are
+                    also None."""
                     pos, prof = _sample_transverse_profile(
                         raw,
                         labels,
@@ -1539,7 +1759,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                         if clip_profile_to_single_vessel
                         else (pos, prof)
                     )
-                    d, x0, r2 = _fwhm_gaussian_fit_with_diagnostics(
+                    d, x0, r2 = fit_profile(
                         pos_fit,
                         prof_fit,
                         profile_baseline_mode=profile_baseline_mode,
@@ -1548,7 +1768,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                         baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
                     )
                     if d is None:
-                        return None, None, None
+                        return None, None, None, None
                     # The larger of the pre-fit guess and this pass's own fitted
                     # diameter: on an edge with no per-edge diameter guess (or a
                     # guess much narrower than reality), the first pass's guess
@@ -1564,12 +1784,12 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                         max_fit_center_offset_fraction_of_diameter=max_fit_center_offset_fraction_of_diameter,
                     )
                     if reject_samples_with_center_offset and x0 is not None and abs(float(x0)) > max_offset:
-                        return None, None, None
+                        return None, None, None, None
                     if reject_samples_with_low_fit_r2 and r2 is not None and float(r2) < float(min_fit_r2):
-                        return None, None, None
+                        return None, None, None, None
                     if not _passes_plateau_gate(pos_fit, prof_fit):
-                        return None, None, None
-                    return d, pos, r2
+                        return None, None, None, None
+                    return d, pos, r2, (0.0 if x0 is None else float(x0))
 
                 # Widen the transverse window until a pass's own fit no longer
                 # asks for more room, up to max_transverse_widen_passes -- an
@@ -1592,10 +1812,13 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 )
                 best_diameter: float | None = None
                 best_fit_r2: float | None = None
+                best_centre: float | None = None
                 accepted_offsets: np.ndarray | None = None
                 best_half_extent: float | None = None
                 for _pass in range(max(1, int(max_transverse_widen_passes)) + 1):
-                    d, pos, fit_r2 = _sample_and_fit(half_extent, local_arc_window, diameter_estimate)
+                    d, pos, fit_r2, x0 = _sample_and_fit(
+                        half_extent, local_arc_window, diameter_estimate
+                    )
                     if d is None and best_half_extent is not None:
                         lo, hi = best_half_extent, half_extent
                         for _bisection in range(_MAX_WIDTH_BISECTIONS):
@@ -1603,17 +1826,20 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                             if mid - lo <= float(transverse_profile_step_um):
                                 break
                             mid_window = _local_arc_window(diameter_estimate)
-                            d_mid, pos_mid, r2_mid = _sample_and_fit(mid, mid_window, diameter_estimate)
+                            d_mid, pos_mid, r2_mid, x0_mid = _sample_and_fit(
+                                mid, mid_window, diameter_estimate
+                            )
                             if d_mid is None:
                                 hi = mid
                                 continue
-                            d, pos, fit_r2 = d_mid, pos_mid, r2_mid
+                            d, pos, fit_r2, x0 = d_mid, pos_mid, r2_mid, x0_mid
                             half_extent, local_arc_window = mid, mid_window
                             lo = mid
                     if d is None:
                         break
                     best_diameter = d
                     best_fit_r2 = fit_r2
+                    best_centre = x0
                     accepted_offsets = pos
                     best_half_extent = half_extent
                     diameter_estimate = d
@@ -1637,6 +1863,15 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                         np.stack([c + float(o) * n_hat for o in accepted_offsets], axis=0)
                     )
                     profile_anchors_phys.append(c.copy())
+                    if best_diameter is not None:
+                        middle = 0.0 if best_centre is None else float(best_centre)
+                        half = 0.5 * float(best_diameter)
+                        measured_lines_phys.append(
+                            np.stack(
+                                [c + (middle - half) * n_hat, c + (middle + half) * n_hat],
+                                axis=0,
+                            )
+                        )
 
             if not diameters:
                 reason = "fwhm_failed"
@@ -1667,6 +1902,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             if store_profile_debug:
                 data["fwhm_profile_lines_phys"] = profile_lines_phys
                 data["fwhm_profile_anchors_phys"] = profile_anchors_phys
+                data["fwhm_measured_lines_phys"] = measured_lines_phys
             summary["edges_measured"] += 1
             summary["per_edge"].append(
                 {
