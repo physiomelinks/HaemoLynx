@@ -97,9 +97,18 @@ def test_the_multi_species_solver_uses_the_configured_arterial_po2():
     assert not np.allclose(_multi(_MultiConfig()), _multi(_MultiConfig(po2_arterial_mmHg=60.0)))
 
 
-@pytest.mark.parametrize("field", ["po2_arterial_mmHg", "systemic_hematocrit"])
+@pytest.mark.parametrize("field", [
+    "po2_arterial_mmHg", "systemic_hematocrit",
+    # Loose end A2: the rest of Tier 3's fields were getattr fallbacks too.
+    "M_max", "k_reduce", "respiratory_quotient", "hco3_tissue", "permeability_o2_cm_s",
+    "permeability_co2_cm_s", "pco2_arterial", "picard_max_iterations", "picard_tolerance",
+    "sigma_diff_co2",
+])
 def test_a_config_without_the_field_is_refused_not_defaulted(field):
-    """The multi-species solver read both through getattr with a default."""
+    """The multi-species solver read every one of these through getattr with a default.
+
+    The sharpest case was M_max, whose fallback of 0.05 is 10x PerfusionConfig's 0.005.
+    """
 
     class Partial:
         pass
@@ -110,6 +119,15 @@ def test_a_config_without_the_field_is_refused_not_defaulted(field):
             setattr(config, name, value)
     with pytest.raises(AttributeError, match=field):
         _multi(config)
+
+
+def test_the_pipeline_reads_the_tier_switch_without_a_default():
+    """Which perfusion tier runs was chosen through getattr(..., False) as well."""
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent / "examples" / "carotid_image_to_model.py").read_text()
+    assert "getattr(perf_config, 'use_multi_species_model'" not in source
+    assert "perf_config.use_multi_species_model" in source
 
 
 def test_the_h2_settings_match_the_values_that_were_hard_coded():

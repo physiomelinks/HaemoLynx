@@ -1418,7 +1418,7 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         A, q_total, s_incoming = haemodynamics.build_adr_matrix(grid, cell_mapping, perf_config)
         
         # 4. Solve the Non-Linear Steady-State Perfusion field
-        if getattr(perf_config, 'use_multi_species_model', False):
+        if perf_config.use_multi_species_model:
             print("  Running Fully Coupled Multi-Species (O2, CO2, pH) Perfusion Solver...")
             PO2_steady, PCO2_steady, pH_steady = haemodynamics.solve_multi_species_perfusion(grid, G, starting_nodes, cell_mapping, perf_config)
             mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)

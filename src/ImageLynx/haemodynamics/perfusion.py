@@ -568,19 +568,21 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     PCO2_tissue = np.full(N, 40.0, dtype=np.float64) # mmHg (baseline arterial)
     pH_tissue = np.full(N, 7.4, dtype=np.float64)
 
-    M_max = getattr(perf_config, 'M_max', 0.05)
-    k_reduce = getattr(perf_config, 'k_reduce', 0.1)
-    RQ = getattr(perf_config, 'respiratory_quotient', 0.82)
-    hco3_tissue = getattr(perf_config, 'hco3_tissue', 24.0)
+    # Every field is read without a default. These were getattr fallbacks, and the M_max one
+    # was 0.05 against PerfusionConfig's 0.005, so a config that lacked it ran at 10x the rate.
+    M_max = perf_config.M_max
+    k_reduce = perf_config.k_reduce
+    RQ = perf_config.respiratory_quotient
+    hco3_tissue = perf_config.hco3_tissue
 
     V_cell = grid.cell_volume
-    P_perm_o2 = getattr(perf_config, 'permeability_o2_cm_s', 1.0e-4) * 1e4 # um/s
-    P_perm_co2 = getattr(perf_config, 'permeability_co2_cm_s', 2.0e-3) * 1e4 # um/s
+    P_perm_o2 = perf_config.permeability_o2_cm_s * 1e4 # um/s
+    P_perm_co2 = perf_config.permeability_co2_cm_s * 1e4 # um/s
     po2_art = perf_config.po2_arterial_mmHg
-    pco2_art = getattr(perf_config, 'pco2_arterial', 40.0)
+    pco2_art = perf_config.pco2_arterial
     systemic_h = perf_config.systemic_hematocrit
-    max_iter = getattr(perf_config, 'picard_max_iterations', 50)
-    tolerance = getattr(perf_config, 'picard_tolerance', 1e-4)
+    max_iter = perf_config.picard_max_iterations
+    tolerance = perf_config.picard_tolerance
 
     logger.info("Initializing Multi-Species 1D-3D Picard Loop...")
 
@@ -646,7 +648,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         return A
 
     A_o2 = build_diffusion_matrix(perf_config.sigma_diff, alpha_o2)
-    A_co2 = build_diffusion_matrix(getattr(perf_config, 'sigma_diff_co2', 3.0e-8), alpha_co2)
+    A_co2 = build_diffusion_matrix(perf_config.sigma_diff_co2, alpha_co2)
 
     area_total = np.zeros(N)
     for cell_idx, vessels in cell_to_vessels.items():
