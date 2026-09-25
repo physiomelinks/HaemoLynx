@@ -548,12 +548,25 @@ def test_multi_species_0d_fick_mass_balance():
     alpha_co2 = 0.03
     
     # 2. Derive Exact Analytical Targets using Fick's Principle
-    # Because Q is massive, Blood pressures don't drop.
+    # Because Q is massive, blood content doesn't drop.
     # Steady State: Flux_into_tissue = Metabolism_at_sink
     # P_perm * Area * alpha * (PO2_blood - PO2_tissue) = M_max * V_cell
-    po2_analytical_tissue = po2_art - (m_max * v_cell) / (p_perm_o2_um_s * area * alpha_o2)
-    pco2_analytical_tissue = pco2_art + (m_co2 * v_cell) / (p_perm_co2_um_s * area * alpha_co2)
-    analytical_ph = calculate_ph_from_pco2(pco2_analytical_tissue, hco3)
+    # The wall flux is taken at the blood's outlet pressure (open item 21), read off the O2 curve
+    # at the cell's tissue pH (Bohr) and the CO2 curve at that PO2 (Haldane). The content is
+    # arterial, but the acidic cell puts blood PO2 about 1 mmHg above 100, so iterate on pH.
+    from scipy.optimize import brentq
+    c_o2_art = calculate_blood_oxygen_content(po2_art, h_d, pco2_art, ph_art)
+    c_co2_art = calculate_blood_co2_content(pco2_art, h_d, po2_art)
+    analytical_ph = ph_art
+    for _ in range(100):
+        po2_blood = brentq(lambda p: calculate_blood_oxygen_content(p, h_d, pco2_art, analytical_ph) - c_o2_art, 0.0, 150.0, xtol=1e-12)
+        pco2_blood = brentq(lambda p: calculate_blood_co2_content(p, h_d, po2_blood) - c_co2_art, 0.0, 150.0, xtol=1e-12)
+        pco2_analytical_tissue = pco2_blood + (m_co2 * v_cell) / (p_perm_co2_um_s * area * alpha_co2)
+        ph_new = calculate_ph_from_pco2(pco2_analytical_tissue, hco3)
+        if abs(ph_new - analytical_ph) < 1e-13:
+            break
+        analytical_ph = ph_new
+    po2_analytical_tissue = po2_blood - (m_max * v_cell) / (p_perm_o2_um_s * area * alpha_o2)
     
     analytical_po2 = po2_analytical_tissue
     analytical_pco2 = pco2_analytical_tissue

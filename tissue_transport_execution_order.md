@@ -67,9 +67,9 @@ flowchart TD
     L5{{"for each out-edge of the node"}}
     P7["E47 · invert C_mix to PO2 and PCO2<br/>Brent root find"]
     L6{{"for each grid cell the edge passes through"}}
-    P8["E48 · phi_O2 transmural flux<br/>E49 · phi_CO2 transmural flux"]
-    P9["E50 · deplete blood content by flux / Q"]
-    P10["E47 again · re-invert using the local tissue pH"]
+    P8["E50 · implicit outlet PO2 then PCO2<br/>Brent root find, local tissue pH"]
+    P9["E48 · phi_O2 transmural flux<br/>E49 · phi_CO2 transmural flux, at the outlet"]
+    P10["outlet content = inlet content - flux / Q"]
     P11["accumulate transmural flux into the cell"]
     P12["hand the outgoing content to the downstream node"]
 
@@ -124,7 +124,7 @@ flowchart TD
 
 **`build_adr_matrix` runs regardless**, but `solve_multi_species_perfusion` takes neither its matrix nor its vectors — it builds its own via `E42` and `E43`. `A2`, `A4` and `A6` are amber for that reason: they execute and their results are discarded.
 
-**`E47` appears twice inside the innermost loop.** The content is inverted to a partial pressure once on entering the edge, then again after every cell, because depleting the content changes the pressure and the Bohr and Haldane couplings mean each inversion depends on the other species and on the local tissue pH. Each of those is a Brent root find, which is why this is the slow path.
+**Root finds inside the innermost loop.** The content is inverted to a partial pressure once on entering the edge (`E47`), then each cell solves its outlet pressures implicitly (`E50`, one Brent root find per species), because the Bohr and Haldane couplings make each depend on the other species and on the local tissue pH. The fluxes are taken at the outlet, so a cell can at most bring blood to equilibrium with its tissue (open item 21). The Picard loop around it is still slow at capillary flow (open item 23).
 
 **Every tier's VTI is tagged (`TAG`).** The H2 hypoxia numbers do not come from this chart: the H2 drivers call the instant-equilibrium solver (Tier 1) directly, with `cb_settings` inputs. So the field data names the tier, the solver and its inputs, and says the file is not the H2 field (open item T). The Picard tolerance is recorded for Tier 3 only, the one tier that reads it from the config.
 

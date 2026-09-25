@@ -447,15 +447,21 @@ $$C_{\mathrm{O_2}}(P_{\mathrm{O_2}}, H, P_{\mathrm{CO_2}}, \mathrm{pH}) - C^{\te
 
 **(E48)** Transmural oxygen flux into a grid cell
 
-$$\phi_{\mathrm{O_2}} = P^{\mathrm{O_2}}_{\text{perm}}\,S\,\alpha_{\mathrm{O_2}}\left(P_{\mathrm{O_2}}^{\text{blood}} - P_{\mathrm{O_2}}^{\text{tissue}}\right)$$
+$$\phi_{\mathrm{O_2}} = P^{\mathrm{O_2}}_{\text{perm}}\,S\,\alpha_{\mathrm{O_2}}\left(P_{\mathrm{O_2}}^{\text{out}} - P_{\mathrm{O_2}}^{\text{tissue}}\right)$$
 
 **(E49)** Transmural carbon dioxide flux into a grid cell
 
-$$\phi_{\mathrm{CO_2}} = P^{\mathrm{CO_2}}_{\text{perm}}\,S\,\alpha_{\mathrm{CO_2}}\left(P_{\mathrm{CO_2}}^{\text{blood}} - P_{\mathrm{CO_2}}^{\text{tissue}}\right)$$
+$$\phi_{\mathrm{CO_2}} = P^{\mathrm{CO_2}}_{\text{perm}}\,S\,\alpha_{\mathrm{CO_2}}\left(P_{\mathrm{CO_2}}^{\text{out}} - P_{\mathrm{CO_2}}^{\text{tissue}}\right)$$
 
-**(E50)** Blood content depletion along an edge
+Both fluxes are taken at the blood's **outlet** pressure from the cell, found by (E50). Until open item 21 they were taken at the pressure on entry, which let one cell take blood past equilibrium with its tissue.
 
-$$C_{\mathrm{O_2}} \leftarrow C_{\mathrm{O_2}} - \frac{\phi_{\mathrm{O_2}}}{Q}, \qquad C_{\mathrm{CO_2}} \leftarrow C_{\mathrm{CO_2}} - \frac{\phi_{\mathrm{CO_2}}}{Q}$$
+**(E50)** Blood content depletion along an edge (implicit per cell)
+
+$$C_{\mathrm{O_2}}\!\left(P_{\mathrm{O_2}}^{\text{out}};\, P_{\mathrm{CO_2}}^{\text{in}},\, \mathrm{pH}^{\text{tissue}}\right) + \frac{P^{\mathrm{O_2}}_{\text{perm}}\,S\,\alpha_{\mathrm{O_2}}}{Q}\left(P_{\mathrm{O_2}}^{\text{out}} - P_{\mathrm{O_2}}^{\text{tissue}}\right) = C^{\text{in}}_{\mathrm{O_2}}$$
+
+$$C_{\mathrm{CO_2}}\!\left(P_{\mathrm{CO_2}}^{\text{out}};\, P_{\mathrm{O_2}}^{\text{out}}\right) + \frac{P^{\mathrm{CO_2}}_{\text{perm}}\,S\,\alpha_{\mathrm{CO_2}}}{Q}\left(P_{\mathrm{CO_2}}^{\text{out}} - P_{\mathrm{CO_2}}^{\text{tissue}}\right) = C^{\text{in}}_{\mathrm{CO_2}}$$
+
+Solved for the outlet pressure by one Brent root find per species, O₂ first (`_implicit_cell_outlet_pressure`). The left side rises with the outlet pressure, so the root is unique and lies between the tissue and inlet pressures; the outlet content is then $C^{\text{out}} = C^{\text{in}} - \phi/Q$ exactly. This replaces (E47)'s re-inversion after each cell. A failed root find raises.
 
 $Q$ is edge flow in µm³/s: `flow_abs` × `POISEUILLE_FLOW_TO_UM3_PER_S`, the factor `map_vessels_to_grid` applies to the per-cell flow in (E30). Until open item 20 it was raw `flow_abs`, in mmHg·µm³/cP.
 

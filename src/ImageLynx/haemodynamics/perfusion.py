@@ -247,6 +247,50 @@ def _edge_flows_um3_per_s(DAG: nx.MultiDiGraph, cell_to_vessels: Dict,
     return q_by_edge
 
 
+def _implicit_cell_outlet_pressure(content_of_p, c_in: float, g: float, p_tissue: float,
+                                   species: str, p_cap: float = 1.0e4) -> float:
+    """
+    Outlet partial pressure of blood leaving one grid cell, from an implicit exchange step.
+
+    Solves ``content_of_p(P) + g * (P - p_tissue) = c_in`` for P, where ``g`` is
+    ``P_perm * A * alpha / q``. The wall flux is taken at the outlet pressure, so blood can at
+    most come to equilibrium with the tissue, and ``q * (c_in - c_out)`` equals the flux.
+
+    The step used to take the flux at the inlet pressure (open item 21). Once
+    ``P_perm * A * alpha`` exceeded ``q * dC/dP``, one step went past equilibrium; at the
+    measured wall permeability that happens at capillary flow, and the Picard loop stalled.
+
+    The left side rises with P, so there is one root, and it lies between ``p_tissue`` and the
+    pressure at which ``content_of_p`` equals ``c_in``. The bracket is taken on that side of
+    ``p_tissue``. Raises if no bracket is found below ``p_cap`` rather than keeping an old value.
+    """
+    from scipy.optimize import brentq
+
+    def residual(p):
+        return content_of_p(p) + g * (p - p_tissue) - c_in
+
+    f_tissue = residual(p_tissue)
+    if f_tissue == 0.0:
+        return float(p_tissue)
+    if f_tissue > 0.0:
+        # Blood holds less than tissue-equilibrium content: it gains gas, P_out <= p_tissue.
+        lo, hi = 0.0, p_tissue
+        if residual(lo) > 0.0:
+            raise ValueError(
+                f"Implicit {species} step has no root in [0, {p_tissue:.6g}] mmHg "
+                f"(c_in={c_in:.6g}, g={g:.6g}).")
+    else:
+        # Blood gives up gas, P_out >= p_tissue.
+        lo, hi = p_tissue, max(2.0 * p_tissue, 150.0)
+        while residual(hi) < 0.0:
+            if hi >= p_cap:
+                raise ValueError(
+                    f"Implicit {species} step found no root below {p_cap:.6g} mmHg "
+                    f"(c_in={c_in:.6g}, p_tissue={p_tissue:.6g}, g={g:.6g}).")
+            hi = min(2.0 * hi, p_cap)
+    return float(brentq(residual, lo, hi, xtol=1e-12))
+
+
 def map_vessels_to_grid(
     G: nx.MultiGraph,
     grid: PerfusionGrid,
@@ -604,6 +648,10 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
 
     The march along each edge uses edge flow converted to um^3/s by ``flow_to_um3_per_s``, which
     must be the factor ``cell_to_vessels`` was built with (``_edge_flows_um3_per_s`` checks it).
+
+    Each cell's exchange is implicit (``_implicit_cell_outlet_pressure``): the wall flux is taken
+    at the blood's outlet pressure, which lies between the tissue's and the inlet's, so one cell
+    can at most bring blood to equilibrium with its tissue.
     """
     import scipy.sparse as sp
     import scipy.sparse.linalg as splinalg
@@ -778,19 +826,25 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
                     area = cell['surface_area']
                     ph_local = pH_tissue[idx]
 
-                    flux_o2 = P_perm_o2 * area * alpha_o2 * (po2_curr - PO2_clamped[idx])
-                    flux_co2 = P_perm_co2 * area * alpha_co2 * (pco2_curr - PCO2_clamped[idx])
+                    k_o2 = P_perm_o2 * area * alpha_o2
+                    k_co2 = P_perm_co2 * area * alpha_co2
 
                     if q > 0:
-                        c_o2_curr = max(0.0, c_o2_curr - (flux_o2 / q))
-                        c_co2_curr = max(0.0, c_co2_curr - (flux_co2 / q))
+                        # Implicit step: flux at the outlet pressure (open item 21). O2 first at
+                        # the inlet PCO2 (Bohr), then CO2 at the new PO2 (Haldane).
+                        pco2_in_cell = pco2_curr
+                        po2_curr = _implicit_cell_outlet_pressure(
+                            lambda p: calculate_blood_oxygen_content(p, h, pco2_in_cell, ph_local),
+                            c_o2_curr, k_o2 / q, PO2_clamped[idx], "O2")
+                        po2_out_cell = po2_curr
+                        pco2_curr = _implicit_cell_outlet_pressure(
+                            lambda p: calculate_blood_co2_content(p, h, po2_out_cell),
+                            c_co2_curr, k_co2 / q, PCO2_clamped[idx], "CO2")
+                        c_o2_curr = calculate_blood_oxygen_content(po2_curr, h, pco2_in_cell, ph_local)
+                        c_co2_curr = calculate_blood_co2_content(pco2_curr, h, po2_curr)
 
-                        try:
-                            # Iteratively solve the coupled Bohr/Haldane equations
-                            po2_curr = brentq(lambda p: calculate_blood_oxygen_content(p, h, pco2_curr, ph_local) - c_o2_curr, 0.0, 150.0)
-                            pco2_curr = brentq(lambda p: calculate_blood_co2_content(p, h, po2_curr) - c_co2_curr, 0.0, 150.0)
-                        except ValueError:
-                            pass # Keep previous pressures if root finding fails
+                    flux_o2 = k_o2 * (po2_curr - PO2_clamped[idx])
+                    flux_co2 = k_co2 * (pco2_curr - PCO2_clamped[idx])
 
                     transmural_o2[idx] += flux_o2
                     transmural_co2[idx] += flux_co2

@@ -77,26 +77,42 @@ def _chain(q_um3_s, flow_abs="solver units"):
 
 
 def _tier3_expected(q, c):
-    """Tissue PO2 and PCO2 in both cells, stepping the march by hand in the solver's order."""
-    p_o2 = c.permeability_o2_cm_s * 1e4
-    p_co2 = c.permeability_co2_cm_s * 1e4
+    """Tissue PO2 and PCO2 in both cells, stepping the march by hand in the solver's order.
+
+    The step is implicit (open item 21): each cell's wall flux is taken at the blood's outlet
+    pressure, so tissue sits M V / k below (O2) or M V RQ / k above (CO2) the blood leaving the
+    cell. The O2 inversion uses the cell's tissue pH, which depends on the outlet PCO2, so each
+    cell is a small fixed point, iterated here.
+    """
+    k_o2 = c.permeability_o2_cm_s * 1e4 * _AREA * _ALPHA_O2
+    k_co2 = c.permeability_co2_cm_s * 1e4 * _AREA * _ALPHA_CO2
     mv_o2 = c.M_max * _V_CELL
     mv_co2 = mv_o2 * c.respiratory_quotient
 
-    po2_b1, pco2_b1 = c.po2_arterial_mmHg, c.pco2_arterial
-    po2_t1 = po2_b1 - mv_o2 / (p_o2 * _AREA * _ALPHA_O2)
-    pco2_t1 = pco2_b1 + mv_co2 / (p_co2 * _AREA * _ALPHA_CO2)
-    ph_t1 = calculate_ph_from_pco2(pco2_t1, c.hco3_tissue)
-
-    # Cell 1's wall fluxes are M V out for O2 and M V RQ in for CO2.
-    c_o2 = calculate_blood_oxygen_content(po2_b1, _H, pco2_b1, 7.4) - mv_o2 / q
-    c_co2 = calculate_blood_co2_content(pco2_b1, _H, po2_b1) + mv_co2 / q
-    po2_b2 = brentq(lambda p: calculate_blood_oxygen_content(p, _H, pco2_b1, ph_t1) - c_o2, 0.0, 150.0)
-    pco2_b2 = brentq(lambda p: calculate_blood_co2_content(p, _H, po2_b2) - c_co2, 0.0, 150.0)
-
-    po2_t2 = po2_b2 - mv_o2 / (p_o2 * _AREA * _ALPHA_O2)
-    pco2_t2 = pco2_b2 + mv_co2 / (p_co2 * _AREA * _ALPHA_CO2)
-    return np.array([po2_t1, po2_t2]), np.array([pco2_t1, pco2_t2])
+    # Blood enters cell 1 at arterial pressures (the inlet inversion is at PCO2 40, pH 7.4).
+    po2_b, pco2_b = c.po2_arterial_mmHg, c.pco2_arterial
+    c_o2 = calculate_blood_oxygen_content(po2_b, _H, pco2_b, 7.4)
+    c_co2 = calculate_blood_co2_content(pco2_b, _H, po2_b)
+    po2_t, pco2_t = [], []
+    for _ in range(2):
+        # Each cell's wall fluxes are M V out for O2 and M V RQ in for CO2.
+        c_o2 -= mv_o2 / q
+        c_co2 += mv_co2 / q
+        pco2_in_cell = pco2_b
+        ph_t = 7.4
+        for _ in range(100):
+            po2_out = brentq(lambda p: calculate_blood_oxygen_content(p, _H, pco2_in_cell, ph_t) - c_o2,
+                             0.0, 150.0, xtol=1e-12)
+            pco2_out = brentq(lambda p: calculate_blood_co2_content(p, _H, po2_out) - c_co2,
+                              0.0, 150.0, xtol=1e-12)
+            ph_new = calculate_ph_from_pco2(pco2_out + mv_co2 / k_co2, c.hco3_tissue)
+            if abs(ph_new - ph_t) < 1e-13:
+                break
+            ph_t = ph_new
+        po2_t.append(po2_out - mv_o2 / k_o2)
+        pco2_t.append(pco2_out + mv_co2 / k_co2)
+        po2_b, pco2_b = po2_out, pco2_out
+    return np.array(po2_t), np.array(pco2_t)
 
 
 def _tier2_expected(q, c):
@@ -132,7 +148,7 @@ def test_tier3_blood_side_drop_matches_the_hand_calculation(q):
 
 
 # Tier 2 has no alpha in its wall flux (open item 22), so its wall term is ~750x Tier 3's and
-# the explicit march overshoots below ~1e2 um^3/s (as item 21 does for Tier 3). These flows are
+# its explicit march overshoots below ~1e2 um^3/s (as Tier 3 did until item 21). These flows are
 # above that.
 @pytest.mark.parametrize("q", [300.0, 1000.0])
 def test_tier2_blood_side_drop_matches_the_hand_calculation(q):
