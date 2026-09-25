@@ -1221,9 +1221,16 @@ def _rheology_cell_arrays(G, vessels):
     convention graph_to_vtk itself uses, and one ParaView hides. These used to be pre-filled
     with 0.45, 1.2 cP and 0 Pa, which would look like real values in the file.
     """
+    # graph_to_vtk writes the key as "edge_key". This read "edge_k" with a zeros fallback,
+    # so every cell looked up key 0 and a parallel edge showed its sibling's values.
     edge_u = np.asarray(vessels.cell_data.get("edge_u", []))
     edge_v = np.asarray(vessels.cell_data.get("edge_v", []))
-    edge_k = np.asarray(vessels.cell_data.get("edge_k", np.zeros_like(edge_u)))
+    edge_k = np.asarray(vessels.cell_data.get("edge_key", []))
+    if not (len(edge_u) == len(edge_v) == len(edge_k) == vessels.n_cells):
+        raise ValueError(
+            "VTK vessels file is missing the edge_u/edge_v/edge_key cell arrays needed to "
+            "match cells to graph edges."
+        )
 
     arrays = {name: np.full(vessels.n_cells, np.nan, dtype=float) for name in _RHEOLOGY_CELL_FIELDS}
     n_unmatched = 0

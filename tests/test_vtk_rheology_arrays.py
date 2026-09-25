@@ -68,3 +68,22 @@ def test_a_fully_matched_mesh_is_silent(caplog):
     with caplog.at_level(logging.WARNING):
         C._rheology_cell_arrays(_graph(**SOLVED), _mesh([(0, 1, 0)]))
     assert not caplog.records
+
+
+# --- The key array is "edge_key", as graph_to_vtk writes it ------------------------------
+
+def test_parallel_edges_each_get_their_own_values():
+    """The export read "edge_k", fell back to zeros, and so gave key 1 the values of key 0."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, key=0, **SOLVED)
+    G.add_edge(0, 1, key=1, **{**SOLVED, "hematocrit": 0.21})
+    arrays = C._rheology_cell_arrays(G, _mesh([(0, 1, 0), (0, 1, 1)]))
+    assert arrays["hematocrit"].tolist() == [0.38, 0.21]
+
+
+@pytest.mark.parametrize("missing", ["edge_u", "edge_v", "edge_key"])
+def test_a_mesh_without_an_edge_id_array_is_refused(missing):
+    mesh = _mesh([(0, 1, 0)])
+    del mesh.cell_data[missing]
+    with pytest.raises(ValueError, match="edge_key"):
+        C._rheology_cell_arrays(_graph(**SOLVED), mesh)
