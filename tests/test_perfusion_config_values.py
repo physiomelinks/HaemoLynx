@@ -98,7 +98,9 @@ def test_the_multi_species_solver_uses_the_configured_arterial_po2():
 
 
 @pytest.mark.parametrize("field", [
-    "po2_arterial_mmHg", "systemic_hematocrit",
+    # systemic_hematocrit is not here: Tier 3 read it only for the arterial blood it gave a
+    # node with no inflow, which now raises instead (open item 24).
+    "po2_arterial_mmHg",
     # Loose end A2: the rest of Tier 3's fields were getattr fallbacks too.
     "M_max", "k_reduce", "respiratory_quotient", "hco3_tissue", "permeability_o2_cm_s",
     "permeability_co2_cm_s", "pco2_arterial", "picard_max_iterations", "picard_tolerance",

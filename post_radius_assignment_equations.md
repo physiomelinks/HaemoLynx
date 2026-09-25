@@ -437,13 +437,17 @@ $$M_{\mathrm{O_2}} = M_{\max}\left(1 - e^{-k\,P_{\mathrm{O_2}}}\right)$$
 
 $$M_{\mathrm{CO_2}} = M_{\mathrm{O_2}}\cdot RQ, \qquad RQ = 0.82$$
 
-**(E46)** Nodal mixing of blood gas content
+**(E46)** Nodal mixing of blood gas content, flow and red-cell flux (two or more inflows)
 
-$$C^{\text{mix}} = \frac{\sum_{e \in \text{in}} C_e Q_e}{\sum_{e \in \text{in}} Q_e}$$
+$$C^{\text{mix}} = \frac{\sum_{e \in \text{in}} C_e Q_e}{\sum_{e \in \text{in}} Q_e}, \qquad H^{\text{mix}} = \frac{\sum_{e \in \text{in}} H_e Q_e}{\sum_{e \in \text{in}} Q_e}, \qquad \mathrm{pH}^{\text{mix}} = \frac{\sum_{e \in \text{in}} \mathrm{pH}_e Q_e}{\sum_{e \in \text{in}} Q_e}$$
 
-**(E47)** Inversion of content to partial pressure (root find)
+A node with one inflow takes that edge's outlet pressures unchanged; a starting node takes the arterial ones (PO₂, PCO₂, pH 7.4).
 
-$$C_{\mathrm{O_2}}(P_{\mathrm{O_2}}, H, P_{\mathrm{CO_2}}, \mathrm{pH}) - C^{\text{mix}}_{\mathrm{O_2}} = 0, \qquad C_{\mathrm{CO_2}}(P_{\mathrm{CO_2}}, H, P_{\mathrm{O_2}}) - C^{\text{mix}}_{\mathrm{CO_2}} = 0$$
+**(E47)** Inversion of the mixture to partial pressures (joint root find)
+
+$$C_{\mathrm{O_2}}(P_{\mathrm{O_2}}, H^{\text{mix}}, P_{\mathrm{CO_2}}, \mathrm{pH}^{\text{mix}}) - C^{\text{mix}}_{\mathrm{O_2}} = 0, \qquad C_{\mathrm{CO_2}}(P_{\mathrm{CO_2}}, H^{\text{mix}}, P_{\mathrm{O_2}}) - C^{\text{mix}}_{\mathrm{CO_2}} = 0$$
+
+Solved by alternating the two one-dimensional root finds (`_mixed_blood_state`); a failure raises. Each daughter edge *d* then starts with content $C(P_{\mathrm{O_2}}, H_d, \ldots)$ at the node's pressures and its own haematocrit. Both curves are affine in *H* at fixed pressures, so $\sum_d Q_d C_d = \sum_{e \in \text{in}} Q_e C_e$ wherever red-cell and plasma flux are conserved at the node. Until open item 24 the content per litre was handed on instead and inverted at the daughter's *H*, PCO₂ 40 and pH 7.4, with an arterial fallback.
 
 **(E48)** Transmural oxygen flux into a grid cell
 

@@ -312,6 +312,65 @@ def _implicit_cell_outlet_pressure(content_of_p, c_in: float, g: float, p_tissue
     return float(brentq(residual, lo, hi, xtol=1e-12))
 
 
+def _increasing_inverse(content_of_p, c: float, species: str, p_cap: float = 1.0e4) -> float:
+    """
+    Partial pressure at which ``content_of_p`` equals ``c``, from zero upwards.
+
+    Both content curves are 0 at P <= 0 and rise from there; the CO2 curve peaks (near 135 mmHg
+    at H near 0, higher as H rises) and then falls. The bracket grows from 150 mmHg until the
+    content reaches ``c``, so it holds exactly one upward crossing. Raises if the content never
+    reaches ``c`` below ``p_cap``: that blood cannot hold that much gas at any pressure.
+    """
+    from scipy.optimize import brentq
+
+    if c <= 0.0:
+        return 0.0
+    hi = 150.0
+    while content_of_p(hi) < c:
+        if hi >= p_cap:
+            raise ValueError(
+                f"No {species} partial pressure below {p_cap:.6g} mmHg gives content {c:.6g} "
+                f"mmol/L.")
+        hi = min(2.0 * hi, p_cap)
+    return float(brentq(lambda p: content_of_p(p) - c, 0.0, hi, xtol=1e-12))
+
+
+def _mixed_blood_state(inflows: List[Dict[str, Any]], max_iter: int = 100,
+                       xtol: float = 1e-10) -> Dict[str, float]:
+    """
+    Blood state where two or more streams join: the pressures of the flow-weighted mixture.
+
+    Content, flow and red cell flux are summed, giving the mixture's content and haematocrit.
+    Its pH is the flow-weighted pH the streams' O2 content was last evaluated at. PO2 and PCO2
+    are then solved together (the O2 curve depends on PCO2 through Bohr, the CO2 curve on PO2
+    through Haldane), alternating one-dimensional inversions from the flow-weighted pressures.
+
+    Both curves are affine in H at fixed pressures, so the mixture content lies between the
+    streams' own curves evaluated at the mixture H, and a root exists between their pressures.
+    Raises if the inversion fails or the alternation does not settle.
+    """
+    q = sum(f["q"] for f in inflows)
+    h = sum(f["q"] * f["h"] for f in inflows) / q
+    c_o2 = sum(f["q"] * f["c_o2"] for f in inflows) / q
+    c_co2 = sum(f["q"] * f["c_co2"] for f in inflows) / q
+    ph = sum(f["q"] * f["state"]["o2_ph"] for f in inflows) / q
+    po2 = sum(f["q"] * f["state"]["po2"] for f in inflows) / q
+    pco2 = sum(f["q"] * f["state"]["pco2"] for f in inflows) / q
+
+    for _ in range(max_iter):
+        pco2_new = _increasing_inverse(
+            lambda p: calculate_blood_co2_content(p, h, po2), c_co2, "CO2")
+        po2_new = _increasing_inverse(
+            lambda p: calculate_blood_oxygen_content(p, h, pco2_new, ph), c_o2, "O2")
+        settled = abs(po2_new - po2) < xtol and abs(pco2_new - pco2) < xtol
+        po2, pco2 = po2_new, pco2_new
+        if settled:
+            return {"po2": po2, "pco2": pco2, "o2_pco2": pco2, "o2_ph": ph}
+    raise ValueError(
+        f"Mixed blood PO2/PCO2 did not settle in {max_iter} alternations "
+        f"(c_o2={c_o2:.6g}, c_co2={c_co2:.6g}, H={h:.6g}).")
+
+
 def map_vessels_to_grid(
     G: nx.MultiGraph,
     grid: PerfusionGrid,
@@ -678,7 +737,6 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     """
     import scipy.sparse as sp
     import scipy.sparse.linalg as splinalg
-    from scipy.optimize import brentq
     import networkx as nx
 
     N = grid.n_cells
@@ -702,7 +760,6 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     P_perm_co2 = perf_config.permeability_co2_cm_s * 1e4 # um/s
     po2_art = perf_config.po2_arterial_mmHg
     pco2_art = perf_config.pco2_arterial
-    systemic_h = perf_config.systemic_hematocrit
     max_iter = perf_config.picard_max_iterations
     tolerance = perf_config.picard_tolerance
 
@@ -723,12 +780,20 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         if f > 0: DAG.add_edge(u, v, key=key, **e_data)
         elif f < 0: DAG.add_edge(v, u, key=key, **e_data)
 
+    # Flow runs from high to low pressure, so the directed graph has no cycle. If it had one,
+    # the march would have no order to follow; it used to fall back to node order silently.
     try:
         topo_order = list(nx.topological_sort(DAG))
-    except nx.NetworkXUnfeasible:
-        topo_order = list(G.nodes())
+    except nx.NetworkXUnfeasible as exc:
+        raise ValueError(
+            "The flow direction graph has a cycle, so the blood-content march has no upstream "
+            "order. Check flow_signed on the edges.") from exc
 
     q_by_edge = _edge_flows_um3_per_s(DAG, cell_to_vessels, flow_to_um3_per_s)
+
+    starting_set = set(starting_nodes)
+    # Arterial blood at pH 7.4.
+    arterial_state = {"po2": po2_art, "pco2": pco2_art, "o2_pco2": pco2_art, "o2_ph": 7.4}
 
     alpha_o2 = 1.34e-3 # mmol/L per mmHg
     alpha_co2 = 0.03 # mmol/L per mmHg
@@ -801,31 +866,30 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         # Henderson-Hasselbalch
         pH_tissue = calculate_ph_from_pco2(PCO2_clamped, hco3_tissue)
 
-        node_o2_flux_in = {n: 0.0 for n in DAG.nodes()}
-        node_co2_flux_in = {n: 0.0 for n in DAG.nodes()}
-        node_q_in = {n: 0.0 for n in DAG.nodes()}
-
-        for n in starting_nodes:
-            if n in DAG.nodes:
-                for succ in DAG.successors(n):
-                    for k, d in DAG[n][succ].items():
-                        h = d["hematocrit"]
-                        q = q_by_edge[(n, succ, k)]
-                        # Arterial blood assumed pH 7.4
-                        node_o2_flux_in[n] += calculate_blood_oxygen_content(po2_art, h, pco2_art, 7.4) * q
-                        node_co2_flux_in[n] += calculate_blood_co2_content(pco2_art, h, po2_art) * q
-                        node_q_in[n] += q
+        # Blood state at each node, as pressures (open item 24). Content per litre of blood is
+        # not carried across a node, because phase separation gives each daughter a different
+        # haematocrit: arterial content at H 0.45 can exceed anything a plasma-skimmed daughter
+        # can hold at any PCO2. Pressures are shared, and each daughter's content is evaluated
+        # at its own H with the same arguments, so O2 and CO2 are conserved (both curves are
+        # affine in H, and the rheology conserves red cell and plasma flux).
+        inflows = {n: [] for n in DAG.nodes()}
 
         transmural_o2 = np.zeros(N, dtype=np.float64)
         transmural_co2 = np.zeros(N, dtype=np.float64)
 
         for node in topo_order:
-            if node_q_in[node] > 0:
-                c_o2_mix = node_o2_flux_in[node] / node_q_in[node]
-                c_co2_mix = node_co2_flux_in[node] / node_q_in[node]
+            if node in starting_set:
+                state = arterial_state
+            elif len(inflows[node]) == 1:
+                state = inflows[node][0]["state"]
+            elif inflows[node]:
+                state = _mixed_blood_state(inflows[node])
+            elif DAG.out_degree(node) > 0:
+                raise ValueError(
+                    f"Node {node} sends blood out but receives none and is not a starting node. "
+                    f"It used to be given arterial blood at systemic haematocrit.")
             else:
-                c_o2_mix = calculate_blood_oxygen_content(po2_art, systemic_h, pco2_art, 7.4)
-                c_co2_mix = calculate_blood_co2_content(pco2_art, systemic_h, po2_art)
+                continue
 
             for _, v, k, e_data in DAG.out_edges(node, data=True, keys=True):
                 edge_key = (node, v, k)
@@ -833,16 +897,10 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
                 q = q_by_edge[(node, v, k)]
                 h = e_data["hematocrit"]
 
-                # Approximate incoming pressures based on mix
-                try:
-                    po2_in = brentq(lambda p: calculate_blood_oxygen_content(p, h, 40.0, 7.4) - c_o2_mix, 0.0, 150.0)
-                except ValueError: po2_in = po2_art
-                try:
-                    pco2_in = brentq(lambda p: calculate_blood_co2_content(p, h, po2_in) - c_co2_mix, 0.0, 150.0)
-                except ValueError: pco2_in = pco2_art
-
-                c_o2_curr, c_co2_curr = c_o2_mix, c_co2_mix
-                po2_curr, pco2_curr = po2_in, pco2_in
+                po2_curr, pco2_curr = state["po2"], state["pco2"]
+                o2_pco2_arg, o2_ph_arg = state["o2_pco2"], state["o2_ph"]
+                c_o2_curr = calculate_blood_oxygen_content(po2_curr, h, o2_pco2_arg, o2_ph_arg)
+                c_co2_curr = calculate_blood_co2_content(pco2_curr, h, po2_curr)
 
                 for cell in edge_to_cells.get(edge_key, []):
                     idx = cell['cell_idx']
@@ -863,7 +921,8 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
                         pco2_curr = _implicit_cell_outlet_pressure(
                             lambda p: calculate_blood_co2_content(p, h, po2_out_cell),
                             c_co2_curr, k_co2 / q, PCO2_clamped[idx], "CO2")
-                        c_o2_curr = calculate_blood_oxygen_content(po2_curr, h, pco2_in_cell, ph_local)
+                        o2_pco2_arg, o2_ph_arg = pco2_in_cell, ph_local
+                        c_o2_curr = calculate_blood_oxygen_content(po2_curr, h, o2_pco2_arg, o2_ph_arg)
                         c_co2_curr = calculate_blood_co2_content(pco2_curr, h, po2_curr)
 
                     flux_o2 = k_o2 * (po2_curr - PO2_clamped[idx])
@@ -872,9 +931,11 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
                     transmural_o2[idx] += flux_o2
                     transmural_co2[idx] += flux_co2
 
-                node_o2_flux_in[v] += c_o2_curr * q
-                node_co2_flux_in[v] += c_co2_curr * q
-                node_q_in[v] += q
+                inflows[v].append({
+                    "q": q, "h": h, "c_o2": c_o2_curr, "c_co2": c_co2_curr,
+                    "state": {"po2": po2_curr, "pco2": pco2_curr,
+                              "o2_pco2": o2_pco2_arg, "o2_ph": o2_ph_arg},
+                })
 
         b_o2 = transmural_o2 - (M_o2_red * V_cell) + (pseudo_washout_o2 * PO2_clamped)
         b_co2 = transmural_co2 + (M_co2_prod * V_cell) + (pseudo_washout_co2 * PCO2_clamped)
@@ -883,7 +944,8 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
             logger.info(f"DEBUG Iteration 0: max(transmural_o2) = {np.max(transmural_o2)}")
             logger.info(f"DEBUG Iteration 0: max(M_o2_red * V_cell) = {np.max(M_o2_red * V_cell)}")
             logger.info(f"DEBUG Iteration 0: max(b_o2) = {np.max(b_o2)}")
-            logger.info(f"DEBUG Iteration 0: max(node_o2_flux_in) = {max(node_o2_flux_in.values() if node_o2_flux_in else [0])}")
+            o2_flux_in = [f["c_o2"] * f["q"] for fs in inflows.values() for f in fs]
+            logger.info(f"DEBUG Iteration 0: max(node O2 flux in) = {max(o2_flux_in, default=0.0)}")
 
         PO2_new, _ = splinalg.cg(A_o2, b_o2, M=M_pre_o2, x0=PO2_tissue, rtol=1e-5, maxiter=500)
         PCO2_new, _ = splinalg.cg(A_co2, b_co2, M=M_pre_co2, x0=PCO2_tissue, rtol=1e-5, maxiter=500)
