@@ -1211,6 +1211,45 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
             
     return starting_nodes, output_nodes, resistance_node_pair
 
+_RHEOLOGY_CELL_FIELDS = ("hematocrit", "viscosity", "wall_shear_stress_pa", "resistance")
+
+
+def _rheology_cell_arrays(G, vessels):
+    """Per-cell rheology values for the vessel mesh, read from the solved graph.
+
+    A cell with no matching edge, or an edge without the value, gets NaN - the missing-value
+    convention graph_to_vtk itself uses, and one ParaView hides. These used to be pre-filled
+    with 0.45, 1.2 cP and 0 Pa, which would look like real values in the file.
+    """
+    edge_u = np.asarray(vessels.cell_data.get("edge_u", []))
+    edge_v = np.asarray(vessels.cell_data.get("edge_v", []))
+    edge_k = np.asarray(vessels.cell_data.get("edge_k", np.zeros_like(edge_u)))
+
+    arrays = {name: np.full(vessels.n_cells, np.nan, dtype=float) for name in _RHEOLOGY_CELL_FIELDS}
+    n_unmatched = 0
+    n_missing = dict.fromkeys(_RHEOLOGY_CELL_FIELDS, 0)
+    for ii in range(vessels.n_cells):
+        u, v, k = int(edge_u[ii]), int(edge_v[ii]), int(edge_k[ii])
+        if not G.has_edge(u, v, k):
+            n_unmatched += 1
+            continue
+        data = G[u][v][k]
+        for name in _RHEOLOGY_CELL_FIELDS:
+            value = data.get(name)
+            if value is None:
+                n_missing[name] += 1
+            else:
+                arrays[name][ii] = float(value)
+
+    missing = {name: n for name, n in n_missing.items() if n}
+    if n_unmatched or missing:
+        logger.warning(
+            f"VTK rheology export: {n_unmatched} of {vessels.n_cells} cells match no graph edge, "
+            f"and matched edges lack {missing or 'nothing'}; those cells are NaN."
+        )
+    return arrays
+
+
 def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config=None):
     """
     Phase 5: Builds the Laplacian matrix, solves the flow equations,
@@ -1354,33 +1393,15 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     # Now manually inject hematocrit and viscosity into the VTK file
     import pyvista as pv
     vessels = pv.read(vtk_export['vessels_path'])
-    edge_u = np.asarray(vessels.cell_data.get("edge_u", []))
-    edge_v = np.asarray(vessels.cell_data.get("edge_v", []))
-    edge_k = np.asarray(vessels.cell_data.get("edge_k", np.zeros_like(edge_u)))
-    
-    hematocrit_array = np.full(vessels.n_cells, 0.45, dtype=float)
-    viscosity_array = np.full(vessels.n_cells, 1.2, dtype=float)
-    wss_array = np.zeros(vessels.n_cells, dtype=float)
+    rheology_arrays = _rheology_cell_arrays(G, vessels)
     # graph_to_vtk ran before the rheology solve, so the resistance array it wrote holds
-    # set_poiseuille_resistances' power-law values while the viscosity array below holds the
+    # set_poiseuille_resistances' power-law values while the viscosity array holds the
     # Pries-Secomb ones. The two did not satisfy R = 128 mu L / (pi d^4) together, and a
-    # reader of the file had no way to tell. Refreshed here alongside the others. NaN is the
-    # missing-value convention graph_to_vtk itself uses.
-    resistance_array = np.full(vessels.n_cells, np.nan, dtype=float)
-
-    for ii in range(vessels.n_cells):
-        u, v, k = int(edge_u[ii]), int(edge_v[ii]), int(edge_k[ii])
-        if G.has_edge(u, v, k):
-            hematocrit_array[ii] = G[u][v][k].get("hematocrit", 0.45)
-            viscosity_array[ii] = G[u][v][k].get("viscosity", 1.2)
-            wss_array[ii] = G[u][v][k].get("wall_shear_stress_pa", 0.0)
-            r = G[u][v][k].get("resistance")
-            resistance_array[ii] = float(r) if r is not None else np.nan
-
-    vessels.cell_data["hematocrit"] = hematocrit_array
-    vessels.cell_data["viscosity"] = viscosity_array
-    vessels.cell_data["wall_shear_stress_pa"] = wss_array
-    vessels.cell_data["resistance"] = resistance_array
+    # reader of the file had no way to tell. Refreshed here alongside the others.
+    vessels.cell_data["hematocrit"] = rheology_arrays["hematocrit"]
+    vessels.cell_data["viscosity"] = rheology_arrays["viscosity"]
+    vessels.cell_data["wall_shear_stress_pa"] = rheology_arrays["wall_shear_stress_pa"]
+    vessels.cell_data["resistance"] = rheology_arrays["resistance"]
     # Saved with the mesh so an unconverged solve can't be mistaken for a converged one later.
     vessels.field_data["rheology_stop_reason"] = np.array([rheology_status["rheology_stop_reason"]])
     vessels.field_data["rheology_iterations"] = np.array([rheology_status["rheology_iterations"]])
