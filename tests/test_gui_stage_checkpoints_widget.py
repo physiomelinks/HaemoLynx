@@ -635,3 +635,55 @@ def test_run_from_perturbations_repeats_the_full_runs_perturbations(
         widget._haemolynx_run_from("7. Perturbations")
         wait()
         assert outcome(runs[-1]) == full
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_regenerate_continues_the_edit_without_rebuilding(make_napari_viewer, qtbot, tmp_path, monkeypatch):
+    """Regenerate used to re-skeletonise the image and build a whole graph
+    again before swapping in the edited one; it now loads the skeleton and the
+    edited graph. The result is the edited network, and the Graph tab keeps
+    the graph as it was built."""
+    import haemolynx.pipeline.stages as stages_mod
+
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    rows = widget._haemolynx_rows()
+    rows["input_path"].value = FIXTURE
+    rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
+    running = widget._haemolynx_run_state
+
+    def wait():
+        qtbot.waitUntil(lambda: not running.running, timeout=600_000)
+        qtbot.wait(200)
+
+    widget._haemolynx_run()
+    wait()
+    checkpoints = widget._haemolynx_checkpoints
+    built_edges = checkpoints.get("build_network").graph.number_of_edges()
+
+    widget._haemolynx_open_graph_editor()
+    edited = widget._haemolynx_graph_editor["state"].graph
+    u, v, key = next(iter(edited.edges(keys=True)))
+    edited.remove_edge(u, v, key)  # what Delete edge does to the graph
+
+    calls = []
+    for name in ("_skeletonize_loaded_mask",):
+        real = getattr(stages_mod, name)
+        monkeypatch.setattr(
+            stages_mod, name, lambda *a, _real=real, _name=name, **k: calls.append(_name) or _real(*a, **k)
+        )
+    real_build = stages_mod.graph.build_graph_from_skeleton
+    monkeypatch.setattr(
+        stages_mod.graph,
+        "build_graph_from_skeleton",
+        lambda *a, **k: calls.append("build_graph_from_skeleton") or real_build(*a, **k),
+    )
+
+    widget._haemolynx_regenerate_from_edit()
+    wait()
+
+    assert calls == [], f"Regenerate rebuilt what it should have loaded: {calls}"
+    assert checkpoints.get("solve").graph.number_of_edges() == edited.number_of_edges()
+    assert checkpoints.get("build_network").graph.number_of_edges() == built_edges
+    assert rows["do_skeletonize"].value is False  # this run's, until Run pipeline

@@ -713,52 +713,16 @@ class StageCheckpoints:
         previous = previous_tab(current_tab)
         assert previous is not None
 
-        order = [stage.call for stage in STAGES if stage.call]
         groups = [
             self._by_stage[name].group
             for name in stages_before(start_from)
             if name in self._by_stage
         ]
 
-        skip: tuple[str, ...] = ()
-        graph_path: Path | None = None
-        skeleton_path = None
-        located = _stem_and_output_dir(settings)
-        if located is not None:
-            stem, output_dir = located
-            output_dir.mkdir(parents=True, exist_ok=True)
-            skeleton_path = ensure_skeleton_artefact(groups, output_dir, stem)
-            if skeleton_path is not None:
-                self.remember_path(skeleton_path)
-            write_graph = (
-                checkpoint.graph is not None
-                and start_from not in {"segment", "skeletonise", "build_network"}
-            )
-            if write_graph:
-                graph_path = graph_resume_path(output_dir, stem)
-                with graph_path.open("wb") as handle:
-                    pickle.dump(checkpoint.graph, handle)
-                logger.info(
-                    "Wrote resumed graph for run-from %s to %s (from stage %s)",
-                    start_from,
-                    graph_path,
-                    target,
-                )
-                self.remember_path(graph_path)
-
-        skip = skip_settings_for_resume(
-            graph_written=graph_path is not None,
-            skeleton_ready=skeleton_path is not None,
-            start_from=start_from,
-            use_fwhm_edge_diameters=bool(
-                settings and settings.get("use_fwhm_edge_diameters")
-            ),
+        skip, graph_path = self._write_resume_artefacts(
+            groups, checkpoint.graph, start_from, settings, source=target
         )
-
-        keep = set(order[: order.index(start_from)])
-        for name in list(self._by_stage):
-            if name not in keep:
-                del self._by_stage[name]
+        self._drop_from(start_from)
 
         return RestorePlan(
             stage=target,
@@ -771,6 +735,93 @@ class StageCheckpoints:
             start_from=start_from,
             resume=resume_from_checkpoint(checkpoint, start_from),
         )
+
+    def plan_regenerate(
+        self,
+        edited_graph: Any,
+        settings: Mapping[str, Any] | None = None,
+        start_from: str = "assign_diameters",
+    ) -> RestorePlan | None:
+        """Prepare a run that continues a hand-edited graph from *start_from*.
+
+        What :meth:`plan_run_from` does for a tab, for the graph editor's
+        Regenerate: the skeleton and the edited graph are written where the
+        run loads them from, so it does not re-skeletonise the image and
+        rebuild a graph only to throw it away for the edited one, and the
+        checkpoints from *start_from* on -- made from the graph before the
+        edit -- are dropped. The boundary roles come from the most recent
+        checkpoint (see :func:`resume_from_edit`). None until Boundaries has
+        been recorded: before that there is nothing to solve between.
+        """
+        if not self.has("assign_boundaries"):
+            return None  # no boundary nodes to solve the edited graph between
+        checkpoint = self.records()[-1]
+        groups = [
+            self._by_stage[name].group
+            for name in stages_before(start_from)
+            if name in self._by_stage
+        ]
+        skip, graph_path = self._write_resume_artefacts(
+            groups, edited_graph, start_from, settings, source="the edited graph"
+        )
+        self._drop_from(start_from)
+        return RestorePlan(
+            stage=checkpoint.stage,
+            title=checkpoint.title,
+            groups=tuple(groups),
+            checkpoint=checkpoint,
+            skip_settings=skip,
+            graph_path=graph_path,
+            start_from=start_from,
+            resume=resume_from_edit(checkpoint, edited_graph, start_from),
+        )
+
+    def _write_resume_artefacts(
+        self,
+        groups: Sequence[Any],
+        graph: Any,
+        start_from: str,
+        settings: Mapping[str, Any] | None,
+        *,
+        source: str,
+    ) -> tuple[tuple[str, ...], Path | None]:
+        """Write the skeleton and *graph* where a run starting at
+        *start_from* loads them, and name the toggles that make it load them.
+        """
+        graph_path: Path | None = None
+        skeleton_path = None
+        located = _stem_and_output_dir(settings)
+        if located is not None:
+            stem, output_dir = located
+            output_dir.mkdir(parents=True, exist_ok=True)
+            skeleton_path = ensure_skeleton_artefact(groups, output_dir, stem)
+            if skeleton_path is not None:
+                self.remember_path(skeleton_path)
+            if graph is not None and start_from not in {"segment", "skeletonise", "build_network"}:
+                graph_path = graph_resume_path(output_dir, stem)
+                with graph_path.open("wb") as handle:
+                    pickle.dump(graph, handle)
+                logger.info(
+                    "Wrote resumed graph for a run from %s to %s (from %s)",
+                    start_from,
+                    graph_path,
+                    source,
+                )
+                self.remember_path(graph_path)
+        skip = skip_settings_for_resume(
+            graph_written=graph_path is not None,
+            skeleton_ready=skeleton_path is not None,
+            start_from=start_from,
+            use_fwhm_edge_diameters=bool(settings and settings.get("use_fwhm_edge_diameters")),
+        )
+        return skip, graph_path
+
+    def _drop_from(self, start_from: str) -> None:
+        """Forget the checkpoints of *start_from* and every later stage."""
+        keep = set(stages_before(start_from))
+        for name in list(self._by_stage):
+            if name not in keep:
+                del self._by_stage[name]
 
 
 def restore_message(plan: RestorePlan) -> str:

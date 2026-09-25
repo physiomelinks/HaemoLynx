@@ -625,3 +625,69 @@ def test_run_from_replays_only_stages_ahead_of_the_start(tmp_path):
         "build_network",
         "assign_boundaries",
     ]
+
+
+# --- Regenerate after a hand edit --------------------------------------------
+
+
+def _through_solve(tmp_path, settings):
+    checkpoints = StageCheckpoints()
+    results = built(a_graph(resistance=1.0))
+    skeleton = np.zeros((2, 3, 4), dtype=bool)
+    skeleton[1, 1, :] = True
+    checkpoints.record(
+        "skeletonise",
+        StageLayers(
+            stage="skeletonise",
+            title="2. Skeletonise",
+            layers=(LayerSpec(kind="labels", name=SKELETON, data=skeleton, scale=(1.0, 1.0, 1.0)),),
+        ),
+        results,
+        settings=settings,
+    )
+    for stage in ("build_network", "assign_boundaries", "assign_diameters",
+                  "build_haemodynamic_model", "solve"):
+        checkpoints.record(stage, _group(stage), results, settings=settings)
+    return checkpoints, skeleton
+
+
+def test_regenerate_loads_the_skeleton_and_the_edited_graph_instead_of_rebuilding(tmp_path):
+    """Regenerate used to re-skeletonise the image and build a whole new
+    graph, only to replace it with the edited one."""
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, skeleton = _through_solve(tmp_path, settings)
+    edited = a_graph(resistance=1.0)
+    edited.add_edge(0, 3, voxels=[[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
+
+    plan = checkpoints.plan_regenerate(edited, settings=settings)
+
+    assert plan is not None
+    assert plan.start_from == "assign_diameters"
+    assert set(plan.skip_settings) == {"do_skeletonize", "do_graph_building"}
+    assert np.array_equal(np.load(skeleton_resume_path(tmp_path / "out", "stack")), skeleton)
+    with graph_resume_path(tmp_path / "out", "stack").open("rb") as handle:
+        written = pickle.load(handle)
+    assert written.number_of_edges() == edited.number_of_edges()
+    assert plan.resume.graph.number_of_edges() == edited.number_of_edges()
+    assert plan.resume.graph is not edited
+
+
+def test_regenerate_forgets_the_checkpoints_made_before_the_edit(tmp_path):
+    """From Diameters on they describe the graph before the edit: a run from
+    one of those tabs must not continue the unedited network."""
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, _ = _through_solve(tmp_path, settings)
+
+    checkpoints.plan_regenerate(a_graph(), settings=settings)
+
+    assert checkpoints.stages == ("skeletonise", "build_network", "assign_boundaries")
+
+
+def test_regenerate_needs_boundaries_first(tmp_path):
+    settings = _settings(tmp_path)
+    checkpoints = StageCheckpoints()
+    checkpoints.record("build_network", _group("build_network"), built(), settings=settings)
+
+    assert checkpoints.plan_regenerate(a_graph(), settings=settings) is None

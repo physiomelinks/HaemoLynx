@@ -75,7 +75,6 @@ from haemolynx.gui.stage_checkpoints import (
     discard_cached_artefacts_for_settings,
     output_dir_from_prefix,
     previous_tab,
-    resume_from_edit,
     restore_message,
     stages_before,
 )
@@ -7726,6 +7725,31 @@ def settings_widget(napari_viewer=None):
             restored_skips=restored_skips,
         )
 
+    def _apply_resume_skips(skip_settings) -> None:
+        """Turn *skip_settings* off for a resumed run, without them becoming
+        the user's own toggles (which Run pipeline puts back)."""
+        nonlocal revert_setting_skips
+        saved_skip_snapshot = dict(skip_toggle_snapshot)
+        disconnected: list[str] = []
+        for name in SKIP_FOR_RESUME:
+            if name in rows:
+                try:
+                    rows[name].changed.disconnect(snapshot_skip_toggles)
+                    disconnected.append(name)
+                except (TypeError, RuntimeError):
+                    pass
+        revert_setting_skips = True
+        try:
+            for name in skip_settings:
+                if name in rows:
+                    rows[name].value = False
+        finally:
+            revert_setting_skips = False
+            skip_toggle_snapshot.update(saved_skip_snapshot)
+            for name in disconnected:
+                rows[name].changed.connect(snapshot_skip_toggles)
+        apply_prerequisites()
+
     def prepare_run_from(tab_title: str):
         """Drop this tab and later work; return the plan, or None."""
         if run_state.running:
@@ -7766,27 +7790,7 @@ def settings_widget(napari_viewer=None):
         _clear_our_layers(viewer)
         _apply_layer_groups(viewer, plan.groups)
         _after_layers_applied()
-        saved_skip_snapshot = dict(skip_toggle_snapshot)
-        disconnected: list[str] = []
-        for name in SKIP_FOR_RESUME:
-            if name in rows:
-                try:
-                    rows[name].changed.disconnect(snapshot_skip_toggles)
-                    disconnected.append(name)
-                except (TypeError, RuntimeError):
-                    pass
-        nonlocal revert_setting_skips
-        revert_setting_skips = True
-        try:
-            for name in plan.skip_settings:
-                if name in rows:
-                    rows[name].value = False
-        finally:
-            revert_setting_skips = False
-            skip_toggle_snapshot.update(saved_skip_snapshot)
-            for name in disconnected:
-                rows[name].changed.connect(snapshot_skip_toggles)
-        apply_prerequisites()
+        _apply_resume_skips(plan.skip_settings)
         if plan.tab_title:
             titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
             if plan.tab_title in titles:
@@ -7925,18 +7929,29 @@ def settings_widget(napari_viewer=None):
         state = graph_editor["state"]
         if state is None:
             return
-        stages_recorded = checkpoints.stages
-        checkpoint = checkpoints.get(stages_recorded[-1]) if stages_recorded else None
-        if checkpoint is None:
+        if run_state.running:
+            report.value = ALREADY_RUNNING
+            return
+        # Like a run from a tab: the user's own toggles first, then the skeleton
+        # and the edited graph written where the run loads them, so it neither
+        # re-skeletonises the image nor rebuilds a graph it would discard.
+        _restore_skip_toggles()
+        try:
+            settings = _settings()
+        except Exception as error:
+            report.value = f"Could not read settings:\n{error}"
+            return
+        plan = checkpoints.plan_regenerate(state.graph, settings=settings)
+        if plan is None:
             report.value = (
                 "Nothing to regenerate from: run the pipeline through at "
                 "least Boundaries first."
             )
             return
-        resume = resume_from_edit(checkpoint, state.graph)
+        _apply_resume_skips(plan.skip_settings)
         on_run(
-            start_from=resume.start_from,
-            resume=resume,
+            start_from=plan.start_from,
+            resume=plan.resume,
             replace_checkpoints=False,
             # Boundaries is recorded again, from the edited graph, so a later
             # "Run from this stage" on Diameters keeps the edit; the graph
