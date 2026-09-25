@@ -176,6 +176,43 @@ def test_the_default_wall_permeability_is_one_value_for_both_gases():
     assert config.permeability_co2_cm_s == config.permeability_o2_cm_s
 
 
+# Open item 19 (c). The wall permeability was 1e-4 cm/s with no source, 10^2-10^4x below a D/delta
+# estimate, and Tier 3 ran wall-limited. Liu, Eskin & Hellums (1994) measured the O2 mass-transfer
+# coefficient of a human umbilical vein endothelial monolayer: k = 1.22e-10 mol/(cm^2 s mmHg).
+# The solver's wall flux is P * A * alpha_O2 * dPO2, so P = k / alpha_O2 reproduces k.
+_LIU_1994_K_MOL_PER_CM2_S_MMHG = 1.22e-10
+_ALPHA_O2_MOL_PER_CM3_MMHG = _ALPHA_O2 * 1e-6  # mmol/L = 1e-6 mol/cm^3
+
+
+def test_the_default_o2_wall_permeability_is_liu_1994_measured_value():
+    config = _pipeline_perfusion_config()
+    expected = _LIU_1994_K_MOL_PER_CM2_S_MMHG / _ALPHA_O2_MOL_PER_CM3_MMHG
+    np.testing.assert_allclose(config.permeability_o2_cm_s, expected, rtol=0.01)
+
+
+@pytest.mark.parametrize("name", ["config_WKY_normotensive.yaml", "config_SHR_hypertensive.yaml"])
+def test_the_example_yamls_carry_the_same_wall_permeabilities(name):
+    """Both YAMLs restate the wall permeabilities; keep them in step with PerfusionConfig."""
+    from pathlib import Path
+
+    yaml = pytest.importorskip("yaml")
+    config = _pipeline_perfusion_config()
+
+    def find(node, key):
+        if isinstance(node, dict):
+            if key in node:
+                return node[key]
+            for child in node.values():
+                found = find(child, key)
+                if found is not None:
+                    return found
+        return None
+
+    loaded = yaml.safe_load((Path(__file__).parent.parent / "examples" / name).read_text())
+    for key in ("permeability_o2_cm_s", "permeability_co2_cm_s"):
+        assert float(find(loaded, key)) == getattr(config, key), key
+
+
 def test_the_multi_species_solver_runs_at_the_corrected_co2_values():
     config = _MultiConfig()
     G = _one_edge()

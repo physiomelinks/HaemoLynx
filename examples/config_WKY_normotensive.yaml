@@ -73,11 +73,11 @@ PipelineConfig:
   # ------------------------------------------------------------------
   # O2 Dynamics
   sigma_diff: 1.5e-9 # Tissue diffusion coefficient (m^2/s)
-  permeability_o2_cm_s: 1.0e-4 # Capillary wall permeability (cm/s)
+  permeability_o2_cm_s: 9.1e-2 # Capillary wall permeability (cm/s); Liu, Eskin & Hellums 1994, k / alpha_O2
   
   # CO2 Dynamics. D is close to O2's; CO2 moves ~20x faster through its solubility alone
   sigma_diff_co2: 1.6e-9 # Tissue diffusion coefficient (m^2/s), Kawashiro et al. 1975
-  permeability_co2_cm_s: 1.0e-4 # Capillary wall permeability (cm/s), same as O2
+  permeability_co2_cm_s: 9.1e-2 # Capillary wall permeability (cm/s), same as O2
   
   # ------------------------------------------------------------------
   # Tissue Metabolism (Michaelis-Menten Kinetics)

@@ -394,7 +394,10 @@ class PerfusionConfig:
     
     # Endothelial Barrier Model
     use_endothelial_barrier_model: bool = True
-    permeability_o2_cm_s: float = 1.0e-4 # Permeability coefficient for O2 (cm/s)
+    # Measured O2 mass-transfer coefficient of a human umbilical vein endothelial monolayer,
+    # k = 1.22e-10 mol/(cm^2 s mmHg) (Liu, Eskin & Hellums 1994), divided by this solver's
+    # alpha_O2 (1.34e-9 mol/(cm^3 mmHg)) so the wall flux P*A*alpha*dP equals k*A*dP.
+    permeability_o2_cm_s: float = 9.1e-2 # Permeability coefficient for O2 (cm/s)
     
     # Multi-Species Coupling (CO2 & pH)
     use_multi_species_model: bool = True
@@ -402,7 +405,7 @@ class PerfusionConfig:
     # solubility (alpha_CO2 ~ 22x alpha_O2). Measured K_CO2/alpha_CO2 ~ 1.6e-9 m^2/s in rat muscle
     # (Kawashiro et al. 1975). One wall permeability for both gases (Dash & Bassingthwaighte 2006).
     sigma_diff_co2: float = 1.6e-9 # Tissue diffusion coefficient for CO2 (m^2/s)
-    permeability_co2_cm_s: float = 1.0e-4 # Permeability coefficient for CO2 (cm/s); = permeability_o2_cm_s
+    permeability_co2_cm_s: float = 9.1e-2 # Permeability coefficient for CO2 (cm/s); = permeability_o2_cm_s
     respiratory_quotient: float = 0.82 # Ratio of CO2 produced to O2 consumed
     
     # Blood & Tissue Baselines
