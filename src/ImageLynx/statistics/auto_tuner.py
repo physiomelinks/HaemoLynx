@@ -254,8 +254,13 @@ def run_optuna_skeleton_optimization(
 class PreprocessingObjective:
     """Optuna objective function for tuning 3D Voxel Preprocessing parameters."""
     
-    def __init__(self, pipeline_eval_fn: Callable):
+    def __init__(self, pipeline_eval_fn: Callable, search_entropy: bool = False):
         self.pipeline_eval_fn = pipeline_eval_fn
+        # The two entropy thresholds are only search dimensions when the entropy path can run:
+        # enable_shannon_entropy on and an entropy map present. Otherwise they have no effect on
+        # the mask, yet the "best" values still land in best_preprocessing_params.yaml looking
+        # tuned, and a later config with entropy on would apply them as if they had been tested.
+        self.search_entropy = search_entropy
 
     def __call__(self, trial):
         # 1. Define the Bayesian search space (TPE limits)
@@ -310,16 +315,17 @@ class PreprocessingObjective:
             # range it moves foreground 0.114-0.121 and leaves the median radius unchanged, and
             # confidence falls slightly as it rises, so the objective is not driven toward it.
             "probability_smoothing_sigma": trial.suggest_float("probability_smoothing_sigma", 0.0, 1.0),
-            "shannon_entropy_threshold": trial.suggest_float("shannon_entropy_threshold", 0.85, 0.99),
-            "shannon_entropy_core": trial.suggest_float("shannon_entropy_core", 0.4, 0.8)
         }
+        if self.search_entropy:
+            pre_kwargs["shannon_entropy_threshold"] = trial.suggest_float("shannon_entropy_threshold", 0.85, 0.99)
+            pre_kwargs["shannon_entropy_core"] = trial.suggest_float("shannon_entropy_core", 0.4, 0.8)
         
         # Enforce physical constraints: High threshold must be > Low threshold
         if pre_kwargs["hysteresis_threshold_high"] <= pre_kwargs["hysteresis_threshold_low"]:
             raise optuna.TrialPruned()
             
         # Core entropy must be less than max entropy
-        if pre_kwargs["shannon_entropy_core"] >= pre_kwargs["shannon_entropy_threshold"]:
+        if self.search_entropy and pre_kwargs["shannon_entropy_core"] >= pre_kwargs["shannon_entropy_threshold"]:
             raise optuna.TrialPruned()
         
         # 2. Evaluate pipeline (applies filters and runs benchmarks)
@@ -420,10 +426,15 @@ def run_optuna_preprocessing_optimization(
     n_trials: int = 30,
     output_dir: Path = Path("outputs"),
     patience: int = 100,
-    seed: Optional[int] = DEFAULT_SAMPLER_SEED
+    seed: Optional[int] = DEFAULT_SAMPLER_SEED,
+    search_entropy: bool = False
 ) -> Dict[str, Any]:
     """
     Executes the Bayesian optimization loop to find the best preprocessing parameters.
+
+    search_entropy adds the two Shannon entropy thresholds to the search. Pass True only when
+    enable_shannon_entropy is on and an entropy map exists; otherwise they cannot affect the
+    mask and their "best" values would be untested.
 
     seed fixes the TPE sampler's random state, so the trial sequence is reproducible across
     runs. Note that this makes the *search* deterministic, not the whole tuning run: if
@@ -436,7 +447,7 @@ def run_optuna_preprocessing_optimization(
     logger.info(f"=== Starting Optuna Preprocessing Optimization (Max {n_trials} trials, Patience {patience}, Seed {seed}) ===")
 
     study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed))
-    objective = PreprocessingObjective(pipeline_eval_fn)
+    objective = PreprocessingObjective(pipeline_eval_fn, search_entropy=search_entropy)
     early_stopper = EarlyStoppingCallback(patience=patience)
     
     study.optimize(objective, n_trials=n_trials, n_jobs=1, callbacks=[early_stopper])

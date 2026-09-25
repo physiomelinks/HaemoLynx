@@ -841,7 +841,8 @@ def _preprocess_local_mask(raw_prob_map, entropy_map, pre_config, skel_config, g
         best_pre_params = auto_tuner.run_optuna_preprocessing_optimization(
             pre_eval_callback, n_trials=optimize_trials,
             output_dir=pipeline_config.vtk_output_prefix.parent,
-            patience=optimize_patience
+            patience=optimize_patience,
+            search_entropy=pre_config.enable_shannon_entropy and entropy_map is not None,
         )
         for k, v in best_pre_params.items():
             setattr(pre_config, k, v)

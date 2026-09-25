@@ -1,3 +1,5 @@
+import functools
+
 import pytest
 import yaml
 from pathlib import Path
@@ -239,7 +241,7 @@ def _recording_skeleton_eval(seen):
 def _recording_preprocessing_eval(seen):
     """Deterministic mock eval for the preprocessing study, recording each proposal."""
     def _eval(kwargs):
-        seen.append((kwargs["hysteresis_threshold_low"], kwargs["shannon_entropy_threshold"]))
+        seen.append((kwargs["hysteresis_threshold_low"], kwargs["probability_smoothing_sigma"]))
         return {
             "confidence": 0.8,
             "probability_yield": 0.3,
@@ -650,3 +652,28 @@ def test_filter_chain_is_not_a_search_dimension():
     suggested = _suggested_ranges(PreprocessingObjective(lambda kwargs: None))
     assert "median_filter_size" not in suggested
     assert "morphological_opening_radius" not in suggested
+
+
+# --- Entropy dimensions only when the entropy path can run (loose end A1) -----------------
+
+SHANNON_KEYS = {"shannon_entropy_threshold", "shannon_entropy_core"}
+
+
+def test_entropy_thresholds_are_not_searched_by_default():
+    """At 2 classes, or with entropy off, they cannot touch the mask, so tuning them is fiction."""
+    assert not SHANNON_KEYS & set(_suggested_ranges(PreprocessingObjective(lambda kwargs: None)))
+    assert not SHANNON_KEYS & set(_kwargs_passed_to_eval(PreprocessingObjective))
+
+
+def test_entropy_thresholds_are_searched_when_asked_for():
+    objective_cls = functools.partial(PreprocessingObjective, search_entropy=True)
+    assert SHANNON_KEYS <= set(_suggested_ranges(objective_cls(lambda kwargs: None)))
+    assert SHANNON_KEYS <= set(_kwargs_passed_to_eval(objective_cls))
+
+
+def test_the_saved_yaml_holds_no_entropy_values_when_entropy_is_off(tmp_path: Path):
+    """The file a user would later pass back in with --config."""
+    run_optuna_preprocessing_optimization(
+        _recording_preprocessing_eval([]), n_trials=5, output_dir=tmp_path, seed=7)
+    saved = yaml.safe_load((tmp_path / "best_preprocessing_params.yaml").read_text())
+    assert not SHANNON_KEYS & set(saved["PreprocessingConfig"])
