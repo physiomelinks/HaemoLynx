@@ -158,18 +158,12 @@ def test_flow_above_the_rounding_level_at_an_unfed_node_still_raises():
         solve_multi_species_perfusion(grid, G, [0], cells, _MEASURED)
 
 
-def test_a_plasma_skimmed_daughter_keeps_tissue_co2_above_arterial(monkeypatch):
+def test_a_plasma_skimmed_daughter_keeps_tissue_co2_above_arterial():
     """With a full Haldane effect in plasma, the H 0.01 daughter's tissue sat at 39.948 mmHg.
 
-    Solved tightly so the check is on the fixed point, not on where a slow loop stopped (open
-    item 23): the tissue CG is tightened the same way as in test_perfusion_implicit_march.
+    Solved tightly so the check is on the fixed point, not on where the loop stopped.
     """
-    import scipy.sparse.linalg
-
-    cg = scipy.sparse.linalg.cg
-    monkeypatch.setattr(scipy.sparse.linalg, "cg",
-                        lambda A, b, **kw: cg(A, b, **{**kw, "rtol": 1e-13, "maxiter": 5000}))
-    config = replace(_MEASURED, picard_max_iterations=20000, picard_tolerance=1e-12)
+    config = replace(_MEASURED, picard_max_iterations=200, picard_tolerance=1e-12)
     grid, G, cells = _network([(0, 1, 1e3, 0.45), (1, 2, 5e2, 0.89), (1, 3, 5e2, 0.01)])
     po2, pco2, _ = solve_multi_species_perfusion(grid, G, [0], cells, config)
     assert np.all(pco2 >= config.pco2_arterial)

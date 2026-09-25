@@ -427,9 +427,11 @@ $$\mathrm{pH} = 6.1 + \log_{10}\!\left(\frac{[\mathrm{HCO_3^-}]}{\alpha_{\mathrm
 
 $$D_z = \frac{\sigma\,\alpha\,r_y r_x}{r_z}, \qquad D_y = \frac{\sigma\,\alpha\,r_z r_x}{r_y}, \qquad D_x = \frac{\sigma\,\alpha\,r_z r_y}{r_x}$$
 
-**(E43)** Pseudo-washout diagonal augmentation
+**(E43)** Diagonal linearisation: the blood's response and the metabolic slope
 
-$$\Lambda^{\mathrm{O_2}}_i = P^{\mathrm{O_2}}_{\text{perm}}\,S_i\,\alpha_{\mathrm{O_2}}\,\gamma, \qquad \Lambda^{\mathrm{CO_2}}_i = P^{\mathrm{CO_2}}_{\text{perm}}\,S_i\,\alpha_{\mathrm{CO_2}}\,\gamma, \qquad \gamma = 1$$
+$$\Lambda^{\mathrm{O_2}}_i = \sum_{e \ni i} \frac{k_e\,C'_e}{C'_e + k_e/Q_e} + \frac{\partial M_{\mathrm{O_2}}}{\partial P}\,V_{\text{cell}}, \qquad \Lambda^{\mathrm{CO_2}}_i = \sum_{e \ni i} \frac{k_e\,C'_e}{C'_e + k_e/Q_e}, \qquad k_e = P_{\text{perm}}\,S_e\,\alpha$$
+
+$C'_e$ is the slope of the blood's content curve at the cell's outlet pressure (E50), so each term is the slope of that vessel's wall flux in tissue pressure through the implicit step. Until open item 23 this was the full $k_e$ (a pseudo-washout with $\gamma = 1$), which at low flow overstates the slope by $(C' + k/Q)/C'$ and made each Picard step move the tissue only that fraction of the way.
 
 **(E44)** Oxygen-dependent metabolic consumption
 
@@ -481,11 +483,15 @@ $$\mathbf{b}_{\mathrm{CO_2}} = \boldsymbol{\phi}_{\mathrm{CO_2}} + M_{\mathrm{CO
 
 **(E53)** Linear systems solved per Picard iteration
 
-$$\mathbf{A}_{\mathrm{O_2}}\,\mathbf{P}_{\mathrm{O_2}} = \mathbf{b}_{\mathrm{O_2}}, \qquad \mathbf{A}_{\mathrm{CO_2}}\,\mathbf{P}_{\mathrm{CO_2}} = \mathbf{b}_{\mathrm{CO_2}}$$
+$$(\mathbf{D}_{\mathrm{O_2}} + \Lambda^{\mathrm{O_2}})\,\mathbf{P}_{\mathrm{O_2}} = \mathbf{b}_{\mathrm{O_2}}, \qquad (\mathbf{D}_{\mathrm{CO_2}} + \Lambda^{\mathrm{CO_2}})\,\mathbf{P}_{\mathrm{CO_2}} = \mathbf{b}_{\mathrm{CO_2}}$$
 
-**(E54)** Picard convergence criterion
+$\mathbf{D}$ is the diffusion operator (E42). Solved exactly by sparse LU each iteration; the result is clipped at zero and passed through guarded Anderson acceleration (depth 5, history dropped when the residual rises) before the next march. Until open item 23: CG at `rtol` 1e-5, warm-started.
 
-$$\frac{\lVert \mathbf{P}^{(k+1)} - \mathbf{P}^{(k)} \rVert}{\lVert \mathbf{P}^{(k+1)} \rVert + 10^{-12}} < \text{tol}$$
+**(E54)** Picard convergence criterion (residual, both gases)
+
+$$\frac{\max_i \bigl|\,(\mathbf{D}\mathbf{P} - \boldsymbol{\phi} \pm M V_{\text{cell}})_i \bigr| \,/\, (D_{ii} + \Lambda_{ii})}{\max_i |P_i| + 10^{-12}} < \text{tol}$$
+
+Evaluated on the field that is returned (−MV for CO₂ production, +MV for O₂ consumption). Until open item 23 the test was the relative change between iterates, which reads small whenever the loop moves slowly.
 
 **(E55)** Final tissue pH
 

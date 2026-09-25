@@ -22,8 +22,12 @@ SOLVERS = {
 }
 
 
-def _provenance(tier):
-    return _perfusion_provenance(tier, SOLVERS[tier], PerfusionConfig(), HaemodynamicsConfig())
+_INFO = {"converged": True, "iterations": 11, "residual_o2": 2.4e-5, "residual_co2": 7.0e-6}
+
+
+def _provenance(tier, info=_INFO):
+    return _perfusion_provenance(tier, SOLVERS[tier], PerfusionConfig(), HaemodynamicsConfig(),
+                                 info if tier == 3 else None)
 
 
 def test_tier_3_records_its_solver_rate_pressures_and_tolerance():
@@ -60,7 +64,30 @@ def test_a_config_missing_M_max_is_refused_not_defaulted():
         picard_tolerance = 1e-4
 
     with pytest.raises(AttributeError, match="M_max"):
-        _perfusion_provenance(3, SOLVERS[3], Partial(), HaemodynamicsConfig())
+        _perfusion_provenance(3, SOLVERS[3], Partial(), HaemodynamicsConfig(), _INFO)
+
+
+def test_tier_3_records_whether_its_loop_converged():
+    """Open item 23: an unconverged Tier 3 field must say so in the file."""
+    tags = _provenance(3)
+    assert tags["perfusion_converged"] == 1
+    assert tags["perfusion_picard_iterations"] == 11
+    assert tags["perfusion_final_residual"] == 2.4e-5
+    unconverged = _provenance(3, dict(_INFO, converged=False, iterations=50))
+    assert unconverged["perfusion_converged"] == 0
+    assert unconverged["perfusion_picard_iterations"] == 50
+
+
+def test_tier_3_without_its_convergence_info_is_refused():
+    with pytest.raises(ValueError, match="convergence info"):
+        _perfusion_provenance(3, SOLVERS[3], PerfusionConfig(), HaemodynamicsConfig())
+
+
+@pytest.mark.parametrize("tier", [1, 2])
+def test_tiers_1_and_2_carry_no_convergence_tags(tier):
+    tags = _provenance(tier)
+    assert not {"perfusion_converged", "perfusion_picard_iterations",
+                "perfusion_final_residual"} & set(tags)
 
 
 def test_the_tags_survive_a_write_and_read_and_keep_the_cell_arrays(tmp_path):

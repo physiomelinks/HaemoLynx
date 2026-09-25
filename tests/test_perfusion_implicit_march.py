@@ -11,7 +11,6 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-import scipy.sparse.linalg
 
 from ImageLynx.haemodynamics.perfusion import (
     _implicit_cell_outlet_pressure,
@@ -83,23 +82,17 @@ def test_no_bracket_raises_instead_of_keeping_an_old_value():
 
 
 @pytest.mark.parametrize("q", [1e2, 1e3])
-def test_tier3_reaches_the_hand_calculated_answer_at_the_measured_permeability(q, caplog, monkeypatch):
+def test_tier3_reaches_the_hand_calculated_answer_at_the_measured_permeability(q, caplog):
     """The old step never settled here; tissue PCO2 came out below arterial.
 
-    The Picard loop is slow at this permeability (thousands of iterations at 1e2 um^3/s), so the
-    tolerance is tight and the cap high: this checks where the loop ends up, not how fast. The
-    tissue CG is tightened too. At its hard-coded rtol 1e-5 (open item 6), warm-started from the
-    last field, it returns that field unchanged once a Picard step is smaller than its
-    tolerance, and the loop stops 0.03-0.25 mmHg short of the answer here.
+    Within the default 50 iterations and the real solver (open item 23). This test used to
+    need 5000 iterations and a tissue CG tightened to rtol 1e-13 by monkeypatch: the loop moved
+    slowly at this permeability, and at the hard-coded rtol 1e-5, warm-started, the CG handed
+    back the last field once a step was smaller than that, so the loop stopped 0.03-0.25 mmHg
+    short.
     """
-    cg = scipy.sparse.linalg.cg
-
-    def tight_cg(A, b, **kwargs):
-        return cg(A, b, **{**kwargs, "rtol": 1e-13, "maxiter": 5000})
-
-    monkeypatch.setattr(scipy.sparse.linalg, "cg", tight_cg)
     config = replace(_Config(), permeability_o2_cm_s=9.1e-2, permeability_co2_cm_s=9.1e-2,
-                     picard_tolerance=1e-10, picard_max_iterations=5000)
+                     picard_tolerance=1e-6, picard_max_iterations=50)
     grid, G, cells = _chain(q)
     with caplog.at_level(logging.WARNING, logger="ImageLynx.haemodynamics.perfusion"):
         po2, pco2, _ = solve_multi_species_perfusion(grid, G, [0], cells, config)

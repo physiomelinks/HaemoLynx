@@ -1274,12 +1274,16 @@ _PERFUSION_VTI_NOTE = (
 )
 
 
-def _perfusion_provenance(tier, solver_name, perf_config, hemo_config):
+def _perfusion_provenance(tier, solver_name, perf_config, hemo_config, solver_info=None):
     """Field-data tags naming the solver and inputs behind a perfusion .vti.
 
     The Picard tolerance is recorded for Tier 3 only, because it is the only tier that reads it
     from the config; Tiers 1 and 2 hard-code their own (open item 6), so the config value would
-    misdescribe them.
+    misdescribe them. For Tier 3 it is a relative residual (open item 23).
+
+    Tier 3 also records whether its loop converged, how many iterations it took and the final
+    residual (``solver_info``, from ``solve_multi_species_perfusion(..., return_info=True)``), so
+    an unconverged field cannot pass for a converged one. It is required for Tier 3.
     """
     mpa_per_mmhg = PASCALS_PER_MMHG * 1e3
     provenance = {
@@ -1291,7 +1295,14 @@ def _perfusion_provenance(tier, solver_name, perf_config, hemo_config):
         "perfusion_note": _PERFUSION_VTI_NOTE,
     }
     if tier == 3:
+        if solver_info is None:
+            raise ValueError("Tier 3 provenance needs the solver's convergence info "
+                             "(solve_multi_species_perfusion(..., return_info=True)).")
         provenance["perfusion_picard_tolerance"] = float(perf_config.picard_tolerance)
+        provenance["perfusion_converged"] = int(bool(solver_info["converged"]))
+        provenance["perfusion_picard_iterations"] = int(solver_info["iterations"])
+        provenance["perfusion_final_residual"] = float(
+            max(solver_info["residual_o2"], solver_info["residual_co2"]))
     return provenance
 
 
@@ -1506,8 +1517,13 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         if perf_config.use_multi_species_model:
             tier, solver_name = 3, "solve_multi_species_perfusion"
             print("  Running Fully Coupled Multi-Species (O2, CO2, pH) Perfusion Solver...")
-            PO2_steady, PCO2_steady, pH_steady = haemodynamics.solve_multi_species_perfusion(grid, G, starting_nodes, cell_mapping, perf_config)
+            PO2_steady, PCO2_steady, pH_steady, solver_info = haemodynamics.solve_multi_species_perfusion(
+                grid, G, starting_nodes, cell_mapping, perf_config, return_info=True)
             mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)
+            print(f"  Perfusion solve {'converged' if solver_info['converged'] else 'DID NOT CONVERGE'} "
+                  f"after {solver_info['iterations']} iterations (residual O2 "
+                  f"{solver_info['residual_o2']:.2e}, CO2 {solver_info['residual_co2']:.2e}; "
+                  f"tolerance {perf_config.picard_tolerance:g}).")
             print(f"  Perfusion solve complete. Mean tissue PO2: {mean_c:.4e} mmHg (Min: {min_c:.4e}, Max: {max_c:.4e})")
             print(f"                            Mean tissue PCO2: {np.mean(PCO2_steady):.4e} mmHg")
             print(f"                            Mean tissue pH: {np.mean(pH_steady):.4f}")
@@ -1521,7 +1537,7 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
             vol.save(vti_path)
             
         elif perf_config.use_endothelial_barrier_model:
-            tier, solver_name = 2, "solve_coupled_1d3d_perfusion"
+            tier, solver_name, solver_info = 2, "solve_coupled_1d3d_perfusion", None
             print("  Running Fully Coupled 1D-3D Endothelial Permeability Solver...")
             PO2_steady = haemodynamics.solve_coupled_1d3d_perfusion(grid, G, starting_nodes, cell_mapping, perf_config)
             mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)
@@ -1529,7 +1545,7 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
             visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
             
         else:
-            tier, solver_name = 1, "solve_perfusion_steady_state"
+            tier, solver_name, solver_info = 1, "solve_perfusion_steady_state", None
             print("  Running Instant-Equilibrium Perfusion Solver...")
             PO2_steady = haemodynamics.solve_perfusion_steady_state(grid, A, q_total, s_incoming, perf_config)
             mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)
@@ -1537,7 +1553,8 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
             visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
             
         # Last, so Tier 3's PCO2/pH save above cannot drop it.
-        _tag_perfusion_vti(vti_path, _perfusion_provenance(tier, solver_name, perf_config, hemo_config))
+        _tag_perfusion_vti(vti_path, _perfusion_provenance(tier, solver_name, perf_config, hemo_config,
+                                                           solver_info))
         print(f"  Saved 3D Perfusion Field to: {vti_path}")
         print(f"  Tagged it as Tier {tier} ({solver_name}); this is not the H2 hypoxia field.")
         

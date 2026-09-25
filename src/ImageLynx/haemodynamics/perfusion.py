@@ -754,8 +754,74 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
 
     return PO2
 
+#: Past iterates the Tier 3 Anderson step combines (open item 23).
+ANDERSON_DEPTH = 5
+
+
+def _blood_response_conductance(content_of_p, p_out: float, k: float, q: float) -> float:
+    """
+    How much one vessel's wall flux into a cell falls per mmHg rise in tissue pressure.
+
+    The implicit step (``_implicit_cell_outlet_pressure``) solves C(P_out) + g (P_out - P_t) =
+    C_in with g = k / q, so dP_out/dP_t = g / (C' + g) and the flux k (P_out - P_t) has slope
+    -k C' / (C' + g). At high flow this is k; at low flow, where the blood follows the tissue,
+    it is about q C', much less. C' is a central difference at P_out.
+    """
+    h = 1e-6 * max(abs(p_out), 1.0)
+    lo = max(p_out - h, 1e-12)
+    slope = (content_of_p(p_out + h) - content_of_p(lo)) / (p_out + h - lo)
+    return k * slope / (slope + k / q)
+
+
+def _relative_residual(A_diff, P: np.ndarray, net_source: np.ndarray, scale: np.ndarray) -> float:
+    """
+    Largest per-cell imbalance of the tissue balance, in mmHg, relative to the field.
+
+    The balance is A_diff P = net_source (wall flux plus production, minus consumption). Each
+    cell's imbalance is divided by ``scale``, the cell's linearised response to its own
+    pressure (diffusion diagonal plus the blood's response), which turns mmol/s into the
+    pressure correction the cell needs. Scaling by the full wall conductance instead would make
+    low-flow cells, where the blood follows the tissue, look converged long before they are.
+    """
+    delta = np.abs(A_diff @ P - net_source) / scale
+    return float(delta.max() / (np.abs(P).max() + 1e-12)) if delta.size else 0.0
+
+
+class _AndersonMixer:
+    """
+    Anderson acceleration of a fixed-point iteration x -> G(x) (Walker & Ni 2011, type II).
+
+    Keeps the last ``depth`` differences of x and of G(x) - x and returns the combination of
+    past G values whose residual is smallest in least squares. The result is clipped at 0
+    (pressures). If the measured residual rose since the last call, the history is dropped and
+    this step is a plain one: unguarded, Anderson on top of the Newton-like update diverged on a
+    stiff two-cell chain.
+    """
+
+    def __init__(self, depth: int):
+        self.depth = depth
+        self.xs, self.fs = [], []
+        self.last = np.inf
+
+    def update(self, x: np.ndarray, gx: np.ndarray, residual: float) -> np.ndarray:
+        if residual > self.last:
+            self.xs, self.fs = [], []
+        self.last = residual
+        self.xs.append(x)
+        self.fs.append(gx - x)
+        self.xs, self.fs = self.xs[-(self.depth + 1):], self.fs[-(self.depth + 1):]
+        if len(self.fs) == 1:
+            return np.maximum(gx, 0.0)
+        dF = np.stack([b - a for a, b in zip(self.fs[:-1], self.fs[1:])], axis=1)
+        dG = np.stack([(xb + fb) - (xa + fa) for xa, xb, fa, fb
+                       in zip(self.xs[:-1], self.xs[1:], self.fs[:-1], self.fs[1:])], axis=1)
+        gamma, *_ = np.linalg.lstsq(dF, self.fs[-1], rcond=None)
+        return np.maximum(gx - dG @ gamma, 0.0)
+
+
 def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting_nodes: list, cell_to_vessels: Dict, perf_config,
-                                  flow_to_um3_per_s: float = POISEUILLE_FLOW_TO_UM3_PER_S) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                                  flow_to_um3_per_s: float = POISEUILLE_FLOW_TO_UM3_PER_S,
+                                  return_info: bool = False):
     """
     Solve the Multi-Species (O2, CO2, pH) Coupled 1D-3D Steady-State system.
     Solves for tissue PO2, PCO2, and pH using Bohr/Haldane effects and Henderson-Hasselbalch.
@@ -766,6 +832,19 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     Each cell's exchange is implicit (``_implicit_cell_outlet_pressure``): the wall flux is taken
     at the blood's outlet pressure, which lies between the tissue's and the inlet's, so one cell
     can at most bring blood to equilibrium with its tissue.
+
+    The Picard loop (open item 23) linearises the wall flux through the blood's actual response
+    (``_blood_response_conductance``) and consumption through its slope, solves each tissue
+    update exactly with a sparse LU, and speeds up with guarded Anderson acceleration
+    (``_AndersonMixer``). It stops when the
+    nonlinear residual of both species, scaled to mmHg by the blood's actual response, is below
+    ``perf_config.picard_tolerance`` relative to the field (``_relative_residual``). It used to
+    stop on the relative change between iterates, with a warm-started CG at rtol 1e-5: the loop
+    moved slowly at capillary flow, and once a step fell below the CG tolerance the change read
+    zero and it reported convergence short of the answer.
+
+    Returns PO2, PCO2 and pH. With ``return_info`` it also returns a dict with ``converged``,
+    ``iterations`` (Picard updates made) and ``residual_o2``/``residual_co2`` of the returned field.
     """
     import scipy.sparse as sp
     import scipy.sparse.linalg as splinalg
@@ -882,26 +961,23 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         A = sp.coo_matrix((data_arr, (rows, cols)), shape=(N, N)).tocsr()
         return A
 
-    A_o2 = build_diffusion_matrix(perf_config.sigma_diff, alpha_o2)
-    A_co2 = build_diffusion_matrix(perf_config.sigma_diff_co2, alpha_co2)
+    A_diff_o2 = build_diffusion_matrix(perf_config.sigma_diff, alpha_o2)
+    A_diff_co2 = build_diffusion_matrix(perf_config.sigma_diff_co2, alpha_co2)
 
-    area_total = np.zeros(N)
-    for cell_idx, vessels in cell_to_vessels.items():
-        area_total[cell_idx] = sum(v['surface_area'] for v in vessels)
+    def exact_solve(A_diff, diagonal, b):
+        # Sparse LU with a symmetric ordering (the matrix is symmetric): exact, and about 1 s
+        # on a 30k-cell grid against 3 s with the default ordering. The CG used before had a
+        # hard-coded rtol of 1e-5 and was warm-started, so a Picard step smaller than that came
+        # back as no change and the loop reported convergence short of the answer (item 23).
+        A = (A_diff + sp.diags(diagonal)).tocsc()
+        lu = splinalg.splu(A, permc_spec="MMD_AT_PLUS_A", options={"SymmetricMode": True})
+        return lu.solve(b)
 
-    gamma_relax_o2 = 1.0
-    gamma_relax_co2 = 1.0 
-
-    pseudo_washout_o2 = P_perm_o2 * area_total * alpha_o2 * gamma_relax_o2
-    pseudo_washout_co2 = P_perm_co2 * area_total * alpha_co2 * gamma_relax_co2
-
-    A_o2.setdiag(A_o2.diagonal() + pseudo_washout_o2)
-    A_co2.setdiag(A_co2.diagonal() + pseudo_washout_co2)
-
-    M_pre_o2 = _jacobi_preconditioner(A_o2)
-    M_pre_co2 = _jacobi_preconditioner(A_co2)
-
-    for iteration in range(max_iter):
+    mixer = _AndersonMixer(ANDERSON_DEPTH)
+    converged = False
+    residual_o2 = residual_co2 = np.inf
+    # One pass more than max_iter updates: the last pass only measures the returned field.
+    for iteration in range(max_iter + 1):
         PO2_clamped = np.maximum(PO2_tissue, 0.0)
         PCO2_clamped = np.maximum(PCO2_tissue, 0.0)
 
@@ -922,6 +998,9 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
 
         transmural_o2 = np.zeros(N, dtype=np.float64)
         transmural_co2 = np.zeros(N, dtype=np.float64)
+        # d(wall flux)/d(tissue pressure) through the blood, for the residual's scale.
+        response_o2 = np.zeros(N, dtype=np.float64)
+        response_co2 = np.zeros(N, dtype=np.float64)
 
         for node in topo_order:
             if node in starting_set:
@@ -970,6 +1049,12 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
                         o2_pco2_arg, o2_ph_arg = pco2_in_cell, ph_local
                         c_o2_curr = calculate_blood_oxygen_content(po2_curr, h, o2_pco2_arg, o2_ph_arg)
                         c_co2_curr = calculate_blood_co2_content(pco2_curr, h, po2_curr)
+                        response_o2[idx] += _blood_response_conductance(
+                            lambda p: calculate_blood_oxygen_content(p, h, pco2_in_cell, ph_local),
+                            po2_curr, k_o2, q)
+                        response_co2[idx] += _blood_response_conductance(
+                            lambda p: calculate_blood_co2_content(p, h, po2_out_cell),
+                            pco2_curr, k_co2, q)
 
                     flux_o2 = k_o2 * (po2_curr - PO2_clamped[idx])
                     flux_co2 = k_co2 * (pco2_curr - PCO2_clamped[idx])
@@ -983,8 +1068,33 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
                               "o2_pco2": o2_pco2_arg, "o2_ph": o2_ph_arg},
                 })
 
-        b_o2 = transmural_o2 - (M_o2_red * V_cell) + (pseudo_washout_o2 * PO2_clamped)
-        b_co2 = transmural_co2 + (M_co2_prod * V_cell) + (pseudo_washout_co2 * PCO2_clamped)
+        # The residual of this field, scaled by the linearised response of each cell to its own
+        # pressure: diffusion, the blood's response through the implicit step, and (O2) the
+        # metabolic slope, since consumption falls as PO2 does.
+        metabolic_slope = M_max * k_reduce * np.exp(-k_reduce * PO2_clamped) * V_cell
+        residual_o2 = _relative_residual(
+            A_diff_o2, PO2_clamped, transmural_o2 - M_o2_red * V_cell,
+            A_diff_o2.diagonal() + response_o2 + metabolic_slope)
+        residual_co2 = _relative_residual(
+            A_diff_co2, PCO2_clamped, transmural_co2 + M_co2_prod * V_cell,
+            A_diff_co2.diagonal() + response_co2)
+        if residual_o2 < tolerance and residual_co2 < tolerance:
+            converged = True
+            logger.info(f"Multi-Species solver converged after {iteration} iterations "
+                        f"(residual O2 {residual_o2:.2e}, CO2 {residual_co2:.2e}).")
+            break
+        if iteration == max_iter:
+            break
+
+        # Newton-like update with the same linearisation on the diagonal. The wall term used to
+        # be the full conductance P A alpha (a pseudo-washout, gamma 1). At low flow the blood
+        # follows the tissue, the true slope is only q C', and each iteration moved the tissue
+        # C' / (C' + P A alpha / q) of the way: thousands of iterations in plasma-skimmed or
+        # slow vessels (open item 23).
+        diag_o2 = response_o2 + metabolic_slope
+        diag_co2 = response_co2
+        b_o2 = transmural_o2 - (M_o2_red * V_cell) + diag_o2 * PO2_clamped
+        b_co2 = transmural_co2 + (M_co2_prod * V_cell) + diag_co2 * PCO2_clamped
 
         if iteration == 0:
             logger.info(f"DEBUG Iteration 0: max(transmural_o2) = {np.max(transmural_o2)}")
@@ -993,24 +1103,24 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
             o2_flux_in = [f["c_o2"] * f["q"] for fs in inflows.values() for f in fs]
             logger.info(f"DEBUG Iteration 0: max(node O2 flux in) = {max(o2_flux_in, default=0.0)}")
 
-        PO2_new, _ = splinalg.cg(A_o2, b_o2, M=M_pre_o2, x0=PO2_tissue, rtol=1e-5, maxiter=500)
-        PCO2_new, _ = splinalg.cg(A_co2, b_co2, M=M_pre_co2, x0=PCO2_tissue, rtol=1e-5, maxiter=500)
+        picard = np.concatenate([np.maximum(exact_solve(A_diff_o2, diag_o2, b_o2), 0.0),
+                                 np.maximum(exact_solve(A_diff_co2, diag_co2, b_co2), 0.0)])
+        mixed = mixer.update(np.concatenate([PO2_clamped, PCO2_clamped]), picard,
+                             max(residual_o2, residual_co2))
+        PO2_tissue, PCO2_tissue = mixed[:N], mixed[N:]
 
-        PO2_new = np.maximum(PO2_new, 0.0)
-        PCO2_new = np.maximum(PCO2_new, 0.0)
+    PO2_tissue = np.maximum(PO2_tissue, 0.0)
+    PCO2_tissue = np.maximum(PCO2_tissue, 0.0)
+    if not converged:
+        logger.warning(
+            f"Multi-Species Picard iteration hit max_iter ({max_iter}) without reaching tolerance "
+            f"{tolerance}: residual O2 {residual_o2:.2e}, CO2 {residual_co2:.2e}.")
 
-        diff_o2 = np.linalg.norm(PO2_new - PO2_tissue) / (np.linalg.norm(PO2_new) + 1e-12)
-        diff_co2 = np.linalg.norm(PCO2_new - PCO2_tissue) / (np.linalg.norm(PCO2_new) + 1e-12)
-
-        PO2_tissue, PCO2_tissue = PO2_new, PCO2_new
-
-        if diff_o2 < tolerance and diff_co2 < tolerance:
-            logger.info(f"Multi-Species solver converged after {iteration+1} iterations.")
-            break
-    else:
-        logger.warning(f"Multi-Species Picard iteration hit max_iter ({max_iter}) without reaching tolerance {tolerance}.")
-
-    pH_tissue = calculate_ph_from_pco2(np.maximum(PCO2_tissue, 0.0), hco3_tissue)
+    pH_tissue = calculate_ph_from_pco2(PCO2_tissue, hco3_tissue)
+    if return_info:
+        info = {"converged": converged, "iterations": int(iteration),
+                "residual_o2": float(residual_o2), "residual_co2": float(residual_co2)}
+        return PO2_tissue, PCO2_tissue, pH_tissue, info
     return PO2_tissue, PCO2_tissue, pH_tissue
 
 
