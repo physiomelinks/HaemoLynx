@@ -737,7 +737,7 @@ fwhm_diameter_measurement:
   # Reject a sample narrower than this many pixels: a width that small cannot be resolved, and is almost always a fit to a single noise spike (0 disables)  [voxels; range 0.0..; needs use_fwhm_edge_diameters]
   fwhm_min_diameter_pixels: 2.0
   # Discard samples whose transverse profile looks like a flat plateau rather than a peak (a saturated detector or a probability map); plasma-filled lumens are plateaus, so leave off for those  [needs use_fwhm_edge_diameters]
-  fwhm_reject_samples_with_plateau_shape: true
+  fwhm_reject_samples_with_plateau_shape: false
   # Reject a sample once its 80%-height width is at least this fraction of its half-max width  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_plateau_shape]
   fwhm_max_plateau_shape_ratio: 0.85
   # Sample transverse profiles in the y-x slice plane, or perpendicular to the true 3D tangent  [one of: in_plane_yx, true_3d_perpendicular; needs use_fwhm_edge_diameters]
