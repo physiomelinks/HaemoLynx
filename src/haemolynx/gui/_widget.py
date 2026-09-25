@@ -289,9 +289,11 @@ def snap_view_to_plane(viewer, plane: str) -> bool:
 def _install_view_snap_buttons(viewer):
     """XY / XZ / YZ buttons pinned to the canvas's bottom-left corner.
 
-    Parented to the Qt viewer rather than the vispy canvas -- a child of an
-    OpenGL widget does not reliably paint on every platform -- and moved back
-    to the corner whenever the canvas is resized. One set per viewer: a
+    Parented to the main window: not the vispy canvas, since a child of an
+    OpenGL widget does not reliably paint on every platform, and not the Qt
+    viewer, which is a QSplitter that adopts every child as a pane and so
+    squeezed the canvas to the buttons' width. Moved back to the corner
+    whenever the canvas or viewer is resized or moved. One set per viewer: a
     second panel on the same viewer reuses it. None without a Qt window.
     """
     existing = getattr(viewer, "_haemolynx_view_snap_buttons", None)
@@ -307,10 +309,11 @@ def _install_view_snap_buttons(viewer):
     qt_viewer = getattr(window, "_qt_viewer", None) if window is not None else None
     canvas = getattr(qt_viewer, "canvas", None)
     native = getattr(canvas, "native", canvas)
-    if qt_viewer is None or native is None:
+    main_window = getattr(window, "_qt_window", None) if window is not None else None
+    if qt_viewer is None or native is None or main_window is None:
         return None
 
-    bar = QWidget(qt_viewer)
+    bar = QWidget(main_window)
     bar.setObjectName("haemolynx_view_snap")
     # Only the buttons show: napari's stylesheet otherwise paints the bar as
     # an opaque strip over the canvas.
@@ -369,6 +372,9 @@ def _install_view_snap_buttons(viewer):
 
     follower = _FollowCanvas(bar)
     native.installEventFilter(follower)
+    # Resizing a dock moves the canvas within the window without sending the
+    # canvas itself a Move.
+    qt_viewer.installEventFilter(follower)
     bar._haemolynx_follow_canvas = follower
     bar.place = place
     place()

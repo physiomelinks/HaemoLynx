@@ -746,9 +746,20 @@ def test_the_view_snap_buttons_sit_in_the_canvas_bottom_left(make_napari_viewer)
     for size in ((500, 400), (800, 650)):
         native.resize(*size)
         bar.place()
-        corner = native.mapTo(qt_viewer, native.rect().bottomLeft())
+        corner = native.mapTo(bar.parentWidget(), native.rect().bottomLeft())
         assert bar.x() == corner.x() + VIEW_SNAP_MARGIN
         assert bar.geometry().bottom() == corner.y() - VIEW_SNAP_MARGIN
+
+
+def test_the_view_snap_buttons_are_not_a_pane_of_the_viewer_splitter(
+    make_napari_viewer,
+):
+    """napari's Qt viewer is a QSplitter, which turns every child into a pane:
+    a bar parented there squeezed the canvas down to the buttons' width."""
+    viewer = _snap_viewer(make_napari_viewer)
+    bar = viewer._haemolynx_view_snap_buttons
+    assert viewer.window._qt_viewer.indexOf(bar) == -1
+    assert bar.parentWidget() is viewer.window._qt_window
 
 
 def test_a_second_panel_reuses_the_viewers_view_snap_buttons(make_napari_viewer):
