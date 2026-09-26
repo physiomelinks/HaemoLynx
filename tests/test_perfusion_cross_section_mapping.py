@@ -125,13 +125,30 @@ def test_the_disc_is_perpendicular_to_a_diagonal_vessel():
 
 
 def test_coincident_centreline_points_raise():
-    """No tangent, so no cross-section plane: raised rather than guessed."""
+    """No segment either side has a direction, so no cross-section plane: raised, not guessed."""
     pts = np.array([[1.0, 5.0, 5.0], [2.0, 5.0, 5.0], [2.0, 5.0, 5.0], [2.0, 5.0, 5.0]])
     G = _graph(pts, diameter=2.0)
     grid = _grid(G, 1.0, (0, 0, 0), (10, 10, 10))
     with pytest.raises(ValueError, match="tangent"):
         map_vessels_to_grid(G, grid, vessel_mapping="cross_section")
     map_vessels_to_grid(G, grid)  # the centreline mapping needs no tangent
+
+
+def test_a_centreline_that_turns_straight_back_uses_the_adjoining_segment(caplog):
+    """A, B, A, C (the WKY-A spur): the disc at B is perpendicular to A -> B, and it is logged."""
+    radius, h = 2.0, 0.5
+    a, b, c = [10.0, 10.0, 10.0], [11.0, 10.0, 10.0], [10.0, 11.0, 10.0]
+    G = _graph([a, b, a, c], diameter=2 * radius)
+    grid = _grid(G, h, (0, 0, 0), (20, 20, 20))
+    with caplog.at_level("WARNING"):
+        entries = _by_edge(map_vessels_to_grid(G, grid, vessel_mapping="cross_section"))
+    assert "reverses on itself" in caplog.text
+    share = sum(e["length_fraction"] for e in entries[(0, 1, 0)].values())
+    assert share == pytest.approx(1.0)
+    # The disc through B lies in the plane z = 11: cells in z-slab [11, 11.5) exist, spread in y, x.
+    centres = np.array([grid.get_xyz_from_index(i) for i in entries[(0, 1, 0)]])
+    at_b = centres[np.isclose(centres[:, 0], 11.25)]
+    assert np.ptp(at_b[:, 1]) >= 2 * radius - 2 * h and np.ptp(at_b[:, 2]) >= 2 * radius - 2 * h
 
 
 def test_lumen_outside_the_grid_is_dropped_and_the_rest_renormalised():
@@ -151,3 +168,15 @@ def test_the_centreline_default_is_unchanged():
     grid = _grid(G, 2.0, (0, 0, 0), (40, 45, 45))
     assert map_vessels_to_grid(G, grid) == map_vessels_to_grid(
         G, grid, vessel_mapping="centreline")
+
+
+def test_the_h2_drivers_map_by_cross_section_at_the_converged_grid():
+    """§2.3 and its VTK export use the mapping and grid chosen in open item 30, and agree."""
+    import cb_h2_hypoxic_fraction
+    import cb_h2_vtk
+    from ImageLynx import cb_settings
+
+    assert cb_h2_hypoxic_fraction.VESSEL_MAPPING == "cross_section"
+    assert cb_h2_vtk.VESSEL_MAPPING == cb_h2_hypoxic_fraction.VESSEL_MAPPING
+    # The coarsest grid within 0.5 mmHg of the next refinement (reference section 6.8).
+    assert cb_settings.GRID_UM == 3.0

@@ -13,13 +13,14 @@ tissue in the flow solve's own units rather than µm³/s, so the sink exceeded t
 2.2e4; and each edge's whole flow was recorded against every cell it crossed, so the source
 grew with grid resolution and the answer was not grid-convergent.
 
-**Resolution.** 4 µm, not the native 1.866 µm. With the conservation defect fixed the solution
+**Resolution.** 3 µm, not the native 1.866 µm. With the conservation defect fixed the solution
 converged: median PO2 moved 27.34, 27.92, 28.21 at 10, 6 and 4 µm, halving its increment each
 time. After open items 22 (O2 solubility in the diffusion) and 29 (washout at the cell's own
-haematocrit) WKY-C runs 91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm and does not
-converge. Each vessel is mapped to the cells its centreline crosses, so a finer grid draws it
-thinner and PO2 keeps falling (open item 30, H2 whitepaper §10.3). 4 µm is kept until the grid is
-chosen.
+haematocrit) it no longer did: each vessel was mapped to the cells its centreline crosses, so a
+finer grid drew it thinner and PO2 kept falling, 1.5-1.9 mmHg per halving (open item 30). Vessels
+are now mapped over their cross-section. WKY-C median PO2 then runs 92.99, 92.79, 92.69, 92.87,
+92.78 at 10, 6, 4, 3, 2 µm; every measure moves at most 0.21 mmHg from 3 to 2 µm, but up to 0.78
+from 4 to 3 µm, so the grid is 3 µm (H2 whitepaper §10.3).
 
 **The metabolic contrast is an assumption, not a measurement.** Nothing in this study measures
 the ratio of glomus to stromal oxygen consumption, so it is a parameter here and the answer is
@@ -63,8 +64,9 @@ GRID_UM = cb_settings.GRID_UM
 INLET_P, OUTLET_P = cb_settings.INLET_PRESSURE_MMHG, cb_settings.OUTLET_PRESSURE_MMHG
 BASE_M_MAX = cb_settings.BASE_M_MAX
 HYPOXIC_THRESHOLDS = (5.0, 10.0, 20.0)
-# Which cells a vessel occupies (open item 30). cb_h2_vtk.py must use the same.
-VESSEL_MAPPING = "centreline"
+# Which cells a vessel occupies (open item 30). cb_h2_vtk.py reads it from here. The centreline
+# mapping has no grid-converged limit; the cross-section one settles by 3 um.
+VESSEL_MAPPING = "cross_section"
 PerfConfig = cb_settings.PerfusionSettings
 
 

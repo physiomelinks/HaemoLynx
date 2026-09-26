@@ -16,7 +16,7 @@ Writes, per specimen, into one shared directory so all six load into a single Pa
     <SPEC>_glomus_surface.vtp   smoothed isosurface of the glomus mask
     <SPEC>_glomus_clusters.vtp  the same surface split into connected nests, each with an id
                                 and its volume, so a single cluster can be isolated
-    <SPEC>_perfusion.vti        4 um ADR grid: PO2, TH fraction, metabolic rate, flow, source
+    <SPEC>_perfusion.vti        3 um ADR grid: PO2, TH fraction, metabolic rate, flow, source
     <SPEC>_vessels_h2.vtp       centrelines carrying flow, haematocrit, viscosity, TH fraction,
                                 transit time and the penetrating/bypassing classification
 
@@ -24,7 +24,7 @@ Writes, per specimen, into one shared directory so all six load into a single Pa
 and ImageData is written with ``dimensions = shape``, ``spacing = PROCESSING_VOXEL_UM`` and
 ``origin`` in the same order, so **VTK's x axis carries the array's z axis**. Graph points are
 stored (z, y, x) in micrometres and land the same way. Everything therefore overlays without a
-transform, and the perfusion grid, which is 4 um where the glomus mask is 1.866 um, lands in the
+transform, and the perfusion grid, which is 3 um where the glomus mask is 1.866 um, lands in the
 same physical frame.
 
 ``--verify`` checks that against the data rather than trusting the reasoning. On WKY-C, edges

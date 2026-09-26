@@ -125,15 +125,17 @@ PENETRATION_FRACTION: float = 0.5
 # Tissue transport
 # ---------------------------------------------------------------------------------------
 
-#: Perfusion grid pitch, isotropic, in um. Not grid-converged (open item 30).
+#: Perfusion grid pitch, isotropic, in um. Chosen on convergence (open item 30).
+#:
+#: With vessels mapped over their cross-section (``vessel_mapping="cross_section"``), Tier 1
+#: median PO2 and TH-weighted PO2 on WKY-C and SHR-C move at most 0.21 mmHg from 3 to 2 um,
+#: but up to 0.78 mmHg from 4 to 3 um (reference section 6.8). 3 um is the coarsest grid
+#: within 0.5 mmHg of the next refinement. It was 4 um until open item 30; with the centreline
+#: mapping no grid converged, because a finer grid drew each vessel thinner.
 #:
 #: Measured tissue-to-vessel distance has a median of 5.28-7.92 um across the three WKY
-#: specimens, so at 4 um the median tissue voxel sits 1.3-2.0 cells from a vessel: the
-#: gradient that decides whether tissue is hypoxic is spanned by one or two cells for half
-#: the tissue. Refining does not help. Vessels are mapped to the cells their centreline
-#: crosses, so a finer grid draws them thinner, and Tier 1 PO2 keeps falling, about 1.5-1.9
-#: mmHg per halving down to 2 um (reference section 6.8). The choice of grid is open.
-GRID_UM: float = 4.0
+#: specimens, so at 3 um the median tissue voxel sits 1.8-2.6 cells from a vessel.
+GRID_UM: float = 3.0
 
 #: Volume-weighted mean maximum metabolic rate, mmol/L/s.
 #:

@@ -233,7 +233,8 @@ def _cross_section_cells(points_zyx: np.ndarray, radius: float, grid: "Perfusion
     """Cells an edge's lumen covers, and the share of each centreline sample that falls in each.
 
     Each centreline point is swept over a disc of the vessel's radius, perpendicular to the local
-    tangent (central differences along the polyline, one-sided at the ends). The disc is sampled
+    tangent (central differences along the polyline, one-sided at the ends; where the polyline
+    turns straight back, the adjoining segment). The disc is sampled
     at an eighth of the finer of the grid pitch and the vessel diameter, so a cell that holds
     part of the lumen receives that part, whatever the grid. Returns ``(cells, weight)``: ``weight`` is in units of
     centreline samples, so it sums to ``len(points_zyx)`` less whatever falls outside the grid.
@@ -241,10 +242,26 @@ def _cross_section_cells(points_zyx: np.ndarray, radius: float, grid: "Perfusion
     tangent = np.gradient(points_zyx, axis=0)
     norm = np.linalg.norm(tangent, axis=1)
     if np.any(norm == 0):
-        raise ValueError(
-            f"Edge {edge} has coincident neighbouring centreline points, so its tangent and "
-            f"therefore the plane of its cross-section are undefined. Deduplicate its 'voxels' "
-            f"first, or map it with vessel_mapping='centreline'.")
+        # The central difference vanishes where the polyline turns straight back on itself
+        # (A, B, A: a one-voxel skeleton spur; one edge in the six CB specimens, on WKY-A).
+        # The segment into the point, or failing that out of it, is still a direction there.
+        step = np.diff(points_zyx, axis=0)
+        into = np.vstack([step[:1], step])
+        out_of = np.vstack([step, step[-1:]])
+        for i in np.flatnonzero(norm == 0):
+            for candidate in (into[i], out_of[i]):
+                if np.linalg.norm(candidate) > 0:
+                    tangent[i] = candidate
+                    break
+            else:
+                raise ValueError(
+                    f"Edge {edge} has coincident neighbouring centreline points, so its tangent "
+                    f"and therefore the plane of its cross-section are undefined. Deduplicate "
+                    f"its 'voxels' first, or map it with vessel_mapping='centreline'.")
+        logger.warning(
+            f"Edge {edge}: centreline reverses on itself at {int((norm == 0).sum())} point(s); "
+            f"the cross-section there is taken perpendicular to the adjoining segment.")
+        norm = np.linalg.norm(tangent, axis=1)
     tangent = tangent / norm[:, None]
 
     # Any vector not parallel to the tangent gives a basis for the perpendicular plane.
