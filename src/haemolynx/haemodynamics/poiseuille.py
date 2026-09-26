@@ -127,22 +127,28 @@ def positive_diameter_um(value: object) -> float | None:
 
 
 def baseline_edge_diameter(
-    data: dict, branch_order: str, diameter_by_branch_order: dict
+    data: dict,
+    branch_order: str,
+    diameter_by_branch_order: dict,
+    *,
+    fwhm_fallback: bool = True,
 ) -> tuple[float, bool]:
     """``(d1, from_fwhm)``: the unconstricted diameter a constriction starts from.
 
     The same choice :meth:`PoiseuilleModel.set_poiseuille_resistances` makes
     for the baseline: the diameter stamped at assign_diameters (a FWHM fit,
-    the EDT fallback, a hand override or the table), else the FWHM fit, else
-    the table. Reading ``fwhm_diameter_um`` alone put every vessel that fell
-    back to EDT -- most of a real network -- at the table diameter, so a
-    constriction factor of 1 did not reproduce the baseline; and demanding a
-    table entry first failed the whole run on any branch order past
-    ``max_branch_order``, even when the vessel had its own diameter.
+    the EDT fallback, a hand override or the table), else -- with
+    *fwhm_fallback*, the baseline's ``prefer_edge_fwhm_diameter`` -- the FWHM
+    fit, else the table. Reading ``fwhm_diameter_um`` alone (FWHM on) or the
+    table alone (FWHM off) put every vessel that fell back to EDT or was set
+    by hand at another diameter, so a constriction factor of 1 did not
+    reproduce the baseline; and demanding a table entry first failed the
+    whole run on any branch order past ``max_branch_order``, even when the
+    vessel had its own diameter.
     """
     diameter = positive_diameter_um(data.get("diameter_um"))
     from_fwhm = data.get("diameter_source") == DIAMETER_SOURCE_MEASURED
-    if diameter is None:
+    if diameter is None and fwhm_fallback:
         diameter = positive_diameter_um(data.get("fwhm_diameter_um"))
         from_fwhm = diameter is not None
     if diameter is not None:
@@ -644,8 +650,16 @@ class PoiseuilleModel:
         *,
         prefer_edge_fwhm_baseline: bool = False,
         constriction_factor_by_branch_order: dict[str, float] | None = None,
+        fwhm_fallback: bool = True,
     ) -> tuple[nx.MultiGraph, dict]:
         """Set edge resistance/conductance by integrating resistance along constrictions.
+
+        Every edge starts from its own diameter -- the one the baseline was
+        solved with -- when it has one (see :func:`baseline_edge_diameter`);
+        the table only fills in for edges that have none. *fwhm_fallback*
+        (with ``prefer_edge_fwhm_baseline``) lets an edge with no stamped
+        diameter fall back to its FWHM fit before the table, as the baseline
+        does when FWHM diameters are on.
 
         Parameters
         ----------
@@ -700,7 +714,8 @@ class PoiseuilleModel:
             if prefer_edge_fwhm_baseline:
                 try:
                     d1, from_fwhm = baseline_edge_diameter(
-                        data, branch_order, diameter_by_branch_order
+                        data, branch_order, diameter_by_branch_order,
+                        fwhm_fallback=fwhm_fallback,
                     )
                 except ValueError as error:
                     raise ValueError(f"Edge ({u}, {v}, {key}): {error}") from error
@@ -725,6 +740,10 @@ class PoiseuilleModel:
                         "Expected dict containing 'd1' and 'd2'."
                     )
                 d1, d2 = diameters["d1"], diameters["d2"]
+                own = positive_diameter_um(data.get("diameter_um"))
+                if own is not None:
+                    # The pair's constriction, on the diameter the baseline used.
+                    d1, d2 = own, own * float(d2) / float(d1)
 
             if d1 <= 0 or d2 <= 0:
                 raise ValueError(

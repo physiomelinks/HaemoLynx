@@ -37,7 +37,12 @@ from typing import Any, Iterable, Protocol
 import networkx as nx
 import numpy as np
 
-from .poiseuille import baseline_edge_diameter, set_edge_resistance
+from .poiseuille import (
+    DIAMETER_SOURCE_MEASURED,
+    baseline_edge_diameter,
+    positive_diameter_um,
+    set_edge_resistance,
+)
 from .viscosity import DEFAULT_HAEMATOCRIT, viscosity_for
 
 #: Micrometres per metre. Diameters and lengths arrive in um and the resistance
@@ -160,12 +165,13 @@ def resolve_edge_diameters(
 
     ``diameter_by_branch_order`` maps a branch order either to a passive
     diameter, in which case ``d2`` comes from the effective constriction
-    factor, or to an explicit ``{"d1": ..., "d2": ...}`` pair. With
-    ``prefer_edge_fwhm_baseline`` the edge's own diameter -- the one the
-    baseline was solved with, see
+    factor, or to an explicit ``{"d1": ..., "d2": ...}`` pair. Either way the
+    edge's own diameter -- the one the baseline was solved with, see
     :func:`~haemolynx.haemodynamics.poiseuille.baseline_edge_diameter` --
-    supersedes the table as ``d1``, and the table supplies only the fallback
-    for edges that have none.
+    supersedes the table as ``d1`` (an explicit pair keeps its ``d2 / d1``),
+    and the table supplies only the fallback for edges that have none.
+    ``prefer_edge_fwhm_baseline`` also falls back to the edge's FWHM fit
+    before the table, as the baseline does with FWHM diameters on.
 
     The effective factor for an order is the map entry when present; otherwise
     ``default_constriction_factor``. Map values **replace** the default for that
@@ -177,17 +183,25 @@ def resolve_edge_diameters(
             edge_data, branch_order, diameter_by_branch_order
         )
     else:
+        own = positive_diameter_um(edge_data.get("diameter_um"))
+        # Counted as baseline_edge_diameter counts it: the vessel's own
+        # diameter is a FWHM fit.
+        used_fwhm_baseline = own is not None and (
+            edge_data.get("diameter_source") == DIAMETER_SOURCE_MEASURED
+        )
         spec = diameter_by_branch_order.get(branch_order)
-        if spec is None:
-            raise ValueError(f"No diameter mapping for branch_order '{branch_order}'.")
         if isinstance(spec, dict):
             if "d1" not in spec or "d2" not in spec:
                 raise ValueError(
                     f"Invalid diameter mapping for '{branch_order}'. "
                     "Expected keys d1 and d2."
                 )
-            return float(spec["d1"]), float(spec["d2"]), used_fwhm_baseline
-        d1 = float(spec)
+            if own is None:
+                return float(spec["d1"]), float(spec["d2"]), used_fwhm_baseline
+            return own, own * float(spec["d2"]) / float(spec["d1"]), used_fwhm_baseline
+        if own is None and spec is None:
+            raise ValueError(f"No diameter mapping for branch_order '{branch_order}'.")
+        d1 = own if own is not None else float(spec)
 
     if (
         constriction_factor_by_branch_order is not None

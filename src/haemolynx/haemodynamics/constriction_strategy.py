@@ -253,24 +253,17 @@ def set_resistances_for_constriction_strategy(
         haematocrit=float(haematocrit),
         diameter_basis=diameter_basis,
     )
-    if prefer_edge_fwhm_baseline:
-        graph, results = poiseuille_model.set_poiseuille_resistances_with_constrictions(
-            graph,
-            diameter_by_branch_order,
-            prefer_edge_fwhm_baseline=True,
-            constriction_factor_by_branch_order=factors,
-        )
-        return graph, PERIODIC_CONSTRICTION_STRATEGY, results
-
-    constricted_diameters = {
-        branch_order: {
-            "d1": float(diameter),
-            "d2": float(diameter) * float(factors[str(branch_order)]),
-        }
-        for branch_order, diameter in diameter_by_branch_order.items()
-    }
+    # The scalar table and the per-order factors, with or without FWHM
+    # diameters: each edge starts from its own diameter, as the baseline did,
+    # and every order on the graph has a factor -- an explicit {d1, d2} table
+    # built from the table's own orders had no entry for one past
+    # max_branch_order. Only an edge with no stamped diameter differs: with
+    # FWHM on it falls back to its FWHM fit, as the baseline does.
     graph, results = poiseuille_model.set_poiseuille_resistances_with_constrictions(
         graph,
-        constricted_diameters,
+        diameter_by_branch_order,
+        prefer_edge_fwhm_baseline=True,
+        constriction_factor_by_branch_order=factors,
+        fwhm_fallback=prefer_edge_fwhm_baseline,
     )
     return graph, PERIODIC_CONSTRICTION_STRATEGY, results

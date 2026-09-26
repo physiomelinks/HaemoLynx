@@ -94,6 +94,36 @@ def test_measured_edge_diameter_supersedes_the_branch_order_table():
     assert used_fwhm is True
 
 
+def test_without_fwhm_an_edges_own_diameter_still_supersedes_the_table():
+    """With FWHM diameters off the baseline still solves each vessel at its
+    own stamped diameter (EDT fallback, hand override); a constriction must
+    start there too, not at the table's -- and not look at a FWHM fit."""
+    d1, d2, _ = resolve_edge_diameters(
+        edge_data={"diameter_um": 3.0, "fwhm_diameter_um": 9.0},
+        branch_order="B01",
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.5},
+        prefer_edge_fwhm_baseline=False,
+    )
+    assert (d1, d2) == (3.0, 1.5)
+    d1, d2, _ = resolve_edge_diameters(
+        edge_data={"diameter_um": 3.0},
+        branch_order="B01",
+        diameter_by_branch_order={"B01": {"d1": 6.0, "d2": 4.5}},
+        constriction_factor_by_branch_order=None,
+        prefer_edge_fwhm_baseline=False,
+    )
+    assert (d1, d2) == (3.0, 2.25)  # the pair's ratio, on the vessel's own diameter
+    d1, d2, _ = resolve_edge_diameters(
+        edge_data={"fwhm_diameter_um": 9.0},
+        branch_order="B01",
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.5},
+        prefer_edge_fwhm_baseline=False,
+    )
+    assert (d1, d2) == (5.0, 2.5)  # no stamped diameter, FWHM off: the table
+
+
 def test_unmeasured_edge_falls_back_to_the_table_diameter():
     d1, d2, used_fwhm = resolve_edge_diameters(
         edge_data={"fwhm_diameter_um": 0.0},
@@ -566,27 +596,29 @@ def _network_of_every_diameter_source() -> nx.MultiGraph:
     return graph
 
 
+@pytest.mark.parametrize("fwhm", [True, False], ids=["fwhm_on", "fwhm_off"])
 @pytest.mark.parametrize(
     "flags",
     [{}, {"use_probabilistic_constriction": True}],
     ids=["periodic", "probabilistic"],
 )
-def test_an_unconstricted_perturbation_reproduces_the_baseline(flags):
+def test_an_unconstricted_perturbation_reproduces_the_baseline(flags, fwhm):
     """A pericyte perturbation with factor 1 must re-solve the network it
-    started from. The constriction path read only ``fwhm_diameter_um``, so
-    every EDT-fallback and hand-set vessel went back to the table diameter,
-    and demanded a table entry for every order -- the user's run failed
-    outright on B59 with max_branch_order 51."""
+    started from. The constriction path read only ``fwhm_diameter_um`` with
+    FWHM diameters on, and only the table with them off, so every EDT-fallback
+    and hand-set vessel went back to the table diameter; and it demanded a
+    table entry for every order -- the user's run failed outright on B59
+    with max_branch_order 51."""
     table = {"B01": 5.0, "B02": 5.0, "B03": 5.0}
     baseline, _ = PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances(
-        _network_of_every_diameter_source(), table, prefer_edge_fwhm_diameter=True
+        _network_of_every_diameter_source(), table, prefer_edge_fwhm_diameter=fwhm
     )
     perturbed, _strategy, results = set_resistances_for_constriction_strategy(
         _network_of_every_diameter_source(),
         diameter_by_branch_order=table,
         constriction_factor_by_branch_order={},
         use_pericyte_mask_constriction=False,
-        prefer_edge_fwhm_baseline=True,
+        prefer_edge_fwhm_baseline=fwhm,
         constriction_length=40.0,
         constriction_spacing=100.0,
         default_constriction_factor=1.0,
@@ -600,14 +632,15 @@ def test_an_unconstricted_perturbation_reproduces_the_baseline(flags):
         assert perturbed[u][v][key]["resistance"] == pytest.approx(data["resistance"], rel=1e-6)
 
 
-def test_an_order_past_the_table_takes_the_default_constriction_factor():
+@pytest.mark.parametrize("fwhm", [True, False], ids=["fwhm_on", "fwhm_off"])
+def test_an_order_past_the_table_takes_the_default_constriction_factor(fwhm):
     graph, _strategy, _results = set_resistances_for_constriction_strategy(
         _network_of_every_diameter_source(),
         diameter_by_branch_order={"B01": 5.0, "B02": 5.0, "B03": 5.0},
         constriction_factor_by_branch_order={"B01": 0.9},
         use_pericyte_mask_constriction=False,
         use_probabilistic_constriction=False,
-        prefer_edge_fwhm_baseline=True,
+        prefer_edge_fwhm_baseline=fwhm,
         constriction_length=40.0,
         constriction_spacing=100.0,
         default_constriction_factor=0.5,
