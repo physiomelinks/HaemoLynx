@@ -10,6 +10,7 @@ from .perfusion import (
     PerfusionGrid, 
     map_vessels_to_grid, 
     build_adr_matrix, 
+    cell_discharge_hematocrit,
     solve_perfusion_steady_state,
     solve_coupled_1d3d_perfusion,
     solve_multi_species_perfusion
@@ -26,5 +27,6 @@ __all__ = [
     "PerfusionGrid",
     "map_vessels_to_grid",
     "build_adr_matrix",
+    "cell_discharge_hematocrit",
     "solve_perfusion_steady_state",
 ]

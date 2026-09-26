@@ -38,7 +38,7 @@ from ImageLynx.graph.boundaries import (                                 # noqa:
     select_boundary_terminal_nodes_by_face,
 )
 from ImageLynx.haemodynamics.perfusion import (                          # noqa: E402
-    PerfusionGrid, build_adr_matrix, map_vessels_to_grid,
+    PerfusionGrid, build_adr_matrix, cell_discharge_hematocrit, map_vessels_to_grid,
     solve_perfusion_steady_state,
 )
 from ImageLynx.haemodynamics.rheology import (                           # noqa: E402
@@ -116,8 +116,10 @@ def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False):
     m_max = blend_per_cell_rate(th_fraction, tissue_rate=stroma * contrast, stroma_rate=stroma)
 
     config = PerfConfig(m_max)
-    A, q, s = build_adr_matrix(grid, map_vessels_to_grid(G, grid), config)
-    po2 = solve_perfusion_steady_state(grid, A, q, s, config)
+    cells = map_vessels_to_grid(G, grid)
+    A, q, s = build_adr_matrix(grid, cells, config)
+    po2 = solve_perfusion_steady_state(grid, A, q, s, config,
+                                       cell_hematocrit=cell_discharge_hematocrit(cells, grid.n_cells))
 
     # Weighted by TH occupancy, so a cell that is 40% glomus contributes 40% of its volume.
     weight = th_fraction

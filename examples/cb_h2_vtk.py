@@ -56,7 +56,7 @@ from ImageLynx.graph.boundaries import (                                 # noqa:
     select_boundary_terminal_nodes_by_face,
 )
 from ImageLynx.haemodynamics.perfusion import (                          # noqa: E402
-    PerfusionGrid, build_adr_matrix, map_vessels_to_grid,
+    PerfusionGrid, build_adr_matrix, cell_discharge_hematocrit, map_vessels_to_grid,
     solve_perfusion_steady_state,
 )
 from ImageLynx.haemodynamics.resistance import (                         # noqa: E402
@@ -139,8 +139,10 @@ def solve(specimen, pad_grid=False):
     stroma = BASE_M_MAX / (1.0 + float(th_cell.mean()) * (2.0 - 1.0))
     m_max = blend_per_cell_rate(th_cell, tissue_rate=stroma * 2.0, stroma_rate=stroma)
     config = PerfConfig(m_max)
-    A, q_total, s_incoming = build_adr_matrix(grid, map_vessels_to_grid(G, grid), config)
-    po2 = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config)
+    cells = map_vessels_to_grid(G, grid)
+    A, q_total, s_incoming = build_adr_matrix(grid, cells, config)
+    po2 = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config,
+                                       cell_hematocrit=cell_discharge_hematocrit(cells, grid.n_cells))
 
     return dict(graph=G, inlets=inlets, outlets=outlets, attached=attached,
                 prob=prob, mask=mask, edge_fraction=frac, arrival=arrival,

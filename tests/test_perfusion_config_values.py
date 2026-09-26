@@ -15,6 +15,7 @@ from ImageLynx.haemodynamics.perfusion import (
     PerfusionGrid,
     build_adr_matrix,
     calculate_blood_oxygen_content,
+    cell_discharge_hematocrit,
     map_vessels_to_grid,
     solve_coupled_1d3d_perfusion,
     solve_multi_species_perfusion,
@@ -45,8 +46,10 @@ def _one_edge(hematocrit=0.45):
 def _tier1(config, hematocrit=0.45):
     G = _one_edge(hematocrit)
     grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
-    A, q, s = build_adr_matrix(grid, map_vessels_to_grid(G, grid), config)
-    return s, solve_perfusion_steady_state(grid, A, q, s, config)
+    cells = map_vessels_to_grid(G, grid)
+    A, q, s = build_adr_matrix(grid, cells, config)
+    return s, solve_perfusion_steady_state(grid, A, q, s, config,
+                                           cell_hematocrit=cell_discharge_hematocrit(cells, grid.n_cells))
 
 
 def test_the_tier1_source_uses_the_configured_arterial_po2():
@@ -56,12 +59,17 @@ def test_the_tier1_source_uses_the_configured_arterial_po2():
     np.testing.assert_allclose(source_60, source_100 * ratio, rtol=1e-12)
 
 
-def test_the_tier1_washout_uses_the_configured_systemic_haematocrit():
-    """Open item 4. The source is fixed by the edge haematocrit, so only the washout can move."""
-    source_a, po2_a = _tier1(_Config(systemic_hematocrit=0.45))
-    source_b, po2_b = _tier1(_Config(systemic_hematocrit=0.30))
-    np.testing.assert_array_equal(source_a, source_b)
-    assert not np.allclose(po2_a, po2_b)
+def test_the_tier1_washout_follows_the_edge_haematocrit_not_the_systemic_one():
+    """Open item 4 moved the washout's 0.45 into the config; open item 29 took it out of Tier 1.
+
+    The washout is at each cell's own haematocrit, as the source is, so the systemic value no
+    longer moves Tier 1 and the edge's does.
+    """
+    _, po2_a = _tier1(_Config(systemic_hematocrit=0.45))
+    _, po2_b = _tier1(_Config(systemic_hematocrit=0.30))
+    np.testing.assert_array_equal(po2_a, po2_b)
+    _, po2_edge = _tier1(_Config(), hematocrit=0.30)
+    assert not np.allclose(po2_a, po2_edge)
 
 
 def _coupled(config):

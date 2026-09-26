@@ -686,6 +686,24 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     return A, q_total, s_incoming
 
 
+def cell_discharge_hematocrit(cell_to_vessels: Dict[int, List[Dict[str, Any]]], n_cells: int) -> np.ndarray:
+    """
+    Each cell's haematocrit as its blood leaves: flow- and length-share-weighted over its vessels.
+
+    O2 content is affine in H (dissolved plus H times bound), so the washout of the cell's
+    vessels summed one by one equals its total flow times the content at this one H. Tier 1's
+    washout uses it, so a cell's source and washout sit on the same curve (open item 29).
+    Cells with no vessel get 0; they have no washout.
+    """
+    h = np.zeros(n_cells, dtype=np.float64)
+    for idx, vessels in cell_to_vessels.items():
+        q = sum(v['flow'] * v.get('length_fraction', 1.0) for v in vessels)
+        if q > 0:
+            h[idx] = sum(v['flow'] * v.get('length_fraction', 1.0) * v['hematocrit']
+                         for v in vessels) / q
+    return h
+
+
 def _content_and_slope(po2: np.ndarray, hematocrit, cells: np.ndarray):
     """O2 content (mmol/L) and its slope dC/dPO2 at ``po2`` for the listed cells, zero elsewhere.
 
@@ -707,7 +725,7 @@ def _content_and_slope(po2: np.ndarray, hematocrit, cells: np.ndarray):
 
 
 def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarray, s_incoming: np.ndarray, perf_config,
-                                 return_info: bool = False):
+                                 *, cell_hematocrit: np.ndarray, return_info: bool = False):
     """
     Step 5: Solve the Non-Linear Steady-State Perfusion system for tissue PO2 (mmHg).
 
@@ -729,6 +747,13 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
     hit max_iter on WKY-A. Plain Newton overshoots there for the same reason (steps of 1000 mmHg
     from a slope of alpha), hence the line search.
 
+    The washout is evaluated at ``cell_hematocrit`` (``cell_discharge_hematocrit``), the
+    haematocrit the source was built with, not at ``systemic_hematocrit``. The two used to
+    differ: a cell fed above 0.45 received more O2 at arterial PO2 than it could wash out below
+    hundreds of mmHg, a phantom source 55 times the whole tissue's demand on WKY-A, and one fed
+    below 0.45 was drained (open item 29). ``cell_hematocrit`` is required and checked, not
+    defaulted.
+
     ``max_iter`` (50) and ``tolerance`` (1e-5) are still hard-coded; open item 6.
     With ``return_info`` it also returns a dict with ``converged``, ``iterations`` (Newton
     steps taken) and ``residual`` of the returned field.
@@ -742,10 +767,17 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
     k_reduce = perf_config.k_reduce
     V_cell = grid.cell_volume
 
-    # The venous washout is evaluated at systemic haematocrit, not at each cell's local
-    # haematocrit, so in Tier 1 the washout is decoupled from phase separation. Read from the
-    # config rather than written out here, so it cannot drift from the systemic value.
-    h_baseline = perf_config.systemic_hematocrit
+    # The washout is evaluated at each cell's own haematocrit, the one its source used (open
+    # item 29). It was systemic_hematocrit, which made a phantom source or sink of every cell
+    # whose vessels were not at 0.45.
+    cell_hematocrit = np.asarray(cell_hematocrit, dtype=np.float64)
+    if cell_hematocrit.shape != (N,):
+        raise ValueError(f"cell_hematocrit has shape {cell_hematocrit.shape}, not ({N},): one "
+                         f"haematocrit per grid cell (cell_discharge_hematocrit).")
+    perfused_h = cell_hematocrit[np.asarray(q_total) > 0]
+    if not np.all(np.isfinite(perfused_h) & (perfused_h >= 0.0) & (perfused_h <= 1.0)):
+        raise ValueError("cell_hematocrit: a perfused cell's haematocrit is missing, non-finite "
+                         "or outside [0, 1]. It sets the washout, so it is not substituted.")
 
     max_iter = 50
     tolerance = 1e-5
@@ -756,7 +788,7 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
     perfused = np.flatnonzero(np.asarray(q_total) > 0)
 
     def balance(P):
-        content, slope = _content_and_slope(P, h_baseline, perfused)
+        content, slope = _content_and_slope(P, cell_hematocrit, perfused)
         consumption = M_max * (1.0 - np.exp(-k_reduce * P)) * V_cell
         net_source = s_incoming - q_total * content - consumption
         jacobian_diag = q_total * slope + M_max * k_reduce * np.exp(-k_reduce * P) * V_cell

@@ -15,6 +15,7 @@ from ImageLynx.haemodynamics.perfusion import (
     PerfusionGrid,
     build_adr_matrix,
     calculate_blood_oxygen_content,
+    cell_discharge_hematocrit,
     map_vessels_to_grid,
     solve_perfusion_steady_state,
 )
@@ -53,6 +54,9 @@ def _slab():
     return build_adr_matrix(_SlabGrid(), ends, _Config())
 
 
+_SLAB_H = np.zeros(_N)  # plasma in both end cells
+
+
 def _analytic():
     """D alpha P'' = M between two fixed ends: P = P0 - M / (2 D alpha) x (L - x)."""
     x = np.arange(_N) * _H_STEP
@@ -61,7 +65,8 @@ def _analytic():
 
 def test_slab_matches_the_krogh_profile_with_solubility():
     A, q, s = _slab()
-    po2, info = solve_perfusion_steady_state(_SlabGrid(), A, q, s, _Config(), return_info=True)
+    po2, info = solve_perfusion_steady_state(_SlabGrid(), A, q, s, _Config(),
+                                             cell_hematocrit=_SLAB_H, return_info=True)
     assert info["converged"]
     np.testing.assert_allclose(po2, _analytic(), atol=1e-3)
     # The profile has to be measurable for this to test anything: a ~5 mmHg dip at mid-slab.
@@ -85,8 +90,9 @@ def _capillary_network(q_um3_s=2.0e3):
                flow_signed=q_um3_s / POISEUILLE_FLOW_TO_UM3_PER_S,
                assigned_diameter_um=6.0, hematocrit=0.45, voxels=pts)
     grid = PerfusionGrid(G, (4.0, 4.0, 4.0))
-    A, q, s = build_adr_matrix(grid, map_vessels_to_grid(G, grid), _NetworkConfig())
-    return grid, A, q, s
+    cells = map_vessels_to_grid(G, grid)
+    A, q, s = build_adr_matrix(grid, cells, _NetworkConfig())
+    return grid, A, q, s, cell_discharge_hematocrit(cells, grid.n_cells)
 
 
 @dataclass
@@ -100,12 +106,13 @@ class _NetworkConfig:
 
 def test_newton_reaches_the_fixed_point_on_a_capillary_grid():
     """The balance is checked here from its definition, not from the solver's own residual."""
-    grid, A, q, s = _capillary_network()
+    grid, A, q, s, h = _capillary_network()
     config = _NetworkConfig()
-    po2, info = solve_perfusion_steady_state(grid, A, q, s, config, return_info=True)
+    po2, info = solve_perfusion_steady_state(grid, A, q, s, config, cell_hematocrit=h,
+                                             return_info=True)
     assert info["converged"] and info["iterations"] < 50
 
-    washout = np.array([q[i] * calculate_blood_oxygen_content(po2[i], config.systemic_hematocrit)
+    washout = np.array([q[i] * calculate_blood_oxygen_content(po2[i], h[i])
                         if q[i] > 0 else 0.0 for i in range(grid.n_cells)])
     consumption = config.M_max * (1.0 - np.exp(-config.k_reduce * po2)) * grid.cell_volume
     imbalance = A @ po2 + 1e-6 * po2 - (s - washout - consumption)
@@ -117,10 +124,10 @@ def test_newton_reaches_the_fixed_point_on_a_capillary_grid():
 
 def test_mass_balance_closes_at_the_fixed_point():
     """Diffusion only moves O2 between cells, so delivery - washout = consumption overall."""
-    grid, A, q, s = _capillary_network()
+    grid, A, q, s, h = _capillary_network()
     config = _NetworkConfig()
-    po2 = solve_perfusion_steady_state(grid, A, q, s, config)
-    washout = sum(q[i] * calculate_blood_oxygen_content(po2[i], config.systemic_hematocrit)
+    po2 = solve_perfusion_steady_state(grid, A, q, s, config, cell_hematocrit=h)
+    washout = sum(q[i] * calculate_blood_oxygen_content(po2[i], h[i])
                   for i in np.flatnonzero(q > 0))
     consumption = float((config.M_max * (1.0 - np.exp(-config.k_reduce * po2))).sum()
                         * grid.cell_volume)
@@ -131,6 +138,7 @@ def test_zero_flow_and_no_metabolism_is_already_converged():
     A, q, s = _slab()
     config = _Config(M_max=0.0)
     q0, s0 = np.zeros_like(q), np.zeros_like(s)
-    po2, info = solve_perfusion_steady_state(_SlabGrid(), A, q0, s0, config, return_info=True)
+    po2, info = solve_perfusion_steady_state(_SlabGrid(), A, q0, s0, config,
+                                             cell_hematocrit=_SLAB_H, return_info=True)
     assert info["converged"] and info["iterations"] == 0
     np.testing.assert_array_equal(po2, 0.0)

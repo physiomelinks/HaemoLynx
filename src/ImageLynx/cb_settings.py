@@ -169,7 +169,7 @@ class PerfusionSettings:
     #: Arterial PO2 of the blood entering the network, mmHg. It used to be written out as
     #: 100.0 inside the solver bodies (open item 3); the value is unchanged.
     po2_arterial_mmHg: float = 100.0
-    #: Systemic haematocrit. Tier 1 evaluates the venous washout at this value rather than at
-    #: each cell's local haematocrit; it used to be written out as 0.45 in the solver (open
-    #: item 4). The value is unchanged.
+    #: Systemic haematocrit. Tier 1 no longer reads it: its washout is at each cell's own
+    #: haematocrit, as its source is (open item 29). Until then the washout was evaluated at this
+    #: value, first written out as 0.45 in the solver (open item 4). The value is unchanged.
     systemic_hematocrit: float = 0.45

@@ -8,7 +8,8 @@ from ImageLynx.haemodynamics.perfusion import (
     PerfusionGrid,
     map_vessels_to_grid,
     build_adr_matrix,
-    solve_perfusion_steady_state
+    solve_perfusion_steady_state,
+    cell_discharge_hematocrit,
 )
 from ImageLynx.haemodynamics.resistance import POISEUILLE_FLOW_TO_UM3_PER_S
 
@@ -152,7 +153,8 @@ def test_perfusion_solver_zero_flow(mock_graph):
     config = MockPerfusionConfig()
     A, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
     
-    C_steady = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config)
+    C_steady = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config,
+                                            cell_hematocrit=cell_discharge_hematocrit(cell_to_vessels, grid.n_cells))
     np.testing.assert_allclose(C_steady, np.zeros_like(C_steady), atol=1e-10)
 
 def test_perfusion_solver_no_metabolism(mock_graph):
@@ -163,7 +165,8 @@ def test_perfusion_solver_no_metabolism(mock_graph):
     config.M_max = 0.0 # Shut off metabolism
     
     A, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
-    C_steady = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config)
+    C_steady = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config,
+                                            cell_hematocrit=cell_discharge_hematocrit(cell_to_vessels, grid.n_cells))
     
     # Total concentration shouldn't be zero since we have advection and no sink
     assert np.sum(C_steady) > 0.0
@@ -272,7 +275,8 @@ def test_analytical_0d_fick_principle_mass_balance():
     s_incoming = np.array([q_flow * c_art])
     
     from ImageLynx.haemodynamics.perfusion import solve_perfusion_steady_state
-    po2_numerical = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config)
+    po2_numerical = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config,
+                                                 cell_hematocrit=np.array([h_d]))
     
     # 4. Assert Absolute Perfection
     # If this passes, the complex 3D solver perfectly conserves mass through the non-linear Hill S-curves.

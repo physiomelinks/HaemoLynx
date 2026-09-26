@@ -1547,7 +1547,9 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         else:
             tier, solver_name, solver_info = 1, "solve_perfusion_steady_state", None
             print("  Running Instant-Equilibrium Perfusion Solver...")
-            PO2_steady = haemodynamics.solve_perfusion_steady_state(grid, A, q_total, s_incoming, perf_config)
+            PO2_steady = haemodynamics.solve_perfusion_steady_state(
+                grid, A, q_total, s_incoming, perf_config,
+                cell_hematocrit=haemodynamics.cell_discharge_hematocrit(cell_mapping, grid.n_cells))
             mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)
             print(f"  Perfusion solve complete. Mean tissue PO2: {mean_c:.4e} mmHg (Min: {min_c:.4e}, Max: {max_c:.4e})")
             visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
