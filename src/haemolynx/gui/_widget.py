@@ -1205,6 +1205,16 @@ def _apply_z_filter(
         layer = _set_z_filtered_layer_data(
             viewer, layer, kind, data, features, segment_owner
         )
+        # Controls first: a recreated layer's new colour-range control takes
+        # its column as newly chosen and fits the range to the rows left in
+        # the window. The rule, applied after, puts back the full layer's.
+        try:
+            _attach_colour_scale(viewer, layer)
+        except Exception:  # noqa: BLE001 - a missing colour bar is survivable
+            logger.debug(
+                "could not reattach colour controls to %s",
+                getattr(layer, "name", "?"), exc_info=True,
+            )
         _reapply_colouring(layer, rule, cache["features"])
         # _set_z_filtered_layer_data recreates the layer (a new object) when
         # the window shrinks -- the branch-hover mouse-move callback and the
@@ -1214,7 +1224,18 @@ def _apply_z_filter(
         # _apply_layers attaches these the same way for a freshly-built
         # layer; do it here too so a recreated layer keeps working, and a
         # merely-updated one is a cheap no-op (_attach_branch_hover_controls
-        # only rebuilds the panel when it is missing).
+        # only rebuilds the panel when it is missing). The same goes for the
+        # Colour by / colour map / colour range controls (attached above):
+        # napari builds fresh controls for the new layer, and without them a
+        # narrowed window left the vessels with no way to change their
+        # colouring at all.
+        try:
+            _refresh_layer_controls(viewer, layer)
+        except Exception:  # noqa: BLE001 - a stale readout is survivable
+            logger.debug(
+                "could not refresh colour controls on %s",
+                getattr(layer, "name", "?"), exc_info=True,
+            )
         try:
             _attach_branch_hover_controls(viewer, layer)
         except Exception:  # noqa: BLE001 - missing hover panel is survivable
@@ -3152,10 +3173,15 @@ NOT_WORTH_COLOURING_BY = frozenset(
     }
 )
 
-#: Preferred order for flow-related columns in the colour-by dropdown.
+#: The columns the colour-by dropdown lists first, in this order.
 _FLOW_COLOUR_COLUMN_ORDER = (
     "flow_abs",
     "flow_abs_log10",
+    # Branch order beside flow rather than alphabetically among ~30 analysis
+    # columns: the number colours with a map, range and colour bar like
+    # flow; the label with the fixed palette the stage plots use.
+    "branch_order_number",
+    "branch_order",
     "flow_signed",
     "flow_dir_rgb",
     "flow_heading_deg",

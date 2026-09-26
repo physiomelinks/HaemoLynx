@@ -719,6 +719,42 @@ def test_z_depth_filter_rebuilds_tubes_from_filtered_vectors(make_napari_viewer)
     assert len(viewer.layers[VESSEL_TUBES].data[0]) == full_verts
 
 
+def test_a_z_depth_window_keeps_the_vessels_colour_controls(make_napari_viewer):
+    """Narrowing the window recreates the vessels layer, and napari builds
+    fresh controls for it: the Colour by list, colour map and colour range
+    were not put back, so the vessels could not be recoloured at all until
+    the next run."""
+    from haemolynx.gui._widget import _layer_controls
+    from haemolynx.gui.results import ResultLayers
+    from test_gui_results import a_graph, network
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    graph = a_graph()
+    for (u, v, key), order in zip(graph.edges(keys=True), ("B01", "B02", "B03")):
+        graph.edges[u, v, key]["branch_order"] = order
+    _apply_layers(viewer, ResultLayers().stage_finished("build_network", network(graph)))
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+    before = viewer.layers[VESSELS]
+    assert _layer_controls(viewer, before)._haemolynx_feature is not None
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
+
+    after = viewer.layers[VESSELS]
+    assert after is not before  # recreated
+    controls = _layer_controls(viewer, after)
+    offered = [
+        controls._haemolynx_feature.native.itemText(i)
+        for i in range(controls._haemolynx_feature.native.count())
+    ]
+    assert "branch_order_number" in offered and "branch_order" in offered
+    controls._haemolynx_feature.native.setCurrentText("branch_order_number")
+    assert after.edge_color_mode == "colormap"
+    assert controls._haemolynx_colormap.shown is True
+    assert controls._haemolynx_scale.shown is True
+
+
 
 # --- XY / XZ / YZ view-snap buttons ------------------------------------------
 

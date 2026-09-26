@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import pickle
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -621,6 +622,34 @@ def _enrich_flow_colour_columns(
     for name, array in direction.items():
         if len(array) == len(values):
             columns[name] = array
+
+
+#: ``branch_order`` as a number (``B07`` -> 7, ``Art3`` -> 3), for colouring.
+BRANCH_ORDER_NUMBER = "branch_order_number"
+
+_TRAILING_NUMBER = re.compile(r"(\d+)\s*$")
+
+
+def branch_order_number(label: Any) -> float:
+    """The order in a branch-order label, or NaN for one with no number."""
+    match = _TRAILING_NUMBER.search(str(label or ""))
+    return float(match.group(1)) if match else float("nan")
+
+
+def _add_branch_order_number(columns: dict[str, np.ndarray]) -> None:
+    """Add :data:`BRANCH_ORDER_NUMBER` whenever ``branch_order`` is present.
+
+    ``branch_order`` is text, so choosing it colours by a fixed categorical
+    palette: no colour map to pick, no range to fit, no colour bar -- the
+    controls flow gets. Its number colours the way flow does, and reads
+    as the order it is (the tier -- Art, B, Ven -- stays in ``branch_order``).
+    """
+    labels = columns.get("branch_order")
+    if labels is None:
+        return
+    columns[BRANCH_ORDER_NUMBER] = np.asarray(
+        [branch_order_number(label) for label in labels], dtype=float
+    )
 
 
 #: Columns holding text rather than numbers; a missing one is "" not NaN.
@@ -1336,6 +1365,7 @@ class ResultLayers:
             columns, graph,
             include_axis_components=bool(self.settings.get("flow_direction_colouring", True)),
         )
+        _add_branch_order_number(columns)
 
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {
@@ -1929,6 +1959,7 @@ class ResultLayers:
             columns, graph,
             include_axis_components=bool(self.settings.get("flow_direction_colouring", True)),
         )
+        _add_branch_order_number(columns)
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {
             name: np.asarray(values)[owner] for name, values in columns.items()
@@ -2031,6 +2062,7 @@ class ResultLayers:
             and name not in stale
         ]
         columns.update(edge_features(graph, non_flow))
+        _add_branch_order_number(columns)
 
         flow0 = np.asarray(sweep.flow_abs_at(*([0] * len(sweep.axis_names))), dtype=float)
         columns["flow_abs"] = flow0[edge_index]

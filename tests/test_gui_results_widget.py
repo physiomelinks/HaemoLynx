@@ -2249,6 +2249,81 @@ def test_vessel_colour_by_combo_switches_to_flow_abs_log10(make_napari_viewer):
     assert vessels.edge_color_mode == "colormap"
 
 
+def test_the_vessels_colour_by_branch_order_from_the_dropdown_as_tubes_and_lines(
+    make_napari_viewer,
+):
+    """Branch order sits beside flow in the vessels' own Colour by list: its
+    number colours with a colour map, range and bar like flow does, its label
+    with one colour per order -- and the tube mesh carries exactly the lines'
+    colours either way, drawn as tubes or as lines."""
+    from haemolynx.gui._widget import (
+        _active_column, _layer_controls, settings_widget,
+    )
+    from haemolynx.gui.results import BRANCH_ORDER_NUMBER
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    graph = a_graph()
+    for (u, v, key), order in zip(graph.edges(keys=True), ("B01", "B02", "B07")):
+        graph.edges[u, v, key]["branch_order"] = order
+    _apply_layers(viewer, ResultLayers().stage_finished("build_network", network(graph)))
+    vessels = viewer.layers[VESSELS]
+    controls = _layer_controls(viewer, vessels)
+    chooser = controls._haemolynx_feature
+    offered = [chooser.native.itemText(i) for i in range(chooser.native.count())]
+    assert offered.index(BRANCH_ORDER_NUMBER) < offered.index("branch_order") <= 3
+
+    def tube_colours_follow_the_lines():
+        tubes = viewer.layers[VESSEL_TUBES]
+        segment = np.asarray(tubes.metadata["haemolynx"]["segment_index"])
+        np.testing.assert_allclose(
+            np.asarray(tubes.vertex_colors)[:, :3],
+            np.asarray(vessels.edge_color)[segment][:, :3],
+            atol=1e-6,
+        )
+
+    def colour_per_order():
+        colours = {}
+        for order, rgba in zip(vessels.features["branch_order"], np.asarray(vessels.edge_color)):
+            colours.setdefault(order, set()).add(tuple(np.round(rgba, 4)))
+        assert all(len(each) == 1 for each in colours.values())
+        return {order: next(iter(each)) for order, each in colours.items()}
+
+    chooser.native.setCurrentText(BRANCH_ORDER_NUMBER)
+    assert _active_column(vessels) == BRANCH_ORDER_NUMBER
+    assert vessels.edge_color_mode == "colormap"
+    assert controls._haemolynx_colormap.shown is True
+    np.testing.assert_array_equal(
+        sorted(set(np.asarray(vessels.features[BRANCH_ORDER_NUMBER]))), [1.0, 2.0, 7.0]
+    )
+    assert len(set(colour_per_order().values())) == 3
+    tube_colours_follow_the_lines()
+
+    chooser.native.setCurrentText("branch_order")
+    assert _active_column(vessels) == "branch_order"
+    assert controls._haemolynx_colormap.shown is False
+    by_order = colour_per_order()
+    assert len(set(by_order.values())) == 3
+    tube_colours_follow_the_lines()
+
+    panel._haemolynx_vessel_draw.setCurrentText("Lines")
+    assert vessels.visible is True and viewer.layers[VESSEL_TUBES].visible is False
+    assert colour_per_order() == by_order
+    panel._haemolynx_vessel_draw.setCurrentText("Tubes")
+    assert viewer.layers[VESSEL_TUBES].visible is True
+    tube_colours_follow_the_lines()
+
+
+def test_branch_order_number_reads_the_order_off_any_tier():
+    from haemolynx.gui.results import branch_order_number
+
+    assert branch_order_number("B07") == 7.0
+    assert branch_order_number("Art3") == 3.0
+    assert branch_order_number("Large_Ven12") == 12.0
+    assert np.isnan(branch_order_number(""))
+    assert np.isnan(branch_order_number(None))
+
+
 def test_arrow_size_slider_mounts_on_flow_direction_layer(make_napari_viewer):
     from haemolynx.gui._widget import _layer_controls, settings_widget
     from test_gui_flow_direction import _built_with_flows, _two_node_edge
