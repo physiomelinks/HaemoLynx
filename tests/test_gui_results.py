@@ -2264,3 +2264,35 @@ def test_merging_stage_groups_keeps_each_layers_final_state():
     assert merged.ndisplay == 3
     assert (merged.stage, merged.title, merged.note) == ("solve", "6. Haemodynamics", "solved")
     assert merge_stage_layers([]) is None
+
+
+def test_a_restored_stage_is_followed_without_building_its_layers(monkeypatch):
+    """A run from a later tab passes back through the earlier stages; their
+    layers are already on screen, so only what stage_finished remembers is
+    needed -- the same bookkeeping, none of the layer building."""
+    image = np.zeros((5, 4, 4), dtype=np.uint8)
+    skeleton = np.zeros((5, 4, 4), dtype=bool)
+    built_graph, cut_graph = a_graph(), a_graph(resistance=2.0)
+    outputs = [
+        ("skeletonise", SimpleNamespace(image=image, skeleton=skeleton, voxel_size_xyz=(2.0, 1.0, 0.5),
+                                        voxel_size_zyx=(0.5, 1.0, 2.0), thick_vessel_mask=None)),
+        ("build_network", network(built_graph, (0.5, 1.0, 2.0))),
+        ("assign_boundaries", SimpleNamespace(inlet_nodes=[0], outlet_nodes=[3], graph=cut_graph)),
+        ("assign_diameters", SimpleNamespace(graph=cut_graph, results={})),
+    ]
+    finished, restored = ResultLayers(), ResultLayers()
+    for stage, output in outputs:
+        finished.stage_finished(stage, output)
+
+    def no_layers(*_args, **_kwargs):
+        raise AssertionError("a restored stage built layers")
+
+    monkeypatch.setattr(ResultLayers, "_vessel_layers", no_layers)
+    for stage, output in outputs:
+        restored.stage_restored(stage, output)
+
+    for attribute in ("_voxel_size_zyx", "_image_shape_z", "_skeleton", "_graph", "_canonical_graph"):
+        assert getattr(restored, attribute) is getattr(finished, attribute) or (
+            getattr(restored, attribute) == getattr(finished, attribute)
+        ), attribute
+    assert restored._graph is cut_graph

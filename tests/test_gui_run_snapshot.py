@@ -243,3 +243,40 @@ def test_the_module_imports_no_gui():
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
     assert not imported & {"napari", "magicgui", "qtpy"}
+
+
+def test_a_saved_run_leaves_the_live_stage_outputs_behind(tmp_path):
+    """The stored volumes and network are this session's; a loaded run has
+    none and loads its skeleton instead (see write_resume_artefacts)."""
+    from haemolynx.pipeline.stages import SegmentedInputs
+
+    checkpoints, results, settings = _recorded(tmp_path)
+    checkpoints.record(
+        "segment", _group("segment"), results, settings=settings,
+        output=SegmentedInputs(image_path=tmp_path / "stack.tif", output_dir=tmp_path / "out"),
+    )
+    assert checkpoints.get("segment").output is not None
+
+    snapshot = capture_run(checkpoints=checkpoints, results=results, settings=settings)
+
+    assert all(item.output is None for item in snapshot.checkpoints)
+
+
+def test_loading_a_run_leaves_graph_building_and_skeleton_files_alone(tmp_path):
+    """Loading used to write the saved run's last graph over
+    {stem}_graph.pkl -- graph building's own output -- and claim it and an
+    existing skeleton as this session's, so the next Clear deleted both."""
+    from haemolynx.gui.run_snapshot import write_resume_artefacts
+
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(checkpoints=checkpoints, results=results, settings=settings)
+    graph_pkl = tmp_path / "out" / "stack_graph.pkl"
+    graph_pkl.write_bytes(b"what graph building made")
+    skeleton = tmp_path / "out" / "stack_skeleton.npy"
+    np.save(skeleton, np.zeros((2, 2, 2), dtype=bool))
+    loaded = StageCheckpoints()
+
+    write_resume_artefacts(snapshot, settings, loaded)
+
+    assert graph_pkl.read_bytes() == b"what graph building made"
+    assert loaded.session_artefact_paths == ()

@@ -1252,6 +1252,36 @@ class ResultLayers:
                 self._emitted.append(spec.name)
         return group
 
+    def stage_restored(self, stage: str, output: Any) -> None:
+        """What :meth:`stage_finished` remembers from *output*, without its layers.
+
+        A run from a later tab passes back through the stages before it, with
+        the outputs it resumed. Their layers are already on screen, replayed
+        from the checkpoints, so building them again -- binarising the whole
+        image for display, a polyline per vessel, once per stage -- was work
+        thrown away. What the later stages' layers need is the bookkeeping:
+        which graph is live now, the voxel size, the image depth, the skeleton.
+        """
+        if stage == "skeletonise":
+            self._voxel_size_zyx = tuple(
+                float(v) for v in getattr(output, "voxel_size_zyx", (1.0, 1.0, 1.0))
+            )
+            image = getattr(output, "image", None)
+            self._image_shape_z = int(np.shape(image)[0]) if image is not None else None
+            skeleton = getattr(output, "skeleton", None)
+            if skeleton is not None:
+                self._thick_vessel_mask = getattr(output, "thick_vessel_mask", None)
+                self._skeleton = skeleton
+        elif stage == "build_network":
+            self._graph = getattr(output, "graph", None)
+        elif stage == "assign_boundaries":
+            graph = getattr(output, "graph", None)
+            if graph is not None:
+                self._graph = graph
+                self._canonical_graph = graph
+        elif stage in {"assign_diameters", "build_haemodynamic_model", "solve"}:
+            self._sync_graph_from_output(output)
+
     # -- the columns a graph can offer right now, for the colour-by control --
 
     def colour_options(self) -> list[str]:

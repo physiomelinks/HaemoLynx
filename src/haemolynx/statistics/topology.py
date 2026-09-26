@@ -166,6 +166,105 @@ def _subtree_membership_counts(
     return counts
 
 
+def _count_separating_points(
+    G: Union[nx.Graph, nx.MultiGraph], points: list, inlets: set, outlets: set
+) -> int:
+    """How many of *points* leave some inlet and outlet in different
+    components when removed.
+
+    Counts exactly what removing each point from a copy of *G* and looking
+    at the components left would -- which is how it used to be done, a full
+    graph copy per point -- from one depth-first search instead. Removing
+    ``v`` leaves: each DFS child subtree ``c`` with ``low[c] >= disc[v]``
+    (every child, for a DFS root), the rest of ``v``'s own component, and
+    every other component untouched. A component "separates" when it holds
+    an inlet while some outlet is outside it, or the other way round --
+    outlets outside it include ``v`` itself and any not in *G* at all.
+    """
+    points = [point for point in points if point in G]
+    if not points:
+        return 0
+    total_in, total_out = len(inlets), len(outlets)
+
+    def separates(inside_in: int, inside_out: int) -> bool:
+        return (inside_in > 0 and total_out - inside_out > 0) or (
+            inside_out > 0 and total_in - inside_in > 0
+        )
+
+    disc: dict = {}
+    low: dict = {}
+    parent: dict = {}
+    size: dict = {}
+    n_in: dict = {}
+    n_out: dict = {}
+    component_of: dict = {}
+    component_totals: dict = {}
+    for root in G.nodes():
+        if root in disc:
+            continue
+        parent[root] = None
+        disc[root] = low[root] = len(disc)
+        stack = [(root, iter(G.adj[root]))]
+        while stack:
+            node, neighbours = stack[-1]
+            advanced = False
+            for neighbour in neighbours:
+                if neighbour == node:
+                    continue
+                if neighbour not in disc:
+                    parent[neighbour] = node
+                    disc[neighbour] = low[neighbour] = len(disc)
+                    stack.append((neighbour, iter(G.adj[neighbour])))
+                    advanced = True
+                    break
+                if neighbour != parent[node]:
+                    low[node] = min(low[node], disc[neighbour])
+            if advanced:
+                continue
+            stack.pop()
+            component_of[node] = root
+            size[node] = 1 + size.get(node, 0)
+            n_in[node] = (node in inlets) + n_in.get(node, 0)
+            n_out[node] = (node in outlets) + n_out.get(node, 0)
+            up = parent[node]
+            if up is not None:
+                low[up] = min(low[up], low[node])
+                size[up] = size.get(up, 0) + size[node]
+                n_in[up] = n_in.get(up, 0) + n_in[node]
+                n_out[up] = n_out.get(up, 0) + n_out[node]
+        component_totals[root] = (size[root], n_in[root], n_out[root])
+
+    separating_components = {
+        root for root, (_size, inside_in, inside_out) in component_totals.items()
+        if separates(inside_in, inside_out)
+    }
+    children: dict = {}
+    for node, up in parent.items():
+        if up is not None:
+            children.setdefault(up, []).append(node)
+
+    count = 0
+    for point in points:
+        root = component_of[point]
+        if separating_components - {root}:
+            count += 1
+            continue
+        split = [
+            child for child in children.get(point, ())
+            if parent[point] is None or low[child] >= disc[point]
+        ]
+        pieces = [(n_in[child], n_out[child]) for child in split]
+        rest_size, rest_in, rest_out = component_totals[root]
+        rest_size -= 1 + sum(size[child] for child in split)
+        rest_in -= (point in inlets) + sum(n_in[child] for child in split)
+        rest_out -= (point in outlets) + sum(n_out[child] for child in split)
+        if rest_size > 0:
+            pieces.append((rest_in, rest_out))
+        if any(separates(inside_in, inside_out) for inside_in, inside_out in pieces):
+            count += 1
+    return count
+
+
 def _perfusion_critical_failure_points(
     G: Union[nx.Graph, nx.MultiGraph],
     bridges: list,
@@ -183,11 +282,7 @@ def _perfusion_critical_failure_points(
     :func:`_spanning_forest_bfs_order`/:func:`_subtree_membership_counts`):
     a bridge is exactly a spanning-tree edge, so its own two sides are the
     tree-child's subtree and everything else. Articulation points are
-    classified by actually removing each one and checking whether the
-    remaining components split the inlets from the outlets -- more
-    expensive (O(V+E) per point), but articulation points are typically far
-    fewer than bridges in a vessel network (most junctions have a
-    redundant path; most bridges are dead-end capillary tips).
+    classified in one more pass too (see :func:`_count_separating_points`).
     """
     total_inlets = len(inlets)
     total_outlets = len(outlets)
@@ -206,20 +301,9 @@ def _perfusion_critical_failure_points(
         if (inlets_in > 0 and outlets_out > 0) or (outlets_in > 0 and inlets_out > 0):
             critical_bridges += 1
 
-    critical_articulation_points = 0
-    for point in articulation_pts:
-        H = G.copy()
-        H.remove_node(point)
-        separates = False
-        for component in nx.connected_components(H):
-            if (inlets & component) and (outlets - component):
-                separates = True
-                break
-            if (outlets & component) and (inlets - component):
-                separates = True
-                break
-        if separates:
-            critical_articulation_points += 1
+    critical_articulation_points = _count_separating_points(
+        G, articulation_pts, inlets, outlets
+    )
 
     return {
         "Critical Bridge Edge Count": critical_bridges,

@@ -3029,25 +3029,44 @@ def _apply_sweep_index(layer, indices: tuple[int, ...]) -> None:
     _colour_layer(layer, colour_by, "continuous", (), limits)
 
 
+def _sweep_dock_name(layer_name: str) -> str:
+    return f"{layer_name} sweep"
+
+
+def _remove_sweep_dock(viewer, layer_name: str) -> None:
+    """Take down the sweep sliders docked for *layer_name*, if there are any.
+
+    A dock outlives its layer otherwise: Clear, a run from an earlier tab, or
+    a perturbation that failed or changed type left sliders driving a layer
+    that was gone or no longer a sweep.
+    """
+    dock_name = _sweep_dock_name(layer_name)
+    try:
+        window = viewer.window
+        docks = getattr(window, "_wrapped_dock_widgets", None)
+        if docks is None:  # napari < 0.6.2
+            docks = getattr(window, "_dock_widgets", {})
+        for dock in list(docks.values()):
+            if getattr(dock, "objectName", lambda: "")() == dock_name or (
+                hasattr(dock, "windowTitle") and dock.windowTitle() == dock_name
+            ):
+                window.remove_dock_widget(dock)
+    except Exception:  # noqa: BLE001
+        logger.debug("could not remove sweep dock %s", dock_name, exc_info=True)
+
+
 def _attach_sweep_sliders(viewer, layer, spec) -> None:
     """One or two integer sliders for a sweep Vectors layer."""
+    # Drop a previous dock for this layer on re-run -- and keep it dropped
+    # when this layer is no longer a sweep.
+    _remove_sweep_dock(viewer, spec.name)
     sweep = getattr(spec, "sweep", None)
     if sweep is None:
         return
 
     from magicgui.widgets import Container, Label, Slider
 
-    dock_name = f"{spec.name} sweep"
-    # Drop a previous dock for this layer on re-run.
-    try:
-        window = viewer.window
-        for dock in list(getattr(window, "_dock_widgets", {}).values()):
-            if getattr(dock, "objectName", lambda: "")() == dock_name or (
-                hasattr(dock, "windowTitle") and dock.windowTitle() == dock_name
-            ):
-                window.remove_dock_widget(dock)
-    except Exception:  # noqa: BLE001
-        logger.debug("could not remove prior sweep dock %s", dock_name, exc_info=True)
+    dock_name = _sweep_dock_name(spec.name)
 
     sliders: list = []
     value_labels: list = []
@@ -4250,8 +4269,10 @@ def _remove_our_layers(viewer, keep: frozenset[str]) -> int:
         return 0
     _process_pending_qt_events()
     for layer in ours:
+        name = layer.name
         viewer.layers.remove(layer)
         _process_pending_qt_events()
+        _remove_sweep_dock(viewer, name)
     return len(ours)
 
 
@@ -4384,8 +4405,9 @@ def _run_in_background(
         mid-pipeline run, and only passed through here: its outputs are the
         resumed ones -- graph building's is the previous tab's *finished*
         graph -- so it is neither recorded nor redrawn, or every earlier tab
-        would take on a later tab's state. Its layers are still built, which
-        keeps the results' own bookkeeping (skeleton, image shape) current.
+        would take on a later tab's state. Its layers are not built either --
+        they are on screen, replayed -- only the results' own bookkeeping
+        follows it (see ``ResultLayers.stage_restored``).
 
         Eagerly, because every stage after `build_network` writes onto the same
         graph: convert later and the viewer shows a later stage's numbers under
@@ -4396,16 +4418,22 @@ def _run_in_background(
         the one thing that must get past it.
         """
         run_state.check(cancel_flag)
+        if stage in restored:
+            try:
+                results.stage_restored(stage, output)
+            except Exception:  # noqa: BLE001 - reported, never raised at the run
+                logger.exception("could not follow restored stage %s", stage)
+            return
         try:
             group = results.stage_finished(stage, output)
         except Exception:  # noqa: BLE001 - reported, never raised at the run
             logger.exception("could not build layers for stage %s", stage)
             return
-        if cancel_flag["cancelled"] or stage in restored:
+        if cancel_flag["cancelled"]:
             return
         if checkpoints is not None:
             try:
-                checkpoints.record(stage, group, results, settings=settings)
+                checkpoints.record(stage, group, results, settings=settings, output=output)
             except Exception:  # noqa: BLE001 - a bad snapshot must not end the run
                 logger.exception("could not record checkpoint for stage %s", stage)
         if cancel_flag["cancelled"]:
@@ -7879,13 +7907,9 @@ def settings_widget(napari_viewer=None):
             vtk_prefix = values.get("vtk_output_prefix")
             output_dir = output_dir_from_prefix(vtk_prefix)
             if output_dir is not None:
-                from haemolynx.gui.stage_checkpoints import (
-                    graph_resume_path,
-                    stems_for_cached_artefacts,
-                )
+                from haemolynx.gui.stage_checkpoints import stems_for_cached_artefacts
 
                 for stem in stems_for_cached_artefacts(values):
-                    pending.append(graph_resume_path(output_dir, stem))
                     pending.extend(output_dir.glob(f"{stem}_checkpoint_*.pkl"))
         existing = tuple(path for path in dict.fromkeys(pending) if Path(path).is_file())
         do_discard = True

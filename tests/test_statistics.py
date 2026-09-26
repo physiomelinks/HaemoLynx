@@ -238,6 +238,85 @@ def test_exact_path_efficiency_matches_a_search_per_pair(monkeypatch, batch):
     ] == pytest.approx(_brute_force_mean_path_length(simple)[0], rel=1e-12)
 
 
+@pytest.mark.parametrize("batch", [256, 2])
+def test_sampled_path_efficiency_matches_a_search_per_sampled_pair(monkeypatch, batch):
+    """fast mode's sampled pairs used one Dijkstra each (29 s on a 2,203-node
+    network, slower than the exact mean); they are now read off one search
+    per distinct source. Same pairs (same seed), same answer."""
+    from haemolynx.statistics import shape
+
+    monkeypatch.setattr(shape, "_ALL_PAIRS_SOURCE_BATCH", batch)
+    rng = np.random.default_rng(5)
+    G = nx.MultiGraph()
+    for u in range(14):
+        G.add_edge(u, (u + 1) % 14, length=float(rng.uniform(1, 9)))
+    G.add_edge(2, 9, length=1.5)
+    G.add_edge(2, 9, length=40.0)
+    G.add_edge(5, 12, length=0.0)
+    simple = nx.Graph()
+    simple.add_nodes_from(G.nodes())  # the node order the sample indexes into
+    for u, v, d in G.edges(data=True):
+        if not simple.has_edge(u, v) or d["length"] < simple[u][v]["length"]:
+            simple.add_edge(u, v, length=d["length"])
+    nodes = list(simple.nodes())
+    sampler = np.random.default_rng(shape.REPRODUCIBILITY_SEED)
+    pairs = set()
+    while len(pairs) < 30:
+        i, j = int(sampler.integers(0, len(nodes))), int(sampler.integers(0, len(nodes)))
+        if i != j:
+            pairs.add((min(i, j), max(i, j)))
+    expected = np.mean([
+        nx.shortest_path_length(simple, nodes[i], nodes[j], weight="length") for i, j in pairs
+    ])
+
+    result = compute_path_efficiency(G, True, max_pairs=30)
+
+    assert result["Average Shortest Path Length (microns)"] == pytest.approx(expected, rel=1e-12)
+    assert result["Path Efficiency Pair Sample Size"] == 30
+    assert result["Path Efficiency Pair Coverage"] == pytest.approx(30 / 91)
+
+
+def _critical_points_by_removal(G, inlets, outlets):
+    """What robustness used to do: copy the graph once per point, remove it."""
+    count = 0
+    for point in nx.articulation_points(G):
+        H = G.copy()
+        H.remove_node(point)
+        if any(
+            ((inlets & c) and (outlets - c)) or ((outlets & c) and (inlets - c))
+            for c in nx.connected_components(H)
+        ):
+            count += 1
+    return count
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_critical_articulation_points_match_removing_each_one(seed):
+    """One depth-first pass gives what a graph copy per articulation point
+    gave: sparse trees and meshes, several components, parallel vessels,
+    self-loops, terminals on articulation points, terminals not in the graph."""
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(3, 30))
+    G = nx.MultiGraph()
+    G.add_nodes_from(range(n))
+    for _ in range(int(rng.integers(n - 2, 2 * n))):
+        u, v = (int(x) for x in rng.integers(0, n, size=2))
+        G.add_edge(u, v, length=1.0)
+    if seed % 3 == 0:  # a second, separate piece
+        G.add_edges_from([(100, 101), (101, 102), (102, 100), (102, 103)])
+    nodes = list(G.nodes())
+    inlets = {nodes[int(i)] for i in rng.integers(0, len(nodes), size=int(rng.integers(1, 4)))}
+    outlets = {nodes[int(i)] for i in rng.integers(0, len(nodes), size=int(rng.integers(1, 4)))}
+    if seed % 5 == 0:
+        outlets.add("not in the graph")
+
+    result = compute_network_robustness(G, inlet_nodes=inlets, outlet_nodes=outlets)
+
+    assert result["Critical Articulation Point Count"] == _critical_points_by_removal(
+        G, inlets, outlets
+    )
+
+
 def test_compute_vessel_density(simple_graph):
     pos = nx.get_node_attributes(simple_graph, "pos")
     s = compute_vessel_density(

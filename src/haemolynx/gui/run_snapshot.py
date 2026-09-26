@@ -20,11 +20,10 @@ from typing import Any, Mapping, Sequence
 
 from haemolynx.gui.results import ResultLayers, copy_graph
 from haemolynx.gui.stage_checkpoints import (
-    GRAPH_RESUME_STAGES,
     StageCheckpoint,
     StageCheckpoints,
     ensure_skeleton_artefact,
-    graph_resume_path,
+    skeleton_resume_path,
     _stem_and_output_dir,
 )
 from haemolynx.gui.tabs import tab_title
@@ -116,8 +115,10 @@ def capture_run(
     """Copy the live panel's run into a snapshot. Raises if there is none."""
     if not can_capture(checkpoints):
         raise RunSnapshotError(NOTHING_TO_SAVE)
+    # Stage outputs stay behind: they are this session's live volumes, and a
+    # loaded run loads its skeleton from disk instead.
     records = tuple(
-        replace(item, pickle_path=None, graph=copy_graph(item.graph))
+        replace(item, pickle_path=None, graph=copy_graph(item.graph), output=None)
         for item in checkpoints.records()
     )
     results_state = results.export_state() if results is not None else None
@@ -242,30 +243,20 @@ def write_resume_artefacts(
     settings: Mapping[str, Any] | None,
     checkpoints: StageCheckpoints,
 ) -> None:
-    """Write ``{stem}_graph.pkl`` / skeleton ``.npy`` so Run-from still works."""
+    """Make sure the skeleton ``.npy`` is on disk so Run-from still works.
+
+    A loaded run has no stage outputs to hand a resumed run, so that run
+    loads its skeleton. Its graph is handed over from the checkpoint, so
+    ``{stem}_graph.pkl`` -- graph building's own output -- is not touched.
+    """
     located = _stem_and_output_dir(settings)
     if located is None:
         return
     stem, output_dir = located
     output_dir.mkdir(parents=True, exist_ok=True)
-    groups = replay_groups(snapshot)
-    skeleton_path = ensure_skeleton_artefact(groups, output_dir, stem)
-    if skeleton_path is not None:
+    existed = skeleton_resume_path(output_dir, stem).is_file()
+    skeleton_path = ensure_skeleton_artefact(replay_groups(snapshot), output_dir, stem)
+    if skeleton_path is not None and not existed:
         checkpoints.remember_path(skeleton_path)
-    graph = None
-    for item in reversed(snapshot.checkpoints):
-        if item.graph is not None and item.stage in GRAPH_RESUME_STAGES:
-            graph = item.graph
-            break
-    if graph is None:
-        return
-    graph_path = graph_resume_path(output_dir, stem)
-    try:
-        with graph_path.open("wb") as handle:
-            pickle.dump(graph, handle)
-        checkpoints.remember_path(graph_path)
-        logger.info("Wrote resumed graph from loaded run to %s", graph_path)
-    except Exception:  # noqa: BLE001 - layers still restored
-        logger.exception("could not write resumed graph %s", graph_path)
 
 

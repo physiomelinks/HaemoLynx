@@ -361,7 +361,12 @@ def test_revert_restores_tube_radii_from_the_replayed_diameter_column(panel):
     np.testing.assert_allclose(radial, diameter_um / 2.0, atol=1e-6)
 
 
-def test_revert_writes_graph_pkl_and_turns_off_rebuild_toggles(panel):
+def test_revert_hands_the_graph_over_and_never_writes_graph_pkl(panel):
+    """The graph goes to the run directly: {stem}_graph.pkl -- graph
+    building's own output, which a run with do_graph_building off loads --
+    is not overwritten with a later stage's graph, and graph building is
+    not turned off. (These seeded checkpoints keep no stage outputs, so the
+    skeleton is still loaded from its file.)"""
     widget, viewer, tmp_path = panel
     _seed_run(widget, viewer, through="assign_diameters")
     rows = widget._haemolynx_rows()
@@ -371,20 +376,10 @@ def test_revert_writes_graph_pkl_and_turns_off_rebuild_toggles(panel):
     widget._haemolynx_revert("5. Diameters")
 
     assert rows["do_skeletonize"].value is False
-    assert rows["do_graph_building"].value is False
+    assert rows["do_graph_building"].value is True
     assert rows["do_fwhm_measurement"].value is True
-    report = widget._haemolynx_report()
-    assert "do_skeletonize" in report
-    # resolve_settings may absolutise vtk_output_prefix; find the resume pickle
-    # wherever the panel actually wrote it.
-    written = list(tmp_path.rglob("*_graph.pkl"))
-    assert written, f"no graph.pkl under {tmp_path}; report was: {report}"
-    import pickle
-
-    with written[0].open("rb") as handle:
-        restored = pickle.load(handle)
-    assert isinstance(restored, nx.MultiGraph)
-    assert restored.number_of_nodes() == 4
+    assert "do_skeletonize" in widget._haemolynx_report()
+    assert not list(tmp_path.rglob("*_graph.pkl"))
 
 
 def test_revert_from_haemodynamics_turns_off_fwhm_remeasurement(panel):
@@ -398,7 +393,7 @@ def test_revert_from_haemodynamics_turns_off_fwhm_remeasurement(panel):
     widget._haemolynx_revert("6. Haemodynamics")
 
     assert rows["do_fwhm_measurement"].value is False
-    assert rows["do_graph_building"].value is False
+    assert rows["do_graph_building"].value is True
     tabs = widget._haemolynx_tabs
     assert tabs.tabText(tabs.currentIndex()) == "6. Haemodynamics"
 
@@ -447,8 +442,10 @@ def test_clear_layers_forgets_checkpoints_and_disables_revert(panel):
     widget._haemolynx_revert("5. Diameters")
 
     assert rows["do_skeletonize"].value is False
-    assert rows["do_graph_building"].value is False
-    assert list(tmp_path.rglob("*_graph.pkl"))
+    assert rows["do_graph_building"].value is True
+    # Graph building's own output, as a real run would have left it.
+    built = next(tmp_path.rglob("*_skeleton.npy")).with_name("stack_graph.pkl")
+    built.write_bytes(b"what graph building made")
 
     widget._haemolynx_clear()
 
@@ -456,7 +453,7 @@ def test_clear_layers_forgets_checkpoints_and_disables_revert(panel):
     assert widget._haemolynx_revert_buttons["5. Diameters"].enabled is False
     assert rows["do_skeletonize"].value is True
     assert rows["do_graph_building"].value is True
-    assert not list(tmp_path.rglob("*_graph.pkl"))
+    assert built.read_bytes() == b"what graph building made"
     assert not list(tmp_path.rglob("*_checkpoint_*.pkl"))
     report = widget._haemolynx_report()
     assert "Discarded cached" in report
@@ -521,14 +518,16 @@ def test_clicking_run_from_on_boundaries_stays_on_boundaries(panel, monkeypatch)
     assert tabs.tabText(tabs.currentIndex()) == "4. Boundaries"
     rows = widget._haemolynx_rows()
     assert rows["do_skeletonize"].value is False
-    assert rows["do_graph_building"].value is False
+    assert rows["do_graph_building"].value is True
     assert started
     assert started[0].get("start_from") == "assign_boundaries"
     assert started[0].get("resume") is not None
 
 
 def test_after_run_from_boundaries_cached_artefacts_pass_preflight(panel):
-    """Preparing Boundaries writes the Graph pickle so a run can load it."""
+    """Preparing Boundaries leaves the resumed run nothing to fail preflight
+    on: the skeleton it loads is on disk, and graph building stays on (the
+    graph is handed over), so no graph pickle is needed."""
     from haemolynx.pipeline import default_schema, preflight, resolve_settings
     from haemolynx.pipeline.checks import check_cached_artefacts
 
@@ -541,7 +540,7 @@ def test_after_run_from_boundaries_cached_artefacts_pass_preflight(panel):
     widget._haemolynx_revert("4. Boundaries")
 
     assert rows["do_skeletonize"].value is False
-    assert rows["do_graph_building"].value is False
+    assert rows["do_graph_building"].value is True
     settings = resolve_settings(
         widget._haemolynx_values(), schema=default_schema(), config_path=None
     )
@@ -550,7 +549,7 @@ def test_after_run_from_boundaries_cached_artefacts_pass_preflight(panel):
     # Full preflight may still fail on missing input_path files in the temp
     # form; the resume-specific failure mode was the cached-artefact check.
     assert list(tmp_path.rglob("*_skeleton.npy")), "skeleton.npy missing after revert"
-    assert list(tmp_path.rglob("*_graph.pkl")), "graph.pkl missing after revert"
+    assert not list(tmp_path.rglob("*_graph.pkl"))
 
 
 def test_save_and_load_run_buttons_sit_under_run_pipeline_on_the_right(panel):
@@ -617,10 +616,10 @@ def test_save_then_load_run_restores_layers_and_checkpoints(panel):
 
 
 def test_each_run_from_starts_from_the_users_own_skip_toggles(panel):
-    """A run from Haemodynamics turns graph building (and FWHM remeasurement)
-    off; a run from Graph straight after must build the graph again, and one
-    from Diameters must measure again -- not inherit the earlier run-from's
-    toggles and quietly load the old graph or keep the old diameters."""
+    """A run from Haemodynamics turns FWHM remeasurement off; one from
+    Diameters straight after must measure again, and one from Graph must
+    build the graph -- not inherit the earlier run-from's toggles and quietly
+    keep the old diameters. Graph building itself is never turned off."""
     widget, viewer, _tmp = panel
     _seed_run(widget, viewer, through="solve")
     rows = widget._haemolynx_rows()
@@ -629,7 +628,7 @@ def test_each_run_from_starts_from_the_users_own_skip_toggles(panel):
     rows["do_graph_building"].value = True
 
     widget._haemolynx_revert("6. Haemodynamics")
-    assert rows["do_graph_building"].value is False
+    assert rows["do_graph_building"].value is True
     assert rows["do_fwhm_measurement"].value is False
 
     widget._haemolynx_revert("5. Diameters")
@@ -746,9 +745,12 @@ def test_run_from_perturbations_repeats_the_full_runs_perturbations(
 @pytest.mark.integration
 def test_regenerate_continues_the_edit_without_rebuilding(make_napari_viewer, qtbot, tmp_path, monkeypatch):
     """Regenerate used to re-skeletonise the image and build a whole graph
-    again before swapping in the edited one; it now loads the skeleton and the
-    edited graph. The result is the edited network, and the Graph tab keeps
-    the graph as it was built."""
+    again before swapping in the edited one, and then to load the skeleton
+    and an edited graph written over {stem}_graph.pkl. It is now handed the
+    run's own volume and network and the edit: nothing is skeletonised,
+    loaded or built, and graph building's pickle is left as it was. The
+    result is the edited network, and the Graph tab keeps the graph as it
+    was built."""
     import haemolynx.pipeline.stages as stages_mod
 
     viewer = make_napari_viewer()
@@ -772,8 +774,10 @@ def test_regenerate_continues_the_edit_without_rebuilding(make_napari_viewer, qt
     u, v, key = next(iter(edited.edges(keys=True)))
     edited.remove_edge(u, v, key)  # what Delete edge does to the graph
 
+    graph_pkl = next((tmp_path / "out").glob("*_graph.pkl"))
+    built_pickle = graph_pkl.read_bytes()
     calls = []
-    for name in ("_skeletonize_loaded_mask",):
+    for name in ("_skeletonize_loaded_mask", "skeletonise", "build_network"):
         real = getattr(stages_mod, name)
         monkeypatch.setattr(
             stages_mod, name, lambda *a, _real=real, _name=name, **k: calls.append(_name) or _real(*a, **k)
@@ -791,4 +795,6 @@ def test_regenerate_continues_the_edit_without_rebuilding(make_napari_viewer, qt
     assert calls == [], f"Regenerate rebuilt what it should have loaded: {calls}"
     assert checkpoints.get("solve").graph.number_of_edges() == edited.number_of_edges()
     assert checkpoints.get("build_network").graph.number_of_edges() == built_edges
-    assert rows["do_skeletonize"].value is False  # this run's, until Run pipeline
+    assert graph_pkl.read_bytes() == built_pickle
+    assert rows["do_skeletonize"].value is True  # nothing to load, so nothing turned off
+    assert rows["do_graph_building"].value is True

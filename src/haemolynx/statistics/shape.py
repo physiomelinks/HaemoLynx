@@ -195,7 +195,21 @@ def compute_path_efficiency(
                 i, j = j, i
             sampled_pairs.add((i, j))
 
-        pairs = [(nodes[i], nodes[j]) for i, j in sampled_pairs]
+        # The same sampled pairs, searched once per distinct source rather
+        # than once per pair: the per-pair loop took 29 s on a 2,203-node
+        # network, longer than the exact mean below.
+        by_source: dict[int, list[int]] = {}
+        for i, j in sampled_pairs:
+            by_source.setdefault(i, []).append(j)
+        adjacency = _length_adjacency(G_s, nodes)
+        for sources, distances in _distances_from(adjacency, sorted(by_source)):
+            for row, source in enumerate(sources):
+                reached = distances[row, by_source[source]]
+                if not np.all(np.isfinite(reached)):
+                    raise RuntimeError(
+                        f"No path between connected-graph node {nodes[source]} and a sampled partner"
+                    )
+                path_lengths.extend(float(value) for value in reached)
     else:
         avg_path_length = _mean_shortest_path_length_over_all_pairs(G_s, nodes)
         efficiency = 1 / avg_path_length if avg_path_length > 0 else 0
@@ -205,15 +219,6 @@ def compute_path_efficiency(
             "Path Efficiency Pair Sample Size": total_pairs,
             "Path Efficiency Pair Coverage": 1.0 if total_pairs > 0 else 0,
         }
-
-    for src, tgt in pairs:
-        try:
-            pl = nx.shortest_path_length(G_s, src, tgt, weight="length")
-        except nx.NetworkXNoPath as exc:
-            raise RuntimeError(
-                f"No path between connected-graph nodes {src} and {tgt}"
-            ) from exc
-        path_lengths.append(pl)
 
     avg_path_length = np.mean(path_lengths) if path_lengths else 0
     efficiency = 1 / avg_path_length if avg_path_length > 0 else 0
@@ -241,12 +246,30 @@ def _mean_shortest_path_length_over_all_pairs(G_s: nx.Graph, nodes: list) -> flo
     statistics mode. The same answer, *G_s* being connected. A missing
     ``length`` counts as 1, as NetworkX's own weighted search does.
     """
-    from scipy.sparse import csr_matrix
-    from scipy.sparse.csgraph import dijkstra
-
     n = len(nodes)
     if n < 2:
         return 0.0
+    total = 0.0
+    for sources, distances in _distances_from(_length_adjacency(G_s, nodes), range(n)):
+        for row, source in enumerate(sources):
+            later = distances[row, source + 1 :]
+            if not np.all(np.isfinite(later)):
+                raise RuntimeError(
+                    f"No path from connected-graph node {nodes[source]} to every other node"
+                )
+            total += float(later.sum())
+    return total / (n * (n - 1) / 2)
+
+
+def _length_adjacency(G_s: nx.Graph, nodes: list):
+    """*G_s* as a sparse ``length`` matrix over *nodes* (their list positions).
+
+    The lightest of any parallel edges, no self-loops, and a missing
+    ``length`` as 1, as NetworkX's own weighted search reads it.
+    """
+    from scipy.sparse import csr_matrix
+
+    n = len(nodes)
     index = {node: i for i, node in enumerate(nodes)}
     lightest: dict[tuple[int, int], float] = {}
     for u, v, data in G_s.edges(data=True):
@@ -258,21 +281,19 @@ def _mean_shortest_path_length_over_all_pairs(G_s: nx.Graph, nodes: list) -> flo
             lightest[(i, j)] = weight
     rows, cols = zip(*lightest) if lightest else ((), ())
     # Explicit zero-length edges stay edges in a sparse graph built this way.
-    adjacency = csr_matrix(
+    return csr_matrix(
         (np.fromiter(lightest.values(), dtype=float), (rows, cols)), shape=(n, n)
     )
-    total = 0.0
-    for start in range(0, n, _ALL_PAIRS_SOURCE_BATCH):
-        sources = np.arange(start, min(n, start + _ALL_PAIRS_SOURCE_BATCH))
-        distances = dijkstra(adjacency, directed=False, indices=sources)
-        for row, source in enumerate(sources):
-            later = distances[row, source + 1 :]
-            if not np.all(np.isfinite(later)):
-                raise RuntimeError(
-                    f"No path from connected-graph node {nodes[source]} to every other node"
-                )
-            total += float(later.sum())
-    return total / (n * (n - 1) / 2)
+
+
+def _distances_from(adjacency, sources):
+    """``(batch, distances)`` per batch of *sources*: one search per source."""
+    from scipy.sparse.csgraph import dijkstra
+
+    sources = np.asarray(list(sources), dtype=int)
+    for start in range(0, len(sources), _ALL_PAIRS_SOURCE_BATCH):
+        batch = sources[start : start + _ALL_PAIRS_SOURCE_BATCH]
+        yield batch, dijkstra(adjacency, directed=False, indices=batch)
 
 
 def compute_vessel_density(

@@ -15,15 +15,12 @@ import pytest
 
 from haemolynx.gui.results import ResultLayers, StageLayers, LayerSpec, SKELETON
 from haemolynx.gui.stage_checkpoints import (
-    GRAPH_RESUME_STAGES,
-    GRAPH_SKIP_FOR_RESUME,
     SKIP_FOR_RESUME,
     StageCheckpoint,
     StageCheckpoints,
     can_revert_from,
     checkpoint_pickle_path,
     discard_cached_artefacts,
-    graph_resume_path,
     previous_tab,
     resume_from_edit,
     restore_message,
@@ -248,18 +245,19 @@ def test_plan_restore_replays_groups_through_the_previous_tab(tmp_path):
     assert checkpoints.has("assign_boundaries")
 
 
-def test_plan_restore_writes_graph_pkl_and_skips_graph_building(tmp_path):
-    """Without a skeleton artefact, only graph building is skipped — not skeletonise.
-
-    Preflight errors if do_skeletonize is off and the .npy is missing; resume
-    must not put the panel in that state.
-    """
+def test_plan_restore_hands_the_graph_over_and_leaves_graph_pkl_alone(tmp_path):
+    """A run-from used to overwrite {stem}_graph.pkl with the checkpoint's
+    later-stage graph (and claim it, so Clear deleted it): a run with the
+    user's own do_graph_building off then loaded the wrong graph, or none.
+    The graph now goes to the run directly, and graph building stays on."""
     checkpoints = StageCheckpoints()
     graph = a_graph(resistance=1.0)
     results = built(graph)
     settings = _settings(tmp_path)
     settings["use_fwhm_edge_diameters"] = True
     (tmp_path / "out").mkdir()
+    graph_pkl = tmp_path / "out" / "stack_graph.pkl"
+    graph_pkl.write_bytes(b"what graph building made")
     checkpoints.record(
         "assign_diameters",
         _group("assign_diameters", "5. Diameters"),
@@ -271,16 +269,16 @@ def test_plan_restore_writes_graph_pkl_and_skips_graph_building(tmp_path):
 
     assert plan is not None
     assert plan.stage == "assign_diameters"
-    assert plan.skip_settings == ("do_graph_building", "do_fwhm_measurement")
-    assert plan.graph_path == graph_resume_path(tmp_path / "out", "stack")
-    assert plan.graph_path.is_file()
-    with plan.graph_path.open("rb") as handle:
-        restored = pickle.load(handle)
-    assert restored.edges[0, 1, 0]["resistance"] == 1.0
+    assert plan.skip_settings == ("do_fwhm_measurement",)
+    assert graph_pkl.read_bytes() == b"what graph building made"
+    assert graph_pkl not in checkpoints.session_artefact_paths
+    assert plan.resume.graph.edges[0, 1, 0]["resistance"] == 1.0
+    assert plan.resume.graph is not checkpoints.get("assign_diameters").graph
 
 
-def test_plan_restore_writes_skeleton_npy_so_both_skip_toggles_are_safe(tmp_path):
-    """Resume from a graph stage must leave preflight happy for both skip toggles."""
+def test_plan_restore_writes_skeleton_npy_when_no_skeleton_is_stored(tmp_path):
+    """A run loaded from a file keeps no stage outputs, so the resumed run
+    loads its skeleton: the .npy must exist before do_skeletonize goes off."""
     checkpoints = StageCheckpoints()
     graph = a_graph(resistance=1.0)
     results = built(graph)
@@ -312,10 +310,63 @@ def test_plan_restore_writes_skeleton_npy_so_both_skip_toggles_are_safe(tmp_path
 
     assert plan is not None
     assert plan.tab_title == "4. Boundaries"
-    assert plan.skip_settings == GRAPH_SKIP_FOR_RESUME
+    assert plan.skip_settings == ("do_skeletonize",)
     skel_path = skeleton_resume_path(tmp_path / "out", "stack")
     assert skel_path.is_file()
     assert np.array_equal(np.load(skel_path), skeleton)
+
+
+def _record_with_outputs(tmp_path, settings):
+    """A run through Boundaries whose early stages kept what they returned."""
+    from haemolynx.pipeline.stages import SegmentedInputs, SkeletonisedVolume, VesselNetwork
+
+    checkpoints = StageCheckpoints()
+    results = built(a_graph(resistance=1.0))
+    inputs = SegmentedInputs(image_path=tmp_path / "stack.tif", output_dir=tmp_path / "out")
+    volume = SkeletonisedVolume(
+        image=np.zeros((2, 3, 4)), skeleton=np.zeros((2, 3, 4), dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+        output_dir=tmp_path / "out",
+    )
+    built_graph = a_graph()
+    network = VesselNetwork(graph=built_graph, volume=volume, large_arteriole_mask=np.ones(3))
+    for stage, output in (("segment", inputs), ("skeletonise", volume),
+                          ("build_network", network), ("assign_boundaries", None)):
+        checkpoints.record(stage, _group(stage), results, settings=settings, output=output)
+    # What assign_boundaries does to the live network after it was recorded.
+    network.graph = a_graph(resistance=9.0)
+    network.large_arteriole_mask = np.zeros(3)
+    return checkpoints, inputs, volume, built_graph
+
+
+def test_a_run_from_hands_over_what_the_early_stages_returned(tmp_path):
+    """So the resumed run neither re-segments (ilastik) nor reloads and
+    re-checks the image, skeleton, masks and graph -- and needs no skeleton
+    file or skip toggle for any of it."""
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, inputs, volume, built_graph = _record_with_outputs(tmp_path, settings)
+
+    plan = checkpoints.plan_run_from("5. Diameters", settings=settings)
+
+    assert plan.resume.inputs == inputs and plan.resume.volume is not None
+    assert plan.resume.volume.skeleton is volume.skeleton
+    # The network as graph building left it, not as Boundaries changed it.
+    assert plan.resume.network.graph is built_graph
+    assert np.array_equal(plan.resume.network.large_arteriole_mask, np.ones(3))
+    assert plan.skip_settings == ()
+    assert not skeleton_resume_path(tmp_path / "out", "stack").exists()
+
+
+def test_a_run_from_hands_over_only_the_stages_before_it(tmp_path):
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, _inputs, _volume, _graph = _record_with_outputs(tmp_path, settings)
+
+    plan = checkpoints.plan_run_from("3. Graph", settings=settings)
+
+    assert plan.resume.inputs is not None and plan.resume.volume is not None
+    assert plan.resume.network is None  # build_network is the stage being re-run
 
 
 def test_revert_from_every_tab_selects_the_restored_predecessor_tab():
@@ -334,56 +385,40 @@ def test_revert_from_every_tab_selects_the_restored_predecessor_tab():
 
 
 def test_skip_settings_for_resume_requires_skeleton_before_disabling_skeletonize():
-    assert skip_settings_for_resume(graph_written=False, skeleton_ready=True) == ()
-    assert skip_settings_for_resume(graph_written=True, skeleton_ready=False) == (
-        "do_graph_building",
+    assert skip_settings_for_resume(skeleton_ready=False, start_from="assign_diameters") == ()
+    assert skip_settings_for_resume(skeleton_ready=True, start_from="assign_diameters") == (
+        "do_skeletonize",
     )
-    assert skip_settings_for_resume(graph_written=True, skeleton_ready=True) == (
-        GRAPH_SKIP_FOR_RESUME
-    )
+    assert skip_settings_for_resume(skeleton_ready=True, start_from="skeletonise") == ()
+    assert skip_settings_for_resume(skeleton_ready=True) == ()
 
 
-def test_skip_settings_for_resume_keeps_fwhm_when_diameters_are_already_on_the_graph():
-    assert skip_settings_for_resume(
-        graph_written=True,
-        skeleton_ready=True,
-        target="assign_boundaries",
-        use_fwhm_edge_diameters=True,
-    ) == GRAPH_SKIP_FOR_RESUME
-    assert skip_settings_for_resume(
-        graph_written=True,
-        skeleton_ready=False,
-        target="assign_diameters",
-        use_fwhm_edge_diameters=False,
-    ) == ("do_graph_building",)
-    assert skip_settings_for_resume(
-        graph_written=True,
-        skeleton_ready=False,
-        target="assign_diameters",
-        use_fwhm_edge_diameters=True,
-    ) == ("do_graph_building", "do_fwhm_measurement")
-    assert skip_settings_for_resume(
-        graph_written=True,
-        skeleton_ready=True,
-        target="assign_diameters",
-        use_fwhm_edge_diameters=True,
-    ) == SKIP_FOR_RESUME
+def test_skip_settings_never_turn_graph_building_off():
+    """A resumed run is handed its graph; turning graph building off made it
+    load {stem}_graph.pkl, which the run-from had to overwrite first."""
+    for start_from in ("build_network", "assign_boundaries", "solve", "export_results"):
+        assert "do_graph_building" not in skip_settings_for_resume(
+            skeleton_ready=True, start_from=start_from, use_fwhm_edge_diameters=True
+        )
 
 
 def test_skip_settings_for_start_from_diameters_does_not_disable_fwhm():
     """Re-running Diameters should remeasure; Haemodynamics must not."""
     assert skip_settings_for_resume(
-        graph_written=True,
         skeleton_ready=True,
         start_from="assign_diameters",
         use_fwhm_edge_diameters=True,
-    ) == GRAPH_SKIP_FOR_RESUME
+    ) == ("do_skeletonize",)
     assert skip_settings_for_resume(
-        graph_written=True,
         skeleton_ready=True,
         start_from="build_haemodynamic_model",
         use_fwhm_edge_diameters=True,
-    ) == SKIP_FOR_RESUME
+    ) == ("do_skeletonize", "do_fwhm_measurement")
+    assert skip_settings_for_resume(
+        skeleton_ready=False,
+        target="assign_diameters",
+        use_fwhm_edge_diameters=True,
+    ) == ("do_fwhm_measurement",)
 
 
 def test_tab_start_stage_of_haemodynamics_is_build_model_not_solve():
@@ -472,35 +507,28 @@ def test_apply_to_results_restores_the_thick_vessel_mask():
     assert fresh._skeleton_layer_options() == {"thick_vessel_mask": fresh._thick_vessel_mask}
 
 
-def test_restore_message_mentions_the_resume_graph(tmp_path):
+def test_restore_message_names_the_tab_and_the_toggles_turned_off():
     plan = SimpleNamespace(
         title="4. Boundaries",
         tab_title="5. Diameters",
         start_from="assign_diameters",
-        graph_path=tmp_path / "stack_graph.pkl",
-        skip_settings=SKIP_FOR_RESUME,
+        skip_settings=("do_skeletonize",),
     )
     message = restore_message(plan)
     assert "5. Diameters" in message
-    assert "stack_graph.pkl" in message
-    assert "do_skeletonize" in message
     assert "do_skeletonize" in message
 
 
-def test_graph_resume_stages_cover_every_post_topology_stage():
-    """A revert from any later tab must be able to seed `{stem}_graph.pkl`."""
-    assert "build_network" in GRAPH_RESUME_STAGES
-    assert "solve" in GRAPH_RESUME_STAGES
-    assert "export_results" in GRAPH_RESUME_STAGES
-
-
-def test_discard_cached_artefacts_removes_graph_and_checkpoints_not_skeleton(
+def test_discard_cached_artefacts_removes_checkpoints_not_the_pipelines_own_files(
     tmp_path,
 ):
+    """{stem}_graph.pkl and {stem}_skeleton.npy are graph building's and
+    skeletonisation's own output, which a run with those stages off loads:
+    Clear, and every fresh Run pipeline, must leave them."""
     output_dir = tmp_path / "out"
     output_dir.mkdir()
     stem = "stack"
-    graph_path = graph_resume_path(output_dir, stem)
+    graph_path = output_dir / f"{stem}_graph.pkl"
     graph_path.write_bytes(b"graph")
     cp1 = checkpoint_pickle_path(output_dir, stem, "build_network")
     cp1.write_bytes(b"cp")
@@ -513,8 +541,8 @@ def test_discard_cached_artefacts_removes_graph_and_checkpoints_not_skeleton(
 
     removed = discard_cached_artefacts(output_dir, stem)
 
-    assert set(removed) == {graph_path, cp1, cp2}
-    assert not graph_path.is_file()
+    assert set(removed) == {cp1, cp2}
+    assert graph_path.is_file()
     assert not cp1.is_file()
     assert not cp2.is_file()
     assert skel_path.is_file()
@@ -527,9 +555,12 @@ def test_discard_cached_artefacts_ignores_missing_files(tmp_path):
     assert discard_cached_artefacts(output_dir, "stack") == ()
 
 
-def test_discard_cached_artefacts_for_settings_covers_vtk_and_input_stems(
+def test_clear_looks_for_checkpoints_under_the_input_stem_they_are_named_with(
     tmp_path,
 ):
+    """record() names them {input stem}_checkpoint_{stage}.pkl; Clear used to
+    look under the VTK prefix's name, so a new session never cleaned an
+    earlier one's pickles."""
     from haemolynx.gui.stage_checkpoints import (
         discard_cached_artefacts_for_settings,
         stems_for_cached_artefacts,
@@ -541,18 +572,25 @@ def test_discard_cached_artefacts_for_settings_covers_vtk_and_input_stems(
         "input_path": tmp_path / "HaemoLynx_image.tif",
         "vtk_output_prefix": tmp_path / "out" / "stack",
     }
-    graph_resume_path(output_dir, "stack").write_bytes(b"g")
-    graph_resume_path(output_dir, "HaemoLynx_image").write_bytes(b"g2")
-    checkpoint_pickle_path(output_dir, "stack", "build_network").write_bytes(b"c")
+    ours = checkpoint_pickle_path(output_dir, "HaemoLynx_image", "build_network")
+    ours.write_bytes(b"c")
+    other = checkpoint_pickle_path(output_dir, "another_image", "build_network")
+    other.write_bytes(b"c2")
 
-    assert set(stems_for_cached_artefacts(settings)) == {"stack"}
+    assert stems_for_cached_artefacts(settings) == ("HaemoLynx_image",)
     removed = discard_cached_artefacts_for_settings(settings)
-    assert graph_resume_path(output_dir, "stack") in removed
-    assert graph_resume_path(output_dir, "HaemoLynx_image") not in removed
-    assert checkpoint_pickle_path(output_dir, "stack", "build_network") in removed
-    assert not graph_resume_path(output_dir, "stack").is_file()
-    assert graph_resume_path(output_dir, "HaemoLynx_image").is_file()
-    assert not checkpoint_pickle_path(output_dir, "stack", "build_network").is_file()
+    assert removed == (ours,)
+    assert not ours.is_file()
+    assert other.is_file()
+    ilastik = {
+        **settings,
+        "input_path": None,
+        "use_ilastik_segmentation": True,
+        "ilastik_unsegmented_image_path": tmp_path / "raw.tif",
+        "ilastik_output_dir": tmp_path / "seg",
+        "ilastik_output_suffix": ".h5",
+    }
+    assert stems_for_cached_artefacts(ilastik) == ("raw_segmented",)
 
 
 # --- a run from a tab starts from, and leaves, the earlier tabs as they were ---
@@ -694,9 +732,10 @@ def _through_solve(tmp_path, settings):
     return checkpoints, skeleton
 
 
-def test_regenerate_loads_the_skeleton_and_the_edited_graph_instead_of_rebuilding(tmp_path):
+def test_regenerate_hands_over_the_edited_graph_instead_of_rebuilding(tmp_path):
     """Regenerate used to re-skeletonise the image and build a whole new
-    graph, only to replace it with the edited one."""
+    graph, only to replace it with the edited one -- and then wrote the edit
+    over {stem}_graph.pkl. It is handed the edit instead."""
     settings = _settings(tmp_path)
     (tmp_path / "out").mkdir()
     checkpoints, skeleton = _through_solve(tmp_path, settings)
@@ -707,11 +746,9 @@ def test_regenerate_loads_the_skeleton_and_the_edited_graph_instead_of_rebuildin
 
     assert plan is not None
     assert plan.start_from == "assign_diameters"
-    assert set(plan.skip_settings) == {"do_skeletonize", "do_graph_building"}
+    assert plan.skip_settings == ("do_skeletonize",)
     assert np.array_equal(np.load(skeleton_resume_path(tmp_path / "out", "stack")), skeleton)
-    with graph_resume_path(tmp_path / "out", "stack").open("rb") as handle:
-        written = pickle.load(handle)
-    assert written.number_of_edges() == edited.number_of_edges()
+    assert not (tmp_path / "out" / "stack_graph.pkl").exists()
     assert plan.resume.graph.number_of_edges() == edited.number_of_edges()
     assert plan.resume.graph is not edited
 

@@ -27,7 +27,7 @@ import json
 import logging
 import pickle
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -286,6 +286,14 @@ class PipelineResume:
     #: this run's own build_network loaded -- see _boundaries_from_resume.
     large_arteriole_mask: Any | None = None
     large_venule_mask: Any | None = None
+    #: What segment, skeletonise and build_network returned in the run being
+    #: resumed. Each one given, for a stage before *start_from*, is used as it
+    #: is instead of that stage being done again -- no ilastik, no reloading
+    #: and re-checking the image, skeleton, masks and graph. ``network`` takes
+    #: *graph* in place of its own. None falls back to loading from disk.
+    inputs: SegmentedInputs | None = None
+    volume: SkeletonisedVolume | None = None
+    network: VesselNetwork | None = None
 
 
 def segmented_input_path(settings: dict) -> Path | None:
@@ -309,8 +317,15 @@ def segmented_input_path(settings: dict) -> Path | None:
     return None if produced is None else Path(produced)
 
 
-def segment(settings: dict):
-    """Produce the segmented mask to analyse, running ilastik when asked to."""
+def segment(settings: dict, *, segmented_path: Path | str | None = None):
+    """Produce the segmented mask to analyse, running ilastik when asked to.
+
+    *segmented_path* is a segmented image this run already has -- a resumed
+    run's, from the stage it resumes -- so ilastik is not run again; the
+    settings are still normalised as a fresh run's would be.
+    """
+    if segmented_path is not None:
+        settings["input_path"] = Path(segmented_path)
     # Not yet a path when ilastik is doing the segmenting: `input_path` is what
     # this stage *produces* in that case, and the documented way to ask for it
     # is to leave the setting empty. Converting first turned that into
@@ -318,7 +333,9 @@ def segment(settings: dict):
     # configuration the setting exists to support (#127).
     if settings["input_path"] is not None:
         settings["input_path"] = Path(settings["input_path"])
-    if settings["use_ilastik_segmentation"]:
+    if segmented_path is not None:
+        logger.info(f"Resuming with the segmented image already made: {settings['input_path']}")
+    elif settings["use_ilastik_segmentation"]:
         unsegmented_image_path = Path(settings["ilastik_unsegmented_image_path"])
         unsegmented_image_path = io.resolve_image_path_with_optional_zip(unsegmented_image_path)
         if settings["ilastik_classifier_path"] is None:
@@ -931,12 +948,17 @@ def build_network(
     schema: Schema,
     progress: StageProgress | None = None,
     on_step_graph: Callable[[str, Any], None] | None = None,
+    resumed_graph: nx.MultiGraph | None = None,
 ):
     """Load the vessel masks and turn the skeleton into a graph.
 
     This is the long stage, so it reports the eleven topology steps of
     :func:`graph.build_graph_from_skeleton` to *progress* as they land -- a
     run's only finer-grained progress than "graph building is happening".
+
+    *resumed_graph* is a resumed run's network, built (and checked and drawn) by the
+    run that made it: it is used as it is, so ``{stem}_graph.pkl`` is neither
+    loaded nor written -- that file stays the one graph building produced.
     """
     image, skeleton = volume.image, volume.skeleton
     output_dir = volume.output_dir
@@ -973,6 +995,23 @@ def build_network(
             f"min_overlap_fraction={float(settings['small_vessel_mask_min_overlap_fraction']):.3f}"
         ),
     )
+
+    if resumed_graph is not None:
+        # Its consistency checks and plots were made when it was built.
+        logger.info("Resuming with the network already built; not building or loading one.")
+        _record_graph_voxel_metadata(
+            resumed_graph, main_voxel_size_xyz, voxel_size_zyx,
+            large_arteriole_mask, large_venule_mask,
+            large_arteriole_mask_voxel_size, large_venule_mask_voxel_size,
+        )
+        return VesselNetwork(
+            graph=resumed_graph,
+            volume=volume,
+            large_arteriole_mask=large_arteriole_mask,
+            large_venule_mask=large_venule_mask,
+            small_arteriole_mask=small_arteriole_mask,
+            small_venule_mask=small_venule_mask,
+        )
 
     if settings["do_graph_building"]:
         # 3) Convert skeleton to graph.
@@ -1078,16 +1117,11 @@ def build_network(
             G = pickle.load(f)
         logger.info(f"Loaded graph from: {graph_path}")
 
-    # Store physical voxel-unit metadata used for skeleton/graph geometry and mask alignment.
-    G.graph["image_voxel_size_xyz"] = main_voxel_size_xyz
-    G.graph["image_voxel_size_zyx"] = voxel_size_zyx
-    if large_arteriole_mask is not None and large_venule_mask is not None:
-        G.graph["large_arteriole_mask_voxel_size_xyz"] = tuple(
-            float(v) for v in large_arteriole_mask_voxel_size
-        )
-        G.graph["large_venule_mask_voxel_size_xyz"] = tuple(
-            float(v) for v in large_venule_mask_voxel_size
-        )
+    _record_graph_voxel_metadata(
+        G, main_voxel_size_xyz, voxel_size_zyx,
+        large_arteriole_mask, large_venule_mask,
+        large_arteriole_mask_voxel_size, large_venule_mask_voxel_size,
+    )
 
     # Purely diagnostic: off by default, and never changes G even when on --
     # see graph.cartwheel_guard for what this looks for and why.
@@ -1138,6 +1172,27 @@ def build_network(
         small_arteriole_mask=small_arteriole_mask,
         small_venule_mask=small_venule_mask,
     )
+
+
+def _record_graph_voxel_metadata(
+    G: nx.Graph,
+    main_voxel_size_xyz,
+    voxel_size_zyx,
+    large_arteriole_mask,
+    large_venule_mask,
+    large_arteriole_mask_voxel_size,
+    large_venule_mask_voxel_size,
+) -> None:
+    """Store physical voxel-unit metadata used for skeleton/graph geometry and mask alignment."""
+    G.graph["image_voxel_size_xyz"] = main_voxel_size_xyz
+    G.graph["image_voxel_size_zyx"] = voxel_size_zyx
+    if large_arteriole_mask is not None and large_venule_mask is not None:
+        G.graph["large_arteriole_mask_voxel_size_xyz"] = tuple(
+            float(v) for v in large_arteriole_mask_voxel_size
+        )
+        G.graph["large_venule_mask_voxel_size_xyz"] = tuple(
+            float(v) for v in large_venule_mask_voxel_size
+        )
 
 
 def _large_vessel_role_terminal_nodes(
@@ -3609,6 +3664,40 @@ def _run_stage_body(name: str, start_from: str | None) -> bool:
     return _stage_index(name) >= _stage_index(start_from)
 
 
+def _earlier_output(
+    resume: PipelineResume | None, start_from: str | None, stage: str, attribute: str
+) -> Any | None:
+    """*resume*'s output for *stage*, when the run starts after that stage."""
+    if resume is None or start_from not in STAGE_CALLS:
+        return None
+    if _stage_index(stage) >= _stage_index(start_from):
+        return None
+    return getattr(resume, attribute, None)
+
+
+def _resumed_segmented_path(
+    settings: dict, resume: PipelineResume | None, start_from: str | None
+) -> Path | None:
+    """The segmented image a run resumed past segmentation already has.
+
+    The resumed run's own, else -- when ilastik segments and its output is
+    on disk (a run loaded from a file carries no stage outputs) -- that
+    output, so resuming never runs ilastik again. None: segment as usual.
+    """
+    inputs = _earlier_output(resume, start_from, "segment", "inputs")
+    if inputs is not None:
+        return inputs.image_path
+    resumed_past_segment = (
+        resume is not None
+        and start_from in STAGE_CALLS
+        and _stage_index(start_from) > _stage_index("segment")
+    )
+    if not resumed_past_segment or not settings.get("use_ilastik_segmentation"):
+        return None
+    produced = segmented_input_path(settings)
+    return produced if produced is not None and produced.is_file() else None
+
+
 def _fill_boundary_settings(settings: dict, resume: PipelineResume) -> None:
     """Write resume node lists into the mutable settings the later stages read."""
     mapping = {
@@ -3691,10 +3780,12 @@ def run_pipeline_stages(
     shows a run's work as it happens; a script could pickle each output, or
     count it, or ignore it.
 
-    *start_from* names a stage call to begin work at. Earlier stages that
-    load from disk (skeleton, graph) still run; boundaries / diameters /
-    haemodynamics / solve / perturbations before that point are reconstructed
-    from *resume* instead of being recomputed.
+    *start_from* names a stage call to begin work at. Stages before that point
+    are not done again: segment, skeletonise and build_network hand on
+    *resume*'s stored outputs when it has them (else ilastik's existing output
+    and the saved skeleton are loaded, and *resume*'s graph is used without
+    touching ``{stem}_graph.pkl``); boundaries / diameters / haemodynamics /
+    solve / perturbations are reconstructed from *resume*.
 
     Both run on whatever thread the run is on, and must not raise: a run is not
     stopped, or changed in any way, by whoever is watching it. Note the outputs
@@ -3706,25 +3797,38 @@ def run_pipeline_stages(
         start_from = resume.start_from
     run = RunProgress(progress)
     with run.stage("segment"):
-        inputs = segment(settings)
+        inputs = segment(
+            settings, segmented_path=_resumed_segmented_path(settings, resume, start_from)
+        )
     _produced(on_stage_output, "segment", inputs)
     with run.stage("skeletonise"):
-        volume = skeletonise(settings, inputs)
+        volume = _earlier_output(resume, start_from, "skeletonise", "volume")
+        if volume is None:
+            volume = skeletonise(settings, inputs)
+        else:
+            logger.info("Resuming with the image and skeleton already loaded.")
     _produced(on_stage_output, "skeletonise", volume)
     with run.stage("build_network") as building:
-        network = build_network(
-            settings,
-            volume,
-            schema,
-            progress=building,
-            on_step_graph=(
-                (lambda label, graph_obj: _produced(
-                    on_stage_output, f"{TOPOLOGY_STEP}{label}", graph_obj
-                ))
-                if on_stage_output is not None
-                else None
-            ),
-        )
+        resumed_graph = _earlier_output(resume, start_from, "build_network", "graph")
+        earlier = _earlier_output(resume, start_from, "build_network", "network")
+        if earlier is not None and resumed_graph is not None:
+            logger.info("Resuming with the network and vessel masks already built.")
+            network = replace(earlier, graph=resumed_graph, volume=volume)
+        else:
+            network = build_network(
+                settings,
+                volume,
+                schema,
+                progress=building,
+                on_step_graph=(
+                    (lambda label, graph_obj: _produced(
+                        on_stage_output, f"{TOPOLOGY_STEP}{label}", graph_obj
+                    ))
+                    if on_stage_output is not None
+                    else None
+                ),
+                resumed_graph=resumed_graph,
+            )
     if resume is not None and resume.graph is not None:
         network.graph = resume.graph
     _produced(on_stage_output, "build_network", network)

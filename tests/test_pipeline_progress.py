@@ -621,3 +621,121 @@ def test_start_from_skips_earlier_stage_bodies_but_still_reports_them(stubbed, m
     assert "build_haemodynamic_model" in called
     assert [event.stage for event in events if event.kind == STAGE_STARTED] == STAGE_NAMES
     assert result is model.graph
+
+
+def _recording_stages(monkeypatch):
+    """The three early stages replaced by stubs that record their arguments."""
+    from types import SimpleNamespace
+
+    calls: dict[str, dict] = {}
+
+    def segment(settings, **kwargs):
+        calls["segment"] = kwargs
+        return SimpleNamespace(image_path=kwargs.get("segmented_path"))
+
+    def skeletonise(*_args, **_kwargs):
+        calls["skeletonise"] = {}
+        return SimpleNamespace(name="freshly loaded volume")
+
+    def build_network(*_args, **kwargs):
+        calls["build_network"] = kwargs
+        return SimpleNamespace(graph=kwargs.get("resumed_graph"), volume=None,
+                               large_arteriole_mask=None, large_venule_mask=None)
+
+    for name, stub in (("segment", segment), ("skeletonise", skeletonise),
+                       ("build_network", build_network)):
+        monkeypatch.setattr(stages, name, stub)
+    return calls
+
+
+def test_a_resumed_run_is_handed_the_early_stages_instead_of_redoing_them(stubbed, monkeypatch):
+    """A run from Perturbations took minutes on a real network re-segmenting
+    (ilastik, when on), reloading and re-checking the image, skeleton, masks
+    and graph, and loading {stem}_graph.pkl only to replace it."""
+    from pathlib import Path
+
+    from haemolynx.pipeline.stages import (
+        PipelineResume, SegmentedInputs, SkeletonisedVolume, VesselNetwork,
+    )
+
+    _called, _model = stubbed()
+    calls = _recording_stages(monkeypatch)
+    outputs: dict[str, object] = {}
+    volume = SkeletonisedVolume(
+        image=None, skeleton=None, voxel_size_xyz=(1, 1, 1), voxel_size_zyx=(1, 1, 1),
+        output_dir=Path("out"),
+    )
+    built = nx.MultiGraph()
+    resumed = nx.MultiGraph()
+    resumed.add_edge(0, 1)
+    mask = object()
+    resume = PipelineResume(
+        start_from="run_perturbations",
+        graph=resumed,
+        inputs=SegmentedInputs(image_path=Path("segmented.tif"), output_dir=Path("out")),
+        volume=volume,
+        network=VesselNetwork(graph=built, volume=volume, large_arteriole_mask=mask),
+    )
+
+    run_pipeline_stages(
+        {}, schema=None, resume=resume,
+        on_stage_output=lambda stage, output: outputs.setdefault(stage, output),
+    )
+
+    assert calls["segment"] == {"segmented_path": Path("segmented.tif")}
+    assert "skeletonise" not in calls and "build_network" not in calls
+    assert outputs["skeletonise"] is volume
+    network = outputs["build_network"]
+    assert network.graph is resumed and network.large_arteriole_mask is mask
+    assert resume.network.graph is built  # the stored network is left as it was
+
+
+def test_a_resume_without_stored_outputs_hands_build_network_the_graph(stubbed, monkeypatch):
+    """A run loaded from a file keeps no stage outputs: the skeleton is
+    loaded, but the graph still goes to build_network directly rather than
+    through {stem}_graph.pkl."""
+    from haemolynx.pipeline.stages import PipelineResume
+
+    stubbed()
+    calls = _recording_stages(monkeypatch)
+    resumed = nx.MultiGraph()
+
+    run_pipeline_stages(
+        {"use_ilastik_segmentation": False}, schema=None,
+        resume=PipelineResume(start_from="build_haemodynamic_model", graph=resumed),
+    )
+
+    assert calls["segment"] == {"segmented_path": None}
+    assert "skeletonise" in calls
+    assert calls["build_network"]["resumed_graph"] is resumed
+
+
+def test_a_resume_reuses_ilastiks_existing_output_instead_of_segmenting_again(
+    stubbed, monkeypatch, tmp_path
+):
+    from haemolynx.pipeline.stages import PipelineResume
+
+    stubbed()
+    calls = _recording_stages(monkeypatch)
+    produced = tmp_path / "raw_segmented.h5"
+    produced.write_bytes(b"")
+    settings = {
+        "use_ilastik_segmentation": True,
+        "ilastik_unsegmented_image_path": tmp_path / "raw.tif",
+        "ilastik_output_dir": tmp_path,
+        "ilastik_output_suffix": ".h5",
+        "input_path": None,
+    }
+
+    run_pipeline_stages(
+        settings, schema=None,
+        resume=PipelineResume(start_from="assign_diameters", graph=nx.MultiGraph()),
+    )
+    assert calls["segment"] == {"segmented_path": produced}
+
+    produced.unlink()
+    run_pipeline_stages(
+        settings, schema=None,
+        resume=PipelineResume(start_from="assign_diameters", graph=nx.MultiGraph()),
+    )
+    assert calls["segment"] == {"segmented_path": None}  # nothing to reuse: segment
