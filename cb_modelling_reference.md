@@ -328,11 +328,28 @@ return tuple(
 
 **Nothing on the CB path consumes this.** `offsets_zyx` is computed, stored on the dataclass,
 printed in the placement table, and exercised by one test. No driver passes it to `crop_roi` or to
-anything else. It exists because `carotid_image_to_model.py` takes offsets rather than indices,
-and that program is not what runs the CB analysis.
+anything else. It exists because `carotid_image_to_model.py` takes offsets rather than indices.
+**That program does run the CB network analysis, and it never gets the offsets (open item 27).**
+`cb_h1_batch.py --stage run` passes `--roi-voxels 160 160 160` but no offsets, so the pipeline
+crops a 160³ box on the **array centre** (`extent // 2`), not on the placed centre. The cached
+batch masks confirm it: IoU with a centred crop 0.92 (WKY-A) and 0.83 (SHR-C), against 0.17 and
+0.15 with `placement.bounds`. The two boxes are 27–61% the same volume:
 
-*Step 10 — the crop that actually runs.* Every CB driver slices the array directly with
-`RoiPlacement.bounds`:
+| Specimen | Array centre | Placed centre | Shift (µm, z/y/x) | Shared volume |
+|---|---|---|---|---|
+| WKY-A | 217, 228, 253 | 230, 240, 188 | +24, +22, −121 | 50% |
+| WKY-B | 217, 178, 175 | 106, 198, 174 | −207, +37, −2 | 27% |
+| WKY-C | 217, 157, 127 | 189, 166, 92 | −52, +17, −65 | 61% |
+| SHR-A | 247, 229, 172 | 157, 260, 146 | −168, +58, −49 | 30% |
+| SHR-B | 247, 241, 199 | 230, 286, 176 | −32, +84, −43 | 55% |
+| SHR-C | 247, 247, 190 | 164, 298, 188 | −155, +95, −4 | 32% |
+
+So every network quantity from the batch (`per_edge_morphometry.csv`, `network_graph.pkl`, the
+H1 morphometry and figures, and the graph the H2 drivers load) is on the centred box. Everything
+below that slices with `bounds` is on the placed box.
+
+*Step 10 — the crop the other drivers run.* Every CB driver except the batch pipeline run slices
+the array directly with `RoiPlacement.bounds`:
 
 ```python
 @property
@@ -343,9 +360,12 @@ def bounds(self):
     )
 ```
 
-`sub = volume[placement.bounds]` — `cb_h1_batch.py:84`, and the same in `cb_h1_th_metrics.py:75`,
-`cb_h2_vtk.py:117`, `cb_h2_glomus_perfusion.py:84` and `cb_h2_hypoxic_fraction.py:92`. Integer
-arithmetic throughout, so the box is exactly 160 wide and exactly centred on the requested voxel.
+`sub = volume[placement.bounds]` — `cb_h1_batch.py:84` (threshold stage only), and the same in
+`cb_h1_th_metrics.py:75`, `cb_h2_vtk.py:117`, `cb_h2_glomus_perfusion.py:84` and
+`cb_h2_hypoxic_fraction.py:92`. Integer arithmetic throughout, so the box is exactly 160 wide and
+exactly centred on the requested voxel. The three H2 drivers crop the TH channel this way and lay
+it over the batch graph from the centred box. The two frames differ by the shifts in the table
+above, so the glomus mask sits over vessels from another region (open item 27).
 
 **The two paths now agree.** `crop_roi` used to rebuild the centre from the fraction by truncating
 twice — `int()` on the offset, then `int()` again on the start. On an axis of **odd** extent,
@@ -367,10 +387,12 @@ Halves round down, so a zero offset still centres on `extent // 2`, matching `cl
 offset from `centre_to_offsets` lands exactly on its centre, for every legal centre of a 160-voxel
 box on each extent tested, odd and even, 160–521 (`test_preprocessing.py`, `test_roi_placement.py`).
 
-**No published number moved**: the CB drivers never took that path. What changes is the
-fractional-offset path in `carotid_image_to_model.py`, which now crops where its offsets say. It
-also moves a centred crop one voxel up when the extent is even and the box size odd, because the
-old start `int(E/2 − s/2)` rounded down where `bounds` does not. Formerly open item 14.
+**No published number moved**: the batch run takes that path only with zero offsets and an even
+box, which the fix leaves where it was. The 2026-09-26 re-run (item 26) reproduced the old masks.
+What changes is the fractional-offset path in `carotid_image_to_model.py`, which now crops where
+its offsets say. It also moves a centred crop one voxel up when the extent is even and the box size
+odd, because the old start `int(E/2 − s/2)` rounded down where `bounds` does not. Formerly open
+item 14.
 
 **The box is clamped, never truncated.** `clamp_centre` pulls the centre inwards until the box fits
 wholly inside the volume. A box hanging over an edge would be silently cropped, making that
@@ -3346,6 +3368,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | ~~23~~ | **Closed.** Tier 3's Picard loop did not reach its fixed point at capillary flow. (a) It was slow: the pseudo-washout put the full wall conductance on the diagonal, so each iteration moved tissue C′/(C′ + P·A·α/*q*) of the way (≈2 700 iterations on a two-cell chain at 10² µm³/s; 378 and 97 on the Y network at 10³ and 10⁴; no progress in a plasma-skimmed branch). (b) It stopped early: a warm-started CG at `rtol` 1e-5 returned the last field once a step was below it, and the relative-change test read zero (0.03–0.25 mmHg short on the chain; 1.7 mmHg at 1e-4). Now the diagonal carries the blood's actual response and the metabolic slope (a Newton step per cell), each update is an exact sparse LU solve, guarded Anderson acceleration sits on top, and the loop stops on the nonlinear residual in mmHg relative to the field (§6.7, E43, E51–E54). Chosen over Anderson alone (75–243 iterations on plasma-skimmed and merging vessels) and the linearisation alone (128 on the Y network). At the default 10⁻⁴: 9–19 iterations on every test network, within 0.023 mmHg of a 10⁻¹² solve; WKY-A 11 iterations, where the old loop hit `max_iter` with minimum tissue PO₂ 59.9 mmHg against 77.4 converged. The `.vti` records convergence, iterations and residual. Getting WKY-A through Tier 3 at all first needed four other fixes: NaN flows from the flow export, junctions carried as content (item 24), flow direction from a different solve than flow size, and a Haldane effect in plasma. `test_perfusion_tier3_convergence.py`. Not in any H1/H2 number | §6.6, §6.7, Appendix A |
 | ~~24~~ | **Closed.** Tier 3 mixed blood-gas *content per litre* at each node and turned it back into pressures for each daughter at PCO₂ 40 and pH 7.4, with the daughter's haematocrit; a failed root find fell back to arterial PO₂ or PCO₂. Phase separation gives daughters a different *H* from the parent, so that content did not describe the daughter's blood: on WKY-A a plasma-skimmed daughter (*H* ≈ 0.01) received arterial CO₂ content at *H* 0.45, more than its curve holds at any PCO₂, and the implicit step (item 21) found no root. The march now carries the blood's state through each node as pressures (E46, E47): one inflow passes its outlet state through unchanged; two or more are mixed by content, flow and red-cell flux and inverted jointly for PO₂ and PCO₂ at the mixture's *H* and flow-weighted pH (`_mixed_blood_state`). Each daughter's content is evaluated at the node state with its own *H*; both curves are affine in *H*, so O₂ and CO₂ are conserved wherever the rheology conserves red-cell and plasma flux. Every fallback in the march now raises: a failed inversion, a non-starting node that sends blood but receives none (it was given arterial blood at `systemic_hematocrit`, which Tier 3 no longer reads), and a cycle in the flow direction (it fell back to node order). `test_perfusion_junction_state.py`. Not in any H1/H2 number | §6.6 Tier 3 |
 | ~~25~~ | **Closed.** Tier 3 seeded arterial blood at a literal pH 7.4, while tissue pH is Henderson–Hasselbalch (pKa 6.1, α 0.03, `hco3_tissue`), which gives 7.401 at PCO₂ 40 and HCO₃⁻ 24. Inside each cell the blood's O₂ is read at the tissue pH, so blood changed pH at the first cell with no exchange behind it. Through the Bohr shift and the Haldane term that left tissue below arterial: on WKY-A tissue PCO₂ 7 × 10⁻⁴ mmHg below arterial; with no metabolism on a three-cell chain, tissue PO₂ 0.08 mmHg below arterial (10 mmHg at PCO₂ 45, HCO₃⁻ 20). Arterial pH now comes from the same formula and bicarbonate as the tissue (E46), and the initial tissue pH too (§6.6). WKY-A: still 11 iterations, minimum tissue PCO₂ 40.00006 mmHg, mean tissue PO₂ 96.31 → 96.39 mmHg, minimum 77.4 → 77.44. `test_perfusion_arterial_ph.py`. Not in any H1/H2 number | §6.6 Tier 3 |
+| 27 | **The batch pipeline run crops the array centre, not the placed ROI.** `cb_h1_batch.py --stage run` passes `--roi-voxels` but not `offsets_zyx`, so `carotid_image_to_model.py` crops 160³ on `extent // 2` (§2.1 steps 9–10). The cached masks match the centred box (IoU 0.92 WKY-A, 0.83 SHR-C) and not `placement.bounds` (0.17, 0.15); the boxes share 27–61% of their volume. So the H1 morphometry (`per_edge_morphometry.csv`, figures) is on centred boxes, while the threshold was chosen, and `cb_h1_th_metrics.py` measures, on placed boxes. The H2 drivers lay the TH channel cropped at `bounds` over the centred-box graph, so the two frames are 85–210 µm apart (length of the shift). Item 13 does not reach the network run until this is fixed. Found 2026-09-26 under follow-up item 26. **Moves published numbers** | §2.1, every H1 network quantity, H2 §2.1–2.4 |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the
