@@ -38,7 +38,8 @@ chemosensors.
 **Three limitations bound what may be concluded.** The groups overlap on two of the four measures,
 and with n = 3 per group the exact two-sided permutation p cannot fall below 0.10. §2.3's hypoxic
 fraction was zero everywhere and its glomus-specific mechanism inert; after open items 22 and 29
-(two Tier 1 defects) it is 0–4% within TH and responds to glomus metabolism, and its interpretation
+(two Tier 1 defects) and 30 (vessels mapped over their cross-section, 3 µm grid) it is 0–3% below
+10 mmHg within TH, responds to glomus metabolism and is grid-converged, and its interpretation
 **needs review** (§10). And absolute perfusion is 20 to 100 times
 below physiological, so no absolute perfusion quantity is defensible (§11.1).
 
@@ -70,7 +71,7 @@ the modelling document into §2.1. The discrepancy should be resolved in the sou
 |---|---|---|---|
 | **2.1** | Functional shunting and glomus bypass | **Implemented** | Shunt index near 1 in both cohorts (§7) |
 | **2.2** | Spatial haematocrit profiling | **Implemented, overlapping** | Direction as anticipated; ranges intersect (§8) |
-| **2.3** | Glomus-specific 3D hypoxic fraction | **Implemented; needs review** | Was inert; after open items 22, 29 non-zero and metabolism-sensitive, not grid-converged (§10.3) |
+| **2.3** | Glomus-specific 3D hypoxic fraction | **Implemented; needs review** | Was inert; after open items 22, 29 non-zero and metabolism-sensitive; grid-converged at 3 µm after open item 30 (§10.3) |
 | **2.4** | Oxygen depletion and transit time | **Implemented** | Cohorts separate without overlap (§9) |
 
 All four require the TH-positive glomus mask as a spatial landmark. That mask is the output of a
@@ -97,7 +98,7 @@ grid, which is what makes every join below sound without a registration step.
 | Boundary selection | face-crossing terminals on axis 1 (§5.2) |
 | Coupled flow and haematocrit | per-edge flow, discharge haematocrit, viscosity |
 | TH join | per-edge tissue fraction, per-cell tissue fraction |
-| Perfusion grid | 4 µm ADR solve for §2.3 |
+| Perfusion grid | 3 µm ADR solve for §2.3, vessels mapped over their cross-section |
 
 ### The two joins
 
@@ -112,9 +113,9 @@ stored polylines are not uniformly spaced, and on the test case built for it ver
 an edge 2% inside where length calls it 90%.
 
 **Grid cells.** `mask_fraction_per_cell` gives the fraction of each perfusion cell occupied by the
-mask. Volume fraction rather than a centre sample, because at 4 µm cells against 1.866 µm voxels
-only 0.9% to 4.2% of cells are wholly TH-positive and 21% to 60% are mixed; a centre sample would
-decide each of those on one voxel in ten.
+mask. Volume fraction rather than a centre sample, because grid cells are larger than the 1.866 µm
+voxels: at the earlier 4 µm grid only 0.9% to 4.2% of cells were wholly TH-positive and 21% to 60%
+mixed, and a centre sample would decide each of those on one voxel in ten (one in four at 3 µm).
 
 An edge counts as **penetrating** when at least half its length lies inside the TH mask.
 
@@ -217,8 +218,9 @@ source was exactly proportional to the mean cells crossed per edge:
 | 3 µm | 5.58 | 1.80e7 | 3.23e6 |
 
 Shared by length, the total is grid-independent to the digit. The solution then converged (median
-PO2 27.34, 27.92, 28.21 at 10, 6 and 4 µm); after open items 22 and 29 it runs 91.38, 90.46, 89.52,
-89.19, 87.90 down to 2 µm and does not converge (§10.3).
+PO2 27.34, 27.92, 28.21 at 10, 6 and 4 µm); after open items 22 and 29 it ran 91.38, 90.46, 89.52,
+89.19, 87.90 down to 2 µm and did not converge, until vessels were mapped over their cross-section
+(§10.3).
 
 ### 4.6 Claims corrected by measurement
 
@@ -408,35 +410,46 @@ arbitrary units and are reported only to show the ratio's construction.
 
 ## 10. Results: §2.3 glomus-specific hypoxic fraction
 
-> ⚠ **Needs review after open items 22 and 29 (re-run 2026-09-26).** Tier 1 left O₂ solubility out of its diffusion (≈750× too strong) and washed blood out at systemic rather than local haematocrit (`cb_modelling_reference.md` open items 22, 29). With both fixed, §2.3 is no longer zero or inert: the numbers below are the re-run. The interpretation in §10.2 and the conclusions that cite it (summary, §11.1, P10) were written for the old field and have **not** been rewritten; each is marked where it no longer holds. Old outputs: `examples/outputs/cb_h2_hypoxic_fraction_2026-09-26_pre_item22.json`.
+> ⚠ **Needs review after open items 22 and 29 (re-run 2026-09-26).** Tier 1 left O₂ solubility out of its diffusion (≈750× too strong) and washed blood out at systemic rather than local haematocrit (`cb_modelling_reference.md` open items 22, 29). With both fixed, §2.3 is no longer zero or inert. The interpretation in §10.2 and the conclusions that cite it (summary, §11.1, P10) were written for the old field and have **not** been rewritten; each is marked where it no longer holds. Old outputs: `examples/outputs/cb_h2_hypoxic_fraction_2026-09-26_pre_item22.json`.
+>
+> **Re-run again for open item 30 (2026-09-26).** The numbers below are at 3 µm with vessels mapped over their cross-section (§10.3), not at 4 µm with vessels mapped by centreline. Outputs before this change: `..._2026-09-26_pre_item30.json`, `..._padded_2026-09-26_pre_item30.json`, `cb_h2_paraview_2026-09-26_pre_item30/`.
 
 ### 10.1 What the model returns
 
-Perfusion grid at 4 µm, metabolic rate assigned per cell from the TH fraction with the
-volume-weighted mean held constant so contrasts are comparable. Uniform metabolism (contrast 1);
-hypoxic fractions are within the TH volume. Every Tier 1 solve converged (Newton, residual < 10⁻⁵).
+Perfusion grid at 3 µm, vessels mapped over their cross-section, metabolic rate assigned per cell
+from the TH fraction with the volume-weighted mean held constant so contrasts are comparable.
+Uniform metabolism (contrast 1); hypoxic fractions are within the TH volume. Every Tier 1 solve
+converged (Newton, residual < 10⁻⁵).
 
 | Specimen | TH volume | PO2 within TH | PO2 in stroma | Hypoxic < 5 | < 10 | < 20 mmHg |
 |---|---|---|---|---|---|---|
-| WKY-A | 17.7% | 75.53 | 63.60 | 0.07% | 1.40% | 5.61% |
-| WKY-B | 30.4% | 74.88 | 69.81 | 0.09% | 1.62% | 3.97% |
-| WKY-C | 20.8% | 83.84 | 75.81 | 0% | 0% | 0% |
-| SHR-A | 17.9% | 82.45 | 77.80 | 0.15% | 1.43% | 4.93% |
-| SHR-B | 15.0% | 86.22 | 83.62 | 0% | 0.21% | 1.14% |
-| SHR-C | 8.2% | 70.01 | 64.01 | 1.89% | 3.95% | 8.89% |
+| WKY-A | 16.9% | 80.97 | 71.10 | 0.01% | 0.59% | 2.99% |
+| WKY-B | 28.7% | 82.74 | 79.54 | 0% | 0.03% | 1.54% |
+| WKY-C | 19.6% | 88.32 | 80.75 | 0% | 0% | 0% |
+| SHR-A | 16.8% | 86.34 | 84.00 | 0% | 0% | 2.31% |
+| SHR-B | 14.2% | 89.84 | 87.59 | 0% | 0.06% | 0.81% |
+| SHR-C | 7.8% | 75.06 | 69.54 | 0.94% | 3.09% | 6.56% |
 
-**Small hypoxic fractions in five of six specimens** (was 0% everywhere). PO2 within the glomus
-clusters is 78.1 mmHg in WKY against 79.6 in SHR, a ratio of 1.02 whose ranges overlap (74.9–83.8
-against 70.0–86.2). Mean TH hypoxic fraction below 10 mmHg is 1.0% in WKY and 1.9% in SHR, and
-below 20 mmHg 3.2% and 5.0%; with n = 3 per group the ranges overlap at every threshold. Before
-items 22 and 29 the table read 28–41 mmHg in TH and 0% at every threshold.
+"TH volume" is the TH share of the grid's volume, so it moves slightly with the grid (17.7% on
+WKY-A at 4 µm).
+
+**Small hypoxic fractions**: below 10 mmHg in four of six specimens, below 20 mmHg in five. PO2
+within the glomus clusters is 84.0 mmHg in WKY against 83.8 in SHR, a ratio of 1.00 whose ranges
+overlap (81.0–88.3 against 75.1–89.8). Mean TH hypoxic fraction below 10 mmHg is 0.21% in WKY and
+1.05% in SHR, and below 20 mmHg 1.51% and 3.23%; with n = 3 per group the ranges overlap at every
+threshold. SHR-C carries most of the SHR hypoxia on its own.
+
+Before open item 30 (4 µm, centreline mapping) the same table read 70.0–86.2 mmHg in TH, WKY/SHR
+78.1/79.6, and 0–3.95% below 10 mmHg: the centreline mapping under-delivered oxygen, and PO2 in
+TH is 3.6–7.9 mmHg higher now. Before items 22 and 29 it read 28–41 mmHg in TH and 0% at every threshold.
 
 ### 10.2 Why this is not a result
 
 > ⚠ **Needs review (items 22, 29): the argument of this section was written for the old field
 > and no longer matches the re-run.** Raising the glomus metabolic rate from one to four times the
-> stromal rate now moves PO2 within TH from 75.53 to 73.07 mmHg on WKY-A (−2.5 mmHg; SHR-C −5.0)
-> and TH hypoxia below 10 mmHg from 1.40% to 2.99% (SHR-C 3.95% to 6.70%). The old figure was
+> stromal rate now moves PO2 within TH from 80.97 to 78.95 mmHg on WKY-A (−2.0 mmHg; SHR-C 75.06
+> to 71.03, −4.0) and TH hypoxia below 10 mmHg from 0.59% to 1.63% (SHR-C 3.09% to 4.97%), at 3 µm
+> with the cross-section mapping (open item 30). The old figure was
 > 32.625 to 32.610. The diffusion-length estimate below always included α; the old solver did
 > not, so its effective diffusion length was ≈27× longer than the one quoted. The text is kept
 > as written until reviewed.
@@ -460,55 +473,58 @@ most substantive negative result in this document.
 
 **Two specimens are additionally solved on less tissue than they contain.** The perfusion grid
 takes its extent from the vascular bounding box, so where vessels stop short of the region edge
-the glomus tissue beyond them is not represented: 4.35% of SHR-A's glomus volume and 7.54% of
-SHR-C's. §2.1, §2.2 and §2.4 are unaffected, being computed against the mask in voxel space
+the glomus tissue beyond them is not represented: 3.74% of SHR-A's glomus volume and 7.54% of
+SHR-C's at 3 µm (4.35% and 7.54% at 4 µm). §2.1, §2.2 and §2.4 are unaffected, being computed against the mask in voxel space
 rather than on the grid. For §2.3 it compounds a result already reported as not usable, and it is
 recorded as S28.
 
-`--pad-grid` extends the grid to the segmented volume and recovers that tissue. After items 22 and
-29 it moves mean PO2 within TH by −3.93 and −4.88 mmHg on the two specimens (contrast 2; was −0.77
-and −0.66) and raises TH hypoxia below 10 mmHg from 1.97% to 5.55% (SHR-A) and from 4.98% to 6.80%
-(SHR-C); it was zero both ways before. **Needs review:** the old reading, that the diffusion length
+`--pad-grid` extends the grid to the segmented volume and recovers that tissue. At 3 µm with the
+cross-section mapping it moves mean PO2 within TH by −3.54 and −4.70 mmHg on the two specimens
+(contrast 2; −3.93 and −4.88 at 4 µm by centreline, −0.77 and −0.66 before items 22 and 29) and
+raises TH hypoxia below 10 mmHg from 0.21% to 2.50% (SHR-A) and from 3.67% to 4.70% (SHR-C); it was
+zero both ways before items 22 and 29. **Needs review:** the old reading, that the diffusion length
 exceeds the unvascularised rim so the recovered cells are supplied by their neighbours, no longer
 holds, and S29's choice of the unpadded grid should be revisited. The results in this document are
 unpadded (S29). Padded outputs: `examples/outputs/cb_h2_hypoxic_fraction_padded.json`.
 
 ### 10.3 Grid convergence (open item 30)
 
-The §2.3 field is **not grid-converged at 4 µm**, and refining does not bring it closer to a limit.
-Contrast 1, unpadded:
+**§2.3 runs at 3 µm with vessels mapped over their cross-section, and is converged there to
+0.5 mmHg.** Contrast 1, unpadded, cross-section mapping:
 
 | Grid | WKY-C median PO2 | WKY-C PO2 in TH | SHR-C median PO2 | SHR-C PO2 in TH | SHR-C TH < 10 mmHg |
 |---|---|---|---|---|---|
-| 10 µm | 91.38 | 86.23 | 80.28 | 71.49 | 3.62% |
-| 6 µm | 90.46 | 84.95 | 79.95 | 70.78 | 3.86% |
-| 4 µm | 89.52 | 83.84 | 78.35 | 70.01 | 3.95% |
-| 3 µm | 89.19 | 83.68 | 78.12 | 69.28 | 4.17% |
-| 2 µm | 87.90 | 82.10 | 75.85 | 67.84 | 4.63% |
+| 10 µm | 92.99 | 88.23 | 84.41 | 74.41 | 3.10% |
+| 6 µm | 92.79 | 87.88 | 85.51 | 74.73 | 3.15% |
+| 4 µm | 92.69 | 87.78 | 85.39 | 74.95 | 3.06% |
+| 3 µm | 92.87 | 88.32 | 86.17 | 75.06 | 3.09% |
+| 2 µm | 92.78 | 88.11 | 86.08 | 75.09 | 3.26% |
 
-"PO2 in TH" is the TH-weighted mean. The fall is roughly linear in ln h, about 1.5 (WKY-C) and 1.9
-(SHR-C) mmHg per halving, and the 3 → 2 µm step is the largest. The other four specimens, run to
-3 µm, fall 0.23–0.64 mmHg from 4 to 3 µm. PO2 within TH falls with refinement on five specimens and
-is not monotone on SHR-A (82.04, 81.81, 82.45, 81.35 at 10, 6, 4, 3 µm).
+"PO2 in TH" is the TH-weighted mean. The criterion was that both PO2 measures move less than
+0.5 mmHg per step on both specimens. From 3 to 2 µm the largest step is 0.21 mmHg; from 4 to 3 µm
+two exceed it (SHR-C median +0.78, WKY-C in TH +0.54), so 3 µm is the coarsest grid that passes.
+On all six, the 4 → 3 µm step is +0.09 to +0.79 mmHg in median PO2 and −0.34 to +0.54 in TH.
+Across the sweep the steps change sign with no trend.
 
-The cause is the vessel mapping, not the solver. Each vessel is placed in the cells its centreline
-crosses, whatever its width, so a finer grid draws a thinner vessel; in the limit it is a line
-source, and the field around a line goes as ln r. On a single straight 9 µm vessel the centreline
-mapping falls 17.0, 11.5, 8.6, 6.8 mmHg at 9, 3, 1, ⅓ µm, while the same flow spread over the
-vessel's cross-section settles at about 23.4 (`tests/test_perfusion_tier1_grid_refinement.py`).
-Median calibre here is 7.5–8.4 µm, so at 4 µm most vessels are already drawn thinner than they are.
-The direction of the error is known: finer grids make the tissue look **less** oxygenated.
+**Why the grid had to be revisited.** Until open item 30 each vessel was placed only in the cells
+its centreline crosses, whatever its width, so a finer grid drew a thinner vessel; in the limit it
+is a line source, and the field around a line goes as ln r. Mapped that way, WKY-C median PO2 ran
+91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm (SHR-C 80.28, 79.95, 78.35, 78.12, 75.85):
+about 1.5 and 1.9 mmHg lost per halving and no limit. On a single straight 9 µm vessel the
+centreline mapping falls 17.0, 11.5, 8.6, 6.8 mmHg at 9, 3, 1, ⅓ µm, while the cross-section mapping
+gives 17.0, 23.4, 23.8, 23.2 (`tests/test_perfusion_tier1_grid_refinement.py`). Median calibre here
+is 7.5–8.4 µm, so at 4 µm most vessels were drawn thinner than they are, and the tissue read as
+less oxygenated than the model's own geometry implies: by 3.6–7.4 mmHg in TH at 4 µm, and unequally
+across specimens, so the error did not cancel between cohorts.
 
-What this means for §10.1: no absolute PO2 or hypoxic fraction here is grid-independent. All six
-use one grid, but the error is not the same for each (1.5 vs 1.9 mmHg per halving on WKY-C and
-SHR-C), so it need not cancel in a WKY-vs-SHR comparison either. Choosing
-the grid, or mapping vessels over their cross-section and re-running §2.3, is open (reference open
-item 30).
+The cross-section mapping keeps the full tissue metabolic rate in cells that hold lumen, a small
+overcount of consumption (reference §11 row 24).
 
-Before items 22 and 29 the sequence was 27.34, 27.92, 28.21, halving and extrapolating to about
-28.5; before the sharing fix of §4.5 it ran 42.0, 46.9, 50.5. Outputs:
-`examples/outputs/cb_h2_hypoxic_fraction_grid10.json`, `..._grid6.json`, `..._grid3.json` (all six),
-`..._grid2.json` (WKY-C, SHR-C).
+Before items 22 and 29 the centreline sequence was 27.34, 27.92, 28.21, halving and extrapolating
+to about 28.5; before the sharing fix of §4.5 it ran 42.0, 46.9, 50.5. Outputs:
+`examples/outputs/cb_h2_hypoxic_fraction_xsec_sweep.json` (cross-section, WKY-C and SHR-C, 10–2 µm),
+`..._xsec_grid4.json` (cross-section, all six, 4 µm), and for the centreline mapping
+`..._grid10.json`, `..._grid6.json`, `..._grid3.json` (all six), `..._grid2.json` (WKY-C, SHR-C).
 
 ---
 
@@ -570,7 +586,7 @@ sensitive to a stated limitation), **Not supported** (measured and disqualified,
 | P7 | The direction of P5 opposes the stagnant-hypoxia prediction §2.4 makes | §9 | as P5 | **Provisional** |
 | P8 | Haematocrit in glomus-penetrating vessels is lower in SHR | §8 | Ranges overlap; rests on SHR-C | **Not supported** |
 | P9 | The shunt index differs between cohorts | §7.2 | Ranges overlap; 11% against a 13.3% floor | **Not supported** |
-| P10 | A glomus-specific hypoxic fraction is measurable on this geometry | §10.2 | Was: diffusion length 20–45 µm vs TVD 5–8 µm. Re-run after open items 22, 29: 0–4% within TH, moves with metabolism; not grid-converged | **Needs review** (was Not supported) |
+| P10 | A glomus-specific hypoxic fraction is measurable on this geometry | §10.2 | Was: diffusion length 20–45 µm vs TVD 5–8 µm. Re-run after open items 22, 29, 30: 0–3% below 10 mmHg within TH, moves with metabolism; grid-converged at 3 µm | **Needs review** (was Not supported) |
 | P11 | Any absolute perfusion quantity reported here is physiological | §11.1 | Velocity 20 to 100× low | **Not supported** |
 
 The defensible position is P1–P4 (Established) plus P5–P7 (Provisional). Nothing else should be
@@ -607,7 +623,7 @@ and 3 bound the two measures that currently overlap.
 | Systemic haematocrit | 0.45 | conventional |
 | Viscosity law | Pries–Secomb **in vivo** | §4.3 |
 | Plasma viscosity | 1.2 cP | conventional |
-| Perfusion grid | 4 µm (not grid-converged) | §10.3 |
+| Perfusion grid | 3 µm, cross-section vessel mapping (converged to 0.5 mmHg) | §10.3 |
 | Oxygen diffusivity | 1.5e-9 m²/s | conventional |
 | M_max | 0.05 mmol/L/s | §10.2 |
 | Penetration cutoff | 0.5 of edge length inside TH | the two joins, §2 |

@@ -22,7 +22,7 @@
 | Why is absolute perfusion so far below physiological? | §13.5 — and pressure is not the cause |
 | What pressure boundaries did the published H2 numbers use? | §7.8 and §8.1 — 60/20, not the config's 100/2 |
 | Which coupling tier produced the oxygen field? | §6.6 — Tier 1; Tier 2 is unreachable |
-| What grid resolution was used, and is it converged? | §6.8 — 4 µm; **not converged**, and Tier 1 has no converged limit while vessels are mapped as centrelines (open item 30) |
+| What grid resolution was used, and is it converged? | §6.8 — 3 µm, with vessels mapped over their cross-section; within 0.21 mmHg of 2 µm (open item 30, closed) |
 | Why is transit time reported as a ratio instead of a number? | §7.6, then §13.3 |
 | Which boundary rule is in force, and how much does it move things? | §2.8, then §13.4 |
 | Why can I not quote a glomus hypoxic fraction? | §13.6 — the tissue is not diffusion-limited (**needs review** after open items 22, 29: the re-run gives 0–4% within TH) |
@@ -129,7 +129,7 @@ and the only place to change it. Everywhere else quotes it with a pointer back.
 | Pressure boundaries **as run** | 60 / 20 mmHg, arteriolar to venular | §8.1 | §7.8, §11, §13.5, §14 |
 | Pressure boundaries in config | 100 / 2 mmHg — **not what ran** | §8.1 | §10.7, open item 10 |
 | Systemic haematocrit | 0.45 | §4.1 | §4.3, §6.7, §10.7 |
-| Perfusion grid pitch | 4 µm; not grid-converged (open item 30) | §6.8 | §6.1, §6.5, §10.9, §13.7 |
+| Perfusion grid pitch | 3 µm, cross-section vessel mapping; converged to 0.5 mmHg (open item 30) | §6.8 | §6.1, §6.5, §10.9, §13.7 |
 | Metabolic rate **as run** | `BASE_M_MAX` = 0.05 mmol/L/s | §6.4 | §6.5, §13.6, open item 8 |
 | Metabolic contrasts | 1×, 2×, 4× | §6.5 | §7.5, §13.6 |
 | Hypoxic thresholds | 5, 10, 20 mmHg | §7.5 | §13.6 |
@@ -1823,6 +1823,26 @@ grows with grid refinement rather than converging.
 **Point sampling remains an approximation** to line–plane intersection, so *where* a vessel deposits
 carries discretisation error even though the total is conserved (§11 row 24).
 
+**Which cells a vessel occupies is a switch, `vessel_mapping`** (open item 30).
+
+- `"centreline"`, the default and the pipeline's mapping: only the cells the centreline crosses,
+  whatever the vessel's diameter. Below a vessel diameter a finer grid draws a thinner vessel, a
+  line source in the limit, and Tier 1 PO₂ falls about 1.5–1.9 mmHg per halving of the pitch (§6.8).
+- `"cross_section"`, used by the H2 drivers: each centreline point is swept over a disc of the
+  vessel's radius, perpendicular to the local tangent, and the edge's length and wall area are
+  shared among cells by the part of the disc each holds. The disc is sampled at the midpoints of a
+  square lattice an eighth of the finer of the grid pitch and the vessel diameter; midpoints,
+  because a lattice through the centre puts a ring of samples on the rim, and at a coarse pitch
+  those carried 31% of a 9 µm vessel into the neighbouring cells of a 9 µm grid. Where the whole
+  disc lies in the centreline's cell the two mappings agree. Steps 6–8 apply unchanged, so the
+  shares still sum to one per edge. The tangent is the central difference along the polyline;
+  where that vanishes because the centreline turns straight back (one edge in the six specimens,
+  a one-voxel spur on WKY-A), the adjoining segment is used and a warning logged, and a point with
+  no direction on either side raises.
+
+Every cell a vessel occupies still carries the tissue's full metabolic rate: lumen volume is not
+taken out of the sink (§11 row 24).
+
 **It raises on a missing diameter.** Diameter feeds surface area and therefore every transvascular
 flux, so it is not substituted silently. Passing `default_diameter_um` is available and is a
 deliberate choice to model unmeasured vessels at a stated calibre. The rheology solver now does the
@@ -1906,7 +1926,7 @@ centres happened to fall.
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
 | 1 | Threshold the TH probability field into a glomus mask | `TH_THRESHOLD` | The metabolic contrast is defined against glomus tissue, so the TH channel has to become a binary region first | **On** | `cb_h2_hypoxic_fraction.py:111` |
-| 2 | Build the perfusion grid from the graph (§6.1) | 4 µm | The metabolic field has to live on the same cells the transport operator solves on | **On** | `cb_h2_hypoxic_fraction.py:116` |
+| 2 | Build the perfusion grid from the graph (§6.1) | 3 µm | The metabolic field has to live on the same cells the transport operator solves on | **On** | `cb_h2_hypoxic_fraction.py:116` |
 | 3 | Per-cell **volume fraction** of the mask, not a centre sample | — | At 4 µm against 1.866 µm voxels a cell holds about a dozen mask voxels, so most cells are mixed and a centre sample would discard nearly all of the mask | **On** | `cb_h2_hypoxic_fraction.py:117` |
 | 4 | Warn if more than 1% of mask voxels fell outside the grid | 1% | The grid is fitted to the graph, so a specimen whose vessels stop short loses tissue silently — worth hearing about | **On** | `tissue_regions.py:45` |
 | 5 | Mean TH fraction f̄ over all cells | — | The normalisation in the next step needs to know how much of the volume is glomus | **On** | `cb_h2_hypoxic_fraction.py:121` |
@@ -1922,8 +1942,9 @@ hypoxic fraction would move for two reasons at once.
 
 **Step 9 matters as much as step 7.** A cell that is 40% glomus contributes 40% of its volume to the
 glomus readout and 60% to the stromal one. Taking a hard per-cell classification instead would put
-whole mixed cells on one side or the other, and at 4 µm against 1.866 µm voxels — roughly a dozen
-mask voxels per cell — most cells are mixed.
+whole mixed cells on one side or the other, and at 3 µm against 1.866 µm voxels — about four mask
+voxels per cell — most cells that hold any glomus tissue are mixed: 10–35% of cells are mixed
+against 2–7% wholly glomus across the six.
 
 Rates are then blended:
 
@@ -2035,11 +2056,31 @@ so it no longer dominates the runtime; the CG solves do.
 
 ### 6.8 Grid resolution
 
-> ⚠ **4 µm is not grid-converged, and Tier 1 has no grid-converged limit to approach (open item
-> 30).** §2.3 still runs at 4 µm; which grid to use, or whether to change the mapping, is undecided.
+**3 µm, with vessels mapped over their cross-section** (`cb_settings.GRID_UM`; open item 30). It
+was 4 µm until item 30, when that grid turned out not to be converged under the centreline mapping.
 
-Measured after open items 22 and 29 (contrast 1, unpadded; `cb_h2_hypoxic_fraction_grid{10,6,3,2}.json`
-and the 4 µm main run):
+Cross-section mapping, measured after open items 22 and 29 (contrast 1, unpadded;
+`cb_h2_hypoxic_fraction_xsec_sweep.json`):
+
+| Grid | WKY-C median PO₂ | WKY-C PO₂ in TH | SHR-C median PO₂ | SHR-C PO₂ in TH | SHR-C TH < 10 mmHg | Cells with no vessel (WKY-C) |
+|---|---|---|---|---|---|---|
+| 10 µm | 92.99 | 88.23 | 84.41 | 74.41 | 3.10% | 50.0% |
+| 6 µm | 92.79 | 87.88 | 85.51 | 74.73 | 3.15% | 65.8% |
+| 4 µm | 92.69 | 87.78 | 85.39 | 74.95 | 3.06% | 74.4% |
+| 3 µm | 92.87 | 88.32 | 86.17 | 75.06 | 3.09% | 77.5% |
+| 2 µm | 92.78 | 88.11 | 86.08 | 75.09 | 3.26% | 82.1% |
+
+("PO₂ in TH" is the TH-weighted mean, stored as `po2_median_th`.) The criterion was that median PO₂
+and PO₂ in TH move less than 0.5 mmHg per step on both specimens. From 3 to 2 µm every measure
+passes (largest −0.21, WKY-C in TH). From 4 to 3 µm two fail (SHR-C median +0.78, WKY-C in TH +0.54),
+so 3 µm is the coarsest grid that qualifies. On all six (`..._xsec_grid4.json` against the main
+run) the 4 → 3 µm step is +0.09 to +0.79 mmHg in median PO₂ and −0.34 to +0.54 in TH. Across the
+sweep the steps change sign with no trend, probably because the grid origin moves with h; the
+drift of the centreline mapping is gone. A 2 µm solve costs about
+4 minutes per specimen, a 3 µm one about 1.
+
+Centreline mapping, as it was (`cb_h2_hypoxic_fraction_grid{10,6,3,2}.json` and the 4 µm main run of
+`feb3332`):
 
 | Grid | WKY-C median PO₂ | WKY-C PO₂ in TH | SHR-C median PO₂ | SHR-C PO₂ in TH | SHR-C TH < 10 mmHg | Cells with no vessel (WKY-C) |
 |---|---|---|---|---|---|---|
@@ -2049,23 +2090,24 @@ and the 4 µm main run):
 | 3 µm | 89.19 | 83.68 | 78.12 | 69.28 | 4.17% | 97.4% |
 | 2 µm | 87.90 | 82.10 | 75.85 | 67.84 | 4.63% | 99.0% |
 
-("PO₂ in TH" is the TH-weighted mean, stored as `po2_median_th`.) The 3 → 2 µm step is the largest of
-the four (−1.28 and −2.27 mmHg). A power law P∞ + C hᵖ has no limit to find: the fit runs to its
-lower bound on p. A straight line in ln h fits to 0.15 mmHg rms on WKY-C, at about 1.5 (WKY-C) and
-1.9 (SHR-C) mmHg lost per halving of h. The 4 → 3 µm step is small on every specimen (WKY-C −0.33),
-probably because the grid origin moves with h; on its own it would have looked like convergence. The
-other four specimens were run to 3 µm only, and fall 0.23–0.64 mmHg over 4 → 3 µm.
+The 3 → 2 µm step was the largest of the four (−1.28 and −2.27 mmHg). A power law P∞ + C hᵖ had no
+limit to find; a straight line in ln h fit to 0.15 mmHg rms on WKY-C, at about 1.5 (WKY-C) and 1.9
+(SHR-C) mmHg lost per halving of h.
 
-**Why.** `map_vessels_to_grid` puts a vessel only in the cells its centreline crosses, whatever its
-diameter (§6.2, §11 row 24). Refining the grid shrinks the vessel with the cell, so in the limit
-each vessel is a line with a fixed exchange conductance per unit length. Around a line the field
-goes as ln r: the cell holding it sits ever closer to the blood, delivers less, and the tissue falls
-by about the same amount per log step in h. `test_perfusion_tier1_grid_refinement.py` shows this on
-one straight vessel of diameter 9 µm. Mapped by centreline, the mean PO₂ is 17.0, 11.5, 8.6, 6.8 mmHg
-at h = 9, 3, 1, ⅓ µm. With the same flow spread over the vessel's cross-section it is 17.0, 23.4,
-23.8, 23.4. So refinement below the vessel diameter moves the model further from the real geometry,
-not closer. Median edge calibre (`assigned_diameter_um`) is 7.5–8.4 µm across the six (p10 3.7–5.3 µm),
-so already at 4 µm the median vessel is about two cells wide and drawn as one.
+**Why the centreline mapping drifts.** It puts a vessel only in the cells its centreline crosses,
+whatever its diameter (§6.2, §11 row 24). Refining the grid shrinks the vessel with the cell, so in
+the limit each vessel is a line with a fixed exchange conductance per unit length. Around a line
+the field goes as ln r: the cell holding it sits ever closer to the blood, delivers less, and the
+tissue falls by about the same amount per log step in h. `test_perfusion_tier1_grid_refinement.py`
+shows this on one straight vessel of diameter 9 µm: mapped by centreline, the mean PO₂ is 17.0,
+11.5, 8.6, 6.8 mmHg at h = 9, 3, 1, ⅓ µm; mapped by cross-section, 17.0, 23.4, 23.8, 23.2. Median
+edge calibre (`assigned_diameter_um`) is 7.5–8.4 µm across the six (p10 3.7–5.3 µm), so at 4 µm the
+median vessel was already two cells wide and drawn as one.
+
+**What the switch moved.** At 4 µm, cross-section against centreline: WKY-C median 92.69 against
+89.52, SHR-C 85.39 against 78.35; PO₂ in TH 3.6–7.4 mmHg higher across the six. The centreline
+mapping under-delivered, by different amounts per specimen, so the error did not cancel between the
+cohorts.
 
 Before items 22 and 29, median PO₂ moved 27.34 → 27.92 → 28.21 at 10, 6 and 4 µm — increments
 halving and extrapolating to about 28.5. With diffusion 750× too strong, the ln h term was too small
@@ -2294,7 +2336,7 @@ stroma, what fraction of the TH-positive volume falls below a hypoxic PO₂?
 
 **How.** Solve the tissue field on the heterogeneous grid (§6.5), then take the fraction of
 TH-weighted cell volume below each threshold. Thresholds swept at **5, 10 and 20 mmHg**; metabolic
-contrast swept at **1×, 2× and 4×**; grid at 4 µm.
+contrast swept at **1×, 2× and 4×**; grid at 3 µm, vessels mapped over their cross-section.
 
 **The order of operations.**
 
@@ -2303,10 +2345,10 @@ contrast swept at **1×, 2× and 4×**; grid at 4 µm.
 | 1 | Load the graph; select boundaries by the face rule | axis 1 | PO₂ depends on where blood enters, so boundary selection sets the entire tissue field | **On** | `cb_h2_hypoxic_fraction.py:107` |
 | 2 | Coupled flow / haematocrit solve (§4.3) | 60 / 20 mmHg | The oxygen source term is flow times content, so neither is known until the network is solved | **On** | `cb_h2_hypoxic_fraction.py:109` |
 | 3 | Threshold the TH field into a glomus mask | 0.5 | The metabolic contrast is defined against glomus tissue, which has to be a region before it can carry a rate | **On** | `cb_h2_hypoxic_fraction.py:111` |
-| 4 | Build the perfusion grid (§6.1) | 4 µm | The tissue field needs a discretisation. 4 µm is not grid-converged: PO₂ keeps falling ~1.5–1.9 mmHg per halving down to 2 µm (§6.8, open item 30) | **On** | `cb_h2_hypoxic_fraction.py:116` |
+| 4 | Build the perfusion grid (§6.1) | 3 µm | The tissue field needs a discretisation. 3 µm is the coarsest grid within 0.5 mmHg of the next refinement once vessels are mapped over their cross-section (§6.8, open item 30) | **On** | `cb_h2_hypoxic_fraction.py:116` |
 | 5 | Per-cell TH volume fraction, then the blended `M_max` field (§6.5) | c ∈ {1, 2, 4} | A heterogeneous metabolic field is the entire mechanism this method proposes to detect | **On** | `cb_h2_hypoxic_fraction.py:117` |
-| 6 | Map vessels to the grid (§6.2), assemble the operator (§6.3) | — | Couples the 1D network to the 3D tissue and assembles the operator that will be solved | **On** | `cb_h2_hypoxic_fraction.py:126` |
-| 7 | Picard solve for the tissue PO₂ field (§6.7) | 50 iterations, tol 1e-5 | Metabolism saturates with PO₂, so the system is non-linear and needs iteration rather than one solve | **On** | `cb_h2_hypoxic_fraction.py:127` |
+| 6 | Map vessels to the grid (§6.2), assemble the operator (§6.3) | `cross_section` | Couples the 1D network to the 3D tissue and assembles the operator that will be solved | **On** | `cb_h2_hypoxic_fraction.py:126` |
+| 7 | Picard solve for the tissue PO₂ field (§6.7) | 50 iterations, tol 1e-5 | Metabolism saturates with PO₂, so the system is non-linear and needs iteration rather than one solve | **On** | `cb_h2_hypoxic_fraction.py:128` |
 | 8 | Report the share of cells with no oxygen source at all | — | Padding the grid raises this share by construction, so it is reported rather than left to be inferred from the PO₂ distribution | **On**, diagnostic | `cb_h2_hypoxic_fraction.py:102` |
 | 9 | Hypoxic fraction = TH-weighted volume below each threshold | 5, 10, 20 mmHg | Weighting by TH occupancy rather than by cell count is what makes it a fraction of glomus volume rather than of grid | **On** | `cb_h2_hypoxic_fraction.py:145` |
 
@@ -2320,8 +2362,9 @@ rises by construction, which is the stated cost of representing tissue beyond th
 > method is built on cannot operate on this geometry.
 >
 > **Needs review after open items 22 and 29:** the 0.01 mmHg came from a Tier 1 with 750× too much
-> diffusion and a haematocrit mismatch. Re-run: four times stromal moves PO₂ in TH by −2.5 mmHg on
-> WKY-A (75.53 → 73.07) and −5.0 on SHR-C, and TH hypoxia below 10 mmHg is 0–4%.
+> diffusion and a haematocrit mismatch. Re-run (3 µm, cross-section mapping, open item 30): four
+> times stromal moves PO₂ in TH by −2.0 mmHg on WKY-A (80.97 → 78.95) and −4.0 on SHR-C
+> (75.06 → 71.03), and TH hypoxia below 10 mmHg is 0–3.1%.
 >
 > The output is still meaningful as a curve in the assumed contrast. It is not a number.
 
@@ -2767,7 +2810,7 @@ These are **not** configurable. They live in the function bodies.
 | Parameter | Value | Units | Class | Source / justification | Sensitivity |
 |---|---|---|---|---|---|
 | `do_perfusion_modeling` | True | — | — | — | — |
-| `grid_resolution_xyz` | (10, 10, 10) default; **4 µm** for H2 §2.3 | µm | (iii) | 4 µm chosen on convergence: median PO₂ 27.34 / 27.92 / 28.21 at 10 / 6 / 4 µm, increments halving, extrapolating to ≈28.5. 4 µm is within ~1% of that limit at 1/27 the cost of native resolution. **After open items 22, 29: 91.38 / 90.46 / 89.52 / 89.19 / 87.90 at 10 / 6 / 4 / 3 / 2 µm, not converging: centreline mapping makes each vessel a line source (§6.8, open item 30)** | measured |
+| `grid_resolution_xyz` | (10, 10, 10) default; **3 µm** for H2 §2.3 | µm | (iii) | 3 µm chosen on convergence with vessels mapped over their cross-section: every measure within 0.21 mmHg from 3 to 2 µm, up to 0.78 from 4 to 3 µm (§6.8). It was 4 µm, chosen when median PO₂ ran 27.34 / 27.92 / 28.21 at 10 / 6 / 4 µm; after open items 22 and 29 the centreline mapping gave 91.38 / 90.46 / 89.52 / 89.19 / 87.90 at 10 / 6 / 4 / 3 / 2 µm and no limit (open item 30) | measured |
 | `sigma_diff` | 1.5 × 10⁻⁹ | m²/s | (i) | O₂ diffusivity in tissue (D, not D·α: every tier multiplies it by α_O₂, open item 22). Consistent with K_O₂/α_O₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`] and (1.04 ± 0.78) × 10⁻⁹ in rat mesentery [`yaegashi_diffusivity_1996`] | assumed |
 | `sigma_diff_co2` | 1.6 × 10⁻⁹ | m²/s | (i) | CO₂ diffusivity in tissue: measured K_CO₂/α_CO₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`]. D is close to O₂'s; CO₂'s ≈20× faster transport comes from its solubility, which the solver multiplies in (`build_diffusion_matrix`). With the code's α values the Krogh ratio K_CO₂/K_O₂ is ≈24 (measured ≈21). Was 3.0 × 10⁻⁸ until open item 18 | assumed |
 | `permeability_o2_cm_s` | 9.1 × 10⁻² | cm/s | (ii) | Endothelial O₂ permeability. Measured O₂ mass-transfer coefficient of a cultured human umbilical vein endothelial monolayer, *k* = 1.22 ± 0.45 × 10⁻¹⁰ mol·cm⁻²·s⁻¹·mmHg⁻¹ at 37 °C, n = 8 [`liu_oxygen_1994`], divided by this solver's α_O₂ (1.34 × 10⁻⁹ mol·cm⁻³·mmHg⁻¹), so the wall flux P·A·α·ΔPO₂ equals *k*·A·ΔPO₂. Their assumed 1 µm wall thickness cancels out of *k*/α. With their tissue α of 1.4 × 10⁻⁹ it is 8.7 × 10⁻² cm/s (their *D*_eff/1 µm); the monolayer-plus-media lower bounds give 1.4–2.0 × 10⁻² cm/s. Cultured cells, human and bovine; not rat capillary. Earlier indirect estimates were lower: 4.6 × 10⁻³ (canine heart) and 3 × 10⁻² cm/s (feline heart), as tabulated there. Was 1.0 × 10⁻⁴ with no source until open item 19, which left Tier 3 wall-limited and anoxic. Used by Tier 3 (and the unreachable Tier 2), not by Tier 1 or H2. At this value Tier 3's explicit step overshot at capillary flow (open item 21, now implicit); its Picard loop is still slow there (open item 23) | assumed |
@@ -2836,7 +2879,7 @@ the model would push it.
 | 21 | Metabolism is phenomenological, M(PO₂) = M_max·(1 − e^(−k·PO₂)) | §6.4 | Not Michaelis–Menten, which is the literature standard. The two differ most in the low-PO₂ regime — exactly where §2.3 reads its answer |
 | 22 | The glomus-to-stroma metabolic ratio | §6.5 | **Nothing in this study measures it.** Reported across a swept range rather than at one value, so the hypoxic fraction is a curve in this parameter, not a number |
 | 23 | Neumann tissue boundary; no exchange beyond the imaged volume | §6.3 | Tissue PO₂ **overestimated** near the domain boundary |
-| 24 | Vessel-to-grid mapping is point-sampled along the centreline | §6.2 | An approximation to line–plane intersection, so *where* a vessel deposits carries discretisation error. The *total* is conserved: shares are normalised by accumulated length, so an edge's flow sums to exactly one across the cells it crosses. The vessel's width is not represented: below a vessel diameter a finer grid draws it thinner, and Tier 1 PO₂ **falls** with every refinement (open item 30) |
+| 24 | Vessel-to-grid mapping is point-sampled along the centreline | §6.2 | An approximation to line–plane intersection, so *where* a vessel deposits carries discretisation error. The *total* is conserved: shares are normalised by accumulated length, so an edge's flow sums to exactly one across the cells it crosses. The centreline mapping ignores the vessel's width, and Tier 1 PO₂ **falls** with every refinement below a vessel diameter; the H2 drivers therefore map each vessel over a disc of its radius, which converges (open item 30). Either way the cells a vessel occupies keep the full tissue metabolic rate: lumen volume is not taken out of the sink, a small overcount of consumption |
 | 25 | The grid spans the segmented volume, not the graph's extent | §6.1 | Tissue beyond the graph is represented; tissue beyond the segmentation is not represented at all |
 | 26 | No lymphatic drainage or interstitial fluid flow | §6.3 | Omits a minor transport pathway |
 | 27 | Tier 1 blood leaves each cell fully equilibrated with its tissue, at the cell's flow-weighted haematocrit | §6.6 | Instant equilibrium per cell (no wall resistance, no march along the vessel). Until open item 29 the washout used `systemic_hematocrit` (0.45), which made a phantom source of every cell fed above it and a sink of every cell fed below. Tier 1 only |
@@ -2946,9 +2989,10 @@ Stated as fact, not softened:
 ### 12.4 The two gaps
 
 **No grid-convergence or order-of-accuracy study exists for any PDE solver.** Every result runs at a
-single fixed resolution. §6.8 records that the Tier 1 field does **not** converge as the grid refines
-(open item 30), because the vessel mapping, not the stencil, sets its behaviour below a vessel
-diameter; that says nothing about the stencil's own order. The cheapest closing move is the zero-order metabolism case,
+single fixed resolution. §6.8 records that the Tier 1 field does not converge under the centreline
+vessel mapping and does, to 0.5 mmHg by 3 µm, under the cross-section one (open item 30): the
+mapping, not the stencil, set its behaviour below a vessel diameter. That says nothing about the
+stencil's own order. The cheapest closing move is the zero-order metabolism case,
 which already has an exact closed-form solution verified to 10⁻¹⁰ at one resolution: run it at 20,
 10, 5 and 2.5 µm, plot L² error against spacing on log axes, and fit the slope. A slope near 2 would
 demonstrate the expected second-order accuracy of the seven-point stencil.
@@ -3066,9 +3110,10 @@ form.
 
 > ⚠ **Needs review after open items 22 and 29 (re-run 2026-09-26).** The measured consequence
 > below came from a Tier 1 solve whose diffusion lacked α (≈750× too strong, so ≈27× the diffusion
-> length computed here) and whose washout used systemic haematocrit. With both fixed, four times
-> stromal glomus metabolism moves PO₂ within TH from 75.53 to 73.07 mmHg on WKY-A (SHR-C 70.01 to
-> 65.03), and TH hypoxia below 10 mmHg is 0–4% at uniform metabolism (was 0%). The diffusion-length
+> length computed here) and whose washout used systemic haematocrit. With both fixed, and vessels
+> mapped over their cross-section at 3 µm (open item 30), four times stromal glomus metabolism moves
+> PO₂ within TH from 80.97 to 78.95 mmHg on WKY-A (SHR-C 75.06 to 71.03), and TH hypoxia below
+> 10 mmHg is 0–3.1% at uniform metabolism (was 0%). The diffusion-length
 > estimate itself is unchanged; whether the section's conclusion still holds has not been
 > re-argued. See H2 whitepaper §10.
 
@@ -3107,14 +3152,15 @@ Measured tissue-to-vessel distance at native resolution:
 | WKY-B | 23.4% | 6.98 µm | 29.01 | 60.95 | 90.58 |
 | WKY-C | 29.4% | 5.28 µm | 25.90 | 65.30 | 109.07 |
 
-At the 4 µm grid the median tissue voxel sits **1.3–2.0 cells** from a vessel. The gradient that
+At the 3 µm grid the median tissue voxel sits **1.8–2.6 cells** from a vessel (1.3–2.0 at the
+earlier 4 µm). The gradient that
 decides whether tissue is hypoxic is therefore spanned by one or two cells for half the tissue —
 resolved, but barely. Only the p90 tail, 25.9–53.1 µm, spans a comfortable number of cells.
 
-Refining further was tested and does not converge (§6.8, open item 30): each vessel is mapped to
-the cells its centreline crosses, so below a vessel diameter a finer grid draws a thinner vessel
-and PO₂ keeps falling, about 1.5–1.9 mmHg per halving down to 2 µm. The short gradient is still the
-physical limit; the grid now adds a mapping error of its own.
+Refining was tested (§6.8, open item 30). With each vessel mapped to the cells its centreline
+crosses, a finer grid drew a thinner vessel and PO₂ kept falling, about 1.5–1.9 mmHg per halving
+down to 2 µm. With vessels mapped over their cross-section the field settles: every measure moves
+at most 0.21 mmHg from 3 to 2 µm. The short gradient is still the physical limit.
 
 ### 13.8 Calibre is not a reportable H1 finding
 
@@ -3415,7 +3461,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | ~~25~~ | **Closed.** Tier 3 seeded arterial blood at a literal pH 7.4, while tissue pH is Henderson–Hasselbalch (pKa 6.1, α 0.03, `hco3_tissue`), which gives 7.401 at PCO₂ 40 and HCO₃⁻ 24. Inside each cell the blood's O₂ is read at the tissue pH, so blood changed pH at the first cell with no exchange behind it. Through the Bohr shift and the Haldane term that left tissue below arterial: on WKY-A tissue PCO₂ 7 × 10⁻⁴ mmHg below arterial; with no metabolism on a three-cell chain, tissue PO₂ 0.08 mmHg below arterial (10 mmHg at PCO₂ 45, HCO₃⁻ 20). Arterial pH now comes from the same formula and bicarbonate as the tissue (E46), and the initial tissue pH too (§6.6). WKY-A: still 11 iterations, minimum tissue PCO₂ 40.00006 mmHg, mean tissue PO₂ 96.31 → 96.39 mmHg, minimum 77.4 → 77.44. `test_perfusion_arterial_ph.py`. Not in any H1/H2 number | §6.6 Tier 3 |
 | 27 | **The batch pipeline run crops the array centre, not the placed ROI.** `cb_h1_batch.py --stage run` passes `--roi-voxels` but not `offsets_zyx`, so `carotid_image_to_model.py` crops 160³ on `extent // 2` (§2.1 steps 9–10). The cached masks match the centred box (IoU 0.92 WKY-A, 0.83 SHR-C) and not `placement.bounds` (0.17, 0.15); the boxes share 27–61% of their volume. So the H1 morphometry (`per_edge_morphometry.csv`, figures) is on centred boxes, while the threshold was chosen, and `cb_h1_th_metrics.py` measures, on placed boxes. The H2 drivers lay the TH channel cropped at `bounds` over the centred-box graph, so the two frames are 85–210 µm apart (length of the shift). Item 13 does not reach the network run until this is fixed. Found 2026-09-26 under follow-up item 26. **Moves published numbers** | §2.1, every H1 network quantity, H2 §2.1–2.4 |
 | ~~29~~ | **Closed.** Tier 1 built its source at each edge's haematocrit and its washout at `systemic_hematocrit` (0.45), so a cell fed above 0.45 got more O₂ at arterial PO₂ than it could wash out below hundreds of mmHg, and one fed below was drained. On WKY-A 27% of perfused cells are above 0.45 (per-cell H 0–0.80, median 0.37) and the surplus at arterial PO₂ was 55× the tissue's whole demand (delivery is 850× demand). The 750× diffusion of item 22 averaged these into the published near-uniform ~30 mmHg field, which is why it moved little with metabolism; with α in, the fixed point was hyperoxic (median 186 mmHg, 78% of cells above arterial). The washout now uses each cell's flow-weighted haematocrit (`cell_discharge_hematocrit`), exact because content is affine in H; `solve_perfusion_steady_state` requires it and raises if a perfused cell's is missing. WKY-A: 10 Newton steps, 18 s, max PO₂ 99.99 mmHg. Found 2026-09-26 under item 22. `test_perfusion_tier1_washout_hematocrit.py`. **Moves published numbers** (H2 §2.3, §13.6) | §6.6, §6.7, §11 row 27 |
-| 30 | **Tier 1 has no grid-converged limit.** After items 22 and 29, median PO₂ on WKY-C runs 91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm, and on SHR-C 80.28, 79.95, 78.35, 78.12, 75.85; a power law finds no limit, and a line in ln h fits (≈1.5 and 1.9 mmHg per halving). SHR-C TH hypoxia below 10 mmHg rises 3.62 → 4.63%. Cause: `map_vessels_to_grid` deposits each vessel only in the cells its centreline crosses, so a finer grid draws a thinner vessel, a line source in the limit, whose field goes as ln r. On one straight 9 µm vessel the centreline mapping falls 17.0, 11.5, 8.6, 6.8 mmHg at h 9, 3, 1, ⅓ µm, while the same flow spread over its cross-section settles at 23.4 ± 0.4 (`test_perfusion_tier1_grid_refinement.py`). Median calibre is 7.5–8.4 µm, so 4 µm already draws most vessels thinner than they are. **Open:** choose the H2 grid, or map vessels over their cross-section (then re-run §2.3) | §6.8, §2.3 (every hypoxia number), §13.7 |
+| ~~30~~ | **Closed.** Tier 1 had no grid-converged limit: with each vessel mapped to the cells its centreline crosses, a finer grid drew it thinner, a line source in the limit, and median PO₂ on WKY-C ran 91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm (SHR-C 80.28 … 75.85), ≈1.5–1.9 mmHg lost per halving. `map_vessels_to_grid` now takes `vessel_mapping="cross_section"`, which sweeps each centreline point over a disc of the vessel's radius; the H2 drivers use it (the pipeline keeps the centreline default). WKY-C and SHR-C then move at most 0.21 mmHg from 3 to 2 µm but up to 0.78 from 4 to 3 µm, so `cb_settings.GRID_UM` went from 4 to 3 µm. §2.3 re-run: PO₂ in TH 81.0–89.8 mmHg (was 70.0–86.2), TH hypoxia below 10 mmHg 0–3.1% (was 0–3.95%). `test_perfusion_cross_section_mapping.py`, `test_perfusion_tier1_grid_refinement.py` | — |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the

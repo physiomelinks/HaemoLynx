@@ -13,7 +13,7 @@ venv/bin/python examples/cb_h2_vtk.py              # write all six specimens
 ```
 
 Everything is in physical micrometres on a common origin, so the files overlay without any
-transform even though the glomus mask is at 1.866 µm and the perfusion grid at 4 µm.
+transform even though the glomus mask is at 1.866 µm and the perfusion grid at 3 µm.
 
 `--verify` re-checks that rather than assuming it. It measures how often an edge scored as
 penetrating actually has its midpoint inside the exported mask, against edges scored as
@@ -42,7 +42,7 @@ under all the tissue; leave it off to match the numbers in the report, which are
 | `<SPEC>_glomus_surface.vtp` | PolyData | The glomus tissue, contoured and smoothed — **open this first** |
 | `<SPEC>_glomus_clusters.vtp` | PolyData | The same surface split into connected nests, each with an id and its volume |
 | `<SPEC>_glomus_prob.vti` | ImageData | TH probability at native 1.866 µm, if you want to contour it yourself |
-| `<SPEC>_perfusion.vti` | ImageData | The 4 µm solve: PO₂, tissue fraction, metabolic rate, source terms |
+| `<SPEC>_perfusion.vti` | ImageData | The 3 µm solve (vessels mapped over their cross-section): PO₂, tissue fraction, metabolic rate, source terms |
 | `<SPEC>_vessels_h2.vtp` | PolyData lines | Centrelines carrying flow, haematocrit, viscosity, transit time and the penetrating flag |
 
 `<SPEC>` is `WKY-A`, `WKY-B`, `WKY-C`, `SHR-A`, `SHR-B`, `SHR-C`. `export_summary.json` in the
@@ -119,8 +119,8 @@ only their contents.
 
 > ⚠ **Needs review after open items 22 and 29.** The flat field below came from a Tier 1 solve
 > with 750× too much diffusion and a haematocrit mismatch. The re-run field is not flat: median
-> PO₂ 78–93 mmHg per specimen, with 1–10% of tissue below 10 mmHg away from vessels, and glomus
-> metabolism now moves it. The paragraph is kept as written until reviewed.
+> PO₂ 86–96 mmHg per specimen, with 0.1–5.9% of tissue below 10 mmHg away from vessels, and glomus
+> metabolism now moves it (3 µm, vessels mapped over their cross-section, contrast 2; open item 30). The paragraph is kept as written until reviewed.
 
 **The oxygen field is nearly flat, and that is a result, not a rendering problem.** Colouring
 by `PO2_mmHg` gives an almost uniform volume. The diffusion length here is 20–45 µm and the
