@@ -22,6 +22,35 @@ helpers (``_arc_length_parameterize``, ``_interpolate_centerline``,
 median-by-default aggregation FWHM uses) rather than re-deriving either --
 one centerline sampler and one aggregation policy for both techniques.
 
+Two ways to read a width off the mask (*method*):
+
+``"cross_section"`` (default)
+    The area of the mask's own cross-section in the plane normal to the
+    centreline, as the diameter of the circle with that area -- the diameter
+    Poiseuille's ``d^4`` needs. The plane is read voxel by voxel (nearest
+    voxel) on a grid a quarter of a voxel fine, and only the piece of it
+    joined to the centreline counts. On synthetic vessels at 0.98 x 0.98 x 1 um
+    voxels it is within 3% on average from 2 to 8 um, at any orientation and
+    sub-voxel placement, for elliptical cross-sections (area-equivalent), and
+    with the centreline half a voxel off the axis.
+``"inscribed_radius"``
+    Twice the EDT inscribed radius at the centreline. Kept for comparison:
+    the EDT at a voxel centre is the distance to the nearest background
+    voxel's *centre*, half a voxel past the wall, so an axis-aligned 2-3 um
+    vessel reads 30-40% wide; an oblique one, a flattened one or a centreline
+    off the axis reads up to ~30% narrow (it is the largest *inscribed*
+    circle, not the section) -- a d^4 error of 0.3x to 3.7x in resistance.
+
+Where the plane's piece of mask is several vessels joined at necks -- two
+touching vessels, or a branch and the vessel it leaves -- only the lobe the
+centreline is in counts. A section that is still not closed within its
+plane, or is more than twice as wide as the inscribed radius there allows
+(the plane cutting a larger vessel's body near a junction), is not counted;
+an edge with no section left falls back to its inscribed radius
+(``edt_diameter_method`` records which was used). On a real 3,191-vessel
+network about 60% of edges get a section; the rest are mostly short edges
+between close junctions.
+
 A raw EDT reading right at a branch point is a real, documented failure
 mode: it returns the *junction's own* larger inscribed sphere, not the
 branch's true radius (a real ~34% overestimate has been measured on short
@@ -54,7 +83,41 @@ from .automated import (
 #: inscribed radius is 0 and the vessel would otherwise get no width at all.
 OFF_CENTRELINE_SEARCH_UM = 3.0
 
-__all__ = ["measure_edge_diameters_from_binary_mask"]
+#: The two ways to read a width off the mask (see the module docstring).
+EDT_DIAMETER_METHODS = ("cross_section", "inscribed_radius")
+
+#: Arc length (um) either side of a sample the centreline's direction is
+#: taken over, so a voxel-scale wiggle does not tilt the cross-section.
+TANGENT_HALF_WINDOW_UM = 2.0
+
+#: The finest the cross-section grid goes (a fraction of the smallest voxel
+#: side), and the most points it takes across, so a large vessel's plane
+#: stays a few tens of thousands of reads.
+_SECTION_STEP_FRACTION = 0.25
+_SECTION_MAX_POINTS_ACROSS = 161
+
+#: How far the plane reaches (um), as a multiple of the inscribed radius
+#: there plus two voxels. The inscribed radius under-reads a flattened or
+#: obliquely cut vessel, and a plane only three times it was too small for
+#: its own section on a third of a real network's samples; past five, more
+#: of what the plane gains is other vessels.
+SECTION_EXTENT_INSCRIBED_MULTIPLE = 5.0
+
+#: A merged section is split into lobes at its necks (a watershed on the
+#: in-plane distance to its outline), each lobe a peak at least this much
+#: (um) above the neck -- two touching vessels, or a branch and the vessel
+#: it leaves. Half a micron keeps one round or flattened section whole.
+SECTION_LOBE_MIN_PROMINENCE_UM = 0.5
+
+#: The widest a section's area-equivalent radius may be against the
+#: inscribed radius at the same point (plus half a voxel) and still be this
+#: vessel's own: 2 admits a 4:1 flattened section. Past it the plane is
+#: cutting something else too -- near a junction with a much larger vessel,
+#: that vessel's body, which the inscribed radius at the centreline does not
+#: see.
+SECTION_TO_INSCRIBED_MAX_RATIO = 2.0
+
+__all__ = ["EDT_DIAMETER_METHODS", "measure_edge_diameters_from_binary_mask"]
 
 
 def measure_edge_diameters_from_binary_mask(
@@ -66,14 +129,18 @@ def measure_edge_diameters_from_binary_mask(
     branch_endpoint_exclusion_um: float = 0.0,
     aggregation: Literal["median", "mean"] = "median",
     use_memmap: bool = False,
+    method: Literal["cross_section", "inscribed_radius"] = "cross_section",
 ) -> dict[str, Any]:
-    """Measure per-edge diameters (µm) from *binary_mask*'s own inscribed radius.
+    """Measure per-edge diameters (µm) from *binary_mask*.
 
-    Diameter at each centerline sample is ``2 * radius``, where *radius* is
-    the mask's EDT-based inscribed radius (physical microns) at that point,
-    trilinearly interpolated the same way
+    With *method* ``"cross_section"`` (default) the diameter at each
+    centerline sample is that of the circle with the area of the mask's own
+    cross-section there; with ``"inscribed_radius"`` it is ``2 * radius``,
+    *radius* being the mask's EDT inscribed radius at that point, trilinearly
+    interpolated the same way
     :func:`haemolynx.haemodynamics.automated.measure_edge_diameters_fwhm_from_raw_tiff`
-    samples its own intensity volume.
+    samples its own intensity volume. See the module docstring for how
+    they compare.
 
     Parameters
     ----------
@@ -113,6 +180,8 @@ def measure_edge_diameters_from_binary_mask(
     """
     if sample_spacing_along_edge_um <= 0:
         raise ValueError("sample_spacing_along_edge_um must be positive.")
+    if method not in EDT_DIAMETER_METHODS:
+        raise ValueError(f"method must be one of {EDT_DIAMETER_METHODS}; got {method!r}.")
 
     sample_radius = None
     if use_memmap:
@@ -157,12 +226,14 @@ def measure_edge_diameters_from_binary_mask(
             if v_is_branch:
                 keep &= (total_len - targets) >= branch_excl
         sample_points = pts[keep]
+        sample_targets = targets[keep]
         if not np.any(keep):
             # An edge shorter than its junction zones: excluding it whole left
             # every short capillary with no width at all (238 of 3191 edges on
             # a real run), falling back to the branch-order table. Its
             # midpoint is as far from either junction as this edge allows.
-            sample_points = _interpolate_centerline(poly, s, np.array([0.5 * total_len]))
+            sample_targets = np.array([0.5 * total_len])
+            sample_points = _interpolate_centerline(poly, s, sample_targets)
             data["edt_midpoint_only"] = True
 
         idx = physical_points_to_continuous_indices(sample_points, voxel_size_zyx)
@@ -179,19 +250,140 @@ def measure_edge_diameters_from_binary_mask(
             continue
 
         diameters = [2.0 * radius for radius in radii]
+        used = "inscribed_radius"
+        if method == "cross_section":
+            tangents = _centreline_tangents(poly, s, total_len, sample_targets)
+            sections = [
+                _cross_section_diameter(
+                    binary_mask, point, tangent, voxel_size_zyx,
+                    guide_radius_um=float(radius) if np.isfinite(radius) else 0.0,
+                )
+                for point, tangent, radius in zip(sample_points, tangents, values)
+            ]
+            closed = [d for d in sections if np.isfinite(d) and d > 0]
+            if closed:
+                diameters = closed
+                used = "cross_section"
         d_final = _aggregate_edge_diameter(diameters, aggregation)
         data["edt_diameter_um"] = d_final
         data["edt_diameter_samples_um"] = diameters
+        data["edt_diameter_method"] = used
         summary["edges_measured"] += 1
         summary["per_edge"].append(
             {
                 "edge": (u, v, key),
                 "edt_diameter_um": d_final,
                 "n_samples": len(diameters),
+                "method": used,
             }
         )
 
     return summary
+
+
+def _centreline_tangents(poly: np.ndarray, s: np.ndarray, total: float, at: np.ndarray) -> np.ndarray:
+    """Unit direction of the centreline at arc lengths *at*, over a short window."""
+    ahead = _interpolate_centerline(poly, s, np.clip(at + TANGENT_HALF_WINDOW_UM, 0.0, total))
+    behind = _interpolate_centerline(poly, s, np.clip(at - TANGENT_HALF_WINDOW_UM, 0.0, total))
+    tangents = np.asarray(ahead, dtype=float) - np.asarray(behind, dtype=float)
+    norms = np.linalg.norm(tangents, axis=1, keepdims=True)
+    return tangents / np.where(norms > 0, norms, 1.0)
+
+
+def _nearest_mask_values(mask: np.ndarray, idx: np.ndarray) -> np.ndarray:
+    """Whether the voxel nearest each continuous index is foreground; False
+    outside the volume. Reads only those voxels, so a memmap stays on disk."""
+    nearest = np.rint(np.asarray(idx, dtype=float)).astype(np.intp)
+    shape = np.asarray(mask.shape)
+    inside = np.all((nearest >= 0) & (nearest < shape), axis=1)
+    values = np.zeros(len(nearest), dtype=bool)
+    if np.any(inside):
+        within = nearest[inside]
+        values[inside] = np.asarray(mask[within[:, 0], within[:, 1], within[:, 2]]) != 0
+    return values
+
+
+def _cross_section_diameter(
+    mask: np.ndarray,
+    point_um: np.ndarray,
+    tangent: np.ndarray,
+    voxel_size_zyx,
+    *,
+    guide_radius_um: float,
+) -> float:
+    """Diameter of the circle with the area of *mask*'s section through
+    *point_um* normal to *tangent*; NaN where there is no closed section.
+
+    The plane is read voxel by voxel (nearest voxel) on a grid a quarter of a
+    voxel fine -- no interpolation or smoothing, which erodes a two-voxel
+    vessel. Only the piece joined to the point counts (or, for a point just
+    off its own mask, the piece nearest it within
+    :data:`OFF_CENTRELINE_SEARCH_UM`), and of that piece only the lobe the
+    point is in, where it has more than one (see
+    :data:`SECTION_LOBE_MIN_PROMINENCE_UM`). A lobe touching the edge of the
+    plane is not a closed section -- another vessel runs into it, or the
+    vessel is wider than the plane (see
+    :data:`SECTION_EXTENT_INSCRIBED_MULTIPLE`) -- so it gives NaN rather than
+    an area that is partly something else. So does a closed one much wider
+    than the inscribed radius there allows (see
+    :data:`SECTION_TO_INSCRIBED_MAX_RATIO`).
+    """
+    from scipy.ndimage import distance_transform_edt, label
+    from skimage.morphology import h_maxima
+    from skimage.segmentation import watershed
+
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    tangent = np.asarray(tangent, dtype=float)
+    reference = np.array([0.0, 0.0, 1.0]) if abs(tangent[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    across = np.cross(tangent, reference)
+    across /= np.linalg.norm(across)
+    other = np.cross(tangent, across)
+    extent = max(
+        4.0,
+        SECTION_EXTENT_INSCRIBED_MULTIPLE * max(guide_radius_um, float(spacing.min()))
+        + 2.0 * float(spacing.max()),
+    )
+    step = max(
+        _SECTION_STEP_FRACTION * float(spacing.min()),
+        2.0 * extent / (_SECTION_MAX_POINTS_ACROSS - 1),
+    )
+    offsets = np.arange(-extent, extent + 0.5 * step, step)
+    plane = (
+        np.asarray(point_um, dtype=float)
+        + offsets[:, None, None] * across
+        + offsets[None, :, None] * other
+    )
+    idx = physical_points_to_continuous_indices(plane.reshape(-1, 3), voxel_size_zyx)
+    inside = _nearest_mask_values(mask, idx).reshape(len(offsets), len(offsets))
+    pieces, count = label(inside)
+    if count == 0:
+        return float("nan")
+    centre = len(offsets) // 2
+    anchor = (centre, centre)
+    piece = pieces[anchor]
+    if piece == 0:
+        rows, cols = np.nonzero(inside)
+        gap = np.hypot(rows - centre, cols - centre) * step
+        nearest = int(np.argmin(gap))
+        if gap[nearest] > OFF_CENTRELINE_SEARCH_UM:
+            return float("nan")
+        anchor = (rows[nearest], cols[nearest])
+        piece = pieces[anchor]
+    section = pieces == piece
+    depth = distance_transform_edt(section) * step
+    peaks, n_peaks = label(h_maxima(depth, SECTION_LOBE_MIN_PROMINENCE_UM))
+    if n_peaks > 1:
+        lobes = watershed(-depth, peaks, mask=section)
+        section = lobes == lobes[anchor]
+    if section[0, :].any() or section[-1, :].any() or section[:, 0].any() or section[:, -1].any():
+        return float("nan")
+    area = float(np.count_nonzero(section)) * step * step
+    radius = float(np.sqrt(area / np.pi))
+    if guide_radius_um > 0 and radius > SECTION_TO_INSCRIBED_MAX_RATIO * (
+        guide_radius_um + 0.5 * float(spacing.max())
+    ):
+        return float("nan")
+    return 2.0 * radius
 
 
 def _nearby_radius(

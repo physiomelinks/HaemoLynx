@@ -83,13 +83,17 @@ def test_measure_edge_diameters_from_binary_mask_reads_physical_voxel_size():
 
 
 def test_edt_diameter_junction_exclusion_removes_inflated_estimate():
-    """A raw EDT reading right at a branch point returns the junction's own
-    larger inscribed sphere, not the branch's true radius -- a real,
-    documented bias for a short branch off a wide hub. Confirmed
-    numerically first (not asserted blind): without exclusion the short
-    branch below reads ~11.0 (heavily biased by the radius-10 hub);
-    with an 8 um exclusion zone it reads exactly 4.0, the branch's true
-    diameter (radius 2)."""
+    """A reading right at a branch point returns the junction's own larger
+    body, not the branch's true radius -- a real, documented bias for a short
+    branch off a wide hub. Without exclusion the short branch below reads
+    far wider than its true 4.0 (dominated by the radius-10 hub); with the
+    exclusion reaching past the hub's own radius (10 um, the default) it
+    reads 4.0.
+
+    It used to exclude only 8 um -- still inside the hub -- and got 4.0 by
+    coincidence: the inscribed radius read 6.0 at the sample in the hub and
+    2.0 at the branch's flat end (where an inscribed sphere is halved), and
+    their median was 4.0. The cross-section reads that end at 4.0."""
     shape = (30, 30, 40)
     zz, yy, xx = np.indices(shape, dtype=float)
     hub = (zz - 15) ** 2 + (yy - 15) ** 2 + (xx - 15) ** 2 <= 10.0**2
@@ -121,7 +125,7 @@ def test_edt_diameter_junction_exclusion_removes_inflated_estimate():
     excluded = _build_graph()
     measure_edge_diameters_from_binary_mask(
         excluded, binary_mask=mask, voxel_size_zyx=(1.0, 1.0, 1.0),
-        sample_spacing_along_edge_um=2.0, branch_endpoint_exclusion_um=8.0,
+        sample_spacing_along_edge_um=2.0, branch_endpoint_exclusion_um=10.0,
     )
 
     inflated = unexcluded[0][1][0]["edt_diameter_um"]
@@ -289,3 +293,94 @@ def test_a_centreline_far_from_any_vessel_still_gets_no_width():
     )
 
     assert summary["edges_skipped"][0][3] == "edt_failed"
+
+
+# --- the cross-section method -------------------------------------------------
+#
+# The inscribed radius read an axis-aligned 2-3 um vessel 30-40% wide and an
+# oblique, flattened or off-centre one up to ~30% narrow -- a d^4 error of
+# 0.3x to 3.7x in resistance. The section's own area does not care which way
+# the vessel runs, where in its voxel it sits, or whether it is round.
+
+_VOXEL = (1.0, 0.98, 0.98)  # z, y, x: the real run's
+
+
+def _tube(diameter, direction, *, ellipse=1.0, shift=(0.0, 0.0, 0.0), offset_um=0.0, shape=(56, 56, 56)):
+    """A straight vessel of *diameter* through the volume, and its centreline;
+    *ellipse* flattens it keeping the area, *offset_um* moves the centreline
+    sideways off the axis."""
+    direction = np.asarray(direction, dtype=float)
+    direction /= np.linalg.norm(direction)
+    points = np.stack(np.indices(shape), axis=-1) * np.asarray(_VOXEL)
+    centre = np.asarray(shape) * np.asarray(_VOXEL) / 2 + np.asarray(shift)
+    rel = points - centre
+    along = rel @ direction
+    across = rel - along[..., None] * direction
+    reference = np.array([0.0, 0.0, 1.0]) if abs(direction[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    first = np.cross(direction, reference)
+    first /= np.linalg.norm(first)
+    second = np.cross(direction, first)
+    a = diameter / 2 * np.sqrt(ellipse)
+    b = diameter / 2 / np.sqrt(ellipse)
+    mask = ((across @ first / a) ** 2 + (across @ second / b) ** 2 <= 1.0) & (np.abs(along) < 22)
+    line = centre + np.linspace(-18, 18, 37)[:, None] * direction + offset_um * first
+    return mask, line
+
+
+def _edt_diameter(mask, line, method="cross_section"):
+    graph = nx.MultiGraph()
+    graph.add_edge(0, 1, key=0, voxels=[tuple(point) for point in line])
+    measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=mask, voxel_size_zyx=_VOXEL, sample_spacing_along_edge_um=2.0,
+        method=method,
+    )
+    return graph.edges[0, 1, 0]
+
+
+@pytest.mark.parametrize("direction", [(1, 0, 0), (0, 0, 1), (1, 0, 1), (1, 1, 1), (2, 1, 0.5)])
+@pytest.mark.parametrize("diameter", [3.0, 6.0])
+def test_the_cross_section_reads_a_vessel_of_known_size_at_any_orientation(direction, diameter):
+    """Within what the mask itself allows: a 3 um vessel centred on a voxel
+    is nine voxels, 22% more area than the circle -- the section reads the
+    mask's area, which averages true only over where the vessel sits."""
+    tolerance = 0.12 if diameter < 4 else 0.06
+    for shift in ((0.0, 0.0, 0.0), (0.3, -0.2, 0.41)):
+        edge = _edt_diameter(*_tube(diameter, direction, shift=shift))
+        assert edge["edt_diameter_method"] == "cross_section"
+        assert edge["edt_diameter_um"] == pytest.approx(diameter, rel=tolerance)
+
+
+def test_the_cross_section_reads_a_flattened_or_off_centre_vessel_the_inscribed_radius_does_not():
+    """A 2:1 section's inscribed circle is its narrow width; a centreline half
+    a voxel off the axis reads the radius short. The area is neither."""
+    for case in (dict(ellipse=2.0), dict(offset_um=0.5)):
+        mask, line = _tube(6.0, (1, 1, 1), **case)
+        assert _edt_diameter(mask, line)["edt_diameter_um"] == pytest.approx(6.0, rel=0.06)
+        assert _edt_diameter(mask, line, "inscribed_radius")["edt_diameter_um"] < 0.9 * 6.0
+
+
+def test_touching_vessels_are_measured_one_at_a_time():
+    """Two vessels whose sections touch at a neck: the whole joined piece
+    read 40% wide; split at the neck, the centreline's own lobe reads true."""
+    first, line = _tube(6.0, (1, 0, 0))
+    second, _ = _tube(6.0, (1, 0, 0), shift=(0.0, 0.0, 0.95 * 6.0))
+    assert _edt_diameter(first | second, line)["edt_diameter_um"] == pytest.approx(6.0, rel=0.05)
+
+
+def test_an_edge_with_no_closed_section_falls_back_to_its_inscribed_radius():
+    """A sheet one voxel thick runs out of every plane across it: no section
+    closes, so the edge keeps the inscribed-radius width, and says so."""
+    mask = np.zeros((40, 40, 40), dtype=bool)
+    mask[20, :, :] = True
+    line = [(20.0 * 1.0, 10.0 * 0.98, x * 0.98) for x in range(5, 35)]
+
+    edge = _edt_diameter(mask, np.asarray(line))
+
+    assert edge["edt_diameter_method"] == "inscribed_radius"
+    assert edge["edt_diameter_um"] > 0
+
+
+def test_an_unknown_method_is_refused():
+    mask, line = _tube(4.0, (1, 0, 0))
+    with pytest.raises(ValueError, match="cross_section"):
+        _edt_diameter(mask, line, method="thickest")

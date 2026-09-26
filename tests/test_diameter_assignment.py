@@ -581,3 +581,25 @@ def test_without_a_mask_in_memory_both_measurements_read_the_one_from_the_path(m
     assert loads == [1]
     for name in ("edt", "fwhm"):
         np.testing.assert_array_equal(seen[name], labels == 1)
+
+
+def test_the_edt_method_setting_reaches_the_measurement(monkeypatch):
+    """edt_diameter_method picks how the mask's width is read; the default
+    is the cross-section, and the old inscribed radius stays selectable."""
+    from haemolynx.haemodynamics import apply
+    from haemolynx.pipeline import default_schema
+
+    seen = []
+    monkeypatch.setattr(
+        apply.edt_diameter, "measure_edge_diameters_from_binary_mask",
+        lambda G, **kwargs: seen.append(kwargs["method"]) or {"edges_measured": 0, "edges_skipped": []},
+    )
+    for edt in ({"use_edt_diameter_crosscheck": True},
+                {"use_edt_diameter_crosscheck": True, "edt_diameter_method": "inscribed_radius"}):
+        config = HaemodynamicsApplyConfig(
+            diameters={"diameter_by_branch_order": dict(DIAMETERS)}, edt=edt
+        )
+        apply._measure_edt_diameters(_network(), config, mask_volume=np.zeros((2, 2, 2), bool))
+
+    assert seen == ["cross_section", "inscribed_radius"]
+    assert default_schema()["edt_diameter_method"].default == "cross_section"

@@ -4077,13 +4077,14 @@ SCHEMA = Schema(
         ),
         # ------------------------------------------------------------------
         # EDT mask diameter estimate: a segmentation-mask-based cross-check
-        # and fallback for FWHM, from the mask's own inscribed radius.
+        # and fallback for FWHM, from the mask's own cross-section (or,
+        # edt_diameter_method, its inscribed radius).
         # ------------------------------------------------------------------
         Setting(
             name="use_edt_diameter_crosscheck",
             kind="bool",
             default=False,
-            help="Estimate per-edge diameters from the segmentation mask's inscribed radius, for fallback and cross-checking against FWHM",
+            help="Estimate per-edge diameters from the segmentation mask (its cross-section, see edt_diameter_method), for fallback and cross-checking against FWHM",
             section=_EDT_DIAMETER,
             # Seeding FWHM's own first-pass guess and flagging disagreement
             # with FWHM do need FWHM on, but falling back for an edge FWHM
@@ -4116,6 +4117,22 @@ SCHEMA = Schema(
             help="Use the EDT mask estimate instead of the branch-order table when FWHM measurement fails for an edge, or was never attempted",
             section=_EDT_DIAMETER,
             requires=("use_edt_diameter_crosscheck",),
+        ),
+        Setting(
+            name="edt_diameter_method",
+            kind="choice",
+            default="cross_section",
+            choices=("cross_section", "inscribed_radius"),
+            help=(
+                "How a width is read off the mask: cross_section is the area of the mask's "
+                "section normal to the centreline, as a circle's diameter (within ~3% on "
+                "synthetic vessels at any orientation); inscribed_radius is twice the EDT "
+                "radius at the centreline (30-40% wide on small axis-aligned vessels, up to "
+                "~30% narrow on oblique or flattened ones)"
+            ),
+            section=_EDT_DIAMETER,
+            requires=("use_edt_diameter_crosscheck",),
+            advanced=True,
         ),
         Setting(
             name="edt_junction_proximity_exclusion_um",

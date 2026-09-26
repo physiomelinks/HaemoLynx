@@ -308,6 +308,7 @@ def _measure_edt_diameters(
         ),
         aggregation=config.fwhm_setting("fwhm_edge_diameter_aggregation", "median"),
         use_memmap=config.use_memmap,
+        method=config.edt_setting("edt_diameter_method", "cross_section"),
     )
 
 
