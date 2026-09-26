@@ -16,8 +16,10 @@ grew with grid resolution and the answer was not grid-convergent.
 **Resolution.** 4 µm, not the native 1.866 µm. With the conservation defect fixed the solution
 converged: median PO2 moved 27.34, 27.92, 28.21 at 10, 6 and 4 µm, halving its increment each
 time. After open items 22 (O2 solubility in the diffusion) and 29 (washout at the cell's own
-haematocrit) WKY-C runs 91.38, 90.46, 89.52, which does not halve: 4 µm is no longer shown to be
-converged (H2 whitepaper §10.3).
+haematocrit) WKY-C runs 91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm and does not
+converge. Each vessel is mapped to the cells its centreline crosses, so a finer grid draws it
+thinner and PO2 keeps falling (open item 30, H2 whitepaper §10.3). 4 µm is kept until the grid is
+chosen.
 
 **The metabolic contrast is an assumption, not a measurement.** Nothing in this study measures
 the ratio of glomus to stromal oxygen consumption, so it is a parameter here and the answer is

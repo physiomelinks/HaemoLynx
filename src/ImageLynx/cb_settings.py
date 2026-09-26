@@ -125,13 +125,14 @@ PENETRATION_FRACTION: float = 0.5
 # Tissue transport
 # ---------------------------------------------------------------------------------------
 
-#: Perfusion grid pitch, isotropic, in um. PO2 is within about 1% of the converged limit.
+#: Perfusion grid pitch, isotropic, in um. Not grid-converged (open item 30).
 #:
-#: The binding constraint is physical rather than numerical. Measured tissue-to-vessel
-#: distance has a median of 5.28-7.92 um across the three WKY specimens, so at 4 um the
-#: median tissue voxel sits 1.3-2.0 cells from a vessel: the gradient that decides whether
-#: tissue is hypoxic is spanned by one or two cells for half the tissue. Refining further
-#: converges but does not lengthen the gradient.
+#: Measured tissue-to-vessel distance has a median of 5.28-7.92 um across the three WKY
+#: specimens, so at 4 um the median tissue voxel sits 1.3-2.0 cells from a vessel: the
+#: gradient that decides whether tissue is hypoxic is spanned by one or two cells for half
+#: the tissue. Refining does not help. Vessels are mapped to the cells their centreline
+#: crosses, so a finer grid draws them thinner, and Tier 1 PO2 keeps falling, about 1.5-1.9
+#: mmHg per halving down to 2 um (reference section 6.8). The choice of grid is open.
 GRID_UM: float = 4.0
 
 #: Volume-weighted mean maximum metabolic rate, mmol/L/s.

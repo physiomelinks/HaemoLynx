@@ -1258,6 +1258,11 @@ the limit** at a twenty-seventh of native resolution's cost. Before the fix the 
 42.0, 46.9, 50.5 with increments of +4.9 and +3.6 and no sign of a limit. T1.6 is answered without
 needing the 70-minute-per-specimen run T1.1 priced.
 
+> **Superseded (open item 30).** This held while diffusion was 750× too strong (open item 22).
+> With it fixed, median PO2 on WKY-C runs 91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm
+> and does not converge: vessels are mapped by centreline, so a finer grid draws them thinner
+> (`cb_modelling_reference.md` §6.8).
+
 **§2.3, across the cohort at 4 µm.** Metabolic rate assigned per cell from the TH fraction, with
 the volume-weighted mean held constant so contrasts are comparable rather than merely scaled:
 
@@ -1570,7 +1575,7 @@ quantifying it.
 |---|---|---|---|
 | T1.1 | ~~Refine the perfusion grid, benchmarking the solver first.~~ **Benchmarked.** Native resolution costs about 70 min per specimen and 4 to 5 GB, which is affordable. Deferred: the CG preconditioner was breaking the solve, and with it fixed the field is zero at any resolution for the reason below. | §2.3 | S19, **S24** |
 | T1.5 | ~~Reconcile the units.~~ **Done.** `POISEUILLE_FLOW_TO_UM3_PER_S`, derived from unit definitions and checked against an independent SI computation. Sink/source moves from 2.2e4× to 0.168×, a 17% implied extraction, and §2.3 produces a 42 mmHg field where it produced zero. | §2.3, and the absolute scale of §2.4 | S24, **S25** |
-| T1.6 | ~~Run §2.3 at native resolution.~~ **Done, and not needed.** The drift was a conservation defect: each edge's whole flow was recorded against every cell it crossed. Shared by length, the source is grid-independent and PO2 converges at 4 µm to within 1%. | §2.3 | S25, **S26** |
+| T1.6 | ~~Run §2.3 at native resolution.~~ **Done, and not needed.** The drift was a conservation defect: each edge's whole flow was recorded against every cell it crossed. Shared by length, the source is grid-independent and PO2 converges at 4 µm to within 1%. **Superseded by open item 30:** after item 22 it does not converge (reference §6.8). | §2.3 | S25, **S26** |
 | T1.8 | ~~The glomus-specific metabolic rate has no effect.~~ **Resolved as a property of the tissue.** The oxygen diffusion length is 20 to 45 µm against a median tissue-to-vessel distance of 5 to 8 µm, so the tissue is not diffusion-limited and a local sink cannot make a local gradient. §2.3's mechanism cannot operate on this geometry, whatever the code does. | §2.3 | S26, **S27** |
 | T1.7 | ~~Revisit the boundary pressures.~~ **Withdrawn.** The 8,900 µm/s figure was a single-tube calculation, not the network. Measured velocity is 4 to 10 µm/s. Replaced by T1.9. | absolute scale of §2.1 to §2.4 | S25, **S27** |
 | T1.9 | **New.** Absolute perfusion is 20 to 100 times below physiological and raising the pressure cannot fix it, needing about 3,257 mmHg. The face rule costs 5 to 7 times the throughput of the band rule, and a residual factor of 30 is the network's own resistance. Blocks any absolute perfusion claim; ratios are unaffected. | §2.3, absolute scale of all four | **S27** |

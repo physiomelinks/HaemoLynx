@@ -70,7 +70,7 @@ the modelling document into §2.1. The discrepancy should be resolved in the sou
 |---|---|---|---|
 | **2.1** | Functional shunting and glomus bypass | **Implemented** | Shunt index near 1 in both cohorts (§7) |
 | **2.2** | Spatial haematocrit profiling | **Implemented, overlapping** | Direction as anticipated; ranges intersect (§8) |
-| **2.3** | Glomus-specific 3D hypoxic fraction | **Implemented; needs review** | Was inert; after open items 22, 29 non-zero and metabolism-sensitive, not shown grid-converged (§10) |
+| **2.3** | Glomus-specific 3D hypoxic fraction | **Implemented; needs review** | Was inert; after open items 22, 29 non-zero and metabolism-sensitive, not grid-converged (§10.3) |
 | **2.4** | Oxygen depletion and transit time | **Implemented** | Cohorts separate without overlap (§9) |
 
 All four require the TH-positive glomus mask as a spatial landmark. That mask is the output of a
@@ -217,8 +217,8 @@ source was exactly proportional to the mean cells crossed per edge:
 | 3 µm | 5.58 | 1.80e7 | 3.23e6 |
 
 Shared by length, the total is grid-independent to the digit. The solution then converged (median
-PO2 27.34, 27.92, 28.21 at 10, 6 and 4 µm); after open items 22 and 29 it runs 91.38, 90.46, 89.52
-and is no longer shown to converge (§10.3).
+PO2 27.34, 27.92, 28.21 at 10, 6 and 4 µm); after open items 22 and 29 it runs 91.38, 90.46, 89.52,
+89.19, 87.90 down to 2 µm and does not converge (§10.3).
 
 ### 4.6 Claims corrected by measurement
 
@@ -473,17 +473,42 @@ exceeds the unvascularised rim so the recovered cells are supplied by their neig
 holds, and S29's choice of the unpadded grid should be revisited. The results in this document are
 unpadded (S29). Padded outputs: `examples/outputs/cb_h2_hypoxic_fraction_padded.json`.
 
-### 10.3 Grid convergence (needs review after items 22, 29)
+### 10.3 Grid convergence (open item 30)
 
-Median PO2 on WKY-C now runs 91.38, 90.46, 89.52 at 10, 6 and 4 µm (contrast 1). The increments,
-−0.92 and −0.94, do not halve, so the field is **not shown to be grid-converged** at 4 µm. PO2
-within TH falls with refinement on five specimens (WKY-A 78.56, 76.86, 75.53) and is not
-monotone on SHR-A (82.04, 81.81, 82.45). The hypoxic fractions
-move less: below 10 mmHg over all tissue, WKY-A 8.90%, 9.19%, 9.46% and SHR-C 8.38%, 8.00%, 8.26%.
+The §2.3 field is **not grid-converged at 4 µm**, and refining does not bring it closer to a limit.
+Contrast 1, unpadded:
+
+| Grid | WKY-C median PO2 | WKY-C PO2 in TH | SHR-C median PO2 | SHR-C PO2 in TH | SHR-C TH < 10 mmHg |
+|---|---|---|---|---|---|
+| 10 µm | 91.38 | 86.23 | 80.28 | 71.49 | 3.62% |
+| 6 µm | 90.46 | 84.95 | 79.95 | 70.78 | 3.86% |
+| 4 µm | 89.52 | 83.84 | 78.35 | 70.01 | 3.95% |
+| 3 µm | 89.19 | 83.68 | 78.12 | 69.28 | 4.17% |
+| 2 µm | 87.90 | 82.10 | 75.85 | 67.84 | 4.63% |
+
+"PO2 in TH" is the TH-weighted mean. The fall is roughly linear in ln h, about 1.5 (WKY-C) and 1.9
+(SHR-C) mmHg per halving, and the 3 → 2 µm step is the largest. The other four specimens, run to
+3 µm, fall 0.23–0.64 mmHg from 4 to 3 µm. PO2 within TH falls with refinement on five specimens and
+is not monotone on SHR-A (82.04, 81.81, 82.45, 81.35 at 10, 6, 4, 3 µm).
+
+The cause is the vessel mapping, not the solver. Each vessel is placed in the cells its centreline
+crosses, whatever its width, so a finer grid draws a thinner vessel; in the limit it is a line
+source, and the field around a line goes as ln r. On a single straight 9 µm vessel the centreline
+mapping falls 17.0, 11.5, 8.6, 6.8 mmHg at 9, 3, 1, ⅓ µm, while the same flow spread over the
+vessel's cross-section settles at about 23.4 (`tests/test_perfusion_tier1_grid_refinement.py`).
+Median calibre here is 7.5–8.4 µm, so at 4 µm most vessels are already drawn thinner than they are.
+The direction of the error is known: finer grids make the tissue look **less** oxygenated.
+
+What this means for §10.1: no absolute PO2 or hypoxic fraction here is grid-independent. All six
+use one grid, but the error is not the same for each (1.5 vs 1.9 mmHg per halving on WKY-C and
+SHR-C), so it need not cancel in a WKY-vs-SHR comparison either. Choosing
+the grid, or mapping vessels over their cross-section and re-running §2.3, is open (reference open
+item 30).
+
 Before items 22 and 29 the sequence was 27.34, 27.92, 28.21, halving and extrapolating to about
-28.5; before the sharing fix of §4.5 it ran 42.0, 46.9, 50.5. With diffusion 750× weaker the
-gradient near vessels is steeper, so a finer grid than 4 µm (or a convergence study to 3 µm) may be
-needed. Outputs: `examples/outputs/cb_h2_hypoxic_fraction_grid10.json`, `..._grid6.json`.
+28.5; before the sharing fix of §4.5 it ran 42.0, 46.9, 50.5. Outputs:
+`examples/outputs/cb_h2_hypoxic_fraction_grid10.json`, `..._grid6.json`, `..._grid3.json` (all six),
+`..._grid2.json` (WKY-C, SHR-C).
 
 ---
 
@@ -582,7 +607,7 @@ and 3 bound the two measures that currently overlap.
 | Systemic haematocrit | 0.45 | conventional |
 | Viscosity law | Pries–Secomb **in vivo** | §4.3 |
 | Plasma viscosity | 1.2 cP | conventional |
-| Perfusion grid | 4 µm | §10.3 |
+| Perfusion grid | 4 µm (not grid-converged) | §10.3 |
 | Oxygen diffusivity | 1.5e-9 m²/s | conventional |
 | M_max | 0.05 mmol/L/s | §10.2 |
 | Penetration cutoff | 0.5 of edge length inside TH | the two joins, §2 |
