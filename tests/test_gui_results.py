@@ -2230,3 +2230,37 @@ def test_a_perturbation_gets_the_baselines_flow_colouring_hover_and_arrows():
     assert len(arrows.data) == graph.number_of_edges()
     # Direction follows this perturbation's own signed flow: along -z here.
     assert np.all(np.asarray(arrows.features["flow_dir_z"]) < 0)
+
+
+# --- replaying several stages draws each layer once --------------------------
+
+
+def test_merging_stage_groups_keeps_each_layers_final_state():
+    """A replay (Load run, "Run from this stage") applied every stage's group
+    in turn, redrawing the vessels once per stage; where one stage's layer was
+    smaller than the one before, the layer was torn down and re-added -- the
+    GL teardown that crashed napari. The merge is what the viewer ends with."""
+    from haemolynx.gui.results import LayerSpec, StageLayers, merge_stage_layers
+
+    def spec(name, rows):
+        return LayerSpec(kind="points", name=name, data=np.zeros((rows, 3)))
+
+    groups = [
+        StageLayers(stage="build_network", title="3. Graph",
+                    layers=(spec(IMAGE, 1), spec(VESSELS, 9), spec(NODES, 5)), ndisplay=3),
+        StageLayers(stage="assign_boundaries", title="4. Boundaries",
+                    layers=(spec(VESSELS, 7), spec(BOUNDARY_NODES, 2)),
+                    recolour=((NODES, "degree"), (IMAGE, "x"))),
+        StageLayers(stage="solve", title="6. Haemodynamics", layers=(spec(IMAGE, 3),),
+                    recolour=((VESSELS, "flow_abs"),), note="solved"),
+    ]
+
+    merged = merge_stage_layers(groups)
+
+    assert [s.name for s in merged.layers] == [IMAGE, VESSELS, NODES, BOUNDARY_NODES]
+    assert [len(s.data) for s in merged.layers] == [3, 7, 5, 2]
+    # IMAGE's recolour came before its last spec, which redraws it.
+    assert dict(merged.recolour) == {NODES: "degree", VESSELS: "flow_abs"}
+    assert merged.ndisplay == 3
+    assert (merged.stage, merged.title, merged.note) == ("solve", "6. Haemodynamics", "solved")
+    assert merge_stage_layers([]) is None

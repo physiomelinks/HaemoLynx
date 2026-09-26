@@ -212,6 +212,87 @@ def test_revert_restores_previous_tab_layers_and_stays_on_this_tab(panel):
     assert "Running from 5. Diameters" in report
 
 
+def test_a_run_from_updates_the_layers_it_redraws_instead_of_rebuilding_them(panel):
+    """Removing every layer only to add each back tore down and rebuilt the
+    GL resources of the image, masks and tube mesh at once -- the teardown
+    that crashes napari -- most of all from the Perturbations tab, which
+    replays every stage before it. Only a later stage's own layers go."""
+    from haemolynx.gui._widget import _add_or_update, _layer_names_redrawn_by
+    from haemolynx.gui.results import LayerSpec
+
+    widget, viewer, _tmp = panel
+    _seed_run(widget, viewer, through="solve")
+    # What a later stage alone draws, e.g. a perturbation's own vessels.
+    _add_or_update(
+        viewer,
+        LayerSpec(kind="points", name="HaemoLynx perturbation_1 nodes",
+                  data=np.zeros((1, 3))),
+    )
+    replayed = [
+        widget._haemolynx_checkpoints.get(stage).group
+        for stage in ("skeletonise", "build_network", "assign_boundaries")
+    ]
+    redrawn = _layer_names_redrawn_by(replayed)
+    before = {layer.name: layer for layer in viewer.layers}
+    kept = {name: layer for name, layer in before.items() if name in redrawn}
+    later_only = set(before) - redrawn
+    assert VESSELS in kept and later_only, (sorted(kept), sorted(later_only))
+
+    widget._haemolynx_revert("5. Diameters")
+
+    for name, layer in kept.items():
+        assert viewer.layers[name] is layer, name
+    assert not later_only & {layer.name for layer in viewer.layers}
+
+
+def test_a_run_from_removes_no_layer_when_a_stage_cut_the_network(panel):
+    """The reproduced crash: a run from Perturbations replayed each stage in
+    turn, so the vessels grew back to the Graph tab's network and then shrank
+    to the Boundaries cut -- and a shrinking Vectors layer is removed and
+    re-added, a GL teardown that faulted in the driver (access violation).
+    The replay now draws each layer once, in its final state."""
+    from haemolynx.gui._widget import _apply_layers
+
+    widget, viewer, _tmp = panel
+    results = ResultLayers()
+    widget._haemolynx_view.results = results
+    checkpoints = widget._haemolynx_checkpoints
+    from haemolynx.pipeline import default_schema, resolve_settings
+
+    resolved = resolve_settings(widget._haemolynx_values(), schema=default_schema(), config_path=None)
+    built_graph = a_graph(branch_order="A1", resistance=2.5)
+    built_graph.add_node(4, pos=np.array([40.0, 0.0, 0.0]))
+    built_graph.add_edge(3, 4, key=0, voxels=[[30.0, 0, 0], [40.0, 0, 0]], length=10.0,
+                         segment_id=3, branch_order="A1", resistance=2.5)
+    cut_graph = a_graph(branch_order="A1", resistance=2.5)  # the cut removed 3-4
+    for stage, output in (
+        ("skeletonise", SimpleNamespace(
+            image=np.zeros((4, 4, 4), dtype=np.uint8), skeleton=np.zeros((4, 4, 4), dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0))),
+        ("build_network", network(built_graph)),
+        ("assign_boundaries", SimpleNamespace(
+            inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[], graph=cut_graph)),
+        ("assign_diameters", SimpleNamespace(graph=cut_graph, results={})),
+        ("build_haemodynamic_model", SimpleNamespace(graph=cut_graph, results={})),
+        ("solve", SimpleNamespace(pressure=np.asarray([1.0, 0.7, 0.3, 0.0]),
+                                  node_list=[0, 1, 2, 3], equivalent_resistance=1.0)),
+    ):
+        group = results.stage_finished(stage, output)
+        checkpoints.record(stage, group, results, settings=resolved)
+        _apply_layers(viewer, group)
+    widget._haemolynx_refresh_revert()
+    vessels = viewer.layers[VESSELS]
+    removed = []
+    viewer.layers.events.removed.connect(lambda event: removed.append(event.value.name))
+
+    widget._haemolynx_revert("7. Perturbations")
+
+    assert removed == []
+    assert viewer.layers[VESSELS] is vessels
+    assert len(vessels.data) == 3
+
+
 def test_revert_restores_tube_radii_from_the_replayed_diameter_column(panel):
     """The per-branch tube-diameter feature (vessel_tubes.tube_radii_um) must
     keep working after "Run from this stage": the replayed vessels Vectors
@@ -320,6 +401,30 @@ def test_revert_from_haemodynamics_turns_off_fwhm_remeasurement(panel):
     assert rows["do_graph_building"].value is False
     tabs = widget._haemolynx_tabs
     assert tabs.tabText(tabs.currentIndex()) == "6. Haemodynamics"
+
+
+def test_a_run_from_that_fails_its_checks_keeps_the_later_work(panel):
+    """The panel fixture's input image does not exist, so the resumed run
+    fails preflight. It used to do so only after this tab's and every later
+    tab's checkpoints, layers and skip toggles were already gone."""
+    widget, viewer, _tmp = panel
+    _seed_run(widget, viewer, through="solve")
+    rows = widget._haemolynx_rows()
+    rows["do_skeletonize"].value = True
+    rows["do_graph_building"].value = True
+    checkpoints = widget._haemolynx_checkpoints
+    recorded = checkpoints.stages
+    layers = [layer.name for layer in viewer.layers]
+    assert "solve" in recorded
+
+    widget._haemolynx_run_from("6. Haemodynamics")
+
+    assert "Checks failed" in widget._haemolynx_report()
+    assert checkpoints.stages == recorded
+    assert [layer.name for layer in viewer.layers] == layers
+    assert rows["do_skeletonize"].value is True
+    assert rows["do_graph_building"].value is True
+    assert widget._haemolynx_revert_buttons["7. Perturbations"].enabled is True
 
 
 def test_revert_with_nothing_saved_says_so_and_does_not_crash(panel):

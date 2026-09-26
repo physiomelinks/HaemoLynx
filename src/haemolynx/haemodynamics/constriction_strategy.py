@@ -180,8 +180,20 @@ def set_resistances_for_constriction_strategy(
     applies to every branch order; keys in *constriction_factor_by_branch_order*
     replace that base for the listed orders only.
     """
+    # Every order on the graph, not only the table's: a vessel past
+    # max_branch_order still has its own diameter, and it takes the default
+    # factor like any order the map does not name -- rather than failing the
+    # whole strategy ("No constriction factor for branch_order 'B59'").
+    orders = dict.fromkeys(diameter_by_branch_order)
+    orders.update(
+        dict.fromkeys(
+            str(data["branch_order"])
+            for _u, _v, data in graph.edges(data=True)
+            if data.get("branch_order") is not None
+        )
+    )
     factors = resolve_constriction_factor_table(
-        diameter_by_branch_order,
+        orders,
         constriction_factor_by_branch_order,
         default_factor=float(default_constriction_factor),
     )

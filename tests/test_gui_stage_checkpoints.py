@@ -627,6 +627,49 @@ def test_run_from_replays_only_stages_ahead_of_the_start(tmp_path):
     ]
 
 
+def test_a_plan_can_keep_the_later_work_until_the_run_is_known_to_start(tmp_path):
+    """The panel checks the resumed run before dropping anything: a run that
+    then fails its checks used to have thrown away every later tab's work."""
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    checkpoints, _ = _through_solve(tmp_path, settings)
+    recorded = checkpoints.stages
+
+    plan = checkpoints.plan_run_from("7. Perturbations", settings=settings, drop=False)
+
+    assert plan is not None and plan.start_from == "run_perturbations"
+    assert checkpoints.stages == recorded
+    checkpoints.drop_from(plan.start_from)
+    assert checkpoints.stages == recorded  # nothing from run_perturbations on yet
+    checkpoints.drop_from("build_haemodynamic_model")
+    assert checkpoints.stages == (
+        "skeletonise", "build_network", "assign_boundaries", "assign_diameters"
+    )
+
+    regenerate = checkpoints.plan_regenerate(a_graph(), settings=settings, drop=False)
+    assert regenerate is not None
+    assert checkpoints.has("assign_diameters")
+
+
+def test_a_run_from_leaves_the_pipelines_own_skeleton_to_the_pipeline(tmp_path):
+    """Clear discards what this session wrote. The skeleton skeletonise saved
+    is the pipeline's own output, which a run with do_skeletonize off loads:
+    claiming it made Clear -- and so every fresh Run pipeline -- delete it."""
+    settings = _settings(tmp_path)
+    (tmp_path / "out").mkdir()
+    skeleton_path = skeleton_resume_path(tmp_path / "out", "stack")
+
+    checkpoints, _ = _through_solve(tmp_path, settings)
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+    assert skeleton_path.is_file()
+    assert skeleton_path in checkpoints.session_artefact_paths  # written by the resume
+
+    checkpoints, _ = _through_solve(tmp_path, settings)
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+    assert skeleton_path.is_file()
+    assert skeleton_path not in checkpoints.session_artefact_paths  # already there
+
+
 # --- Regenerate after a hand edit --------------------------------------------
 
 

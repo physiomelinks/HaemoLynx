@@ -703,8 +703,15 @@ class StageCheckpoints:
         self,
         current_tab: str,
         settings: Mapping[str, Any] | None = None,
+        *,
+        drop: bool = True,
     ) -> RestorePlan | None:
-        """See :meth:`plan_restore`."""
+        """See :meth:`plan_restore`.
+
+        With ``drop=False`` the checkpoints of this tab and later ones are
+        kept until :meth:`drop_from` is called -- so a caller can check the
+        planned run will start before it throws away the work it replaces.
+        """
         target = revert_target_stage(current_tab)
         start_from = tab_start_stage(current_tab)
         if target is None or start_from is None or not self.has(target):
@@ -722,7 +729,8 @@ class StageCheckpoints:
         skip, graph_path = self._write_resume_artefacts(
             groups, checkpoint.graph, start_from, settings, source=target
         )
-        self._drop_from(start_from)
+        if drop:
+            self.drop_from(start_from)
 
         return RestorePlan(
             stage=target,
@@ -741,6 +749,8 @@ class StageCheckpoints:
         edited_graph: Any,
         settings: Mapping[str, Any] | None = None,
         start_from: str = "assign_diameters",
+        *,
+        drop: bool = True,
     ) -> RestorePlan | None:
         """Prepare a run that continues a hand-edited graph from *start_from*.
 
@@ -764,7 +774,8 @@ class StageCheckpoints:
         skip, graph_path = self._write_resume_artefacts(
             groups, edited_graph, start_from, settings, source="the edited graph"
         )
-        self._drop_from(start_from)
+        if drop:
+            self.drop_from(start_from)
         return RestorePlan(
             stage=checkpoint.stage,
             title=checkpoint.title,
@@ -794,8 +805,13 @@ class StageCheckpoints:
         if located is not None:
             stem, output_dir = located
             output_dir.mkdir(parents=True, exist_ok=True)
+            # Only a skeleton written here is this session's to discard: the
+            # one skeletonise itself saved is the pipeline's output, which
+            # Clear keeps (see discard_cached_artefacts) -- and which a run
+            # with the user's own do_skeletonize off still has to load.
+            skeleton_existed = skeleton_resume_path(output_dir, stem).is_file()
             skeleton_path = ensure_skeleton_artefact(groups, output_dir, stem)
-            if skeleton_path is not None:
+            if skeleton_path is not None and not skeleton_existed:
                 self.remember_path(skeleton_path)
             if graph is not None and start_from not in {"segment", "skeletonise", "build_network"}:
                 graph_path = graph_resume_path(output_dir, stem)
@@ -816,7 +832,7 @@ class StageCheckpoints:
         )
         return skip, graph_path
 
-    def _drop_from(self, start_from: str) -> None:
+    def drop_from(self, start_from: str) -> None:
         """Forget the checkpoints of *start_from* and every later stage."""
         keep = set(stages_before(start_from))
         for name in list(self._by_stage):

@@ -126,6 +126,40 @@ def positive_diameter_um(value: object) -> float | None:
     return number
 
 
+def baseline_edge_diameter(
+    data: dict, branch_order: str, diameter_by_branch_order: dict
+) -> tuple[float, bool]:
+    """``(d1, from_fwhm)``: the unconstricted diameter a constriction starts from.
+
+    The same choice :meth:`PoiseuilleModel.set_poiseuille_resistances` makes
+    for the baseline: the diameter stamped at assign_diameters (a FWHM fit,
+    the EDT fallback, a hand override or the table), else the FWHM fit, else
+    the table. Reading ``fwhm_diameter_um`` alone put every vessel that fell
+    back to EDT -- most of a real network -- at the table diameter, so a
+    constriction factor of 1 did not reproduce the baseline; and demanding a
+    table entry first failed the whole run on any branch order past
+    ``max_branch_order``, even when the vessel had its own diameter.
+    """
+    diameter = positive_diameter_um(data.get("diameter_um"))
+    from_fwhm = data.get("diameter_source") == DIAMETER_SOURCE_MEASURED
+    if diameter is None:
+        diameter = positive_diameter_um(data.get("fwhm_diameter_um"))
+        from_fwhm = diameter is not None
+    if diameter is not None:
+        return diameter, from_fwhm
+    spec = diameter_by_branch_order.get(branch_order)
+    if spec is None:
+        raise ValueError(
+            f"No fallback baseline diameter for branch_order '{branch_order}'."
+        )
+    if isinstance(spec, dict):
+        raise ValueError(
+            "With prefer_edge_fwhm_baseline=True, diameter_by_branch_order must "
+            f"map '{branch_order}' to a numeric fallback baseline diameter."
+        )
+    return float(spec), False
+
+
 def clear_edge_resistances(G: nx.MultiGraph) -> None:
     """Drop ``resistance`` and ``conductance`` so diameters can exist alone."""
     for _u, _v, _key, data in G.edges(keys=True, data=True):
@@ -620,11 +654,12 @@ class PoiseuilleModel:
             ``{"d1": float, "d2": float}`` (passive and constricted diameters in µm).
 
             If True: maps ``branch_order`` to a **scalar** fallback diameter (µm) used
-            only when an edge has no positive ``fwhm_diameter_um``.
+            only when an edge has no diameter of its own.
         prefer_edge_fwhm_baseline :
-            When True, per edge ``d1 = fwhm_diameter_um`` if set and positive, else the
-            scalar fallback for that ``branch_order``; ``d2 = d1 * factor`` where
-            ``factor`` comes from ``constriction_factor_by_branch_order[branch_order]``.
+            When True, per edge ``d1`` is the baseline's own diameter (see
+            :func:`baseline_edge_diameter`), else the scalar fallback for that
+            ``branch_order``; ``d2 = d1 * factor`` where ``factor`` comes from
+            ``constriction_factor_by_branch_order[branch_order]``.
         constriction_factor_by_branch_order :
             Required when ``prefer_edge_fwhm_baseline`` is True: multiplier applied to
             baseline ``d1`` to obtain ``d2`` (same role as d2/d1 in the manual pipeline).
@@ -663,24 +698,14 @@ class PoiseuilleModel:
                 )
 
             if prefer_edge_fwhm_baseline:
-                spec = diameter_by_branch_order.get(branch_order)
-                if spec is None:
-                    raise ValueError(
-                        f"Edge ({u}, {v}, {key}) has unknown branch_order '{branch_order}'. "
-                        "No matching entry in diameter_by_branch_order (fallback diameters)."
+                try:
+                    d1, from_fwhm = baseline_edge_diameter(
+                        data, branch_order, diameter_by_branch_order
                     )
-                if isinstance(spec, dict):
-                    raise ValueError(
-                        "When prefer_edge_fwhm_baseline=True, diameter_by_branch_order "
-                        f"must map to numeric fallbacks, not dict for '{branch_order}'."
-                    )
-                fallback_d1 = float(spec)
-                fwhm_d = data.get("fwhm_diameter_um")
-                if fwhm_d is not None and float(fwhm_d) > 0:
-                    d1 = float(fwhm_d)
+                except ValueError as error:
+                    raise ValueError(f"Edge ({u}, {v}, {key}): {error}") from error
+                if from_fwhm:
                     results["used_fwhm_baseline"] += 1
-                else:
-                    d1 = fallback_d1
                 factor = constr_map.get(branch_order) if constr_map is not None else None
                 if factor is None:
                     raise ValueError(

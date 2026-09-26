@@ -37,7 +37,7 @@ from typing import Any, Iterable, Protocol
 import networkx as nx
 import numpy as np
 
-from .poiseuille import set_edge_resistance
+from .poiseuille import baseline_edge_diameter, set_edge_resistance
 from .viscosity import DEFAULT_HAEMATOCRIT, viscosity_for
 
 #: Micrometres per metre. Diameters and lengths arrive in um and the resistance
@@ -161,9 +161,11 @@ def resolve_edge_diameters(
     ``diameter_by_branch_order`` maps a branch order either to a passive
     diameter, in which case ``d2`` comes from the effective constriction
     factor, or to an explicit ``{"d1": ..., "d2": ...}`` pair. With
-    ``prefer_edge_fwhm_baseline`` the edge's own measured ``fwhm_diameter_um``
+    ``prefer_edge_fwhm_baseline`` the edge's own diameter -- the one the
+    baseline was solved with, see
+    :func:`~haemolynx.haemodynamics.poiseuille.baseline_edge_diameter` --
     supersedes the table as ``d1``, and the table supplies only the fallback
-    for edges that were never measured.
+    for edges that have none.
 
     The effective factor for an order is the map entry when present; otherwise
     ``default_constriction_factor``. Map values **replace** the default for that
@@ -171,21 +173,9 @@ def resolve_edge_diameters(
     """
     used_fwhm_baseline = False
     if prefer_edge_fwhm_baseline:
-        spec = diameter_by_branch_order.get(branch_order)
-        if spec is None:
-            raise ValueError(
-                f"No fallback baseline diameter for branch_order '{branch_order}'."
-            )
-        if isinstance(spec, dict):
-            raise ValueError(
-                "With prefer_edge_fwhm_baseline=True, diameter_by_branch_order must "
-                f"map '{branch_order}' to a numeric fallback baseline diameter."
-            )
-        d1 = float(spec)
-        fwhm_diameter = edge_data.get("fwhm_diameter_um")
-        if fwhm_diameter is not None and float(fwhm_diameter) > 0:
-            d1 = float(fwhm_diameter)
-            used_fwhm_baseline = True
+        d1, used_fwhm_baseline = baseline_edge_diameter(
+            edge_data, branch_order, diameter_by_branch_order
+        )
     else:
         spec = diameter_by_branch_order.get(branch_order)
         if spec is None:

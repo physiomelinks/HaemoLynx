@@ -549,6 +549,75 @@ def test_the_settings_select_the_strategy(flags, expected_strategy):
     assert results["edges_set"] == 1
 
 
+def _network_of_every_diameter_source() -> nx.MultiGraph:
+    """Four vessels as assign_diameters leaves them with FWHM + EDT on: one
+    measured, one EDT fallback, one hand override, and one whose order
+    (B59) is past a table built to max_branch_order -- all four with their
+    own ``diameter_um``, none needing the table."""
+    graph = nx.MultiGraph()
+    rows = [
+        ("B01", {"fwhm_diameter_um": 4.0, "diameter_um": 4.0, "diameter_source": "measured"}),
+        ("B02", {"edt_diameter_um": 7.5, "diameter_um": 7.5, "diameter_source": "edt_mask"}),
+        ("B03", {"diameter_um": 9.0, "diameter_source": "override"}),
+        ("B59", {"edt_diameter_um": 3.0, "diameter_um": 3.0, "diameter_source": "edt_mask"}),
+    ]
+    for index, (order, attrs) in enumerate(rows):
+        graph.add_edge(index, index + 10, length=120.0, branch_order=order, **attrs)
+    return graph
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [{}, {"use_probabilistic_constriction": True}],
+    ids=["periodic", "probabilistic"],
+)
+def test_an_unconstricted_perturbation_reproduces_the_baseline(flags):
+    """A pericyte perturbation with factor 1 must re-solve the network it
+    started from. The constriction path read only ``fwhm_diameter_um``, so
+    every EDT-fallback and hand-set vessel went back to the table diameter,
+    and demanded a table entry for every order -- the user's run failed
+    outright on B59 with max_branch_order 51."""
+    table = {"B01": 5.0, "B02": 5.0, "B03": 5.0}
+    baseline, _ = PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances(
+        _network_of_every_diameter_source(), table, prefer_edge_fwhm_diameter=True
+    )
+    perturbed, _strategy, results = set_resistances_for_constriction_strategy(
+        _network_of_every_diameter_source(),
+        diameter_by_branch_order=table,
+        constriction_factor_by_branch_order={},
+        use_pericyte_mask_constriction=False,
+        prefer_edge_fwhm_baseline=True,
+        constriction_length=40.0,
+        constriction_spacing=100.0,
+        default_constriction_factor=1.0,
+        use_probabilistic_constriction=flags.get("use_probabilistic_constriction", False),
+        seed=1,
+    )
+
+    assert results["edges_set"] == 4
+    assert results["used_fwhm_baseline"] == 1
+    for u, v, key, data in baseline.edges(keys=True, data=True):
+        assert perturbed[u][v][key]["resistance"] == pytest.approx(data["resistance"], rel=1e-6)
+
+
+def test_an_order_past_the_table_takes_the_default_constriction_factor():
+    graph, _strategy, _results = set_resistances_for_constriction_strategy(
+        _network_of_every_diameter_source(),
+        diameter_by_branch_order={"B01": 5.0, "B02": 5.0, "B03": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.9},
+        use_pericyte_mask_constriction=False,
+        use_probabilistic_constriction=False,
+        prefer_edge_fwhm_baseline=True,
+        constriction_length=40.0,
+        constriction_spacing=100.0,
+        default_constriction_factor=0.5,
+    )
+    expected = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
+    assert graph[3][13][0]["resistance"] == pytest.approx(
+        expected.calculate_integrated_resistance(120.0, 3.0, 1.5), rel=1e-9
+    )
+
+
 # --- every strategy reads the configured viscosity law ----------------------
 #
 # `viscosity_law` used to reach only the periodic `PoiseuilleModel` path, so a

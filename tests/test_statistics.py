@@ -191,6 +191,53 @@ def test_compute_path_efficiency(simple_graph):
     assert "Path Efficiency" in s
 
 
+def _brute_force_mean_path_length(G):
+    simple = nx.Graph()
+    simple.add_nodes_from(G)
+    for u, v, d in G.edges(data=True):
+        w = d.get("length", 1)
+        if not simple.has_edge(u, v) or w < simple[u][v]["length"]:
+            simple.add_edge(u, v, length=w)
+    nodes = list(simple)
+    lengths = [
+        nx.shortest_path_length(simple, a, b, weight="length")
+        for i, a in enumerate(nodes) for b in nodes[i + 1:]
+    ]
+    return float(np.mean(lengths)), len(lengths)
+
+
+@pytest.mark.parametrize("batch", [256, 3])
+def test_exact_path_efficiency_matches_a_search_per_pair(monkeypatch, batch):
+    """full mode searched once per node *pair* -- hours of Export on a real
+    network. One search per node gives the same mean: parallel vessels take
+    the lighter, a zero-length vessel is still a vessel, a missing length
+    counts 1, a self-loop changes nothing; also across source batches."""
+    from haemolynx.statistics import shape
+
+    monkeypatch.setattr(shape, "_ALL_PAIRS_SOURCE_BATCH", batch)
+    rng = np.random.default_rng(3)
+    G = nx.MultiGraph()
+    for u in range(11):  # a ring with chords, so paths have choices
+        G.add_edge(u, (u + 1) % 11, length=float(rng.uniform(1, 9)))
+    G.add_edge(0, 5, length=2.0)
+    G.add_edge(0, 5, length=30.0)  # parallel, heavier: ignored
+    G.add_edge(3, 8, length=0.0)  # collapsed junction
+    G.add_edge(2, 9)  # no length
+    G.add_edge(4, 4, length=1.0)  # self-loop
+    expected, pairs = _brute_force_mean_path_length(G)
+
+    result = compute_path_efficiency(G, True, max_pairs=None)
+
+    assert result["Average Shortest Path Length (microns)"] == pytest.approx(expected, rel=1e-12)
+    assert result["Path Efficiency"] == pytest.approx(1 / expected, rel=1e-12)
+    assert result["Path Efficiency Pair Sample Size"] == pairs == 55
+    assert result["Path Efficiency Pair Coverage"] == 1.0
+    simple = nx.Graph(G)
+    assert compute_path_efficiency(simple, False, max_pairs=None)[
+        "Average Shortest Path Length (microns)"
+    ] == pytest.approx(_brute_force_mean_path_length(simple)[0], rel=1e-12)
+
+
 def test_compute_vessel_density(simple_graph):
     pos = nx.get_node_attributes(simple_graph, "pos")
     s = compute_vessel_density(

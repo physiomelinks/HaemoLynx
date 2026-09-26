@@ -2116,29 +2116,23 @@ def _apply_layers(viewer, group, report=None) -> None:
 
 
 def _apply_layer_groups(viewer, groups, report=None) -> None:
-    """Apply several stage groups to *viewer*, one Qt event-loop cycle apart.
+    """Put back what several stage groups leave, drawing each layer once.
 
-    A live pipeline run never calls :func:`_apply_layers` back to back like a
-    plain loop would: each stage's group crosses a worker-thread Qt signal to
-    the GUI thread as its own queued event, so the event loop fully cycles
-    (paints, vispy/GPU work settles) between one stage's layers landing and
-    the next stage's. Loading a saved run or reverting to an earlier stage
-    both used to build every group in the same call with a bare ``for`` loop,
-    applying all of them inside a single GUI-thread call with the event loop
-    never getting to run in between -- several tube-mesh Surface layers and
-    colour recomputations queuing up back to back this way is what actually
-    crashed napari (confirmed: the identical live per-stage path, through
-    "Run pipeline", does not). ``processEvents()`` between groups reproduces
-    that same one-cycle-per-stage pacing for a case that never goes through
-    the worker-thread signal at all.
+    Loading a saved run and "Run from this stage" both replay every stage
+    up to some point. Applied one after another, the vessels and nodes
+    layers were redrawn once per stage, and where a stage's layer is smaller
+    than the one before it :func:`_add_or_update` removes and re-adds it:
+    the GL teardown that crashed the process with an access violation in the
+    driver (reproduced on a 3,191-vessel network, the second run from the
+    Perturbations tab). Pacing the groups a Qt event-loop cycle apart made
+    that rarer, not safe. Each layer's final state is all the viewer needs
+    (see :func:`~haemolynx.gui.results.merge_stage_layers`).
     """
-    from qtpy.QtWidgets import QApplication
+    from haemolynx.gui.results import merge_stage_layers
 
-    for group in groups:
-        _apply_layers(viewer, group, report)
-        app = QApplication.instance()
-        if app is not None:
-            app.processEvents()
+    merged = merge_stage_layers(list(groups))
+    if merged is not None:
+        _apply_layers(viewer, merged, report)
 
 
 def _colour_attribute(layer) -> str:
@@ -2451,7 +2445,11 @@ def _add_or_update(viewer, spec) -> None:
             new_count = len(np.asarray(spec.data))
             old_count = len(np.asarray(existing.data))
             if new_count < old_count:
+                # A synchronous GL teardown: let vispy's queued work flush
+                # first, as _clear_our_layers does, or the driver can fault.
+                _process_pending_qt_events()
                 viewer.layers.remove(existing)
+                _process_pending_qt_events()
                 existing = None
         if existing is not None:
             # A Shapes layer applies the types it already holds to whatever data
@@ -4223,7 +4221,31 @@ def _clear_our_layers(viewer) -> int:
     drain before, and between, each removal is the standard mitigation for
     this class of vispy/GL race.
     """
-    ours = [layer for layer in list(viewer.layers) if _is_ours(layer)]
+    return _remove_our_layers(viewer, keep=frozenset())
+
+
+def _layer_names_redrawn_by(groups) -> frozenset[str]:
+    """Every layer name replaying *groups* puts back, tube Surfaces included.
+
+    With the name a clash with a user's layer would give ours (see
+    :func:`_add_or_update`), and the tube mesh drawn for each vessels layer
+    (see :func:`_sync_vessel_tubes`).
+    """
+    names = {spec.name for group in groups for spec in getattr(group, "layers", ())}
+    names |= {vessel_tubes_layer_name(name) for name in list(names)}
+    names |= {f"{name} (HaemoLynx)" for name in list(names)}
+    return frozenset(names)
+
+
+def _remove_our_layers(viewer, keep: frozenset[str]) -> int:
+    """Remove this plugin's layers except those named in *keep*.
+
+    See :func:`_clear_our_layers` for why the removals are paced.
+    """
+    ours = [
+        layer for layer in list(viewer.layers)
+        if _is_ours(layer) and layer.name not in keep
+    ]
     if not ours:
         return 0
     _process_pending_qt_events()
@@ -7924,8 +7946,28 @@ def settings_widget(napari_viewer=None):
                 rows[name].changed.connect(snapshot_skip_toggles)
         apply_prerequisites()
 
-    def prepare_run_from(tab_title: str):
-        """Drop this tab and later work; return the plan, or None."""
+    def _resumed_run_passes_checks(settings, plan) -> bool:
+        """Preflight the run *plan* would start, before anything is dropped.
+
+        `on_run` checks too, but only after this tab's and later tabs'
+        checkpoints and layers are gone and the skip toggles are off: a
+        failing check there threw the finished work away for a run that then
+        never started.
+        """
+        planned = dict(settings)
+        planned.update({name: False for name in plan.skip_settings})
+        if preflight(planned, schema).ok:
+            return True
+        report.value = "Checks failed; nothing was run. Press 'Run checks' for detail."
+        refresh_revert_buttons()
+        return False
+
+    def prepare_run_from(tab_title: str, *, check: bool = False):
+        """Drop this tab and later work; return the plan, or None.
+
+        With *check*, nothing is dropped unless the run the plan starts
+        passes preflight (see :func:`_resumed_run_passes_checks`).
+        """
         if run_state.running:
             report.value = ALREADY_RUNNING
             return None
@@ -7946,7 +7988,7 @@ def settings_widget(napari_viewer=None):
             except Exception as error:
                 report.value = f"Could not read settings:\n{error}"
                 return None
-        plan = checkpoints.plan_run_from(tab_title, settings=settings)
+        plan = checkpoints.plan_run_from(tab_title, settings=settings, drop=False)
         if plan is None:
             report.value = (
                 "Nothing ready to run from: run the pipeline with 'Show each "
@@ -7954,6 +7996,9 @@ def settings_widget(napari_viewer=None):
             )
             refresh_revert_buttons()
             return None
+        if check and not _resumed_run_passes_checks(settings, plan):
+            return None
+        checkpoints.drop_from(plan.start_from)
         results = view.results
         if results is None:
             results = ResultLayers()
@@ -7961,7 +8006,13 @@ def settings_widget(napari_viewer=None):
             if boundaries is not None:
                 boundaries.state.results = results
         checkpoints.apply_to_results(results, plan.checkpoint)
-        _clear_our_layers(viewer)
+        # Only what the replay will not put back: the replay updates the rest
+        # in place. Removing every layer -- the image, masks and FWHM volumes,
+        # the tube mesh -- only to re-add each one tore down and rebuilt all
+        # of their GL resources at once, the teardown that crashes the process
+        # (see _clear_our_layers), and did it most on the latest tabs, which
+        # replay the most stages.
+        _remove_our_layers(viewer, keep=_layer_names_redrawn_by(plan.groups))
         _apply_layer_groups(viewer, plan.groups)
         _after_layers_applied()
         _apply_resume_skips(plan.skip_settings)
@@ -7975,7 +8026,7 @@ def settings_widget(napari_viewer=None):
 
     def on_revert(tab_title: str) -> None:
         """Prepare the previous tab's work, then rerun from this stage."""
-        plan = prepare_run_from(tab_title)
+        plan = prepare_run_from(tab_title, check=True)
         if plan is None:
             return
         on_run(
@@ -8115,13 +8166,16 @@ def settings_widget(napari_viewer=None):
         except Exception as error:
             report.value = f"Could not read settings:\n{error}"
             return
-        plan = checkpoints.plan_regenerate(state.graph, settings=settings)
+        plan = checkpoints.plan_regenerate(state.graph, settings=settings, drop=False)
         if plan is None:
             report.value = (
                 "Nothing to regenerate from: run the pipeline through at "
                 "least Boundaries first."
             )
             return
+        if not _resumed_run_passes_checks(settings, plan):
+            return
+        checkpoints.drop_from(plan.start_from)
         _apply_resume_skips(plan.skip_settings)
         on_run(
             start_from=plan.start_from,

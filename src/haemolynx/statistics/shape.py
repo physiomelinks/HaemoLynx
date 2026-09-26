@@ -197,10 +197,14 @@ def compute_path_efficiency(
 
         pairs = [(nodes[i], nodes[j]) for i, j in sampled_pairs]
     else:
-        pairs = []
-        for i, src in enumerate(nodes):
-            for tgt in nodes[i + 1 :]:
-                pairs.append((src, tgt))
+        avg_path_length = _mean_shortest_path_length_over_all_pairs(G_s, nodes)
+        efficiency = 1 / avg_path_length if avg_path_length > 0 else 0
+        return {
+            "Path Efficiency": efficiency,
+            "Average Shortest Path Length (microns)": avg_path_length,
+            "Path Efficiency Pair Sample Size": total_pairs,
+            "Path Efficiency Pair Coverage": 1.0 if total_pairs > 0 else 0,
+        }
 
     for src, tgt in pairs:
         try:
@@ -221,6 +225,54 @@ def compute_path_efficiency(
             len(path_lengths) / total_pairs if total_pairs > 0 else 0
         ),
     }
+
+
+#: Sources per batch of the all-pairs search: bounds the distance block held
+#: at once to this many rows of the node count.
+_ALL_PAIRS_SOURCE_BATCH = 256
+
+
+def _mean_shortest_path_length_over_all_pairs(G_s: nx.Graph, nodes: list) -> float:
+    """Mean ``length``-weighted shortest path over every unordered node pair.
+
+    One single-source search per node, in compiled code, rather than one
+    search per *pair*: a pair-at-a-time loop ran ~4 million Dijkstra searches
+    on a 2,800-node network, which kept Export busy for hours in ``full``
+    statistics mode. The same answer, *G_s* being connected. A missing
+    ``length`` counts as 1, as NetworkX's own weighted search does.
+    """
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import dijkstra
+
+    n = len(nodes)
+    if n < 2:
+        return 0.0
+    index = {node: i for i, node in enumerate(nodes)}
+    lightest: dict[tuple[int, int], float] = {}
+    for u, v, data in G_s.edges(data=True):
+        i, j = sorted((index[u], index[v]))
+        if i == j:
+            continue
+        weight = float(data.get("length", 1))
+        if (i, j) not in lightest or weight < lightest[(i, j)]:
+            lightest[(i, j)] = weight
+    rows, cols = zip(*lightest) if lightest else ((), ())
+    # Explicit zero-length edges stay edges in a sparse graph built this way.
+    adjacency = csr_matrix(
+        (np.fromiter(lightest.values(), dtype=float), (rows, cols)), shape=(n, n)
+    )
+    total = 0.0
+    for start in range(0, n, _ALL_PAIRS_SOURCE_BATCH):
+        sources = np.arange(start, min(n, start + _ALL_PAIRS_SOURCE_BATCH))
+        distances = dijkstra(adjacency, directed=False, indices=sources)
+        for row, source in enumerate(sources):
+            later = distances[row, source + 1 :]
+            if not np.all(np.isfinite(later)):
+                raise RuntimeError(
+                    f"No path from connected-graph node {nodes[source]} to every other node"
+                )
+            total += float(later.sum())
+    return total / (n * (n - 1) / 2)
 
 
 def compute_vessel_density(

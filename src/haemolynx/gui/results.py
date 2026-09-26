@@ -702,6 +702,42 @@ class StageLayers:
     ndisplay: int | None = None
 
 
+def merge_stage_layers(groups: Sequence[StageLayers]) -> StageLayers | None:
+    """What applying *groups* one after another leaves, as one group.
+
+    Each layer name keeps its last spec, at the place it first appeared; a
+    recolour stands only if no later spec redraws that layer; the last
+    ``ndisplay`` set wins; title, stage and note are the last group's. So a
+    replay draws every layer once, in its final state, instead of redrawing
+    the same vessels and nodes once per stage -- where one stage's layer is
+    smaller than the one before it (a boundary cut), a Vectors or Points
+    layer is removed and re-added, and that GL teardown is what crashed
+    napari on "Run from this stage". None for no groups.
+    """
+    if not groups:
+        return None
+    specs: dict[str, LayerSpec] = {}
+    recolour: dict[str, str] = {}
+    ndisplay = None
+    for group in groups:
+        for spec in group.layers:
+            specs[spec.name] = spec
+            recolour.pop(spec.name, None)
+        for name, column in group.recolour:
+            recolour[name] = column
+        if group.ndisplay is not None:
+            ndisplay = group.ndisplay
+    last = groups[-1]
+    return StageLayers(
+        stage=last.stage,
+        title=last.title,
+        layers=tuple(specs.values()),
+        recolour=tuple(recolour.items()),
+        note=last.note,
+        ndisplay=ndisplay,
+    )
+
+
 def vessel_mask_volume_layers(
     masks: Any,
     *,
