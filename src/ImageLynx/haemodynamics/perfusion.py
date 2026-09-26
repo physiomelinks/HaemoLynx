@@ -210,6 +210,64 @@ def _edge_diameter_um(data, default_diameter_um):
     return None if default_diameter_um is None else float(default_diameter_um)
 
 
+VESSEL_MAPPINGS = ("centreline", "cross_section")
+
+
+def _disc_offsets(radius: float, spacing: float) -> np.ndarray:
+    """In-plane (a, b) offsets: midpoints of a square lattice of pitch ``spacing`` inside a disc.
+
+    Midpoints, so no sample sits on the rim: a lattice through the centre puts a ring of points
+    exactly on the circle, and at a coarse pitch those carry a large share of the weight (a
+    quarter-cell pitch sent 31% of a 9 um vessel on a 9 um grid into the neighbouring cells).
+    ``spacing`` at most a quarter of ``radius`` keeps at least the four central points inside.
+    """
+    k = int(np.ceil(radius / spacing))
+    ticks = spacing * (np.arange(-k, k) + 0.5)
+    a, b = np.meshgrid(ticks, ticks, indexing="ij")
+    inside = a * a + b * b <= radius * radius
+    return np.stack([a[inside], b[inside]], axis=1)
+
+
+def _cross_section_cells(points_zyx: np.ndarray, radius: float, grid: "PerfusionGrid",
+                         edge) -> Tuple[np.ndarray, np.ndarray]:
+    """Cells an edge's lumen covers, and the share of each centreline sample that falls in each.
+
+    Each centreline point is swept over a disc of the vessel's radius, perpendicular to the local
+    tangent (central differences along the polyline, one-sided at the ends). The disc is sampled
+    at an eighth of the finer of the grid pitch and the vessel diameter, so a cell that holds
+    part of the lumen receives that part, whatever the grid. Returns ``(cells, weight)``: ``weight`` is in units of
+    centreline samples, so it sums to ``len(points_zyx)`` less whatever falls outside the grid.
+    """
+    tangent = np.gradient(points_zyx, axis=0)
+    norm = np.linalg.norm(tangent, axis=1)
+    if np.any(norm == 0):
+        raise ValueError(
+            f"Edge {edge} has coincident neighbouring centreline points, so its tangent and "
+            f"therefore the plane of its cross-section are undefined. Deduplicate its 'voxels' "
+            f"first, or map it with vessel_mapping='centreline'.")
+    tangent = tangent / norm[:, None]
+
+    # Any vector not parallel to the tangent gives a basis for the perpendicular plane.
+    ref = np.zeros_like(tangent)
+    ref[np.arange(len(tangent)), np.argmin(np.abs(tangent), axis=1)] = 1.0
+    e1 = np.cross(tangent, ref)
+    e1 /= np.linalg.norm(e1, axis=1)[:, None]
+    e2 = np.cross(tangent, e1)
+
+    offsets = _disc_offsets(radius, min(float(np.min(grid.res)), 2.0 * radius) / 8.0)
+    samples = (points_zyx[:, None, :]
+               + offsets[None, :, 0, None] * e1[:, None, :]
+               + offsets[None, :, 1, None] * e2[:, None, :]).reshape(-1, 3)
+
+    # Same rule as _numba_get_linear_index: truncate toward zero, drop what falls outside.
+    ijk = np.trunc((samples - grid.min_xyz) / grid.res).astype(np.int64)
+    inside = np.all((ijk >= 0) & (ijk < grid.dims), axis=1)
+    ijk = ijk[inside]
+    linear = ijk[:, 0] + ijk[:, 1] * grid.dims[0] + ijk[:, 2] * grid.dims[0] * grid.dims[1]
+    cells, counts = np.unique(linear, return_counts=True)
+    return cells, counts / float(len(offsets))
+
+
 def _raise_on_non_finite_flow(G) -> None:
     """
     Raise if any edge's ``flow_abs`` is NaN or infinite.
@@ -412,6 +470,7 @@ def map_vessels_to_grid(
     grid: PerfusionGrid,
     default_diameter_um: float | None = None,
     flow_to_um3_per_s: float = POISEUILLE_FLOW_TO_UM3_PER_S,
+    vessel_mapping: str = "centreline",
 ) -> Dict[int, List[Dict[str, Any]]]:
     """
     Step 2: Map 1D vessel segments (edges) to the 3D tissue grid cells.
@@ -434,10 +493,25 @@ def map_vessels_to_grid(
     so a graph that had never been through the rheology solve was given systemic haematocrit
     everywhere and delivered oxygen as if it had.
 
+    ``vessel_mapping`` says which cells a vessel occupies (open item 30):
+
+    - ``"centreline"`` (default): only the cells its centreline crosses, whatever its diameter.
+      Below a vessel diameter a finer grid draws a thinner vessel, a line source in the limit,
+      and Tier 1 PO2 falls by about the same amount at every halving of the pitch.
+    - ``"cross_section"``: every cell its lumen covers. Each centreline point is swept over a
+      disc of the vessel's radius perpendicular to the local tangent, and the edge's length and
+      wall area are shared among cells by the part of that disc each one holds. Where the whole
+      disc falls inside the centreline's cell this is the centreline mapping.
+
+    Either way each edge's shares sum to one (below), so the total source does not change.
+
     Returns:
         Mapping of linear_cell_index -> list of segments passing through that cell.
         Each segment info includes the edge ID, flow in um^3/s, and length in that cell.
     """
+    if vessel_mapping not in VESSEL_MAPPINGS:
+        raise ValueError(
+            f"vessel_mapping must be one of {VESSEL_MAPPINGS}, got {vessel_mapping!r}.")
     missing = [
         (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
         if _edge_diameter_um(data, default_diameter_um) is None
@@ -487,6 +561,18 @@ def map_vessels_to_grid(
         # In a real model, we'd use line-plane intersection, but for high-res microscopy,
         # point-sampling the voxels is a robust and fast approximation.
         len_per_vox = edge_len / (len(voxels) - 1) if len(voxels) > 1 else 0.0
+
+        if vessel_mapping == "cross_section":
+            cells, weight = _cross_section_cells(vox_phys_zyx, radius, grid, (u, v, key))
+            for idx, w in zip(cells.tolist(), weight.tolist()):
+                cell_to_vessels.setdefault(idx, []).append({
+                    'edge': (u, v, key),
+                    'flow': flow,
+                    'hematocrit': float(data["hematocrit"]),
+                    'length': w * len_per_vox,
+                    'surface_area': 2.0 * np.pi * radius * w * len_per_vox
+                })
+            continue
 
         for i in range(len(vox_phys_zyx)):
             zyx = vox_phys_zyx[i]

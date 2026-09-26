@@ -41,8 +41,8 @@ from ImageLynx.graph.boundaries import (                                 # noqa:
     select_boundary_terminal_nodes_by_face,
 )
 from ImageLynx.haemodynamics.perfusion import (                          # noqa: E402
-    PerfusionGrid, build_adr_matrix, cell_discharge_hematocrit, map_vessels_to_grid,
-    solve_perfusion_steady_state,
+    VESSEL_MAPPINGS, PerfusionGrid, build_adr_matrix, cell_discharge_hematocrit,
+    map_vessels_to_grid, solve_perfusion_steady_state,
 )
 from ImageLynx.haemodynamics.rheology import (                           # noqa: E402
     solve_coupled_flow_and_hematocrit,
@@ -63,6 +63,8 @@ GRID_UM = cb_settings.GRID_UM
 INLET_P, OUTLET_P = cb_settings.INLET_PRESSURE_MMHG, cb_settings.OUTLET_PRESSURE_MMHG
 BASE_M_MAX = cb_settings.BASE_M_MAX
 HYPOXIC_THRESHOLDS = (5.0, 10.0, 20.0)
+# Which cells a vessel occupies (open item 30). cb_h2_vtk.py must use the same.
+VESSEL_MAPPING = "centreline"
 PerfConfig = cb_settings.PerfusionSettings
 
 
@@ -98,7 +100,7 @@ def _unsupplied_pct(q_total):
     return float(100.0 * (q <= 0).mean()) if q.size else float("nan")
 
 
-def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False):
+def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False, vessel_mapping=VESSEL_MAPPING):
     G = _load_graph(specimen)
     inlets, outlets = select_boundary_terminal_nodes_by_face(
         G, ROI, axis=BOUNDARY_AXIS, voxel_size=PROCESSING_VOXEL_UM)
@@ -119,7 +121,7 @@ def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False):
     m_max = blend_per_cell_rate(th_fraction, tissue_rate=stroma * contrast, stroma_rate=stroma)
 
     config = PerfConfig(m_max)
-    cells = map_vessels_to_grid(G, grid)
+    cells = map_vessels_to_grid(G, grid, vessel_mapping=vessel_mapping)
     A, q, s = build_adr_matrix(grid, cells, config)
     po2 = solve_perfusion_steady_state(grid, A, q, s, config,
                                        cell_hematocrit=cell_discharge_hematocrit(cells, grid.n_cells))
@@ -131,6 +133,7 @@ def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False):
         "specimen_id": specimen.specimen_id, "group": specimen.group,
         "contrast": contrast, "grid_um": grid_um, "cells": int(grid.n_cells),
         "padded_to_segmented_volume": bool(pad_grid),
+        "vessel_mapping": vessel_mapping,
         "cells_without_vessels_pct": _unsupplied_pct(q),
         "th_volume_fraction": mean_fraction,
         "po2_median_all": float(np.median(po2)),
@@ -160,11 +163,14 @@ def main():
                          "Measured on this cohort after open items 22 and 29 (contrast 2) it "
                          "costs 3.9 and 4.9 mmHg of mean PO2 within TH on SHR-A and SHR-C and "
                          "raises TH hypoxia below 10 mmHg by 3.6 and 1.8 points.")
+    ap.add_argument("--vessel-mapping", choices=VESSEL_MAPPINGS, default=VESSEL_MAPPING,
+                    help="Cells a vessel occupies: those its centreline crosses, or all those "
+                         "its lumen covers (open item 30).")
     ap.add_argument("--out", default="examples/outputs/cb_h2_hypoxic_fraction.json")
     args = ap.parse_args()
 
     print(f"ROI {ROI[0]}^3, perfusion grid {args.grid_um} um, TH threshold {TH_THRESHOLD}, "
-          f"boundary face rule axis {BOUNDARY_AXIS}")
+          f"boundary face rule axis {BOUNDARY_AXIS}, vessel mapping {args.vessel_mapping}")
     print(f"Volume-weighted mean metabolic rate held at {BASE_M_MAX} across contrasts.\n")
 
     rows = []
@@ -173,7 +179,8 @@ def main():
         print(f"  {'spec':7s} {'TH vol':>7s} {'PO2 TH':>8s} {'PO2 stroma':>11s} "
               + " ".join(f"{'hyp<' + format(t, 'g'):>9s}" for t in HYPOXIC_THRESHOLDS))
         for specimen in SPECIMENS:
-            r = analyse(specimen, contrast, args.grid_um, pad_grid=args.pad_grid)
+            r = analyse(specimen, contrast, args.grid_um, pad_grid=args.pad_grid,
+                        vessel_mapping=args.vessel_mapping)
             rows.append(r)
             print(f"  {r['specimen_id']:7s} {100*r['th_volume_fraction']:6.1f}% "
                   f"{r['po2_median_th']:8.2f} {r['po2_median_stroma']:11.2f} "

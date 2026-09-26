@@ -8,6 +8,8 @@ drifts down by about the same amount at every refinement. It never settles.
 
 The same vessel spread over its real cross-section (the flow shared by parallel centrelines on a
 lattice finer than every grid here) converges. So the drift is the mapping, not the solver.
+``vessel_mapping="cross_section"`` does that spreading inside ``map_vessels_to_grid``, from one
+centreline and the vessel's diameter, and converges the same way.
 
 Both cases are a thin slab along the vessel. Tier 1 feeds every vessel cell arterial blood, so
 the field is uniform along it and the cross-section is the whole problem.
@@ -42,7 +44,7 @@ def _offsets(spread):
     return [(dy, dx) for dy in ticks for dx in ticks if dy * dy + dx * dx <= _RADIUS ** 2]
 
 
-def _solve(h, spread):
+def _solve(h, spread, vessel_mapping="centreline"):
     """Mean tissue PO2 and net O2 delivered per um^3, on a slab a cell or two thick."""
     offsets = _offsets(spread)
     G = nx.MultiGraph()
@@ -58,7 +60,7 @@ def _solve(h, spread):
 
     grid = PerfusionGrid(G, (h, h, h), bounds_zyx=((0.0, 0.0, 0.0), (h, _WIDTH, _WIDTH)))
     config = PerfusionSettings(BASE_M_MAX)
-    cells = map_vessels_to_grid(G, grid)
+    cells = map_vessels_to_grid(G, grid, vessel_mapping=vessel_mapping)
     A, q, s = build_adr_matrix(grid, cells, config)
     h_cell = cell_discharge_hematocrit(cells, grid.n_cells)
     po2, info = solve_perfusion_steady_state(grid, A, q, s, config, cell_hematocrit=h_cell,
@@ -77,6 +79,11 @@ def line():
 @pytest.fixture(scope="module")
 def spread():
     return [_solve(h, spread=True) for h in _H]
+
+
+@pytest.fixture(scope="module")
+def disc():
+    return [_solve(h, spread=False, vessel_mapping="cross_section") for h in _H]
 
 
 def test_a_centreline_vessel_keeps_drifting_down_with_every_refinement(line):
@@ -98,3 +105,16 @@ def test_the_same_vessel_spread_over_its_cross_section_converges(spread):
 def test_the_two_agree_while_the_vessel_fits_in_one_cell(line, spread):
     """At h = 9 um the vessel (9 um across) is one cell either way, so the mapping is the same."""
     assert line[0][0] == pytest.approx(spread[0][0], rel=1e-9)
+
+
+def test_cross_section_mapping_settles_where_the_hand_spread_vessel_does(disc, spread, line):
+    """Mean PO2 16.99, 23.36, 23.79, 23.23 mmHg at h 9, 3, 1, 1/3 um: a +-0.3 wobble, no trend.
+
+    The centreline mapping loses 4.7 mmHg over the same three refinements. The two spread
+    versions agree to 0.04 mmHg while the hand-spread lattice (0.25 um) is finer than the cell;
+    at h = 1/3 um it is coarser, and the disc sampled inside map_vessels_to_grid is the finer.
+    """
+    means = np.array([m for m, _ in disc])
+    assert means[0] == pytest.approx(line[0][0], abs=1e-6)
+    assert np.ptp(means[1:]) < 0.6, means
+    np.testing.assert_allclose(means[:3], [m for m, _ in spread[:3]], atol=0.05)

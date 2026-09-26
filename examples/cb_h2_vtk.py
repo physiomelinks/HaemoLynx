@@ -56,8 +56,8 @@ from ImageLynx.graph.boundaries import (                                 # noqa:
     select_boundary_terminal_nodes_by_face,
 )
 from ImageLynx.haemodynamics.perfusion import (                          # noqa: E402
-    PerfusionGrid, build_adr_matrix, cell_discharge_hematocrit, map_vessels_to_grid,
-    solve_perfusion_steady_state,
+    VESSEL_MAPPINGS, PerfusionGrid, build_adr_matrix, cell_discharge_hematocrit,
+    map_vessels_to_grid, solve_perfusion_steady_state,
 )
 from ImageLynx.haemodynamics.resistance import (                         # noqa: E402
     poiseuille_flow_to_um3_per_s,
@@ -73,6 +73,8 @@ from ImageLynx.haemodynamics.transit import transit_time_from_inlets     # noqa:
 from ImageLynx.roi_placement import place_roi                            # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS           # noqa: E402
 from ImageLynx import cb_settings                                        # noqa: E402
+# The §2.3 driver owns the vessel mapping, so the exported field is the one §2.3 reports.
+from cb_h2_hypoxic_fraction import VESSEL_MAPPING                        # noqa: E402
 
 BATCH = Path(__file__).resolve().parents[1] / "examples/outputs/cb_h1_batch"
 OUT = Path(__file__).resolve().parents[1] / "examples/outputs/cb_h2_paraview"
@@ -121,7 +123,7 @@ def load_th(specimen):
     return block / 255.0 if block.max() > 1.5 else block
 
 
-def solve(specimen, pad_grid=False):
+def solve(specimen, pad_grid=False, vessel_mapping=VESSEL_MAPPING):
     """Everything the exports need, computed once."""
     G, attached = load_graph(specimen)
     inlets, outlets = select_boundary_terminal_nodes_by_face(
@@ -139,7 +141,7 @@ def solve(specimen, pad_grid=False):
     stroma = BASE_M_MAX / (1.0 + float(th_cell.mean()) * (2.0 - 1.0))
     m_max = blend_per_cell_rate(th_cell, tissue_rate=stroma * 2.0, stroma_rate=stroma)
     config = PerfConfig(m_max)
-    cells = map_vessels_to_grid(G, grid)
+    cells = map_vessels_to_grid(G, grid, vessel_mapping=vessel_mapping)
     A, q_total, s_incoming = build_adr_matrix(grid, cells, config)
     po2 = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config,
                                        cell_hematocrit=cell_discharge_hematocrit(cells, grid.n_cells))
@@ -147,6 +149,7 @@ def solve(specimen, pad_grid=False):
     return dict(graph=G, inlets=inlets, outlets=outlets, attached=attached,
                 prob=prob, mask=mask, edge_fraction=frac, arrival=arrival,
                 grid=grid, th_cell=th_cell, m_max=m_max, padded=bool(pad_grid),
+                vessel_mapping=vessel_mapping,
                 q_total=q_total, s_incoming=s_incoming, po2=po2)
 
 
@@ -345,6 +348,9 @@ def main():
                          "no vessels. Measured on this cohort after open items 22 and 29: "
                          "about 4-5 mmHg of mean PO2 within TH on SHR-A and SHR-C and a few "
                          "points of TH hypoxic fraction. See the H2 guide.")
+    ap.add_argument("--vessel-mapping", choices=VESSEL_MAPPINGS, default=VESSEL_MAPPING,
+                    help="Cells a vessel occupies: those its centreline crosses, or all those "
+                         "its lumen covers (open item 30). Defaults to what §2.3 uses.")
     ap.add_argument("--specimen", nargs="*", default=None)
     ap.add_argument("--out", default=str(OUT))
     args = ap.parse_args()
@@ -357,7 +363,7 @@ def main():
 
     summary, checks = [], []
     for specimen in chosen:
-        state = solve(specimen, pad_grid=args.pad_grid)
+        state = solve(specimen, pad_grid=args.pad_grid, vessel_mapping=args.vessel_mapping)
         check = verify(specimen, state)
         checks.append(check)
         status = "ok" if check["ok"] else "FAILED"
@@ -410,6 +416,7 @@ def main():
     (out_dir / "export_summary.json").write_text(json.dumps(
         {"roi_zyx": list(ROI), "grid_um": GRID_UM, "th_threshold": TH_THRESHOLD,
          "padded_to_segmented_volume": bool(args.pad_grid),
+         "vessel_mapping": args.vessel_mapping,
          "boundary_axis": BOUNDARY_AXIS, "penetration_cutoff": PENETRATION,
          "specimens": summary}, indent=2))
     print(f"\nWrote {len(summary)} specimens to {out_dir}")
