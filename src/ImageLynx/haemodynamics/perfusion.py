@@ -855,16 +855,16 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     nz_dim, ny_dim, nx_dim = grid.dims
     res = grid.res
 
-    PO2_tissue = np.zeros(N, dtype=np.float64) # mmHg
-    PCO2_tissue = np.full(N, 40.0, dtype=np.float64) # mmHg (baseline arterial)
-    pH_tissue = np.full(N, 7.4, dtype=np.float64)
-
     # Every field is read without a default. These were getattr fallbacks, and the M_max one
     # was 0.05 against PerfusionConfig's 0.005, so a config that lacked it ran at 10x the rate.
     M_max = perf_config.M_max
     k_reduce = perf_config.k_reduce
     RQ = perf_config.respiratory_quotient
     hco3_tissue = perf_config.hco3_tissue
+
+    PO2_tissue = np.zeros(N, dtype=np.float64) # mmHg
+    PCO2_tissue = np.full(N, 40.0, dtype=np.float64) # mmHg (baseline arterial)
+    pH_tissue = calculate_ph_from_pco2(PCO2_tissue, hco3_tissue)
 
     V_cell = grid.cell_volume
     P_perm_o2 = perf_config.permeability_o2_cm_s * 1e4 # um/s
@@ -917,8 +917,13 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     q_by_edge = _edge_flows_um3_per_s(DAG, cell_to_vessels, flow_to_um3_per_s)
 
     starting_set = set(starting_nodes)
-    # Arterial blood at pH 7.4.
-    arterial_state = {"po2": po2_art, "pco2": pco2_art, "o2_pco2": pco2_art, "o2_ph": 7.4}
+    # Arterial blood at the Henderson-Hasselbalch pH of its own PCO2 (open item 25). In each
+    # cell the blood's O2 is read at the tissue pH, from the same formula and bicarbonate, so
+    # blood and tissue at the arterial PCO2 share one pH. A literal 7.4 (the formula gives
+    # 7.401 at PCO2 40, HCO3 24) shifted the blood's pH at the first cell with no exchange
+    # behind it, and left tissue PCO2 below arterial.
+    arterial_state = {"po2": po2_art, "pco2": pco2_art, "o2_pco2": pco2_art,
+                      "o2_ph": calculate_ph_from_pco2(pco2_art, hco3_tissue)}
 
     alpha_o2 = 1.34e-3 # mmol/L per mmHg
     alpha_co2 = 0.03 # mmol/L per mmHg

@@ -530,11 +530,13 @@ def test_multi_species_0d_fick_mass_balance():
     
     # 1. Setup Parameters
     v_cell = 1000.0; q_huge = 1e9; h_d = 0.45 
-    po2_art = 100.0; pco2_art = 40.0; ph_art = 7.4
+    po2_art = 100.0; pco2_art = 40.0
     
     m_max = 0.05
     rq = 0.82
     hco3 = 24.0
+    # Arterial blood enters at the Henderson-Hasselbalch pH of its PCO2, 7.401 (open item 25).
+    ph_art = calculate_ph_from_pco2(pco2_art, hco3)
     m_co2 = m_max * rq
     
     # We use stable physiological permeabilities.

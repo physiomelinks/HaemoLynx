@@ -89,9 +89,11 @@ def _tier3_expected(q, c):
     mv_o2 = c.M_max * _V_CELL
     mv_co2 = mv_o2 * c.respiratory_quotient
 
-    # Blood enters cell 1 at arterial pressures (the inlet inversion is at PCO2 40, pH 7.4).
+    # Blood enters cell 1 at arterial pressures, at the Henderson-Hasselbalch pH of the
+    # arterial PCO2 (open item 25).
     po2_b, pco2_b = c.po2_arterial_mmHg, c.pco2_arterial
-    c_o2 = calculate_blood_oxygen_content(po2_b, _H, pco2_b, 7.4)
+    ph_art = calculate_ph_from_pco2(pco2_b, c.hco3_tissue)
+    c_o2 = calculate_blood_oxygen_content(po2_b, _H, pco2_b, ph_art)
     c_co2 = calculate_blood_co2_content(pco2_b, _H, po2_b)
     po2_t, pco2_t = [], []
     for _ in range(2):
@@ -99,7 +101,7 @@ def _tier3_expected(q, c):
         c_o2 -= mv_o2 / q
         c_co2 += mv_co2 / q
         pco2_in_cell = pco2_b
-        ph_t = 7.4
+        ph_t = ph_art
         for _ in range(100):
             po2_out = brentq(lambda p: calculate_blood_oxygen_content(p, _H, pco2_in_cell, ph_t) - c_o2,
                              0.0, 150.0, xtol=1e-12)

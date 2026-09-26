@@ -445,7 +445,7 @@ $$M_{\mathrm{CO_2}} = M_{\mathrm{O_2}}\cdot RQ, \qquad RQ = 0.82$$
 
 $$C^{\text{mix}} = \frac{\sum_{e \in \text{in}} C_e Q_e}{\sum_{e \in \text{in}} Q_e}, \qquad H^{\text{mix}} = \frac{\sum_{e \in \text{in}} H_e Q_e}{\sum_{e \in \text{in}} Q_e}, \qquad \mathrm{pH}^{\text{mix}} = \frac{\sum_{e \in \text{in}} \mathrm{pH}_e Q_e}{\sum_{e \in \text{in}} Q_e}$$
 
-A node with one inflow takes that edge's outlet pressures unchanged; a starting node takes the arterial ones (PO₂, PCO₂, pH 7.4).
+A node with one inflow takes that edge's outlet pressures unchanged; a starting node takes the arterial ones: PO₂, PCO₂ and the Henderson–Hasselbalch pH of that PCO₂ at `hco3_tissue` (7.401 at the defaults). It was a literal 7.4 until open item 25.
 
 **(E47)** Inversion of the mixture to partial pressures (joint root find)
 

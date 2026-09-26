@@ -37,7 +37,7 @@ flowchart TD
   ALT(["instant-equilibrium or endothelial-barrier solver<br/>not taken by default"])
 
   subgraph S1["solve_multi_species_perfusion · setup"]
-    S2["initialise PO2 = 0, PCO2 = 40, pH = 7.4"]
+    S2["initialise PO2 = 0, PCO2 = 40, pH from HH"]
     S3["build edge-to-cell map and per-cell q_total"]
     S4["orient edges into a DAG from flow sign<br/>topologically sort the nodes"]
     S5["E42 · build A_O2 and A_CO2 diffusion matrices"]
