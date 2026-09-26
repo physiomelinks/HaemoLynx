@@ -2253,25 +2253,28 @@ def test_the_vessels_colour_by_branch_order_from_the_dropdown_as_tubes_and_lines
     make_napari_viewer,
 ):
     """Branch order sits beside flow in the vessels' own Colour by list: its
-    number colours with a colour map, range and bar like flow does, its label
+    rank along the flow path and its signed generations from the capillary
+    bed colour with a colour map, range and bar like flow does, its label
     with one colour per order -- and the tube mesh carries exactly the lines'
-    colours either way, drawn as tubes or as lines."""
+    colours every way, drawn as tubes or as lines."""
     from haemolynx.gui._widget import (
         _active_column, _layer_controls, settings_widget,
     )
-    from haemolynx.gui.results import BRANCH_ORDER_NUMBER
+    from haemolynx.gui.results import BRANCH_ORDER_RANK, BRANCH_ORDER_SIGNED
 
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
     graph = a_graph()
-    for (u, v, key), order in zip(graph.edges(keys=True), ("B01", "B02", "B07")):
+    for (u, v, key), order in zip(graph.edges(keys=True), ("Art1", "B01", "Ven1")):
         graph.edges[u, v, key]["branch_order"] = order
     _apply_layers(viewer, ResultLayers().stage_finished("build_network", network(graph)))
     vessels = viewer.layers[VESSELS]
     controls = _layer_controls(viewer, vessels)
     chooser = controls._haemolynx_feature
     offered = [chooser.native.itemText(i) for i in range(chooser.native.count())]
-    assert offered.index(BRANCH_ORDER_NUMBER) < offered.index("branch_order") <= 3
+    first = offered.index(BRANCH_ORDER_RANK)
+    assert offered[:first] == [c for c in ("flow_abs", "flow_abs_log10") if c in offered]
+    assert offered[first:first + 3] == [BRANCH_ORDER_RANK, BRANCH_ORDER_SIGNED, "branch_order"]
 
     def tube_colours_follow_the_lines():
         tubes = viewer.layers[VESSEL_TUBES]
@@ -2289,15 +2292,21 @@ def test_the_vessels_colour_by_branch_order_from_the_dropdown_as_tubes_and_lines
         assert all(len(each) == 1 for each in colours.values())
         return {order: next(iter(each)) for order, each in colours.items()}
 
-    chooser.native.setCurrentText(BRANCH_ORDER_NUMBER)
-    assert _active_column(vessels) == BRANCH_ORDER_NUMBER
-    assert vessels.edge_color_mode == "colormap"
-    assert controls._haemolynx_colormap.shown is True
-    np.testing.assert_array_equal(
-        sorted(set(np.asarray(vessels.features[BRANCH_ORDER_NUMBER]))), [1.0, 2.0, 7.0]
-    )
-    assert len(set(colour_per_order().values())) == 3
-    tube_colours_follow_the_lines()
+    for column, expected in (
+        (BRANCH_ORDER_RANK, {"Art1": 1.0, "B01": 2.0, "Ven1": 3.0}),
+        (BRANCH_ORDER_SIGNED, {"Art1": -1.0, "B01": 0.0, "Ven1": 1.0}),
+    ):
+        chooser.native.setCurrentText(column)
+        assert _active_column(vessels) == column
+        assert vessels.edge_color_mode == "colormap"
+        assert controls._haemolynx_colormap.shown is True
+        values = dict(zip(vessels.features["branch_order"], vessels.features[column]))
+        assert values == expected
+        assert len(set(colour_per_order().values())) == 3
+        tube_colours_follow_the_lines()
+    # Signed: a diverging map, centred on the capillary bed.
+    assert vessels.edge_colormap.name == "coolwarm"
+    assert tuple(vessels.edge_contrast_limits) == (-1.0, 1.0)
 
     chooser.native.setCurrentText("branch_order")
     assert _active_column(vessels) == "branch_order"
@@ -2314,14 +2323,51 @@ def test_the_vessels_colour_by_branch_order_from_the_dropdown_as_tubes_and_lines
     tube_colours_follow_the_lines()
 
 
-def test_branch_order_number_reads_the_order_off_any_tier():
-    from haemolynx.gui.results import branch_order_number
+#: Every tier, in the order blood passes it. Ven and Large_Ven are numbered
+#: from the outlet (graph.branch_order), so along the path they count down.
+FLOW_PATH = ["Large_Art1", "Large_Art2", "Art1", "Art2", "B01", "B02",
+             "Ven2", "Ven1", "Large_Ven2", "Large_Ven1"]
 
-    assert branch_order_number("B07") == 7.0
-    assert branch_order_number("Art3") == 3.0
-    assert branch_order_number("Large_Ven12") == 12.0
-    assert np.isnan(branch_order_number(""))
-    assert np.isnan(branch_order_number(None))
+
+def test_branch_order_rank_follows_the_flow_path_across_tiers():
+    """Art1, B01 and Ven1 are three different places; their bare number (1)
+    is not. The rank is each label's place along the path blood takes."""
+    from haemolynx.gui.results import branch_order_rank_values
+
+    shuffled = ["Ven1", "B02", "Large_Art2", "Art1", "Large_Ven1", "B01",
+                "Art2", "Large_Ven2", "Large_Art1", "Ven2", "", "Ven1"]
+    ranks = dict(zip(shuffled, branch_order_rank_values(shuffled)))
+    assert [label for label in FLOW_PATH] == sorted(FLOW_PATH, key=ranks.get)
+    assert [ranks[label] for label in FLOW_PATH] == list(range(1, 11))
+    assert np.isnan(ranks[""])
+
+
+def test_branch_order_signed_counts_generations_from_the_capillary_bed():
+    """Capillaries 0; the arteriole feeding them -1, counting up the arterial
+    tree to the inlet; the venule draining them +1, counting down the venous
+    tree to the outlet."""
+    from haemolynx.gui.results import branch_order_signed_values
+
+    signed = dict(zip(FLOW_PATH, branch_order_signed_values(FLOW_PATH)))
+    assert signed == {
+        "Large_Art1": -4.0, "Large_Art2": -3.0, "Art1": -2.0, "Art2": -1.0,
+        "B01": 0.0, "B02": 0.0,
+        "Ven2": 1.0, "Ven1": 2.0, "Large_Ven2": 3.0, "Large_Ven1": 4.0,
+    }
+    # No Art tier: the large arterioles feed the capillaries themselves.
+    assert list(branch_order_signed_values(["Large_Art1", "Large_Art2", "B01"])) == [-2.0, -1.0, 0.0]
+    assert np.isnan(branch_order_signed_values(["segment"])[0])
+
+
+def test_the_branch_order_palette_runs_inlet_to_outlet():
+    """The venous tiers are numbered from the outlet; sorted by that number
+    the palette doubled back, putting Ven1 -- next to the outlet -- beside
+    the capillaries."""
+    from haemolynx.gui.results import colour_cycle_for
+
+    assert [label for label, _colour in colour_cycle_for(reversed(FLOW_PATH))] == FLOW_PATH
+    # Other text columns keep a plain order.
+    assert [label for label, _c in colour_cycle_for(["outlet", "inlet"])] == ["inlet", "outlet"]
 
 
 def test_arrow_size_slider_mounts_on_flow_direction_layer(make_napari_viewer):

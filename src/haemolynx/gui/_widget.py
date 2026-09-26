@@ -37,6 +37,7 @@ from haemolynx.gui.log_view import LogView, VERBOSE_LEVEL
 from haemolynx.gui.run_log import DEFAULT_LEVEL, attach
 from haemolynx.gui.results import (
     BRANCH_HOVER,
+    BRANCH_ORDER_SIGNED,
     EDIT_DRAFT,
     FLOW_DIR_COLUMNS,
     FLOW_DIR_RGB_COLUMN,
@@ -2255,7 +2256,7 @@ def _default_colormap_for(column: str | None) -> str:
     """The map a colour-by column starts with, before the user overrides it."""
     if column == FLOW_HEADING_COLUMN:
         return _flow_heading_colormap()
-    if column in FLOW_DIR_COLUMNS:
+    if column in FLOW_DIR_COLUMNS or column == BRANCH_ORDER_SIGNED:
         return "coolwarm"
     return "viridis"
 
@@ -3178,9 +3179,11 @@ _FLOW_COLOUR_COLUMN_ORDER = (
     "flow_abs",
     "flow_abs_log10",
     # Branch order beside flow rather than alphabetically among ~30 analysis
-    # columns: the number colours with a map, range and colour bar like
-    # flow; the label with the fixed palette the stage plots use.
-    "branch_order_number",
+    # columns: its rank along the flow path and its signed generations from
+    # the capillary bed colour with a map, range and colour bar like flow;
+    # the label with a fixed palette in the same flow-path order.
+    "branch_order_rank",
+    "branch_order_signed",
     "branch_order",
     "flow_signed",
     "flow_dir_rgb",
@@ -3319,6 +3322,11 @@ def _data_range(layer, column: str | None, low_percentile=0.0, high_percentile=1
         return _flow_heading_contrast_limits(values)
     if column in FLOW_DIR_COLUMNS:
         return _flow_dir_contrast_limits(values)
+    if column == BRANCH_ORDER_SIGNED:
+        # Centred on the capillary bed, so a diverging map puts the arterial
+        # and venous sides on its two halves whatever their depths.
+        reach = max(float(np.max(np.abs(finite))), 1.0)
+        return -reach, reach
     low = float(np.percentile(finite, low_percentile))
     high = float(np.percentile(finite, high_percentile))
     if high <= low:

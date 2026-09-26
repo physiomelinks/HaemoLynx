@@ -748,8 +748,8 @@ def test_a_z_depth_window_keeps_the_vessels_colour_controls(make_napari_viewer):
         controls._haemolynx_feature.native.itemText(i)
         for i in range(controls._haemolynx_feature.native.count())
     ]
-    assert "branch_order_number" in offered and "branch_order" in offered
-    controls._haemolynx_feature.native.setCurrentText("branch_order_number")
+    assert "branch_order_rank" in offered and "branch_order" in offered
+    controls._haemolynx_feature.native.setCurrentText("branch_order_rank")
     assert after.edge_color_mode == "colormap"
     assert controls._haemolynx_colormap.shown is True
     assert controls._haemolynx_scale.shown is True
