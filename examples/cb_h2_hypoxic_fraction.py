@@ -14,9 +14,10 @@ tissue in the flow solve's own units rather than µm³/s, so the sink exceeded t
 grew with grid resolution and the answer was not grid-convergent.
 
 **Resolution.** 4 µm, not the native 1.866 µm. With the conservation defect fixed the solution
-converges: median PO2 moves 27.34, 27.92, 28.21 at 10, 6 and 4 µm, halving its increment each
-time and extrapolating to about 28.5. At 4 µm it is within roughly 1% of that limit for a
-twenty-seventh of the cost of native resolution.
+converged: median PO2 moved 27.34, 27.92, 28.21 at 10, 6 and 4 µm, halving its increment each
+time. After open items 22 (O2 solubility in the diffusion) and 29 (washout at the cell's own
+haematocrit) WKY-C runs 91.38, 90.46, 89.52, which does not halve: 4 µm is no longer shown to be
+converged (H2 whitepaper §10.3).
 
 **The metabolic contrast is an assumption, not a measurement.** Nothing in this study measures
 the ratio of glomus to stromal oxygen consumption, so it is a parameter here and the answer is
@@ -154,9 +155,9 @@ def main():
                          "stopping at the vascular bounding box. This represents glomus "
                          "tissue the default drops (4.35%% of SHR-A, 7.54%% of SHR-C), at the "
                          "cost of solving the added cells with no local oxygen source. "
-                         "Measured on this cohort that costs 0.7 mmHg of mean PO2 within TH "
-                         "and no change in hypoxic fraction, because the diffusion length "
-                         "exceeds the unvascularised rim; do not assume that on a sparser bed.")
+                         "Measured on this cohort after open items 22 and 29 (contrast 2) it "
+                         "costs 3.9 and 4.9 mmHg of mean PO2 within TH on SHR-A and SHR-C and "
+                         "raises TH hypoxia below 10 mmHg by 3.6 and 1.8 points.")
     ap.add_argument("--out", default="examples/outputs/cb_h2_hypoxic_fraction.json")
     args = ap.parse_args()
 

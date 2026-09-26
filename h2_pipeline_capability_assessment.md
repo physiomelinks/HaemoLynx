@@ -1221,6 +1221,9 @@ grid-converged.`
 
 ### S26. The source grew with the grid, and §2.3 now runs and predicts no hypoxia
 
+> **Superseded 2026-09-26 (open items 22, 29 in `cb_modelling_reference.md`).** The §2.3 numbers in this finding came from a Tier 1 solve with O₂ solubility missing from its diffusion (≈750× too strong) and its washout at systemic haematocrit. The re-run gives PO₂ within TH 70–86 mmHg, TH hypoxia below 10 mmHg 0–4%, a −2.5 mmHg response to 4× glomus metabolism on WKY-A, and no demonstrated grid convergence at 4 µm. Current numbers: `H2_preliminary_results_whitepaper.md` §10. This finding is kept as the record of what was measured then.
+
+
 **T1.6** asked for §2.3 at native resolution, because S25 had found the answer moving with the
 grid. Checking *why* it moved found a conservation defect rather than a discretisation error.
 
@@ -1406,6 +1409,9 @@ separately as T2.6 and measured in S29.
 `STATUS — S28 RESOLVED as reporting. Padding implemented and measured under T2.6, see S29.`
 
 ### S29. Padding the grid to the segmented volume, and a prediction that did not hold
+
+> **Superseded 2026-09-26 (open items 22, 29 in `cb_modelling_reference.md`).** The §2.3 numbers in this finding came from a Tier 1 solve with O₂ solubility missing from its diffusion (≈750× too strong) and its washout at systemic haematocrit. The re-run gives PO₂ within TH 70–86 mmHg, TH hypoxia below 10 mmHg 0–4%, a −2.5 mmHg response to 4× glomus metabolism on WKY-A, and no demonstrated grid convergence at 4 µm. Current numbers: `H2_preliminary_results_whitepaper.md` §10. This finding is kept as the record of what was measured then.
+
 
 **T2.6.** `PerfusionGrid` takes an optional `bounds_zyx`, a **union** with the node bounding box
 and never a replacement, because a bound tighter than the vasculature would leave graph nodes

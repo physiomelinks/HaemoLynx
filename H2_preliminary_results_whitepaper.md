@@ -37,8 +37,9 @@ chemosensors.
 
 **Three limitations bound what may be concluded.** The groups overlap on two of the four measures,
 and with n = 3 per group the exact two-sided permutation p cannot fall below 0.10. §2.3's hypoxic
-fraction is zero everywhere and its glomus-specific mechanism is inert for a reason that is a
-property of the tissue rather than of the code (§10.2). And absolute perfusion is 20 to 100 times
+fraction was zero everywhere and its glomus-specific mechanism inert; after open items 22 and 29
+(two Tier 1 defects) it is 0–4% within TH and responds to glomus metabolism, and its interpretation
+**needs review** (§10). And absolute perfusion is 20 to 100 times
 below physiological, so no absolute perfusion quantity is defensible (§11.1).
 
 **Verdict.** §2.1, §2.2 and §2.4 are implemented, posed as within-specimen ratios, and report.
@@ -69,7 +70,7 @@ the modelling document into §2.1. The discrepancy should be resolved in the sou
 |---|---|---|---|
 | **2.1** | Functional shunting and glomus bypass | **Implemented** | Shunt index near 1 in both cohorts (§7) |
 | **2.2** | Spatial haematocrit profiling | **Implemented, overlapping** | Direction as anticipated; ranges intersect (§8) |
-| **2.3** | Glomus-specific 3D hypoxic fraction | **Implemented, not supported** | Mechanism inert on this geometry (§10) |
+| **2.3** | Glomus-specific 3D hypoxic fraction | **Implemented; needs review** | Was inert; after open items 22, 29 non-zero and metabolism-sensitive, not shown grid-converged (§10) |
 | **2.4** | Oxygen depletion and transit time | **Implemented** | Cohorts separate without overlap (§9) |
 
 All four require the TH-positive glomus mask as a spatial landmark. That mask is the output of a
@@ -215,8 +216,9 @@ source was exactly proportional to the mean cells crossed per edge:
 | 4 µm | 4.74 | 1.54e7 | 3.25e6 |
 | 3 µm | 5.58 | 1.80e7 | 3.23e6 |
 
-Shared by length, the total is grid-independent to the digit, and the solution converges: median
-PO2 runs 27.34, 27.92, 28.21 at 10, 6 and 4 µm, the increment halving each time.
+Shared by length, the total is grid-independent to the digit. The solution then converged (median
+PO2 27.34, 27.92, 28.21 at 10, 6 and 4 µm); after open items 22 and 29 it runs 91.38, 90.46, 89.52
+and is no longer shown to converge (§10.3).
 
 ### 4.6 Claims corrected by measurement
 
@@ -406,24 +408,38 @@ arbitrary units and are reported only to show the ratio's construction.
 
 ## 10. Results: §2.3 glomus-specific hypoxic fraction
 
+> ⚠ **Needs review after open items 22 and 29 (re-run 2026-09-26).** Tier 1 left O₂ solubility out of its diffusion (≈750× too strong) and washed blood out at systemic rather than local haematocrit (`cb_modelling_reference.md` open items 22, 29). With both fixed, §2.3 is no longer zero or inert: the numbers below are the re-run. The interpretation in §10.2 and the conclusions that cite it (summary, §11.1, P10) were written for the old field and have **not** been rewritten; each is marked where it no longer holds. Old outputs: `examples/outputs/cb_h2_hypoxic_fraction_2026-09-26_pre_item22.json`.
+
 ### 10.1 What the model returns
 
 Perfusion grid at 4 µm, metabolic rate assigned per cell from the TH fraction with the
-volume-weighted mean held constant so contrasts are comparable.
+volume-weighted mean held constant so contrasts are comparable. Uniform metabolism (contrast 1);
+hypoxic fractions are within the TH volume. Every Tier 1 solve converged (Newton, residual < 10⁻⁵).
 
 | Specimen | TH volume | PO2 within TH | PO2 in stroma | Hypoxic < 5 | < 10 | < 20 mmHg |
 |---|---|---|---|---|---|---|
-| WKY-A | 17.7% | 32.62 | 32.58 | 0% | 0% | 0% |
-| WKY-B | 30.4% | 32.32 | 32.31 | 0% | 0% | 0% |
-| WKY-C | 20.8% | 28.20 | 28.20 | 0% | 0% | 0% |
-| SHR-A | 17.9% | 40.10 | 40.05 | 0% | 0% | 0% |
-| SHR-B | 15.0% | 40.95 | 40.96 | 0% | 0% | 0% |
-| SHR-C | 8.2% | 28.72 | 28.65 | 0% | 0% | 0% |
+| WKY-A | 17.7% | 75.53 | 63.60 | 0.07% | 1.40% | 5.61% |
+| WKY-B | 30.4% | 74.88 | 69.81 | 0.09% | 1.62% | 3.97% |
+| WKY-C | 20.8% | 83.84 | 75.81 | 0% | 0% | 0% |
+| SHR-A | 17.9% | 82.45 | 77.80 | 0.15% | 1.43% | 4.93% |
+| SHR-B | 15.0% | 86.22 | 83.62 | 0% | 0.21% | 1.14% |
+| SHR-C | 8.2% | 70.01 | 64.01 | 1.89% | 3.95% | 8.89% |
 
-**No hypoxia at any threshold in either cohort.** PO2 within the glomus clusters is 31.1 mmHg in
-WKY against 36.6 in SHR, a ratio of 1.18 whose ranges overlap.
+**Small hypoxic fractions in five of six specimens** (was 0% everywhere). PO2 within the glomus
+clusters is 78.1 mmHg in WKY against 79.6 in SHR, a ratio of 1.02 whose ranges overlap (74.9–83.8
+against 70.0–86.2). Mean TH hypoxic fraction below 10 mmHg is 1.0% in WKY and 1.9% in SHR, and
+below 20 mmHg 3.2% and 5.0%; with n = 3 per group the ranges overlap at every threshold. Before
+items 22 and 29 the table read 28–41 mmHg in TH and 0% at every threshold.
 
 ### 10.2 Why this is not a result
+
+> ⚠ **Needs review (items 22, 29): the argument of this section was written for the old field
+> and no longer matches the re-run.** Raising the glomus metabolic rate from one to four times the
+> stromal rate now moves PO2 within TH from 75.53 to 73.07 mmHg on WKY-A (−2.5 mmHg; SHR-C −5.0)
+> and TH hypoxia below 10 mmHg from 1.40% to 2.99% (SHR-C 3.95% to 6.70%). The old figure was
+> 32.625 to 32.610. The diffusion-length estimate below always included α; the old solver did
+> not, so its effective diffusion length was ≈27× longer than the one quoted. The text is kept
+> as written until reviewed.
 
 **The glomus-specific mechanism is inert.** Raising the glomus metabolic rate from one to four
 times the stromal rate moves PO2 within TH from 32.625 to 32.610 on WKY-A: fifteen thousandths of
@@ -449,16 +465,25 @@ SHR-C's. §2.1, §2.2 and §2.4 are unaffected, being computed against the mask 
 rather than on the grid. For §2.3 it compounds a result already reported as not usable, and it is
 recorded as S28.
 
-`--pad-grid` extends the grid to the segmented volume and recovers that tissue. It moves mean PO2
-within TH by -0.77 and -0.66 mmHg on the two specimens and leaves the hypoxic fraction at zero, for
-the same reason §2.3 is inert: the diffusion length exceeds the unvascularised rim, so the recovered
-cells are supplied by their neighbours. The results in this document are unpadded (S29).
+`--pad-grid` extends the grid to the segmented volume and recovers that tissue. After items 22 and
+29 it moves mean PO2 within TH by −3.93 and −4.88 mmHg on the two specimens (contrast 2; was −0.77
+and −0.66) and raises TH hypoxia below 10 mmHg from 1.97% to 5.55% (SHR-A) and from 4.98% to 6.80%
+(SHR-C); it was zero both ways before. **Needs review:** the old reading, that the diffusion length
+exceeds the unvascularised rim so the recovered cells are supplied by their neighbours, no longer
+holds, and S29's choice of the unpadded grid should be revisited. The results in this document are
+unpadded (S29). Padded outputs: `examples/outputs/cb_h2_hypoxic_fraction_padded.json`.
 
-### 10.3 The solution is grid-converged
+### 10.3 Grid convergence (needs review after items 22, 29)
 
-Median PO2 on WKY-C runs 27.34, 27.92, 28.21 at 10, 6 and 4 µm, the increment halving each time
-and extrapolating to about 28.5, so 4 µm sits within roughly 1% of the limit. Before the sharing
-fix of §4.5 the same sequence ran 42.0, 46.9, 50.5 with no sign of a limit.
+Median PO2 on WKY-C now runs 91.38, 90.46, 89.52 at 10, 6 and 4 µm (contrast 1). The increments,
+−0.92 and −0.94, do not halve, so the field is **not shown to be grid-converged** at 4 µm. PO2
+within TH falls with refinement on five specimens (WKY-A 78.56, 76.86, 75.53) and is not
+monotone on SHR-A (82.04, 81.81, 82.45). The hypoxic fractions
+move less: below 10 mmHg over all tissue, WKY-A 8.90%, 9.19%, 9.46% and SHR-C 8.38%, 8.00%, 8.26%.
+Before items 22 and 29 the sequence was 27.34, 27.92, 28.21, halving and extrapolating to about
+28.5; before the sharing fix of §4.5 it ran 42.0, 46.9, 50.5. With diffusion 750× weaker the
+gradient near vessels is steeper, so a finer grid than 4 µm (or a convergence study to 3 µm) may be
+needed. Outputs: `examples/outputs/cb_h2_hypoxic_fraction_grid10.json`, `..._grid6.json`.
 
 ---
 
@@ -481,6 +506,8 @@ for any arrangement of three against three. No claim of statistical significance
 ranges, and the haematocrit group mean rests on one specimen of three.
 
 **§2.3 is not supported by its own premise** (§10.2), independently of anything measured here.
+*Needs review after open items 22 and 29: that premise was measured on a solver with 750× too much
+diffusion; see the note at the head of §10.*
 
 **The skimming model's parameterisation is unsettled** (§8.1), and it bears directly on §2.2.
 
@@ -518,7 +545,7 @@ sensitive to a stated limitation), **Not supported** (measured and disqualified,
 | P7 | The direction of P5 opposes the stagnant-hypoxia prediction §2.4 makes | §9 | as P5 | **Provisional** |
 | P8 | Haematocrit in glomus-penetrating vessels is lower in SHR | §8 | Ranges overlap; rests on SHR-C | **Not supported** |
 | P9 | The shunt index differs between cohorts | §7.2 | Ranges overlap; 11% against a 13.3% floor | **Not supported** |
-| P10 | A glomus-specific hypoxic fraction is measurable on this geometry | §10.2 | Diffusion length 20–45 µm vs TVD 5–8 µm | **Not supported** |
+| P10 | A glomus-specific hypoxic fraction is measurable on this geometry | §10.2 | Was: diffusion length 20–45 µm vs TVD 5–8 µm. Re-run after open items 22, 29: 0–4% within TH, moves with metabolism; not grid-converged | **Needs review** (was Not supported) |
 | P11 | Any absolute perfusion quantity reported here is physiological | §11.1 | Velocity 20 to 100× low | **Not supported** |
 
 The defensible position is P1–P4 (Established) plus P5–P7 (Provisional). Nothing else should be

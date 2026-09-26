@@ -113,17 +113,14 @@ class PerfusionGrid:
     no vessels, because the vessels supplying them were cut off by the region crop rather than
     absent from the organ, so they consume without a local source.
 
-    That was expected to drive the padded faces to artefactual anoxia, and **measured, it does
-    not**: on SHR-A and SHR-C, padding moves mean PO2 within TH by -0.77 and -0.66 mmHg, and the
-    hypoxic fraction below 10 mmHg stays at exactly zero. The reason is the same property that
-    makes H2 section 2.3 inert. The oxygen diffusion length is 20 to 45 um against an
-    unvascularised rim of 12 to 13 um, so the added cells are supplied by diffusion from their
-    neighbours. Tissue this densely vascularised does not go hypoxic for want of a local vessel.
+    That was expected to drive the padded faces towards anoxia. Measured before open items 22
+    and 29 it did not (-0.77 and -0.66 mmHg within TH on SHR-A and SHR-C, hypoxia still zero),
+    but that solve had 750 times too much diffusion. Re-measured after them (contrast 2), padding
+    moves mean PO2 within TH by -3.9 and -4.9 mmHg and TH hypoxia below 10 mmHg from 2.0% to
+    5.6% and from 5.0% to 6.8%: the added cells do go short of oxygen.
 
     Read a padded solve as tissue-complete and supply-incomplete at its edges; the default is
-    the reverse. On this cohort the difference is about 2% in PO2 and nothing in hypoxic
-    fraction, but that is a fact about carotid body vascular density and should be re-measured
-    rather than assumed on a sparser bed.
+    the reverse. Which is the better model of the cropped tissue needs review (S29).
     """
     def __init__(self, G: nx.MultiGraph, grid_resolution_xyz: Tuple[float, float, float],
                  bounds_zyx: Tuple[Sequence[float], Sequence[float]] | None = None):

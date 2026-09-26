@@ -30,8 +30,9 @@ perfusion volume visibly ends before the glomus surface does — SHR-A's stops a
 the tissue runs to 298 µm. That is where the vessels stop, not a misalignment.
 
 `--pad-grid` extends the grid to the segmented volume instead, so the oxygen field covers all
-the tissue. It costs about 0.7 mmHg of mean PO₂ within TH and nothing in hypoxic fraction, and
-it leaves the other four specimens byte-identical. Use it when the view should show a field
+the tissue. After open items 22 and 29 it costs about 4–5 mmHg of mean PO₂ within TH on SHR-A and
+SHR-C and a few points of TH hypoxic fraction (it used to cost 0.7 mmHg and nothing), and it leaves
+the other four specimens byte-identical. Use it when the view should show a field
 under all the tissue; leave it off to match the numbers in the report, which are unpadded.
 
 ## The files
@@ -115,6 +116,11 @@ are cut from different parts of each organ, so their absolute positions are not 
 only their contents.
 
 ## Three cautions
+
+> ⚠ **Needs review after open items 22 and 29.** The flat field below came from a Tier 1 solve
+> with 750× too much diffusion and a haematocrit mismatch. The re-run field is not flat: median
+> PO₂ 78–93 mmHg per specimen, with 1–10% of tissue below 10 mmHg away from vessels, and glomus
+> metabolism now moves it. The paragraph is kept as written until reviewed.
 
 **The oxygen field is nearly flat, and that is a result, not a rendering problem.** Colouring
 by `PO2_mmHg` gives an almost uniform volume. The diffusion length here is 20–45 µm and the

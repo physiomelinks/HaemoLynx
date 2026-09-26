@@ -342,8 +342,9 @@ def main():
                     help="Extend the perfusion grid to the segmented volume rather than "
                          "stopping at the vascular bounding box. Represents glomus tissue the "
                          "default drops, at the cost of solving cells that contain tissue and "
-                         "no vessels. Measured cost on this cohort is 0.7 mmHg of mean PO2 "
-                         "within TH and no change in hypoxic fraction. See the H2 guide.")
+                         "no vessels. Measured on this cohort after open items 22 and 29: "
+                         "about 4-5 mmHg of mean PO2 within TH on SHR-A and SHR-C and a few "
+                         "points of TH hypoxic fraction. See the H2 guide.")
     ap.add_argument("--specimen", nargs="*", default=None)
     ap.add_argument("--out", default=str(OUT))
     args = ap.parse_args()
