@@ -389,7 +389,9 @@ $$s_{\text{in},i} = \sum_{v \in i} Q_v\,f_{\ell,v}\,C_{\mathrm{O_2}}(P_{\mathrm{
 
 **(E35)** Diffusive face conductances, $\sigma$ in µm²/s, $\mathbf{res} = (r_z, r_y, r_x)$
 
-$$D_z = \frac{\sigma\,r_y r_x}{r_z}, \qquad D_y = \frac{\sigma\,r_z r_x}{r_y}, \qquad D_x = \frac{\sigma\,r_z r_y}{r_x}$$
+$$D_z = \frac{\sigma\,\alpha_{\mathrm{O_2}}\,r_y r_x}{r_z}, \qquad D_y = \frac{\sigma\,\alpha_{\mathrm{O_2}}\,r_z r_x}{r_y}, \qquad D_x = \frac{\sigma\,\alpha_{\mathrm{O_2}}\,r_z r_y}{r_x}$$
+
+In µm³/s × mmol/L per mmHg, so $\mathbf{A}\,\mathbf{P}_{\mathrm{O_2}}$ is an O₂ flux in mmol/L·µm³/s, the unit of E34 and of the washout and consumption. Until open item 22 Tier 1 (and Tier 2) left out $\alpha_{\mathrm{O_2}}$, so diffusion was ≈750× too strong. Tier 3's E42 always had it.
 
 **(E36)** Seven-point diffusion operator
 

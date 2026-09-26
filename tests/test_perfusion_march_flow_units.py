@@ -118,13 +118,13 @@ def _tier3_expected(q, c):
 
 
 def _tier2_expected(q, c):
-    """Tier 2's wall flux is P A dPO2, without solubility (open item 22)."""
-    p_o2 = c.permeability_o2_cm_s * 1e4
+    """Tier 2's wall flux is P A alpha dPO2, as Tier 3's (open item 22), taken at the inlet."""
+    k_o2 = c.permeability_o2_cm_s * 1e4 * _AREA * _ALPHA_O2
     mv = c.M_max * _V_CELL
-    po2_t1 = c.po2_arterial_mmHg - mv / (p_o2 * _AREA)
+    po2_t1 = c.po2_arterial_mmHg - mv / k_o2
     c2 = calculate_blood_oxygen_content(c.po2_arterial_mmHg, _H) - mv / q
     po2_b2 = brentq(lambda p: calculate_blood_oxygen_content(p, _H) - c2, 0.0, 150.0)
-    return np.array([po2_t1, po2_b2 - mv / (p_o2 * _AREA)])
+    return np.array([po2_t1, po2_b2 - mv / k_o2])
 
 
 def _run_tier3(q, config=_Config()):
@@ -149,9 +149,8 @@ def test_tier3_blood_side_drop_matches_the_hand_calculation(q):
     assert _tier3_expected(1e12, _Config())[0][1] - want_po2[1] > 0.05
 
 
-# Tier 2 has no alpha in its wall flux (open item 22), so its wall term is ~750x Tier 3's and
-# its explicit march overshoots below ~1e2 um^3/s (as Tier 3 did until item 21). These flows are
-# above that.
+# Tier 2's march is still explicit (flux at the cell's inlet PO2), so it can overshoot where
+# P A alpha exceeds q C' (as Tier 3 did until item 21). These flows are above that.
 @pytest.mark.parametrize("q", [300.0, 1000.0])
 def test_tier2_blood_side_drop_matches_the_hand_calculation(q):
     po2 = _run_tier2(q)

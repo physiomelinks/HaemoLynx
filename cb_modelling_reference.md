@@ -1838,8 +1838,8 @@ it away from the same cell; it does not carry oxygen from one cell to the next.
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
-| 1 | Convert the diffusion coefficient m²/s → µm²/s | × 10¹² | `sigma_diff` is stored in SI while the whole grid is in microns; converting once here keeps every conductance in µm³/s | **On** | `perfusion.py:368` |
-| 2 | Face conductances D_z, D_y, D_x from σ, face area and normal spacing | — | Fick's law across a cell face: flux scales with the face area and inversely with the distance between cell centres | **On** | `perfusion.py:373` |
+| 1 | Convert the diffusion coefficient m²/s → µm²/s, and multiply by α_O₂ | × 10¹², × 1.34 × 10⁻³ mmol/L/mmHg | `sigma_diff` is stored in SI while the whole grid is in microns. α turns a PO₂ difference into an amount of O₂, so every conductance is in µm³/s × mmol/L/mmHg and diffusion is in the same unit as the source, washout and sink (open item 22) | **On** | `build_adr_matrix` |
+| 2 | Face conductances D_z, D_y, D_x from σα, face area and normal spacing | — | Fick's law across a cell face: flux scales with the face area and inversely with the distance between cell centres | **On** | `build_adr_matrix` |
 | 3 | Per perfused cell, `q_total` = Σ flow × `length_fraction` | — | Blood entering a cell is the only oxygen source the tissue has | **On** | `perfusion.py:388` |
 | 4 | Per perfused cell, `s_incoming` = Σ flow-share × C_O₂(PO₂_art, H_edge) | PO₂_art = `po2_arterial_mmHg`, 100 mmHg | Converts that flow into an oxygen delivery rate using the arterial content at the edge's own haematocrit. An edge with no `hematocrit` is refused by `map_vessels_to_grid` rather than given 0.45 | **On** | `perfusion.py:398` |
 | 5 | Reshape the index array `(nx, ny, nz)` so the last axis is z | C-order | The linear index is z-fastest, and a C-order reshape makes the last axis fastest — so the shape has to be reversed to match | **On** | `perfusion.py:406` |
@@ -1859,11 +1859,15 @@ boundary row is ever written (§11 row 23).
 
 Diffusive conductance across each cell face, in µm³/s:
 
-$$D_z = \frac{\sigma\, r_y r_x}{r_z}, \qquad
-D_y = \frac{\sigma\, r_z r_x}{r_y}, \qquad
-D_x = \frac{\sigma\, r_z r_y}{r_x}$$
+$$D_z = \frac{\sigma\,\alpha\, r_y r_x}{r_z}, \qquad
+D_y = \frac{\sigma\,\alpha\, r_z r_x}{r_y}, \qquad
+D_x = \frac{\sigma\,\alpha\, r_z r_y}{r_x}$$
 
-with $\sigma$ in $\mathrm{\mu m^2/s} = \sigma_\text{config} \times 10^{12}$.
+with $\sigma$ in $\mathrm{\mu m^2/s} = \sigma_\text{config} \times 10^{12}$ and
+$\alpha = 1.34 \times 10^{-3}$ mmol/L/mmHg (`ALPHA_O2_MMOL_PER_L_MMHG`, the same α as the blood's
+dissolved O₂). **Until open item 22 α was missing here**: diffusion was then in mmHg·µm³/s and was
+added to fluxes in mmol/L·µm³/s, which made it ≈1/α ≈ 750× too strong and its diffusion length
+≈27× the √(Dα PO₂/M) of §13.6.
 
 assembled as a standard **seven-point stencil** — each cell coupled to its six face neighbours,
 with the diagonal accumulating the conductances it participates in. No flux is written at the
@@ -1954,8 +1958,8 @@ scaled versions of each other.
 > stops on the nonlinear residual (§6.7). WKY-A converges in 11 iterations. At the old, unsourced
 > permeability (10⁻⁴ cm/s) the tissue was anoxic. Blood crosses each node as pressures, not as content per litre, so a
 > plasma-skimmed daughter is not handed more gas than its haematocrit can hold (open item 24).
-> Tier 2 had the same unit error (also fixed) and still leaves solubility out of its
-> wall flux and diffusion; Tier 1 leaves it out of diffusion (open item 22, unverified).
+> Tier 2 had the same unit error (also fixed). Tier 1 left solubility out of its diffusion, and
+> Tier 2 out of its diffusion and wall flux, until open item 22; all three tiers now carry α.
 
 **Tier 1 uses a fixed baseline haematocrit** for the washout: `systemic_hematocrit` (0.45) from the
 config, not the edge's own haematocrit (§11 row 27). The source side does use the edge's
@@ -1965,16 +1969,22 @@ PO₂, and tissue PO₂ climbs above arterial.
 
 ### 6.7 Numerical stabilisation of the Picard loop
 
-The non-linear washout acts as a sink on the right-hand side, which is unstable for conjugate
-gradient. The loop applies a **pseudo-washout**: add $q_\text{total}\,\gamma$ to the LHS diagonal *and the
-same term* to the RHS.
+**Tier 1 is solved by Newton's method with a line search** (open item 22). The balance is
 
-$$b = s_\text{incoming} - s_\text{washout}
-- M(P_{\mathrm{O_2}})\,V_\text{cell}
-+ q_\text{total}\,\gamma\,P_{\mathrm{O_2}}$$
+$$F(P) = \mathbf{A}P - s_\text{incoming} + q_\text{total}\,C_{\mathrm{O_2}}(P) + M(P)\,V_\text{cell} = 0$$
 
-The true steady-state roots are unchanged, but the matrix becomes strictly diagonally dominant and
-well conditioned. γ = 0.5 in Tier 1, damping the Picard step and preventing sigmoidal oscillation.
+and each step solves $(\mathbf{A} + \operatorname{diag}(q\,C'(P) + M'(P)\,V))\,\Delta P = -F(P)$ by
+Jacobi-preconditioned CG at `rtol` 10⁻¹⁰, then halves the step until $\lVert F \rVert$ falls. It stops
+when the largest cell imbalance, divided by its Jacobian diagonal (so in mmHg), is below 10⁻⁵ of the
+largest PO₂: the same test as Tier 3 (`_relative_residual`).
+
+Until open item 22 Tier 1 was a Picard loop with a **pseudo-washout**: $q_\text{total}\,\gamma$ on the
+diagonal and $q_\text{total}\,\gamma\,P$ on the right, γ = 0.5, stopping on the relative change between
+iterates. γ stands in for $C'(P)$, which is near α at both flat ends of the O₂ curve and ≈0.2 at its
+steepest. While diffusion was 750× too strong it tied each cell to its neighbours and hid the gap;
+with α in the diffusion the loop hit its 50-iteration cap on WKY-A. Plain Newton fails too: at a
+slope of α a step jumps by 10³ mmHg, and it swung between ≈18 and ≈1 100 mmHg. With the line
+search WKY-A converges in 10–21 steps (≈10–30 s at 4 µm).
 
 **Tier 3 no longer uses a pseudo-washout** (open item 23). It put the full wall conductance
 P·A·α on the diagonal (γ = 1). At low flow the blood follows the tissue, so the true slope of the
@@ -2003,39 +2013,21 @@ oscillation.
 
 The loop warns rather than raising if it hits its iteration cap without reaching tolerance.
 
-**The order of operations — the Tier 1 steady-state Picard loop.**
+**The order of operations — the Tier 1 steady-state Newton solve.**
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
-| 1 | Initial guess: PO₂ = 0 mmHg everywhere | — | Starting from zero is the safe end: the iteration climbs towards the solution rather than descending through non-physical values | **On** | `perfusion.py:461` |
-| 2 | Copy A and add a diagonal regulariser | 10⁻⁶ | ILU and CG both need a non-singular matrix, and pure diffusion under Neumann boundaries is not | **On**, once | `perfusion.py:478` |
-| 3 | Add a linear pseudo-washout $q_\text{total}\,\gamma$ to the diagonal | γ = 0.5 | Adding a linear pseudo-washout makes the matrix strictly diagonally dominant, turning a system CG handles badly into one it handles well | **On**, once | `perfusion.py:489` |
-| 4 | Build the Jacobi preconditioner from the stabilised matrix | diagonal | Built once because the stabilised matrix never changes; only the right-hand side does | **On**, once | `perfusion.py:493` |
-| 5 | Clamp PO₂ ≥ 0 | — | Negative PO₂ is non-physical and would drive the oxygen-content curve into an oscillation | **On**, every iteration | `perfusion.py:497` |
-| 6 | Metabolic sink $M_\text{max}\bigl(1 - e^{-k P_{\mathrm{O_2}}}\bigr)$ | k = 0.1 | The sink saturates with PO₂, so it has to be re-evaluated from the current iterate rather than held fixed | **On** | `perfusion.py:501` |
-| 7 | Advective washout $q_\text{total} \cdot C_{\mathrm{O_2}}(P_{\mathrm{O_2}}, H)$ per perfused cell | H = `systemic_hematocrit`, 0.45 — not the cell's local haematocrit | Blood leaves each cell carrying oxygen at the local tissue PO₂, which is exactly what the previous iterate just changed | **On** — §11 row 27 | `perfusion.py:523` |
-| 8 | RHS = $s_\text{incoming} - s_\text{washout} - M V_\text{cell} + q\gamma P_{\mathrm{O_2}}$ | — | Assembles delivery, removal and consumption into one right-hand side, with the pseudo-washout added back so the fixed point is unchanged | **On** | `perfusion.py:512` |
-| 9 | CG solve, warm-started from the previous iterate | `rtol` 1e-6, `maxiter` 1000 | Warm-starting from the previous iterate means later Picard passes cost far fewer inner iterations than the first | **On** | `perfusion.py:515` |
-| 10 | Non-convergence warns, never fails silently | — | A truncated inner solve is reported rather than returned as if it had converged | **On** | `perfusion.py:517` |
-| 11 | Clamp the new iterate ≥ 0 | — | Keeps the next iterate inside the physical domain before it is used as a starting point | **On** | `perfusion.py:521` |
-| 12 | Convergence on the **relative** L2 change | tol 1e-5 | A relative test makes the tolerance mean the same thing regardless of the field's absolute magnitude | **On** | `perfusion.py:524` |
-| 13 | Hitting `max_iter` warns and returns the last iterate | 50 | A solve that ran out of iterations is a different object from a converged one, and the caller has to be able to tell | **On** — open item 6 | `perfusion.py:533` |
+| 1 | Initial guess: PO₂ = 0 mmHg everywhere | — | Starting from zero is the safe end; the line search keeps each step from overshooting | **On** | `solve_perfusion_steady_state` |
+| 2 | Add a diagonal regulariser to A | 10⁻⁶ | Pure diffusion under Neumann boundaries is singular. Still ≪ the face conductances (≈8 at 4 µm) | **On**, once | `solve_perfusion_steady_state` |
+| 3 | Metabolic sink $M_\text{max}\bigl(1 - e^{-k P_{\mathrm{O_2}}}\bigr)$ and its slope | k = 0.1 | The sink saturates with PO₂, so it is re-evaluated from the current iterate | **On** | `balance` |
+| 4 | Washout $q_\text{total} \cdot C_{\mathrm{O_2}}(P_{\mathrm{O_2}}, H)$ and its slope $q\,C'$ per perfused cell | H = `systemic_hematocrit`, 0.45 — not the cell's local haematocrit | Blood leaves each cell at the local tissue PO₂. The slope is a central difference of `calculate_blood_oxygen_content` (`_content_and_slope`) | **On** — §11 row 27 | `balance` |
+| 5 | Residual $F$ and the scaled stop test | tol 10⁻⁵ | Imbalance ÷ Jacobian diagonal is the mmHg correction each cell needs; relative to max PO₂ | **On** | `_relative_residual` |
+| 6 | Newton direction: CG on $\mathbf{A} + \operatorname{diag}(q C' + M' V)$, Jacobi preconditioner | `rtol` 10⁻¹⁰, `maxiter` 20 000 | Exact enough that the direction, not the inner solve, limits convergence. A shortfall warns | **On** | `solve_perfusion_steady_state` |
+| 7 | Backtracking line search, clamp PO₂ ≥ 0 | halve until ‖F‖ falls (Armijo 10⁻⁴), down to 10⁻⁴ | Newton on the sigmoid overshoots where C′ ≈ α | **On** | `solve_perfusion_steady_state` |
+| 8 | Hitting `max_iter` warns and returns the last iterate; `return_info` reports it | 50 | A solve that ran out of iterations is a different object from a converged one | **On** — open item 6 | `solve_perfusion_steady_state` |
 
-**Steps 3 and 8 are the same term, added twice on purpose.** $q\gamma$ goes onto the diagonal of the
-left-hand side and $q\gamma P_{\mathrm{O_2}}$ onto the right. At the fixed point the two cancel exactly, so the true
-steady-state roots are unchanged — but the matrix becomes strictly diagonally dominant, which turns
-a system CG handles badly into one it handles well. It also damps the Picard step, which is what
-stops the sigmoidal oxygen-content curve driving an oscillation.
-
-**Step 9 warm-starts from the previous iterate.** `x0=PO2` means each CG solve begins where the last
-one finished, so later Picard passes cost far fewer inner iterations than the first.
-
-**Step 7 is a Python loop over every cell, every iteration.** At 4 µm over a 298 µm box that is on
-the order of 10⁵ cells × up to 50 iterations of interpreted work, and it dominates the runtime of
-the tissue solve. Correct, but it is the reason grid refinement gets expensive quickly (§6.8).
-
-**Note the two tolerances are different quantities.** Step 12's 10⁻⁵ is a relative L2 change on the
-PO₂ field — unlike §4.3 step 6, which is an *absolute* flow difference.
+**Step 4 is a Python loop over the perfused cells**, about 3% of the grid on WKY-A (13 k of 439 k),
+so it no longer dominates the runtime; the CG solves do.
 
 ### 6.8 Grid resolution
 
@@ -2475,7 +2467,7 @@ that tissue no route to lose oxygen to the tissue beyond the crop (§11 row 23).
 **A null space, and how it is handled.** Pure diffusion under Neumann boundaries has rows summing to
 zero, so a constant offset in PO₂ is unconstrained and the matrix is singular. Two regularisations
 address it: a 10⁻¹² sink added to the diagonal at assembly, and a further 10⁻⁶ before the solve. The
-pseudo-washout of §6.7 also contributes diagonal dominance.
+blood and metabolic slopes on the Newton diagonal (§6.7) also contribute diagonal dominance.
 
 **Grid extent.** The grid is padded to span the segmented volume rather than the graph's own extent
 (§6.1). Tissue beyond the segmentation is not represented at all — it is outside the domain, not
@@ -2541,26 +2533,27 @@ Three non-linearities, all handled the same way:
 | Loop | Non-linearity | Damping |
 |---|---|---|
 | Rheology (§4.3) | Viscosity depends on haematocrit, which depends on flow | None; 15 iterations at 10⁻⁴ |
-| Tissue Tier 1 (§6.7) | Metabolic sink and venous washout both depend on PO₂ | γ = 0.5 |
+| Tissue Tier 1 (§6.7) | Metabolic sink and venous washout both depend on PO₂ | Newton with a line search (open item 22; was Picard with γ = 0.5) |
 | Tissue Tier 3 | The same, coupled across O₂, CO₂ and pH | γ = 1.0 each |
 
-**Why Picard rather than Newton.** No Jacobian is assembled anywhere. Picard costs one linear solve
-per iteration and converges reliably here because the non-linearities are saturating and
-monotonic — an exponential approach in the metabolic sink, a sigmoid in the Hill equation. Newton
-would converge faster but requires derivatives of the blood-gas chemistry that nothing currently
-provides.
+**Why Picard, and where not.** Picard costs one linear solve per iteration and needs no
+Jacobian. It is still used by the rheology loop. The tissue tiers now carry the slopes that matter:
+Tier 3 a per-cell blood-response linearisation (open item 23), Tier 1 a full Newton step with a
+line search (open item 22), both from central differences of the blood-gas functions. Tier 1's
+fixed-slope Picard stopped converging once its diffusion carried α.
 
-**The stabilisation is the interesting part.** The pseudo-washout of §6.7 moves a term from the
-right-hand side onto the diagonal and adds it back on the right, leaving the steady-state roots
-unchanged while making the matrix strictly diagonally dominant. This converts a system conjugate
-gradient handles badly into one it handles well, without changing the answer.
+**The stabilisation is the interesting part.** A slope term on the diagonal, added back on the
+right, leaves the steady-state roots unchanged while making the matrix strictly diagonally
+dominant. A fixed slope (the old pseudo-washout) converges only while it is close to the true one;
+§6.7 describes what replaced it in each tier.
 
 ### 9.3 Linear solvers
 
 | System | Solver | Why |
 |---|---|---|
 | Network Laplacian | Direct below 50,000 nodes, iterative above | CB graphs sit far below the threshold, so the flow solve is exact to machine precision |
-| Tissue diffusion | Conjugate gradient, Jacobi preconditioned | The matrix is large, sparse, symmetric and positive definite once regularised |
+| Tissue diffusion, Tier 1 | Conjugate gradient, Jacobi preconditioned, `rtol` 10⁻¹⁰ per Newton step | The matrix is large, sparse, symmetric and positive definite once regularised; 439 k cells at 4 µm |
+| Tissue diffusion, Tier 3 | Sparse LU, symmetric ordering | Exact; see §6.7 and open item 23 |
 
 **The preconditioner must be SPD**, which is what conjugate gradient requires. A diagonal
 (Jacobi) preconditioner is trivially SPD when the diagonal is positive, and the perfusion matrix's
@@ -2735,7 +2728,7 @@ These are **not** configurable. They live in the function bodies.
 |---|---|---|---|---|---|
 | `do_perfusion_modeling` | True | — | — | — | — |
 | `grid_resolution_xyz` | (10, 10, 10) default; **4 µm** for H2 §2.3 | µm | (iii) | 4 µm chosen on convergence: median PO₂ 27.34 / 27.92 / 28.21 at 10 / 6 / 4 µm, increments halving, extrapolating to ≈28.5. 4 µm is within ~1% of that limit at 1/27 the cost of native resolution | measured |
-| `sigma_diff` | 1.5 × 10⁻⁹ | m²/s | (i) | O₂ diffusivity in tissue. Consistent with K_O₂/α_O₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`] and (1.04 ± 0.78) × 10⁻⁹ in rat mesentery [`yaegashi_diffusivity_1996`] | assumed |
+| `sigma_diff` | 1.5 × 10⁻⁹ | m²/s | (i) | O₂ diffusivity in tissue (D, not D·α: every tier multiplies it by α_O₂, open item 22). Consistent with K_O₂/α_O₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`] and (1.04 ± 0.78) × 10⁻⁹ in rat mesentery [`yaegashi_diffusivity_1996`] | assumed |
 | `sigma_diff_co2` | 1.6 × 10⁻⁹ | m²/s | (i) | CO₂ diffusivity in tissue: measured K_CO₂/α_CO₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`]. D is close to O₂'s; CO₂'s ≈20× faster transport comes from its solubility, which the solver multiplies in (`build_diffusion_matrix`). With the code's α values the Krogh ratio K_CO₂/K_O₂ is ≈24 (measured ≈21). Was 3.0 × 10⁻⁸ until open item 18 | assumed |
 | `permeability_o2_cm_s` | 9.1 × 10⁻² | cm/s | (ii) | Endothelial O₂ permeability. Measured O₂ mass-transfer coefficient of a cultured human umbilical vein endothelial monolayer, *k* = 1.22 ± 0.45 × 10⁻¹⁰ mol·cm⁻²·s⁻¹·mmHg⁻¹ at 37 °C, n = 8 [`liu_oxygen_1994`], divided by this solver's α_O₂ (1.34 × 10⁻⁹ mol·cm⁻³·mmHg⁻¹), so the wall flux P·A·α·ΔPO₂ equals *k*·A·ΔPO₂. Their assumed 1 µm wall thickness cancels out of *k*/α. With their tissue α of 1.4 × 10⁻⁹ it is 8.7 × 10⁻² cm/s (their *D*_eff/1 µm); the monolayer-plus-media lower bounds give 1.4–2.0 × 10⁻² cm/s. Cultured cells, human and bovine; not rat capillary. Earlier indirect estimates were lower: 4.6 × 10⁻³ (canine heart) and 3 × 10⁻² cm/s (feline heart), as tabulated there. Was 1.0 × 10⁻⁴ with no source until open item 19, which left Tier 3 wall-limited and anoxic. Used by Tier 3 (and the unreachable Tier 2), not by Tier 1 or H2. At this value Tier 3's explicit step overshot at capillary flow (open item 21, now implicit); its Picard loop is still slow there (open item 23) | assumed |
 | `permeability_co2_cm_s` | 9.1 × 10⁻² | cm/s | (ii) | Endothelial CO₂ permeability, set equal to `permeability_o2_cm_s`: [`dash_simultaneous_2006`] use one capillary PS for both O₂ and CO₂, and the wall flux is also scaled by α, so CO₂ still crosses ≈22× faster per mmHg. Not measured for CO₂; follows the O₂ value. Was 2.0 × 10⁻³ until open item 18, then 1.0 × 10⁻⁴ until open item 19 | assumed |
@@ -2868,6 +2861,7 @@ The suite is **547 tests** across 55 files, run under continuous integration.
 | Wall shear stress | Closed-form recomputation | 10⁻¹⁰ |
 | 1D pure diffusion | Closed-form linear gradient | 10⁻¹⁰ |
 | Zero-order metabolism | Exact parabolic profile `c₀ − (M/2σ)x(L−x)` | 10⁻¹⁰ |
+| Tier 1 slab with solubility (open item 22) | `P₀ − M/(2Dα)·x(L−x)` through `build_adr_matrix` and the Newton solve; the balance and mass balance at the fixed point from their definitions (`test_perfusion_tier1_solubility.py`) | 10⁻³ mmHg |
 | Radial point source | Qualitative 1/r decay | Bracketed |
 | Krogh cylinder radial diffusion | Analytic radial profile | Bracketed |
 | Plasma skimming | Erythrocyte mass conservation | 10⁻⁸ |
@@ -3221,11 +3215,11 @@ tuning opportunity.
 
 | Setting | Value | Where | Notes |
 |---|---|---|---|
-| Picard max iterations | 50 | hard-coded in `solve_perfusion_steady_state` | Duplicates `picard_max_iterations` |
-| Picard tolerance | 1 × 10⁻⁵ | hard-coded | **Differs from `PerfusionConfig.picard_tolerance` = 1 × 10⁻⁴** |
-| Relaxation γ | 0.5 | hard-coded | Effective linearised slope |
-| CG relative tolerance | 1 × 10⁻⁶ | hard-coded | |
-| CG max iterations | 1 000 | hard-coded | |
+| Newton max iterations | 50 | hard-coded in `solve_perfusion_steady_state` | Duplicates `picard_max_iterations` |
+| Tolerance | 1 × 10⁻⁵ | hard-coded | Max cell residual in mmHg / max PO₂ (`_relative_residual`), as Tier 3; was the relative L2 change until open item 22. **Differs from `PerfusionConfig.picard_tolerance` = 1 × 10⁻⁴** |
+| Line search | halve until ‖F‖ falls, Armijo 10⁻⁴, floor 10⁻⁴ | hard-coded | Replaced the Picard relaxation γ = 0.5 (open item 22) |
+| CG relative tolerance | 1 × 10⁻¹⁰ | hard-coded | Per Newton step; was 1 × 10⁻⁶ |
+| CG max iterations | 20 000 | hard-coded | Was 1 000 |
 | Preconditioner | Jacobi (diagonal) | `_jacobi_preconditioner` | Guarded against non-positive diagonals |
 | Singularity handling | diagonal regularisation | `build_adr_matrix` | Pure-diffusion rows sum to zero under Neumann boundaries |
 
@@ -3364,7 +3358,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | ~~19~~ | **Closed.** The Tier 3 blood-gas relations did not match their sources (found under item 7; §5.3). (a) and (b): the CO₂ curve is now McHardy's as its source defines it, in mmol/L, with his Hb term for *H* and no second dissolved term; his saturation term replaces the unsourced Haldane term, so the Haldane effect is 2.8 mmol/L on full desaturation against ≈2.5 measured [`loeppky_quantitative_1983`]. Content at PCO₂ 40 went from 24.4 to 21.3 mmol/L, slope from 0.28 to 0.21 mmol/L/mmHg. `test_blood_co2_content.py`. (c): `permeability_o2_cm_s` was 1.0 × 10⁻⁴ cm/s with no source and left Tier 3 anoxic; it is now the measured 9.1 × 10⁻² cm/s [`liu_oxygen_1994`], ≈900× higher, and `permeability_co2_cm_s` follows it (item 18). `test_perfusion_config_values.py`. Checking convergence at the new value found items 20 and 21. Tier 1, and so every H2 number, uses none of these; the pipeline's `*_perfusion.vti` does | §5.3, §10.8, §10.9, §6.6 Tier 3 |
 | ~~20~~ | **Closed.** The Tier 2 and Tier 3 marches (`c ← c − φ/q`) read edge `flow_abs` raw, in mmHg·µm³/cP, while φ is in mmol/L·µm³/s, so *q* was 1.33 × 10⁵× too small and blood gave up its gas in the first cell of each edge whatever the flow. Both solvers now take `flow_to_um3_per_s` (default `POISEUILLE_FLOW_TO_UM3_PER_S`, as `map_vessels_to_grid`), convert each edge once (`_edge_flows_um3_per_s`), and raise if a flowing edge has no `flow_abs` (it was read with a 0.0 default) or if the per-cell flows were built with a different factor. On a two-cell chain both tiers match a hand calculation of the blood-side drop. On the Y test network Tier 3 mean PO₂ is now 23, 61 and 95 mmHg at 10³, 10⁴ and 10⁵ µm³/s (P = 9.1 × 10⁻² cm/s); it still hits `max_iter` at the lower two (item 21). Tier 2 also overshoots below ≈10² µm³/s. `test_perfusion_march_flow_units.py`. Not in any H1/H2 number | §6.2, §6.6 Tier 2, Tier 3 |
 | ~~21~~ | **Closed.** Tier 3's per-cell step took φ at the blood pressure on entry and subtracted φ/*q*; once P·A·α exceeded *q*·dC/dP (P = 9.1 × 10⁻² cm/s, capillary flow, flat top of the O₂ curve) one step went past blood–tissue equilibrium, the Picard loop hit `max_iter` at 10³ and 10⁴ µm³/s, and tissue PCO₂ came out below arterial (down to 1.7 mmHg). Each cell now solves C(P_out) + (P·A·α/*q*)(P_out − P_tissue) = C_in for the outlet pressure (`_implicit_cell_outlet_pressure`, E48–E50): O₂ first at the inlet PCO₂ and the cell's pH, then CO₂ at the new PO₂. The outlet lies between tissue and inlet, *q*·ΔC equals φ, and a failed root find raises instead of keeping the old pressures. Because the flux is now taken at the outlet, which is read at the cell's own pH, even at infinite flow the blood PO₂ seen by the wall carries that cell's Bohr shift (≈ +1 mmHg in the 0D Fick test). On the Y test network (P = 9.1 × 10⁻² cm/s) PCO₂ now stays ≥ 40 mmHg everywhere, and mean PO₂ is 36.6, 77.5 and 94.8 mmHg at 10³, 10⁴ and 10⁵ µm³/s after 50 iterations; the loop still hits `max_iter` at the lower two (item 23). `test_perfusion_implicit_march.py`. Not in any H1/H2 number | §6.6 Tier 3, §6.7 |
-| 22 | **Tier 1 and Tier 2 leave O₂ solubility out of diffusion; Tier 2 also out of its wall flux.** Unverified. Tier 1's diffusion term σ·ΔPO₂ (E35, §6.3) is in mmHg·µm³/s, while every other term of its balance (`s_incoming`, washout, M·V) is in mmol/L·µm³/s. Tier 3 multiplies σ by α (E42), and so does §13.6's diffusion length √(D α PO₂ / M). Unless `sigma_diff` is meant as a Krogh coefficient K = D·α (§10.9 gives it as D, 1.5 × 10⁻⁹ m²/s), Tier 1 diffusion is ≈1/α ≈ 750× too strong, and its effective diffusion length ≈27× the 20–45 µm of §13.6. That could be why §2.3 and §13.6 find the tissue inert to glomus metabolism. Tier 2's wall flux P·S·ΔPO₂ (`solve_coupled_1d3d_perfusion`) and its diffusion matrix also lack α, so its wall term is ≈750× Tier 3's. Found while fixing item 20; not yet checked. **May move published H2 numbers** | §6.3, §6.6 Tier 1, Tier 2, §13.6, H2 §2.3 |
+| ~~22~~ | **Closed (code).** Tier 1's diffusion term σ·ΔPO₂ (E35) was in mmHg·µm³/s while every other term of its balance is in mmol/L·µm³/s; `sigma_diff` is D (§10.9), so diffusion was ≈1/α ≈ 750× too strong and its diffusion length ≈27× §13.6's. Tier 2's diffusion and wall flux P·S·ΔPO₂ had the same gap. Confirmed on a 1D slab between two fixed ends with a zero-order sink: analytic mid-slab drop M L²/(8Dα) = 4.975 mmHg; the old matrix gave 0.0067, the α version 4.975. All three tiers now use one `ALPHA_O2_MMOL_PER_L_MMHG`. With α in, Tier 1's fixed-slope Picard loop (γ = 0.5) hit `max_iter` on WKY-A and plain Newton oscillated, so Tier 1 is now Newton with a line search and a residual stop (§6.7, Appendix A.3). **Tier 1's fixed point with α alone is hyperoxic** on WKY-A (median 186 mmHg, 78% of cells above arterial) because its washout uses systemic haematocrit while its source uses each edge's: open item 29. The published §2.3 field (~30 mmHg, inert to glomus metabolism) rested on both defects; H2 numbers are re-derived after item 29. `test_perfusion_tier1_solubility.py`, `test_perfusion_march_flow_units.py` (Tier 2) | §6.3, §6.6, §6.7, §13.6, H2 §2.3 |
 | ~~23~~ | **Closed.** Tier 3's Picard loop did not reach its fixed point at capillary flow. (a) It was slow: the pseudo-washout put the full wall conductance on the diagonal, so each iteration moved tissue C′/(C′ + P·A·α/*q*) of the way (≈2 700 iterations on a two-cell chain at 10² µm³/s; 378 and 97 on the Y network at 10³ and 10⁴; no progress in a plasma-skimmed branch). (b) It stopped early: a warm-started CG at `rtol` 1e-5 returned the last field once a step was below it, and the relative-change test read zero (0.03–0.25 mmHg short on the chain; 1.7 mmHg at 1e-4). Now the diagonal carries the blood's actual response and the metabolic slope (a Newton step per cell), each update is an exact sparse LU solve, guarded Anderson acceleration sits on top, and the loop stops on the nonlinear residual in mmHg relative to the field (§6.7, E43, E51–E54). Chosen over Anderson alone (75–243 iterations on plasma-skimmed and merging vessels) and the linearisation alone (128 on the Y network). At the default 10⁻⁴: 9–19 iterations on every test network, within 0.023 mmHg of a 10⁻¹² solve; WKY-A 11 iterations, where the old loop hit `max_iter` with minimum tissue PO₂ 59.9 mmHg against 77.4 converged. The `.vti` records convergence, iterations and residual. Getting WKY-A through Tier 3 at all first needed four other fixes: NaN flows from the flow export, junctions carried as content (item 24), flow direction from a different solve than flow size, and a Haldane effect in plasma. `test_perfusion_tier3_convergence.py`. Not in any H1/H2 number | §6.6, §6.7, Appendix A |
 | ~~24~~ | **Closed.** Tier 3 mixed blood-gas *content per litre* at each node and turned it back into pressures for each daughter at PCO₂ 40 and pH 7.4, with the daughter's haematocrit; a failed root find fell back to arterial PO₂ or PCO₂. Phase separation gives daughters a different *H* from the parent, so that content did not describe the daughter's blood: on WKY-A a plasma-skimmed daughter (*H* ≈ 0.01) received arterial CO₂ content at *H* 0.45, more than its curve holds at any PCO₂, and the implicit step (item 21) found no root. The march now carries the blood's state through each node as pressures (E46, E47): one inflow passes its outlet state through unchanged; two or more are mixed by content, flow and red-cell flux and inverted jointly for PO₂ and PCO₂ at the mixture's *H* and flow-weighted pH (`_mixed_blood_state`). Each daughter's content is evaluated at the node state with its own *H*; both curves are affine in *H*, so O₂ and CO₂ are conserved wherever the rheology conserves red-cell and plasma flux. Every fallback in the march now raises: a failed inversion, a non-starting node that sends blood but receives none (it was given arterial blood at `systemic_hematocrit`, which Tier 3 no longer reads), and a cycle in the flow direction (it fell back to node order). `test_perfusion_junction_state.py`. Not in any H1/H2 number | §6.6 Tier 3 |
 | ~~25~~ | **Closed.** Tier 3 seeded arterial blood at a literal pH 7.4, while tissue pH is Henderson–Hasselbalch (pKa 6.1, α 0.03, `hco3_tissue`), which gives 7.401 at PCO₂ 40 and HCO₃⁻ 24. Inside each cell the blood's O₂ is read at the tissue pH, so blood changed pH at the first cell with no exchange behind it. Through the Bohr shift and the Haldane term that left tissue below arterial: on WKY-A tissue PCO₂ 7 × 10⁻⁴ mmHg below arterial; with no metabolism on a three-cell chain, tissue PO₂ 0.08 mmHg below arterial (10 mmHg at PCO₂ 45, HCO₃⁻ 20). Arterial pH now comes from the same formula and bicarbonate as the tissue (E46), and the initial tissue pH too (§6.6). WKY-A: still 11 iterations, minimum tissue PCO₂ 40.00006 mmHg, mean tissue PO₂ 96.31 → 96.39 mmHg, minimum 77.4 → 77.44. `test_perfusion_arterial_ph.py`. Not in any H1/H2 number | §6.6 Tier 3 |

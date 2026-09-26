@@ -71,7 +71,11 @@ def _coupled(config):
 
 
 def test_the_coupled_solver_uses_the_configured_arterial_po2():
-    assert not np.allclose(_coupled(_Config()), _coupled(_Config(po2_arterial_mmHg=60.0)))
+    # With O2 solubility in its wall flux (open item 22), the wall at 1e-4 cm/s passes too little
+    # O2 for 0.05 mmol/L/s, and the tissue is anoxic at either arterial PO2. A lower rate keeps
+    # it off zero, so the arterial value can show.
+    assert not np.allclose(_coupled(_Config(M_max=1e-4)),
+                           _coupled(_Config(M_max=1e-4, po2_arterial_mmHg=60.0)))
 
 
 @dataclass

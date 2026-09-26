@@ -10,6 +10,13 @@ logger = logging.getLogger(__name__)
 # definition for the derivation and for what coupling the two unconverted did.
 from .resistance import POISEUILLE_FLOW_TO_UM3_PER_S  # noqa: E402
 
+#: Solubility of O2 in plasma and tissue, mmol/L per mmHg. One value for the blood's dissolved
+#: O2 and for every tier's tissue transport. Diffusion and wall flux are driven by PO2 but move
+#: amount of O2, so each conductance is D alpha or P alpha; ``sigma_diff`` is D, not D alpha.
+#: Tier 1 and Tier 2 left alpha out and ran their tissue transport about 750x too strong
+#: (open item 22).
+ALPHA_O2_MMOL_PER_L_MMHG = 1.34e-3
+
 def calculate_blood_oxygen_content(po2_mmHg: float, hematocrit: float, pco2_mmHg: float = 40.0, ph: float = 7.4) -> float:
     """
     Calculates total oxygen content in blood (mmol/L) using the Hill Equation.
@@ -18,7 +25,7 @@ def calculate_blood_oxygen_content(po2_mmHg: float, hematocrit: float, pco2_mmHg
     if po2_mmHg <= 0.0:
         return 0.0
         
-    alpha_o2 = 1.34e-3  # Solubility of O2 in plasma (mmol/L per mmHg)
+    alpha_o2 = ALPHA_O2_MMOL_PER_L_MMHG
     hill_n = 2.7
     c_hb_max = 0.446 * 20.4 / 0.45 # Scale to pure RBC
     
@@ -570,6 +577,13 @@ def _jacobi_preconditioner(A):
 def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[str, Any]]], perf_config) -> Tuple[Any, np.ndarray, np.ndarray]:
     """
     Step 4: Build the pure Diffusion sparse matrix and Advection vectors.
+
+    The matrix acts on PO2 (mmHg) and returns O2 flux (mmol/L um^3/s), the unit of every other
+    term in the balance: each face conductance is ``sigma_diff * alpha * face / spacing``. It
+    used to leave out alpha, so diffusion came out in mmHg um^3/s and was added to fluxes in
+    mmol/L um^3/s as if they were the same unit: about 1/alpha = 750 times too strong, with a
+    diffusion length 27 times the sqrt(D alpha PO2 / M) of the reference (open item 22).
+
     Returns:
         A: scipy.sparse.csr_matrix (Constant LHS matrix for Diffusion ONLY)
         q_total: np.ndarray (Total bulk flow through each voxel)
@@ -585,15 +599,16 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     nz, ny, nx = grid.dims
     res = grid.res
     
-    # Convert diffusion coefficient from m^2/s to µm^2/s
-    sigma_diff_um2_s = perf_config.sigma_diff * 1e12
-    
-    # Diffusive conductance between cells (µm^3/s)
-    # Diffusive conductance across a cell face: sigma * (face area) / (spacing normal to
-    # it). res is (rz, ry, rx), so the z conductance uses the y-x face.
-    D_z = sigma_diff_um2_s * (res[1] * res[2]) / res[0]
-    D_y = sigma_diff_um2_s * (res[0] * res[2]) / res[1]
-    D_x = sigma_diff_um2_s * (res[0] * res[1]) / res[2]
+    # Convert diffusion coefficient from m^2/s to µm^2/s, and multiply by solubility so the
+    # conductance takes a PO2 difference to an O2 flux (open item 22).
+    sigma_alpha = perf_config.sigma_diff * 1e12 * ALPHA_O2_MMOL_PER_L_MMHG
+
+    # Diffusive conductance between cells (µm^3/s x mmol/L per mmHg)
+    # Diffusive conductance across a cell face: sigma * alpha * (face area) / (spacing normal
+    # to it). res is (rz, ry, rx), so the z conductance uses the y-x face.
+    D_z = sigma_alpha * (res[1] * res[2]) / res[0]
+    D_y = sigma_alpha * (res[0] * res[2]) / res[1]
+    D_x = sigma_alpha * (res[0] * res[1]) / res[2]
     
     rows, cols, data = [], [], []
     diag_A = np.zeros(N, dtype=np.float64)
@@ -671,87 +686,122 @@ def build_adr_matrix(grid: PerfusionGrid, cell_to_vessels: Dict[int, List[Dict[s
     return A, q_total, s_incoming
 
 
-def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarray, s_incoming: np.ndarray, perf_config) -> np.ndarray:
+def _content_and_slope(po2: np.ndarray, hematocrit, cells: np.ndarray):
+    """O2 content (mmol/L) and its slope dC/dPO2 at ``po2`` for the listed cells, zero elsewhere.
+
+    ``hematocrit`` is a scalar or a per-cell array. The slope is a central difference, as in
+    ``_blood_response_conductance``, so it follows ``calculate_blood_oxygen_content`` exactly.
     """
-    Step 5: Solve the Non-Linear Steady-State Perfusion system using Picard Iteration.
-    Solves for tissue PO2 (mmHg).
+    content = np.zeros(po2.shape, dtype=np.float64)
+    slope = np.zeros(po2.shape, dtype=np.float64)
+    h_of = np.broadcast_to(np.asarray(hematocrit, dtype=np.float64), po2.shape)
+    for i in cells:
+        p = max(float(po2[i]), 0.0)
+        h = float(h_of[i])
+        step = 1e-6 * max(p, 1.0)
+        lo = max(p - step, 1e-12)
+        content[i] = calculate_blood_oxygen_content(p, h)
+        slope[i] = (calculate_blood_oxygen_content(p + step, h)
+                    - calculate_blood_oxygen_content(lo, h)) / (p + step - lo)
+    return content, slope
+
+
+def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarray, s_incoming: np.ndarray, perf_config,
+                                 return_info: bool = False):
     """
+    Step 5: Solve the Non-Linear Steady-State Perfusion system for tissue PO2 (mmHg).
+
+    Each cell balances diffusion against blood delivery, washout and consumption, all in
+    mmol/L um^3/s:
+
+        F(P) = A P - s_incoming + q C(P) + M(P) V = 0
+
+    Solved by Newton's method with a backtracking line search. The Jacobian is A plus, on the
+    diagonal, the blood's slope q C'(P) and the metabolic slope; each step is a CG solve at
+    rtol 1e-10 under the Jacobi preconditioner; a step is halved until the residual norm falls.
+    The loop stops when the residual, scaled to mmHg by the Jacobian diagonal, is below the
+    tolerance relative to the field (``_relative_residual``, as in Tier 3).
+
+    This replaced a Picard loop with a fixed slope of 0.5 mmol/L per mmHg for q C'(P) that
+    stopped on the relative change between iterates (open item 22). With O2 solubility in the
+    diffusion the tissue is no longer tied to its neighbours strongly enough to hide the gap
+    between 0.5 and the real slope, which is near alpha on both flat ends of the curve: the loop
+    hit max_iter on WKY-A. Plain Newton overshoots there for the same reason (steps of 1000 mmHg
+    from a slope of alpha), hence the line search.
+
+    ``max_iter`` (50) and ``tolerance`` (1e-5) are still hard-coded; open item 6.
+    With ``return_info`` it also returns a dict with ``converged``, ``iterations`` (Newton
+    steps taken) and ``residual`` of the returned field.
+    """
+    import scipy.sparse as sp
     import scipy.sparse.linalg as splinalg
-    
+
     N = grid.n_cells
-    PO2 = np.zeros(N, dtype=np.float64) # Initial guess (0.0 mmHg everywhere)
-    
+
     M_max = perf_config.M_max
     k_reduce = perf_config.k_reduce
     V_cell = grid.cell_volume
-    
+
     # The venous washout is evaluated at systemic haematocrit, not at each cell's local
     # haematocrit, so in Tier 1 the washout is decoupled from phase separation. Read from the
     # config rather than written out here, so it cannot drift from the systemic value.
     h_baseline = perf_config.systemic_hematocrit
-    
+
     max_iter = 50
     tolerance = 1e-5
-    
-    logger.info("Initializing ILU preconditioner for steady-state solver...")
-    # Add a tiny diagonal regularizer to A to ensure ILU succeeds if entirely disconnected
-    A_reg = A.copy()
-    A_reg.setdiag(A_reg.diagonal() + 1e-6)
-    
-    # NUMERICAL STABILIZATION:
-    # Because A is purely diffusion, its rows sum to 0. Solving A*x = b fails if sum(b) != 0.
-    # The non-linear advective washout acts as a sink on the RHS, which is highly unstable for CG.
-    # We apply a mathematical trick: Add a linear pseudo-washout to the LHS diagonal,
-    # and add the exact same term to the RHS. The true steady-state roots remain identical,
-    # but the LHS matrix becomes strictly diagonally dominant and highly invertible.
-    # Increasing gamma_relax dampens the Picard step size, preventing sigmoidal oscillations.
-    gamma_relax = 0.5 # Effective linearized slope
-    pseudo_washout_diag = q_total * gamma_relax
-    A_stable = A_reg.copy()
-    A_stable.setdiag(A_stable.diagonal() + pseudo_washout_diag)
-    
-    M_pre = _jacobi_preconditioner(A_stable)
 
-    logger.info("Starting Non-Linear Picard Iteration loop solving for PO2...")
-    for iteration in range(max_iter):
-        PO2_clamped = np.maximum(PO2, 0.0)
-        
-        # 1. Compute non-linear metabolic sink based on current PO2
-        # M(PO2) = M_max * (1 - exp(-k * PO2))
-        M_reduced = M_max * (1.0 - np.exp(-k_reduce * PO2_clamped))
-        
-        # 2. Compute dynamic Advective Washout
-        # Voxel loses oxygen based on blood leaving at local tissue PO2
-        s_washout = np.zeros(N, dtype=np.float64)
-        for i in range(N):
-            if q_total[i] > 0:
-                c_venous = calculate_blood_oxygen_content(PO2_clamped[i], h_baseline)
-                s_washout[i] = q_total[i] * c_venous
-                
-        # 3. Construct the full RHS: b = Advection_In - Advection_Out - Metabolic_Sink + Pseudo_Washout
-        b = s_incoming - s_washout - (M_reduced * V_cell) + (pseudo_washout_diag * PO2_clamped)
-        
-        # 4. Solve the linear system A_stable * PO2_new = b
-        PO2_new, info = splinalg.cg(A_stable, b, M=M_pre, x0=PO2, rtol=1e-6, maxiter=1000)
-        
-        if info != 0:
-            logger.warning(f"CG Solver did not converge perfectly at iteration {iteration} (info={info})")
-            
-        # Prevent non-physical negative pressures which cause Picard oscillation
-        PO2_new = np.maximum(PO2_new, 0.0)
-        
-        # 5. Check convergence
-        diff = np.linalg.norm(PO2_new - PO2) / (np.linalg.norm(PO2_new) + 1e-12)
-        logger.debug(f"  Iteration {iteration+1}: Relative change = {diff:.6e}")
-        
-        PO2 = PO2_new
-        
-        if diff < tolerance:
-            logger.info(f"Steady-state perfusion converged successfully after {iteration+1} iterations.")
+    # A tiny diagonal regulariser: pure diffusion under Neumann boundaries has a null space.
+    # Still far below the face conductances (about 8 at 4 um with alpha).
+    A_reg = (A + sp.identity(N, format="csr") * 1e-6).tocsr()
+    perfused = np.flatnonzero(np.asarray(q_total) > 0)
+
+    def balance(P):
+        content, slope = _content_and_slope(P, h_baseline, perfused)
+        consumption = M_max * (1.0 - np.exp(-k_reduce * P)) * V_cell
+        net_source = s_incoming - q_total * content - consumption
+        jacobian_diag = q_total * slope + M_max * k_reduce * np.exp(-k_reduce * P) * V_cell
+        return A_reg @ P - net_source, net_source, jacobian_diag
+
+    PO2 = np.zeros(N, dtype=np.float64)  # Initial guess (0.0 mmHg everywhere)
+    F, net_source, jac_diag = balance(PO2)
+    converged = False
+    residual = np.inf
+
+    logger.info("Starting Newton iteration solving for PO2...")
+    # One pass more than max_iter steps: the last pass only measures the returned field.
+    for iteration in range(max_iter + 1):
+        residual = _relative_residual(A_reg, PO2, net_source, A_reg.diagonal() + jac_diag)
+        logger.debug(f"  Newton step {iteration}: scaled residual = {residual:.6e}")
+        if residual < tolerance:
+            converged = True
+            logger.info(f"Steady-state perfusion converged after {iteration} Newton steps "
+                        f"(residual {residual:.2e}).")
             break
-    else:
-        logger.warning(f"Picard iteration hit max_iter ({max_iter}) without reaching tolerance {tolerance}.")
+        if iteration == max_iter:
+            break
 
+        J = (A_reg + sp.diags(jac_diag)).tocsr()
+        step, info = splinalg.cg(J, -F, M=_jacobi_preconditioner(J), rtol=1e-10, maxiter=20000)
+        if info != 0:
+            logger.warning(f"CG did not reach rtol 1e-10 at Newton step {iteration} (info={info}).")
+
+        # Backtracking on the residual norm. PO2 is clipped at 0 (a pressure).
+        norm_F = np.linalg.norm(F)
+        lam = 1.0
+        while True:
+            trial = np.maximum(PO2 + lam * step, 0.0)
+            F_trial, net_trial, jac_trial = balance(trial)
+            if np.linalg.norm(F_trial) < (1.0 - 1e-4 * lam) * norm_F or lam < 1e-4:
+                break
+            lam *= 0.5
+        PO2, F, net_source, jac_diag = trial, F_trial, net_trial, jac_trial
+
+    if not converged:
+        logger.warning(f"Newton iteration hit max_iter ({max_iter}) without reaching tolerance "
+                       f"{tolerance}: residual {residual:.2e}.")
+
+    if return_info:
+        return PO2, {"converged": converged, "iterations": int(iteration), "residual": float(residual)}
     return PO2
 
 #: Past iterates the Tier 3 Anderson step combines (open item 23).
@@ -925,7 +975,7 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     arterial_state = {"po2": po2_art, "pco2": pco2_art, "o2_pco2": pco2_art,
                       "o2_ph": calculate_ph_from_pco2(pco2_art, hco3_tissue)}
 
-    alpha_o2 = 1.34e-3 # mmol/L per mmHg
+    alpha_o2 = ALPHA_O2_MMOL_PER_L_MMHG
     alpha_co2 = 0.03 # mmol/L per mmHg
 
     def build_diffusion_matrix(sigma_diff, alpha):
@@ -1135,8 +1185,9 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
     Solve the Fully Coupled 1D-3D Steady-State Perfusion system using Picard Iteration.
     Solves for tissue PO2 (mmHg) and Blood PO2 simultaneously using an endothelial barrier model.
 
-    Edge flow is converted to um^3/s as in ``solve_multi_species_perfusion``. The wall flux and
-    the diffusion matrix still leave out O2 solubility (open item 22).
+    Edge flow is converted to um^3/s as in ``solve_multi_species_perfusion``. The wall flux
+    (P S alpha dPO2) and the diffusion matrix carry O2 solubility, as Tier 3's do; both used to
+    leave it out, so this tier's wall and diffusion were about 750 times Tier 3's (open item 22).
     """
     import scipy.sparse as sp
     import scipy.sparse.linalg as splinalg
@@ -1147,11 +1198,12 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
     nz_dim, ny_dim, nx_dim = grid.dims
     res = grid.res
     
-    sigma_diff_um2_s = perf_config.sigma_diff * 1e12
+    alpha_o2 = ALPHA_O2_MMOL_PER_L_MMHG
+    sigma_alpha = perf_config.sigma_diff * 1e12 * alpha_o2
     # res is (rz, ry, rx); the z conductance uses the y-x face. See build_adr_matrix.
-    D_z = sigma_diff_um2_s * (res[1] * res[2]) / res[0]
-    D_y = sigma_diff_um2_s * (res[0] * res[2]) / res[1]
-    D_x = sigma_diff_um2_s * (res[0] * res[1]) / res[2]
+    D_z = sigma_alpha * (res[1] * res[2]) / res[0]
+    D_y = sigma_alpha * (res[0] * res[2]) / res[1]
+    D_x = sigma_alpha * (res[0] * res[1]) / res[2]
     
     rows, cols, data = [], [], []
     diag_A = np.zeros(N, dtype=np.float64)
@@ -1217,11 +1269,11 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
         area_total[cell_idx] = sum(v['surface_area'] for v in vessels)
         
     A_stable = A.copy()
-    # The true linear sink of Tissue PO2 is the trans-mural flux: -P_perm * Area * Tissue_PO2.
+    # The true linear sink of Tissue PO2 is the trans-mural flux: -P_perm * Area * alpha * Tissue_PO2.
     # By placing this exactly on the diagonal, the matrix is strictly diagonally dominant.
     # We add 1.0 to gamma_relax to ensure aggressive dampening against the non-linear Hill inversion.
     gamma_relax = 1.0
-    pseudo_washout_diag = P_perm * area_total * gamma_relax
+    pseudo_washout_diag = P_perm * area_total * alpha_o2 * gamma_relax
     A_stable.setdiag(A_stable.diagonal() + pseudo_washout_diag)
     
     M_pre = _jacobi_preconditioner(A_stable)
@@ -1256,7 +1308,7 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
                 
                 c_current = c_mix
                 for cell in edge_to_cells.get(edge_key, []):
-                    flux = P_perm * cell['surface_area'] * max(0.0, po2_current - PO2_clamped[cell['cell_idx']])
+                    flux = P_perm * cell['surface_area'] * alpha_o2 * max(0.0, po2_current - PO2_clamped[cell['cell_idx']])
                     if q > 0:
                         c_current = max(0.0, c_current - (flux / q))
                         try:

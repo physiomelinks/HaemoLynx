@@ -330,7 +330,8 @@ def test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weigh
     import networkx as nx_lib
     import numpy as np
 
-    from ImageLynx.haemodynamics.perfusion import PerfusionGrid, build_adr_matrix
+    from ImageLynx.haemodynamics.perfusion import (
+        ALPHA_O2_MMOL_PER_L_MMHG, PerfusionGrid, build_adr_matrix)
 
     class _Config:
         sigma_diff = 1.5e-9
@@ -351,7 +352,8 @@ def test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weigh
 
     matrix = build_adr_matrix(grid, {}, _Config())[0]
     res = grid.res
-    sigma = _Config.sigma_diff * 1e12
+    # D alpha: the conductance takes a PO2 difference to an O2 flux (open item 22).
+    sigma = _Config.sigma_diff * 1e12 * ALPHA_O2_MMOL_PER_L_MMHG
     expected = {
         "z": sigma * (res[1] * res[2]) / res[0],
         "y": sigma * (res[0] * res[2]) / res[1],
