@@ -216,19 +216,10 @@ def test_the_example_yamls_carry_the_same_wall_permeabilities_and_metabolic_rate
     yaml = pytest.importorskip("yaml")
     config = _pipeline_perfusion_config()
 
-    def find(node, key):
-        if isinstance(node, dict):
-            if key in node:
-                return node[key]
-            for child in node.values():
-                found = find(child, key)
-                if found is not None:
-                    return found
-        return None
-
     loaded = yaml.safe_load((Path(__file__).parent.parent / "examples" / name).read_text())
+    perf = loaded["PerfusionConfig"]
     for key in ("permeability_o2_cm_s", "permeability_co2_cm_s", "M_max"):
-        assert float(find(loaded, key)) == getattr(config, key), key
+        assert float(perf[key]) == getattr(config, key), key
 
 
 def test_the_multi_species_solver_runs_at_the_corrected_co2_values():

@@ -54,9 +54,6 @@ PerfusionConfig:
   do_perfusion_modeling: true
   use_endothelial_barrier_model: true
   use_multi_species_model: true
-
-PipelineConfig:
-  run_benchmarking: true
   
   # 3D Tissue Grid Resolution (in micrometers)
   grid_resolution_xyz: [10.0, 10.0, 10.0] 
@@ -93,3 +90,6 @@ PipelineConfig:
   # ------------------------------------------------------------------
   picard_max_iterations: 200
   picard_tolerance: 1.0e-4
+
+PipelineConfig:
+  run_benchmarking: true
