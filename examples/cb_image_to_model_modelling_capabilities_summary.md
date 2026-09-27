@@ -349,7 +349,7 @@ Tissue metabolic consumption follows a saturating exponential:
 $$M(PO_2) = M_{\text{max}} \cdot \left(1 - e^{-k \cdot PO_2}\right)$$
 
 where:
-- $M_{\text{max}} = 0.005$ mmol/L/s (maximum metabolic rate),
+- $M_{\text{max}} = 0.05$ mmol/L/s (maximum metabolic rate),
 - $k = 0.1$ per mmol (reduction constant for hypoxic zones).
 
 > **Assumption**: This is a phenomenological model, not a Michaelis–Menten kinetic model. The exponential form ensures consumption approaches zero as $PO_2$ → 0 and saturates at $M_{\text{max}}$ for high $PO_2$. A Michaelis–Menten form ($M = M_{\text{max}} \cdot PO_2 / (K_m + PO_2)$) is more commonly used in the literature for mitochondrial oxygen consumption.
@@ -511,7 +511,7 @@ Boundary nodes are auto-selected by finding **dead-end nodes** (degree-1) locate
 | $P_{50}$ (baseline) | $P_{50}$ | 26.0 | mmHg | At pH 7.4, $PCO_2$ 40 mmHg |
 | $O_2$ plasma solubility | $\alpha_{O_2}$ | $1.34 \times 10^{-3}$ | mmol/L per mmHg | Henry's Law |
 | $CO_2$ plasma solubility | $\alpha_{CO_2}$ | 0.03 | mmol/L per mmHg | Henry's Law |
-| Max metabolic rate | $M_{\text{max}}$ | 0.005 | mmol/L/s | Phenomenological |
+| Max metabolic rate | $M_{\text{max}}$ | 0.05 | mmol/L/s | Phenomenological |
 | Metabolic reduction constant | $k$ | 0.1 | per mmol | Phenomenological |
 | Respiratory quotient | $RQ$ | 0.82 | dimensionless | Mixed substrate metabolism |
 | Tissue bicarbonate | $[HCO_3^-]$ | 24.0 | mmol/L | Normal plasma |

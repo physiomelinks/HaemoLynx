@@ -656,7 +656,7 @@ Tissue metabolic consumption follows a saturating exponential:
 $$M(PO_2) = M_{\text{max}} \cdot \left(1 - e^{-k \cdot PO_2}\right)$$
 
 where:
-- $M_{\text{max}} = 0.005$ mmol/L/s (maximum metabolic rate),
+- $M_{\text{max}} = 0.05$ mmol/L/s (maximum metabolic rate),
 - $k = 0.1$ per mmol (reduction constant for hypoxic zones),
 - $PO_2$ is clamped to $\geq 0$ before evaluation.
 
@@ -1074,7 +1074,7 @@ For each node tagged with `is_robin_boundary=True`:
 | Bohr shift coefficient (pH) | — | −0.4 | per pH unit | Kelman (1966) / Severinghaus (1979) |
 | Bohr shift coefficient ($PCO_2$) | — | 0.06 | per log unit | Kelman (1966) / Severinghaus (1979) |
 | Henderson-Hasselbalch $pK_a$ | $pK_a$ | 6.1 | dimensionless | Carbonic acid |
-| Max metabolic rate | $M_{\text{max}}$ | 0.005 | mmol/L/s | Phenomenological |
+| Max metabolic rate | $M_{\text{max}}$ | 0.05 | mmol/L/s | Phenomenological |
 | Metabolic reduction constant | $k$ | 0.1 | per mmol | Phenomenological |
 | Respiratory quotient | $RQ$ | 0.82 | dimensionless | Mixed substrate metabolism |
 | Tissue bicarbonate | $[HCO_3^-]$ | 24.0 | mmol/L | Normal plasma |

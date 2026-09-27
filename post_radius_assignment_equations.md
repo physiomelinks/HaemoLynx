@@ -168,7 +168,7 @@ Listed in execution order for the default configuration.
 | $\sigma_{\mathrm{CO_2}}$ | `sigma_diff_co2` | $1.6\times10^{-9}$ ($=1.6\times10^{3}$ µm²·s⁻¹) | m²·s⁻¹ | $K_{\mathrm{CO_2}}/\alpha_{\mathrm{CO_2}} \approx 1.6\times10^{-9}$ in rat skeletal muscle [@kawashiro1975]. CO₂'s ≈20× faster transport comes from $\alpha$, not $D$; see `cb_modelling_reference.md` open item 18 |
 | $P^{\mathrm{O_2}}_{\text{perm}}$ | `permeability_o2_cm_s` | $9.1\times10^{-2}$ ($=910$ µm·s⁻¹) | cm·s⁻¹ | [@liu_oxygen_1994]: measured O₂ mass-transfer coefficient $k = 1.22\times10^{-10}$ mol·cm⁻²·s⁻¹·mmHg⁻¹ (cultured human umbilical vein endothelium, 37 °C), divided by $\alpha_{\mathrm{O_2}}$ so that the wall flux equals $k\,S\,\Delta P$. See `cb_modelling_reference.md` open items 19–21 |
 | $P^{\mathrm{CO_2}}_{\text{perm}}$ | `permeability_co2_cm_s` | $9.1\times10^{-2}$ ($=910$ µm·s⁻¹) | cm·s⁻¹ | Equal to $P^{\mathrm{O_2}}_{\text{perm}}$: [@dash2006] use one capillary PS for both O₂ and CO₂; see `cb_modelling_reference.md` open items 18 and 19 |
-| $M_{\max}$ | `M_max` | 0.005 | mmol·L⁻¹·s⁻¹ | Chosen; see `cb_modelling_reference.md` §10.9 and open item 8 |
+| $M_{\max}$ | `M_max` | 0.05 | mmol·L⁻¹·s⁻¹ | Chosen; same as `cb_settings.BASE_M_MAX` (was 0.005 until open item 8). See `cb_modelling_reference.md` §10.9 |
 | $k$ | `k_reduce` | 0.1 | mmHg⁻¹ | Chosen; phenomenological, see `cb_modelling_reference.md` §10.9 |
 | $RQ$ | `respiratory_quotient` | 0.82 | — | [@mileschan2015]: fasting whole-body RQ ≈ 0.80–0.90, depending on diet (human). Measured 0.85 in rat skeletal muscle [@kawashiro1975] |
 | $\gamma$ | Picard relaxation factor, multi-species | 1.0 | — | Numerical choice |
