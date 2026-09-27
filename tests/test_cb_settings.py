@@ -10,7 +10,7 @@ Two things are tested here.
 1. No driver defines those constants as literals any more. A shared module only helps if
    nobody reintroduces a local copy.
 2. The remaining config-versus-settings disagreements are *exactly* the ones recorded as
-   open items 1 and 10 - no more, and with the values the reference document states.
+   open item 1 - no more, and with the values the reference document states.
    These are pinned rather than fixed because every published H1 and H2 number was produced
    at the settings values, and silently changing the config default would make the document
    wrong rather than making the code right.
@@ -68,7 +68,7 @@ def test_no_driver_redefines_an_owned_constant_as_a_literal(path):
 
 
 def test_pressure_pair_is_the_one_the_published_numbers_used():
-    """60/20 mmHg, arteriolar to venular. Open item 10 records the config's 100/2."""
+    """60/20 mmHg, arteriolar to venular. The pipeline config reads it too (open item 10)."""
     assert cb_settings.INLET_PRESSURE_MMHG == 60.0
     assert cb_settings.OUTLET_PRESSURE_MMHG == 20.0
 
@@ -110,11 +110,6 @@ def test_known_config_disagreements_are_exactly_the_recorded_open_items():
         assert m, f"{field} not found in carotid_image_to_model.py"
         return float(m.group(1))
 
-    # open item 10 - pressures. The config stores them in mPa, so convert to compare:
-    # 1 mmHg = 133.322387415 Pa = 1.33322387415e5 mPa.
-    mpa_per_mmhg = 133.322387415e3
-    assert default_of("input_p_bc") / mpa_per_mmhg == pytest.approx(100.0, abs=0.05)
-    assert default_of("output_p_bc") / mpa_per_mmhg == pytest.approx(2.0, abs=0.05)
     # open item 1 - hysteresis band, superseded at run time by the frozen threshold
     assert default_of("hysteresis_threshold_low") == 0.65
     assert default_of("hysteresis_threshold_high") == 0.75
@@ -127,6 +122,33 @@ def test_pipeline_and_h2_share_the_perfusion_stop_settings():
     config, settings = PerfusionConfig(), cb_settings.PerfusionSettings()
     assert config.picard_tolerance == settings.picard_tolerance == 1e-5
     assert config.picard_max_iterations == settings.picard_max_iterations == 50
+
+
+#: 1 mmHg = 133.322387415 Pa = 1.33322387415e5 mPa, the unit the pipeline config uses.
+_MPA_PER_MMHG = 133.322387415e3
+
+
+def test_pipeline_and_h2_share_the_pressure_boundaries():
+    """Open item 10: the pipeline config said 100/2 mmHg while the H2 drivers ran at 60/20."""
+    from carotid_image_to_model import HaemodynamicsConfig
+
+    config = HaemodynamicsConfig()
+    assert config.input_p_bc / _MPA_PER_MMHG == pytest.approx(cb_settings.INLET_PRESSURE_MMHG)
+    assert config.output_p_bc / _MPA_PER_MMHG == pytest.approx(cb_settings.OUTLET_PRESSURE_MMHG)
+    assert (cb_settings.INLET_PRESSURE_MMHG, cb_settings.OUTLET_PRESSURE_MMHG) == (60.0, 20.0)
+
+
+@pytest.mark.parametrize("name", ["config_WKY_normotensive.yaml", "config_SHR_hypertensive.yaml"])
+def test_the_example_yamls_carry_the_pressure_boundaries(name):
+    """Both YAMLs restate the pressures in mPa; a stale copy would override the config."""
+    yaml = pytest.importorskip("yaml")
+    from carotid_image_to_model import HaemodynamicsConfig
+
+    config = HaemodynamicsConfig()
+    loaded = yaml.safe_load((REPO / "examples" / name).read_text(encoding="utf-8"))
+    hemo = loaded["HaemodynamicsConfig"]
+    assert float(hemo["input_p_bc"]) == pytest.approx(config.input_p_bc, rel=1e-6)
+    assert float(hemo["output_p_bc"]) == pytest.approx(config.output_p_bc, rel=1e-6)
 
 
 def test_pipeline_and_h2_share_the_metabolic_rate():

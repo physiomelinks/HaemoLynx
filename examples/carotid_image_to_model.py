@@ -22,7 +22,7 @@ root_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
-from ImageLynx import graph, haemodynamics, io, preprocessing, specimens, statistics, visualization
+from ImageLynx import cb_settings, graph, haemodynamics, io, preprocessing, specimens, statistics, visualization
 from ImageLynx.haemodynamics.resistance import PASCALS_PER_MMHG
 
 # ---------------------------
@@ -256,8 +256,10 @@ class HaemodynamicsConfig:
     constrict_at_pericytes: bool = False
     # To match dimensions of viscosity (mPa*s) and lengths (um) yielding flow (Q) in um^3/s:
     # Pressure must be provided in milliPascals (mPa).
-    input_p_bc: float = 13.332e6 ### mPa (MAP of 100 mmHg = 13.332 kPa = 13.332e6 mPa)
-    output_p_bc: float = 0.27e6 ### mPa (CVP of 2 mmHg = 0.267 kPa = 0.27e6 mPa)
+    # Arteriolar 60 mmHg in, venular 20 mmHg out, the pair every published H2 number used.
+    # cb_settings owns both; this was MAP to CVP (100/2 mmHg) until open item 10.
+    input_p_bc: float = cb_settings.INLET_PRESSURE_MMHG * PASCALS_PER_MMHG * 1e3 ### mPa (60 mmHg = 7.999e6 mPa)
+    output_p_bc: float = cb_settings.OUTLET_PRESSURE_MMHG * PASCALS_PER_MMHG * 1e3 ### mPa (20 mmHg = 2.666e6 mPa)
     diameter_by_branch_order: dict = field(default_factory=dict)
     
     # --- Baseline Radius Assignment ---

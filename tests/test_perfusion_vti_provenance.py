@@ -38,10 +38,11 @@ def test_tier_3_records_its_solver_rate_pressures_and_tolerance():
     assert tags["perfusion_solver"] == "solve_multi_species_perfusion"
     assert tags["perfusion_M_max"] == perf.M_max
     assert tags["perfusion_picard_tolerance"] == perf.picard_tolerance
-    # Config pressures are in mPa; the tag is in mmHg. 13.332e6 mPa is 100 mmHg, 0.27e6 is ~2.03.
-    assert tags["perfusion_inlet_pressure_mmHg"] == pytest.approx(100.0, abs=0.01)
-    assert tags["perfusion_outlet_pressure_mmHg"] == pytest.approx(2.025, abs=0.01)
+    # Config pressures are in mPa; the tag is in mmHg. The defaults are 60/20 mmHg (open item 10).
+    assert tags["perfusion_inlet_pressure_mmHg"] == pytest.approx(60.0)
+    assert tags["perfusion_outlet_pressure_mmHg"] == pytest.approx(20.0)
     assert tags["perfusion_inlet_pressure_mmHg"] * 133322.387415 == pytest.approx(hemo.input_p_bc)
+    assert tags["perfusion_outlet_pressure_mmHg"] * 133322.387415 == pytest.approx(hemo.output_p_bc)
 
 
 @pytest.mark.parametrize("tier", [1, 2, 3])

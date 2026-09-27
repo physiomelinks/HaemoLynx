@@ -9,10 +9,11 @@ HaemodynamicsConfig:
   # ------------------------------------------------------------------
   # Blood Flow Physics & Boundary Conditions
   # ------------------------------------------------------------------
-  # Normal Mean Arterial Pressure (100 mmHg MAP)
-  input_p_bc: 13.332e6 # mPa
-  # Normal Central Venous Pressure (2 mmHg CVP)
-  output_p_bc: 0.27e6 # mPa
+  # Arteriolar inlet pressure (60 mmHg), the same for all six specimens
+  # (cb_settings.INLET_PRESSURE_MMHG, open item 10)
+  input_p_bc: 7.999343e6 # mPa
+  # Venular outlet pressure (20 mmHg; cb_settings.OUTLET_PRESSURE_MMHG)
+  output_p_bc: 2.666448e6 # mPa
   
   # ------------------------------------------------------------------
   # Baseline Radius Assignment

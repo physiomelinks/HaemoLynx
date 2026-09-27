@@ -9,7 +9,8 @@ same defect in different clothes: a driver constant that had silently drifted fr
     open item 2   two boundary rules: band on axis 0 in H1, face on axis 1 in H2
     open item 8   ``M_max`` 10x apart: PerfusionConfig 0.005 against the driver's 0.05 (closed:
                   PerfusionConfig now declares 0.05 too)
-    open item 10  pressures: config 100/2 mmHg against the drivers' 60/20 mmHg
+    open item 10  pressures: config 100/2 mmHg against the drivers' 60/20 mmHg (closed:
+                  HaemodynamicsConfig now reads 60/20 from here)
 
 A shared module does not by itself decide which value is right. What it does is make the
 disagreement impossible to reintroduce silently: there is now exactly one place to change,
@@ -96,10 +97,10 @@ BOUNDARY_FACE_TOLERANCE_VOXELS: float = 1.0
 
 #: Arteriolar to venular, in mmHg. Every published H2 number used this pair.
 #:
-#: ``HaemodynamicsConfig`` still declares 100/2 mmHg, which assumes the entire systemic
-#: arterial-to-venous drop falls across ~1 mm of tissue. It does not; most of it falls
-#: across the arterial tree upstream and the venous tree downstream. The two disagree by
-#: 2.45x in driving pressure, which is open item 10.
+#: ``HaemodynamicsConfig`` declared 100/2 mmHg until open item 10, which assumes the entire
+#: systemic arterial-to-venous drop falls across ~1 mm of tissue. It does not; most of it
+#: falls across the arterial tree upstream and the venous tree downstream. The config now
+#: takes its defaults from these two values.
 #:
 #: Neither choice rescues absolute perfusion. Measured across all six at 60/20, total inlet
 #: flow runs 6,511-16,240 um^3/s at flow-weighted velocities of 4.1-9.7 um/s, against a
