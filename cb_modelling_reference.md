@@ -1968,7 +1968,7 @@ scaled versions of each other.
 |---|---|---|---|
 | 1 | `solve_perfusion_steady_state` | O₂ only; blood as a well-mixed source and sink per cell | **Active** — this is what §2.3 runs |
 | 2 | `solve_coupled_1d3d_perfusion` | O₂ across an endothelial permeability barrier | **Implemented, unreachable** — the dispatch is `if multi_species … elif barrier …`, and multi-species is also on |
-| 3 | `solve_multi_species_perfusion` | O₂, CO₂ and pH, linked by the respiratory quotient | Reachable; reads Picard settings from config where Tier 1 hard-codes them |
+| 3 | `solve_multi_species_perfusion` | O₂, CO₂ and pH, linked by the respiratory quotient | Reachable. All three tiers read their step cap and tolerance from config (open item 6) |
 
 > **Tier 3 history.** Its march along each vessel used edge flow in the flow solver's units, not
 > µm³/s, so blood gave up its gas in the first cell whatever the flow (open item 20, fixed). With the
@@ -2000,8 +2000,18 @@ $$F(P) = \mathbf{A}P - s_\text{incoming} + q_\text{total}\,C_{\mathrm{O_2}}(P) +
 
 and each step solves $(\mathbf{A} + \operatorname{diag}(q\,C'(P) + M'(P)\,V))\,\Delta P = -F(P)$ by
 Jacobi-preconditioned CG at `rtol` 10⁻¹⁰, then halves the step until $\lVert F \rVert$ falls. It stops
-when the largest cell imbalance, divided by its Jacobian diagonal (so in mmHg), is below 10⁻⁵ of the
-largest PO₂: the same test as Tier 3 (`_relative_residual`).
+when the largest cell imbalance, divided by its Jacobian diagonal (so in mmHg), is below
+`picard_tolerance` (10⁻⁵) of the largest PO₂: the same test as Tier 3 (`_relative_residual`). The cap
+and tolerance come from the config (`PerfusionConfig`, and `cb_settings.PerfusionSettings` for H2),
+both at 50 and 10⁻⁵; they were hard-coded at those values until open item 6.
+
+**What 10⁻⁵ leaves** (open item 6, WKY-A, §2.3 setup at contrasts 1, 2, 4). Newton takes the
+residual from above 10⁻⁴ to ≈5 × 10⁻⁶ in one step, so 10⁻⁴ and 10⁻⁵ stop at the same step (9) and
+return the same field, which matches the published §2.3 numbers exactly. Against a 10⁻⁸ solve (10–11
+steps) the returned field is up to 0.07–0.10 mmHg off in a single cell, medians (all, TH, stroma) at
+most 0.009 mmHg, hypoxic fractions at most 0.021 percentage points (all cells) and 0.014 (TH). A
+residual of 10⁻⁵ is a local mmHg correction per cell; diffusion spreads it, so the field error is
+larger than the residual suggests. It is well below the grid error (§6.8, §13.7).
 
 Until open item 22 Tier 1 was a Picard loop with a **pseudo-washout**: $q_\text{total}\,\gamma$ on the
 diagonal and $q_\text{total}\,\gamma\,P$ on the right, γ = 0.5, stopping on the relative change between
@@ -2029,8 +2039,12 @@ is divided by the same diagonal (diffusion plus blood response plus metabolic sl
 pressure correction it needs; the loop stops when the largest, relative to the largest pressure, is
 below `picard_tolerance` for both gases. The step between iterates says little when the loop is
 slow: at 10⁻⁴ it stopped the chain 1.7 mmHg short. The check is made on the field that is returned.
-Iterations to the default 10⁻⁴: 9–19 on the test networks (Y network, plasma-skimmed branch,
-merging inlets, chain), 11 on WKY-A; the returned fields sit within 0.023 mmHg of a 10⁻¹² solve.
+Iterations to 10⁻⁴, the default until open item 6: 9–19 on the test networks (Y network,
+plasma-skimmed branch, merging inlets, chain), 11 on WKY-A; the returned fields sit within 0.023 mmHg
+of a 10⁻¹² solve. The default is now 10⁻⁵, the value Tier 1 uses (open item 6). On a fresh WKY-A
+pipeline run 10⁻⁵ takes 4 iterations (residual 2.3 × 10⁻⁶) against 3 at 10⁻⁴, and moves tissue PO₂
+by up to 0.29 mmHg (mean 0.03; minimum 78.15 → 78.44, mean 96.79 → 96.82), PCO₂ by up to 0.003 mmHg.
+So 10⁻⁴ left more than the 0.02 mmHg the test networks suggested.
 The `.vti` records whether it converged, the iterations and the final residual.
 
 **PO₂ is clamped to ≥ 0** at each iteration. Negative values are non-physical and drive Picard
@@ -2046,10 +2060,10 @@ The loop warns rather than raising if it hits its iteration cap without reaching
 | 2 | Add a diagonal regulariser to A | 10⁻⁶ | Pure diffusion under Neumann boundaries is singular. Still ≪ the face conductances (≈8 at 4 µm) | **On**, once | `solve_perfusion_steady_state` |
 | 3 | Metabolic sink $M_\text{max}\bigl(1 - e^{-k P_{\mathrm{O_2}}}\bigr)$ and its slope | k = 0.1 | The sink saturates with PO₂, so it is re-evaluated from the current iterate | **On** | `balance` |
 | 4 | Washout $q_\text{total} \cdot C_{\mathrm{O_2}}(P_{\mathrm{O_2}}, H_\text{cell})$ and its slope $q\,C'$ per perfused cell | $H_\text{cell}$ = `cell_hematocrit`, the cell's flow-weighted haematocrit (required; raises if missing or outside [0, 1]) | Blood leaves each cell at the local tissue PO₂, on the same content curve its source used (open item 29). The slope is a central difference of `calculate_blood_oxygen_content` (`_content_and_slope`) | **On** — §11 row 27 | `balance` |
-| 5 | Residual $F$ and the scaled stop test | tol 10⁻⁵ | Imbalance ÷ Jacobian diagonal is the mmHg correction each cell needs; relative to max PO₂ | **On** | `_relative_residual` |
+| 5 | Residual $F$ and the scaled stop test | `picard_tolerance` 10⁻⁵ | Imbalance ÷ Jacobian diagonal is the mmHg correction each cell needs; relative to max PO₂. Leaves ≤ 0.10 mmHg against a 10⁻⁸ solve on WKY-A | **On** | `_relative_residual` |
 | 6 | Newton direction: CG on $\mathbf{A} + \operatorname{diag}(q C' + M' V)$, Jacobi preconditioner | `rtol` 10⁻¹⁰, `maxiter` 20 000 | Exact enough that the direction, not the inner solve, limits convergence. A shortfall warns | **On** | `solve_perfusion_steady_state` |
 | 7 | Backtracking line search, clamp PO₂ ≥ 0 | halve until ‖F‖ falls (Armijo 10⁻⁴), down to 10⁻⁴ | Newton on the sigmoid overshoots where C′ ≈ α | **On** | `solve_perfusion_steady_state` |
-| 8 | Hitting `max_iter` warns and returns the last iterate; `return_info` reports it | 50 | A solve that ran out of iterations is a different object from a converged one | **On** — open item 6 | `solve_perfusion_steady_state` |
+| 8 | Hitting `max_iter` warns and returns the last iterate; `return_info` reports it | `picard_max_iterations` 50 | A solve that ran out of iterations is a different object from a converged one | **On** | `solve_perfusion_steady_state` |
 
 **Step 4 is a Python loop over the perfused cells**, about 3% of the grid on WKY-A (13 k of 439 k),
 so it no longer dominates the runtime; the CG solves do.
@@ -2348,7 +2362,7 @@ contrast swept at **1×, 2× and 4×**; grid at 3 µm, vessels mapped over their
 | 4 | Build the perfusion grid (§6.1) | 3 µm | The tissue field needs a discretisation. 3 µm is the coarsest grid within 0.5 mmHg of the next refinement once vessels are mapped over their cross-section (§6.8, open item 30) | **On** | `cb_h2_hypoxic_fraction.py:116` |
 | 5 | Per-cell TH volume fraction, then the blended `M_max` field (§6.5) | c ∈ {1, 2, 4} | A heterogeneous metabolic field is the entire mechanism this method proposes to detect | **On** | `cb_h2_hypoxic_fraction.py:117` |
 | 6 | Map vessels to the grid (§6.2), assemble the operator (§6.3) | `cross_section` | Couples the 1D network to the 3D tissue and assembles the operator that will be solved | **On** | `cb_h2_hypoxic_fraction.py:126` |
-| 7 | Picard solve for the tissue PO₂ field (§6.7) | 50 iterations, tol 1e-5 | Metabolism saturates with PO₂, so the system is non-linear and needs iteration rather than one solve | **On** | `cb_h2_hypoxic_fraction.py:128` |
+| 7 | Newton solve for the tissue PO₂ field (§6.7) | 50 steps, tol 1e-5 (`PerfusionSettings`) | Metabolism saturates with PO₂, so the system is non-linear and needs iteration rather than one solve | **On** | `cb_h2_hypoxic_fraction.py:128` |
 | 8 | Report the share of cells with no oxygen source at all | — | Padding the grid raises this share by construction, so it is reported rather than left to be inferred from the PO₂ distribution | **On**, diagnostic | `cb_h2_hypoxic_fraction.py:102` |
 | 9 | Hypoxic fraction = TH-weighted volume below each threshold | 5, 10, 20 mmHg | Weighting by TH occupancy rather than by cell count is what makes it a fraction of glomus volume rather than of grid | **On** | `cb_h2_hypoxic_fraction.py:145` |
 
@@ -3160,7 +3174,8 @@ resolved, but barely. Only the p90 tail, 25.9–53.1 µm, spans a comfortable nu
 Refining was tested (§6.8, open item 30). With each vessel mapped to the cells its centreline
 crosses, a finer grid drew a thinner vessel and PO₂ kept falling, about 1.5–1.9 mmHg per halving
 down to 2 µm. With vessels mapped over their cross-section the field settles: every measure moves
-at most 0.21 mmHg from 3 to 2 µm. The short gradient is still the physical limit.
+at most 0.21 mmHg from 3 to 2 µm. The short gradient is still the physical limit. The Newton
+stop at 10⁻⁵ adds at most 0.10 mmHg per cell on WKY-A, 0.009 mmHg in the medians (§6.7, open item 6).
 
 ### 13.8 Calibre is not a reportable H1 finding
 
@@ -3312,8 +3327,8 @@ tuning opportunity.
 
 | Setting | Value | Where | Notes |
 |---|---|---|---|
-| Newton max iterations | 50 | hard-coded in `solve_perfusion_steady_state` | Duplicates `picard_max_iterations` |
-| Tolerance | 1 × 10⁻⁵ | hard-coded | Max cell residual in mmHg / max PO₂ (`_relative_residual`), as Tier 3; was the relative L2 change until open item 22. **Differs from `PerfusionConfig.picard_tolerance` = 1 × 10⁻⁴** |
+| Newton max iterations | 50 | `picard_max_iterations` (`PerfusionConfig`; `PerfusionSettings` for H2) | Hard-coded until open item 6 |
+| Tolerance | 1 × 10⁻⁵ | `picard_tolerance` (same) | Max cell residual in mmHg / max PO₂ (`_relative_residual`), as Tier 3; was the relative L2 change until open item 22, and hard-coded until open item 6. On WKY-A the field is within 0.10 mmHg per cell, 0.009 mmHg in the medians and 0.021 percentage points in the hypoxic fractions of a 10⁻⁸ solve; 10⁻⁴ returns the same field (§6.7) |
 | Line search | halve until ‖F‖ falls, Armijo 10⁻⁴, floor 10⁻⁴ | hard-coded | Replaced the Picard relaxation γ = 0.5 (open item 22) |
 | CG relative tolerance | 1 × 10⁻¹⁰ | hard-coded | Per Newton step; was 1 × 10⁻⁶ |
 | CG max iterations | 20 000 | hard-coded | Was 1 000 |
@@ -3334,13 +3349,11 @@ tuning opportunity.
 
 | Setting | Value | Where | Notes |
 |---|---|---|---|
-| `picard_max_iterations` | 50 | `PerfusionConfig` | Agrees with the hard-coded Tier 1 value |
-| `picard_tolerance` | 1 × 10⁻⁴ | `PerfusionConfig` | Does **not** agree with Tier 1's hard-coded 1 × 10⁻⁵. In Tier 3 it bounds the relative residual, not the step (open item 23); ≈0.02 mmHg from the fixed point on WKY-A |
+| `picard_max_iterations` | 50 | `PerfusionConfig`, `cb_settings.PerfusionSettings` | Read by all three tiers: Newton steps in Tier 1, Picard passes in Tiers 2 and 3 |
+| `picard_tolerance` | 1 × 10⁻⁵ | `PerfusionConfig`, `cb_settings.PerfusionSettings` | Read by all three tiers. Tiers 1 and 3 test the relative residual (open items 22, 23), Tier 2 the relative L2 step. Was 1 × 10⁻⁴ in `PerfusionConfig` while Tier 1 hard-coded 1 × 10⁻⁵ and Tier 2 1 × 10⁻⁴ (open item 6). `test_cb_settings.py` pins the two to agree, and every tier's `.vti` records it. Tier 3 on WKY-A: 10⁻⁴ → 10⁻⁵ moves PO₂ up to 0.29 mmHg, one more iteration (§6.7) |
 
-> ⚠ **Open item 6 — the solver settings are inconsistent between config and code.** Tolerances
-> and iteration caps are declared in `PerfusionConfig` and then hard-coded again inside the
-> solvers, with two values that disagree. Until this is reconciled, treat Appendix A as
-> descriptive of the code, not of the config.
+Tier 2's inner CG (`rtol` 1 × 10⁻⁶, `maxiter` 1 000) stays hard-coded, as Tier 1's does: it sets the
+direction, not the stop. Tier 2 now warns when it hits the cap.
 
 ---
 
@@ -3438,7 +3451,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | ~~3~~ | **Closed.** Arterial PO₂ was hard-coded as 100 in the Tier 1 source and Tier 2, and read through `getattr` with a default in Tier 3. All three now read `po2_arterial_mmHg` and raise if it is missing; `cb_settings.PerfusionSettings` gains the field at 100, so no published number moves. Tier 3's other fields (`M_max`, `k_reduce`, RQ, HCO₃⁻, both permeabilities, arterial PCO₂, D_CO₂ and the Picard settings) and the pipeline's tier switch are now also read without a default; the hidden Tier 3 `M_max` fallback was 0.05, 10× `PerfusionConfig`. `test_perfusion_config_values.py` | — |
 | ~~4~~ | **Closed.** The Tier 1 washout now reads `systemic_hematocrit` instead of a hard-coded 0.45, and `cb_settings.PerfusionSettings` gains the field at 0.45. The washout was still evaluated at systemic rather than local haematocrit, kept as §11 row 27; open item 29 moved it to each cell's own haematocrit. The 0.45 edge-haematocrit and 100 µm² surface-area defaults in `perfusion.py` are gone too: `map_vessels_to_grid` raises on an edge with no `hematocrit` | — |
 | ~~5~~ | **Closed.** `C_arterial` was declared 3× and read 0×; it is removed from `PerfusionConfig`, `cb_settings.PerfusionSettings` and the H2 drivers, and `test_cb_settings.py` fails if it comes back. One analytical test had set it expecting it to control arterial PO₂; it now sets `po2_arterial_mmHg` | — |
-| 6 | Solver tolerances disagree between config and code | Appendix A |
+| ~~6~~ | **Closed.** Tier 1 hard-coded 50 Newton steps and 1 × 10⁻⁵, Tier 2 50 passes and 1 × 10⁻⁴, while `PerfusionConfig.picard_tolerance` was 1 × 10⁻⁴ and only Tier 3 read it. All three now read `picard_max_iterations` and `picard_tolerance` without a default; `PerfusionConfig` goes to 1 × 10⁻⁵ and `cb_settings.PerfusionSettings` gains both fields at 50 and 1 × 10⁻⁵, so no published number moves (WKY-A §2.3 matches exactly). On WKY-A 10⁻⁴ and 10⁻⁵ return the same field; against 10⁻⁸ it is within 0.10 mmHg per cell and 0.021 percentage points in the hypoxic fractions (§6.7). The pipeline's Tier 3 now stops at 1 × 10⁻⁵: on a fresh WKY-A run 4 iterations instead of 3, tissue PO₂ up to 0.29 mmHg higher (mean 0.03), so 10⁻⁴ had not been as tight as the test networks suggested. Every tier's `.vti` records the tolerance. Inner CG settings stay hard-coded. `test_perfusion_solver_settings.py` | — |
 | ~~7~~ | **Closed** (sources only; no code change). The CO₂ curve is McHardy (1967), not Spencer (1979), and returns vol% of whole blood; checked against a secondary quote [`mallat_ratio_2021`], not the 1967 paper. No source was found for the Haldane term. `permeability_o2_cm_s` has a measured counterpart [`liu_oxygen_1994`] whose value was not read, and a derived estimate 10²–10⁴× above the code value. What the search found wrong with the values is open item 19. `sigma_diff_co2` and `permeability_co2_cm_s` stay under item 18 | — |
 | 8 | `M_max` differs 10× between `PerfusionConfig` (0.005) and `cb_settings.BASE_M_MAX` (0.05). The published §2.3 results used 0.05. **Now pinned** by `test_cb_settings.py` | §6.4, §13.6 |
 | ~~9~~ | **Closed** by `f92a96c`. The rheology solver substituted a silent 5.0 µm diameter; it now raises, matching `map_vessels_to_grid` and `edge_transit_times`. `2d98ab8` removed the least-squares pressure fallback, but left the rheology solver's initialisation and update on 5.0 µm | §3.2, §3.4, §2.8 |
