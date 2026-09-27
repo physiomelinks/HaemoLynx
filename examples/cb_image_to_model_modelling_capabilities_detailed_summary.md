@@ -976,10 +976,10 @@ For iterative solving:
 
 | Boundary | Default Value | Physical Basis |
 |---|---|---|
-| **Inlet pressure** ($P_{\text{in}}$) | 13.332 × 10⁶ mPa (= 100 mmHg) | Mean arterial pressure (MAP) — the average pressure in the systemic arterial circulation. |
-| **Outlet pressure** ($P_{\text{out}}$) | 0.27 × 10⁶ mPa (= 2 mmHg) | Central venous pressure (CVP) — the pressure in the systemic venous circulation near the right atrium. |
+| **Inlet pressure** ($P_{\text{in}}$) | 7.999 × 10⁶ mPa (= 60 mmHg) | Arteriolar pressure, from `cb_settings.INLET_PRESSURE_MMHG` (was MAP, 100 mmHg, until open item 10). |
+| **Outlet pressure** ($P_{\text{out}}$) | 2.666 × 10⁶ mPa (= 20 mmHg) | Venular pressure, from `cb_settings.OUTLET_PRESSURE_MMHG` (was CVP, 2 mmHg, until open item 10). |
 
-> **Assumption**: The pressure drop from 100 mmHg (MAP) to 2 mmHg (CVP) across a micro-organ is a significant simplification. In reality, the carotid body is perfused at high flow rates relative to its mass, and the upstream resistance of the feeding artery and downstream venous drainage significantly modulate the actual pressures at the organ boundary. The effective perfusion pressure across the carotid body is likely substantially less than the full MAP–CVP gradient.
+> **Assumption**: One arteriolar-to-venular pair (60 → 20 mmHg) is imposed on every specimen's sub-volume. The real pressures at the sub-volume boundary depend on the upstream and downstream vessels, which the imaging does not include, and SHR arteriolar pressures run higher than WKY; the shared pair carries none of that difference.
 
 ### 8.2 Inlet/Outlet Node Selection
 
@@ -1027,8 +1027,8 @@ For each node tagged with `is_robin_boundary=True`:
 |---|---|---|---|---|
 | Plasma viscosity | $\mu_{\text{plasma}}$ | 1.2 | mPa·s (cP) | Standard value for human blood plasma at 37°C |
 | Systemic hematocrit | $H_D$ | 0.45 | dimensionless | Normal adult hematocrit |
-| Inlet pressure (MAP) | $P_{\text{in}}$ | 13.332 × 10⁶ | mPa | 100 mmHg |
-| Outlet pressure (CVP) | $P_{\text{out}}$ | 0.27 × 10⁶ | mPa | 2 mmHg |
+| Inlet pressure (arteriolar) | $P_{\text{in}}$ | 7.999 × 10⁶ | mPa | 60 mmHg |
+| Outlet pressure (venular) | $P_{\text{out}}$ | 2.666 × 10⁶ | mPa | 20 mmHg |
 | Minimum vessel diameter | $D_{\text{min}}$ | 3.0 | $\mu m$ | RBC minimum traversal diameter |
 | Maximum hematocrit clamp | — | 0.95 | dimensionless | Physical upper bound |
 | Skimming threshold | $x_0$ | 0.05 | dimensionless | Pries & Secomb empirical |
@@ -1114,7 +1114,7 @@ The following is a consolidated list of the most significant physiological and m
 6. **Empirical rheology from rat mesentery**: Pries–Secomb correlations applied to carotid body vasculature without organ-specific validation.
 7. **Phase separation only at bifurcations**: Trifurcations and higher use simple mixing.
 8. **Exponential diameter scaling**: Murray's Law is not used; a heuristic 3-point exponential fit is used instead.
-9. **Full MAP-to-CVP pressure drop**: The entire systemic pressure gradient (100 mmHg → 2 mmHg) is applied across the micro-organ, without accounting for upstream arterial resistance or downstream venous back-pressure.
+9. **One fixed arteriolar-to-venular pressure pair**: 60 → 20 mmHg is applied at the boundary of every sub-volume, without modelling the upstream arterial or downstream venous resistance. Until open item 10 the pipeline applied the full MAP-to-CVP drop, 100 → 2 mmHg.
 10. **Plug-flow approximation**: No radial concentration gradients within vessel lumens.
 11. **Constant bicarbonate buffer**: $[HCO_3^-]$ is fixed at 24 mmol/L; no renal regulation.
 12. **Phenomenological metabolism**: Saturating exponential rather than Michaelis–Menten kinetics.

@@ -20,7 +20,7 @@
 | Why is vessel diameter measured by EDT and not FWHM? | §2.6 |
 | How much of my diameter distribution was measured rather than fabricated? | §2.6 — the guard refuses at any fabrication |
 | Why is absolute perfusion so far below physiological? | §13.5 — and pressure is not the cause |
-| What pressure boundaries did the published H2 numbers use? | §7.8 and §8.1 — 60/20, not the config's 100/2 |
+| What pressure boundaries did the published H2 numbers use? | §7.8 and §8.1 — 60/20; the pipeline config reads the same pair since open item 10 |
 | Which coupling tier produced the oxygen field? | §6.6 — Tier 1; Tier 2 is unreachable |
 | What grid resolution was used, and is it converged? | §6.8 — 3 µm, with vessels mapped over their cross-section; within 0.21 mmHg of 2 µm (open item 30, closed) |
 | Why is transit time reported as a ratio instead of a number? | §7.6, then §13.3 |
@@ -126,8 +126,7 @@ and the only place to change it. Everywhere else quotes it with a pointer back.
 | Boundary rule and axis | face rule, axis 1, 1-voxel tolerance | §2.8 | §8.1, §8.2, §13.4 |
 | Boundary sensitivity | 13.3% (face) against 75.8% (band) | §2.8 | §13.4 |
 | Interior terminal share | 83.5–86.9%, mean ≈ 86% | §8.2 | §2.8, §13.4 |
-| Pressure boundaries **as run** | 60 / 20 mmHg, arteriolar to venular | §8.1 | §7.8, §11, §13.5, §14 |
-| Pressure boundaries in config | 100 / 2 mmHg — **not what ran** | §8.1 | §10.7, open item 10 |
+| Pressure boundaries | 60 / 20 mmHg, arteriolar to venular, H2 and pipeline config alike | §8.1 | §7.8, §10.7, §11, §13.5, §14, open item 10 |
 | Systemic haematocrit | 0.45 | §4.1 | §4.3, §6.7, §10.7 |
 | Perfusion grid pitch | 3 µm, cross-section vessel mapping; converged to 0.5 mmHg (open item 30) | §6.8 | §6.1, §6.5, §10.9, §13.7 |
 | Metabolic rate | `BASE_M_MAX` = 0.05 mmol/L/s, H2 and pipeline config alike | §6.4 | §6.5, §13.6, open item 8 |
@@ -2047,7 +2046,8 @@ by up to 0.29 mmHg (mean 0.03; minimum 78.15 → 78.44, mean 96.79 → 96.82), P
 So 10⁻⁴ left more than the 0.02 mmHg the test networks suggested. Those WKY-A runs were at
 `M_max` 0.005; at 0.05, the default since open item 8, WKY-A takes 7 iterations (residual
 6.0 × 10⁻⁷) and the Y network at 10³ µm³/s 30 (was 14), still within 2 × 10⁻⁴ mmHg of a
-10⁻¹² solve.
+10⁻¹² solve. Every WKY-A pipeline figure here ran with edge flow ≈1.33 × 10⁵× too high (open
+item 31); the test-network figures do not.
 The `.vti` records whether it converged, the iterations and the final residual.
 
 **PO₂ is clamped to ≥ 0** at each iteration. Negative values are non-physical and drive Picard
@@ -2468,16 +2468,15 @@ on; separation with a gap wider than the noise is worth stopping for.
 
 ### 7.8 Pressure boundaries used by these methods
 
-> ⚠ **Open item 10 — the H2 methods do not use the config pressures.** `HaemodynamicsConfig`
-> declares 100 mmHg in and 2 mmHg out — MAP to CVP. The H2 drivers use **60 mmHg to 20 mmHg**,
-> arteriolar to venular, across the same sub-volume.
->
-> The driver value is the more defensible of the two: placing the full systemic gradient across
-> roughly 1 mm of tissue is what §11 row 15 flags. But the two disagree by a factor of 2.45 in
-> driving pressure, every published H2 number used 60/20, and nothing in the config records that.
->
-> Resolve before quoting any absolute flow. It does not affect the within-specimen ratios, which
-> are the reportable quantities anyway.
+The H2 drivers use **60 mmHg in and 20 mmHg out**, arteriolar to venular, from
+`cb_settings.INLET_PRESSURE_MMHG` / `OUTLET_PRESSURE_MMHG`. `HaemodynamicsConfig` declared
+100/2 mmHg (MAP to CVP) until open item 10; it now takes its defaults from the same two constants,
+and `test_cb_settings.py` keeps the config and both example YAMLs equal to them. The pipeline still
+chooses its boundary nodes by the band rule on axis 0 (open item 2), so its flows are not the H2
+flows even at the same pressures.
+
+The pair is chosen, not measured in the carotid body (§8.1, §10.7). It does not affect the
+within-specimen ratios, which are the reportable quantities.
 
 ---
 
@@ -2493,17 +2492,28 @@ and nothing imposed anywhere else.
 
 | Source | Inlet | Outlet | Gradient | Interpretation |
 |---|---|---|---|---|
-| `HaemodynamicsConfig` | 100 mmHg | 2 mmHg | 98 mmHg | Systemic MAP to central venous pressure |
-| **H2 drivers (what ran)** | **60 mmHg** | **20 mmHg** | **40 mmHg** | Arteriolar to venular |
+| **`cb_settings` (H2 drivers and `HaemodynamicsConfig`)** | **60 mmHg** | **20 mmHg** | **40 mmHg** | Arteriolar to venular |
+| `HaemodynamicsConfig` before open item 10 | 100 mmHg | 2 mmHg | 98 mmHg | Systemic MAP to central venous pressure |
 
-**These disagree by 2.45× in driving pressure, and every published H2 number used the second row.**
-See open item 10.
+Every published H2 number used the first row. The config's old pair was 2.45× larger in driving
+pressure; closing open item 10 moved the config to the first row, so no published number changed.
 
-**What the config value assumes.** That the entire arterial-to-venous pressure drop of the systemic
-circulation falls across roughly 1 mm of tissue. It does not — most of it falls across the arterial
-tree upstream and the venous tree downstream. This overestimates perfusion pressure and therefore
-absolute flow (§11 row 15). The driver's arteriolar-to-venular pair is the more defensible framing
-of the same sub-volume.
+**What the old config value assumed.** That the entire arterial-to-venous pressure drop of the
+systemic circulation falls across roughly 1 mm of tissue. It does not — most of it falls across the
+arterial tree upstream and the venous tree downstream. This overestimates perfusion pressure and
+therefore absolute flow (§11 row 15).
+
+**Where 60/20 sits against measurements.** A PubMed search found no microvascular pressure
+measured inside the carotid body. In other rat beds, servo-null micropuncture puts ≈50 µm arterioles at 55 mmHg and
+≈20 µm arterioles at 30–34 mmHg, with venules of 23–54 µm at 18–26 mmHg, at a systemic pressure of
+110 mmHg (stomach [`peti-peterdi_direct_1998`]). In WKY mesentery, arterial microvessels of 15–25 and
+25–45 µm read 3.6 and 4.2 kPa (27 and 32 mmHg); SHR read 4.8 and 6.0 kPa (36 and 45 mmHg), while
+small venules did not differ between strains [`jin_study_1997`, English abstract only]. In cat
+skeletal muscle the smallest venules (8–15 µm) average 24 mmHg [`fronek_microvascular_1975`]. So
+20 mmHg is a venular pressure, and 60 mmHg is an upper value for the arterioles feeding a bed of this
+size; arterioles of 15–45 µm run nearer 30 mmHg, which would lower the driving pressure further.
+SHR arteriolar pressures run higher than WKY; one pair is used for all six specimens on purpose, so
+the model carries none of that group difference (§11 row 15).
 
 **Neither choice rescues absolute perfusion.** §13.5 measures flow-weighted velocities of 4–10 µm/s
 against a physiological 200–1,000, and reaching 500 µm/s would require about 3,257 mmHg. The
@@ -2607,7 +2617,7 @@ The rheology loop starts every edge at systemic haematocrit 0.45 with the corres
 Pries–Secomb viscosity (§4.3) — likewise a starting guess, replaced on the first pass.
 
 > **At a glance** — Dirichlet pressure at face terminals, everything else caged; Neumann on tissue ·
-> config 100/2 mmHg but H2 ran 60/20; 86% of terminals interior · `boundaries.py:106`,
+> 60/20 mmHg in H2 and the pipeline config alike; 86% of terminals interior · `boundaries.py:106`,
 > `perfusion.py:349`, `perfusion.py:461` · `tests/test_boundary_faces.py`,
 > `tests/test_flow_conservation.py`
 
@@ -2788,8 +2798,8 @@ Present in the code, disabled for the CB path, and `__post_init__` raises if re-
 
 | Parameter | Value | Units | Class | Source / justification | Sensitivity |
 |---|---|---|---|---|---|
-| `input_p_bc` | 13.332 × 10⁶ | mPa (= 100 mmHg) | (i) | Systemic MAP; 101 ± 2 mmHg in anaesthetised WKY rats [`izuta_cerebral_1995`]. SHR run higher: 169 ± 3 anaesthetised [`izuta_cerebral_1995`], 154 ± 3 conscious [`li_sympathetic_1997`] | assumed |
-| `output_p_bc` | 0.27 × 10⁶ | mPa (= 2 mmHg) | (i) | Central venous pressure; 4 ± 3 mmHg in conscious control rats [`willenbrock_effect_1997`] | assumed |
+| `input_p_bc` | 7.999 × 10⁶ | mPa (= 60 mmHg, `cb_settings.INLET_PRESSURE_MMHG`) | (iii) | Arteriolar pressure, chosen; not measured in the carotid body. Rat stomach arterioles read 55 mmHg at ≈50 µm and 30–34 mmHg at ≈20 µm [`peti-peterdi_direct_1998`]; WKY mesenteric arterial microvessels 27–32 mmHg at 15–45 µm, SHR 36–45 [`jin_study_1997`, abstract only]. So 60 is an upper value. Was 100 mmHg (MAP; 101 ± 2 anaesthetised WKY [`izuta_cerebral_1995`]) until open item 10 | Flows are linear in p_in − p_out, so within-specimen ratios do not move (§8.1) |
+| `output_p_bc` | 2.666 × 10⁶ | mPa (= 20 mmHg, `cb_settings.OUTLET_PRESSURE_MMHG`) | (ii) | Venular pressure: rat stomach venules 18–26 mmHg [`peti-peterdi_direct_1998`]; cat muscle venules of 8–15 µm 24 mmHg [`fronek_microvascular_1975`]; no WKY/SHR difference in small mesenteric venules [`jin_study_1997`]. Was 2 mmHg (CVP; 4 ± 3 in conscious control rats [`willenbrock_effect_1997`]) until open item 10 | As `input_p_bc` |
 | `blood_plasma_viscosity_cP` | 1.2 | cP | (i) | Plasma viscosity; normal range 1.10–1.30 mPa·s at 37 °C, human [`kesmarky_plasma_2008`] | assumed |
 | Viscosity law | `in_vivo` | — | (ii) | Pries et al. 1994, fitted to microvessels in living tissue, where the endothelial surface layer narrows the effective lumen [`pries_resistance_1994`]. `in_vitro` (Pries et al. 1992, glass tubes) is available and not default [`pries_blood_1992`] | measured — the two differ by ≈3.4× apparent viscosity at D = 8 µm, but a 3–4× change moved no within-specimen ratio (§13) |
 | μ₄₅ in vivo | 6.0·e^(−0.085 d) + 3.2 − 2.44·e^(−0.06 d^0.645) | relative | (ii) | [`pries_resistance_1994`] | — |
@@ -2877,7 +2887,7 @@ the model would push it.
 | 12 | Newtonian fluid at initialisation | §4.3 | Biases initial resistances; replaced by the per-pass Poiseuille recompute (§4.3 step 14) |
 | 13 | Rheological correlations transferred from rat mesentery | §4.1–§4.2 | Transferability to carotid body microvasculature **unquantified** |
 | 14 | Phase separation occurs at binary bifurcations only | §4.2 | Higher-order divisions mix proportionally → haematocrit heterogeneity **underestimated** |
-| 15 | A systemic-scale pressure gradient falls across the imaged sub-volume | §8 | The config declares MAP-to-CVP, ~98 mmHg across roughly 1 mm, which **overestimates** perfusion pressure. The H2 drivers instead use 60→20 mmHg, arteriolar to venular, and every published H2 number used that. See open item 10 |
+| 15 | One arteriolar-to-venular pressure pair, 60→20 mmHg, is imposed on every specimen's sub-volume | §8 | Probably **overestimates** perfusion pressure: 60 mmHg is an upper value for the arterioles of other rat beds, 15–45 µm arterioles read nearer 30 (§8.1). SHR arteriolar pressures run higher than WKY [`jin_study_1997`], and the shared pair carries none of that difference. The pipeline config declared MAP-to-CVP, 100→2 mmHg, until open item 10; every published H2 number used 60/20 |
 | 16 | No vasoregulation of any kind | §3.3 | Constriction is disabled entirely, so there is neither active feedback (myogenic, metabolic, shear-mediated) nor a static constriction geometry. The network is a fixed passive resistor array |
 
 ### 11.3 Blood gas chemistry
@@ -3299,7 +3309,7 @@ is stochastic.
 2. Predict headlessly with the classifier named in the sidecar.
 3. Threshold to a mask; the H1 cohort used a single frozen value for all six (open item 1).
 4. Run the H1 batch to produce graphs and per-edge morphometry.
-5. Run the H2 driver for the method in question, at 60/20 mmHg on axis 1 (open item 10).
+5. Run the H2 driver for the method in question, at 60/20 mmHg on axis 1 (`cb_settings`).
 
 **One invariant.** One classifier for all six volumes, never one per cohort, and identical
 parameters everywhere. Violating either invalidates the cohort comparison, because a per-cohort
@@ -3458,7 +3468,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | ~~7~~ | **Closed** (sources only; no code change). The CO₂ curve is McHardy (1967), not Spencer (1979), and returns vol% of whole blood; checked against a secondary quote [`mallat_ratio_2021`], not the 1967 paper. No source was found for the Haldane term. `permeability_o2_cm_s` has a measured counterpart [`liu_oxygen_1994`] whose value was not read, and a derived estimate 10²–10⁴× above the code value. What the search found wrong with the values is open item 19. `sigma_diff_co2` and `permeability_co2_cm_s` stay under item 18 | — |
 | ~~8~~ | **Closed.** `M_max` differed 10× between `PerfusionConfig` (0.005) and `cb_settings.BASE_M_MAX` (0.05), and the published §2.3 results used 0.05. `PerfusionConfig` and both example YAMLs now say 0.05, and `test_cb_settings.py` asserts the config equals `BASE_M_MAX`, so no published number moves. Only the pipeline's own Tier 3 `*_perfusion.vti` changes. Fresh WKY-A run: converged in 7 iterations (was 4), residual 6.0 × 10⁻⁷; tissue PO₂ mean 96.82 → 75.80 mmHg, median 99.23 → 92.44, minimum 78.44 → 0.26; cells below 5 / 10 / 20 mmHg 0 → 3.00 / 5.08 / 9.63%; PCO₂ maximum 40.74 → 43.43 mmHg, pH minimum 7.393 → 7.365. On the test Y network at 10³ µm³/s Tier 3 now takes 30 iterations (was 14; the test cap is 35). `test_cb_settings.py`, `test_perfusion_config_values.py` | — |
 | ~~9~~ | **Closed** by `f92a96c`. The rheology solver substituted a silent 5.0 µm diameter; it now raises, matching `map_vessels_to_grid` and `edge_transit_times`. `2d98ab8` removed the least-squares pressure fallback, but left the rheology solver's initialisation and update on 5.0 µm | §3.2, §3.4, §2.8 |
-| 10 | Pressure boundaries disagree: config 100/2 mmHg, `cb_settings` 60/20 mmHg. Every published H2 number used 60/20. **Now pinned** by `test_cb_settings.py` | §7.8, §8, §11 row 15 |
+| ~~10~~ | **Closed.** Pressure boundaries differed between `HaemodynamicsConfig` (100/2 mmHg, MAP to CVP) and `cb_settings` (60/20 mmHg, arteriolar to venular), and every published H2 number used 60/20. The config now takes its defaults from `cb_settings.INLET_PRESSURE_MMHG` / `OUTLET_PRESSURE_MMHG`, both example YAMLs say 60/20 in mPa, and `test_cb_settings.py` keeps all three equal, so no published number moves. §8.1 and §10.7 now place 60/20 against measured rat microvascular pressures [`peti-peterdi_direct_1998`, `jin_study_1997`, `fronek_microvascular_1975`]: 20 is a venular value, 60 an upper arteriolar one. Fresh WKY-A run: flows 0.408× the 100/2 run (40/97.97) on 4 071 of 4 178 flowing edges, diameters and resistances unchanged; haematocrit moved by more than 0.01 on 96 of 4 512 edges, because the rheology loop stops unconverged at 15 iterations in both runs and its path is not exactly scale-free. The Tier 3 `.vti` did **not** change (7 iterations, residual 6.0 × 10⁻⁷, tissue PO₂ mean 75.80, min 0.26 mmHg, as under open item 8): the pipeline's perfusion step over-converts flow, open item 31. `test_cb_settings.py`, `test_perfusion_vti_provenance.py` | — |
 | ~~11~~ | **Closed.** The entropy path defaulted to on but could not run at 2 classes, and fell back to plain hysteresis with only a warning. `enable_shannon_entropy` now defaults to False and raises if turned on for a 2-class field or one with no class axis; `shannon_entropy_core` is a real config field. The Optuna preprocessing tuner searches the two entropy thresholds only when entropy is on and an entropy map exists, so it no longer writes untested values for them to `best_preprocessing_params.yaml`. CB masks unchanged | — |
 | ~~12~~ | **Closed in code** by `7ea1b36`. The rheology loop rescaled resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contained $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently. **Results not yet re-derived** | every absolute flow in §7, §13.5 |
 | 13 | The lateral ROI centroid projects over the whole stack, not the 160 slices the ROI occupies, so tissue outside the box helps place it. Restricting to the band moves the centre 7–45 µm | §2.1, and every per-specimen quantity through what was sampled |
@@ -3478,6 +3488,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 27 | **The batch pipeline run crops the array centre, not the placed ROI.** `cb_h1_batch.py --stage run` passes `--roi-voxels` but not `offsets_zyx`, so `carotid_image_to_model.py` crops 160³ on `extent // 2` (§2.1 steps 9–10). The cached masks match the centred box (IoU 0.92 WKY-A, 0.83 SHR-C) and not `placement.bounds` (0.17, 0.15); the boxes share 27–61% of their volume. So the H1 morphometry (`per_edge_morphometry.csv`, figures) is on centred boxes, while the threshold was chosen, and `cb_h1_th_metrics.py` measures, on placed boxes. The H2 drivers lay the TH channel cropped at `bounds` over the centred-box graph, so the two frames are 85–210 µm apart (length of the shift). Item 13 does not reach the network run until this is fixed. Found 2026-09-26 under follow-up item 26. **Moves published numbers** | §2.1, every H1 network quantity, H2 §2.1–2.4 |
 | ~~29~~ | **Closed.** Tier 1 built its source at each edge's haematocrit and its washout at `systemic_hematocrit` (0.45), so a cell fed above 0.45 got more O₂ at arterial PO₂ than it could wash out below hundreds of mmHg, and one fed below was drained. On WKY-A 27% of perfused cells are above 0.45 (per-cell H 0–0.80, median 0.37) and the surplus at arterial PO₂ was 55× the tissue's whole demand (delivery is 850× demand). The 750× diffusion of item 22 averaged these into the published near-uniform ~30 mmHg field, which is why it moved little with metabolism; with α in, the fixed point was hyperoxic (median 186 mmHg, 78% of cells above arterial). The washout now uses each cell's flow-weighted haematocrit (`cell_discharge_hematocrit`), exact because content is affine in H; `solve_perfusion_steady_state` requires it and raises if a perfused cell's is missing. WKY-A: 10 Newton steps, 18 s, max PO₂ 99.99 mmHg. Found 2026-09-26 under item 22. `test_perfusion_tier1_washout_hematocrit.py`. **Moves published numbers** (H2 §2.3, §13.6) | §6.6, §6.7, §11 row 27 |
 | ~~30~~ | **Closed.** Tier 1 had no grid-converged limit: with each vessel mapped to the cells its centreline crosses, a finer grid drew it thinner, a line source in the limit, and median PO₂ on WKY-C ran 91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm (SHR-C 80.28 … 75.85), ≈1.5–1.9 mmHg lost per halving. `map_vessels_to_grid` now takes `vessel_mapping="cross_section"`, which sweeps each centreline point over a disc of the vessel's radius; the H2 drivers use it (the pipeline keeps the centreline default). WKY-C and SHR-C then move at most 0.21 mmHg from 3 to 2 µm but up to 0.78 from 4 to 3 µm, so `cb_settings.GRID_UM` went from 4 to 3 µm. §2.3 re-run: PO₂ in TH 81.0–89.8 mmHg (was 70.0–86.2), TH hypoxia below 10 mmHg 0–3.1% (was 0–3.95%). `test_perfusion_cross_section_mapping.py`, `test_perfusion_tier1_grid_refinement.py` | — |
+| 31 | **The pipeline's perfusion step converts flow to µm³/s twice.** `carotid_image_to_model.py` passes pressures in mPa, so its Poiseuille flows are already in µm³/s (`rheology.py:510`). Every perfusion tier then multiplies `flow_abs` by `POISEUILLE_FLOW_TO_UM3_PER_S` (1.33 × 10⁵), which assumes pressures in mmHg, as the H2 drivers pass. The pipeline calls `map_vessels_to_grid` and the solvers with that default factor, so its perfusion sees flow ≈1.33 × 10⁵× too high and its blood hardly desaturates. Found under open item 10: at 60/20 the flows fell to 0.408× and the Tier 3 field did not move. H2 numbers are unaffected. The pipeline Tier 3 figures quoted under open items 6, 8, 23 and 25 describe a field at that flow | The pipeline's `*_perfusion.vti`; no published number |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the

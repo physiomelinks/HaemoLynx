@@ -133,8 +133,8 @@ Listed in execution order for the default configuration.
 | — | Diameter floor for the Pries–Secomb relation | 3.0 | µm | — |
 | $X_0$ | Phase separation skimming threshold | $0.964\,(1 - H_{\text{in}})/D_F$ (E18) | — | Derived from $H_{\text{in}}$ and $D_F$ (E18) [@pries1989; @rasmussen2018] |
 | $H$ | `systemic_hematocrit` | 0.45 | — | [@dash2010]: standard haematocrit ≈ 0.45 (human) |
-| $p_{\text{in}}$ | `input_p_bc` | $13.332\times10^{6}$ (100 mmHg) | mPa | [@izuta1995]: 101 ± 2 mmHg in anaesthetised WKY rats. SHR run higher: 169 ± 3 anaesthetised [@izuta1995], 154 ± 3 conscious [@li1997] |
-| $p_{\text{out}}$ | `output_p_bc` | $0.27\times10^{6}$ (2 mmHg) | mPa | [@willenbrock1997]: central venous pressure 4 ± 3 mmHg in conscious control rats |
+| $p_{\text{in}}$ | `input_p_bc` | $7.999\times10^{6}$ (60 mmHg) | mPa | Arteriolar; same as `cb_settings.INLET_PRESSURE_MMHG` (was 100 mmHg, MAP, until open item 10). Chosen; rat arterioles of 15–50 µm read 27–55 mmHg [@peti-peterdi_direct_1998; @jin_study_1997]. See `cb_modelling_reference.md` §8.1, §10.7 |
+| $p_{\text{out}}$ | `output_p_bc` | $2.666\times10^{6}$ (20 mmHg) | mPa | Venular; same as `cb_settings.OUTLET_PRESSURE_MMHG` (was 2 mmHg, CVP, until open item 10). Rat venules 18–26 mmHg [@peti-peterdi_direct_1998]; cat muscle venules 24 mmHg [@fronek_microvascular_1975] |
 | — | `rheology_max_iterations` | 15 | — | — |
 | — | `rheology_tolerance` | $1\times10^{-4}$ | — | — |
 | — | `robin_distal_resistance_multiplier` | 10.0 | — | — |
