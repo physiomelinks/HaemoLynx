@@ -173,7 +173,7 @@ Listed in execution order for the default configuration.
 | $RQ$ | `respiratory_quotient` | 0.82 | — | [@mileschan2015]: fasting whole-body RQ ≈ 0.80–0.90, depending on diet (human). Measured 0.85 in rat skeletal muscle [@kawashiro1975] |
 | $\gamma$ | Picard relaxation factor, multi-species | 1.0 | — | Numerical choice |
 | $\varepsilon$ | Diagonal regularisation | $1\times10^{-12}$ | — | Numerical choice |
-| — | `picard_max_iterations` | 50 | — | — |
+| — | `picard_max_iterations` | 200 | — | Was 50 until `cb_modelling_reference.md` open item 32 |
 | — | `picard_tolerance` | $1\times10^{-4}$ | — | — |
 | — | Conjugate gradient relative tolerance | $1\times10^{-5}$ | — | — |
 | — | Conjugate gradient maximum iterations | 500 | — | — |
