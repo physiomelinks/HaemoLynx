@@ -2084,7 +2084,12 @@ def carotid_image_to_model(image_path: Path | str,
     _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config)
     
 def update_dataclass_from_dict(obj, config_dict):
-    """Updates a dataclass instance with values from a dictionary."""
+    """Updates a dataclass instance with values from a dictionary, then re-runs its checks.
+
+    setattr bypasses __post_init__, so a YAML could set a value the constructor forbids
+    (open item 35: both example YAMLs set constrict_at_pericytes: true). The checks run
+    again once every key is set.
+    """
     if not config_dict:
         return
     for key, value in config_dict.items():
@@ -2092,6 +2097,9 @@ def update_dataclass_from_dict(obj, config_dict):
             setattr(obj, key, value)
         else:
             logger.warning(f"Config key '{key}' ignored (not a valid parameter for {type(obj).__name__}).")
+    post_init = getattr(obj, "__post_init__", None)
+    if post_init is not None:
+        post_init()
 
 def _apply_hysteresis_overrides(pre_config, low=None, high=None):
     """Set the hysteresis band from the command line; None leaves a bound as configured.

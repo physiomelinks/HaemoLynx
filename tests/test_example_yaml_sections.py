@@ -74,8 +74,33 @@ def test_loading_ignores_no_key(name, caplog):
             assert got == value, f"{name}: {section}.{key} is {got!r}, YAML says {value!r}"
 
 
-def test_the_two_yamls_share_one_perfusion_section():
-    """Open item 34: the SHR YAML set arterial PCO2 35 mmHg against WKY's 40. A perfusion
-    setting that differs by group would confound the WKY-vs-SHR comparison."""
-    wky, shr = (_load(name)["PerfusionConfig"] for name in YAMLS)
+def test_the_two_yamls_carry_the_same_settings():
+    """A setting that differs by group would confound the WKY-vs-SHR comparison. Open item 34:
+    the SHR YAML set arterial PCO2 35 mmHg against WKY's 40. Open item 35: SHR set both
+    constriction ratios to 0.95 against WKY's 1.0, and only WKY turned on benchmarking."""
+    wky, shr = (_load(name) for name in YAMLS)
     assert wky == shr
+
+
+#: Keys the frozen method never reads: constriction is disabled (reference §10.6) and the
+#: constant radius only applies outside edt_radius (§10.5).
+RETIRED_HAEMODYNAMICS_KEYS = {
+    "constrict_at_pericytes",
+    "constriction_mode",
+    "sphincter_length_um",
+    "intimal_cushion_constriction_ratio",
+    "pre_capillary_constriction_ratio",
+    "pre_capillary_topological_offset",
+    "constant_radius_um",
+}
+
+
+@pytest.mark.parametrize("name", YAMLS)
+def test_the_yamls_use_the_frozen_radius_estimator(name):
+    """Open item 35: both YAMLs set constant_radius (every edge 10 um across) and turned
+    constriction on, so a --config run replaced every measured calibre."""
+    section = _load(name)["HaemodynamicsConfig"]
+    assert section["radius_assignment_mode"] == pipeline.HaemodynamicsConfig().radius_assignment_mode
+    assert section["radius_assignment_mode"] == "edt_radius"
+    retired = sorted(RETIRED_HAEMODYNAMICS_KEYS & set(section))
+    assert not retired, f"{name}: keys the frozen method never reads: {retired}"

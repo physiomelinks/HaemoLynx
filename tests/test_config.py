@@ -96,6 +96,28 @@ def test_variable_constriction_is_disabled_and_cannot_be_re_enabled_silently():
         HaemodynamicsConfig(diameter_by_branch_order={}, constrict_at_pericytes=True)
 
 
+def test_config_loader_runs_the_checks_setattr_skips():
+    """Open item 35: --config sets fields with setattr after construction, which skipped
+    __post_init__, so both example YAMLs could set constrict_at_pericytes: true unnoticed."""
+    import pytest
+    from carotid_image_to_model import update_dataclass_from_dict
+
+    HaemodynamicsConfig = _load_carotid_config()
+
+    with pytest.raises(ValueError, match="constrict_at_pericytes is disabled"):
+        update_dataclass_from_dict(
+            HaemodynamicsConfig(diameter_by_branch_order={}), {"constrict_at_pericytes": True})
+
+    with pytest.raises(ValueError, match="radius_assignment_mode must be"):
+        update_dataclass_from_dict(
+            HaemodynamicsConfig(diameter_by_branch_order={}), {"radius_assignment_mode": "guess"})
+
+    config = HaemodynamicsConfig(diameter_by_branch_order={})
+    update_dataclass_from_dict(config, {"radius_assignment_mode": "edt_radius", "rheology_max_iterations": 20})
+    assert config.radius_assignment_mode == "edt_radius"
+    assert config.rheology_max_iterations == 20
+
+
 def test_branch_order_fallback_carries_no_constriction():
     """Every branch-order entry the fallback generates has d2 equal to d1.
 

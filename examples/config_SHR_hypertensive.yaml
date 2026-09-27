@@ -1,5 +1,7 @@
-# SHR (Hypertensive) Pipeline Configuration
-# Simulates a hypertensive Carotid Body with high blood pressure and extreme sympathetic tone.
+# SHR (hypertensive) pipeline configuration
+# The frozen settings shared by all six specimens. Nothing here differs by group: the WKY and
+# SHR files are identical apart from their first line, and exist only so a run can be
+# launched by group name (open item 35).
 
 SkeletonConfig:
   # Image analysis boundary
@@ -18,27 +20,10 @@ HaemodynamicsConfig:
   # ------------------------------------------------------------------
   # Baseline Radius Assignment
   # ------------------------------------------------------------------
-  radius_assignment_mode: "constant_radius" # Options: "fwhm_radius" or "constant_radius"
-  constant_radius_um: 5.0 # Only used if radius_assignment_mode is "constant_radius"
+  # The frozen estimator: the mask's Euclidean distance transform (reference §10.5).
+  # Pericyte constriction is disabled for the CB pipeline (§10.6), so no keys for it here.
+  radius_assignment_mode: "edt_radius"
 
-  # ------------------------------------------------------------------
-  # Pre-Capillary Sphincter Model (Sympathetic Tone)
-  # ------------------------------------------------------------------
-  constrict_at_pericytes: true
-  constriction_mode: "sphincter" # Options: "sphincter" or "periodic"
-  sphincter_length_um: 5.0
-  # Severe sympathetic tone: (1-x)% blockage at inlets and capillary junctions
-  intimal_cushion_constriction_ratio: 0.95
-  pre_capillary_constriction_ratio: 0.95
-  pre_capillary_topological_offset: 1
-  
-  # ------------------------------------------------------------------
-  # Automated 3D Diameter Extraction (FWHM Ray-Casting)
-  # ------------------------------------------------------------------
-  fwhm_sample_spacing_along_edge_um: 2.0
-  fwhm_transverse_profile_step_um: 0.5
-  fwhm_transverse_half_extent_um: 15.0
-  
   # ------------------------------------------------------------------
   # Non-Newtonian Rheology Solver (Fåhræus–Lindqvist effect)
   # ------------------------------------------------------------------
@@ -63,7 +48,7 @@ PerfusionConfig:
   # ------------------------------------------------------------------
   systemic_hematocrit: 0.45
   po2_arterial_mmHg: 100.0
-  pco2_arterial: 40.0 # Normal physiological baseline, as WKY (open item 34)
+  pco2_arterial: 40.0 # Normal physiological baseline, the same for both groups (open item 34)
   hco3_tissue: 24.0 # Standard bicarbonate buffer (mmol/L)
   
   # ------------------------------------------------------------------
@@ -80,7 +65,8 @@ PerfusionConfig:
   # ------------------------------------------------------------------
   # Tissue Metabolism (Michaelis-Menten Kinetics)
   # ------------------------------------------------------------------
-  M_max: 0.05 # Maximum O2 consumption rate (mmol / L / s); = cb_settings.BASE_M_MAX (open item 8)
+  # Same as cb_settings.BASE_M_MAX, the rate behind the published H2 runs (open item 8)
+  M_max: 0.05 # Maximum O2 consumption rate (mmol / L / s)
   k_reduce: 0.1 # Exponential decay constant under hypoxia
   respiratory_quotient: 0.82 # Ratio of CO2 produced to O2 consumed
   

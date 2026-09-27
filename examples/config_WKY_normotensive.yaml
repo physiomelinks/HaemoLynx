@@ -1,5 +1,7 @@
-# WKY (Normotensive/Normoxic) Pipeline Configuration
-# Simulates a healthy Carotid Body with normal blood pressure, minimal sympathetic tone, and sustainable metabolism.
+# WKY (normotensive) pipeline configuration
+# The frozen settings shared by all six specimens. Nothing here differs by group: the WKY and
+# SHR files are identical apart from their first line, and exist only so a run can be
+# launched by group name (open item 35).
 
 SkeletonConfig:
   # Image analysis boundary
@@ -18,27 +20,10 @@ HaemodynamicsConfig:
   # ------------------------------------------------------------------
   # Baseline Radius Assignment
   # ------------------------------------------------------------------
-  radius_assignment_mode: "constant_radius" # Options: "fwhm_radius" or "constant_radius"
-  constant_radius_um: 5.0 # Only used if radius_assignment_mode is "constant_radius"
+  # The frozen estimator: the mask's Euclidean distance transform (reference §10.5).
+  # Pericyte constriction is disabled for the CB pipeline (§10.6), so no keys for it here.
+  radius_assignment_mode: "edt_radius"
 
-  # ------------------------------------------------------------------
-  # Pre-Capillary Sphincter Model (Sympathetic Tone)
-  # ------------------------------------------------------------------
-  constrict_at_pericytes: true
-  constriction_mode: "sphincter" # Options: "sphincter" or "periodic"
-  sphincter_length_um: 5.0
-  # Healthy baseline: minimal sympathetic tone (vessels are 95% dilated)
-  intimal_cushion_constriction_ratio: 1.0
-  pre_capillary_constriction_ratio: 1.0
-  pre_capillary_topological_offset: 1
-  
-  # ------------------------------------------------------------------
-  # Automated 3D Diameter Extraction (FWHM Ray-Casting)
-  # ------------------------------------------------------------------
-  fwhm_sample_spacing_along_edge_um: 2.0
-  fwhm_transverse_profile_step_um: 0.5
-  fwhm_transverse_half_extent_um: 15.0
-  
   # ------------------------------------------------------------------
   # Non-Newtonian Rheology Solver (Fåhræus–Lindqvist effect)
   # ------------------------------------------------------------------
@@ -63,7 +48,7 @@ PerfusionConfig:
   # ------------------------------------------------------------------
   systemic_hematocrit: 0.45
   po2_arterial_mmHg: 100.0
-  pco2_arterial: 40.0 # Normal physiological baseline
+  pco2_arterial: 40.0 # Normal physiological baseline, the same for both groups (open item 34)
   hco3_tissue: 24.0 # Standard bicarbonate buffer (mmol/L)
   
   # ------------------------------------------------------------------
@@ -90,6 +75,3 @@ PerfusionConfig:
   # ------------------------------------------------------------------
   picard_max_iterations: 200
   picard_tolerance: 1.0e-5 # = PerfusionConfig and cb_settings.PerfusionSettings (open items 6, 34)
-
-PipelineConfig:
-  run_benchmarking: true
