@@ -1,5 +1,5 @@
 # SHR (Hypertensive) Pipeline Configuration
-# Simulates a hypertensive Carotid Body with high blood pressure, extreme sympathetic tone, and hyperventilation.
+# Simulates a hypertensive Carotid Body with high blood pressure and extreme sympathetic tone.
 
 SkeletonConfig:
   # Image analysis boundary
@@ -63,7 +63,7 @@ PerfusionConfig:
   # ------------------------------------------------------------------
   systemic_hematocrit: 0.45
   po2_arterial_mmHg: 100.0
-  pco2_arterial: 35.0 # Hyperventilating baseline (hypocapnic arterial blood)
+  pco2_arterial: 40.0 # Normal physiological baseline, as WKY (open item 34)
   hco3_tissue: 24.0 # Standard bicarbonate buffer (mmol/L)
   
   # ------------------------------------------------------------------
@@ -88,4 +88,4 @@ PerfusionConfig:
   # Non-Linear Picard Matrix Solver Parameters
   # ------------------------------------------------------------------
   picard_max_iterations: 200
-  picard_tolerance: 1.0e-4
+  picard_tolerance: 1.0e-5 # = PerfusionConfig and cb_settings.PerfusionSettings (open items 6, 34)

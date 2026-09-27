@@ -119,15 +119,18 @@ def test_pipeline_and_h2_share_the_perfusion_stop_settings():
 
 
 @pytest.mark.parametrize("name", ["config_WKY_normotensive.yaml", "config_SHR_hypertensive.yaml"])
-def test_the_example_yamls_carry_the_iteration_cap(name):
+def test_the_example_yamls_carry_the_picard_settings(name):
     """Open item 32: a YAML still at 50 would override the config and stop Tier 3 short
-    (WKY-C needs 80 passes)."""
+    (WKY-C needs 80 passes). Open item 34: both YAMLs kept 1e-4 after item 6 moved the
+    config to 1e-5, so a --config run stopped Tier 3 early."""
     yaml = pytest.importorskip("yaml")
     from carotid_image_to_model import PerfusionConfig
 
+    config = PerfusionConfig()
     loaded = yaml.safe_load((REPO / "examples" / name).read_text(encoding="utf-8"))
     perf = loaded["PerfusionConfig"]
-    assert perf["picard_max_iterations"] == PerfusionConfig().picard_max_iterations
+    assert perf["picard_max_iterations"] == config.picard_max_iterations
+    assert float(perf["picard_tolerance"]) == config.picard_tolerance
 
 
 #: 1 mmHg = 133.322387415 Pa = 1.33322387415e5 mPa, the unit the pipeline config uses.

@@ -222,6 +222,18 @@ def test_the_example_yamls_carry_the_same_wall_permeabilities_and_metabolic_rate
         assert float(perf[key]) == getattr(config, key), key
 
 
+@pytest.mark.parametrize("name", ["config_WKY_normotensive.yaml", "config_SHR_hypertensive.yaml"])
+def test_the_example_yamls_share_the_arterial_pco2(name):
+    """Open item 34: the SHR YAML set 35 mmHg against 40 for WKY, a difference by group."""
+    from pathlib import Path
+
+    yaml = pytest.importorskip("yaml")
+    config = _pipeline_perfusion_config()
+
+    loaded = yaml.safe_load((Path(__file__).parent.parent / "examples" / name).read_text())
+    assert float(loaded["PerfusionConfig"]["pco2_arterial"]) == config.pco2_arterial == 40.0
+
+
 def test_the_multi_species_solver_runs_at_the_corrected_co2_values():
     config = _MultiConfig()
     G = _one_edge()

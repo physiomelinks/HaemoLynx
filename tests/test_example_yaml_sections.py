@@ -65,6 +65,17 @@ def test_loading_ignores_no_key(name, caplog):
     ignored = [r.getMessage() for r in caplog.records if "ignored" in r.getMessage()]
     assert not ignored, ignored
 
-    # The perfusion block now reaches PerfusionConfig. The YAMLs' 1e-4 is below the config's
-    # 1e-5 until open item 34, so it shows the value was applied rather than defaulted.
-    assert configs["PerfusionConfig"].picard_tolerance == 1e-4
+    # Every value reaches the section it is written under.
+    for section, keys in loaded.items():
+        for key, value in (keys or {}).items():
+            got = getattr(configs[section], key)
+            if isinstance(value, list):
+                got = list(got)
+            assert got == value, f"{name}: {section}.{key} is {got!r}, YAML says {value!r}"
+
+
+def test_the_two_yamls_share_one_perfusion_section():
+    """Open item 34: the SHR YAML set arterial PCO2 35 mmHg against WKY's 40. A perfusion
+    setting that differs by group would confound the WKY-vs-SHR comparison."""
+    wky, shr = (_load(name)["PerfusionConfig"] for name in YAMLS)
+    assert wky == shr

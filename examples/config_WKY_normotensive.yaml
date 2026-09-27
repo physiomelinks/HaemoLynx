@@ -89,7 +89,7 @@ PerfusionConfig:
   # Non-Linear Picard Matrix Solver Parameters
   # ------------------------------------------------------------------
   picard_max_iterations: 200
-  picard_tolerance: 1.0e-4
+  picard_tolerance: 1.0e-5 # = PerfusionConfig and cb_settings.PerfusionSettings (open items 6, 34)
 
 PipelineConfig:
   run_benchmarking: true
