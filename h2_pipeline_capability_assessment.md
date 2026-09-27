@@ -1214,7 +1214,9 @@ physiological 200 to 1,000, and concluded that the pressures were too aggressive
 computed for a *single straight tube* spanning the region, not for the network. Measured on the
 six networks the flow-weighted velocity is 4 to 10 µm/s, so the error was in the opposite
 direction and by a factor of about a thousand. The conclusion that follows is different and is
-recorded in S27.
+recorded in S27. *(2026-09-27: that 4 to 10 µm/s was itself an artefact of the rheology
+resistance bug. Re-derived it is 979 to 3,319 µm/s, so the single-tube figure was high but in the
+right direction; see S30.)*
 
 `STATUS — T1.5 RESOLVED. §2.3 is unblocked and awaits grid refinement (T1.1) to be
 grid-converged.`
@@ -1297,6 +1299,11 @@ its glomus-specific mechanism is inert pending T1.7 and T1.8.`
 
 ### S27. Absolute perfusion is far below physiological, and the boundary pressure is not the cause
 
+> **Superseded 2026-09-27 (open item 12), see S30.** The tables and conclusions below were measured
+> on a rheology loop that inflated every resistance 208–539× (`7ea1b36`). Re-derived, the face-rule
+> velocity is 979–3,319 µm/s, not 4–10, and 500 µm/s needs 6–20 mmHg, not 3,257. The "residual
+> factor of 30" was the bug. Kept as written because later findings cite it.
+
 **T1.7 and T1.8, and a withdrawal.**
 
 **T1.8 first, because it resolves cleanly.** §2.3's premise is that a higher glomus metabolic rate
@@ -1371,7 +1378,7 @@ fraction is an absolute threshold on an absolute field, and is the one method of
 this bites.
 
 `STATUS — T1.8 RESOLVED as a property of the tissue, not a defect. T1.7 withdrawn and replaced by
-T1.9.`
+T1.9.` *(T1.9 superseded by S30.)*
 
 ### S28. The perfusion grid does not span two specimens, and the missing tissue was silent
 
@@ -1461,6 +1468,66 @@ and it should be re-measured on a sparser bed rather than assumed.
 `STATUS — T2.6 RESOLVED. Padding available and off by default; on this cohort it recovers the
 tissue S28 identified at a cost of roughly 2% in PO2 and none in hypoxic fraction.`
 
+
+### S30. Re-derived after the rheology fix: the network runs fast, and the ratios hold their pattern
+
+Added 2026-09-27 for open item 12 in `cb_modelling_reference.md`. Every flow number in S20–S27 and
+the H2 whitepaper §7–§9 was computed while the rheology loop rescaled resistance by µ_app / µ_old
+against a base that no longer held µ_old. That inflated each resistance by µ_PS(d, 0.45)·d^1.647:
+208× at 4 µm, 269× at 8 µm, 539× at 20 µm. `7ea1b36` fixed it; `d9bafbc`, `be28179` and `7f05a78`
+(#98) then changed phase separation, damping and the rescale. Nothing was re-run until now.
+
+**The script.** S27's table had no committed script. `examples/cb_h2_absolute_perfusion.py` now
+makes it, under both rules, with `tests/test_cb_h2_absolute_perfusion.py`. Run with the pre-fix
+rheology module patched in, it gives back S27 to the digit (WKY-A: 18 inlets, 8,924 µm³/s, 6.17
+µm/s; band rule 100–196 inlets, 3.9e4–7.7e4 µm³/s, 10.8–18.1 µm/s). The same patch on
+`cb_h2_glomus_perfusion.py` gives back the 2026-08-19 JSON exactly. So the graphs did not change;
+every move below is the rheology code.
+
+**Absolute perfusion**, face rule on axis 1, 60/20 mmHg:
+
+| Specimen | Inlets | Total inlet flow (µm³/s) | Flow-weighted velocity | Was | ΔP for 500 µm/s |
+|---|---|---|---|---|---|
+| WKY-A | 18 | 2.40e6 | 1,785 µm/s | 6.2 | 11.2 mmHg |
+| WKY-B | 10 | 2.40e6 | 1,893 µm/s | 6.4 | 10.6 mmHg |
+| WKY-C | 11 | 1.51e6 | 979 µm/s | 4.1 | 20.4 mmHg |
+| SHR-A | 12 | 4.58e6 | 3,319 µm/s | 9.7 | 6.0 mmHg |
+| SHR-B | 12 | 3.74e6 | 1,713 µm/s | 6.3 | 11.7 mmHg |
+| SHR-C | 7 | 1.61e6 | 1,643 µm/s | 6.6 | 12.2 mmHg |
+
+Velocity rose 240–343× per specimen, the size of the inflation factor at these calibres, as the
+reference's item-12 note predicted. `7ea1b36` alone gives 1,045–3,243 µm/s; the #98 fixes move it
+by −10% to +2%. The band rule carries 4.0–7.6× the face rule's inflow and 1.6–3.7× its velocity
+(2,966–6,984 µm/s).
+
+**So S27's conclusion reverses.** At 60/20 mmHg the network runs 1–3× *above* the physiological
+200–1,000 µm/s, and a 6–20 mmHg drop would give 500 µm/s. There is no residual factor of 30 in the
+network's resistance. S25's withdrawn single-tube figure (8,900 µm/s) overstated the velocity, but
+pointed the right way: the 60/20 pair, an upper-end arteriolar/venular drop across 300 µm, drives
+the bed hard. Absolute perfusion is still not reportable (±45% calibre floor, 4–8× with the boundary
+rule, no carotid-body pressure measurement), so T1.9 stands as a block, for different reasons.
+
+**The rheology loop does not meet its tolerance.** On all six it stops at its 15-iteration cap with
+the last pass changing flow by 0.03–1.3% of the largest edge flow. Run to 50 and 200 iterations the
+velocities above move by under 0.3%.
+
+**The ratios**, `cb_h2_glomus_perfusion.py`, cohort means (per-specimen tables in the whitepaper):
+
+| Measure | WKY was → now | SHR was → now | SHR/WKY | Overlap |
+|---|---|---|---|---|
+| §2.1 shunt index | 0.904 → 0.894 | 1.002 → 0.987 | 1.11 → 1.10 | yes → yes |
+| §2.1 median flow ratio | 0.907 → 0.882 | 1.097 → 1.077 | 1.21 → 1.22 | no → no |
+| §2.2 haematocrit ratio | 1.025 → 1.006 | 0.953 → 0.934 | 0.93 → 0.93 | yes → yes |
+| §2.4 transit ratio | 1.162 → 1.163 | 0.793 → 0.833 | 0.68 → 0.72 | no → no |
+
+Per specimen the largest moves are 0.09 (WKY-C haematocrit 1.023 → 0.930; SHR-C shunt index
+1.044 → 1.124). This correction was not uniform in diameter, so unlike S22's viscosity-law change
+it does not cancel from a ratio; it moved ratios four times further than S22 did. It did not change
+which measures separate the cohorts. The between-group differences are now 10%, 22% and 28%
+against the 13.3% boundary floor of S21, which used plain Poiseuille and is unaffected.
+
+`STATUS — open item 12 closed. T1.9 re-grounded: absolute perfusion is blocked by calibration, not
+by a shortfall.`
 
 ## Effect on the four H2 methods
 
@@ -1578,8 +1645,8 @@ quantifying it.
 | T1.5 | ~~Reconcile the units.~~ **Done.** `POISEUILLE_FLOW_TO_UM3_PER_S`, derived from unit definitions and checked against an independent SI computation. Sink/source moves from 2.2e4× to 0.168×, a 17% implied extraction, and §2.3 produces a 42 mmHg field where it produced zero. | §2.3, and the absolute scale of §2.4 | S24, **S25** |
 | T1.6 | ~~Run §2.3 at native resolution.~~ **Done, and not needed.** The drift was a conservation defect: each edge's whole flow was recorded against every cell it crossed. Shared by length, the source is grid-independent and PO2 converges at 4 µm to within 1%. **Superseded by open item 30:** after item 22 it does not converge (reference §6.8). | §2.3 | S25, **S26** |
 | T1.8 | ~~The glomus-specific metabolic rate has no effect.~~ **Resolved as a property of the tissue.** The oxygen diffusion length is 20 to 45 µm against a median tissue-to-vessel distance of 5 to 8 µm, so the tissue is not diffusion-limited and a local sink cannot make a local gradient. §2.3's mechanism cannot operate on this geometry, whatever the code does. | §2.3 | S26, **S27** |
-| T1.7 | ~~Revisit the boundary pressures.~~ **Withdrawn.** The 8,900 µm/s figure was a single-tube calculation, not the network. Measured velocity is 4 to 10 µm/s. Replaced by T1.9. | absolute scale of §2.1 to §2.4 | S25, **S27** |
-| T1.9 | **New.** Absolute perfusion is 20 to 100 times below physiological and raising the pressure cannot fix it, needing about 3,257 mmHg. The face rule costs 5 to 7 times the throughput of the band rule, and a residual factor of 30 is the network's own resistance. Blocks any absolute perfusion claim; ratios are unaffected. | §2.3, absolute scale of all four | **S27** |
+| T1.7 | ~~Revisit the boundary pressures.~~ **Withdrawn.** The 8,900 µm/s figure was a single-tube calculation, not the network. Measured velocity was 4 to 10 µm/s; after the rheology fix it is 979 to 3,319 µm/s (S30), so the pressures may be aggressive after all. Replaced by T1.9. | absolute scale of §2.1 to §2.4 | S25, S27, **S30** |
+| T1.9 | **Re-grounded (S30).** ~~Absolute perfusion is 20 to 100 times below physiological and raising the pressure cannot fix it, needing about 3,257 mmHg.~~ That came from the inflated rheology resistances. Re-derived, the network runs at 979 to 3,319 µm/s at 60/20 mmHg, 1 to 3 times above physiological; 6 to 20 mmHg gives 500 µm/s. The face rule still costs 4 to 8 times the throughput of the band rule. Still blocks any absolute perfusion claim, now for want of calibration (pressure drop, boundary rule); ratios keep their cohort pattern. | §2.3, absolute scale of all four | S27, **S30** |
 | T1.2 | ~~Settle whether `calculate_pries_secomb_viscosity` should use the in vitro or in vivo relation.~~ **Done.** In vivo, and the function was a hybrid of both with the wall factor applied once instead of twice. §2.1 and §2.2 conclusions unchanged. | §2.2 | S18, **S22** |
 | T1.3 | ~~Re-pose transit time as a within-specimen ratio.~~ **Done.** Ratio of transit time to penetrating against bypassing edges, along solved flow directions. Cohorts separate without overlap. | §2.4 | S13, S15, S20, **S23** |
 | T1.4 | ~~Regenerate the flow and perfusion artefacts without the fabricated constriction.~~ **Done**, all six. | all | S17 |
@@ -1668,3 +1735,4 @@ venv/bin/python -m pytest tests/test_haemodynamics_analytical.py         # S1
 | The ADR coefficients are swapped by 16× (S16 draft) | withdrawn; error was in the check |
 | Geometry and mask are in transposed frames | refuted; 100.0% foreground as stored |
 | Padding the grid causes artefactual anoxia (S29 draft) | withdrawn; -0.7 mmHg and no hypoxia, measured |
+| Absolute perfusion is 20 to 100× below physiological (S27) | **reversed** by S30; 1 to 3× above at 60/20 mmHg, after the rheology fix |

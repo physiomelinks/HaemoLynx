@@ -24,14 +24,21 @@ threshold and matched sub-volumes, the four methods give:
 
 | Measure | WKY | SHR | Ratio | Cohorts overlap? |
 |---|---|---|---|---|
-| §2.4 Transit time to glomus clusters | 1.162 | 0.793 | **0.68** | **No** |
-| §2.1 Median flow, penetrating over bypassing | 0.907 | 1.097 | **1.21** | **No** |
-| §2.1 Shunt index | 0.904 | 1.002 | 1.11 | Yes |
-| §2.2 Haematocrit, penetrating over bypassing | 1.025 | 0.953 | 0.93 | Yes |
+| §2.4 Transit time to glomus clusters | 1.163 | 0.833 | **0.72** | **No** |
+| §2.1 Median flow, penetrating over bypassing | 0.882 | 1.077 | **1.22** | **No** |
+| §2.1 Shunt index | 0.894 | 0.987 | 1.10 | Yes |
+| §2.2 Haematocrit, penetrating over bypassing | 1.006 | 0.934 | 0.93 | Yes |
+
+> **Re-derived 2026-09-27 (open item 12).** Every flow number here was first computed on a rheology
+> loop that inflated each resistance 208–539× by an amount that varied with diameter
+> (`cb_modelling_reference.md` §3.2). With the fix (`7ea1b36`) and the later rheology fixes, the
+> ratios moved by up to 0.09 per specimen and 0.04 in cohort means; every overlap pattern held.
+> Absolute velocity rose about 290×, which reverses §11.1. Old outputs:
+> `examples/outputs/cb_h2_glomus_perfusion_2026-08-19_pre_item12.json`.
 
 **The single clearest negative result is that there is no functional shunting.** §2.1 proposes
 that flow in the hypertensive network bypasses the capillaries penetrating the glomus clusters.
-The shunt index, flow share divided by edge share, sits at 0.90 in WKY and 1.00 in SHR: flow is
+The shunt index, flow share divided by edge share, sits at 0.89 in WKY and 0.99 in SHR: flow is
 close to indifferent to the clusters in both cohorts. Blood is not being diverted away from the
 chemosensors.
 
@@ -40,14 +47,16 @@ and with n = 3 per group the exact two-sided permutation p cannot fall below 0.1
 fraction was zero everywhere and its glomus-specific mechanism inert; after open items 22 and 29
 (two Tier 1 defects) and 30 (vessels mapped over their cross-section, 3 µm grid) it is 0–3% below
 10 mmHg within TH, responds to glomus metabolism and is grid-converged, and its interpretation
-**needs review** (§10). And absolute perfusion is 20 to 100 times
-below physiological, so no absolute perfusion quantity is defensible (§11.1).
+**needs review** (§10). And no absolute perfusion quantity is defensible (§11.1): at 60/20 mmHg
+the network runs at 1 to 3 times the upper physiological velocity, and its throughput moves 4 to 8
+times with the boundary rule.
 
 **Verdict.** §2.1, §2.2 and §2.4 are implemented, posed as within-specimen ratios, and report.
 §2.3 is implemented and runs, but returns a quantity its own premise cannot support on this
-geometry. Every measure that survives is a ratio, and that is not an accident: three independent
-routes, calibre, viscosity and perfusion, each moved absolute quantities by large factors while
-leaving every ratio unchanged.
+geometry. Every measure that survives is a ratio, and that is not an accident: four independent
+routes, calibre, viscosity, perfusion and the rheology resistance fix, each moved absolute
+quantities by large factors. The first three left every ratio unchanged; the fourth, which varied
+with diameter, moved ratios by up to 0.09 per specimen and left every cohort pattern intact (§6.1).
 
 ---
 
@@ -230,8 +239,11 @@ evidence.
 - A claim that the face rule reduced boundary sensitivity was first measured the wrong way, by
   holding each rule's second parameter fixed, and appeared to show the opposite.
 - A claim that the boundary pressures implied a capillary velocity ten times too high was
-  **withdrawn**: it came from a single straight tube, and the network runs 20 to 100 times too
-  *slow*, an error in the opposite direction by about a factor of a thousand (§11.1).
+  **withdrawn**: it came from a single straight tube, and the network appeared to run 20 to 100
+  times too *slow*. That network figure was itself wrong: it came from the inflated resistances of
+  open item 12. Re-derived, the network runs at 979 to 3,319 µm/s, 1 to 3 times *above* the
+  physiological range (§11.1). The withdrawn single-tube figure (8,900 µm/s) was too high, but in
+  the right direction.
 - The assessment reported the Picard loop converging with no warnings. That was the outer loop;
   the inner CG had been failing at every step under a differently worded message.
 
@@ -271,16 +283,23 @@ each moved an absolute quantity by a large factor:
 | Viscosity law (§4.3) | 3.6 to 3.9× viscosity | 0.924 → 0.909 | 0.90 → 0.92 |
 | Preconditioner (§4.4) | solve 39× faster, residual 19 → 8.8e-7 | unchanged | unchanged |
 | Flow units and sharing (§4.5) | source ×1.3e5, then grid-independent | unchanged | unchanged |
+| Rheology resistance fix (open item 12) | velocity ×240 to ×343 | 0.904 / 1.002 → 0.894 / 0.987 (WKY / SHR) | 1.025 / 0.953 → 1.006 / 0.934 |
 
-Every ratio moved by at most 0.02 while the quantities beneath them moved by factors of three to
-five orders. That is the behaviour a within-specimen ratio is supposed to have, demonstrated
-rather than assumed.
+Under the first three, every ratio moved by at most 0.02 while the quantities beneath them moved by
+factors of three to five orders. That is the behaviour a within-specimen ratio is supposed to have,
+demonstrated rather than assumed.
+
+The fourth is different in kind. The bug inflated resistance by a factor that grew with diameter
+(208× at 4 µm, 539× at 20 µm), so it redistributed flow rather than scaling it, and a ratio does not
+cancel that. Per specimen the ratios moved by up to 0.09 (WKY-C haematocrit 1.023 → 0.930, SHR-C
+shunt index 1.044 → 1.124); cohort means by at most 0.04; the SHR/WKY ratios by at most 0.04
+(transit 0.68 → 0.72). Which measures separate the cohorts and which overlap did not change.
 
 ### 6.2 Does the boundary choice produce the difference?
 
 The residual spread of the shunt ratio under the face rule, as its tolerance moves over 1, 2 and
-4 voxels, is 13.3%. The measured between-group differences are 11% (shunt index), 21% (flow
-ratio) and 32% (transit ratio). The two smaller of those are not comfortably clear of the floor
+4 voxels, is 13.3%. The measured between-group differences are 10% (shunt index), 22% (flow
+ratio) and 28% (transit ratio). The two smaller of those are not comfortably clear of the floor
 and are reported with that stated.
 
 ### 6.3 What is not validated
@@ -297,12 +316,12 @@ single-classifier design, exactly as in H1, and that demonstration remains outst
 
 | Specimen | Group | Penetrating edges | Edge share | Flow share | **Shunt index** | Median flow ratio |
 |---|---|---|---|---|---|---|
-| WKY-A | WKY | 1,178 | 26.1% | 26.0% | 0.997 | 0.870 |
-| WKY-B | WKY | 1,624 | 41.3% | 33.9% | 0.822 | 0.872 |
-| WKY-C | WKY | 1,659 | 24.8% | 22.1% | 0.892 | 0.979 |
-| SHR-A | SHR | 1,655 | 24.3% | 23.5% | 0.967 | 1.179 |
-| SHR-B | SHR | 1,182 | 14.6% | 14.6% | 0.996 | 0.998 |
-| SHR-C | SHR | 473 | 9.7% | 10.1% | 1.044 | 1.115 |
+| WKY-A | WKY | 1,178 | 26.1% | 25.7% | 0.983 | 0.790 |
+| WKY-B | WKY | 1,624 | 41.3% | 33.6% | 0.813 | 0.894 |
+| WKY-C | WKY | 1,659 | 24.8% | 22.0% | 0.887 | 0.960 |
+| SHR-A | SHR | 1,655 | 24.3% | 21.7% | 0.892 | 1.159 |
+| SHR-B | SHR | 1,182 | 14.6% | 13.8% | 0.945 | 1.029 |
+| SHR-C | SHR | 473 | 9.7% | 10.9% | 1.124 | 1.045 |
 
 ### 7.2 The shunt index, and why flow share alone is not it
 
@@ -312,25 +331,29 @@ method proposes to detect.
 
 | | WKY | SHR | Ratio |
 |---|---|---|---|
-| Shunt index | 0.904 | 1.002 | 1.11 |
+| Shunt index | 0.894 | 0.987 | 1.10 |
 
-**Both cohorts sit near 1, so there is no evidence of functional shunting in either.**
+**Both cohorts sit near 1, so there is no evidence of functional shunting in either.** WKY runs
+0.81 to 0.98 and SHR 0.89 to 1.12; the ranges overlap. The lowest value, WKY-B at 0.81, means the
+penetrating edges there carry about a fifth less than their share, which is modest and lies in the
+normotensive cohort, the opposite of what §2.1 predicts.
 
-Flow share alone would have said something else. It runs 27.9% in WKY against 16.5% in SHR, a
-0.59 ratio that reads as dramatic diversion in the hypertensive network. But it tracks the edge
+Flow share alone would have said something else. It runs 27.1% in WKY against 15.5% in SHR, a
+0.57 ratio that reads as dramatic diversion in the hypertensive network. But it tracks the edge
 share almost exactly, and the edge share is itself downstream of the parenchymal volume
 difference H1 §1.3 reports at 0.60. Dividing it out removes an apparent effect that was never
 about flow.
 
 ### 7.3 Median flow ratio
 
-Flow through penetrating edges over flow through bypassing edges, per specimen: **WKY 0.907
-against SHR 1.097, and the cohorts do not overlap** (WKY 0.870 to 0.979, SHR 0.998 to 1.179). For
+Flow through penetrating edges over flow through bypassing edges, per specimen: **WKY 0.882
+against SHR 1.077, and the cohorts do not overlap** (WKY 0.790 to 0.960, SHR 1.029 to 1.159). For
 three against three that is the most extreme arrangement available, giving the design floor of
 p = 0.10.
 
-Penetrating capillaries carry about 9% less flow than bypassing ones in WKY and about 10% more in
-SHR. The effect is small and the separation is clean; both are reported.
+Penetrating capillaries carry about 12% less flow than bypassing ones in WKY and about 8% more in
+SHR. The effect is small and the separation is clean; both are reported. The gap between the
+groups is narrow: WKY-C at 0.960 and SHR-B at 1.029.
 
 ---
 
@@ -341,22 +364,23 @@ until flows converge.
 
 | Specimen | Hct penetrating | Hct bypassing | Ratio |
 |---|---|---|---|
-| WKY-A | 0.3972 | 0.3893 | 1.020 |
-| WKY-B | 0.3906 | 0.3790 | 1.031 |
-| WKY-C | 0.3926 | 0.3839 | 1.023 |
-| SHR-A | 0.3681 | 0.3492 | 1.054 |
-| SHR-B | 0.3854 | 0.3730 | 1.033 |
-| SHR-C | 0.2957 | 0.3840 | 0.770 |
+| WKY-A | 0.3916 | 0.3708 | 1.056 |
+| WKY-B | 0.3841 | 0.3724 | 1.031 |
+| WKY-C | 0.3664 | 0.3939 | 0.930 |
+| SHR-A | 0.3653 | 0.3602 | 1.014 |
+| SHR-B | 0.3903 | 0.3862 | 1.011 |
+| SHR-C | 0.3194 | 0.4109 | 0.777 |
 
 | | WKY | SHR | Ratio |
 |---|---|---|---|
-| Haematocrit ratio | 1.025 | 0.953 | 0.93 |
+| Haematocrit ratio | 1.006 | 0.934 | 0.93 |
 
 **Directionally what the method anticipates, and not supported.** §2.2 proposes RBC starvation in
 the glomus microenvironment of the hypertensive network: a dense capillary bed carrying mostly
-plasma. SHR does show a lower ratio. But the ranges overlap heavily and the group mean rests
-almost entirely on SHR-C at 0.770, with the other two SHR specimens at 1.054 and 1.033, both
-above the WKY mean of 1.025.
+plasma. SHR does show a lower ratio. But the ranges overlap heavily (WKY 0.930 to 1.056, SHR 0.777
+to 1.014) and the group mean rests almost entirely on SHR-C at 0.777. The other two SHR specimens,
+at 1.014 and 1.011, sit just above the WKY mean of 1.006, and one WKY specimen (WKY-C, 0.930) now
+shows the lower glomus haematocrit the method predicts for SHR.
 
 ### 8.1 An open question about the skimming model
 
@@ -383,24 +407,24 @@ to it. Reported as the ratio of transit time to penetrating edges against bypass
 
 | Specimen | Penetrating | Bypassing | Ratio |
 |---|---|---|---|
-| WKY-A | 2.381e7 | 1.889e7 | 1.261 |
-| WKY-B | 1.715e7 | 1.547e7 | 1.109 |
-| WKY-C | 2.811e7 | 2.516e7 | 1.117 |
-| SHR-A | 1.245e7 | 1.518e7 | 0.820 |
-| SHR-B | 1.463e7 | 1.674e7 | 0.874 |
-| SHR-C | 1.382e7 | 2.017e7 | 0.685 |
+| WKY-A | 9.571e4 | 7.412e4 | 1.291 |
+| WKY-B | 6.299e4 | 5.843e4 | 1.078 |
+| WKY-C | 1.206e5 | 1.076e5 | 1.120 |
+| SHR-A | 5.011e4 | 5.962e4 | 0.841 |
+| SHR-B | 5.853e4 | 6.586e4 | 0.889 |
+| SHR-C | 6.222e4 | 8.077e4 | 0.770 |
 
 | | WKY | SHR | Ratio |
 |---|---|---|---|
-| Transit ratio | 1.162 | 0.793 | **0.68** |
+| Transit ratio | 1.163 | 0.833 | **0.72** |
 
-**The cohorts separate without overlap**, WKY 1.109 to 1.261 against SHR 0.685 to 0.874, giving
+**The cohorts separate without overlap**, WKY 1.078 to 1.291 against SHR 0.770 to 0.889, giving
 p = 0.10, the design floor. This is the largest separation of the four measures.
 
 **The direction is the opposite of what §2.4 anticipates.** It expects sluggish transit to the
 sensors in the hypertensive network, producing stagnant hypoxia at the sensor site. Blood reaches
-the SHR clusters in about two thirds of the time it takes to reach the surrounding tissue, where
-in WKY it takes about a fifth longer.
+the SHR clusters in about five sixths of the time it takes to reach the surrounding tissue, where
+in WKY it takes about a sixth longer.
 
 Whether that means the sensors are well perfused, or merely that a smaller cluster sits closer to
 its supply, is not answerable from a ratio and is not claimed. Absolute transit times are in
@@ -532,13 +556,19 @@ to about 28.5; before the sharing fix of §4.5 it ran 42.0, 46.9, 50.5. Outputs:
 
 ### 11.1 Limitations that bound the claims
 
-**Absolute perfusion is 20 to 100 times below physiological.** Flow-weighted capillary velocity is
-4 to 10 µm/s across the six against a physiological 200 to 1,000. Raising the boundary pressure
-is not the remedy: reaching 500 µm/s would need about 3,257 mmHg. The face boundary rule accounts
-for part of it, carrying five to seven times less flow than the band rule it replaced, which is a
-cost of §4.2 that its own validation did not measure; a residual factor of about 30 is the
-network's own resistance over a 300 µm span. **No absolute perfusion quantity in this document is
-defensible.** Every reported measure is a ratio for this reason.
+**Absolute perfusion is not calibrated, and at 60/20 mmHg it runs fast.** Flow-weighted velocity
+is 979 to 3,319 µm/s across the six against a physiological 200 to 1,000; five of six sit above
+the upper end. A 500 µm/s velocity would need a drop of 6 to 20 mmHg, not 40. The face boundary
+rule carries 4 to 8 times less flow than the band rule it replaced, a cost of §4.2 that its own
+validation did not measure. So the absolute scale depends on a pressure pair that is not measured
+in the carotid body and on a boundary choice with no anatomical calibration, on top of the ±45%
+calibre floor. **No absolute perfusion quantity in this document is defensible.** Every reported
+measure is a ratio for this reason.
+
+Until open item 12 was re-derived (2026-09-27) this paragraph said the opposite: 4 to 10 µm/s, 20
+to 100 times too slow, needing about 3,257 mmHg. Those figures came from the inflated resistances
+of the rheology bug. `examples/cb_h2_absolute_perfusion.py` reproduces both the old table (with
+the old code) and the new one.
 
 **Statistical power.** n = 3 per group. The exact two-sided permutation p cannot fall below 0.10
 for any arrangement of three against three. No claim of statistical significance is made.
@@ -557,7 +587,7 @@ diffusion; see the note at the head of §10.*
 ### 11.2 Limitations that bound the precision
 
 **Boundary sensitivity.** The residual spread of a ratio under the face rule is 13.3%, against
-measured differences of 11%, 21% and 32%.
+measured differences of 10%, 22% and 28%.
 
 **Calibre quantisation.** Inherited from H1 §1.2: the distance transform returns a coarse
 diameter distribution, and resistance goes as the inverse fourth power of diameter.
@@ -578,16 +608,16 @@ sensitive to a stated limitation), **Not supported** (measured and disqualified,
 | # | Claim | Evidence | Rests on | Grade |
 |---|---|---|---|---|
 | P1 | All four H2 methods are implemented and run on all six specimens | §7–§10 | none | **Established** |
-| P2 | The reported ratios are insensitive to corrections that moved absolute quantities by three to five orders | §6.1 | Three independent corrections | **Established** |
-| P3 | There is no functional shunting in either cohort | §7.2 | Shunt index 0.90 and 1.00 | **Established** |
-| P4 | Flow share alone would have reported shunting that is an artefact of edge share | §7.2 | 0.59 ratio removed by normalisation | **Established** |
+| P2 | The reported ratios are insensitive to uniform corrections that moved absolute quantities by three to five orders; a diameter-dependent one (open item 12) moved them by up to 0.09 per specimen and left every cohort pattern intact | §6.1 | Four independent corrections | **Established** |
+| P3 | There is no functional shunting in either cohort | §7.2 | Shunt index 0.89 and 0.99 | **Established** |
+| P4 | Flow share alone would have reported shunting that is an artefact of edge share | §7.2 | 0.57 ratio removed by normalisation | **Established** |
 | P5 | Transit time to the glomus clusters is shorter in SHR relative to surrounding tissue | §9 | No overlap; p = 0.10 floor | **Provisional** |
-| P6 | Penetrating capillaries carry relatively more flow in SHR | §7.3 | No overlap; effect is 9% against 10% | **Provisional** |
+| P6 | Penetrating capillaries carry relatively more flow in SHR | §7.3 | No overlap; effect is 12% against 8% | **Provisional** |
 | P7 | The direction of P5 opposes the stagnant-hypoxia prediction §2.4 makes | §9 | as P5 | **Provisional** |
 | P8 | Haematocrit in glomus-penetrating vessels is lower in SHR | §8 | Ranges overlap; rests on SHR-C | **Not supported** |
-| P9 | The shunt index differs between cohorts | §7.2 | Ranges overlap; 11% against a 13.3% floor | **Not supported** |
+| P9 | The shunt index differs between cohorts | §7.2 | Ranges overlap; 10% against a 13.3% floor | **Not supported** |
 | P10 | A glomus-specific hypoxic fraction is measurable on this geometry | §10.2 | Was: diffusion length 20–45 µm vs TVD 5–8 µm. Re-run after open items 22, 29, 30: 0–3% below 10 mmHg within TH, moves with metabolism; grid-converged at 3 µm | **Needs review** (was Not supported) |
-| P11 | Any absolute perfusion quantity reported here is physiological | §11.1 | Velocity 20 to 100× low | **Not supported** |
+| P11 | Any absolute perfusion quantity reported here is physiological | §11.1 | Velocity 1 to 3× above the physiological range at 60/20 mmHg; throughput 4 to 8× with the boundary rule (was: 20 to 100× low, before open item 12) | **Not supported** |
 
 The defensible position is P1–P4 (Established) plus P5–P7 (Provisional). Nothing else should be
 presented as a result.
@@ -598,7 +628,7 @@ presented as a result.
 
 | Priority | Work | Unblocks | Cost |
 |---|---|---|---|
-| 1 | Reconcile absolute perfusion: establish why the network carries 20 to 100× too little flow | Every absolute quantity; §2.3 | Investigation |
+| 1 | Calibrate absolute perfusion: a measured or defensible pressure drop across the region (6 to 20 mmHg gives 500 µm/s) and a boundary rule whose throughput is anatomically grounded | Every absolute quantity; §2.3 | Investigation |
 | 2 | Settle the skimming model's parameterisation, fractional flow against velocity | §2.2 | Literature plus a re-run |
 | 3 | Level the TH classifier's residual 2.1× cohort skew | The stated bound on both whitepapers | Hours of labelling |
 | 4 | Complete perivascular boundary labelling on the vessel channel | Calibre precision, inherited by every resistance | Hours; H1 §13 item 1 |
@@ -633,6 +663,7 @@ and 3 bound the two measures that currently overlap.
 ```
 python examples/cb_h2_boundary_selection.py          # §4.2
 python examples/cb_h2_glomus_perfusion.py            # §7, §8, §9
+python examples/cb_h2_absolute_perfusion.py          # §11.1 absolute perfusion
 python examples/cb_h2_hypoxic_fraction.py            # §10
 python examples/cb_h2_error_propagation.py           # the noise floor
 python examples/cb_h2_vtk.py                         # ParaView artefacts, not a result
@@ -643,6 +674,7 @@ python examples/cb_h2_vtk.py                         # ParaView artefacts, not a
 | Artefact | Supplies |
 |---|---|
 | `cb_h2_glomus_perfusion.json` | §7, §8, §9 |
+| `cb_h2_absolute_perfusion.json` | §11.1 |
 | `cb_h2_hypoxic_fraction.json` | §10 |
 | `cb_h2_paraview/export_summary.json` | the frame check behind the ParaView exports |
 | `<SPECIMEN>/per_edge_morphometry.csv` | diameters; the cached graph carries none |
@@ -660,5 +692,6 @@ python examples/cb_h2_vtk.py                         # ParaView artefacts, not a
 | Silent fallbacks | Diameter provenance, 5 µm default, dropped edges | `7e273aa` |
 | Transit time and axis naming | S23 | `891ea52` |
 | Withdrawal of the velocity claim | S27 | `e98d59d` |
+| Rheology resistance inflated 208–539× (open item 12) | Poiseuille recompute, then rescale once; flows re-derived, S30 | `7ea1b36`, `7f05a78` |
 
-The assessment behind these is `h2_pipeline_capability_assessment.md`, findings S1 to S27.
+The assessment behind these is `h2_pipeline_capability_assessment.md`, findings S1 to S30.

@@ -129,12 +129,13 @@ several times over and no gradient survives. The consequence is that §2.3's glo
 mechanism is inert in this tissue: raising glomus consumption to twice stromal changes almost
 nothing. Do not read a flat field as a failed solve.
 
-**Absolute perfusion is 20–100× lower than measured carotid body flow.** The ratios in the
-report are reliable — the three independent unit and physics corrections moved absolute
-quantities by three to five orders while every within-specimen ratio moved by at most 0.02 —
-but `flow_um3_s` and everything derived from it should be read as relative, not as a
-calibrated flow rate. The likely cause is the 160-voxel region cutting the supplying arteriole,
-which is recorded as T1.9 and not yet resolved.
+**Absolute perfusion is not calibrated.** At 60/20 mmHg the flow-weighted velocity is
+979–3,319 µm/s, 1–3× above a physiological 200–1,000, and the face boundary rule carries 4–8×
+less flow than the band rule (`cb_modelling_reference.md` §13.5). Until open item 12 was
+re-derived this note said 20–100× *lower*; that came from a rheology bug that inflated every
+resistance ~200–540×. The ratios in the report kept their cohort pattern through that fix, but
+`flow_um3_s` and everything derived from it should be read as relative, not as a calibrated
+flow rate.
 
 **Each file is a 0.0266 mm³ region, not a whole carotid body**, centred on each volume's own
 tissue signal. And with three specimens per group, a visible difference between one WKY and

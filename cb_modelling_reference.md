@@ -19,7 +19,7 @@
 | Would the other viscosity law change my answer? | §4.4 — not for ratios; yes for absolutes |
 | Why is vessel diameter measured by EDT and not FWHM? | §2.6 |
 | How much of my diameter distribution was measured rather than fabricated? | §2.6 — the guard refuses at any fabrication |
-| Why is absolute perfusion so far below physiological? | §13.5 — and pressure is not the cause |
+| Is absolute perfusion physiological? | §13.5 — at 60/20 mmHg it runs 1–3× fast; it was 20–100× slow only before open item 12 |
 | What pressure boundaries did the published H2 numbers use? | §7.8 and §8.1 — 60/20; the pipeline config reads the same pair since open item 10 |
 | Which coupling tier produced the oxygen field? | §6.6 — Tier 1; Tier 2 is unreachable |
 | What grid resolution was used, and is it converged? | §6.8 — 3 µm, with vessels mapped over their cross-section; within 0.21 mmHg of 2 µm (open item 30, closed) |
@@ -134,8 +134,8 @@ and the only place to change it. Everywhere else quotes it with a pointer back.
 | Hypoxic thresholds | 5, 10, 20 mmHg | §7.5 | §13.6 |
 | Tissue-to-vessel distance | median 5.28–7.92 µm, p90 25.9–53.1 µm | §13.7 | §6.8, §7.2 |
 | Oxygen diffusion length | 20 µm at PO₂ 10, 35 at 30, 45 at 50 | §13.6 | §6.8 |
-| Total inlet flow | 6,511–16,240 µm³/s | §13.5 | §7.6 |
-| Flow-weighted velocity | 4.1–9.7 µm/s against a physiological 200–1,000 | §13.5 | §11, §13.10 |
+| Total inlet flow | 1.51e6–4.58e6 µm³/s (face rule) | §13.5 | §7.6 |
+| Flow-weighted velocity | 979–3,319 µm/s against a physiological 200–1,000 | §13.5 | §8.1, §11, §13.10 |
 | Calibre error floor | ±45% on an absolute flow quantity | §13.3 | §7.1, §7.6, §11 |
 | Within-specimen floor | ±6.3% | §13.3 | §7.3 |
 | Pre-threshold filter cost | median-3 destroys 80% of the vessel | §2.3 | §11.1 |
@@ -1346,9 +1346,9 @@ R &= \frac{128\,\mu_\text{app} L}{\pi d^{4}}
 | 4 | R **recomputed** from Hagen–Poiseuille at the new µ_app | $R = 128\,\mu_\text{app} L / \pi d^{4}$ | The same expression as step 2, so initialisation and update agree. Until `7ea1b36` this step rescaled a stored base by $\mu_\text{app} / \mu_\text{old}$ — see closed item 12 below | **On** | `rheology.py:408` |
 | 5 | ~~`original_resistance` captured once~~ | — | Removed in `7ea1b36` with the rescale it served | **Removed** | — |
 
-> ⚠ **Item 12 — closed in code by `7ea1b36`; published numbers not yet re-derived.** Until that
-> commit step 4 double-applied viscosity, inflating every resistance by roughly 200–540×. The record
-> below is kept because every absolute flow in §7 and §13 was computed before the fix.
+> **Item 12 — closed by `7ea1b36`; numbers re-derived 2026-09-27.** Until that commit step 4
+> double-applied viscosity, inflating every resistance by roughly 200–540×. The record below is kept
+> because it explains why the H2 flow numbers before 2026-09-27 differ from the current ones.
 >
 > The rescale was correct *if* `original_resistance` holds the power-law resistance, because
 > $R_\text{old} \times \mu_\text{app}/\mu_\text{old}$ then telescopes to $128\,\mu_\text{app} L / (\pi d^{4})$. It does not. Step 2 overwrites
@@ -1376,18 +1376,25 @@ R &= \frac{128\,\mu_\text{app} L}{\pi d^{4}}
 > step-2 resistances, which were correct. The corruption entered at the end of iteration 0, so the
 > returned graph carried the inflated values.
 >
-> **A candidate — not a demonstrated — explanation for §13.5.** Absolute perfusion there is 20–100×
-> low, and §13.5 computes that reaching 500 µm/s would need about 3,257 mmHg against the 40 mmHg
-> used: an implied excess resistance of roughly 81×. That is the same order as the factor above,
-> which sits near 230× at the median measured diameter of 6.37 µm. The two are not equal and the
-> comparison is loose — velocity is flow-weighted across a diameter distribution — so this is a
-> hypothesis to test by re-running now that step 4 is corrected, not a conclusion. **No H1 or H2 number in
-> this document has been re-derived against it.**
+> **The explanation for §13.5 held.** Absolute perfusion there was 20–100× low, and reaching
+> 500 µm/s seemed to need about 3,257 mmHg against the 40 mmHg used. This block proposed the inflated
+> resistance as the cause. Re-derived (`examples/cb_h2_absolute_perfusion.py`), the flow-weighted
+> velocity rose 240–343× per specimen, to 979–3,319 µm/s, and a 500 µm/s velocity now needs 6–20
+> mmHg. Run with the pre-fix rheology code patched in, the same script gives back the old table to
+> the digit, so the graphs did not change and the rheology code accounts for all of it. §13.5 has the
+> new table.
 >
-> **Ratios and topology are unaffected in kind but not in value.** β₁, calibre, length and
-> tortuosity are all fixed before any resistance is computed (§2.4–§2.6). Anything downstream of
-> the flow solve — shunt ratio, transit time, PO₂ depletion, wall shear stress — was computed on the
-> inflated field in every published run.
+> **Ratios moved in value, not in pattern.** β₁, calibre, length and tortuosity are fixed before any
+> resistance is computed (§2.4–§2.6), so H1 is untouched. The H2 §2.1, §2.2 and §2.4 ratios were
+> computed on the inflated field (`cb_h2_glomus_perfusion.json`, 2026-08-19; kept as
+> `..._2026-08-19_pre_item12.json`) and were re-run. Per specimen they moved by up to 0.09 (WKY-C
+> haematocrit ratio 1.023 → 0.930; SHR-C shunt index 1.044 → 1.124). Cohort means moved by at most
+> 0.04. The SHR/WKY ratios went 1.11 → 1.10 (shunt index), 1.21 → 1.22 (median flow), 0.93 → 0.93
+> (haematocrit) and 0.68 → 0.72 (transit). Flow ratio and transit ratio still separate the cohorts
+> with no overlap; shunt index and haematocrit ratio still overlap. Part of each move comes from the
+> later #98 fixes (`d9bafbc` feeding-vessel phase separation, `be28179` under-relaxation, `7f05a78`
+> rescale once), which the re-run also picked up; `7ea1b36` alone moved the ratios by a similar
+> amount. H2 §2.3 had already been re-run after all four (2026-09-26), so it is unchanged.
 
 **So the power law survives only if the rheology solve is not run.** When it is run, it is an
 initial condition that is replaced rather than blended — which is what §11 row 12 means by
@@ -2534,9 +2541,11 @@ size; arterioles of 15–45 µm run nearer 30 mmHg, which would lower the drivin
 SHR arteriolar pressures run higher than WKY; one pair is used for all six specimens on purpose, so
 the model carries none of that group difference (§11 row 15).
 
-**Neither choice rescues absolute perfusion.** §13.5 measures flow-weighted velocities of 4–10 µm/s
-against a physiological 200–1,000, and reaching 500 µm/s would require about 3,257 mmHg. The
-boundary pressure is not what is missing.
+**At 60/20 mmHg the network runs fast, not slow.** §13.5 measures flow-weighted velocities of
+979–3,319 µm/s against a physiological 200–1,000, and a 500 µm/s velocity needs a drop of only
+6–20 mmHg. That fits the paragraph above: arterioles of this size run nearer 30 mmHg, which would
+lower the drive. (Before open item 12 was re-derived this paragraph read 4–10 µm/s and 3,257 mmHg;
+those came from the inflated pre-`7ea1b36` resistances.)
 
 **Within-specimen ratios are insensitive to this.** Flow is linear in the pressure difference, so a
 uniform change scales every edge's flow and cancels from any ratio taken within one specimen — the
@@ -3126,27 +3135,47 @@ to 43.1%. Axis 1 is the only axis with terminals on both faces in all six specim
 Below the operative floor of §13.3 and below the effects H1 measures — but only because the rule
 and its axis are pinned. See open item 2 in §10: they are not yet pinned in one place.
 
-### 13.5 Absolute perfusion is 20–100× below physiological
+### 13.5 Absolute perfusion at 60/20 mmHg is at or above physiological
 
-Measured across all six with the face rule at 60/20 mmHg:
+Measured across all six with the face rule at 60/20 mmHg (`examples/cb_h2_absolute_perfusion.py`,
+re-derived 2026-09-27 for open item 12):
 
-| Specimen | Inlets | Total inlet flow (µm³/s) | Flow-weighted velocity |
-|---|---|---|---|
-| WKY-A | 18 | 8,924 | 6.2 µm/s |
-| WKY-B | 10 | 8,699 | 6.4 µm/s |
-| WKY-C | 11 | 6,511 | 4.1 µm/s |
-| SHR-A | 12 | 16,240 | 9.7 µm/s |
-| SHR-B | 12 | 14,870 | 6.3 µm/s |
-| SHR-C | 7 | 6,560 | 6.6 µm/s |
+| Specimen | Inlets | Total inlet flow (µm³/s) | Flow-weighted velocity | ΔP for 500 µm/s |
+|---|---|---|---|---|
+| WKY-A | 18 | 2.40e6 | 1,785 µm/s | 11.2 mmHg |
+| WKY-B | 10 | 2.40e6 | 1,893 µm/s | 10.6 mmHg |
+| WKY-C | 11 | 1.51e6 | 979 µm/s | 20.4 mmHg |
+| SHR-A | 12 | 4.58e6 | 3,319 µm/s | 6.0 mmHg |
+| SHR-B | 12 | 3.74e6 | 1,713 µm/s | 11.7 mmHg |
+| SHR-C | 7 | 1.61e6 | 1,643 µm/s | 12.2 mmHg |
 
-**4–10 µm/s against a physiological 200–1,000 µm/s.**
+**979–3,319 µm/s against a physiological 200–1,000 µm/s.** Five of six sit above the upper end,
+by up to 3.3×. A 500 µm/s flow-weighted velocity needs a drop of 6–20 mmHg, not the 40 used. The
+solve is linear in the pressure drop (phase separation reads flow fractions, which a uniform scaling
+leaves alone), so that is the frozen drop scaled by 500 / v; `tests/test_cb_h2_absolute_perfusion.py`
+checks it against a second solve.
 
-**Boundary pressure is not the cause.** Reaching 500 µm/s would require about **3,257 mmHg**. The
-boundary rule accounts for part of the gap — the alternative rule carries five to seven times more
-flow and about two and a half times the velocity — but not for its size.
+**This replaces "20–100× below physiological".** The earlier table (4.1–9.7 µm/s, and "about 3,257
+mmHg" for 500 µm/s) was computed before `7ea1b36`, while the rheology loop inflated every resistance
+208–539× (§3.2, closed item 12). The new script, run with the pre-fix rheology code patched in,
+gives back that table to the digit (WKY-A: 18 inlets, 8,924 µm³/s, 6.17 µm/s). So the whole change
+is the rheology code: velocity rose 240–343× per specimen, the factor §3.2 predicted. The later
+rheology fixes (#98: feeding-vessel phase separation, under-relaxation, rescale once) move it a
+further −10% to +2%.
 
-Every absolute perfusion figure inherits this. It is a further reason ratios are the only reportable
-form.
+**The boundary rule still sets the throughput.** The band rule (25% of axis 1 at each end) the face
+rule replaced carries 4.0–7.6× the inlet flow (1.1e7–2.2e7 µm³/s) and 1.6–3.7× the velocity
+(2,966–6,984 µm/s). The face rule is kept for ratio stability (§2.8, §13.4).
+
+**The rheology solve does not meet its tolerance on these graphs.** At the 15-iteration cap its last
+pass still changes flow by 0.03–1.3% of the largest edge flow. Running to 50 and 200 iterations
+moves the velocities above by under 0.3%, so the table does not depend on the cap.
+
+Absolute perfusion is still not a reportable quantity: it sits under the ±45% calibre floor
+(§13.3), it moves 4–8× with the boundary rule, and 60/20 mmHg is an upper-end arteriolar/venular
+pair, not a measured carotid-body drop (§8.1). But the model is no longer orders of magnitude off.
+At 60/20 mmHg it runs somewhat fast, which points at the pressure pair rather than at the network's
+resistance.
 
 ### 13.6 The tissue is not diffusion-limited
 
@@ -3228,7 +3257,7 @@ sensitivity analysis, not a proof, and it remains the stated bound on any TH-cha
 | Claim type | Supported? |
 |---|---|
 | Within-specimen ratios of flow-derived quantities | **Yes** — ±6.3% floor against 27–40% effects |
-| Absolute flow, velocity or perfusion | **No** — ±45% floor, and 20–100× below physiological |
+| Absolute flow, velocity or perfusion | **No** — ±45% floor, 4–8× with the boundary rule, and 1–3× above physiological at 60/20 mmHg (§13.5) |
 | Between-group calibre differences | **No** — gap is 1/20 of the measurement step |
 | Glomus-specific hypoxic fraction as a number | **No** — the mechanism cannot operate (§13.6); report as a curve in the assumed metabolic contrast |
 | Between-group TH-channel contrasts | **Qualified** — bounded by §13.9's sensitivity analysis, not by proof |
@@ -3485,7 +3514,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | ~~9~~ | **Closed** by `f92a96c`. The rheology solver substituted a silent 5.0 µm diameter; it now raises, matching `map_vessels_to_grid` and `edge_transit_times`. `2d98ab8` removed the least-squares pressure fallback, but left the rheology solver's initialisation and update on 5.0 µm | §3.2, §3.4, §2.8 |
 | ~~10~~ | **Closed.** Pressure boundaries differed between `HaemodynamicsConfig` (100/2 mmHg, MAP to CVP) and `cb_settings` (60/20 mmHg, arteriolar to venular), and every published H2 number used 60/20. The config now takes its defaults from `cb_settings.INLET_PRESSURE_MMHG` / `OUTLET_PRESSURE_MMHG`, both example YAMLs say 60/20 in mPa, and `test_cb_settings.py` keeps all three equal, so no published number moves. §8.1 and §10.7 now place 60/20 against measured rat microvascular pressures [`peti-peterdi_direct_1998`, `jin_study_1997`, `fronek_microvascular_1975`]: 20 is a venular value, 60 an upper arteriolar one. Fresh WKY-A run: flows 0.408× the 100/2 run (40/97.97) on 4 071 of 4 178 flowing edges, diameters and resistances unchanged; haematocrit moved by more than 0.01 on 96 of 4 512 edges, because the rheology loop stops unconverged at 15 iterations in both runs and its path is not exactly scale-free. The Tier 3 `.vti` did **not** change (7 iterations, residual 6.0 × 10⁻⁷, tissue PO₂ mean 75.80, min 0.26 mmHg, as under open item 8): the pipeline's perfusion step over-converts flow, open item 31. `test_cb_settings.py`, `test_perfusion_vti_provenance.py` | — |
 | ~~11~~ | **Closed.** The entropy path defaulted to on but could not run at 2 classes, and fell back to plain hysteresis with only a warning. `enable_shannon_entropy` now defaults to False and raises if turned on for a 2-class field or one with no class axis; `shannon_entropy_core` is a real config field. The Optuna preprocessing tuner searches the two entropy thresholds only when entropy is on and an entropy map exists, so it no longer writes untested values for them to `best_preprocessing_params.yaml`. CB masks unchanged | — |
-| ~~12~~ | **Closed in code** by `7ea1b36`. The rheology loop rescaled resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contained $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently. **Results not yet re-derived** | every absolute flow in §7, §13.5 |
+| ~~12~~ | **Closed** by `7ea1b36`; numbers re-derived 2026-09-27. The rheology loop rescaled resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contained $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently. Re-derived with `cb_h2_glomus_perfusion.py` and the new `cb_h2_absolute_perfusion.py`: flow-weighted velocity 4.1–9.7 → 979–3,319 µm/s (face rule, 60/20 mmHg), so §13.5 now reads 1–3× above physiological, not 20–100× below. H2 §2.1/§2.2/§2.4 ratios moved up to 0.09 per specimen, ≤ 0.04 in cohort means; every overlap/no-overlap pattern held. §3.2 has the detail | §3.2, §13.5; H2 whitepaper §6–§9, §11–§13 |
 | 13 | The lateral ROI centroid projects over the whole stack, not the 160 slices the ROI occupies, so tissue outside the box helps place it. Restricting to the band moves the centre 7–45 µm | §2.1, and every per-specimen quantity through what was sampled |
 | ~~14~~ | **Closed.** `crop_roi` rounded the centre twice and landed one voxel low on odd axes with the centre above the midpoint. It now rounds once and uses the same `centre − size // 2` rule as `RoiPlacement.bounds`, so the two paths agree exactly. No CB result used that path | — |
 | 15 | The threshold selector's “median diameter” is a median over every foreground voxel, while §2.6's calibre is a median over centreline voxels. The 4–7 µm capillary window is an external target for the latter and is being applied to the former, which reads 0.63–1.00× as large | §2.2 step 3; the selected threshold, hence everything downstream |
