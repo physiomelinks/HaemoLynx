@@ -73,7 +73,7 @@ def test_the_default_settings_converge_and_land_on_the_fixed_point(name, grid, G
     iterations at 1e3 / 1e4 / 1e5 (were 14 / 14 / 10). At 1e3 the tissue is nearly anoxic
     (mean PO2 5 mmHg), the hardest case for the linearised blood response."""
     default = PerfusionConfig()
-    assert default.picard_max_iterations == 50 and default.picard_tolerance == 1e-5
+    assert default.picard_max_iterations == 200 and default.picard_tolerance == 1e-5
     config = replace(config, picard_max_iterations=default.picard_max_iterations,
                      picard_tolerance=default.picard_tolerance)
     po2, pco2, _, info = _solve(grid, G, starts, cells, config)

@@ -91,5 +91,5 @@ PipelineConfig:
   # ------------------------------------------------------------------
   # Non-Linear Picard Matrix Solver Parameters
   # ------------------------------------------------------------------
-  picard_max_iterations: 50
+  picard_max_iterations: 200
   picard_tolerance: 1.0e-4

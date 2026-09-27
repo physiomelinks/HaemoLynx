@@ -109,12 +109,35 @@ def test_pipeline_and_h1_share_the_hysteresis_band():
 
 
 def test_pipeline_and_h2_share_the_perfusion_stop_settings():
-    """Open item 6: the pipeline config said 1e-4 while Tier 1 hard-coded 1e-5 for H2."""
+    """Open item 6: the pipeline config said 1e-4 while Tier 1 hard-coded 1e-5 for H2.
+    Open item 32: the cap went 50 -> 200 in both; the pipeline's Tier 3 needs up to 80 passes."""
     from carotid_image_to_model import PerfusionConfig
 
     config, settings = PerfusionConfig(), cb_settings.PerfusionSettings()
     assert config.picard_tolerance == settings.picard_tolerance == 1e-5
-    assert config.picard_max_iterations == settings.picard_max_iterations == 50
+    assert config.picard_max_iterations == settings.picard_max_iterations == 200
+
+
+@pytest.mark.parametrize("name", ["config_WKY_normotensive.yaml", "config_SHR_hypertensive.yaml"])
+def test_the_example_yamls_carry_the_iteration_cap(name):
+    """Open item 32: a YAML still at 50 would override the config and stop Tier 3 short
+    (WKY-C needs 80 passes).
+    Searched at any depth: the WKY YAML holds its perfusion block under PipelineConfig."""
+    yaml = pytest.importorskip("yaml")
+    from carotid_image_to_model import PerfusionConfig
+
+    def find(node, key):
+        if isinstance(node, dict):
+            if key in node:
+                return node[key]
+            for child in node.values():
+                found = find(child, key)
+                if found is not None:
+                    return found
+        return None
+
+    loaded = yaml.safe_load((REPO / "examples" / name).read_text(encoding="utf-8"))
+    assert find(loaded, "picard_max_iterations") == PerfusionConfig().picard_max_iterations
 
 
 #: 1 mmHg = 133.322387415 Pa = 1.33322387415e5 mPa, the unit the pipeline config uses.

@@ -419,7 +419,10 @@ class PerfusionConfig:
     # Solver stop settings, read by every tier (open item 6): Newton steps in Tier 1, Picard
     # passes in Tiers 2 and 3. Tiers 1 and 3 stop on the relative residual, Tier 2 on the
     # relative step. 1e-5 is what Tier 1 hard-coded for the H2 runs; it was 1e-4 here.
-    picard_max_iterations: int = 50
+    # The cap was 50 until open item 32: at the face-rule flows Tier 3 needs 40-80 passes on the
+    # six specimens (WKY-C 80). A slow-flow cell swings from pass to pass, so the Anderson guard
+    # keeps dropping its history. 200 leaves 2.5x headroom on the slowest.
+    picard_max_iterations: int = 200
     picard_tolerance: float = 1e-5
     
     # M_max: Maximum metabolic consumption rate (mmol / L / s). Matches cb_settings.BASE_M_MAX,

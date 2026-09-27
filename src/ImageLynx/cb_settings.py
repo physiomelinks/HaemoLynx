@@ -181,6 +181,7 @@ class PerfusionSettings:
     systemic_hematocrit: float = 0.45
     #: Newton step cap and stop tolerance for Tier 1 (the tolerance is the largest cell residual
     #: in mmHg over the largest PO2, ``_relative_residual``). They were hard-coded in the solver
-    #: at 50 and 1e-5 (open item 6); the values are unchanged. ``PerfusionConfig`` holds the same.
-    picard_max_iterations: int = 50
+    #: at 50 and 1e-5 (open item 6). The cap went 50 -> 200 with ``PerfusionConfig``'s (open
+    #: item 32): Tier 1 stops after 9-11 steps on every H2 run, so no H2 number moved.
+    picard_max_iterations: int = 200
     picard_tolerance: float = 1e-5
