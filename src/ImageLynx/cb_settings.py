@@ -7,7 +7,8 @@ same defect in different clothes: a driver constant that had silently drifted fr
 
     open item 1   two segmentation thresholds: config 0.65/0.75 against the frozen 0.90
     open item 2   two boundary rules: band on axis 0 in H1, face on axis 1 in H2
-    open item 8   ``M_max`` 10x apart: PerfusionConfig 0.005 against the driver's 0.05
+    open item 8   ``M_max`` 10x apart: PerfusionConfig 0.005 against the driver's 0.05 (closed:
+                  PerfusionConfig now declares 0.05 too)
     open item 10  pressures: config 100/2 mmHg against the drivers' 60/20 mmHg
 
 A shared module does not by itself decide which value is right. What it does is make the
@@ -140,9 +141,9 @@ GRID_UM: float = 3.0
 #: Volume-weighted mean maximum metabolic rate, mmol/L/s.
 #:
 #: 0.05 mmol/L/s is 0.067 mL O2 per mL per minute, against roughly 0.040 for brain - the
-#: right order for a metabolically active organ. ``PerfusionConfig.M_max`` still declares
-#: 0.005, ten times lower, which is open item 8. Every published H2 section 2.3 result used
-#: the value here.
+#: right order for a metabolically active organ. Every published H2 section 2.3 result used
+#: the value here. ``PerfusionConfig.M_max`` declared 0.005, ten times lower, until open item 8
+#: set it to this value; ``tests/test_cb_settings.py`` keeps the two equal.
 BASE_M_MAX: float = 0.05
 
 #: Glomus-to-stroma metabolic contrasts swept by the hypoxic-fraction driver.

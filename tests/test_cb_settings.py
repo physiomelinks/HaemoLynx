@@ -10,7 +10,7 @@ Two things are tested here.
 1. No driver defines those constants as literals any more. A shared module only helps if
    nobody reintroduces a local copy.
 2. The remaining config-versus-settings disagreements are *exactly* the ones recorded as
-   open items 1, 8 and 10 - no more, and with the values the reference document states.
+   open items 1 and 10 - no more, and with the values the reference document states.
    These are pinned rather than fixed because every published H1 and H2 number was produced
    at the settings values, and silently changing the config default would make the document
    wrong rather than making the code right.
@@ -115,9 +115,6 @@ def test_known_config_disagreements_are_exactly_the_recorded_open_items():
     mpa_per_mmhg = 133.322387415e3
     assert default_of("input_p_bc") / mpa_per_mmhg == pytest.approx(100.0, abs=0.05)
     assert default_of("output_p_bc") / mpa_per_mmhg == pytest.approx(2.0, abs=0.05)
-    # open item 8 - metabolic rate, ten times lower than the drivers used
-    assert default_of("M_max") == 0.005
-    assert cb_settings.BASE_M_MAX == 10.0 * default_of("M_max")
     # open item 1 - hysteresis band, superseded at run time by the frozen threshold
     assert default_of("hysteresis_threshold_low") == 0.65
     assert default_of("hysteresis_threshold_high") == 0.75
@@ -130,6 +127,14 @@ def test_pipeline_and_h2_share_the_perfusion_stop_settings():
     config, settings = PerfusionConfig(), cb_settings.PerfusionSettings()
     assert config.picard_tolerance == settings.picard_tolerance == 1e-5
     assert config.picard_max_iterations == settings.picard_max_iterations == 50
+
+
+def test_pipeline_and_h2_share_the_metabolic_rate():
+    """Open item 8: the pipeline config said 0.005 while the H2 drivers ran at 0.05."""
+    from carotid_image_to_model import PerfusionConfig
+
+    config, settings = PerfusionConfig(), cb_settings.PerfusionSettings()
+    assert config.M_max == settings.M_max == cb_settings.BASE_M_MAX == 0.05
 
 
 def test_dead_arterial_concentration_is_gone_everywhere():

@@ -79,7 +79,7 @@ PerfusionConfig:
   # ------------------------------------------------------------------
   # Tissue Metabolism (Michaelis-Menten Kinetics)
   # ------------------------------------------------------------------
-  M_max: 0.005 # Massive metabolic sink (simulates high glomus activity)
+  M_max: 0.05 # Maximum O2 consumption rate (mmol / L / s); = cb_settings.BASE_M_MAX (open item 8)
   k_reduce: 0.1 # Exponential decay constant under hypoxia
   respiratory_quotient: 0.82 # Ratio of CO2 produced to O2 consumed
   

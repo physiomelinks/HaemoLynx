@@ -124,7 +124,8 @@ def test_the_multi_species_solver_uses_the_configured_arterial_po2():
 def test_a_config_without_the_field_is_refused_not_defaulted(field):
     """The multi-species solver read every one of these through getattr with a default.
 
-    The sharpest case was M_max, whose fallback of 0.05 is 10x PerfusionConfig's 0.005.
+    The sharpest case was M_max, whose fallback of 0.05 was then 10x PerfusionConfig's 0.005
+    (open item 8 has since set PerfusionConfig to 0.05 as well).
     """
 
     class Partial:
@@ -208,8 +209,8 @@ def test_the_default_o2_wall_permeability_is_liu_1994_measured_value():
 
 
 @pytest.mark.parametrize("name", ["config_WKY_normotensive.yaml", "config_SHR_hypertensive.yaml"])
-def test_the_example_yamls_carry_the_same_wall_permeabilities(name):
-    """Both YAMLs restate the wall permeabilities; keep them in step with PerfusionConfig."""
+def test_the_example_yamls_carry_the_same_wall_permeabilities_and_metabolic_rate(name):
+    """Both YAMLs restate the wall permeabilities and M_max; keep them in step with PerfusionConfig."""
     from pathlib import Path
 
     yaml = pytest.importorskip("yaml")
@@ -226,7 +227,7 @@ def test_the_example_yamls_carry_the_same_wall_permeabilities(name):
         return None
 
     loaded = yaml.safe_load((Path(__file__).parent.parent / "examples" / name).read_text())
-    for key in ("permeability_o2_cm_s", "permeability_co2_cm_s"):
+    for key in ("permeability_o2_cm_s", "permeability_co2_cm_s", "M_max"):
         assert float(find(loaded, key)) == getattr(config, key), key
 
 

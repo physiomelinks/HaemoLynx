@@ -82,8 +82,8 @@ PipelineConfig:
   # ------------------------------------------------------------------
   # Tissue Metabolism (Michaelis-Menten Kinetics)
   # ------------------------------------------------------------------
-  # Reduced metabolic sink to simulate a sustainable, normoxic tissue equilibrium
-  M_max: 0.005 # Maximum O2 consumption rate (mmol / L / s)
+  # Same as cb_settings.BASE_M_MAX, the rate behind the published H2 runs (open item 8)
+  M_max: 0.05 # Maximum O2 consumption rate (mmol / L / s)
   k_reduce: 0.1 # Exponential decay constant under hypoxia
   respiratory_quotient: 0.82 # Ratio of CO2 produced to O2 consumed
   

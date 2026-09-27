@@ -67,14 +67,18 @@ def test_the_default_settings_converge_and_land_on_the_fixed_point(name, grid, G
                                                                    config):
     """Before: 378 and 97 iterations on the Y network at 1e3 and 1e4 (plain Picard); the
     plasma-skimmed and merging cases took 75-243 with Anderson alone. The cases built on
-    _MEASURED carry its 1e-4; each runs at the pipeline default here (1e-5 since open item 6)."""
+    _MEASURED carry its 1e-4; each runs at the pipeline default here (1e-5 since open item 6).
+
+    The Y cases use the default M_max, 0.05 since open item 8 (was 0.005): 30 / 23 / 12
+    iterations at 1e3 / 1e4 / 1e5 (were 14 / 14 / 10). At 1e3 the tissue is nearly anoxic
+    (mean PO2 5 mmHg), the hardest case for the linearised blood response."""
     default = PerfusionConfig()
     assert default.picard_max_iterations == 50 and default.picard_tolerance == 1e-5
     config = replace(config, picard_max_iterations=default.picard_max_iterations,
                      picard_tolerance=default.picard_tolerance)
     po2, pco2, _, info = _solve(grid, G, starts, cells, config)
     assert info["converged"]
-    assert info["iterations"] <= 25
+    assert info["iterations"] <= 35
     tight_po2, tight_pco2, _, tight = _solve(
         grid, G, starts, cells, replace(config, picard_tolerance=1e-12, picard_max_iterations=200))
     assert tight["converged"]
