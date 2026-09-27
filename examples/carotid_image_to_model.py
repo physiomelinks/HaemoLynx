@@ -23,7 +23,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 from ImageLynx import cb_settings, graph, haemodynamics, io, preprocessing, specimens, statistics, visualization
-from ImageLynx.haemodynamics.resistance import PASCALS_PER_MMHG
+from ImageLynx.haemodynamics.resistance import PASCALS_PER_MMHG, POISEUILLE_FLOW_TO_UM3_PER_S
+
+#: The pipeline's pressure unit, mPa, per mmHg. HaemodynamicsConfig holds its pressures in mPa.
+_MPA_PER_MMHG = PASCALS_PER_MMHG * 1e3
+
+
+def _perfusion_flow_to_um3_per_s():
+    """Factor taking this pipeline's edge flow to um^3/s for the perfusion step: 1.0.
+
+    The flow solve takes pressure in mPa, viscosity in cP (mPa s) and lengths in um, so
+    ``Q = dP / R`` already comes out in um^3/s. The perfusion library's default factor,
+    ``POISEUILLE_FLOW_TO_UM3_PER_S``, assumes pressures in mmHg, as the H2 drivers pass them.
+    Divided by the mPa-per-mmHg of this pipeline's pressures it leaves 1.0. The pipeline used
+    the library default until open item 31, so its perfusion saw flow 1.33e5 times too high
+    and its blood hardly gave up any oxygen.
+    """
+    return POISEUILLE_FLOW_TO_UM3_PER_S / _MPA_PER_MMHG
 
 # ---------------------------
 # Beginner-friendly settings
@@ -258,8 +274,8 @@ class HaemodynamicsConfig:
     # Pressure must be provided in milliPascals (mPa).
     # Arteriolar 60 mmHg in, venular 20 mmHg out, the pair every published H2 number used.
     # cb_settings owns both; this was MAP to CVP (100/2 mmHg) until open item 10.
-    input_p_bc: float = cb_settings.INLET_PRESSURE_MMHG * PASCALS_PER_MMHG * 1e3 ### mPa (60 mmHg = 7.999e6 mPa)
-    output_p_bc: float = cb_settings.OUTLET_PRESSURE_MMHG * PASCALS_PER_MMHG * 1e3 ### mPa (20 mmHg = 2.666e6 mPa)
+    input_p_bc: float = cb_settings.INLET_PRESSURE_MMHG * _MPA_PER_MMHG ### mPa (60 mmHg = 7.999e6 mPa)
+    output_p_bc: float = cb_settings.OUTLET_PRESSURE_MMHG * _MPA_PER_MMHG ### mPa (20 mmHg = 2.666e6 mPa)
     diameter_by_branch_order: dict = field(default_factory=dict)
     
     # --- Baseline Radius Assignment ---
@@ -1279,7 +1295,8 @@ _PERFUSION_VTI_NOTE = (
 )
 
 
-def _perfusion_provenance(tier, solver_name, perf_config, hemo_config, solver_info=None):
+def _perfusion_provenance(tier, solver_name, perf_config, hemo_config, solver_info=None, *,
+                          flow_to_um3_per_s):
     """Field-data tags naming the solver and inputs behind a perfusion .vti.
 
     The tolerance is recorded for every tier, since every tier now reads it from the config (open
@@ -1289,16 +1306,19 @@ def _perfusion_provenance(tier, solver_name, perf_config, hemo_config, solver_in
     Tier 3 also records whether its loop converged, how many iterations it took and the final
     residual (``solver_info``, from ``solve_multi_species_perfusion(..., return_info=True)``), so
     an unconverged field cannot pass for a converged one. It is required for Tier 3.
+
+    Every tier records the factor its edge flows were taken to um^3/s by (open item 31), so a
+    field made before the fix, at 1.33e5, has no such tag and can be told apart.
     """
-    mpa_per_mmhg = PASCALS_PER_MMHG * 1e3
     provenance = {
         "perfusion_tier": int(tier),
         "perfusion_solver": solver_name,
         "perfusion_M_max": float(perf_config.M_max),
-        "perfusion_inlet_pressure_mmHg": float(hemo_config.input_p_bc) / mpa_per_mmhg,
-        "perfusion_outlet_pressure_mmHg": float(hemo_config.output_p_bc) / mpa_per_mmhg,
+        "perfusion_inlet_pressure_mmHg": float(hemo_config.input_p_bc) / _MPA_PER_MMHG,
+        "perfusion_outlet_pressure_mmHg": float(hemo_config.output_p_bc) / _MPA_PER_MMHG,
         "perfusion_note": _PERFUSION_VTI_NOTE,
         "perfusion_picard_tolerance": float(perf_config.picard_tolerance),
+        "perfusion_flow_to_um3_per_s": float(flow_to_um3_per_s),
     }
     if tier == 3:
         if solver_info is None:
@@ -1511,8 +1531,11 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         grid = haemodynamics.PerfusionGrid(G, perf_config.grid_resolution_xyz)
         
         # 2. Map the 1D vessels to the 3D grid
-        # This identifies which tissue blocks are perfused by which vessels
-        cell_mapping = haemodynamics.map_vessels_to_grid(G, grid)
+        # This identifies which tissue blocks are perfused by which vessels. Flow is already in
+        # um^3/s here (pressures in mPa), so every perfusion call gets the same factor, 1.0, not
+        # the library's mmHg default (open item 31).
+        flow_to_um3_per_s = _perfusion_flow_to_um3_per_s()
+        cell_mapping = haemodynamics.map_vessels_to_grid(G, grid, flow_to_um3_per_s=flow_to_um3_per_s)
         
         # 3. Build Advection-Diffusion-Reaction (ADR) Matrix
         A, q_total, s_incoming = haemodynamics.build_adr_matrix(grid, cell_mapping, perf_config)
@@ -1523,7 +1546,8 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
             tier, solver_name = 3, "solve_multi_species_perfusion"
             print("  Running Fully Coupled Multi-Species (O2, CO2, pH) Perfusion Solver...")
             PO2_steady, PCO2_steady, pH_steady, solver_info = haemodynamics.solve_multi_species_perfusion(
-                grid, G, starting_nodes, cell_mapping, perf_config, return_info=True)
+                grid, G, starting_nodes, cell_mapping, perf_config,
+                flow_to_um3_per_s=flow_to_um3_per_s, return_info=True)
             mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)
             print(f"  Perfusion solve {'converged' if solver_info['converged'] else 'DID NOT CONVERGE'} "
                   f"after {solver_info['iterations']} iterations (residual O2 "
@@ -1544,7 +1568,8 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         elif perf_config.use_endothelial_barrier_model:
             tier, solver_name, solver_info = 2, "solve_coupled_1d3d_perfusion", None
             print("  Running Fully Coupled 1D-3D Endothelial Permeability Solver...")
-            PO2_steady = haemodynamics.solve_coupled_1d3d_perfusion(grid, G, starting_nodes, cell_mapping, perf_config)
+            PO2_steady = haemodynamics.solve_coupled_1d3d_perfusion(
+                grid, G, starting_nodes, cell_mapping, perf_config, flow_to_um3_per_s=flow_to_um3_per_s)
             mean_c = np.mean(PO2_steady); max_c = np.max(PO2_steady); min_c = np.min(PO2_steady)
             print(f"  Perfusion solve complete. Mean tissue PO2: {mean_c:.4e} mmHg (Min: {min_c:.4e}, Max: {max_c:.4e})")
             visualization.export_perfusion_grid_to_vti(grid, PO2_steady, vti_path, array_name="PO2_mmHg")
@@ -1561,7 +1586,8 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
             
         # Last, so Tier 3's PCO2/pH save above cannot drop it.
         _tag_perfusion_vti(vti_path, _perfusion_provenance(tier, solver_name, perf_config, hemo_config,
-                                                           solver_info))
+                                                           solver_info,
+                                                           flow_to_um3_per_s=flow_to_um3_per_s))
         print(f"  Saved 3D Perfusion Field to: {vti_path}")
         print(f"  Tagged it as Tier {tier} ({solver_name}); this is not the H2 hypoxia field.")
         

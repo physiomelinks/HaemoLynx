@@ -11,6 +11,7 @@ pv = pytest.importorskip("pyvista")
 from carotid_image_to_model import (
     HaemodynamicsConfig,
     PerfusionConfig,
+    _perfusion_flow_to_um3_per_s,
     _perfusion_provenance,
     _tag_perfusion_vti,
 )
@@ -27,7 +28,8 @@ _INFO = {"converged": True, "iterations": 11, "residual_o2": 2.4e-5, "residual_c
 
 def _provenance(tier, info=_INFO):
     return _perfusion_provenance(tier, SOLVERS[tier], PerfusionConfig(), HaemodynamicsConfig(),
-                                 info if tier == 3 else None)
+                                 info if tier == 3 else None,
+                                 flow_to_um3_per_s=_perfusion_flow_to_um3_per_s())
 
 
 def test_tier_3_records_its_solver_rate_pressures_and_tolerance():
@@ -66,7 +68,8 @@ def test_a_config_missing_M_max_is_refused_not_defaulted():
         picard_tolerance = 1e-4
 
     with pytest.raises(AttributeError, match="M_max"):
-        _perfusion_provenance(3, SOLVERS[3], Partial(), HaemodynamicsConfig(), _INFO)
+        _perfusion_provenance(3, SOLVERS[3], Partial(), HaemodynamicsConfig(), _INFO,
+                              flow_to_um3_per_s=1.0)
 
 
 def test_tier_3_records_whether_its_loop_converged():
@@ -82,7 +85,19 @@ def test_tier_3_records_whether_its_loop_converged():
 
 def test_tier_3_without_its_convergence_info_is_refused():
     with pytest.raises(ValueError, match="convergence info"):
-        _perfusion_provenance(3, SOLVERS[3], PerfusionConfig(), HaemodynamicsConfig())
+        _perfusion_provenance(3, SOLVERS[3], PerfusionConfig(), HaemodynamicsConfig(),
+                              flow_to_um3_per_s=1.0)
+
+
+@pytest.mark.parametrize("tier", [1, 2, 3])
+def test_every_tier_records_the_flow_factor(tier):
+    """Open item 31: the pipeline's flow is already um^3/s, so the factor is 1.0, not 1.33e5."""
+    assert _provenance(tier)["perfusion_flow_to_um3_per_s"] == pytest.approx(1.0, rel=1e-12)
+
+
+def test_the_flow_factor_is_required_not_defaulted():
+    with pytest.raises(TypeError, match="flow_to_um3_per_s"):
+        _perfusion_provenance(1, SOLVERS[1], PerfusionConfig(), HaemodynamicsConfig())
 
 
 @pytest.mark.parametrize("tier", [1, 2])

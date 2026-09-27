@@ -493,14 +493,18 @@ def map_vessels_to_grid(
     Step 2: Map 1D vessel segments (edges) to the 3D tissue grid cells.
 
     This is where the 1D flow solve meets the 3D tissue, and therefore where the two unit
-    systems have to be made to agree. Edge ``flow_abs`` is in the flow solve's own units,
-    mmHg um^3 / cP, because ``R = 128 mu L / (pi d^4)`` is evaluated with pressure in mmHg,
-    viscosity in cP and lengths in um. The metabolic sink downstream is in mmol/L/s times
-    um^3. Coupling them unconverted asked the tissue to consume 2.2e4 times the oxygen the
-    blood delivered, and the steady-state PO2 was correctly zero everywhere.
+    systems have to be made to agree. Edge ``flow_abs`` is in the flow solve's own units, which
+    depend on the pressure unit the caller gave it. ``R = 128 mu L / (pi d^4)`` is evaluated
+    with viscosity in cP and lengths in um, so with pressure in mmHg (the H2 drivers) flow is in
+    mmHg um^3 / cP, and the default ``flow_to_um3_per_s`` converts it. The metabolic sink
+    downstream is in mmol/L/s times um^3. Coupling them unconverted asked the tissue to consume
+    2.2e4 times the oxygen the blood delivered, and the steady-state PO2 was correctly zero
+    everywhere.
 
-    ``flow_to_um3_per_s=1.0`` leaves flow in solver units, for a caller comparing against
-    output produced before the conversion existed.
+    With pressure in mPa (``carotid_image_to_model.py``) flow is already in um^3/s, and the
+    caller must pass ``flow_to_um3_per_s=1.0``. The pipeline took the default until open item
+    31, so its perfusion saw flow 1.33e5 times too high. ``1.0`` also leaves flow in solver
+    units, for a caller comparing against output produced before the conversion existed.
 
     Raises if any edge lacks a usable diameter, unless ``default_diameter_um`` is given.
     Passing it is a deliberate choice to model unmeasured vessels at a stated calibre; the
