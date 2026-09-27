@@ -473,7 +473,7 @@ $$C_{\mathrm{CO_2}}\!\left(P_{\mathrm{CO_2}}^{\text{out}};\, P_{\mathrm{O_2}}^{\
 
 Solved for the outlet pressure by one Brent root find per species, O₂ first (`_implicit_cell_outlet_pressure`). The left side rises with the outlet pressure, so the root is unique and lies between the tissue and inlet pressures; the outlet content is then $C^{\text{out}} = C^{\text{in}} - \phi/Q$ exactly. This replaces (E47)'s re-inversion after each cell. A failed root find raises.
 
-$Q$ is edge flow in µm³/s: `flow_abs` × `POISEUILLE_FLOW_TO_UM3_PER_S`, the factor `map_vessels_to_grid` applies to the per-cell flow in (E30). Until open item 20 it was raw `flow_abs`, in mmHg·µm³/cP.
+$Q$ is edge flow in µm³/s: `flow_abs` × `flow_to_um3_per_s`, the factor `map_vessels_to_grid` applies to the per-cell flow in (E30). That is `POISEUILLE_FLOW_TO_UM3_PER_S` for callers passing pressures in mmHg (the H2 drivers), and 1.0 in `carotid_image_to_model.py`, whose pressures are in mPa so its flow is already in µm³/s (open item 31; until then the pipeline took the mmHg factor too). Until open item 20 it was raw `flow_abs`, in mmHg·µm³/cP.
 
 **(E51)** Oxygen right-hand side
 
