@@ -386,7 +386,10 @@ positions against a voxel-count extent and mis-scale both bands by the voxel siz
 path passes `voxel_size` explicitly ([:1032](examples/carotid_image_to_model.py:1032)) and is
 unaffected. The `resistance_network_pipeline.py` examples do reach the affected branch.
 
-`STATUS — OUTSTANDING`
+`STATUS — FIXED` for the CB path (open item 2, 2026-09-27). `carotid_image_to_model.py` no longer
+uses the band rule: it selects boundaries with `select_boundary_terminal_nodes_by_face` on
+`cb_settings.BOUNDARY_AXIS` (1), as the H2 drivers do (S21), and the empty-band fallback of point 3
+now raises unless a caller opts in. The nerve-pipeline note above is still outstanding.
 
 ### S8. Two solvers are missing from the package's public exports
 

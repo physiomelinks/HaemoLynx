@@ -1202,30 +1202,31 @@ descriptive rather than load-bearing.
 
 **What it does.** Decides which degree-1 nodes receive arterial pressure and which receive venous.
 
-**What was chosen.** The face-crossing rule on **axis 1**, with a tolerance of one voxel —
-in the H2 drivers. The main pipeline still runs the band rule on axis 0; see the warning below.
+**What was chosen.** The face-crossing rule on **axis 1**, with a tolerance of one voxel, in the
+main pipeline and in every H2 driver. `cb_settings.BOUNDARY_AXIS` and
+`BOUNDARY_FACE_TOLERANCE_VOXELS` own both values; `GraphConfig.boundary_axis` and
+`face_tolerance_voxels` read them, and `test_cb_settings.py` keeps them equal.
 
-> ⚠ **Two different rules are in use, and the main pipeline does not use the face rule.**
+> **Open item 2, closed.** Until 2026-09-27 the main pipeline ran the band rule
+> (`select_boundary_terminal_nodes`, axis 0, `edge_percent` / `end_percent` = 25 / 25) while the
+> H2 drivers ran the face rule on axis 1. On the six batch graphs the band rule put pressure on
+> 216–399 terminals per specimen; the face rule puts it on 16–37 (WKY-A 126 + 119 → 18 + 9). The
+> pipeline now calls `select_boundary_terminal_nodes_by_face` with the `GraphConfig` values, so on
+> the same graph it picks exactly the nodes the H2 drivers pick.
 >
-> | Driver | Function | Rule | Axis | Parameter |
-> |---|---|---|---|---|
-> | `carotid_image_to_model.py` (**H1**) | `select_boundary_terminal_nodes` | **Band** | **0** | `edge_percent` / `end_percent` = 25 / 25 |
-> | `cb_h2_vtk.py`, `cb_h2_hypoxic_fraction.py`, `cb_h2_glomus_perfusion.py` (**H2**) | `select_boundary_terminal_nodes_by_face` | **Face** | **1** | tolerance 1 voxel |
+> **No published number moved.** β₁, calibre, length and tortuosity are fixed before boundaries are
+> chosen. The pipeline outputs that depend on the inlets are the `branch_order` column of
+> `per_edge_morphometry.csv` (§2.7), the pipeline's own flows and rheology, `model_results.md` and
+> the Tier 3 `*_perfusion.vti`. No H1 or H2 script reads any of them. The files under
+> `examples/outputs/cb_h1_batch/` still carry band-rule values until the batch is re-run with items
+> 27, 13, 15 and 17.
 >
-> The face rule is the reasoned choice and the evidence below is why. It is **only reached by the
-> three H2 drivers**, which load a graph and select boundaries themselves. Every H1 run went through
-> the band rule on axis 0 at a 25% band — the rule this section argues against, on the axis that the
-> axis analysis did not select. This is the same shape as the pressure split recorded in §8.1: the
-> H2 drivers carry the considered settings and the main pipeline carries the config defaults.
->
-> **This is open item 2**, and the table above is the concrete form of it. Either the main pipeline
-> is switched to the face rule, or every H1 boundary-dependent quantity is reported as
-> band-rule-derived. The affected H1 readouts are
-> those that depend on inlet identity: branch order (§2.7), transit time, and anything routed
-> through `resistance_node_pair`. β₁, calibre and length distributions are unaffected — they are
-> fixed before boundaries are chosen.
+> **A guard came with it.** The face rule measures terminals against the faces of the shape it is
+> given, so `_check_graph_fits_frame` raises if a node lies more than one voxel outside that shape.
+> This stops the `--use-cache-dir` path on an `.h5` input, which passes a `(1, 1, 1)` placeholder
+> (open item 28), instead of solving on invented boundaries.
 
-**The order of operations — the face rule, as the H2 drivers run it.**
+**The order of operations — the face rule, as the pipeline and the H2 drivers run it.**
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
@@ -1237,9 +1238,11 @@ in the H2 drivers. The main pipeline still runs the band rule on axis 0; see the
 | 6 | Raise if either face carries no terminal | — | An unsolvable region should stay unsolvable rather than be solved with invented boundaries | **On**, no fallback | `boundaries.py:181` |
 | 7 | Non-face terminals: nothing under `caged` | `caged` | An interior dead end is a mask defect, not a vessel, so it earns no pressure | **On** | `boundaries.py:191` |
 
-**And the band rule, as the main pipeline runs it.**
+**And the band rule, which the CB path no longer runs.** It remains in the library for the nerve
+pipeline (through `select_boundary_nodes_by_method`) and as the comparison rule in
+`cb_h2_absolute_perfusion.py`. The table describes it as the CB pipeline ran it until open item 2.
 
-| # | Step | Setting | Why | On the CB path | Where |
+| # | Step | Setting | Why | On the CB path until item 2 | Where |
 |---|---|---|---|---|---|
 | 1 | Collect degree-1 nodes that carry a `pos` | — | Only a dead end can be a vessel entering or leaving the region; an interior junction is already connected on both sides | **On** | `boundaries.py:53` |
 | 2 | Scale the axis extent from voxels into microns | `voxel_size[axis]` | `image_shape` is in voxels while node `pos` is in microns — comparing them unscaled shrinks the apparent volume and drags interior dead ends into the band | **On** | `boundaries.py:48` |
@@ -1285,6 +1288,12 @@ depend on it.
 **Why axis 1.** Not anatomy — availability. It is the only axis solvable in all six specimens: axis 0
 has no outlet terminal in SHR-A, and axis 2 has no inlet terminal in SHR-C. That is a selection
 criterion, and a property of these graphs rather than a general rule.
+
+**The mask's virtual padding is still on axis 0.** Under `caged`, `_apply_preprocessing_filters`
+pads 10 slices on axis 0 only (edge mode) before filtering and strips them after, so vessel ends on
+the axis-0 faces are protected from edge effects and those on the axis-1 faces are not. It was set
+up for the band rule's axis. Moving it would change the masks and so every H1 number, and the H2
+drivers already run the face rule on axis 1 on these same graphs, so it is left as it is.
 
 **It raises rather than falling back.** If a face carries no terminals the rule refuses. A band
 fallback would drop to the extreme 10% of *all* nodes, converting an unsolvable region into a solved
@@ -2073,7 +2082,9 @@ So 10⁻⁴ left more than the 0.02 mmHg the test networks suggested. Those WKY-
 6.0 × 10⁻⁷) and the Y network at 10³ µm³/s 30 (was 14), still within 2 × 10⁻⁴ mmHg of a
 10⁻¹² solve. Every WKY-A pipeline figure above ran with edge flow ≈1.33 × 10⁵× too high (open
 item 31); the test-network figures do not. At the corrected flow (median edge flow 8.0 × 10⁴ µm³/s)
-WKY-A takes 22 iterations (residual 6.9 × 10⁻⁶).
+WKY-A takes 22 iterations (residual 6.9 × 10⁻⁶). All of these WKY-A runs used the band-rule
+boundaries. With the pipeline on the face rule (open item 2), median edge flow falls to
+9.2 × 10³ µm³/s and WKY-A hits the 50-iteration cap unconverged (residual 5.9 × 10⁻⁵; open item 32).
 The `.vti` records whether it converged, the iterations and the final residual.
 
 **PO₂ is clamped to ≥ 0** at each iteration. Negative values are non-physical and drive Picard
@@ -2497,9 +2508,9 @@ on; separation with a gap wider than the noise is worth stopping for.
 The H2 drivers use **60 mmHg in and 20 mmHg out**, arteriolar to venular, from
 `cb_settings.INLET_PRESSURE_MMHG` / `OUTLET_PRESSURE_MMHG`. `HaemodynamicsConfig` declared
 100/2 mmHg (MAP to CVP) until open item 10; it now takes its defaults from the same two constants,
-and `test_cb_settings.py` keeps the config and both example YAMLs equal to them. The pipeline still
-chooses its boundary nodes by the band rule on axis 0 (open item 2), so its flows are not the H2
-flows even at the same pressures.
+and `test_cb_settings.py` keeps the config and both example YAMLs equal to them. Since open item 2
+the pipeline also picks the same boundary nodes as the H2 drivers (face rule, axis 1), so the two
+now differ only in the rheology and perfusion settings, not in where the pressures act.
 
 The pair is chosen, not measured in the carotid body (§8.1, §10.7). It does not affect the
 within-specimen ratios, which are the reportable quantities.
@@ -2781,17 +2792,14 @@ in the coupled solvers.
 | `min_stub_length_um` | 5.6 | µm | (iii) | A skeletonisation spur at a branch point cannot exceed the local vessel radius; measured inscribed radius is p90 3.73 µm, p99 5.60 µm. Cannot affect β₁ (pruning removes only degree-1 nodes, which lie on no cycle) — verified constant at 307 from 0 to 30 µm. Does move the §1.2 and §1.4 per-edge distributions | measured (0.0 / 5.6 / 10.0 / 18.7 µm → 0% / 1.6% / 4.8% / 10.5% of nodes removed) |
 | `boundary_permeability_mode` | "caged" | — | (iii) | Chosen. Alternatives `universal_sink`, `robin_resistance` | unswept |
 | `robin_distal_resistance_multiplier` | 10.0 | — | (iii) | Inert under "caged" | — |
-| `edge_percent` | 25.0 | % | (iii) | Band-rule parameter — see open item 2 | measured (§13) |
-| `end_percent` | 25.0 | % | (iii) | Band-rule parameter — see open item 2 | measured (§13) |
-| `node_edge_axis` | 0 | axis index | (iii) | See open item 2 — the boundary helper's own default is axis 1 | measured |
+| `boundary_axis` | 1 | axis index | (iii) | From `cb_settings.BOUNDARY_AXIS`: the only axis with terminals on both faces in all six specimens (§2.8) | measured (§13.4) |
+| `face_tolerance_voxels` | 1.0 | voxels | (iii) | From `cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS`: one voxel means "on the face" | measured (1/2/4 voxels, 13.3% ratio spread, §13.4) |
 
-> ⚠ **Open item 2 — two boundary rules coexist, and the axis defaults disagree.** `GraphConfig`
-> still carries the band-rule parameters (`edge_percent`, `end_percent`, `node_edge_axis = 0`),
-> while the H2 drivers select the face-crossing rule on **axis 1** — the only axis with terminals
-> on both faces in all six specimens. `select_boundary_nodes_by_method` itself defaults to
-> `axis = 1`, `edge_percent = 10.0`, `end_percent = 10.0`, none of which match `GraphConfig`.
-> So the rule *and* its parameters depend on the caller. This is the largest single sensitivity
-> in the model (§13), so it must be resolved and stated once, not left to the driver.
+> **Open item 2, closed.** `GraphConfig` used to carry the band-rule parameters (`edge_percent`,
+> `end_percent` = 25, `node_edge_axis` = 0) while the H2 drivers ran the face rule on axis 1. The
+> band parameters are gone; the two rows above read `cb_settings`, and `test_cb_settings.py` fails
+> if they drift. `select_boundary_nodes_by_method` keeps its own band defaults (axis 1, 10 / 10%)
+> for the nerve pipeline, which the CB path does not use.
 
 ### 10.5 Calibre assignment — `HaemodynamicsConfig`
 
@@ -3133,7 +3141,8 @@ Larger than calibre error. The face-crossing rule on axis 1 holds residual bound
 to 43.1%. Axis 1 is the only axis with terminals on both faces in all six specimens.
 
 Below the operative floor of §13.3 and below the effects H1 measures — but only because the rule
-and its axis are pinned. See open item 2 in §10: they are not yet pinned in one place.
+and its axis are pinned. They are now pinned in one place: `cb_settings` owns both, and the main
+pipeline and the H2 drivers read them (open item 2, closed).
 
 ### 13.5 Absolute perfusion at 60/20 mmHg is at or above physiological
 
@@ -3504,7 +3513,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | # | Item | Blocks |
 |---|---|---|
 | ~~1~~ | **Closed.** The hysteresis band differed between `PreprocessingConfig` (0.65 / 0.75) and the frozen 0.90 / 0.95 every H1 run used (`--hysteresis-low 0.90`, seed auto-raised). The config now reads `cb_settings.HYSTERESIS_LOW` / `HYSTERESIS_HIGH`, and `test_cb_settings.py` keeps them equal, so no published number moves. A `--hysteresis-low` given alone now always takes low + 0.05 as its seed (it used to keep the config's high whenever that was still above low), and a seed at or below low raises. The mask step's hidden 0.2 / 0.4 fallbacks are gone. The tuner's upper bounds rose 0.85 / 0.95 → 0.95 / 0.99 so the default stays inside its search range. Fresh WKY-A run with no flag: mask, skeleton, graph and `per_edge_morphometry.csv` identical to the batch output. `test_cb_settings.py`, `test_pipeline_hysteresis_band.py` | — |
-| 2 | Two boundary rules coexist: H1 runs the band rule on axis 0 at 25%, the H2 drivers run the face rule on axis 1. **Now pinned**: `cb_settings.BOUNDARY_AXIS` owns the axis, and the band rule raises on an empty band instead of falling back to the extreme decile of all nodes (opt-in only, for the nerve pipeline) | §2.8, §8, §13 — the largest sensitivity in the model |
+| ~~2~~ | **Closed.** Two boundary rules coexisted: the pipeline ran the band rule on axis 0 at 25%, the H2 drivers the face rule on axis 1. The pipeline now calls `select_boundary_terminal_nodes_by_face` with `GraphConfig.boundary_axis` / `face_tolerance_voxels`, both read from `cb_settings`; the band fields are gone from `GraphConfig`, and the band rule stays in the library (raising on an empty band) for the nerve pipeline. Band 216–399 pressure nodes per specimen → face 16–37. Fresh WKY-A (scratchpad; batch outputs untouched): the pipeline's 18 inlets and 9 outlets are exactly the H2 face-rule sets on the same graph; mask, graph and `per_edge_morphometry.csv` identical except `branch_order` (4312 of 4512 edges). Against item 31's band-rule run: median edge flow 8.0e4 → 9.2e3 µm³/s; rheology still stops at 15 iterations (max flow change 1.1e3 µm³/s); Tier 3 now hits its 50-iteration cap unconverged (residual 5.9e-5 against 1e-5; was 22 iterations), with PO₂ mean 70.14 → 49.66, median 85.56 → 58.84 and cells < 10 mmHg 6.30 → 13.21% on that unconverged field (open item 32). A new guard (`_check_graph_fits_frame`) raises when the shape passed for boundary selection does not hold the graph, which stops the item 28 cache path. No published number moves; the batch outputs keep band-rule `branch_order` and flows until the item 27 re-run. `test_pipeline_boundary_rule.py`, `test_cb_settings.py` | §2.8, §7.8, §10.4, §13.4 |
 | ~~3~~ | **Closed.** Arterial PO₂ was hard-coded as 100 in the Tier 1 source and Tier 2, and read through `getattr` with a default in Tier 3. All three now read `po2_arterial_mmHg` and raise if it is missing; `cb_settings.PerfusionSettings` gains the field at 100, so no published number moves. Tier 3's other fields (`M_max`, `k_reduce`, RQ, HCO₃⁻, both permeabilities, arterial PCO₂, D_CO₂ and the Picard settings) and the pipeline's tier switch are now also read without a default; the hidden Tier 3 `M_max` fallback was 0.05, 10× `PerfusionConfig`. `test_perfusion_config_values.py` | — |
 | ~~4~~ | **Closed.** The Tier 1 washout now reads `systemic_hematocrit` instead of a hard-coded 0.45, and `cb_settings.PerfusionSettings` gains the field at 0.45. The washout was still evaluated at systemic rather than local haematocrit, kept as §11 row 27; open item 29 moved it to each cell's own haematocrit. The 0.45 edge-haematocrit and 100 µm² surface-area defaults in `perfusion.py` are gone too: `map_vessels_to_grid` raises on an edge with no `hematocrit` | — |
 | ~~5~~ | **Closed.** `C_arterial` was declared 3× and read 0×; it is removed from `PerfusionConfig`, `cb_settings.PerfusionSettings` and the H2 drivers, and `test_cb_settings.py` fails if it comes back. One analytical test had set it expecting it to control arterial PO₂; it now sets `po2_arterial_mmHg` | — |
@@ -3533,6 +3542,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | ~~29~~ | **Closed.** Tier 1 built its source at each edge's haematocrit and its washout at `systemic_hematocrit` (0.45), so a cell fed above 0.45 got more O₂ at arterial PO₂ than it could wash out below hundreds of mmHg, and one fed below was drained. On WKY-A 27% of perfused cells are above 0.45 (per-cell H 0–0.80, median 0.37) and the surplus at arterial PO₂ was 55× the tissue's whole demand (delivery is 850× demand). The 750× diffusion of item 22 averaged these into the published near-uniform ~30 mmHg field, which is why it moved little with metabolism; with α in, the fixed point was hyperoxic (median 186 mmHg, 78% of cells above arterial). The washout now uses each cell's flow-weighted haematocrit (`cell_discharge_hematocrit`), exact because content is affine in H; `solve_perfusion_steady_state` requires it and raises if a perfused cell's is missing. WKY-A: 10 Newton steps, 18 s, max PO₂ 99.99 mmHg. Found 2026-09-26 under item 22. `test_perfusion_tier1_washout_hematocrit.py`. **Moves published numbers** (H2 §2.3, §13.6) | §6.6, §6.7, §11 row 27 |
 | ~~30~~ | **Closed.** Tier 1 had no grid-converged limit: with each vessel mapped to the cells its centreline crosses, a finer grid drew it thinner, a line source in the limit, and median PO₂ on WKY-C ran 91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm (SHR-C 80.28 … 75.85), ≈1.5–1.9 mmHg lost per halving. `map_vessels_to_grid` now takes `vessel_mapping="cross_section"`, which sweeps each centreline point over a disc of the vessel's radius; the H2 drivers use it (the pipeline keeps the centreline default). WKY-C and SHR-C then move at most 0.21 mmHg from 3 to 2 µm but up to 0.78 from 4 to 3 µm, so `cb_settings.GRID_UM` went from 4 to 3 µm. §2.3 re-run: PO₂ in TH 81.0–89.8 mmHg (was 70.0–86.2), TH hypoxia below 10 mmHg 0–3.1% (was 0–3.95%). `test_perfusion_cross_section_mapping.py`, `test_perfusion_tier1_grid_refinement.py` | — |
 | ~~31~~ | **Closed.** The pipeline's perfusion step converted flow to µm³/s twice. `carotid_image_to_model.py` passes pressures in mPa, so its Poiseuille flows are already in µm³/s, but it called `map_vessels_to_grid` and the Tier 2/3 solvers with the default `flow_to_um3_per_s` = `POISEUILLE_FLOW_TO_UM3_PER_S` (1.33 × 10⁵), which assumes mmHg, as the H2 drivers pass. Its perfusion saw flow ≈1.33 × 10⁵× too high and its blood hardly desaturated; found under open item 10, when flows fell to 0.408× and the Tier 3 field did not move. The pipeline now derives its factor from its pressure unit (`_perfusion_flow_to_um3_per_s` = `POISEUILLE_FLOW_TO_UM3_PER_S` / mPa per mmHg = 1.0), passes it to all three calls, and records it on every `.vti` as `perfusion_flow_to_um3_per_s` (a `.vti` without the tag predates the fix). Library defaults are unchanged, so the H2 drivers are not affected (§3.7). Fresh WKY-A run: median edge flow 8.0 × 10⁴ µm³/s; Tier 3 converged in 22 iterations (was 7), residual 6.9 × 10⁻⁶; tissue PO₂ mean 75.80 → 70.14 mmHg, median 92.44 → 85.56, minimum 0.26 → 0.20, maximum 99.82; cells below 5 / 10 / 20 mmHg 3.00 / 5.08 / 9.63 → 3.52 / 6.30 / 11.41%; PCO₂ mean 40.97, maximum 43.43 → 43.35 mmHg, pH minimum 7.365 → 7.366. The WKY-A pipeline figures under open items 6, 8, 23 and 25 and in §6.6–6.7 were at the old flow and are marked so, not re-quoted. `test_pipeline_perfusion_flow_units.py` (the factor, a tube solved at the pipeline's pressures against SI Poiseuille, the grid flow, the map/solver mismatch guard, and every pipeline perfusion call passing the factor), `test_perfusion_vti_provenance.py` | The pipeline's `*_perfusion.vti`; no published number |
+| 32 | **Pipeline Tier 3 does not converge at the face-rule flows.** Found under open item 2. With the pipeline on the face rule, WKY-A's median edge flow is 9.2e3 µm³/s (8.7× below the band rule's), and `solve_multi_species_perfusion` stops at `picard_max_iterations` = 50 with an O₂ residual of 5.9e-5 against `picard_tolerance` 1e-5 (CO₂ 1.9e-5). The `.vti` records it (`perfusion_converged` = 0). Only the pipeline's own `*_perfusion.vti` is affected; every H2 hypoxia number is Tier 1. Not investigated: whether more iterations reach the tolerance or the scheme stalls at low flow, as item 23 found for the Picard loop before its fix | §6.6, §6.7 |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the
