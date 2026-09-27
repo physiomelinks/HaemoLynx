@@ -66,15 +66,19 @@ def _cases():
 def test_the_default_settings_converge_and_land_on_the_fixed_point(name, grid, G, cells, starts,
                                                                    config):
     """Before: 378 and 97 iterations on the Y network at 1e3 and 1e4 (plain Picard); the
-    plasma-skimmed and merging cases took 75-243 with Anderson alone."""
-    assert config.picard_max_iterations == 50 and config.picard_tolerance == 1e-4
+    plasma-skimmed and merging cases took 75-243 with Anderson alone. The cases built on
+    _MEASURED carry its 1e-4; each runs at the pipeline default here (1e-5 since open item 6)."""
+    default = PerfusionConfig()
+    assert default.picard_max_iterations == 50 and default.picard_tolerance == 1e-5
+    config = replace(config, picard_max_iterations=default.picard_max_iterations,
+                     picard_tolerance=default.picard_tolerance)
     po2, pco2, _, info = _solve(grid, G, starts, cells, config)
     assert info["converged"]
     assert info["iterations"] <= 25
     tight_po2, tight_pco2, _, tight = _solve(
         grid, G, starts, cells, replace(config, picard_tolerance=1e-12, picard_max_iterations=200))
     assert tight["converged"]
-    # At 1e-4 the Y network sits within 0.023 mmHg of the fixed point; the others closer.
+    # At 1e-4 the Y network sat within 0.023 mmHg of the fixed point; 1e-5 is tighter.
     np.testing.assert_allclose(po2, tight_po2, atol=0.05)
     np.testing.assert_allclose(pco2, tight_pco2, atol=0.05)
 

@@ -123,6 +123,15 @@ def test_known_config_disagreements_are_exactly_the_recorded_open_items():
     assert default_of("hysteresis_threshold_high") == 0.75
 
 
+def test_pipeline_and_h2_share_the_perfusion_stop_settings():
+    """Open item 6: the pipeline config said 1e-4 while Tier 1 hard-coded 1e-5 for H2."""
+    from carotid_image_to_model import PerfusionConfig
+
+    config, settings = PerfusionConfig(), cb_settings.PerfusionSettings()
+    assert config.picard_tolerance == settings.picard_tolerance == 1e-5
+    assert config.picard_max_iterations == settings.picard_max_iterations == 50
+
+
 def test_dead_arterial_concentration_is_gone_everywhere():
     """Open item 5: ``C_arterial`` was declared three times and read nowhere.
 

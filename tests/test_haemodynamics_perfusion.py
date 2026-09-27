@@ -23,6 +23,9 @@ class MockPerfusionConfig:
     k_reduce: float = 0.1
     po2_arterial_mmHg: float = 100.0
     systemic_hematocrit: float = 0.45
+    #: Solver stop settings the tiers now read (open item 6), at Tier 1's old hard-coded values.
+    picard_max_iterations: int = 50
+    picard_tolerance: float = 1e-5
 
 @pytest.fixture
 def mock_graph():
@@ -266,6 +269,8 @@ def test_analytical_0d_fick_principle_mass_balance():
             self.M_max = 0.05
             self.k_reduce = 1000.0
             self.systemic_hematocrit = 0.45
+            # Tier 1's old hard-coded stop settings (open item 6).
+            self.picard_max_iterations = 50; self.picard_tolerance = 1e-5
             
     grid = FakeGrid()
     config = FakeConfig()
@@ -306,6 +311,8 @@ def test_analytical_transmural_exponential_decay():
             # Giant metabolic sink forces Tissue PO2 to 0.0
             self.M_max = 1e9; self.k_reduce = 1000.0; self.permeability_o2_cm_s = p_perm_cm_s; self.sigma_diff = 1.5e-9
             self.po2_arterial_mmHg = 100.0; self.systemic_hematocrit = 0.45
+            # Tier 2's old hard-coded stop settings (open item 6).
+            self.picard_max_iterations = 50; self.picard_tolerance = 1e-4
 
     grid = FakeGrid(); config = FakeConfig(); A = sp.csr_matrix([[0.0]])
     G_mock = nx.MultiGraph(); G_mock.add_node(0); G_mock.add_node(1)

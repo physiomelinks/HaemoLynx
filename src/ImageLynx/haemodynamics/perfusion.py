@@ -854,7 +854,10 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
     below 0.45 was drained (open item 29). ``cell_hematocrit`` is required and checked, not
     defaulted.
 
-    ``max_iter`` (50) and ``tolerance`` (1e-5) are still hard-coded; open item 6.
+    The step cap and tolerance are ``perf_config.picard_max_iterations`` and
+    ``perf_config.picard_tolerance``, read without a default. The names are shared with Tier 3,
+    although the steps here are Newton steps; they used to be hard-coded at 50 and 1e-5 (open
+    item 6). The inner CG settings stay hard-coded: they set the direction, not the stop.
     With ``return_info`` it also returns a dict with ``converged``, ``iterations`` (Newton
     steps taken) and ``residual`` of the returned field.
     """
@@ -879,8 +882,8 @@ def solve_perfusion_steady_state(grid: PerfusionGrid, A: Any, q_total: np.ndarra
         raise ValueError("cell_hematocrit: a perfused cell's haematocrit is missing, non-finite "
                          "or outside [0, 1]. It sets the washout, so it is not substituted.")
 
-    max_iter = 50
-    tolerance = 1e-5
+    max_iter = perf_config.picard_max_iterations
+    tolerance = perf_config.picard_tolerance
 
     # A tiny diagonal regulariser: pure diffusion under Neumann boundaries has a null space.
     # Still far below the face conductances (about 8 at 4 um with alpha).
@@ -1320,6 +1323,11 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
     Edge flow is converted to um^3/s as in ``solve_multi_species_perfusion``. The wall flux
     (P S alpha dPO2) and the diffusion matrix carry O2 solubility, as Tier 3's do; both used to
     leave it out, so this tier's wall and diffusion were about 750 times Tier 3's (open item 22).
+
+    The loop runs at most ``perf_config.picard_max_iterations`` passes and stops when the relative
+    L2 change between iterates is below ``perf_config.picard_tolerance``. Unlike Tiers 1 and 3,
+    that bounds the step, not the residual. Both used to be hard-coded at 50 and 1e-4 (open
+    item 6). It warns if it hits the cap.
     """
     import scipy.sparse as sp
     import scipy.sparse.linalg as splinalg
@@ -1372,6 +1380,8 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
     P_perm = perf_config.permeability_o2_cm_s * 1e4 # um/s
     po2_arterial = perf_config.po2_arterial_mmHg
     systemic_h = perf_config.systemic_hematocrit
+    max_iter = perf_config.picard_max_iterations
+    tolerance = perf_config.picard_tolerance
     
     edge_to_cells = {}
     q_total = np.zeros(N)
@@ -1410,8 +1420,9 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
     
     M_pre = _jacobi_preconditioner(A_stable)
 
+    converged = False
     logger.info("Starting Fully Coupled 1D-3D Picard Loop...")
-    for iteration in range(50):
+    for iteration in range(max_iter):
         PO2_clamped = np.maximum(PO2_tissue, 0.0)
         M_red = M_max * (1.0 - np.exp(-k_reduce * PO2_clamped))
         
@@ -1454,7 +1465,11 @@ def solve_coupled_1d3d_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, starting
         PO2_new = np.maximum(PO2_new, 0.0)
         diff = np.linalg.norm(PO2_new - PO2_tissue) / (np.linalg.norm(PO2_new) + 1e-12)
         PO2_tissue = PO2_new
-        if diff < 1e-4:
+        if diff < tolerance:
+            converged = True
             logger.info(f"Coupled solver converged after {iteration+1} iterations.")
             break
+    if not converged:
+        logger.warning(f"Coupled 1D-3D Picard iteration hit max_iter ({max_iter}) without the "
+                       f"relative step falling below {tolerance}.")
     return PO2_tissue

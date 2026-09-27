@@ -44,12 +44,13 @@ def test_tier_3_records_its_solver_rate_pressures_and_tolerance():
     assert tags["perfusion_inlet_pressure_mmHg"] * 133322.387415 == pytest.approx(hemo.input_p_bc)
 
 
-@pytest.mark.parametrize("tier", [1, 2])
-def test_tiers_that_hard_code_their_tolerance_do_not_claim_the_config_one(tier):
+@pytest.mark.parametrize("tier", [1, 2, 3])
+def test_every_tier_records_the_config_tolerance_it_now_reads(tier):
+    """Tiers 1 and 2 hard-coded theirs and were left untagged until open item 6."""
     tags = _provenance(tier)
     assert tags["perfusion_tier"] == tier
     assert tags["perfusion_solver"] == SOLVERS[tier]
-    assert "perfusion_picard_tolerance" not in tags
+    assert tags["perfusion_picard_tolerance"] == PerfusionConfig().picard_tolerance == 1e-5
 
 
 @pytest.mark.parametrize("tier", [1, 2, 3])

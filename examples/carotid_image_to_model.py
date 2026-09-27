@@ -414,9 +414,11 @@ class PerfusionConfig:
     pco2_arterial: float = 40.0 # Arterial PCO2 (mmHg)
     hco3_tissue: float = 24.0 # Tissue bicarbonate buffer (mmol/L)
     
-    # Picard Solver Parameters
+    # Solver stop settings, read by every tier (open item 6): Newton steps in Tier 1, Picard
+    # passes in Tiers 2 and 3. Tiers 1 and 3 stop on the relative residual, Tier 2 on the
+    # relative step. 1e-5 is what Tier 1 hard-coded for the H2 runs; it was 1e-4 here.
     picard_max_iterations: int = 50
-    picard_tolerance: float = 1e-4
+    picard_tolerance: float = 1e-5
     
     # M_max: Maximum metabolic consumption rate (mmol / L / s)
     M_max: float = 0.005
@@ -1277,9 +1279,9 @@ _PERFUSION_VTI_NOTE = (
 def _perfusion_provenance(tier, solver_name, perf_config, hemo_config, solver_info=None):
     """Field-data tags naming the solver and inputs behind a perfusion .vti.
 
-    The Picard tolerance is recorded for Tier 3 only, because it is the only tier that reads it
-    from the config; Tiers 1 and 2 hard-code their own (open item 6), so the config value would
-    misdescribe them. For Tier 3 it is a relative residual (open item 23).
+    The tolerance is recorded for every tier, since every tier now reads it from the config (open
+    item 6; Tiers 1 and 2 used to hard-code their own, and were not tagged). For Tiers 1 and 3 it
+    is a relative residual (open items 22, 23), for Tier 2 a relative step.
 
     Tier 3 also records whether its loop converged, how many iterations it took and the final
     residual (``solver_info``, from ``solve_multi_species_perfusion(..., return_info=True)``), so
@@ -1293,12 +1295,12 @@ def _perfusion_provenance(tier, solver_name, perf_config, hemo_config, solver_in
         "perfusion_inlet_pressure_mmHg": float(hemo_config.input_p_bc) / mpa_per_mmhg,
         "perfusion_outlet_pressure_mmHg": float(hemo_config.output_p_bc) / mpa_per_mmhg,
         "perfusion_note": _PERFUSION_VTI_NOTE,
+        "perfusion_picard_tolerance": float(perf_config.picard_tolerance),
     }
     if tier == 3:
         if solver_info is None:
             raise ValueError("Tier 3 provenance needs the solver's convergence info "
                              "(solve_multi_species_perfusion(..., return_info=True)).")
-        provenance["perfusion_picard_tolerance"] = float(perf_config.picard_tolerance)
         provenance["perfusion_converged"] = int(bool(solver_info["converged"]))
         provenance["perfusion_picard_iterations"] = int(solver_info["iterations"])
         provenance["perfusion_final_residual"] = float(

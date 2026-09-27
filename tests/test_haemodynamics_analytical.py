@@ -29,6 +29,9 @@ class MockPerfusionConfig:
     sigma_diff: float = 1.0 # Simplified for analytical tests
     M_max: float = 10.0
     k_reduce: float = 1000.0 # High value forces linear "zero-order" kinetics
+    #: Solver stop settings the tiers now read (open item 6), at Tier 1's old hard-coded values.
+    picard_max_iterations: int = 50
+    picard_tolerance: float = 1e-5
 
 
 # --- Part 1: 1D Hemodynamics Analytical Tests ---
@@ -444,6 +447,9 @@ def test_krogh_cylinder_radial_diffusion():
         sigma_diff = 1.5e-9
         po2_arterial_mmHg = 100.0
         systemic_hematocrit = 0.45
+        # Tier 2's old hard-coded stop settings (open item 6).
+        picard_max_iterations = 50
+        picard_tolerance = 1e-4
         
     grid = FakeGrid()
     config = FakeConfig()

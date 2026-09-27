@@ -31,6 +31,9 @@ class _Config:
     k_reduce: float = 1000.0
     po2_arterial_mmHg: float = 100.0
     systemic_hematocrit: float = 0.45
+    #: Solver stop settings the tiers now read (open item 6), at Tier 1's old hard-coded values.
+    picard_max_iterations: int = 50
+    picard_tolerance: float = 1e-5
 
 
 def _one_cell(vessels, config):

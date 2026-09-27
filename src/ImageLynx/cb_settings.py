@@ -176,3 +176,8 @@ class PerfusionSettings:
     #: haematocrit, as its source is (open item 29). Until then the washout was evaluated at this
     #: value, first written out as 0.45 in the solver (open item 4). The value is unchanged.
     systemic_hematocrit: float = 0.45
+    #: Newton step cap and stop tolerance for Tier 1 (the tolerance is the largest cell residual
+    #: in mmHg over the largest PO2, ``_relative_residual``). They were hard-coded in the solver
+    #: at 50 and 1e-5 (open item 6); the values are unchanged. ``PerfusionConfig`` holds the same.
+    picard_max_iterations: int = 50
+    picard_tolerance: float = 1e-5

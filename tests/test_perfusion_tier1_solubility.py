@@ -45,6 +45,9 @@ class _Config:
     po2_arterial_mmHg: float = _P0
     #: Plasma, so blood content is alpha P and the end cells are held by a linear term.
     systemic_hematocrit: float = 0.0
+    #: Solver stop settings the tiers now read (open item 6), at Tier 1's old hard-coded values.
+    picard_max_iterations: int = 50
+    picard_tolerance: float = 1e-5
 
 
 def _slab():
@@ -102,6 +105,9 @@ class _NetworkConfig:
     k_reduce: float = 0.1
     po2_arterial_mmHg: float = 100.0
     systemic_hematocrit: float = 0.45
+    #: Solver stop settings the tiers now read (open item 6), at Tier 1's old hard-coded values.
+    picard_max_iterations: int = 50
+    picard_tolerance: float = 1e-5
 
 
 def test_newton_reaches_the_fixed_point_on_a_capillary_grid():
