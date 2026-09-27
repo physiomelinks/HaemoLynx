@@ -120,9 +120,9 @@ def test_branch_order_fallback_carries_no_constriction():
     G = nx.MultiGraph()
     G.add_node(1, pos=np.array([0.0, 0.0, 0.0]))
     G.add_node(2, pos=np.array([20.0, 20.0, 20.0]))
-    G.add_node(3, pos=np.array([40.0, 40.0, 40.0]))
+    G.add_node(3, pos=np.array([40.0, 49.0, 40.0]))
     G.add_edge(1, 2, key=0, length=20.0, voxels=[[0, 0, 0], [20, 20, 20]])
-    G.add_edge(2, 3, key=0, length=20.0, voxels=[[20, 20, 20], [40, 40, 40]])
+    G.add_edge(2, 3, key=0, length=20.0, voxels=[[20, 20, 20], [40, 49, 40]])
 
     hemo_config = HaemodynamicsConfig(
         diameter_by_branch_order={"DEFAULT": {"d1": 10.0, "d2": 10.0}},
@@ -132,7 +132,7 @@ def test_branch_order_fallback_carries_no_constriction():
         G,
         np.ones((50, 50, 50)),
         hemo_config,
-        GraphConfig(edge_percent=25.0, end_percent=25.0),
+        GraphConfig(),
         "mock_path",
         "numpy",
     )

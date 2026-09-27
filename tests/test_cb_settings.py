@@ -10,8 +10,8 @@ Two things are tested here.
 1. No driver defines those constants as literals any more. A shared module only helps if
    nobody reintroduces a local copy.
 2. The pipeline config agrees with the settings on each value that used to disagree: the
-   hysteresis band (open item 1), the metabolic rate (item 8), the pressures (item 10) and
-   the perfusion stop settings (item 6). Each was resolved in favour of the settings, because
+   hysteresis band (open item 1), the boundary rule (item 2), the metabolic rate (item 8),
+   the pressures (item 10) and the perfusion stop settings (item 6). Each was resolved in favour of the settings, because
    every published H1 and H2 number was produced at the settings values.
 """
 import ast
@@ -142,6 +142,15 @@ def test_the_example_yamls_carry_the_pressure_boundaries(name):
     hemo = loaded["HaemodynamicsConfig"]
     assert float(hemo["input_p_bc"]) == pytest.approx(config.input_p_bc, rel=1e-6)
     assert float(hemo["output_p_bc"]) == pytest.approx(config.output_p_bc, rel=1e-6)
+
+
+def test_pipeline_and_h2_share_the_boundary_rule():
+    """Open item 2: the pipeline used the band rule on axis 0; H2 the face rule on axis 1."""
+    from carotid_image_to_model import GraphConfig
+
+    config = GraphConfig()
+    assert config.boundary_axis == cb_settings.BOUNDARY_AXIS == 1
+    assert config.face_tolerance_voxels == cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS == 1.0
 
 
 def test_pipeline_and_h2_share_the_metabolic_rate():

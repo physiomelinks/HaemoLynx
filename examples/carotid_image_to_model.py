@@ -213,9 +213,12 @@ class SkeletonConfig:
 class GraphConfig:
     """Configuration for mathematical graph generation and boundary node selection."""
     keep_largest_component_only: bool = True
-    edge_percent: float = 25.0
-    end_percent: float = 25.0
-    node_edge_axis: int = 0
+    # Pressure boundaries are the terminals that cross the two faces of this axis (the face
+    # rule, reference section 2.8). cb_settings owns both values and the H2 drivers read the
+    # same ones. Until open item 2 the pipeline took every degree-1 node in a 25% band of
+    # axis 0, so most of its inlets were interior dead ends, not vessels entering the region.
+    boundary_axis: int = cb_settings.BOUNDARY_AXIS
+    face_tolerance_voxels: float = cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS
     boundary_permeability_mode: str = "caged" # Options: "caged", "universal_sink", "robin_resistance"
     # Terminal branches shorter than this are deleted, in MICRONS. Previously not passed at all,
     # so the pipeline silently took prune_vascular_stubs' library default of 10.0 - which at the
@@ -1038,6 +1041,32 @@ def _build_and_optimize_graph(skeleton, image, image_path, input_format, skel_co
             
     return G
 
+def _check_graph_fits_frame(G, image_shape, voxel_size, slack_voxels=1.0):
+    """Raise if a node lies outside the volume *image_shape* describes.
+
+    The face rule measures each terminal against the region's faces, so the shape has to be
+    the one the graph was built in. On the cache path an .h5 input gets a (1, 1, 1)
+    placeholder (open item 28); under that shape the high face sits at 0 um and every
+    terminal reads as crossing it. Better to stop than to solve on those boundaries.
+    """
+    node_pos = nx.get_node_attributes(G, "pos")
+    if not node_pos:
+        return
+    coords = np.asarray(list(node_pos.values()), dtype=float)
+    for axis, size in enumerate(image_shape[:coords.shape[1]]):
+        spacing = float(voxel_size[axis])
+        limit = (float(size) - 1.0 + slack_voxels) * spacing
+        low = -slack_voxels * spacing
+        worst_high = float(coords[:, axis].max())
+        worst_low = float(coords[:, axis].min())
+        if worst_high > limit or worst_low < low:
+            raise ValueError(
+                f"The graph does not fit the volume passed for boundary selection: shape "
+                f"{tuple(image_shape)} spans 0-{(size - 1) * spacing:.2f} um on axis {axis}, but "
+                f"nodes lie at {worst_low:.2f}-{worst_high:.2f} um. The shape must be the region "
+                f"the graph was built in (a cache-path placeholder is not; open item 28).")
+
+
 def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config, image_path, input_format, binary=None):
     """
     Phase 4: Selects inlet/outlet nodes, calculates branch hierarchies,
@@ -1045,25 +1074,26 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
     """
     starting_nodes = []
     output_nodes = []
-    # Auto-detect Inlet (start) and Outlet (output) nodes by finding dead-ends at the physical boundaries of the image volume
-    start_nodes, out_nodes = graph.select_boundary_terminal_nodes(
+    # image.shape is in voxels while node 'pos' is physical, so the spacing is needed to
+    # compare them; without it the apparent volume shrinks and interior dead-ends reach a face.
+    voxel_size = _resolve_voxel_size(image_path, input_format)
+    _check_graph_fits_frame(G, image.shape, voxel_size)
+    # Inlets are the terminals on the low face of the boundary axis, outlets those on the high
+    # face; a dead end inside the volume gets no pressure (the face rule, open item 2).
+    start_nodes, out_nodes = graph.select_boundary_terminal_nodes_by_face(
         G,
         image.shape,
-        # image.shape is in voxels while node 'pos' is physical, so the spacing is needed to
-        # compare them; without it the apparent volume shrinks and interior dead-ends drift
-        # into the outlet band.
-        voxel_size=_resolve_voxel_size(image_path, input_format),
-        edge_percent=graph_config.edge_percent,
-        end_percent=graph_config.end_percent,
-        axis=graph_config.node_edge_axis,
+        axis=graph_config.boundary_axis,
+        face_tolerance_voxels=graph_config.face_tolerance_voxels,
+        voxel_size=voxel_size,
         boundary_permeability_mode=graph_config.boundary_permeability_mode
     )
     starting_nodes.extend(start_nodes)
     output_nodes.extend(out_nodes)
     print(
-        f"Auto-selected {len(starting_nodes)} STARTING_NODES "
-        f"(top {graph_config.edge_percent}%) and {len(output_nodes)} OUTPUT_NODES "
-        f"(bottom {graph_config.end_percent}%) along axis {graph_config.node_edge_axis}."
+        f"Auto-selected {len(starting_nodes)} STARTING_NODES (low face) and "
+        f"{len(output_nodes)} OUTPUT_NODES (high face) on axis {graph_config.boundary_axis}, "
+        f"within {graph_config.face_tolerance_voxels} voxel(s)."
     )
     print(f"Starting nodes are: {starting_nodes}")
     print(f"Output nodes are: {output_nodes}")
@@ -1072,7 +1102,9 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
         resistance_node_pair = (starting_nodes[0], output_nodes[0])
         print(f"Auto-selected resistance node_pair: {resistance_node_pair}")
     else:
-        raise ValueError(f"No starting or output nodes found in input {graph_config.edge_percent}% or output {graph_config.end_percent}%")
+        raise ValueError(
+            f"No terminal on the {'low' if not starting_nodes else 'high'} face of axis "
+            f"{graph_config.boundary_axis}.")
 
     if starting_nodes:
         # Crawl the network from the inlets to assign a Branch Order (e.g. B01, B02) to every vessel based on bifurcations passed

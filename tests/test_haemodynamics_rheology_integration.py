@@ -191,16 +191,15 @@ def test_carotid_pipeline_end_to_end_resistance_and_skimming():
     # It must have a 'pos' array (ZYX)
     G.add_node(1, pos=np.array([0.0, 0.0, 0.0]))
     G.add_node(2, pos=np.array([20.0, 20.0, 20.0]))
-    G.add_node(3, pos=np.array([40.0, 40.0, 40.0]))
+    G.add_node(3, pos=np.array([40.0, 49.0, 40.0]))
     
     G.add_edge(1, 2, key=0, length=20.0, voxels=[[0,0,0], [20,20,20]])
-    G.add_edge(2, 3, key=0, length=20.0, voxels=[[20,20,20], [40,40,40]])
+    G.add_edge(2, 3, key=0, length=20.0, voxels=[[20,20,20], [40,49,40]])
     
     # Set up the configs matching an SHR Sphincter run
-    graph_config = GraphConfig(
-        edge_percent=25.0,
-        end_percent=25.0
-    )
+    # Node 1 sits on the low face and node 3 on the high face of the boundary axis (1), so
+    # the face rule finds one inlet and one outlet in the 50^3 mock volume.
+    graph_config = GraphConfig()
     hemo_config = HaemodynamicsConfig(
         diameter_by_branch_order={"DEFAULT": {"d1": 10.0, "d2": 10.0}},
         # Stated explicitly rather than inherited: the default moved to "edt_radius" (#98
