@@ -9,14 +9,12 @@ Two things are tested here.
 
 1. No driver defines those constants as literals any more. A shared module only helps if
    nobody reintroduces a local copy.
-2. The remaining config-versus-settings disagreements are *exactly* the ones recorded as
-   open item 1 - no more, and with the values the reference document states.
-   These are pinned rather than fixed because every published H1 and H2 number was produced
-   at the settings values, and silently changing the config default would make the document
-   wrong rather than making the code right.
+2. The pipeline config agrees with the settings on each value that used to disagree: the
+   hysteresis band (open item 1), the metabolic rate (item 8), the pressures (item 10) and
+   the perfusion stop settings (item 6). Each was resolved in favour of the settings, because
+   every published H1 and H2 number was produced at the settings values.
 """
 import ast
-import re
 from pathlib import Path
 
 import pytest
@@ -100,19 +98,14 @@ def test_metabolic_mean_is_held_across_the_contrast_sweep():
         assert mean == pytest.approx(cb_settings.BASE_M_MAX, rel=1e-9)
 
 
-def test_known_config_disagreements_are_exactly_the_recorded_open_items():
-    """Pin the drift that is deliberately left in place, so it cannot grow unnoticed."""
-    driver = (REPO / "examples" / "carotid_image_to_model.py").read_text(encoding="utf-8")
+def test_pipeline_and_h1_share_the_hysteresis_band():
+    """Open item 1: the pipeline config said 0.65/0.75 while every H1 run used 0.90/0.95."""
+    from carotid_image_to_model import PreprocessingConfig
 
-    def default_of(field):
-        m = re.search(rf"^\s+{field}\s*:\s*[\w\[\]\|., \"']+?\s*=\s*([-\d.eE]+)",
-                      driver, re.M)
-        assert m, f"{field} not found in carotid_image_to_model.py"
-        return float(m.group(1))
-
-    # open item 1 - hysteresis band, superseded at run time by the frozen threshold
-    assert default_of("hysteresis_threshold_low") == 0.65
-    assert default_of("hysteresis_threshold_high") == 0.75
+    config = PreprocessingConfig()
+    assert config.hysteresis_threshold_low == cb_settings.HYSTERESIS_LOW == 0.90
+    assert config.hysteresis_threshold_high == cb_settings.HYSTERESIS_HIGH
+    assert config.hysteresis_threshold_high == pytest.approx(0.95)
 
 
 def test_pipeline_and_h2_share_the_perfusion_stop_settings():

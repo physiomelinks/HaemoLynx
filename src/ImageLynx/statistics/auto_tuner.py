@@ -281,8 +281,13 @@ class PreprocessingObjective:
             # low = 0.6 onward, which is the discretisation floor at a 1.866 um voxel and the
             # correct scale for a capillary. Bounds are set wide enough that the plausible band
             # of roughly 0.60-0.80 is interior rather than pressed against an edge.
-            "hysteresis_threshold_low": trial.suggest_float("hysteresis_threshold_low", 0.45, 0.85),
-            "hysteresis_threshold_high": trial.suggest_float("hysteresis_threshold_high", 0.55, 0.95),
+            #
+            # The upper bounds were 0.85 / 0.95 until open item 1. The pipeline default is now the
+            # frozen CB band from cb_settings, 0.90 / 0.95 (the median of the six per-specimen
+            # selections), so both are raised far enough to keep that band reachable. The CB
+            # batch never runs the tuner; this only keeps the default inside its own search.
+            "hysteresis_threshold_low": trial.suggest_float("hysteresis_threshold_low", 0.45, 0.95),
+            "hysteresis_threshold_high": trial.suggest_float("hysteresis_threshold_high", 0.55, 0.99),
             # median_filter_size, morphological_opening_radius and morphological_closing_radius
             # are NOT set here. They used to be pinned at 9, 4 and 0, which silently overrode
             # PreprocessingConfig's own 7, 1 and 0 - the eval callback does

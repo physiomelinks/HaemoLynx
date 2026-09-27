@@ -116,36 +116,17 @@ class PreprocessingConfig:
     morphological_opening_radius: int = 0
     morphological_closing_radius: int = 0
     enable_hysteresis_threshold: bool = True
-    # PROVISIONAL, and not chosen by the tuner - it cannot choose them. The preprocessing
-    # objective is (1 - mean probability inside the mask), which rises monotonically with the
-    # threshold across the entire plausible band, and the yield cliff that is supposed to stop
-    # it never engages: probability yield is still 0.071 at low = 0.85, far above the 0.05
-    # trigger. So the objective's argmin is simply the top of whatever search range it is given,
-    # and a tuned value would report the range bound rather than a property of the data.
+    # cb_settings owns the band: low is the frozen threshold (the median of the six per-specimen
+    # selections on the placed ROIs, snapped to the sweep grid; reference section 2.2) and high
+    # is low + HYSTERESIS_HIGH_OFFSET. Every H1 batch run passed 0.90 as --hysteresis-low and
+    # got 0.95 as the seed, so a direct run now builds the same mask without the flag.
     #
-    # Set instead from the two criteria that are independent of the classifier's calibration.
-    # Measured on the reference subvolume at the default filter chain:
-    #
-    #     low   fg     r_p90    r_p99   components
-    #     0.20  0.847  31.55    44.51            1   floods - one blob
-    #     0.60  0.154   4.57     8.55           61
-    #     0.65  0.118   4.17     6.73          116   <- here
-    #     0.70  0.090   3.73     5.60           84
-    #     0.80  0.045   3.23     4.57          367   network breaking into fragments
-    #     0.85  0.031   2.64     4.17          414
-    #
-    # Calibre: r_p90 of 4.17 um is the right scale for a capillary (~3 um inscribed radius).
-    # Connectivity: component count stays in the 60-120 range from 0.60 to 0.73 and then
-    # explodes above 0.80, which is continuous vessels breaking into disconnected beads. Both
-    # criteria agree on roughly 0.60-0.75, and 0.65 sits inside it and interior to the search
-    # range rather than against an edge.
-    #
-    # Item 21's pooled tuning run was meant to set these. It cannot, for the reason above; that
-    # needs resolving before the frozen parameter set is fixed. Both values are in item 25's
-    # sensitivity scope, and given they were chosen rather than derived, that analysis is doing
-    # real work here rather than confirming robustness.
-    hysteresis_threshold_low: float = 0.65
-    hysteresis_threshold_high: float = 0.75
+    # Until open item 1 this read 0.65 / 0.75, set by hand from calibre and connectivity on an
+    # earlier reference subvolume (r_p90 4.17 um, component count stable over 0.60-0.73). The
+    # tuner cannot choose the band: its objective, 1 - mean probability inside the mask, falls
+    # monotonically with the threshold, so its argmin is the top of whatever range it searches.
+    hysteresis_threshold_low: float = cb_settings.HYSTERESIS_LOW
+    hysteresis_threshold_high: float = cb_settings.HYSTERESIS_HIGH
     enable_hole_filling: bool = True
     ilastik_vessel_channel: int = 0
     # Joint probability-entropy hysteresis. Off by default because it needs a classifier with
@@ -739,16 +720,16 @@ def _apply_preprocessing_filters(raw_prob_map, entropy_map, pre_config_dict, bou
             binary = preprocessing.joint_hysteresis_threshold(
                 image, 
                 entropy_map,
-                low=pre_config_dict.get("hysteresis_threshold_low", 0.2), 
-                high=pre_config_dict.get("hysteresis_threshold_high", 0.4),
+                low=pre_config_dict["hysteresis_threshold_low"], 
+                high=pre_config_dict["hysteresis_threshold_high"],
                 shannon_core=pre_config_dict["shannon_entropy_core"],
                 shannon_max=pre_config_dict["shannon_entropy_threshold"]
             )
         else:
             binary = preprocessing.hysteresis_threshold(
                 image, 
-                low=pre_config_dict.get("hysteresis_threshold_low", 0.2), 
-                high=pre_config_dict.get("hysteresis_threshold_high", 0.4)
+                low=pre_config_dict["hysteresis_threshold_low"], 
+                high=pre_config_dict["hysteresis_threshold_high"]
             )
     else:
         from skimage.filters import threshold_otsu
@@ -2077,6 +2058,25 @@ def update_dataclass_from_dict(obj, config_dict):
         else:
             logger.warning(f"Config key '{key}' ignored (not a valid parameter for {type(obj).__name__}).")
 
+def _apply_hysteresis_overrides(pre_config, low=None, high=None):
+    """Set the hysteresis band from the command line; None leaves a bound as configured.
+
+    A low given alone takes its seed from cb_settings.HYSTERESIS_HIGH_OFFSET, the rule the
+    frozen band was built with (0.90 -> 0.95), not from whatever high the config held. A band
+    whose seed does not sit above its flood threshold raises rather than inverting.
+    """
+    if low is not None:
+        pre_config.hysteresis_threshold_low = low
+        if high is None:
+            pre_config.hysteresis_threshold_high = min(0.999, low + cb_settings.HYSTERESIS_HIGH_OFFSET)
+    if high is not None:
+        pre_config.hysteresis_threshold_high = high
+    if pre_config.hysteresis_threshold_high <= pre_config.hysteresis_threshold_low:
+        raise ValueError(
+            f"Hysteresis high ({pre_config.hysteresis_threshold_high}) must be above low "
+            f"({pre_config.hysteresis_threshold_low}); the seed threshold cannot sit at or "
+            f"below the flood threshold.")
+
 if __name__ == "__main__":
     import argparse
     import yaml
@@ -2088,11 +2088,13 @@ if __name__ == "__main__":
                              "specimens: they otherwise share one path and each overwrites the "
                              "last, leaving only the final specimen's per-edge morphometry.")
     parser.add_argument("--hysteresis-low", type=float, default=None,
-                        help="Freeze the lower hysteresis threshold. Must be identical across "
-                             "specimens in a comparison: a per-specimen threshold absorbs "
-                             "classifier differences into what looks like a tissue result.")
+                        help="Override the lower hysteresis threshold (default: the frozen "
+                             "cb_settings value, 0.90). Given alone, the seed becomes low + 0.05. "
+                             "Must be identical across specimens in a comparison: a per-specimen "
+                             "threshold absorbs classifier differences into what looks like a "
+                             "tissue result.")
     parser.add_argument("--hysteresis-high", type=float, default=None,
-                        help="Freeze the upper (seed) hysteresis threshold.")
+                        help="Override the upper (seed) hysteresis threshold (default 0.95).")
     parser.add_argument("--roi-voxels", type=int, nargs=3, metavar=("Z", "Y", "X"), default=None,
                         help="Explicit ROI size in voxels, overriding --sub-volume. Use this "
                              "when comparing specimens: the same percentage of differently "
@@ -2219,13 +2221,7 @@ if __name__ == "__main__":
         _out.mkdir(parents=True, exist_ok=True)
         pipeline_config.vtk_output_prefix = _out / "resistance_network"
         pipeline_config.plot_dir = _out / "plots"
-    if args.hysteresis_low is not None:
-        pre_config.hysteresis_threshold_low = args.hysteresis_low
-        if args.hysteresis_high is None and args.hysteresis_low >= pre_config.hysteresis_threshold_high:
-            # The seed threshold must stay above the flood threshold or hysteresis inverts.
-            pre_config.hysteresis_threshold_high = min(0.999, args.hysteresis_low + 0.05)
-    if args.hysteresis_high is not None:
-        pre_config.hysteresis_threshold_high = args.hysteresis_high
+    _apply_hysteresis_overrides(pre_config, args.hysteresis_low, args.hysteresis_high)
     if args.roi_voxels is not None:
         skel_config.sub_volume_voxels = tuple(args.roi_voxels)
     if args.sub_volume is not None:
