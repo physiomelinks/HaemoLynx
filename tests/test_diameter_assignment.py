@@ -28,9 +28,12 @@ from haemolynx.haemodynamics.poiseuille import (  # noqa: E402
     DIAMETER_SOURCE_MEASURED,
     DIAMETER_SOURCE_OVERRIDE,
     DIAMETER_SOURCE_TABLE,
+    PoiseuilleModel,
+    build_diameter_by_branch_order,
     flag_fwhm_edt_disagreement,
     set_edge_diameter_override,
     stamp_edge_diameters,
+    table_diameter_for_order,
 )
 from haemolynx.pipeline import (  # noqa: E402
     BoundaryNodes,
@@ -427,6 +430,51 @@ def test_stamp_edge_diameters_use_edt_fallback_true_prefers_edt_over_table():
     assert graph[0][1][0]["diameter_um"] == pytest.approx(5.0)
 
 
+_TABLE_TO_51 = build_diameter_by_branch_order(
+    all_diams_const=False,
+    max_branch_order=51,
+    default_diameter=4.0,
+    manual_capillary_diameter_by_branch_order={"B01": 6.2},
+    manual_large_arteriole_diameter_by_branch_order={"Large_Art1": 30.0},
+)
+
+
+@pytest.mark.parametrize(
+    ("order", "expected"),
+    [("B51", 4.0), ("B58", 4.0), ("Art60", 6.2), ("Large_Art60", 4.0), ("B01", 6.2)],
+)
+def test_an_order_past_the_table_takes_its_last_entry_of_the_same_kind(order, expected):
+    """The table stops at max_branch_order (51); a real network ran to B59.
+    Past the end, every order would take the same default the table's last
+    entries do, so the last one of that kind stands in."""
+    assert table_diameter_for_order(_TABLE_TO_51, order) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("order", ["B03", "Foo7", "unassigned", None])
+def test_a_gap_or_an_unknown_label_still_has_no_table_entry(order):
+    table = {"B01": 5.0, "B02": 5.0, "B04": 5.0}
+    assert table_diameter_for_order(table, order) is None
+
+
+def test_a_vessel_past_the_table_with_no_width_of_its_own_gets_the_table_diameter():
+    """Regression: a B58 vessel that neither FWHM nor the mask could measure
+    (here, one the mask left as too thin to resolve) was left unset, and the
+    run then failed with "No fallback baseline diameter for branch_order
+    'B58'"."""
+    graph = nx.MultiGraph()
+    graph.add_edge(0, 1, key=0, branch_order="B58", length=EDGE_LENGTH_UM,
+                   edt_unresolved_diameter_um=1.4)
+
+    counts = stamp_edge_diameters(graph, _TABLE_TO_51, use_edt_fallback=True)
+    PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances(graph, _TABLE_TO_51)
+
+    data = graph[0][1][0]
+    assert counts["table"] == 1 and counts["unset"] == 0
+    assert data["diameter_source"] == DIAMETER_SOURCE_TABLE
+    assert data["diameter_um"] == pytest.approx(4.0)
+    assert data["resistance"] > 0
+
+
 def test_stamp_edge_diameters_fwhm_still_wins_over_edt_fallback():
     graph = _table_only_network()
     graph[0][1][0]["fwhm_diameter_um"] = 7.0
@@ -603,3 +651,27 @@ def test_the_edt_method_setting_reaches_the_measurement(monkeypatch):
 
     assert seen == ["cross_section", "inscribed_radius"]
     assert default_schema()["edt_diameter_method"].default == "cross_section"
+
+
+def test_the_resolvable_diameter_floor_setting_reaches_the_measurement(monkeypatch):
+    """edt_min_resolvable_diameter_um sets the narrowest reading taken as a
+    width; the schema's default is the measurement's own."""
+    from haemolynx.haemodynamics import apply, edt_diameter
+    from haemolynx.pipeline import default_schema
+
+    seen = []
+    monkeypatch.setattr(
+        apply.edt_diameter, "measure_edge_diameters_from_binary_mask",
+        lambda G, **kwargs: seen.append(kwargs["min_resolvable_diameter_um"])
+        or {"edges_measured": 0, "edges_skipped": []},
+    )
+    for edt in ({"use_edt_diameter_crosscheck": True},
+                {"use_edt_diameter_crosscheck": True, "edt_min_resolvable_diameter_um": 0.0}):
+        config = HaemodynamicsApplyConfig(
+            diameters={"diameter_by_branch_order": dict(DIAMETERS)}, edt=edt
+        )
+        apply._measure_edt_diameters(_network(), config, mask_volume=np.zeros((2, 2, 2), bool))
+
+    default = default_schema()["edt_min_resolvable_diameter_um"].default
+    assert seen == [edt_diameter.MIN_RESOLVABLE_DIAMETER_UM, 0.0]
+    assert default == edt_diameter.MIN_RESOLVABLE_DIAMETER_UM

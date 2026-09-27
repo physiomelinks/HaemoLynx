@@ -309,6 +309,11 @@ def _measure_edt_diameters(
         aggregation=config.fwhm_setting("fwhm_edge_diameter_aggregation", "median"),
         use_memmap=config.use_memmap,
         method=config.edt_setting("edt_diameter_method", "cross_section"),
+        min_resolvable_diameter_um=float(
+            config.edt_setting(
+                "edt_min_resolvable_diameter_um", edt_diameter.MIN_RESOLVABLE_DIAMETER_UM
+            )
+        ),
     )
 
 

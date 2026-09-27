@@ -42,6 +42,7 @@ from .poiseuille import (
     baseline_edge_diameter,
     positive_diameter_um,
     set_edge_resistance,
+    table_diameter_for_order,
 )
 from .viscosity import DEFAULT_HAEMATOCRIT, viscosity_for
 
@@ -189,7 +190,7 @@ def resolve_edge_diameters(
         used_fwhm_baseline = own is not None and (
             edge_data.get("diameter_source") == DIAMETER_SOURCE_MEASURED
         )
-        spec = diameter_by_branch_order.get(branch_order)
+        spec = table_diameter_for_order(diameter_by_branch_order, branch_order)
         if isinstance(spec, dict):
             if "d1" not in spec or "d2" not in spec:
                 raise ValueError(

@@ -48,8 +48,8 @@ plane, or is more than twice as wide as the inscribed radius there allows
 (the plane cutting a larger vessel's body near a junction), is not counted;
 an edge with no section left falls back to its inscribed radius
 (``edt_diameter_method`` records which was used). On a real 3,191-vessel
-network about 60% of edges get a section; the rest are mostly short edges
-between close junctions.
+network about three quarters of edges get a section; the rest are mostly
+short edges between close junctions.
 
 A raw EDT reading right at a branch point is a real, documented failure
 mode: it returns the *junction's own* larger inscribed sphere, not the
@@ -59,6 +59,19 @@ capillary segments this way -- a `d^4` error in the resistance it feeds).
 identically-named parameter does: skip sample positions too close (by
 centerline arc length) to an edge endpoint that is itself a bifurcation
 (graph degree > 1).
+
+Every edge is read at least :data:`SHORT_EDGE_MIN_READINGS` times where it is
+long enough to be: a short one is read at several closely spaced points
+rather than once at its midpoint, so one reading at a gap or a notch in the
+mask is outvoted by the median. Readings under
+:data:`MIN_RESOLVABLE_DIAMETER_UM` -- a strand of mask a voxel or so thick --
+are not widths and are left out; an edge with nothing else is left
+unmeasured, for the branch-order table. On a real network 86% of the 486
+vessels read under 2 um were short edges between junctions read once;
+several readings brought them to 358, and the rest run down a strand one or
+two voxels thick, beside a larger vessel that the plane beyond them cuts --
+which is also why the readings are not re-centred on the widest point
+nearby: from a centreline near its wall, that is the larger vessel.
 """
 from __future__ import annotations
 
@@ -117,7 +130,48 @@ SECTION_LOBE_MIN_PROMINENCE_UM = 0.5
 #: see.
 SECTION_TO_INSCRIBED_MAX_RATIO = 2.0
 
-__all__ = ["EDT_DIAMETER_METHODS", "measure_edge_diameters_from_binary_mask"]
+#: The fewest readings an edge is measured at. An edge whose junction zones
+#: (or a coarse sample spacing) leave it fewer is read instead at up to
+#: :data:`SHORT_EDGE_MAX_READINGS` points, :data:`SHORT_EDGE_MIN_READING_SPACING_UM`
+#: or more apart, across what is left between its junction zones -- or, when
+#: they leave nothing, across the half of the edge farthest from them. One
+#: reading at the midpoint was what 86% of a real network's sub-2 um vessels
+#: rested on.
+SHORT_EDGE_MIN_READINGS = 3
+SHORT_EDGE_MAX_READINGS = 5
+SHORT_EDGE_MIN_READING_SPACING_UM = 0.5
+
+#: The steepest a step of the off-centreline search's climb may point along
+#: the centreline (cosine of its angle to the tangent): it moves across the
+#: vessel to its middle, not along it into a wider junction.
+LATERAL_STEP_MAX_COS = 0.5
+
+#: The narrowest reading (um) taken as a width: at ~1 um voxels, a section
+#: two voxels across both ways (it reads ~2.3 um). A strand one voxel thick
+#: reads ~1.4 um and one 1 x 2 voxels ~1.8 um: the segmentation caught a
+#: sliver of the vessel, not how wide it is. On a real 3,191-vessel network,
+#: readings under 2 um were 11% of vessels and, as d^4 resistances, all but
+#: the whole network's summed L/d^4; a floor at 1.5 um still left 39% of it
+#: on the vessels between 1.5 and 2. Scale it with the voxel size.
+MIN_RESOLVABLE_DIAMETER_UM = 2.0
+
+#: Everything a measurement writes on an edge, cleared before it is measured
+#: again so a failed edge does not keep an earlier run's width.
+_EDGE_ATTRIBUTES = (
+    "edt_diameter_um",
+    "edt_diameter_samples_um",
+    "edt_diameter_method",
+    "edt_short_edge_readings",
+    "edt_off_centreline_samples",
+    "edt_unresolved_samples",
+    "edt_unresolved_diameter_um",
+)
+
+__all__ = [
+    "EDT_DIAMETER_METHODS",
+    "MIN_RESOLVABLE_DIAMETER_UM",
+    "measure_edge_diameters_from_binary_mask",
+]
 
 
 def measure_edge_diameters_from_binary_mask(
@@ -130,6 +184,7 @@ def measure_edge_diameters_from_binary_mask(
     aggregation: Literal["median", "mean"] = "median",
     use_memmap: bool = False,
     method: Literal["cross_section", "inscribed_radius"] = "cross_section",
+    min_resolvable_diameter_um: float = MIN_RESOLVABLE_DIAMETER_UM,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from *binary_mask*.
 
@@ -170,6 +225,11 @@ def measure_edge_diameters_from_binary_mask(
         never converts *binary_mask* to a whole-volume boolean copy. Same
         diameters, bar a last-bit difference where two background voxels are
         exactly equidistant under a non-representable voxel spacing.
+    min_resolvable_diameter_um :
+        Readings narrower than this (see :data:`MIN_RESOLVABLE_DIAMETER_UM`)
+        are left out of the edge's median; an edge with none left is skipped
+        as ``below_resolvable_diameter``, with the median it would have had in
+        ``edt_unresolved_diameter_um``. 0 keeps every reading.
 
     Returns
     -------
@@ -180,6 +240,9 @@ def measure_edge_diameters_from_binary_mask(
     """
     if sample_spacing_along_edge_um <= 0:
         raise ValueError("sample_spacing_along_edge_um must be positive.")
+    if min_resolvable_diameter_um < 0:
+        raise ValueError("min_resolvable_diameter_um must not be negative.")
+    min_resolvable = float(min_resolvable_diameter_um)
     if method not in EDT_DIAMETER_METHODS:
         raise ValueError(f"method must be one of {EDT_DIAMETER_METHODS}; got {method!r}.")
 
@@ -227,21 +290,32 @@ def measure_edge_diameters_from_binary_mask(
                 keep &= (total_len - targets) >= branch_excl
         sample_points = pts[keep]
         sample_targets = targets[keep]
-        if not np.any(keep):
-            # An edge shorter than its junction zones: excluding it whole left
-            # every short capillary with no width at all (238 of 3191 edges on
-            # a real run), falling back to the branch-order table. Its
-            # midpoint is as far from either junction as this edge allows.
-            sample_targets = np.array([0.5 * total_len])
+        for stale in _EDGE_ATTRIBUTES:
+            data.pop(stale, None)
+        if len(sample_targets) < SHORT_EDGE_MIN_READINGS:
+            # An edge shorter than its junction zones used to be excluded
+            # whole (238 of 3191 edges on a real run, left to the
+            # branch-order table), then read once at its midpoint, with
+            # nothing to outvote a reading at a gap or notch in the mask: 86%
+            # of a real network's vessels read under 2 um were such edges.
+            sample_targets = _short_edge_targets(
+                total_len,
+                start=branch_excl if u_is_branch else 0.0,
+                end=total_len - branch_excl if v_is_branch else total_len,
+                start_is_branch=u_is_branch,
+                end_is_branch=v_is_branch,
+            )
             sample_points = _interpolate_centerline(poly, s, sample_targets)
-            data["edt_midpoint_only"] = True
+            data["edt_short_edge_readings"] = len(sample_targets)
 
+        tangents = _centreline_tangents(poly, s, total_len, sample_targets)
         idx = physical_points_to_continuous_indices(sample_points, voxel_size_zyx)
         values = np.asarray(sample_radius(idx), dtype=float)
         off_mask = ~(np.isfinite(values) & (values > 0))
         if np.any(off_mask):
             values[off_mask] = _nearby_radius(
-                sample_radius, idx[off_mask], voxel_size_zyx, OFF_CENTRELINE_SEARCH_UM
+                sample_radius, idx[off_mask], voxel_size_zyx, OFF_CENTRELINE_SEARCH_UM,
+                tangents[off_mask],
             )
             data["edt_off_centreline_samples"] = int(np.count_nonzero(off_mask))
         radii = [float(value) for value in values if np.isfinite(value) and value > 0]
@@ -252,7 +326,6 @@ def measure_edge_diameters_from_binary_mask(
         diameters = [2.0 * radius for radius in radii]
         used = "inscribed_radius"
         if method == "cross_section":
-            tangents = _centreline_tangents(poly, s, total_len, sample_targets)
             sections = [
                 _cross_section_diameter(
                     binary_mask, point, tangent, voxel_size_zyx,
@@ -264,6 +337,19 @@ def measure_edge_diameters_from_binary_mask(
             if closed:
                 diameters = closed
                 used = "cross_section"
+        resolved = [d for d in diameters if d >= min_resolvable]
+        if not resolved:
+            # A strand of mask a voxel or so thick: a real vessel the
+            # segmentation caught only a sliver of, whose width the mask
+            # cannot give. Left unmeasured, so the edge falls back to the
+            # branch-order table, rather than a d^4 resistance hundreds of
+            # times its neighbours'.
+            data["edt_unresolved_diameter_um"] = _aggregate_edge_diameter(diameters, aggregation)
+            summary["edges_skipped"].append((u, v, key, "below_resolvable_diameter"))
+            continue
+        if len(resolved) < len(diameters):
+            data["edt_unresolved_samples"] = len(diameters) - len(resolved)
+        diameters = resolved
         d_final = _aggregate_edge_diameter(diameters, aggregation)
         data["edt_diameter_um"] = d_final
         data["edt_diameter_samples_um"] = diameters
@@ -386,8 +472,30 @@ def _cross_section_diameter(
     return 2.0 * radius
 
 
+def _short_edge_targets(
+    total: float, *, start: float, end: float, start_is_branch: bool, end_is_branch: bool
+) -> np.ndarray:
+    """Arc lengths to read an edge at when its regular samples are too few:
+    up to :data:`SHORT_EDGE_MAX_READINGS`, at least
+    :data:`SHORT_EDGE_MIN_READING_SPACING_UM` apart, evenly across
+    ``[start, end]`` -- what its junction zones leave. When they leave
+    nothing, across the half of the edge farthest from its junctions: the
+    middle half between two, the outer half of a dead end."""
+    if end < start:
+        centre = 0.5 * total
+        if start_is_branch != end_is_branch:
+            centre = 0.75 * total if start_is_branch else 0.25 * total
+        start, end = centre - 0.25 * total, centre + 0.25 * total
+    count = int(np.clip(
+        np.floor((end - start) / SHORT_EDGE_MIN_READING_SPACING_UM) + 1, 1, SHORT_EDGE_MAX_READINGS
+    ))
+    if count == 1:
+        return np.array([0.5 * (start + end)])
+    return np.linspace(start, end, count)
+
+
 def _nearby_radius(
-    sample_radius, idx: np.ndarray, voxel_size_zyx, search_um: float
+    sample_radius, idx: np.ndarray, voxel_size_zyx, search_um: float, tangents: np.ndarray
 ) -> np.ndarray:
     """For each point (continuous voxel indices) whose own inscribed radius is
     0, the inscribed radius of the vessel it was meant to run down: the
@@ -397,10 +505,17 @@ def _nearby_radius(
     Uphill, not just the largest radius in reach: from a centreline a voxel
     outside the wall, the best point within reach is near the far side of
     the wall, where the radius is small -- a 6um vessel read 4.5um that way.
-    The climb stops at the first local maximum (the vessel's medial axis,
-    where moving along the vessel no longer increases the radius), and is
-    capped at twice the search distance so it cannot wander along a
-    connected network into a larger vessel.
+    The climb goes across the vessel -- only steps within 60 degrees of the
+    plane normal to the point's *tangent* (see :data:`LATERAL_STEP_MAX_COS`)
+    -- to the first local maximum, the vessel's medial axis; along the vessel
+    it could climb into a larger junction. Capped at twice the search
+    distance in steps.
+
+    Only for points off the mask: climbing from every point, onto the
+    medial axis of whatever is widest nearby, read a real network's small
+    vessels as the larger vessels beside them -- a vessel's own parent lies
+    in its normal plane at a junction -- with tubes drawn at those widths
+    1.17x the mask's volume.
     """
     spacing = np.asarray(voxel_size_zyx, dtype=float)
     reach = np.maximum(1, np.ceil(float(search_um) / spacing).astype(int))
@@ -423,6 +538,10 @@ def _nearby_radius(
     step_grid = np.stack(
         np.meshgrid(*(np.arange(-1, 2),) * 3, indexing="ij"), axis=-1
     ).reshape(-1, 3)
+    step_grid = step_grid[np.any(step_grid != 0, axis=1)]
+    step_um = step_grid * spacing
+    step_um /= np.linalg.norm(step_um, axis=1, keepdims=True)
+    lateral = np.abs(np.asarray(tangents, dtype=float).reshape(-1, 3) @ step_um.T) < LATERAL_STEP_MAX_COS
     max_steps = int(np.ceil(2.0 * float(search_um) / float(np.min(spacing))))
     climbing = found.copy()
     for _step in range(max_steps):
@@ -431,7 +550,7 @@ def _nearby_radius(
         rows = np.flatnonzero(climbing)
         neighbours = (position[rows, None, :] + step_grid[None, :, :]).reshape(-1, 3)
         around = np.asarray(sample_radius(neighbours), dtype=float).reshape(len(rows), len(step_grid))
-        around[~np.isfinite(around)] = 0.0
+        around[~np.isfinite(around) | ~lateral[rows]] = 0.0
         best = around.argmax(axis=1)
         better = around[np.arange(len(rows)), best] > radius[rows] + 1e-9
         moved = rows[better]

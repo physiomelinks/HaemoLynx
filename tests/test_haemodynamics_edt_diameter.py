@@ -246,10 +246,11 @@ def _short_edge_between_junctions(length):
     return graph
 
 
-def test_an_edge_shorter_than_its_junction_zones_is_measured_at_its_midpoint():
+def test_an_edge_shorter_than_its_junction_zones_is_read_across_its_middle():
     """Regression: a 3um capillary between two junctions, sampled only at its
     two ends, lost both to the 10um zones and got no width at all -- 238 of
-    3191 edges on a real run, left to the branch-order table."""
+    3191 edges on a real run, left to the branch-order table. It is read
+    across its middle half, several times, not once at its midpoint."""
     mask = _cylinder_mask((20, 20, 30), z=10, y=10, radius=3.0, x0=0, x1=29)
     graph = _short_edge_between_junctions(3.0)
 
@@ -260,8 +261,190 @@ def test_an_edge_shorter_than_its_junction_zones_is_measured_at_its_midpoint():
 
     data = graph[0][1][0]
     assert (0, 1, 0, "excluded_near_branch") not in summary["edges_skipped"]
-    assert data["edt_midpoint_only"] is True
+    assert data["edt_short_edge_readings"] == 4  # 0.75..2.25 um, 0.5 um apart
+    assert len(data["edt_diameter_samples_um"]) == 4
     assert data["edt_diameter_um"] == pytest.approx(6.0, abs=0.6)
+
+
+def test_one_bad_spot_on_a_short_edge_is_outvoted():
+    """The sub-2 um vessels of a real network were mostly short edges between
+    junctions read once, at the midpoint; where that one reading hit a notch
+    in the mask, a 4-5 um vessel was read under 2 um. Read at five points, the
+    notch is one reading of five and the median is the vessel's own."""
+    mask = _cylinder_mask((20, 20, 30), z=10, y=10, radius=3.0, x0=0, x1=29)
+    mask[:, 10:, 13] = False  # over half the section gone, one voxel long, at the midpoint
+    graph = _short_edge_between_junctions(6.0)  # x = 10..16, midpoint 13
+
+    measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=mask, voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=2.0, branch_endpoint_exclusion_um=10.0,
+    )
+
+    data = graph[0][1][0]
+    readings = data["edt_diameter_samples_um"]
+    assert data["edt_short_edge_readings"] == 5
+    assert min(readings) < 0.8 * 6.0  # the notch, which alone used to be the answer
+    assert data["edt_diameter_um"] == pytest.approx(6.0, abs=0.6)
+
+
+@pytest.mark.parametrize(
+    ("start_is_branch", "end_is_branch", "window"),
+    [(True, True, (2.5, 7.5)), (True, False, (5.0, 10.0)), (False, True, (0.0, 5.0))],
+)
+def test_an_edge_its_junction_zones_cover_is_read_on_the_half_farthest_from_them(
+    start_is_branch, end_is_branch, window
+):
+    from haemolynx.haemodynamics.edt_diameter import _short_edge_targets
+
+    targets = _short_edge_targets(
+        10.0,
+        start=12.0 if start_is_branch else 0.0,  # a 12 um zone on a 10 um edge
+        end=-2.0 if end_is_branch else 10.0,
+        start_is_branch=start_is_branch,
+        end_is_branch=end_is_branch,
+    )
+
+    assert targets == pytest.approx(np.linspace(*window, 5))
+
+
+def test_what_a_junction_zone_leaves_of_a_short_edge_is_all_that_is_read():
+    """A short branch off a wide hub: its middle half is inside the hub, so
+    what the 10 um zone leaves -- however little -- is read, not the middle."""
+    from haemolynx.haemodynamics.edt_diameter import _short_edge_targets
+
+    assert _short_edge_targets(
+        10.4, start=10.0, end=10.4, start_is_branch=True, end_is_branch=False
+    ) == pytest.approx([10.2])
+    assert _short_edge_targets(
+        12.0, start=10.0, end=12.0, start_is_branch=True, end_is_branch=False
+    ) == pytest.approx([10.0, 10.5, 11.0, 11.5, 12.0])
+
+
+def test_an_off_mask_centreline_climbs_across_its_vessel_not_along_it():
+    """A centreline just outside a thin branch, near where the branch leaves a
+    wide hub: climbing along the branch reaches the hub's body, so the search
+    only climbs across it."""
+    from haemolynx.haemodynamics.edt_diameter import _nearby_radius
+    from haemolynx.preprocessing.thick_vessels import inscribed_radius_map
+    from scipy.ndimage import map_coordinates
+
+    shape = (30, 30, 40)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    hub = (zz - 15) ** 2 + (yy - 15) ** 2 + (xx - 12) ** 2 <= 8.0**2
+    branch = (np.hypot(zz - 15, yy - 15) <= 2.0) & (xx >= 12) & (xx <= 35)
+    radius_map = inscribed_radius_map(hub | branch, (1.0, 1.0, 1.0))
+
+    def sample(idx):
+        return map_coordinates(radius_map, np.asarray(idx).T, order=1)
+
+    start = np.array([[15.0, 18.0, 20.0]])  # 1 um outside the branch, at the hub's edge
+    assert sample(start)[0] == 0.0
+
+    radius = _nearby_radius(sample, start, (1.0, 1.0, 1.0), 3.0, np.array([[0.0, 0.0, 1.0]]))
+    wrong_way = _nearby_radius(sample, start, (1.0, 1.0, 1.0), 3.0, np.array([[0.0, 1.0, 0.0]]))
+
+    assert 2.0 * radius[0] == pytest.approx(4.0, abs=1.0)
+    assert wrong_way[0] > radius[0] + 2.0  # let loose along the branch, it reaches the hub
+
+
+# --- widths the mask cannot give ------------------------------------------------
+#
+# A strand of mask a voxel thick is a vessel the segmentation caught a sliver
+# of: its reading (~1.4 um) is the voxel's, not the vessel's, and as a d^4
+# resistance it is hundreds of times its neighbours'.
+
+
+def _strand(shape=(20, 20, 30), *, x0=2, x1=27):
+    mask = np.zeros(shape, dtype=bool)
+    mask[10, 10, x0:x1 + 1] = True
+    return mask
+
+
+def test_a_one_voxel_strand_is_left_for_the_table():
+    graph = _straight_edge_graph(4, 25)
+
+    summary = measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=_strand(), voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=2.0,
+    )
+
+    data = graph[0][1][0]
+    assert summary["edges_skipped"] == [(0, 1, 0, "below_resolvable_diameter")]
+    assert "edt_diameter_um" not in data
+    assert data["edt_unresolved_diameter_um"] == pytest.approx(1.4, abs=0.2)
+
+
+def test_an_unresolved_edge_takes_the_branch_order_table_diameter():
+    """The EDT fallback skips it, so the chain goes on to the table."""
+    from haemolynx.haemodynamics.poiseuille import (
+        DIAMETER_SOURCE_TABLE,
+        stamp_edge_diameters,
+    )
+
+    graph = _straight_edge_graph(4, 25)
+    graph[0][1][0]["branch_order"] = "B01"
+    measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=_strand(), voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=2.0,
+    )
+
+    stamp_edge_diameters(graph, {"B01": 5.0}, use_edt_fallback=True)
+
+    assert graph[0][1][0]["diameter_source"] == DIAMETER_SOURCE_TABLE
+    assert graph[0][1][0]["diameter_um"] == pytest.approx(5.0)
+
+
+def test_a_zero_floor_keeps_every_reading():
+    graph = _straight_edge_graph(4, 25)
+
+    measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=_strand(), voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=2.0, min_resolvable_diameter_um=0.0,
+    )
+
+    assert graph[0][1][0]["edt_diameter_um"] == pytest.approx(1.4, abs=0.2)
+
+
+def test_readings_on_a_strand_are_left_out_of_a_measured_vessel_median():
+    """Four readings on a 6 um vessel, eight on the strand it narrows to: the
+    median of all twelve is the strand's; of the resolvable ones, the vessel's."""
+    mask = _cylinder_mask((20, 20, 30), z=10, y=10, radius=3.0, x0=0, x1=10)
+    mask |= _strand(x0=11, x1=29)
+    graph = _straight_edge_graph(4, 26)  # readings at x = 4, 6, ..., 26
+
+    measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=mask, voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=2.0,
+    )
+
+    data = graph[0][1][0]
+    assert data["edt_unresolved_samples"] == 8
+    assert len(data["edt_diameter_samples_um"]) == 4
+    assert data["edt_diameter_um"] == pytest.approx(6.0, abs=0.6)
+
+
+def test_remeasuring_an_edge_clears_what_the_last_measurement_wrote():
+    """An edge measured once with no floor, then again with one, must not keep
+    the first run's width when the second leaves it unmeasured."""
+    graph = _straight_edge_graph(4, 25)
+    for floor in (0.0, 1.5):
+        measure_edge_diameters_from_binary_mask(
+            graph, binary_mask=_strand(), voxel_size_zyx=(1.0, 1.0, 1.0),
+            sample_spacing_along_edge_um=2.0, min_resolvable_diameter_um=floor,
+        )
+
+    data = graph[0][1][0]
+    assert "edt_diameter_um" not in data
+    assert "edt_diameter_samples_um" not in data
+    assert "edt_diameter_method" not in data
+
+
+def test_a_negative_floor_is_rejected():
+    with pytest.raises(ValueError, match="min_resolvable_diameter_um"):
+        measure_edge_diameters_from_binary_mask(
+            _straight_edge_graph(4, 25), binary_mask=_strand(), voxel_size_zyx=(1.0, 1.0, 1.0),
+            sample_spacing_along_edge_um=2.0, min_resolvable_diameter_um=-1.0,
+        )
 
 
 def test_a_centreline_just_off_its_mask_finds_its_own_vessel():

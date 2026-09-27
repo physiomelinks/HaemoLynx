@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import warnings
 
 import numpy as np
@@ -91,7 +92,7 @@ def build_diameter_by_branch_order(
 
 
 #: How an edge's modelled ``diameter_um`` was chosen. ``measured`` is a FWHM
-#: fit; ``edt_mask`` is the segmentation mask's own inscribed radius, used
+#: fit; ``edt_mask`` is the segmentation mask's own width estimate, used
 #: only when FWHM measurement failed for that edge and ``use_edt_fallback``
 #: is on (see ``haemolynx.haemodynamics.edt_diameter`)); ``table`` is the
 #: branch-order lookup; ``override`` is a human value.
@@ -111,6 +112,38 @@ DIAMETER_SOURCES = frozenset(
 _KEPT_DIAMETER_SOURCES = frozenset(
     {DIAMETER_SOURCE_MEASURED, DIAMETER_SOURCE_EDT, DIAMETER_SOURCE_OVERRIDE}
 )
+
+
+_BRANCH_ORDER_LABEL = re.compile(r"^(?P<kind>[A-Za-z_]+?)(?P<order>\d+)$")
+
+
+def table_diameter_for_order(diameter_by_branch_order: dict, branch_order: object):
+    """*diameter_by_branch_order*'s entry for *branch_order*; for an order past
+    the highest the table lists of its kind, that highest order's.
+
+    The table is built up to ``max_branch_order`` (51 by default), and a real
+    network's orders run past it -- B59 on a user's -- with every unlisted
+    order taking the same default, so the last entry is what the table would
+    say had it gone that far. An order with no entry otherwise failed the run
+    as soon as that vessel had no width of its own. A gap inside the table,
+    or a label of a kind it does not list, still has no entry.
+    """
+    spec = diameter_by_branch_order.get(branch_order)
+    if spec is not None or not isinstance(branch_order, str):
+        return spec
+    label = _BRANCH_ORDER_LABEL.match(branch_order)
+    if label is None:
+        return None
+    order = int(label["order"])
+    listed = []
+    for key, value in diameter_by_branch_order.items():
+        other = _BRANCH_ORDER_LABEL.match(key) if isinstance(key, str) else None
+        if other is not None and other["kind"] == label["kind"]:
+            listed.append((int(other["order"]), value))
+    if not listed:
+        return None
+    last_order, last_value = max(listed, key=lambda entry: entry[0])
+    return last_value if order > last_order else None
 
 
 def positive_diameter_um(value: object) -> float | None:
@@ -153,7 +186,7 @@ def baseline_edge_diameter(
         from_fwhm = diameter is not None
     if diameter is not None:
         return diameter, from_fwhm
-    spec = diameter_by_branch_order.get(branch_order)
+    spec = table_diameter_for_order(diameter_by_branch_order, branch_order)
     if spec is None:
         raise ValueError(
             f"No fallback baseline diameter for branch_order '{branch_order}'."
@@ -214,8 +247,10 @@ def stamp_edge_diameters(
     FWHM, when present, wins; then -- when *use_edt_fallback* is True and
     the edge carries an ``edt_diameter_um`` (see
     ``haemolynx.haemodynamics.edt_diameter``) -- the segmentation mask's own
-    inscribed-radius estimate, a vessel-specific reading unlike the generic
-    branch-order table; then the table.
+    estimate, a vessel-specific reading unlike the generic branch-order
+    table; then the table (see :func:`table_diameter_for_order` for an order
+    past its end). A vessel whose mask was too thin to give a width has no
+    ``edt_diameter_um`` and so takes the table's.
     """
     table = diameter_by_branch_order or {}
     counts = {"measured": 0, "edt_mask": 0, "table": 0, "override": 0, "unset": 0}
@@ -251,7 +286,9 @@ def stamp_edge_diameters(
                 data["diameter_source"] = DIAMETER_SOURCE_EDT
                 counts["edt_mask"] += 1
                 continue
-        table_diameter = positive_diameter_um(table.get(data.get("branch_order")))
+        table_diameter = positive_diameter_um(
+            table_diameter_for_order(table, data.get("branch_order"))
+        )
         if table_diameter is not None:
             data["diameter_um"] = table_diameter
             data["diameter_source"] = DIAMETER_SOURCE_TABLE
@@ -574,7 +611,7 @@ class PoiseuilleModel:
                 diameter = positive_diameter_um(data.get("fwhm_diameter_um"))
                 used_fwhm = diameter is not None
             if diameter is None:
-                diameter = diameter_by_branch_order.get(branch_order, None)
+                diameter = table_diameter_for_order(diameter_by_branch_order, branch_order)
                 used_fwhm = False
             if used_fwhm:
                 results['used_fwhm_edge_diameter'] += 1

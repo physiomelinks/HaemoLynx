@@ -4135,6 +4135,22 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="edt_min_resolvable_diameter_um",
+            kind="float",
+            default=2.0,
+            help=(
+                "Readings narrower than this are a strand of mask a voxel or so thick -- a vessel "
+                "the segmentation caught a sliver of -- not its width, and are left out; a vessel "
+                "with no other reading falls back to the branch-order table. About two voxels "
+                "across; 0 keeps every reading"
+            ),
+            section=_EDT_DIAMETER,
+            minimum=0.0,
+            unit="um",
+            requires=("use_edt_diameter_crosscheck",),
+            advanced=True,
+        ),
+        Setting(
             name="edt_junction_proximity_exclusion_um",
             kind="float",
             default=10.0,
