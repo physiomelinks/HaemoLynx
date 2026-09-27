@@ -35,6 +35,7 @@ from haemolynx.preprocessing.memmap_support import (
     iter_blocks,
     map_blockwise,
     new_memmap_array,
+    release_memmap_array,
     release_superseded,
 )
 from haemolynx.preprocessing.skeleton import (
@@ -161,7 +162,7 @@ def test_release_superseded_keeps_a_step_that_returned_its_input():
         release_superseded(same, same, keep=np.zeros(1))
         assert Path(same.filename).exists()
     finally:
-        Path(same.filename).unlink()
+        release_memmap_array(same)
 
 
 def test_release_superseded_keeps_the_callers_own_input():
@@ -170,7 +171,7 @@ def test_release_superseded_keeps_the_callers_own_input():
         release_superseded(callers, np.zeros((3, 3, 3), bool), keep=callers)
         assert Path(callers.filename).exists()
     finally:
-        Path(callers.filename).unlink()
+        release_memmap_array(callers)
 
 
 def test_release_superseded_is_a_no_op_on_plain_arrays():
