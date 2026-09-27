@@ -5,7 +5,8 @@ Every constant here was previously written out separately in each driver under
 same defect in different clothes: a driver constant that had silently drifted from the
 ``carotid_image_to_model.py`` config default it was supposed to match.
 
-    open item 1   two segmentation thresholds: config 0.65/0.75 against the frozen 0.90
+    open item 1   two segmentation thresholds: config 0.65/0.75 against the frozen 0.90 (closed:
+                  PreprocessingConfig now reads HYSTERESIS_LOW/HIGH from here)
     open item 2   two boundary rules: band on axis 0 in H1, face on axis 1 in H2
     open item 8   ``M_max`` 10x apart: PerfusionConfig 0.005 against the driver's 0.05 (closed:
                   PerfusionConfig now declares 0.05 too)
@@ -64,13 +65,13 @@ THRESHOLD_GRID: Tuple[float, ...] = (
 #: group stays visible.
 FROZEN_THRESHOLD: float = 0.90
 
-#: The pipeline receives ``FROZEN_THRESHOLD`` as ``--hysteresis-low`` only, and raises the
-#: high bound by this much so the seed threshold cannot fall below the flood threshold.
-#: The operative band for every H1 run was therefore 0.90 / 0.95, not the config's
-#: 0.65 / 0.75 - which is open item 1.
+#: The pipeline receives ``FROZEN_THRESHOLD`` as ``--hysteresis-low`` only, and a low given
+#: alone takes low + this offset as its seed, so the seed sits above the flood threshold.
+#: The operative band for every H1 run was therefore 0.90 / 0.95.
 HYSTERESIS_HIGH_OFFSET: float = 0.05
 
-#: Convenience: the pair the H1 masks were actually built with.
+#: The pair the H1 masks were built with. ``PreprocessingConfig`` reads both as its defaults
+#: (it said 0.65 / 0.75 until open item 1), so a direct run builds the same mask.
 HYSTERESIS_LOW: float = FROZEN_THRESHOLD
 HYSTERESIS_HIGH: float = FROZEN_THRESHOLD + HYSTERESIS_HIGH_OFFSET
 

@@ -116,7 +116,7 @@ and the only place to change it. Everywhere else quotes it with a pointer back.
 | ROI size | 160³ voxels = 0.0266 mm³, 4–12% of the imaged block | §2.1 | §1.1, §10.1 |
 | Imaged block volume | 0.227 mm³ (WKY-C) – 0.653 mm³ (WKY-A) | §10.1 | §2.1 |
 | Frozen segmentation threshold | 0.90, band 0.90 / 0.95 as run | §2.2 | §2.3, §10.2, §13.8 |
-| Config hysteresis band | 0.65 / 0.75 — **not what ran** | §2.3 | §10.2, open item 1 |
+| Config hysteresis band | 0.90 / 0.95, read from `cb_settings` (0.65 / 0.75 until open item 1) | §2.3 | §10.2 |
 | Capillary calibre window | 4.0–7.0 µm | §2.2 | §10.2 |
 | Fragmentation tolerance | 1.5 × median endpoint density | §2.2 | §10.2 |
 | Stub / reconnection threshold | 5.6 µm = p99 inscribed radius | §2.5 | §2.4, §10.3, §11.1 |
@@ -684,9 +684,12 @@ gives a thinner mask and thinner vessels, so it works against finding SHR vessel
 item 17, which absorbed the former item 16.
 
 **The hysteresis pair follows the frozen value.** `--stage run` passes the frozen threshold as
-`--hysteresis-low` only. The pipeline raises the high bound automatically when the low one would
-overtake it (`carotid_image_to_model.py:2047`), so a frozen 0.90 gives a 0.90 / 0.95 pair, not the
-config's 0.65 / 0.75 with an inverted ordering.
+`--hysteresis-low` only. A low given alone always takes low + `HYSTERESIS_HIGH_OFFSET` (0.05) as its
+seed (`_apply_hysteresis_overrides`), so a frozen 0.90 gives a 0.90 / 0.95 pair. Since open item 1
+the `PreprocessingConfig` default is that same pair, read from `cb_settings.HYSTERESIS_LOW` /
+`HYSTERESIS_HIGH`, so a direct run without the flag builds the batch mask (checked on WKY-A: mask,
+skeleton, graph and `per_edge_morphometry.csv` identical). A seed at or below the flood threshold
+raises.
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -734,15 +737,16 @@ why the pre-threshold filters are off, not to describe a step.
 
 ### 2.3.1 The operative path: plain hysteresis
 
-Two thresholds, `low = 0.65` and `high = 0.75`, applied as a connectivity rule rather than a cut:
+Two thresholds, `low = 0.90` and `high = 0.95` (`cb_settings.HYSTERESIS_LOW` / `HYSTERESIS_HIGH`),
+applied as a connectivity rule rather than a cut:
 
-1. **Seed.** Every voxel with $p \ge 0.75$ is a seed.
-2. **Grow.** Every voxel with $p \ge 0.65$ is a candidate.
+1. **Seed.** Every voxel with $p > 0.95$ is a seed.
+2. **Grow.** Every voxel with $p > 0.90$ is a candidate.
 3. **Keep** only the candidates that are connected to at least one seed.
 
-A voxel at p = 0.70 is therefore kept or discarded *depending on its neighbours* — kept if it hangs
+A voxel at p = 0.92 is therefore kept or discarded *depending on its neighbours* — kept if it hangs
 off a confident core, discarded if it is isolated. This is the whole point: a single global cut at
-0.75 severs vessels wherever the classifier dipped, while a single cut at 0.65 admits every
+0.95 severs vessels wherever the classifier dipped, while a single cut at 0.90 admits every
 scattered speck. Hysteresis takes the connected interior of the first and the extent of the second.
 
 **Why this matters more here than in a typical image.** Classifier confidence falls at vessel
@@ -750,34 +754,37 @@ scattered speck. Hysteresis takes the connected interior of the first and the ex
 the outside in, and resistance carries that as $d^{-4}$. Hysteresis lets the mask grow out to the wall
 provided it started somewhere confident.
 
-**The band is narrow — 0.65 to 0.75.** With only 0.10 of separation, the growth step is a modest
-dilation of the seed set rather than a long reach, so the mask is closer to a plain cut at 0.75
+**The band is narrow — 0.90 to 0.95.** With only 0.05 of separation, the growth step is a modest
+dilation of the seed set rather than a long reach, so the mask is closer to a plain cut at 0.95
 than the two numbers suggest. Widening the band would recover more wall at the cost of admitting
-more speckle.
+more speckle. Both comparisons are strict, and the field is quantised to 0.01 (open item 17), so a
+voxel at exactly 0.95 does not seed.
 
-> ⚠ **Neither number is what H1 ran at.** These are the `PreprocessingConfig` defaults. H1 passed
-> the frozen 0.90 as `--hysteresis-low`, which auto-raises `high` to 0.95 (§2.2). So the operative
-> band was **0.90 / 0.95**, not 0.65 / 0.75 — a much stricter seed and a much narrower band.
+**Where the values came from.** `low` is the frozen threshold of §2.2: the median of the six
+per-specimen selections on the placed ROIs, snapped to the sweep grid. `high` is `low` + 0.05. This is
+the band every H1 run used. The tuner cannot choose it: the preprocessing objective is
+`1 − mean probability inside the mask`, which rises monotonically across the whole plausible band,
+so its argmin is always the top of the search range rather than a property of the data. The yield
+cliff meant to stop it never engages — probability yield is still 0.071 at `low = 0.85`, well above
+the 0.05 trigger. (The tuner's upper bounds were raised to 0.95 / 0.99 under open item 1 so the
+default stays inside its search range; the CB batch never runs it.)
 
-**Where the values came from.** Chosen, not tuned, and the config comment says why the tuner cannot
-choose them: the preprocessing objective is `1 − mean probability inside the mask`, which rises
-monotonically across the whole plausible band, so its argmin is always the top of the search range
-rather than a property of the data. The yield cliff meant to stop it never engages — probability
-yield is still 0.071 at `low = 0.85`, well above the 0.05 trigger. The values were set instead from
-calibre and connectivity, measured on the reference subvolume:
+**History.** Until open item 1 the `PreprocessingConfig` default was 0.65 / 0.75, set by hand from
+calibre and connectivity on an earlier reference subvolume. It was never the band H1 ran at. The
+measurements behind it:
 
 | `low` | Foreground | r_p90 (µm) | Components | |
 |---|---|---|---|---|
 | 0.20 | 0.847 | 31.55 | 1 | floods into one blob |
 | 0.60 | 0.154 | 4.57 | 61 | |
-| **0.65** | 0.118 | **4.17** | 116 | **chosen** |
+| **0.65** | 0.118 | **4.17** | 116 | old config default |
 | 0.70 | 0.090 | 3.73 | 84 | |
 | 0.80 | 0.045 | 3.23 | 367 | breaking into fragments |
 | 0.85 | 0.031 | 2.64 | 414 | |
 
-r_p90 of 4.17 µm is the right scale for a ~3 µm capillary radius, and component count is stable
-from 0.60 to 0.73 before exploding above 0.80. Both criteria agree on 0.60–0.75, and 0.65 sits
-inside that range rather than against a search bound.
+On that subvolume r_p90 of 4.17 µm was the right scale for a ~3 µm capillary radius, and component
+count was stable from 0.60 to 0.73 before exploding above 0.80. The per-specimen selector of §2.2,
+run on the six placed ROIs with the pooled classifier, chose higher values; those set the band now.
 
 **The full mask-formation order**, as executed:
 
@@ -792,7 +799,7 @@ inside that range rather than against a search bound.
 | 7 | Morphological closing | radius 0 | Off — same objection: any operator whose support matches the structure width deletes the structure | Off | `carotid_image_to_model.py:692` |
 | 8 | Probability smoothing | sigma 0.0 | Off — blurring the field moves the wall the threshold lands on, which resistance carries as $d^{-4}$ | Off | `carotid_image_to_model.py:696` |
 | 9 | Joint probability–entropy hysteresis | core 0.6 / max 0.95 | Would gate seeding and growth on classifier confidence as well as probability; the guard keeps it out of reach at 2 classes | **Off** — needs a 3-class classifier | `carotid_image_to_model.py:710` |
-| 10 | Plain hysteresis threshold | 0.90 / 0.95 **as run** (config 0.65 / 0.75) | Confidence legitimately falls at vessel walls, so a single hard cut erodes every vessel from the outside in | **On** | `carotid_image_to_model.py:710` |
+| 10 | Plain hysteresis threshold | 0.90 / 0.95 (`cb_settings`; config 0.65 / 0.75 until open item 1) | Confidence legitimately falls at vessel walls, so a single hard cut erodes every vessel from the outside in | **On** | `carotid_image_to_model.py:710` |
 | 11 | Hole filling, 3D | — | A lumen voxel the classifier missed would otherwise stay a permanent hole and shrink the EDT inscribed radius through it | **On** | `carotid_image_to_model.py:720` |
 | 12 | Un-pad | 10 voxels in z | The pad is scaffolding; leaving it would extend every boundary vessel by 10 slices of replicated probability | **On** | `carotid_image_to_model.py:722` |
 
@@ -2722,21 +2729,17 @@ in the coupled solvers.
 | `morphological_opening_radius` | 0 | voxels | (iii) | **Disabled.** Radius 1 retains 51% of a 1.6-voxel-radius tube; radius 2 retains none | measured |
 | `morphological_closing_radius` | 0 | voxels | (iii) | **Disabled**, same reasoning | measured |
 | `enable_hysteresis_threshold` | True | — | (iii) | — | — |
-| `hysteresis_threshold_low` | 0.65 | probability | (iii) | **Provisional.** Not tuner-derived — the preprocessing objective rises monotonically across the plausible band, so its argmin is the top of the search range rather than a property of the data. Set instead from calibre (r_p90 4.17 µm, right scale for a ~3 µm capillary) and connectivity (component count stable 0.60–0.73, explodes above 0.80) | measured, in sensitivity scope |
-| `hysteresis_threshold_high` | 0.75 | probability | (iii) | Provisional, as above | measured, in sensitivity scope |
+| `hysteresis_threshold_low` | 0.90 | probability | (iii) | `cb_settings.HYSTERESIS_LOW` = `FROZEN_THRESHOLD`: the median of the six per-specimen selections, snapped to the sweep grid (§2.2). Not tuner-derived — the preprocessing objective's argmin is the top of its search range. Was 0.65 until open item 1, set by hand on an earlier subvolume (§2.3.1) | measured, in sensitivity scope |
+| `hysteresis_threshold_high` | 0.95 | probability | (iii) | `cb_settings.HYSTERESIS_HIGH` = low + `HYSTERESIS_HIGH_OFFSET` (0.05). Was 0.75 until open item 1 | measured, in sensitivity scope |
 | `enable_hole_filling` | True | — | (iii) | — | unswept |
 | `ilastik_vessel_channel` | 0 | index | (i) | Classifier output layout | — |
 | `enable_shannon_entropy` | False | — | (iii) | **Off.** The vessel classifier has 2 classes; turning this on raises (§2.3) | no effect |
 | `shannon_entropy_threshold` | 0.95 | normalised entropy | (iii) | Chosen. Max entropy for a *candidate* voxel; permissive gate | no effect on the CB path |
 | `shannon_entropy_core` | 0.6 | normalised entropy | (iii) | Chosen. Max entropy for a *seed* voxel; strict gate | no effect on the CB path |
 
-> ⚠ **Open item 1 — two different thresholds are in play.** The config defaults above are
-> 0.65 / 0.75. The H1 cohort runs instead froze the vessel threshold at **0.90**, which is not
-> arbitrary: it is the median of the six per-specimen selections, snapped to the sweep grid
-> (§2.2). Passed as `--hysteresis-low`, it auto-raises the high bound to 0.95. So the config
-> defaults are *never* the values H1 ran at, and anything reading `PreprocessingConfig` alone
-> will describe a segmentation that did not happen. Which value is in force depends entirely on
-> which driver ran. Resolve before quoting either.
+> **Open item 1 (closed).** The config defaults were 0.65 / 0.75 while every H1 run passed the
+> frozen 0.90 as `--hysteresis-low` and got a 0.95 seed. The config now reads the band from
+> `cb_settings`, and `test_cb_settings.py` keeps them equal. No published number moves.
 
 ### 10.3 Skeletonisation and topology — `SkeletonConfig`
 
@@ -3319,7 +3322,7 @@ is stochastic.
 
 1. Preprocess to Ilastik input with the recorded parameters — identical for all six volumes.
 2. Predict headlessly with the classifier named in the sidecar.
-3. Threshold to a mask; the H1 cohort used a single frozen value for all six (open item 1).
+3. Threshold to a mask at the frozen 0.90 / 0.95 band, the same for all six (§2.2, `cb_settings`).
 4. Run the H1 batch to produce graphs and per-edge morphometry.
 5. Run the H2 driver for the method in question, at 60/20 mmHg on axis 1 (`cb_settings`).
 
@@ -3471,7 +3474,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 
 | # | Item | Blocks |
 |---|---|---|
-| 1 | Two segmentation thresholds in play — config 0.65/0.75 vs the frozen 0.90 used for H1. **Now pinned**: `cb_settings.FROZEN_THRESHOLD` owns the value and `test_cb_settings.py` asserts the config default has not moved | §2.2, and any quoted calibre |
+| ~~1~~ | **Closed.** The hysteresis band differed between `PreprocessingConfig` (0.65 / 0.75) and the frozen 0.90 / 0.95 every H1 run used (`--hysteresis-low 0.90`, seed auto-raised). The config now reads `cb_settings.HYSTERESIS_LOW` / `HYSTERESIS_HIGH`, and `test_cb_settings.py` keeps them equal, so no published number moves. A `--hysteresis-low` given alone now always takes low + 0.05 as its seed (it used to keep the config's high whenever that was still above low), and a seed at or below low raises. The mask step's hidden 0.2 / 0.4 fallbacks are gone. The tuner's upper bounds rose 0.85 / 0.95 → 0.95 / 0.99 so the default stays inside its search range. Fresh WKY-A run with no flag: mask, skeleton, graph and `per_edge_morphometry.csv` identical to the batch output. `test_cb_settings.py`, `test_pipeline_hysteresis_band.py` | — |
 | 2 | Two boundary rules coexist: H1 runs the band rule on axis 0 at 25%, the H2 drivers run the face rule on axis 1. **Now pinned**: `cb_settings.BOUNDARY_AXIS` owns the axis, and the band rule raises on an empty band instead of falling back to the extreme decile of all nodes (opt-in only, for the nerve pipeline) | §2.8, §8, §13 — the largest sensitivity in the model |
 | ~~3~~ | **Closed.** Arterial PO₂ was hard-coded as 100 in the Tier 1 source and Tier 2, and read through `getattr` with a default in Tier 3. All three now read `po2_arterial_mmHg` and raise if it is missing; `cb_settings.PerfusionSettings` gains the field at 100, so no published number moves. Tier 3's other fields (`M_max`, `k_reduce`, RQ, HCO₃⁻, both permeabilities, arterial PCO₂, D_CO₂ and the Picard settings) and the pipeline's tier switch are now also read without a default; the hidden Tier 3 `M_max` fallback was 0.05, 10× `PerfusionConfig`. `test_perfusion_config_values.py` | — |
 | ~~4~~ | **Closed.** The Tier 1 washout now reads `systemic_hematocrit` instead of a hard-coded 0.45, and `cb_settings.PerfusionSettings` gains the field at 0.45. The washout was still evaluated at systemic rather than local haematocrit, kept as §11 row 27; open item 29 moved it to each cell's own haematocrit. The 0.45 edge-haematocrit and 100 µm² surface-area defaults in `perfusion.py` are gone too: `map_vessels_to_grid` raises on an edge with no `hematocrit` | — |
