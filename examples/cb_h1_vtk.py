@@ -39,6 +39,7 @@ import pyvista as pv
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ImageLynx.artefact_provenance import read_provenance          # noqa: E402
+from ImageLynx.roi_placement import check_output_roi                # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS     # noqa: E402
 from ImageLynx import cb_settings                                 # noqa: E402
 
@@ -237,6 +238,8 @@ def main():
         if edges is None:
             print(f"{specimen.specimen_id}: no morphometry, skipped")
             continue
+        # Refuse morphometry cut anywhere but the placed ROI (open item 27).
+        check_output_roi(RESULTS / specimen.specimen_id, specimen, cb_settings.ROI_VOXELS)
         report = {}
         vessels = enrich_vessels(specimen, edges, report)
         nodes = build_nodes(specimen, edges, report)

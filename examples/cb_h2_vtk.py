@@ -70,7 +70,7 @@ from ImageLynx.haemodynamics.tissue_regions import (                     # noqa:
     mask_fraction_per_cell,
 )
 from ImageLynx.haemodynamics.transit import transit_time_from_inlets     # noqa: E402
-from ImageLynx.roi_placement import place_roi                            # noqa: E402
+from ImageLynx.roi_placement import check_output_roi, place_roi          # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS           # noqa: E402
 from ImageLynx import cb_settings                                        # noqa: E402
 # The §2.3 driver owns the vessel mapping, so the exported field is the one §2.3 reports.
@@ -98,6 +98,8 @@ def load_graph(specimen):
     The graph carries no diameter of its own. Without this the flow solve silently falls back,
     and transit time, which is quadratic in diameter, would be fabricated with it.
     """
+    # Refuse a graph cut anywhere but the placed ROI the TH channel is cropped at (item 27).
+    check_output_roi(BATCH / specimen.specimen_id, specimen, ROI)
     with open(next((BATCH / specimen.specimen_id).glob("*_cache/network_graph.pkl")), "rb") as h:
         G = pickle.load(h)
     by_edge = {}

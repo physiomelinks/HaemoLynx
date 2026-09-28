@@ -51,7 +51,7 @@ from ImageLynx.haemodynamics.rheology import (                           # noqa:
 from ImageLynx.haemodynamics.tissue_regions import (                     # noqa: E402
     blend_per_cell_rate, mask_bounds_um, mask_fraction_per_cell,
 )
-from ImageLynx.roi_placement import place_roi                            # noqa: E402
+from ImageLynx.roi_placement import check_output_roi, place_roi          # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS           # noqa: E402
 from ImageLynx import cb_settings                                       # noqa: E402
 
@@ -71,6 +71,8 @@ PerfConfig = cb_settings.PerfusionSettings
 
 
 def _load_graph(specimen):
+    # Refuse a graph cut anywhere but the placed ROI the TH channel is cropped at (item 27).
+    check_output_roi(BATCH / specimen.specimen_id, specimen, ROI)
     with open(next((BATCH / specimen.specimen_id).glob("*_cache/network_graph.pkl")), "rb") as h:
         G = pickle.load(h)
     by_edge = {}

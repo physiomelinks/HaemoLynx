@@ -171,6 +171,96 @@ def place_roi(
     )
 
 
+#: Sidecar the network pipeline writes next to its outputs, naming the box it cropped. Every
+#: driver that reads a batch graph or ``per_edge_morphometry.csv`` checks it against
+#: ``place_roi`` before using the output (open item 27).
+ROI_RECORD_NAME = "roi_placement.json"
+
+
+def placement_fell_back(placement: RoiPlacement) -> bool:
+    """True when any axis of the placement came from the volume centre, not the data."""
+    return "volume_centre" in placement.source
+
+
+def centred_placement(specimen, size_zyx: Sequence[int]) -> RoiPlacement:
+    """The array-centre box, as ``crop_roi`` cuts it with zero offsets (``extent // 2``)."""
+    size_zyx = tuple(int(v) for v in size_zyx)
+    shape = specimen.shape_zyx
+    centre = clamp_centre(tuple(e // 2 for e in shape), size_zyx, shape)
+    return RoiPlacement(
+        specimen_id=specimen.specimen_id,
+        centre_zyx=centre,
+        size_zyx=size_zyx,
+        offsets_zyx=centre_to_offsets(centre, shape),
+        peak_slice=None,
+        source="array_centre (requested)",
+    )
+
+
+def roi_record(placement: RoiPlacement, shape_zyx, *, centred: bool) -> dict:
+    """What the sidecar holds: enough to rebuild the box and to see how it was chosen."""
+    return {
+        "specimen_id": placement.specimen_id,
+        "volume_shape_zyx": [int(v) for v in shape_zyx],
+        "centre_zyx": [int(v) for v in placement.centre_zyx],
+        "size_zyx": [int(v) for v in placement.size_zyx],
+        "bounds_zyx": [[int(s.start), int(s.stop)] for s in placement.bounds],
+        "offsets_zyx": [float(v) for v in placement.offsets_zyx],
+        "peak_slice": placement.peak_slice,
+        "source": placement.source,
+        "centred": bool(centred),
+    }
+
+
+def write_roi_record(directory, record: dict):
+    """Write the sidecar into ``directory`` and return its path."""
+    import json
+    from pathlib import Path
+
+    path = Path(directory) / ROI_RECORD_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2))
+    return path
+
+
+def check_output_roi(directory, specimen, size_zyx: Sequence[int],
+                     placement: Optional[RoiPlacement] = None) -> dict:
+    """Refuse a pipeline output that was not cropped at this specimen's placed ROI.
+
+    Raises when the sidecar is missing (outputs from before open item 27, all centre-cropped),
+    when the run asked for the array centre, or when its box differs from what ``place_roi``
+    gives now (the placement rule has changed since the run). Returns the record otherwise.
+    """
+    import json
+    from pathlib import Path
+
+    path = Path(directory) / ROI_RECORD_NAME
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{specimen.specimen_id}: no {ROI_RECORD_NAME} in {directory}. Pipeline outputs "
+            f"without it predate open item 27 and were cropped at the array centre, not the "
+            f"placed ROI. Re-run cb_h1_batch.py --stage run."
+        )
+    record = json.loads(path.read_text())
+    if record.get("specimen_id") != specimen.specimen_id:
+        raise ValueError(
+            f"{path} is for {record.get('specimen_id')}, not {specimen.specimen_id}.")
+    if record.get("centred"):
+        raise ValueError(
+            f"{specimen.specimen_id}: the output in {directory} was cropped at the array "
+            f"centre (--roi-centred), not at the placed ROI.")
+    if placement is None:
+        placement = place_roi(specimen, size_zyx)
+    expected = [[int(s.start), int(s.stop)] for s in placement.bounds]
+    if record.get("bounds_zyx") != expected:
+        raise ValueError(
+            f"{specimen.specimen_id}: the output in {directory} was cropped at "
+            f"{record.get('bounds_zyx')}, but place_roi now gives {expected}. The placement "
+            f"has changed since that run; re-run cb_h1_batch.py --stage run."
+        )
+    return record
+
+
 def format_placement_table(placements: Sequence[RoiPlacement], specimens=None) -> str:
     """What was sampled from where, for the record."""
     lines = [

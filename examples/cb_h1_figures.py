@@ -23,6 +23,7 @@ import numpy as np
 
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS
 from ImageLynx import cb_settings
+from ImageLynx.roi_placement import check_output_roi
 
 # Categorical slots 1 and 2 of the reference palette, validated for CVD separation
 # (worst adjacent pair dE 24.7 protan) and >= 3:1 contrast on the light surface.
@@ -212,8 +213,16 @@ def figure_diameter(path, diameters):
     plt.close(fig)
 
 
+def _check_rois():
+    """Refuse morphometry cut anywhere but each specimen's placed ROI (open item 27)."""
+    for specimen in SPECIMENS:
+        if (RESULTS / specimen.specimen_id / "per_edge_morphometry.csv").exists():
+            check_output_roi(RESULTS / specimen.specimen_id, specimen, cb_settings.ROI_VOXELS)
+
+
 def main():
     RESULTS.mkdir(parents=True, exist_ok=True)
+    _check_rois()
     diameters = _load_diameters()
     density_path = RESULTS / "figure1_network_density.png"
     diameter_path = RESULTS / "figure2_diameter_distribution.png"

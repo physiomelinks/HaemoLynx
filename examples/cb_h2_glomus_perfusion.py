@@ -41,7 +41,7 @@ from ImageLynx.haemodynamics.rheology import (                         # noqa: E
 )
 from ImageLynx.haemodynamics.tissue_regions import edge_tissue_fraction  # noqa: E402
 from ImageLynx.haemodynamics.transit import transit_time_from_inlets     # noqa: E402
-from ImageLynx.roi_placement import place_roi                          # noqa: E402
+from ImageLynx.roi_placement import check_output_roi, place_roi        # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS         # noqa: E402
 from ImageLynx import cb_settings                                     # noqa: E402
 
@@ -56,6 +56,8 @@ INLET_P, OUTLET_P = cb_settings.INLET_PRESSURE_MMHG, cb_settings.OUTLET_PRESSURE
 
 
 def _load_graph(specimen):
+    # Refuse a graph cut anywhere but the placed ROI the TH channel is cropped at (item 27).
+    check_output_roi(BATCH / specimen.specimen_id, specimen, ROI)
     path = next((BATCH / specimen.specimen_id).glob("*_cache/network_graph.pkl"))
     with open(path, "rb") as handle:
         return pickle.load(handle)

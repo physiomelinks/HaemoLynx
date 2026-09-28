@@ -36,7 +36,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ImageLynx.io import read_ilastik_probabilities                     # noqa: E402
-from ImageLynx.roi_placement import format_placement_table, place_roi   # noqa: E402
+from ImageLynx.roi_placement import (                                   # noqa: E402
+    check_output_roi, format_placement_table, place_roi,
+)
 from ImageLynx.specimens import (                                       # noqa: E402
     PROCESSING_VOXEL_UM, SPECIMENS, get_specimen,
 )
@@ -124,7 +126,11 @@ def stage_threshold(roi, grid):
 
 
 def stage_run(roi, threshold):
-    """Run the pipeline once per specimen with frozen parameters and matched ROIs."""
+    """Run the pipeline once per specimen with frozen parameters and matched ROIs.
+
+    The pipeline places each ROI itself from --roi-voxels (open item 27; before that it cropped
+    the array centre), and writes roi_placement.json; each run is checked against it here.
+    """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     pipeline = Path(__file__).resolve().parent / "carotid_image_to_model.py"
     results = {}
@@ -144,6 +150,9 @@ def stage_run(roi, threshold):
         log = out / "pipeline.log"
         with log.open("w") as handle:
             code = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT).returncode
+        if code == 0:
+            # The pipeline places the ROI itself (open item 27); confirm it cut this box.
+            check_output_roi(out, specimen, roi, placement)
         results[specimen.specimen_id] = code
         print(f"  exit={code}  log={log}")
     failed = [s for s, c in results.items() if c != 0]

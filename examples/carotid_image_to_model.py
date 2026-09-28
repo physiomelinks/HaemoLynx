@@ -651,6 +651,9 @@ def _preview_post_processed_mask(binary, image_path, input_format, vis_config, p
 # Run-wide (z, y, x) voxel size in microns, populated from PipelineConfig.voxel_size_um in
 # main(). None means "fall back to file metadata", which is warned about in _resolve_voxel_size.
 VOXEL_SIZE_UM = None
+# The placed ROI for this run (roi_placement.roi_record), set in main(). The loader checks the
+# volume it crops has the shape the placement was computed on.
+ROI_RECORD = None
 _VOXEL_SIZE_WARNED = False
 
 def _resolve_voxel_size(image_path, input_format):
@@ -776,6 +779,16 @@ def _load_raw_probability_field(image_path, input_format, pre_config, skel_confi
        0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or \
        skel_config.sub_volume_offset_y != 0 or skel_config.sub_volume_offset_x != 0:
         print(f"Applying ROI crop (sub-volume={skel_config.sub_volume_percentage})...")
+        if ROI_RECORD is not None:
+            # The offsets were computed on the registry shape; on any other shape they would
+            # land somewhere else.
+            dims = list(image.shape)
+            if len(dims) == 4:
+                dims.pop(int(np.argmin(dims)))
+            if tuple(dims) != tuple(ROI_RECORD["volume_shape_zyx"]):
+                raise ValueError(
+                    f"The ROI was placed on a {tuple(ROI_RECORD['volume_shape_zyx'])} volume, "
+                    f"but {image_path} is {tuple(dims)}.")
         image = preprocessing.crop_roi(
             image,
             sub_volume_percentage=skel_config.sub_volume_percentage,
@@ -1746,14 +1759,17 @@ def carotid_image_to_model(image_path: Path | str,
                 print(f"Exported Global Raw Anatomy to: {out_path_anat_global}")
                 
                 # 2. Sub-Volume Export
-                if 0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or skel_config.sub_volume_offset_y != 0 or skel_config.sub_volume_offset_x != 0:
+                # Same condition and same box as the probability crop, including an explicit
+                # --roi-voxels size, which this export used to ignore.
+                if skel_config.sub_volume_voxels is not None or 0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or skel_config.sub_volume_offset_y != 0 or skel_config.sub_volume_offset_x != 0:
                     import ImageLynx.preprocessing as preprocessing
                     raw_anatomy_sub = preprocessing.crop_roi(
                         raw_anatomy_global,
                         sub_volume_percentage=skel_config.sub_volume_percentage,
                         offset_z=skel_config.sub_volume_offset_z,
                         offset_y=skel_config.sub_volume_offset_y,
-                        offset_x=skel_config.sub_volume_offset_x
+                        offset_x=skel_config.sub_volume_offset_x,
+                        size_zyx=skel_config.sub_volume_voxels,
                     )
                 else:
                     raw_anatomy_sub = raw_anatomy_global
@@ -2101,6 +2117,47 @@ def update_dataclass_from_dict(obj, config_dict):
     if post_init is not None:
         post_init()
 
+def _apply_roi_placement(skel_config, specimen, centred=False):
+    """Point the ROI crop at the specimen's placed box; return the record the sidecar holds.
+
+    Only an explicit size (--roi-voxels) is placed: a percentage crop is the nerve pipeline's
+    rule and has no placement. Until open item 27 the CB batch passed the size and no
+    offsets, so every network was built on the array-centre box while the threshold, the TH
+    metrics and the H2 overlay used place_roi's box, 85-210 um away. ``centred`` keeps the
+    array centre, and is recorded, so downstream drivers can refuse it. Returns None when no
+    explicit size is set.
+    """
+    from ImageLynx.roi_placement import (
+        centred_placement, placement_fell_back, place_roi, roi_record,
+    )
+
+    if skel_config.sub_volume_voxels is None:
+        return None
+    size = tuple(int(v) for v in skel_config.sub_volume_voxels)
+    offsets = (skel_config.sub_volume_offset_z, skel_config.sub_volume_offset_y,
+               skel_config.sub_volume_offset_x)
+    if any(o != 0 for o in offsets):
+        raise ValueError(
+            f"SkeletonConfig sets sub_volume_offset_zyx {offsets} together with an explicit "
+            f"ROI size. The box is placed from the specimen's own data (place_roi); hand-set "
+            f"offsets would override that for one run only. Drop the offsets, or use "
+            f"--roi-centred for the array centre."
+        )
+    if centred:
+        placement = centred_placement(specimen, size)
+    else:
+        placement = place_roi(specimen, size)
+        if placement_fell_back(placement):
+            raise ValueError(
+                f"{specimen.specimen_id}: ROI placement fell back to the volume centre "
+                f"({placement.source}). That silently reproduces open item 27; make the QC "
+                f"record and the Ilastik input HDF5 reachable, or pass --roi-centred."
+            )
+    (skel_config.sub_volume_offset_z, skel_config.sub_volume_offset_y,
+     skel_config.sub_volume_offset_x) = placement.offsets_zyx
+    return roi_record(placement, specimen.shape_zyx, centred=centred)
+
+
 def _apply_hysteresis_overrides(pre_config, low=None, high=None):
     """Set the hysteresis band from the command line; None leaves a bound as configured.
 
@@ -2142,6 +2199,10 @@ if __name__ == "__main__":
                         help="Explicit ROI size in voxels, overriding --sub-volume. Use this "
                              "when comparing specimens: the same percentage of differently "
                              "sized volumes is not a matched sample.")
+    parser.add_argument("--roi-centred", action="store_true",
+                        help="With --roi-voxels, crop at the array centre instead of the "
+                             "specimen's placed ROI (roi_placement.place_roi). Recorded in "
+                             "roi_placement.json; the CB drivers refuse such outputs.")
     parser.add_argument("--config", type=str, default=None, help="Path to a YAML configuration file to override default parameters.")
     parser.add_argument("--optimize-skeleton", type=int, default=0, help="Run Bayesian optimization (Optuna) for N trials before continuing.")
     parser.add_argument("--optimize-preprocessing", type=int, default=0, help="Run Bayesian optimization for preprocessing filters for N trials.")
@@ -2303,6 +2364,23 @@ if __name__ == "__main__":
     print(f"Specimen {active_specimen.specimen_id} ({active_specimen.group}), "
           f"classifier {active_specimen.classifier.name}")
     print(f"  stages: {active_specimen.stage_status()}")
+
+    # Crop at this specimen's placed ROI (open item 27). The sidecar names the box, so the
+    # H1/H2 drivers can refuse an output cut anywhere else.
+    ROI_RECORD = _apply_roi_placement(skel_config, active_specimen, centred=args.roi_centred)
+    if ROI_RECORD is not None:
+        print(f"  ROI {'array centre' if ROI_RECORD['centred'] else 'placed'}: centre "
+              f"{tuple(ROI_RECORD['centre_zyx'])}, bounds {ROI_RECORD['bounds_zyx']} "
+              f"({ROI_RECORD['source']})")
+        _out_dir = pipeline_config.vtk_output_prefix.parent
+        if pipeline_config.pre_generated_mask_and_skeleton:
+            # The cached mask was cut by an earlier run; it must be the same box.
+            if not ROI_RECORD["centred"]:
+                from ImageLynx.roi_placement import check_output_roi
+                check_output_roi(_out_dir, active_specimen, ROI_RECORD["size_zyx"])
+        else:
+            from ImageLynx.roi_placement import write_roi_record
+            print(f"  wrote {write_roi_record(_out_dir, ROI_RECORD)}")
 
     if args.voxel_size_um is not None:
         pipeline_config.voxel_size_um = tuple(args.voxel_size_um)

@@ -18,6 +18,10 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
+from ImageLynx import cb_settings
+from ImageLynx.roi_placement import check_output_roi
+from ImageLynx.specimens import get_specimen
+
 OUTPUTS = Path(__file__).resolve().parent / "outputs"
 SPECIMENS = ("WKY-A", "WKY-B", "WKY-C", "SHR-A", "SHR-B", "SHR-C")
 VOXEL_UM = 1.866
@@ -30,6 +34,9 @@ RUNS = (
 
 
 def median_calibre(path):
+    # Refuse a run cut anywhere but the placed ROI (open item 27).
+    specimen = get_specimen(path.parent.name)
+    check_output_roi(path.parent, specimen, cb_settings.ROI_VOXELS)
     d = pd.read_csv(path, usecols=["edt_diameter_um"])["edt_diameter_um"].to_numpy(float)
     d = d[np.isfinite(d) & (d > 0)]
     return float(np.median(d))
