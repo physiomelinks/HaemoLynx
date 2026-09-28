@@ -1062,9 +1062,10 @@ def _check_graph_fits_frame(G, image_shape, voxel_size, slack_voxels=1.0):
     """Raise if a node lies outside the volume *image_shape* describes.
 
     The face rule measures each terminal against the region's faces, so the shape has to be
-    the one the graph was built in. On the cache path an .h5 input gets a (1, 1, 1)
-    placeholder (open item 28); under that shape the high face sits at 0 um and every
-    terminal reads as crossing it. Better to stop than to solve on those boundaries.
+    the one the graph was built in. The cache path used to pass a (1, 1, 1) placeholder for
+    an .h5 input (open item 28); under that shape the high face sits at 0 um and every
+    terminal reads as crossing it. That path now passes the cached mask; this stays as a
+    backstop for any shape too small to hold the graph.
     """
     node_pos = nx.get_node_attributes(G, "pos")
     if not node_pos:
@@ -1094,6 +1095,13 @@ def _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_co
     # image.shape is in voxels while node 'pos' is physical, so the spacing is needed to
     # compare them; without it the apparent volume shrinks and interior dead-ends reach a face.
     voxel_size = _resolve_voxel_size(image_path, input_format)
+    # The graph was built in the mask's frame. A larger shape would pass the fit check below
+    # but put the high face beyond every terminal (open item 28).
+    if binary is not None and tuple(image.shape) != tuple(binary.shape):
+        raise ValueError(
+            f"The image passed for boundary selection has shape {tuple(image.shape)}, but the "
+            f"vessel mask the graph was built from has shape {tuple(binary.shape)}. The face "
+            f"rule needs the mask's frame (open item 28).")
     _check_graph_fits_frame(G, image.shape, voxel_size)
     # Inlets are the terminals on the low face of the boundary axis, outlets those on the high
     # face; a dead end inside the volume gets no pressure (the face rule, open item 2).
@@ -1688,7 +1696,11 @@ def carotid_image_to_model(image_path: Path | str,
     if getattr(pipeline_config, 'pre_generated_mask_and_skeleton', False):
         if not cache_dir.exists():
             raise FileNotFoundError(f"Cache directory {cache_dir} not found. A standard run must be completed first to populate the cache.")
-        
+        if hemo_config.radius_assignment_mode == "fwhm_radius":
+            raise ValueError(
+                "fwhm_radius measures diameters on image intensities, and the cache holds only the "
+                "mask. Run without --use-cache-dir, or use edt_radius.")
+
         mask_path = cache_dir / "vessel_mask.npy"
         skeleton_path = cache_dir / "skeleton.npy"
         graph_path = cache_dir / "network_graph.pkl"
@@ -1702,10 +1714,13 @@ def carotid_image_to_model(image_path: Path | str,
         
         with graph_path.open("rb") as f:
             G = pickle.load(f)
-            
-        import ImageLynx.io as io
-        image = io.load_3d_tif(RAW_IMAGE_PATH, lazy=False) if input_format == "tif" else np.zeros((1,1,1))
-        
+
+        # The cached mask is the region the graph was built in, so its shape is the one boundary
+        # selection and the statistics need (open item 28). Past this point the image's content
+        # only feeds plots. It used to be a (1, 1, 1) placeholder for .h5 inputs and a fixed,
+        # uncropped raw TIFF for .tif inputs.
+        image = binary
+
         # Bypass straight to downstream logic
         pipeline_config.do_skeletonize = False
         pipeline_config.do_graph_building = False

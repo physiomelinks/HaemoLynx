@@ -70,7 +70,7 @@ def test_pipeline_boundaries_are_the_h2_face_rule_boundaries(monkeypatch):
 
 
 def test_a_placeholder_shape_is_refused(monkeypatch):
-    """The .h5 cache path hands over np.zeros((1, 1, 1)) (open item 28)."""
+    """The .h5 cache path used to hand over np.zeros((1, 1, 1)) (open item 28)."""
     monkeypatch.setattr(C, "VOXEL_SIZE_UM", (1.0, 1.0, 1.0))
     with pytest.raises(ValueError, match="does not fit the volume"):
         C._setup_boundary_conditions_and_haemodynamics(
