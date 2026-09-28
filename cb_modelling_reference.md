@@ -19,14 +19,14 @@
 | Would the other viscosity law change my answer? | §4.4 — not for ratios; yes for absolutes |
 | Why is vessel diameter measured by EDT and not FWHM? | §2.6 |
 | How much of my diameter distribution was measured rather than fabricated? | §2.6 — the guard refuses at any fabrication |
-| Is absolute perfusion physiological? | §13.5 — at 60/20 mmHg it runs 1–3× fast; it was 20–100× slow only before open item 12 |
+| Is absolute perfusion physiological? | §13.5 — at 60/20 mmHg it runs up to 1.8× fast; it was 20–100× slow only before open item 12 |
 | What pressure boundaries did the published H2 numbers use? | §7.8 and §8.1 — 60/20; the pipeline config reads the same pair since open item 10 |
 | Which coupling tier produced the oxygen field? | §6.6 — Tier 1; Tier 2 is unreachable |
-| What grid resolution was used, and is it converged? | §6.8 — 3 µm, with vessels mapped over their cross-section; within 0.21 mmHg of 2 µm (open item 30, closed) |
+| What grid resolution was used, and is it converged? | §6.8 — 3 µm, with vessels mapped over their cross-section; within 0.21 mmHg of 2 µm on the centred-box networks (open item 30, closed; not re-measured after 2026-09-28) |
 | Why is transit time reported as a ratio instead of a number? | §7.6, then §13.3 |
 | Which boundary rule is in force, and how much does it move things? | §2.8, then §13.4 |
-| Why can I not quote a glomus hypoxic fraction? | §13.6 — the tissue is not diffusion-limited (**needs review** after open items 22, 29: the re-run gives 0–4% within TH) |
-| Is calibre a defensible H1 finding? | §13.8 — no |
+| Why can I not quote a glomus hypoxic fraction? | §13.6 — the tissue is not diffusion-limited (**needs review**: since the 2026-09-28 re-run TH hypoxia is 0 everywhere, and PO₂ in TH separates the groups) |
+| Is calibre a defensible H1 finding? | §13.8 — no, on the stated argument (**needs review**: at 0.95 the gap is half a voxel, without overlap) |
 | Can I use the TH channel for a between-group contrast? | §13.9 — qualified, bounded by sensitivity analysis |
 | What is turned off in the model, and why? | §10.6 constriction; §6.6 Tier 2; §2.5 bundle collapse |
 | What am I allowed to claim? | **§13.10** |
@@ -115,29 +115,29 @@ and the only place to change it. Everywhere else quotes it with a pointer back.
 | Processing voxel | 1.8639 × 1.866 × 1.866 µm | §10.1 | §2.1, §2.4, §7.2 |
 | ROI size | 160³ voxels = 0.0266 mm³, 4–12% of the imaged block | §2.1 | §1.1, §10.1 |
 | Imaged block volume | 0.227 mm³ (WKY-C) – 0.653 mm³ (WKY-A) | §10.1 | §2.1 |
-| Frozen segmentation threshold | 0.90, band 0.90 / 0.95 as run | §2.2 | §2.3, §10.2, §13.8 |
-| Config hysteresis band | 0.90 / 0.95, read from `cb_settings` (0.65 / 0.75 until open item 1) | §2.3 | §10.2 |
+| Frozen segmentation threshold | 0.95, band 0.95 / 0.999 as run (0.90 / 0.95 before the 2026-09-28 re-run) | §2.2 | §2.3, §10.2, §13.8 |
+| Config hysteresis band | 0.95 / 0.999, read from `cb_settings` (0.90 / 0.95 until 2026-09-28; 0.65 / 0.75 until open item 1) | §2.3 | §10.2 |
 | Capillary calibre window | 4.0–7.0 µm | §2.2 | §10.2 |
 | Fragmentation tolerance | 1.5 × median endpoint density | §2.2 | §10.2 |
 | Stub / reconnection threshold | 5.6 µm = p99 inscribed radius | §2.5 | §2.4, §10.3, §11.1 |
 | β₁ | 307 on the reference subvolume | §2.5 | §7.1, §10.3 |
 | Junction exclusion | 3.73 µm ≈ one capillary inscribed radius | §2.6 | §10.5, §11.1, §13.3 |
-| Median EDT diameter | 6.37 µm (EDT) against 8.20 µm (FWHM), *r* = 0.245 | §2.6 | §3.1, §10.5 |
+| Median EDT diameter | 6.37 µm (EDT) against 8.20 µm (FWHM), *r* = 0.245, on the method-choice subvolume; the batch at 0.95 gives per-specimen medians 5.87–7.46 µm (mean 6.70) | §2.6 | §3.1, §10.5 |
 | Boundary rule and axis | face rule, axis 1, 1-voxel tolerance | §2.8 | §8.1, §8.2, §13.4 |
-| Boundary sensitivity | 13.3% (face) against 75.8% (band) | §2.8 | §13.4 |
-| Interior terminal share | 83.5–86.9%, mean ≈ 86% | §8.2 | §2.8, §13.4 |
+| Boundary sensitivity | 8.9% (face) against 73.9% (band) | §2.8 | §13.4 |
+| Interior terminal share | 82.8–89.4%, mean ≈ 86% | §8.2 | §2.8, §13.4 |
 | Pressure boundaries | 60 / 20 mmHg, arteriolar to venular, H2 and pipeline config alike | §8.1 | §7.8, §10.7, §11, §13.5, §14, open item 10 |
 | Systemic haematocrit | 0.45 | §4.1 | §4.3, §6.7, §10.7 |
 | Perfusion grid pitch | 3 µm, cross-section vessel mapping; converged to 0.5 mmHg (open item 30) | §6.8 | §6.1, §6.5, §10.9, §13.7 |
 | Metabolic rate | `BASE_M_MAX` = 0.05 mmol/L/s, H2 and pipeline config alike | §6.4 | §6.5, §13.6, open item 8 |
 | Metabolic contrasts | 1×, 2×, 4× | §6.5 | §7.5, §13.6 |
 | Hypoxic thresholds | 5, 10, 20 mmHg | §7.5 | §13.6 |
-| Tissue-to-vessel distance | median 5.28–7.92 µm, p90 25.9–53.1 µm | §13.7 | §6.8, §7.2 |
+| Tissue-to-vessel distance | median 4.57–6.19 µm, p90 12.1–46.8 µm | §13.7 | §6.8, §7.2 |
 | Oxygen diffusion length | 20 µm at PO₂ 10, 35 at 30, 45 at 50 | §13.6 | §6.8 |
-| Total inlet flow | 1.51e6–4.58e6 µm³/s (face rule) | §13.5 | §7.6 |
-| Flow-weighted velocity | 979–3,319 µm/s against a physiological 200–1,000 | §13.5 | §8.1, §11, §13.10 |
-| Calibre error floor | ±45% on an absolute flow quantity | §13.3 | §7.1, §7.6, §11 |
-| Within-specimen floor | ±6.3% | §13.3 | §7.3 |
+| Total inlet flow | 1.33e6–4.00e6 µm³/s (face rule) | §13.5 | §7.6 |
+| Flow-weighted velocity | 977–1,812 µm/s against a physiological 200–1,000 | §13.5 | §8.1, §11, §13.10 |
+| Calibre error floor | ±43% on an absolute flow quantity | §13.3 | §7.1, §7.6, §11 |
+| Within-specimen floor | ±4.7% | §13.3 | §7.3 |
 | Pre-threshold filter cost | median-3 destroys 80% of the vessel | §2.3 | §11.1 |
 
 **In code, these live in `src/ImageLynx/cb_settings.py`**, which is the single owner for every
@@ -195,12 +195,12 @@ a measured cohort effect. `tests/test_roi_placement.py` asserts only that the ga
 |---|---|---|---|---|---|
 | 1 | Read the specimen's QC record | — | The axial tissue peak was measured once, in preprocessing; recomputing it here could disagree with the recorded value | **On** | `roi_placement.py:113` |
 | 2 | z ← `z_profile.peak_slice` | — | The organ sits a quarter of the way into one block (WKY-B, 0.244) and just past halfway into another (WKY-A, 0.529), so a fixed z samples different anatomy in each | **On**; falls back to `shape[0] // 2` and records `z=volume_centre` | `roi_placement.py:118` |
-| 3 | Open the Ilastik input HDF5, **channel 0 only** | subsample (4, 2, 2) | The vesselness channels are derived from channel 0 and would pull the centroid towards whichever Sato scale happened to dominate | **On** | `roi_placement.py:133` |
-| 4 | Maximum-intensity projection along z | — | Collapses the stack to one plane so the lateral centre is not weighted by how many slices happen to contain tissue | **On** | `roi_placement.py:85` |
+| 3 | Open the Ilastik input HDF5, **channel 0 only**, over the box's own 160 slices | subsample (4, 2, 2) | The vesselness channels are derived from channel 0 and would pull the centroid towards whichever Sato scale happened to dominate. z is clamped first, so only the slices the box will occupy are read (open item 13) | **On** | `roi_placement.py` (`place_roi`) |
+| 4 | Maximum-intensity projection along z | — | Collapses the band to one plane so the lateral centre is not weighted by how many slices happen to contain tissue | **On** | `roi_placement.py:85` |
 | 5 | Threshold the projection | 99th percentile | The mean of a background-subtracted volume is dominated by near-zero voxels, which drags the centroid back to the geometric middle | **On** | `roi_placement.py:86` |
 | 6 | Intensity-weighted centroid of the survivors → y, x | — | Centres the box on signal rather than on the array — the entire reason placement is computed per specimen | **On**; falls back to the volume centre and records why | `roi_placement.py:92` |
 | 7 | Rescale the centroid back to full resolution | × 2 in y and x | The centroid was measured on a subsampled block; the crop needs full-resolution indices | **On** | `roi_placement.py:135` |
-| 8 | Clamp the centre so the box fits whole | 160³ | A box hanging over an edge would be silently cropped, making that specimen's sample smaller than the rest | **On, but never fires** — all six centres sit inside the legal window, smallest margin 12 voxels (WKY-C, x) | `roi_placement.py:142` |
+| 8 | Clamp the centre so the box fits whole | 160³ | A box hanging over an edge would be silently cropped, making that specimen's sample smaller than the rest | **On, but never fires** — all six centres sit inside the legal window, smallest margin 20 voxels (WKY-C, x) | `roi_placement.py:142` |
 | 9 | Centre → fractional offsets for `crop_roi` | — | `crop_roi` takes offsets from the volume centre as a fraction of each dimension, not absolute indices | **On** since open item 27: `carotid_image_to_model.py` places the ROI itself and passes `offsets_zyx` to `crop_roi`, which lands exactly on `bounds` | `roi_placement.py`, `carotid_image_to_model.py` (`_apply_roi_placement`) |
 | 10 | Crop the probability field to the ROI | 160³ voxels | Everything downstream counts things inside this box; a matched size is what makes those counts comparable across specimens | **On**: the drivers slice `RoiPlacement.bounds`, the network pipeline `crop_roi` with the step 9 offsets — the same box. The pipeline writes `roi_placement.json`, which the drivers check | `cb_h1_batch.py:84`, `carotid_image_to_model.py` |
 
@@ -228,36 +228,36 @@ So the peak slice is the brightest *region* of the stack, and the verdict string
 `"hump / tissue-extent dominated"` names one of three profile shapes — it is not the method by
 which the peak was found.
 
-*Lateral (y, x)* comes from `tissue_centroid_yx` on channel 0, subsampled (4, 2, 2):
+*Lateral (y, x)* comes from `tissue_centroid_yx` on channel 0, subsampled (4, 2, 2), over the 160
+slices the box occupies once z is clamped (open item 13; the whole stack before 2026-09-28):
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
 | 1 | Read channel 0, subsampled | (4, 2, 2) | A 4× stride in z is free — the next step collapses z anyway — and 2× laterally is 4× less data for a centroid stable to a voxel | **On** | `roi_placement.py:133` |
-| 2 | **Maximum-intensity projection** along z | — | Collapses the stack to one image, so a slice-rich region cannot outvote a bright one. Summing instead would weight by *how many* slices hold tissue, which is the axial question, already answered | **On** | `roi_placement.py:85` |
+| 2 | **Maximum-intensity projection** along z, over the box's z-band | — | Collapses the band to one image, so a slice-rich region cannot outvote a bright one. Summing instead would weight by *how many* slices hold tissue, which is the axial question, already answered | **On** | `roi_placement.py:85` |
 | 3 | Threshold the projection at the **99th percentile** | p99 | A plain centre of mass over a background-subtracted volume is mostly background, and background is spread evenly, so it drags the answer to the geometric middle — the exact failure this function exists to avoid | **On** | `roi_placement.py:86` |
-| 4 | Weighted centre of mass of the survivors | weights = intensity | Intended to let brighter survivors count for more | **On, but inert — see below** | `roi_placement.py:92` |
+| 4 | Weighted centre of mass of the survivors | weights = intensity | Intended to let brighter survivors count for more | **On; inert in four of six, 0.31 µm in WKY-A — see below** | `roi_placement.py:92` |
 | 5 | Rescale by the lateral stride | × 2, × 2 | The centroid was measured on a subsampled grid. z needs no rescale: the projection discarded it | **On** | `roi_placement.py:135` |
 
-**The intensity weighting does nothing on this data, and it is worth knowing why.**
+**The intensity weighting mostly does nothing on this data, and it is worth knowing why.**
 `preprocess_cb.py` normalises with `--saturated 0.02`, which clips the brightest 0.02% of voxels
-to exactly 1.0. The projection in step 2 takes a maximum over ~109 subsampled slices, so a column
-saturates if *any* voxel in it does — lifting the saturated share from 0.02% of voxels to
-**1.33–1.52% of the projection**. That is more than 1%, so the 99th percentile lands exactly on
-**1.0**, and the surviving set is precisely the saturated pixels, every one of them carrying the
-same weight. Measured across all six volumes, the weighted and unweighted centroids agree to
-**0.00 px**.
+to exactly 1.0. The projection in step 2 takes a maximum over the band's 40 subsampled slices, so a
+column saturates if *any* voxel in it does — lifting the saturated share from 0.02% of voxels to
+**0.63–1.33% of the projection**. Where that share is at least 1% (WKY-B, WKY-C, SHR-B, SHR-C) the
+99th percentile lands exactly on **1.0**, the surviving set is precisely the saturated pixels, and
+every one carries the same weight: weighted and unweighted centroids agree to **0.00 µm**. SHR-A
+(0.99%) cuts at 0.998 and still agrees to 0.00 µm. WKY-A (0.63%) cuts at **0.902**, and there the
+weighting moves the centroid by **0.31 µm**.
 
-The consequence is that the answer is set by *where the saturated specks are*, not by a graded
-centre of mass. In practice that is stable — the plateau spans percentiles ~98.5 to 100, so
-anything from 98.5 upwards returns the identical answer — but the stability comes from
-saturation, not from the weighting. Below the plateau the behaviour changes, and by a
-non-trivial amount: at the 90th percentile the centroid shifts by 8–70 µm (largest in SHR-C),
-against an ROI 298 µm across. The margin holding it on the plateau is only **0.33–0.52
-percentage points**, so a smaller `--saturated` in preprocessing would silently move ROI
-placement. That coupling is not obvious from either module.
+The consequence is that the answer is mostly set by *where the saturated specks are*, not by a
+graded centre of mass. Below the cutoff the behaviour changes: at the 90th percentile the centroid
+shifts by 3.7–68.1 µm (largest in SHR-C), against an ROI 298 µm across. So a smaller `--saturated`
+in preprocessing would move ROI placement, and the margin is thinner than it was: over the whole
+stack (the rule until open item 13) 1.33–1.53% of the projection saturated, so the cutoff sat on 1.0
+in all six. That coupling is not obvious from either module.
 
-**What it buys.** The centroid sits 37–123 µm from the geometric centre depending on specimen, so
-the step is doing real work — a centred box would be measurably elsewhere.
+**What it buys.** The centroid sits 27–127 µm (laterally) from the geometric centre depending on
+specimen, so the step is doing real work — a centred box would be measurably elsewhere.
 
 **Why a projection at all, when the peak slice is already known.** The two rules share no
 intermediate. `diagnose_z` reduced each slice to a single number, so the axial profile carries
@@ -271,19 +271,20 @@ step 1 is not a re-read — it is the only read.
 and for RAM it is: 25 MB against 402 MB for WKY-A's channel 0, at a cost of 6.9 µm in the answer.
 But the HDF5 chunks are `(32, 128, 128, 3)` and **gzip-compressed**, so a stride of 4 in z still
 lands in every chunk, and a chunk must be decompressed whole — all three channels — to yield any
-element of it. Measured on WKY-A, both orders, cold and warm: the strided read takes **4.88 s**
+element of it. Measured on WKY-A's whole stack (the read before open item 13), both orders, cold
+and warm: the strided read takes **4.88 s**
 and the full-resolution read **4.58 s**. Striding is very slightly *slower*. Treat the subsample
 as a memory decision, because that is the only thing it is.
 
-**The projection spans the whole stack, not the box.** Step 2 maximises over every slice, but the
-ROI is only 160 deep, so tissue that will never be inside the box still votes on where the box
-goes laterally. Restricting the projection to the 160 slices the ROI actually occupies moves the
-lateral centre by **7.1 µm (SHR-C) to 45.3 µm (SHR-B)** — up to 15% of the ROI's 298 µm width.
-Neither choice is obviously right: the whole-stack projection is the more stable of the two,
-because only over the full stack do enough columns saturate to put the cutoff on the plateau
-described above, whereas the band's cutoff falls to 0.899 in WKY-A. Using the single peak slice
-is clearly worse — the cutoff drops to 0.42–0.59 in every specimen, the surviving set shrinks by
-a third, and the answer moves 17–98 µm. Recorded as open item 13.
+**The projection spans the box's slices, not the whole stack (open item 13, closed).** Until
+2026-09-28 step 2 maximised over every slice, but the ROI is only 160 deep, so tissue that would
+never be inside the box still voted on where the box went laterally. `place_roi` now clamps z
+first and reads only the 160 slices the box occupies. That moved the lateral centres by **8.3 µm
+(SHR-C) to 45.1 µm (SHR-B)**, up to 15% of the ROI's 298 µm width; z is unchanged. The cost is the
+one noted above: fewer columns saturate over the band, so in WKY-A the cutoff falls to 0.90 and the
+intensity weighting takes effect. Using the single peak slice instead would be clearly worse — the
+cutoff drops to 0.42–0.59 in every specimen, the surviving set shrinks by a third, and the answer
+moves 17–98 µm (measured on the whole-stack rule, before the fix).
 
 **No vesselness is used, deliberately.** Channel 0 is the background-subtracted grayscale. The
 vesselness channels exist in the same file — multiscale **Sato**, fine at σ 1.0/1.4/2.0 px and
@@ -329,13 +330,27 @@ return tuple(
 `carotid_image_to_model.py` calls `place_roi` itself and sets `sub_volume_offset_zyx` to
 `offsets_zyx`; `crop_roi` then cuts exactly `bounds` (checked for every legal centre on every
 axis of the six shapes, `test_pipeline_roi.py`). It writes `roi_placement.json`, which the batch
-and every driver reading a batch output check against `place_roi`. **Before that fix it never got
-the offsets**, and the rest of this step describes the outputs made before it (2026-09-26 and
-earlier).
-`cb_h1_batch.py --stage run` passes `--roi-voxels 160 160 160` but no offsets, so the pipeline
-crops a 160³ box on the **array centre** (`extent // 2`), not on the placed centre. The cached
-batch masks confirm it: IoU with a centred crop 0.92 (WKY-A) and 0.83 (SHR-C), against 0.17 and
-0.15 with `placement.bounds`. The two boxes are 27–61% the same volume:
+and every driver reading a batch output check against `place_roi`. The batch outputs date from the
+2026-09-28 re-run, which is on these boxes (open items 27, 15, 17 and 13 together). Placed centres
+now, against the array centre:
+
+| Specimen | Array centre | Placed centre | Shift (µm, z/y/x) | Shared volume |
+|---|---|---|---|---|
+| WKY-A | 217, 228, 253 | 230, 224, 186 | +24, −7, −125 | 52% |
+| WKY-B | 217, 178, 175 | 106, 192, 178 | −207, +26, +6 | 27% |
+| WKY-C | 217, 157, 127 | 189, 158, 100 | −52, +2, −50 | 68% |
+| SHR-A | 247, 229, 172 | 157, 244, 158 | −168, +28, −26 | 36% |
+| SHR-B | 247, 241, 199 | 230, 308, 186 | −32, +125, −24 | 48% |
+| SHR-C | 247, 247, 190 | 164, 302, 186 | −155, +103, −7 | 31% |
+
+**Before that fix the pipeline never got the offsets**, and the rest of this step is the record of
+the outputs made before it (2026-09-26 and earlier; archived in `cb_h1_batch_2026-09-26/`).
+`cb_h1_batch.py --stage run` passed `--roi-voxels 160 160 160` but no offsets, so the pipeline
+cropped a 160³ box on the **array centre** (`extent // 2`), not on the placed centre. The cached
+batch masks confirmed it: IoU with a centred crop 0.92 (WKY-A) and 0.83 (SHR-C), against 0.17 and
+0.15 with `placement.bounds`. A fresh WKY-A mask on the placed box now has IoU 0.951 with a
+hysteresis mask cut at `bounds`, and 0.174 with the centred one. The pre-fix record, with the
+placed centres of the time (whole-stack projection, before open item 13):
 
 | Specimen | Array centre | Placed centre | Shift (µm, z/y/x) | Shared volume |
 |---|---|---|---|---|
@@ -346,11 +361,12 @@ batch masks confirm it: IoU with a centred crop 0.92 (WKY-A) and 0.83 (SHR-C), a
 | SHR-B | 247, 241, 199 | 230, 286, 176 | −32, +84, −43 | 55% |
 | SHR-C | 247, 247, 190 | 164, 298, 188 | −155, +95, −4 | 32% |
 
-So every network quantity from the batch (`per_edge_morphometry.csv`, `network_graph.pkl`, the
-H1 morphometry and figures, and the graph the H2 drivers load) is on the centred box. Everything
-below that slices with `bounds` is on the placed box.
+So before the re-run every network quantity from the batch (`per_edge_morphometry.csv`,
+`network_graph.pkl`, the H1 morphometry and figures, and the graph the H2 drivers load) was on the
+centred box, while everything that slices with `bounds` was on the placed box. Since the re-run
+both are on the placed box.
 
-*Step 10 — the crop the other drivers run.* Every CB driver except the batch pipeline run slices
+*Step 10 — the crop the other drivers run.* Every CB driver except the network pipeline slices
 the array directly with `RoiPlacement.bounds`:
 
 ```python
@@ -366,8 +382,11 @@ def bounds(self):
 `cb_h1_th_metrics.py:75`, `cb_h2_vtk.py:117`, `cb_h2_glomus_perfusion.py:84` and
 `cb_h2_hypoxic_fraction.py:92`. Integer arithmetic throughout, so the box is exactly 160 wide and
 exactly centred on the requested voxel. The three H2 drivers crop the TH channel this way and lay
-it over the batch graph from the centred box. The two frames differ by the shifts in the table
-above, so the glomus mask sits over vessels from another region (open item 27).
+it over the batch graph, which since the re-run is cut at the same `bounds`, so the two frames
+agree (`cb_h2_vtk.py --verify`: 83–88% of penetrating centreline inside the TH mask, 13–38% in the
+transposed control). Before the re-run the graph came from the centred box, the two frames differed
+by the shifts in the pre-fix table above, and the glomus mask sat over vessels from another region
+(open item 27, closed).
 
 **The two paths now agree.** `crop_roi` used to rebuild the centre from the fraction by truncating
 twice — `int()` on the offset, then `int()` again on the start. On an axis of **odd** extent,
@@ -389,8 +408,10 @@ Halves round down, so a zero offset still centres on `extent // 2`, matching `cl
 offset from `centre_to_offsets` lands exactly on its centre, for every legal centre of a 160-voxel
 box on each extent tested, odd and even, 160–521 (`test_preprocessing.py`, `test_roi_placement.py`).
 
-**No published number moved**: the batch run takes that path only with zero offsets and an even
-box, which the fix leaves where it was. The 2026-09-26 re-run (item 26) reproduced the old masks.
+**No published number moved** at the time: the batch run then took that path only with zero
+offsets and an even box, which the fix left where it was. The 2026-09-26 re-run (item 26)
+reproduced the old masks. Since open item 27 the batch takes the offset path, and this fix is what
+makes it land exactly on `bounds`.
 What changes is the fractional-offset path in `carotid_image_to_model.py`, which now crops where
 its offsets say. It also moves a centred crop one voxel up when the extent is even and the box size
 odd, because the old start `int(E/2 − s/2)` rounded down where `bounds` does not. Formerly open
@@ -431,20 +452,20 @@ median mask diameter falls in the capillary window, provided it lies below the f
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
-| 1 | Place the ROI and crop the probability volume | 160³ | The threshold has to be chosen on the same sub-volume it will be applied to | **On**, and load-bearing — a geometrically-centred box chooses differently for 3 of 6 | `cb_h1_batch.py:84` |
+| 1 | Place the ROI and crop the probability volume | 160³ | The threshold has to be chosen on the same sub-volume it will be applied to | **On** — a geometrically-centred box chose differently for 3 of 6 before the 2026-09-28 fixes; with them it chooses the same 0.95 in all six | `cb_h1_batch.py:84` |
 | 2 | Cut a mask at each threshold in the grid | `p ≥ t`, a **plain cut** | A cheap monotone family of masks to rank against each other; the sweep is a ranking, not an absolute measurement | **On** — inclusive since open item 17, as the pipeline's hysteresis is; the strict `p > t` before it dropped the level on the threshold | `threshold_selection.py` (`evaluate_threshold`) |
 | 3 | EDT → median and p90 diameter **on the skeleton voxels** | `sampling` = voxel size | Calibre is the criterion that selects, and EDT is bounded by the mask so it cannot read a neighbouring vessel. Read on the centreline, as §2.6 does, since open item 15; the median over every foreground voxel is printed as `d_vox` | **On** — the median decides; the p90 and `d_vox` are printed and never read | `threshold_selection.py` (`evaluate_threshold`) |
 | 4 | Label mask components, largest share, count above floor | 50 voxels | Kept for continuity with `prob_to_mask.py`; component statistics move, but with no knee to read a threshold off | **On** — the total and the share are printed; the above-floor count is neither printed nor read | `threshold_selection.py:200` |
 | 5 | Skeletonise the cut mask | raw, **no cleanup** | Endpoint density needs a centreline; there is no other way to count where the network has broken | **On** | `threshold_selection.py:210` |
 | 6 | Skeleton length from voxel count | × in-plane pitch | An endpoint count alone scales with network size, so it needs a per-length denominator to compare across thresholds | **On** | `threshold_selection.py:215` |
 | 7 | Count degree-1 voxels → endpoint density | per mm of skeleton | A network breaking into beads gains endpoints far faster than it gains components, so this detects fragmentation earlier | **On, but never decisive** — the veto it feeds does not bind on any of the six | `threshold_selection.py:219` |
-| 8 | Drop thresholds whose mask is empty | — | At the top of a sweep an empty mask is the expected outcome, not a failure worth reporting as one | **On, but never fires** — foreground is still 6.2–9.0% at 0.99 | `threshold_selection.py:251` |
+| 8 | Drop thresholds whose mask is empty | — | At the top of a sweep an empty mask is the expected outcome, not a failure worth reporting as one | **On, but never fires** — foreground is still 10.4–15.0% at 0.99 | `threshold_selection.py:251` |
 | 9 | Baseline = **median** endpoint density across the sweep | — | The minimum is a single noisy sample; using it would flag ordinary variation as fragmentation | **On** | `threshold_selection.py:276` |
-| 10 | Onset = lowest threshold above 1.5 × baseline | `FRAGMENTATION_TOLERANCE` | Marks where the centreline is demonstrably breaking, so every threshold at or above it can be vetoed | **On, but never binding** — onset is 0.95 or 0.97, always above the window's top | `threshold_selection.py:281` |
+| 10 | Onset = lowest threshold above 1.5 × baseline | `FRAGMENTATION_TOLERANCE` | Marks where the centreline is demonstrably breaking, so every threshold at or above it can be vetoed | **On, but never binding** — onset is 0.97 or 0.99, always above the window's top (0.95) | `threshold_selection.py:281` |
 | 11 | Calibre window = thresholds with median d in range | 4.0–7.0 µm | An external target rather than an internal optimum — a threshold tuned to a property of the data has no independent standard to be wrong against | **On** — but only the 4.0 µm bound can select; see below | `threshold_selection.py:283` |
 | 12 | Chosen = **highest** window threshold below onset | — | Calibre falls monotonically with threshold and the risk being traded is over-inclusion, which resistance carries as $r^{-4}$ | **On**, or a refusal | `threshold_selection.py:305` |
-| 13 | Repeat 1–12 per specimen; median of six, snapped to grid | 6 specimens | Per-specimen thresholds would absorb exactly the classifier-quality differences H1 is trying to measure | **On** — four specimens choose 0.90, two choose 0.85 | `cb_h1_batch.py:106` |
-| 14 | Cohort-split check on the per-specimen choices | — | A threshold that splits by group is a confound; reporting it makes that visible rather than hidden | **On**, reported — verdict is *no separation*, because SHR-A chose 0.90 with the WKYs | `cb_h1_batch.py:101` |
+| 13 | Repeat 1–12 per specimen; median of six, snapped to grid | 6 specimens | Per-specimen thresholds would absorb exactly the classifier-quality differences H1 is trying to measure | **On** — all six choose 0.95 (2026-09-28; four chose 0.90 and two 0.85 before open items 27, 15, 17 and 13) | `cb_h1_batch.py:106` |
+| 14 | Cohort-split check on the per-specimen choices | — | A threshold that splits by group is a confound; reporting it makes that visible rather than hidden | **On**, reported — verdict is *no separation*, because all six chose the same value | `cb_h1_batch.py:101` |
 
 **Steps 1 and 2: what is being cut, and what the cut discards.** These two look like
 bookkeeping. They are not.
@@ -458,10 +479,13 @@ volume = read_ilastik_probabilities(
 sub = volume[placement.bounds]          # cb_h1_batch.py:84
 ```
 
-**The threshold genuinely depends on where the box is.** Re-running the whole selection on a
-geometrically-centred box instead of the placed one changes the answer for half the cohort — WKY-B
-0.90 → 0.93, SHR-B 0.85 → 0.90, SHR-C 0.85 → 0.90. Row 1's stated rationale is not a formality: a
-threshold chosen on sparse margin is not the threshold this tissue needs.
+**Whether the threshold depends on where the box is.** It did: on the selector of the time
+(voxel median, strict cut), re-running the whole selection on a geometrically-centred box instead
+of the placed one changed the answer for half the cohort — WKY-B 0.90 → 0.93, SHR-B 0.85 → 0.90,
+SHR-C 0.85 → 0.90. With the current selector it does not: the centred boxes also choose 0.95 in all
+six (windows 0.90–0.95, or 0.93–0.95 in WKY-A and WKY-B; onsets 0.97 or 0.99). Row 1's rationale
+still stands, since the network is measured on the placed box, but on this data the choice of box
+no longer moves the threshold.
 
 **The ROI is dense by construction, and that has a consequence for the reader's own guard.**
 `read_ilastik_probabilities` refuses a channel whose **whole-volume** mean probability exceeds 0.5,
@@ -469,11 +493,11 @@ on the reasoning that such a channel must be the background class. Measured:
 
 | Specimen | Whole-volume mean | Mean inside the analysed ROI |
 |---|---|---|
-| WKY-A | 0.214 | **0.611** |
-| WKY-B | 0.219 | **0.541** |
-| WKY-C | 0.353 | **0.538** |
-| SHR-A | 0.216 | **0.575** |
-| SHR-B | 0.251 | **0.571** |
+| WKY-A | 0.214 | **0.615** |
+| WKY-B | 0.219 | **0.531** |
+| WKY-C | 0.353 | **0.541** |
+| SHR-A | 0.216 | **0.574** |
+| SHR-B | 0.251 | **0.553** |
 | SHR-C | 0.179 | **0.560** |
 
 Every ROI sits above the limit the guard treats as proof of a swapped channel; every whole volume
@@ -494,39 +518,48 @@ paying about a gigabyte and a second per specimen for no return.
 *Step 2 — the cut.* One line, and two properties worth knowing:
 
 ```python
-binary = np.asarray(probabilities) > float(threshold)   # threshold_selection.py:191
+binary = at_or_above(probabilities, threshold)   # threshold_selection.py (evaluate_threshold)
 if not binary.any():
     return None
 ```
 
-**Monotone, hence a ranking.** Because the comparison is a single global cut, $p > t_2 \subseteq
-p > t_1$ whenever $t_1 < t_2$ — verified nested at every step of the grid. That nesting is what
-licenses treating the sweep as a *ranking* over thresholds rather than a set of independent
-measurements, which is the argument that survives the fact that the pipeline actually builds a
-different (hysteresis) mask.
+`preprocessing.at_or_above` is `values >= threshold`, with the threshold cast to the array's float
+type so a float32 level k/100 compares equal to the threshold k/100.
+
+**Monotone, hence a ranking.** Because the comparison is a single global cut, $p \ge t_2 \subseteq
+p \ge t_1$ whenever $t_1 < t_2$ — nested at every step of the grid. That nesting is what licenses
+treating the sweep as a *ranking* over thresholds rather than a set of independent measurements,
+which is the argument that survives the fact that the pipeline actually builds a different
+(hysteresis) mask.
 
 **The field is quantised to hundredths, and every grid threshold lands on a level.** The ROI holds
-exactly **101 distinct probability values** — 0.00, 0.01, … 1.00, with zero deviation from $k/100$.
-Every value in the sweep grid is also a whole number of hundredths. So each threshold sits exactly
-*on* an occupied level, a whole level's worth of voxels lies on the boundary, and the strict `>`
-discards all of them. Two consequences follow exactly, not approximately:
+**101 probability levels** — 0.00, 0.01, … 1.00, each within 4 × 10⁻⁶ of $k/100$. (In WKY-C, SHR-B
+and SHR-C a few levels between 0.31 and 0.59 also carry a float32 neighbour one step above the
+level, so up to 108 distinct values; none is at a grid threshold, and the inclusive cut keeps them.)
+Every value in the sweep grid is also a whole number of hundredths, so each threshold sits exactly
+*on* an occupied level, and a whole level's worth of voxels lies on the boundary.
+
+**Until open item 17 the cut was strict, `p > t`, and discarded that whole level.** Two
+consequences followed exactly, not approximately:
 
 $$p > t \quad\equiv\quad p \ge t + 0.01 \qquad\text{and}\qquad p > 0.99 \quad\equiv\quad p = 1.0$$
 
-The nominal threshold is therefore always one level below the effective one, and **the top of the
-sweep is not measuring "probability above 0.99" at all — it is measuring the saturated set.** The
-tie mass is small at the bottom of the grid and large at the top:
+The nominal threshold was one level below the effective one, and **the top of the sweep was not
+measuring "probability above 0.99" at all — it was measuring the saturated set.** The tie mass is
+small at the bottom of the grid and large at the top (placed ROIs, 2026-09-28):
 
 | | 0.30 | 0.50 | 0.70 | 0.85 | 0.90 | 0.95 | 0.99 |
 |---|---|---|---|---|---|---|---|
-| WKY-A, fraction of ROI exactly at *t* | 0.54% | 0.50% | 0.62% | 0.97% | 1.33% | 2.23% | **5.92%** |
+| WKY-A, fraction of ROI exactly at *t* | 0.55% | 0.50% | 0.63% | 0.98% | 1.33% | 2.23% | **5.96%** |
 | SHR-C, fraction of ROI exactly at *t* | 0.67% | 0.61% | 0.68% | 0.97% | 1.23% | 1.87% | **4.16%** |
 
-At 0.99 that discarded mass is worth **66–67% of the mask the strict cut keeps** — using `≥` would
-make the mask two-thirds larger. At the thresholds that actually get chosen it is smaller but not
-negligible: +3.9% (WKY-A) and +4.7% (SHR-C) of mask volume at 0.90.
+At 0.99 that level is worth **66–67% of the mask the strict cut keeps**. At the frozen 0.95 it is
++8.9% (WKY-A) and +10.2% (SHR-C) of mask volume. The selector, the pipeline's hysteresis (flood and
+seed) and `cb_h1_th_metrics.py`'s vessel cut now all use `≥`; the TH cut, the entropy hysteresis
+(off) and `prob_to_mask.py` keep `>`.
 
-**And it changes the answer.** Re-running the selection with `≥` in place of `>`:
+**And it changed the answer.** Re-running the selection of the time (voxel-median calibre,
+whole-stack placement) with `≥` in place of `>`:
 
 | Specimen | with `p > t` | with `p ≥ t` |
 |---|---|---|
@@ -537,13 +570,11 @@ negligible: +3.9% (WKY-A) and +4.7% (SHR-C) of mask volume at 0.90.
 | SHR-B | 0.85 | **0.90** |
 | SHR-C | 0.85 | **0.90** |
 
-Three of six move. The frozen value is 0.90 either way, so no published number changes — but the
-group asymmetry below (formerly open item 16), where SHR-B and SHR-C alone run below their own calibre
-floor, **does not appear under `≥`**: all three SHR would choose 0.90 with everyone else. That
-asymmetry is therefore at least partly an artefact of which side of a quantisation level the cut
-falls on, not a property of the tissue. Open item 17.
+Three of six moved, and the group asymmetry of the old freeze (formerly open item 16, below), where
+SHR-B and SHR-C alone ran below their own calibre floor, did not appear under `≥`. With items 27,
+15 and 13 applied as well, all six now choose 0.95 (below). Open item 17, closed.
 
-**The selector does not measure the mask the pipeline builds.** Step 2 is a plain cut (`p > t`) and
+**The selector does not measure the mask the pipeline builds.** Step 2 is a plain cut (`p ≥ t`) and
 step 5 skeletonises it raw. The pipeline instead builds a *hysteresis* mask, closes it, prunes to
 the largest component and cleans the skeleton (§2.3, §2.4). So the calibre and fragmentation figures
 that choose the threshold are measured on a **thinner, noisier** object than the one that reaches
@@ -562,53 +593,57 @@ not a physical density.
 where component count climbs steeply and the largest component's share starts falling*. Measured on
 the six ROIs, both halves of it fail — but not in the way the module docstring claimed, and the
 docstring's figures are from a differently-placed sub-volume that predates §2.1. The real numbers,
-for WKY-C:
+for WKY-C (placed ROI, `p ≥ t`, 2026-09-28):
 
 | Threshold | Mask components | Largest share | Components > 50 vox | ep/mm |
 |---|---|---|---|---|
-| 0.30 | 753 | 0.9980 | 6 | 3.10 |
-| 0.50 | 572 | 0.9972 | 21 | 5.13 |
-| 0.70 | 405 | 0.9899 | 11 | 5.13 |
-| 0.90 | 400 | 0.9917 | 10 | 5.17 |
-| 0.95 | 640 | 0.9925 | 11 | 7.83 |
-| 0.99 | 2,700 | 0.9239 | 32 | 32.57 |
+| 0.30 | 751 | 0.9974 | 6 | 3.12 |
+| 0.50 | 566 | 0.9966 | 21 | 5.11 |
+| 0.70 | 422 | 0.9966 | 15 | 5.32 |
+| 0.90 | 364 | 0.9878 | 14 | 5.44 |
+| 0.95 | 541 | 0.9868 | 23 | 6.92 |
+| 0.99 | 1,379 | 0.9784 | 20 | 15.96 |
 
-The share **does** fall — from 0.9980 to 0.9239, and in all six specimens, contradicting the
-docstring's claim that it never does and is *higher* at 0.99 than at 0.70. Component count is not
-flat either: it is U-shaped, bottoming near 0.50–0.70 and then climbing 6.7-fold. What is true is
-that neither has a **knee**. Component count accelerates smoothly — successive ratios 1.28, 1.14,
-1.14, 1.26, 1.42, 1.67, 2.81 — so "just above where it climbs steeply" names no particular
-threshold. And the share only moves once the network has already shattered: reading a threshold off
-where the share starts falling lands at 0.95–0.97, by which point endpoint density has already
-doubled. Component statistics do not fail to move; they move **too late**, and without a feature
-sharp enough to read a value from. That is a property of the data's topology — a vascular bed
-percolates, and a percolating mask stays connected long after its centreline has begun beading —
-not of any one classifier.
+The share **does** fall — from 0.9974 to 0.9784 here, and lower at 0.99 than at 0.30 in all six,
+contradicting the docstring's claim that it never does and is *higher* at 0.99 than at 0.70.
+Component count is not flat either: it is U-shaped, bottoming at 0.85 (330) and then climbing
+4.2-fold. What is true is that neither has a **knee**. Component count changes smoothly — successive
+ratios across the grid 0.75, 0.75, 0.87, 0.90, 1.10, 1.10, 1.36, 1.39, 1.83 — so "just above where it
+climbs steeply" names no particular threshold. And the share steps down once, at 0.80, then sits
+near 0.987 until the network is already breaking at 0.97–0.99. Component statistics do not fail to
+move; they move **without a feature sharp enough to read a value from**, or too late. That is a
+property of the data's topology — a vascular bed percolates, and a percolating mask stays connected
+long after its centreline has begun beading — not of any one classifier.
 
 **What actually selects, measured on all six.** Running `cb_h1_batch.py --stage threshold` over the
-real ROIs reproduces the frozen 0.90, but the route to it is narrower than the twelve-step table
-suggests:
+placed ROIs (2026-09-28, centreline calibre, `p ≥ t`) gives the frozen 0.95, but the route to it is
+narrower than the fourteen-step table suggests:
 
-| Specimen | Calibre window | Onset | Own choice | d at 0.90 |
+| Specimen | Calibre window | Onset | Own choice | d at 0.95 |
 |---|---|---|---|---|
-| WKY-A | 0.80–0.90 | 0.95 | **0.90** | 5.27 µm |
-| WKY-B | 0.70–0.90 | 0.97 | **0.90** | 5.27 µm |
-| WKY-C | 0.70–0.90 | 0.95 | **0.90** | 5.27 µm |
-| SHR-A | 0.70–0.90 | 0.95 | **0.90** | 5.27 µm |
-| SHR-B | 0.70–0.85 | 0.97 | **0.85** | 3.73 µm |
-| SHR-C | 0.70–0.85 | 0.95 | **0.85** | 3.73 µm |
+| WKY-A | 0.93–0.95 | 0.97 | **0.95** | 5.27 µm |
+| WKY-B | 0.90–0.95 | 0.99 | **0.95** | 5.27 µm |
+| WKY-C | 0.90–0.95 | 0.97 | **0.95** | 5.27 µm |
+| SHR-A | 0.90–0.95 | 0.97 | **0.95** | 5.27 µm |
+| SHR-B | 0.90–0.95 | 0.99 | **0.95** | 5.27 µm |
+| SHR-C | 0.85–0.95 | 0.97 | **0.95** | 5.27 µm |
 
-**The fragmentation veto never binds.** In every specimen the onset (0.95 or 0.97) sits above the
-top of the calibre window (0.90 or 0.85), so no candidate is ever removed by it. Re-running the
-selection with the constraint switched off entirely returns the identical six choices. Steps 5–7
-and 9–10 — skeletonisation, length, endpoint density, baseline, onset — are the expensive half of
-the sweep, and on this data they change nothing. They are a guard that has not yet been needed, in
-the same sense as the ROI clamp in §2.1. Keeping them is still right: they are the only thing
-standing between the calibre rule and a threshold that meets calibre by shredding the network.
+At 0.97 the centreline median falls to 3.73 µm in every specimen, below the window's 4.0 µm floor,
+so the window stops at 0.95 everywhere. (Before the re-run, on the voxel median and strict cut,
+four chose 0.90 and two 0.85, with onsets at 0.95 or 0.97.)
 
-**The median diameter is atomic, and the window admits three values.** The EDT of a binary volume on
-this near-cubic grid can only take values $\text{pitch}\times\sqrt{k}$, so a *median* over foreground
-voxels lands on one of a few levels. Across the whole 6 × 10 sweep it visits nine:
+**The fragmentation veto never binds.** In every specimen the onset (0.97 or 0.99) sits above the
+top of the calibre window (0.95), so no candidate is ever removed by it. Re-running the selection
+with the constraint switched off entirely returns the identical six choices. Steps 5–7 and 9–10 —
+skeletonisation, length, endpoint density, baseline, onset — are the expensive half of the sweep,
+and on this data they change nothing at the 4.0 µm floor. They are a guard that has not yet been
+needed, in the same sense as the ROI clamp in §2.1. Keeping them is still right: they are the only
+thing standing between the calibre rule and a threshold that meets calibre by shredding the
+network, and with a floor at or below 3.73 µm they would bind in four of six (below).
+
+**The median diameter is atomic, and the window admits two values.** The EDT of a binary volume on
+this near-cubic grid can only take values $\text{pitch}\times\sqrt{k}$, so a *median* over
+skeleton voxels lands on one of a few levels. Across the whole 6 × 10 sweep it visits ten:
 
 | $d$ (µm) | radius / voxel | $\sqrt{k}$ | inside 4.0–7.0? |
 |---|---|---|---|
@@ -616,14 +651,16 @@ voxels lands on one of a few levels. Across the whole 6 × 10 sweep it visits ni
 | 5.27 | 1.412 | $\sqrt{2}$ | **yes** |
 | 6.46 | 1.731 | $\sqrt{3}$ | **yes** |
 | 7.46 | 1.999 | $\sqrt{4}$ | no — above the ceiling |
-| 8.34, 9.14, 10.56 | 2.24–2.83 | $\sqrt{5}, \sqrt{6}, \sqrt{8}$ | no |
+| 8.34, 9.13, 10.56, 11.19, 11.80, 13.45 | 2.24–3.60 | $\sqrt{5}, \sqrt{6}, \sqrt{8}, \sqrt{9}, \sqrt{10}, \sqrt{13}$ | no |
 
 So "median diameter in the 4–7 µm capillary window" is, on this grid, exactly the statement *the
-median foreground voxel's inscribed radius is $\sqrt2$ or $\sqrt3$ voxels*. The selection turns on a
-single quantisation step — where the median falls from $\sqrt2$ to $\sqrt1$ — not on a smooth
-approach to a physiological target. That does not make it wrong, but it does mean the window's
-apparent precision is not real: any lower bound between 3.74 and 5.27 µm gives the identical six
-choices, and 3.70 gives a different answer for every specimen.
+median centreline voxel's inscribed radius is $\sqrt2$ or $\sqrt3$ voxels*. The selection turns
+on a single quantisation step — where the median falls from $\sqrt2$ to $\sqrt1$, between 0.95
+and 0.97 in all six — not on a smooth approach to a physiological target. That does not make it
+wrong, but it does mean the window's apparent precision is not real: any lower bound from 3.74 to
+5.27 µm gives the identical six choices. At 3.73 µm or below, WKY-B and SHR-B move to 0.97 and the
+other four are held at 0.95 only by the fragmentation veto; above 5.27 µm four move to 0.90, SHR-C
+to 0.85, and WKY-A refuses.
 
 **Only the lower bound can select.** Median calibre falls monotonically with threshold, and step 12
 takes the **highest** threshold in the window. The upper bound therefore only ever prunes from the
@@ -633,24 +670,27 @@ force a refusal. Of the two numbers in `CAPILLARY_DIAMETER_RANGE_UM`, **4.0 sele
 inert** — which matters for the sensitivity analysis the constant's own comment calls for, because
 sweeping the width of the window symmetrically tests one live parameter and one dead one.
 
-**The selector's diameter is not the calibre §2.6 reports.** Step 3 takes the median of `edt[binary]`
-— every foreground voxel. §2.6 samples the EDT **on the centreline** and takes a per-edge median.
-These are different statistics on the same transform: a volume-weighted median is dragged down by
-the surface shell, which is most of a thin mask. Measured side by side on the same masks, the
-voxel-weighted median runs 0.63–1.00 × the centreline median:
+**The selector's diameter is now the statistic §2.6 reports (open item 15, closed).** Until
+2026-09-28 step 3 took the median of `edt[binary]` — every foreground voxel — while §2.6 samples
+the EDT **on the centreline**. A volume-weighted median is dragged down by the surface shell, which
+is most of a thin mask, and it read 0.63–1.00 × the centreline median on the same masks. The
+selector now reads 2 × EDT at the skeleton voxels; the voxel median is still printed, as `d_vox`,
+and selects nothing. Side by side on the placed ROIs:
 
-| Threshold | WKY-C voxel-weighted | WKY-C centreline | SHR-A voxel-weighted | SHR-A centreline |
+| Threshold | WKY-C `d_vox` | WKY-C centreline | SHR-A `d_vox` | SHR-A centreline |
 |---|---|---|---|---|
-| 0.70 | 6.46 µm | 8.35 | 6.46 | 8.34 |
+| 0.70 | 6.46 µm | 9.13 | 6.46 | 8.35 |
 | 0.80 | 5.28 | 8.34 | 5.28 | 7.46 |
-| 0.90 | 5.27 | 6.46 | 5.27 | 5.28 |
-| 0.95 | 3.73 | 3.73 | 3.73 | 3.73 |
+| 0.90 | 5.27 | 6.46 | 5.27 | 6.46 |
+| 0.93 | 3.73 | 5.27 | 3.73 | 5.27 |
+| 0.95 | 3.73 | 5.27 | 3.73 | 5.27 |
+| 0.97 | 3.73 | 3.73 | 3.73 | 3.73 |
 
-At the chosen 0.90 the selector reads 5.27 µm while §2.6 reports a 6.37 µm median EDT diameter on
-the delivered mask. Part of that gap is the mask (plain cut here, hysteresis there — already noted
-above) and part is the estimator. Neither is an error, but the 4–7 µm window is an external
-*capillary diameter* target, and the quantity it is compared against is not a vessel diameter in the
-sense §2.6 means. Open item 15.
+On `d_vox` the selection would pick 0.93 in WKY-A and 0.90 in the other five, so item 15 is what
+moved the freeze from 0.90 to 0.95. At the chosen 0.95 the selector reads 5.27 µm, while
+§2.6's per-edge medians on the delivered mask run 5.87–7.46 µm by specimen. The estimator is the
+same; what is left of the gap is the mask (plain cut here, hysteresis there — noted above) and a
+per-voxel against a per-edge median.
 
 **Why the highest, not the middle.** Calibre falls monotonically with threshold, and the risk being
 traded is over-inclusion: the lower the threshold, the fatter the vessel, and resistance carries
@@ -665,34 +705,32 @@ than it gains components.
 picking something: no threshold reaches capillary calibre at all, or every threshold at capillary
 calibre is at or beyond the fragmentation onset.
 
-**One threshold for all six, and where 0.90 came from.** The selector runs *per specimen*, but no
+**One threshold for all six, and where 0.95 came from.** The selector runs *per specimen*, but no
 specimen runs at its own choice. `cb_h1_batch.py --stage threshold` sweeps the grid
 `[0.30, 0.50, 0.70, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97, 0.99]`, selects per specimen, then takes
-the **median of the six selections and snaps it to the nearest grid value**. Measured: four
-specimens choose 0.90 and two choose 0.85, median 0.875, snapped to the frozen **0.90**. The
-rationale is in the driver: per-specimen thresholds would absorb exactly the classifier-quality
-differences that H1 is trying to measure, turning a confound into an apparently clean result. The
-per-specimen choices are still reported and passed to `assess_cohort_split`, so a threshold that
-splits by group is visible rather than hidden.
+the **median of the six selections and snaps it to the nearest grid value**. Measured 2026-09-28:
+all six choose 0.95, so the frozen value is **0.95** (`cb_settings.FROZEN_THRESHOLD`). Before open
+items 27, 15, 17 and 13, four chose 0.90 and two 0.85, median 0.875, snapped to 0.90. The rationale
+is in the driver: per-specimen thresholds would absorb exactly the classifier-quality differences
+that H1 is trying to measure, turning a confound into an apparently clean result. The per-specimen
+choices are still reported and passed to `assess_cohort_split`, so a threshold that splits by group
+is visible rather than hidden.
 
-**And the split test passes — but the freezing is still group-asymmetric.** `assess_cohort_split`
-returns *no separation*, correctly: SHR-A chose 0.90 alongside all three WKYs, so the cohorts
-overlap. What the test cannot see is what freezing then *does*. The two specimens run above their
-own choice are both SHR, and at 0.90 their median calibre is 3.73 µm — below the 4.0 µm floor the
-selector itself enforces. So **0 of 3 WKY and 2 of 3 SHR** are analysed at a threshold their own
-calibre criterion would have rejected. The cohort-split check is applied to the *inputs* of the
-freeze, not to its consequences. Foreground fraction at 0.90 does still overlap (WKY mean 0.291,
-SHR 0.278), which is the reassuring part, and the direction is conservative — a higher threshold
-gives a thinner mask and thinner vessels, so it works against finding SHR vessels wider. Open
-item 17, which absorbed the former item 16.
+**The split test passes, and the old freeze asymmetry is gone.** `assess_cohort_split` returns *no
+separation*: all six chose the same value, so no specimen runs above or below its own choice.
+Foreground fraction at 0.95 overlaps between groups (WKY 0.205–0.274, mean 0.229; SHR 0.201–0.231,
+mean 0.215). Under the 0.90 freeze the two specimens run above their own choice were both SHR, at a
+median calibre of 3.73 µm — below the 4.0 µm floor the selector enforces — so 0 of 3 WKY and 2 of 3
+SHR were analysed at a threshold their own calibre criterion rejected. That asymmetry came from the
+strict cut and did not survive `≥` (formerly open item 16, merged into 17, now closed).
 
 **The hysteresis pair follows the frozen value.** `--stage run` passes the frozen threshold as
-`--hysteresis-low` only. A low given alone always takes low + `HYSTERESIS_HIGH_OFFSET` (0.05) as its
-seed (`_apply_hysteresis_overrides`), so a frozen 0.90 gives a 0.90 / 0.95 pair. Since open item 1
-the `PreprocessingConfig` default is that same pair, read from `cb_settings.HYSTERESIS_LOW` /
-`HYSTERESIS_HIGH`, so a direct run without the flag builds the batch mask (checked on WKY-A: mask,
-skeleton, graph and `per_edge_morphometry.csv` identical). A seed at or below the flood threshold
-raises.
+`--hysteresis-low` only. A low given alone takes low + `HYSTERESIS_HIGH_OFFSET` (0.05) as its seed,
+capped at `HYSTERESIS_SEED_CAP` (0.999) (`_apply_hysteresis_overrides`), so a frozen 0.95 gives a
+**0.95 / 0.999** pair. On a field quantised to hundredths the inclusive seed `p ≥ 0.999` is exactly
+the saturated set `p == 1.0`. `PreprocessingConfig` reads the same pair from
+`cb_settings.HYSTERESIS_LOW` / `HYSTERESIS_HIGH`, so a direct run without the flag builds the batch
+mask. A seed at or below the flood threshold raises. (The pair was 0.90 / 0.95 until 2026-09-28.)
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -700,8 +738,8 @@ raises.
 | `FRAGMENTATION_TOLERANCE` | 1.5× | Endpoint-density multiple defining onset; the veto it produces never binds on these six |
 | `MIN_COMPONENT_VOXELS` | 50 | Floor for `mask_components_above_floor`, which is computed and then neither printed nor read |
 
-> **At a glance** — highest intact threshold in a 4–7 µm calibre window · fragmentation onset at
-> 1.5× baseline endpoint density · `threshold_selection.py:256`, `threshold_selection.py:163` ·
+> **At a glance** — highest intact threshold in a 4–7 µm centreline-calibre window, `p ≥ t` · all
+> six choose 0.95 · fragmentation onset at 1.5× baseline endpoint density · `threshold_selection.py:256`, `threshold_selection.py:163` ·
 > `tests/test_threshold_selection.py`
 
 ---
@@ -740,32 +778,39 @@ why the pre-threshold filters are off, not to describe a step.
 
 ### 2.3.1 The operative path: plain hysteresis
 
-Two thresholds, `low = 0.90` and `high = 0.95` (`cb_settings.HYSTERESIS_LOW` / `HYSTERESIS_HIGH`),
+Two thresholds, `low = 0.95` and `high = 0.999` (`cb_settings.HYSTERESIS_LOW` / `HYSTERESIS_HIGH`),
 applied as a connectivity rule rather than a cut:
 
-1. **Seed.** Every voxel with $p > 0.95$ is a seed.
-2. **Grow.** Every voxel with $p > 0.90$ is a candidate.
-3. **Keep** only the candidates that are connected to at least one seed.
+1. **Seed.** Every voxel with $p \ge 0.999$ is a seed — on this field, exactly the saturated voxels, $p = 1.0$.
+2. **Grow.** Every voxel with $p \ge 0.95$ is a candidate.
+3. **Keep** only the candidates that are face-connected to at least one seed.
 
-A voxel at p = 0.92 is therefore kept or discarded *depending on its neighbours* — kept if it hangs
+A voxel at p = 0.97 is therefore kept or discarded *depending on its neighbours* — kept if it hangs
 off a confident core, discarded if it is isolated. This is the whole point: a single global cut at
-0.95 severs vessels wherever the classifier dipped, while a single cut at 0.90 admits every
+1.0 severs vessels wherever the classifier dipped, while a single cut at 0.95 admits every
 scattered speck. Hysteresis takes the connected interior of the first and the extent of the second.
+
+The comparisons are inclusive since open item 17 (`preprocessing.at_or_above`); the hysteresis is
+the module's own, face-connected like skimage's `apply_hysteresis_threshold` and identical to it on
+a field with no ties. Before that fix both comparisons were strict, and the field is quantised to
+0.01, so a voxel exactly at `low` was not a candidate and one exactly at `high` did not seed.
 
 **Why this matters more here than in a typical image.** Classifier confidence falls at vessel
 *walls* — the boundary voxels are genuinely mixed. A hard cut therefore erodes every vessel from
 the outside in, and resistance carries that as $d^{-4}$. Hysteresis lets the mask grow out to the wall
 provided it started somewhere confident.
 
-**The band is narrow — 0.90 to 0.95.** With only 0.05 of separation, the growth step is a modest
-dilation of the seed set rather than a long reach, so the mask is closer to a plain cut at 0.95
-than the two numbers suggest. Widening the band would recover more wall at the cost of admitting
-more speckle. Both comparisons are strict, and the field is quantised to 0.01 (open item 17), so a
-voxel at exactly 0.95 does not seed.
+**The band is narrow — 0.95 to 0.999.** The growth step is a modest dilation of the saturated core
+rather than a long reach, so the mask is close to a plain cut at 0.95 wherever that cut touches a
+saturated voxel. Widening the band would recover more wall at the cost of admitting more speckle.
+Measured on WKY-A: the hysteresis mask on the placed box has IoU 0.951 with the pipeline's cached
+mask; the plain cut at 0.95 keeps 27.4% of the ROI (threshold stage) and the pipeline mask 28.9%
+after hole filling.
 
 **Where the values came from.** `low` is the frozen threshold of §2.2: the median of the six
-per-specimen selections on the placed ROIs, snapped to the sweep grid. `high` is `low` + 0.05. This is
-the band every H1 run used. The tuner cannot choose it: the preprocessing objective is
+per-specimen selections on the placed ROIs, snapped to the sweep grid. `high` is `low` + 0.05,
+capped at 0.999 (`HYSTERESIS_SEED_CAP`). This is the band every H1 run used since 2026-09-28
+(0.90 / 0.95 before). The tuner cannot choose it: the preprocessing objective is
 `1 − mean probability inside the mask`, which rises monotonically across the whole plausible band,
 so its argmin is always the top of the search range rather than a property of the data. The yield
 cliff meant to stop it never engages — probability yield is still 0.071 at `low = 0.85`, well above
@@ -802,7 +847,7 @@ run on the six placed ROIs with the pooled classifier, chose higher values; thos
 | 7 | Morphological closing | radius 0 | Off — same objection: any operator whose support matches the structure width deletes the structure | Off | `carotid_image_to_model.py:692` |
 | 8 | Probability smoothing | sigma 0.0 | Off — blurring the field moves the wall the threshold lands on, which resistance carries as $d^{-4}$ | Off | `carotid_image_to_model.py:696` |
 | 9 | Joint probability–entropy hysteresis | core 0.6 / max 0.95 | Would gate seeding and growth on classifier confidence as well as probability; the guard keeps it out of reach at 2 classes | **Off** — needs a 3-class classifier | `carotid_image_to_model.py:710` |
-| 10 | Plain hysteresis threshold | 0.90 / 0.95 (`cb_settings`; config 0.65 / 0.75 until open item 1) | Confidence legitimately falls at vessel walls, so a single hard cut erodes every vessel from the outside in | **On** | `carotid_image_to_model.py:710` |
+| 10 | Plain hysteresis threshold, `p ≥` both bounds | 0.95 / 0.999 (`cb_settings`; 0.90 / 0.95 until 2026-09-28; config 0.65 / 0.75 until open item 1) | Confidence legitimately falls at vessel walls, so a single hard cut erodes every vessel from the outside in | **On** | `carotid_image_to_model.py:710` |
 | 11 | Hole filling, 3D | — | A lumen voxel the classifier missed would otherwise stay a permanent hole and shrink the EDT inscribed radius through it | **On** | `carotid_image_to_model.py:720` |
 | 12 | Un-pad | 10 voxels in z | The pad is scaffolding; leaving it would extend every boundary vessel by 10 slices of replicated probability | **On** | `carotid_image_to_model.py:722` |
 
@@ -1083,7 +1128,7 @@ junction-proximity exclusion of 3.73 µm.
 | 6 | Drop samples outside the mask or at radius 0 | — | A centreline point that rounds to outside the mask has no inscribed radius to report | **On** | `automated.py:1316` |
 | 7 | Flag which of an edge's two ends are junctions | — | The trim must fire only at ends that actually abut a junction — trimming a free terminal would discard real vessel | **On** | `automated.py:1323` |
 | 8 | Trim samples within the exclusion of a junction end | 3.73 µm | Within about one radius of a bifurcation the EDT returns the junction's inscribed sphere rather than the vessel's, biasing calibre upward | **On** | `automated.py:1327` |
-| 9 | If nothing survives, keep the untrimmed median and tag it | — | Dropping segments shorter than the exclusion would delete short inter-junction capillaries and bias the distribution towards long vessels | **On** — `untrimmed_too_short`, 61% of edges | `automated.py:1338` |
+| 9 | If nothing survives, keep the untrimmed median and tag it | — | Dropping segments shorter than the exclusion would delete short inter-junction capillaries and bias the distribution towards long vessels | **On** — `untrimmed_too_short`, 35.5% of edges at 0.95 (61% on the 0.90 centred-box outputs) | `automated.py:1338` |
 | 10 | Per-edge diameter = 2 × **median** surviving radius | — | Robust against a single local bottleneck or bulge setting the calibre of the whole edge | **On** | `automated.py:1345` |
 | 11 | Refuse if any edge fell back to a synthetic diameter | `MAX_SYNTHETIC_FRACTION_EDT = 0.0` | EDT has no legitimate per-edge failure mode on a mask that covers the vessel, so any fallback is a defect rather than an expected shortfall | **On**, raises | `poiseuille.py:13` |
 | 12 | Resistance from the assigned diameter | Hagen–Poiseuille | Converts the measured geometry into the one quantity the flow solve consumes | **On** | `poiseuille.py:160` |
@@ -1093,8 +1138,9 @@ single local bottleneck or bulge cannot set the edge's calibre. The full sample 
 `edt_diameter_samples_um`, so the within-edge spread stays recoverable.
 
 **The trim is recorded, not just applied.** Every edge carries `edt_junction_trim` as one of
-`trimmed`, `no_junction`, `untrimmed_too_short` or `not_applied`. This is what makes the 61%
-figure below countable rather than an estimate.
+`trimmed`, `no_junction`, `untrimmed_too_short` or `not_applied`. This is what makes the untrimmed
+share in step 9 countable rather than an estimate: 64.2% `trimmed`, 35.5% `untrimmed_too_short`,
+0.3% `no_junction` over the 42,211 edges of the 2026-09-28 batch.
 
 **Step 2 runs even though step 11 forbids its output.** The branch-order diameter table is built on
 every run, then never read under `edt_radius` — and if it ever were read, the zero-tolerance guard
@@ -1147,7 +1193,7 @@ calibre step.
 
 **Fabricated calibre is refused, not warned about.** `MAX_SYNTHETIC_FRACTION_EDT = 0.0`. EDT has no
 legitimate per-edge failure mode on a mask that covers the vessel — 100% measured provenance was
-observed across 34,900 edges — so any fallback is a defect rather than an expected shortfall. FWHM
+observed across 34,900 edges, and across all 42,211 of the 2026-09-28 re-run — so any fallback is a defect rather than an expected shortfall. FWHM
 is exempt by default, because Gaussian fitting genuinely fails on individual edges of a probability
 field; the fraction is still reported.
 
@@ -1213,16 +1259,16 @@ main pipeline and in every H2 driver. `cb_settings.BOUNDARY_AXIS` and
 > **Open item 2, closed.** Until 2026-09-27 the main pipeline ran the band rule
 > (`select_boundary_terminal_nodes`, axis 0, `edge_percent` / `end_percent` = 25 / 25) while the
 > H2 drivers ran the face rule on axis 1. On the six batch graphs the band rule put pressure on
-> 216–399 terminals per specimen; the face rule puts it on 16–37 (WKY-A 126 + 119 → 18 + 9). The
+> 216–399 terminals per specimen; the face rule put it on 16–37 (WKY-A 126 + 119 → 18 + 9), and on
+> the 2026-09-28 graphs puts it on 27–44 (WKY-A 23 + 21). The
 > pipeline now calls `select_boundary_terminal_nodes_by_face` with the `GraphConfig` values, so on
 > the same graph it picks exactly the nodes the H2 drivers pick.
 >
 > **No published number moved.** β₁, calibre, length and tortuosity are fixed before boundaries are
 > chosen. The pipeline outputs that depend on the inlets are the `branch_order` column of
 > `per_edge_morphometry.csv` (§2.7), the pipeline's own flows and rheology, `model_results.md` and
-> the Tier 3 `*_perfusion.vti`. No H1 or H2 script reads any of them. The files under
-> `examples/outputs/cb_h1_batch/` still carry band-rule values until the batch is re-run with items
-> 27, 13, 15 and 17.
+> the Tier 3 `*_perfusion.vti`. No H1 or H2 script reads any of them. The batch outputs of the
+> 2026-09-28 re-run (items 27, 13, 15 and 17) carry face-rule values.
 >
 > **A guard came with it.** The face rule measures terminals against the faces of the shape it is
 > given, so `_check_graph_fits_frame` raises if a node lies more than one voxel outside that shape.
@@ -1276,21 +1322,27 @@ of the shunt ratio per specimen:
 
 | Rule and parameter range | Ratio spread |
 |---|---|
-| Band, axis 1, width 10/25/40% | 75.8% |
-| **Face, axis 1, tolerance 1/2/4 voxels** | **13.3%** |
+| Band, axis 1, width 10/25/40% | 73.9% |
+| **Face, axis 1, tolerance 1/2/4 voxels** | **8.9%** |
 
-A 5.7-fold reduction, and it comes from the *parameter*, not the axis. The band width has no
+Re-measured on the 2026-09-28 networks (`cb_h2_boundary_selection.py`; 75.8% and 13.3% on the
+centred boxes before). An 8.3-fold reduction, and it comes from the *parameter*, not the axis. The band width has no
 principled value, so its whole plausible range is live. The face tolerance is anchored to the voxel
 size — one voxel means "on the face" — and the other values exist only to show the answer does not
 depend on it.
 
 > **Comparing at a fixed second parameter is misleading, and initially pointed the other way.**
-> Axis spread alone is 28.4% for the band rule against 31.5% for the face rule, which flatters the
-> band rule by holding the parameter that damages it at its default. Both parameters have to move.
+> Axis spread alone is 34.2% for the band rule against 34.9% for the face rule (28.4% and 31.5%
+> before the re-run), which flatters the band rule by holding the parameter that damages it at its
+> default. Both parameters have to move: total spread 113.7% (band) against 44.9% (face).
 
-**Why axis 1.** Not anatomy — availability. It is the only axis solvable in all six specimens: axis 0
-has no outlet terminal in SHR-A, and axis 2 has no inlet terminal in SHR-C. That is a selection
-criterion, and a property of these graphs rather than a general rule.
+**Why axis 1.** Not anatomy — availability. On the centred-box graphs it was the only axis solvable
+in all six specimens: axis 0 had no outlet terminal in SHR-A, and axis 2 no inlet terminal in
+SHR-C. That was a selection criterion, and a property of those graphs rather than a general rule.
+**On the 2026-09-28 graphs all three axes are solvable in all six**, so availability no longer
+singles out axis 1; it stays because it is pinned in `cb_settings.BOUNDARY_AXIS` and every H2
+number uses it. *Needs review:* whether the axis choice should be re-argued or its spread across
+axes reported.
 
 **The mask's virtual padding is still on axis 0.** Under `caged`, `_apply_preprocessing_filters`
 pads 10 slices on axis 0 only (edge mode) before filtering and strips them after, so vessel ends on
@@ -1309,7 +1361,7 @@ The low face wins; the ambiguity is not silently doubled into both sets.
 `universal_sink` adds them all as outlets; `robin_resistance` tags them for a distal resistance.
 
 > **At a glance** — face-crossing rule, axis 1, 1-voxel tolerance, raises on an empty face ·
-> 86% of degree-1 nodes are interior; ratio spread 13.3% vs 75.8% · `boundaries.py:106`,
+> 86% of degree-1 nodes are interior; ratio spread 8.9% vs 73.9% · `boundaries.py:106`,
 > `boundaries.py:208` · `tests/test_boundary_faces.py`
 
 ---
@@ -1391,8 +1443,8 @@ R &= \frac{128\,\mu_\text{app} L}{\pi d^{4}}
 > **The explanation for §13.5 held.** Absolute perfusion there was 20–100× low, and reaching
 > 500 µm/s seemed to need about 3,257 mmHg against the 40 mmHg used. This block proposed the inflated
 > resistance as the cause. Re-derived (`examples/cb_h2_absolute_perfusion.py`), the flow-weighted
-> velocity rose 240–343× per specimen, to 979–3,319 µm/s, and a 500 µm/s velocity now needs 6–20
-> mmHg. Run with the pre-fix rheology code patched in, the same script gives back the old table to
+> velocity rose 240–343× per specimen, to 979–3,319 µm/s, and a 500 µm/s velocity needed 6–20
+> mmHg (centred boxes; 977–1,812 µm/s and 11–20 mmHg since the 2026-09-28 re-run, §13.5). Run with the pre-fix rheology code patched in, the same script gives back the old table to
 > the digit, so the graphs did not change and the rheology code accounts for all of it. §13.5 has the
 > new table.
 >
@@ -2089,7 +2141,8 @@ WKY-A takes 22 iterations (residual 6.9 × 10⁻⁶). All of these WKY-A runs us
 boundaries. With the pipeline on the face rule (open item 2), median edge flow falls to
 9.2 × 10³ µm³/s and WKY-A needs 55 iterations; the old cap of 50 stopped it at a residual of
 5.9 × 10⁻⁵, within 0.02 mmHg per cell of a 10⁻⁷ solve. On the six specimens it takes 40–80
-iterations (WKY-C 80), so the cap is now 200 (open item 32).
+iterations (WKY-C 80), so the cap is now 200 (open item 32). On the 2026-09-28 placed-box networks
+it converges on all six, e.g. WKY-A in 50 iterations and SHR-A in 53 (SHR-A only after open item 36).
 The `.vti` records whether it converged, the iterations and the final residual.
 
 **PO₂ is clamped to ≥ 0** at each iteration. Negative values are non-physical and drive Picard
@@ -2119,7 +2172,9 @@ so it no longer dominates the runtime; the CG solves do.
 was 4 µm until item 30, when that grid turned out not to be converged under the centreline mapping.
 
 Cross-section mapping, measured after open items 22 and 29 (contrast 1, unpadded;
-`cb_h2_hypoxic_fraction_xsec_sweep.json`):
+`cb_h2_hypoxic_fraction_xsec_sweep.json`). These sweeps ran on the centred-box networks at 0.90 and
+were **not repeated after the 2026-09-28 re-run**; the convergence they show is a property of the
+discretisation, but the PO₂ values in the table are not today's (§7.5 has those):
 
 | Grid | WKY-C median PO₂ | WKY-C PO₂ in TH | SHR-C median PO₂ | SHR-C PO₂ in TH | SHR-C TH < 10 mmHg | Cells with no vessel (WKY-C) |
 |---|---|---|---|---|---|---|
@@ -2303,7 +2358,7 @@ nearest **centreline** voxel, with `sampling` set to the voxel size so the resul
 large distance instead of as an error.
 
 > **At a glance** — real-step length, centreline distance, boundary steps excluded · median TVD
-> 5.3–7.9 µm (§13.7) · `th_morphometry.py:34`, `th_morphometry.py:78` ·
+> 4.6–6.2 µm (§13.7) · `th_morphometry.py:34`, `th_morphometry.py:78` ·
 > `tests/test_th_morphometry.py`
 
 ---
@@ -2353,7 +2408,7 @@ preferentially by the vessels that bypass them — the shunting the method is tr
 **Flow share alone cannot answer it**, because flow share tracks how many edges penetrate, which is
 itself downstream of the parenchymal volume difference H1 §1.3 reports. The ratio removes that.
 
-**This is a within-specimen ratio**, so it sits under the ±6.3% floor rather than the ±45% one
+**This is a within-specimen ratio**, so it sits under the ±4.7% floor rather than the ±43% one
 (§13.3).
 
 > **At a glance** — 50% length-in-mask classification, flow share over edge share ·
@@ -2416,14 +2471,19 @@ rises by construction, which is the stated cost of representing tissue beyond th
 (§6.1 step 4). It is reported rather than left for the reader to infer from the PO₂ distribution.
 
 > ⚠ **Read §13.6 before using this.** The tissue is not diffusion-limited — the oxygen diffusion
-> length is 20–45 µm against a median tissue-to-vessel distance of 5.3–7.9 µm. Raising the glomus
-> rate to four times stromal moves PO₂ inside the TH volume by **0.01 mmHg**. The mechanism this
-> method is built on cannot operate on this geometry.
+> length is 20–45 µm against a median tissue-to-vessel distance of 4.6–6.2 µm. Before open items 22
+> and 29, raising the glomus rate to four times stromal moved PO₂ inside the TH volume by
+> **0.01 mmHg**, and this block concluded that the mechanism could not operate on this geometry.
 >
-> **Needs review after open items 22 and 29:** the 0.01 mmHg came from a Tier 1 with 750× too much
-> diffusion and a haematocrit mismatch. Re-run (3 µm, cross-section mapping, open item 30): four
-> times stromal moves PO₂ in TH by −2.0 mmHg on WKY-A (80.97 → 78.95) and −4.0 on SHR-C
-> (75.06 → 71.03), and TH hypoxia below 10 mmHg is 0–3.1%.
+> **Needs review after the 2026-09-28 re-run (open items 27, 15, 17, 13).** On the placed-box
+> networks at 0.95 (3 µm, cross-section mapping): median PO₂ in TH is 88.7–95.2 mmHg at uniform
+> metabolism and 84.2–94.0 at four times stromal; four times stromal moves it by −1.2 mmHg on WKY-A
+> (95.18 → 93.96) and −4.4 on SHR-C (88.65 → 84.23). **TH hypoxia below 5, 10 and 20 mmHg is 0 in
+> every specimen at every contrast** (it was up to 2.05 / 4.97 / 9.62% on the centred boxes). PO₂ in
+> TH now **separates the groups**: SHR/WKY 0.967, 0.959, 0.946 at contrast 1, 2, 4, with no overlap
+> (0.997 / 0.993 / 0.986, overlapping, before). Padded grid: PO₂ in TH 84.1–95.1, all-cell hypoxia
+> below 10 mmHg up to 4.96%, TH hypoxia 0; ratio 0.966 / 0.946, no overlap. What this means for the
+> H2 §2.3 claim has not been re-argued.
 >
 > The output is still meaningful as a curve in the assumed contrast. It is not a number.
 
@@ -2452,7 +2512,7 @@ arrive, and a finite stand-in would propagate as a merely slow path.
 | 5 | Dijkstra from all inlets at cost 0 | — | Every inlet is an equally valid origin, so the arrival time is the earliest over all of them | **On** | `transit.py:86` |
 | 6 | Unreachable nodes carry `inf`, never absent | — | A missing key could be read as zero, which is the opposite of what an unreachable node means | **On** | `transit.py:84` |
 | 7 | Score an edge by the **later** of its two ends | — | A penetrating capillary should be scored by how long blood takes to get through it, not to reach its nearer end | **On** | `cb_h2_glomus_perfusion.py:110` |
-| 8 | Report the penetrating / bypassing median ratio | — | The magnitude is in arbitrary units (§3.7) and sits under the ±45% calibre floor, so only a ratio computed identically means anything | **On** | `cb_h2_glomus_perfusion.py:166` |
+| 8 | Report the penetrating / bypassing median ratio | — | The magnitude is in arbitrary units (§3.7) and sits under the ±43% calibre floor, so only a ratio computed identically means anything | **On** | `cb_h2_glomus_perfusion.py:166` |
 
 **Step 4 follows flow, not adjacency.** An edge carrying blood *away* from a node cannot deliver
 blood *to* it, and ignoring the direction would report a transit time along a route no blood takes.
@@ -2468,7 +2528,7 @@ the same answer where the directions are acyclic and terminates where they are n
 flow-directed graph.
 
 > **Reported as a ratio, never an absolute.** Two independent reasons, and they compound. An
-> absolute flow quantity sits under the ±45% floor from calibre alone (§13.3). And the pressure,
+> absolute flow quantity sits under the ±43% floor from calibre alone (§13.3). And the pressure,
 > viscosity and length units are not reconciled to one system (§3.7), so the magnitude is in
 > arbitrary units. Both have the same answer: compare transit time to one set of terminals against
 > another, computed identically, and the shared error divides out.
@@ -2558,8 +2618,8 @@ SHR arteriolar pressures run higher than WKY; one pair is used for all six speci
 the model carries none of that group difference (§11 row 15).
 
 **At 60/20 mmHg the network runs fast, not slow.** §13.5 measures flow-weighted velocities of
-979–3,319 µm/s against a physiological 200–1,000, and a 500 µm/s velocity needs a drop of only
-6–20 mmHg. That fits the paragraph above: arterioles of this size run nearer 30 mmHg, which would
+977–1,812 µm/s against a physiological 200–1,000, and a 500 µm/s velocity needs a drop of only
+11–20 mmHg (979–3,319 µm/s and 6–20 mmHg on the centred boxes before the 2026-09-28 re-run). That fits the paragraph above: arterioles of this size run nearer 30 mmHg, which would
 lower the drive. (Before open item 12 was re-derived this paragraph read 4–10 µm/s and 3,257 mmHg;
 those came from the inflated pre-`7ea1b36` resistances.)
 
@@ -2570,16 +2630,17 @@ same cancellation §4.4 describes for viscosity.
 ### 8.2 What happens to terminals that are not boundaries
 
 **About 86% of degree-1 nodes are interior** — nowhere near a region face. Counting terminals within
-one voxel of each of the six ROI faces:
+one voxel of each of the six ROI faces (2026-09-28 graphs, `cb_h2_error_propagation.py` S10; the
+centred-box graphs gave 83.5–86.9%):
 
 | Specimen | Terminals | On any face | Interior | Interior share |
 |---|---|---|---|---|
-| WKY-A | 544 | 71 | 473 | 86.9% |
-| WKY-B | 534 | 88 | 446 | 83.5% |
-| WKY-C | 674 | 91 | 583 | 86.5% |
-| SHR-A | 545 | 80 | 465 | 85.3% |
-| SHR-B | 754 | 104 | 650 | 86.2% |
-| SHR-C | 503 | 67 | 436 | 86.7% |
+| WKY-A | 784 | 135 | 649 | 82.8% |
+| WKY-B | 681 | 98 | 583 | 85.6% |
+| WKY-C | 715 | 77 | 638 | 89.2% |
+| SHR-A | 715 | 108 | 607 | 84.9% |
+| SHR-B | 632 | 97 | 535 | 84.7% |
+| SHR-C | 714 | 76 | 638 | 89.4% |
 
 **The crop is not the boundary problem; interior dead ends are.** These are skeletonisation spurs
 and segmentation breaks, not vessels severed by the ROI. A real capillary bed has few genuine
@@ -2589,14 +2650,16 @@ Three modes decide what happens to them:
 
 | Mode | Behaviour | Consequence |
 |---|---|---|
-| **`caged`** (default) | Interior terminals are not boundaries at all | They become no-flow dead ends. Under the band rule roughly **half of all terminals** were stranded this way |
+| **`caged`** (default) | Interior terminals are not boundaries at all | They become no-flow dead ends. Under the band rule roughly **half of all terminals** are stranded this way (45–61% on the 2026-09-28 graphs) |
 | `universal_sink` | Every non-inlet terminal becomes an outlet | No stranding, but every mask defect becomes a drain |
 | `robin_resistance` | Non-boundary terminals are tagged for a distal resistance | A middle course; multiplier 10.0, unswept |
 
 **Why the inlet:outlet ratio matters.** Under a fixed pressure boundary it directly scales how much
-flow the network carries. Measured under the band rule the ratio spanned **10.7×** across six
-specimens, from 2.67 to 0.25, with group means 1.87 (WKY) against 0.88 (SHR). That is the right size
-and the right direction to become a confound, and it is set by ROI placement rather than by biology.
+flow the network carries. Measured under the band rule on the centred-box graphs the ratio spanned
+**10.7×** across six specimens, from 2.67 to 0.25, with group means 1.87 (WKY) against 0.88 (SHR).
+That is the right size and the right direction to become a confound, and it is set by ROI placement
+rather than by biology. On the 2026-09-28 graphs the same census gives 1.11–2.13 (1.9×), group
+means 1.26 (WKY) against 1.64 (SHR): smaller, and in the other direction.
 The face rule (§2.8) is what reduces this; it is the reason boundary selection is the largest single
 lever in §13.4.
 
@@ -2754,8 +2817,8 @@ in the coupled solvers.
 | `morphological_opening_radius` | 0 | voxels | (iii) | **Disabled.** Radius 1 retains 51% of a 1.6-voxel-radius tube; radius 2 retains none | measured |
 | `morphological_closing_radius` | 0 | voxels | (iii) | **Disabled**, same reasoning | measured |
 | `enable_hysteresis_threshold` | True | — | (iii) | — | — |
-| `hysteresis_threshold_low` | 0.90 | probability | (iii) | `cb_settings.HYSTERESIS_LOW` = `FROZEN_THRESHOLD`: the median of the six per-specimen selections, snapped to the sweep grid (§2.2). Not tuner-derived — the preprocessing objective's argmin is the top of its search range. Was 0.65 until open item 1, set by hand on an earlier subvolume (§2.3.1) | measured, in sensitivity scope |
-| `hysteresis_threshold_high` | 0.95 | probability | (iii) | `cb_settings.HYSTERESIS_HIGH` = low + `HYSTERESIS_HIGH_OFFSET` (0.05). Was 0.75 until open item 1 | measured, in sensitivity scope |
+| `hysteresis_threshold_low` | 0.95 | probability | (iii) | `cb_settings.HYSTERESIS_LOW` = `FROZEN_THRESHOLD`: the median of the six per-specimen selections, snapped to the sweep grid (§2.2); all six chose 0.95 on 2026-09-28. Inclusive, `p ≥ low` (open item 17). Not tuner-derived — the preprocessing objective's argmin is the top of its search range. Was 0.90 until 2026-09-28, and 0.65 until open item 1, set by hand on an earlier subvolume (§2.3.1) | measured, in sensitivity scope |
+| `hysteresis_threshold_high` | 0.999 | probability | (iii) | `cb_settings.HYSTERESIS_HIGH` = min(`HYSTERESIS_SEED_CAP` 0.999, low + `HYSTERESIS_HIGH_OFFSET` 0.05); on this field `p ≥ 0.999` is `p = 1.0`. Was 0.95 until 2026-09-28, and 0.75 until open item 1 | measured, in sensitivity scope |
 | `enable_hole_filling` | True | — | (iii) | — | unswept |
 | `ilastik_vessel_channel` | 0 | index | (i) | Classifier output layout | — |
 | `enable_shannon_entropy` | False | — | (iii) | **Off.** The vessel classifier has 2 classes; turning this on raises (§2.3) | no effect |
@@ -2764,7 +2827,8 @@ in the coupled solvers.
 
 > **Open item 1 (closed).** The config defaults were 0.65 / 0.75 while every H1 run passed the
 > frozen 0.90 as `--hysteresis-low` and got a 0.95 seed. The config now reads the band from
-> `cb_settings`, and `test_cb_settings.py` keeps them equal. No published number moves.
+> `cb_settings`, and `test_cb_settings.py` keeps them equal. No published number moved. Since the
+> 2026-09-28 re-selection the band is 0.95 / 0.999.
 
 ### 10.3 Skeletonisation and topology — `SkeletonConfig`
 
@@ -2798,7 +2862,7 @@ in the coupled solvers.
 | `boundary_permeability_mode` | "caged" | — | (iii) | Chosen. Alternatives `universal_sink`, `robin_resistance` | unswept |
 | `robin_distal_resistance_multiplier` | 10.0 | — | (iii) | Inert under "caged" | — |
 | `boundary_axis` | 1 | axis index | (iii) | From `cb_settings.BOUNDARY_AXIS`: the only axis with terminals on both faces in all six specimens (§2.8) | measured (§13.4) |
-| `face_tolerance_voxels` | 1.0 | voxels | (iii) | From `cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS`: one voxel means "on the face" | measured (1/2/4 voxels, 13.3% ratio spread, §13.4) |
+| `face_tolerance_voxels` | 1.0 | voxels | (iii) | From `cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS`: one voxel means "on the face" | measured (1/2/4 voxels, 8.9% ratio spread, §13.4) |
 
 > **Open item 2, closed.** `GraphConfig` used to carry the band-rule parameters (`edge_percent`,
 > `end_percent` = 25, `node_edge_axis` = 0) while the H2 drivers ran the face rule on axis 1. The
@@ -2813,7 +2877,7 @@ in the coupled solvers.
 | `radius_assignment_mode` | "edt_radius" | — | (iii) | Chosen on measured evidence over `fwhm_radius`. Both run over the same 1330 edges: EDT 100% coverage, median 6.37 µm, p95 11.34, max 20.09; FWHM 76.5%, median 8.20 µm, p95 16.78, max 39.16. They correlate weakly (Pearson r = 0.245, Spearman ρ = 0.284; median ratio FWHM/EDT = 1.359). FWHM's tail is not physical for a bed whose measured inscribed radius is p99 5.60 µm | measured |
 | `constant_radius_um` | 5.0 | µm | (iii) | Used only under `constant_radius` mode | — |
 | `edt_junction_proximity_exclusion_um` | 3.73 | µm (2 voxels) | (iii) | Within ~one radius of a bifurcation the EDT returns the junction's inscribed sphere, biasing radius upward. Specified externally as 2 voxels; ≈ one capillary inscribed radius. The swept optimum is nearer 1.5 voxels, but 2.80 µm would be tuned to one subvolume and the difference is 0.3% on resistance | measured (0.93→5.60 µm swept; effect on resistance ~4–8%) |
-| `MAX_SYNTHETIC_FRACTION_EDT` | 0.0 | fraction | (iii) | EDT has no legitimate per-edge failure mode on a mask that covers the vessel — 100% measured provenance was observed across 34,900 edges — so any fallback is a defect, not an expected shortfall. FWHM is exempt by default because Gaussian fitting genuinely fails on individual edges | measured |
+| `MAX_SYNTHETIC_FRACTION_EDT` | 0.0 | fraction | (iii) | EDT has no legitimate per-edge failure mode on a mask that covers the vessel — 100% measured provenance was observed across 34,900 edges, and all 42,211 of the 2026-09-28 re-run — so any fallback is a defect, not an expected shortfall. FWHM is exempt by default because Gaussian fitting genuinely fails on individual edges | measured |
 | `fwhm_sample_spacing_along_edge_um` | 2.0 | µm | (iii) | Chosen | unswept |
 | `fwhm_transverse_profile_step_um` | 0.5 | µm | (iii) | Chosen | unswept |
 | `fwhm_transverse_half_extent_um` | 15.0 | µm | (iii) | ≈8 voxels, ≈4.7 vessel radii. In a bed this dense the transverse profile runs into neighbouring vessels, which is one of the two mechanisms behind FWHM's inflated tail | measured (indirectly) |
@@ -2953,8 +3017,8 @@ the model would push it.
 | # | Assumption | Enters at | Expected direction of effect |
 |---|---|---|---|
 | 28 | The two channels are co-registered by construction | §7.2 | Two channels of one acquisition on an identical grid, with no registration step. This is what makes a join between them sound; it would not hold across separate acquisitions |
-| 29 | Absolute flow quantities are reported only as within-specimen ratios | §7.6 | Not a modelling assumption but a reporting rule forced by two of them — the ±45% calibre floor and the unreconciled unit magnitude. See §13 |
-| 30 | Boundary terminals are selected on axis 1 only | §8 | The only axis with terminals on both faces in all six specimens. A specimen whose true inflow is off-axis is served by the wrong terminals |
+| 29 | Absolute flow quantities are reported only as within-specimen ratios | §7.6 | Not a modelling assumption but a reporting rule forced by two of them — the ±43% calibre floor and the unreconciled unit magnitude. See §13 |
+| 30 | Boundary terminals are selected on axis 1 only | §8 | Chosen as the only axis with terminals on both faces in all six centred-box graphs; on the 2026-09-28 graphs all three axes qualify, so the choice now rests on its being pinned (§2.8, needs review). A specimen whose true inflow is off-axis is served by the wrong terminals |
 
 ### 11.6 Four rows that changed against the earlier understanding
 
@@ -3077,27 +3141,32 @@ against vessel calibre, or by tissue geometry, and no change to the solver touch
 
 ### 13.1 The governing constraint: resistance goes as $d^{-4}$
 
-Fractional calibre error propagates as $\delta R/R \approx 4\,\delta d/d$. Measured over the pooled 34,900 edges,
-taking one voxel (1.866 µm) as the diameter uncertainty:
+Fractional calibre error propagates as $\delta R/R \approx 4\,\delta d/d$. Measured over the pooled 42,211 edges
+of the 2026-09-28 batch (threshold 0.95, placed ROIs), taking one voxel (1.866 µm) as the diameter
+uncertainty:
 
 | Percentile | Diameter (µm) | $\delta d/d$ | $\delta R/R$ |
 |---|---|---|---|
-| p5 | 3.732 | 50.0% | **200.0%** |
-| p25 | 5.868 | 31.8% | **127.2%** |
-| p50 | 7.904 | 23.6% | **94.4%** |
-| p75 | 10.550 | 17.7% | **70.8%** |
-| p95 | 13.963 | 13.4% | **53.5%** |
+| p5 | 3.728 | 50.1% | **200.2%** |
+| p25 | 5.275 | 35.4% | **141.5%** |
+| p50 | 6.462 | 28.9% | **115.5%** |
+| p75 | 8.343 | 22.4% | **89.5%** |
+| p95 | 11.790 | 15.8% | **63.3%** |
 
-- **95.9%** of edges carry more than 50% resistance uncertainty
-- **37.2%** carry more than 100%
-- The measured p5–p95 calibre spread of 3.74× becomes a **196× spread in resistance**
+- **98.9%** of edges carry more than 50% resistance uncertainty
+- **55.4%** carry more than 100%
+- The measured p5–p95 calibre spread of 3.16× becomes a **100× spread in resistance**
+
+(On the 34,900 edges of the 0.90 centred-box batch: median 7.904 µm, 95.9% above 50%, 37.2% above
+100%, a 3.74× calibre spread and 196× in resistance. The higher threshold gives thinner vessels, so
+every edge's relative uncertainty is larger.)
 
 The network's resistance structure is dominated by a quantity measured to roughly a quarter of its
 own value. **This is not fixable in the solver** — not by the Picard iteration, the ADR
 discretisation, or the rheology.
 
-> **Not a quantisation problem.** The pooled diameters take 823 distinct values with a median gap
-> of 0.0023 µm — junction trimming and B-spline smoothing break the raw EDT lattice, so the values
+> **Not a quantisation problem.** The pooled diameters take 588 distinct values with a median gap
+> of 0.0028 µm (823 and 0.0023 µm before the re-run) — junction trimming and B-spline smoothing break the raw EDT lattice, so the values
 > are numerically dense. The 1.87 µm figure is the scale below which a difference is not
 > *physically* resolved, not the spacing of the values. The problem is uncertainty, not
 > discretisation.
@@ -3108,42 +3177,63 @@ The segmentation threshold is the dominant correlated term: every edge in a spec
 from one mask at one threshold, so moving it moves every diameter together.
 
 Measured median calibre falls monotonically with threshold in **6 of 6 specimens**. Over the clean
-0.85–0.90 interval the mean shift is **0.922 µm, about half a voxel** — a per-edge $\delta d/d$ of 11.7%
-and an analytic `δR/R` of 46.7%.
+0.93–0.95 interval below the frozen value the mean shift is **0.690 µm, about 0.37 voxel** — a
+per-edge $\delta d/d$ of 10.3% and an analytic `δR/R` of 41.2% (`cb_h2_threshold_calibre.py`). The
+0.95–0.97 interval moves 1.130 µm, but 0.97 is the fragmentation onset in four of six, which
+contaminates it. (Before the re-run: 0.922 µm over 0.85–0.90, δd/d 11.7%, δR/R 46.7%.)
 
 Measured by re-solving the networks at that perturbation rather than scaling, since $d^{-4}$ is not
-linear:
+linear (`cb_h2_error_propagation.py`, re-run on the 2026-09-28 networks; its S12/S13 solve places
+pressure with its own 25% band on the exported frame, as it always has):
 
 | Perturbation | Independent | Correlated | Within-specimen ratio |
 |---|---|---|---|
-| One voxel, 1.866 µm (conservative bound) | 4.1% | 95.3% | 13.2% |
-| **Measured threshold shift, 0.922 µm** | 2.2% | **45.3%** | **6.3%** |
+| One voxel, 1.866 µm (conservative bound) | 3.9% | 125.4% | 13.3% |
+| **Measured threshold shift, 0.690 µm** | 1.6% | **43.4%** | **4.7%** |
 
-The measured 45.3% sits close to the 46.7% that $4\,\delta d/d$ predicts, so propagation is near-linear at
-this scale even though the underlying law is not. **The ratio cancels 86% of the correlated error
-at both perturbation sizes**, which makes that cancellation a property of the ratio rather than an
-artefact of the size chosen.
+(Before the re-run: 4.1 / 95.3 / 13.2% at one voxel and 2.2 / 45.3 / 6.3% at 0.922 µm.) The
+measured 43.4% sits close to the 41.2% that $4\,\delta d/d$ predicts, so propagation is near-linear
+at this scale even though the underlying law is not. **The ratio cancels 89% of the correlated error
+at both perturbation sizes** (86% before), which makes that cancellation a property of the ratio
+rather than an artefact of the size chosen. Per specimen at 0.690 µm: correlated 38.0–46.6%, ratio
+3.8–5.8%.
+
+The script prints these and then stops with `NameError: boundary_sensitivity` — its last call sits
+above the function's definition (since `8e888ca`). The S12/S13 tables print before that line. The
+boundary numbers in §13.4 come from `cb_h2_boundary_selection.py` instead.
 
 ### 13.3 The two noise floors
 
-| Quantity | Floor | Against H1's measured 27–40% effects |
+| Quantity | Floor | Against H1's measured group-mean ratios at 0.95 |
 |---|---|---|
-| Absolute network flow | **±45%** | Cannot resolve them |
-| Within-specimen ratio | **±6.3%** | Can resolve them — roughly fourfold margin |
+| Absolute network flow | **±43%** | Cannot resolve them |
+| Within-specimen ratio | **±4.7%** | See below — **needs review** |
 
 **This is why §7.6 reports ratios and never absolutes.** It is not caution; it is the difference
 between an answerable question and an unanswerable one.
 
-**One residual, in the ratio itself.** The per-specimen shift is uneven — 0.441 µm (WKY-C) to
-2.117 µm (WKY-A) — so the correlated error is not identical across specimens and does not cancel
-perfectly in a *between-group* comparison. Group means differ: 1.075 µm for WKY against 0.768 µm
-for SHR. That is the right shape to become a confound. With n = 3 it is noted, not established.
+> ⚠ **Needs review after the 2026-09-28 re-run.** This table used to read "against H1's measured
+> 27–40% effects … can resolve them, roughly fourfold margin". Those effects were measured at 0.90
+> on the centred boxes. At 0.95 on the placed boxes the SHR/WKY group-mean ratios are β₁ density
+> 1.087, junction density 1.064, length density 1.022, tortuosity 1.001 (median EDT diameter 0.869),
+> and the groups overlap on every density. So the effects are 2–9%, against a within-specimen floor
+> of 4.7%: not a fourfold margin. (The floor is for flow-derived ratios; β₁ and the densities are
+> topological counts, which calibre does not move, §13.10.) Whether and how to restate the claim is
+> left to the H1 write-up.
+
+**One residual, in the ratio itself.** The per-specimen shift is uneven — 0.380 µm (WKY-B) to
+1.002 µm (SHR-A) — so the correlated error is not identical across specimens and does not cancel
+perfectly in a *between-group* comparison. Group means differ: 0.585 µm for WKY against 0.795 µm
+for SHR (1.075 against 0.768 before the re-run, the other way round). That is the right shape to
+become a confound. With n = 3 it is noted, not established.
 
 ### 13.4 Boundary selection is the largest single lever
 
 Larger than calibre error. The face-crossing rule on axis 1 holds residual boundary sensitivity to
-**13.3%**, against **75.8%** for the alternative band rule, and cuts total sensitivity from 118.8%
-to 43.1%. Axis 1 is the only axis with terminals on both faces in all six specimens.
+**8.9%**, against **73.9%** for the alternative band rule, and cuts total sensitivity from 113.7%
+to 44.9% (`cb_h2_boundary_selection.py` on the 2026-09-28 networks; 13.3% / 75.8% and 118.8% /
+43.1% on the centred boxes). On the centred boxes axis 1 was the only axis with terminals on both
+faces in all six specimens; on the new networks all three axes are (§2.8).
 
 Below the operative floor of §13.3 and below the effects H1 measures — but only because the rule
 and its axis are pinned. They are now pinned in one place: `cb_settings` owns both, and the main
@@ -3152,22 +3242,23 @@ pipeline and the H2 drivers read them (open item 2, closed).
 ### 13.5 Absolute perfusion at 60/20 mmHg is at or above physiological
 
 Measured across all six with the face rule at 60/20 mmHg (`examples/cb_h2_absolute_perfusion.py`,
-re-derived 2026-09-27 for open item 12):
+re-derived 2026-09-27 for open item 12 and re-run 2026-09-28 on the placed-box networks):
 
 | Specimen | Inlets | Total inlet flow (µm³/s) | Flow-weighted velocity | ΔP for 500 µm/s |
 |---|---|---|---|---|
-| WKY-A | 18 | 2.40e6 | 1,785 µm/s | 11.2 mmHg |
-| WKY-B | 10 | 2.40e6 | 1,893 µm/s | 10.6 mmHg |
-| WKY-C | 11 | 1.51e6 | 979 µm/s | 20.4 mmHg |
-| SHR-A | 12 | 4.58e6 | 3,319 µm/s | 6.0 mmHg |
-| SHR-B | 12 | 3.74e6 | 1,713 µm/s | 11.7 mmHg |
-| SHR-C | 7 | 1.61e6 | 1,643 µm/s | 12.2 mmHg |
+| WKY-A | 23 | 4.00e6 | 1,812 µm/s | 11.0 mmHg |
+| WKY-B | 8 | 1.51e6 | 1,099 µm/s | 18.2 mmHg |
+| WKY-C | 17 | 2.02e6 | 1,162 µm/s | 17.2 mmHg |
+| SHR-A | 14 | 1.33e6 | 977 µm/s | 20.5 mmHg |
+| SHR-B | 23 | 1.63e6 | 1,104 µm/s | 18.1 mmHg |
+| SHR-C | 14 | 1.66e6 | 1,457 µm/s | 13.7 mmHg |
 
-**979–3,319 µm/s against a physiological 200–1,000 µm/s.** Five of six sit above the upper end,
-by up to 3.3×. A 500 µm/s flow-weighted velocity needs a drop of 6–20 mmHg, not the 40 used. The
+**977–1,812 µm/s against a physiological 200–1,000 µm/s.** Five of six sit above the upper end, by
+up to 1.8×. A 500 µm/s flow-weighted velocity needs a drop of 11–20 mmHg, not the 40 used. The
 solve is linear in the pressure drop (phase separation reads flow fractions, which a uniform scaling
 leaves alone), so that is the frozen drop scaled by 500 / v; `tests/test_cb_h2_absolute_perfusion.py`
-checks it against a second solve.
+checks it against a second solve. On the centred boxes at 0.90 the same script gave 979–3,319 µm/s
+and 6–20 mmHg.
 
 **This replaces "20–100× below physiological".** The earlier table (4.1–9.7 µm/s, and "about 3,257
 mmHg" for 500 µm/s) was computed before `7ea1b36`, while the rheology loop inflated every resistance
@@ -3178,15 +3269,17 @@ rheology fixes (#98: feeding-vessel phase separation, under-relaxation, rescale 
 further −10% to +2%.
 
 **The boundary rule still sets the throughput.** The band rule (25% of axis 1 at each end) the face
-rule replaced carries 4.0–7.6× the inlet flow (1.1e7–2.2e7 µm³/s) and 1.6–3.7× the velocity
-(2,966–6,984 µm/s). The face rule is kept for ratio stability (§2.8, §13.4).
+rule replaced carries 2.2–4.3× the inlet flow (4.5e6–1.2e7 µm³/s) and 1.4–2.1× the velocity
+(1,655–3,151 µm/s); on the centred boxes it was 4.0–7.6× and 1.6–3.7×. The face rule is kept for
+ratio stability (§2.8, §13.4).
 
 **The rheology solve does not meet its tolerance on these graphs.** At the 15-iteration cap its last
-pass still changes flow by 0.03–1.3% of the largest edge flow. Running to 50 and 200 iterations
-moves the velocities above by under 0.3%, so the table does not depend on the cap.
+pass still changes flow by 0.05–1.7% of the largest edge flow (face rule, 2026-09-28). On the
+centred boxes, running to 50 and 200 iterations moved the velocities by under 0.3%, so the table did
+not depend on the cap; that check was not repeated on the new networks.
 
-Absolute perfusion is still not a reportable quantity: it sits under the ±45% calibre floor
-(§13.3), it moves 4–8× with the boundary rule, and 60/20 mmHg is an upper-end arteriolar/venular
+Absolute perfusion is still not a reportable quantity: it sits under the ±43% calibre floor
+(§13.3), it moves 2–4× with the boundary rule, and 60/20 mmHg is an upper-end arteriolar/venular
 pair, not a measured carotid-body drop (§8.1). But the model is no longer orders of magnitude off.
 At 60/20 mmHg it runs somewhat fast, which points at the pressure pair rather than at the network's
 resistance.
@@ -3201,6 +3294,12 @@ resistance.
 > 10 mmHg is 0–3.1% at uniform metabolism (was 0%). The diffusion-length
 > estimate itself is unchanged; whether the section's conclusion still holds has not been
 > re-argued. See H2 whitepaper §10.
+>
+> ⚠ **Needs review again after the 2026-09-28 re-run.** On the placed-box networks at 0.95, four
+> times stromal moves PO₂ in TH from 95.18 to 93.96 mmHg on WKY-A and from 88.65 to 84.23 on SHR-C,
+> TH hypoxia is 0 below 5, 10 and 20 mmHg at every contrast, and PO₂ in TH separates the groups
+> (SHR/WKY 0.967 / 0.959 / 0.946 at contrast 1 / 2 / 4, no overlap). Median tissue-to-vessel
+> distance is now 4.6–6.2 µm (§13.7). §7.5 has the numbers.
 
 **The most consequential limit in this document**, because it constrains the mechanism rather than
 the precision.
@@ -3212,8 +3311,8 @@ $$\sqrt{\frac{D\,\alpha\,P_{\mathrm{O_2}}}{M}}
 \quad 35\ \mathrm{\mu m}\ \text{at}\ 30,
 \quad 45\ \mathrm{\mu m}\ \text{at}\ 50$$
 
-against a **median tissue-to-vessel distance of 5.3–7.9 µm**. Every tissue point sits at roughly a
-fifth of its supply radius, so the tissue is not diffusion-limited and a local sink cannot produce
+against a **median tissue-to-vessel distance of 4.6–6.2 µm** (5.3–7.9 µm on the WKY centred boxes).
+Every tissue point sits at roughly a fifth of its supply radius or less, so the tissue is not diffusion-limited and a local sink cannot produce
 a local gradient.
 
 Measured consequence: raising the glomus metabolic rate to **four times** the stromal one moves PO₂
@@ -3229,32 +3328,48 @@ against roughly 0.040 for brain — the right order for a metabolically active o
 
 ### 13.7 Grid resolution against the gradient that matters
 
-Measured tissue-to-vessel distance at native resolution:
+Measured tissue-to-vessel distance at native resolution — the Euclidean distance from every
+non-vessel voxel of the ROI to the nearest vessel voxel of the pipeline mask (2026-09-28 batch,
+threshold 0.95):
 
 | Specimen | Foreground | TVD p50 | p90 | p99 | max |
 |---|---|---|---|---|---|
-| WKY-A | 23.5% | 7.92 µm | 53.06 | 113.15 | 172.26 |
-| WKY-B | 23.4% | 6.98 µm | 29.01 | 60.95 | 90.58 |
-| WKY-C | 29.4% | 5.28 µm | 25.90 | 65.30 | 109.07 |
+| WKY-A | 28.9% | 4.57 µm | 12.08 | 36.80 | 73.27 |
+| WKY-B | 21.6% | 5.60 µm | 17.30 | 56.99 | 96.91 |
+| WKY-C | 21.4% | 6.19 µm | 34.43 | 74.15 | 110.12 |
+| SHR-A | 24.2% | 5.60 µm | 46.83 | 113.10 | 164.52 |
+| SHR-B | 21.7% | 5.89 µm | 25.45 | 80.62 | 128.05 |
+| SHR-C | 20.1% | 5.90 µm | 31.67 | 81.49 | 123.85 |
 
-At the 3 µm grid the median tissue voxel sits **1.8–2.6 cells** from a vessel (1.3–2.0 at the
-earlier 4 µm). The gradient that
-decides whether tissue is hypoxic is therefore spanned by one or two cells for half the tissue —
-resolved, but barely. Only the p90 tail, 25.9–53.1 µm, spans a comfortable number of cells.
+(The WKY centred boxes at 0.90 gave p50 5.28–7.92 µm and p90 25.9–53.1 µm.) At the 3 µm grid the
+median tissue voxel sits **1.5–2.1 cells** from a vessel. The gradient that decides whether tissue
+is hypoxic is therefore spanned by one or two cells for half the tissue — resolved, but barely.
+Only the p90 tail, 12.1–46.8 µm, spans a comfortable number of cells.
 
 Refining was tested (§6.8, open item 30). With each vessel mapped to the cells its centreline
 crosses, a finer grid drew a thinner vessel and PO₂ kept falling, about 1.5–1.9 mmHg per halving
 down to 2 µm. With vessels mapped over their cross-section the field settles: every measure moves
-at most 0.21 mmHg from 3 to 2 µm. The short gradient is still the physical limit. The Newton
+at most 0.21 mmHg from 3 to 2 µm. (The grid and cross-section sweeps were run on the centred-box
+networks and were not repeated after the 2026-09-28 re-run; grid convergence is a property of the
+discretisation, so it is expected to carry over, but it has not been re-measured.) The short gradient is still the physical limit. The Newton
 stop at 10⁻⁵ adds at most 0.10 mmHg per cell on WKY-A, 0.009 mmHg in the medians (§6.7, open item 6).
 
 ### 13.8 Calibre is not a reportable H1 finding
 
-The between-group calibre gap sits at **one twentieth of the smallest resolvable difference**.
-Within-group spread is 0.45 µm (WKY) and 0.34 µm (SHR) — three to four times the gap itself.
+> ⚠ **Needs review after the 2026-09-28 re-run.** The paragraph below predates even the 0.90
+> centred-box outputs: those gave WKY 8.35, 8.34, 7.91 µm against SHR 7.46, 7.80, 7.46 µm, a gap of
+> 0.62 µm with no overlap (ratio 0.924). At 0.95 on the placed boxes the per-specimen median EDT diameters are WKY 7.46,
+> 7.08, 6.96 µm and SHR 6.46, 6.37, 5.87 µm: group means 7.17 and 6.23, a gap of **0.94 µm, half a
+> voxel**, and the groups **do not overlap** (smallest WKY 6.96 against largest SHR 6.46). Within-group
+> spread is 0.50 µm (WKY) and 0.59 µm (SHR), smaller than the gap. The gap is still below one
+> voxel, and the threshold alone moves calibre 0.690 µm (§13.2), with a larger shift in SHR than in
+> WKY (§13.3). Whether calibre stays "not reportable" is not re-argued here.
+
+The between-group calibre gap sat at **one twentieth of the smallest resolvable difference**.
+Within-group spread was 0.45 µm (WKY) and 0.34 µm (SHR) — three to four times the gap itself.
 
 A separation that small is a coincidence of where six medians happened to fall. Any claim that SHR
-capillaries are narrower is **not supported**.
+capillaries are narrower was **not supported** on those numbers.
 
 ### 13.9 The TH classifier carries a residual cohort skew
 
@@ -3270,10 +3385,10 @@ sensitivity analysis, not a proof, and it remains the stated bound on any TH-cha
 
 | Claim type | Supported? |
 |---|---|
-| Within-specimen ratios of flow-derived quantities | **Yes** — ±6.3% floor against 27–40% effects |
-| Absolute flow, velocity or perfusion | **No** — ±45% floor, 4–8× with the boundary rule, and 1–3× above physiological at 60/20 mmHg (§13.5) |
-| Between-group calibre differences | **No** — gap is 1/20 of the measurement step |
-| Glomus-specific hypoxic fraction as a number | **No** — the mechanism cannot operate (§13.6); report as a curve in the assumed metabolic contrast |
+| Within-specimen ratios of flow-derived quantities | **Yes** — ±4.7% floor. *Needs review:* the 27–40% H1 effects this was set against are 2–9% at 0.95 (§13.3) |
+| Absolute flow, velocity or perfusion | **No** — ±43% floor, 2–4× with the boundary rule, and up to 1.8× above physiological at 60/20 mmHg (§13.5) |
+| Between-group calibre differences | **No** — the stated reason was a gap of 1/20 of the measurement step. *Needs review:* at 0.95 the gap is half a voxel and the groups do not overlap (§13.8) |
+| Glomus-specific hypoxic fraction as a number | **No** — the mechanism cannot operate (§13.6); report as a curve in the assumed metabolic contrast. *Needs review:* TH hypoxia is now 0 everywhere, while PO₂ in TH separates the groups (§7.5) |
 | Between-group TH-channel contrasts | **Qualified** — bounded by §13.9's sensitivity analysis, not by proof |
 | Topological counts (β₁) | **Yes** — unaffected by calibre, and stub pruning cannot move it |
 
@@ -3365,7 +3480,7 @@ is stochastic.
 
 1. Preprocess to Ilastik input with the recorded parameters — identical for all six volumes.
 2. Predict headlessly with the classifier named in the sidecar.
-3. Threshold to a mask at the frozen 0.90 / 0.95 band, the same for all six (§2.2, `cb_settings`).
+3. Threshold to a mask at the frozen 0.95 / 0.999 band (`p ≥` both), the same for all six (§2.2, `cb_settings`).
 4. Run the H1 batch to produce graphs and per-edge morphometry.
 5. Run the H2 driver for the method in question, at 60/20 mmHg on axis 1 (`cb_settings`).
 
@@ -3414,7 +3529,7 @@ tuning opportunity.
 | Tissue linear solve | sparse LU, `MMD_AT_PLUS_A` ordering, every iteration | `splu` | Exact. Replaced CG at `rtol` 1 × 10⁻⁵, warm-started, `maxiter` 500, which returned the last field once a step was below its tolerance (open item 23) |
 | Anderson depth | 5 | `ANDERSON_DEPTH` | History dropped whenever the residual rises |
 | Convergence test | max cell residual in mmHg / max \|P\| < `picard_tolerance`, both gases | `_relative_residual` | Was the relative L2 change between iterates |
-| Stagnant-flow floor | 10⁻¹² × max \|q\| | `STAGNANT_FLOW_FRACTION` | Edges at or below it carry no blood in the march. The flow solve balances every node to ≈3 × 10⁻¹⁴ of the largest flow (WKY-A), so below this is rounding; in stagnant pockets it left nodes sending blood they never received |
+| Stagnant-flow floor | 10⁻¹⁰ × max \|q\| | `STAGNANT_FLOW_FRACTION` | Edges at or below it carry no blood in the march. The flow solve balances every node to ≈3 × 10⁻¹⁴ of the largest flow (WKY-A), so below this is rounding; in stagnant pockets it left nodes sending blood they never received. Was 10⁻¹² until open item 36: on the six 2026-09-28 networks rounding flows reach 1.7 × 10⁻¹² and real flows start at 2.1 × 10⁻⁸ |
 
 ### A.5 Config-level Picard settings
 
@@ -3529,11 +3644,11 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | ~~10~~ | **Closed.** Pressure boundaries differed between `HaemodynamicsConfig` (100/2 mmHg, MAP to CVP) and `cb_settings` (60/20 mmHg, arteriolar to venular), and every published H2 number used 60/20. The config now takes its defaults from `cb_settings.INLET_PRESSURE_MMHG` / `OUTLET_PRESSURE_MMHG`, both example YAMLs say 60/20 in mPa, and `test_cb_settings.py` keeps all three equal, so no published number moves. §8.1 and §10.7 now place 60/20 against measured rat microvascular pressures [`peti-peterdi_direct_1998`, `jin_study_1997`, `fronek_microvascular_1975`]: 20 is a venular value, 60 an upper arteriolar one. Fresh WKY-A run: flows 0.408× the 100/2 run (40/97.97) on 4 071 of 4 178 flowing edges, diameters and resistances unchanged; haematocrit moved by more than 0.01 on 96 of 4 512 edges, because the rheology loop stops unconverged at 15 iterations in both runs and its path is not exactly scale-free. The Tier 3 `.vti` did **not** change (7 iterations, residual 6.0 × 10⁻⁷, tissue PO₂ mean 75.80, min 0.26 mmHg, as under open item 8): the pipeline's perfusion step over-converts flow, open item 31. `test_cb_settings.py`, `test_perfusion_vti_provenance.py` | — |
 | ~~11~~ | **Closed.** The entropy path defaulted to on but could not run at 2 classes, and fell back to plain hysteresis with only a warning. `enable_shannon_entropy` now defaults to False and raises if turned on for a 2-class field or one with no class axis; `shannon_entropy_core` is a real config field. The Optuna preprocessing tuner searches the two entropy thresholds only when entropy is on and an entropy map exists, so it no longer writes untested values for them to `best_preprocessing_params.yaml`. CB masks unchanged | — |
 | ~~12~~ | **Closed** by `7ea1b36`; numbers re-derived 2026-09-27. The rheology loop rescaled resistance by $\mu_\text{app} / \mu_\text{old}$ against a base that no longer contained $\mu_\text{old}$, inflating every resistance ~200–540× and diameter-dependently. Re-derived with `cb_h2_glomus_perfusion.py` and the new `cb_h2_absolute_perfusion.py`: flow-weighted velocity 4.1–9.7 → 979–3,319 µm/s (face rule, 60/20 mmHg), so §13.5 now reads 1–3× above physiological, not 20–100× below. H2 §2.1/§2.2/§2.4 ratios moved up to 0.09 per specimen, ≤ 0.04 in cohort means; every overlap/no-overlap pattern held. §3.2 has the detail | §3.2, §13.5; H2 whitepaper §6–§9, §11–§13 |
-| 13 | **Fixed in code (`a9cc5cd`); the 2026-09-28 re-run is pending.** `place_roi` clamps z first and projects only the box's own 160 slices; lateral centres move 8.3 µm (SHR-C) to 45.1 µm (SHR-B), z unchanged. The original finding: the lateral ROI centroid projects over the whole stack, not the 160 slices the ROI occupies, so tissue outside the box helps place it. Restricting to the band moves the centre 7–45 µm | §2.1, and every per-specimen quantity through what was sampled |
+| ~~13~~ | **Closed** (`a9cc5cd`, re-run 2026-09-28). The lateral ROI centroid projected over the whole stack, not the 160 slices the ROI occupies, so tissue that never enters the box helped place it. `place_roi` now clamps z first and projects only the box's own z-band; lateral centres moved 8.3 µm (SHR-C) to 45.1 µm (SHR-B), z unchanged. New centres (z, y, x): WKY-A (230, 224, 186), WKY-B (106, 192, 178), WKY-C (189, 158, 100), SHR-A (157, 244, 158), SHR-B (230, 308, 186), SHR-C (164, 302, 186). Over the band fewer columns saturate, so in WKY-A the p99 cutoff falls to 0.90 and the intensity weighting moves the centroid 0.31 µm (§2.1). Re-run together with items 27, 15 and 17 | — |
 | ~~14~~ | **Closed.** `crop_roi` rounded the centre twice and landed one voxel low on odd axes with the centre above the midpoint. It now rounds once and uses the same `centre − size // 2` rule as `RoiPlacement.bounds`, so the two paths agree exactly. No CB result used that path | — |
-| 15 | **Fixed in code (`c2a9a36`); the 2026-09-28 re-run is pending.** `evaluate_threshold` now takes the median and p90 of 2 × EDT at the skeleton voxels; the voxel median is printed as `d_vox` and selects nothing. The original finding: the threshold selector's “median diameter” is a median over every foreground voxel, while §2.6's calibre is a median over centreline voxels. The 4–7 µm capillary window is an external target for the latter and is being applied to the former, which reads 0.63–1.00× as large | §2.2 step 3; the selected threshold, hence everything downstream |
+| ~~15~~ | **Closed** (`c2a9a36`, re-run 2026-09-28). The threshold selector's “median diameter” was a median over every foreground voxel, while §2.6's calibre is a median over centreline voxels, and the 4–7 µm window is a target for the latter; the voxel median read 0.63–1.00× the centreline one. `evaluate_threshold` now takes the median and p90 of 2 × EDT at the skeleton voxels; the voxel median is printed as `d_vox` and selects nothing. At 0.95 the centreline median is 5.27 µm in all six. On `d_vox` the selection would have picked 0.93 (WKY-A) and 0.90 (the other five), so this item is what moved the freeze to 0.95 (`8f02e7b`, user-approved) | — |
 | ~~16~~ | **Merged into 17.** The group asymmetry of the freeze is a consequence of item 17's quantisation, not a separate defect: it disappears under `≥` | — |
-| 17 | **Fixed in code (`bacff70`); the 2026-09-28 re-run is pending.** The selector, the pipeline's hysteresis (flood and seed) and `cb_h1_th_metrics.py`'s vessel cut now use `p ≥ t` (`preprocessing.at_or_above`, threshold cast to the array's float type); the hysteresis is its own, face-connected like skimage's and identical to it on a field with no ties. The TH cut, the entropy hysteresis (off) and `prob_to_mask.py` keep `>`. The original finding: the probability field is quantised to hundredths and every sweep threshold lands exactly on a level, so the strict `p > t` discards a whole level — 0.5% of the ROI at 0.30 rising to 4.2–5.9% at 0.99, where it is two thirds of the mask. `p > 0.99` is exactly `p = 1.0`. Using `≥` moves 3 of 6 per-specimen choices. **Consequence (formerly item 16):** freezing at 0.90 runs SHR-B and SHR-C above their own choice, at a median diameter of 3.73 µm — below the selector's own 4.0 µm floor. 0 of 3 WKY and 2 of 3 SHR are affected, so the freeze is group-asymmetric even though `assess_cohort_split` on the choices reports no separation. Under `≥` all three SHR choose 0.90 and the asymmetry disappears | §2.2 steps 2 and 13; the per-specimen choices, and every per-specimen geometric quantity |
+| ~~17~~ | **Closed** (`bacff70`, re-run 2026-09-28). The probability field is quantised to hundredths and every sweep threshold lands exactly on a level, so the strict `p > t` discarded a whole level — 0.5% of the ROI at 0.30 rising to 4.2–6.0% at 0.99, where it is two thirds of the mask; `p > 0.99` is exactly `p = 1.0`. The selector, the pipeline's hysteresis (flood and seed) and `cb_h1_th_metrics.py`'s vessel cut now use `p ≥ t` (`preprocessing.at_or_above`, threshold cast to the array's float type); the hysteresis is its own, face-connected like skimage's and identical to it on a field with no ties. The TH cut, the entropy hysteresis (off) and `prob_to_mask.py` keep `>`. **Consequence (formerly item 16):** the 0.90 freeze ran SHR-B and SHR-C above their own choice at 3.73 µm, below the selector's 4.0 µm floor (0 of 3 WKY, 2 of 3 SHR). After the re-run all six choose 0.95, so the asymmetry is gone. With the frozen 0.95 the seed would be 1.00, so `HYSTERESIS_SEED_CAP` (0.999) keeps it below 1: the band is 0.95 / 0.999, seed = `p == 1.0` | — |
 | ~~T~~ | **Closed.** The pipeline's perfusion step defaults to Tier 3, so its `*_perfusion.vti` came from a different solver than the H2 hypoxia maps (Tier 1, run by the H2 drivers), and nothing in the file said so. Switching the default could not fix this: turning off multi-species alone lands on Tier 2, and even Tier 1 in the pipeline runs on `PerfusionConfig` inputs (`M_max` 0.005, 100/2 mmHg, band rule) rather than the H2 ones. Tier 3 stays the default; every tier now tags the `.vti` field data with its tier, solver, `M_max`, pressures and a not-H2 note (`_perfusion_provenance`). The Tier 2 switch is now read without a `getattr` default. `test_perfusion_vti_provenance.py` | — |
 | ~~18~~ | **Closed.** `sigma_diff_co2` was 3.0 × 10⁻⁸ m²/s and `permeability_co2_cm_s` 2.0 × 10⁻³ cm/s, each 20× the O₂ value; since the multi-species solver also multiplies both by solubility (α_CO₂ ≈ 22× α_O₂), CO₂ moved ≈450× faster than O₂ against a measured Krogh ratio of ≈21 [`kawashiro_determination_1975`]. Now D_CO₂ = 1.6 × 10⁻⁹ m²/s (Kawashiro) and P_CO₂ = P_O₂ = 1.0 × 10⁻⁴ cm/s [`dash_simultaneous_2006`], giving ≈24× and ≈22×. (Both permeabilities moved to 9.1 × 10⁻² cm/s under item 19.) Only Tier 3 reads these, so the pipeline's `*_perfusion.vti` CO₂, pH and (through the Bohr shift) PO₂ fields change; no published H1/H2 number moves. The perfusion keys in `examples/config_*.yaml` sit under `PipelineConfig:` and are ignored by the loader. `test_perfusion_config_values.py` | §10.9, §6 |
 | ~~19~~ | **Closed.** The Tier 3 blood-gas relations did not match their sources (found under item 7; §5.3). (a) and (b): the CO₂ curve is now McHardy's as its source defines it, in mmol/L, with his Hb term for *H* and no second dissolved term; his saturation term replaces the unsourced Haldane term, so the Haldane effect is 2.8 mmol/L on full desaturation against ≈2.5 measured [`loeppky_quantitative_1983`]. Content at PCO₂ 40 went from 24.4 to 21.3 mmol/L, slope from 0.28 to 0.21 mmol/L/mmHg. `test_blood_co2_content.py`. (c): `permeability_o2_cm_s` was 1.0 × 10⁻⁴ cm/s with no source and left Tier 3 anoxic; it is now the measured 9.1 × 10⁻² cm/s [`liu_oxygen_1994`], ≈900× higher, and `permeability_co2_cm_s` follows it (item 18). `test_perfusion_config_values.py`. Checking convergence at the new value found items 20 and 21. Tier 1, and so every H2 number, uses none of these; the pipeline's `*_perfusion.vti` does | §5.3, §10.8, §10.9, §6.6 Tier 3 |
@@ -3543,7 +3658,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | ~~23~~ | **Closed.** Tier 3's Picard loop did not reach its fixed point at capillary flow. (a) It was slow: the pseudo-washout put the full wall conductance on the diagonal, so each iteration moved tissue C′/(C′ + P·A·α/*q*) of the way (≈2 700 iterations on a two-cell chain at 10² µm³/s; 378 and 97 on the Y network at 10³ and 10⁴; no progress in a plasma-skimmed branch). (b) It stopped early: a warm-started CG at `rtol` 1e-5 returned the last field once a step was below it, and the relative-change test read zero (0.03–0.25 mmHg short on the chain; 1.7 mmHg at 1e-4). Now the diagonal carries the blood's actual response and the metabolic slope (a Newton step per cell), each update is an exact sparse LU solve, guarded Anderson acceleration sits on top, and the loop stops on the nonlinear residual in mmHg relative to the field (§6.7, E43, E51–E54). Chosen over Anderson alone (75–243 iterations on plasma-skimmed and merging vessels) and the linearisation alone (128 on the Y network). At the default 10⁻⁴: 9–19 iterations on every test network, within 0.023 mmHg of a 10⁻¹² solve; WKY-A (at the double-converted flow of open item 31) 11 iterations, where the old loop hit `max_iter` with minimum tissue PO₂ 59.9 mmHg against 77.4 converged. The `.vti` records convergence, iterations and residual. Getting WKY-A through Tier 3 at all first needed four other fixes: NaN flows from the flow export, junctions carried as content (item 24), flow direction from a different solve than flow size, and a Haldane effect in plasma. `test_perfusion_tier3_convergence.py`. Not in any H1/H2 number | §6.6, §6.7, Appendix A |
 | ~~24~~ | **Closed.** Tier 3 mixed blood-gas *content per litre* at each node and turned it back into pressures for each daughter at PCO₂ 40 and pH 7.4, with the daughter's haematocrit; a failed root find fell back to arterial PO₂ or PCO₂. Phase separation gives daughters a different *H* from the parent, so that content did not describe the daughter's blood: on WKY-A a plasma-skimmed daughter (*H* ≈ 0.01) received arterial CO₂ content at *H* 0.45, more than its curve holds at any PCO₂, and the implicit step (item 21) found no root. The march now carries the blood's state through each node as pressures (E46, E47): one inflow passes its outlet state through unchanged; two or more are mixed by content, flow and red-cell flux and inverted jointly for PO₂ and PCO₂ at the mixture's *H* and flow-weighted pH (`_mixed_blood_state`). Each daughter's content is evaluated at the node state with its own *H*; both curves are affine in *H*, so O₂ and CO₂ are conserved wherever the rheology conserves red-cell and plasma flux. Every fallback in the march now raises: a failed inversion, a non-starting node that sends blood but receives none (it was given arterial blood at `systemic_hematocrit`, which Tier 3 no longer reads), and a cycle in the flow direction (it fell back to node order). `test_perfusion_junction_state.py`. Not in any H1/H2 number | §6.6 Tier 3 |
 | ~~25~~ | **Closed.** Tier 3 seeded arterial blood at a literal pH 7.4, while tissue pH is Henderson–Hasselbalch (pKa 6.1, α 0.03, `hco3_tissue`), which gives 7.401 at PCO₂ 40 and HCO₃⁻ 24. Inside each cell the blood's O₂ is read at the tissue pH, so blood changed pH at the first cell with no exchange behind it. Through the Bohr shift and the Haldane term that left tissue below arterial: on WKY-A tissue PCO₂ 7 × 10⁻⁴ mmHg below arterial; with no metabolism on a three-cell chain, tissue PO₂ 0.08 mmHg below arterial (10 mmHg at PCO₂ 45, HCO₃⁻ 20). Arterial pH now comes from the same formula and bicarbonate as the tissue (E46), and the initial tissue pH too (§6.6). WKY-A (at the double-converted flow of open item 31): still 11 iterations, minimum tissue PCO₂ 40.00006 mmHg, mean tissue PO₂ 96.31 → 96.39 mmHg, minimum 77.4 → 77.44. `test_perfusion_arterial_ph.py`. Not in any H1/H2 number | §6.6 Tier 3 |
-| 27 | **Fixed in code (`b864732`); the 2026-09-28 re-run (items 27, 15, 17, 13 together) is pending.** `carotid_image_to_model.py` now calls `place_roi` when `--roi-voxels` is given and passes its offsets to `crop_roi`; a placement that fell back to the volume centre raises, and `--roi-centred` is the explicit opt-out. Each run writes `roi_placement.json`, and every driver that reads a batch graph or `per_edge_morphometry.csv` (and the batch itself, after each run) refuses an output whose box differs from `place_roi`'s. Fresh WKY-A mask: IoU 0.951 with hysteresis on the placed box, 0.174 on the centred one. `test_pipeline_roi.py`. The original finding: **The batch pipeline run crops the array centre, not the placed ROI.** `cb_h1_batch.py --stage run` passes `--roi-voxels` but not `offsets_zyx`, so `carotid_image_to_model.py` crops 160³ on `extent // 2` (§2.1 steps 9–10). The cached masks match the centred box (IoU 0.92 WKY-A, 0.83 SHR-C) and not `placement.bounds` (0.17, 0.15); the boxes share 27–61% of their volume. So the H1 morphometry (`per_edge_morphometry.csv`, figures) is on centred boxes, while the threshold was chosen, and `cb_h1_th_metrics.py` measures, on placed boxes. The H2 drivers lay the TH channel cropped at `bounds` over the centred-box graph, so the two frames are 85–210 µm apart (length of the shift). Item 13 does not reach the network run until this is fixed. Found 2026-09-26 under follow-up item 26. **Moves published numbers** | §2.1, every H1 network quantity, H2 §2.1–2.4 |
+| ~~27~~ | **Closed** (`b864732`, re-run 2026-09-28 with items 15, 17 and 13). The batch pipeline run cropped the **array centre**, not the placed ROI: `cb_h1_batch.py --stage run` passed `--roi-voxels` but no offsets, so the cached masks matched the centred box (IoU 0.92 WKY-A, 0.83 SHR-C) and not `placement.bounds` (0.17, 0.15), and the boxes shared 27–61% of their volume. H1 morphometry was on centred boxes while the threshold and `cb_h1_th_metrics.py` were on placed ones, and the H2 drivers laid TH cropped at `bounds` over the centred-box graph (frames 85–210 µm apart). `carotid_image_to_model.py` now calls `place_roi` when `--roi-voxels` is given and passes its offsets to `crop_roi`; a placement that fell back to the volume centre raises, and `--roi-centred` is the explicit opt-out. Each run writes `roi_placement.json`, and every driver that reads a batch graph or `per_edge_morphometry.csv` (and the batch after each run) refuses an output whose box differs from `place_roi`'s (`check_output_roi`). Fresh WKY-A mask: IoU 0.951 with hysteresis on the placed box, 0.174 on the centred one. **Re-run results:** all six choose 0.95 (frozen, `8f02e7b`); edges WKY-A 4512 → 7597, WKY-B 3932 → 6140, WKY-C 6699 → 6863, SHR-A 6815 → 8281, SHR-B 8077 → 6954, SHR-C 4865 → 6376. H1 SHR/WKY group-mean ratios: β₁ density 1.087 (was 1.401), junction density 1.064 (1.337), length density 1.022 (1.267), median EDT diameter 0.869 (0.924), tortuosity 1.001; groups overlap on every density. H2 SHR/WKY: shunt index 0.89 (1.10), penetrating flow share 0.78 (0.57, now overlapping), flow ratio 0.91 (1.22, now overlapping), haematocrit 1.02 (0.93), transit 1.03 (0.72, now overlapping); TH hypoxia 0 everywhere and PO₂ in TH now separates the groups (§7.5). `cb_h2_vtk.py --verify` passes on all six. Old outputs: `cb_h1_batch_2026-09-26/` and the `*_2026-09-28_pre_item27` files. Not re-run: the grid / cross-section sweeps (§6.8, §13.7) and the pipeline Tier 3 field of the SHR-C sensitivity runs (one edge in the 10⁻¹²–10⁻¹⁰ band of item 36, unused downstream). `tests/test_pipeline_roi.py` | — |
 | ~~29~~ | **Closed.** Tier 1 built its source at each edge's haematocrit and its washout at `systemic_hematocrit` (0.45), so a cell fed above 0.45 got more O₂ at arterial PO₂ than it could wash out below hundreds of mmHg, and one fed below was drained. On WKY-A 27% of perfused cells are above 0.45 (per-cell H 0–0.80, median 0.37) and the surplus at arterial PO₂ was 55× the tissue's whole demand (delivery is 850× demand). The 750× diffusion of item 22 averaged these into the published near-uniform ~30 mmHg field, which is why it moved little with metabolism; with α in, the fixed point was hyperoxic (median 186 mmHg, 78% of cells above arterial). The washout now uses each cell's flow-weighted haematocrit (`cell_discharge_hematocrit`), exact because content is affine in H; `solve_perfusion_steady_state` requires it and raises if a perfused cell's is missing. WKY-A: 10 Newton steps, 18 s, max PO₂ 99.99 mmHg. Found 2026-09-26 under item 22. `test_perfusion_tier1_washout_hematocrit.py`. **Moves published numbers** (H2 §2.3, §13.6) | §6.6, §6.7, §11 row 27 |
 | ~~30~~ | **Closed.** Tier 1 had no grid-converged limit: with each vessel mapped to the cells its centreline crosses, a finer grid drew it thinner, a line source in the limit, and median PO₂ on WKY-C ran 91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm (SHR-C 80.28 … 75.85), ≈1.5–1.9 mmHg lost per halving. `map_vessels_to_grid` now takes `vessel_mapping="cross_section"`, which sweeps each centreline point over a disc of the vessel's radius; the H2 drivers use it (the pipeline keeps the centreline default). WKY-C and SHR-C then move at most 0.21 mmHg from 3 to 2 µm but up to 0.78 from 4 to 3 µm, so `cb_settings.GRID_UM` went from 4 to 3 µm. §2.3 re-run: PO₂ in TH 81.0–89.8 mmHg (was 70.0–86.2), TH hypoxia below 10 mmHg 0–3.1% (was 0–3.95%). `test_perfusion_cross_section_mapping.py`, `test_perfusion_tier1_grid_refinement.py` | — |
 | ~~31~~ | **Closed.** The pipeline's perfusion step converted flow to µm³/s twice. `carotid_image_to_model.py` passes pressures in mPa, so its Poiseuille flows are already in µm³/s, but it called `map_vessels_to_grid` and the Tier 2/3 solvers with the default `flow_to_um3_per_s` = `POISEUILLE_FLOW_TO_UM3_PER_S` (1.33 × 10⁵), which assumes mmHg, as the H2 drivers pass. Its perfusion saw flow ≈1.33 × 10⁵× too high and its blood hardly desaturated; found under open item 10, when flows fell to 0.408× and the Tier 3 field did not move. The pipeline now derives its factor from its pressure unit (`_perfusion_flow_to_um3_per_s` = `POISEUILLE_FLOW_TO_UM3_PER_S` / mPa per mmHg = 1.0), passes it to all three calls, and records it on every `.vti` as `perfusion_flow_to_um3_per_s` (a `.vti` without the tag predates the fix). Library defaults are unchanged, so the H2 drivers are not affected (§3.7). Fresh WKY-A run: median edge flow 8.0 × 10⁴ µm³/s; Tier 3 converged in 22 iterations (was 7), residual 6.9 × 10⁻⁶; tissue PO₂ mean 75.80 → 70.14 mmHg, median 92.44 → 85.56, minimum 0.26 → 0.20, maximum 99.82; cells below 5 / 10 / 20 mmHg 3.00 / 5.08 / 9.63 → 3.52 / 6.30 / 11.41%; PCO₂ mean 40.97, maximum 43.43 → 43.35 mmHg, pH minimum 7.365 → 7.366. The WKY-A pipeline figures under open items 6, 8, 23 and 25 and in §6.6–6.7 were at the old flow and are marked so, not re-quoted. `test_pipeline_perfusion_flow_units.py` (the factor, a tube solved at the pipeline's pressures against SI Poiseuille, the grid flow, the map/solver mismatch guard, and every pipeline perfusion call passing the factor), `test_perfusion_vti_provenance.py` | The pipeline's `*_perfusion.vti`; no published number |
@@ -3551,15 +3666,17 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | ~~33~~ | **Closed.** `config_WKY_normotensive.yaml` listed its perfusion settings (`grid_resolution_xyz`, the blood-gas baselines, both diffusivities and permeabilities, `M_max`, `k_reduce`, RQ and both Picard settings) under `PipelineConfig`, which has none of those fields, so `update_dataclass_from_dict` dropped each one with a warning and `--config` ran on the `PerfusionConfig` defaults. The block now sits under `PerfusionConfig`, as in the SHR YAML, with its values unchanged. The dropped values equalled the defaults except `picard_tolerance`, so the one change in behaviour is that a WKY `--config` run now stops Tier 3 at the YAML's 10⁻⁴, as an SHR one already did (open item 34). The older YAML tests searched for keys at any depth and passed despite the misplacement; they now read `PerfusionConfig`. No H1/H2 number moves: the batch passes no `--config`. Found under open item 32 | `test_example_yaml_sections.py` (every section is one the loader reads, every key is a field of its section, loading ignores no key), `test_cb_settings.py`, `test_perfusion_config_values.py` |
 | ~~34~~ | **Closed.** Both example YAMLs set `picard_tolerance` 1 × 10⁻⁴ after open item 6 moved `PerfusionConfig` to 1 × 10⁻⁵, so a run with either YAML as `--config` stopped Tier 3 at 10⁻⁴ (the WKY one was dropped until open item 33). The SHR YAML also set `pco2_arterial` 35 mmHg against 40 in `PerfusionConfig` and the WKY YAML, a difference by group. Both YAMLs now say 1 × 10⁻⁵ and 40 mmHg, and their `PerfusionConfig` sections are identical. No H1/H2 number moves: the batch passes no `--config`, and Tier 1 does not read PCO₂. Found under open item 32. The YAMLs' other leftover settings are open item 35 | `test_cb_settings.py` (both Picard settings), `test_perfusion_config_values.py` (PCO₂), `test_example_yaml_sections.py` (the two perfusion sections are equal; every YAML value reaches its section) |
 | ~~35~~ | **Closed.** The example YAMLs still carried scenario settings from before the frozen methods. (a) Both set `radius_assignment_mode: constant_radius` with `constant_radius_um` 5, so a `--config` run gave every edge a 10 µm diameter instead of the frozen `edt_radius` measurement. Its provenance is `constant`, which `check_diameter_provenance` does not count as synthetic, so nothing raised. (b) Both set `constrict_at_pericytes: true`, which `HaemodynamicsConfig.__post_init__` forbids. `update_dataclass_from_dict` sets fields with `setattr` after construction, so the check never ran on a `--config` load. Nothing downstream read the flag or the constriction ratios, so it had no effect. (c) The SHR YAML set both constriction ratios to 0.95 against WKY's 1.0, a difference by group (unread, as (b)). (d) The SHR header described "high blood pressure and extreme sympathetic tone", but its pressures were the shared 60/20 mmHg. The WKY YAML also turned on `run_benchmarking` and the SHR one did not. No H1/H2 number is affected: the batch passes no `--config`. Both YAMLs now set `edt_radius` and carry no constriction, `constant_radius_um` or `fwhm_*` keys, and neither sets `run_benchmarking`. Their headers make no group claim, and the two files differ only in their first line. `update_dataclass_from_dict` re-runs `__post_init__` after setting the keys, so a YAML that sets a forbidden value now raises; the old YAMLs raise on `constrict_at_pericytes`. Found under open item 34 | §10.5, §10.6; `test_config.py` (the loader runs the checks), `test_example_yaml_sections.py` (`edt_radius`, no retired keys, the two YAMLs load to the same dict) |
+| ~~36~~ | **Closed** (`d57a78f`). The 2026-09-28 SHR-A run (8281 edges) stopped in Tier 3: node 748 heads a dead-end branch whose two edges carry exactly zero flow, and its entry edge carried 1.7 × 10⁻¹² of the largest flow, outward — rounding from the pressure solve, but above the 10⁻¹² stagnant cutoff, so the march saw a node sending blood it never received. Across the six new networks rounding flows reach at most 1.7 × 10⁻¹² and real flows start at 2.1 × 10⁻⁸, with nothing between. `STAGNANT_FLOW_FRACTION` is now 10⁻¹⁰ (59× above the one, 210× below the other); flow at 10⁻⁹ at an unfed node still raises. No edge of the other five batch networks lies in (10⁻¹², 10⁻¹⁰], so their Tier 3 results are unchanged; SHR-A was re-run alone. One SHR-C sensitivity run has an edge in that band; its pipeline Tier 3 field was not re-run and is unused downstream | Appendix A |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the
 config default drifts further. What is still open is the *decision*: which of the two values is
 right. That is a modelling judgement, not a refactor, and changing either one re-dates every
-number in §7 and §13. Item 12's fix is known to move results, and every absolute flow in §7 and §13
-predates it; re-running them is the outstanding step.
-Item 17's freeze asymmetry moves one for two specimens, in a conservative direction. Item 13 would move one, but
-only by re-placing the ROIs and re-running everything, so it is a decision to take deliberately
-rather than a defect to patch.
+number in §7 and §13. Item 12's absolute flows were re-derived on 2026-09-27 and again in the
+2026-09-28 re-run (§13.5).
+Items 27, 15, 17 and 13 were fixed together and closed by one full re-run on 2026-09-28: the ROIs
+were re-placed, the threshold re-selected (0.95) and every H1 and H2 script re-run, which moved
+most numbers in §2, §7 and §13. Several conclusions there are marked **needs review** rather than
+rewritten.
 
 ---
