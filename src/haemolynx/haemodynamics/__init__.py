@@ -1,6 +1,7 @@
 """Haemodynamics: viscosity, Poiseuille resistance/conductance, network resistance."""
 from . import automated
 from . import edt_diameter
+from . import raw_section
 from .viscosity import (
     VISCOSITY_LAWS,
     describe_law,
@@ -11,6 +12,7 @@ from .poiseuille import (
     DIAMETER_SOURCE_EDT,
     DIAMETER_SOURCE_MEASURED,
     DIAMETER_SOURCE_OVERRIDE,
+    DIAMETER_SOURCE_RAW_SECTION,
     DIAMETER_SOURCE_TABLE,
     PlaceholderViscosityWarning,
     PoiseuilleModel,
@@ -20,6 +22,7 @@ from .poiseuille import (
     stamp_edge_diameters,
 )
 from .edt_diameter import measure_edge_diameters_from_binary_mask
+from .raw_section import measure_edge_diameters_from_raw_sections
 from .resistance import (
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
@@ -101,9 +104,11 @@ __all__ = [
     "DIAMETER_SOURCE_EDT",
     "DIAMETER_SOURCE_MEASURED",
     "DIAMETER_SOURCE_OVERRIDE",
+    "DIAMETER_SOURCE_RAW_SECTION",
     "DIAMETER_SOURCE_TABLE",
     "flag_fwhm_edt_disagreement",
     "measure_edge_diameters_from_binary_mask",
+    "measure_edge_diameters_from_raw_sections",
     "set_edge_diameter_override",
     "stamp_edge_diameters",
     "ARTERIOLE_PREFIX",

@@ -92,17 +92,22 @@ def build_diameter_by_branch_order(
 
 
 #: How an edge's modelled ``diameter_um`` was chosen. ``measured`` is a FWHM
-#: fit; ``edt_mask`` is the segmentation mask's own width estimate, used
-#: only when FWHM measurement failed for that edge and ``use_edt_fallback``
-#: is on (see ``haemolynx.haemodynamics.edt_diameter`)); ``table`` is the
-#: branch-order lookup; ``override`` is a human value.
+#: fit; ``raw_section`` is the raw image's own cross-section, fitted where
+#: FWHM failed when ``use_raw_section_fallback`` is on (see
+#: ``haemolynx.haemodynamics.raw_section``); ``edt_mask`` is the segmentation
+#: mask's own width estimate, used only when both of those failed for that
+#: edge and ``use_edt_fallback`` is on (see
+#: ``haemolynx.haemodynamics.edt_diameter``); ``table`` is the branch-order
+#: lookup; ``override`` is a human value.
 DIAMETER_SOURCE_MEASURED = "measured"
+DIAMETER_SOURCE_RAW_SECTION = "raw_section"
 DIAMETER_SOURCE_EDT = "edt_mask"
 DIAMETER_SOURCE_TABLE = "table"
 DIAMETER_SOURCE_OVERRIDE = "override"
 DIAMETER_SOURCES = frozenset(
     {
         DIAMETER_SOURCE_MEASURED,
+        DIAMETER_SOURCE_RAW_SECTION,
         DIAMETER_SOURCE_EDT,
         DIAMETER_SOURCE_TABLE,
         DIAMETER_SOURCE_OVERRIDE,
@@ -110,7 +115,12 @@ DIAMETER_SOURCES = frozenset(
 )
 
 _KEPT_DIAMETER_SOURCES = frozenset(
-    {DIAMETER_SOURCE_MEASURED, DIAMETER_SOURCE_EDT, DIAMETER_SOURCE_OVERRIDE}
+    {
+        DIAMETER_SOURCE_MEASURED,
+        DIAMETER_SOURCE_RAW_SECTION,
+        DIAMETER_SOURCE_EDT,
+        DIAMETER_SOURCE_OVERRIDE,
+    }
 )
 
 
@@ -239,12 +249,17 @@ def stamp_edge_diameters(
     *,
     keep_existing: bool = False,
     use_edt_fallback: bool = False,
+    use_raw_section_fallback: bool = False,
 ) -> dict[str, int]:
     """Write ``diameter_um`` and ``diameter_source`` on every edge that can.
 
-    When *keep_existing* is True, measured/EDT/override edges stay as they
-    are (so a resume does not wipe approvals or re-fall-back). Otherwise
-    FWHM, when present, wins; then -- when *use_edt_fallback* is True and
+    When *keep_existing* is True, measured/raw-section/EDT/override edges
+    stay as they are (so a resume does not wipe approvals or re-fall-back).
+    Otherwise FWHM, when present, wins; then -- when
+    *use_raw_section_fallback* is True and the edge carries a
+    ``raw_section_diameter_um`` (see ``haemolynx.haemodynamics.raw_section``)
+    -- the raw image's own cross-section, still a measurement of the
+    intensity FWHM reads; then -- when *use_edt_fallback* is True and
     the edge carries an ``edt_diameter_um`` (see
     ``haemolynx.haemodynamics.edt_diameter``) -- the segmentation mask's own
     estimate, a vessel-specific reading unlike the generic branch-order
@@ -253,7 +268,9 @@ def stamp_edge_diameters(
     ``edt_diameter_um`` and so takes the table's.
     """
     table = diameter_by_branch_order or {}
-    counts = {"measured": 0, "edt_mask": 0, "table": 0, "override": 0, "unset": 0}
+    counts = {
+        "measured": 0, "raw_section": 0, "edt_mask": 0, "table": 0, "override": 0, "unset": 0,
+    }
     for _u, _v, _key, data in G.edges(keys=True, data=True):
         source = data.get("diameter_source")
         if keep_existing and source in _KEPT_DIAMETER_SOURCES:
@@ -279,6 +296,13 @@ def stamp_edge_diameters(
             data["diameter_source"] = DIAMETER_SOURCE_MEASURED
             counts["measured"] += 1
             continue
+        if use_raw_section_fallback:
+            section = positive_diameter_um(data.get("raw_section_diameter_um"))
+            if section is not None:
+                data["diameter_um"] = section
+                data["diameter_source"] = DIAMETER_SOURCE_RAW_SECTION
+                counts["raw_section"] += 1
+                continue
         if use_edt_fallback:
             edt = positive_diameter_um(data.get("edt_diameter_um"))
             if edt is not None:

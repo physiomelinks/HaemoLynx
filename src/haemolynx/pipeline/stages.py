@@ -2150,6 +2150,17 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                     "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
                     "table diameters without per-edge FWHM)."
                 )
+            if "raw_section" in haemo_results:
+                section = haemo_results["raw_section"]
+                if section.get("skipped"):
+                    logger.info(f"Raw cross-section fallback skipped: {section.get('reason')}")
+                else:
+                    logger.info(
+                        f"Raw cross-section fallback: {section['edges_measured']} of "
+                        f"{section['edges_measured'] + len(section['edges_skipped'])} edges FWHM "
+                        f"failed on measured; PSF sigma (z, y, x) {section.get('psf_sigma_zyx')} um; "
+                        f"readings rejected {section.get('readings_rejected')}"
+                    )
             if "edt" in haemo_results:
                 logger.info(f"EDT mask diameter measurement summary: {haemo_results['edt']}")
             if "diameters" in haemo_results:

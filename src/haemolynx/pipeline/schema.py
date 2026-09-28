@@ -4075,6 +4075,68 @@ SCHEMA = Schema(
             requires=("use_fwhm_edge_diameters",),
             advanced=True,
         ),
+        # Raw cross-section fallback: where FWHM fails, fit the raw image's
+        # whole cross-section (haemodynamics.raw_section) before falling back
+        # to the segmentation mask. Off by default -- on a textured image it
+        # reads the halo round a vessel; see that module's docstring.
+        Setting(
+            name="use_raw_section_fallback",
+            kind="bool",
+            default=False,
+            help=(
+                "Where FWHM fails, fit the raw image's whole cross-section of the vessel (a "
+                "blurred lumen, pooling every photon in the section) before falling back to the "
+                "segmentation mask. Measures wide and z-running vessels a line cannot; check it "
+                "against FWHM on your image first, since on a speckled one it reads the halo "
+                "round a vessel"
+            ),
+            section=_FWHM,
+            requires=("use_fwhm_edge_diameters", "do_fwhm_measurement"),
+        ),
+        Setting(
+            name="raw_section_min_lumen_contrast",
+            kind="float",
+            default=3.0,
+            help=(
+                "Keep a cross-section's reading only when its fitted lumen stands this many "
+                "standard deviations of the section's texture above the background; a vessel "
+                "needs two such readings"
+            ),
+            section=_FWHM,
+            minimum=0.0,
+            requires=("use_raw_section_fallback",),
+            advanced=True,
+        ),
+        Setting(
+            name="raw_section_psf_sigma_xy_um",
+            kind="float",
+            default=None,
+            help=(
+                "The image's blur across the y-x plane, as a Gaussian sigma. Leave unset to "
+                "estimate it from the image's own wide vessels"
+            ),
+            section=_FWHM,
+            unit="um",
+            minimum=0.0,
+            requires=("use_raw_section_fallback",),
+            advanced=True,
+            placeholder="estimate",
+        ),
+        Setting(
+            name="raw_section_psf_sigma_z_um",
+            kind="float",
+            default=None,
+            help=(
+                "The image's blur along z, as a Gaussian sigma. Leave unset to estimate it from "
+                "the image's own wide vessels"
+            ),
+            section=_FWHM,
+            unit="um",
+            minimum=0.0,
+            requires=("use_raw_section_fallback",),
+            advanced=True,
+            placeholder="estimate",
+        ),
         # ------------------------------------------------------------------
         # EDT mask diameter estimate: a segmentation-mask-based cross-check
         # and fallback for FWHM, from the mask's own cross-section (or,

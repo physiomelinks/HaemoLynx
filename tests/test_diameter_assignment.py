@@ -675,3 +675,144 @@ def test_the_resolvable_diameter_floor_setting_reaches_the_measurement(monkeypat
     default = default_schema()["edt_min_resolvable_diameter_um"].default
     assert seen == [edt_diameter.MIN_RESOLVABLE_DIAMETER_UM, 0.0]
     assert default == edt_diameter.MIN_RESOLVABLE_DIAMETER_UM
+
+
+# --- the raw cross-section fallback, between FWHM and the mask ----------------------
+
+
+def test_stamping_goes_fwhm_then_raw_section_then_the_mask_then_the_table():
+    from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_RAW_SECTION
+
+    graph = nx.MultiGraph()
+    rows = [
+        {"fwhm_diameter_um": 4.0, "raw_section_diameter_um": 5.0, "edt_diameter_um": 6.0},
+        {"raw_section_diameter_um": 5.0, "edt_diameter_um": 6.0},
+        {"edt_diameter_um": 6.0},
+        {},
+    ]
+    for index, attrs in enumerate(rows):
+        graph.add_edge(index, index + 10, key=0, branch_order="B01", length=EDGE_LENGTH_UM, **attrs)
+
+    counts = stamp_edge_diameters(
+        graph, DIAMETERS, use_edt_fallback=True, use_raw_section_fallback=True
+    )
+
+    sources = [graph[i][i + 10][0]["diameter_source"] for i in range(4)]
+    widths = [graph[i][i + 10][0]["diameter_um"] for i in range(4)]
+    assert sources == [
+        DIAMETER_SOURCE_MEASURED, DIAMETER_SOURCE_RAW_SECTION, DIAMETER_SOURCE_EDT,
+        DIAMETER_SOURCE_TABLE,
+    ]
+    assert widths == [4.0, 5.0, 6.0, DIAMETERS["B01"]]
+    assert counts["raw_section"] == 1
+
+
+def test_a_raw_section_width_is_ignored_while_the_fallback_is_off():
+    graph = nx.MultiGraph()
+    graph.add_edge(0, 1, key=0, branch_order="B01", length=EDGE_LENGTH_UM,
+                   raw_section_diameter_um=5.0, edt_diameter_um=6.0)
+
+    stamp_edge_diameters(graph, DIAMETERS, use_edt_fallback=True)
+
+    assert graph[0][1][0]["diameter_source"] == DIAMETER_SOURCE_EDT
+
+
+def test_keeping_existing_diameters_keeps_a_raw_section_one():
+    from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_RAW_SECTION
+
+    graph = nx.MultiGraph()
+    graph.add_edge(0, 1, key=0, branch_order="B01", length=EDGE_LENGTH_UM,
+                   diameter_um=5.0, diameter_source=DIAMETER_SOURCE_RAW_SECTION)
+
+    counts = stamp_edge_diameters(graph, DIAMETERS, keep_existing=True)
+
+    assert graph[0][1][0]["diameter_um"] == 5.0
+    assert counts["raw_section"] == 1
+
+
+def _fallback_run(monkeypatch, fwhm_settings):
+    """assign_edge_diameters with FWHM measuring only the first edge, and the
+    raw-section measurement recording what it was asked to do."""
+    from haemolynx.haemodynamics import apply
+
+    calls = []
+
+    def fake_fwhm(G, _config, raw_volume=None, vessel_mask=None, **_kwargs):
+        first = next(iter(G.edges(keys=True)))
+        G.edges[first]["fwhm_diameter_um"] = 4.0
+        return {}
+
+    def fake_sections(G, **kwargs):
+        calls.append(kwargs)
+        for edge in kwargs["edges"]:
+            G.edges[edge]["raw_section_diameter_um"] = 5.5
+        return {"edges_measured": len(kwargs["edges"]), "edges_skipped": []}
+
+    monkeypatch.setattr(apply, "_measure_fwhm_diameters", fake_fwhm)
+    monkeypatch.setattr(
+        apply.raw_section, "measure_edge_diameters_from_raw_sections", fake_sections
+    )
+    monkeypatch.setattr(
+        apply, "load_fwhm_raw_volume", lambda _config: np.zeros((4, 4, 4), dtype=np.float32)
+    )
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": dict(DIAMETERS)},
+        fwhm={"use_fwhm_edge_diameters": True, "do_fwhm_measurement": True, **fwhm_settings},
+    )
+    graph = _network()
+    graph, summary, _raw = assign_edge_diameters(graph, config)
+    return graph, summary, calls
+
+
+def test_the_raw_section_fallback_is_off_unless_asked_for(monkeypatch):
+    graph, summary, calls = _fallback_run(monkeypatch, {})
+
+    assert calls == []
+    assert "raw_section" not in summary
+    assert DIAMETER_SOURCE_TABLE in {d["diameter_source"] for _u, _v, d in graph.edges(data=True)}
+
+
+def test_with_the_fallback_on_only_the_vessels_fwhm_failed_on_are_read(monkeypatch):
+    from haemolynx.haemodynamics.poiseuille import DIAMETER_SOURCE_RAW_SECTION
+
+    graph, summary, calls = _fallback_run(
+        monkeypatch,
+        {
+            "use_raw_section_fallback": True,
+            "raw_section_min_lumen_contrast": 4.5,
+            "raw_section_psf_sigma_xy_um": 0.4,
+            "raw_section_psf_sigma_z_um": 1.3,
+            "fwhm_sample_spacing_along_edge_um": 3.0,
+            "fwhm_longitudinal_average_um": 6.0,
+        },
+    )
+
+    (call,) = calls
+    first = next(iter(graph.edges(keys=True)))
+    assert first not in call["edges"] and len(call["edges"]) == graph.number_of_edges() - 1
+    assert call["psf_sigma_zyx"] == (1.3, 0.4, 0.4)
+    assert call["min_lumen_contrast"] == 4.5
+    assert call["sample_spacing_along_edge_um"] == 3.0
+    assert call["average_along_vessel_um"] == 6.0
+    sources = [d["diameter_source"] for _u, _v, d in graph.edges(data=True)]
+    assert sources.count(DIAMETER_SOURCE_MEASURED) == 1
+    assert sources.count(DIAMETER_SOURCE_RAW_SECTION) == graph.number_of_edges() - 1
+
+
+def test_one_psf_width_alone_means_both_are_estimated(monkeypatch):
+    _graph, _summary, calls = _fallback_run(
+        monkeypatch, {"use_raw_section_fallback": True, "raw_section_psf_sigma_xy_um": 0.4}
+    )
+
+    assert calls[0]["psf_sigma_zyx"] is None
+
+
+def test_the_raw_section_settings_are_off_by_default_and_follow_fwhm():
+    schema = default_schema()
+
+    assert schema["use_raw_section_fallback"].default is False
+    assert set(schema["use_raw_section_fallback"].requires) == {
+        "use_fwhm_edge_diameters", "do_fwhm_measurement",
+    }
+    for name in ("raw_section_psf_sigma_xy_um", "raw_section_psf_sigma_z_um"):
+        assert schema[name].default is None

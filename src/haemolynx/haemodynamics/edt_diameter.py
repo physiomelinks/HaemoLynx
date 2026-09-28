@@ -276,36 +276,17 @@ def measure_edge_diameters_from_binary_mask(
             summary["edges_skipped"].append((u, v, key, "zero_length"))
             continue
 
-        n_samples = max(1, int(np.floor(total_len / sample_spacing_along_edge_um)) + 1)
-        targets = np.linspace(0.0, total_len, n_samples)
-        pts = _interpolate_centerline(poly, s, targets)
-
-        u_is_branch = int(G.degree(u)) > 1
-        v_is_branch = int(G.degree(v)) > 1
-        keep = np.ones(n_samples, dtype=bool)
-        if branch_excl > 0.0:
-            if u_is_branch:
-                keep &= targets >= branch_excl
-            if v_is_branch:
-                keep &= (total_len - targets) >= branch_excl
-        sample_points = pts[keep]
-        sample_targets = targets[keep]
         for stale in _EDGE_ATTRIBUTES:
             data.pop(stale, None)
-        if len(sample_targets) < SHORT_EDGE_MIN_READINGS:
-            # An edge shorter than its junction zones used to be excluded
-            # whole (238 of 3191 edges on a real run, left to the
-            # branch-order table), then read once at its midpoint, with
-            # nothing to outvote a reading at a gap or notch in the mask: 86%
-            # of a real network's vessels read under 2 um were such edges.
-            sample_targets = _short_edge_targets(
-                total_len,
-                start=branch_excl if u_is_branch else 0.0,
-                end=total_len - branch_excl if v_is_branch else total_len,
-                start_is_branch=u_is_branch,
-                end_is_branch=v_is_branch,
-            )
-            sample_points = _interpolate_centerline(poly, s, sample_targets)
+        sample_targets, short = edge_sample_targets(
+            total_len,
+            sample_spacing_along_edge_um,
+            branch_excl,
+            start_is_branch=int(G.degree(u)) > 1,
+            end_is_branch=int(G.degree(v)) > 1,
+        )
+        sample_points = _interpolate_centerline(poly, s, sample_targets)
+        if short:
             data["edt_short_edge_readings"] = len(sample_targets)
 
         tangents = _centreline_tangents(poly, s, total_len, sample_targets)
@@ -470,6 +451,46 @@ def _cross_section_diameter(
     ):
         return float("nan")
     return 2.0 * radius
+
+
+def edge_sample_targets(
+    total_len: float,
+    spacing_um: float,
+    branch_exclusion_um: float,
+    *,
+    start_is_branch: bool,
+    end_is_branch: bool,
+) -> tuple[np.ndarray, bool]:
+    """Arc lengths to read an edge at, and whether they are a short edge's.
+
+    Every *spacing_um* along the edge, leaving out *branch_exclusion_um* at
+    an end that is a junction. An edge shorter than its junction zones used
+    to be excluded whole (238 of 3191 edges on a real run, left to the
+    branch-order table), then read once at its midpoint, with nothing to
+    outvote a reading at a gap or notch in the mask: 86% of a real network's
+    vessels read under 2 um were such edges. One left with fewer than
+    :data:`SHORT_EDGE_MIN_READINGS` is read at :func:`_short_edge_targets`
+    instead, and the second value is True.
+    """
+    n_samples = max(1, int(np.floor(total_len / spacing_um)) + 1)
+    targets = np.linspace(0.0, total_len, n_samples)
+    exclusion = max(0.0, float(branch_exclusion_um))
+    keep = np.ones(n_samples, dtype=bool)
+    if exclusion > 0.0:
+        if start_is_branch:
+            keep &= targets >= exclusion
+        if end_is_branch:
+            keep &= (total_len - targets) >= exclusion
+    targets = targets[keep]
+    if len(targets) >= SHORT_EDGE_MIN_READINGS:
+        return targets, False
+    return _short_edge_targets(
+        total_len,
+        start=exclusion if start_is_branch else 0.0,
+        end=total_len - exclusion if end_is_branch else total_len,
+        start_is_branch=start_is_branch,
+        end_is_branch=end_is_branch,
+    ), True
 
 
 def _short_edge_targets(

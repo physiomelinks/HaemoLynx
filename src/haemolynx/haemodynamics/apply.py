@@ -17,10 +17,12 @@ from haemolynx.parsers import prefixed_arguments
 from haemolynx.preprocessing.memmap_support import release_memmap_array
 from haemolynx.haemodynamics import automated
 from haemolynx.haemodynamics import edt_diameter
+from haemolynx.haemodynamics import raw_section
 from haemolynx.haemodynamics.poiseuille import (
     PoiseuilleModel,
     clear_edge_resistances,
     flag_fwhm_edt_disagreement,
+    positive_diameter_um,
     stamp_edge_diameters,
 )
 from haemolynx.haemodynamics.viscosity import describe_law
@@ -253,6 +255,74 @@ def _measure_fwhm_diameters(
     )
 
 
+def _measure_raw_section_diameters(
+    G: nx.MultiGraph,
+    config: HaemodynamicsApplyConfig,
+    *,
+    raw_volume: np.ndarray | None,
+    vessel_mask: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Fit the raw cross-sections of the edges FWHM left without a width.
+
+    Shares FWHM's own sampling (spacing, junction exclusion, how far a
+    section is averaged along the vessel, aggregation) and first guess, so
+    the two read a vessel at the same places."""
+    if raw_volume is None:
+        path = _fwhm_raw_path(config)
+        if path is None:
+            return {"skipped": True, "reason": "no fwhm_raw_tiff_path to read sections from"}
+        raw_volume = automated.load_single_channel_tiff_volume(
+            path, axis_order=config.axis_order, use_memmap=config.use_memmap,
+            memmap_directory=config.memmap_directory,
+        )
+    voxel_sz = tuple(
+        float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
+    )
+    unmeasured = [
+        (u, v, key)
+        for u, v, key, data in G.edges(keys=True, data=True)
+        if positive_diameter_um(data.get("fwhm_diameter_um")) is None
+    ]
+    sigma_xy = config.fwhm_setting("raw_section_psf_sigma_xy_um")
+    sigma_z = config.fwhm_setting("raw_section_psf_sigma_z_um")
+    psf = None
+    if sigma_xy is not None and sigma_z is not None:
+        psf = (float(sigma_z), float(sigma_xy), float(sigma_xy))
+    elif sigma_xy is not None or sigma_z is not None:
+        logger.warning(
+            "Raw cross-section: only one of raw_section_psf_sigma_xy_um and "
+            "raw_section_psf_sigma_z_um is set; estimating both from the image."
+        )
+    return raw_section.measure_edge_diameters_from_raw_sections(
+        G,
+        raw_volume=raw_volume,
+        voxel_size_zyx=voxel_sz,
+        vessel_mask=vessel_mask,
+        psf_sigma_zyx=psf,
+        edges=unmeasured,
+        sample_spacing_along_edge_um=float(
+            config.fwhm_setting("fwhm_sample_spacing_along_edge_um", 2.0)
+        ),
+        branch_endpoint_exclusion_um=float(
+            config.fwhm_setting("fwhm_branch_endpoint_exclusion_um", 10.0)
+        ),
+        average_along_vessel_um=float(
+            config.fwhm_setting(
+                "fwhm_longitudinal_average_um", raw_section.DEFAULT_AVERAGE_ALONG_VESSEL_UM
+            )
+        ),
+        min_lumen_contrast=float(
+            config.fwhm_setting(
+                "raw_section_min_lumen_contrast", raw_section.RAW_SECTION_MIN_LUMEN_CONTRAST
+            )
+        ),
+        min_diameter_pixels=float(config.fwhm_setting("fwhm_min_diameter_pixels", 2.0)),
+        aggregation=config.fwhm_setting("fwhm_edge_diameter_aggregation", "median"),
+        guide_attribute=config.fwhm_setting("fwhm_diameter_guess_edge_attribute", "edt_diameter_um"),
+        fallback_guide_um=float(config.fwhm_setting("fwhm_diameter_guess_um", None) or 4.0),
+    )
+
+
 def load_edt_mask_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
     """The binary mask EDT diameter measurement samples from
     ``edt_mask_path``, or ``None`` when no path is configured.
@@ -423,12 +493,19 @@ def _assign_edge_diameters_with_mask(
                 "reason": "no in-memory segmentation volume and no edt_mask_path configured",
             }
 
+    use_raw_section_fallback = bool(
+        config.use_fwhm_edge_diameters and config.fwhm_setting("use_raw_section_fallback", False)
+    )
     if config.use_fwhm_edge_diameters:
         raw_volume = load_fwhm_raw_volume(config)
         if remeasure:
             summary["fwhm"] = _measure_fwhm_diameters(
                 G, config, raw_volume=raw_volume, vessel_mask=mask_volume
             )
+            if use_raw_section_fallback:
+                summary["raw_section"] = _measure_raw_section_diameters(
+                    G, config, raw_volume=raw_volume, vessel_mask=mask_volume
+                )
         else:
             summary["fwhm"] = {
                 "skipped": True,
@@ -440,6 +517,7 @@ def _assign_edge_diameters_with_mask(
         config.diameter("diameter_by_branch_order"),
         keep_existing=keep_existing,
         use_edt_fallback=use_edt_fallback,
+        use_raw_section_fallback=use_raw_section_fallback,
     )
     if config.use_edt_diameter_crosscheck:
         warn_ratio = float(config.edt_setting("edt_fwhm_disagreement_warn_ratio", 1.5))
