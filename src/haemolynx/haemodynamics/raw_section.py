@@ -38,8 +38,13 @@ image whose sections are speckle with no clean lumen edge -- a real embryonic
 brain stack, where the plasma dye appears to have leaked into the tissue --
 fits latch onto the bright halo round a vessel and read about twice its
 width, and agree with FWHM within 20% on only a quarter of vessels at any
-contrast gate. That is why it is off by default: check it against FWHM on
-your own image before trusting it (``raw_section_*`` edge attributes).
+contrast gate. Against the same stack's endothelial internal diameters (see
+:mod:`haemolynx.haemodynamics.endothelial`), on 674 vessels, it read 1.37x
+(median) where the plasma segmentation's cross-section read 0.95x and FWHM
+0.88x. That is why it is off by default -- and why, though it beats FWHM on
+clean synthetic vessels, it did not replace FWHM as the default: check it
+against FWHM on your own image before trusting it (``raw_section_*`` edge
+attributes).
 
 Vessels are read where the segmentation-mask estimate reads them
 (:func:`haemolynx.haemodynamics.edt_diameter.edge_sample_targets`): every
@@ -53,11 +58,19 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Literal
 
 import numpy as np
-from scipy.ndimage import binary_dilation, binary_fill_holes, gaussian_filter, label, map_coordinates
+from scipy.ndimage import binary_dilation, binary_fill_holes, gaussian_filter, label
 from scipy.optimize import least_squares
 
 from .automated import _aggregate_edge_diameter, _arc_length_parameterize, _interpolate_centerline
 from .edt_diameter import _centreline_tangents, edge_sample_targets
+from .sections import (
+    averaged_section,
+    lumen_image,
+    nearest_section,
+    projected_sigma,
+    psf_from_section_blurs,
+    section_axes,
+)
 
 __all__ = [
     "MIN_ACCEPTED_READINGS",
@@ -120,75 +133,6 @@ class SectionFit:
     sigma_across_um: float
     sigma_other_um: float
     other_axis_z: float
-
-
-def section_axes(tangent: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Unit tangent ``t`` and the section's axes: ``a`` across the vessel in
-    the y-x plane (no z), and ``b = t x a``. With ``a`` free of z, a PSF
-    aligned to the image axes projects onto ``(a, b)`` with no cross term."""
-    t = np.asarray(tangent, dtype=float)
-    t = t / max(float(np.linalg.norm(t)), 1e-12)
-    a = np.cross(t, np.array([1.0, 0.0, 0.0]))  # axis 0 is z
-    if np.linalg.norm(a) < 1e-6:
-        a = np.array([0.0, 1.0, 0.0])
-    a /= np.linalg.norm(a)
-    b = np.cross(t, a)
-    b /= np.linalg.norm(b)
-    return t, a, b
-
-
-def _projected_sigma(axis: np.ndarray, psf_sigma_zyx) -> float:
-    sz, sy, sx = (float(v) for v in psf_sigma_zyx)
-    return float(np.sqrt((axis[0] * sz) ** 2 + (axis[1] * sy) ** 2 + (axis[2] * sx) ** 2))
-
-
-def _averaged_section(
-    raw: np.ndarray,
-    poly: np.ndarray,
-    s: np.ndarray,
-    total_len: float,
-    at: float,
-    voxel_size_zyx,
-    offsets: np.ndarray,
-    average_um: float,
-) -> np.ndarray:
-    """The raw image in the plane normal to the centreline at arc length *at*,
-    averaged over *average_um* of the vessel along its curve -- each plane in
-    its own frame, so a curved vessel stays centred. NaN outside the volume."""
-    spacing = np.asarray(voxel_size_zyx, dtype=float)
-    half = 0.5 * max(float(average_um), 0.0)
-    step = 0.5 * float(np.min(spacing))
-    along = np.arange(max(0.0, at - half), min(total_len, at + half) + 1e-9, step)
-    if along.size == 0:
-        along = np.array([at])
-    points = _interpolate_centerline(poly, s, along)
-    tangents = _centreline_tangents(poly, s, total_len, along)
-    total = np.zeros((len(offsets), len(offsets)))
-    for point, tangent in zip(points, tangents):
-        _t, a, b = section_axes(tangent)
-        plane = point + offsets[:, None, None] * a + offsets[None, :, None] * b
-        idx = (plane / spacing).reshape(-1, 3).T
-        # Float output: map_coordinates otherwise returns the volume's own
-        # dtype, and a uint16 stack would come back truncated, with no NaN
-        # to mark where the plane leaves it.
-        total += map_coordinates(
-            raw, idx, order=1, mode="constant", cval=np.nan, output=np.float64
-        ).reshape(total.shape)
-    return total / len(points)
-
-
-def _lumen_image(offsets, cx, cy, ra, rb, sigma_a, sigma_b, step) -> np.ndarray:
-    """A unit-height elliptical lumen (semi-axes *ra*, *rb* along the
-    section's a and b), its edge soft over one grid step, seen through a
-    Gaussian blur of *sigma_a*, *sigma_b* (um)."""
-    x = offsets[:, None] - cx
-    y = offsets[None, :] - cy
-    radius = np.sqrt((x / ra) ** 2 + (y / rb) ** 2)
-    signed = (radius - 1.0) * np.sqrt(ra * rb)
-    cover = np.clip(0.5 - signed / step, 0.0, 1.0)
-    return gaussian_filter(
-        cover, (max(sigma_a / step, 1e-3), max(sigma_b / step, 1e-3)), mode="constant"
-    )
 
 
 def _own_region(plane, valid, offsets, rr, step, guide_um, mask_plane):
@@ -254,13 +198,13 @@ def fit_section(
     if free_sigma:
         sigma_a = sigma_b = 0.5
     else:
-        sigma_a = _projected_sigma(a, psf_sigma_zyx)
-        sigma_b = _projected_sigma(b, psf_sigma_zyx)
+        sigma_a = projected_sigma(a, psf_sigma_zyx)
+        sigma_b = projected_sigma(b, psf_sigma_zyx)
     blur = max(sigma_a, sigma_b, 1.0 if free_sigma else 0.0)
     extent = max(5.0, 1.6 * float(guide_um) + 3.0 * blur)
     step = max(_PLANE_STEP_UM, 2.0 * extent / (_PLANE_MAX_POINTS_ACROSS - 1))
     offsets = np.arange(-extent, extent + 0.5 * step, step)
-    plane = _averaged_section(raw, poly, s, total_len, at, spacing, offsets, average_um)
+    plane = averaged_section(raw, poly, s, total_len, at, spacing, offsets, average_um)
     valid = np.isfinite(plane)
     if valid.mean() < 0.5:
         return None, "off_volume"
@@ -268,13 +212,7 @@ def fit_section(
     mask_plane = None
     if vessel_mask is not None:
         point = _interpolate_centerline(poly, s, np.array([at]))[0]
-        section = point + offsets[:, None, None] * a + offsets[None, :, None] * b
-        nearest = np.rint((section / spacing).reshape(-1, 3)).astype(np.intp)
-        inside_volume = np.all((nearest >= 0) & (nearest < np.asarray(vessel_mask.shape)), axis=1)
-        values = np.zeros(len(nearest), dtype=float)
-        hits = nearest[inside_volume]
-        values[inside_volume] = np.asarray(vessel_mask[hits[:, 0], hits[:, 1], hits[:, 2]]) != 0
-        mask_plane = values.reshape(plane.shape)
+        mask_plane = nearest_section(vessel_mask, point, a, b, offsets, spacing)
     own, others = _own_region(plane, valid, offsets, rr, step, float(guide_um), mask_plane)
     if own is None or not own.any():
         return None, "no_lumen_region"
@@ -290,7 +228,17 @@ def fit_section(
         window &= ~binary_dilation(others, iterations=int(np.ceil(blur / step)) + 1)
     if int(window.sum()) < _MIN_WINDOW_PIXELS:
         return None, "no_lumen_region"
-    observed = plane[window]
+    # The model is rendered on the window's own crop (plus a blur margin),
+    # not the whole plane: the fit evaluates it a hundred-odd times.
+    margin = int(np.ceil(3.0 * blur / step)) + 2
+    rows_w, cols_w = np.nonzero(window)
+    crop = (
+        slice(max(0, rows_w.min() - margin), min(len(offsets), rows_w.max() + margin + 1)),
+        slice(max(0, cols_w.min() - margin), min(len(offsets), cols_w.max() + margin + 1)),
+    )
+    xs, ys = offsets[crop[0]], offsets[crop[1]]
+    in_crop = window[crop]
+    observed = plane[crop][in_crop]
     rows, cols = np.nonzero(own)
     cx0, cy0 = float(offsets[rows].mean()), float(offsets[cols].mean())
     r0 = max(float(np.sqrt(own.sum() * step * step / np.pi)), step)
@@ -303,7 +251,7 @@ def fit_section(
         else:
             background, amplitude, cx, cy, ra, rb = p
             sa, sb = sigma_a, sigma_b
-        return background + amplitude * _lumen_image(offsets, cx, cy, ra, rb, sa, sb, step)[window]
+        return background + amplitude * lumen_image(xs, ys, cx, cy, ra, rb, sa, sb, step)[in_crop]
 
     lo = [-np.inf, 0.0, cx0 - 3.0, cy0 - 3.0, 0.25 * step, 0.25 * step]
     hi = [np.inf, np.inf, cx0 + 3.0, cy0 + 3.0, extent, extent]
@@ -330,7 +278,7 @@ def fit_section(
     # not against what the fit leaves unexplained: a bright blob of speckle
     # fits a lumen well and leaves little, but stands only a fluctuation or
     # two above the texture it is part of.
-    fitted = _lumen_image(offsets, p[2], p[3], ra, rb, sigma_a, sigma_b, step)
+    fitted = lumen_image(offsets, offsets, p[2], p[3], ra, rb, sigma_a, sigma_b, step)
     outside = valid & (fitted < 0.02)
     if int(outside.sum()) < _MIN_WINDOW_PIXELS:
         return None, "lumen_not_closed"
@@ -434,20 +382,11 @@ def estimate_psf_sigma(
             f"at least {PSF_CALIBRATION_MIN_FITS} ({PSF_CALIBRATION_MIN_AXIAL_FITS}) are needed"
         )
         return None, details
-    sa = np.array([f.sigma_across_um for f in fits])
-    sb = np.array([f.sigma_other_um for f in fits])
-    bz = np.array([f.other_axis_z for f in fits])
-    design = np.concatenate(
-        [np.c_[np.ones_like(sa), np.zeros_like(sa)], np.c_[1.0 - bz ** 2, bz ** 2]]
+    sigma_xy, sigma_z = psf_from_section_blurs(
+        [f.sigma_across_um for f in fits],
+        [f.sigma_other_um for f in fits],
+        [f.other_axis_z for f in fits],
     )
-    target = np.concatenate([sa ** 2, sb ** 2])
-    weights = np.ones_like(target)
-    for _iteration in range(10):
-        coef, *_ = np.linalg.lstsq(design * weights[:, None], target * weights, rcond=None)
-        residual = target - design @ coef
-        scale = 1.4826 * float(np.median(np.abs(residual))) + 1e-12
-        weights = 1.0 / np.maximum(1.0, np.abs(residual) / (1.5 * scale))
-    sigma_xy, sigma_z = (float(np.sqrt(max(c, 1e-6))) for c in coef)
     details.update(sigma_xy_um=sigma_xy, sigma_z_um=sigma_z)
     return (sigma_z, sigma_xy, sigma_xy), details
 

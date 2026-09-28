@@ -40,6 +40,7 @@ import numpy as np
 from .poiseuille import (
     DIAMETER_SOURCE_MEASURED,
     baseline_edge_diameter,
+    edge_diameter_basis,
     positive_diameter_um,
     set_edge_resistance,
     table_diameter_for_order,
@@ -431,7 +432,7 @@ def apply_constriction_sites(
             num_points=int(num_integration_points),
             viscosity_law=viscosity_law,
             haematocrit=float(edge_haematocrit),
-            diameter_basis=diameter_basis,
+            diameter_basis=edge_diameter_basis(edge_data, diameter_basis),
         )
         set_edge_resistance(graph[u][v][key], float(total_resistance))
         graph[u][v][key]["pericyte_count_assigned"] = int(len(centers))

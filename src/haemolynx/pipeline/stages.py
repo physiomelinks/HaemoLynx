@@ -2052,6 +2052,7 @@ def _haemodynamics_apply_config(
         diameters=diameters,
         fwhm=schema.section_values(settings, "FWHM diameter measurement"),
         edt=edt,
+        endothelial=schema.section_values(settings, "Endothelial diameter"),
         resistance_node_pair=resistance_node_pair,
         voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
         axis_order=settings["image_axis_order"],
@@ -2166,6 +2167,18 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                             f"read in that range (edge attribute fwhm_in_speck_width_range)"
                             if speck else ""
                         )
+                    )
+            if "endothelial" in haemo_results:
+                wall = haemo_results["endothelial"]
+                if wall.get("skipped"):
+                    logger.info(f"Endothelial diameters skipped: {wall.get('reason')}")
+                else:
+                    logger.info(
+                        f"Endothelial diameters: {wall['edges_measured']} of "
+                        f"{wall['edges_measured'] + len(wall['edges_skipped'])} edges measured; "
+                        f"PSF sigma (z, y, x) {wall.get('psf_sigma_zyx')} um, wall "
+                        f"{wall.get('wall_um', float('nan')):.2f} um; readings rejected "
+                        f"{wall.get('readings_rejected')}"
                     )
             if "raw_section" in haemo_results:
                 section = haemo_results["raw_section"]

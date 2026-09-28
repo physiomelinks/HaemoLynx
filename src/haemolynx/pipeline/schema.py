@@ -68,6 +68,7 @@ _CARTWHEEL_GUARD = "Cartwheel hub guard"
 _DIAMETERS_AND_PERICYTES = "Diameters and pericytes"
 _FWHM = "FWHM diameter measurement"
 _EDT_DIAMETER = "EDT mask diameter estimate"
+_ENDOTHELIAL = "Endothelial diameter"
 # Not "Perturbations": the YAML key of a section may not collide with a
 # setting name, and `perturbations` is one of the settings in it.
 _PERTURBATION_RUNS = "Perturbation runs"
@@ -4169,6 +4170,109 @@ SCHEMA = Schema(
             unit="um",
             minimum=0.0,
             requires=("use_raw_section_fallback",),
+            advanced=True,
+            placeholder="estimate",
+        ),
+        # ------------------------------------------------------------------
+        # Endothelial diameter: the internal diameter inside an endothelial
+        # stain's wall, the run's alternative to FWHM
+        # (haemodynamics.endothelial).
+        # ------------------------------------------------------------------
+        Setting(
+            name="use_endothelial_diameters",
+            kind="bool",
+            default=False,
+            help=(
+                "Measure each vessel's internal diameter from an endothelial stain -- the lumen "
+                "inside the bright wall ring -- instead of FWHM on the plasma label. A vessel "
+                "whose ring is not resolved falls back to the segmentation mask, then the table. "
+                "These widths run wall to wall, so their viscosity takes the anatomical form"
+            ),
+            section=_ENDOTHELIAL,
+            requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="endothelial_image_path",
+            kind="path",
+            default=None,
+            help="The endothelial stain (claudin-5, CD31, isolectin...): a single-channel stack, or a multi-channel one with its channel below",
+            section=_ENDOTHELIAL,
+            requires=("use_endothelial_diameters",),
+            must_exist=True,
+        ),
+        Setting(
+            name="endothelial_channel",
+            kind="int",
+            default=None,
+            help="Which channel of a multi-channel stack is the endothelial stain, counting from 0; leave unset for a single-channel file",
+            section=_ENDOTHELIAL,
+            minimum=0,
+            requires=("use_endothelial_diameters",),
+            placeholder="single-channel file",
+        ),
+        Setting(
+            name="endothelial_min_ring_contrast",
+            kind="float",
+            default=4.0,
+            help=(
+                "Keep a section's reading only when its fitted wall stands this many times the "
+                "fit's own scatter above its lumen; a vessel needs two such readings"
+            ),
+            section=_ENDOTHELIAL,
+            minimum=0.0,
+            requires=("use_endothelial_diameters",),
+            advanced=True,
+        ),
+        Setting(
+            name="endothelial_wall_thickness_um",
+            kind="float",
+            default=None,
+            help=(
+                "The stained wall's thickness. Leave unset to estimate it from the image's wide "
+                "vessels; across the image plane it trades against the blur, so set it when you "
+                "know it (from EM, say) -- an error here shifts every internal diameter by about as much"
+            ),
+            section=_ENDOTHELIAL,
+            unit="um",
+            minimum=0.0,
+            requires=("use_endothelial_diameters",),
+            advanced=True,
+            placeholder="estimate",
+        ),
+        Setting(
+            name="endothelial_workers",
+            kind="int",
+            default=0,
+            help=(
+                "Processes to measure vessels in at once; 0 picks up to 8, leaving a core free. "
+                "The widths are the same however many"
+            ),
+            section=_ENDOTHELIAL,
+            minimum=0,
+            requires=("use_endothelial_diameters",),
+            advanced=True,
+        ),
+        Setting(
+            name="endothelial_psf_sigma_xy_um",
+            kind="float",
+            default=None,
+            help="The endothelial channel's blur across the y-x plane, as a Gaussian sigma. Leave unset to estimate it from the image's wide vessels",
+            section=_ENDOTHELIAL,
+            unit="um",
+            minimum=0.0,
+            requires=("use_endothelial_diameters",),
+            advanced=True,
+            placeholder="estimate",
+        ),
+        Setting(
+            name="endothelial_psf_sigma_z_um",
+            kind="float",
+            default=None,
+            help="The endothelial channel's blur along z, as a Gaussian sigma. Leave unset to estimate it from the image's wide vessels",
+            section=_ENDOTHELIAL,
+            unit="um",
+            minimum=0.0,
+            requires=("use_endothelial_diameters",),
             advanced=True,
             placeholder="estimate",
         ),

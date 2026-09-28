@@ -61,6 +61,7 @@ HIDE_WHEN_UNMET_SECTIONS = frozenset({
     "Diameters and pericytes",
     "FWHM diameter measurement",
     "EDT mask diameter estimate",
+    "Endothelial diameter",
     "Statistics and measurements",
     "Connectivity/Network Analysis",
     "Vascular communities",
@@ -303,6 +304,7 @@ def visible_diameter_settings(
         _visible_settings_in_section(schema, values, "Diameters and pericytes")
         | _visible_settings_in_section(schema, values, "FWHM diameter measurement")
         | _visible_settings_in_section(schema, values, "EDT mask diameter estimate")
+        | _visible_settings_in_section(schema, values, "Endothelial diameter")
     )
 
 

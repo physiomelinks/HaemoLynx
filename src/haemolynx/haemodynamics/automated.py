@@ -43,10 +43,13 @@ def load_single_channel_tiff_volume(
     axis_order: str = CANONICAL_AXIS_ORDER,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
+    channel: int | None = None,
 ) -> np.ndarray:
     """Load a 3D TIFF as float32 in canonical ``(z, y, x)`` order.
 
-    Single channel / single signal expected.
+    Single channel / single signal expected -- or, with *channel*, that one
+    channel (counting from 0) of a multi-channel stack such as an ImageJ
+    composite (see :func:`_read_tiff_channel`).
 
     *use_memmap* (the low-RAM option) decompresses, reorders and converts to
     float32 into disk-backed arrays in *memmap_directory*; the returned
@@ -56,6 +59,16 @@ def load_single_channel_tiff_volume(
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"TIFF not found: {path}")
+    if channel is not None:
+        vol = _read_tiff_channel(path, int(channel))
+        vol = apply_axis_order(vol, axis_order)
+        if not use_memmap:
+            return np.asarray(vol, dtype=np.float32)
+        from haemolynx.preprocessing.memmap_support import map_by_slab, new_memmap_array
+
+        out = new_memmap_array(vol.shape, np.float32, directory=memmap_directory)
+        map_by_slab(vol, lambda slab: slab.astype(np.float32), out)
+        return out
     if use_memmap:
         from haemolynx.io.load import load_3d_tif_with_voxel_size
 
@@ -93,6 +106,50 @@ def load_single_channel_tiff_volume(
             f"Expected 2D slice stack or 3D volume, got shape {vol.shape} for {path}"
         )
     return np.asarray(vol, dtype=np.float32)
+
+
+def _read_tiff_channel(path: Path, channel: int) -> np.ndarray:
+    """One channel of a multi-channel TIFF as a 3D volume in its stored axis
+    order (``(z, y, x)`` for an ImageJ hyperstack), reading only that
+    channel's pages. A stack with no channel axis is its own channel 0."""
+    with tifffile.TiffFile(str(path)) as tif:
+        series = tif.series[0]
+        axes = series.axes.upper()
+        shape = series.shape
+        if "C" not in axes:
+            if channel != 0:
+                raise ValueError(
+                    f"{path.name} has no channel axis (axes {axes}); channel {channel} "
+                    "does not exist. Leave the channel unset for a single-channel file."
+                )
+            volume = series.asarray()
+        else:
+            count = shape[axes.index("C")]
+            if not 0 <= channel < count:
+                raise ValueError(
+                    f"{path.name} has {count} channels (0-{count - 1}); channel {channel} "
+                    "does not exist."
+                )
+            if axes.endswith("YX") and len(series.pages) == int(np.prod(shape[:-2])):
+                # One page per plane: read only this channel's.
+                leading = [n for n in shape[:-2]]
+                grid = np.indices(leading).reshape(len(leading), -1)
+                pick = grid[axes.index("C")] == channel
+                pages = np.ravel_multi_index(grid[:, pick], leading)
+                volume = tifffile.imread(str(path), key=pages.tolist(), series=0)
+                kept = [n for i, n in enumerate(leading) if i != axes.index("C")]
+                volume = volume.reshape(kept + list(shape[-2:]))
+            else:
+                volume = np.take(series.asarray(), channel, axis=axes.index("C"))
+            axes = axes.replace("C", "")
+    volume = np.squeeze(volume)
+    if volume.ndim == 2:
+        volume = volume[np.newaxis, ...]
+    if volume.ndim != 3:
+        raise ValueError(
+            f"Expected a 3D volume in channel {channel} of {path.name}, got shape {volume.shape}"
+        )
+    return volume
 
 
 def _spacing_vec(voxel_size_zyx: tuple[float, float, float]) -> np.ndarray:
@@ -320,60 +377,68 @@ def _max_extent_along_ray(
         raise ValueError("step_um must be positive.")
     d = direction_unit / np.linalg.norm(direction_unit)
     n_steps = int(np.ceil(max_physical_extent / step_um))
-    shape = labels.shape
-    use_mask = vessel_mask is not None and bool(
+    if n_steps <= 0:
+        return max_physical_extent
+    shape = np.asarray(labels.shape)
+    # Every step along the ray at once; the ray ends at the first step that
+    # stops it, and each stop returns the distance of the step before.
+    ks = np.arange(1, n_steps + 1)
+    idx = center_idx[None, :] + (ks[:, None] * step_um) * (d / spacing)[None, :]
+    outside = np.any((idx < 0) | (idx > shape - 1), axis=1)
+    stop = int(np.argmax(outside)) if outside.any() else n_steps
+    if stop == 0:
+        return 0.0
+    nearest = np.rint(idx[:stop]).astype(np.intp)
+    if vessel_mask is not None and bool(
         vessel_mask[_nearest_integer_index(center_idx, vessel_mask.shape)]
-    )
-    # Less than a voxel of background (measured along this ray) is the mask's
-    # own pixelation, not a gap between two vessels.
-    min_gap_um = float(1.0 / np.linalg.norm(d / spacing))
-    background_run_um = 0.0
-    left_own_vessel = False
-    for k in range(1, n_steps + 1):
-        delta_phys = d * (k * step_um)
-        idx = center_idx + delta_phys / spacing
-        if (
-            idx[0] < 0
-            or idx[1] < 0
-            or idx[2] < 0
-            or idx[0] > shape[0] - 1
-            or idx[1] > shape[1] - 1
-            or idx[2] > shape[2] - 1
-        ):
-            return max(0.0, (k - 1) * step_um)
-        if use_mask:
-            if vessel_mask[_nearest_integer_index(idx, vessel_mask.shape)]:
-                if left_own_vessel:
-                    return max(0.0, (k - 1) * step_um)
-                background_run_um = 0.0
+    ):
+        # Less than a voxel of background (measured along this ray) is the
+        # mask's own pixelation, not a gap between two vessels.
+        min_gap_um = float(1.0 / np.linalg.norm(d / spacing))
+        on_vessel = np.asarray(vessel_mask[nearest[:, 0], nearest[:, 1], nearest[:, 2]]) != 0
+        # The ray has left its own vessel once a run of background is at
+        # least min_gap_um long; the next vessel voxel is another vessel.
+        count = 0.0
+        left_at = None
+        for i in range(stop):
+            if on_vessel[i]:
+                count = 0.0
             else:
-                background_run_um += step_um
-                if background_run_um >= min_gap_um:
-                    left_own_vessel = True
-        lab = _label_at(labels, idx, shape)
-        if lab == assigned_label:
-            if (
-                same_edge_s_lookup is not None
-                and same_edge_s0_um is not None
-                and same_edge_arc_window_um is not None
-                and same_edge_arc_window_um > 0
-            ):
-                key = _nearest_integer_index(idx, shape)
-                s_here = same_edge_s_lookup.get(key)
-                if s_here is not None and abs(float(s_here) - float(same_edge_s0_um)) > float(
-                    same_edge_arc_window_um
-                ):
-                    return max(0.0, (k - 1) * step_um)
-            continue
-        if lab == background_label:
-            continue
-        if junction_label is not None and lab == junction_label:
-            if allow_junction_crossing:
-                continue
-            return max(0.0, (k - 1) * step_um)
-        if allow_crossing_other_edges:
-            continue
-        return max(0.0, (k - 1) * step_um)
+                count += step_um
+                if count >= min_gap_um:
+                    left_at = i
+                    break
+        if left_at is not None:
+            later = np.flatnonzero(on_vessel[left_at + 1:])
+            if later.size:
+                stop = min(stop, left_at + 1 + int(later[0]))
+    lab = np.asarray(labels[nearest[:stop, 0], nearest[:stop, 1], nearest[:stop, 2]])
+    halts = np.zeros(stop, dtype=bool)
+    other = (lab != assigned_label) & (lab != background_label)
+    if junction_label is not None:
+        junction = lab == junction_label
+        halts |= junction & (not allow_junction_crossing)
+        other &= ~junction
+    if not allow_crossing_other_edges:
+        halts |= other
+    if (
+        same_edge_s_lookup is not None
+        and same_edge_s0_um is not None
+        and same_edge_arc_window_um is not None
+        and same_edge_arc_window_um > 0
+    ):
+        first_halt = int(np.argmax(halts)) if halts.any() else stop
+        window = float(same_edge_arc_window_um)
+        s0 = float(same_edge_s0_um)
+        for i in np.flatnonzero(lab[:first_halt] == assigned_label):
+            s_here = same_edge_s_lookup.get(tuple(int(v) for v in nearest[i]))
+            if s_here is not None and abs(float(s_here) - s0) > window:
+                halts[i] = True
+                break
+    if halts.any():
+        stop = min(stop, int(np.argmax(halts)))
+    if stop < n_steps:
+        return max(0.0, stop * step_um)
     return max_physical_extent
 
 
@@ -1820,11 +1885,14 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     ref_s = dense_s if dense_s is not None else s
                     arc_apart = np.abs(ref_s - float(s0))
                     center_arr = np.asarray(center, dtype=float)
-                    # Conservative cap using the closer of 3D and in-plane (y-x) distances.
-                    apart = np.minimum(
-                        np.linalg.norm(ref_pts - center_arr, axis=1),
-                        np.linalg.norm(ref_pts[:, 1:3] - center_arr[1:3], axis=1),
-                    )
+                    # The 3D distance: whether another part of this vessel
+                    # can cross the line. It also took the y-x distance
+                    # alone, and along a vessel running in z every point
+                    # further along it lies straight above or below: a
+                    # y-x distance of about nothing, taken as the vessel
+                    # folding back, so every line was capped at almost
+                    # nothing and no z-running vessel was ever measured.
+                    apart = np.linalg.norm(ref_pts - center_arr, axis=1)
                     # Only where the centreline folds back on itself: a point
                     # far along the arc but close in space. Every point at
                     # least arc_sep along a *straight* vessel is still about

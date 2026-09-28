@@ -219,6 +219,7 @@ STAGES: tuple[Stage, ...] = (
             "Diameters and pericytes",
             "FWHM diameter measurement",
             "EDT mask diameter estimate",
+            "Endothelial diameter",
         ),
     ),
     Stage(

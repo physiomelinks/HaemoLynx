@@ -94,13 +94,17 @@ def build_diameter_by_branch_order(
 #: How an edge's modelled ``diameter_um`` was chosen. ``measured`` is a FWHM
 #: fit; ``raw_section`` is the raw image's own cross-section, fitted where
 #: FWHM failed when ``use_raw_section_fallback`` is on (see
-#: ``haemolynx.haemodynamics.raw_section``); ``edt_mask`` is the segmentation
+#: ``haemolynx.haemodynamics.raw_section``); ``endothelial`` is the internal
+#: diameter inside the endothelial wall, the run's alternative to FWHM when
+#: ``use_endothelial_diameters`` is on (see
+#: ``haemolynx.haemodynamics.endothelial``); ``edt_mask`` is the segmentation
 #: mask's own width estimate, used only when both of those failed for that
 #: edge and ``use_edt_fallback`` is on (see
 #: ``haemolynx.haemodynamics.edt_diameter``); ``table`` is the branch-order
 #: lookup; ``override`` is a human value.
 DIAMETER_SOURCE_MEASURED = "measured"
 DIAMETER_SOURCE_RAW_SECTION = "raw_section"
+DIAMETER_SOURCE_ENDOTHELIAL = "endothelial"
 DIAMETER_SOURCE_EDT = "edt_mask"
 DIAMETER_SOURCE_TABLE = "table"
 DIAMETER_SOURCE_OVERRIDE = "override"
@@ -108,6 +112,7 @@ DIAMETER_SOURCES = frozenset(
     {
         DIAMETER_SOURCE_MEASURED,
         DIAMETER_SOURCE_RAW_SECTION,
+        DIAMETER_SOURCE_ENDOTHELIAL,
         DIAMETER_SOURCE_EDT,
         DIAMETER_SOURCE_TABLE,
         DIAMETER_SOURCE_OVERRIDE,
@@ -118,6 +123,7 @@ _KEPT_DIAMETER_SOURCES = frozenset(
     {
         DIAMETER_SOURCE_MEASURED,
         DIAMETER_SOURCE_RAW_SECTION,
+        DIAMETER_SOURCE_ENDOTHELIAL,
         DIAMETER_SOURCE_EDT,
         DIAMETER_SOURCE_OVERRIDE,
     }
@@ -154,6 +160,22 @@ def table_diameter_for_order(diameter_by_branch_order: dict, branch_order: objec
         return None
     last_order, last_value = max(listed, key=lambda entry: entry[0])
     return last_value if order > last_order else None
+
+
+#: A vessel's own ``diameter_basis`` edge attribute, when a measurement knows
+#: which diameter it read -- an endothelial internal diameter runs wall to
+#: wall (``anatomical``) whatever the run's ``diameter_basis`` says about the
+#: rest. Read wherever a vessel's viscosity is computed, so one network can
+#: hold both, each through its own form of the law.
+EDGE_DIAMETER_BASIS = "diameter_basis"
+
+
+def edge_diameter_basis(data: dict, default: str) -> str:
+    """The diameter basis *data*'s diameter was measured on: its own
+    :data:`EDGE_DIAMETER_BASIS` when it names a known one, else *default*
+    (the run's)."""
+    basis = data.get(EDGE_DIAMETER_BASIS)
+    return basis if basis in DIAMETER_BASES else default
 
 
 def positive_diameter_um(value: object) -> float | None:
@@ -225,6 +247,7 @@ def set_edge_diameter_override(data: dict, diameter_um: float) -> None:
         )
     data["diameter_um"] = diameter
     data["diameter_source"] = DIAMETER_SOURCE_OVERRIDE
+    data.pop(EDGE_DIAMETER_BASIS, None)  # a human value is on the run's basis
 
 
 def scale_stored_edge_diameters(data: dict, scale: float) -> bool:
@@ -250,12 +273,16 @@ def stamp_edge_diameters(
     keep_existing: bool = False,
     use_edt_fallback: bool = False,
     use_raw_section_fallback: bool = False,
+    use_endothelial: bool = False,
 ) -> dict[str, int]:
     """Write ``diameter_um`` and ``diameter_source`` on every edge that can.
 
-    When *keep_existing* is True, measured/raw-section/EDT/override edges
-    stay as they are (so a resume does not wipe approvals or re-fall-back).
-    Otherwise FWHM, when present, wins; then -- when
+    When *keep_existing* is True, measured/raw-section/endothelial/EDT/
+    override edges stay as they are (so a resume does not wipe approvals or
+    re-fall-back). Otherwise -- with *use_endothelial* -- the endothelial
+    internal diameter (``endothelial_diameter_um``, see
+    ``haemolynx.haemodynamics.endothelial``) wins, the run's alternative to
+    FWHM; else FWHM, when present, wins; then -- when
     *use_raw_section_fallback* is True and the edge carries a
     ``raw_section_diameter_um`` (see ``haemolynx.haemodynamics.raw_section``)
     -- the raw image's own cross-section, still a measurement of the
@@ -266,11 +293,27 @@ def stamp_edge_diameters(
     table; then the table (see :func:`table_diameter_for_order` for an order
     past its end). A vessel whose mask was too thin to give a width has no
     ``edt_diameter_um`` and so takes the table's.
+
+    An endothelial diameter runs wall to wall, so its edge is marked
+    :data:`EDGE_DIAMETER_BASIS` ``"anatomical"`` and its viscosity takes that
+    form of the law (see :func:`edge_diameter_basis`); every other source
+    is the run's own basis, and clears the mark.
     """
     table = diameter_by_branch_order or {}
     counts = {
-        "measured": 0, "raw_section": 0, "edt_mask": 0, "table": 0, "override": 0, "unset": 0,
+        "measured": 0, "raw_section": 0, "endothelial": 0, "edt_mask": 0, "table": 0,
+        "override": 0, "unset": 0,
     }
+
+    def stamp(data: dict, diameter: float, source: str) -> None:
+        data["diameter_um"] = diameter
+        data["diameter_source"] = source
+        if source == DIAMETER_SOURCE_ENDOTHELIAL:
+            data[EDGE_DIAMETER_BASIS] = "anatomical"
+        else:
+            data.pop(EDGE_DIAMETER_BASIS, None)
+        counts[source] += 1
+
     for _u, _v, _key, data in G.edges(keys=True, data=True):
         source = data.get("diameter_source")
         if keep_existing and source in _KEPT_DIAMETER_SOURCES:
@@ -285,38 +328,33 @@ def stamp_edge_diameters(
         if keep_existing:
             measured = positive_diameter_um(data.get("fwhm_diameter_um"))
             if measured is not None:
-                data["diameter_um"] = measured
-                data["diameter_source"] = DIAMETER_SOURCE_MEASURED
-                counts["measured"] += 1
+                stamp(data, measured, DIAMETER_SOURCE_MEASURED)
                 continue
 
+        if use_endothelial:
+            endothelial = positive_diameter_um(data.get("endothelial_diameter_um"))
+            if endothelial is not None:
+                stamp(data, endothelial, DIAMETER_SOURCE_ENDOTHELIAL)
+                continue
         measured = positive_diameter_um(data.get("fwhm_diameter_um"))
         if measured is not None:
-            data["diameter_um"] = measured
-            data["diameter_source"] = DIAMETER_SOURCE_MEASURED
-            counts["measured"] += 1
+            stamp(data, measured, DIAMETER_SOURCE_MEASURED)
             continue
         if use_raw_section_fallback:
             section = positive_diameter_um(data.get("raw_section_diameter_um"))
             if section is not None:
-                data["diameter_um"] = section
-                data["diameter_source"] = DIAMETER_SOURCE_RAW_SECTION
-                counts["raw_section"] += 1
+                stamp(data, section, DIAMETER_SOURCE_RAW_SECTION)
                 continue
         if use_edt_fallback:
             edt = positive_diameter_um(data.get("edt_diameter_um"))
             if edt is not None:
-                data["diameter_um"] = edt
-                data["diameter_source"] = DIAMETER_SOURCE_EDT
-                counts["edt_mask"] += 1
+                stamp(data, edt, DIAMETER_SOURCE_EDT)
                 continue
         table_diameter = positive_diameter_um(
             table_diameter_for_order(table, data.get("branch_order"))
         )
         if table_diameter is not None:
-            data["diameter_um"] = table_diameter
-            data["diameter_source"] = DIAMETER_SOURCE_TABLE
-            counts["table"] += 1
+            stamp(data, table_diameter, DIAMETER_SOURCE_TABLE)
             continue
         counts["unset"] += 1
     return counts
@@ -449,7 +487,11 @@ class PoiseuilleModel:
         return d1
 
     def calculate_viscosity(
-        self, diameter: float, *, haematocrit: float | None = None
+        self,
+        diameter: float,
+        *,
+        haematocrit: float | None = None,
+        diameter_basis: str | None = None,
     ) -> float:
         """Apparent blood viscosity in Pa.s for a vessel of *diameter* um.
 
@@ -459,13 +501,15 @@ class PoiseuilleModel:
         ``haematocrit`` overrides ``self.haematocrit`` for this one call --
         used by callers that have a per-edge discharge haematocrit (see
         :mod:`haemolynx.haemodynamics.haematocrit_distribution`) instead of
-        the uniform value every edge otherwise shares.
+        the uniform value every edge otherwise shares. ``diameter_basis``
+        overrides ``self.diameter_basis`` the same way, for a vessel whose
+        diameter was measured on another basis (see :func:`edge_diameter_basis`).
         """
         return viscosity_for(
             diameter,
             law=self.viscosity_law,
             haematocrit=self.haematocrit if haematocrit is None else float(haematocrit),
-            diameter_basis=self.diameter_basis,
+            diameter_basis=self.diameter_basis if diameter_basis is None else diameter_basis,
         )
 
     def describe_viscosity_law(self) -> str:
@@ -475,7 +519,12 @@ class PoiseuilleModel:
         )
 
     def resistance_of_uniform_segment(
-        self, length: float, diameter: float, *, haematocrit: float | None = None
+        self,
+        length: float,
+        diameter: float,
+        *,
+        haematocrit: float | None = None,
+        diameter_basis: str | None = None,
     ) -> float:
         """Poiseuille resistance (Pa.s/m^3) of a straight uniform segment.
 
@@ -489,7 +538,9 @@ class PoiseuilleModel:
         """
         if length <= 0 or diameter <= 0:
             return float("inf")
-        viscosity = self.calculate_viscosity(diameter, haematocrit=haematocrit)
+        viscosity = self.calculate_viscosity(
+            diameter, haematocrit=haematocrit, diameter_basis=diameter_basis
+        )
         length_m = length / UM_PER_M
         diameter_m = diameter / UM_PER_M
         return (128.0 * viscosity * length_m) / (np.pi * diameter_m ** 4)
@@ -502,6 +553,7 @@ class PoiseuilleModel:
         d2: float,
         *,
         haematocrit: float | None = None,
+        diameter_basis: str | None = None,
     ) -> float:
         """Resistance per unit length (Pa.s/m^4) at *position* um along the vessel.
 
@@ -515,7 +567,9 @@ class PoiseuilleModel:
         diameter = self.get_diameter_at_position(position, length, d1, d2)
         if diameter <= 0:
             return float("inf")
-        viscosity = self.calculate_viscosity(diameter, haematocrit=haematocrit)
+        viscosity = self.calculate_viscosity(
+            diameter, haematocrit=haematocrit, diameter_basis=diameter_basis
+        )
         diameter_m = diameter / UM_PER_M
         return (128.0 * viscosity) / (np.pi * diameter_m ** 4)
 
@@ -527,6 +581,7 @@ class PoiseuilleModel:
         num_points: int = 1000,
         *,
         haematocrit: float | None = None,
+        diameter_basis: str | None = None,
     ) -> float:
         """Total resistance (Pa.s/m^3) by trapezoidal integration along the vessel.
 
@@ -537,7 +592,9 @@ class PoiseuilleModel:
             return float("inf")
         positions = np.linspace(0, length, num_points)
         resistances = [
-            self.resistance_integrand(pos, length, d1, d2, haematocrit=haematocrit)
+            self.resistance_integrand(
+                pos, length, d1, d2, haematocrit=haematocrit, diameter_basis=diameter_basis
+            )
             for pos in positions
         ]
         dx = (length / (num_points - 1) if num_points > 1 else length) / UM_PER_M
@@ -654,7 +711,16 @@ class PoiseuilleModel:
             # exactly as before, so the default (no per-edge override) path
             # pays no extra cost.
             edge_haematocrit = data.get("discharge_haematocrit")
-            if edge_haematocrit is None:
+            basis = edge_diameter_basis(data, self.diameter_basis)
+            if basis != self.diameter_basis:
+                # Its own basis: the precalculated map assumed the run's.
+                viscosity = self.calculate_viscosity(
+                    diameter, haematocrit=edge_haematocrit, diameter_basis=basis
+                )
+                resistance = self.resistance_of_uniform_segment(
+                    length, diameter, haematocrit=edge_haematocrit, diameter_basis=basis
+                )
+            elif edge_haematocrit is None:
                 # Get pre-calculated viscosity for this diameter
                 viscosity = diameter_viscosity_map.get(diameter, None)
                 if viscosity is None:
@@ -813,7 +879,8 @@ class PoiseuilleModel:
                 )
             try:
                 total_resistance = self.calculate_integrated_resistance(
-                    length, d1, d2, haematocrit=data.get("discharge_haematocrit")
+                    length, d1, d2, haematocrit=data.get("discharge_haematocrit"),
+                    diameter_basis=edge_diameter_basis(data, self.diameter_basis),
                 )
                 set_edge_resistance(G[u][v][key], total_resistance)
                 results["edges_set"] += 1

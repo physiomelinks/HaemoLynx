@@ -742,6 +742,27 @@ fwhm_diameter_measurement:
   raw_section_psf_sigma_z_um: null
 
 # ------------------------------------------------------------------------
+# Endothelial diameter
+# ------------------------------------------------------------------------
+endothelial_diameter:
+  # Measure each vessel's internal diameter from an endothelial stain -- the lumen inside the bright wall ring -- instead of FWHM on the plasma label. A vessel whose ring is not resolved falls back to the segmentation mask, then the table. These widths run wall to wall, so their viscosity takes the anatomical form  [needs run_haemodynamics]
+  use_endothelial_diameters: false
+  # The endothelial stain (claudin-5, CD31, isolectin...): a single-channel stack, or a multi-channel one with its channel below  [needs use_endothelial_diameters; must exist]
+  endothelial_image_path: null
+  # Which channel of a multi-channel stack is the endothelial stain, counting from 0; leave unset for a single-channel file  [range 0..; needs use_endothelial_diameters]
+  endothelial_channel: null
+  # Keep a section's reading only when its fitted wall stands this many times the fit's own scatter above its lumen; a vessel needs two such readings  [range 0.0..; needs use_endothelial_diameters]
+  endothelial_min_ring_contrast: 4.0
+  # The stained wall's thickness. Leave unset to estimate it from the image's wide vessels; across the image plane it trades against the blur, so set it when you know it (from EM, say) -- an error here shifts every internal diameter by about as much  [um; range 0.0..; needs use_endothelial_diameters]
+  endothelial_wall_thickness_um: null
+  # Processes to measure vessels in at once; 0 picks up to 8, leaving a core free. The widths are the same however many  [range 0..; needs use_endothelial_diameters]
+  endothelial_workers: 0
+  # The endothelial channel's blur across the y-x plane, as a Gaussian sigma. Leave unset to estimate it from the image's wide vessels  [um; range 0.0..; needs use_endothelial_diameters]
+  endothelial_psf_sigma_xy_um: null
+  # The endothelial channel's blur along z, as a Gaussian sigma. Leave unset to estimate it from the image's wide vessels  [um; range 0.0..; needs use_endothelial_diameters]
+  endothelial_psf_sigma_z_um: null
+
+# ------------------------------------------------------------------------
 # EDT mask diameter estimate
 # ------------------------------------------------------------------------
 edt_mask_diameter_estimate:

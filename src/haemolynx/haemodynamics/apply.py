@@ -17,8 +17,10 @@ from haemolynx.parsers import prefixed_arguments
 from haemolynx.preprocessing.memmap_support import release_memmap_array
 from haemolynx.haemodynamics import automated
 from haemolynx.haemodynamics import edt_diameter
+from haemolynx.haemodynamics import endothelial
 from haemolynx.haemodynamics import fwhm_decoys
 from haemolynx.haemodynamics import raw_section
+from haemolynx.haemodynamics import sections
 from haemolynx.haemodynamics.poiseuille import (
     PoiseuilleModel,
     clear_edge_resistances,
@@ -111,6 +113,10 @@ class HaemodynamicsApplyConfig:
         fall back to the segmentation mask's own inscribed radius (see
         :mod:`haemolynx.haemodynamics.edt_diameter`) when FWHM measurement
         fails for an edge.
+    ``endothelial``
+        The ``Endothelial diameter`` section -- the internal diameter inside
+        an endothelial stain's wall, the run's alternative to FWHM (see
+        :mod:`haemolynx.haemodynamics.endothelial`).
 
     Anything a run computes rather than configures stays an ordinary field.
     """
@@ -118,6 +124,7 @@ class HaemodynamicsApplyConfig:
     diameters: dict[str, Any] = field(default_factory=dict)
     fwhm: dict[str, Any] = field(default_factory=dict)
     edt: dict[str, Any] = field(default_factory=dict)
+    endothelial: dict[str, Any] = field(default_factory=dict)
 
     # Computed per run, not configured.
     comparison_output_csv_path: Path | None = None
@@ -186,6 +193,11 @@ class HaemodynamicsApplyConfig:
     @property
     def do_pericyte_constriction(self) -> bool:
         return bool(self.diameters.get("do_pericyte_construction", False))
+
+    def endothelial_setting(self, name: str, default: Any = None) -> Any:
+        """One value from the endothelial group, named as it is in the config."""
+        value = self.endothelial.get(name, default)
+        return default if value is None else value
 
     def edt_setting(self, name: str, default: Any = None) -> Any:
         """One value from the EDT group, named as it is in the config."""
@@ -322,6 +334,66 @@ def _measure_raw_section_diameters(
         guide_attribute=config.fwhm_setting("fwhm_diameter_guess_edge_attribute", "edt_diameter_um"),
         fallback_guide_um=float(config.fwhm_setting("fwhm_diameter_guess_um", None) or 4.0),
     )
+
+
+def _measure_endothelial_diameters(
+    G: nx.MultiGraph, config: HaemodynamicsApplyConfig
+) -> dict[str, Any]:
+    """Read each edge's internal diameter off the endothelial stain.
+
+    Reads the configured channel of ``endothelial_image_path`` and hands the
+    measurement the PSF and wall thickness the settings give (each estimated
+    from the image when unset). Samples where the mask estimate does, clear
+    of the same junction zones."""
+    path = config.endothelial_setting("endothelial_image_path")
+    if path is None:
+        return {"skipped": True, "reason": "no endothelial_image_path to read the wall from"}
+    channel = config.endothelial_setting("endothelial_channel")
+    volume = automated.load_single_channel_tiff_volume(
+        io.resolve_image_path_with_optional_zip(Path(path)),
+        axis_order=config.axis_order,
+        use_memmap=config.use_memmap,
+        memmap_directory=config.memmap_directory,
+        channel=None if channel is None else int(channel),
+    )
+    voxel_sz = tuple(
+        float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
+    )
+    sigma_xy = config.endothelial_setting("endothelial_psf_sigma_xy_um")
+    sigma_z = config.endothelial_setting("endothelial_psf_sigma_z_um")
+    psf = None
+    if sigma_xy is not None and sigma_z is not None:
+        psf = (float(sigma_z), float(sigma_xy), float(sigma_xy))
+    elif sigma_xy is not None or sigma_z is not None:
+        logger.warning(
+            "Endothelial diameters: only one of endothelial_psf_sigma_xy_um and "
+            "endothelial_psf_sigma_z_um is set; estimating both from the image."
+        )
+    wall = config.endothelial_setting("endothelial_wall_thickness_um")
+    workers = int(config.endothelial_setting("endothelial_workers", 0))
+    if workers <= 0:
+        workers = sections.default_worker_count()
+    try:
+        return endothelial.measure_edge_diameters_from_endothelium(
+            G,
+            endothelial_volume=volume,
+            voxel_size_zyx=voxel_sz,
+            psf_sigma_zyx=psf,
+            wall_um=None if wall is None else float(wall),
+            branch_endpoint_exclusion_um=float(
+                config.edt_setting("edt_junction_proximity_exclusion_um", 10.0)
+            ),
+            min_ring_contrast=float(
+                config.endothelial_setting(
+                    "endothelial_min_ring_contrast", endothelial.ENDOTHELIAL_MIN_RING_CONTRAST
+                )
+            ),
+            workers=workers,
+            memmap_directory=config.memmap_directory,
+        )
+    finally:
+        if isinstance(volume, np.memmap):
+            release_memmap_array(volume)
 
 
 def load_edt_mask_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
@@ -497,6 +569,9 @@ def _assign_edge_diameters_with_mask(
     use_raw_section_fallback = bool(
         config.use_fwhm_edge_diameters and config.fwhm_setting("use_raw_section_fallback", False)
     )
+    use_endothelial = bool(config.endothelial_setting("use_endothelial_diameters", False))
+    if use_endothelial:
+        summary["endothelial"] = _measure_endothelial_diameters(G, config)
     if config.use_fwhm_edge_diameters:
         raw_volume = load_fwhm_raw_volume(config)
         if remeasure:
@@ -539,6 +614,7 @@ def _assign_edge_diameters_with_mask(
         keep_existing=keep_existing,
         use_edt_fallback=use_edt_fallback,
         use_raw_section_fallback=use_raw_section_fallback,
+        use_endothelial=use_endothelial,
     )
     if config.use_edt_diameter_crosscheck:
         warn_ratio = float(config.edt_setting("edt_fwhm_disagreement_warn_ratio", 1.5))

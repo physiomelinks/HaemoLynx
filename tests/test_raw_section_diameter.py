@@ -236,9 +236,12 @@ def test_a_lumen_at_only_one_reading_is_not_a_vessel_width():
 
 
 def test_a_vessel_fwhm_cannot_read_is_read_by_the_fallback_in_a_run(tmp_path):
-    """End to end through assign_edge_diameters: FWHM's lines lie in the y-x
-    plane and cannot cross a z-running vessel, so it fails; the raw section
-    measures it before the mask or the table are reached."""
+    """End to end through assign_edge_diameters: where FWHM gives a vessel no
+    width -- here made to, by asking for more accepted samples than the
+    vessel has -- the raw section measures it before the mask or the table
+    are reached. (This used a z-running vessel, which FWHM could not measure
+    until its fold-back cap stopped taking every point above or below a
+    sample as a fold.)"""
     import tifffile
 
     from haemolynx.haemodynamics import HaemodynamicsApplyConfig, assign_edge_diameters
@@ -262,6 +265,7 @@ def test_a_vessel_fwhm_cannot_read_is_read_by_the_fallback_in_a_run(tmp_path):
             "do_fwhm_measurement": True,
             "fwhm_raw_tiff_path": path,
             "fwhm_branch_endpoint_exclusion_um": 0.0,
+            "fwhm_min_accepted_samples": 99,
             "use_raw_section_fallback": True,
             "raw_section_psf_sigma_xy_um": EFFECTIVE_PSF[1],
             "raw_section_psf_sigma_z_um": EFFECTIVE_PSF[0],

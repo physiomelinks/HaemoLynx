@@ -447,6 +447,22 @@ def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
+def check_one_primary_diameter_measurement(settings: Mapping[str, Any]) -> CheckReport:
+    """FWHM on the plasma label and the endothelial internal diameter are
+    alternatives: each is the first source in its own diameter chain, and
+    they measure different diameters (the plasma column, the lumen wall to
+    wall)."""
+    report = CheckReport()
+    if bool(settings.get("use_endothelial_diameters")) and bool(
+        settings.get("use_fwhm_edge_diameters")
+    ):
+        report.add_error(
+            "use_endothelial_diameters and use_fwhm_edge_diameters are both on; they are "
+            "alternatives, each the first source of its own diameter chain. Turn one off."
+        )
+    return report
+
+
 def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     """Every pre-run check, printed as a checklist.
 
@@ -463,5 +479,6 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_thick_vessel_restriction_prerequisites(settings))
     report.extend(check_perturbations(settings, schema))
     report.extend(check_segmentation_quality(settings))
+    report.extend(check_one_primary_diameter_measurement(settings))
     report.print("Preflight")
     return report

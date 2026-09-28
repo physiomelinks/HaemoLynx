@@ -235,3 +235,26 @@ def test_a_run_without_the_check_does_not_make_decoys(monkeypatch):
 
     assert len(calls) == 1
     assert "fwhm_decoy_check" not in summary
+
+
+# --- a vessel running along z ---------------------------------------------------------
+
+
+def test_fwhm_measures_a_vessel_running_along_z():
+    """Regression: FWHM capped each line where another part of the same
+    centreline came close, judged by the smaller of the 3D and the y-x
+    distance. Along a vessel running in z every point further along lies
+    straight above or below -- a y-x distance of about nothing -- so every
+    line was capped at almost nothing and no z-running vessel was measured."""
+    raw, mask, lines = _render([(6.0, (1, 0.05, 0.05), (0, 0, 0))], seed=61)
+    graph = _graph(lines, [6.0])
+
+    automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        graph, raw_tiff_path="unused", raw_volume=raw, vessel_mask=mask, voxel_size_zyx=VOXEL,
+        sample_spacing_along_edge_um=2.0, transverse_profile_step_um=0.25,
+        transverse_half_extent_um=6.0, min_accepted_samples=2,
+    )
+
+    data = graph[0][1][0]
+    assert data["fwhm_status"] == "measured"
+    assert data["fwhm_diameter_um"] == pytest.approx(6.0, rel=0.12)
