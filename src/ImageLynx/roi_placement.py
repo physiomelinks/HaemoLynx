@@ -18,9 +18,8 @@ Placement here is computed from the data rather than chosen by hand:
   it as the argmax of a per-slice 99th-percentile brightness profile, smoothed along z by a
   moving average of max(3, n // 20) slices.
 - **y and x** from the centroid of the grayscale channel's z-projection, thresholded at its
-  99th percentile. Note that the intensity weighting is inert as the data is normalised:
-  the cutoff lands on the saturation plateau at 1.0, so every surviving pixel weighs the
-  same. See tissue_centroid_yx.
+  99th percentile. The projection covers only the slices the box occupies (open item 13),
+  not the whole stack. See tissue_centroid_yx.
 
 **The trade this makes.** Centring on signal samples the middle of the organ, which is
 denser than its periphery, so the absolute densities reported are not representative of the
@@ -86,15 +85,12 @@ def tissue_centroid_yx(volume: np.ndarray, percentile: float = 99.0) -> Tuple[in
     volume is dominated by the many near-zero voxels, which drags the centroid towards the
     geometric middle and defeats the point of measuring it.
 
-    On the CB volumes the weighting is inert, and deliberately left in rather than removed.
-    preprocess_cb.py clips the top 0.02% of voxels to 1.0, and the projection below takes a
-    max over z, so 1.33-1.52% of the projection is saturated - more than 1%, which puts the
-    99th percentile exactly on 1.0. Every surviving pixel then carries the same weight, and
-    the weighted centroid equals the unweighted one to 0.00 px on all six volumes. The
-    weighting still matters for any input that is not saturated at the cutoff, which is why
-    it stays; but a smaller --saturated upstream would move ROI placement, by up to ~70 um
-    at the 90th percentile. The margin holding the cutoff on the plateau is 0.33-0.52
-    percentage points.
+    The weighting is not always inert. preprocess_cb.py clips the top 0.02% of voxels to
+    1.0 and the projection takes a max over z, so over the *whole* stack 1.33-1.52% of the
+    projection is saturated, the 99th percentile lands exactly on 1.0, and every survivor
+    weighs the same. place_roi now projects only the ROI's own 160 slices (open item 13),
+    where fewer columns saturate and the cutoff can fall below 1.0 (0.899 in WKY-A), so the
+    intensity weighting takes effect there.
     """
     data = np.asarray(volume, dtype=np.float32)
     projected = data.max(axis=0) if data.ndim == 3 else data
@@ -136,6 +132,13 @@ def place_roi(
         centre_z = shape[0] // 2
         sources.append("z=volume_centre")
 
+    # Clamp z before reading: the lateral centroid is measured over the slices the box will
+    # actually occupy (open item 13). Projecting the whole stack let tissue that never enters
+    # the box vote on where it goes laterally, which moved the centre 7-45 um.
+    centre_z = clamp_centre((centre_z, 0, 0), (size_zyx[0], 1, 1), (shape[0], 1, 1))[0]
+    z0 = centre_z - size_zyx[0] // 2
+    z1 = z0 + size_zyx[0]
+
     centre_y, centre_x = shape[1] // 2, shape[2] // 2
     path = specimen.ilastik_input_path
     if path.exists():
@@ -151,10 +154,10 @@ def place_roi(
                 # every chunk and each is decompressed whole. Measured on WKY-A: strided
                 # 4.88 s for 25 MB, full-resolution 4.58 s for 402 MB. It costs 6.9 um of
                 # centroid accuracy to hold 16x less in RAM.
-                block = np.asarray(handle["data"][::sz, ::sy, ::sx, 0], dtype=np.float32)
+                block = np.asarray(handle["data"][z0:z1:sz, ::sy, ::sx, 0], dtype=np.float32)
             cy, cx = tissue_centroid_yx(block)
             centre_y, centre_x = cy * sy, cx * sx
-            sources.append("yx=grayscale_centroid")
+            sources.append(f"yx=grayscale_centroid over z {z0}-{z1}")
         except Exception:
             sources.append("yx=volume_centre (unreadable)")
     else:

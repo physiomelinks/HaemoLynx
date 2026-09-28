@@ -150,3 +150,37 @@ def test_placement_differs_between_specimens():
     """If every ROI landed in the same relative spot there would be nothing to correct."""
     centres = {s.specimen_id: place_roi(s, (160, 160, 160)).centre_zyx for s in SPECIMENS}
     assert len(set(centres.values())) > 1
+
+
+def test_the_lateral_centroid_is_measured_over_the_rois_own_slices(tmp_path):
+    """Open item 13: tissue the box will never contain must not vote on where it goes.
+
+    Bright tissue sits outside the ROI's z-band at one (y, x), and inside it at another. A
+    whole-stack projection lands between the two; the band projection lands on the tissue
+    the box actually holds.
+    """
+    from types import SimpleNamespace
+
+    import h5py
+
+    shape = (200, 96, 96)
+    data = np.zeros(shape + (3,), dtype=np.float32)
+    data[0:40, 8:24, 8:24, 0] = 1.0          # outside the band, and larger
+    data[110:170, 56:64, 56:64, 0] = 1.0     # inside the band
+    path = tmp_path / "input.h5"
+    with h5py.File(path, "w") as handle:
+        handle["data"] = data
+
+    specimen = SimpleNamespace(
+        specimen_id="TEST", shape_zyx=shape, ilastik_input_path=path,
+        qc_record=lambda: {"z_profile": {"peak_slice": 140}},
+    )
+    placement = place_roi(specimen, (80, 32, 32))
+
+    assert placement.centre_zyx[0] == 140
+    assert placement.bounds[0] == slice(100, 180)
+    assert placement.centre_zyx[1:] == (60, 60)
+    assert "over z 100-180" in placement.source
+
+    whole_stack = tissue_centroid_yx(data[::4, ::2, ::2, 0])
+    assert abs(whole_stack[0] * 2 - 60) > 10, "the whole-stack centroid must differ, or this proves nothing"
