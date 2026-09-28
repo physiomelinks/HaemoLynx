@@ -30,6 +30,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from ImageLynx.preprocessing.image import at_or_above                  # noqa: E402
 from ImageLynx.roi_placement import place_roi                          # noqa: E402
 from ImageLynx.specimens import (                                      # noqa: E402
     PROCESSING_VOXEL_UM, SPECIMENS, TH_CHANNEL, VESSEL_CHANNEL,
@@ -73,8 +74,10 @@ def _skeletonise(mask):
 
 def analyse(specimen, th_threshold, vessel_threshold=FROZEN_VESSEL_THRESHOLD, roi=ROI):
     bounds = place_roi(specimen, roi).bounds
-    vessel = _crop(specimen.probabilities_path, bounds,
-                   VESSEL_CHANNEL.target_index) > vessel_threshold
+    # The vessel cut is inclusive, the same plain cut the threshold selector makes (open item
+    # 17). The TH cut stays strict: TH_THRESHOLD was not chosen on this sweep.
+    vessel = at_or_above(_crop(specimen.probabilities_path, bounds,
+                               VESSEL_CHANNEL.target_index), vessel_threshold)
     th = _crop(specimen.th_probabilities_path, bounds,
                TH_CHANNEL.target_index) > th_threshold
     return summarise(

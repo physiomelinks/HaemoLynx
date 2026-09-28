@@ -3,8 +3,8 @@ import logging
 from typing import Optional
 
 import numpy as np
+from scipy import ndimage as ndi
 from scipy.ndimage import gaussian_filter, median_filter
-from skimage.filters import apply_hysteresis_threshold
 from skimage.morphology import opening, binary_opening, ball
 
 logger = logging.getLogger(__name__)
@@ -15,6 +15,21 @@ def _is_dask_array(arr):
         return isinstance(arr, da.Array)
     except ImportError:
         return False
+
+def at_or_above(values: np.ndarray, threshold: float) -> np.ndarray:
+    """``values >= threshold``, with the threshold cast to the array's float type.
+
+    The Ilastik export is quantised to hundredths and every CB threshold is a whole number of
+    hundredths, so voxels sit exactly on the threshold. A strict ``>`` drops that whole level
+    (open item 17: ``p > 0.90`` is ``p >= 0.91``, and ``p > 0.99`` is ``p == 1.0``). The cast
+    makes a float32 level k/100 compare equal to the threshold k/100, whatever the promotion
+    rules of the installed numpy.
+    """
+    values = np.asarray(values)
+    if np.issubdtype(values.dtype, np.floating):
+        threshold = values.dtype.type(threshold)
+    return values >= threshold
+
 
 def smooth_probability_map(image: np.ndarray, sigma: float = 1.0) -> np.ndarray:
     """Apply Gaussian smoothing to a probability map to reduce noise.
@@ -144,8 +159,13 @@ def hysteresis_threshold(
 ) -> np.ndarray:
     """Apply hysteresis thresholding to a probability map.
 
-    Pixels above 'high' are seeds. Any pixel above 'low' that is connected 
+    Voxels at or above 'high' are seeds. Any voxel at or above 'low' that is face-connected
     to a seed is kept.
+
+    Inclusive at both bounds (open item 17), unlike ``skimage.filters.
+    apply_hysteresis_threshold``, which this replaced and which cuts ``>`` at both. Otherwise
+    identical: ``scipy.ndimage.label`` with its default (face) connectivity, and ``low``
+    clipped to ``high``.
 
     Parameters
     ----------
@@ -174,7 +194,14 @@ def hysteresis_threshold(
             dtype=bool
         )
 
-    return apply_hysteresis_threshold(image, low, high)
+    low = min(low, high)
+    flood = at_or_above(image, low)
+    seeds = at_or_above(image, high)
+    labels, count = ndi.label(flood)
+    seeded = np.zeros(count + 1, dtype=bool)
+    seeded[np.unique(labels[seeds])] = True
+    seeded[0] = False
+    return seeded[labels]
 
 def joint_hysteresis_threshold(
     probability_map: np.ndarray,

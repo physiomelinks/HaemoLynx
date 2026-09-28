@@ -278,43 +278,46 @@ def _quantised(**kw):
             / np.float32(100.0))
 
 
-def test_the_strict_cut_discards_a_whole_level_of_a_quantised_field():
-    """`>` in evaluate_threshold is load-bearing, not stylistic.
+def test_the_cut_keeps_the_level_on_the_threshold():
+    """The cut is inclusive (open item 17), as the pipeline's hysteresis is.
 
     The Ilastik export is quantised to hundredths - 101 distinct values on every real ROI -
     and every threshold in the sweep grid is a whole number of hundredths, so each lands
-    exactly on an occupied level and the strict cut drops that level entire. On the six
-    specimens the dropped mass runs 0.5% of the ROI at 0.30 to 4.2-5.9% at 0.99, where it is
-    two thirds of the surviving mask, and swapping `>` for `>=` moves 3 of the 6 per-specimen
-    choices. This pins the arithmetic that makes that so. Section 2.2, open item 17.
+    exactly on an occupied level. The strict `>` used until item 17 dropped that level
+    entire: (p > t) == (p >= t + 0.01), and p > 0.99 was exactly p == 1.0. On the six
+    specimens the dropped mass ran 0.5% of the ROI at 0.30 to 4.2-5.9% at 0.99.
     """
     prob = _quantised()
     assert len(np.unique(prob)) <= 101
 
-    for t in (0.30, 0.70, 0.90, 0.99):
-        strict = prob > np.float32(t)
-        # the nominal threshold is one level below the effective one
-        assert np.array_equal(strict, prob >= np.float32(round(t + 0.01, 2)))
-        # and `>=` differs from `>` by exactly the level sitting on the threshold
-        assert np.array_equal(prob >= np.float32(t), strict | (prob == np.float32(t)))
-
-    # so the top of the grid measures the saturated set, not "probability above 0.99"
-    assert np.array_equal(prob > np.float32(0.99), prob == np.float32(1.0))
+    # the tube's discrete radii do not occupy every level; test the grid values that are
+    occupied = [t for t in (0.30, 0.50, 0.70, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97, 0.99)
+                if (prob == np.float32(t)).any()]
+    assert len(occupied) >= 3, occupied
+    for t in occupied:
+        on_level = prob == np.float32(t)
+        sample = evaluate_threshold(prob, t, VOXEL)
+        assert sample.foreground_fraction == pytest.approx(float((prob >= np.float32(t)).mean()))
+        # and strictly more than the old strict cut, by exactly the level on the threshold
+        assert sample.foreground_fraction == pytest.approx(
+            float((prob > np.float32(t)).mean() + on_level.mean()))
 
 
 def test_the_cut_is_nested_so_the_sweep_is_a_ranking():
-    """p > t_high is a subset of p > t_low, which is what licenses ranking the thresholds.
+    """p >= t_high is a subset of p >= t_low, which is what licenses ranking the thresholds.
 
     The sweep measures a plain cut while the pipeline builds a hysteresis mask, so the
     absolute calibre and fragmentation figures are not the delivered mask's. Treating the
     sweep as an ordering rather than a measurement is what survives that, and this nesting
     is the property the ordering rests on.
     """
+    from ImageLynx.preprocessing.image import at_or_above
+
     prob = _quantised()
     grid = [0.30, 0.50, 0.70, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97, 0.99]
     previous = None
     for t in grid:
-        mask = prob > np.float32(t)
+        mask = at_or_above(prob, t)
         if previous is not None:
             assert np.all(mask <= previous), t
         previous = mask
