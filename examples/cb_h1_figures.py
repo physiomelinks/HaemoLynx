@@ -245,23 +245,27 @@ def figure_sensitivity(path):
     Three series, so identity is carried by a direct label on each line rather than a legend
     box; the aqua slot sits below 3:1 on the light surface and the relief rule applies.
     """
-    thresholds = np.array([0.85, 0.90, 0.95])
+    # Group-mean ratios from the frozen run and the sensitivity runs at its grid neighbours,
+    # all on the placed ROI (2026-09-28 re-run; open items 27, 15, 17, 13). Until then the
+    # figure showed 0.85 / 0.90 / 0.95 on centre-cropped runs: 1.30-1.51 (beta-1),
+    # 1.23-1.42 (junctions), 1.23-1.31 (length).
+    thresholds = np.array([0.93, 0.95, 0.97])
     series = [
-        ("β₁ loop density",     np.array([1.297, 1.401, 1.505]), "#2a78d6"),
-        ("Junction density",    np.array([1.229, 1.339, 1.419]), "#eb6834"),
-        ("Vessel length density", np.array([1.230, 1.267, 1.308]), "#1baf7a"),
+        ("β₁ loop density",     np.array([1.054, 1.087, 1.117]), "#2a78d6"),
+        ("Junction density",    np.array([1.055, 1.064, 1.098]), "#eb6834"),
+        ("Vessel length density", np.array([1.015, 1.022, 1.030]), "#1baf7a"),
     ]
     fig, ax = plt.subplots(figsize=(8.2, 4.8), facecolor=SURFACE)
     _style(ax)
 
-    # 0.95 is at or past the fragmentation onset for four of six specimens, where a single
-    # vessel begins to break into several edges and loops appear artefactually.
-    ax.axvspan(0.925, 0.975, color="#0b0b0b", alpha=0.055, zorder=0)
-    ax.text(0.95, 1.055, "fragmentation\ncontaminates\n(4 of 6 specimens)", fontsize=8.5,
+    # 0.97 is the fragmentation onset for four of six specimens, where a single vessel begins
+    # to break into several edges and loops appear artefactually.
+    ax.axvspan(0.96, 0.98, color="#0b0b0b", alpha=0.055, zorder=0)
+    ax.text(0.97, 1.14, "fragmentation\ncontaminates\n(4 of 6 specimens)", fontsize=8.5,
             color=INK_MUTED, ha="center", va="bottom", linespacing=1.35)
 
     ax.axhline(1.0, color=GRID, linewidth=1.4, zorder=1)
-    ax.text(0.842, 1.006, "no difference", fontsize=8.5, color=INK_MUTED, va="bottom")
+    ax.text(1.005, 1.002, "no difference", fontsize=8.5, color=INK_MUTED, va="bottom")
 
     for label, values, colour in series:
         ax.plot(thresholds[:2], values[:2], color=colour, linewidth=2.4, zorder=3)
@@ -269,12 +273,12 @@ def figure_sensitivity(path):
                 linestyle=(0, (4, 2)))
         ax.scatter(thresholds, values, s=64, color=colour, edgecolor=SURFACE,
                    linewidth=2, zorder=4)
-        ax.text(0.9545, values[-1], f"  {label}", fontsize=9.5, color=INK, va="center")
+        ax.text(0.9718, values[-1], f"  {label}", fontsize=9.5, color=INK, va="center")
 
     ax.set_xticks(thresholds)
     ax.set_xticklabels([f"{t:.2f}" for t in thresholds], fontsize=10, color=INK)
-    ax.set_xlim(0.833, 1.13)
-    ax.set_ylim(0.98, 1.60)
+    ax.set_xlim(0.923, 1.042)
+    ax.set_ylim(0.98, 1.20)
     ax.set_xlabel("segmentation probability threshold  (higher = less inclusive)",
                   fontsize=9.5, color=INK_MUTED)
     ax.set_ylabel("group ratio, SHR / WKY")

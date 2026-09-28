@@ -6,9 +6,11 @@ a specimen is measured from one mask produced at one threshold, so moving it mov
 together. This measures by how much, so that the noise floor in S15 rests on the real perturbation
 rather than on a round number.
 
-The three runs already exist from the H1 sensitivity sweep, so this reads them rather than
-recomputing anything. The clean interval is 0.85 to 0.90: H1 section 6.4 records that at 0.95 four
-of the six specimens sit at or beyond their fragmentation onset, which contaminates that column.
+The three runs are the frozen threshold's batch run and the H1 sensitivity runs at its two grid
+neighbours, so this reads them rather than recomputing anything. Since the 2026-09-28
+re-selection the frozen value is 0.95 and the neighbours are 0.93 and 0.97. The clean interval is
+the lower one, 0.93 to 0.95: 0.97 is the fragmentation onset in four of the six specimens, which
+contaminates that column. (Until then it was 0.85 / 0.90 / 0.95, on centre-cropped runs.)
 
 Run with::
 
@@ -26,10 +28,19 @@ OUTPUTS = Path(__file__).resolve().parent / "outputs"
 SPECIMENS = ("WKY-A", "WKY-B", "WKY-C", "SHR-A", "SHR-B", "SHR-C")
 VOXEL_UM = 1.866
 
+_GRID = list(cb_settings.THRESHOLD_GRID)
+_FROZEN = _GRID.index(cb_settings.FROZEN_THRESHOLD)
+LOWER, FROZEN, UPPER = (f"{t:.2f}" for t in _GRID[_FROZEN - 1:_FROZEN + 2])
+
+
+def _sensitivity(label):
+    return lambda s: OUTPUTS / "cb_h1_sensitivity" / f"t{label}" / s / "per_edge_morphometry.csv"
+
+
 RUNS = (
-    ("0.85", lambda s: OUTPUTS / "cb_h1_sensitivity" / "t0.85" / s / "per_edge_morphometry.csv"),
-    ("0.90", lambda s: OUTPUTS / "cb_h1_batch" / s / "per_edge_morphometry.csv"),
-    ("0.95", lambda s: OUTPUTS / "cb_h1_sensitivity" / "t0.95" / s / "per_edge_morphometry.csv"),
+    (LOWER, _sensitivity(LOWER)),
+    (FROZEN, lambda s: OUTPUTS / "cb_h1_batch" / s / "per_edge_morphometry.csv"),
+    (UPPER, _sensitivity(UPPER)),
 )
 
 
@@ -44,7 +55,7 @@ def median_calibre(path):
 
 def main():
     print(f"{'specimen':10}" + "".join(f"{label:>9}" for label, _ in RUNS)
-          + f"{'0.85->0.90':>13}{'0.90->0.95':>13}")
+          + f"{LOWER + '->' + FROZEN:>13}{FROZEN + '->' + UPPER:>13}")
     table = []
     for specimen_id in SPECIMENS:
         medians = [median_calibre(path(specimen_id)) for _, path in RUNS]
@@ -58,9 +69,9 @@ def main():
     baseline = values[:, 1].mean()
 
     print(f"\nmedian calibre at the frozen threshold: {baseline:.3f} um")
-    print(f"mean shift over the clean 0.85-0.90 interval: {clean.mean():.3f} um "
+    print(f"mean shift over the clean {LOWER}-{FROZEN} interval: {clean.mean():.3f} um "
           f"({clean.mean()/VOXEL_UM:.3f} voxel)")
-    print(f"mean shift over the contaminated 0.90-0.95 interval: {contaminated.mean():.3f} um "
+    print(f"mean shift over the contaminated {FROZEN}-{UPPER} interval: {contaminated.mean():.3f} um "
           f"({contaminated.mean()/VOXEL_UM:.3f} voxel)")
 
     # Calibre falls monotonically with threshold for every specimen. That common direction is what

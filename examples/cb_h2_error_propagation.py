@@ -52,9 +52,10 @@ SPECIMENS = ("WKY-A", "WKY-B", "WKY-C", "SHR-A", "SHR-B", "SHR-C")
 AXIS = 2
 EDGE_PERCENT = END_PERCENT = 25.0
 VOXEL_UM = 1.866
-# Median calibre shift over the clean 0.85 to 0.90 threshold interval, averaged over the six
-# specimens. Measured by cb_h2_threshold_calibre.py, not assumed.
-THRESHOLD_SHIFT_UM = 0.922
+# Median calibre shift over the clean threshold interval below the frozen value, averaged over
+# the six specimens. Measured by cb_h2_threshold_calibre.py, not assumed: 0.690 um over 0.93 to
+# 0.95 on the placed ROI (2026-09-28 re-run); it was 0.922 over 0.85 to 0.90 on centre crops.
+THRESHOLD_SHIFT_UM = 0.690
 DRAWS = 24
 SEED = 20260815
 
