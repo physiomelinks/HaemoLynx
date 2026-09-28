@@ -24,13 +24,13 @@ rather than an internal optimum: the handover's own validation table expects a c
 of 4-7 um, and its half-voxel arithmetic gives the same window independently. So it can be an
 objective without anything being fitted.
 
-Two caveats on it, both measured. It is a median over *every foreground voxel*, not over the
-centreline as the pipeline's own calibre assignment is, and it runs 0.63-1.00x the centreline
-median on the same masks. And it is atomic: the EDT on this grid can only take values
-pitch*sqrt(k), so across the whole 6 x 10 sweep the median visits nine levels and only
-sqrt(2) (5.27 um) and sqrt(3) (6.46 um) fall inside the window. The selection therefore turns
-on a single quantisation step. Any lower bound between 3.74 and 5.27 um gives the identical
-six choices; 3.70 changes all six.
+It is read on the *centreline* - 2 x EDT at the skeleton voxels - the same quantity the
+pipeline's calibre assignment samples (section 2.6), which is what a capillary diameter
+means. Until open item 15 it was a median over every foreground voxel, which the surface
+shell drags down: 0.63-1.00x the centreline median on the same masks. That voxel median is
+still printed (d_vox) and never read. The EDT on this grid can only take values
+pitch*sqrt(k), so the median is atomic either way and the selection turns on which level it
+lands on, not on a smooth approach to the target.
 
 Note also that only the lower bound can ever select. Calibre falls monotonically and
 `select_threshold` takes the highest threshold in the window, so the upper bound prunes only
@@ -98,8 +98,12 @@ class ThresholdSample:
 
     threshold: float
     foreground_fraction: float
+    #: 2 x EDT on the centreline (skeleton voxels): the calibre the window is compared with.
     median_diameter_um: float
     p90_diameter_um: float
+    #: 2 x EDT over every foreground voxel - the statistic that selected until open item 15.
+    #: Printed for comparison, never read by the selection.
+    median_voxel_diameter_um: float
     mask_components: int
     mask_components_above_floor: int
     largest_mask_component_share: float
@@ -137,7 +141,7 @@ class ThresholdSelection:
             f"threshold sweep  (capillary window {lo}-{hi} um, "
             f"fragmentation above {FRAGMENTATION_TOLERANCE:.1f}x "
             f"{self.baseline_endpoint_density_per_mm:.2f} ep/mm)",
-            f"{'thr':>6}{'fg':>8}{'d_med':>8}{'d_p90':>8}{'ep/mm':>8}"
+            f"{'thr':>6}{'fg':>8}{'d_med':>8}{'d_p90':>8}{'d_vox':>8}{'ep/mm':>8}"
             f"{'skelcmp':>9}{'maskcmp':>9}{'share':>8}  verdict",
         ]
         for sample in self.samples:
@@ -152,6 +156,7 @@ class ThresholdSelection:
             lines.append(
                 f"{sample.threshold:>6.2f}{sample.foreground_fraction:>8.3f}"
                 f"{sample.median_diameter_um:>8.2f}{sample.p90_diameter_um:>8.2f}"
+                f"{sample.median_voxel_diameter_um:>8.2f}"
                 f"{sample.endpoint_density_per_mm:>8.2f}{sample.skeleton_components:>9d}"
                 f"{sample.mask_components:>9d}{sample.largest_mask_component_share:>8.3f}"
                 f"  {' '.join(marks)}"
@@ -164,16 +169,14 @@ def evaluate_threshold(
     probabilities: np.ndarray,
     threshold: float,
     voxel_size_zyx: Sequence[float],
-    *,
-    measure_skeleton: bool = True,
 ) -> Optional[ThresholdSample]:
     """Measure calibre and both topologies at one threshold.
 
     Returns ``None`` when the mask is empty, which is a legitimate outcome at the top of a
     sweep rather than an error.
 
-    Skeletonisation dominates the cost, so ``measure_skeleton=False`` is available for a
-    calibre-only pass; the fragmentation constraint cannot be applied without it.
+    Calibre is read on the centreline (open item 15), so the skeleton is always built; there
+    is no calibre-only pass any more.
     """
     from scipy.ndimage import convolve, distance_transform_edt
     from skimage.measure import label
@@ -193,38 +196,42 @@ def evaluate_threshold(
         return None
 
     edt = distance_transform_edt(binary, sampling=spacing)
-    radii = edt[binary]
+    # Calibre on the centreline, the statistic section 2.6 reports and the 4-7 um capillary
+    # window describes. The median over every foreground voxel (kept below for comparison)
+    # is dragged down by the surface shell, most of a thin mask, and read 0.63-1.00x the
+    # centreline median on the same masks (open item 15).
+    skeleton = skeletonize(binary).astype(bool)
+    n_skeleton = int(skeleton.sum())
+    if not n_skeleton:
+        raise ValueError(
+            f"The mask at threshold {threshold} has {int(binary.sum())} voxels but an empty "
+            f"skeleton, so it has no centreline to measure calibre on.")
+    radii = edt[skeleton]
     median_diameter = 2.0 * float(np.median(radii))
     p90_diameter = 2.0 * float(np.percentile(radii, 90))
+    median_voxel_diameter = 2.0 * float(np.median(edt[binary]))
 
     labelled = label(binary, connectivity=3)
     counts = np.bincount(labelled.ravel())[1:]
     share = float(counts.max() / counts.sum()) if counts.size else 0.0
     above_floor = int((counts >= MIN_COMPONENT_VOXELS).sum())
 
-    length_mm = 0.0
-    endpoints = 0
-    density = 0.0
-    skeleton_components = 0
-    if measure_skeleton:
-        skeleton = skeletonize(binary)
-        n_skeleton = int(skeleton.sum())
-        if n_skeleton:
-            # One voxel step is the in-plane pitch; the volume is near-isotropic (axial to
-            # lateral 1.0011) so a single figure is exact enough for a density denominator.
-            length_mm = n_skeleton * spacing[1] / 1000.0
-            neighbourhood = np.ones((3, 3, 3), dtype=np.uint8)
-            neighbourhood[1, 1, 1] = 0
-            degree = convolve(skeleton.astype(np.uint8), neighbourhood, mode="constant")
-            endpoints = int(((degree == 1) & skeleton).sum())
-            density = endpoints / length_mm if length_mm else 0.0
-            skeleton_components = int(label(skeleton, connectivity=3).max())
+    # One voxel step is the in-plane pitch; the volume is near-isotropic (axial to lateral
+    # 1.0011) so a single figure is exact enough for a density denominator.
+    length_mm = n_skeleton * spacing[1] / 1000.0
+    neighbourhood = np.ones((3, 3, 3), dtype=np.uint8)
+    neighbourhood[1, 1, 1] = 0
+    degree = convolve(skeleton.astype(np.uint8), neighbourhood, mode="constant")
+    endpoints = int(((degree == 1) & skeleton).sum())
+    density = endpoints / length_mm if length_mm else 0.0
+    skeleton_components = int(label(skeleton, connectivity=3).max())
 
     return ThresholdSample(
         threshold=float(threshold),
         foreground_fraction=float(binary.mean()),
         median_diameter_um=median_diameter,
         p90_diameter_um=p90_diameter,
+        median_voxel_diameter_um=median_voxel_diameter,
         mask_components=int(counts.size),
         mask_components_above_floor=above_floor,
         largest_mask_component_share=share,
@@ -239,15 +246,11 @@ def sweep_thresholds(
     probabilities: np.ndarray,
     thresholds: Iterable[float],
     voxel_size_zyx: Sequence[float],
-    *,
-    measure_skeleton: bool = True,
 ) -> Tuple[ThresholdSample, ...]:
     """Evaluate a sorted sweep, dropping thresholds whose mask is empty."""
     samples = []
     for threshold in sorted(float(t) for t in thresholds):
-        sample = evaluate_threshold(
-            probabilities, threshold, voxel_size_zyx, measure_skeleton=measure_skeleton
-        )
+        sample = evaluate_threshold(probabilities, threshold, voxel_size_zyx)
         if sample is not None:
             samples.append(sample)
     return tuple(samples)

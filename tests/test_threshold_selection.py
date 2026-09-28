@@ -79,8 +79,12 @@ def test_a_single_evaluation_reports_calibre_and_both_topologies():
 
 
 def test_calibre_is_the_objective_and_picks_the_capillary_scale_threshold():
-    """The handover's own validation table expects a 4-7 um capillary diameter mode."""
-    prob = _tube(radius_vox=4.0)
+    """The handover's own validation table expects a 4-7 um capillary diameter mode.
+
+    A capillary-scale tube: radius 1.5 voxels, ~5.6 um across. It was radius 4 (~15 um) until
+    open item 15, which only reached the window through the voxel-weighted median.
+    """
+    prob = _tube(radius_vox=1.5)
     samples = sweep_thresholds(prob, np.arange(0.1, 1.0, 0.1), VOXEL)
     selection = select_threshold(samples)
 
@@ -173,6 +177,7 @@ def _sample(threshold, d_med, ep_per_mm):
         foreground_fraction=0.3,
         median_diameter_um=d_med,
         p90_diameter_um=d_med * 2,
+        median_voxel_diameter_um=d_med * 0.8,
         mask_components=100,
         mask_components_above_floor=10,
         largest_mask_component_share=0.99,
@@ -313,3 +318,32 @@ def test_the_cut_is_nested_so_the_sweep_is_a_ranking():
         if previous is not None:
             assert np.all(mask <= previous), t
         previous = mask
+
+
+def test_calibre_is_read_on_the_centreline_not_over_every_voxel():
+    """Open item 15: the window is a capillary diameter, which is a centreline quantity.
+
+    For a solid tube of radius R the centreline EDT is ~R everywhere, while the median over
+    every foreground voxel sits near R(1 - 1/sqrt(2)), because half a disc's area lies in its
+    outer ring. The selector used the latter until item 15 and read 0.63-1.00x the centreline
+    median on the real masks.
+    """
+    radius_vox = 6.0
+    prob = _tube(radius_vox=radius_vox)
+    sample = evaluate_threshold(prob, 0.5, VOXEL)
+
+    centreline_diameter = 2 * radius_vox * VOXEL[1]
+    assert sample.median_diameter_um == pytest.approx(centreline_diameter, rel=0.1)
+    assert sample.median_voxel_diameter_um < 0.75 * sample.median_diameter_um
+
+
+def test_the_voxel_median_is_printed_but_never_selects():
+    import inspect
+
+    from ImageLynx.statistics import threshold_selection
+
+    source = inspect.getsource(threshold_selection.select_threshold)
+    assert "median_voxel_diameter_um" not in source
+    samples = sweep_thresholds(_tube(), [0.3, 0.6], VOXEL)
+    assert "d_vox" in select_threshold(samples).format_table()
+
