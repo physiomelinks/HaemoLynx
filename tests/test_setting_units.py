@@ -83,6 +83,7 @@ DIMENSIONLESS = {
     "skeleton_component_connectivity",
     # Counts and identifiers.
     "centreline_smoothing_iterations",
+    "fwhm_decoy_check_sample_size",
     "max_branch_order",
     "pericyte_constriction_seed",
     "inlet_nodes",

@@ -2150,6 +2150,23 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                     "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
                     "table diameters without per-edge FWHM)."
                 )
+            if "fwhm_decoy_check" in haemo_results:
+                check = haemo_results["fwhm_decoy_check"]
+                if check.get("skipped"):
+                    logger.info(f"FWHM decoy check skipped: {check.get('reason')}")
+                else:
+                    speck = check.get("speck_width_range_um")
+                    logger.info(
+                        f"FWHM decoy check: gave {check['decoys_measured']} of {check['decoys']} "
+                        f"decoys in vessel-free tissue a width "
+                        f"({check['false_positive_rate']:.0%})"
+                        + (
+                            f", reading {speck[0]:.1f}-{speck[1]:.1f} um there; "
+                            f"{check['measured_in_speck_width_range']:.0%} of measured vessels "
+                            f"read in that range (edge attribute fwhm_in_speck_width_range)"
+                            if speck else ""
+                        )
+                    )
             if "raw_section" in haemo_results:
                 section = haemo_results["raw_section"]
                 if section.get("skipped"):

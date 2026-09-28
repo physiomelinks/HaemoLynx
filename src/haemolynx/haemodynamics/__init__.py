@@ -1,6 +1,7 @@
 """Haemodynamics: viscosity, Poiseuille resistance/conductance, network resistance."""
 from . import automated
 from . import edt_diameter
+from . import fwhm_decoys
 from . import raw_section
 from .viscosity import (
     VISCOSITY_LAWS,

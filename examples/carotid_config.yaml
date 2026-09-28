@@ -726,6 +726,12 @@ fwhm_diameter_measurement:
   fwhm_warn_out_of_plane_tangent_fraction: 0.3
   # Collapse an edge's accepted per-sample diameters to one value by median or mean  [one of: median, mean; needs use_fwhm_edge_diameters]
   fwhm_edge_diameter_aggregation: median
+  # Give an edge a FWHM width only when at least this many samples along it pass every gate. On a speckled image a line can fit one bright speck cleanly; a speck is one place, a lumen is all along the vessel. 1 accepts a single sample  [range 1..; needs use_fwhm_edge_diameters]
+  fwhm_min_accepted_samples: 2
+  # After measuring, copy a sample of the measured vessels into vessel-free tissue and measure them again: reports how often FWHM gives texture a width, and flags every FWHM width in the range it reads there. Changes no diameter  [needs use_fwhm_edge_diameters and do_fwhm_measurement]
+  fwhm_decoy_check: true
+  # How many measured vessels the decoy check copies  [range 1..; needs fwhm_decoy_check]
+  fwhm_decoy_check_sample_size: 100
   # Where FWHM fails, fit the raw image's whole cross-section of the vessel (a blurred lumen, pooling every photon in the section) before falling back to the segmentation mask. Measures wide and z-running vessels a line cannot; check it against FWHM on your image first, since on a speckled one it reads the halo round a vessel  [needs use_fwhm_edge_diameters and do_fwhm_measurement]
   use_raw_section_fallback: false
   # Keep a cross-section's reading only when its fitted lumen stands this many standard deviations of the section's texture above the background; a vessel needs two such readings  [range 0.0..; needs use_raw_section_fallback]

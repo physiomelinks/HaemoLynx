@@ -17,6 +17,7 @@ from haemolynx.parsers import prefixed_arguments
 from haemolynx.preprocessing.memmap_support import release_memmap_array
 from haemolynx.haemodynamics import automated
 from haemolynx.haemodynamics import edt_diameter
+from haemolynx.haemodynamics import fwhm_decoys
 from haemolynx.haemodynamics import raw_section
 from haemolynx.haemodynamics.poiseuille import (
     PoiseuilleModel,
@@ -502,6 +503,26 @@ def _assign_edge_diameters_with_mask(
             summary["fwhm"] = _measure_fwhm_diameters(
                 G, config, raw_volume=raw_volume, vessel_mask=mask_volume
             )
+            if config.fwhm_setting("fwhm_decoy_check", False):
+                summary["fwhm_decoy_check"] = fwhm_decoys.fwhm_decoy_check(
+                    G,
+                    lambda probe: _measure_fwhm_diameters(
+                        probe, config, raw_volume=raw_volume, vessel_mask=mask_volume
+                    ),
+                    vessel_mask=mask_volume,
+                    voxel_size_zyx=tuple(
+                        float(v)
+                        for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
+                    ),
+                    sample_size=int(
+                        config.fwhm_setting(
+                            "fwhm_decoy_check_sample_size", fwhm_decoys.DECOY_SAMPLE_SIZE
+                        )
+                    ),
+                    guide_attribute=config.fwhm_setting(
+                        "fwhm_diameter_guess_edge_attribute", "edt_diameter_um"
+                    ),
+                )
             if use_raw_section_fallback:
                 summary["raw_section"] = _measure_raw_section_diameters(
                     G, config, raw_volume=raw_volume, vessel_mask=mask_volume

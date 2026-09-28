@@ -1305,6 +1305,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     transverse_sampling_mode: TransverseSamplingMode = "in_plane_yx",
     warn_out_of_plane_tangent_fraction: float = 0.3,
     edge_diameter_aggregation: Literal["median", "mean"] = "median",
+    min_accepted_samples: int = 1,
     profile_model: ProfileModel = "blurred_lumen",
     longitudinal_average_um: float = 4.0,
     min_diameter_pixels: float = 2.0,
@@ -1500,6 +1501,13 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         How to collapse one edge's accepted per-sample diameters into one
         value -- ``median`` (default, resists a single outlier sample) or
         ``mean`` (the previous behaviour). See :func:`_aggregate_edge_diameter`.
+    min_accepted_samples :
+        The fewest samples along an edge that must pass every gate for the
+        edge to be measured; one with fewer fails as ``too_few_samples``. On
+        a speckled image a line across a vessel can fit one bright speck
+        cleanly and pass every gate -- the lumen's own texture, or tissue
+        with no vessel in it (see :mod:`haemolynx.haemodynamics.fwhm_decoys`)
+        -- but a speck is one place, and a lumen is all along the vessel.
     profile_model :
         ``"blurred_lumen"`` (default): fit each profile as a filled lumen
         seen through a blur and report that curve's full width at half
@@ -2026,9 +2034,11 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                             )
                         )
 
-            if not diameters:
+            if len(diameters) < max(1, int(min_accepted_samples)):
                 reason = "fwhm_failed"
-                if branch_excl > 0 and (u_is_branch or v_is_branch):
+                if diameters:
+                    reason = "too_few_samples"
+                elif branch_excl > 0 and (u_is_branch or v_is_branch):
                     reason = "fwhm_failed_or_excluded_near_branch"
                 summary["edges_skipped"].append((u, v, key, reason))
                 data["fwhm_status"] = f"failed:{reason}"

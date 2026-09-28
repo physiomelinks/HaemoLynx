@@ -4075,6 +4075,41 @@ SCHEMA = Schema(
             requires=("use_fwhm_edge_diameters",),
             advanced=True,
         ),
+        Setting(
+            name="fwhm_min_accepted_samples",
+            kind="int",
+            default=2,
+            help=(
+                "Give an edge a FWHM width only when at least this many samples along it pass "
+                "every gate. On a speckled image a line can fit one bright speck cleanly; a speck "
+                "is one place, a lumen is all along the vessel. 1 accepts a single sample"
+            ),
+            section=_FWHM,
+            minimum=1,
+            requires=("use_fwhm_edge_diameters",),
+        ),
+        Setting(
+            name="fwhm_decoy_check",
+            kind="bool",
+            default=True,
+            help=(
+                "After measuring, copy a sample of the measured vessels into vessel-free tissue "
+                "and measure them again: reports how often FWHM gives texture a width, and flags "
+                "every FWHM width in the range it reads there. Changes no diameter"
+            ),
+            section=_FWHM,
+            requires=("use_fwhm_edge_diameters", "do_fwhm_measurement"),
+        ),
+        Setting(
+            name="fwhm_decoy_check_sample_size",
+            kind="int",
+            default=100,
+            help="How many measured vessels the decoy check copies",
+            section=_FWHM,
+            minimum=1,
+            requires=("fwhm_decoy_check",),
+            advanced=True,
+        ),
         # Raw cross-section fallback: where FWHM fails, fit the raw image's
         # whole cross-section (haemodynamics.raw_section) before falling back
         # to the segmentation mask. Off by default -- on a textured image it
