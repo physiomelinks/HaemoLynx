@@ -152,6 +152,17 @@ def test_rounding_level_flow_is_stagnant_not_an_unfed_source():
     np.testing.assert_allclose(po2[2:], 0.0, atol=1e-12)
 
 
+def test_rounding_flow_into_a_dead_end_branch_is_stagnant():
+    """SHR-A, 2026-09-28: node 748 heads a dead-end side branch. Its two branch edges carry
+    exactly zero flow and its entry edge 1.7e-12 of the largest flow, outward - above the old
+    1e-12 cutoff, so the march saw a node sending blood it never received (open item 36)."""
+    grid, G, cells = _network([(0, 1, 1e3, 0.45), (1, 2, 1e3, 0.45),
+                               (4, 3, 1e3 * 1.7e-12, 0.45), (4, 5, 0.0, 0.45),
+                               (4, 6, 0.0, 0.45)])
+    po2, pco2, _ = solve_multi_species_perfusion(grid, G, [0], cells, _MEASURED)
+    assert np.all(np.isfinite(po2)) and np.all(np.isfinite(pco2))
+
+
 def test_flow_above_the_rounding_level_at_an_unfed_node_still_raises():
     grid, G, cells = _network([(0, 1, 1e3, 0.45), (4, 3, 1e3 * 1e-9, 0.45)])
     with pytest.raises(ValueError, match="Node 4 sends blood out but receives none"):
