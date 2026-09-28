@@ -10,9 +10,9 @@ density within them. Section 1.5 is the distance from every TH-positive voxel to
 lectin-positive centreline.
 
 Both channels are cropped to the same ROI, placed by ``place_roi`` from each specimen's own
-data, and the vessel channel is thresholded at the frozen 0.9 that cb_h1_batch selected. That
-combination was verified against the foreground fractions recorded in its
-threshold_selection.json before any of this was computed.
+data, and the vessel channel is cut at cb_settings.FROZEN_THRESHOLD (0.95 since 2026-09-28,
+0.90 before), with the same inclusive plain cut as cb_h1_batch's threshold stage, so its
+foreground fractions match that stage's threshold_selection.json.
 
 **On SHR.** The classifier that produced the TH channel carries 22.9x more glomus labels in
 WKY than SHR, and SHR-B and SHR-C carry none at all. A between-group contrast drawn from it

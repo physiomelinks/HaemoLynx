@@ -23,7 +23,7 @@ Usage
 -----
     python examples/cb_h1_batch.py --stage placement
     python examples/cb_h1_batch.py --stage threshold
-    python examples/cb_h1_batch.py --stage run --threshold 0.90
+    python examples/cb_h1_batch.py --stage run --threshold 0.95
 """
 import argparse
 import json

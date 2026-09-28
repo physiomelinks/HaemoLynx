@@ -118,8 +118,9 @@ class PreprocessingConfig:
     enable_hysteresis_threshold: bool = True
     # cb_settings owns the band: low is the frozen threshold (the median of the six per-specimen
     # selections on the placed ROIs, snapped to the sweep grid; reference section 2.2) and high
-    # is low + HYSTERESIS_HIGH_OFFSET. Every H1 batch run passed 0.90 as --hysteresis-low and
-    # got 0.95 as the seed, so a direct run now builds the same mask without the flag.
+    # is low + HYSTERESIS_HIGH_OFFSET, capped at HYSTERESIS_SEED_CAP. The batch passes the frozen
+    # value as --hysteresis-low and gets the same seed, so a direct run builds the same mask
+    # without the flag. 0.95 / 0.999 since 2026-09-28; 0.90 / 0.95 before.
     #
     # Until open item 1 this read 0.65 / 0.75, set by hand from calibre and connectivity on an
     # earlier reference subvolume (r_p90 4.17 um, component count stable over 0.60-0.73). The
@@ -2162,13 +2163,14 @@ def _apply_hysteresis_overrides(pre_config, low=None, high=None):
     """Set the hysteresis band from the command line; None leaves a bound as configured.
 
     A low given alone takes its seed from cb_settings.HYSTERESIS_HIGH_OFFSET, the rule the
-    frozen band was built with (0.90 -> 0.95), not from whatever high the config held. A band
+    frozen band was built with (0.95 -> 0.999, capped), not from whatever high the config held. A band
     whose seed does not sit above its flood threshold raises rather than inverting.
     """
     if low is not None:
         pre_config.hysteresis_threshold_low = low
         if high is None:
-            pre_config.hysteresis_threshold_high = min(0.999, low + cb_settings.HYSTERESIS_HIGH_OFFSET)
+            pre_config.hysteresis_threshold_high = min(cb_settings.HYSTERESIS_SEED_CAP,
+                                                       low + cb_settings.HYSTERESIS_HIGH_OFFSET)
     if high is not None:
         pre_config.hysteresis_threshold_high = high
     if pre_config.hysteresis_threshold_high <= pre_config.hysteresis_threshold_low:
@@ -2189,7 +2191,7 @@ if __name__ == "__main__":
                              "last, leaving only the final specimen's per-edge morphometry.")
     parser.add_argument("--hysteresis-low", type=float, default=None,
                         help="Override the lower hysteresis threshold (default: the frozen "
-                             "cb_settings value, 0.90). Given alone, the seed becomes low + 0.05. "
+                             "cb_settings value, 0.95). Given alone, the seed becomes low + 0.05, capped at 0.999. "
                              "Must be identical across specimens in a comparison: a per-specimen "
                              "threshold absorbs classifier differences into what looks like a "
                              "tissue result.")

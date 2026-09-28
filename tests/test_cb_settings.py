@@ -79,8 +79,9 @@ def test_frozen_threshold_lies_on_the_sweep_grid():
 def test_hysteresis_band_matches_what_the_pipeline_auto_raises_to():
     """--stage run passes low only; the pipeline raises high to low + 0.05."""
     assert cb_settings.HYSTERESIS_LOW == cb_settings.FROZEN_THRESHOLD
-    assert cb_settings.HYSTERESIS_HIGH == pytest.approx(
-        cb_settings.FROZEN_THRESHOLD + cb_settings.HYSTERESIS_HIGH_OFFSET)
+    assert cb_settings.HYSTERESIS_HIGH == pytest.approx(min(
+        cb_settings.HYSTERESIS_SEED_CAP,
+        cb_settings.FROZEN_THRESHOLD + cb_settings.HYSTERESIS_HIGH_OFFSET))
     assert cb_settings.HYSTERESIS_HIGH > cb_settings.HYSTERESIS_LOW
 
 
@@ -99,13 +100,16 @@ def test_metabolic_mean_is_held_across_the_contrast_sweep():
 
 
 def test_pipeline_and_h1_share_the_hysteresis_band():
-    """Open item 1: the pipeline config said 0.65/0.75 while every H1 run used 0.90/0.95."""
+    """Open item 1: the pipeline config said 0.65/0.75 while every H1 run used 0.90/0.95.
+
+    The band is 0.95 / 0.999 since the 2026-09-28 re-selection (items 27, 15, 17, 13).
+    """
     from carotid_image_to_model import PreprocessingConfig
 
     config = PreprocessingConfig()
-    assert config.hysteresis_threshold_low == cb_settings.HYSTERESIS_LOW == 0.90
+    assert config.hysteresis_threshold_low == cb_settings.HYSTERESIS_LOW == 0.95
     assert config.hysteresis_threshold_high == cb_settings.HYSTERESIS_HIGH
-    assert config.hysteresis_threshold_high == pytest.approx(0.95)
+    assert config.hysteresis_threshold_high == pytest.approx(0.999)
 
 
 def test_pipeline_and_h2_share_the_perfusion_stop_settings():

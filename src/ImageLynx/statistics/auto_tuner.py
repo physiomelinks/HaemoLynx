@@ -283,11 +283,12 @@ class PreprocessingObjective:
             # of roughly 0.60-0.80 is interior rather than pressed against an edge.
             #
             # The upper bounds were 0.85 / 0.95 until open item 1. The pipeline default is now the
-            # frozen CB band from cb_settings, 0.90 / 0.95 (the median of the six per-specimen
-            # selections), so both are raised far enough to keep that band reachable. The CB
-            # batch never runs the tuner; this only keeps the default inside its own search.
+            # frozen CB band from cb_settings, 0.95 / 0.999 since 2026-09-28 (the median of the
+            # six per-specimen selections; 0.90 / 0.95 before), so both are raised far enough to
+            # keep that band reachable. The CB batch never runs the tuner; this only keeps the
+            # default inside its own search.
             "hysteresis_threshold_low": trial.suggest_float("hysteresis_threshold_low", 0.45, 0.95),
-            "hysteresis_threshold_high": trial.suggest_float("hysteresis_threshold_high", 0.55, 0.99),
+            "hysteresis_threshold_high": trial.suggest_float("hysteresis_threshold_high", 0.55, 0.999),
             # median_filter_size, morphological_opening_radius and morphological_closing_radius
             # are NOT set here. They used to be pinned at 9, 4 and 0, which silently overrode
             # PreprocessingConfig's own 7, 1 and 0 - the eval callback does

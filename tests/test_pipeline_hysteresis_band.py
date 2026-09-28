@@ -59,16 +59,20 @@ def test_a_seed_at_or_below_the_flood_threshold_raises(low, high):
 # --- Mask step -----------------------------------------------------------------------------
 
 def _probability_field():
-    """Two 1-voxel tubes along x at 0.92 (between the bounds): one seeded at 0.97, one not.
+    """Two 1-voxel tubes along x between the frozen bounds: one seeded, one not.
 
-    A 0.85 voxel touches the seeded tube. The frozen band keeps only the seeded tube; the old
-    0.65 / 0.75 default would have grown into the 0.85 voxel as well.
+    A voxel just below the flood threshold touches the seeded tube. The frozen band keeps only
+    the seeded tube; the old 0.65 / 0.75 default would have grown into that voxel as well.
+    Values follow cb_settings, on the hundredths grid the Ilastik export uses.
     """
+    low, high = cb_settings.HYSTERESIS_LOW, cb_settings.HYSTERESIS_HIGH
+    between = np.float32(round(low + 0.01, 2))
+    assert low < between < high
     prob = np.zeros((12, 12, 12), dtype=np.float32)
-    prob[6, 6, 2:10] = 0.92
-    prob[6, 6, 5] = 0.97
-    prob[6, 7, 5] = 0.85
-    prob[3, 3, 2:10] = 0.92
+    prob[6, 6, 2:10] = between
+    prob[6, 6, 5] = 1.0                                    # the seed
+    prob[6, 7, 5] = np.float32(round(low - 0.05, 2))       # touches the seeded tube
+    prob[3, 3, 2:10] = between
     expected = np.zeros(prob.shape, dtype=bool)
     expected[6, 6, 2:10] = True
     return prob, expected

@@ -63,17 +63,28 @@ THRESHOLD_GRID: Tuple[float, ...] = (
 #: measure, turning a confound into an apparently clean result. The per-specimen choices
 #: are still reported and passed to ``assess_cohort_split``, so a threshold that splits by
 #: group stays visible.
-FROZEN_THRESHOLD: float = 0.90
+#:
+#: 0.95 since the 2026-09-28 re-selection, when all six chose 0.95. It was 0.90 (four chose
+#: 0.90, two 0.85) until open items 27, 15, 17 and 13 changed what the selector measures: the
+#: placed ROI's lateral centre over its own slices (13), calibre on the centreline rather than
+#: over every foreground voxel (15, the change that moved it), and an inclusive cut (17).
+FROZEN_THRESHOLD: float = 0.95
 
 #: The pipeline receives ``FROZEN_THRESHOLD`` as ``--hysteresis-low`` only, and a low given
-#: alone takes low + this offset as its seed, so the seed sits above the flood threshold.
-#: The operative band for every H1 run was therefore 0.90 / 0.95.
+#: alone takes low + this offset as its seed, capped at ``HYSTERESIS_SEED_CAP``, so the seed
+#: sits above the flood threshold. The operative band was 0.90 / 0.95 until 2026-09-28 and is
+#: 0.95 / 0.999 since.
 HYSTERESIS_HIGH_OFFSET: float = 0.05
+
+#: Highest seed threshold. 0.95 + 0.05 would be 1.00; the cap keeps the seed below 1. On the
+#: Ilastik export, quantised to hundredths, the inclusive seed p >= 0.999 is exactly the
+#: saturated set p == 1.0.
+HYSTERESIS_SEED_CAP: float = 0.999
 
 #: The pair the H1 masks were built with. ``PreprocessingConfig`` reads both as its defaults
 #: (it said 0.65 / 0.75 until open item 1), so a direct run builds the same mask.
 HYSTERESIS_LOW: float = FROZEN_THRESHOLD
-HYSTERESIS_HIGH: float = FROZEN_THRESHOLD + HYSTERESIS_HIGH_OFFSET
+HYSTERESIS_HIGH: float = min(HYSTERESIS_SEED_CAP, FROZEN_THRESHOLD + HYSTERESIS_HIGH_OFFSET)
 
 # ---------------------------------------------------------------------------------------
 # Pressure boundaries

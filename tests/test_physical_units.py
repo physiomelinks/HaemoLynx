@@ -391,11 +391,11 @@ def test_mask_calibre_is_reported_but_never_optimised_against():
 
 # --- The default filter chain must survive a capillary (Phase 1.5) ------------------------
 
-def _capillary_probability_volume(radius_voxels=1.6, p_vessel=0.99, p_background=0.05):
+def _capillary_probability_volume(radius_voxels=1.6, p_vessel=1.0, p_background=0.05):
     """A capillary-scale tube in a probability map: the thing the chain must not erase.
 
-    The vessel sits at 0.99, above the frozen 0.90 / 0.95 band (open item 1). It was 0.95
-    against the old 0.75 seed; hysteresis seeds on ``p > high``, so 0.95 no longer seeds.
+    The vessel sits at 1.0, the only level that seeds under the frozen 0.95 / 0.999 band
+    (2026-09-28). It was 0.99 under the 0.90 / 0.95 band, and 0.95 against the old 0.75 seed.
     """
     shape = (24, 41, 41)
     _, yy, xx = np.indices(shape)
