@@ -214,19 +214,14 @@ def main(perturbation_um=VOXEL_UM):
           f"({ind_mean:.1f}% against {cor_mean:.1f}%)")
     print(f"a within-specimen ratio cancels {100*(1-rat_mean/cor_mean):.0f}% of the correlated error "
           f"({cor_mean:.1f}% -> {rat_mean:.1f}%)")
+    return rat_mean
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--perturbation-um", type=float, default=VOXEL_UM,
-                        help=f"diameter perturbation in um (default {VOXEL_UM}, one voxel; "
-                             f"pass {THRESHOLD_SHIFT_UM} for the measured threshold shift)")
-    main(parser.parse_args().perturbation_um)
-    boundary_sensitivity()
-
-
-def boundary_sensitivity():
+def boundary_sensitivity(calibre_ratio_pct):
     """S20: how much does the shunt ratio move when the boundary choice moves?
+
+    ``calibre_ratio_pct`` is the within-specimen ratio error ``main`` just measured, so the
+    comparison line below matches the perturbation that was run.
 
     S13 established that a within-specimen ratio cancels calibre error. That is only half the
     picture. S10 showed the inlet and outlet nodes are chosen positionally, by axis and by band
@@ -288,5 +283,13 @@ def boundary_sensitivity():
 
     print(f"\nmean spread of the shunt ratio: axis {np.nanmean(axis_spread):.1f}%, "
           f"band {np.nanmean(band_spread):.1f}%, combined {np.nanmean(total_spread):.1f}%")
-    print("Calibre error moves the same ratio 6.3% (S13, S15), so the boundary choice, "
-          "not calibre, is the dominant term.")
+    print(f"Calibre error moves the same ratio {calibre_ratio_pct:.1f}% (S13, S15), so the "
+          f"boundary choice, not calibre, is the dominant term.")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--perturbation-um", type=float, default=VOXEL_UM,
+                        help=f"diameter perturbation in um (default {VOXEL_UM}, one voxel; "
+                             f"pass {THRESHOLD_SHIFT_UM} for the measured threshold shift)")
+    boundary_sensitivity(main(parser.parse_args().perturbation_um))
