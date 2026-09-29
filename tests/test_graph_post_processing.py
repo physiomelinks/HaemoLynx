@@ -169,7 +169,10 @@ def test_split_four_way_makes_two_bifurcations_joined_by_a_15um_vessel():
     connector = G.get_edge_data(0, new)[0]
     assert connector["length"] == pytest.approx(DEFAULT_SPLIT_CONNECTOR_LENGTH_UM)
     assert connector["junction_split_connector"] is True
-    assert "diameter_um" not in connector and "branch_order" not in connector
+    # Every arm is 6 um across, so the connector takes their mean as an override.
+    assert connector["diameter_um"] == pytest.approx(6.0)
+    assert connector["diameter_source"] == "override"
+    assert "branch_order" not in connector
 
 
 def test_split_trims_moved_vessels_and_remeasures_them():
@@ -341,3 +344,16 @@ def test_prune_refuses_to_remove_every_vessel():
     G = _main_and_cut_off_pieces()
     with pytest.raises(ValueError, match="every vessel"):
         prune_disconnected_branches(G, [4], [2])  # no piece has both
+
+
+def test_split_connector_diameter_is_the_mean_of_the_junctions_vessels():
+    G = _four_way_with_one_close_pair()
+    for (u, v, k), diameter in zip(edge_keys(G), [4.0, 6.0, 8.0, 10.0]):
+        G.edges[u, v, k]["diameter_um"] = diameter
+    new = split_junction(G, 0)[0]
+    assert G.get_edge_data(0, new)[0]["diameter_um"] == pytest.approx(7.0)
+    # With no diameters at all, the connector gets none (the table decides).
+    positions, edges = _star(4)
+    bare = _network(positions, edges)
+    new = split_junction(bare, 0)[0]
+    assert "diameter_um" not in bare.get_edge_data(0, new)[0]

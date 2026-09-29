@@ -249,8 +249,11 @@ def split_junction(
     and its length is re-measured from what is left. *node* keeps its id (so a
     boundary role on it survives); new ids avoid *reserved_ids*.
 
-    Connector vessels carry ``junction_split_connector=True`` and no diameter
-    or branch order: a regenerate from Diameters assigns both.
+    Connector vessels carry ``junction_split_connector=True`` and, like every
+    vessel this module adds, the mean diameter of the vessels that met at
+    *node* as a manual override (:func:`mean_incident_diameter`; none when
+    none of them has a diameter). A regenerate from Diameters assigns their
+    branch order.
 
     Returns the new node ids.
     """
@@ -260,6 +263,7 @@ def split_junction(
     if node not in G:
         raise ValueError(f"Node {node!r} is not in the network")
     origin = _node_position(G, node)
+    connector_diameter = mean_incident_diameter(G, [node])
     reserved = set(reserved_ids)
     connectors: set[tuple[Any, Any, Any]] = set()
     new_nodes: list[Any] = []
@@ -309,13 +313,16 @@ def split_junction(
             attrs["length"] = float(calculate_path_length(points))
             G.remove_edge(node, other, k)
             G.add_edge(new_node, other, **attrs)
-        key = G.add_edge(
-            node,
-            new_node,
-            voxels=[tuple(float(c) for c in origin), tuple(float(c) for c in new_pos)],
-            length=length,
-            junction_split_connector=True,
-        )
+        connector_attrs: dict[str, Any] = {
+            "voxels": [tuple(float(c) for c in origin), tuple(float(c) for c in new_pos)],
+            "length": length,
+            "junction_split_connector": True,
+        }
+        if connector_diameter is not None:
+            from haemolynx.haemodynamics.poiseuille import set_edge_diameter_override
+
+            set_edge_diameter_override(connector_attrs, connector_diameter)
+        key = G.add_edge(node, new_node, **connector_attrs)
         connectors.add((node, new_node, key))
         new_nodes.append(new_node)
     return new_nodes

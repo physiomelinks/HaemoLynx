@@ -31,6 +31,7 @@ After a run (at least through **4. Boundaries**), tab 10 works on a copy of the 
      refused.
    - **Split into bifurcations with a vessel of [15 µm].** The two vessels leaving in the most
      similar direction move to a new node, joined back by a connector vessel of that length.
+     The connector takes the mean diameter of the junction's vessels, as an override.
      This repeats until the junction is degree 3, so a 5-way junction takes two splits.
    - **Leave as is:** marks the junction and moves on to the next.
 4. **Edit by clicking in the viewer.** This replaces the old bottom-row **Edit** button, which is
@@ -64,8 +65,9 @@ After a run (at least through **4. Boundaries**), tab 10 works on a copy of the 
    (`boundaries_following_graph`), so pruned boundary nodes don't stop the solve. It also
    **keeps the FWHM diameters already measured** instead of measuring every vessel again: it
    adds `do_fwhm_measurement` to the rerun's skip list, and the next Run pipeline restores the
-   switch. New vessels still get their diameter: the override for an added vessel, the table
-   for a split's connector. The old Edit window's Regenerate keeps the strict boundary check and
+   switch. New vessels still get their diameter: **every vessel tab 10 adds (Add vessel, or a
+   split's connector) takes the mean diameter of the vessels at its nodes**, as a manual
+   override that Regenerate keeps. The old Edit window's Regenerate keeps the strict boundary check and
    re-measures.
 
    **What Regenerate costs**, measured on the real network: Diameters → Export takes about 10 s.
@@ -98,7 +100,8 @@ How `split_junction` picks the pair: the two incident vessels whose directions o
 10 µm have the largest dot product. The new node goes `connector_length_um` out along their
 mean direction. Moved vessels lose the part of their path the connector now covers, and their
 `length` is re-measured from `voxels`. The connector is flagged `junction_split_connector=True`
-and has no diameter or branch order; Regenerate assigns them. The junction keeps its node id,
+and carries the mean diameter of the junction's vessels as an override (none if none of them
+has one). Regenerate assigns its branch order. The junction keeps its node id,
 so a boundary role on it survives.
 
 ---
@@ -220,3 +223,5 @@ Known unrelated failures in this environment:
   - Tests: the tab's pure, widget, graph, tooltip and editor tests pass (106).
 - **2026-09-30, commit 5:** Tab 10's Regenerate keeps the measured FWHM diameters. Diameters
   went from 171 s to 1.5 s on the real run; 747 measured diameters were kept.
+- **2026-09-30, commit 6:** A split's connector takes the mean diameter of the junction's vessels
+  (override), so every vessel tab 10 adds uses the neighbours' average.
