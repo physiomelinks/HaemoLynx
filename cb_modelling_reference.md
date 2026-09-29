@@ -2369,39 +2369,42 @@ per-edge CSV cannot disagree about what an edge's tortuosity is.
 Joins the vessel channel to the TH channel. **Sound only because they are two channels of one
 acquisition** — identical grid, co-registered by construction, no registration step (§11 row 28).
 
-**Centreline length within the glomus.** Length is summed over real steps, not by counting skeleton
-voxels:
+**Vessel set: the batch network** (open item 40). Both methods read the vessel side from the
+`cb_h1_batch` run (`cb_h1_th_metrics._load_batch`): the graph for length, the cached skeleton for
+distance, the cached mask for vessel volume. All three come from the hysteresis band (§1), so §1.3
+and §1.5 describe the same vessels as §1.1–1.4. `check_output_roi` refuses a batch output cut at
+another box. Until item 40 the driver cut the probability map plainly at the frozen threshold and
+skeletonised that itself, a vessel set with 1.6× the skeleton voxels of the network.
 
-$$\text{length} = \sum_\text{steps}
-\bigl\lVert \mathbf{s} \odot \mathbf{v} \bigr\rVert \cdot \operatorname{count}(\mathbf{s})$$
+**Centreline length within the glomus.** The network's edge polylines (the same edges and lengths
+as `per_edge_morphometry.csv`), classified against the TH mask by the sampling of
+`edge_tissue_fraction` (§7.3):
 
-where $\mathbf{s}$ is the integer step offset and $\mathbf{v}$ the voxel size in µm.
+$$L_\text{TH} = \sum_\text{edges} \sum_\text{segments} \ell_\text{seg} \cdot
+\frac{\#\{\text{sub-step midpoints in TH}\}}{n_\text{seg}},
+\qquad n_\text{seg} = \lceil \ell_\text{seg} / (v_\text{min}/2) \rceil$$
 
 **The order of operations.**
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
-| 1 | Enumerate the 13 unique 26-connected steps, once per pair not per direction | — | Visiting each unordered neighbour pair once is what stops every step being counted twice | **On** | `th_morphometry.py:28` |
-| 2 | Physical length of each step, $\sqrt{\sum_i (s_i v_i)^2}$ | voxel (1.8639, 1.866, 1.866) | A diagonal step covers 3.23 µm where an axial one covers 1.87, so counting voxels would be wrong by up to $\sqrt{3}$ | **On** | `th_morphometry.py:59` |
-| 3 | Count skeleton voxel pairs joined by that step | — | The number of joined pairs in each direction is what the step length multiplies | **On** | `th_morphometry.py:60` |
-| 4 | With `within`, keep a step only if **both** endpoints are in the mask | — | A step straddling the boundary belongs to neither side, and assigning it to the tissue it half touches would inflate whichever mask is more fragmented | **On** | `th_morphometry.py:63` |
-| 5 | Total = Σ step length × pair count | — | Summing per step class rather than applying a global factor gives the exact correction rather than an average one | **On** | `th_morphometry.py:65` |
-| 6 | Raise if the centreline is empty | — | A distance transform against an empty mask returns infinity everywhere, which would propagate as a very large distance rather than as an error | **On**, never returns ∞ | `th_morphometry.py:100` |
-| 7 | EDT from every non-centreline voxel, `sampling` = voxel size | µm directly | `sampling` puts the answer in microns directly and carries the 1.0011 axial-to-lateral ratio, so nothing downstream converts again | **On** | `th_morphometry.py:108` |
-| 8 | Read the distance at every TH-positive voxel | — | H1 §1.5 asks how far glomus tissue sits from its supply, which is a question about tissue voxels rather than about vessels | **On** | `th_morphometry.py:109` |
+| 1 | Load the batch graph, skeleton and mask; refuse another box or shape | ROI 160³ | One vessel set for all of H1; a plain-cut mask here measured different vessels | **On** | `cb_h1_th_metrics.py:72` |
+| 2 | Split each polyline segment into sub-steps of at most half the finest voxel | 0.93 µm | A mask crossing cannot be stepped over | **On** | `tissue_regions.py:207` |
+| 3 | Look up each sub-step midpoint in the voxel **centred** on it (first corner at −v/2) | — | The graph puts voxel k's centre at k·v; a lookup with the corner at 0 was half a voxel off on every axis | **On** | `tissue_regions.py:210` |
+| 4 | Length inside = Σ segment length × share of midpoints inside | — | Length-weighted, so unevenly spaced polyline points do not outvote a long run | **On** | `tissue_regions.py:238` |
+| 5 | Total = Σ polyline length; raise on an edge with no geometry | — | A missing edge would shorten the network with no sign in the result | **On** | `tissue_regions.py:280` |
+| 6 | Raise if the centreline is empty | — | A distance transform against an empty mask returns infinity everywhere, which would propagate as a very large distance rather than as an error | **On**, never returns ∞ | `th_morphometry.py:53` |
+| 7 | EDT from every non-centreline voxel of the **pipeline skeleton**, `sampling` = voxel size | µm directly | `sampling` puts the answer in microns directly and carries the 1.0011 axial-to-lateral ratio, so nothing downstream converts again | **On** | `th_morphometry.py:61` |
+| 8 | Read the distance at every TH-positive voxel | — | H1 §1.5 asks how far glomus tissue sits from its supply, which is a question about tissue voxels rather than about vessels | **On** | `th_morphometry.py:62` |
 
-**Step 1 is why the count is 13 and not 26.** Each unordered neighbour pair is visited once, so no
-step is double-counted. Steps 2–3 then give the exact √3 correction the paragraph below describes,
-per step class rather than as a global factor.
+**Why not a voxel-pair sum.** Until item 40 the length summed every 26-adjacent skeleton voxel
+pair at its physical step length. That fixes the √3 bias of counting voxels, but where three
+skeleton voxels touch at a corner it counts all three links though the path uses two: 9% above
+skan's path length on the plain-cut skeleton and 28% above on the pipeline skeleton. The polyline
+length has neither bias, and it is the length §1.1–1.4 already use.
 
-Counting voxels and multiplying by voxel size is the obvious estimator and is wrong by up to √3 — a
-diagonal step covers 3.23 µm on this grid where an axial one covers 1.87 µm. On a tortuous network
-that is not a small correction, and H1 §1.4 turns on tortuosity, so the two must not disagree about
-what length means.
-
-**Steps at the mask boundary count for neither side.** A step is included only when *both*
-endpoints lie inside the mask. Assigning a straddling step to the tissue it half touches would
-inflate whichever mask is more fragmented.
+**Resolution at the TH boundary.** Each crossing is placed to within one sub-step (0.93 µm), so an
+edge's inside length is exact to about ±1 µm per crossing.
 
 **Tissue-to-vessel distance.** Euclidean distance transform from every TH-positive voxel to the
 nearest **centreline** voxel, with `sampling` set to the voxel size so the result is in µm directly.
@@ -2413,9 +2416,10 @@ nearest **centreline** voxel, with `sampling` set to the voxel size so the resul
 **It raises on an empty centreline** rather than returning infinity, which would propagate as a very
 large distance instead of as an error.
 
-> **At a glance** — real-step length, centreline distance, boundary steps excluded · median TVD
-> 4.6–6.2 µm (§13.7) · `th_morphometry.py:34`, `th_morphometry.py:78` ·
-> `tests/test_th_morphometry.py`
+> **At a glance** — network polyline length, pipeline-skeleton distance, voxel-centred lookup
+> (open item 40) · median TVD 4.6–6.2 µm (§13.7; pre-item-40, re-run with package J) ·
+> `th_morphometry.py:96`, `tissue_regions.py:280` · `tests/test_th_morphometry.py`,
+> `tests/test_tissue_regions.py`
 
 ---
 
@@ -3750,6 +3754,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 37 | **Open (code closed, `cfee721`; H1/H2 scripts not re-run).** The coupled flow–haematocrit loop (§4.3) stopped on its 15-pass cap in every specimen, still wandering, so every flow, haematocrit, transit and shear value came from whichever pass it stopped on; `cb_h2_glomus_perfusion.json` did not record it. It was not a two-state swing: on WKY-A total flow was settled (pass 15 vs 100: 0.6% L1) while 511 edges' haematocrit still differed by > 0.01, up to 0.43, and relaxation 0.5 → 0.1 over 150 passes only lowered the floor. Two discrete switches drove it. (a) 745–895 dead-end edges per specimen carry rounding-level flow (≤ 10⁻¹² of the largest, with no edge between 10⁻¹² and 10⁻⁸), and 60–120 of them flipped direction every pass, which made their junctions switch between skimming and proportional mixing and caused every "no inflowing parent" fallback (15–29 per pass, all interior; none at an inlet). They are now left out of the transport at `STAGNANT_FLOW_FRACTION` (10⁻¹⁰, the Tier 3 cut, moved to `resistance.py`). (b) Junctions with three or more outflows mixed proportionally, so a small daughter reversing switched the rule; they now skim one-vs-rest (§4.2), which reduces to the Pries relation at two daughters. With both, relaxation 0.5 still wandered and 0.3/0.4 left SHR-C on a periodic cycle; 0.2 converges all six. The stop is now scale-free (relative flow 10⁻⁶, haematocrit residual 10⁻⁴), and pipeline (mPa) and H2 (mmHg) solves agree on every edge's haematocrit to 10⁻¹⁰. No-parent D_F is now the Murray parent and is counted; it no longer fires. Settings in `cb_settings` (cap 1000, relaxation 0.2); `rheology_status(G)` goes into the pipeline stats and VTK and every H2 JSON. **Pipeline re-run 2026-09-29** (`rerun_2026-09-29_item37_logs/`; old outputs `*_2026-09-29_pre_item37`): all 18 runs converge (0.95: WKY-A 330, WKY-B 457, WKY-C 404, SHR-A 217, SHR-B 173, SHR-C 184 passes; 0.93 and 0.97: 155–726, the slowest WKY-B at 0.93). `per_edge_morphometry.csv` and `roi_placement.json` are byte-identical, so no H1 number moves. Mean edge haematocrit rises (WKY-A 0.352 → 0.365). The Tier 3 field barely moves: mean PO₂ changes by ≤ 0.06 mmHg in all 18 runs (WKY-A 71.34 → 71.35, SHR-C 50.55 → 50.55 at 0.95). **Still to do:** re-run the H2 scripts. Scratch comparison on the same networks (ratios of cohort means, SHR/WKY, pre-fix → converged): shunt index 0.889 → 0.883, median flow ratio 0.908 → 0.926, haematocrit ratio 1.019 → 1.056, transit ratio 1.026 → 1.038; SHR-C moves most (haematocrit ratio 0.998 → 1.051, flow ratio 0.518 → 0.595). `test_rheology_convergence.py`, `test_cb_settings.py` | §2.1, §2.2, §2.4 and every H2 flow number; §4.2, §4.3, §10.7, A.1 updated |
 | 38 | **Open (code closed, `870de15`; H2 scripts not re-run).** `tissue_regions.mask_fraction_per_cell` counted TH voxel centres per grid cell and divided by the mean count per cell (27 / 6.49 = 4.16 at 3 µm). A 3 µm cell holds 1 or 2 voxel centres per axis, so a solid glomus cell read 0.24, 0.48, 0.96 or up to 1.92, and `np.clip(…, 0, 1)` threw the excess away with no warning; the comment said the clip only caught rounding. About 17% of the TH volume was lost in every specimen (grid TH share / voxel TH share 0.821–0.835; WKY-A 17.4% against 20.87%), and the per-cell fractions aliased into a lattice. It fed the TH-weighted "PO₂ in TH", the per-cell metabolic rate of contrasts 2 and 4 (whose mean-rate normalisation used the aliased f̄) and the `cb_h2_vtk.py` TH field. Not group-correlated. The fraction is now the exact overlap volume of each voxel with each cell (separable per axis), with no clip; the function raises if the in-grid volume is not conserved or a cell exceeds 1, and warns on out-of-grid loss by volume. On the six masks it keeps ≥ 99.97% of the volume at 3 µm (the rest overhangs the grid). **Grid sweep re-run 2026-09-30** (cross-section, contrast 1, all six; §6.8): the all-cell median moved by ≤ 0.01 mmHg and PO₂ in TH by ≤ 0.04 at every grid (the stromal median by up to 0.77, as the TH/stroma split changed), TH hypoxia stays 0.00%, and every refinement step is under 0.5 mmHg; 4 µm now passes by 0.005 mmHg, and 3 µm is kept. Mixed cells 13–36%, wholly glomus 4–15% (§6.5). **Still to do:** re-run `cb_h2_hypoxic_fraction.py` (plain and `--pad-grid`) and `cb_h2_vtk.py`, with the open item 37 re-run. `test_tissue_regions.py` | §6.5, §6.8, §7.5 "PO₂ in TH" and the contrast runs, the H2 VTK TH field |
 | 39 | **Open (low).** The cross-section sweep is not monotone at 3 µm: in every specimen 3 µm gives the highest all-cell median PO₂ of 4, 3 and 2 µm (4 → 3 µm +0.18 to +0.49, 3 → 2 µm −0.09 to −0.16). It was put down to the TH aliasing of open item 38, but survived that fix unchanged, so it is not. §6.8 already suspects the grid origin, which moves with h because the grid is padded by half a cell around the node bounding box. Every step still passes the 0.5 mmHg rule, so it does not change the grid choice. To check: re-run 4 / 3 / 2 µm with the grid origin fixed (e.g. `bounds_zyx` from the ROI) and see whether the bump goes. | §6.8 |
+| 40 | **Open (code closed; `cb_h1_th_metrics.py` and the H2 scripts not re-run).** Three fixes, one cause: H1 did not use one definition of the vessel network. (a) **§1.3 length** (re-run notes item 17). `cb_h1_th_metrics.py` cut the probability map plainly at 0.95 and skeletonised that, where the network uses the hysteresis band plus cleanup (1.6× the skeleton voxels), and `th_morphometry.centreline_length_um` summed every 26-adjacent voxel pair, counting all three links at a corner (9–28% above skan). WKY-A's §1.3 length was 199.4 mm against the network's 97.0 mm. The driver now reads the batch graph, skeleton and mask (`check_output_roi` first), the length is the edge polylines (`tissue_regions.edge_length_inside_um`), §1.5 is measured to the pipeline skeleton, and the pairwise estimator is gone. (b) **Half-voxel lookup.** Graph positions put voxel k's centre at k·v (checked on WKY-A to 10⁻¹⁴), but `edge_tissue_fraction`, `mask_fraction_per_cell` and `mask_bounds_um` put voxel k's *corner* there by default, so every TH lookup was half a voxel (≈ 0.93 µm) off on each axis against the graph and grid. The default first corner is now −v/2 in all three. On the six networks, TH > 0.5, edge TH fractions move by a mean 0.02–0.06 (single short edges by up to 1), and 45–201 more edges per specimen touch TH. (c) **Junction count** (re-run notes item 32). `compute_branching_statistics` counted on `nx.Graph(G)`, which merges parallel edges: 4,475 for WKY-A against 4,631 in the CSV, Figure 3 and `cb_h1_vtk.py`. It now counts on the MultiGraph; the branching angles are unchanged (still chords to neighbour nodes). **Scratch check on the current batch (TH > 0.5, not written to the outputs):** §1.3 total length now equals the CSV sum in all six (WKY-A 96.96 mm); length within TH WKY 13.2 / 20.0 / 15.2 mm, SHR 19.7 / 12.1 / 5.2 mm; density WKY 2,382 / 2,255 / 2,425, SHR 3,308 / 3,045 / 1,999 mm·mm⁻³ (ratio of means 1.18). The half-voxel fix alone lowers length within TH by 1–6%; the rest is the change of vessel set and estimator. **The H1 whitepaper §9A claim that length density separates the cohorts completely no longer holds**: SHR-C now sits below every WKY. §1.5 TVD medians rise (WKY 8.55 / 9.14 / 8.55, SHR 7.92 / 7.92 / 9.70 µm), as the pipeline skeleton is sparser. **Still to do:** re-run `cb_h1_th_metrics.py` (plain and `--all`) with package J, which also picks up (b) in `cb_h2_glomus_perfusion.py`, `cb_h2_hypoxic_fraction.py` (plain and `--pad-grid`) and `cb_h2_vtk.py`; then re-quote H1 §9A and the pipeline's `model_results.md` junction count at the next batch run. `test_th_morphometry.py`, `test_tissue_regions.py`, `test_statistics.py` | §7.2, §13.7, H1 §1.3 and §1.5, H2 §2.1–§2.3 TH joins |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the
