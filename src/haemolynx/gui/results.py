@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 import pickle
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -793,6 +793,10 @@ class LayerSpec:
     #: ``(forward, backward)`` flow-direction columns per drawable edge, for
     #: :func:`sweep_direction_columns` to pick from at each grid point.
     sweep_directions: Any | None = None
+    #: The perturbation whose network this layer draws; ``None`` for the
+    #: baseline's and for everything that is not a network (see
+    #: :mod:`haemolynx.gui.layer_sets`, which swaps whole networks).
+    layer_set: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2218,9 +2222,10 @@ class ResultLayers:
         layers: list[LayerSpec] = []
         for result in results:
             if is_sweep_perturbation(getattr(result, "type", "")):
-                layers.extend(self._sweep_perturbation_layers(result))
+                specs = self._sweep_perturbation_layers(result)
             else:
-                layers.extend(self._perturbation_layers(result))
+                specs = self._perturbation_layers(result)
+            layers.extend(replace(spec, layer_set=str(result.name)) for spec in specs)
 
         failures = list(getattr(output, "failures", ()) or ())
         layer_count = len([spec for spec in layers if spec.kind == "vectors"])

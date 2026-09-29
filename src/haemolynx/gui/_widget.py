@@ -59,6 +59,7 @@ from haemolynx.gui.results import (
     filter_vectors_by_z,
     is_z_depth_filtered_layer,
     is_z_depth_windowed_volume_layer,
+    perturbation_layer_names,
     z_window_is_full,
 )
 from haemolynx.gui.optimise_progress import OptimisationProgressDisplay
@@ -1014,8 +1015,9 @@ def _make_surfaces_follow_the_dims_order() -> None:
     _SurfaceSliceRequest.__call__ = __call__
 
 
-def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
-    """Show tubes or line ribbons for one vessels Vectors layer."""
+def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> str:
+    """Show tubes or line ribbons for one vessels Vectors layer; the name of
+    its tubes layer, whether or not it has one yet."""
     _make_surfaces_follow_the_dims_order()
     name = vessel_tubes_layer_name(vessels.name)
     existing = viewer.layers[name] if name in viewer.layers else None
@@ -1026,7 +1028,7 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
     if not tubes_on:
         vessels.visible = True
         _hide_tube_surface(existing)
-        return
+        return name
 
     radii = tube_radii_um(_vessel_segment_diameters_um(vessels))
     vertices, faces, segment_index = tubes_from_vectors(
@@ -1040,7 +1042,7 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
     if len(vertices) == 0:
         vessels.visible = False
         _hide_tube_surface(existing)
-        return
+        return name
     colours = colors_for_tube_vertices(segment_index, _vector_edge_rgba(vessels))
     ours = {
         "kind": "surface",
@@ -1073,21 +1075,33 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> None:
         )
     vessels.visible = False
     _ensure_tube_colour_follow(viewer, vessels)
+    return name
 
 
 def _sync_vessel_tubes(viewer) -> None:
-    """Rebuild or hide tube Surfaces to match the session drawing mode."""
+    """Rebuild or hide tube Surfaces to match the session drawing mode.
+
+    Only for the network the view panel is showing (see
+    :func:`show_layer_set`): the baseline's vessels normally, a
+    perturbation's once it is chosen -- and then every other network's tubes
+    go, and its vessels are left as the swap left them, hidden.
+    """
     if viewer is None:
         return
     tubes_on = _vessel_draw_mode == VESSEL_DRAW_TUBES
+    shown = _layer_set_shown(viewer)
     seen_tube_names: set[str] = set()
     try:
         for layer in list(viewer.layers):
-            if not _is_vessel_vectors_layer(layer):
+            if shown is None:
+                if not _is_vessel_vectors_layer(layer):
+                    continue
+            elif not (_is_ours(layer) and layer.__class__.__name__ == "Vectors"
+                      and _layer_set_of(layer) == shown
+                      and layer.name == perturbation_layer_names(shown)[0]):
                 continue
-            _sync_one_vessel_tubes(viewer, layer, tubes_on)
-            seen_tube_names.add(vessel_tubes_layer_name(layer.name))
-        if not tubes_on:
+            seen_tube_names.add(_sync_one_vessel_tubes(viewer, layer, tubes_on))
+        if not tubes_on or shown is not None or _perturbation_sets_in(viewer):
             for layer in list(viewer.layers):
                 if _is_vessel_tubes_layer(layer) and layer.name not in seen_tube_names:
                     _hide_tube_surface(layer)
@@ -2575,6 +2589,7 @@ def _add_or_update(viewer, spec) -> None:
             _colour_layer(existing, spec.colour_by, spec.colour_kind,
                           spec.colour_cycle, spec.contrast_limits)
             _store_sweep_metadata(existing, spec)
+            _store_layer_set_metadata(existing, spec)
             _store_branch_hover_metadata(existing, spec)
             _maybe_store_z_filter_cache(existing, spec)
             _store_thick_thin_skeleton_metadata(existing, spec)
@@ -2611,6 +2626,7 @@ def _add_or_update(viewer, spec) -> None:
     _colour_layer(layer, spec.colour_by, spec.colour_kind,
                   spec.colour_cycle, spec.contrast_limits)
     _store_sweep_metadata(layer, spec)
+    _store_layer_set_metadata(layer, spec)
     _store_branch_hover_metadata(layer, spec)
     _maybe_store_z_filter_cache(layer, spec)
     _store_thick_thin_skeleton_metadata(layer, spec)
@@ -2637,6 +2653,99 @@ def _store_sweep_metadata(layer, spec) -> None:
     metadata = dict(getattr(layer, "metadata", {}) or {})
     metadata[OURS] = tag
     layer.metadata = metadata
+
+
+def _store_layer_set_metadata(layer, spec) -> None:
+    """Remember which perturbation's network *layer* draws, if any."""
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    key = getattr(spec, "layer_set", None)
+    if key is None:
+        tag.pop("layer_set", None)
+    else:
+        tag["layer_set"] = str(key)
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _layer_set_of(layer) -> str | None:
+    """The perturbation whose network *layer* draws; None for anything else."""
+    tag = getattr(layer, "metadata", {}).get(OURS) or {}
+    key = tag.get("layer_set")
+    return None if key is None else str(key)
+
+
+def _perturbation_sets_in(viewer) -> list[str]:
+    """The perturbations with a network in the viewer, in layer order."""
+    if viewer is None:
+        return []
+    keys = (_layer_set_of(layer) for layer in viewer.layers if _is_ours(layer))
+    return list(dict.fromkeys(key for key in keys if key is not None))
+
+
+def _layer_set_shown(viewer) -> str | None:
+    """The network the view panel shows: a perturbation's name, or None."""
+    return getattr(viewer, "_haemolynx_layer_set", None)
+
+
+def _apply_layer_set_visibility(viewer, key, roles) -> None:
+    from haemolynx.gui.layer_sets import visibility_for
+
+    present = [layer.name for layer in viewer.layers if _is_ours(layer)]
+    keys = [None, *_perturbation_sets_in(viewer)]
+    for name, visible in visibility_for(key, keys, roles, present).items():
+        layer = viewer.layers[name]
+        if bool(layer.visible) != visible:
+            if not visible and _is_vessel_tubes_layer(layer):
+                _hide_tube_surface(layer)
+            else:
+                layer.visible = visible
+
+
+def show_layer_set(viewer, key: str | None) -> None:
+    """Show one network -- the baseline (None) or a perturbation -- and hide
+    every other network's vessels, nodes and flow direction.
+
+    Which kinds of layer were on carries across from the network shown
+    before (see :mod:`haemolynx.gui.layer_sets`). A perturbation with no
+    layers in the viewer shows the baseline instead.
+    """
+    from haemolynx.gui.layer_sets import role_visibility
+
+    if viewer is None:
+        return
+    if key is not None and key not in _perturbation_sets_in(viewer):
+        key = None
+    shown = _layer_set_shown(viewer)
+    visible = {layer.name: bool(layer.visible) for layer in viewer.layers if _is_ours(layer)}
+    roles = role_visibility(key, visible)
+    outgoing = role_visibility(shown, visible)
+    if shown is not None and shown not in _perturbation_sets_in(viewer):
+        # What was shown has gone: fall back to how the baseline was left.
+        outgoing = getattr(viewer, "_haemolynx_layer_set_roles", {}) or {}
+    roles.update(outgoing)
+    viewer._haemolynx_layer_set = key
+    viewer._haemolynx_layer_set_roles = roles
+    _apply_layer_set_visibility(viewer, key, roles)
+    _sync_vessel_tubes(viewer)
+
+
+def _reapply_layer_set(viewer) -> None:
+    """Keep the chosen network shown after layers were redrawn or removed.
+
+    A redrawn perturbation layer comes back hidden, as every perturbation
+    layer starts; a removed one leaves nothing to show, so the baseline
+    comes back.
+    """
+    shown = _layer_set_shown(viewer)
+    if shown is None:
+        return
+    if shown not in _perturbation_sets_in(viewer):
+        show_layer_set(viewer, None)
+        return
+    _apply_layer_set_visibility(
+        viewer, shown, getattr(viewer, "_haemolynx_layer_set_roles", {}) or {}
+    )
 
 
 def _store_branch_hover_metadata(layer, spec) -> None:
@@ -7486,6 +7595,7 @@ def settings_widget(napari_viewer=None):
         SHOW_RESULTS_TOOLTIP,
         SHOW_STEPS_TOOLTIP,
         SNAPSHOT_TOOLTIP,
+        LAYER_SET_TOOLTIP,
         VESSEL_DRAW_TOOLTIP,
         Z_DEPTH_TOOLTIP,
     )
@@ -7515,7 +7625,7 @@ def settings_widget(napari_viewer=None):
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import (
         QButtonGroup, QCheckBox, QFormLayout, QGroupBox, QHBoxLayout,
-        QLabel, QPushButton, QRadioButton, QWidget,
+        QLabel, QMenu, QPushButton, QRadioButton, QToolButton, QWidget,
     )
     from superqt import QDoubleSlider
 
@@ -7566,6 +7676,55 @@ def settings_widget(napari_viewer=None):
         lines_radio.setChecked(True)
     else:
         tubes_radio.setChecked(True)
+
+    # Which network is drawn: the baseline, or one perturbation. A menu on a
+    # button rather than a QComboBox, whose popup over the floating dock
+    # missed clicks (see the Tubes/Lines radios); it only appears once a
+    # perturbation has layers to swap to.
+    layer_set_label = QLabel("Showing")
+    layer_set_label.setObjectName("haemolynx_layer_set_label")
+    layer_set_button = QToolButton()
+    layer_set_button.setObjectName("haemolynx_layer_set")
+    layer_set_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+    layer_set_menu = QMenu(layer_set_button)
+    layer_set_menu.setObjectName("haemolynx_layer_set_menu")
+    layer_set_button.setMenu(layer_set_menu)
+    layer_set_label.setToolTip(LAYER_SET_TOOLTIP)
+    layer_set_button.setToolTip(LAYER_SET_TOOLTIP)
+
+    def choose_layer_set(key: str | None) -> None:
+        if viewer is None:
+            return
+        show_layer_set(viewer, key)
+        refresh_layer_sets()
+
+    def refresh_layer_sets(*_args) -> None:
+        """List the networks in the viewer; hide the row with only the baseline.
+
+        The row stays while a perturbation is shown even after its layers
+        went, so there is always a way back to the baseline.
+        """
+        from haemolynx.gui.layer_sets import layer_set_choices
+
+        try:
+            perturbations = _perturbation_sets_in(viewer)
+            shown = _layer_set_shown(viewer) if viewer is not None else None
+            choices = layer_set_choices(perturbations)
+            layer_set_menu.clear()
+            for label, key in choices:
+                action = layer_set_menu.addAction(label)
+                action.setCheckable(True)
+                action.setChecked(key == shown)
+                action.setData(key)
+                action.triggered.connect(
+                    lambda _checked=False, key=key: choose_layer_set(key)
+                )
+            label = next((label for label, key in choices if key == shown), str(shown))
+            layer_set_button.setText(label)
+            layer_set_row.setVisible(bool(perturbations) or shown is not None)
+        except RuntimeError:
+            # The dock's Qt widgets outlive the panel on teardown.
+            logger.debug("layer-set menu is gone", exc_info=True)
 
     scale_bar_box = QCheckBox("Scale bar")
     scale_bar_box.setObjectName("haemolynx_scale_bar")
@@ -7673,9 +7832,15 @@ def settings_widget(napari_viewer=None):
         reparent_arrow_length_slider()
         _focus_image_layer_rendering(viewer)
         apply_view_z(force=True)
+        _reapply_layer_set(viewer)
+        refresh_layer_sets()
 
     if viewer is not None:
         viewer._haemolynx_after_layers_applied = _after_layers_applied
+        # Only the menu: a layer the Z filter replaces is removed and re-added,
+        # and switching networks in between would lose the choice.
+        viewer.layers.events.inserted.connect(refresh_layer_sets)
+        viewer.layers.events.removed.connect(refresh_layer_sets)
 
     def _z_slider_should_apply(slider) -> bool:
         return not bool(slider.isSliderDown())
@@ -8027,6 +8192,8 @@ def settings_widget(napari_viewer=None):
         removed = 0
         if viewer is not None:
             removed = _clear_our_layers(viewer)
+            viewer._haemolynx_layer_set = None
+            refresh_layer_sets()
             reparent_arrow_length_slider()
             z_depth_slider._haemolynx_extent_ready = False
             z_depth_slider.setEnabled(False)
@@ -8583,6 +8750,13 @@ def settings_widget(napari_viewer=None):
     vessel_draw_form.setContentsMargins(0, 0, 0, 0)
     vessel_draw_form.addRow(vessel_draw_label, vessel_draw)
     display_form.addRow(vessel_draw_row)
+    layer_set_row = QWidget()
+    layer_set_row.setObjectName("haemolynx_layer_set_row")
+    layer_set_form = QFormLayout(layer_set_row)
+    layer_set_form.setContentsMargins(0, 0, 0, 0)
+    layer_set_form.addRow(layer_set_label, layer_set_button)
+    display_form.addRow(layer_set_row)
+    refresh_layer_sets()
     display_form.addRow(scale_bar_box)
 
     def on_save_snapshot() -> None:
@@ -8679,6 +8853,10 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_z_depth_row = z_depth_row
     panel._haemolynx_vessel_draw = vessel_draw
     panel._haemolynx_vessel_draw_row = vessel_draw_row
+    panel._haemolynx_layer_set_row = layer_set_row
+    panel._haemolynx_layer_set_button = layer_set_button
+    panel._haemolynx_layer_set_menu = layer_set_menu
+    panel._haemolynx_choose_layer_set = choose_layer_set
     panel._haemolynx_view_panel = view_panel
     panel._haemolynx_view_dock = view_dock
     panel._haemolynx_view_button = view_button

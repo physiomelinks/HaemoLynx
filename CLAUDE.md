@@ -69,7 +69,9 @@ haemolynx/
 │   │                       #   layer -> run settings, pure), boundary_picking.py
 │   │                       #   (boundary settings <-> napari Points/Shapes, pure),
 │   │                       #   view_snap.py (XY/XZ/YZ plane -> dims order / camera
-│   │                       #   directions, pure), perturbation_editing.py, graph_editor.py
+│   │                       #   directions, pure), layer_sets.py (baseline/perturbation
+│   │                       #   network swap for the view panel's "Showing" menu, pure),
+│   │                       #   perturbation_editing.py, graph_editor.py
 │   │                       #   + graph_click.py (the Edit window), branch_hover.py,
 │   │                       #   vessel_tubes.py, run_state.py, run_log.py + log_view.py,
 │   │                       #   run_snapshot.py (.haemorun save/load), stage_checkpoints.py
@@ -431,6 +433,11 @@ are only caught locally.
   `log_view.py` (the only two that touch Qt, and only inside functions): settings in,
   layer specs out, layer data in, settings out, nothing importing napari. `rectangle_from_box` and
   `box_from_rectangle` are exact inverses, which is what lets an edited layer *be* the setting.
+- **`gui/layer_sets.py`** — what the view panel's "Showing" menu swaps: the baseline network or one
+  perturbation's (vessels, nodes, flow direction, vessel tubes), every other network hidden, and
+  which kinds of layer were on carried across. A perturbation's `LayerSpec`s carry
+  `layer_set=<its name>`, stored in the layer's `OURS` tag; the baseline's are `None`. The shown
+  network is the one `_sync_vessel_tubes` draws as tubes or lines.
 - **`examples/pipeline_presets.py`** — `PRESETS`, named partial configs; every setting name is
   checked against the schema at import, so a preset cannot quietly set something that no longer
   exists. The override engine itself is library code, in `parsers/cli.py` and `parsers/config.py`.

@@ -1062,6 +1062,25 @@ def test_two_perturbations_give_two_distinctly_named_vessel_layers():
     assert len(set(vessels)) == 2
 
 
+
+def test_every_perturbation_layer_names_its_perturbation_and_baseline_layers_none():
+    """What the view panel's "Showing" menu swaps by: a whole network at once."""
+    results = built()
+    baseline = results.stage_finished("build_network", network(a_graph(), (1.0, 1.0, 1.0)))
+    group = results.stage_finished(
+        "run_perturbations",
+        a_perturbation_run(a_perturbation("art_dilate_20"),
+                           a_perturbation("art_constrict_20")),
+    )
+
+    assert {spec.layer_set for spec in baseline.layers} == {None}
+    by_set = {}
+    for spec in group.layers:
+        by_set.setdefault(spec.layer_set, []).append(spec.name)
+    assert set(by_set) == {"art_dilate_20", "art_constrict_20"}
+    for name, layer_names in by_set.items():
+        assert set(perturbation_layer_names(name)) <= set(layer_names)
+
 def test_each_perturbation_gets_a_nodes_layer_of_its_own():
     group = built().stage_finished(
         "run_perturbations", a_perturbation_run(a_perturbation("art_dilate_20"))

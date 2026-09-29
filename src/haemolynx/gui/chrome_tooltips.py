@@ -104,6 +104,11 @@ VESSEL_DRAW_TOOLTIP = (
     "Tubes: each centreline step as a 3D prism that stays visible from every "
     "camera angle. Lines: napari vector ribbons (faster, can vanish edge-on)"
 )
+LAYER_SET_TOOLTIP = (
+    "Which network the vessels, nodes and flow-direction layers show: the "
+    "baseline, or one perturbation. Swapping keeps the same kinds of layer on, "
+    "so flipping back and forth compares like with like"
+)
 SCALE_BAR_TOOLTIP = (
     "Show napari's scale bar in the bottom-right of the canvas, in microns when voxel size is known"
 )

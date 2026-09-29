@@ -91,6 +91,7 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         chrome.REVERT_STAGE_TOOLTIP,
         chrome.Z_DEPTH_TOOLTIP,
         chrome.VESSEL_DRAW_TOOLTIP,
+        chrome.LAYER_SET_TOOLTIP,
         chrome.SCALE_BAR_TOOLTIP,
         chrome.SNAPSHOT_TOOLTIP,
         *chrome.VIEW_SNAP_TOOLTIPS.values(),
