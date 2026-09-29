@@ -160,19 +160,27 @@ def write_run_snapshot(path: Path | str, snapshot: RunSnapshot) -> Path:
     return dest
 
 
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
 def read_run_snapshot(path: Path | str) -> RunSnapshot:
     """Load a file written by :func:`write_run_snapshot`."""
     source = Path(path)
-    payload = None
+    # Decide by the file's own header rather than by trying gzip and falling
+    # back: a gzip file that fails to unpickle would otherwise be reported with
+    # the fallback's "invalid load key '\x1f'", hiding what actually went wrong.
     try:
-        with gzip.open(source, "rb") as handle:
+        with source.open("rb") as handle:
+            compressed = handle.read(2) == _GZIP_MAGIC
+    except OSError as error:
+        raise RunSnapshotError(f"Could not read {source}: {error}") from error
+    try:
+        with (gzip.open(source, "rb") if compressed else source.open("rb")) as handle:
             payload = pickle.load(handle)
-    except Exception:
-        try:
-            with source.open("rb") as handle:
-                payload = pickle.load(handle)
-        except Exception as error:
-            raise RunSnapshotError(f"Could not read {source}: {error}") from error
+    except Exception as error:
+        raise RunSnapshotError(
+            f"Could not read {source}: {type(error).__name__}: {error}"
+        ) from error
     if not isinstance(payload, dict) or payload.get("format") != FORMAT:
         raise RunSnapshotError(f"{source} is not a HaemoLynx run snapshot.")
     version = payload.get("version")
