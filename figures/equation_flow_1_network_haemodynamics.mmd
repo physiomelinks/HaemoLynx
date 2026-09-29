@@ -29,8 +29,8 @@ flowchart TD
     E18["E18 · logit of FQe1"]
     E19["E19 · FQe1 red cell flux fraction"]
     E20["E20 · H1 and H2 daughter haematocrit"]
-    RLX["under-relaxation<br/>H = H_old + 0.5 (H_new - H_old)"]
-    DF["D_F · feeding-vessel diameter<br/>in-edge, flow-weighted mean at a merge,<br/>larger daughter if none"]
+    RLX["under-relaxation<br/>H = H_old + 0.2 (H_new - H_old)"]
+    DF["D_F · feeding-vessel diameter<br/>in-edge, flow-weighted mean at a merge,<br/>Murray parent of the daughters if none"]
     E21["E21 · R = R0 mu_app(D, H) / mu_old<br/>rescaled by the new haematocrit"]
     E22["E22 · tau_w = 32 mu_app Q / pi D^3"]
 
@@ -58,7 +58,7 @@ flowchart TD
     E10 --> E21
     E10 --> E22
     E15 --> E22
-    E21 -. "x15 or until tolerance 1e-4" .-> E12
+    E21 -. "≤ 1000 passes, until relative flow 1e-6 and haematocrit 1e-4" .-> E12
   end
 
   subgraph S4["Final conductance, effective resistance and flow solve"]

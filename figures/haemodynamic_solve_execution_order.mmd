@@ -27,7 +27,7 @@ flowchart TD
   end
 
   IT["iteration = 0"]
-  D2{"iteration < 15<br/>and flow change > 1e-4?"}
+  D2{"iteration < 1000?"}
 
   subgraph P3["Phase 5 · Rheology iteration body"]
     C1["E12 · build conductance matrix"]
@@ -35,9 +35,9 @@ flowchart TD
     C3["apply Dirichlet pressures<br/>at inlet and outlet nodes"]
     C4["E14 · solve Luu pu = -Luk pk"]
     L3{{"for each edge in G"}}
-    C5["E15 · Q_ij = dp / R_ij<br/>record sign, orient into a DAG"]
+    C5["E15 · Q_ij = dp / R_ij<br/>record sign, orient into a DAG<br/>stagnant edges (≤ 1e-10 max Q) left out"]
     C12["compute max flow change<br/>against the previous pass"]
-    D5{"iteration > 0 and<br/>flow change ≤ 1e-4?"}
+    D5{"iteration > 0 and<br/>max ΔQ / max Q ≤ 1e-6 and<br/>haematocrit residual ≤ 1e-4?"}
     D6{"DAG sorts topologically?<br/>no cycle in flow directions"}
     C6s["snapshot H_old on every edge<br/>for the under-relaxation"]
     C6a["reset every node's inflow totals<br/>node_q_in = 0, node_h_in = 0"]
@@ -49,13 +49,13 @@ flowchart TD
       C6d["h_mix = 0.45<br/>no inflow, fall back to systemic"]
     end
     D3{"node has exactly<br/>two out-edges?"}
-    CDF["D_F · feeding_vessel_diameter<br/>single in-edge, flow-weighted mean at a merge,<br/>larger daughter and count it if none"]
+    CDF["D_F · feeding_vessel_diameter<br/>single in-edge, flow-weighted mean at a merge,<br/>Murray parent of the daughters and count it if none"]
     C7["E16, E17 → E18 → E19 → E20<br/>phase separation split, scaled by D_F"]
-    C8["proportional mixing<br/>relation undefined above a Y-split"]
+    C8["one-vs-rest phase separation<br/>each daughter against the rest, scaled to sum to 1"]
     C6e["add H·Q and Q of each out-edge<br/>to its child's inflow totals"]
     L5{{"for each edge in G"}}
     CLG["log the count of splits<br/>with no inflowing parent, if any"]
-    C13["H = H_old + 0.5 (H_skim - H_old)<br/>under-relaxation"]
+    C13["H = H_old + 0.2 (H_skim - H_old)<br/>under-relaxation"]
     C9["recompute E6, E8, E10<br/>from the relaxed haematocrit"]
     C10["E21 · R = R0 mu_app / mu_old<br/>same rule as E11"]
     C11["E22 · tau_w = 32 mu_app Q / pi D^3"]

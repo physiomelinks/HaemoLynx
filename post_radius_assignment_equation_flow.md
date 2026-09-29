@@ -69,7 +69,7 @@ flowchart TD
     E10 --> E21
     E10 --> E22
     E15 --> E22
-    E21 -. "x15 or until tolerance 1e-4" .-> E12
+    E21 -. "≤ 1000 passes, until relative flow 1e-6 and haematocrit 1e-4" .-> E12
   end
 
   subgraph S4["Final conductance, effective resistance and flow solve"]
@@ -236,11 +236,11 @@ configuration.
 
 **E21 back to E12** — the rheology solver. Each pass recomputes viscosity from the updated
 haematocrit, rebuilds the Laplacian, re-solves for pressure and re-splits red cells at every
-bifurcation. Runs up to 15 times. `STOP` records why it ended — `converged`, `flow_cycle` or
-`max_iterations` — from the pass-to-pass change in the `E15` flows, and travels with the
-statistics and the output (`09346d7`). An asymmetric Y-split never converges: its smaller
-daughter's haematocrit alternates between two values on successive passes, so the loop ends on
-`max_iterations`.
+bifurcation, with haematocrit relaxed a fifth of the way each pass. Runs up to 1000 times.
+`STOP` records why it ended — `converged`, `flow_cycle` or `max_iterations` — from the
+pass-to-pass relative change in the `E15` flows and the haematocrit residual, and travels with
+the statistics and the output. Since `cb_modelling_reference.md` open item 37 all six networks
+converge, in 173–457 passes; before it every solve ran out its 15 passes.
 
 **E54 back to E41 and E44** — the Picard loop. Each pass recomputes pH and metabolic rate
 from the updated tissue partial pressures, re-walks the vessel tree, and re-solves both

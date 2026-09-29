@@ -21,6 +21,13 @@
 > labelled **inspected** come from reading the code and are not backed by execution; they are stated
 > separately because that distinction is what makes the document auditable.
 
+> **Note, 2026-09-29 (open item 37 in `cb_modelling_reference.md`).** Every flow, haematocrit and
+> transit figure in this document came from a flow–haematocrit loop that never converged: it
+> stopped on its 15-pass cap in all six specimens, per-edge haematocrit still moving by up to 0.4
+> between passes. Since `cfee721` it converges (173–457 passes). The H2 scripts have not yet been
+> re-run on it, so the measured figures below stand as pre-fix values. The expected shifts are in
+> the H2 whitepaper's note of the same date.
+
 ---
 
 ## Document status

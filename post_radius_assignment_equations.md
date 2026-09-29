@@ -135,8 +135,10 @@ Listed in execution order for the default configuration.
 | $H$ | `systemic_hematocrit` | 0.45 | — | [@dash2010]: standard haematocrit ≈ 0.45 (human) |
 | $p_{\text{in}}$ | `input_p_bc` | $7.999\times10^{6}$ (60 mmHg) | mPa | Arteriolar; same as `cb_settings.INLET_PRESSURE_MMHG` (was 100 mmHg, MAP, until open item 10). Chosen; rat arterioles of 15–50 µm read 27–55 mmHg [@peti-peterdi_direct_1998; @jin_study_1997]. See `cb_modelling_reference.md` §8.1, §10.7 |
 | $p_{\text{out}}$ | `output_p_bc` | $2.666\times10^{6}$ (20 mmHg) | mPa | Venular; same as `cb_settings.OUTLET_PRESSURE_MMHG` (was 2 mmHg, CVP, until open item 10). Rat venules 18–26 mmHg [@peti-peterdi_direct_1998]; cat muscle venules 24 mmHg [@fronek_microvascular_1975] |
-| — | `rheology_max_iterations` | 15 | — | — |
-| — | `rheology_tolerance` | $1\times10^{-4}$ | — | — |
+| — | `rheology_max_iterations` | 1000 | — | Was 15 until `cb_modelling_reference.md` open item 37 |
+| — | `rheology_relaxation` | 0.2 | — | Haematocrit steps a fifth of the way to the new split each pass |
+| — | `rheology_flow_rtol` | $1\times10^{-6}$ | — | Relative to the largest flow; was an absolute $1\times10^{-4}$ |
+| — | `rheology_hematocrit_atol` | $1\times10^{-4}$ | — | Largest gap between split and current haematocrit on a flowing edge |
 | — | `robin_distal_resistance_multiplier` | 10.0 | — | — |
 
 ## Blood gas chemistry
@@ -298,6 +300,12 @@ $$H_1 = \min\!\left[\max\!\left(H_{\text{in}}\frac{FQ_{E1}}{FQ_1},\,0\right),\,0
 
 The clamp to $[0, 0.95]$ is not part of the Pries law. If it fires, red cell flux is no
 longer conserved at the bifurcation. It has not fired for daughters of 3–30 µm.
+
+At a junction with three or more daughters (open item 37), each daughter $i$ takes
+$FQ_{Ei}$ from E16–E19 with $FQ_i$, $D_i$ and, as the second branch, the flow-weighted mean
+diameter of the others; the $FQ_{Ei}$ are scaled to sum to 1 and E20 applies to each. With two
+daughters this is E16–E20 exactly. $D_F$ at a junction with no inflowing edge is the Murray
+parent $(\sum_i D_i^3)^{1/3}$.
 
 **(E21)** Resistance, rescaled by the updated haematocrit
 

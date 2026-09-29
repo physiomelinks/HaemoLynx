@@ -129,7 +129,8 @@ OUTLET_PRESSURE_MMHG: float = 20.0
 #: between skimming and proportional mixing. With both removed, relaxation 0.5 still does
 #: not converge, and 0.3 and 0.4 leave SHR-C on a periodic cycle. At 0.2 all six converge,
 #: in 173 (SHR-B) to 457 (WKY-B) passes, and the pipeline (mPa) and the H2 drivers (mmHg)
-#: land on the same haematocrit to 1e-10. The cap is 2.2x the slowest.
+#: land on the same haematocrit to 1e-10. The cap is 2.2x the slowest at 0.95, and 1.4x the
+#: slowest sensitivity run (WKY-B at 0.93, 726 passes).
 #:
 #: The stop is scale-free: the largest per-pass flow change, as a fraction of the largest
 #: flow, and the largest gap between skimmed and current haematocrit on a flowing edge.

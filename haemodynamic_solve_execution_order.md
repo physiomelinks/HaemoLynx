@@ -32,7 +32,7 @@ flowchart TD
   end
 
   IT["iteration = 0"]
-  D2{"iteration < 15<br/>and flow change > 1e-4?"}
+  D2{"iteration < 1000?"}
 
   subgraph P3["Phase 5 · Rheology iteration body"]
     C1["E12 · build conductance matrix"]
@@ -40,9 +40,9 @@ flowchart TD
     C3["apply Dirichlet pressures<br/>at inlet and outlet nodes"]
     C4["E14 · solve Luu pu = -Luk pk"]
     L3{{"for each edge in G"}}
-    C5["E15 · Q_ij = dp / R_ij<br/>record sign, orient into a DAG"]
+    C5["E15 · Q_ij = dp / R_ij<br/>record sign, orient into a DAG<br/>stagnant edges (≤ 1e-10 max Q) left out"]
     C12["compute max flow change<br/>against the previous pass"]
-    D5{"iteration > 0 and<br/>flow change ≤ 1e-4?"}
+    D5{"iteration > 0 and<br/>max ΔQ / max Q ≤ 1e-6 and<br/>haematocrit residual ≤ 1e-4?"}
     D6{"DAG sorts topologically?<br/>no cycle in flow directions"}
     C6a["reset every node's inflow totals<br/>node_q_in = 0, node_h_in = 0"]
     C6b["seed each inlet<br/>node_h_in = 0.45, node_q_in = 1.0 as a dummy"]
@@ -54,7 +54,7 @@ flowchart TD
     end
     D3{"node has exactly<br/>two out-edges?"}
     C7["E16, E17 → E18 → E19 → E20<br/>phase separation split"]
-    C8["proportional mixing<br/>relation undefined above a Y-split"]
+    C8["one-vs-rest phase separation<br/>each daughter against the rest, scaled to sum to 1"]
     C6e["add H·Q and Q of each out-edge<br/>to its child's inflow totals"]
     L5{{"for each edge in G"}}
     C9["recompute E6, E8, E10<br/>from the updated haematocrit"]
@@ -129,7 +129,7 @@ flowchart TD
 
 **The convergence check sits straight after the E15 edge loop.** When `D5` breaks, the
 haematocrit split and the E21/E22 update for that pass never run, so the final resistances and
-τ_w come from the previous pass. `D2` still ends the loop once 15 passes have run.
+τ_w come from the previous pass. `D2` still ends the loop once 1000 passes have run.
 
 **`D6` is the second early exit.** If rounding in the solve leaves a directed cycle,
 `topological_sort` raises and the loop breaks with a logged warning. The flows are from this
@@ -137,16 +137,18 @@ pass, while the resistances and haematocrit are from the one before.
 
 **Every exit is recorded at `RS`.** Since `09346d7` the solver writes the stop reason
 (`converged`, `flow_cycle` or `max_iterations`), the number of pressure solves and the last max
-flow change (None if only one pass ran) to `G.graph`. The return value is unchanged. The driver
-prints a warning at `WN` for any reason other than `converged`, appends the three values to the
-printed statistics, and saves them as `field_data` on the vessels VTK at `F6`.
+flow change (None if only one pass ran) to `G.graph`; since open item 37 also the relative flow
+change, the haematocrit residual, the stagnant-edge and Murray-parent counts and the settings,
+all returned by `rheology_status(G)`. The return value is unchanged. The driver prints a warning
+at `WN` for any reason other than `converged`, appends the values to the printed statistics,
+and saves them as `field_data` on the vessels VTK at `F6`.
 
-**An asymmetric Y-split does not converge.** On a single bifurcation with 8 µm and 4 µm
-daughters, the 4 µm branch alternates between haematocrit 0 and about 0.246, and its flow
-between about 0.6 and 6.3, on successive passes. The swing does not decay, so the loop always
-leaves through `D2` on `max_iterations`, and the result is whichever half of the swing pass 15
-lands on. A symmetric Y converges on the second pass. Whether the full CB network does is not
-yet checked; `rheology_stop_reason` on a real run answers it.
+**The loop converges (open item 37).** Undamped, an asymmetric Y (8 µm and 4 µm daughters)
+flips its 4 µm branch between two haematocrit states every pass; the relaxation of 0.2 settles
+it. On the CB networks two discrete switches also stopped it converging: stagnant dead-end edges
+whose rounding-level direction flipped (now left out at `C5`), and junctions switching between
+`C7` and proportional mixing as small daughters reversed (`C8` now skims one-vs-rest). All six
+now leave through `D5` in 173–457 passes; before the fix every run left through `D2` after 15.
 
 **`C6` reads totals that the parent nodes filled in.** Each node's haematocrit is the
 flow-weighted mean of its incoming streams, which is red-cell conservation at a junction. The
@@ -159,7 +161,7 @@ node with no inflow, such as one fed only by an edge carrying exactly zero flow,
 0.45 at `C6d`. At an outlet `h_mix` is computed and then unused, since there is no out-edge to
 carry it.
 
-**The branch at `D3`** is the only place the phase separation relation is applied. A node with three or more outgoing edges falls to proportional mixing instead, because the Pries relation is defined only for a single bifurcation.
+**The branch at `D3`** separates Y-splits (`C7`, the Pries relation) from nodes with three or more outgoing edges (`C8`), which apply the same relation one daughter against the rest and scale the red-cell shares to sum to 1 (`cb_modelling_reference.md` §4.2). Both reduce to the same result as a daughter's flow falls to zero, so a small daughter reversing no longer switches the rule.
 
 **One node is amber.** `F3`, the two-point effective resistance, is computed and never
 read again — though since `69dbe70` it runs after the solve, so the number it reports is a

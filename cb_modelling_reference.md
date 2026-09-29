@@ -1634,8 +1634,22 @@ flow.
 **Degenerate cases are handled explicitly** rather than by the logit: if either branch takes less
 than 10⁻⁶ of the flow, all red cells follow the other.
 
-**Binary bifurcations only** (§11 row 14). A higher-order division mixes proportionally, so
-haematocrit heterogeneity is underestimated wherever one occurs.
+**Junctions with three or more daughters split one-vs-rest** (§11 row 14; open item 37). Each
+daughter *i* takes *f_Ei* from the relation above with *f_Qi*, its own diameter and, as the other
+branch, the flow-weighted mean diameter of the remaining daughters; the *f_Ei* are then scaled to
+sum to 1, so red-cell flux is conserved. With two daughters this is exactly the Y-split relation,
+it does not depend on how the daughters are ordered, and it is continuous as a daughter's flow
+falls to zero (it drops below *x₀* and takes no red cells). Until item 37 these junctions mixed
+proportionally, and the rule switched on and off whenever a small daughter reversed, which kept
+the coupled loop (§4.3) from converging. The extension is ours, not Pries's; the relation was
+fitted to Y-splits only.
+
+**Feeding diameter.** *D_F* is the diameter of the one inflowing edge, or the flow-weighted mean
+of several. A junction with no inflowing edge has no measured parent, and *D_F* is then the Murray
+parent of its daughters, (Σ *d_i*³)^(1/3), counted in `rheology_murray_parent_bifurcations`. The
+stand-in was the larger daughter, logged at INFO only, until item 37; it fired 15–29 times per
+pass, always at an interior node fed only by rounding-level flow. With stagnant edges left out of
+the transport (§4.3) it no longer fires on any of the six networks.
 
 ### 4.3 The coupled flow–haematocrit–viscosity solve
 
@@ -1645,12 +1659,14 @@ flow. The loop closes it by Picard iteration:
 1. **Initialise** — every edge at systemic haematocrit 0.45, viscosity from Pries–Secomb,
    resistance from Poiseuille.
 2. **Solve** the Laplacian system for nodal pressure (§3.4).
-3. **Direct** every edge high-pressure to low-pressure, producing a DAG.
-4. **Traverse** the DAG from inlets to outlets, applying §4.2 at every bifurcation to assign child
-   haematocrits.
-5. **Update** viscosity and resistance from the new haematocrit distribution.
-6. **Repeat** until the maximum absolute flow change falls below tolerance, a flow cycle stops the
-   sort, or the iteration cap is reached.
+3. **Direct** every flowing edge high-pressure to low-pressure, producing a DAG. Stagnant edges
+   (|Q| at most `STAGNANT_FLOW_FRACTION` = 10⁻¹⁰ of the largest, the Tier 3 cut) are left out.
+4. **Traverse** the DAG from inlets to outlets, applying §4.2 at every diverging junction to
+   assign child haematocrits.
+5. **Update** haematocrit a fifth of the way towards the new distribution (relaxation 0.2), then
+   viscosity and resistance from it.
+6. **Repeat** until the relative flow change and the haematocrit residual both fall below
+   tolerance, a flow cycle stops the sort, or the iteration cap is reached.
 
 **The order of operations.**
 
@@ -1660,45 +1676,50 @@ flow. The loop closes it by Picard iteration:
 | 2 | µ from Pries–Secomb, R from Hagen–Poiseuille | in vivo law | Gives the first pressure solve a physically scaled resistance rather than the power-law stand-in | **On**, once | `rheology.py:236` |
 | 3 | Diameter read `assigned_diameter_um` → `fwhm_diameter_um`, else **raise** before initialising | `default_diameter_um` opt-in, used at every step | Resistance goes as $d^{-4}$, so a substituted calibre produces a fabricated flow field rather than an approximate one | **On** — item 9 closed by `f92a96c`; a zero or negative diameter is refused too | `rheology.py:229` |
 | 4 | Solve the Laplacian for nodal pressure (§3.4) | — | Flow cannot be known until pressures are, and pressures change as resistances do | **On**, every iteration | `rheology.py:279` |
-| 5 | Per-edge signed flow; direct high → low into a DAG | — | Phase separation is defined on a directed tree, so the flow directions have to be resolved first | **On**, every iteration | `rheology.py:293` |
-| 6 | Convergence test on the max **absolute** flow change | tol 1e-4 | Stops the loop once further passes would not move the answer | **On**, from iteration 1; a pass that converges skips steps 7–15 | `rheology.py:311` |
+| 5 | Per-edge signed flow; direct high → low into a DAG, **leaving out stagnant edges** | \|Q\| ≤ 10⁻¹⁰ × max \|Q\| | Phase separation is defined on a directed tree, so the flow directions have to be resolved first. A stagnant edge's direction is rounding noise; 60–120 per specimen flipped every pass and switched their junctions' rule (open item 37) | **On**, every iteration; 745–895 edges per specimen, all in dead ends. They keep their haematocrit (systemic) | `solve_coupled_flow_and_hematocrit` |
+| 6 | Convergence test: max \|ΔQ\| / max \|Q\| **and** the haematocrit residual max \|H_skim − H\| on flowing edges | 10⁻⁶ and 10⁻⁴ (`cb_settings`) | Stops the loop once further passes would not move the answer. Both are scale-free, so the pipeline (mPa) and the H2 drivers (mmHg) apply the same test; the old absolute 10⁻⁴ on flow did not | **On**, from iteration 1; a pass that converges skips steps 7–15 | `solve_coupled_flow_and_hematocrit` |
 | 7 | Topological sort of the DAG | — | Haematocrit has to be propagated downstream in order, parent before child | **On**; a cycle breaks the loop with a warning | `rheology.py:320` |
 | 8 | Force systemic haematocrit at every inlet | H = 0.45 | The inlets are the one place where haematocrit is prescribed rather than inherited | **On** | `rheology.py:332` |
 | 9 | Node haematocrit = flow-weighted mix of inflows | — | A node fed by several vessels carries the flow-weighted mixture, not any one parent's value | **On** | `rheology.py:338` |
 | 10 | Degree-2 pass-through: child inherits the mix | — | With one outlet there is nothing to separate, so the child simply inherits | **On** | `rheology.py:346` |
 | 11 | Bifurcation: phase separation (§4.2) | — | Red cells do not divide in proportion to plasma at a bifurcation — this is the whole Fåhræus effect the model exists to capture | **On** | `rheology.py:354` |
-| 12 | Trifurcation or higher: **proportional mixing, no skimming** | — | The Pries–Secomb relation is defined for a Y-split only, so higher-order junctions fall back to proportional mixing | **On** | `rheology.py:377` |
+| 12 | Trifurcation or higher: **one-vs-rest phase separation** (§4.2) | — | The Pries–Secomb relation is defined for a Y-split only. Proportional mixing, used until open item 37, switched on and off as small daughters reversed and kept the loop from converging | **On** | `calculate_multiway_phase_separation_hematocrit` |
+| 12a | Under-relax haematocrit | relaxation 0.2 (`cb_settings`) | Plain Picard (1.0) flips a 12 → 8/4 µm Y between two states every pass; 0.5 still wandered on the CB networks, and 0.3 and 0.4 left SHR-C on a periodic cycle | **On** | `solve_coupled_flow_and_hematocrit` |
 | 13 | Recompute µ_app from the new haematocrit | in vivo law | Closes the loop: the new haematocrit changes viscosity, which changes resistance, which changes flow | **On** | `rheology.py:390` |
 | 14 | Recompute R from Hagen–Poiseuille at the new µ_app | $R = 128\mu_\text{app}L/\pi d^4$ | The same expression as step 2, so initialisation and update agree; replaced the $\mu_\text{app}/\mu_\text{old}$ rescale in `7ea1b36` | **On** | `rheology.py:408` |
 | 15 | Wall shear stress from µ_app and abs(Q) | 32µQ/(πd³), mPa → Pa | Shear stress is a per-edge diagnostic that depends on both the new viscosity and the current flow | **On** | `rheology.py:415` |
-| 16 | Repeat from step 4 | ≤ 15 iterations | Repeats until converged or capped, because the system is non-linear and one pass is not a solution | **On** | `rheology.py:248` |
-| 17 | Record why the loop stopped | `converged`, `flow_cycle` or `max_iterations` | A cycle or cap exit otherwise returns a graph indistinguishable from a converged one | **On**; written to `G.graph` with the pass count and last flow change. The driver warns on anything but `converged` and saves all three in the printed stats and the vessels VTK `field_data` | `rheology.py:424`, `carotid_image_to_model.py` |
+| 16 | Repeat from step 4 | ≤ 1000 iterations (`cb_settings`) | Repeats until converged or capped, because the system is non-linear and one pass is not a solution. All six converge in 173–457 passes | **On** | `solve_coupled_flow_and_hematocrit` |
+| 17 | Record why the loop stopped | `converged`, `flow_cycle` or `max_iterations` | A cycle or cap exit otherwise returns a graph indistinguishable from a converged one | **On**; `rheology_status(G)` returns the reason, pass count, absolute and relative flow change, haematocrit residual, stagnant-edge and Murray-parent counts, and the settings. The pipeline warns on anything but `converged` and saves them in the printed stats and the vessels VTK `field_data`; every H2 driver writes them into its JSON as `"rheology"` and prints a warning | `rheology_status`, `report_unconverged`, `carotid_image_to_model.py`, `cb_h2_*.py` |
 
 **What the numbered summary above does not say.**
 
-**The convergence test is on an absolute flow difference, not a relative one.** Step 6 takes
-`max |Q_new − Q_old|` and compares it against 1e-4 — in the flow units of §3.7, not as a fraction.
-Whether that is tight or loose therefore depends on the magnitude of the flows themselves, and on
-this network's units it is a demanding test rather than a lenient one.
+**The convergence test is relative.** Until open item 37 step 6 compared `max |Q_new − Q_old|`
+against an absolute 10⁻⁴ in the flow units of §3.7, so the pipeline (mPa) and the H2 drivers
+(mmHg) ran different tests on the same network. The relative flow test and the haematocrit
+residual are unit-free: on all six the two unit scales stop on the same pass and agree on every
+edge's haematocrit to 10⁻¹⁰.
 
-**Junctions above degree 3 get no phase separation.** Step 12 splits haematocrit in proportion to
-flow, because the Pries–Secomb phase-separation relation is defined for a Y-split only. Skimming is
-therefore absent at every higher-order junction, and after the degree-2 collapse of §2.5 those are
-exactly the unresolved multi-way crossings.
+**Junctions above degree 3 skim one-vs-rest** (§4.2), an extension of a relation fitted to
+Y-splits. After the degree-2 collapse of §2.5 those junctions are the unresolved multi-way
+crossings.
 
 **The check runs before the update, so the loop always does at least two passes.** Step 6 is
 evaluated after step 5 of iteration 1, against iteration 0's flows. When it passes, steps 7–15 of
 that pass are skipped, so the returned resistances, viscosities and wall shear stress are those of
 the previous pass.
 
-**An asymmetric Y-split does not converge.** On a single bifurcation with 8 µm and 4 µm daughters,
-the 4 µm branch alternates between haematocrit 0 and about 0.246, and its flow changes about
-tenfold, on successive passes. The swing does not decay under either unit scale tested, so the loop
-always ends on `max_iterations` and returns whichever half of the swing the last pass lands on. A
-symmetric Y converges on the second pass. Whether the full CB network converges is not yet checked;
-step 17's `rheology_stop_reason` on a real run answers it.
+**Convergence (open item 37).** Undamped, a single 12 → 8/4 µm Y flips its 4 µm branch between
+two haematocrit states every pass; relaxation settles it. The CB networks did not converge at all
+before item 37: every solve stopped on the 15-pass cap, per-edge haematocrit still moving by up to
+0.4 between passes, and relaxation alone (0.5 down to 0.1, 150 passes) only lowered the floor.
+Two discrete switches drove it: stagnant dead-end edges whose rounding-level direction flipped,
+and junctions switching between skimming and proportional mixing as small daughters reversed.
+With both removed (steps 5 and 12) and relaxation 0.2, all six converge: WKY-A 330, WKY-B 457,
+WKY-C 404, SHR-A 217, SHR-B 173, SHR-C 184 passes, 30–65 s each. At 0.3 and 0.4 SHR-C settles on
+a periodic cycle instead, so 0.2 is the largest step that converges all six.
 
-Limits: 15 iterations, tolerance 10⁻⁴.
+Limits: 1000 iterations, relative flow tolerance 10⁻⁶, haematocrit tolerance 10⁻⁴, relaxation 0.2,
+all in `cb_settings` and shared by the pipeline and every H2 driver.
 
 ### 4.4 What the viscosity law does and does not move
 
@@ -2752,7 +2773,7 @@ Three non-linearities, all handled the same way:
 
 | Loop | Non-linearity | Damping |
 |---|---|---|
-| Rheology (§4.3) | Viscosity depends on haematocrit, which depends on flow | None; 15 iterations at 10⁻⁴ |
+| Rheology (§4.3) | Viscosity depends on haematocrit, which depends on flow | Haematocrit relaxation 0.2; converges in 173–457 passes (open item 37) |
 | Tissue Tier 1 (§6.7) | Metabolic sink and venous washout both depend on PO₂ | Newton with a line search (open item 22; was Picard with γ = 0.5) |
 | Tissue Tier 3 | The same, coupled across O₂, CO₂ and pH | γ = 1.0 each |
 
@@ -2911,9 +2932,11 @@ Present in the code, disabled for the CB path, and `__post_init__` raises if re-
 | Phase separation | Pries bifurcation relation | — | (ii) | [`pries_red_1989`], fitted to 65 arteriolar bifurcations in rat mesentery | unswept |
 | `PASCALS_PER_MMHG` | 133.322387415 | Pa/mmHg | (i) | Exact by definition of the conventional millimetre of mercury | exact |
 | `POISEUILLE_FLOW_TO_UM3_PER_S` | 133.322387415 × 10³ | (µm³/s) per solver unit | (i) | Derived. The solve evaluates *R* = 128 μL/(π d⁴) with pressure in mmHg, viscosity in cP and lengths in µm, so its *Q* carries mmHg·µm⁴/(cP·µm) and is not a volumetric rate. Rewriting *R* in SI multiplies it by 10¹⁵. Only for callers passing mmHg (the H2 drivers); the pipeline passes mPa, so its factor is 1.0 (open item 31) | exact |
-| `rheology_max_iterations` | 15 | iterations | (iii) | See Appendix A | unswept |
-| `rheology_tolerance` | 1 × 10⁻⁴ | relative | (iii) | See Appendix A | unswept |
-| Murray's law | **not used** | — | — | The branch-order fallback is exponential, not Murray scaling [`murray_physiological_1926`] | — |
+| `rheology_max_iterations` | 1000 | iterations | (iii) | `cb_settings.RHEOLOGY_MAX_ITERATIONS`; 2.2× the slowest specimen at 0.95 and 1.4× the slowest sensitivity run (WKY-B at 0.93, 726; open item 37). Was 15, which every solve hit | none: every solve converges |
+| `rheology_relaxation` | 0.2 | — | (iii) | `cb_settings.RHEOLOGY_RELAXATION`; the largest step that converges all six (§4.3) | the converged answer does not depend on it |
+| `rheology_flow_rtol` | 1 × 10⁻⁶ | relative to max \|Q\| | (iii) | `cb_settings.RHEOLOGY_FLOW_RTOL`. Was an absolute 1 × 10⁻⁴, a different test in mPa and in mmHg | unswept |
+| `rheology_hematocrit_atol` | 1 × 10⁻⁴ | haematocrit | (iii) | `cb_settings.RHEOLOGY_HEMATOCRIT_ATOL` | unswept |
+| Murray's law | **feeding diameter only** | — | — | The branch-order fallback is exponential, not Murray scaling [`murray_physiological_1926`]. Murray's cube law is used for one thing: *D_F* at a junction with no inflowing edge (§4.2), which does not occur on the six networks | — |
 
 ### 10.8 Blood gas chemistry — hard-coded in `perfusion.py`
 
@@ -2990,7 +3013,7 @@ the model would push it.
 | 11 | Plug flow; no radial intraluminal gradient | §6.6 | Transmural driving force slightly **overestimated** |
 | 12 | Newtonian fluid at initialisation | §4.3 | Biases initial resistances; replaced by the per-pass Poiseuille recompute (§4.3 step 14) |
 | 13 | Rheological correlations transferred from rat mesentery | §4.1–§4.2 | Transferability to carotid body microvasculature **unquantified** |
-| 14 | Phase separation occurs at binary bifurcations only | §4.2 | Higher-order divisions mix proportionally → haematocrit heterogeneity **underestimated** |
+| 14 | Phase separation at higher-order divisions is a one-vs-rest extension of the Y-split relation | §4.2 | Not validated against data; it reduces to the Pries relation at two daughters. Until open item 37 these divisions mixed proportionally, which **underestimated** haematocrit heterogeneity |
 | 15 | One arteriolar-to-venular pressure pair, 60→20 mmHg, is imposed on every specimen's sub-volume | §8 | Probably **overestimates** perfusion pressure: 60 mmHg is an upper value for the arterioles of other rat beds, 15–45 µm arterioles read nearer 30 (§8.1). SHR arteriolar pressures run higher than WKY [`jin_study_1997`], and the shared pair carries none of that difference. The pipeline config declared MAP-to-CVP, 100→2 mmHg, until open item 10; every published H2 number used 60/20 |
 | 16 | No vasoregulation of any kind | §3.3 | Constriction is disabled entirely, so there is neither active feedback (myogenic, metabolic, shear-mediated) nor a static constriction geometry. The network is a fixed passive resistor array |
 
@@ -3503,8 +3526,11 @@ tuning opportunity.
 
 | Setting | Value | Where | Notes |
 |---|---|---|---|
-| Picard max iterations | 15 | `HaemodynamicsConfig.rheology_max_iterations` | |
-| Picard tolerance | 1 × 10⁻⁴ | `HaemodynamicsConfig.rheology_tolerance` | Relative |
+| Picard max iterations | 1000 | `cb_settings.RHEOLOGY_MAX_ITERATIONS` → `HaemodynamicsConfig.rheology_max_iterations` | Was 15 until open item 37 |
+| Haematocrit relaxation | 0.2 | `cb_settings.RHEOLOGY_RELAXATION` → `rheology_relaxation` | |
+| Flow tolerance | 1 × 10⁻⁶ | `cb_settings.RHEOLOGY_FLOW_RTOL` → `rheology_flow_rtol` | Relative to the largest flow; was an absolute 10⁻⁴ |
+| Haematocrit tolerance | 1 × 10⁻⁴ | `cb_settings.RHEOLOGY_HEMATOCRIT_ATOL` → `rheology_hematocrit_atol` | Max \|H_skim − H\| on flowing edges |
+| Stagnant cut | 10⁻¹⁰ × max \|Q\| | `resistance.STAGNANT_FLOW_FRACTION` | Shared with Tier 3 |
 
 ### A.2 Network flow solve
 
@@ -3613,7 +3639,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | Flow unit conversion | `resistance.py:37` | `test_flow_units.py`, `test_physical_units.py` |
 | Pries–Secomb viscosity | `rheology.py:30` | `test_rheology_laws.py` |
 | Phase separation | `rheology.py:90` | `test_haemodynamics_analytical.py` |
-| Coupled flow–haematocrit | `rheology.py:164` | `test_haemodynamics_rheology_integration.py` |
+| Coupled flow–haematocrit | `rheology.py` `solve_coupled_flow_and_hematocrit` | `test_haemodynamics_rheology_integration.py`, `test_rheology_convergence.py` |
 | Blood oxygen content | `perfusion.py:13` | `test_haemodynamics_analytical.py` |
 | Blood CO₂ content | `perfusion.py:37` | `test_haemodynamics_analytical.py` |
 | Tissue pH | `perfusion.py:65` | `test_haemodynamics_analytical.py` |
@@ -3671,6 +3697,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | ~~34~~ | **Closed.** Both example YAMLs set `picard_tolerance` 1 × 10⁻⁴ after open item 6 moved `PerfusionConfig` to 1 × 10⁻⁵, so a run with either YAML as `--config` stopped Tier 3 at 10⁻⁴ (the WKY one was dropped until open item 33). The SHR YAML also set `pco2_arterial` 35 mmHg against 40 in `PerfusionConfig` and the WKY YAML, a difference by group. Both YAMLs now say 1 × 10⁻⁵ and 40 mmHg, and their `PerfusionConfig` sections are identical. No H1/H2 number moves: the batch passes no `--config`, and Tier 1 does not read PCO₂. Found under open item 32. The YAMLs' other leftover settings are open item 35 | `test_cb_settings.py` (both Picard settings), `test_perfusion_config_values.py` (PCO₂), `test_example_yaml_sections.py` (the two perfusion sections are equal; every YAML value reaches its section) |
 | ~~35~~ | **Closed.** The example YAMLs still carried scenario settings from before the frozen methods. (a) Both set `radius_assignment_mode: constant_radius` with `constant_radius_um` 5, so a `--config` run gave every edge a 10 µm diameter instead of the frozen `edt_radius` measurement. Its provenance is `constant`, which `check_diameter_provenance` does not count as synthetic, so nothing raised. (b) Both set `constrict_at_pericytes: true`, which `HaemodynamicsConfig.__post_init__` forbids. `update_dataclass_from_dict` sets fields with `setattr` after construction, so the check never ran on a `--config` load. Nothing downstream read the flag or the constriction ratios, so it had no effect. (c) The SHR YAML set both constriction ratios to 0.95 against WKY's 1.0, a difference by group (unread, as (b)). (d) The SHR header described "high blood pressure and extreme sympathetic tone", but its pressures were the shared 60/20 mmHg. The WKY YAML also turned on `run_benchmarking` and the SHR one did not. No H1/H2 number is affected: the batch passes no `--config`. Both YAMLs now set `edt_radius` and carry no constriction, `constant_radius_um` or `fwhm_*` keys, and neither sets `run_benchmarking`. Their headers make no group claim, and the two files differ only in their first line. `update_dataclass_from_dict` re-runs `__post_init__` after setting the keys, so a YAML that sets a forbidden value now raises; the old YAMLs raise on `constrict_at_pericytes`. Found under open item 34 | §10.5, §10.6; `test_config.py` (the loader runs the checks), `test_example_yaml_sections.py` (`edt_radius`, no retired keys, the two YAMLs load to the same dict) |
 | ~~36~~ | **Closed** (`d57a78f`). The 2026-09-28 SHR-A run (8281 edges) stopped in Tier 3: node 748 heads a dead-end branch whose two edges carry exactly zero flow, and its entry edge carried 1.7 × 10⁻¹² of the largest flow, outward — rounding from the pressure solve, but above the 10⁻¹² stagnant cutoff, so the march saw a node sending blood it never received. Across the six new networks rounding flows reach at most 1.7 × 10⁻¹² and real flows start at 2.1 × 10⁻⁸, with nothing between. `STAGNANT_FLOW_FRACTION` is now 10⁻¹⁰ (59× above the one, 210× below the other); flow at 10⁻⁹ at an unfed node still raises. No edge of the other five batch networks lies in (10⁻¹², 10⁻¹⁰], so their Tier 3 results are unchanged; SHR-A was re-run alone. One SHR-C sensitivity run has an edge in that band; its pipeline Tier 3 field was not re-run and is unused downstream | Appendix A |
+| 37 | **Open (code closed, `cfee721`; H1/H2 scripts not re-run).** The coupled flow–haematocrit loop (§4.3) stopped on its 15-pass cap in every specimen, still wandering, so every flow, haematocrit, transit and shear value came from whichever pass it stopped on; `cb_h2_glomus_perfusion.json` did not record it. It was not a two-state swing: on WKY-A total flow was settled (pass 15 vs 100: 0.6% L1) while 511 edges' haematocrit still differed by > 0.01, up to 0.43, and relaxation 0.5 → 0.1 over 150 passes only lowered the floor. Two discrete switches drove it. (a) 745–895 dead-end edges per specimen carry rounding-level flow (≤ 10⁻¹² of the largest, with no edge between 10⁻¹² and 10⁻⁸), and 60–120 of them flipped direction every pass, which made their junctions switch between skimming and proportional mixing and caused every "no inflowing parent" fallback (15–29 per pass, all interior; none at an inlet). They are now left out of the transport at `STAGNANT_FLOW_FRACTION` (10⁻¹⁰, the Tier 3 cut, moved to `resistance.py`). (b) Junctions with three or more outflows mixed proportionally, so a small daughter reversing switched the rule; they now skim one-vs-rest (§4.2), which reduces to the Pries relation at two daughters. With both, relaxation 0.5 still wandered and 0.3/0.4 left SHR-C on a periodic cycle; 0.2 converges all six. The stop is now scale-free (relative flow 10⁻⁶, haematocrit residual 10⁻⁴), and pipeline (mPa) and H2 (mmHg) solves agree on every edge's haematocrit to 10⁻¹⁰. No-parent D_F is now the Murray parent and is counted; it no longer fires. Settings in `cb_settings` (cap 1000, relaxation 0.2); `rheology_status(G)` goes into the pipeline stats and VTK and every H2 JSON. **Pipeline re-run 2026-09-29** (`rerun_2026-09-29_item37_logs/`; old outputs `*_2026-09-29_pre_item37`): all 18 runs converge (0.95: WKY-A 330, WKY-B 457, WKY-C 404, SHR-A 217, SHR-B 173, SHR-C 184 passes; 0.93 and 0.97: 155–726, the slowest WKY-B at 0.93). `per_edge_morphometry.csv` and `roi_placement.json` are byte-identical, so no H1 number moves. Mean edge haematocrit rises (WKY-A 0.352 → 0.365). The Tier 3 field barely moves: mean PO₂ changes by ≤ 0.06 mmHg in all 18 runs (WKY-A 71.34 → 71.35, SHR-C 50.55 → 50.55 at 0.95). **Still to do:** re-run the H2 scripts. Scratch comparison on the same networks (ratios of cohort means, SHR/WKY, pre-fix → converged): shunt index 0.889 → 0.883, median flow ratio 0.908 → 0.926, haematocrit ratio 1.019 → 1.056, transit ratio 1.026 → 1.038; SHR-C moves most (haematocrit ratio 0.998 → 1.051, flow ratio 0.518 → 0.595). `test_rheology_convergence.py`, `test_cb_settings.py` | §2.1, §2.2, §2.4 and every H2 flow number; §4.2, §4.3, §10.7, A.1 updated |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the

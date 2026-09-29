@@ -36,6 +36,17 @@ threshold and matched sub-volumes, the four methods give:
 > Absolute velocity rose about 290×, which reverses §11.1. Old outputs:
 > `examples/outputs/cb_h2_glomus_perfusion_2026-08-19_pre_item12.json`.
 
+> **Pending re-run, 2026-09-29 (open item 37).** Every flow, haematocrit and transit number in
+> this document comes from a rheology loop that stopped on its 15-pass cap in all six specimens
+> without converging (`cb_modelling_reference.md` §4.3). The loop now converges in 173–457 passes
+> (`cfee721`), but the H2 scripts have not been re-run on it, so the tables here still show the
+> pre-fix values. A scratch comparison on the 2026-09-29 networks gives the expected size of the
+> change. Its old values reproduce `cb_h2_glomus_perfusion.json`, which is newer than some tables
+> here. As ratios of cohort means (SHR/WKY, old → converged): shunt index 0.889 → 0.883, median flow ratio
+> 0.908 → 0.926, haematocrit ratio 1.019 → 1.056, transit ratio 1.026 → 1.038. Median haematocrit
+> rises by 0.02–0.05 on both sides; SHR-C moves most (haematocrit ratio 0.998 → 1.051, flow
+> ratio 0.518 → 0.595).
+
 **The single clearest negative result is that there is no functional shunting.** §2.1 proposes
 that flow in the hypertensive network bypasses the capillaries penetrating the glomus clusters.
 The shunt index, flow share divided by edge share, sits at 0.89 in WKY and 0.99 in SHR: flow is
@@ -359,8 +370,9 @@ groups is narrow: WKY-C at 0.960 and SHR-B at 1.029.
 
 ## 8. Results: §2.2 spatial haematocrit profiling
 
-Discharge haematocrit is solved by iterating flow against the Pries–Secomb phase-separation model
-until flows converge.
+Discharge haematocrit is solved by iterating flow against the Pries–Secomb phase-separation model.
+The numbers below come from the pre-fix loop, which stopped on its 15-pass cap without converging;
+see the open item 37 note at the top.
 
 | Specimen | Hct penetrating | Hct bypassing | Ratio |
 |---|---|---|---|
