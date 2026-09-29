@@ -385,10 +385,13 @@ OPTIONS_BY_WIDGET = {
 }
 
 
-def _options_for(setting: Setting, widget_type: str) -> dict[str, Any]:
+def _options_for(setting: Setting, widget_type: str, value: Any = None) -> dict[str, Any]:
     """The magicgui keyword options the widget this setting gets will accept."""
     options: dict[str, Any] = {}
-    if setting.kind == "choice":
+    if setting.name in CHANNEL_SETTINGS:
+        # Until the panel reads the file it names, only the current channel.
+        options["choices"] = channel_choices([], value)
+    elif setting.kind == "choice":
         labels = CHOICE_VALUE_LABELS.get(setting.name)
         options["choices"] = (
             [(labels.get(c, c), c) for c in (setting.choices or ())]
@@ -416,6 +419,39 @@ def _options_for(setting: Setting, widget_type: str) -> dict[str, Any]:
     return options
 
 
+#: Settings that pick one channel of the image another setting names: the
+#: panel shows them as a drop-down of that file's channels, Fiji-named (C1,
+#: C2, ...), where a number box would leave the user to count from 0.
+CHANNEL_SETTINGS = {
+    "endothelial_channel": "endothelial_image_path",
+    "fwhm_raw_channel": "fwhm_raw_tiff_path",
+}
+
+#: The drop-down's "no channel" entry: a single-channel file has nothing to
+#: pick, and a multi-channel one has to be told which.
+NO_CHANNEL_SINGLE = "single-channel file"
+NO_CHANNEL_CHOOSE = "choose a channel"
+
+
+def channel_choices(channels, current: int | None = None) -> list[tuple[str, int | None]]:
+    """``(label, value)`` entries for a channel drop-down.
+
+    *channels* is what :func:`haemolynx.io.tiff_channels` read from the file
+    (empty for a single-channel one, or none chosen yet). A channel the file
+    does not have stays listed when it is the current one -- marked, so the
+    mistake is visible rather than silently changed to another channel.
+    """
+    entries: list[tuple[str, int | None]] = [
+        (NO_CHANNEL_CHOOSE if channels else NO_CHANNEL_SINGLE, None)
+    ]
+    entries += [(channel.label, channel.index) for channel in channels]
+    known = {channel.index for channel in channels}
+    if current is not None and int(current) not in known:
+        label = f"C{int(current) + 1}"
+        entries.append((f"{label} (not in this file)" if channels else label, int(current)))
+    return entries
+
+
 #: Widgets that cannot hold "unset". A setting with no default needs one that
 #: can, or the panel reports a value nobody chose -- a FloatSpinBox says 0.0
 #: and a FileEdit says the working directory, and the schema then warns that a
@@ -425,6 +461,8 @@ NUMERIC_WIDGETS = {"SpinBox", "FloatSpinBox"}
 
 def widget_type_for(setting: Setting) -> str:
     """The widget that can express this setting, including its unset state."""
+    if setting.name in CHANNEL_SETTINGS:
+        return "ComboBox"
     widget = WIDGET_TYPES[setting.kind]
     if setting.default is None and widget in NUMERIC_WIDGETS:
         return "LineEdit"
@@ -472,7 +510,9 @@ def field_for(setting: Setting, value: Any = None) -> Field:
         value=_display_value(
             setting, setting.default if value is None else value, widget_type
         ),
-        options=_options_for(setting, widget_type),
+        options=_options_for(
+            setting, widget_type, setting.default if value is None else value
+        ),
         help=setting.help + (f" ({setting.unit})" if setting.unit else ""),
         section=setting.section,
         advanced=setting.advanced,

@@ -397,7 +397,7 @@ def test_optimise_settings_loads_the_raw_data_row_as_the_raw_image(panel, monkey
         lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
     )
     monkeypatch.setattr(
-        automated_mod, "load_single_channel_tiff_volume", lambda path, axis_order: raw_image,
+        automated_mod, "load_single_channel_tiff_volume", lambda path, axis_order, channel=None: raw_image,
     )
 
     captured = {}
@@ -508,7 +508,7 @@ def test_optimise_settings_raw_image_shape_mismatch_degrades_instead_of_crashing
     monkeypatch.setattr(
         automated_mod,
         "load_single_channel_tiff_volume",
-        lambda path, axis_order: mismatched_raw_image,
+        lambda path, axis_order, channel=None: mismatched_raw_image,
     )
 
     real_input = tmp_path / "mask.tif"

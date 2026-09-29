@@ -626,6 +626,7 @@ def optimise_fwhm_settings(
     groups: Optional[Iterable[str]] = None,
     max_passes: int = 1,
     axis_order: str = automated.CANONICAL_AXIS_ORDER,
+    raw_channel: int | None = None,
 ) -> OptimisationResult:
     """Empirically choose every FWHM setting in :data:`FWHM_SETTING_NAMES`
     for *G* against the raw image at *raw_tiff_path*.
@@ -659,7 +660,9 @@ def optimise_fwhm_settings(
     if total_edges == 0:
         raise ValueError("Graph has no edges to measure FWHM diameters on.")
 
-    raw_volume = automated.load_single_channel_tiff_volume(raw_tiff_path, axis_order=axis_order)
+    raw_volume = automated.load_single_channel_tiff_volume(
+        raw_tiff_path, axis_order=axis_order, channel=raw_channel
+    )
 
     if sample_edge_count is None:
         sample_edge_count = estimate_sample_edge_count_for_time_budget(

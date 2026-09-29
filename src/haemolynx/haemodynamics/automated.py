@@ -112,11 +112,14 @@ def _read_tiff_channel(path: Path, channel: int) -> np.ndarray:
     """One channel of a multi-channel TIFF as a 3D volume in its stored axis
     order (``(z, y, x)`` for an ImageJ hyperstack), reading only that
     channel's pages. A stack with no channel axis is its own channel 0."""
+    from haemolynx.io.channels import tiff_channel_axis
+
     with tifffile.TiffFile(str(path)) as tif:
         series = tif.series[0]
         axes = series.axes.upper()
         shape = series.shape
-        if "C" not in axes:
+        channel_axis = tiff_channel_axis(axes, shape, tif.imagej_metadata)
+        if channel_axis is None:
             if channel != 0:
                 raise ValueError(
                     f"{path.name} has no channel axis (axes {axes}); channel {channel} "
@@ -124,7 +127,7 @@ def _read_tiff_channel(path: Path, channel: int) -> np.ndarray:
                 )
             volume = series.asarray()
         else:
-            count = shape[axes.index("C")]
+            count = shape[channel_axis]
             if not 0 <= channel < count:
                 raise ValueError(
                     f"{path.name} has {count} channels (0-{count - 1}); channel {channel} "
@@ -134,13 +137,13 @@ def _read_tiff_channel(path: Path, channel: int) -> np.ndarray:
                 # One page per plane: read only this channel's.
                 leading = [n for n in shape[:-2]]
                 grid = np.indices(leading).reshape(len(leading), -1)
-                pick = grid[axes.index("C")] == channel
+                pick = grid[channel_axis] == channel
                 pages = np.ravel_multi_index(grid[:, pick], leading)
                 volume = tifffile.imread(str(path), key=pages.tolist(), series=0)
-                kept = [n for i, n in enumerate(leading) if i != axes.index("C")]
+                kept = [n for i, n in enumerate(leading) if i != channel_axis]
                 volume = volume.reshape(kept + list(shape[-2:]))
             else:
-                volume = np.take(series.asarray(), channel, axis=axes.index("C"))
+                volume = np.take(series.asarray(), channel, axis=channel_axis)
             axes = axes.replace("C", "")
     volume = np.squeeze(volume)
     if volume.ndim == 2:
@@ -1381,6 +1384,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     raw_volume: np.ndarray | None = None,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
+    raw_channel: int | None = None,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -1602,6 +1606,9 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         really is in the way.
     stop_at_other_vessels_in_mask :
         Use *vessel_mask* that way. Ignored without a mask.
+    raw_channel :
+        Which channel of a multi-channel *raw_tiff_path* to read (counting
+        from 0); ``None`` for a single-channel file. Unused with *raw_volume*.
     clip_decision_smoothing_um :
         Width of the smoothing :func:`_clip_profile_to_central_lobe` decides
         where the central lobe ends on. ``None`` is at least two pixels of
@@ -1670,6 +1677,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             axis_order=axis_order,
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
+            channel=raw_channel,
         )
     if use_memmap and isinstance(raw, np.memmap) and raw is not raw_volume:
         owned.append(raw)

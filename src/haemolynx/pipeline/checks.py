@@ -447,6 +447,46 @@ def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
+#: Each image a run reads one channel of: (its path setting, its channel
+#: setting, the setting that makes the run read it).
+_CHANNEL_IMAGES = (
+    ("fwhm_raw_tiff_path", "fwhm_raw_channel", "use_fwhm_edge_diameters"),
+    ("endothelial_image_path", "endothelial_channel", "use_endothelial_diameters"),
+)
+
+
+def check_image_channels(settings: Mapping[str, Any]) -> CheckReport:
+    """A multi-channel image needs a channel chosen, and one it has; a
+    single-channel one needs none. Caught here rather than as the load fails
+    partway through a run."""
+    from haemolynx.io import tiff_channels
+
+    report = CheckReport()
+    for path_name, channel_name, used_by in _CHANNEL_IMAGES:
+        path = settings.get(path_name)
+        if not settings.get(used_by) or not path or not Path(path).is_file():
+            continue
+        channels = tiff_channels(path)
+        channel = settings.get(channel_name)
+        listing = ", ".join(c.label for c in channels)
+        if channels and channel is None:
+            report.add_error(
+                f"{path_name} has {len(channels)} channels ({listing}); choose one with "
+                f"{channel_name}."
+            )
+        elif channel is not None and not channels:
+            report.add_error(
+                f"{path_name} is a single-channel image, but {channel_name} is {channel}; "
+                "leave it unset."
+            )
+        elif channel is not None and int(channel) >= len(channels):
+            report.add_error(
+                f"{channel_name} is {channel} (C{int(channel) + 1}), but {path_name} has "
+                f"{len(channels)} channels ({listing})."
+            )
+    return report
+
+
 def check_one_primary_diameter_measurement(settings: Mapping[str, Any]) -> CheckReport:
     """FWHM on the plasma label and the endothelial internal diameter are
     alternatives: each is the first source in its own diameter chain, and
@@ -480,5 +520,6 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_perturbations(settings, schema))
     report.extend(check_segmentation_quality(settings))
     report.extend(check_one_primary_diameter_measurement(settings))
+    report.extend(check_image_channels(settings))
     report.print("Preflight")
     return report

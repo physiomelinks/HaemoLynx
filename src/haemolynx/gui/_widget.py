@@ -26,10 +26,12 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from haemolynx.gui.form import (
+    CHANNEL_SETTINGS,
     Field,
     SHARED_ILASTIK_SETTINGS,
     SHARED_ILASTIK_SETTING_SET,
     display_value_for,
+    channel_choices,
     shared_ilastik_host,
 )
 from haemolynx.gui.layers import input_for_layer, voxel_size_xyz_from_scale
@@ -481,8 +483,70 @@ def _grouped_by_section(
     return runs
 
 
+_CHANNEL_COMBO_BOX = None
+
+
+def _channel_combo_box_class():
+    """A drop-down of an image's channels (built on first use, like every
+    magicgui import here)."""
+    global _CHANNEL_COMBO_BOX
+    if _CHANNEL_COMBO_BOX is None:
+        from magicgui.widgets import ComboBox
+
+        class ChannelComboBox(ComboBox):
+            """Takes any channel it is given, listing it if it must: a value
+            written in -- from a config file, before the image path that says
+            which channels exist -- is kept, not refused or swapped for
+            another channel. :meth:`show_channels` then lists the file's."""
+
+            def _on_value_change(self, value=None) -> None:
+                # "No channel" is None, a real choice here: magicgui's base
+                # class would swallow the change to it (None is its "unset").
+                self.changed.emit(value)
+
+            def _entries(self) -> list[tuple[str, Any]]:
+                return [(self.native.itemText(i), data) for i, data in enumerate(self.choices)]
+
+            @ComboBox.value.setter
+            def value(self, value):
+                if value is not None and value not in self.choices:
+                    self.choices = self._entries() + channel_choices([], int(value))[-1:]
+                ComboBox.value.fset(self, value)
+
+            def show_channels(self, channels) -> None:
+                """List *channels* (from :func:`haemolynx.io.tiff_channels`), keeping the current one."""
+                keep = self.value
+                self.choices = channel_choices(channels, keep)
+                ComboBox.value.fset(self, keep)
+
+        _CHANNEL_COMBO_BOX = ChannelComboBox
+    return _CHANNEL_COMBO_BOX
+
+
+def _follow_image_channels(channel_row, path_row) -> None:
+    """Keep *channel_row*'s list to the channels of the file *path_row* names."""
+    from haemolynx.io import tiff_channels
+
+    def refresh(*_args) -> None:
+        value = path_row.value
+        path = None if value in (None, "", ".") else Path(value)
+        channel_row.show_channels(
+            tiff_channels(path) if path is not None and path.is_file() else []
+        )
+
+    path_row.changed.connect(refresh)
+    refresh()
+
+
 def _build_row(field: Field):
     """One magicgui widget for one form row."""
+    if field.name in CHANNEL_SETTINGS:
+        widget = _channel_combo_box_class()(
+            choices=field.options["choices"], value=field.value, name=field.name,
+            label=field.label,
+        )
+        widget.tooltip = field.help
+        return widget
     widget = _create_widget(
         value=field.value,
         name=field.name,
@@ -4679,8 +4743,11 @@ def _load_raw_reference_image_or_none(
         return None, None
     try:
         raw_path_resolved = resolve_image_path_with_optional_zip(Path(raw_path))
+        channel = local_settings.get("fwhm_raw_channel")
         raw_image = load_single_channel_tiff_volume(
-            raw_path_resolved, axis_order=local_settings["image_axis_order"]
+            raw_path_resolved,
+            axis_order=local_settings["image_axis_order"],
+            channel=None if channel is None else int(channel),
         )
         if raw_image.shape != expected_shape:
             raise ValueError(
@@ -4952,6 +5019,7 @@ def _run_fwhm_optimisation_in_background(
             progress=watched,
             groups=groups,
             axis_order=local_settings["image_axis_order"],
+            raw_channel=local_settings.get("fwhm_raw_channel"),
         )
         return result, raw_path
 
@@ -6627,6 +6695,12 @@ def settings_widget(napari_viewer=None):
             rows[field.name] = _build_row(field)
             fields[field.name] = field
 
+    # A channel drop-down lists the channels of the file its image setting
+    # names, and follows it as that changes.
+    for channel_name, path_name in CHANNEL_SETTINGS.items():
+        if channel_name in rows and path_name in rows:
+            _follow_image_channels(rows[channel_name], rows[path_name])
+
     # Shared ilastik knobs stay out of the initial tab containers until
     # place_shared_ilastik hosts them. Keep them hidden while unparented: a
     # visible widget with no parent is a floating top-level window.
@@ -7288,6 +7362,39 @@ def settings_widget(napari_viewer=None):
 
     raw_data_row.changed.connect(_sync_primary_from_raw_data_row)
     rows["fwhm_raw_tiff_path"].changed.connect(_sync_raw_data_row_from_primary)
+
+    #: The raw file's channel, mirrored the same way: "Check segmented image"
+    #: reads fwhm_raw_channel with the file, and the Diameters-tab row for it
+    #: is hidden while FWHM is off.
+    raw_channel_row = _channel_combo_box_class()(
+        choices=channel_choices([], rows["fwhm_raw_channel"].value),
+        value=rows["fwhm_raw_channel"].value,
+        label="Raw data channel",
+    )
+    raw_channel_row.tooltip = (
+        "Which channel of a multi-channel raw data file to read, as Fiji names them. "
+        "Shares its value with fwhm_raw_channel on the Diameters tab."
+    )
+    if input_settings is not None:
+        input_settings.append(raw_channel_row)
+    _follow_image_channels(raw_channel_row, raw_data_row)
+    _raw_channel_syncing = {"active": False}
+
+    def _mirror_channel(source, target) -> None:
+        if _raw_channel_syncing["active"]:
+            return
+        _raw_channel_syncing["active"] = True
+        try:
+            target.value = source.value
+        finally:
+            _raw_channel_syncing["active"] = False
+
+    raw_channel_row.changed.connect(
+        lambda *_a: _mirror_channel(raw_channel_row, rows["fwhm_raw_channel"])
+    )
+    rows["fwhm_raw_channel"].changed.connect(
+        lambda *_a: _mirror_channel(rows["fwhm_raw_channel"], raw_channel_row)
+    )
 
     #: "Optimise FWHM settings": empirically choose the FWHM diameter-
     #: measurement settings from the current in-memory graph and its raw
@@ -8612,6 +8719,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_optimise_group_checkboxes_container = group_checkboxes_container
     panel._haemolynx_check_image_button = check_image_button
     panel._haemolynx_raw_data_row = raw_data_row
+    panel._haemolynx_raw_channel_row = raw_channel_row
     panel._haemolynx_check_segmented_image = on_check_segmented_image
     panel._haemolynx_edit_button = edit_button
     panel._haemolynx_graph_editor = graph_editor

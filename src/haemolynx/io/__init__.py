@@ -23,6 +23,7 @@ from .automated_vessel_assignment import (
     load_large_vessel_masks,
 )
 from .voxel_validation import resolve_voxel_size_xyz, validate_voxel_size_xyz
+from .channels import TiffChannel, tiff_channel_axis, tiff_channels
 from .axis_order import (
     CANONICAL_AXIS_ORDER,
     VALID_AXIS_ORDERS,
@@ -35,6 +36,9 @@ from .axis_order import (
 from ..preprocessing import bridge_gaps
 
 __all__ = [
+    "TiffChannel",
+    "tiff_channel_axis",
+    "tiff_channels",
     "load_3d_tif_with_voxel_size",
     "read_voxel_size_xyz",
     "load_3d_h5_with_voxel_size",

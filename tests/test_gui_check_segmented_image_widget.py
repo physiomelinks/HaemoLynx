@@ -385,7 +385,7 @@ def test_check_segmented_image_cross_checks_against_a_raw_file_when_set(
     monkeypatch.setattr(
         automated_mod,
         "load_single_channel_tiff_volume",
-        lambda path, axis_order: raw_image,
+        lambda path, axis_order, channel=None: raw_image,
     )
 
     real_input = tmp_path / "mask.tif"
@@ -416,6 +416,54 @@ def test_check_segmented_image_cross_checks_against_a_raw_file_when_set(
     assert "removed voxels" in report, report
     assert "missed structures" in report, report
 
+
+
+def test_check_segmented_image_reads_the_chosen_raw_channel(panel, tmp_path, monkeypatch):
+    """The Raw data channel row is the channel the cross-check loads -- a
+    composite's plasma channel, not whichever the loader would default to."""
+    import time
+
+    import numpy as np
+    from qtpy.QtWidgets import QApplication
+
+    import haemolynx.haemodynamics.automated as automated_mod
+
+    mask = np.zeros((12, 12, 12), dtype=bool)
+    mask[4:8, 4:8, 1:11] = True
+    requested = []
+
+    def load(path, axis_order, channel=None):
+        requested.append(channel)
+        return np.where(mask, 200.0, 10.0).astype(np.float32)
+
+    monkeypatch.setattr(
+        widget_mod,
+        "load_volume_for_skeletonise",
+        lambda settings, input_format: (mask, (1.0, 1.0, 1.0), {"status": "complete"}),
+    )
+    monkeypatch.setattr(automated_mod, "load_single_channel_tiff_volume", load)
+
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+    panel._haemolynx_raw_data_row.value = raw_file
+    panel._haemolynx_raw_channel_row.value = 1
+
+    panel._haemolynx_check_segmented_image()
+
+    app = QApplication.instance()
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+        if "Checking segmented image..." not in panel._haemolynx_report():
+            break
+    else:
+        pytest.fail("segmented image check did not finish within 10s")
+
+    assert requested == [1]
 
 def test_check_segmented_image_degrades_gracefully_when_raw_file_is_missing(
     panel, monkeypatch, tmp_path

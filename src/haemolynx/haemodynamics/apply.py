@@ -233,7 +233,14 @@ def load_fwhm_raw_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
         axis_order=config.axis_order,
         use_memmap=config.use_memmap,
         memmap_directory=config.memmap_directory,
+        channel=_fwhm_raw_channel(config),
     )
+
+
+def _fwhm_raw_channel(config: HaemodynamicsApplyConfig) -> int | None:
+    """The channel of the FWHM raw image to read, or ``None`` for a single-channel file."""
+    channel = config.fwhm_setting("fwhm_raw_channel")
+    return None if channel is None else int(channel)
 
 
 def _measure_fwhm_diameters(
@@ -286,7 +293,7 @@ def _measure_raw_section_diameters(
             return {"skipped": True, "reason": "no fwhm_raw_tiff_path to read sections from"}
         raw_volume = automated.load_single_channel_tiff_volume(
             path, axis_order=config.axis_order, use_memmap=config.use_memmap,
-            memmap_directory=config.memmap_directory,
+            memmap_directory=config.memmap_directory, channel=_fwhm_raw_channel(config),
         )
     voxel_sz = tuple(
         float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)

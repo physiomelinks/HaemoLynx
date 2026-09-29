@@ -3602,7 +3602,7 @@ SCHEMA = Schema(
             kind="path",
             default=None,
             help=(
-                "Measure FWHM diameters from this raw single-channel image. "
+                "Measure FWHM diameters from this raw image (one channel of it: fwhm_raw_channel). "
                 "Also usable, independent of use_fwhm_edge_diameters, as the "
                 "'Raw data file' shown next to 'Check segmented image' on the "
                 "Input tab, so the segmentation can be cross-checked against "
@@ -3611,6 +3611,22 @@ SCHEMA = Schema(
             section=_FWHM,
             requires=("use_fwhm_edge_diameters",),
             must_exist=True,
+            always_effective=True,
+        ),
+        Setting(
+            name="fwhm_raw_channel",
+            kind="int",
+            default=None,
+            help=(
+                "Which channel of a multi-channel raw image FWHM reads, counting from 0 (the panel "
+                "lists them as Fiji names them: C1 is 0); leave unset for a single-channel file"
+            ),
+            section=_FWHM,
+            minimum=0,
+            requires=("use_fwhm_edge_diameters",),
+            placeholder="single-channel file",
+            # Read with fwhm_raw_tiff_path wherever that is: the Input tab's
+            # 'Check segmented image' cross-check uses both with FWHM off.
             always_effective=True,
         ),
         Setting(
@@ -4204,7 +4220,11 @@ SCHEMA = Schema(
             name="endothelial_channel",
             kind="int",
             default=None,
-            help="Which channel of a multi-channel stack is the endothelial stain, counting from 0; leave unset for a single-channel file",
+            help=(
+                "Which channel of a multi-channel stack is the endothelial stain, counting from 0 "
+                "(the panel lists them as Fiji names them: C1 is 0); leave unset for a "
+                "single-channel file"
+            ),
             section=_ENDOTHELIAL,
             minimum=0,
             requires=("use_endothelial_diameters",),
