@@ -1,25 +1,27 @@
 """Measurements behind Part 1 of the H2 capability assessment.
 
-Four questions, all answered from the exported H1 artefacts rather than from a pipeline run.
+Four questions, answered from the batch outputs (``examples/outputs/cb_h1_batch/``) rather than
+from a fresh pipeline run: the cached network graph for topology and ``per_edge_morphometry.csv``
+for calibre and length. Every graph is checked against the placed ROI before it is read.
 
-**Why solve the network here rather than read the pipeline's own flow output.** The pipeline has
-run on all six specimens and its flow output exists, but it was produced with
-``constrict_at_pericytes = True``, so 12.3% of edges carry a fabricated narrowing that inflates
-their resistance by a median of about 12x (assessment finding S14). Building the conductance
-network directly from measured calibre and length sidesteps that entirely, and isolates the
-propagation question from every other defect in the chain.
+**Pressure boundaries are the pipeline's own.** Inlets and outlets come from
+``select_boundary_terminal_nodes_by_face`` on ``cb_settings.BOUNDARY_AXIS`` at
+``cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS``, the call the pipeline and every other H2 driver
+make. Until package C of the 2026-09-29 re-run notes this script placed pressure with its own 25%
+band on another axis, so its floors were measured on different pressure nodes.
+
+**The solve is plain Poiseuille, not the Pries flow.** Viscosity is taken as uniform and folds
+out, since only relative changes are read. That isolates how calibre error propagates through the
+network from every other term in the chain, but it is not the H2 flow field: Fåhræus–Lindqvist
+viscosity also depends on calibre and would move these numbers somewhat.
 
 **Two perturbation sizes, and why both are reported.** One voxel, 1.866 um, is the scale at which a
 diameter difference stops being physically resolved: H1 section 8.2 disqualifies calibre as a
 finding because the between-group gap sits at one twentieth of that step. It is the conservative
-bound.
-
-The threshold-calibrated size is the empirical one. Measured across the three sensitivity runs, the
-median calibre moves 0.922 um over the clean 0.85 to 0.90 interval, about half a voxel, in the same
-direction for all six specimens. Since the threshold is the dominant correlated error term, that is
-the size of the correlated perturbation actually at play. Resistance goes as the inverse fourth
-power of diameter, so the two do not simply scale, and the smaller one is measured rather than
-inferred from the larger.
+bound. The threshold-calibrated size is the empirical one: the median calibre shift over the clean
+threshold interval below the frozen value, measured by ``cb_h2_threshold_calibre.py``. Resistance
+goes as the inverse fourth power of diameter, so the two do not simply scale, and the smaller one
+is measured rather than inferred from the larger.
 
 **Why independent and correlated are both run.** Resistance goes as the inverse fourth power of
 diameter, so the per-edge uncertainty is near 94% at the median. Whether that matters at the network
@@ -27,11 +29,17 @@ level depends entirely on whether the errors cancel. They do when independent an
 correlated, and this pipeline's errors are correlated because every edge in a specimen comes from
 one mask at one threshold.
 
+Edges are counted on the MultiGraph, so parallel edges between one node pair are separate
+conductances rather than merged.
+
 Run with::
 
     venv/bin/python examples/cb_h2_error_propagation.py
+    venv/bin/python examples/cb_h2_error_propagation.py --perturbation-um 0.690
 """
 import argparse
+import csv
+import pickle
 import sys
 from pathlib import Path
 
@@ -42,16 +50,26 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from ImageLynx import cb_settings                                     # noqa: E402
+from ImageLynx.graph.boundaries import (                               # noqa: E402
+    select_boundary_terminal_nodes_by_face,
+)
+from ImageLynx.roi_placement import check_output_roi                   # noqa: E402
+from ImageLynx.specimens import PROCESSING_VOXEL_UM                    # noqa: E402
+from ImageLynx.specimens import SPECIMENS as REGISTRY                  # noqa: E402
+
+BATCH = Path(__file__).resolve().parent / "outputs" / "cb_h1_batch"
 VTK = Path(__file__).resolve().parent / "outputs" / "cb_h1_paraview"
 SPECIMENS = ("WKY-A", "WKY-B", "WKY-C", "SHR-A", "SHR-B", "SHR-C")
 
-# Graph 'pos' is (z, y, x) and node_edge_axis defaults to 0, which is this coordinate index in the
-# exported geometry. Verified against the mask rather than assumed: sampling the mask at every raw
-# skeleton point gives 100.0% foreground in this frame and 24.4% in the transposed one.
-AXIS = 2
-EDGE_PERCENT = END_PERCENT = 25.0
-VOXEL_UM = 1.866
+# Analysis settings come from ImageLynx.cb_settings, which is their single owner.
+ROI = cb_settings.ROI_VOXELS
+BOUNDARY_AXIS = cb_settings.BOUNDARY_AXIS
+FACE_TOLERANCE = cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS
+# The in-plane voxel edge; the perturbation is quoted in these units.
+VOXEL_UM = PROCESSING_VOXEL_UM[1]
 # Median calibre shift over the clean threshold interval below the frozen value, averaged over
 # the six specimens. Measured by cb_h2_threshold_calibre.py, not assumed: 0.690 um over 0.93 to
 # 0.95 on the placed ROI (2026-09-28 re-run); it was 0.922 over 0.85 to 0.90 on centre crops.
@@ -60,8 +78,16 @@ DRAWS = 24
 SEED = 20260815
 
 
+def _specimen(specimen_id):
+    return next(s for s in REGISTRY if s.specimen_id == specimen_id)
+
+
 def load(specimen_id):
-    """Edges, terminal nodes and ROI bounds for one specimen."""
+    """Edges, terminal nodes and ROI bounds from the ParaView export, in the VTK frame.
+
+    Kept for ``cb_h2_boundary_selection.py``, which imports it. This script uses
+    ``load_network``.
+    """
     edges = pv.read(VTK / f"{specimen_id}_vessels.vtp")
     nodes = pv.read(VTK / f"{specimen_id}_nodes.vtp")
     mask = pv.read(VTK / f"{specimen_id}_mask.vti")
@@ -77,18 +103,83 @@ def load(specimen_id):
     return (u[keep], v[keep], length[keep], diameter[keep], nodes, np.array(mask.bounds).reshape(3, 2))
 
 
-def boundary_nodes(nodes, bounds):
-    """Inlets and outlets exactly as select_boundary_terminal_nodes would choose them."""
-    node_id = np.asarray(nodes.point_data["node_id"]).astype(int)
-    degree = np.asarray(nodes.point_data["degree"]).astype(int)
-    points = nodes.points
-    low, high = bounds[AXIS]
-    extent = high - low
-    terminal = degree == 1
-    coord = points[terminal][:, AXIS]
-    inlets = node_id[terminal][coord <= low + extent * EDGE_PERCENT / 100.0]
-    outlets = node_id[terminal][coord >= low + extent * (1.0 - END_PERCENT / 100.0)]
-    return set(inlets.tolist()), set(outlets.tolist())
+def network_arrays(G, csv_path):
+    """Per-edge arrays over the MultiGraph, with calibre and length joined from the CSV.
+
+    Returns ``(u, v, length, diameter, index)``: ``u`` and ``v`` are 0-based node indices and
+    ``index`` maps each graph node to its index. Parallel edges stay separate conductances.
+    Raises if any edge has no morphometry row, rather than solving on a partial network.
+    """
+    by_edge = {}
+    with open(csv_path) as handle:
+        for row in csv.DictReader(handle):
+            by_edge[(row["u"], row["v"], row["key"])] = row
+
+    index = {node: i for i, node in enumerate(G.nodes())}
+    u, v, length, diameter, missing = [], [], [], [], []
+    for a, b, key in G.edges(keys=True):
+        row = by_edge.get((str(a), str(b), str(key))) or by_edge.get((str(b), str(a), str(key)))
+        if row is None:
+            missing.append((a, b, key))
+            continue
+        u.append(index[a])
+        v.append(index[b])
+        length.append(float(row["length_um"] or "nan"))
+        diameter.append(float(row["assigned_diameter_um"] or "nan"))
+    if missing:
+        raise ValueError(f"{len(missing)} graph edges have no row in {csv_path}, "
+                         f"e.g. {missing[:3]}; the CSV and the cached graph are out of step.")
+
+    u, v = np.array(u, int), np.array(v, int)
+    length, diameter = np.array(length, float), np.array(diameter, float)
+    # Self-loops carry no pressure drop and a non-positive length or diameter would make the
+    # conductance singular. Both are dropped rather than clamped, so nothing silently contributes.
+    keep = (u != v) & np.isfinite(length) & (length > 0) & np.isfinite(diameter) & (diameter > 0)
+    u, v, length, diameter = u[keep], v[keep], length[keep], diameter[keep]
+    # A node left with no edge would be a zero row in the Laplacian and make the solve singular.
+    stranded = len(index) - len(np.union1d(u, v))
+    if stranded:
+        raise ValueError(f"{stranded} nodes have no usable edge after dropping self-loops and "
+                         f"non-positive calibre or length; the solve would be singular.")
+    return u, v, length, diameter, index
+
+
+def load_network(specimen_id):
+    """The batch run's MultiGraph and its per-edge arrays, for the placed ROI only."""
+    directory = BATCH / specimen_id
+    # Refuse a graph cut anywhere but the placed ROI (item 27).
+    check_output_roi(directory, _specimen(specimen_id), ROI)
+    with open(next(directory.glob("*_cache/network_graph.pkl")), "rb") as handle:
+        G = pickle.load(handle)
+    return (G, *network_arrays(G, directory / "per_edge_morphometry.csv"))
+
+
+def face_boundaries(G, index, axis=BOUNDARY_AXIS, tolerance=FACE_TOLERANCE):
+    """Inlet and outlet indices from the pipeline's face rule. Raises on an empty face."""
+    inlets, outlets = select_boundary_terminal_nodes_by_face(
+        G, ROI, axis=axis, face_tolerance_voxels=tolerance, voxel_size=PROCESSING_VOXEL_UM)
+    return (np.array([index[n] for n in inlets], int),
+            np.array([index[n] for n in outlets], int))
+
+
+def terminals_on_any_face(G):
+    """Degree-1 nodes, and which of them lie within one voxel of any ROI face."""
+    terminals = [n for n, d in G.degree() if d == 1]
+    pos = np.array([G.nodes[n]["pos"] for n in terminals], float).reshape(-1, 3)
+    spacing = np.asarray(PROCESSING_VOXEL_UM, float)
+    extent = (np.asarray(ROI, float) - 1.0) * spacing
+    on_face = ((pos <= spacing) | (pos >= extent - spacing)).any(axis=1)
+    return len(terminals), int(on_face.sum())
+
+
+def edge_count_between_boundaries(G, inlet_nodes, outlet_nodes):
+    """(edges in components holding both an inlet and an outlet, all edges), on the MultiGraph."""
+    solvable = sum(
+        G.subgraph(c).number_of_edges()
+        for c in nx.connected_components(G)
+        if (c & inlet_nodes) and (c & outlet_nodes)
+    )
+    return solvable, G.number_of_edges()
 
 
 def solve_edge_flows(u, v, length, diameter, inlets, outlets, n_nodes):
@@ -131,55 +222,37 @@ def solve_edge_flows(u, v, length, diameter, inlets, outlets, n_nodes):
 def main(perturbation_um=VOXEL_UM):
     rng = np.random.default_rng(SEED)
     print(f"perturbation = {perturbation_um} um "
-          f"({perturbation_um / VOXEL_UM:.2f} voxel)\n")
+          f"({perturbation_um / VOXEL_UM:.2f} voxel); boundaries: face rule, axis "
+          f"{BOUNDARY_AXIS}, tolerance {FACE_TOLERANCE} voxel\n")
+
+    networks = {specimen_id: load_network(specimen_id) for specimen_id in SPECIMENS}
 
     print("=== S10: terminal-node census, and where the boundary nodes come from ===")
     print(f"{'spec':8}{'term':>6}{'on face':>9}{'interior':>10}{'inlet':>7}{'outlet':>8}"
           f"{'in:out':>9}{'stranded':>10}")
-    for specimen_id in SPECIMENS:
-        u, v, length, diameter, nodes, bounds = load(specimen_id)
-        degree = np.asarray(nodes.point_data["degree"]).astype(int)
-        points = nodes.points[degree == 1]
-        on_face = np.zeros(len(points), bool)
-        for axis in range(3):
-            for side in range(2):
-                on_face |= np.abs(points[:, axis] - bounds[axis, side]) <= VOXEL_UM
-        inlets, outlets = boundary_nodes(nodes, bounds)
-        total = len(points)
+    for specimen_id, (G, u, v, length, diameter, index) in networks.items():
+        total, on_face = terminals_on_any_face(G)
+        inlets, outlets = face_boundaries(G, index)
         stranded = total - len(inlets) - len(outlets)
-        print(f"{specimen_id:8}{total:6}{on_face.sum():9}{(~on_face).sum():10}"
+        print(f"{specimen_id:8}{total:6}{on_face:9}{total - on_face:10}"
               f"{len(inlets):7}{len(outlets):8}{len(inlets)/max(len(outlets),1):9.2f}"
               f"{stranded:7} ({100*stranded/total:.0f}%)")
 
     print("\n=== S11: is the solve well posed? ===")
-    for specimen_id in SPECIMENS:
-        u, v, length, diameter, nodes, bounds = load(specimen_id)
-        inlets, outlets = boundary_nodes(nodes, bounds)
-        graph = nx.Graph()
-        graph.add_edges_from(zip(u, v))
-        components = list(nx.connected_components(graph))
-        solvable = sum(
-            graph.subgraph(c).number_of_edges()
-            for c in components
-            if (c & inlets) and (c & outlets)
-        )
-        total = graph.number_of_edges()
-        print(f"{specimen_id:8} components={len(components):3}  "
+    for specimen_id, (G, u, v, length, diameter, index) in networks.items():
+        inlet_nodes, outlet_nodes = select_boundary_terminal_nodes_by_face(
+            G, ROI, axis=BOUNDARY_AXIS, face_tolerance_voxels=FACE_TOLERANCE,
+            voxel_size=PROCESSING_VOXEL_UM)
+        solvable, total = edge_count_between_boundaries(G, set(inlet_nodes), set(outlet_nodes))
+        print(f"{specimen_id:8} components={nx.number_connected_components(G):3}  "
               f"edges between an inlet and an outlet: {solvable}/{total} "
               f"({100*solvable/total:.1f}%)")
 
     print("\n=== S12 and S13: how correlated calibre error propagates ===")
     print(f"{'spec':8}{'independent':>13}{'correlated':>12}{'shunt ratio':>13}")
     independent_all, correlated_all, ratio_all = [], [], []
-    for specimen_id in SPECIMENS:
-        u0, v0, length, diameter, nodes, bounds = load(specimen_id)
-        ids = np.unique(np.concatenate([u0, v0]))
-        remap = {x: i for i, x in enumerate(ids)}
-        u = np.array([remap[x] for x in u0])
-        v = np.array([remap[x] for x in v0])
-        inlet_ids, outlet_ids = boundary_nodes(nodes, bounds)
-        inlets = np.array([remap[x] for x in inlet_ids if x in remap])
-        outlets = np.array([remap[x] for x in outlet_ids if x in remap])
+    for specimen_id, (G, u, v, length, diameter, index) in networks.items():
+        inlets, outlets = face_boundaries(G, index)
 
         # Throughput is the inflow at the inlets, not the sum over every edge. Inlets are
         # degree-1 terminals carrying one edge each, so this is the network's total perfusion;
@@ -187,7 +260,7 @@ def main(perturbation_um=VOXEL_UM):
         at_inlet = np.isin(u, inlets) | np.isin(v, inlets)
 
         def total_and_ratio(d):
-            flows = solve_edge_flows(u, v, length, d, inlets, outlets, len(ids))
+            flows = solve_edge_flows(u, v, length, d, inlets, outlets, len(index))
             return flows[at_inlet].sum(), flows[shunt].sum() / flows.sum()
 
         # The shunt set is fixed at baseline calibre so that the perturbation measures flow
@@ -224,67 +297,54 @@ def boundary_sensitivity(calibre_ratio_pct):
     comparison line below matches the perturbation that was run.
 
     S13 established that a within-specimen ratio cancels calibre error. That is only half the
-    picture. S10 showed the inlet and outlet nodes are chosen positionally, by axis and by band
-    width, with no anatomical basis for either. If the ratio moves when that choice moves, being
-    a ratio does not save it.
-
-    The axis and the band width are separated because they are not equally fixable. There is no
-    anatomical reason to prefer one axis over another in a mid-organ ROI, so that term is
-    irreducible without new information. The band width is a free parameter that could be argued
-    to a principled value.
+    picture: if the ratio moves when the boundary choice moves, being a ratio does not save it.
+    Under the face rule the choice has two parts. The axis has no anatomical basis in a mid-organ
+    ROI, so its term is irreducible without new information; it is pinned by
+    ``cb_settings.BOUNDARY_AXIS``. The face tolerance is anchored to the voxel size, and 2 and 4
+    voxels are only there to show how much the answer depends on it. Axes are graph axes (z, y, x).
     """
-    cases = (("axis0 25%", 2, 25.0), ("axis1 25%", 1, 25.0), ("axis2 25%", 0, 25.0),
-             ("axis0 10%", 2, 10.0), ("axis0 40%", 2, 40.0))
+    cases = (("axis0 tol1", 0, 1.0), ("axis1 tol1", 1, 1.0), ("axis2 tol1", 2, 1.0),
+             ("axis1 tol2", 1, 2.0), ("axis1 tol4", 1, 4.0))
 
-    def ratio_for(specimen_id, axis, percent):
-        u0, v0, length, diameter, nodes, bounds = load(specimen_id)
-        ids = np.unique(np.concatenate([u0, v0]))
-        remap = {x: i for i, x in enumerate(ids)}
-        u = np.array([remap[x] for x in u0])
-        v = np.array([remap[x] for x in v0])
-        node_id = np.asarray(nodes.point_data["node_id"]).astype(int)
-        degree = np.asarray(nodes.point_data["degree"]).astype(int)
-        points = nodes.points
-        low, high = bounds[axis]
-        extent = high - low
-        terminal = degree == 1
-        coord = points[terminal][:, axis]
-        inlets = np.array([remap[x] for x in node_id[terminal][coord <= low + extent * percent / 100.0]
-                           if x in remap])
-        outlets = np.array([remap[x] for x in node_id[terminal][coord >= low + extent * (1 - percent / 100.0)]
-                            if x in remap])
-        if len(inlets) == 0 or len(outlets) == 0:
+    def ratio_for(network, axis, tolerance):
+        G, u, v, length, diameter, index = network
+        try:
+            inlets, outlets = face_boundaries(G, index, axis, tolerance)
+        except ValueError:
+            # A face with no terminals: this axis cannot carry a pressure boundary here.
             return None
         shunt = diameter >= np.percentile(diameter, 90)
-        flows = solve_edge_flows(u, v, length, diameter, inlets, outlets, len(ids))
+        flows = solve_edge_flows(u, v, length, diameter, inlets, outlets, len(index))
         return flows[shunt].sum() / flows.sum()
 
-    print("\n=== S20: shunt ratio against the boundary choice ===")
+    print("\n=== S20: shunt ratio against the boundary choice (face rule) ===")
     print(f"{'spec':8}" + "".join(f"{name:>12}" for name, _, _ in cases)
-          + f"{'axis':>8}{'band':>8}{'total':>8}")
-    axis_spread, band_spread, total_spread = [], [], []
+          + f"{'axis':>8}{'tol':>8}{'total':>8}")
+    axis_spread, tol_spread, total_spread = [], [], []
     for specimen_id in SPECIMENS:
-        values = [ratio_for(specimen_id, axis, percent) for _, axis, percent in cases]
+        network = load_network(specimen_id)
+        values = [ratio_for(network, axis, tolerance) for _, axis, tolerance in cases]
         present = [v for v in values if v is not None]
         by_axis = [v for v in values[:3] if v is not None]
-        # The band triple must hold the axis fixed, so index 0 (axis0 25%), not index 1 (axis1).
-        by_band = [values[3], values[0], values[4]]
-        by_band = [v for v in by_band if v is not None]
+        # The tolerance triple must hold the axis fixed at 1: indices 1, 3 and 4.
+        by_tol = [v for v in (values[1], values[3], values[4]) if v is not None]
 
         def full_range(xs):
             return 100.0 * (max(xs) - min(xs)) / np.mean(xs) if len(xs) > 1 else float("nan")
 
         axis_spread.append(full_range(by_axis))
-        band_spread.append(full_range(by_band))
+        tol_spread.append(full_range(by_tol))
         total_spread.append(full_range(present))
         print(f"{specimen_id:8}"
               + "".join(f"{(v if v is not None else float('nan')):12.4f}" for v in values)
-              + f"{axis_spread[-1]:7.1f}%{band_spread[-1]:7.1f}%{total_spread[-1]:7.1f}%")
+              + f"{axis_spread[-1]:7.1f}%{tol_spread[-1]:7.1f}%{total_spread[-1]:7.1f}%")
 
-    print(f"\nmean spread of the shunt ratio: axis {np.nanmean(axis_spread):.1f}%, "
-          f"band {np.nanmean(band_spread):.1f}%, combined {np.nanmean(total_spread):.1f}%")
-    print(f"Calibre error moves the same ratio {calibre_ratio_pct:.1f}% (S13, S15), so the "
-          f"boundary choice, not calibre, is the dominant term.")
+    axis_mean, tol_mean = np.nanmean(axis_spread), np.nanmean(tol_spread)
+    print(f"\nmean spread of the shunt ratio: axis {axis_mean:.1f}%, "
+          f"tolerance {tol_mean:.1f}%, combined {np.nanmean(total_spread):.1f}%")
+    larger = "the boundary choice" if tol_mean > calibre_ratio_pct else "calibre error"
+    print(f"Calibre error moves the same ratio {calibre_ratio_pct:.1f}% (S13, S15), against "
+          f"{tol_mean:.1f}% for the face tolerance at the pinned axis, so {larger} is the larger term.")
 
 
 if __name__ == "__main__":

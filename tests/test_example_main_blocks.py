@@ -7,8 +7,8 @@ prints the within-specimen ratio ``main`` measured instead of a hard-coded 6.3%.
 """
 import ast
 from pathlib import Path
-from types import SimpleNamespace
 
+import networkx as nx
 import numpy as np
 import pytest
 
@@ -51,24 +51,39 @@ def test_the_check_catches_a_call_above_its_definition(tmp_path):
     assert _calls_defined_after_main(script) == ["later (called line 2, defined line 5)"]
 
 
-def _cross_network():
-    """Centre node joined to one terminal on each of the six faces of a 10-unit box."""
-    points = np.array([(5, 5, 5), (0, 5, 5), (10, 5, 5), (5, 0, 5),
-                       (5, 10, 5), (5, 5, 0), (5, 5, 10)], dtype=float)
-    u = np.zeros(6, int)
-    v = np.arange(1, 7)
-    length = np.full(6, 5.0)
-    diameter = np.array([4.0, 5.0, 6.0, 7.0, 8.0, 12.0])
-    nodes = SimpleNamespace(points=points, point_data={
-        "node_id": np.arange(7), "degree": np.array([6, 1, 1, 1, 1, 1, 1])})
-    bounds = np.array([[0.0, 10.0]] * 3)
-    return u, v, length, diameter, nodes, bounds
+def _cross_network(tmp_path):
+    """Centre node joined to one terminal on each of the six ROI faces, in micrometres.
+
+    One extra branch reaches the low axis-1 face through a parallel pair, so the MultiGraph path
+    is exercised. Calibre and length come from a CSV, as they do from the batch output.
+    """
+    G = nx.MultiGraph()
+    mid, top = 148.0, 296.0
+    G.add_node(0, pos=np.array([mid, mid, mid]))
+    faces = [(0.0, mid, mid), (top, mid, mid), (mid, 0.0, mid),
+             (mid, top, mid), (mid, mid, 0.0), (mid, mid, top)]
+    for i, pos in enumerate(faces, start=1):
+        G.add_node(i, pos=np.array(pos))
+        G.add_edge(0, i)
+    G.add_node(7, pos=np.array([mid, 60.0, 100.0]))
+    G.add_node(8, pos=np.array([mid, 0.5, 100.0]))
+    G.add_edge(0, 7)
+    G.add_edge(0, 7)
+    G.add_edge(7, 8)
+    path = tmp_path / "per_edge_morphometry.csv"
+    lines = ["u,v,key,length_um,assigned_diameter_um"]
+    for n, (a, b, k) in enumerate(G.edges(keys=True)):
+        lines.append(f"{a},{b},{k},{50.0 + 5 * n},{4.0 + n}")
+    path.write_text("\n".join(lines) + "\n")
+    return G, path
 
 
 @pytest.fixture
-def propagation(monkeypatch):
+def propagation(monkeypatch, tmp_path):
     import cb_h2_error_propagation as module
-    monkeypatch.setattr(module, "load", lambda specimen_id: _cross_network())
+    G, csv_path = _cross_network(tmp_path)
+    monkeypatch.setattr(module, "load_network",
+                        lambda specimen_id: (G, *module.network_arrays(G, csv_path)))
     return module
 
 
