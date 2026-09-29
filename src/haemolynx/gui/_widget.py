@@ -7723,7 +7723,7 @@ def settings_widget(napari_viewer=None):
         report,
         results=lambda: view.results,
         boundary_roles=lambda: checkpoints._carried_boundary_roles(),
-        regenerate=lambda graph: regenerate_from_graph(graph, follow_graph_boundaries=True),
+        regenerate=lambda graph: regenerate_from_graph(graph, from_post_processing=True),
         running=lambda: run_state.running,
     )
     post_processing_scroller = _fitting_scroll_area()
@@ -9257,14 +9257,18 @@ def settings_widget(napari_viewer=None):
             return
         regenerate_from_graph(state.graph)
 
-    def regenerate_from_graph(graph, *, follow_graph_boundaries: bool = False) -> None:
+    def regenerate_from_graph(graph, *, from_post_processing: bool = False) -> None:
         """Rerun Diameters onwards on *graph*: the Edit window's Regenerate,
         and the post-processing tab's.
 
-        *follow_graph_boundaries* (the post-processing tab, whose Prune can
-        drop inlets and outlets on purpose) cuts the run's boundary lists to
-        the nodes *graph* still has; without it a missing boundary node stops
-        the solve, which catches an accidental one.
+        *from_post_processing* (the post-processing tab) does two things more.
+        It cuts the run's boundary lists to the nodes *graph* still has --
+        the tab's Prune drops inlets and outlets on purpose; without it a
+        missing boundary node stops the solve, which catches an accidental
+        one. And it keeps the FWHM diameters already measured instead of
+        measuring every vessel again (``do_fwhm_measurement`` off for this run
+        only, the way a run from a tab skips what it already has): the tab
+        changes which vessels there are, not the image they were measured in.
         """
         if run_state.running:
             report.value = ALREADY_RUNNING
@@ -9285,10 +9289,13 @@ def settings_widget(napari_viewer=None):
                 "least Boundaries first."
             )
             return
-        if follow_graph_boundaries:
+        if from_post_processing:
             from haemolynx.gui.post_processing import boundaries_following_graph
 
-            plan = replace(plan, resume=boundaries_following_graph(plan.resume))
+            skips = tuple(dict.fromkeys((*plan.skip_settings, "do_fwhm_measurement")))
+            plan = replace(
+                plan, resume=boundaries_following_graph(plan.resume), skip_settings=skips
+            )
         if not _resumed_run_passes_checks(settings, plan):
             return
         checkpoints.drop_from(plan.start_from)

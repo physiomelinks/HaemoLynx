@@ -61,8 +61,18 @@ After a run (at least through **4. Boundaries**), tab 10 works on a copy of the 
 6. **Regenerate from the edited network:** reruns Diameters → Export on the edited graph, so
    branch orders, resistances, flows and the 3D view catch up. Tab 10's Regenerate
    cuts the rerun's inlet, outlet and boundary lists to the nodes still in the graph
-   (`boundaries_following_graph`), so pruned boundary nodes don't stop the solve. The old Edit
-   window's Regenerate keeps the strict check. The tab then clears; scan again
+   (`boundaries_following_graph`), so pruned boundary nodes don't stop the solve. It also
+   **keeps the FWHM diameters already measured** instead of measuring every vessel again: it
+   adds `do_fwhm_measurement` to the rerun's skip list, and the next Run pipeline restores the
+   switch. New vessels still get their diameter: the override for an added vessel, the table
+   for a split's connector. The old Edit window's Regenerate keeps the strict boundary check and
+   re-measures.
+
+   **What Regenerate costs**, measured on the real network: Diameters → Export takes about 10 s.
+   It never re-skeletonises or rebuilds the graph when the session has them. The first
+   Regenerate after **Load run** takes about 2 minutes more, because a saved run doesn't store the
+   loaded volumes (by design, in `gui/run_snapshot.py`), so Skeletonise and Graph reload from
+   their cached files once. The tab then clears; scan again
    afterwards.
 
 Things to know:
@@ -100,7 +110,7 @@ so a boundary role on it survives.
 | `src/haemolynx/gui/_widget.py`: `POST_PROCESSING_TAB`, `JUNCTION_ZOOM_BOX_UM`, `_zoom_viewer_to`, `_post_processing_controls` | **The tab's Qt page.** A self-contained block just above `def settings_widget`; tab-10 work goes here |
 | `_widget.py` in `settings_widget`, right after the stage-tab loop | Builds the page and adds it as the last tab (`post_processing = _post_processing_controls(...)`) |
 | `_widget.py`, revert-stack loop | Adds one empty "Run from this stage" slot so the stack's pages still line up with the tabs |
-| `_widget.py`, `on_regenerate_from_edit` | Body moved into `regenerate_from_graph(graph, follow_graph_boundaries=False)`, shared by the old Edit window and tab 10. Tab 10 passes `True`, which cuts the resume's boundary lists to the graph |
+| `_widget.py`, `on_regenerate_from_edit` | Body moved into `regenerate_from_graph(graph, from_post_processing=False)`, shared by the old Edit window and tab 10. Tab 10 passes `True`, which cuts the resume's boundary lists to the graph and adds `do_fwhm_measurement` to the rerun's skips |
 | `_widget.py`, test hooks | `panel._haemolynx_post_processing` |
 | `_widget.py`, bottom "run file" row | `edit_button.visible = False`, one added line: the old Edit button stays in its row (a view-panel test checks the row order) but is hidden, and its code is kept |
 | `src/haemolynx/haemodynamics/poiseuille.py`, `stamp_edge_diameters` | A vessel with `diameter_source="override"` now keeps its diameter over the **branch-order table**; a measurement of that vessel (FWHM, endothelial, raw section, EDT) still replaces it, which `test_fresh_fwhm_run_wipes_overrides` pins. **Tell the colleague:** this is haemodynamics code, not tab 10 |
@@ -208,3 +218,5 @@ Known unrelated failures in this environment:
   - Side effect: that check overwrote `/home/sliu205/outputs`' checkpoints and
     `ZStack_Haemolynx_*.vtp` with the test's edited network. Rerun before using them.
   - Tests: the tab's pure, widget, graph, tooltip and editor tests pass (106).
+- **2026-09-30, commit 5:** Tab 10's Regenerate keeps the measured FWHM diameters. Diameters
+  went from 171 s to 1.5 s on the real run; 747 measured diameters were kept.
