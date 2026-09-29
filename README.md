@@ -1,6 +1,6 @@
 # HaemoLynx
 
-Converts raw microscopy images of the microvasculature into computational haemodynamics models for hypothesis testing, experimental design, and more.
+Converts raw microscopy images of the microvasculature into network-based representations for network level statistics and computational haemodynamics models for hypothesis testing, experimental design, and more.
 
 ## Install
 
