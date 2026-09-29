@@ -22,7 +22,7 @@
 | Is absolute perfusion physiological? | §13.5 — at 60/20 mmHg it runs up to 1.8× fast; it was 20–100× slow only before open item 12 |
 | What pressure boundaries did the published H2 numbers use? | §7.8 and §8.1 — 60/20; the pipeline config reads the same pair since open item 10 |
 | Which coupling tier produced the oxygen field? | §6.6 — Tier 1; Tier 2 is unreachable |
-| What grid resolution was used, and is it converged? | §6.8 — 3 µm, with vessels mapped over their cross-section; within 0.21 mmHg of 2 µm on the centred-box networks (open item 30, closed; not re-measured after 2026-09-28) |
+| What grid resolution was used, and is it converged? | §6.8 — 3 µm, with vessels mapped over their cross-section; within 0.16 mmHg of 2 µm on all six placed-box networks (re-measured 2026-09-30 after open item 38; 4 µm passes the 0.5 mmHg rule by 0.005 mmHg, 3 µm kept) |
 | Why is transit time reported as a ratio instead of a number? | §7.6, then §13.3 |
 | Which boundary rule is in force, and how much does it move things? | §2.8, then §13.4 |
 | Why can I not quote a glomus hypoxic fraction? | §13.6 — the tissue is not diffusion-limited (**needs review**: since the 2026-09-28 re-run TH hypoxia is 0 everywhere, and PO₂ in TH separates the groups) |
@@ -2026,10 +2026,17 @@ from (§11 row 21).
 `M_max` may be a scalar **or a per-cell array**, and the solver applies it elementwise.
 
 The glomus mask is joined to the grid by **volume fraction per cell**, not by sampling the mask at
-the cell centre. At 4 µm against 1.866 µm voxels there are roughly a dozen mask voxels to a cell,
+the cell centre. At 3 µm against 1.866 µm voxels there are about four mask voxels to a cell,
 and at the former 10 µm resolution about 154 — so a cell is rarely wholly tissue or wholly stroma,
 and a centre sample would discard almost all of the mask and make the answer depend on where cell
 centres happened to fall.
+
+The fraction is the **exact overlap volume** (open item 38): each voxel adds to every cell the
+volume it shares with it, computed per axis, so the fractions sum to the in-grid mask volume and
+none exceeds 1. `mask_fraction_per_cell` raises if either fails. Until item 38 it counted voxel
+centres per cell and divided by the mean count, which at 3 µm put a solid glomus cell anywhere
+from 0.24 to 1.92, and a clip at 1 dropped about 17% of the TH volume in every specimen
+(WKY-A 17.4% of the grid against 20.87% of the voxels).
 
 **The order of operations.**
 
@@ -2037,8 +2044,8 @@ centres happened to fall.
 |---|---|---|---|---|---|
 | 1 | Threshold the TH probability field into a glomus mask | `TH_THRESHOLD` | The metabolic contrast is defined against glomus tissue, so the TH channel has to become a binary region first | **On** | `cb_h2_hypoxic_fraction.py:111` |
 | 2 | Build the perfusion grid from the graph (§6.1) | 3 µm | The metabolic field has to live on the same cells the transport operator solves on | **On** | `cb_h2_hypoxic_fraction.py:116` |
-| 3 | Per-cell **volume fraction** of the mask, not a centre sample | — | At 4 µm against 1.866 µm voxels a cell holds about a dozen mask voxels, so most cells are mixed and a centre sample would discard nearly all of the mask | **On** | `cb_h2_hypoxic_fraction.py:117` |
-| 4 | Warn if more than 1% of mask voxels fell outside the grid | 1% | The grid is fitted to the graph, so a specimen whose vessels stop short loses tissue silently — worth hearing about | **On** | `tissue_regions.py:45` |
+| 3 | Per-cell **volume fraction** of the mask, by exact voxel–cell overlap, not a centre sample or a centre count | — | At 3 µm against 1.866 µm voxels a cell holds about four mask voxels, so most glomus cells are mixed and a centre sample would discard nearly all of the mask; counting centres aliased and lost ~17% of the volume (open item 38) | **On** | `cb_h2_hypoxic_fraction.py:124` |
+| 4 | Warn if more than 1% of the mask volume fell outside the grid; raise if the in-grid volume is not conserved | 1% | The grid is fitted to the graph, so a specimen whose vessels stop short loses tissue silently — worth hearing about. The conservation check is what would have caught open item 38 | **On** | `tissue_regions.py:104` |
 | 5 | Mean TH fraction f̄ over all cells | — | The normalisation in the next step needs to know how much of the volume is glomus | **On** | `cb_h2_hypoxic_fraction.py:121` |
 | 6 | Stromal rate = `BASE_M_MAX / (1 + f̄(c − 1))` | `BASE_M_MAX` = 0.05 | Holds the volume-weighted mean rate at `BASE_M_MAX` for every contrast, so runs differ in distribution rather than in total consumption | **On** — open item 8 | `cb_h2_hypoxic_fraction.py:122` |
 | 7 | Per-cell `M_max` blended between $\text{stroma}\cdot c$ and `stroma` | c ∈ {1, 2, 4} | Puts the glomus rate at $c$ times the stromal one while preserving that mean | **On** | `cb_h2_hypoxic_fraction.py:123` |
@@ -2053,8 +2060,9 @@ hypoxic fraction would move for two reasons at once.
 **Step 9 matters as much as step 7.** A cell that is 40% glomus contributes 40% of its volume to the
 glomus readout and 60% to the stromal one. Taking a hard per-cell classification instead would put
 whole mixed cells on one side or the other, and at 3 µm against 1.866 µm voxels — about four mask
-voxels per cell — most cells that hold any glomus tissue are mixed: 10–35% of cells are mixed
-against 2–7% wholly glomus across the six.
+voxels per cell — most cells that hold any glomus tissue are mixed: 13–36% of cells are mixed
+against 4–15% wholly glomus across the six (by exact overlap; 10–34% against 2–7% under the
+centre count before open item 38).
 
 Rates are then blended:
 
@@ -2195,10 +2203,34 @@ so it no longer dominates the runtime; the CG solves do.
 **3 µm, with vessels mapped over their cross-section** (`cb_settings.GRID_UM`; open item 30). It
 was 4 µm until item 30, when that grid turned out not to be converged under the centreline mapping.
 
+**Re-measured 2026-09-30, all six, after open item 38** (exact TH overlap) and on the converged
+rheology of open item 37 (`cb_h2_hypoxic_fraction_xsec_grid{10,6,4,3,2}.json`, contrast 1,
+unpadded; logs in `rerun_2026-09-30_item38_logs/`). Median PO₂ over all cells / PO₂ in TH (mmHg) /
+TH share of the grid (%):
+
+| Specimen | 10 µm | 6 µm | 4 µm | **3 µm** | 2 µm | TH % of ROI voxels |
+|---|---|---|---|---|---|---|
+| WKY-A | 95.68 / 95.60 / 18.6 | 95.43 / 95.25 / 19.4 | 95.32 / 95.09 / 19.7 | 95.50 / 95.18 / 20.5 | 95.40 / 95.09 / 20.5 | 20.87 |
+| WKY-B | 92.67 / 92.42 / 29.7 | 92.40 / 91.99 / 30.9 | 92.28 / 91.80 / 31.5 | 92.52 / 91.99 / 32.8 | 92.41 / 91.86 / 32.8 | 33.28 |
+| WKY-C | 92.44 / 93.25 / 21.0 | 92.35 / 92.77 / 21.8 | 92.29 / 92.54 / 22.2 | 92.69 / 92.67 / 23.1 | 92.58 / 92.54 / 23.1 | 23.51 |
+| SHR-A | 92.53 / 91.10 / 20.0 | 92.41 / 90.69 / 20.8 | 92.34 / 90.51 / 21.2 | 92.62 / 90.70 / 22.0 | 92.52 / 90.59 / 22.0 | 22.38 |
+| SHR-B | 91.20 / 91.55 / 13.3 | 90.99 / 91.15 / 13.8 | 90.87 / 90.96 / 14.1 | 91.16 / 91.10 / 14.7 | 91.04 / 91.01 / 14.7 | 14.92 |
+| SHR-C | 89.77 / 88.90 / 8.7 | 89.59 / 88.58 / 9.0 | 89.52 / 88.46 / 9.2 | 90.01 / 88.62 / 9.6 | 89.86 / 88.55 / 9.6 | 9.70 |
+
+Largest step per refinement, over both measures and all six: 10 → 6 µm 0.48, 6 → 4 µm 0.23,
+4 → 3 µm 0.495 (SHR-C median), 3 → 2 µm 0.16 mmHg. Every step passes, so 4 µm now qualifies too,
+by 0.005 mmHg; **3 µm is kept** because 4 µm sits on the line and the 3 → 2 µm step is a third of
+it. The TH share now rises towards the voxel truth as h falls, the remaining gap being the grid's
+overhang past the ROI, where the old centre count had it scattered (17.4–18.7% on WKY-A) and
+lowest at 3 µm. Open item 38 moved the all-cell median by at most 0.01 mmHg and PO₂ in TH by at most 0.04 at any grid (the stromal median by up to 0.77, because glomus volume the clip had dropped is no longer counted as stroma), so the 4 → 3 µm step
+(unchanged at +0.18 to +0.49 median) is **not** an artefact of the TH aliasing: 3 µm still has the
+highest all-cell median of 4, 3 and 2 µm in every specimen (open item 39). TH hypoxia is 0.00% at
+every grid.
+
 Cross-section mapping, measured after open items 22 and 29 (contrast 1, unpadded;
 `cb_h2_hypoxic_fraction_xsec_sweep.json`). These sweeps ran on the centred-box networks at 0.90 and
-were **not repeated after the 2026-09-28 re-run**; the convergence they show is a property of the
-discretisation, but the PO₂ values in the table are not today's (§7.5 has those):
+were superseded by the 2026-09-30 sweep above; the table is kept for the record, and its PO₂
+values are not today's:
 
 | Grid | WKY-C median PO₂ | WKY-C PO₂ in TH | SHR-C median PO₂ | SHR-C PO₂ in TH | SHR-C TH < 10 mmHg | Cells with no vessel (WKY-C) |
 |---|---|---|---|---|---|---|
@@ -2403,10 +2435,10 @@ length lies inside the TH mask, sampled along the **whole polyline**.
 | 2 | Select boundaries by the **face** rule | axis 1, 1 voxel | The shunt index compares flow against edge count, so which vessels are inlets sets the entire flow field | **On** | `cb_h2_glomus_perfusion.py:94` |
 | 3 | Coupled flow / haematocrit / viscosity solve (§4.3) | 60 / 20 mmHg | There is no shunting to measure until flow has been solved on the network | **On** | `cb_h2_glomus_perfusion.py:97` |
 | 4 | Threshold the TH probability field | `TH_THRESHOLD` = 0.5 | The question is about vessels relative to the glomus clusters, so the clusters have to be a region first | **On** | `cb_h2_glomus_perfusion.py:88` |
-| 5 | Resample each edge polyline at half the finest voxel | 0.93 µm | The stored polylines are unevenly spaced after B-spline smoothing, so counting points would let a densely sampled stretch outvote a long one | **On** | `tissue_regions.py:177` |
-| 6 | Sample the mask at sub-step **midpoints**, length-weighted | — | Each sub-step carries the same length, so averaging over midpoints is exactly a length-weighted average along the segment | **On** | `tissue_regions.py:209` |
-| 7 | Points outside the mask array count as outside, never clipped | — | Clipping would pile distal centreline onto the mask border and count it as inside | **On** | `tissue_regions.py:181` |
-| 8 | Per-edge fraction = inside length ÷ total length | — | Turns a geometric relationship into one number per edge that the classification can threshold | **On** | `tissue_regions.py:213` |
+| 5 | Resample each edge polyline at half the finest voxel | 0.93 µm | The stored polylines are unevenly spaced after B-spline smoothing, so counting points would let a densely sampled stretch outvote a long one | **On** | `tissue_regions.py:208` |
+| 6 | Sample the mask at sub-step **midpoints**, length-weighted | — | Each sub-step carries the same length, so averaging over midpoints is exactly a length-weighted average along the segment | **On** | `tissue_regions.py:240` |
+| 7 | Points outside the mask array count as outside, never clipped | — | Clipping would pile distal centreline onto the mask border and count it as inside | **On** | `tissue_regions.py:212` |
+| 8 | Per-edge fraction = inside length ÷ total length | — | Turns a geometric relationship into one number per edge that the classification can threshold | **On** | `tissue_regions.py:244` |
 | 9 | Classify: fraction ≥ 0.5 penetrating, below 0.5 bypassing | `PENETRATION` = 0.5 | A capillary penetrating a cluster usually starts and ends in stroma, so an endpoint test would classify exactly the vessels the question is about as extra-glomus | **On** | `cb_h2_glomus_perfusion.py:132` |
 | 10 | Flow share of penetrating edges ÷ their edge share | — | Flow share alone tracks how many edges penetrate, which is itself downstream of the parenchymal volume difference H1 §1.3 reports; the ratio removes that | **On** | `cb_h2_glomus_perfusion.py:156` |
 
@@ -2964,7 +2996,7 @@ These are **not** configurable. They live in the function bodies.
 | Parameter | Value | Units | Class | Source / justification | Sensitivity |
 |---|---|---|---|---|---|
 | `do_perfusion_modeling` | True | — | — | — | — |
-| `grid_resolution_xyz` | (10, 10, 10) default; **3 µm** for H2 §2.3 | µm | (iii) | 3 µm chosen on convergence with vessels mapped over their cross-section: every measure within 0.21 mmHg from 3 to 2 µm, up to 0.78 from 4 to 3 µm (§6.8). It was 4 µm, chosen when median PO₂ ran 27.34 / 27.92 / 28.21 at 10 / 6 / 4 µm; after open items 22 and 29 the centreline mapping gave 91.38 / 90.46 / 89.52 / 89.19 / 87.90 at 10 / 6 / 4 / 3 / 2 µm and no limit (open item 30) | measured |
+| `grid_resolution_xyz` | (10, 10, 10) default; **3 µm** for H2 §2.3 | µm | (iii) | 3 µm chosen on convergence with vessels mapped over their cross-section: every measure within 0.21 mmHg from 3 to 2 µm, up to 0.78 from 4 to 3 µm (§6.8). Re-measured on all six after open item 38: within 0.16 from 3 to 2 µm, up to 0.495 from 4 to 3 µm, so 4 µm passes by 0.005 mmHg and 3 µm is kept. It was 4 µm, chosen when median PO₂ ran 27.34 / 27.92 / 28.21 at 10 / 6 / 4 µm; after open items 22 and 29 the centreline mapping gave 91.38 / 90.46 / 89.52 / 89.19 / 87.90 at 10 / 6 / 4 / 3 / 2 µm and no limit (open item 30) | measured |
 | `sigma_diff` | 1.5 × 10⁻⁹ | m²/s | (i) | O₂ diffusivity in tissue (D, not D·α: every tier multiplies it by α_O₂, open item 22). Consistent with K_O₂/α_O₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`] and (1.04 ± 0.78) × 10⁻⁹ in rat mesentery [`yaegashi_diffusivity_1996`] | assumed |
 | `sigma_diff_co2` | 1.6 × 10⁻⁹ | m²/s | (i) | CO₂ diffusivity in tissue: measured K_CO₂/α_CO₂ ≈ 1.6 × 10⁻⁹ in rat skeletal muscle [`kawashiro_determination_1975`]. D is close to O₂'s; CO₂'s ≈20× faster transport comes from its solubility, which the solver multiplies in (`build_diffusion_matrix`). With the code's α values the Krogh ratio K_CO₂/K_O₂ is ≈24 (measured ≈21). Was 3.0 × 10⁻⁸ until open item 18 | assumed |
 | `permeability_o2_cm_s` | 9.1 × 10⁻² | cm/s | (ii) | Endothelial O₂ permeability. Measured O₂ mass-transfer coefficient of a cultured human umbilical vein endothelial monolayer, *k* = 1.22 ± 0.45 × 10⁻¹⁰ mol·cm⁻²·s⁻¹·mmHg⁻¹ at 37 °C, n = 8 [`liu_oxygen_1994`], divided by this solver's α_O₂ (1.34 × 10⁻⁹ mol·cm⁻³·mmHg⁻¹), so the wall flux P·A·α·ΔPO₂ equals *k*·A·ΔPO₂. Their assumed 1 µm wall thickness cancels out of *k*/α. With their tissue α of 1.4 × 10⁻⁹ it is 8.7 × 10⁻² cm/s (their *D*_eff/1 µm); the monolayer-plus-media lower bounds give 1.4–2.0 × 10⁻² cm/s. Cultured cells, human and bovine; not rat capillary. Earlier indirect estimates were lower: 4.6 × 10⁻³ (canine heart) and 3 × 10⁻² cm/s (feline heart), as tabulated there. Was 1.0 × 10⁻⁴ with no source until open item 19, which left Tier 3 wall-limited and anoxic. Used by Tier 3 (and the unreachable Tier 2), not by Tier 1 or H2. At this value Tier 3's explicit step overshot at capillary flow (open item 21, now implicit); its Picard loop is still slow there (open item 23) | assumed |
@@ -3649,7 +3681,7 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | Jacobi preconditioner | `perfusion.py:317` | `test_perfusion_preconditioner.py` |
 | Tier 1 steady state | `perfusion.py:453` | `test_haemodynamics_analytical.py` |
 | Tier 3 multi-species | `perfusion.py:537` | `test_haemodynamics_analytical.py` |
-| Heterogeneous metabolism | `tissue_regions.py:28`, `tissue_regions.py:124` | `test_tissue_regions.py` |
+| Heterogeneous metabolism | `tissue_regions.py:40`, `tissue_regions.py:155` | `test_tissue_regions.py` |
 | Morphometry | `stats.py:147`, `stats.py:349` | `test_statistics.py`, `test_synthetic_network_statistics.py` |
 | Two-channel morphometry | `th_morphometry.py:34`, `th_morphometry.py:78` | `test_th_morphometry.py` |
 | Transit time | `transit.py:28`, `transit.py:57` | `test_transit.py` |
@@ -3698,6 +3730,8 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | ~~35~~ | **Closed.** The example YAMLs still carried scenario settings from before the frozen methods. (a) Both set `radius_assignment_mode: constant_radius` with `constant_radius_um` 5, so a `--config` run gave every edge a 10 µm diameter instead of the frozen `edt_radius` measurement. Its provenance is `constant`, which `check_diameter_provenance` does not count as synthetic, so nothing raised. (b) Both set `constrict_at_pericytes: true`, which `HaemodynamicsConfig.__post_init__` forbids. `update_dataclass_from_dict` sets fields with `setattr` after construction, so the check never ran on a `--config` load. Nothing downstream read the flag or the constriction ratios, so it had no effect. (c) The SHR YAML set both constriction ratios to 0.95 against WKY's 1.0, a difference by group (unread, as (b)). (d) The SHR header described "high blood pressure and extreme sympathetic tone", but its pressures were the shared 60/20 mmHg. The WKY YAML also turned on `run_benchmarking` and the SHR one did not. No H1/H2 number is affected: the batch passes no `--config`. Both YAMLs now set `edt_radius` and carry no constriction, `constant_radius_um` or `fwhm_*` keys, and neither sets `run_benchmarking`. Their headers make no group claim, and the two files differ only in their first line. `update_dataclass_from_dict` re-runs `__post_init__` after setting the keys, so a YAML that sets a forbidden value now raises; the old YAMLs raise on `constrict_at_pericytes`. Found under open item 34 | §10.5, §10.6; `test_config.py` (the loader runs the checks), `test_example_yaml_sections.py` (`edt_radius`, no retired keys, the two YAMLs load to the same dict) |
 | ~~36~~ | **Closed** (`d57a78f`). The 2026-09-28 SHR-A run (8281 edges) stopped in Tier 3: node 748 heads a dead-end branch whose two edges carry exactly zero flow, and its entry edge carried 1.7 × 10⁻¹² of the largest flow, outward — rounding from the pressure solve, but above the 10⁻¹² stagnant cutoff, so the march saw a node sending blood it never received. Across the six new networks rounding flows reach at most 1.7 × 10⁻¹² and real flows start at 2.1 × 10⁻⁸, with nothing between. `STAGNANT_FLOW_FRACTION` is now 10⁻¹⁰ (59× above the one, 210× below the other); flow at 10⁻⁹ at an unfed node still raises. No edge of the other five batch networks lies in (10⁻¹², 10⁻¹⁰], so their Tier 3 results are unchanged; SHR-A was re-run alone. One SHR-C sensitivity run has an edge in that band; its pipeline Tier 3 field was not re-run and is unused downstream | Appendix A |
 | 37 | **Open (code closed, `cfee721`; H1/H2 scripts not re-run).** The coupled flow–haematocrit loop (§4.3) stopped on its 15-pass cap in every specimen, still wandering, so every flow, haematocrit, transit and shear value came from whichever pass it stopped on; `cb_h2_glomus_perfusion.json` did not record it. It was not a two-state swing: on WKY-A total flow was settled (pass 15 vs 100: 0.6% L1) while 511 edges' haematocrit still differed by > 0.01, up to 0.43, and relaxation 0.5 → 0.1 over 150 passes only lowered the floor. Two discrete switches drove it. (a) 745–895 dead-end edges per specimen carry rounding-level flow (≤ 10⁻¹² of the largest, with no edge between 10⁻¹² and 10⁻⁸), and 60–120 of them flipped direction every pass, which made their junctions switch between skimming and proportional mixing and caused every "no inflowing parent" fallback (15–29 per pass, all interior; none at an inlet). They are now left out of the transport at `STAGNANT_FLOW_FRACTION` (10⁻¹⁰, the Tier 3 cut, moved to `resistance.py`). (b) Junctions with three or more outflows mixed proportionally, so a small daughter reversing switched the rule; they now skim one-vs-rest (§4.2), which reduces to the Pries relation at two daughters. With both, relaxation 0.5 still wandered and 0.3/0.4 left SHR-C on a periodic cycle; 0.2 converges all six. The stop is now scale-free (relative flow 10⁻⁶, haematocrit residual 10⁻⁴), and pipeline (mPa) and H2 (mmHg) solves agree on every edge's haematocrit to 10⁻¹⁰. No-parent D_F is now the Murray parent and is counted; it no longer fires. Settings in `cb_settings` (cap 1000, relaxation 0.2); `rheology_status(G)` goes into the pipeline stats and VTK and every H2 JSON. **Pipeline re-run 2026-09-29** (`rerun_2026-09-29_item37_logs/`; old outputs `*_2026-09-29_pre_item37`): all 18 runs converge (0.95: WKY-A 330, WKY-B 457, WKY-C 404, SHR-A 217, SHR-B 173, SHR-C 184 passes; 0.93 and 0.97: 155–726, the slowest WKY-B at 0.93). `per_edge_morphometry.csv` and `roi_placement.json` are byte-identical, so no H1 number moves. Mean edge haematocrit rises (WKY-A 0.352 → 0.365). The Tier 3 field barely moves: mean PO₂ changes by ≤ 0.06 mmHg in all 18 runs (WKY-A 71.34 → 71.35, SHR-C 50.55 → 50.55 at 0.95). **Still to do:** re-run the H2 scripts. Scratch comparison on the same networks (ratios of cohort means, SHR/WKY, pre-fix → converged): shunt index 0.889 → 0.883, median flow ratio 0.908 → 0.926, haematocrit ratio 1.019 → 1.056, transit ratio 1.026 → 1.038; SHR-C moves most (haematocrit ratio 0.998 → 1.051, flow ratio 0.518 → 0.595). `test_rheology_convergence.py`, `test_cb_settings.py` | §2.1, §2.2, §2.4 and every H2 flow number; §4.2, §4.3, §10.7, A.1 updated |
+| 38 | **Open (code closed, `870de15`; H2 scripts not re-run).** `tissue_regions.mask_fraction_per_cell` counted TH voxel centres per grid cell and divided by the mean count per cell (27 / 6.49 = 4.16 at 3 µm). A 3 µm cell holds 1 or 2 voxel centres per axis, so a solid glomus cell read 0.24, 0.48, 0.96 or up to 1.92, and `np.clip(…, 0, 1)` threw the excess away with no warning; the comment said the clip only caught rounding. About 17% of the TH volume was lost in every specimen (grid TH share / voxel TH share 0.821–0.835; WKY-A 17.4% against 20.87%), and the per-cell fractions aliased into a lattice. It fed the TH-weighted "PO₂ in TH", the per-cell metabolic rate of contrasts 2 and 4 (whose mean-rate normalisation used the aliased f̄) and the `cb_h2_vtk.py` TH field. Not group-correlated. The fraction is now the exact overlap volume of each voxel with each cell (separable per axis), with no clip; the function raises if the in-grid volume is not conserved or a cell exceeds 1, and warns on out-of-grid loss by volume. On the six masks it keeps ≥ 99.97% of the volume at 3 µm (the rest overhangs the grid). **Grid sweep re-run 2026-09-30** (cross-section, contrast 1, all six; §6.8): the all-cell median moved by ≤ 0.01 mmHg and PO₂ in TH by ≤ 0.04 at every grid (the stromal median by up to 0.77, as the TH/stroma split changed), TH hypoxia stays 0.00%, and every refinement step is under 0.5 mmHg; 4 µm now passes by 0.005 mmHg, and 3 µm is kept. Mixed cells 13–36%, wholly glomus 4–15% (§6.5). **Still to do:** re-run `cb_h2_hypoxic_fraction.py` (plain and `--pad-grid`) and `cb_h2_vtk.py`, with the open item 37 re-run. `test_tissue_regions.py` | §6.5, §6.8, §7.5 "PO₂ in TH" and the contrast runs, the H2 VTK TH field |
+| 39 | **Open (low).** The cross-section sweep is not monotone at 3 µm: in every specimen 3 µm gives the highest all-cell median PO₂ of 4, 3 and 2 µm (4 → 3 µm +0.18 to +0.49, 3 → 2 µm −0.09 to −0.16). It was put down to the TH aliasing of open item 38, but survived that fix unchanged, so it is not. §6.8 already suspects the grid origin, which moves with h because the grid is padded by half a cell around the node bounding box. Every step still passes the 0.5 mmHg rule, so it does not change the grid choice. To check: re-run 4 / 3 / 2 µm with the grid origin fixed (e.g. `bounds_zyx` from the ROI) and see whether the bump goes. | §6.8 |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the
