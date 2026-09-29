@@ -12,11 +12,14 @@ import pytest
 
 from haemolynx.graph import (
     DEFAULT_SPLIT_CONNECTOR_LENGTH_UM,
+    add_vessel_between,
     delete_vessels,
     edge_keys,
     high_degree_junctions,
     junction_vessels,
+    mean_incident_diameter,
     split_junction,
+    vessel_path_between,
 )
 from haemolynx.graph._helpers import calculate_path_length
 
@@ -209,3 +212,96 @@ def test_split_rejects_a_non_positive_connector():
     G = _four_way_with_one_close_pair()
     with pytest.raises(ValueError, match="positive"):
         split_junction(G, 0, connector_length_um=0.0)
+
+
+# --- a new vessel between two nodes -------------------------------------------
+
+
+def _two_ends() -> nx.MultiGraph:
+    """Two separate 2-vessel chains whose ends 1 and 4 a new vessel can join.
+
+    0 -(4 um)- 1 -(6 um)- 2   and   3 -(8 um)- 4 -(no diameter)- 5, all in
+    the z = 0 plane, with 1 at (0, 0, 10) and 4 at (0, 20, 10).
+    """
+    positions = {
+        0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 10.0), 2: (0.0, 0.0, 20.0),
+        3: (0.0, 20.0, 0.0), 4: (0.0, 20.0, 10.0), 5: (0.0, 20.0, 20.0),
+    }
+    G = _network(positions, [(0, 1), (1, 2), (3, 4), (4, 5)])
+    for (u, v), diameter in zip([(0, 1), (1, 2), (3, 4)], [4.0, 6.0, 8.0]):
+        G.edges[u, v, 0]["diameter_um"] = diameter
+    return G
+
+
+def test_mean_incident_diameter_averages_the_vessels_at_both_nodes():
+    G = _two_ends()
+    assert mean_incident_diameter(G, [1, 4]) == pytest.approx((4 + 6 + 8) / 3)
+    assert mean_incident_diameter(G, [1]) == pytest.approx(5.0)
+    # A vessel with no diameter is skipped, and none at all gives None.
+    assert mean_incident_diameter(G, [5]) is None
+    # A vessel joining both nodes counts once.
+    G.add_edge(1, 4, voxels=_straight((0, 0, 10), (0, 20, 10)), length=20.0, diameter_um=2.0)
+    assert mean_incident_diameter(G, [1, 4]) == pytest.approx((4 + 6 + 8 + 2) / 4)
+
+
+def _bent_mask() -> np.ndarray:
+    """A 1-voxel-thick L-shaped vessel from voxel (0, 0, 10) to (0, 20, 10)
+    that detours through y..x = (0..20, 30): routing should follow it."""
+    mask = np.zeros((1, 25, 35), dtype=bool)
+    mask[0, 0, 10:31] = True
+    mask[0, 0:21, 30] = True
+    mask[0, 20, 10:31] = True
+    return mask
+
+
+def test_path_is_routed_through_the_mask_when_it_can_be():
+    from haemolynx.graph import mask_cost_field
+
+    G = _two_ends()
+    mask = _bent_mask()
+    points, how = vessel_path_between(
+        G, 1, 4, cost_field=mask_cost_field(mask), mask=mask, voxel_size_zyx=(1.0, 1.0, 1.0)
+    )
+    assert how == "routed"
+    assert np.allclose(points[0], (0, 0, 10)) and np.allclose(points[-1], (0, 20, 10))
+    # It went round the L (out to x = 30), not straight across.
+    assert max(p[2] for p in points) >= 29
+    assert calculate_path_length(points) > 50
+
+
+def test_path_falls_back_to_straight_without_an_image_or_off_the_vessel():
+    from haemolynx.graph import mask_cost_field
+
+    G = _two_ends()
+    straight = [(0.0, 0.0, 10.0), (0.0, 20.0, 10.0)]
+    assert vessel_path_between(G, 1, 4) == (straight, "straight")
+    # A mask with nothing between the nodes: any route leaves the vessel.
+    empty = np.zeros((1, 25, 35), dtype=bool)
+    empty[0, 0, 0] = True
+    points, how = vessel_path_between(
+        G, 1, 4, cost_field=mask_cost_field(empty), mask=empty
+    )
+    assert (points, how) == (straight, "straight")
+
+
+def test_add_vessel_between_measures_it_and_keeps_the_diameter_as_override():
+    G = _two_ends()
+    u, v, key = add_vessel_between(G, 1, 4, diameter_um=6.0)
+    data = G.edges[u, v, key]
+    assert data["length"] == pytest.approx(20.0)
+    assert data["diameter_um"] == pytest.approx(6.0)
+    assert data["diameter_source"] == "override"
+    assert data["post_processing_added"] is True
+    assert G.degree(1) == 3 and G.degree(4) == 3
+    # Without a diameter the Diameters stage decides it later.
+    u, v, key = add_vessel_between(G, 0, 3, points_um=[(0, 0, 0), (0, 10, 0), (0, 20, 0)])
+    assert "diameter_um" not in G.edges[u, v, key]
+    assert G.edges[u, v, key]["length"] == pytest.approx(20.0)
+
+
+def test_add_vessel_between_rejects_a_self_loop_or_a_missing_node():
+    G = _two_ends()
+    with pytest.raises(ValueError, match="two different"):
+        add_vessel_between(G, 1, 1)
+    with pytest.raises(ValueError, match="not in the network"):
+        add_vessel_between(G, 1, 99)

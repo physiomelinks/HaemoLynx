@@ -17,33 +17,49 @@ Three things a user can do at a junction of degree four or more:
   original by a short connector vessel (15 um by default), until the
   junction is a bifurcation.
 * leave it as it is, which needs no function.
+
+And, for the tab's click-in-the-viewer edits: :func:`vessel_path_between` and
+:func:`add_vessel_between` draw a new vessel between two chosen nodes, routed
+through the segmented image where it can be and straight where it cannot,
+with the mean diameter of the vessels already at those nodes
+(:func:`mean_incident_diameter`).
 """
 from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 import networkx as nx
 import numpy as np
 
 from ._helpers import calculate_path_length, next_node_id
 from .degree2 import create_trivial_merged_edge
+from .edit import astar_path, voxel_path_to_microns
 
 __all__ = [
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
     "JunctionVessel",
+    "MIN_ROUTED_INSIDE_FRACTION",
+    "add_vessel_between",
     "delete_vessels",
     "edge_keys",
     "high_degree_junctions",
     "junction_vessels",
+    "mean_incident_diameter",
     "split_junction",
+    "vessel_path_between",
 ]
 
 EdgeKey = tuple[Any, Any, Any]
 
 #: Length of the connector vessel :func:`split_junction` inserts.
 DEFAULT_SPLIT_CONNECTOR_LENGTH_UM = 15.0
+
+#: A routed new vessel must run at least this fraction of its points inside
+#: the segmented mask; less, and the route has left the vessel -- draw it
+#: straight instead.
+MIN_ROUTED_INSIDE_FRACTION = 0.5
 
 #: How far along a vessel its direction out of a junction is measured.
 _DIRECTION_SAMPLE_UM = 10.0
@@ -301,3 +317,108 @@ def split_junction(
         new_nodes.append(new_node)
     return new_nodes
 
+
+def mean_incident_diameter(G: nx.MultiGraph, nodes: Iterable[Any]) -> float | None:
+    """Mean ``diameter_um`` of the vessels meeting at any of *nodes*.
+
+    Each vessel counts once even when it joins two of the nodes; vessels with
+    no usable diameter are skipped. None when none has one.
+    """
+    seen: set = set()
+    diameters: list[float] = []
+    for node in nodes:
+        if node not in G:
+            continue
+        for u, v, k, data in G.edges(node, keys=True, data=True):
+            key = (frozenset((u, v)), k)
+            if key in seen:
+                continue
+            seen.add(key)
+            diameter = _optional_float(data.get("diameter_um"))
+            if diameter is not None and diameter > 0:
+                diameters.append(diameter)
+    return float(np.mean(diameters)) if diameters else None
+
+
+def _inside_fraction(points_um: Sequence[Sequence[float]], mask: Any, voxel_size_zyx) -> float:
+    scale = np.asarray(voxel_size_zyx, dtype=float)
+    shape = np.asarray(np.shape(mask))
+    index = np.clip(np.round(np.asarray(points_um, dtype=float) / scale).astype(int), 0, shape - 1)
+    values = np.asarray([bool(mask[tuple(i)]) for i in index])
+    return float(values.mean()) if len(values) else 0.0
+
+
+def vessel_path_between(
+    G: nx.MultiGraph,
+    a: Any,
+    b: Any,
+    *,
+    cost_field: Any = None,
+    mask: Any = None,
+    voxel_size_zyx: Sequence[float] = (1.0, 1.0, 1.0),
+    min_inside_fraction: float = MIN_ROUTED_INSIDE_FRACTION,
+) -> tuple[list[tuple[float, float, float]], str]:
+    """The path a new vessel from *a* to *b* follows, and how it was found.
+
+    Routed through *cost_field* (``graph.mask_cost_field`` of the segmented
+    *mask*) with :func:`haemolynx.graph.astar_path` when both are given, and
+    kept when at least *min_inside_fraction* of it lies inside the mask;
+    otherwise -- no image, a route that left the vessel, or routing that
+    failed -- the straight line from *a* to *b*. Returns ``(points_um,
+    "routed" | "straight")``; the path always starts and ends exactly on the
+    two nodes.
+    """
+    start = _node_position(G, a)
+    end = _node_position(G, b)
+    straight = [tuple(float(c) for c in start), tuple(float(c) for c in end)]
+    if cost_field is None or mask is None:
+        return straight, "straight"
+    scale = np.asarray(voxel_size_zyx, dtype=float)
+    try:
+        path_vox = astar_path(cost_field, start / scale, end / scale)
+        points = voxel_path_to_microns(path_vox, scale)
+    except Exception:  # noqa: BLE001 - any routing failure falls back to straight
+        return straight, "straight"
+    if len(points) < 2 or _inside_fraction(points, mask, scale) < min_inside_fraction:
+        return straight, "straight"
+    points[0], points[-1] = straight[0], straight[1]
+    return points, "routed"
+
+
+def add_vessel_between(
+    G: nx.MultiGraph,
+    a: Any,
+    b: Any,
+    points_um: Sequence[Sequence[float]] | None = None,
+    *,
+    diameter_um: float | None = None,
+) -> EdgeKey:
+    """Add a vessel from node *a* to node *b* along *points_um*.
+
+    *points_um* defaults to the straight line between the two. Its length is
+    measured from the path. With *diameter_um*, the vessel carries it as a
+    manual override (``diameter_source="override"``), which the Diameters
+    stage keeps over the branch-order table. Returns the new edge's
+    ``(u, v, key)``.
+    """
+    if a == b:
+        raise ValueError("A vessel needs two different nodes")
+    for node in (a, b):
+        if node not in G:
+            raise ValueError(f"Node {node!r} is not in the network")
+    if points_um is None:
+        points_um = [_node_position(G, a), _node_position(G, b)]
+    points = [tuple(float(c) for c in np.asarray(p, dtype=float)[:3]) for p in points_um]
+    if len(points) < 2:
+        raise ValueError("A vessel path needs at least two points")
+    attrs: dict[str, Any] = {
+        "voxels": points,
+        "length": float(calculate_path_length(points)),
+        "post_processing_added": True,
+    }
+    if diameter_um is not None:
+        from haemolynx.haemodynamics.poiseuille import set_edge_diameter_override
+
+        set_edge_diameter_override(attrs, diameter_um)
+    key = G.add_edge(a, b, **attrs)
+    return (a, b, key)

@@ -6871,6 +6871,14 @@ POST_PROCESSING_TAB = "10. Post processing"
 #: How wide a box, in microns, zooming to a junction fits on screen.
 JUNCTION_ZOOM_BOX_UM = 60.0
 
+#: Status line of the post-processing tab's click-in-the-viewer edits.
+_POST_PROCESSING_EDIT_STATUS = {
+    "idle": "Not editing. Delete vessel or Add vessel, then click in the viewer.",
+    "delete-armed": "Delete vessel: click a vessel in the viewer to remove it.",
+    "add-armed": "Add vessel: click the node to start from, then the node to join it to.",
+    "deleted": "Vessel deleted. Click another, or Stop editing.",
+}
+
 def _zoom_viewer_to(viewer, position_zyx, box_um: float = JUNCTION_ZOOM_BOX_UM) -> None:
     """Centre the camera on *position_zyx* (microns) and zoom to a *box_um* box.
 
@@ -6907,7 +6915,10 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     an edited graph and *running* says whether a run is under way -- callables,
     because the panel builds them after its tabs.
 
-    The page edits one working copy of the graph. The graph rules live in
+    The page edits one working copy of the graph: the junction table's
+    Delete and Split, and the edit box's click-in-the-viewer Delete vessel and
+    Add vessel (two nodes, joined through the segmented image where it can
+    be, with the mean diameter of the vessels at them). The graph rules live in
     :mod:`haemolynx.graph.post_processing` and the colours in
     :mod:`haemolynx.gui.post_processing`; this is only the Qt glue. Clicks only
     recolour the vessels layer already on screen (and its tubes); the layer is
@@ -6916,6 +6927,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     from qtpy.QtWidgets import (
         QAbstractItemView,
         QDoubleSpinBox,
+        QGroupBox,
         QHBoxLayout,
         QHeaderView,
         QLabel,
@@ -6929,8 +6941,12 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
 
     from haemolynx.graph import (
         DEFAULT_SPLIT_CONNECTOR_LENGTH_UM,
+        add_vessel_between,
         delete_vessels,
+        mask_cost_field,
+        mean_incident_diameter,
         split_junction,
+        vessel_path_between,
     )
     from haemolynx.gui.chrome_tooltips import POST_PROCESSING_TOOLTIPS as tips
     from haemolynx.gui.post_processing import (
@@ -6940,6 +6956,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         junction_label,
         junction_marker_layer,
         junction_table_rows,
+        nearest_node,
         scan_network,
         status_colours,
         vessel_status,
@@ -6952,6 +6969,13 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         decisions={},
         node=None,
         vessels=[],
+        #: "idle", "delete" (click a vessel) or "add" (click two nodes).
+        mode="idle",
+        #: The first node an Add vessel picked, waiting for the second.
+        start_node=None,
+        #: (image data, its cost field): made once, the first time a vessel
+        #: is added, and reused while the image stays the same.
+        routing=None,
     )
 
     page = QWidget()
@@ -6994,6 +7018,22 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     connector.setDecimals(1)
     connector.setSuffix(" µm")
     connector.setValue(DEFAULT_SPLIT_CONNECTOR_LENGTH_UM)
+    edit_box = QGroupBox("Edit by clicking in the viewer")
+    edit_layout = QVBoxLayout(edit_box)
+    edit_status = QLabel(_POST_PROCESSING_EDIT_STATUS["idle"])
+    edit_status.setWordWrap(True)
+    click_delete_button = QPushButton("Delete vessel")
+    click_delete_button.setToolTip(tips["click_delete"])
+    add_button = QPushButton("Add vessel")
+    add_button.setToolTip(tips["add"])
+    stop_button = QPushButton("Stop editing")
+    stop_button.setToolTip(tips["stop"])
+    edit_layout.addWidget(edit_status)
+    edit_row = QHBoxLayout()
+    for button in (click_delete_button, add_button, stop_button):
+        edit_row.addWidget(button)
+    edit_layout.addLayout(edit_row)
+
     regenerate_button = QPushButton("Regenerate from the edited network")
     regenerate_button.setToolTip(tips["regenerate"])
 
@@ -7012,6 +7052,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     row.addWidget(split_button)
     row.addWidget(connector)
     layout.addLayout(row)
+    layout.addWidget(edit_box)
     layout.addWidget(regenerate_button)
 
     def layer(name):
@@ -7059,6 +7100,12 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
                 metadata={OURS: {"post_processing": True}},
                 **spec.options,
             )
+            # napari selects a layer it has just added, and a click goes to the
+            # selected layer: hand selection back to the vessels.
+            vessels = layer(VESSELS)
+            if vessels is not None:
+                viewer.layers.selection.active = vessels
+            attach_click_callbacks()
 
     def redraw_network() -> None:
         """Rebuild the vessels/nodes layers from the edited graph, then recolour."""
@@ -7066,6 +7113,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         if viewer is None or current is None or state.graph is None:
             return
         _apply_layers(viewer, current.layers_for_graph(state.graph))
+        attach_click_callbacks()
         recolour()
 
     def show_vessels(node) -> None:
@@ -7131,10 +7179,12 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
             return
         roles = boundary_roles() or {}
         state.protected = frozenset(n for nodes in roles.values() for n in (nodes or ()))
+        stop_editing()
         state.graph = copy_graph(graph)
         state.decisions = {}
         # The vessels on screen are already this graph: recolour, no rebuild.
         rescan(redraw=False)
+        attach_click_callbacks()
         report.value = f"Post processing: {state.scan.summary}"
 
     def on_delete() -> None:
@@ -7185,6 +7235,122 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         state.decisions[state.node] = "left as is"
         fill_list()
 
+    # --- editing by clicking in the viewer ------------------------------------
+
+    def set_edit_status(key: str) -> None:
+        edit_status.setText(_POST_PROCESSING_EDIT_STATUS.get(key, key))
+
+    def stop_editing() -> None:
+        state.mode = "idle"
+        state.start_node = None
+        set_edit_status("idle")
+
+    def attach_click_callbacks() -> None:
+        """(Re-)attach to the vessels/nodes layers, which a rebuild can swap."""
+        for name in (VESSELS, NODES, HIGH_DEGREE_JUNCTIONS):
+            target = layer(name)
+            if target is not None and on_click not in target.mouse_drag_callbacks:
+                target.mouse_drag_callbacks.append(on_click)
+
+    def arm(mode: str) -> None:
+        if state.graph is None:
+            set_edit_status("Scan the network first.")
+            return
+        state.mode = mode
+        state.start_node = None
+        attach_click_callbacks()
+        # napari hands a click to the selected layer: make it one that listens.
+        vessels = layer(VESSELS)
+        if vessels is not None:
+            viewer.layers.selection.active = vessels
+        set_edit_status(f"{mode}-armed")
+
+    def routing():
+        """The segmented image and its cost field, made once per image."""
+        image = layer(IMAGE)
+        if image is None:
+            return None, None
+        data = image.data
+        if state.routing is None or state.routing[0] is not data:
+            set_edit_status("Preparing the segmented image to route new vessels through...")
+            _process_pending_qt_events()
+            state.routing = (data, mask_cost_field(np.asanyarray(data), use_memmap=True))
+        return state.routing[0], state.routing[1]
+
+    def click_hit(event):
+        from haemolynx.gui.graph_click import NodeHit, hit_test_vessels
+
+        position = event.position
+        dims = list(getattr(event, "dims_displayed", ()) or ())
+        view_direction = getattr(event, "view_direction", None)
+        if state.mode == "delete":
+            vessels = layer(VESSELS)
+            if vessels is None:
+                return None
+            return hit_test_vessels(
+                vessels.data, _layer_features(vessels), position,
+                view_direction=view_direction, dims=dims,
+            )
+        node = nearest_node(
+            state.graph, position,
+            view_direction=view_direction if len(dims) == 3 else None, dims=dims or None,
+        )
+        return None if node is None else NodeHit(node_id=node)
+
+    def delete_clicked(hit) -> None:
+        try:
+            delete_vessels(state.graph, [(hit.u, hit.v, hit.key)], protected=state.protected)
+        except ValueError as error:
+            set_edit_status(str(error))
+            return
+        rescan(prefer=state.node)
+        set_edit_status("deleted")
+
+    def add_clicked(hit) -> None:
+        node = hit.node_id
+        if state.start_node is None or state.start_node not in state.graph:
+            state.start_node = node
+            set_edit_status(f"Start node {node} picked: now click the node to join it to.")
+            return
+        if node == state.start_node:
+            set_edit_status(f"That is node {node} again: click a different node to join it to.")
+            return
+        start, state.start_node = state.start_node, None
+        mask, cost_field = routing()
+        points, how = vessel_path_between(
+            state.graph, start, node,
+            cost_field=cost_field, mask=mask,
+            voxel_size_zyx=tuple(
+                float(v) for v in getattr(results(), "_voxel_size_zyx", (1.0, 1.0, 1.0))
+            ),
+        )
+        diameter = mean_incident_diameter(state.graph, [start, node])
+        add_vessel_between(state.graph, start, node, points, diameter_um=diameter)
+        rescan(prefer=state.node)
+        size = f"{diameter:.3g} µm" if diameter is not None else "the table's diameter"
+        path = "routed through the image" if how == "routed" else "as a straight line"
+        set_edit_status(
+            f"Added a vessel from node {start} to node {node}, {path}, with {size}. "
+            "Click the next start node, or Stop editing."
+        )
+
+    def on_click(_layer, event) -> None:
+        if state.mode == "idle" or state.graph is None:
+            return
+        try:
+            hit = click_hit(event)
+            if hit is None:
+                return
+            if state.mode == "delete":
+                delete_clicked(hit)
+            else:
+                add_clicked(hit)
+        except Exception as error:  # noqa: BLE001 - a click must not crash the viewer
+            logger.exception("post-processing click failed")
+            set_edit_status(f"error: {error}")
+
+    # --- leaving -----------------------------------------------------------------
+
     def remove_layers() -> None:
         if viewer is None:
             return
@@ -7193,6 +7359,10 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
                 _process_pending_qt_events()
                 viewer.layers.remove(viewer.layers[name])
                 _process_pending_qt_events()
+        for name in (VESSELS, NODES):
+            target = layer(name)
+            if target is not None and on_click in target.mouse_drag_callbacks:
+                target.mouse_drag_callbacks.remove(on_click)
 
     def on_regenerate() -> None:
         if state.graph is None:
@@ -7201,6 +7371,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         if running():
             report.value = ALREADY_RUNNING
             return
+        stop_editing()
         graph = state.graph
         remove_layers()
         state.graph = state.scan = state.node = None
@@ -7216,6 +7387,9 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     delete_button.clicked.connect(on_delete)
     split_button.clicked.connect(on_split)
     leave_button.clicked.connect(on_leave)
+    click_delete_button.clicked.connect(lambda: arm("delete"))
+    add_button.clicked.connect(lambda: arm("add"))
+    stop_button.clicked.connect(stop_editing)
     regenerate_button.clicked.connect(on_regenerate)
 
     return SimpleNamespace(
@@ -7228,8 +7402,13 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         split_button=split_button,
         connector=connector,
         leave_button=leave_button,
+        click_delete_button=click_delete_button,
+        add_button=add_button,
+        stop_button=stop_button,
         regenerate_button=regenerate_button,
         status=status,
+        edit_status=edit_status,
+        on_click=on_click,
     )
 
 
@@ -9243,6 +9422,10 @@ def settings_widget(napari_viewer=None):
     run_file_layout.addStretch(1)
     run_file_layout.addWidget(view_button.native)
     run_file_layout.addWidget(edit_button.native)
+    # Editing lives in the "10. Post processing" tab now: the button keeps
+    # its place in the row (and the floating Edit window its code) but is
+    # hidden.
+    edit_button.visible = False
     run_file_layout.addWidget(save_run_button.native)
     run_file_layout.addWidget(load_run_button.native)
     view_controls = Container(

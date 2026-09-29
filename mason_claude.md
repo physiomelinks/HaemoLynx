@@ -13,7 +13,7 @@ adds a line to the change log at the bottom.
 
 ---
 
-## What the tab does (as of commit 1)
+## What the tab does (as of commit 2)
 
 After a run (at least through **4. Boundaries**), tab 10 works on a copy of the run's network:
 
@@ -33,7 +33,24 @@ After a run (at least through **4. Boundaries**), tab 10 works on a copy of the 
      similar direction move to a new node, joined back by a connector vessel of that length.
      This repeats until the junction is degree 3, so a 5-way junction takes two splits.
    - **Leave as is:** marks the junction and moves on to the next.
-4. **Regenerate from the edited network:** reruns Diameters → Export on the edited graph, so
+4. **Edit by clicking in the viewer.** This replaces the old bottom-row **Edit** button, which is
+   now hidden.
+   - **Delete vessel:** then click vessels to remove them, one per click, with the same
+     boundary-node protection as the table's Delete.
+   - **Add vessel:** then click node A, then node B. The new vessel:
+     - is routed through the segmented image (the IMAGE layer) with the windowed A* cost
+       field;
+     - falls back to a straight line when there's no image, or when the route runs under half
+       its length inside the mask;
+     - gets the mean `diameter_um` of the vessels already at A and B, stored as a manual
+       override, so it survives Regenerate;
+     - carries `post_processing_added=True`.
+
+     The status line says which path was used.
+   - **Stop editing.**
+   - Nodes are picked from the graph itself (`nearest_node`, the node nearest the click ray),
+     not by napari's point picking, which needs the layer drawn on screen.
+5. **Regenerate from the edited network:** reruns Diameters → Export on the edited graph, so
    branch orders, resistances, flows and the 3D view catch up. The tab then clears; scan again
    afterwards.
 
@@ -42,7 +59,7 @@ Things to know:
   regenerated.
 - A vessel's **branchID** is its position in `G.edges(keys=True)`, so it changes after any
   deletion or split.
-- The old floating **Edit** window and its button are unchanged in this commit.
+- The old floating **Edit** window's code is unchanged. Only its button is hidden.
 
 ---
 
@@ -50,8 +67,8 @@ Things to know:
 
 | File | What it holds |
 |---|---|
-| `src/haemolynx/graph/post_processing.py` | Pure graph rules, no Qt or napari: `edge_keys`, `high_degree_junctions`, `junction_vessels` → `JunctionVessel`, `delete_vessels(protected=...)`, `split_junction(connector_length_um=15)`, `DEFAULT_SPLIT_CONNECTOR_LENGTH_UM` |
-| `src/haemolynx/gui/post_processing.py` | Pure viewer logic: `scan_network` → `NetworkScan`, `vessel_status` / `status_colours` / `STATUS_COLOURS` (grey, cyan, yellow), `junction_marker_layer` (layer `HaemoLynx 4+ junctions`), `junction_table_rows`, `junction_label`, `camera_center_for`, `zoom_for_canvas` |
+| `src/haemolynx/graph/post_processing.py` | Pure graph rules, no Qt or napari: `edge_keys`, `high_degree_junctions`, `junction_vessels` → `JunctionVessel`, `delete_vessels(protected=...)`, `split_junction(connector_length_um=15)`, `DEFAULT_SPLIT_CONNECTOR_LENGTH_UM`; for Add vessel: `mean_incident_diameter`, `vessel_path_between` (routed or straight, `MIN_ROUTED_INSIDE_FRACTION`), `add_vessel_between` |
+| `src/haemolynx/gui/post_processing.py` | Pure viewer logic: `scan_network` → `NetworkScan`, `vessel_status` / `status_colours` / `STATUS_COLOURS` (grey, cyan, yellow), `junction_marker_layer` (layer `HaemoLynx 4+ junctions`), `junction_table_rows`, `junction_label`, `nearest_node` (click → node), `camera_center_for`, `zoom_for_canvas` |
 | `tests/test_graph_post_processing.py` | Graph rules on small hand-built networks |
 | `tests/test_gui_post_processing.py` | The pure viewer logic |
 | `tests/test_gui_post_processing_widget.py` | The real Qt page with a napari viewer (`gui` marker) |
@@ -74,6 +91,9 @@ so a boundary role on it survives.
 | `_widget.py`, revert-stack loop | Adds one empty "Run from this stage" slot so the stack's pages still line up with the tabs |
 | `_widget.py`, `on_regenerate_from_edit` | Body moved into `regenerate_from_graph(graph)`, shared by the old Edit window and tab 10 |
 | `_widget.py`, test hooks | `panel._haemolynx_post_processing` |
+| `_widget.py`, bottom "run file" row | `edit_button.visible = False`, one added line: the old Edit button stays in its row (a view-panel test checks the row order) but is hidden, and its code is kept |
+| `src/haemolynx/haemodynamics/poiseuille.py`, `stamp_edge_diameters` | A vessel with `diameter_source="override"` now keeps its diameter over the **branch-order table**; a measurement of that vessel (FWHM, endothelial, raw section, EDT) still replaces it, which `test_fresh_fwhm_run_wipes_overrides` pins. **Tell the colleague:** this is haemodynamics code, not tab 10 |
+| `tests/test_diameter_assignment.py` | `test_override_beats_the_table_when_nothing_measures_the_vessel` |
 | `src/haemolynx/graph/__init__.py` | Imports and `__all__` for the new graph functions |
 | `src/haemolynx/gui/chrome_tooltips.py` | `POST_PROCESSING_TOOLTIPS` (hover text for every tab-10 control) |
 | `tests/test_gui_widget.py` | The tab-list test expects `POST_PROCESSING_TAB` after the stage tabs |
@@ -114,16 +134,14 @@ where it can't be committed by accident:
 - `.git/mason_tab10_backup/full_post_pull.tgz`: the same files as a tarball.
 - The `*_pre_pull*` copies are from before your colleague's 3 commits were pulled.
 
-1. **Off-network vessels:** `graph.off_network_edges` (biconnected-component test: a vessel is on
-   the network iff it lies on a simple inlet → outlet path), a red status in `vessel_status`, and
-   "N of M vessels are not on an inlet-to-outlet path" in the scan summary.
-2. **Edit tools moved into tab 10:**
-   - Add vessel, Finish, Delete by click and Stop editing, reusing
-     `gui/graph_editor.GraphEditorState` on the same working graph.
-   - Click-delete protects boundary nodes.
-   - The old Edit button is hidden but kept in its row, because
-     `test_gui_view_panel.py::test_the_view_button_sits_left_of_edit_and_has_a_tooltip` checks
-     the row order.
+1. **Delete by branch ID** (next): type branchIDs, e.g. `12, 40`, and delete them.
+2. **Prune disconnected branches**, placed just above Regenerate. It removes every component
+   without both an inlet and an outlet (`graph.remove_components_without_connected_io`).
+   Regenerate then has to drop the pruned inlets and outlets from the boundary lists
+   (`PipelineResume` in `regenerate_from_graph`) instead of stopping.
+3. **Off-network vessels (saved code):** `graph.off_network_edges` (biconnected-component test:
+   a vessel is on the network iff it lies on a simple inlet → outlet path), a red status in
+   `vessel_status`, and "N of M vessels are not on an inlet-to-outlet path" in the scan summary.
 
 Later ideas: remove the red vessels in one go (prune dead ends upwards, optionally dangling
 loops); a connectivity map (vessel → junction → vessels, directed by solved flow, as CSV plus a
@@ -159,3 +177,14 @@ Known unrelated failures in this environment:
   (up to `1158437`), then committed tab 10 with **junction fixing only**: scan for 4- and 5-vessel
   junctions, junction table, Delete / Split (15 µm connector) / Leave, Regenerate. Tests: tab,
   panel, editor and view-panel GUI tests pass apart from the 3 known offscreen failures.
+- **2026-09-30:** Commit 1 rebased onto the colleague's README commit `4c392a4` and **pushed** to
+  `origin/Devel_GUI_improvements_HD` as `a7ce297`.
+- **2026-09-30, commit 2:** Edit by clicking in tab 10:
+  - Delete vessel by click.
+  - Add vessel by clicking two nodes: routed through the image, straight as the fallback, with
+    the mean diameter as an override.
+  - Stop editing.
+  - The bottom Edit button is hidden.
+  - A manual override diameter now beats the branch-order table (`poiseuille.py`).
+  - Tests: 3,682 fast tests passed; the GUI tests passed apart from the 3 known offscreen
+    view-panel failures.

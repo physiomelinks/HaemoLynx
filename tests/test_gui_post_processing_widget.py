@@ -3,8 +3,9 @@
 The graph rules are pinned in ``test_graph_post_processing.py`` and the
 colours in ``test_gui_post_processing.py``; these check the Qt glue between
 them: a scan lists the 4+ junctions and recolours the vessels layer, the
-table turns vessels yellow, and each button changes the network the viewer
-shows. Marked ``gui`` like the other ``*_widget.py`` tests.
+table turns vessels yellow, each button changes the network the viewer
+shows, and clicks in the viewer delete and add vessels. Marked ``gui`` like
+the other ``*_widget.py`` tests.
 """
 from __future__ import annotations
 
@@ -104,6 +105,11 @@ def _rgba(status) -> tuple:
     return tuple(np.round(STATUS_COLOURS[status], 3))
 
 
+def _click(page, position):
+    event = SimpleNamespace(position=position, dims_displayed=(0, 1, 2), view_direction=None)
+    page.controls.on_click(page.viewer.layers[VESSELS], event)
+
+
 def test_the_panel_ends_with_the_post_processing_tab(make_napari_viewer):
     from qtpy.QtWidgets import QStackedWidget, QTabWidget
 
@@ -115,6 +121,9 @@ def test_the_panel_ends_with_the_post_processing_tab(make_napari_viewer):
     stack = panel.findChild(QStackedWidget, "haemolynx_revert_stack")
     assert stack.count() == tabs.count()
     assert panel._haemolynx_post_processing.scan_button.toolTip()
+    # Editing moved into the tab: the old Edit button is no longer shown.
+    assert not panel._haemolynx_edit_button.visible
+    assert panel._haemolynx_post_processing.add_button.toolTip()
 
 
 def test_scan_before_a_run_reports_instead_of_raising(make_napari_viewer):
@@ -210,6 +219,106 @@ def test_leave_as_is_marks_the_junction(page):
     assert c.state.graph.degree(1) == 4
 
 
+def test_clicking_a_vessel_in_delete_mode_removes_it(page):
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    c.click_delete_button.click()
+    assert "click a vessel" in c.edit_status.text()
+    _click(page, (10.0, 10.0, 0.0))  # halfway along the 1 -> 5 vessel
+
+    graph = c.state.graph
+    assert 5 not in graph and graph.degree(1) == 3
+    assert len(viewer.layers[VESSELS].data) == 5
+    c.stop_button.click()
+    _click(page, (25.0, 5.0, 0.0))  # not armed any more: nothing happens
+    assert graph.number_of_edges() == 5
+
+
+def test_click_delete_never_strands_the_outlet(page):
+    c = page.controls
+    c.scan_button.click()
+    c.click_delete_button.click()
+    _click(page, (25.0, 5.0, 0.0))  # one of the two vessels into outlet 4
+    assert c.state.graph.degree(4) == 1
+    _click(page, (25.0, -5.0, 0.0))  # the last one: refused
+    assert c.state.graph.degree(4) == 1
+    assert "boundary node" in c.edit_status.text()
+
+
+def test_add_vessel_joins_two_clicked_nodes_with_their_mean_diameter(page):
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    c.add_button.click()
+    _click(page, (10.0, 20.0, 0.0))  # node 5
+    assert "Start node 5 picked" in c.edit_status.text()
+    _click(page, (20.0, -10.0, 0.0))  # node 3
+
+    graph = c.state.graph
+    added = [
+        (u, v, d) for u, v, d in graph.edges(data=True) if d.get("post_processing_added")
+    ]
+    assert len(added) == 1 and {added[0][0], added[0][1]} == {3, 5}
+    data = added[0][2]
+    # No image layer here, so it is drawn straight: 5 -> 3 is sqrt(10^2 + 30^2).
+    assert data["length"] == pytest.approx(np.hypot(10.0, 30.0))
+    # Every vessel at nodes 3 and 5 is 5 um across, so the mean is 5 um.
+    assert data["diameter_um"] == pytest.approx(5.0)
+    assert data["diameter_source"] == "override"
+    assert "as a straight line" in c.edit_status.text()
+    assert len(viewer.layers[VESSELS].data) == 7
+
+
+def test_add_vessel_ignores_a_click_on_the_same_node_twice(page):
+    c = page.controls
+    c.scan_button.click()
+    c.add_button.click()
+    _click(page, (10.0, 20.0, 0.0))
+    _click(page, (10.0, 20.0, 0.0))
+    assert "node 5 again" in c.edit_status.text()
+    assert c.state.graph.number_of_edges() == 6
+
+
+def test_add_vessel_routes_through_the_segmented_image(make_napari_viewer):
+    """With the segmented image loaded, a new vessel follows it."""
+    viewer = make_napari_viewer()
+    mask = np.zeros((1, 25, 35), dtype=np.uint8)
+    mask[0, 0, 10:31] = 1          # an L-shaped vessel from (0, 0, 10) ...
+    mask[0, 0:21, 30] = 1
+    mask[0, 20, 10:31] = 1         # ... round to (0, 20, 10)
+    G = nx.MultiGraph()
+    for node, pos in {0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 20, 0), 3: (0, 20, 10)}.items():
+        G.add_node(node, pos=np.asarray(pos, dtype=float))
+    for u, v in [(0, 1), (2, 3)]:
+        voxels = [tuple(map(float, G.nodes[u]["pos"])), tuple(map(float, G.nodes[v]["pos"]))]
+        G.add_edge(u, v, voxels=voxels, length=10.0, diameter_um=4.0)
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=mask, skeleton=np.zeros_like(mask, dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+        ),
+    ))
+    _apply_layers(viewer, results.stage_finished("build_network", network(G)))
+    c = _post_processing_controls(
+        viewer, SimpleNamespace(value=""), results=lambda: results,
+        boundary_roles=lambda: {"inlet": (0,), "outlet": (2,)},
+        regenerate=lambda graph: None, running=lambda: False,
+    )
+    c.scan_button.click()
+    c.add_button.click()
+    page = SimpleNamespace(controls=c, viewer=viewer)
+    _click(page, (0.0, 0.0, 10.0))   # node 1
+    _click(page, (0.0, 20.0, 10.0))  # node 3
+
+    added = [d for _u, _v, d in c.state.graph.edges(data=True) if d.get("post_processing_added")]
+    assert len(added) == 1
+    assert "routed through the image" in c.edit_status.text()
+    assert max(p[2] for p in added[0]["voxels"]) >= 29   # went round the L
+    assert added[0]["length"] > 50
+    assert added[0]["diameter_um"] == pytest.approx(4.0)
+
+
 def test_regenerate_hands_over_the_edited_graph_and_clears_the_tab(page):
     c, viewer = page.controls, page.viewer
     c.scan_button.click()
@@ -219,4 +328,5 @@ def test_regenerate_hands_over_the_edited_graph_and_clears_the_tab(page):
 
     assert page.regenerated == [edited]
     assert HIGH_DEGREE_JUNCTIONS not in viewer.layers
+    assert c.on_click not in viewer.layers[VESSELS].mouse_drag_callbacks
     assert c.state.graph is None and c.junction_list.count() == 0

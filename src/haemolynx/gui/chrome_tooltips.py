@@ -170,6 +170,16 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "bifurcations, in microns"
     ),
     "leave": "Keep the chosen junction as it is and move on to the next one",
+    "click_delete": (
+        "Then click vessels in the viewer to remove them, one per click; "
+        "inlets, outlets and boundary nodes are never cut off"
+    ),
+    "add": (
+        "Then click two nodes in the viewer to join them with a new vessel, "
+        "routed through the segmented image where it can be (straight where "
+        "not), with the mean diameter of the vessels already at those nodes"
+    ),
+    "stop": "Stop deleting or adding by clicking in the viewer",
     "regenerate": (
         "Rerun Diameters, Haemodynamics, Solve, Perturbations and Export on "
         "the edited network, so the 3D view and outputs catch up with the edits"

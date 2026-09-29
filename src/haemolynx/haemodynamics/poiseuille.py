@@ -350,6 +350,14 @@ def stamp_edge_diameters(
             if edt is not None:
                 stamp(data, edt, DIAMETER_SOURCE_EDT)
                 continue
+        # A human diameter beats the generic table (a vessel drawn by hand in
+        # the post-processing tab carries one); a measurement above still
+        # replaces it, as a fresh FWHM run always has.
+        if source == DIAMETER_SOURCE_OVERRIDE:
+            override = positive_diameter_um(data.get("diameter_um"))
+            if override is not None:
+                counts["override"] += 1
+                continue
         table_diameter = positive_diameter_um(
             table_diameter_for_order(table, data.get("branch_order"))
         )

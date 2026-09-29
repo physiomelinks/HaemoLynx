@@ -44,6 +44,7 @@ __all__ = [
     "junction_label",
     "junction_marker_layer",
     "junction_table_rows",
+    "nearest_node",
     "scan_network",
     "status_colours",
     "vessel_status",
@@ -170,6 +171,41 @@ def junction_marker_layer(graph: Any, scan: NetworkScan) -> LayerSpec:
             "out_of_slice_display": True,
         },
     )
+
+
+#: How far, in microns, a click may land from a node and still pick it.
+NODE_PICK_DISTANCE_UM = 3.0
+
+
+def nearest_node(
+    graph: Any,
+    position: Sequence[float],
+    *,
+    view_direction: Sequence[float] | None = None,
+    dims: Sequence[int] | None = None,
+    max_distance: float = NODE_PICK_DISTANCE_UM,
+) -> Any | None:
+    """The node a click at *position* (microns, ``(z, y, x)``) landed on.
+
+    In 3D the click is a ray along *view_direction*: the node nearest that
+    ray wins, so what is under the cursor is picked however deep it sits.
+    Otherwise the plain distance over the displayed *dims* counts. None when
+    no node is within *max_distance*. Worked out from the graph itself, not
+    from napari's point picking, which needs the layer drawn on screen.
+    """
+    points, ids = node_points(graph)
+    if not len(points):
+        return None
+    point = np.asarray(position, dtype=float)[-3:]
+    axes = [a for a in (dims or (0, 1, 2)) if 0 <= int(a) < 3]
+    delta = points[:, axes] - point[axes]
+    view = None if view_direction is None else np.asarray(view_direction, dtype=float)[-3:]
+    if view is not None and len(axes) == 3 and np.linalg.norm(view) > 1e-12:
+        view = view / np.linalg.norm(view)
+        delta = delta - np.outer(delta @ view, view)
+    distance = np.linalg.norm(delta, axis=1)
+    best = int(np.argmin(distance))
+    return ids[best] if distance[best] <= max_distance else None
 
 
 def camera_center_for(

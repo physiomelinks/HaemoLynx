@@ -21,11 +21,15 @@ from .edit import (
 from .post_processing import (
     DEFAULT_SPLIT_CONNECTOR_LENGTH_UM,
     JunctionVessel,
+    MIN_ROUTED_INSIDE_FRACTION,
+    add_vessel_between,
     delete_vessels,
     edge_keys,
     high_degree_junctions,
     junction_vessels,
+    mean_incident_diameter,
     split_junction,
+    vessel_path_between,
 )
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .validate import (
@@ -169,11 +173,15 @@ __all__ = [
     "reconnect_orphan_and_dangling_nodes",
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
     "JunctionVessel",
+    "MIN_ROUTED_INSIDE_FRACTION",
+    "add_vessel_between",
     "delete_vessels",
     "edge_keys",
     "high_degree_junctions",
     "junction_vessels",
+    "mean_incident_diameter",
     "split_junction",
+    "vessel_path_between",
     "validate_skeleton_connection",
     "assert_no_forbidden_edge_attributes",
     "EDGE_ATTRIBUTE_UNITS",

@@ -18,6 +18,7 @@ from haemolynx.gui.post_processing import (
     junction_label,
     junction_marker_layer,
     junction_table_rows,
+    nearest_node,
     scan_network,
     status_colours,
     vessel_status,
@@ -113,3 +114,15 @@ def test_camera_center_follows_the_displayed_dims():
 def test_zoom_for_canvas(canvas, box, expected):
     result = zoom_for_canvas(canvas, box)
     assert result == (pytest.approx(expected) if expected is not None else None)
+
+
+def test_nearest_node_picks_what_is_under_the_click():
+    G = _network()  # node 1 at (0, 0, 10), node 5 at (0, 20, 10)
+    assert nearest_node(G, (0.0, 0.5, 10.5)) == 1
+    assert nearest_node(G, (0.0, 19.0, 10.0)) == 5
+    assert nearest_node(G, (0.0, 40.0, 40.0)) is None  # nothing near
+    # 3D: a click ray looking down z through (y, x) = (0, 10) hits node 1
+    # whatever depth the click position sits at.
+    assert nearest_node(G, (50.0, 0.0, 10.0), view_direction=(1, 0, 0)) == 1
+    # 2D: only the displayed axes count.
+    assert nearest_node(G, (99.0, 20.0, 10.0), dims=(1, 2)) == 5
