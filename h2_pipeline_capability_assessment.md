@@ -455,6 +455,12 @@ these results stand independently of S2.
 
 ### S10. The crop is not the boundary problem; interior dead ends are
 
+> **Re-measured 2026-09-30 (package C of the 2026-09-29 re-run notes).** `cb_h2_error_propagation.py`
+> now reads the batch graphs and places pressure with the pipeline's face rule on
+> `cb_settings.BOUNDARY_AXIS`. On the current placed-ROI graphs: 632–784 terminals, 82–148 on a face,
+> interior share 81.1–88.5%; 8–23 inlets and 13–27 outlets, so 93–96% of terminals are stranded.
+> Table in `cb_modelling_reference.md` §8.2. The table below is the centred-box record.
+
 S7 argued that most degree-1 nodes would be vessels severed by the ROI crop. **That is wrong, and
 measured to be wrong.** Counting terminals within one voxel of each of the six ROI faces:
 
@@ -498,6 +504,11 @@ right direction to become one, and it is set by ROI placement rather than by bio
 
 ### S11. The networks are singly connected, so the solve is well posed
 
+> **Re-measured 2026-09-30 (package C).** Still one component in all six, with 100% of edges between
+> a face-rule inlet and outlet. Edges are now counted on the MultiGraph, so parallel edges count:
+> WKY-A 7597 (the simple-Graph count was 7517), WKY-B 6140, WKY-C 6863, SHR-A 8281, SHR-B 6954,
+> SHR-C 6376.
+
 **Measured.** Every specimen's extracted graph is a **single connected component**, and 100% of
 edges lie in a component containing at least one inlet and at least one outlet. There are no
 orphaned subnetworks carrying zero flow.
@@ -508,6 +519,13 @@ it does not leave part of the network unsolvable.
 `STATUS — OUTSTANDING` (recorded as a positive; no action)
 
 ### S12. Independent calibre error averages down; correlated error does not
+
+> **Re-measured 2026-09-30 (package C), S12 and S13.** Before this the script placed pressure with its
+> own 25% band on graph axis 0 (148–248 inlets), not the face rule the H2 flows use. On the face rule,
+> still plain Poiseuille: at one voxel independent 8.8%, correlated 126.9%, ratio 15.5%; at the
+> measured 0.690 µm threshold shift 3.9%, **43.7%** and **5.5%** (band rule: 3.9 / 125.4 / 13.3% and
+> 1.6 / 43.4 / 4.7%). The ratio cancels 88% of the correlated error at both sizes. Current numbers
+> and discussion: `cb_modelling_reference.md` §13.2–13.3. The text below is the original record.
 
 The decisive Phase 2 result, and the one that determines whether H2 is answerable.
 
@@ -886,6 +904,14 @@ attempted rather than discovered during it.
 `STATUS — OUTSTANDING`
 
 ### S20. The boundary choice, not calibre, is the dominant error on a ratio
+
+> **Re-measured 2026-09-30 (package C).** S20 now varies the face rule rather than the band: axis 0/1/2
+> at one voxel, and tolerance 1/2/4 voxels at axis 1, in graph axes (the old labels named VTK
+> indices). Mean shunt-ratio spread: axis 14.0%, tolerance at the pinned axis **3.6%**, combined 15.9%,
+> against a calibre ratio error of 5.5% at 0.690 µm and 15.5% at one voxel. With the axis pinned by
+> `cb_settings`, calibre is the larger term in this frame. `cb_h2_boundary_selection.py`, which
+> divides by inlet throughput instead, gives 8.9% for the same tolerance range (S21). See
+> `cb_modelling_reference.md` §13.4.
 
 **This revises S13 and S15 downward, and it is the most consequential finding in Phase 2.**
 
@@ -1726,7 +1752,7 @@ regenerated flow output in `examples/outputs/cb_h2_regen/`, and three scripts:
 
 ```bash
 venv/bin/python examples/cb_h2_error_propagation.py                      # S10-S13, S20
-venv/bin/python examples/cb_h2_error_propagation.py --perturbation-um 0.922   # S15
+venv/bin/python examples/cb_h2_error_propagation.py --perturbation-um 0.690   # S15 (0.922 on the centred boxes)
 venv/bin/python examples/cb_h2_threshold_calibre.py                      # S15
 venv/bin/python -m pytest tests/test_haemodynamics_analytical.py         # S1
 ```

@@ -136,8 +136,8 @@ and the only place to change it. Everywhere else quotes it with a pointer back.
 | Oxygen diffusion length | 20 µm at PO₂ 10, 35 at 30, 45 at 50 | §13.6 | §6.8 |
 | Total inlet flow | 1.33e6–4.00e6 µm³/s (face rule) | §13.5 | §7.6 |
 | Flow-weighted velocity | 977–1,812 µm/s against a physiological 200–1,000 | §13.5 | §8.1, §11, §13.10 |
-| Calibre error floor | ±43% on an absolute flow quantity | §13.3 | §7.1, §7.6, §11 |
-| Within-specimen floor | ±4.7% | §13.3 | §7.3 |
+| Calibre error floor | ±44% on an absolute flow quantity | §13.3 | §7.1, §7.6, §11 |
+| Within-specimen floor | ±5.5% | §13.3 | §7.3 |
 | Pre-threshold filter cost | median-3 destroys 80% of the vessel | §2.3 | §11.1 |
 
 **In code, these live in `src/ImageLynx/cb_settings.py`**, which is the single owner for every
@@ -2464,7 +2464,7 @@ preferentially by the vessels that bypass them — the shunting the method is tr
 **Flow share alone cannot answer it**, because flow share tracks how many edges penetrate, which is
 itself downstream of the parenchymal volume difference H1 §1.3 reports. The ratio removes that.
 
-**This is a within-specimen ratio**, so it sits under the ±4.7% floor rather than the ±43% one
+**This is a within-specimen ratio**, so it sits under the ±5.5% floor rather than the ±44% one
 (§13.3).
 
 > **At a glance** — 50% length-in-mask classification, flow share over edge share ·
@@ -2568,7 +2568,7 @@ arrive, and a finite stand-in would propagate as a merely slow path.
 | 5 | Dijkstra from all inlets at cost 0 | — | Every inlet is an equally valid origin, so the arrival time is the earliest over all of them | **On** | `transit.py:86` |
 | 6 | Unreachable nodes carry `inf`, never absent | — | A missing key could be read as zero, which is the opposite of what an unreachable node means | **On** | `transit.py:84` |
 | 7 | Score an edge by the **later** of its two ends | — | A penetrating capillary should be scored by how long blood takes to get through it, not to reach its nearer end | **On** | `cb_h2_glomus_perfusion.py:110` |
-| 8 | Report the penetrating / bypassing median ratio | — | The magnitude is in arbitrary units (§3.7) and sits under the ±43% calibre floor, so only a ratio computed identically means anything | **On** | `cb_h2_glomus_perfusion.py:166` |
+| 8 | Report the penetrating / bypassing median ratio | — | The magnitude is in arbitrary units (§3.7) and sits under the ±44% calibre floor, so only a ratio computed identically means anything | **On** | `cb_h2_glomus_perfusion.py:166` |
 
 **Step 4 follows flow, not adjacency.** An edge carrying blood *away* from a node cannot deliver
 blood *to* it, and ignoring the direction would report a transit time along a route no blood takes.
@@ -2584,7 +2584,7 @@ the same answer where the directions are acyclic and terminates where they are n
 flow-directed graph.
 
 > **Reported as a ratio, never an absolute.** Two independent reasons, and they compound. An
-> absolute flow quantity sits under the ±43% floor from calibre alone (§13.3). And the pressure,
+> absolute flow quantity sits under the ±44% floor from calibre alone (§13.3). And the pressure,
 > viscosity and length units are not reconciled to one system (§3.7), so the magnitude is in
 > arbitrary units. Both have the same answer: compare transit time to one set of terminals against
 > another, computed identically, and the shared error divides out.
@@ -2685,18 +2685,23 @@ same cancellation §4.4 describes for viscosity.
 
 ### 8.2 What happens to terminals that are not boundaries
 
-**About 86% of degree-1 nodes are interior** — nowhere near a region face. Counting terminals within
-one voxel of each of the six ROI faces (2026-09-28 graphs, `cb_h2_error_propagation.py` S10; the
+**About 84% of degree-1 nodes are interior** — nowhere near a region face. Counting terminals within
+one voxel of each of the six ROI faces (current batch graphs, `cb_h2_error_propagation.py` S10,
+2026-09-30; the census now measures against the ROI extent in the graph frame, as the face rule does,
+where it used the exported mask bounds before, which gave 82.8–89.4% on the same graphs; the
 centred-box graphs gave 83.5–86.9%):
 
 | Specimen | Terminals | On any face | Interior | Interior share |
 |---|---|---|---|---|
-| WKY-A | 784 | 135 | 649 | 82.8% |
-| WKY-B | 681 | 98 | 583 | 85.6% |
-| WKY-C | 715 | 77 | 638 | 89.2% |
-| SHR-A | 715 | 108 | 607 | 84.9% |
-| SHR-B | 632 | 97 | 535 | 84.7% |
-| SHR-C | 714 | 76 | 638 | 89.4% |
+| WKY-A | 784 | 148 | 636 | 81.1% |
+| WKY-B | 681 | 107 | 574 | 84.3% |
+| WKY-C | 715 | 91 | 624 | 87.3% |
+| SHR-A | 715 | 132 | 583 | 81.5% |
+| SHR-B | 632 | 106 | 526 | 83.2% |
+| SHR-C | 714 | 82 | 632 | 88.5% |
+
+On the pinned axis only 27–44 of these are pressure boundaries (8–23 inlets, 13–27 outlets per
+specimen); the rest, 93–96% of terminals, are stranded dead ends.
 
 **The crop is not the boundary problem; interior dead ends are.** These are skeletonisation spurs
 and segmentation breaks, not vessels severed by the ROI. A real capillary bed has few genuine
@@ -3075,7 +3080,7 @@ the model would push it.
 | # | Assumption | Enters at | Expected direction of effect |
 |---|---|---|---|
 | 28 | The two channels are co-registered by construction | §7.2 | Two channels of one acquisition on an identical grid, with no registration step. This is what makes a join between them sound; it would not hold across separate acquisitions |
-| 29 | Absolute flow quantities are reported only as within-specimen ratios | §7.6 | Not a modelling assumption but a reporting rule forced by two of them — the ±43% calibre floor and the unreconciled unit magnitude. See §13 |
+| 29 | Absolute flow quantities are reported only as within-specimen ratios | §7.6 | Not a modelling assumption but a reporting rule forced by two of them — the ±44% calibre floor and the unreconciled unit magnitude. See §13 |
 | 30 | Boundary terminals are selected on axis 1 only | §8 | Chosen as the only axis with terminals on both faces in all six centred-box graphs; on the 2026-09-28 graphs all three axes qualify, so the choice now rests on its being pinned (§2.8, needs review). A specimen whose true inflow is off-axis is served by the wrong terminals |
 
 ### 11.6 Four rows that changed against the earlier understanding
@@ -3241,31 +3246,35 @@ per-edge $\delta d/d$ of 10.3% and an analytic `δR/R` of 41.2% (`cb_h2_threshol
 contaminates it. (Before the re-run: 0.922 µm over 0.85–0.90, δd/d 11.7%, δR/R 46.7%.)
 
 Measured by re-solving the networks at that perturbation rather than scaling, since $d^{-4}$ is not
-linear (`cb_h2_error_propagation.py`, re-run on the 2026-09-28 networks; its S12/S13 solve places
-pressure with its own 25% band on the exported frame, as it always has):
+linear (`cb_h2_error_propagation.py`, 2026-09-30, package C of the 2026-09-29 re-run notes). The solve
+now reads the batch networks (MultiGraph and `per_edge_morphometry.csv`) and places pressure with
+`select_boundary_terminal_nodes_by_face` on `cb_settings.BOUNDARY_AXIS` at one voxel, the pipeline's
+own call. It is still plain Poiseuille with uniform viscosity, not the Pries flow the H2 drivers use,
+so it isolates calibre propagation rather than reproducing the H2 flow field:
 
 | Perturbation | Independent | Correlated | Within-specimen ratio |
 |---|---|---|---|
-| One voxel, 1.866 µm (conservative bound) | 3.9% | 125.4% | 13.3% |
-| **Measured threshold shift, 0.690 µm** | 1.6% | **43.4%** | **4.7%** |
+| One voxel, 1.866 µm (conservative bound) | 8.8% | 126.9% | 15.5% |
+| **Measured threshold shift, 0.690 µm** | 3.9% | **43.7%** | **5.5%** |
 
-(Before the re-run: 4.1 / 95.3 / 13.2% at one voxel and 2.2 / 45.3 / 6.3% at 0.922 µm.) The
-measured 43.4% sits close to the 41.2% that $4\,\delta d/d$ predicts, so propagation is near-linear
-at this scale even though the underlying law is not. **The ratio cancels 89% of the correlated error
-at both perturbation sizes** (86% before), which makes that cancellation a property of the ratio
-rather than an artefact of the size chosen. Per specimen at 0.690 µm: correlated 38.0–46.6%, ratio
-3.8–5.8%.
-
-The script prints these and then stops with `NameError: boundary_sensitivity` — its last call sits
-above the function's definition (since `8e888ca`). The S12/S13 tables print before that line. The
-boundary numbers in §13.4 come from `cb_h2_boundary_selection.py` instead.
+(Before package C the script used its own 25% band on graph axis 0, 148–248 inlets per specimen
+instead of the face rule's 8–23: 3.9 / 125.4 / 13.3% at one voxel and 1.6 / 43.4 / 4.7% at
+0.690 µm. Before the 2026-09-28 re-run: 4.1 / 95.3 / 13.2% at one voxel and 2.2 / 45.3 / 6.3% at
+0.922 µm.) The correlated term barely moves with the boundary rule, and the measured 43.7% still
+sits close to the 41.2% that $4\,\delta d/d$ predicts, so propagation is near-linear at this scale
+even though the underlying law is not. The independent term roughly doubles, since a few face
+inlets carry the whole throughput and averaging over them is weaker than over 150–250 band nodes.
+**The ratio cancels 88% of the correlated error at both perturbation sizes** (89% under the band
+rule), so the cancellation is a property of the ratio rather than of the size or the boundaries
+chosen. Per specimen at 0.690 µm: correlated 38.1–48.5%, ratio 4.4–7.0%, the three SHR above the
+three WKY (6.0–7.0% against 4.4–4.6%).
 
 ### 13.3 The two noise floors
 
 | Quantity | Floor | Against H1's measured group-mean ratios at 0.95 |
 |---|---|---|
-| Absolute network flow | **±43%** | Cannot resolve them |
-| Within-specimen ratio | **±4.7%** | See below — **needs review** |
+| Absolute network flow | **±44%** | Cannot resolve them |
+| Within-specimen ratio | **±5.5%** | See below — **needs review** |
 
 **This is why §7.6 reports ratios and never absolutes.** It is not caution; it is the difference
 between an answerable question and an unanswerable one.
@@ -3275,8 +3284,9 @@ between an answerable question and an unanswerable one.
 > on the centred boxes. At 0.95 on the placed boxes the SHR/WKY group-mean ratios are β₁ density
 > 1.087, junction density 1.064, length density 1.022, tortuosity 1.001 (median EDT diameter 0.869),
 > and the groups overlap on every density. So the effects are 2–9%, against a within-specimen floor
-> of 4.7%: not a fourfold margin. (The floor is for flow-derived ratios; β₁ and the densities are
-> topological counts, which calibre does not move, §13.10.) Whether and how to restate the claim is
+> of 5.5% (4.7% before the floor moved onto the face-rule boundaries, package C): not a fourfold
+> margin, and only β₁ and junction density clear it at all. (The floor is for flow-derived ratios;
+> β₁ and the densities are topological counts, which calibre does not move, §13.10.) Whether and how to restate the claim is
 > left to the H1 write-up.
 
 **One residual, in the ratio itself.** The per-specimen shift is uneven — 0.380 µm (WKY-B) to
@@ -3292,6 +3302,14 @@ Larger than calibre error. The face-crossing rule on axis 1 holds residual bound
 to 44.9% (`cb_h2_boundary_selection.py` on the 2026-09-28 networks; 13.3% / 75.8% and 118.8% /
 43.1% on the centred boxes). On the centred boxes axis 1 was the only axis with terminals on both
 faces in all six specimens; on the new networks all three axes are (§2.8).
+
+**Measured in the error-propagation frame too** (`cb_h2_error_propagation.py` S20, 2026-09-30, face
+rule throughout, plain Poiseuille). With the axis pinned at 1, moving the face tolerance over 1/2/4
+voxels spreads the shunt ratio by **3.6%** on average (1.6–6.4% per specimen); moving the axis at one
+voxel spreads it by 14.0%. The residual 3.6% is below the 5.5% calibre ratio floor, whereas the 8.9%
+above is above it. The two measure different ratios: S20 divides shunt flow by the flow summed over
+every edge (as S13 does), and `cb_h2_boundary_selection.py` divides by inlet throughput. So which
+term is larger at the pinned axis depends on the ratio's denominator; the axis choice dominates both.
 
 Below the operative floor of §13.3 and below the effects H1 measures — but only because the rule
 and its axis are pinned. They are now pinned in one place: `cb_settings` owns both, and the main
@@ -3336,7 +3354,7 @@ pass still changes flow by 0.05–1.7% of the largest edge flow (face rule, 2026
 centred boxes, running to 50 and 200 iterations moved the velocities by under 0.3%, so the table did
 not depend on the cap; that check was not repeated on the new networks.
 
-Absolute perfusion is still not a reportable quantity: it sits under the ±43% calibre floor
+Absolute perfusion is still not a reportable quantity: it sits under the ±44% calibre floor
 (§13.3), it moves 2–4× with the boundary rule, and 60/20 mmHg is an upper-end arteriolar/venular
 pair, not a measured carotid-body drop (§8.1). But the model is no longer orders of magnitude off.
 At 60/20 mmHg it runs somewhat fast, which points at the pressure pair rather than at the network's
@@ -3443,8 +3461,8 @@ sensitivity analysis, not a proof, and it remains the stated bound on any TH-cha
 
 | Claim type | Supported? |
 |---|---|
-| Within-specimen ratios of flow-derived quantities | **Yes** — ±4.7% floor. *Needs review:* the 27–40% H1 effects this was set against are 2–9% at 0.95 (§13.3) |
-| Absolute flow, velocity or perfusion | **No** — ±43% floor, 2–4× with the boundary rule, and up to 1.8× above physiological at 60/20 mmHg (§13.5) |
+| Within-specimen ratios of flow-derived quantities | **Yes** — ±5.5% floor. *Needs review:* the 27–40% H1 effects this was set against are 2–9% at 0.95 (§13.3) |
+| Absolute flow, velocity or perfusion | **No** — ±44% floor, 2–4× with the boundary rule, and up to 1.8× above physiological at 60/20 mmHg (§13.5) |
 | Between-group calibre differences | **No** — the stated reason was a gap of 1/20 of the measurement step. *Needs review:* at 0.95 the gap is half a voxel and the groups do not overlap (§13.8) |
 | Glomus-specific hypoxic fraction as a number | **No** — the mechanism cannot operate (§13.6); report as a curve in the assumed metabolic contrast. *Needs review:* TH hypoxia is now 0 everywhere, while PO₂ in TH separates the groups (§7.5) |
 | Between-group TH-channel contrasts | **Qualified** — bounded by §13.9's sensitivity analysis, not by proof |
@@ -3519,7 +3537,7 @@ physical answer, rather than a finite least-squares value.
 | `cb_h1_figures.py`, `cb_h1_renders.py`, `cb_h1_vtk.py` | H1 figures and ParaView artefacts |
 | `cb_h2_boundary_selection.py` | The boundary rule comparison behind §13.4 |
 | `cb_h2_threshold_calibre.py` | The correlated-error size behind §13.2 |
-| `cb_h2_error_propagation.py` | The independent/correlated/ratio floors behind §13.3 |
+| `cb_h2_error_propagation.py` | The independent/correlated/ratio floors behind §13.2–13.3 (face-rule boundaries, plain Poiseuille), the §8.2 terminal census and the S20 spreads in §13.4 |
 | `cb_h2_glomus_perfusion.py` | §7.3 shunting, §7.4 haematocrit, §7.6 transit time |
 | `cb_h2_hypoxic_fraction.py` | §7.5 hypoxic fraction on the heterogeneous grid |
 | `cb_h2_vtk.py` | H2 ParaView artefacts |

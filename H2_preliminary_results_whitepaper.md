@@ -573,7 +573,7 @@ is 979 to 3,319 µm/s across the six against a physiological 200 to 1,000; five 
 the upper end. A 500 µm/s velocity would need a drop of 6 to 20 mmHg, not 40. The face boundary
 rule carries 4 to 8 times less flow than the band rule it replaced, a cost of §4.2 that its own
 validation did not measure. So the absolute scale depends on a pressure pair that is not measured
-in the carotid body and on a boundary choice with no anatomical calibration, on top of the ±45%
+in the carotid body and on a boundary choice with no anatomical calibration, on top of the ±44%
 calibre floor. **No absolute perfusion quantity in this document is defensible.** Every reported
 measure is a ratio for this reason.
 
