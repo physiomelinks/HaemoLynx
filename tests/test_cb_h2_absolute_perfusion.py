@@ -32,7 +32,7 @@ def _y_network():
 
 def _solve(G, inlets, outlets, p_in, p_out=P_OUT):
     G, _ = solve_coupled_flow_and_hematocrit(
-        G, inlets, outlets, p_in, p_out, max_iterations=200, tolerance=1e-12)
+        G, inlets, outlets, p_in, p_out, max_iterations=200, flow_rtol=1e-12)
     return G
 
 

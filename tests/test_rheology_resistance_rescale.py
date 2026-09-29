@@ -73,7 +73,7 @@ def test_a_narrower_upstream_resistance_carries_through_to_the_flow_split():
         G.add_edge(1, target, key=0, length=10.0, assigned_diameter_um=8.0, resistance=r)
     G, _ = solve_coupled_flow_and_hematocrit(
         G, starting_nodes=[0], output_nodes=[2, 3], input_p_bc=P_IN, output_p_bc=P_OUT,
-        systemic_hematocrit=0.45, max_iterations=200, tolerance=1e-10,
+        systemic_hematocrit=0.45, max_iterations=200, flow_rtol=1e-10,
     )
     q_open, q_constricted = G[1][2][0]["flow_abs"], G[1][3][0]["flow_abs"]
     assert q_open / q_constricted > 1.5

@@ -11,7 +11,8 @@ Two things are tested here.
    nobody reintroduces a local copy.
 2. The pipeline config agrees with the settings on each value that used to disagree: the
    hysteresis band (open item 1), the boundary rule (item 2), the metabolic rate (item 8),
-   the pressures (item 10) and the perfusion stop settings (item 6). Each was resolved in favour of the settings, because
+   the pressures (item 10), the perfusion stop settings (item 6) and the rheology solve
+   settings (item 37). Each was resolved in favour of the settings, because
    every published H1 and H2 number was produced at the settings values.
 """
 import ast
@@ -204,3 +205,45 @@ def test_h2_drivers_take_their_perfusion_config_from_settings(name):
     """Both H2 transport drivers use the one settings class, not a local copy of it."""
     value = _module_level_assignments(REPO / "examples" / name)["PerfConfig"]
     assert ast.unparse(value) == "cb_settings.PerfusionSettings"
+
+
+def test_pipeline_and_h2_share_the_rheology_settings():
+    """Open item 37: the pipeline and the H2 drivers run the same rheology solve."""
+    from carotid_image_to_model import HaemodynamicsConfig
+
+    config = HaemodynamicsConfig()
+    kwargs = cb_settings.rheology_solver_kwargs()
+    assert config.rheology_max_iterations == kwargs["max_iterations"]
+    assert config.rheology_relaxation == kwargs["relaxation"]
+    assert config.rheology_flow_rtol == kwargs["flow_rtol"]
+    assert config.rheology_hematocrit_atol == kwargs["hematocrit_atol"]
+
+
+@pytest.mark.parametrize("name", ["config_WKY_normotensive.yaml", "config_SHR_hypertensive.yaml"])
+def test_the_example_yamls_carry_the_rheology_settings(name):
+    yaml = pytest.importorskip("yaml")
+    hemo = yaml.safe_load((REPO / "examples" / name).read_text(encoding="utf-8"))[
+        "HaemodynamicsConfig"]
+    kwargs = cb_settings.rheology_solver_kwargs()
+    assert int(hemo["rheology_max_iterations"]) == kwargs["max_iterations"]
+    assert float(hemo["rheology_relaxation"]) == kwargs["relaxation"]
+    assert float(hemo["rheology_flow_rtol"]) == kwargs["flow_rtol"]
+    assert float(hemo["rheology_hematocrit_atol"]) == kwargs["hematocrit_atol"]
+    assert "rheology_tolerance" not in hemo
+
+
+@pytest.mark.parametrize("name", [
+    "cb_h2_glomus_perfusion.py", "cb_h2_hypoxic_fraction.py", "cb_h2_vtk.py",
+    "cb_h2_absolute_perfusion.py",
+])
+def test_h2_drivers_solve_rheology_at_the_settings_and_record_it(name):
+    """Every rheology call passes the settings, and the driver keeps the solve's status."""
+    tree = ast.parse((REPO / "examples" / name).read_text(encoding="utf-8"))
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", None) == "solve_coupled_flow_and_hematocrit"]
+    assert calls
+    for call in calls:
+        assert [ast.unparse(k.value) for k in call.keywords if k.arg is None] == [
+            "cb_settings.rheology_solver_kwargs()"]
+    names = {getattr(n.func, "id", None) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    assert {"rheology_status", "report_unconverged"} <= names

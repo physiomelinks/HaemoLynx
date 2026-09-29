@@ -37,6 +37,8 @@ from ImageLynx.graph.boundaries import (                               # noqa: E
     select_boundary_terminal_nodes_by_face,
 )
 from ImageLynx.haemodynamics.rheology import (                         # noqa: E402
+    report_unconverged,
+    rheology_status,
     solve_coupled_flow_and_hematocrit,
 )
 from ImageLynx.haemodynamics.tissue_regions import edge_tissue_fraction  # noqa: E402
@@ -99,7 +101,9 @@ def analyse(specimen):
         G, ROI, axis=BOUNDARY_AXIS, voxel_size=PROCESSING_VOXEL_UM)
 
     G, _pressure = solve_coupled_flow_and_hematocrit(
-        G, inlets, outlets, INLET_P, OUTLET_P)
+        G, inlets, outlets, INLET_P, OUTLET_P, **cb_settings.rheology_solver_kwargs())
+    rheology = rheology_status(G)
+    report_unconverged(rheology, specimen.specimen_id)
 
     frac = edge_tissue_fraction(G, _th_mask(specimen), PROCESSING_VOXEL_UM)
     # §2.4: accumulated transit time from the arterial inlets to every node, along the solved
@@ -127,6 +131,7 @@ def analyse(specimen):
         "inlets": len(inlets),
         "outlets": len(outlets),
         "diameters_attached": attached,
+        "rheology": rheology,
         "edges": rows,
     }
 
@@ -167,6 +172,7 @@ def _summarise(result):
         "median_diameter_bypass": q(byp, "diameter"),
         "median_transit_penetrating": q(pen, "transit"),
         "median_transit_bypass": q(byp, "transit"),
+        "rheology": result["rheology"],
         "transit_ratio": (q(pen, "transit") / q(byp, "transit")
                           if np.isfinite(q(byp, "transit")) and q(byp, "transit") > 0
                           else float("nan")),

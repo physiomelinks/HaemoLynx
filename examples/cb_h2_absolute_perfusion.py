@@ -46,6 +46,8 @@ from ImageLynx.haemodynamics.resistance import (                       # noqa: E
     poiseuille_flow_to_um3_per_s,
 )
 from ImageLynx.haemodynamics.rheology import (                         # noqa: E402
+    report_unconverged,
+    rheology_status,
     solve_coupled_flow_and_hematocrit,
 )
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS         # noqa: E402
@@ -121,19 +123,15 @@ def analyse(specimen, rule):
     G = _load_graph(specimen)
     _attach_diameters(G, specimen)
     inlets, outlets = select_boundaries(G, rule)
-    G, _pressure = solve_coupled_flow_and_hematocrit(G, inlets, outlets, INLET_P, OUTLET_P)
+    G, _pressure = solve_coupled_flow_and_hematocrit(
+        G, inlets, outlets, INLET_P, OUTLET_P, **cb_settings.rheology_solver_kwargs())
+    rheology = rheology_status(G)
+    report_unconverged(rheology, f"{specimen.specimen_id} ({rule} rule)")
     summary = perfusion_summary(G, inlets, INLET_P - OUTLET_P)
-    # The rheology loop on these graphs stops at its iteration cap, still moving by a small
-    # fraction of the largest flow each pass; report how far, relative to that flow.
-    change = G.graph.get("rheology_max_flow_change")
-    largest = max(abs(d["flow_abs"]) for *_, d in G.edges(keys=True, data=True))
     summary.update({
         "inlets": len(inlets),
         "outlets": len(outlets),
-        "rheology_stop_reason": G.graph.get("rheology_stop_reason"),
-        "rheology_iterations": G.graph.get("rheology_iterations"),
-        "rheology_last_change_over_max_flow":
-            None if change is None else float(change / largest),
+        "rheology": rheology,
     })
     return summary
 
@@ -170,7 +168,8 @@ def main():
                   f"{r['total_inlet_flow_um3_s']:14.4g} "
                   f"{r['flow_weighted_velocity_um_s']:10.2f} "
                   f"{r['pressure_drop_for_target_mmhg']:11.0f} mmHg "
-                  f"{r['rheology_stop_reason']}/{r['rheology_iterations']}")
+                  f"{r['rheology']['rheology_stop_reason']}/"
+                  f"{r['rheology']['rheology_iterations']}")
     lo, hi = PHYSIOLOGICAL_VELOCITY_UM_S
     print(f"\nPhysiological capillary velocity {lo:g}-{hi:g} um/s.")
 

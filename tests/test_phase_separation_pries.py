@@ -128,10 +128,14 @@ def test_feeding_diameter_at_a_merge_is_the_flow_weighted_mean():
     assert not fell_back
 
 
-def test_feeding_diameter_falls_back_to_the_larger_daughter():
-    assert feeding_vessel_diameter(_dag([]), 1, 5.0, 7.0) == (7.0, True)
+def test_feeding_diameter_with_no_parent_is_the_murray_parent():
+    """Open item 37: the stand-in was the larger daughter; it is now (d1^3 + d2^3)^(1/3)."""
+    murray = (5.0**3 + 7.0**3) ** (1.0 / 3.0)
+    d, fell_back = feeding_vessel_diameter(_dag([]), 1, 5.0, 7.0)
+    assert fell_back and d == pytest.approx(murray, rel=1e-12)
     # An in-edge with no flow says nothing about the feed either
-    assert feeding_vessel_diameter(_dag([(0, 0.0, 12.0)]), 1, 5.0, 7.0) == (7.0, True)
+    d, fell_back = feeding_vessel_diameter(_dag([(0, 0.0, 12.0)]), 1, 5.0, 7.0)
+    assert fell_back and d == pytest.approx(murray, rel=1e-12)
 
 
 def test_solver_uses_the_parent_diameter_at_a_bifurcation():
@@ -147,7 +151,7 @@ def test_solver_uses_the_parent_diameter_at_a_bifurcation():
 
     G, _ = solve_coupled_flow_and_hematocrit(
         G, starting_nodes=[0], output_nodes=[2, 3], input_p_bc=100.0, output_p_bc=10.0,
-        systemic_hematocrit=0.45, max_iterations=200, tolerance=1e-12,
+        systemic_hematocrit=0.45, max_iterations=200, flow_rtol=1e-12,
     )
 
     q2, q3 = G[1][2][0]["flow_abs"], G[1][3][0]["flow_abs"]
@@ -171,6 +175,6 @@ def test_solver_logs_bifurcations_without_an_inflowing_parent(caplog):
     with caplog.at_level(logging.INFO, logger="ImageLynx.haemodynamics.rheology"):
         solve_coupled_flow_and_hematocrit(
             G, starting_nodes=[0], output_nodes=[1, 2], input_p_bc=100.0, output_p_bc=10.0,
-            systemic_hematocrit=0.45, max_iterations=3, tolerance=1e-6,
+            systemic_hematocrit=0.45, max_iterations=3, flow_rtol=1e-6,
         )
     assert any("no inflowing parent" in r.getMessage() for r in caplog.records)

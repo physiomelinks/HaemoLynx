@@ -46,6 +46,8 @@ from ImageLynx.haemodynamics.perfusion import (                          # noqa:
     map_vessels_to_grid, solve_perfusion_steady_state,
 )
 from ImageLynx.haemodynamics.rheology import (                           # noqa: E402
+    report_unconverged,
+    rheology_status,
     solve_coupled_flow_and_hematocrit,
 )
 from ImageLynx.haemodynamics.tissue_regions import (                     # noqa: E402
@@ -108,7 +110,10 @@ def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False, vessel_mapping=
     G = _load_graph(specimen)
     inlets, outlets = select_boundary_terminal_nodes_by_face(
         G, ROI, axis=BOUNDARY_AXIS, voxel_size=PROCESSING_VOXEL_UM)
-    G, _ = solve_coupled_flow_and_hematocrit(G, inlets, outlets, INLET_P, OUTLET_P)
+    G, _ = solve_coupled_flow_and_hematocrit(
+        G, inlets, outlets, INLET_P, OUTLET_P, **cb_settings.rheology_solver_kwargs())
+    rheology = rheology_status(G)
+    report_unconverged(rheology, specimen.specimen_id)
 
     mask = _th_mask(specimen)
     # Default: the grid stops at the vasculature, and glomus tissue beyond it is dropped (S28).
@@ -144,6 +149,7 @@ def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False, vessel_mapping=
         "po2_median_th": float(np.average(po2, weights=weight)) if total else float("nan"),
         "po2_median_stroma": (float(np.average(po2, weights=1.0 - weight))
                               if (1.0 - weight).sum() else float("nan")),
+        "rheology": rheology,
     }
     for threshold in HYPOXIC_THRESHOLDS:
         below = (po2 < threshold).astype(float)

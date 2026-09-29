@@ -34,6 +34,17 @@ PASCALS_PER_MMHG = 133.322387415
 POISEUILLE_FLOW_TO_UM3_PER_S = PASCALS_PER_MMHG * 1e3
 
 
+#: Tier 3 and the rheology loop treat an edge whose |flow| is at most this fraction of the
+#: network's largest as stagnant: rounding, not blood. It was 1e-12, set from WKY-A's 0.90 network, where the flow
+#: solve conserved mass to ~3e-14 of the largest flow. On the 2026-09-28 networks (placed ROI,
+#: threshold 0.95, 6-8k edges) rounding flow reached 1.7e-12 in SHR-A, on the entry edge of a
+#: dead-end side branch, which then sent blood it never received and the march raised (open
+#: item 36). Across all six, rounding flows stay at or below 1.7e-12 and real ones start at
+#: 2.1e-8 (WKY-C), with no edge in between; 1e-10 sits 59x above the one and 210x below the
+#: other.
+STAGNANT_FLOW_FRACTION = 1e-10
+
+
 def poiseuille_flow_to_um3_per_s(flow, factor: float = POISEUILLE_FLOW_TO_UM3_PER_S):
     """Convert flow from this pipeline's mixed units to um^3/s.
 

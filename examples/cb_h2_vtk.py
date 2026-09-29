@@ -63,6 +63,8 @@ from ImageLynx.haemodynamics.resistance import (                         # noqa:
     poiseuille_flow_to_um3_per_s,
 )
 from ImageLynx.haemodynamics.rheology import (                           # noqa: E402
+    report_unconverged,
+    rheology_status,
     solve_coupled_flow_and_hematocrit,
 )
 from ImageLynx.haemodynamics.tissue_regions import (                     # noqa: E402
@@ -130,7 +132,10 @@ def solve(specimen, pad_grid=False, vessel_mapping=VESSEL_MAPPING):
     G, attached = load_graph(specimen)
     inlets, outlets = select_boundary_terminal_nodes_by_face(
         G, ROI, axis=BOUNDARY_AXIS, voxel_size=PROCESSING_VOXEL_UM)
-    G, _ = solve_coupled_flow_and_hematocrit(G, inlets, outlets, INLET_P, OUTLET_P)
+    G, _ = solve_coupled_flow_and_hematocrit(
+        G, inlets, outlets, INLET_P, OUTLET_P, **cb_settings.rheology_solver_kwargs())
+    rheology = rheology_status(G)
+    report_unconverged(rheology, specimen.specimen_id)
 
     prob = load_th(specimen)
     mask = prob > TH_THRESHOLD
@@ -148,7 +153,7 @@ def solve(specimen, pad_grid=False, vessel_mapping=VESSEL_MAPPING):
     po2 = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config,
                                        cell_hematocrit=cell_discharge_hematocrit(cells, grid.n_cells))
 
-    return dict(graph=G, inlets=inlets, outlets=outlets, attached=attached,
+    return dict(graph=G, inlets=inlets, outlets=outlets, attached=attached, rheology=rheology,
                 prob=prob, mask=mask, edge_fraction=frac, arrival=arrival,
                 grid=grid, th_cell=th_cell, m_max=m_max, padded=bool(pad_grid),
                 vessel_mapping=vessel_mapping,
@@ -407,6 +412,7 @@ def main():
             "cells_without_vessels_pct": round(
                 float(100.0 * (np.asarray(state["q_total"]) <= 0).mean()), 2),
             "po2_median_mmHg": float(np.median(state["po2"])),
+            "rheology": state["rheology"],
             "files": written, "frame_check": check,
         })
         print(f"    wrote 5 files: {mesh.n_cells} edges, {n_clusters} glomus clusters, "

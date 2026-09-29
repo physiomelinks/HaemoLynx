@@ -120,6 +120,34 @@ BOUNDARY_FACE_TOLERANCE_VOXELS: float = 1.0
 INLET_PRESSURE_MMHG: float = 60.0
 OUTLET_PRESSURE_MMHG: float = 20.0
 
+#: The coupled flow-haematocrit solve (``solve_coupled_flow_and_hematocrit``), shared by the
+#: pipeline and every H2 driver (open item 37).
+#:
+#: Until item 37 the loop ran at most 15 passes with relaxation 0.5 and an absolute flow
+#: tolerance of 1e-4, and it stopped on the cap in every specimen, still wandering. Two
+#: switches drove it: rounding-level edges flipping direction, and junctions switching
+#: between skimming and proportional mixing. With both removed, relaxation 0.5 still does
+#: not converge, and 0.3 and 0.4 leave SHR-C on a periodic cycle. At 0.2 all six converge,
+#: in 173 (SHR-B) to 457 (WKY-B) passes, and the pipeline (mPa) and the H2 drivers (mmHg)
+#: land on the same haematocrit to 1e-10. The cap is 2.2x the slowest.
+#:
+#: The stop is scale-free: the largest per-pass flow change, as a fraction of the largest
+#: flow, and the largest gap between skimmed and current haematocrit on a flowing edge.
+RHEOLOGY_MAX_ITERATIONS: int = 1000
+RHEOLOGY_RELAXATION: float = 0.2
+RHEOLOGY_FLOW_RTOL: float = 1e-6
+RHEOLOGY_HEMATOCRIT_ATOL: float = 1e-4
+
+
+def rheology_solver_kwargs() -> dict:
+    """The rheology settings as keyword arguments for ``solve_coupled_flow_and_hematocrit``."""
+    return {
+        "max_iterations": RHEOLOGY_MAX_ITERATIONS,
+        "relaxation": RHEOLOGY_RELAXATION,
+        "flow_rtol": RHEOLOGY_FLOW_RTOL,
+        "hematocrit_atol": RHEOLOGY_HEMATOCRIT_ATOL,
+    }
+
 # ---------------------------------------------------------------------------------------
 # TH / glomus channel
 # ---------------------------------------------------------------------------------------

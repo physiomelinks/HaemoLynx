@@ -338,8 +338,11 @@ class HaemodynamicsConfig:
     fwhm_transverse_half_extent_um: float = 15.0
     
     # --- Rheology Solver Parameters ---
-    rheology_max_iterations: int = 15
-    rheology_tolerance: float = 1e-4
+    # cb_settings owns all four (open item 37); the H2 drivers read the same values.
+    rheology_max_iterations: int = cb_settings.RHEOLOGY_MAX_ITERATIONS
+    rheology_relaxation: float = cb_settings.RHEOLOGY_RELAXATION
+    rheology_flow_rtol: float = cb_settings.RHEOLOGY_FLOW_RTOL
+    rheology_hematocrit_atol: float = cb_settings.RHEOLOGY_HEMATOCRIT_ATOL
     blood_plasma_viscosity_cP: float = 1.2
 
     def __post_init__(self):
@@ -1441,12 +1444,11 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         hemo_config.output_p_bc,
         systemic_hematocrit=perf_config.systemic_hematocrit,
         max_iterations=hemo_config.rheology_max_iterations,
-        tolerance=hemo_config.rheology_tolerance
+        relaxation=hemo_config.rheology_relaxation,
+        flow_rtol=hemo_config.rheology_flow_rtol,
+        hematocrit_atol=hemo_config.rheology_hematocrit_atol,
     )
-    rheology_status = {
-        key: G.graph[key]
-        for key in ("rheology_stop_reason", "rheology_iterations", "rheology_max_flow_change")
-    }
+    rheology_status = rheo.rheology_status(G)
     if rheology_status["rheology_stop_reason"] != "converged":
         print(
             f"\nWARNING: rheology solve stopped on '{rheology_status['rheology_stop_reason']}' "
@@ -1461,7 +1463,8 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
         node_positions=node_positions,
         image_dimensions=image.shape,
     )
-    stats.update(rheology_status)
+    # The settings dict stays out of the flat statistics; the config already records them.
+    stats.update({k: v for k, v in rheology_status.items() if k != "rheology_settings"})
 
     print("\n=== Statistics ===")
     for key, value in stats.items():
@@ -1528,6 +1531,11 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     max_flow_change = rheology_status["rheology_max_flow_change"]
     vessels.field_data["rheology_max_flow_change"] = np.array(
         [np.nan if max_flow_change is None else max_flow_change])
+    for key in ("rheology_relative_flow_change", "rheology_hematocrit_residual"):
+        value = rheology_status[key]
+        vessels.field_data[key] = np.array([np.nan if value is None else value])
+    for key in ("rheology_stagnant_edges", "rheology_murray_parent_bifurcations"):
+        vessels.field_data[key] = np.array([rheology_status[key]])
     vessels.save(vtk_export['vessels_path'])
 
     flow, vtk_export = haemodynamics.solve_flow_from_conductance_matrix(

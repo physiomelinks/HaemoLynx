@@ -25,7 +25,7 @@ def test_coupled_solver_convergence():
         output_p_bc=10.0,
         systemic_hematocrit=0.45,
         max_iterations=10,
-        tolerance=1e-3
+        flow_rtol=1e-3
     )
     
     # Assert solver completed and returned pressures
@@ -265,7 +265,7 @@ def test_resistance_matches_poiseuille_at_the_solved_viscosity():
         output_p_bc=0.27e6,
         systemic_hematocrit=0.45,
         max_iterations=10,
-        tolerance=1e-4,
+        flow_rtol=1e-4,
     )
 
     for u, v, key, data in G_solved.edges(keys=True, data=True):
@@ -292,7 +292,7 @@ def test_resistance_is_not_inflated_by_the_power_law_viscosity():
         output_p_bc=0.27e6,
         systemic_hematocrit=0.45,
         max_iterations=10,
-        tolerance=1e-4,
+        flow_rtol=1e-4,
     )
 
     for u, v, key, data in G_solved.edges(keys=True, data=True):
@@ -321,7 +321,7 @@ def test_the_update_step_agrees_with_the_initialisation():
         input_p_bc=13.332e6,
         output_p_bc=0.27e6,
         systemic_hematocrit=0.45,
-        tolerance=1e-4,
+        flow_rtol=1e-4,
     )
     one_pass, _ = solve_coupled_flow_and_hematocrit(
         _bifurcation_graph(), max_iterations=1, **common)
@@ -425,7 +425,7 @@ def test_the_two_point_resistance_depends_on_which_resistances_are_in_force():
         output_p_bc=0.27e6,
         systemic_hematocrit=0.45,
         max_iterations=10,
-        tolerance=1e-4,
+        flow_rtol=1e-4,
     )
     after = two_point(solved)
 
@@ -744,28 +744,29 @@ _STOP_REASON_BCS = dict(
 
 
 def test_stop_reason_is_converged_when_flows_settle():
-    """Equal daughters split red cells evenly, so the second pass reproduces the first.
-
-    ``_bifurcation_graph`` is not used here: its 4 um daughter alternates between two
-    haematocrit states on successive passes and never converges.
-    """
+    """Equal daughters split red cells evenly, so the second pass reproduces the first."""
     G = nx.MultiGraph()
     G.add_edge(0, 1, key=0, length=40.0, fwhm_diameter_um=12.0)
     G.add_edge(1, 2, key=0, length=25.0, fwhm_diameter_um=8.0)
     G.add_edge(1, 3, key=0, length=25.0, fwhm_diameter_um=8.0)
 
     solved, _ = solve_coupled_flow_and_hematocrit(
-        G, max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+        G, max_iterations=15, flow_rtol=1e-4, **_STOP_REASON_BCS)
 
     assert solved.graph["rheology_stop_reason"] == "converged"
     assert solved.graph["rheology_iterations"] == 2
     assert solved.graph["rheology_max_flow_change"] <= 1e-4
 
 
-def test_asymmetric_bifurcation_reports_that_it_did_not_converge():
-    """The oscillating case must not be reported as converged."""
+def test_undamped_asymmetric_bifurcation_reports_that_it_did_not_converge():
+    """The oscillating case must not be reported as converged.
+
+    Undamped, the 4 um daughter alternates between two haematocrit states every pass. The
+    damped solve converges (``test_rheology_convergence.py``).
+    """
     solved, _ = solve_coupled_flow_and_hematocrit(
-        _bifurcation_graph(), max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+        _bifurcation_graph(), max_iterations=15, flow_rtol=1e-4, relaxation=1.0,
+        **_STOP_REASON_BCS)
 
     assert solved.graph["rheology_stop_reason"] == "max_iterations"
     assert solved.graph["rheology_iterations"] == 15
@@ -774,7 +775,7 @@ def test_asymmetric_bifurcation_reports_that_it_did_not_converge():
 def test_stop_reason_is_max_iterations_when_the_limit_is_hit():
     """A negative tolerance can never be met, so only the iteration limit can end the loop."""
     solved, _ = solve_coupled_flow_and_hematocrit(
-        _bifurcation_graph(), max_iterations=3, tolerance=-1.0, **_STOP_REASON_BCS)
+        _bifurcation_graph(), max_iterations=3, flow_rtol=-1.0, **_STOP_REASON_BCS)
 
     assert solved.graph["rheology_stop_reason"] == "max_iterations"
     assert solved.graph["rheology_iterations"] == 3
@@ -784,7 +785,7 @@ def test_stop_reason_is_max_iterations_when_the_limit_is_hit():
 def test_max_flow_change_is_none_after_a_single_pass():
     """One pass has nothing to compare against, so no flow change was ever measured."""
     solved, _ = solve_coupled_flow_and_hematocrit(
-        _bifurcation_graph(), max_iterations=1, tolerance=1e-4, **_STOP_REASON_BCS)
+        _bifurcation_graph(), max_iterations=1, flow_rtol=1e-4, **_STOP_REASON_BCS)
 
     assert solved.graph["rheology_stop_reason"] == "max_iterations"
     assert solved.graph["rheology_iterations"] == 1
@@ -800,7 +801,7 @@ def test_stop_reason_is_flow_cycle_when_the_dag_cannot_be_sorted(monkeypatch):
 
     monkeypatch.setattr(rheology.nx, "topological_sort", raise_cycle)
     solved, final_pressure = solve_coupled_flow_and_hematocrit(
-        _bifurcation_graph(), max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+        _bifurcation_graph(), max_iterations=15, flow_rtol=1e-4, **_STOP_REASON_BCS)
 
     assert solved.graph["rheology_stop_reason"] == "flow_cycle"
     assert solved.graph["rheology_iterations"] == 1
@@ -815,7 +816,7 @@ def test_an_edge_without_a_diameter_is_refused_not_solved_at_five_microns():
 
     with pytest.raises(ValueError, match="1 of 3 edges have no usable diameter"):
         solve_coupled_flow_and_hematocrit(
-            G, max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+            G, max_iterations=15, flow_rtol=1e-4, **_STOP_REASON_BCS)
 
 
 def test_a_non_positive_diameter_is_refused_too():
@@ -824,7 +825,7 @@ def test_a_non_positive_diameter_is_refused_too():
 
     with pytest.raises(ValueError, match="diameter"):
         solve_coupled_flow_and_hematocrit(
-            G, max_iterations=15, tolerance=1e-4, **_STOP_REASON_BCS)
+            G, max_iterations=15, flow_rtol=1e-4, **_STOP_REASON_BCS)
 
 
 def test_default_diameter_is_the_stated_calibre_at_every_step():
@@ -833,7 +834,7 @@ def test_default_diameter_is_the_stated_calibre_at_every_step():
     del G[1][3][0]["fwhm_diameter_um"]
 
     solved, _ = solve_coupled_flow_and_hematocrit(
-        G, max_iterations=3, tolerance=1e-4, default_diameter_um=6.0, **_STOP_REASON_BCS)
+        G, max_iterations=3, flow_rtol=1e-4, default_diameter_um=6.0, **_STOP_REASON_BCS)
 
     data = solved[1][3][0]
     expected = (128.0 * data["viscosity"] * data["length"]) / (np.pi * 6.0 ** 4)

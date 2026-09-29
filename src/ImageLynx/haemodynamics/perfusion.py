@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 # Flow leaves the resistance solve in mmHg um^3 / cP, not um^3/s. See the constant's own
 # definition for the derivation and for what coupling the two unconverted did.
-from .resistance import POISEUILLE_FLOW_TO_UM3_PER_S  # noqa: E402
+from .resistance import POISEUILLE_FLOW_TO_UM3_PER_S, STAGNANT_FLOW_FRACTION  # noqa: E402
 
 #: Solubility of O2 in plasma and tissue, mmol/L per mmHg. One value for the blood's dissolved
 #: O2 and for every tier's tissue transport. Diffusion and wall flux are driven by PO2 but move
@@ -305,15 +305,8 @@ def _raise_on_non_finite_flow(G) -> None:
             f"solve_flow_from_conductance_matrix leaves NaN on purpose.")
 
 
-#: Tier 3 treats an edge whose |flow| is at most this fraction of the network's largest as
-#: stagnant: rounding, not blood. It was 1e-12, set from WKY-A's 0.90 network, where the flow
-#: solve conserved mass to ~3e-14 of the largest flow. On the 2026-09-28 networks (placed ROI,
-#: threshold 0.95, 6-8k edges) rounding flow reached 1.7e-12 in SHR-A, on the entry edge of a
-#: dead-end side branch, which then sent blood it never received and the march raised (open
-#: item 36). Across all six, rounding flows stay at or below 1.7e-12 and real ones start at
-#: 2.1e-8 (WKY-C), with no edge in between; 1e-10 sits 59x above the one and 210x below the
-#: other.
-STAGNANT_FLOW_FRACTION = 1e-10
+# STAGNANT_FLOW_FRACTION lives in resistance.py, beside the flow solve, because the rheology
+# loop uses the same cut (open item 37).
 
 
 def _raise_on_direction_size_mismatch(G) -> None:

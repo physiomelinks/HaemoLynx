@@ -42,13 +42,13 @@ def test_one_pass_steps_part_of_the_way_to_the_skimmed_haematocrit():
 
 def test_running_out_of_iterations_is_warned(caplog):
     with caplog.at_level(logging.WARNING, logger="ImageLynx.haemodynamics.rheology"):
-        _solve(_y_junction(), max_iterations=2, tolerance=1e-12)
+        _solve(_y_junction(), max_iterations=2, flow_rtol=1e-12)
     assert any("did not converge" in r.getMessage() for r in caplog.records)
 
 
 def test_convergence_is_not_warned(caplog):
     with caplog.at_level(logging.WARNING, logger="ImageLynx.haemodynamics.rheology"):
-        _solve(_y_junction(), max_iterations=200, tolerance=1e-6)
+        _solve(_y_junction(), max_iterations=200, flow_rtol=1e-6)
     assert not any("did not converge" in r.getMessage() for r in caplog.records)
 
 
@@ -60,8 +60,8 @@ def test_damped_in_vivo_y_junction_records_convergence():
     try:
         rh.calculate_pries_secomb_viscosity = (
             lambda d, h, mu_p=1.2: original(d, h, mu_p, law="in_vivo"))
-        undamped, _ = _solve(_y_junction(), max_iterations=50, tolerance=1e-3, relaxation=1.0)
-        damped, _ = _solve(_y_junction(), max_iterations=50, tolerance=1e-3)
+        undamped, _ = _solve(_y_junction(), max_iterations=50, flow_rtol=1e-3, relaxation=1.0)
+        damped, _ = _solve(_y_junction(), max_iterations=50, flow_rtol=1e-3)
     finally:
         rh.calculate_pries_secomb_viscosity = original
     assert undamped.graph["rheology_stop_reason"] == "max_iterations"

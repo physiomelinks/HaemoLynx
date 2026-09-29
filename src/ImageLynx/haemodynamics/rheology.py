@@ -152,23 +152,7 @@ def calculate_phase_separation_hematocrit(
     if x0 >= 0.5:
         return float(h_in), float(h_in)
 
-    if fq1 <= x0:
-        fq_e1 = 0.0
-    elif fq1 >= 1.0 - x0:
-        fq_e1 = 1.0
-    else:
-        # Pries-Secomb Logistic Skimming Function
-        # A defines the asymmetry of the bifurcation based on diameters
-        A = -13.29 * ((d_out1**2 / d_out2**2) - 1) / ((d_out1**2 / d_out2**2) + 1) * (1 - h_in) / d_parent
-        
-        # B controls the steepness of the skimming curve
-        B = 1.0 + 6.98 * (1 - h_in) / d_parent
-        
-        # Logit transformation; (FQ-X0)/(1-FQ-X0) is logit[(FQ-X0)/(1-2 X0)] rearranged
-        logit_fq = np.log((fq1 - x0) / (1.0 - fq1 - x0))
-        
-        logit_fe = A + B * logit_fq
-        fq_e1 = 1.0 / (1.0 + np.exp(-logit_fe))
+    fq_e1 = _pries_red_cell_fraction(fq1, d_out1, d_out2, h_in, d_parent)
 
     # Mass Conservation of RBCs
     fq_e2 = 1.0 - fq_e1
@@ -183,6 +167,72 @@ def calculate_phase_separation_hematocrit(
     h_out2 = min(max(h_out2, 0.0), 0.95)
 
     return float(h_out1), float(h_out2)
+
+
+def _pries_red_cell_fraction(fq1, d1, d2, h_in, d_parent):
+    """FQ_E1, the share of red-cell flux entering branch 1, from the Pries law (E16-E19).
+
+    Branch 2 is everything else leaving the junction. Needs X0 < 0.5.
+    """
+    x0 = 0.964 * (1 - h_in) / d_parent
+    if fq1 <= x0:
+        return 0.0
+    if fq1 >= 1.0 - x0:
+        return 1.0
+    # Pries-Secomb Logistic Skimming Function
+    # A defines the asymmetry of the bifurcation based on diameters
+    A = -13.29 * ((d1**2 / d2**2) - 1) / ((d1**2 / d2**2) + 1) * (1 - h_in) / d_parent
+    # B controls the steepness of the skimming curve
+    B = 1.0 + 6.98 * (1 - h_in) / d_parent
+    # Logit transformation; (FQ-X0)/(1-FQ-X0) is logit[(FQ-X0)/(1-2 X0)] rearranged
+    logit_fq = np.log((fq1 - x0) / (1.0 - fq1 - x0))
+    return float(1.0 / (1.0 + np.exp(-(A + B * logit_fq))))
+
+
+def calculate_multiway_phase_separation_hematocrit(
+    h_in: float, flows: list[float], diameters: list[float], d_parent: float,
+) -> list[float]:
+    """
+    Haematocrit in each of three or more daughters of a diverging junction.
+
+    The Pries law is defined for a Y-split. Here each daughter i is split against the rest
+    of the junction: FQ_Ei from the law with FQ_i, D_i and, as the other branch, the
+    flow-weighted mean diameter of the other daughters. The FQ_Ei are then scaled to sum to 1,
+    so red-cell flux is conserved, and H_i = H_in FQ_Ei / FQ_i.
+
+    This replaces proportional mixing (every daughter got H_in) at these junctions. That rule
+    switched on and off whenever a small daughter reversed and turned a bifurcation into a
+    trifurcation or back, and the switch kept the rheology loop from converging on the CB
+    networks (open item 37). The one-vs-rest form is continuous there: a daughter whose flow
+    falls to zero drops below X0 and gets no red cells, and with two daughters left it reduces
+    exactly to ``calculate_phase_separation_hematocrit``, whose FQ_E1 + FQ_E2 = 1 already. It
+    does not depend on how the daughters are ordered.
+
+    If X0 >= 0.5, or if every daughter sits at or below X0 (possible only for D_F below about
+    1.6 um with three daughters), the law gives no split and every daughter gets H_in.
+    """
+    flows = [float(q) for q in flows]
+    q_in = sum(flows)
+    if q_in <= 1e-12 or h_in <= 0.0:
+        return [0.0] * len(flows)
+    x0 = 0.964 * (1 - h_in) / d_parent
+    if x0 >= 0.5:
+        return [float(h_in)] * len(flows)
+    fq_e = []
+    for i, (q_i, d_i) in enumerate(zip(flows, diameters)):
+        q_rest = q_in - q_i
+        if q_rest <= 0.0:
+            fq_e.append(1.0)
+            continue
+        d_rest = sum(q * d for j, (q, d) in enumerate(zip(flows, diameters)) if j != i) / q_rest
+        fq_e.append(_pries_red_cell_fraction(q_i / q_in, d_i, d_rest, h_in, d_parent))
+    total = sum(fq_e)
+    if total <= 0.0:
+        return [float(h_in)] * len(flows)
+    return [
+        min(max(h_in * (fe / total) / (q / q_in), 0.0), 0.95) if q > 0 else 0.0
+        for fe, q in zip(fq_e, flows)
+    ]
 
 
 def _edge_diameter_um(data, default_diameter_um=None):
@@ -223,8 +273,14 @@ def feeding_vessel_diameter(
     The feeding diameter D_F at a diverging bifurcation, for the phase separation law.
 
     One incoming edge gives its diameter. Several (a merge that splits again) give the
-    flow-weighted mean of their diameters. No incoming edge with flow falls back to the
-    larger daughter, and the second return value is True so callers can count the fallbacks.
+    flow-weighted mean of their diameters. A node with no inflowing edge has no measured
+    parent, so D_F is the Murray parent of the two daughters, (d1^3 + d2^3)^(1/3), and the
+    second return value is True so callers can count these nodes.
+
+    The rule used to be the larger daughter, logged at INFO only. It fired 15-29 times per
+    pass on the CB networks, every time at an interior node fed only by rounding-level flow
+    (open item 37). The rheology loop now leaves those edges out of the transport, so on the
+    CB networks the rule no longer fires; it stays for a bifurcation fed by nothing.
     """
     q_sum = 0.0
     qd_sum = 0.0
@@ -234,7 +290,7 @@ def feeding_vessel_diameter(
         qd_sum += q * _edge_diameter_um(data, default_diameter_um)
     if q_sum > 0.0:
         return qd_sum / q_sum, False
-    return max(d1, d2), True
+    return float((d1**3 + d2**3) ** (1.0 / 3.0)), True
 
 
 def _upstream_viscosity(diameter_um: float) -> float:
@@ -282,9 +338,11 @@ def solve_coupled_flow_and_hematocrit(
     output_p_bc: float,
     systemic_hematocrit: float = 0.45,
     max_iterations: int = 15,
-    tolerance: float = 1e-4,
+    flow_rtol: float = 1e-6,
+    hematocrit_atol: float = 1e-4,
     default_diameter_um: float | None = None,
     relaxation: float = 0.5,
+    stagnant_flow_fraction: float | None = None,
 ) -> tuple[nx.MultiGraph, np.ndarray]:
     """
     Solves the highly non-linear coupled system of Flow, Resistance, and Hematocrit.
@@ -296,16 +354,34 @@ def solve_coupled_flow_and_hematocrit(
     4. At every bifurcation, calculate plasma skimming (phase separation) to assign new hematocrit values to child edges.
     5. Under-relax the new hematocrit against the previous pass, then update viscosities and
        resistances from it.
-    6. Repeat until flow changes fall below tolerance.
+    6. Repeat until converged: the largest change in edge flow between passes, as a fraction
+       of the largest flow, is at most ``flow_rtol``, **and** the largest gap between the
+       skimmed and the previous haematocrit on any flowing edge is at most
+       ``hematocrit_atol``. Both tests are scale-free: the pipeline solves in mPa and the H2
+       drivers in mmHg, and an absolute flow tolerance meant a different test in each.
+
+    Stagnant edges, whose |flow| is at most ``stagnant_flow_fraction`` (default
+    ``resistance.STAGNANT_FLOW_FRACTION``) of the largest, carry rounding, not blood. They
+    are left out of the haematocrit transport, keep the haematocrit they had (systemic, from
+    initialisation), and are not counted by the haematocrit test. Their sign is noise and
+    flipped on 60-120 edges per pass on the CB networks, which switched junctions between
+    skimming and proportional mixing and kept the loop from ever converging (open item 37).
 
     Why the loop stopped is written to ``G.graph``, since a cycle or iteration-limit exit
-    otherwise returns a graph indistinguishable from a converged one:
+    otherwise returns a graph indistinguishable from a converged one. ``rheology_status(G)``
+    returns these keys as a dict:
 
     - ``rheology_stop_reason``: ``"converged"``, ``"flow_cycle"`` (the flow directions could
       not be sorted topologically) or ``"max_iterations"``.
     - ``rheology_iterations``: number of pressure solves performed.
     - ``rheology_max_flow_change``: last max absolute change in edge flow between passes, or
       None if fewer than two passes ran.
+    - ``rheology_relative_flow_change``: the same divided by the largest flow.
+    - ``rheology_hematocrit_residual``: last max |H_skim - H_old| over flowing edges.
+    - ``rheology_stagnant_edges``: edges left out of the transport on the last pass.
+    - ``rheology_murray_parent_bifurcations``: bifurcations on the last transport pass with no
+      inflowing parent, where D_F was the Murray parent (``feeding_vessel_diameter``).
+    - ``rheology_settings``: the settings the solve ran with.
 
     ``relaxation`` is the step taken towards the new hematocrit each pass,
     H = H_old + relaxation * (H_skim - H_old). At 1.0 (undamped) a 15 -> 10/5 um Y-junction
@@ -314,7 +390,12 @@ def solve_coupled_flow_and_hematocrit(
     """
     if not 0.0 < relaxation <= 1.0:
         raise ValueError(f"relaxation must be in (0, 1], got {relaxation}.")
-    from .resistance import build_conductance_matrix_from_graph, calc_laplacian_from_conductance_matrix, _solve_system_smart
+    from .resistance import (
+        STAGNANT_FLOW_FRACTION, build_conductance_matrix_from_graph,
+        calc_laplacian_from_conductance_matrix, _solve_system_smart,
+    )
+    if stagnant_flow_fraction is None:
+        stagnant_flow_fraction = STAGNANT_FLOW_FRACTION
     import logging
     logger = logging.getLogger(__name__)
     _require_diameters(G, default_diameter_um)
@@ -334,11 +415,15 @@ def solve_coupled_flow_and_hematocrit(
 
     iteration = 0
     max_flow_diff = float('inf')
+    relative_flow_diff = float('inf')
+    hematocrit_residual = float('inf')
+    n_stagnant = 0
+    n_parent_fallbacks = 0
     previous_flows = {}
     final_pressure = None
     stop_reason = "max_iterations"
     
-    while iteration < max_iterations and max_flow_diff > tolerance:
+    while iteration < max_iterations:
         logger.info(f"--- Flow-Hematocrit Iteration {iteration+1} ---")
         
         # 1. Build Conductance and Laplacian
@@ -384,24 +469,33 @@ def solve_coupled_flow_and_hematocrit(
             r = data["resistance"]
             
             flow_signed = (1.0 / r) * (p_u - p_v)
-            flow_abs = abs(flow_signed)
-            
-            current_flows[(u, v, key)] = flow_abs
-            data["flow_abs"] = flow_abs
+            current_flows[(u, v, key)] = abs(flow_signed)
+            data["flow_abs"] = abs(flow_signed)
             data["flow_signed"] = flow_signed
-            
-            # Direct the edge from high pressure to low pressure
-            if flow_signed > 0:
+
+        # Stagnant edges stay out of the DAG: their direction is rounding noise.
+        q_max = max(current_flows.values(), default=0.0)
+        stagnant_cut = stagnant_flow_fraction * q_max
+        stagnant = set()
+        for u, v, key, data in G.edges(keys=True, data=True):
+            if data["flow_abs"] <= stagnant_cut:
+                stagnant.add((u, v, key))
+            elif data["flow_signed"] > 0:
+                # Direct the edge from high pressure to low pressure
                 DAG.add_edge(u, v, key=key, **data)
             else:
                 DAG.add_edge(v, u, key=key, **data)
+        n_stagnant = len(stagnant)
                 
         # 5. Check Convergence
         if iteration > 0:
             diffs = [abs(current_flows[k] - previous_flows[k]) for k in current_flows]
             max_flow_diff = max(diffs) if diffs else 0.0
-            logger.info(f"  Max Flow Diff: {max_flow_diff:.6e}")
-            if max_flow_diff <= tolerance:
+            relative_flow_diff = max_flow_diff / q_max if q_max > 0 else 0.0
+            logger.info(
+                f"  Max Flow Diff: {max_flow_diff:.6e} (relative {relative_flow_diff:.3e}); "
+                f"haematocrit residual {hematocrit_residual:.3e}")
+            if relative_flow_diff <= flow_rtol and hematocrit_residual <= hematocrit_atol:
                 logger.info("  -> Converged!")
                 stop_reason = "converged"
                 break
@@ -478,23 +572,38 @@ def solve_coupled_flow_and_hematocrit(
                 node_h_in[e2[1]] += h2 * q2
                 node_q_in[e2[1]] += q2
             else:
-                # Trifurcation+ -> Just proportional mixing (Phase separation equations only work for Y-splits)
-                for _, v, k, data in out_edges:
-                    G[node][v][k]["hematocrit"] = h_mix
-                    data["hematocrit"] = h_mix
-                    node_h_in[v] += h_mix * data["flow_abs"]
+                # Trifurcation+ -> one-vs-rest phase separation (open item 37)
+                flows = [e[3]["flow_abs"] for e in out_edges]
+                diams = [_edge_diameter_um(e[3], default_diameter_um) for e in out_edges]
+                d_parent, fell_back = feeding_vessel_diameter(
+                    DAG, node, max(diams), sorted(diams)[-2], default_diameter_um
+                )
+                if fell_back:
+                    # Murray parent of all the daughters, not just the two largest.
+                    d_parent = float(sum(d**3 for d in diams) ** (1.0 / 3.0))
+                n_parent_fallbacks += fell_back
+                hs = calculate_multiway_phase_separation_hematocrit(
+                    h_mix, flows, diams, d_parent)
+                for (_, v, k, data), h in zip(out_edges, hs):
+                    G[node][v][k]["hematocrit"] = h
+                    data["hematocrit"] = h
+                    node_h_in[v] += h * data["flow_abs"]
                     node_q_in[v] += data["flow_abs"]
 
         if n_parent_fallbacks:
             logger.info(
                 f"  {n_parent_fallbacks} bifurcation(s) had no inflowing parent; "
-                "D_F fell back to the larger daughter diameter."
+                "D_F was the Murray parent of the daughters."
             )
 
         # 7. Update Graph Viscosities and Resistances for next iteration
+        hematocrit_residual = 0.0
         for u, v, key, data in G.edges(keys=True, data=True):
             # The traversal wrote the skimmed hematocrit into G; step only part of the way to it.
+            # A stagnant edge was not traversed, so it keeps its value and adds no residual.
             h_old = previous_hematocrit[(u, v, key)]
+            if (u, v, key) not in stagnant:
+                hematocrit_residual = max(hematocrit_residual, abs(data["hematocrit"] - h_old))
             h = h_old + relaxation * (data["hematocrit"] - h_old)
             data["hematocrit"] = h
             d = _edge_diameter_um(data, default_diameter_um)
@@ -523,5 +632,58 @@ def solve_coupled_flow_and_hematocrit(
     G.graph["rheology_stop_reason"] = stop_reason
     G.graph["rheology_iterations"] = iterations
     G.graph["rheology_max_flow_change"] = None if np.isinf(max_flow_diff) else float(max_flow_diff)
+    G.graph["rheology_relative_flow_change"] = (
+        None if np.isinf(relative_flow_diff) else float(relative_flow_diff))
+    G.graph["rheology_hematocrit_residual"] = (
+        None if np.isinf(hematocrit_residual) else float(hematocrit_residual))
+    G.graph["rheology_stagnant_edges"] = int(n_stagnant)
+    G.graph["rheology_murray_parent_bifurcations"] = int(n_parent_fallbacks)
+    G.graph["rheology_settings"] = {
+        "max_iterations": int(max_iterations),
+        "flow_rtol": float(flow_rtol),
+        "hematocrit_atol": float(hematocrit_atol),
+        "relaxation": float(relaxation),
+        "stagnant_flow_fraction": float(stagnant_flow_fraction),
+        "systemic_hematocrit": float(systemic_hematocrit),
+    }
 
     return G, final_pressure
+
+
+#: The ``G.graph`` keys ``solve_coupled_flow_and_hematocrit`` writes, in the order reported.
+RHEOLOGY_STATUS_KEYS = (
+    "rheology_stop_reason", "rheology_iterations", "rheology_max_flow_change",
+    "rheology_relative_flow_change", "rheology_hematocrit_residual",
+    "rheology_stagnant_edges", "rheology_murray_parent_bifurcations", "rheology_settings",
+)
+
+
+def rheology_status(G) -> dict:
+    """How the rheology solve on ``G`` stopped, as a JSON-ready dict.
+
+    Raises if ``G`` was not solved by ``solve_coupled_flow_and_hematocrit``, rather than
+    reporting an empty status that reads like a clean one.
+    """
+    missing = [k for k in RHEOLOGY_STATUS_KEYS if k not in G.graph]
+    if missing:
+        raise ValueError(
+            f"G carries no rheology status ({', '.join(missing)} missing); run "
+            f"solve_coupled_flow_and_hematocrit on it first.")
+    return {k: G.graph[k] for k in RHEOLOGY_STATUS_KEYS}
+
+
+def report_unconverged(status: dict, label: str) -> bool:
+    """Print a warning naming ``label`` unless ``status`` says converged; return True if it did.
+
+    The drivers keep going (their JSON records the status), but the warning is loud so an
+    unconverged solve is not read as a converged one.
+    """
+    if status["rheology_stop_reason"] == "converged":
+        return False
+    print(
+        f"WARNING: {label}: rheology solve stopped on '{status['rheology_stop_reason']}' after "
+        f"{status['rheology_iterations']} iterations (relative flow change "
+        f"{status['rheology_relative_flow_change']}, haematocrit residual "
+        f"{status['rheology_hematocrit_residual']}). Its flows and haematocrit are not a "
+        f"converged solution.")
+    return True

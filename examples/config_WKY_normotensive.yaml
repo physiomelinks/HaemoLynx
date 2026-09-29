@@ -28,8 +28,11 @@ HaemodynamicsConfig:
   # Non-Newtonian Rheology Solver (Fåhræus–Lindqvist effect)
   # ------------------------------------------------------------------
   blood_plasma_viscosity_cP: 1.2
-  rheology_max_iterations: 15
-  rheology_tolerance: 1.0e-4
+  # cb_settings owns these four (open item 37)
+  rheology_max_iterations: 1000
+  rheology_relaxation: 0.2
+  rheology_flow_rtol: 1.0e-6
+  rheology_hematocrit_atol: 1.0e-4
 
 
 PerfusionConfig:
