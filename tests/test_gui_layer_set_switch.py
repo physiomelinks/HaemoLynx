@@ -194,3 +194,106 @@ def test_a_z_depth_window_keeps_the_perturbation_shown(run):
     assert _drawn(viewer, DILATE_VESSELS)
     assert not _drawn(viewer, VESSELS)
     assert _checked(panel) == ["dilate"]
+
+
+# --- sweep sliders live in the view panel, for the sweep shown --------------
+
+
+@pytest.fixture
+def sweeps(run, tmp_path):
+    """The baseline plus two real sweep perturbations, one slider each."""
+    from haemolynx.gui.results import ResultLayers
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import DILATION_SWEEP, PRESSURE_SWEEP, _run
+
+    panel, viewer = run
+    results = _run(tmp_path, [PRESSURE_SWEEP, DILATION_SWEEP]).results
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=results, output_dir=tmp_path)))
+    return panel, viewer, [result.name for result in results]
+
+
+def _sweep_slider(panel, name):
+    from qtpy.QtWidgets import QAbstractSlider
+
+    _key, container = panel._haemolynx_sweep_controls[perturbation_layer_names(name)[0]]
+    (slider,) = container.native.findChildren(QAbstractSlider)
+    return container, slider
+
+
+def test_sweep_sliders_are_in_the_view_panel_not_docks_of_their_own(sweeps):
+    panel, viewer, names = sweeps
+
+    docks = [name for name in viewer.window._wrapped_dock_widgets if name.endswith(" sweep")]
+    assert docks == []
+    assert set(panel._haemolynx_sweep_controls) == {
+        perturbation_layer_names(name)[0] for name in names
+    }
+    view_panel = panel._haemolynx_view_panel
+    for name in names:
+        container, _slider = _sweep_slider(panel, name)
+        assert view_panel.isAncestorOf(container.native)
+
+
+def test_only_the_shown_sweep_s_sliders_are_shown(sweeps):
+    panel, _viewer, (first, second) = sweeps
+    group = panel._haemolynx_sweep_group
+    assert group.isHidden()  # the baseline has no sweep
+
+    _choose(panel, first)
+    assert not group.isHidden()
+    assert first in group.title()
+    assert not _sweep_slider(panel, first)[0].native.isHidden()
+    assert _sweep_slider(panel, second)[0].native.isHidden()
+
+    _choose(panel, second)
+    assert _sweep_slider(panel, first)[0].native.isHidden()
+    assert not _sweep_slider(panel, second)[0].native.isHidden()
+
+    _choose(panel, "Baseline")
+    assert group.isHidden()
+
+
+def test_a_single_re_solve_perturbation_shows_no_sweep_box(run):
+    panel, viewer = run
+    _apply_layers(viewer, _perturbations("dilate"))
+
+    _choose(panel, "dilate")
+
+    assert panel._haemolynx_sweep_group.isHidden()
+
+
+def test_the_panel_slider_recolours_the_shown_sweep_s_tubes(sweeps):
+    import numpy as np
+
+    panel, viewer, (first, second) = sweeps
+    _choose(panel, first)
+    vessels = perturbation_layer_names(first)[0]
+    tubes = vessel_tubes_layer_name(vessels)
+    other = perturbation_layer_names(second)[0]
+    flows = np.asarray(viewer.layers[vessels].features["flow_abs"], dtype=float).copy()
+    colours = np.asarray(viewer.layers[tubes].vertex_colors, dtype=float).copy()
+    other_flows = np.asarray(viewer.layers[other].features["flow_abs"], dtype=float).copy()
+
+    _container, slider = _sweep_slider(panel, first)
+    slider.setValue(slider.maximum())
+
+    # Flows are ~1e-13, so np.allclose's default atol would call any two equal.
+    now = np.asarray(viewer.layers[vessels].features["flow_abs"], dtype=float)
+    assert not np.allclose(now, flows, rtol=1e-6, atol=0.0)
+    assert not np.allclose(np.asarray(viewer.layers[tubes].vertex_colors, dtype=float), colours)
+    np.testing.assert_array_equal(
+        np.asarray(viewer.layers[other].features["flow_abs"], dtype=float), other_flows
+    )
+
+
+def test_each_sweep_keeps_its_grid_point_while_another_is_shown(sweeps):
+    panel, _viewer, (first, second) = sweeps
+    _choose(panel, first)
+    _container, slider = _sweep_slider(panel, first)
+    slider.setValue(slider.maximum())
+
+    _choose(panel, second)
+    _choose(panel, first)
+
+    assert _sweep_slider(panel, first)[1].value() == slider.maximum()

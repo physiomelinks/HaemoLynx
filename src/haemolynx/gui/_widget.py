@@ -98,14 +98,17 @@ from haemolynx.gui.run_snapshot import (
 )
 from haemolynx.gui.tabs import section_box_title, tabs_for
 from haemolynx.gui.vessel_tubes import (
+    DEFAULT_TUBE_QUALITY,
     DEFAULT_VESSEL_DRAW,
-    TUBE_SHADING,
+    TUBE_QUALITY_SIDES,
     VESSEL_DRAW_LINES,
     VESSEL_DRAW_TUBES,
+    clamp_tube_quality,
     colors_for_tube_vertices,
+    tube_mesh,
     tube_radii_um,
     tube_radius_um,
-    tubes_from_vectors,
+    tube_shading_for_quality,
     vessel_tubes_layer_name,
 )
 from haemolynx.io import resolve_voxel_size_xyz
@@ -726,6 +729,9 @@ _branch_hover_session_selected: tuple[str, ...] | None = None
 #: View-only vessels drawing: tubes (default) or napari Vectors line ribbons.
 #: Survives layer rebuilds within a napari session; not a pipeline setting.
 _vessel_draw_mode: str = DEFAULT_VESSEL_DRAW
+#: The tubes' render quality (see ``TUBE_QUALITY_SIDES``), shared by every
+#: tubes layer in the session and set from the slider on their controls.
+_tube_quality: int = DEFAULT_TUBE_QUALITY
 
 #: Keys stashed on a branch-hover LayerSpec that must not reach napari.
 _BRANCH_HOVER_OPTION_KEYS = frozenset(
@@ -1031,13 +1037,20 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> str:
         return name
 
     radii = tube_radii_um(_vessel_segment_diameters_um(vessels))
-    vertices, faces, segment_index = tubes_from_vectors(
+    features = getattr(vessels, "features", None)
+    groups = None
+    if features is not None and "edge_index" in features:
+        # One tube per vessel: steps of two vessels meeting at a node stay apart.
+        groups = np.asarray(features["edge_index"])
+    vertices, faces, segment_index = tube_mesh(
         getattr(vessels, "data", ()),
         radius=(
             radii
             if radii is not None
             else tube_radius_um(getattr(vessels, "edge_width", None))
         ),
+        quality=_tube_quality,
+        groups=groups,
     )
     if len(vertices) == 0:
         vessels.visible = False
@@ -1059,23 +1072,110 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> str:
         existing.metadata = extra
         _set_tube_mesh(existing, vertices, faces, colours)
         existing.visible = True
+        tubes_layer = existing
     else:
         if existing is not None:
             _process_pending_qt_events()
             viewer.layers.remove(existing)
             _process_pending_qt_events()
-        viewer.add_surface(
+        tubes_layer = viewer.add_surface(
             (vertices, faces),
             name=name,
             scale=scale,
             vertex_colors=colours,
-            shading=TUBE_SHADING,
+            shading=tube_shading_for_quality(_tube_quality),
             blending="translucent",
             metadata={OURS: ours},
         )
     vessels.visible = False
     _ensure_tube_colour_follow(viewer, vessels)
+    try:
+        _attach_tube_quality_slider(viewer, tubes_layer)
+    except Exception:  # noqa: BLE001 - a missing slider must not stop drawing
+        logger.debug("could not attach the tube quality slider", exc_info=True)
     return name
+
+
+def _tube_quality_sliders(viewer) -> list:
+    """Every tube-quality slider on the tubes layers' controls."""
+    sliders = []
+    for layer in list(getattr(viewer, "layers", ())):
+        if not _is_vessel_tubes_layer(layer):
+            continue
+        controls = _layer_controls(viewer, layer)
+        slider = getattr(controls, "_haemolynx_tube_quality", None) if controls else None
+        if slider is not None:
+            sliders.append(slider)
+    return sliders
+
+
+def set_tube_quality(viewer, quality: int) -> None:
+    """Redraw every tube at *quality* (see ``TUBE_QUALITY_SIDES``).
+
+    The shading goes with it -- flat for the separate prisms of level 0,
+    smooth for the joined tubes above -- and every tubes layer's slider is
+    moved to match, since the level is the session's, not one layer's.
+    """
+    global _tube_quality
+    _tube_quality = clamp_tube_quality(quality)
+    for slider in _tube_quality_sliders(viewer):
+        if slider.value() != _tube_quality:
+            slider.blockSignals(True)
+            slider.setValue(_tube_quality)
+            slider.blockSignals(False)
+    shading = tube_shading_for_quality(_tube_quality)
+    for layer in list(viewer.layers):
+        if _is_vessel_tubes_layer(layer):
+            try:
+                layer.shading = shading
+            except Exception:  # noqa: BLE001 - shading is cosmetic
+                logger.debug("could not set tube shading", exc_info=True)
+    _sync_vessel_tubes(viewer)
+
+
+def _attach_tube_quality_slider(viewer, layer) -> bool:
+    """Put the "Render quality" slider on a tubes layer's controls, once.
+
+    It lives on the layer's own controls, so napari shows it only while a
+    tubes layer is selected. The left end is the original banded prisms;
+    each step right draws smoother, rounder, continuous tubes (and costs
+    more to draw). It acts on release, not while dragging: a big network
+    takes a moment to rebuild.
+    """
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QLabel, QSlider
+
+    from haemolynx.gui.chrome_tooltips import TUBE_QUALITY_TOOLTIP
+
+    controls = _layer_controls(viewer, layer)
+    if controls is None:
+        return False
+    slider = getattr(controls, "_haemolynx_tube_quality", None)
+    if slider is not None:
+        if slider.value() != _tube_quality:
+            slider.blockSignals(True)
+            slider.setValue(_tube_quality)
+            slider.blockSignals(False)
+        return True
+    layout = controls.layout()
+    if not hasattr(layout, "addRow"):
+        return False
+    slider = QSlider(Qt.Orientation.Horizontal)
+    slider.setObjectName("haemolynx_tube_quality")
+    slider.setRange(0, len(TUBE_QUALITY_SIDES) - 1)
+    slider.setSingleStep(1)
+    slider.setPageStep(1)
+    slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+    slider.setTickInterval(1)
+    slider.setTracking(False)
+    slider.setValue(_tube_quality)
+    slider.setToolTip(TUBE_QUALITY_TOOLTIP)
+    label = QLabel("render quality:")
+    label.setToolTip(TUBE_QUALITY_TOOLTIP)
+    slider.valueChanged.connect(lambda value: set_tube_quality(viewer, value))
+    layout.addRow(label, slider)
+    controls._haemolynx_tube_quality = slider
+    return True
 
 
 def _sync_vessel_tubes(viewer) -> None:
@@ -3228,13 +3328,21 @@ def _sweep_dock_name(layer_name: str) -> str:
     return f"{layer_name} sweep"
 
 
-def _remove_sweep_dock(viewer, layer_name: str) -> None:
-    """Take down the sweep sliders docked for *layer_name*, if there are any.
+def _remove_sweep_sliders(viewer, layer_name: str) -> None:
+    """Take down the sweep sliders for *layer_name*, if there are any.
 
-    A dock outlives its layer otherwise: Clear, a run from an earlier tab, or
-    a perturbation that failed or changed type left sliders driving a layer
-    that was gone or no longer a sweep.
+    Sliders outlive their layer otherwise: Clear, a run from an earlier tab,
+    or a perturbation that failed or changed type left sliders driving a
+    layer that was gone or no longer a sweep. They live in the view panel
+    (see :func:`_attach_sweep_sliders`), or in a dock of their own when the
+    viewer has no panel.
     """
+    host = getattr(viewer, "_haemolynx_sweep_host", None)
+    if host is not None:
+        try:
+            host.remove(layer_name)
+        except Exception:  # noqa: BLE001
+            logger.debug("could not remove sweep sliders for %s", layer_name, exc_info=True)
     dock_name = _sweep_dock_name(layer_name)
     try:
         window = viewer.window
@@ -3251,10 +3359,15 @@ def _remove_sweep_dock(viewer, layer_name: str) -> None:
 
 
 def _attach_sweep_sliders(viewer, layer, spec) -> None:
-    """One or two integer sliders for a sweep Vectors layer."""
-    # Drop a previous dock for this layer on re-run -- and keep it dropped
+    """One or two integer sliders for a sweep Vectors layer.
+
+    They go in the view panel's Sweep box, which shows only the sliders of
+    the perturbation chosen under "Showing"; a viewer with no panel gets them
+    in a dock of their own.
+    """
+    # Drop previous sliders for this layer on re-run -- and keep them dropped
     # when this layer is no longer a sweep.
-    _remove_sweep_dock(viewer, spec.name)
+    _remove_sweep_sliders(viewer, spec.name)
     sweep = getattr(spec, "sweep", None)
     if sweep is None:
         return
@@ -3306,6 +3419,10 @@ def _attach_sweep_sliders(viewer, layer, spec) -> None:
         rows.append(slider)
         rows.append(readout)
     container = Container(widgets=rows, layout="vertical", labels=True)
+    host = getattr(viewer, "_haemolynx_sweep_host", None)
+    if host is not None:
+        host.add(spec.name, getattr(spec, "layer_set", None), container)
+        return
     try:
         dock = viewer.window.add_dock_widget(
             container, name=dock_name, area="right", allowed_areas=["right", "left"]
@@ -4479,7 +4596,7 @@ def _remove_our_layers(viewer, keep: frozenset[str]) -> int:
         name = layer.name
         viewer.layers.remove(layer)
         _process_pending_qt_events()
-        _remove_sweep_dock(viewer, name)
+        _remove_sweep_sliders(viewer, name)
     return len(ours)
 
 
@@ -7595,6 +7712,7 @@ def settings_widget(napari_viewer=None):
         SHOW_RESULTS_TOOLTIP,
         SHOW_STEPS_TOOLTIP,
         SNAPSHOT_TOOLTIP,
+        SWEEP_TOOLTIP,
         LAYER_SET_TOOLTIP,
         VESSEL_DRAW_TOOLTIP,
         Z_DEPTH_TOOLTIP,
@@ -7722,6 +7840,7 @@ def settings_widget(napari_viewer=None):
             label = next((label for label, key in choices if key == shown), str(shown))
             layer_set_button.setText(label)
             layer_set_row.setVisible(bool(perturbations) or shown is not None)
+            refresh_sweep_controls()
         except RuntimeError:
             # The dock's Qt widgets outlive the panel on teardown.
             logger.debug("layer-set menu is gone", exc_info=True)
@@ -8756,6 +8875,65 @@ def settings_widget(napari_viewer=None):
     layer_set_form.setContentsMargins(0, 0, 0, 0)
     layer_set_form.addRow(layer_set_label, layer_set_button)
     display_form.addRow(layer_set_row)
+
+    # A sweep perturbation's grid sliders, one set per sweep, of which only
+    # the one chosen under "Showing" is shown -- a slider for a network not on
+    # screen moved flows nobody could see.
+    sweep_group = QGroupBox("Sweep")
+    sweep_group.setObjectName("haemolynx_sweep_group")
+    sweep_group.setToolTip(SWEEP_TOOLTIP)
+    sweep_layout = QVBoxLayout(sweep_group)
+    sweep_group.setVisible(False)
+    #: layer name -> (the perturbation it belongs to, its magicgui Container).
+    sweep_controls: dict[str, tuple[str | None, Any]] = {}
+    view_dock_holder: dict[str, Any] = {"dock": None}
+
+    def fit_view_dock() -> None:
+        """Grow or shrink the floating view panel to its contents."""
+        dock = view_dock_holder["dock"]
+        try:
+            if dock is None or not dock.isFloating():
+                return
+            view_panel.adjustSize()
+            hint = view_panel.sizeHint()
+            dock.resize(max(dock.width(), int(hint.width())),
+                        max(int(hint.height()) + 24, 220))
+        except RuntimeError:
+            logger.debug("view dock is gone", exc_info=True)
+
+    def refresh_sweep_controls() -> None:
+        shown = _layer_set_shown(viewer) if viewer is not None else None
+        any_shown = False
+        for key, container in sweep_controls.values():
+            on = key == shown
+            container.native.setVisible(on)
+            any_shown = any_shown or on
+        was_shown = not sweep_group.isHidden()
+        sweep_group.setTitle(f"Sweep: {shown}" if any_shown and shown else "Sweep")
+        sweep_group.setVisible(any_shown)
+        if any_shown != was_shown:
+            fit_view_dock()
+
+    def add_sweep_controls(layer_name: str, key: str | None, container) -> None:
+        remove_sweep_controls(layer_name)
+        sweep_controls[layer_name] = (key, container)
+        sweep_layout.addWidget(container.native)
+        refresh_sweep_controls()
+
+    def remove_sweep_controls(layer_name: str) -> None:
+        entry = sweep_controls.pop(layer_name, None)
+        if entry is not None:
+            native = entry[1].native
+            sweep_layout.removeWidget(native)
+            native.setParent(None)
+            native.deleteLater()
+        refresh_sweep_controls()
+
+    if viewer is not None:
+        viewer._haemolynx_sweep_host = SimpleNamespace(
+            add=add_sweep_controls, remove=remove_sweep_controls
+        )
+
     refresh_layer_sets()
     display_form.addRow(scale_bar_box)
 
@@ -8787,6 +8965,7 @@ def settings_widget(napari_viewer=None):
     snapshot_group.setMinimumHeight(48)
     view_layout = QVBoxLayout(view_panel)
     view_layout.addWidget(display_group)
+    view_layout.addWidget(sweep_group)
     view_layout.addWidget(snapshot_group)
 
     view_dock = None
@@ -8806,6 +8985,7 @@ def settings_widget(napari_viewer=None):
             view_dock.setObjectName("haemolynx_view_dock")
         except Exception:  # noqa: BLE001
             pass
+        view_dock_holder["dock"] = view_dock
         _give_bottom_docks_the_corners(viewer)
         _float_dock_over_canvas(viewer, view_dock)
         try:
@@ -8864,6 +9044,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_scale_bar = scale_bar_box
     panel._haemolynx_display_group = display_group
     panel._haemolynx_snapshot_group = snapshot_group
+    panel._haemolynx_sweep_group = sweep_group
+    panel._haemolynx_sweep_controls = sweep_controls
     panel._haemolynx_snapshot_button = snapshot_button
     panel._haemolynx_apply_view_z = apply_view_z
     panel._haemolynx_data_for_pipeline = data_for_pipeline

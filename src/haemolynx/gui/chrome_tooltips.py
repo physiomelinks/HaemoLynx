@@ -118,6 +118,17 @@ VIEW_SNAP_TOOLTIPS = {
     "XZ": "Centre the view and look along y at the XZ plane, z increasing downwards",
     "YZ": "Centre the view and look along x at the YZ plane, z increasing downwards",
 }
+SWEEP_TOOLTIP = (
+    "Step through the chosen perturbation's sweep: each grid point's flows, "
+    "recoloured in place. Shown for a sweep perturbation chosen under Showing; "
+    "each sweep keeps its own position while another is shown"
+)
+TUBE_QUALITY_TOOLTIP = (
+    "How the vessel tubes are drawn. Left: separate six-sided prisms per "
+    "centreline step, flat shaded (fastest; reads as bands). Each step right: "
+    "one continuous, capped tube per vessel with rounder cross-sections and "
+    "smooth shading -- slower to build on a large network"
+)
 SNAPSHOT_TOOLTIP = (
     "Write a TIFF of the current napari view into the pipeline "
     "output folder (cosmetic export only; does not feed the run)"

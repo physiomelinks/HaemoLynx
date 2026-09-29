@@ -6,11 +6,18 @@ import pytest
 
 from haemolynx.gui.results import VESSELS, VESSEL_TUBES
 from haemolynx.gui.vessel_tubes import (
+    DEFAULT_TUBE_QUALITY,
     DEFAULT_TUBE_SIDES,
+    TUBE_QUALITY_SIDES,
     TUBE_RADIUS_UM,
+    TUBE_SHADING,
+    clamp_tube_quality,
     colors_for_tube_vertices,
+    joined_tubes_from_vectors,
+    tube_mesh,
     tube_radii_um,
     tube_radius_um,
+    tube_shading_for_quality,
     tubes_from_vectors,
     vessel_tubes_layer_name,
 )
@@ -242,3 +249,155 @@ def test_large_network_mesh_is_vectorized_and_fast():
         owned = vertices[index == src]
         distances = _radial_distances(vectors[src, 0], vectors[src, 1], owned)
         np.testing.assert_allclose(distances, TUBE_RADIUS_UM, atol=1e-8)
+
+
+# --- render quality: joined, rounder tubes ------------------------------------
+
+
+def _polyline_vectors(points):
+    points = np.asarray(points, dtype=float)
+    return np.stack([points[:-1], points[1:] - points[:-1]], axis=1)
+
+
+def _edge_use(faces):
+    """How many faces use each undirected edge: 2 everywhere for a closed surface."""
+    edges = np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]), axis=1)
+    _unique, counts = np.unique(edges, axis=0, return_counts=True)
+    return set(counts.tolist())
+
+
+def _helix(turns=3, points=200):
+    t = np.linspace(0.0, 2.0 * np.pi * turns, points)
+    return np.stack([3.0 * np.cos(t), 3.0 * np.sin(t), 0.8 * t], axis=1)
+
+
+def test_quality_zero_is_the_original_drawing_exactly():
+    vectors = _polyline_vectors(_helix())
+    expected = tubes_from_vectors(vectors, radius=1.5, sides=TUBE_QUALITY_SIDES[0])
+    for got, want in zip(tube_mesh(vectors, radius=1.5, quality=0), expected):
+        np.testing.assert_array_equal(got, want)
+    assert TUBE_QUALITY_SIDES[0] == DEFAULT_TUBE_SIDES
+    assert DEFAULT_TUBE_QUALITY == 0
+
+
+def test_each_quality_step_is_rounder():
+    assert list(TUBE_QUALITY_SIDES) == sorted(TUBE_QUALITY_SIDES)
+    assert len(set(TUBE_QUALITY_SIDES)) == len(TUBE_QUALITY_SIDES)
+    vectors = _polyline_vectors(_helix())
+    counts = [len(tube_mesh(vectors, quality=q)[0]) for q in range(len(TUBE_QUALITY_SIDES))]
+    assert counts[1:] == sorted(counts[1:])
+
+
+def test_a_joined_tube_is_one_closed_surface():
+    """No bands: the rings are shared, so every edge borders exactly two faces."""
+    vertices, faces, _index = joined_tubes_from_vectors(
+        _polyline_vectors(_helix()), radius=1.0, sides=16
+    )
+    assert _edge_use(faces) == {2}
+    assert faces.min() >= 0 and faces.max() < len(vertices)
+
+
+def test_the_original_prisms_are_separate_open_bands():
+    """The premise: level 0 leaves every prism's ends open and unshared."""
+    _vertices, faces, _index = tubes_from_vectors(_polyline_vectors(_helix()), sides=6)
+    assert 1 in _edge_use(faces)
+
+
+def test_a_straight_tube_keeps_its_radius():
+    line = np.stack([np.zeros(10), np.zeros(10), np.arange(10.0)], axis=1)
+    vertices, _faces, _index = joined_tubes_from_vectors(
+        _polyline_vectors(line), radius=1.0, sides=8
+    )
+    rings = vertices[: 8 * 10]
+    np.testing.assert_allclose(np.linalg.norm(rings[:, :2], axis=1), 1.0)
+
+
+def test_a_bend_is_mitred_so_the_tube_keeps_its_width():
+    bend = _polyline_vectors([[0, 0, 0], [0, 0, 5], [0, 5, 5]])
+    vertices, _faces, _index = joined_tubes_from_vectors(bend, radius=1.0, sides=8)
+    joint = np.linalg.norm(vertices[8:16] - [0, 0, 5], axis=1)
+    # A 90-degree mitre is a sqrt(2)-stretched ellipse across the bend.
+    assert joint.min() == pytest.approx(1.0)
+    assert joint.max() == pytest.approx(np.sqrt(2.0))
+
+
+def test_a_joined_tube_does_not_twist():
+    """Each ring's own frame differs; the rings are lined up, not left twisted."""
+    helix = _helix()
+    vectors = _polyline_vectors(helix)
+    sides = 16
+    vertices, faces, _index = joined_tubes_from_vectors(vectors, radius=1.0, sides=sides)
+    side_faces = faces[: len(vectors) * sides * 2]
+    step = np.linalg.norm(vectors[:, 1], axis=1).max()
+    across = 2.0 * np.pi * 1.0 / sides
+    longest = np.linalg.norm(vertices[side_faces[:, 0]] - vertices[side_faces[:, 2]], axis=1).max()
+    # A face runs one step along and at most one side round -- never across the tube.
+    assert longest <= np.hypot(step, across) * 1.2
+
+
+def test_two_vessels_meeting_at_a_node_stay_two_tubes():
+    vectors = np.concatenate([
+        _polyline_vectors([[0, 0, 0], [0, 0, 5]]),
+        _polyline_vectors([[0, 0, 5], [0, 5, 5]]),
+    ])
+    joined, _faces, _index = joined_tubes_from_vectors(vectors, radius=1.0, sides=8)
+    apart, faces, index = joined_tubes_from_vectors(vectors, radius=1.0, sides=8, groups=[7, 9])
+    assert len(apart) == len(joined) + 8 + 2  # one more ring and two more caps
+    assert _edge_use(faces) == {2}
+    assert set(index.tolist()) == {0, 1}
+
+
+def test_joined_vertices_map_onto_their_own_steps():
+    vectors = _polyline_vectors(_helix(points=20))
+    vertices, _faces, index = joined_tubes_from_vectors(vectors, radius=1.0, sides=6)
+    assert len(index) == len(vertices)
+    assert index.min() == 0 and index.max() == len(vectors) - 1
+    # Ring k (k < steps) is where step k starts.
+    np.testing.assert_array_equal(index[: 6 * len(vectors)], np.repeat(np.arange(len(vectors)), 6))
+
+
+def test_joined_tubes_skip_zero_length_steps_and_take_per_step_radii():
+    points = [[0, 0, 0], [0, 0, 2], [0, 0, 2], [0, 0, 4]]
+    vectors = _polyline_vectors(points)
+    vertices, faces, index = joined_tubes_from_vectors(
+        vectors, radius=np.array([1.0, 5.0, np.nan]), sides=8
+    )
+    assert 1 not in index.tolist()  # the zero-length step
+    assert _edge_use(faces) == {2}
+    start_ring = np.linalg.norm(vertices[:8, :2], axis=1)
+    np.testing.assert_allclose(start_ring, 1.0)
+    end_ring = np.linalg.norm(vertices[16:24, :2], axis=1)
+    np.testing.assert_allclose(end_ring, TUBE_RADIUS_UM)  # NaN falls back
+
+
+def test_empty_and_bad_input_for_joined_tubes():
+    vertices, faces, index = joined_tubes_from_vectors(np.empty((0, 2, 3)))
+    assert vertices.shape == (0, 3) and faces.shape == (0, 3) and index.shape == (0,)
+    with pytest.raises(ValueError):
+        joined_tubes_from_vectors(np.zeros((2, 3)))
+    with pytest.raises(ValueError):
+        joined_tubes_from_vectors(_polyline_vectors(_helix(points=5)), sides=2)
+
+
+def test_shading_is_flat_for_the_prisms_and_smooth_for_joined_tubes():
+    assert tube_shading_for_quality(0) == TUBE_SHADING
+    assert {tube_shading_for_quality(q) for q in range(1, len(TUBE_QUALITY_SIDES))} == {"smooth"}
+
+
+def test_quality_is_clamped_to_a_real_level():
+    top = len(TUBE_QUALITY_SIDES) - 1
+    assert clamp_tube_quality(-3) == 0
+    assert clamp_tube_quality(top + 5) == top
+    assert clamp_tube_quality("2") == 2
+    assert clamp_tube_quality(None) == DEFAULT_TUBE_QUALITY
+
+
+def test_the_top_quality_is_fast_enough_for_a_large_network():
+    import time
+
+    rng = np.random.default_rng(0)
+    vectors = _polyline_vectors(np.cumsum(rng.normal(size=(100_001, 3)), axis=0))
+    groups = np.repeat(np.arange(100_000 // 20), 20)
+    started = time.perf_counter()
+    tube_mesh(vectors, quality=len(TUBE_QUALITY_SIDES) - 1, groups=groups)
+    assert time.perf_counter() - started < 10.0

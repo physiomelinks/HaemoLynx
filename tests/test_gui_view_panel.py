@@ -113,7 +113,13 @@ def test_the_view_panel_floats_over_the_canvas(make_napari_viewer):
     assert snapshot.parentWidget() is panel._haemolynx_view_panel
     layout = panel._haemolynx_view_panel.layout()
     assert layout.indexOf(panel._haemolynx_display_group) >= 0
-    assert layout.indexOf(snapshot) == layout.indexOf(panel._haemolynx_display_group) + 1
+    # Display, then a sweep perturbation's sliders (hidden until one is shown),
+    # then Snapshot.
+    sweep = panel._haemolynx_sweep_group
+    assert sweep.objectName() == "haemolynx_sweep_group"
+    assert sweep.isHidden()
+    assert layout.indexOf(sweep) == layout.indexOf(panel._haemolynx_display_group) + 1
+    assert layout.indexOf(snapshot) == layout.indexOf(sweep) + 1
     button = panel._haemolynx_snapshot_button
     assert button.objectName() == "haemolynx_snapshot_button"
     assert button.parentWidget() is snapshot
@@ -1076,8 +1082,8 @@ def test_a_sweep_layer_keeps_its_grid_point_through_a_z_depth_change(make_napari
         "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)))
     panel._haemolynx_after_layers_applied()
     name = perturbation_layer_names(result.name)[0]
-    dock = viewer.window._dock_widgets[f"{name} sweep"]
-    (grid_slider,) = dock.findChildren(QAbstractSlider)
+    _key, sliders = panel._haemolynx_sweep_controls[name]
+    (grid_slider,) = sliders.native.findChildren(QAbstractSlider)
 
     def expected(point):
         tag = viewer.layers[name].metadata[RESULT_OURS]
@@ -1102,8 +1108,10 @@ def test_a_sweep_layer_keeps_its_grid_point_through_a_z_depth_change(make_napari
     np.testing.assert_allclose(shown(), expected(0))
 
 
-def _sweep_docks(viewer) -> list[str]:
-    return [name for name in viewer.window._wrapped_dock_widgets if name.endswith(" sweep")]
+def _sweep_sliders(panel, viewer) -> list[str]:
+    """The layers with sweep sliders: in the view panel, or any stray dock."""
+    docks = [name for name in viewer.window._wrapped_dock_widgets if name.endswith(" sweep")]
+    return docks + list(panel._haemolynx_sweep_controls)
 
 
 def test_sweep_sliders_go_when_their_layer_goes_or_stops_being_a_sweep(make_napari_viewer, tmp_path):
@@ -1126,15 +1134,16 @@ def test_sweep_sliders_go_when_their_layer_goes_or_stops_being_a_sweep(make_napa
             "run_perturbations", PerturbationRun(results=[perturbation], output_dir=tmp_path)))
 
     show(result)
-    assert _sweep_docks(viewer) == [f"{name} sweep"]
+    assert _sweep_sliders(panel, viewer) == [name]
 
     # The same perturbation re-run as a single re-solve: same layer, no sweep.
     show(replace(result, type="capillary_block", sweep_flows=None))
     assert name in viewer.layers
-    assert _sweep_docks(viewer) == []
+    assert _sweep_sliders(panel, viewer) == []
 
     show(result)
-    assert _sweep_docks(viewer) == [f"{name} sweep"]
+    assert _sweep_sliders(panel, viewer) == [name]
     panel._haemolynx_clear()
     assert name not in viewer.layers
-    assert _sweep_docks(viewer) == []
+    assert _sweep_sliders(panel, viewer) == []
+    assert panel._haemolynx_sweep_group.isHidden()

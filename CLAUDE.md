@@ -437,7 +437,15 @@ are only caught locally.
   perturbation's (vessels, nodes, flow direction, vessel tubes), every other network hidden, and
   which kinds of layer were on carried across. A perturbation's `LayerSpec`s carry
   `layer_set=<its name>`, stored in the layer's `OURS` tag; the baseline's are `None`. The shown
-  network is the one `_sync_vessel_tubes` draws as tubes or lines.
+  network is the one `_sync_vessel_tubes` draws as tubes or lines. A sweep perturbation's grid
+  sliders sit in the view panel's Sweep box (not docks of their own) and show only while that
+  perturbation is the one shown.
+- **`gui/vessel_tubes.py`** — the vessel tube mesh. `tube_mesh(..., quality=)` is driven by the
+  "render quality" slider on a tubes layer's own controls: level 0 is the original separate
+  six-sided prisms per centreline step, flat shaded (cheap, but reads as bands); every level above
+  is `joined_tubes_from_vectors` — one closed, capped tube per vessel (steps grouped by
+  `edge_index`), rings mitred at bends and lined up so the tube cannot twist, smooth shaded, with
+  more sides per level (`TUBE_QUALITY_SIDES`). The level is the session's, shared by every tubes layer.
 - **`examples/pipeline_presets.py`** — `PRESETS`, named partial configs; every setting name is
   checked against the schema at import, so a preset cannot quietly set something that no longer
   exists. The override engine itself is library code, in `parsers/cli.py` and `parsers/config.py`.
