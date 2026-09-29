@@ -319,6 +319,36 @@ def test_add_vessel_routes_through_the_segmented_image(make_napari_viewer):
     assert added[0]["diameter_um"] == pytest.approx(4.0)
 
 
+def test_delete_by_branch_id_removes_the_vessels_typed(page):
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    keys = edge_keys(c.state.graph)
+    dead_end = next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})
+    c.branch_ids.setText(str(dead_end))
+    c.delete_ids_button.click()
+
+    graph = c.state.graph
+    assert 5 not in graph and graph.number_of_edges() == 5
+    assert len(viewer.layers[VESSELS].data) == 5
+    assert f"Deleted branchID(s) {dead_end}" in c.edit_status.text()
+    assert c.branch_ids.text() == ""
+
+
+def test_delete_by_branch_id_reports_bad_input_and_protects_boundaries(page):
+    c = page.controls
+    c.scan_button.click()
+    c.branch_ids.setText("99")
+    c.delete_ids_button.click()
+    assert "branchID 99 is not in this network (0 to 5)" in c.edit_status.text()
+    keys = edge_keys(c.state.graph)
+    into_outlet = [i for i, k in enumerate(keys) if 4 in k[:2]]
+    c.branch_ids.setText(", ".join(map(str, into_outlet)))
+    c.branch_ids.returnPressed.emit()
+    assert "boundary node" in c.edit_status.text()
+    assert c.state.graph.number_of_edges() == 6
+    assert c.branch_ids.text() != ""  # kept, so it can be corrected
+
+
 def test_regenerate_hands_over_the_edited_graph_and_clears_the_tab(page):
     c, viewer = page.controls, page.viewer
     c.scan_button.click()

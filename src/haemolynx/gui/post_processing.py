@@ -45,6 +45,7 @@ __all__ = [
     "junction_marker_layer",
     "junction_table_rows",
     "nearest_node",
+    "parse_branch_ids",
     "scan_network",
     "status_colours",
     "vessel_status",
@@ -171,6 +172,31 @@ def junction_marker_layer(graph: Any, scan: NetworkScan) -> LayerSpec:
             "out_of_slice_display": True,
         },
     )
+
+
+def parse_branch_ids(text: str, vessel_count: int) -> list[int]:
+    """The branchIDs typed into the tab, e.g. ``"12, 40 311"``, in order, once each.
+
+    Commas, semicolons and spaces all separate IDs. Raises ``ValueError``
+    naming what is wrong: nothing typed, something that is not a whole
+    number, or an ID the network does not have (0 to *vessel_count* - 1).
+    """
+    tokens = [t for t in str(text).replace(",", " ").replace(";", " ").split() if t]
+    if not tokens:
+        raise ValueError("Type one or more branchIDs, e.g. 12, 40")
+    ids: list[int] = []
+    for token in tokens:
+        try:
+            value = int(token)
+        except ValueError:
+            raise ValueError(f"{token!r} is not a branchID (a whole number)") from None
+        if not 0 <= value < vessel_count:
+            raise ValueError(
+                f"branchID {value} is not in this network (0 to {vessel_count - 1})"
+            )
+        if value not in ids:
+            ids.append(value)
+    return ids
 
 
 #: How far, in microns, a click may land from a node and still pick it.

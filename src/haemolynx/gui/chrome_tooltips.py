@@ -180,6 +180,14 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "not), with the mean diameter of the vessels already at those nodes"
     ),
     "stop": "Stop deleting or adding by clicking in the viewer",
+    "branch_ids": (
+        "The branchIDs to delete, as the vessel hover shows them, separated "
+        "by commas or spaces; Enter deletes them"
+    ),
+    "delete_ids": (
+        "Delete the vessels with the branchIDs typed beside this button; "
+        "inlets, outlets and boundary nodes are never cut off"
+    ),
     "regenerate": (
         "Rerun Diameters, Haemodynamics, Solve, Perturbations and Export on "
         "the edited network, so the 3D view and outputs catch up with the edits"

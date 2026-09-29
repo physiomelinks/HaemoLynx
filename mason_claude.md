@@ -13,7 +13,7 @@ adds a line to the change log at the bottom.
 
 ---
 
-## What the tab does (as of commit 2)
+## What the tab does (as of commit 3)
 
 After a run (at least through **4. Boundaries**), tab 10 works on a copy of the run's network:
 
@@ -48,6 +48,10 @@ After a run (at least through **4. Boundaries**), tab 10 works on a copy of the 
 
      The status line says which path was used.
    - **Stop editing.**
+   - **Delete by branch ID:** type branchIDs as the vessel hover shows them (`12, 40 311`;
+     commas, spaces or semicolons), then press the button or Enter. Bad input is reported and
+     kept so it can be corrected. Boundary nodes are protected the same way. After a delete, the
+     IDs of later vessels move down.
    - Nodes are picked from the graph itself (`nearest_node`, the node nearest the click ray),
      not by napari's point picking, which needs the layer drawn on screen.
 5. **Regenerate from the edited network:** reruns Diameters → Export on the edited graph, so
@@ -68,7 +72,7 @@ Things to know:
 | File | What it holds |
 |---|---|
 | `src/haemolynx/graph/post_processing.py` | Pure graph rules, no Qt or napari: `edge_keys`, `high_degree_junctions`, `junction_vessels` → `JunctionVessel`, `delete_vessels(protected=...)`, `split_junction(connector_length_um=15)`, `DEFAULT_SPLIT_CONNECTOR_LENGTH_UM`; for Add vessel: `mean_incident_diameter`, `vessel_path_between` (routed or straight, `MIN_ROUTED_INSIDE_FRACTION`), `add_vessel_between` |
-| `src/haemolynx/gui/post_processing.py` | Pure viewer logic: `scan_network` → `NetworkScan`, `vessel_status` / `status_colours` / `STATUS_COLOURS` (grey, cyan, yellow), `junction_marker_layer` (layer `HaemoLynx 4+ junctions`), `junction_table_rows`, `junction_label`, `nearest_node` (click → node), `camera_center_for`, `zoom_for_canvas` |
+| `src/haemolynx/gui/post_processing.py` | Pure viewer logic: `scan_network` → `NetworkScan`, `vessel_status` / `status_colours` / `STATUS_COLOURS` (grey, cyan, yellow), `junction_marker_layer` (layer `HaemoLynx 4+ junctions`), `junction_table_rows`, `junction_label`, `nearest_node` (click → node), `parse_branch_ids`, `camera_center_for`, `zoom_for_canvas` |
 | `tests/test_graph_post_processing.py` | Graph rules on small hand-built networks |
 | `tests/test_gui_post_processing.py` | The pure viewer logic |
 | `tests/test_gui_post_processing_widget.py` | The real Qt page with a napari viewer (`gui` marker) |
@@ -134,12 +138,11 @@ where it can't be committed by accident:
 - `.git/mason_tab10_backup/full_post_pull.tgz`: the same files as a tarball.
 - The `*_pre_pull*` copies are from before your colleague's 3 commits were pulled.
 
-1. **Delete by branch ID** (next): type branchIDs, e.g. `12, 40`, and delete them.
-2. **Prune disconnected branches**, placed just above Regenerate. It removes every component
+1. **Prune disconnected branches** (next), placed just above Regenerate. It removes every component
    without both an inlet and an outlet (`graph.remove_components_without_connected_io`).
    Regenerate then has to drop the pruned inlets and outlets from the boundary lists
    (`PipelineResume` in `regenerate_from_graph`) instead of stopping.
-3. **Off-network vessels (saved code):** `graph.off_network_edges` (biconnected-component test:
+2. **Off-network vessels (saved code):** `graph.off_network_edges` (biconnected-component test:
    a vessel is on the network iff it lies on a simple inlet → outlet path), a red status in
    `vessel_status`, and "N of M vessels are not on an inlet-to-outlet path" in the scan summary.
 
@@ -188,3 +191,5 @@ Known unrelated failures in this environment:
   - A manual override diameter now beats the branch-order table (`poiseuille.py`).
   - Tests: 3,682 fast tests passed; the GUI tests passed apart from the 3 known offscreen
     view-panel failures.
+- **2026-09-30, commit 3:** Delete by branch ID in tab 10's edit box (`parse_branch_ids`), with
+  boundary-node protection. Tests: the tab's pure, widget and tooltip tests pass (40).

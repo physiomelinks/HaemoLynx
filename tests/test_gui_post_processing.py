@@ -19,6 +19,7 @@ from haemolynx.gui.post_processing import (
     junction_marker_layer,
     junction_table_rows,
     nearest_node,
+    parse_branch_ids,
     scan_network,
     status_colours,
     vessel_status,
@@ -126,3 +127,24 @@ def test_nearest_node_picks_what_is_under_the_click():
     assert nearest_node(G, (50.0, 0.0, 10.0), view_direction=(1, 0, 0)) == 1
     # 2D: only the displayed axes count.
     assert nearest_node(G, (99.0, 20.0, 10.0), dims=(1, 2)) == 5
+
+
+def test_parse_branch_ids_reads_commas_spaces_and_semicolons_once_each():
+    assert parse_branch_ids("12, 40 3;12", 50) == [12, 40, 3]
+    assert parse_branch_ids("0", 1) == [0]
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("", "Type one or more"),
+        ("  , ", "Type one or more"),
+        ("12, x", "'x' is not a branchID"),
+        ("1.5", "'1.5' is not a branchID"),
+        ("50", "branchID 50 is not in this network \\(0 to 49\\)"),
+        ("-1", "branchID -1 is not in this network"),
+    ],
+)
+def test_parse_branch_ids_says_what_is_wrong(text, message):
+    with pytest.raises(ValueError, match=message):
+        parse_branch_ids(text, 50)

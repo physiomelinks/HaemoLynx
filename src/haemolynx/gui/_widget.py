@@ -6931,6 +6931,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         QHBoxLayout,
         QHeaderView,
         QLabel,
+        QLineEdit,
         QListWidget,
         QPushButton,
         QTableWidget,
@@ -6943,6 +6944,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         DEFAULT_SPLIT_CONNECTOR_LENGTH_UM,
         add_vessel_between,
         delete_vessels,
+        edge_keys,
         mask_cost_field,
         mean_incident_diameter,
         split_junction,
@@ -6957,6 +6959,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         junction_marker_layer,
         junction_table_rows,
         nearest_node,
+        parse_branch_ids,
         scan_network,
         status_colours,
         vessel_status,
@@ -7033,6 +7036,16 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     for button in (click_delete_button, add_button, stop_button):
         edit_row.addWidget(button)
     edit_layout.addLayout(edit_row)
+    branch_ids = QLineEdit()
+    branch_ids.setObjectName("haemolynx_post_processing_branch_ids")
+    branch_ids.setPlaceholderText("branchIDs, e.g. 12, 40")
+    branch_ids.setToolTip(tips["branch_ids"])
+    delete_ids_button = QPushButton("Delete by branch ID")
+    delete_ids_button.setToolTip(tips["delete_ids"])
+    ids_row = QHBoxLayout()
+    ids_row.addWidget(branch_ids, 1)
+    ids_row.addWidget(delete_ids_button)
+    edit_layout.addLayout(ids_row)
 
     regenerate_button = QPushButton("Regenerate from the edited network")
     regenerate_button.setToolTip(tips["regenerate"])
@@ -7334,6 +7347,24 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
             "Click the next start node, or Stop editing."
         )
 
+    def on_delete_ids() -> None:
+        if state.graph is None:
+            set_edit_status("Scan the network first.")
+            return
+        keys = edge_keys(state.graph)
+        try:
+            ids = parse_branch_ids(branch_ids.text(), len(keys))
+            delete_vessels(state.graph, [keys[i] for i in ids], protected=state.protected)
+        except ValueError as error:
+            set_edit_status(str(error))
+            return
+        branch_ids.clear()
+        rescan(prefer=state.node)
+        set_edit_status(
+            f"Deleted branchID(s) {', '.join(str(i) for i in ids)}. branchIDs of the "
+            "vessels after them have moved down: hover a vessel for its new one."
+        )
+
     def on_click(_layer, event) -> None:
         if state.mode == "idle" or state.graph is None:
             return
@@ -7390,6 +7421,8 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     click_delete_button.clicked.connect(lambda: arm("delete"))
     add_button.clicked.connect(lambda: arm("add"))
     stop_button.clicked.connect(stop_editing)
+    delete_ids_button.clicked.connect(on_delete_ids)
+    branch_ids.returnPressed.connect(on_delete_ids)
     regenerate_button.clicked.connect(on_regenerate)
 
     return SimpleNamespace(
@@ -7405,6 +7438,8 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         click_delete_button=click_delete_button,
         add_button=add_button,
         stop_button=stop_button,
+        branch_ids=branch_ids,
+        delete_ids_button=delete_ids_button,
         regenerate_button=regenerate_button,
         status=status,
         edit_status=edit_status,
