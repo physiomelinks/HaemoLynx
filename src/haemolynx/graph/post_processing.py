@@ -23,7 +23,9 @@ And, for the tab's click-in-the-viewer edits: :func:`vessel_path_between` and
 through the segmented image where it can be and straight where it cannot,
 with the mean diameter of the vessels already at those nodes
 (:func:`mean_incident_diameter`). After deleting, :func:`prune_disconnected_branches`
-removes whatever the deletions cut off from every inlet-to-outlet piece.
+removes whatever the deletions cut off from every inlet-to-outlet piece, and
+:func:`dead_end_vessels` / :func:`delete_dead_end_vessels` find and remove
+every vessel no inlet-to-outlet path runs through.
 """
 from __future__ import annotations
 
@@ -44,6 +46,8 @@ __all__ = [
     "JunctionVessel",
     "MIN_ROUTED_INSIDE_FRACTION",
     "add_vessel_between",
+    "dead_end_vessels",
+    "delete_dead_end_vessels",
     "delete_vessels",
     "edge_keys",
     "high_degree_junctions",
@@ -462,3 +466,98 @@ def prune_disconnected_branches(
     stats["removed_vessels"] = G.number_of_edges() - pruned.number_of_edges()
     stats["removed_boundary_nodes"] = [n for n in boundary if n in G and n not in pruned]
     return pruned, stats
+
+
+def dead_end_vessels(
+    G: nx.MultiGraph,
+    inlet_nodes: Sequence[Any],
+    outlet_nodes: Sequence[Any],
+) -> list[EdgeKey]:
+    """Vessels no inlet-to-outlet path runs through, in branchID order.
+
+    A vessel belongs to the network between the inlets and outlets when some
+    path from an inlet to an outlet, visiting no node twice, uses it: one of
+    its ends leads back to an inlet and the other on to an outlet, by
+    different vessels. Everything else carries no flow in the solve -- a
+    dead-end branch, a loop hanging off a single node, a self-loop, a piece
+    with no inlet or no outlet -- and is listed here.
+
+    The test is exact and linear-time: join every inlet to a virtual source,
+    every outlet to a virtual sink, and the source to the sink. A vessel is on
+    a simple inlet-to-outlet path exactly when it shares a biconnected
+    component with that source-sink edge.
+    """
+    inlets = [n for n in dict.fromkeys(inlet_nodes) if n in G]
+    outlets = [n for n in dict.fromkeys(outlet_nodes) if n in G]
+    if not inlets or not outlets:
+        raise ValueError(
+            "Finding dead-end vessels needs at least one inlet and one outlet in the network"
+        )
+    source, sink = object(), object()
+    H = nx.Graph()
+    H.add_nodes_from(G)
+    H.add_edges_from((u, v) for u, v in G.edges() if u != v)
+    H.add_edges_from((source, n) for n in inlets)
+    H.add_edges_from((sink, n) for n in outlets)
+    H.add_edge(source, sink)
+    through: set[frozenset] = set()
+    for component in nx.biconnected_component_edges(H):
+        pairs = {frozenset(edge) for edge in component}
+        if frozenset((source, sink)) in pairs:
+            through = pairs
+            break
+    return [
+        (u, v, k)
+        for u, v, k in G.edges(keys=True)
+        if u == v or frozenset((u, v)) not in through
+    ]
+
+
+def delete_dead_end_vessels(
+    G: nx.MultiGraph,
+    inlet_nodes: Sequence[Any],
+    outlet_nodes: Sequence[Any],
+    edges: Iterable[EdgeKey] | None = None,
+    *,
+    protected: Iterable[Any] = (),
+) -> list[Any]:
+    """Remove dead-end vessels -- *edges*, or every one when None.
+
+    Each must be one :func:`dead_end_vessels` lists. Nodes are tidied as
+    :func:`delete_vessels` does, with one difference: a *protected* node
+    whose every vessel is being removed goes with them, since it sits on a
+    part of the network the solve never reaches (as
+    :func:`prune_disconnected_branches` drops a boundary node on a piece with
+    no inlet or no outlet). Protected nodes that keep a vessel, and inlets and
+    outlets always, are never merged. Refuses to remove every vessel.
+
+    Returns the protected nodes removed, in the order first touched.
+    """
+    dead = dead_end_vessels(G, inlet_nodes, outlet_nodes)
+    if edges is None:
+        selected = dead
+    else:
+        dead_set = set(dead)
+        selected = list(dict.fromkeys(tuple(edge) for edge in edges))
+        for edge in selected:
+            if edge not in dead_set:
+                raise ValueError(
+                    f"Vessel {edge!r} is not a dead end: an inlet-to-outlet path runs through it"
+                )
+    if not selected:
+        return []
+    if len(selected) >= G.number_of_edges():
+        raise ValueError(
+            "No vessel lies between an inlet and an outlet; deleting the dead ends "
+            "would remove every vessel"
+        )
+    protected_set = set(protected) | set(inlet_nodes) | set(outlet_nodes)
+    loss: Counter = Counter()
+    for u, v, _k in selected:
+        loss[u] += 1
+        loss[v] += 1
+    stranded = [
+        node for node in loss if node in protected_set and G.degree(node) - loss[node] <= 0
+    ]
+    delete_vessels(G, selected, protected=protected_set - set(stranded))
+    return stranded

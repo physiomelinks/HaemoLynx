@@ -192,6 +192,23 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "Remove every piece of the network that no longer has both an inlet "
         "and an outlet, such as a branch whose only link to the rest was deleted"
     ),
+    "find_dead": (
+        "List every vessel no inlet-to-outlet path runs through -- dead-end "
+        "branches, loops hanging off one node, pieces with no inlet or no "
+        "outlet -- and draw them orange; the list follows every later edit"
+    ),
+    "dead_table": (
+        "Dead-end vessels; click one to zoom to it and turn it yellow, "
+        "shift/ctrl-click to select several"
+    ),
+    "delete_dead": (
+        "Remove the selected dead-end vessels and select the next one, so "
+        "they can be checked and deleted one at a time"
+    ),
+    "delete_all_dead": (
+        "Remove every dead-end vessel at once, leaving only the network "
+        "between the inlets and outlets"
+    ),
     "log": (
         "Every change made in this tab, oldest first, with the branchIDs as "
         "they were when it was made; the same lines go to the napari log"

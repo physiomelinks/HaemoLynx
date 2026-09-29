@@ -10,12 +10,15 @@ from haemolynx.graph._helpers import calculate_path_length
 from haemolynx.gui.post_processing import (
     AT_JUNCTION,
     CONNECTED,
+    DEAD_END,
+    DEAD_END_TABLE_COLUMNS,
     HIGH_DEGREE_JUNCTIONS,
     JUNCTION_TABLE_COLUMNS,
     SELECTED,
     STATUS_COLOURS,
     boundaries_following_graph,
     camera_center_for,
+    dead_end_table_rows,
     describe_vessels,
     junction_label,
     junction_marker_layer,
@@ -24,6 +27,7 @@ from haemolynx.gui.post_processing import (
     parse_branch_ids,
     scan_network,
     status_colours,
+    vessel_midpoint,
     vessel_status,
     zoom_for_canvas,
 )
@@ -187,3 +191,28 @@ def test_describe_vessels_names_branch_id_ends_length_and_diameter():
     del G.edges[keys[0]]["diameter_um"]
     assert describe_vessels(G, [keys[0]]) == "branchID 0 (node 0-1, 10 µm)"
     assert describe_vessels(G, [(98, 99, 0)]) == ""  # not in the graph
+
+
+def test_vessel_status_draws_dead_ends_under_junction_and_selection():
+    status = vessel_status([0, 1, 2, 3], dead_end=[1, 2, 3], at_junction=[2], selected=[3])
+    assert list(status) == [CONNECTED, DEAD_END, AT_JUNCTION, SELECTED]
+    assert tuple(status_colours([DEAD_END])[0]) == STATUS_COLOURS[DEAD_END]
+
+
+def test_dead_end_table_rows_list_branch_ids_in_order_with_both_ends():
+    G = _network()
+    keys = edge_keys(G)
+    to_5 = next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})
+    ids, rows = dead_end_table_rows(G, [keys[to_5], keys[0]])
+    assert ids == sorted([0, to_5])
+    assert len(rows[0]) == len(DEAD_END_TABLE_COLUMNS)
+    assert rows[ids.index(to_5)] == (str(to_5), "20", "5", "B01", "1-5")
+
+
+def test_vessel_midpoint_is_halfway_along_the_path():
+    G = _network()
+    edge = next(k for k in edge_keys(G) if set(k[:2]) == {1, 5})
+    G.edges[edge]["voxels"] = [(0.0, 0.0, 10.0), (0.0, 10.0, 10.0), (0.0, 20.0, 10.0)]
+    assert np.allclose(vessel_midpoint(G, edge), [0, 10, 10])
+    G.edges[edge]["voxels"] = None
+    assert np.allclose(vessel_midpoint(G, edge), [0, 10, 10])
