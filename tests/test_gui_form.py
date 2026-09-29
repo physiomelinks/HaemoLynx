@@ -899,7 +899,6 @@ def test_visible_vessel_mask_settings_nests_under_automated_and_parents():
         "automated_vessel_assignment",
         "use_large_vessel_masks",
         "use_small_vessel_masks_for_boundary_assignment",
-        "remove_disconnected_io_components_after_final_assignment",
     }
 
     large_on = {

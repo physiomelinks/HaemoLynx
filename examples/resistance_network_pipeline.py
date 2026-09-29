@@ -20,6 +20,7 @@ from haemolynx.parsers import configure_console_logging, settings_from_command_l
 from haemolynx.pipeline import resolve_settings as _resolve_settings
 from haemolynx.pipeline import (
     preflight,
+    apply_network_handling,
     assign_boundaries,
     assign_diameters,
     build_haemodynamic_model,
@@ -84,6 +85,7 @@ def image_to_model_pipeline(settings: dict | None = None, **overrides):
     network = build_network(settings, volume, SCHEMA)
     boundaries = assign_boundaries(settings, network)
     diameters = assign_diameters(settings, network, boundaries, SCHEMA)
+    diameters = apply_network_handling(settings, diameters, boundaries, network)
     model = build_haemodynamic_model(settings, diameters)
     solution = solve(settings, model, boundaries)
     # Nothing to bind: each perturbation writes its own output, and the run

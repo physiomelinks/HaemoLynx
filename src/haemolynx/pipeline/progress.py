@@ -233,6 +233,9 @@ STAGES: tuple[Stage, ...] = (
             "run_haemodynamics",
             *_VISCOSITY_SETTINGS_ON_HAEMODYNAMICS_TAB,
         ),
+        # Done to the assigned network at the start of this stage (see
+        # stages.apply_network_handling), so its rows sit here.
+        sections=("Network handling",),
     ),
     Stage(
         # Its rows belong beside the haemodynamics they configure, so this

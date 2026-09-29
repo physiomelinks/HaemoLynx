@@ -31,6 +31,7 @@ for _path in (root_dir / "src", examples_dir):
 from haemolynx.haemodynamics.pericyte_sweep import run_pericyte_dilation_pressure_sweep
 from haemolynx.parsers import configure_console_logging, settings_from_command_line
 from haemolynx.pipeline import (
+    apply_network_handling,
     assign_boundaries,
     assign_diameters,
     build_haemodynamic_model,
@@ -56,6 +57,7 @@ def main(settings: dict) -> dict:
     network = build_network(settings, volume, SCHEMA)
     boundaries = assign_boundaries(settings, network)
     diameters = assign_diameters(settings, network, boundaries, SCHEMA)
+    diameters = apply_network_handling(settings, diameters, boundaries, network)
     model = build_haemodynamic_model(settings, diameters)
     solution = solve(settings, model, boundaries)
     export_results(settings, network, model, solution)

@@ -72,6 +72,10 @@ _ENDOTHELIAL = "Endothelial diameter"
 # Not "Perturbations": the YAML key of a section may not collide with a
 # setting name, and `perturbations` is one of the settings in it.
 _PERTURBATION_RUNS = "Perturbation runs"
+#: What is done to the assigned network before its haemodynamic model is
+#: built (the "6. Haemodynamics" tab's own box; see pipeline.stages
+#: apply_network_handling).
+_NETWORK_HANDLING = "Network handling"
 
 
 SCHEMA = Schema(
@@ -1030,17 +1034,6 @@ SCHEMA = Schema(
                 "!cut_network_at_large_vessel_volumes",
                 "assign_large_vessel_branch_orders",
             ),
-        ),
-        Setting(
-            name="remove_disconnected_io_components_after_final_assignment",
-            kind="bool",
-            default=False,
-            help=(
-                "After final I/O assignment, drop graph components that lack both "
-                "an inlet and an outlet node"
-            ),
-            section=_VESSEL_MASKS,
-            requires=("automated_vessel_assignment",),
         ),
         Setting(
             name="skeleton_thick_vessel_restrict_to_mask",
@@ -3274,6 +3267,33 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
+        ),
+        # ------------------------------------------------------------------
+        # Network handling: done to the assigned network at the start of the
+        # haemodynamics stage, so a change here takes effect on "Run from this
+        # stage" from the Haemodynamics tab.
+        # ------------------------------------------------------------------
+        Setting(
+            name="remove_disconnected_io_components_after_final_assignment",
+            kind="bool",
+            default=False,
+            help=(
+                "Before building the haemodynamic model, drop graph components "
+                "that do not have both an inlet and an outlet node"
+            ),
+            section=_NETWORK_HANDLING,
+            requires=("automated_vessel_assignment",),
+        ),
+        Setting(
+            name="boundary_handling",
+            kind="choice",
+            default="None",
+            help=(
+                "How the network's boundaries are handled before the haemodynamic "
+                "model is built; None leaves them as assigned"
+            ),
+            section=_NETWORK_HANDLING,
+            choices=("None",),
         ),
         Setting(
             name="all_diams_const",

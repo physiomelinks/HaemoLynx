@@ -61,3 +61,7 @@ def test_extras_schema_defaults():
     assert schema["remove_disconnected_io_components_after_final_assignment"].requires == (
         "automated_vessel_assignment",
     )
+    assert (
+        schema["remove_disconnected_io_components_after_final_assignment"].section
+        == "Network handling"
+    )

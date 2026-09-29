@@ -371,7 +371,9 @@ def test_a_tab_carries_the_rows_for_its_settings():
     is the model that reads them), `solve` brings the boundary pressures it
     reads plus the Pries-Secomb haematocrit distribution settings (retabbed
     the same way, since they configure the flow solve, not the baseline
-    diameter model).
+    diameter model). The "Network handling" box is what is done to the
+    assigned network first -- pruning components without I/O, and boundary
+    handling -- which runs at the start of `build_haemodynamic_model`.
     """
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     haemodynamics = tabs["6. Haemodynamics"]
@@ -385,6 +387,8 @@ def test_a_tab_carries_the_rows_for_its_settings():
         "haematocrit_model",
         "haematocrit_distribution_max_iterations",
         "haematocrit_distribution_tolerance",
+        "remove_disconnected_io_components_after_final_assignment",
+        "boundary_handling",
     }
 
 

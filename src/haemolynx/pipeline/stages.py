@@ -10,6 +10,8 @@ you intervene in the middle of a run.
     build_network        skeleton + vessel masks -> graph
     assign_boundaries    graph -> inlet, outlet and vessel-boundary nodes
     assign_diameters     graph -> branch orders and a diameter per edge
+    apply_network_handling    the "Network handling" settings, at the start of the
+                              haemodynamics stage (e.g. drop components lacking I/O)
     build_haemodynamic_model  diameters -> resistance and conductance per edge
     solve                conductance -> pressures, flows, equivalent resistance
     run_perturbations    the same baseline, re-solved once per perturbation
@@ -1904,44 +1906,6 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     logger.info(f"Arteriole boundary nodes are: {settings['arteriole_boundary_nodes']}")
     logger.info(f"Venule boundary nodes are: {settings['venule_boundary_nodes']}")
 
-    if bool(settings.get("remove_disconnected_io_components_after_final_assignment", False)):
-        G_pruned, io_prune_stats = graph.remove_components_without_connected_io(
-            G,
-            settings["inlet_nodes"],
-            settings["outlet_nodes"],
-        )
-        if int(io_prune_stats["removed_components"]) > 0:
-            network.graph = G_pruned
-            G = G_pruned
-            settings["inlet_nodes"][:] = [
-                node_id for node_id in settings["inlet_nodes"] if node_id in G.nodes
-            ]
-            settings["outlet_nodes"][:] = [
-                node_id for node_id in settings["outlet_nodes"] if node_id in G.nodes
-            ]
-            settings["arteriole_boundary_nodes"][:] = [
-                node_id
-                for node_id in settings["arteriole_boundary_nodes"]
-                if node_id in G.nodes
-            ]
-            settings["venule_boundary_nodes"][:] = [
-                node_id
-                for node_id in settings["venule_boundary_nodes"]
-                if node_id in G.nodes
-            ]
-            logger.info(
-                "Removed disconnected graph component(s) lacking inlet or outlet "
-                "nodes after final assignment: "
-                f"removed_components={int(io_prune_stats['removed_components'])}, "
-                f"removed_nodes={int(io_prune_stats['removed_nodes'])}, "
-                f"remaining_nodes={int(io_prune_stats['remaining_nodes'])}."
-            )
-            if not settings["inlet_nodes"] or not settings["outlet_nodes"]:
-                raise ValueError(
-                    "After removing disconnected components without both inlet and "
-                    "outlet nodes, no valid boundary nodes remained."
-                )
-
     if settings["automated_vessel_assignment"] and settings["visualize_results"]:
         if large_arteriole_mask is None or large_venule_mask is None:
             raise ValueError(
@@ -2212,6 +2176,71 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
         results=locals().get("haemo_results", {}) or {},
         fwhm_raw=locals().get("fwhm_raw"),
     )
+
+
+#: The boundary-node lists a network-handling step keeps in step with the graph.
+_BOUNDARY_NODE_LISTS = (
+    "inlet_nodes",
+    "outlet_nodes",
+    "arteriole_boundary_nodes",
+    "venule_boundary_nodes",
+    "large_arteriole_boundary_nodes",
+    "large_venule_boundary_nodes",
+)
+
+
+def apply_network_handling(
+    settings: dict,
+    model: HaemodynamicModel,
+    boundaries: BoundaryNodes,
+    network: VesselNetwork | None = None,
+) -> HaemodynamicModel:
+    """What the "Network handling" settings do to the assigned network.
+
+    Runs at the start of the haemodynamics stage, before the model is built,
+    so a change on the Haemodynamics tab takes effect when the run restarts
+    there. ``remove_disconnected_io_components_after_final_assignment`` drops
+    every graph component that does not have both an inlet and an outlet;
+    the boundary-node lists (on *boundaries* and in *settings*) and the
+    resistance node pair follow the pruned graph, which becomes *model*'s,
+    *boundaries*' and *network*'s. ``boundary_handling`` has only ``None``
+    so far, which changes nothing.
+    """
+    if not bool(settings.get("remove_disconnected_io_components_after_final_assignment", False)):
+        return model
+    G_pruned, io_prune_stats = graph.remove_components_without_connected_io(
+        model.graph, boundaries.inlet_nodes, boundaries.outlet_nodes
+    )
+    if int(io_prune_stats["removed_components"]) == 0:
+        return model
+    model.graph = G_pruned
+    boundaries.graph = G_pruned
+    if network is not None:
+        network.graph = G_pruned
+    for name in _BOUNDARY_NODE_LISTS:
+        # In place: assign_boundaries hands the settings' own lists over, and
+        # both must say the same thing afterwards.
+        kept = getattr(boundaries, name)
+        kept[:] = [node_id for node_id in kept if node_id in G_pruned]
+        in_settings = settings.get(name)
+        if isinstance(in_settings, list) and in_settings is not kept:
+            in_settings[:] = [node_id for node_id in in_settings if node_id in G_pruned]
+    logger.info(
+        "Removed disconnected graph component(s) lacking inlet or outlet nodes: "
+        f"removed_components={int(io_prune_stats['removed_components'])}, "
+        f"removed_nodes={int(io_prune_stats['removed_nodes'])}, "
+        f"remaining_nodes={int(io_prune_stats['remaining_nodes'])}."
+    )
+    if not boundaries.inlet_nodes or not boundaries.outlet_nodes:
+        raise ValueError(
+            "After removing disconnected components without both inlet and "
+            "outlet nodes, no valid boundary nodes remained."
+        )
+    pair = boundaries.resistance_node_pair
+    if pair is None or any(node_id not in G_pruned for node_id in pair):
+        boundaries.resistance_node_pair = (boundaries.inlet_nodes[0], boundaries.outlet_nodes[0])
+        logger.info(f"Re-selected resistance node pair: {boundaries.resistance_node_pair}")
+    return model
 
 
 def build_haemodynamic_model(
@@ -3899,6 +3928,7 @@ def run_pipeline_stages(
     _produced(on_stage_output, "assign_diameters", diameters)
     with run.stage("build_haemodynamic_model"):
         if _run_stage_body("build_haemodynamic_model", start_from):
+            diameters = apply_network_handling(settings, diameters, boundaries, network)
             model = build_haemodynamic_model(settings, diameters, schema)
         else:
             model = diameters

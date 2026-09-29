@@ -344,7 +344,12 @@ are only caught locally.
   dataclass, so a caller can run them one at a time and intervene. `run_pipeline_stages` is the
   orchestrator that runs all nine in order and returns the graph; its `start_from` / `resume`
   arguments let the panel re-run from a chosen stage using a saved run's state instead of
-  recomputing the earlier ones.
+  recomputing the earlier ones. `apply_network_handling(settings, model, boundaries, network)` is
+  the "Network handling" box on the Haemodynamics tab (pruning components without both an inlet
+  and an outlet; `boundary_handling`), run at the start of the haemodynamics stage — not at the
+  end of `assign_boundaries`, where it used to be — so "Run from this stage" on that tab honours
+  it. A caller running the stages by hand calls it between `assign_diameters` and
+  `build_haemodynamic_model`, as the examples do.
 - **`pipeline/progress.py`** — `STAGES`, the run's stages in order (the panel draws one tab
   per entry and a progress bar counts them — one list, not two). It has ten entries for nine
   stage functions: `solve` has no tab of its own (it shares **6. Haemodynamics**), and
