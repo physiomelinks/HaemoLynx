@@ -18,6 +18,15 @@ from .edit import (
     mask_cost_field,
     voxel_path_to_microns,
 )
+from .post_processing import (
+    DEFAULT_SPLIT_CONNECTOR_LENGTH_UM,
+    JunctionVessel,
+    delete_vessels,
+    edge_keys,
+    high_degree_junctions,
+    junction_vessels,
+    split_junction,
+)
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .validate import (
     EDGE_ATTRIBUTE_UNITS,
@@ -158,6 +167,13 @@ __all__ = [
     "reconnect_secondary_loop_edges",
     "optimise_graph_topology_fixed",
     "reconnect_orphan_and_dangling_nodes",
+    "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
+    "JunctionVessel",
+    "delete_vessels",
+    "edge_keys",
+    "high_degree_junctions",
+    "junction_vessels",
+    "split_junction",
     "validate_skeleton_connection",
     "assert_no_forbidden_edge_attributes",
     "EDGE_ATTRIBUTE_UNITS",

@@ -100,15 +100,21 @@ def test_the_panel_builds_with_no_viewer():
 
 
 def test_there_is_one_tab_per_stage_that_opens_one(panel):
-    """Not one per stage: `solve` shows its rows on the haemodynamics tab."""
+    """Not one per stage: `solve` shows its rows on the haemodynamics tab.
+
+    Then the post-processing page, which is no stage of its own.
+    """
     from qtpy.QtWidgets import QTabWidget
+
+    from haemolynx.gui._widget import POST_PROCESSING_TAB
 
     widget, _viewer = panel
     tab_widget = widget.findChild(QTabWidget)
     assert tab_widget is not None
-    assert [tab_widget.tabText(i) for i in range(tab_widget.count())] == list(
-        tab_titles()
-    )
+    assert [tab_widget.tabText(i) for i in range(tab_widget.count())] == [
+        *tab_titles(),
+        POST_PROCESSING_TAB,
+    ]
 
 
 def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):

@@ -32,8 +32,9 @@ haemolynx/
 │   │                       #   smoothing.py (centreline smoothing — rewrites `length`),
 │   │                       #   thick_vessel_junctions.py (IS_ZERO_RESISTANCE bridges),
 │   │                       #   communities.py (vascular communities), edit.py (the panel's
-│   │                       #   graph edits), automated_vessel_assignment.py (terminal-node
-│   │                       #   assignment)
+│   │                       #   graph edits), post_processing.py (4+ junctions: delete
+│   │                       #   vessels / split with a connector), automated_vessel_assignment.py
+│   │                       #   (terminal-node assignment)
 │   ├── haemodynamics/      # poiseuille, viscosity (the laws), resistance, apply,
 │   │                       #   automated.py (FWHM diameters), raw_section.py (the raw
 │   │                       #   cross-section fitted where FWHM fails, opt-in), edt_diameter.py
@@ -72,7 +73,8 @@ haemolynx/
 │   │                       #   directions, pure), layer_sets.py (baseline/perturbation
 │   │                       #   network swap for the view panel's "Showing" menu, pure),
 │   │                       #   perturbation_editing.py, graph_editor.py
-│   │                       #   + graph_click.py (the Edit window), branch_hover.py,
+│   │                       #   + graph_click.py (the Edit window), post_processing.py
+│   │                       #   (what the "10. Post processing" tab draws, pure), branch_hover.py,
 │   │                       #   vessel_tubes.py, run_state.py, run_log.py + log_view.py,
 │   │                       #   run_snapshot.py (.haemorun save/load), stage_checkpoints.py
 │   │                       #   (re-run from a tab), optimise_progress.py, chrome_tooltips.py
@@ -354,7 +356,9 @@ are only caught locally.
   per entry and a progress bar counts them — one list, not two). It has ten entries for nine
   stage functions: `solve` has no tab of its own (it shares **6. Haemodynamics**), and
   **8. Additional measurements** is a tab with no stage function (its settings are read by
-  `export_results`). Plus what a run reports through:
+  `export_results`). The panel's last tab, **10. Post processing**, is not in `STAGES` at all:
+  it edits a finished run's graph and hands it to the same Regenerate the Edit window uses.
+  Plus what a run reports through:
   `run_pipeline_stages(settings, schema, progress=callback)` hands the callback a `ProgressEvent`
   as each stage starts, finishes or fails, and one per topology step inside graph building.
   `log_progress` is the ready-made console consumer; the napari panel's bars are the other one.

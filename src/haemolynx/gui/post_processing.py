@@ -1,0 +1,200 @@
+"""What the "10. Post processing" tab draws and lists, described without napari.
+
+Pure, like :mod:`haemolynx.gui.results`: a graph in, colours, layer specs
+and table rows out. ``_widget.py`` owns the Qt page,
+applies these to the viewer and calls the graph edits in
+:mod:`haemolynx.graph.post_processing`.
+
+The tab does not draw a second copy of the network. It recolours the vessels
+layer that is already there -- so the colours land on the 3D tubes as well as
+the lines, and a click only swaps colours instead of rebuilding a layer:
+
+* grey -- every other vessel;
+* cyan -- one of the vessels at the junction being looked at;
+* yellow -- a vessel selected in the tab's table.
+
+The one layer of its own, :data:`HIGH_DEGREE_JUNCTIONS`, rings every node
+where four or more vessels meet.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Iterable, Sequence
+
+import numpy as np
+
+from haemolynx.graph.post_processing import (
+    JunctionVessel,
+    edge_keys,
+    high_degree_junctions,
+    junction_vessels,
+)
+from haemolynx.gui.results import PREFIX, LayerSpec, node_points
+
+__all__ = [
+    "AT_JUNCTION",
+    "CONNECTED",
+    "HIGH_DEGREE_JUNCTIONS",
+    "JUNCTION_TABLE_COLUMNS",
+    "NetworkScan",
+    "POST_PROCESSING_LAYERS",
+    "SELECTED",
+    "STATUS_COLOURS",
+    "camera_center_for",
+    "junction_label",
+    "junction_marker_layer",
+    "junction_table_rows",
+    "scan_network",
+    "status_colours",
+    "vessel_status",
+    "zoom_for_canvas",
+]
+
+HIGH_DEGREE_JUNCTIONS = f"{PREFIX}4+ junctions"
+#: Every layer this tab adds, for removing them all at once.
+POST_PROCESSING_LAYERS = (HIGH_DEGREE_JUNCTIONS,)
+
+CONNECTED = "connected"
+AT_JUNCTION = "at junction"
+SELECTED = "selected"
+#: RGBA per status, in the precedence :func:`vessel_status` applies them.
+STATUS_COLOURS: dict[str, tuple[float, float, float, float]] = {
+    SELECTED: (1.0, 0.9, 0.0, 1.0),
+    AT_JUNCTION: (0.0, 0.85, 1.0, 1.0),
+    CONNECTED: (0.62, 0.62, 0.62, 1.0),
+}
+
+#: Header of the junction table, one column per :func:`junction_table_rows` cell.
+JUNCTION_TABLE_COLUMNS = ("branchID", "length (µm)", "diameter (µm)", "branch order", "other end")
+
+
+@dataclass(frozen=True)
+class NetworkScan:
+    """One look at the network: what the tab lists."""
+
+    junctions: tuple[Any, ...]
+    vessel_count: int
+
+    @property
+    def summary(self) -> str:
+        return (
+            f"{len(self.junctions)} junction(s) where 4+ vessels meet, "
+            f"in {self.vessel_count} vessels."
+        )
+
+
+def scan_network(graph: Any) -> NetworkScan:
+    """The 4+ junctions of *graph*."""
+    return NetworkScan(
+        junctions=tuple(high_degree_junctions(graph)),
+        vessel_count=len(edge_keys(graph)),
+    )
+
+
+def vessel_status(
+    edge_index: Sequence[int],
+    *,
+    at_junction: Iterable[int] = (),
+    selected: Iterable[int] = (),
+) -> np.ndarray:
+    """Each drawn segment's status, from the branchID it belongs to.
+
+    *edge_index* is the vessels layer's own per-segment ``edge_index`` column.
+    A selected vessel reads as selected even though it is also at the
+    junction.
+    """
+    index = np.asarray(edge_index, dtype=int)
+    status = np.full(index.shape, CONNECTED, dtype=object)
+    for label, ids in ((AT_JUNCTION, at_junction), (SELECTED, selected)):
+        chosen = np.fromiter((int(i) for i in ids), dtype=int)
+        if chosen.size:
+            status[np.isin(index, chosen)] = label
+    return status
+
+
+def status_colours(status: Sequence[str]) -> np.ndarray:
+    """(n, 4) RGBA for :func:`vessel_status`'s labels."""
+    labels = np.asarray(status, dtype=object)
+    colours = np.empty((len(labels), 4), dtype=float)
+    for label, rgba in STATUS_COLOURS.items():
+        colours[labels == label] = rgba
+    return colours
+
+
+def junction_label(graph: Any, node: Any, decision: str | None = None) -> str:
+    """One line of the junction list: its id, how many vessels, what was decided."""
+    text = f"Node {node} - {graph.degree(node)} vessels"
+    return f"{text} ({decision})" if decision else text
+
+
+def _cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.3g}"
+    return str(value)
+
+
+def junction_table_rows(graph: Any, node: Any) -> tuple[list[JunctionVessel], list[tuple[str, ...]]]:
+    """The vessels at *node* and their table cells, in the same order."""
+    vessels = junction_vessels(graph, node)
+    rows = [
+        (
+            str(vessel.branch_id),
+            _cell(vessel.length_um),
+            _cell(vessel.diameter_um),
+            _cell(vessel.branch_order),
+            str(vessel.other_node),
+        )
+        for vessel in vessels
+    ]
+    return vessels, rows
+
+
+def junction_marker_layer(graph: Any, scan: NetworkScan) -> LayerSpec:
+    """A magenta ring on each node where four or more vessels meet."""
+    points, ids = node_points(graph, scan.junctions)
+    return LayerSpec(
+        kind="points",
+        name=HIGH_DEGREE_JUNCTIONS,
+        data=points,
+        features={
+            "node_id": ids,
+            "degree": np.asarray([graph.degree(n) for n in ids], dtype=float),
+        },
+        options={
+            "size": 8.0,
+            "face_color": "transparent",
+            "border_color": "magenta",
+            "border_width": 0.2,
+            "out_of_slice_display": True,
+        },
+    )
+
+
+def camera_center_for(
+    position_zyx: Sequence[float], displayed: Sequence[int]
+) -> tuple[float, float, float]:
+    """napari ``camera.center`` that puts *position_zyx* mid-screen.
+
+    The camera's centre is given in the displayed dims' own order (which a
+    snap to XZ or YZ permutes), padded at the front to three values when only
+    two dims are displayed -- napari reads the last two in 2D.
+    """
+    centre = [float(position_zyx[axis]) for axis in displayed]
+    while len(centre) < 3:
+        centre.insert(0, 0.0)
+    return tuple(centre[-3:])  # type: ignore[return-value]
+
+
+def zoom_for_canvas(canvas_size_px: Sequence[float], box_um: float) -> float | None:
+    """napari camera zoom (screen pixels per micron) that fits a *box_um* box.
+
+    Worked out from the canvas size directly rather than by resetting the view
+    first, which redraws the whole scene once more on every click. None when
+    either is unusable, so the caller keeps its zoom.
+    """
+    sizes = [float(v) for v in canvas_size_px if float(v) > 0]
+    if not sizes or box_um <= 0:
+        return None
+    return min(sizes) / float(box_um)
