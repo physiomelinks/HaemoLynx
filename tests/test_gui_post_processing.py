@@ -16,6 +16,7 @@ from haemolynx.gui.post_processing import (
     STATUS_COLOURS,
     boundaries_following_graph,
     camera_center_for,
+    describe_vessels,
     junction_label,
     junction_marker_layer,
     junction_table_rows,
@@ -173,3 +174,16 @@ def test_boundaries_following_graph_drops_pruned_boundary_nodes():
                        outlet_nodes=(4,), resistance_node_pair=(1, 4))
     )
     assert kept.resistance_node_pair == (1, 4)
+
+
+def test_describe_vessels_names_branch_id_ends_length_and_diameter():
+    G = _network()
+    keys = edge_keys(G)
+    dead_end = next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})
+    picked = [keys[dead_end], keys[0]]  # given out of order: listed by branchID
+    assert describe_vessels(G, picked) == (
+        f"branchID 0 (node 0-1, 10 µm, 5 µm); branchID {dead_end} (node 1-5, 20 µm, 5 µm)"
+    )
+    del G.edges[keys[0]]["diameter_um"]
+    assert describe_vessels(G, [keys[0]]) == "branchID 0 (node 0-1, 10 µm)"
+    assert describe_vessels(G, [(98, 99, 0)]) == ""  # not in the graph

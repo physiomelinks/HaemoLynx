@@ -42,6 +42,7 @@ __all__ = [
     "STATUS_COLOURS",
     "boundaries_following_graph",
     "camera_center_for",
+    "describe_vessels",
     "junction_label",
     "junction_marker_layer",
     "junction_table_rows",
@@ -122,6 +123,31 @@ def status_colours(status: Sequence[str]) -> np.ndarray:
     for label, rgba in STATUS_COLOURS.items():
         colours[labels == label] = rgba
     return colours
+
+
+def describe_vessels(graph: Any, edges: Iterable[tuple[Any, Any, Any]]) -> str:
+    """The vessels *edges* as the tab's log names them, in branchID order.
+
+    ``"branchID 12 (node 3-7, 25.1 µm, 5 µm)"`` per vessel, joined by ``"; "``
+    -- its branchID, both ends, length and diameter where known. Call it
+    before an edit: a deletion renumbers every later branchID.
+    """
+    index = {key: i for i, key in enumerate(edge_keys(graph))}
+    wanted = sorted((index[tuple(e)], tuple(e)) for e in edges if tuple(e) in index)
+    parts = []
+    for branch_id, (u, v, k) in wanted:
+        data = graph.edges[u, v, k]
+        details = [f"node {u}-{v}"]
+        for attr in ("length", "diameter_um"):
+            value = data.get(attr)
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(number):
+                details.append(f"{number:.3g} µm")
+        parts.append(f"branchID {branch_id} ({', '.join(details)})")
+    return "; ".join(parts)
 
 
 def junction_label(graph: Any, node: Any, decision: str | None = None) -> str:

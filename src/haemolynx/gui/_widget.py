@@ -6933,6 +6933,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         QLabel,
         QLineEdit,
         QListWidget,
+        QPlainTextEdit,
         QPushButton,
         QTableWidget,
         QTableWidgetItem,
@@ -6956,6 +6957,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         HIGH_DEGREE_JUNCTIONS,
         JUNCTION_TABLE_COLUMNS,
         POST_PROCESSING_LAYERS,
+        describe_vessels,
         junction_label,
         junction_marker_layer,
         junction_table_rows,
@@ -7054,6 +7056,11 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     prune_button.setToolTip(tips["prune"])
     regenerate_button = QPushButton("Regenerate from the edited network")
     regenerate_button.setToolTip(tips["regenerate"])
+    log_box = QPlainTextEdit()
+    log_box.setObjectName("haemolynx_post_processing_log")
+    log_box.setReadOnly(True)
+    log_box.setToolTip(tips["log"])
+    log_box.setMinimumHeight(110)
 
     layout.addWidget(intro)
     layout.addWidget(scan_button)
@@ -7073,9 +7080,16 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     layout.addWidget(edit_box)
     layout.addWidget(prune_button)
     layout.addWidget(regenerate_button)
+    layout.addWidget(QLabel("What was changed:"))
+    layout.addWidget(log_box)
 
     def layer(name):
         return viewer.layers[name] if viewer is not None and name in viewer.layers else None
+
+    def log_edit(text: str) -> None:
+        """One line in the tab's own log, and the same in napari's run log."""
+        log_box.appendPlainText(f"{datetime.now():%H:%M:%S}  {text}")
+        logger.info("Post processing: %s", text)
 
     def selected_rows() -> list[int]:
         rows = sorted({index.row() for index in table.selectionModel().selectedRows()})
@@ -7207,6 +7221,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         rescan(redraw=False)
         attach_click_callbacks()
         report.value = f"Post processing: {state.scan.summary}"
+        log_edit(f"Scanned the network: {state.scan.summary}")
 
     def on_delete() -> None:
         if state.graph is None or state.node is None:
@@ -7218,11 +7233,15 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
             return
         node = state.node
         edges = [state.vessels[r].edge for r in rows]
+        degree = state.graph.degree(node)
+        described = describe_vessels(state.graph, edges)
         try:
             delete_vessels(state.graph, edges, protected=state.protected)
         except ValueError as error:
             status.setText(str(error))
+            log_edit(f"Node {node} ({degree} vessels): delete refused, {error}")
             return
+        log_edit(f"Node {node} ({degree} vessels): deleted {described}")
         rescan(prefer=node)
         report.value = (
             f"Post processing: deleted {len(edges)} vessel(s) at node {node}. "
@@ -7234,16 +7253,34 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
             status.setText("Scan the network and pick a junction first.")
             return
         node = state.node
+        degree = state.graph.degree(node)
+        length = float(connector.value())
         try:
             new_nodes = split_junction(
                 state.graph,
                 node,
-                connector_length_um=float(connector.value()),
+                connector_length_um=length,
                 reserved_ids=state.protected,
             )
         except ValueError as error:
             status.setText(str(error))
+            log_edit(f"Node {node} ({degree} vessels): split refused, {error}")
             return
+        moves = []
+        for new in new_nodes:
+            ends = sorted((o for _, o in state.graph.edges(new) if o != node), key=str)
+            moves.append(
+                f"vessels to node(s) {', '.join(map(str, ends))} moved to new node {new}"
+            )
+        diameter = next(
+            (d.get("diameter_um") for n in new_nodes[:1] for d in state.graph.get_edge_data(node, n).values()),
+            None,
+        )
+        size = f", {diameter:.3g} µm across" if diameter is not None else ""
+        log_edit(
+            f"Node {node} ({degree} vessels): split into bifurcations with "
+            f"{length:g} µm connector(s){size}; {'; '.join(moves)}"
+        )
         rescan()
         report.value = (
             f"Post processing: split node {node} into bifurcations "
@@ -7264,10 +7301,19 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
             pruned, stats = prune_disconnected_branches(state.graph, state.inlets, state.outlets)
         except ValueError as error:
             status.setText(str(error))
+            log_edit(f"Prune refused, {error}")
             return
         if not stats["removed_components"]:
             status.setText("Nothing to prune: every piece has an inlet and an outlet.")
+            log_edit("Prune: nothing to remove, every piece has an inlet and an outlet")
             return
+        removed = [e for e in edge_keys(state.graph) if e[0] not in pruned]
+        lost = stats["removed_boundary_nodes"]
+        log_edit(
+            f"Pruned {stats['removed_components']} disconnected piece(s), "
+            f"{stats['removed_vessels']} vessel(s): {describe_vessels(state.graph, removed)}"
+            + (f"; boundary node(s) removed with them: {', '.join(map(str, lost))}" if lost else "")
+        )
         stop_editing()
         state.graph = pruned
         state.inlets = tuple(n for n in state.inlets if n in pruned)
@@ -7286,6 +7332,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         if state.scan is None or state.node is None:
             return
         state.decisions[state.node] = "left as is"
+        log_edit(f"Node {state.node} ({state.graph.degree(state.node)} vessels): left as is")
         fill_list()
 
     # --- editing by clicking in the viewer ------------------------------------
@@ -7351,11 +7398,15 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         return None if node is None else NodeHit(node_id=node)
 
     def delete_clicked(hit) -> None:
+        edge = (hit.u, hit.v, hit.key)
+        described = describe_vessels(state.graph, [edge])
         try:
-            delete_vessels(state.graph, [(hit.u, hit.v, hit.key)], protected=state.protected)
+            delete_vessels(state.graph, [edge], protected=state.protected)
         except ValueError as error:
             set_edit_status(str(error))
+            log_edit(f"Delete of {described} (clicked) refused, {error}")
             return
+        log_edit(f"Deleted {described} (clicked in the viewer)")
         rescan(prefer=state.node)
         set_edit_status("deleted")
 
@@ -7378,7 +7429,9 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
             ),
         )
         diameter = mean_incident_diameter(state.graph, [start, node])
-        add_vessel_between(state.graph, start, node, points, diameter_um=diameter)
+        new_edge = add_vessel_between(state.graph, start, node, points, diameter_um=diameter)
+        path_word = "routed through the image" if how == "routed" else "straight"
+        log_edit(f"Added {describe_vessels(state.graph, [new_edge])}, {path_word}")
         rescan(prefer=state.node)
         size = f"{diameter:.3g} µm" if diameter is not None else "the table's diameter"
         path = "routed through the image" if how == "routed" else "as a straight line"
@@ -7394,10 +7447,17 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         keys = edge_keys(state.graph)
         try:
             ids = parse_branch_ids(branch_ids.text(), len(keys))
-            delete_vessels(state.graph, [keys[i] for i in ids], protected=state.protected)
         except ValueError as error:
             set_edit_status(str(error))
             return
+        described = describe_vessels(state.graph, [keys[i] for i in ids])
+        try:
+            delete_vessels(state.graph, [keys[i] for i in ids], protected=state.protected)
+        except ValueError as error:
+            set_edit_status(str(error))
+            log_edit(f"Delete by branch ID of {described} refused, {error}")
+            return
+        log_edit(f"Deleted by branch ID: {described}")
         branch_ids.clear()
         rescan(prefer=state.node)
         set_edit_status(
@@ -7444,6 +7504,10 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
             return
         stop_editing()
         graph = state.graph
+        log_edit(
+            f"Regenerating Diameters to Export from the edited network "
+            f"({graph.number_of_edges()} vessels, measured diameters kept)"
+        )
         remove_layers()
         state.graph = state.scan = state.node = None
         state.vessels = []
@@ -7483,6 +7547,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         delete_ids_button=delete_ids_button,
         prune_button=prune_button,
         regenerate_button=regenerate_button,
+        log_box=log_box,
         status=status,
         edit_status=edit_status,
         on_click=on_click,

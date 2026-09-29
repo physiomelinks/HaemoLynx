@@ -381,6 +381,39 @@ def test_prune_removes_a_branch_a_delete_cut_off(make_napari_viewer):
     assert "pruned 1 disconnected piece(s), 1 vessel(s)" in report.value
 
 
+def test_the_log_records_each_change_with_its_branch_ids(make_napari_viewer):
+    viewer = make_napari_viewer()
+    G = _four_way_network()
+    G.add_node(6, pos=np.asarray((10.0, 30.0, 0.0)))
+    G.add_edge(5, 6, voxels=[(10.0, 20.0, 0.0), (10.0, 30.0, 0.0)], length=10.0,
+               branch_order="B02", diameter_um=5.0)
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("build_network", network(G)))
+    c = _post_processing_controls(
+        viewer, SimpleNamespace(value=""), results=lambda: results,
+        boundary_roles=lambda: {"inlet": (0,), "outlet": (4,)},
+        regenerate=lambda graph: None, running=lambda: False,
+    )
+    c.scan_button.click()
+    keys = edge_keys(c.state.graph)
+    to_5 = next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})
+
+    _select_rows(c.table, [_row_to(c.table, "5")])
+    c.delete_button.click()
+    c.prune_button.click()
+    c.branch_ids.setText("0")          # the vessel into inlet 0: refused
+    c.delete_ids_button.click()
+
+    lines = c.log_box.toPlainText().splitlines()
+    assert "Scanned the network: 1 junction(s) where 4+ vessels meet, in 7 vessels." in lines[0]
+    assert f"Node 1 (4 vessels): deleted branchID {to_5} (node 1-5, 20 µm, 5 µm)" in lines[1]
+    # The prune names the vessel it removed by its branchID at the time.
+    assert "Pruned 1 disconnected piece(s), 1 vessel(s): branchID" in lines[2]
+    assert "(node 5-6, 10 µm, 5 µm)" in lines[2]
+    assert "refused" in lines[3] and "boundary node" in lines[3]
+    assert all(line[:2].isdigit() and line[2] == ":" for line in lines)  # timestamped
+
+
 def test_regenerate_hands_over_the_edited_graph_and_clears_the_tab(page):
     c, viewer = page.controls, page.viewer
     c.scan_button.click()

@@ -13,7 +13,7 @@ adds a line to the change log at the bottom.
 
 ---
 
-## What the tab does (as of commit 4)
+## What the tab does (as of commit 7)
 
 After a run (at least through **4. Boundaries**), tab 10 works on a copy of the run's network:
 
@@ -77,7 +77,17 @@ After a run (at least through **4. Boundaries**), tab 10 works on a copy of the 
    their cached files once. The tab then clears; scan again
    afterwards.
 
+7. **"What was changed" log** at the bottom of the tab: one timestamped line per action (scan,
+   delete, split, leave, click-delete, add, delete by ID, prune, regenerate, and any refusal).
+   The same line goes to napari's run log as `Post processing: …`. Vessels are named with
+   `describe_vessels` **before** the edit, e.g. `branchID 15 (node 26-136, 26.2 µm, 4 µm)`, so
+   the IDs are the ones on screen when it was made. A prune lists every vessel it removed.
+
 Things to know:
+- **Regenerate saves the outputs.** Its Export stage writes the VTK files and the stage
+  checkpoints to the run's output folder (`vtk_output_prefix`). Edits that haven't been
+  regenerated are only in the viewer. To keep the whole session (edits included, once
+  regenerated), use **Save run**, and wait for `Wrote run …`.
 - **Scan network** reads the network as it is in the viewer now, including edits not yet
   regenerated.
 - A vessel's **branchID** is its position in `G.edges(keys=True)`, so it changes after any
@@ -91,7 +101,7 @@ Things to know:
 | File | What it holds |
 |---|---|
 | `src/haemolynx/graph/post_processing.py` | Pure graph rules, no Qt or napari: `edge_keys`, `high_degree_junctions`, `junction_vessels` → `JunctionVessel`, `delete_vessels(protected=...)`, `split_junction(connector_length_um=15)`, `DEFAULT_SPLIT_CONNECTOR_LENGTH_UM`; for Add vessel: `mean_incident_diameter`, `vessel_path_between` (routed or straight, `MIN_ROUTED_INSIDE_FRACTION`), `add_vessel_between`; `prune_disconnected_branches` |
-| `src/haemolynx/gui/post_processing.py` | Pure viewer logic: `scan_network` → `NetworkScan`, `vessel_status` / `status_colours` / `STATUS_COLOURS` (grey, cyan, yellow), `junction_marker_layer` (layer `HaemoLynx 4+ junctions`), `junction_table_rows`, `junction_label`, `nearest_node` (click → node), `parse_branch_ids`, `boundaries_following_graph`, `camera_center_for`, `zoom_for_canvas` |
+| `src/haemolynx/gui/post_processing.py` | Pure viewer logic: `scan_network` → `NetworkScan`, `vessel_status` / `status_colours` / `STATUS_COLOURS` (grey, cyan, yellow), `junction_marker_layer` (layer `HaemoLynx 4+ junctions`), `junction_table_rows`, `junction_label`, `nearest_node` (click → node), `parse_branch_ids`, `boundaries_following_graph`, `describe_vessels` (log wording), `camera_center_for`, `zoom_for_canvas` |
 | `tests/test_graph_post_processing.py` | Graph rules on small hand-built networks |
 | `tests/test_gui_post_processing.py` | The pure viewer logic |
 | `tests/test_gui_post_processing_widget.py` | The real Qt page with a napari viewer (`gui` marker) |
@@ -225,3 +235,5 @@ Known unrelated failures in this environment:
   went from 171 s to 1.5 s on the real run; 747 measured diameters were kept.
 - **2026-09-30, commit 6:** A split's connector takes the mean diameter of the junction's vessels
   (override), so every vessel tab 10 adds uses the neighbours' average.
+- **2026-09-30, commit 7:** "What was changed" log at the bottom of tab 10, mirrored to napari's
+  log. It records every change, with pre-edit branchIDs and every vessel a prune removed.

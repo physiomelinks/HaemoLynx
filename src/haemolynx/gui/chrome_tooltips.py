@@ -192,6 +192,10 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "Remove every piece of the network that no longer has both an inlet "
         "and an outlet, such as a branch whose only link to the rest was deleted"
     ),
+    "log": (
+        "Every change made in this tab, oldest first, with the branchIDs as "
+        "they were when it was made; the same lines go to the napari log"
+    ),
     "regenerate": (
         "Rerun Diameters, Haemodynamics, Solve, Perturbations and Export on "
         "the edited network, so the 3D view and outputs catch up with the edits"
