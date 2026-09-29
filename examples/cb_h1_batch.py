@@ -1,10 +1,11 @@
 """Run all six specimens through the pipeline on matched sub-volumes, and compare the groups.
 
-Three stages, each of which can be run alone:
+Four stages, each of which can be run alone:
 
-  --stage placement   where each ROI will sit, and why          (seconds)
-  --stage threshold   choose one threshold for all six          (minutes)
-  --stage run         run the pipeline and compare the groups   (~6 min per specimen)
+  --stage placement    where each ROI will sit, and why          (seconds)
+  --stage threshold    choose one threshold for all six          (minutes)
+  --stage run          run the pipeline and compare the groups   (~6 min per specimen)
+  --stage sensitivity  rerun at the frozen value's grid neighbours (~6 min per run, 12 runs)
 
 Two design decisions are load-bearing and deliberate.
 
@@ -24,6 +25,13 @@ Usage
     python examples/cb_h1_batch.py --stage placement
     python examples/cb_h1_batch.py --stage threshold
     python examples/cb_h1_batch.py --stage run --threshold 0.95
+    python examples/cb_h1_batch.py --stage sensitivity
+
+**The sensitivity runs move one parameter.** They pass the frozen seed
+(``cb_settings.HYSTERESIS_HIGH``) as ``--hysteresis-high`` alongside each neighbour's
+``--hysteresis-low``. Given the low bound alone the pipeline derives the seed as low + 0.05, so
+until package F the 0.93 run seeded at 0.98 while the frozen run seeds at 0.999, and the lower
+neighbour differed in two parameters (open item 41).
 """
 import argparse
 import json
@@ -52,6 +60,8 @@ from ImageLynx.statistics.threshold_selection import (                  # noqa: 
 DEFAULT_ROI = cb_settings.ROI_VOXELS
 DEFAULT_GRID = list(cb_settings.THRESHOLD_GRID)
 OUTPUT_DIR = Path(__file__).resolve().parent / "outputs" / "cb_h1_batch"
+SENSITIVITY_DIR = Path(__file__).resolve().parent / "outputs" / "cb_h1_sensitivity"
+PIPELINE = Path(__file__).resolve().parent / "carotid_image_to_model.py"
 
 
 def _predicted():
@@ -78,13 +88,14 @@ def stage_placement(roi):
 
 def stage_threshold(roi, grid):
     """Choose one threshold for all six, and check the per-specimen choices for a cohort split."""
-    chosen, foreground = {}, {}
+    chosen, foreground, calibre = {}, {}, {}
     for specimen in _predicted():
         placement = place_roi(specimen, roi)
         volume = read_ilastik_probabilities(
             specimen.probabilities_path, expected_shape_zyx=specimen.shape_zyx)
         sub = volume[placement.bounds]
-        samples = sweep_thresholds(sub, grid, PROCESSING_VOXEL_UM)
+        samples = sweep_thresholds(sub, grid, PROCESSING_VOXEL_UM,
+                                   seed=cb_settings.HYSTERESIS_HIGH)
         selection = select_threshold(samples)
         print(f"\n########## {specimen.specimen_id} ({specimen.group}) ##########")
         print(selection.format_table())
@@ -92,6 +103,10 @@ def stage_threshold(roi, grid):
             chosen[specimen.specimen_id] = selection.threshold
         foreground[specimen.specimen_id] = {s.threshold: s.foreground_fraction
                                             for s in samples}
+        calibre[specimen.specimen_id] = {
+            f"{s.threshold:.2f}": {"d_med": s.median_diameter_um,
+                                   "d_net": s.median_network_diameter_um}
+            for s in samples}
         del volume, sub
 
     if not chosen:
@@ -121,8 +136,41 @@ def stage_threshold(roi, grid):
     (OUTPUT_DIR / "threshold_selection.json").write_text(json.dumps(
         {"per_specimen": chosen, "frozen": frozen,
          "threshold_split": split.verdict,
-         "foreground_at_frozen": at_frozen}, indent=2))
+         "foreground_at_frozen": at_frozen,
+         "seed": cb_settings.HYSTERESIS_HIGH,
+         "calibre_um": calibre}, indent=2))
     return frozen
+
+
+def _run_pipeline(specimen, roi, out, low, high=None):
+    """Run the pipeline for one specimen into ``out``, then check it cut the placed box."""
+    placement = place_roi(specimen, roi)
+    out.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable, str(PIPELINE),
+        "--specimen", specimen.specimen_id,
+        "--roi-voxels", *[str(v) for v in roi],
+        "--hysteresis-low", str(low),
+    ]
+    if high is not None:
+        command += ["--hysteresis-high", str(high)]
+    command += ["--output-dir", str(out)]
+    print(f"\n=== {specimen.specimen_id} ({specimen.group}) centre "
+          f"{placement.centre_zyx} ===", flush=True)
+    log = out / "pipeline.log"
+    with log.open("w") as handle:
+        code = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT).returncode
+    if code == 0:
+        # The pipeline places the ROI itself (open item 27); confirm it cut this box.
+        check_output_roi(out, specimen, roi, placement)
+    print(f"  exit={code}  log={log}")
+    return code
+
+
+def _report(results):
+    failed = [s for s, c in results.items() if c != 0]
+    print(f"\n{len(results) - len(failed)}/{len(results)} completed."
+          + (f" Failed: {', '.join(failed)}" if failed else ""))
 
 
 def stage_run(roi, threshold):
@@ -132,42 +180,59 @@ def stage_run(roi, threshold):
     the array centre), and writes roi_placement.json; each run is checked against it here.
     """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    pipeline = Path(__file__).resolve().parent / "carotid_image_to_model.py"
     results = {}
     for specimen in _predicted():
-        placement = place_roi(specimen, roi)
-        out = OUTPUT_DIR / specimen.specimen_id
-        out.mkdir(exist_ok=True)
-        command = [
-            sys.executable, str(pipeline),
-            "--specimen", specimen.specimen_id,
-            "--roi-voxels", *[str(v) for v in roi],
-            "--hysteresis-low", str(threshold),
-            "--output-dir", str(out),
-        ]
-        print(f"\n=== {specimen.specimen_id} ({specimen.group}) centre "
-              f"{placement.centre_zyx} ===", flush=True)
-        log = out / "pipeline.log"
-        with log.open("w") as handle:
-            code = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT).returncode
-        if code == 0:
-            # The pipeline places the ROI itself (open item 27); confirm it cut this box.
-            check_output_roi(out, specimen, roi, placement)
-        results[specimen.specimen_id] = code
-        print(f"  exit={code}  log={log}")
-    failed = [s for s, c in results.items() if c != 0]
-    print(f"\n{len(results) - len(failed)}/{len(results)} completed."
-          + (f" Failed: {', '.join(failed)}" if failed else ""))
+        results[specimen.specimen_id] = _run_pipeline(
+            specimen, roi, OUTPUT_DIR / specimen.specimen_id, threshold)
+    _report(results)
+    return results
+
+
+def sensitivity_thresholds(frozen):
+    """The frozen threshold's two neighbours on the sweep grid."""
+    grid = sorted(DEFAULT_GRID)
+    if frozen not in grid:
+        raise ValueError(f"The frozen threshold {frozen} is not on the sweep grid {grid}.")
+    i = grid.index(frozen)
+    if i == 0 or i == len(grid) - 1:
+        raise ValueError(f"The frozen threshold {frozen} is at the end of the grid, so it has "
+                         f"no neighbour on one side.")
+    return grid[i - 1], grid[i + 1]
+
+
+def stage_sensitivity(roi, frozen):
+    """Rerun every specimen at the frozen threshold's grid neighbours, with the frozen seed.
+
+    Only the flood threshold moves: the seed is passed explicitly, so it cannot follow the
+    low bound (open item 41). Outputs go to outputs/cb_h1_sensitivity/t<value>/<specimen>/,
+    which cb_h2_threshold_calibre.py reads.
+    """
+    seed = cb_settings.HYSTERESIS_HIGH
+    thresholds = sensitivity_thresholds(frozen)
+    for low in thresholds:
+        if seed <= low:
+            raise ValueError(f"The seed {seed} must be above the neighbour threshold {low}.")
+    results = {}
+    for low in thresholds:
+        print(f"\n########## threshold {low:.2f}, seed {seed} ##########")
+        for specimen in _predicted():
+            out = SENSITIVITY_DIR / f"t{low:.2f}" / specimen.specimen_id
+            results[f"{specimen.specimen_id}@{low:.2f}"] = _run_pipeline(
+                specimen, roi, out, low, seed)
+    _report(results)
     return results
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--stage", choices=["placement", "threshold", "run"], required=True)
+    parser.add_argument("--stage", choices=["placement", "threshold", "run", "sensitivity"],
+                        required=True)
     parser.add_argument("--roi-voxels", type=int, nargs=3, default=list(DEFAULT_ROI))
     parser.add_argument("--threshold", type=float, default=None,
-                        help="Frozen threshold for --stage run. Required there.")
+                        help="Frozen threshold for --stage run (required there). For "
+                             "--stage sensitivity, the value whose grid neighbours are run "
+                             "(default: cb_settings.FROZEN_THRESHOLD).")
     args = parser.parse_args()
     roi = tuple(args.roi_voxels)
 
@@ -175,6 +240,9 @@ def main():
         stage_placement(roi)
     elif args.stage == "threshold":
         stage_threshold(roi, DEFAULT_GRID)
+    elif args.stage == "sensitivity":
+        frozen = cb_settings.FROZEN_THRESHOLD if args.threshold is None else args.threshold
+        stage_sensitivity(roi, frozen)
     else:
         if args.threshold is None:
             parser.error("--threshold is required for --stage run; take it from --stage threshold")

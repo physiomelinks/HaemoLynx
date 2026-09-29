@@ -157,7 +157,9 @@ def test_sweep_is_ordered_and_covers_every_requested_threshold():
 
 def test_an_empty_mask_is_skipped_rather_than_crashing():
     """Sweeps run to the top of the range, where the mask legitimately empties out."""
-    samples = sweep_thresholds(_tube(), [0.5, 0.99999], VOXEL)
+    # The seed must sit above every threshold (the pipeline's rule), so it goes to 1.0 here;
+    # nothing reaches it, and the network-mask calibre is then NaN rather than an error.
+    samples = sweep_thresholds(_tube(), [0.5, 0.99999], VOXEL, seed=1.0)
     assert all(s.foreground_fraction > 0 for s in samples)
     assert len(samples) < 2 or samples[-1].skeleton_length_mm >= 0
 
@@ -350,3 +352,39 @@ def test_the_voxel_median_is_printed_but_never_selects():
     samples = sweep_thresholds(_tube(), [0.3, 0.6], VOXEL)
     assert "d_vox" in select_threshold(samples).format_table()
 
+
+
+def test_the_network_mask_calibre_is_printed_but_never_selects():
+    """d_net shows the calibre the network would read at each threshold (open item 41).
+
+    It is a diagnostic: the window is still tested on the plain-cut centreline median, because
+    every candidate replacement moves calibre by about the window's width and so would choose
+    the threshold by itself.
+    """
+    import inspect
+
+    from ImageLynx.statistics import threshold_selection
+
+    source = inspect.getsource(threshold_selection.select_threshold)
+    assert "median_network_diameter_um" not in source
+
+    # The radius-4 tube's core saturates past the 0.999 seed; a thinner one never seeds.
+    samples = sweep_thresholds(_tube(), [0.3, 0.5, 0.7], VOXEL)
+    assert all(np.isfinite(s.median_network_diameter_um) for s in samples)
+    assert "d_net" in select_threshold(samples).format_table()
+
+
+def test_the_network_mask_uses_the_given_seed():
+    """Nothing reaches a seed of 1.0 here, so the network mask is empty and d_net is NaN,
+    while the plain-cut calibre is untouched: the seed reaches d_net and nothing else."""
+    prob = _tube()
+    fixed = evaluate_threshold(prob, 0.5, VOXEL)
+    unseeded = evaluate_threshold(prob, 0.5, VOXEL, seed=1.0)
+    assert np.isfinite(fixed.median_network_diameter_um)
+    assert np.isnan(unseeded.median_network_diameter_um)
+    assert unseeded.median_diameter_um == fixed.median_diameter_um
+
+
+def test_a_seed_at_or_below_the_threshold_raises():
+    with pytest.raises(ValueError, match="seed"):
+        evaluate_threshold(_tube(), 0.95, VOXEL, seed=0.95)

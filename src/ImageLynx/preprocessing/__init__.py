@@ -21,6 +21,7 @@ from .image import (
     joint_hysteresis_threshold,
     calculate_entropy_map,
 )
+from .mask import build_vessel_mask
 
 __all__ = [
     "bridge_gaps",
@@ -41,4 +42,5 @@ __all__ = [
     "hysteresis_threshold",
     "joint_hysteresis_threshold",
     "calculate_entropy_map",
+    "build_vessel_mask",
 ]

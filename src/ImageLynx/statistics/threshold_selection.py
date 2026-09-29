@@ -32,6 +32,15 @@ still printed (d_vox) and never read. The EDT on this grid can only take values
 pitch*sqrt(k), so the median is atomic either way and the selection turns on which level it
 lands on, not on a smooth approach to the target.
 
+It is also read on a plain ``p >= t`` cut, not on the mask the network is built from. That
+mask - hysteresis from the frozen seed, hole filling, closing, largest component - reads
+wider: at 0.95 the network's median calibre is 5.87-7.46 um against 5.27 here. The same
+statistic on the network's mask is printed as d_net and never read (open item 41). Neither
+fault is fixed here, because every candidate estimator moves calibre by about as much as the
+window is wide: supersampling the field 2x or 3x before the cut puts WKY-A at 0.95 at 5.60
+or 5.28 um, the network's own estimator at 7.46 (outside the window), and the EDT's
+half-step bias shrinks with every refinement. Choosing between them chooses the threshold.
+
 Note also that only the lower bound can ever select. Calibre falls monotonically and
 `select_threshold` takes the highest threshold in the window, so the upper bound prunes only
 from the low-threshold end, which the maximum never reads. Sweeping it from 5.5 to 25 um
@@ -59,6 +68,8 @@ from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence, Tuple
 
 import numpy as np
+
+from .. import cb_settings
 
 #: The capillary diameter mode the segmentation handover's validation table expects, and the
 #: same window its half-voxel error arithmetic implies independently.
@@ -111,6 +122,9 @@ class ThresholdSample:
     endpoints: int
     endpoint_density_per_mm: float
     skeleton_components: int
+    #: 2 x EDT on the centreline of the network's mask (`build_vessel_mask`, fixed seed) - the
+    #: estimator the pipeline's per-edge calibre uses. Printed, never read (open item 41).
+    median_network_diameter_um: float = float("nan")
 
     @property
     def calibre_ok(self) -> bool:
@@ -141,7 +155,7 @@ class ThresholdSelection:
             f"threshold sweep  (capillary window {lo}-{hi} um, "
             f"fragmentation above {FRAGMENTATION_TOLERANCE:.1f}x "
             f"{self.baseline_endpoint_density_per_mm:.2f} ep/mm)",
-            f"{'thr':>6}{'fg':>8}{'d_med':>8}{'d_p90':>8}{'d_vox':>8}{'ep/mm':>8}"
+            f"{'thr':>6}{'fg':>8}{'d_med':>8}{'d_p90':>8}{'d_vox':>8}{'d_net':>8}{'ep/mm':>8}"
             f"{'skelcmp':>9}{'maskcmp':>9}{'share':>8}  verdict",
         ]
         for sample in self.samples:
@@ -157,6 +171,7 @@ class ThresholdSelection:
                 f"{sample.threshold:>6.2f}{sample.foreground_fraction:>8.3f}"
                 f"{sample.median_diameter_um:>8.2f}{sample.p90_diameter_um:>8.2f}"
                 f"{sample.median_voxel_diameter_um:>8.2f}"
+                f"{sample.median_network_diameter_um:>8.2f}"
                 f"{sample.endpoint_density_per_mm:>8.2f}{sample.skeleton_components:>9d}"
                 f"{sample.mask_components:>9d}{sample.largest_mask_component_share:>8.3f}"
                 f"  {' '.join(marks)}"
@@ -169,6 +184,8 @@ def evaluate_threshold(
     probabilities: np.ndarray,
     threshold: float,
     voxel_size_zyx: Sequence[float],
+    *,
+    seed: float = cb_settings.HYSTERESIS_HIGH,
 ) -> Optional[ThresholdSample]:
     """Measure calibre and both topologies at one threshold.
 
@@ -177,6 +194,9 @@ def evaluate_threshold(
 
     Calibre is read on the centreline (open item 15), so the skeleton is always built; there
     is no calibre-only pass any more.
+
+    ``seed`` is the hysteresis seed for the network-mask calibre (d_net) only. It is held
+    fixed across a sweep, as the batch holds it, so only the flood threshold moves.
     """
     from scipy.ndimage import convolve, distance_transform_edt
     from skimage.measure import label
@@ -191,6 +211,12 @@ def evaluate_threshold(
     # rising to 4.2-5.9% at 0.99. See section 2.2.
     from ..preprocessing.image import at_or_above
 
+    from ..preprocessing.mask import build_vessel_mask
+
+    if seed <= threshold:
+        raise ValueError(
+            f"The hysteresis seed ({seed}) must be above the threshold ({threshold}), as the "
+            f"pipeline requires.")
     binary = at_or_above(probabilities, threshold)
     if not binary.any():
         return None
@@ -210,6 +236,13 @@ def evaluate_threshold(
     median_diameter = 2.0 * float(np.median(radii))
     p90_diameter = 2.0 * float(np.percentile(radii, 90))
     median_voxel_diameter = 2.0 * float(np.median(edt[binary]))
+
+    network_mask = build_vessel_mask(probabilities, threshold, seed)
+    network_skeleton = skeletonize(network_mask).astype(bool)
+    median_network_diameter = float("nan")
+    if network_skeleton.any():
+        network_edt = distance_transform_edt(network_mask, sampling=spacing)
+        median_network_diameter = 2.0 * float(np.median(network_edt[network_skeleton]))
 
     labelled = label(binary, connectivity=3)
     counts = np.bincount(labelled.ravel())[1:]
@@ -239,6 +272,7 @@ def evaluate_threshold(
         endpoints=endpoints,
         endpoint_density_per_mm=density,
         skeleton_components=skeleton_components,
+        median_network_diameter_um=median_network_diameter,
     )
 
 
@@ -246,11 +280,13 @@ def sweep_thresholds(
     probabilities: np.ndarray,
     thresholds: Iterable[float],
     voxel_size_zyx: Sequence[float],
+    *,
+    seed: float = cb_settings.HYSTERESIS_HIGH,
 ) -> Tuple[ThresholdSample, ...]:
-    """Evaluate a sorted sweep, dropping thresholds whose mask is empty."""
+    """Evaluate a sorted sweep with one fixed seed, dropping thresholds whose mask is empty."""
     samples = []
     for threshold in sorted(float(t) for t in thresholds):
-        sample = evaluate_threshold(probabilities, threshold, voxel_size_zyx)
+        sample = evaluate_threshold(probabilities, threshold, voxel_size_zyx, seed=seed)
         if sample is not None:
             samples.append(sample)
     return tuple(samples)
