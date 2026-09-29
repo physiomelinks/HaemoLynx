@@ -173,9 +173,19 @@ def compute_tortuosity_measures(
 
 
 def compute_branching_statistics(
-    G: nx.Graph, node_positions: Optional[dict]
+    G: nx.Graph,
+    node_positions: Optional[dict],
+    count_graph: Optional[Union[nx.Graph, nx.MultiGraph]] = None,
 ) -> Dict[str, Any]:
-    """Compute average branching angle."""
+    """Compute average branching angle and the number of branching points.
+
+    ``count_graph`` is the graph the branching points are counted on, ``G`` by default. Pass
+    the original MultiGraph when ``G`` is its simple-graph copy: merging parallel edges drops
+    a node joined twice to one neighbour below degree 3, although both are real vessels. On
+    WKY-A that counted 4,475 junctions where the CSV, Figure 3 and cb_h1_vtk.py count 4,631
+    (open item 40).
+    """
+    counted = G if count_graph is None else count_graph
     if node_positions is None:
         return {"Average Branching Angle (degrees)": "N/A (no position data)"}
     branching_angles = []
@@ -205,7 +215,7 @@ def compute_branching_statistics(
             np.mean(branching_angles) if branching_angles else 0
         ),
         "Number of Branching Points": len(
-            [n for n in G.nodes() if G.degree(n) > 2]
+            [n for n in counted.nodes() if counted.degree(n) > 2]
         ),
     }
 
@@ -657,7 +667,7 @@ def compute_comprehensive_vessel_statistics(
     base = {
         **compute_basic_statistics(G, is_mg),
         **compute_tortuosity_measures(G, node_positions, is_mg),
-        **compute_branching_statistics(G_simple, node_positions),
+        **compute_branching_statistics(G_simple, node_positions, count_graph=G),
         **compute_tree_asymmetry(G_simple),
         **compute_fractal_dimension(G_simple, node_positions),
         **compute_vessel_density(

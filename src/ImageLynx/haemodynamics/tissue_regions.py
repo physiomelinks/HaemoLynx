@@ -25,6 +25,23 @@ import warnings
 import numpy as np
 
 
+def _origin_or_default(origin_um, voxel: np.ndarray) -> np.ndarray:
+    """The physical position of a mask's first voxel *corner*, in micrometres.
+
+    The default is half a voxel below zero. The graph puts voxel k's centre at k x voxel
+    (node positions are skeleton indices times the voxel size, checked on WKY-A to 1e-14), so
+    a mask cropped at the same ROI has its first corner at -voxel/2, not at 0. Until open item
+    40 the default was 0, which shifted every mask lookup half a voxel (about 0.93 um) along
+    each axis against the graph and the grid built from it.
+    """
+    if origin_um is None:
+        return -0.5 * voxel
+    origin = np.asarray(origin_um, dtype=float)
+    if origin.shape != (3,):
+        raise ValueError(f"origin_um must be a (z, y, x) triple, got {origin_um}")
+    return origin
+
+
 def _axis_overlap_um(n_vox, voxel, origin, n_cells, res, lo):
     """Overlap length of every voxel with every cell along one axis, shape ``(n_cells, n_vox)``.
 
@@ -47,8 +64,9 @@ def mask_fraction_per_cell(
     """Fraction of each grid cell occupied by ``mask``, as a flat per-cell array.
 
     ``mask`` is a boolean volume in (z, y, x) at ``voxel_um`` spacing. ``origin_um`` is the
-    physical position of its first voxel corner, defaulting to the origin, which is correct
-    when the mask and the graph were both cropped from the same region.
+    physical position of its first voxel corner. The default, half a voxel below zero, is
+    correct when the mask and the graph were both cropped from the same region, because the
+    graph puts voxel centres at whole multiples of the voxel size (open item 40).
 
     **Exact overlap volume** (open item 38). Each mask voxel is a box, and it adds to every
     cell the volume it shares with that cell. Voxels and cells are both axis-aligned, so the
@@ -83,7 +101,7 @@ def mask_fraction_per_cell(
     if not mask.any():
         return np.zeros(n_cells, dtype=np.float64)
 
-    origin = np.zeros(3) if origin_um is None else np.asarray(origin_um, dtype=float)
+    origin = _origin_or_default(origin_um, voxel)
     dims = np.asarray(grid.dims, dtype=int)       # (nz, ny, nx)
     res = np.asarray(grid.res, dtype=float)
     lo = np.asarray(grid.min_xyz, dtype=float)    # zyx despite the name
@@ -137,7 +155,8 @@ def mask_bounds_um(
     slightly wrong bounds still solves and still looks like a field.
 
     The extent is the outer corners of the volume, not the centres of the corner voxels, so it
-    matches the convention ``mask_fraction_per_cell`` uses when it places voxel centres.
+    matches the convention ``mask_fraction_per_cell`` uses when it places voxel centres. With
+    no ``origin_um`` the first corner is half a voxel below zero, as there (open item 40).
     """
     shape = np.asarray(mask_shape, dtype=float)
     if shape.shape != (3,) or np.any(shape <= 0):
@@ -146,9 +165,7 @@ def mask_bounds_um(
     if voxel.shape != (3,) or np.any(voxel <= 0):
         raise ValueError(f"voxel_um must be three positive values, got {voxel_um}")
 
-    origin = np.zeros(3) if origin_um is None else np.asarray(origin_um, dtype=float)
-    if origin.shape != (3,):
-        raise ValueError(f"origin_um must be a (z, y, x) triple, got {origin_um}")
+    origin = _origin_or_default(origin_um, voxel)
     return origin, origin + shape * voxel
 
 
@@ -176,6 +193,56 @@ def blend_per_cell_rate(
     return stroma_rate + (tissue_rate - stroma_rate) * fraction
 
 
+def _edge_inside_lengths(G, mask, voxel_um, origin_um, step_um) -> dict:
+    """``{(u, v, key): (inside_um, total_um)}`` along each edge's stored centreline.
+
+    An edge with no usable geometry maps to ``None``; the callers decide what that means.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    if mask.ndim != 3:
+        raise ValueError(f"mask must be a 3D volume, got shape {mask.shape}")
+    voxel = np.asarray(voxel_um, dtype=float)
+    origin = _origin_or_default(origin_um, voxel)
+    # Half the finest voxel, so a crossing cannot be stepped over.
+    step = float(step_um) if step_um else float(voxel.min()) * 0.5
+
+    def inside(points: np.ndarray) -> np.ndarray:
+        idx = np.floor((points - origin) / voxel).astype(np.int64)
+        ok = np.all((idx >= 0) & (idx < np.asarray(mask.shape)), axis=1)
+        out = np.zeros(len(points), dtype=bool)
+        if ok.any():
+            sel = idx[ok]
+            out[ok] = mask[sel[:, 0], sel[:, 1], sel[:, 2]]
+        return out
+
+    result: dict = {}
+    for u, v, key, data in G.edges(keys=True, data=True):
+        pts = data.get("voxels")
+        if pts is None or len(pts) < 2:
+            pos = G.nodes[u].get("pos"), G.nodes[v].get("pos")
+            if pos[0] is None or pos[1] is None:
+                result[(u, v, key)] = None
+                continue
+            pts = [pos[0], pos[1]]
+        poly = np.asarray(pts, dtype=float)
+
+        inside_length = 0.0
+        total_length = 0.0
+        for a, b in zip(poly[:-1], poly[1:]):
+            seg = float(np.linalg.norm(b - a))
+            if seg <= 0:
+                continue
+            n = max(1, int(np.ceil(seg / step)))
+            # Midpoints of n equal sub-steps: each carries the same length, so the average
+            # over them is a length-weighted average along this segment.
+            t = (np.arange(n) + 0.5) / n
+            samples = a + np.outer(t, b - a)
+            inside_length += float(inside(samples).mean()) * seg
+            total_length += seg
+        result[(u, v, key)] = (inside_length, total_length)
+    return result
+
+
 def edge_tissue_fraction(
     G,
     mask: np.ndarray,
@@ -196,50 +263,44 @@ def edge_tissue_fraction(
     because the stored polylines are not uniformly spaced and a densely sampled stretch would
     otherwise outvote a long one.
 
+    ``origin_um`` is the mask's first voxel corner, by default half a voxel below zero so that
+    voxel k is the one centred on k x voxel, as in the graph (open item 40).
+
     Returns ``{(u, v, key): fraction}``. Centreline points outside the mask array count as
-    outside rather than being clipped to its border.
+    outside rather than being clipped to its border. An edge with neither a polyline nor node
+    positions maps to NaN.
     """
-    mask = np.asarray(mask, dtype=bool)
-    if mask.ndim != 3:
-        raise ValueError(f"mask must be a 3D volume, got shape {mask.shape}")
-    voxel = np.asarray(voxel_um, dtype=float)
-    origin = np.zeros(3) if origin_um is None else np.asarray(origin_um, dtype=float)
-    # Half the finest voxel, so a crossing cannot be stepped over.
-    step = float(step_um) if step_um else float(voxel.min()) * 0.5
+    lengths = _edge_inside_lengths(G, mask, voxel_um, origin_um, step_um)
+    return {
+        edge: (pair[0] / pair[1]) if pair is not None and pair[1] > 0 else float("nan")
+        for edge, pair in lengths.items()
+    }
 
-    def inside(points: np.ndarray) -> np.ndarray:
-        idx = np.floor((points - origin) / voxel).astype(np.int64)
-        ok = np.all((idx >= 0) & (idx < np.asarray(mask.shape)), axis=1)
-        out = np.zeros(len(points), dtype=bool)
-        if ok.any():
-            sel = idx[ok]
-            out[ok] = mask[sel[:, 0], sel[:, 1], sel[:, 2]]
-        return out
 
-    result: dict = {}
-    for u, v, key, data in G.edges(keys=True, data=True):
-        pts = data.get("voxels")
-        if pts is None or len(pts) < 2:
-            pos = G.nodes[u].get("pos"), G.nodes[v].get("pos")
-            if pos[0] is None or pos[1] is None:
-                result[(u, v, key)] = float("nan")
-                continue
-            pts = [pos[0], pos[1]]
-        poly = np.asarray(pts, dtype=float)
+def edge_length_inside_um(
+    G,
+    mask: np.ndarray,
+    voxel_um: Sequence[float],
+    *,
+    origin_um: Sequence[float] | None = None,
+    step_um: float | None = None,
+) -> tuple:
+    """Total centreline length of the network, and the part of it inside ``mask``, in µm.
 
-        inside_length = 0.0
-        total_length = 0.0
-        for a, b in zip(poly[:-1], poly[1:]):
-            seg = float(np.linalg.norm(b - a))
-            if seg <= 0:
-                continue
-            n = max(1, int(np.ceil(seg / step)))
-            # Midpoints of n equal sub-steps: each carries the same length, so the average
-            # over them is a length-weighted average along this segment.
-            t = (np.arange(n) + 0.5) / n
-            samples = a + np.outer(t, b - a)
-            inside_length += float(inside(samples).mean()) * seg
-            total_length += seg
+    H1 §1.3's length and length within TH (open item 40). Measured on the network's own edge
+    polylines, the same geometry ``per_edge_morphometry.csv`` reports, and classified by the
+    same sampling as :func:`edge_tissue_fraction`, so §1.3 and H2 §2.1/§2.2 agree on which
+    stretch of vessel is glomus.
 
-        result[(u, v, key)] = (inside_length / total_length) if total_length > 0 else float("nan")
-    return result
+    Raises on an edge with no geometry: this is a sum, and leaving an edge out would shorten
+    the network without any sign in the result.
+    """
+    lengths = _edge_inside_lengths(G, mask, voxel_um, origin_um, step_um)
+    missing = [edge for edge, pair in lengths.items() if pair is None]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} edge(s) have neither a centreline polyline nor node positions, "
+            f"so their length is unknown (first: {missing[0]})")
+    inside = sum(pair[0] for pair in lengths.values())
+    total = sum(pair[1] for pair in lengths.values())
+    return float(total), float(inside)

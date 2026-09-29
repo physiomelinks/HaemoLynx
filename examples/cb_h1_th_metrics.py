@@ -9,10 +9,14 @@ Section 1.3 is the parenchymal volume of the TH-positive clusters and the centre
 density within them. Section 1.5 is the distance from every TH-positive voxel to the nearest
 lectin-positive centreline.
 
-Both channels are cropped to the same ROI, placed by ``place_roi`` from each specimen's own
-data, and the vessel channel is cut at cb_settings.FROZEN_THRESHOLD (0.95 since 2026-09-28,
-0.90 before), with the same inclusive plain cut as cb_h1_batch's threshold stage, so its
-foreground fractions match that stage's threshold_selection.json.
+The vessel side is the batch network, read from ``examples/outputs/cb_h1_batch/<specimen>/``:
+its graph gives the length (the same edges as per_edge_morphometry.csv), its cached skeleton
+the distance, and its cached mask the vessel volume. All three were built with the frozen
+hysteresis band (cb_settings.HYSTERESIS_LOW / HYSTERESIS_HIGH). Until open item 40 this script
+cut the probability map plainly and skeletonised that itself, which measured a different
+vessel set from the network, with a length estimator that over-counted corners. Run
+``cb_h1_batch.py --stage run`` first. The TH channel is cropped to the same placed ROI, and a
+batch output cut anywhere else is refused (``check_output_roi``).
 
 **On SHR.** The classifier that produced the TH channel carries 22.9x more glomus labels in
 WKY than SHR, and SHR-B and SHR-C carry none at all. A between-group contrast drawn from it
@@ -25,22 +29,25 @@ import json
 import sys
 from pathlib import Path
 
+import pickle
+
 import h5py
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ImageLynx.preprocessing.image import at_or_above                  # noqa: E402
-from ImageLynx.roi_placement import place_roi                          # noqa: E402
+from ImageLynx.roi_placement import check_output_roi, place_roi        # noqa: E402
 from ImageLynx.specimens import (                                      # noqa: E402
-    PROCESSING_VOXEL_UM, SPECIMENS, TH_CHANNEL, VESSEL_CHANNEL,
+    PROCESSING_VOXEL_UM, SPECIMENS, TH_CHANNEL,
 )
 from ImageLynx.statistics.th_morphometry import ThMorphometry, summarise  # noqa: E402
 from ImageLynx import cb_settings                                      # noqa: E402
 
-#: The threshold cb_h1_batch froze for all six after checking it does not split the cohorts.
+#: The threshold cb_h1_batch froze for all six after checking it does not split the cohorts;
+#: the batch network was built from the hysteresis band with this as its low end.
 FROZEN_VESSEL_THRESHOLD = cb_settings.FROZEN_THRESHOLD
 ROI = cb_settings.ROI_VOXELS
+BATCH = Path(__file__).resolve().parents[1] / "examples/outputs/cb_h1_batch"
 
 #: Why any SHR row here is provisional. Carried into the JSON and printed beside the table,
 #: because a caveat that lives only in a commit message is a caveat nobody reads.
@@ -62,33 +69,44 @@ def _crop(path, bounds, channel_index):
     return block / 255.0 if block.max() > 1.5 else block
 
 
-def _skeletonise(mask):
-    from scipy import ndimage as ndi
-    from skimage.morphology import skeletonize
+def _load_batch(specimen):
+    """The batch network's graph, skeleton and vessel mask, refused if cut at another box."""
+    directory = BATCH / specimen.specimen_id
+    check_output_roi(directory, specimen, ROI)
+    caches = sorted(directory.glob("*_cache"))
+    if len(caches) != 1:
+        raise FileNotFoundError(
+            f"{specimen.specimen_id}: expected one *_cache directory in {directory}, found "
+            f"{len(caches)}. Run cb_h1_batch.py --stage run.")
+    cache = caches[0]
+    with open(cache / "network_graph.pkl", "rb") as handle:
+        graph = pickle.load(handle)
+    skeleton = np.load(cache / "skeleton.npy")
+    vessel = np.load(cache / "vessel_mask.npy")
+    for name, volume in (("skeleton.npy", skeleton), ("vessel_mask.npy", vessel)):
+        if tuple(volume.shape) != tuple(ROI):
+            raise ValueError(
+                f"{specimen.specimen_id}: {cache / name} has shape {volume.shape}, not the "
+                f"ROI {tuple(ROI)}")
+    return graph, skeleton.astype(bool), vessel.astype(bool)
 
-    # Fill enclosed cavities so a hollow arteriole lumen does not skeletonise into a shell.
-    # No dilation or gap bridging: bridge_gaps is a plain dilation that inflates narrow
-    # vessels hardest, which is the wrong bias for a length measurement.
-    return skeletonize(ndi.binary_fill_holes(mask))
 
-
-def analyse(specimen, th_threshold, vessel_threshold=FROZEN_VESSEL_THRESHOLD, roi=ROI):
-    bounds = place_roi(specimen, roi).bounds
-    # The vessel cut is inclusive, the same plain cut the threshold selector makes (open item
-    # 17). The TH cut stays strict: TH_THRESHOLD was not chosen on this sweep.
-    vessel = at_or_above(_crop(specimen.probabilities_path, bounds,
-                               VESSEL_CHANNEL.target_index), vessel_threshold)
+def analyse(specimen, th_threshold):
+    bounds = place_roi(specimen, ROI).bounds
+    graph, skeleton, vessel = _load_batch(specimen)
+    # The TH cut stays strict: TH_THRESHOLD was not chosen on the vessel sweep.
     th = _crop(specimen.th_probabilities_path, bounds,
                TH_CHANNEL.target_index) > th_threshold
     return summarise(
         specimen_id=specimen.specimen_id,
         group=specimen.group,
+        graph=graph,
         th_mask=th,
         vessel_mask=vessel,
-        skeleton=_skeletonise(vessel),
+        skeleton=skeleton,
         voxel_um=PROCESSING_VOXEL_UM,
         th_threshold=th_threshold,
-        vessel_threshold=vessel_threshold,
+        vessel_threshold=FROZEN_VESSEL_THRESHOLD,
     )
 
 
@@ -121,7 +139,6 @@ def main():
                     help="Include SHR. Every SHR row carries the labelling caveat.")
     ap.add_argument("--th-threshold", type=float, nargs="+", default=[0.5, 0.7, 0.9],
                     help="TH probability cutoffs. Several so the sensitivity is visible.")
-    ap.add_argument("--roi", type=int, nargs=3, default=list(ROI), metavar=("Z", "Y", "X"))
     ap.add_argument("--out", default="examples/outputs/cb_h1_th_metrics.json")
     args = ap.parse_args()
 
@@ -130,21 +147,24 @@ def main():
     if missing:
         sys.exit(f"No TH probability map for: {', '.join(missing)}")
 
-    print(f"ROI {args.roi[0]}x{args.roi[1]}x{args.roi[2]} voxels = "
-          f"{np.prod(args.roi) * float(np.prod(PROCESSING_VOXEL_UM)) / 1e9:.4f} mm3, "
+    print(f"ROI {ROI[0]}x{ROI[1]}x{ROI[2]} voxels = "
+          f"{np.prod(ROI) * float(np.prod(PROCESSING_VOXEL_UM)) / 1e9:.4f} mm3, "
           f"identical for every specimen")
-    print(f"Vessel threshold frozen at {FROZEN_VESSEL_THRESHOLD} (cb_h1_batch)")
+    print(f"Vessel network from cb_h1_batch (hysteresis {cb_settings.HYSTERESIS_LOW} / "
+          f"{cb_settings.HYSTERESIS_HIGH})")
     if any(s.group == "SHR" for s in specimens):
         print(f"\n  !! {SHR_CAVEAT}\n")
 
-    payload = {"roi_zyx": list(args.roi),
+    payload = {"roi_zyx": list(ROI),
                "vessel_threshold": FROZEN_VESSEL_THRESHOLD,
+               "vessel_hysteresis": [cb_settings.HYSTERESIS_LOW, cb_settings.HYSTERESIS_HIGH],
+               "vessel_source": "cb_h1_batch network (open item 40)",
                "shr_included": bool(args.all),
                "shr_caveat": SHR_CAVEAT if args.all else None,
                "by_threshold": {}}
 
     for th_threshold in args.th_threshold:
-        rows = [analyse(s, th_threshold, roi=tuple(args.roi)) for s in specimens]
+        rows = [analyse(s, th_threshold) for s in specimens]
         print(f"\nTH threshold {th_threshold}")
         print(_table(rows))
         for field, label in (("th_volume_um3", "1.3 parenchymal volume um3"),

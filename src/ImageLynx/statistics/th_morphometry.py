@@ -6,73 +6,26 @@ every TH-positive voxel to the nearest lectin-positive centreline. Both are join
 two channels of one acquisition, which is only sound because they are two channels of one
 acquisition: identical grid, co-registered by construction, no registration step involved.
 
-Both channels are cropped to the same region of interest, placed by ``roi_placement.place_roi``
-from each specimen's own data. That is the same ROI and the same frozen vessel threshold that
-``examples/cb_h1_batch.py`` uses, verified by reproducing the foreground fractions recorded in
-its threshold_selection.json to five decimal places.
+The vessel side is the batch network itself (``examples/cb_h1_batch.py --stage run``), not a
+mask recomputed here: its graph for the §1.3 length, its skeleton for the §1.5 distance and
+its mask for the vessel volume. The TH channel is cropped to the same placed ROI, and the
+driver refuses a batch output whose box differs (``roi_placement.check_output_roi``).
 
-The vessel mask and skeleton are recomputed here rather than read from the
-``*_ilastik_Probabilities_cache`` directories. Those were written by a different run against a
-different crop: at the H1 ROI only about 29% of their voxels fall inside the box at all, so
-joining TH to them would have measured the overlap of two unrelated regions.
+**One definition of vessel length** (open item 40). Until then this module thresholded the
+probability map plainly at the frozen cut and skeletonised that, while the network uses the
+hysteresis band plus its own cleanup, and it measured length by summing every 26-adjacent
+voxel pair, which counts all three links where three skeleton voxels touch at a corner. The
+two together put WKY-A's §1.3 length at 199 mm against the network's 97 mm. The length is
+now the network's edge polylines, classified against TH by the same sampling H2 §2.1 uses.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from itertools import product
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, Sequence
 
 import numpy as np
 
-#: Every unique 26-connected step, taken once per pair rather than once per direction.
-_STEPS: Tuple[Tuple[int, int, int], ...] = tuple(
-    offset for offset in product((-1, 0, 1), repeat=3)
-    if offset > (0, 0, 0)
-)
-
-
-def centreline_length_um(
-    skeleton: np.ndarray,
-    voxel_um: Sequence[float],
-    within: Optional[np.ndarray] = None,
-) -> float:
-    """Total centreline length, summing the real length of every step.
-
-    Counting skeleton voxels and multiplying by the voxel size is the obvious estimator and
-    it is wrong by up to sqrt(3): a diagonal step covers 3.23 um on this grid where an axial
-    one covers 1.87. On a tortuous network that is not a small correction, and H1 section 1.4
-    turns on tortuosity, so the two must not disagree about what length means.
-
-    With ``within``, a step counts only when *both* of its endpoints are inside the mask. A
-    step straddling the boundary belongs to neither side, and assigning it to the tissue it
-    half touches would inflate whichever mask is more fragmented.
-    """
-    skeleton = np.asarray(skeleton, dtype=bool)
-    if within is not None:
-        within = np.asarray(within, dtype=bool)
-        if within.shape != skeleton.shape:
-            raise ValueError(
-                f"within has shape {within.shape}, skeleton has {skeleton.shape}")
-
-    total = 0.0
-    for step in _STEPS:
-        length = float(np.sqrt(sum((s * v) ** 2 for s, v in zip(step, voxel_um))))
-        a, b = _shifted_pair(skeleton, step)
-        joined = a & b
-        if within is not None:
-            wa, wb = _shifted_pair(within, step)
-            joined &= wa & wb
-        total += length * int(joined.sum())
-    return total
-
-
-def _shifted_pair(volume: np.ndarray, step) -> Tuple[np.ndarray, np.ndarray]:
-    """The overlapping views of ``volume`` offset against itself by ``step``."""
-    lo = tuple(slice(max(s, 0), volume.shape[i] + min(s, 0))
-               for i, s in enumerate(step))
-    hi = tuple(slice(max(-s, 0), volume.shape[i] + min(-s, 0))
-               for i, s in enumerate(step))
-    return volume[lo], volume[hi]
+from ImageLynx.haemodynamics.tissue_regions import edge_length_inside_um
 
 
 def tissue_to_vessel_distance_um(
@@ -143,6 +96,7 @@ class ThMorphometry:
 def summarise(
     specimen_id: str,
     group: str,
+    graph,
     th_mask: np.ndarray,
     vessel_mask: np.ndarray,
     skeleton: np.ndarray,
@@ -150,12 +104,20 @@ def summarise(
     th_threshold: float,
     vessel_threshold: float,
 ) -> ThMorphometry:
-    """Assemble both sections from masks that are already on a common grid."""
+    """Assemble both sections from the batch network and masks on its grid.
+
+    ``graph`` gives the §1.3 lengths, ``skeleton`` the §1.5 distances; both come from the
+    same pipeline run, so they describe one vessel set.
+    """
+    th_mask = np.asarray(th_mask, dtype=bool)
+    for name, volume in (("vessel_mask", vessel_mask), ("skeleton", skeleton)):
+        if np.shape(volume) != th_mask.shape:
+            raise ValueError(
+                f"{name} has shape {np.shape(volume)}, th_mask has {th_mask.shape}")
     voxel_volume = float(np.prod(voxel_um))
     n = int(th_mask.size)
 
-    length_all = centreline_length_um(skeleton, voxel_um)
-    length_in_th = centreline_length_um(skeleton, voxel_um, within=th_mask)
+    length_all, length_in_th = edge_length_inside_um(graph, th_mask, voxel_um)
     th_volume = float(th_mask.sum()) * voxel_volume
 
     # Length per unit parenchymal volume, expressed as mm of centreline per mm3 of TH+

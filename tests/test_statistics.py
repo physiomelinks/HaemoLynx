@@ -33,6 +33,29 @@ def test_compute_branching_statistics(simple_graph):
     assert "Average Branching Angle (degrees)" in s
 
 
+def test_branching_points_are_counted_on_the_multigraph_not_its_simple_copy():
+    """A node joined twice to one neighbour and once to another meets three vessels.
+
+    Merging the parallel pair drops it to degree 2. The per-edge CSV, Figure 3 and
+    cb_h1_vtk.py count it as a junction, so the printed stats must too (open item 40).
+    """
+    G = nx.MultiGraph()
+    pos = {0: (0.0, 0.0, 0.0), 1: (10.0, 0.0, 0.0), 2: (0.0, 10.0, 0.0)}
+    for n, p in pos.items():
+        G.add_node(n, pos=p)
+    G.add_edge(0, 1, length=10.0)
+    G.add_edge(0, 1, length=12.0)
+    G.add_edge(0, 2, length=10.0)
+
+    merged = compute_branching_statistics(nx.Graph(G), pos)
+    counted = compute_branching_statistics(nx.Graph(G), pos, count_graph=G)
+    assert merged["Number of Branching Points"] == 0
+    assert counted["Number of Branching Points"] == 1
+
+    full = compute_comprehensive_vessel_statistics(G, pos)
+    assert full["Number of Branching Points"] == 1
+
+
 def test_compute_tree_asymmetry(simple_graph):
     s = compute_tree_asymmetry(simple_graph)
     assert "Tree Asymmetry Index" in s

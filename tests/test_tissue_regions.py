@@ -249,7 +249,7 @@ def test_the_outside_the_grid_warning_counts_volume_not_voxel_centres():
     grid = _grid_from_bounds((0.0, 0.0, 0.0), (10.0, 10.0, 10.0), 2.0)   # spans -1 to 11 um
     mask = np.ones((5, 5, 5), bool)                                      # 0 to 12.5 um at 2.5
     with pytest.warns(RuntimeWarning, match="fall outside the grid"):
-        frac = mask_fraction_per_cell(mask, grid, (2.5, 2.5, 2.5))
+        frac = mask_fraction_per_cell(mask, grid, (2.5, 2.5, 2.5), origin_um=(0.0, 0.0, 0.0))
     placed = float(frac.sum()) * float(np.prod(grid.res))
     assert placed == pytest.approx(11.0 ** 3, rel=1e-9)
 
@@ -393,10 +393,13 @@ def test_a_mask_that_fits_the_grid_warns_about_nothing():
 def test_mask_bounds_are_the_outer_corners_not_the_corner_voxel_centres():
     """Half a voxel matters: the centre convention would leave the outermost half-voxel of
     tissue outside a grid built to contain it, which is the very gap this exists to close."""
-    lo, hi = mask_bounds_um((160, 160, 160), (1.8639, 1.866, 1.866))
+    voxel = np.array([1.8639, 1.866, 1.866])
+    lo, hi = mask_bounds_um((160, 160, 160), voxel)
 
-    assert np.allclose(lo, [0.0, 0.0, 0.0])
-    assert np.allclose(hi, [160 * 1.8639, 160 * 1.866, 160 * 1.866])
+    # Voxel k is centred on k x voxel, as in the graph (open item 40), so the outer corners
+    # sit half a voxel outside the first and last centres.
+    assert np.allclose(lo, -0.5 * voxel)
+    assert np.allclose(hi, 159.5 * voxel)
 
 
 def test_mask_bounds_respect_a_non_zero_origin():
@@ -434,3 +437,68 @@ def test_a_grid_built_from_mask_bounds_contains_every_mask_voxel():
 def test_malformed_mask_bounds_raise(shape, voxel):
     with pytest.raises(ValueError):
         mask_bounds_um(shape, voxel)
+
+
+# --- Voxel k is centred on k x voxel, as the graph puts it (open item 40) ----------------
+
+from ImageLynx.haemodynamics.tissue_regions import edge_length_inside_um   # noqa: E402
+
+
+def _one_voxel_mask(index, shape=(20, 20, 20)):
+    mask = np.zeros(shape, bool)
+    mask[index] = True
+    return mask
+
+
+@pytest.mark.parametrize("offset,inside", [(0.0, True), (0.4, True), (-0.4, True),
+                                           (0.6, False), (-0.6, False)])
+def test_an_edge_point_is_looked_up_in_the_voxel_it_is_centred_on(offset, inside):
+    """Graph positions are skeleton indices times the voxel size, so a point at k x voxel is
+    the centre of voxel k. The old floor lookup put it on voxel k's lower corner, half a
+    voxel off along every axis."""
+    k = np.array([8, 9, 10])
+    point = (k + offset) * np.asarray(VOX)
+    G = _edge_graph({"e": [point, point + np.array([0.0, 0.0, 1e-3])]})
+    frac = list(edge_tissue_fraction(G, _one_voxel_mask(tuple(k)), VOX).values())[0]
+    assert frac == (pytest.approx(1.0) if inside else pytest.approx(0.0))
+
+
+def test_a_mask_voxel_lands_in_the_cell_holding_its_graph_position():
+    """The grid-side join uses the same convention: voxel k's volume is centred on k x voxel."""
+    grid = _grid_from_bounds((0.0, 0.0, 0.0), (60.0, 60.0, 60.0), 3.0)
+    k = (10, 12, 14)
+    frac = mask_fraction_per_cell(_one_voxel_mask(k, (40, 40, 40)), grid, VOX)
+    centre = np.asarray(k) * np.asarray(VOX)
+    lo = centre - 0.5 * np.asarray(VOX)
+    hi = centre + 0.5 * np.asarray(VOX)
+    cells = {int(grid.get_cell_index(np.array([z, y, x])))
+             for z in (lo[0] + 1e-6, hi[0] - 1e-6)
+             for y in (lo[1] + 1e-6, hi[1] - 1e-6)
+             for x in (lo[2] + 1e-6, hi[2] - 1e-6)}
+    assert set(np.flatnonzero(frac)) == cells
+
+
+def test_the_network_length_inside_is_the_fraction_weighted_polyline_length():
+    mask = np.zeros((60, 60, 60), bool)
+    mask[:, 25:35, :] = True
+    G = _edge_graph({"a": [(20.0, 10.0, 20.0), (20.0, 56.0, 20.0), (20.0, 100.0, 20.0)],
+                     "b": [(30.0, 40.0, 10.0), (30.0, 60.0, 50.0)]})
+    total, inside = edge_length_inside_um(G, mask, VOX)
+    frac = edge_tissue_fraction(G, mask, VOX)
+
+    lengths = {(u, v, k): float(np.linalg.norm(np.diff(np.asarray(d["voxels"]), axis=0),
+                                               axis=1).sum())
+               for u, v, k, d in G.edges(keys=True, data=True)}
+    assert total == pytest.approx(sum(lengths.values()))
+    assert inside == pytest.approx(sum(frac[e] * lengths[e] for e in lengths))
+    assert 0.0 < inside < total
+
+
+def test_an_edge_with_no_geometry_is_refused_rather_than_left_out_of_the_length():
+    G = nx.MultiGraph()
+    G.add_node("a")
+    G.add_node("b")
+    G.add_edge("a", "b")
+    assert np.isnan(list(edge_tissue_fraction(G, np.zeros((5, 5, 5), bool), VOX).values())[0])
+    with pytest.raises(ValueError, match="neither a centreline polyline nor node positions"):
+        edge_length_inside_um(G, np.zeros((5, 5, 5), bool), VOX)
