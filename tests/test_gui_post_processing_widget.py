@@ -349,6 +349,38 @@ def test_delete_by_branch_id_reports_bad_input_and_protects_boundaries(page):
     assert c.branch_ids.text() != ""  # kept, so it can be corrected
 
 
+def test_prune_removes_a_branch_a_delete_cut_off(make_napari_viewer):
+    """1 -> 5 -> 6 hangs off the junction; deleting 1 -> 5 cuts 5 -> 6 off."""
+    viewer = make_napari_viewer()
+    G = _four_way_network()
+    G.add_node(6, pos=np.asarray((10.0, 30.0, 0.0)))
+    G.add_edge(5, 6, voxels=[(10.0, 20.0, 0.0), (10.0, 30.0, 0.0)], length=10.0,
+               branch_order="B02", diameter_um=5.0)
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("build_network", network(G)))
+    report = SimpleNamespace(value="")
+    c = _post_processing_controls(
+        viewer, report, results=lambda: results,
+        boundary_roles=lambda: {"inlet": (0,), "outlet": (4,)},
+        regenerate=lambda graph: None, running=lambda: False,
+    )
+    c.scan_button.click()
+    c.prune_button.click()
+    assert "Nothing to prune" in c.status.text()
+
+    keys = edge_keys(c.state.graph)
+    c.branch_ids.setText(str(next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})))
+    c.delete_ids_button.click()
+    assert c.state.graph.has_edge(5, 6)  # cut off, but still there
+    c.prune_button.click()
+
+    graph = c.state.graph
+    assert 5 not in graph and 6 not in graph
+    assert graph.number_of_edges() == 5
+    assert len(viewer.layers[VESSELS].data) == 5
+    assert "pruned 1 disconnected piece(s), 1 vessel(s)" in report.value
+
+
 def test_regenerate_hands_over_the_edited_graph_and_clears_the_tab(page):
     c, viewer = page.controls, page.viewer
     c.scan_button.click()

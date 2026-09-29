@@ -14,6 +14,7 @@ from haemolynx.gui.post_processing import (
     JUNCTION_TABLE_COLUMNS,
     SELECTED,
     STATUS_COLOURS,
+    boundaries_following_graph,
     camera_center_for,
     junction_label,
     junction_marker_layer,
@@ -148,3 +149,27 @@ def test_parse_branch_ids_reads_commas_spaces_and_semicolons_once_each():
 def test_parse_branch_ids_says_what_is_wrong(text, message):
     with pytest.raises(ValueError, match=message):
         parse_branch_ids(text, 50)
+
+
+def test_boundaries_following_graph_drops_pruned_boundary_nodes():
+    from haemolynx.pipeline.stages import PipelineResume
+
+    G = _network()
+    G.remove_node(0)  # say a prune took inlet 0 with it
+    resume = PipelineResume(
+        start_from="assign_diameters", graph=G,
+        inlet_nodes=(0, 2), outlet_nodes=(4,),
+        arteriole_boundary_nodes=(0, 1), venule_boundary_nodes=(3,),
+        resistance_node_pair=(0, 4),
+    )
+    after = boundaries_following_graph(resume)
+    assert after.inlet_nodes == (2,) and after.outlet_nodes == (4,)
+    assert after.arteriole_boundary_nodes == (1,) and after.venule_boundary_nodes == (3,)
+    assert after.resistance_node_pair == (2, 4)  # re-picked: 0 is gone
+    assert after.graph is G and after.start_from == "assign_diameters"
+    # A pair that survived is left alone.
+    kept = boundaries_following_graph(
+        PipelineResume(start_from="assign_diameters", graph=G, inlet_nodes=(2,),
+                       outlet_nodes=(4,), resistance_node_pair=(1, 4))
+    )
+    assert kept.resistance_node_pair == (1, 4)

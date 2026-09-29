@@ -18,6 +18,7 @@ from haemolynx.graph import (
     high_degree_junctions,
     junction_vessels,
     mean_incident_diameter,
+    prune_disconnected_branches,
     split_junction,
     vessel_path_between,
 )
@@ -305,3 +306,38 @@ def test_add_vessel_between_rejects_a_self_loop_or_a_missing_node():
         add_vessel_between(G, 1, 1)
     with pytest.raises(ValueError, match="not in the network"):
         add_vessel_between(G, 1, 99)
+
+
+
+# --- prune_disconnected_branches ----------------------------------------------
+
+
+def _main_and_cut_off_pieces() -> nx.MultiGraph:
+    """Inlet 0 -> 1 -> outlet 2 (kept); 3 -> inlet 4 (inlet only);
+    5 -> 6 (no boundary node at all)."""
+    positions = {n: (0.0, float(n), 0.0) for n in range(7)}
+    return _network(positions, [(0, 1), (1, 2), (3, 4), (5, 6)])
+
+
+def test_prune_drops_every_piece_without_both_an_inlet_and_an_outlet():
+    G = _main_and_cut_off_pieces()
+    pruned, stats = prune_disconnected_branches(G, [0, 4], [2])
+    assert sorted(pruned.nodes) == [0, 1, 2]
+    assert stats["removed_components"] == 2
+    assert stats["removed_vessels"] == 2
+    assert stats["removed_boundary_nodes"] == [4]
+    assert G.number_of_edges() == 4  # the input graph is left as it was
+
+
+def test_prune_with_nothing_to_drop_changes_nothing():
+    positions = {n: (0.0, float(n), 0.0) for n in range(3)}
+    G = _network(positions, [(0, 1), (1, 2)])
+    pruned, stats = prune_disconnected_branches(G, [0], [2])
+    assert stats["removed_components"] == 0 and stats["removed_vessels"] == 0
+    assert pruned.number_of_edges() == 2
+
+
+def test_prune_refuses_to_remove_every_vessel():
+    G = _main_and_cut_off_pieces()
+    with pytest.raises(ValueError, match="every vessel"):
+        prune_disconnected_branches(G, [4], [2])  # no piece has both

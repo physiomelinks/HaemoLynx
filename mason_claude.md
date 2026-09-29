@@ -13,7 +13,7 @@ adds a line to the change log at the bottom.
 
 ---
 
-## What the tab does (as of commit 3)
+## What the tab does (as of commit 4)
 
 After a run (at least through **4. Boundaries**), tab 10 works on a copy of the run's network:
 
@@ -54,8 +54,15 @@ After a run (at least through **4. Boundaries**), tab 10 works on a copy of the 
      IDs of later vessels move down.
    - Nodes are picked from the graph itself (`nearest_node`, the node nearest the click ray),
      not by napari's point picking, which needs the layer drawn on screen.
-5. **Regenerate from the edited network:** reruns Diameters → Export on the edited graph, so
-   branch orders, resistances, flows and the 3D view catch up. The tab then clears; scan again
+5. **Prune disconnected branches** (just above Regenerate): removes every piece of the network
+   that no longer has both an inlet and an outlet, e.g. a branch whose only link to the rest was
+   deleted (`prune_disconnected_branches`). The report says how many pieces, vessels and boundary
+   nodes went.
+6. **Regenerate from the edited network:** reruns Diameters → Export on the edited graph, so
+   branch orders, resistances, flows and the 3D view catch up. Tab 10's Regenerate
+   cuts the rerun's inlet, outlet and boundary lists to the nodes still in the graph
+   (`boundaries_following_graph`), so pruned boundary nodes don't stop the solve. The old Edit
+   window's Regenerate keeps the strict check. The tab then clears; scan again
    afterwards.
 
 Things to know:
@@ -71,8 +78,8 @@ Things to know:
 
 | File | What it holds |
 |---|---|
-| `src/haemolynx/graph/post_processing.py` | Pure graph rules, no Qt or napari: `edge_keys`, `high_degree_junctions`, `junction_vessels` → `JunctionVessel`, `delete_vessels(protected=...)`, `split_junction(connector_length_um=15)`, `DEFAULT_SPLIT_CONNECTOR_LENGTH_UM`; for Add vessel: `mean_incident_diameter`, `vessel_path_between` (routed or straight, `MIN_ROUTED_INSIDE_FRACTION`), `add_vessel_between` |
-| `src/haemolynx/gui/post_processing.py` | Pure viewer logic: `scan_network` → `NetworkScan`, `vessel_status` / `status_colours` / `STATUS_COLOURS` (grey, cyan, yellow), `junction_marker_layer` (layer `HaemoLynx 4+ junctions`), `junction_table_rows`, `junction_label`, `nearest_node` (click → node), `parse_branch_ids`, `camera_center_for`, `zoom_for_canvas` |
+| `src/haemolynx/graph/post_processing.py` | Pure graph rules, no Qt or napari: `edge_keys`, `high_degree_junctions`, `junction_vessels` → `JunctionVessel`, `delete_vessels(protected=...)`, `split_junction(connector_length_um=15)`, `DEFAULT_SPLIT_CONNECTOR_LENGTH_UM`; for Add vessel: `mean_incident_diameter`, `vessel_path_between` (routed or straight, `MIN_ROUTED_INSIDE_FRACTION`), `add_vessel_between`; `prune_disconnected_branches` |
+| `src/haemolynx/gui/post_processing.py` | Pure viewer logic: `scan_network` → `NetworkScan`, `vessel_status` / `status_colours` / `STATUS_COLOURS` (grey, cyan, yellow), `junction_marker_layer` (layer `HaemoLynx 4+ junctions`), `junction_table_rows`, `junction_label`, `nearest_node` (click → node), `parse_branch_ids`, `boundaries_following_graph`, `camera_center_for`, `zoom_for_canvas` |
 | `tests/test_graph_post_processing.py` | Graph rules on small hand-built networks |
 | `tests/test_gui_post_processing.py` | The pure viewer logic |
 | `tests/test_gui_post_processing_widget.py` | The real Qt page with a napari viewer (`gui` marker) |
@@ -93,7 +100,7 @@ so a boundary role on it survives.
 | `src/haemolynx/gui/_widget.py`: `POST_PROCESSING_TAB`, `JUNCTION_ZOOM_BOX_UM`, `_zoom_viewer_to`, `_post_processing_controls` | **The tab's Qt page.** A self-contained block just above `def settings_widget`; tab-10 work goes here |
 | `_widget.py` in `settings_widget`, right after the stage-tab loop | Builds the page and adds it as the last tab (`post_processing = _post_processing_controls(...)`) |
 | `_widget.py`, revert-stack loop | Adds one empty "Run from this stage" slot so the stack's pages still line up with the tabs |
-| `_widget.py`, `on_regenerate_from_edit` | Body moved into `regenerate_from_graph(graph)`, shared by the old Edit window and tab 10 |
+| `_widget.py`, `on_regenerate_from_edit` | Body moved into `regenerate_from_graph(graph, follow_graph_boundaries=False)`, shared by the old Edit window and tab 10. Tab 10 passes `True`, which cuts the resume's boundary lists to the graph |
 | `_widget.py`, test hooks | `panel._haemolynx_post_processing` |
 | `_widget.py`, bottom "run file" row | `edit_button.visible = False`, one added line: the old Edit button stays in its row (a view-panel test checks the row order) but is hidden, and its code is kept |
 | `src/haemolynx/haemodynamics/poiseuille.py`, `stamp_edge_diameters` | A vessel with `diameter_source="override"` now keeps its diameter over the **branch-order table**; a measurement of that vessel (FWHM, endothelial, raw section, EDT) still replaces it, which `test_fresh_fwhm_run_wipes_overrides` pins. **Tell the colleague:** this is haemodynamics code, not tab 10 |
@@ -138,11 +145,7 @@ where it can't be committed by accident:
 - `.git/mason_tab10_backup/full_post_pull.tgz`: the same files as a tarball.
 - The `*_pre_pull*` copies are from before your colleague's 3 commits were pulled.
 
-1. **Prune disconnected branches** (next), placed just above Regenerate. It removes every component
-   without both an inlet and an outlet (`graph.remove_components_without_connected_io`).
-   Regenerate then has to drop the pruned inlets and outlets from the boundary lists
-   (`PipelineResume` in `regenerate_from_graph`) instead of stopping.
-2. **Off-network vessels (saved code):** `graph.off_network_edges` (biconnected-component test:
+1. **Off-network vessels (saved code):** `graph.off_network_edges` (biconnected-component test:
    a vessel is on the network iff it lies on a simple inlet → outlet path), a red status in
    `vessel_status`, and "N of M vessels are not on an inlet-to-outlet path" in the scan summary.
 
@@ -162,6 +165,10 @@ PYTHONPATH=src python -m pytest tests/test_graph_post_processing.py tests/test_g
 PYTHONPATH=<folder with pytest+pytest-qt> QT_QPA_PLATFORM=offscreen \
   ~/napari-venv/bin/python -m pytest -m gui tests/test_gui_post_processing_widget.py
 ```
+
+**Checking Regenerate end to end** writes into the run's own output folder
+(`vtk_output_prefix`, e.g. `/home/sliu205/outputs`), overwriting its checkpoints and `.vtp`
+files. Point `vtk_output_prefix` at a scratch folder first, or rerun afterwards.
 
 Known unrelated failures in this environment:
 - 3 in `tests/test_gui_view_panel.py`: the scale bar and tubes-after-snap tests fail offscreen
@@ -193,3 +200,11 @@ Known unrelated failures in this environment:
     view-panel failures.
 - **2026-09-30, commit 3:** Delete by branch ID in tab 10's edit box (`parse_branch_ids`), with
   boundary-node protection. Tests: the tab's pure, widget and tooltip tests pass (40).
+- **2026-09-30, commit 4:** Prune disconnected branches (`prune_disconnected_branches`), and tab
+  10's Regenerate follows pruned boundary nodes (`boundaries_following_graph`).
+  - Checked end to end on a copy of `ZStack_Haemolynx.haemorun`: delete branchID 17, which cut a
+    9-vessel piece holding outlets 2141 and 2195 off from the inlets, then prune, then
+    Regenerate. Every stage from Diameters to Export completed (320 s).
+  - Side effect: that check overwrote `/home/sliu205/outputs`' checkpoints and
+    `ZStack_Haemolynx_*.vtp` with the test's edited network. Rerun before using them.
+  - Tests: the tab's pure, widget, graph, tooltip and editor tests pass (106).

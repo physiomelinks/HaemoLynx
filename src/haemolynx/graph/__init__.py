@@ -28,6 +28,7 @@ from .post_processing import (
     high_degree_junctions,
     junction_vessels,
     mean_incident_diameter,
+    prune_disconnected_branches,
     split_junction,
     vessel_path_between,
 )
@@ -180,6 +181,7 @@ __all__ = [
     "high_degree_junctions",
     "junction_vessels",
     "mean_incident_diameter",
+    "prune_disconnected_branches",
     "split_junction",
     "vessel_path_between",
     "validate_skeleton_connection",

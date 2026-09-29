@@ -22,7 +22,8 @@ And, for the tab's click-in-the-viewer edits: :func:`vessel_path_between` and
 :func:`add_vessel_between` draw a new vessel between two chosen nodes, routed
 through the segmented image where it can be and straight where it cannot,
 with the mean diameter of the vessels already at those nodes
-(:func:`mean_incident_diameter`).
+(:func:`mean_incident_diameter`). After deleting, :func:`prune_disconnected_branches`
+removes whatever the deletions cut off from every inlet-to-outlet piece.
 """
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ import numpy as np
 from ._helpers import calculate_path_length, next_node_id
 from .degree2 import create_trivial_merged_edge
 from .edit import astar_path, voxel_path_to_microns
+from .prune import remove_components_without_connected_io
 
 __all__ = [
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
@@ -47,6 +49,7 @@ __all__ = [
     "high_degree_junctions",
     "junction_vessels",
     "mean_incident_diameter",
+    "prune_disconnected_branches",
     "split_junction",
     "vessel_path_between",
 ]
@@ -422,3 +425,33 @@ def add_vessel_between(
         set_edge_diameter_override(attrs, diameter_um)
     key = G.add_edge(a, b, **attrs)
     return (a, b, key)
+
+
+def prune_disconnected_branches(
+    G: nx.MultiGraph,
+    inlet_nodes: Sequence[Any],
+    outlet_nodes: Sequence[Any],
+) -> tuple[nx.MultiGraph, dict[str, Any]]:
+    """Drop every piece of *G* that has no inlet or no outlet.
+
+    What a deletion leaves behind when it cut the last vessel joining a
+    branch to the rest: a piece that blood cannot cross, which has no
+    boundary condition to solve with. The rule is
+    :func:`haemolynx.graph.remove_components_without_connected_io`'s; this
+    adds what was removed -- ``removed_vessels`` and ``removed_boundary_nodes``
+    (inlets or outlets that sat on a dropped piece) -- to its counts, and
+    refuses to drop everything.
+    """
+    pruned, stats = remove_components_without_connected_io(
+        G, list(inlet_nodes), list(outlet_nodes)
+    )
+    if G.number_of_edges() and not pruned.number_of_edges():
+        raise ValueError(
+            "No piece of the network has both an inlet and an outlet; pruning "
+            "would remove every vessel"
+        )
+    boundary = dict.fromkeys([*inlet_nodes, *outlet_nodes])
+    stats = dict(stats)
+    stats["removed_vessels"] = G.number_of_edges() - pruned.number_of_edges()
+    stats["removed_boundary_nodes"] = [n for n in boundary if n in G and n not in pruned]
+    return pruned, stats

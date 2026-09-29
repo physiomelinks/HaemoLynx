@@ -188,6 +188,10 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "Delete the vessels with the branchIDs typed beside this button; "
         "inlets, outlets and boundary nodes are never cut off"
     ),
+    "prune": (
+        "Remove every piece of the network that no longer has both an inlet "
+        "and an outlet, such as a branch whose only link to the rest was deleted"
+    ),
     "regenerate": (
         "Rerun Diameters, Haemodynamics, Solve, Perturbations and Export on "
         "the edited network, so the 3D view and outputs catch up with the edits"

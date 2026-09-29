@@ -6947,6 +6947,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         edge_keys,
         mask_cost_field,
         mean_incident_diameter,
+        prune_disconnected_branches,
         split_junction,
         vessel_path_between,
     )
@@ -6968,6 +6969,8 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     state = SimpleNamespace(
         graph=None,
         scan=None,
+        inlets=(),
+        outlets=(),
         protected=frozenset(),
         decisions={},
         node=None,
@@ -7047,6 +7050,8 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     ids_row.addWidget(delete_ids_button)
     edit_layout.addLayout(ids_row)
 
+    prune_button = QPushButton("Prune disconnected branches")
+    prune_button.setToolTip(tips["prune"])
     regenerate_button = QPushButton("Regenerate from the edited network")
     regenerate_button.setToolTip(tips["regenerate"])
 
@@ -7066,6 +7071,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     row.addWidget(connector)
     layout.addLayout(row)
     layout.addWidget(edit_box)
+    layout.addWidget(prune_button)
     layout.addWidget(regenerate_button)
 
     def layer(name):
@@ -7191,6 +7197,8 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
             status.setText("Nothing to check yet: run the pipeline through at least Boundaries first.")
             return
         roles = boundary_roles() or {}
+        state.inlets = tuple(roles.get("inlet", ()) or ())
+        state.outlets = tuple(roles.get("outlet", ()) or ())
         state.protected = frozenset(n for nodes in roles.values() for n in (nodes or ()))
         stop_editing()
         state.graph = copy_graph(graph)
@@ -7240,6 +7248,38 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         report.value = (
             f"Post processing: split node {node} into bifurcations "
             f"(new node(s) {', '.join(str(n) for n in new_nodes)}). {state.scan.summary}"
+        )
+
+    def on_prune() -> None:
+        if state.graph is None:
+            status.setText("Scan the network first.")
+            return
+        if not state.inlets or not state.outlets:
+            status.setText(
+                "This run has no inlet or no outlet nodes, so there is nothing to "
+                "tell a connected branch from a disconnected one."
+            )
+            return
+        try:
+            pruned, stats = prune_disconnected_branches(state.graph, state.inlets, state.outlets)
+        except ValueError as error:
+            status.setText(str(error))
+            return
+        if not stats["removed_components"]:
+            status.setText("Nothing to prune: every piece has an inlet and an outlet.")
+            return
+        stop_editing()
+        state.graph = pruned
+        state.inlets = tuple(n for n in state.inlets if n in pruned)
+        state.outlets = tuple(n for n in state.outlets if n in pruned)
+        rescan(prefer=state.node)
+        dropped = stats["removed_boundary_nodes"]
+        extra = (
+            f", with boundary node(s) {', '.join(str(n) for n in dropped)}" if dropped else ""
+        )
+        report.value = (
+            f"Post processing: pruned {stats['removed_components']} disconnected "
+            f"piece(s), {stats['removed_vessels']} vessel(s){extra}. {state.scan.summary}"
         )
 
     def on_leave() -> None:
@@ -7418,6 +7458,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
     delete_button.clicked.connect(on_delete)
     split_button.clicked.connect(on_split)
     leave_button.clicked.connect(on_leave)
+    prune_button.clicked.connect(on_prune)
     click_delete_button.clicked.connect(lambda: arm("delete"))
     add_button.clicked.connect(lambda: arm("add"))
     stop_button.clicked.connect(stop_editing)
@@ -7440,6 +7481,7 @@ def _post_processing_controls(viewer, report, *, results, boundary_roles, regene
         stop_button=stop_button,
         branch_ids=branch_ids,
         delete_ids_button=delete_ids_button,
+        prune_button=prune_button,
         regenerate_button=regenerate_button,
         status=status,
         edit_status=edit_status,
@@ -7681,7 +7723,7 @@ def settings_widget(napari_viewer=None):
         report,
         results=lambda: view.results,
         boundary_roles=lambda: checkpoints._carried_boundary_roles(),
-        regenerate=lambda graph: regenerate_from_graph(graph),
+        regenerate=lambda graph: regenerate_from_graph(graph, follow_graph_boundaries=True),
         running=lambda: run_state.running,
     )
     post_processing_scroller = _fitting_scroll_area()
@@ -9215,9 +9257,15 @@ def settings_widget(napari_viewer=None):
             return
         regenerate_from_graph(state.graph)
 
-    def regenerate_from_graph(graph) -> None:
+    def regenerate_from_graph(graph, *, follow_graph_boundaries: bool = False) -> None:
         """Rerun Diameters onwards on *graph*: the Edit window's Regenerate,
-        and the post-processing tab's."""
+        and the post-processing tab's.
+
+        *follow_graph_boundaries* (the post-processing tab, whose Prune can
+        drop inlets and outlets on purpose) cuts the run's boundary lists to
+        the nodes *graph* still has; without it a missing boundary node stops
+        the solve, which catches an accidental one.
+        """
         if run_state.running:
             report.value = ALREADY_RUNNING
             return
@@ -9237,6 +9285,10 @@ def settings_widget(napari_viewer=None):
                 "least Boundaries first."
             )
             return
+        if follow_graph_boundaries:
+            from haemolynx.gui.post_processing import boundaries_following_graph
+
+            plan = replace(plan, resume=boundaries_following_graph(plan.resume))
         if not _resumed_run_passes_checks(settings, plan):
             return
         checkpoints.drop_from(plan.start_from)

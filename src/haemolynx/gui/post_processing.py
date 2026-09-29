@@ -18,7 +18,7 @@ where four or more vessels meet.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Sequence
 
 import numpy as np
@@ -40,6 +40,7 @@ __all__ = [
     "POST_PROCESSING_LAYERS",
     "SELECTED",
     "STATUS_COLOURS",
+    "boundaries_following_graph",
     "camera_center_for",
     "junction_label",
     "junction_marker_layer",
@@ -260,3 +261,32 @@ def zoom_for_canvas(canvas_size_px: Sequence[float], box_um: float) -> float | N
     if not sizes or box_um <= 0:
         return None
     return min(sizes) / float(box_um)
+
+
+def boundaries_following_graph(resume: Any) -> Any:
+    """*resume* (a ``PipelineResume``) with its boundary lists cut to its graph.
+
+    A prune in this tab can drop inlets or outlets that sat on a piece cut
+    off from the rest; the run being regenerated must not look for them. The
+    resistance node pair is re-picked from what is left when either of its
+    nodes went. Everything else on *resume* is kept.
+    """
+    graph = resume.graph
+    if graph is None:
+        return resume
+
+    def kept(nodes):
+        return tuple(node for node in (nodes or ()) if node in graph)
+
+    inlets, outlets = kept(resume.inlet_nodes), kept(resume.outlet_nodes)
+    pair = resume.resistance_node_pair
+    if pair is None or any(node not in graph for node in pair):
+        pair = (inlets[0], outlets[0]) if inlets and outlets else None
+    return replace(
+        resume,
+        inlet_nodes=inlets,
+        outlet_nodes=outlets,
+        arteriole_boundary_nodes=kept(resume.arteriole_boundary_nodes),
+        venule_boundary_nodes=kept(resume.venule_boundary_nodes),
+        resistance_node_pair=pair,
+    )
