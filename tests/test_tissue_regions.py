@@ -166,6 +166,94 @@ def test_origin_um_places_the_mask_in_physical_space():
     assert shifted.any(), "origin_um did not move the mask into the grid"
 
 
+# --- Exact overlap: volume is conserved and never clipped (open item 38) -----------------
+
+def _grid_from_bounds(lo_um, hi_um, res_um):
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array(lo_um, dtype=float))
+    G.add_node(1, pos=np.array(hi_um, dtype=float))
+    G.add_edge(0, 1, length=1.0)
+    return PerfusionGrid(G, (res_um, res_um, res_um))
+
+
+def _in_grid_mask_volume(mask, grid, voxel, origin=(0.0, 0.0, 0.0)):
+    """Brute force: each voxel's volume inside the grid box, summed over the mask."""
+    voxel = np.asarray(voxel, float)
+    lo = np.asarray(grid.min_xyz, float)
+    hi = lo + np.asarray(grid.dims) * np.asarray(grid.res)
+    idx = np.argwhere(mask)
+    v_lo = np.asarray(origin) + idx * voxel
+    inside = np.clip(np.minimum(v_lo + voxel, hi) - np.maximum(v_lo, lo), 0.0, None)
+    return float(np.prod(inside, axis=1).sum())
+
+
+def test_a_solid_block_on_the_h2_grid_keeps_its_whole_volume():
+    """The item-23 case: 1.866 um voxels on a 3 um grid.
+
+    Counting voxel centres gave a solid cell 1 to 8 centres against a mean of 4.16, so it read
+    0.24 to 1.92 and the clip at 1 lost about 17% of the TH volume. The overlap loses none.
+    """
+    grid = _grid_from_bounds((0.0, 0.0, 0.0), (60.0, 60.0, 60.0), 3.0)
+    mask = np.zeros((40, 40, 40), bool)
+    mask[5:30, 8:28, 3:30] = True
+
+    frac = mask_fraction_per_cell(mask, grid, VOX)
+
+    placed = float(frac.sum()) * float(np.prod(grid.res))
+    assert placed == pytest.approx(float(mask.sum()) * float(np.prod(VOX)), rel=1e-9)
+    assert frac.max() <= 1.0
+    # A cell well inside the block is wholly TH.
+    centre = np.array([17.0, 18.0, 18.0]) * np.asarray(VOX)
+    assert frac[grid.get_cell_index(centre)] == pytest.approx(1.0, abs=1e-12)
+
+
+def test_every_cell_inside_a_fully_masked_volume_reads_exactly_one():
+    grid = _grid_from_bounds((0.0, 0.0, 0.0), (40.0, 40.0, 40.0), 3.0)
+    hi = np.asarray(grid.min_xyz) + np.asarray(grid.dims) * np.asarray(grid.res)
+    shape = tuple(int(np.ceil(h / v)) + 1 for h, v in zip(hi, VOX))
+    frac = mask_fraction_per_cell(np.ones(shape, bool), grid, VOX)
+
+    # The grid starts half a cell below zero, where the mask does not reach; every cell
+    # from the second one on each axis is wholly inside the mask.
+    cube = frac.reshape(tuple(grid.dims), order="F")
+    assert np.allclose(cube[1:, 1:, 1:], 1.0, atol=1e-12)
+
+
+def test_volume_is_conserved_with_an_offset_origin_and_unaligned_pitches():
+    grid = _grid_from_bounds((10.0, 20.0, 30.0), (70.0, 80.0, 90.0), 3.7)
+    rng = np.random.default_rng(3)
+    mask = rng.random((30, 30, 30)) > 0.6
+    origin = (11.3, 19.1, 31.7)
+
+    frac = mask_fraction_per_cell(mask, grid, VOX, origin_um=origin)
+
+    placed = float(frac.sum()) * float(np.prod(grid.res))
+    assert placed == pytest.approx(_in_grid_mask_volume(mask, grid, VOX, origin), rel=1e-9)
+    assert 0.0 <= frac.min() and frac.max() <= 1.0
+
+
+def test_a_grid_finer_than_the_voxel_conserves_volume_and_stays_in_the_unit_interval():
+    grid = _grid_from_bounds((0.0, 0.0, 0.0), (20.0, 20.0, 20.0), 1.0)
+    mask = np.zeros((12, 12, 12), bool)
+    mask[2:9, 3:10, 1:7] = True
+
+    frac = mask_fraction_per_cell(mask, grid, VOX)
+
+    placed = float(frac.sum()) * float(np.prod(grid.res))
+    assert placed == pytest.approx(float(mask.sum()) * float(np.prod(VOX)), rel=1e-9)
+    assert 0.0 <= frac.min() and frac.max() <= 1.0
+
+
+def test_the_outside_the_grid_warning_counts_volume_not_voxel_centres():
+    """A mask overhanging the grid by under half a voxel moves no centre out, but loses volume."""
+    grid = _grid_from_bounds((0.0, 0.0, 0.0), (10.0, 10.0, 10.0), 2.0)   # spans -1 to 11 um
+    mask = np.ones((5, 5, 5), bool)                                      # 0 to 12.5 um at 2.5
+    with pytest.warns(RuntimeWarning, match="fall outside the grid"):
+        frac = mask_fraction_per_cell(mask, grid, (2.5, 2.5, 2.5))
+    placed = float(frac.sum()) * float(np.prod(grid.res))
+    assert placed == pytest.approx(11.0 ** 3, rel=1e-9)
+
+
 # --- The graph-side join: which edges lie inside the tissue -------------------------------
 
 from ImageLynx.haemodynamics.tissue_regions import edge_tissue_fraction   # noqa: E402

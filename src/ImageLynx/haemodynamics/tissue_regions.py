@@ -25,6 +25,18 @@ import warnings
 import numpy as np
 
 
+def _axis_overlap_um(n_vox, voxel, origin, n_cells, res, lo):
+    """Overlap length of every voxel with every cell along one axis, shape ``(n_cells, n_vox)``.
+
+    Voxel ``i`` spans ``origin + [i, i+1) * voxel`` and cell ``j`` spans ``lo + [j, j+1) * res``.
+    """
+    v_lo = origin + np.arange(n_vox) * voxel
+    c_lo = lo + np.arange(n_cells) * res
+    overlap = (np.minimum(c_lo[:, None] + res, v_lo[None, :] + voxel)
+               - np.maximum(c_lo[:, None], v_lo[None, :]))
+    return np.clip(overlap, 0.0, None)
+
+
 def mask_fraction_per_cell(
     mask: np.ndarray,
     grid,
@@ -38,15 +50,27 @@ def mask_fraction_per_cell(
     physical position of its first voxel corner, defaulting to the origin, which is correct
     when the mask and the graph were both cropped from the same region.
 
-    Mask voxels falling outside the grid are dropped. They must not be clipped or wrapped: a
+    **Exact overlap volume** (open item 38). Each mask voxel is a box, and it adds to every
+    cell the volume it shares with that cell. Voxels and cells are both axis-aligned, so the
+    overlap factorises into three 1D overlap-length matrices applied in turn. The fractions
+    therefore sum to the mask volume inside the grid, and no cell can exceed 1 except by
+    rounding. Until item 38 this counted voxel centres per cell and divided by the mean number
+    of voxels per cell. On the 3 µm grid against 1.866 µm voxels a cell holds 1 to 8 centres
+    against a mean of 4.16, so a solid TH cell read 0.24 to 1.92, and a clip at 1 silently
+    threw away about 17% of the TH volume in every specimen.
+
+    Mask volume falling outside the grid is dropped. It must not be clipped or wrapped: a
     wrapped index would deposit distal tissue into cell 0 and a clipped one would pile it onto
     the boundary cells, and in both cases the error is invisible in the output.
 
-    Dropping is the right behaviour and is still worth hearing about, so more than 1% lost
-    warns. The grid is built from the graph's node bounding box, so a specimen whose vessels
-    stop short of the region edge gets a grid smaller than the mask, and the tissue in the gap
-    leaves the analysis without changing anything that looks wrong: the returned fractions are
-    all valid, and simply describe less tissue than was passed in.
+    Dropping is the right behaviour and is still worth hearing about, so more than 1% of the
+    mask volume lost warns. The grid is built from the graph's node bounding box, so a specimen
+    whose vessels stop short of the region edge gets a grid smaller than the mask, and the
+    tissue in the gap leaves the analysis without changing anything that looks wrong: the
+    returned fractions are all valid, and simply describe less tissue than was passed in.
+
+    Raises if the fractions do not conserve the in-grid mask volume or exceed 1 by more than
+    rounding; both would mean the overlap itself is wrong.
     """
     mask = np.asarray(mask, dtype=bool)
     if mask.ndim != 3:
@@ -60,37 +84,44 @@ def mask_fraction_per_cell(
         return np.zeros(n_cells, dtype=np.float64)
 
     origin = np.zeros(3) if origin_um is None else np.asarray(origin_um, dtype=float)
-    idx = np.argwhere(mask)                       # (N, 3) voxel indices, zyx
-    centres = (idx + 0.5) * voxel + origin        # voxel centres in physical zyx
-
     dims = np.asarray(grid.dims, dtype=int)       # (nz, ny, nx)
-    rel = (centres - np.asarray(grid.min_xyz, dtype=float)) / np.asarray(grid.res, dtype=float)
-    ijk = np.floor(rel).astype(np.int64)
-    inside = np.all((ijk >= 0) & (ijk < dims), axis=1)
-    dropped = int(inside.size - inside.sum())
-    if dropped and dropped > 0.01 * inside.size:
+    res = np.asarray(grid.res, dtype=float)
+    lo = np.asarray(grid.min_xyz, dtype=float)    # zyx despite the name
+    Wz, Wy, Wx = (_axis_overlap_um(mask.shape[a], voxel[a], origin[a], int(dims[a]), res[a], lo[a])
+                  for a in range(3))
+
+    # Occupied volume per cell, (nz, ny, nx), one axis at a time.
+    m = mask.astype(np.float64)
+    vol = np.einsum("iz,zyx->iyx", Wz, m)
+    vol = np.einsum("jy,iyx->ijx", Wy, vol)
+    vol = np.einsum("kx,ijx->ijk", Wx, vol)
+
+    voxel_volume = float(np.prod(voxel))
+    mask_volume = float(mask.sum()) * voxel_volume
+    # In-grid share of each voxel is the product of its per-axis in-grid lengths.
+    in_grid = np.einsum("z,y,x,zyx->", Wz.sum(axis=0), Wy.sum(axis=0), Wx.sum(axis=0), m)
+    placed = float(vol.sum())
+    if not np.isclose(placed, in_grid, rtol=1e-9, atol=1e-9 * voxel_volume):
+        raise ValueError(
+            f"per-cell mask volume {placed:.6g} um^3 does not conserve the in-grid mask volume "
+            f"{in_grid:.6g} um^3")
+
+    dropped = mask_volume - in_grid
+    if dropped > 0.01 * mask_volume:
         warnings.warn(
-            f"{dropped} of {inside.size} mask voxels ({100.0 * dropped / inside.size:.2f}%) "
-            f"fall outside the grid and are not represented in the returned fractions; the "
-            f"grid spans {np.round(np.asarray(grid.min_xyz), 1)} to "
-            f"{np.round(np.asarray(grid.min_xyz) + dims * np.asarray(grid.res), 1)} um",
+            f"mask voxels holding {dropped:.4g} of {mask_volume:.4g} um^3 "
+            f"({100.0 * dropped / mask_volume:.2f}%) fall outside the grid and are not "
+            f"represented in the returned fractions; the grid spans {np.round(lo, 1)} to "
+            f"{np.round(lo + dims * res, 1)} um",
             RuntimeWarning, stacklevel=2)
-    ijk = ijk[inside]
-    if ijk.size == 0:
-        return np.zeros(n_cells, dtype=np.float64)
 
+    fraction = vol / float(np.prod(res))
+    if fraction.max() > 1.0 + 1e-9:
+        raise ValueError(
+            f"a cell is {fraction.max():.6g} occupied; the overlap cannot exceed the cell")
+    fraction = np.minimum(fraction, 1.0)          # rounding only, checked above
     # PerfusionGrid.get_cell_index is z-fastest: index = z + y*nz + x*nz*ny.
-    nz, ny = int(dims[0]), int(dims[1])
-    linear = ijk[:, 0] + ijk[:, 1] * nz + ijk[:, 2] * nz * ny
-    counts = np.bincount(linear, minlength=n_cells).astype(np.float64)
-
-    voxels_per_cell = float(np.prod(np.asarray(grid.res, dtype=float)) / np.prod(voxel))
-    if voxels_per_cell <= 0:
-        raise ValueError("grid resolution and voxel size give a non-positive cell occupancy")
-    # Clipped at 1: a grid cell finer than one voxel can receive the same voxel centre from
-    # no more than one cell, but rounding at the boundary can still push a ratio marginally
-    # above unity, and a fraction above 1 would blend past the tissue rate in the caller.
-    return np.clip(counts / voxels_per_cell, 0.0, 1.0)
+    return fraction.ravel(order="F")
 
 
 def mask_bounds_um(
