@@ -141,3 +141,67 @@ def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# --- one under-covered edge is not the arteriole ending twice -------------------
+
+
+def _arteriole_chain(middle_covered_from_x: int):
+    """Five nodes along x joined in a chain, then a capillary; the arteriole
+    mask covers the first four edges except the start of the middle one."""
+    shape = (5, 5, 60)
+    G = nx.MultiGraph()
+    xs = [0.0, 10.0, 20.0, 30.0, 40.0, 55.0]
+    for i, x in enumerate(xs):
+        G.add_node(i, pos=np.array([2.0, 2.0, x]))
+    for i in range(len(xs) - 1):
+        G.add_edge(i, i + 1, voxels=[[2.0, 2.0, float(x)] for x in range(int(xs[i]), int(xs[i + 1]) + 1)])
+    arteriole = np.zeros(shape, dtype=bool)
+    arteriole[:, :, 0:10] = True
+    arteriole[:, :, middle_covered_from_x:41] = True  # edge 1-2 spans x 10..20
+    venule = np.zeros(shape, dtype=bool)
+    return G, arteriole, venule
+
+
+def test_an_under_covered_edge_between_two_arteriole_edges_is_arteriole():
+    """Regression: 40% of edge 1-2 in the mask fell short of 50%, so the
+    arteriole read as meeting the capillary bed at nodes 1 and 2 -- in the
+    middle of the vessel -- as well as at node 4, where it really does."""
+    G, arteriole, venule = _arteriole_chain(middle_covered_from_x=16)  # x 16..20: 5 of 11 voxels
+
+    result = infer_boundary_nodes_from_small_vessel_masks(
+        G, arteriole, venule, voxel_size_zyx=(1.0, 1.0, 1.0), minimum_overlap_fraction=0.5
+    )
+
+    assert G.edges[1, 2, 0]["mask_vessel_type"] == "arteriole"
+    assert result["gap_filled_edge_count"] == 1
+    assert result["arteriole_boundary_nodes"] == [4]
+
+
+def test_an_uncovered_edge_between_two_arteriole_edges_is_left_a_gap():
+    """Hysteresis, not a blanket fill: an edge with too little of itself in
+    the mask -- a capillary linking two arteriole branches -- keeps no type."""
+    G, arteriole, venule = _arteriole_chain(middle_covered_from_x=21)  # nothing of x 10..20
+
+    result = infer_boundary_nodes_from_small_vessel_masks(
+        G, arteriole, venule, voxel_size_zyx=(1.0, 1.0, 1.0), minimum_overlap_fraction=0.5
+    )
+
+    assert "mask_vessel_type" not in G.edges[1, 2, 0]
+    assert result["gap_filled_edge_count"] == 0
+    assert set(result["arteriole_boundary_nodes"]) == {1, 2, 4}
+
+
+def test_a_simple_graph_is_labelled_the_same_way_as_a_multigraph():
+    """The two used to be two copies of the same forty lines."""
+    multi, arteriole, venule = _arteriole_chain(middle_covered_from_x=16)
+    simple = nx.Graph(multi)
+
+    a = infer_boundary_nodes_from_small_vessel_masks(
+        multi, arteriole, venule, voxel_size_zyx=(1.0, 1.0, 1.0)
+    )
+    b = infer_boundary_nodes_from_small_vessel_masks(
+        simple, arteriole, venule, voxel_size_zyx=(1.0, 1.0, 1.0)
+    )
+
+    assert a == b

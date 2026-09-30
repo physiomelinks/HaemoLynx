@@ -23,6 +23,7 @@ Either way a run says where it has got to, if anything is listening::
 from .checks import preflight
 from .citations import render_citations, write_citations
 from .progress import (
+    HEARTBEAT,
     KINDS,
     STAGE_FAILED,
     STAGE_FINISHED,
@@ -63,6 +64,7 @@ from .stages import (
 )
 
 __all__ = [
+    "HEARTBEAT",
     "KINDS",
     "SCHEMA",
     "STAGES",

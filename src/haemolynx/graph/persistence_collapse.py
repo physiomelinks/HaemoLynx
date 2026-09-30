@@ -80,6 +80,7 @@ from scipy.sparse.csgraph import minimum_spanning_tree
 from scipy.spatial import cKDTree
 from scipy.spatial.distance import pdist, squareform
 
+from .collapse import move_node_with_its_edges
 from .direction_aware_collapse import _rewire_edges_deduplicating
 
 logger = logging.getLogger(__name__)
@@ -277,7 +278,7 @@ def collapse_node_clusters_persistence(
                 cluster_positions = np.array(
                     [G.nodes[n]["pos"] for n in group if "pos" in G.nodes[n]]
                 )
-                G.nodes[rep]["pos"] = cluster_positions.mean(axis=0)
+                move_node_with_its_edges(G, rep, cluster_positions.mean(axis=0))
 
                 # Neighbours rep already reaches by 2+ parallel edges before
                 # any of this cluster's members are merged in -- a genuine

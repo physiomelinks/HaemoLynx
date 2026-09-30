@@ -40,7 +40,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import cKDTree
 
-from .skeleton import fill_binary_holes, skeletonize_volume
+from .skeleton import fill_binary_holes, skeletonize_by_component, skeletonize_volume
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +171,47 @@ def inscribed_radius_map(
     return distance_transform_edt(mask, sampling=tuple(float(v) for v in voxel_size_zyx))
 
 
+def _distance_um(
+    features: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float],
+    *,
+    use_memmap: bool,
+    memmap_directory,
+    owned: list,
+) -> np.ndarray:
+    """``distance_transform_edt(features, sampling=voxel_size_zyx)``: each
+    voxel's distance in microns to the nearest zero of *features*.
+
+    Under *use_memmap* (the low-RAM option) it is written one padded block at
+    a time into a disk-backed array appended to *owned*, for the caller to
+    release: scipy's own whole-array call holds ~70 bytes of RAM per voxel
+    whatever it writes into, which on a whole-brain crop is the largest
+    allocation this module makes.
+    """
+    sampling = tuple(float(v) for v in voxel_size_zyx)
+    if not use_memmap:
+        return distance_transform_edt(features, sampling=sampling)
+    from .memmap_support import new_memmap_array
+    from .pointwise_distance import distance_transform_edt_blockwise
+
+    out = new_memmap_array(features.shape, np.float64, directory=memmap_directory)
+    owned.append(out)
+    try:
+        distance_transform_edt_blockwise(features, out, sampling=sampling)
+    except ValueError:
+        # Every voxel on one side: scipy's own result is not a distance to
+        # anything, and only its whole-array call reproduces it.
+        distance_transform_edt(features, sampling=sampling, distances=out)
+    return out
+
+
+def _release_all(owned: list) -> None:
+    from .memmap_support import release_memmap_array
+
+    while owned:
+        release_memmap_array(owned.pop())
+
+
 def max_inscribed_radius_um(
     binary: np.ndarray,
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
@@ -240,6 +281,8 @@ def thick_vessel_object_mask(
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
     wall_absorption_um: float | None = None,
     restrict_to_mask: np.ndarray | None = None,
+    use_memmap: bool = False,
+    memmap_directory=None,
 ) -> np.ndarray:
     """Fat-region voxels of a (possibly single) connected plasma-labelled mask.
 
@@ -277,15 +320,53 @@ def thick_vessel_object_mask(
     as it would on a geodesic one, so nearby fused-vessel/surface
     roughness just past the mask's own edge is still absorbed the same way
     -- the result is not strictly confined to the mask's own footprint.
+
+    *use_memmap* (the low-RAM option) computes both distance transforms one
+    block at a time into disk-backed arrays (see :func:`_distance_um`); the
+    boolean masks and the result stay in RAM at one byte per voxel. Same
+    result either way.
     """
     mask = np.asarray(binary, dtype=bool)
     out = np.zeros(mask.shape, dtype=bool)
     if min_radius_um <= 0.0 or not mask.any():
         return out
+    owned: list = []
+    try:
+        _thick_vessel_object_mask_into(
+            out,
+            mask,
+            min_radius_um=float(min_radius_um),
+            voxel_size_zyx=voxel_size_zyx,
+            wall_absorption_um=wall_absorption_um,
+            restrict_to_mask=restrict_to_mask,
+            distance=lambda features: _distance_um(
+                features,
+                voxel_size_zyx,
+                use_memmap=use_memmap,
+                memmap_directory=memmap_directory,
+                owned=owned,
+            ),
+        )
+    finally:
+        _release_all(owned)
+    return out
 
+
+def _thick_vessel_object_mask_into(
+    out: np.ndarray,
+    mask: np.ndarray,
+    *,
+    min_radius_um: float,
+    voxel_size_zyx: tuple[float, float, float],
+    wall_absorption_um: float | None,
+    restrict_to_mask: np.ndarray | None,
+    distance,
+) -> None:
+    """:func:`thick_vessel_object_mask`'s body, writing into *out*, with every
+    distance transform taken through *distance*."""
     bbox = _foreground_bbox(mask, pad=1)
     if bbox is None:
-        return out
+        return
     crop = mask[bbox]
     logger.info(
         "thick_vessel_object_mask: cropped to %s (%d voxels, %d foreground) "
@@ -304,11 +385,9 @@ def thick_vessel_object_mask(
     if restrict_to_mask is not None:
         body = crop & np.asarray(restrict_to_mask, dtype=bool)[bbox]
         if not body.any():
-            return out
+            return
         t0 = time.perf_counter()
-        dist_to_body = distance_transform_edt(
-            ~body, sampling=tuple(float(v) for v in voxel_size_zyx)
-        )
+        dist_to_body = distance(~body)
         out[bbox] = crop & (dist_to_body <= wall_radius)
         logger.info(
             "thick_vessel_object_mask: restricted to mask directly (no "
@@ -317,10 +396,10 @@ def thick_vessel_object_mask(
             time.perf_counter() - t0,
             int(out.sum()),
         )
-        return out
+        return
 
     t0 = time.perf_counter()
-    radius_map = inscribed_radius_map(crop, voxel_size_zyx)
+    radius_map = distance(crop)
     thick_core = crop & (radius_map >= float(min_radius_um))
     logger.info(
         "thick_vessel_object_mask: inscribed radius map took %.2fs (%d core voxels)",
@@ -328,7 +407,7 @@ def thick_vessel_object_mask(
         int(thick_core.sum()),
     )
     if not thick_core.any():
-        return out
+        return
 
     propagation_gate = 0.5 * float(min_radius_um)
     allowed = crop & (radius_map >= propagation_gate)
@@ -345,16 +424,13 @@ def thick_vessel_object_mask(
         int(body.sum()),
     )
     t2 = time.perf_counter()
-    dist_to_body = distance_transform_edt(
-        ~body, sampling=tuple(float(v) for v in voxel_size_zyx)
-    )
+    dist_to_body = distance(~body)
     out[bbox] = crop & (dist_to_body <= wall_radius)
     logger.info(
         "thick_vessel_object_mask: wall distance transform took %.2fs (%d fat voxels total)",
         time.perf_counter() - t2,
         int(out.sum()),
     )
-    return out
 
 
 def diagnose_mask_restriction_alignment(
@@ -1156,7 +1232,7 @@ def _join_thin_arms_to_fat_ridge(
     allowed: np.ndarray,
     *,
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
-    min_arm_extent_voxels: float = 4.0,
+    min_arm_extent_um: float = 4.0,
     max_bridge_distance_um: float | None = None,
     max_bridge_radius_multiple: float | None = None,
     radius_smoothing_um: float = 10.0,
@@ -1166,7 +1242,10 @@ def _join_thin_arms_to_fat_ridge(
     Thin skeleton CCs that never extend beyond the wall (Lee flakes / wrapping
     mesh on the fat surface) are dropped. Joining those would draw a sheet of
     chords. A fused capillary does extend, and its Lee polyline must meet the
-    ridge.
+    ridge. "Extend" means reaching at least *min_arm_extent_um* microns from
+    the fat region, measured physically: in voxels, an arm leaving along a
+    coarse z axis had to reach several times further than one leaving
+    in-plane before it counted as a vessel.
 
     Nearest-neighbour search and the caps below are evaluated in physical
     microns (via *voxel_size_zyx*), not raw voxel-index distance -- the same
@@ -1247,13 +1326,13 @@ def _join_thin_arms_to_fat_ridge(
             # "nothing to join to" conclusion for exactly this case.
             continue
         origin = np.array([int(s.start) for s in slc], dtype=int)
-        dist_crop = distance_transform_edt(~thick_b[slc])
+        dist_crop = distance_transform_edt(~thick_b[slc], sampling=tuple(scale))
         local = thin_coords[here] - origin
         dists[here] = dist_crop[tuple(local.T)]
 
     max_dist = np.zeros(int(n_labels) + 1, dtype=np.float64)
     np.maximum.at(max_dist, labels_at, dists)
-    arm_ids = np.flatnonzero(max_dist >= float(min_arm_extent_voxels))
+    arm_ids = np.flatnonzero(max_dist >= float(min_arm_extent_um))
     arm_ids = arm_ids[arm_ids > 0]
     objects = find_objects(labeled)
 
@@ -1489,6 +1568,11 @@ def skeletonize_thickness_gated(
     max_bridge_distance_um: float | None = None,
     bridge_radius_smoothing_um: float = 10.0,
     return_thick_mask: bool = False,
+    use_memmap: bool = False,
+    memmap_directory=None,
+    tile_large_components: bool = False,
+    tile_max_voxels: int = 200_000_000,
+    tile_halo_voxels: int = 0,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray | None]:
     """Lee on the thin catchment; an EDT-ridge tree (every arm) inside the fat catchment.
 
@@ -1552,16 +1636,51 @@ def skeletonize_thickness_gated(
     *return_thick_mask*, when ``True``, returns ``(skeleton, thick)``
     instead of a bare array -- *thick* is ``None`` on every path that never
     computed one (``min_radius_um <= 0``, or no fat region found).
+
+    *use_memmap* (the low-RAM option) takes every volume-sized distance
+    transform one block at a time into disk-backed arrays -- the fat
+    catchment's radius map and wall distance, and the flake filter's
+    distance from the fat region -- and, with the ``tile_*`` settings,
+    Lee-thins through :func:`~haemolynx.preprocessing.skeleton.skeletonize_by_component`
+    like the plain path does. Boolean masks stay in RAM at one byte a voxel.
+    Same skeleton either way.
     """
+    lee_kwargs = {
+        "use_memmap": use_memmap,
+        "memmap_directory": memmap_directory,
+        "tile_large_components": tile_large_components,
+        "tile_max_voxels": tile_max_voxels,
+        "tile_halo_voxels": tile_halo_voxels,
+    }
+    # Tiling only applies under use_memmap (see skeletonize_by_component).
+    low_ram = bool(use_memmap)
+
+    def lee(volume: np.ndarray) -> np.ndarray:
+        if not low_ram:
+            return _skeletonize_foreground(volume)
+        skeleton = skeletonize_by_component(volume, **lee_kwargs)
+        in_ram = np.array(skeleton, dtype=bool)
+        if isinstance(skeleton, np.memmap):
+            from .memmap_support import release_memmap_array
+
+            release_memmap_array(skeleton)
+        return in_ram
+
     mask = np.asarray(binary, dtype=bool)
     if fill_mask_holes:
         bbox = _foreground_bbox(mask, pad=0)
         if bbox is not None:
-            filled = fill_binary_holes(mask[bbox])
+            filled = fill_binary_holes(
+                mask[bbox], use_memmap=use_memmap, memmap_directory=memmap_directory
+            )
             mask = mask.copy()
             mask[bbox] = filled
+            if isinstance(filled, np.memmap):
+                from .memmap_support import release_memmap_array
+
+                release_memmap_array(filled)
     if float(min_radius_um) <= 0.0:
-        skeleton = skeletonize_volume(mask).astype(bool)
+        skeleton = (lee(mask) if low_ram else skeletonize_volume(mask)).astype(bool)
         return (skeleton, None) if return_thick_mask else skeleton
 
     logger.info(
@@ -1577,10 +1696,12 @@ def skeletonize_thickness_gated(
         voxel_size_zyx=voxel_size_zyx,
         wall_absorption_um=wall_absorption_um,
         restrict_to_mask=restrict_thick_to_mask,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
     )
     t_catchment = time.perf_counter() - t0
     if not thick.any():
-        skeleton = skeletonize_volume(mask).astype(bool)
+        skeleton = (lee(mask) if low_ram else skeletonize_volume(mask)).astype(bool)
         return (skeleton, None) if return_thick_mask else skeleton
     # thick_vessel_object_mask's own large locals (the radius map, the
     # geodesic body, the wall distance transform -- each up to the size of
@@ -1592,11 +1713,15 @@ def skeletonize_thickness_gated(
     gc.collect()
 
     thin = mask & ~thick
+    # In microns, compared against a distance measured in microns: this was a
+    # voxel count against a voxel-index distance, so on an anisotropic stack
+    # an arm leaving the trunk along the coarse z axis had to reach several
+    # times further than one leaving in-plane before it was kept.
     spacing = min(float(v) for v in voxel_size_zyx)
     if flake_filter_um is None:
-        min_arm_extent = max(4.0, 0.75 * float(min_radius_um) / max(spacing, 1e-6))
+        min_arm_extent_um = max(4.0 * spacing, 0.75 * float(min_radius_um))
     else:
-        min_arm_extent = max(0.0, float(flake_filter_um) / max(spacing, 1e-6))
+        min_arm_extent_um = max(0.0, float(flake_filter_um))
     result = np.zeros(mask.shape, dtype=bool)
     logger.info(
         "skeletonize_thickness_gated: fat catchment done in %.2fs (%d fat, %d thin "
@@ -1611,12 +1736,22 @@ def skeletonize_thickness_gated(
         # from thick, and Lee of that wrap is the looped mesh beside the ridge.
         bbox = _foreground_bbox(thin | thick, pad=1)
         if bbox is None:
-            result |= _skeletonize_foreground(thin)
+            result |= lee(thin)
         else:
-            dist_crop = distance_transform_edt(~thick[bbox])
-            lee_crop = thin[bbox] & (dist_crop >= float(min_arm_extent))
+            owned: list = []
+            try:
+                dist_crop = _distance_um(
+                    ~thick[bbox],
+                    voxel_size_zyx,
+                    use_memmap=use_memmap,
+                    memmap_directory=memmap_directory,
+                    owned=owned,
+                )
+                lee_crop = thin[bbox] & (dist_crop >= float(min_arm_extent_um))
+            finally:
+                _release_all(owned)
             if lee_crop.any():
-                result[bbox] |= _skeletonize_foreground(lee_crop)
+                result[bbox] |= lee(lee_crop)
     t_lee = time.perf_counter() - t1
     gc.collect()
     logger.info(
@@ -1639,7 +1774,7 @@ def skeletonize_thickness_gated(
         thick,
         mask,
         voxel_size_zyx=voxel_size_zyx,
-        min_arm_extent_voxels=min_arm_extent,
+        min_arm_extent_um=min_arm_extent_um,
         max_bridge_radius_multiple=max_bridge_radius_multiple,
         max_bridge_distance_um=max_bridge_distance_um,
         radius_smoothing_um=bridge_radius_smoothing_um,

@@ -694,3 +694,43 @@ def test_settings_absent_from_the_config_are_left_to_their_defaults() -> None:
 def test_an_unknown_mask_role_is_rejected() -> None:
     with pytest.raises(ValueError, match="mask_role must be 'large' or 'small'"):
         vessel_mask_arguments(LARGE_SETTINGS, "medium")
+
+
+@pytest.mark.parametrize("reuse", [True, False])
+def test_vessel_mask_ilastik_runs_honour_the_reuse_setting(tmp_path, monkeypatch, reuse) -> None:
+    """Both mask segmentations reuse a current output exactly as the main one does."""
+    from haemolynx.io import automated_vessel_assignment as module
+
+    shape = (3, 4, 5)
+    seen = []
+
+    def fake_run(**kwargs):
+        seen.append(kwargs["reuse_existing"])
+        _write_mask_with_voxel_size(kwargs["output_path"], np.zeros(shape, dtype=np.uint8))
+        return Path(kwargs["output_path"])
+
+    monkeypatch.setattr(module, "run_ilastik_headless_segmentation", fake_run)
+    for name in ("art.tif", "ven.tif", "art.ilp", "ven.ilp"):
+        (tmp_path / name).write_bytes(b"x")
+    settings = {
+        "use_large_vessel_masks": True,
+        "use_ilastik_large_vessel_segmentation": True,
+        "ilastik_unsegmented_arteriole_image_path": tmp_path / "art.tif",
+        "ilastik_unsegmented_venule_image_path": tmp_path / "ven.tif",
+        "ilastik_arteriole_classifier_path": tmp_path / "art.ilp",
+        "ilastik_venule_classifier_path": tmp_path / "ven.ilp",
+        "ilastik_output_dir": tmp_path / "seg",
+        "ilastik_reuse_existing_output": reuse,
+    }
+    arguments = vessel_mask_arguments(settings, "large")
+    assert arguments["ilastik_reuse_existing_output"] is reuse
+
+    (tmp_path / "seg").mkdir()
+    load_and_validate_vessel_masks(
+        **arguments,
+        arteriole_mask_path=None,
+        venule_mask_path=None,
+        image_shape=shape,
+        main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+    )
+    assert seen == [reuse, reuse]

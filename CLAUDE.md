@@ -87,7 +87,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 400 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 406 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py

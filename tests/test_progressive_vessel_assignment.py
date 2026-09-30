@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import networkx as nx
 import numpy as np
+import pytest
 
 from haemolynx.graph import (
     infer_boundary_nodes_from_small_vessel_masks_progressive_dilation,
@@ -121,3 +122,112 @@ def test_progressive_dilation_schema_settings_and_requires():
     )
     assert assign.default == 0.0
     assert small.default == 0.0
+
+
+# --- read from each terminal's distance, not from whole-volume step masks ------
+
+
+def _star_with_masks(seed):
+    """A star of terminals around a hub, and random blobs for the two masks."""
+    rng = np.random.default_rng(seed)
+    shape = (20, 24, 24)
+    G = nx.MultiGraph()
+    G.add_node("hub", pos=np.array([10.0, 12.0, 12.0]))
+    for i in range(14):
+        pos = np.array([rng.integers(0, shape[0]), rng.integers(0, shape[1]), rng.integers(0, shape[2])], dtype=float)
+        G.add_node(i, pos=pos)
+        G.add_edge("hub", i)
+    zz, yy, xx = np.indices(shape)
+    art = np.zeros(shape, dtype=bool)
+    ven = np.zeros(shape, dtype=bool)
+    for mask in (art, ven):
+        for _ in range(2):
+            c = rng.integers(0, shape[0]), rng.integers(0, shape[1]), rng.integers(0, shape[2])
+            mask |= (zz - c[0]) ** 2 + (yy - c[1]) ** 2 + (xx - c[2]) ** 2 <= int(rng.integers(2, 5)) ** 2
+    ven &= ~art  # the masks touch but never overlap
+    return G, art, ven
+
+
+def _reference_first_steps(G, mask, schedule, voxel_size):
+    """The step-mask algorithm: grow the mask step by step, note the first
+    step that reaches each terminal."""
+    from scipy.ndimage import distance_transform_edt
+
+    distance = distance_transform_edt(~mask, sampling=voxel_size)
+    first = {}
+    for k, dilation in enumerate(schedule):
+        grown = mask | (distance <= dilation)
+        for node in G.nodes:
+            if node == "hub" or node in first:
+                continue
+            index = tuple(int(v) for v in np.rint(np.asarray(G.nodes[node]["pos"]) / voxel_size))
+            if grown[index]:
+                first[node] = k
+    return first
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_progressive_assignment_matches_growing_the_masks_step_by_step(seed):
+    """Every terminal the two masks reach at different steps is assigned just
+    as growing the masks step by step would assign it."""
+    G, art, ven = _star_with_masks(seed)
+    voxel_size = (2.0, 0.5, 0.5)
+    for node in G.nodes:  # positions are voxel indices above; make them microns
+        G.nodes[node]["pos"] = G.nodes[node]["pos"] * np.asarray(voxel_size)
+    schedule = [0.0, 1.5, 3.0, 4.5, 5.0]
+
+    inputs, outputs = select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
+        G, art, ven, voxel_size_zyx=voxel_size, max_dilation_microns=5.0, dilation_step_microns=1.5,
+    )
+
+    art_first = _reference_first_steps(G, art, schedule, voxel_size)
+    ven_first = _reference_first_steps(G, ven, schedule, voxel_size)
+    for node in (n for n in G.nodes if n != "hub"):
+        a, v = art_first.get(node), ven_first.get(node)
+        if a is not None and (v is None or a < v):
+            assert node in inputs
+        elif v is not None and (a is None or v < a):
+            assert node in outputs
+        elif a is None and v is None:
+            assert node not in inputs and node not in outputs
+
+
+def test_progressive_assignment_builds_no_whole_volume_mask_per_step(monkeypatch):
+    """Regression: two volume-sized masks were built at every step, to read a
+    handful of terminal voxels from."""
+    import haemolynx.graph.automated_vessel_assignment as module
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a whole-volume step mask was built")
+
+    monkeypatch.setattr(module, "_dilated_mask_from_cached_distance", refuse)
+    monkeypatch.setattr(module, "distance_transform_edt", refuse)
+    G, art, ven = _star_with_masks(0)
+
+    inputs, outputs = select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
+        G, art, ven, voxel_size_zyx=(1.0, 1.0, 1.0), max_dilation_microns=10.0,
+    )
+
+    assert inputs or outputs
+
+
+def test_a_terminal_both_masks_reach_at_one_step_goes_to_the_nearer_mask():
+    """Regression: a same-step tie was settled by whole-mask midpoints; a big
+    arteriole whose middle is far away beat a venule right beside the
+    terminal."""
+    shape = (12, 12, 60)
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([6.0, 6.0, 30.0]))  # the terminal
+    G.add_node(1, pos=np.array([6.0, 6.0, 20.0]))
+    G.add_edge(0, 1, voxels=[[6.0, 6.0, 30.0], [6.0, 6.0, 20.0]])
+    art = np.zeros(shape, dtype=bool)
+    ven = np.zeros(shape, dtype=bool)
+    art[:, :, 34:60] = True  # 4 um away, a long vessel
+    ven[5:8, 9:12, 29:32] = True  # 3 um away, a small one
+
+    inputs, outputs = select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
+        G, art, ven, voxel_size_zyx=(1.0, 1.0, 1.0), max_dilation_microns=5.0,
+        dilation_step_microns=5.0,
+    )
+
+    assert outputs == [0] and 0 not in inputs

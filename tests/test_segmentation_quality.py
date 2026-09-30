@@ -208,16 +208,76 @@ def test_resolution_score_drops_for_a_vessel_barely_wider_than_a_voxel():
 
 
 def test_resolution_score_reads_physical_microns_not_voxels():
-    """The same voxel-radius vessel scores differently once the coarsest
-    axis is expressed in coarser physical units -- proving the score reads
+    """The same voxel-radius vessel scores differently once the in-plane
+    axes are expressed in coarser physical units -- proving the score reads
     voxel_size_zyx, not a raw voxel count."""
     shape = (20, 20, 20)
     mask = _cylinder_along_x(shape, z=10, y=10, radius=3.0, x0=2, x1=17)
 
     fine = sq.score_segmented_mask(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
-    coarse = sq.score_segmented_mask(mask, voxel_size_zyx=(4.0, 1.0, 1.0))
+    coarse = sq.score_segmented_mask(mask, voxel_size_zyx=(1.0, 4.0, 4.0))
 
     assert coarse.resolution < fine.resolution
+
+
+def test_a_coarse_z_alone_does_not_make_resolution_the_limiting_factor():
+    """Regression: judged on the coarsest axis, a typical confocal stack
+    (0.5 x 0.5 um in-plane, 2 um z) read its well-resolved capillaries as a
+    re-imaging problem -- though every diameter is measured in the y-x plane.
+    The z sampling is reported instead."""
+    spacing = (2.0, 0.5, 0.5)
+    shape = (12, 40, 60)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    # A 3 um-radius vessel running along x: 6 in-plane voxels, 1.5 z steps.
+    mask = ((zz - 6) * 2.0) ** 2 + ((yy - 20) * 0.5) ** 2 <= 3.0**2
+    mask &= (xx >= 5) & (xx <= 54)
+
+    score = sq.score_segmented_mask(mask, voxel_size_zyx=spacing)
+    text = sq.format_segmentation_quality_report(score)
+
+    assert score.resolution == pytest.approx(2.0)
+    assert score.in_plane_voxel_um == pytest.approx(0.5)
+    assert score.axial_voxels_across_radius < sq.DEFAULT_TARGET_VOXELS_ACROSS_RADIUS
+    assert "Resolution is the limiting factor" not in text
+    assert "z step" in text
+
+
+def test_a_clean_thin_vessel_is_not_scored_as_noisy_for_being_thin():
+    """Regression: blurring and re-thresholding at one half shrinks any thin
+    tube, so a clean 1.5 um-radius capillary lost noise marks for its size
+    alone. The smoothing now keeps the mask's volume."""
+    from haemolynx.preprocessing import smooth_vessel_surfaces
+
+    spacing = (0.25, 0.25, 0.25)
+    shape = (30, 30, 80)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    # Running the full length of the volume, so it has no ends to round off:
+    # this is about thinness alone.
+    mask = ((zz - 15) * 0.25) ** 2 + ((yy - 15) * 0.25) ** 2 <= 1.5**2
+    half_threshold = smooth_vessel_surfaces(mask, voxel_size_zyx=spacing, sigma_um=1.0)
+    assert sq._iou(mask, half_threshold) < 0.6  # what the score used to read
+
+    score = sq.score_segmented_mask(mask, voxel_size_zyx=spacing)
+
+    assert score.noise > 1.9
+
+
+def test_a_jagged_thin_vessel_still_loses_noise_marks():
+    """Dividing out the thinness must not hide real roughness."""
+    spacing = (0.25, 0.25, 0.25)
+    shape = (30, 30, 80)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    clean = ((zz - 15) * 0.25) ** 2 + ((yy - 15) * 0.25) ** 2 <= 1.5**2
+    clean &= (xx >= 5) & (xx <= 74)
+    rng = np.random.default_rng(0)
+    shell = clean ^ (((zz - 15) * 0.25) ** 2 + ((yy - 15) * 0.25) ** 2 <= 2.3**2)
+    shell &= (xx >= 5) & (xx <= 74)
+    jagged = clean | (shell & (rng.random(shape) < 0.35))
+
+    clean_score = sq.score_segmented_mask(clean, voxel_size_zyx=spacing)
+    jagged_score = sq.score_segmented_mask(jagged, voxel_size_zyx=spacing)
+
+    assert jagged_score.noise < clean_score.noise - 0.2
 
 
 # --- report text -----------------------------------------------------------------

@@ -1342,3 +1342,25 @@ def test_center_offset_gate_uses_the_just_fitted_diameter_not_a_stale_guess(
     )
     assert summary["edges_measured"] == 1
     assert abs(summary["per_edge"][0]["fwhm_diameter_um"] - true_diameter) < 0.5
+
+
+def test_the_lumen_fit_holds_a_given_blur_instead_of_fitting_it():
+    """With the image's PSF known, each profile's blur is held there: the
+    right blur recovers the width, and a wrong one moves the answer -- it is
+    used, not ignored."""
+    from haemolynx.haemodynamics.automated import (
+        _blurred_lumen_1d,
+        _blurred_lumen_fwhm,
+        _lumen_fwhm_fit_with_diagnostics,
+    )
+
+    x = np.linspace(-8.0, 8.0, 161)
+    profile = _blurred_lumen_1d(x, 10.0, 100.0, 0.3, 4.0, 0.5)
+
+    held, centre, r2 = _lumen_fwhm_fit_with_diagnostics(x, profile, blur_sigma_um=0.5)
+    wrong, _c, _r2 = _lumen_fwhm_fit_with_diagnostics(x, profile, blur_sigma_um=2.0)
+
+    assert held == pytest.approx(_blurred_lumen_fwhm(4.0, 0.5), rel=1e-3)
+    assert centre == pytest.approx(0.3, abs=1e-3)
+    assert r2 > 0.999
+    assert abs(wrong - held) > 0.05

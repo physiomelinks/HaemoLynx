@@ -410,6 +410,63 @@ def _sample_overlap_fraction(
     return float(in_mask_count) / float(valid_count)
 
 
+#: An unlabelled edge joining two edges of one vessel type takes that type
+#: when at least this fraction of ``minimum_overlap_fraction`` of it lies in
+#: that type's mask: hysteresis, so one under-covered stretch of a vessel does
+#: not read as the vessel ending twice.
+GAP_FILL_FRACTION_OF_THRESHOLD = 0.5
+
+
+def _label_edge_ids(G: nx.Graph) -> list[tuple[Any, Any, tuple[Any, Any, int], dict[str, Any]]]:
+    """``(u, v, edge id, data)`` for every edge, the id in this module's form."""
+    if isinstance(G, nx.MultiGraph):
+        return [(u, v, _edge_id(u, v, key), data) for u, v, key, data in G.edges(keys=True, data=True)]
+    return [
+        (u, v, ((u, v, 0) if u <= v else (v, u, 0)), data) for u, v, data in G.edges(data=True)
+    ]
+
+
+def _fill_label_gaps(
+    edges: list[tuple[Any, Any, tuple[Any, Any, int], dict[str, Any]]],
+    fractions: dict[tuple[Any, Any, int], tuple[float, float]],
+    labelled: dict[str, set[tuple[Any, Any, int]]],
+    *,
+    low_fraction: float,
+) -> int:
+    """Label every unlabelled edge whose two ends each meet another edge of
+    one type and which lies at least *low_fraction* in that type's mask;
+    repeat until nothing changes. Returns how many edges were filled."""
+    filled = 0
+    ends = {edge_id: (u, v) for u, v, edge_id, _data in edges}
+    data_of = {edge_id: data for _u, _v, edge_id, data in edges}
+    while True:
+        touching: dict[str, dict[Any, set]] = {name: {} for name in labelled}
+        for name, edge_ids in labelled.items():
+            for edge_id in edge_ids:
+                for node in ends.get(edge_id, ()):
+                    touching[name].setdefault(node, set()).add(edge_id)
+        taken = set().union(*labelled.values())
+        added: list[tuple[str, tuple[Any, Any, int]]] = []
+        for edge_id, (art_fraction, ven_fraction) in fractions.items():
+            if edge_id in taken:
+                continue
+            u, v = ends[edge_id]
+            options = []
+            for name, fraction in (("arteriole", art_fraction), ("venule", ven_fraction)):
+                if fraction < low_fraction:
+                    continue
+                if touching[name].get(u, set()) - {edge_id} and touching[name].get(v, set()) - {edge_id}:
+                    options.append((fraction, name))
+            if options:
+                added.append((max(options)[1], edge_id))
+        if not added:
+            return filled
+        for name, edge_id in added:
+            labelled[name].add(edge_id)
+            data_of[edge_id]["mask_vessel_type"] = name
+            filled += 1
+
+
 def infer_boundary_nodes_from_small_vessel_masks(
     G: nx.Graph,
     small_arteriole_mask: np.ndarray,
@@ -425,8 +482,13 @@ def infer_boundary_nodes_from_small_vessel_masks(
 
     Edges are marked as arteriole/venule when the fraction of sampled edge points
     inside the corresponding small-vessel mask meets `minimum_overlap_fraction`.
-    Associated endpoint nodes are given the same mask vessel type. Boundary nodes
-    are the labeled-mask nodes that connect to at least one unlabeled edge, i.e.
+    Then, with hysteresis, an unlabelled edge joining two edges of one type
+    takes that type when at least ``GAP_FILL_FRACTION_OF_THRESHOLD`` of that
+    fraction of it lies in the type's mask: one under-covered edge in the
+    middle of an arteriole used to leave a gap, and both its ends were then
+    reported as the arteriole meeting the capillary bed. Associated endpoint
+    nodes are given the same mask vessel type. Boundary nodes are the
+    labeled-mask nodes that connect to at least one unlabeled edge, i.e.
     where the small-vessel mask region transitions into the capillary bed.
     """
     if small_arteriole_mask.shape != small_venule_mask.shape:
@@ -463,99 +525,64 @@ def infer_boundary_nodes_from_small_vessel_masks(
     # Clear previous mask labels to keep output deterministic between reruns.
     for _, attrs in G.nodes(data=True):
         attrs.pop("mask_vessel_type", None)
-    if isinstance(G, nx.MultiGraph):
-        edge_iter_reset = G.edges(keys=True, data=True)
-        for _u, _v, _k, attrs in edge_iter_reset:
-            attrs.pop("mask_vessel_type", None)
-    else:
-        edge_iter_reset = G.edges(data=True)
-        for _u, _v, attrs in edge_iter_reset:
-            attrs.pop("mask_vessel_type", None)
+    edges = _label_edge_ids(G)
+    for _u, _v, _edge, attrs in edges:
+        attrs.pop("mask_vessel_type", None)
 
     arteriole_edges: set[tuple[Any, Any, int]] = set()
     venule_edges: set[tuple[Any, Any, int]] = set()
     overlap_edges = 0
+    fractions: dict[tuple[Any, Any, int], tuple[float, float]] = {}
+    threshold = float(minimum_overlap_fraction)
 
-    if isinstance(G, nx.MultiGraph):
-        edge_iter = G.edges(keys=True, data=True)
-        for u, v, key, edge_data in edge_iter:
-            if u not in node_positions or v not in node_positions:
-                continue
-            pu = np.asarray(node_positions[u], dtype=float)
-            pv = np.asarray(node_positions[v], dtype=float)
-            samples = _edge_sample_points_from_data(edge_data, (pu, pv))
-            arteriole_fraction = _sample_overlap_fraction(
-                samples,
-                arteriole_mask,
-                voxel_size_zyx=voxel_size_zyx,
-            )
-            venule_fraction = _sample_overlap_fraction(
-                samples,
-                venule_mask,
-                voxel_size_zyx=voxel_size_zyx,
-            )
-            in_arteriole = arteriole_fraction >= float(minimum_overlap_fraction)
-            in_venule = venule_fraction >= float(minimum_overlap_fraction)
-            edge_id = _edge_id(u, v, key)
-            if in_arteriole and in_venule:
-                overlap_edges += 1
-                if allow_overlap:
-                    arteriole_edges.add(edge_id)
-                    venule_edges.add(edge_id)
-                    edge_data["mask_vessel_type"] = "overlap"
-                elif arteriole_fraction >= venule_fraction:
-                    arteriole_edges.add(edge_id)
-                    edge_data["mask_vessel_type"] = "arteriole"
-                else:
-                    venule_edges.add(edge_id)
-                    edge_data["mask_vessel_type"] = "venule"
-                continue
-            if in_arteriole:
+    for u, v, edge_id, edge_data in edges:
+        if u not in node_positions or v not in node_positions:
+            continue
+        pu = np.asarray(node_positions[u], dtype=float)
+        pv = np.asarray(node_positions[v], dtype=float)
+        samples = _edge_sample_points_from_data(edge_data, (pu, pv))
+        arteriole_fraction = _sample_overlap_fraction(
+            samples, arteriole_mask, voxel_size_zyx=voxel_size_zyx
+        )
+        venule_fraction = _sample_overlap_fraction(
+            samples, venule_mask, voxel_size_zyx=voxel_size_zyx
+        )
+        fractions[edge_id] = (arteriole_fraction, venule_fraction)
+        in_arteriole = arteriole_fraction >= threshold
+        in_venule = venule_fraction >= threshold
+        if in_arteriole and in_venule:
+            overlap_edges += 1
+            if allow_overlap:
+                arteriole_edges.add(edge_id)
+                venule_edges.add(edge_id)
+                edge_data["mask_vessel_type"] = "overlap"
+            elif arteriole_fraction >= venule_fraction:
                 arteriole_edges.add(edge_id)
                 edge_data["mask_vessel_type"] = "arteriole"
-            elif in_venule:
+            else:
                 venule_edges.add(edge_id)
                 edge_data["mask_vessel_type"] = "venule"
-    else:
-        edge_iter = G.edges(data=True)
-        for u, v, edge_data in edge_iter:
-            if u not in node_positions or v not in node_positions:
-                continue
-            pu = np.asarray(node_positions[u], dtype=float)
-            pv = np.asarray(node_positions[v], dtype=float)
-            samples = _edge_sample_points_from_data(edge_data, (pu, pv))
-            arteriole_fraction = _sample_overlap_fraction(
-                samples,
-                arteriole_mask,
-                voxel_size_zyx=voxel_size_zyx,
-            )
-            venule_fraction = _sample_overlap_fraction(
-                samples,
-                venule_mask,
-                voxel_size_zyx=voxel_size_zyx,
-            )
-            in_arteriole = arteriole_fraction >= float(minimum_overlap_fraction)
-            in_venule = venule_fraction >= float(minimum_overlap_fraction)
-            edge_id = (u, v, 0) if u <= v else (v, u, 0)
-            if in_arteriole and in_venule:
-                overlap_edges += 1
-                if allow_overlap:
-                    arteriole_edges.add(edge_id)
-                    venule_edges.add(edge_id)
-                    edge_data["mask_vessel_type"] = "overlap"
-                elif arteriole_fraction >= venule_fraction:
-                    arteriole_edges.add(edge_id)
-                    edge_data["mask_vessel_type"] = "arteriole"
-                else:
-                    venule_edges.add(edge_id)
-                    edge_data["mask_vessel_type"] = "venule"
-                continue
-            if in_arteriole:
-                arteriole_edges.add(edge_id)
-                edge_data["mask_vessel_type"] = "arteriole"
-            elif in_venule:
-                venule_edges.add(edge_id)
-                edge_data["mask_vessel_type"] = "venule"
+            continue
+        if in_arteriole:
+            arteriole_edges.add(edge_id)
+            edge_data["mask_vessel_type"] = "arteriole"
+        elif in_venule:
+            venule_edges.add(edge_id)
+            edge_data["mask_vessel_type"] = "venule"
+
+    gap_filled = _fill_label_gaps(
+        edges,
+        fractions,
+        {"arteriole": arteriole_edges, "venule": venule_edges},
+        low_fraction=GAP_FILL_FRACTION_OF_THRESHOLD * threshold,
+    )
+    if gap_filled:
+        logger.info(
+            "Small-vessel masks: %d under-covered edge(s) between two edges of one "
+            "vessel type took that type (at least %.2f of the edge in its mask).",
+            gap_filled,
+            GAP_FILL_FRACTION_OF_THRESHOLD * threshold,
+        )
 
     arteriole_nodes: set[Any] = set()
     venule_nodes: set[Any] = set()
@@ -577,21 +604,18 @@ def infer_boundary_nodes_from_small_vessel_masks(
         if node_id in G.nodes and G.nodes[node_id].get("mask_vessel_type") != "arteriole":
             G.nodes[node_id]["mask_vessel_type"] = "venule"
 
+    incident: dict[Any, set[tuple[Any, Any, int]]] = {}
+    for u, v, edge_id, _data in edges:
+        incident.setdefault(u, set()).add(edge_id)
+        incident.setdefault(v, set()).add(edge_id)
+
     def _boundary_nodes_for(edge_ids: set[tuple[Any, Any, int]], labeled_nodes: set[Any]) -> list[Any]:
-        boundaries: set[Any] = set()
-        for node_id in labeled_nodes:
-            incident_all: set[tuple[Any, Any, int]] = set()
-            if isinstance(G, nx.MultiGraph):
-                for nu, nv, nkey in G.edges(node_id, keys=True):
-                    incident_all.add(_edge_id(nu, nv, nkey))
-            else:
-                for nu, nv in G.edges(node_id):
-                    edge_id = (nu, nv, 0) if nu <= nv else (nv, nu, 0)
-                    incident_all.add(edge_id)
-            # Transition point from mask-labeled region to non-labeled region.
-            if any(edge_id not in edge_ids for edge_id in incident_all):
-                boundaries.add(node_id)
-        return _sort_nodes(boundaries)
+        # Transition point from mask-labeled region to non-labeled region.
+        return _sort_nodes(
+            node_id
+            for node_id in labeled_nodes
+            if any(edge_id not in edge_ids for edge_id in incident.get(node_id, ()))
+        )
 
     arteriole_boundary_nodes = _boundary_nodes_for(arteriole_edges, arteriole_nodes)
     venule_boundary_nodes = _boundary_nodes_for(venule_edges, venule_nodes)
@@ -604,6 +628,7 @@ def infer_boundary_nodes_from_small_vessel_masks(
         "arteriole_edge_count": len(arteriole_edges),
         "venule_edge_count": len(venule_edges),
         "overlap_edge_count": overlap_edges,
+        "gap_filled_edge_count": gap_filled,
         "minimum_overlap_fraction": float(minimum_overlap_fraction),
     }
 
@@ -664,6 +689,32 @@ def _build_dilation_schedule_microns(
     return schedule
 
 
+def _distances_to_mask_microns(
+    mask: np.ndarray,
+    indices: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+) -> np.ndarray:
+    """Each of *indices*' distance to the nearest voxel of *mask*, in microns
+    (0 inside it; ``inf`` when the mask is empty).
+
+    Read point by point from the mask's surface (a KD-tree over it), not from
+    a whole-volume distance transform: the same values
+    ``distance_transform_edt(~mask, sampling=voxel_size_zyx)`` gives there.
+    """
+    from haemolynx.preprocessing.pointwise_distance import FeatureDistance
+
+    binary = np.asanyarray(mask, dtype=bool)
+    if len(indices) == 0:
+        return np.zeros(0, dtype=float)
+    if not binary.any():
+        return np.full(len(indices), np.inf)
+    if binary.all():
+        return np.zeros(len(indices), dtype=float)
+    distance = FeatureDistance(binary, feature_value=True, sampling=voxel_size_zyx)
+    return distance.at(np.asarray(indices, dtype=np.intp))
+
+
 def select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
     G: nx.Graph,
     large_arteriole_mask: np.ndarray,
@@ -679,11 +730,24 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
     """Assign I/O nodes over progressive dilation steps without reassignment.
 
     Assignment steps always include 0 microns first, followed by fixed dilation
-    increments (default: 5 microns) up to `max_dilation_microns`.
+    increments (default: 5 microns) up to `max_dilation_microns`. A terminal
+    is locked at the first step whose dilation reaches it -- inside the
+    arteriole mask grown by that much, an inlet; the venule mask, an outlet --
+    and cannot be reassigned at a later step.
 
-    Nodes assigned at an earlier step are locked and cannot be reassigned at a
-    later step, even if they overlap the opposite mask after additional dilation.
+    Each terminal's distance to each mask is read once, point by point, and
+    its step is the first one at least that far: the same answer growing both
+    masks step by step gives, without building two whole-volume masks per step
+    to read a handful of voxels from. A terminal both masks reach at the same
+    step goes to the nearer one -- it used to be settled by comparing
+    whole-mask midpoints, scanning both masks for every such terminal --
+    and an exact tie to the arteriole, as before.
+
+    ``exclude_smaller_overlapping_volumes`` cleans the two masks' overlap
+    once, before any distance is read. ``overlap_parallel_workers`` is
+    accepted for API compatibility and unused.
     """
+    del overlap_parallel_workers
     if large_arteriole_mask.shape != large_venule_mask.shape:
         raise ValueError(
             "large_arteriole_mask and large_venule_mask must share a shape. "
@@ -697,93 +761,67 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
     terminal_nodes = _terminal_nodes_with_position_pairs(G)
     if not terminal_nodes:
         return [], []
-    terminal_node_ids = {node_id for node_id, _ in terminal_nodes}
+
+    arteriole_mask = large_arteriole_mask.astype(bool, copy=False)
+    venule_mask = large_venule_mask.astype(bool, copy=False)
+    if exclude_smaller_overlapping_volumes:
+        cleaned_arteriole, cleaned_venule = exclude_smaller_overlapping_large_vessel_components(
+            arteriole_mask, venule_mask
+        )
+        if cleaned_arteriole is not None and cleaned_venule is not None:
+            arteriole_mask, venule_mask = cleaned_arteriole, cleaned_venule
+
+    inside: list[tuple[Any, tuple[int, int, int]]] = []
+    for node_id, node_pos in terminal_nodes:
+        index = _position_to_mask_index(
+            node_pos, voxel_size_zyx=voxel_size_zyx, mask_shape=arteriole_mask.shape
+        )
+        if index is not None:
+            inside.append((node_id, index))
+    indices = np.asarray([index for _node, index in inside], dtype=np.intp).reshape(-1, 3)
+    to_arteriole = _distances_to_mask_microns(arteriole_mask, indices, voxel_size_zyx=voxel_size_zyx)
+    to_venule = _distances_to_mask_microns(venule_mask, indices, voxel_size_zyx=voxel_size_zyx)
+
+    steps = np.asarray(schedule, dtype=float)
+
+    def first_step(distance: float) -> int | None:
+        reached = np.flatnonzero(steps >= float(distance) - 1e-9)
+        return int(reached[0]) if reached.size else None
 
     assigned_inputs: set[Any] = set()
     assigned_outputs: set[Any] = set()
-    remaining_terminal_ids = set(terminal_node_ids)
-
-    base_arteriole_mask = large_arteriole_mask.astype(bool, copy=False)
-    base_venule_mask = large_venule_mask.astype(bool, copy=False)
-    arteriole_distance_from_mask = _distance_from_mask_microns(
-        base_arteriole_mask,
-        voxel_size_zyx=voxel_size_zyx,
-    )
-    venule_distance_from_mask = _distance_from_mask_microns(
-        base_venule_mask,
-        voxel_size_zyx=voxel_size_zyx,
-    )
+    per_step = [[0, 0] for _ in schedule]
+    for (node_id, _index), d_art, d_ven in zip(inside, to_arteriole, to_venule):
+        step_art, step_ven = first_step(d_art), first_step(d_ven)
+        if step_art is None and step_ven is None:
+            continue
+        if step_ven is None or (step_art is not None and step_art < step_ven):
+            to_inlet = True
+        elif step_art is None or step_ven < step_art:
+            to_inlet = False
+        else:
+            # Both reach it at the same step: the nearer mask, and on an exact
+            # tie (or allow_overlap) the arteriole, as the step-mask version did.
+            to_inlet = allow_overlap or float(d_art) <= float(d_ven)
+        step = step_art if to_inlet else step_ven
+        if to_inlet:
+            assigned_inputs.add(node_id)
+            per_step[step][0] += 1
+        else:
+            assigned_outputs.add(node_id)
+            per_step[step][1] += 1
 
     logger.info(
-        "Automated large-vessel progressive assignment: "
-        f"{len(schedule)} step(s), max_dilation={float(max_dilation_microns):.3f} microns, "
-        f"step={float(dilation_step_microns):.3f} microns."
+        "Automated large-vessel progressive assignment: %d step(s), max_dilation=%.3f microns, "
+        "step=%.3f microns; new (inputs, outputs) per step: %s; %d of %d terminals unassigned.",
+        len(schedule),
+        float(max_dilation_microns),
+        float(dilation_step_microns),
+        ", ".join(f"{d:g} um: {i}/{o}" for d, (i, o) in zip(schedule, per_step)),
+        len(terminal_nodes) - len(assigned_inputs) - len(assigned_outputs),
+        len(terminal_nodes),
     )
-    for step_idx, dilation_microns in enumerate(schedule, start=1):
-        if not remaining_terminal_ids:
-            logger.info(
-                "Automated large-vessel progressive assignment: "
-                "all terminal nodes assigned before final dilation step."
-            )
-            break
-        if dilation_microns <= 0:
-            step_arteriole_mask = base_arteriole_mask
-            step_venule_mask = base_venule_mask
-        else:
-            step_arteriole_mask = _dilated_mask_from_cached_distance(
-                base_arteriole_mask,
-                arteriole_distance_from_mask,
-                dilation_microns=float(dilation_microns),
-            )
-            step_venule_mask = _dilated_mask_from_cached_distance(
-                base_venule_mask,
-                venule_distance_from_mask,
-                dilation_microns=float(dilation_microns),
-            )
-
-        step_inputs, step_outputs = select_terminal_nodes_from_large_vessel_masks(
-            G,
-            large_arteriole_mask=step_arteriole_mask,
-            large_venule_mask=step_venule_mask,
-            voxel_size_zyx=voxel_size_zyx,
-            terminal_node_ids=remaining_terminal_ids,
-            allow_overlap=allow_overlap,
-            exclude_smaller_overlapping_volumes=exclude_smaller_overlapping_volumes,
-            overlap_parallel_workers=overlap_parallel_workers,
-        )
-
-        newly_assigned_inputs = [
-            node_id
-            for node_id in step_inputs
-            if node_id in remaining_terminal_ids
-        ]
-        for node_id in newly_assigned_inputs:
-            assigned_inputs.add(node_id)
-            remaining_terminal_ids.discard(node_id)
-
-        newly_assigned_outputs = [
-            node_id
-            for node_id in step_outputs
-            if node_id in remaining_terminal_ids
-        ]
-        for node_id in newly_assigned_outputs:
-            assigned_outputs.add(node_id)
-            remaining_terminal_ids.discard(node_id)
-
-        logger.info(
-            "Automated large-vessel progressive assignment step "
-            f"{step_idx}/{len(schedule)} "
-            f"(dilation={float(dilation_microns):.3f} microns): "
-            f"step_total_inputs={len(step_inputs)}, "
-            f"step_total_outputs={len(step_outputs)}, "
-            f"new_inputs={len(newly_assigned_inputs)}, "
-            f"new_outputs={len(newly_assigned_outputs)}, "
-            f"remaining_terminals={len(remaining_terminal_ids)}."
-        )
-
-    sorted_inputs = _sort_nodes(assigned_inputs)
-    sorted_outputs = _sort_nodes(assigned_outputs - assigned_inputs)
-    return sorted_inputs, sorted_outputs
+    return _sort_nodes(assigned_inputs), _sort_nodes(assigned_outputs - assigned_inputs)
 
 
 def _distance_from_mask_microns(

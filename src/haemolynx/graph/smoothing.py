@@ -21,14 +21,18 @@ skeleton on capillaries, where the turns are genuine rather than sampled.
 
 Whatever is done to a centreline, it must still describe the vessel it came
 from, so a smoothed path is accepted only if every interior point stays within
-``max_deviation`` of a skeleton voxel; otherwise it is blended back towards the
+a tolerance of a skeleton voxel; otherwise it is blended back towards the
 original until it does, and failing that the original is kept. Each edge records
-which of those happened.
+which of those happened. The tolerance is ``max_deviation``, widened where one
+voxel's staircase is itself wider (half the voxel diagonal -- on 2 um z steps a
+straight line lies up to ~1 um from every voxel centre) and in a wide vessel (a
+fraction of its radius): a fixed 1 um kept the staircase exactly where it was
+largest.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, Optional
 
 import networkx as nx
 import numpy as np
@@ -54,6 +58,13 @@ TAUBIN_MU = -0.53
 #: 0.28 um and a 99th percentile of 0.66, so 1.0 accepts the overwhelming
 #: majority while still catching a corner that has been cut across a bend.
 DEFAULT_MAX_DEVIATION_UM = 1.0
+
+#: How much of a vessel's radius a smoothed centreline may stray from the
+#: skeleton: well inside the lumen, however wide it is.
+RADIUS_FRACTION = 0.5
+
+#: At most this many points along an edge are read for its radius (their median).
+_RADIUS_SAMPLES = 7
 
 #: Tried in turn when a smoothed path strays too far: each is the weight given
 #: to the smoothed path against the original.
@@ -207,6 +218,31 @@ def _accept(
     return original, "kept_raw"
 
 
+def edge_tolerance_um(
+    voxels: np.ndarray,
+    *,
+    max_deviation: float,
+    voxel_size_zyx: tuple[float, float, float],
+    radius_at: Optional[Callable[[np.ndarray], float]] = None,
+) -> float:
+    """How far this edge's smoothed centreline may sit from the skeleton.
+
+    The largest of *max_deviation*, half the voxel diagonal (the staircase's
+    own scale), and :data:`RADIUS_FRACTION` of the vessel's radius -- the
+    median of *radius_at* at up to :data:`_RADIUS_SAMPLES` points along it.
+    """
+    tolerance = max(
+        float(max_deviation), 0.5 * float(np.linalg.norm(np.asarray(voxel_size_zyx, dtype=float)))
+    )
+    if radius_at is not None and len(voxels):
+        picks = np.unique(np.linspace(0, len(voxels) - 1, min(_RADIUS_SAMPLES, len(voxels))).astype(int))
+        radii = [float(radius_at(voxels[i])) for i in picks]
+        radii = [r for r in radii if r > 0]
+        if radii:
+            tolerance = max(tolerance, RADIUS_FRACTION * float(np.median(radii)))
+    return tolerance
+
+
 def smooth_graph_centrelines(
     G: nx.Graph,
     skeleton: np.ndarray,
@@ -215,14 +251,21 @@ def smooth_graph_centrelines(
     method: str = "taubin",
     iterations: int = 10,
     max_deviation: float = DEFAULT_MAX_DEVIATION_UM,
+    radius_at: Optional[Callable[[np.ndarray], float]] = None,
 ) -> Mapping[str, int]:
     """Smooth every edge's centreline in place, and re-measure its length.
 
-    ``length`` is rewritten from the accepted path, so the number the
-    haemodynamics uses describes the same curve the exports draw. Each edge
-    gains ``centreline_smoothing`` saying what happened to it: ``smoothed``,
+    ``length`` is rewritten from every edge's path -- smoothed or not -- so the
+    number the haemodynamics uses describes the same curve the exports draw,
+    whatever earlier steps did to either. Each edge gains
+    ``centreline_smoothing`` saying what happened to it: ``smoothed``,
     ``relaxed`` (blended back to stay on the vessel), ``kept_raw`` (nothing was
     close enough) or ``too_short`` (a two-point edge has no corners to cut).
+
+    How far a smoothed path may stray is set per edge by
+    :func:`edge_tolerance_um` -- *radius_at*, when given, is the vessel radius
+    in microns at a ``(z, y, x)`` position (e.g.
+    ``graph.assemble.mask_radius_sampler``).
 
     Returns those counts. A graph with no skeleton to check against is left
     alone -- there would be nothing to say whether a smoothed path had wandered
@@ -250,17 +293,24 @@ def smooth_graph_centrelines(
         if voxels is None or len(voxels) < 3:
             counts["too_short"] += 1
             data["centreline_smoothing"] = "too_short"
+            if voxels is not None and len(voxels) >= 2:
+                data["length"] = float(calculate_path_length(voxels))
             continue
 
         original = np.asarray(voxels, dtype=float)
         smoothed = smooth_polyline(original, method=method, iterations=iterations)
-        accepted, outcome = _accept(original, smoothed, tree, max_deviation)
+        tolerance = edge_tolerance_um(
+            original, max_deviation=max_deviation, voxel_size_zyx=voxel_size_zyx, radius_at=radius_at
+        )
+        accepted, outcome = _accept(original, smoothed, tree, tolerance)
 
         counts[outcome] += 1
         data["centreline_smoothing"] = outcome
         if outcome in {"smoothed", "relaxed"}:
             data["voxels"] = accepted.tolist()
-            data["length"] = float(calculate_path_length(accepted.tolist()))
+        # Every edge, kept raw included: an earlier step may have moved a
+        # path's end without measuring it again.
+        data["length"] = float(calculate_path_length(data["voxels"]))
 
     logger.info(
         "Centreline smoothing (%s, %d passes): %d smoothed, %d relaxed, "

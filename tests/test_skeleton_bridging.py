@@ -1,11 +1,15 @@
-"""Skeleton bridging finds its candidates without comparing every pair.
+"""Skeleton bridging joins branch ends to what lies ahead of them, in microns.
 
-``connect_skeleton_components`` used to query every voxel of every component
-against every other component's tree: quadratic in the fragments, and in the
-size of a large component every nearby fragment was measured against. It now
-skips pairs whose bounding boxes are too far apart and measures each pair from
-its smaller side -- which must give exactly the bridges the old loop gave,
-down to which voxel pair a tie picks, since that is what gets drawn.
+``connect_skeleton_components`` used to join the nearest pair of voxels
+between any two components, wherever on them those were, measured in voxels
+with a hand-set z weight. Side-by-side capillaries a few voxels apart were
+cross-linked, and on a coarse-z stack a gap along z counted as a quarter of
+its real length. A bridge now starts at a branch end (a tip), goes only to
+something within the tip's own heading, and reaches ``max_bridge_distance``
+voxels of the *finest* axis, measured physically.
+
+``inter_component_gap_distances`` -- the distribution of gaps the settings
+optimiser picks candidate distances from -- is tested at the end.
 """
 from __future__ import annotations
 
@@ -18,7 +22,14 @@ import haemolynx.preprocessing.skeleton as skeleton_mod
 from haemolynx.preprocessing.skeleton import (
     connect_skeleton_components,
     inter_component_gap_distances,
+    preprocess_skeleton_for_graph,
 )
+
+STRUCTURE = generate_binary_structure(3, 3)
+
+
+def _count(volume) -> int:
+    return int(label(volume, structure=STRUCTURE)[1])
 
 
 def _components(skeleton, z_weight):
@@ -33,36 +44,6 @@ def _components(skeleton, z_weight):
     return comp, weights
 
 
-def _all_pairs_candidates(skeleton, max_distance, z_weight):
-    """The loop this replaced: every pair, every voxel of the first queried."""
-    comp, weights = _components(skeleton, z_weight)
-    trees = {c: cKDTree(v * weights) for c, v in comp.items()}
-    ids = sorted(comp)
-    out = []
-    for i, a in enumerate(ids):
-        for b in ids[i + 1:]:
-            dists, idx = trees[b].query(comp[a] * weights)
-            k = int(np.argmin(dists))
-            if dists[k] <= max_distance:
-                out.append((float(dists[k]), tuple(comp[a][k]), tuple(comp[b][int(idx[k])]), a, b))
-    return sorted(out, key=lambda c: c[0])
-
-
-def _pruned_candidates(skeleton, max_distance, z_weight):
-    comp, weights = _components(skeleton, z_weight)
-    weighted = {c: v * weights for c, v in comp.items()}
-    trees = {c: cKDTree(w) for c, w in weighted.items()}
-    out = []
-    for a, b in skeleton_mod._pairs_within_reach(sorted(comp), weighted, max_distance):
-        found = skeleton_mod._nearest_voxel_pair(
-            weighted[a], trees[a], weighted[b], trees[b], max_distance=max_distance
-        )
-        if found is not None:
-            d, i, j = found
-            out.append((d, tuple(comp[a][i]), tuple(comp[b][j]), a, b))
-    return sorted(out, key=lambda c: c[0])
-
-
 def _fragments(seed):
     rng = np.random.default_rng(seed)
     shape = (int(rng.integers(6, 14)), int(rng.integers(16, 32)), int(rng.integers(16, 32)))
@@ -72,34 +53,128 @@ def _fragments(seed):
     return skeleton
 
 
-@pytest.mark.parametrize("seed", range(8))
-@pytest.mark.parametrize("max_distance, z_weight", [(3.0, 1.0), (10.0, 1.0), (6.0, 2.0), (6.0, 0.5)])
-def test_pruned_candidates_are_the_all_pairs_candidates(seed, max_distance, z_weight):
-    """Same pairs, same distances, same voxel pair on every tie, same order."""
-    skeleton = _fragments(seed)
+def test_two_parallel_vessels_are_not_cross_linked():
+    """Regression: the nearest voxels of two side-by-side lines were bridged,
+    though neither line ends there."""
+    volume = np.zeros((5, 12, 30), dtype=bool)
+    volume[2, 3, 2:28] = True
+    volume[2, 6, 2:28] = True  # 3 voxels away along its whole length
 
-    assert _pruned_candidates(skeleton, max_distance, z_weight) == _all_pairs_candidates(
-        skeleton, max_distance, z_weight
+    result = connect_skeleton_components(volume, max_bridge_distance=5)
+
+    assert _count(result) == 2
+    assert np.array_equal(result, volume)
+
+
+def test_a_vessel_broken_in_two_is_joined():
+    volume = np.zeros((5, 5, 30), dtype=bool)
+    volume[2, 2, 2:12] = True
+    volume[2, 2, 15:28] = True
+
+    result = connect_skeleton_components(volume, max_bridge_distance=5)
+
+    assert _count(result) == 1
+    assert result[2, 2, 12:15].all()
+
+
+def test_a_branch_ending_just_short_of_another_vessel_joins_its_side():
+    """The target need not be a tip: a capillary cut off just before its
+    junction reaches the side of the vessel it was joining."""
+    volume = np.zeros((5, 20, 30), dtype=bool)
+    volume[2, 15, 2:28] = True  # the trunk, along x
+    volume[2, 2:12, 14] = True  # a branch along y, ending 3 voxels short of it
+
+    result = connect_skeleton_components(volume, max_bridge_distance=5)
+
+    assert _count(result) == 1
+
+
+def _line_and_a_piece_beside_its_end():
+    """A line ending at x=14 (heading +x), and a short piece running along z
+    4 voxels to one side of it, behind its end -- within reach of the end,
+    but not ahead of it, and with its own ends pointing along z, at nothing."""
+    volume = np.zeros((5, 20, 30), dtype=bool)
+    volume[2, 5, 2:15] = True
+    volume[0:5, 9, 12] = True
+    return volume
+
+
+def test_a_fragment_beside_a_branch_end_is_not_reached_for():
+    """Regression: its nearest voxel was 4 away, and that was enough."""
+    volume = _line_and_a_piece_beside_its_end()
+
+    result = connect_skeleton_components(volume, max_bridge_distance=5)
+
+    assert _count(result) == 2
+
+
+def test_facing_can_be_switched_off():
+    volume = _line_and_a_piece_beside_its_end()
+
+    result = connect_skeleton_components(volume, max_bridge_distance=5, min_facing_cosine=-1.0)
+
+    assert _count(result) == 1
+
+
+def test_a_lone_voxel_is_never_bridged_from():
+    """A speck has no direction to be ahead of."""
+    volume = np.zeros((5, 5, 20), dtype=bool)
+    volume[2, 2, 2] = True
+    volume[2, 2, 5] = True
+
+    result = connect_skeleton_components(volume, max_bridge_distance=5)
+
+    assert _count(result) == 2
+
+
+def test_the_reach_is_physical_counted_in_voxels_of_the_finest_axis():
+    """On 2 x 0.5 x 0.5 um voxels a reach of 4 is 2 um: ends 3 z steps apart
+    (6 um) are too far, while ends 4 x steps apart (2 um) are not. In voxels
+    the z gap counted as 3 -- within reach."""
+    spacing = (2.0, 0.5, 0.5)
+    along_z = np.zeros((20, 5, 5), dtype=bool)
+    along_z[0:6, 2, 2] = True
+    along_z[8:14, 2, 2] = True  # ends 3 z steps = 6 um apart
+    along_x = np.zeros((5, 5, 30), dtype=bool)
+    along_x[2, 2, 0:10] = True
+    along_x[2, 2, 13:23] = True  # ends 4 x steps = 2 um apart
+
+    assert _count(connect_skeleton_components(along_z, max_bridge_distance=4, voxel_size_zyx=spacing)) == 2
+    assert _count(connect_skeleton_components(along_x, max_bridge_distance=4, voxel_size_zyx=spacing)) == 1
+    # With no voxel size given every voxel is a unit cube, as before.
+    assert _count(connect_skeleton_components(along_z, max_bridge_distance=4)) == 1
+
+
+def test_a_short_piece_of_a_broken_vessel_is_joined_before_it_is_filtered():
+    """Regression: min_branch_length deleted small components before
+    bridging, so a larger value removed exactly the pieces bridging exists to
+    reconnect."""
+    volume = np.zeros((5, 5, 60), dtype=bool)
+    volume[2, 2, 0:30] = True
+    volume[2, 2, 33:39] = True  # a 6-voxel piece past a 2-voxel gap
+    volume[2, 2, 42:60] = True
+
+    result = preprocess_skeleton_for_graph(
+        volume, min_branch_length=10, max_bridge_distance=4, bundle_scan_size=3,
+        bundle_density_fraction=1.0,
     )
 
+    assert _count(result) == 1
+    assert result[2, 2, 35]
 
-def test_pairs_out_of_reach_are_never_measured(monkeypatch):
-    """Two clusters far apart: no pair across them is measured at all."""
-    skeleton = np.zeros((5, 20, 200), dtype=bool)
-    skeleton[2, 5, 0:3] = skeleton[2, 5, 5:8] = True  # near each other
-    skeleton[2, 5, 150:153] = skeleton[2, 5, 156:159] = True  # far from the first two
-    measured = []
-    real = skeleton_mod._nearest_voxel_pair
 
-    def recording(points_a, tree_a, points_b, tree_b, **kwargs):
-        measured.append((len(points_a), len(points_b)))
-        return real(points_a, tree_a, points_b, tree_b, **kwargs)
+def test_what_bridging_could_not_join_is_still_filtered():
+    volume = np.zeros((5, 20, 60), dtype=bool)
+    volume[2, 2, 0:40] = True
+    volume[2, 15, 20:25] = True  # a 5-voxel piece, nothing ahead of it
 
-    monkeypatch.setattr(skeleton_mod, "_nearest_voxel_pair", recording)
-    result = connect_skeleton_components(skeleton, max_bridge_distance=5)
+    result = preprocess_skeleton_for_graph(
+        volume, min_branch_length=10, max_bridge_distance=4, bundle_scan_size=3,
+        bundle_density_fraction=1.0,
+    )
 
-    assert len(measured) == 2, "only the two pairs within reach"
-    assert result[2, 5, 3:5].all() and result[2, 5, 153:156].all(), "both gaps bridged"
+    assert _count(result) == 1
+    assert not result[2, 15, 20:25].any()
 
 
 @pytest.mark.parametrize("seed", range(4))

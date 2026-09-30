@@ -176,8 +176,8 @@ def test_connect_skeleton_components_z_distance_weight_discourages_z_bridges():
     from scipy.ndimage import generate_binary_structure, label
 
     volume = np.zeros((20, 5, 5), dtype=bool)
-    volume[2, 2, 2] = True
-    volume[8, 2, 2] = True  # 6 voxels apart, purely along z
+    volume[0:3, 2, 2] = True
+    volume[8:11, 2, 2] = True  # ends 6 voxels apart, facing, purely along z
     structure = generate_binary_structure(3, 3)
 
     default = connect_skeleton_components(volume, max_bridge_distance=10)
@@ -198,8 +198,8 @@ def test_connect_skeleton_components_z_distance_weight_below_one_favors_z_bridge
     from scipy.ndimage import generate_binary_structure, label
 
     volume = np.zeros((20, 5, 5), dtype=bool)
-    volume[2, 2, 2] = True
-    volume[10, 2, 2] = True  # 8 voxels apart, purely along z
+    volume[0:3, 2, 2] = True
+    volume[10:13, 2, 2] = True  # ends 8 voxels apart, facing, purely along z
     structure = generate_binary_structure(3, 3)
 
     default = connect_skeleton_components(volume, max_bridge_distance=5)
@@ -221,8 +221,10 @@ def test_connect_skeleton_components_weight_by_segmentation_follows_the_mask():
     bridge should follow that corridor rather than cut through background."""
     shape = (1, 15, 15)
     volume = np.zeros(shape, dtype=bool)
-    volume[0, 2, 2] = True
-    volume[0, 12, 12] = True
+    # Two short diagonal segments whose ends, at (2, 2) and (12, 12), face.
+    for step in range(3):
+        volume[0, step, step] = True
+        volume[0, 14 - step, 14 - step] = True
 
     mask = np.zeros(shape, dtype=bool)
     mask[0, 2:13, 2] = True
@@ -252,8 +254,10 @@ def test_connect_skeleton_components_weight_by_segmentation_off_by_default():
     also opting in must reproduce today's straight-line behaviour exactly."""
     shape = (1, 15, 15)
     volume = np.zeros(shape, dtype=bool)
-    volume[0, 2, 2] = True
-    volume[0, 12, 12] = True
+    # Two short diagonal segments whose ends, at (2, 2) and (12, 12), face.
+    for step in range(3):
+        volume[0, step, step] = True
+        volume[0, 14 - step, 14 - step] = True
     mask = np.zeros(shape, dtype=bool)
     mask[0, 2:13, 2] = True
     mask[0, 12, 2:13] = True
@@ -270,9 +274,9 @@ def test_connect_skeleton_components_weight_by_segmentation_falls_back_without_a
     bridge via the straight-line fallback rather than raising."""
     from scipy.ndimage import generate_binary_structure, label
 
-    volume = np.zeros((5, 5, 10), dtype=bool)
-    volume[2, 2, 2] = True
-    volume[2, 2, 7] = True
+    volume = np.zeros((5, 5, 12), dtype=bool)
+    volume[2, 2, 0:3] = True
+    volume[2, 2, 7:10] = True  # ends 5 voxels apart, facing
     structure = generate_binary_structure(3, 3)
 
     result = connect_skeleton_components(

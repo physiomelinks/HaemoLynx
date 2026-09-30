@@ -324,12 +324,21 @@ def segmented_input_path(settings: dict) -> Path | None:
     return None if produced is None else Path(produced)
 
 
-def segment(settings: dict, *, segmented_path: Path | str | None = None):
+def segment(
+    settings: dict,
+    *,
+    segmented_path: Path | str | None = None,
+    progress: StageProgress | None = None,
+):
     """Produce the segmented mask to analyse, running ilastik when asked to.
 
     *segmented_path* is a segmented image this run already has -- a resumed
     run's, from the stage it resumes -- so ilastik is not run again; the
     settings are still normalised as a fresh run's would be.
+
+    *progress*, when given, hears a heartbeat about every half second while
+    ilastik runs, which is where a watcher can stop the run: whatever its
+    callback raises kills ilastik and propagates.
     """
     if segmented_path is not None:
         settings["input_path"] = Path(segmented_path)
@@ -360,6 +369,8 @@ def segment(settings: dict, *, segmented_path: Path | str | None = None):
             output_path=ilastik_segmented_path,
             ilastik_executable=settings["ilastik_executable"],
             timeout=settings["ilastik_timeout_seconds"],
+            reuse_existing=bool(settings.get("ilastik_reuse_existing_output", False)),
+            poll=progress.alive if progress is not None else None,
         )
         logger.info(f"Using ilastik-segmented image: {settings['input_path']}")
     else:
@@ -563,6 +574,11 @@ def _skeletonize_loaded_mask(
                 settings["skeleton_thick_vessel_bridge_radius_smoothing_um"]
             ),
             return_thick_mask=True,
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
+            tile_large_components=settings["skeletonize_tile_large_components"],
+            tile_max_voxels=settings["skeletonize_tile_max_voxels"],
+            tile_halo_voxels=_skeletonize_tile_halo_voxels(settings, voxel_size_zyx),
         )
     return (
         _skeletonize_loaded_volume(
@@ -718,6 +734,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
                 parameters_of(preprocessing.preprocess_skeleton_for_graph),
             ),
             min_component_fraction=settings["skeleton_min_component_percent"] / 100.0,
+            voxel_size_zyx=io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size)),
             segmentation_mask=binary,
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
@@ -1060,6 +1077,20 @@ def build_network(
                 extra_plot_names=(plot_png,),
             )
 
+        # Stubs are judged against the radius of the vessel they leave, and a
+        # smoothed centreline may stray further inside a wider vessel: both
+        # read the radius from the same binary mask the skeleton was made
+        # from, through one sampler.
+        stub_radius_multiple = float(settings.get("min_stub_length_radius_multiple", 0.0) or 0.0)
+        radius_mask = None
+        radius_at = None
+        if stub_radius_multiple > 0 or settings["smooth_centrelines"]:
+            radius_mask = _to_binary_volume_for_skeletonization(
+                image,
+                use_memmap=settings["use_memmap_loading"],
+                memmap_directory=settings["memmap_directory"],
+            )
+            radius_at = graph.assemble.mask_radius_sampler(radius_mask, voxel_size_zyx, 1.0)
         G = graph.build_graph_from_skeleton(
             skeleton,
             voxel_size=voxel_size_zyx,
@@ -1067,6 +1098,8 @@ def build_network(
             final_orphan_reconnect_threshold=settings["final_orphan_reconnect_threshold"],
             cluster_collapse_distance=settings["cluster_collapse_distance"],
             min_stub_length=settings["min_stub_length"],
+            min_stub_length_radius_multiple=stub_radius_multiple,
+            stub_radius_at=radius_at,
             debug=settings["verbose_logging"],
             step_callback=_graph_build_step_callback,
             cluster_collapse_method=settings["cluster_collapse_method"],
@@ -1097,7 +1130,11 @@ def build_network(
                 method=settings["centreline_smoothing_method"],
                 iterations=settings["centreline_smoothing_iterations"],
                 max_deviation=settings["centreline_max_deviation"],
+                radius_at=radius_at,
             )
+        if radius_mask is not None:
+            preprocessing.release_superseded(radius_mask, G, keep=image)
+            radius_mask = radius_at = None
 
         # Last thing before the graph is saved, after every topology step and
         # the centreline smoothing above: a thin-vessel-to-fat-vessel join
@@ -3881,9 +3918,11 @@ def run_pipeline_stages(
     if resume is not None and start_from is None:
         start_from = resume.start_from
     run = RunProgress(progress)
-    with run.stage("segment"):
+    with run.stage("segment") as segmenting:
         inputs = segment(
-            settings, segmented_path=_resumed_segmented_path(settings, resume, start_from)
+            settings,
+            segmented_path=_resumed_segmented_path(settings, resume, start_from),
+            progress=segmenting,
         )
     _produced(on_stage_output, "segment", inputs)
     with run.stage("skeletonise"):

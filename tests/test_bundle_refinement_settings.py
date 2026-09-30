@@ -94,3 +94,63 @@ def test_bundle_rows_grey_out_when_skeletonise_is_off():
     for name in BUNDLE_SETTING_NAMES:
         assert fields[name].is_enabled(values_off) is False
         assert fields[name].is_enabled(values_on) is True
+
+
+# --- hub links: one per branch, not one per octant ------------------------------
+
+
+def _two_branches_in_one_octant():
+    """A hub centre and two separate branches both leaving it toward
+    (+z, +y, +x): one a pair of adjacent voxels, one a single voxel."""
+    import numpy as np
+
+    result = np.zeros((21, 21, 21), dtype=bool)
+    center = np.array([10, 10, 10])
+    branch_a = np.array([[14, 11, 11], [15, 11, 11]])
+    branch_b = np.array([[11, 14, 12]])
+    result[tuple(center)] = True
+    for point in np.vstack([branch_a, branch_b]):
+        result[tuple(point)] = True
+    return result, center, np.vstack([branch_a, branch_b])
+
+
+def test_two_branches_leaving_a_hub_in_the_same_octant_both_get_a_link():
+    """Regression: links were kept one per sign of the direction, so the
+    nearer of two branches in one octant was left disconnected."""
+    import numpy as np
+    from scipy.ndimage import generate_binary_structure, label
+
+    from haemolynx.preprocessing.skeleton import _draw_hub_links
+
+    result, center, boundary = _two_branches_in_one_octant()
+    _draw_hub_links(result, center, boundary, max_connections_per_hub=8)
+
+    assert label(result, structure=generate_binary_structure(3, 3))[1] == 1
+
+
+def test_adjacent_boundary_voxels_are_one_branch_with_one_link():
+    import numpy as np
+
+    from haemolynx.preprocessing.skeleton import _draw_hub_links
+
+    result, center, boundary = _two_branches_in_one_octant()
+    before = result.copy()
+    _draw_hub_links(result, center, boundary[:2], max_connections_per_hub=8)
+
+    # One line, centre (10, 10, 10) to the farther voxel (15, 11, 11): the
+    # voxels between, one per z step, not already set.
+    drawn = np.argwhere(result & ~before)
+    assert sorted(drawn[:, 0].tolist()) == [11, 12, 13]
+    assert set(map(tuple, drawn[:, 1:].tolist())) <= {(10, 10), (11, 11)}
+
+
+def test_the_link_cap_keeps_the_farthest_branches():
+    import numpy as np
+
+    from haemolynx.preprocessing.skeleton import _draw_hub_links
+
+    result, center, boundary = _two_branches_in_one_octant()
+    _draw_hub_links(result, center, boundary, max_connections_per_hub=1)
+
+    assert result[13, 10, 10] or result[13, 11, 11] or result[13, 10, 11] or result[13, 11, 10]
+    assert not (result[10, 12, 11] or result[10, 13, 11] or result[11, 12, 11] or result[11, 13, 12])

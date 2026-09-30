@@ -46,7 +46,7 @@ from .cartwheel_guard import (
     _spoke_direction_and_length,
     hub_radial_dispersion,
 )
-from .collapse import _patch_voxel_endpoint
+from .collapse import _patch_voxel_endpoint, _remeasure_length, move_node_with_its_edges
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ def _rewire_edges_deduplicating(
             neighbor = v if u == old_node else u
             if neighbor == new_node:
                 continue
-            patched = _patch_voxel_endpoint(data, old_pos, new_pos)
+            patched = _remeasure_length(_patch_voxel_endpoint(data, old_pos, new_pos))
             new_length = patched.get("length", float("inf"))
             existing = G.get_edge_data(new_node, neighbor) or {}
             if existing and neighbor not in protected_loop_neighbors:
@@ -186,7 +186,7 @@ def _rewire_edges_deduplicating(
             neighbor = v if u == old_node else u
             if neighbor == new_node:
                 continue
-            patched = _patch_voxel_endpoint(data, old_pos, new_pos)
+            patched = _remeasure_length(_patch_voxel_endpoint(data, old_pos, new_pos))
             if not G.has_edge(new_node, neighbor):
                 G.add_edge(new_node, neighbor, **patched)
             else:
@@ -314,7 +314,7 @@ def collapse_node_clusters_direction_aware(
             cluster_positions = np.array(
                 [G.nodes[n]["pos"] for n in group if "pos" in G.nodes[n]]
             )
-            G.nodes[rep]["pos"] = cluster_positions.mean(axis=0)
+            move_node_with_its_edges(G, rep, cluster_positions.mean(axis=0))
 
             # Neighbours rep already reaches by 2+ parallel edges before any
             # of this cluster's members are merged in -- a genuine loop, not

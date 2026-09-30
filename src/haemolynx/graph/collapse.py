@@ -12,6 +12,8 @@ import numpy as np
 import networkx as nx
 from scipy.spatial import cKDTree
 
+from ._helpers import calculate_path_length
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,6 +35,17 @@ def collapse_node_clusters(
 ) -> Union[nx.Graph, nx.MultiGraph]:
     """Collapse clusters of nodes that are within *distance_threshold* of each
     other into single representative nodes.
+
+    A cluster is bounded: its representative -- the highest-degree node still
+    unclaimed in a group of nodes linked by pairs closer than the threshold
+    -- takes the unclaimed nodes within *distance_threshold* of itself, and
+    the rest form clusters of their own. Taking whole linked groups instead
+    chained: a run of nodes 4 um apart along a vessel, however long, became
+    one node at its middle.
+
+    The representative moves to its cluster's centroid and every edge it
+    keeps, its own and the ones rewired onto it, is re-ended there and has its
+    ``length`` re-measured from its ``voxels``.
 
     Parameters
     ----------
@@ -83,38 +96,30 @@ def collapse_node_clusters(
         for component in nx.connected_components(proximity):
             if len(component) < 2:
                 continue
+            for cluster in _bounded_clusters(G, component, node_ids, coords, distance_threshold):
+                rep, others = cluster[0], cluster[1:]
 
-            cluster = [node_ids[i] for i in component]
-            # Ensure all cluster nodes still exist (earlier merge might have
-            # removed some).
-            cluster = [n for n in cluster if G.has_node(n)]
-            if len(cluster) < 2:
-                continue
+                if debug:
+                    logger.info(
+                        "Collapsing cluster of %d nodes %s -> representative %s",
+                        len(cluster),
+                        cluster,
+                        rep,
+                    )
 
-            rep = _pick_representative(G, cluster)
-            others = [n for n in cluster if n != rep]
-
-            if debug:
-                logger.info(
-                    "Collapsing cluster of %d nodes %s -> representative %s",
-                    len(cluster),
-                    cluster,
-                    rep,
+                # The representative sits at the cluster's centroid, taking
+                # the matching end of each of its own edges with it.
+                cluster_positions = np.array(
+                    [G.nodes[n]["pos"] for n in cluster if "pos" in G.nodes[n]]
                 )
+                move_node_with_its_edges(G, rep, cluster_positions.mean(axis=0))
 
-            # Update the representative position to the centroid of the
-            # cluster so it sits at a geometrically central location.
-            cluster_positions = np.array(
-                [G.nodes[n]["pos"] for n in cluster if "pos" in G.nodes[n]]
-            )
-            G.nodes[rep]["pos"] = cluster_positions.mean(axis=0)
-
-            for other in others:
-                if not G.has_node(other):
-                    continue
-                _rewire_edges(G, other, rep, is_multi, debug)
-                G.remove_node(other)
-                merged_this_iter += 1
+                for other in others:
+                    if not G.has_node(other):
+                        continue
+                    _rewire_edges(G, other, rep, is_multi, debug)
+                    G.remove_node(other)
+                    merged_this_iter += 1
 
         total_merged += merged_this_iter
         if debug:
@@ -150,23 +155,90 @@ def collapse_node_clusters(
     return G
 
 
+def _bounded_clusters(
+    G: Union[nx.Graph, nx.MultiGraph],
+    component: set,
+    node_ids: list,
+    coords: np.ndarray,
+    distance_threshold: float,
+) -> list[list]:
+    """Split one linked group of nearby nodes into clusters of bounded size.
+
+    Representatives are taken in :func:`_pick_representative`'s order
+    (highest degree, then lowest id); each takes every still-unclaimed node of
+    the group within *distance_threshold* of itself. Returns each cluster of
+    two or more with its representative first.
+    """
+    indices = [i for i in component if G.has_node(node_ids[i])]
+    order = sorted(indices, key=lambda i: (-G.degree(node_ids[i]), node_ids[i]))
+    unclaimed = set(indices)
+    clusters: list[list] = []
+    for leader in order:
+        if leader not in unclaimed:
+            continue
+        members = sorted(
+            j
+            for j in unclaimed
+            if float(np.linalg.norm(coords[j] - coords[leader])) <= float(distance_threshold)
+        )
+        unclaimed.difference_update(members)
+        if len(members) >= 2:
+            clusters.append([node_ids[leader]] + [node_ids[j] for j in members if j != leader])
+    return clusters
+
+
+def _remeasure_length(data: dict) -> dict:
+    """*data* with ``length`` measured from its ``voxels``, when it has a path."""
+    voxels = data.get("voxels")
+    if voxels is not None and len(voxels) >= 2:
+        data["length"] = float(calculate_path_length(voxels))
+    return data
+
+
+def move_node_with_its_edges(
+    G: Union[nx.Graph, nx.MultiGraph], node, new_pos
+) -> None:
+    """Move *node* to *new_pos*, taking the matching end of every edge on it
+    along, and re-measure each edge's ``length``.
+
+    Moving only the node leaves its edges' ``voxels`` ending where it used to
+    be, and their ``length`` measuring a path that no longer meets it.
+    """
+    old_pos = np.asarray(G.nodes[node].get("pos", new_pos), dtype=float)
+    new_pos = np.asarray(new_pos, dtype=float)
+    G.nodes[node]["pos"] = new_pos
+    if np.array_equal(old_pos, new_pos):
+        return
+    if G.is_multigraph():
+        edges = [(u, v, G[u][v][k]) for u, v, k in G.edges(node, keys=True)]
+    else:
+        edges = [(u, v, G[u][v]) for u, v in G.edges(node)]
+    for u, v, data in edges:
+        if u == v:
+            continue
+        patched = _remeasure_length(_patch_voxel_endpoint(data, old_pos, new_pos))
+        data.update(patched)
+
+
 def _patch_voxel_endpoint(data: dict, old_pos: np.ndarray, new_pos: np.ndarray) -> dict:
     """Return a shallow copy of *data* with the voxel path endpoint closest to
-    *old_pos* replaced by *new_pos* (as integer tuple)."""
+    *old_pos* replaced by *new_pos*.
+
+    Kept in microns as given: ``voxels`` are physical coordinates, and this
+    used to round the new endpoint to a whole micron -- up to 0.87 um off the
+    node it was meant to meet.
+    """
     data = dict(data)
     voxels = data.get("voxels")
     if not voxels or len(voxels) < 2:
         return data
 
-    new_voxel = tuple(np.round(new_pos).astype(int))
-    old_voxel = tuple(np.round(old_pos).astype(int))
-
+    old_pos = np.asarray(old_pos, dtype=float)
+    new_voxel = [float(v) for v in np.asarray(new_pos, dtype=float)]
     voxels = list(voxels)
-    start_key = tuple(np.round(np.asarray(voxels[0])).astype(int))
-    end_key = tuple(np.round(np.asarray(voxels[-1])).astype(int))
-
-    if start_key == old_voxel or np.linalg.norm(np.asarray(voxels[0], dtype=float) - old_pos) < \
-            np.linalg.norm(np.asarray(voxels[-1], dtype=float) - old_pos):
+    if np.linalg.norm(np.asarray(voxels[0], dtype=float) - old_pos) <= np.linalg.norm(
+        np.asarray(voxels[-1], dtype=float) - old_pos
+    ):
         voxels[0] = new_voxel
     else:
         voxels[-1] = new_voxel
@@ -193,7 +265,7 @@ def _rewire_edges(
             neighbor = v if u == old_node else u
             if neighbor == new_node:
                 continue
-            patched = _patch_voxel_endpoint(data, old_pos, new_pos)
+            patched = _remeasure_length(_patch_voxel_endpoint(data, old_pos, new_pos))
             G.add_edge(new_node, neighbor, **patched)
     else:
         edges = list(G.edges(old_node, data=True))
@@ -201,7 +273,7 @@ def _rewire_edges(
             neighbor = v if u == old_node else u
             if neighbor == new_node:
                 continue
-            patched = _patch_voxel_endpoint(data, old_pos, new_pos)
+            patched = _remeasure_length(_patch_voxel_endpoint(data, old_pos, new_pos))
             if not G.has_edge(new_node, neighbor):
                 G.add_edge(new_node, neighbor, **patched)
             else:

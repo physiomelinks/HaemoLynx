@@ -830,3 +830,135 @@ def test_the_raw_section_settings_are_off_by_default_and_follow_fwhm():
     }
     for name in ("raw_section_psf_sigma_xy_um", "raw_section_psf_sigma_z_um"):
         assert schema[name].default is None
+
+
+# --- one PSF for the raw image's widths; flagged FWHM widths step aside ---------
+
+
+def _fake_measurements(monkeypatch, tmp_path, *, fwhm_um=3.0, edt_um=None, flag_specks=False):
+    """Replace the heavy measurements with ones that record what they were
+    handed and write fixed widths; returns the record."""
+    import haemolynx.haemodynamics.apply as apply_module
+
+    seen: dict = {"fwhm_psf": [], "raw_psf": [], "raw_edges": []}
+
+    def fake_fwhm(G, **kwargs):
+        seen["fwhm_psf"].append(kwargs.get("profile_psf_sigma_zyx"))
+        for _u, _v, _key, data in G.edges(keys=True, data=True):
+            data["fwhm_diameter_um"] = fwhm_um
+            if flag_specks:
+                data["fwhm_in_speck_width_range"] = True
+        return {"edges_measured": G.number_of_edges(), "edges_skipped": []}
+
+    def fake_raw(G, **kwargs):
+        seen["raw_psf"].append(kwargs.get("psf_sigma_zyx"))
+        seen["raw_edges"].append(list(kwargs.get("edges") or []))
+        for edge in kwargs.get("edges") or []:
+            G.edges[edge]["raw_section_diameter_um"] = 5.5
+        return {"edges_measured": len(kwargs.get("edges") or []), "edges_skipped": []}
+
+    def fake_edt(G, _config, mask_volume=None):
+        for _u, _v, _key, data in G.edges(keys=True, data=True):
+            data["edt_diameter_um"] = edt_um
+        return {"edges_measured": G.number_of_edges(), "edges_skipped": []}
+
+    monkeypatch.setattr(apply_module.automated, "measure_edge_diameters_fwhm_from_raw_tiff", fake_fwhm)
+    monkeypatch.setattr(apply_module.raw_section, "measure_edge_diameters_from_raw_sections", fake_raw)
+    monkeypatch.setattr(apply_module, "_measure_edt_diameters", fake_edt)
+    monkeypatch.setattr(apply_module, "load_fwhm_raw_volume", lambda _c: np.zeros((2, 2, 2), np.float32))
+    monkeypatch.setattr(apply_module, "load_edt_mask_volume", lambda _c: np.zeros((2, 2, 2), bool))
+    raw_path = tmp_path / "raw.tif"
+    raw_path.write_bytes(b"x")
+    return seen, raw_path
+
+
+def _fwhm_config(raw_path, *, edt=False, **fwhm):
+    return HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": dict(DIAMETERS)},
+        fwhm={
+            "use_fwhm_edge_diameters": True,
+            "do_fwhm_measurement": True,
+            "fwhm_raw_tiff_path": raw_path,
+            "fwhm_decoy_check": False,
+            "use_raw_section_fallback": True,
+            **fwhm,
+        },
+        edt={"use_edt_diameter_crosscheck": edt, "edt_diameter_prefer_over_table_on_fwhm_failure": True},
+    )
+
+
+def test_fwhm_and_the_raw_section_fallback_share_one_image_psf(monkeypatch, tmp_path):
+    """FWHM fitted each profile's blur afresh while the raw-section fit, on
+    the same image, held one PSF: the two methods disagreed about what the
+    image's blur is."""
+    seen, raw_path = _fake_measurements(monkeypatch, tmp_path, fwhm_um=None)
+    graph = _network()
+
+    _graph, summary, _raw = assign_edge_diameters(
+        graph,
+        _fwhm_config(raw_path, raw_section_psf_sigma_xy_um=0.4, raw_section_psf_sigma_z_um=1.2),
+    )
+
+    assert seen["fwhm_psf"] == [(1.2, 0.4, 0.4)]
+    assert seen["raw_psf"] == [(1.2, 0.4, 0.4)]
+    assert graph.graph["fwhm_psf_sigma_zyx"] == (1.2, 0.4, 0.4)
+    assert summary["fwhm_psf"]["source"] == "settings"
+
+
+def test_fwhm_fits_each_profiles_blur_when_the_shared_psf_is_switched_off(monkeypatch, tmp_path):
+    seen, raw_path = _fake_measurements(monkeypatch, tmp_path)
+
+    assign_edge_diameters(
+        _network(),
+        _fwhm_config(
+            raw_path,
+            fwhm_fix_blur_to_image_psf=False,
+            raw_section_psf_sigma_xy_um=0.4,
+            raw_section_psf_sigma_z_um=1.2,
+        ),
+    )
+
+    assert seen["fwhm_psf"] == [None]
+
+
+def test_a_width_disagreeing_with_the_mask_goes_to_the_raw_section_fit(monkeypatch, tmp_path):
+    """Regression: the FWHM/EDT disagreement flag was written after the
+    diameters were chosen, so a width 3x the mask's own was modelled
+    regardless; now the edge is re-measured from its raw section first."""
+    seen, raw_path = _fake_measurements(monkeypatch, tmp_path, fwhm_um=3.0, edt_um=9.0)
+    graph = _network()
+
+    assign_edge_diameters(graph, _fwhm_config(raw_path, edt=True))
+
+    assert len(seen["raw_edges"][0]) == graph.number_of_edges()
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        assert data["fwhm_demoted"] == "edt_disagreement"
+        assert data["diameter_source"] == "raw_section"
+        assert data["diameter_um"] == pytest.approx(5.5)
+        assert data["fwhm_diameter_um"] == pytest.approx(3.0)  # kept for review
+
+
+def test_flagged_widths_are_modelled_as_before_when_demotion_is_off(monkeypatch, tmp_path):
+    seen, raw_path = _fake_measurements(monkeypatch, tmp_path, fwhm_um=3.0, edt_um=9.0)
+    graph = _network()
+
+    assign_edge_diameters(graph, _fwhm_config(raw_path, edt=True, fwhm_demote_flagged_edges=False))
+
+    assert seen["raw_edges"][0] == []
+    assert set(_sources(graph).values()) == {DIAMETER_SOURCE_MEASURED}
+
+
+def test_a_speck_width_steps_aside_for_the_next_source():
+    from haemolynx.haemodynamics.poiseuille import mark_fwhm_demotions
+
+    graph = _network()
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["fwhm_diameter_um"] = 1.5
+        data["edt_diameter_um"] = 6.0
+        data["fwhm_in_speck_width_range"] = True
+
+    counts = mark_fwhm_demotions(graph)
+    stamp_edge_diameters(graph, dict(DIAMETERS), use_edt_fallback=True)
+
+    assert counts == {"speck_width": graph.number_of_edges(), "edt_disagreement": 0}
+    assert set(_sources(graph).values()) == {DIAMETER_SOURCE_EDT}

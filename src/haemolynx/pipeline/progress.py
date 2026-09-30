@@ -146,6 +146,7 @@ STAGES: tuple[Stage, ...] = (
             "skeleton_max_bridge_distance",
             "skeleton_bridge_weight_by_segmentation",
             "skeleton_bridge_z_distance_weight",
+            "skeleton_bridge_min_facing_cosine",
             "skeleton_component_connectivity",
             "skeleton_min_component_percent",
             "skeleton_bundle_scan_size",
@@ -172,6 +173,7 @@ STAGES: tuple[Stage, ...] = (
             "cluster_collapse_max_radial_dispersion",
             "cluster_collapse_persistence_search_multiple",
             "min_stub_length",
+            "min_stub_length_radius_multiple",
             "save_step_artifacts",
             # Centreline smoothing is the last thing graph building does.
             "smooth_centrelines",
@@ -305,9 +307,13 @@ STAGE_FINISHED = "stage_finished"
 STAGE_FAILED = "stage_failed"
 #: A step *inside* a stage finished -- graph building's topology passes.
 STEP = "step"
+#: A stage is still busy inside one long call (ilastik, today) and has
+#: nothing new to show. Sent about every half second so a watcher can stop
+#: the run there; a display has nothing to change for it.
+HEARTBEAT = "heartbeat"
 
 #: Every kind an event can be, for a consumer that wants to check.
-KINDS: tuple[str, ...] = (STAGE_STARTED, STAGE_FINISHED, STAGE_FAILED, STEP)
+KINDS: tuple[str, ...] = (STAGE_STARTED, STAGE_FINISHED, STAGE_FAILED, STEP, HEARTBEAT)
 
 
 @dataclass(frozen=True)
@@ -390,6 +396,23 @@ class StageProgress:
             )
         )
         self._done += 1
+
+    def alive(self) -> None:
+        """Report that the stage is still working, with nothing new to show.
+
+        For a stage waiting on one long call: each call gives the watcher a
+        chance to stop the run (by raising from its callback) without the
+        stage having to know how a run is stopped.
+        """
+        self._run.emit(
+            ProgressEvent(
+                kind=HEARTBEAT,
+                stage=self._stage.call or "",
+                title=self._stage.title,
+                index=self._index,
+                total=self._run.total,
+            )
+        )
 
 
 class RunProgress:

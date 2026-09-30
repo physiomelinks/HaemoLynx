@@ -1053,7 +1053,7 @@ def test_a_bridge_past_the_distance_cap_is_left_disconnected():
         skeleton,
         thick,
         allowed,
-        min_arm_extent_voxels=0.0,
+        min_arm_extent_um=0.0,
         max_bridge_distance_um=10.0,
     )
 
@@ -1069,7 +1069,7 @@ def test_a_bridge_within_the_distance_cap_still_joins():
         skeleton,
         thick,
         allowed,
-        min_arm_extent_voxels=0.0,
+        min_arm_extent_um=0.0,
         max_bridge_distance_um=30.0,
     )
 
@@ -1081,7 +1081,7 @@ def test_no_cap_leaves_the_join_search_unbounded_as_before():
     skeleton, thick, allowed = _distant_arm_fixture(distance=20)
 
     joined = _join_thin_arms_to_fat_ridge(
-        skeleton, thick, allowed, min_arm_extent_voxels=0.0
+        skeleton, thick, allowed, min_arm_extent_um=0.0
     )
 
     _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
@@ -1160,7 +1160,7 @@ def test_bridge_radius_multiple_scales_with_the_local_fat_radius_not_a_fixed_con
         skeleton,
         thick,
         allowed,
-        min_arm_extent_voxels=0.0,
+        min_arm_extent_um=0.0,
         max_bridge_radius_multiple=multiplier,
     )
 
@@ -1182,7 +1182,7 @@ def test_bridge_radius_multiple_still_rejects_a_genuinely_far_arm():
         skeleton,
         thick,
         allowed,
-        min_arm_extent_voxels=0.0,
+        min_arm_extent_um=0.0,
         max_bridge_radius_multiple=multiplier,
     )
 
@@ -1239,7 +1239,7 @@ def test_bridge_cap_is_evaluated_in_physical_microns_not_raw_voxel_distance():
         thick,
         allowed,
         voxel_size_zyx=voxel_size_zyx,
-        min_arm_extent_voxels=0.0,
+        min_arm_extent_um=0.0,
         max_bridge_radius_multiple=multiplier,
     )
 
@@ -1305,7 +1305,7 @@ def test_local_fat_radius_is_smoothed_over_a_transient_narrow_waist():
         skeleton,
         thick,
         allowed,
-        min_arm_extent_voxels=0.0,
+        min_arm_extent_um=0.0,
         max_bridge_radius_multiple=multiplier,
         radius_smoothing_um=radius_smoothing_um,
     )
@@ -1330,7 +1330,7 @@ def test_radius_smoothing_disabled_falls_back_to_the_raw_single_point_sample():
         skeleton,
         thick,
         allowed,
-        min_arm_extent_voxels=0.0,
+        min_arm_extent_um=0.0,
         max_bridge_radius_multiple=multiplier,
         radius_smoothing_um=0.0,
     )
@@ -1389,7 +1389,7 @@ def test_join_fallback_stays_fast_in_a_large_image_with_unrelated_content():
 
     start = time.perf_counter()
     joined = _join_thin_arms_to_fat_ridge(
-        skeleton, thick, allowed, min_arm_extent_voxels=0.0
+        skeleton, thick, allowed, min_arm_extent_um=0.0
     )
     elapsed = time.perf_counter() - start
 
@@ -1433,7 +1433,7 @@ def test_length_filter_stays_scoped_when_thick_and_thin_span_most_of_the_image()
 
     start = time.perf_counter()
     joined = _join_thin_arms_to_fat_ridge(
-        skeleton, thick, mask, min_arm_extent_voxels=4.0
+        skeleton, thick, mask, min_arm_extent_um=4.0
     )
     elapsed = time.perf_counter() - start
 
@@ -1486,7 +1486,7 @@ def test_joining_many_arms_does_not_rescan_the_whole_image_per_arm():
 
     start = time.perf_counter()
     joined = _join_thin_arms_to_fat_ridge(
-        skeleton, thick, mask, min_arm_extent_voxels=0.0
+        skeleton, thick, mask, min_arm_extent_um=0.0
     )
     elapsed = time.perf_counter() - start
 
@@ -1645,3 +1645,95 @@ def test_path_through_mask_reuses_one_fallback_graph_across_several_arms():
         ), "path must be a real 26-connected walk, not a straight-line jump"
 
     assert build_calls["n"] == 1, "the graph must be built once, not once per arm"
+
+
+# --- flake filter in microns; the low-RAM option -------------------------------
+
+
+def _wall_with_two_arms(spacing):
+    """A fat slab with a ridge, one thin arm leaving along z and one along y,
+    each reaching 8 um beyond the fat wall on a 2 x 0.5 x 0.5 um grid (4 z
+    steps; 16 y steps)."""
+    shape = (12, 30, 40)
+    thick = np.zeros(shape, dtype=bool)
+    thick[0:4, 0:6, :] = True
+    ridge = np.zeros(shape, dtype=bool)
+    ridge[2, 3, :] = True
+    arm_z = np.zeros(shape, dtype=bool)
+    arm_z[4:8, 2, 10] = True
+    arm_y = np.zeros(shape, dtype=bool)
+    arm_y[1, 6:22, 30] = True
+    return ridge | arm_z | arm_y, thick, thick | arm_z | arm_y
+
+
+@pytest.mark.parametrize("extent_um, kept", [(6.0, True), (9.0, False)])
+def test_the_flake_filter_measures_an_arms_reach_in_microns(extent_um, kept):
+    """Regression: reach was a voxel count, so on a coarse-z stack an arm
+    leaving along z had to reach 4x further than one leaving in-plane. Two
+    arms reaching the same 8 um now fare the same, either way."""
+    spacing = (2.0, 0.5, 0.5)
+    skeleton, thick, allowed = _wall_with_two_arms(spacing)
+
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton, thick, allowed, voxel_size_zyx=spacing, min_arm_extent_um=extent_um
+    )
+
+    assert bool(joined[7, 2, 10]) is kept  # the z arm's tip
+    assert bool(joined[1, 21, 30]) is kept  # the y arm's tip
+
+
+def test_the_flake_filter_setting_reaches_the_join_in_microns(monkeypatch):
+    """skeleton_thick_vessel_flake_filter_um arrives as microns, not divided
+    into voxels of the finest axis first."""
+    import haemolynx.preprocessing.thick_vessels as thick_vessels_module
+
+    captured = []
+    real = thick_vessels_module._join_thin_arms_to_fat_ridge
+
+    def spy(*args, **kwargs):
+        captured.append(kwargs["min_arm_extent_um"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(thick_vessels_module, "_join_thin_arms_to_fat_ridge", spy)
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    spacing = (2.0, 0.5, 0.5)
+    skeletonize_thickness_gated(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=spacing, flake_filter_um=3.0
+    )
+    skeletonize_thickness_gated(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=spacing
+    )
+
+    assert captured[0] == pytest.approx(3.0)
+    assert captured[1] == pytest.approx(max(4.0 * 0.5, 0.75 * THICK_VESSEL_MIN_RADIUS_UM))
+
+
+@pytest.mark.parametrize("spacing", [(1.0, 1.0, 1.0), (1.5, 0.6, 0.6)])
+def test_the_low_ram_thickness_gated_skeleton_is_the_in_ram_one(tmp_path, monkeypatch, spacing):
+    """The low-RAM option takes the three volume-sized distance transforms a
+    block at a time on disk -- and changes nothing about the result."""
+    import haemolynx.preprocessing.pointwise_distance as pointwise
+
+    calls = []
+    real = pointwise.distance_transform_edt_blockwise
+
+    def counting(*args, **kwargs):
+        calls.append(np.shape(args[0]))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pointwise, "distance_transform_edt_blockwise", counting)
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    kwargs = dict(
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=spacing, return_thick_mask=True
+    )
+
+    plain, plain_thick = skeletonize_thickness_gated(mask, **kwargs)
+    assert calls == []
+    low_ram, low_ram_thick = skeletonize_thickness_gated(
+        mask, use_memmap=True, memmap_directory=tmp_path, **kwargs
+    )
+
+    assert len(calls) == 3  # radius map, wall distance, flake filter
+    assert np.array_equal(low_ram_thick, plain_thick)
+    assert np.array_equal(low_ram, plain)
+    assert not any(path.suffix == ".dat" for path in tmp_path.rglob("*")), "temporary files left behind"

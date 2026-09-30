@@ -147,6 +147,18 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="ilastik_reuse_existing_output",
+            kind="bool",
+            default=True,
+            help=(
+                "Skip ilastik when its output for an image already exists and "
+                "is newer than both the image and the project file, and use "
+                "that output. Turn off to segment again on every run"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            advanced=True,
+        ),
+        Setting(
             name="ilastik_output_dir",
             kind="path",
             default=f"{_OUTPUTS}/segmentations",
@@ -1898,6 +1910,21 @@ SCHEMA = Schema(
             unit="um",
             minimum=0.0,
         ),
+        Setting(
+            name="boundary_open_end_max_distance_um",
+            kind="float",
+            default=10.0,
+            help=(
+                "With edge_percent or degree_1_from_inlet, choose only terminals "
+                "within this distance of an image face -- vessels the image cut "
+                "through -- not dead ends inside the tissue, where no flow "
+                "enters or leaves. Leave empty to allow any terminal"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            unit="um",
+            minimum=0.0,
+            advanced=True,
+        ),
         # The coordinates below apply whenever a role's selection method is
         # "coordinates". They are empty by default because a coordinate is a
         # statement about one dataset: the previous default named six points in
@@ -2299,7 +2326,12 @@ SCHEMA = Schema(
             name="skeleton_max_bridge_distance",
             kind="int",
             default=4,
-            help="Reconnect skeleton fragments no further apart than this distance",
+            help=(
+                "Reconnect a skeleton fragment's branch end to another fragment "
+                "no further away than this, counted in voxels of the finest axis "
+                "and measured physically, so a gap along a coarse z axis counts "
+                "for its real length"
+            ),
             section=_PIPELINE_STAGES,
             unit="voxels",
             minimum=0,
@@ -2324,16 +2356,32 @@ SCHEMA = Schema(
             kind="float",
             default=1.0,
             help=(
-                "Multiplies the z-component of a gap distance before it is "
-                "compared to skeleton_max_bridge_distance -- z and xy "
-                "voxels otherwise count equally regardless of actual voxel "
-                "size. Above 1.0 discourages bridging mostly through z "
-                "relative to xy; below 1.0 does the reverse; 1.0 leaves z "
-                "and xy voxels equally weighted"
+                "Multiplies the z-component of a gap distance, on top of the "
+                "physical voxel size, before it is compared to "
+                "skeleton_max_bridge_distance. Above 1.0 discourages bridging "
+                "mostly through z; below 1.0 does the reverse; 1.0 measures "
+                "plain microns"
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
             requires=("do_skeletonize",),
+        ),
+        Setting(
+            name="skeleton_bridge_min_facing_cosine",
+            kind="float",
+            default=0.5,
+            help=(
+                "Only bridge from a fragment's branch end toward something "
+                "roughly ahead of it: the cosine of the largest angle allowed "
+                "between the end's direction and the bridge (0.5 is 60 "
+                "degrees). Stops side-by-side vessels being cross-linked; -1 "
+                "allows any direction"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=-1.0,
+            maximum=1.0,
+            requires=("do_skeletonize",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_component_connectivity",
@@ -2369,9 +2417,30 @@ SCHEMA = Schema(
             name="min_stub_length",
             kind="float",
             default=10.0,
-            help="Prune terminal stubs shorter than this length",
+            help=(
+                "Prune terminal stubs shorter than this length, wherever the "
+                "stub is not judged by its parent vessel's radius instead (see "
+                "min_stub_length_radius_multiple). A stub ending at an image "
+                "face is kept -- that is a vessel the image cut through"
+            ),
             section=_PIPELINE_STAGES,
             unit="um",
+            minimum=0.0,
+            requires=("do_graph_building",),
+        ),
+        Setting(
+            name="min_stub_length_radius_multiple",
+            kind="float",
+            default=1.5,
+            help=(
+                "Prune a terminal stub shorter than this many radii of the "
+                "vessel it branches from, read from the segmented mask: a "
+                "skeleton spur on a wide vessel is about as long as the vessel "
+                "is thick, and one fixed length removes those or real short "
+                "capillary ends, never just the spurs. 0 uses min_stub_length "
+                "for every stub"
+            ),
+            section=_PIPELINE_STAGES,
             minimum=0.0,
             requires=("do_graph_building",),
         ),
@@ -2860,7 +2929,9 @@ SCHEMA = Schema(
             default=1.0,
             help=(
                 "How far a smoothed centreline may sit from the skeleton before it "
-                "is blended back towards the original"
+                "is blended back towards the original. Widened per vessel to half "
+                "the voxel diagonal (a voxel staircase's own scale) and to half "
+                "the vessel's radius, when either is larger"
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
@@ -4365,10 +4436,40 @@ SCHEMA = Schema(
             help=(
                 "After measuring, copy a sample of the measured vessels into vessel-free tissue "
                 "and measure them again: reports how often FWHM gives texture a width, and flags "
-                "every FWHM width in the range it reads there. Changes no diameter"
+                "every FWHM width in the range it reads there (see "
+                "fwhm_demote_flagged_edges for what a flag then does)"
             ),
             section=_FWHM,
             requires=("use_fwhm_edge_diameters", "do_fwhm_measurement"),
+        ),
+        Setting(
+            name="fwhm_demote_flagged_edges",
+            kind="bool",
+            default=True,
+            help=(
+                "Do not model a vessel with an FWHM width the run's own checks flag -- "
+                "one in the decoy check's speck-width range, or one disagreeing with "
+                "the mask's own width past edt_fwhm_disagreement_warn_ratio -- but "
+                "go on to the next diameter source (raw section, mask, table). The "
+                "FWHM width stays on the vessel for review"
+            ),
+            section=_FWHM,
+            requires=("use_fwhm_edge_diameters", "do_fwhm_measurement"),
+        ),
+        Setting(
+            name="fwhm_fix_blur_to_image_psf",
+            kind="bool",
+            default=True,
+            help=(
+                "Hold each profile's blur at the image's own PSF -- the raw-section "
+                "PSF settings when set, else estimated from the image's wide "
+                "vessels, as the raw-section fallback does -- instead of fitting it "
+                "again in every profile. Falls back to per-profile fitting when too "
+                "few wide vessels show their blur"
+            ),
+            section=_FWHM,
+            requires=("use_fwhm_edge_diameters", "do_fwhm_measurement"),
+            advanced=True,
         ),
         Setting(
             name="fwhm_decoy_check_sample_size",

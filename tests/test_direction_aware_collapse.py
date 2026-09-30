@@ -10,6 +10,8 @@ import math
 
 import numpy as np
 import networkx as nx
+
+from haemolynx.graph._helpers import calculate_path_length
 import pytest
 
 from haemolynx.graph.cartwheel_guard import detect_cartwheel_hubs
@@ -148,15 +150,19 @@ def test_two_cluster_members_reaching_the_same_neighbour_keep_only_the_shorter_e
     G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
     G.add_node(1, pos=np.array([1.0, 0.0, 0.0]))
     G.add_node(2, pos=np.array([20.0, 0.0, 0.0]))
-    G.add_edge(0, 2, length=20.0, voxels=[[0, 0, 0], [20, 0, 0]])
-    G.add_edge(1, 2, length=19.2, voxels=[[1, 0, 0], [20, 0, 0]])
+    # Lengths are what the paths measure: the representative's own edge takes
+    # a detour, the member's runs straight.
+    G.add_edge(0, 2, length=20.9, voxels=[[0, 0, 0], [10, 3, 0], [20, 0, 0]])
+    G.add_edge(1, 2, length=19.0, voxels=[[1, 0, 0], [20, 0, 0]])
 
     out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
 
     assert out.number_of_nodes() == 2
     assert out.number_of_edges() == 1
     remaining = list(out.edges(data=True))[0][2]
-    assert remaining["length"] == pytest.approx(19.2)
+    # The straight path, now starting at the merged node's centroid (0.5, 0, 0).
+    assert len(remaining["voxels"]) == 2
+    assert remaining["length"] == pytest.approx(19.5)
 
 
 def test_a_genuine_pre_existing_loop_survives_a_merged_members_shorter_edge():
@@ -172,17 +178,26 @@ def test_a_genuine_pre_existing_loop_survives_a_merged_members_shorter_edge():
     G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
     G.add_node(1, pos=np.array([1.0, 0.0, 0.0]))
     G.add_node(99, pos=np.array([20.0, 0.0, 0.0]))
-    G.add_edge(0, 99, length=8.0, voxels=[[0, 0, 0], [20, 0, 0]])
-    G.add_edge(0, 99, length=12.0, voxels=[[0, 0, 0], [20, 0, 0]])
-    G.add_edge(1, 99, length=5.0, voxels=[[1, 0, 0], [20, 0, 0]])
+    # Two genuine, differently shaped loop paths, and a straighter one from
+    # the member; lengths are what the paths measure.
+    loop_a = [[0, 0, 0], [10, 2, 0], [20, 0, 0]]
+    loop_b = [[0, 0, 0], [10, 6, 0], [20, 0, 0]]
+    G.add_edge(0, 99, length=20.4, voxels=loop_a)
+    G.add_edge(0, 99, length=23.3, voxels=loop_b)
+    G.add_edge(1, 99, length=19.0, voxels=[[1, 0, 0], [20, 0, 0]])
 
     out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
 
     assert out.number_of_nodes() == 2  # 0 and 1 merged into one representative
     lengths = sorted(data["length"] for _, _, data in out.edges(0, data=True))
-    assert lengths == pytest.approx([5.0, 8.0, 12.0]), (
-        "both genuine pre-existing edges (8, 12) must survive alongside the "
-        "merged member's edge (5), none of them deleted"
+    moved = [0.5, 0.0, 0.0]  # the merged node's centroid
+    expected = sorted(
+        calculate_path_length(path)
+        for path in ([moved] + loop_a[1:], [moved] + loop_b[1:], [moved, [20, 0, 0]])
+    )
+    assert lengths == pytest.approx(expected), (
+        "both genuine pre-existing edges must survive alongside the merged "
+        "member's shorter edge, none of them deleted"
     )
 
 

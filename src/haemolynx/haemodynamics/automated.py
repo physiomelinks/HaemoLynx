@@ -893,8 +893,15 @@ def _lumen_fwhm_fit_with_diagnostics(
     profile_baseline_wing_fraction: float = 0.2,
     constrain_fitted_baseline: bool = False,
     baseline_constraint_half_width_ptp: float = 0.35,
+    blur_sigma_um: float | None = None,
 ) -> tuple[float | None, float | None, float | None]:
     """``(fwhm_um, fitted_center_um, fit_r2)`` from a blurred-lumen fit.
+
+    *blur_sigma_um*, when given, is the image's own blur along this profile
+    (the PSF projected onto the line), and the fit holds it there rather than
+    fitting it again in every profile: blur is a property of the microscope,
+    not of one vessel, and a narrow vessel's width and blur trade off against
+    each other in a single noisy profile.
 
     A plasma-labelled vessel is a filled column, not a Gaussian: across a
     wide one the profile is a flat top with blurred edges. A Gaussian fitted
@@ -976,10 +983,22 @@ def _lumen_fwhm_fit_with_diagnostics(
         dtype=float,
     )
     p0 = np.clip(np.array([b0, amp0, x0_guess, w0, s0], dtype=float), lo, hi)
+    fixed_sigma = (
+        float(blur_sigma_um)
+        if blur_sigma_um is not None and np.isfinite(blur_sigma_um) and blur_sigma_um > 0
+        else None
+    )
     try:
-        popt, _ = curve_fit(
-            _blurred_lumen_1d, x, y, p0=p0, bounds=(lo, hi), maxfev=50000
-        )
+        if fixed_sigma is None:
+            popt, _ = curve_fit(
+                _blurred_lumen_1d, x, y, p0=p0, bounds=(lo, hi), maxfev=50000
+            )
+        else:
+            popt4, _ = curve_fit(
+                lambda xs, b, a, c, w: _blurred_lumen_1d(xs, b, a, c, w, fixed_sigma),
+                x, y, p0=p0[:4], bounds=(lo[:4], hi[:4]), maxfev=50000,
+            )
+            popt = np.append(popt4, fixed_sigma)
     except (RuntimeError, ValueError):
         return None, None, None
     baseline_fit, amplitude_fit, x0_fit, width_fit, sigma_fit = (float(v) for v in popt)
@@ -1375,6 +1394,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     edge_diameter_aggregation: Literal["median", "mean"] = "median",
     min_accepted_samples: int = 1,
     profile_model: ProfileModel = "blurred_lumen",
+    profile_psf_sigma_zyx: tuple[float, float, float] | None = None,
     longitudinal_average_um: float = 4.0,
     min_diameter_pixels: float = 2.0,
     clip_decision_smoothing_um: float | None = None,
@@ -1585,6 +1605,12 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         ``"gaussian"``: the previous Gaussian fit, which reads a wide
         plasma-filled vessel about 10% narrow and often cannot fit its flat
         top at all.
+    profile_psf_sigma_zyx :
+        The image's blur ``(sigma_z, sigma_y, sigma_x)`` in microns (e.g. from
+        :func:`haemolynx.haemodynamics.raw_section.estimate_psf_sigma`). With
+        ``profile_model="blurred_lumen"`` each profile's blur is then held at
+        this PSF projected onto its line instead of being fitted again per
+        profile; ``None`` (default) fits it per profile.
     longitudinal_average_um :
         Average each transverse profile over this length along the vessel
         before fitting (see :func:`_sample_transverse_profile`). 0 reads a
@@ -1655,6 +1681,9 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         if clip_decision_smoothing_um is None
         else float(clip_decision_smoothing_um)
     )
+    # Not at module level: sections imports from this module.
+    from .sections import projected_sigma
+
     if profile_model == "blurred_lumen":
         fit_profile = _lumen_fwhm_fit_with_diagnostics
     elif profile_model == "gaussian":
@@ -1872,6 +1901,11 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                 tangent = _tangent_at(poly, s, float(s0))
                 n_hat = _transverse_unit_for_mode(tangent, transverse_sampling_mode)
                 sample_out_of_plane_fraction = _out_of_plane_fraction(tangent)
+                fixed_blur = (
+                    {"blur_sigma_um": projected_sigma(n_hat, profile_psf_sigma_zyx)}
+                    if profile_psf_sigma_zyx is not None and profile_model == "blurred_lumen"
+                    else {}
+                )
 
                 def _capped_initial_half_extent(half_extent: float, local_arc_window: float) -> float:
                     """`half_extent`, further capped by the nearest non-local
@@ -1972,6 +2006,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                         profile_baseline_wing_fraction=profile_baseline_wing_fraction,
                         constrain_fitted_baseline=constrain_fitted_baseline,
                         baseline_constraint_half_width_ptp=baseline_constraint_half_width_ptp,
+                        **fixed_blur,
                     )
                     if d is None or d < min_diameter_um:
                         return None, None, None, None, False

@@ -158,3 +158,72 @@ def test_ilastik_timeout_setting_reaches_the_subprocess_call(tmp_path, monkeypat
     segment(settings)
 
     assert seen.get("timeout") == 42.0
+
+
+def test_ilastik_reuse_setting_reaches_the_call_and_defaults_on(tmp_path, monkeypatch):
+    """A current segmentation is reused unless the user asks for a new one."""
+    from haemolynx import io
+
+    raw = a_segmented_tiff(tmp_path)
+    produced = tmp_path / "segmentations" / "mask_segmented.tif"
+    produced.parent.mkdir()
+    produced.write_bytes(raw.read_bytes())
+    seen = []
+
+    def fake_run(**kwargs):
+        seen.append(kwargs)
+        return produced
+
+    monkeypatch.setattr(io, "run_ilastik_headless_segmentation", fake_run)
+    common = dict(
+        use_ilastik_segmentation=True,
+        input_path=None,
+        ilastik_unsegmented_image_path=raw,
+        ilastik_classifier_path=tmp_path / "classifier.ilp",
+        ilastik_output_dir=tmp_path / "segmentations",
+    )
+
+    segment(settings_for(tmp_path, **common))
+    segment(settings_for(tmp_path, ilastik_reuse_existing_output=False, **common))
+
+    assert [call["reuse_existing"] for call in seen] == [True, False]
+
+
+def test_a_stop_during_ilastik_arrives_through_the_stage_heartbeat(tmp_path, monkeypatch):
+    """The progress callback is the only way a watcher can stop a run, and
+    ilastik is one long call: the stage hands it a heartbeat to poll."""
+    from haemolynx import io
+    from haemolynx.pipeline.progress import HEARTBEAT, RunProgress
+
+    raw = a_segmented_tiff(tmp_path)
+
+    def fake_run(**kwargs):
+        for _ in range(10):
+            kwargs["poll"]()
+        raise AssertionError("the stop was not honoured")
+
+    monkeypatch.setattr(io, "run_ilastik_headless_segmentation", fake_run)
+    kinds = []
+
+    class Stopped(Exception):
+        pass
+
+    def watcher(event):
+        kinds.append(event.kind)
+        if kinds.count(HEARTBEAT) == 2:
+            raise Stopped()
+
+    settings = settings_for(
+        tmp_path,
+        use_ilastik_segmentation=True,
+        input_path=None,
+        ilastik_unsegmented_image_path=raw,
+        ilastik_classifier_path=tmp_path / "classifier.ilp",
+        ilastik_output_dir=tmp_path / "segmentations",
+    )
+    run = RunProgress(watcher)
+    with pytest.raises(Stopped):
+        with run.stage("segment") as segmenting:
+            segment(settings, progress=segmenting)
+
+    assert kinds.count(HEARTBEAT) == 2

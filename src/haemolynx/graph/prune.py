@@ -1,12 +1,14 @@
 """Prune short terminal stubs from vascular graph."""
 import logging
-from typing import Tuple, Union
+from typing import Any, Callable, Optional, Sequence, Tuple, Union
 
 import networkx as nx
+import numpy as np
 
 from ._helpers import calculate_edge_length
 
 logger = logging.getLogger(__name__)
+
 
 def prune_vascular_stubs(
     G: Union[nx.Graph, nx.MultiGraph],
@@ -14,20 +16,57 @@ def prune_vascular_stubs(
     max_iterations: int = 100,
     debug: bool = False,
     voxel_size: Tuple[float, float, float] = (1, 1, 1),
+    *,
+    radius_at: Optional[Callable[[np.ndarray], float]] = None,
+    radius_multiple: float = 0.0,
+    image_extent_um: Optional[Sequence[float]] = None,
 ) -> Union[nx.Graph, nx.MultiGraph]:
-    """Iteratively remove short terminal stubs until convergence."""
+    """Iteratively remove short terminal stubs until convergence.
+
+    A stub is a terminal node's edge; it is removed when shorter than its
+    threshold. With *radius_at* (the vessel radius, in microns, at a
+    position) and a positive *radius_multiple*, the threshold is that many
+    radii of the vessel the stub leaves -- read at the junction it hangs from
+    -- so a skeleton spur on a wide vessel, as long as that vessel is thick,
+    goes, while a real short capillary end survives; one fixed length could
+    only ever do one of the two. *min_stub_length* is the threshold wherever
+    no radius can be read.
+
+    With *image_extent_um* (the image's ``(z, y, x)`` extent in microns, node
+    positions running from 0 to it), a terminal no further from an image face
+    than its own threshold is kept: that is a vessel the image cut through --
+    exactly the open ends inlets and outlets are chosen from -- not a spur.
+    """
     if min_stub_length < 0:
         raise ValueError("min_stub_length must be non-negative")
     if max_iterations <= 0:
         raise ValueError("max_iterations must be positive")
     if len(voxel_size) != 3:
         raise ValueError("voxel_size must be a 3-tuple")
+    if radius_multiple < 0:
+        raise ValueError("radius_multiple must be non-negative")
 
     G_pruned = G.copy()
     if G_pruned.number_of_nodes() == 0:
         return G_pruned
 
+    extent = None if image_extent_um is None else np.asarray(image_extent_um, dtype=float)
+
+    def threshold_for(junction: Any) -> float:
+        if radius_at is not None and radius_multiple > 0 and "pos" in G_pruned.nodes[junction]:
+            radius = float(radius_at(np.asarray(G_pruned.nodes[junction]["pos"], dtype=float)))
+            if radius > 0:
+                return radius_multiple * radius
+        return float(min_stub_length)
+
+    def at_an_image_face(node: Any, threshold: float) -> bool:
+        if extent is None or "pos" not in G_pruned.nodes[node]:
+            return False
+        position = np.asarray(G_pruned.nodes[node]["pos"], dtype=float)
+        return float(np.min(np.minimum(position, extent - position))) <= threshold
+
     total_removed = 0
+    protected: set = set()
     iteration = 0
 
     while iteration < max_iterations:
@@ -61,7 +100,11 @@ def prune_vascular_stubs(
                     edge_length = calculate_edge_length(
                         node, neighbor, edge_data, voxel_size
                     )
-                if edge_length < min_stub_length:
+                threshold = threshold_for(neighbor)
+                if edge_length < threshold and at_an_image_face(node, threshold):
+                    protected.add(node)
+                    continue
+                if edge_length < threshold:
                     nodes_to_remove.append(node)
                     if debug:
                         logger.debug(
@@ -88,9 +131,17 @@ def prune_vascular_stubs(
                 logger.debug(f"Convergence reached after {iteration} iterations")
             break
 
+    kept_at_faces = sum(1 for node in protected if node in G_pruned)
     logger.info(
-        "Pruning complete: removed %d terminal stubs, graph now has %d nodes / %d edges",
+        "Pruning complete: removed %d terminal stubs (%s), kept %d short one(s) "
+        "at an image face, graph now has %d nodes / %d edges",
         total_removed,
+        (
+            f"threshold {radius_multiple:g} x the parent vessel's radius"
+            if radius_at is not None and radius_multiple > 0
+            else f"threshold {float(min_stub_length):g} um"
+        ),
+        kept_at_faces,
         G_pruned.number_of_nodes(),
         G_pruned.number_of_edges(),
     )

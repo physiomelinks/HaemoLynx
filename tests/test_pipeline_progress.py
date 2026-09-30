@@ -630,6 +630,9 @@ def _recording_stages(monkeypatch):
     calls: dict[str, dict] = {}
 
     def segment(settings, **kwargs):
+        # The stage's own reporter (for ilastik's heartbeat) is always passed;
+        # what these tests check is which segmented image a resume hands on.
+        assert kwargs.pop("progress") is not None
         calls["segment"] = kwargs
         return SimpleNamespace(image_path=kwargs.get("segmented_path"))
 
@@ -739,3 +742,44 @@ def test_a_resume_reuses_ilastiks_existing_output_instead_of_segmenting_again(
         resume=PipelineResume(start_from="assign_diameters", graph=nx.MultiGraph()),
     )
     assert calls["segment"] == {"segmented_path": None}  # nothing to reuse: segment
+
+
+# --- heartbeats ----------------------------------------------------------------
+
+
+def test_a_heartbeat_names_its_stage_and_is_a_known_kind():
+    from haemolynx.pipeline.progress import HEARTBEAT
+
+    events = []
+    run = RunProgress(events.append)
+    with run.stage("segment") as segmenting:
+        segmenting.alive()
+
+    (beat,) = [event for event in events if event.kind == HEARTBEAT]
+    assert HEARTBEAT in KINDS
+    assert beat.stage == "segment"
+    assert beat.step is None and beat.step_index is None
+    assert segmenting.steps_done == 0
+
+
+def test_log_progress_says_nothing_for_a_heartbeat(caplog):
+    import logging
+
+    from haemolynx.pipeline.progress import HEARTBEAT
+
+    event = ProgressEvent(kind=HEARTBEAT, stage="segment", title="1. Input", index=0, total=9)
+    with caplog.at_level(logging.DEBUG):
+        log_progress(event)
+    assert caplog.records == []
+
+
+def test_the_bars_do_not_move_for_a_heartbeat():
+    from haemolynx.gui.progress import ProgressDisplay
+    from haemolynx.pipeline.progress import HEARTBEAT, STAGE_STARTED
+
+    display = ProgressDisplay()
+    display.start()
+    display.update(ProgressEvent(kind=STAGE_STARTED, stage="segment", title="1. Input", index=0, total=9))
+    before = (display.stages, display.steps)
+    display.update(ProgressEvent(kind=HEARTBEAT, stage="segment", title="1. Input", index=0, total=9))
+    assert (display.stages, display.steps) == before

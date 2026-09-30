@@ -17,6 +17,10 @@ decides which raw skeleton every later sweep even sees, then min-branch-length,
 bundle refinement, closing, gap-bridging, and finally
 component-connectivity/filtering -- so that at every sweep, "everything not
 yet decided" really is what the real pipeline call would still use by default.
+One exception: ``preprocess_skeleton_for_graph`` applies min-branch-length
+*after* bridging (a short piece of a broken vessel is joined before it can be
+filtered), but it is still swept first here -- every sweep runs the whole
+real call, so the order only decides which setting is fixed first.
 The graph-side settings (reconnect thresholds, cluster collapse, stub
 pruning, centreline smoothing) run afterwards, each on the single
 already-decided skeleton or graph the previous sweep produced.
@@ -129,6 +133,7 @@ GRAPH_SETTING_NAMES: tuple[str, ...] = (
     "cluster_collapse_max_radial_dispersion",
     "cluster_collapse_persistence_search_multiple",
     "min_stub_length",
+    "min_stub_length_radius_multiple",
     "smooth_centrelines",
     "centreline_smoothing_method",
     "centreline_smoothing_iterations",
@@ -458,6 +463,12 @@ def _skeleton_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
         bundle_hub_min_spacing=int(settings["skeleton_bundle_hub_min_spacing"]),
         bridge_weight_by_segmentation=bool(settings["skeleton_bridge_weight_by_segmentation"]),
         bridge_z_distance_weight=float(settings["skeleton_bridge_z_distance_weight"]),
+        bridge_min_facing_cosine=float(
+            settings.get(
+                "skeleton_bridge_min_facing_cosine",
+                preprocessing.skeleton.DEFAULT_BRIDGE_MIN_FACING_COSINE,
+            )
+        ),
     )
 
 
@@ -743,7 +754,10 @@ class _Search(_SweepBookkeeping):
     def _preprocess_trial(self, overrides: Mapping[str, Any]) -> np.ndarray:
         settings = {**self.current, **overrides}
         return preprocessing.preprocess_skeleton_for_graph(
-            self.raw_skeleton, segmentation_mask=self.raw_mask, **_skeleton_kwargs(settings)
+            self.raw_skeleton,
+            segmentation_mask=self.raw_mask,
+            voxel_size_zyx=self.voxel_size_zyx,
+            **_skeleton_kwargs(settings),
         )
 
     def _connectivity(self) -> Optional[int]:
@@ -1392,6 +1406,17 @@ class _Search(_SweepBookkeeping):
             z_distance_weight=float(self.current["skeleton_bridge_z_distance_weight"]),
         )
 
+    def _gap_distances_finest_voxels(self) -> np.ndarray:
+        """Gaps in the unit ``skeleton_max_bridge_distance`` is compared in:
+        physical distance, counted in voxels of the finest axis."""
+        spacing = np.asarray(self.voxel_size_zyx, dtype=float)
+        return preprocessing.inter_component_gap_distances(
+            self.current_skeleton,
+            self._connectivity(),
+            voxel_size_zyx=tuple(spacing / float(spacing.min())),
+            z_distance_weight=float(self.current["skeleton_bridge_z_distance_weight"]),
+        )
+
     def _fusion_cost(self, cleaned: np.ndarray) -> float:
         signal = met.gap_vs_fusion_signal(
             self.current_skeleton, cleaned, voxel_size_zyx=self.voxel_size_zyx,
@@ -1440,7 +1465,7 @@ class _Search(_SweepBookkeeping):
         # stage").
         self._fusion_baseline_coverage = self._skeleton_mask_coverage_fraction(self.current_skeleton)
 
-        gaps = self._gap_distances_voxels()
+        gaps = self._gap_distances_finest_voxels()
         max_distance_candidates = cand.max_bridge_distance_candidates(
             gaps, int(self.current["skeleton_max_bridge_distance"])
         )
@@ -1503,8 +1528,22 @@ class _Search(_SweepBookkeeping):
         self.current_skeleton = self._preprocess_trial({})
 
     # -- group 7: reconnect thresholds -------------------------------------------------
+    def _stub_radius_sampler(self):
+        """The mask's radius at a position, built once for every graph this
+        search builds (see ``graph.assemble.mask_radius_sampler``)."""
+        cached = getattr(self, "_stub_radius_at", None)
+        # Rebuilt if segmentation cleanup has since replaced the mask.
+        if cached is None or cached[0] is not self.raw_mask:
+            cached = (
+                self.raw_mask,
+                graph_mod.assemble.mask_radius_sampler(self.raw_mask, self.voxel_size_zyx, 1.0),
+            )
+            self._stub_radius_at = cached
+        return cached[1]
+
     def _build_graph(self, overrides: Mapping[str, Any]):
         settings = {**self.current, **overrides}
+        radius_multiple = float(settings.get("min_stub_length_radius_multiple", 0.0) or 0.0)
         return graph_mod.build_graph_from_skeleton(
             self.current_skeleton,
             voxel_size=self.voxel_size_zyx,
@@ -1512,6 +1551,8 @@ class _Search(_SweepBookkeeping):
             final_orphan_reconnect_threshold=float(settings["final_orphan_reconnect_threshold"]),
             cluster_collapse_distance=float(settings["cluster_collapse_distance"]),
             min_stub_length=float(settings["min_stub_length"]),
+            min_stub_length_radius_multiple=radius_multiple,
+            stub_radius_at=self._stub_radius_sampler() if radius_multiple > 0 else None,
             cluster_collapse_method=str(settings["cluster_collapse_method"]),
             cluster_collapse_max_radial_dispersion=float(settings["cluster_collapse_max_radial_dispersion"]),
             cluster_collapse_persistence_search_multiple=float(
@@ -1672,16 +1713,27 @@ class _Search(_SweepBookkeeping):
         # own comment). `_MAX_GRAPH_LENGTH_REMOVED_FRACTION` below is the
         # existing, purpose-built guard against removing too much.
         group = "min_stub_length"
-        terminal_lengths = cand.terminal_edge_lengths_um(self.current_graph)
-        candidate_values = cand.min_stub_length_candidates(
-            terminal_lengths, float(self.current["min_stub_length"])
+        # Whichever threshold a real run would judge stubs by: a multiple of
+        # the parent vessel's radius when that is on, else the fixed length.
+        by_radius = float(self.current.get("min_stub_length_radius_multiple", 0.0) or 0.0) > 0
+        setting = "min_stub_length_radius_multiple" if by_radius else "min_stub_length"
+        if by_radius:
+            candidate_values = sorted(
+                {0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, float(self.current[setting])}
+            )
+        else:
+            terminal_lengths = cand.terminal_edge_lengths_um(self.current_graph)
+            candidate_values = cand.min_stub_length_candidates(
+                terminal_lengths, float(self.current["min_stub_length"])
+            )
+        unpruned = self._build_graph(
+            {"min_stub_length": 0.0, "min_stub_length_radius_multiple": 0.0}
         )
-        unpruned = self._build_graph({"min_stub_length": 0.0})
         baseline_nodes = unpruned.number_of_nodes()
         baseline_length = met.total_edge_length(unpruned)
 
         def cost(value: float) -> float:
-            G = self._build_graph({"min_stub_length": value})
+            G = self._build_graph({setting: value})
             stubs_removed = max(0, baseline_nodes - G.number_of_nodes())
             length_removed = max(0.0, baseline_length - met.total_edge_length(G))
             if baseline_length > 0 and length_removed / baseline_length > _MAX_GRAPH_LENGTH_REMOVED_FRACTION:
@@ -1690,7 +1742,7 @@ class _Search(_SweepBookkeeping):
                 return 0.0
             return -(stubs_removed / length_removed)
 
-        self._sweep(group, "min_stub_length", candidate_values, cost)
+        self._sweep(group, setting, candidate_values, cost)
         self.current_graph = self._build_graph({})
 
     # -- group 10: centreline smoothing ------------------------------------------------

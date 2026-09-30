@@ -50,6 +50,7 @@ covariance case.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +63,7 @@ from scipy.ndimage import (
     find_objects,
     gaussian_filter,
     label,
+    maximum_filter,
 )
 from scipy.spatial import cKDTree
 from skimage.feature import peak_local_max
@@ -93,7 +95,22 @@ __all__ = [
     "clean_segmented_mask_for_skeletonisation",
 ]
 
+logger = logging.getLogger(__name__)
+
 _STRUCTURE_26 = np.ones((3, 3, 3), dtype=bool)
+
+
+def _log_step_stats(step: str, stats: dict[str, Any]) -> None:
+    """One line saying what a cleanup step did: its counts, then why it
+    declined what it declined, most common reason first."""
+    counts = ", ".join(
+        f"{key}={value}" for key, value in stats.items() if key != "rejected_reasons"
+    )
+    reasons = sorted(
+        (stats.get("rejected_reasons") or {}).items(), key=lambda item: (-item[1], item[0])
+    )
+    declined = ", ".join(f"{reason} x{count}" for reason, count in reasons) or "none"
+    logger.info("Segmentation cleanup, %s: %s; declined: %s.", step, counts, declined)
 
 
 def _morphology(
@@ -201,75 +218,200 @@ def _top_two_eigen_3x3(
     return (eigval0, axis0), (eigval1, axis1)
 
 
-def _component_descriptors(
-    *, labeled: np.ndarray, count: int, edt_inside: np.ndarray
-) -> dict[int, dict[str, Any]]:
-    """Per labeled component: centroid, PCA principal axis, a "linearity"
-    (cylindricality) score, the two endpoints along that axis, and a median
-    local radius in physical microns.
+#: Farthest-point extremities examined per component as candidate tips: two
+#: for a straight or curved fragment's ends, more for a branched one's.
+_MAX_TIPS_PER_COMPONENT = 6
+#: At most this many voxels of one component take part in the farthest-point
+#: search (every n-th voxel beyond it); each extremity is then refined in its
+#: own neighbourhood, so the subsampling only decides roughly where to look.
+_TIP_SEARCH_MAX_POINTS = 200_000
+#: A tip's neighbourhood reaches this many local radii back into its
+#: component: far enough for a stable axis, short enough to follow a bend.
+_TIP_NEIGHBOURHOOD_RADII = 4.0
+#: ...and never less than this many of the coarsest voxel spacing.
+_TIP_NEIGHBOURHOOD_MIN_VOXELS = 3.0
+#: A point is a tip -- the end of a tube, not the side of one -- when its
+#: neighbourhood's centroid lies at least this fraction of the neighbourhood
+#: radius behind it along the local axis. A tip with its neighbourhood
+#: centred on it has its centroid about half a radius back; a point on a
+#: tube's side has it level.
+_TIP_MIN_ENDNESS = 0.3
 
-    Linearity is ``(eigval[0] - eigval[1]) / eigval[0]`` on the covariance of
-    the component's own voxel coordinates -- near 1 for an elongated,
-    tube-like component, near 0 for a blob -- computed via
-    :func:`_top_two_eigen_3x3` (power iteration plus one deflation step),
-    not ``np.linalg.eigh``, which crashes natively on this environment's
-    broken NumPy/BLAS build for a non-trivial component. PCA runs on raw
-    voxel indices, not physical coordinates (matching
-    ``graph.mask_continuity``'s own precedent): a genuinely anisotropic
-    dataset biases this somewhat toward the more finely sampled axes, a
-    known, accepted limitation of the same approach already used in
-    production elsewhere in this codebase.
 
-    *edt_inside* is a Euclidean distance transform of the *whole* mask,
-    computed once by the caller with physical ``sampling=voxel_size_zyx``
-    (so it is correct for an anisotropic dataset) -- the median of its
-    values over just this component's own voxels is a real, local radius
-    estimate, not a crude area/length approximation.
+def _box_around(
+    center_idx: np.ndarray, reach_um: float, sampling: np.ndarray, shape: tuple[int, ...]
+) -> tuple[slice, ...]:
+    """The voxel box reaching *reach_um* around *center_idx* on every axis."""
+    half = np.ceil(float(reach_um) / sampling).astype(int)
+    lo = np.maximum(center_idx - half, 0)
+    hi = np.minimum(center_idx + half + 1, np.asarray(shape))
+    return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+
+
+def _principal_axis_and_linearity(points_um: np.ndarray) -> tuple[np.ndarray, float, np.ndarray]:
+    """``(unit axis, linearity, centroid)`` of a physical point cloud.
+
+    Linearity is ``(lambda0 - lambda1) / lambda0`` of its covariance: near 1
+    for a tube, near 0 for a blob. In microns, so an anisotropic voxel grid
+    does not tilt the axis toward its finely sampled axes.
     """
-    from scipy.ndimage import find_objects
+    centroid = points_um.mean(axis=0)
+    if points_um.shape[0] < 3:
+        return np.asarray([1.0, 0.0, 0.0]), 0.0, centroid
+    cov = _symmetric_covariance_3x3(points_um - centroid)
+    (eigval0, axis), (eigval1, _axis1) = _top_two_eigen_3x3(cov)
+    linearity = float((eigval0 - eigval1) / max(1e-12, float(eigval0)))
+    norm = float(np.linalg.norm(axis))
+    axis = axis / norm if norm > 1e-12 else np.asarray([1.0, 0.0, 0.0])
+    return axis, linearity, centroid
 
+
+def _tip_descriptor(
+    start_idx: np.ndarray,
+    *,
+    component_id: int,
+    labeled: np.ndarray,
+    edt_inside: np.ndarray,
+    sampling: np.ndarray,
+) -> dict[str, Any]:
+    """The local shape of *component_id* around the extremity *start_idx*.
+
+    The neighbourhood is the component's own voxels within a few local radii
+    of the extremity -- read from a small box of *labeled*, not the whole
+    component -- and its radius is re-estimated from that neighbourhood until
+    the two agree (twice is enough). Everything is in microns.
+    """
+    min_reach = _TIP_NEIGHBOURHOOD_MIN_VOXELS * float(sampling.max())
+    reach = min_reach
+    start_um = start_idx.astype(float) * sampling
+    near_idx = start_idx.reshape(1, 3)
+    radius = 0.0
+    for _ in range(3):
+        box = _box_around(start_idx, reach, sampling, labeled.shape)
+        offset = np.asarray([s.start for s in box])
+        own = np.asarray(labeled[box]) == component_id
+        local = np.argwhere(own) + offset
+        points = local.astype(float) * sampling
+        keep = np.linalg.norm(points - start_um, axis=1) <= reach
+        if keep.any():
+            near_idx = local[keep]
+        # The radius is read on the medial ridge (local maxima of the distance
+        # transform): a statistic over every voxel sits near the surface,
+        # where most of a tube's voxels are, and reads well short of it.
+        edt_box = np.asarray(edt_inside[box], dtype=float)
+        ridge = own & (edt_box > 0) & (maximum_filter(edt_box, footprint=_STRUCTURE_26) == edt_box)
+        ridge_idx = np.argwhere(ridge) + offset
+        ridge_near = np.linalg.norm(ridge_idx.astype(float) * sampling - start_um, axis=1) <= reach
+        radii = np.asarray(edt_inside[tuple(ridge_idx[ridge_near].T)], dtype=float)
+        if radii.size == 0:
+            radii = np.asarray(edt_inside[tuple(near_idx.T)], dtype=float)
+        radius = float(np.median(radii)) if radii.size else 0.0
+        new_reach = max(_TIP_NEIGHBOURHOOD_RADII * radius, min_reach)
+        if abs(new_reach - reach) <= 1e-9 * max(new_reach, 1.0):
+            break
+        reach = new_reach
+
+    near_um = near_idx.astype(float) * sampling
+    axis, linearity, centroid = _principal_axis_and_linearity(near_um)
+    projection = _project_onto_axis(near_um - centroid, axis)
+    # Orient outward: from the neighbourhood's centroid toward the extremity.
+    if float(np.dot(start_um - centroid, axis)) < 0.0:
+        axis = -axis
+        projection = -projection
+    # The tip point is the centre of the end face: the voxels within half the
+    # finest spacing of the furthest one out. Measuring gaps between end-face
+    # centres, not between arbitrary corner voxels, is what makes a distance
+    # gate exact for a tube whose cross-section is several voxels wide.
+    if projection.size:
+        end_face = projection >= float(projection.max()) - 0.5 * float(sampling.min())
+        tip_um = near_um[end_face].mean(axis=0)
+    else:
+        tip_um = start_um
+    endness = float(np.dot(tip_um - centroid, axis)) / max(reach, 1e-12)
+    return {
+        "point_um": tip_um,
+        "axis": axis,
+        "linearity": float(linearity) if near_um.shape[0] >= 3 else 0.0,
+        "radius_um": float(radius),
+        "endness": endness,
+    }
+
+
+def _extremities(points_um: np.ndarray, *, min_separation_um: float) -> list[int]:
+    """Farthest-point sampling: indices of up to ``_MAX_TIPS_PER_COMPONENT``
+    points of *points_um*, each as far as possible from those already taken,
+    stopping once the next would be within *min_separation_um* of one."""
+    if points_um.shape[0] == 0:
+        return []
+    centroid = points_um.mean(axis=0)
+    first = int(np.argmax(np.linalg.norm(points_um - centroid, axis=1)))
+    chosen = [first]
+    nearest = np.linalg.norm(points_um - points_um[first], axis=1)
+    while len(chosen) < _MAX_TIPS_PER_COMPONENT:
+        candidate = int(np.argmax(nearest))
+        if float(nearest[candidate]) < float(min_separation_um):
+            break
+        chosen.append(candidate)
+        nearest = np.minimum(nearest, np.linalg.norm(points_um - points_um[candidate], axis=1))
+    return chosen
+
+
+def _component_descriptors(
+    *,
+    labeled: np.ndarray,
+    count: int,
+    edt_inside: np.ndarray,
+    sampling: tuple[float, float, float] | None = None,
+) -> dict[int, dict[str, Any]]:
+    """Per labeled component: its size and its candidate *tips*, each with the
+    local axis, linearity, radius and "endness" of the component around it.
+
+    Earlier versions fitted one principal axis to the whole component and
+    took its two extreme voxels: a curved or branched fragment then read as
+    a blob (low global linearity) and was never bridged, and a thick-and-thin
+    fragment's median radius described neither part. Now every extremity
+    (:func:`_extremities`) is described by its own neighbourhood
+    (:func:`_tip_descriptor`), in microns.
+
+    *edt_inside* is a Euclidean distance transform of the whole mask in
+    physical units, computed once by the caller. The component's full voxel
+    list is not kept once it has been described.
+    """
+    spacing = np.asarray(sampling if sampling is not None else (1.0, 1.0, 1.0), dtype=float)
     descriptors: dict[int, dict[str, Any]] = {}
     if count <= 0:
         return descriptors
     slices = find_objects(labeled, max_label=count)
+    min_separation = 2.0 * _TIP_NEIGHBOURHOOD_MIN_VOXELS * float(spacing.max())
     for component_id in range(1, count + 1):
         component_slice = slices[component_id - 1] if slices else None
         if component_slice is None:
             continue
-        local = labeled[component_slice]
-        local_coords = np.argwhere(local == component_id)
-        if local_coords.size == 0:
+        local = np.asarray(labeled[component_slice])
+        coords = np.argwhere(local == component_id)
+        if coords.size == 0:
             continue
-        offset = np.asarray(
-            [int(s.start) for s in component_slice], dtype=int
-        ).reshape(1, 3)
-        coords = local_coords + offset
-        coords_float = coords.astype(float)
-        centroid = np.mean(coords_float, axis=0)
-        if coords.shape[0] >= 3:
-            cov = _symmetric_covariance_3x3(coords_float - centroid)
-            (eigval0, principal_axis), (eigval1, _axis1) = _top_two_eigen_3x3(cov)
-            linearity = float(
-                (eigval0 - eigval1) / max(1e-9, float(eigval0))
+        offset = np.asarray([int(s.start) for s in component_slice], dtype=int).reshape(1, 3)
+        size = int(coords.shape[0])
+        stride = max(1, size // _TIP_SEARCH_MAX_POINTS)
+        sample = coords[::stride] + offset
+        del coords, local
+        tips = [
+            _tip_descriptor(
+                sample[index],
+                component_id=component_id,
+                labeled=labeled,
+                edt_inside=edt_inside,
+                sampling=spacing,
             )
-        else:
-            principal_axis = np.asarray([1.0, 0.0, 0.0], dtype=float)
-            linearity = 0.0
-        norm = float(np.linalg.norm(principal_axis))
-        principal_axis = principal_axis / norm if norm > 1e-9 else principal_axis
-        projections = _project_onto_axis(coords_float, principal_axis)
-        end_a = coords[int(np.argmin(projections))]
-        end_b = coords[int(np.argmax(projections))]
-        radii = edt_inside[coords[:, 0], coords[:, 1], coords[:, 2]]
-        median_radius_um = float(np.median(radii)) if radii.size else 0.0
+            for index in _extremities(
+                sample.astype(float) * spacing, min_separation_um=min_separation
+            )
+        ]
         descriptors[component_id] = {
             "component_id": int(component_id),
-            "centroid": centroid,
-            "principal_axis": principal_axis,
-            "linearity": linearity,
-            "endpoints": (end_a.astype(int), end_b.astype(int)),
-            "median_radius_um": float(median_radius_um),
-            "size_voxels": int(coords.shape[0]),
+            "size_voxels": size,
+            "tips": tips,
         }
     return descriptors
 
@@ -281,40 +423,49 @@ def _axis_angle_deg(axis_a: np.ndarray, axis_b: np.ndarray) -> float:
     return float(np.degrees(np.arccos(cosine)))
 
 
-def _line_indices(start: np.ndarray, end: np.ndarray) -> np.ndarray:
-    delta = end.astype(float) - start.astype(float)
-    steps = int(max(2, np.ceil(float(np.linalg.norm(delta))) + 1))
-    t = np.linspace(0.0, 1.0, steps, dtype=float).reshape(-1, 1)
-    points = np.rint(start.reshape(1, 3) * (1.0 - t) + end.reshape(1, 3) * t)
-    return np.unique(points.astype(int), axis=0)
-
-
-def _bridge_mask_from_line(
-    line: np.ndarray, shape: tuple[int, int, int], *, radius_voxels: int
+def _tube_between(
+    start_um: np.ndarray,
+    end_um: np.ndarray,
+    radius_um: float,
+    *,
+    sampling: np.ndarray,
+    shape: tuple[int, ...],
 ) -> tuple[tuple[slice, ...], np.ndarray] | None:
-    """The bridge as ``(slices, local)`` -- ``result[slices] |= local`` is
-    exactly OR-ing in the whole-volume dilation of *line*, which never
-    reaches more than *radius_voxels* past the line's own bounding box --
-    or ``None`` when no line voxel lies in the volume."""
-    if line.size == 0:
+    """The voxels within *radius_um* of the segment *start_um*-*end_um*, as
+    ``(slices, local)`` so ``result[slices] |= local`` ORs it in.
+
+    Sized in microns on each axis -- a wide vessel's gap gets a bridge as wide
+    as the vessel, not a fixed few voxels -- and always containing the voxels
+    the segment itself passes through, so even a bridge thinner than a voxel
+    still connects.
+    """
+    reach = float(radius_um) + float(sampling.max())
+    lo_um = np.minimum(start_um, end_um) - reach
+    hi_um = np.maximum(start_um, end_um) + reach
+    lo = np.maximum(np.floor(lo_um / sampling).astype(int), 0)
+    hi = np.minimum(np.ceil(hi_um / sampling).astype(int) + 1, np.asarray(shape))
+    if np.any(hi <= lo):
         return None
-    valid = np.all(line >= 0, axis=1) & np.all(
-        line < np.asarray(shape).reshape(1, 3), axis=1
+    grids = np.meshgrid(
+        *(np.arange(int(a), int(b), dtype=float) * s for a, b, s in zip(lo, hi, sampling)),
+        indexing="ij",
     )
-    line = line[valid]
-    if line.size == 0:
-        return None
-    reach = max(0, int(radius_voxels))
-    lo = np.maximum(line.min(axis=0) - reach, 0)
-    hi = np.minimum(line.max(axis=0) + reach + 1, np.asarray(shape))
-    bridge = np.zeros(tuple(hi - lo), dtype=bool)
-    local = line - lo
-    bridge[local[:, 0], local[:, 1], local[:, 2]] = True
-    if radius_voxels > 0:
-        bridge = binary_dilation(
-            bridge, structure=_STRUCTURE_26, iterations=int(radius_voxels)
-        )
-    return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi)), bridge
+    points = np.stack([g.ravel() for g in grids], axis=1)
+    segment = end_um - start_um
+    length_sq = float(np.dot(segment, segment))
+    if length_sq > 0.0:
+        t = np.clip(_project_onto_axis(points - start_um, segment) / length_sq, 0.0, 1.0)
+    else:
+        t = np.zeros(points.shape[0])
+    distance = np.linalg.norm(points - (start_um + t[:, None] * segment), axis=1)
+    local = (distance <= float(radius_um) + 1e-9).reshape(tuple(hi - lo))
+    steps = int(max(2, np.ceil(np.sqrt(length_sq) / float(sampling.min())) + 1))
+    along = np.linspace(0.0, 1.0, steps).reshape(-1, 1)
+    line = np.rint((start_um + along * segment) / sampling).astype(int) - lo
+    inside = np.all((line >= 0) & (line < (hi - lo)), axis=1)
+    line = line[inside]
+    local[line[:, 0], line[:, 1], line[:, 2]] = True
+    return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi)), local
 
 
 def _attempt_tube_bridge(
@@ -329,74 +480,50 @@ def _attempt_tube_bridge(
     min_facing_cosine: float,
     max_radius_ratio: float,
 ) -> tuple[bool, tuple[tuple[slice, ...], np.ndarray] | None, str]:
-    """Single-mask analog of ``graph.mask_continuity._attempt_cylinder_
-    bridge``, minus the same-type-corridor / opposite-type-exclusion checks
-    (those exist there for bridging within one of two *type-locked* masks;
-    there is only one mask here).
+    """Whether two *tips* (see :func:`_tip_descriptor`) are the same tube
+    continuing across a gap, and if so the bridge that joins them.
 
-    An accepted bridge comes back as ``(slices, local)`` (see
-    :func:`_bridge_mask_from_line`), not a whole-volume mask per candidate.
+    Single-mask analog of ``graph.mask_continuity._attempt_cylinder_bridge``,
+    minus the same-type-corridor / opposite-type-exclusion checks (those
+    exist there for bridging within one of two *type-locked* masks; there is
+    only one mask here). Every test reads the two tips' own neighbourhoods,
+    not their whole components.
     """
-    empty = None
+    spacing = np.asarray(sampling_zyx, dtype=float)
     if float(source["linearity"]) < float(min_cylindricality):
-        return False, empty, "source_not_cylindrical"
+        return False, None, "source_not_cylindrical"
     if float(target["linearity"]) < float(min_cylindricality):
-        return False, empty, "target_not_cylindrical"
+        return False, None, "target_not_cylindrical"
+    if float(source["endness"]) < _TIP_MIN_ENDNESS:
+        return False, None, "source_not_a_tip"
+    if float(target["endness"]) < _TIP_MIN_ENDNESS:
+        return False, None, "target_not_a_tip"
 
-    spacing = np.asarray(sampling_zyx, dtype=float).reshape(1, 3)
-    pairs = [
-        (a, b) for a in source["endpoints"] for b in target["endpoints"]
-    ]
-    best_pair, best_distance = None, np.inf
-    for p0, p1 in pairs:
-        distance = float(np.linalg.norm((p1 - p0).astype(float) * spacing[0]))
-        if distance < best_distance:
-            best_distance, best_pair = distance, (p0, p1)
-    if best_pair is None:
-        return False, empty, "no_endpoint_pair"
-    if best_distance > float(max_bridge_distance_microns):
-        return False, empty, "bridge_too_long"
-    p0, p1 = best_pair
-
-    v = (p1 - p0).astype(float) * spacing[0]
-    v_norm = float(np.linalg.norm(v))
-    if v_norm <= 1e-9:
-        return False, empty, "degenerate_endpoint_vector"
-    v_hat = v / v_norm
-    source_axis = np.asarray(source["principal_axis"], dtype=float) * spacing[0]
-    target_axis = np.asarray(target["principal_axis"], dtype=float) * spacing[0]
-    source_axis = source_axis / max(1e-9, float(np.linalg.norm(source_axis)))
-    target_axis = target_axis / max(1e-9, float(np.linalg.norm(target_axis)))
-    # Orient the source axis to point toward the target, and the target axis
-    # to point back toward the source -- "facing" is then how well each
-    # fragment's own tube direction actually aims at the other.
-    if float(np.dot(source_axis, v_hat)) < 0.0:
-        source_axis = -source_axis
-    if float(np.dot(target_axis, v_hat)) > 0.0:
-        target_axis = -target_axis
-    source_facing = float(np.dot(source_axis, v_hat))
-    target_facing = float(np.dot(target_axis, -v_hat))
+    start = np.asarray(source["point_um"], dtype=float)
+    end = np.asarray(target["point_um"], dtype=float)
+    v = end - start
+    distance = float(np.linalg.norm(v))
+    if distance > float(max_bridge_distance_microns) + 1e-9:
+        return False, None, "bridge_too_long"
+    if distance <= 1e-9:
+        return False, None, "degenerate_endpoint_vector"
+    v_hat = v / distance
+    # Each tip's axis already points outward, away from its own component,
+    # so two ends of one tube facing each other both point along the gap.
+    source_facing = float(np.dot(source["axis"], v_hat))
+    target_facing = float(np.dot(target["axis"], -v_hat))
     if source_facing < float(min_facing_cosine) or target_facing < float(min_facing_cosine):
-        return False, empty, "endpoint_facing_mismatch"
+        return False, None, "endpoint_facing_mismatch"
 
-    angle = _axis_angle_deg(source["principal_axis"], target["principal_axis"])
-    if angle > float(max_axis_angle_degrees):
-        return False, empty, "axis_mismatch"
+    if _axis_angle_deg(source["axis"], target["axis"]) > float(max_axis_angle_degrees):
+        return False, None, "axis_mismatch"
 
-    src_r = max(1e-6, float(source["median_radius_um"]))
-    tgt_r = max(1e-6, float(target["median_radius_um"]))
-    ratio = max(src_r, tgt_r) / min(src_r, tgt_r)
-    if ratio > float(max_radius_ratio):
-        return False, empty, "radius_ratio_mismatch"
+    src_r = max(1e-6, float(source["radius_um"]))
+    tgt_r = max(1e-6, float(target["radius_um"]))
+    if max(src_r, tgt_r) / min(src_r, tgt_r) > float(max_radius_ratio):
+        return False, None, "radius_ratio_mismatch"
 
-    line = _line_indices(p0, p1)
-    # The finest axis's voxel size is the conservative conversion basis
-    # (matching graph.mask_continuity's own precedent): using the coarsest
-    # axis instead would under-cover the bridge along the finer axes.
-    voxel_scale_um = min(float(v) for v in sampling_zyx)
-    avg_radius_voxels = 0.5 * (src_r + tgt_r) / max(1e-9, voxel_scale_um)
-    bridge_radius_voxels = int(min(3, max(0, round(avg_radius_voxels))))
-    bridge = _bridge_mask_from_line(line, shape, radius_voxels=bridge_radius_voxels)
+    bridge = _tube_between(start, end, 0.5 * (src_r + tgt_r), sampling=spacing, shape=shape)
     return True, bridge, "bridged"
 
 
@@ -415,17 +542,23 @@ def reconnect_vessel_like_components(
     """Bridge disconnected mask components that look like the same vessel
     tube continuing.
 
-    Labels 26-connected components, builds a ``cKDTree`` over every
-    component's two endpoints (in physical microns), and for each component
-    queries its nearby-endpoint candidates sorted shortest-first. Each
-    candidate is gated through :func:`_attempt_tube_bridge` (both ends
-    cylindrical enough, close enough, well-aligned, similarly sized);
-    accepted bridges are OR'd into the mask and their two components
-    unioned (union-find, the same greedy shortest-first pattern
+    Labels 26-connected components and finds each one's candidate *tips* --
+    its farthest-point extremities, each described by its own neighbourhood:
+    a local axis, linearity and radius, in microns (see
+    :func:`_component_descriptors`). Pairs of tips on different components
+    within *max_bridge_distance_um* of each other are tried shortest-first,
+    each gated through :func:`_attempt_tube_bridge` (both ends tubular, both
+    genuinely ends, facing each other, aligned, similarly sized). An accepted
+    bridge is a tube as wide as the two ends' mean radius, ORed into the
+    mask, and its two components are unioned (union-find, the same greedy
+    shortest-first pattern
     :func:`haemolynx.preprocessing.skeleton.connect_skeleton_components`
-    already uses for the skeleton), so an already-merged pair is never
-    re-attempted. Single-pass: a chain of 3+ fragments may need this run
-    twice to fully close.
+    uses for the skeleton), so an already-merged pair is never re-attempted.
+
+    Only a component's extremities are tried as tips, so a gap in the middle
+    of a large network (not near one of its few extremities) is not found
+    here; this step joins fragments, which are small enough for their ends to
+    be their extremities.
 
     Returns ``(mask, stats)`` where ``stats`` has ``attempted_bridges``,
     ``accepted_bridges`` and ``rejected_reasons`` (a ``dict[str, int]``
@@ -510,19 +643,28 @@ def _reconnect_using_edt(
     caller can release memmap-backed arrays in a ``finally`` clause around
     whichever return path this takes. *result*, when given, is a copy of
     *mask* to bridge into (a disk-backed one, under the low-RAM option)."""
-    descriptors = _component_descriptors(labeled=labeled, count=count, edt_inside=edt_inside)
-    component_ids = sorted(descriptors)
-    spacing = np.asarray(sampling, dtype=float).reshape(1, 3)
-    endpoint_points: list[np.ndarray] = []
-    endpoint_owner: list[int] = []
-    for cid in component_ids:
-        for endpoint in descriptors[cid]["endpoints"]:
-            endpoint_points.append(endpoint.astype(float))
-            endpoint_owner.append(cid)
-    endpoints_arr = np.asarray(endpoint_points, dtype=float)
-    tree = cKDTree(endpoints_arr * spacing)
+    descriptors = _component_descriptors(
+        labeled=labeled, count=count, edt_inside=edt_inside, sampling=sampling
+    )
+    tips: list[dict[str, Any]] = []
+    owners: list[int] = []
+    for cid in sorted(descriptors):
+        for tip in descriptors[cid]["tips"]:
+            tips.append(tip)
+            owners.append(cid)
+    if len(tips) < 2:
+        return (mask.copy() if result is None else result), stats
 
-    parent = {cid: cid for cid in component_ids}
+    points = np.asarray([tip["point_um"] for tip in tips], dtype=float)
+    tree = cKDTree(points)
+    candidates: list[tuple[float, int, int]] = []
+    for i, j in sorted(tree.query_pairs(r=float(max_bridge_distance_um) + 1e-9)):
+        if owners[i] == owners[j]:
+            continue
+        candidates.append((float(np.linalg.norm(points[i] - points[j])), i, j))
+    candidates.sort(key=lambda row: row[0])
+
+    parent = {cid: cid for cid in descriptors}
 
     def find(x: int) -> int:
         while parent[x] != x:
@@ -530,39 +672,16 @@ def _reconnect_using_edt(
             x = parent[x]
         return x
 
-    candidates: list[tuple[float, int, int]] = []
-    seen_pairs: set[tuple[int, int]] = set()
-    for i, cid in enumerate(component_ids):
-        for endpoint in descriptors[cid]["endpoints"]:
-            nearby = tree.query_ball_point(
-                endpoint.astype(float) * sampling, r=float(max_bridge_distance_um)
-            )
-            for idx in nearby:
-                other_cid = endpoint_owner[int(idx)]
-                if other_cid == cid:
-                    continue
-                pair = (min(cid, other_cid), max(cid, other_cid))
-                if pair in seen_pairs:
-                    continue
-                seen_pairs.add(pair)
-                distance = float(
-                    np.linalg.norm(
-                        (endpoints_arr[int(idx)] - endpoint.astype(float)) * spacing[0]
-                    )
-                )
-                candidates.append((distance, cid, other_cid))
-    candidates.sort(key=lambda row: row[0])
-
     if result is None:
         result = mask.copy()
     shape = mask.shape
-    for _distance, cid_a, cid_b in candidates:
-        if find(cid_a) == find(cid_b):
+    for _distance, i, j in candidates:
+        if find(owners[i]) == find(owners[j]):
             continue
         stats["attempted_bridges"] += 1
         accepted, bridge, reason = _attempt_tube_bridge(
-            descriptors[cid_a],
-            descriptors[cid_b],
+            tips[i],
+            tips[j],
             shape=shape,
             sampling_zyx=sampling,
             max_bridge_distance_microns=max_bridge_distance_um,
@@ -575,7 +694,7 @@ def _reconnect_using_edt(
             if bridge is not None:
                 slices, local = bridge
                 result[slices] |= local
-            parent[find(cid_a)] = find(cid_b)
+            parent[find(owners[i])] = find(owners[j])
             stats["accepted_bridges"] += 1
         else:
             stats["rejected_reasons"][reason] = stats["rejected_reasons"].get(reason, 0) + 1
@@ -1173,7 +1292,7 @@ def clean_segmented_mask_for_skeletonisation(
             )
         )
     if split_narrow_necks:
-        split, _stats = split_narrow_neck_components(
+        split, split_stats = split_narrow_neck_components(
             cleaned,
             voxel_size_zyx=voxel_size_zyx,
             min_marker_separation_um=split_min_marker_separation_um,
@@ -1182,6 +1301,7 @@ def clean_segmented_mask_for_skeletonisation(
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
         )
+        _log_step_stats("split narrow necks", split_stats)
         cleaned = advance(split)
     if close_gaps:
         cleaned = advance(
@@ -1194,7 +1314,7 @@ def clean_segmented_mask_for_skeletonisation(
             )
         )
     if reconnect_gaps:
-        reconnected, _stats = reconnect_vessel_like_components(
+        reconnected, reconnect_stats = reconnect_vessel_like_components(
             cleaned,
             voxel_size_zyx=voxel_size_zyx,
             max_bridge_distance_um=reconnect_max_bridge_distance_um,
@@ -1205,6 +1325,7 @@ def clean_segmented_mask_for_skeletonisation(
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
         )
+        _log_step_stats("reconnect gaps", reconnect_stats)
         cleaned = advance(reconnected)
     if smooth_surfaces:
         cleaned = advance(

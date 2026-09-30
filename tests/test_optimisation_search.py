@@ -103,6 +103,7 @@ _DEFAULT_STARTING_VALUES = {
     "cluster_collapse_max_radial_dispersion": 0.5,
     "cluster_collapse_persistence_search_multiple": 3.0,
     "min_stub_length": 10.0,
+    "min_stub_length_radius_multiple": 1.5,
     "smooth_centrelines": True,
     "centreline_smoothing_method": "taubin",
     "centreline_smoothing_iterations": 10,
@@ -1278,8 +1279,20 @@ def test_optimise_settings_with_only_graph_groups_still_builds_a_graph(y_shaped_
     )
     assert result.groups_run == ("min_stub_length",)
     tried_settings = {trial.setting for trial in result.trials}
-    assert tried_settings == {"min_stub_length"}
+    # Stubs are judged by a multiple of their parent vessel's radius by
+    # default, so that multiple is what the group tunes.
+    assert tried_settings == {"min_stub_length_radius_multiple"}
     assert result.settings["skeleton_closing_radius"] == _DEFAULT_STARTING_VALUES["skeleton_closing_radius"]
+
+
+def test_the_stub_group_tunes_the_fixed_length_when_radius_pruning_is_off(y_shaped_mask):
+    starting = {**_DEFAULT_STARTING_VALUES, "min_stub_length_radius_multiple": 0.0}
+    result = optimise_skeleton_and_graph_settings(
+        y_shaped_mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting,
+        groups=("min_stub_length",),
+    )
+    assert {trial.setting for trial in result.trials} == {"min_stub_length"}
+    assert result.settings["min_stub_length_radius_multiple"] == 0.0
 
 
 def test_optimise_settings_with_only_segmentation_cleanup_group_leaves_other_settings_untouched(y_shaped_mask):

@@ -1,6 +1,7 @@
 """Boundary-based node selection helpers."""
 from __future__ import annotations
 
+import logging
 import warnings
 from typing import Any, Iterable, Mapping
 
@@ -8,6 +9,8 @@ import numpy as np
 import networkx as nx
 
 from ._helpers import sort_nodes
+
+logger = logging.getLogger(__name__)
 
 
 class BoundaryCoordinateWarning(UserWarning):
@@ -174,6 +177,68 @@ def select_boundary_terminal_nodes(
     return inlets, outlets
 
 
+#: How close to an image face a terminal must be, in microns, to be an open
+#: end -- a vessel the image cut through -- rather than a dead end inside the
+#: tissue. Loose, because a skeleton stops short of the face it runs into by
+#: up to the vessel's radius.
+DEFAULT_OPEN_END_MAX_DISTANCE_UM = 10.0
+
+
+def open_terminal_nodes(
+    G: nx.Graph, image_shape: tuple[int, ...], *, max_distance_um: float
+) -> list[Any] | None:
+    """The terminals within *max_distance_um* of an image face, in node order.
+
+    ``None`` when the graph does not record its voxel size (or the image is
+    not 3D), so the image's extent in microns is unknown and nothing can be
+    said either way.
+    """
+    voxel_size = _voxel_size_zyx(G)
+    if voxel_size is None or len(image_shape) != 3:
+        return None
+    extent = (np.asarray(image_shape, dtype=float) - 1.0) * voxel_size
+    terminals, pos = _terminal_nodes_and_position_map(G)
+    return [
+        node
+        for node in terminals
+        if float(np.min(np.minimum(pos[node], extent - pos[node]))) <= float(max_distance_um)
+    ]
+
+
+def _keep_open_ends(
+    selected: list[Any],
+    open_ends: list[Any] | None,
+    *,
+    method: str,
+    node_role: str,
+    max_distance_um: float,
+) -> list[Any]:
+    """*selected* less its interior dead ends -- or all of it, with a warning,
+    when none of it is an open end (the network may simply stop short of
+    every face, and no boundary at all would fail the run later instead)."""
+    if open_ends is None:
+        return selected
+    open_set = set(open_ends)
+    kept = [node for node in selected if node in open_set]
+    dropped = len(selected) - len(kept)
+    if kept:
+        if dropped:
+            logger.info(
+                "%s %s nodes: left out %d terminal(s) more than %.3g um from every "
+                "image face -- dead ends inside the tissue, not vessels the image cut.",
+                method, node_role, dropped, max_distance_um,
+            )
+        return kept
+    if selected:
+        logger.warning(
+            "%s %s nodes: none of the %d candidate terminal(s) lies within %.3g um of "
+            "an image face, so interior dead ends are being used as boundaries. Check "
+            "the network reaches the image edge, or raise boundary_open_end_max_distance_um.",
+            method, node_role, len(selected), max_distance_um,
+        )
+    return selected
+
+
 def _terminal_nodes_and_position_map(G: nx.Graph) -> tuple[list[Any], dict[Any, np.ndarray]]:
     node_pos = nx.get_node_attributes(G, "pos")
     terminals = [node for node, degree in G.degree() if degree == 1 and node in node_pos]
@@ -203,11 +268,22 @@ def select_boundary_nodes_by_method(
     inlet_nodes_for_distance: Iterable[Any] | None = None,
     distance_from_inlet_node: float = 0.0,
     coordinates_setting_name: str = "coordinates",
+    open_end_max_distance_um: float | None = DEFAULT_OPEN_END_MAX_DISTANCE_UM,
 ) -> list[Any]:
     """Select boundary nodes for one role using the specified method.
 
     ``coordinates_setting_name`` only names the setting the points came from,
     so a :class:`BoundaryCoordinateWarning` can say which one to edit.
+
+    The two methods that choose terminals by position alone,
+    ``edge_percent`` and ``degree_1_from_inlet``, keep only *open ends* --
+    terminals within *open_end_max_distance_um* of an image face (see
+    :func:`open_terminal_nodes`). A terminal deep inside the tissue is a
+    vessel's dead end (a segmentation gap, most often): holding it at a
+    boundary pressure pushes flow in or out where none enters the tissue.
+    ``None`` turns this off. When a method's candidates hold no open end at
+    all, it keeps them all and warns. The other methods take what the user
+    placed or asked for, unfiltered.
     """
     if node_role not in {"inlet", "outlet"}:
         raise ValueError("node_role must be 'inlet' or 'outlet'.")
@@ -276,6 +352,14 @@ def select_boundary_nodes_by_method(
             axis=axis,
         )
         selected = inlet_nodes if node_role == "inlet" else outlet_nodes
+        if open_end_max_distance_um is not None:
+            selected = _keep_open_ends(
+                selected,
+                open_terminal_nodes(G, image_shape, max_distance_um=open_end_max_distance_um),
+                method=method_norm,
+                node_role=node_role,
+                max_distance_um=float(open_end_max_distance_um),
+            )
     elif method_norm == "degree_1_from_inlet":
         if distance_from_inlet_node < 0:
             raise ValueError("distance_from_inlet_node must be non-negative.")
@@ -295,6 +379,14 @@ def select_boundary_nodes_by_method(
             )
             if nearest_start_dist > distance_from_inlet_node:
                 selected.append(node_id)
+        if open_end_max_distance_um is not None:
+            selected = _keep_open_ends(
+                selected,
+                open_terminal_nodes(G, image_shape, max_distance_um=open_end_max_distance_um),
+                method=method_norm,
+                node_role=node_role,
+                max_distance_um=float(open_end_max_distance_um),
+            )
     else:
         raise ValueError(
             "Unknown boundary-node method. Supported methods are: "
@@ -421,6 +513,10 @@ def select_boundary_nodes_for_role(
         for name, keyword in BOUNDARY_BAND_SETTINGS.items()
         if settings.get(name) is not None
     }
+    # Unlike the band settings, an empty value here means "off", not "the
+    # selector's default" -- so an absent setting is the only fall-through.
+    if "boundary_open_end_max_distance_um" in settings:
+        band["open_end_max_distance_um"] = settings["boundary_open_end_max_distance_um"]
     return select_boundary_nodes_by_method(
         G,
         image_shape,

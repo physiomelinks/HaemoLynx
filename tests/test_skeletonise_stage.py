@@ -789,3 +789,66 @@ def test_skeletonise_close_gaps_bridges_a_single_voxel_dropout_in_volume_image(t
     volume = skeletonise(settings, segment(settings))
 
     assert bool(np.asarray(volume.image)[10, 10, 9])  # the dropout, now bridged
+
+
+def test_thick_vessel_skeletonisation_honours_the_low_ram_settings(tmp_path, monkeypatch):
+    """Regression: the thick-vessel path ignored use_memmap_loading and the
+    tiling settings, though it is the option most used on whole-brain stacks."""
+    import haemolynx.preprocessing as preprocessing_module
+
+    captured = {}
+    real = preprocessing_module.skeletonize_thickness_gated
+
+    def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preprocessing_module, "skeletonize_thickness_gated", spy)
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    memmaps = tmp_path / "memmaps"
+    memmaps.mkdir()
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+        use_memmap_loading=True,
+        memmap_directory=memmaps,
+        skeletonize_tile_large_components=True,
+        skeletonize_tile_max_voxels=12345,
+    )
+    skeletonise(settings, segment(settings))
+
+    assert captured["use_memmap"] is True
+    assert str(captured["memmap_directory"]) == str(memmaps)
+    assert captured["tile_large_components"] is True
+    assert captured["tile_max_voxels"] == 12345
+
+
+@pytest.mark.parametrize("multiple", [1.5, 0.0])
+def test_graph_building_judges_stubs_by_the_mask_it_was_skeletonised_from(tmp_path, monkeypatch, multiple):
+    """build_network hands graph building the radius multiple and a sampler
+    reading the vessel radius from the binary mask (also what centreline
+    smoothing is given, so it is built whenever smoothing is on)."""
+    import haemolynx.graph as graph_module
+    from haemolynx.pipeline.stages import build_network
+
+    captured = {}
+    real = graph_module.build_graph_from_skeleton
+
+    def spy(skeleton, **kwargs):
+        captured.update(kwargs)
+        return real(skeleton, **kwargs)
+
+    monkeypatch.setattr(graph_module, "build_graph_from_skeleton", spy)
+    mask = np.zeros((9, 20, 40), dtype=bool)
+    mask[3:6, 8:12, 2:38] = True
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), min_stub_length_radius_multiple=multiple
+    )
+    volume = skeletonise(settings, segment(settings))
+    build_network(settings, volume, SCHEMA)
+
+    assert captured["min_stub_length_radius_multiple"] == pytest.approx(multiple)
+    radius_at = captured["stub_radius_at"]
+    assert radius_at(np.array([4.0, 10.0, 20.0])) > 0  # inside the vessel
+    assert radius_at(np.array([0.0, 0.0, 0.0])) == 0  # background

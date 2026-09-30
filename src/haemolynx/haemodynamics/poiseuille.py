@@ -266,6 +266,50 @@ def scale_stored_edge_diameters(data: dict, scale: float) -> bool:
     return moved
 
 
+#: Edge attribute naming why an edge's FWHM width is not used (see
+#: :func:`mark_fwhm_demotions`); absent when it is.
+FWHM_DEMOTED_ATTR = "fwhm_demoted"
+
+
+def fwhm_demotion_reason(data: dict) -> str | None:
+    """Why this edge's FWHM width was set aside, or ``None`` if it was not."""
+    return data.get(FWHM_DEMOTED_ATTR)
+
+
+def mark_fwhm_demotions(G: nx.MultiGraph, *, enabled: bool = True) -> dict[str, int]:
+    """Set aside FWHM widths the run's own checks call into doubt.
+
+    Two checks flag an FWHM width without changing it: the decoy check
+    (``fwhm_in_speck_width_range`` -- the width is one FWHM also reads off
+    specks in vessel-free tissue) and the EDT cross-check
+    (``fwhm_low_confidence_vs_edt`` -- it disagrees with the mask's own width
+    past the warn ratio). With *enabled*, such an edge gets
+    :data:`FWHM_DEMOTED_ATTR` saying which, and :func:`stamp_edge_diameters`
+    goes on to its next source; the FWHM width itself stays on the edge.
+    Returns how many edges each reason demoted.
+    """
+    counts = {"speck_width": 0, "edt_disagreement": 0}
+    for _u, _v, _key, data in G.edges(keys=True, data=True):
+        data.pop(FWHM_DEMOTED_ATTR, None)
+        if not enabled or positive_diameter_um(data.get("fwhm_diameter_um")) is None:
+            continue
+        if data.get("fwhm_in_speck_width_range"):
+            data[FWHM_DEMOTED_ATTR] = "speck_width"
+        elif data.get("fwhm_low_confidence_vs_edt"):
+            data[FWHM_DEMOTED_ATTR] = "edt_disagreement"
+        else:
+            continue
+        counts[data[FWHM_DEMOTED_ATTR]] += 1
+    if any(counts.values()):
+        logger.info(
+            "FWHM widths set aside for the next diameter source: %d in the speck-width "
+            "range, %d disagreeing with the mask's own width.",
+            counts["speck_width"],
+            counts["edt_disagreement"],
+        )
+    return counts
+
+
 def stamp_edge_diameters(
     G: nx.MultiGraph,
     diameter_by_branch_order: dict | None,
@@ -282,7 +326,8 @@ def stamp_edge_diameters(
     re-fall-back). Otherwise -- with *use_endothelial* -- the endothelial
     internal diameter (``endothelial_diameter_um``, see
     ``haemolynx.haemodynamics.endothelial``) wins, the run's alternative to
-    FWHM; else FWHM, when present, wins; then -- when
+    FWHM; else FWHM, when present and not set aside by
+    :func:`mark_fwhm_demotions`, wins; then -- when
     *use_raw_section_fallback* is True and the edge carries a
     ``raw_section_diameter_um`` (see ``haemolynx.haemodynamics.raw_section``)
     -- the raw image's own cross-section, still a measurement of the
@@ -337,7 +382,7 @@ def stamp_edge_diameters(
                 stamp(data, endothelial, DIAMETER_SOURCE_ENDOTHELIAL)
                 continue
         measured = positive_diameter_um(data.get("fwhm_diameter_um"))
-        if measured is not None:
+        if measured is not None and fwhm_demotion_reason(data) is None:
             stamp(data, measured, DIAMETER_SOURCE_MEASURED)
             continue
         if use_raw_section_fallback:

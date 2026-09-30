@@ -688,3 +688,130 @@ def test_clean_segmented_mask_returns_raw_only_when_a_step_ran():
     assert raw is not None
     assert np.array_equal(raw, speck)
     assert not cleaned[0, 0, 0]
+
+
+# --- reconnect: local tip geometry, physical units, wide bridges --------------
+
+
+def _tube_along(shape, spacing, start_um, end_um, radius_um):
+    """Voxels within *radius_um* of the segment *start_um*-*end_um* (microns)."""
+    spacing = np.asarray(spacing, dtype=float)
+    grid = np.indices(shape).reshape(3, -1).T.astype(float) * spacing
+    start = np.asarray(start_um, dtype=float)
+    segment = np.asarray(end_um, dtype=float) - start
+    t = np.clip(((grid - start) * segment).sum(axis=1) / float((segment * segment).sum()), 0.0, 1.0)
+    distance = np.linalg.norm(grid - (start + t[:, None] * segment), axis=1)
+    return (distance <= radius_um).reshape(shape)
+
+
+def _arc_tube(shape, *, center_yx, arc_radius, tube_radius, z, degrees):
+    """A tube bent round *degrees* of a circle in the y-x plane, from angle 0."""
+    zz, yy, xx = np.indices(shape, dtype=float)
+    dy, dx = yy - center_yx[0], xx - center_yx[1]
+    angle = np.degrees(np.arctan2(dy, dx)) % 360.0
+    radial = np.sqrt(dy**2 + dx**2) - arc_radius
+    return (radial**2 + (zz - z) ** 2 <= tube_radius**2) & (angle <= degrees)
+
+
+def test_reconnect_bridges_a_curved_fragment_by_its_own_end_not_its_overall_shape():
+    """Regression: a U-bend read as a blob-like or sideways-pointing whole,
+    so its ends never faced the vessel they had been cut from."""
+    shape = (9, 50, 60)
+    # A half circle from (y=25, x=45) round to (y=25, x=15), its ends pointing
+    # along -y there -- continued by a straight tube after a 6-voxel gap.
+    arc = _arc_tube(shape, center_yx=(25, 30), arc_radius=15, tube_radius=1.6, z=4, degrees=180)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    straight = ((zz - 4) ** 2 + (xx - 45) ** 2 <= 1.6**2) & (yy >= 3) & (yy <= 18)
+    mask = arc | straight
+
+    cleaned, stats = sc.reconnect_vessel_like_components(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), max_bridge_distance_um=10.0
+    )
+
+    assert stats["accepted_bridges"] == 1
+    assert sc._connected_components(cleaned)[1] == 1
+
+
+def test_reconnect_reads_directions_in_microns_on_an_anisotropic_grid():
+    """Two pieces of one vessel bending 25 degrees across a gap, in physical
+    space, on 2 x 0.5 x 0.5 um voxels. In voxel indices z is squashed 4x, so
+    the same two axes are ~47 degrees apart -- past the 30 degree limit --
+    and the angle used to be measured there."""
+    spacing = (2.0, 0.5, 0.5)
+    shape = (30, 8, 50)
+
+    def heading(degrees_from_x):
+        return np.asarray([np.sin(np.radians(degrees_from_x)), 0.0, np.cos(np.radians(degrees_from_x))])
+
+    start = np.asarray([2.0, 2.0, 2.0])
+    first_end = start + 16.0 * heading(60.0)
+    second_start = first_end + 5.0 * heading(72.5)
+    mask = _tube_along(shape, spacing, start, first_end, 1.2)
+    mask |= _tube_along(shape, spacing, second_start, second_start + 16.0 * heading(85.0), 1.2)
+    assert sc._connected_components(mask)[1] == 2
+
+    cleaned, stats = sc.reconnect_vessel_like_components(
+        mask, voxel_size_zyx=spacing, max_bridge_distance_um=10.0, max_axis_angle_degrees=30.0
+    )
+
+    assert stats["accepted_bridges"] == 1
+    assert sc._connected_components(cleaned)[1] == 1
+
+
+def test_reconnect_bridges_the_arm_of_a_branched_fragment():
+    """A Y-shaped fragment has three ends; only two were ever looked at."""
+    shape = (9, 60, 70)
+    zz, yy, xx = np.indices(shape, dtype=float)
+    # Stem along x, two arms off its end -- one arm points (along +y) at a
+    # separate straight fragment continuing it after a 6-voxel gap.
+    stem = ((zz - 4) ** 2 + (yy - 20) ** 2 <= 2.0) & (xx >= 5) & (xx <= 35)
+    arm_up = ((zz - 4) ** 2 + (xx - 35) ** 2 <= 2.0) & (yy >= 20) & (yy <= 36)
+    arm_down = ((zz - 4) ** 2 + (xx - 35) ** 2 <= 2.0) & (yy >= 8) & (yy <= 20)
+    continuation = ((zz - 4) ** 2 + (xx - 35) ** 2 <= 2.0) & (yy >= 43) & (yy <= 58)
+    mask = stem | arm_up | arm_down | continuation
+
+    cleaned, stats = sc.reconnect_vessel_like_components(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), max_bridge_distance_um=10.0
+    )
+
+    assert stats["accepted_bridges"] == 1
+    assert sc._connected_components(cleaned)[1] == 1
+
+
+def test_reconnect_makes_a_wide_vessels_bridge_as_wide_as_the_vessel():
+    """Regression: every bridge was capped at 3 voxels of radius, so a gap
+    in a wide vessel became a thin neck -- which then skeletonised and
+    measured as a narrowing that is not there."""
+    shape = (21, 21, 60)
+    radius = 7.0
+    mask = _cylinder_along_x(shape, z=10, y=10, radius=radius, x0=0, x1=26)
+    mask |= _cylinder_along_x(shape, z=10, y=10, radius=radius, x0=33, x1=59)
+
+    cleaned, stats = sc.reconnect_vessel_like_components(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), max_bridge_distance_um=12.0
+    )
+
+    assert stats["accepted_bridges"] == 1
+    full_section = int(mask[:, :, 10].sum())
+    for x in range(27, 33):
+        assert int(cleaned[:, :, x].sum()) >= 0.8 * full_section
+
+
+def test_clean_segmented_mask_logs_what_reconnect_did(caplog):
+    """The bridge and rejection counts used to be computed and thrown away."""
+    import logging
+
+    shape = (10, 10, 40)
+    mask = _cylinder_along_x(shape, z=5, y=5, radius=1.0, x0=0, x1=14)
+    mask |= _cylinder_along_x(shape, z=5, y=5, radius=1.0, x0=20, x1=34)
+
+    with caplog.at_level(logging.INFO, logger="haemolynx.preprocessing.segmentation_cleanup"):
+        sc.clean_segmented_mask_for_skeletonisation(
+            mask,
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            reconnect_gaps=True,
+            reconnect_max_bridge_distance_um=10.0,
+        )
+
+    (line,) = [r.getMessage() for r in caplog.records if "reconnect gaps" in r.getMessage()]
+    assert "accepted_bridges=1" in line

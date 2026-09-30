@@ -18,6 +18,8 @@ input_and_segmentation:
   ilastik_executable: ilastik.exe
   # Kill an ilastik headless run that takes longer than this. A hang usually means a bad project file or unreadable input, not a slow but working run -- raise it for very large volumes  [range 0.0..]
   ilastik_timeout_seconds: 7200.0
+  # Skip ilastik when its output for an image already exists and is newer than both the image and the project file, and use that output. Turn off to segment again on every run
+  ilastik_reuse_existing_output: true
   # Write ilastik-generated segmentations into this directory
   ilastik_output_dir: outputs/segmentations
   # Give ilastik segmentation outputs this file suffix
@@ -282,6 +284,8 @@ boundary_assignment:
   boundary_last_percent: 10.0
   # Keep only the terminals further than this from an inlet node when the degree_1_from_inlet method is used  [um; range 0.0..]
   boundary_distance_from_inlet_node: 0.0
+  # With edge_percent or degree_1_from_inlet, choose only terminals within this distance of an image face -- vessels the image cut through -- not dead ends inside the tissue, where no flow enters or leaves. Leave empty to allow any terminal  [um; range 0.0..]
+  boundary_open_end_max_distance_um: 10.0
   # Pick inlet nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   inlet_node_coordinates: []
   # Pick outlet nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
@@ -378,20 +382,24 @@ pipeline_stages:
   skeleton_bridge_gap_size: 3
   # Drop skeleton branches shorter than this many voxels during cleaning  [voxels; range 0..; needs do_skeletonize]
   skeleton_min_branch_length: 3
-  # Reconnect skeleton fragments no further apart than this distance  [voxels; range 0..; needs do_skeletonize]
+  # Reconnect a skeleton fragment's branch end to another fragment no further away than this, counted in voxels of the finest axis and measured physically, so a gap along a coarse z axis counts for its real length  [voxels; range 0..; needs do_skeletonize]
   skeleton_max_bridge_distance: 0
   # Draw skeleton bridges by routing through the segmented mask instead of a straight line -- prefers a path that stays inside real segmented tissue over one that cuts through background. A bridge within skeleton_max_bridge_distance is always drawn either way; this only changes its shape  [needs do_skeletonize]
   skeleton_bridge_weight_by_segmentation: false
-  # Multiplies the z-component of a gap distance before it is compared to skeleton_max_bridge_distance -- z and xy voxels otherwise count equally regardless of actual voxel size. Above 1.0 discourages bridging mostly through z relative to xy; below 1.0 does the reverse; 1.0 leaves z and xy voxels equally weighted  [range 0.0..; needs do_skeletonize]
+  # Multiplies the z-component of a gap distance, on top of the physical voxel size, before it is compared to skeleton_max_bridge_distance. Above 1.0 discourages bridging mostly through z; below 1.0 does the reverse; 1.0 measures plain microns  [range 0.0..; needs do_skeletonize]
   skeleton_bridge_z_distance_weight: 1.0
+  # Only bridge from a fragment's branch end toward something roughly ahead of it: the cosine of the largest angle allowed between the end's direction and the bridge (0.5 is 60 degrees). Stops side-by-side vessels being cross-linked; -1 allows any direction  [range -1.0..1.0; needs do_skeletonize]
+  skeleton_bridge_min_facing_cosine: 0.5
   # Use this voxel connectivity when analysing skeleton components  [range 1..3; needs do_skeletonize]
   skeleton_component_connectivity: 3
   # Reconnect graph fragments whose endpoints lie within this distance  [um; range 0.0..; needs do_graph_building]
   graph_reconnect_threshold: 10.0
   # Reconnect leftover orphan and dangling nodes within this distance in the final pass  [um; range 0.0..; needs do_graph_building]
   final_orphan_reconnect_threshold: 3.0
-  # Prune terminal stubs shorter than this length  [um; range 0.0..; needs do_graph_building]
+  # Prune terminal stubs shorter than this length, wherever the stub is not judged by its parent vessel's radius instead (see min_stub_length_radius_multiple). A stub ending at an image face is kept -- that is a vessel the image cut through  [um; range 0.0..; needs do_graph_building]
   min_stub_length: 10.0
+  # Prune a terminal stub shorter than this many radii of the vessel it branches from, read from the segmented mask: a skeleton spur on a wide vessel is about as long as the vessel is thick, and one fixed length removes those or real short capillary ends, never just the spurs. 0 uses min_stub_length for every stub  [range 0.0..; needs do_graph_building]
+  min_stub_length_radius_multiple: 1.5
   # Collapse clusters of nodes lying within this distance of each other  [um; range 0.0..; needs do_graph_building]
   cluster_collapse_distance: 5.0
   # distance_only collapses every node within cluster_collapse_distance of another however far that chains -- the original behaviour. direction_aware additionally refuses a merge that would turn the collapsed node's incident edges into a cartwheel shape (see the cartwheel hub guard below), leaving separate nodes where proximity alone could not tell two nearby real junctions apart. persistence cuts each local cluster at its own natural gap in single-linkage merge distance (0-dimensional persistent homology) instead of one global distance -- see graph.persistence_collapse  [one of: distance_only, direction_aware, persistence; needs do_graph_building]
@@ -458,7 +466,7 @@ pipeline_stages:
   centreline_smoothing_method: taubin
   # How many smoothing passes; accuracy plateaus around 15, and past that the filter slowly starts inflating a centreline instead  [range 0..50; needs smooth_centrelines]
   centreline_smoothing_iterations: 10
-  # How far a smoothed centreline may sit from the skeleton before it is blended back towards the original  [um; range 0.0..; needs smooth_centrelines]
+  # How far a smoothed centreline may sit from the skeleton before it is blended back towards the original. Widened per vessel to half the voxel diagonal (a voxel staircase's own scale) and to half the vessel's radius, when either is larger  [um; range 0.0..; needs smooth_centrelines]
   centreline_max_deviation: 1.0
 
 # ------------------------------------------------------------------------
@@ -759,8 +767,12 @@ fwhm_diameter_measurement:
   fwhm_edge_diameter_aggregation: median
   # Give an edge a FWHM width only when at least this many samples along it pass every gate. On a speckled image a line can fit one bright speck cleanly; a speck is one place, a lumen is all along the vessel. 1 accepts a single sample  [range 1..; needs use_fwhm_edge_diameters]
   fwhm_min_accepted_samples: 2
-  # After measuring, copy a sample of the measured vessels into vessel-free tissue and measure them again: reports how often FWHM gives texture a width, and flags every FWHM width in the range it reads there. Changes no diameter  [needs use_fwhm_edge_diameters and do_fwhm_measurement]
+  # After measuring, copy a sample of the measured vessels into vessel-free tissue and measure them again: reports how often FWHM gives texture a width, and flags every FWHM width in the range it reads there (see fwhm_demote_flagged_edges for what a flag then does)  [needs use_fwhm_edge_diameters and do_fwhm_measurement]
   fwhm_decoy_check: true
+  # Do not model a vessel with an FWHM width the run's own checks flag -- one in the decoy check's speck-width range, or one disagreeing with the mask's own width past edt_fwhm_disagreement_warn_ratio -- but go on to the next diameter source (raw section, mask, table). The FWHM width stays on the vessel for review  [needs use_fwhm_edge_diameters and do_fwhm_measurement]
+  fwhm_demote_flagged_edges: true
+  # Hold each profile's blur at the image's own PSF -- the raw-section PSF settings when set, else estimated from the image's wide vessels, as the raw-section fallback does -- instead of fitting it again in every profile. Falls back to per-profile fitting when too few wide vessels show their blur  [needs use_fwhm_edge_diameters and do_fwhm_measurement]
+  fwhm_fix_blur_to_image_psf: true
   # How many measured vessels the decoy check copies  [range 1..; needs fwhm_decoy_check]
   fwhm_decoy_check_sample_size: 100
   # Where FWHM fails, fit the raw image's whole cross-section of the vessel (a blurred lumen, pooling every photon in the section) before falling back to the segmentation mask. Measures wide and z-running vessels a line cannot; check it against FWHM on your image first, since on a speckled one it reads the halo round a vessel  [needs use_fwhm_edge_diameters and do_fwhm_measurement]

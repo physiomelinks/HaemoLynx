@@ -25,6 +25,8 @@ from haemolynx.haemodynamics.poiseuille import (
     PoiseuilleModel,
     clear_edge_resistances,
     flag_fwhm_edt_disagreement,
+    fwhm_demotion_reason,
+    mark_fwhm_demotions,
     positive_diameter_um,
     stamp_edge_diameters,
 )
@@ -243,12 +245,68 @@ def _fwhm_raw_channel(config: HaemodynamicsApplyConfig) -> int | None:
     return None if channel is None else int(channel)
 
 
+def _configured_raw_psf(config: HaemodynamicsApplyConfig) -> tuple[float, float, float] | None:
+    """The raw image's PSF ``(sigma_z, sigma_y, sigma_x)`` from the settings,
+    when both of its halves are set."""
+    sigma_xy = config.fwhm_setting("raw_section_psf_sigma_xy_um")
+    sigma_z = config.fwhm_setting("raw_section_psf_sigma_z_um")
+    if sigma_xy is not None and sigma_z is not None:
+        return (float(sigma_z), float(sigma_xy), float(sigma_xy))
+    return None
+
+
+def image_psf_for_fwhm(
+    G: nx.MultiGraph,
+    config: HaemodynamicsApplyConfig,
+    *,
+    raw_volume: np.ndarray | None,
+    vessel_mask: np.ndarray | None = None,
+) -> tuple[tuple[float, float, float] | None, dict[str, Any]]:
+    """The one PSF the raw image's width measurements share, and how it was got.
+
+    The raw-section settings' PSF when set; otherwise estimated from the
+    image's own wide vessels (:func:`raw_section.estimate_psf_sigma`), the
+    same estimate the raw-section fallback makes. ``None`` -- FWHM then fits
+    each profile's blur itself -- when ``fwhm_fix_blur_to_image_psf`` is off,
+    the profile model is not ``blurred_lumen``, there is no raw image, or too
+    few wide vessels show their blur.
+    """
+    if not bool(config.fwhm_setting("fwhm_fix_blur_to_image_psf", True)):
+        return None, {"source": "per_profile", "reason": "fwhm_fix_blur_to_image_psf is off"}
+    if config.fwhm_setting("fwhm_profile_model", "blurred_lumen") != "blurred_lumen":
+        return None, {"source": "per_profile", "reason": "only the blurred_lumen model has a blur"}
+    configured = _configured_raw_psf(config)
+    if configured is not None:
+        return configured, {"source": "settings", "psf_sigma_zyx": configured}
+    if raw_volume is None:
+        return None, {"source": "per_profile", "reason": "no raw image"}
+    voxel_sz = tuple(
+        float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
+    )
+    psf, details = raw_section.estimate_psf_sigma(
+        G,
+        raw_volume,
+        voxel_sz,
+        vessel_mask=vessel_mask,
+        guide_attribute=config.fwhm_setting("fwhm_diameter_guess_edge_attribute", "edt_diameter_um"),
+        average_um=float(
+            config.fwhm_setting(
+                "fwhm_longitudinal_average_um", raw_section.DEFAULT_AVERAGE_ALONG_VESSEL_UM
+            )
+        ),
+    )
+    if psf is None:
+        return None, {"source": "per_profile", **details}
+    return tuple(float(v) for v in psf), {"source": "estimated", "psf_sigma_zyx": psf, **details}
+
+
 def _measure_fwhm_diameters(
     G: nx.MultiGraph,
     config: HaemodynamicsApplyConfig,
     *,
     raw_volume: np.ndarray | None = None,
     vessel_mask: np.ndarray | None = None,
+    psf_sigma_zyx: tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
     path = _fwhm_raw_path(config)
     if path is None:
@@ -271,6 +329,7 @@ def _measure_fwhm_diameters(
             **config.fwhm_measurement_arguments(measurement_parameters),
             "raw_tiff_path": path,
             "store_profile_debug": True,
+            "profile_psf_sigma_zyx": psf_sigma_zyx,
         },
     )
 
@@ -281,12 +340,16 @@ def _measure_raw_section_diameters(
     *,
     raw_volume: np.ndarray | None,
     vessel_mask: np.ndarray | None = None,
+    psf_sigma_zyx: tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
-    """Fit the raw cross-sections of the edges FWHM left without a width.
+    """Fit the raw cross-sections of the edges FWHM left without a width --
+    or whose width was demoted (see :func:`poiseuille.fwhm_demotion_reason`).
 
     Shares FWHM's own sampling (spacing, junction exclusion, how far a
     section is averaged along the vessel, aggregation) and first guess, so
-    the two read a vessel at the same places."""
+    the two read a vessel at the same places -- and, when *psf_sigma_zyx* is
+    given, the same PSF FWHM held its blur at, rather than estimating it
+    again."""
     if raw_volume is None:
         path = _fwhm_raw_path(config)
         if path is None:
@@ -302,13 +365,12 @@ def _measure_raw_section_diameters(
         (u, v, key)
         for u, v, key, data in G.edges(keys=True, data=True)
         if positive_diameter_um(data.get("fwhm_diameter_um")) is None
+        or fwhm_demotion_reason(data) is not None
     ]
     sigma_xy = config.fwhm_setting("raw_section_psf_sigma_xy_um")
     sigma_z = config.fwhm_setting("raw_section_psf_sigma_z_um")
-    psf = None
-    if sigma_xy is not None and sigma_z is not None:
-        psf = (float(sigma_z), float(sigma_xy), float(sigma_xy))
-    elif sigma_xy is not None or sigma_z is not None:
+    psf = _configured_raw_psf(config) or psf_sigma_zyx
+    if psf is None and (sigma_xy is not None or sigma_z is not None):
         logger.warning(
             "Raw cross-section: only one of raw_section_psf_sigma_xy_um and "
             "raw_section_psf_sigma_z_um is set; estimating both from the image."
@@ -579,17 +641,27 @@ def _assign_edge_diameters_with_mask(
     use_endothelial = bool(config.endothelial_setting("use_endothelial_diameters", False))
     if use_endothelial:
         summary["endothelial"] = _measure_endothelial_diameters(G, config)
+    demote_flagged = bool(config.fwhm_setting("fwhm_demote_flagged_edges", True))
     if config.use_fwhm_edge_diameters:
         raw_volume = load_fwhm_raw_volume(config)
         if remeasure:
-            summary["fwhm"] = _measure_fwhm_diameters(
+            psf, psf_details = image_psf_for_fwhm(
                 G, config, raw_volume=raw_volume, vessel_mask=mask_volume
+            )
+            summary["fwhm_psf"] = psf_details
+            if psf is not None:
+                G.graph["fwhm_psf_sigma_zyx"] = psf
+            else:
+                G.graph.pop("fwhm_psf_sigma_zyx", None)
+            summary["fwhm"] = _measure_fwhm_diameters(
+                G, config, raw_volume=raw_volume, vessel_mask=mask_volume, psf_sigma_zyx=psf
             )
             if config.fwhm_setting("fwhm_decoy_check", False):
                 summary["fwhm_decoy_check"] = fwhm_decoys.fwhm_decoy_check(
                     G,
                     lambda probe: _measure_fwhm_diameters(
-                        probe, config, raw_volume=raw_volume, vessel_mask=mask_volume
+                        probe, config, raw_volume=raw_volume, vessel_mask=mask_volume,
+                        psf_sigma_zyx=psf,
                     ),
                     vessel_mask=mask_volume,
                     voxel_size_zyx=tuple(
@@ -605,9 +677,17 @@ def _assign_edge_diameters_with_mask(
                         "fwhm_diameter_guess_edge_attribute", "edt_diameter_um"
                     ),
                 )
+            # Flagged before anything reads the widths, so a flagged width can
+            # hand its edge on to the next source -- the raw-section fit
+            # included -- rather than only being reported after the fact.
+            if config.use_edt_diameter_crosscheck:
+                flag_fwhm_edt_disagreement(
+                    G, warn_ratio=float(config.edt_setting("edt_fwhm_disagreement_warn_ratio", 1.5))
+                )
+            summary["fwhm_demoted"] = mark_fwhm_demotions(G, enabled=demote_flagged)
             if use_raw_section_fallback:
                 summary["raw_section"] = _measure_raw_section_diameters(
-                    G, config, raw_volume=raw_volume, vessel_mask=mask_volume
+                    G, config, raw_volume=raw_volume, vessel_mask=mask_volume, psf_sigma_zyx=psf
                 )
         else:
             summary["fwhm"] = {
@@ -623,7 +703,7 @@ def _assign_edge_diameters_with_mask(
         use_raw_section_fallback=use_raw_section_fallback,
         use_endothelial=use_endothelial,
     )
-    if config.use_edt_diameter_crosscheck:
+    if config.use_edt_diameter_crosscheck and not remeasure:
         warn_ratio = float(config.edt_setting("edt_fwhm_disagreement_warn_ratio", 1.5))
         flag_fwhm_edt_disagreement(G, warn_ratio=warn_ratio)
     return G, summary, raw_volume

@@ -15,14 +15,16 @@ sensitive to, so a user can tell *why* a score is low, not just that it is:
   volume's own edge -- each one becomes an open end after skeletonisation,
   and a haemodynamic solve wants a small, known number of inlets/outlets,
   not dozens.
-- ``noise``: how much the mask's own shape changes under a light surface
-  smoothing (:func:`haemolynx.preprocessing.smooth_vessel_surfaces`) --
-  a jagged, poorly-resolved vessel changes a lot; a clean one barely moves.
+- ``noise``: how much the mask's own shape changes under a light,
+  volume-preserving surface smoothing (see :func:`_volume_preserving_smooth`)
+  -- a jagged vessel, specks or holes change a lot; a clean one barely moves,
+  however thin it is.
 - ``resolution``: the typical vessel radius (the mask's own distance
   transform, sampled at its medial ridge -- see
   :data:`DEFAULT_TARGET_VOXELS_ACROSS_RADIUS`) measured in units of the
-  coarsest sampled axis -- a vessel only one or two voxels across is
-  undersampled, whatever its physical size.
+  in-plane (y-x) sampling, where diameters are measured -- a vessel only one
+  or two voxels across is undersampled, whatever its physical size. How many
+  z steps that radius spans is reported alongside, not scored.
 
 The report this drives (:func:`format_segmentation_quality_report`) leads
 with a verdict grouping these five into two tiers, not just the blended
@@ -49,9 +51,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt, label
+from scipy.ndimage import distance_transform_edt, gaussian_filter, label
 
-from .segmentation_cleanup import smooth_vessel_surfaces
 from .thick_vessels import medial_ridge_mask
 
 __all__ = [
@@ -152,6 +153,11 @@ class SegmentationQualityScore:
     surface_iou: float
     median_radius_um: float
     coarsest_voxel_um: float
+    #: The coarser of the two in-plane (y, x) spacings: what ``resolution``
+    #: is judged against, since diameters are measured across the y-x plane.
+    in_plane_voxel_um: float = 0.0
+    #: How many z steps a typical radius spans -- reported, not scored.
+    axial_voxels_across_radius: float = 0.0
 
     @property
     def total(self) -> float:
@@ -205,6 +211,34 @@ def _boundary_patch_count(mask: np.ndarray) -> int:
 def _iou(a: np.ndarray, b: np.ndarray) -> float:
     union = int((a | b).sum())
     return float((a & b).sum()) / union if union else 1.0
+
+
+def _volume_preserving_smooth(
+    mask: np.ndarray, sampling: tuple[float, float, float], sigma_um: float
+) -> np.ndarray:
+    """*mask* blurred by a Gaussian of *sigma_um* (per axis, in microns) and
+    re-thresholded at the level that keeps its voxel count.
+
+    Thresholding at one half instead -- what
+    :func:`~haemolynx.preprocessing.segmentation_cleanup.smooth_vessel_surfaces`
+    does -- shrinks any curved surface, and a thin tube is all curvature: at
+    1 um of blur a clean 1.5 um-radius capillary lost half its voxels
+    without a single rough one, and the noise score called it noisy. Holding
+    the volume fixed, a clean tube of any width comes back as itself, while
+    specks, holes and a jagged surface still do not.
+    """
+    if sigma_um <= 0.0 or not mask.any():
+        return mask.copy()
+    sigma_voxels = tuple(float(sigma_um) / max(1e-12, float(v)) for v in sampling)
+    blurred = gaussian_filter(mask.astype(np.float32), sigma=sigma_voxels)
+    count = int(mask.sum())
+    candidates = blurred[blurred > 0]
+    if candidates.size <= count:
+        return blurred > 0
+    # The count-th largest value: exactly `count` voxels lie at or above it,
+    # up to ties.
+    level = np.partition(candidates, candidates.size - count)[candidates.size - count]
+    return blurred >= level
 
 
 def score_segmented_mask(
@@ -280,7 +314,7 @@ def score_segmented_mask(
         np.exp(-boundary_excess / max(1e-9, boundary_patch_decay_scale))
     )
 
-    smoothed = smooth_vessel_surfaces(mask, voxel_size_zyx=sampling, sigma_um=noise_sigma_um)
+    smoothed = _volume_preserving_smooth(mask, sampling, noise_sigma_um)
     surface_iou = _iou(mask, smoothed)
     noise = 2.0 * surface_iou
 
@@ -301,8 +335,14 @@ def score_segmented_mask(
     ridge_radii = edt[medial_ridge_mask(edt, ridge_source)]
     median_radius_um = float(np.median(ridge_radii)) if ridge_radii.size else 0.0
     coarsest_voxel_um = float(max(sampling))
-    voxels_across_radius = median_radius_um / max(1e-9, coarsest_voxel_um)
+    # Judged in the y-x plane, where FWHM, EDT cross-sections and the raw
+    # section fits measure a vessel's width: on a typical confocal stack z is
+    # 3-4x coarser, and judging by it told users with well-resolved
+    # capillaries to re-image. How coarse z is still gets reported.
+    in_plane_voxel_um = float(max(sampling[1], sampling[2]))
+    voxels_across_radius = median_radius_um / max(1e-9, in_plane_voxel_um)
     resolution = 2.0 * min(1.0, voxels_across_radius / max(1e-9, target_voxels_across_radius))
+    axial_voxels_across_radius = median_radius_um / max(1e-9, float(sampling[0]))
 
     return SegmentationQualityScore(
         fragmentation=fragmentation,
@@ -317,6 +357,8 @@ def score_segmented_mask(
         surface_iou=surface_iou,
         median_radius_um=median_radius_um,
         coarsest_voxel_um=coarsest_voxel_um,
+        in_plane_voxel_um=in_plane_voxel_um,
+        axial_voxels_across_radius=axial_voxels_across_radius,
     )
 
 
@@ -331,10 +373,11 @@ def _verdict_line(score: SegmentationQualityScore) -> str:
     RESOLUTION_LIMITING_THRESHOLD's own docstring for the reasoning).
     """
     if score.resolution < RESOLUTION_LIMITING_THRESHOLD:
-        voxels_across_radius = score.median_radius_um / max(1e-9, score.coarsest_voxel_um)
+        in_plane = score.in_plane_voxel_um or score.coarsest_voxel_um
+        voxels_across_radius = score.median_radius_um / max(1e-9, in_plane)
         return (
             f"⚠ Resolution is the limiting factor "
-            f"({voxels_across_radius:.1f} voxels across a typical vessel radius) -- "
+            f"({voxels_across_radius:.1f} in-plane voxels across a typical vessel radius) -- "
             f"no amount of cleanup fixes this. Re-image at higher "
             f"resolution/magnification, or resegment from a less-downsampled source."
         )
@@ -383,6 +426,14 @@ def format_segmentation_quality_report(
         )
     else:
         headline = f"Segmented image quality: {score.total:.1f}/10"
+    in_plane = score.in_plane_voxel_um or score.coarsest_voxel_um
+    axial_note = ""
+    if 0.0 < score.axial_voxels_across_radius < DEFAULT_TARGET_VOXELS_ACROSS_RADIUS:
+        axial_note = (
+            f"\n  note: a typical radius spans only {score.axial_voxels_across_radius:.1f} "
+            "z step(s). Diameters are measured in-plane and are unaffected, but "
+            "vessels lying in the imaging plane skeletonise less reliably."
+        )
     return (
         f"{_verdict_line(score)}\n"
         f"{headline}\n"
@@ -397,5 +448,6 @@ def format_segmentation_quality_report(
         f"(surface unchanged by light smoothing: {score.surface_iou * 100:.0f}%)\n"
         f"  resolution:       {score.resolution:.1f}/2  "
         f"(typical vessel radius {score.median_radius_um:.2f}um vs "
-        f"{score.coarsest_voxel_um:.2f}um sampling)"
+        f"{in_plane:.2f}um in-plane sampling)"
+        f"{axial_note}"
     )

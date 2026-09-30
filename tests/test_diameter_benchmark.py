@@ -77,3 +77,29 @@ def test_the_endothelial_ring_is_within_six_percent_from_four_microns(inner, dir
     )
 
     assert graph[0][1][0]["endothelial_diameter_um"] == pytest.approx(inner, rel=0.06)
+
+
+@pytest.mark.parametrize("diameter", [3.0, 5.0, 8.0])
+@pytest.mark.parametrize("direction", list(DIRECTIONS), ids=list(DIRECTIONS))
+def test_fwhm_with_the_image_psf_held_fixed_is_within_fifteen_percent_and_steadier(diameter, direction):
+    """The blur held at the image's own PSF (what fwhm_fix_blur_to_image_psf
+    does) rather than fitted per profile: as accurate, and each vessel's
+    samples scatter no more than they did with the blur free."""
+    widths = {}
+    for psf in (None, EFFECTIVE_PSF):
+        raw, mask, graph = _plasma_vessel(diameter, DIRECTIONS[direction], seed=int(10 * diameter) + 1)
+        automated.measure_edge_diameters_fwhm_from_raw_tiff(
+            graph, raw_tiff_path="unused", raw_volume=raw, vessel_mask=mask, voxel_size_zyx=VOXEL,
+            sample_spacing_along_edge_um=2.0, transverse_profile_step_um=0.25,
+            transverse_half_extent_um=6.0, min_accepted_samples=2, profile_psf_sigma_zyx=psf,
+        )
+        widths[psf is not None] = graph[0][1][0]
+
+    fixed, free = widths[True], widths[False]
+    assert fixed["fwhm_diameter_um"] == pytest.approx(diameter, rel=0.15)
+
+    def spread(data):
+        samples = np.asarray(data["fwhm_diameter_samples_um"], dtype=float)
+        return float(np.std(samples) / np.mean(samples))
+
+    assert spread(fixed) <= spread(free) + 1e-9

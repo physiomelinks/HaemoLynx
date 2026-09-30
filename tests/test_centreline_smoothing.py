@@ -719,3 +719,64 @@ def test_writes_the_length_error_against_known_truth(known_vessels, plot_subdir,
     assert output.stat().st_size > 0
     # The figure has to show what the tests above assert, or it is decoration.
     assert raw_error > 4.0 and abs(smoothed_error) < 2.0
+
+
+# --- the tolerance scales with the voxel and the vessel; every length re-measured ---
+
+
+def _zigzag_edge(amplitude: float):
+    """A path along x whose skeleton zigzags by *amplitude* in y -- a wide
+    vessel's centreline wandering inside its lumen."""
+    points = np.array([[0.0, amplitude * (i % 2), 2.0 * i] for i in range(11)])
+    skeleton = np.zeros((1, int(amplitude) + 2, 22), dtype=bool)
+    for point in points:
+        skeleton[int(point[0]), int(point[1]), int(point[2])] = True
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=points[0])
+    graph.add_node(1, pos=points[-1])
+    graph.add_edge(0, 1, key=0, voxels=points.tolist(), length=999.0)
+    return graph, skeleton
+
+
+def test_a_wide_vessels_wandering_centreline_is_smoothed_not_kept_raw():
+    """Regression: the fixed 1 um tolerance kept a wide vessel's zigzag as it
+    was -- the case where its extra length matters most."""
+    narrow, skeleton = _zigzag_edge(3.0)
+    wide, _ = _zigzag_edge(3.0)
+
+    smooth_graph_centrelines(narrow, skeleton, max_deviation=1.0)
+    smooth_graph_centrelines(wide, skeleton, max_deviation=1.0, radius_at=lambda _p: 10.0)
+
+    assert narrow.edges[0, 1, 0]["centreline_smoothing"] in {"relaxed", "kept_raw"}
+    assert wide.edges[0, 1, 0]["centreline_smoothing"] == "smoothed"
+    assert wide.edges[0, 1, 0]["length"] < narrow.edges[0, 1, 0]["length"]
+
+
+def test_the_tolerance_is_never_below_half_the_voxel_diagonal():
+    """On 2 x 0.5 x 0.5 um voxels a straight line lies up to ~1.06 um from
+    every voxel centre: a 1 um tolerance refused the staircase's own scale."""
+    from haemolynx.graph.smoothing import edge_tolerance_um
+
+    path = np.zeros((5, 3))
+    assert edge_tolerance_um(path, max_deviation=1.0, voxel_size_zyx=(2.0, 0.5, 0.5)) == pytest.approx(
+        0.5 * np.sqrt(4.0 + 0.25 + 0.25)
+    )
+    assert edge_tolerance_um(path, max_deviation=1.0, voxel_size_zyx=(0.5, 0.5, 0.5)) == 1.0
+    assert edge_tolerance_um(
+        path, max_deviation=1.0, voxel_size_zyx=(0.5, 0.5, 0.5), radius_at=lambda _p: 6.0
+    ) == pytest.approx(3.0)
+
+
+def test_every_edges_length_is_measured_from_its_path_smoothed_or_not():
+    """Regression: an edge kept raw, or too short to smooth, kept whatever
+    length it arrived with -- stale if an earlier step had moved its end."""
+    raw, skeleton = _zigzag_edge(3.0)
+    raw.add_node(2, pos=np.array([0.0, 0.0, 30.0]))
+    raw.add_edge(1, 2, key=0, voxels=[[0.0, 0.0, 20.0], [0.0, 0.0, 30.0]], length=999.0)
+
+    smooth_graph_centrelines(raw, skeleton, max_deviation=0.1)
+
+    for _u, _v, data in raw.edges(data=True):
+        assert data["length"] == pytest.approx(
+            float(np.linalg.norm(np.diff(np.asarray(data["voxels"]), axis=0), axis=1).sum())
+        )

@@ -291,6 +291,7 @@ _SHARED_VESSEL_MASK_SETTINGS = (
     "ilastik_output_suffix",
     "ilastik_executable",
     "ilastik_timeout_seconds",
+    "ilastik_reuse_existing_output",
     "voxel_size_override_xyz",
     "voxel_size_policy",
 )
@@ -338,6 +339,7 @@ def load_and_validate_vessel_masks(
     ilastik_output_suffix: str = ".tif",
     ilastik_executable: str | None = None,
     ilastik_timeout_seconds: float | None = None,
+    ilastik_reuse_existing_output: bool = False,
     dilation_microns: float = 0.0,
     min_component_volume_um3: float = 0.0,
     swap_minority_components: bool = False,
@@ -408,6 +410,7 @@ def load_and_validate_vessel_masks(
             output_path=segmented_arteriole_path,
             ilastik_executable=ilastik_executable,
             timeout=ilastik_timeout_seconds,
+            reuse_existing=bool(ilastik_reuse_existing_output),
         )
         logger.info(
             f"Running ilastik segmentation for {scale_label} venule image: "
@@ -419,6 +422,7 @@ def load_and_validate_vessel_masks(
             output_path=segmented_venule_path,
             ilastik_executable=ilastik_executable,
             timeout=ilastik_timeout_seconds,
+            reuse_existing=bool(ilastik_reuse_existing_output),
         )
         logger.info(
             f"Using ilastik-segmented {scale_label}-vessel masks: "

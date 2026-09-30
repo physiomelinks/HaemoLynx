@@ -78,6 +78,36 @@ def _notify_step(
         step_callback(G, label)
 
 
+def mask_radius_sampler(
+    mask: np.ndarray | None,
+    voxel_size: tuple[float, float, float],
+    radius_multiple: float,
+) -> Callable[[np.ndarray], float] | None:
+    """``radius(position_um)``: the mask's distance to background, in microns,
+    at the voxel nearest a physical ``(z, y, x)`` position -- or ``None`` when
+    there is no mask to read, or nothing will read it.
+
+    Built on the mask's surface voxels rather than a whole-volume distance
+    transform, so it costs a KD-tree over the surface, not ~70 bytes a voxel.
+    """
+    if mask is None or radius_multiple <= 0:
+        return None
+    from haemolynx.preprocessing.pointwise_distance import FeatureDistance
+
+    binary = np.asanyarray(mask, dtype=bool)
+    distance = FeatureDistance(binary, feature_value=False, sampling=voxel_size)
+    if not distance.has_surface:
+        return None
+    spacing = np.asarray(voxel_size, dtype=float)
+    upper = np.asarray(binary.shape) - 1
+
+    def radius(position_um: np.ndarray) -> float:
+        index = np.clip(np.rint(np.asarray(position_um, dtype=float) / spacing), 0, upper)
+        return float(distance.at(index.astype(np.intp).reshape(1, -1))[0])
+
+    return radius
+
+
 def _log_degree2_diagnostics(G: nx.MultiGraph, max_degree: int, debug: bool) -> None:
     if not debug:
         return
@@ -100,6 +130,10 @@ def build_graph_from_skeleton(
     cluster_collapse_direction_aware_min_degree: int = DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK,
     cluster_collapse_direction_aware_tangent_length_um: float = DEFAULT_TANGENT_LENGTH_UM,
     use_memmap: bool = False,
+    segmentation_mask: np.ndarray | None = None,
+    min_stub_length_radius_multiple: float = 0.0,
+    protect_image_face_stubs: bool = True,
+    stub_radius_at: Callable[[np.ndarray], float] | None = None,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -123,15 +157,16 @@ def build_graph_from_skeleton(
     cluster_collapse_distance
         Distance threshold for collapsing nearby node clusters.
     min_stub_length
-        Minimum stub length (microns) retained before pruning.
+        Minimum stub length (microns) retained before pruning, wherever the
+        stub is not judged by its parent vessel's radius instead.
     debug
         When True, print degree-2 diagnostic reports after cleanup passes.
     step_callback
         Optional ``callback(G, step_label)`` invoked after each topology step.
     cluster_collapse_method
-        ``"distance_only"`` (default) is the original, unmodified behaviour --
-        every node within ``cluster_collapse_distance`` of another collapses
-        via single-linkage clustering, however far that chains. ``"direction_
+        ``"distance_only"`` (default) collapses each node within
+        ``cluster_collapse_distance`` of a representative into it, clusters
+        bounded by that distance (see ``collapse.collapse_node_clusters``). ``"direction_
         aware"`` additionally refuses a merge that would turn the collapsed
         node's incident edges into a cartwheel shape -- see
         ``direction_aware_collapse`` for why and how. ``"persistence"`` cuts
@@ -158,6 +193,19 @@ def build_graph_from_skeleton(
         secondary-loop reconnection to bounded windows -- see
         ``build.skan_skeleton`` and ``reconnect.reconnect_secondary_loop_edges``.
         The graph is the same either way.
+    segmentation_mask, min_stub_length_radius_multiple
+        With the binary mask the skeleton came from and a positive multiple,
+        a stub is pruned when shorter than that many radii of the vessel it
+        leaves (the mask's distance to background at the junction), instead
+        of *min_stub_length* -- see ``prune.prune_vascular_stubs``.
+    stub_radius_at
+        A ready-made ``radius(position_um)`` (see :func:`mask_radius_sampler`)
+        used in place of building one from *segmentation_mask* -- for a
+        caller building many graphs from one mask.
+    protect_image_face_stubs
+        Keep a short stub whose end lies within its pruning threshold of an
+        image face: a vessel cut by the image, the open ends inlets and
+        outlets are chosen from.
 
     Returns
     -------
@@ -249,7 +297,22 @@ def build_graph_from_skeleton(
     )
     _notify_step(G, "smart_multigraph_degree2_removal_post_collapse", step_callback)
 
-    G = prune_vascular_stubs(G, debug=debug, min_stub_length=min_stub_length)
+    G = prune_vascular_stubs(
+        G,
+        debug=debug,
+        min_stub_length=min_stub_length,
+        radius_at=(
+            stub_radius_at
+            if stub_radius_at is not None
+            else mask_radius_sampler(segmentation_mask, voxel_size, min_stub_length_radius_multiple)
+        ),
+        radius_multiple=float(min_stub_length_radius_multiple),
+        image_extent_um=(
+            (np.asarray(skeleton.shape, dtype=float) - 1.0) * np.asarray(voxel_size, dtype=float)
+            if protect_image_face_stubs
+            else None
+        ),
+    )
     _notify_step(G, "prune_vascular_stubs", step_callback)
     _log_degree2_diagnostics(G, degree2_pass2_max_degree, debug)
 

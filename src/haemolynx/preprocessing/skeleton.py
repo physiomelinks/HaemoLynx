@@ -6,7 +6,6 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 import numpy as np
 from scipy.ndimage import (
@@ -702,24 +701,51 @@ def _draw_hub_links(
     boundary_points: np.ndarray,
     max_connections_per_hub: int,
 ) -> None:
-    """Link *center* to the farthest boundary point in each direction, at
-    most *max_connections_per_hub* of them, farthest first."""
-    by_direction: dict[tuple[int, ...], tuple[float, np.ndarray]] = {}
-    for pt in boundary_points:
-        vec = pt - center
-        direction = tuple(np.sign(vec).astype(int).tolist())
-        if all(v == 0 for v in direction):
-            continue
-        dist2 = float(np.dot(vec, vec))
-        prev = by_direction.get(direction)
-        if prev is None or dist2 > prev[0]:
-            by_direction[direction] = (dist2, pt)
+    """Link *center* to every branch leaving the hub, at most
+    *max_connections_per_hub* of them, farthest first.
 
-    chosen = sorted(by_direction.values(), key=lambda item: item[0], reverse=True)[
-        :max_connections_per_hub
-    ]
-    for _, endpoint in chosen:
-        _draw_line_3d(result, center, endpoint)
+    A branch is one 26-connected group of *boundary_points* (the skeleton
+    voxels in the shell just outside the hub's window), and its link goes to
+    the group's farthest point. Links used to be kept one per sign of the
+    direction vector -- one per octant -- so two branches leaving in the same
+    octant got one link between them, and the other, its voxels inside the
+    window already erased, was left cut off.
+    """
+    from scipy.spatial import cKDTree
+
+    points = np.asarray(boundary_points)
+    points = points[np.any(points != np.asarray(center), axis=1)]
+    if points.shape[0] == 0:
+        return
+    parent = list(range(points.shape[0]))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    # sqrt(3): 26-adjacency, the far corner of the 3x3x3 block and no further.
+    for i, j in cKDTree(points).query_pairs(r=1.7321):
+        parent[find(i)] = find(j)
+    farthest: dict[int, tuple[float, int]] = {}
+    for i, point in enumerate(points):
+        vec = point - center
+        dist2 = float(np.dot(vec, vec))
+        root = find(i)
+        if root not in farthest or dist2 > farthest[root][0]:
+            farthest[root] = (dist2, i)
+
+    branches = sorted(farthest.values(), key=lambda item: (-item[0], item[1]))
+    if len(branches) > max_connections_per_hub:
+        logger.debug(
+            "Bundle hub at %s has %d branches; linking the %d farthest.",
+            tuple(int(v) for v in center),
+            len(branches),
+            max_connections_per_hub,
+        )
+    for _, index in branches[:max_connections_per_hub]:
+        _draw_line_3d(result, center, points[index])
 
 
 def _collapse_hubs(
@@ -1006,64 +1032,48 @@ def _bridge_path_through_mask(
         return None
 
 
-def _pairs_within_reach(
-    comp_ids: list[int], weighted: dict[int, np.ndarray], reach: float
-) -> Iterator[tuple[int, int]]:
-    """Every ``(a, b)``, ``a`` before ``b`` in *comp_ids*, in the same order a
-    double loop over them gives -- less the pairs whose bounding boxes are
-    more than *reach* apart along some axis. No voxel pair of those can be
-    within *reach*: each coordinate difference is at least that gap (float
-    subtraction is monotonic), and a distance is at least any one of its
-    coordinate differences. So skipping them never drops a bridge.
+#: How many skeleton steps back from a tip its direction is read over: enough
+#: to see past the last voxel's staircase, few enough to stay on the branch.
+_TIP_TANGENT_STEPS = 4
+
+#: The default for ``min_facing_cosine``: a tip must point within this much of
+#: the gap it would bridge (cos 60 degrees). Loose, because a tip's direction
+#: is read from a few voxels.
+DEFAULT_BRIDGE_MIN_FACING_COSINE = 0.5
+
+
+def _neighbour_lists(index_tree, coords: np.ndarray) -> list[list[int]]:
+    """Each skeleton voxel's 26-neighbours, as indices into *coords*."""
+    # sqrt(3) reaches the far corner of the 3x3x3 block and nothing beyond it.
+    neighbours = index_tree.query_ball_point(coords, r=1.7321)
+    return [[j for j in found if j != i] for i, found in enumerate(neighbours)]
+
+
+def _tip_directions(
+    coords: np.ndarray, neighbours: list[list[int]], weights: np.ndarray
+) -> dict[int, np.ndarray]:
+    """``{tip index: unit direction}`` for every tip that has one.
+
+    A tip is a voxel with exactly one neighbour -- a branch end. Its direction
+    points out of the branch: from the voxel up to :data:`_TIP_TANGENT_STEPS`
+    steps back along it to the tip, measured in *weights* (physical, z
+    weighted) space. A voxel with no neighbour is a speck with no direction.
     """
-    if not comp_ids:
-        return
-    lo = np.stack([weighted[cid].min(axis=0) for cid in comp_ids])
-    hi = np.stack([weighted[cid].max(axis=0) for cid in comp_ids])
-    for i, cid_a in enumerate(comp_ids):
-        later = slice(i + 1, None)
-        apart = ((lo[later] - hi[i]) > reach) | ((lo[i] - hi[later]) > reach)
-        for j in np.flatnonzero(~apart.any(axis=1)):
-            yield cid_a, comp_ids[i + 1 + int(j)]
-
-
-def _nearest_voxel_pair(
-    points_a: np.ndarray,
-    tree_a,
-    points_b: np.ndarray,
-    tree_b,
-    *,
-    max_distance: float,
-) -> tuple[float, int, int] | None:
-    """``(distance, i, j)`` for the closest voxels ``points_a[i]``,
-    ``points_b[j]``, or None if they are further apart than *max_distance*.
-
-    Exactly what querying every point of *a* against *b*'s tree and taking the
-    first minimum gives -- the same ``i`` and ``j`` on a tie -- without doing
-    that for every point of a large component: the minimum distance comes
-    from whichever side is smaller, and only the points of *a* that could
-    reach it are queried the original way to pick ``i`` and ``j``.
-    """
-    bound = float(max_distance) * (1 + 1e-9) + 1e-9
-    if len(points_a) <= len(points_b):
-        dists, _ = tree_b.query(points_a, distance_upper_bound=bound)
-        min_dist = float(dists.min())
-        if not min_dist <= max_distance:
-            return None
-        candidates = np.flatnonzero(dists == min_dist)[:1]
-    else:
-        dists, _ = tree_a.query(points_b, distance_upper_bound=bound)
-        min_dist = float(dists.min())
-        if not min_dist <= max_distance:
-            return None
-        # Any point of a at the minimum is within it of one of these.
-        near = tree_a.query_ball_point(
-            points_b[dists == min_dist], r=min_dist * (1 + 1e-9) + 1e-9
-        )
-        candidates = np.unique(np.concatenate([np.asarray(n, dtype=np.intp) for n in near]))
-    exact, idx = tree_b.query(points_a[candidates])
-    first = int(np.flatnonzero(exact == min_dist)[0])
-    return min_dist, int(candidates[first]), int(idx[first])
+    directions: dict[int, np.ndarray] = {}
+    for tip, around in enumerate(neighbours):
+        if len(around) != 1:
+            continue
+        previous, current = tip, around[0]
+        for _ in range(_TIP_TANGENT_STEPS - 1):
+            onward = [j for j in neighbours[current] if j != previous]
+            if len(onward) != 1:
+                break
+            previous, current = current, onward[0]
+        vector = (coords[tip] - coords[current]) * weights
+        norm = float(np.linalg.norm(vector))
+        if norm > 0.0:
+            directions[tip] = vector / norm
+    return directions
 
 
 def connect_skeleton_components(
@@ -1072,6 +1082,8 @@ def connect_skeleton_components(
     component_connectivity: int | None = None,
     *,
     z_distance_weight: float = 1.0,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
+    min_facing_cosine: float = DEFAULT_BRIDGE_MIN_FACING_COSINE,
     segmentation_mask: np.ndarray | None = None,
     weight_by_segmentation: bool = False,
     use_memmap: bool = False,
@@ -1080,28 +1092,43 @@ def connect_skeleton_components(
     tile_max_voxels: int = 200_000_000,
     tile_halo_voxels: int = 0,
 ) -> np.ndarray:
-    """Bridge nearby skeleton components with straight voxel lines.
+    """Bridge a branch end of one skeleton component to a nearby voxel of
+    another, where the end points at it.
 
-    Unlike a main-component-only strategy, this function considers *all*
-    pairwise inter-component gaps.  A greedy union-find approach bridges the
-    closest pairs first, avoiding redundant connections once two components
-    have already been merged.
+    Every bridge starts at a *tip* -- a voxel with one skeleton neighbour --
+    and goes to the nearest voxel of a different component that lies within
+    reach and within the tip's own heading (the cosine between the tip's
+    direction and the bridge at least *min_facing_cosine*). If that voxel is
+    itself a tip, it must face back the same way. So a vessel broken in two,
+    or one ending just short of another, is joined; two parallel vessels a
+    few voxels apart, neither of which ends there, are not. This used to join
+    the nearest pair of voxels between any two components, wherever they
+    were, which cross-linked side-by-side capillaries. A component with no
+    tip (a loop) can still be bridged *to*; a lone voxel, having no
+    direction, is never bridged from.
+
+    Candidates are taken shortest first, and a greedy union-find skips any
+    whose two components have already been joined.
 
     Parameters
     ----------
     skeleton:
         Boolean skeleton array.
     max_bridge_distance:
-        Maximum voxel distance allowed for bridging.  Component pairs
-        further apart than this are left disconnected.
+        How far a bridge may reach, in voxels of the finest axis: in microns
+        that is ``max_bridge_distance * min(voxel_size_zyx)``, and every
+        distance is measured in microns, so a gap along a coarse z axis counts
+        for its real length rather than as a few voxels. With
+        *voxel_size_zyx* left ``None`` every voxel is a unit cube, as before.
     z_distance_weight:
-        Multiplies the z-component of every inter-voxel distance used both
-        to pick the nearest pair and to compare against
-        *max_bridge_distance* -- the z and xy axes are otherwise treated as
-        equally spaced regardless of the actual voxel size. 1.0 (default)
-        reproduces that voxel-isotropic behaviour exactly; above 1.0 a given
-        z-gap counts for more, discouraging bridges that reach mostly
-        through z relative to xy; below 1.0 does the reverse.
+        Multiplies the z component of every distance, on top of the physical
+        spacing: above 1.0 a z gap counts for more, below 1.0 for less. 1.0
+        (the default) measures plain microns.
+    voxel_size_zyx:
+        Per-axis spacing of *skeleton*, in microns.
+    min_facing_cosine:
+        How nearly a tip must point along the bridge it would make, as the
+        cosine of the angle between them. -1 accepts any direction.
     segmentation_mask:
         Optional binary mask of the real segmented tissue, same shape as
         *skeleton*. Only used when *weight_by_segmentation* is also true.
@@ -1109,17 +1136,15 @@ def connect_skeleton_components(
         When true and *segmentation_mask* is given, each accepted bridge is
         drawn by routing through the mask (preferring to stay inside real
         segmented signal) rather than an unconditional straight line --
-        see :func:`_bridge_path_through_mask`. A bridge within
-        *max_bridge_distance* is always drawn either way; this only changes
-        the path's shape, never whether two components get connected.
+        see :func:`_bridge_path_through_mask`. This only changes the path's
+        shape, never whether two components get connected.
     use_memmap, memmap_directory:
         Back the labelled array (see :func:`_labeled_components`), the
         working copy of *skeleton* that bridges are drawn into, and (via
         :func:`skeletonize_by_component`) the re-skeletonize step after
         bridging, with disk-backed buffers instead of fresh in-RAM ones.
-        The coordinate lists and KD-trees below are sized to the sparse
-        skeleton's own foreground voxel count, not the volume, so only
-        these three are worth redirecting.
+        The coordinate list and KD-trees below are sized to the sparse
+        skeleton's own foreground voxel count, not the volume.
     tile_large_components, tile_max_voxels, tile_halo_voxels:
         Forwarded to the re-skeletonize step's own
         :func:`skeletonize_by_component` call, only reached when a bridge
@@ -1129,72 +1154,57 @@ def connect_skeleton_components(
 
     conn = _resolve_component_connectivity(skeleton.ndim, component_connectivity)
     structure = generate_binary_structure(skeleton.ndim, conn)
+    spacing = np.asarray(
+        voxel_size_zyx if voxel_size_zyx is not None else (1.0,) * skeleton.ndim, dtype=float
+    )
+    weights = spacing * np.array([float(z_distance_weight), 1.0, 1.0])
+    reach = float(max_bridge_distance) * float(spacing.min())
     with _labeled_components(
         skeleton, structure, use_memmap=use_memmap, memmap_directory=memmap_directory
     ) as (labeled, n_components):
         if n_components <= 1:
             return skeleton
 
-        z_weight = float(z_distance_weight)
-        axis_weights = np.array([z_weight, 1.0, 1.0], dtype=float)
+        coords = np.argwhere(labeled)
+        labels = np.asarray(labeled[tuple(coords.T)])
+        neighbours = _neighbour_lists(cKDTree(coords), coords)
+        directions = _tip_directions(coords, neighbours, weights)
+        weighted = coords * weights
+        tree = cKDTree(weighted)
 
-        # One pass over the labels, then split by component. Asking
-        # `labeled == comp_id` per component instead re-reads the whole volume once
-        # for every component, which on a full stack with a hundred-odd fragments
-        # was the bulk of this function's cost.
-        coords_all = np.argwhere(labeled)
-        labels_all = labeled[tuple(coords_all.T)]
-        order = np.argsort(labels_all, kind="stable")
-        coords_all = coords_all[order]
-        labels_all = labels_all[order]
-        starts = np.searchsorted(labels_all, np.arange(1, n_components + 2))
-
-        comp_coords: dict[int, np.ndarray] = {}
-        comp_trees: dict[int, cKDTree] = {}
-        for comp_id in range(1, n_components + 1):
-            lo, hi = int(starts[comp_id - 1]), int(starts[comp_id])
-            if hi <= lo:
+        candidates: list[tuple[float, int, int]] = []
+        declined = 0
+        for tip, heading in directions.items():
+            nearby = np.asarray(tree.query_ball_point(weighted[tip], r=reach * (1 + 1e-9) + 1e-9), dtype=int)
+            nearby = nearby[labels[nearby] != labels[tip]]
+            if nearby.size == 0:
                 continue
-            coords = coords_all[lo:hi]
-            comp_coords[comp_id] = coords
-            # The tree is built (and queried) in z-weighted space so nearest-pair
-            # selection and the distance cutoff both respect `z_distance_weight`;
-            # the original, unscaled `coords` above are what actually get drawn.
-            comp_trees[comp_id] = cKDTree(coords * axis_weights)
+            vectors = weighted[nearby] - weighted[tip]
+            distances = np.linalg.norm(vectors, axis=1)
+            # Elementwise, not `vectors @ heading`: see thick_vessels._matvec_3x3.
+            along = vectors[:, 0] * heading[0] + vectors[:, 1] * heading[1] + vectors[:, 2] * heading[2]
+            facing = along >= float(min_facing_cosine) * distances
+            for target in nearby[facing][np.argsort(distances[facing], kind="stable")]:
+                back = directions.get(int(target))
+                if back is not None:
+                    gap = weighted[tip] - weighted[int(target)]
+                    if float(np.dot(back, gap)) < float(min_facing_cosine) * float(np.linalg.norm(gap)):
+                        continue
+                candidates.append(
+                    (float(np.linalg.norm(weighted[int(target)] - weighted[tip])), tip, int(target))
+                )
+                break
+            else:
+                declined += 1
+        candidates.sort(key=lambda row: (row[0], row[1], row[2]))
 
-        # Union-find helpers
-        _parent: dict[int, int] = {c: c for c in comp_coords}
+        parent: dict[int, int] = {int(c): int(c) for c in np.unique(labels)}
 
         def _find(x: int) -> int:
-            while _parent[x] != x:
-                _parent[x] = _parent[_parent[x]]
-                x = _parent[x]
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
             return x
-
-        def _union(a: int, b: int) -> None:
-            ra, rb = _find(a), _find(b)
-            if ra != rb:
-                _parent[ra] = rb
-
-        # Collect candidate bridges (distance, start, end, comp_a, comp_b)
-        comp_ids = sorted(comp_coords.keys())
-        weighted = {cid: comp_coords[cid] * axis_weights for cid in comp_ids}
-        candidates: list[tuple[float, np.ndarray, np.ndarray, int, int]] = []
-        for cid_a, cid_b in _pairs_within_reach(comp_ids, weighted, max_bridge_distance):
-            found = _nearest_voxel_pair(
-                weighted[cid_a],
-                comp_trees[cid_a],
-                weighted[cid_b],
-                comp_trees[cid_b],
-                max_distance=max_bridge_distance,
-            )
-            if found is not None:
-                min_dist, start_idx, end_idx = found
-                start = comp_coords[cid_a][start_idx]
-                end = comp_coords[cid_b][end_idx]
-                candidates.append((min_dist, start, end, cid_a, cid_b))
-
-        candidates.sort(key=lambda c: c[0])
 
         skeleton_bool = np.asanyarray(skeleton, dtype=bool)
         if use_memmap:
@@ -1203,9 +1213,11 @@ def connect_skeleton_components(
         else:
             result = skeleton_bool.copy()
         bridged = 0
-        for _, start, end, cid_a, cid_b in candidates:
-            if _find(cid_a) == _find(cid_b):
+        for _, tip, target in candidates:
+            comp_a, comp_b = _find(int(labels[tip])), _find(int(labels[target]))
+            if comp_a == comp_b:
                 continue
+            start, end = coords[tip], coords[target]
             path = None
             if weight_by_segmentation and segmentation_mask is not None:
                 if segmentation_mask.shape == skeleton.shape:
@@ -1214,13 +1226,20 @@ def connect_skeleton_components(
                 result[tuple(path.T)] = True
             else:
                 _draw_line_3d(result, start, end)
-            _union(cid_a, cid_b)
+            parent[comp_a] = comp_b
             bridged += 1
 
+    logger.info(
+        "Skeleton bridging: %d bridge(s) drawn from %d branch end(s) within %.3g um; "
+        "%d end(s) had another component within reach but not ahead of them.",
+        bridged,
+        len(directions),
+        reach,
+        declined,
+    )
     # `labeled` is released above (or was never disk-backed) before the
     # re-skeletonize step's own, potentially large, working buffers exist.
     if bridged:
-        logger.debug("Bridged %d skeleton component pair(s).", bridged)
         bridged_copy = result
         result = skeletonize_by_component(
             bridged_copy,
@@ -1408,6 +1427,8 @@ def preprocess_skeleton_for_graph(
     bundle_hub_min_spacing: int | None = None,
     *,
     bridge_z_distance_weight: float = 1.0,
+    bridge_min_facing_cosine: float = DEFAULT_BRIDGE_MIN_FACING_COSINE,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
     segmentation_mask: np.ndarray | None = None,
     bridge_weight_by_segmentation: bool = False,
     use_memmap: bool = False,
@@ -1416,19 +1437,22 @@ def preprocess_skeleton_for_graph(
     tile_max_voxels: int = 200_000_000,
     tile_halo_voxels: int = 0,
 ) -> np.ndarray:
-    """Remove small objects, re-skeletonize, and reconnect isolated fragments.
+    """Refine dense bundles, close and re-skeletonize, reconnect fragments,
+    then remove what is still too small.
 
     Parameters
     ----------
     skeleton_image:
         Raw boolean skeleton from :func:`skeletonize_volume` (or initial load).
     min_branch_length:
-        Connected components with fewer than this many voxels are removed
-        before re-skeletonizing (reduces degree-2 noise nodes).
+        Connected components with fewer than this many voxels are removed --
+        after bridging, so a short piece of a broken vessel gets its chance to
+        be joined back first (removed before, a larger value deleted exactly
+        the fragments bridging exists to reconnect).
     max_bridge_distance:
-        After pruning, isolated components whose nearest voxel is within this
-        many voxels of the main skeleton are bridged back in.  Set to 0 to
-        disable reconnection.
+        How far a fragment's branch end may be from another component, in
+        voxels of the finest axis, to be bridged to it -- see
+        :func:`connect_skeleton_components`. Set to 0 to disable reconnection.
     component_connectivity:
         Connectivity used when identifying connected components. Defaults to
         full neighborhood (8-neighbor in 2D, 26-neighbor in 3D), which
@@ -1454,13 +1478,13 @@ def preprocess_skeleton_for_graph(
         Max directional links retained when reconnecting paths to each hub.
     bundle_hub_min_spacing:
         Minimum spacing between neighboring dense hub centers.
-    bridge_z_distance_weight, segmentation_mask, bridge_weight_by_segmentation:
+    bridge_z_distance_weight, bridge_min_facing_cosine, voxel_size_zyx, segmentation_mask, bridge_weight_by_segmentation:
         Forwarded to :func:`connect_skeleton_components` as
-        ``z_distance_weight``, ``segmentation_mask``, and
-        ``weight_by_segmentation`` respectively -- see its own docstring.
+        ``z_distance_weight``, ``min_facing_cosine``, ``voxel_size_zyx``,
+        ``segmentation_mask``, and ``weight_by_segmentation`` respectively --
+        see its own docstring.
     use_memmap, memmap_directory:
-        Forwarded to :func:`drop_small_components` (the very first step
-        below); to :func:`bridge_gaps`, whose distance-transform path
+        Forwarded to :func:`drop_small_components`; to :func:`bridge_gaps`, whose distance-transform path
         (only taken when ``bridge_gap_size`` exceeds
         :data:`MAX_BALL_DILATION_RADIUS`) is a full-volume ``float64``
         allocation this function can also redirect to disk; to the
@@ -1499,15 +1523,6 @@ def preprocess_skeleton_for_graph(
         release_superseded(cleaned, new, keep=skeleton_image)
         return new
 
-    cleaned = advance(
-        drop_small_components(
-            cleaned,
-            min_size=min_branch_length,
-            connectivity=conn,
-            use_memmap=use_memmap,
-            memmap_directory=memmap_directory,
-        )
-    )
     # Refine dense local bundles into single hub nodes with clean in/out links.
     cleaned = advance(
         skeletonize_voxel_bundles_into_paths(
@@ -1560,8 +1575,9 @@ def preprocess_skeleton_for_graph(
         )
     )
 
-    # Bridge remaining disconnected components BEFORE filtering by size so
-    # that small fragments get a chance to merge rather than being discarded.
+    # Bridge remaining disconnected components BEFORE filtering by size --
+    # both filters below -- so that small fragments get a chance to merge
+    # rather than being discarded.
     if max_bridge_distance > 0:
         cleaned = advance(
             connect_skeleton_components(
@@ -1569,6 +1585,8 @@ def preprocess_skeleton_for_graph(
                 max_bridge_distance=max_bridge_distance,
                 component_connectivity=conn,
                 z_distance_weight=bridge_z_distance_weight,
+                voxel_size_zyx=voxel_size_zyx,
+                min_facing_cosine=bridge_min_facing_cosine,
                 segmentation_mask=segmentation_mask,
                 weight_by_segmentation=bridge_weight_by_segmentation,
                 use_memmap=use_memmap,
@@ -1576,6 +1594,16 @@ def preprocess_skeleton_for_graph(
                 **tiling,
             )
         )
+
+    cleaned = advance(
+        drop_small_components(
+            cleaned,
+            min_size=min_branch_length,
+            connectivity=conn,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
+        )
+    )
 
     if min_component_fraction > 0.0:
         cleaned = advance(

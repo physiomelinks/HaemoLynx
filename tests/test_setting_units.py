@@ -100,6 +100,9 @@ DIMENSIONLESS = {
     # A multiple of the fat-region radius, not a distance itself -- the
     # radius it scales is already in microns.
     "skeleton_thick_vessel_max_bridge_radius_multiple",
+    # A multiple of the parent vessel's radius at the junction, in microns
+    # already; a stub shorter than it is pruned.
+    "min_stub_length_radius_multiple",
     # Label sentinels written into the int32 branch-label volume.
     "fwhm_background_label",
     "fwhm_junction_label",
