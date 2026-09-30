@@ -325,7 +325,7 @@ A competing explanation was considered and is not supported by the data. If rais
 
 **Consequence for the headline result.** The values reported at the frozen threshold of 0.90 are lower bounds on the effect this instrument would measure with less inclusive segmentation. That is the direction the incomplete boundary labelling (§2.3, §11.1) is expected to move them when it is finished.
 
-> **Figure 3.** `figure3_threshold_sensitivity.png`. Group ratio against threshold for the three topological measures. Solid segments span the clean interval where every specimen sits below its fragmentation onset; dashed segments and the shaded band mark where fragmentation contaminates the measurement. The horizontal rule at 1.0 is no difference between cohorts.
+> **Figure 3.** `figure3_threshold_sensitivity.png`. Group ratio (SHR / WKY) against threshold for the three topological measures, at the frozen 0.95 and its grid neighbours 0.93 and 0.97, all on the placed ROI with the seed held at 0.999. Solid segments span the clean interval where every specimen sits below its fragmentation onset; dashed segments and the shaded band mark where fragmentation contaminates the measurement (onset 0.97 in four of six specimens). The horizontal rule at 1.0 is no difference between cohorts. Every value is read from the batch and sensitivity outputs: β₁ 1.050 / 1.087 / 1.117, junctions 1.051 / 1.064 / 1.098, length 1.013 / 1.022 / 1.030. SHR exceeds WKY in all nine comparisons, but the groups overlap at every threshold (smallest exact p 0.60). The table above predates these runs.
 
 **All four checks are internal.** They demonstrate that the segmentation is not *differentially* biased between cohorts on the quantities reported, and that the result is not an artefact of the one threshold chosen. They do not establish that the segmentation is accurate in absolute terms; that requires hand-labelled held-out regions scored separately per cohort, which do not yet exist (§11.1).
 
@@ -383,9 +383,9 @@ Segment length distributions are near-identical between cohorts, overlapping acr
 
 The distribution also explains a limitation quantitatively. About a third of segments are shorter than 7.46 µm, twice the junction exclusion, and therefore cannot have the junction radius correction applied at all (§11.2).
 
-> **Figure 8.** `figure8_segment_length.png`. Segment length, one line per specimen, with twice the junction exclusion marked.
+> **Figure 8.** `figure8_segment_length.png`. Segment length, one line per specimen, with twice the junction exclusion (2 × 3.73 µm) marked. On the current batch the junction radius correction reaches 62–67% of edges.
 
-> **Figure 1.** `figure1_network_density.png`. Three panels, one per measure, each specimen plotted individually with the group mean as a rule. No bars: at n = 3 a bar of group means would conceal that WKY-C exceeds SHR-C and imply a precision three specimens cannot support.
+> **Figure 1.** `figure1_network_density.png`. Three panels, one per measure, each specimen plotted individually with the group mean as a rule, at threshold 0.95 on the placed ROI. No bars: at n = 3 a bar of group means would conceal the overlap and imply a precision three specimens cannot support. On the current batch SHR is +8.7% (β₁), +6.4% (junctions) and +2.2% (length) above WKY, the groups overlap in all three, and the exact permutation p is 0.60 / 0.60 / 0.80. The figure reads these from the per-edge tables; the §7 tables above predate the current batch.
 
 ---
 
@@ -420,7 +420,7 @@ The distance transform on a discrete grid can only return certain distances; eac
 
 The absolute values disqualify the measure independently: median calibre is 7.5–8.4 µm against an expected capillary range of 4–7 µm. The masks are over-inclusive, as the incomplete boundary labelling (§2.3) predicts. Diameters will change when that labelling is completed.
 
-> **Figure 2.** `figure2_diameter_distribution.png`. Left: cumulative distribution per specimen with the 1.87 µm quantisation grid drawn, so the discreteness of the measurement is visible rather than smoothed away. Right: the six group medians against one measurement step, all fitting inside it. The 0.10 µm gap is deliberately not drawn, because an arrow for it is illegible at any scale that also shows 1.87 µm, which is the finding rather than a limitation of the figure.
+> **Figure 2.** `figure2_diameter_distribution.png`. Left: cumulative distribution per specimen with the 1.87 µm quantisation grid drawn, so the discreteness of the measurement is visible rather than smoothed away. Right: the six specimen medians against one measurement step, all fitting inside it. On the current batch the medians separate completely (SHR < WKY; WKY 6.96–7.46 µm, SHR 5.87–6.46 µm) with a gap of 0.50 µm, 0.27 of one step, and exact p = 0.10, the floor at n = 3. Four of the six medians lie in the 4–7 µm window. The diameters are EDT values without the half-voxel bias correction (reference open item 42). The §8 tables above predate the current batch and quote a 0.10 µm gap.
 
 ---
 
