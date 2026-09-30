@@ -228,7 +228,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--verify", action="store_true",
-                        help="Cross-check that the exported frames overlay.")
+                        help="Cross-check that the exported frames overlay. Still writes the "
+                             "VTK files; the checks are printed as well.")
     args = parser.parse_args()
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
