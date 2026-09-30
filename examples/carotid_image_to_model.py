@@ -1381,7 +1381,7 @@ def _tag_perfusion_vti(vti_path, provenance):
     vol.save(vti_path)
 
 
-def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config=None):
+def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config=None, voxel_size=None):
     """
     Phase 5: Builds the Laplacian matrix, solves the flow equations,
     calculates comprehensive statistics, and exports all data to VTK files.
@@ -1458,9 +1458,12 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
 
     node_positions = nx.get_node_attributes(G, "pos")
     # Calculate physical and topological statistics (e.g. total length, mean tortuosity, degree distribution)
+    # voxel_size is the spacing the graph was built with. Without it the image volume was
+    # a voxel count labelled micron³, 6.5x too small (re-run notes item 10).
     stats = statistics.compute_comprehensive_vessel_statistics(
         G,
         node_positions=node_positions,
+        voxel_size=voxel_size,
         image_dimensions=image.shape,
     )
     # The settings dict stays out of the flat statistics; the config already records them.
@@ -2121,7 +2124,8 @@ def carotid_image_to_model(image_path: Path | str,
         print(f"Loaded graph from: {graph_path}")
 
     starting_nodes, output_nodes, resistance_node_pair = _setup_boundary_conditions_and_haemodynamics(G, image, hemo_config, graph_config, image_path, input_format, binary=binary)
-    _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config)
+    _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nodes, resistance_node_pair, hemo_config, vis_config, pipeline_config, perf_config,
+                                    voxel_size=_resolve_voxel_size(image_path, input_format))
     
 def update_dataclass_from_dict(obj, config_dict):
     """Updates a dataclass instance with values from a dictionary, then re-runs its checks.

@@ -330,6 +330,7 @@ def test_synthetic_network_statistics(tmp_path: Path) -> None:
     stats = compute_comprehensive_vessel_statistics(
         G,
         node_positions=node_positions,
+        voxel_size=(1.0, 1.0, 1.0),
         image_dimensions=(60, 20, 60),
         statistics_mode="fast",
     )

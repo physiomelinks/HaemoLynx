@@ -363,7 +363,21 @@ def compute_vessel_density(
     image_dimensions,
     is_multigraph: bool,
 ) -> Dict[str, Any]:
-    """Compute vessel density."""
+    """Compute vessel length per unit volume against two volumes, both in micron³.
+
+    - Node bounding-box volume: the axis-aligned box around the node positions
+      (already in microns). It is a graph-extent volume, not a tissue volume.
+    - Total image volume: ``image_dimensions`` times ``voxel_size``. ``voxel_size``
+      must be given with ``image_dimensions``; without it the "micron³" would be a
+      voxel count (re-run notes item 10).
+
+    Neither is the parenchymal density H1 §1.3 asks for (reference §7.2).
+    """
+    if image_dimensions is not None and voxel_size is None:
+        raise ValueError(
+            "compute_vessel_density needs voxel_size with image_dimensions; "
+            "without it the image volume would be in voxels, not micron³."
+        )
     if is_multigraph:
         lengths = [
             d.get("weight", d.get("length", 0))
@@ -384,18 +398,18 @@ def compute_vessel_density(
             vol = np.prod(
                 positions.max(axis=0) - positions.min(axis=0)
             )
-            out["Vessel Density in Tissue (microns/micron³)"] = (
+            out["Vessel Density in Node Bounding Box (microns/micron³)"] = (
                 total_length / vol if vol > 0 else 0
             )
-            out["Vessel-Occupied Volume (micron³)"] = vol
+            out["Node Bounding-Box Volume (micron³)"] = vol
         else:
-            out["Vessel Density in Tissue (microns/micron³)"] = (
+            out["Vessel Density in Node Bounding Box (microns/micron³)"] = (
                 "N/A (no position data)"
             )
     else:
-        out["Vessel Density in Tissue (microns/micron³)"] = "N/A (no position data)"
+        out["Vessel Density in Node Bounding Box (microns/micron³)"] = "N/A (no position data)"
 
-    if image_dimensions is not None and voxel_size is not None:
+    if image_dimensions is not None:
         img_vol = np.prod(
             [d * v for d, v in zip(image_dimensions, voxel_size)]
         )
@@ -645,7 +659,7 @@ def compute_betweenness_and_community_measurements(
 def compute_comprehensive_vessel_statistics(
     G: Union[nx.Graph, nx.MultiGraph],
     node_positions: Optional[dict] = None,
-    voxel_size=(1.0, 1.0, 1.0),
+    voxel_size=None,
     image_dimensions=None,
     statistics_mode: str = "fast",
 ) -> Dict[str, Any]:

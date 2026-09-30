@@ -83,7 +83,8 @@ def test_compute_vessel_density(simple_graph):
 def test_compute_comprehensive_vessel_statistics(simple_graph):
     pos = nx.get_node_attributes(simple_graph, "pos")
     s = compute_comprehensive_vessel_statistics(
-        simple_graph, node_positions=pos, image_dimensions=(10, 10, 10)
+        simple_graph, node_positions=pos, voxel_size=(1, 1, 1),
+        image_dimensions=(10, 10, 10),
     )
     assert "Total Nodes" in s
     assert "Fractal Dimension" in s
@@ -218,3 +219,60 @@ def test_per_edge_export_carries_the_junction_trim_provenance():
     assert "untrimmed_too_short" in by_trim
     # Edges never measured by EDT carry no trim tag at all, rather than a misleading one.
     assert None in by_trim
+
+
+def test_image_volume_applies_the_voxel_size(simple_graph):
+    """Re-run notes item 10: the image volume ignored the voxel size, 6.5x too small on CB."""
+    pos = nx.get_node_attributes(simple_graph, "pos")
+    s = compute_vessel_density(simple_graph, pos, (2.0, 1.0, 0.5), (10, 10, 10), False)
+    assert s["Total Image Volume (micron³)"] == pytest.approx(1000.0)
+    assert s["Vessel Density in Whole Image (microns/micron³)"] == pytest.approx(2.0 / 1000.0)
+
+
+def test_image_volume_without_a_voxel_size_raises(simple_graph):
+    pos = nx.get_node_attributes(simple_graph, "pos")
+    with pytest.raises(ValueError, match="voxel_size"):
+        compute_vessel_density(simple_graph, pos, None, (10, 10, 10), False)
+    with pytest.raises(ValueError, match="voxel_size"):
+        compute_comprehensive_vessel_statistics(
+            simple_graph, node_positions=pos, image_dimensions=(10, 10, 10))
+
+
+def test_no_image_dimensions_needs_no_voxel_size(simple_graph):
+    pos = nx.get_node_attributes(simple_graph, "pos")
+    s = compute_vessel_density(simple_graph, pos, None, None, False)
+    assert s["Vessel Density in Whole Image (microns/micron³)"] == "N/A (no image dimension data)"
+
+
+def test_bounding_box_volume_is_named_for_what_it_is():
+    """The node-extent box is not a tissue volume, so its keys say "bounding box"."""
+    G = nx.Graph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([2.0, 3.0, 4.0]))
+    G.add_edge(0, 1, length=6.0)
+    s = compute_vessel_density(G, nx.get_node_attributes(G, "pos"), (1, 1, 1), None, False)
+    assert s["Node Bounding-Box Volume (micron³)"] == pytest.approx(24.0)
+    assert s["Vessel Density in Node Bounding Box (microns/micron³)"] == pytest.approx(0.25)
+    assert "Vessel-Occupied Volume (micron³)" not in s
+    assert "Vessel Density in Tissue (microns/micron³)" not in s
+
+
+@pytest.mark.parametrize("script", [
+    "carotid_image_to_model.py",
+    "resistance_network_pipeline.py",
+    "resistance_network_pipeline_for_Alice.py",
+])
+def test_pipelines_pass_the_voxel_size_to_the_statistics(script):
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).parent.parent / "examples" / script).read_text()
+    calls = [
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "compute_comprehensive_vessel_statistics"
+    ]
+    assert calls, f"{script} no longer calls compute_comprehensive_vessel_statistics"
+    for call in calls:
+        assert "voxel_size" in {kw.arg for kw in call.keywords}, (
+            f"{script}:{call.lineno} computes statistics without voxel_size")

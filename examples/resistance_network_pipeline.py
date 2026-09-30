@@ -1404,6 +1404,7 @@ def image_to_model_pipeline(image_path=INPUT_PATH,
         stats = statistics.compute_comprehensive_vessel_statistics(
             G,
             node_positions=node_positions,
+            voxel_size=voxel_size,
             image_dimensions=image.shape,
             statistics_mode=statistics_mode,
         )
