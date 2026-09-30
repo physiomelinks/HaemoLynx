@@ -141,3 +141,63 @@ LOAD_RUN_TOOLTIP = (
     "Clear the current HaemoLynx layers and state, then restore a saved "
     "pipeline run so the viewer looks as it did when that run finished"
 )
+#: "10. Post processing" tab.
+POST_PROCESSING_TOOLTIPS: dict[str, str] = {
+    "scan": (
+        "Look at the last run's network and list every junction where four "
+        "or more vessels meet"
+    ),
+    "junctions": (
+        "Junctions where four or more vessels meet; click one to zoom to it "
+        "and list its vessels below"
+    ),
+    "table": (
+        "The vessels meeting at the chosen junction; click or shift/ctrl-click "
+        "rows to select vessels, drawn thick and yellow in the viewer"
+    ),
+    "delete": (
+        "Remove the selected vessels; a junction left joining just two "
+        "vessels is merged into one, and inlets, outlets and boundary nodes "
+        "are never removed"
+    ),
+    "split": (
+        "Turn the chosen junction into bifurcations: the two vessels leaving "
+        "in the most similar directions move to a new node joined back by a "
+        "connector vessel of the length beside this button"
+    ),
+    "connector": (
+        "Length of the connector vessel a split inserts between the two new "
+        "bifurcations, in microns"
+    ),
+    "leave": "Keep the chosen junction as it is and move on to the next one",
+    "click_delete": (
+        "Then click vessels in the viewer to remove them, one per click; "
+        "inlets, outlets and boundary nodes are never cut off"
+    ),
+    "add": (
+        "Then click two nodes in the viewer to join them with a new vessel, "
+        "routed through the segmented image where it can be (straight where "
+        "not), with the mean diameter of the vessels already at those nodes"
+    ),
+    "stop": "Stop deleting or adding by clicking in the viewer",
+    "branch_ids": (
+        "The branchIDs to delete, as the vessel hover shows them, separated "
+        "by commas or spaces; Enter deletes them"
+    ),
+    "delete_ids": (
+        "Delete the vessels with the branchIDs typed beside this button; "
+        "inlets, outlets and boundary nodes are never cut off"
+    ),
+    "prune": (
+        "Remove every piece of the network that no longer has both an inlet "
+        "and an outlet, such as a branch whose only link to the rest was deleted"
+    ),
+    "log": (
+        "Every change made in this tab, oldest first, with the branchIDs as "
+        "they were when it was made; the same lines go to the napari log"
+    ),
+    "regenerate": (
+        "Rerun Diameters, Haemodynamics, Solve, Perturbations and Export on "
+        "the edited network, so the 3D view and outputs catch up with the edits"
+    ),
+}

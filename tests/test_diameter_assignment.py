@@ -240,6 +240,20 @@ def test_set_edge_diameter_override_survives_resume_even_when_fwhm_is_present():
     assert summary["diameters"]["table"] == 3
 
 
+def test_override_beats_the_table_when_nothing_measures_the_vessel():
+    """A table-only run (FWHM off) keeps a hand-set diameter, e.g. a vessel
+    drawn in the post-processing tab; its neighbours still take the table."""
+    graph = _network()
+    set_edge_diameter_override(graph[1][2][0], 9.0)
+    stamped, summary, _raw = assign_edge_diameters(graph, _config())
+    assert stamped[1][2][0]["diameter_source"] == DIAMETER_SOURCE_OVERRIDE
+    assert stamped[1][2][0]["diameter_um"] == pytest.approx(9.0)
+    assert summary["diameters"]["override"] == 1
+    assert summary["diameters"]["table"] == stamped.number_of_edges() - 1
+    others = {k: v for k, v in _sources(stamped).items() if k[:2] != (1, 2)}
+    assert set(others.values()) == {DIAMETER_SOURCE_TABLE}
+
+
 def test_resume_keeps_measured_and_override_and_does_not_remeasure(monkeypatch):
     def boom(*_args, **_kwargs):
         raise AssertionError("FWHM must not be remeasured when the toggle is off")
