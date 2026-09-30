@@ -99,3 +99,18 @@ def test_main_returns_the_within_specimen_ratio_it_prints(propagation, capsys):
     out = capsys.readouterr().out
     assert np.isfinite(ratio)
     assert f"-> {ratio:.1f}%)" in out
+
+
+_CALIBRE_INPUTS = Path(__file__).resolve().parents[1] / "examples" / "outputs"
+
+
+@pytest.mark.skipif(not (_CALIBRE_INPUTS / "cb_h1_sensitivity").is_dir()
+                    or not (_CALIBRE_INPUTS / "cb_h1_batch").is_dir(),
+                    reason="needs the batch and sensitivity outputs (gitignored)")
+def test_the_propagation_default_is_the_measured_threshold_shift(capsys):
+    """THRESHOLD_SHIFT_UM is copied from cb_h2_threshold_calibre.py; fail when it drifts."""
+    import cb_h2_error_propagation
+    import cb_h2_threshold_calibre
+
+    shift = cb_h2_threshold_calibre.main()
+    assert round(shift, 3) == cb_h2_error_propagation.THRESHOLD_SHIFT_UM

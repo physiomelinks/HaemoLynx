@@ -58,6 +58,7 @@ def median_calibre(path):
 
 
 def main():
+    """Print the per-specimen table and return the mean shift over the clean interval."""
     print(f"{'specimen':10}" + "".join(f"{label:>9}" for label, _ in RUNS)
           + f"{LOWER + '->' + FROZEN:>13}{FROZEN + '->' + UPPER:>13}")
     table = []
@@ -90,6 +91,7 @@ def main():
     print("Feed the measured shift into the network solve with:")
     print(f"  venv/bin/python examples/cb_h2_error_propagation.py "
           f"--perturbation-um {clean.mean():.3f}")
+    return float(clean.mean())
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ conductances rather than merged.
 Run with::
 
     venv/bin/python examples/cb_h2_error_propagation.py
-    venv/bin/python examples/cb_h2_error_propagation.py --perturbation-um 0.690
+    venv/bin/python examples/cb_h2_error_propagation.py --perturbation-um 0.740
 """
 import argparse
 import csv
@@ -71,9 +71,10 @@ FACE_TOLERANCE = cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS
 # The in-plane voxel edge; the perturbation is quoted in these units.
 VOXEL_UM = PROCESSING_VOXEL_UM[1]
 # Median calibre shift over the clean threshold interval below the frozen value, averaged over
-# the six specimens. Measured by cb_h2_threshold_calibre.py, not assumed: 0.690 um over 0.93 to
-# 0.95 on the placed ROI (2026-09-28 re-run); it was 0.922 over 0.85 to 0.90 on centre crops.
-THRESHOLD_SHIFT_UM = 0.690
+# the six specimens. Measured by cb_h2_threshold_calibre.py, not assumed: 0.740 um over 0.93 to
+# 0.95 on the placed ROI, with the sensitivity runs holding the frozen seed (open item 41). It was
+# 0.690 while the 0.93 run seeded at 0.98, and 0.922 over 0.85 to 0.90 on centre crops.
+THRESHOLD_SHIFT_UM = 0.740
 DRAWS = 24
 SEED = 20260815
 
