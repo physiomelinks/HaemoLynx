@@ -23,7 +23,7 @@ pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import (  # noqa: E402
     DISPLAY_SETTINGS_OFF_IN_NAPARI,
-    FORCED_HIDDEN_EXPORT_SETTINGS,
+    FORCED_HIDDEN_SETTINGS,
     OURS,
     ROW_LABEL_MAX_WIDTH,
     forced_hidden_value,
@@ -209,7 +209,7 @@ def test_an_untouched_panel_reads_back_the_schema_defaults(panel):
         setting.name: DISPLAY_SETTINGS_OFF_IN_NAPARI.get(setting.name, setting.default)
         for setting in schema
     }
-    for name in FORCED_HIDDEN_EXPORT_SETTINGS:
+    for name in FORCED_HIDDEN_SETTINGS:
         defaults[name] = forced_hidden_value(name, defaults)
     expected = schema.validate(defaults)
     assert resolved == expected
@@ -265,8 +265,8 @@ def test_forced_hidden_export_settings_have_no_row_but_keep_their_value(panel):
     _show_tab(widget, "Additional measurements")
 
     values = widget._haemolynx_values()
-    assert "compute_vascular_communities" not in FORCED_HIDDEN_EXPORT_SETTINGS
-    for name in FORCED_HIDDEN_EXPORT_SETTINGS:
+    assert "compute_vascular_communities" not in FORCED_HIDDEN_SETTINGS
+    for name in FORCED_HIDDEN_SETTINGS:
         assert rows[name].visible is False, name
         assert values[name] == forced_hidden_value(name, values), name
 

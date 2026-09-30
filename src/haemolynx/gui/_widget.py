@@ -35,6 +35,15 @@ from haemolynx.gui.form import (
     prerequisite_chain,
     shared_ilastik_host,
 )
+from haemolynx.gui.diameter_source import (
+    BOTH_ON_NOTE,
+    DIAMETER_SOURCES,
+    DIAMETER_SOURCE_LABEL,
+    DIAMETER_SOURCE_SETTINGS,
+    both_on,
+    settings_for,
+    source_from,
+)
 from haemolynx.gui.layers import input_for_layer, voxel_size_xyz_from_scale
 from haemolynx.gui.layout import (
     Disclosure,
@@ -174,19 +183,24 @@ DISPLAY_SETTINGS_OFF_IN_NAPARI = {
 
 #: Settings that are not a per-run decision, so they get no row of their
 #: own: flow_direction_colouring/flow_arrow_scale are cosmetics for a layer
-#: that is always added anyway. A value is either a constant or a function of
-#: the other settings. Never parented as flat tab rows, forced on every call
-#: to ``apply_prerequisites`` so a loaded config cannot silently change one
-#: with no visible control to notice it by.
-FORCED_HIDDEN_EXPORT_SETTINGS: dict[str, Any] = {
+#: that is always added anyway, and the two FWHM label values are the
+#: numbers the rasterised branch label volume marks background and junction
+#: voxels with -- internal bookkeeping, held at the schema's defaults. A
+#: value is either a constant or a function of the other settings. Never
+#: parented as flat tab rows, forced on every call to ``apply_prerequisites``
+#: so a loaded config cannot silently change one with no visible control to
+#: notice it by.
+FORCED_HIDDEN_SETTINGS: dict[str, Any] = {
     "flow_direction_colouring": True,
     "flow_arrow_scale": 1.0,
+    "fwhm_background_label": 0,
+    "fwhm_junction_label": -1,
 }
 
 
 def forced_hidden_value(name: str, values: Mapping[str, Any]) -> Any:
-    """The value a FORCED_HIDDEN_EXPORT_SETTINGS entry takes given ``values``."""
-    forced = FORCED_HIDDEN_EXPORT_SETTINGS[name]
+    """The value a FORCED_HIDDEN_SETTINGS entry takes given ``values``."""
+    forced = FORCED_HIDDEN_SETTINGS[name]
     return forced(values) if callable(forced) else forced
 
 #: What napari calls the log window's dock.
@@ -629,21 +643,29 @@ class _AdvancedDisclosure:
         self._retitle()
 
 
-def _box_containers(layout: TabLayout, rows: Mapping[str, Any], disclosures: dict, lead=()):
+def _box_containers(
+    layout: TabLayout, rows: Mapping[str, Any], disclosures: dict, lead=(), replacements=None
+):
     """One labelled Container per box of *layout*, with its Advanced buttons in place.
 
     *lead* (a tab's summary line) heads the first box when that box is
     untitled. Every button made is recorded in *disclosures* by its key.
+    *replacements* draws a panel control in a row's place, or nothing for a
+    row mapped to None: the row still anchors its Advanced buttons.
     """
     from magicgui.widgets import Container
 
+    replacements = replacements or {}
     made: list[tuple[Any, Any]] = []
     lead = list(lead)
     for index, box in enumerate(layout.boxes):
         widgets = lead if (index == 0 and box.title is None) else []
         buttons = []
         for item in box.items:
-            if isinstance(item, str):
+            if isinstance(item, str) and item in replacements:
+                if replacements[item] is not None:
+                    widgets.append(replacements[item])
+            elif isinstance(item, str):
                 widgets.append(rows[item])
             else:
                 disclosure = _AdvancedDisclosure(item, rows)
@@ -663,7 +685,15 @@ def _box_containers(layout: TabLayout, rows: Mapping[str, Any], disclosures: dic
     return made
 
 
-def _lay_out_boxes(layout: TabLayout, rows: Mapping[str, Any], *, disclosures: dict, group_boxes: dict, lead=()):
+def _lay_out_boxes(
+    layout: TabLayout,
+    rows: Mapping[str, Any],
+    *,
+    disclosures: dict,
+    group_boxes: dict,
+    lead=(),
+    replacements=None,
+):
     """Draw *layout*: untitled boxes as plain runs of rows, titled ones as group boxes.
 
     Returns the drawn page and each box's Container by key. A titled box is
@@ -677,7 +707,9 @@ def _lay_out_boxes(layout: TabLayout, rows: Mapping[str, Any], *, disclosures: d
     page_layout = QVBoxLayout(page)
     page_layout.setContentsMargins(0, 0, 0, 0)
     containers: dict[str, Any] = {}
-    for box, container in _box_containers(layout, rows, disclosures, lead=lead):
+    for box, container in _box_containers(
+        layout, rows, disclosures, lead=lead, replacements=replacements
+    ):
         if box is None or box.title is None:
             page_layout.addWidget(container.native)
         else:
@@ -8257,13 +8289,36 @@ def settings_widget(napari_viewer=None):
             rows[name].visible = False
             orphan_holder.append(rows[name])
 
-    # FORCED_HIDDEN_EXPORT_SETTINGS: never parented as a flat Export row for
+    # FORCED_HIDDEN_SETTINGS: never parented as a flat tab row for
     # the same reason as the perturbation rows above -- park them in the
     # same hidden holder rather than leaving them as a floating window.
-    for name in FORCED_HIDDEN_EXPORT_SETTINGS:
+    for name in FORCED_HIDDEN_SETTINGS:
         if name in rows:
             rows[name].visible = False
             orphan_holder.append(rows[name])
+
+    # FWHM and the endothelial measurement are alternatives, so the Diameters
+    # tab shows one "Diameter measurement" choice where their two checkboxes
+    # were (see haemolynx.gui.diameter_source). The checkboxes still hold the
+    # two settings a config file saves -- parked, never shown -- and the
+    # choice writes them.
+    diameter_source = ComboBox(
+        label=DIAMETER_SOURCE_LABEL,
+        choices=list(DIAMETER_SOURCES),
+        value=source_from({name: rows[name].value for name in DIAMETER_SOURCE_SETTINGS}),
+    )
+    from haemolynx.gui.chrome_tooltips import DIAMETER_SOURCE_TOOLTIP
+
+    diameter_source.tooltip = DIAMETER_SOURCE_TOOLTIP
+    diameter_source.native.setObjectName("haemolynx_diameter_source")
+    for name in DIAMETER_SOURCE_SETTINGS:
+        rows[name].visible = False
+        orphan_holder.append(rows[name])
+    #: The first checkbox's place takes the choice; the second's takes nothing.
+    diameter_source_places = {
+        DIAMETER_SOURCE_SETTINGS[0]: diameter_source,
+        DIAMETER_SOURCE_SETTINGS[1]: None,
+    }
 
     #: Stages that lay their own page out, keyed by the stage function they
     #: belong to rather than by the tab's title, so renaming a tab cannot
@@ -8313,12 +8368,12 @@ def settings_widget(napari_viewer=None):
         summary = Label(value=tab.stage.summary)
         build = pages.get(tab.stage.call or "")
         # Shared ilastik knobs start unparented; place_shared_ilastik hosts
-        # them. FORCED_HIDDEN_EXPORT_SETTINGS are parked in orphan_holder.
+        # them. FORCED_HIDDEN_SETTINGS are parked in orphan_holder.
         names = [
             field.name
             for field in tab.fields
             if field.name not in SHARED_ILASTIK_SETTING_SET
-            and field.name not in FORCED_HIDDEN_EXPORT_SETTINGS
+            and field.name not in FORCED_HIDDEN_SETTINGS
         ]
         if build is not None:
             native = build(summary, names)
@@ -8334,6 +8389,7 @@ def settings_widget(napari_viewer=None):
                 disclosures=advanced_disclosures,
                 group_boxes=section_group_boxes,
                 lead=[summary],
+                replacements=diameter_source_places,
             )
             if tab.stage.call == "segment":
                 input_boxes = containers
@@ -8563,7 +8619,7 @@ def settings_widget(napari_viewer=None):
         # a dependent row reading a forced value to compute its own `enabled`
         # would otherwise use the stale, not-yet-forced value.
         values = current_values()
-        for name in FORCED_HIDDEN_EXPORT_SETTINGS:
+        for name in FORCED_HIDDEN_SETTINGS:
             forced = forced_hidden_value(name, values)
             if name in rows and rows[name].value != forced:
                 rows[name].value = forced
@@ -8575,14 +8631,16 @@ def settings_widget(napari_viewer=None):
                 widget.enabled = True
                 widget.tooltip = fields[name].help
                 continue
-            if name in orphaned_perturbation_rows:
+            if name in orphaned_perturbation_rows or name in DIAMETER_SOURCE_SETTINGS:
                 # Never parented as flat tab rows; typed editors clone their
-                # own widgets. Do not reveal — visible + no parent is a window.
+                # own widgets, and the Diameter measurement choice stands for
+                # the two diameter checkboxes. Do not reveal — visible + no
+                # parent is a window.
                 widget.visible = False
                 widget.enabled = True
                 widget.tooltip = fields[name].help
                 continue
-            if name in FORCED_HIDDEN_EXPORT_SETTINGS:
+            if name in FORCED_HIDDEN_SETTINGS:
                 # Value already pinned above -- just keep it hidden.
                 widget.visible = False
                 widget.enabled = True
@@ -8622,6 +8680,9 @@ def settings_widget(napari_viewer=None):
             )
         if perturbations is not None:
             perturbations.refresh_entries()
+
+        # The Diameter measurement choice shows while its settings apply.
+        diameter_source.visible = chain_met(DIAMETER_SOURCE_SETTINGS[0], values)
 
         # Large-vessel-network mode relabels the thick-vessel checkbox: once
         # both are on, "thick vessel skeletonisation" is no longer the
@@ -8663,6 +8724,69 @@ def settings_widget(napari_viewer=None):
 
     for widget in rows.values():
         widget.changed.connect(apply_prerequisites)
+
+    #: True while one side of the Diameter measurement choice is writing the
+    #: other, so the write does not echo back.
+    diameter_source_syncing = {"active": False}
+
+    def on_diameter_source_chosen(*_args) -> None:
+        """The choice -> its two settings."""
+        if diameter_source_syncing["active"]:
+            return
+        wanted = settings_for(str(diameter_source.value))
+        diameter_source_syncing["active"] = True
+        try:
+            # Off before on, so the two are never both on, even for a moment.
+            for name in sorted(wanted, key=lambda n: wanted[n]):
+                if rows[name].value != wanted[name]:
+                    rows[name].value = wanted[name]
+        finally:
+            diameter_source_syncing["active"] = False
+
+    def diameter_settings_now() -> dict[str, Any]:
+        return {name: rows[name].value for name in DIAMETER_SOURCE_SETTINGS}
+
+    def show_diameter_source() -> None:
+        chosen = source_from(diameter_settings_now())
+        if diameter_source.value != chosen:
+            diameter_source_syncing["active"] = True
+            try:
+                diameter_source.value = chosen
+            finally:
+                diameter_source_syncing["active"] = False
+
+    def settle_both_on() -> None:
+        """Both still on once the load is done: keep FWHM, and say so.
+
+        The one combination the choice cannot show, and a run refuses.
+        Checked once the event loop is back, not as each row is set: a
+        config switching from the endothelium to FWHM is loaded one setting
+        at a time, and passes through both on without meaning it.
+        """
+        if not both_on(diameter_settings_now()):
+            return
+        diameter_source_syncing["active"] = True
+        try:
+            rows[DIAMETER_SOURCE_SETTINGS[1]].value = False
+        finally:
+            diameter_source_syncing["active"] = False
+        report.value = BOTH_ON_NOTE
+        logger.warning(BOTH_ON_NOTE)
+        show_diameter_source()
+
+    def on_diameter_setting_changed(*_args) -> None:
+        """Its two settings -> the choice: a loaded config, or a test, set them."""
+        if diameter_source_syncing["active"]:
+            return
+        if both_on(diameter_settings_now()):
+            from qtpy.QtCore import QTimer
+
+            QTimer.singleShot(0, settle_both_on)
+        show_diameter_source()
+
+    diameter_source.changed.connect(on_diameter_source_chosen)
+    for name in DIAMETER_SOURCE_SETTINGS:
+        rows[name].changed.connect(on_diameter_setting_changed)
 
     #: User-facing values of the resume skip toggles before Revert turns them
     #: off. Restored by "Clear layers and state".
@@ -10456,6 +10580,7 @@ def settings_widget(napari_viewer=None):
                 editor.advanced.toggle(expanded)
 
     panel._haemolynx_advanced = advanced_disclosures
+    panel._haemolynx_diameter_source = diameter_source
     panel._haemolynx_expand_advanced = expand_advanced
     panel._haemolynx_shared_ilastik_block = shared_ilastik_block
     panel._haemolynx_input_boxes = input_boxes

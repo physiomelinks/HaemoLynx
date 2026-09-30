@@ -15,7 +15,7 @@ import pytest
 napari = pytest.importorskip("napari")
 pytest.importorskip("magicgui")
 
-from haemolynx.gui._widget import settings_widget  # noqa: E402
+from haemolynx.gui._widget import FORCED_HIDDEN_SETTINGS, settings_widget  # noqa: E402
 from haemolynx.gui.perturbation_editing import visible_tab_settings  # noqa: E402
 from haemolynx.gui.tabs import tabs_for  # noqa: E402
 from haemolynx.pipeline import default_schema  # noqa: E402
@@ -159,7 +159,7 @@ def test_every_advanced_setting_the_panel_lays_out_is_behind_a_button(panel):
         for setting in SCHEMA
         if setting.advanced
         and setting.name not in elsewhere
-        and setting.name not in {"flow_direction_colouring", "flow_arrow_scale"}
+        and setting.name not in FORCED_HIDDEN_SETTINGS
         and setting.name not in behind
     ]
     assert missing == []

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from haemolynx.gui._widget import FORCED_HIDDEN_SETTINGS
 from haemolynx.gui.boundary_picking import ROLES, role_settings, shared_settings
 from haemolynx.gui.form import SHARED_ILASTIK_SETTING_SET
 from haemolynx.gui.layout import (
@@ -30,9 +31,8 @@ from haemolynx.pipeline import default_schema
 
 SCHEMA = default_schema()
 
-#: Rows the panel does not lay out as ordinary tab rows: each has a place of
-#: its own (see haemolynx.gui._widget.settings_widget).
-FORCED_HIDDEN = {"flow_direction_colouring", "flow_arrow_scale"}
+#: Rows the panel gives no row at all (see haemolynx.gui._widget.settings_widget).
+FORCED_HIDDEN = set(FORCED_HIDDEN_SETTINGS)
 
 
 def _tab_names(tab) -> list[str]:

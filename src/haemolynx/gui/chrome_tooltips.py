@@ -208,6 +208,15 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     ),
 }
 
+#: Diameters tab — the one choice standing for use_fwhm_edge_diameters and
+#: use_endothelial_diameters, which cannot both be on.
+DIAMETER_SOURCE_TOOLTIP = (
+    "Where each vessel's diameter is measured first: FWHM across the plasma "
+    "label in the raw image, the lumen inside an endothelial stain's wall, or "
+    "neither; a vessel with no measurement falls back to the mask estimate if "
+    "it is on, then the diameter table"
+)
+
 #: Every tab — the button that shows or hides the less common settings
 #: belonging to the row above it.
 ADVANCED_SETTINGS_TOOLTIP = (

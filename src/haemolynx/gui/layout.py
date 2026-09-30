@@ -534,7 +534,6 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
             ),
         ),
         ("Per-vessel width", ("fwhm_edge_diameter_aggregation",)),
-        ("Internal label values", ("fwhm_background_label", "fwhm_junction_label")),
     ),
     "statistics_network_analysis": (
         (
