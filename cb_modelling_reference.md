@@ -3352,8 +3352,9 @@ between an answerable question and an unanswerable one.
 > of 5.9% (5.5% before the sensitivity runs held the seed, open item 41; 4.7% before the floor moved
 > onto the face-rule boundaries, package C): not a fourfold margin, and only β₁ (8.7%) and junction
 > density (6.4%) clear it at all, junction density by half a point. (The floor is for flow-derived ratios;
-> β₁ and the densities are topological counts, which calibre does not move, §13.10.) Whether and how to restate the claim is
-> left to the H1 write-up.
+> β₁ and the densities are topological counts, which calibre does not move, §13.10.) The H1
+> whitepaper, re-quoted 2026-09-30 (package N), restates the claim on these numbers (§7.2, §12):
+> β₁ and junction density "Provisional (weak)", length density "Not supported".
 
 **One residual, in the ratio itself.** The per-specimen shift is uneven — 0.380 µm (WKY-B) to
 1.093 µm (SHR-C) — so the correlated error is not identical across specimens and does not cancel
@@ -3504,7 +3505,9 @@ stop at 10⁻⁵ adds at most 0.10 mmHg per cell on WKY-A, 0.009 mmHg in the med
 > voxel**, and the groups **do not overlap** (smallest WKY 6.96 against largest SHR 6.46). Within-group
 > spread is 0.50 µm (WKY) and 0.59 µm (SHR), smaller than the gap. The gap is still below one
 > voxel, and the threshold alone moves calibre 0.740 µm (§13.2), with a larger shift in SHR than in
-> WKY (§13.3). Whether calibre stays "not reportable" is not re-argued here.
+> WKY (§13.3). The H1 whitepaper §8.2 (re-quoted 2026-09-30, package N) re-argues it and keeps
+> calibre not reportable: the gap is below one voxel, the groups touch at 0.93 and 0.97, and both
+> the group-correlated threshold shift and the EDT bias (open item 42) are larger than the gap.
 
 The between-group calibre gap sat at **one twentieth of the smallest resolvable difference**.
 Within-group spread was 0.45 µm (WKY) and 0.34 µm (SHR) — three to four times the gap itself.
@@ -3526,9 +3529,9 @@ sensitivity analysis, not a proof, and it remains the stated bound on any TH-cha
 
 | Claim type | Supported? |
 |---|---|
-| Within-specimen ratios of flow-derived quantities | **Yes** — ±5.9% floor. *Needs review:* the 27–40% H1 effects this was set against are 2–9% at 0.95 (§13.3) |
+| Within-specimen ratios of flow-derived quantities | **Yes** — ±5.9% floor. *Needs review:* the 27–40% H1 effects this was set against are 2–9% at 0.95 (§13.3); H1 whitepaper §7.2 re-quoted on them |
 | Absolute flow, velocity or perfusion | **No** — ±47% floor, 2–4× with the boundary rule, and up to 1.8× above physiological at 60/20 mmHg (§13.5) |
-| Between-group calibre differences | **No** — the stated reason was a gap of 1/20 of the measurement step. *Needs review:* at 0.95 the gap is half a voxel and the groups do not overlap (§13.8) |
+| Between-group calibre differences | **No** — the stated reason was a gap of 1/20 of the measurement step. *Needs review:* at 0.95 the gap is half a voxel and the groups do not overlap (§13.8); H1 whitepaper §8.2 keeps it not reportable on other grounds |
 | Glomus-specific hypoxic fraction as a number | **No** — the mechanism cannot operate (§13.6); report as a curve in the assumed metabolic contrast. *Needs review:* TH hypoxia is now 0 everywhere, while PO₂ in TH separates the groups (§7.5) |
 | Between-group TH-channel contrasts | **Qualified** — bounded by §13.9's sensitivity analysis, not by proof |
 | Topological counts (β₁) | **Yes** — unaffected by calibre, and stub pruning cannot move it |
