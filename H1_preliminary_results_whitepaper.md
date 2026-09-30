@@ -4,6 +4,16 @@
 
 *ImageLynx / `carotid_image_to_model` · branch `cb_pipeline_improvements_sweep` · Dale Sasis*
 
+> ⚠ **Partly out of date (noted 2026-09-30).** Only §9A (§1.3 and §1.5) has been re-quoted on the
+> current analysis: vessel threshold 0.95 with a 0.999 hysteresis seed, regions placed on tissue
+> (`place_roi`), and the batch network (`examples/outputs/cb_h1_batch/`). §2 to §9, the summary
+> table below and the claim ledger rows that cite them are still on the tissue-centred boxes at
+> 0.90 and have **not** been re-quoted. On the current batch the SHR/WKY group-mean ratios are β₁
+> density 1.087, junction density 1.064 and length density 1.022, and the groups overlap on every
+> density (`cb_modelling_reference.md` §13.3), against the 1.40 / 1.34 / 1.27 below. The figures
+> have their own open item (package D in `pipeline_rerun_2026-09-29_notes.md`). A full re-quote is
+> a separate piece of work.
+
 ---
 
 ## 0. Executive summary
@@ -28,11 +38,11 @@ Four checks show that the segmentation is not producing this difference. The dir
 
 **Reproducing the analysis at three thresholds leaves the direction unchanged**, so the result is not an artefact of the one parameter that most directly controls how much tissue is called vessel.
 
-**Verdict.** All five sub-methods have a working implementation. §1.1 is implemented and measuring what it was specified to measure. §1.2 is implemented but below the resolution required to support a claim. §1.4 is implemented but confounded. §1.3 and §1.5 are implemented and reported for both cohorts (§9A), with the between-group contrast held stable across three TH classifiers spanning an elevenfold change in cohort skew and a seventyfold change in class balance (§9A.5).
+**Verdict.** All five sub-methods have a working implementation. §1.1 is implemented and measuring what it was specified to measure. §1.2 is implemented but below the resolution required to support a claim. §1.4 is implemented but confounded. §1.3 and §1.5 are implemented and reported for both cohorts on the batch network (§9A); neither separates the cohorts. On the old vessel set their contrast held across three TH classifiers spanning an elevenfold change in cohort skew and a seventyfold change in class balance (§9A.5).
 
 Implementation is not the same as answerability. Four of the five are answerable within the limits of n = 3; §1.2 is not answerable at any labelling effort with the current voxel size.
 
-The TH-dependent measures add a second, independent line of evidence to §1.1's. SHR carotid bodies in this sample carry **less TH-positive parenchyma (0.60×) that is more densely vascularised (1.27×)**, the latter separating the cohorts without overlap.
+The TH-dependent measures, re-quoted on the batch network (§9A), point the same way as §1.1's but separate nothing. SHR carotid bodies in this sample carry **less TH-positive parenchyma (0.61×) that is more densely vascularised (1.18×)**, and the cohorts overlap on both: SHR-A has more TH volume than WKY-A, and SHR-C's length density is below every WKY value.
 
 ---
 
@@ -44,9 +54,9 @@ H1 and its five sub-methods are defined in `hypothesis_testing_methods.md`; that
 |---|---|---|---|
 | **1.1** | Topological node counting | **Implemented** | Graph extraction yields nodes, degree distribution and β₁ |
 | **1.2** | EDM geometric profiling | **Implemented, not conclusive** | Estimator runs on 100% of edges; calibre resolution insufficient (§8) |
-| **1.3** | Proportional capillary density | **Implemented** | Length density separates the cohorts without overlap (§9A.3) |
+| **1.3** | Proportional capillary density | **Implemented, overlapping** | Length density 1.18× in SHR; SHR-C sits below every WKY value (§9A.3) |
 | **1.4** | Tortuosity | **Implemented, confounded** | Correlates with segmentation inclusiveness (§9) |
-| **1.5** | Tissue-to-vessel distance | **Implemented, weakest of the three** | Cohorts overlap; rests on two specimens of three (§9A.3) |
+| **1.5** | Tissue-to-vessel distance | **Implemented, no difference** | 0.97×; cohorts overlap, SHR-C furthest of all six (§9A.3) |
 
 §1.3 and §1.5 require a parenchymal landmark to measure against, which the vessel segmentation alone cannot supply. A second two-class Ilastik project segments the TH channel of the same acquisitions, and both methods are implemented in `ImageLynx.statistics.th_morphometry`. The same capability supports all four H2 perfusion methods, which depend on TH-masked analyses.
 
@@ -436,65 +446,76 @@ Both are reported for the full cohort. They are placed together because they sha
 
 §1.3 asks for the parenchymal volume of the TH-positive glomus clusters, and for centreline length density *within* those clusters rather than within the whole region. §1.5 asks for the distance from every TH-positive voxel to the nearest lectin-positive centreline.
 
-Both are joins between the two channels, which is only sound because they are two channels of a single `ZCYX` acquisition on an identical grid: co-registered by construction, with no registration step to introduce error. Both channels are cropped to the same region (§5.3) and the vessel channel is thresholded at the same frozen 0.9 (§5.2).
+Both are joins between the two channels, which is only sound because they are two channels of a single `ZCYX` acquisition on an identical grid: co-registered by construction, with no registration step to introduce error. Both channels are cropped to the same placed region.
+
+**The vessel side is the batch network** (re-quoted 2026-09-30, `cb_modelling_reference.md` open item 40). Both measures read the graph, skeleton and mask of the `cb_h1_batch` run, which come from the frozen hysteresis band (0.95, seed 0.999), so §1.3 and §1.5 describe the same vessels as §1.1. Until then this section cut the probability map plainly at 0.90 and skeletonised that itself, a different vessel set with about 1.6 times the skeleton voxels.
 
 Two definitional choices are worth stating because the obvious alternative is wrong in each case.
 
-**Length is summed over steps, not counted in voxels.** A 26-connected diagonal step spans 3.23 µm on this grid where an axial step spans 1.87. Counting skeleton voxels understates a tortuous path by up to √3, and §1.4 turns on tortuosity, so the two measures must not disagree about what length means. Within a mask, a step is counted only when both of its endpoints are inside it; a step straddling the boundary belongs to neither side.
+**Length is the network's edge polylines, not a count of voxels or voxel pairs.** Counting skeleton voxels understates a diagonal path by up to √3; summing every 26-adjacent voxel pair fixes that but counts all three links where three voxels meet at a corner, 9 to 28% too much. The polyline length has neither bias, and it is the length §1.1 uses: the total equals the sum over `per_edge_morphometry.csv` in every specimen (WKY-A 96.96 mm). Each edge is split into sub-steps of half a voxel and the share of sub-step midpoints inside the TH mask sets the length inside, so a boundary crossing is placed to within about 1 µm. The lookup is centred on the voxel; until item 40 it was half a voxel off on every axis.
 
 **Distance is to the centreline, not the vessel surface.** The two differ by the local radius. On a capillary that is roughly 1.5 µm everywhere, which would be absorbed into any group difference rather than appearing as one, and §1.2 has already established that this instrument cannot resolve calibre well enough to correct for it.
 
 ### 9A.2 Per-specimen values
 
-At TH probability > 0.5, vessel > 0.9, in the same 0.0266 mm³ region as §7 to §9.
+At TH probability > 0.5, on the batch network, in the same 0.0266 mm³ region as §1.1.
 
 | Specimen | Group | TH volume (mm³) | TH % of region | Centreline in region (mm) | Centreline within TH (mm) | §1.3 length density (mm·mm⁻³) | §1.5 TVD median (µm) |
 |---|---|---|---|---|---|---|---|
-| WKY-A | WKY | 0.00537 | 20.21% | 168.63 | 17.42 | 3,241.9 | 7.69 |
-| WKY-B | WKY | 0.00924 | 34.77% | 141.42 | 28.98 | 3,134.9 | 7.69 |
-| WKY-C | WKY | 0.00635 | 23.90% | 147.80 | 20.63 | 3,246.9 | 7.69 |
-| SHR-A | SHR | 0.00540 | 20.32% | 179.43 | 25.07 | 4,640.0 | 6.73 |
-| SHR-B | SHR | 0.00455 | 17.10% | 163.36 | 18.63 | 4,099.4 | 6.98 |
-| SHR-C | SHR | 0.00254 | 9.57% | 164.04 | 8.91 | 3,503.4 | 7.69 |
+| WKY-A | WKY | 0.00555 | 20.87% | 96.96 | 13.22 | 2,382.4 | 8.55 |
+| WKY-B | WKY | 0.00885 | 33.28% | 81.53 | 19.95 | 2,255.4 | 9.14 |
+| WKY-C | WKY | 0.00625 | 23.51% | 83.54 | 15.16 | 2,425.3 | 8.55 |
+| SHR-A | SHR | 0.00595 | 22.38% | 101.02 | 19.68 | 3,307.8 | 7.92 |
+| SHR-B | SHR | 0.00397 | 14.92% | 87.28 | 12.08 | 3,044.7 | 7.92 |
+| SHR-C | SHR | 0.00258 | 9.70% | 79.41 | 5.16 | 1,998.8 | 9.70 |
 
-Tissue-to-vessel distributions, over 0.39 to 1.42 million TH-positive voxels per specimen:
+Tissue-to-vessel distributions, over 0.40 to 1.36 million TH-positive voxels per specimen:
 
 | Specimen | p25 | median | p75 | p90 |
 |---|---|---|---|---|
-| WKY-A | 5.27 | 7.69 | 10.22 | 12.52 |
-| WKY-B | 5.28 | 7.69 | 10.71 | 13.19 |
-| WKY-C | 5.27 | 7.69 | 10.22 | 13.19 |
-| SHR-A | 4.17 | 6.73 | 9.33 | 11.80 |
-| SHR-B | 4.17 | 6.98 | 9.50 | 11.79 |
-| SHR-C | 5.27 | 7.69 | 10.88 | 14.56 |
+| WKY-A | 5.89 | 8.55 | 11.50 | 14.33 |
+| WKY-B | 5.90 | 9.14 | 11.94 | 14.69 |
+| WKY-C | 5.90 | 8.55 | 11.50 | 14.57 |
+| SHR-A | 5.60 | 7.92 | 11.03 | 14.21 |
+| SHR-B | 5.60 | 7.92 | 10.88 | 13.58 |
+| SHR-C | 6.72 | 9.70 | 13.71 | 18.85 |
+
+The distances are longer than they were on the plain-cut skeleton (7.69 µm in every WKY specimen), because the network's skeleton is sparser.
 
 ### 9A.3 Group comparison
 
 | Measure | WKY | SHR | Ratio | Ranges overlap? |
 |---|---|---|---|---|
-| §1.3 parenchymal volume | 0.00699 mm³ | 0.00416 mm³ | **0.60** | Yes, at one point |
-| §1.3 length density | 3,208 mm·mm⁻³ | 4,081 mm·mm⁻³ | **1.27** | **No** |
-| §1.5 TVD median | 7.69 µm | 7.13 µm | **0.93** | Yes |
+| §1.3 parenchymal volume | 0.00688 mm³ | 0.00417 mm³ | **0.61** | Yes |
+| §1.3 length density | 2,354 mm·mm⁻³ | 2,784 mm·mm⁻³ | **1.18** | Yes |
+| §1.5 TVD median | 8.75 µm | 8.51 µm | **0.97** | Yes |
 
-**Length density separates the cohorts completely.** The highest WKY value (3,246.9) is below the lowest SHR value (3,503.4). For n = 3 against 3 that is the most extreme arrangement available, and its exact two-sided permutation p is 2/20 = 0.10, the floor for this design. No stronger statistical statement is attainable from six specimens, and none is made.
+**Nothing separates the cohorts.** On the plain-cut vessel set, length density did (3,208 against 4,081, no overlap). On the network it does not: SHR-A and SHR-B sit well above every WKY specimen (3,308 and 3,045 against at most 2,425), but SHR-C, at 1,999, sits below every one. The mean ratio of 1.18 is two specimens against one.
 
-**The other two overlap and are weaker.** SHR-A's parenchymal volume (0.00540) marginally exceeds WKY-A's (0.00537), so the 0.60 ratio is a difference in group means whose ranges touch. On tissue-to-vessel distance SHR-C sits exactly on the WKY value, so that difference rests on two specimens of three and should be treated as the weakest of the three.
+**Parenchymal volume is lower in SHR on average, with overlap.** SHR-A's TH volume (0.00595 mm³) exceeds WKY-A's (0.00555), so the 0.61 ratio is a difference in group means whose ranges intersect. It barely moved with the change of vessel set, as it should: it does not involve the vessels.
 
-Read together, SHR carotid bodies in this sample have **less TH-positive parenchyma, more densely vascularised**. That is consistent with §7.2, which finds SHR vessel length density per unit region 1.27 times higher by an independent route, and with §1.1's loop and junction densities. It is *not* consistent with the prior §1.3 cites, which is addressed in §10.
+**Tissue-to-vessel distance does not differ.** WKY runs 8.55 to 9.14 µm and SHR 7.92 to 9.70; SHR-A and SHR-B are closer to their vessels than any WKY specimen, SHR-C further than any.
+
+Read together, the direction is still **less TH-positive parenchyma, more densely vascularised** in SHR, but it now rests on SHR-A and SHR-B, with SHR-C on the other side of WKY in both density and distance. SHR-C also has the smallest glomus volume by a factor of 1.5 and the fewest vessels inside it (5.2 mm of centreline), so it is the least precisely measured specimen of the six. The direction is still *not* consistent with the prior §1.3 cites, which is addressed in §10.
 
 ### 9A.4 Threshold sensitivity
 
-The TH threshold is not frozen the way the vessel threshold is, because no equivalent selection exercise has been run for it. All three values are reported.
+The TH threshold is frozen at 0.5 (`cb_settings.TH_THRESHOLD`) without a selection exercise of its own, so all three values are reported.
 
 | TH threshold | WKY volume (mm³) | SHR volume (mm³) | Ratio | WKY density | SHR density | Ratio | WKY TVD | SHR TVD | Ratio |
 |---|---|---|---|---|---|---|---|---|---|
-| 0.5 | 0.00699 | 0.00416 | 0.60 | 3,208 | 4,081 | 1.27 | 7.69 | 7.13 | 0.93 |
-| 0.7 | 0.00595 | 0.00352 | 0.59 | 2,892 | 3,830 | 1.32 | 7.77 | 7.20 | 0.93 |
-| 0.9 | 0.00453 | 0.00266 | 0.59 | 2,489 | 3,456 | 1.39 | 7.92 | 7.29 | 0.92 |
+| 0.5 | 0.00688 | 0.00417 | 0.61 | 2,354 | 2,784 | 1.18 | 8.75 | 8.51 | 0.97 |
+| 0.7 | 0.00584 | 0.00353 | 0.60 | 2,197 | 2,663 | 1.21 | 8.87 | 8.63 | 0.97 |
+| 0.9 | 0.00444 | 0.00266 | 0.60 | 1,978 | 2,494 | 1.26 | 9.07 | 8.82 | 0.97 |
 
-Absolute parenchymal volume falls by a third across the range, so **no absolute level here is a result**. Every ratio is stable: parenchymal volume within 0.01, tissue-to-vessel distance within 0.01, and length density strengthening slightly as the threshold rises, which is the direction expected if a more conservative TH mask retains the densest parenchyma.
+Absolute parenchymal volume falls by a third across the range, so **no absolute level here is a result**. Parenchymal volume and tissue-to-vessel distance hold their ratios within 0.01. Length density strengthens as the threshold rises (1.18 to 1.26), the direction expected if a more conservative TH mask keeps the densest parenchyma, but the overlap does not go away: SHR-C is below every WKY specimen at every threshold.
 
 ### 9A.5 Sensitivity to the TH labelling
+
+> **Measured on the old vessel set.** The three-classifier comparison below was run when §9A used
+> the plain-cut 0.90 skeleton and the voxel-pair length. It has not been repeated on the batch
+> network. It tests whether the TH labelling can produce the contrast, which does not depend on
+> the vessel set, but the density ratios it quotes (1.27 to 1.28) are the old ones.
 
 The quantity most likely to manufacture a spurious group difference is the composition of the TH training set. A classifier whose positive examples come predominantly from one cohort may not generalise to the other; one whose labels are overwhelmingly background will under-call the class being measured; and one trained on labels far from any tissue boundary learns little about where that boundary lies. The contrast was therefore evaluated against three TH classifiers spanning all three properties.
 
@@ -524,13 +545,11 @@ Absolute levels moved as expected. WKY parenchymal volume runs 0.00769, 0.00778 
 
 **What it does not establish.** That the segmentation is accurate in absolute terms; §9A.4 shows the absolute levels are threshold-dependent and no claim is made about them. Nor does it substitute for labelled ground truth, which does not exist for either channel (§11.1). The analysis constrains how the *ratio* could arise, not how close the masks are to truth.
 
-### 9A.6 Two independent agreements
+### 9A.6 Two cross-checks
 
-Neither is proof, and both are recorded because neither was designed for.
+**The tissue-to-vessel distance is consistent with the perfusion grid's.** The H2 capability assessment measured a median of 5.3 to 7.9 µm from the perfusion grid on the old boxes, to decide whether a grid cell could resolve the oxygen gradient; `cb_modelling_reference.md` §13.7 measures 4.6 to 6.2 µm from every non-vessel voxel to the network's mask. §1.5 gives 7.9 to 9.7 µm from glomus voxels to the network's centreline. The differences are the expected ones (centreline against surface, glomus tissue against all tissue), and all three put tissue within about 10 µm of a vessel, against an oxygen diffusion length of 20 to 45 µm.
 
-**The tissue-to-vessel distance reproduces a figure obtained by a different route.** The H2 capability assessment measured a median TVD of 5.3 to 7.9 µm from the perfusion grid, to decide whether a 10 µm grid cell could resolve the oxygen gradient. §1.5 obtains 7.69 µm in WKY and 7.13 µm in SHR from the skeleton and the TH mask, with no shared code. Two methods agreeing on a quantity neither was tuned to is the best evidence available that it is being measured rather than constructed.
-
-**Length density within TH tracks vessel length density per region.** §7.2 reports SHR vessel length density per unit region 1.27 times WKY by a route that never touches the TH channel. §1.3 reports centreline length per unit TH volume at 1.27 times, from a different denominator. The agreement is not independent confirmation, since both share a numerator, but a large disagreement would have been evidence against the TH mask and there is none.
+**Length density within TH does not track length per region any more.** On the batch network the total centreline in the region is 1.02 times higher in SHR (WKY 87.3 mm, SHR 89.2 mm), while length per unit TH volume is 1.18 times. SHR actually has *less* centreline inside TH (12.3 mm against 16.1 mm on average), but its TH volume is smaller still (0.61×), so the density rises. The §1.3 contrast is the denominator, not more vessel. On the old vessel set the two agreed at 1.27, which this section used to report as a check on the TH mask.
 
 ---
 
@@ -551,7 +570,7 @@ Two readings are available and the data cannot presently distinguish them. Over-
 
 ### 10.1 The parenchymal prior, which the measurement opposes
 
-§1.3 of the hypothesis document states that CB parenchyma expands up to threefold in SHR through glomus and sustentacular cell hyperplasia. §9A.3 measures TH-positive parenchymal volume at **0.60 times** WKY: a contraction, not an expansion, and in the opposite direction to a prior that anticipated a factor of three.
+§1.3 of the hypothesis document states that CB parenchyma expands up to threefold in SHR through glomus and sustentacular cell hyperplasia. §9A.3 measures TH-positive parenchymal volume at **0.61 times** WKY (group means; the ranges overlap at SHR-A): a contraction, not an expansion, and in the opposite direction to a prior that anticipated a factor of three.
 
 A result that opposes its prior carries a higher burden than one that confirms it, and three things are worth separating.
 
@@ -559,9 +578,9 @@ A result that opposes its prior carries a higher burden than one that confirms i
 
 **The instrument is not obviously capable of producing it as an artefact.** The mechanism that would manufacture a low SHR parenchymal volume is a TH classifier that under-calls glomus in SHR. §9A.5 removes the three ways that could arise and the ratio does not move.
 
-**It is internally consistent with the vascular measures, which is not by itself evidence.** Less parenchyma with denser vasculature agrees with §7.2 and §1.1. But a smaller measured SHR parenchyma with unchanged vasculature would produce the same agreement, so the concordance does not discriminate between the biology and a segmentation offset shared by both.
+**On the batch network the density contrast is the parenchyma, not the vessels.** The region carries about the same centreline in both cohorts (1.02×) and SHR carries less of it inside TH, so the higher SHR density within TH comes from the smaller TH volume (§9A.6). A smaller measured SHR parenchyma with unchanged vasculature is exactly the case that could not be told apart from a segmentation offset, so the density adds no evidence of its own.
 
-The defensible statement is that within a matched, tissue-centred sub-volume, TH-positive parenchyma is lower in SHR and its vasculature denser. Whether that scales to the whole organ, and therefore whether it genuinely opposes the published prior, is not answerable from region-sampled data. Item 5 of §13 is the work that would settle it.
+The defensible statement is that within a matched, tissue-placed sub-volume, TH-positive parenchyma is lower in SHR on average, with overlapping ranges. Whether that scales to the whole organ, and therefore whether it genuinely opposes the published prior, is not answerable from region-sampled data. Item 5 of §13 is the work that would settle it.
 
 ---
 
@@ -579,7 +598,7 @@ Limitations are separated by what they constrain. Some bound what may be *claime
 
 **The TH classifier retains a 2.1× cohort skew.** Its positive class carries 24,935 labels in WKY against 11,673 in SHR (§2.3), above the 2× reporting threshold. §9A.5 constrains what that can be doing: the contrast is unchanged across classifiers spanning 22.9× to 2.1× skew, so a further reduction would be expected to change little. It remains the stated bound on §9A because the argument is a sensitivity analysis rather than a proof. *Resolution:* level the positive class between cohorts. Hours of GUI work; prediction is 6 minutes for all six.
 
-**No absolute accuracy claim is made for either TH quantity.** §9A.4 shows parenchymal volume falling by a third between TH thresholds 0.5 and 0.9 while every ratio holds within 0.01. The ratios are what this document reports; the absolute levels are threshold-dependent and are not results.
+**No absolute accuracy claim is made for either TH quantity.** §9A.4 shows parenchymal volume falling by a third between TH thresholds 0.5 and 0.9 while the volume and distance ratios hold within 0.01 and the density ratio moves from 1.18 to 1.26. The ratios are what this document reports; the absolute levels are threshold-dependent and are not results.
 
 **The TH threshold is not frozen.** The vessel threshold was selected by an explicit exercise and checked for a cohort split (§5.2, §6.1); no equivalent has been run for TH. §9A reports three values instead, and the absolute level moves by a third across them. *Resolution:* the same selection exercise, once the labelling supports it.
 
@@ -623,13 +642,13 @@ Each claim is graded: **Established** (evidenced and robust to the known limitat
 | C11 | Tortuosity differs between cohorts | §9 | r = +0.86 with inclusiveness | **Not supported** |
 | C12 | The absolute densities represent the whole organ | §5.3 | Region centred on signal | **Not supported** |
 | C13 | §1.3 and §1.5 are implemented and produce stable values | §9A.2, §9A.4 | Nine unit tests against hand arithmetic; four mutations caught | **Established** |
-| C14 | Centreline length density within glomus tissue is higher in SHR (+27%) | §9A.3 | Cohorts separate without overlap; p = 0.10, the design floor | **Provisional** |
-| C15 | TH-positive parenchymal volume is lower in SHR (0.60×) | §9A.3 | n = 3; ranges touch at one point; region-sampled, not whole-organ | **Provisional** |
-| C16 | Glomus-cell tissue sits closer to the vasculature in SHR (0.93×) | §9A.3 | SHR-C sits on the WKY value; rests on two specimens of three | **Provisional (weak)** |
-| C17 | The §9A contrast is not attributable to the TH labelling | §9A.5 | Ratios within 0.01 across three classifiers spanning 22.9× to 2.1× cohort skew and 1:59 to 1:0.8 class balance | **Established** |
+| C14 | Centreline length density within glomus tissue is higher in SHR (+18%) | §9A.3 | Ranges overlap: SHR-C is below every WKY value at every TH threshold; the contrast is the smaller TH volume, not more vessel (§9A.6). Separated without overlap (+27%) on the old plain-cut vessel set | **Not supported** (was Provisional) |
+| C15 | TH-positive parenchymal volume is lower in SHR (0.61×) | §9A.3 | n = 3; ranges overlap (SHR-A above WKY-A); stable across TH thresholds; region-sampled, not whole-organ | **Provisional** |
+| C16 | Glomus-cell tissue sits closer to the vasculature in SHR (0.97×) | §9A.3 | Ranges overlap; SHR-C is further than any WKY specimen | **Not supported** (was Provisional, weak) |
+| C17 | The §9A contrast is not attributable to the TH labelling | §9A.5 | Ratios within 0.01 across three classifiers spanning 22.9× to 2.1× cohort skew and 1:59 to 1:0.8 class balance; measured on the old vessel set, not repeated on the network | **Established** for the parenchymal volume, which does not involve the vessels; not re-measured for the density |
 | C18 | The §9A parenchymal result describes the whole organ | §10.1 | Measured in a 0.0266 mm³ tissue-centred region, roughly 1/40 of an organ | **Not supported** |
 
-The document's defensible position is C1–C3, C8, C13 and C17 (Established) plus C4–C6, C8b, C14 and C15 (Provisional). Nothing else should be presented as a result.
+The document's defensible position is C1–C3, C8, C13 and C17 (Established) plus C4–C6, C8b and C15 (Provisional). C4 to C6 and C8b are on the old boxes and have not been re-quoted (see the note at the top). Nothing else should be presented as a result.
 
 ---
 
