@@ -500,7 +500,17 @@ def test_rows_keep_the_schema_order_within_a_tab():
 def test_vessel_mask_settings_live_on_boundaries_not_graph():
     """Volume-assignment masks configure Boundaries, not graph topology."""
     owner = assign_to_stages(SCHEMA)
-    mask_names = list(SCHEMA.section_names("Vessel masks"))
+    # Declared under Vessel masks because they name which masks, but read by
+    # skeletonisation's thickness gate, so their rows sit on Skeletonise.
+    on_skeletonise = {
+        "skeleton_thick_vessel_restrict_to_mask",
+        "skeleton_thick_vessel_restrict_to_mask_warn_below",
+    }
+    for name in on_skeletonise:
+        assert owner[name] == "2. Skeletonise", name
+    mask_names = [
+        name for name in SCHEMA.section_names("Vessel masks") if name not in on_skeletonise
+    ]
     assert mask_names[0] == "automated_vessel_assignment"
     for name in mask_names:
         assert owner[name] == "4. Boundaries", name
@@ -579,6 +589,13 @@ def test_input_ilastik_fields_declare_hide_when_unmet():
     assert fields["ilastik_timeout_seconds"].is_visible(on)
 
 
+#: The smoothing settings each read by one smoothing method only.
+_SMOOTHING_METHOD_OF = {
+    "segmentation_cleanup_smooth_sigma_um": "gaussian",
+    "segmentation_cleanup_smooth_morphological_radius_um": "morphological",
+}
+
+
 def test_segmentation_cleanup_fields_are_on_input_and_declare_hide_when_unmet():
     """All seven cleanup toggles nest under the segmentation_cleanup master
 
@@ -633,7 +650,21 @@ def test_segmentation_cleanup_fields_are_on_input_and_declare_hide_when_unmet():
         master_off_too = {"segmentation_cleanup": False, toggle: True}
         for child in children:
             assert fields[child].hide_when_unmet
-            assert SCHEMA[child].requires == ("segmentation_cleanup", toggle)
+            method = _SMOOTHING_METHOD_OF.get(child)
+            if method is None:
+                assert SCHEMA[child].requires == ("segmentation_cleanup", toggle)
+            else:
+                # A smoothing radius also needs the method that reads it.
+                assert SCHEMA[child].requires == (
+                    "segmentation_cleanup",
+                    toggle,
+                    f"segmentation_cleanup_smooth_method={method}",
+                )
+                cleanup_on = {**cleanup_on, "segmentation_cleanup_smooth_method": method}
+                other = {"gaussian": "morphological", "morphological": "gaussian"}[method]
+                assert not fields[child].is_visible(
+                    {**cleanup_on, "segmentation_cleanup_smooth_method": other}
+                )
             assert not fields[child].is_visible(cleanup_off)
             assert fields[child].is_visible(cleanup_on)
             # Regression: a child used to check only its own immediate
@@ -810,8 +841,14 @@ def test_measurement_3d_fields_on_export_declare_hide_when_unmet():
     assert fields["measurement_3d_to_cell_mask"].is_visible({})
     assert not fields["statistics"].hide_when_unmet
 
-    off = {"measurement_3d_to_cell_mask": False, "statistics": False}
-    on = {"measurement_3d_to_cell_mask": True, "statistics": False}
+    # HDF5 files, so the dataset-name rows have a dataset to name and show too.
+    h5_paths = {
+        "cell_mask_path": "cells.h5",
+        "measurement_3d_vessel_mask_path": "vessels.h5",
+        "measurement_3d_reference_image_path": "reference.h5",
+    }
+    off = {"measurement_3d_to_cell_mask": False, "statistics": False, **h5_paths}
+    on = {"measurement_3d_to_cell_mask": True, "statistics": False, **h5_paths}
     for name in _MEASUREMENT_3D_CHILDREN:
         assert fields[name].hide_when_unmet, name
         assert SCHEMA[name].requires == ("measurement_3d_to_cell_mask",), name
@@ -859,7 +896,7 @@ def test_every_tab_starts_with_a_number_so_the_order_is_visible(title):
 # --- group-box titles -----------------------------------------------------------
 
 
-def test_the_haemodynamics_tab_titles_its_blood_model_box_haemodynamics_settings():
+def test_the_haemodynamics_tab_titles_its_blood_model_box_blood_model():
     """The viscosity/haematocrit rows are declared in "Diameters and
     pericytes", but on "6. Haemodynamics" that name describes another tab."""
     from haemolynx.gui.tabs import section_box_title, tabs_for
@@ -868,7 +905,7 @@ def test_the_haemodynamics_tab_titles_its_blood_model_box_haemodynamics_settings
     sections = {field.section for field in haemodynamics.fields}
     assert DIAMETERS_AND_PERICYTES in sections
 
-    assert section_box_title("build_haemodynamic_model", DIAMETERS_AND_PERICYTES) == "Haemodynamics settings"
+    assert section_box_title("build_haemodynamic_model", DIAMETERS_AND_PERICYTES) == "Blood model"
 
 
 def test_a_box_title_changes_only_on_its_own_tab_and_not_the_section():

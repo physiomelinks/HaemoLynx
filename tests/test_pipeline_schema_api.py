@@ -18,7 +18,13 @@ import pytest
 
 yaml = pytest.importorskip("yaml")
 
-from haemolynx.parsers import ConfigError, Schema, load_config  # noqa: E402
+from haemolynx.parsers import (  # noqa: E402
+    ConfigError,
+    Schema,
+    load_config,
+    parse_prerequisite,
+    prerequisite_name,
+)
 from haemolynx.pipeline import default_schema, write_default_config  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -215,14 +221,16 @@ def _first_unmet_prerequisite(setting) -> tuple[str, object]:
     prerequisite unmet -- ``all()`` over requires means unmeeting just one
     is enough to make the whole setting ineffective."""
     prerequisite = setting.requires[0]
-    if "=" in prerequisite:
-        name, _, expected = prerequisite.partition("=")
+    name, test, expected = parse_prerequisite(prerequisite)
+    if test == "equals":
         choices = default_schema()[name].choices or ()
         other = next((c for c in choices if c != expected), expected)
         return name, other
-    if prerequisite.startswith("!"):
-        return prerequisite[1:], True
-    return prerequisite, False
+    if test == "not_equals":
+        return name, expected
+    if test == "off":
+        return name, True
+    return name, False
 
 
 def test_every_requires_prerequisite_names_a_real_setting():
@@ -238,7 +246,7 @@ def test_every_requires_prerequisite_names_a_real_setting():
         (setting.name, prerequisite)
         for setting in schema
         for prerequisite in (setting.requires or ())
-        if prerequisite.partition("=")[0].lstrip("!") not in names
+        if prerequisite_name(prerequisite) not in names
     ]
     assert bad == []
 

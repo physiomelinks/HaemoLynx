@@ -131,3 +131,15 @@ def test_must_exist_is_part_of_the_gui_description():
 def test_a_negated_prerequisite_names_a_real_setting():
     with pytest.raises(ConfigError, match="requires 'missing'"):
         Schema([Setting("a", "path", None, "Only", "S", requires=("!missing",))])
+
+
+def test_an_unset_path_needed_outside_one_mode_says_which_mode(tmp_path):
+    schema = Schema([
+        Setting("mode", "choice", "file", "Where masks come from", "S", choices=("file", "none")),
+        Setting(
+            "mask_path", "path", None, "Read this mask", "S",
+            requires=("mode!=none",), must_exist=True,
+        ),
+    ])
+    report = check_settings(schema, {"mode": "file", "mask_path": None})
+    assert any("'mode' is not 'none'" in message for message in report.errors)

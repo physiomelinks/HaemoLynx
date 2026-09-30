@@ -66,7 +66,8 @@ haemolynx/
 │   │                       #   settings), candidates/metrics (+ fwhm_ variants), report,
 │   │                       #   progress
 │   ├── gui/                # napari plugin: form.py (schema -> form rows, pure),
-│   │                       #   tabs.py (one tab per stage), progress.py (what the
+│   │                       #   tabs.py (one tab per stage), layout.py (each tab's
+│   │                       #   boxes and nested Advanced buttons, pure), progress.py (what the
 │   │                       #   progress bars read, pure), results.py (what each
 │   │                       #   stage puts in the viewer, pure), layers.py (an open
 │   │                       #   layer -> run settings, pure), boundary_picking.py
@@ -216,7 +217,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py` |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py` |
-| `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text |
+| `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text |
 | `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_citations.py`, `test_setting_units.py`, `test_example_configs.py` |
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py` |
 | Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
@@ -256,7 +257,11 @@ are only caught locally.
 - **Settings** — every setting is declared exactly once, in `pipeline/schema.py`, and the examples
   add their own on top of it (`examples/*_schema.py`). A new ilastik path or flag goes there, with
   its `requires`, so `pipeline/checks.py` can check it and the config file and the CLI both grow a
-  line for free.
+  line for free. A `requires` entry is `name` (a bool on), `!name` (off), `name=value` (a choice
+  holding one value) or `name!=value` (holding any other); read them through
+  `parsers.parse_prerequisite` rather than by hand. Mark a setting `advanced=True` unless most runs
+  change it: the panel then shows it behind an Advanced button under the row it depends on (see
+  `gui/layout.py`), and `tests/test_gui_layout.py` fails if it lands nowhere.
 - **Generated configs** — `examples/*_config.yaml` are written by `examples/regenerate_configs.py`
   from the schemas, never hand-edited: they carry each setting's help text, units and prerequisites
   as comments. Path values are serialised with `PurePath(...).as_posix()`, so regenerating on
@@ -444,6 +449,16 @@ are only caught locally.
   `log_view.py` (the only two that touch Qt, and only inside functions): settings in,
   layer specs out, layer data in, settings out, nothing importing napari. `rectangle_from_box` and
   `box_from_rectangle` are exact inverses, which is what lets an edited layer *be* the setting.
+- **`gui/layout.py`** — where each row sits on its tab. Most tabs get one box per schema section;
+  Input, Boundaries, Diameters, Haemodynamics and Export are grouped by hand (`TAB_BOXES`). Every
+  `advanced` setting goes behind an Advanced button anchored on the innermost ordinary row it
+  needs (so buttons nest as the settings do: the FWHM decoy check under "Do FWHM measurement",
+  under "Use FWHM edge diameters"), placed after that row's subtree; a child of an advanced toggle
+  shares its button. Buttons start closed and show how many hidden settings differ from where the
+  panel started (`changed_settings`). The panel follows each row's whole prerequisite chain
+  (`form.prerequisite_chain`), not only its own `requires`, so a row never outlives the toggle
+  above it. `_widget.py`'s `_AdvancedDisclosure` draws a button; tests open them all with
+  `panel._haemolynx_expand_advanced()`.
 - **`gui/layer_sets.py`** — what the view panel's "Showing" menu swaps: the baseline network or one
   perturbation's (vessels, nodes, flow direction, vessel tubes), every other network hidden, and
   which kinds of layer were on carried across. A perturbation's `LayerSpec`s carry

@@ -132,6 +132,12 @@ STAGES: tuple[Stage, ...] = (
             "skeleton_thick_vessel_max_bridge_radius_multiple",
             "skeleton_thick_vessel_max_bridge_distance_um",
             "skeleton_thick_vessel_bridge_radius_smoothing_um",
+            # Declared under Vessel masks (they name which masks), but it is
+            # this stage's thickness gate that reads them -- see
+            # stages._thick_vessel_restriction_mask -- so their rows sit
+            # beside the thick-vessel settings they change.
+            "skeleton_thick_vessel_restrict_to_mask",
+            "skeleton_thick_vessel_restrict_to_mask_warn_below",
             # A read-only check on the tree this stage just built -- see
             # preprocessing.thick_vessel_braid_guard.
             "detect_thick_vessel_braiding",

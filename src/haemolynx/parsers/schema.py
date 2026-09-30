@@ -41,6 +41,38 @@ KINDS = (
 
 _LIST_KINDS = {"int_list": int, "float_list": float, "str_list": str}
 
+#: What a prerequisite asks of the setting it names: switched on, switched
+#: off, holding one value, or holding anything but one value.
+PREREQUISITE_ON = "on"
+PREREQUISITE_OFF = "off"
+PREREQUISITE_EQUALS = "equals"
+PREREQUISITE_NOT_EQUALS = "not_equals"
+
+
+def parse_prerequisite(prerequisite: str) -> tuple[str, str, str | None]:
+    """``(name, test, expected)`` for one ``requires`` entry.
+
+    ``name`` asks for a bool to be on and ``!name`` for it to be off;
+    ``name=value`` asks a ``choice`` setting to hold one value and
+    ``name!=value`` to hold any other. *expected* is None for the two bool
+    forms. Every reader of a ``requires`` entry goes through this, so a form
+    cannot be understood in one place and misread in another.
+    """
+    if "!=" in prerequisite:
+        name, _, expected = prerequisite.partition("!=")
+        return name, PREREQUISITE_NOT_EQUALS, expected
+    if "=" in prerequisite:
+        name, _, expected = prerequisite.partition("=")
+        return name, PREREQUISITE_EQUALS, expected
+    if prerequisite.startswith("!"):
+        return prerequisite[1:], PREREQUISITE_OFF, None
+    return prerequisite, PREREQUISITE_ON, None
+
+
+def prerequisite_name(prerequisite: str) -> str:
+    """The setting a ``requires`` entry names, whatever it asks of it."""
+    return parse_prerequisite(prerequisite)[0]
+
 
 def is_prerequisite_met(prerequisite: str, values: Mapping[str, Any]) -> bool:
     """True when *prerequisite* holds in *values*.
@@ -50,14 +82,18 @@ def is_prerequisite_met(prerequisite: str, values: Mapping[str, Any]) -> bool:
     generate for itself, for instance. ``name=value`` instead asks whether a
     ``choice`` setting is holding one specific value, for a setting that
     only makes sense under one of several modes rather than one on/off
-    feature — see :func:`Schema.__init__`'s validation of this form.
+    feature, and ``name!=value`` whether it is holding any other -- for a
+    setting read by every mode but one -- see :func:`Schema.__init__`'s
+    validation of both forms.
     """
-    if "=" in prerequisite:
-        name, _, expected = prerequisite.partition("=")
+    name, test, expected = parse_prerequisite(prerequisite)
+    if test == PREREQUISITE_EQUALS:
         return values.get(name) == expected
-    if prerequisite.startswith("!"):
-        return not bool(values.get(prerequisite[1:], False))
-    return bool(values.get(prerequisite, False))
+    if test == PREREQUISITE_NOT_EQUALS:
+        return values.get(name) != expected
+    if test == PREREQUISITE_OFF:
+        return not bool(values.get(name, False))
+    return bool(values.get(name, False))
 
 
 def is_active(setting: "Setting", values: Mapping[str, Any]) -> bool:
@@ -69,15 +105,17 @@ def describe_unmet_prerequisite(prerequisite: str) -> str:
     """A sentence fragment naming why *prerequisite* (currently unmet) fails.
 
     Shared by every message that reports an unmet ``requires`` entry, so a
-    ``name=value`` prerequisite reads naturally everywhere ``!name``/``name``
-    already did.
+    ``name=value`` or ``name!=value`` prerequisite reads naturally everywhere
+    ``!name``/``name`` already did.
     """
-    if "=" in prerequisite:
-        name, _, expected = prerequisite.partition("=")
+    name, test, expected = parse_prerequisite(prerequisite)
+    if test == PREREQUISITE_EQUALS:
         return f"'{name}' is not {expected!r}"
-    if prerequisite.startswith("!"):
-        return f"'{prerequisite[1:]}' is true"
-    return f"'{prerequisite}' is false"
+    if test == PREREQUISITE_NOT_EQUALS:
+        return f"'{name}' is {expected!r}"
+    if test == PREREQUISITE_OFF:
+        return f"'{name}' is true"
+    return f"'{name}' is false"
 
 
 def section_key(section: str) -> str:
@@ -358,8 +396,8 @@ class Schema:
             by_name[setting.name] = setting
         for setting in settings:
             for prerequisite in setting.requires:
-                if "=" in prerequisite:
-                    name, _, expected = prerequisite.partition("=")
+                name, test, expected = parse_prerequisite(prerequisite)
+                if test in (PREREQUISITE_EQUALS, PREREQUISITE_NOT_EQUALS):
                     if name not in by_name:
                         raise ConfigError(
                             f"Setting '{setting.name}' requires '{name}', "
@@ -369,16 +407,15 @@ class Schema:
                     if target.kind != "choice":
                         raise ConfigError(
                             f"Setting '{setting.name}' requires "
-                            f"'{name}={expected}', but '{name}' is not a choice."
+                            f"'{prerequisite}', but '{name}' is not a choice."
                         )
                     if expected not in (target.choices or ()):
                         raise ConfigError(
                             f"Setting '{setting.name}' requires "
-                            f"'{name}={expected}', which is not one of "
+                            f"'{prerequisite}', which is not one of "
                             f"'{name}'s choices {list(target.choices or ())}."
                         )
                     continue
-                name = prerequisite.lstrip("!")
                 if name not in by_name:
                     raise ConfigError(
                         f"Setting '{setting.name}' requires '{name}', "

@@ -15,7 +15,16 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from haemolynx.parsers.schema import Schema, Setting, is_prerequisite_met
+from haemolynx.parsers.schema import (
+    PREREQUISITE_EQUALS,
+    PREREQUISITE_NOT_EQUALS,
+    PREREQUISITE_OFF,
+    Schema,
+    Setting,
+    is_prerequisite_met,
+    parse_prerequisite,
+    prerequisite_name,
+)
 
 #: Schema kind -> the magicgui widget that edits it. `any`, `mapping` and the
 #: list kinds have no dedicated widget, so they are edited as Python literals:
@@ -46,11 +55,11 @@ DEFAULT_FLOAT_RANGE = (-1e12, 1e12)
 #: children; Vessel masks nests under ``automated_vessel_assignment``;
 #: Diameters nests constant vs per-order tables and FWHM under its parents;
 #: Statistics nests cell-mask under its parent bool;
-#: EDT mask diameter estimate nests entirely under ``use_fwhm_edge_diameters``
-#: then ``use_edt_diameter_crosscheck`` -- its own diameter estimate only
-#: ever seeds, falls back for, or cross-checks a FWHM measurement (see
-#: haemodynamics.apply.assign_edge_diameters), so it has nothing to show
-#: while FWHM is off; Connectivity/Network Analysis nests entirely under
+#: EDT mask diameter estimate nests under ``use_edt_diameter_crosscheck``
+#: (the mask step of the diameter chain, after FWHM or the endothelium and
+#: before the table -- see haemodynamics.apply.assign_edge_diameters), with
+#: only its FWHM disagreement warning also needing FWHM on;
+#: Connectivity/Network Analysis nests entirely under
 #: ``statistics`` then its own ``statistics_network_analysis`` toggle, the
 #: same two-level pattern -- it groups every graph-theoretic connectivity
 #: measure (bridges, loops, centrality, community structure) apart from
@@ -88,7 +97,10 @@ SHARED_ILASTIK_SETTING_SET = frozenset(SHARED_ILASTIK_SETTINGS)
 #: one same-tab child in "Perturbation runs" -- the other settings in that
 #: section are only ever edited inside a perturbation entry's own typed
 #: editor, gated by that entry's type dropdown rather than this mechanism,
-#: so they are not listed here).
+#: so they are not listed here). ``cluster_collapse_method`` hides the knob
+#: each collapse method alone reads, and ``capillary_block_selection`` the
+#: vessels a capillary block's other way of choosing them would read, inside
+#: a perturbation entry.
 HIDE_WHEN_UNMET_PARENTS = frozenset(
     {
         "smooth_centrelines",
@@ -97,8 +109,31 @@ HIDE_WHEN_UNMET_PARENTS = frozenset(
         "show_plots_in_ide",
         "detect_cartwheel_hub_artifacts",
         "run_perturbations",
+        "cluster_collapse_method",
+        "capillary_block_selection",
     }
 )
+
+#: A dataset-name setting -> the path setting naming the file it is a dataset
+#: *of*. A dataset name means nothing unless that file is HDF5, so its row
+#: shows only while the path names one.
+H5_DATASET_SETTINGS: dict[str, str] = {
+    "cell_mask_h5_dataset_name": "cell_mask_path",
+    "measurement_3d_vessel_mask_h5_dataset_name": "measurement_3d_vessel_mask_path",
+    "measurement_3d_reference_h5_dataset_name": "measurement_3d_reference_image_path",
+    "pericyte_mask_h5_dataset_name": "pericyte_mask_path",
+}
+
+#: What the loaders read as HDF5 (see haemolynx.io.load).
+H5_SUFFIXES = frozenset({".h5", ".hdf5"})
+
+
+def is_h5_path(value: Any) -> bool:
+    """True when *value* names an HDF5 file by its suffix."""
+    if value is None:
+        return False
+    text = str(value).strip()
+    return bool(text) and Path(text).suffix.lower() in H5_SUFFIXES
 
 
 def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
@@ -193,7 +228,7 @@ class Field:
         if self.section in HIDE_WHEN_UNMET_SECTIONS:
             return True
         return any(
-            (rule[1:] if rule.startswith("!") else rule) in HIDE_WHEN_UNMET_PARENTS
+            prerequisite_name(rule) in HIDE_WHEN_UNMET_PARENTS
             for rule in self.enabled_by
         )
 
@@ -202,9 +237,14 @@ class Field:
 
         Shared ilastik rows use Input-tab visibility here (hosted on Input).
         Boundaries hosting is layered on by :func:`visible_vessel_mask_settings`.
+        An HDF5 dataset-name row (:data:`H5_DATASET_SETTINGS`) also needs the
+        file it names a dataset of to be HDF5.
         """
         if self.name in SHARED_ILASTIK_SETTING_SET:
             return shared_ilastik_host(values) == "input"
+        pair = H5_DATASET_SETTINGS.get(self.name)
+        if pair is not None and not is_h5_path(values.get(pair)):
+            return False
         if self.hide_when_unmet:
             return self.is_enabled(values)
         return True
@@ -216,14 +256,40 @@ class Field:
             return ""
         parts = []
         for rule in unmet:
-            if "=" in rule:
-                name, _, expected = rule.partition("=")
+            name, test, expected = parse_prerequisite(rule)
+            if test == PREREQUISITE_EQUALS:
                 parts.append(f"'{name}' is not '{expected}'")
-            elif rule.startswith("!"):
-                parts.append(f"'{rule[1:]}' is on")
+            elif test == PREREQUISITE_NOT_EQUALS:
+                parts.append(f"'{name}' is '{expected}'")
+            elif test == PREREQUISITE_OFF:
+                parts.append(f"'{name}' is on")
             else:
-                parts.append(f"'{rule}' is off")
+                parts.append(f"'{name}' is off")
         return f"Not used while {' and '.join(parts)}."
+
+
+def prerequisite_chain(schema: Schema, name: str) -> tuple[str, ...]:
+    """Every ``requires`` rule *name* depends on: its own, then its gates' own.
+
+    A setting's ``requires`` names only its nearest gates -- the FWHM decoy
+    check's sample size names the decoy check, not FWHM itself -- but it
+    takes effect only while every gate above those is met too. The panel
+    reads the whole chain, so a row never lingers after a toggle further up
+    has hidden the row it hangs under.
+    """
+    chain: list[str] = []
+    seen: set[str] = set()
+    pending = [name]
+    while pending:
+        current = pending.pop(0)
+        if current in seen or current not in schema:
+            continue
+        seen.add(current)
+        for rule in schema[current].requires:
+            if rule not in chain:
+                chain.append(rule)
+            pending.append(prerequisite_name(rule))
+    return tuple(chain)
 
 
 def _visible_settings_in_section(

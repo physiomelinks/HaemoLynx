@@ -24,7 +24,7 @@ input_and_segmentation:
   ilastik_output_dir: examples/outputs/segmentations
   # Give ilastik segmentation outputs this file suffix
   ilastik_output_suffix: .tif
-  # Override the voxel size with these (x, y, z) values instead of reading image metadata  [um]
+  # Override the voxel size with these (x, y, z) values instead of reading image metadata  [um; needs voxel_size_policy not metadata_only]
   voxel_size_override_xyz: null
   # Choose how the voxel size is resolved from metadata and the manual override  [one of: auto, override, metadata_only]
   voxel_size_policy: auto
@@ -70,9 +70,9 @@ input_and_segmentation:
   segmentation_cleanup_smooth_surfaces: false
   # How to smooth: gaussian blur-then-rethreshold is fast but slightly erodes thin/highly-curved vessels (worse the more curved), which biases their diameter and therefore resistance; morphological closing-then-opening avoids that threshold-driven bias, at the cost of coarser size control  [one of: gaussian, morphological; needs segmentation_cleanup and segmentation_cleanup_smooth_surfaces]
   segmentation_cleanup_smooth_method: gaussian
-  # Physical smoothing sigma for the gaussian method, sampled anisotropy-aware per axis from voxel_size_zyx  [um; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_smooth_surfaces]
+  # Physical smoothing sigma for the gaussian method, sampled anisotropy-aware per axis from voxel_size_zyx  [um; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_smooth_surfaces and segmentation_cleanup_smooth_method = gaussian]
   segmentation_cleanup_smooth_sigma_um: 1.0
-  # Physical closing/opening radius for the morphological method, sampled anisotropy-aware per axis from voxel_size_zyx  [um; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_smooth_surfaces]
+  # Physical closing/opening radius for the morphological method, sampled anisotropy-aware per axis from voxel_size_zyx  [um; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_smooth_surfaces and segmentation_cleanup_smooth_method = morphological]
   segmentation_cleanup_smooth_morphological_radius_um: 1.0
   # Remove small disconnected segmented volumes, before skeletonisation  [needs segmentation_cleanup]
   segmentation_cleanup_remove_small_volumes: false
@@ -167,7 +167,7 @@ vessel_masks:
   large_vessel_mask_min_overlap_fraction: 0.5
   # Classify every voxel inside the chosen mask(s) as fat/thick directly -- skeleton_thick_vessel_min_radius_um does not gate it there, only its own local radius does elsewhere. Off (the default), local radius alone decides, which can sweep dense, complex vasculature into one large connected 'fat' region purely because it locally measures wide, or -- the opposite failure -- miss a real large vessel entirely when it never reaches the radius threshold anywhere (an artery imaged before full muscularisation can measure narrower everywhere than its paired vein, for instance). 'large' needs use_large_vessel_masks; 'small' needs use_small_vessel_masks_for_boundary_assignment; 'both' needs both. If the mask has no overlap with the segmented image at all, skeletonisation falls back to plain Lee on the whole mask, same as when no fat trunk is present today  [one of: off, large, small, both; needs use_thick_vessel_skeletonisation]
   skeleton_thick_vessel_restrict_to_mask: 'off'
-  # Log a warning instead of an info line when fewer than this fraction of a large/small vessel mask's own voxels fall on the segmented image, while skeleton_thick_vessel_restrict_to_mask is using it -- see preprocessing.thick_vessels.diagnose_mask_restriction_alignment. A low fraction usually means that mask is misaligned with, or a different shape than, the vessel as it actually appears in the segmented image, so much of it contributes nothing to the fat catchment regardless of wall absorption. Reported per mask (large arteriole and venule counted separately), not blended  [range 0.0..1.0; needs use_thick_vessel_skeletonisation]
+  # Log a warning instead of an info line when fewer than this fraction of a large/small vessel mask's own voxels fall on the segmented image, while skeleton_thick_vessel_restrict_to_mask is using it -- see preprocessing.thick_vessels.diagnose_mask_restriction_alignment. A low fraction usually means that mask is misaligned with, or a different shape than, the vessel as it actually appears in the segmented image, so much of it contributes nothing to the fat catchment regardless of wall absorption. Reported per mask (large arteriole and venule counted separately), not blended  [range 0.0..1.0; needs use_thick_vessel_skeletonisation and skeleton_thick_vessel_restrict_to_mask not off]
   skeleton_thick_vessel_restrict_to_mask_warn_below: 0.5
   # Assign arteriole and venule boundary nodes from small-vessel masks  [needs automated_vessel_assignment]
   use_small_vessel_masks_for_boundary_assignment: false
@@ -422,9 +422,9 @@ pipeline_stages:
   cluster_collapse_distance: 5.0
   # distance_only collapses every node within cluster_collapse_distance of another however far that chains -- the original behaviour. direction_aware additionally refuses a merge that would turn the collapsed node's incident edges into a cartwheel shape (see the cartwheel hub guard below), leaving separate nodes where proximity alone could not tell two nearby real junctions apart. persistence cuts each local cluster at its own natural gap in single-linkage merge distance (0-dimensional persistent homology) instead of one global distance -- see graph.persistence_collapse  [one of: distance_only, direction_aware, persistence; needs do_graph_building]
   cluster_collapse_method: distance_only
-  # Only used by cluster_collapse_method=direction_aware: refuse a merge whose combined incident edges would disperse to at most this much (0 = spread evenly in every direction, 1 = all leave the same way) -- the same reading as the cartwheel hub guard's own threshold, kept separate so the two can be tuned independently  [range 0.0..1.0]
+  # Only used by cluster_collapse_method=direction_aware: refuse a merge whose combined incident edges would disperse to at most this much (0 = spread evenly in every direction, 1 = all leave the same way) -- the same reading as the cartwheel hub guard's own threshold, kept separate so the two can be tuned independently  [range 0.0..1.0; needs do_graph_building and cluster_collapse_method = direction_aware]
   cluster_collapse_max_radial_dispersion: 0.5
-  # Only used by cluster_collapse_method=persistence: how many multiples of cluster_collapse_distance to search for candidate pairs -- wider than the ordinary collapse distance, so a genuine persistence gap has room to appear on both sides of it. See graph.persistence_collapse  [range 0.0..]
+  # Only used by cluster_collapse_method=persistence: how many multiples of cluster_collapse_distance to search for candidate pairs -- wider than the ordinary collapse distance, so a genuine persistence gap has room to appear on both sides of it. See graph.persistence_collapse  [range 0.0..; needs do_graph_building and cluster_collapse_method = persistence]
   cluster_collapse_persistence_search_multiple: 3.0
   # Log a warning instead of an info line when fewer than this fraction of the skeleton's own voxels are still traced by the finished graph's edges -- see graph.diagnostics.diagnose_skeleton_graph_consistency for what that measures and why. Checked whether the graph was just built or loaded from cache, so this is not gated on do_graph_building  [range 0.0..1.0]
   skeleton_graph_consistency_warn_below: 0.7
@@ -864,13 +864,13 @@ perturbation_runs:
   arteriole_diameter_change_percent: 0.0
   # How to choose the vessels to block: a fraction of the vessels of some branch orders (branch_order_probability -- reads the branch orders, probability and seed), or listed vessels (vessel_ids -- reads the vessel IDs)  [one of: branch_order_probability, vessel_ids]
   capillary_block_selection: branch_order_probability
-  # Block vessels from these branch orders, e.g. ['BO2'] or ['BO2', 'BO3']; a bare number means that capillary order (2 is BO2). Read when blocking by branch order and probability
+  # Block vessels from these branch orders, e.g. ['BO2'] or ['BO2', 'BO3']; a bare number means that capillary order (2 is BO2). Read when blocking by branch order and probability  [needs capillary_block_selection = branch_order_probability]
   capillary_block_branch_orders: [BO2]
-  # Fraction of the chosen branch orders' vessels to block, drawn at random: exactly round(fraction x count) of them, so 0.1 of 50 vessels always blocks 5. Read when blocking by branch order and probability  [fraction; range 0.0..1.0]
+  # Fraction of the chosen branch orders' vessels to block, drawn at random: exactly round(fraction x count) of them, so 0.1 of 50 vessels always blocks 5. Read when blocking by branch order and probability  [fraction; range 0.0..1.0; needs capillary_block_selection = branch_order_probability]
   capillary_block_probability: 0.1
-  # Draw the blocked vessels from this seed, so a run repeats; another seed blocks a different set, and null draws a fresh set every run. Read when blocking by branch order and probability
+  # Draw the blocked vessels from this seed, so a run repeats; another seed blocks a different set, and null draws a fresh set every run. Read when blocking by branch order and probability  [needs capillary_block_selection = branch_order_probability]
   capillary_block_seed: 20240917
-  # Vessels to block, by the branchID shown when hovering a vessel after the Solve stage (e.g. [12, 40]), or as [u, v, key]. Read when blocking listed vessels
+  # Vessels to block, by the branchID shown when hovering a vessel after the Solve stage (e.g. [12, 40]), or as [u, v, key]. Read when blocking listed vessels  [needs capillary_block_selection = vessel_ids]
   capillary_block_vessel_ids: []
   # Multiply a blocked vessel's resistance by this -- near infinite, so it carries about a millionth of its flow, but still solvable where removing it would cut part of the network off from every inlet and outlet  [range 1.0..]
   capillary_block_resistance_factor: 1000000.0

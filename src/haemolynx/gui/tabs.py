@@ -55,7 +55,7 @@ __all__ = [
 #: title changes; the section name is what settings, configs and
 #: ``section_values`` go on keying by.
 SECTION_BOX_TITLES: Mapping[tuple[str, str], str] = {
-    ("build_haemodynamic_model", "Diameters and pericytes"): "Haemodynamics settings",
+    ("build_haemodynamic_model", "Diameters and pericytes"): "Blood model",
 }
 
 

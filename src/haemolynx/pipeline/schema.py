@@ -164,6 +164,7 @@ SCHEMA = Schema(
             default=f"{_OUTPUTS}/segmentations",
             help="Write ilastik-generated segmentations into this directory",
             section=_INPUT_AND_SEGMENTATION,
+            advanced=True,
         ),
         Setting(
             name="ilastik_output_suffix",
@@ -171,6 +172,7 @@ SCHEMA = Schema(
             default=".tif",
             help="Give ilastik segmentation outputs this file suffix",
             section=_INPUT_AND_SEGMENTATION,
+            advanced=True,
         ),
         Setting(
             name="voxel_size_override_xyz",
@@ -179,6 +181,7 @@ SCHEMA = Schema(
             help="Override the voxel size with these (x, y, z) values instead of reading image metadata",
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
+            requires=("voxel_size_policy!=metadata_only",),
         ),
         Setting(
             name="voxel_size_policy",
@@ -234,6 +237,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             requires=("use_memmap_loading",),
+            advanced=True,
         ),
         # ------------------------------------------------------------------
         # Segmentation cleanup (Input tab): seven independently-toggleable
@@ -311,6 +315,7 @@ SCHEMA = Schema(
             unit="um",
             minimum=0.0,
             requires=("segmentation_cleanup", "segmentation_cleanup_split_narrow_necks"),
+            advanced=True,
         ),
         Setting(
             name="segmentation_cleanup_split_min_pinch_radius_ratio",
@@ -324,6 +329,7 @@ SCHEMA = Schema(
             minimum=0.0,
             maximum=1.0,
             requires=("segmentation_cleanup", "segmentation_cleanup_split_narrow_necks"),
+            advanced=True,
         ),
         Setting(
             name="segmentation_cleanup_split_min_body_radius_um",
@@ -334,6 +340,7 @@ SCHEMA = Schema(
             unit="um",
             minimum=0.0,
             requires=("segmentation_cleanup", "segmentation_cleanup_split_narrow_necks"),
+            advanced=True,
         ),
         Setting(
             name="segmentation_cleanup_close_gaps",
@@ -394,6 +401,7 @@ SCHEMA = Schema(
             minimum=0.0,
             maximum=1.0,
             requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
+            advanced=True,
         ),
         Setting(
             name="segmentation_cleanup_reconnect_max_axis_angle_degrees",
@@ -408,6 +416,7 @@ SCHEMA = Schema(
             minimum=0.0,
             maximum=90.0,
             requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
+            advanced=True,
         ),
         Setting(
             name="segmentation_cleanup_reconnect_min_facing_cosine",
@@ -421,6 +430,7 @@ SCHEMA = Schema(
             minimum=0.0,
             maximum=1.0,
             requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
+            advanced=True,
         ),
         Setting(
             name="segmentation_cleanup_reconnect_max_radius_ratio",
@@ -430,6 +440,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             minimum=1.0,
             requires=("segmentation_cleanup", "segmentation_cleanup_reconnect_gaps"),
+            advanced=True,
         ),
         Setting(
             name="segmentation_cleanup_smooth_surfaces",
@@ -462,7 +473,11 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
             minimum=0.0,
-            requires=("segmentation_cleanup", "segmentation_cleanup_smooth_surfaces"),
+            requires=(
+                "segmentation_cleanup",
+                "segmentation_cleanup_smooth_surfaces",
+                "segmentation_cleanup_smooth_method=gaussian",
+            ),
         ),
         Setting(
             name="segmentation_cleanup_smooth_morphological_radius_um",
@@ -472,7 +487,11 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
             minimum=0.0,
-            requires=("segmentation_cleanup", "segmentation_cleanup_smooth_surfaces"),
+            requires=(
+                "segmentation_cleanup",
+                "segmentation_cleanup_smooth_surfaces",
+                "segmentation_cleanup_smooth_method=morphological",
+            ),
         ),
         Setting(
             name="segmentation_cleanup_remove_small_volumes",
@@ -511,6 +530,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             minimum=0,
+            advanced=True,
         ),
         Setting(
             name="min_voxels_across_vessel_radius",
@@ -525,6 +545,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
+            advanced=True,
         ),
         Setting(
             name="min_acceptable_segmentation_quality",
@@ -540,6 +561,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
             maximum=10.0,
+            advanced=True,
         ),
         # ------------------------------------------------------------------
         # Vessel masks (Boundaries tab: under automated_vessel_assignment)
@@ -667,6 +689,7 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um",
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="large_vessel_assignment_max_dilation_microns",
@@ -695,6 +718,7 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um3",
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="large_vessel_swap_minority_components",
@@ -711,6 +735,7 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="large_vessel_swap_max_size_ratio",
@@ -730,6 +755,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "large_vessel_swap_minority_components",
             ),
+            advanced=True,
         ),
         Setting(
             name="large_vessel_swap_min_contact_fraction",
@@ -751,6 +777,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "large_vessel_swap_minority_components",
             ),
+            advanced=True,
         ),
         Setting(
             name="large_vessel_remove_small_opposite_attached_components",
@@ -762,6 +789,7 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="large_vessel_opposite_attached_max_component_volume_um3",
@@ -779,6 +807,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "large_vessel_remove_small_opposite_attached_components",
             ),
+            advanced=True,
         ),
         Setting(
             name="large_vessel_opposite_attached_max_distance_microns",
@@ -796,6 +825,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "large_vessel_remove_small_opposite_attached_components",
             ),
+            advanced=True,
         ),
         Setting(
             name="exclude_smaller_overlapping_volumes",
@@ -812,6 +842,7 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="automated_vessel_assignment_enable_overlap_cleanup",
@@ -823,6 +854,7 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="automated_vessel_assignment_fast_mode",
@@ -839,6 +871,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "automated_vessel_assignment_enable_overlap_cleanup",
             ),
+            advanced=True,
         ),
         Setting(
             name="automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode",
@@ -855,6 +888,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment_enable_overlap_cleanup",
                 "!automated_vessel_assignment_fast_mode",
             ),
+            advanced=True,
         ),
         Setting(
             name="automated_vessel_overlap_parallel_workers",
@@ -871,6 +905,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "automated_vessel_assignment_enable_overlap_cleanup",
             ),
+            advanced=True,
         ),
         Setting(
             name="automated_vessel_assignment_use_legacy_mode",
@@ -882,6 +917,7 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="automated_vessel_confidence_margin",
@@ -895,6 +931,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "!automated_vessel_assignment_use_legacy_mode",
             ),
+            advanced=True,
         ),
         Setting(
             name="automated_vessel_min_confidence",
@@ -908,6 +945,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "!automated_vessel_assignment_use_legacy_mode",
             ),
+            advanced=True,
         ),
         Setting(
             name="automated_vessel_topology_penalty",
@@ -921,6 +959,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "!automated_vessel_assignment_use_legacy_mode",
             ),
+            advanced=True,
         ),
         Setting(
             name="automated_vessel_quality_max_overlap_fraction",
@@ -939,6 +978,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "!automated_vessel_assignment_use_legacy_mode",
             ),
+            advanced=True,
         ),
         Setting(
             name="automated_vessel_quality_min_terminal_coverage",
@@ -954,6 +994,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "!automated_vessel_assignment_use_legacy_mode",
             ),
+            advanced=True,
         ),
         Setting(
             name="automated_vessel_quality_max_component_count",
@@ -970,6 +1011,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "!automated_vessel_assignment_use_legacy_mode",
             ),
+            advanced=True,
         ),
         Setting(
             name="automated_vessel_conservative_max_dilation_microns",
@@ -984,6 +1026,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "!automated_vessel_assignment_use_legacy_mode",
             ),
+            advanced=True,
         ),
         Setting(
             name="write_fast_mode_preassignment_large_vessel_debug_3d_html",
@@ -999,6 +1042,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "automated_vessel_assignment_fast_mode",
             ),
+            advanced=True,
         ),
         Setting(
             name="large_vessel_3d_volume_downsample_stride",
@@ -1011,6 +1055,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             minimum=1,
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="cut_network_at_large_vessel_volumes",
@@ -1042,6 +1087,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "cut_network_at_large_vessel_volumes",
             ),
+            advanced=True,
         ),
         Setting(
             name="orphaned_branch_max_edge_count",
@@ -1060,6 +1106,7 @@ SCHEMA = Schema(
                 "cut_network_at_large_vessel_volumes",
                 "remove_orphaned_branches_outside_large_vessel_volumes",
             ),
+            advanced=True,
         ),
         Setting(
             name="assign_large_vessel_branch_orders",
@@ -1104,6 +1151,7 @@ SCHEMA = Schema(
                 "!cut_network_at_large_vessel_volumes",
                 "assign_large_vessel_branch_orders",
             ),
+            advanced=True,
         ),
         Setting(
             name="skeleton_thick_vessel_restrict_to_mask",
@@ -1130,6 +1178,7 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_thick_vessel_restrict_to_mask_warn_below",
@@ -1151,7 +1200,11 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             minimum=0.0,
             maximum=1.0,
-            requires=("use_thick_vessel_skeletonisation",),
+            requires=(
+                "use_thick_vessel_skeletonisation",
+                "skeleton_thick_vessel_restrict_to_mask!=off",
+            ),
+            advanced=True,
         ),
         Setting(
             name="use_small_vessel_masks_for_boundary_assignment",
@@ -1255,6 +1308,7 @@ SCHEMA = Schema(
             minimum=0.0,
             maximum=1.0,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_mask_dilation_microns",
@@ -1281,6 +1335,7 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_boundary_assignment_fast_mode",
@@ -1297,6 +1352,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_boundary_assignment_enable_overlap_cleanup",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode",
@@ -1313,6 +1369,7 @@ SCHEMA = Schema(
                 "small_vessel_boundary_assignment_enable_overlap_cleanup",
                 "!small_vessel_boundary_assignment_fast_mode",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_overlap_parallel_workers",
@@ -1329,6 +1386,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_boundary_assignment_enable_overlap_cleanup",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_mask_continuity_enable",
@@ -1340,6 +1398,7 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_mask_continuity_allow_small_to_large",
@@ -1352,6 +1411,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_mask_continuity_allow_small_to_small",
@@ -1364,6 +1424,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_mask_continuity_enforce_cylinder_only",
@@ -1376,6 +1437,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_mask_continuity_min_cylindricality",
@@ -1390,6 +1452,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_mask_continuity_max_axis_angle_degrees",
@@ -1403,6 +1466,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_mask_continuity_min_facing_cosine",
@@ -1417,6 +1481,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_mask_continuity_max_radius_ratio",
@@ -1430,6 +1495,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_mask_continuity_max_bridge_distance_microns",
@@ -1444,6 +1510,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_mask_continuity_corridor_max_distance_microns",
@@ -1458,6 +1525,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_mask_continuity_opposite_exclusion_distance_microns",
@@ -1474,6 +1542,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_mask_continuity_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_tangential_redefinition_enable",
@@ -1490,6 +1559,7 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_tangential_redefinition_max_contact_distance_microns",
@@ -1508,6 +1578,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_tangential_redefinition_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_tangential_redefinition_touch_distance_microns",
@@ -1525,6 +1596,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_tangential_redefinition_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_tangential_redefinition_tangency_cosine_max",
@@ -1545,6 +1617,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_tangential_redefinition_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_tangential_redefinition_min_contact_fraction",
@@ -1582,6 +1655,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_tangential_redefinition_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_tangential_redefinition_parallel_workers",
@@ -1598,6 +1672,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_tangential_redefinition_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_sandwiched_reassignment_enable",
@@ -1680,6 +1755,7 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_boundary_fallback_to_hop_distance",
@@ -1691,6 +1767,7 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_boundary_fallback_hop_distance",
@@ -1704,6 +1781,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_boundary_fallback_to_hop_distance",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_min_component_volume_um3",
@@ -1717,6 +1795,7 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um3",
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_swap_minority_components",
@@ -1736,6 +1815,7 @@ SCHEMA = Schema(
             ),
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_swap_max_size_ratio",
@@ -1755,6 +1835,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_swap_minority_components",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_swap_min_contact_fraction",
@@ -1776,6 +1857,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_swap_minority_components",
             ),
+            advanced=True,
         ),
         Setting(
             name="write_small_vessel_boundary_labelling_3d_html",
@@ -1784,6 +1866,7 @@ SCHEMA = Schema(
             help="Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling",
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+            advanced=True,
         ),
                                                         # ------------------------------------------------------------------
         # Boundary assignment
@@ -1794,6 +1877,7 @@ SCHEMA = Schema(
             default=_PLOTS,
             help="Write plot artifacts under this base directory",
             section=_BOUNDARY_ASSIGNMENT,
+            advanced=True,
         ),
         # "edge_percent" is the default for the two that every run needs
         # because it is the only method that asks nothing of the dataset: it
@@ -2116,6 +2200,7 @@ SCHEMA = Schema(
                 "capillary B* orders from inlets and warn"
             ),
             section=_BOUNDARY_ASSIGNMENT,
+            advanced=True,
         ),
         # ------------------------------------------------------------------
         # Solver and output
@@ -2147,6 +2232,7 @@ SCHEMA = Schema(
                 "final_graph_3d.html). Off skips all of that production"
             ),
             section=_SOLVER_AND_OUTPUT,
+            advanced=True,
         ),
         Setting(
             name="interactive_plots",
@@ -2155,6 +2241,7 @@ SCHEMA = Schema(
             help="Show plots interactively instead of saving them to the plot directory",
             section=_SOLVER_AND_OUTPUT,
             requires=("visualize_results",),
+            advanced=True,
         ),
         Setting(
             name="show_plots_in_ide",
@@ -2163,6 +2250,7 @@ SCHEMA = Schema(
             help="Open saved plots in IDE windows while the run proceeds",
             section=_SOLVER_AND_OUTPUT,
             requires=("visualize_results",),
+            advanced=True,
         ),
         Setting(
             name="ide_plot_mode",
@@ -2172,6 +2260,7 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             choices=("all", "final_only", "none"),
             requires=("visualize_results", "show_plots_in_ide"),
+            advanced=True,
         ),
         Setting(
             name="hold_ide_plots_open",
@@ -2180,6 +2269,7 @@ SCHEMA = Schema(
             help="Block at the end of the script so the IDE plot windows stay open",
             section=_SOLVER_AND_OUTPUT,
             requires=("visualize_results", "show_plots_in_ide"),
+            advanced=True,
         ),
         Setting(
             name="final_render_mode",
@@ -2189,6 +2279,7 @@ SCHEMA = Schema(
             section=_SOLVER_AND_OUTPUT,
             choices=("2d", "3d"),
             requires=("visualize_results",),
+            advanced=True,
         ),
         Setting(
             name="vtk_export",
@@ -2205,6 +2296,7 @@ SCHEMA = Schema(
             help="Open the exported VTK network in the interactive viewer",
             section=_SOLVER_AND_OUTPUT,
             requires=("run_haemodynamics", "vtk_export"),
+            advanced=True,
         ),
         Setting(
             name="flow_direction_colouring",
@@ -2240,6 +2332,7 @@ SCHEMA = Schema(
             default=False,
             help="Print verbose per-stage logging while the pipeline runs",
             section=_SOLVER_AND_OUTPUT,
+            advanced=True,
         ),
         Setting(
             name="export_citations",
@@ -2284,6 +2377,7 @@ SCHEMA = Schema(
             help="Compute the two-point equivalent resistance between the chosen node pair",
             section=_PIPELINE_STAGES,
             requires=("run_haemodynamics",),
+            advanced=True,
         ),
         Setting(
             name="vtk_output_prefix",
@@ -2350,6 +2444,7 @@ SCHEMA = Schema(
             ),
             section=_PIPELINE_STAGES,
             requires=("do_skeletonize",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_bridge_z_distance_weight",
@@ -2365,6 +2460,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             minimum=0.0,
             requires=("do_skeletonize",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_bridge_min_facing_cosine",
@@ -2392,6 +2488,7 @@ SCHEMA = Schema(
             minimum=1,
             maximum=3,
             requires=("do_skeletonize",),
+            advanced=True,
         ),
         Setting(
             name="graph_reconnect_threshold",
@@ -2472,6 +2569,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             choices=("distance_only", "direction_aware", "persistence"),
             requires=("do_graph_building",),
+            advanced=True,
         ),
         Setting(
             name="cluster_collapse_max_radial_dispersion",
@@ -2487,6 +2585,8 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
+            advanced=True,
+            requires=("do_graph_building", "cluster_collapse_method=direction_aware"),
         ),
         Setting(
             name="cluster_collapse_persistence_search_multiple",
@@ -2500,6 +2600,8 @@ SCHEMA = Schema(
             ),
             section=_PIPELINE_STAGES,
             minimum=0.0,
+            advanced=True,
+            requires=("do_graph_building", "cluster_collapse_method=persistence"),
         ),
         Setting(
             name="skeleton_graph_consistency_warn_below",
@@ -2515,6 +2617,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
+            advanced=True,
         ),
         Setting(
             name="graph_mask_consistency_warn_below",
@@ -2531,6 +2634,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
+            advanced=True,
         ),
         Setting(
             name="save_step_artifacts",
@@ -2543,6 +2647,7 @@ SCHEMA = Schema(
             ),
             section=_PIPELINE_STAGES,
             requires=("do_graph_building",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_min_component_percent",
@@ -2567,6 +2672,7 @@ SCHEMA = Schema(
             unit="voxels",
             minimum=3,
             requires=("do_skeletonize",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_bundle_density_fraction",
@@ -2577,6 +2683,7 @@ SCHEMA = Schema(
             minimum=0.0,
             maximum=1.0,
             requires=("do_skeletonize",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_bundle_max_connections_per_hub",
@@ -2586,6 +2693,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             minimum=1,
             requires=("do_skeletonize",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_bundle_hub_min_spacing",
@@ -2599,6 +2707,7 @@ SCHEMA = Schema(
             unit="voxels",
             minimum=1,
             requires=("do_skeletonize",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_mask_consistency_warn_below",
@@ -2614,6 +2723,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
+            advanced=True,
         ),
         Setting(
             name="missing_vessel_min_voxels",
@@ -2628,6 +2738,7 @@ SCHEMA = Schema(
             ),
             section=_PIPELINE_STAGES,
             minimum=1,
+            advanced=True,
         ),
         Setting(
             name="skeleton_missing_vessel_warn_below",
@@ -2646,6 +2757,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
+            advanced=True,
         ),
         Setting(
             name="graph_missing_vessel_warn_below",
@@ -2663,6 +2775,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             minimum=0.0,
             maximum=1.0,
+            advanced=True,
         ),
         Setting(
             name="use_thick_vessel_skeletonisation",
@@ -2703,6 +2816,7 @@ SCHEMA = Schema(
             ),
             section=_PIPELINE_STAGES,
             requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
         ),
         Setting(
             name="skeleton_thick_vessel_wall_absorption_um",
@@ -2818,6 +2932,7 @@ SCHEMA = Schema(
             ),
             section=_PIPELINE_STAGES,
             requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
         ),
         Setting(
             name="thick_vessel_braid_factor_limit",
@@ -2831,6 +2946,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             minimum=0.0,
             requires=("use_thick_vessel_skeletonisation", "detect_thick_vessel_braiding"),
+            advanced=True,
         ),
         Setting(
             name="thick_vessel_braid_min_occupied_slices",
@@ -2844,6 +2960,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             minimum=1,
             requires=("use_thick_vessel_skeletonisation", "detect_thick_vessel_braiding"),
+            advanced=True,
         ),
         Setting(
             name="skeletonize_tile_large_components",
@@ -2860,6 +2977,7 @@ SCHEMA = Schema(
             ),
             section=_PIPELINE_STAGES,
             requires=("use_memmap_loading",),
+            advanced=True,
         ),
         Setting(
             name="skeletonize_tile_max_voxels",
@@ -2874,6 +2992,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             minimum=1,
             requires=("skeletonize_tile_large_components",),
+            advanced=True,
         ),
         Setting(
             name="skeletonize_tile_halo_um",
@@ -2889,6 +3008,7 @@ SCHEMA = Schema(
             unit="um",
             minimum=0.0,
             requires=("skeletonize_tile_large_components",),
+            advanced=True,
         ),
         Setting(
             name="smooth_centrelines",
@@ -2909,6 +3029,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             choices=("taubin", "chaikin"),
             requires=("smooth_centrelines",),
+            advanced=True,
         ),
         Setting(
             name="centreline_smoothing_iterations",
@@ -2922,6 +3043,7 @@ SCHEMA = Schema(
             minimum=0,
             maximum=50,
             requires=("smooth_centrelines",),
+            advanced=True,
         ),
         Setting(
             name="centreline_max_deviation",
@@ -2937,6 +3059,7 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um",
             requires=("smooth_centrelines",),
+            advanced=True,
         ),
         # ------------------------------------------------------------------
         # Cartwheel hub guard
@@ -2956,6 +3079,7 @@ SCHEMA = Schema(
                 "together. Diagnostic only: never changes the graph"
             ),
             section=_CARTWHEEL_GUARD,
+            advanced=True,
         ),
         Setting(
             name="cartwheel_hub_min_degree",
@@ -2965,6 +3089,7 @@ SCHEMA = Schema(
             section=_CARTWHEEL_GUARD,
             minimum=2,
             requires=("detect_cartwheel_hub_artifacts",),
+            advanced=True,
         ),
         Setting(
             name="cartwheel_hub_max_radial_dispersion",
@@ -2979,6 +3104,7 @@ SCHEMA = Schema(
             minimum=0.0,
             maximum=1.0,
             requires=("detect_cartwheel_hub_artifacts",),
+            advanced=True,
         ),
         Setting(
             name="cartwheel_hub_tangent_length_um",
@@ -2993,6 +3119,7 @@ SCHEMA = Schema(
             # turning the guard into a no-op. Strictly positive.
             minimum=0.1,
             requires=("detect_cartwheel_hub_artifacts",),
+            advanced=True,
         ),
         # ------------------------------------------------------------------
         # Statistics
@@ -3023,6 +3150,7 @@ SCHEMA = Schema(
             help="Read this dataset from the cell mask when it is an H5 file",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
+            advanced=True,
         ),
         Setting(
             name="measurement_3d_vessel_mask_path",
@@ -3032,6 +3160,7 @@ SCHEMA = Schema(
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
             must_exist=True,
+            advanced=True,
         ),
         Setting(
             name="measurement_3d_vessel_mask_h5_dataset_name",
@@ -3040,6 +3169,7 @@ SCHEMA = Schema(
             help="Read this dataset from the 3D-distance vessel mask when it is an H5 file",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
+            advanced=True,
         ),
         Setting(
             name="measurement_3d_reference_image_path",
@@ -3049,6 +3179,7 @@ SCHEMA = Schema(
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
             must_exist=True,
+            advanced=True,
         ),
         Setting(
             name="measurement_3d_reference_h5_dataset_name",
@@ -3057,6 +3188,7 @@ SCHEMA = Schema(
             help="Read this dataset from the 3D-distance reference image when it is an H5 file",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
+            advanced=True,
         ),
         Setting(
             name="statistics",
@@ -3072,6 +3204,7 @@ SCHEMA = Schema(
             help="Node/edge counts, total length, mean diameter and the other basic vessel statistics",
             section=_STATISTICS,
             requires=("statistics",),
+            advanced=True,
         ),
         Setting(
             name="statistics_tortuosity",
@@ -3080,6 +3213,7 @@ SCHEMA = Schema(
             help="How much each vessel's centreline deviates from a straight line",
             section=_STATISTICS,
             requires=("statistics",),
+            advanced=True,
         ),
         Setting(
             name="statistics_branching",
@@ -3088,6 +3222,7 @@ SCHEMA = Schema(
             help="Branch-point counts and per-node branching-factor statistics",
             section=_STATISTICS,
             requires=("statistics",),
+            advanced=True,
         ),
         Setting(
             name="statistics_tree_asymmetry",
@@ -3096,6 +3231,7 @@ SCHEMA = Schema(
             help="Asymmetry between sibling sub-tree sizes at each branch point",
             section=_STATISTICS,
             requires=("statistics",),
+            advanced=True,
         ),
         Setting(
             name="statistics_fractal_dimension",
@@ -3104,6 +3240,7 @@ SCHEMA = Schema(
             help="Fractal dimension of the network, from both node positions and centrelines",
             section=_STATISTICS,
             requires=("statistics",),
+            advanced=True,
         ),
         Setting(
             name="statistics_vessel_density",
@@ -3112,6 +3249,7 @@ SCHEMA = Schema(
             help="Vessel length and volume per unit of imaged tissue volume",
             section=_STATISTICS,
             requires=("statistics",),
+            advanced=True,
         ),
         Setting(
             name="statistics_murray_law",
@@ -3120,6 +3258,7 @@ SCHEMA = Schema(
             help="How closely parent/daughter diameters at each junction follow Murray's cube law",
             section=_STATISTICS,
             requires=("statistics",),
+            advanced=True,
         ),
         Setting(
             name="statistics_daughter_angles",
@@ -3128,6 +3267,7 @@ SCHEMA = Schema(
             help="Branching angle between sibling daughter vessels at each junction",
             section=_STATISTICS,
             requires=("statistics",),
+            advanced=True,
         ),
         Setting(
             name="statistics_intercapillary_distance",
@@ -3136,6 +3276,7 @@ SCHEMA = Schema(
             help="Typical spacing between neighbouring capillaries",
             section=_STATISTICS,
             requires=("statistics",),
+            advanced=True,
         ),
         # ------------------------------------------------------------------
         # Connectivity/Network Analysis -- nests under `statistics`, then its
@@ -3176,6 +3317,7 @@ SCHEMA = Schema(
             help="Bridge-edge and articulation-point counts -- how much of the network depends on a single connection -- and, when inlet/outlet boundaries are known, which of them are perfusion-critical",
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_bottlenecks",
@@ -3191,6 +3333,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_shunts",
@@ -3204,6 +3347,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_route_weighting",
@@ -3221,6 +3365,7 @@ SCHEMA = Schema(
             section=_NETWORK_ANALYSIS,
             choices=("topology", "length", "resistance"),
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_shunt_max_route_fraction",
@@ -3235,6 +3380,7 @@ SCHEMA = Schema(
             minimum=0.0,
             maximum=1.0,
             requires=("statistics", "statistics_network_analysis", "statistics_shunts"),
+            advanced=True,
         ),
         Setting(
             name="statistics_occlusion_impact",
@@ -3255,6 +3401,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_occlusion_hypoperfusion_fraction",
@@ -3269,6 +3416,7 @@ SCHEMA = Schema(
             minimum=0.0,
             maximum=1.0,
             requires=("statistics", "statistics_network_analysis", "statistics_occlusion_impact"),
+            advanced=True,
         ),
         Setting(
             name="statistics_occlusion_curves",
@@ -3284,6 +3432,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_occlusion_curve_max_fraction",
@@ -3295,6 +3444,7 @@ SCHEMA = Schema(
             minimum=0.01,
             maximum=1.0,
             requires=("statistics", "statistics_network_analysis", "statistics_occlusion_curves"),
+            advanced=True,
         ),
         Setting(
             name="statistics_current_flow",
@@ -3309,6 +3459,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_perfusion_territories",
@@ -3323,6 +3474,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_transit_time",
@@ -3336,6 +3488,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_loop_hierarchy",
@@ -3349,6 +3502,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_strahler",
@@ -3361,6 +3515,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_algebraic_connectivity",
@@ -3373,6 +3528,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_cyclomatic_number",
@@ -3381,6 +3537,7 @@ SCHEMA = Schema(
             help="Independent loop (anastomosis) count -- 0 means every vessel is a single point of failure for everything downstream of it",
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_degree_assortativity",
@@ -3389,6 +3546,7 @@ SCHEMA = Schema(
             help="Whether high-degree junctions connect to other high-degree junctions (vascular trees are normally disassortative)",
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_rich_club",
@@ -3397,6 +3555,7 @@ SCHEMA = Schema(
             help="Whether the highest-degree vessels/junctions preferentially interconnect, forming their own backbone",
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_k_core",
@@ -3405,6 +3564,7 @@ SCHEMA = Schema(
             help="How onion-layered (redundant core plus peripheral shell) vs. purely tree-like the network is",
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_flow_hierarchy",
@@ -3413,6 +3573,7 @@ SCHEMA = Schema(
             help="Fraction of the solved flow's own directed edges that do not sit on a directed (recirculating) loop",
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_path_efficiency",
@@ -3421,6 +3582,7 @@ SCHEMA = Schema(
             help="How close shortest network paths are to straight-line distance, sampled (fast) or exact (full) per statistics_mode",
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_community",
@@ -3429,6 +3591,7 @@ SCHEMA = Schema(
             help="Community/module detection over the network's topology, sampled (fast) or exact (full) per statistics_mode",
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         Setting(
             name="statistics_betweenness",
@@ -3437,6 +3600,7 @@ SCHEMA = Schema(
             help="Betweenness centrality of each node, sampled (fast) or exact (full) per statistics_mode",
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
         ),
         # ------------------------------------------------------------------
         # Vascular communities -- its own group on "8. Additional
@@ -3561,6 +3725,7 @@ SCHEMA = Schema(
             section=_DIAMETERS_AND_PERICYTES,
             minimum=1,
             requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
+            advanced=True,
         ),
         Setting(
             name="haematocrit_distribution_tolerance",
@@ -3571,6 +3736,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
+            advanced=True,
         ),
         # ------------------------------------------------------------------
         # Network handling: done to the assigned network at the start of the
@@ -3598,6 +3764,7 @@ SCHEMA = Schema(
             ),
             section=_NETWORK_HANDLING,
             choices=("None",),
+            advanced=True,
         ),
         Setting(
             name="all_diams_const",
@@ -3732,6 +3899,7 @@ SCHEMA = Schema(
             ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("use_pericyte_mask_constriction",),
+            advanced=True,
         ),
         Setting(
             name="pericyte_max_assignment_distance_um",
@@ -3745,6 +3913,7 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um",
             requires=("use_pericyte_mask_constriction",),
+            advanced=True,
         ),
         Setting(
             name="pericyte_min_diameter_um",
@@ -3758,6 +3927,7 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um",
             requires=("use_pericyte_mask_constriction",),
+            advanced=True,
         ),
         Setting(
             name="pericyte_max_diameter_um",
@@ -3771,6 +3941,7 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um",
             requires=("use_pericyte_mask_constriction",),
+            advanced=True,
         ),
         Setting(
             name="use_probabilistic_pericyte_constriction",
@@ -3811,6 +3982,7 @@ SCHEMA = Schema(
             ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("use_probabilistic_pericyte_constriction",),
+            advanced=True,
         ),
         Setting(
             name="run_pericyte_resistance_comparison",
@@ -3860,6 +4032,7 @@ SCHEMA = Schema(
             help="Build the diameter and constriction tables up to this branch-order index",
             section=_DIAMETERS_AND_PERICYTES,
             minimum=1,
+            advanced=True,
         ),
         Setting(
             name="default_diameter",
@@ -4441,6 +4614,7 @@ SCHEMA = Schema(
             ),
             section=_FWHM,
             requires=("use_fwhm_edge_diameters", "do_fwhm_measurement"),
+            advanced=True,
         ),
         Setting(
             name="fwhm_demote_flagged_edges",
@@ -4798,6 +4972,7 @@ SCHEMA = Schema(
             ),
             section=_PERTURBATION_RUNS,
             requires=("run_perturbations",),
+            advanced=True,
         ),
         Setting(
             name="run_pericyte_dilation_sweep",
@@ -4891,6 +5066,7 @@ SCHEMA = Schema(
                 "(2 is BO2). Read when blocking by branch order and probability"
             ),
             section=_PERTURBATION_RUNS,
+            requires=("capillary_block_selection=branch_order_probability",),
         ),
         Setting(
             name="capillary_block_probability",
@@ -4906,6 +5082,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
+            requires=("capillary_block_selection=branch_order_probability",),
         ),
         Setting(
             name="capillary_block_seed",
@@ -4917,6 +5094,8 @@ SCHEMA = Schema(
                 "set every run. Read when blocking by branch order and probability"
             ),
             section=_PERTURBATION_RUNS,
+            advanced=True,
+            requires=("capillary_block_selection=branch_order_probability",),
         ),
         Setting(
             name="capillary_block_vessel_ids",
@@ -4928,6 +5107,7 @@ SCHEMA = Schema(
                 "[u, v, key]. Read when blocking listed vessels"
             ),
             section=_PERTURBATION_RUNS,
+            requires=("capillary_block_selection=vessel_ids",),
         ),
         Setting(
             name="capillary_block_resistance_factor",
@@ -4955,6 +5135,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
+            advanced=True,
         ),
         Setting(
             name="arteriole_dilation_min_percent",

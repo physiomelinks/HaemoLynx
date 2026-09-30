@@ -32,9 +32,19 @@ from haemolynx.gui.form import (
     SHARED_ILASTIK_SETTING_SET,
     display_value_for,
     channel_choices,
+    prerequisite_chain,
     shared_ilastik_host,
 )
 from haemolynx.gui.layers import input_for_layer, voxel_size_xyz_from_scale
+from haemolynx.gui.layout import (
+    Disclosure,
+    TabLayout,
+    changed_settings,
+    entry_disclosure,
+    layout_for,
+    role_nodes_disclosure,
+    shared_ilastik_disclosure,
+)
 from haemolynx.gui.log_view import LogView, VERBOSE_LEVEL
 from haemolynx.gui.run_log import DEFAULT_LEVEL, attach
 from haemolynx.gui.results import (
@@ -96,7 +106,7 @@ from haemolynx.gui.run_snapshot import (
     write_resume_artefacts,
     write_run_snapshot,
 )
-from haemolynx.gui.tabs import section_box_title, tabs_for
+from haemolynx.gui.tabs import tabs_for
 from haemolynx.gui.vessel_tubes import (
     DEFAULT_TUBE_QUALITY,
     DEFAULT_VESSEL_DRAW,
@@ -130,7 +140,9 @@ from haemolynx.parsers import (
     load_config,
     parameters_of,
     prefixed_arguments,
+    prerequisite_name,
 )
+from haemolynx.parsers.schema import is_prerequisite_met
 from haemolynx.pipeline import (
     default_schema,
     load_volume_for_skeletonise,
@@ -463,28 +475,220 @@ def unique_snapshot_path(
         n += 1
 
 
-def _grouped_by_section(
-    names: Sequence[str], fields: Mapping[str, Field]
-) -> list[tuple[str, list[str]]]:
-    """*names* split into consecutive runs sharing one section.
+#: How far in each nesting level of an Advanced button is drawn, in pixels,
+#: and how far in the rows it reveals sit from the button itself.
+ADVANCED_INDENT_PX = 14
 
-    A tab whose `Stage` claims more than one schema section (only "8.
-    Additional measurements" does today, for "Statistics and measurements"
-    plus the nested "Connectivity/Network Analysis") sees each section as one
-    contiguous run here rather than interleaved, because
-    :func:`haemolynx.gui.form.fields_for` walks the schema in declaration
-    order and every section's settings are declared together. A tab with a
-    single section -- everywhere else -- comes back as one run, so callers
-    do not need to special-case it.
+#: The panel's starting value where it is not the schema default -- what an
+#: Advanced button's "changed" count measures against, so Produce IDE plots
+#: being off in napari does not read as a change nobody made.
+ADVANCED_BASELINE: dict[str, Any] = dict(DISPLAY_SETTINGS_OFF_IN_NAPARI)
+
+
+def advanced_button_text(title: str, expanded: bool, changed: int = 0) -> str:
+    """What an Advanced button says: open or closed, and how much is changed."""
+    arrow = "▾" if expanded else "▸"
+    note = f" ({changed} changed)" if changed else ""
+    return f"{arrow} {title}{note}"
+
+
+def _hide_row_label(widget) -> None:
+    """Drop the empty label a labelled Container gives a nested block.
+
+    magicgui wraps every widget that is not a button in a row with a label,
+    pinned to the widest label's width, so a nested block -- an Advanced
+    button, the shared ilastik holder -- would otherwise start half-way across
+    the tab, squeezed into the value column.
     """
-    runs: list[tuple[str, list[str]]] = []
-    for name in names:
-        section = fields[name].section
-        if runs and runs[-1][0] == section:
-            runs[-1][1].append(name)
+    labeled = widget._labeled_widget()
+    if labeled is not None:
+        labeled._label_widget.visible = False
+
+
+def _flush(container) -> None:
+    """No margins: a nested block lines up with the rows around it."""
+    container.margins = (0, 0, 0, 0)
+
+
+def _line_up_labels(container) -> None:
+    """Give every label in *container* the widest one's width, so values align.
+
+    magicgui does this whenever a widget is added to a container, but not for
+    the widgets it is built with -- so a box built whole would keep ragged
+    value columns, and no label in it would reach the width
+    :func:`_wrap_row_labels` caps and wraps at.
+    """
+    container._unify_label_widths()
+
+
+class _AdvancedDisclosure:
+    """One "Advanced" button and the rows it reveals.
+
+    :mod:`haemolynx.gui.layout` decides which rows, under which row, and at
+    what depth; this draws that. It starts closed. The rows inside keep their
+    own prerequisites -- hidden or greyed exactly as they would be outside --
+    and the button itself hides when none of them would show, so it never
+    opens onto nothing.
+    """
+
+    def __init__(self, spec: Disclosure, rows: Mapping[str, Any], *, always_visible: bool = False) -> None:
+        from magicgui.widgets import Container, PushButton
+
+        from haemolynx.gui.chrome_tooltips import ADVANCED_SETTINGS_TOOLTIP
+
+        self.spec = spec
+        self.names: tuple[str, ...] = tuple(spec.names)
+        self.expanded = False
+        self.changed = 0
+        #: For a block that something else shows and hides (the shared
+        #: ilastik rows, which move between two tabs).
+        self.always_visible = always_visible
+        #: Panel controls placed inside that are not settings: they always show.
+        self.extras: list[Any] = []
+        self._extras_holder = None
+        self.headings: list[tuple[Any, tuple[str, ...]]] = []
+
+        self.button = PushButton(text=advanced_button_text(spec.title, False))
+        self.button.tooltip = ADVANCED_SETTINGS_TOOLTIP
+        native = self.button.native
+        native.setObjectName("haemolynx_advanced")
+        native.setAccessibleName(spec.key)
+        native.setFlat(True)
+        native.setStyleSheet("text-align: left; padding: 2px 4px;")
+
+        self.body = Container(widgets=[], labels=False)
+        self.body.margins = (ADVANCED_INDENT_PX, 0, 0, 4)
+        self._fill(spec.groups, rows)
+        self.container = Container(widgets=[self.button, self.body], labels=False)
+        self.container.margins = (ADVANCED_INDENT_PX * spec.level, 0, 0, 0)
+        self.body.visible = False
+        self.button.changed.connect(lambda *_args: self.toggle())
+
+    def _fill(self, groups, rows: Mapping[str, Any]) -> None:
+        from magicgui.widgets import Container, Label
+
+        for heading, names in groups:
+            if heading:
+                label = Label(value=heading)
+                label.native.setStyleSheet("font-weight: bold;")
+                self.body.append(label)
+                self.headings.append((label, tuple(names)))
+            chunk = Container(widgets=[rows[n] for n in names if n in rows], labels=True)
+            _flush(chunk)
+            _line_up_labels(chunk)
+            self.body.append(chunk)
+
+    def set_rows(self, names: Sequence[str], rows: Mapping[str, Any]) -> None:
+        """Put these rows, and only these, behind the button (one run, no headings)."""
+        self.body.clear()
+        self.headings = []
+        self._extras_holder = None
+        self.names = tuple(names)
+        self._fill(((None, tuple(names)),) if names else (), rows)
+        for widget in self.extras:
+            self._extras_holder_container().append(widget)
+
+    def _extras_holder_container(self):
+        from magicgui.widgets import Container
+
+        if self._extras_holder is None:
+            self._extras_holder = Container(widgets=[], labels=True)
+            _flush(self._extras_holder)
+            self.body.append(self._extras_holder)
+        return self._extras_holder
+
+    def add(self, widget) -> None:
+        """Put a panel control that is not a setting behind the button too."""
+        from magicgui.widgets import Container
+
+        self._extras_holder_container().append(widget)
+        if isinstance(widget, Container):
+            _hide_row_label(widget)
+        self.extras.append(widget)
+
+    def toggle(self, expanded: bool | None = None) -> None:
+        """Open or close; with no argument, the other way from now."""
+        self.expanded = (not self.expanded) if expanded is None else bool(expanded)
+        self.body.visible = self.expanded
+        self._retitle()
+
+    def _retitle(self) -> None:
+        self.button.text = advanced_button_text(self.spec.title, self.expanded, self.changed)
+
+    def refresh(self, shows, values: Mapping[str, Any], schema, baseline=None) -> None:
+        """Follow the other settings: whether to show at all, and what is changed.
+
+        *shows* says whether one row would show, given everything above it.
+        """
+        names = [n for n in self.names if n in schema]
+        shown = self.always_visible or bool(self.extras) or any(shows(n) for n in names)
+        self.container.visible = shown
+        for label, members in self.headings:
+            label.visible = any(shows(n) for n in members if n in schema)
+        self.changed = len(changed_settings(names, schema, values, baseline))
+        self._retitle()
+
+
+def _box_containers(layout: TabLayout, rows: Mapping[str, Any], disclosures: dict, lead=()):
+    """One labelled Container per box of *layout*, with its Advanced buttons in place.
+
+    *lead* (a tab's summary line) heads the first box when that box is
+    untitled. Every button made is recorded in *disclosures* by its key.
+    """
+    from magicgui.widgets import Container
+
+    made: list[tuple[Any, Any]] = []
+    lead = list(lead)
+    for index, box in enumerate(layout.boxes):
+        widgets = lead if (index == 0 and box.title is None) else []
+        buttons = []
+        for item in box.items:
+            if isinstance(item, str):
+                widgets.append(rows[item])
+            else:
+                disclosure = _AdvancedDisclosure(item, rows)
+                buttons.append(disclosure)
+                widgets.append(disclosure.container)
+        container = Container(widgets=list(widgets), labels=True)
+        _line_up_labels(container)
+        for disclosure in buttons:
+            _hide_row_label(disclosure.container)
+            disclosures[disclosure.spec.key] = disclosure
+        made.append((box, container))
+        if index == 0 and box.title is None:
+            lead = []
+    if lead:
+        # The first box has a title, so the summary stands above it on its own.
+        made.insert(0, (None, Container(widgets=lead, labels=True)))
+    return made
+
+
+def _lay_out_boxes(layout: TabLayout, rows: Mapping[str, Any], *, disclosures: dict, group_boxes: dict, lead=()):
+    """Draw *layout*: untitled boxes as plain runs of rows, titled ones as group boxes.
+
+    Returns the drawn page and each box's Container by key. A titled box is
+    recorded in *group_boxes* with every setting in it, so the panel can hide
+    the whole box -- rather than leave an empty titled frame -- once none of
+    them would show.
+    """
+    from qtpy.QtWidgets import QGroupBox, QVBoxLayout, QWidget
+
+    page = QWidget()
+    page_layout = QVBoxLayout(page)
+    page_layout.setContentsMargins(0, 0, 0, 0)
+    containers: dict[str, Any] = {}
+    for box, container in _box_containers(layout, rows, disclosures, lead=lead):
+        if box is None or box.title is None:
+            page_layout.addWidget(container.native)
         else:
-            runs.append((section, [name]))
-    return runs
+            group = QGroupBox(box.title)
+            group.setObjectName(f"haemolynx_section_{box.key}")
+            QVBoxLayout(group).addWidget(container.native)
+            page_layout.addWidget(group)
+            group_boxes[box.key] = (group, list(box.names))
+        if box is not None:
+            containers[box.key] = container
+    return page, containers
 
 
 _CHANNEL_COMBO_BOX = None
@@ -5074,7 +5278,7 @@ def _names_with_prerequisite_closure(schema: Schema, names: Sequence[str]) -> tu
             # "name=value" names a choice setting to check the value of, not
             # a nested prerequisite of its own -- the base name is what needs
             # to be in the closure.
-            stack.append(prerequisite.lstrip("!").partition("=")[0])
+            stack.append(prerequisite_name(prerequisite))
     return tuple(setting.name for setting in schema if setting.name in closure)
 
 
@@ -6160,7 +6364,11 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         hidden = set()
         for name in orderable_settings():
             # A method row always stays: it is the row that decides which of
-            # the others you need to fill in.
+            # the others you need to fill in. An advanced row (the node IDs a
+            # run fills in) belongs to the role page's own Advanced button,
+            # which no method choice hides.
+            if name in schema and schema[name].advanced:
+                continue
             if name in rows and name not in methods and name not in owned:
                 rows[name].visible = name in wanted
                 if name not in wanted:
@@ -6579,20 +6787,33 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         """
         from qtpy.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 
+        state.disclosures = {}
+        state.group_boxes = {}
         role_tabs = QTabWidget()
         placed: set[str] = set()
         for name in ROLES:
             mine = [n for n in role_settings(name) if n in rows]
             placed.update(mine)
+            # The node IDs a run fills in sit behind the page's own Advanced
+            # button, below the pick/draw controls.
+            advanced = [n for n in mine if schema[n].advanced]
+            ordinary = [n for n in mine if n not in advanced]
             action = actions[name]
+            nodes = None
+            if advanced:
+                nodes = _AdvancedDisclosure(role_nodes_disclosure(name, advanced), rows)
             holder = Container(
                 widgets=[
-                    *(rows[n] for n in mine),
+                    *(rows[n] for n in ordinary),
                     action.pick, action.draw, action.depth,
                     action.move, action.assign, action.clear,
+                    *((nodes.container,) if nodes is not None else ()),
                 ],
                 labels=True,
             )
+            if nodes is not None:
+                _hide_row_label(nodes.container)
+                state.disclosures[nodes.spec.key] = nodes
             holders[name] = holder
             role_tabs.addTab(holder.native, role_title(name))
             role_tabs.setTabToolTip(role_tabs.count() - 1,
@@ -6600,21 +6821,36 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
         shared = [n for n in shared_settings() if n in rows]
         rest = [n for n in names if n not in placed and n not in shared]
+        # The vessel masks, boxed large and small; the node-ID rows no role
+        # page owns go last, under the role tabs.
+        laid_out = layout_for("assign_boundaries", rest, schema)
+        trailing = tuple(box for box in laid_out.boxes if box.key == "boundary_nodes")
+        leading = TabLayout(boxes=tuple(b for b in laid_out.boxes if b not in trailing))
         # Shared main/large/small ilastik knobs are reparented here when only
         # vessel-mask ilastik is on (declared under Input; same widgets).
-        shared_ilastik_holder = Container(widgets=[], labels=True)
+        shared_ilastik_holder = Container(widgets=[], labels=False)
+        _flush(shared_ilastik_holder)
 
         body = QWidget()
         layout = QVBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(summary.native)
-        if rest:
-            layout.addWidget(Container(widgets=[rows[n] for n in rest],
-                                       labels=True).native)
+        if leading.boxes:
+            masks, _ = _lay_out_boxes(
+                leading, rows, disclosures=state.disclosures,
+                group_boxes=state.group_boxes,
+            )
+            layout.addWidget(masks)
         layout.addWidget(shared_ilastik_holder.native)
         layout.addWidget(Label(value=AUTOMATED_OVERRIDES_MANUAL_NOTE).native)
         layout.addWidget(widget.native)
         layout.addWidget(role_tabs)
+        if trailing:
+            node_ids, _ = _lay_out_boxes(
+                TabLayout(boxes=trailing), rows, disclosures=state.disclosures,
+                group_boxes=state.group_boxes,
+            )
+            layout.addWidget(node_ids)
         layout.addStretch(1)
         for name in shared:
             shared_home[name] = None
@@ -6657,6 +6893,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         draw_in_3d=draw_in_3d,
         layer_names=(BC_COORDINATES, *BC_REGION_NAMES, *BC_BOX_NAMES),
         shared_ilastik_holder=lambda: getattr(state, "shared_ilastik_holder", None),
+        disclosures=lambda: dict(getattr(state, "disclosures", {})),
+        group_boxes=lambda: dict(getattr(state, "group_boxes", {})),
     )
 
 
@@ -6752,7 +6990,9 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
 
         The visible editors are the entry's overrides: an option belonging to
         a type the user has moved away from has stopped being set, rather than
-        lingering as a value nothing applies.
+        lingering as a value nothing applies -- and so has one the entry's own
+        choices hide (a capillary block's probability once it blocks listed
+        vessels instead).
 
         An empty one is left out rather than sent as None. An override replaces
         what the run configured, so a blank `pericyte_mask_path` editor would
@@ -6765,30 +7005,70 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             for name in shown
             if name in editor.editors
         }
-        return {name: value for name, value in read.items() if value is not None}
+        values = entry_values(editor)
+        return {
+            name: value
+            for name, value in read.items()
+            if value is not None and entry_shows(name, values)
+        }
+
+    def entry_shows(name: str, values: Mapping[str, Any]) -> bool:
+        """Whether an entry's option applies, given the whole chain of gates above it."""
+        return fields[name].is_visible(values) and all(
+            is_prerequisite_met(rule, values) for rule in prerequisite_chain(schema, name)
+        )
+
+    def entry_values(editor) -> dict[str, Any]:
+        """What this entry's run would read: the baseline, then its own options."""
+        values = {
+            name: fields[name].to_setting_value(_safe_widget_value(widget))
+            for name, widget in rows.items()
+        }
+        for name in rows_for_type(editor.type.value):
+            if name in editor.editors:
+                values[name] = fields[name].to_setting_value(
+                    _safe_widget_value(editor.editors[name])
+                )
+        return values
+
+    def refresh_entry(editor) -> None:
+        """Show this type's options whose own prerequisites this entry meets.
+
+        The same rule a tab row follows, read against the entry's values
+        rather than the baseline's: a pericyte mask path shows only while that
+        entry places its sites from a mask.
+        """
+        values = entry_values(editor)
+        shown = set(rows_for_type(editor.type.value))
+        for name, widget in editor.editors.items():
+            widget.visible = name in shown and entry_shows(name, values)
+        editor.advanced.refresh(
+            lambda n: n in shown and entry_shows(n, values), values, schema
+        )
 
     def lay_out_editors(editor) -> None:
         """Name, type, this type's knobs in SETTINGS_FOR_TYPE order, Remove.
 
         Visibility alone is not enough: editors are built once for every type,
         so a naive append order buried ``arteriole_diameter_change_percent``
-        under pericyte geometry rows on the combined type.
+        under pericyte geometry rows on the combined type. The type's advanced
+        options go behind the entry's own Advanced button, after the rest.
         """
         chosen = editor.type.value
         shown = set(rows_for_type(chosen))
-        for name, widget in editor.editors.items():
-            widget.visible = name in shown
-        ordered = [
-            editor.editors[name]
-            for name in editor_layout_order(chosen)
-            if name in editor.editors
-        ]
+        order = [name for name in editor_layout_order(chosen) if name in editor.editors]
+        behind = [name for name in order if name in shown and schema[name].advanced]
         editor.container.clear()
+        editor.advanced.set_rows(behind, editor.editors)
         editor.container.append(editor.name)
         editor.container.append(editor.type)
-        for widget in ordered:
-            editor.container.append(widget)
+        for name in order:
+            if name not in behind:
+                editor.container.append(editor.editors[name])
+        editor.container.append(editor.advanced.container)
+        _hide_row_label(editor.advanced.container)
         editor.container.append(editor.remove)
+        refresh_entry(editor)
         editor.shown = frozenset(name for name in editor.editors if name in shown)
         editor.hidden = frozenset(
             name for name in editor.editors if name not in shown
@@ -6857,6 +7137,8 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             remove=remove_button,
             # Empty shell; lay_out_editors fills it in SETTINGS_FOR_TYPE order.
             container=Container(widgets=[], labels=True),
+            # The chosen type's advanced options; lay_out_editors fills it.
+            advanced=_AdvancedDisclosure(entry_disclosure(index, ()), editors),
         )
 
         def on_name(*_args) -> None:
@@ -6876,6 +7158,9 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
             write_row()
 
         def on_override(*_args) -> None:
+            # An option's own prerequisites follow the entry even while the
+            # entries are being rebuilt from a loaded config.
+            refresh_entry(editor)
             if state.applying:
                 return
             state.entries = set_overrides(state.entries, index, overrides_from(editor))
@@ -6948,7 +7233,12 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         from qtpy.QtWidgets import QSizePolicy
 
         flat = [name for name in visible_tab_settings(names) if name in rows]
-        settings = Container(widgets=[rows[name] for name in flat], labels=True)
+        state.disclosures = {}
+        boxes = _box_containers(
+            layout_for("run_perturbations", flat, schema), rows, state.disclosures
+        )
+        settings = Container(widgets=[container for _box, container in boxes], labels=False)
+        _flush(settings)
         explanation = Label(
             value=(
                 "Each perturbation re-solves the network from the same "
@@ -6969,6 +7259,11 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         body.native.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         return body.native
 
+    def refresh_entries() -> None:
+        """Re-read every entry's options against the baseline as it is now."""
+        for editor in state.editors:
+            refresh_entry(editor)
+
     return SimpleNamespace(
         page=page,
         state=state,
@@ -6981,6 +7276,8 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
         holder=holder,
         add_button=add_button,
         list_setting=LIST_SETTING,
+        refresh_entries=refresh_entries,
+        disclosures=lambda: dict(getattr(state, "disclosures", {})),
     )
 
 
@@ -7911,12 +8208,32 @@ def settings_widget(napari_viewer=None):
         if channel_name in rows and path_name in rows:
             _follow_image_channels(rows[channel_name], rows[path_name])
 
-    # Shared ilastik knobs stay out of the initial tab containers until
-    # place_shared_ilastik hosts them. Keep them hidden while unparented: a
-    # visible widget with no parent is a floating top-level window.
-    for name in SHARED_ILASTIK_SETTINGS:
-        if name in rows:
-            rows[name].visible = False
+    #: Every Advanced button on the panel, by key (see haemolynx.gui.layout).
+    advanced_disclosures: dict[str, _AdvancedDisclosure] = {}
+
+    # Shared ilastik knobs are one block -- the ordinary rows, then their own
+    # Advanced button -- that place_shared_ilastik moves between Input and
+    # Boundaries. The block stays hidden while it has no parent: a visible
+    # widget with no parent is a floating top-level window.
+    shared_ilastik_names = [name for name in SHARED_ILASTIK_SETTINGS if name in rows]
+    shared_ilastik_rows = Container(
+        widgets=[rows[n] for n in shared_ilastik_names if not schema[n].advanced],
+        labels=True,
+    )
+    _flush(shared_ilastik_rows)
+    shared_ilastik_advanced = _AdvancedDisclosure(
+        shared_ilastik_disclosure(
+            [n for n in shared_ilastik_names if schema[n].advanced]
+        ),
+        rows,
+        always_visible=True,
+    )
+    advanced_disclosures[shared_ilastik_advanced.spec.key] = shared_ilastik_advanced
+    shared_ilastik_block = Container(
+        widgets=[shared_ilastik_rows, shared_ilastik_advanced.container], labels=False
+    )
+    _flush(shared_ilastik_block)
+    shared_ilastik_block.visible = False
 
     # Perturbations claims legacy flags and typed-entry options so Field
     # objects exist, but only ALWAYS_VISIBLE_TAB_SETTINGS are parented as flat
@@ -7966,12 +8283,15 @@ def settings_widget(napari_viewer=None):
     revert_buttons: dict[str, Any] = {}
     from haemolynx.gui.chrome_tooltips import REVERT_STAGE_TOOLTIP
 
-    #: Input-tab container that can receive the shared ilastik rows when main
+    #: The Input tab's boxes by key, so the chrome built further down (the
+    #: check and optimise buttons) can join the box it belongs to.
+    input_boxes: dict[str, Any] = {}
+    #: Input-tab holder that receives the shared ilastik block when main
     #: segmentation uses ilastik. Boundaries gets a holder of its own.
-    input_settings: Any = None
+    input_shared_ilastik_holder: Any = None
     #: Diameters-tab container, so "Optimise FWHM settings" (built further
     #: down, once its own click handler exists) can be inserted right after
-    #: the fwhm_raw_tiff_path row -- same pattern as `input_settings` above.
+    #: the fwhm_raw_tiff_path row.
     diameters_settings: Any = None
     #: Which tab currently parents the shared ilastik rows.
     shared_ilastik_placement: dict[str, str | None] = {"host": None}
@@ -8002,49 +8322,29 @@ def settings_widget(napari_viewer=None):
         ]
         if build is not None:
             native = build(summary, names)
-        elif tab.stage.call == "segment":
-            input_settings = Container(
-                widgets=[summary, *(rows[name] for name in names)],
-                labels=True,
-            )
-            native = input_settings.native
-        elif tab.stage.call == "assign_diameters":
-            diameters_settings = Container(
-                widgets=[summary, *(rows[name] for name in names)],
-                labels=True,
-            )
-            native = diameters_settings.native
         else:
-            runs = _grouped_by_section(names, fields)
-            leading_section, leading_names = runs[0] if runs else ("", [])
-            page_stack = QWidget()
-            page_stack_layout = QVBoxLayout(page_stack)
-            page_stack_layout.setContentsMargins(0, 0, 0, 0)
-            page_stack_layout.addWidget(
-                Container(
-                    widgets=[summary, *(rows[name] for name in leading_names)],
-                    labels=True,
-                ).native
+            # Boxes and Advanced buttons are decided by haemolynx.gui.layout:
+            # a later section on a tab is a nested checkbox's own children
+            # (e.g. "Connectivity/Network Analysis" under "Statistics and
+            # measurements") and gets a group box of its own, and every
+            # advanced row goes behind a button under the row it belongs to.
+            native, containers = _lay_out_boxes(
+                layout_for(tab.stage.call, names, schema),
+                rows,
+                disclosures=advanced_disclosures,
+                group_boxes=section_group_boxes,
+                lead=[summary],
             )
-            # A later section on the same tab is a nested checkbox's own
-            # children (e.g. "Connectivity/Network Analysis" under
-            # "Statistics and measurements") -- boxed so it reads as a
-            # distinct, nested group rather than a continuation of the
-            # leading section's flat list.
-            for section, section_names in runs[1:]:
-                group = QGroupBox(section_box_title(tab.stage.call, section))
-                slug = section.lower().replace(" ", "_").replace("/", "_")
-                group.setObjectName(f"haemolynx_section_{slug}")
-                group_layout = QVBoxLayout(group)
-                group_layout.addWidget(
-                    Container(
-                        widgets=[rows[name] for name in section_names],
-                        labels=True,
-                    ).native
-                )
-                page_stack_layout.addWidget(group)
-                section_group_boxes[section] = (group, section_names)
-            native = page_stack
+            if tab.stage.call == "segment":
+                input_boxes = containers
+                input_shared_ilastik_holder = Container(widgets=[], labels=False)
+                _flush(input_shared_ilastik_holder)
+                leading_input = containers.get("input")
+                if leading_input is not None:
+                    leading_input.append(input_shared_ilastik_holder)
+                    _hide_row_label(input_shared_ilastik_holder)
+            elif tab.stage.call == "assign_diameters":
+                diameters_settings = containers.get("diameters")
         # A bounded QScrollArea rather than `Container(scrollable=True)`: the
         # magicgui one reports the full height of its contents, so a tab with
         # 39 rows stretches the whole napari window instead of scrolling.
@@ -8093,6 +8393,14 @@ def settings_widget(napari_viewer=None):
         "Junctions where four or more vessels meet, and vessels on no "
         "inlet-to-outlet path, after a run",
     )
+
+    # The pages that lay themselves out keep their own Advanced buttons and
+    # boxes; the panel refreshes them with everything else.
+    for controls in (boundaries, perturbations):
+        if controls is None:
+            continue
+        advanced_disclosures.update(controls.disclosures())
+        section_group_boxes.update(getattr(controls, "group_boxes", dict)())
 
     # Per-tab Revert pages, stacked in tab order: empty for the first tab,
     # centered button for every later one. The stack tracks the tab widget so
@@ -8193,14 +8501,15 @@ def settings_widget(napari_viewer=None):
         report.value = note
 
     def place_shared_ilastik() -> None:
-        """Host shared ilastik rows on Input or Boundaries (same widgets).
+        """Host the shared ilastik block on Input or Boundaries (same widgets).
 
-        These rows are deliberately left out of the initial tab containers and
-        moved later. A magicgui row with no Qt parent that is set visible
-        becomes a top-level window beside napari — the same failure
-        ``place_shared`` already guards against for boundary-method rows.
-        Hide before detach, show only after a successful append, and never
-        record a host that did not actually receive the widgets.
+        The block -- the shared rows and their own Advanced button -- is
+        deliberately left out of the initial tab containers and moved later.
+        A magicgui widget with no Qt parent that is set visible becomes a
+        top-level window beside napari — the same failure ``place_shared``
+        already guards against for boundary-method rows. Hide before detach,
+        show only after a successful append, and never record a host that did
+        not actually receive the block.
         """
         values = current_values()
         host = shared_ilastik_host(values)
@@ -8211,50 +8520,42 @@ def settings_widget(napari_viewer=None):
 
         if host == shared_ilastik_placement["host"]:
             # Already placed (or correctly unhosted). Do not poke ``visible``
-            # here: setting True on an unparented row opens a floating window.
+            # here: setting True on an unparented block opens a floating window.
             return
 
-        def _detach(container) -> None:
-            if container is None:
-                return
-            for name in SHARED_ILASTIK_SETTINGS:
-                row = rows.get(name)
-                if row is None:
-                    continue
-                # Hide before remove: a visible widget with no parent is a
-                # window of its own (see Boundaries ``place_shared``).
-                row.visible = False
-                try:
-                    container.remove(row)
-                except Exception:
-                    pass
-
-        _detach(input_settings)
-        _detach(boundaries_holder)
+        # Hide before remove: a visible widget with no parent is a window of
+        # its own (see Boundaries ``place_shared``).
+        shared_ilastik_block.visible = False
+        for holder in (input_shared_ilastik_holder, boundaries_holder):
+            if holder is not None and any(w is shared_ilastik_block for w in holder):
+                holder.remove(shared_ilastik_block)
 
         attached: str | None = None
-        if host == "input" and input_settings is not None:
-            for name in SHARED_ILASTIK_SETTINGS:
-                if name not in rows:
-                    continue
-                input_settings.append(rows[name])
-                rows[name].visible = True
+        if host == "input" and input_shared_ilastik_holder is not None:
+            input_shared_ilastik_holder.append(shared_ilastik_block)
             attached = "input"
         elif host == "boundaries" and boundaries_holder is not None:
-            for name in SHARED_ILASTIK_SETTINGS:
-                if name not in rows:
-                    continue
-                boundaries_holder.append(rows[name])
-                rows[name].visible = True
+            boundaries_holder.append(shared_ilastik_block)
             attached = "boundaries"
-        else:
-            for name in SHARED_ILASTIK_SETTINGS:
-                if name in rows:
-                    rows[name].visible = False
+        if attached is not None:
+            shared_ilastik_block.visible = True
 
         shared_ilastik_placement["host"] = attached
         # Moving rows into a container re-unifies its label widths.
         _wrap_row_labels(tab_widget)
+
+    #: Every gate above each row (see haemolynx.gui.form.prerequisite_chain).
+    chains = {name: prerequisite_chain(schema, name) for name in fields}
+
+    def chain_met(name: str, values: Mapping[str, Any]) -> bool:
+        return all(is_prerequisite_met(rule, values) for rule in chains.get(name, ()))
+
+    def row_shows(name: str, values: Mapping[str, Any]) -> bool:
+        """Whether *name*'s row would show: hidden rows need their whole chain met."""
+        field = fields[name]
+        if not field.is_visible(values):
+            return False
+        return chain_met(name, values) if field.hide_when_unmet else True
 
     def apply_prerequisites(*_args) -> None:
         """Apply schema prerequisites: hide nested rows, grey others."""
@@ -8288,16 +8589,21 @@ def settings_widget(napari_viewer=None):
                 widget.tooltip = fields[name].help
                 continue
             field = fields[name]
-            enabled = field.is_enabled(values)
+            # The whole chain of gates above the row, not only its own.
+            enabled = chain_met(name, values)
             if field.hide_when_unmet:
                 # Input / Diameters / FWHM / Boundaries vessel / Graph
                 # centreline options: only relevant nested knobs appear.
-                widget.visible = field.is_visible(values)
+                widget.visible = field.is_visible(values) and enabled
                 widget.enabled = True
                 widget.tooltip = field.help
             else:
                 widget.enabled = enabled
-                widget.tooltip = field.help if enabled else field.why_disabled(values)
+                widget.tooltip = (
+                    field.help
+                    if enabled
+                    else replace(field, enabled_by=chains[name]).why_disabled(values)
+                )
 
         for group, section_names in section_group_boxes.values():
             # Not `rows[name].visible`: magicgui reads that back through the
@@ -8306,7 +8612,16 @@ def settings_widget(napari_viewer=None):
             # call) state -- reading it here would latch the group hidden
             # forever once hidden once. `field.is_visible` is the pure,
             # ancestor-independent answer the per-row loop above just used.
-            group.setVisible(any(fields[name].is_visible(values) for name in section_names))
+            group.setVisible(any(row_shows(name, values) for name in section_names))
+
+        # Each Advanced button hides when none of its rows would show, and
+        # counts the rows holding something other than where the panel started.
+        for disclosure in advanced_disclosures.values():
+            disclosure.refresh(
+                lambda name: row_shows(name, values), values, schema, ADVANCED_BASELINE
+            )
+        if perturbations is not None:
+            perturbations.refresh_entries()
 
         # Large-vessel-network mode relabels the thick-vessel checkbox: once
         # both are on, "thick vessel skeletonisation" is no longer the
@@ -8475,10 +8790,25 @@ def settings_widget(napari_viewer=None):
         elif images:
             adopt(images[-1])
 
+    #: The Input tab's "Check and optimise" box, and the Advanced button its
+    #: own settings sit behind: the check and optimise buttons go in the box,
+    #: before that button, and their less-used options behind it.
+    check_box = input_boxes.get("check_and_optimise")
+    check_advanced = advanced_disclosures.get("segment:box:check_and_optimise")
+
+    def into_check_box(widget, position: int) -> None:
+        if check_box is not None:
+            check_box.insert(position, widget)
+
+    def behind_check_advanced(widget) -> None:
+        if check_advanced is not None:
+            check_advanced.add(widget)
+        elif check_box is not None:
+            check_box.append(widget)
+
     #: "Optimise settings": empirically choose Skeletonise/Graph tab values
     #: from the segmented input image. The button lives on the Input tab
-    #: itself (appended to `input_settings`, a magicgui Container, like
-    #: `place_shared_ilastik` appends shared rows there); its progress bars are
+    #: itself, in its "Check and optimise" box; its progress bars are
     #: plain Qt (`OptimiseProgressBars.native`), so they join the shared panel
     #: chrome beside the pipeline's own `bars.native` rather than being forced
     #: into a magicgui Container, which only accepts magicgui widgets.
@@ -8486,8 +8816,7 @@ def settings_widget(napari_viewer=None):
     from haemolynx.gui.chrome_tooltips import OPTIMISE_SETTINGS_TOOLTIP
 
     optimise_button.tooltip = OPTIMISE_SETTINGS_TOOLTIP
-    if input_settings is not None:
-        input_settings.append(optimise_button)
+    into_check_box(optimise_button, 0)
     optimise_bars = OptimiseProgressBars()
 
     #: "Optimisation downsampling": how coarse a copy of the image the search
@@ -8514,8 +8843,7 @@ def settings_widget(napari_viewer=None):
         "times one real evaluation on this image and picks a factor aiming "
         "to keep the whole search under about five minutes"
     )
-    if input_settings is not None:
-        input_settings.append(downsample_dropdown)
+    behind_check_advanced(downsample_dropdown)
 
     #: "Choose optimisation types": restricts Optimise settings to a subset of
     #: its eleven groups. The per-group checkboxes stay hidden until asked for --
@@ -8527,16 +8855,14 @@ def settings_widget(napari_viewer=None):
         "Restrict Optimise settings to only the ticked group(s) below, "
         "instead of every Skeletonise/Graph setting"
     )
-    if input_settings is not None:
-        input_settings.append(choose_groups_checkbox)
+    behind_check_advanced(choose_groups_checkbox)
 
     group_checkboxes: dict[str, Any] = {
         name: CheckBox(text=GROUP_LABELS[name], value=True) for name in GROUP_NAMES
     }
     group_checkboxes_container = Container(widgets=list(group_checkboxes.values()), labels=False)
     group_checkboxes_container.visible = False
-    if input_settings is not None:
-        input_settings.append(group_checkboxes_container)
+    behind_check_advanced(group_checkboxes_container)
 
     #: "Check segmented image": scores the raw segmented input mask, 0-10,
     #: before any pipeline stage runs on it -- see
@@ -8547,8 +8873,7 @@ def settings_widget(napari_viewer=None):
     from haemolynx.gui.chrome_tooltips import CHECK_SEGMENTED_IMAGE_TOOLTIP
 
     check_image_button.tooltip = CHECK_SEGMENTED_IMAGE_TOOLTIP
-    if input_settings is not None:
-        input_settings.append(check_image_button)
+    into_check_box(check_image_button, 0)
 
     #: A mirror of the FWHM raw-image path (`fwhm_raw_tiff_path`), shown here
     #: too so "Check segmented image" can cross-check the segmentation
@@ -8572,8 +8897,7 @@ def settings_widget(napari_viewer=None):
         "Shares its value with fwhm_raw_tiff_path on the Diameters tab "
         "(also used there for FWHM diameter measurement)."
     )
-    if input_settings is not None:
-        input_settings.append(raw_data_row)
+    into_check_box(raw_data_row, 0)
 
     _raw_data_row_syncing = {"active": False}
 
@@ -8610,8 +8934,7 @@ def settings_widget(napari_viewer=None):
         "Which channel of a multi-channel raw data file to read, as Fiji names them. "
         "Shares its value with fwhm_raw_channel on the Diameters tab."
     )
-    if input_settings is not None:
-        input_settings.append(raw_channel_row)
+    into_check_box(raw_channel_row, 1)
     _follow_image_channels(raw_channel_row, raw_data_row)
     _raw_channel_syncing = {"active": False}
 
@@ -10123,6 +10446,19 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_check_image_button = check_image_button
     panel._haemolynx_raw_data_row = raw_data_row
     panel._haemolynx_raw_channel_row = raw_channel_row
+
+    def expand_advanced(expanded: bool = True) -> None:
+        """Open (or close) every Advanced button on the panel."""
+        for disclosure in advanced_disclosures.values():
+            disclosure.toggle(expanded)
+        if perturbations is not None:
+            for editor in perturbations.editors():
+                editor.advanced.toggle(expanded)
+
+    panel._haemolynx_advanced = advanced_disclosures
+    panel._haemolynx_expand_advanced = expand_advanced
+    panel._haemolynx_shared_ilastik_block = shared_ilastik_block
+    panel._haemolynx_input_boxes = input_boxes
     panel._haemolynx_check_segmented_image = on_check_segmented_image
     panel._haemolynx_edit_button = edit_button
     panel._haemolynx_graph_editor = graph_editor

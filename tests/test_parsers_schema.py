@@ -10,7 +10,10 @@ from haemolynx.parsers import (
     IneffectiveSettingWarning,
     Schema,
     Setting,
+    parse_prerequisite,
+    prerequisite_name,
 )
+from haemolynx.parsers.schema import describe_unmet_prerequisite, is_prerequisite_met
 
 
 def _schema() -> Schema:
@@ -300,3 +303,50 @@ def test_container_defaults_are_not_shared_between_calls():
     second = schema.defaults()
     assert second["edges"] == [[0, 1]]
     assert second["table"] == {"B01": 5.0}
+
+
+# --- the four forms of a prerequisite ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "rule, parsed",
+    [
+        ("use_masks", ("use_masks", "on", None)),
+        ("!use_masks", ("use_masks", "off", None)),
+        ("mode=full", ("mode", "equals", "full")),
+        ("mode!=fast", ("mode", "not_equals", "fast")),
+    ],
+)
+def test_every_prerequisite_form_parses_to_its_setting_and_test(rule, parsed):
+    assert parse_prerequisite(rule) == parsed
+    assert prerequisite_name(rule) == parsed[0]
+
+
+def test_a_not_equals_prerequisite_holds_for_every_other_choice():
+    assert is_prerequisite_met("mode!=fast", {"mode": "full"})
+    assert not is_prerequisite_met("mode!=fast", {"mode": "fast"})
+    assert describe_unmet_prerequisite("mode!=fast") == "'mode' is 'fast'"
+
+
+def _mode_schema(rule: str) -> Schema:
+    return Schema([
+        Setting("mode", "choice", "fast", "Statistics detail", "S", choices=("fast", "full")),
+        Setting("depth", "int", 1, "Only read outside fast mode", "S", requires=(rule,)),
+    ])
+
+
+def test_a_setting_read_by_every_choice_but_one_warns_under_that_one():
+    schema = _mode_schema("mode!=fast")
+    with pytest.warns(IneffectiveSettingWarning, match="'mode' is 'fast'"):
+        schema.validate({"depth": 3})
+    assert schema.ineffective_settings({"mode": "full", "depth": 3}) == []
+
+
+def test_a_not_equals_prerequisite_must_name_a_choice_and_one_of_its_values():
+    with pytest.raises(ConfigError, match="which is not one of"):
+        _mode_schema("mode!=slow")
+    with pytest.raises(ConfigError, match="is not a choice"):
+        Schema([
+            Setting("gate", "bool", False, "A flag", "S"),
+            Setting("a", "int", 1, "Dependent", "S", requires=("gate!=x",)),
+        ])

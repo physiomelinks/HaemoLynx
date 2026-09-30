@@ -15,6 +15,7 @@ from pathlib import Path
 from haemolynx.gui.form import (
     DEFAULT_FLOAT_RANGE,
     DEFAULT_INT_RANGE,
+    H5_DATASET_SETTINGS,
     HIDE_WHEN_UNMET_PARENTS,
     HIDE_WHEN_UNMET_SECTIONS,
     OPTIONS_BY_WIDGET,
@@ -776,6 +777,15 @@ _NETWORK_ANALYSIS_MEASURE_CHILDREN = tuple(
 )
 
 
+#: The three measurement-3D files as HDF5, so their dataset-name rows show
+#: too (a dataset name only means something for an HDF5 file).
+_MEASUREMENT_3D_H5_PATHS = {
+    "cell_mask_path": "cells.h5",
+    "measurement_3d_vessel_mask_path": "vessels.h5",
+    "measurement_3d_reference_image_path": "reference.h5",
+}
+
+
 def test_measurement_3d_rows_hide_when_measurement_3d_to_cell_mask_is_off():
     """Export nests cell-mask paths under measurement_3d_to_cell_mask."""
     assert "Statistics and measurements" in HIDE_WHEN_UNMET_SECTIONS
@@ -791,8 +801,12 @@ def test_measurement_3d_rows_hide_when_measurement_3d_to_cell_mask_is_off():
         assert child.hide_when_unmet, name
         assert child.section == "Statistics and measurements", name
         assert SCHEMA[name].requires == ("measurement_3d_to_cell_mask",), name
-        assert not child.is_visible({"measurement_3d_to_cell_mask": False}), name
-        assert child.is_visible({"measurement_3d_to_cell_mask": True}), name
+        assert not child.is_visible(
+            {"measurement_3d_to_cell_mask": False, **_MEASUREMENT_3D_H5_PATHS}
+        ), name
+        assert child.is_visible(
+            {"measurement_3d_to_cell_mask": True, **_MEASUREMENT_3D_H5_PATHS}
+        ), name
 
     # Every non-network-analysis per-measure checkbox nests under statistics
     # the same way, and starts checked so a user opts individual measures
@@ -855,13 +869,19 @@ def test_visible_statistics_settings_nests_under_measurement_3d_to_cell_mask():
         assert name not in shown, name
     assert "statistics_mode" not in shown
 
-    on = {**off, "measurement_3d_to_cell_mask": True}
+    on = {**off, "measurement_3d_to_cell_mask": True, **_MEASUREMENT_3D_H5_PATHS}
     shown = visible_statistics_settings(SCHEMA, on)
     assert "measurement_3d_to_cell_mask" in shown
     assert "statistics" in shown
     for name in _MEASUREMENT_3D_CHILDREN:
         assert name in shown, name
     assert "statistics_mode" not in shown
+
+    # With TIFF files there is no dataset to name, so those rows stay hidden.
+    tiffs = {**on, **{k: v.replace(".h5", ".tif") for k, v in _MEASUREMENT_3D_H5_PATHS.items()}}
+    shown = visible_statistics_settings(SCHEMA, tiffs)
+    for name in _MEASUREMENT_3D_CHILDREN:
+        assert (name in shown) is (not name.endswith("_h5_dataset_name")), name
 
     stats_on = {**off, "statistics": True}
     shown = visible_statistics_settings(SCHEMA, stats_on)
@@ -1202,3 +1222,61 @@ def test_the_cell_mask_measurement_row_names_a_3d_object_mask():
         fields["measurement_3d_to_cell_mask"].label
         == "Measure distance between vessels and 3D object mask"
     )
+
+
+# --- rows gated on one choice, or on a file being HDF5 ------------------------
+
+
+def test_a_row_read_by_every_choice_but_one_says_which_choice_turns_it_off():
+    field = field_for(SCHEMA["voxel_size_override_xyz"])
+    assert field.enabled_by == ("voxel_size_policy!=metadata_only",)
+    assert field.is_visible({"voxel_size_policy": "auto"})
+    assert field.is_visible({"voxel_size_policy": "override"})
+    assert not field.is_visible({"voxel_size_policy": "metadata_only"})
+    assert field.why_disabled({"voxel_size_policy": "metadata_only"}) == (
+        "Not used while 'voxel_size_policy' is 'metadata_only'."
+    )
+
+
+@pytest.mark.parametrize(
+    "name, method",
+    [
+        ("cluster_collapse_max_radial_dispersion", "direction_aware"),
+        ("cluster_collapse_persistence_search_multiple", "persistence"),
+    ],
+)
+def test_a_collapse_knob_shows_only_under_the_method_that_reads_it(name, method):
+    assert "cluster_collapse_method" in HIDE_WHEN_UNMET_PARENTS
+    field = field_for(SCHEMA[name])
+    assert field.hide_when_unmet
+    for choice in SCHEMA["cluster_collapse_method"].choices:
+        values = {"do_graph_building": True, "cluster_collapse_method": choice}
+        assert field.is_visible(values) is (choice == method), choice
+
+
+def test_a_capillary_block_shows_only_the_vessels_its_selection_reads():
+    by_ids = {"capillary_block_selection": "vessel_ids"}
+    by_orders = {"capillary_block_selection": "branch_order_probability"}
+    for name in ("capillary_block_branch_orders", "capillary_block_probability", "capillary_block_seed"):
+        field = field_for(SCHEMA[name])
+        assert field.is_visible(by_orders), name
+        assert not field.is_visible(by_ids), name
+    ids = field_for(SCHEMA["capillary_block_vessel_ids"])
+    assert ids.is_visible(by_ids)
+    assert not ids.is_visible(by_orders)
+
+
+@pytest.mark.parametrize("name, path_name", sorted(H5_DATASET_SETTINGS.items()))
+def test_an_h5_dataset_row_shows_only_for_an_hdf5_file(name, path_name):
+    assert name in SCHEMA and path_name in SCHEMA
+    field = field_for(SCHEMA[name])
+    gates = {prerequisite: True for prerequisite in SCHEMA[name].requires}
+    gates.update({"run_haemodynamics": True})
+    for path, shown in (
+        ("volume.h5", True),
+        ("volume.HDF5", True),
+        ("volume.tif", False),
+        ("", False),
+        (None, False),
+    ):
+        assert field.is_visible({**gates, path_name: path}) is shown, path

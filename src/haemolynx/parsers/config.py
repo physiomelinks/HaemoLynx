@@ -14,7 +14,17 @@ import inspect
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from .schema import ConfigError, Schema, Setting, _jsonify, section_key
+from .schema import (
+    PREREQUISITE_EQUALS,
+    PREREQUISITE_NOT_EQUALS,
+    PREREQUISITE_OFF,
+    ConfigError,
+    Schema,
+    Setting,
+    _jsonify,
+    parse_prerequisite,
+    section_key,
+)
 
 #: Threshold from the project convention: a call taking more than this many
 #: settings is passed the config dict instead of individual keyword arguments.
@@ -155,20 +165,24 @@ def _comment_lines(setting: Setting) -> list[str]:
         notes.append(f"range {low}..{high}")
     if setting.requires:
         notes.append(
-            "needs "
-            + " and ".join(
-                (
-                    f"{name.partition('=')[0]} = {name.partition('=')[2]}"
-                    if "=" in name
-                    else f"{name[1:]} off" if name.startswith("!") else name
-                )
-                for name in setting.requires
-            )
+            "needs " + " and ".join(_prerequisite_note(p) for p in setting.requires)
         )
     if setting.must_exist:
         notes.append("must exist")
     suffix = f"  [{'; '.join(notes)}]" if notes else ""
     return [f"  # {setting.help}{suffix}"]
+
+
+def _prerequisite_note(prerequisite: str) -> str:
+    """How one ``requires`` entry reads in a config file's comment."""
+    name, test, expected = parse_prerequisite(prerequisite)
+    if test == PREREQUISITE_EQUALS:
+        return f"{name} = {expected}"
+    if test == PREREQUISITE_NOT_EQUALS:
+        return f"{name} not {expected}"
+    if test == PREREQUISITE_OFF:
+        return f"{name} off"
+    return name
 
 
 def _is_block(value: Any) -> bool:

@@ -318,3 +318,12 @@ def test_ensure_yaml_suffix_adds_yaml_when_missing():
     assert ensure_yaml_suffix("config.yaml") == Path("config.yaml")
     assert ensure_yaml_suffix("config.yml") == Path("config.yml")
     assert ensure_yaml_suffix(Path("out") / "settings") == Path("out") / "settings.yaml"
+
+
+def test_a_generated_config_says_which_choice_a_setting_must_avoid(tmp_path):
+    schema = Schema([
+        Setting("mode", "choice", "fast", "Statistics detail", "S", choices=("fast", "full")),
+        Setting("depth", "int", 1, "Only read outside fast mode", "S", requires=("mode!=fast",)),
+    ])
+    text = dump_config(tmp_path / "c.yaml", schema).read_text(encoding="utf-8")
+    assert "needs mode not fast" in text

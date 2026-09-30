@@ -1120,6 +1120,8 @@ def test_shared_ilastik_reparent_does_not_spawn_floating_windows(panel):
                 return
         raise AssertionError(f"no tab containing {title_substring!r}")
 
+    # The block's own Advanced button open, so every shared row can show.
+    widget._haemolynx_advanced["shared:ilastik"].toggle(True)
     rows["use_ilastik_segmentation"].value = True
     QApplication.processEvents()
     select_tab("Input")
@@ -1211,6 +1213,10 @@ def test_thick_vessel_threshold_overrides_show_auto_placeholder_and_nest(panel):
 
     rows["use_thick_vessel_skeletonisation"].value = True
     QApplication.processEvents()
+    # Both overrides sit behind the thick-vessel Advanced button.
+    assert wall.visible is False
+    widget._haemolynx_advanced["skeletonise:use_thick_vessel_skeletonisation"].toggle(True)
+    QApplication.processEvents()
     assert wall.visible is True
     assert flake.visible is True
     assert rows["skeleton_thick_vessel_min_radius_um"].visible is True
@@ -1247,6 +1253,8 @@ def test_cartwheel_hub_guard_knobs_nest_under_its_own_toggle(panel):
         rows["cartwheel_hub_tangent_length_um"],
     ]
 
+    # The guard is one of the Graph tab's Checks, behind its Advanced button.
+    widget._haemolynx_advanced["build_network:box:pipeline_stages"].toggle(True)
     rows["detect_cartwheel_hub_artifacts"].value = False
     QApplication.processEvents()
     for child in children:
@@ -1277,6 +1285,7 @@ def test_perturbation_output_dir_nests_under_run_perturbations(panel):
         raise AssertionError("no tab containing 'Perturbations'")
 
     output_dir = rows["perturbation_output_dir"]
+    widget._haemolynx_advanced["run_perturbations:run_perturbations"].toggle(True)
 
     rows["run_perturbations"].value = False
     QApplication.processEvents()
@@ -1386,10 +1395,11 @@ def test_long_row_labels_wrap_and_keep_their_height(panel):
 
     widget, _viewer = panel
     widget.show()
+    # Longer than the cap on its own, whatever else shares its box.
     label = next(
         label
         for label in widget.findChildren(QLabel)
-        if label.text().startswith("Voxel size override")
+        if label.text().startswith("Segmentation cleanup reconnect max bridge distance")
     )
     assert label.wordWrap()
     assert label.minimumWidth() <= ROW_LABEL_MAX_WIDTH

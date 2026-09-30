@@ -207,3 +207,10 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "the edited network, so the 3D view and outputs catch up with the edits"
     ),
 }
+
+#: Every tab — the button that shows or hides the less common settings
+#: belonging to the row above it.
+ADVANCED_SETTINGS_TOOLTIP = (
+    "Show or hide the less often changed settings for the option above; "
+    "the count says how many of them differ from their defaults"
+)

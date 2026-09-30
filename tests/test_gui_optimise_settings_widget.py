@@ -222,6 +222,8 @@ def test_ticking_choose_groups_reveals_the_checkbox_list(panel):
     docked and displayed), not true of a bare, never-shown widget in a test,
     so this test shows the panel itself first."""
     panel.show()
+    # The group list sits behind the "Check and optimise" box's Advanced button.
+    panel._haemolynx_advanced["segment:box:check_and_optimise"].toggle(True)
 
     container = panel._haemolynx_optimise_group_checkboxes_container
     assert container.visible is False

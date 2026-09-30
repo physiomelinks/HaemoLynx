@@ -15,7 +15,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .schema import Schema, Setting, is_active
+from .schema import (
+    PREREQUISITE_EQUALS,
+    PREREQUISITE_NOT_EQUALS,
+    PREREQUISITE_OFF,
+    Schema,
+    Setting,
+    is_active,
+    parse_prerequisite,
+)
 
 #: Loaders accept a zipped file in place of the plain one, so a missing path is
 #: not missing if its `.zip` sibling is there.
@@ -110,12 +118,14 @@ def _because(setting: Setting) -> str:
     if not setting.requires:
         return "for every run"
     parts = []
-    for name in setting.requires:
-        if "=" in name:
-            key, _, expected = name.partition("=")
-            parts.append(f"'{key}' is '{expected}'")
-        elif name.startswith("!"):
-            parts.append(f"'{name[1:]}' is off")
+    for prerequisite in setting.requires:
+        name, test, expected = parse_prerequisite(prerequisite)
+        if test == PREREQUISITE_EQUALS:
+            parts.append(f"'{name}' is '{expected}'")
+        elif test == PREREQUISITE_NOT_EQUALS:
+            parts.append(f"'{name}' is not '{expected}'")
+        elif test == PREREQUISITE_OFF:
+            parts.append(f"'{name}' is off")
         else:
             parts.append(f"'{name}' is on")
     return "because " + " and ".join(parts)
