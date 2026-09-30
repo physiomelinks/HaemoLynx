@@ -578,8 +578,10 @@ extremes of the cohort:
 0.5 mmHg per step in every specimen. Over all six, the largest step is 0.48 mmHg from 10 to 6 µm,
 0.23 from 6 to 4, 0.495 from 4 to 3 and 0.16 from 3 to 2. So 4 µm passes by 0.005 mmHg and 3 µm,
 the frozen grid, with a margin. 3 µm gives the highest median of 4, 3 and 2 µm in every specimen,
-a bump the TH fraction fix did not remove (open item 39; the moving grid origin is the suspect).
-It is within the criterion. The sweep predates the centred TH lookup of open item 40, which moves
+a bump the TH fraction fix did not remove. It is the grid extent, not the solve (open item 39,
+closed): the default grid's side is 304 µm at 4 µm but 300 µm at 3 and 2 µm, and the extra
+vessel-free cells pull the 4 µm median down. On a grid pinned to 300 µm at every h, both measures
+fall steadily with h (−0.09 to −0.16 mmHg per step). It is within the criterion either way. The sweep predates the centred TH lookup of open item 40, which moves
 PO2 in TH at 3 µm by at most 0.08 mmHg.
 
 **Why the grid had to be revisited.** Until open item 30 each vessel was placed only in the cells
