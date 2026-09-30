@@ -45,6 +45,22 @@ POISEUILLE_FLOW_TO_UM3_PER_S = PASCALS_PER_MMHG * 1e3
 STAGNANT_FLOW_FRACTION = 1e-10
 
 
+def stagnant_edges(G, fraction: float | None = None) -> set:
+    """Edges ``(u, v, key)`` whose |``flow_signed``| is at most ``fraction`` of the largest.
+
+    Exact zeros count: an edge with no flow is as stagnant as one with rounding flow. The
+    rheology loop and Tier 3 both take their stagnant set from here, so they agree by
+    construction. Tier 3's log used to count only the nonzero ones, 136 on WKY-A against the
+    loop's 867, which read as two different sets (re-run package K).
+    """
+    if fraction is None:
+        fraction = STAGNANT_FLOW_FRACTION
+    flows = {(u, v, k): abs(float(d.get("flow_signed", 0.0)))
+             for u, v, k, d in G.edges(keys=True, data=True)}
+    cut = fraction * max(flows.values(), default=0.0)
+    return {e for e, q in flows.items() if q <= cut}
+
+
 def poiseuille_flow_to_um3_per_s(flow, factor: float = POISEUILLE_FLOW_TO_UM3_PER_S):
     """Convert flow from this pipeline's mixed units to um^3/s.
 

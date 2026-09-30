@@ -12,12 +12,14 @@ at). One inflow passes its state through; two or more are mixed and inverted joi
 daughter's content is evaluated at the node state with its own H. Both curves are affine in H,
 so this conserves O2 and CO2 wherever the rheology conserves red cell and plasma flux.
 """
+import logging
 from dataclasses import replace
 
 import networkx as nx
 import numpy as np
 import pytest
 
+from ImageLynx import cb_settings
 from ImageLynx.haemodynamics.perfusion import (
     _increasing_inverse,
     _mixed_blood_state,
@@ -25,7 +27,8 @@ from ImageLynx.haemodynamics.perfusion import (
     calculate_blood_oxygen_content,
     solve_multi_species_perfusion,
 )
-from ImageLynx.haemodynamics.resistance import POISEUILLE_FLOW_TO_UM3_PER_S
+from ImageLynx.haemodynamics.resistance import POISEUILLE_FLOW_TO_UM3_PER_S, stagnant_edges
+from ImageLynx.haemodynamics.rheology import solve_coupled_flow_and_hematocrit
 from test_perfusion_march_flow_units import _AREA, _V_CELL, _Config
 
 _MEASURED = replace(_Config(), permeability_o2_cm_s=9.1e-2, permeability_co2_cm_s=9.1e-2,
@@ -179,3 +182,36 @@ def test_a_plasma_skimmed_daughter_keeps_tissue_co2_above_arterial():
     po2, pco2, _ = solve_multi_species_perfusion(grid, G, [0], cells, config)
     assert np.all(pco2 >= config.pco2_arterial)
     assert np.all(po2 <= config.po2_arterial_mmHg)
+
+
+def test_the_stagnant_log_counts_exact_zeros(caplog):
+    """Package K: the log left out exact zeros, so Tier 3 reported 136 stagnant edges on WKY-A
+    where the rheology loop reported 867. They were the same edges."""
+    grid, G, cells = _network([(0, 1, 1e3, 0.45), (1, 2, 1e3, 0.45),
+                               (4, 3, 1e3 * 1.7e-12, 0.45), (4, 5, 0.0, 0.45),
+                               (4, 6, 0.0, 0.45)])
+    with caplog.at_level(logging.INFO, logger="ImageLynx.haemodynamics.perfusion"):
+        solve_multi_species_perfusion(grid, G, [0], cells, _MEASURED)
+    assert "3 of 5 edges have flow at or below 1e-10 of the largest (2 of them exactly zero)" \
+        in caplog.text
+
+
+def test_the_rheology_loop_and_tier_3_count_the_same_stagnant_edges(caplog):
+    """A Y with a two-edge dead-end spur: the loop and the march cut the same edges."""
+    G = nx.MultiGraph()
+    for u, v, d in ((0, 1, 12.0), (1, 2, 8.0), (1, 3, 4.0), (1, 4, 6.0), (4, 5, 6.0)):
+        G.add_edge(u, v, key=0, length=30.0, fwhm_diameter_um=d)
+    G, _ = solve_coupled_flow_and_hematocrit(
+        G, [0], [2, 3], 60.0, 20.0, systemic_hematocrit=0.45,
+        **cb_settings.rheology_solver_kwargs())
+    loop_count = G.graph["rheology_stagnant_edges"]
+    assert loop_count == 2
+    assert stagnant_edges(G) == {(1, 4, 0), (4, 5, 0)}
+
+    edges = list(G.edges(keys=True, data=True))
+    cells = {i: [{'edge': (u, v, k), 'flow': d["flow_abs"] * POISEUILLE_FLOW_TO_UM3_PER_S,
+                  'hematocrit': d["hematocrit"], 'length': 30.0, 'surface_area': _AREA}]
+             for i, (u, v, k, d) in enumerate(edges)}
+    with caplog.at_level(logging.INFO, logger="ImageLynx.haemodynamics.perfusion"):
+        solve_multi_species_perfusion(_LineGrid(len(edges)), G, [0], cells, _MEASURED)
+    assert f"{loop_count} of {len(edges)} edges have flow at or below" in caplog.text

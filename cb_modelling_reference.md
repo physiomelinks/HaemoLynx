@@ -3679,7 +3679,7 @@ tuning opportunity.
 | Tissue linear solve | sparse LU, `MMD_AT_PLUS_A` ordering, every iteration | `splu` | Exact. Replaced CG at `rtol` 1 × 10⁻⁵, warm-started, `maxiter` 500, which returned the last field once a step was below its tolerance (open item 23) |
 | Anderson depth | 5 | `ANDERSON_DEPTH` | History dropped whenever the residual rises |
 | Convergence test | max cell residual in mmHg / max \|P\| < `picard_tolerance`, both gases | `_relative_residual` | Was the relative L2 change between iterates |
-| Stagnant-flow floor | 10⁻¹⁰ × max \|q\| | `STAGNANT_FLOW_FRACTION` | Edges at or below it carry no blood in the march. The flow solve balances every node to ≈3 × 10⁻¹⁴ of the largest flow (WKY-A), so below this is rounding; in stagnant pockets it left nodes sending blood they never received. Was 10⁻¹² until open item 36: on the six 2026-09-28 networks rounding flows reach 1.7 × 10⁻¹² and real flows start at 2.1 × 10⁻⁸ |
+| Stagnant-flow floor | 10⁻¹⁰ × max \|q\| | `STAGNANT_FLOW_FRACTION` | Edges at or below it carry no blood in the march. The flow solve balances every node to ≈3 × 10⁻¹⁴ of the largest flow (WKY-A), so below this is rounding; in stagnant pockets it left nodes sending blood they never received. Was 10⁻¹² until open item 36: on the six 2026-09-28 networks rounding flows reach 1.7 × 10⁻¹² and real flows start at 2.1 × 10⁻⁸. The rheology loop and Tier 3 take the set from one helper, `stagnant_edges` (`resistance.py`), exact zeros included: 745–895 edges per specimen on the 2026-09-29 batch, of which 605–731 are exactly zero. Tier 3's log once counted only the nonzero ones (136–212), which read as a disagreement between the two; it was not one |
 
 ### A.5 Config-level Picard settings
 

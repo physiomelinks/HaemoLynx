@@ -392,7 +392,7 @@ def solve_coupled_flow_and_hematocrit(
         raise ValueError(f"relaxation must be in (0, 1], got {relaxation}.")
     from .resistance import (
         STAGNANT_FLOW_FRACTION, build_conductance_matrix_from_graph,
-        calc_laplacian_from_conductance_matrix, _solve_system_smart,
+        calc_laplacian_from_conductance_matrix, _solve_system_smart, stagnant_edges,
     )
     if stagnant_flow_fraction is None:
         stagnant_flow_fraction = STAGNANT_FLOW_FRACTION
@@ -473,13 +473,13 @@ def solve_coupled_flow_and_hematocrit(
             data["flow_abs"] = abs(flow_signed)
             data["flow_signed"] = flow_signed
 
-        # Stagnant edges stay out of the DAG: their direction is rounding noise.
+        # Stagnant edges stay out of the DAG: their direction is rounding noise. Tier 3 takes
+        # its set from the same helper.
         q_max = max(current_flows.values(), default=0.0)
-        stagnant_cut = stagnant_flow_fraction * q_max
-        stagnant = set()
+        stagnant = stagnant_edges(G, stagnant_flow_fraction)
         for u, v, key, data in G.edges(keys=True, data=True):
-            if data["flow_abs"] <= stagnant_cut:
-                stagnant.add((u, v, key))
+            if (u, v, key) in stagnant:
+                continue
             elif data["flow_signed"] > 0:
                 # Direct the edge from high pressure to low pressure
                 DAG.add_edge(u, v, key=key, **data)

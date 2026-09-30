@@ -8,7 +8,9 @@ logger = logging.getLogger(__name__)
 
 # Flow leaves the resistance solve in mmHg um^3 / cP, not um^3/s. See the constant's own
 # definition for the derivation and for what coupling the two unconverted did.
-from .resistance import POISEUILLE_FLOW_TO_UM3_PER_S, STAGNANT_FLOW_FRACTION  # noqa: E402
+from .resistance import (  # noqa: E402
+    POISEUILLE_FLOW_TO_UM3_PER_S, STAGNANT_FLOW_FRACTION, stagnant_edges,
+)
 
 #: Solubility of O2 in plasma and tissue, mmol/L per mmHg. One value for the blood's dissolved
 #: O2 and for every tier's tissue transport. Diffusion and wall flux are driven by PO2 but move
@@ -306,7 +308,7 @@ def _raise_on_non_finite_flow(G) -> None:
 
 
 # STAGNANT_FLOW_FRACTION lives in resistance.py, beside the flow solve, because the rheology
-# loop uses the same cut (open item 37).
+# loop uses the same cut (open item 37). Both take the set from resistance.stagnant_edges.
 
 
 def _raise_on_direction_size_mismatch(G) -> None:
@@ -1076,21 +1078,22 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
     # Flow at the pressure solve's rounding level is not flow. In near-stagnant pockets it can
     # leave both edges of a node flowing outward, and the node then sends blood it never
     # receives (7 such nodes on WKY-A, net outflow ~1e-14 of the largest flow). Such edges
-    # carry no blood in the march, the same as an exact zero.
-    q_scale = max((abs(float(d.get("flow_signed", 0.0))) for _, _, d in G.edges(data=True)),
-                  default=0.0)
-    stagnant_tol = STAGNANT_FLOW_FRACTION * q_scale
-    n_stagnant = 0
+    # carry no blood in the march, the same as an exact zero. The set is the rheology loop's
+    # (stagnant_edges), and the count includes exact zeros. It used to leave them out, so the
+    # log showed 136 on WKY-A against the loop's 867 for the same edges (re-run package K).
+    stagnant = stagnant_edges(G)
+    n_zero = 0
     DAG = nx.MultiDiGraph()
     for u, v, key, e_data in G.edges(keys=True, data=True):
         f = e_data.get("flow_signed", 0.0)
-        if 0.0 < abs(f) <= stagnant_tol:
-            n_stagnant += 1
+        if (u, v, key) in stagnant:
+            n_zero += f == 0.0
         elif f > 0: DAG.add_edge(u, v, key=key, **e_data)
         elif f < 0: DAG.add_edge(v, u, key=key, **e_data)
-    if n_stagnant:
-        logger.info(f"{n_stagnant} of {G.number_of_edges()} edges have flow at or below "
-                    f"{STAGNANT_FLOW_FRACTION:g} of the largest and carry no blood in the march.")
+    if stagnant:
+        logger.info(f"{len(stagnant)} of {G.number_of_edges()} edges have flow at or below "
+                    f"{STAGNANT_FLOW_FRACTION:g} of the largest ({n_zero} of them exactly zero) "
+                    f"and carry no blood in the march.")
 
     # Flow runs from high to low pressure, so the directed graph has no cycle. If it had one,
     # the march would have no order to follow; it used to fall back to node order silently.
