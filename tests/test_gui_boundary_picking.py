@@ -244,14 +244,11 @@ def test_points_carry_their_role_in_settings_order():
 
 
 def test_regions_carry_their_role_and_their_own_depth():
-    """Every shape of a region is tagged, handle and outline alike, so the
-    colouring covers the whole box and the sync can tell them apart."""
+    """One rectangle per region, tagged with the role and the depth it stands for."""
     spec = specs_for(CONFIGURED)[1]
     assert set(spec.features["role"]) == {"outlet"}
-    assert list(spec.features["depth"]) == pytest.approx([600.0] * 13)
-    handles = [i for i, part in enumerate(spec.features["part"]) if part == "handle"]
-    assert len(handles) == 1
-    assert spec.options["shape_type"][handles[0]] == "rectangle"
+    assert list(spec.features["depth"]) == pytest.approx([600.0])
+    assert list(spec.options["shape_type"]) == ["rectangle"]
 
 
 def test_the_picking_layers_never_collide_with_a_runs_layers():
@@ -388,39 +385,188 @@ def test_importing_it_does_not_drag_in_a_gui():
 # --- a region is drawn as the box it stands for, not just a rectangle --------
 
 
-def test_a_region_is_drawn_as_a_box_not_a_flat_rectangle():
-    """The rectangle is the handle; the twelve segments are the box.
-
-    A rectangle alone is planar, so on its own it says nothing about how deep
-    a region is -- which is the whole of what a volume box adds.
-    """
+def test_the_regions_layer_holds_only_the_rectangles():
+    """Nothing but the editable rectangles: the box outline used to be twelve
+    more shapes per region in this layer, rebuilt on every edit, underneath
+    napari's own drawing tool -- which is what made drawing a second region
+    lose it (and crash with `_selected_box` None)."""
     from haemolynx.gui.boundary_picking import region_shapes
 
-    picks = BoundaryPicks.from_settings({"outlet_node_volumes": [list(A_BOX)]})
-    _data, kinds, features = region_shapes(picks)
+    picks = BoundaryPicks.from_settings(
+        {"outlet_node_volumes": [list(A_BOX), [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]]]}
+    )
+    data, kinds, features = region_shapes(picks)
 
-    assert kinds.count("rectangle") == 1, "one editable handle per region"
-    assert kinds.count("line") == 12, "the twelve edges of the box"
-    assert list(features["part"]).count("handle") == 1
-    assert set(features["role"]) == {"outlet"}
-
-
-def test_the_outline_spans_the_boxs_full_depth():
-    from haemolynx.gui.boundary_picking import box_outline
-
-    edges = box_outline(*A_BOX)
-    corners = np.concatenate(edges, axis=0)
-    assert corners[:, 0].min() == pytest.approx(A_BOX[0][0])
-    assert corners[:, 0].max() == pytest.approx(A_BOX[1][0])
-    assert corners[:, 2].max() == pytest.approx(A_BOX[1][2])
+    assert kinds == ["rectangle", "rectangle"], "one editable rectangle per region"
+    assert [len(corners) for corners in data] == [4, 4]
+    assert set(features) == {"role", "depth"}
 
 
-def test_every_outline_segment_lies_along_one_axis():
-    """An edge of a box changes in exactly one coordinate."""
-    from haemolynx.gui.boundary_picking import box_outline
+def test_a_box_is_a_closed_solid_of_its_own():
+    from haemolynx.gui.boundary_picking import box_mesh
 
-    for edge in box_outline(*A_BOX):
-        assert int(np.count_nonzero(edge[0] != edge[1])) == 1
+    vertices, faces, owner = box_mesh([A_BOX])
+
+    assert vertices.shape == (8, 3) and faces.shape == (12, 3)
+    assert vertices.min(axis=0) == pytest.approx(A_BOX[0])
+    assert vertices.max(axis=0) == pytest.approx(A_BOX[1])
+    assert set(owner) == {0}
+    # Closed: every edge of the triangulated surface is shared by exactly two
+    # triangles, so there is no hole to see through.
+    edges = {}
+    for tri in faces:
+        for a, b in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+            edges[frozenset((int(a), int(b)))] = edges.get(frozenset((int(a), int(b))), 0) + 1
+    assert set(edges.values()) == {2}
+
+
+def test_every_face_of_a_box_points_outwards():
+    """Flat shading lights a face by its normal; an inward one reads as a hole."""
+    from haemolynx.gui.boundary_picking import box_mesh
+
+    vertices, faces, _owner = box_mesh([A_BOX])
+    centre = vertices.mean(axis=0)
+    for tri in faces:
+        p = vertices[tri]
+        normal = np.cross(p[1] - p[0], p[2] - p[0])
+        assert np.dot(normal, p.mean(axis=0) - centre) > 0
+
+
+def test_each_box_keeps_its_own_vertices():
+    """So each can carry a colour of its own."""
+    from haemolynx.gui.boundary_picking import box_mesh
+
+    vertices, faces, owner = box_mesh([A_BOX, ([0, 0, 0], [1, 1, 1])])
+
+    assert vertices.shape == (16, 3)
+    assert list(owner) == [0] * 8 + [1] * 8
+    assert set(owner[faces[12:]].ravel()) == {1}
+    assert box_mesh([])[0].shape == (0, 3)
+
+
+def test_each_box_of_a_role_gets_a_different_shade_of_its_colour():
+    from haemolynx.gui.boundary_picking import box_colours
+
+    green = dict(role_colours())["inlet"]
+    shades = box_colours(green, 3)
+
+    assert len({tuple(round(v, 6) for v in shade) for shade in shades}) == 3
+    for shade in shades:
+        # Still green: the role stays readable whichever box it is.
+        assert shade[1] == max(shade[:3])
+    assert box_colours(green, 1) == [tuple(green)], "a lone box is the role's colour"
+
+
+def test_the_boxes_of_a_role_are_its_band_its_regions_and_a_box_being_drawn():
+    from haemolynx.gui.boundary_picking import band_boxes, role_boxes
+
+    values = {"boundary_axis": 1, "inlet_node_selection_method": "edge_percent",
+              "boundary_first_percent": 10.0, "outlet_node_volumes": [list(A_BOX)]}
+    bands = band_boxes(values, *FULL_IMAGE)
+    dragging = ([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+
+    boxes = role_boxes(BoundaryPicks.from_settings(values), bands,
+                       extra={"outlet": [dragging]})
+
+    assert set(boxes) == {"inlet", "outlet"}
+    band_lo, band_hi = bands["inlet"]
+    assert boxes["inlet"] == [(list(band_lo), list(band_hi))]
+    assert len(boxes["outlet"]) == 2
+    assert boxes["outlet"][1] == ([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+
+
+# --- a box dragged out in the 3D view ---------------------------------------
+
+#: napari's default 3D camera looks down z with y up the screen.
+DOWN_Z = ((1.0, 0.0, 0.0), (0.0, -1.0, 0.0))
+EXTENT = ([0.0, 0.0, 0.0], [100.0, 200.0, 300.0])
+
+
+def test_looking_down_z_a_drag_is_its_rectangle_through_the_whole_stack():
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    lo, hi = box_from_view_drag([50.0, 20.0, 30.0], [50.0, 80.0, 120.0],
+                                *DOWN_Z, *EXTENT)
+
+    assert lo == pytest.approx([0.0, 20.0, 30.0])
+    assert hi == pytest.approx([100.0, 80.0, 120.0])
+
+
+def test_the_drag_direction_does_not_matter():
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    forwards = box_from_view_drag([50.0, 20.0, 30.0], [50.0, 80.0, 120.0], *DOWN_Z, *EXTENT)
+    backwards = box_from_view_drag([50.0, 80.0, 120.0], [50.0, 20.0, 30.0], *DOWN_Z, *EXTENT)
+
+    assert forwards == backwards
+
+
+def test_looking_down_x_the_box_runs_through_the_whole_width():
+    """Whichever axis the camera looks down is the one the box spans entirely."""
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    lo, hi = box_from_view_drag([10.0, 20.0, 150.0], [60.0, 90.0, 150.0],
+                                (0.0, 0.0, 1.0), (-1.0, 0.0, 0.0), *EXTENT)
+
+    assert lo == pytest.approx([10.0, 20.0, 0.0])
+    assert hi == pytest.approx([60.0, 90.0, 300.0])
+
+
+def test_the_region_depth_trims_a_z_view_box_about_the_stacks_middle():
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    lo, hi = box_from_view_drag([50.0, 20.0, 30.0], [50.0, 80.0, 120.0],
+                                *DOWN_Z, *EXTENT, depth=40.0)
+
+    assert (lo[0], hi[0]) == pytest.approx((30.0, 70.0))
+
+
+def test_a_drag_is_clipped_to_the_image():
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    lo, hi = box_from_view_drag([50.0, -40.0, 250.0], [50.0, 80.0, 400.0], *DOWN_Z, *EXTENT)
+
+    assert lo == pytest.approx([0.0, 0.0, 250.0])
+    assert hi == pytest.approx([100.0, 80.0, 300.0])
+
+
+def test_a_click_without_a_drag_or_off_the_image_makes_no_box():
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    assert box_from_view_drag([50.0, 20.0, 30.0], [50.0, 20.0, 30.0], *DOWN_Z, *EXTENT) is None
+    assert box_from_view_drag([50.0, 20.0, 30.0], [50.0, 20.0, 90.0], *DOWN_Z, *EXTENT) is None
+    assert box_from_view_drag([50.0, 500.0, 30.0], [50.0, 600.0, 90.0], *DOWN_Z, *EXTENT) is None
+
+
+def test_at_an_angle_the_box_holds_the_whole_dragged_rectangle():
+    """Not an exact box -- the smallest axis-aligned one around the rectangle."""
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    view = np.array([1.0, 0.2, 0.1])
+    view /= np.linalg.norm(view)
+    up = np.array([0.0, -1.0, 0.3])
+    up -= np.dot(up, view) * view
+    up /= np.linalg.norm(up)
+    right = np.cross(view, up)
+    # Both ends of a drag lie in the plane facing the camera, as napari's
+    # 3D cursor positions do.
+    start = np.array([50.0, 100.0, 150.0])
+    corners = [start + a * right + b * up for a in (0.0, 60.0) for b in (0.0, 40.0)]
+    lo, hi = box_from_view_drag(start, corners[-1], view, up, *EXTENT)
+
+    assert lo[0] == pytest.approx(0.0) and hi[0] == pytest.approx(100.0)
+    for point in corners:
+        assert lo[1] - 1e-3 <= point[1] <= hi[1] + 1e-3
+        assert lo[2] - 1e-3 <= point[2] <= hi[2] + 1e-3
+
+
+def test_a_dragged_box_is_plain_floats_a_row_can_read_back():
+    from haemolynx.gui.boundary_picking import box_from_view_drag
+
+    box = box_from_view_drag(np.array([50.0, 20.0, 30.0]), np.array([50.0, 80.0, 120.0]),
+                             *DOWN_Z, *EXTENT)
+    assert all(type(v) is float for corner in box for v in corner)
+    assert ast.literal_eval(str(box)) == box
 
 
 def test_a_flat_region_still_draws_its_rectangle():
@@ -829,30 +975,16 @@ def test_a_nonsense_axis_draws_nothing_rather_than_raising():
 
 def test_a_band_is_drawn_as_a_box_with_no_handle():
     """It is not a region anyone typed, so there is nothing to drag and
-    nothing for the settings to read back out of it."""
-    from haemolynx.gui.boundary_picking import BAND, band_boxes, region_shapes
+    nothing for the settings to read back out of it: a box, no rectangle."""
+    from haemolynx.gui.boundary_picking import band_boxes, region_shapes, role_boxes
 
     values = {"boundary_axis": 1, "inlet_node_selection_method": "edge_percent",
               "boundary_first_percent": 10.0}
     bands = band_boxes(values, *FULL_IMAGE)
-    _data, kinds, features = region_shapes(BoundaryPicks.from_settings(values), bands)
+    picks = BoundaryPicks.from_settings(values)
 
-    assert kinds == ["line"] * 12
-    assert set(features["part"]) == {BAND}
-    assert set(features["role"]) == {"inlet"}
-
-
-def test_a_band_and_a_configured_region_can_be_drawn_together():
-    from haemolynx.gui.boundary_picking import band_boxes, region_shapes
-
-    values = {"boundary_axis": 1, "inlet_node_selection_method": "edge_percent",
-              "boundary_first_percent": 10.0, "outlet_node_volumes": [list(A_BOX)]}
-    bands = band_boxes(values, *FULL_IMAGE)
-    _data, kinds, features = region_shapes(BoundaryPicks.from_settings(values), bands)
-
-    assert kinds.count("rectangle") == 1, "only the configured region is editable"
-    assert kinds.count("line") == 24
-    assert list(features["part"]).count("handle") == 1
+    assert region_shapes(picks)[0] == []
+    assert len(role_boxes(picks, bands)["inlet"]) == 1
 
 
 def test_the_span_of_the_terminals_needs_a_graph():
@@ -925,29 +1057,31 @@ def test_a_region_layer_holds_only_its_own_roles_shapes():
 
     for role in ("inlet", "outlet"):
         assert set(specs[regions_name(role)].features["role"]) == {role}
-        assert len(specs[regions_name(role)].data) == 13
+        assert len(specs[regions_name(role)].data) == 1
 
 
-def test_a_band_goes_in_its_roles_layer_too():
-    from haemolynx.gui.boundary_picking import band_boxes
-
+def test_a_band_makes_no_editable_layer():
+    """It is drawn as a box only; the regions layer is for what can be edited."""
     values = {"boundary_axis": 1, "outlet_node_selection_method": "edge_percent",
               "boundary_last_percent": 10.0}
-    names = [spec.name
-             for spec in specs_for(values, band_boxes(values, [0, 0, 0], [9.0, 9.0, 9.0]))]
 
-    assert names == [BC_COORDINATES, regions_name("outlet")]
+    assert [spec.name for spec in specs_for(values)] == [BC_COORDINATES]
 
 
 def test_the_layer_names_say_which_role_they_are():
+    from haemolynx.gui.boundary_picking import BC_BOX_NAMES, boxes_name
+
     assert regions_name("inlet") == "HaemoLynx BC inlet regions"
     assert regions_name("arteriole_boundary") == "HaemoLynx BC arteriole regions"
+    assert boxes_name("inlet") == "HaemoLynx BC inlet boxes"
     assert len(set(BC_REGION_NAMES)) == len(ROLES)
+    assert len(set(BC_BOX_NAMES) | set(BC_REGION_NAMES)) == 2 * len(ROLES)
+    assert set(BC_BOX_NAMES) <= BC_LAYER_NAMES
 
 
 def test_every_picking_layer_is_named_in_one_place():
     """`_clear_our_layers` and the "is this ours?" check both read this."""
-    from haemolynx.gui.boundary_picking import BC_LAYER_NAMES
+    from haemolynx.gui.boundary_picking import BC_BOX_NAMES, BC_LAYER_NAMES
 
-    assert BC_LAYER_NAMES == {BC_COORDINATES, *BC_REGION_NAMES}
+    assert BC_LAYER_NAMES == {BC_COORDINATES, *BC_REGION_NAMES, *BC_BOX_NAMES}
     assert BC_LAYER_NAMES.isdisjoint(LAYER_NAMES), "never a run's own layer"

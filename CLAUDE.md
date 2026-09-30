@@ -450,7 +450,9 @@ are only caught locally.
   `layer_set=<its name>`, stored in the layer's `OURS` tag; the baseline's are `None`. The shown
   network is the one `_sync_vessel_tubes` draws as tubes or lines. A sweep perturbation's grid
   sliders sit in the view panel's Sweep box (not docks of their own) and show only while that
-  perturbation is the one shown.
+  perturbation is the one shown. The view panel's "Colour by" menu (`_VesselColourMenu` in
+  `_widget.py`) colours the shown network's vessels Vectors layer — tubes take their colours from
+  it — through `_choose_colour_by`, the same path as the layer controls' own Colour by.
 - **`gui/vessel_tubes.py`** — the vessel tube mesh. `tube_mesh(..., quality=)` is driven by the
   "render quality" slider on a tubes layer's own controls: level 0 is the original separate
   six-sided prisms per centreline step, flat shaded (cheap, but reads as bands); every level above

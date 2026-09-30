@@ -1147,3 +1147,189 @@ def test_sweep_sliders_go_when_their_layer_goes_or_stops_being_a_sweep(make_napa
     assert name not in viewer.layers
     assert _sweep_sliders(panel, viewer) == []
     assert panel._haemolynx_sweep_group.isHidden()
+
+
+# --- "Colour by" in the view panel, for the vessels on screen -----------------
+
+
+def _flow_panel(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    results, groups, _extent = _flow_network_results()
+    for group in groups:
+        _apply_layers(viewer, group)
+    panel._haemolynx_view.results = results
+    panel._haemolynx_after_layers_applied()
+    return panel, viewer
+
+
+def _offered(colour_by):
+    return [action.text() for action in colour_by.menu.actions()]
+
+
+def _ticked(colour_by):
+    return [action.text() for action in colour_by.menu.actions() if action.isChecked()]
+
+
+def _pick(colour_by, column):
+    """Choose an entry the way a click on the menu does."""
+    (action,) = [a for a in colour_by.menu.actions() if a.text() == column]
+    action.trigger()
+
+
+def _layer_controls_choice(viewer, name=VESSELS):
+    from haemolynx.gui._widget import _layer_controls
+
+    return _layer_controls(viewer, viewer.layers[name])._haemolynx_feature.native
+
+
+def test_colour_by_is_hidden_until_there_are_vessels_to_colour(make_napari_viewer):
+    from haemolynx.gui.chrome_tooltips import COLOUR_BY_TOOLTIP
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    colour_by = panel._haemolynx_colour_by
+    assert colour_by.row.parentWidget() is panel._haemolynx_display_group
+    assert colour_by.shown is False
+    assert colour_by.row.isHidden()
+    assert colour_by.button.toolTip() == COLOUR_BY_TOOLTIP
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    assert colour_by.shown is True
+    assert not colour_by.row.isHidden()
+
+
+def test_colour_by_offers_what_the_vessels_layer_controls_offer(make_napari_viewer):
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    combo = _layer_controls_choice(viewer)
+
+    offered = _offered(colour_by)
+    assert offered == [combo.itemText(i) for i in range(combo.count())]
+    # Flow first, as on the layer's own controls.
+    assert offered[:2] == ["flow_abs", "flow_abs_log10"]
+    assert _ticked(colour_by) == [colour_by.button.text()] == [combo.currentText()]
+
+
+def test_picking_log10_flow_recolours_the_tubes_on_screen(make_napari_viewer):
+    from haemolynx.gui._widget import _active_column
+
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    assert panel._haemolynx_vessel_draw.currentText() == "Tubes"
+    vessels, tubes = viewer.layers[VESSELS], viewer.layers[VESSEL_TUBES]
+    assert tubes.visible and not vessels.visible
+    _pick(colour_by, "flow_abs")
+    before = np.asarray(tubes.vertex_colors, dtype=float).copy()
+
+    _pick(colour_by, "flow_abs_log10")
+
+    assert _active_column(vessels) == "flow_abs_log10"
+    assert vessels.edge_color_mode == "colormap"
+    # Fitted to the column's own range, not left on flow's.
+    log10 = np.asarray(vessels.features["flow_abs_log10"], dtype=float)
+    assert tuple(vessels.edge_contrast_limits) == pytest.approx(
+        (np.nanmin(log10), np.nanmax(log10)))
+    after = np.asarray(tubes.vertex_colors, dtype=float)
+    assert after.shape == before.shape
+    assert not np.allclose(after, before)
+    segment_index = tubes.metadata["haemolynx"]["segment_index"]
+    np.testing.assert_allclose(after, np.asarray(vessels.edge_color)[segment_index])
+    assert colour_by.button.text() == "flow_abs_log10"
+    assert _ticked(colour_by) == ["flow_abs_log10"]
+    # The vessels layer's own control shows the same choice.
+    assert _layer_controls_choice(viewer).currentText() == "flow_abs_log10"
+
+
+def test_colour_by_colours_the_lines_when_lines_are_drawn(make_napari_viewer):
+    from haemolynx.gui._widget import _active_column
+
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    _choose_vessel_draw(panel._haemolynx_vessel_draw, "Lines")
+    vessels = viewer.layers[VESSELS]
+    assert vessels.visible
+
+    _pick(colour_by, "branch_order")
+
+    assert _active_column(vessels) == "branch_order"
+    assert len(np.unique(np.round(np.asarray(vessels.edge_color), 6), axis=0)) > 1
+    assert colour_by.button.text() == "branch_order"
+
+
+def test_picking_the_ticked_entry_again_keeps_it_ticked(make_napari_viewer):
+    """A checkable action unticks itself when clicked; the colouring stays."""
+    panel, _viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    _pick(colour_by, "flow_abs_log10")
+
+    _pick(colour_by, "flow_abs_log10")
+
+    assert _ticked(colour_by) == ["flow_abs_log10"]
+
+
+def test_colour_by_follows_a_choice_made_on_the_layer_controls(make_napari_viewer):
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+
+    _layer_controls_choice(viewer).setCurrentText("length")
+    assert colour_by.button.text() == "length"
+    assert _ticked(colour_by) == ["length"]
+
+    # A text column is coloured in direct mode, which napari's colour event
+    # reports before the column is recorded -- still the one shown here.
+    _layer_controls_choice(viewer).setCurrentText("branch_order")
+    assert colour_by.button.text() == "branch_order"
+
+
+def test_colour_by_follows_the_layer_a_z_depth_window_replaces(make_napari_viewer):
+    from haemolynx.gui._widget import _active_column
+
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    before = viewer.layers[VESSELS]
+
+    panel._haemolynx_z_depth_slider.setValue((20.0, 60.0))
+    after = viewer.layers[VESSELS]
+    assert after is not before
+    _pick(colour_by, "flow_abs_log10")
+
+    assert _active_column(after) == "flow_abs_log10"
+
+
+def test_colour_by_acts_on_the_network_showing_names(make_napari_viewer):
+    from haemolynx.gui._widget import _active_column
+    from haemolynx.gui.results import perturbation_layer_names
+    from test_gui_results import a_perturbation, a_perturbation_run, built
+
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    _apply_layers(viewer, built().stage_finished(
+        "run_perturbations", a_perturbation_run(a_perturbation("dilate"))))
+    dilate = viewer.layers[perturbation_layer_names("dilate")[0]]
+    baseline = viewer.layers[VESSELS]
+    _pick(colour_by, "flow_abs")
+
+    panel._haemolynx_choose_layer_set("dilate")
+    assert colour_by.button.text() == _active_column(dilate) == "flow_abs"
+    _pick(colour_by, "flow_abs_log10")
+
+    assert _active_column(dilate) == "flow_abs_log10"
+    assert _active_column(baseline) == "flow_abs"
+
+    panel._haemolynx_choose_layer_set(None)
+    assert colour_by.button.text() == "flow_abs"
+
+
+def test_clear_hides_colour_by(make_napari_viewer):
+    panel, _viewer = _flow_panel(make_napari_viewer)
+    colour_by = panel._haemolynx_colour_by
+    assert colour_by.shown is True
+
+    panel._haemolynx_clear()
+
+    assert colour_by.shown is False
+    assert colour_by.row.isHidden()
+    assert _offered(colour_by) == []
