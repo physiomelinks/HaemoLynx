@@ -16,6 +16,7 @@ napari = pytest.importorskip("napari")
 pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import FORCED_HIDDEN_SETTINGS, settings_widget  # noqa: E402
+from haemolynx.gui.form import SHARED_ILASTIK_SETTINGS  # noqa: E402
 from haemolynx.gui.perturbation_editing import visible_tab_settings  # noqa: E402
 from haemolynx.gui.tabs import tabs_for  # noqa: E402
 from haemolynx.pipeline import default_schema  # noqa: E402
@@ -169,7 +170,8 @@ def test_the_shared_ilastik_rows_move_with_their_own_button(panel):
     rows = panel._haemolynx_rows()
     block = panel._haemolynx_shared_ilastik_block
     advanced = panel._haemolynx_advanced["shared:ilastik"]
-    assert set(advanced.names) == {"ilastik_output_dir", "ilastik_output_suffix", "ilastik_timeout_seconds"}
+    assert set(advanced.names) == {n for n in SHARED_ILASTIK_SETTINGS if SCHEMA[n].advanced}
+    assert {"ilastik_output_dir", "ilastik_output_suffix", "ilastik_timeout_seconds"} <= set(advanced.names)
 
     rows["use_ilastik_segmentation"].value = True
     _process()

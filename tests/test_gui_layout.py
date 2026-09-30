@@ -130,6 +130,19 @@ def test_a_row_whose_toggle_is_advanced_is_behind_the_same_button(call):
 
 
 @pytest.mark.parametrize("call", sorted(LAYOUTS))
+def test_no_ordinary_row_needs_a_toggle_that_is_behind_a_button(call):
+    """An ordinary row whose toggle is advanced would show on its own,
+    detached from the toggle deciding whether it applies -- a new setting
+    nested under an advanced one must be advanced too."""
+    _tab, layout = LAYOUTS[call]
+    on_tab = set(layout.names)
+    for box in layout.boxes:
+        for row in box.rows:
+            hidden_parents = [p for p in _closure(row) if p in on_tab and SCHEMA[p].advanced]
+            assert hidden_parents == [], (row, hidden_parents)
+
+
+@pytest.mark.parametrize("call", sorted(LAYOUTS))
 def test_a_button_follows_the_last_ordinary_row_of_its_anchors_subtree(call):
     _tab, layout = LAYOUTS[call]
     for box in layout.boxes:

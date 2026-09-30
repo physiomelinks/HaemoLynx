@@ -270,7 +270,7 @@ ADVANCED_TITLES: Mapping[str, str] = {
     "box:boundary_other": "Advanced boundary settings",
     "all_diams_const": "Advanced diameter table",
     "use_fwhm_edge_diameters": "Advanced FWHM settings",
-    "do_fwhm_measurement": "Advanced FWHM checks",
+    "do_fwhm_measurement": "Advanced FWHM measurement",
     "use_raw_section_fallback": "Advanced raw-section fit",
     "use_endothelial_diameters": "Advanced endothelial settings",
     "use_edt_diameter_crosscheck": "Advanced mask-diameter settings",
@@ -296,6 +296,7 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
             (
                 "skeleton_bridge_weight_by_segmentation",
                 "skeleton_bridge_z_distance_weight",
+                "skeleton_bridge_min_facing_cosine",
                 "skeleton_component_connectivity",
             ),
         ),
@@ -467,7 +468,12 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "small_vessel_tangential_redefinition_touch_distance_microns",
                 "small_vessel_tangential_redefinition_tangency_cosine_max",
                 "small_vessel_tangential_redefinition_margin",
+                "small_vessel_tangential_redefinition_min_contact_fraction",
                 "small_vessel_tangential_redefinition_parallel_workers",
+                "small_vessel_sandwiched_reassignment_enable",
+                "small_vessel_sandwiched_max_gap_microns",
+                "small_vessel_sandwiched_min_facing_cosine",
+                "small_vessel_sandwiched_max_axis_angle_degrees",
             ),
         ),
         (
@@ -543,6 +549,17 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
             ),
         ),
         ("Per-vessel width", ("fwhm_edge_diameter_aggregation",)),
+    ),
+    "do_fwhm_measurement": (
+        (
+            "Checks on the widths",
+            (
+                "fwhm_decoy_check",
+                "fwhm_decoy_check_sample_size",
+                "fwhm_demote_flagged_edges",
+            ),
+        ),
+        ("Blur", ("fwhm_fix_blur_to_image_psf",)),
     ),
     "statistics_network_analysis": (
         (

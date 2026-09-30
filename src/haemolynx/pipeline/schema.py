@@ -1637,6 +1637,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_tangential_redefinition_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_tangential_redefinition_margin",
@@ -1689,6 +1690,7 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_tangential_redefinition_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_sandwiched_max_gap_microns",
@@ -1707,6 +1709,7 @@ SCHEMA = Schema(
                 "small_vessel_tangential_redefinition_enable",
                 "small_vessel_sandwiched_reassignment_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_sandwiched_min_facing_cosine",
@@ -1725,6 +1728,7 @@ SCHEMA = Schema(
                 "small_vessel_tangential_redefinition_enable",
                 "small_vessel_sandwiched_reassignment_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="small_vessel_sandwiched_max_axis_angle_degrees",
@@ -1744,6 +1748,7 @@ SCHEMA = Schema(
                 "small_vessel_tangential_redefinition_enable",
                 "small_vessel_sandwiched_reassignment_enable",
             ),
+            advanced=True,
         ),
         Setting(
             name="use_gpu_mask_continuity_acceleration",
@@ -4629,6 +4634,7 @@ SCHEMA = Schema(
             ),
             section=_FWHM,
             requires=("use_fwhm_edge_diameters", "do_fwhm_measurement"),
+            advanced=True,
         ),
         Setting(
             name="fwhm_fix_blur_to_image_psf",
