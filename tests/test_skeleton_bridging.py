@@ -177,6 +177,73 @@ def test_what_bridging_could_not_join_is_still_filtered():
     assert not result[2, 15, 20:25].any()
 
 
+#: The pipeline's default skeleton settings, closing and bridge_gaps included.
+_PIPELINE_DEFAULTS = dict(
+    min_branch_length=3, max_bridge_distance=4, closing_radius=2, bridge_gap_size=3,
+    bundle_scan_size=9, bundle_density_fraction=0.35, bundle_max_connections_per_hub=8,
+    bundle_hub_min_spacing=4,
+)
+
+
+def _vessel_with_a_row_of_specks(specks_y: int) -> np.ndarray:
+    volume = np.zeros((24, 40, 60), dtype=bool)
+    volume[12, 20, 5:55] = True
+    volume[12, specks_y, 20:30:3] = True  # four lone noise voxels, 3 apart
+    return volume
+
+
+def test_a_row_of_noise_specks_is_dropped_before_bridge_gaps_can_grow_it():
+    """Regression: with the size filter moved after bridging, bridge_gaps
+    merged the specks into one blob whose skeleton was long enough to pass it,
+    so the noise stayed as a component of its own (a noisy image's graph fell
+    into pieces and could not be solved)."""
+    result = preprocess_skeleton_for_graph(_vessel_with_a_row_of_specks(6), **_PIPELINE_DEFAULTS)
+
+    assert _count(result) == 1
+    assert not result[:, :14].any()
+
+
+def test_noise_specks_beside_a_vessel_leave_it_as_it_was():
+    """The same specks 6 voxels off the vessel's side were grown into it as a
+    lump; a speck no bridge would reach for is not a piece of the vessel."""
+    vessel_alone = np.zeros((24, 40, 60), dtype=bool)
+    vessel_alone[12, 20, 5:55] = True
+    expected = preprocess_skeleton_for_graph(vessel_alone, **_PIPELINE_DEFAULTS)
+
+    result = preprocess_skeleton_for_graph(_vessel_with_a_row_of_specks(26), **_PIPELINE_DEFAULTS)
+
+    assert np.array_equal(result, expected)
+
+
+def test_a_short_piece_a_vessel_end_points_at_survives_the_early_filter():
+    """The early filter keeps what bridging could join: here a 2-voxel piece
+    the vessel's end points straight at, 3 voxels past it."""
+    volume = np.zeros((5, 5, 40), dtype=bool)
+    volume[2, 2, 0:30] = True
+    volume[2, 2, 33:35] = True
+
+    result = preprocess_skeleton_for_graph(
+        volume, min_branch_length=5, max_bridge_distance=4, bundle_scan_size=3,
+        bundle_density_fraction=1.0,
+    )
+
+    assert _count(result) == 1
+    assert result[2, 2, 34]
+
+
+def test_the_early_filter_gives_the_same_result_on_the_low_ram_path(tmp_path):
+    volume = _vessel_with_a_row_of_specks(6)
+    volume[2, 2, 10:13] = True  # a short piece in line with nothing: dropped as well
+
+    in_ram = preprocess_skeleton_for_graph(volume, **_PIPELINE_DEFAULTS)
+    on_disk = preprocess_skeleton_for_graph(
+        volume, use_memmap=True, memmap_directory=tmp_path, **_PIPELINE_DEFAULTS
+    )
+
+    assert np.array_equal(np.asarray(on_disk), in_ram)
+    assert _count(in_ram) == 1
+
+
 @pytest.mark.parametrize("seed", range(4))
 @pytest.mark.parametrize("voxel_size_zyx, z_weight", [((1.0, 1.0, 1.0), 1.0), ((1.3, 0.4, 0.4), 1.5)])
 def test_gap_distances_are_the_all_pairs_minimum(seed, voxel_size_zyx, z_weight):

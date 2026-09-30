@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import tifffile
+from scipy import ndimage
 
 from haemolynx.pipeline import default_schema
 from haemolynx.pipeline.stages import _skeletonize_tile_halo_voxels, segment, skeletonise
@@ -193,6 +194,20 @@ def test_thickness_gate_defaults_off_and_matches_the_locked_radius():
         THICK_VESSEL_MIN_RADIUS_UM
     )
     assert SCHEMA["skeleton_fill_mask_holes_before_thickness"].default is True
+
+
+def test_the_noisy_seven_vessel_fixture_skeletonises_to_one_piece_by_default(tmp_path):
+    """Regression: noise specks grown by bridge_gaps survived the size filter
+    once it ran after bridging, splitting this fixture's skeleton into three
+    pieces, so a default run could not be solved (inlets and outlets ended up
+    on different pieces)."""
+    fixture = Path(__file__).parent / "data" / "seven_vessel_noisy_3d.tif"
+    settings = settings_for(tmp_path, fixture)
+
+    volume = skeletonise(settings, segment(settings))
+
+    _labels, pieces = ndimage.label(volume.skeleton, structure=np.ones((3, 3, 3)))
+    assert pieces == 1
 
 
 def test_skeletonise_toggle_off_leaves_the_fat_sheet_on_lee(tmp_path):

@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+import haemolynx.graph as graph_package
 from haemolynx.graph import assert_no_forbidden_edge_attributes, detect_cartwheel_hubs
 from haemolynx.pipeline import default_schema, resolve_settings, run_pipeline_stages
 from haemolynx.pipeline.stages import TOPOLOGY_STEP
@@ -261,7 +262,9 @@ def test_cluster_collapse_persistence_runs_end_to_end_and_never_flags_more_hubs(
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_consistency_warn_below_settings_choose_the_right_log_level(tmp_path, caplog):
+def test_consistency_warn_below_settings_choose_the_right_log_level(
+    tmp_path, caplog, monkeypatch
+):
     """Stage-wiring regression test for the three *_consistency_warn_below
     settings (skeleton_mask_, skeleton_graph_, graph_mask_consistency_warn_
     below): each is read from the right settings-dict key, compared with
@@ -296,9 +299,26 @@ def test_consistency_warn_below_settings_choose_the_right_log_level(tmp_path, ca
         values.update(overrides)
         return resolve_settings(values, schema=schema, config_path=None)
 
+    # The finished graph can trace every voxel of this fixture's skeleton
+    # (a stub ending at the image face is kept, not pruned), and a coverage of
+    # exactly 1.0 never warns. So the skeleton/graph check measures a copy of
+    # the real graph missing one edge: below 1.0 whatever the graph traces,
+    # and the settings lookup and comparison under test are unchanged.
+    real_skeleton_graph_check = graph_package.diagnose_skeleton_graph_consistency
+
+    def _graph_missing_one_edge(G, skeleton, **kwargs):
+        partial = G.copy()
+        partial.remove_edge(*next(iter(partial.edges(keys=True))))
+        return real_skeleton_graph_check(partial, skeleton, **kwargs)
+
+    monkeypatch.setattr(
+        graph_package, "diagnose_skeleton_graph_consistency", _graph_missing_one_edge
+    )
+
     # 1.0 is above any coverage_fraction this real, noisy fixture achieves
-    # for any of the three checks (all measured well under 1.0 elsewhere in
-    # this test suite) -- guaranteed to warn on all three at once.
+    # for the two mask checks (all measured well under 1.0 elsewhere in this
+    # test suite), and above the one-edge-short skeleton check's -- guaranteed
+    # to warn on all three at once.
     warn_high = _settings(run_name="warn_high", **{name: 1.0 for name, _ in checks})
     # 0.0 is at or below any achievable coverage_fraction -- guaranteed to
     # never warn on any of the three.
