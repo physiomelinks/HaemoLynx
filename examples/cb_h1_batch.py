@@ -88,7 +88,7 @@ def stage_placement(roi):
 
 def stage_threshold(roi, grid):
     """Choose one threshold for all six, and check the per-specimen choices for a cohort split."""
-    chosen, foreground, calibre, check = {}, {}, {}, {}
+    chosen, foreground, calibre, check, onset = {}, {}, {}, {}, {}
     for specimen in _predicted():
         placement = place_roi(specimen, roi)
         volume = read_ilastik_probabilities(
@@ -101,6 +101,8 @@ def stage_threshold(roi, grid):
         print(selection.format_table())
         if selection.threshold is not None:
             chosen[specimen.specimen_id] = selection.threshold
+        # Saved so Figure 3 can shade where each specimen fragments (re-run package D).
+        onset[specimen.specimen_id] = selection.fragmentation_onset
         # Reported, never frozen (open item 41): the same rule on d_net less one voxel.
         network = select_on_network_calibre(samples, PROCESSING_VOXEL_UM)
         print(f"check, network calibre less one voxel: {network.reason}")
@@ -145,6 +147,7 @@ def stage_threshold(roi, grid):
          "foreground_at_frozen": at_frozen,
          "seed": cb_settings.HYSTERESIS_HIGH,
          "calibre_um": calibre,
+         "fragmentation_onset": onset,
          "robustness_network_calibre_less_voxel": robustness}, indent=2))
     return frozen
 
