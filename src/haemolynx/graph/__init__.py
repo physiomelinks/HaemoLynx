@@ -98,16 +98,15 @@ from .confidence_vessel_assignment import (
     assess_large_vessel_assignment_quality,
     select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence,
 )
-from .mask_continuity import (
-    enforce_small_vessel_mask_continuity,
-    redefine_small_masks_from_large_tangential_contact,
-)
+from .mask_continuity import enforce_small_vessel_mask_continuity
+from .small_vessel_redefinition import redefine_small_masks_from_large_tangential_contact
 from .large_vessels import (
     dilate_binary_mask_by_microns,
     dilate_large_vessel_masks_by_microns,
     exclude_smaller_overlapping_large_vessel_components,
     exclude_smaller_overlapping_small_vessel_components,
     remove_small_opposite_attached_large_vessel_components,
+    swap_minority_touching_vessel_components,
 )
 from .cut_at_large_vessel_volumes import cut_graph_at_large_vessel_volumes
 from .large_vessel_network import (
@@ -219,6 +218,7 @@ __all__ = [
     "exclude_smaller_overlapping_large_vessel_components",
     "exclude_smaller_overlapping_small_vessel_components",
     "remove_small_opposite_attached_large_vessel_components",
+    "swap_minority_touching_vessel_components",
     "cut_graph_at_large_vessel_volumes",
     "find_large_vessel_mask_stump_points",
     "select_large_vessel_mask_stump_terminal_nodes_for_role",

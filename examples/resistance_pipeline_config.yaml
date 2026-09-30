@@ -110,13 +110,19 @@ vessel_masks:
   large_vessel_assignment_max_dilation_microns: 0.0
   # Remove connected components smaller than this physical volume from large-vessel masks after dilation (set 0 to disable)  [um3; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_min_component_volume_um3: 200.0
+  # Relabel a large arteriole/venule component that touches a larger one of the other class as that class, so a vessel segmented partly as each becomes one continuous vessel. Masks exported with one label per voxel touch without overlapping, which exclude_smaller_overlapping_volumes cannot fix. Runs at load time, after the component-volume filter and before the opposite-attached cleanup; the run log lists every component it swaps  [needs use_large_vessel_masks and automated_vessel_assignment]
+  large_vessel_swap_minority_components: false
+  # Swap a large-vessel component only when its volume is at most this fraction of the touching other-class component's (1 = any smaller component, 0.5 = at most half the size)  [fraction; range 0.01..1.0; needs use_large_vessel_masks and automated_vessel_assignment and large_vessel_swap_minority_components]
+  large_vessel_swap_max_size_ratio: 1.0
+  # Swap a large-vessel component only when at least this fraction of its surface touches the larger other-class component. A vessel whose labels split across its width shares about half its surface; one merely running beside or across another touches about 0.15-0.2, and is kept. Lower it to catch a short piece joined end to end  [fraction; range 0.0..1.0; needs use_large_vessel_masks and automated_vessel_assignment and large_vessel_swap_minority_components]
+  large_vessel_swap_min_contact_fraction: 0.3
   # Remove tiny large-vessel components that sit attached near the opposite-type mask surface (suppresses small mislabelled attachments)  [needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_remove_small_opposite_attached_components: true
   # Maximum physical volume of a large-vessel component eligible for opposite-attached cleanup  [um3; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and large_vessel_remove_small_opposite_attached_components]
   large_vessel_opposite_attached_max_component_volume_um3: 250.0
   # Maximum distance from the opposite large-vessel mask for a tiny component to count as opposite-attached and be removed  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment and large_vessel_remove_small_opposite_attached_components]
   large_vessel_opposite_attached_max_distance_microns: 3.0
-  # At load time, remove arteriole/venule overlap voxels from the smaller overlapping connected component. Assignment-time cleanup is controlled separately by automated_vessel_assignment_enable_overlap_cleanup / fast_mode (large) and small_vessel_boundary_assignment_* (small)  [needs use_large_vessel_masks and automated_vessel_assignment]
+  # At load time, remove arteriole/venule overlap voxels from the smaller overlapping connected component; the rest of that component keeps its class (large_vessel_swap_minority_components relabels it). Assignment-time cleanup is controlled separately by automated_vessel_assignment_enable_overlap_cleanup / fast_mode (large) and small_vessel_boundary_assignment_* (small)  [needs use_large_vessel_masks and automated_vessel_assignment]
   exclude_smaller_overlapping_volumes: false
   # Master switch for large-vessel overlap cleanup at assignment time. If False, cleanup is skipped even when fast mode is on  [needs use_large_vessel_masks and automated_vessel_assignment]
   automated_vessel_assignment_enable_overlap_cleanup: true
@@ -210,19 +216,29 @@ vessel_masks:
   small_vessel_mask_continuity_corridor_max_distance_microns: 12.0
   # Reject bridges that come within this distance of the opposite-type mask  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_mask_continuity_enable]
   small_vessel_mask_continuity_opposite_exclusion_distance_microns: 3.0
-  # Reassign small-vessel components that make tangential near-contact with a large-vessel mask of the opposite/same type  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
+  # Relabel a small-vessel piece that runs alongside a large vessel as that large vessel's class, then flip a small piece lying in line between two pieces of the other class. Runs at boundary assignment; the first part needs the large-vessel masks. The napari mask layers show the result from the Boundaries stage on, and the run log names each piece changed. To relabel a small piece by what it touches in the small masks, use small_vessel_swap_minority_components  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_tangential_redefinition_enable: false
-  # Maximum contact distance (microns) for tangential redefinition  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
+  # How far from a large vessel (microns) a small piece is examined: the stretch of it within this distance gives the direction that is judged against the large vessel's surface  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
   small_vessel_tangential_redefinition_max_contact_distance_microns: 12.0
-  # Touch-distance threshold (microns) for tangential redefinition scoring  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
+  # A small piece has to come this close (microns) to a large vessel for the contact to count; its voxels this close are the part touching it  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
   small_vessel_tangential_redefinition_touch_distance_microns: 3.0
-  # Maximum tangency cosine for a contact to count as tangential  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
+  # Largest |cosine| between a small piece's direction and the large vessel's surface normal for the piece to count as running alongside it (0 = along the surface, 1 = pointing straight into it; 0.35 is within about 20 degrees of the surface). A piece meeting a large vessel end-on is a branch, and keeps its class  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
   small_vessel_tangential_redefinition_tangency_cosine_max: 0.35
-  # Minimum score margin required to switch arteriole/venule class  [range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
+  # Relabel a small piece only when at least this fraction of its voxels touch the large vessel it runs alongside, so one contact near the tip of a large small-vessel tree does not relabel the whole tree  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
+  small_vessel_tangential_redefinition_min_contact_fraction: 0.15
+  # When a piece runs alongside both a large arteriole and a large venule, the better contact has to score lower by at least this much to win (score: distance in microns, plus 4 x tangency cosine, plus a penalty for coming within 3 microns of the other class)  [range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
   small_vessel_tangential_redefinition_margin: 0.1
-  # Worker count for parallel tangential reassignment scoring  [range 0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
+  # Worker threads for judging small pieces against the large vessels (0 or 1 = one at a time)  [range 0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
   small_vessel_tangential_redefinition_parallel_workers: 8
-  # Optional CuPy GPU acceleration for EDT-heavy continuity / tangential-redefinition steps (falls back to CPU if unavailable)  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
+  # Flip a small piece lying in line between two pieces of the other class, one beyond each of its ends, when it is smaller than the two together (part of tangential redefinition)  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable]
+  small_vessel_sandwiched_reassignment_enable: true
+  # Largest gap (microns) between a sandwiched piece's end and the piece beyond it  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable and small_vessel_sandwiched_reassignment_enable]
+  small_vessel_sandwiched_max_gap_microns: 12.0
+  # Across a gap, the piece beyond an end has to lie within this cosine of the direction the end points (0.82 is about 35 degrees)  [range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable and small_vessel_sandwiched_reassignment_enable]
+  small_vessel_sandwiched_min_facing_cosine: 0.82
+  # Largest angle (degrees) between a sandwiched piece's direction and each neighbour's direction near it, so a vessel it merely ends against side-on does not count  [range 0.0..90.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_tangential_redefinition_enable and small_vessel_sandwiched_reassignment_enable]
+  small_vessel_sandwiched_max_axis_angle_degrees: 45.0
+  # Optional CuPy GPU acceleration for the distance transforms of continuity bridging (falls back to CPU if unavailable)  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   use_gpu_mask_continuity_acceleration: false
   # If small-vessel mask labelling misses seed-edge coverage from inlets/outlets, fall back to nodes at a fixed hop distance  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_boundary_fallback_to_hop_distance: true
@@ -230,6 +246,12 @@ vessel_masks:
   small_vessel_boundary_fallback_hop_distance: 1
   # Remove connected components smaller than this physical volume from small-vessel masks before boundary assignment (set 0 to disable)  [um3; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_min_component_volume_um3: 50.0
+  # Relabel a small arteriole/venule component that touches a larger one of the other class as that class, so a vessel segmented partly as each becomes one continuous vessel. Runs at load time, after the component-volume filter and before boundary labelling; the run log lists every component it swaps. Unlike small_vessel_tangential_redefinition_enable it compares the two small masks with each other only, never with the large masks, and needs touching, not alignment: a piece with one larger neighbour, or split across the vessel's width, is swapped. The two can be used together; this one runs first  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
+  small_vessel_swap_minority_components: false
+  # Swap a small-vessel component only when its volume is at most this fraction of the touching other-class component's (1 = any smaller component, 0.5 = at most half the size)  [fraction; range 0.01..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_swap_minority_components]
+  small_vessel_swap_max_size_ratio: 1.0
+  # Swap a small-vessel component only when at least this fraction of its surface touches the larger other-class component. A vessel whose labels split across its width shares about half its surface; one merely running beside or across another touches about 0.15-0.2, and is kept. Lower it to catch a short piece joined end to end  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_swap_minority_components]
+  small_vessel_swap_min_contact_fraction: 0.3
   # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   write_small_vessel_boundary_labelling_3d_html: true
 

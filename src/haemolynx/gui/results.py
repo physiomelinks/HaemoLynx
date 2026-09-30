@@ -1863,12 +1863,9 @@ class ResultLayers:
                     )
                 )
 
-        if getattr(output, "large_arteriole_mask", None) is not None or getattr(
-            output, "large_venule_mask", None
-        ) is not None:
-            layers.extend(
-                vessel_mask_volume_layers(output, voxel_size_zyx=self._voxel_size_zyx)
-            )
+        # The large masks as cleaned and the small masks as boundary labelling
+        # read them; each replaces the as-loaded layer of the same name.
+        layers.extend(vessel_mask_volume_layers(output, voxel_size_zyx=self._voxel_size_zyx))
 
         counts = ", ".join(f"{len(ids)} {role}" for role, ids in roles.items() if ids)
         return StageLayers(

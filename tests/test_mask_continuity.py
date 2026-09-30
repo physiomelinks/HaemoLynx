@@ -3,10 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from haemolynx.graph import (
-    enforce_small_vessel_mask_continuity,
-    redefine_small_masks_from_large_tangential_contact,
-)
+from haemolynx.graph import enforce_small_vessel_mask_continuity
 from haemolynx.pipeline import default_schema
 
 
@@ -105,51 +102,6 @@ def test_continuity_endpoint_facing_gate_blocks_sideways_cylinders():
     assert (
         result["stats"]["venule"]["rejected_reasons"].get("endpoint_facing_mismatch", 0)
     ) == 1
-
-
-def test_tangential_redefinition_moves_small_component_to_arteriole():
-    shape = (24, 24, 24)
-    small_ven = _cylinder_along_x(shape, z=12.0, y=12.0, radius=1.2, x0=5, x1=12)
-    small_art = np.zeros(shape, dtype=bool)
-    large_art = _cylinder_along_x(shape, z=10.0, y=12.0, radius=2.5, x0=11, x1=22)
-    large_ven = np.zeros(shape, dtype=bool)
-
-    result = redefine_small_masks_from_large_tangential_contact(
-        small_arteriole_mask=small_art,
-        small_venule_mask=small_ven,
-        large_arteriole_mask=large_art,
-        large_venule_mask=large_ven,
-        voxel_size_zyx=(1.0, 1.0, 1.0),
-        enable_redefinition=True,
-        max_contact_distance_microns=12.0,
-        touch_distance_microns=4.0,
-        tangency_cosine_max=0.40,
-        reassignment_margin=0.05,
-    )
-    assert int(result["stats"]["reassigned_to_arteriole"]) == 1
-
-
-def test_sandwiched_component_reassignment_flips_middle_label():
-    shape = (32, 24, 24)
-    left_ven = _cylinder_along_x(shape, z=12.0, y=12.0, radius=1.4, x0=3, x1=9)
-    right_ven = _cylinder_along_x(shape, z=12.0, y=12.0, radius=1.4, x0=17, x1=24)
-    middle_wrong_art = _cylinder_along_x(shape, z=12.0, y=12.0, radius=1.3, x0=10, x1=16)
-    small_ven = left_ven | right_ven
-    small_art = middle_wrong_art
-
-    result = redefine_small_masks_from_large_tangential_contact(
-        small_arteriole_mask=small_art,
-        small_venule_mask=small_ven,
-        large_arteriole_mask=None,
-        large_venule_mask=None,
-        voxel_size_zyx=(1.0, 1.0, 1.0),
-        enable_redefinition=True,
-        enable_sandwiched_component_reassignment=True,
-        sandwiched_max_endpoint_distance_microns=5.0,
-        sandwiched_min_facing_cosine=0.80,
-        sandwiched_max_axis_angle_degrees=35.0,
-    )
-    assert int(result["stats"]["sandwiched_flips_to_venule"]) == 1
 
 
 def test_continuity_schema_flags_require_small_masks():

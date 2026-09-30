@@ -2,11 +2,24 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt, find_objects, label
+from scipy.ndimage import (
+    binary_dilation,
+    binary_erosion,
+    distance_transform_edt,
+    find_objects,
+    label,
+)
 
 logger = logging.getLogger(__name__)
+
+#: Face neighbours only: a voxel is on a component's surface when one of its six
+#: face neighbours is outside it.
+_FACE_STRUCTURE = np.zeros((3, 3, 3), dtype=bool)
+_FACE_STRUCTURE[1, 1, :] = _FACE_STRUCTURE[1, :, 1] = _FACE_STRUCTURE[:, 1, 1] = True
+_FULL_STRUCTURE = np.ones((3, 3, 3), dtype=bool)
 
 
 def dilate_binary_mask_by_microns(
@@ -100,6 +113,158 @@ def exclude_smaller_overlapping_small_vessel_components(
     return _exclude_smaller_overlapping_mask_components(
         small_arteriole_mask,
         small_venule_mask,
+    )
+
+
+def swap_minority_touching_vessel_components(
+    arteriole_mask: np.ndarray | None,
+    venule_mask: np.ndarray | None,
+    *,
+    max_size_ratio: float = 1.0,
+    min_contact_fraction: float = 0.3,
+) -> tuple[np.ndarray | None, np.ndarray | None, dict[str, Any]]:
+    """Move each minority arteriole/venule component into the class it touches.
+
+    A vessel segmented partly as arteriole and partly as venule comes out of the
+    classifier as two touching components, one of each class. The smaller one
+    (the minority) is relabelled -- moved whole into the other mask and cleared
+    from its own -- so the vessel is one continuous class. Two components touch
+    when they share a voxel or sit 26-adjacent, which is how masks exported one
+    label per voxel meet: they never overlap, so removing overlap does nothing.
+
+    A component is swapped when the touching components of the other class that
+    are larger than it, and at least ``1 / max_size_ratio`` times its size,
+    cover at least ``min_contact_fraction`` of its surface voxels. The contact
+    requirement is what keeps a genuine vessel that merely runs beside or across
+    a larger one of the other class: one side of a tube touching a neighbour is
+    roughly 0.15-0.2 of its surface, while a vessel whose labels split across
+    its cross-section shares about half. A short piece joined end to end onto a
+    longer vessel touches only at its end, so catching those needs a lower
+    fraction.
+
+    Components are decided largest first, each against its neighbours' labels
+    as they stand after the larger decisions, so a chain of alternating pieces
+    ends up one consistent class rather than every piece flipping at once.
+    """
+    stats: dict[str, Any] = {
+        "swapped_to_venule_component_count": 0,
+        "swapped_to_arteriole_component_count": 0,
+        "swapped_to_venule_voxel_count": 0,
+        "swapped_to_arteriole_voxel_count": 0,
+        "kept_touching_component_count": 0,
+        "max_kept_contact_fraction": 0.0,
+        "components": [],
+    }
+    if arteriole_mask is None or venule_mask is None:
+        return arteriole_mask, venule_mask, stats
+    if arteriole_mask.shape != venule_mask.shape:
+        raise ValueError(
+            "arteriole and venule masks must share a shape. "
+            f"Got {arteriole_mask.shape} and {venule_mask.shape}."
+        )
+    ratio = float(max_size_ratio)
+    if not 0.0 < ratio <= 1.0:
+        raise ValueError(f"max_size_ratio must be in (0, 1], got {max_size_ratio!r}.")
+    min_contact = float(min_contact_fraction)
+    if not 0.0 <= min_contact <= 1.0:
+        raise ValueError(
+            f"min_contact_fraction must be in [0, 1], got {min_contact_fraction!r}."
+        )
+
+    arteriole = arteriole_mask.astype(bool, copy=False)
+    venule = venule_mask.astype(bool, copy=False)
+    if not np.any(arteriole) or not np.any(venule):
+        return arteriole, venule, stats
+
+    labels = {
+        "arteriole": label(arteriole, structure=_FULL_STRUCTURE)[0],
+        "venule": label(venule, structure=_FULL_STRUCTURE)[0],
+    }
+    sizes = {kind: np.bincount(labels[kind].ravel()) for kind in labels}
+    slices = {kind: find_objects(labels[kind]) for kind in labels}
+    swapped = {kind: np.zeros(sizes[kind].size, dtype=bool) for kind in labels}
+    opposite = {"arteriole": "venule", "venule": "arteriole"}
+    largest = {kind: int(sizes[kind][1:].max()) for kind in labels}
+
+    order = sorted(
+        (
+            (int(sizes[kind][component_id]), kind, component_id)
+            for kind in labels
+            for component_id in range(1, sizes[kind].size)
+            if sizes[kind][component_id] > 0
+        ),
+        reverse=True,
+    )
+    for size, kind, component_id in order:
+        other = opposite[kind]
+        min_partner_size = size / ratio
+        if largest[other] <= size or largest[other] < min_partner_size:
+            continue
+        box = _padded_box(slices[kind][component_id - 1], labels[kind].shape)
+        component = labels[kind][box] == component_id
+        other_labels = labels[other][box]
+        partner_sizes = sizes[other]
+        eligible = (
+            (partner_sizes > size)
+            & (partner_sizes >= min_partner_size)
+            & ~swapped[other]
+        )
+        eligible[0] = False
+        partners = eligible[other_labels]
+        touching_partners = partners & binary_dilation(component, _FULL_STRUCTURE)
+        if not np.any(touching_partners):
+            continue
+
+        surface = component & ~binary_erosion(
+            component, structure=_FACE_STRUCTURE, border_value=1
+        )
+        surface_count = int(np.count_nonzero(surface))
+        if surface_count == 0:
+            continue
+        touching = binary_dilation(partners, _FULL_STRUCTURE)
+        contact_fraction = float(np.count_nonzero(surface & touching)) / surface_count
+        largest_partner = int(
+            partner_sizes[np.unique(other_labels[touching_partners])].max()
+        )
+        is_swapped = contact_fraction >= min_contact
+        stats["components"].append(
+            {
+                "from": kind,
+                "to": other,
+                "voxel_count": size,
+                "largest_partner_voxel_count": largest_partner,
+                "contact_fraction": contact_fraction,
+                "swapped": is_swapped,
+            }
+        )
+        if is_swapped:
+            swapped[kind][component_id] = True
+            stats[f"swapped_to_{other}_component_count"] += 1
+            stats[f"swapped_to_{other}_voxel_count"] += size
+        else:
+            stats["kept_touching_component_count"] += 1
+            stats["max_kept_contact_fraction"] = max(
+                stats["max_kept_contact_fraction"], contact_fraction
+            )
+
+    if not (np.any(swapped["arteriole"]) or np.any(swapped["venule"])):
+        return arteriole, venule, stats
+    to_venule = swapped["arteriole"][labels["arteriole"]]
+    to_arteriole = swapped["venule"][labels["venule"]]
+    return (
+        (arteriole & ~to_venule) | to_arteriole,
+        (venule & ~to_arteriole) | to_venule,
+        stats,
+    )
+
+
+def _padded_box(
+    component_slice: tuple[slice, ...], shape: tuple[int, ...]
+) -> tuple[slice, ...]:
+    """A component's bounding box grown by one voxel, for 26-neighbour tests."""
+    return tuple(
+        slice(max(0, axis.start - 1), min(size, axis.stop + 1))
+        for axis, size in zip(component_slice, shape)
     )
 
 

@@ -685,6 +685,62 @@ SCHEMA = Schema(
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
+            name="large_vessel_swap_minority_components",
+            kind="bool",
+            default=False,
+            help=(
+                "Relabel a large arteriole/venule component that touches a larger "
+                "one of the other class as that class, so a vessel segmented partly "
+                "as each becomes one continuous vessel. Masks exported with one "
+                "label per voxel touch without overlapping, which "
+                "exclude_smaller_overlapping_volumes cannot fix. Runs at load time, "
+                "after the component-volume filter and before the opposite-attached "
+                "cleanup; the run log lists every component it swaps"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="large_vessel_swap_max_size_ratio",
+            kind="float",
+            default=1.0,
+            help=(
+                "Swap a large-vessel component only when its volume is at most this "
+                "fraction of the touching other-class component's (1 = any smaller "
+                "component, 0.5 = at most half the size)"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.01,
+            maximum=1.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "large_vessel_swap_minority_components",
+            ),
+        ),
+        Setting(
+            name="large_vessel_swap_min_contact_fraction",
+            kind="float",
+            default=0.3,
+            help=(
+                "Swap a large-vessel component only when at least this fraction of "
+                "its surface touches the larger other-class component. A vessel "
+                "whose labels split across its width shares about half its surface; "
+                "one merely running beside or across another touches about 0.15-0.2, "
+                "and is kept. Lower it to catch a short piece joined end to end"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "large_vessel_swap_minority_components",
+            ),
+        ),
+        Setting(
             name="large_vessel_remove_small_opposite_attached_components",
             kind="bool",
             default=True,
@@ -735,7 +791,9 @@ SCHEMA = Schema(
             default=False,
             help=(
                 "At load time, remove arteriole/venule overlap voxels from the "
-                "smaller overlapping connected component. Assignment-time cleanup "
+                "smaller overlapping connected component; the rest of that component "
+                "keeps its class (large_vessel_swap_minority_components relabels "
+                "it). Assignment-time cleanup "
                 "is controlled separately by "
                 "automated_vessel_assignment_enable_overlap_cleanup / fast_mode "
                 "(large) and small_vessel_boundary_assignment_* (small)"
@@ -1410,8 +1468,13 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help=(
-                "Reassign small-vessel components that make tangential near-contact "
-                "with a large-vessel mask of the opposite/same type"
+                "Relabel a small-vessel piece that runs alongside a large vessel as "
+                "that large vessel's class, then flip a small piece lying in line "
+                "between two pieces of the other class. Runs at boundary assignment; "
+                "the first part needs the large-vessel masks. The napari mask layers "
+                "show the result from the Boundaries stage on, and the run log names "
+                "each piece changed. To relabel a small piece by what it touches in "
+                "the small masks, use small_vessel_swap_minority_components"
             ),
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
@@ -1420,7 +1483,11 @@ SCHEMA = Schema(
             name="small_vessel_tangential_redefinition_max_contact_distance_microns",
             kind="float",
             default=12.0,
-            help="Maximum contact distance (microns) for tangential redefinition",
+            help=(
+                "How far from a large vessel (microns) a small piece is examined: the "
+                "stretch of it within this distance gives the direction that is "
+                "judged against the large vessel's surface"
+            ),
             section=_VESSEL_MASKS,
             minimum=0.0,
             unit="um",
@@ -1434,7 +1501,10 @@ SCHEMA = Schema(
             name="small_vessel_tangential_redefinition_touch_distance_microns",
             kind="float",
             default=3.0,
-            help="Touch-distance threshold (microns) for tangential redefinition scoring",
+            help=(
+                "A small piece has to come this close (microns) to a large vessel for "
+                "the contact to count; its voxels this close are the part touching it"
+            ),
             section=_VESSEL_MASKS,
             minimum=0.0,
             unit="um",
@@ -1448,8 +1518,33 @@ SCHEMA = Schema(
             name="small_vessel_tangential_redefinition_tangency_cosine_max",
             kind="float",
             default=0.35,
-            help="Maximum tangency cosine for a contact to count as tangential",
+            help=(
+                "Largest |cosine| between a small piece's direction and the large "
+                "vessel's surface normal for the piece to count as running alongside "
+                "it (0 = along the surface, 1 = pointing straight into it; 0.35 is "
+                "within about 20 degrees of the surface). A piece meeting a large "
+                "vessel end-on is a branch, and keeps its class"
+            ),
             section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_tangential_redefinition_min_contact_fraction",
+            kind="float",
+            default=0.15,
+            help=(
+                "Relabel a small piece only when at least this fraction of its voxels "
+                "touch the large vessel it runs alongside, so one contact near the tip "
+                "of a large small-vessel tree does not relabel the whole tree"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
             minimum=0.0,
             maximum=1.0,
             requires=(
@@ -1462,7 +1557,12 @@ SCHEMA = Schema(
             name="small_vessel_tangential_redefinition_margin",
             kind="float",
             default=0.10,
-            help="Minimum score margin required to switch arteriole/venule class",
+            help=(
+                "When a piece runs alongside both a large arteriole and a large "
+                "venule, the better contact has to score lower by at least this much "
+                "to win (score: distance in microns, plus 4 x tangency cosine, plus a "
+                "penalty for coming within 3 microns of the other class)"
+            ),
             section=_VESSEL_MASKS,
             minimum=0.0,
             requires=(
@@ -1475,7 +1575,10 @@ SCHEMA = Schema(
             name="small_vessel_tangential_redefinition_parallel_workers",
             kind="int",
             default=8,
-            help="Worker count for parallel tangential reassignment scoring",
+            help=(
+                "Worker threads for judging small pieces against the large vessels "
+                "(0 or 1 = one at a time)"
+            ),
             section=_VESSEL_MASKS,
             minimum=0,
             requires=(
@@ -1485,12 +1588,83 @@ SCHEMA = Schema(
             ),
         ),
         Setting(
+            name="small_vessel_sandwiched_reassignment_enable",
+            kind="bool",
+            default=True,
+            help=(
+                "Flip a small piece lying in line between two pieces of the other "
+                "class, one beyond each of its ends, when it is smaller than the two "
+                "together (part of tangential redefinition)"
+            ),
+            section=_VESSEL_MASKS,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_sandwiched_max_gap_microns",
+            kind="float",
+            default=12.0,
+            help=(
+                "Largest gap (microns) between a sandwiched piece's end and the piece "
+                "beyond it"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            unit="um",
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+                "small_vessel_sandwiched_reassignment_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_sandwiched_min_facing_cosine",
+            kind="float",
+            default=0.82,
+            help=(
+                "Across a gap, the piece beyond an end has to lie within this cosine "
+                "of the direction the end points (0.82 is about 35 degrees)"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+                "small_vessel_sandwiched_reassignment_enable",
+            ),
+        ),
+        Setting(
+            name="small_vessel_sandwiched_max_axis_angle_degrees",
+            kind="float",
+            default=45.0,
+            help=(
+                "Largest angle (degrees) between a sandwiched piece's direction and "
+                "each neighbour's direction near it, so a vessel it merely ends "
+                "against side-on does not count"
+            ),
+            section=_VESSEL_MASKS,
+            minimum=0.0,
+            maximum=90.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_tangential_redefinition_enable",
+                "small_vessel_sandwiched_reassignment_enable",
+            ),
+        ),
+        Setting(
             name="use_gpu_mask_continuity_acceleration",
             kind="bool",
             default=False,
             help=(
-                "Optional CuPy GPU acceleration for EDT-heavy continuity / "
-                "tangential-redefinition steps (falls back to CPU if unavailable)"
+                "Optional CuPy GPU acceleration for the distance transforms of "
+                "continuity bridging (falls back to CPU if unavailable)"
             ),
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
@@ -1531,6 +1705,65 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um3",
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="small_vessel_swap_minority_components",
+            kind="bool",
+            default=False,
+            help=(
+                "Relabel a small arteriole/venule component that touches a larger "
+                "one of the other class as that class, so a vessel segmented partly "
+                "as each becomes one continuous vessel. Runs at load time, after the "
+                "component-volume filter and before boundary labelling; the run log "
+                "lists every component it swaps. Unlike "
+                "small_vessel_tangential_redefinition_enable it compares the two "
+                "small masks with each other only, never with the large masks, and "
+                "needs touching, not alignment: a piece with one larger neighbour, "
+                "or split across the vessel's width, is swapped. The two can be "
+                "used together; this one runs first"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
+        ),
+        Setting(
+            name="small_vessel_swap_max_size_ratio",
+            kind="float",
+            default=1.0,
+            help=(
+                "Swap a small-vessel component only when its volume is at most this "
+                "fraction of the touching other-class component's (1 = any smaller "
+                "component, 0.5 = at most half the size)"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.01,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_swap_minority_components",
+            ),
+        ),
+        Setting(
+            name="small_vessel_swap_min_contact_fraction",
+            kind="float",
+            default=0.3,
+            help=(
+                "Swap a small-vessel component only when at least this fraction of "
+                "its surface touches the larger other-class component. A vessel "
+                "whose labels split across its width shares about half its surface; "
+                "one merely running beside or across another touches about 0.15-0.2, "
+                "and is kept. Lower it to catch a short piece joined end to end"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_small_vessel_masks_for_boundary_assignment",
+                "automated_vessel_assignment",
+                "small_vessel_swap_minority_components",
+            ),
         ),
         Setting(
             name="write_small_vessel_boundary_labelling_3d_html",

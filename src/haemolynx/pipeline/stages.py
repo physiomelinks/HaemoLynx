@@ -186,6 +186,11 @@ class BoundaryNodes:
     #: Post-assignment-prepass large masks (overlap cleanup applied), when set.
     large_arteriole_mask: np.ndarray | None = None
     large_venule_mask: np.ndarray | None = None
+    #: The small masks boundary labelling read -- after overlap cleanup,
+    #: tangential redefinition and continuity bridging -- so the viewer shows
+    #: what decided the arteriole/venule boundaries, not the files as loaded.
+    small_arteriole_mask: np.ndarray | None = None
+    small_venule_mask: np.ndarray | None = None
 
 
 @dataclass
@@ -1701,11 +1706,23 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 reassignment_margin=float(
                     settings["small_vessel_tangential_redefinition_margin"]
                 ),
+                min_contact_fraction=float(
+                    settings["small_vessel_tangential_redefinition_min_contact_fraction"]
+                ),
+                enable_sandwiched_component_reassignment=bool(
+                    settings["small_vessel_sandwiched_reassignment_enable"]
+                ),
+                sandwiched_max_endpoint_distance_microns=float(
+                    settings["small_vessel_sandwiched_max_gap_microns"]
+                ),
+                sandwiched_min_facing_cosine=float(
+                    settings["small_vessel_sandwiched_min_facing_cosine"]
+                ),
+                sandwiched_max_axis_angle_degrees=float(
+                    settings["small_vessel_sandwiched_max_axis_angle_degrees"]
+                ),
                 reassignment_parallel_workers=int(
                     settings["small_vessel_tangential_redefinition_parallel_workers"]
-                ),
-                use_gpu_acceleration=bool(
-                    settings["use_gpu_mask_continuity_acceleration"]
                 ),
             )
             assignment_small_arteriole_mask = np.asarray(
@@ -1713,10 +1730,6 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             )
             assignment_small_venule_mask = np.asarray(
                 redefinition_result["small_venule_mask"], dtype=bool
-            )
-            logger.info(
-                "Small-vessel tangential redefinition applied "
-                f"(stats={redefinition_result.get('stats')})."
             )
         if bool(settings["small_vessel_mask_continuity_enable"]):
             continuity_result = graph.enforce_small_vessel_mask_continuity(
@@ -1993,6 +2006,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         graph=G,
         large_arteriole_mask=network.large_arteriole_mask,
         large_venule_mask=network.large_venule_mask,
+        small_arteriole_mask=small_arteriole_mask,
+        small_venule_mask=small_venule_mask,
     )
 
 

@@ -252,6 +252,9 @@ VESSEL_MASK_SETTINGS: dict[str, dict[str, str]] = {
         "ilastik_venule_classifier_path": "ilastik_venule_classifier_path",
         "dilation_microns": "large_vessel_mask_dilation_microns",
         "min_component_volume_um3": "large_vessel_min_component_volume_um3",
+        "swap_minority_components": "large_vessel_swap_minority_components",
+        "swap_max_size_ratio": "large_vessel_swap_max_size_ratio",
+        "swap_min_contact_fraction": "large_vessel_swap_min_contact_fraction",
         "remove_small_opposite_attached_components": (
             "large_vessel_remove_small_opposite_attached_components"
         ),
@@ -273,8 +276,14 @@ VESSEL_MASK_SETTINGS: dict[str, dict[str, str]] = {
         "ilastik_arteriole_classifier_path": "ilastik_small_arteriole_classifier_path",
         "ilastik_venule_classifier_path": "ilastik_small_venule_classifier_path",
         "min_component_volume_um3": "small_vessel_min_component_volume_um3",
+        "swap_minority_components": "small_vessel_swap_minority_components",
+        "swap_max_size_ratio": "small_vessel_swap_max_size_ratio",
+        "swap_min_contact_fraction": "small_vessel_swap_min_contact_fraction",
     },
 }
+
+#: Swapped components named one per line in the run log; the rest are counted.
+_MAX_LOGGED_SWAPS = 20
 
 #: Settings both roles share, named identically in the config.
 _SHARED_VESSEL_MASK_SETTINGS = (
@@ -331,6 +340,9 @@ def load_and_validate_vessel_masks(
     ilastik_timeout_seconds: float | None = None,
     dilation_microns: float = 0.0,
     min_component_volume_um3: float = 0.0,
+    swap_minority_components: bool = False,
+    swap_max_size_ratio: float = 1.0,
+    swap_min_contact_fraction: float = 0.3,
     remove_small_opposite_attached_components: bool = False,
     opposite_attached_max_component_volume_um3: float = 250.0,
     opposite_attached_max_distance_microns: float = 3.0,
@@ -498,6 +510,51 @@ def load_and_validate_vessel_masks(
             f"removed_volume_um3(arteriole="
             f"{float(arteriole_stats.get('removed_volume_um3', 0.0)):.3f}, "
             f"venule={float(venule_stats.get('removed_volume_um3', 0.0)):.3f})."
+        )
+
+    # Before the opposite-attached removal, so a small mislabelled piece of a
+    # vessel is given back to it rather than deleted and left as a gap.
+    if bool(swap_minority_components):
+        from haemolynx.graph.large_vessels import (
+            swap_minority_touching_vessel_components,
+        )
+
+        arteriole_mask, venule_mask, swap_stats = (
+            swap_minority_touching_vessel_components(
+                arteriole_mask,
+                venule_mask,
+                max_size_ratio=float(swap_max_size_ratio),
+                min_contact_fraction=float(swap_min_contact_fraction),
+            )
+        )
+        # Largest first, so a mask with thousands of mislabelled specks still
+        # names the vessels that matter without burying the rest of the log.
+        swapped_components = [c for c in swap_stats["components"] if c["swapped"]]
+        for component in swapped_components[:_MAX_LOGGED_SWAPS]:
+            logger.info(
+                f"{scale_label.capitalize()}-vessel minority swap: "
+                f"{component['from']} component of {component['voxel_count']} "
+                f"voxels -> {component['to']} (touching {component['to']} "
+                f"component of {component['largest_partner_voxel_count']} "
+                f"voxels, contact fraction {component['contact_fraction']:.3f})."
+            )
+        if len(swapped_components) > _MAX_LOGGED_SWAPS:
+            logger.info(
+                f"{scale_label.capitalize()}-vessel minority swap: and "
+                f"{len(swapped_components) - _MAX_LOGGED_SWAPS} smaller component(s)."
+            )
+        logger.info(
+            f"{scale_label.capitalize()}-vessel minority swap: "
+            f"max_size_ratio={float(swap_max_size_ratio):.3f}, "
+            f"min_contact_fraction={float(swap_min_contact_fraction):.3f}; "
+            f"swapped {swap_stats['swapped_to_venule_component_count']} arteriole "
+            f"component(s) to venule ({swap_stats['swapped_to_venule_voxel_count']} "
+            f"voxels) and {swap_stats['swapped_to_arteriole_component_count']} "
+            f"venule component(s) to arteriole "
+            f"({swap_stats['swapped_to_arteriole_voxel_count']} voxels); kept "
+            f"{swap_stats['kept_touching_component_count']} touching smaller "
+            f"component(s) below the contact fraction (highest "
+            f"{float(swap_stats['max_kept_contact_fraction']):.3f})."
         )
 
     if mask_role == "large" and bool(remove_small_opposite_attached_components):

@@ -669,6 +669,38 @@ def test_masks_are_shown_as_translucent_volume_layers():
     assert mask.data.dtype == np.float32
 
 
+def test_boundaries_show_the_small_masks_boundary_labelling_read():
+    """assign_boundaries relabels the small masks (tangential redefinition,
+    continuity bridging); its own layers replace the as-loaded ones, even with
+    no large masks in the run."""
+    from haemolynx.gui.results import MASK_LAYERS
+
+    loaded = np.zeros((4, 4, 4), dtype=bool)
+    relabelled = np.zeros((4, 4, 4), dtype=bool)
+    relabelled[1:3, 1, 1] = True
+    results = ResultLayers()
+    results.stage_finished(
+        "build_network",
+        network(a_graph(), small_arteriole_mask=loaded, small_venule_mask=loaded),
+    )
+    group = results.stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(
+            inlet_nodes=[0],
+            outlet_nodes=[3],
+            arteriole_boundary_nodes=[],
+            venule_boundary_nodes=[],
+            graph=a_graph(),
+            small_arteriole_mask=relabelled,
+            small_venule_mask=loaded,
+        ),
+    )
+
+    shown = spec_named(group, MASK_LAYERS["small_arteriole_mask"])
+    assert np.array_equal(shown.data, relabelled.astype(np.float32))
+    assert MASK_LAYERS["large_arteriole_mask"] not in {spec.name for spec in group.layers}
+
+
 def test_vessel_mask_volume_layers_skip_missing_and_keep_role_colours():
     from haemolynx.gui.results import (
         MASK_COLOURS,

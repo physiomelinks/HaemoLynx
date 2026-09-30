@@ -28,7 +28,9 @@ haemolynx/
 │   │                       #   cartwheel_guard), branch_order, boundaries, boundary_node_fallback,
 │   │                       #   large_vessels, large_vessel_network, cut_at_large_vessel_volumes,
 │   │                       #   confidence_vessel_assignment, mask_component_volume,
-│   │                       #   mask_continuity, diagnostics, validate, _helpers, _platform,
+│   │                       #   mask_continuity (small-mask bridging), small_vessel_redefinition
+│   │                       #   (tangential / sandwiched small-mask relabelling),
+│   │                       #   diagnostics, validate, _helpers, _platform,
 │   │                       #   smoothing.py (centreline smoothing — rewrites `length`),
 │   │                       #   thick_vessel_junctions.py (IS_ZERO_RESISTANCE bridges),
 │   │                       #   communities.py (vascular communities), edit.py (the panel's
@@ -83,7 +85,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 366 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 400 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -206,7 +208,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 |-------------|----------------------|
 | `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py` |
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
-| `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, boundary/assignment tests |
+| `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), FWHM/pericyte integration tests |
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_sweep_flow_layers.py` |
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py` |

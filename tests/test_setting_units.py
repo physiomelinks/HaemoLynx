@@ -122,6 +122,7 @@ DIMENSIONLESS = {
     "segmentation_cleanup_reconnect_max_radius_ratio",
     # Angle in degrees; no degrees unit is registered in the schema vocabulary.
     "small_vessel_mask_continuity_max_axis_angle_degrees",
+    "small_vessel_sandwiched_max_axis_angle_degrees",
     "segmentation_cleanup_reconnect_max_axis_angle_degrees",
     # A dot-product/cosine similarity in [0, 1], not a distance.
     "segmentation_cleanup_reconnect_min_facing_cosine",
