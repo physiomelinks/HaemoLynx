@@ -5673,12 +5673,17 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
     from haemolynx.gui.boundary_picking import (
         AUTOMATED_OVERRIDES_MANUAL_NOTE,
+        BC_BOX_NAMES,
         BC_COORDINATES,
         BC_LAYER_NAMES,
         BC_REGION_NAMES,
         DISABLED_ROLE_TOOLTIP,
-        HANDLE,
         band_boxes,
+        box_colours,
+        box_from_view_drag,
+        box_mesh,
+        boxes_name,
+        role_boxes,
         ROLES,
         orderable_settings,
         outside_extent,
@@ -5705,6 +5710,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         SHOW_BOUNDARIES_TOOLTIP,
         SNAP_BOUNDARIES_TOOLTIP,
     )
+    from haemolynx.gui.results import role_colours
 
     #: Which role a new point or region belongs to. Not shown: the sub-tab bar
     #: built in `page` is what the user sees, and this follows it. Keeping the
@@ -5746,7 +5752,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
     state = SimpleNamespace(applying=False, results=None, connected=set(),
                         visible=frozenset(), hidden=frozenset(), tabs=None,
-                        actions={})
+                        actions={}, draw3d=None)
 
     #: Each role's page, and where each shared row currently sits. Filled in
     #: by `page`; empty until the panel has been laid out.
@@ -5867,7 +5873,20 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             values = current_values()
             bands, measured = bands_now(values)
             group = group_for(values, bands)
-            _apply_layers(viewer, group, report)
+            # Straight to `_add_or_update`, not through `_apply_layers`: that
+            # also rebuilds the vessel tube mesh and re-runs the Z-depth
+            # filter, neither of which a boundary edit touches, and doing both
+            # on every edit is what made picking lag.
+            for spec in group.layers:
+                if spec.name in BC_REGION_NAMES and region_layer_holds(spec.name, values):
+                    # Already what the settings say -- typically because the
+                    # settings came *from* it. Rewriting it anyway would reset
+                    # napari's selection and drawing state underneath the user.
+                    continue
+                try:
+                    _add_or_update(viewer, spec)
+                except Exception:  # noqa: BLE001 - one bad layer must not stop the rest
+                    logger.exception("could not show layer %s", spec.name)
             report.value = (f"Boundary conditions: {group.note}"
                             f"{band_note(bands, measured)}"
                             f"{unused_warning(values)}{offscreen_warning(values)}")
@@ -5875,23 +5894,37 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                 listen(layer(name))
             drawn = {spec.name for spec in group.layers}
             for name in BC_REGION_NAMES:
-                # `_apply_layers` only ever adds and updates, so a role that
-                # has nothing left to draw would keep the layer it had --
-                # unless a tool is pointed at it. Pressing Draw makes an empty
-                # layer to draw into, and taking that away would leave the
-                # next click with nowhere to land. Being merely selected is
-                # not enough: napari selects whatever was added last.
+                # `_add_or_update` only ever adds and updates, so a role that
+                # has nothing left to draw would keep the layer it had. Pressing
+                # Draw makes an empty layer to draw into, and taking that away
+                # would leave the next click with nowhere to land -- so a layer
+                # a tool is pointed at is emptied rather than removed. Being
+                # merely selected is not enough: napari selects whatever was
+                # added last.
                 stale = layer(name)
-                if (name not in drawn and stale is not None
-                        and getattr(stale, "mode", "pan_zoom") == "pan_zoom"):
+                if name in drawn or stale is None or not _is_ours(stale):
+                    continue
+                if getattr(stale, "mode", "pan_zoom") == "pan_zoom":
                     viewer.layers.remove(stale)
+                elif len(stale.data):
+                    stale.data = []
+            draw_boxes(values, bands)
             set_depth_range()
         finally:
             state.applying = False
 
-    def sync(*_args) -> None:
+    #: What a layer's `events.data` says once an edit is complete. The same
+    #: edit also fires "adding"/"changing"/"removing" first, and napari's
+    #: rectangle tool fires "adding" before the rectangle exists -- reading
+    #: that one back did nothing but cost a full sync per edit.
+    FINISHED_EDITS = frozenset({"added", "changed", "removed"})
+
+    def sync(event=None, *_args) -> None:
         """Layers -> settings. The other authoritative direction."""
         if state.applying:
+            return
+        action = getattr(event, "action", None)
+        if action is not None and str(getattr(action, "value", action)) not in FINISHED_EDITS:
             return
         state.applying = True
         try:
@@ -5909,12 +5942,10 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                 # empty every role but the last one read.
                 rectangles, rectangle_roles, depths = [], [], []
                 for owner, target in drawn:
-                    handles = handle_indices(target)
-                    roles = roles_of(target, len(target.data), default=owner)
-                    found = depths_of(target, len(target.data))
-                    rectangles += [target.data[index] for index in handles]
-                    rectangle_roles += [roles[index] for index in handles]
-                    depths += [found[index] for index in handles]
+                    found = read_regions(target, owner)
+                    rectangles += found[0]
+                    rectangle_roles += found[1]
+                    depths += found[2]
                 proposed.update(settings_from_layers(
                     rectangles=rectangles,
                     rectangle_roles=rectangle_roles,
@@ -5922,6 +5953,9 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                 ))
             write_rows(proposed)
             values = current_values()
+            # The boxes are drawn from the settings, so they follow an edit
+            # here; the layer that was edited is left exactly as it is.
+            draw_boxes(values)
             picks = BoundaryPicks.from_settings(values)
             report.value = (f"Boundary conditions: {picks.summary()}"
                             f"{unused_warning(values)}{offscreen_warning(values)}")
@@ -5929,23 +5963,86 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             state.applying = False
 
     def handle_indices(target) -> list[int]:
-        """Which shapes are the editable rectangles, not the box outlines.
+        """Which shapes can be read as a region: anything with an area.
 
-        A region is drawn as a rectangle plus the twelve segments of the box it
-        stands for. Only the rectangle is a region; reading the segments back
-        would turn one box into thirteen.
+        Only rectangles are drawn here, but napari's layer controls offer the
+        other tools too; an ellipse or polygon still reads as the box around
+        it, while a line has no area to make one from.
         """
-        parts = list(target.features.get("part", [])) if len(target.features) else []
         kinds = list(target.shape_type)
         return [
             index
             for index in range(len(target.data))
-            # A rectangle the user has just drawn may have no `part` yet, and
-            # an unfilled column reads back as NaN rather than as a string.
-            if (parts[index] if index < len(parts)
-                and isinstance(parts[index], str) else HANDLE) == HANDLE
-            and kinds[index] != "line"
+            if kinds[index] not in ("line", "path")
+            and len(target.data[index]) >= 3
         ]
+
+    def read_regions(target, owner) -> tuple[list, list[str], list[float]]:
+        """A regions layer's rectangles, with each one's role and depth."""
+        handles = handle_indices(target)
+        roles = roles_of(target, len(target.data), default=owner)
+        found = depths_of(target, len(target.data))
+        return ([target.data[index] for index in handles],
+                [roles[index] for index in handles],
+                [found[index] for index in handles])
+
+    def region_layer_holds(name: str, values) -> bool:
+        """Whether a role's regions layer already shows what *values* say."""
+        target = layer(name)
+        owner = next((r for r in ROLES if regions_name(r) == name), None)
+        if target is None or owner is None:
+            return False
+        rectangles, roles, depths = read_regions(target, owner)
+        if len(rectangles) != len(target.data) or any(r != owner for r in roles):
+            return False
+        held = settings_from_layers(rectangles=rectangles, rectangle_roles=roles,
+                                    depths=depths)[volume_setting(owner)]
+        wanted = BoundaryPicks.from_settings(values).to_settings()[volume_setting(owner)]
+        return held == wanted
+
+    def draw_boxes(values=None, bands=None, extra=None) -> None:
+        """Each role's regions as translucent solid boxes, one shade per box.
+
+        Its own Surface layer per role rather than more shapes in the regions
+        layer: a Surface draws in 3D, where a Shapes layer can only show flat
+        rectangles, and it is never edited, so it can be rewritten freely
+        without disturbing a tool working on the regions layer. *extra* is a
+        box still being dragged out in 3D.
+        """
+        values = current_values() if values is None else values
+        if bands is None:
+            bands, _measured = bands_now(values)
+        boxes = role_boxes(BoundaryPicks.from_settings(values), bands, extra=extra)
+        colours = dict(role_colours())
+        for owner in ROLES:
+            name = boxes_name(owner)
+            existing = layer(name)
+            if existing is not None and not _is_ours(existing):
+                continue
+            mine = boxes.get(owner)
+            if not mine:
+                if existing is not None:
+                    viewer.layers.remove(existing)
+                continue
+            vertices, faces, which = box_mesh(mine)
+            shades = np.asarray(box_colours(colours[owner], len(mine)), dtype=float)[which]
+            if existing is not None and existing.__class__.__name__.lower() == "surface":
+                _set_tube_mesh(existing, vertices, faces, shades)
+                continue
+            # Adding a layer makes it the active one, and the camera follows
+            # the active layer's `mouse_pan` -- so a box appearing mid-drag
+            # would hand the drag to the camera. Put the selection back.
+            active = viewer.layers.selection.active
+            viewer.add_surface(
+                (vertices, faces), name=name, vertex_colors=shades,
+                opacity=0.35, shading="flat",
+                # Every face of every box, front and back: a box is only
+                # readable as a volume if you can see through to its far side.
+                blending="translucent_no_depth",
+                metadata={OURS: {"kind": "surface", "role": "boundary_boxes"}},
+            )
+            if active is not None and active in viewer.layers:
+                viewer.layers.selection.active = active
 
     def roles_of(target, count, default=None) -> list[str]:
         """Each item's role, filling anything unlabelled with the chosen one.
@@ -5980,26 +6077,16 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         """Follow a layer's edits, once per layer."""
         if target is None or id(target) in state.connected:
             return
+        # Only the data event. There used to be a drag callback here too,
+        # redrawing the layer when the mouse came up -- which ran before
+        # napari's own tool had finished adding the rectangle, so it wiped
+        # the new region and left the tool holding a stale selection (the
+        # `_selected_box` TypeError on the next drag).
         target.events.data.connect(sync)
-        target.mouse_drag_callbacks.append(redraw_when_the_drag_ends)
         state.connected.add(id(target))
 
-    def redraw_when_the_drag_ends(_layer, event):
-        """Redraw once the mouse comes up, not on every step of the drag.
-
-        A region drawn or moved by hand is one rectangle until it is drawn
-        from the settings again, so without this the box a user just made has
-        no depth on screen -- and redrawing on every `events.data` would be
-        replacing the layer's contents underneath the drag that is producing
-        them.
-        """
-        yield
-        while event.type == "mouse_move":
-            yield
-        redraw()
-
     def set_defaults(target) -> None:
-        """Tag whatever napari adds next as this role's, and as a handle.
+        """Tag whatever napari adds next as this role's, at this role's depth.
 
         Every column the layer has, not just the ones this cares about: a
         default that names a subset is refused outright, and the failure is
@@ -6009,9 +6096,6 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         known = {
             "role": str(role.value),
             "depth": float(depth_slider().value),
-            # What the user draws by hand is the region itself; the outline
-            # segments are only ever made from the settings.
-            "part": HANDLE,
         }
         defaults = {name: value for name, value in known.items()
                     if name in target.features}
@@ -6149,7 +6233,6 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     def refresh_actions() -> None:
         """Show a role's controls only where its method has a use for them."""
         values = current_values()
-        drawable = viewer.dims.ndisplay == 2
         for name, action in actions.items():
             method = str(values.get(method_setting(name)))
             useful = set(ACTIONS_FOR_METHOD.get(method, ()))
@@ -6161,12 +6244,6 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                 if overridden:
                     widget.enabled = False
                     widget.tooltip = DISABLED_ROLE_TOOLTIP[name]
-                elif control == "draw" and not drawable:
-                    widget.enabled = False
-                    widget.tooltip = (
-                        "napari cannot edit a Shapes layer in the "
-                        "3D view. Switch to 2D to draw a region."
-                    )
                 else:
                     widget.enabled = True
                     widget.tooltip = ACTION_TOOLTIPS[control]
@@ -6184,6 +6261,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         redraw()
 
     def on_pick() -> None:
+        disarm_3d()
         redraw()
         target = layer(BC_COORDINATES)
         if target is None:
@@ -6197,11 +6275,11 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         )
 
     def on_draw() -> None:
-        if viewer.dims.ndisplay == 3:
+        disarm_3d()
+        if viewer.dims.ndisplay == 3 and image_extent() is None:
             report.value = (
-                "Regions can only be drawn in the 2D view -- napari does not "
-                "allow editing a Shapes layer in 3D. Switch to 2D, draw the "
-                "rectangle, then come back to 3D to see the box it makes."
+                "Open an image first: a box drawn in 3D runs through the image "
+                "along the line of sight, so it needs an image to run through."
             )
             return
         redraw()
@@ -6221,10 +6299,86 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             listen(target)
         viewer.layers.selection.active = target
         set_defaults(target)
+        if viewer.dims.ndisplay == 3:
+            arm_3d(target)
+            report.value = (
+                f"Drag a rectangle across the 3D view for a {role.value} region. "
+                "Across the screen the box takes what you drag; along the line "
+                "of sight it runs through the whole image (looking down z, the "
+                f"Region depth below: {depth_slider().value:.0f} um). Snap the "
+                "view to XY, XZ or YZ for an exact box -- at an angle it takes "
+                "the smallest box holding the rectangle. The view stops turning "
+                "until the drag is done; press Draw again for another box."
+            )
+            return
         target.mode = "add_rectangle"
         report.value = (
-            f"Draw a rectangle for a {role.value} region. It takes the depth "
-            f"below ({depth_slider().value:.0f} um), centred on the slice you draw it on."
+            f"Draw rectangles for {role.value} regions -- as many as you like. "
+            f"Each takes the depth below ({depth_slider().value:.0f} um), "
+            "centred on the slice you draw it on."
+        )
+
+    def arm_3d(target) -> None:
+        """Let the next drag on *target* make a box instead of turning the view.
+
+        The camera follows the active layer's `mouse_pan`, which is how napari's
+        own 3D plane dragging keeps the view still; the same switch here.
+        """
+        state.draw3d = SimpleNamespace(layer=target, owner=str(role.value))
+        target.mouse_pan = False
+        if draw_in_3d not in target.mouse_drag_callbacks:
+            target.mouse_drag_callbacks.append(draw_in_3d)
+
+    def disarm_3d() -> None:
+        """Give the mouse back to the camera."""
+        armed, state.draw3d = state.draw3d, None
+        if armed is None:
+            return
+        try:
+            armed.layer.mouse_pan = True
+            if draw_in_3d in armed.layer.mouse_drag_callbacks:
+                armed.layer.mouse_drag_callbacks.remove(draw_in_3d)
+        except Exception:  # noqa: BLE001 - a layer removed meanwhile has nothing to restore
+            logger.debug("could not disarm 3D region drawing", exc_info=True)
+
+    def draw_in_3d(target, event):
+        """One box per drag: previewed as it grows, written when the mouse is up."""
+        armed = state.draw3d
+        extent = image_extent()
+        if (armed is None or armed.layer is not target
+                or viewer.dims.ndisplay != 3 or extent is None):
+            return
+        start = np.asarray(event.position, dtype=float)
+        view = getattr(event, "view_direction", None)
+        up = getattr(event, "up_direction", None)
+        if view is None or up is None:
+            view, up = viewer.camera.view_direction, viewer.camera.up_direction
+        depth = float(actions[armed.owner].depth.value)
+
+        def box_to(position):
+            return box_from_view_drag(start, position, view, up, *extent, depth=depth)
+
+        yield
+        while event.type == "mouse_move":
+            box = box_to(event.position)
+            draw_boxes(extra={armed.owner: [box]} if box is not None else None)
+            yield
+        box = box_to(event.position)
+        disarm_3d()
+        if box is None:
+            draw_boxes()
+            report.value = (
+                "That drag made no box -- it had no area across the screen, or "
+                "missed the image. Press Draw and drag across the image."
+            )
+            return
+        name = volume_setting(armed.owner)
+        held = BoundaryPicks.from_settings(current_values()).to_settings()[name]
+        # Writing the row redraws: the settings are the one place a box lives.
+        write_rows({name: [*held, box]})
+        report.value = (
+            f"Added a box for {armed.owner}: {box[0]} to {box[1]} um (z, y, x). "
+            "Press Draw for another; the depth slider trims its z extent."
         )
 
     def on_depth_changed(*_args) -> None:
@@ -6277,11 +6431,13 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             return
         if regions and viewer.dims.ndisplay == 3:
             report.value = (
-                "Regions can only be edited in the 2D view -- napari does not "
-                "allow editing a Shapes layer in 3D. Coordinates can be moved "
-                "in either view."
+                "Regions can only be moved or resized in the 2D view -- napari "
+                "does not allow editing a Shapes layer in 3D. In 3D, Draw adds "
+                "a box and Clear removes this role's boxes. Coordinates can be "
+                "moved in either view."
             )
             return
+        disarm_3d()
         viewer.layers.selection.active = target
         target.mode = "select"
         report.value = (
@@ -6401,8 +6557,9 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         wire(_name, _action.depth, on_depth_changed)
 
     def on_ndisplay(*_args) -> None:
-        # refresh_actions owns enabled for Draw (2D vs 3D and the automated
-        # inlet/outlet override).
+        # A drag armed in 3D would, back in 2D, fight napari's own tools for
+        # the mouse; and napari resets `mouse_pan` on the mode change anyway.
+        disarm_3d()
         refresh_actions()
 
     viewer.dims.events.ndisplay.connect(on_ndisplay)
@@ -6481,6 +6638,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             if tabs.currentIndex() != index:
                 tabs.setCurrentIndex(index)
         place_shared()
+        if state.draw3d is not None and state.draw3d.owner != str(role.value):
+            disarm_3d()
         for name in our_layer_names():
             target = layer(name)
             if target is not None:
@@ -6495,7 +6654,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         row_order=row_order, refresh_rows=refresh_rows,
         show=on_show, pick=on_pick, draw=on_draw, snap=on_snap, move=on_move,
         assign=on_assign, clear=on_clear, redraw=redraw, sync=sync,
-        layer_names=(BC_COORDINATES, *BC_REGION_NAMES),
+        draw_in_3d=draw_in_3d,
+        layer_names=(BC_COORDINATES, *BC_REGION_NAMES, *BC_BOX_NAMES),
         shared_ilastik_holder=lambda: getattr(state, "shared_ilastik_holder", None),
     )
 

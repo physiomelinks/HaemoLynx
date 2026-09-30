@@ -22,8 +22,8 @@ ACTION_TOOLTIPS: dict[str, str] = {
         "points for this role"
     ),
     "draw": (
-        "Draw a rectangle in the 2D view; its extruded box becomes this "
-        "role's volume region"
+        "Add volume regions for this role: in 2D draw rectangles (each "
+        "extruded by the region depth), in 3D drag a box across the view"
     ),
     "depth": (
         "Z extent of the next region drawn for this role, in microns"

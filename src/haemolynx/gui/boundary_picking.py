@@ -14,16 +14,25 @@ This turns those settings into two napari layers and back:
     ``scale=(1, 1, 1)`` and node ``pos`` is physical. So there is no conversion
     anywhere in this module, only bookkeeping.
 
-``HaemoLynx BC regions``
-    A Shapes layer, one rectangle per volume box, drawn at the box's z centre
-    with the box's y/x extent. The z extent it came from rides alongside as a
-    ``depth`` feature, so every region keeps its own rather than sharing one.
-    :func:`rectangle_from_box` and :func:`box_from_rectangle` are exact
-    inverses, which is what lets the layer be treated as the setting.
+``HaemoLynx BC <role> regions``
+    A Shapes layer per role, one rectangle per volume box, drawn at the box's z
+    centre with the box's y/x extent. The z extent it came from rides alongside
+    as a ``depth`` feature, so every region keeps its own rather than sharing
+    one. :func:`rectangle_from_box` and :func:`box_from_rectangle` are exact
+    inverses, which is what lets the layer be treated as the setting. Nothing
+    but those rectangles goes in it: it is the layer napari's own drawing tool
+    works on, and anything else in it is something that tool can trip over.
 
-Both layers are editable, and everything here is pure: settings in, layer specs
-out, layer data in, settings out. Nothing imports napari, so it is all testable
-without a display -- the same contract :mod:`haemolynx.gui.results` keeps.
+``HaemoLynx BC <role> boxes``
+    A Surface layer per role showing what the rectangles stand for: each box as
+    a translucent solid in a shade of its own (:func:`box_mesh`), plus the band
+    an ``edge_percent`` role selects from. Drawn from the settings only, so it
+    is never edited and never read back, and it is the one that shows in 3D.
+
+The coordinates and regions layers are editable, and everything here is pure:
+settings in, layer specs out, layer data in, settings out. Nothing imports
+napari, so it is all testable without a display -- the same contract
+:mod:`haemolynx.gui.results` keeps.
 
 One hazard is worth naming, because it is silent. The settings rows are edited
 by magicgui's ``LiteralEvalLineEdit``, which stores ``str(value)`` and reads it
@@ -53,9 +62,11 @@ from haemolynx.gui.results import (
 
 __all__ = [
     "AUTOMATED_OVERRIDES_MANUAL_NOTE",
+    "BC_BOX_NAMES",
     "BC_COORDINATES",
     "BC_LAYER_NAMES",
     "BC_REGION_NAMES",
+    "boxes_name",
     "regions_name",
     "ROLES",
     "LARGE_AUTO_ROLES",
@@ -65,9 +76,12 @@ __all__ = [
     "LARGE_VESSEL_NETWORK_MODE_OFF_NOTE",
     "DISABLED_ROLE_TOOLTIP",
     "BoundaryPicks",
+    "box_colours",
     "box_from_rectangle",
-    "box_outline",
+    "box_from_view_drag",
+    "box_mesh",
     "region_shapes",
+    "role_boxes",
     "coordinate_setting",
     "orderable_settings",
     "role_manual_controls_enabled",
@@ -81,7 +95,6 @@ __all__ = [
     "snap",
     "specs_for",
     "terminal_points",
-    "BAND",
     "PERCENT_FOR_NODE_ROLE",
     "band_boxes",
     "terminal_axis_span",
@@ -277,11 +290,19 @@ def regions_name(role: str) -> str:
     return f"{PREFIX}BC {role_title(role).lower()} regions"
 
 
+def boxes_name(role: str) -> str:
+    """The layer a role's regions are drawn in as solid boxes."""
+    return f"{PREFIX}BC {role_title(role).lower()} boxes"
+
+
 #: Every region layer, in role order.
 BC_REGION_NAMES = tuple(regions_name(role) for role in ROLES)
 
+#: Every box layer, in role order.
+BC_BOX_NAMES = tuple(boxes_name(role) for role in ROLES)
+
 #: All of them, for "is this one of the picking layers?".
-BC_LAYER_NAMES = frozenset({BC_COORDINATES, *BC_REGION_NAMES})
+BC_LAYER_NAMES = frozenset({BC_COORDINATES, *BC_REGION_NAMES, *BC_BOX_NAMES})
 
 
 def outside_extent(
@@ -438,32 +459,163 @@ def box_from_rectangle(
     return [plain([round(v, DECIMALS) for v in lo]), plain([round(v, DECIMALS) for v in hi])]
 
 
-def box_outline(
-    corner_a: Sequence[float], corner_b: Sequence[float]
-) -> list[np.ndarray]:
-    """The twelve edges of a box, as two-point segments.
+def _unit_cube() -> tuple[np.ndarray, np.ndarray]:
+    """A unit cube's eight corners and its twelve outward-wound triangles.
 
-    A rectangle is the only thing napari can *edit*, and it is flat -- so on
-    its own it says nothing about how deep a region is. These draw the box the
-    rectangle stands for. They are regenerated from the setting every time, so
-    dragging one does nothing lasting; the rectangle is the handle.
+    Corner ``i`` has bit 4 for z, 2 for y and 1 for x, so ``lo + corner * size``
+    places it. The winding is settled once here, by turning each triangle to
+    face away from the centre, because flat shading lights a face by its
+    normal and an inward one reads as a hole in the box.
     """
-    lo = np.minimum(np.asarray(corner_a, dtype=float), np.asarray(corner_b, dtype=float))
-    hi = np.maximum(np.asarray(corner_a, dtype=float), np.asarray(corner_b, dtype=float))
-    corners = np.array(list(itertools.product(*zip(lo, hi))), dtype=float)
-    edges = []
-    for a, b in itertools.combinations(range(len(corners)), 2):
-        # An edge joins two corners that differ along exactly one axis.
-        if int(np.count_nonzero(corners[a] != corners[b])) == 1:
-            edges.append(np.array([corners[a], corners[b]], dtype=float))
-    return edges
+    corners = np.array(list(itertools.product((0.0, 1.0), repeat=3)))
+    quads = []
+    for axis in range(3):
+        for side in (0.0, 1.0):
+            quad = [i for i in range(8) if corners[i][axis] == side]
+            # Round the face, not across it: swap the last two into order.
+            quads.append([quad[0], quad[1], quad[3], quad[2]])
+    faces = []
+    centre = np.full(3, 0.5)
+    for a, b, c, d in quads:
+        for tri in ((a, b, c), (a, c, d)):
+            p = corners[list(tri)]
+            normal = np.cross(p[1] - p[0], p[2] - p[0])
+            if np.dot(normal, p.mean(axis=0) - centre) < 0:
+                tri = (tri[0], tri[2], tri[1])
+            faces.append(tri)
+    return corners, np.asarray(faces, dtype=int)
 
 
-#: What a shape in the regions layer is for: the editable rectangle, or one of
-#: the twelve segments drawing the box it stands for.
-BAND = "band"
-HANDLE = "handle"
-OUTLINE = "outline"
+_CUBE_CORNERS, _CUBE_FACES = _unit_cube()
+
+
+def box_mesh(
+    boxes: Sequence[tuple[Sequence[float], Sequence[float]]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Every box as a closed solid: vertices, triangles and whose each vertex is.
+
+    Each box has its own eight vertices rather than sharing any, so it can
+    carry a colour of its own (:func:`box_colours`) -- the whole point of
+    drawing them as separate solids is that two regions of one role can be
+    told apart in 3D.
+    """
+    if not len(boxes):
+        return (np.empty((0, 3), dtype=float), np.empty((0, 3), dtype=int),
+                np.empty((0,), dtype=int))
+    vertices, faces, owner = [], [], []
+    for index, (corner_a, corner_b) in enumerate(boxes):
+        lo = np.minimum(np.asarray(corner_a, dtype=float), np.asarray(corner_b, dtype=float))
+        hi = np.maximum(np.asarray(corner_a, dtype=float), np.asarray(corner_b, dtype=float))
+        vertices.append(lo + _CUBE_CORNERS * (hi - lo))
+        faces.append(_CUBE_FACES + 8 * index)
+        owner.append(np.full(8, index, dtype=int))
+    return np.concatenate(vertices), np.concatenate(faces), np.concatenate(owner)
+
+
+def box_colours(
+    colour: Sequence[float], count: int
+) -> list[tuple[float, float, float, float]]:
+    """*count* shades of one role's colour, one per box, all telling apart.
+
+    The role stays readable (an inlet box is still green) while two inlet
+    boxes are not the same green: the shades run from darker to lighter than
+    the role colour, which a single box keeps exactly.
+    """
+    base = np.asarray(colour, dtype=float)[:3]
+    alpha = float(colour[3]) if len(colour) > 3 else 1.0
+    if count <= 1:
+        return [(*(float(v) for v in base), alpha)] * max(count, 0)
+    shades = []
+    for step in np.linspace(-0.45, 0.45, count):
+        towards = np.ones(3) if step > 0 else np.zeros(3)
+        rgb = base + abs(step) * (towards - base)
+        shades.append((*(float(v) for v in rgb), alpha))
+    return shades
+
+
+def role_boxes(
+    picks: "BoundaryPicks",
+    bands: Mapping[str, tuple[Sequence[float], Sequence[float]]] | None = None,
+    *,
+    extra: Mapping[str, Sequence[tuple[Sequence[float], Sequence[float]]]] | None = None,
+) -> dict[str, list[tuple[list[float], list[float]]]]:
+    """The boxes each role's box layer shows: its band, its regions, *extra*.
+
+    *extra* is a box still being dragged out in 3D -- shown so the drag has
+    something to look at, but in no setting until the mouse comes up.
+    """
+    out: dict[str, list] = {}
+    for role in ROLES:
+        boxes = []
+        if bands and role in bands:
+            lo, hi = bands[role]
+            boxes.append(([float(v) for v in lo], [float(v) for v in hi]))
+        for lo, hi in picks.volumes.get(role, ()):
+            boxes.append(([float(v) for v in lo], [float(v) for v in hi]))
+        for lo, hi in (extra or {}).get(role, ()):
+            boxes.append(([float(v) for v in lo], [float(v) for v in hi]))
+        if boxes:
+            out[role] = boxes
+    return out
+
+
+def box_from_view_drag(
+    start: Sequence[float],
+    end: Sequence[float],
+    view_direction: Sequence[float],
+    up_direction: Sequence[float],
+    lo: Sequence[float],
+    hi: Sequence[float],
+    *,
+    depth: float | None = None,
+) -> list[list[float]] | None:
+    """The box a mouse drag across the 3D view describes, or None.
+
+    A drag on screen is a rectangle in the plane facing the camera: across it,
+    the box takes the rectangle; along the line of sight -- the axis the camera
+    looks down most nearly -- it runs through the whole image, since a 3D view
+    shows no depth to point at. On a z view, *depth* trims that to a slab
+    centred on the image, which is what the Region depth slider says. Looking
+    straight down an axis gives exactly the rectangle dragged; at an angle, the
+    smallest axis-aligned box holding it.
+
+    None for a drag with no area across the screen, or one that misses the
+    image altogether: there is no box to add, and adding a flat one would
+    select nothing.
+    """
+    start = np.asarray(start, dtype=float)[-3:]
+    end = np.asarray(end, dtype=float)[-3:]
+    view = np.asarray(view_direction, dtype=float)[-3:]
+    up = np.asarray(up_direction, dtype=float)[-3:]
+    low = np.asarray(lo, dtype=float)
+    high = np.asarray(hi, dtype=float)
+    if not np.linalg.norm(view):
+        return None
+    view = view / np.linalg.norm(view)
+    up = up - np.dot(up, view) * view
+    if not np.linalg.norm(up):
+        return None
+    up = up / np.linalg.norm(up)
+    right = np.cross(view, up)
+    delta = end - start
+    across, along = float(np.dot(delta, right)), float(np.dot(delta, up))
+    corners = np.array([
+        start,
+        start + across * right,
+        start + along * up,
+        start + across * right + along * up,
+    ])
+    box_lo, box_hi = corners.min(axis=0), corners.max(axis=0)
+    sight = int(np.argmax(np.abs(view)))
+    box_lo[sight], box_hi[sight] = low[sight], high[sight]
+    if depth is not None and sight == 0 and math.isfinite(depth) and depth > 0:
+        centre = (low[0] + high[0]) / 2.0
+        box_lo[0], box_hi[0] = centre - depth / 2.0, centre + depth / 2.0
+    box_lo, box_hi = np.maximum(box_lo, low), np.minimum(box_hi, high)
+    if any(box_hi[axis] - box_lo[axis] <= 0 for axis in range(3) if axis != sight):
+        return None
+    return [plain([round(float(v), DECIMALS) for v in box_lo]),
+            plain([round(float(v), DECIMALS) for v in box_hi])]
 
 
 def terminal_axis_span(graph, axis: int):
@@ -534,50 +686,31 @@ def band_boxes(
 
 def region_shapes(
     picks: "BoundaryPicks",
-    bands: Mapping[str, tuple[Sequence[float], Sequence[float]]] | None = None,
     *,
     only: str | None = None,
 ) -> tuple[list[np.ndarray], list[str], dict[str, np.ndarray]]:
-    """Every region as one editable rectangle plus the box it describes.
+    """Every region as the one editable rectangle that stands for it.
 
-    A band gets the box and no rectangle: it is not a region anyone typed, it
-    is what a percentage works out to, so there is no handle to drag and
-    nothing for the settings to read back.
+    Only rectangles: the box each one describes is drawn in its own layer
+    (:func:`box_mesh`). It used to be twelve line segments in this one, which
+    made thirteen shapes per region for napari to rebuild on every edit and
+    left its drawing tool working on a layer that was being rewritten
+    underneath it.
     """
     data: list[np.ndarray] = []
-    kinds: list[str] = []
     roles: list[str] = []
     depths: list[float] = []
-    parts: list[str] = []
-    for role, (lo, hi) in (bands or {}).items():
-        if only is not None and role != only:
-            continue
-        for edge in box_outline(lo, hi):
-            data.append(edge)
-            kinds.append("line")
-            roles.append(role)
-            depths.append(abs(float(hi[0]) - float(lo[0])))
-            parts.append(BAND)
     for role in ROLES if only is None else (only,):
         for lo, hi in picks.volumes.get(role, ()):
             corners, depth = rectangle_from_box(lo, hi)
             data.append(corners)
-            kinds.append("rectangle")
             roles.append(role)
             depths.append(depth)
-            parts.append(HANDLE)
-            for edge in box_outline(lo, hi):
-                data.append(edge)
-                kinds.append("line")
-                roles.append(role)
-                depths.append(depth)
-                parts.append(OUTLINE)
     features = {
         "role": np.asarray(roles, dtype=object),
         "depth": np.asarray(depths, dtype=float),
-        "part": np.asarray(parts, dtype=object),
     }
-    return data, kinds, features
+    return data, ["rectangle"] * len(data), features
 
 
 @dataclass(frozen=True)
@@ -690,13 +823,15 @@ class BoundaryPicks:
         return ", ".join(parts)
 
 
-def specs_for(values: Mapping[str, Any], bands=None) -> tuple[LayerSpec, ...]:
-    """The layers that draw what *values* describes.
+def specs_for(values: Mapping[str, Any]) -> tuple[LayerSpec, ...]:
+    """The editable layers that draw what *values* describes.
 
     The coordinates layer is emitted even when empty -- it is the surface the
     user clicks into, so it has to exist before there is anything on it. The
     regions layer is not: an empty Shapes layer draws nothing and would only be
-    one more row in the layer list until a region is drawn.
+    one more row in the layer list until a region is drawn. The box layers are
+    not specs at all: napari has no Surface in `LayerSpec`'s vocabulary, and
+    they are drawn from :func:`role_boxes` by the panel.
     """
     picks = BoundaryPicks.from_settings(values)
     points, point_features = picks.points()
@@ -720,7 +855,7 @@ def specs_for(values: Mapping[str, Any], bands=None) -> tuple[LayerSpec, ...]:
         )
     ]
     for role in ROLES:
-        shapes, kinds, shape_features = region_shapes(picks, bands, only=role)
+        shapes, kinds, shape_features = region_shapes(picks, only=role)
         if not shapes:
             continue
         specs.append(
@@ -751,7 +886,7 @@ def group_for(values: Mapping[str, Any], bands=None) -> StageLayers:
     return StageLayers(
         stage="boundary_picking",
         title="Boundary conditions",
-        layers=specs_for(values, bands),
+        layers=specs_for(values),
         note=note,
     )
 
