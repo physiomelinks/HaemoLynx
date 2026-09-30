@@ -2377,7 +2377,7 @@ Computed from the graph alone, with no physics.
 | 4 | Branching statistics: junction count, branching angles | degree ≥ 3 | Junction density is an H1 readout, and branching angle is the diagnostic that shows whether junctions were resolved sensibly | **On** | `stats.py:175` |
 | 5 | Tree asymmetry | — | Distinguishes a balanced bed from a network dominated by one trunk | **On** | `stats.py:213` |
 | 6 | Fractal dimension by box counting | — | A scale-invariant descriptor of how densely the network fills the volume | **On** | `stats.py:241` |
-| 7 | Vessel density, both definitions | ⚠ voxel size **not passed** | Both definitions are reported because neither is the parenchymal density H1 §1.3 asks for, and saying so requires showing both | **On** | `stats.py:349` |
+| 7 | Vessel density, both definitions | voxel size passed (required with the image dimensions) | Both definitions are reported because neither is the parenchymal density H1 §1.3 asks for, and saying so requires showing both | **On** | `stats.py:359` |
 | 8 | Path efficiency | sampled — `max_pairs` capped in `fast` | Exhaustive all-pairs shortest paths are quadratic in node count, so `fast` samples instead | **On** | `stats.py:268` |
 | 9 | Communities and betweenness | summaries only in `fast` | Diagnostic centrality and modularity; reduced to summaries because the full objects are large and unused | **On** | `stats.py:402`, `stats.py:436` |
 | 10 | Per-edge morphometry table → CSV | 16 fixed columns | With n = 3 per group the per-edge table is the only place with enough data to describe a distribution at all | **On** | `stats.py:56`, `stats.py:135` |
@@ -2396,21 +2396,24 @@ mode exists and is never selected on the CB path.
 > construction. If that setting were ever turned off, every β₁ in this document would be wrong by
 > the number of components, silently.
 
-> ⚠ **"Vessel Density in Whole Image" is numerically wrong, not just conceptually.**
-> `compute_comprehensive_vessel_statistics` is called without `voxel_size`
-> (`carotid_image_to_model.py:1277`), so it defaults to `(1.0, 1.0, 1.0)` and the denominator is
-> `prod(image_dimensions)` in **voxels³** while the numerator is length in **µm**. The reported
-> density is therefore too high by `prod(1.8639, 1.866, 1.866)` = **6.49×**. The graph-extent
-> density above it is unaffected — it is computed from physical node positions. Neither is the
-> parenchymal quantity H1 §1.3 asks for; that one is in §7.2.
+> **"Vessel Density in Whole Image" now applies the voxel size (re-run package G).** Until then
+> `compute_comprehensive_vessel_statistics` was called without `voxel_size`, so the image volume
+> was `prod(image_dimensions)` in voxels and the density was too high by `prod(1.8639, 1.866, 1.866)`
+> = 6.49×. The pipeline now passes the spacing the graph was built with, and the function raises if
+> `image_dimensions` comes without a voxel size. On WKY-A the image volume is 2.66 × 10⁷ µm³ (was
+> 4.10 × 10⁶) and the density 0.00365 µm/µm³ (was 0.0237). These lines are only printed to
+> `pipeline.log`; no H1 or H2 number used them, and the batch logs carry the old values until the
+> next batch run.
 
 **Tortuosity is derived from the per-edge table rather than recomputed**, so the summary and the
 per-edge CSV cannot disagree about what an edge's tortuosity is.
 
 > ⚠ **"Vessel density" means two different things, and neither is parenchymal density.**
-> `compute_vessel_density` reports *Density in Tissue* as total length divided by the **bounding box
-> of the node positions**, and *Density in Whole Image* as total length divided by the full image
-> volume. The first is a graph-extent density; the second includes everything that is not tissue.
+> `compute_vessel_density` reports *Density in Node Bounding Box* as total length divided by the
+> **bounding box of the node positions**, and *Density in Whole Image* as total length divided by
+> the full image volume. The first is a graph-extent density; the second includes everything that
+> is not tissue. The first pair was called "Vessel-Occupied Volume" and "Density in Tissue" until
+> re-run package G, which read as a tissue volume it is not.
 > The parenchymal quantity H1 §1.3 asks for is the one in §7.2, not either of these.
 
 > **At a glance** — graph-only metrics, tortuosity shared with the per-edge table ·
