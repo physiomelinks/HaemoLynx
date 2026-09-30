@@ -1,10 +1,10 @@
-"""Run all six specimens through the pipeline on matched sub-volumes, and compare the groups.
+"""Run all six specimens through the pipeline on matched sub-volumes.
 
 Four stages, each of which can be run alone:
 
   --stage placement    where each ROI will sit, and why          (seconds)
   --stage threshold    choose one threshold for all six          (minutes)
-  --stage run          run the pipeline and compare the groups   (~6 min per specimen)
+  --stage run          run the pipeline on each specimen        (~6 min per specimen)
   --stage sensitivity  rerun at the frozen value's grid neighbours (~6 min per run, 12 runs)
 
 Two design decisions are load-bearing and deliberate.

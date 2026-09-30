@@ -6,12 +6,13 @@ so the files overlay without any transform and the ParaView ruler reads true dis
 Regenerate with:
 
 ```bash
-venv/bin/python examples/cb_h1_vtk.py --verify
+venv/bin/python examples/cb_h1_vtk.py --verify   # check the frames agree, write nothing
+venv/bin/python examples/cb_h1_vtk.py            # write the files
 ```
 
 `--verify` re-checks that the frames agree rather than assuming it: that centrelines sit
 inside the mask to within a fraction of a voxel, and that every raw skeleton point falls in
-mask foreground.
+mask foreground. It writes no file.
 
 ## The files
 

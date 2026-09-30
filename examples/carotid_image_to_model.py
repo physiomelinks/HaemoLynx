@@ -782,7 +782,13 @@ def _load_raw_probability_field(image_path, input_format, pre_config, skel_confi
     if skel_config.sub_volume_voxels is not None or \
        0 < skel_config.sub_volume_percentage < 1.0 or skel_config.sub_volume_offset_z != 0 or \
        skel_config.sub_volume_offset_y != 0 or skel_config.sub_volume_offset_x != 0:
-        print(f"Applying ROI crop (sub-volume={skel_config.sub_volume_percentage})...")
+        if skel_config.sub_volume_voxels is not None:
+            print(f"Applying ROI crop ({tuple(skel_config.sub_volume_voxels)} voxels, centre "
+                  f"offset z/y/x {skel_config.sub_volume_offset_z:+.4f}/"
+                  f"{skel_config.sub_volume_offset_y:+.4f}/{skel_config.sub_volume_offset_x:+.4f} "
+                  f"of the volume)...")
+        else:
+            print(f"Applying ROI crop (sub-volume={skel_config.sub_volume_percentage})...")
         if ROI_RECORD is not None:
             # The offsets were computed on the registry shape; on any other shape they would
             # land somewhere else.
@@ -2392,7 +2398,8 @@ if __name__ == "__main__":
     specimens.assert_single_classifier()
     print(f"Specimen {active_specimen.specimen_id} ({active_specimen.group}), "
           f"classifier {active_specimen.classifier.name}")
-    print(f"  stages: {active_specimen.stage_status()}")
+    # 'masked' is the registry mask (prob_to_mask.py), not this run's cached mask.
+    print(f"  registry artefacts before this run: {active_specimen.stage_status()}")
 
     # Crop at this specimen's placed ROI (open item 27). The sidecar names the box, so the
     # H1/H2 drivers can refuse an output cut anywhere else.

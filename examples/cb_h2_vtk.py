@@ -378,7 +378,7 @@ def main():
               f"penetrating {check['penetrating_midpoint_inside_pct']}% inside, "
               f"non-penetrating {check['non_penetrating_midpoint_inside_pct']}%, "
               f"transposed control {check['transposed_control_pct']}%")
-        if not check["perfusion_grid_contains_glomus_volume"]:
+        if check["glomus_outside_grid_pct"] > 0:
             print(f"    note: {check['glomus_outside_grid_pct']}% of the glomus volume lies "
                   f"outside the perfusion grid and carries no PO2. The grid is the graph's "
                   f"node bounding box, so this is where the vessels stop, not a frame fault.")

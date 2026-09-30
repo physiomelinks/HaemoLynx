@@ -112,7 +112,7 @@ def build_graph_segment_skan_stitched_loops(
     t0 = time.perf_counter()
     max_workers = min(4, os.cpu_count() or 1)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        segments = [s for s in tqdm(executor.map(make_segment_safe, paths), total=len(paths), desc="Extracting Segments") if s]
+        segments = [s for s in tqdm(executor.map(make_segment_safe, paths), total=len(paths), desc="Extracting Segments", disable=None) if s]
     logger.info("Segments extracted (%d valid) in %.1fs", len(segments), time.perf_counter() - t0)
 
     if not segments:

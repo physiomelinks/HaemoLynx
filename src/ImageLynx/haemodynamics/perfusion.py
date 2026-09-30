@@ -1289,11 +1289,11 @@ def solve_multi_species_perfusion(grid: PerfusionGrid, G: nx.MultiGraph, startin
         b_co2 = transmural_co2 + (M_co2_prod * V_cell) + diag_co2 * PCO2_clamped
 
         if iteration == 0:
-            logger.info(f"DEBUG Iteration 0: max(transmural_o2) = {np.max(transmural_o2)}")
-            logger.info(f"DEBUG Iteration 0: max(M_o2_red * V_cell) = {np.max(M_o2_red * V_cell)}")
-            logger.info(f"DEBUG Iteration 0: max(b_o2) = {np.max(b_o2)}")
+            logger.debug(f"Iteration 0: max(transmural_o2) = {np.max(transmural_o2)}")
+            logger.debug(f"Iteration 0: max(M_o2_red * V_cell) = {np.max(M_o2_red * V_cell)}")
+            logger.debug(f"Iteration 0: max(b_o2) = {np.max(b_o2)}")
             o2_flux_in = [f["c_o2"] * f["q"] for fs in inflows.values() for f in fs]
-            logger.info(f"DEBUG Iteration 0: max(node O2 flux in) = {max(o2_flux_in, default=0.0)}")
+            logger.debug(f"Iteration 0: max(node O2 flux in) = {max(o2_flux_in, default=0.0)}")
 
         picard = np.concatenate([np.maximum(exact_solve(A_diff_o2, diag_o2, b_o2), 0.0),
                                  np.maximum(exact_solve(A_diff_co2, diag_co2, b_co2), 0.0)])

@@ -1,4 +1,5 @@
 """Internal helpers for graph operations."""
+import logging
 from typing import List, Tuple, Dict, Any, Union, Optional
 
 import numpy as np
@@ -6,6 +7,8 @@ import networkx as nx
 from scipy.interpolate import splprep, splev
 from scipy.spatial import cKDTree
 from numba import jit
+
+logger = logging.getLogger(__name__)
 
 # Terminal-reconnection distances, in MICRONS.
 #
@@ -935,7 +938,8 @@ def smooth_graph_edge_centerlines_continuous(
             for edge in edge_iter
         ),
         total=len(edge_iter),
-        desc="Centerline Smoothing"
+        desc="Centerline Smoothing",
+        disable=None,  # no bar when stderr is not a terminal, so logs stay greppable
     ))
 
     smoothed_edges = 0
@@ -981,6 +985,11 @@ def smooth_graph_edge_centerlines_continuous(
             f"{smoothed_edges}, relaxed={relaxed_edges}, "
             f"fallback={fallback_edges}, skipped={skipped_edges}"
         )
+    if fallback_edges:
+        logger.warning(
+            "Centreline smoothing: %d of %d edges kept the raw centreline "
+            "(the spline left the skeleton corridor; tagged raw_fallback)",
+            fallback_edges, len(edge_iter))
     provenance_counts: Dict[str, int] = {}
     for edge in (G.edges(keys=True, data=True) if is_multi else G.edges(data=True)):
         tag = edge[-1].get("centreline_smoothing")

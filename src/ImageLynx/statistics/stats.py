@@ -1,4 +1,5 @@
 """Vessel network statistics."""
+import logging
 from typing import Dict, Any, Optional, Union, Callable
 from pathlib import Path
 from datetime import datetime, timezone
@@ -10,6 +11,8 @@ import numpy as np
 import networkx as nx
 from scipy.spatial.distance import euclidean
 from networkx.algorithms.community import greedy_modularity_communities
+
+logger = logging.getLogger(__name__)
 
 #Need to add in bifurcation ratios
 
@@ -423,6 +426,12 @@ def compute_vessel_density(
         )
     return out
     
+def _warn_community_fallback(n_nodes: int, max_nodes_exact: int) -> None:
+    logger.warning(
+        "Community statistics: %d nodes > max_nodes_exact=%d, so connected components "
+        "stand in for modularity communities", n_nodes, max_nodes_exact)
+
+
 def compute_communities_summary(
     G: nx.Graph, max_nodes_exact: int = 1500
 ) -> Dict[str, Any]:
@@ -442,6 +451,7 @@ def compute_communities_summary(
         }
 
     # Fallback for large graphs: connected components are fast and stable.
+    _warn_community_fallback(n_nodes, max_nodes_exact)
     components = list(nx.connected_components(G))
     sizes = [len(c) for c in components]
     return {
@@ -620,6 +630,7 @@ def compute_weighted_communities_summary(
             "Community Method": "greedy_modularity_weighted",
         }
 
+    _warn_community_fallback(n_nodes, max_nodes_exact)
     components = list(nx.connected_components(G_s))
     sizes = [len(c) for c in components]
     return {

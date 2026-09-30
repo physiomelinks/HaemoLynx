@@ -1172,7 +1172,8 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             for u, v, key, data in sorted_edges
         ),
         total=len(sorted_edges),
-        desc="FWHM Measurement"
+        desc="FWHM Measurement",
+        disable=None,  # no bar when stderr is not a terminal, so logs stay greppable
     ))
 
     for (u, v, key), res in results_list:

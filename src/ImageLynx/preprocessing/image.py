@@ -176,7 +176,7 @@ def hysteresis_threshold(
     high:
         Upper threshold for seeds.
     """
-    logger.info("Applying hysteresis thresholding (low=%.2f, high=%.2f)", low, high)
+    logger.info("Applying hysteresis thresholding (low=%g, high=%g)", low, high)
     
     if _is_dask_array(image):
         # Hysteresis is a global operation (connected components).
@@ -257,7 +257,7 @@ def joint_hysteresis_threshold(
     if shannon_core > shannon_max:
         raise ValueError(f"shannon_core ({shannon_core}) must be <= shannon_max ({shannon_max})")
 
-    logger.info("Applying joint hysteresis (low=%.2f, high=%.2f, core=%.2f, max=%.2f)", low, high, shannon_core, shannon_max)
+    logger.info("Applying joint hysteresis (low=%g, high=%g, core=%g, max=%g)", low, high, shannon_core, shannon_max)
 
     if _is_dask_array(probability_map) or _is_dask_array(entropy_map):
         logger.warning("Applying Joint Hysteresis to Dask array - results may differ slightly at chunk boundaries.")

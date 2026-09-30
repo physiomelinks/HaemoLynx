@@ -25,7 +25,7 @@ session:
 (z, y, x) order, so VTK's x axis carries the array's z axis, and graph points are stored
 (z, y, x) in micrometres and land the same way. Everything therefore overlays, and the raw
 skeleton is mapped identically. ``--verify`` checks this against the data rather than
-trusting the reasoning.
+trusting the reasoning, and writes nothing.
 """
 import argparse
 import csv
@@ -210,8 +210,9 @@ def verify(specimen, vessels, skeleton, grid):
         verdict = "sub-voxel, from centreline smoothing" if overhang < voxel else "CHECK"
         notes.append(f"overhang beyond mask {overhang:.2f} um "
                      f"({overhang / voxel:.2f} voxel) - {verdict}")
-        notes.append(f"inset from mask face {inset:.1f} um "
-                     f"- network does not reach that face")
+        reach = ("network does not reach that face" if inset > 0
+                 else "network reaches every face")
+        notes.append(f"inset from mask face {inset:.1f} um - {reach}")
     if skeleton is not None and grid is not None:
         mask = grid["vessel_mask"].reshape(grid.dimensions, order="F").astype(bool)
         vz, vy, vx = PROCESSING_VOXEL_UM
@@ -228,11 +229,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--verify", action="store_true",
-                        help="Cross-check that the exported frames overlay. Still writes the "
-                             "VTK files; the checks are printed as well.")
+                        help="Check that the exported frames overlay, and stop without "
+                             "writing any file (as cb_h2_vtk.py --verify does).")
     args = parser.parse_args()
 
-    OUTPUT.mkdir(parents=True, exist_ok=True)
+    if not args.verify:
+        OUTPUT.mkdir(parents=True, exist_ok=True)
     summary = {}
     for specimen in SPECIMENS:
         edges = read_edges(specimen)
@@ -247,17 +249,18 @@ def main():
         skeleton = build_skeleton(specimen, report)
         surface, grid = build_surface(specimen, report)
 
-        stem = OUTPUT / specimen.specimen_id
-        if vessels is not None:
-            vessels.save(f"{stem}_vessels.vtp")
-        if nodes is not None:
-            nodes.save(f"{stem}_nodes.vtp")
-        if skeleton is not None:
-            skeleton.save(f"{stem}_skeleton.vtp")
-        if surface is not None:
-            surface.save(f"{stem}_surface.vtp")
-        if grid is not None:
-            stamp(grid, specimen).save(f"{stem}_mask.vti")
+        if not args.verify:
+            stem = OUTPUT / specimen.specimen_id
+            if vessels is not None:
+                vessels.save(f"{stem}_vessels.vtp")
+            if nodes is not None:
+                nodes.save(f"{stem}_nodes.vtp")
+            if skeleton is not None:
+                skeleton.save(f"{stem}_skeleton.vtp")
+            if surface is not None:
+                surface.save(f"{stem}_surface.vtp")
+            if grid is not None:
+                stamp(grid, specimen).save(f"{stem}_mask.vti")
 
         matched = report.get("vessels_matched", 0)
         cells = report.get("vessels_cells", 0)
@@ -271,6 +274,9 @@ def main():
                 print(f"    {note}")
         summary[specimen.specimen_id] = report
 
+    if args.verify:
+        print("\n  --verify only; nothing written.")
+        return
     (OUTPUT / "export_summary.json").write_text(json.dumps(summary, indent=2))
     # The guide is version-controlled beside the code; examples/outputs/ is gitignored, so a
     # copy travels with the data for anyone handed the directory on its own.
