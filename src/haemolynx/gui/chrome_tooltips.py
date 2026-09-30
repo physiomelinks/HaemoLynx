@@ -54,8 +54,9 @@ EDIT_GRAPH_TOOLTIP = (
     "to the edit"
 )
 REOPEN_VIEW_TOOLTIP = (
-    "Reopen the HaemoLynx view panel (Z-depth, vessel draw mode, scale bar "
-    "and snapshot) if it has been closed; does nothing while it is already open"
+    "Reopen the HaemoLynx view panel (Z-depth, vessel draw mode and colouring, "
+    "scale bar and snapshot) if it has been closed; does nothing while it is "
+    "already open"
 )
 SAVE_CONFIG_TOOLTIP = (
     "Write the current form values to a YAML config file; relative "
@@ -108,6 +109,11 @@ LAYER_SET_TOOLTIP = (
     "Which network the vessels, nodes and flow-direction layers show: the "
     "baseline, or one perturbation. Swapping keeps the same kinds of layer on, "
     "so flipping back and forth compares like with like"
+)
+COLOUR_BY_TOOLTIP = (
+    "What the vessels on screen are coloured by, drawn as tubes or as lines: "
+    "the same choice as Colour by on the vessels layer's own controls, for "
+    "the network chosen under Showing"
 )
 SCALE_BAR_TOOLTIP = (
     "Show napari's scale bar in the bottom-right of the canvas, in microns when voxel size is known"

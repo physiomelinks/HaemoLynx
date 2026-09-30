@@ -3957,6 +3957,23 @@ class _ColourScale:
             self.refresh(self._column)
 
 
+def _choose_colour_by(viewer, layer, column: str) -> None:
+    """Colour *layer* by *column* as a user's pick does, then let every
+    control showing that choice catch up.
+
+    The one path for both pickers -- "Colour by" on the layer's own controls
+    and on the view panel -- so neither colours differently from the other,
+    or is left naming a column that is no longer the one on screen.
+    """
+    text = _is_text_column(layer, column)
+    cycle = colour_cycle_for(layer.features[column]) if text else ()
+    _colour_layer(layer, column, "categorical" if text else "continuous", cycle)
+    _refresh_layer_controls(viewer, layer)
+    refresh_view_panel = getattr(viewer, "_haemolynx_refresh_colour_by", None)
+    if refresh_view_panel is not None:
+        refresh_view_panel()
+
+
 class _FeatureChooser:
     """The dropdown napari gives Vectors once, and does not give Points.
 
@@ -4006,13 +4023,7 @@ class _FeatureChooser:
         layer = self._layer()
         if layer is None or not column:
             return
-        text = _is_text_column(layer, column)
-        cycle = colour_cycle_for(layer.features[column]) if text else ()
-        _colour_layer(layer, column, "categorical" if text else "continuous", cycle)
-        controls = _layer_controls(self._viewer, layer)
-        chooser = getattr(controls, "_haemolynx_colormap", None) if controls else None
-        if chooser is not None:
-            chooser.refresh()
+        _choose_colour_by(self._viewer, layer, column)
 
 
 def _known_colormap(name: str) -> bool:
@@ -4208,6 +4219,129 @@ def _refresh_layer_controls(viewer, layer) -> None:
             widget.follow_the_layer()
         else:
             widget.refresh()
+
+
+def _shown_vessels_layer(viewer):
+    """The vessels Vectors layer of the network "Showing" names, or None.
+
+    Tubes or lines, this is the layer to colour: the tube Surface takes its
+    colours from it (see :func:`_retint_vessel_tubes`), hidden or not.
+    """
+    from haemolynx.gui.layer_sets import layer_set
+
+    layers = getattr(viewer, "layers", None) if viewer is not None else None
+    if layers is None:
+        return None
+    name = layer_set(_layer_set_shown(viewer))["vessels"]
+    # With the name a clash with a user's layer gives ours (see _add_or_update).
+    for candidate in (name, f"{name} (HaemoLynx)"):
+        if candidate in layers:
+            layer = layers[candidate]
+            if _is_ours(layer) and layer.__class__.__name__ == "Vectors":
+                return layer
+    return None
+
+
+class _VesselColourMenu:
+    """"Colour by" for the vessels on screen, in the floating view panel.
+
+    The same choice as the vessels layer's own "Colour by" (see
+    :class:`_FeatureChooser`), without having to select the layer first. For
+    tubes that was the only way: the tube Surface takes its colours from the
+    vessels Vectors layer, which is hidden while tubes are drawn. It acts on
+    the network "Showing" names, drawn either way.
+
+    A menu on a button rather than a QComboBox, for the reason the Showing
+    menu is one: a combo's popup over the floating dock missed clicks.
+    """
+
+    def __init__(self, viewer, on_resize=None) -> None:
+        from qtpy.QtWidgets import QFormLayout, QLabel, QMenu, QToolButton, QWidget
+
+        from haemolynx.gui.chrome_tooltips import COLOUR_BY_TOOLTIP
+
+        self._viewer = viewer
+        self._on_resize = on_resize
+        self._connected = None
+        #: Recorded for tests: Qt reports children of an unshown window as
+        #: invisible, so callers check this rather than isVisible().
+        self.shown = False
+        self.label = QLabel("Colour by")
+        self.label.setObjectName("haemolynx_colour_by_label")
+        self.button = QToolButton()
+        self.button.setObjectName("haemolynx_colour_by")
+        self.button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.menu = QMenu(self.button)
+        self.menu.setObjectName("haemolynx_colour_by_menu")
+        self.button.setMenu(self.menu)
+        # A later stage adds columns (flow after the solve) without always
+        # recolouring, so the list is read afresh each time it opens.
+        self.menu.aboutToShow.connect(self.refresh)
+        for widget in (self.label, self.button):
+            widget.setToolTip(COLOUR_BY_TOOLTIP)
+        self.row = QWidget()
+        self.row.setObjectName("haemolynx_colour_by_row")
+        form = QFormLayout(self.row)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.addRow(self.label, self.button)
+        self.row.setVisible(False)
+
+    def refresh(self, *_args) -> None:
+        """Offer what the shown network's vessels layer offers on its own
+        controls, tick the one on screen, and hide the row while there is no
+        network to colour."""
+        layer = _shown_vessels_layer(self._viewer)
+        self._follow(layer)
+        columns = _colour_by_columns(layer) if layer is not None else []
+        active = _active_column(layer) if layer is not None else None
+        try:
+            offered = [action.text() for action in self.menu.actions()]
+            if offered != columns:
+                # Only when the list changed: a pick recolours, the recolour
+                # lands here, and clearing would delete the very action whose
+                # `triggered` is still being delivered.
+                self.menu.clear()
+                for column in columns:
+                    action = self.menu.addAction(column)
+                    action.setCheckable(True)
+                    action.triggered.connect(
+                        lambda _checked=False, column=column: self.choose(column)
+                    )
+            for action in self.menu.actions():
+                action.setChecked(action.text() == active)
+            self.button.setText(active if active in columns else "none")
+            was_shown = self.shown
+            self.shown = bool(columns)
+            self.row.setVisible(self.shown)
+        except RuntimeError:
+            # The dock's Qt widgets outlive the panel on teardown.
+            logger.debug("colour-by menu is gone", exc_info=True)
+            return
+        if self.shown != was_shown and self._on_resize is not None:
+            self._on_resize()
+
+    def choose(self, column: str) -> None:
+        """Colour the shown network's vessels by *column*, tubes and all."""
+        layer = _shown_vessels_layer(self._viewer)
+        if layer is None or column not in getattr(layer, "features", {}):
+            self.refresh()
+            return
+        # Which refreshes this menu too, through the viewer's hook.
+        _choose_colour_by(self._viewer, layer, column)
+
+    def _follow(self, layer) -> None:
+        """Hear about a colouring chosen anywhere else -- napari's own controls.
+
+        A bound method, which napari connects once however often it is asked,
+        so going back to a network already followed adds nothing.
+        """
+        if layer is None or layer is self._connected:
+            return
+        events = getattr(layer, "events", None)
+        signal = getattr(events, "edge_color", None) if events else None
+        if signal is not None:
+            signal.connect(self.refresh)
+        self._connected = layer
 
 
 def _layer_features(layer):
@@ -8556,6 +8690,7 @@ def settings_widget(napari_viewer=None):
             layer_set_button.setText(label)
             layer_set_row.setVisible(bool(perturbations) or shown is not None)
             refresh_sweep_controls()
+            colour_by.refresh()
         except RuntimeError:
             # The dock's Qt widgets outlive the panel on teardown.
             logger.debug("layer-set menu is gone", exc_info=True)
@@ -9616,6 +9751,12 @@ def settings_widget(napari_viewer=None):
     layer_set_form.setContentsMargins(0, 0, 0, 0)
     layer_set_form.addRow(layer_set_label, layer_set_button)
     display_form.addRow(layer_set_row)
+    # What the shown network's vessels are coloured by -- flow, log10 flow,
+    # ... -- whether drawn as tubes or lines, without selecting the layer.
+    colour_by = _VesselColourMenu(viewer, on_resize=lambda: fit_view_dock())
+    display_form.addRow(colour_by.row)
+    if viewer is not None:
+        viewer._haemolynx_refresh_colour_by = colour_by.refresh
 
     # A sweep perturbation's grid sliders, one set per sweep, of which only
     # the one chosen under "Showing" is shown -- a slider for a network not on
@@ -9778,6 +9919,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_layer_set_button = layer_set_button
     panel._haemolynx_layer_set_menu = layer_set_menu
     panel._haemolynx_choose_layer_set = choose_layer_set
+    panel._haemolynx_colour_by = colour_by
     panel._haemolynx_view_panel = view_panel
     panel._haemolynx_view_dock = view_dock
     panel._haemolynx_view_button = view_button

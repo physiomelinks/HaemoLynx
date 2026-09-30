@@ -92,6 +92,7 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         chrome.Z_DEPTH_TOOLTIP,
         chrome.VESSEL_DRAW_TOOLTIP,
         chrome.LAYER_SET_TOOLTIP,
+        chrome.COLOUR_BY_TOOLTIP,
         chrome.SCALE_BAR_TOOLTIP,
         chrome.SNAPSHOT_TOOLTIP,
         chrome.TUBE_QUALITY_TOOLTIP,
