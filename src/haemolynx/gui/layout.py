@@ -190,9 +190,17 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
             "Small-vessel masks: arteriole and venule boundaries",
             subtree_of="use_small_vessel_masks_for_boundary_assignment",
         ),
+        # Anything else about choosing boundaries that no role page places:
+        # its own button above the role tabs, rather than falling in with
+        # the node IDs below them.
+        BoxSpec("boundary_other", None, rest=True),
         # The node-ID rows no role page owns; the page draws this box last,
         # under the role tabs.
-        BoxSpec("boundary_nodes", None, rest=True),
+        BoxSpec(
+            "boundary_nodes",
+            None,
+            names=("large_arteriole_boundary_nodes", "large_venule_boundary_nodes"),
+        ),
     ),
     "assign_diameters": (BoxSpec("diameters", None, rest=True),),
     "build_haemodynamic_model": (
@@ -259,6 +267,7 @@ ADVANCED_TITLES: Mapping[str, str] = {
     "assign_large_vessel_branch_orders": "Advanced large-vessel network",
     "use_small_vessel_masks_for_boundary_assignment": "Advanced small-vessel assignment",
     "box:boundary_nodes": "Large-vessel boundary node IDs filled in by the run",
+    "box:boundary_other": "Advanced boundary settings",
     "all_diams_const": "Advanced diameter table",
     "use_fwhm_edge_diameters": "Advanced FWHM settings",
     "do_fwhm_measurement": "Advanced FWHM checks",

@@ -283,12 +283,16 @@ def test_the_export_tab_leads_with_where_the_outputs_go():
 
 def test_boundaries_box_each_mask_kind_by_its_own_toggle():
     _tab, layout = LAYOUTS["assign_boundaries"]
-    assert [b.key for b in layout.boxes] == [
+    keys = [b.key for b in layout.boxes]
+    # "boundary_other" appears only once some setting needs it.
+    assert [k for k in keys if k != "boundary_other"] == [
         "vessel_masks",
         "large_vessel_masks",
         "small_vessel_masks",
         "boundary_nodes",
     ]
+    if "boundary_other" in keys:
+        assert keys.index("boundary_other") < keys.index("boundary_nodes")
     large = layout.box("large_vessel_masks")
     small = layout.box("small_vessel_masks")
     for name in large.names:
@@ -301,6 +305,31 @@ def test_boundaries_box_each_mask_kind_by_its_own_toggle():
         "large_arteriole_boundary_nodes",
         "large_venule_boundary_nodes",
     }
+
+
+def test_an_unplaced_boundaries_setting_gets_its_own_button_not_the_node_ids():
+    """A new Boundaries setting no role page places must not be filed under
+    the node IDs a run fills in: it gets its own button, above the role tabs."""
+    schema = Schema([
+        Setting("automated_vessel_assignment", "bool", False, "Assign from masks for a test", "Vessel masks"),
+        Setting(
+            "large_arteriole_boundary_nodes", "any", [], "Node IDs for a test", "Boundary assignment",
+            advanced=True,
+        ),
+        Setting(
+            "large_venule_boundary_nodes", "any", [], "Node IDs for a test", "Boundary assignment",
+            advanced=True,
+        ),
+        Setting(
+            "open_end_distance", "float", 10.0, "Distance to a face for a test", "Boundary assignment",
+            advanced=True,
+        ),
+    ])
+    layout = layout_for("assign_boundaries", list(schema.names), schema)
+    assert [b.key for b in layout.boxes] == ["vessel_masks", "boundary_other", "boundary_nodes"]
+    other = layout.disclosure_of("open_end_distance")
+    assert other.title == "Advanced boundary settings"
+    assert "open_end_distance" not in layout.box("boundary_nodes").names
 
 
 def test_the_input_tab_puts_the_voxel_size_policy_above_its_override():
@@ -319,9 +348,12 @@ def test_every_hand_made_box_names_real_settings():
 
 
 def test_every_title_and_group_key_names_a_button_the_panel_draws():
-    """A stale key would silently stop titling or grouping anything."""
+    """A stale key would silently stop titling or grouping anything. A
+    hand-made box's own button may be waiting for its first setting, so its
+    title counts as long as the box does."""
     keys = {d.key.split(":", 1)[1] for _tab, layout in LAYOUTS.values() for d in layout.disclosures}
-    assert set(ADVANCED_TITLES) <= keys
+    hand_made = {f"box:{spec.key}" for specs in TAB_BOXES.values() for spec in specs}
+    assert set(ADVANCED_TITLES) <= keys | hand_made
     assert set(ADVANCED_GROUPS) <= keys
 
 
