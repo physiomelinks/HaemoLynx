@@ -92,14 +92,24 @@ def _component_descriptors(
     mask: np.ndarray,
     edt_inside: np.ndarray | None = None,
     *,
+    sampling_zyx: tuple[float, float, float],
     labeled: np.ndarray | None = None,
     count: int | None = None,
 ) -> dict[int, dict[str, Any]]:
+    """Describe each component of *mask* for the cylinder-bridge gates.
+
+    The principal axis, linearity and choice of endpoints are measured in
+    microns: in voxel indices every direction on an anisotropic stack tilts
+    towards the finely sampled axes. ``principal_axis_zyx`` is a unit vector
+    in microns; ``coords_zyx``, ``centroid_zyx`` and ``endpoints_zyx`` stay
+    voxel indices.
+    """
     if labeled is None or count is None:
         labeled, count = _connected_components(mask)
     descriptors: dict[int, dict[str, Any]] = {}
     if int(count) <= 0:
         return descriptors
+    spacing = np.asarray(sampling_zyx, dtype=float).reshape(1, 3)
     component_slices = find_objects(labeled, max_label=int(count))
     for component_id in range(1, int(count) + 1):
         component_slice = component_slices[component_id - 1] if component_slices else None
@@ -121,8 +131,9 @@ def _component_descriptors(
         if coords.size == 0:
             continue
         centroid = np.mean(coords.astype(float), axis=0)
+        points_um = coords.astype(float) * spacing
         if coords.shape[0] >= 3:
-            cov = np.cov(coords.astype(float).T)
+            cov = np.cov(points_um.T)
             eigvals, eigvecs = np.linalg.eigh(cov)
             order = np.argsort(eigvals)[::-1]
             eigvals = eigvals[order]
@@ -132,7 +143,7 @@ def _component_descriptors(
         else:
             principal_axis = np.asarray([1.0, 0.0, 0.0], dtype=float)
             linearity = 0.0
-        projections = coords.astype(float) @ principal_axis.reshape(3, 1)
+        projections = points_um @ principal_axis.reshape(3, 1)
         min_idx = int(np.argmin(projections[:, 0]))
         max_idx = int(np.argmax(projections[:, 0]))
         end_a = coords[min_idx].astype(int)
@@ -309,7 +320,8 @@ def _attempt_cylinder_bridge(
         return False, np.zeros(shape, dtype=bool), "bridge_too_long"
 
     if enforce_cylinder_only:
-        v = (p1_best - p0_best).astype(float)
+        # In microns, like the principal axes it is compared with.
+        v = (p1_best - p0_best).astype(float) * spacing[0]
         v_norm = float(np.linalg.norm(v))
         if v_norm <= 1e-9:
             return False, np.zeros(shape, dtype=bool), "degenerate_endpoint_vector"
@@ -406,7 +418,9 @@ def _enforce_type_locked_continuity_for_small_mask(
         sampling_zyx=sampling_zyx,
         use_gpu_acceleration=bool(use_gpu_acceleration),
     )
-    small_desc = _component_descriptors(small_binary, edt_inside_small)
+    small_desc = _component_descriptors(
+        small_binary, edt_inside_small, sampling_zyx=sampling_zyx
+    )
     if not small_desc:
         return small_binary.copy(), {
             "attempted_bridges": 0,
@@ -421,7 +435,9 @@ def _enforce_type_locked_continuity_for_small_mask(
             sampling_zyx=sampling_zyx,
             use_gpu_acceleration=bool(use_gpu_acceleration),
         )
-        large_desc = _component_descriptors(large_binary, edt_inside_large)
+        large_desc = _component_descriptors(
+            large_binary, edt_inside_large, sampling_zyx=sampling_zyx
+        )
 
     updated_small = small_binary.copy()
     source_candidates: dict[int, list[dict[str, Any]]] = {}
