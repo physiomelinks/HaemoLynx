@@ -78,3 +78,45 @@ def test_the_frozen_run_command_is_unchanged(monkeypatch, tmp_path):
     assert "--hysteresis-high" not in commands[0]
     assert commands[0][commands[0].index("--hysteresis-low") + 1] == str(
         cb_settings.FROZEN_THRESHOLD)
+
+
+def test_the_network_calibre_check_is_recorded_but_never_frozen(monkeypatch, tmp_path):
+    """--stage threshold freezes on the plain cut; the d_net check sits beside it (open item 41)."""
+    import json
+    from dataclasses import replace
+
+    import numpy as np
+
+    from ImageLynx.statistics.threshold_selection import ThresholdSample
+
+    def sample(threshold, d_med, d_net):
+        return ThresholdSample(
+            threshold=threshold, foreground_fraction=0.3, median_diameter_um=d_med,
+            p90_diameter_um=2 * d_med, median_voxel_diameter_um=d_med,
+            mask_components=10, mask_components_above_floor=10,
+            largest_mask_component_share=0.99, skeleton_length_mm=1.0, endpoints=4,
+            endpoint_density_per_mm=4.0, skeleton_components=1,
+            median_network_diameter_um=d_net)
+
+    # Plain cut picks 0.95; d_net less one voxel picks 0.97 (d_net 6.46 -> 4.59 um).
+    sweep = [sample(0.93, 5.27, 7.46), sample(0.95, 5.27, 7.46), sample(0.97, 3.73, 6.46)]
+
+    class _Placement:
+        bounds = (slice(None),) * 3
+
+    monkeypatch.setattr(cb_h1_batch, "_predicted", lambda: cb_h1_batch.SPECIMENS)
+    monkeypatch.setattr(cb_h1_batch, "place_roi", lambda specimen, roi: _Placement())
+    monkeypatch.setattr(cb_h1_batch, "read_ilastik_probabilities",
+                        lambda *a, **k: np.zeros((1, 1, 1)))
+    monkeypatch.setattr(cb_h1_batch, "sweep_thresholds", lambda *a, **k: sweep)
+    monkeypatch.setattr(cb_h1_batch, "OUTPUT_DIR", tmp_path)
+
+    frozen = cb_h1_batch.stage_threshold(cb_settings.ROI_VOXELS, [0.93, 0.95, 0.97])
+
+    record = json.loads((tmp_path / "threshold_selection.json").read_text())
+    assert frozen == record["frozen"] == 0.95
+    assert set(record["per_specimen"].values()) == {0.95}
+    check = record["robustness_network_calibre_less_voxel"]
+    assert check["frozen"] == 0.97
+    assert set(check["per_specimen"].values()) == {0.97}
+

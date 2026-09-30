@@ -53,7 +53,7 @@ from ImageLynx.specimens import (                                       # noqa: 
 from ImageLynx.statistics.cohort_split import assess_cohort_split       # noqa: E402
 from ImageLynx import cb_settings                                       # noqa: E402
 from ImageLynx.statistics.threshold_selection import (                  # noqa: E402
-    select_threshold, sweep_thresholds,
+    select_on_network_calibre, select_threshold, sweep_thresholds,
 )
 
 # Analysis settings come from ImageLynx.cb_settings, which is their single owner.
@@ -88,7 +88,7 @@ def stage_placement(roi):
 
 def stage_threshold(roi, grid):
     """Choose one threshold for all six, and check the per-specimen choices for a cohort split."""
-    chosen, foreground, calibre = {}, {}, {}
+    chosen, foreground, calibre, check = {}, {}, {}, {}
     for specimen in _predicted():
         placement = place_roi(specimen, roi)
         volume = read_ilastik_probabilities(
@@ -101,6 +101,11 @@ def stage_threshold(roi, grid):
         print(selection.format_table())
         if selection.threshold is not None:
             chosen[specimen.specimen_id] = selection.threshold
+        # Reported, never frozen (open item 41): the same rule on d_net less one voxel.
+        network = select_on_network_calibre(samples, PROCESSING_VOXEL_UM)
+        print(f"check, network calibre less one voxel: {network.reason}")
+        if network.threshold is not None:
+            check[specimen.specimen_id] = network.threshold
         foreground[specimen.specimen_id] = {s.threshold: s.foreground_fraction
                                             for s in samples}
         calibre[specimen.specimen_id] = {
@@ -120,9 +125,10 @@ def stage_threshold(roi, grid):
         print(f"  {group}: {', '.join(f'{v:.2f}' for v in sorted(values))}")
     print(f"\n  {split.verdict}")
 
-    frozen = float(np.median(list(chosen.values())))
-    frozen = min(DEFAULT_GRID, key=lambda t: abs(t - frozen))
+    frozen = _snapped_median(chosen)
     print(f"\nFrozen threshold for all six: {frozen:.2f} (median of the per-specimen choices)")
+
+    robustness = _network_calibre_check(check)
 
     at_frozen = {sid: fg[frozen] for sid, fg in foreground.items() if frozen in fg}
     if len(at_frozen) >= 4:
@@ -138,8 +144,33 @@ def stage_threshold(roi, grid):
          "threshold_split": split.verdict,
          "foreground_at_frozen": at_frozen,
          "seed": cb_settings.HYSTERESIS_HIGH,
-         "calibre_um": calibre}, indent=2))
+         "calibre_um": calibre,
+         "robustness_network_calibre_less_voxel": robustness}, indent=2))
     return frozen
+
+
+def _snapped_median(chosen):
+    """Median of the per-specimen choices, snapped to the nearest grid value."""
+    median = float(np.median(list(chosen.values())))
+    return min(DEFAULT_GRID, key=lambda t: abs(t - median))
+
+
+def _network_calibre_check(check):
+    """Report what the selection gives on the network's calibre, less the EDT bias.
+
+    Printed and recorded only; the frozen value comes from the plain-cut choices (open item 41).
+    """
+    print("\nCheck: the same rule on the network-mask calibre less one voxel "
+          "(EDT half-step bias):")
+    if not check:
+        print("  no specimen selects on that calibre")
+        return {"per_specimen": {}, "frozen": None, "threshold_split": None}
+    split = assess_cohort_split(check, quantity="threshold selected on the network calibre")
+    for group, values in split.values_by_group.items():
+        print(f"  {group}: {', '.join(f'{v:.2f}' for v in sorted(values))}")
+    frozen = _snapped_median(check)
+    print(f"  median {frozen:.2f}; {split.verdict}")
+    return {"per_specimen": check, "frozen": frozen, "threshold_split": split.verdict}
 
 
 def _run_pipeline(specimen, roi, out, low, high=None):

@@ -38,6 +38,7 @@ from ImageLynx.statistics.threshold_selection import (
     CAPILLARY_DIAMETER_RANGE_UM,
     ThresholdSample,
     evaluate_threshold,
+    select_on_network_calibre,
     select_threshold,
     sweep_thresholds,
 )
@@ -388,3 +389,52 @@ def test_the_network_mask_uses_the_given_seed():
 def test_a_seed_at_or_below_the_threshold_raises():
     with pytest.raises(ValueError, match="seed"):
         evaluate_threshold(_tube(), 0.95, VOXEL, seed=0.95)
+
+
+def _with_network(sample, d_net):
+    from dataclasses import replace
+    return replace(sample, median_network_diameter_um=d_net)
+
+
+# WKY-B-like: the plain cut enters the window at 0.93, the network mask never does uncorrected.
+_NETWORK_SWEEP = [
+    _with_network(_sample(0.90, 7.46, 4.0), 8.35),
+    _with_network(_sample(0.93, 5.27, 4.0), 7.46),
+    _with_network(_sample(0.95, 5.27, 4.0), 7.46),
+    _with_network(_sample(0.97, 3.73, 4.0), 7.40),
+]
+
+
+def test_the_default_calibre_is_the_plain_cut_median():
+    """Passing the default reader explicitly changes nothing: the plain cut still selects."""
+    default = select_threshold(_NETWORK_SWEEP)
+    explicit = select_threshold(_NETWORK_SWEEP, calibre=lambda s: s.median_diameter_um)
+    assert default.threshold == explicit.threshold == 0.95
+    assert default.calibre_window == explicit.calibre_window == (0.93, 0.95)
+
+
+def test_a_different_calibre_moves_the_window():
+    uncorrected = select_threshold(
+        _NETWORK_SWEEP, calibre=lambda s: s.median_network_diameter_um)
+    assert uncorrected.threshold is None
+    assert "No threshold reaches capillary calibre" in uncorrected.reason
+    assert "7.40-8.35" in uncorrected.reason
+
+
+def test_the_network_check_takes_one_mean_voxel_off_d_net():
+    """d_net less one voxel (the EDT half-step bias) re-enters the window (open item 41)."""
+    check = select_on_network_calibre(_NETWORK_SWEEP, VOXEL)
+    pitch = float(np.mean(VOXEL))
+    expected = tuple(s.threshold for s in _NETWORK_SWEEP
+                     if 4.0 <= s.median_network_diameter_um - pitch <= 7.0)
+    assert check.calibre_window == expected == (0.90, 0.93, 0.95, 0.97)
+    assert check.threshold == 0.97
+    # A scalar voxel works the same way.
+    assert select_on_network_calibre(_NETWORK_SWEEP, pitch).threshold == 0.97
+
+
+def test_the_network_check_leaves_the_selection_alone():
+    """The check is a second call, not a change to the first."""
+    select_on_network_calibre(_NETWORK_SWEEP, VOXEL)
+    assert select_threshold(_NETWORK_SWEEP).threshold == 0.95
+

@@ -40,6 +40,9 @@ fault is fixed here, because every candidate estimator moves calibre by about as
 window is wide: supersampling the field 2x or 3x before the cut puts WKY-A at 0.95 at 5.60
 or 5.28 um, the network's own estimator at 7.46 (outside the window), and the EDT's
 half-step bias shrinks with every refinement. Choosing between them chooses the threshold.
+So the plain cut keeps selecting, and `select_on_network_calibre` re-runs the selection on
+the network's mask with that bias taken off (d_net less one voxel) as a reported check: it
+shows whether the frozen value survives the estimator the network actually uses.
 
 Note also that only the lower bound can ever select. Calibre falls monotonically and
 `select_threshold` takes the highest threshold in the window, so the upper bound prunes only
@@ -65,7 +68,7 @@ because it is the only thing standing between the calibre rule and a threshold t
 capillary calibre by shredding the network.
 """
 from dataclasses import dataclass
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Callable, Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -297,6 +300,7 @@ def select_threshold(
     *,
     diameter_range: Tuple[float, float] = CAPILLARY_DIAMETER_RANGE_UM,
     fragmentation_tolerance: float = FRAGMENTATION_TOLERANCE,
+    calibre: Callable[[ThresholdSample], float] = lambda s: s.median_diameter_um,
 ) -> ThresholdSelection:
     """Highest intact threshold whose calibre is capillary-scale, or a refusal.
 
@@ -304,6 +308,9 @@ def select_threshold(
     threshold is taken, because calibre falls monotonically with threshold and the risk being
     traded against is over-inclusion: the lower the threshold the fatter the vessel, and
     resistance carries that as r^-4.
+
+    ``calibre`` reads the value the window is tested on. The default, the plain-cut centreline
+    median, is the one that selects; `select_on_network_calibre` passes another as a check.
     """
     if not samples:
         return ThresholdSelection(None, "No thresholds were evaluated.", (), None, 0.0, ())
@@ -319,9 +326,9 @@ def select_threshold(
         breaking = [s.threshold for s in ordered if s.endpoint_density_per_mm > limit]
         onset = min(breaking) if breaking else None
 
-    window = tuple(s.threshold for s in ordered if lo <= s.median_diameter_um <= hi)
+    window = tuple(s.threshold for s in ordered if lo <= calibre(s) <= hi)
     if not window:
-        diameters = [s.median_diameter_um for s in ordered]
+        diameters = [calibre(s) for s in ordered]
         return ThresholdSelection(
             None,
             f"No threshold reaches capillary calibre: median diameter spans "
@@ -349,3 +356,20 @@ def select_threshold(
         f"{'none observed' if onset is None else f'{onset:.2f}'}).",
         window, onset, baseline, ordered,
     )
+
+
+def select_on_network_calibre(
+    samples: Sequence[ThresholdSample], voxel_size_zyx
+) -> ThresholdSelection:
+    """The selection re-run on the network's mask, less the EDT's half-step bias (open item 41).
+
+    The EDT measures to the nearest *background voxel centre*, so it overstates a radius by
+    about half a grid step and a diameter by about one voxel. d_net is read on the mask the
+    network is built from, so d_net less one voxel (the mean pitch; the axes differ by 0.1%)
+    is the network's calibre with that bias taken off. This is a check, printed and recorded
+    beside the choice and never frozen: it asks whether the threshold the plain cut picks
+    survives the network's own estimator.
+    """
+    pitch = float(np.mean(np.atleast_1d(voxel_size_zyx)))
+    return select_threshold(
+        samples, calibre=lambda s: s.median_network_diameter_um - pitch)
