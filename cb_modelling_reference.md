@@ -136,8 +136,8 @@ and the only place to change it. Everywhere else quotes it with a pointer back.
 | Oxygen diffusion length | 20 µm at PO₂ 10, 35 at 30, 45 at 50 | §13.6 | §6.8 |
 | Total inlet flow | 1.33e6–4.00e6 µm³/s (face rule) | §13.5 | §7.6 |
 | Flow-weighted velocity | 977–1,812 µm/s against a physiological 200–1,000 | §13.5 | §8.1, §11, §13.10 |
-| Calibre error floor | ±44% on an absolute flow quantity | §13.3 | §7.1, §7.6, §11 |
-| Within-specimen floor | ±5.5% | §13.3 | §7.3 |
+| Calibre error floor | ±47% on an absolute flow quantity | §13.3 | §7.1, §7.6, §11 |
+| Within-specimen floor | ±5.9% | §13.3 | §7.3 |
 | Pre-threshold filter cost | median-3 destroys 80% of the vessel | §2.3 | §11.1 |
 
 **In code, these live in `src/ImageLynx/cb_settings.py`**, which is the single owner for every
@@ -454,7 +454,7 @@ median mask diameter falls in the capillary window, provided it lies below the f
 |---|---|---|---|---|---|
 | 1 | Place the ROI and crop the probability volume | 160³ | The threshold has to be chosen on the same sub-volume it will be applied to | **On** — a geometrically-centred box chose differently for 3 of 6 before the 2026-09-28 fixes; with them it chooses the same 0.95 in all six | `cb_h1_batch.py:84` |
 | 2 | Cut a mask at each threshold in the grid | `p ≥ t`, a **plain cut** | A cheap monotone family of masks to rank against each other; the sweep is a ranking, not an absolute measurement | **On** — inclusive since open item 17, as the pipeline's hysteresis is; the strict `p > t` before it dropped the level on the threshold | `threshold_selection.py` (`evaluate_threshold`) |
-| 3 | EDT → median and p90 diameter **on the skeleton voxels** | `sampling` = voxel size | Calibre is the criterion that selects, and EDT is bounded by the mask so it cannot read a neighbouring vessel. Read on the centreline, as §2.6 does, since open item 15; the median over every foreground voxel is printed as `d_vox` | **On** — the median decides; the p90 and `d_vox` are printed and never read | `threshold_selection.py` (`evaluate_threshold`) |
+| 3 | EDT → median and p90 diameter **on the skeleton voxels** | `sampling` = voxel size | Calibre is the criterion that selects, and EDT is bounded by the mask so it cannot read a neighbouring vessel. Read on the centreline, as §2.6 does, since open item 15; the median over every foreground voxel is printed as `d_vox`, and the same centreline median on the network's own mask as `d_net` (open item 41) | **On** — the median decides; the p90, `d_vox` and `d_net` are printed and never read | `threshold_selection.py` (`evaluate_threshold`) |
 | 4 | Label mask components, largest share, count above floor | 50 voxels | Kept for continuity with `prob_to_mask.py`; component statistics move, but with no knee to read a threshold off | **On** — the total and the share are printed; the above-floor count is neither printed nor read | `threshold_selection.py:200` |
 | 5 | Skeletonise the cut mask | raw, **no cleanup** | Endpoint density needs a centreline; there is no other way to count where the network has broken | **On** | `threshold_selection.py:210` |
 | 6 | Skeleton length from voxel count | × in-plane pitch | An endpoint count alone scales with network size, so it needs a per-length denominator to compare across thresholds | **On** | `threshold_selection.py:215` |
@@ -692,6 +692,49 @@ moved the freeze from 0.90 to 0.95. At the chosen 0.95 the selector reads 5.27 �
 same; what is left of the gap is the mask (plain cut here, hysteresis there — noted above) and a
 per-voxel against a per-edge median.
 
+**The window is tested on a mask the network never uses, and that is kept, with a check
+(open item 41, closed).** Since 2026-09-30 the sweep also prints `d_net`: the same centreline median, on the mask
+the pipeline builds (`preprocessing.build_vessel_mask`: caged z pad, hysteresis from the frozen
+0.999 seed, hole fill, closing, largest component; a drift test holds it to the pipeline's).
+At 0.95 it reads **7.46 µm in all three WKY and 6.46 µm in all three SHR**, against 5.27 µm in
+all six on the plain cut. On the network's mask WKY sits one level *above* the 7.0 µm ceiling,
+and the calibre window would refuse or move 0.95 in every WKY specimen.
+
+Two replacements were measured, and neither was adopted, because each would choose the
+threshold by itself. Both use the network's mask and skeleton, and read the EDT of the same
+recipe cut from the field trilinearly supersampled 2× or 3× (a `2n−1`-point grid, so every
+native voxel is a supersampled grid point). Median centreline diameter, µm:
+
+| Specimen | Threshold | Plain cut (selects) | Network mask | 2× | 3× |
+|---|---|---|---|---|---|
+| WKY-A | 0.93 | 5.28 | 8.34 | 6.19 | 6.22 |
+| WKY-A | 0.95 | 5.27 | 7.46 | 5.60 | 5.28 |
+| WKY-A | 0.97 | 3.73 | 6.46 | 5.60 | 4.65 |
+| SHR-C | 0.93 | 5.27 | 7.46 | 5.60 | 5.13 |
+| SHR-C | 0.95 | 5.27 | 6.46 | 5.28 | 4.65 |
+| SHR-C | 0.97 | 3.73 | 5.27 | 4.17 | 3.73 |
+
+Supersampling does not remove the quantisation, it only makes the steps finer: 5.60 µm is the
+half-pitch level $2 \times \tfrac{h}{2}\sqrt{9}$, and WKY-A ties at 0.95 and 0.97 exactly as the
+plain cut tied at 0.93 and 0.95. A grouped (interpolated) median does not help, because the level
+holding the 50% point carries too much of the mass. And the value does not converge: it falls by
+about 1.9 µm from native to 2× and by 0.3 µm from 2× to 3×. The EDT measures to the nearest
+*background voxel centre*, so it overstates the radius by about half a grid step, and the
+refinement only shrinks that bias. The same bias sits in §2.6's network calibre, about +1.9 µm in
+diameter on the native grid. So the estimator moves calibre by about as much as the 4–7 µm window
+is wide, and picking one picks the threshold.
+
+So the plain cut keeps selecting, and the sweep re-runs the same rule on the network's own
+estimator with the bias taken off, `d_net` less one voxel (`select_on_network_calibre`). It is
+printed beside each choice and recorded in `threshold_selection.json` under
+`robustness_network_calibre_less_voxel`, never frozen. Measured 2026-09-30
+(`rerun_2026-09-29_logs/F_05_threshold.log`): WKY-A 0.95, **WKY-B 0.97**, WKY-C 0.95, SHR-A/B/C
+0.95. The median is **0.95**, the same frozen value, and the choices do not separate by group.
+WKY-B moves because its `d_net` at 0.97 is 6.46 µm (4.59 corrected) and it is still intact there
+(8.49 ep/mm against a 8.75 onset). The frozen threshold therefore survives the network's own
+calibre once its known bias is removed. The same bias in §2.6's per-edge diameters, which do
+feed resistance, is open item 42.
+
 **Why the highest, not the middle.** Calibre falls monotonically with threshold, and the risk being
 traded is over-inclusion: the lower the threshold, the fatter the vessel, and resistance carries
 that as $r^{-4}$.
@@ -731,6 +774,18 @@ capped at `HYSTERESIS_SEED_CAP` (0.999) (`_apply_hysteresis_overrides`), so a fr
 the saturated set `p == 1.0`. `PreprocessingConfig` reads the same pair from
 `cb_settings.HYSTERESIS_LOW` / `HYSTERESIS_HIGH`, so a direct run without the flag builds the batch
 mask. A seed at or below the flood threshold raises. (The pair was 0.90 / 0.95 until 2026-09-28.)
+
+**The sensitivity runs hold the seed.** `cb_h1_batch.py --stage sensitivity` reruns every specimen
+at the frozen value's two grid neighbours (0.93 and 0.97) and passes `--hysteresis-high` set to
+`HYSTERESIS_HIGH` beside each `--hysteresis-low`, so only the flood threshold moves. Before
+2026-09-30 the neighbours were run by hand with the low bound alone, so 0.93 seeded at 0.98 and
+differed from the frozen run in two parameters (re-run notes item 6, open item 41). The sweep holds
+the same 0.999 seed for `d_net` at every threshold. Re-run 2026-09-30, 12/12 exit 0: the 0.97
+outputs are byte-identical (their seed was already 0.999), and 0.93 moves little. SHR/WKY
+group-mean ratios at 0.93 / 0.95 / 0.97 are now β₁ density 1.050 / 1.087 / 1.117, junction
+density 1.051 / 1.064 / 1.098, length density 1.013 / 1.022 / 1.030 (0.93 was 1.054, 1.055,
+1.015 with the 0.98 seed). The median calibre at 0.93 rose in SHR-B and SHR-C (6.81 → 6.96 µm),
+so the threshold shift of §13.2 is now 0.740 µm.
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -2468,7 +2523,7 @@ preferentially by the vessels that bypass them — the shunting the method is tr
 **Flow share alone cannot answer it**, because flow share tracks how many edges penetrate, which is
 itself downstream of the parenchymal volume difference H1 §1.3 reports. The ratio removes that.
 
-**This is a within-specimen ratio**, so it sits under the ±5.5% floor rather than the ±44% one
+**This is a within-specimen ratio**, so it sits under the ±5.9% floor rather than the ±47% one
 (§13.3).
 
 > **At a glance** — 50% length-in-mask classification, flow share over edge share ·
@@ -2572,7 +2627,7 @@ arrive, and a finite stand-in would propagate as a merely slow path.
 | 5 | Dijkstra from all inlets at cost 0 | — | Every inlet is an equally valid origin, so the arrival time is the earliest over all of them | **On** | `transit.py:86` |
 | 6 | Unreachable nodes carry `inf`, never absent | — | A missing key could be read as zero, which is the opposite of what an unreachable node means | **On** | `transit.py:84` |
 | 7 | Score an edge by the **later** of its two ends | — | A penetrating capillary should be scored by how long blood takes to get through it, not to reach its nearer end | **On** | `cb_h2_glomus_perfusion.py:110` |
-| 8 | Report the penetrating / bypassing median ratio | — | The magnitude is in arbitrary units (§3.7) and sits under the ±44% calibre floor, so only a ratio computed identically means anything | **On** | `cb_h2_glomus_perfusion.py:166` |
+| 8 | Report the penetrating / bypassing median ratio | — | The magnitude is in arbitrary units (§3.7) and sits under the ±47% calibre floor, so only a ratio computed identically means anything | **On** | `cb_h2_glomus_perfusion.py:166` |
 
 **Step 4 follows flow, not adjacency.** An edge carrying blood *away* from a node cannot deliver
 blood *to* it, and ignoring the direction would report a transit time along a route no blood takes.
@@ -2588,7 +2643,7 @@ the same answer where the directions are acyclic and terminates where they are n
 flow-directed graph.
 
 > **Reported as a ratio, never an absolute.** Two independent reasons, and they compound. An
-> absolute flow quantity sits under the ±44% floor from calibre alone (§13.3). And the pressure,
+> absolute flow quantity sits under the ±47% floor from calibre alone (§13.3). And the pressure,
 > viscosity and length units are not reconciled to one system (§3.7), so the magnitude is in
 > arbitrary units. Both have the same answer: compare transit time to one set of terminals against
 > another, computed identically, and the shared error divides out.
@@ -3084,7 +3139,7 @@ the model would push it.
 | # | Assumption | Enters at | Expected direction of effect |
 |---|---|---|---|
 | 28 | The two channels are co-registered by construction | §7.2 | Two channels of one acquisition on an identical grid, with no registration step. This is what makes a join between them sound; it would not hold across separate acquisitions |
-| 29 | Absolute flow quantities are reported only as within-specimen ratios | §7.6 | Not a modelling assumption but a reporting rule forced by two of them — the ±44% calibre floor and the unreconciled unit magnitude. See §13 |
+| 29 | Absolute flow quantities are reported only as within-specimen ratios | §7.6 | Not a modelling assumption but a reporting rule forced by two of them — the ±47% calibre floor and the unreconciled unit magnitude. See §13 |
 | 30 | Boundary terminals are selected on axis 1 only | §8 | Chosen as the only axis with terminals on both faces in all six centred-box graphs; on the 2026-09-28 graphs all three axes qualify, so the choice now rests on its being pinned (§2.8, needs review). A specimen whose true inflow is off-axis is served by the wrong terminals |
 
 ### 11.6 Four rows that changed against the earlier understanding
@@ -3244,14 +3299,17 @@ The segmentation threshold is the dominant correlated term: every edge in a spec
 from one mask at one threshold, so moving it moves every diameter together.
 
 Measured median calibre falls monotonically with threshold in **6 of 6 specimens**. Over the clean
-0.93–0.95 interval below the frozen value the mean shift is **0.690 µm, about 0.37 voxel** — a
-per-edge $\delta d/d$ of 10.3% and an analytic `δR/R` of 41.2% (`cb_h2_threshold_calibre.py`). The
+0.93–0.95 interval below the frozen value the mean shift is **0.740 µm, about 0.40 voxel** — a
+per-edge $\delta d/d$ of 11.0% and an analytic `δR/R` of 44.2% (`cb_h2_threshold_calibre.py`). The
 0.95–0.97 interval moves 1.130 µm, but 0.97 is the fragmentation onset in four of six, which
-contaminates it. (Before the re-run: 0.922 µm over 0.85–0.90, δd/d 11.7%, δR/R 46.7%.)
+contaminates it. (0.690 µm, δd/d 10.3%, δR/R 41.2% until 2026-09-30, while the 0.93 run seeded at
+0.98 rather than the frozen 0.999; open item 41. Before the 2026-09-28 re-run: 0.922 µm over
+0.85–0.90, δd/d 11.7%, δR/R 46.7%.)
 
 Measured by re-solving the networks at that perturbation rather than scaling, since $d^{-4}$ is not
 linear (`cb_h2_error_propagation.py`, 2026-09-30, package C of the 2026-09-29 re-run notes). The solve
-now reads the batch networks (MultiGraph and `per_edge_morphometry.csv`) and places pressure with
+now reads the batch networks (MultiGraph and `per_edge_morphometry.csv`; re-run at 0.740 µm on
+2026-09-30, `rerun_2026-09-29_logs/F_07_error_propagation_0p740.log`) and places pressure with
 `select_boundary_terminal_nodes_by_face` on `cb_settings.BOUNDARY_AXIS` at one voxel, the pipeline's
 own call. It is still plain Poiseuille with uniform viscosity, not the Pries flow the H2 drivers use,
 so it isolates calibre propagation rather than reproducing the H2 flow field:
@@ -3259,26 +3317,26 @@ so it isolates calibre propagation rather than reproducing the H2 flow field:
 | Perturbation | Independent | Correlated | Within-specimen ratio |
 |---|---|---|---|
 | One voxel, 1.866 µm (conservative bound) | 8.8% | 126.9% | 15.5% |
-| **Measured threshold shift, 0.690 µm** | 3.9% | **43.7%** | **5.5%** |
+| **Measured threshold shift, 0.740 µm** | 4.2% | **47.0%** | **5.9%** |
 
-(Before package C the script used its own 25% band on graph axis 0, 148–248 inlets per specimen
-instead of the face rule's 8–23: 3.9 / 125.4 / 13.3% at one voxel and 1.6 / 43.4 / 4.7% at
-0.690 µm. Before the 2026-09-28 re-run: 4.1 / 95.3 / 13.2% at one voxel and 2.2 / 45.3 / 6.3% at
-0.922 µm.) The correlated term barely moves with the boundary rule, and the measured 43.7% still
-sits close to the 41.2% that $4\,\delta d/d$ predicts, so propagation is near-linear at this scale
+(At the old 0.690 µm shift: 3.9 / 43.7 / 5.5%. Before package C the script used its own 25% band
+on graph axis 0, 148–248 inlets per specimen instead of the face rule's 8–23: 3.9 / 125.4 / 13.3%
+at one voxel and 1.6 / 43.4 / 4.7% at 0.690 µm. Before the 2026-09-28 re-run: 4.1 / 95.3 / 13.2%
+at one voxel and 2.2 / 45.3 / 6.3% at 0.922 µm.) The correlated term barely moves with the boundary rule, and the measured 47.0% still
+sits close to the 44.2% that $4\,\delta d/d$ predicts, so propagation is near-linear at this scale
 even though the underlying law is not. The independent term roughly doubles, since a few face
 inlets carry the whole throughput and averaging over them is weaker than over 150–250 band nodes.
 **The ratio cancels 88% of the correlated error at both perturbation sizes** (89% under the band
 rule), so the cancellation is a property of the ratio rather than of the size or the boundaries
-chosen. Per specimen at 0.690 µm: correlated 38.1–48.5%, ratio 4.4–7.0%, the three SHR above the
-three WKY (6.0–7.0% against 4.4–4.6%).
+chosen. Per specimen at 0.740 µm: correlated 40.9–52.1%, ratio 4.7–7.5%, the three SHR above the
+three WKY (6.4–7.5% against 4.7–4.9%).
 
 ### 13.3 The two noise floors
 
 | Quantity | Floor | Against H1's measured group-mean ratios at 0.95 |
 |---|---|---|
-| Absolute network flow | **±44%** | Cannot resolve them |
-| Within-specimen ratio | **±5.5%** | See below — **needs review** |
+| Absolute network flow | **±47%** | Cannot resolve them |
+| Within-specimen ratio | **±5.9%** | See below — **needs review** |
 
 **This is why §7.6 reports ratios and never absolutes.** It is not caution; it is the difference
 between an answerable question and an unanswerable one.
@@ -3288,15 +3346,17 @@ between an answerable question and an unanswerable one.
 > on the centred boxes. At 0.95 on the placed boxes the SHR/WKY group-mean ratios are β₁ density
 > 1.087, junction density 1.064, length density 1.022, tortuosity 1.001 (median EDT diameter 0.869),
 > and the groups overlap on every density. So the effects are 2–9%, against a within-specimen floor
-> of 5.5% (4.7% before the floor moved onto the face-rule boundaries, package C): not a fourfold
-> margin, and only β₁ and junction density clear it at all. (The floor is for flow-derived ratios;
+> of 5.9% (5.5% before the sensitivity runs held the seed, open item 41; 4.7% before the floor moved
+> onto the face-rule boundaries, package C): not a fourfold margin, and only β₁ (8.7%) and junction
+> density (6.4%) clear it at all, junction density by half a point. (The floor is for flow-derived ratios;
 > β₁ and the densities are topological counts, which calibre does not move, §13.10.) Whether and how to restate the claim is
 > left to the H1 write-up.
 
 **One residual, in the ratio itself.** The per-specimen shift is uneven — 0.380 µm (WKY-B) to
-1.002 µm (SHR-A) — so the correlated error is not identical across specimens and does not cancel
-perfectly in a *between-group* comparison. Group means differ: 0.585 µm for WKY against 0.795 µm
-for SHR (1.075 against 0.768 before the re-run, the other way round). That is the right shape to
+1.093 µm (SHR-C) — so the correlated error is not identical across specimens and does not cancel
+perfectly in a *between-group* comparison. Group means differ: 0.585 µm for WKY against 0.895 µm
+for SHR (0.795 while the 0.93 run seeded at 0.98; 1.075 against 0.768 before the 2026-09-28
+re-run, the other way round). That is the right shape to
 become a confound. With n = 3 it is noted, not established.
 
 ### 13.4 Boundary selection is the largest single lever
@@ -3310,7 +3370,7 @@ faces in all six specimens; on the new networks all three axes are (§2.8).
 **Measured in the error-propagation frame too** (`cb_h2_error_propagation.py` S20, 2026-09-30, face
 rule throughout, plain Poiseuille). With the axis pinned at 1, moving the face tolerance over 1/2/4
 voxels spreads the shunt ratio by **3.6%** on average (1.6–6.4% per specimen); moving the axis at one
-voxel spreads it by 14.0%. The residual 3.6% is below the 5.5% calibre ratio floor, whereas the 8.9%
+voxel spreads it by 14.0%. The residual 3.6% is below the 5.9% calibre ratio floor, whereas the 8.9%
 above is above it. The two measure different ratios: S20 divides shunt flow by the flow summed over
 every edge (as S13 does), and `cb_h2_boundary_selection.py` divides by inlet throughput. So which
 term is larger at the pinned axis depends on the ratio's denominator; the axis choice dominates both.
@@ -3358,7 +3418,7 @@ pass still changes flow by 0.05–1.7% of the largest edge flow (face rule, 2026
 centred boxes, running to 50 and 200 iterations moved the velocities by under 0.3%, so the table did
 not depend on the cap; that check was not repeated on the new networks.
 
-Absolute perfusion is still not a reportable quantity: it sits under the ±44% calibre floor
+Absolute perfusion is still not a reportable quantity: it sits under the ±47% calibre floor
 (§13.3), it moves 2–4× with the boundary rule, and 60/20 mmHg is an upper-end arteriolar/venular
 pair, not a measured carotid-body drop (§8.1). But the model is no longer orders of magnitude off.
 At 60/20 mmHg it runs somewhat fast, which points at the pressure pair rather than at the network's
@@ -3442,7 +3502,7 @@ stop at 10⁻⁵ adds at most 0.10 mmHg per cell on WKY-A, 0.009 mmHg in the med
 > 7.08, 6.96 µm and SHR 6.46, 6.37, 5.87 µm: group means 7.17 and 6.23, a gap of **0.94 µm, half a
 > voxel**, and the groups **do not overlap** (smallest WKY 6.96 against largest SHR 6.46). Within-group
 > spread is 0.50 µm (WKY) and 0.59 µm (SHR), smaller than the gap. The gap is still below one
-> voxel, and the threshold alone moves calibre 0.690 µm (§13.2), with a larger shift in SHR than in
+> voxel, and the threshold alone moves calibre 0.740 µm (§13.2), with a larger shift in SHR than in
 > WKY (§13.3). Whether calibre stays "not reportable" is not re-argued here.
 
 The between-group calibre gap sat at **one twentieth of the smallest resolvable difference**.
@@ -3465,8 +3525,8 @@ sensitivity analysis, not a proof, and it remains the stated bound on any TH-cha
 
 | Claim type | Supported? |
 |---|---|
-| Within-specimen ratios of flow-derived quantities | **Yes** — ±5.5% floor. *Needs review:* the 27–40% H1 effects this was set against are 2–9% at 0.95 (§13.3) |
-| Absolute flow, velocity or perfusion | **No** — ±44% floor, 2–4× with the boundary rule, and up to 1.8× above physiological at 60/20 mmHg (§13.5) |
+| Within-specimen ratios of flow-derived quantities | **Yes** — ±5.9% floor. *Needs review:* the 27–40% H1 effects this was set against are 2–9% at 0.95 (§13.3) |
+| Absolute flow, velocity or perfusion | **No** — ±47% floor, 2–4× with the boundary rule, and up to 1.8× above physiological at 60/20 mmHg (§13.5) |
 | Between-group calibre differences | **No** — the stated reason was a gap of 1/20 of the measurement step. *Needs review:* at 0.95 the gap is half a voxel and the groups do not overlap (§13.8) |
 | Glomus-specific hypoxic fraction as a number | **No** — the mechanism cannot operate (§13.6); report as a curve in the assumed metabolic contrast. *Needs review:* TH hypoxia is now 0 everywhere, while PO₂ in TH separates the groups (§7.5) |
 | Between-group TH-channel contrasts | **Qualified** — bounded by §13.9's sensitivity analysis, not by proof |
@@ -3755,6 +3815,8 @@ from *α_O₂* (solubility); *n_H* (Hill) from *b* (branch order); *L* (length) 
 | 38 | **Open (code closed, `870de15`; H2 scripts not re-run).** `tissue_regions.mask_fraction_per_cell` counted TH voxel centres per grid cell and divided by the mean count per cell (27 / 6.49 = 4.16 at 3 µm). A 3 µm cell holds 1 or 2 voxel centres per axis, so a solid glomus cell read 0.24, 0.48, 0.96 or up to 1.92, and `np.clip(…, 0, 1)` threw the excess away with no warning; the comment said the clip only caught rounding. About 17% of the TH volume was lost in every specimen (grid TH share / voxel TH share 0.821–0.835; WKY-A 17.4% against 20.87%), and the per-cell fractions aliased into a lattice. It fed the TH-weighted "PO₂ in TH", the per-cell metabolic rate of contrasts 2 and 4 (whose mean-rate normalisation used the aliased f̄) and the `cb_h2_vtk.py` TH field. Not group-correlated. The fraction is now the exact overlap volume of each voxel with each cell (separable per axis), with no clip; the function raises if the in-grid volume is not conserved or a cell exceeds 1, and warns on out-of-grid loss by volume. On the six masks it keeps ≥ 99.97% of the volume at 3 µm (the rest overhangs the grid). **Grid sweep re-run 2026-09-30** (cross-section, contrast 1, all six; §6.8): the all-cell median moved by ≤ 0.01 mmHg and PO₂ in TH by ≤ 0.04 at every grid (the stromal median by up to 0.77, as the TH/stroma split changed), TH hypoxia stays 0.00%, and every refinement step is under 0.5 mmHg; 4 µm now passes by 0.005 mmHg, and 3 µm is kept. Mixed cells 13–36%, wholly glomus 4–15% (§6.5). **Still to do:** re-run `cb_h2_hypoxic_fraction.py` (plain and `--pad-grid`) and `cb_h2_vtk.py`, with the open item 37 re-run. `test_tissue_regions.py` | §6.5, §6.8, §7.5 "PO₂ in TH" and the contrast runs, the H2 VTK TH field |
 | 39 | **Open (low).** The cross-section sweep is not monotone at 3 µm: in every specimen 3 µm gives the highest all-cell median PO₂ of 4, 3 and 2 µm (4 → 3 µm +0.18 to +0.49, 3 → 2 µm −0.09 to −0.16). It was put down to the TH aliasing of open item 38, but survived that fix unchanged, so it is not. §6.8 already suspects the grid origin, which moves with h because the grid is padded by half a cell around the node bounding box. Every step still passes the 0.5 mmHg rule, so it does not change the grid choice. To check: re-run 4 / 3 / 2 µm with the grid origin fixed (e.g. `bounds_zyx` from the ROI) and see whether the bump goes. | §6.8 |
 | 40 | **Open (code closed; `cb_h1_th_metrics.py` and the H2 scripts not re-run).** Three fixes, one cause: H1 did not use one definition of the vessel network. (a) **§1.3 length** (re-run notes item 17). `cb_h1_th_metrics.py` cut the probability map plainly at 0.95 and skeletonised that, where the network uses the hysteresis band plus cleanup (1.6× the skeleton voxels), and `th_morphometry.centreline_length_um` summed every 26-adjacent voxel pair, counting all three links at a corner (9–28% above skan). WKY-A's §1.3 length was 199.4 mm against the network's 97.0 mm. The driver now reads the batch graph, skeleton and mask (`check_output_roi` first), the length is the edge polylines (`tissue_regions.edge_length_inside_um`), §1.5 is measured to the pipeline skeleton, and the pairwise estimator is gone. (b) **Half-voxel lookup.** Graph positions put voxel k's centre at k·v (checked on WKY-A to 10⁻¹⁴), but `edge_tissue_fraction`, `mask_fraction_per_cell` and `mask_bounds_um` put voxel k's *corner* there by default, so every TH lookup was half a voxel (≈ 0.93 µm) off on each axis against the graph and grid. The default first corner is now −v/2 in all three. On the six networks, TH > 0.5, edge TH fractions move by a mean 0.02–0.06 (single short edges by up to 1), and 45–201 more edges per specimen touch TH. (c) **Junction count** (re-run notes item 32). `compute_branching_statistics` counted on `nx.Graph(G)`, which merges parallel edges: 4,475 for WKY-A against 4,631 in the CSV, Figure 3 and `cb_h1_vtk.py`. It now counts on the MultiGraph; the branching angles are unchanged (still chords to neighbour nodes). **Scratch check on the current batch (TH > 0.5, not written to the outputs):** §1.3 total length now equals the CSV sum in all six (WKY-A 96.96 mm); length within TH WKY 13.2 / 20.0 / 15.2 mm, SHR 19.7 / 12.1 / 5.2 mm; density WKY 2,382 / 2,255 / 2,425, SHR 3,308 / 3,045 / 1,999 mm·mm⁻³ (ratio of means 1.18). The half-voxel fix alone lowers length within TH by 1–6%; the rest is the change of vessel set and estimator. **The H1 whitepaper §9A claim that length density separates the cohorts completely no longer holds**: SHR-C now sits below every WKY. §1.5 TVD medians rise (WKY 8.55 / 9.14 / 8.55, SHR 7.92 / 7.92 / 9.70 µm), as the pipeline skeleton is sparser. **Still to do:** re-run `cb_h1_th_metrics.py` (plain and `--all`) with package J, which also picks up (b) in `cb_h2_glomus_perfusion.py`, `cb_h2_hypoxic_fraction.py` (plain and `--pad-grid`) and `cb_h2_vtk.py`; then re-quote H1 §9A and the pipeline's `model_results.md` junction count at the next batch run. `test_th_morphometry.py`, `test_tissue_regions.py`, `test_statistics.py` | §7.2, §13.7, H1 §1.3 and §1.5, H2 §2.1–§2.3 TH joins |
+| ~~41~~ | **Closed** (`b7666dd`, `f18cea0`, `aaff25e`). Threshold and calibre measurement (re-run notes package F, items 3, 6, 31). (a) **Seed.** The sensitivity neighbours were run with `--hysteresis-low` alone, so 0.93 seeded at 0.98 while the frozen run seeds at 0.999; `cb_h1_batch.py --stage sensitivity` now passes `HYSTERESIS_HIGH` beside each low. Re-run 2026-09-30: 0.97 byte-identical, 0.93 ratios β₁ 1.054 → 1.050, junctions 1.055 → 1.051, length 1.015 → 1.013; the 0.93–0.95 calibre shift 0.690 → **0.740 µm**, so the error floors are now independent 4.2%, correlated **47.0%**, ratio **5.9%** (§13.2–13.3). (b) **Which calibre selects.** The selector's plain-cut centreline median is voxel-quantised (0.93 and 0.95 both 5.27 µm) and read on a mask the network does not use (`d_net` 7.46 WKY / 6.46 SHR at 0.95). Every candidate estimator moves calibre by about the window's width (§2.2), so the plain cut is kept and the sweep reports the same rule on `d_net` less one voxel: median 0.95 (WKY-B alone 0.97), no group split. The frozen value stands. `test_threshold_selection.py`, `test_cb_h1_batch_sensitivity.py`, `test_example_main_blocks.py` (the propagation default tracks the measured shift) | §2.2, §13.2–13.3, Figure 3 (literals at 0.93 now stale; package D) |
+| 42 | **Open.** The EDT measures to the nearest *background voxel centre*, so it overstates a radius by about half a grid step and a diameter by about one voxel (§2.2). §2.6's per-edge `edt_diameter_um`, which sets every conductance, is read the same way on the native grid. The size is estimated, not yet measured per edge: on WKY-A at 0.95 the network-mask centreline median falls 7.46 → 5.60 → 5.28 µm at native, 2× and 3× supersampling (§2.2). An offset of one voxel on a 6.7 µm median is about 28% of calibre, which reaches absolute resistance at the fourth power (about 3.7× if all of it is real). Within-specimen ratios cancel a uniform offset but not its calibre dependence, since a fixed offset is a larger share of a thin vessel. Also touches the per-specimen calibre of §13.8. **To do:** measure the bias per edge (supersampled EDT, or a sub-voxel boundary estimate) and decide whether to correct §2.6. A correction re-runs the batch, the sensitivity runs and every H2 driver. | §2.6, §4, §7, §13.2, §13.8 |
 
 **"Pinned" is not "fixed".** Items 1, 2, 8 and 10 are the same defect — a value written down
 twice — and all four now have a single owner in `cb_settings.py` plus a test that fails if the

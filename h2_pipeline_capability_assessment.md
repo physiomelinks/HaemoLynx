@@ -523,8 +523,9 @@ it does not leave part of the network unsolvable.
 > **Re-measured 2026-09-30 (package C), S12 and S13.** Before this the script placed pressure with its
 > own 25% band on graph axis 0 (148–248 inlets), not the face rule the H2 flows use. On the face rule,
 > still plain Poiseuille: at one voxel independent 8.8%, correlated 126.9%, ratio 15.5%; at the
-> measured 0.690 µm threshold shift 3.9%, **43.7%** and **5.5%** (band rule: 3.9 / 125.4 / 13.3% and
-> 1.6 / 43.4 / 4.7%). The ratio cancels 88% of the correlated error at both sizes. Current numbers
+> measured threshold shift, 0.740 µm since the sensitivity runs hold the seed (open item 41), 4.2%,
+> **47.0%** and **5.9%** (3.9 / 43.7 / 5.5% at the earlier 0.690 µm; band rule: 3.9 / 125.4 / 13.3%
+> and 1.6 / 43.4 / 4.7%). The ratio cancels 88% of the correlated error at both sizes. Current numbers
 > and discussion: `cb_modelling_reference.md` §13.2–13.3. The text below is the original record.
 
 The decisive Phase 2 result, and the one that determines whether H2 is answerable.
@@ -908,7 +909,7 @@ attempted rather than discovered during it.
 > **Re-measured 2026-09-30 (package C).** S20 now varies the face rule rather than the band: axis 0/1/2
 > at one voxel, and tolerance 1/2/4 voxels at axis 1, in graph axes (the old labels named VTK
 > indices). Mean shunt-ratio spread: axis 14.0%, tolerance at the pinned axis **3.6%**, combined 15.9%,
-> against a calibre ratio error of 5.5% at 0.690 µm and 15.5% at one voxel. With the axis pinned by
+> against a calibre ratio error of 5.9% at 0.740 µm (5.5% at the earlier 0.690) and 15.5% at one voxel. With the axis pinned by
 > `cb_settings`, calibre is the larger term in this frame. `cb_h2_boundary_selection.py`, which
 > divides by inlet throughput instead, gives 8.9% for the same tolerance range (S21). See
 > `cb_modelling_reference.md` §13.4.
@@ -1752,7 +1753,7 @@ regenerated flow output in `examples/outputs/cb_h2_regen/`, and three scripts:
 
 ```bash
 venv/bin/python examples/cb_h2_error_propagation.py                      # S10-S13, S20
-venv/bin/python examples/cb_h2_error_propagation.py --perturbation-um 0.690   # S15 (0.922 on the centred boxes)
+venv/bin/python examples/cb_h2_error_propagation.py --perturbation-um 0.740   # S15 (0.690 before open item 41; 0.922 on the centred boxes)
 venv/bin/python examples/cb_h2_threshold_calibre.py                      # S15
 venv/bin/python -m pytest tests/test_haemodynamics_analytical.py         # S1
 ```
