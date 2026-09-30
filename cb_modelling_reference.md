@@ -1669,19 +1669,35 @@ At a diverging bifurcation, red cells do not split in the same proportion as pla
 disproportionately favour the branch with higher flow fraction and larger diameter
 [`pries_red_1989`].
 
-With *f_Q1* the fraction of bulk flow entering branch 1:
+With *f_Q1* the fraction of bulk flow entering branch 1, *d₁* and *d₂* the daughter diameters and
+*D_F* the diameter of the feeding vessel (see "Feeding diameter" below), all in µm:
 
 $$\begin{aligned}
 A &= -13.29 \cdot \frac{(d_1^{2}/d_2^{2}) - 1}{(d_1^{2}/d_2^{2}) + 1}
-     \cdot \frac{1 - H_\text{in}}{d_1} \\[4pt]
-B &= 1 + 6.98 \cdot \frac{1 - H_\text{in}}{d_1} \\[6pt]
+     \cdot \frac{1 - H_\text{in}}{D_F} \\[4pt]
+B &= 1 + 6.98 \cdot \frac{1 - H_\text{in}}{D_F} \\[4pt]
+x_0 &= 0.964 \cdot \frac{1 - H_\text{in}}{D_F} \\[6pt]
 \operatorname{logit}(f_{E1}) &= A + B \cdot
-     \operatorname{logit}\!\left(\frac{f_{Q1} - x_0}{1 - f_{Q1} - x_0}\right)
+     \ln\!\left(\frac{f_{Q1} - x_0}{1 - f_{Q1} - x_0}\right),
+     \qquad x_0 < f_{Q1} < 1 - x_0
 \end{aligned}$$
 
-where *f_E1* is the fraction of the **erythrocyte** flux entering branch 1, and *x₀* = 0.05 is the
-skimming threshold — red cells effectively fail to enter a branch drawing less than about 5% of the
-flow.
+with *f_E1* = 0 if *f_Q1* ≤ *x₀* and *f_E1* = 1 if *f_Q1* ≥ 1 − *x₀*. Here *f_E1* is the
+fraction of the **erythrocyte** flux entering branch 1, and *x₀* is the skimming threshold: a
+branch drawing less than *x₀* of the flow gets no red cells. It is not a fixed 5%; it grows as
+the feeding vessel narrows (0.053 at *D_F* = 10 µm, 0.13 at 4 µm, both at *H_in* = 0.45). The log
+term equals logit[(*f_Q1* − *x₀*)/(1 − 2*x₀*)], the form Pries et al. print. All three
+parameters scale with *D_F*, not a daughter's diameter, so the result does not depend on which
+daughter is called branch 1.
+
+The constants are as printed in Rasmussen, Secomb & Pries [`rasmussen_modeling_2018`], who
+attribute them to Pries, Reglin & Secomb (2003); other sources give the same form as Pries &
+Secomb (2005). Which paper first printed them is unconfirmed. The same block is E16–E18 in
+`post_radius_assignment_equations.md`; the code is `calculate_phase_separation_hematocrit` in
+`rheology.py`.
+
+**If *x₀* ≥ 0.5 the relation is undefined** (1 − 2*x₀* ≤ 0 leaves no flow range for the curve).
+That needs *D_F* below about 1.06 µm at *H_in* = 0.45; there both daughters take *H_in*.
 
 **Erythrocyte mass is conserved exactly**: *f_E2* = 1 − *f_E1*. Outlet haematocrits follow as
 *H_out* = *H_in* · *f_E* / *f_Q*, then clamped to [0, 0.95].
@@ -3031,7 +3047,7 @@ Present in the code, disabled for the CB path, and `__post_init__` raises if re-
 | Viscosity law | `in_vivo` | — | (ii) | Pries et al. 1994, fitted to microvessels in living tissue, where the endothelial surface layer narrows the effective lumen [`pries_resistance_1994`]. `in_vitro` (Pries et al. 1992, glass tubes) is available and not default [`pries_blood_1992`] | measured — the two differ by ≈3.4× apparent viscosity at D = 8 µm, but a 3–4× change moved no within-specimen ratio (§13) |
 | μ₄₅ in vivo | 6.0·e^(−0.085 d) + 3.2 − 2.44·e^(−0.06 d^0.645) | relative | (ii) | [`pries_resistance_1994`] | — |
 | μ₄₅ in vitro | 220·e^(−1.3 d) + 3.2 − 2.44·e^(−0.06 d^0.645) | relative | (ii) | [`pries_blood_1992`] | — |
-| Phase separation | Pries bifurcation relation | — | (ii) | [`pries_red_1989`], fitted to 65 arteriolar bifurcations in rat mesentery | unswept |
+| Phase separation | Pries bifurcation relation | — | (ii) | [`pries_red_1989`], fitted to 65 arteriolar bifurcations in rat mesentery. The constants in use (A, B and *x₀* scaled by the feeding diameter *D_F*, §4.2) are the later parametrisation printed in [`rasmussen_modeling_2018`], attributed there to Pries, Reglin & Secomb (2003) | unswept |
 | `PASCALS_PER_MMHG` | 133.322387415 | Pa/mmHg | (i) | Exact by definition of the conventional millimetre of mercury | exact |
 | `POISEUILLE_FLOW_TO_UM3_PER_S` | 133.322387415 × 10³ | (µm³/s) per solver unit | (i) | Derived. The solve evaluates *R* = 128 μL/(π d⁴) with pressure in mmHg, viscosity in cP and lengths in µm, so its *Q* carries mmHg·µm⁴/(cP·µm) and is not a volumetric rate. Rewriting *R* in SI multiplies it by 10¹⁵. Only for callers passing mmHg (the H2 drivers); the pipeline passes mPa, so its factor is 1.0 (open item 31) | exact |
 | `rheology_max_iterations` | 1000 | iterations | (iii) | `cb_settings.RHEOLOGY_MAX_ITERATIONS`; 2.2× the slowest specimen at 0.95 and 1.4× the slowest sensitivity run (WKY-B at 0.93, 726; open item 37). Was 15, which every solve hit | none: every solve converges |
@@ -3715,7 +3731,8 @@ binding for this document.
 | *f_E* | Erythrocyte flux fraction into a branch | fraction |
 | *α* | Asymmetry parameter in the skimming logit | — |
 | *β* | Steepness parameter in the skimming logit | — |
-| *x₀* | Skimming threshold | 0.05 |
+| *x₀* | Skimming threshold, 0.964(1 − *H_in*)/*D_F* | fraction |
+| *D_F* | Feeding (parent) diameter at a diverging junction | µm |
 | *C* | Blood gas content | mmol/L |
 | *α_O₂*, *α_CO₂* | Gas solubility in plasma | mmol/L/mmHg |
 | *S* | Haemoglobin oxygen saturation | fraction |

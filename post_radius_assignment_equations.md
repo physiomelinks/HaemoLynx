@@ -275,8 +275,8 @@ Pries, Reglin & Secomb (2003); other sources give the same form as Pries & Secom
 Which paper first printed them is unconfirmed.
 
 $D_F$ is the diameter of the single inflowing edge. Where two or more edges merge into a node
-that then splits, it is their flow-weighted mean diameter. Where no edge flows in, it falls
-back to the larger of $D_1$ and $D_2$.
+that then splits, it is their flow-weighted mean diameter. Where no edge flows in, it is
+the Murray parent of the daughters, $(\sum_i D_i^3)^{1/3}$ (open item 37).
 
 **(E18)** Phase separation logit relation [@pries1989; @rasmussen2018]
 
