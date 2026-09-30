@@ -178,14 +178,20 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     "leave": "Keep the chosen junction as it is and move on to the next one",
     "click_delete": (
         "Then click vessels in the viewer to remove them, one per click; "
-        "inlets, outlets and boundary nodes are never cut off"
+        "inlets, outlets and boundary nodes are never cut off. Press it again "
+        "to stop"
     ),
     "add": (
-        "Then click two nodes in the viewer to join them with a new vessel, "
-        "routed through the segmented image where it can be (straight where "
-        "not), with the mean diameter of the vessels already at those nodes"
+        "Then click a node, or a point on a vessel where a new node should "
+        "form, and click along the new vessel: each click is traced from the "
+        "last through the image chosen beside this button, and a click on "
+        "another node or vessel finishes it. It takes the mean diameter of the "
+        "vessels at its ends; press it again to cancel"
     ),
-    "stop": "Stop deleting or adding by clicking in the viewer",
+    "trace_source": (
+        "What Add vessel traces each leg through: the segmented mask, or the "
+        "raw data (FWHM's image, or the Raw data file on the Input tab)"
+    ),
     "branch_ids": (
         "The branchIDs to delete, as the vessel hover shows them, separated "
         "by commas or spaces; Enter deletes them"

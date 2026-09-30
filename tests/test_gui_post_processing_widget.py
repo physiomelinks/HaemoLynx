@@ -27,13 +27,19 @@ from haemolynx.gui._widget import (  # noqa: E402
     settings_widget,
 )
 from haemolynx.gui.post_processing import (  # noqa: E402
+    ADDED,
+    ADDED_NODES,
     AT_JUNCTION,
     CONNECTED,
     HIGH_DEGREE_JUNCTIONS,
+    NEW_VESSEL_POINTS,
+    NEW_VESSEL_TRACE,
     SELECTED,
     STATUS_COLOURS,
+    TRACE_SOURCES,
+    TRACE_THROUGH_RAW,
 )
-from haemolynx.gui.results import VESSELS, ResultLayers  # noqa: E402
+from haemolynx.gui.results import FWHM_RAW, VESSELS, ResultLayers  # noqa: E402
 
 from test_gui_results import network  # noqa: E402
 
@@ -123,7 +129,13 @@ def test_the_panel_ends_with_the_post_processing_tab(make_napari_viewer):
     assert panel._haemolynx_post_processing.scan_button.toolTip()
     # Editing moved into the tab: the old Edit button is no longer shown.
     assert not panel._haemolynx_edit_button.visible
-    assert panel._haemolynx_post_processing.add_button.toolTip()
+    controls = panel._haemolynx_post_processing
+    assert controls.add_button.toolTip() and controls.trace_source.toolTip()
+    # Add vessel finishes by itself and both modes are toggles: no Stop button.
+    assert not hasattr(controls, "stop_button")
+    assert controls.add_button.isCheckable() and controls.click_delete_button.isCheckable()
+    items = [controls.trace_source.itemText(i) for i in range(controls.trace_source.count())]
+    assert items == list(TRACE_SOURCES)
 
 
 def test_scan_before_a_run_reports_instead_of_raising(make_napari_viewer):
@@ -229,7 +241,9 @@ def test_clicking_a_vessel_in_delete_mode_removes_it(page):
     graph = c.state.graph
     assert 5 not in graph and graph.degree(1) == 3
     assert len(viewer.layers[VESSELS].data) == 5
-    c.stop_button.click()
+    assert c.click_delete_button.isChecked()  # still armed for the next one
+    c.click_delete_button.click()  # pressed again: stops
+    assert not c.click_delete_button.isChecked()
     _click(page, (25.0, 5.0, 0.0))  # not armed any more: nothing happens
     assert graph.number_of_edges() == 5
 
@@ -245,18 +259,22 @@ def test_click_delete_never_strands_the_outlet(page):
     assert "boundary node" in c.edit_status.text()
 
 
-def test_add_vessel_joins_two_clicked_nodes_with_their_mean_diameter(page):
+def _added(graph):
+    return [(u, v, d) for u, v, d in graph.edges(data=True) if d.get("post_processing_added")]
+
+
+def test_add_vessel_from_a_node_to_a_node_finishes_by_itself(page):
     c, viewer = page.controls, page.viewer
     c.scan_button.click()
     c.add_button.click()
+    assert c.add_button.isChecked()
     _click(page, (10.0, 20.0, 0.0))  # node 5
-    assert "Start node 5 picked" in c.edit_status.text()
-    _click(page, (20.0, -10.0, 0.0))  # node 3
+    assert "Starting at node 5" in c.edit_status.text()
+    assert list(viewer.layers[NEW_VESSEL_POINTS].features["role"]) == ["start node"]
+    _click(page, (20.0, -10.0, 0.0))  # node 3: the vessel is finished
 
     graph = c.state.graph
-    added = [
-        (u, v, d) for u, v, d in graph.edges(data=True) if d.get("post_processing_added")
-    ]
+    added = _added(graph)
     assert len(added) == 1 and {added[0][0], added[0][1]} == {3, 5}
     data = added[0][2]
     # No image layer here, so it is drawn straight: 5 -> 3 is sqrt(10^2 + 30^2).
@@ -266,57 +284,212 @@ def test_add_vessel_joins_two_clicked_nodes_with_their_mean_diameter(page):
     assert data["diameter_source"] == "override"
     assert "as a straight line" in c.edit_status.text()
     assert len(viewer.layers[VESSELS].data) == 7
+    # Finished: the mode ends and the trace is no longer drawn.
+    assert c.state.mode == "idle" and not c.add_button.isChecked()
+    assert c.state.trace is None
+    assert NEW_VESSEL_TRACE not in viewer.layers and NEW_VESSEL_POINTS not in viewer.layers
+    assert _colour_of(viewer, graph, (3, 5)) == _rgba(ADDED)
+    assert "Added branchID" in c.log_box.toPlainText()
 
 
-def test_add_vessel_ignores_a_click_on_the_same_node_twice(page):
-    c = page.controls
+def test_add_vessel_refuses_to_end_where_it_started_and_can_be_cancelled(page):
+    c, viewer = page.controls, page.viewer
     c.scan_button.click()
     c.add_button.click()
     _click(page, (10.0, 20.0, 0.0))
     _click(page, (10.0, 20.0, 0.0))
-    assert "node 5 again" in c.edit_status.text()
+    assert "start and end at node 5" in c.edit_status.text()
+    assert c.state.graph.number_of_edges() == 6
+    assert c.state.trace is not None  # still tracing
+    c.add_button.click()  # pressed again: cancelled
+    assert c.state.trace is None and c.state.mode == "idle"
+    assert "cancelled" in c.edit_status.text()
+    assert NEW_VESSEL_POINTS not in viewer.layers
     assert c.state.graph.number_of_edges() == 6
 
 
-def test_add_vessel_routes_through_the_segmented_image(make_napari_viewer):
-    """With the segmented image loaded, a new vessel follows it."""
-    viewer = make_napari_viewer()
-    mask = np.zeros((1, 25, 35), dtype=np.uint8)
-    mask[0, 0, 10:31] = 1          # an L-shaped vessel from (0, 0, 10) ...
-    mask[0, 0:21, 30] = 1
-    mask[0, 20, 10:31] = 1         # ... round to (0, 20, 10)
+def test_add_vessel_from_one_vessel_to_another_forms_a_node_on_each(page):
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    c.add_button.click()
+    _click(page, (10.0, 10.0, 0.0))  # halfway along 1 -> 5
+    assert "a new node on branchID" in c.edit_status.text()
+    assert list(viewer.layers[NEW_VESSEL_POINTS].features["role"]) == ["new node"]
+    assert c.state.graph.number_of_edges() == 6  # nothing changes until it finishes
+
+    _click(page, (0.0, 10.0, 0.0))  # a point along the way
+    assert "Point 1 traced as a straight line" in c.edit_status.text()
+    trace = viewer.layers[NEW_VESSEL_TRACE].data
+    assert np.allclose(trace[0, 0], (10, 10, 0))
+    assert np.allclose(trace[-1, 0] + trace[-1, 1], (0, 10, 0))
+    assert len(viewer.layers[NEW_VESSEL_POINTS].data) == 2
+
+    _click(page, (25.0, 5.0, 0.0))  # halfway along 2 -> 4: finished there
+    graph = c.state.graph
+    new_nodes = c.state.added_nodes
+    assert len(new_nodes) == 2
+    assert np.allclose(graph.nodes[new_nodes[0]]["pos"], (10, 10, 0))
+    assert np.allclose(graph.nodes[new_nodes[1]]["pos"], (25, 5, 0))
+    # Both vessels cut in two, each half measured again; plus the new vessel.
+    assert graph.number_of_edges() == 9
+    assert not graph.has_edge(1, 5) and not graph.has_edge(2, 4)
+    assert graph.edges[1, new_nodes[0], 0]["length"] == pytest.approx(10.0)
+    assert graph.edges[new_nodes[0], 5, 0]["length"] == pytest.approx(10.0)
+    assert graph.edges[2, new_nodes[1], 0]["length"] == pytest.approx(np.hypot(5.0, 5.0))
+    (u, v, data), = _added(graph)
+    assert {u, v} == set(new_nodes)
+    assert data["length"] == pytest.approx(10.0 + np.hypot(25.0, 5.0))
+    assert data["diameter_um"] == pytest.approx(5.0)
+    # The new nodes stay marked until Regenerate, and the log says what was cut.
+    assert np.allclose(viewer.layers[ADDED_NODES].data, [(10, 10, 0), (25, 5, 0)])
+    log = c.log_box.toPlainText()
+    assert f"new node(s) {new_nodes[0]}, {new_nodes[1]} cut branchID" in log
+    assert "in 3 clicks" in log
+
+
+def test_a_drag_turns_the_view_and_adds_nothing(page):
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    c.add_button.click()
+    layer = viewer.layers[VESSELS]
+    assert c.on_press in layer.mouse_drag_callbacks
+
+    def press_and_release(moved_to):
+        event = SimpleNamespace(
+            position=(10.0, 20.0, 0.0), dims_displayed=(0, 1, 2), view_direction=None,
+            pos=(100.0, 100.0), type="mouse_press", button=1,
+        )
+        gen = c.on_press(layer, event)
+        next(gen)
+        event.type, event.pos = "mouse_move", moved_to
+        next(gen)
+        event.type = "mouse_release"
+        with pytest.raises(StopIteration):
+            next(gen)
+
+    press_and_release((160.0, 100.0))  # dragged: turning the view
+    assert c.state.trace is None
+    press_and_release((101.0, 100.0))  # a twitch of the hand: still a click
+    assert c.state.trace is not None and c.state.trace.start.node == 5
+
+
+def _l_shaped_network():
+    """Two short vessels whose ends 1 (0, 0, 10) and 3 (0, 20, 10) an
+    L-shaped piece of image joins, out round x = 30."""
     G = nx.MultiGraph()
     for node, pos in {0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 20, 0), 3: (0, 20, 10)}.items():
         G.add_node(node, pos=np.asarray(pos, dtype=float))
     for u, v in [(0, 1), (2, 3)]:
         voxels = [tuple(map(float, G.nodes[u]["pos"])), tuple(map(float, G.nodes[v]["pos"]))]
         G.add_edge(u, v, voxels=voxels, length=10.0, diameter_um=4.0)
+    return G
+
+
+def _l_mask():
+    mask = np.zeros((1, 25, 35), dtype=np.uint8)
+    mask[0, 0, 10:31] = 1          # an L-shaped vessel from (0, 0, 10) ...
+    mask[0, 0:21, 30] = 1
+    mask[0, 20, 10:31] = 1         # ... round to (0, 20, 10)
+    return mask
+
+
+def _l_page(viewer, *, image=None, settings=None):
     results = ResultLayers()
-    _apply_layers(viewer, results.stage_finished(
-        "skeletonise",
-        SimpleNamespace(
-            image=mask, skeleton=np.zeros_like(mask, dtype=bool),
-            voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
-        ),
-    ))
-    _apply_layers(viewer, results.stage_finished("build_network", network(G)))
+    if image is not None:
+        _apply_layers(viewer, results.stage_finished(
+            "skeletonise",
+            SimpleNamespace(
+                image=image, skeleton=np.zeros_like(image, dtype=bool),
+                voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+            ),
+        ))
+    _apply_layers(viewer, results.stage_finished("build_network", network(_l_shaped_network())))
     c = _post_processing_controls(
         viewer, SimpleNamespace(value=""), results=lambda: results,
         boundary_roles=lambda: {"inlet": (0,), "outlet": (2,)},
-        regenerate=lambda graph: None, running=lambda: False,
+        regenerate=lambda graph: None, running=lambda: False, settings=settings,
     )
     c.scan_button.click()
     c.add_button.click()
-    page = SimpleNamespace(controls=c, viewer=viewer)
-    _click(page, (0.0, 0.0, 10.0))   # node 1
-    _click(page, (0.0, 20.0, 10.0))  # node 3
+    return SimpleNamespace(controls=c, viewer=viewer)
 
-    added = [d for _u, _v, d in c.state.graph.edges(data=True) if d.get("post_processing_added")]
-    assert len(added) == 1
-    assert "routed through the image" in c.edit_status.text()
-    assert max(p[2] for p in added[0]["voxels"]) >= 29   # went round the L
-    assert added[0]["length"] > 50
-    assert added[0]["diameter_um"] == pytest.approx(4.0)
+
+def test_add_vessel_traces_each_leg_through_the_segmented_mask(make_napari_viewer):
+    """Each click is traced from the last through the mask, drawn at once."""
+    page = _l_page(make_napari_viewer(), image=_l_mask())
+    c, viewer = page.controls, page.viewer
+    _click(page, (0.0, 0.0, 10.0))   # node 1
+    _click(page, (0.0, 20.0, 30.0))  # the far corner of the L
+    assert "Point 1 traced through the segmented mask" in c.edit_status.text()
+    first_leg = viewer.layers[NEW_VESSEL_TRACE].data
+    ends = first_leg[:, 0] + first_leg[:, 1]
+    assert ends[:, 2].max() >= 29 and np.allclose(ends[-1], (0, 20, 30))
+    # It went along the mask (out to x = 30, then down), not straight across.
+    assert (first_leg[:, 0, 1] < 1).sum() >= 15
+
+    _click(page, (0.0, 20.0, 10.0))  # node 3: finished
+    (u, v, data), = _added(c.state.graph)
+    assert {u, v} == {1, 3}
+    assert "through the segmented mask" in c.edit_status.text()
+    assert max(p[2] for p in data["voxels"]) >= 29
+    assert data["length"] > 50
+    assert data["diameter_um"] == pytest.approx(4.0)
+    # Smoothed as the pipeline smooths its own centrelines.
+    assert data["centreline_smoothing"] in ("smoothed", "relaxed", "kept_raw")
+
+
+def _bright_l():
+    raw = np.random.default_rng(0).uniform(0.0, 20.0, size=(1, 25, 35)).astype(np.float32)
+    raw[_l_mask().astype(bool)] = 200.0
+    return raw
+
+
+def test_add_vessel_traces_through_the_raw_data_when_chosen(make_napari_viewer):
+    viewer = make_napari_viewer()
+    viewer.add_image(_bright_l(), name=FWHM_RAW)
+    page = _l_page(viewer)  # no segmented image: only the raw data to follow
+    c = page.controls
+    c.trace_source.setCurrentText(TRACE_THROUGH_RAW)
+    _click(page, (0.0, 0.0, 10.0))
+    _click(page, (0.0, 20.0, 10.0))
+    (_u, _v, data), = _added(c.state.graph)
+    assert "through the raw data" in c.edit_status.text()
+    assert max(p[2] for p in data["voxels"]) >= 29
+
+
+def test_add_vessel_reads_the_raw_data_file_from_the_settings(make_napari_viewer, tmp_path):
+    tifffile = pytest.importorskip("tifffile")
+    path = tmp_path / "raw.tif"
+    tifffile.imwrite(path, _bright_l())
+    settings = {"fwhm_raw_tiff_path": str(path), "image_axis_order": "zyx"}
+    page = _l_page(make_napari_viewer(), image=_l_mask(), settings=lambda: settings)
+    c = page.controls
+    c.trace_source.setCurrentText(TRACE_THROUGH_RAW)
+    _click(page, (0.0, 0.0, 10.0))
+    _click(page, (0.0, 20.0, 10.0))
+    assert "through the raw data" in c.edit_status.text()
+    assert c.state.raw is not None and c.state.raw[0].shape == (1, 25, 35)
+
+
+def test_add_vessel_without_raw_data_says_so_and_uses_the_mask(make_napari_viewer, tmp_path):
+    settings = {"image_axis_order": "zyx"}
+    page = _l_page(make_napari_viewer(), image=_l_mask(), settings=lambda: settings)
+    c = page.controls
+    c.trace_source.setCurrentText(TRACE_THROUGH_RAW)
+    _click(page, (0.0, 0.0, 10.0))
+    _click(page, (0.0, 20.0, 30.0))
+    text = c.edit_status.text()
+    assert "through the segmented mask" in text and "no raw data to trace through" in text
+    assert "Raw data file" in text
+
+    # A Raw data file set afterwards is read once Raw data is chosen again.
+    tifffile = pytest.importorskip("tifffile")
+    tifffile.imwrite(tmp_path / "raw.tif", _bright_l())
+    settings["fwhm_raw_tiff_path"] = str(tmp_path / "raw.tif")
+    c.trace_source.setCurrentIndex(0)
+    c.trace_source.setCurrentText(TRACE_THROUGH_RAW)
+    _click(page, (0.0, 20.0, 20.0))
+    assert "Point 2 traced through the raw data" in c.edit_status.text()
 
 
 def test_delete_by_branch_id_removes_the_vessels_typed(page):
@@ -423,5 +596,21 @@ def test_regenerate_hands_over_the_edited_graph_and_clears_the_tab(page):
 
     assert page.regenerated == [edited]
     assert HIGH_DEGREE_JUNCTIONS not in viewer.layers
-    assert c.on_click not in viewer.layers[VESSELS].mouse_drag_callbacks
+    assert c.on_press not in viewer.layers[VESSELS].mouse_drag_callbacks
     assert c.state.graph is None and c.junction_list.count() == 0
+
+
+def test_regenerate_hands_over_a_traced_vessel_with_its_cut_vessels(page):
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    c.add_button.click()
+    _click(page, (10.0, 10.0, 0.0))  # halfway along 1 -> 5
+    _click(page, (20.0, -10.0, 0.0))  # node 3
+    c.regenerate_button.click()
+
+    (graph,) = page.regenerated
+    assert graph.number_of_edges() == 8
+    for _u, _v, data in graph.edges(data=True):
+        assert data["length"] == pytest.approx(calculate_path_length(data["voxels"]))
+    assert len(_added(graph)) == 1
+    assert ADDED_NODES not in viewer.layers and c.state.added_nodes == []

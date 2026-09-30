@@ -18,18 +18,22 @@ Three things a user can do at a junction of degree four or more:
   junction is a bifurcation.
 * leave it as it is, which needs no function.
 
-And, for the tab's click-in-the-viewer edits: :func:`vessel_path_between` and
-:func:`add_vessel_between` draw a new vessel between two chosen nodes, routed
-through the segmented image where it can be and straight where it cannot,
-with the mean diameter of the vessels already at those nodes
-(:func:`mean_incident_diameter`). After deleting, :func:`prune_disconnected_branches`
-removes whatever the deletions cut off from every inlet-to-outlet piece.
+And, for the tab's click-in-the-viewer edits: :func:`add_traced_vessel` adds
+a vessel traced click by click -- from a node, or from a point on a vessel
+where :func:`split_vessel_at` forms a new node, through waypoints joined by
+:func:`trace_path` (A* through the segmented mask, or through the raw image's
+intensities with :class:`IntensityCostField`), to another node or vessel --
+with the mean diameter of the vessels already at its ends
+(:func:`mean_incident_diameter`). :func:`vessel_path_between` and
+:func:`add_vessel_between` are the two-node version. After deleting,
+:func:`prune_disconnected_branches` removes whatever the deletions cut off
+from every inlet-to-outlet piece.
 """
 from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import networkx as nx
 import numpy as np
@@ -41,8 +45,13 @@ from .prune import remove_components_without_connected_io
 
 __all__ = [
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
+    "IntensityCostField",
     "JunctionVessel",
     "MIN_ROUTED_INSIDE_FRACTION",
+    "SPLIT_SNAP_UM",
+    "TracedVessel",
+    "VesselEnd",
+    "add_traced_vessel",
     "add_vessel_between",
     "delete_vessels",
     "edge_keys",
@@ -50,7 +59,11 @@ __all__ = [
     "junction_vessels",
     "mean_incident_diameter",
     "prune_disconnected_branches",
+    "smooth_traced_path",
     "split_junction",
+    "split_vessel_at",
+    "trace_path",
+    "vessel_path",
     "vessel_path_between",
 ]
 
@@ -66,6 +79,20 @@ MIN_ROUTED_INSIDE_FRACTION = 0.5
 
 #: How far along a vessel its direction out of a junction is measured.
 _DIRECTION_SAMPLE_UM = 10.0
+
+#: A traced vessel ending on a vessel this close (along it) to one of that
+#: vessel's ends joins the node there instead of cutting off a sliver.
+SPLIT_SNAP_UM = 1.0
+
+#: Raw-intensity routing (:class:`IntensityCostField`): the brightest voxels
+#: of a window cost 1 and the dimmest ``1 / RAW_COST_FLOOR``, so a route
+#: follows a bright vessel rather than cutting across dark tissue.
+RAW_COST_FLOOR = 0.01
+#: Window percentiles taken as black and white: robust to a few hot pixels.
+RAW_COST_PERCENTILES = (1.0, 99.5)
+#: Gaussian blur (voxels) before costing, so a route does not hop between
+#: bright specks of noise.
+RAW_COST_SMOOTHING_SIGMA_VOX = 1.0
 
 
 @dataclass(frozen=True)
@@ -432,6 +459,390 @@ def add_vessel_between(
         set_edge_diameter_override(attrs, diameter_um)
     key = G.add_edge(a, b, **attrs)
     return (a, b, key)
+
+
+def vessel_path(G: nx.MultiGraph, edge: EdgeKey) -> np.ndarray:
+    """Vessel *edge*'s path as (n, 3) microns, running from its ``u`` end.
+
+    Its ``voxels`` when it has two or more, else the straight line between
+    its nodes.
+    """
+    u, v, k = edge
+    if not G.has_edge(u, v, key=k):
+        raise ValueError(f"No vessel ({u!r}, {v!r}, {k!r}) in the network")
+    return _path_from(G, u, v, G.edges[u, v, k])
+
+
+def _dedupe(points: Iterable[Sequence[float]]) -> list[tuple[float, float, float]]:
+    """*points* as tuples, without consecutive repeats."""
+    kept: list[tuple[float, float, float]] = []
+    for point in points:
+        p = tuple(float(c) for c in np.asarray(point, dtype=float)[:3])
+        if not kept or np.linalg.norm(np.subtract(p, kept[-1])) > 1e-9:
+            kept.append(p)
+    return kept
+
+
+@dataclass(frozen=True)
+class _PlaceOnVessel:
+    """Where on a vessel's path a point falls."""
+
+    #: The path segment it falls on (``points[segment]`` to ``points[segment + 1]``).
+    segment: int
+    point: np.ndarray
+    #: Distance along the path from its ``u`` end, and the path's whole length.
+    along_um: float
+    total_um: float
+
+
+def _place_on_vessel(points: np.ndarray, target: Sequence[float]) -> _PlaceOnVessel:
+    """The point of path *points* nearest *target*."""
+    target = np.asarray(target, dtype=float)[:3]
+    a, b = points[:-1], points[1:]
+    d = b - a
+    length_sq = np.einsum("ij,ij->i", d, d)
+    safe = np.where(length_sq > 0, length_sq, 1.0)
+    t = np.clip(np.einsum("ij,ij->i", target - a, d) / safe, 0.0, 1.0)
+    t = np.where(length_sq > 0, t, 0.0)
+    closest = a + t[:, None] * d
+    i = int(np.argmin(np.linalg.norm(closest - target, axis=1)))
+    lengths = np.sqrt(length_sq)
+    return _PlaceOnVessel(
+        segment=i,
+        point=closest[i],
+        along_um=float(lengths[:i].sum() + t[i] * lengths[i]),
+        total_um=float(lengths.sum()),
+    )
+
+
+def _snapped_end(edge: EdgeKey, place: _PlaceOnVessel, snap_um: float) -> Any | None:
+    """The node at an end of *edge* that *place* is within *snap_um* of, if any."""
+    u, v, _k = edge
+    if place.along_um <= snap_um:
+        return u
+    if place.total_um - place.along_um <= snap_um:
+        return v
+    return None
+
+
+def split_vessel_at(
+    G: nx.MultiGraph,
+    edge: EdgeKey,
+    point_um: Sequence[float],
+    *,
+    reserved_ids: Iterable[Any] = (),
+    snap_um: float = SPLIT_SNAP_UM,
+) -> Any:
+    """Cut vessel *edge* in two at the point of its path nearest *point_um*.
+
+    A new node goes exactly there -- between two of the path's points if
+    that is where it falls, not at the nearest one, so a straight two-point
+    vessel can be split too. The two halves keep every attribute of the
+    vessel (its diameter and where it came from included) except its path
+    and ``length``, which are measured from each half: the two lengths add up
+    to the vessel's. Within *snap_um* of either end, nothing is cut and the
+    node at that end is returned instead. New ids avoid *reserved_ids*.
+
+    Returns the node at the cut.
+    """
+    points = vessel_path(G, edge)
+    place = _place_on_vessel(points, point_um)
+    snapped = _snapped_end(edge, place, snap_um)
+    if snapped is not None:
+        return snapped
+    u, v, k = edge
+    data = G.edges[u, v, k]
+    node = next_node_id(G, set(reserved_ids))
+    G.add_node(node, pos=np.asarray(place.point, dtype=float))
+    halves = (
+        (u, node, _dedupe([*points[: place.segment + 1], place.point])),
+        (node, v, _dedupe([place.point, *points[place.segment + 1 :]])),
+    )
+    for a, b, path in halves:
+        attrs = {key: value for key, value in data.items() if key not in ("voxels", "length")}
+        if len(path) < 2:
+            path = _dedupe([_node_position(G, a), _node_position(G, b)])
+        attrs["voxels"] = path
+        attrs["length"] = float(calculate_path_length(path))
+        G.add_edge(a, b, **attrs)
+    G.remove_edge(u, v, k)
+    return node
+
+
+class IntensityCostField:
+    """A routing cost from raw intensities, worked out one window at a time.
+
+    The raw-image counterpart of :func:`haemolynx.graph.mask_cost_field`, and
+    shaped like its windowed form: ``shape`` plus slicing by a tuple of
+    unit-step slices, which is all :func:`haemolynx.graph.astar_path` uses.
+    Each window is blurred (:data:`RAW_COST_SMOOTHING_SIGMA_VOX`, with enough
+    context that the blur has no edge), scaled between its own
+    :data:`RAW_COST_PERCENTILES` and costed ``1 / max(t, RAW_COST_FLOOR)``:
+    1 on the brightest voxels, 100 on the dimmest. A cost relative to the
+    window keeps it fair to a vessel that is dim across the whole stack, and
+    one route is always found within a single window.
+    """
+
+    def __init__(
+        self,
+        raw: Any,
+        *,
+        sigma_vox: float = RAW_COST_SMOOTHING_SIGMA_VOX,
+        percentiles: tuple[float, float] = RAW_COST_PERCENTILES,
+        floor: float = RAW_COST_FLOOR,
+    ):
+        shape = tuple(int(n) for n in np.shape(raw))
+        if len(shape) != 3:
+            raise ValueError(f"Raw intensities need a 3D (z, y, x) volume, got shape {shape}")
+        self.raw = raw
+        self.shape = shape
+        self.ndim = 3
+        self.sigma_vox = float(sigma_vox)
+        self.percentiles = tuple(float(p) for p in percentiles)
+        self.floor = float(floor)
+
+    def __getitem__(self, key) -> np.ndarray:
+        from scipy.ndimage import gaussian_filter
+
+        window = tuple(slice(*k.indices(n)) for k, n in zip(key, self.shape))
+        if any(k.step != 1 for k in window):
+            raise IndexError("IntensityCostField supports unit-step slices only")
+        lo = np.array([k.start for k in window])
+        hi = np.maximum(np.array([k.stop for k in window]), lo)
+        pad = int(np.ceil(3.0 * self.sigma_vox)) if self.sigma_vox > 0 else 0
+        plo = np.maximum(lo - pad, 0)
+        phi = np.minimum(hi + pad, self.shape)
+        crop = np.asarray(
+            self.raw[tuple(slice(a, b) for a, b in zip(plo, phi))], dtype=np.float32
+        )
+        if self.sigma_vox > 0 and crop.size:
+            crop = gaussian_filter(crop, self.sigma_vox)
+        values = crop[tuple(slice(a - p, b - p) for a, b, p in zip(lo, hi, plo))]
+        if not values.size:
+            return np.ones(values.shape)
+        black, white = np.percentile(values, self.percentiles)
+        if not white > black:
+            return np.ones(values.shape)
+        brightness = np.clip((values - black) / (white - black), self.floor, 1.0)
+        return 1.0 / brightness.astype(np.float64)
+
+
+def trace_path(
+    cost_field: Any,
+    start_um: Sequence[float],
+    end_um: Sequence[float],
+    *,
+    voxel_size_zyx: Sequence[float] = (1.0, 1.0, 1.0),
+) -> list[tuple[float, float, float]]:
+    """The cheapest path from *start_um* to *end_um* through *cost_field*.
+
+    :func:`haemolynx.graph.astar_path` over a window round the two points --
+    *cost_field* is :func:`haemolynx.graph.mask_cost_field` of the segmented
+    mask or an :class:`IntensityCostField` of the raw image -- in microns,
+    starting and ending exactly on the two points. With no *cost_field*, the
+    straight line between them.
+    """
+    start = np.asarray(start_um, dtype=float)[:3]
+    end = np.asarray(end_um, dtype=float)[:3]
+    straight = _dedupe([start, end])
+    if cost_field is None or len(straight) < 2:
+        return straight
+    scale = np.asarray(voxel_size_zyx, dtype=float)
+    points = voxel_path_to_microns(astar_path(cost_field, start / scale, end / scale), scale)
+    if len(points) < 2:
+        return straight
+    return _dedupe([start, *points[1:-1], end])
+
+
+def smooth_traced_path(
+    points_um: Sequence[Sequence[float]],
+    *,
+    voxel_size_zyx: Sequence[float] = (1.0, 1.0, 1.0),
+    method: str = "taubin",
+    iterations: int = 10,
+    max_deviation: float | None = None,
+) -> tuple[list[tuple[float, float, float]], str]:
+    """A traced path with the voxel staircase taken out, as graph building does.
+
+    An A* path steps voxel to voxel, which makes it longer than the vessel
+    it follows (by ~7%; see :mod:`haemolynx.graph.smoothing`) -- and the
+    vessels the pipeline built were smoothed. The same smoother and the same
+    acceptance rule apply, judged against the traced path itself: the result
+    may not stray further from it than :func:`haemolynx.graph.smoothing.edge_tolerance_um`
+    allows, nor be longer. Returns the path and what happened to it
+    (``smoothed``, ``relaxed``, ``kept_raw`` or ``too_short``).
+    """
+    from scipy.spatial import cKDTree
+
+    from .smoothing import DEFAULT_MAX_DEVIATION_UM, _accept, edge_tolerance_um, smooth_polyline
+
+    original = np.asarray(_dedupe(points_um), dtype=float)
+    if len(original) < 3:
+        return _dedupe(original), "too_short"
+    smoothed = smooth_polyline(original, method=method, iterations=iterations)
+    tolerance = edge_tolerance_um(
+        original,
+        max_deviation=DEFAULT_MAX_DEVIATION_UM if max_deviation is None else float(max_deviation),
+        voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
+    )
+    accepted, outcome = _accept(original, smoothed, cKDTree(original), tolerance)
+    return _dedupe(accepted), outcome
+
+
+@dataclass(frozen=True)
+class VesselEnd:
+    """Where a traced vessel starts or ends: an existing node, or a point on
+    an existing vessel, where :func:`add_traced_vessel` will form a new node."""
+
+    node: Any = None
+    edge: EdgeKey | None = None
+    point_um: tuple[float, float, float] | None = None
+
+    @classmethod
+    def at_node(cls, node: Any) -> "VesselEnd":
+        return cls(node=node)
+
+    @classmethod
+    def on_vessel(cls, edge: EdgeKey, point_um: Sequence[float]) -> "VesselEnd":
+        return cls(
+            edge=tuple(edge),
+            point_um=tuple(float(c) for c in np.asarray(point_um, dtype=float)[:3]),
+        )
+
+    @property
+    def on_a_vessel(self) -> bool:
+        return self.edge is not None
+
+    def position(self, G: nx.MultiGraph) -> np.ndarray:
+        """Where it is, in microns: the node's ``pos``, or the point on the vessel."""
+        if self.edge is not None:
+            return np.asarray(self.point_um, dtype=float)
+        return _node_position(G, self.node)
+
+
+@dataclass(frozen=True)
+class TracedVessel:
+    """What :func:`add_traced_vessel` did."""
+
+    edge: EdgeKey
+    #: Nodes formed on existing vessels, in the order the vessel reaches them.
+    new_nodes: tuple[Any, ...]
+    #: The vessels those nodes cut in two, as they were before the cut.
+    split_vessels: tuple[EdgeKey, ...]
+    diameter_um: float | None
+    #: What smoothing did to the path (see :func:`smooth_traced_path`), or
+    #: None when it was not smoothed.
+    smoothing: str | None
+
+
+def _resolve_end(G: nx.MultiGraph, end: VesselEnd, snap_um: float):
+    """``(node, place)``: the node *end* is at, or where on its vessel to cut."""
+    if not end.on_a_vessel:
+        if end.node not in G:
+            raise ValueError(f"Node {end.node!r} is not in the network")
+        return end.node, None
+    place = _place_on_vessel(vessel_path(G, end.edge), end.point_um)
+    snapped = _snapped_end(end.edge, place, snap_um)
+    return (snapped, None) if snapped is not None else (None, place)
+
+
+def add_traced_vessel(
+    G: nx.MultiGraph,
+    start: VesselEnd,
+    end: VesselEnd,
+    points_um: Sequence[Sequence[float]],
+    *,
+    reserved_ids: Iterable[Any] = (),
+    voxel_size_zyx: Sequence[float] = (1.0, 1.0, 1.0),
+    smoothing: Mapping[str, Any] | None = None,
+    snap_um: float = SPLIT_SNAP_UM,
+) -> TracedVessel:
+    """Add the vessel traced along *points_um* from *start* to *end*.
+
+    An end on an existing vessel cuts that vessel there with
+    :func:`split_vessel_at` (a new node, two halves each measured again);
+    both ends on one vessel cut it twice. The new vessel's path runs from its
+    start node to its end node through *points_um* (the traced points; its
+    first and last are moved onto the nodes), smoothed like the pipeline's
+    own centrelines when *smoothing* -- keyword arguments of
+    :func:`smooth_traced_path`: ``method``, ``iterations``, ``max_deviation``
+    -- is given, and its ``length`` is measured from that path. It carries
+    ``post_processing_added=True`` and, as a manual override, the mean
+    diameter of the vessels at its two ends (:func:`mean_incident_diameter`,
+    halves of a cut vessel included).
+
+    A vessel from a node back to itself is refused before anything changes.
+    New ids avoid *reserved_ids*.
+    """
+    # Both ends first, so a refusal leaves G as it was.
+    start_node, start_place = _resolve_end(G, start, snap_um)
+    end_node, end_place = _resolve_end(G, end, snap_um)
+    if start_node is not None and start_node == end_node:
+        raise ValueError(
+            f"This vessel would start and end at node {start_node}: finish it on "
+            "a different node or vessel"
+        )
+    if (
+        start_place is not None
+        and end_place is not None
+        and start.edge == end.edge
+        and abs(start_place.along_um - end_place.along_um) <= snap_um
+    ):
+        raise ValueError(
+            "This vessel would start and end at the same point: finish it on a "
+            "different node or vessel"
+        )
+    points = _dedupe(points_um)
+    if len(points) < 2:
+        raise ValueError("A traced vessel needs at least two points")
+
+    reserved = set(reserved_ids)
+    new_nodes: list[Any] = []
+    split_vessels: list[EdgeKey] = []
+    if start_node is None:
+        start_node = split_vessel_at(
+            G, start.edge, start.point_um, reserved_ids=reserved, snap_um=snap_um
+        )
+        new_nodes.append(start_node)
+        split_vessels.append(tuple(start.edge))
+    if end_node is None:
+        edge = tuple(end.edge)
+        if not G.has_edge(*edge):
+            # The start's cut was on this vessel too: cut whichever half holds the end.
+            edge = min(
+                ((a, b, k) for a, b, k in G.edges(start_node, keys=True)),
+                key=lambda half: float(
+                    np.linalg.norm(
+                        _place_on_vessel(vessel_path(G, half), end.point_um).point
+                        - np.asarray(end.point_um, dtype=float)
+                    )
+                ),
+            )
+        end_node = split_vessel_at(G, edge, end.point_um, reserved_ids=reserved, snap_um=snap_um)
+        new_nodes.append(end_node)
+        split_vessels.append(tuple(end.edge))
+
+    points[0] = tuple(float(c) for c in _node_position(G, start_node))
+    points[-1] = tuple(float(c) for c in _node_position(G, end_node))
+    points = _dedupe(points)
+    if len(points) < 2:
+        points = [points[0], points[0]]
+    outcome = None
+    if smoothing is not None:
+        points, outcome = smooth_traced_path(
+            points, voxel_size_zyx=voxel_size_zyx, **dict(smoothing)
+        )
+    diameter = mean_incident_diameter(G, [start_node, end_node])
+    edge = add_vessel_between(G, start_node, end_node, points, diameter_um=diameter)
+    if outcome is not None:
+        G.edges[edge]["centreline_smoothing"] = outcome
+    return TracedVessel(
+        edge=edge,
+        new_nodes=tuple(new_nodes),
+        split_vessels=tuple(split_vessels),
+        diameter_um=diameter,
+        smoothing=outcome,
+    )
 
 
 def prune_disconnected_branches(

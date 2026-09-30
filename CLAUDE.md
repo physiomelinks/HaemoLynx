@@ -35,7 +35,8 @@ haemolynx/
 │   │                       #   thick_vessel_junctions.py (IS_ZERO_RESISTANCE bridges),
 │   │                       #   communities.py (vascular communities), edit.py (the panel's
 │   │                       #   graph edits), post_processing.py (4+ junctions: delete
-│   │                       #   vessels / split with a connector), automated_vessel_assignment.py
+│   │                       #   vessels / split with a connector; Add vessel's click-by-click
+│   │                       #   A* traces through mask or raw data), automated_vessel_assignment.py
 │   │                       #   (terminal-node assignment)
 │   ├── haemodynamics/      # poiseuille, viscosity (the laws), resistance, apply,
 │   │                       #   automated.py (FWHM diameters), raw_section.py (the raw

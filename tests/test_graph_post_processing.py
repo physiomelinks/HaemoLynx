@@ -12,14 +12,22 @@ import pytest
 
 from haemolynx.graph import (
     DEFAULT_SPLIT_CONNECTOR_LENGTH_UM,
+    IntensityCostField,
+    VesselEnd,
+    add_traced_vessel,
     add_vessel_between,
     delete_vessels,
     edge_keys,
     high_degree_junctions,
     junction_vessels,
+    mask_cost_field,
     mean_incident_diameter,
     prune_disconnected_branches,
+    smooth_traced_path,
     split_junction,
+    split_vessel_at,
+    trace_path,
+    vessel_path,
     vessel_path_between,
 )
 from haemolynx.graph._helpers import calculate_path_length
@@ -357,3 +365,210 @@ def test_split_connector_diameter_is_the_mean_of_the_junctions_vessels():
     bare = _network(positions, edges)
     new = split_junction(bare, 0)[0]
     assert "diameter_um" not in bare.get_edge_data(0, new)[0]
+
+
+# --- tracing a new vessel (Add vessel) -----------------------------------------
+
+
+def _one_vessel(voxels, **attrs) -> nx.MultiGraph:
+    """Node 0 at the first point of *voxels*, node 1 at the last, one vessel."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.asarray(voxels[0], dtype=float))
+    G.add_node(1, pos=np.asarray(voxels[-1], dtype=float))
+    G.add_edge(0, 1, voxels=list(voxels), length=calculate_path_length(voxels), **attrs)
+    return G
+
+
+def test_split_vessel_at_cuts_between_path_points_and_keeps_its_attributes():
+    # A straight two-point vessel: the cut lands between its only two points.
+    G = _one_vessel(
+        [(0.0, 0.0, 0.0), (0.0, 0.0, 20.0)],
+        diameter_um=5.0, diameter_source="measured", branch_order="B02",
+    )
+    node = split_vessel_at(G, (0, 1, 0), (0.0, 3.0, 7.0), reserved_ids={2})
+    assert node == 3  # the next free id, past the reserved one
+    assert np.allclose(G.nodes[node]["pos"], (0.0, 0.0, 7.0))
+    assert not G.has_edge(0, 1)
+    first, second = G.edges[0, node, 0], G.edges[node, 1, 0]
+    assert first["length"] == pytest.approx(7.0) and second["length"] == pytest.approx(13.0)
+    for half in (first, second):
+        assert half["diameter_um"] == 5.0 and half["diameter_source"] == "measured"
+        assert half["branch_order"] == "B02"
+    assert np.allclose(first["voxels"][-1], (0, 0, 7)) and np.allclose(second["voxels"][0], (0, 0, 7))
+
+
+def test_split_vessel_at_follows_a_path_stored_the_other_way_round():
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.asarray((0.0, 0.0, 0.0)))
+    G.add_node(1, pos=np.asarray((0.0, 0.0, 20.0)))
+    G.add_edge(0, 1, voxels=_straight((0, 0, 20), (0, 0, 0)), length=20.0)
+    node = split_vessel_at(G, (0, 1, 0), (0.0, 0.0, 5.0))
+    # The half at node 0 is the 5 um nearest it, not the 15 um at node 1.
+    assert G.edges[0, node, 0]["length"] == pytest.approx(5.0)
+    assert G.edges[node, 1, 0]["length"] == pytest.approx(15.0)
+    assert np.allclose(G.edges[0, node, 0]["voxels"][0], (0, 0, 0))
+
+
+def test_split_vessel_at_an_end_joins_that_node_instead():
+    G = _one_vessel(_straight((0, 0, 0), (0, 0, 20)))
+    assert split_vessel_at(G, (0, 1, 0), (0.0, 0.0, 0.6)) == 0
+    assert split_vessel_at(G, (0, 1, 0), (0.0, 0.0, 19.5)) == 1
+    assert sorted(G.nodes) == [0, 1] and G.number_of_edges() == 1
+
+
+def test_trace_path_follows_the_mask_and_ends_exactly_on_its_points():
+    mask = _bent_mask()
+    points = trace_path(mask_cost_field(mask), (0.0, 0.0, 10.2), (0.0, 20.0, 9.8))
+    assert points[0] == (0.0, 0.0, 10.2) and points[-1] == (0.0, 20.0, 9.8)
+    assert max(p[2] for p in points) >= 29  # round the L, not straight across
+    # No cost field: the straight line.
+    assert trace_path(None, (0, 0, 10), (0, 20, 10)) == [(0.0, 0.0, 10.0), (0.0, 20.0, 10.0)]
+
+
+def test_trace_path_scales_voxels_to_microns():
+    mask = np.zeros((1, 25, 35), dtype=bool)
+    mask[0, 0:21, 10] = True  # straight down y at voxel x = 10
+    points = trace_path(
+        mask_cost_field(mask), (0.0, 0.0, 5.0), (0.0, 10.0, 5.0), voxel_size_zyx=(1.0, 0.5, 0.5)
+    )
+    assert all(p[2] == pytest.approx(5.0) for p in points)
+    assert calculate_path_length(points) == pytest.approx(10.0)
+
+
+def _bright_l(noise_seed: int = 0) -> np.ndarray:
+    """Raw intensities: the L of _bent_mask, bright, over dim noise."""
+    rng = np.random.default_rng(noise_seed)
+    raw = rng.uniform(0.0, 20.0, size=(1, 25, 35)).astype(np.float32)
+    raw[_bent_mask()] = 200.0
+    return raw
+
+
+def test_intensity_cost_is_cheap_on_bright_voxels_and_dear_on_dark_ones():
+    field = IntensityCostField(_bright_l(), sigma_vox=0.0)
+    window = field[0:1, 0:25, 0:35]
+    assert window.shape == (1, 25, 35)
+    assert window.min() == pytest.approx(1.0)
+    assert window.max() <= 1.0 / 0.01 + 1e-9
+    assert window[0, 0, 20] == pytest.approx(1.0)  # on the L
+    assert window[0, 10, 20] > 10.0  # in the dark middle
+    with pytest.raises(ValueError, match="3D"):
+        IntensityCostField(np.zeros((5, 5)))
+
+
+def test_trace_path_follows_the_bright_vessel_in_raw_data():
+    points = trace_path(IntensityCostField(_bright_l()), (0.0, 0.0, 10.0), (0.0, 20.0, 10.0))
+    assert max(p[2] for p in points) >= 29
+    assert calculate_path_length(points) > 50
+
+
+def _staircase(steps: int = 20, dx: float = 1.0) -> list[tuple[float, float, float]]:
+    """A voxel staircase: alternately one step in y and *dx* in x."""
+    stairs = [(0.0, 0.0, 0.0)]
+    for i in range(steps):
+        y, x = stairs[-1][1], stairs[-1][2]
+        stairs.append((0.0, y + 1.0, x) if i % 2 == 0 else (0.0, y, x + dx))
+    return stairs
+
+
+def test_smooth_traced_path_takes_out_the_staircase_without_moving_the_ends():
+    stairs = _staircase()
+    smoothed, outcome = smooth_traced_path(stairs)
+    assert outcome in ("smoothed", "relaxed")
+    assert smoothed[0] == stairs[0] and smoothed[-1] == stairs[-1]
+    assert calculate_path_length(smoothed) < calculate_path_length(stairs)
+    assert calculate_path_length(smoothed) >= np.hypot(10.0, 10.0) - 1e-9
+    assert smooth_traced_path(stairs[:2]) == (stairs[:2], "too_short")
+
+
+def test_add_traced_vessel_from_a_node_to_a_point_on_a_vessel_forms_a_node():
+    G = _two_ends()
+    # 1 -> a waypoint -> 4 um along 3 -> 4 (which runs x = 0..10 at y = 20).
+    path = [(0.0, 0.0, 10.0), (0.0, 10.0, 6.0), (0.0, 20.0, 4.0)]
+    traced = add_traced_vessel(
+        G, VesselEnd.at_node(1), VesselEnd.on_vessel((3, 4, 0), (0.0, 20.5, 4.0)), path,
+        smoothing=None,
+    )
+    new = traced.new_nodes[0]
+    assert traced.split_vessels == ((3, 4, 0),)
+    assert np.allclose(G.nodes[new]["pos"], (0.0, 20.0, 4.0))
+    assert not G.has_edge(3, 4)
+    assert G.edges[3, new, 0]["length"] == pytest.approx(4.0)
+    assert G.edges[new, 4, 0]["length"] == pytest.approx(6.0)
+    assert G.edges[3, new, 0]["diameter_um"] == G.edges[new, 4, 0]["diameter_um"] == 8.0
+
+    data = G.edges[traced.edge]
+    assert set(traced.edge[:2]) == {1, new}
+    assert data["post_processing_added"] is True
+    assert data["length"] == pytest.approx(calculate_path_length(path))
+    # The mean of the vessels at node 1 (4 and 6 um) and at the new node (8, 8).
+    assert data["diameter_um"] == pytest.approx(6.5) == traced.diameter_um
+    assert data["diameter_source"] == "override"
+
+
+def test_add_traced_vessel_with_both_ends_on_one_vessel_cuts_it_twice():
+    G = _one_vessel(_straight((0, 0, 0), (0, 0, 40)), diameter_um=5.0)
+    path = [(0.0, 0.0, 10.0), (0.0, 10.0, 10.0), (0.0, 10.0, 30.0), (0.0, 0.0, 30.0)]
+    traced = add_traced_vessel(
+        G,
+        VesselEnd.on_vessel((0, 1, 0), (0.0, 0.0, 10.0)),
+        VesselEnd.on_vessel((0, 1, 0), (0.0, 0.0, 30.0)),
+        path,
+        smoothing=None,
+    )
+    a, b = traced.new_nodes
+    assert np.allclose(G.nodes[a]["pos"], (0, 0, 10)) and np.allclose(G.nodes[b]["pos"], (0, 0, 30))
+    lengths = {
+        frozenset((u, v)): d["length"]
+        for u, v, d in G.edges(data=True) if not d.get("post_processing_added")
+    }
+    assert lengths == {
+        frozenset((0, a)): pytest.approx(10.0),
+        frozenset((a, b)): pytest.approx(20.0),
+        frozenset((b, 1)): pytest.approx(10.0),
+    }
+    assert G.edges[traced.edge]["length"] == pytest.approx(40.0)
+    assert G.number_of_edges() == 4
+
+
+def test_add_traced_vessel_puts_the_path_ends_on_the_nodes_and_smooths_it():
+    G = _two_ends()
+    stairs = [(0.0, y, 10.0 + x) for _z, y, x in _staircase(dx=1.0)]
+    stairs[0], stairs[-1] = (0.0, 0.3, 10.2), (0.0, 9.8, 19.8)
+    G.nodes[5]["pos"] = np.asarray((0.0, 10.0, 20.0))
+    # {}: the pipeline's own smoothing defaults (Taubin, 10 passes).
+    traced = add_traced_vessel(G, VesselEnd.at_node(1), VesselEnd.at_node(5), stairs, smoothing={})
+    data = G.edges[traced.edge]
+    assert np.allclose(data["voxels"][0], (0, 0, 10)) and np.allclose(data["voxels"][-1], (0, 10, 20))
+    assert traced.smoothing in ("smoothed", "relaxed")
+    assert data["centreline_smoothing"] == traced.smoothing
+    assert data["length"] == pytest.approx(calculate_path_length(data["voxels"]))
+    assert data["length"] < calculate_path_length(stairs)
+
+
+def test_add_traced_vessel_refuses_a_loop_back_to_its_start_and_changes_nothing():
+    G = _one_vessel(_straight((0, 0, 0), (0, 0, 40)))
+    before = (sorted(G.nodes), sorted(edge_keys(G)))
+    with pytest.raises(ValueError, match="start and end at node 0"):
+        add_traced_vessel(G, VesselEnd.at_node(0), VesselEnd.at_node(0), [(0, 0, 0), (0, 5, 0)])
+    with pytest.raises(ValueError, match="start and end at node 0"):
+        # A point on the vessel right by node 0 is node 0.
+        add_traced_vessel(
+            G, VesselEnd.at_node(0), VesselEnd.on_vessel((0, 1, 0), (0.0, 0.0, 0.5)),
+            [(0, 0, 0), (0, 5, 0), (0, 0, 0.5)],
+        )
+    with pytest.raises(ValueError, match="same point"):
+        add_traced_vessel(
+            G,
+            VesselEnd.on_vessel((0, 1, 0), (0.0, 0.0, 20.0)),
+            VesselEnd.on_vessel((0, 1, 0), (0.0, 0.0, 20.4)),
+            [(0, 0, 20), (0, 5, 20), (0, 0, 20.4)],
+        )
+    assert (sorted(G.nodes), sorted(edge_keys(G))) == before
+
+
+def test_vessel_path_runs_from_the_u_end():
+    G = _one_vessel(_straight((0, 0, 0), (0, 0, 10)))
+    assert np.allclose(vessel_path(G, (0, 1, 0))[0], (0, 0, 0))
+    assert np.allclose(vessel_path(G, (1, 0, 0))[0], (0, 0, 10))
+    with pytest.raises(ValueError, match="No vessel"):
+        vessel_path(G, (0, 1, 7))
