@@ -1,6 +1,6 @@
 """Network handling: what is done to the assigned network before its model.
 
-The "Network handling" settings sit on the "6. Haemodynamics" tab, and run at
+The "Network handling" settings sit on the "7. Haemodynamics" tab, and run at
 the start of that stage (``apply_network_handling``) rather than at the end of
 boundary assignment -- so changing one there and choosing "Run from this
 stage" actually takes effect.
@@ -72,9 +72,9 @@ def test_the_prune_toggle_still_needs_automated_assignment():
 
 def test_network_handling_is_the_last_box_on_the_haemodynamics_tab():
     owner = assign_to_stages(SCHEMA)
-    assert owner[PRUNE] == "6. Haemodynamics"
-    assert owner["boundary_handling"] == "6. Haemodynamics"
-    (tab,) = [tab for tab in tabs_for(SCHEMA) if tab.stage.title == "6. Haemodynamics"]
+    assert owner[PRUNE] == "7. Haemodynamics"
+    assert owner["boundary_handling"] == "7. Haemodynamics"
+    (tab,) = [tab for tab in tabs_for(SCHEMA) if tab.stage.title == "7. Haemodynamics"]
     sections = list(dict.fromkeys(SCHEMA[row.name].section for row in tab.fields))
     assert sections[-1] == "Network handling"
     names = [row.name for row in tab.fields if SCHEMA[row.name].section == "Network handling"]

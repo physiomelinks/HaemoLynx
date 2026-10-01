@@ -35,8 +35,9 @@ def _stage_event(kind, name, **extra):
 
 
 def test_the_run_has_as_many_stages_as_the_pipeline_does():
-    """Nine since the perturbations became a stage rather than only a tab."""
-    assert TOTAL_STAGES == 9
+    """Ten since Post processing became a stage between Diameters and
+    Haemodynamics (nine since the perturbations became one)."""
+    assert TOTAL_STAGES == 10
 
 
 def test_nothing_is_shown_before_a_run_starts():
@@ -93,7 +94,24 @@ def test_the_whole_run_moves_the_bar_one_stage_at_a_time():
         display.update(_stage_event(STAGE_FINISHED, stage.call))
         seen.append(display.stages.value)
 
-    assert seen == [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9]
+    assert seen == [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10]
+
+
+def test_a_paused_run_leaves_the_bar_where_it_stopped():
+    """Paused before Post processing is not finished: the bar must not fill."""
+    display = ProgressDisplay()
+    display.start()
+    for stage in [stage for stage in STAGES if stage.call][:5]:
+        display.update(_stage_event(STAGE_STARTED, stage.call))
+        display.update(_stage_event(STAGE_FINISHED, stage.call))
+
+    display.pause("Paused at 6. Post processing")
+
+    assert display.stages.value == 5
+    assert display.stages.total == TOTAL_STAGES
+    assert display.stages.text == "Paused at 6. Post processing"
+    assert display.stages.visible
+    assert not display.steps.visible
 
 
 # --- the bar within a stage --------------------------------------------------

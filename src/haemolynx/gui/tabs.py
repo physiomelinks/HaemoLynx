@@ -49,7 +49,7 @@ __all__ = [
 
 #: What the panel titles a section's group box on one tab, where the schema's
 #: section name reads wrong there. Keyed by (stage call, section) because a
-#: section's settings can be split across tabs: "6. Haemodynamics" shows the
+#: section's settings can be split across tabs: "7. Haemodynamics" shows the
 #: viscosity and haematocrit settings, which are declared in "Diameters and
 #: pericytes" -- a name that describes the Diameters tab, not these. Only the
 #: title changes; the section name is what settings, configs and

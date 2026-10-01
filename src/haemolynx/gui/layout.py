@@ -155,6 +155,7 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
                 "use_ilastik_segmentation",
                 "ilastik_unsegmented_image_path",
                 "ilastik_classifier_path",
+                "mid_run_postprocessing",
             ),
             rest=True,
         ),

@@ -149,6 +149,10 @@ class StageCheckpoint:
     outlet_nodes: tuple[Any, ...] = ()
     arteriole_boundary_nodes: tuple[Any, ...] = ()
     venule_boundary_nodes: tuple[Any, ...] = ()
+    #: The Large_Art/Large_Ven hand-off nodes, read from assign_boundaries'
+    #: own output (they have no layer) and carried forward like the rest.
+    large_arteriole_boundary_nodes: tuple[Any, ...] = ()
+    large_venule_boundary_nodes: tuple[Any, ...] = ()
     large_arteriole_mask: Any | None = None
     large_venule_mask: Any | None = None
     #: The fat catchment `skeletonise` produced, if thickness-gated
@@ -475,9 +479,12 @@ def _resume_payload(checkpoint: StageCheckpoint, *, graph: Any, start_from: str)
         outlet_nodes=checkpoint.outlet_nodes,
         arteriole_boundary_nodes=checkpoint.arteriole_boundary_nodes,
         venule_boundary_nodes=checkpoint.venule_boundary_nodes,
+        large_arteriole_boundary_nodes=checkpoint.large_arteriole_boundary_nodes,
+        large_venule_boundary_nodes=checkpoint.large_venule_boundary_nodes,
         resistance_node_pair=pair,
         large_arteriole_mask=checkpoint.large_arteriole_mask,
         large_venule_mask=checkpoint.large_venule_mask,
+        thick_vessel_mask=checkpoint.thick_vessel_mask,
     )
 
 
@@ -577,6 +584,8 @@ class StageCheckpoints:
                     "outlet": checkpoint.outlet_nodes,
                     "arteriole_boundary": checkpoint.arteriole_boundary_nodes,
                     "venule_boundary": checkpoint.venule_boundary_nodes,
+                    "large_arteriole_boundary": checkpoint.large_arteriole_boundary_nodes,
+                    "large_venule_boundary": checkpoint.large_venule_boundary_nodes,
                 }
         return None
 
@@ -632,7 +641,12 @@ class StageCheckpoints:
                 pickle_path = None
 
         roles = _boundary_ids_from_group(group)
-        if not any(roles.values()):
+        if any(roles.values()):
+            # Only assign_boundaries draws boundary nodes; its output has the
+            # large-vessel hand-off nodes, which it does not draw.
+            for role in ("large_arteriole_boundary", "large_venule_boundary"):
+                roles[role] = tuple(getattr(output, f"{role}_nodes", None) or ())
+        else:
             carried = self._carried_boundary_roles()
             if carried is not None:
                 roles = carried
@@ -656,6 +670,8 @@ class StageCheckpoints:
             outlet_nodes=roles.get("outlet", ()),
             arteriole_boundary_nodes=roles.get("arteriole_boundary", ()),
             venule_boundary_nodes=roles.get("venule_boundary", ()),
+            large_arteriole_boundary_nodes=roles.get("large_arteriole_boundary", ()),
+            large_venule_boundary_nodes=roles.get("large_venule_boundary", ()),
             large_arteriole_mask=large_arteriole_mask,
             large_venule_mask=large_venule_mask,
             thick_vessel_mask=getattr(results, "_thick_vessel_mask", None),

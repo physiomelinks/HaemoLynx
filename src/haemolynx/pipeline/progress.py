@@ -231,8 +231,20 @@ STAGES: tuple[Stage, ...] = (
         ),
     ),
     Stage(
+        # Hand edits to the network, between the diameters and the flow they
+        # set: the panel can pause a run here (mid_run_postprocessing, on
+        # Input). The stage brings the edits in line with the rest of the
+        # network; it has no settings, and its tab lays out its own page.
+        call="post_process",
+        title="6. Post processing",
+        summary=(
+            "Fix the network by hand before haemodynamics: junctions where four "
+            "or more vessels meet, and vessels to add or delete."
+        ),
+    ),
+    Stage(
         call="build_haemodynamic_model",
-        title="6. Haemodynamics",
+        title="7. Haemodynamics",
         summary=(
             "Whether to solve the flow, the blood model it solves with, and "
             "the pressures to solve it at."
@@ -257,11 +269,11 @@ STAGES: tuple[Stage, ...] = (
             "do_equiv_resistance_calculation",
             *_HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB,
         ),
-        tab="6. Haemodynamics",
+        tab="7. Haemodynamics",
     ),
     Stage(
         call="run_perturbations",
-        title="7. Perturbations",
+        title="8. Perturbations",
         summary="What to re-solve the finished network for.",
         # Pericyte / constriction knobs stay in the Diameters schema section
         # (apply.py reads that group by name) but their *rows* belong here:
@@ -280,12 +292,12 @@ STAGES: tuple[Stage, ...] = (
         # Statistics and the 3D cell-mask measurement are computed inside
         # export_results (there is no separate pipeline stage for them), but
         # get a tab of their own so a long, rarely-touched options list does
-        # not crowd the VTK/plot settings on "9. Export". call=None is the
+        # not crowd the VTK/plot settings on "10. Export". call=None is the
         # same feature "Solve" above uses in the other direction (a real
         # stage sharing another's tab): a tab the pipeline does not run as
         # its own stage.
         call=None,
-        title="8. Additional measurements",
+        title="9. Additional measurements",
         summary=(
             "Global vessel statistics, 3D distance to a cell mask, and "
             "vascular communities for colouring the vessels."
@@ -298,7 +310,7 @@ STAGES: tuple[Stage, ...] = (
     ),
     Stage(
         call="export_results",
-        title="9. Export",
+        title="10. Export",
         summary="VTK and plots.",
         settings=("vtk_output_prefix", "base_plot_dir", "verbose_logging"),
         sections=("Solver and output",),

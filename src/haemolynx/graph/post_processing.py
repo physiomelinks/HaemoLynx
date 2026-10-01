@@ -1,10 +1,17 @@
-"""Post-processing a finished network: junctions where four or more vessels meet.
+"""Post-processing a network by hand: junctions where four or more vessels meet.
 
-Pure graph logic behind the panel's "10. Post processing" tab -- no Qt, no
+Pure graph logic behind the panel's "6. Post processing" tab -- no Qt, no
 napari -- so every rule here is testable on a hand-built graph. A vessel is
 an edge and a junction a node, as everywhere else; a vessel's *branchID* is
 its position in ``G.edges(keys=True)``, the same index the viewer's hover
 shows (see :func:`edge_keys`).
+
+Every edit marks what it did, for the pipeline's ``post_process`` stage to
+bring in line with the rest of the network (its length, branch order,
+diameter and thick-vessel bridge): each vessel it created or rewrote carries
+:data:`EDITED`, and the graph carries :data:`PENDING` -- set by a deletion
+too, which changes branch orders downstream of it without leaving a vessel
+to mark. :func:`has_pending_edits` asks; the stage clears both.
 
 Three things a user can do at a junction of degree four or more:
 
@@ -42,21 +49,29 @@ from ._helpers import calculate_path_length, next_node_id
 from .degree2 import create_trivial_merged_edge
 from .edit import astar_path, voxel_path_to_microns
 from .prune import remove_components_without_connected_io
+from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 
 __all__ = [
+    "APPLIED",
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
+    "EDITED",
     "IntensityCostField",
     "JunctionVessel",
     "MIN_ROUTED_INSIDE_FRACTION",
+    "PENDING",
     "SPLIT_SNAP_UM",
     "TracedVessel",
     "VesselEnd",
     "add_traced_vessel",
     "add_vessel_between",
+    "clear_edit_marks",
     "delete_vessels",
     "edge_keys",
+    "edited_edges",
+    "has_pending_edits",
     "high_degree_junctions",
     "junction_vessels",
+    "mark_edited",
     "mean_incident_diameter",
     "prune_disconnected_branches",
     "smooth_traced_path",
@@ -68,6 +83,16 @@ __all__ = [
 ]
 
 EdgeKey = tuple[Any, Any, Any]
+
+#: Edge attribute: an edit here created or rewrote this vessel, so the
+#: ``post_process`` stage measures it again the way graph building's vessels
+#: were measured.
+EDITED = "post_processing_edited"
+#: Graph attribute: the network was edited here since it was last regenerated.
+PENDING = "post_processing_pending"
+#: Graph attribute: edits made here were brought into this network (set by the
+#: ``post_process`` stage, and kept) -- work a rerun from an earlier stage drops.
+APPLIED = "post_processing_applied"
 
 #: Length of the connector vessel :func:`split_junction` inserts.
 DEFAULT_SPLIT_CONNECTOR_LENGTH_UM = 15.0
@@ -117,6 +142,36 @@ class JunctionVessel:
 def edge_keys(G: nx.MultiGraph) -> list[EdgeKey]:
     """Every edge's ``(u, v, key)``, indexed by branchID."""
     return [(u, v, k) for u, v, k in G.edges(keys=True)]
+
+
+def mark_edited(G: nx.MultiGraph, edges: Iterable[EdgeKey] = ()) -> None:
+    """Mark *edges* :data:`EDITED` and *G* :data:`PENDING` (with no edges: *G* only)."""
+    for u, v, k in edges:
+        G.edges[u, v, k][EDITED] = True
+    G.graph[PENDING] = True
+
+
+def edited_edges(G: nx.MultiGraph) -> list[EdgeKey]:
+    """The vessels an edit created or rewrote since the last regenerate."""
+    return [(u, v, k) for u, v, k, data in G.edges(keys=True, data=True) if data.get(EDITED)]
+
+
+def has_pending_edits(G: nx.MultiGraph | None) -> bool:
+    """Whether *G* was edited here since it was last regenerated."""
+    if G is None:
+        return False
+    return bool(G.graph.get(PENDING)) or bool(edited_edges(G))
+
+
+def clear_edit_marks(G: nx.MultiGraph) -> None:
+    """Forget every edit mark: the network is in line with itself again."""
+    for _u, _v, _k, data in G.edges(keys=True, data=True):
+        data.pop(EDITED, None)
+    G.graph.pop(PENDING, None)
+
+
+def _is_bridge(data: Mapping[str, Any]) -> bool:
+    return bool(data.get(IS_ZERO_RESISTANCE))
 
 
 def high_degree_junctions(G: nx.MultiGraph, *, min_degree: int = 4) -> list[Any]:
@@ -177,6 +232,14 @@ def delete_vessels(
     never merged, and a deletion that would leave one with no vessel at all is
     refused before anything changes: the solve needs every boundary node.
 
+    Thick-vessel bridges (:data:`~haemolynx.graph.IS_ZERO_RESISTANCE`, the
+    opening of a small vessel into a big one's lumen) are kept apart from the
+    vessels they open: a bridge and an ordinary vessel meeting at a
+    pass-through are not merged -- the merged vessel would take one of the
+    two's resistance rule for both -- and a bridge a deletion leaves hanging
+    from a thick vessel, with nothing beyond it, is deleted with the vessel
+    it opened.
+
     Returns the node ids whose drawing changed.
     """
     selected = list(dict.fromkeys(tuple(edge) for edge in edges))
@@ -201,13 +264,23 @@ def delete_vessels(
         G.remove_edge(u, v, k)
 
     changed: set[Any] = set()
-    for node in loss:
+    queue = list(loss)
+    while queue:
+        node = queue.pop(0)
         if not G.has_node(node) or node in protected_set:
             continue
         degree = G.degree(node)
         if degree == 0:
             G.remove_node(node)
             changed.add(node)
+            continue
+        if degree == 1:
+            ((_, other, k, data),) = G.edges(node, keys=True, data=True)
+            if _is_bridge(data):
+                G.remove_edge(node, other, k)
+                G.remove_node(node)
+                changed.update({node, other})
+                queue.append(other)
             continue
         if degree != 2:
             continue
@@ -217,10 +290,14 @@ def delete_vessels(
         (_, n1, _k1, d1), (_, n2, _k2, d2) = incident
         if n1 == n2:
             continue  # two vessels to one neighbour: a loop, not a pass-through
+        if _is_bridge(d1) != _is_bridge(d2):
+            continue  # a bridge and the vessel it opens: two vessels, not one
         merged = create_trivial_merged_edge(d1, d2, G.nodes[node].get("pos"))
         G.remove_node(node)
-        G.add_edge(n1, n2, **merged)
+        key = G.add_edge(n1, n2, **merged)
+        mark_edited(G, [(n1, n2, key)])
         changed.update({node, n1, n2})
+    mark_edited(G)
     return changed
 
 
@@ -264,6 +341,7 @@ def split_junction(
     *,
     connector_length_um: float = DEFAULT_SPLIT_CONNECTOR_LENGTH_UM,
     reserved_ids: Iterable[Any] = (),
+    mark: bool = True,
 ) -> list[Any]:
     """Split *node* into bifurcations joined by short connector vessels.
 
@@ -279,8 +357,9 @@ def split_junction(
     Connector vessels carry ``junction_split_connector=True`` and, like every
     vessel this module adds, the mean diameter of the vessels that met at
     *node* as a manual override (:func:`mean_incident_diameter`; none when
-    none of them has a diameter). A regenerate from Diameters assigns their
-    branch order.
+    none of them has a diameter). With *mark* (the tab's edits), connectors
+    and moved vessels are marked :data:`EDITED`, so the ``post_process``
+    stage measures them and assigns their branch order.
 
     Returns the new node ids.
     """
@@ -339,7 +418,9 @@ def split_junction(
             attrs["voxels"] = points
             attrs["length"] = float(calculate_path_length(points))
             G.remove_edge(node, other, k)
-            G.add_edge(new_node, other, **attrs)
+            moved = G.add_edge(new_node, other, **attrs)
+            if mark:
+                mark_edited(G, [(new_node, other, moved)])
         connector_attrs: dict[str, Any] = {
             "voxels": [tuple(float(c) for c in origin), tuple(float(c) for c in new_pos)],
             "length": length,
@@ -350,6 +431,8 @@ def split_junction(
 
             set_edge_diameter_override(connector_attrs, connector_diameter)
         key = G.add_edge(node, new_node, **connector_attrs)
+        if mark:
+            mark_edited(G, [(node, new_node, key)])
         connectors.add((node, new_node, key))
         new_nodes.append(new_node)
     return new_nodes
@@ -458,6 +541,7 @@ def add_vessel_between(
 
         set_edge_diameter_override(attrs, diameter_um)
     key = G.add_edge(a, b, **attrs)
+    mark_edited(G, [(a, b, key)])
     return (a, b, key)
 
 
@@ -564,7 +648,8 @@ def split_vessel_at(
             path = _dedupe([_node_position(G, a), _node_position(G, b)])
         attrs["voxels"] = path
         attrs["length"] = float(calculate_path_length(path))
-        G.add_edge(a, b, **attrs)
+        half = G.add_edge(a, b, **attrs)
+        mark_edited(G, [(a, b, half)])
     G.remove_edge(u, v, k)
     return node
 
@@ -872,4 +957,6 @@ def prune_disconnected_branches(
     stats = dict(stats)
     stats["removed_vessels"] = G.number_of_edges() - pruned.number_of_edges()
     stats["removed_boundary_nodes"] = [n for n in boundary if n in G and n not in pruned]
+    if stats["removed_vessels"] or G.graph.get(PENDING):
+        mark_edited(pruned)
     return pruned, stats

@@ -757,6 +757,7 @@ TEXT_COLUMNS = frozenset(
 DEFAULT_VESSEL_COLOUR = {
     "build_network": "segment_id",
     "assign_diameters": "diameter_um",
+    "post_process": "diameter_um",
     "build_haemodynamic_model": "resistance",
     "solve": "flow_abs",
 }
@@ -1389,7 +1390,7 @@ class ResultLayers:
                 self._skeleton = skeleton
         elif stage == "build_network":
             self._graph = getattr(output, "graph", None)
-        elif stage == "assign_boundaries":
+        elif stage in {"assign_boundaries", "post_process"}:
             graph = getattr(output, "graph", None)
             if graph is not None:
                 self._graph = graph
@@ -1947,6 +1948,38 @@ class ResultLayers:
             note=note,
         )
 
+    def _from_post_process(self, output: Any) -> StageLayers:
+        """The network as Post processing left it: the edited vessels in line,
+        split into bridges where they open into a thick vessel, so the vessels
+        are drawn again (coloured by diameter, as after Diameters).
+
+        Like Boundaries' cut, the edits change the network on purpose -- a
+        vessel drawn by hand adds an edge -- so this graph becomes the
+        canonical one rather than being refused as a stale copy. A network
+        nobody edited passed through untouched: Diameters' layers already
+        show it, so nothing is drawn again."""
+        graph = getattr(output, "graph", None)
+        if graph is not None:
+            self._graph = graph
+            self._canonical_graph = graph
+        done = (getattr(output, "results", None) or {}).get("post_process")
+        if self._graph is None or not done:
+            return StageLayers(
+                stage="post_process", title=_title_for("post_process"), note="No edits."
+            )
+        note = f"{done.get('edited_vessels', 0)} edited vessel(s) in line"
+        if done.get("diameters"):
+            measured = {name: count for name, count in done["diameters"].items() if count}
+            note += ", diameters " + ", ".join(
+                f"{count} {name}" for name, count in sorted(measured.items())
+            )
+        return StageLayers(
+            stage="post_process",
+            title=_title_for("post_process"),
+            layers=tuple(self._vessel_layers("post_process")),
+            note=note,
+        )
+
     def _from_build_haemodynamic_model(self, output: Any) -> StageLayers:
         """No new layer: this stage returns the object it was given.
 
@@ -2381,6 +2414,7 @@ _BUILDERS = {
     "build_network": ResultLayers._from_build_network,
     "assign_boundaries": ResultLayers._from_assign_boundaries,
     "assign_diameters": ResultLayers._from_assign_diameters,
+    "post_process": ResultLayers._from_post_process,
     "build_haemodynamic_model": ResultLayers._from_build_haemodynamic_model,
     "solve": ResultLayers._from_solve,
     "run_perturbations": ResultLayers._from_run_perturbations,

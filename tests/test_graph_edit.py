@@ -302,3 +302,18 @@ def test_commit_new_edge_creates_a_dangling_terminal_when_no_target_was_hit():
     assert end not in (0,)
     assert G.nodes[end]["pos"] == (5.0, 0.0, 0.0)
     assert G.has_edge(0, end, key)
+
+
+def test_delete_edge_does_not_merge_a_thick_vessel_bridge_with_an_ordinary_vessel():
+    """The Edit window's delete keeps a bridge apart, like the Post processing tab's:
+    merged, one resistance rule would cover both."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    G = _star_graph()
+    G.edges["A", "C", 0][IS_ZERO_RESISTANCE] = True
+
+    delete_edge_and_collapse(G, "C", "D", 0)
+
+    assert "C" in G and G.degree("C") == 2
+    assert G.edges["A", "C", 0][IS_ZERO_RESISTANCE] is True
+    assert not G.edges["C", "B", 0].get(IS_ZERO_RESISTANCE)

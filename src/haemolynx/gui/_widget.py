@@ -87,9 +87,15 @@ from haemolynx.gui.run_state import (
     ALREADY_RUNNING,
     CANCELLED,
     FINISHED_FIRST,
+    POST_PROCESS,
     RunCancelled,
     RunState,
     clear_message,
+    mid_run_stop_after,
+    paused_bar_text,
+    paused_message,
+    post_processing_tab_title,
+    regenerate_stop_after,
 )
 from haemolynx.gui.stage_checkpoints import (
     SKIP_FOR_RESUME,
@@ -461,6 +467,19 @@ def output_folder_from_settings(values: Mapping[str, Any]) -> Path | None:
     snapshots and pickle discards do not land in the process cwd.
     """
     return output_dir_from_prefix(values.get("vtk_output_prefix"))
+
+
+def _confirm_discard_hand_edits(parent, tab_title: str) -> bool:
+    """Ask before a run from *tab_title* drops the Post processing tab's edits."""
+    from qtpy.QtWidgets import QMessageBox
+
+    answer = QMessageBox.question(
+        parent,
+        "Discard the hand edits?",
+        f"Running from {tab_title} starts again from a network without the "
+        f"edits made on {POST_PROCESSING_TAB}; they will be lost. Run anyway?",
+    )
+    return answer == QMessageBox.Yes
 
 
 def _dialog_parent(viewer) -> Any:
@@ -872,6 +891,10 @@ class ProgressBars:
 
     def finish(self, message: str = "Finished") -> None:
         self.display.finish(message)
+        self._refresh()
+
+    def pause(self, message: str) -> None:
+        self.display.pause(message)
         self._refresh()
 
     def fail(self, message: str = "Failed") -> None:
@@ -5004,7 +5027,8 @@ def _progress_bridge():
 def _run_in_background(
     settings, schema, report, button, bars=None, viewer=None, results=None,
     state=None, log=None, checkpoints=None, after_layers=None,
-    start_from=None, resume=None, restored_stages=()):
+    start_from=None, resume=None, restored_stages=(), stop_after=None,
+    on_paused=None):
     """Run the pipeline off the GUI thread, reporting back as it goes.
 
     With *viewer* and *results*, each stage's output is turned into layers as it
@@ -5028,6 +5052,11 @@ def _run_in_background(
     *start_from* / *resume* are forwarded to
     :func:`~haemolynx.pipeline.run_pipeline_stages` so "Run from this stage"
     can skip earlier work.
+
+    *stop_after* is forwarded too: a run that stops there on purpose is
+    paused, not finished -- the bars stay where it got to, *state* records
+    where it paused, and *on_paused* (if given) is called, for the panel to
+    bring up its Post processing tab.
     """
     from napari.qt.threading import thread_worker
 
@@ -5142,6 +5171,8 @@ def _run_in_background(
         if start_from is not None or resume is not None:
             extra["start_from"] = start_from
             extra["resume"] = resume
+        if stop_after is not None:
+            extra["stop_after"] = stop_after
         return run_pipeline_stages(
             settings,
             schema,
@@ -5160,6 +5191,17 @@ def _run_in_background(
             # next checkpoint. Saying "finished" beside an empty viewer, or
             # "cancelled" about a run that completed, would both be wrong.
             report.value = FINISHED_FIRST
+            return
+        if stop_after is not None and graph is not None:
+            run_state.paused_after = stop_after
+            if bars is not None:
+                pause = getattr(bars, "pause", None)
+                (pause if callable(pause) else bars.finish)(paused_bar_text(stop_after))
+            report.value = paused_message(
+                stop_after, graph.number_of_nodes(), graph.number_of_edges()
+            )
+            if on_paused is not None:
+                on_paused()
             return
         if graph is None:
             if bars is not None:
@@ -7487,9 +7529,10 @@ class _GraphEditorWindow:
         return bool(self.native.isVisible())
 
 
-#: The tab after the stages: a panel page, not a pipeline stage, so it is not
-#: in STAGES -- no "Run from this stage", nothing for the progress bars.
-POST_PROCESSING_TAB = "10. Post processing"
+#: The Post processing stage's tab, between Diameters and Haemodynamics. Its
+#: page is its own (no setting rows), and it has no "Run from this stage": its
+#: Regenerate graph / Continue / Regenerate from the edited network are that.
+POST_PROCESSING_TAB = post_processing_tab_title()
 
 #: How wide a box, in microns, zooming to a junction fits on screen.
 JUNCTION_ZOOM_BOX_UM = 60.0
@@ -7541,16 +7584,27 @@ def _zoom_viewer_to(viewer, position_zyx, box_um: float = JUNCTION_ZOOM_BOX_UM) 
 
 
 def _post_processing_controls(
-    viewer, report, *, results, boundary_roles, regenerate, running, settings=None
+    viewer, report, *, results, boundary_roles, regenerate, running, settings=None,
+    paused=None, complete=None,
 ):
-    """The "10. Post processing" page: junctions where four or more vessels meet.
+    """The "6. Post processing" page: fix the network by hand before haemodynamics.
 
     *results* returns the panel's current ResultLayers (or None), *boundary_roles*
-    the run's boundary node ids by role, *regenerate* reruns the later stages on
-    an edited graph, *running* says whether a run is under way and *settings*
-    (optional) returns the panel's settings -- where Add vessel finds the raw
-    data file and the run's centreline smoothing. Callables, because the panel
-    builds them after its tabs.
+    the run's boundary node ids by role, *regenerate(graph, stop_after=...)*
+    runs the Post processing stage on an edited graph (and on to *stop_after*,
+    or the end) and says whether it started, *running* says whether a run is
+    under way and *settings* (optional) returns the panel's settings -- where
+    Add vessel finds the raw data file and the run's centreline smoothing.
+    *paused* says whether a run is paused here (Mid-run postprocessing) and
+    *complete* whether one has been past here. Callables, because the panel
+    builds them before what they read.
+
+    Three buttons at the foot of the page take the edits on. Regenerate graph
+    brings them in line -- branch orders, lengths, diameters by the run's own
+    methods, thick-vessel bridges (the pipeline's ``post_process`` stage) --
+    and, when a run is paused here, stays paused; after a finished run it goes
+    on to re-solve Haemodynamics to Export, as Regenerate from the edited
+    network does. Continue, while paused, does the same and carries the run on.
 
     The page edits one working copy of the graph: the junction table's
     Delete and Split, and the edit box's click-in-the-viewer Delete vessel and
@@ -7589,6 +7643,7 @@ def _post_processing_controls(
         add_traced_vessel,
         delete_vessels,
         edge_keys,
+        has_pending_edits,
         mask_cost_field,
         prune_disconnected_branches,
         split_junction,
@@ -7651,10 +7706,12 @@ def _post_processing_controls(
     page.setObjectName("haemolynx_post_processing")
     layout = QVBoxLayout(page)
     intro = QLabel(
-        "After a run: find junctions where four or more vessels meet and fix "
-        "them. The chosen junction's vessels are cyan and the ones selected in "
-        "the table yellow. Edits stay in the viewer until Regenerate reruns "
-        "Diameters onwards on them."
+        "Fix the network by hand: junctions where four or more vessels meet, "
+        "and vessels to add or delete. The chosen junction's vessels are cyan "
+        "and the ones selected in the table yellow. Edits stay in the viewer "
+        "until Regenerate graph brings them in line with the rest of the "
+        "network. With Mid-run postprocessing on (1. Input), a run pauses here "
+        "after Diameters and Continue runs Haemodynamics onwards."
     )
     intro.setWordWrap(True)
     scan_button = QPushButton("Scan network")
@@ -7722,7 +7779,17 @@ def _post_processing_controls(
     prune_button = QPushButton("Prune disconnected branches")
     prune_button.setToolTip(tips["prune"])
     regenerate_button = QPushButton("Regenerate from the edited network")
+    regenerate_button.setObjectName("haemolynx_post_processing_regenerate")
     regenerate_button.setToolTip(tips["regenerate"])
+    regenerate_graph_button = QPushButton("Regenerate graph")
+    regenerate_graph_button.setObjectName("haemolynx_post_processing_regenerate_graph")
+    regenerate_graph_button.setToolTip(tips["regenerate_graph"])
+    continue_button = QPushButton("Continue")
+    continue_button.setObjectName("haemolynx_post_processing_continue")
+    continue_button.setToolTip(tips["continue"])
+    commit_status = QLabel("")
+    commit_status.setObjectName("haemolynx_post_processing_commit_status")
+    commit_status.setWordWrap(True)
     log_box = QPlainTextEdit()
     log_box.setObjectName("haemolynx_post_processing_log")
     log_box.setReadOnly(True)
@@ -7746,9 +7813,14 @@ def _post_processing_controls(
     layout.addLayout(row)
     layout.addWidget(edit_box)
     layout.addWidget(prune_button)
-    layout.addWidget(regenerate_button)
     layout.addWidget(QLabel("What was changed:"))
     layout.addWidget(log_box)
+    row = QHBoxLayout()
+    row.addWidget(regenerate_graph_button)
+    row.addWidget(regenerate_button)
+    layout.addLayout(row)
+    layout.addWidget(commit_status)
+    layout.addWidget(continue_button)
 
     def layer(name):
         return viewer.layers[name] if viewer is not None and name in viewer.layers else None
@@ -7905,6 +7977,38 @@ def _post_processing_controls(
         draw_markers()
         draw_added_nodes()
         fill_list(prefer)
+        refresh_buttons()
+
+    def is_paused() -> bool:
+        return bool(paused()) if paused is not None else False
+
+    def refresh_buttons() -> None:
+        """Which of the three hand-over buttons applies now, and why."""
+        busy = bool(running())
+        held = is_paused()
+        finished = bool(complete()) if complete is not None else False
+        pending = has_pending_edits(state.graph)
+        regenerate_graph_button.setEnabled(not busy and pending)
+        continue_button.setEnabled(not busy and held)
+        regenerate_button.setEnabled(not busy and pending and finished and not held)
+        if busy:
+            text = "A run is going."
+        elif held and pending:
+            text = (
+                "Paused before Haemodynamics, with edits not yet in the model. "
+                "Regenerate graph brings them in line and stays paused; Continue "
+                "brings them in line and runs Haemodynamics onwards."
+            )
+        elif held:
+            text = "Paused before Haemodynamics. Continue runs Haemodynamics onwards."
+        elif pending:
+            text = (
+                "Edits not yet in the model. Regenerate graph brings them in line "
+                "and re-solves Haemodynamics through Export."
+            )
+        else:
+            text = ""
+        commit_status.setText(text)
 
     def on_junction_changed(row: int) -> None:
         if state.scan is None or not 0 <= row < len(state.scan.junctions):
@@ -8452,27 +8556,95 @@ def _post_processing_controls(
             if target is not None and on_press in target.mouse_drag_callbacks:
                 target.mouse_drag_callbacks.remove(on_press)
 
-    def on_regenerate() -> None:
-        if state.graph is None:
-            status.setText("Scan the network first; there is nothing edited to regenerate from.")
-            return
-        if running():
-            report.value = ALREADY_RUNNING
-            return
+    def hand_over(graph, *, stop_after, note: str, waiting: str) -> None:
+        """Start the run that takes *graph* on, and clear the tab for it.
+
+        The tab keeps its edits when the run does not start (a failed check
+        says why in the report box): nothing is lost to a refused run.
+        """
         stop_editing()
-        graph = state.graph
-        log_edit(
-            f"Regenerating Diameters to Export from the edited network "
-            f"({graph.number_of_edges()} vessels, measured diameters kept)"
-        )
+        if not regenerate(graph, stop_after=stop_after):
+            refresh_buttons()
+            return
+        log_edit(note)
         remove_layers()
         state.graph = state.scan = state.node = None
         state.vessels = []
         state.added_nodes = []
         junction_list.clear()
         table.setRowCount(0)
-        status.setText("Regenerating from the edited network; scan again once it finishes.")
-        regenerate(graph)
+        status.setText(waiting)
+        refresh_buttons()
+
+    def on_regenerate() -> None:
+        """After a finished run: the edits in line, then Haemodynamics to Export."""
+        if state.graph is None:
+            status.setText("Scan the network first; there is nothing edited to regenerate from.")
+            return
+        if running():
+            report.value = ALREADY_RUNNING
+            return
+        hand_over(
+            state.graph,
+            stop_after=None,
+            note=(
+                f"Regenerating from the edited network: the edits in line, then "
+                f"Haemodynamics to Export ({state.graph.number_of_edges()} vessels)"
+            ),
+            waiting="Regenerating from the edited network; scan again once it finishes.",
+        )
+
+    def on_regenerate_graph() -> None:
+        """The edits in line; paused, the run stays paused, else it re-solves."""
+        if state.graph is None or not has_pending_edits(state.graph):
+            status.setText("No outstanding edits to regenerate: the network is in line.")
+            return
+        if running():
+            report.value = ALREADY_RUNNING
+            return
+        held = is_paused()
+        hand_over(
+            state.graph,
+            stop_after=regenerate_stop_after(held),
+            note=(
+                f"Regenerating the graph ({state.graph.number_of_edges()} vessels): "
+                "branch orders, lengths, diameters and bridges of the edited vessels"
+                + ("; the run stays paused" if held else "; then Haemodynamics to Export")
+            ),
+            waiting=(
+                "Regenerating the graph; the tab scans it again once it is done."
+                if held
+                else "Regenerating the graph and re-solving; scan again once it finishes."
+            ),
+        )
+
+    def on_continue() -> None:
+        """A paused run: the edits (if any) in line, then Haemodynamics onwards."""
+        if not is_paused():
+            status.setText(
+                "No run is paused here. Turn on Mid-run postprocessing (1. Input) "
+                "for a run to stop here after Diameters."
+            )
+            return
+        if running():
+            report.value = ALREADY_RUNNING
+            return
+        graph = state.graph
+        if graph is None:
+            current = results()
+            graph = getattr(current, "_graph", None) if current is not None else None
+        if graph is None:
+            status.setText("Nothing to continue from: run the pipeline again.")
+            return
+        hand_over(
+            graph,
+            stop_after=None,
+            note=(
+                f"Continuing the run from the edited network ({graph.number_of_edges()} "
+                "vessels): the edits in line, then Haemodynamics onwards"
+            ),
+            waiting="Continuing the run; scan again once it finishes.",
+        )
 
     scan_button.clicked.connect(on_scan)
     junction_list.currentRowChanged.connect(on_junction_changed)
@@ -8493,10 +8665,35 @@ def _post_processing_controls(
     delete_ids_button.clicked.connect(on_delete_ids)
     branch_ids.returnPressed.connect(on_delete_ids)
     regenerate_button.clicked.connect(on_regenerate)
+    regenerate_graph_button.clicked.connect(on_regenerate_graph)
+    continue_button.clicked.connect(on_continue)
+    # Off until there is something to take on; the panel refreshes them once
+    # what `running`, `paused` and `complete` read exists.
+    for button in (regenerate_graph_button, continue_button, regenerate_button):
+        button.setEnabled(False)
+
+    def forget() -> None:
+        """The panel was cleared: drop the working graph and its edits."""
+        stop_editing()
+        state.graph = state.scan = state.node = None
+        state.vessels = []
+        state.added_nodes = []
+        state.decisions = {}
+        state.raw = state.raw_problem = None
+        junction_list.clear()
+        table.setRowCount(0)
+        status.setText("Not scanned yet.")
+        refresh_buttons()
 
     return SimpleNamespace(
         page=page,
         state=state,
+        scan=on_scan,
+        refresh=refresh_buttons,
+        forget=forget,
+        regenerate_graph_button=regenerate_graph_button,
+        continue_button=continue_button,
+        commit_status=commit_status,
         scan_button=scan_button,
         junction_list=junction_list,
         table=table,
@@ -8672,6 +8869,23 @@ def settings_widget(napari_viewer=None):
     perturbations = _perturbation_controls(viewer, rows, fields, schema, report)
     if perturbations is not None:
         pages["run_perturbations"] = perturbations.page
+    # Hand edits between Diameters and Haemodynamics: the post_process stage's
+    # page, which has no setting rows of its own. Its callables read `view`,
+    # `checkpoints` and `run_state` when clicked, all of which exist by then.
+    post_processing = _post_processing_controls(
+        viewer,
+        report,
+        results=lambda: view.results,
+        boundary_roles=lambda: checkpoints._carried_boundary_roles(),
+        regenerate=lambda graph, stop_after=None: regenerate_from_graph(
+            graph, from_post_processing=True, stop_after=stop_after
+        ),
+        running=lambda: run_state.running,
+        settings=lambda: _settings(),
+        paused=lambda: run_state.paused,
+        complete=lambda: not run_state.paused and checkpoints.has(POST_PROCESS),
+    )
+    pages[POST_PROCESS] = lambda _summary, _names: post_processing.page
 
     #: Snapshots from the last run that showed layers: what "Run from this
     #: stage" on a tab needs from the previous tab. Cleared when the layers
@@ -8758,7 +8972,7 @@ def settings_widget(napari_viewer=None):
         # has a predecessor, shown for the active tab and centered on the
         # panel. After a full run it drops this tab and later work, then
         # reruns from here using the previous tab's checkpoint.
-        if previous_tab(tab.stage.title) is not None:
+        if previous_tab(tab.stage.title) is not None and tab.stage.call != POST_PROCESS:
             revert = PushButton(text="Run from this stage")
             revert.enabled = False
             revert.tooltip = REVERT_STAGE_TOOLTIP
@@ -8771,27 +8985,6 @@ def settings_widget(napari_viewer=None):
         if tab.stage.call:
             index = tab_widget.count() - 1
             tab_widget.setTabToolTip(index, f"{tab.stage.call}(settings, ...)")
-
-    # After every stage's tab: checks and fixes on the finished network. Its
-    # callables read `view`, `checkpoints` and `run_state` when clicked, all of
-    # which exist by then.
-    post_processing = _post_processing_controls(
-        viewer,
-        report,
-        results=lambda: view.results,
-        boundary_roles=lambda: checkpoints._carried_boundary_roles(),
-        regenerate=lambda graph: regenerate_from_graph(graph, from_post_processing=True),
-        running=lambda: run_state.running,
-        settings=lambda: _settings(),
-    )
-    post_processing_scroller = _fitting_scroll_area()
-    post_processing_scroller.setWidget(post_processing.page)
-    tab_widget.addTab(post_processing_scroller, POST_PROCESSING_TAB)
-    tab_widget.setTabToolTip(
-        tab_widget.count() - 1,
-        "Junctions where four or more vessels meet, and vessels on no "
-        "inlet-to-outlet path, after a run",
-    )
 
     # The pages that lay themselves out keep their own Advanced buttons and
     # boxes; the panel refreshes them with everything else.
@@ -8817,11 +9010,6 @@ def settings_widget(napari_viewer=None):
             row.addWidget(button.native, 0, Qt.AlignHCenter)
         row.addStretch(1)
         revert_stack.addWidget(slot)
-    # The post-processing tab is no stage, so it has no Revert: an empty page
-    # keeps the stack's pages in step with the tabs.
-    post_processing_slot = QWidget()
-    post_processing_slot.setObjectName("haemolynx_revert_slot")
-    revert_stack.addWidget(post_processing_slot)
 
     def sync_revert_stack(index: int) -> None:
         if 0 <= index < revert_stack.count():
@@ -10019,7 +10207,12 @@ def settings_widget(napari_viewer=None):
         resume=None,
         replace_checkpoints: bool = True,
         restored_stages=(),
+        stop_after="auto",
     ) -> None:
+        """Start a run. *stop_after* is where it stops: ``"auto"`` pauses it
+        before Post processing when Mid-run postprocessing is on (see
+        :func:`~haemolynx.gui.run_state.mid_run_stop_after`), else a stage
+        call, or None to run to the end."""
         if run_state.running:
             # The button is disabled while a run is going, so this is only
             # reached from a script or a keyboard -- but it is also the one
@@ -10069,6 +10262,10 @@ def settings_widget(napari_viewer=None):
         )
         show_log()
         refresh_revert_buttons()
+        if stop_after == "auto":
+            # A pause needs the run on screen: the tab edits the viewer's graph.
+            stop_after = mid_run_stop_after(settings, start_from) if results is not None else None
+        run_state.paused_after = None
         worker = _run_in_background(
             settings, schema, report, run_button, bars,
             viewer=viewer if show_results.value else None,
@@ -10080,14 +10277,32 @@ def settings_widget(napari_viewer=None):
             start_from=start_from,
             resume=resume,
             restored_stages=restored_stages,
+            stop_after=stop_after,
+            on_paused=on_paused,
         )
         # After start(): running is True, so run-from buttons grey out for
         # the length of the run. They come back when the worker stops.
         refresh_revert_buttons()
+        post_processing.refresh()
         if worker is not None:
-            worker.returned.connect(lambda *_: refresh_revert_buttons())
-            worker.errored.connect(lambda *_: refresh_revert_buttons())
-            worker.finished.connect(lambda *_: refresh_revert_buttons())
+            for signal in (worker.returned, worker.errored, worker.finished):
+                signal.connect(lambda *_: refresh_revert_buttons())
+                signal.connect(lambda *_: post_processing.refresh())
+
+    def on_paused() -> None:
+        """A run stopped before Post processing (or after a Regenerate graph
+        there): bring up that tab with the network scanned, for Continue."""
+        titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
+        if POST_PROCESSING_TAB in titles:
+            tab_widget.setCurrentIndex(titles.index(POST_PROCESSING_TAB))
+        # Scanning reports its junction count; the pause message says more.
+        message = report.value
+        try:
+            post_processing.scan()
+        except Exception:  # noqa: BLE001 - the run is paused either way
+            logger.exception("could not scan the paused network")
+        report.value = message
+        post_processing.refresh()
 
     def on_clear(*, ask: bool = False) -> None:
         """Take our layers out of the viewer, stop the run, and forget state.
@@ -10164,7 +10379,9 @@ def settings_widget(napari_viewer=None):
             discarded_artefacts = bool(removed_paths)
         restored_skips = _restore_skip_toggles()
         checkpoints.clear()
+        run_state.paused_after = None
         refresh_revert_buttons()
+        post_processing.forget()
         report.value = clear_message(
             removed,
             stopping,
@@ -10277,6 +10494,17 @@ def settings_widget(napari_viewer=None):
 
     def on_revert(tab_title: str) -> None:
         """Prepare the previous tab's work, then rerun from this stage."""
+        from haemolynx.gui.post_processing import edits_lost_by_running_from
+        from haemolynx.gui.stage_checkpoints import tab_start_stage
+
+        post_processed = checkpoints.get(POST_PROCESS)
+        if edits_lost_by_running_from(
+            tab_start_stage(tab_title),
+            post_processing.state.graph,
+            post_processed.graph if post_processed is not None else None,
+        ) and not _confirm_discard_hand_edits(_dialog_parent(viewer), tab_title):
+            report.value = f"Kept the hand edits on {POST_PROCESSING_TAB}: nothing was run."
+            return
         plan = prepare_run_from(tab_title, check=True)
         if plan is None:
             return
@@ -10407,22 +10635,25 @@ def settings_widget(napari_viewer=None):
             return
         regenerate_from_graph(state.graph)
 
-    def regenerate_from_graph(graph, *, from_post_processing: bool = False) -> None:
-        """Rerun Diameters onwards on *graph*: the Edit window's Regenerate,
-        and the post-processing tab's.
+    def regenerate_from_graph(
+        graph, *, from_post_processing: bool = False, stop_after=None
+    ) -> bool:
+        """Run the later stages on the hand-edited *graph*. Returns whether a
+        run started (a failed check says why in the report box).
 
-        *from_post_processing* (the post-processing tab) does two things more.
-        It cuts the run's boundary lists to the nodes *graph* still has --
-        the tab's Prune drops inlets and outlets on purpose; without it a
-        missing boundary node stops the solve, which catches an accidental
-        one. And it keeps the FWHM diameters already measured instead of
-        measuring every vessel again (``do_fwhm_measurement`` off for this run
-        only, the way a run from a tab skips what it already has): the tab
-        changes which vessels there are, not the image they were measured in.
+        From the Post processing tab (*from_post_processing*) the run starts
+        at its ``post_process`` stage, which brings the edits in line --
+        boundary lists cut to the nodes left (the tab's Prune drops inlets on
+        purpose), bridges into thick vessels, lengths, branch orders, and the
+        edited vessels measured by the run's own diameter methods -- and goes
+        on to *stop_after*, or to the end. Diameters and everything before it
+        keep what they recorded: the tab comes after them.
+
+        From the Edit window the run starts at Diameters, as it always has.
         """
         if run_state.running:
             report.value = ALREADY_RUNNING
-            return
+            return False
         # Like a run from a tab: the user's own toggles first, then the skeleton
         # and the edited graph written where the run loads them, so it neither
         # re-skeletonises the image nor rebuilds a graph it would discard.
@@ -10431,34 +10662,35 @@ def settings_widget(napari_viewer=None):
             settings = _settings()
         except Exception as error:
             report.value = f"Could not read settings:\n{error}"
-            return
-        plan = checkpoints.plan_regenerate(graph, settings=settings, drop=False)
+            return False
+        start_from = POST_PROCESS if from_post_processing else "assign_diameters"
+        plan = checkpoints.plan_regenerate(
+            graph, settings=settings, start_from=start_from, drop=False
+        )
         if plan is None:
             report.value = (
                 "Nothing to regenerate from: run the pipeline through at "
                 "least Boundaries first."
             )
-            return
-        if from_post_processing:
-            from haemolynx.gui.post_processing import boundaries_following_graph
-
-            skips = tuple(dict.fromkeys((*plan.skip_settings, "do_fwhm_measurement")))
-            plan = replace(
-                plan, resume=boundaries_following_graph(plan.resume), skip_settings=skips
-            )
+            return False
         if not _resumed_run_passes_checks(settings, plan):
-            return
+            return False
         checkpoints.drop_from(plan.start_from)
         _apply_resume_skips(plan.skip_settings)
         on_run(
             start_from=plan.start_from,
             resume=plan.resume,
             replace_checkpoints=False,
-            # Boundaries is recorded again, from the edited graph, so a later
-            # "Run from this stage" on Diameters keeps the edit; the graph
-            # tab and earlier keep the graph as it was built.
-            restored_stages=stages_before("assign_boundaries"),
+            # From the Edit window, Boundaries is recorded again, from the
+            # edited graph, so a later "Run from this stage" on Diameters keeps
+            # the edit. From Post processing the edit comes after Diameters:
+            # every stage before it keeps its own record.
+            restored_stages=stages_before(
+                start_from if from_post_processing else "assign_boundaries"
+            ),
+            stop_after=stop_after,
         )
+        return bool(run_state.running)
 
     def on_open_graph_editor() -> None:
         if view.results is None or getattr(view.results, "_graph", None) is None:
@@ -10505,6 +10737,7 @@ def settings_widget(napari_viewer=None):
                 show_results=bool(show_results.value),
                 show_steps=bool(show_steps.value),
                 report=str(report.value or ""),
+                paused_after=run_state.paused_after,
             )
         except RunSnapshotError as error:
             report.value = str(error)
@@ -10551,6 +10784,8 @@ def settings_widget(napari_viewer=None):
         except Exception:  # noqa: BLE001 - loading still proceeds
             logger.exception("could not discard cached artefacts before loading a run")
         checkpoints.clear()
+        run_state.paused_after = None
+        post_processing.forget()
         bars.reset()
 
     def load_run_file(path: Path | str) -> bool:
@@ -10605,6 +10840,12 @@ def settings_widget(napari_viewer=None):
         report.value = (
             f"Loaded run from {path}: {len(snapshot.stages)} stages restored."
         )
+        if snapshot.paused_after is not None:
+            # Saved while paused: pick it up where it stopped, Continue ready.
+            run_state.paused_after = snapshot.paused_after
+            report.value += f" It was paused; Continue on {POST_PROCESSING_TAB} runs the rest."
+            on_paused()
+        post_processing.refresh()
         return True
 
     def on_save_run() -> None:
@@ -10666,7 +10907,7 @@ def settings_widget(napari_viewer=None):
     run_file_layout.addStretch(1)
     run_file_layout.addWidget(view_button.native)
     run_file_layout.addWidget(edit_button.native)
-    # Editing lives in the "10. Post processing" tab now: the button keeps
+    # Editing lives in the "6. Post processing" tab now: the button keeps
     # its place in the row (and the floating Edit window its code) but is
     # hidden.
     edit_button.visible = False
@@ -10968,6 +11209,7 @@ def settings_widget(napari_viewer=None):
     else:
         _after_layers_applied()
     refresh_revert_buttons()
+    post_processing.refresh()
     # Applied once, panel-wide, after every row -- including the buttons and
     # dropdowns appended onto the Input tab above -- is in place.
     _wrap_row_labels(panel)

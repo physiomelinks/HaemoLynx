@@ -57,6 +57,9 @@ class RunSnapshot:
     report: str = ""
     results_state: dict[str, Any] | None = None
     checkpoints: tuple[StageCheckpoint, ...] = ()
+    #: The stage the run was paused after (Mid-run postprocessing), so a loaded
+    #: run can Continue; None for a run that was not paused.
+    paused_after: str | None = None
 
     @property
     def stages(self) -> tuple[str, ...]:
@@ -111,6 +114,7 @@ def capture_run(
     show_results: bool = True,
     show_steps: bool = False,
     report: str = "",
+    paused_after: str | None = None,
 ) -> RunSnapshot:
     """Copy the live panel's run into a snapshot. Raises if there is none."""
     if not can_capture(checkpoints):
@@ -130,6 +134,7 @@ def capture_run(
         report=str(report or ""),
         results_state=results_state,
         checkpoints=records,
+        paused_after=paused_after,
     )
 
 
@@ -147,6 +152,7 @@ def write_run_snapshot(path: Path | str, snapshot: RunSnapshot) -> Path:
         "report": snapshot.report,
         "results_state": snapshot.results_state,
         "checkpoints": snapshot.checkpoints,
+        "paused_after": snapshot.paused_after,
     }
     with gzip.open(dest, "wb") as handle:
         pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
@@ -189,8 +195,33 @@ def read_run_snapshot(path: Path | str) -> RunSnapshot:
         show_steps=bool(payload.get("show_steps", False)),
         report=str(payload.get("report") or ""),
         results_state=payload.get("results_state"),
-        checkpoints=checkpoints,
+        checkpoints=with_post_process_checkpoint(checkpoints),
+        paused_after=payload.get("paused_after"),
     )
+
+
+def with_post_process_checkpoint(
+    checkpoints: Sequence[StageCheckpoint],
+) -> tuple[StageCheckpoint, ...]:
+    """*checkpoints*, with one for ``post_process`` when a run saved before that
+    stage existed went past it.
+
+    Such a run went straight from Diameters to Haemodynamics, so Post
+    processing's end-of-tab state is Diameters' own -- the checkpoint "Run from
+    this stage" on Haemodynamics now needs.
+    """
+    stages = [item.stage for item in checkpoints]
+    if "post_process" in stages or "assign_diameters" not in stages:
+        return tuple(checkpoints)
+    order = [stage.call for stage in STAGES if stage.call]
+    later = order[order.index("post_process") + 1:]
+    if not any(stage in later for stage in stages):
+        return tuple(checkpoints)
+    diameters = checkpoints[stages.index("assign_diameters")]
+    title = next(stage.title for stage in STAGES if stage.call == "post_process")
+    stand_in = replace(diameters, stage="post_process", title=title)
+    at = stages.index("assign_diameters") + 1
+    return (*checkpoints[:at], stand_in, *checkpoints[at:])
 
 
 def replay_groups(snapshot: RunSnapshot) -> tuple[Any, ...]:

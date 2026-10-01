@@ -280,3 +280,62 @@ def test_loading_a_run_leaves_graph_building_and_skeleton_files_alone(tmp_path):
 
     assert graph_pkl.read_bytes() == b"what graph building made"
     assert loaded.session_artefact_paths == ()
+
+
+# --- a run paused for post-processing, and runs saved before that stage existed ----------
+
+
+def test_a_paused_run_is_saved_and_loaded_paused(tmp_path):
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(
+        checkpoints=checkpoints, results=results, settings=settings,
+        paused_after="assign_diameters",
+    )
+
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "paused", snapshot))
+
+    assert loaded.paused_after == "assign_diameters"
+
+
+def test_a_finished_run_is_not_loaded_paused(tmp_path):
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(checkpoints=checkpoints, results=results, settings=settings)
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "done", snapshot))
+    assert loaded.paused_after is None
+
+
+def _through(stages):
+    checkpoints = StageCheckpoints()
+    results = built()
+    for stage in stages:
+        checkpoints.record(stage, _group(stage), results)
+    return checkpoints.records()
+
+
+def test_a_run_saved_before_post_processing_existed_gets_its_checkpoint():
+    """Such a run went straight from Diameters to Haemodynamics: Post
+    processing's end-of-tab state is Diameters' own, which "Run from this
+    stage" on Haemodynamics now needs."""
+    from haemolynx.gui.run_snapshot import with_post_process_checkpoint
+
+    old = _through(("assign_boundaries", "assign_diameters", "build_haemodynamic_model", "solve"))
+    upgraded = with_post_process_checkpoint(old)
+
+    assert [c.stage for c in upgraded] == [
+        "assign_boundaries", "assign_diameters", "post_process",
+        "build_haemodynamic_model", "solve",
+    ]
+    stand_in = upgraded[2]
+    assert stand_in.title == "6. Post processing"
+    assert stand_in.graph is upgraded[1].graph
+
+
+def test_a_run_that_stopped_at_diameters_or_has_the_stage_is_left_alone():
+    from haemolynx.gui.run_snapshot import with_post_process_checkpoint
+
+    paused = _through(("assign_boundaries", "assign_diameters"))
+    assert [c.stage for c in with_post_process_checkpoint(paused)] == [
+        "assign_boundaries", "assign_diameters",
+    ]
+    current = _through(("assign_diameters", "post_process", "build_haemodynamic_model"))
+    assert with_post_process_checkpoint(current) == tuple(current)

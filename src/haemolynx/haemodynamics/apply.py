@@ -24,6 +24,7 @@ from haemolynx.haemodynamics import sections
 from haemolynx.haemodynamics.poiseuille import (
     PoiseuilleModel,
     clear_edge_resistances,
+    edge_selection,
     flag_fwhm_edt_disagreement,
     fwhm_demotion_reason,
     mark_fwhm_demotions,
@@ -218,6 +219,12 @@ class HaemodynamicsApplyConfig:
         return prefixed_arguments(self.fwhm, FWHM_SETTING_PREFIX, valid_parameters)
 
 
+def _subset(edges) -> dict[str, Any]:
+    """``edges=`` for a measurement helper, only when a subset was asked for --
+    so a full run calls every helper exactly as it always has."""
+    return {} if edges is None else {"edges": edges}
+
+
 def _fwhm_raw_path(config: HaemodynamicsApplyConfig) -> Path | None:
     raw_tiff_path = config.fwhm_setting("fwhm_raw_tiff_path")
     if raw_tiff_path is None:
@@ -307,6 +314,7 @@ def _measure_fwhm_diameters(
     raw_volume: np.ndarray | None = None,
     vessel_mask: np.ndarray | None = None,
     psf_sigma_zyx: tuple[float, float, float] | None = None,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> dict[str, Any]:
     path = _fwhm_raw_path(config)
     if path is None:
@@ -330,6 +338,7 @@ def _measure_fwhm_diameters(
             "raw_tiff_path": path,
             "store_profile_debug": True,
             "profile_psf_sigma_zyx": psf_sigma_zyx,
+            **_subset(edges),
         },
     )
 
@@ -341,9 +350,11 @@ def _measure_raw_section_diameters(
     raw_volume: np.ndarray | None,
     vessel_mask: np.ndarray | None = None,
     psf_sigma_zyx: tuple[float, float, float] | None = None,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> dict[str, Any]:
     """Fit the raw cross-sections of the edges FWHM left without a width --
-    or whose width was demoted (see :func:`poiseuille.fwhm_demotion_reason`).
+    or whose width was demoted (see :func:`poiseuille.fwhm_demotion_reason`),
+    among *edges* when given.
 
     Shares FWHM's own sampling (spacing, junction exclusion, how far a
     section is averaged along the vessel, aggregation) and first guess, so
@@ -361,11 +372,15 @@ def _measure_raw_section_diameters(
     voxel_sz = tuple(
         float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
     )
+    chosen = edge_selection(edges)
     unmeasured = [
         (u, v, key)
         for u, v, key, data in G.edges(keys=True, data=True)
-        if positive_diameter_um(data.get("fwhm_diameter_um")) is None
-        or fwhm_demotion_reason(data) is not None
+        if (chosen is None or (frozenset((u, v)), key) in chosen)
+        and (
+            positive_diameter_um(data.get("fwhm_diameter_um")) is None
+            or fwhm_demotion_reason(data) is not None
+        )
     ]
     sigma_xy = config.fwhm_setting("raw_section_psf_sigma_xy_um")
     sigma_z = config.fwhm_setting("raw_section_psf_sigma_z_um")
@@ -406,7 +421,9 @@ def _measure_raw_section_diameters(
 
 
 def _measure_endothelial_diameters(
-    G: nx.MultiGraph, config: HaemodynamicsApplyConfig
+    G: nx.MultiGraph,
+    config: HaemodynamicsApplyConfig,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> dict[str, Any]:
     """Read each edge's internal diameter off the endothelial stain.
 
@@ -459,6 +476,7 @@ def _measure_endothelial_diameters(
             ),
             workers=workers,
             memmap_directory=config.memmap_directory,
+            **_subset(edges),
         )
     finally:
         if isinstance(volume, np.memmap):
@@ -500,6 +518,7 @@ def _measure_edt_diameters(
     config: HaemodynamicsApplyConfig,
     *,
     mask_volume: np.ndarray,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> dict[str, Any]:
     voxel_sz = tuple(
         float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
@@ -526,6 +545,7 @@ def _measure_edt_diameters(
                 "edt_min_resolvable_diameter_um", edt_diameter.MIN_RESOLVABLE_DIAMETER_UM
             )
         ),
+        **_subset(edges),
     )
 
 
@@ -534,11 +554,23 @@ def assign_edge_diameters(
     config: HaemodynamicsApplyConfig,
     *,
     mask_volume: np.ndarray | None = None,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     """Stamp modelled diameters on *G* without writing resistance.
 
     Measures FWHM when that is enabled and ``do_fwhm_measurement`` is on.
     Otherwise keeps measured / override values already on the graph.
+
+    With *edges* (``(u, v, key)``), only those are measured -- EDT, FWHM,
+    the raw-section fit and the endothelium, whichever the run uses, FWHM
+    whatever ``do_fwhm_measurement`` says -- and go down the whole diameter
+    chain afresh (``stamp_edge_diameters``'s *fresh_edges*); every other edge
+    keeps its measurement, and a table or class-median diameter follows its
+    branch order. How the post_process stage brings hand-edited vessels in
+    line: FWHM holds its blur at the PSF the run already recorded
+    (``G.graph["fwhm_psf_sigma_zyx"]``) rather than estimating it again, and
+    the decoy check -- a statistic of the whole image, already reported --
+    is not run again.
 
     When ``use_edt_diameter_crosscheck`` is on, also measures each edge's
     diameter from the segmentation mask's own inscribed radius (*mask_volume*
@@ -563,8 +595,13 @@ def assign_edge_diameters(
     clear_edge_resistances(G)
     summary: dict[str, Any] = {}
     loaded_mask: np.ndarray | None = None
-    wants_mask = config.use_edt_diameter_crosscheck or (
-        config.use_fwhm_edge_diameters and config.do_fwhm_measurement
+    edges = None if edges is None else [tuple(edge) for edge in edges]
+    wants_mask = (edges is None or bool(edges)) and (
+        config.use_edt_diameter_crosscheck
+        or (
+            config.use_fwhm_edge_diameters
+            and (config.do_fwhm_measurement or edges is not None)
+        )
     )
     if mask_volume is None and wants_mask:
         # No segmentation in memory (e.g. a resumed run): read it from
@@ -572,7 +609,7 @@ def assign_edge_diameters(
         # for both the EDT widths and FWHM's neighbouring-vessel stops.
         mask_volume = loaded_mask = load_edt_mask_volume(config)
     try:
-        return _assign_edge_diameters_binarised(G, config, summary, mask_volume)
+        return _assign_edge_diameters_binarised(G, config, summary, mask_volume, edges)
     finally:
         if isinstance(loaded_mask, np.memmap):
             release_memmap_array(loaded_mask)
@@ -583,6 +620,7 @@ def _assign_edge_diameters_binarised(
     config: HaemodynamicsApplyConfig,
     summary: dict[str, Any],
     mask_volume: np.ndarray | None,
+    edges: list[tuple[Any, Any, Any]] | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     if mask_volume is not None:
         # The segmentation exactly as the skeleton was made from it -- the
@@ -605,7 +643,7 @@ def _assign_edge_diameters_binarised(
     else:
         made_binary_on_disk = False
     try:
-        return _assign_edge_diameters_with_mask(G, config, summary, mask_volume)
+        return _assign_edge_diameters_with_mask(G, config, summary, mask_volume, edges)
     finally:
         if made_binary_on_disk:
             release_memmap_array(mask_volume)
@@ -616,16 +654,31 @@ def _assign_edge_diameters_with_mask(
     config: HaemodynamicsApplyConfig,
     summary: dict[str, Any],
     mask_volume: np.ndarray | None,
+    edges: list[tuple[Any, Any, Any]] | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     raw_volume: np.ndarray | None = None
-    remeasure = bool(config.use_fwhm_edge_diameters and config.do_fwhm_measurement)
-    keep_existing = bool(config.use_fwhm_edge_diameters and not config.do_fwhm_measurement)
+    subset = edges is not None
+    # An empty subset (only deletions were made) measures nothing: it is here
+    # for the re-stamp below, a table diameter following a new branch order.
+    measuring = not subset or bool(edges)
+    remeasure = bool(
+        measuring
+        and config.use_fwhm_edge_diameters
+        and (config.do_fwhm_measurement or subset)
+    )
+    keep_existing = subset or bool(
+        config.use_fwhm_edge_diameters and not config.do_fwhm_measurement
+    )
 
     use_edt_fallback = False
-    if config.use_edt_diameter_crosscheck:
+    if config.use_edt_diameter_crosscheck and not measuring:
+        use_edt_fallback = config.edt_diameter_prefer_over_table_on_fwhm_failure
+    elif config.use_edt_diameter_crosscheck:
         edt_mask = mask_volume if mask_volume is not None else load_edt_mask_volume(config)
         if edt_mask is not None:
-            summary["edt"] = _measure_edt_diameters(G, config, mask_volume=edt_mask)
+            summary["edt"] = _measure_edt_diameters(
+                G, config, mask_volume=edt_mask, **_subset(edges)
+            )
             use_edt_fallback = config.edt_diameter_prefer_over_table_on_fwhm_failure
             if mask_volume is None and isinstance(edt_mask, np.memmap):
                 release_memmap_array(edt_mask)
@@ -639,24 +692,35 @@ def _assign_edge_diameters_with_mask(
         config.use_fwhm_edge_diameters and config.fwhm_setting("use_raw_section_fallback", False)
     )
     use_endothelial = bool(config.endothelial_setting("use_endothelial_diameters", False))
-    if use_endothelial:
-        summary["endothelial"] = _measure_endothelial_diameters(G, config)
+    if use_endothelial and measuring:
+        summary["endothelial"] = _measure_endothelial_diameters(G, config, **_subset(edges))
     demote_flagged = bool(config.fwhm_setting("fwhm_demote_flagged_edges", True))
-    if config.use_fwhm_edge_diameters:
+    if config.use_fwhm_edge_diameters and measuring:
         raw_volume = load_fwhm_raw_volume(config)
         if remeasure:
-            psf, psf_details = image_psf_for_fwhm(
-                G, config, raw_volume=raw_volume, vessel_mask=mask_volume
-            )
-            summary["fwhm_psf"] = psf_details
-            if psf is not None:
-                G.graph["fwhm_psf_sigma_zyx"] = psf
+            recorded = G.graph.get("fwhm_psf_sigma_zyx") if subset else None
+            if recorded is not None:
+                psf = tuple(float(v) for v in recorded)
+                summary["fwhm_psf"] = {"source": "recorded", "psf_sigma_zyx": psf}
             else:
-                G.graph.pop("fwhm_psf_sigma_zyx", None)
+                psf, psf_details = image_psf_for_fwhm(
+                    G, config, raw_volume=raw_volume, vessel_mask=mask_volume
+                )
+                summary["fwhm_psf"] = psf_details
+                if psf is not None:
+                    G.graph["fwhm_psf_sigma_zyx"] = psf
+                else:
+                    G.graph.pop("fwhm_psf_sigma_zyx", None)
             summary["fwhm"] = _measure_fwhm_diameters(
-                G, config, raw_volume=raw_volume, vessel_mask=mask_volume, psf_sigma_zyx=psf
+                G, config, raw_volume=raw_volume, vessel_mask=mask_volume, psf_sigma_zyx=psf,
+                **_subset(edges),
             )
-            if config.fwhm_setting("fwhm_decoy_check", False):
+            if subset:
+                summary["fwhm_decoy_check"] = {
+                    "skipped": True,
+                    "reason": "measuring edited vessels only; the run's own check stands",
+                }
+            elif config.fwhm_setting("fwhm_decoy_check", False):
                 summary["fwhm_decoy_check"] = fwhm_decoys.fwhm_decoy_check(
                     G,
                     lambda probe: _measure_fwhm_diameters(
@@ -687,7 +751,8 @@ def _assign_edge_diameters_with_mask(
             summary["fwhm_demoted"] = mark_fwhm_demotions(G, enabled=demote_flagged)
             if use_raw_section_fallback:
                 summary["raw_section"] = _measure_raw_section_diameters(
-                    G, config, raw_volume=raw_volume, vessel_mask=mask_volume, psf_sigma_zyx=psf
+                    G, config, raw_volume=raw_volume, vessel_mask=mask_volume, psf_sigma_zyx=psf,
+                    **_subset(edges),
                 )
         else:
             summary["fwhm"] = {
@@ -702,6 +767,7 @@ def _assign_edge_diameters_with_mask(
         use_edt_fallback=use_edt_fallback,
         use_raw_section_fallback=use_raw_section_fallback,
         use_endothelial=use_endothelial,
+        fresh_edges=edges,
     )
     if config.use_edt_diameter_crosscheck and not remeasure:
         warn_ratio = float(config.edt_setting("edt_fwhm_disagreement_warn_ratio", 1.5))

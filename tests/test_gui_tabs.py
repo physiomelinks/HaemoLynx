@@ -68,9 +68,13 @@ def test_the_tabs_hold_every_setting_between_them():
 
 
 def test_no_tab_is_empty():
-    """An empty tab is a stage the panel implies has nothing to configure."""
-    empty = [tab.stage.title for tab in tabs_for(SCHEMA) if not tab.fields]
-    assert empty == [], f"tabs with no settings: {empty}"
+    """An empty tab is a stage the panel implies has nothing to configure.
+
+    Post processing is the one exception: it has no settings, only its own
+    page (the junction table and the edit buttons), which the panel lays out.
+    """
+    empty = [tab.stage.call for tab in tabs_for(SCHEMA) if not tab.fields]
+    assert empty == ["post_process"], f"tabs with no settings: {empty}"
 
 
 # --- the schema section a stage hands over whole -----------------------------
@@ -197,9 +201,9 @@ def test_the_whole_section_is_on_the_stage_that_hands_it_over():
     }
     assert tabs == {"5. Diameters"}
     for name in retabbed_to_perturbations:
-        assert owner[name] == "7. Perturbations", name
+        assert owner[name] == "8. Perturbations", name
     for name in retabbed_to_haemodynamics:
-        assert owner[name] == "6. Haemodynamics", name
+        assert owner[name] == "7. Haemodynamics", name
 
 
 # --- the stages themselves ---------------------------------------------------
@@ -216,6 +220,7 @@ def test_the_tabs_are_the_pipeline_stages_in_order():
         "build_network",
         "assign_boundaries",
         "assign_diameters",
+        "post_process",
         "build_haemodynamic_model",
         "solve",
         "run_perturbations",
@@ -244,12 +249,13 @@ def test_the_tabs_read_in_pipeline_order():
         "3. Graph",
         "4. Boundaries",
         "5. Diameters",
-        "6. Haemodynamics",
+        "6. Post processing",
+        "7. Haemodynamics",
         # `solve` renders its rows onto the haemodynamics tab rather than
         # opening one of its own.
-        "7. Perturbations",
-        "8. Additional measurements",
-        "9. Export",
+        "8. Perturbations",
+        "9. Additional measurements",
+        "10. Export",
     ]
 
 
@@ -376,7 +382,7 @@ def test_a_tab_carries_the_rows_for_its_settings():
     handling -- which runs at the start of `build_haemodynamic_model`.
     """
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
-    haemodynamics = tabs["6. Haemodynamics"]
+    haemodynamics = tabs["7. Haemodynamics"]
     assert {field.name for field in haemodynamics.fields} == {
         "run_haemodynamics",
         "viscosity_law",
@@ -420,7 +426,7 @@ def test_legacy_and_comparison_settings_are_not_on_the_diameters_tab():
     legacy = progress_module._LEGACY_SETTINGS_HIDDEN_FROM_DIAMETERS
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     diameters = {field.name for field in tabs["5. Diameters"].fields}
-    perturbations = {field.name for field in tabs["7. Perturbations"].fields}
+    perturbations = {field.name for field in tabs["8. Perturbations"].fields}
     for name in legacy:
         assert name not in diameters, f"{name} is still on Diameters"
         assert name in perturbations, f"{name} is not claimed by Perturbations"
@@ -439,7 +445,7 @@ def test_pericyte_constriction_settings_are_not_on_the_diameters_tab():
 
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     diameters = {field.name for field in tabs["5. Diameters"].fields}
-    perturbations = {field.name for field in tabs["7. Perturbations"].fields}
+    perturbations = {field.name for field in tabs["8. Perturbations"].fields}
     for name in PERICYTE_CONSTRICTION_SETTINGS:
         assert name not in diameters, f"{name} is still on Diameters"
         assert name in perturbations, f"{name} is not claimed by Perturbations"
@@ -453,7 +459,7 @@ def test_the_perturbations_tab_shows_only_the_always_on_run_settings():
     whether to run perturbations, the list, and where to write them.
     """
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
-    claimed = {field.name for field in tabs["7. Perturbations"].fields}
+    claimed = {field.name for field in tabs["8. Perturbations"].fields}
     # Claimed by the stage (so unassigned stays empty and the editor can clone
     # Field objects), but not shown as ordinary rows -- see
     # gui.perturbation_editing.visible_tab_settings.
@@ -485,7 +491,7 @@ def test_the_perturbations_tab_shows_only_the_always_on_run_settings():
 
 def test_supplied_values_reach_the_right_tab():
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA, {"inlet_p_bc": 1234.0})}
-    row = next(f for f in tabs["6. Haemodynamics"].fields if f.name == "inlet_p_bc")
+    row = next(f for f in tabs["7. Haemodynamics"].fields if f.name == "inlet_p_bc")
     assert row.value == 1234.0
 
 
@@ -741,7 +747,7 @@ def test_cartwheel_hub_fields_on_graph_declare_hide_when_unmet():
 def test_perturbation_output_dir_field_on_perturbations_declares_hide_when_unmet():
     """perturbation_output_dir hides until run_perturbations is on."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
-    fields = {field.name: field for field in tabs["7. Perturbations"].fields}
+    fields = {field.name: field for field in tabs["8. Perturbations"].fields}
 
     assert "run_perturbations" in fields
     assert not fields["run_perturbations"].hide_when_unmet
@@ -809,7 +815,7 @@ _MEASUREMENT_3D_CHILDREN = (
 def test_ide_plot_fields_on_export_declare_hide_when_unmet():
     """Produce IDE plots nests Show / mode / hold on the Export tab."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
-    fields = {field.name: field for field in tabs["9. Export"].fields}
+    fields = {field.name: field for field in tabs["10. Export"].fields}
 
     assert not fields["visualize_results"].hide_when_unmet
     assert fields["visualize_results"].label == "Produce IDE plots"
@@ -833,7 +839,7 @@ def test_measurement_3d_fields_on_export_declare_hide_when_unmet():
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     fields = {
         field.name: field
-        for field in tabs["8. Additional measurements"].fields
+        for field in tabs["9. Additional measurements"].fields
         if field.section in ("Statistics and measurements", "Connectivity/Network Analysis")
     }
 
@@ -898,7 +904,7 @@ def test_every_tab_starts_with_a_number_so_the_order_is_visible(title):
 
 def test_the_haemodynamics_tab_titles_its_blood_model_box_blood_model():
     """The viscosity/haematocrit rows are declared in "Diameters and
-    pericytes", but on "6. Haemodynamics" that name describes another tab."""
+    pericytes", but on "7. Haemodynamics" that name describes another tab."""
     from haemolynx.gui.tabs import section_box_title, tabs_for
 
     haemodynamics = next(t for t in tabs_for(SCHEMA) if t.stage.call == "build_haemodynamic_model")
@@ -923,8 +929,8 @@ def test_vascular_communities_are_their_own_group_on_the_additional_measurements
     (not inside) the 3D-measurement, Statistics and network-analysis rows --
     and depend on nothing but their own toggle."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
-    measurements = [field.name for field in tabs["8. Additional measurements"].fields]
-    export = {field.name for field in tabs["9. Export"].fields}
+    measurements = [field.name for field in tabs["9. Additional measurements"].fields]
+    export = {field.name for field in tabs["10. Export"].fields}
     for name in ("compute_vascular_communities", "vascular_community_weighting"):
         assert name in measurements
         assert name not in export
@@ -936,7 +942,7 @@ def test_vascular_communities_are_their_own_group_on_the_additional_measurements
 
 def test_the_3d_object_mask_measurement_comes_before_statistics():
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
-    measurements = [field.name for field in tabs["8. Additional measurements"].fields]
+    measurements = [field.name for field in tabs["9. Additional measurements"].fields]
     assert measurements.index("measurement_3d_to_cell_mask") < measurements.index("statistics")
     assert measurements.index("measurement_3d_reference_h5_dataset_name") < measurements.index(
         "statistics"

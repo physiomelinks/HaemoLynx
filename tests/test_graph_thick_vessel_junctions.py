@@ -136,3 +136,58 @@ def test_a_single_voxel_flicker_at_the_boundary_does_not_create_a_degenerate_edg
 
     # The flicker at x=8 is absorbed into a neighbouring run, not its own edge.
     assert result.number_of_edges() == 2
+
+
+# --- only the edges asked about (a hand-edited vessel's bridge) ------------------
+
+
+def _two_crossing_edges() -> nx.MultiGraph:
+    """A-B and C-D both run from x 0 to x 20 across a boundary at x 10."""
+    G = nx.MultiGraph()
+    for name, y in (("A", 0.0), ("B", 0.0), ("C", 0.0), ("D", 0.0)):
+        G.add_node(name, pos=(0.0, y, 0.0 if name in "AC" else 20.0))
+    voxels = [(0.0, 0.0, float(x)) for x in range(0, 21)]
+    G.add_edge("A", "B", key=0, voxels=voxels, length=20.0)
+    G.add_edge("C", "D", key=0, voxels=voxels, length=20.0)
+    return G
+
+
+def test_edges_limits_the_split_to_the_edges_named():
+    G = _two_crossing_edges()
+    mask = _mask(25, range(10, 25))
+
+    result = insert_thick_vessel_junction_nodes(
+        G, mask, voxel_size_zyx=(1.0, 1.0, 1.0), edges=[("B", "A", 0)]
+    )
+
+    assert not result.has_edge("A", "B"), "A-B was named, either way round: split"
+    assert result.has_edge("C", "D"), "C-D was not named: kept whole"
+    assert not result.edges["C", "D", 0].get(IS_ZERO_RESISTANCE)
+    assert sum(1 for *_e, d in result.edges(data=True) if d.get(IS_ZERO_RESISTANCE)) == 1
+
+
+def test_a_named_edge_already_a_bridge_is_left_as_it_is():
+    """An existing bridge starts on the boundary sample; resampled, it could
+    read as a crossing of its own and be split again."""
+    G = _straight_edge_graph(9, 20, **{IS_ZERO_RESISTANCE: True})
+    mask = _mask(25, range(10, 25))
+
+    result = insert_thick_vessel_junction_nodes(
+        G, mask, voxel_size_zyx=(1.0, 1.0, 1.0), edges=[("A", "B", 0)]
+    )
+
+    assert result.number_of_edges() == 1
+    assert result.edges["A", "B", 0][IS_ZERO_RESISTANCE] is True
+
+
+def test_the_pieces_keep_every_other_attribute_of_the_edge_they_came_from():
+    G = _straight_edge_graph(0, 20, post_processing_edited=True, post_processing_added=True)
+    mask = _mask(25, range(10, 25))
+
+    result = insert_thick_vessel_junction_nodes(
+        G, mask, voxel_size_zyx=(1.0, 1.0, 1.0), edges=[("A", "B", 0)]
+    )
+
+    assert result.number_of_edges() == 2
+    for *_e, data in result.edges(data=True):
+        assert data["post_processing_edited"] and data["post_processing_added"]

@@ -962,3 +962,117 @@ def test_a_speck_width_steps_aside_for_the_next_source():
 
     assert counts == {"speck_width": graph.number_of_edges(), "edt_disagreement": 0}
     assert set(_sources(graph).values()) == {DIAMETER_SOURCE_EDT}
+
+
+# --- measuring only the vessels an edit touched (the post_process stage) -------
+
+
+def test_fresh_edges_go_down_the_whole_chain_while_the_rest_keep_theirs():
+    """keep_existing keeps an override; a vessel just measured again does not
+    keep its provisional one when a measurement beats it."""
+    graph = _network()
+    for u, v, k, data in graph.edges(keys=True, data=True):
+        set_edge_diameter_override(data, 11.0)
+        data["fwhm_diameter_um"] = 3.0
+    fresh = [(1, 0, 0)]  # either way round
+
+    stamp_edge_diameters(graph, dict(DIAMETERS), keep_existing=True, fresh_edges=fresh)
+
+    assert graph.edges[0, 1, 0]["diameter_source"] == DIAMETER_SOURCE_MEASURED
+    assert graph.edges[0, 1, 0]["diameter_um"] == pytest.approx(3.0)
+    for u, v in ((1, 2), (2, 3), (3, 4)):
+        assert graph.edges[u, v, 0]["diameter_source"] == DIAMETER_SOURCE_OVERRIDE
+        assert graph.edges[u, v, 0]["diameter_um"] == pytest.approx(11.0)
+
+
+def test_a_fresh_edge_no_method_measured_keeps_its_provisional_diameter_over_the_table():
+    graph = _network()
+    set_edge_diameter_override(graph.edges[1, 2, 0], 11.0)
+
+    stamp_edge_diameters(graph, dict(DIAMETERS), keep_existing=True, fresh_edges=[(1, 2, 0)])
+
+    assert graph.edges[1, 2, 0]["diameter_source"] == DIAMETER_SOURCE_OVERRIDE
+    assert graph.edges[1, 2, 0]["diameter_um"] == pytest.approx(11.0)
+
+
+def _measurement_spies(monkeypatch):
+    seen: dict = {"fwhm": [], "psf": 0, "decoy": 0, "raw_loaded": 0}
+
+    def fake_fwhm(G, _config, raw_volume=None, **kwargs):
+        seen["fwhm"].append((kwargs.get("edges"), kwargs.get("psf_sigma_zyx")))
+        for u, v, k in kwargs.get("edges") or []:
+            G.edges[u, v, k]["fwhm_diameter_um"] = 5.5
+        return {"edges_measured": len(kwargs.get("edges") or []), "edges_skipped": []}
+
+    def fake_psf(*_a, **_k):
+        seen["psf"] += 1
+        return (1.0, 0.5, 0.5), {"source": "image"}
+
+    def fake_decoy(*_a, **_k):
+        seen["decoy"] += 1
+        return {}
+
+    def fake_raw(_config):
+        seen["raw_loaded"] += 1
+        return np.zeros((2, 2, 2), dtype=np.float32)
+
+    monkeypatch.setattr("haemolynx.haemodynamics.apply._measure_fwhm_diameters", fake_fwhm)
+    monkeypatch.setattr("haemolynx.haemodynamics.apply.image_psf_for_fwhm", fake_psf)
+    monkeypatch.setattr(
+        "haemolynx.haemodynamics.apply.fwhm_decoys.fwhm_decoy_check", fake_decoy
+    )
+    monkeypatch.setattr("haemolynx.haemodynamics.apply.load_fwhm_raw_volume", fake_raw)
+    monkeypatch.setattr(
+        "haemolynx.haemodynamics.apply.load_edt_mask_volume",
+        lambda _config: np.zeros((2, 2, 2), dtype=bool),
+    )
+    return seen
+
+
+def test_a_subset_is_measured_by_fwhm_even_with_do_fwhm_measurement_off(monkeypatch):
+    """A resumed run turns do_fwhm_measurement off to keep what it measured;
+    a vessel drawn since has nothing to keep."""
+    seen = _measurement_spies(monkeypatch)
+    graph = _network()
+    graph.graph["fwhm_psf_sigma_zyx"] = (2.0, 1.0, 1.0)
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["fwhm_diameter_um"] = 9.0
+        data["diameter_source"] = DIAMETER_SOURCE_MEASURED
+        data["diameter_um"] = 9.0
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": dict(DIAMETERS)},
+        fwhm={
+            "use_fwhm_edge_diameters": True,
+            "do_fwhm_measurement": False,
+            "fwhm_decoy_check": True,
+        },
+    )
+
+    _graph, summary, _raw = assign_edge_diameters(graph, config, edges=[(2, 1, 0)])
+
+    assert seen["fwhm"] == [([(2, 1, 0)], (2.0, 1.0, 1.0))], "the recorded PSF, the edge asked"
+    assert seen["psf"] == 0, "the run's recorded PSF is not estimated again"
+    assert seen["decoy"] == 0 and summary["fwhm_decoy_check"]["skipped"]
+    assert graph.edges[1, 2, 0]["diameter_um"] == pytest.approx(5.5)
+    assert graph.edges[0, 1, 0]["diameter_um"] == pytest.approx(9.0)
+
+
+def test_an_empty_subset_measures_nothing_and_still_restamps_the_table(monkeypatch):
+    """Only a deletion was made: no image is read, but a table diameter follows
+    the branch order just assigned."""
+    seen = _measurement_spies(monkeypatch)
+    graph = _network()
+    for _u, _v, _k, data in graph.edges(keys=True, data=True):
+        data["diameter_source"] = DIAMETER_SOURCE_TABLE
+        data["diameter_um"] = 99.0  # stale: its order's table value is not this
+    config = HaemodynamicsApplyConfig(
+        diameters={"diameter_by_branch_order": dict(DIAMETERS)},
+        fwhm={"use_fwhm_edge_diameters": True, "do_fwhm_measurement": False},
+        edt={"use_edt_diameter_crosscheck": True},
+    )
+
+    assign_edge_diameters(graph, config, edges=[])
+
+    assert seen["fwhm"] == [] and seen["raw_loaded"] == 0
+    for (u, v), order in zip(((0, 1), (1, 2), (2, 3), (3, 4)), BRANCH_ORDERS):
+        assert graph.edges[u, v, 0]["diameter_um"] == pytest.approx(DIAMETERS[order])

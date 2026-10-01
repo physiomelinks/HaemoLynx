@@ -1,4 +1,4 @@
-"""Post-processing rules behind the "10. Post processing" tab.
+"""Post-processing rules behind the "6. Post processing" tab.
 
 Junctions where four or more vessels meet: list them, delete vessels, split
 with a connector -- pure graph logic, pinned on small hand-built networks
@@ -572,3 +572,131 @@ def test_vessel_path_runs_from_the_u_end():
     assert np.allclose(vessel_path(G, (1, 0, 0))[0], (0, 0, 10))
     with pytest.raises(ValueError, match="No vessel"):
         vessel_path(G, (0, 1, 7))
+
+
+# --- what each edit marks for the post_process stage ---------------------------
+
+from haemolynx.graph import (  # noqa: E402
+    IS_ZERO_RESISTANCE,
+    clear_edit_marks,
+    edited_edges,
+    has_pending_edits,
+)
+from haemolynx.graph.post_processing import EDITED, PENDING  # noqa: E402
+
+
+def _edited(G) -> set:
+    return {frozenset(edge[:2]) for edge in edited_edges(G)}
+
+
+def test_a_network_nobody_edited_has_nothing_pending():
+    G = _four_way_through()
+    assert not has_pending_edits(G)
+    assert edited_edges(G) == []
+    assert not has_pending_edits(None)
+
+
+def test_adding_a_vessel_marks_it_and_nothing_else():
+    G = _two_ends()
+    before = set(G.edges(keys=True))
+    edge = add_vessel_between(G, 1, 2)
+    assert _edited(G) == {frozenset(edge[:2])}
+    assert has_pending_edits(G)
+    assert all(EDITED not in G.edges[e] for e in before)
+
+
+def test_cutting_a_vessel_marks_both_halves():
+    G = _one_vessel([(0.0, 0.0, 0.0), (0.0, 0.0, 10.0)])
+    node = split_vessel_at(G, (0, 1, 0), (0.0, 0.0, 4.0))
+    assert _edited(G) == {frozenset((0, node)), frozenset((node, 1))}
+
+
+def test_splitting_a_junction_marks_its_connector_and_the_vessels_it_moved():
+    G = _four_way_with_one_close_pair()
+    untouched = set(G.edges(keys=True))
+    new_nodes = split_junction(G, 0)
+    (new_node,) = new_nodes
+    marked = _edited(G)
+    assert frozenset((0, new_node)) in marked, "the connector"
+    moved = [e for e in G.edges(new_node, keys=True) if 0 not in e[:2]]
+    assert len(moved) == 2 and all(frozenset(e[:2]) in marked for e in moved)
+    still_there = [e for e in untouched if G.has_edge(*e)]
+    assert all(EDITED not in G.edges[e] for e in still_there)
+
+
+def test_a_deletion_marks_the_network_and_the_vessel_its_merge_made():
+    G = _four_way_through()
+    delete_vessels(G, [(0, 3, 0), (0, 4, 0)])
+    assert G.has_edge(1, 2)
+    assert _edited(G) == {frozenset((1, 2))}
+    assert G.graph[PENDING] is True
+
+
+def test_a_deletion_with_no_merge_still_leaves_the_network_pending():
+    G = _four_way_through()
+    delete_vessels(G, [(0, 3, 0)])
+    assert edited_edges(G) == []
+    assert has_pending_edits(G), "branch orders downstream of it can change"
+
+
+def test_pruning_marks_the_pruned_network_pending():
+    G = _main_and_cut_off_pieces()
+    pruned, stats = prune_disconnected_branches(G, [0], [2])
+    assert stats["removed_vessels"]
+    assert has_pending_edits(pruned)
+
+
+def test_clearing_the_marks_leaves_nothing_pending():
+    G = _two_ends()
+    add_vessel_between(G, 1, 2)
+    clear_edit_marks(G)
+    assert not has_pending_edits(G)
+    assert all(EDITED not in data for *_e, data in G.edges(data=True))
+
+
+# --- deletions and thick-vessel bridges ---------------------------------------
+
+
+def _bridged() -> nx.MultiGraph:
+    """Thin vessel 0-1, bridge 1-2 into a thick vessel's centreline 3-2-4.
+
+    Node 1 is where the thin vessel meets the thick vessel's surface; node 2
+    is on the thick vessel's own centreline.
+    """
+    positions = {
+        0: (0.0, 0.0, 0.0),
+        1: (0.0, 0.0, 10.0),
+        2: (0.0, 0.0, 15.0),
+        3: (0.0, -20.0, 15.0),
+        4: (0.0, 20.0, 15.0),
+        5: (0.0, 0.0, -10.0),
+        6: (0.0, 10.0, 0.0),
+        7: (0.0, -10.0, 0.0),
+    }
+    G = _network(positions, [(0, 1), (3, 2), (2, 4), (5, 0), (0, 6), (0, 7)])
+    voxels = _straight(positions[1], positions[2])
+    G.add_edge(1, 2, voxels=voxels, length=calculate_path_length(voxels), **{IS_ZERO_RESISTANCE: True})
+    return G
+
+
+def test_deleting_a_thin_vessel_deletes_the_bridge_it_opened_through():
+    G = _bridged()
+    delete_vessels(G, [(0, 1, 0)], protected={3, 4})
+
+    assert 1 not in G, "the bridge's outer end went with it"
+    assert not any(data.get(IS_ZERO_RESISTANCE) for *_e, data in G.edges(data=True))
+    # The thick vessel's centreline is whole again: one vessel through node 2.
+    assert 2 not in G and G.has_edge(3, 4)
+    assert _edited(G) == {frozenset((3, 4))}
+
+
+def test_a_bridge_is_never_merged_with_the_vessel_it_opens():
+    """Deleting a centreline piece leaves node 2 between the bridge and the
+    rest of the thick vessel; merged, one resistance rule would cover both."""
+    G = _bridged()
+    delete_vessels(G, [(2, 4, 0)], protected={0, 3})
+
+    assert 2 in G
+    bridges = [data for *_e, data in G.edges(2, data=True) if data.get(IS_ZERO_RESISTANCE)]
+    ordinary = [data for *_e, data in G.edges(2, data=True) if not data.get(IS_ZERO_RESISTANCE)]
+    assert len(bridges) == 1 and len(ordinary) == 1

@@ -24,6 +24,7 @@ from skimage.graph import route_through_array
 
 from ._helpers import calculate_path_length, next_node_id
 from .degree2 import create_trivial_merged_edge
+from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,10 @@ def delete_edge_and_collapse(G: nx.MultiGraph, u: Any, v: Any, key: Any) -> set[
             if n1 == n2:
                 # Two parallel edges to the same neighbour: a loop, not a
                 # pass-through -- collapsing it would create a self-loop.
+                continue
+            if bool(d1.get(IS_ZERO_RESISTANCE)) != bool(d2.get(IS_ZERO_RESISTANCE)):
+                # A thick-vessel bridge and the vessel it opens: merged, one
+                # resistance rule would cover both.
                 continue
             node_pos = G.nodes[node].get("pos")
             merged = create_trivial_merged_edge(d1, d2, node_pos)

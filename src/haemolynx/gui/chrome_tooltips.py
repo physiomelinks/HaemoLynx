@@ -147,7 +147,7 @@ LOAD_RUN_TOOLTIP = (
     "Clear the current HaemoLynx layers and state, then restore a saved "
     "pipeline run so the viewer looks as it did when that run finished"
 )
-#: "10. Post processing" tab.
+#: "6. Post processing" tab.
 POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     "scan": (
         "Look at the last run's network and list every junction where four "
@@ -209,8 +209,21 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "they were when it was made; the same lines go to the napari log"
     ),
     "regenerate": (
-        "Rerun Diameters, Haemodynamics, Solve, Perturbations and Export on "
-        "the edited network, so the 3D view and outputs catch up with the edits"
+        "After a finished run: bring the edits in line with the rest of the "
+        "network, then rerun Haemodynamics, Solve, Perturbations and Export on "
+        "it, so the 3D view and outputs catch up with the edits"
+    ),
+    "regenerate_graph": (
+        "Bring the edits in line with the rest of the network: branch orders "
+        "assigned again, each edited vessel's length measured along its path and "
+        "its diameter by the run's own methods, and a zero-resistance bridge "
+        "where it opens into a thick vessel. While a run is paused here it stays "
+        "paused; after a finished run, Haemodynamics to Export are run again"
+    ),
+    "continue": (
+        "Carry on the run paused here: bring any edits in line, then run "
+        "Haemodynamics, Solve, Perturbations and Export. A run pauses here when "
+        "Mid-run postprocessing (1. Input) is on"
     ),
 }
 

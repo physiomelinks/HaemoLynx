@@ -1,4 +1,4 @@
-"""What the "10. Post processing" tab draws and lists (pure, no napari)."""
+"""What the "6. Post processing" tab draws and lists (pure, no napari)."""
 from __future__ import annotations
 
 import networkx as nx
@@ -21,10 +21,10 @@ from haemolynx.gui.post_processing import (
     VesselTrace,
     added_nodes_layer,
     added_vessel_ids,
-    boundaries_following_graph,
     branch_id_of,
     camera_center_for,
     describe_vessels,
+    edits_lost_by_running_from,
     junction_label,
     junction_marker_layer,
     junction_table_rows,
@@ -163,28 +163,35 @@ def test_parse_branch_ids_says_what_is_wrong(text, message):
         parse_branch_ids(text, 50)
 
 
-def test_boundaries_following_graph_drops_pruned_boundary_nodes():
-    from haemolynx.pipeline.stages import PipelineResume
+def test_a_run_from_before_post_processing_would_lose_the_edits_still_in_the_tab():
+    from haemolynx.graph import add_vessel_between
 
     G = _network()
-    G.remove_node(0)  # say a prune took inlet 0 with it
-    resume = PipelineResume(
-        start_from="assign_diameters", graph=G,
-        inlet_nodes=(0, 2), outlet_nodes=(4,),
-        arteriole_boundary_nodes=(0, 1), venule_boundary_nodes=(3,),
-        resistance_node_pair=(0, 4),
-    )
-    after = boundaries_following_graph(resume)
-    assert after.inlet_nodes == (2,) and after.outlet_nodes == (4,)
-    assert after.arteriole_boundary_nodes == (1,) and after.venule_boundary_nodes == (3,)
-    assert after.resistance_node_pair == (2, 4)  # re-picked: 0 is gone
-    assert after.graph is G and after.start_from == "assign_diameters"
-    # A pair that survived is left alone.
-    kept = boundaries_following_graph(
-        PipelineResume(start_from="assign_diameters", graph=G, inlet_nodes=(2,),
-                       outlet_nodes=(4,), resistance_node_pair=(1, 4))
-    )
-    assert kept.resistance_node_pair == (1, 4)
+    assert not edits_lost_by_running_from("assign_diameters", G, None)
+    add_vessel_between(G, 0, 4)
+    assert edits_lost_by_running_from("assign_diameters", G, None)
+    assert edits_lost_by_running_from("skeletonise", G, None)
+
+
+def test_a_run_from_before_post_processing_would_lose_edits_already_applied():
+    from haemolynx.graph.post_processing import APPLIED
+
+    applied = _network()
+    applied.graph[APPLIED] = True
+    assert edits_lost_by_running_from("assign_boundaries", None, applied)
+    assert not edits_lost_by_running_from("assign_boundaries", None, _network())
+
+
+def test_a_run_from_post_processing_or_later_loses_nothing():
+    from haemolynx.graph import add_vessel_between
+    from haemolynx.graph.post_processing import APPLIED
+
+    G = _network()
+    add_vessel_between(G, 0, 4)
+    applied = _network()
+    applied.graph[APPLIED] = True
+    for start in ("post_process", "build_haemodynamic_model", "export_results", None, "nope"):
+        assert not edits_lost_by_running_from(start, G, applied)
 
 
 def test_describe_vessels_names_branch_id_ends_length_and_diameter():

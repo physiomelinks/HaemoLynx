@@ -48,6 +48,68 @@ ALREADY_RUNNING = (
     "A run is already going. Press 'Clear layers and state' to stop it."
 )
 
+#: The stage a run pauses after when ``mid_run_postprocessing`` is on: the one
+#: before Post processing, so the network can be edited before it runs.
+MID_RUN_PAUSE_AFTER = "assign_diameters"
+#: The stage a run from Post processing starts at, and a Regenerate graph
+#: during a pause stops after.
+POST_PROCESS = "post_process"
+
+
+def mid_run_stop_after(settings, start_from: str | None) -> str | None:
+    """Where a run started at *start_from* stops, or None to run to the end.
+
+    With ``mid_run_postprocessing`` on, a run that reaches the Post processing
+    stage from before it -- a full run, or one from Diameters or earlier --
+    pauses just before it. One that starts at Post processing or later does
+    not: it has already been past the pause.
+    """
+    if not settings or not settings.get("mid_run_postprocessing"):
+        return None
+    from haemolynx.pipeline.progress import STAGES
+
+    order = [stage.call for stage in STAGES if stage.call]
+    if start_from is not None and start_from in order:
+        if order.index(start_from) > order.index(MID_RUN_PAUSE_AFTER):
+            return None
+    return MID_RUN_PAUSE_AFTER
+
+
+def post_processing_tab_title() -> str:
+    """The Post processing stage's tab title, e.g. ``"6. Post processing"``."""
+    from haemolynx.pipeline.progress import STAGES
+
+    for stage in STAGES:
+        if stage.call == POST_PROCESS:
+            return stage.tab or stage.title
+    return "Post processing"
+
+
+def paused_bar_text(stop_after: str) -> str:
+    """What the stage bar says while a run is paused after *stop_after*."""
+    return f"Paused at {post_processing_tab_title()}"
+
+
+def paused_message(stop_after: str, nodes: int, vessels: int) -> str:
+    """What the report box says when a run has paused after *stop_after*."""
+    tab = post_processing_tab_title()
+    if stop_after == POST_PROCESS:
+        return (
+            f"Graph regenerated: {nodes} nodes, {vessels} vessels. Edit more on "
+            f"{tab}, or press Continue there to run Haemodynamics onwards."
+        )
+    return (
+        f"Paused after Diameters: {nodes} nodes, {vessels} vessels. Fix the "
+        f"network on {tab}, then press Continue there to run Haemodynamics onwards."
+    )
+
+
+def regenerate_stop_after(paused: bool) -> str | None:
+    """Where Regenerate graph's run stops: after Post processing while the run
+    is paused (it stays paused, for Continue), else nowhere -- a finished run
+    is re-solved from Haemodynamics to Export."""
+    return POST_PROCESS if paused else None
+
 
 class RunCancelled(Exception):
     """Raised inside a run to stop it, because the user asked it to stop.
@@ -79,8 +141,17 @@ class RunState:
         self._results: Any = None
         self._running = False
         self._flag: dict[str, bool] = {"cancelled": False}
+        #: The stage a pipeline run stopped after on purpose, to be picked up
+        #: again (Continue); None when no run is paused. Not cleared by
+        #: :meth:`start`: an optimisation run during a pause leaves it paused.
+        self.paused_after: str | None = None
 
     # -- what the panel asks ------------------------------------------------
+
+    @property
+    def paused(self) -> bool:
+        """Whether the last pipeline run stopped part-way on purpose."""
+        return self.paused_after is not None
 
     @property
     def running(self) -> bool:

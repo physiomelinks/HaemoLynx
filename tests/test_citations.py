@@ -288,7 +288,7 @@ def test_export_citations_schema_default_and_section():
 def test_export_citations_lives_on_the_export_tab():
     from haemolynx.gui.tabs import assign_to_stages
 
-    assert assign_to_stages(SCHEMA)["export_citations"] == "9. Export"
+    assert assign_to_stages(SCHEMA)["export_citations"] == "10. Export"
 
 
 # --- wired into export_results -----------------------------------------------

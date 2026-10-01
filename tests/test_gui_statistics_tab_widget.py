@@ -21,7 +21,7 @@ def test_network_analysis_measures_sit_in_their_own_boxed_group(make_napari_view
     panel = settings_widget(napari_viewer=viewer)
     tabs = panel.findChild(QTabWidget)
     index = next(
-        i for i in range(tabs.count()) if tabs.tabText(i) == "8. Additional measurements"
+        i for i in range(tabs.count()) if tabs.tabText(i) == "9. Additional measurements"
     )
     page = tabs.widget(index)
 
@@ -56,7 +56,7 @@ def test_network_analysis_group_hides_when_statistics_is_off(make_napari_viewer)
     panel.show()
     tabs = panel.findChild(QTabWidget)
     index = next(
-        i for i in range(tabs.count()) if tabs.tabText(i) == "8. Additional measurements"
+        i for i in range(tabs.count()) if tabs.tabText(i) == "9. Additional measurements"
     )
     tabs.setCurrentIndex(index)
     QApplication.processEvents()

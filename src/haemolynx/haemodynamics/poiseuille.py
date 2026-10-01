@@ -11,6 +11,15 @@ import networkx as nx
 logger = logging.getLogger(__name__)
 
 
+def edge_selection(edges) -> set[tuple[frozenset, object]] | None:
+    """*edges* (``(u, v, key)``, either way round) as a set to test edges
+    against with ``(frozenset((u, v)), key) in``; None -- every edge -- for None.
+    """
+    if edges is None:
+        return None
+    return {(frozenset((u, v)), key) for u, v, key in edges}
+
+
 def build_diameter_by_branch_order(
     *,
     all_diams_const: bool,
@@ -318,12 +327,16 @@ def stamp_edge_diameters(
     use_edt_fallback: bool = False,
     use_raw_section_fallback: bool = False,
     use_endothelial: bool = False,
+    fresh_edges=None,
 ) -> dict[str, int]:
     """Write ``diameter_um`` and ``diameter_source`` on every edge that can.
 
     When *keep_existing* is True, measured/raw-section/endothelial/EDT/
     override edges stay as they are (so a resume does not wipe approvals or
-    re-fall-back). Otherwise -- with *use_endothelial* -- the endothelial
+    re-fall-back) -- except *fresh_edges* (``(u, v, key)``, either way round),
+    just measured again, which go down the whole chain below as if it were
+    False: a hand-edited vessel's provisional override must not outrank its
+    new measurement. Otherwise -- with *use_endothelial* -- the endothelial
     internal diameter (``endothelial_diameter_um``, see
     ``haemolynx.haemodynamics.endothelial``) wins, the run's alternative to
     FWHM; else FWHM, when present and not set aside by
@@ -358,10 +371,12 @@ def stamp_edge_diameters(
         else:
             data.pop(EDGE_DIAMETER_BASIS, None)
         counts[source] += 1
+    fresh = edge_selection(fresh_edges) or set()
 
-    for _u, _v, _key, data in G.edges(keys=True, data=True):
+    for u, v, key, data in G.edges(keys=True, data=True):
         source = data.get("diameter_source")
-        if keep_existing and source in _KEPT_DIAMETER_SOURCES:
+        keep = keep_existing and (frozenset((u, v)), key) not in fresh
+        if keep and source in _KEPT_DIAMETER_SOURCES:
             kept = positive_diameter_um(data.get("diameter_um"))
             if kept is None and source == DIAMETER_SOURCE_MEASURED:
                 kept = positive_diameter_um(data.get("fwhm_diameter_um"))
@@ -370,7 +385,7 @@ def stamp_edge_diameters(
             if kept is not None:
                 counts[str(source)] += 1
                 continue
-        if keep_existing:
+        if keep:
             measured = positive_diameter_um(data.get("fwhm_diameter_um"))
             if measured is not None:
                 stamp(data, measured, DIAMETER_SOURCE_MEASURED)

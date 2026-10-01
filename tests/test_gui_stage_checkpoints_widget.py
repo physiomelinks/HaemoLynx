@@ -77,6 +77,7 @@ def _seed_run(widget, viewer, through: str = "assign_diameters") -> ResultLayers
             ),
         ),
         ("assign_diameters", SimpleNamespace(graph=graph, results={})),
+        ("post_process", SimpleNamespace(graph=graph, results={})),
         ("build_haemodynamic_model", SimpleNamespace(graph=graph, results={})),
         (
             "solve",
@@ -103,11 +104,16 @@ def _seed_run(widget, viewer, through: str = "assign_diameters") -> ResultLayers
 
 
 def test_every_tab_but_the_first_has_a_revert_button(panel):
+    """Bar Post processing, whose own Regenerate graph / Continue buttons are
+    how a run starts there."""
     widget, _viewer, _tmp = panel
     titles = pipeline_tab_titles()
     buttons = widget._haemolynx_revert_buttons
     assert titles[0] not in buttons
+    assert "6. Post processing" not in buttons
     for title in titles[1:]:
+        if title == "6. Post processing":
+            continue
         assert title in buttons
         assert buttons[title].text == "Run from this stage"
         assert buttons[title].enabled is False
@@ -190,7 +196,7 @@ def test_revert_enables_once_the_previous_stage_is_checkpointed(panel):
     buttons = widget._haemolynx_revert_buttons
     assert buttons["5. Diameters"].enabled is True
     # Haemodynamics wants the diameters checkpoint, which is not there yet.
-    assert buttons["6. Haemodynamics"].enabled is False
+    assert buttons["7. Haemodynamics"].enabled is False
 
 
 # --- restore behaviour -------------------------------------------------------
@@ -286,7 +292,7 @@ def test_a_run_from_removes_no_layer_when_a_stage_cut_the_network(panel):
     removed = []
     viewer.layers.events.removed.connect(lambda event: removed.append(event.value.name))
 
-    widget._haemolynx_revert("7. Perturbations")
+    widget._haemolynx_revert("8. Perturbations")
 
     assert removed == []
     assert viewer.layers[VESSELS] is vessels
@@ -385,17 +391,17 @@ def test_revert_hands_the_graph_over_and_never_writes_graph_pkl(panel):
 def test_revert_from_haemodynamics_turns_off_fwhm_remeasurement(panel):
     """Continuing from Haemodynamics must keep diameters already on the graph."""
     widget, viewer, _tmp = panel
-    _seed_run(widget, viewer, through="assign_diameters")
+    _seed_run(widget, viewer, through="post_process")
     rows = widget._haemolynx_rows()
     rows["use_fwhm_edge_diameters"].value = True
     rows["do_fwhm_measurement"].value = True
 
-    widget._haemolynx_revert("6. Haemodynamics")
+    widget._haemolynx_revert("7. Haemodynamics")
 
     assert rows["do_fwhm_measurement"].value is False
     assert rows["do_graph_building"].value is True
     tabs = widget._haemolynx_tabs
-    assert tabs.tabText(tabs.currentIndex()) == "6. Haemodynamics"
+    assert tabs.tabText(tabs.currentIndex()) == "7. Haemodynamics"
 
 
 def test_a_run_from_that_fails_its_checks_keeps_the_later_work(panel):
@@ -412,14 +418,14 @@ def test_a_run_from_that_fails_its_checks_keeps_the_later_work(panel):
     layers = [layer.name for layer in viewer.layers]
     assert "solve" in recorded
 
-    widget._haemolynx_run_from("6. Haemodynamics")
+    widget._haemolynx_run_from("7. Haemodynamics")
 
     assert "Checks failed" in widget._haemolynx_report()
     assert checkpoints.stages == recorded
     assert [layer.name for layer in viewer.layers] == layers
     assert rows["do_skeletonize"].value is True
     assert rows["do_graph_building"].value is True
-    assert widget._haemolynx_revert_buttons["7. Perturbations"].enabled is True
+    assert widget._haemolynx_revert_buttons["8. Perturbations"].enabled is True
 
 
 def test_revert_with_nothing_saved_says_so_and_does_not_crash(panel):
@@ -589,7 +595,7 @@ def test_save_run_with_nothing_recorded_says_so(panel):
 
 def test_save_then_load_run_restores_layers_and_checkpoints(panel):
     widget, viewer, tmp_path = panel
-    _seed_run(widget, viewer, through="assign_diameters")
+    _seed_run(widget, viewer, through="post_process")
     assert VESSELS in viewer.layers
     dest = tmp_path / "session.haemorun"
 
@@ -607,7 +613,7 @@ def test_save_then_load_run_restores_layers_and_checkpoints(panel):
     assert "assign_diameters" in widget._haemolynx_checkpoints.stages
     assert widget._haemolynx_view.results is not None
     assert widget._haemolynx_view.results._graph is not None
-    assert widget._haemolynx_revert_buttons["6. Haemodynamics"].enabled is True
+    assert widget._haemolynx_revert_buttons["7. Haemodynamics"].enabled is True
     assert "Loaded run" in widget._haemolynx_report()
 
 
@@ -627,7 +633,7 @@ def test_each_run_from_starts_from_the_users_own_skip_toggles(panel):
     rows["do_fwhm_measurement"].value = True
     rows["do_graph_building"].value = True
 
-    widget._haemolynx_revert("6. Haemodynamics")
+    widget._haemolynx_revert("7. Haemodynamics")
     assert rows["do_graph_building"].value is True
     assert rows["do_fwhm_measurement"].value is False
 
@@ -635,7 +641,7 @@ def test_each_run_from_starts_from_the_users_own_skip_toggles(panel):
     assert rows["do_fwhm_measurement"].value is True
 
     _seed_run(widget, viewer, through="solve")
-    widget._haemolynx_revert("6. Haemodynamics")
+    widget._haemolynx_revert("7. Haemodynamics")
     widget._haemolynx_revert("3. Graph")
     assert rows["do_graph_building"].value is True
     assert "do_graph_building" not in widget._haemolynx_report()
@@ -681,7 +687,7 @@ def test_run_from_a_tab_leaves_earlier_tabs_as_they_were(make_napari_viewer, qtb
     assert all("diameter_um" not in d for *_e, d in built_graph.edges(data=True))
 
     for _ in range(2):
-        widget._haemolynx_run_from("6. Haemodynamics")
+        widget._haemolynx_run_from("7. Haemodynamics")
         wait()
         assert _flows(checkpoints.get("solve").graph) == full_flows
 
@@ -736,7 +742,7 @@ def test_run_from_perturbations_repeats_the_full_runs_perturbations(
     assert full[1], "the fixture must produce a perturbed network"
 
     for _ in range(2):
-        widget._haemolynx_run_from("7. Perturbations")
+        widget._haemolynx_run_from("8. Perturbations")
         wait()
         assert outcome(runs[-1]) == full
 
@@ -798,3 +804,87 @@ def test_regenerate_continues_the_edit_without_rebuilding(make_napari_viewer, qt
     assert graph_pkl.read_bytes() == built_pickle
     assert rows["do_skeletonize"].value is True  # nothing to load, so nothing turned off
     assert rows["do_graph_building"].value is True
+
+
+def _add_a_shortcut(page):
+    """A vessel between two nodes of the inlet's piece that no vessel joins yet --
+    what the tab's Add vessel ends in (graph.add_vessel_between) -- then the
+    page refreshed, as its own edits do."""
+    import networkx as nx
+
+    from haemolynx.graph import add_vessel_between
+
+    graph = page.state.graph
+    inlet = page.state.inlets[0]
+    piece = sorted(nx.node_connected_component(graph, inlet), key=str)
+    a, b = next(
+        (a, b) for i, a in enumerate(piece) for b in piece[i + 1:]
+        if not graph.has_edge(a, b)
+    )
+    edge = add_vessel_between(graph, a, b)
+    page.refresh()
+    return edge
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_a_run_pauses_for_post_processing_and_continue_finishes_it(
+    make_napari_viewer, qtbot, tmp_path
+):
+    """Mid-run postprocessing: the run stops after Diameters on the Post
+    processing tab, scanned; a vessel drawn there is in the solve Continue
+    runs; and Regenerate graph after the finished run re-solves."""
+    from haemolynx.gui._widget import POST_PROCESSING_TAB
+
+    viewer = make_napari_viewer()
+    widget = settings_widget(napari_viewer=viewer)
+    rows = widget._haemolynx_rows()
+    rows["input_path"].value = FIXTURE
+    rows["vtk_output_prefix"].value = tmp_path / "out" / "run"
+    rows["mid_run_postprocessing"].value = True
+    running = widget._haemolynx_run_state
+    checkpoints = widget._haemolynx_checkpoints
+    page = widget._haemolynx_post_processing
+
+    def wait():
+        qtbot.waitUntil(lambda: not running.running, timeout=600_000)
+        qtbot.wait(200)
+
+    widget._haemolynx_run()
+    wait()
+
+    assert running.paused and running.paused_after == "assign_diameters"
+    assert "assign_diameters" in checkpoints.stages
+    assert "post_process" not in checkpoints.stages and "solve" not in checkpoints.stages
+    tabs = widget._haemolynx_tabs
+    assert tabs.tabText(tabs.currentIndex()) == POST_PROCESSING_TAB
+    assert page.state.graph is not None, "the paused network is scanned"
+    assert page.continue_button.isEnabled()
+    assert "Paused after Diameters" in widget._haemolynx_report()
+    assert not widget._haemolynx_revert_buttons["7. Haemodynamics"].enabled
+
+    u, v, _key = _add_a_shortcut(page)
+    assert page.regenerate_graph_button.isEnabled()
+    vessels_after_edit = page.state.graph.number_of_edges()
+
+    page.continue_button.click()
+    wait()
+
+    assert not running.paused, widget._haemolynx_report()
+    solved = checkpoints.get("solve").graph
+    assert solved.number_of_edges() == vessels_after_edit
+    assert all("resistance" in d for *_e, d in solved.edges(data=True))
+    (drawn,) = [d for d in solved[u][v].values() if d.get("post_processing_added")]
+    assert drawn["branch_order"] and drawn["diameter_um"] > 0
+    assert checkpoints.get("post_process").graph.graph.get("post_processing_applied")
+    assert widget._haemolynx_revert_buttons["7. Haemodynamics"].enabled
+
+    # After the finished run: another vessel, and Regenerate graph re-solves.
+    page.scan_button.click()
+    _add_a_shortcut(page)
+    expected = page.state.graph.number_of_edges()
+    page.regenerate_graph_button.click()
+    wait()
+
+    assert not running.paused, widget._haemolynx_report()
+    assert checkpoints.get("solve").graph.number_of_edges() == expected

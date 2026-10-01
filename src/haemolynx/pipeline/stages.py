@@ -72,7 +72,12 @@ from haemolynx.haemodynamics.pericyte_sweep import (
     solve_pressure_and_boundary_flow,
 )
 from haemolynx.haemodynamics.perturbations import plain as plain_values
-from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
+from haemolynx.haemodynamics.poiseuille import (
+    EDGE_DIAMETER_BASIS,
+    PoiseuilleModel,
+    positive_diameter_um,
+    set_edge_diameter_override,
+)
 from haemolynx.io.load import (
     _skeletonize_loaded_volume,
     _to_binary_volume_for_skeletonization,
@@ -103,6 +108,7 @@ STAGE_CALLS: tuple[str, ...] = (
     "build_network",
     "assign_boundaries",
     "assign_diameters",
+    "post_process",
     "build_haemodynamic_model",
     "solve",
     "run_perturbations",
@@ -287,12 +293,21 @@ class PipelineResume:
     outlet_nodes: tuple[Any, ...] = ()
     arteriole_boundary_nodes: tuple[Any, ...] = ()
     venule_boundary_nodes: tuple[Any, ...] = ()
+    #: Where the Large_Art/Large_Ven tier hands off to Art/Ven. Only
+    #: assign_boundaries finds them, so a run resumed past it that assigns
+    #: branch orders again (Diameters, Post processing) needs them handed on.
+    large_arteriole_boundary_nodes: tuple[Any, ...] = ()
+    large_venule_boundary_nodes: tuple[Any, ...] = ()
     resistance_node_pair: tuple[Any, Any] | None = None
     #: The cleaned (overlap-resolved) large-vessel masks assign_boundaries
     #: produced, when resuming past it. None falls back to whatever raw masks
     #: this run's own build_network loaded -- see _boundaries_from_resume.
     large_arteriole_mask: Any | None = None
     large_venule_mask: Any | None = None
+    #: Thickness-gated skeletonisation's thick-vessel region, for a run whose
+    #: *volume* does not carry it (loaded rather than skeletonised): where the
+    #: post_process stage splits an edited vessel into a bridge.
+    thick_vessel_mask: Any | None = None
     #: What segment, skeletonise and build_network returned in the run being
     #: resumed. Each one given, for a stage before *start_from*, is used as it
     #: is instead of that stage being done again -- no ilastik, no reloading
@@ -545,6 +560,37 @@ def _skeletonize_tile_halo_voxels(settings: dict, voxel_size_zyx) -> int:
     return round(float(settings["skeletonize_tile_halo_um"]) / voxel_size_zyx[0])
 
 
+def _thick_region_arguments(settings: dict, binary: np.ndarray, voxel_size_xyz) -> dict:
+    """What decides the thick-vessel region: shared by skeletonisation and by
+    :func:`thick_vessel_mask_from_image`, so the two find the same voxels."""
+    return {
+        "min_radius_um": float(settings["skeleton_thick_vessel_min_radius_um"]),
+        "voxel_size_zyx": io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz)),
+        "fill_mask_holes": bool(settings["skeleton_fill_mask_holes_before_thickness"]),
+        "wall_absorption_um": settings["skeleton_thick_vessel_wall_absorption_um"],
+        "restrict_thick_to_mask": _thick_vessel_restriction_mask(binary, settings, voxel_size_xyz),
+        "use_memmap": settings["use_memmap_loading"],
+        "memmap_directory": settings["memmap_directory"],
+    }
+
+
+def thick_vessel_mask_from_image(
+    settings: dict, image: np.ndarray, voxel_size_xyz
+) -> np.ndarray | None:
+    """The thick-vessel region skeletonisation found in *image*, found again.
+
+    For a run that needs the region but loaded its skeleton instead of making
+    it (a resume with no stored stage outputs). None when thickness-gated
+    skeletonisation is off, or finds no thick vessel.
+    """
+    if not settings.get("use_thick_vessel_skeletonisation"):
+        return None
+    binary = _to_binary_volume_for_skeletonization(image)
+    return preprocessing.thick_vessel_region(
+        binary, **_thick_region_arguments(settings, binary, voxel_size_xyz)
+    )
+
+
 def _skeletonize_loaded_mask(
     image, settings: dict, voxel_size_xyz
 ) -> tuple[np.ndarray, np.ndarray | None]:
@@ -558,13 +604,7 @@ def _skeletonize_loaded_mask(
         binary = _to_binary_volume_for_skeletonization(image)
         return preprocessing.skeletonize_thickness_gated(
             binary,
-            min_radius_um=float(settings["skeleton_thick_vessel_min_radius_um"]),
-            voxel_size_zyx=voxel_size_zyx,
-            fill_mask_holes=bool(settings["skeleton_fill_mask_holes_before_thickness"]),
-            wall_absorption_um=settings["skeleton_thick_vessel_wall_absorption_um"],
-            restrict_thick_to_mask=_thick_vessel_restriction_mask(
-                binary, settings, voxel_size_xyz
-            ),
+            **_thick_region_arguments(settings, binary, voxel_size_xyz),
             flake_filter_um=settings["skeleton_thick_vessel_flake_filter_um"],
             max_bridge_radius_multiple=settings[
                 "skeleton_thick_vessel_max_bridge_radius_multiple"
@@ -574,8 +614,6 @@ def _skeletonize_loaded_mask(
                 settings["skeleton_thick_vessel_bridge_radius_smoothing_um"]
             ),
             return_thick_mask=True,
-            use_memmap=settings["use_memmap_loading"],
-            memmap_directory=settings["memmap_directory"],
             tile_large_components=settings["skeletonize_tile_large_components"],
             tile_max_voxels=settings["skeletonize_tile_max_voxels"],
             tile_halo_voxels=_skeletonize_tile_halo_voxels(settings, voxel_size_zyx),
@@ -2078,6 +2116,56 @@ def _haemodynamics_apply_config(
     )
 
 
+def _assign_branch_orders(
+    settings: dict, G: nx.MultiGraph, *, post_assign_callback=None
+) -> dict[str, Any]:
+    """Branch orders on *G* from the run's boundary-node lists in *settings*.
+
+    One call for the Diameters stage and the Post processing stage, which
+    assigns them again over a hand-edited network: the two must read the same
+    boundary lists and the same hierarchical rules, or an edit would change
+    orders the rest of the network was never given.
+    """
+    branch_summary = graph.assign_vessel_branch_orders(
+        G,
+        settings["inlet_nodes"],
+        outlet_nodes=settings["outlet_nodes"],
+        arteriole_boundary_nodes=settings["arteriole_boundary_nodes"],
+        venule_boundary_nodes=settings["venule_boundary_nodes"],
+        large_arteriole_boundary_nodes=settings["large_arteriole_boundary_nodes"],
+        large_venule_boundary_nodes=settings["large_venule_boundary_nodes"],
+        strict_hierarchical=settings["strict_branch_order_assignment"],
+        # Hierarchical Art*/Ven* labelling needs small-vessel terminals
+        # (auto masks or manual A/V coords/volumes). Large-vessel
+        # automation alone only fills inlets/outlets. Large_Art/Large_Ven
+        # sits above Art/Ven, so it also needs hierarchical mode to
+        # actually fire -- turning it on without small-vessel/manual A-V
+        # boundaries configured would otherwise silently never tag
+        # anything.
+        expects_hierarchical=bool(
+            settings["use_small_vessel_masks_for_boundary_assignment"]
+            or settings["arteriole_boundary_node_coordinates"]
+            or settings["arteriole_boundary_node_volumes"]
+            or settings["venule_boundary_node_coordinates"]
+            or settings["venule_boundary_node_volumes"]
+            or settings["assign_large_vessel_branch_orders"]
+        ),
+        post_assign_callback=post_assign_callback,
+    )
+    if branch_summary["mode"] == "hierarchical":
+        logger.info(
+            "Assigned hierarchical branch orders "
+            "(Art*/Ven* first, then capillary B* from arteriole boundary)."
+        )
+        logger.info(f"Branch assignment summary: {branch_summary}")
+    elif branch_summary["mode"] == "capillary":
+        logger.info(
+            "Assigned capillary branch orders from STARTING_NODES only "
+            "(no arteriole/venule boundary-node sets supplied)."
+        )
+    return branch_summary
+
+
 def assign_diameters(settings: dict, network: VesselNetwork, boundaries: BoundaryNodes, schema: Schema):
     """Assign branch orders, then the diameter each edge is modelled with.\n\n    Branch orders come first because they are the key into the diameter\n    table; per-edge FWHM measurements override that table when enabled."""
     if boundaries.graph is not None:
@@ -2100,47 +2188,15 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                 f"{vessel_type_3d_path}"
             )
 
-        branch_summary = graph.assign_vessel_branch_orders(
+        _assign_branch_orders(
+            settings,
             G,
-            settings["inlet_nodes"],
-            outlet_nodes=settings["outlet_nodes"],
-            arteriole_boundary_nodes=settings["arteriole_boundary_nodes"],
-            venule_boundary_nodes=settings["venule_boundary_nodes"],
-            large_arteriole_boundary_nodes=settings["large_arteriole_boundary_nodes"],
-            large_venule_boundary_nodes=settings["large_venule_boundary_nodes"],
-            strict_hierarchical=settings["strict_branch_order_assignment"],
-            # Hierarchical Art*/Ven* labelling needs small-vessel terminals
-            # (auto masks or manual A/V coords/volumes). Large-vessel
-            # automation alone only fills inlets/outlets. Large_Art/Large_Ven
-            # sits above Art/Ven, so it also needs hierarchical mode to
-            # actually fire -- turning it on without small-vessel/manual A-V
-            # boundaries configured would otherwise silently never tag
-            # anything.
-            expects_hierarchical=bool(
-                settings["use_small_vessel_masks_for_boundary_assignment"]
-                or settings["arteriole_boundary_node_coordinates"]
-                or settings["arteriole_boundary_node_volumes"]
-                or settings["venule_boundary_node_coordinates"]
-                or settings["venule_boundary_node_volumes"]
-                or settings["assign_large_vessel_branch_orders"]
-            ),
             post_assign_callback=(
                 _vessel_types_after_branch_assign
                 if _want_midrun_plotly_html(settings)
                 else None
             ),
         )
-        if branch_summary["mode"] == "hierarchical":
-            logger.info(
-                "Assigned hierarchical branch orders "
-                "(Art*/Ven* first, then capillary B* from arteriole boundary)."
-            )
-            logger.info(f"Branch assignment summary: {branch_summary}")
-        elif branch_summary["mode"] == "capillary":
-            logger.info(
-                "Assigned capillary branch orders from STARTING_NODES only "
-                "(no arteriole/venule boundary-node sets supplied)."
-            )
 
         if not settings["run_haemodynamics"]:
             logger.info(
@@ -2228,6 +2284,229 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
         results=locals().get("haemo_results", {}) or {},
         fwhm_raw=locals().get("fwhm_raw"),
     )
+
+
+#: What an edited vessel may have brought with it from the vessel it was cut
+#: from or merged with, and must be measured for afresh instead: every width
+#: and its flags, and the resistance built on them.
+_MEASUREMENT_PREFIXES = ("fwhm_", "edt_", "raw_section_", "endothelial_")
+_MEASUREMENT_ATTRIBUTES = (
+    "diameter_um",
+    "diameter_source",
+    EDGE_DIAMETER_BASIS,
+    "resistance",
+    "conductance",
+)
+
+
+def _start_measurement_afresh(data: dict) -> None:
+    """Clear what *data* was measured as, keeping its diameter as provisional.
+
+    The provisional diameter is what the edit gave it -- its neighbours' mean
+    for a vessel drawn by hand, the cut vessel's for each half -- held as an
+    override: a measurement replaces it, the branch-order table does not.
+    """
+    provisional = positive_diameter_um(data.get("diameter_um"))
+    stale = [
+        name
+        for name in data
+        if name in _MEASUREMENT_ATTRIBUTES or str(name).startswith(_MEASUREMENT_PREFIXES)
+    ]
+    for name in stale:
+        del data[name]
+    if provisional is not None:
+        set_edge_diameter_override(data, provisional)
+
+
+def _bridge_edited_vessels(
+    settings: dict,
+    G: nx.MultiGraph,
+    network: VesselNetwork | None,
+    thick_vessel_mask: np.ndarray | None,
+) -> nx.MultiGraph:
+    """*G* with every edited vessel that opens into a thick vessel split there.
+
+    What graph building's last step does to every vessel
+    (:func:`haemolynx.graph.insert_thick_vessel_junction_nodes`), for the
+    edited ones only: the part inside the thick-vessel region becomes a
+    zero-resistance bridge. Only with thickness-gated skeletonisation, the one
+    thing that makes bridges. The region is the run's own when its volume
+    carries it, else *thick_vessel_mask*, else found again from the
+    segmentation.
+    """
+    if not settings.get("use_thick_vessel_skeletonisation"):
+        return G
+    edited = graph.edited_edges(G)
+    if not edited:
+        return G
+    mask = network.volume.thick_vessel_mask if network is not None else None
+    if mask is None:
+        mask = thick_vessel_mask
+    if mask is None:
+        if network is None:
+            logger.warning(
+                "Post processing: no thick-vessel region and no segmentation to find "
+                "it in; %d edited vessel(s) get no zero-resistance bridge where they "
+                "open into a thick vessel.",
+                len(edited),
+            )
+            return G
+        logger.info(
+            "Post processing: finding the thick-vessel region in the segmentation "
+            "again (this run loaded its skeleton rather than making it)."
+        )
+        mask = thick_vessel_mask_from_image(
+            settings, network.volume.image, network.volume.voxel_size_xyz
+        )
+        if mask is None:
+            return G  # no thick vessel anywhere: graph building made no bridges either
+    if network is not None:
+        voxel_size_zyx = tuple(float(v) for v in network.volume.voxel_size_zyx)
+    else:
+        voxel_size_zyx = tuple(float(v) for v in G.graph.get("image_voxel_size_zyx", (1, 1, 1)))
+
+    def edited_bridges(graph_obj: nx.MultiGraph) -> int:
+        return sum(
+            1
+            for _u, _v, data in graph_obj.edges(data=True)
+            if data.get(graph.IS_ZERO_RESISTANCE) and data.get(graph.post_processing.EDITED)
+        )
+
+    before = edited_bridges(G)
+    bridged = graph.insert_thick_vessel_junction_nodes(
+        G, mask, voxel_size_zyx=voxel_size_zyx, edges=edited
+    )
+    added = edited_bridges(bridged) - before
+    if added:
+        logger.info(
+            "Post processing: %d edited vessel piece(s) inside a thick vessel became "
+            "zero-resistance bridges.",
+            added,
+        )
+    return bridged
+
+
+def _trim_boundary_lists(
+    settings: dict, boundaries: BoundaryNodes, G: nx.MultiGraph
+) -> None:
+    """Keep only the boundary nodes still in *G*, on *boundaries* and in *settings*.
+
+    In place: assign_boundaries hands the settings' own lists over, and both
+    must say the same thing afterwards. The resistance node pair is picked
+    again when either of its nodes went.
+    """
+    for name in _BOUNDARY_NODE_LISTS:
+        kept = getattr(boundaries, name)
+        kept[:] = [node_id for node_id in kept if node_id in G]
+        in_settings = settings.get(name)
+        if isinstance(in_settings, list) and in_settings is not kept:
+            in_settings[:] = [node_id for node_id in in_settings if node_id in G]
+    pair = boundaries.resistance_node_pair
+    if pair is not None and any(node_id not in G for node_id in pair):
+        boundaries.resistance_node_pair = (
+            (boundaries.inlet_nodes[0], boundaries.outlet_nodes[0])
+            if boundaries.inlet_nodes and boundaries.outlet_nodes
+            else None
+        )
+        logger.info(f"Re-selected resistance node pair: {boundaries.resistance_node_pair}")
+
+
+def post_process(
+    settings: dict,
+    model: HaemodynamicModel,
+    boundaries: BoundaryNodes,
+    schema: Schema,
+    *,
+    network: VesselNetwork | None = None,
+    thick_vessel_mask: np.ndarray | None = None,
+) -> HaemodynamicModel:
+    """Bring a network edited by hand in line with the rest of the run.
+
+    The Post processing tab's stage, between Diameters and Haemodynamics. The
+    tab's edits (:mod:`haemolynx.graph.post_processing`) mark what they
+    touched; this does to those vessels what the stages before it did to
+    every vessel:
+
+    1. the boundary-node lists follow the graph -- a prune can drop an inlet;
+    2. an edited vessel that opens into a thick vessel is split where it
+       enters, the part inside a zero-resistance bridge
+       (:func:`_bridge_edited_vessels`);
+    3. each edited vessel's ``length`` is measured along its path;
+    4. branch orders are assigned again over the whole network, as Diameters
+       does (an edit changes the orders downstream of it);
+    5. with haemodynamics on, each edited vessel is measured afresh with the
+       run's own diameter methods (FWHM, the raw section, EDT, the
+       endothelium -- whichever it uses), keeping the diameter the edit gave
+       it as a provisional override: a measurement replaces that, the
+       branch-order table does not.
+
+    Then the marks are cleared, and ``model.results["post_process"]`` says
+    what was done (``edited_vessels``, and the ``diameters`` sources when
+    measured). A network nobody edited passes through untouched -- no
+    ``"post_process"`` entry -- so a run without the panel does what it did
+    before this stage.
+
+    *thick_vessel_mask* is the thick-vessel region, for a run whose
+    *network* volume does not carry one (see :class:`PipelineResume`).
+    """
+    G = model.graph
+    if not graph.has_pending_edits(G):
+        logger.info("Post processing: no edits to bring in line.")
+        return model
+    had_inlets, had_outlets = bool(boundaries.inlet_nodes), bool(boundaries.outlet_nodes)
+    _trim_boundary_lists(settings, boundaries, G)
+    if (had_inlets and not boundaries.inlet_nodes) or (had_outlets and not boundaries.outlet_nodes):
+        raise ValueError(
+            "The post-processing edits removed every inlet or every outlet; the "
+            "network has nothing left to solve between."
+        )
+    G = _bridge_edited_vessels(settings, G, network, thick_vessel_mask)
+    model.graph = G
+    boundaries.graph = G
+    if network is not None:
+        network.graph = G
+    edited = graph.edited_edges(G)
+    for u, v, key in edited:
+        data = G.edges[u, v, key]
+        points = data.get("voxels")
+        if points is not None and len(points) >= 2:
+            data["length"] = float(graph.calculate_path_length(points))
+    diameters = None
+    summary: dict[str, Any] = {"edited_vessels": len(edited)}
+    if settings["inlet_nodes"]:
+        _assign_branch_orders(settings, G)
+        # Even with no vessel to measure (only deletions): a table or class
+        # median diameter follows the branch order just assigned.
+        if settings["run_haemodynamics"]:
+            for u, v, key in edited:
+                _start_measurement_afresh(G.edges[u, v, key])
+            voxel_size_zyx = (
+                network.volume.voxel_size_zyx
+                if network is not None
+                else tuple(G.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0)))
+            )
+            haemo_config = _haemodynamics_apply_config(
+                settings, schema, voxel_size_zyx=voxel_size_zyx
+            )
+            G, results, _raw = assign_edge_diameters(
+                G,
+                haemo_config,
+                mask_volume=network.volume.image if network is not None else None,
+                edges=edited,
+            )
+            diameters = results.get("diameters")
+            summary["diameters"] = diameters
+            summary["measurement"] = results
+    model.results["post_process"] = summary
+    graph.clear_edit_marks(G)
+    G.graph[graph.post_processing.APPLIED] = True
+    logger.info(
+        f"Post processing: brought {len(edited)} edited vessel(s) in line with the "
+        f"network ({G.number_of_edges()} vessels)"
+        + (f"; diameter sources: {diameters}" if diameters else "")
+        + "."
+    )
+    return model
 
 
 #: The boundary-node lists a network-handling step keeps in step with the graph.
@@ -3827,6 +4106,8 @@ def _fill_boundary_settings(settings: dict, resume: PipelineResume) -> None:
         "outlet_nodes": resume.outlet_nodes,
         "arteriole_boundary_nodes": resume.arteriole_boundary_nodes,
         "venule_boundary_nodes": resume.venule_boundary_nodes,
+        "large_arteriole_boundary_nodes": resume.large_arteriole_boundary_nodes,
+        "large_venule_boundary_nodes": resume.large_venule_boundary_nodes,
     }
     for name, values in mapping.items():
         current = settings.get(name)
@@ -3864,6 +4145,8 @@ def _boundaries_from_resume(
         outlet_nodes=list(resume.outlet_nodes),
         arteriole_boundary_nodes=list(resume.arteriole_boundary_nodes),
         venule_boundary_nodes=list(resume.venule_boundary_nodes),
+        large_arteriole_boundary_nodes=list(resume.large_arteriole_boundary_nodes),
+        large_venule_boundary_nodes=list(resume.large_venule_boundary_nodes),
         resistance_node_pair=pair,
         graph=graph,
         large_arteriole_mask=large_arteriole_mask,
@@ -3887,6 +4170,7 @@ def run_pipeline_stages(
     on_stage_output: StageOutputCallback | None = None,
     start_from: str | None = None,
     resume: PipelineResume | None = None,
+    stop_after: str | None = None,
 ) -> nx.MultiGraph | None:
     """Run every stage in order, for one resolved settings dict.
 
@@ -3909,6 +4193,12 @@ def run_pipeline_stages(
     touching ``{stem}_graph.pkl``); boundaries / diameters / haemodynamics /
     solve / perturbations are reconstructed from *resume*.
 
+    *stop_after* names the last stage call to run: the run returns the graph
+    as that stage left it (None before there is one), and the stages after it
+    neither run nor report. How the napari panel pauses a run on its Post
+    processing tab -- ``stop_after="assign_diameters"`` -- and later picks it
+    up again with ``start_from="post_process"``.
+
     Both run on whatever thread the run is on, and must not raise: a run is not
     stopped, or changed in any way, by whoever is watching it. Note the outputs
     are the live objects, not copies -- every stage after ``build_network``
@@ -3917,6 +4207,15 @@ def run_pipeline_stages(
     """
     if resume is not None and start_from is None:
         start_from = resume.start_from
+    if stop_after is not None:
+        if stop_after not in STAGE_CALLS:
+            raise ValueError(
+                f"stop_after={stop_after!r} is not a stage. Stages: {', '.join(STAGE_CALLS)}."
+            )
+        if start_from in STAGE_CALLS and _stage_index(stop_after) < _stage_index(start_from):
+            raise ValueError(
+                f"stop_after={stop_after!r} comes before start_from={start_from!r}."
+            )
     run = RunProgress(progress)
     with run.stage("segment") as segmenting:
         inputs = segment(
@@ -3925,6 +4224,8 @@ def run_pipeline_stages(
             progress=segmenting,
         )
     _produced(on_stage_output, "segment", inputs)
+    if stop_after == "segment":
+        return None
     with run.stage("skeletonise"):
         volume = _earlier_output(resume, start_from, "skeletonise", "volume")
         if volume is None:
@@ -3932,6 +4233,8 @@ def run_pipeline_stages(
         else:
             logger.info("Resuming with the image and skeleton already loaded.")
     _produced(on_stage_output, "skeletonise", volume)
+    if stop_after == "skeletonise":
+        return None
     with run.stage("build_network") as building:
         resumed_graph = _earlier_output(resume, start_from, "build_network", "graph")
         earlier = _earlier_output(resume, start_from, "build_network", "network")
@@ -3956,6 +4259,8 @@ def run_pipeline_stages(
     if resume is not None and resume.graph is not None:
         network.graph = resume.graph
     _produced(on_stage_output, "build_network", network)
+    if stop_after == "build_network":
+        return network.graph
     with run.stage("assign_boundaries"):
         if _run_stage_body("assign_boundaries", start_from):
             boundaries = assign_boundaries(settings, network)
@@ -3970,6 +4275,8 @@ def run_pipeline_stages(
             if boundaries.graph is not None:
                 network.graph = boundaries.graph
     _produced(on_stage_output, "assign_boundaries", boundaries)
+    if stop_after == "assign_boundaries":
+        return boundaries.graph if boundaries.graph is not None else network.graph
     with run.stage("assign_diameters"):
         if _run_stage_body("assign_diameters", start_from):
             diameters = assign_diameters(settings, network, boundaries, schema)
@@ -3980,6 +4287,21 @@ def run_pipeline_stages(
                 graph=boundaries.graph if boundaries.graph is not None else network.graph
             )
     _produced(on_stage_output, "assign_diameters", diameters)
+    if stop_after == "assign_diameters":
+        return diameters.graph
+    with run.stage("post_process"):
+        if _run_stage_body("post_process", start_from):
+            diameters = post_process(
+                settings,
+                diameters,
+                boundaries,
+                schema,
+                network=network,
+                thick_vessel_mask=resume.thick_vessel_mask if resume is not None else None,
+            )
+    _produced(on_stage_output, "post_process", diameters)
+    if stop_after == "post_process":
+        return diameters.graph
     with run.stage("build_haemodynamic_model"):
         if _run_stage_body("build_haemodynamic_model", start_from):
             diameters = apply_network_handling(settings, diameters, boundaries, network)
@@ -3987,12 +4309,16 @@ def run_pipeline_stages(
         else:
             model = diameters
     _produced(on_stage_output, "build_haemodynamic_model", model)
+    if stop_after == "build_haemodynamic_model":
+        return model.graph
     with run.stage("solve"):
         if _run_stage_body("solve", start_from):
             solution = solve(settings, model, boundaries, schema)
         else:
             solution = _solution_from_graph(model.graph)
     _produced(on_stage_output, "solve", solution)
+    if stop_after == "solve":
+        return model.graph
     # After the baseline is solved, so each perturbation has a solved network to
     # difference against, and before the export, which writes that baseline out.
     with run.stage("run_perturbations") as perturbing:
@@ -4008,6 +4334,8 @@ def run_pipeline_stages(
         else:
             perturbations = PerturbationRun()
     _produced(on_stage_output, "run_perturbations", perturbations)
+    if stop_after == "run_perturbations":
+        return model.graph
     with run.stage("export_results"):
         if _run_stage_body("export_results", start_from):
             export_results(settings, network, model, solution)

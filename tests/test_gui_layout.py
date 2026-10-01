@@ -257,7 +257,7 @@ def test_the_cartwheel_guard_joins_the_graph_tabs_checks():
 
 
 def test_the_connectivity_box_keeps_its_measures_behind_its_own_button():
-    _tab, layout = LAYOUTS["8. Additional measurements"]
+    _tab, layout = LAYOUTS["9. Additional measurements"]
     box = layout.box("connectivity_network_analysis")
     assert box.title == "Connectivity/Network Analysis"
     assert box.rows == ("statistics_network_analysis", "statistics_mode")

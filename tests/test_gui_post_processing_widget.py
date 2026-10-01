@@ -1,4 +1,4 @@
-"""The "10. Post processing" tab, built for real, with a viewer.
+"""The "6. Post processing" tab, built for real, with a viewer.
 
 The graph rules are pinned in ``test_graph_post_processing.py`` and the
 colours in ``test_gui_post_processing.py``; these check the Qt glue between
@@ -69,17 +69,30 @@ def page(make_napari_viewer):
     _apply_layers(viewer, results.stage_finished("build_network", network(_four_way_network())))
     report = SimpleNamespace(value="")
     regenerated: list = []
+    stops: list = []
+    #: What the panel would say: a run paused here, one finished, whether a
+    #: run started when asked.
+    run = SimpleNamespace(paused=False, complete=True, starts=True)
+
+    def regenerate(graph, stop_after=None):
+        regenerated.append(graph)
+        stops.append(stop_after)
+        return run.starts
+
     controls = _post_processing_controls(
         viewer,
         report,
         results=lambda: results,
         boundary_roles=lambda: {"inlet": (0,), "outlet": (4,)},
-        regenerate=regenerated.append,
+        regenerate=regenerate,
         running=lambda: False,
+        paused=lambda: run.paused,
+        complete=lambda: run.complete,
     )
+    controls.refresh()
     return SimpleNamespace(
         controls=controls, viewer=viewer, results=results, report=report,
-        regenerated=regenerated,
+        regenerated=regenerated, stops=stops, run=run,
     )
 
 
@@ -116,13 +129,19 @@ def _click(page, position):
     page.controls.on_click(page.viewer.layers[VESSELS], event)
 
 
-def test_the_panel_ends_with_the_post_processing_tab(make_napari_viewer):
+def test_the_post_processing_tab_sits_between_diameters_and_haemodynamics(make_napari_viewer):
     from qtpy.QtWidgets import QStackedWidget, QTabWidget
 
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
     tabs = panel.findChild(QTabWidget)
-    assert tabs.tabText(tabs.count() - 1) == POST_PROCESSING_TAB
+    titles = [tabs.tabText(i) for i in range(tabs.count())]
+    assert POST_PROCESSING_TAB == "6. Post processing"
+    at = titles.index(POST_PROCESSING_TAB)
+    assert titles[at - 1] == "5. Diameters" and titles[at + 1] == "7. Haemodynamics"
+    assert titles[-1] == "10. Export"
+    # Its own buttons start a run there, not "Run from this stage".
+    assert POST_PROCESSING_TAB not in panel._haemolynx_revert_buttons
     # One Revert page per tab, so the chrome below still follows the tabs.
     stack = panel.findChild(QStackedWidget, "haemolynx_revert_stack")
     assert stack.count() == tabs.count()
@@ -595,6 +614,7 @@ def test_regenerate_hands_over_the_edited_graph_and_clears_the_tab(page):
     c.regenerate_button.click()
 
     assert page.regenerated == [edited]
+    assert page.stops == [None], "after a finished run: on to the end"
     assert HIGH_DEGREE_JUNCTIONS not in viewer.layers
     assert c.on_press not in viewer.layers[VESSELS].mouse_drag_callbacks
     assert c.state.graph is None and c.junction_list.count() == 0
@@ -614,3 +634,109 @@ def test_regenerate_hands_over_a_traced_vessel_with_its_cut_vessels(page):
         assert data["length"] == pytest.approx(calculate_path_length(data["voxels"]))
     assert len(_added(graph)) == 1
     assert ADDED_NODES not in viewer.layers and c.state.added_nodes == []
+
+
+# --- Regenerate graph and Continue ----------------------------------------------
+
+
+def test_the_hand_over_buttons_wait_for_something_to_hand_over(page):
+    c = page.controls
+    assert c.regenerate_graph_button.toolTip() and c.continue_button.toolTip()
+    c.scan_button.click()
+    assert not c.regenerate_graph_button.isEnabled(), "nothing edited yet"
+    assert not c.regenerate_button.isEnabled()
+    assert not c.continue_button.isEnabled(), "no run is paused"
+
+    c.split_button.click()
+
+    assert c.regenerate_graph_button.isEnabled()
+    assert c.regenerate_button.isEnabled()
+    assert "Regenerate graph" in c.commit_status.text()
+
+
+def test_regenerate_graph_while_paused_keeps_the_run_paused(page):
+    c = page.controls
+    page.run.paused, page.run.complete = True, False
+    c.scan_button.click()
+    c.split_button.click()
+    assert c.continue_button.isEnabled()
+    assert not c.regenerate_button.isEnabled(), "Continue, not this, while paused"
+    edited = c.state.graph
+
+    c.regenerate_graph_button.click()
+
+    assert page.regenerated == [edited]
+    assert page.stops == ["post_process"]
+    assert c.state.graph is None
+
+
+def test_regenerate_graph_after_a_finished_run_re_solves_to_the_end(page):
+    c = page.controls
+    c.scan_button.click()
+    c.split_button.click()
+
+    c.regenerate_graph_button.click()
+
+    assert page.stops == [None]
+
+
+def test_continue_carries_a_paused_run_on_with_the_edits(page):
+    c = page.controls
+    page.run.paused, page.run.complete = True, False
+    c.refresh()
+    c.scan_button.click()
+    c.split_button.click()
+    edited = c.state.graph
+
+    c.continue_button.click()
+
+    assert page.regenerated == [edited]
+    assert page.stops == [None]
+
+
+def test_continue_without_a_scan_carries_on_the_network_as_it_paused(page):
+    c = page.controls
+    page.run.paused = True
+    c.refresh()
+
+    c.continue_button.click()
+
+    (graph,) = page.regenerated
+    assert graph is page.results._graph
+
+
+def test_a_run_that_does_not_start_leaves_the_edits_in_the_tab(page):
+    c = page.controls
+    page.run.starts = False
+    c.scan_button.click()
+    c.split_button.click()
+    edited = c.state.graph
+
+    c.regenerate_graph_button.click()
+
+    assert c.state.graph is edited, "a refused run loses nothing"
+    assert c.junction_list.count() > 0 or c.state.scan is not None
+
+
+def test_forgetting_the_tab_drops_its_edits(page):
+    c = page.controls
+    c.scan_button.click()
+    c.split_button.click()
+
+    c.forget()
+
+    assert c.state.graph is None
+    assert not c.regenerate_graph_button.isEnabled()
+    assert c.status.text() == "Not scanned yet."
+
+
+def test_mid_run_postprocessing_is_an_input_tab_checkbox_off_by_default(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    row = panel._haemolynx_rows()["mid_run_postprocessing"]
+    assert row.value is False
+    assert row.label == "Mid-run postprocessing"
+    from haemolynx.gui.tabs import assign_to_stages
+    from haemolynx.pipeline import default_schema
+
+    assert assign_to_stages(default_schema())["mid_run_postprocessing"] == "1. Input"

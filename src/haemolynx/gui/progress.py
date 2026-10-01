@@ -108,6 +108,17 @@ class ProgressDisplay:
         )
         self.steps = BarState()
 
+    def pause(self, message: str) -> None:
+        """The run stopped on purpose part-way (to post-process by hand): the
+        bar stays where it got to -- it is not finished -- and says why."""
+        self.stages = BarState(
+            value=self.stages.value,
+            total=self.stages.total,
+            text=message,
+            visible=True,
+        )
+        self.steps = BarState()
+
     def fail(self, message: str = "Failed") -> None:
         """The run stopped early: leave the bar where it got to, and say so."""
         self.stages = BarState(

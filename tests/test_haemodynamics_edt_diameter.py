@@ -567,3 +567,21 @@ def test_an_unknown_method_is_refused():
     mask, line = _tube(4.0, (1, 0, 0))
     with pytest.raises(ValueError, match="cross_section"):
         _edt_diameter(mask, line, method="thickest")
+
+
+def test_measuring_a_subset_leaves_every_other_edge_alone():
+    shape = (20, 20, 30)
+    mask = _cylinder_mask(shape, z=10, y=10, radius=4.0, x0=2, x1=27)
+    graph = _straight_edge_graph(2, 27)
+    graph.add_node(2, pos=np.array([10.0, 10.0, 27.0]))
+    voxels = [(10.0, 10.0, 27.0), (10.0, 10.0, 28.0)]
+    graph.add_edge(1, 2, key=0, length=1.0, voxels=voxels, edt_diameter_um=99.0)
+
+    summary = measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=mask, voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=2.0, edges=[(1, 0, 0)],
+    )
+
+    assert summary["edges_measured"] == 1
+    assert abs(graph[0][1][0]["edt_diameter_um"] - 8.0) < 0.5
+    assert graph[1][2][0]["edt_diameter_um"] == 99.0, "not asked about: kept"

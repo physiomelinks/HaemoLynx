@@ -17,7 +17,7 @@ is anisotropic with coarser ``z``.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 import numpy as np
 import networkx as nx
@@ -32,6 +32,8 @@ from haemolynx.io.axis_order import (
     normalize_axis_order,
 )
 from haemolynx.preprocessing.memmap_support import release_memmap_array
+
+from .poiseuille import edge_selection
 
 # FWHM of a Gaussian with standard deviation sigma (not 2*sigma^2 in the exponent).
 _GAUSSIAN_FWHM_FROM_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
@@ -1405,6 +1407,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
     raw_channel: int | None = None,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from a raw TIFF using graph-derived branch labels.
 
@@ -1635,6 +1638,12 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     raw_channel :
         Which channel of a multi-channel *raw_tiff_path* to read (counting
         from 0); ``None`` for a single-channel file. Unused with *raw_volume*.
+    edges :
+        Measure only these ``(u, v, key)`` edges (either way round); every
+        other edge keeps what it has. ``None`` (default) measures them all.
+        The label volume is still drawn from the whole graph, so a subset's
+        lines stop at the same neighbouring vessels and junctions a full run's
+        do -- which is what lets a hand-edited vessel be measured on its own.
     clip_decision_smoothing_um :
         Width of the smoothing :func:`_clip_profile_to_central_lobe` decides
         where the central lobe ends on. ``None`` is at least two pixels of
@@ -1807,7 +1816,10 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             ratio = _profile_plateau_shape_ratio(pos_fit, prof_fit, baseline)
             return ratio is None or ratio < float(max_plateau_shape_ratio)
 
+        chosen = edge_selection(edges)
         for u, v, key, data in G.edges(keys=True, data=True):
+            if chosen is not None and (frozenset((u, v)), key) not in chosen:
+                continue
             vox = data.get("voxels")
             assigned = data.get("graph_edge_label_id")
             if not vox or len(vox) < 2 or assigned is None:

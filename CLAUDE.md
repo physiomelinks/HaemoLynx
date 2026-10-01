@@ -80,7 +80,7 @@ haemolynx/
 │   │                       #   network swap for the view panel's "Showing" menu, pure),
 │   │                       #   perturbation_editing.py, graph_editor.py
 │   │                       #   + graph_click.py (the Edit window), post_processing.py
-│   │                       #   (what the "10. Post processing" tab draws, pure), branch_hover.py,
+│   │                       #   (what the "6. Post processing" tab draws, pure), branch_hover.py,
 │   │                       #   vessel_tubes.py, run_state.py, run_log.py + log_view.py,
 │   │                       #   run_snapshot.py (.haemorun save/load), stage_checkpoints.py
 │   │                       #   (re-run from a tab), optimise_progress.py, chrome_tooltips.py
@@ -91,7 +91,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 406 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 407 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -152,14 +152,15 @@ Users may also supply **pre-segmented** masks only (no ilastik call) — typical
 2. **Vessel masks (optional)** — `io.load_and_validate_vessel_masks` (large/small arteriole/venule; from disk or ilastik)  
 3. **Graph build** — `graph.build_graph_from_skeleton` (eleven topology steps in `graph/assemble.py`), then `graph.smooth_graph_centrelines`  
 4. **Boundary & branch order** — manual volume/coordinates or mask-based assignment; `graph.assign_vessel_branch_orders` / hierarchical orders  
-5. **Haemodynamics** — `haemodynamics.apply_poiseuille_haemodynamics`, conductance matrix, two-point resistance, flow solve (optionally iterating a distributed haematocrit, `haematocrit_model="distributed_iterative"`)  
-6. **Perturbations (optional)** — `run_perturbations` re-solves copies of the solved network, once per configured entry in `perturbations` (see `haemodynamics/perturbations.py`)  
-7. **Export & stats** — `visualization.graph_to_vtk`, `statistics.compute_comprehensive_vessel_statistics` (with the selected network analyses), vascular communities
+5. **Post processing (hand edits)** — `post_process` brings vessels edited by hand in the panel (`graph/post_processing.py`) in line with the rest: lengths, branch orders, diameters by the run's own methods (only the edited vessels are measured), zero-resistance bridges where one opens into a thick vessel. A no-op on an unedited network. With `mid_run_postprocessing` on, a panel run pauses before it (`run_pipeline_stages(stop_after="assign_diameters")`) and Continue resumes at it  
+6. **Haemodynamics** — `haemodynamics.apply_poiseuille_haemodynamics`, conductance matrix, two-point resistance, flow solve (optionally iterating a distributed haematocrit, `haematocrit_model="distributed_iterative"`)  
+7. **Perturbations (optional)** — `run_perturbations` re-solves copies of the solved network, once per configured entry in `perturbations` (see `haemodynamics/perturbations.py`)  
+8. **Export & stats** — `visualization.graph_to_vtk`, `statistics.compute_comprehensive_vessel_statistics` (with the selected network analyses), vascular communities
 
-`pipeline/stages.py` runs these as nine stage functions: `segment`, `skeletonise`, `build_network`,
-`assign_boundaries`, `assign_diameters`, `build_haemodynamic_model`, `solve`, `run_perturbations`,
-`export_results`. The vessel masks (step 2) are loaded at the start of `build_network`, and the
-statistics, network analyses and communities (step 7) all run inside `export_results`.
+`pipeline/stages.py` runs these as ten stage functions: `segment`, `skeletonise`, `build_network`,
+`assign_boundaries`, `assign_diameters`, `post_process`, `build_haemodynamic_model`, `solve`,
+`run_perturbations`, `export_results`. The vessel masks (step 2) are loaded at the start of `build_network`, and the
+statistics, network analyses and communities (step 8) all run inside `export_results`.
 
 The production-style entry point is `examples/resistance_network_pipeline.py` (`image_to_model_pipeline`). The tutorial (`tutorials/pipeline_tutorial.ipynb`) documents segmentation as a prerequisite stage and runs on pre-segmented fixture data by default.
 
@@ -221,7 +222,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py` |
 | `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text |
-| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_citations.py`, `test_setting_units.py`, `test_example_configs.py` |
+| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_post_process_stage.py`, `test_citations.py`, `test_setting_units.py`, `test_example_configs.py` |
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py` |
 | Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
 | Packaging / the installed wheel | `tests/test_installed_package.py`, `test_packaging_metadata.py`, `test_napari_manifest.py` |
@@ -351,23 +352,32 @@ are only caught locally.
   the path it came from; each edge records which of `smoothed` / `relaxed` / `kept_raw` /
   `too_short` happened to it.
 - **`pipeline/stages.py`** — one function per stage (`segment`, `skeletonise`, `build_network`,
-  `assign_boundaries`, `assign_diameters`, `build_haemodynamic_model`, `solve`,
+  `assign_boundaries`, `assign_diameters`, `post_process`, `build_haemodynamic_model`, `solve`,
   `run_perturbations`, `export_results`), each taking settings plus the previous stage's
   dataclass, so a caller can run them one at a time and intervene. `run_pipeline_stages` is the
-  orchestrator that runs all nine in order and returns the graph; its `start_from` / `resume`
+  orchestrator that runs all ten in order and returns the graph; its `start_from` / `resume`
   arguments let the panel re-run from a chosen stage using a saved run's state instead of
-  recomputing the earlier ones. `apply_network_handling(settings, model, boundaries, network)` is
+  recomputing the earlier ones, and `stop_after` ends a run after a named stage (how the panel
+  pauses for post-processing). `PipelineResume` carries every boundary list -- the
+  Large_Art/Large_Ven hand-off nodes included, which a resumed run used to lose -- and the
+  thick-vessel region. `post_process` measures only the vessels an edit marked
+  (`haemodynamics.apply.assign_edge_diameters(edges=...)`, FWHM's and EDT's own `edges=`), keeps the
+  diameter the edit gave as a provisional override, and bridges them with
+  `graph.insert_thick_vessel_junction_nodes(edges=...)`, which never re-splits an existing bridge. `apply_network_handling(settings, model, boundaries, network)` is
   the "Network handling" box on the Haemodynamics tab (pruning components without both an inlet
   and an outlet; `boundary_handling`), run at the start of the haemodynamics stage — not at the
   end of `assign_boundaries`, where it used to be — so "Run from this stage" on that tab honours
   it. A caller running the stages by hand calls it between `assign_diameters` and
   `build_haemodynamic_model`, as the examples do.
 - **`pipeline/progress.py`** — `STAGES`, the run's stages in order (the panel draws one tab
-  per entry and a progress bar counts them — one list, not two). It has ten entries for nine
-  stage functions: `solve` has no tab of its own (it shares **6. Haemodynamics**), and
-  **8. Additional measurements** is a tab with no stage function (its settings are read by
-  `export_results`). The panel's last tab, **10. Post processing**, is not in `STAGES` at all:
-  it edits a finished run's graph and hands it to the same Regenerate the Edit window uses.
+  per entry and a progress bar counts them — one list, not two). It has eleven entries for ten
+  stage functions: `solve` has no tab of its own (it shares **7. Haemodynamics**), and
+  **9. Additional measurements** is a tab with no stage function (its settings are read by
+  `export_results`). **6. Post processing** (`post_process`, between Diameters and
+  Haemodynamics) has no settings: its tab is its own page (`gui/_widget.py`'s
+  `_post_processing_controls`), with no "Run from this stage". Its Regenerate graph runs
+  `post_process` alone while a run is paused there (`gui/run_state.py`), else re-solves to Export
+  like Regenerate from the edited network; Continue carries a paused run on.
   Plus what a run reports through:
   `run_pipeline_stages(settings, schema, progress=callback)` hands the callback a `ProgressEvent`
   as each stage starts, finishes or fails, and one per topology step inside graph building.

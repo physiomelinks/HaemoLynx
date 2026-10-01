@@ -1,4 +1,4 @@
-"""What the "10. Post processing" tab draws and lists, described without napari.
+"""What the "6. Post processing" tab draws and lists, described without napari.
 
 Pure, like :mod:`haemolynx.gui.results`: a graph in, colours, layer specs
 and table rows out. ``_widget.py`` owns the Qt page,
@@ -22,15 +22,17 @@ formed on existing vessels (:func:`added_nodes_layer`).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
 import numpy as np
 
 from haemolynx.graph.post_processing import (
+    APPLIED,
     JunctionVessel,
     VesselEnd,
     edge_keys,
+    has_pending_edits,
     high_degree_junctions,
     junction_vessels,
 )
@@ -56,9 +58,9 @@ __all__ = [
     "added_nodes_layer",
     "added_vessel_ids",
     "branch_id_of",
-    "boundaries_following_graph",
     "camera_center_for",
     "describe_vessels",
+    "edits_lost_by_running_from",
     "junction_label",
     "junction_marker_layer",
     "junction_table_rows",
@@ -586,30 +588,25 @@ def zoom_for_canvas(canvas_size_px: Sequence[float], box_um: float) -> float | N
     return min(sizes) / float(box_um)
 
 
-def boundaries_following_graph(resume: Any) -> Any:
-    """*resume* (a ``PipelineResume``) with its boundary lists cut to its graph.
+def edits_lost_by_running_from(
+    start_from: str | None, working_graph: Any, post_processed_graph: Any
+) -> bool:
+    """Whether a run starting at *start_from* would throw hand edits away.
 
-    A prune in this tab can drop inlets or outlets that sat on a piece cut
-    off from the rest; the run being regenerated must not look for them. The
-    resistance node pair is re-picked from what is left when either of its
-    nodes went. Everything else on *resume* is kept.
+    The tab comes after Diameters, so a run from Diameters or earlier starts
+    again from a graph that never had the edits: the ones still in the tab's
+    *working_graph*, and the ones the ``post_process`` stage already brought
+    into the network (*post_processed_graph*, its checkpoint's, marked
+    :data:`~haemolynx.graph.post_processing.APPLIED`).
     """
-    graph = resume.graph
-    if graph is None:
-        return resume
+    from haemolynx.pipeline.progress import STAGES
 
-    def kept(nodes):
-        return tuple(node for node in (nodes or ()) if node in graph)
-
-    inlets, outlets = kept(resume.inlet_nodes), kept(resume.outlet_nodes)
-    pair = resume.resistance_node_pair
-    if pair is None or any(node not in graph for node in pair):
-        pair = (inlets[0], outlets[0]) if inlets and outlets else None
-    return replace(
-        resume,
-        inlet_nodes=inlets,
-        outlet_nodes=outlets,
-        arteriole_boundary_nodes=kept(resume.arteriole_boundary_nodes),
-        venule_boundary_nodes=kept(resume.venule_boundary_nodes),
-        resistance_node_pair=pair,
-    )
+    order = [stage.call for stage in STAGES if stage.call]
+    if start_from not in order:
+        return False
+    if order.index(start_from) >= order.index("post_process"):
+        return False
+    if has_pending_edits(working_graph):
+        return True
+    graph_attrs = getattr(post_processed_graph, "graph", None) or {}
+    return bool(graph_attrs.get(APPLIED))

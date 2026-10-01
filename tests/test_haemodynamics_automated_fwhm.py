@@ -1364,3 +1364,57 @@ def test_the_lumen_fit_holds_a_given_blur_instead_of_fitting_it():
     assert centre == pytest.approx(0.3, abs=1e-3)
     assert r2 > 0.999
     assert abs(wrong - held) > 0.05
+
+
+def _two_parallel_vessels(tmp_path: Path):
+    """Two blurred lumens side by side (y 10 and y 30), and a graph along both."""
+    nz, ny, nx_dim = 11, 41, 41
+    z = np.arange(nz, dtype=float)[:, None, None]
+    y = np.arange(ny, dtype=float)[None, :, None]
+    x = np.arange(nx_dim, dtype=float)[None, None, :]
+    raw = np.zeros((nz, ny, nx_dim), dtype=np.float32)
+    for yc, sigma in ((10.0, 1.5), (30.0, 2.5)):
+        r2 = (y - yc) ** 2 + (z - 5.0) ** 2 + 0.0 * x
+        raw += (100.0 * np.exp(-r2 / (2.0 * sigma**2))).astype(np.float32)
+    raw_path = tmp_path / "two_vessels.tif"
+    tifffile.imwrite(str(raw_path), raw)
+
+    def build() -> nx.MultiGraph:
+        graph = nx.MultiGraph()
+        for node, (yc, xpos) in enumerate(((10.0, 3.0), (10.0, 37.0), (30.0, 3.0), (30.0, 37.0))):
+            graph.add_node(node, pos=np.array([5.0, yc, xpos]))
+        for u, v, yc in ((0, 1, 10.0), (2, 3, 30.0)):
+            voxels = [(5.0, yc, float(xv)) for xv in range(3, 38)]
+            graph.add_edge(u, v, length=34.0, branch_order="B01", voxels=voxels)
+        return graph
+
+    return raw_path, build
+
+
+def test_measuring_a_subset_gives_those_edges_what_a_full_run_gives_them(tmp_path: Path):
+    """How a hand-edited vessel is measured on its own: the label volume is
+    still the whole graph's, so the edge reads exactly as it does in a full run."""
+    raw_path, build = _two_parallel_vessels(tmp_path)
+    common = dict(
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=4.0,
+        transverse_profile_step_um=0.25,
+        transverse_half_extent_um=8.0,
+        diameter_guess_um=4.0,
+        profile_model="gaussian",
+    )
+    full = build()
+    automated.measure_edge_diameters_fwhm_from_raw_tiff(full, **common)
+    subset = build()
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        subset, edges=[(3, 2, 0)], **common
+    )
+
+    assert summary["edges_measured"] == 1
+    assert full.edges[2, 3, 0]["fwhm_diameter_um"] > 0
+    assert subset.edges[2, 3, 0]["fwhm_diameter_um"] == pytest.approx(
+        full.edges[2, 3, 0]["fwhm_diameter_um"]
+    )
+    untouched = subset.edges[0, 1, 0]
+    assert "fwhm_diameter_um" not in untouched and "fwhm_status" not in untouched

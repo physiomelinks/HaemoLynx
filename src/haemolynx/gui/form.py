@@ -407,6 +407,7 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "use_thick_vessel_skeletonisation": "Use alternate skeletonisation for thick vessels",
     "use_memmap_loading": "Low RAM option for large networks (Slow)",
     "measurement_3d_to_cell_mask": "Measure distance between vessels and 3D object mask",
+    "mid_run_postprocessing": "Mid-run postprocessing",
 }
 
 #: Display text for a ``choice`` setting's values, keyed by setting name then

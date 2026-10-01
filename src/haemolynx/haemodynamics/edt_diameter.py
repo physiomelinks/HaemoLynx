@@ -89,6 +89,7 @@ from .automated import (
     _interpolate_centerline,
     physical_points_to_continuous_indices,
 )
+from .poiseuille import edge_selection
 
 #: How far from its centreline (µm) a sample looks for its own vessel when the
 #: centreline itself lies outside the mask -- a smoothed or reconnected
@@ -185,6 +186,7 @@ def measure_edge_diameters_from_binary_mask(
     use_memmap: bool = False,
     method: Literal["cross_section", "inscribed_radius"] = "cross_section",
     min_resolvable_diameter_um: float = MIN_RESOLVABLE_DIAMETER_UM,
+    edges: Any = None,
 ) -> dict[str, Any]:
     """Measure per-edge diameters (µm) from *binary_mask*.
 
@@ -230,6 +232,9 @@ def measure_edge_diameters_from_binary_mask(
         are left out of the edge's median; an edge with none left is skipped
         as ``below_resolvable_diameter``, with the median it would have had in
         ``edt_unresolved_diameter_um``. 0 keeps every reading.
+    edges :
+        Measure only these ``(u, v, key)`` edges (either way round); every
+        other edge keeps what it has. ``None`` (default) measures them all.
 
     Returns
     -------
@@ -265,7 +270,10 @@ def measure_edge_diameters_from_binary_mask(
         "per_edge": [],
     }
 
+    chosen = edge_selection(edges)
     for u, v, key, data in G.edges(keys=True, data=True):
+        if chosen is not None and (frozenset((u, v)), key) not in chosen:
+            continue
         vox = data.get("voxels")
         if not vox or len(vox) < 2:
             summary["edges_skipped"].append((u, v, key, "no_voxels"))

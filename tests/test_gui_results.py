@@ -2302,7 +2302,7 @@ def test_merging_stage_groups_keeps_each_layers_final_state():
         StageLayers(stage="assign_boundaries", title="4. Boundaries",
                     layers=(spec(VESSELS, 7), spec(BOUNDARY_NODES, 2)),
                     recolour=((NODES, "degree"), (IMAGE, "x"))),
-        StageLayers(stage="solve", title="6. Haemodynamics", layers=(spec(IMAGE, 3),),
+        StageLayers(stage="solve", title="7. Haemodynamics", layers=(spec(IMAGE, 3),),
                     recolour=((VESSELS, "flow_abs"),), note="solved"),
     ]
 
@@ -2313,7 +2313,7 @@ def test_merging_stage_groups_keeps_each_layers_final_state():
     # IMAGE's recolour came before its last spec, which redraws it.
     assert dict(merged.recolour) == {NODES: "degree", VESSELS: "flow_abs"}
     assert merged.ndisplay == 3
-    assert (merged.stage, merged.title, merged.note) == ("solve", "6. Haemodynamics", "solved")
+    assert (merged.stage, merged.title, merged.note) == ("solve", "7. Haemodynamics", "solved")
     assert merge_stage_layers([]) is None
 
 
@@ -2347,3 +2347,43 @@ def test_a_restored_stage_is_followed_without_building_its_layers(monkeypatch):
             getattr(restored, attribute) == getattr(finished, attribute)
         ), attribute
     assert restored._graph is cut_graph
+
+
+def test_post_processing_draws_the_edited_network_even_when_it_has_more_vessels():
+    """A later stage's larger graph is normally a stale copy and refused; the
+    Post processing stage changes the network on purpose -- a vessel drawn by
+    hand, a bridge split off -- so its graph becomes the one drawn."""
+    from haemolynx.gui.results import VESSELS
+
+    results = ResultLayers()
+    before = a_graph()
+    results.stage_finished("build_network", network(before))
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=before))
+    edited = a_graph()
+    edited.add_edge(0, 3, key=0, voxels=[[0.0, 0.0, 0.0], [30.0, 5.0, 0.0]], length=30.4)
+
+    group = results.stage_finished(
+        "post_process",
+        SimpleNamespace(graph=edited, results={"post_process": {"edited_vessels": 1}}),
+    )
+
+    assert results._graph is edited
+    (vessels,) = [spec for spec in group.layers if spec.name == VESSELS]
+    assert set(np.asarray(vessels.features["edge_index"])) == {0, 1, 2, 3}
+    # And the later stages keep it: it is the canonical graph now.
+    results.stage_finished("build_haemodynamic_model", SimpleNamespace(graph=edited))
+    assert results._graph is edited
+
+
+def test_an_unedited_post_processing_pass_draws_nothing_again():
+    """Diameters' layers already show the network; redrawing a whole-brain
+    vessels layer for a stage that did nothing would be wasted."""
+    results = ResultLayers()
+    graph = a_graph()
+    results.stage_finished("build_network", network(graph))
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph))
+
+    group = results.stage_finished("post_process", SimpleNamespace(graph=graph, results={}))
+
+    assert group.layers == ()
+    assert results._graph is graph

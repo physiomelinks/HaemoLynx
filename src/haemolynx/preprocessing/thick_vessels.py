@@ -1555,6 +1555,63 @@ def _join_thin_arms_to_fat_ridge(
     return result
 
 
+def _hole_filled_mask(
+    binary: np.ndarray, fill_mask_holes: bool, *, use_memmap: bool, memmap_directory
+) -> np.ndarray:
+    """*binary* as bool, its enclosed holes filled when *fill_mask_holes*."""
+    mask = np.asarray(binary, dtype=bool)
+    if fill_mask_holes:
+        bbox = _foreground_bbox(mask, pad=0)
+        if bbox is not None:
+            filled = fill_binary_holes(
+                mask[bbox], use_memmap=use_memmap, memmap_directory=memmap_directory
+            )
+            mask = mask.copy()
+            mask[bbox] = filled
+            if isinstance(filled, np.memmap):
+                from .memmap_support import release_memmap_array
+
+                release_memmap_array(filled)
+    return mask
+
+
+def thick_vessel_region(
+    binary: np.ndarray,
+    *,
+    min_radius_um: float = THICK_VESSEL_MIN_RADIUS_UM,
+    voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    fill_mask_holes: bool = True,
+    wall_absorption_um: float | None = None,
+    restrict_thick_to_mask: np.ndarray | None = None,
+    use_memmap: bool = False,
+    memmap_directory=None,
+) -> np.ndarray | None:
+    """The thick-vessel region :func:`skeletonize_thickness_gated` returns
+    with ``return_thick_mask=True``, without skeletonising anything.
+
+    For a resumed run that needs the region (where a hand-drawn vessel
+    opens into a thick one) but only has the segmentation: the same hole
+    filling and :func:`thick_vessel_object_mask` call, so the same voxels.
+    ``None`` where that function returns ``None`` too -- *min_radius_um* 0,
+    or no thick region found.
+    """
+    if float(min_radius_um) <= 0.0:
+        return None
+    mask = _hole_filled_mask(
+        binary, fill_mask_holes, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
+    thick = thick_vessel_object_mask(
+        mask,
+        min_radius_um=float(min_radius_um),
+        voxel_size_zyx=voxel_size_zyx,
+        wall_absorption_um=wall_absorption_um,
+        restrict_to_mask=restrict_thick_to_mask,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+    )
+    return thick if thick.any() else None
+
+
 def skeletonize_thickness_gated(
     binary: np.ndarray,
     *,
@@ -1666,19 +1723,9 @@ def skeletonize_thickness_gated(
             release_memmap_array(skeleton)
         return in_ram
 
-    mask = np.asarray(binary, dtype=bool)
-    if fill_mask_holes:
-        bbox = _foreground_bbox(mask, pad=0)
-        if bbox is not None:
-            filled = fill_binary_holes(
-                mask[bbox], use_memmap=use_memmap, memmap_directory=memmap_directory
-            )
-            mask = mask.copy()
-            mask[bbox] = filled
-            if isinstance(filled, np.memmap):
-                from .memmap_support import release_memmap_array
-
-                release_memmap_array(filled)
+    mask = _hole_filled_mask(
+        binary, fill_mask_holes, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
     if float(min_radius_um) <= 0.0:
         skeleton = (lee(mask) if low_ram else skeletonize_volume(mask)).astype(bool)
         return (skeleton, None) if return_thick_mask else skeleton

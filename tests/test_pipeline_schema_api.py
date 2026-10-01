@@ -149,7 +149,7 @@ def test_all_diams_const_children_are_declared_immediately_after_it():
 
 
 def test_measurement_3d_to_cell_mask_is_declared_right_before_statistics():
-    """On "8. Additional measurements" the 3D object-mask distance comes
+    """On "9. Additional measurements" the 3D object-mask distance comes
     first, above Statistics: measurement_3d_to_cell_mask and its six
     children are one contiguous block (so the flat-Container nesting keeps
     the children under their toggle) ending right before `statistics`."""

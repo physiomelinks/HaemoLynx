@@ -1737,3 +1737,60 @@ def test_the_low_ram_thickness_gated_skeleton_is_the_in_ram_one(tmp_path, monkey
     assert np.array_equal(low_ram_thick, plain_thick)
     assert np.array_equal(low_ram, plain)
     assert not any(path.suffix == ".dat" for path in tmp_path.rglob("*")), "temporary files left behind"
+
+
+# --- the thick region on its own (a resumed run's post_process) ------------------
+
+
+def test_thick_vessel_region_is_the_region_gated_skeletonisation_returns():
+    """A resumed run finds the region again; it must be the same voxels."""
+    from haemolynx.preprocessing import thick_vessel_region
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    _skeleton, thick = skeletonize_thickness_gated(
+        mask,
+        min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+        return_thick_mask=True,
+    )
+    again = thick_vessel_region(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+    assert again is not None and np.array_equal(again, thick)
+
+
+def test_thick_vessel_region_is_none_where_skeletonisation_finds_none():
+    from haemolynx.preprocessing import thick_vessel_region
+
+    assert thick_vessel_region(
+        capillary_only_object(), min_radius_um=THICK_VESSEL_MIN_RADIUS_UM,
+        voxel_size_zyx=SPACING_ZYX,
+    ) is None
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    assert thick_vessel_region(mask, min_radius_um=0.0, voxel_size_zyx=SPACING_ZYX) is None
+
+
+def test_the_pipeline_finds_the_region_its_skeletonise_stage_found(tmp_path):
+    """stages.thick_vessel_mask_from_image reads the settings skeletonise read."""
+    from haemolynx.pipeline import default_schema, resolve_settings
+    from haemolynx.pipeline.stages import _skeletonize_loaded_mask, thick_vessel_mask_from_image
+
+    schema = default_schema()
+    values = {setting.name: setting.default for setting in schema}
+    values.update(
+        {
+            "input_path": tmp_path / "input.tif",
+            "vtk_output_prefix": tmp_path / "run",
+            "plot_dir": tmp_path / "plots",
+            "use_thick_vessel_skeletonisation": True,
+        }
+    )
+    settings = resolve_settings(values, schema=schema, config_path=None)
+    mask, _fat_roi = plasma_labelled_object(8.0)
+
+    _skeleton, thick = _skeletonize_loaded_mask(mask, settings, (1.0, 1.0, 1.0))
+    again = thick_vessel_mask_from_image(settings, mask, (1.0, 1.0, 1.0))
+
+    assert thick is not None and np.array_equal(again, thick)
+    settings["use_thick_vessel_skeletonisation"] = False
+    assert thick_vessel_mask_from_image(settings, mask, (1.0, 1.0, 1.0)) is None

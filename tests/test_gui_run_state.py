@@ -291,3 +291,61 @@ def test_no_napari_import_appears_in_the_source():
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
     assert not imported & {"napari", "magicgui", "qtpy"}
+
+
+# --- pausing a run for post-processing ------------------------------------------
+
+from haemolynx.gui.run_state import (  # noqa: E402
+    MID_RUN_PAUSE_AFTER,
+    POST_PROCESS,
+    mid_run_stop_after,
+    paused_bar_text,
+    paused_message,
+    post_processing_tab_title,
+    regenerate_stop_after,
+)
+
+
+def test_mid_run_postprocessing_pauses_a_run_that_reaches_it_from_before():
+    on = {"mid_run_postprocessing": True}
+    assert MID_RUN_PAUSE_AFTER == "assign_diameters"
+    for start in (None, "segment", "skeletonise", "assign_boundaries", "assign_diameters"):
+        assert mid_run_stop_after(on, start) == "assign_diameters", start
+
+
+def test_a_run_from_post_processing_or_later_does_not_pause_again():
+    on = {"mid_run_postprocessing": True}
+    for start in ("post_process", "build_haemodynamic_model", "run_perturbations"):
+        assert mid_run_stop_after(on, start) is None, start
+
+
+def test_without_mid_run_postprocessing_nothing_pauses():
+    assert mid_run_stop_after({"mid_run_postprocessing": False}, None) is None
+    assert mid_run_stop_after({}, None) is None
+    assert mid_run_stop_after(None, None) is None
+
+
+def test_regenerate_graph_stays_paused_only_when_the_run_is_paused():
+    assert regenerate_stop_after(True) == POST_PROCESS == "post_process"
+    assert regenerate_stop_after(False) is None
+
+
+def test_a_paused_run_says_where_to_carry_it_on():
+    tab = post_processing_tab_title()
+    assert tab == "6. Post processing"
+    assert paused_bar_text("assign_diameters") == f"Paused at {tab}"
+    message = paused_message("assign_diameters", 12, 30)
+    assert "12 nodes" in message and "30 vessels" in message
+    assert tab in message and "Continue" in message
+    assert paused_message("post_process", 12, 31).startswith("Graph regenerated")
+
+
+def test_the_paused_flag_is_the_panels_to_set_and_survives_other_runs():
+    state = RunState()
+    assert not state.paused and state.paused_after is None
+    state.paused_after = "assign_diameters"
+    assert state.paused
+    # An optimisation run during the pause leaves it paused.
+    state.start(worker=None)
+    state.stopped()
+    assert state.paused

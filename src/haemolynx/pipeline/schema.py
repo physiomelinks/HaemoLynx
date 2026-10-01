@@ -73,7 +73,7 @@ _ENDOTHELIAL = "Endothelial diameter"
 # setting name, and `perturbations` is one of the settings in it.
 _PERTURBATION_RUNS = "Perturbation runs"
 #: What is done to the assigned network before its haemodynamic model is
-#: built (the "6. Haemodynamics" tab's own box; see pipeline.stages
+#: built (the "7. Haemodynamics" tab's own box; see pipeline.stages
 #: apply_network_handling).
 _NETWORK_HANDLING = "Network handling"
 
@@ -198,6 +198,18 @@ SCHEMA = Schema(
             help="Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load",
             section=_INPUT_AND_SEGMENTATION,
             choices=AXIS_ORDERS,
+        ),
+        Setting(
+            name="mid_run_postprocessing",
+            kind="bool",
+            default=False,
+            help=(
+                "Pause a napari panel run after Diameters, on the Post processing "
+                "tab, to fix the network by hand before haemodynamics; the tab's "
+                "Continue button brings the edits in line and runs the rest. "
+                "A command-line run does not pause"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
         ),
         Setting(
             name="use_memmap_loading",

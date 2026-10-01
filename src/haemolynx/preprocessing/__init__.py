@@ -31,6 +31,7 @@ from .thick_vessels import (
     skeletonize_edt_ridge,
     skeletonize_thickness_gated,
     thick_vessel_object_mask,
+    thick_vessel_region,
     lee_sheet_excess,
 )
 from .thick_vessel_braid_guard import (
@@ -108,6 +109,7 @@ __all__ = [
     "skeletonize_volume",
     "skeletonize_3d",  # deprecated alias
     "thick_vessel_object_mask",
+    "thick_vessel_region",
     "BraidedThickVesselComponent",
     "component_long_axis",
     "detect_braided_thick_vessel_components",

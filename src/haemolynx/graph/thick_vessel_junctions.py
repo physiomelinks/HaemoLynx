@@ -115,6 +115,7 @@ def insert_thick_vessel_junction_nodes(
     thick_mask: np.ndarray,
     *,
     voxel_size_zyx: tuple[float, float, float],
+    edges: Any = None,
 ) -> nx.MultiGraph:
     """Split edges at the ``thick_mask`` boundary; tag the interior segment(s).
 
@@ -123,8 +124,18 @@ def insert_thick_vessel_junction_nodes(
     left untouched -- both are real vessel material with their own
     resistance. An edge that crosses the boundary is split at each
     crossing, keeping both sides; only the segment(s) inside ``thick_mask``
-    are tagged :data:`IS_ZERO_RESISTANCE`.
+    are tagged :data:`IS_ZERO_RESISTANCE`. Each piece keeps every other
+    attribute of the edge it came from.
+
+    With *edges* (``(u, v, key)``, either way round) only those are looked
+    at, and one already tagged is left as it is; every other edge is copied
+    unchanged. That is how a hand-edited vessel gets its bridge without the
+    network's existing ones being split again: each of those starts on the
+    boundary sample, and resampled it can read as a crossing of its own.
     """
+    chosen = (
+        None if edges is None else {(frozenset((u, v)), key) for u, v, key in edges}
+    )
     result = nx.MultiGraph()
     result.graph.update(G.graph)
 
@@ -146,6 +157,11 @@ def insert_thick_vessel_junction_nodes(
 
     for u, v, _key, edge_data in edge_iter:
         if u not in node_pos or v not in node_pos:
+            result.add_edge(u, v, **dict(edge_data))
+            continue
+        if chosen is not None and (
+            (frozenset((u, v)), _key) not in chosen or edge_data.get(IS_ZERO_RESISTANCE)
+        ):
             result.add_edge(u, v, **dict(edge_data))
             continue
 
