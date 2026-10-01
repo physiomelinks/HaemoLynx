@@ -31,6 +31,7 @@ from haemolynx.gui.post_processing import (  # noqa: E402
     ADDED_NODES,
     AT_JUNCTION,
     CONNECTED,
+    DEAD_END,
     HIGH_DEGREE_JUNCTIONS,
     NEW_VESSEL_POINTS,
     NEW_VESSEL_TRACE,
@@ -882,3 +883,122 @@ def test_open_connectivity_map_draws_the_last_export(page, tmp_path, monkeypatch
     assert html_path == tmp_path / "net_map.html" and html_path.is_file()
     assert opened == [html_path.resolve().as_uri()]
     assert "Opened the 2D connectivity map" in c.connectivity_status.text()
+def _dead_end_page(make_napari_viewer, roles=None):
+    """The four-way network with 1 -> 5 -> 6 hanging off it: two dead ends."""
+    viewer = make_napari_viewer()
+    G = _four_way_network()
+    G.add_node(6, pos=np.asarray((10.0, 30.0, 0.0)))
+    G.add_edge(5, 6, voxels=[(10.0, 20.0, 0.0), (10.0, 30.0, 0.0)], length=10.0,
+               branch_order="B02", diameter_um=5.0)
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("build_network", network(G)))
+    report = SimpleNamespace(value="")
+    c = _post_processing_controls(
+        viewer, report, results=lambda: results,
+        boundary_roles=lambda: roles or {"inlet": (0,), "outlet": (4,)},
+        regenerate=lambda graph, stop_after=None: True, running=lambda: False,
+    )
+    c.refresh()
+    # The junction table and its cyan are behind this checkbox, off by default.
+    c.junction_toggle.setChecked(True)
+    c.scan_button.click()
+    return SimpleNamespace(controls=c, viewer=viewer, report=report)
+
+
+def _dead_row_to(table, ends: set) -> int:
+    return next(
+        r for r in range(table.rowCount())
+        if set(map(int, table.item(r, 4).text().split("-"))) == ends
+    )
+
+
+def test_find_dead_ends_lists_them_and_draws_them_orange(make_napari_viewer):
+    page = _dead_end_page(make_napari_viewer)
+    c, viewer = page.controls, page.viewer
+    c.find_dead_button.click()
+
+    assert c.dead_table.rowCount() == 2
+    assert {c.dead_table.item(r, 4).text() for r in range(2)} == {"1-5", "5-6"}
+    assert "2 dead-end vessel(s)" in c.dead_status.text()
+    graph = c.state.graph
+    assert _colour_of(viewer, graph, (5, 6)) == _rgba(DEAD_END)
+    assert _colour_of(viewer, graph, (2, 4)) == _rgba(CONNECTED)
+    # 1 -> 5 is also at the chosen junction; the junction's cyan shows over orange.
+    assert _colour_of(viewer, graph, (1, 5)) == _rgba(AT_JUNCTION)
+    assert "Found 2 dead-end vessel(s)" in c.log_box.toPlainText()
+
+
+def test_clicking_a_dead_end_turns_it_yellow_and_zooms_to_it(make_napari_viewer):
+    page = _dead_end_page(make_napari_viewer)
+    c, viewer = page.controls, page.viewer
+    c.find_dead_button.click()
+    c.dead_table.selectRow(_dead_row_to(c.dead_table, {5, 6}))
+
+    assert _colour_of(viewer, c.state.graph, (5, 6)) == _rgba(SELECTED)
+    centre = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
+    assert np.allclose(centre, [10, 30, 0][-len(viewer.dims.displayed):], atol=1e-6)
+
+
+def test_delete_selected_dead_end_moves_on_to_the_next(make_napari_viewer):
+    page = _dead_end_page(make_napari_viewer)
+    c, viewer = page.controls, page.viewer
+    c.find_dead_button.click()
+    c.dead_table.selectRow(_dead_row_to(c.dead_table, {5, 6}))
+    c.delete_dead_button.click()
+
+    graph = c.state.graph
+    assert 6 not in graph and graph.has_edge(1, 5)
+    assert len(viewer.layers[VESSELS].data) == graph.number_of_edges() == 6
+    # The list follows the edit and the one left is selected, ready to delete.
+    assert c.dead_table.rowCount() == 1
+    assert c.dead_table.item(0, 4).text() == "1-5"
+    assert [i.row() for i in c.dead_table.selectionModel().selectedRows()] == [0]
+    assert "Deleted dead-end vessel(s): 1 vessel(s), branchID" in c.log_box.toPlainText()
+    assert "(node 5-6, 10 µm, 5 µm)" in c.log_box.toPlainText()
+
+    c.delete_dead_button.click()
+    assert c.dead_table.rowCount() == 0
+    assert 5 not in c.state.graph
+    assert "No dead-end vessels" in c.dead_status.text()
+
+
+def test_delete_all_dead_ends_at_once(make_napari_viewer):
+    page = _dead_end_page(make_napari_viewer)
+    c, viewer = page.controls, page.viewer
+    c.find_dead_button.click()
+    c.delete_all_dead_button.click()
+
+    graph = c.state.graph
+    assert set(graph.nodes) == {0, 1, 2, 3, 4}
+    assert graph.number_of_edges() == 5
+    assert len(viewer.layers[VESSELS].data) == 5
+    assert c.dead_table.rowCount() == 0
+    assert "deleted 2 dead-end vessel(s)" in page.report.value
+    assert "Deleted all dead-end vessels: 2 vessel(s)" in c.log_box.toPlainText()
+
+
+def test_other_deletes_keep_the_dead_end_list_up_to_date(make_napari_viewer):
+    page = _dead_end_page(make_napari_viewer)
+    c = page.controls
+    c.find_dead_button.click()
+    # Cutting 1 -> 2 at the junction leaves 1 -> 3 -> 4 the only path, and
+    # 2 -> 4 a new dead end; the branchIDs after the cut moved down.
+    _select_rows(c.table, [_row_to(c.table, "2")])
+    c.delete_button.click()
+    rows = [c.dead_table.item(r, 4).text() for r in range(c.dead_table.rowCount())]
+    assert sorted(rows) == ["1-5", "2-4", "5-6"]
+    keys = edge_keys(c.state.graph)
+    assert [set(keys[i][:2]) for i in c.state.dead_ids] == [
+        set(map(int, text.split("-"))) for text in rows
+    ]
+
+
+def test_find_dead_ends_needs_an_inlet_and_an_outlet(make_napari_viewer):
+    page = _dead_end_page(make_napari_viewer, roles={"inlet": (0,)})
+    c = page.controls
+    c.find_dead_button.click()
+    assert "no inlet or no outlet" in c.dead_status.text()
+    assert c.dead_table.rowCount() == 0
+    c.delete_all_dead_button.click()
+    assert "Find the dead-end vessels first" in c.dead_status.text()
+    assert c.state.graph.number_of_edges() == 7

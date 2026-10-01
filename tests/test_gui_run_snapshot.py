@@ -147,6 +147,30 @@ def test_a_foreign_pickle_is_rejected(tmp_path):
         read_run_snapshot(path)
 
 
+def test_a_damaged_run_file_reports_the_real_error_not_the_gzip_header(tmp_path):
+    """A gzip file that fails to unpickle must say why, not "invalid load key '\\x1f'"."""
+    import gzip
+    import pickle
+
+    path = tmp_path / "cut.haemorun"
+    data = gzip.compress(pickle.dumps({"format": "x", "blob": b"0" * 10_000}))
+    path.write_bytes(data[: len(data) // 2])
+    with pytest.raises(RunSnapshotError) as caught:
+        read_run_snapshot(path)
+    message = str(caught.value)
+    assert "invalid load key" not in message
+    assert "EOFError" in message or "Compressed file ended" in message
+
+
+def test_an_uncompressed_run_file_still_loads(tmp_path):
+    import pickle
+
+    path = tmp_path / "plain.haemorun"
+    path.write_bytes(pickle.dumps({"format": "not ours"}))
+    with pytest.raises(RunSnapshotError, match="not a HaemoLynx run snapshot"):
+        read_run_snapshot(path)
+
+
 def test_format_and_version_are_stable():
     assert FORMAT == "haemolynx.run"
     assert VERSION == 1

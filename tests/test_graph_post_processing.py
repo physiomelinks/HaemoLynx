@@ -16,6 +16,8 @@ from haemolynx.graph import (
     VesselEnd,
     add_traced_vessel,
     add_vessel_between,
+    dead_end_vessels,
+    delete_dead_end_vessels,
     delete_vessels,
     edge_keys,
     high_degree_junctions,
@@ -789,3 +791,127 @@ def test_a_bridge_is_never_merged_with_the_vessel_it_opens():
     bridges = [data for *_e, data in G.edges(2, data=True) if data.get(IS_ZERO_RESISTANCE)]
     ordinary = [data for *_e, data in G.edges(2, data=True) if not data.get(IS_ZERO_RESISTANCE)]
     assert len(bridges) == 1 and len(ordinary) == 1
+# --- dead-end vessels -------------------------------------------------------
+
+
+def _with_dead_ends() -> nx.MultiGraph:
+    """Inlet 0 -> 1 -> {2, 3} -> outlet 4 (a loop blood crosses), plus dead ends.
+
+    1 -> 5 -> 6 is a dead-end branch; 5 -> 7 -> 8 -> 5 a loop hanging off it
+    at one node; 4 has a self-loop; 9 - 10 is a piece with neither boundary.
+    """
+    positions = {
+        0: (0, 0, 0), 1: (10, 0, 0), 2: (20, 10, 0), 3: (20, -10, 0), 4: (30, 0, 0),
+        5: (10, 20, 0), 6: (10, 30, 0), 7: (0, 30, 0), 8: (0, 20, 0),
+        9: (50, 0, 0), 10: (60, 0, 0),
+    }
+    G = _network(
+        positions,
+        [(0, 1), (1, 2), (1, 3), (2, 4), (3, 4), (1, 5), (5, 6), (5, 7), (7, 8), (8, 5), (9, 10)],
+        diameter_um=5.0,
+    )
+    G.add_edge(4, 4, voxels=[(30.0, 0.0, 0.0), (31.0, 1.0, 0.0), (30.0, 0.0, 0.0)], length=3.0)
+    return G
+
+
+def _pairs(edges) -> set:
+    return {frozenset(e[:2]) for e in edges}
+
+
+def test_dead_end_vessels_lists_everything_off_the_inlet_to_outlet_paths():
+    G = _with_dead_ends()
+    dead = dead_end_vessels(G, [0], [4])
+    assert _pairs(dead) == {
+        frozenset(p) for p in [(1, 5), (5, 6), (5, 7), (7, 8), (8, 5), (9, 10), (4, 4)]
+    }
+    # In branchID order, as the tab's table lists them.
+    index = {key: i for i, key in enumerate(edge_keys(G))}
+    assert [index[e] for e in dead] == sorted(index[e] for e in dead)
+
+
+def test_a_loop_blood_crosses_is_not_a_dead_end_but_one_off_a_single_node_is():
+    # 1 -> 2 -> 4 and 1 -> 3 -> 4 both carry flow; 5 -> 7 -> 8 -> 5 only
+    # touches the rest at 5, so every node on it sits at 5's pressure.
+    dead = _pairs(dead_end_vessels(_with_dead_ends(), [0], [4]))
+    for through in [(0, 1), (1, 2), (1, 3), (2, 4), (3, 4)]:
+        assert frozenset(through) not in dead
+    assert frozenset((7, 8)) in dead
+
+
+def test_parallel_vessels_between_inlet_and_outlet_both_carry_flow():
+    G = _network({0: (0, 0, 0), 1: (10, 0, 0), 2: (20, 0, 0)}, [(0, 1), (1, 2), (1, 2)])
+    assert dead_end_vessels(G, [0], [2]) == []
+
+
+def test_several_inlets_and_outlets_each_keep_their_own_paths():
+    # 0 -> 1 -> 2 and 3 -> 1 -> 4: every vessel is on some inlet-to-outlet path.
+    positions = {0: (0, 0, 0), 1: (10, 0, 0), 2: (20, 0, 0), 3: (10, 10, 0), 4: (10, -10, 0)}
+    G = _network(positions, [(0, 1), (1, 2), (3, 1), (1, 4)])
+    assert dead_end_vessels(G, [0, 3], [2, 4]) == []
+    # With 3 no longer an inlet, its vessel leads nowhere.
+    assert _pairs(dead_end_vessels(G, [0], [2, 4])) == {frozenset((1, 3))}
+
+
+def test_dead_end_vessels_needs_an_inlet_and_an_outlet_in_the_network():
+    G = _with_dead_ends()
+    with pytest.raises(ValueError, match="at least one inlet and one outlet"):
+        dead_end_vessels(G, [0], [])
+    with pytest.raises(ValueError, match="at least one inlet and one outlet"):
+        dead_end_vessels(G, [0], [99])
+
+
+def test_delete_all_dead_ends_leaves_only_the_network_between_inlet_and_outlet():
+    G = _with_dead_ends()
+    lost = delete_dead_end_vessels(G, [0], [4])
+    assert lost == []
+    assert _pairs(edge_keys(G)) == {frozenset(p) for p in [(0, 1), (1, 2), (1, 3), (2, 4), (3, 4)]}
+    assert set(G.nodes) == {0, 1, 2, 3, 4}
+    assert dead_end_vessels(G, [0], [4]) == []
+    # Outlet 4, a pass-through once its self-loop went, is kept, not merged.
+    assert G.degree(4) == 2
+
+
+def test_deleting_one_dead_end_tidies_its_nodes_like_any_delete():
+    G = _with_dead_ends()
+    edge = next(e for e in edge_keys(G) if set(e[:2]) == {5, 6})
+    delete_dead_end_vessels(G, [0], [4], [edge])
+    assert 6 not in G  # left with no vessel
+    assert G.degree(5) == 3  # the branch 1 -> 5 and the loop remain, still dead ends
+    assert frozenset((1, 5)) in _pairs(dead_end_vessels(G, [0], [4]))
+
+
+def test_delete_dead_end_vessels_refuses_a_vessel_blood_crosses():
+    G = _with_dead_ends()
+    edge = next(e for e in edge_keys(G) if set(e[:2]) == {1, 2})
+    before = G.number_of_edges()
+    with pytest.raises(ValueError, match="not a dead end"):
+        delete_dead_end_vessels(G, [0], [4], [edge])
+    assert G.number_of_edges() == before
+
+
+def test_a_boundary_node_on_a_dead_end_goes_with_it_but_one_still_used_stays():
+    G = _with_dead_ends()
+    # 6 is an arteriole boundary node at the tip of the dead-end branch.
+    lost = delete_dead_end_vessels(G, [0], [4], protected={0, 4, 6})
+    assert lost == [6]
+    assert 6 not in G and 0 in G and 4 in G
+
+
+def test_a_protected_node_keeping_a_vessel_is_not_merged():
+    # 0 -> 1 -> 2 with a dead end 1 -> 3: deleting it leaves 1 a pass-through.
+    positions = {0: (0, 0, 0), 1: (10, 0, 0), 2: (20, 0, 0), 3: (10, 10, 0)}
+    G = _network(positions, [(0, 1), (1, 2), (1, 3)])
+    delete_dead_end_vessels(G, [0], [2], protected={0, 1, 2})
+    assert 1 in G and G.degree(1) == 2
+    G = _network(positions, [(0, 1), (1, 2), (1, 3)])
+    delete_dead_end_vessels(G, [0], [2], protected={0, 2})
+    assert 1 not in G and G.has_edge(0, 2)  # merged into one vessel
+
+
+def test_delete_dead_end_vessels_refuses_to_remove_every_vessel():
+    G = _network({0: (0, 0, 0), 1: (10, 0, 0), 2: (20, 0, 0)}, [(0, 1)])
+    G.add_node(2, pos=np.zeros(3))
+    G.add_edge(2, 2, voxels=[(20.0, 0.0, 0.0), (20.0, 0.0, 0.0)], length=0.0)
+    with pytest.raises(ValueError, match="remove every vessel"):
+        delete_dead_end_vessels(G, [0], [2])
+    assert G.number_of_edges() == 2

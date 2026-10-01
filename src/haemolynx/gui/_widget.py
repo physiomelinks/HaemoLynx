@@ -7633,19 +7633,21 @@ def _post_processing_controls(
     network does. Continue, while paused, does the same and carries the run on.
 
     The page edits one working copy of the graph: the junction table's
-    Delete and Split, and the edit box's click-in-the-viewer Delete vessel and
-    Add vessel. The junction list, its table and their buttons sit behind the
-    "Manual 4+ vessel junction correction" checkbox, off at first; while it
-    is off a scan neither marks the 4+ junctions in the viewer nor zooms to
-    one. Add vessel traces a vessel click by click: from a node, or a
-    point on a vessel (where a node will form), through each point clicked
-    after it -- every leg found by A* through the segmented mask or the raw
-    data, as the box's dropdown says, and drawn as soon as it is -- until a
-    click lands on another node or vessel, which finishes it. The graph rules
-    live in :mod:`haemolynx.graph.post_processing` and the colours and click
-    geometry in :mod:`haemolynx.gui.post_processing`; this is only the Qt glue.
-    Clicks only recolour the vessels layer already on screen (and its tubes);
-    the layer is rebuilt only after an edit changes the network.
+    Delete and Split, the edit box's click-in-the-viewer Delete vessel and
+    Add vessel, and the dead-end box's list of vessels no inlet-to-outlet path
+    runs through, deleted one at a time or all at once. The junction list, its
+    table and their buttons sit behind the "Manual 4+ vessel junction
+    correction" checkbox, off at first; while it is off a scan neither marks
+    the 4+ junctions in the viewer nor zooms to one. Add vessel traces a vessel
+    click by click: from a node, or a point on a vessel (where a node will
+    form), through each point clicked after it -- every leg found by A* through
+    the segmented mask or the raw data, as the box's dropdown says, and drawn
+    as soon as it is -- until a click lands on another node or vessel, which
+    finishes it. The graph rules live in :mod:`haemolynx.graph.post_processing`
+    and the colours and click geometry in :mod:`haemolynx.gui.post_processing`;
+    this is only the Qt glue. Clicks only recolour the vessels layer already on
+    screen (and its tubes); the layer is rebuilt only after an edit changes the
+    network.
     """
     from qtpy.QtWidgets import (
         QAbstractItemView,
@@ -7672,6 +7674,8 @@ def _post_processing_controls(
         VesselEnd,
         add_traced_vessel,
         connectivity_rows,
+        dead_end_vessels,
+        delete_dead_end_vessels,
         delete_vessels,
         edge_keys,
         has_pending_edits,
@@ -7685,6 +7689,7 @@ def _post_processing_controls(
     from haemolynx.gui.chrome_tooltips import POST_PROCESSING_TOOLTIPS as tips
     from haemolynx.gui.post_processing import (
         ADDED_NODES,
+        DEAD_END_TABLE_COLUMNS,
         HIGH_DEGREE_JUNCTIONS,
         JUNCTION_TABLE_COLUMNS,
         NEW_VESSEL_POINTS,
@@ -7699,6 +7704,7 @@ def _post_processing_controls(
         CONNECTIVITY_EXPORT_CHOICES,
         INLET_TO_OUTLET_ONLY,
         default_connectivity_csv_path,
+        dead_end_table_rows,
         describe_vessels,
         junction_label,
         junction_marker_layer,
@@ -7710,6 +7716,7 @@ def _post_processing_controls(
         scan_network,
         status_colours,
         trace_layers,
+        vessel_midpoint,
         vessel_status,
     )
     from haemolynx.gui.results import FWHM_RAW
@@ -7737,6 +7744,10 @@ def _post_processing_controls(
         raw_problem=None,
         #: The connectivity CSV exported last, for Open 2D connectivity map.
         connectivity_csv=None,
+        #: The dead-end vessels listed, in table order; None until "Find
+        #: dead-end vessels" is pressed, after which every edit refreshes it.
+        dead_edges=None,
+        dead_ids=[],
     )
 
     page = QWidget()
@@ -7816,6 +7827,37 @@ def _post_processing_controls(
     ids_row.addWidget(delete_ids_button)
     edit_layout.addLayout(ids_row)
 
+    dead_box = QGroupBox("Dead-end vessels (not between an inlet and an outlet)")
+    dead_layout = QVBoxLayout(dead_box)
+    find_dead_button = QPushButton("Find dead-end vessels")
+    find_dead_button.setToolTip(tips["find_dead"])
+    dead_status = QLabel(
+        "Vessels no inlet-to-outlet path runs through carry no flow. Find them "
+        "to list them here and draw them orange."
+    )
+    dead_status.setWordWrap(True)
+    dead_table = QTableWidget(0, len(DEAD_END_TABLE_COLUMNS))
+    dead_table.setObjectName("haemolynx_post_processing_dead_ends")
+    dead_table.setToolTip(tips["dead_table"])
+    dead_table.setHorizontalHeaderLabels(list(DEAD_END_TABLE_COLUMNS))
+    dead_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    dead_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+    dead_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    dead_table.verticalHeader().setVisible(False)
+    dead_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    dead_table.setMinimumHeight(120)
+    delete_dead_button = QPushButton("Delete selected")
+    delete_dead_button.setToolTip(tips["delete_dead"])
+    delete_all_dead_button = QPushButton("Delete all dead-end vessels")
+    delete_all_dead_button.setToolTip(tips["delete_all_dead"])
+    dead_layout.addWidget(find_dead_button)
+    dead_layout.addWidget(dead_status)
+    dead_layout.addWidget(dead_table)
+    dead_row = QHBoxLayout()
+    dead_row.addWidget(delete_dead_button)
+    dead_row.addWidget(delete_all_dead_button)
+    dead_layout.addLayout(dead_row)
+
     prune_button = QPushButton("Prune disconnected branches")
     prune_button.setToolTip(tips["prune"])
     # The connectivity export: built here, because it exports the network
@@ -7892,6 +7934,7 @@ def _post_processing_controls(
     layout.addWidget(junction_toggle)
     layout.addWidget(junction_box)
     layout.addWidget(edit_box)
+    layout.addWidget(dead_box)
     layout.addWidget(prune_button)
     layout.addWidget(QLabel("What was changed:"))
     layout.addWidget(log_box)
@@ -7914,6 +7957,10 @@ def _post_processing_controls(
         rows = sorted({index.row() for index in table.selectionModel().selectedRows()})
         return [r for r in rows if r < len(state.vessels)]
 
+    def selected_dead_rows() -> list[int]:
+        rows = sorted({index.row() for index in dead_table.selectionModel().selectedRows()})
+        return [r for r in rows if r < len(state.dead_ids)]
+
     def recolour() -> None:
         """Colour the vessels layer (and its tubes) by status: cheap, no rebuild."""
         vessels = layer(VESSELS)
@@ -7922,11 +7969,13 @@ def _post_processing_controls(
         features = _layer_features(vessels)
         if "edge_index" not in features or len(features["edge_index"]) != len(vessels.data):
             return
-        chosen = selected_rows()
+        chosen = [state.vessels[r].branch_id for r in selected_rows()]
+        chosen += [state.dead_ids[r] for r in selected_dead_rows()]
         labels = vessel_status(
             np.asarray(features["edge_index"]),
+            dead_end=state.dead_ids,
             at_junction=[v.branch_id for v in state.vessels],
-            selected=[state.vessels[r].branch_id for r in chosen],
+            selected=chosen,
             added=added_vessel_ids(state.graph) if state.graph is not None else (),
         )
         vessels.edge_color = status_colours(labels)
@@ -8054,8 +8103,48 @@ def _post_processing_controls(
             return
         junction_list.setCurrentRow(junctions.index(prefer))
 
+    def refresh_dead_ends() -> bool:
+        """Relist the dead-end vessels of the edited graph, if they are being shown.
+
+        False when they are not shown, or could not be found.
+        """
+        dead_table.blockSignals(True)
+        dead_table.clearSelection()
+        state.dead_ids = []
+        edges = None
+        if state.dead_edges is not None and state.graph is not None:
+            try:
+                edges = dead_end_vessels(state.graph, state.inlets, state.outlets)
+            except ValueError as error:
+                dead_status.setText(str(error))
+        if edges is None:
+            if state.dead_edges is not None:
+                state.dead_edges = []
+            dead_table.setRowCount(0)
+            dead_table.blockSignals(False)
+            return False
+        state.dead_ids, rows = dead_end_table_rows(state.graph, edges)
+        keys = edge_keys(state.graph)
+        state.dead_edges = [keys[i] for i in state.dead_ids]
+        dead_table.setRowCount(len(rows))
+        for r, cells in enumerate(rows):
+            for c, text in enumerate(cells):
+                dead_table.setItem(r, c, QTableWidgetItem(text))
+        if rows:
+            dead_status.setText(
+                f"{len(rows)} dead-end vessel(s), orange in the viewer. Click one to "
+                "zoom to it; Delete selected removes it and moves to the next."
+            )
+        else:
+            dead_status.setText(
+                "No dead-end vessels: every vessel lies between an inlet and an outlet."
+            )
+        dead_table.blockSignals(False)
+        return True
+
     def rescan(prefer=None, *, redraw: bool = True) -> None:
         state.scan = scan_network(state.graph)
+        refresh_dead_ends()
         state.decisions = {n: d for n, d in state.decisions.items() if n in state.scan.junctions}
         show_vessels(None)
         if redraw:
@@ -8356,6 +8445,85 @@ def _post_processing_controls(
             f"Post processing: pruned {stats['removed_components']} disconnected "
             f"piece(s), {stats['removed_vessels']} vessel(s){extra}. {state.scan.summary}"
         )
+
+    def on_find_dead() -> None:
+        if state.graph is None:
+            dead_status.setText("Scan the network first.")
+            return
+        if not state.inlets or not state.outlets:
+            dead_status.setText(
+                "This run has no inlet or no outlet nodes, so there is no network "
+                "between them to tell a dead end from."
+            )
+            return
+        state.dead_edges = []
+        found_them = refresh_dead_ends()
+        recolour()
+        if not found_them:
+            return
+        found = ", ".join(str(i) for i in state.dead_ids)
+        log_edit(
+            f"Found {len(state.dead_ids)} dead-end vessel(s) not between an inlet and "
+            f"an outlet" + (f": branchID(s) {found}" if found else "")
+        )
+        report.value = f"Post processing: {len(state.dead_ids)} dead-end vessel(s)."
+
+    def on_dead_row_changed(row: int, *_rest) -> None:
+        if state.graph is None or not 0 <= row < len(state.dead_edges or ()):
+            return
+        position = vessel_midpoint(state.graph, state.dead_edges[row])
+        if position is not None:
+            _zoom_viewer_to(viewer, position)
+
+    def delete_dead(edges, *, what: str, next_row: int | None = None) -> None:
+        described = describe_vessels(state.graph, edges or state.dead_edges)
+        count = len(edges) if edges is not None else len(state.dead_edges)
+        try:
+            lost = delete_dead_end_vessels(
+                state.graph, state.inlets, state.outlets, edges, protected=state.protected
+            )
+        except ValueError as error:
+            dead_status.setText(str(error))
+            log_edit(f"{what} refused, {error}")
+            return
+        state.inlets = tuple(n for n in state.inlets if n in state.graph)
+        state.outlets = tuple(n for n in state.outlets if n in state.graph)
+        extra = (
+            f"; boundary node(s) removed with them: {', '.join(map(str, lost))}" if lost else ""
+        )
+        log_edit(f"{what}: {count} vessel(s), {described}{extra}")
+        stop_editing()
+        rescan(prefer=state.node)
+        if next_row is not None and state.dead_ids:
+            # Straight on to the next one, zoomed to, for going through them in turn.
+            dead_table.selectRow(min(next_row, len(state.dead_ids) - 1))
+        report.value = (
+            f"Post processing: deleted {count} dead-end vessel(s). "
+            f"{len(state.dead_ids)} left. {state.scan.summary}"
+        )
+
+    def on_delete_dead() -> None:
+        if state.graph is None or state.dead_edges is None:
+            dead_status.setText("Find the dead-end vessels first.")
+            return
+        rows = selected_dead_rows()
+        if not rows:
+            dead_status.setText("Select one or more dead-end vessels in the table first.")
+            return
+        delete_dead(
+            [state.dead_edges[r] for r in rows],
+            what="Deleted dead-end vessel(s)",
+            next_row=rows[0],
+        )
+
+    def on_delete_all_dead() -> None:
+        if state.graph is None or state.dead_edges is None:
+            dead_status.setText("Find the dead-end vessels first.")
+            return
+        if not state.dead_edges:
+            dead_status.setText("No dead-end vessels to delete.")
+            return
+        delete_dead(None, what="Deleted all dead-end vessels")
 
     def on_leave() -> None:
         if state.scan is None or state.node is None:
@@ -8774,11 +8942,13 @@ def _post_processing_controls(
             return
         log_edit(note)
         remove_layers()
-        state.graph = state.scan = state.node = None
+        state.graph = state.scan = state.node = state.dead_edges = None
         state.vessels = []
+        state.dead_ids = []
         state.added_nodes = []
         junction_list.clear()
         table.setRowCount(0)
+        dead_table.setRowCount(0)
         status.setText(waiting)
         refresh_buttons()
 
@@ -8862,6 +9032,11 @@ def _post_processing_controls(
     prune_button.clicked.connect(on_prune)
     export_connectivity_button.clicked.connect(on_export_connectivity)
     connectivity_map_button.clicked.connect(on_connectivity_map)
+    find_dead_button.clicked.connect(on_find_dead)
+    dead_table.itemSelectionChanged.connect(recolour)
+    dead_table.currentCellChanged.connect(on_dead_row_changed)
+    delete_dead_button.clicked.connect(on_delete_dead)
+    delete_all_dead_button.clicked.connect(on_delete_all_dead)
     click_delete_button.clicked.connect(lambda: arm("delete"))
     add_button.clicked.connect(lambda: arm("add"))
 
@@ -8884,13 +9059,15 @@ def _post_processing_controls(
     def forget() -> None:
         """The panel was cleared: drop the working graph and its edits."""
         stop_editing()
-        state.graph = state.scan = state.node = None
+        state.graph = state.scan = state.node = state.dead_edges = None
         state.vessels = []
+        state.dead_ids = []
         state.added_nodes = []
         state.decisions = {}
         state.raw = state.raw_problem = None
         junction_list.clear()
         table.setRowCount(0)
+        dead_table.setRowCount(0)
         status.setText("Not scanned yet.")
         refresh_buttons()
 
@@ -8925,6 +9102,11 @@ def _post_processing_controls(
         connectivity_map_button=connectivity_map_button,
         connectivity_status=connectivity_status,
         open_connectivity_map=open_connectivity_map,
+        find_dead_button=find_dead_button,
+        dead_table=dead_table,
+        dead_status=dead_status,
+        delete_dead_button=delete_dead_button,
+        delete_all_dead_button=delete_all_dead_button,
         regenerate_button=regenerate_button,
         log_box=log_box,
         status=status,

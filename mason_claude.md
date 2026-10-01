@@ -55,6 +55,22 @@ After a run (at least through **4. Boundaries**), tab 10 works on a copy of the 
      IDs of later vessels move down.
    - Nodes are picked from the graph itself (`nearest_node`, the node nearest the click ray),
      not by napari's point picking, which needs the layer drawn on screen.
+4b. **Dead-end vessels (not between an inlet and an outlet)** box, below the edit box.
+   - **Find dead-end vessels** lists every vessel that no inlet-to-outlet path runs through, and
+     draws them **orange**. That covers dead-end branches, loops hanging off a single node,
+     self-loops, and pieces with no inlet or no outlet. None of these carry flow in the solve.
+     The rule is exact (`dead_end_vessels`): a vessel counts when some path from an inlet to an
+     outlet, visiting no node twice, uses it. It is tested with biconnected components after
+     joining the inlets to a virtual source, the outlets to a virtual sink, and the source to the
+     sink.
+   - The table works like the junction table: click a row to zoom to the vessel and turn it
+     yellow. **Delete selected** removes it and selects the next one, so you can step through
+     them one by one. **Delete all dead-end vessels** removes them all at once.
+   - The list refreshes after every edit in the tab. Deleting at a junction can create new dead
+     ends, and they show up straight away.
+   - A boundary node whose every vessel is a dead end goes with them (as with Prune), and the log
+     names it. Inlets and outlets that keep a vessel are never merged away. Deleting every vessel
+     is refused.
 5a. **Network connectivity box** (on **10. Export**, below its settings; the Post processing page
    owns it). It has a dropdown, **All vessels in the viewer** or **Only vessels between an inlet and
    an outlet**. The second uses `inlet_to_outlet_vessels`: dead ends, loops off one node and pieces
@@ -109,7 +125,7 @@ After a run (at least through **4. Boundaries**), tab 10 works on a copy of the 
    afterwards.
 
 7. **"What was changed" log** at the bottom of the tab: one timestamped line per action (scan,
-   delete, split, leave, click-delete, add, delete by ID, prune, regenerate, and any refusal).
+   delete, split, leave, click-delete, add, delete by ID, find/delete dead ends, prune, regenerate, and any refusal).
    The same line goes to napari's run log as `Post processing: …`. Vessels are named with
    `describe_vessels` **before** the edit, e.g. `branchID 15 (node 26-136, 26.2 µm, 4 µm)`, so
    the IDs are the ones on screen when it was made. A prune lists every vessel it removed.
@@ -131,8 +147,8 @@ Things to know:
 
 | File | What it holds |
 |---|---|
-| `src/haemolynx/graph/post_processing.py` | Pure graph rules, no Qt or napari: `edge_keys`, `high_degree_junctions`, `junction_vessels` → `JunctionVessel`, `delete_vessels(protected=...)`, `split_junction(connector_length_um=15)`, `DEFAULT_SPLIT_CONNECTOR_LENGTH_UM`; for Add vessel: `mean_incident_diameter`, `vessel_path_between` (routed or straight, `MIN_ROUTED_INSIDE_FRACTION`), `add_vessel_between`; `prune_disconnected_branches` |
-| `src/haemolynx/gui/post_processing.py` | Pure viewer logic: `scan_network` → `NetworkScan`, `vessel_status` / `status_colours` / `STATUS_COLOURS` (grey, cyan, yellow), `junction_marker_layer` (layer `HaemoLynx 4+ junctions`), `junction_table_rows`, `junction_label`, `nearest_node` (click → node), `parse_branch_ids`, `boundaries_following_graph`, `describe_vessels` (log wording), `camera_center_for`, `zoom_for_canvas` |
+| `src/haemolynx/graph/post_processing.py` | Pure graph rules, no Qt or napari: `edge_keys`, `high_degree_junctions`, `junction_vessels` → `JunctionVessel`, `delete_vessels(protected=...)`, `split_junction(connector_length_um=15)`, `DEFAULT_SPLIT_CONNECTOR_LENGTH_UM`; for Add vessel: `mean_incident_diameter`, `vessel_path_between` (routed or straight, `MIN_ROUTED_INSIDE_FRACTION`), `add_vessel_between`; `prune_disconnected_branches`; `dead_end_vessels`, `delete_dead_end_vessels` |
+| `src/haemolynx/gui/post_processing.py` | Pure viewer logic: `scan_network` → `NetworkScan`, `vessel_status` / `status_colours` / `STATUS_COLOURS` (grey, orange, cyan, yellow), `junction_marker_layer` (layer `HaemoLynx 4+ junctions`), `junction_table_rows`, `junction_label`, `nearest_node` (click → node), `parse_branch_ids`, `boundaries_following_graph`, `describe_vessels` (log wording), `dead_end_table_rows` / `DEAD_END_TABLE_COLUMNS`, `vessel_midpoint`, `DEAD_END` status (orange), `camera_center_for`, `zoom_for_canvas` |
 | `tests/test_graph_post_processing.py` | Graph rules on small hand-built networks |
 | `tests/test_gui_post_processing.py` | The pure viewer logic |
 | `tests/test_gui_post_processing_widget.py` | The real Qt page with a napari viewer (`gui` marker) |

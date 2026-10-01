@@ -12,6 +12,8 @@ from haemolynx.gui.post_processing import (
     ADDED_NODES,
     AT_JUNCTION,
     CONNECTED,
+    DEAD_END,
+    DEAD_END_TABLE_COLUMNS,
     HIGH_DEGREE_JUNCTIONS,
     JUNCTION_TABLE_COLUMNS,
     NEW_VESSEL_POINTS,
@@ -24,6 +26,7 @@ from haemolynx.gui.post_processing import (
     branch_id_of,
     camera_center_for,
     default_connectivity_csv_path,
+    dead_end_table_rows,
     describe_vessels,
     edits_lost_by_running_from,
     junction_label,
@@ -36,6 +39,7 @@ from haemolynx.gui.post_processing import (
     scan_network,
     status_colours,
     trace_layers,
+    vessel_midpoint,
     vessel_status,
     zoom_for_canvas,
 )
@@ -357,3 +361,26 @@ def test_default_connectivity_csv_path_sits_beside_the_vtk_output(tmp_path):
     elsewhere = {"vtk_output_prefix": tmp_path / "missing" / "stack"}
     assert default_connectivity_csv_path(elsewhere) == "stack_connectivity.csv"
     assert default_connectivity_csv_path(None) == "haemolynx_connectivity.csv"
+def test_vessel_status_draws_dead_ends_under_junction_and_selection():
+    status = vessel_status([0, 1, 2, 3], dead_end=[1, 2, 3], at_junction=[2], selected=[3])
+    assert list(status) == [CONNECTED, DEAD_END, AT_JUNCTION, SELECTED]
+    assert tuple(status_colours([DEAD_END])[0]) == STATUS_COLOURS[DEAD_END]
+
+
+def test_dead_end_table_rows_list_branch_ids_in_order_with_both_ends():
+    G = _network()
+    keys = edge_keys(G)
+    to_5 = next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})
+    ids, rows = dead_end_table_rows(G, [keys[to_5], keys[0]])
+    assert ids == sorted([0, to_5])
+    assert len(rows[0]) == len(DEAD_END_TABLE_COLUMNS)
+    assert rows[ids.index(to_5)] == (str(to_5), "20", "5", "B01", "1-5")
+
+
+def test_vessel_midpoint_is_halfway_along_the_path():
+    G = _network()
+    edge = next(k for k in edge_keys(G) if set(k[:2]) == {1, 5})
+    G.edges[edge]["voxels"] = [(0.0, 0.0, 10.0), (0.0, 10.0, 10.0), (0.0, 20.0, 10.0)]
+    assert np.allclose(vessel_midpoint(G, edge), [0, 10, 10])
+    G.edges[edge]["voxels"] = None
+    assert np.allclose(vessel_midpoint(G, edge), [0, 10, 10])

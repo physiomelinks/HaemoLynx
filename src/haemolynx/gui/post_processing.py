@@ -11,8 +11,10 @@ the lines, and a click only swaps colours instead of rebuilding a layer:
 
 * grey -- every other vessel;
 * green -- a vessel Add vessel drew;
+* orange -- a dead-end vessel, one no inlet-to-outlet path runs through
+  (once the dead-end list has been filled);
 * cyan -- one of the vessels at the junction being looked at;
-* yellow -- a vessel selected in the tab's table.
+* yellow -- a vessel selected in either of the tab's tables.
 
 Its own layers: :data:`HIGH_DEGREE_JUNCTIONS` rings every node where four or
 more vessels meet; while Add vessel traces, :data:`NEW_VESSEL_TRACE` draws
@@ -47,6 +49,8 @@ __all__ = [
     "ADDED_NODES",
     "AT_JUNCTION",
     "CONNECTED",
+    "DEAD_END",
+    "DEAD_END_TABLE_COLUMNS",
     "HIGH_DEGREE_JUNCTIONS",
     "JUNCTION_TABLE_COLUMNS",
     "NEW_VESSEL_POINTS",
@@ -63,6 +67,7 @@ __all__ = [
     "added_vessel_ids",
     "branch_id_of",
     "camera_center_for",
+    "dead_end_table_rows",
     "describe_vessels",
     "edits_lost_by_running_from",
     "junction_label",
@@ -75,6 +80,7 @@ __all__ = [
     "scan_network",
     "status_colours",
     "trace_layers",
+    "vessel_midpoint",
     "vessel_status",
     "zoom_for_canvas",
 ]
@@ -91,6 +97,7 @@ POST_PROCESSING_LAYERS = (HIGH_DEGREE_JUNCTIONS, NEW_VESSEL_TRACE, NEW_VESSEL_PO
 
 CONNECTED = "connected"
 ADDED = "added"
+DEAD_END = "dead end"
 AT_JUNCTION = "at junction"
 SELECTED = "selected"
 #: RGBA per status, in the precedence :func:`vessel_status` applies them.
@@ -98,6 +105,7 @@ STATUS_COLOURS: dict[str, tuple[float, float, float, float]] = {
     SELECTED: (1.0, 0.9, 0.0, 1.0),
     AT_JUNCTION: (0.0, 0.85, 1.0, 1.0),
     ADDED: (0.35, 1.0, 0.35, 1.0),
+    DEAD_END: (1.0, 0.4, 0.1, 1.0),
     CONNECTED: (0.62, 0.62, 0.62, 1.0),
 }
 
@@ -119,6 +127,8 @@ TRACE_LINE_WIDTH = 1.2
 
 #: Header of the junction table, one column per :func:`junction_table_rows` cell.
 JUNCTION_TABLE_COLUMNS = ("branchID", "length (µm)", "diameter (µm)", "branch order", "other end")
+#: Header of the dead-end table, one column per :func:`dead_end_table_rows` cell.
+DEAD_END_TABLE_COLUMNS = ("branchID", "length (µm)", "diameter (µm)", "branch order", "nodes")
 
 
 @dataclass(frozen=True)
@@ -147,6 +157,7 @@ def scan_network(graph: Any) -> NetworkScan:
 def vessel_status(
     edge_index: Sequence[int],
     *,
+    dead_end: Iterable[int] = (),
     at_junction: Iterable[int] = (),
     selected: Iterable[int] = (),
     added: Iterable[int] = (),
@@ -154,13 +165,16 @@ def vessel_status(
     """Each drawn segment's status, from the branchID it belongs to.
 
     *edge_index* is the vessels layer's own per-segment ``edge_index`` column.
-    A selected vessel reads as selected even though it is also at the
-    junction, and a vessel at the junction as at the junction even though
-    Add vessel drew it (*added*).
+    Later statuses win: a selected vessel reads as selected even though it is
+    also at the junction, one at the junction as at the junction even though
+    Add vessel drew it (*added*), and an added vessel as added even though it
+    is a dead end.
     """
     index = np.asarray(edge_index, dtype=int)
     status = np.full(index.shape, CONNECTED, dtype=object)
-    for label, ids in ((ADDED, added), (AT_JUNCTION, at_junction), (SELECTED, selected)):
+    for label, ids in (
+        (DEAD_END, dead_end), (ADDED, added), (AT_JUNCTION, at_junction), (SELECTED, selected)
+    ):
         chosen = np.fromiter((int(i) for i in ids), dtype=int)
         if chosen.size:
             status[np.isin(index, chosen)] = label
@@ -256,6 +270,53 @@ def junction_table_rows(graph: Any, node: Any) -> tuple[list[JunctionVessel], li
         for vessel in vessels
     ]
     return vessels, rows
+
+
+def dead_end_table_rows(
+    graph: Any, edges: Iterable[tuple[Any, Any, Any]]
+) -> tuple[list[int], list[tuple[str, ...]]]:
+    """The branchIDs of *edges* and their dead-end table cells, in branchID order."""
+    index = {key: i for i, key in enumerate(edge_keys(graph))}
+    wanted = sorted((index[tuple(e)], tuple(e)) for e in edges if tuple(e) in index)
+    ids, rows = [], []
+    for branch_id, (u, v, k) in wanted:
+        data = graph.edges[u, v, k]
+        order = data.get("branch_order")
+        ids.append(branch_id)
+        rows.append(
+            (
+                str(branch_id),
+                _cell(_finite(data.get("length"))),
+                _cell(_finite(data.get("diameter_um"))),
+                _cell(None if order is None else str(order)),
+                f"{u}-{v}",
+            )
+        )
+    return ids, rows
+
+
+def _finite(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
+def vessel_midpoint(graph: Any, edge: tuple[Any, Any, Any]) -> np.ndarray | None:
+    """A point halfway along a vessel's path (microns), to zoom the viewer to.
+
+    The middle of its ``voxels``, or the midpoint of its two nodes when it
+    has none; None when neither is known.
+    """
+    u, v, k = edge
+    voxels = graph.edges[u, v, k].get("voxels")
+    if voxels is not None and len(voxels):
+        return np.asarray(voxels[len(voxels) // 2], dtype=float)[:3]
+    ends = [graph.nodes[n].get("pos") for n in (u, v)]
+    if any(pos is None for pos in ends):
+        return None
+    return np.mean([np.asarray(pos, dtype=float)[:3] for pos in ends], axis=0)
 
 
 def junction_marker_layer(graph: Any, scan: NetworkScan) -> LayerSpec:
