@@ -1209,6 +1209,25 @@ def _geodesic_on_crop(
     return path
 
 
+def _box_dilation(mask: np.ndarray, reach) -> np.ndarray:
+    """*mask* dilated by a box reaching ``reach[axis]`` voxels along each axis.
+
+    One line per axis in turn: a box is the sum of its three edges, so this is
+    the same dilation as one ``np.ones`` box structure. Handed that box,
+    scipy's dilation allocates the *square* of its voxel count -- a 40-voxel
+    corridor's 81**3 box asks for terabytes -- and that ran the thin-arm join
+    out of memory on a real stack.
+    """
+    dilated = np.asarray(mask, dtype=bool)
+    for axis, r in enumerate(reach):
+        if int(r) <= 0:
+            continue
+        line = [1] * dilated.ndim
+        line[axis] = 2 * int(r) + 1
+        dilated = binary_dilation(dilated, structure=np.ones(line, dtype=bool))
+    return dilated
+
+
 def _path_through_mask(
     start: tuple[int, int, int],
     end: tuple[int, int, int],
@@ -1264,10 +1283,7 @@ def _path_through_mask(
         # A box reaching *radius* finest-axis voxels, at least one along every
         # axis -- *radius* iterations of the 26-neighbour cube on cube voxels.
         reach = [max(1, int(round(radius / s))) for s in relative]
-        corridor = (
-            binary_dilation(painted, structure=np.ones([2 * r + 1 for r in reach], dtype=bool))
-            & crop_allowed
-        )
+        corridor = _box_dilation(painted, reach) & crop_allowed
         corridor[local_start] = True
         corridor[local_end] = True
         local_path = _geodesic_on_crop(

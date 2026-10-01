@@ -14,7 +14,13 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from scipy.ndimage import distance_transform_edt, generate_binary_structure, label, maximum_filter
+from scipy.ndimage import (
+    binary_dilation,
+    distance_transform_edt,
+    generate_binary_structure,
+    label,
+    maximum_filter,
+)
 
 from haemolynx.preprocessing import (
     BRAID_FACTOR_LIMIT,
@@ -32,6 +38,7 @@ from haemolynx.preprocessing import (
     thick_vessel_object_mask,
 )
 from haemolynx.preprocessing.thick_vessels import (
+    _box_dilation,
     _build_dijkstra_graph,
     _cover_around_path,
     _dijkstra_parents,
@@ -1645,6 +1652,50 @@ def test_path_through_mask_reuses_one_fallback_graph_across_several_arms():
         ), "path must be a real 26-connected walk, not a straight-line jump"
 
     assert build_calls["n"] == 1, "the graph must be built once, not once per arm"
+
+
+def test_box_dilation_is_the_same_dilation_as_one_box_structure():
+    """One axis at a time gives exactly the whole box's dilation -- including a
+    reach longer than the array along an axis, and no reach along another."""
+    rng = np.random.default_rng(0)
+    for shape in ((5, 12, 9), (15, 15, 15), (1, 30, 4)):
+        mask = rng.random(shape) < 0.02
+        for reach in ((1, 1, 1), (0, 2, 5), (6, 2, 1), (10, 10, 10)):
+            box = np.ones([2 * r + 1 for r in reach], dtype=bool)
+            np.testing.assert_array_equal(
+                _box_dilation(mask, reach), binary_dilation(mask, structure=box)
+            )
+
+
+def test_a_join_needing_the_widest_corridor_finds_it_without_running_out_of_memory():
+    """A join only the 40-voxel corridor can make comes back as a real path.
+
+    That corridor was one dilation by an 81**3 box, for which scipy allocates
+    the square of the box's voxel count: a bare MemoryError, reported as
+    "2. Skeletonise" failing with no message, on a real stack of near-cube
+    voxels. Here a U-shaped vessel's arms meet 34 voxels below the straight
+    line between start and end, so the 2-, 5- and 15-voxel corridors stop
+    short of the U's bottom and only the 40-voxel one reaches it -- through a
+    crop at least 81 voxels along every axis, as on a real stack.
+    """
+    allowed = np.zeros((90, 100, 90), dtype=bool)
+    allowed[44:47, 44:81, 30:33] = True
+    allowed[44:47, 44:81, 56:59] = True
+    allowed[44:47, 78:81, 30:59] = True
+    start, end = (45, 45, 31), (45, 45, 57)
+
+    def fallback_graph_fn():
+        raise AssertionError("the 40-voxel corridor should have found the path")
+
+    path = _path_through_mask(start, end, allowed, fallback_graph_fn=fallback_graph_fn)
+
+    assert path[0] == start and path[-1] == end
+    assert all(allowed[p] for p in path), "every joined voxel must be foreground"
+    assert all(
+        max(abs(a - b) for a, b in zip(path[i], path[i + 1])) <= 1
+        for i in range(len(path) - 1)
+    ), "path must be a real 26-connected walk"
+    assert max(p[1] for p in path) >= 78, "the path must go round the U's bottom"
 
 
 # --- flake filter in microns; the low-RAM option -------------------------------
