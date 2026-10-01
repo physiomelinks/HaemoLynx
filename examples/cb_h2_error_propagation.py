@@ -45,7 +45,6 @@ from pathlib import Path
 
 import numpy as np
 import networkx as nx
-import pyvista as pv
 from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
 
@@ -61,7 +60,6 @@ from ImageLynx.specimens import PROCESSING_VOXEL_UM                    # noqa: E
 from ImageLynx.specimens import SPECIMENS as REGISTRY                  # noqa: E402
 
 BATCH = Path(__file__).resolve().parent / "outputs" / "cb_h1_batch"
-VTK = Path(__file__).resolve().parent / "outputs" / "cb_h1_paraview"
 SPECIMENS = ("WKY-A", "WKY-B", "WKY-C", "SHR-A", "SHR-B", "SHR-C")
 
 # Analysis settings come from ImageLynx.cb_settings, which is their single owner.
@@ -81,27 +79,6 @@ SEED = 20260815
 
 def _specimen(specimen_id):
     return next(s for s in REGISTRY if s.specimen_id == specimen_id)
-
-
-def load(specimen_id):
-    """Edges, terminal nodes and ROI bounds from the ParaView export, in the VTK frame.
-
-    Kept for ``cb_h2_boundary_selection.py``, which imports it. This script uses
-    ``load_network``.
-    """
-    edges = pv.read(VTK / f"{specimen_id}_vessels.vtp")
-    nodes = pv.read(VTK / f"{specimen_id}_nodes.vtp")
-    mask = pv.read(VTK / f"{specimen_id}_mask.vti")
-
-    u = np.asarray(edges.cell_data["edge_u"]).astype(int)
-    v = np.asarray(edges.cell_data["edge_v"]).astype(int)
-    length = np.asarray(edges.cell_data["length_um"], float)
-    diameter = np.asarray(edges.cell_data["edt_diameter_um"], float)
-
-    # Self-loops carry no pressure drop and a non-positive length or diameter would make the
-    # conductance singular. Both are dropped rather than clamped, so nothing silently contributes.
-    keep = (u != v) & np.isfinite(length) & (length > 0) & np.isfinite(diameter) & (diameter > 0)
-    return (u[keep], v[keep], length[keep], diameter[keep], nodes, np.array(mask.bounds).reshape(3, 2))
 
 
 def network_arrays(G, csv_path):
