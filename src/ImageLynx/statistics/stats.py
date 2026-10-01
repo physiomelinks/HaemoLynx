@@ -426,10 +426,24 @@ def compute_vessel_density(
         )
     return out
     
-def _warn_community_fallback(n_nodes: int, max_nodes_exact: int) -> None:
+def _component_fallback_summary(G: nx.Graph, max_nodes_exact: int) -> Dict[str, Any]:
+    """Summarise connected components when the graph is too large for modularity.
+
+    The keys name components, not communities: a component count is not a modularity
+    result, and every CB network is a single component, so a "Community Count" of 1
+    read as a finding when it was not one (re-run notes 2026-10-01, item 5).
+    """
     logger.warning(
-        "Community statistics: %d nodes > max_nodes_exact=%d, so connected components "
-        "stand in for modularity communities", n_nodes, max_nodes_exact)
+        "Community statistics: %d nodes > max_nodes_exact=%d, so communities are not "
+        "computed; connected-component counts are reported instead",
+        G.number_of_nodes(), max_nodes_exact)
+    sizes = [len(c) for c in nx.connected_components(G)]
+    return {
+        "Connected Component Count": len(sizes),
+        "Largest Component Size": max(sizes) if sizes else 0,
+        "Mean Component Size": float(np.mean(sizes)) if sizes else 0,
+        "Community Method": "connected_components_fallback",
+    }
 
 
 def compute_communities_summary(
@@ -451,15 +465,7 @@ def compute_communities_summary(
         }
 
     # Fallback for large graphs: connected components are fast and stable.
-    _warn_community_fallback(n_nodes, max_nodes_exact)
-    components = list(nx.connected_components(G))
-    sizes = [len(c) for c in components]
-    return {
-        "Community Count": len(components),
-        "Largest Community Size": max(sizes) if sizes else 0,
-        "Mean Community Size": float(np.mean(sizes)) if sizes else 0,
-        "Community Method": "connected_components_fallback",
-    }
+    return _component_fallback_summary(G, max_nodes_exact)
 
 
 def compute_communities(G: nx.Graph):
@@ -630,15 +636,7 @@ def compute_weighted_communities_summary(
             "Community Method": "greedy_modularity_weighted",
         }
 
-    _warn_community_fallback(n_nodes, max_nodes_exact)
-    components = list(nx.connected_components(G_s))
-    sizes = [len(c) for c in components]
-    return {
-        "Community Count": len(components),
-        "Largest Community Size": max(sizes) if sizes else 0,
-        "Mean Community Size": float(np.mean(sizes)) if sizes else 0,
-        "Community Method": "connected_components_fallback",
-    }
+    return _component_fallback_summary(G_s, max_nodes_exact)
 
 
 def compute_betweenness_and_community_measurements(
@@ -803,6 +801,8 @@ def _annotation_for_metric(metric_name: str) -> str:
         return "Inverse of mean shortest-path distance."
     if "Betweenness" in metric_name:
         return "Centrality based on shortest-path traffic."
+    if "Component" in metric_name:
+        return "Connected-component summary; communities not computed above max_nodes_exact."
     if "Community" in metric_name:
         return "Subnetwork partition summary."
     if "Density" in metric_name:

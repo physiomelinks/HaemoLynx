@@ -2424,16 +2424,16 @@ Computed from the graph alone, with no physics.
 
 | # | Step | Setting | Why | On the CB path | Where |
 |---|---|---|---|---|---|
-| 1 | Collapse the MultiGraph to a simple graph for the topological measures | — | Most graph-theoretic measures are undefined or ambiguous on a MultiGraph, so a simple view is taken for those | **On** | `stats.py:651` |
-| 2 | Basic counts: nodes, edges, total and mean edge length, mean degree | uses `weight` | The counts every other quantity is normalised against | **On** | `stats.py:16` |
-| 3 | Tortuosity per edge and its summary | — | H1 §1.4 is a tortuosity claim, and it is computed once here so the summary and the per-edge CSV cannot disagree | **On** | `stats.py:147` |
-| 4 | Branching statistics: junction count, branching angles | degree ≥ 3 | Junction density is an H1 readout, and branching angle is the diagnostic that shows whether junctions were resolved sensibly | **On** | `stats.py:175` |
-| 5 | Tree asymmetry | — | Distinguishes a balanced bed from a network dominated by one trunk | **On** | `stats.py:213` |
-| 6 | Fractal dimension by box counting | — | A scale-invariant descriptor of how densely the network fills the volume | **On** | `stats.py:241` |
-| 7 | Vessel density, both definitions | voxel size passed (required with the image dimensions) | Both definitions are reported because neither is the parenchymal density H1 §1.3 asks for, and saying so requires showing both | **On** | `stats.py:359` |
-| 8 | Path efficiency | sampled — `max_pairs` capped in `fast` | Exhaustive all-pairs shortest paths are quadratic in node count, so `fast` samples instead | **On** | `stats.py:268` |
-| 9 | Communities and betweenness | summaries only in `fast` | Diagnostic centrality and modularity; reduced to summaries because the full objects are large and unused | **On** | `stats.py:402`, `stats.py:436` |
-| 10 | Per-edge morphometry table → CSV | 16 fixed columns | With n = 3 per group the per-edge table is the only place with enough data to describe a distribution at all | **On** | `stats.py:56`, `stats.py:135` |
+| 1 | Collapse the MultiGraph to a simple graph for the topological measures | — | Most graph-theoretic measures are undefined or ambiguous on a MultiGraph, so a simple view is taken for those | **On** | `stats.py:684` |
+| 2 | Basic counts: nodes, edges, total and mean edge length, mean degree | uses `weight` | The counts every other quantity is normalised against | **On** | `stats.py:19` |
+| 3 | Tortuosity per edge and its summary | — | H1 §1.4 is a tortuosity claim, and it is computed once here so the summary and the per-edge CSV cannot disagree | **On** | `stats.py:150` |
+| 4 | Branching statistics: junction count, branching angles | degree ≥ 3 | Junction density is an H1 readout, and branching angle is the diagnostic that shows whether junctions were resolved sensibly | **On** | `stats.py:178` |
+| 5 | Tree asymmetry | — | Distinguishes a balanced bed from a network dominated by one trunk | **On** | `stats.py:226` |
+| 6 | Fractal dimension by box counting | — | A scale-invariant descriptor of how densely the network fills the volume | **On** | `stats.py:254` |
+| 7 | Vessel density, both definitions | voxel size passed (required with the image dimensions) | Both definitions are reported because neither is the parenchymal density H1 §1.3 asks for, and saying so requires showing both | **On** | `stats.py:362` |
+| 8 | Path efficiency | sampled — `max_pairs` capped in `fast` | Exhaustive all-pairs shortest paths are quadratic in node count, so `fast` samples instead | **On** | `stats.py:281` |
+| 9 | Communities and betweenness | summaries only in `fast`; communities only up to `max_nodes_exact` = 1500 nodes | Diagnostic centrality and modularity; reduced to summaries because the full objects are large and unused. Every CB network is larger than 1500 nodes, so modularity is never computed on the CB path: the summary reports connected-component counts instead, under component keys (`Connected Component Count`, always 1 here), with `Community Method: connected_components_fallback` | **On** (components only) | `stats.py:449`, `stats.py:476` |
+| 10 | Per-edge morphometry table → CSV | 16 fixed columns | With n = 3 per group the per-edge table is the only place with enough data to describe a distribution at all | **On** | `stats.py:59`, `stats.py:138` |
 | 11 | Benchmarking suite, including `graph_fundamental_loops` | `run_benchmarking = False` | Off — and with it the only function in the library that computes $E - V + C$, which is why $\beta_1$ is derived post hoc | **Off** | `benchmarking.py:180` |
 
 **`statistics_mode` is `"fast"` and the caller does not override it.** In `fast`, path efficiency is

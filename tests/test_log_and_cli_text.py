@@ -42,6 +42,32 @@ def test_community_fallback_is_logged(caplog, name):
     assert "6 nodes > max_nodes_exact=3" in caplog.text
 
 
+_COMMUNITY_KEYS = ("Community Count", "Largest Community Size", "Mean Community Size")
+_COMPONENT_KEYS = ("Connected Component Count", "Largest Component Size", "Mean Component Size")
+
+
+@pytest.mark.parametrize("name", ["compute_communities_summary",
+                                  "compute_weighted_communities_summary"])
+def test_community_fallback_reports_components_not_communities(name):
+    """The fallback counts components, so it must not label them communities (package S)."""
+    from ImageLynx.statistics import stats
+
+    G = nx.disjoint_union(nx.path_graph(4), nx.path_graph(2))
+    nx.set_edge_attributes(G, 1.0, "length")
+    fn = getattr(stats, name)
+    kwargs = {"source_attr": "length"} if "weighted" in name else {}
+
+    small = fn(G, max_nodes_exact=10, **kwargs)
+    assert all(k in small for k in _COMMUNITY_KEYS)
+    assert not any(k in small for k in _COMPONENT_KEYS)
+
+    large = fn(G, max_nodes_exact=3, **kwargs)
+    assert not any(k in large for k in _COMMUNITY_KEYS)
+    assert large["Connected Component Count"] == 2
+    assert large["Largest Component Size"] == 4
+    assert large["Mean Component Size"] == 3.0
+
+
 def _edge_graph(voxels):
     G = nx.MultiGraph()
     G.add_node("a", pos=np.array(voxels[0], float))
