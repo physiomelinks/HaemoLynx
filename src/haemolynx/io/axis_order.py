@@ -22,6 +22,8 @@ the axis projected through — user-selectable.
 """
 from __future__ import annotations
 
+from typing import Sequence
+
 import numpy as np
 
 CANONICAL_AXIS_ORDER = "zyx"
@@ -138,3 +140,37 @@ def voxel_size_xyz_from_zyx(
             f"voxel_size_zyx must have length 3, got {voxel_size_zyx}."
         )
     return (float(arr[2]), float(arr[1]), float(arr[0]))
+
+
+def voxel_size_xyz_from_file_axes(
+    file_axis_spacing: Sequence[float], axis_order: str = CANONICAL_AXIS_ORDER
+) -> tuple[float, float, float]:
+    """Physical ``(x, y, z)`` voxel size from the spacing along each of a
+    file's own array axes, in the file's order, given *axis_order* -- what
+    each of those axes is.
+
+    A TIFF's resolution tags and an HDF5 ``element_size_um`` describe the
+    file's axes (pages, height, width), not physical ones: in a stack saved
+    with ``image_axis_order="xyz"`` the page spacing is the x spacing. Read
+    as if the file were ``zyx``, the z and x spacings swap for the whole run.
+    For the default ``"zyx"`` this is :func:`voxel_size_xyz_from_zyx`.
+    """
+    normalized = normalize_axis_order(axis_order)
+    spacing = [float(value) for value in np.asarray(file_axis_spacing, dtype=float).ravel()]
+    if len(spacing) != 3:
+        raise ValueError(f"file_axis_spacing must have length 3, got {file_axis_spacing}.")
+    by_axis = dict(zip(normalized, spacing))
+    return (by_axis["x"], by_axis["y"], by_axis["z"])
+
+
+def file_axis_spacing_from_xyz(
+    voxel_size_xyz: Sequence[float], axis_order: str = CANONICAL_AXIS_ORDER
+) -> tuple[float, float, float]:
+    """The inverse of :func:`voxel_size_xyz_from_file_axes`: the spacing along
+    each of a file's own array axes, in the file's order."""
+    normalized = normalize_axis_order(axis_order)
+    values = [float(value) for value in np.asarray(voxel_size_xyz, dtype=float).ravel()]
+    if len(values) != 3:
+        raise ValueError(f"voxel_size_xyz must have length 3, got {voxel_size_xyz}.")
+    by_axis = dict(zip("xyz", values))
+    return tuple(by_axis[axis] for axis in normalized)

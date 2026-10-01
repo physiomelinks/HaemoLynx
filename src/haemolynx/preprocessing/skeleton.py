@@ -375,6 +375,28 @@ def _euclidean_ball(radius: int) -> np.ndarray:
     return sum(g.astype(np.int64) ** 2 for g in grids) <= radius * radius
 
 
+def _finest_axis_spacing(voxel_size_zyx, ndim: int) -> np.ndarray:
+    """Per-axis spacing in units of the finest axis (1 there, more along a
+    coarser one); all ones without *voxel_size_zyx*."""
+    if voxel_size_zyx is None:
+        return np.ones(ndim)
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    return spacing / float(spacing.min())
+
+
+def _physical_footprint(radius: int, relative_spacing: np.ndarray, *, norm: int) -> np.ndarray:
+    """Offsets within *radius* finest-axis voxels of the centre, measured in
+    physical units: a coarser axis reaches ``radius / its relative spacing``
+    voxels, possibly none. *norm* 2 is a ball (Euclidean), 1 a diamond
+    (city-block -- what iterating a 6-connected cross builds)."""
+    reach = np.floor(float(radius) / relative_spacing + 1e-9).astype(int)
+    spans = [np.arange(-r, r + 1) * s for r, s in zip(reach, relative_spacing)]
+    grids = np.meshgrid(*spans, indexing="ij")
+    if norm == 1:
+        return sum(np.abs(g) for g in grids) <= radius + 1e-9
+    return sum(g * g for g in grids) <= radius * radius + 1e-9
+
+
 #: Largest *max_gap* for which :func:`bridge_gaps` dilates rather than measures.
 #: A ball footprint has ``(2r+1)^3`` elements and a dilation costs the volume
 #: times that, while the distance transform costs the volume whatever the
@@ -388,19 +410,24 @@ def bridge_gaps(
     binary_skeleton: np.ndarray,
     max_gap: int = 4,
     *,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
 ) -> np.ndarray:
     """Fill small gaps in a binary mask.
 
-    Every background voxel within *max_gap* voxels of any foreground voxel is
-    set to foreground -- that is, dilation by a Euclidean ball of radius
-    *max_gap*. Two ways to get there, and which is cheaper depends on the
-    radius: dilating by that ball directly, or measuring an exact distance for
-    every voxel in the volume and thresholding it. Small radii dilate; from
-    :data:`MAX_BALL_DILATION_RADIUS` up the footprint grows faster than the
-    transform does and the transform wins. Both return the same mask, so this
-    only decides how long it takes.
+    Every background voxel within *max_gap* voxels of the finest axis of any
+    foreground voxel is set to foreground -- that is, dilation by a Euclidean
+    ball of radius ``max_gap * min(voxel_size_zyx)`` microns, reaching fewer
+    voxels along a coarser axis. Counted in voxels of every axis alike, a gap
+    of 3 bridged 12 um in z but 3 um in-plane on a 0.5 x 0.5 x 2 um stack,
+    fusing vessels stacked in z. Two ways to get there, and which is cheaper
+    depends on the radius: dilating by that ball directly, or measuring an
+    exact distance for every voxel in the volume and thresholding it. Small
+    radii dilate; from :data:`MAX_BALL_DILATION_RADIUS` up the footprint grows
+    faster than the transform does and the transform wins. Both return the
+    same mask, so this only decides how long it takes. Without
+    *voxel_size_zyx* every voxel is a unit cube.
 
     *use_memmap*, when True, runs either path one padded block at a time
     (:func:`map_blockwise`) into a new memmap in *memmap_directory*. Both
@@ -414,26 +441,32 @@ def bridge_gaps(
     if max_gap <= 0:
         return binary_skeleton
     max_gap = int(max_gap)
+    relative = _finest_axis_spacing(voxel_size_zyx, np.ndim(binary_skeleton))
     if use_memmap:
-        return _bridge_gaps_blockwise(binary_skeleton, max_gap, memmap_directory)
+        return _bridge_gaps_blockwise(binary_skeleton, max_gap, relative, memmap_directory)
     if max_gap <= MAX_BALL_DILATION_RADIUS:
-        return binary_dilation(binary_skeleton, structure=_euclidean_ball(max_gap))
+        return binary_dilation(
+            binary_skeleton, structure=_physical_footprint(max_gap, relative, norm=2)
+        )
     # scipy's distance transform of an array with no background voxel is not
     # all-infinite but measured from a corner: nothing must dilate to nothing.
     if not binary_skeleton.any():
         return binary_skeleton.copy()
     inverted = ~binary_skeleton
-    distance = distance_transform_edt(inverted)
+    distance = distance_transform_edt(inverted, sampling=relative)
     return binary_skeleton | ((distance <= max_gap) & inverted)
 
 
 def _bridge_gaps_blockwise(
-    binary_skeleton: np.ndarray, max_gap: int, memmap_directory: str | Path | None
+    binary_skeleton: np.ndarray,
+    max_gap: int,
+    relative_spacing: np.ndarray,
+    memmap_directory: str | Path | None,
 ) -> np.memmap:
     skeleton_bool = np.asanyarray(binary_skeleton, dtype=bool)
     result = new_memmap_array(skeleton_bool.shape, bool, directory=memmap_directory)
     if max_gap <= MAX_BALL_DILATION_RADIUS:
-        ball = _euclidean_ball(max_gap)
+        ball = _physical_footprint(max_gap, relative_spacing, norm=2)
         return map_blockwise(
             skeleton_bool,
             lambda block: binary_dilation(block, structure=ball),
@@ -448,7 +481,8 @@ def _bridge_gaps_blockwise(
         if not block.any():
             return block.copy()
         inverted = ~block
-        return block | ((distance_transform_edt(inverted) <= max_gap) & inverted)
+        distance = distance_transform_edt(inverted, sampling=relative_spacing)
+        return block | ((distance <= max_gap) & inverted)
 
     return map_blockwise(skeleton_bool, within_gap, result, halo=max_gap)
 
@@ -457,24 +491,31 @@ def close_binary_mask(
     binary: np.ndarray,
     radius: int = 2,
     *,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
 ) -> np.ndarray:
     """Morphologically close a binary mask to seal small gaps.
 
     Applies binary dilation followed by binary erosion (closing) using a
-    ball-shaped structuring element of the given *radius*.  Unlike plain
-    dilation, closing does not permanently expand object boundaries — it only
-    fills concavities and bridges narrow gaps smaller than the structuring
-    element.
+    diamond-shaped structuring element of the given *radius* in voxels of the
+    finest axis -- ``radius * min(voxel_size_zyx)`` microns, reaching fewer
+    voxels along a coarser axis. On isotropic voxels that is *radius*
+    iterations of a 6-connected cross, as before; counted in voxels of every
+    axis alike, a radius of 2 closed 8 um gaps in z against 2 um in-plane on
+    a 0.5 x 0.5 x 2 um stack. Unlike plain dilation, closing does not
+    permanently expand object boundaries — it only fills concavities and
+    bridges narrow gaps smaller than the structuring element.
 
     Parameters
     ----------
     binary:
-        Input boolean array (2D or 3D).
+        Input boolean array (3D, canonical ``(z, y, x)``, or 2D).
     radius:
-        Number of erosion/dilation iterations.  Larger values bridge wider
-        gaps but risk merging genuinely distinct structures.
+        Reach of the closing in voxels of the finest axis. Larger values
+        bridge wider gaps but risk merging genuinely distinct structures.
+    voxel_size_zyx:
+        Per-axis spacing of *binary*; ``None`` treats every voxel as a cube.
     use_memmap, memmap_directory:
         When *use_memmap* is True, close one padded block at a time
         (:func:`map_blockwise`) into a new memmap in *memmap_directory*
@@ -483,21 +524,24 @@ def close_binary_mask(
         of it (``radius`` for the dilation, ``radius`` more for the erosion
         that reads it), so that halo makes every block exact.
     """
-    from scipy.ndimage import binary_closing, generate_binary_structure
+    from scipy.ndimage import binary_closing
 
     if radius <= 0:
         return binary
-    struct = generate_binary_structure(binary.ndim, 1)
+    radius = int(radius)
+    struct = _physical_footprint(
+        radius, _finest_axis_spacing(voxel_size_zyx, binary.ndim), norm=1
+    )
     if use_memmap:
         binary_bool = np.asanyarray(binary, dtype=bool)
         result = new_memmap_array(binary_bool.shape, bool, directory=memmap_directory)
         return map_blockwise(
             binary_bool,
-            lambda block: binary_closing(block, structure=struct, iterations=radius),
+            lambda block: binary_closing(block, structure=struct),
             result,
             halo=2 * radius,
         )
-    return binary_closing(binary.astype(bool), structure=struct, iterations=radius)
+    return binary_closing(binary.astype(bool), structure=struct)
 
 
 def skeletonize_volume(img: np.ndarray) -> np.ndarray:
@@ -683,17 +727,48 @@ def _draw_line_3d(array: np.ndarray, start: np.ndarray, end: np.ndarray) -> None
 
 
 def _select_hub_centres(
-    peak_coords: np.ndarray, peak_density: np.ndarray, hub_min_spacing: float
+    peak_coords: np.ndarray,
+    peak_density: np.ndarray,
+    hub_min_spacing: float,
+    relative_spacing: np.ndarray | None = None,
 ) -> list[np.ndarray]:
     """Density peaks, densest first, keeping each only if it is at least
-    *hub_min_spacing* from every hub already kept."""
+    *hub_min_spacing* from every hub already kept -- measured in voxels of
+    the finest axis, each axis weighted by *relative_spacing* (see
+    :func:`_finest_axis_spacing`)."""
+    weights = np.ones(peak_coords.shape[1]) if relative_spacing is None else relative_spacing
     order = np.argsort(peak_density)[::-1]
     selected_hubs: list[np.ndarray] = []
     for idx in order:
         candidate = peak_coords[idx]
-        if all(np.linalg.norm(candidate - existing) >= hub_min_spacing for existing in selected_hubs):
+        if all(
+            np.linalg.norm((candidate - existing) * weights) >= hub_min_spacing
+            for existing in selected_hubs
+        ):
             selected_hubs.append(candidate)
     return selected_hubs
+
+
+def _odd_at_least_three(value: float) -> int:
+    return max(3, 2 * int(round((float(value) - 1.0) / 2.0)) + 1)
+
+
+def bundle_scan_window(
+    scan_size: int | tuple[int, ...], voxel_size_zyx, ndim: int = 3
+) -> tuple[int, ...]:
+    """The per-axis window :func:`skeletonize_voxel_bundles_into_paths` scans
+    with: an int *scan_size* is voxels of the finest axis, the same physical
+    width on every axis (odd, at least 3); a tuple is taken per axis as given.
+    Anything else that measures local density "at a scan size" -- the
+    optimiser's candidates and its cost -- uses this window, not
+    ``size=scan_size``.
+    """
+    if isinstance(scan_size, (int, np.integer)):
+        relative = _finest_axis_spacing(voxel_size_zyx, ndim)
+        return tuple(_odd_at_least_three(int(scan_size) / r) for r in relative)
+    if len(scan_size) != ndim:
+        raise ValueError(f"scan_size must have {ndim} dimensions, got {len(scan_size)}")
+    return tuple(max(3, int(s)) for s in scan_size)
 
 
 def _draw_hub_links(
@@ -815,6 +890,7 @@ def skeletonize_voxel_bundles_into_paths(
     max_connections_per_hub: int = 8,
     hub_min_spacing: int | None = None,
     *,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
     tile_large_components: bool = False,
@@ -836,16 +912,24 @@ def skeletonize_voxel_bundles_into_paths(
     binary_mask:
         Boolean foreground mask/skeleton candidate.
     scan_size:
-        Sliding window size used to estimate local density (int or per-axis
-        tuple). Odd values are preferred.
+        Sliding window size used to estimate local density: a per-axis tuple
+        of voxels, or an int in voxels of the finest axis -- the same
+        physical width on every axis, so fewer voxels (odd, at least 3) along
+        a coarser one. Counted as voxels on every axis, a window of 9 spanned
+        18 um in z but 4.5 um in-plane on a 0.5 x 0.5 x 2 um stack, and
+        vessels stacked in z read as one bundle. Odd values are preferred.
     density_fraction:
         Mark a location as dense when its local foreground fraction is at least
         this threshold (0.0-1.0).
     max_connections_per_hub:
         Max number of directional in/out links reconnected to each hub.
     hub_min_spacing:
-        Minimum Euclidean spacing between selected hub centers. Defaults to
-        about half the smallest scan window dimension.
+        Minimum spacing between selected hub centers, in voxels of the finest
+        axis, measured physically. Defaults to about half the window's
+        physical width.
+    voxel_size_zyx:
+        Per-axis spacing of *binary_mask*; ``None`` treats every voxel as a
+        cube.
     use_memmap, memmap_directory, tile_large_components, tile_max_voxels, tile_halo_voxels:
         With *use_memmap* True, see
         :func:`_skeletonize_voxel_bundles_into_paths_low_memory` -- the same
@@ -856,18 +940,12 @@ def skeletonize_voxel_bundles_into_paths(
     if not mask.any():
         return mask
 
-    if isinstance(scan_size, int):
-        scan = (max(3, int(scan_size)),) * mask.ndim
-    else:
-        if len(scan_size) != mask.ndim:
-            raise ValueError(
-                f"scan_size must have {mask.ndim} dimensions, got {len(scan_size)}"
-            )
-        scan = tuple(max(3, int(s)) for s in scan_size)
+    relative = _finest_axis_spacing(voxel_size_zyx, mask.ndim)
+    scan = bundle_scan_window(scan_size, voxel_size_zyx, mask.ndim)
     density_fraction = float(np.clip(density_fraction, 0.0, 1.0))
     max_connections_per_hub = max(1, int(max_connections_per_hub))
     if hub_min_spacing is None:
-        hub_min_spacing = max(1, int(min(scan) / 2))
+        hub_min_spacing = max(1, int(min(s * r for s, r in zip(scan, relative)) / 2))
 
     if use_memmap:
         return _skeletonize_voxel_bundles_into_paths_low_memory(
@@ -876,6 +954,7 @@ def skeletonize_voxel_bundles_into_paths(
             density_fraction,
             max_connections_per_hub,
             hub_min_spacing,
+            relative_spacing=relative,
             memmap_directory=memmap_directory,
             tile_large_components=tile_large_components,
             tile_max_voxels=tile_max_voxels,
@@ -894,7 +973,7 @@ def skeletonize_voxel_bundles_into_paths(
         return base_skeleton.astype(bool)
 
     selected_hubs = _select_hub_centres(
-        peak_coords, density[tuple(peak_coords.T)], hub_min_spacing
+        peak_coords, density[tuple(peak_coords.T)], hub_min_spacing, relative
     )
 
     result = base_skeleton.astype(bool).copy()
@@ -910,6 +989,7 @@ def _skeletonize_voxel_bundles_into_paths_low_memory(
     max_connections_per_hub: int,
     hub_min_spacing: float,
     *,
+    relative_spacing: np.ndarray | None = None,
     memmap_directory: str | Path | None,
     tile_large_components: bool,
     tile_max_voxels: int,
@@ -974,7 +1054,7 @@ def _skeletonize_voxel_bundles_into_paths_low_memory(
         peak_density = np.concatenate(peak_density_parts)
         c_order = np.lexsort(peak_coords.T[::-1])
         selected_hubs = _select_hub_centres(
-            peak_coords[c_order], peak_density[c_order], hub_min_spacing
+            peak_coords[c_order], peak_density[c_order], hub_min_spacing, relative_spacing
         )
 
         result = base_skeleton
@@ -998,19 +1078,27 @@ _BRIDGE_MASK_WINDOW_PAD = 3
 
 
 def _bridge_path_through_mask(
-    mask: np.ndarray, start: np.ndarray, end: np.ndarray
+    mask: np.ndarray,
+    start: np.ndarray,
+    end: np.ndarray,
+    relative_spacing: np.ndarray | None = None,
 ) -> np.ndarray | None:
     """A* path from *start* to *end* that prefers staying inside *mask*.
 
     Same cost-field convention as `graph.reconnect`'s own skeleton-proximity
     router (``1 + distance_transform_edt(~reference) ** 2``), but built from
     the segmentation mask instead of the skeleton, and only over a small
-    local window around the two endpoints. Returns ``None`` (never raises) on
-    any failure -- a shape mismatch, an out-of-bounds window, or a routing
-    exception -- so the caller can fall back to a straight line.
+    local window around the two endpoints. Distances and steps are physical
+    (*relative_spacing*, see :func:`_finest_axis_spacing`): costed per voxel,
+    a step along a coarse z covered four times the tissue for the same price,
+    and bridges went the long way round through it. Returns ``None`` (never
+    raises) on any failure -- a shape mismatch, an out-of-bounds window, or a
+    routing exception -- so the caller can fall back to a straight line.
     """
     try:
-        from skimage.graph import route_through_array
+        from skimage.graph import MCP_Geometric
+
+        relative = np.ones(3) if relative_spacing is None else np.asarray(relative_spacing, float)
 
         lo = np.maximum(np.minimum(start, end) - _BRIDGE_MASK_WINDOW_PAD, 0)
         hi = np.minimum(
@@ -1019,12 +1107,12 @@ def _bridge_path_through_mask(
         if np.any(hi <= lo):
             return None
         window = mask[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]]
-        cost = 1 + distance_transform_edt(~window.astype(bool)) ** 2
-        start_local = tuple((start - lo).astype(int))
-        end_local = tuple((end - lo).astype(int))
-        path_coords, _cost = route_through_array(
-            cost, start_local, end_local, fully_connected=True
-        )
+        cost = 1 + distance_transform_edt(~window.astype(bool), sampling=tuple(relative)) ** 2
+        start_local = tuple(int(v) for v in (start - lo))
+        end_local = tuple(int(v) for v in (end - lo))
+        router = MCP_Geometric(cost, fully_connected=True, sampling=tuple(relative))
+        router.find_costs([start_local], [end_local])
+        path_coords = router.traceback(end_local)
         if not path_coords:
             return None
         return np.asarray(path_coords, dtype=int) + lo
@@ -1272,7 +1360,10 @@ def connect_skeleton_components(
             path = None
             if weight_by_segmentation and segmentation_mask is not None:
                 if segmentation_mask.shape == skeleton.shape:
-                    path = _bridge_path_through_mask(segmentation_mask, start, end)
+                    path = _bridge_path_through_mask(
+                        segmentation_mask, start, end,
+                        _finest_axis_spacing(voxel_size_zyx, skeleton.ndim),
+                    )
             if path is not None:
                 result[tuple(path.T)] = True
             else:
@@ -1415,15 +1506,73 @@ def _small_object_survival_by_size(sizes: np.ndarray, min_size: int) -> np.ndarr
     return filtered[starts][inverse]
 
 
+def _skeleton_component_lengths(
+    coords: np.ndarray, labels: np.ndarray, n_components: int, relative_spacing: np.ndarray
+) -> np.ndarray:
+    """Each component's length in voxels of the finest axis, index 0 unused:
+    every voxel counts for the mean physical length, per unit of voxel step,
+    of the steps to its 26-neighbours -- 1 for a step along the finest axis,
+    the axis's relative spacing along a coarser one (a lone voxel counts 1).
+    On cube voxels every voxel counts exactly 1: the voxel count."""
+    from scipy.spatial import cKDTree
+
+    weights = np.ones(len(coords))
+    neighbours = _neighbour_lists(cKDTree(coords), coords)
+    for index, around in enumerate(neighbours):
+        if not around:
+            continue
+        steps = coords[around] - coords[index]
+        voxel_steps = np.sqrt(np.sum(steps * steps, axis=1))
+        physical = np.sqrt(np.sum((steps * relative_spacing) ** 2, axis=1))
+        weights[index] = float(np.mean(physical / voxel_steps))
+    return np.bincount(labels, weights=weights, minlength=n_components + 1)
+
+
+def _surviving_components(
+    labeled: np.ndarray,
+    n_components: int,
+    min_size: int,
+    relative_spacing: np.ndarray,
+    *,
+    coords: np.ndarray | None = None,
+    labels: np.ndarray | None = None,
+) -> np.ndarray:
+    """``survives[label]`` (index 0 unused, False): whether each component is
+    at least *min_size* long in voxels of the finest axis, by skimage's own
+    rule (:func:`_small_object_survival_by_size`). On cube voxels the length is
+    the voxel count, exactly as ``remove_small_objects`` counts it."""
+    if coords is None:
+        coords = np.argwhere(labeled)
+        labels = np.asarray(labeled[tuple(coords.T)])
+    if np.allclose(relative_spacing, 1.0):
+        sizes = np.bincount(labels, minlength=n_components + 1)
+    else:
+        sizes = np.rint(
+            _skeleton_component_lengths(coords, labels, n_components, relative_spacing)
+        ).astype(np.int64)
+    survives = np.zeros(n_components + 1, dtype=bool)
+    survives[1:] = _small_object_survival_by_size(sizes[1:], min_size)
+    return survives
+
+
 def drop_small_components(
     mask: np.ndarray,
     *,
     min_size: int,
     connectivity: int = 1,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
 ) -> np.ndarray:
     """Remove connected components smaller than *min_size* voxels.
+
+    With an anisotropic *voxel_size_zyx*, for a skeleton: smaller than
+    *min_size* voxels of the finest axis in length, each voxel counting for
+    the physical steps to its neighbours (see
+    :func:`_skeleton_component_lengths`) -- three voxels running along a
+    2 um z are 6 um of vessel, three along a 0.5 um x 1.5 um, and a count
+    treated them alike. On cube voxels, or without a voxel size, exactly the
+    voxel count, as below.
 
     With *use_memmap* False (the default), this is exactly
     ``skimage.morphology.remove_small_objects(mask, min_size=min_size,
@@ -1447,6 +1596,23 @@ def drop_small_components(
     than assumed, so this tracks whatever the *use_memmap* False branch
     above actually does on whichever skimage version is installed.
     """
+    relative = _finest_axis_spacing(voxel_size_zyx, np.ndim(mask))
+    if not np.allclose(relative, 1.0):
+        mask = np.asanyarray(mask, dtype=bool)
+        structure = generate_binary_structure(mask.ndim, connectivity)
+        with _labeled_components(
+            mask, structure, use_memmap=use_memmap, memmap_directory=memmap_directory
+        ) as (labeled, n_components):
+            if n_components == 0:
+                return mask
+            survives = _surviving_components(labeled, n_components, min_size, relative)
+            if survives[1:].all():
+                return mask
+            if use_memmap:
+                result = new_memmap_array(mask.shape, bool, directory=memmap_directory)
+                _combine_per_slice(result, lambda m, lb: m & survives[lb], mask, labeled)
+                return result
+            return mask & survives[labeled]
     if not use_memmap:
         return remove_small_objects(
             np.asanyarray(mask, dtype=bool), min_size=min_size, connectivity=connectivity
@@ -1472,6 +1638,7 @@ def _drop_small_components_bridging_cannot_join(
     reach: float,
     min_facing_cosine: float,
     connectivity: int,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
 ) -> np.ndarray:
@@ -1493,10 +1660,11 @@ def _drop_small_components_bridging_cannot_join(
             return skeleton
         coords = np.argwhere(labeled)
         labels = np.asarray(labeled[tuple(coords.T)])
-        drop = np.zeros(n_components + 1, dtype=bool)
-        drop[1:] = ~_small_object_survival_by_size(
-            np.bincount(labels, minlength=n_components + 1)[1:], min_size
+        drop = ~_surviving_components(
+            labeled, n_components, min_size, _finest_axis_spacing(voxel_size_zyx, skeleton.ndim),
+            coords=coords, labels=labels,
         )
+        drop[0] = False
         if not drop.any():
             return skeleton
         small = drop[labels]
@@ -1650,6 +1818,7 @@ def preprocess_skeleton_for_graph(
             reach=reach,
             min_facing_cosine=bridge_min_facing_cosine,
             connectivity=conn,
+            voxel_size_zyx=voxel_size_zyx,
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
         )
@@ -1663,6 +1832,7 @@ def preprocess_skeleton_for_graph(
             density_fraction=bundle_density_fraction,
             max_connections_per_hub=bundle_max_connections_per_hub,
             hub_min_spacing=bundle_hub_min_spacing,
+            voxel_size_zyx=voxel_size_zyx,
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
             **tiling,
@@ -1675,6 +1845,7 @@ def preprocess_skeleton_for_graph(
             close_binary_mask(
                 cleaned,
                 radius=closing_radius,
+                voxel_size_zyx=voxel_size_zyx,
                 use_memmap=use_memmap,
                 memmap_directory=memmap_directory,
             )
@@ -1686,6 +1857,7 @@ def preprocess_skeleton_for_graph(
             bridge_gaps(
                 np.asanyarray(cleaned, dtype=bool),
                 max_gap=bridge_gap_size,
+                voxel_size_zyx=voxel_size_zyx,
                 use_memmap=use_memmap,
                 memmap_directory=memmap_directory,
             )
@@ -1732,6 +1904,7 @@ def preprocess_skeleton_for_graph(
             cleaned,
             min_size=min_branch_length,
             connectivity=conn,
+            voxel_size_zyx=voxel_size_zyx,
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
         )

@@ -483,3 +483,86 @@ def test_select_terminal_nodes_from_large_vessel_masks_excludes_overlap():
     assert start_nodes == [0]
     assert out_nodes == [1]
 
+
+
+def _loop_in_the_z_x_plane(spacing=(2.0, 0.5, 0.5)):
+    """A rectangular skeleton loop: the edge between u (x=10) and v (x=70)
+    runs along its bottom (z=2); the other way round runs along its top, four
+    2 um slices -- 8 um -- above. Tails make u and v degree 2."""
+    skeleton = np.zeros((12, 5, 80), dtype=bool)
+    skeleton[2, 2, 0:80] = True
+    skeleton[6, 2, 10:71] = True
+    skeleton[2:7, 2, 10] = skeleton[2:7, 2, 70] = True
+    s = np.asarray(spacing)
+
+    def physical(z, x):
+        return [float(z * s[0]), float(2 * s[1]), float(x * s[2])]
+
+    G = nx.MultiGraph()
+    for node, x in {0: 0, 1: 10, 2: 70, 3: 79}.items():
+        G.add_node(node, pos=np.array(physical(2, x)))
+    G.add_edge(0, 1, voxels=[physical(2, x) for x in range(0, 11)])
+    G.add_edge(1, 2, voxels=[physical(2, x) for x in range(10, 71)])
+    G.add_edge(2, 3, voxels=[physical(2, x) for x in range(70, 80)])
+    return G, skeleton
+
+
+def test_a_loop_8_um_away_in_z_is_not_too_similar_to_add():
+    """Regression (audit): the "too similar" test was a Hausdorff distance in
+    voxel indices, so the other way round a loop four 2 um slices (8 um) away
+    was 4 voxels from the edge -- under the 8 the edge must differ by -- and
+    refused, where the same 8 um in-plane (16 voxels of 0.5 um) was added."""
+    G, skeleton = _loop_in_the_z_x_plane()
+
+    result = reconnect_secondary_loop_edges(
+        G, skeleton, voxel_size=(2.0, 0.5, 0.5), debug=False, max_workers=1, routing_processes=0
+    )
+
+    secondary = [d for _u, _v, d in result.edges(data=True) if d.get("secondary")]
+    assert len(secondary) == 1
+    top = np.asarray(secondary[0]["voxels"])
+    assert top[:, 0].max() == pytest.approx(12.0)  # z = 6 slices x 2 um
+    # Its length is the physical way round: 8 up, 30 across, 8 down.
+    assert secondary[0]["length"] == pytest.approx(46.0, abs=1.5)
+
+
+def test_a_traced_skeleton_path_is_the_shortest_in_microns():
+    """Regression (audit): A* counted voxel steps, so between two points it
+    took the route with fewest voxels -- here one slice up through z and
+    straight across (8 steps, 6.9 um) -- over the in-plane way round an
+    obstacle (12 steps, 6.4 um, and shorter)."""
+    from haemolynx.graph._helpers import trace_skeleton_path
+
+    spacing = (2.0, 0.5, 0.5)
+    skeleton = np.zeros((3, 9, 12), dtype=bool)
+    skeleton[0, 4, 0:3] = skeleton[0, 4, 9:12] = True  # the two ends, in slice 0
+    skeleton[0, 1, 3:9] = True  # round the obstacle, in-plane ...
+    skeleton[0, 2, 2] = skeleton[0, 3, 2] = skeleton[0, 2, 9] = skeleton[0, 3, 9] = True
+    skeleton[1, 4, 3:9] = True  # ... or one slice up and straight across
+
+    path = trace_skeleton_path(skeleton, (0.0, 2.0, 0.0), (0.0, 2.0, 5.5), voxel_size=spacing)
+
+    assert path is not None
+    assert {round(p[0], 6) for p in path} == {0.0}  # never leaves slice 0
+
+
+def test_a_connection_is_near_the_skeleton_within_the_same_physical_tolerance_every_way():
+    """Regression (audit): "near" was the 3x3x3 voxel neighbourhood -- 2 um
+    in z but 0.5 um in-plane on 2 x 0.5 x 0.5 um voxels -- so a line one
+    whole z slice off the skeleton still validated."""
+    spacing = (2.0, 0.5, 0.5)
+    skeleton = np.zeros((6, 10, 30), dtype=bool)
+    skeleton[3, 5, :] = True  # the skeleton, one slice above the line below
+
+    one_slice_off, _ = validate_skeleton_connection(
+        skeleton, np.array([4.0, 2.5, 1.0]), np.array([4.0, 2.5, 13.0]), voxel_size=spacing
+    )
+    on_it, _ = validate_skeleton_connection(
+        skeleton, np.array([6.0, 2.5, 1.0]), np.array([6.0, 2.5, 13.0]), voxel_size=spacing
+    )
+    one_voxel_off_in_plane, _ = validate_skeleton_connection(
+        skeleton, np.array([6.0, 3.0, 1.0]), np.array([6.0, 3.0, 13.0]), voxel_size=spacing
+    )
+
+    assert not one_slice_off
+    assert on_it and one_voxel_off_in_plane

@@ -66,6 +66,17 @@ def test_the_layer_scale_is_reversed_into_image_metadata_order():
     assert voxel_size_xyz_from_scale((2.0, 0.5, 0.4)) == (0.4, 0.5, 2.0)
 
 
+def test_the_layer_scale_follows_the_runs_axis_order():
+    """Regression: a layer opened from a file keeps the file's axes, which
+    image_axis_order names; its scale was always read as (z, y, x), swapping
+    the z and x spacings of a stack whose pages step along x."""
+    assert voxel_size_xyz_from_scale((2.0, 0.5, 0.4), "xyz") == (2.0, 0.5, 0.4)
+    result = input_for_layer(
+        fake_layer(scale=(2.0, 0.5, 0.4), path=None), Path("/tmp"), "xyz"
+    )
+    assert result.settings["voxel_size_override_xyz"] == [2.0, 0.5, 0.4]
+
+
 def test_an_all_ones_scale_carries_no_information():
     """Leave whatever the file says rather than overriding it with nothing."""
     assert voxel_size_xyz_from_scale((1.0, 1.0, 1.0)) is None

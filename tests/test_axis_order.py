@@ -121,3 +121,67 @@ def test_tif_loader_applies_axis_order(tmp_path):
 
     as_stored, _vx, _vy, _vz, _status = load_3d_tif_with_voxel_size(str(path))
     assert as_stored.shape == volume.shape
+
+
+def test_file_axis_spacing_maps_to_the_physical_axis_each_file_axis_is():
+    from haemolynx.io import file_axis_spacing_from_xyz, voxel_size_xyz_from_file_axes
+
+    # (pages, height, width) spacings of a file whose pages step along x.
+    assert voxel_size_xyz_from_file_axes((2.0, 0.25, 0.5), "xyz") == (2.0, 0.25, 0.5)
+    assert voxel_size_xyz_from_file_axes((2.0, 0.25, 0.5), "zyx") == (0.5, 0.25, 2.0)
+    assert voxel_size_xyz_from_file_axes((2.0, 0.25, 0.5), "yzx") == (0.5, 2.0, 0.25)
+    for order in VALID_AXIS_ORDERS:
+        spacing = file_axis_spacing_from_xyz((0.3, 0.7, 1.9), order)
+        assert voxel_size_xyz_from_file_axes(spacing, order) == pytest.approx((0.3, 0.7, 1.9))
+
+
+def _imagej_stack(path, *, page_spacing, height_spacing, width_spacing):
+    tifffile.imwrite(
+        str(path),
+        np.zeros((4, 6, 8), dtype=np.uint8),
+        imagej=True,
+        resolution=(1.0 / width_spacing, 1.0 / height_spacing),
+        metadata={"spacing": page_spacing, "unit": "um"},
+    )
+
+
+def test_a_tiffs_spacings_follow_the_axis_order_its_pages_are_read_with(tmp_path):
+    """Regression: the page spacing was always labelled z and the width
+    spacing x, so a stack whose pages step along x (image_axis_order="xyz")
+    had its z and x spacings swapped for the whole run."""
+    from haemolynx.io import read_voxel_size_xyz
+
+    path = tmp_path / "pages_along_x.tif"
+    _imagej_stack(path, page_spacing=2.0, height_spacing=0.25, width_spacing=0.5)
+
+    _image, vx, vy, vz, _status = load_3d_tif_with_voxel_size(str(path), axis_order="xyz")
+    assert (vx, vy, vz) == pytest.approx((2.0, 0.25, 0.5))
+    assert read_voxel_size_xyz(path, "xyz")[0] == pytest.approx((2.0, 0.25, 0.5))
+
+    _image, vx, vy, vz, _status = load_3d_tif_with_voxel_size(str(path))
+    assert (vx, vy, vz) == pytest.approx((0.5, 0.25, 2.0))
+
+
+def test_a_missing_tag_is_reported_for_the_physical_axis_it_describes(tmp_path):
+    path = tmp_path / "no_spacing.tif"
+    tifffile.imwrite(str(path), np.zeros((4, 6, 8), dtype=np.uint8), imagej=True,
+                     resolution=(2.0, 4.0))
+
+    *_sizes, status = load_3d_tif_with_voxel_size(str(path), axis_order="xyz")
+
+    assert status["missing_axes"] == ["x"]  # the page spacing, and the pages are x
+
+
+def test_an_h5_element_size_follows_the_axis_order(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    from haemolynx.io import load_3d_h5_with_voxel_size
+
+    path = tmp_path / "pages_along_x.h5"
+    with h5py.File(path, "w") as handle:
+        dataset = handle.create_dataset("data", data=np.zeros((4, 6, 8), dtype=np.uint8))
+        dataset.attrs["element_size_um"] = (2.0, 0.25, 0.5)  # one per dataset axis
+
+    _image, vx, vy, vz, _status = load_3d_h5_with_voxel_size(str(path), axis_order="xyz")
+    assert (vx, vy, vz) == pytest.approx((2.0, 0.25, 0.5))
+    _image, vx, vy, vz, _status = load_3d_h5_with_voxel_size(str(path))
+    assert (vx, vy, vz) == pytest.approx((0.5, 0.25, 2.0))

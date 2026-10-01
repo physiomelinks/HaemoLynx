@@ -122,6 +122,7 @@ def swap_minority_touching_vessel_components(
     *,
     max_size_ratio: float = 1.0,
     min_contact_fraction: float = 0.3,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
 ) -> tuple[np.ndarray | None, np.ndarray | None, dict[str, Any]]:
     """Move each minority arteriole/venule component into the class it touches.
 
@@ -134,17 +135,25 @@ def swap_minority_touching_vessel_components(
 
     A component is swapped when the touching components of the other class that
     are larger than it, and at least ``1 / max_size_ratio`` times its size,
-    cover at least ``min_contact_fraction`` of its surface voxels. The contact
-    requirement is what keeps a genuine vessel that merely runs beside or across
-    a larger one of the other class: one side of a tube touching a neighbour is
-    roughly 0.15-0.2 of its surface, while a vessel whose labels split across
-    its cross-section shares about half. A short piece joined end to end onto a
-    longer vessel touches only at its end, so catching those needs a lower
-    fraction.
+    face at least ``min_contact_fraction`` of its surface area (see
+    :func:`_facing_area_fraction`). The contact requirement is what keeps a
+    genuine vessel that merely runs beside or across a larger one of the other
+    class: a tube lying against a neighbour faces it over a few percent of its
+    surface, while a vessel whose labels split lengthwise across its
+    cross-section faces the other half over its flat side, about a third. A
+    short piece joined end to end onto a longer vessel faces it only with its
+    end (about 0.1-0.15), so catching those needs a lower fraction.
 
     Components are decided largest first, each against its neighbours' labels
     as they stand after the larger decisions, so a chain of alternating pieces
     ends up one consistent class rather than every piece flipping at once.
+
+    The fraction is of surface *area*, each voxel face weighted by its area on
+    *voxel_size_zyx*: counted as surface voxels within 26-adjacency of the
+    other class, the same tube split lengthwise on 2 x 0.5 x 0.5 um voxels read
+    0.54 (swapped) or 0.21 (kept) depending only on which way the split ran --
+    a face normal to z covers a quarter of one normal to y, and 26-adjacency
+    reaches 2 um in z but 0.5 um in-plane. As facing area both read 0.36.
     """
     stats: dict[str, Any] = {
         "swapped_to_venule_component_count": 0,
@@ -215,14 +224,9 @@ def swap_minority_touching_vessel_components(
         if not np.any(touching_partners):
             continue
 
-        surface = component & ~binary_erosion(
-            component, structure=_FACE_STRUCTURE, border_value=1
-        )
-        surface_count = int(np.count_nonzero(surface))
-        if surface_count == 0:
+        contact_fraction = _facing_area_fraction(component, partners, voxel_size_zyx)
+        if contact_fraction is None:
             continue
-        touching = binary_dilation(partners, _FULL_STRUCTURE)
-        contact_fraction = float(np.count_nonzero(surface & touching)) / surface_count
         largest_partner = int(
             partner_sizes[np.unique(other_labels[touching_partners])].max()
         )
@@ -256,6 +260,31 @@ def swap_minority_touching_vessel_components(
         (venule & ~to_arteriole) | to_venule,
         stats,
     )
+
+
+def _facing_area_fraction(
+    component: np.ndarray,
+    partners: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float] | None,
+) -> float | None:
+    """The share of *component*'s surface area whose faces open onto a voxel of
+    *partners*, each face weighted by its area on *voxel_size_zyx*; ``None``
+    when it has no exposed face. A face on the array's edge is not exposed."""
+    spacing = np.ones(3) if voxel_size_zyx is None else np.asarray(voxel_size_zyx, float)
+    face_area = (spacing[1] * spacing[2], spacing[0] * spacing[2], spacing[0] * spacing[1])
+    inside = np.pad(component, 1, mode="constant", constant_values=True)
+    other = np.pad(partners, 1, mode="constant", constant_values=False)
+    core = tuple(slice(1, -1) for _ in range(3))
+    total = facing = 0.0
+    for axis in range(3):
+        for step in (-1, 1):
+            neighbour = list(core)
+            neighbour[axis] = slice(1 + step, inside.shape[axis] - 1 + step)
+            neighbour = tuple(neighbour)
+            open_face = component & ~inside[neighbour]
+            total += float(np.count_nonzero(open_face)) * face_area[axis]
+            facing += float(np.count_nonzero(open_face & other[neighbour])) * face_area[axis]
+    return facing / total if total > 0.0 else None
 
 
 def _padded_box(

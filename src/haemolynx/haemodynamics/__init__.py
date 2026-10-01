@@ -10,6 +10,7 @@ from .viscosity import (
     viscosity_for,
 )
 from .poiseuille import (
+    DIAMETER_SOURCE_CLASS_MEDIAN,
     DIAMETER_SOURCE_EDT,
     DIAMETER_SOURCE_MEASURED,
     DIAMETER_SOURCE_OVERRIDE,
@@ -61,7 +62,9 @@ from .sweep_flows import SweepFlowGrid, build_sweep_flow_grid, record_flows_afte
 from .capillary_block import (
     block_vessels,
     compare_block_to_baseline,
+    replicate_seeds,
     resolve_blocked_vessels,
+    summarise_block_replicates,
 )
 from .perturbations import (
     INCOMPARABLE_OVERRIDES,
@@ -104,6 +107,7 @@ __all__ = [
     "distribute_discharge_haematocrit",
     "iterate_flow_and_haematocrit",
     "pries_secomb_daughter_haematocrit",
+    "DIAMETER_SOURCE_CLASS_MEDIAN",
     "DIAMETER_SOURCE_EDT",
     "DIAMETER_SOURCE_MEASURED",
     "DIAMETER_SOURCE_OVERRIDE",
@@ -124,7 +128,9 @@ __all__ = [
     "run_capillary_dilation_pressure_sweep",
     "block_vessels",
     "compare_block_to_baseline",
+    "replicate_seeds",
     "resolve_blocked_vessels",
+    "summarise_block_replicates",
     "SweepFlowGrid",
     "build_sweep_flow_grid",
     "record_flows_after_solve",

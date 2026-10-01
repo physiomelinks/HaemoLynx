@@ -178,6 +178,7 @@ CAPILLARY_BLOCK_SETTINGS: tuple[str, ...] = (
     "capillary_block_branch_orders",
     "capillary_block_probability",
     "capillary_block_seed",
+    "capillary_block_replicates",
     "capillary_block_vessel_ids",
     "capillary_block_resistance_factor",
     "capillary_block_hypoperfusion_fraction",

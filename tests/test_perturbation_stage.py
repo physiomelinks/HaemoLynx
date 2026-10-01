@@ -1329,32 +1329,41 @@ def test_a_pericyte_perturbation_re_equilibrates_haematocrit_too(tmp_path):
         assert data["resistance"] == pytest.approx(expected, rel=1e-6), (u, v, key)
 
 
-def test_a_sweep_perturbation_keeps_the_frozen_baseline_haematocrit_and_says_so(
-    tmp_path, caplog,
-):
-    """Sweeps run their own internal grid of resistance/solve passes; coupling
-    every grid point to a full Pries-Secomb re-iteration would multiply an
-    already-expensive nested loop, so this is a deliberate, documented gap:
-    a sweep perturbation solves every grid point with whatever
-    discharge_haematocrit the baseline already converged to, and says so in
-    the log instead of silently doing the wrong thing.
-    """
+def test_a_sweep_point_re_equilibrates_haematocrit_like_the_same_single_change(tmp_path):
+    """Regression: a single re-solve re-balanced the haematocrit for its own
+    geometry, but a sweep kept the baseline's frozen values, so the same 50%
+    arteriole dilation gave a different flow depending on which type asked for
+    it. Each sweep point now iterates its own haematocrit, and the two agree."""
     settings, model, boundaries = _hct_baseline(
         tmp_path,
-        [{"name": "art_sweep", "type": "arteriole_diameter_sweep", "overrides": {}}],
+        [
+            {
+                "name": "art_dilate_50",
+                "type": "arteriole_diameter_change",
+                "overrides": {"arteriole_diameter_change_percent": 50},
+            },
+            {
+                "name": "art_sweep_50",
+                "type": "arteriole_diameter_sweep",
+                "overrides": {
+                    "arteriole_dilation_min_percent": 50,
+                    "arteriole_dilation_max_percent": 50,
+                    "arteriole_dilation_step_percent": 10,
+                },
+            },
+        ],
     )
 
-    with caplog.at_level("WARNING"):
-        run = run_perturbations(settings, model, boundaries, SCHEMA)
+    run = run_perturbations(settings, model, boundaries, SCHEMA)
 
-    result = run.results[0]
-    assert result.ok, result.error
-    assert "haematocrit_distribution" not in result.summary
-    assert any(
-        "'art_sweep'" in message
-        and "discharge_haematocrit the baseline converged to" in message
-        for message in caplog.messages
+    single, sweep = run.results
+    assert single.ok and sweep.ok, (single.error, sweep.error)
+    (row,) = _sweep_rows(sweep)
+    assert float(row["total_inlet_flow"]) == pytest.approx(
+        single.summary["total_inlet_flow"], rel=1e-6
     )
+    report = sweep.summary["haematocrit_distribution"]
+    assert report["points"] == 1 and report["not_converged"] == 0
 
 
 TRIFURCATION_DIAMETERS = {"Art1": 15.0, "Art2": 20.0, "Art3": 8.0, "Art4": 12.0}
@@ -1399,8 +1408,10 @@ def _hct_trifurcation_baseline(tmp_path: Path, perturbations: list[dict], rule: 
 
 
 @pytest.mark.parametrize("rule", ["no_separation", "sequential_bifurcations"])
-def test_a_perturbation_divides_a_trifurcation_by_the_runs_junction_rule(tmp_path, rule):
-    """A re-solve re-runs the haematocrit loop, with the run's junction rule."""
+def test_perturbations_divide_a_trifurcation_by_the_runs_junction_rule(tmp_path, rule):
+    """A single re-solve and a sweep point both re-run the haematocrit loop;
+    both must use the run's junction rule, or the same dilation gives two
+    different flows (a sweep that fell back to the default would)."""
     settings, model, boundaries = _hct_trifurcation_baseline(
         tmp_path,
         [
@@ -1409,23 +1420,39 @@ def test_a_perturbation_divides_a_trifurcation_by_the_runs_junction_rule(tmp_pat
                 "type": "arteriole_diameter_change",
                 "overrides": {"arteriole_diameter_change_percent": 50},
             },
+            {
+                "name": "art_sweep_50",
+                "type": "arteriole_diameter_sweep",
+                "overrides": {
+                    "arteriole_dilation_min_percent": 50,
+                    "arteriole_dilation_max_percent": 50,
+                    "arteriole_dilation_step_percent": 10,
+                },
+            },
         ],
         rule,
     )
 
     run = run_perturbations(settings, model, boundaries, SCHEMA)
 
-    (single,) = run.results
-    assert single.ok, single.error
+    single, sweep = run.results
+    assert single.ok and sweep.ok, (single.error, sweep.error)
     daughters = [single.graph[1][node][0]["discharge_haematocrit"] for node in (2, 3, 4)]
     if rule == "no_separation":
         assert daughters == pytest.approx([0.45] * 3)
     else:
         assert len({round(h, 9) for h in daughters}) == 3
+    (row,) = _sweep_rows(sweep)
+    # abs=0: these flows are ~1e-12 m^3/s, inside approx's default absolute
+    # tolerance, which would pass any two of them.
+    assert float(row["total_inlet_flow"]) == pytest.approx(
+        single.summary["total_inlet_flow"], rel=1e-6, abs=0
+    )
 
 
 def test_the_junction_rule_changes_a_trifurcations_flow(tmp_path):
-    """The two rules give the same dilation different flows."""
+    """What makes the comparison above bite: the two rules really do give the
+    same dilation different flows."""
     flows = []
     for rule in ("no_separation", "sequential_bifurcations"):
         (tmp_path / rule).mkdir()
@@ -1444,6 +1471,14 @@ def test_the_junction_rule_changes_a_trifurcations_flow(tmp_path):
         assert result.ok, result.error
         flows.append(result.summary["total_inlet_flow"])
     assert flows[0] != pytest.approx(flows[1], rel=1e-5, abs=0)
+
+
+def test_a_sweep_without_distributed_haematocrit_iterates_nothing(tmp_path):
+    run = _run(tmp_path, [ARTERIOLE_DIAMETER_SWEEP])
+
+    result = run.results[0]
+    assert result.ok, result.error
+    assert "haematocrit_distribution" not in result.summary
 
 
 # --- review regressions: what a perturbation's resistance recompute keeps ------

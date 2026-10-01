@@ -187,8 +187,9 @@ def test_a_chain_of_pieces_ends_up_one_class() -> None:
     venule[4:8, 4:8, 4:8] = True
     large_arteriole[4:8, 4:8, 8:22] = True
 
+    # The cubes meet end to end: one face in six faces the next (1/6 of the area).
     swapped_arteriole, swapped_venule, stats = swap_minority_touching_vessel_components(
-        small_arteriole | large_arteriole, venule, min_contact_fraction=0.2
+        small_arteriole | large_arteriole, venule, min_contact_fraction=0.15
     )
 
     assert np.array_equal(swapped_arteriole, small_arteriole | venule | large_arteriole)
@@ -369,7 +370,9 @@ def test_the_run_log_counts_rather_than_lists_a_crowd_of_swaps(
     arteriole = np.zeros(shape, dtype=bool)
     venule[0:2, :, :] = True
     for speck in range(25):
-        arteriole[2:4, 2:4, 4 * speck : 4 * speck + 2] = True
+        # Sunk halfway into the venule: it faces the venule over half its surface.
+        arteriole[1:3, 2:4, 4 * speck : 4 * speck + 2] = True
+    venule &= ~arteriole
     arteriole_path, venule_path = _write_masks(tmp_path, arteriole, venule)
 
     with caplog.at_level(logging.INFO, logger="haemolynx.io.automated_vessel_assignment"):
@@ -444,3 +447,35 @@ def test_the_config_reaches_the_loader_for_each_role(role: str) -> None:
         arguments["swap_max_size_ratio"],
         arguments["swap_min_contact_fraction"],
     ) == expected
+
+
+def _round_tube_split(plane: str):
+    """A tube 12 um across on 2 x 0.5 x 0.5 um voxels, its first stretch
+    labelled arteriole on one side of a lengthwise split: *plane* "z" splits
+    it top from bottom, "y" side from side."""
+    spacing = (2.0, 0.5, 0.5)
+    z, y, x = np.indices((15, 40, 64))
+    tube = ((z - 7) * spacing[0]) ** 2 + ((y - 20) * spacing[1]) ** 2 <= 6.0**2
+    tube &= (x >= 2) & (x < 62)
+    side = (z < 7) if plane == "z" else (y < 20)
+    arteriole = tube & side & (x < 22)
+    return arteriole, tube & ~arteriole, spacing
+
+
+def test_the_contact_fraction_does_not_depend_on_which_way_the_split_runs() -> None:
+    """Regression (audit): counted as surface voxels within 26-adjacency, a
+    tube split lengthwise on 2 x 0.5 x 0.5 um voxels read about 0.54 split top
+    from bottom and 0.21 split side from side -- swapped or kept against the
+    0.3 threshold by the split's orientation alone. As facing surface area the
+    two agree, and both are swapped."""
+    fractions = {}
+    for plane in ("z", "y"):
+        arteriole, venule, spacing = _round_tube_split(plane)
+        swapped_arteriole, _v, stats = swap_minority_touching_vessel_components(
+            arteriole, venule, voxel_size_zyx=spacing
+        )
+        (component,) = stats["components"]
+        fractions[plane] = component["contact_fraction"]
+        assert component["swapped"] and not np.any(swapped_arteriole)
+
+    assert abs(fractions["z"] - fractions["y"]) < 0.02

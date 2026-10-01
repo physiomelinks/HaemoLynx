@@ -813,6 +813,62 @@ def split_narrow_neck_components(
             release_memmap_array(edt)
 
 
+def _marker_peaks(
+    edt: np.ndarray,
+    mask: np.ndarray,
+    *,
+    sampling: tuple[float, float, float],
+    min_marker_separation_um: float,
+) -> np.ndarray:
+    """The EDT's local maxima at least *min_marker_separation_um* apart on
+    every axis -- the watershed's markers, strongest first.
+
+    ``peak_local_max``'s ``min_distance`` is one voxel count for every axis:
+    converted with the finest spacing, a 10 um separation became 40 um along
+    a 2 um z, so two vessel bodies fused one above the other were rarely
+    split. On anisotropic voxels the neighbourhood is a box of the separation
+    in microns on each axis and the peaks are thinned by the same physical
+    (Chebyshev, as skimage's own) distance; on cube voxels it is the plain
+    ``min_distance`` call, as before.
+    """
+    spacing = np.asarray(sampling, dtype=float)
+    separation = float(min_marker_separation_um)
+    # exclude_border defaults to min_distance, which would blank out the
+    # whole array whenever a volume's own extent is not much bigger than
+    # the marker-separation distance (real vessels legitimately run close
+    # to a stack's edge) -- physical proximity to another marker is already
+    # what min_distance enforces, so a plain edge is not disqualifying.
+    if np.allclose(spacing, spacing[0]):
+        return peak_local_max(
+            edt,
+            min_distance=max(1, int(round(separation / max(1e-9, float(spacing[0]))))),
+            labels=mask.astype(np.int32),
+            exclude_border=False,
+        )
+    half = [max(1, int(round(separation / max(1e-9, s)))) for s in spacing]
+    candidates = peak_local_max(
+        edt,
+        footprint=np.ones([2 * h + 1 for h in half], dtype=bool),
+        labels=mask.astype(np.int32),
+        exclude_border=False,
+    )
+    if candidates.shape[0] < 2:
+        return candidates
+    from scipy.spatial import cKDTree
+
+    physical = candidates * spacing
+    tree = cKDTree(physical)
+    suppressed = np.zeros(len(candidates), dtype=bool)
+    kept = []
+    for index in range(len(candidates)):  # strongest first, as peak_local_max returns them
+        if suppressed[index]:
+            continue
+        kept.append(index)
+        near = tree.query_ball_point(physical[index], r=separation * (1 - 1e-9), p=np.inf)
+        suppressed[near] = True
+    return candidates[kept]
+
+
 def _split_using_edt(
     mask: np.ndarray,
     *,
@@ -828,20 +884,8 @@ def _split_using_edt(
     """The rest of :func:`split_narrow_neck_components`, split out so its
     caller can release a memmap-backed ``edt`` in a ``finally`` clause
     around whichever return path this takes."""
-    voxel_scale_um = min(sampling)
-    min_distance_voxels = max(
-        1, int(round(float(min_marker_separation_um) / max(1e-9, voxel_scale_um)))
-    )
-    # exclude_border defaults to min_distance, which would blank out the
-    # whole array whenever a volume's own extent is not much bigger than
-    # the marker-separation distance (real vessels legitimately run close
-    # to a stack's edge) -- physical proximity to another marker is already
-    # what min_distance enforces, so a plain edge is not disqualifying.
-    peaks = peak_local_max(
-        edt,
-        min_distance=min_distance_voxels,
-        labels=mask.astype(np.int32),
-        exclude_border=False,
+    peaks = _marker_peaks(
+        edt, mask, sampling=sampling, min_marker_separation_um=min_marker_separation_um
     )
     if peaks.shape[0] < 2:
         return mask, stats
@@ -928,15 +972,26 @@ def _split_using_edt(
     return mask & ~to_remove, stats
 
 
-def _ellipsoid_structure(radius_voxels: tuple[int, int, int]) -> np.ndarray:
-    """Boolean footprint of the ellipsoid ``radius_voxels`` describes.
+def _physical_ball(
+    radius_um: float, voxel_size_zyx: tuple[float, float, float]
+) -> tuple[np.ndarray, int]:
+    """The footprint of a ball of *radius_um* microns, and its reach in voxels.
 
-    Per-axis radii, not a single scalar, so an anisotropic ``voxel_size_zyx``
-    still opens a physically round (not axis-stretched) neighbourhood.
+    The offsets whose physical distance from the centre is within the radius:
+    a coarse axis reaches ``radius / its spacing`` voxels -- none at all when
+    the radius is under one of its voxels. Rounding every axis up to at least
+    one voxel (as the footprint used to) turned a 1 um
+    whisker radius into 2 um along a 2 um z, and opening then deleted a 4 um
+    capillary two slices thick outright. The finest axis still reaches at
+    least one voxel, so a radius under a voxel acts on the smallest scale the
+    grid has, as it did.
     """
-    rz, ry, rx = (max(1, int(r)) for r in radius_voxels)
-    zz, yy, xx = np.ogrid[-rz : rz + 1, -ry : ry + 1, -rx : rx + 1]
-    return (zz / rz) ** 2 + (yy / ry) ** 2 + (xx / rx) ** 2 <= 1.0
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    radius = max(float(radius_um), float(spacing.min()))
+    reach = np.floor(radius / spacing + 1e-9).astype(int)
+    offsets = np.ogrid[tuple(slice(-r, r + 1) for r in reach)]
+    structure = sum((axis * s) ** 2 for axis, s in zip(offsets, spacing)) <= radius**2 + 1e-9
+    return structure, int(reach.max())
 
 
 def remove_surface_whiskers(
@@ -955,7 +1010,7 @@ def remove_surface_whiskers(
     that thick (a 1-2 voxel whisker has none), then dilation by the same
     ball restores the vessel body's own size -- a whisker does not reappear
     since erosion left nothing there to dilate back from. The structuring
-    element is an anisotropy-aware ellipsoid (:func:`_ellipsoid_structure`),
+    element is an anisotropy-aware ellipsoid (:func:`_physical_ball`),
     matching :func:`smooth_vessel_surfaces`'s own precedent, so a
     ``(1.0, 0.4, 0.4)`` zyx dataset does not strip more aggressively along
     the coarser z axis than the finer y/x ones. ``whisker_radius_um <= 0``
@@ -968,15 +1023,11 @@ def remove_surface_whiskers(
     mask = np.asanyarray(mask, dtype=bool) if use_memmap else np.asarray(mask, dtype=bool)
     if float(whisker_radius_um) <= 0.0:
         return mask
-    radius_voxels = tuple(
-        max(1, int(round(float(whisker_radius_um) / max(1e-9, float(v)))))
-        for v in voxel_size_zyx
-    )
-    structure = _ellipsoid_structure(radius_voxels)
+    structure, reach = _physical_ball(whisker_radius_um, voxel_size_zyx)
     return _morphology(
         mask,
         lambda m: binary_opening(m, structure=structure),
-        reach=2 * max(radius_voxels),
+        reach=2 * reach,
         use_memmap=use_memmap,
         memmap_directory=memmap_directory,
     )
@@ -1005,7 +1056,7 @@ def close_small_gaps(
     it, then erosion by the same ball removes the added surface layer
     everywhere except right at the bridge, leaving genuinely separate
     vessels further apart than ``closing_radius_um`` untouched. Reuses the
-    same anisotropy-aware ellipsoid footprint (:func:`_ellipsoid_structure`)
+    same anisotropy-aware ellipsoid footprint (:func:`_physical_ball`)
     :func:`remove_surface_whiskers` already uses, so a ``(1.0, 0.4, 0.4)``
     zyx dataset closes the same physical distance on every axis.
     ``closing_radius_um <= 0`` is a no-op.
@@ -1017,15 +1068,11 @@ def close_small_gaps(
     mask = np.asanyarray(mask, dtype=bool) if use_memmap else np.asarray(mask, dtype=bool)
     if float(closing_radius_um) <= 0.0:
         return mask
-    radius_voxels = tuple(
-        max(1, int(round(float(closing_radius_um) / max(1e-9, float(v)))))
-        for v in voxel_size_zyx
-    )
-    structure = _ellipsoid_structure(radius_voxels)
+    structure, reach = _physical_ball(closing_radius_um, voxel_size_zyx)
     return _morphology(
         mask,
         lambda m: binary_closing(m, structure=structure),
-        reach=2 * max(radius_voxels),
+        reach=2 * reach,
         use_memmap=use_memmap,
         memmap_directory=memmap_directory,
     )
@@ -1050,22 +1097,18 @@ def _smooth_vessel_surfaces_morphological(
     protrusions the same way -- the standard morphological pair for
     smoothing a binary shape without a re-threshold step, so it does not
     carry that step's own curvature-dependent bias (see
-    :func:`smooth_vessel_surfaces`). Reuses :func:`_ellipsoid_structure`, the
+    :func:`smooth_vessel_surfaces`). Reuses :func:`_physical_ball`, the
     same anisotropy-aware footprint :func:`remove_surface_whiskers` already
     uses, so a ``(1.0, 0.4, 0.4)`` zyx dataset closes/opens the same
     physical distance on every axis. ``radius_um <= 0`` is a no-op.
     """
     if float(radius_um) <= 0.0:
         return mask
-    radius_voxels = tuple(
-        max(1, int(round(float(radius_um) / max(1e-9, float(v)))))
-        for v in voxel_size_zyx
-    )
-    structure = _ellipsoid_structure(radius_voxels)
+    structure, reach = _physical_ball(radius_um, voxel_size_zyx)
     return _morphology(
         mask,
         lambda m: binary_opening(binary_closing(m, structure=structure), structure=structure),
-        reach=4 * max(radius_voxels),
+        reach=4 * reach,
         use_memmap=use_memmap,
         memmap_directory=memmap_directory,
     )

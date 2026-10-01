@@ -243,12 +243,12 @@ def test_astar_path_falls_back_to_a_straight_line_if_routing_itself_fails(monkey
     """A routing failure inside the (now-windowed) search must still produce
     something to draw, not propagate -- matches
     connect_skeleton_components's own mask-preferred-not-required fallback."""
-    import haemolynx.graph.edit as edit_module
+    import skimage.graph
 
     def _boom(*_args, **_kwargs):
         raise ValueError("simulated routing failure")
 
-    monkeypatch.setattr(edit_module, "route_through_array", _boom)
+    monkeypatch.setattr(skimage.graph, "MCP_Geometric", _boom)
     cost = np.ones((10, 10, 10), dtype=float)
     path = astar_path(cost, (0, 0, 0), (5, 0, 0))
     assert tuple(path[0].astype(int)) == (0, 0, 0)
@@ -317,3 +317,38 @@ def test_delete_edge_does_not_merge_a_thick_vessel_bridge_with_an_ordinary_vesse
     assert "C" in G and G.degree("C") == 2
     assert G.edges["A", "C", 0][IS_ZERO_RESISTANCE] is True
     assert not G.edges["C", "B", 0].get(IS_ZERO_RESISTANCE)
+
+
+def test_a_drawn_branch_is_routed_by_physical_step_length():
+    """Regression (audit): routed per voxel through a voxel distance field, a
+    branch drawn on 2 x 0.5 x 0.5 um voxels went over an obstacle through the
+    next z slice (fewer voxel steps) rather than round it in-plane (shorter)."""
+    from haemolynx.graph.edit import mask_cost_field
+
+    spacing = (2.0, 0.5, 0.5)
+    mask = np.zeros((3, 9, 13), dtype=bool)
+    mask[0, 1:8, :] = True
+    mask[0, 2:7, 6] = False  # the obstacle, in the branch's own slice
+    mask[1, 1:8, :] = True
+
+    physical = astar_path(
+        mask_cost_field(mask, voxel_size_zyx=spacing), (0, 4, 2), (0, 4, 10), voxel_size_zyx=spacing
+    )
+    per_voxel = astar_path(mask_cost_field(mask), (0, 4, 2), (0, 4, 10))
+
+    assert set(physical[:, 0].astype(int).tolist()) == {0}
+    assert 1 in set(per_voxel[:, 0].astype(int).tolist())
+
+
+def test_the_windowed_cost_field_matches_the_whole_one_on_anisotropic_voxels():
+    from haemolynx.graph.edit import WindowedMaskCostField, mask_cost_field
+
+    spacing = (2.0, 0.5, 0.5)
+    rng = np.random.default_rng(4)
+    mask = rng.random((20, 90, 90)) > 0.995
+    whole = mask_cost_field(mask, voxel_size_zyx=spacing)
+    windowed = WindowedMaskCostField(mask, voxel_size_zyx=spacing)
+
+    window = (slice(4, 16), slice(30, 70), slice(10, 80))
+    np.testing.assert_allclose(windowed[window], whole[window])
+

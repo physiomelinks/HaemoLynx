@@ -569,3 +569,40 @@ def test_build_network_and_export_write_final_graph_html_via_shared_helper():
     export_src = inspect.getsource(stages.export_results)
     assert "_write_run_final_graph_3d_html" in build_src
     assert "_write_run_final_graph_3d_html" in export_src
+
+
+def test_volume_trace_pools_a_coarse_axis_over_fewer_voxels():
+    """Regression (audit): the stride pooled every axis by the same number of
+    voxels, so on 0.5 x 0.5 x 2 um voxels a stride of 4 made blocks 8 um deep
+    and 2 um wide, and two vessel layers 6 um apart in depth drew as one. The
+    stride is now finest-axis voxels: z is pooled by 1, y and x by 4."""
+    import plotly.graph_objects as go
+
+    from haemolynx.visualization.large_vessel_assignment import _axis_strides
+
+    spacing = (2.0, 0.5, 0.5)
+    mask = np.zeros((8, 16, 16), dtype=bool)
+    mask[2, 4:12, 4:12] = True
+    mask[5, 4:12, 4:12] = True  # three slices deeper: 6 um
+
+    fig = go.Figure()
+    assert add_binary_mask_volume_trace(
+        fig, mask, name="m", color="red", opacity=0.5, voxel_size_zyx=spacing,
+        volume_downsample_stride=4,
+    )
+    trace = fig.data[0]
+    z = np.asarray(trace.z, dtype=float)
+    value = np.asarray(trace.value, dtype=float)
+
+    assert _axis_strides(4, spacing) == (1, 4, 4)
+    assert set(np.round(z[value > 0], 6)) == {4.0, 10.0}
+    assert (value[np.isclose(z, 6.0) | np.isclose(z, 8.0)] == 0).all()
+    # In-plane, blocks of 4 voxels = 2 um, the same as one z slice.
+    assert set(np.round(np.diff(np.unique(np.asarray(trace.x, dtype=float))), 6)) == {2.0}
+
+
+def test_axis_strides_on_cube_voxels_is_the_stride_everywhere():
+    from haemolynx.visualization.large_vessel_assignment import _axis_strides
+
+    assert _axis_strides(3, (1.0, 1.0, 1.0)) == (3, 3, 3)
+    assert _axis_strides(1, (2.0, 0.5, 0.5)) == (1, 1, 1)

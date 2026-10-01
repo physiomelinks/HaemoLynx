@@ -27,11 +27,12 @@ from .constriction_strategy import (
 from .pericyte_sweep import (
     apply_baseline_overrides,
     dilate_graph_diameters,
-    solve_pressure_and_boundary_flow,
+    haematocrit_sweep_report,
+    solve_sweep_point,
+    sweep_rows_at_pressures,
 )
 from .poiseuille import PoiseuilleModel
-from .resistance import build_conductance_matrix_from_graph
-from .sweep_flows import build_sweep_flow_grid, record_flows_after_solve
+from .sweep_flows import build_sweep_flow_grid
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,7 @@ def run_pericyte_geometry_sweep(
 
     results: list[dict[str, Any]] = []
     recorded_flows: list[dict[str, np.ndarray]] = []
+    iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for axis_value in axis_values:
         if sweep_axis == "spacing":
@@ -220,43 +222,42 @@ def run_pericyte_geometry_sweep(
             spacing = fixed_spacing
 
         step_graph = dilated_base.copy()
-        step_graph = _apply_focal_constrictions(
+
+        def recompute_resistances(graph=step_graph, length=length, spacing=spacing) -> None:
+            _apply_focal_constrictions(
+                graph,
+                settings,
+                scaled_diameters=scaled_diameters,
+                constriction_length=length,
+                constriction_spacing=spacing,
+                dilation_factor=dilation_factor,
+            )
+
+        recompute_resistances()
+        unit, node_list, iterated = solve_sweep_point(
             step_graph,
             settings,
-            scaled_diameters=scaled_diameters,
-            constriction_length=length,
-            constriction_spacing=spacing,
-            dilation_factor=dilation_factor,
-        )
-        conductance, node_list = build_conductance_matrix_from_graph(step_graph)
-        last_node_list = list(node_list)
-        solved = solve_pressure_and_boundary_flow(
-            conductance,
-            node_list,
-            inlet_p_bc=float(inlet_pressure_pa),
-            outlet_p_bc=outlet_pressure_pa,
+            recompute_resistances=recompute_resistances,
             inlet_nodes=inlet_nodes,
             outlet_nodes=outlet_nodes,
         )
-        recorded_flows.append(
-            record_flows_after_solve(step_graph, node_list, solved["pressure"])
-        )
-        results.append(
+        iterations.append(iterated)
+        last_node_list = node_list
+        rows, flows = sweep_rows_at_pressures(
+            unit,
+            step_graph,
+            node_list,
+            (inlet_pressure_pa,),
+            outlet_pressure_pa,
             {
                 "constriction_spacing_um": spacing,
                 "constriction_length_um": length,
                 "dilation_percent": dilation_percent,
                 "dilation_factor": float(dilation_factor),
-                "inlet_pressure_pa": inlet_pressure_pa,
-                "outlet_pressure_pa": outlet_pressure_pa,
-                "total_inlet_flow": solved["total_inlet_flow"],
-                "total_outlet_flow": solved["total_outlet_flow"],
-                "flow_balance_error": (
-                    solved["total_inlet_flow"] + solved["total_outlet_flow"]
-                ),
-                "equivalent_resistance": solved["equivalent_resistance"],
-            }
+            },
         )
+        results.extend(rows)
+        recorded_flows.extend(flows)
 
     if sweep_axis == "spacing":
         flow_axis_name = "constriction_spacing_um"
@@ -278,4 +279,5 @@ def run_pericyte_geometry_sweep(
         "results": results,
         "csv_path": str(csv_path),
         "sweep_flows": sweep_flows,
+        "haematocrit_distribution": haematocrit_sweep_report(iterations),
     }

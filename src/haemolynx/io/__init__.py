@@ -29,7 +29,9 @@ from .axis_order import (
     VALID_AXIS_ORDERS,
     apply_axis_order,
     axis_order_transpose,
+    file_axis_spacing_from_xyz,
     normalize_axis_order,
+    voxel_size_xyz_from_file_axes,
     voxel_size_xyz_from_zyx,
     voxel_size_zyx_from_xyz,
 )
@@ -62,6 +64,8 @@ __all__ = [
     "CANONICAL_AXIS_ORDER",
     "VALID_AXIS_ORDERS",
     "normalize_axis_order",
+    "voxel_size_xyz_from_file_axes",
+    "file_axis_spacing_from_xyz",
     "axis_order_transpose",
     "apply_axis_order",
     "voxel_size_zyx_from_xyz",

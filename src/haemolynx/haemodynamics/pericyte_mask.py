@@ -19,9 +19,10 @@ from scipy.spatial import cKDTree
 from haemolynx.geometry import cumulative_lengths
 from haemolynx.io import (
     CANONICAL_AXIS_ORDER,
-    load_binary_mask_and_voxel_size,
     voxel_size_zyx_from_xyz,
 )
+from haemolynx.io.load import load_binary_mask_voxel_size_and_status
+from haemolynx.io.voxel_validation import resolve_voxel_size_xyz
 from .constriction import (
     apply_constriction_sites,
     is_capillary_branch_order,
@@ -250,6 +251,8 @@ def set_poiseuille_resistances_with_pericyte_mask(
     axis_order: str = CANONICAL_AXIS_ORDER,
     rng: np.random.Generator | None = None,
     seed: int | None = None,
+    voxel_size_override_xyz=None,
+    voxel_size_policy: str = "auto",
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
     """Set edge resistance/conductance using pericyte centroids from a mask volume.
 
@@ -265,17 +268,41 @@ def set_poiseuille_resistances_with_pericyte_mask(
     ``viscosity_law``, ``haematocrit`` and ``diameter_basis`` select the
     apparent-viscosity law the resistances are computed with; see
     :mod:`haemolynx.haemodynamics.viscosity`.
+
+    The mask's voxel size is resolved with the run's *voxel_size_override_xyz*
+    and *voxel_size_policy*, as the main image's and the vessel masks' are,
+    and must match the main image's (the graph's ``image_voxel_size_zyx``,
+    when it records one): a mask exported without z spacing read as 1 um
+    against a 2 um image, and every pericyte landed at half its depth --
+    attached to the wrong vessel, or dropped as too far from any.
     """
     require_positive_constriction_length(constriction_length)
     require_enough_integration_points(num_integration_points)
 
-    mask_bool, mask_voxel_size = load_binary_mask_and_voxel_size(
+    mask_bool, metadata_voxel_size, metadata_status = load_binary_mask_voxel_size_and_status(
         pericyte_mask_path,
         h5_dataset_name=pericyte_mask_h5_dataset_name,
         axis_order=axis_order,
         description=PERICYTE_MASK_DESCRIPTION,
     )
+    mask_voxel_size, _source = resolve_voxel_size_xyz(
+        metadata_voxel_size_xyz=metadata_voxel_size,
+        metadata_status=metadata_status,
+        voxel_size_override_xyz=voxel_size_override_xyz,
+        voxel_size_policy=voxel_size_policy,
+    )
     mask_voxel_size_zyx = voxel_size_zyx_from_xyz(mask_voxel_size)
+    image_voxel_size_zyx = graph.graph.get("image_voxel_size_zyx")
+    if image_voxel_size_zyx is not None and not np.allclose(
+        mask_voxel_size_zyx, np.asarray(image_voxel_size_zyx, dtype=float), rtol=1e-3, atol=0.0
+    ):
+        raise ValueError(
+            f"The pericyte mask's voxel size (z, y, x) {tuple(mask_voxel_size_zyx)} does not "
+            f"match the main image's {tuple(float(v) for v in image_voxel_size_zyx)}: its "
+            "pericytes would be placed against the wrong vessels. Export the mask with the "
+            "image's voxel size, or give the run's voxel_size_override_xyz with "
+            "voxel_size_policy 'override'."
+        )
     if (
         min_pericyte_diameter_um is not None
         and max_pericyte_diameter_um is not None

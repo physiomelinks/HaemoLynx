@@ -271,3 +271,136 @@ def test_fwhm_search_group_enabled_and_emit_still_work_through_the_base_class():
     search._record("exclusion_and_extent", "some_setting", 1.0, 0.5, note="ok")
     assert len(search.trials) == 1
     assert search.trials[0].setting == "some_setting"
+
+
+# ---------------------------------------------------------------------------
+# The run's own checks on every trial: image PSF, decoys, EDT cross-check
+# ---------------------------------------------------------------------------
+def _vessel_mask() -> np.ndarray:
+    """The four vessels as the segmentation would have them."""
+    return _multi_vessel_raw_volume() > 50.0
+
+
+def _search(G, raw, **kwargs) -> s._FwhmSearch:
+    return s._FwhmSearch(
+        G,
+        raw_volume=raw,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        starting_values=_fwhm_starting_values(),
+        progress=None,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("fixed", [True, False])
+def test_every_trial_holds_the_blur_at_the_image_psf(multi_vessel, monkeypatch, fixed):
+    """Regression: the optimiser's trials fitted each profile's blur freely
+    while the run holds it at one image PSF, so it tuned a different
+    measurement from the one the run makes."""
+    import functools
+
+    G, raw_path = multi_vessel
+    seen = []
+    real = s.automated.measure_edge_diameters_fwhm_from_raw_tiff
+
+    @functools.wraps(real)  # the search reads its keyword arguments off the signature
+    def recording(graph, **kwargs):
+        seen.append(kwargs.get("profile_psf_sigma_zyx"))
+        return real(graph, **kwargs)
+
+    monkeypatch.setattr(s.automated, "measure_edge_diameters_fwhm_from_raw_tiff", recording)
+    s.optimise_fwhm_settings(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        starting_values=_fwhm_starting_values(
+            fwhm_fix_blur_to_image_psf=fixed,
+            raw_section_psf_sigma_xy_um=0.8,
+            raw_section_psf_sigma_z_um=1.6,
+        ),
+        sample_edge_count=4,
+        groups=["exclusion_zones"],
+    )
+
+    assert seen
+    assert set(seen) == ({(1.6, 0.8, 0.8)} if fixed else {None})
+
+
+def _speckled(clean: np.ndarray) -> np.ndarray:
+    """*clean* with blurred specks, as bright as the vessels, in the tissue
+    the mask leaves out."""
+    from scipy import ndimage
+
+    rng = np.random.default_rng(1)
+    specks = ndimage.gaussian_filter((rng.random(clean.shape) < 0.05).astype(float), 1.2)
+    specks *= 100.0 / specks.max()
+    specks[ndimage.binary_dilation(_vessel_mask(), iterations=3)] = 0.0
+    return np.maximum(clean, specks).astype(np.float32)
+
+
+def test_decoys_in_unsegmented_speckle_count_against_a_trial():
+    """With the vessel mask, each trial measures decoys beside the sampled
+    vessels; FWHM fitting specks there costs the trial."""
+    G = _multi_vessel_graph()
+    clean = _multi_vessel_raw_volume()
+
+    on_clean = _search(G.copy(), clean, vessel_mask=_vessel_mask())._quality({})
+    on_speckled = _search(G.copy(), _speckled(clean), vessel_mask=_vessel_mask())._quality({})
+
+    assert on_clean.decoy_false_positive_rate == pytest.approx(0.0)
+    assert on_speckled.decoy_false_positive_rate > 0.0
+    assert on_speckled.score > on_clean.score
+
+
+def test_a_width_disagreeing_with_the_mask_is_not_usable():
+    G = _multi_vessel_graph()
+    for _u, _v, data in G.edges(data=True):
+        data["edt_diameter_um"] = 20.0  # far from the ~3.5 um FWHM reads
+
+    quality = _search(G, _multi_vessel_raw_volume())._quality({})
+
+    assert quality.n_edges_measured > 0
+    assert quality.n_edges_demoted == quality.n_edges_measured
+    assert quality.usable_fraction == pytest.approx(0.0)
+    assert quality.edt_disagreement_fraction == pytest.approx(1.0)
+
+
+def test_the_mask_gives_the_sample_its_own_width_without_touching_the_callers_graph():
+    G = _multi_vessel_graph()
+    search = _search(s._representative_subgraph(G, 4), _multi_vessel_raw_volume(),
+                     vessel_mask=_vessel_mask())
+
+    assert all(
+        float(data.get("edt_diameter_um") or 0.0) > 0.0
+        for _u, _v, data in search.sample_graph_template.edges(data=True)
+    )
+    assert all("edt_diameter_um" not in data for _u, _v, data in G.edges(data=True))
+    assert search.decoy_probe is not None and search.decoy_probe.number_of_edges() > 0
+
+
+def test_the_guard_judges_usable_widths_not_measured_ones(monkeypatch):
+    """A gate that stops FWHM fitting specks measures fewer edges and loses
+    no usable width; the guard used to veto it for measuring fewer."""
+    baseline = FwhmQuality(measured=10, demoted=4, fp=0.5)
+    gated = FwhmQuality(measured=6, demoted=0, fp=0.0)
+    search = _search(_multi_vessel_graph(), _multi_vessel_raw_volume())
+    monkeypatch.setattr(
+        search, "_quality", lambda overrides: gated if overrides else baseline
+    )
+
+    chosen = search._guarded_sweep(
+        "rejection_gates", "fwhm_reject_samples_with_low_fit_r2", [True],
+    )
+
+    assert chosen is True
+    assert search.trials[-1].score < 100.0  # no guard penalty
+
+
+def FwhmQuality(*, measured: int, demoted: int, fp: float):
+    from haemolynx.optimisation.fwhm_metrics import FwhmMeasurementQuality
+
+    return FwhmMeasurementQuality(
+        n_edges_total=10, n_edges_measured=measured, measured_fraction=measured / 10,
+        mean_fit_r2=0.9, median_fit_r2=0.9, mean_achieved_extent_ratio=1.0,
+        median_diameter_cv=0.0, n_edges_demoted=demoted, decoy_false_positive_rate=fp,
+    )

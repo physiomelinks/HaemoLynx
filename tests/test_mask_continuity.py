@@ -273,3 +273,22 @@ def test_continuity_schema_flags_require_small_masks():
         "automated_vessel_assignment",
         "small_vessel_mask_continuity_enable",
     )
+
+
+def test_a_bridge_is_the_same_physical_thickness_on_every_axis():
+    """Regression (audit): the bridge was the line dilated by the 26-neighbour
+    cube, iterated per voxel, so on 2 x 0.5 x 0.5 um voxels it was as many
+    slices thick (8 um) as voxels wide in-plane (2 um)."""
+    from haemolynx.graph.mask_continuity import _bridge_mask_from_line
+
+    line = np.array([[6, 10, x] for x in range(5, 25)])
+    # A half-width of 4 finest-axis voxels: 2 um.
+    physical = _bridge_mask_from_line(line, (13, 21, 30), radius_voxels=4, sampling_zyx=(2.0, 0.5, 0.5))
+    cube = _bridge_mask_from_line(line, (13, 21, 30), radius_voxels=4)
+
+    assert set(np.argwhere(physical)[:, 0]) == {5, 6, 7}  # 1 slice each way: 2 um
+    assert set(np.argwhere(physical)[:, 1]) == set(range(6, 15))  # 4 voxels: 2 um
+    assert set(np.argwhere(cube)[:, 0]) == set(range(2, 11))  # cube voxels, as before
+    assert np.array_equal(
+        cube, _bridge_mask_from_line(line, (13, 21, 30), radius_voxels=4, sampling_zyx=(1.0, 1.0, 1.0))
+    )

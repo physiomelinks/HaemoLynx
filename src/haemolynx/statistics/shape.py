@@ -52,41 +52,111 @@ def compute_tortuosity_measures(
     }
 
 
-def _box_counting_fractal_dimension(points: np.ndarray) -> float:
-    """Box-counting fractal-dimension estimate for a physical point cloud.
+#: Box sizes tried between the smallest and the largest (log-spaced).
+_FRACTAL_BOX_SIZES = 16
+#: The fewest boxes a size may be covered by and still count as scaling:
+#: fewer, and where the grid happens to fall decides the count.
+_FRACTAL_MIN_BOXES = 10
+#: Grid offsets tried at each box size, as fractions of a box; the fewest
+#: boxes over them is the count (the usual guard against the grid's
+#: alignment).
+_FRACTAL_GRID_OFFSETS = np.array(
+    [[0.0, 0.0, 0.0], [0.5, 0.5, 0.5], [0.25, 0.75, 0.5], [0.75, 0.25, 0.25]]
+)
+#: The centreline is sampled this often (um) for its box count.
+FRACTAL_CENTRELINE_STEP_UM = 1.0
 
-    Returns 0.0 -- the same fallback already used below when the box counts
-    do not admit a fit -- for a degenerate cloud with no spatial extent
-    (every point coincident, or numerically indistinguishable), rather than
-    feeding a zero range into log-spaced box sizes: `np.log10(0)` is `-inf`,
-    which propagates to non-finite box sizes and leaves `np.polyfit` fitting
-    a degenerate system, raising `LinAlgError: SVD did not converge`.
+
+def _occupied_boxes(points: np.ndarray, size: float) -> int:
+    """The fewest boxes of edge *size* that cover *points*, over the grid
+    offsets in :data:`_FRACTAL_GRID_OFFSETS`."""
+    origin = points.min(axis=0)
+    fewest = None
+    for offset in _FRACTAL_GRID_OFFSETS[:, : points.shape[1]]:
+        index = np.floor((points - origin) / size + offset).astype(np.int64)
+        index -= index.min(axis=0)
+        span = index.max(axis=0) + 1
+        keys = index[:, 0]
+        for axis in range(1, index.shape[1]):
+            keys = keys * span[axis] + index[:, axis]
+        count = int(np.unique(keys).size)
+        fewest = count if fewest is None else min(fewest, count)
+    return int(fewest)
+
+
+def box_counting_fractal_dimension(
+    points: np.ndarray, *, sampling_step_um: Optional[float] = None
+) -> Dict[str, Any]:
+    """Box-counting dimension of a physical point cloud, and how well it fits.
+
+    Box sizes run from twice the cloud's sampling step (*sampling_step_um*,
+    else the median distance between neighbouring points) -- below that the
+    count measures how the points were sampled, not the network -- to half
+    its extent, and only the sizes still covered by at least
+    :data:`_FRACTAL_MIN_BOXES` boxes are fitted. Counted with ``np.unique`` on
+    integer box keys, the fewest over a few grid offsets.
+
+    Returns ``dimension`` (the fitted slope), ``r_squared`` of the log-log
+    fit, the ``box_min_um``/``box_max_um`` fitted over and how many ``sizes``;
+    a cloud with no extent, or too few box sizes to fit a line to, has
+    ``dimension`` 0.0 and ``r_squared`` NaN.
     """
-    max_range = np.max(points.max(axis=0) - points.min(axis=0))
-    if not np.isfinite(max_range) or max_range <= 0:
-        return 0.0
-    min_bs = max_range / 100
-    max_bs = max_range / 2
-    box_sizes, box_counts = [], []
-    for bs in np.logspace(np.log10(min_bs), np.log10(max_bs), 10):
-        min_c = points.min(axis=0)
-        indices = ((points - min_c) / bs).astype(int)
-        box_sizes.append(bs)
-        box_counts.append(len(set(tuple(i) for i in indices)))
-    if len(box_sizes) > 1 and all(c > 0 for c in box_counts):
-        return float(-np.polyfit(np.log(box_sizes), np.log(box_counts), 1)[0])
-    return 0.0
+    none = {"dimension": 0.0, "r_squared": float("nan"), "box_min_um": float("nan"),
+            "box_max_um": float("nan"), "sizes": 0}
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[0] < 2:
+        return none
+    extent = float(np.max(points.max(axis=0) - points.min(axis=0)))
+    if not np.isfinite(extent) or extent <= 0:
+        return none
+    if sampling_step_um is None:
+        gaps, _ = cKDTree(points).query(points, k=2)
+        gaps = gaps[:, 1][gaps[:, 1] > 0]
+        sampling_step_um = float(np.median(gaps)) if gaps.size else extent
+    smallest = max(2.0 * float(sampling_step_um), extent / 1000.0)
+    largest = extent / 2.0
+    if not smallest < largest:
+        return none
+    sizes = np.logspace(np.log10(smallest), np.log10(largest), _FRACTAL_BOX_SIZES)
+    counts = np.array([_occupied_boxes(points, size) for size in sizes], dtype=float)
+    scaling = counts >= _FRACTAL_MIN_BOXES
+    if int(scaling.sum()) < 2:
+        return none
+    sizes, counts = sizes[scaling], counts[scaling]
+    log_s, log_n = np.log(sizes), np.log(counts)
+    slope, intercept = np.polyfit(log_s, log_n, 1)
+    residual = log_n - (slope * log_s + intercept)
+    spread = float(np.sum((log_n - log_n.mean()) ** 2))
+    r_squared = 1.0 - float(np.sum(residual**2)) / spread if spread > 0 else float("nan")
+    return {
+        "dimension": float(-slope),
+        "r_squared": r_squared,
+        "box_min_um": float(sizes.min()),
+        "box_max_um": float(sizes.max()),
+        "sizes": int(sizes.size),
+    }
 
 
-def _centreline_points(G: Union[nx.Graph, nx.MultiGraph]) -> np.ndarray:
+def _box_counting_fractal_dimension(points: np.ndarray) -> float:
+    """:func:`box_counting_fractal_dimension`'s dimension alone; 0.0 for a
+    degenerate cloud (every point coincident)."""
+    return box_counting_fractal_dimension(points)["dimension"]
+
+
+def _centreline_points(
+    G: Union[nx.Graph, nx.MultiGraph], *, step_um: Optional[float] = None
+) -> np.ndarray:
     """Every point along every edge's real centreline, concatenated.
 
     Reads each edge's ``voxels`` polyline (the smoothed centreline, where
     available) via the same `edge_polyline` the vessel-tube drawing and the
     emergence-angle tangent both use, so this is the network's actual
     physical shape -- not just the branch/terminal points left after
-    topology simplification.
+    topology simplification. With *step_um*, each polyline is resampled
+    evenly at that step (see :func:`haemolynx.geometry.resample_at_step`).
     """
+    from haemolynx.geometry import resample_at_step
+
     is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
     edge_iter = G.edges(keys=True, data=True) if is_mg else G.edges(data=True)
     chunks: list[np.ndarray] = []
@@ -94,12 +164,23 @@ def _centreline_points(G: Union[nx.Graph, nx.MultiGraph]) -> np.ndarray:
         u, v = item[0], item[1]
         data = item[-1]
         try:
-            chunks.append(edge_polyline(G, u, v, data))
+            polyline = edge_polyline(G, u, v, data)
         except (TypeError, ValueError):
             continue
+        chunks.append(resample_at_step(polyline, step_um) if step_um else polyline)
     if not chunks:
         return np.empty((0, 3))
     return np.concatenate(chunks, axis=0)
+
+
+def _fractal_entries(name: str, fit: Dict[str, Any]) -> Dict[str, Any]:
+    if not np.isfinite(fit["r_squared"]):
+        return {name: fit["dimension"], f"{name} R^2": "N/A (no scaling range to fit)"}
+    return {
+        name: fit["dimension"],
+        f"{name} R^2": fit["r_squared"],
+        f"{name} Box Sizes (microns)": f"{fit['box_min_um']:.3g}-{fit['box_max_um']:.3g}",
+    }
 
 
 def compute_fractal_dimension(
@@ -110,11 +191,16 @@ def compute_fractal_dimension(
     "Fractal Dimension (Node Positions)" counts only the branch/terminal
     points left after topology simplification -- fast, but blind to the
     vessel's actual path shape between junctions, so it understates spatial
-    complexity. "Fractal Dimension (Centreline)" counts every point along
-    every edge's real centreline instead, matching standard vascular
-    fractal-dimension methodology, at the cost of many more points to bin.
-    The two are not expected to agree; both are reported explicitly rather
-    than folded into one "Fractal Dimension" value.
+    complexity. "Fractal Dimension (Centreline)" counts points every
+    :data:`FRACTAL_CENTRELINE_STEP_UM` along every edge's real centreline
+    instead, matching standard vascular fractal-dimension methodology. The
+    two are not expected to agree; both are reported explicitly rather than
+    folded into one "Fractal Dimension" value.
+
+    Each comes with the R^2 of its log-log fit and the box sizes it was fitted
+    over (see :func:`box_counting_fractal_dimension`): a dimension from a
+    range where the network does not scale -- a fixed range used to be fitted
+    whatever the counts did -- says little, and the R^2 is what shows it.
     """
     result: Dict[str, Any] = {}
 
@@ -127,16 +213,24 @@ def compute_fractal_dimension(
         if len(node_points) < 2:
             result["Fractal Dimension (Node Positions)"] = "N/A (insufficient position data)"
         else:
-            result["Fractal Dimension (Node Positions)"] = _box_counting_fractal_dimension(
-                node_points
+            result.update(
+                _fractal_entries(
+                    "Fractal Dimension (Node Positions)",
+                    box_counting_fractal_dimension(node_points),
+                )
             )
 
-    centreline_points = _centreline_points(G)
+    centreline_points = _centreline_points(G, step_um=FRACTAL_CENTRELINE_STEP_UM)
     if len(centreline_points) < 2:
         result["Fractal Dimension (Centreline)"] = "N/A (insufficient position data)"
     else:
-        result["Fractal Dimension (Centreline)"] = _box_counting_fractal_dimension(
-            centreline_points
+        result.update(
+            _fractal_entries(
+                "Fractal Dimension (Centreline)",
+                box_counting_fractal_dimension(
+                    centreline_points, sampling_step_um=FRACTAL_CENTRELINE_STEP_UM
+                ),
+            )
         )
 
     return result
@@ -373,29 +467,40 @@ def compute_vessel_density(
     return out
 
 
+#: Spacing of the points each vessel is sampled at for the intercapillary
+#: distance, in microns: fine next to a spacing of tens of microns, coarse
+#: enough to keep a whole network's points few.
+INTERCAPILLARY_SAMPLE_STEP_UM = 2.0
+
+#: How many nearest points each query looks through for one on an unrelated
+#: vessel, widening to the next when none of them is.
+_INTERCAPILLARY_NEIGHBOUR_COUNTS = (64, 512, 4096)
+
+
 def compute_intercapillary_distance(
     G: Union[nx.Graph, nx.MultiGraph],
     *,
-    max_neighbors: int = 64,
+    sample_step_um: float = INTERCAPILLARY_SAMPLE_STEP_UM,
 ) -> Dict[str, Any]:
-    """Nearest-neighbour spacing between non-adjacent vessels.
+    """Spacing between non-adjacent vessels.
 
-    For each edge, the distance from its own centreline to the closest
-    point on any *other* edge that does not share a node with it -- a
-    shared node is trivially close at the junction itself, not a
-    meaningful measure of tissue spacing. This is the key input to
-    Krogh-cylinder oxygen-diffusion modelling: how far apart two vessels
-    actually sit, not how far apart their branch points are.
+    Each edge is sampled every *sample_step_um* along its centreline
+    (``voxels``, or its two node positions when that is all there is), each
+    sample's distance to the nearest point of any *other* edge that does not
+    share a node with it is taken -- a shared node is trivially close at the
+    junction itself -- and the edge's value is the median of those distances
+    along it. Reported as the mean and median over edges. This is the key
+    input to Krogh-cylinder oxygen-diffusion modelling: how far the tissue
+    between two vessels reaches.
 
-    Approximate by design: each edge's own polyline (``voxels``, or its two
-    node positions when that is all there is) is queried against a single
-    global k-nearest-neighbour tree of every edge's sampled points, taking
-    the closest of up to *max_neighbors* results that belongs to an allowed
-    (non-self, non-adjacent) edge. An edge whose nearest *max_neighbors*
-    sampled points are all on itself or an adjacent edge -- possible next to
-    one very densely sampled, very long neighbour -- is left out of the
-    average rather than searched exhaustively.
+    The median along the vessel, not its closest approach: a vessel's nearest
+    unrelated neighbour is usually a vessel two junctions away, met right at
+    the junction, so the closest approach ran low for almost every vessel.
+    Samples evenly spaced in microns, not the centreline's own vertices, so a
+    stretch along a coarse z axis counts for its length.
     """
+    from haemolynx.geometry import resample_at_step
+
     is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
     raw_edges = (
         list(G.edges(keys=True, data=True))
@@ -413,7 +518,7 @@ def compute_intercapillary_distance(
         if points.ndim != 2 or points.shape[0] == 0:
             continue
         idx = len(edge_points)
-        edge_points.append((points, u, v))
+        edge_points.append((resample_at_step(points, sample_step_um), u, v))
         incident.setdefault(u, set()).add(idx)
         incident.setdefault(v, set()).add(idx)
 
@@ -432,26 +537,30 @@ def compute_intercapillary_distance(
         ]
     )
     tree = cKDTree(all_points)
-    k = min(int(max_neighbors), all_points.shape[0])
+    neighbour_counts = [k for k in _INTERCAPILLARY_NEIGHBOUR_COUNTS if k < all_points.shape[0]]
+    neighbour_counts.append(all_points.shape[0])
 
     distances: list[float] = []
     for i, (points, u, v) in enumerate(edge_points):
-        forbidden = {i} | incident.get(u, set()) | incident.get(v, set())
-        dists, idxs = tree.query(points, k=k)
-        if k == 1:
-            dists = dists.reshape(-1, 1)
-            idxs = idxs.reshape(-1, 1)
-        best: Optional[float] = None
-        for row_d, row_i in zip(dists, idxs):
-            for d, point_i in zip(np.atleast_1d(row_d), np.atleast_1d(row_i)):
-                if int(point_edge_idx[point_i]) in forbidden:
-                    continue
-                d = float(d)
-                if best is None or d < best:
-                    best = d
-                break  # results are sorted ascending; first allowed one wins
-        if best is not None:
-            distances.append(best)
+        forbidden = np.fromiter(
+            {i} | incident.get(u, set()) | incident.get(v, set()), dtype=np.intp
+        )
+        nearest = np.full(points.shape[0], np.nan)
+        pending = np.arange(points.shape[0])
+        for k in neighbour_counts:
+            dists, idxs = tree.query(points[pending], k=k)
+            dists = np.asarray(dists, dtype=float).reshape(len(pending), -1)
+            idxs = np.asarray(idxs).reshape(len(pending), -1)
+            allowed = ~np.isin(point_edge_idx[idxs], forbidden)
+            found = allowed.any(axis=1)
+            # Results come nearest first: the first allowed one is the nearest.
+            first = np.argmax(allowed, axis=1)
+            nearest[pending[found]] = dists[found, first[found]]
+            pending = pending[~found]
+            if pending.size == 0:
+                break
+        if np.isfinite(nearest).any():
+            distances.append(float(np.nanmedian(nearest)))
 
     if not distances:
         return {

@@ -62,6 +62,30 @@ _OFFSETS_26 = tuple(
 )
 
 
+def _relative_spacing(voxel_size_zyx) -> np.ndarray:
+    """Per-axis spacing in voxels of the finest axis: 1 there, more along a
+    coarser axis; all ones without a voxel size.
+
+    The centreline tree below works in these units: its distances, radii and
+    thresholds are the same numbers as before on cube voxels, and physical on
+    any other -- where, counted in voxels, a round trunk read as a flat
+    ellipse and its ridge as a band (the medial sheet this tree exists to
+    avoid).
+    """
+    if voxel_size_zyx is None:
+        return np.ones(3)
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    return spacing / float(spacing.min())
+
+
+def _step_factor(offset, relative_spacing: np.ndarray) -> float:
+    """How much longer a voxel step along *offset* is, physically, than the
+    same step on cube voxels: 1 on cube voxels, and a step along a coarse
+    axis its relative spacing."""
+    step = np.asarray(offset, dtype=float)
+    return float(np.linalg.norm(step * relative_spacing) / np.linalg.norm(step))
+
+
 class _ForegroundIndex:
     """Map ``(z, y, x)`` to a compact foreground id without a dense volume.
 
@@ -597,8 +621,14 @@ def _skeletonize_foreground(mask: np.ndarray) -> np.ndarray:
     return result
 
 
-def _build_dijkstra_graph(binary: np.ndarray, cost: np.ndarray):
+def _build_dijkstra_graph(
+    binary: np.ndarray, cost: np.ndarray, relative_spacing: np.ndarray | None = None
+):
     """The sparse 26-neighbour weighted graph over foreground voxels of *binary*.
+
+    A step into a voxel costs that voxel's *cost* times :func:`_step_factor`:
+    on an anisotropic crop a step along the coarse axis covers more tissue,
+    and costed per voxel it came four times cheaper per micron.
 
     This -- not the Dijkstra walk itself -- is the expensive part of a call
     to :func:`_dijkstra_parents` on a large crop: it means a Python loop over
@@ -621,6 +651,7 @@ def _build_dijkstra_graph(binary: np.ndarray, cost: np.ndarray):
     zyx = fg_coords.astype(np.intp, copy=False)
     z_max, y_max, x_max = binary_f.shape
     cost_a = np.asarray(cost, dtype=np.float64)
+    relative = np.ones(3) if relative_spacing is None else np.asarray(relative_spacing, float)
     row_chunks: list[np.ndarray] = []
     col_chunks: list[np.ndarray] = []
     data_chunks: list[np.ndarray] = []
@@ -646,7 +677,7 @@ def _build_dijkstra_graph(binary: np.ndarray, cost: np.ndarray):
         nbr_z = nz[in_bounds][connected]
         nbr_y = ny[in_bounds][connected]
         nbr_x = nx_[in_bounds][connected]
-        weights = cost_a[nbr_z, nbr_y, nbr_x]
+        weights = cost_a[nbr_z, nbr_y, nbr_x] * _step_factor((dz, dy, dx), relative)
         finite = np.isfinite(weights) & (weights > 0.0)
         if not np.any(finite):
             continue
@@ -670,6 +701,7 @@ def _dijkstra_parents(
     root: tuple[int, int, int],
     *,
     precomputed_graph=None,
+    relative_spacing: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, _ForegroundIndex] | None:
     """Sparse 26-connected Dijkstra on foreground voxels of *binary*.
 
@@ -690,7 +722,7 @@ def _dijkstra_parents(
     if precomputed_graph is not None:
         graph, fg_coords, index_of = precomputed_graph
     else:
-        graph, fg_coords, index_of = _build_dijkstra_graph(binary, cost)
+        graph, fg_coords, index_of = _build_dijkstra_graph(binary, cost, relative_spacing)
     n_fg = int(fg_coords.shape[0])
     if n_fg == 0:
         return None
@@ -827,12 +859,15 @@ def _principal_axis(coords: np.ndarray) -> np.ndarray:
     return _dominant_eigenvector_3x3(_symmetric_covariance_3x3(centered))
 
 
-def _principal_endpoints(coords: np.ndarray) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
-    """Voxels at the ends of the component's long axis."""
+def _principal_endpoints(
+    coords: np.ndarray, relative_spacing: np.ndarray | None = None
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """Voxels at the ends of the component's long axis, measured physically."""
     if coords.shape[0] < 2:
         voxel = tuple(int(v) for v in coords[0])
         return voxel, voxel
-    centered = coords.astype(float) - coords.astype(float).mean(axis=0)
+    scaled = coords.astype(float) * (1.0 if relative_spacing is None else relative_spacing)
+    centered = scaled - scaled.mean(axis=0)
     axis = _dominant_eigenvector_3x3(_symmetric_covariance_3x3(centered))
     projection = _project_onto_axis(centered, axis)
     start = tuple(int(v) for v in coords[int(np.argmin(projection))])
@@ -849,18 +884,23 @@ def _cover_around_path(
     path: list[tuple[int, int, int]],
     radius_voxels: int,
     shape: tuple[int, int, int],
+    relative_spacing: np.ndarray | None = None,
 ) -> np.ndarray:
+    """Voxels within *radius_voxels* voxels of the finest axis of *path*,
+    measured physically."""
     mask = np.zeros(shape, dtype=bool)
     if not path:
         return mask
     radius = max(1, int(radius_voxels))
+    relative = np.ones(3) if relative_spacing is None else relative_spacing
+    reach = np.ceil(radius / relative).astype(int)
     pts = np.asarray(path, dtype=int)
-    lo = np.maximum(pts.min(axis=0) - radius, 0)
-    hi = np.minimum(pts.max(axis=0) + radius + 1, shape)
+    lo = np.maximum(pts.min(axis=0) - reach, 0)
+    hi = np.minimum(pts.max(axis=0) + reach + 1, shape)
     slc = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
     local = np.zeros(tuple(int(b - a) for a, b in zip(lo, hi)), dtype=bool)
     local[tuple((pts - lo).T)] = True
-    mask[slc] = distance_transform_edt(~local) <= radius
+    mask[slc] = distance_transform_edt(~local, sampling=tuple(relative)) <= radius
     return mask
 
 
@@ -868,26 +908,34 @@ def _local_principal_axis(
     component: np.ndarray,
     point: tuple[int, int, int],
     radius: float,
+    relative_spacing: np.ndarray | None = None,
 ) -> np.ndarray | None:
-    """Long axis of *component* in a ball around *point*, or None if too small."""
+    """Long axis of *component* in a ball around *point*, or None if too small
+    -- ball and axis in voxels of the finest axis, measured physically."""
     r = max(2, int(np.ceil(radius)))
+    relative = np.ones(3) if relative_spacing is None else relative_spacing
+    rz, ry, rx = (int(np.ceil(r / s)) for s in relative)
     z, y, x = (int(v) for v in point)
-    z0, z1 = max(0, z - r), min(component.shape[0], z + r + 1)
-    y0, y1 = max(0, y - r), min(component.shape[1], y + r + 1)
-    x0, x1 = max(0, x - r), min(component.shape[2], x + r + 1)
+    z0, z1 = max(0, z - rz), min(component.shape[0], z + rz + 1)
+    y0, y1 = max(0, y - ry), min(component.shape[1], y + ry + 1)
+    x0, x1 = max(0, x - rx), min(component.shape[2], x + rx + 1)
     crop = component[z0:z1, y0:y1, x0:x1]
     zz, yy, xx = np.ogrid[z0:z1, y0:y1, x0:x1]
-    ball = (zz - z) ** 2 + (yy - y) ** 2 + (xx - x) ** 2 <= r * r
+    ball = (
+        ((zz - z) * relative[0]) ** 2 + ((yy - y) * relative[1]) ** 2
+        + ((xx - x) * relative[2]) ** 2 <= r * r
+    )
     coords = np.argwhere(crop & ball)
     if coords.shape[0] < 8:
         return None
-    return _principal_axis(coords)
+    return _principal_axis(coords * relative)
 
 
 def _path_cuts_across_lumen(
     path: list[tuple[int, int, int]],
     component: np.ndarray,
     max_edt: float,
+    relative_spacing: np.ndarray | None = None,
 ) -> bool:
     """True when *path* crosses a tube's width instead of following an arm.
 
@@ -898,8 +946,9 @@ def _path_cuts_across_lumen(
     """
     if len(path) < 2:
         return True
-    start = np.asarray(path[0], dtype=float)
-    end = np.asarray(path[-1], dtype=float)
+    relative = np.ones(3) if relative_spacing is None else relative_spacing
+    start = np.asarray(path[0], dtype=float) * relative
+    end = np.asarray(path[-1], dtype=float) * relative
     direction = end - start
     norm = float(np.linalg.norm(direction))
     if norm < 1e-6:
@@ -914,7 +963,8 @@ def _path_cuts_across_lumen(
     # perpendicular sheet-crossing stub, so it reads the same in the case
     # this check exists to catch.
     axis = _local_principal_axis(
-        component, path[len(path) // 2], radius=max(3.0, 1.25 * float(max_edt))
+        component, path[len(path) // 2], radius=max(3.0, 1.25 * float(max_edt)),
+        relative_spacing=relative,
     )
     if axis is None:
         return False
@@ -939,8 +989,27 @@ def _trim_to_tree(
     return trimmed
 
 
-def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.ndarray:
-    """Centreline tree on an already-cropped fat component."""
+def _path_length(path: list[tuple[int, int, int]], relative_spacing: np.ndarray) -> float:
+    """A voxel path's length in voxels of the finest axis, counting its first
+    voxel and weighting each step by :func:`_step_factor` -- on cube voxels,
+    its voxel count."""
+    if not path:
+        return 0.0
+    steps = np.diff(np.asarray(path, dtype=float), axis=0)
+    if steps.size == 0:
+        return 1.0
+    voxel_steps = np.sqrt(np.sum(steps * steps, axis=1))
+    physical = np.sqrt(np.sum((steps * relative_spacing) ** 2, axis=1))
+    return 1.0 + float(np.sum(physical / voxel_steps))
+
+
+def _component_edt_ridge_on_crop(
+    component: np.ndarray, edt: np.ndarray, relative_spacing: np.ndarray | None = None
+) -> np.ndarray:
+    """Centreline tree on an already-cropped fat component. *edt* and every
+    distance here are in voxels of the finest axis (see
+    :func:`_relative_spacing`)."""
+    relative = np.ones(3) if relative_spacing is None else np.asarray(relative_spacing, float)
     result = np.zeros(component.shape, dtype=bool)
     coords = np.argwhere(component)
     if coords.size == 0:
@@ -949,8 +1018,8 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
     local_edt = np.where(component, edt, 0.0)
     max_edt = float(local_edt.max())
     cost = np.where(component, 1.0 / (np.square(local_edt) + 1e-6), np.inf)
-    root, far = _principal_endpoints(coords)
-    walked = _dijkstra_parents(component, cost, root)
+    root, far = _principal_endpoints(coords, relative)
+    walked = _dijkstra_parents(component, cost, root, relative_spacing=relative)
     if walked is None:
         centre = tuple(int(v) for v in coords[int(np.argmax(local_edt[tuple(coords.T)]))])
         result[centre] = True
@@ -964,7 +1033,7 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
     _draw_path(result, main)
 
     cover_r = max(1, int(round(max_edt)))
-    covered = _cover_around_path(main, cover_r, component.shape)
+    covered = _cover_around_path(main, cover_r, component.shape, relative)
     min_arm_voxels = max(4, int(2.0 * max_edt))
     high = component & (local_edt >= 0.4 * max_edt)
     # Every voxel this loop ever adds to `result` is exactly one of `main`
@@ -974,7 +1043,7 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
     # arm. On a real multi-million-voxel fat component with many arms, that
     # full-array rescan per acceptance was most of this function's cost.
     tree_coords = np.asarray(main, dtype=np.intp)
-    tree_kdt = cKDTree(tree_coords.astype(np.float64, copy=False))
+    tree_kdt = cKDTree(tree_coords.astype(np.float64, copy=False) * relative)
 
     # A real network's single connected fat catchment can legitimately have
     # far more than a dozen arms (a whole fused sub-network, not one trunk);
@@ -989,7 +1058,7 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
         if not candidates.any():
             break
         cand_coords = np.argwhere(candidates)
-        dists, _ = tree_kdt.query(cand_coords.astype(np.float64, copy=False), k=1)
+        dists, _ = tree_kdt.query(cand_coords.astype(np.float64, copy=False) * relative, k=1)
         far_dist = float(np.max(dists))
         # Remaining high-EDT voxels sitting beside the trunk are the sheet, not arms.
         if far_dist < 2.0 * max_edt:
@@ -999,7 +1068,7 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
             _traceback(parent, fg_coords, index_of, root, target),
             result,
         )
-        if len(branch) < min_arm_voxels:
+        if _path_length(branch, relative) < min_arm_voxels:
             # Cover the rejected branch's own neighbourhood so the same
             # short stub is not re-traced next iteration -- but only a
             # small fixed margin, not the full cover_r (the TRUNK's own
@@ -1009,21 +1078,21 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
             # neighbourhood pre-emptively removed the real arm's
             # candidate voxels before they were ever tried, silently
             # dropping it from the centreline tree.
-            covered |= _cover_around_path(branch, min(2, cover_r), component.shape)
+            covered |= _cover_around_path(branch, min(2, cover_r), component.shape, relative)
             continue
         if _touches_tree(result, branch[-1]):
             # Tip already on the tree: this geodesic would close a loop.
             covered[target] = True
             continue
-        if _path_cuts_across_lumen(branch, component, max_edt):
-            covered |= _cover_around_path(branch, cover_r, component.shape)
+        if _path_cuts_across_lumen(branch, component, max_edt, relative):
+            covered |= _cover_around_path(branch, cover_r, component.shape, relative)
             continue
         _draw_path(result, branch)
-        covered |= _cover_around_path(branch, cover_r, component.shape)
+        covered |= _cover_around_path(branch, cover_r, component.shape, relative)
         tree_coords = np.concatenate(
             [tree_coords, np.asarray(branch, dtype=np.intp)], axis=0
         )
-        tree_kdt = cKDTree(tree_coords.astype(np.float64, copy=False))
+        tree_kdt = cKDTree(tree_coords.astype(np.float64, copy=False) * relative)
     else:
         # Loop ran out of iterations without a break, i.e. without ever
         # deciding "no arms left" or "what's left is the sheet, not an arm" --
@@ -1040,8 +1109,15 @@ def _component_edt_ridge_on_crop(component: np.ndarray, edt: np.ndarray) -> np.n
     return result
 
 
-def skeletonize_edt_ridge(binary: np.ndarray) -> np.ndarray:
-    """Centreline tree per connected component: every fat arm, not a medial sheet."""
+def skeletonize_edt_ridge(
+    binary: np.ndarray, voxel_size_zyx: tuple[float, float, float] | None = None
+) -> np.ndarray:
+    """Centreline tree per connected component: every fat arm, not a medial sheet.
+
+    Distances, costs and the tree's thresholds are physical (see
+    :func:`_relative_spacing`); without *voxel_size_zyx* every voxel is a cube.
+    """
+    relative = _relative_spacing(voxel_size_zyx)
     mask = np.asarray(binary, dtype=bool)
     result = np.zeros(mask.shape, dtype=bool)
     if not mask.any():
@@ -1050,7 +1126,7 @@ def skeletonize_edt_ridge(binary: np.ndarray) -> np.ndarray:
     if bbox is None:
         return result
     crop = mask[bbox]
-    edt = distance_transform_edt(crop)
+    edt = distance_transform_edt(crop, sampling=tuple(relative))
     # 26-connected, matching every other label() call in this module. The
     # default (6-connected, face-only) can split a solid fat blob that is
     # only diagonally connected at a jagged mask boundary into two
@@ -1073,7 +1149,7 @@ def skeletonize_edt_ridge(binary: np.ndarray) -> np.ndarray:
             continue
         component_mask = labeled[slc] == component_id
         t_component = time.perf_counter()
-        crop_result[slc] |= _component_edt_ridge_on_crop(component_mask, edt[slc])
+        crop_result[slc] |= _component_edt_ridge_on_crop(component_mask, edt[slc], relative)
         if n_labels > 1 or int(component_mask.sum()) > 10_000:
             logger.info(
                 "skeletonize_edt_ridge: component %d/%d (%d voxels) took %.2fs",
@@ -1101,6 +1177,7 @@ def _geodesic_on_crop(
     *,
     precomputed_cost: np.ndarray | None = None,
     precomputed_graph=None,
+    relative_spacing: np.ndarray | None = None,
 ) -> list[tuple[int, int, int]]:
     """Inverted-EDT geodesic in a cropped boolean mask, or empty if unreachable.
 
@@ -1116,12 +1193,13 @@ def _geodesic_on_crop(
     if precomputed_graph is not None:
         walked = _dijkstra_parents(crop, None, local_start, precomputed_graph=precomputed_graph)
     else:
+        relative = np.ones(3) if relative_spacing is None else relative_spacing
         if precomputed_cost is not None:
             cost = precomputed_cost
         else:
-            edt = distance_transform_edt(crop)
+            edt = distance_transform_edt(crop, sampling=tuple(relative))
             cost = np.where(crop, 1.0 / (np.square(edt) + 1e-6), np.inf)
-        walked = _dijkstra_parents(crop, cost, local_start)
+        walked = _dijkstra_parents(crop, cost, local_start, relative_spacing=relative)
     if walked is None:
         return []
     parent, fg_coords, index_of = walked
@@ -1137,8 +1215,12 @@ def _path_through_mask(
     allowed: np.ndarray,
     *,
     fallback_graph_fn=None,
+    relative_spacing: np.ndarray | None = None,
 ) -> list[tuple[int, int, int]]:
     """Geodesic in *allowed* from *start* to *end*, falling back to a straight line.
+
+    Corridor radii are in voxels of the finest axis and the geodesics costed
+    physically (see :func:`_relative_spacing`).
 
     Prefers a straight line when every voxel is in *allowed*, then a dilated-line
     corridor at growing radii, then Dijkstra on the whole of *allowed*. Does not
@@ -1163,7 +1245,7 @@ def _path_through_mask(
     if all(allowed_b[p] for p in line):
         return line
 
-    struct26 = generate_binary_structure(3, 3)
+    relative = np.ones(3) if relative_spacing is None else np.asarray(relative_spacing, float)
     # Radii stay cheap because the corridor's cost scales with the box
     # around (start, end) plus this padding, not with the whole of
     # `allowed` -- wider radii here are what let a real winding path (round
@@ -1179,13 +1261,18 @@ def _path_through_mask(
         for z, y, x in _line_voxels(local_start, local_end):
             if 0 <= z < cz and 0 <= y < cy and 0 <= x < cx:
                 painted[z, y, x] = True
+        # A box reaching *radius* finest-axis voxels, at least one along every
+        # axis -- *radius* iterations of the 26-neighbour cube on cube voxels.
+        reach = [max(1, int(round(radius / s))) for s in relative]
         corridor = (
-            binary_dilation(painted, structure=struct26, iterations=int(radius))
+            binary_dilation(painted, structure=np.ones([2 * r + 1 for r in reach], dtype=bool))
             & crop_allowed
         )
         corridor[local_start] = True
         corridor[local_end] = True
-        local_path = _geodesic_on_crop(corridor, local_start, local_end)
+        local_path = _geodesic_on_crop(
+            corridor, local_start, local_end, relative_spacing=relative
+        )
         if len(local_path) >= 2:
             return _shift_path(local_path, origin)
 
@@ -1194,6 +1281,7 @@ def _path_through_mask(
         allowed_b[slc],
         tuple(int(s - o) for s, o in zip(start, origin)),
         tuple(int(e - o) for e, o in zip(end, origin)),
+        relative_spacing=relative,
     )
     if len(local_path) >= 2:
         return _shift_path(local_path, origin)
@@ -1213,6 +1301,7 @@ def _path_through_mask(
         start,
         end,
         precomputed_graph=fallback_graph_fn() if fallback_graph_fn is not None else None,
+        relative_spacing=relative,
     )
     if len(full_path) >= 2:
         return full_path
@@ -1285,6 +1374,7 @@ def _join_thin_arms_to_fat_ridge(
     thick_b = np.asarray(thick, dtype=bool)
     allowed_b = np.asarray(allowed, dtype=bool)
     scale = np.array(voxel_size_zyx, dtype=np.float64)
+    relative_scale = _relative_spacing(scale)
     thin_skel = result & ~thick_b
     fat_skel = result & thick_b
     if not fat_skel.any():
@@ -1373,9 +1463,9 @@ def _join_thin_arms_to_fat_ridge(
         cached = graph_cache.get(label_key)
         if cached is not None:
             return cached
-        local_edt = distance_transform_edt(local_mask)
+        local_edt = distance_transform_edt(local_mask, sampling=tuple(relative_scale))
         cost = np.where(local_mask, 1.0 / (np.square(local_edt) + 1e-6), np.inf)
-        built = _build_dijkstra_graph(local_mask, cost)
+        built = _build_dijkstra_graph(local_mask, cost, relative_scale)
         graph_cache[label_key] = built
         return built
 
@@ -1508,6 +1598,7 @@ def _join_thin_arms_to_fat_ridge(
             fallback_graph_fn=lambda: _fallback_graph_for(
                 arm_component_label, local_allowed
             ),
+            relative_spacing=relative_scale,
         )
         path = [
             tuple(int(v) for v in (np.array(voxel) + component_origin))
@@ -1807,7 +1898,7 @@ def skeletonize_thickness_gated(
         t_lee,
     )
     t2 = time.perf_counter()
-    result |= skeletonize_edt_ridge(thick)
+    result |= skeletonize_edt_ridge(thick, voxel_size_zyx)
     t_ridge = time.perf_counter() - t2
     gc.collect()
     logger.info(

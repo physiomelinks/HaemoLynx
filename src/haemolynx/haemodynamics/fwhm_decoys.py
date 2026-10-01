@@ -28,7 +28,13 @@ from typing import Any, Callable
 import networkx as nx
 import numpy as np
 
-__all__ = ["DECOY_SAMPLE_SIZE", "decoy_centrelines", "fwhm_decoy_check"]
+__all__ = [
+    "DECOY_SAMPLE_SIZE",
+    "decoy_centrelines",
+    "decoy_probe_graph",
+    "fwhm_decoy_check",
+    "speck_width_report",
+]
 
 #: Edges the check copies at most: enough for a rate to a few percent, at a
 #: fraction of the time the run's own FWHM takes.
@@ -114,6 +120,73 @@ def decoy_centrelines(
     return found
 
 
+def decoy_probe_graph(
+    G: Any,
+    edges,
+    vessel_mask: np.ndarray,
+    voxel_size_zyx,
+    *,
+    rng: np.random.Generator,
+    guide_attribute: str | None = "edt_diameter_um",
+    copy_attributes=(),
+) -> nx.MultiGraph | None:
+    """A graph of one edge per decoy of *edges* (see :func:`decoy_centrelines`),
+    ready to measure, or ``None`` when none fits beside its vessel.
+
+    Each decoy edge carries its guide width as *guide_attribute* and a copy of
+    its own edge's *copy_attributes*, so a measurement guided by any of those
+    reads it as it would the vessel.
+    """
+    decoys = decoy_centrelines(
+        G, edges, vessel_mask, voxel_size_zyx, rng=rng, guide_attribute=guide_attribute
+    )
+    if not decoys:
+        return None
+    probe = nx.MultiGraph()
+    probe.graph.update(G.graph)
+    for index, (edge, line, guide) in enumerate(decoys):
+        attrs = {"voxels": [tuple(p) for p in line],
+                 "length": float(np.sum(np.linalg.norm(np.diff(line, axis=0), axis=1)))}
+        source = G.edges[edge]
+        attrs.update({name: source[name] for name in copy_attributes if name in source})
+        if guide_attribute:
+            attrs[guide_attribute] = guide
+        probe.add_edge(2 * index, 2 * index + 1, key=0, **attrs)
+    return probe
+
+
+def speck_width_report(G: Any, probe: nx.MultiGraph, measured_edges) -> dict[str, Any]:
+    """What FWHM read on a measured *probe* of decoys, and which of *G*'s
+    *measured_edges* have a width inside the speck range it sets.
+
+    Writes ``fwhm_in_speck_width_range`` on each of *measured_edges* when there
+    are enough decoy widths for a range (the 5-95% of them).
+    """
+    widths = np.array([
+        float(data["fwhm_diameter_um"])
+        for _u, _v, data in probe.edges(data=True)
+        if _positive(data.get("fwhm_diameter_um"))
+    ])
+    decoys = probe.number_of_edges()
+    report: dict[str, Any] = dict(
+        decoys=decoys,
+        decoys_measured=int(widths.size),
+        false_positive_rate=float(widths.size / decoys) if decoys else 0.0,
+    )
+    measured_edges = list(measured_edges)
+    if widths.size >= _MIN_DECOY_WIDTHS and measured_edges:
+        low, high = (float(v) for v in np.percentile(widths, [5, 95]))
+        report["speck_width_range_um"] = (low, high)
+        report["speck_width_median_um"] = float(np.median(widths))
+        inside = 0
+        for edge in measured_edges:
+            flag = low <= float(G.edges[edge]["fwhm_diameter_um"]) <= high
+            G.edges[edge]["fwhm_in_speck_width_range"] = flag
+            inside += flag
+        report["measured_in_speck_width_range"] = float(inside / len(measured_edges))
+    return report
+
+
 def fwhm_decoy_check(
     G: Any,
     measure: Callable[[nx.MultiGraph], Any],
@@ -151,42 +224,15 @@ def fwhm_decoy_check(
         return report
     rng = np.random.default_rng(seed)
     order = rng.permutation(len(measured))[: max(1, int(sample_size))]
-    decoys = decoy_centrelines(
+    probe = decoy_probe_graph(
         G, [measured[i] for i in order], vessel_mask, voxel_size_zyx,
         rng=rng, guide_attribute=guide_attribute,
     )
-    if not decoys:
+    if probe is None:
         report.update(skipped=True, reason="no vessel-free tissue beside the measured edges")
         return report
-    probe = nx.MultiGraph()
-    probe.graph.update(G.graph)
-    for index, (_edge, line, guide) in enumerate(decoys):
-        attrs = {"voxels": [tuple(p) for p in line],
-                 "length": float(np.sum(np.linalg.norm(np.diff(line, axis=0), axis=1)))}
-        if guide_attribute:
-            attrs[guide_attribute] = guide
-        probe.add_edge(2 * index, 2 * index + 1, key=0, **attrs)
     measure(probe)
-    widths = np.array([
-        float(data["fwhm_diameter_um"])
-        for _u, _v, data in probe.edges(data=True)
-        if _positive(data.get("fwhm_diameter_um"))
-    ])
-    report.update(
-        decoys=len(decoys),
-        decoys_measured=int(widths.size),
-        false_positive_rate=float(widths.size / len(decoys)),
-    )
-    if widths.size >= _MIN_DECOY_WIDTHS:
-        low, high = (float(v) for v in np.percentile(widths, [5, 95]))
-        report["speck_width_range_um"] = (low, high)
-        report["speck_width_median_um"] = float(np.median(widths))
-        inside = 0
-        for edge in measured:
-            flag = low <= float(G.edges[edge]["fwhm_diameter_um"]) <= high
-            G.edges[edge]["fwhm_in_speck_width_range"] = flag
-            inside += flag
-        report["measured_in_speck_width_range"] = float(inside / len(measured))
+    report.update(speck_width_report(G, probe, measured))
     G.graph["fwhm_decoy_check"] = dict(report)
     return report
 

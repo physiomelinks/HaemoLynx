@@ -5,7 +5,7 @@ import inspect
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import networkx as nx
 import numpy as np
@@ -22,6 +22,7 @@ from haemolynx.haemodynamics import fwhm_decoys
 from haemolynx.haemodynamics import raw_section
 from haemolynx.haemodynamics import sections
 from haemolynx.haemodynamics.poiseuille import (
+    DEFAULT_CLASS_MEDIAN_MIN_EDGES,
     PoiseuilleModel,
     clear_edge_resistances,
     edge_selection,
@@ -252,11 +253,11 @@ def _fwhm_raw_channel(config: HaemodynamicsApplyConfig) -> int | None:
     return None if channel is None else int(channel)
 
 
-def _configured_raw_psf(config: HaemodynamicsApplyConfig) -> tuple[float, float, float] | None:
+def _configured_raw_psf(settings: Mapping[str, Any]) -> tuple[float, float, float] | None:
     """The raw image's PSF ``(sigma_z, sigma_y, sigma_x)`` from the settings,
     when both of its halves are set."""
-    sigma_xy = config.fwhm_setting("raw_section_psf_sigma_xy_um")
-    sigma_z = config.fwhm_setting("raw_section_psf_sigma_z_um")
+    sigma_xy = settings.get("raw_section_psf_sigma_xy_um")
+    sigma_z = settings.get("raw_section_psf_sigma_z_um")
     if sigma_xy is not None and sigma_z is not None:
         return (float(sigma_z), float(sigma_xy), float(sigma_xy))
     return None
@@ -269,6 +270,25 @@ def image_psf_for_fwhm(
     raw_volume: np.ndarray | None,
     vessel_mask: np.ndarray | None = None,
 ) -> tuple[tuple[float, float, float] | None, dict[str, Any]]:
+    """The one PSF the raw image's width measurements share, and how it was got
+    -- :func:`image_psf_from_settings` with this run's FWHM settings."""
+    return image_psf_from_settings(
+        G,
+        config.fwhm,
+        voxel_size_zyx=config.voxel_size_zyx,
+        raw_volume=raw_volume,
+        vessel_mask=vessel_mask,
+    )
+
+
+def image_psf_from_settings(
+    G: nx.MultiGraph,
+    settings: Mapping[str, Any],
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+    raw_volume: np.ndarray | None,
+    vessel_mask: np.ndarray | None = None,
+) -> tuple[tuple[float, float, float] | None, dict[str, Any]]:
     """The one PSF the raw image's width measurements share, and how it was got.
 
     The raw-section settings' PSF when set; otherwise estimated from the
@@ -276,30 +296,28 @@ def image_psf_for_fwhm(
     same estimate the raw-section fallback makes. ``None`` -- FWHM then fits
     each profile's blur itself -- when ``fwhm_fix_blur_to_image_psf`` is off,
     the profile model is not ``blurred_lumen``, there is no raw image, or too
-    few wide vessels show their blur.
+    few wide vessels show their blur. *settings* holds the FWHM settings
+    (and the raw-section PSF, when set); *voxel_size_zyx* is the raw image's
+    unless the graph records its own (``image_voxel_size_zyx``).
     """
-    if not bool(config.fwhm_setting("fwhm_fix_blur_to_image_psf", True)):
+    if not bool(settings.get("fwhm_fix_blur_to_image_psf", True)):
         return None, {"source": "per_profile", "reason": "fwhm_fix_blur_to_image_psf is off"}
-    if config.fwhm_setting("fwhm_profile_model", "blurred_lumen") != "blurred_lumen":
+    if settings.get("fwhm_profile_model", "blurred_lumen") != "blurred_lumen":
         return None, {"source": "per_profile", "reason": "only the blurred_lumen model has a blur"}
-    configured = _configured_raw_psf(config)
+    configured = _configured_raw_psf(settings)
     if configured is not None:
         return configured, {"source": "settings", "psf_sigma_zyx": configured}
     if raw_volume is None:
         return None, {"source": "per_profile", "reason": "no raw image"}
-    voxel_sz = tuple(
-        float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
-    )
+    voxel_sz = tuple(float(v) for v in G.graph.get("image_voxel_size_zyx", voxel_size_zyx))
     psf, details = raw_section.estimate_psf_sigma(
         G,
         raw_volume,
         voxel_sz,
         vessel_mask=vessel_mask,
-        guide_attribute=config.fwhm_setting("fwhm_diameter_guess_edge_attribute", "edt_diameter_um"),
+        guide_attribute=settings.get("fwhm_diameter_guess_edge_attribute", "edt_diameter_um"),
         average_um=float(
-            config.fwhm_setting(
-                "fwhm_longitudinal_average_um", raw_section.DEFAULT_AVERAGE_ALONG_VESSEL_UM
-            )
+            settings.get("fwhm_longitudinal_average_um", raw_section.DEFAULT_AVERAGE_ALONG_VESSEL_UM)
         ),
     )
     if psf is None:
@@ -384,7 +402,7 @@ def _measure_raw_section_diameters(
     ]
     sigma_xy = config.fwhm_setting("raw_section_psf_sigma_xy_um")
     sigma_z = config.fwhm_setting("raw_section_psf_sigma_z_um")
-    psf = _configured_raw_psf(config) or psf_sigma_zyx
+    psf = _configured_raw_psf(config.fwhm) or psf_sigma_zyx
     if psf is None and (sigma_xy is not None or sigma_z is not None):
         logger.warning(
             "Raw cross-section: only one of raw_section_psf_sigma_xy_um and "
@@ -767,6 +785,9 @@ def _assign_edge_diameters_with_mask(
         use_edt_fallback=use_edt_fallback,
         use_raw_section_fallback=use_raw_section_fallback,
         use_endothelial=use_endothelial,
+        class_median_min_edges=int(
+            config.diameter("diameter_class_median_min_edges", DEFAULT_CLASS_MEDIAN_MIN_EDGES)
+        ),
         fresh_edges=edges,
     )
     if config.use_edt_diameter_crosscheck and not remeasure:

@@ -186,6 +186,49 @@ def test_fractal_dimension_centreline_sees_the_polyline_the_node_only_one_misses
     )
 
 
+def _lines_graph(lines) -> nx.Graph:
+    G = nx.Graph()
+    for i, (start, end) in enumerate(lines):
+        G.add_node(2 * i, pos=start)
+        G.add_node(2 * i + 1, pos=end)
+        G.add_edge(2 * i, 2 * i + 1, voxels=[start, end])
+    return G
+
+
+def test_a_straight_vessel_drawn_by_its_two_ends_has_dimension_one():
+    """Regression: the box count took the centreline's own vertices, so a
+    straight vessel stored as its two ends was two points -- dimension 0 --
+    and a fixed range of box sizes was fitted whatever the counts did."""
+    G = _lines_graph([((0.0, 0.0, 0.0), (0.0, 0.0, 200.0))])
+
+    result = compute_fractal_dimension(G, nx.get_node_attributes(G, "pos"))
+
+    assert result["Fractal Dimension (Centreline)"] == pytest.approx(1.0, abs=0.05)
+    assert result["Fractal Dimension (Centreline) R^2"] > 0.99
+
+
+def test_a_plane_filling_mesh_has_dimension_two_above_its_spacing():
+    """Parallel vessels every 2 um across a 100 um square fill the plane at
+    every box size above that spacing."""
+    lines = [((0.0, float(y), 0.0), (0.0, float(y), 100.0)) for y in range(0, 101, 2)]
+    G = _lines_graph(lines)
+
+    result = compute_fractal_dimension(G, nx.get_node_attributes(G, "pos"))
+
+    assert result["Fractal Dimension (Centreline)"] == pytest.approx(2.0, abs=0.15)
+    low, high = (float(v) for v in result["Fractal Dimension (Centreline) Box Sizes (microns)"].split("-"))
+    assert low >= 2.0 and high <= 50.0
+
+
+def test_box_counts_are_the_fewest_over_grid_offsets():
+    """Two points one box apart straddle a grid line at one offset and share
+    a box at another; the count is the fewest."""
+    from haemolynx.statistics.shape import _occupied_boxes
+
+    points = np.array([[0.0, 0.0, 0.4], [0.0, 0.0, 0.9]])
+    assert _occupied_boxes(points, 1.0) == 1
+
+
 def test_compute_path_efficiency(simple_graph):
     s = compute_path_efficiency(simple_graph, False)
     assert "Path Efficiency" in s
@@ -632,7 +675,10 @@ def test_murray_law_skips_a_junction_missing_any_one_diameter():
     result = compute_murray_law_compliance(G)
 
     assert result["Murray Ratio Sample Count"] == 0
-    assert result["Mean Murray Ratio"] == "N/A (no junction had diameters on every branch)"
+    assert result["Mean Murray Ratio"] == (
+        "N/A (no junction had a measured diameter on every branch)"
+    )
+    assert result["Murray Junctions Without Measured Diameters"] == 1
 
 
 def test_murray_law_averages_across_several_junctions():
@@ -657,6 +703,72 @@ def test_murray_law_averages_across_several_junctions():
 
     assert result["Murray Ratio Sample Count"] == 2
     assert result["Mean Murray Ratio"] == pytest.approx(1.5, rel=1e-6)
+
+
+def _bifurcation(parent, daughters, *, sources=None):
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(0.0, 0.0, 0.0))
+    G.add_node(1, pos=(0.0, 0.0, 10.0))
+    G.add_edge(0, 1, key=0, branch_order="Art1", diameter_um=parent)
+    for i, d in enumerate(daughters):
+        G.add_node(2 + i, pos=(0.0, 5.0 * (i + 1), 20.0))
+        G.add_edge(1, 2 + i, key=0, branch_order=f"BO{i + 1}", diameter_um=d)
+    for (u, v, key), source in (sources or {}).items():
+        G[u][v][key]["diameter_source"] = source
+    return G
+
+
+def test_murray_law_ignores_diameters_the_run_filled_in_from_the_table():
+    """Regression: every diameter counted whatever its source, so with the
+    defaults -- every vessel at the table's 4 um -- every junction of two
+    daughters scored exactly 2.0, a statement about the table, not the
+    network."""
+    G = _bifurcation(4.0, [4.0, 4.0], sources={
+        (0, 1, 0): "table", (1, 2, 0): "table", (1, 3, 0): "table",
+    })
+
+    result = compute_murray_law_compliance(G)
+
+    assert result["Murray Ratio Sample Count"] == 0
+    assert result["Murray Junctions Without Measured Diameters"] == 1
+
+
+@pytest.mark.parametrize("filled_in", ["table", "class_median", "override"])
+def test_one_filled_in_daughter_skips_the_junction(filled_in):
+    G = _bifurcation(10.0, [8.0, 8.0], sources={
+        (0, 1, 0): "measured", (1, 2, 0): "measured", (1, 3, 0): filled_in,
+    })
+
+    assert compute_murray_law_compliance(G)["Murray Ratio Sample Count"] == 0
+
+
+def test_measured_sources_all_count():
+    G = _bifurcation(10.0, [8.0, 8.0], sources={
+        (0, 1, 0): "measured", (1, 2, 0): "raw_section", (1, 3, 0): "edt_mask",
+    })
+
+    assert compute_murray_law_compliance(G)["Mean Murray Ratio"] == pytest.approx(1.024)
+
+
+def test_each_junction_gets_its_own_fitted_exponent():
+    """Two equal daughters of 2**(-1/n) times the parent satisfy the law at
+    exactly n; the median and IQR are over the junctions' own exponents."""
+    from haemolynx.statistics.bifurcation import fitted_murray_exponent
+
+    for n in (2.0, 2.7, 3.0):
+        assert fitted_murray_exponent(10.0, [10.0 * 2 ** (-1 / n)] * 2) == pytest.approx(n)
+
+    G = _bifurcation(10.0, [10.0 * 2 ** (-1 / 3)] * 2)
+    result = compute_murray_law_compliance(G)
+    assert result["Median Fitted Murray Exponent"] == pytest.approx(3.0)
+    assert result["Fitted Murray Exponent Sample Count"] == 1
+
+
+@pytest.mark.parametrize("daughters", [[8.0], [10.0, 6.0], [12.0, 5.0]])
+def test_no_exponent_fits_a_single_daughter_or_one_as_wide_as_its_parent(daughters):
+    from haemolynx.statistics.bifurcation import fitted_murray_exponent
+
+    assert fitted_murray_exponent(10.0, daughters) is None
 
 
 def test_export_statistics_to_csv(tmp_path):
@@ -942,8 +1054,61 @@ def test_intercapillary_distance_excludes_edges_sharing_a_node():
     result = compute_intercapillary_distance(G)
 
     assert result["Intercapillary Distance Sample Count"] == 3
-    assert result["Mean Intercapillary Distance (microns)"] == pytest.approx(50.0)
+    # A and C are 50 apart all along; B runs on past C's end, so its median
+    # distance along its length is a little more (50.26), never the 0 of
+    # the junction it shares with A.
     assert result["Median Intercapillary Distance (microns)"] == pytest.approx(50.0)
+    assert result["Mean Intercapillary Distance (microns)"] == pytest.approx(
+        (50.0 + 50.0 + (np.hypot(50.0, 4.0) + np.hypot(50.0, 6.0)) / 2) / 3
+    )
+
+
+def test_intercapillary_distance_is_the_median_along_a_vessel_not_its_closest_approach():
+    """Regression: each vessel counted only its closest approach to another,
+    which usually falls at one end, so values ran low. A and C run 100 um,
+    40 um apart all along, and a short stub D sits 5 um beside A's end: the
+    spacing is 40 um, where the closest approaches gave 5, 35 and 5."""
+    G = nx.MultiGraph()
+    for node, pos in {
+        0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 100.0),  # A
+        2: (0.0, 40.0, 0.0), 3: (0.0, 40.0, 100.0),  # C
+        4: (0.0, 5.0, 100.0), 5: (0.0, 5.0, 104.0),  # D, a stub beside A's end
+    }.items():
+        G.add_node(node, pos=pos)
+    _straight_edge(G, 0, 1, "BO1")
+    _straight_edge(G, 2, 3, "BO2")
+    _straight_edge(G, 4, 5, "BO3")
+
+    result = compute_intercapillary_distance(G)
+
+    assert result["Intercapillary Distance Sample Count"] == 3
+    assert result["Median Intercapillary Distance (microns)"] == pytest.approx(40.0, abs=0.5)
+
+
+def test_intercapillary_distance_weights_microns_not_centreline_vertices():
+    """A centreline's vertices are unevenly spaced (a voxel apart, four times
+    denser per micron along a fine axis than a coarse one); the median is over
+    the vessel's length. A has 80 vertices over its first 20 um, beside B
+    (30 um away), and 21 over the other 80 um, which reach from B's end out
+    to E (60 um away): along its length its median is sqrt(30^2 + 30^2)."""
+    G = nx.MultiGraph()
+    for node, pos in {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 100.0),
+                      2: (0.0, 30.0, 0.0), 3: (0.0, 30.0, 20.0),
+                      4: (0.0, 60.0, 20.0), 5: (0.0, 60.0, 100.0)}.items():
+        G.add_node(node, pos=pos)
+    dense = [[0.0, 0.0, x] for x in np.arange(0.0, 20.0, 0.25)]
+    sparse = [[0.0, 0.0, x] for x in np.arange(20.0, 100.1, 4.0)]
+    G.add_edge(0, 1, key=0, branch_order="BO1", voxels=dense + sparse)
+    _straight_edge(G, 2, 3, "BO2")  # B
+    _straight_edge(G, 4, 5, "BO3")  # E
+
+    result = compute_intercapillary_distance(G)
+
+    # A ~42.4, B 30, E ~50: the median is A's. Counted per vertex, A's would
+    # be 30.
+    assert result["Median Intercapillary Distance (microns)"] == pytest.approx(
+        np.hypot(30.0, 30.0), abs=1.0
+    )
 
 
 def test_intercapillary_distance_needs_at_least_two_edges():

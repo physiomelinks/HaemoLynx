@@ -205,3 +205,30 @@ def test_a_simple_graph_is_labelled_the_same_way_as_a_multigraph():
     )
 
     assert a == b
+
+
+def test_the_overlap_fraction_is_a_fraction_of_the_vessels_length():
+    """Regression (audit): the fraction counted centreline vertices, one per
+    voxel -- four times as dense per micron along a 0.5 um x as along a 2 um
+    z -- so the part of a vessel running in z carried a quarter of its weight.
+    Here an L-shaped edge runs 20 um in-plane (inside the arteriole mask) then
+    20 um along z (outside it): half its length is in the mask, but 41 of its
+    51 vertices were."""
+    from haemolynx.graph.automated_vessel_assignment import (
+        _edge_sample_points_from_data,
+        _sample_overlap_fraction,
+    )
+
+    spacing = (2.0, 0.5, 0.5)
+    in_plane = [[0.0, 2.0, x * 0.5] for x in range(41)]  # 40 voxels, 20 um
+    along_z = [[z * 2.0, 2.0, 20.0] for z in range(1, 11)]  # 10 slices, 20 um
+    edge = {"voxels": in_plane + along_z}
+    mask = np.zeros((12, 6, 44), dtype=bool)
+    mask[0, 4, :41] = True  # the in-plane leg, at y = 2 um
+
+    vertices = _edge_sample_points_from_data(edge, (np.zeros(3), np.zeros(3)))
+    evenly = _edge_sample_points_from_data(edge, (np.zeros(3), np.zeros(3)), step_um=0.5)
+
+    assert _sample_overlap_fraction(vertices, mask, voxel_size_zyx=spacing) == pytest.approx(41 / 51)
+    # Half, to within the first micron of the z leg, which rounds into slice 0.
+    assert _sample_overlap_fraction(evenly, mask, voxel_size_zyx=spacing) == pytest.approx(0.5, abs=0.04)

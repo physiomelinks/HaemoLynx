@@ -826,7 +826,9 @@ def _build_row(field: Field):
     return widget
 
 
-def _scale_layer_from_its_file(layer, path) -> tuple[float, float, float] | None:
+def _scale_layer_from_its_file(
+    layer, path, axis_order: str = "zyx"
+) -> tuple[float, float, float] | None:
     """Give *layer* the voxel size its own file describes, if it has none.
 
     napari's readers do not apply a TIFF's resolution tags, so a stack opened
@@ -837,16 +839,17 @@ def _scale_layer_from_its_file(layer, path) -> tuple[float, float, float] | None
 
     Only ever fills a gap: a layer whose scale someone has already set is left
     alone, and so is a file whose tags say nothing. Returns the scale applied,
-    or None if it left the layer as it was.
+    or None if it left the layer as it was. The layer's axes are the file's,
+    which *axis_order* (``image_axis_order``) names.
     """
-    from haemolynx.io import read_voxel_size_xyz, voxel_size_zyx_from_xyz
+    from haemolynx.io import file_axis_spacing_from_xyz, read_voxel_size_xyz
 
     if path is None or voxel_size_xyz_from_scale(getattr(layer, "scale", None)):
         return None
-    found = read_voxel_size_xyz(path)
+    found = read_voxel_size_xyz(path, axis_order)
     if found is None:
         return None
-    scale = voxel_size_zyx_from_xyz(found[0])
+    scale = file_axis_spacing_from_xyz(found[0], axis_order)
     try:
         layer.scale = scale
     except Exception:  # noqa: BLE001 - a layer that will not take a scale is survivable
@@ -5621,6 +5624,16 @@ def _run_optimisation_in_background(
     )
 
 
+#: Settings outside the ``fwhm_`` group the FWHM optimiser reads and never
+#: changes: the image PSF its trials hold the blur at, and the FWHM/EDT ratio a
+#: width is set aside at.
+_FWHM_OPTIMISER_READS = (
+    "raw_section_psf_sigma_xy_um",
+    "raw_section_psf_sigma_z_um",
+    "edt_fwhm_disagreement_warn_ratio",
+)
+
+
 def _run_fwhm_optimisation_in_background(
     graph: "nx.MultiGraph",
     voxel_size_zyx: tuple[float, float, float],
@@ -5634,6 +5647,7 @@ def _run_fwhm_optimisation_in_background(
     apply_prerequisites,
     run_state: RunState,
     groups: "tuple[str, ...] | None" = None,
+    vessel_mask: "np.ndarray | None" = None,
 ):
     """Run the FWHM settings optimiser off the GUI thread, reporting progress
     as it goes -- the Diameters tab's own analogue of
@@ -5643,7 +5657,8 @@ def _run_fwhm_optimisation_in_background(
     rather than a mask reloaded from disk. Shares *run_state* with "Run
     pipeline" and "Optimise settings" purely for mutual exclusion and
     cooperative cancellation -- only one of the three may run at a time
-    against the same `rows`.
+    against the same `rows`. *vessel_mask*, the run's segmented image, lets
+    every trial be checked against decoys and the mask's own widths.
     """
     from napari.qt.threading import thread_worker
 
@@ -5653,7 +5668,9 @@ def _run_fwhm_optimisation_in_background(
     def run():
         local_settings = dict(settings)
         starting_values = {
-            name: value for name, value in local_settings.items() if name.startswith("fwhm_")
+            name: value
+            for name, value in local_settings.items()
+            if name.startswith("fwhm_") or name in _FWHM_OPTIMISER_READS
         }
         raw_path = local_settings["fwhm_raw_tiff_path"]
         result = optimise_fwhm_settings(
@@ -5665,6 +5682,7 @@ def _run_fwhm_optimisation_in_background(
             groups=groups,
             axis_order=local_settings["image_axis_order"],
             raw_channel=local_settings.get("fwhm_raw_channel"),
+            vessel_mask=vessel_mask,
         )
         return result, raw_path
 
@@ -8267,7 +8285,10 @@ def _post_processing_controls(
         if state.routing is None or state.routing[0] is not data:
             set_edit_status("Preparing the segmented image to trace new vessels through...")
             _process_pending_qt_events()
-            state.routing = (data, mask_cost_field(np.asanyarray(data), use_memmap=True))
+            state.routing = (
+                data,
+                mask_cost_field(np.asanyarray(data), use_memmap=True, voxel_size_zyx=voxel_size()),
+            )
         return state.routing
 
     def load_raw():
@@ -9066,8 +9087,9 @@ def settings_widget(napari_viewer=None):
 
     def use_layer(layer) -> None:
         """Point the run at *layer*: its own file, or its array written out."""
+        axis_order = str(current_values().get("image_axis_order") or "zyx")
         try:
-            chosen = input_for_layer(layer, _export_dir(current_values()))
+            chosen = input_for_layer(layer, _export_dir(current_values()), axis_order)
         except ValueError as error:
             report.value = str(error)
             return
@@ -9086,11 +9108,14 @@ def settings_widget(napari_viewer=None):
         adopted.name = getattr(layer, "name", None)
         apply_prerequisites()
         note = chosen.note
-        applied = _scale_layer_from_its_file(layer, chosen.settings.get("input_path"))
+        applied = _scale_layer_from_its_file(
+            layer, chosen.settings.get("input_path"), axis_order
+        )
         if applied is not None:
             note += (
-                f" Scaled the layer to {tuple(round(v, 4) for v in applied)} (z, y, x) "
-                "microns, from the file, so it sits where the results will."
+                f" Scaled the layer to {tuple(round(v, 4) for v in applied)} "
+                f"({', '.join(axis_order)}) microns, from the file, so it sits where "
+                "the results will."
             )
         report.value = note
 
@@ -9661,6 +9686,7 @@ def settings_widget(napari_viewer=None):
         voxel_size_zyx = tuple(
             float(v) for v in getattr(results, "_voxel_size_zyx", (1.0, 1.0, 1.0))
         )
+        skeletonised = checkpoints.get("skeletonise")
         _run_fwhm_optimisation_in_background(
             graph,
             voxel_size_zyx,
@@ -9672,6 +9698,7 @@ def settings_widget(napari_viewer=None):
             optimise_fwhm_bars,
             apply_prerequisites=apply_prerequisites,
             run_state=run_state,
+            vessel_mask=getattr(getattr(skeletonised, "output", None), "image", None),
         )
 
     optimise_fwhm_button.changed.connect(lambda *_args: on_optimise_fwhm_settings())

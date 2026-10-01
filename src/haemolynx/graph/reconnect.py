@@ -13,7 +13,6 @@ import numpy as np
 import networkx as nx
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 from scipy.spatial.distance import directed_hausdorff
-from skimage.graph import route_through_array
 
 from haemolynx.preprocessing.memmap_support import LOW_MEMORY_BLOCK_VOXELS
 
@@ -63,6 +62,40 @@ def _path_length_3d(points) -> float:
     return float(np.sum(np.linalg.norm(np.diff(arr, axis=0), axis=1)))
 
 
+def _relative_spacing(voxel_size) -> np.ndarray:
+    """Per-axis spacing in voxels of the finest axis (1 there, more along a
+    coarser axis). The thresholds below are counted in these units: the same
+    numbers as before on cube voxels, and physical on any other -- where a
+    voxel count made a loop four times longer along a 2 um z than in-plane,
+    and an alternative path four z-voxels (8 um) away "too similar"."""
+    spacing = np.asarray(voxel_size, dtype=float)
+    return spacing / float(spacing.min())
+
+
+def _voxel_path_length(path: np.ndarray, relative_spacing: np.ndarray) -> float:
+    """A voxel path's length in voxels of the finest axis: its first voxel
+    plus each step weighted by how much longer it is, physically, than the
+    same step on cube voxels -- on cube voxels, its voxel count."""
+    steps = np.diff(np.asarray(path, dtype=float), axis=0)
+    if steps.size == 0:
+        return float(len(path))
+    voxel_steps = np.sqrt(np.sum(steps * steps, axis=1))
+    physical = np.sqrt(np.sum((steps * relative_spacing) ** 2, axis=1))
+    return 1.0 + float(np.sum(physical / voxel_steps))
+
+
+def _route(cost, start, end, sampling):
+    """The minimum-cost 26-connected path through *cost*, steps weighted by
+    their physical length (*sampling*): ``(path, total cost)``, as
+    ``skimage.graph.route_through_array`` returns -- which this is, on cube
+    voxels."""
+    from skimage.graph import MCP_Geometric
+
+    router = MCP_Geometric(cost, fully_connected=True, sampling=tuple(sampling))
+    costs, _ = router.find_costs([tuple(start)], [tuple(end)])
+    return router.traceback(tuple(end)), float(costs[tuple(end)])
+
+
 #: Candidate pairs from which routing is handed to worker processes. skimage's
 #: router holds the GIL, so the worker threads otherwise take turns at it; the
 #: workers cost a second or two to start, worth it only for a real run.
@@ -75,15 +108,17 @@ ROUTING_PROCESS_MIN_PAIRS = 32
 #: ``if __name__ == "__main__"`` guard in every worker).
 _ROUTE_WORKER_CODE = """
 import pickle, sys
-from skimage.graph import route_through_array
+from skimage.graph import MCP_Geometric
 read, write = sys.stdin.buffer, sys.stdout.buffer
 while True:
     try:
-        cost, start, end = pickle.load(read)
+        cost, start, end, sampling = pickle.load(read)
     except EOFError:
         break
     try:
-        reply = (True, route_through_array(cost, start, end, fully_connected=True))
+        router = MCP_Geometric(cost, fully_connected=True, sampling=tuple(sampling))
+        costs, _ = router.find_costs([tuple(start)], [tuple(end)])
+        reply = (True, (router.traceback(tuple(end)), float(costs[tuple(end)])))
     except BaseException as exc:
         reply = (False, exc)
     pickle.dump(reply, write, protocol=pickle.HIGHEST_PROTOCOL)
@@ -92,8 +127,9 @@ while True:
 
 
 class _Router:
-    """``route_through_array(cost, start, end, fully_connected=True)``, in
-    worker processes when there are any.
+    """:func:`_route` (``route_through_array(cost, start, end,
+    fully_connected=True)`` on cube voxels), in worker processes when there
+    are any.
 
     Each call hands its cost array to a free worker over a pipe and waits for
     the path -- the same call on the same array, so the same path, or the same
@@ -122,13 +158,14 @@ class _Router:
             logger.warning("[reconnect] no routing processes; routing in-thread", exc_info=True)
             self.close()
 
-    def __call__(self, cost, start, end):
+    def __call__(self, cost, start, end, sampling=(1.0, 1.0, 1.0)):
+        sampling = tuple(float(s) for s in sampling)
         if self._workers and not self._broken:
             worker = self._idle.get()
             try:
                 if not self._broken:
                     pickle.dump(
-                        (np.ascontiguousarray(cost), start, end),
+                        (np.ascontiguousarray(cost), start, end, sampling),
                         worker.stdin,
                         protocol=pickle.HIGHEST_PROTOCOL,
                     )
@@ -145,7 +182,7 @@ class _Router:
                 # Always handed back, dead or alive: a thread waiting for a
                 # worker must never wait for one that is not coming.
                 self._idle.put(worker)
-        return route_through_array(cost, start, end, fully_connected=True)
+        return _route(cost, start, end, sampling)
 
     def close(self) -> None:
         for worker in self._workers:
@@ -159,7 +196,7 @@ class _Router:
 
 def _gaussian_of_sparse(mask, sigma):
     """``gaussian_filter(mask, sigma)`` for a *mask* that is zero outside a
-    small region, computed on that region only.
+    small region, computed on that region only. *sigma* may be one per axis.
 
     The filter reaches ``int(4 * sigma + 0.5)`` voxels, so outside the
     nonzero bounding box grown by that (plus one) the result is exactly zero,
@@ -172,7 +209,7 @@ def _gaussian_of_sparse(mask, sigma):
     nonzero = np.argwhere(mask)
     if not len(nonzero):
         return gaussian_filter(mask, sigma=sigma)
-    reach = int(4.0 * float(sigma) + 0.5) + 1
+    reach = (4.0 * np.broadcast_to(np.asarray(sigma, dtype=float), (mask.ndim,)) + 0.5).astype(int) + 1
     lo = np.maximum(nonzero.min(axis=0) - reach, 0)
     hi = np.minimum(nonzero.max(axis=0) + reach + 1, mask.shape)
     region = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
@@ -223,6 +260,12 @@ def reconnect_secondary_loop_edges(
     *max_cache_size* is accepted for compatibility and ignored: each pair
     routes through its own windows only once, and a cost field (which carries
     that pair's own repulsion term) is never valid for another pair.
+
+    Lengths (*min_length_voxels*, *max_length_voxels*), distances
+    (*min_geom_dev*, *margin*, *repulsion_sigma*) and the routing itself are
+    in voxels of the finest axis of *voxel_size* and measured physically (see
+    :func:`_relative_spacing`), so whether a loop edge is added does not
+    depend on which way the loop runs.
     """
     if not isinstance(G, (nx.Graph, nx.MultiGraph)):
         raise ValueError("G must be a NetworkX Graph or MultiGraph")
@@ -240,6 +283,8 @@ def reconnect_secondary_loop_edges(
         return G
 
     deg = dict(G.degree())
+    relative = _relative_spacing(voxel_size)
+    sampling = tuple(float(s) for s in relative)
     # Read-only either way; under use_memmap a bool memmap is used as is.
     skeleton_copy = (
         np.asanyarray(skeleton, dtype=bool) if use_memmap else skeleton.astype(bool)
@@ -292,11 +337,13 @@ def reconnect_secondary_loop_edges(
 
             dist = np.empty(crop.shape, dtype=np.float64)
             try:
-                distance_transform_edt_blockwise(crop, dist, feature_value=True)
+                distance_transform_edt_blockwise(
+                    crop, dist, feature_value=True, sampling=sampling
+                )
             except ValueError:
                 dist = None  # no skeleton in the window: scipy's own answer
         if dist is None:
-            dist = distance_transform_edt(~np.asarray(crop))
+            dist = distance_transform_edt(~np.asarray(crop), sampling=sampling)
         inner = tuple(
             slice(int(minc[d] - plo[d]), int(minc[d] - plo[d] + maxc[d] - minc[d]))
             for d in range(3)
@@ -318,7 +365,7 @@ def reconnect_secondary_loop_edges(
                         f"{spent / max(volume_voxels, 1):.1f}x the volume",
                     )
                     cost_budget["global_field"] = (
-                        1 + distance_transform_edt(~skeleton_copy) ** 2
+                        1 + distance_transform_edt(~skeleton_copy, sampling=sampling) ** 2
                     )
             global_field = cost_budget["global_field"]
             if global_field is None:
@@ -380,7 +427,7 @@ def reconnect_secondary_loop_edges(
         if valid_count == 0:
             return np.zeros(sub_shape, dtype=float)
         try:
-            repulsion_field = _gaussian_of_sparse(mask, repulsion_sigma)
+            repulsion_field = _gaussian_of_sparse(mask, float(repulsion_sigma) / relative)
             max_repulsion = np.max(repulsion_field)
             if max_repulsion > 0:
                 repulsion_field = (repulsion_field / max_repulsion) * 50.0
@@ -451,7 +498,8 @@ def reconnect_secondary_loop_edges(
                 return None
             best_paths = []
             for expansion in [0, 10, 25, 50]:
-                ext = margin + expansion
+                # The same physical reach on every axis.
+                ext = np.ceil((margin + expansion) / relative - 1e-9).astype(int)
                 minc = np.maximum(np.minimum(u_vox, v_vox) - ext, 0)
                 maxc = np.minimum(np.maximum(u_vox, v_vox) + ext + 1, skeleton_copy.shape)
                 if np.any(minc >= maxc):
@@ -486,12 +534,15 @@ def reconnect_secondary_loop_edges(
                     ):
                         continue
                     try:
-                        path_coords, cost = router(sub_cost, tuple(ru), tuple(rv))
-                        if path_coords is None or len(path_coords) < min_length_voxels:
+                        path_coords, cost = router(sub_cost, tuple(ru), tuple(rv), sampling)
+                        if path_coords is None or len(path_coords) == 0:
                             continue
                         path_coords = np.array(path_coords)
                         path_length = len(path_coords)
-                        if path_length > max_length_voxels:
+                        physical_length = _voxel_path_length(path_coords, relative)
+                        if physical_length < min_length_voxels:
+                            continue
+                        if physical_length > max_length_voxels:
                             continue
                         abs_coords = path_coords + minc
                         if np.any(abs_coords < 0) or np.any(abs_coords >= skeleton.shape):
@@ -504,8 +555,8 @@ def reconnect_secondary_loop_edges(
                                 continue
                             orig_coords = np.array(orig_voxels)
                             hausdorff_dist = max(
-                                directed_hausdorff(orig_coords, abs_coords)[0],
-                                directed_hausdorff(abs_coords, orig_coords)[0],
+                                directed_hausdorff(orig_coords * relative, abs_coords * relative)[0],
+                                directed_hausdorff(abs_coords * relative, orig_coords * relative)[0],
                             )
                             if hausdorff_dist < min_geom_dev:
                                 if debug:

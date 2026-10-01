@@ -19,6 +19,76 @@ from ._helpers import (
 from .geometry import edge_polyline
 
 
+def write_plotly_html(fig: go.Figure, path: Any) -> None:
+    """Write *fig* as an HTML page with plotly.js inside it, so it opens
+    offline and on its own when moved away from the folder it was written to
+    (loading plotly.js from its CDN, a page stayed blank without the internet).
+    """
+    fig.write_html(str(path), include_plotlyjs=True)
+
+
+#: How far (um) a thinned centreline may stray from the full one in the 3D
+#: plots: a quarter of a micron, below what the plot shows at any zoom a
+#: network fits in.
+PLOT_CENTRELINE_TOLERANCE_UM = 0.25
+
+
+def thin_polyline(points: np.ndarray, tolerance_um: float) -> np.ndarray:
+    """The fewest of *points* (Douglas-Peucker) that keep the polyline within
+    *tolerance_um* of every point left out; its two ends always stay.
+
+    A centreline is one point per voxel, so a straight run of a hundred
+    voxels needs two points to draw, not a hundred.
+    """
+    points = np.asarray(points, dtype=float)
+    n = len(points)
+    if n <= 2 or tolerance_um <= 0:
+        return points
+    keep = np.zeros(n, dtype=bool)
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        first, last = stack.pop()
+        if last - first < 2:
+            continue
+        chord = points[last] - points[first]
+        chord_sq = float(np.sum(chord * chord))
+        between = points[first + 1:last] - points[first]
+        if chord_sq > 0.0:
+            t = np.clip(np.sum(between * chord, axis=1) / chord_sq, 0.0, 1.0)
+            between = between - t[:, None] * chord
+        distances = np.sqrt(np.sum(between * between, axis=1))
+        farthest = int(np.argmax(distances))
+        if distances[farthest] > tolerance_um:
+            split = first + 1 + farthest
+            keep[split] = True
+            stack.extend(((first, split), (split, last)))
+    return points[keep]
+
+
+#: What ``visualize_3d_plotly(colour_by="auto")`` colours the vessels by: the
+#: first of these most edges carry a number for.
+AUTO_COLOUR_ATTRIBUTES = ("diameter_um", "flow_abs", "length")
+
+
+def _edge_number(data: dict, name: str) -> float:
+    try:
+        value = float(data.get(name))
+    except (TypeError, ValueError):
+        return float("nan")
+    return value if np.isfinite(value) else float("nan")
+
+
+def _auto_colour_attribute(G: nx.Graph) -> Optional[str]:
+    edges = [item[-1] for item in G.edges(data=True)]
+    for name in AUTO_COLOUR_ATTRIBUTES:
+        present = sum(np.isfinite(_edge_number(data, name)) for data in edges)
+        if edges and present >= 0.5 * len(edges):
+            return name
+    return None
+
+
+
 def _resolve_voxel_size(
     G: Optional[nx.Graph] = None,
     voxel_size: Optional[Tuple[float, float, float]] = None,
@@ -484,23 +554,37 @@ def visualize_3d_plotly(
     title: str = "3D Network",
     save_html_path: Optional[str] = None,
     show: bool = True,
+    *,
+    colour_by: Optional[str] = "auto",
+    thin_tolerance_um: float = PLOT_CENTRELINE_TOLERANCE_UM,
 ) -> go.Figure:
     """Interactive 3D graph rendering using Plotly.
 
     Uses edge voxel polylines when present, otherwise falls back to node-to-node
     straight segments. Coordinates are interpreted as (z, y, x) in graph
     metadata and mapped to Plotly axes as (x, y, z).
+
+    Each vessel is coloured by its *colour_by* edge attribute, on a colour
+    bar -- ``"auto"`` picks the first of :data:`AUTO_COLOUR_ATTRIBUTES` most
+    edges carry; ``None``, or no such attribute, draws them all one colour.
+    Centrelines are thinned to within *thin_tolerance_um*
+    (:func:`thin_polyline`; 0 keeps every point), and a saved page carries
+    plotly.js itself (:func:`write_plotly_html`).
     """
     pos = nx.get_node_attributes(G, "pos")
     if not pos:
         raise ValueError("Graph has no node positions ('pos').")
+    attribute = _auto_colour_attribute(G) if colour_by == "auto" else colour_by
     edge_x, edge_y, edge_z = [], [], []
+    edge_values: list[float] = []
 
     def _append_edge_polyline(u, v, edge_data) -> None:
         try:
             points = edge_polyline(G, u, v, edge_data)
         except ValueError:
             return
+        points = thin_polyline(points, thin_tolerance_um)
+        value = _edge_number(edge_data, attribute) if attribute else float("nan")
         for pt in points:
             # Stored as (z, y, x)
             edge_x.append(float(pt[2]))
@@ -509,6 +593,7 @@ def visualize_3d_plotly(
         edge_x.append(None)
         edge_y.append(None)
         edge_z.append(None)
+        edge_values.extend([value] * (len(points) + 1))
 
     if isinstance(G, nx.MultiGraph):
         for u, v, _k, edge_data in G.edges(keys=True, data=True):
@@ -522,11 +607,25 @@ def visualize_3d_plotly(
     node_y = [float(p[1]) for p in pos.values()]
     node_z = [float(p[0]) for p in pos.values()]
     fig = go.Figure()
+    finite = [value for value in edge_values if np.isfinite(value)]
+    if attribute and finite:
+        line = dict(
+            color=edge_values,
+            colorscale="Viridis",
+            cmin=min(finite),
+            cmax=max(finite),
+            width=3,
+            colorbar=dict(title=attribute),
+        )
+        edge_name = f"Edges (colour: {attribute})"
+    else:
+        line = dict(color="cyan", width=2)
+        edge_name = "Edges"
     fig.add_trace(go.Scatter3d(
         x=edge_x, y=edge_y, z=edge_z,
         mode="lines",
-        line=dict(color="cyan", width=2),
-        name="Edges",
+        line=line,
+        name=edge_name,
     ))
     fig.add_trace(go.Scatter3d(
         x=node_x, y=node_y, z=node_z,
@@ -545,7 +644,7 @@ def visualize_3d_plotly(
         ),
     )
     if save_html_path:
-        fig.write_html(str(save_html_path), include_plotlyjs="cdn")
+        write_plotly_html(fig, save_html_path)
     if show and not _is_pytest_runtime():
         if backend_can_display():
             fig.show()
@@ -615,6 +714,7 @@ def visualize_3d_plotly_vessel_types(
         except ValueError:
             return
         vessel_type = _vessel_type(edge_data.get("branch_order"))
+        points = thin_polyline(points, PLOT_CENTRELINE_TOLERANCE_UM)
         for pt in points:
             per_type_coords[vessel_type]["x"].append(float(pt[2]))
             per_type_coords[vessel_type]["y"].append(float(pt[1]))
@@ -679,7 +779,7 @@ def visualize_3d_plotly_vessel_types(
         ),
     )
     if save_html_path:
-        fig.write_html(str(save_html_path), include_plotlyjs="cdn")
+        write_plotly_html(fig, save_html_path)
     if show and not _is_pytest_runtime():
         if backend_can_display():
             fig.show()

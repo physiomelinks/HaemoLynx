@@ -92,6 +92,34 @@ def test_small_radius_candidates_cap_can_drop_the_default_itself():
     assert 7.84 not in result
 
 
+
+@pytest.mark.parametrize("spacing, typical_radius", [((2.0, 0.5, 0.5), 2.5), ((1.5, 0.5, 0.5), 1.6)])
+def test_footprint_radius_candidates_are_each_a_different_footprint(spacing, typical_radius):
+    """Regression (audit): a whisker/closing/morphological radius is a
+    physical ball at least one finest voxel wide, so half a voxel was the
+    same footprint as one -- a wasted trial -- and on a 1.5 um z nothing on
+    the grid under the vessel's radius reached across a slice at all."""
+    from haemolynx.preprocessing.segmentation_cleanup import _physical_ball
+
+    result = c.small_radius_candidates(
+        spacing, default=0.5, typical_radius_um=typical_radius, footprint=True
+    )
+
+    footprints = [_physical_ball(r, spacing)[0] for r in result]
+    for i, a in enumerate(footprints):
+        for b in footprints[i + 1:]:
+            assert a.shape != b.shape or not np.array_equal(a, b)
+    assert any(f.shape[0] > 1 for f in footprints), "no candidate reaches along z"
+    assert max(result) <= typical_radius
+
+
+def test_a_gaussian_sigma_keeps_the_sub_voxel_grid():
+    """A sigma is not a footprint: half a voxel blurs less than one."""
+    result = c.small_radius_candidates((2.0, 0.5, 0.5), default=1.0)
+    assert min(result) == pytest.approx(0.25)
+    assert 2.0 in result and 1.5 not in result
+
+
 def test_split_marker_separation_candidates_include_default():
     result = c.split_marker_separation_candidates(typical_radius_um=4.0, default=10.0)
     assert 10.0 in result
@@ -289,6 +317,47 @@ def test_bundle_density_fraction_candidates_bounded_unit_interval():
     result = c.bundle_density_fraction_candidates(mask, scan_size=5, default=0.35)
     assert 0.35 in result
     assert all(0.0 < v <= 1.0 for v in result)
+
+
+
+def _stacked_vessels_at_half_micron() -> np.ndarray:
+    """Nine 2 um-radius vessels along x, three deep in z and three across y,
+    on 0.5 um cube voxels."""
+    zz, yy = np.mgrid[0:96, 0:64]
+    mask = np.zeros((96, 64, 40), dtype=bool)
+    for zc in (24, 48, 72):
+        for yc in (16, 32, 48):
+            mask[((zz - zc) ** 2 + (yy - yc) ** 2) <= 4**2, :] = True
+    return mask
+
+
+def test_bundle_density_fraction_candidates_scan_the_refinements_own_window():
+    """Regression (audit): densities were measured over a cube of scan_size
+    voxels, 18 um deep but 4.5 um wide on a 2 um z, while bundle refinement
+    scans a window the same physical width every way -- so the thresholds on
+    offer were ones its own densities never reach. The same vessels imaged on
+    a 2 um z now offer the thresholds they do on cube voxels."""
+    cube = _stacked_vessels_at_half_micron()
+    coarse_z = cube[::4]
+
+    on_cube = c.bundle_density_fraction_candidates(
+        cube, 9, default=1.0, voxel_size_zyx=(0.5, 0.5, 0.5)
+    )
+    on_coarse_z = c.bundle_density_fraction_candidates(
+        coarse_z, 9, default=1.0, voxel_size_zyx=(2.0, 0.5, 0.5)
+    )
+
+    assert on_coarse_z[1] == pytest.approx(on_cube[1], abs=0.05)  # the 75th percentile
+
+
+def test_bundle_scan_window_is_one_physical_width():
+    from haemolynx.preprocessing.skeleton import bundle_scan_window
+
+    assert bundle_scan_window(9, (2.0, 0.5, 0.5)) == (3, 9, 9)
+    assert bundle_scan_window(9, None) == (9, 9, 9)
+    assert bundle_scan_window((5, 7, 7), (2.0, 0.5, 0.5)) == (5, 7, 7)
+    with pytest.raises(ValueError):
+        bundle_scan_window((5, 7), (2.0, 0.5, 0.5))
 
 
 def test_estimate_bundle_max_connections_on_empty_skeleton_returns_default():

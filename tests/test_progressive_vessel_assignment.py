@@ -76,10 +76,12 @@ def test_progressive_small_vessel_zero_max_matches_single_shot_shape():
 
     art = np.zeros((12, 8, 8), dtype=bool)
     ven = np.zeros((12, 8, 8), dtype=bool)
-    art[0:3, 3, 3] = True
-    # Cover the venule segment (z=6..7) but leave the distal edge (z=8..10) unlabeled
-    # so a capillary transition exists at the venule/capillary boundary.
-    ven[6:8, 3, 3] = True
+    # Each mask covers most of the length of the edges it labels -- the
+    # overlap is a fraction of an edge's length, sampled every micron.
+    art[0:4, 3, 3] = True
+    # Cover the venule segments (z=4..8) but leave the distal edge (z=8..10)
+    # unlabeled so a capillary transition exists at the venule/capillary boundary.
+    ven[5:8, 3, 3] = True
 
     result = infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
         G,
@@ -231,3 +233,25 @@ def test_a_terminal_both_masks_reach_at_one_step_goes_to_the_nearer_mask():
     )
 
     assert outputs == [0] and 0 not in inputs
+
+
+def test_a_masks_long_axis_is_measured_in_microns():
+    """Regression (audit): the long axis was the one with most voxels, so a
+    mask 98 um long in z (50 slices of 2 um) and 74.5 um across x (150 voxels
+    of 0.5 um) read as running along x, and the cross-section that resolves an
+    inlet/outlet overlap was taken from the wrong slice."""
+    from haemolynx.graph.automated_vessel_assignment import (
+        _cross_section_midpoint_physical,
+        _mask_principal_axis,
+    )
+
+    spacing = (2.0, 0.5, 0.5)
+    mask = np.zeros((50, 6, 150), dtype=bool)
+    mask[:, 2:4, :] = True
+
+    assert _mask_principal_axis(mask, spacing) == 0
+    assert _mask_principal_axis(mask) == 2  # counted in voxels
+    midpoint = _cross_section_midpoint_physical(mask, spacing, np.array([40.0, 1.5, 10.0]))
+    # The cross-section through z = 40 um, centred in y and x.
+    assert midpoint[0] == pytest.approx(40.0)
+    assert midpoint[2] == pytest.approx(74.5 / 2)

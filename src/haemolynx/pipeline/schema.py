@@ -775,10 +775,11 @@ SCHEMA = Schema(
             default=0.3,
             help=(
                 "Swap a large-vessel component only when at least this fraction of "
-                "its surface touches the larger other-class component. A vessel "
-                "whose labels split across its width shares about half its surface; "
-                "one merely running beside or across another touches about 0.15-0.2, "
-                "and is kept. Lower it to catch a short piece joined end to end"
+                "its surface area faces the larger other-class component. A vessel "
+                "whose labels split lengthwise faces the other part over about a "
+                "third of its surface; one merely running beside or across another, "
+                "a few percent, and is kept; a short piece joined end to end, its end "
+                "(about 0.1-0.15). Lower it to catch those"
             ),
             section=_VESSEL_MASKS,
             unit="fraction",
@@ -1062,7 +1063,9 @@ SCHEMA = Schema(
             default=1,
             help=(
                 "Block-max downsample stride for large/small vessel volume traces "
-                "in the automated-assignment Plotly HTML view"
+                "in the automated-assignment Plotly HTML view, in voxels of the "
+                "finest axis: a coarser axis is pooled over proportionally fewer "
+                "voxels, so each block is about the same size in microns every way"
             ),
             section=_VESSEL_MASKS,
             minimum=1,
@@ -1860,10 +1863,11 @@ SCHEMA = Schema(
             default=0.3,
             help=(
                 "Swap a small-vessel component only when at least this fraction of "
-                "its surface touches the larger other-class component. A vessel "
-                "whose labels split across its width shares about half its surface; "
-                "one merely running beside or across another touches about 0.15-0.2, "
-                "and is kept. Lower it to catch a short piece joined end to end"
+                "its surface area faces the larger other-class component. A vessel "
+                "whose labels split lengthwise faces the other part over about a "
+                "third of its surface; one merely running beside or across another, "
+                "a few percent, and is kept; a short piece joined end to end, its end "
+                "(about 0.1-0.15). Lower it to catch those"
             ),
             section=_VESSEL_MASKS,
             unit="fraction",
@@ -2407,7 +2411,11 @@ SCHEMA = Schema(
             name="skeleton_closing_radius",
             kind="int",
             default=2,
-            help="Close gaps in the mask with a structuring element of this radius before skeletonizing",
+            help=(
+                "Close gaps in the mask with a structuring element of this radius before "
+                "skeletonizing, in voxels of the finest axis: a physical radius of this many "
+                "times the smallest voxel size, so it reaches fewer voxels along a coarser z"
+            ),
             section=_PIPELINE_STAGES,
             unit="voxels",
             minimum=0,
@@ -2417,7 +2425,11 @@ SCHEMA = Schema(
             name="skeleton_bridge_gap_size",
             kind="int",
             default=3,
-            help="Bridge skeleton gaps no larger than this many voxels",
+            help=(
+                "Bridge skeleton gaps no larger than this many voxels of the finest axis: a "
+                "physical distance of this many times the smallest voxel size, so fewer "
+                "voxels along a coarser z"
+            ),
             section=_PIPELINE_STAGES,
             unit="voxels",
             minimum=0,
@@ -2427,7 +2439,11 @@ SCHEMA = Schema(
             name="skeleton_min_branch_length",
             kind="int",
             default=3,
-            help="Drop skeleton branches shorter than this many voxels during cleaning",
+            help=(
+                "Drop skeleton pieces shorter than this many voxels of the finest axis during "
+                "cleaning, each voxel counting for its physical length -- one along a coarser "
+                "z counts for more"
+            ),
             section=_PIPELINE_STAGES,
             unit="voxels",
             minimum=0,
@@ -4237,6 +4253,20 @@ SCHEMA = Schema(
             unit="um",
         ),
         Setting(
+            name="diameter_class_median_min_edges",
+            kind="int",
+            default=3,
+            help=(
+                "Give a vessel no method measured the median measured diameter of this "
+                "run's vessels with the same branch-order label, when at least this many "
+                "of them were measured, before falling back to the branch-order table "
+                "(which has no entry for a large arteriole or venule, so it takes "
+                "default_diameter). 0 goes straight to the table"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            minimum=0,
+        ),
+        Setting(
             name="pericyte_constriction_factor",
             kind="float",
             default=1.0,
@@ -5289,6 +5319,22 @@ SCHEMA = Schema(
             ),
             section=_PERTURBATION_RUNS,
             advanced=True,
+            requires=("capillary_block_selection=branch_order_probability",),
+        ),
+        Setting(
+            name="capillary_block_replicates",
+            kind="int",
+            default=1,
+            help=(
+                "Draw the random block this many times -- from the seed, then the "
+                "seeds after it -- and report each comparison metric's mean, "
+                "standard deviation and 2.5-97.5% range over the draws, beside the "
+                "first draw's own results. One draw is one outcome: which vessels "
+                "a block happens to hit can matter as much as how many. Read when "
+                "blocking by branch order and probability"
+            ),
+            section=_PERTURBATION_RUNS,
+            minimum=1,
             requires=("capillary_block_selection=branch_order_probability",),
         ),
         Setting(

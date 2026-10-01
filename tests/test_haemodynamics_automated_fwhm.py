@@ -1418,3 +1418,48 @@ def test_measuring_a_subset_gives_those_edges_what_a_full_run_gives_them(tmp_pat
     )
     untouched = subset.edges[0, 1, 0]
     assert "fwhm_diameter_um" not in untouched and "fwhm_status" not in untouched
+
+
+def test_a_line_crosses_voxels_at_its_own_axis_pitch():
+    spacing = (2.0, 0.5, 0.5)
+    assert automated._line_pitch_um(np.array([1.0, 0.0, 0.0]), spacing) == pytest.approx(2.0)
+    assert automated._line_pitch_um(np.array([0.0, 0.0, 1.0]), spacing) == pytest.approx(0.5)
+    oblique = np.array([1.0, 0.0, 1.0]) / np.sqrt(2.0)
+    assert 0.5 < automated._line_pitch_um(oblique, spacing) < 2.0
+
+
+def test_true_3d_sampling_measures_a_3_um_vessel_running_along_z(tmp_path: Path):
+    """Regression (audit): true-3D sampling judged every line by the coarsest
+    axis's pitch, so with fwhm_min_diameter_pixels=2 on a 0.5 x 0.5 x 2 um
+    stack every width under 4 um was rejected -- even on this vessel, whose
+    lines run in-plane, crossing a voxel every 0.5 um."""
+    spacing = (2.0, 0.5, 0.5)
+    nz, ny, nx_dim = 24, 40, 40
+    yc, xc = 20, 20
+    _z, y, x = np.indices((nz, ny, nx_dim)).astype(float)
+    sigma_um = 3.0 / 2.3548  # an intensity FWHM of 3 um
+    r2 = ((y - yc) * spacing[1]) ** 2 + ((x - xc) * spacing[2]) ** 2
+    raw = (100.0 * np.exp(-r2 / (2.0 * sigma_um**2))).astype(np.float32)
+    raw_path = tmp_path / "raw.tif"
+    tifffile.imwrite(str(raw_path), raw)
+    G = nx.MultiGraph()
+    top, bottom = np.array([4.0, yc * 0.5, xc * 0.5]), np.array([42.0, yc * 0.5, xc * 0.5])
+    G.add_node(0, pos=top)
+    G.add_node(1, pos=bottom)
+    G.add_edge(0, 1, length=38.0, branch_order="B01",
+               voxels=[(float(z) * 2.0, yc * 0.5, xc * 0.5) for z in range(2, 22)])
+
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=spacing,
+        sample_spacing_along_edge_um=4.0,
+        transverse_profile_step_um=0.1,
+        transverse_half_extent_um=6.0,
+        diameter_guess_um=3.0,
+        transverse_sampling_mode="true_3d_perpendicular",
+        profile_model="gaussian",
+    )
+
+    assert summary["edges_measured"] == 1
+    assert G[0][1][0]["fwhm_diameter_um"] == pytest.approx(3.0, abs=0.4)

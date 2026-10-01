@@ -127,3 +127,59 @@ def test_regression_penalty_within_tolerance_is_free():
 
 def test_regression_penalty_beyond_tolerance_is_guarded():
     assert met.regression_penalty(current=0.5, baseline=0.9, tolerance=0.05) == met._GUARD_PENALTY
+
+
+def _quality(**fields) -> met.FwhmMeasurementQuality:
+    base = dict(
+        n_edges_total=10, n_edges_measured=10, measured_fraction=1.0,
+        mean_fit_r2=0.9, median_fit_r2=0.9, mean_achieved_extent_ratio=1.0,
+        median_diameter_cv=0.0,
+    )
+    base.update(fields)
+    return met.FwhmMeasurementQuality(**base)
+
+
+def test_usable_fraction_leaves_out_widths_the_run_sets_aside():
+    G = _graph_with_edges(
+        [
+            {"fwhm_status": "measured", "fwhm_diameter_r2_samples": [0.9]},
+            {"fwhm_status": "measured", "fwhm_diameter_r2_samples": [0.9],
+             "fwhm_demoted": "speck_width"},
+            {"fwhm_status": "measured", "fwhm_diameter_r2_samples": [0.9],
+             "fwhm_demoted": "edt_disagreement", "fwhm_low_confidence_vs_edt": True},
+            {"fwhm_status": "failed:fwhm_failed"},
+        ]
+    )
+    quality = met.fwhm_measurement_quality(
+        G, {"edges_measured": 3}, min_total_extent_multiplier=3.0,
+        decoy_report={"false_positive_rate": 0.25},
+    )
+    assert quality.measured_fraction == pytest.approx(0.75)
+    assert quality.n_edges_demoted == 2
+    assert quality.usable_fraction == pytest.approx(0.25)
+    assert quality.decoy_false_positive_rate == pytest.approx(0.25)
+    assert quality.edt_disagreement_fraction == pytest.approx(1 / 3)
+
+
+def test_without_checks_usable_is_measured_and_the_score_is_unchanged():
+    quality = _quality(n_edges_measured=8, measured_fraction=0.8)
+    assert quality.usable_fraction == pytest.approx(0.8)
+    assert quality.score == pytest.approx(-0.8 - 0.5 * 0.9 - 0.25 * 1.0)
+
+
+def test_a_setting_that_measures_more_by_fitting_specks_does_not_win():
+    """Regression: the score rewarded measuring more edges with no accuracy
+    term, so a gate loose enough to fit specks won. Here the loose setting
+    measures every edge but reads half its decoys and has two widths in the
+    speck range; the strict one measures eight, all usable, and no decoy."""
+    loose = _quality(n_edges_measured=10, measured_fraction=1.0, n_edges_demoted=2,
+                     decoy_false_positive_rate=0.5)
+    strict = _quality(n_edges_measured=8, measured_fraction=0.8)
+
+    assert strict.score < loose.score
+    assert met.rejection_gates_score(strict) < met.rejection_gates_score(loose)
+
+
+def test_rejection_gates_score_counts_usable_widths_and_charges_decoys():
+    quality = _quality(n_edges_demoted=5, decoy_false_positive_rate=0.2)
+    assert met.rejection_gates_score(quality) == pytest.approx(-(0.5 * 0.9) + 0.2)

@@ -118,3 +118,15 @@ def test_braid_factor_along_long_axis_reads_high_for_two_parallel_strands():
     skel[0, 0, :] = True
     skel[0, 1, :] = True  # a second strand, parallel, one voxel over
     assert braid_factor_along_long_axis(skel) == pytest.approx(2.0)
+
+
+def test_braid_factor_along_long_axis_counts_slices_in_voxels():
+    """The axis is chosen by voxel extent, deliberately, on anisotropic
+    voxels too: a line drifting 30 voxels in x (15 um at 0.5 um) while it
+    descends 23 slices of a 2 um z (46 um) is a clean centreline -- 1.0
+    voxels per x slice -- but 1.3 per z slice, the physically longer axis."""
+    from skimage.draw import line_nd
+
+    skel = np.zeros((24, 3, 31), dtype=bool)
+    skel[line_nd((0, 1, 0), (23, 1, 30), endpoint=True)] = True
+    assert braid_factor_along_long_axis(skel) == pytest.approx(1.0)

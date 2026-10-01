@@ -109,12 +109,15 @@ def build_diameter_by_branch_order(
 #: ``haemolynx.haemodynamics.endothelial``); ``edt_mask`` is the segmentation
 #: mask's own width estimate, used only when both of those failed for that
 #: edge and ``use_edt_fallback`` is on (see
-#: ``haemolynx.haemodynamics.edt_diameter``); ``table`` is the branch-order
+#: ``haemolynx.haemodynamics.edt_diameter``); ``class_median`` is the median of
+#: those measurements over the run's edges with the same ``branch_order``
+#: label, for an edge none of them reached; ``table`` is the branch-order
 #: lookup; ``override`` is a human value.
 DIAMETER_SOURCE_MEASURED = "measured"
 DIAMETER_SOURCE_RAW_SECTION = "raw_section"
 DIAMETER_SOURCE_ENDOTHELIAL = "endothelial"
 DIAMETER_SOURCE_EDT = "edt_mask"
+DIAMETER_SOURCE_CLASS_MEDIAN = "class_median"
 DIAMETER_SOURCE_TABLE = "table"
 DIAMETER_SOURCE_OVERRIDE = "override"
 DIAMETER_SOURCES = frozenset(
@@ -123,10 +126,26 @@ DIAMETER_SOURCES = frozenset(
         DIAMETER_SOURCE_RAW_SECTION,
         DIAMETER_SOURCE_ENDOTHELIAL,
         DIAMETER_SOURCE_EDT,
+        DIAMETER_SOURCE_CLASS_MEDIAN,
         DIAMETER_SOURCE_TABLE,
         DIAMETER_SOURCE_OVERRIDE,
     }
 )
+
+#: The sources that are this run's own measurement of the edge itself --
+#: what a class median is taken over.
+_MEASURED_DIAMETER_SOURCES = frozenset(
+    {
+        DIAMETER_SOURCE_MEASURED,
+        DIAMETER_SOURCE_RAW_SECTION,
+        DIAMETER_SOURCE_ENDOTHELIAL,
+        DIAMETER_SOURCE_EDT,
+    }
+)
+
+#: The default of the ``diameter_class_median_min_edges`` setting: measured
+#: edges a label needs before its median stands in for an unmeasured one.
+DEFAULT_CLASS_MEDIAN_MIN_EDGES = 3
 
 _KEPT_DIAMETER_SOURCES = frozenset(
     {
@@ -327,6 +346,7 @@ def stamp_edge_diameters(
     use_edt_fallback: bool = False,
     use_raw_section_fallback: bool = False,
     use_endothelial: bool = False,
+    class_median_min_edges: int = 0,
     fresh_edges=None,
 ) -> dict[str, int]:
     """Write ``diameter_um`` and ``diameter_source`` on every edge that can.
@@ -348,29 +368,37 @@ def stamp_edge_diameters(
     the edge carries an ``edt_diameter_um`` (see
     ``haemolynx.haemodynamics.edt_diameter``) -- the segmentation mask's own
     estimate, a vessel-specific reading unlike the generic branch-order
-    table; then the table (see :func:`table_diameter_for_order` for an order
-    past its end). A vessel whose mask was too thin to give a width has no
-    ``edt_diameter_um`` and so takes the table's.
+    table; then -- when *class_median_min_edges* is positive and at least that
+    many edges with the same ``branch_order`` label were measured by any of
+    the above -- their median (``class_median``, see
+    :func:`class_median_diameters`): a large arteriole the table has no entry
+    for would otherwise be modelled at ``default_diameter``; then the table
+    (see :func:`table_diameter_for_order` for an order past its end). A
+    vessel whose mask was too thin to give a width has no ``edt_diameter_um``
+    and so takes the class median or the table's.
 
     An endothelial diameter runs wall to wall, so its edge is marked
     :data:`EDGE_DIAMETER_BASIS` ``"anatomical"`` and its viscosity takes that
     form of the law (see :func:`edge_diameter_basis`); every other source
-    is the run's own basis, and clears the mark.
+    is the run's own basis, and clears the mark. A class median carries the
+    basis of the widths it was taken over.
     """
     table = diameter_by_branch_order or {}
     counts = {
-        "measured": 0, "raw_section": 0, "endothelial": 0, "edt_mask": 0, "table": 0,
-        "override": 0, "unset": 0,
+        "measured": 0, "raw_section": 0, "endothelial": 0, "edt_mask": 0,
+        "class_median": 0, "table": 0, "override": 0, "unset": 0,
     }
 
-    def stamp(data: dict, diameter: float, source: str) -> None:
+    def stamp(data: dict, diameter: float, source: str, *, anatomical: bool = False) -> None:
         data["diameter_um"] = diameter
         data["diameter_source"] = source
-        if source == DIAMETER_SOURCE_ENDOTHELIAL:
+        if anatomical or source == DIAMETER_SOURCE_ENDOTHELIAL:
             data[EDGE_DIAMETER_BASIS] = "anatomical"
         else:
             data.pop(EDGE_DIAMETER_BASIS, None)
         counts[source] += 1
+
+    unmeasured: list[dict] = []
     fresh = edge_selection(fresh_edges) or set()
 
     for u, v, key, data in G.edges(keys=True, data=True):
@@ -418,6 +446,16 @@ def stamp_edge_diameters(
             if override is not None:
                 counts["override"] += 1
                 continue
+        unmeasured.append(data)
+
+    medians = class_median_diameters(G, min_edges=class_median_min_edges)
+    for data in unmeasured:
+        order = data.get("branch_order")
+        median = medians.get(str(order)) if order is not None else None
+        if median is not None:
+            diameter, anatomical = median
+            stamp(data, diameter, DIAMETER_SOURCE_CLASS_MEDIAN, anatomical=anatomical)
+            continue
         table_diameter = positive_diameter_um(
             table_diameter_for_order(table, data.get("branch_order"))
         )
@@ -426,6 +464,39 @@ def stamp_edge_diameters(
             continue
         counts["unset"] += 1
     return counts
+
+
+def class_median_diameters(
+    G: nx.MultiGraph, *, min_edges: int
+) -> dict[str, tuple[float, bool]]:
+    """``{branch_order label: (median diameter, anatomical)}`` over the edges
+    whose ``diameter_source`` is one of this run's measurements, for each label
+    with at least *min_edges* of them (none when *min_edges* is 0).
+
+    Taken over the label's edges of the basis most of them have -- wall to wall
+    (``anatomical``, the endothelial measurement) or the run's own -- so one
+    median never mixes the two.
+    """
+    if int(min_edges) <= 0:
+        return {}
+    by_label: dict[str, dict[bool, list[float]]] = {}
+    for _u, _v, _key, data in G.edges(keys=True, data=True):
+        if data.get("diameter_source") not in _MEASURED_DIAMETER_SOURCES:
+            continue
+        order = data.get("branch_order")
+        diameter = positive_diameter_um(data.get("diameter_um"))
+        if order is None or diameter is None:
+            continue
+        anatomical = data.get(EDGE_DIAMETER_BASIS) == "anatomical"
+        by_label.setdefault(str(order), {}).setdefault(anatomical, []).append(diameter)
+    medians: dict[str, tuple[float, bool]] = {}
+    for label, by_basis in by_label.items():
+        anatomical, diameters = max(
+            by_basis.items(), key=lambda item: (len(item[1]), not item[0])
+        )
+        if len(diameters) >= int(min_edges):
+            medians[label] = (float(np.median(diameters)), anatomical)
+    return medians
 
 
 def flag_fwhm_edt_disagreement(G: nx.MultiGraph, *, warn_ratio: float) -> int:

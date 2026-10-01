@@ -56,8 +56,16 @@ def _terminal_edge_sample_points(
     node_pos: np.ndarray,
     *,
     max_sample_points: int = 25,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
 ) -> np.ndarray:
-    """Collect sample points near a terminal node along its incident edge."""
+    """Collect sample points near a terminal node along its incident edge.
+
+    With *voxel_size_zyx*: the edge's centreline sampled every finest voxel
+    spacing, within *max_sample_points* of those steps of the node -- the same
+    length of vessel whichever way it runs. Without, its *max_sample_points*
+    nearest vertices, which along a 2 um z spanned four times the length they
+    did in-plane.
+    """
     if max_sample_points <= 0:
         return np.asarray([node_pos], dtype=float)
 
@@ -84,11 +92,23 @@ def _terminal_edge_sample_points(
     if edge_voxels is None:
         return np.asarray([node_pos], dtype=float)
 
+    if voxel_size_zyx is not None:
+        step = float(min(voxel_size_zyx))
+        evenly = _evenly_spaced(edge_voxels, step)
+        distances = np.linalg.norm(evenly - node_pos.reshape(1, 3), axis=1)
+        samples = evenly[distances <= max_sample_points * step + 1e-9]
+        return np.unique(np.vstack([samples, node_pos.reshape(1, 3)]), axis=0)
     distances = np.linalg.norm(edge_voxels - node_pos.reshape(1, 3), axis=1)
     nearest_idx = np.argsort(distances)[: max_sample_points]
     samples = edge_voxels[nearest_idx]
     samples = np.vstack([samples, node_pos.reshape(1, 3)])
     return np.unique(samples, axis=0)
+
+
+def _evenly_spaced(polyline: np.ndarray, step_um: float) -> np.ndarray:
+    from haemolynx.geometry import resample_at_step
+
+    return resample_at_step(np.asarray(polyline, dtype=float), step_um)
 
 
 def _mask_midpoint_physical(
@@ -102,11 +122,18 @@ def _mask_midpoint_physical(
     return np.mean(points_zyx.astype(float), axis=0) * voxel_size
 
 
-def _mask_principal_axis(mask: np.ndarray) -> int:
+def _mask_principal_axis(
+    mask: np.ndarray, voxel_size_zyx: tuple[float, float, float] | None = None
+) -> int:
+    """The array axis along which *mask* is longest, in microns: counted in
+    voxels, a mask 100 um long in z (50 slices) and 75 um in x (150 voxels)
+    read as running along x."""
     points_zyx = np.argwhere(mask.astype(bool, copy=False))
     if points_zyx.size == 0:
         return 0
     spans = np.ptp(points_zyx.astype(float), axis=0)
+    if voxel_size_zyx is not None:
+        spans = spans * np.asarray(voxel_size_zyx, dtype=float)
     return int(np.argmax(spans))
 
 
@@ -118,7 +145,7 @@ def _cross_section_midpoint_physical(
     points_zyx = np.argwhere(mask.astype(bool, copy=False))
     if points_zyx.size == 0 or intersection_point is None:
         return np.asarray([np.inf, np.inf, np.inf], dtype=float)
-    axis = _mask_principal_axis(mask)
+    axis = _mask_principal_axis(mask, voxel_size_zyx)
     voxel_size = np.asarray(voxel_size_zyx, dtype=float)
     intersection_index = np.rint(intersection_point / voxel_size).astype(int)
     target_slice = int(intersection_index[axis])
@@ -232,6 +259,7 @@ def compute_overlapping_terminal_assignment_metrics(
         node_id,
         node_pos,
         max_sample_points=max_sample_points,
+        voxel_size_zyx=voxel_size_zyx,
     )
     arteriole_overlap, arteriole_intersection = _overlap_fraction_and_intersection(
         samples, large_arteriole_mask, voxel_size_zyx, node_pos
@@ -371,12 +399,20 @@ def select_terminal_nodes_from_large_vessel_masks(
 def _edge_sample_points_from_data(
     edge_data: dict[str, Any],
     endpoint_positions: tuple[np.ndarray, np.ndarray],
+    *,
+    step_um: float | None = None,
 ) -> np.ndarray:
-    """Return unique physical sample points for an edge."""
+    """Return physical sample points for an edge: its centreline sampled every
+    *step_um*, so a fraction of them is a fraction of the vessel's length, or
+    without a step its unique vertices -- one per voxel, a quarter as dense per
+    micron along a 2 um z as in-plane, which under-weighted the part of a
+    vessel running in z."""
     voxels = edge_data.get("voxels")
     if voxels is not None:
         arr = np.asarray(voxels, dtype=float)
         if arr.ndim == 2 and arr.shape[1] == 3 and arr.size > 0:
+            if step_um is not None and len(arr) > 1:
+                return _evenly_spaced(arr, float(step_um))
             return np.unique(arr, axis=0)
     p_u, p_v = endpoint_positions
     return np.unique(
@@ -540,7 +576,9 @@ def infer_boundary_nodes_from_small_vessel_masks(
             continue
         pu = np.asarray(node_positions[u], dtype=float)
         pv = np.asarray(node_positions[v], dtype=float)
-        samples = _edge_sample_points_from_data(edge_data, (pu, pv))
+        samples = _edge_sample_points_from_data(
+            edge_data, (pu, pv), step_um=float(min(voxel_size_zyx))
+        )
         arteriole_fraction = _sample_overlap_fraction(
             samples, arteriole_mask, voxel_size_zyx=voxel_size_zyx
         )
@@ -850,37 +888,6 @@ def _dilated_mask_from_cached_distance(
     if dilation <= 0:
         return base_mask.astype(bool, copy=False)
     return base_mask.astype(bool, copy=False) | (distance_from_mask <= dilation)
-
-
-def _downsample_binary_mask_max(mask: np.ndarray, stride: int) -> np.ndarray:
-    """Downsample a 3D binary mask via block max-pooling."""
-    if stride <= 1:
-        return mask.astype(bool, copy=False)
-
-    z, y, x = mask.shape
-    pad_z = (-z) % stride
-    pad_y = (-y) % stride
-    pad_x = (-x) % stride
-    if pad_z or pad_y or pad_x:
-        padded = np.pad(
-            mask.astype(bool, copy=False),
-            ((0, pad_z), (0, pad_y), (0, pad_x)),
-            mode="constant",
-            constant_values=False,
-        )
-    else:
-        padded = mask.astype(bool, copy=False)
-
-    z2, y2, x2 = padded.shape
-    pooled = padded.reshape(
-        z2 // stride,
-        stride,
-        y2 // stride,
-        stride,
-        x2 // stride,
-        stride,
-    )
-    return np.max(pooled, axis=(1, 3, 5))
 
 
 def _recompute_small_vessel_boundary_state_from_edge_labels(
@@ -1386,7 +1393,9 @@ def write_automated_vessel_assignment_3d_html(
             aspectmode="data",
         ),
     )
-    fig.write_html(str(output_html_path), include_plotlyjs="cdn")
+    from haemolynx.visualization.plot import write_plotly_html
+
+    write_plotly_html(fig, output_html_path)
     return True
 
 
@@ -1640,5 +1649,7 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
             aspectmode="data",
         ),
     )
-    fig.write_html(str(output_html_path), include_plotlyjs="cdn")
+    from haemolynx.visualization.plot import write_plotly_html
+
+    write_plotly_html(fig, output_html_path)
     return True

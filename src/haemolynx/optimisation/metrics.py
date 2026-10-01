@@ -234,6 +234,12 @@ def braid_factor_along_long_axis(skeleton: np.ndarray) -> float:
     the trunk axis"). A fixture-specific caller knows its own trunk axis; an
     optimiser does not, so this measures the skeleton's own bounding-box
     extent and uses whichever axis it is longest along.
+
+    The extent is in voxels, not microns, on anisotropic voxels too: the
+    measure counts voxels per voxel *slice*, and a single line holds fewest
+    per slice along the axis it crosses the most slices of. A line drifting
+    30 voxels in x (15 um) while it descends 23 slices of a 2 um z (46 um)
+    reads 1.0 along x and 1.3 along z.
     """
     skeleton_bool = np.asarray(skeleton, dtype=bool)
     if not skeleton_bool.any():

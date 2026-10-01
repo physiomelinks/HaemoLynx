@@ -82,6 +82,7 @@ def small_radius_candidates(
     *,
     typical_radius_um: float | None = None,
     max_multiple_of_typical_radius: float = 1.0,
+    footprint: bool = False,
 ) -> list[float]:
     """Voxel-scale alternatives to a plain small closing/opening/smoothing
     radius setting.
@@ -104,12 +105,23 @@ def small_radius_candidates(
     voxels" is already several times a real vessel's own diameter. The
     smallest voxel-scale candidate always survives the cap, so a genuinely
     fine dataset is never left with no safe option at all.
+
+    *footprint* is for a radius used as a physical ball footprint (whisker,
+    closing, morphological smoothing --
+    :func:`haemolynx.preprocessing.segmentation_cleanup._physical_ball`), which
+    reaches ``radius / spacing`` voxels along each axis and is at least the
+    finest voxel: half a voxel is then the same footprint as one, a wasted
+    trial, and is dropped; and each coarser axis's own spacing -- the smallest
+    radius that reaches along it at all -- is added, so on a 2 um z the grid
+    holds a radius that closes across slices and not only ones that never do.
+    A gaussian sigma is not a footprint and keeps the plain grid.
     """
     one_voxel_um = min(float(v) for v in voxel_size_zyx) or 1.0
-    candidates = {
-        v for v in ({float(default)} | {round(one_voxel_um * m, 6) for m in (0.5, 1.0, 2.0, 4.0)})
-        if v > 0.0
-    }
+    multiples = (1.0, 2.0, 4.0) if footprint else (0.5, 1.0, 2.0, 4.0)
+    grid = {round(one_voxel_um * m, 6) for m in multiples}
+    if footprint:
+        grid |= {round(float(v), 6) for v in voxel_size_zyx if float(v) > one_voxel_um}
+    candidates = {v for v in ({float(default)} | grid) if v > 0.0}
     if not candidates:
         return [float(default)]
     if typical_radius_um is not None and typical_radius_um > 0:
@@ -303,7 +315,10 @@ def bundle_scan_size_candidates(
     voxel_size_zyx: tuple[float, float, float],
     default: int,
 ) -> list[int]:
-    """Odd window sizes bracketing the mask's own median vessel radius."""
+    """Odd window sizes bracketing the mask's own median vessel radius, in
+    voxels of the finest axis -- the unit
+    :func:`haemolynx.preprocessing.skeleton.bundle_scan_window` reads an int
+    scan size in, the same physical width on every axis."""
     radius_map = inscribed_radius_map(raw_mask, voxel_size_zyx)
     nonzero = radius_map[radius_map > 0]
     if nonzero.size == 0:
@@ -323,11 +338,21 @@ def bundle_density_fraction_candidates(
     raw_mask: np.ndarray,
     scan_size: int,
     default: float,
+    *,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
 ) -> list[float]:
-    """Percentiles of the local-density map at the chosen scan size."""
+    """Percentiles of the local-density map at the chosen scan size, over the
+    window bundle refinement itself scans with on *voxel_size_zyx*
+    (:func:`haemolynx.preprocessing.skeleton.bundle_scan_window`). A cube of
+    ``scan_size`` voxels on every axis spanned four times the depth it did
+    in-plane on a 2 um z, diluting every density and offering thresholds the
+    refinement's own window never reaches."""
     from scipy.ndimage import uniform_filter
 
-    density = uniform_filter(raw_mask.astype(float), size=scan_size)
+    from haemolynx.preprocessing.skeleton import bundle_scan_window
+
+    window = bundle_scan_window(int(scan_size), voxel_size_zyx, raw_mask.ndim)
+    density = uniform_filter(raw_mask.astype(float), size=window)
     nonzero = density[density > 0]
     candidates = {float(default)} | set(_percentiles(nonzero, (60.0, 75.0, 90.0)))
     return sorted(v for v in candidates if 0.0 < v <= 1.0) or [float(default)]

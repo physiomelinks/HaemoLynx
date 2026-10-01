@@ -22,6 +22,15 @@ downsampled approximation).
 A candidate that raises is scored as a loss and the sweep continues; if every
 candidate in a sweep fails, the setting simply keeps its incoming value --
 same fallback as :mod:`.search`.
+
+Given the segmented vessel mask, every trial is also checked the way a run
+checks its own FWHM widths: a fixed set of decoys (sampled vessels moved into
+vessel-free tissue, :mod:`haemolynx.haemodynamics.fwhm_decoys`) is measured
+with the same settings, widths in the speck range they set or disagreeing
+with the mask's own width are set aside, and the score counts only the widths
+left plus the share of decoys given a width -- so a setting loose enough to
+fit specks does not win by measuring more. Every trial also holds FWHM's blur
+at the image PSF the run would use (``fwhm_fix_blur_to_image_psf``).
 """
 from __future__ import annotations
 
@@ -33,7 +42,12 @@ from typing import Any, Iterable, Mapping, Optional
 import networkx as nx
 import numpy as np
 
-from haemolynx.haemodynamics import automated
+from haemolynx.haemodynamics import automated, edt_diameter, fwhm_decoys
+from haemolynx.haemodynamics.apply import image_psf_from_settings
+from haemolynx.haemodynamics.poiseuille import (
+    flag_fwhm_edt_disagreement,
+    mark_fwhm_demotions,
+)
 
 from . import fwhm_candidates as cand
 from . import fwhm_metrics as met
@@ -131,13 +145,19 @@ _MIN_SAMPLE_EDGE_COUNT = 10
 _GUARD_PENALTY = met._GUARD_PENALTY
 #: Guard every sweep's own combined score against the one failure mode none
 #: of the individual metrics can see on their own: a candidate that
-#: improves its own score while quietly measuring far fewer edges, or
-#: fitting them far worse, than the group's own pre-sweep baseline did --
-#: see `.fwhm_metrics.regression_penalty`. Reasoned, not empirically
+#: improves its own score while quietly leaving far fewer edges a usable
+#: width, or fitting them far worse, than the group's own pre-sweep baseline
+#: did -- see `.fwhm_metrics.regression_penalty`. Usable, not merely
+#: measured: a gate that stops FWHM fitting specks measures fewer edges and
+#: loses nothing the run would have used. Reasoned, not empirically
 #: fitted: small enough that ordinary sample-to-sample noise between two
 #: similar candidates never falsely trips the guard.
-_MAX_MEASURED_FRACTION_REGRESSION = 0.05
+_MAX_USABLE_FRACTION_REGRESSION = 0.05
 _MAX_FIT_R2_REGRESSION = 0.05
+
+#: The FWHM/EDT disagreement ratio a width is set aside at, when the
+#: settings do not give ``edt_fwhm_disagreement_warn_ratio`` -- its default.
+_DEFAULT_EDT_WARN_RATIO = 1.5
 
 
 def _measurement_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
@@ -228,6 +248,7 @@ def estimate_sample_edge_count_for_time_budget(
     voxel_size_zyx: tuple[float, float, float],
     starting_values: Mapping[str, Any],
     target_seconds: float = DEFAULT_AUTO_SAMPLE_TARGET_SECONDS,
+    psf_sigma_zyx: tuple[float, float, float] | None = None,
 ) -> int:
     """The largest sample-edge count estimated to keep a full search under
     *target_seconds* on the machine it actually runs on.
@@ -254,6 +275,7 @@ def estimate_sample_edge_count_for_time_budget(
             raw_volume=raw_volume,
             voxel_size_zyx=voxel_size_zyx,
             store_profile_debug=False,
+            profile_psf_sigma_zyx=psf_sigma_zyx,
             **kwargs,
         )
 
@@ -286,15 +308,28 @@ class _FwhmSearch(_SweepBookkeeping):
         starting_values: Mapping[str, Any],
         progress: Optional[ProgressCallback],
         enabled_groups: Optional[Iterable[str]] = None,
+        vessel_mask: Optional[np.ndarray] = None,
+        psf_sigma_zyx: tuple[float, float, float] | None = None,
     ) -> None:
-        #: Never mutated -- every trial copies this fresh (see `_run_trial`),
-        #: matching `.search._Search`'s own "always re-derive from source"
-        #: discipline, since a measurement call writes its results directly
-        #: onto the graph's own edges.
+        #: Never mutated by a trial -- every trial copies this fresh (see
+        #: `_run_trial`), matching `.search._Search`'s own "always re-derive
+        #: from source" discipline, since a measurement call writes its
+        #: results directly onto the graph's own edges.
         self.sample_graph_template = sample_graph
         self.raw_volume = raw_volume
         self.voxel_size_zyx = voxel_size_zyx
         self.current: dict[str, Any] = dict(starting_values)
+        #: The image PSF every trial holds FWHM's blur at, while
+        #: ``fwhm_fix_blur_to_image_psf`` is on.
+        self.psf_sigma_zyx = psf_sigma_zyx
+        self.edt_warn_ratio = float(
+            starting_values.get("edt_fwhm_disagreement_warn_ratio") or _DEFAULT_EDT_WARN_RATIO
+        )
+        #: One decoy per sampled edge (up to the decoy check's own sample
+        #: size), placed once so every trial is judged on the same tissue.
+        self.decoy_probe: nx.MultiGraph | None = None
+        if vessel_mask is not None:
+            self._prepare_checks(vessel_mask)
         super().__init__(
             progress=progress,
             enabled_groups=enabled_groups,
@@ -303,25 +338,87 @@ class _FwhmSearch(_SweepBookkeeping):
         self.passes_run: int = 0
 
     # -- real-measurement trial helpers ------------------------------------------
+    def _prepare_checks(self, vessel_mask: np.ndarray) -> None:
+        """Give the sampled edges the mask's own width, when they lack one, and
+        place their decoys -- once, before any trial."""
+        template = self.sample_graph_template
+        if not any(
+            float(data.get("edt_diameter_um") or 0.0) > 0.0
+            for _u, _v, data in template.edges(data=True)
+        ):
+            edt_diameter.measure_edge_diameters_from_binary_mask(
+                template,
+                binary_mask=vessel_mask,
+                voxel_size_zyx=self.voxel_size_zyx,
+                sample_spacing_along_edge_um=float(
+                    self.current.get("fwhm_sample_spacing_along_edge_um") or 2.0
+                ),
+            )
+        edges = list(template.edges(keys=True))
+        rng = np.random.default_rng(0)
+        order = rng.permutation(len(edges))[: fwhm_decoys.DECOY_SAMPLE_SIZE]
+        self.decoy_probe = fwhm_decoys.decoy_probe_graph(
+            template,
+            [edges[i] for i in order],
+            vessel_mask,
+            self.voxel_size_zyx,
+            rng=rng,
+            guide_attribute="edt_diameter_um",
+            copy_attributes=("diameter_um",),
+        )
+
+    def _measure(
+        self, graph: nx.MultiGraph, settings: Mapping[str, Any], *, debug: bool
+    ) -> dict[str, Any]:
+        """The real FWHM measurement of *graph* with *settings*, its blur held
+        at the image PSF while ``fwhm_fix_blur_to_image_psf`` is on."""
+        fixed_blur = bool(settings.get("fwhm_fix_blur_to_image_psf", True))
+        return automated.measure_edge_diameters_fwhm_from_raw_tiff(
+            graph,
+            raw_volume=self.raw_volume,
+            voxel_size_zyx=self.voxel_size_zyx,
+            store_profile_debug=debug,
+            profile_psf_sigma_zyx=self.psf_sigma_zyx if fixed_blur else None,
+            **_measurement_kwargs(settings),
+        )
+
     def _run_trial(self, overrides: Mapping[str, Any]) -> tuple[nx.MultiGraph, dict[str, Any]]:
         """Run the real measurement on a fresh copy of the sample subgraph
         with `self.current` plus *overrides* -- never a previous trial's own
         output."""
         settings = {**self.current, **overrides}
         graph_trial = self.sample_graph_template.copy()
-        summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(
-            graph_trial,
-            raw_volume=self.raw_volume,
-            voxel_size_zyx=self.voxel_size_zyx,
-            store_profile_debug=True,
-            **_measurement_kwargs(settings),
-        )
+        summary = self._measure(graph_trial, settings, debug=True)
         return graph_trial, summary
 
-    def _quality(self, overrides: Mapping[str, Any]) -> met.FwhmMeasurementQuality:
+    def _checked_trial(
+        self, overrides: Mapping[str, Any]
+    ) -> tuple[nx.MultiGraph, dict[str, Any], dict[str, Any] | None]:
+        """:meth:`_run_trial`, then the run's own checks on its widths: the
+        decoys measured with the same settings, the EDT cross-check, and the
+        widths either sets aside marked ``fwhm_demoted``. Returns the decoy
+        report too, or ``None`` without decoys."""
         graph_trial, summary = self._run_trial(overrides)
+        decoy_report = None
+        if self.decoy_probe is not None:
+            probe = self.decoy_probe.copy()
+            self._measure(probe, {**self.current, **overrides}, debug=False)
+            measured = [
+                (u, v, key)
+                for u, v, key, data in graph_trial.edges(keys=True, data=True)
+                if float(data.get("fwhm_diameter_um") or 0.0) > 0.0
+            ]
+            decoy_report = fwhm_decoys.speck_width_report(graph_trial, probe, measured)
+        flag_fwhm_edt_disagreement(graph_trial, warn_ratio=self.edt_warn_ratio)
+        mark_fwhm_demotions(graph_trial, enabled=True)
+        return graph_trial, summary, decoy_report
+
+    def _quality(self, overrides: Mapping[str, Any]) -> met.FwhmMeasurementQuality:
+        graph_trial, summary, decoy_report = self._checked_trial(overrides)
         mult = float({**self.current, **overrides}["fwhm_min_total_extent_multiplier"])
-        return met.fwhm_measurement_quality(graph_trial, summary, min_total_extent_multiplier=mult)
+        return met.fwhm_measurement_quality(
+            graph_trial, summary, min_total_extent_multiplier=mult, decoy_report=decoy_report
+        )
 
     def _baseline_diameters_um(self) -> np.ndarray:
         """This edge sample's own accepted FWHM diameters under
@@ -380,7 +477,7 @@ class _FwhmSearch(_SweepBookkeeping):
         self, group: str, setting: str, candidate_values: list, *, score_fn=None
     ) -> Any:
         """:meth:`_sweep`, guarded against a candidate that improves its own
-        combined score while regressing `measured_fraction` or
+        combined score while regressing `usable_fraction` or
         `mean_fit_r2` below this sub-sweep's own pre-sweep baseline (see
         `.fwhm_metrics.regression_penalty`) -- the workhorse behind every
         group method below except where a group-specific *score_fn* is
@@ -392,7 +489,7 @@ class _FwhmSearch(_SweepBookkeeping):
         def cost_fn(value: Any) -> float:
             quality = self._quality({setting: value})
             penalty = met.regression_penalty(
-                quality.measured_fraction, baseline.measured_fraction, _MAX_MEASURED_FRACTION_REGRESSION
+                quality.usable_fraction, baseline.usable_fraction, _MAX_USABLE_FRACTION_REGRESSION
             )
             penalty += met.regression_penalty(
                 quality.mean_fit_r2, baseline.mean_fit_r2, _MAX_FIT_R2_REGRESSION
@@ -627,13 +724,21 @@ def optimise_fwhm_settings(
     max_passes: int = 1,
     axis_order: str = automated.CANONICAL_AXIS_ORDER,
     raw_channel: int | None = None,
+    vessel_mask: Optional[np.ndarray] = None,
 ) -> OptimisationResult:
     """Empirically choose every FWHM setting in :data:`FWHM_SETTING_NAMES`
     for *G* against the raw image at *raw_tiff_path*.
 
     *starting_values* must have an entry for every FWHM measurement setting
     (see `_measurement_kwargs`) -- the settings this run does not manage to
-    improve on simply keep their starting value.
+    improve on simply keep their starting value. It may also carry
+    ``raw_section_psf_sigma_xy_um`` / ``raw_section_psf_sigma_z_um`` (the image
+    PSF, estimated from the image's wide vessels when unset) and
+    ``edt_fwhm_disagreement_warn_ratio``, which are read and never changed.
+
+    *vessel_mask*, the segmented vessel mask *G* was built from, turns on the
+    decoy and EDT checks every trial is scored with (see the module
+    docstring); without it a trial is scored on its measurement alone.
 
     *sample_edge_count* trades accuracy for speed: ``None`` (the default)
     auto-selects a count estimated to keep the whole search under
@@ -663,6 +768,13 @@ def optimise_fwhm_settings(
     raw_volume = automated.load_single_channel_tiff_volume(
         raw_tiff_path, axis_order=axis_order, channel=raw_channel
     )
+    psf_sigma_zyx, _psf_details = image_psf_from_settings(
+        G,
+        starting_values,
+        voxel_size_zyx=voxel_size_zyx,
+        raw_volume=raw_volume,
+        vessel_mask=vessel_mask,
+    )
 
     if sample_edge_count is None:
         sample_edge_count = estimate_sample_edge_count_for_time_budget(
@@ -670,7 +782,9 @@ def optimise_fwhm_settings(
             raw_volume=raw_volume,
             voxel_size_zyx=voxel_size_zyx,
             starting_values=starting_values,
-            target_seconds=auto_sample_target_seconds,
+            # Each trial measures a decoy per sampled edge as well, doubling it.
+            target_seconds=auto_sample_target_seconds / (2.0 if vessel_mask is not None else 1.0),
+            psf_sigma_zyx=psf_sigma_zyx,
         )
     sample_edge_count = max(1, min(int(sample_edge_count), total_edges))
 
@@ -683,6 +797,8 @@ def optimise_fwhm_settings(
         starting_values=starting_values,
         progress=progress,
         enabled_groups=groups,
+        vessel_mask=vessel_mask,
+        psf_sigma_zyx=psf_sigma_zyx,
     )
     search.run(max_passes=max_passes)
 
@@ -693,13 +809,7 @@ def optimise_fwhm_settings(
     # `self.current_skeleton` at full fidelity rather than leaving it at a
     # downsampled approximation.
     final_settings = {**starting_values, **settings}
-    automated.measure_edge_diameters_fwhm_from_raw_tiff(
-        G,
-        raw_volume=raw_volume,
-        voxel_size_zyx=voxel_size_zyx,
-        store_profile_debug=True,
-        **_measurement_kwargs(final_settings),
-    )
+    search._measure(G, final_settings, debug=True)
 
     return OptimisationResult(
         settings=settings,

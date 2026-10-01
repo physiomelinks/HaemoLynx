@@ -1739,6 +1739,48 @@ def test_the_low_ram_thickness_gated_skeleton_is_the_in_ram_one(tmp_path, monkey
     assert not any(path.suffix == ".dat" for path in tmp_path.rglob("*")), "temporary files left behind"
 
 
+def _round_trunk_on_anisotropic_voxels():
+    """A round trunk 12 um across on 0.5 x 0.5 x 2 um voxels: 6 slices tall
+    and 24 voxels wide -- in voxel units, a flat ellipse."""
+    spacing = (2.0, 0.5, 0.5)
+    z, y, x = np.indices((13, 61, 80))
+    zc, yc = 6, 30
+    trunk = ((z - zc) * spacing[0]) ** 2 + ((y - yc) * spacing[1]) ** 2 <= 6.0**2
+    return trunk & (x >= 5) & (x < 75), spacing, (zc, yc)
+
+
+def test_the_ridge_of_a_round_trunk_on_anisotropic_voxels_runs_down_its_middle():
+    """Regression (audit): the centreline tree measured everything in voxels
+    -- an unsampled distance transform, steps costed per voxel, PCA and
+    thresholds on voxel indices -- so a round trunk read as a flat ellipse
+    whose ridge is a band: the medial sheet the tree exists to remove."""
+    trunk, spacing, (zc, yc) = _round_trunk_on_anisotropic_voxels()
+
+    ridge = skeletonize_edt_ridge(trunk, voxel_size_zyx=spacing)
+
+    assert braid_factor(ridge, axis=2) <= 1.5  # was 2.9 in voxel units
+    # Along the trunk, away from its ends (where the path starts and finishes
+    # on the rim of the end face, on cube voxels too).
+    coords = np.argwhere(ridge)
+    coords = coords[(coords[:, 2] >= 15) & (coords[:, 2] < 65)]
+    off_centre_um = np.hypot((coords[:, 0] - zc) * spacing[0], (coords[:, 1] - yc) * spacing[1])
+    assert len(coords) and off_centre_um.max() <= 1.0
+
+
+def test_on_cube_voxels_the_ridge_is_what_it_always_was():
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    thick = thick_vessel_object_mask(
+        mask, min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=SPACING_ZYX
+    )
+
+    assert np.array_equal(
+        skeletonize_edt_ridge(thick), skeletonize_edt_ridge(thick, voxel_size_zyx=(1.0, 1.0, 1.0))
+    )
+    assert np.array_equal(
+        skeletonize_edt_ridge(thick), skeletonize_edt_ridge(thick, voxel_size_zyx=(0.7, 0.7, 0.7))
+    )
+
+
 # --- the thick region on its own (a resumed run's post_process) ------------------
 
 

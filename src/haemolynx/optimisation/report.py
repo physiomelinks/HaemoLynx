@@ -46,8 +46,15 @@ def build_report_text(
     """
     lines = ["HaemoLynx settings, optimised from the segmented input image:"]
     if result.downsample_factor > 1:
+        factors = tuple(getattr(result, "downsample_factors_zyx", ()) or ())
+        per_axis = (
+            f" (z, y, x reduced {factors[0]}x, {factors[1]}x, {factors[2]}x, so its voxels "
+            "are as near the same size on every axis as the factors allow)"
+            if len(factors) == 3 and len(set(factors)) > 1
+            else ""
+        )
         lines.append(
-            f"Searched on a {result.downsample_factor}x downsampled copy for speed; "
+            f"Searched on a {result.downsample_factor}x downsampled copy for speed{per_axis}; "
             "voxel-based settings below are already scaled back up to the full-resolution grid."
         )
     skipped_groups = [name for name in group_names if name not in result.groups_run]

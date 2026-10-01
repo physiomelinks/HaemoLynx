@@ -1221,8 +1221,10 @@ def test_optimise_settings_downsample_scales_the_voxel_size_the_search_sees(monk
         mask, voxel_size_xyz=(1.0, 1.0, 2.0), starting_values=_DEFAULT_STARTING_VALUES,
         downsample_factor=4,
     )
-    assert seen["mask_shape"] == (10, 10, 10)
-    assert seen["voxel_size_xyz"] == pytest.approx((4.0, 4.0, 8.0))
+    # z is twice as coarse, so it is reduced half as much: 4 um voxels on
+    # every axis, not 4 x 4 x 8.
+    assert seen["mask_shape"] == (20, 10, 10)
+    assert seen["voxel_size_xyz"] == pytest.approx((4.0, 4.0, 4.0))
 
 
 def test_voxel_scaled_setting_names_are_all_real_settings():
@@ -1463,3 +1465,159 @@ def test_group_names_cover_every_group_a_trial_could_report():
     )
     used_groups = {trial.group for trial in result.trials}
     assert used_groups <= set(GROUP_NAMES)
+
+
+def test_downsampling_reduces_each_axis_towards_isotropic_voxels():
+    """Regression: every axis was reduced by the same factor, so a 4x search
+    of a 0.5 x 0.5 x 2 um stack ran on 2 x 2 x 8 um voxels -- a vessel's z
+    extent at four times the resolution loss of its in-plane width."""
+    from haemolynx.optimisation.search import _downsample_mask, axis_downsample_factors
+
+    spacing_zyx = (2.0, 0.5, 0.5)
+    assert axis_downsample_factors(4, spacing_zyx) == (1, 4, 4)
+    assert axis_downsample_factors(8, spacing_zyx) == (2, 8, 8)
+    assert axis_downsample_factors(2, spacing_zyx) == (1, 2, 2)
+    assert axis_downsample_factors(4, (1.0, 1.0, 1.0)) == (4, 4, 4)
+    assert axis_downsample_factors(4) == (4, 4, 4)
+
+    mask = np.zeros((8, 32, 32), dtype=bool)
+    mask[3, 10, 10] = True
+    reduced = _downsample_mask(mask, 4, spacing_zyx)
+    assert reduced.shape == (8, 8, 8)
+    assert reduced[3, 2, 2]
+
+
+def test_a_search_on_an_anisotropic_stack_runs_on_near_isotropic_voxels(y_shaped_mask):
+    stretched = np.repeat(np.repeat(y_shaped_mask, 4, axis=1), 4, axis=2)
+    result = optimise_skeleton_and_graph_settings(
+        stretched,
+        voxel_size_xyz=(0.5, 0.5, 2.0),
+        starting_values=_DEFAULT_STARTING_VALUES,
+        downsample_factor=4,
+        groups=["closing_radius"],
+    )
+
+    assert result.downsample_factor == 4
+    assert result.downsample_factors_zyx == (1, 4, 4)
+
+
+def test_the_time_estimate_counts_the_voxels_each_factor_keeps():
+    """A factor that leaves the coarse axis alone keeps more voxels than its
+    cube: at 0.5 x 0.5 x 2 um, factor 4 over factor 2 reduces only y and x
+    further, 4x fewer voxels, not 8x."""
+    from haemolynx.optimisation.search import _voxel_reduction
+
+    spacing_zyx = (2.0, 0.5, 0.5)
+    assert _voxel_reduction(4, spacing_zyx) / _voxel_reduction(2, spacing_zyx) == 4
+    assert _voxel_reduction(4, None) / _voxel_reduction(2, None) == 8
+
+
+def test_the_typical_radius_floor_is_judged_in_plane():
+    """Regression (audit): only ridge radii of at least three of the coarsest
+    voxels counted -- 6 um on a 2 um z -- so four 2.5 um capillaries beside one
+    8 um vessel read as a typical radius of the large vessel's."""
+    from types import SimpleNamespace
+
+    import haemolynx.optimisation.search as search_module
+
+    spacing = (2.0, 0.5, 0.5)
+    z, y, x = np.indices((20, 120, 80))
+
+    def tube(yc, radius):
+        return ((z - 10) * spacing[0]) ** 2 + ((y - yc) * spacing[1]) ** 2 <= radius**2
+
+    mask = tube(60, 8.0)
+    for yc in (15, 30, 90, 105):
+        mask |= tube(yc, 2.5)
+    mask &= (x >= 5) & (x < 75)
+
+    radius = search_module._Search._measure_typical_radius_um(
+        SimpleNamespace(voxel_size_zyx=spacing), mask
+    )
+
+    assert radius < 4.0
+
+
+def test_bundle_refinement_scores_density_over_its_own_window(monkeypatch):
+    """Regression (audit): the bundle group's leftover-density cost filtered
+    with ``size=scan_size`` -- a cube of voxels, four times deeper than wide on
+    a 2 um z -- not the window bundle refinement itself scans with."""
+    import scipy.ndimage
+
+    from haemolynx import preprocessing
+    from haemolynx.optimisation.search import _Search
+    from haemolynx.preprocessing.skeleton import bundle_scan_window
+
+    mask = _y_shaped_vessel()
+    search = _Search(
+        mask, voxel_size_xyz=(0.5, 0.5, 2.0), starting_values=dict(_DEFAULT_STARTING_VALUES),
+        progress=None,
+    )
+    search.current_skeleton = preprocessing.skeletonize_volume(mask)
+
+    sizes = []
+    real_uniform_filter = scipy.ndimage.uniform_filter
+
+    def recording_uniform_filter(values, size=3, *args, **kwargs):
+        sizes.append(size)
+        return real_uniform_filter(values, size=size, *args, **kwargs)
+
+    monkeypatch.setattr(scipy.ndimage, "uniform_filter", recording_uniform_filter)
+    search._group_bundle_refinement()
+
+    assert sizes
+    for size in sizes:
+        assert isinstance(size, tuple) and size[0] < size[1] == size[2]
+    scan = int(search.current["skeleton_bundle_scan_size"])
+    assert bundle_scan_window(scan, search.voxel_size_zyx) in sizes
+
+
+def test_closing_and_bridge_gap_candidates_are_in_finest_axis_voxels():
+    """Regression (audit): the closing radius and the bridge gap size are
+    read in voxels of the finest axis (a physical footprint), but their
+    candidates came from gaps counted in plain voxels -- a 6 um gap of three
+    2 um slices offered a bridge gap of 3, 1.5 um, which never reaches across
+    a slice. The same gap now offers 12 (6 um / 0.5 um)."""
+    from haemolynx.optimisation.search import _Search
+
+    mask = _y_shaped_vessel()
+    search = _Search(
+        mask, voxel_size_xyz=(0.5, 0.5, 2.0), starting_values=dict(_DEFAULT_STARTING_VALUES),
+        progress=None,
+    )
+    skeleton = np.zeros((20, 9, 9), dtype=bool)
+    skeleton[0:8, 4, 4] = True
+    skeleton[10:20, 4, 4] = True  # three slices on from z=7: 6 um
+    search.current_skeleton = skeleton
+
+    swept = {}
+
+    def recording_sweep(group, setting, candidate_values, cost_fn):
+        swept[setting] = list(candidate_values)
+        return search.current[setting]
+
+    search._sweep = recording_sweep
+    search._preprocess_trial = lambda overrides: skeleton
+    search._skeleton_mask_coverage_fraction = lambda cleaned: 1.0
+    search._group_gap_bridging()
+
+    # Beyond 0 and the default (3), the measured gap's own candidates.
+    assert set(swept["skeleton_bridge_gap_size"]) - {0, 3} == {12}
+    assert 12 in swept["skeleton_max_bridge_distance"]
+
+
+def test_the_max_bridge_distance_candidates_keep_the_z_weight():
+    from haemolynx.optimisation.search import _Search
+
+    mask = _y_shaped_vessel()
+    starting_values = dict(_DEFAULT_STARTING_VALUES, skeleton_bridge_z_distance_weight=2.0)
+    search = _Search(
+        mask, voxel_size_xyz=(0.5, 0.5, 2.0), starting_values=starting_values, progress=None,
+    )
+    skeleton = np.zeros((20, 9, 9), dtype=bool)
+    skeleton[0:8, 4, 4] = True
+    skeleton[10:20, 4, 4] = True
+    search.current_skeleton = skeleton
+
+    assert search._gap_distances_finest_voxels().tolist() == [12.0]
+    assert search._gap_distances_finest_voxels(z_distance_weight=2.0).tolist() == [24.0]

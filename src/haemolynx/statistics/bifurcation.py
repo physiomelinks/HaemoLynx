@@ -331,6 +331,50 @@ def _positive_diameter_or_none(value: Any) -> Optional[float]:
     return value_f if value_f > 0 else None
 
 
+def _measured_diameter_or_none(data: dict) -> Optional[float]:
+    """The edge's ``diameter_um`` when it is a measurement of that vessel --
+    not one the run filled in from the branch-order table, a class median or
+    a hand-set value (``diameter_source``); an edge that records no source
+    counts as given."""
+    from haemolynx.haemodynamics.poiseuille import (
+        DIAMETER_SOURCE_CLASS_MEDIAN,
+        DIAMETER_SOURCE_OVERRIDE,
+        DIAMETER_SOURCE_TABLE,
+    )
+
+    if data.get("diameter_source") in (
+        DIAMETER_SOURCE_TABLE, DIAMETER_SOURCE_CLASS_MEDIAN, DIAMETER_SOURCE_OVERRIDE,
+    ):
+        return None
+    return _positive_diameter_or_none(data.get("diameter_um"))
+
+
+#: The exponents :func:`fitted_murray_exponent` searches between.
+_MURRAY_EXPONENT_BOUNDS = (0.01, 100.0)
+
+
+def fitted_murray_exponent(parent_d: float, daughter_ds: list[float]) -> Optional[float]:
+    """The exponent ``n`` with ``parent^n = sum(daughter^n)`` at one junction.
+
+    Unique when there are at least two daughters, all narrower than the
+    parent (the sum falls from the daughter count to 0 as ``n`` grows);
+    ``None`` otherwise, or when it lies outside :data:`_MURRAY_EXPONENT_BOUNDS`.
+    """
+    if len(daughter_ds) < 2 or max(daughter_ds) >= parent_d:
+        return None
+    ratios = np.asarray(daughter_ds, dtype=float) / float(parent_d)
+
+    def excess(n: float) -> float:
+        return float(np.sum(ratios**n)) - 1.0
+
+    low, high = _MURRAY_EXPONENT_BOUNDS
+    if excess(low) <= 0.0 or excess(high) >= 0.0:
+        return None
+    from scipy.optimize import brentq
+
+    return float(brentq(excess, low, high, xtol=1e-10))
+
+
 def compute_murray_law_compliance(
     G: Union[nx.Graph, nx.MultiGraph],
     *,
@@ -346,39 +390,59 @@ def compute_murray_law_compliance(
     (see :func:`_iter_parent_daughter_junctions`): the unique lowest-rank
     incident edge is the parent, every other labelled edge a daughter.
 
-    A junction missing a positive diameter on the parent or on any one of
-    its daughters is skipped entirely -- a ratio computed from a partial
-    set of daughters is not comparable to one computed from all of them.
+    Only measured diameters count (see :func:`_measured_diameter_or_none`): a
+    vessel given its branch order's table diameter says nothing about the
+    law -- with every vessel at the table's one default, every junction of two
+    daughters scored exactly 2.0. A junction missing a measured diameter on
+    the parent or on any one of its daughters is skipped entirely -- a ratio
+    computed from a partial set of daughters is not comparable to one computed
+    from all of them.
+
+    Besides the mean ratio at *exponent*, each junction's own exponent is
+    fitted (:func:`fitted_murray_exponent`) and summarised by its median and
+    interquartile range: a mean of ratios at a fixed exponent is dominated by
+    its outliers, where the exponent itself is the quantity the literature
+    compares (about 3 for arterioles, lower in capillary beds).
     """
     ratios: list[float] = []
+    exponents: list[float] = []
+    skipped = 0
     for _node, parent_item, daughter_items in _iter_parent_daughter_junctions(G):
         if not daughter_items:
             continue
-        parent_d = _positive_diameter_or_none(parent_item[3].get("diameter_um"))
-        if parent_d is None:
+        parent_d = _measured_diameter_or_none(parent_item[3])
+        daughter_ds = [_measured_diameter_or_none(item[3]) for item in daughter_items]
+        if parent_d is None or any(d is None for d in daughter_ds):
+            skipped += 1
             continue
-        daughter_sum = 0.0
-        for daughter_item in daughter_items:
-            daughter_d = _positive_diameter_or_none(daughter_item[3].get("diameter_um"))
-            if daughter_d is None:
-                daughter_sum = None
-                break
-            daughter_sum += daughter_d**exponent
-        if daughter_sum is None:
-            continue
-        ratios.append(daughter_sum / (parent_d**exponent))
+        ratios.append(sum(d**exponent for d in daughter_ds) / (parent_d**exponent))
+        fitted = fitted_murray_exponent(parent_d, daughter_ds)
+        if fitted is not None:
+            exponents.append(fitted)
 
-    if not ratios:
-        return {
-            "Mean Murray Ratio": "N/A (no junction had diameters on every branch)",
-            "Murray Ratio Sample Count": 0,
-            "Murray Law Exponent": exponent,
-        }
-    return {
-        "Mean Murray Ratio": float(np.mean(ratios)),
+    result: Dict[str, Any] = {
         "Murray Ratio Sample Count": len(ratios),
         "Murray Law Exponent": exponent,
+        "Murray Junctions Without Measured Diameters": skipped,
+        "Fitted Murray Exponent Sample Count": len(exponents),
     }
+    if ratios:
+        result["Mean Murray Ratio"] = float(np.mean(ratios))
+        result["Median Murray Ratio"] = float(np.median(ratios))
+    else:
+        result["Mean Murray Ratio"] = "N/A (no junction had a measured diameter on every branch)"
+        result["Median Murray Ratio"] = result["Mean Murray Ratio"]
+    if exponents:
+        low, median, high = np.percentile(exponents, [25, 50, 75])
+        result["Median Fitted Murray Exponent"] = float(median)
+        result["Fitted Murray Exponent IQR Low"] = float(low)
+        result["Fitted Murray Exponent IQR High"] = float(high)
+    else:
+        note = "N/A (no junction of two or more narrower measured daughters)"
+        result["Median Fitted Murray Exponent"] = note
+        result["Fitted Murray Exponent IQR Low"] = note
+        result["Fitted Murray Exponent IQR High"] = note
+    return result
 
 
 def compute_daughter_daughter_angles(

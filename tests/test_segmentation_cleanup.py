@@ -179,6 +179,41 @@ def test_split_cuts_a_dumbbell_at_its_genuine_pinch():
     assert after == 2
 
 
+def _dumbbell_along_z_on_anisotropic_voxels(spacing=(2.0, 0.5, 0.5)):
+    """Two 5 um-radius bodies 20 um apart in z, joined by a 1.5 um neck."""
+    z, y, x = np.indices((30, 40, 40)) * np.asarray(spacing).reshape(3, 1, 1, 1)
+    radial = (y - 10.0) ** 2 + (x - 10.0) ** 2
+    body_a = radial + (z - 20.0) ** 2 <= 5.0**2
+    body_b = radial + (z - 40.0) ** 2 <= 5.0**2
+    neck = (radial <= 1.5**2) & (z >= 20.0) & (z <= 40.0)
+    return body_a | body_b | neck
+
+
+def test_split_cuts_a_neck_between_bodies_stacked_in_z():
+    """Regression (audit): the 10 um marker separation became one voxel count
+    for every axis -- 20 voxels of 0.5 um, so 40 um along a 2 um z -- and two
+    bodies 20 um apart in z got one marker between them and were never cut."""
+    mask = _dumbbell_along_z_on_anisotropic_voxels()
+
+    cleaned, stats = sc.split_narrow_neck_components(mask, voxel_size_zyx=(2.0, 0.5, 0.5))
+
+    assert stats["cuts_made"] == 1
+    assert sc._connected_components(cleaned)[1] == 2
+
+
+def test_markers_closer_than_the_separation_on_any_axis_merge():
+    edt = np.zeros((20, 30, 30))
+    mask = np.ones_like(edt, dtype=bool)
+    edt[5, 15, 15] = 3.0
+    edt[9, 15, 15] = 2.5  # 8 um above the first on a 2 um z
+    edt[5, 15, 25] = 2.0  # 5 um across on a 0.5 um x
+
+    kept = sc._marker_peaks(edt, mask, sampling=(2.0, 0.5, 0.5), min_marker_separation_um=10.0)
+    assert kept.tolist() == [[5, 15, 15]]
+    kept = sc._marker_peaks(edt, mask, sampling=(2.0, 0.5, 0.5), min_marker_separation_um=4.0)
+    assert sorted(kept.tolist()) == [[5, 15, 15], [5, 15, 25], [9, 15, 15]]
+
+
 def test_split_leaves_a_uniform_radius_tube_as_one_component():
     """Watershed may still seed multiple markers along a flat ridge, but a
     uniform vessel has no narrowing at any interface, so nothing is cut."""
@@ -314,29 +349,45 @@ def test_remove_whiskers_radius_zero_is_a_no_op():
 
 
 def test_remove_whiskers_converts_physical_radius_per_axis_anisotropically(monkeypatch):
-    """The structuring element radius must come from voxel_size_zyx per axis,
-    not a single scalar -- else an anisotropic dataset opens more
-    aggressively along its coarser axis than its finer ones."""
+    """The structuring element must reach the same physical distance on every
+    axis -- none at all along a z coarser than the radius, not the one voxel
+    (2 um) every axis used to be rounded up to."""
     captured = {}
 
-    def fake_ellipsoid(radius_voxels):
-        captured["radius_voxels"] = radius_voxels
-        return np.ones((1, 1, 1), dtype=bool)
+    def fake_opening(mask, structure=None):
+        captured["structure"] = structure
+        return mask
 
-    monkeypatch.setattr(sc, "_ellipsoid_structure", fake_ellipsoid)
-    monkeypatch.setattr(sc, "binary_opening", lambda mask, structure=None: mask)
+    monkeypatch.setattr(sc, "binary_opening", fake_opening)
 
     mask = np.zeros((5, 5, 5), dtype=bool)
     mask[2, 2, 2] = True
     sc.remove_surface_whiskers(mask, voxel_size_zyx=(2.0, 0.5, 0.25), whisker_radius_um=1.0)
 
-    assert captured["radius_voxels"] == (1, 2, 4)
+    assert captured["structure"].shape == (1, 5, 9)
 
 
-def test_ellipsoid_structure_shape_matches_per_axis_radius():
-    structure = sc._ellipsoid_structure((1, 3, 2))
-    assert structure.shape == (3, 7, 5)
-    assert structure[1, 3, 2]
+def test_the_physical_ball_is_the_offsets_within_the_radius():
+    structure, reach = sc._physical_ball(1.0, (2.0, 0.5, 0.25))
+    assert structure.shape == (1, 5, 9) and reach == 4
+    assert structure[0, 2, 4] and structure[0, 0, 4] and structure[0, 2, 0]
+    assert not structure[0, 0, 0]  # (1.0, 1.0) um away: outside the 1 um ball
+    # A radius under the finest voxel still reaches one voxel, as it did.
+    assert sc._physical_ball(0.5, (1.0, 1.0, 1.0))[0].shape == (3, 3, 3)
+
+
+def test_whisker_removal_keeps_a_capillary_two_z_slices_thick():
+    """Regression (audit): the default 1 um whisker radius, rounded up to one
+    2 um slice along z, eroded a 4 um capillary lying two slices thick clean
+    away -- 0 of its voxels were left."""
+    mask = np.zeros((6, 24, 60), dtype=bool)
+    y, x = np.ogrid[:24, :60]
+    mask[2:4] = ((y - 12) * 0.5) ** 2 <= 2.0**2  # 4 um across, two 2 um slices deep
+    mask[:, :, :5] = mask[:, :, 55:] = False
+
+    kept = sc.remove_surface_whiskers(mask, voxel_size_zyx=(2.0, 0.5, 0.5), whisker_radius_um=1.0)
+
+    assert kept.sum() >= 0.7 * mask.sum()
 
 
 # --- close_small_gaps -----------------------------------------------------
@@ -394,23 +445,30 @@ def test_close_small_gaps_radius_zero_is_a_no_op():
 
 
 def test_close_small_gaps_converts_physical_radius_per_axis_anisotropically(monkeypatch):
-    """The structuring element radius must come from voxel_size_zyx per axis,
-    not a single scalar -- else an anisotropic dataset closes more
-    aggressively along its coarser axis than its finer ones."""
+    """The structuring element must reach the same physical distance on every
+    axis: at the default 0.5 um, a 2 um z gap used to be bridged."""
     captured = {}
 
-    def fake_ellipsoid(radius_voxels):
-        captured["radius_voxels"] = radius_voxels
-        return np.ones((1, 1, 1), dtype=bool)
+    def fake_closing(mask, structure=None):
+        captured["structure"] = structure
+        return mask
 
-    monkeypatch.setattr(sc, "_ellipsoid_structure", fake_ellipsoid)
-    monkeypatch.setattr(sc, "binary_closing", lambda mask, structure=None: mask)
+    monkeypatch.setattr(sc, "binary_closing", fake_closing)
 
     mask = np.zeros((5, 5, 5), dtype=bool)
     mask[2, 2, 2] = True
     sc.close_small_gaps(mask, voxel_size_zyx=(2.0, 0.5, 0.25), closing_radius_um=1.0)
 
-    assert captured["radius_voxels"] == (1, 2, 4)
+    assert captured["structure"].shape == (1, 5, 9)
+
+
+def test_close_small_gaps_does_not_bridge_a_z_gap_wider_than_its_radius():
+    mask = np.zeros((11, 12, 12), dtype=bool)
+    mask[:5, 2:10, 2:10] = mask[6:, 2:10, 2:10] = True  # one 2 um slice apart
+
+    closed = sc.close_small_gaps(mask, voxel_size_zyx=(2.0, 0.5, 0.5), closing_radius_um=0.5)
+
+    assert not closed[5].any()
 
 
 # --- smooth_vessel_surfaces ---------------------------------------------------

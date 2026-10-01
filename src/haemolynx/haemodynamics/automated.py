@@ -329,6 +329,14 @@ def _label_at(
     return int(labels[iz, iy, ix])
 
 
+def _line_pitch_um(direction_unit: np.ndarray, voxel_size_zyx) -> float:
+    """How far apart, in microns, a line along *direction_unit* crosses voxels:
+    ``1 / |direction / spacing|`` -- each axis's spacing along an axis, and in
+    between for an oblique line."""
+    per_voxel = np.asarray(direction_unit, dtype=float) / _spacing_vec(voxel_size_zyx)
+    return float(1.0 / max(np.linalg.norm(per_voxel), 1e-12))
+
+
 def _max_extent_along_ray(
     center_idx: np.ndarray,
     direction_unit: np.ndarray,
@@ -1677,19 +1685,6 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         raise ValueError(
             f"profile_baseline_mode must be 'wings' or 'percentile', got {profile_baseline_mode!r}."
         )
-    # The pixel pitch of the plane the transverse lines lie in: y-x for the
-    # default in-plane sampling, all three axes for true-3D sampling.
-    sampling_pixel_um = float(
-        np.max(_spacing_vec(voxel_size_zyx)[1:])
-        if transverse_sampling_mode == "in_plane_yx"
-        else np.max(_spacing_vec(voxel_size_zyx))
-    )
-    min_diameter_um = max(0.0, float(min_diameter_pixels)) * sampling_pixel_um
-    clip_smoothing_um = (
-        max(_CLIP_DECISION_SMOOTHING_WINDOW_UM, 2.0 * sampling_pixel_um)
-        if clip_decision_smoothing_um is None
-        else float(clip_decision_smoothing_um)
-    )
     # Not at module level: sections imports from this module.
     from .sections import projected_sigma
 
@@ -1917,6 +1912,18 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
                     {"blur_sigma_um": projected_sigma(n_hat, profile_psf_sigma_zyx)}
                     if profile_psf_sigma_zyx is not None and profile_model == "blurred_lumen"
                     else {}
+                )
+                # The voxel pitch along this sample's own line, for the
+                # minimum width and the clip's smoothing: taking the coarsest
+                # axis's for every line in true-3D sampling rejected every
+                # width under 4 um on a 0.5 x 0.5 x 2 um stack, even on lines
+                # crossing a voxel every 0.5 um.
+                line_pitch_um = _line_pitch_um(n_hat, voxel_size_zyx)
+                min_diameter_um = max(0.0, float(min_diameter_pixels)) * line_pitch_um
+                clip_smoothing_um = (
+                    max(_CLIP_DECISION_SMOOTHING_WINDOW_UM, 2.0 * line_pitch_um)
+                    if clip_decision_smoothing_um is None
+                    else float(clip_decision_smoothing_um)
                 )
 
                 def _capped_initial_half_extent(half_extent: float, local_arc_window: float) -> float:

@@ -7,13 +7,21 @@ compare pericyte tone between conditions.
 Kept here rather than in an example because both the whole-network solve and
 the sweep are generally useful, and because a numerical result belongs
 somewhere it can be tested.
+
+Every sweep grid point is solved once (:func:`solve_sweep_point`): flow is
+linear in the pressure drop, so one solve at a unit drop gives every inlet
+pressure by scaling (:class:`UnitPressureSolve`), and the discharge
+haematocrit -- which depends on how flow divides at each junction, not on its
+size -- is iterated to its fixed point for that point's geometry, as a single
+re-solve does, when ``haematocrit_model`` is ``distributed_iterative``.
 """
 from __future__ import annotations
 
 import csv
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import networkx as nx
 import numpy as np
@@ -23,6 +31,7 @@ from .constriction_strategy import (
     constriction_strategy_kwargs,
     set_resistances_for_constriction_strategy,
 )
+from .haematocrit_distribution import JUNCTION_RULE_NO_SEPARATION, iterate_flow_and_haematocrit
 from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
 from .resistance import (
     build_conductance_matrix_from_graph,
@@ -61,6 +70,77 @@ def solve_pressure_and_boundary_flow(
     Returns the pressure field, the flow summed over the inlets and over the
     outlets, and the network's equivalent resistance.
     """
+    return unit_pressure_solve(
+        conductance, node_list, inlet_nodes=inlet_nodes, outlet_nodes=outlet_nodes
+    ).at(inlet_p_bc, outlet_p_bc)
+
+
+@dataclass(frozen=True)
+class UnitPressureSolve:
+    """A network solved once, at inlets 1 Pa above the outlets.
+
+    Flow is linear in the pressure drop and the Laplacian's rows sum to zero,
+    so at inlet pressure ``p_in`` and outlet pressure ``p_out`` every node the
+    boundaries reach sits at ``p_out + (p_in - p_out) * pressure`` and every
+    flow scales by ``p_in - p_out``: :meth:`at` gives the same answer as a
+    fresh solve at those pressures, to rounding, for the cost of a multiply.
+    A node with no conductive path to a boundary stays at 0 Pa, as a solve
+    leaves it.
+    """
+
+    #: Pressure at a unit drop: 1 at the inlets, 0 at the outlets and at every
+    #: node the boundaries do not reach.
+    pressure: np.ndarray
+    #: The nodes whose pressure the boundaries set.
+    reached: np.ndarray
+    #: Total flow through the inlets, and through the outlets, per Pa of drop.
+    inlet_flow: float
+    outlet_flow: float
+    #: Whether any conductive path joins an inlet to an outlet.
+    connected: bool
+    #: Nodes listed as both an inlet and an outlet.
+    both_ends: tuple
+
+    def at(self, inlet_p_bc: float, outlet_p_bc: float) -> dict[str, Any]:
+        """Pressures, boundary flows and equivalent resistance at these pressures."""
+        inlet_p_bc, outlet_p_bc = float(inlet_p_bc), float(outlet_p_bc)
+        drop = inlet_p_bc - outlet_p_bc
+        if self.both_ends and not np.isclose(inlet_p_bc, outlet_p_bc):
+            raise ValueError(
+                f"Node {self.both_ends[0]} receives conflicting BC pressures "
+                f"{inlet_p_bc} and {outlet_p_bc}."
+            )
+        if drop != 0.0 and not self.connected:
+            raise ValueError(
+                "Inlet and outlet boundary nodes are not connected by "
+                "conductance-carrying edges; cannot solve for flow. Check that "
+                "the inlet and outlet land on the same conductive part of the "
+                "network."
+            )
+        pressure = np.where(self.reached, outlet_p_bc + drop * self.pressure, 0.0)
+        total_inlet_flow = drop * self.inlet_flow
+        # Exact zero only: flows are in m^3/s and physiologically ~1e-14, so any
+        # absolute tolerance would swallow every real result.
+        equivalent_resistance = (
+            np.inf if total_inlet_flow == 0.0 else drop / total_inlet_flow
+        )
+        return {
+            "pressure": pressure,
+            "total_inlet_flow": float(total_inlet_flow),
+            "total_outlet_flow": float(drop * self.outlet_flow),
+            "equivalent_resistance": float(equivalent_resistance),
+        }
+
+
+def unit_pressure_solve(
+    conductance: np.ndarray,
+    node_list: list[int],
+    *,
+    inlet_nodes: list[int],
+    outlet_nodes: list[int],
+) -> UnitPressureSolve:
+    """Solve *conductance* once at a unit pressure drop -- see
+    :class:`UnitPressureSolve` for how that answers every other drop."""
     if not inlet_nodes:
         raise ValueError("inlet_nodes cannot be empty for flow/resistance sweep.")
     if not outlet_nodes:
@@ -85,16 +165,15 @@ def solve_pressure_and_boundary_flow(
     pressure = np.zeros(n_nodes, dtype=float)
     bc_idx_to_p: dict[int, float] = {}
     for node_id in inlet_nodes:
-        bc_idx_to_p[node_to_idx[node_id]] = float(inlet_p_bc)
+        bc_idx_to_p[node_to_idx[node_id]] = 1.0
+    both_ends: list[int] = []
     for node_id in outlet_nodes:
         idx = node_to_idx[node_id]
-        existing = bc_idx_to_p.get(idx)
-        if existing is not None and not np.isclose(existing, float(outlet_p_bc)):
-            raise ValueError(
-                f"Node {node_id} receives conflicting BC pressures "
-                f"{existing} and {outlet_p_bc}."
-            )
-        bc_idx_to_p[idx] = float(outlet_p_bc)
+        if bc_idx_to_p.get(idx) == 1.0:
+            # Refused by `at` unless the two pressures are equal, when the node
+            # sits at the one pressure either way.
+            both_ends.append(node_id)
+        bc_idx_to_p[idx] = 0.0
 
     known_idx = np.array(sorted(bc_idx_to_p.keys()), dtype=int)
     pressure[known_idx] = np.array([bc_idx_to_p[idx] for idx in known_idx], dtype=float)
@@ -106,15 +185,7 @@ def solve_pressure_and_boundary_flow(
     adjacency = conductance > 0
     inlet_idx = np.array([node_to_idx[n] for n in inlet_nodes], dtype=int)
     outlet_idx = np.array([node_to_idx[n] for n in outlet_nodes], dtype=int)
-    if float(inlet_p_bc) != float(outlet_p_bc) and not bool(
-        np.any(reachable_through_conductances(adjacency, inlet_idx)[outlet_idx])
-    ):
-        raise ValueError(
-            "Inlet and outlet boundary nodes are not connected by "
-            "conductance-carrying edges; cannot solve for flow. Check that "
-            "the inlet and outlet land on the same conductive part of the "
-            "network."
-        )
+    connected = bool(np.any(reachable_through_conductances(adjacency, inlet_idx)[outlet_idx]))
     unknown_idx, stranded_conductive = reachable_unknown_node_indices(
         conductance, known_idx
     )
@@ -145,21 +216,115 @@ def solve_pressure_and_boundary_flow(
             total += float(np.sum(conductance[i, :] * (pressure[i] - pressure)))
         return total
 
-    total_inlet_flow = _boundary_flow(inlet_nodes)
-    total_outlet_flow = _boundary_flow(outlet_nodes)
-
-    pressure_drop = float(inlet_p_bc - outlet_p_bc)
-    # Exact zero only: flows are in m^3/s and physiologically ~1e-14, so any
-    # absolute tolerance would swallow every real result.
-    equivalent_resistance = (
-        np.inf if total_inlet_flow == 0.0 else pressure_drop / total_inlet_flow
+    reached = np.zeros(n_nodes, dtype=bool)
+    reached[known_idx] = True
+    reached[unknown_idx] = True
+    return UnitPressureSolve(
+        pressure=pressure,
+        reached=reached,
+        inlet_flow=_boundary_flow(inlet_nodes),
+        outlet_flow=_boundary_flow(outlet_nodes),
+        connected=connected,
+        both_ends=tuple(both_ends),
     )
 
+
+def solve_sweep_point(
+    G: nx.MultiGraph,
+    settings: Mapping[str, Any],
+    *,
+    recompute_resistances: Callable[[], None],
+    inlet_nodes: list[int],
+    outlet_nodes: list[int],
+) -> tuple[UnitPressureSolve, list[int], dict[str, Any] | None]:
+    """One sweep grid point, solved the way a single re-solve is.
+
+    *G* carries the point's own resistances, and *recompute_resistances* redoes
+    them in place from each edge's ``discharge_haematocrit``. When
+    ``haematocrit_model`` is ``distributed_iterative``, flow and haematocrit
+    are iterated to their fixed point first
+    (:func:`~haemolynx.haemodynamics.haematocrit_distribution.iterate_flow_and_haematocrit`),
+    at the run's own boundary pressures: the haematocrit follows how flow
+    divides at each junction, which scaling the pressure drop leaves alone,
+    so the one fixed point serves every inlet pressure. Then one unit solve.
+
+    Returns the unit solve, its node order, and the haematocrit iteration's
+    report (``None`` without one).
+    """
+    iterated = None
+    if settings.get("haematocrit_model") == "distributed_iterative":
+        outlet_p = float(settings["outlet_p_bc"])
+        inlet_p = float(settings["inlet_p_bc"])
+        iterated = iterate_flow_and_haematocrit(
+            G,
+            recompute_resistances=recompute_resistances,
+            inlet_haematocrit=float(settings["haematocrit"]),
+            # Any drop gives the same fixed point; a zero one gives no flow to
+            # divide.
+            inlet_p_bc=inlet_p if inlet_p != outlet_p else outlet_p + 1.0,
+            outlet_p_bc=outlet_p,
+            inlet_nodes=list(inlet_nodes),
+            outlet_nodes=list(outlet_nodes),
+            max_iterations=int(settings.get("haematocrit_distribution_max_iterations", 20)),
+            tolerance=float(settings.get("haematocrit_distribution_tolerance", 0.01)),
+            junction_rule=settings.get("haematocrit_junction_rule") or JUNCTION_RULE_NO_SEPARATION,
+        )
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    unit = unit_pressure_solve(
+        conductance, list(node_list), inlet_nodes=inlet_nodes, outlet_nodes=outlet_nodes
+    )
+    return unit, list(node_list), iterated
+
+
+def sweep_rows_at_pressures(
+    unit: UnitPressureSolve,
+    G: nx.MultiGraph,
+    node_list: list[int],
+    inlet_pressures: Sequence[float],
+    outlet_pressure_pa: float,
+    fixed: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, np.ndarray]]]:
+    """One CSV row, and the per-vessel flows, for each inlet pressure of a grid
+    point solved by :func:`solve_sweep_point`; *fixed* are the row's own
+    geometry columns."""
+    rows: list[dict[str, Any]] = []
+    flows: list[dict[str, np.ndarray]] = []
+    for inlet_pressure_pa in inlet_pressures:
+        solved = unit.at(float(inlet_pressure_pa), outlet_pressure_pa)
+        flows.append(record_flows_after_solve(G, node_list, solved["pressure"]))
+        rows.append(
+            {
+                **fixed,
+                "inlet_pressure_pa": inlet_pressure_pa,
+                "outlet_pressure_pa": outlet_pressure_pa,
+                "total_inlet_flow": solved["total_inlet_flow"],
+                "total_outlet_flow": solved["total_outlet_flow"],
+                "flow_balance_error": (
+                    solved["total_inlet_flow"] + solved["total_outlet_flow"]
+                ),
+                "equivalent_resistance": solved["equivalent_resistance"],
+            }
+        )
+    return rows, flows
+
+
+def haematocrit_sweep_report(iterations: Sequence[dict[str, Any] | None]) -> dict[str, Any] | None:
+    """How the grid points' haematocrit iterations went, or ``None`` when the
+    sweep did not iterate it; warns about any that did not converge."""
+    ran = [item for item in iterations if item is not None]
+    if not ran:
+        return None
+    not_converged = sum(1 for item in ran if not item.get("converged"))
+    if not_converged:
+        logger.warning(
+            f"Sweep: the discharge haematocrit did not converge at {not_converged} of "
+            f"{len(ran)} grid point(s) within haematocrit_distribution_max_iterations; "
+            "their flows use the last iteration's."
+        )
     return {
-        "pressure": pressure,
-        "total_inlet_flow": float(total_inlet_flow),
-        "total_outlet_flow": float(total_outlet_flow),
-        "equivalent_resistance": float(equivalent_resistance),
+        "points": len(ran),
+        "not_converged": not_converged,
+        "max_iterations_used": max(int(item.get("iterations", 0)) for item in ran),
     }
 
 
@@ -316,6 +481,7 @@ def run_pericyte_dilation_pressure_sweep(
 
     results: list[dict[str, Any]] = []
     recorded_flows: list[dict[str, np.ndarray]] = []
+    iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for dilation_percent in dilation_values:
         dilation_factor = 1.0 + (float(dilation_percent) / 100.0)
@@ -324,43 +490,39 @@ def run_pericyte_dilation_pressure_sweep(
             branch_order: float(diameter_um) * dilation_factor
             for branch_order, diameter_um in diameter_by_branch_order.items()
         }
-        dilated = _apply_sweep_resistances(
+
+        def recompute_resistances(
+            graph=dilated, scaled=scaled_diameters, factor=dilation_factor
+        ) -> None:
+            _apply_sweep_resistances(
+                graph,
+                settings,
+                scaled_diameters=scaled,
+                dilation_factor=factor,
+                sweep_dilation=sweep_dilation,
+                poiseuille_model=poiseuille_model,
+            )
+
+        recompute_resistances()
+        unit, node_list, iterated = solve_sweep_point(
             dilated,
             settings,
-            scaled_diameters=scaled_diameters,
-            dilation_factor=dilation_factor,
-            sweep_dilation=sweep_dilation,
-            poiseuille_model=poiseuille_model,
+            recompute_resistances=recompute_resistances,
+            inlet_nodes=inlet_nodes,
+            outlet_nodes=outlet_nodes,
         )
-
-        conductance, node_list = build_conductance_matrix_from_graph(dilated)
-        last_node_list = list(node_list)
-        for inlet_pressure_pa in inlet_pressures:
-            solved = solve_pressure_and_boundary_flow(
-                conductance,
-                node_list,
-                inlet_p_bc=float(inlet_pressure_pa),
-                outlet_p_bc=outlet_pressure_pa,
-                inlet_nodes=inlet_nodes,
-                outlet_nodes=outlet_nodes,
-            )
-            recorded_flows.append(
-                record_flows_after_solve(dilated, node_list, solved["pressure"])
-            )
-            results.append(
-                {
-                    "dilation_percent": int(dilation_percent),
-                    "dilation_factor": float(dilation_factor),
-                    "inlet_pressure_pa": inlet_pressure_pa,
-                    "outlet_pressure_pa": outlet_pressure_pa,
-                    "total_inlet_flow": solved["total_inlet_flow"],
-                    "total_outlet_flow": solved["total_outlet_flow"],
-                    "flow_balance_error": (
-                        solved["total_inlet_flow"] + solved["total_outlet_flow"]
-                    ),
-                    "equivalent_resistance": solved["equivalent_resistance"],
-                }
-            )
+        iterations.append(iterated)
+        last_node_list = node_list
+        rows, flows = sweep_rows_at_pressures(
+            unit,
+            dilated,
+            node_list,
+            inlet_pressures,
+            outlet_pressure_pa,
+            {"dilation_percent": int(dilation_percent), "dilation_factor": float(dilation_factor)},
+        )
+        results.extend(rows)
+        recorded_flows.extend(flows)
 
     if sweep_dilation and sweep_pressure:
         csv_name = "pericyte_dilation_pressure_sweep.csv"
@@ -397,6 +559,7 @@ def run_pericyte_dilation_pressure_sweep(
         "results": results,
         "csv_path": str(csv_path),
         "sweep_flows": sweep_flows,
+        "haematocrit_distribution": haematocrit_sweep_report(iterations),
     }
 
 
@@ -473,10 +636,11 @@ def run_arteriole_dilation_pressure_sweep(
 
     results: list[dict[str, Any]] = []
     recorded_flows: list[dict[str, np.ndarray]] = []
+    iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for dilation_percent in dilation_values:
         scale = percent_change_to_scale(float(dilation_percent))
-        scaled, _table, _summary = scale_arteriole_diameters(
+        scaled, scaled_table, _summary = scale_arteriole_diameters(
             G,
             diameter_by_branch_order,
             scale,
@@ -484,34 +648,34 @@ def run_arteriole_dilation_pressure_sweep(
             prefer_edge_fwhm_diameter=prefer_measured,
         )
         apply_baseline_overrides(scaled, settings, poiseuille_model)
-        conductance, node_list = build_conductance_matrix_from_graph(scaled)
-        last_node_list = list(node_list)
-        for inlet_pressure_pa in inlet_pressures:
-            solved = solve_pressure_and_boundary_flow(
-                conductance,
-                node_list,
-                inlet_p_bc=float(inlet_pressure_pa),
-                outlet_p_bc=outlet_pressure_pa,
-                inlet_nodes=inlet_nodes,
-                outlet_nodes=outlet_nodes,
+
+        def recompute_resistances(graph=scaled, table=scaled_table) -> None:
+            # The diameters are already scaled on the edges; this only moves
+            # resistance, from the edges' current discharge_haematocrit.
+            poiseuille_model.set_poiseuille_resistances(
+                graph, table, prefer_edge_fwhm_diameter=prefer_measured
             )
-            recorded_flows.append(
-                record_flows_after_solve(scaled, node_list, solved["pressure"])
-            )
-            results.append(
-                {
-                    "dilation_percent": int(dilation_percent),
-                    "dilation_factor": float(scale),
-                    "inlet_pressure_pa": inlet_pressure_pa,
-                    "outlet_pressure_pa": outlet_pressure_pa,
-                    "total_inlet_flow": solved["total_inlet_flow"],
-                    "total_outlet_flow": solved["total_outlet_flow"],
-                    "flow_balance_error": (
-                        solved["total_inlet_flow"] + solved["total_outlet_flow"]
-                    ),
-                    "equivalent_resistance": solved["equivalent_resistance"],
-                }
-            )
+            apply_baseline_overrides(graph, settings, poiseuille_model)
+
+        unit, node_list, iterated = solve_sweep_point(
+            scaled,
+            settings,
+            recompute_resistances=recompute_resistances,
+            inlet_nodes=inlet_nodes,
+            outlet_nodes=outlet_nodes,
+        )
+        iterations.append(iterated)
+        last_node_list = node_list
+        rows, flows = sweep_rows_at_pressures(
+            unit,
+            scaled,
+            node_list,
+            inlet_pressures,
+            outlet_pressure_pa,
+            {"dilation_percent": int(dilation_percent), "dilation_factor": float(scale)},
+        )
+        results.extend(rows)
+        recorded_flows.extend(flows)
 
     if sweep_dilation and sweep_pressure:
         csv_name = "arteriole_dilation_pressure_sweep.csv"
@@ -548,6 +712,7 @@ def run_arteriole_dilation_pressure_sweep(
         "results": results,
         "csv_path": str(csv_path),
         "sweep_flows": sweep_flows,
+        "haematocrit_distribution": haematocrit_sweep_report(iterations),
     }
 
 

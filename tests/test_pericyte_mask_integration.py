@@ -304,3 +304,59 @@ if __name__ == "__main__":
             expect_constriction=False,
         )
     print("Synthetic pericyte mask integration run completed.")
+
+
+def _anisotropic_case(tmp_path: Path):
+    """A vessel along x at z = 20 um, y = 8 um, from a 2 x 0.5 x 0.5 um image,
+    and a pericyte on it in a mask saved with no voxel size at all."""
+    tifffile = pytest.importorskip("tifffile")
+    G = nx.MultiGraph()
+    G.graph["image_voxel_size_zyx"] = (2.0, 0.5, 0.5)
+    G.add_node(0, pos=np.array([20.0, 8.0, 2.0]))
+    G.add_node(1, pos=np.array([20.0, 8.0, 30.0]))
+    G.add_edge(0, 1, key=0, length=28.0, branch_order="B01",
+               voxels=[[20.0, 8.0, float(x)] for x in range(2, 31)])
+    z, y, x = np.indices((20, 32, 64))
+    blob = ((z - 10) * 2.0) ** 2 + ((y - 16) * 0.5) ** 2 + ((x - 32) * 0.5) ** 2 <= 3.5**2
+    mask_path = tmp_path / "pericytes.tif"
+    tifffile.imwrite(str(mask_path), blob.astype(np.uint8) * 255)
+    kwargs = dict(
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.8},
+        pericyte_mask_path=mask_path,
+        constriction_length=8.0,
+    )
+    return G, kwargs
+
+
+def test_a_pericyte_mask_at_another_voxel_size_than_the_image_is_refused(tmp_path: Path):
+    """Regression (audit): the mask's voxel size came from its own file alone,
+    unchecked -- saved without z spacing it read as 1 um against the image's
+    2 um, its pericyte landed 12.8 um off its vessel, past the 3 um limit, and
+    was silently dropped."""
+    G, kwargs = _anisotropic_case(tmp_path)
+
+    with pytest.raises(ValueError, match="voxel size"):
+        set_poiseuille_resistances_with_pericyte_mask(G, **kwargs)
+
+
+def test_the_runs_voxel_size_override_places_the_pericyte_on_its_vessel(tmp_path: Path):
+    G, kwargs = _anisotropic_case(tmp_path)
+
+    _G, results = set_poiseuille_resistances_with_pericyte_mask(
+        G, voxel_size_override_xyz=(0.5, 0.5, 2.0), voxel_size_policy="override", **kwargs
+    )
+
+    assert results["eligible_pericyte_count"] == 1
+    assert results["assignment_distance_um_max"] == pytest.approx(0.0, abs=0.5)
+
+
+def test_the_strategy_settings_carry_the_runs_voxel_size_policy():
+    from haemolynx.haemodynamics.constriction_strategy import constriction_strategy_kwargs
+
+    kwargs = constriction_strategy_kwargs(
+        {"voxel_size_override_xyz": [0.5, 0.5, 2.0], "voxel_size_policy": "override"},
+        diameter_by_branch_order={},
+    )
+    assert kwargs["voxel_size_override_xyz"] == [0.5, 0.5, 2.0]
+    assert kwargs["voxel_size_policy"] == "override"

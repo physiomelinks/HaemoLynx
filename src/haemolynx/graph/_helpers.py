@@ -318,9 +318,13 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
     
     Positions are in physical units; *voxel_size* converts them to array
     indices for look-ups.  The returned path is converted back to physical
-    coordinates.
+    coordinates. The search for the nearest skeleton voxel and the path's
+    step costs are physical too: in voxels, the path with fewest voxels won
+    over the shortest one, and a merged edge's ``voxels`` and ``length``
+    followed it.
     """
     vs = np.asarray(voxel_size, dtype=float)
+    relative = vs / float(vs.min())
     start_vox = np.round(np.asarray(start_pos, dtype=float) / vs).astype(int)
     end_vox = np.round(np.asarray(end_pos, dtype=float) / vs).astype(int)
     
@@ -333,8 +337,8 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
             logger.debug(f"       Could not parse skeleton data")
         return None
     
-    start_skeleton = find_nearest_skeleton_voxel(skeleton_array, start_vox)
-    end_skeleton = find_nearest_skeleton_voxel(skeleton_array, end_vox)
+    start_skeleton = find_nearest_skeleton_voxel(skeleton_array, start_vox, spacing=relative)
+    end_skeleton = find_nearest_skeleton_voxel(skeleton_array, end_vox, spacing=relative)
     
     if start_skeleton is None or end_skeleton is None:
         if debug:
@@ -347,7 +351,7 @@ def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_si
         logger.debug(f"       Start skeleton voxel: {start_skeleton} (dist: {start_dist:.1f})")
         logger.debug(f"       End skeleton voxel: {end_skeleton} (dist: {end_dist:.1f})")
     
-    path = astar_skeleton_path(skeleton_array, start_skeleton, end_skeleton, debug)
+    path = astar_skeleton_path(skeleton_array, start_skeleton, end_skeleton, debug, spacing=relative)
     
     if path:
         if debug:
@@ -405,27 +409,33 @@ def parse_skeleton_data(skeleton_data):
         return None
 
 
-def find_nearest_skeleton_voxel(skeleton_array, target_pos, max_search_radius=10):
+def find_nearest_skeleton_voxel(skeleton_array, target_pos, max_search_radius=10, spacing=None):
     """
     Find the nearest skeleton voxel to target_pos within search radius.
+
+    Radius and distance in voxels of the finest axis, each axis weighted by
+    *spacing* (per-axis spacing relative to the finest; cube voxels when
+    ``None``), so the search reaches the same physical distance every way.
     """
     target = np.array(target_pos, dtype=int)
     shape = skeleton_array.shape
-    
+    relative = np.ones(3) if spacing is None else np.asarray(spacing, dtype=float)
+
     if (target >= 0).all() and (target < shape).all():
         if skeleton_array[tuple(target)]:
             return tuple(target)
-    
+
     for radius in range(1, max_search_radius + 1):
-        lo = np.maximum(target - radius, 0)
-        hi = np.minimum(target + radius + 1, shape)
-        
+        reach = np.ceil(radius / relative - 1e-9).astype(int)
+        lo = np.maximum(target - reach, 0)
+        hi = np.minimum(target + reach + 1, shape)
+
         sub = skeleton_array[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
         if not np.any(sub):
             continue
-        
+
         local_hits = np.argwhere(sub) + lo
-        dists = np.linalg.norm(local_hits - target, axis=1)
+        dists = np.linalg.norm((local_hits - target) * relative, axis=1)
         within = dists <= radius
         if np.any(within):
             best = int(np.argmin(np.where(within, dists, np.inf)))
@@ -434,9 +444,11 @@ def find_nearest_skeleton_voxel(skeleton_array, target_pos, max_search_radius=10
     return None
 
 
-def astar_skeleton_path(skeleton_array, start, end, debug=False):
+def astar_skeleton_path(skeleton_array, start, end, debug=False, spacing=None):
     """
-    A* pathfinding through skeleton voxels only.
+    A* pathfinding through skeleton voxels only, each step costing its
+    physical length (*spacing*, per axis relative to the finest; cube voxels
+    when ``None``).
     """
     import heapq
     from collections import defaultdict
@@ -449,6 +461,7 @@ def astar_skeleton_path(skeleton_array, start, end, debug=False):
     
     ex, ey, ez = end
     sx, sy, sz = skeleton_array.shape
+    wx, wy, wz = (1.0, 1.0, 1.0) if spacing is None else (float(s) for s in spacing)
 
     open_set = [(0, 0, start)]
     came_from = {}
@@ -500,7 +513,7 @@ def astar_skeleton_path(skeleton_array, start, end, debug=False):
             if neighbor in closed_set:
                 continue
             
-            distance = (dx*dx + dy*dy + dz*dz) ** 0.5
+            distance = ((dx * wx) ** 2 + (dy * wy) ** 2 + (dz * wz) ** 2) ** 0.5
             tentative_g = cur_g + distance
             
             if tentative_g < g_score[neighbor]:
@@ -509,7 +522,7 @@ def astar_skeleton_path(skeleton_array, start, end, debug=False):
                 hdx = nx_ - ex
                 hdy = ny_ - ey
                 hdz = nz_ - ez
-                f = tentative_g + (hdx*hdx + hdy*hdy + hdz*hdz) ** 0.5
+                f = tentative_g + ((hdx * wx) ** 2 + (hdy * wy) ** 2 + (hdz * wz) ** 2) ** 0.5
                 heapq.heappush(open_set, (f, tentative_g, neighbor))
     
     return None

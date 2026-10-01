@@ -104,7 +104,7 @@ class GraphEditorState:
         scale = self.voxel_size_zyx
         start_vox = tuple(c / s for c, s in zip(self.draft.last_point, scale))
         end_vox = tuple(c / s for c, s in zip(point_um, scale))
-        path_vox = astar_path(self.cost_field, start_vox, end_vox)
+        path_vox = astar_path(self.cost_field, start_vox, end_vox, voxel_size_zyx=scale)
         self.draft.extend(voxel_path_to_microns(path_vox, scale))
 
     def click_add(
@@ -173,4 +173,6 @@ class GraphEditorState:
         :class:`haemolynx.graph.edit.WindowedMaskCostField`, which gives the
         same values one routing window at a time.
         """
-        self.cost_field = mask_cost_field(mask, use_memmap=use_memmap)
+        self.cost_field = mask_cost_field(
+            mask, use_memmap=use_memmap, voxel_size_zyx=self.voxel_size_zyx
+        )

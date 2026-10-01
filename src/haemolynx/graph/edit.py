@@ -20,7 +20,6 @@ from typing import Any, Sequence
 import networkx as nx
 import numpy as np
 from scipy.ndimage import distance_transform_edt
-from skimage.graph import route_through_array
 
 from ._helpers import calculate_path_length, next_node_id
 from .degree2 import create_trivial_merged_edge
@@ -152,8 +151,23 @@ def delete_edge_and_collapse(G: nx.MultiGraph, u: Any, v: Any, key: Any) -> set[
     return changed
 
 
-def mask_cost_field(mask: np.ndarray, *, use_memmap: bool = False):
-    """Routing cost ``1 + d^2``, ``d`` = voxel distance to the nearest True mask voxel.
+def _relative_spacing(voxel_size_zyx) -> np.ndarray | None:
+    """Per-axis spacing in voxels of the finest axis, or None for cube voxels."""
+    if voxel_size_zyx is None:
+        return None
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    return spacing / float(spacing.min())
+
+
+def mask_cost_field(
+    mask: np.ndarray,
+    *,
+    use_memmap: bool = False,
+    voxel_size_zyx: Sequence[float] | None = None,
+):
+    """Routing cost ``1 + d^2``, ``d`` = distance to the nearest True mask voxel,
+    in voxels of the finest axis of *voxel_size_zyx* (cube voxels without one)
+    -- physical, so the field rises as fast in z as in-plane.
 
     Same formula as ``graph.reconnect``'s own ``window_cost``, applied to the
     segmented vessel mask rather than the skeleton: cheap inside or near real
@@ -166,11 +180,13 @@ def mask_cost_field(mask: np.ndarray, *, use_memmap: bool = False):
     reads rather than for the whole volume up front.
     """
     if use_memmap:
-        field = WindowedMaskCostField(mask)
+        field = WindowedMaskCostField(mask, voxel_size_zyx=voxel_size_zyx)
         if field.exact:
             return field
     binary = np.asarray(mask, dtype=bool)
-    return 1.0 + distance_transform_edt(~binary) ** 2
+    relative = _relative_spacing(voxel_size_zyx)
+    sampling = None if relative is None else tuple(relative)
+    return 1.0 + distance_transform_edt(~binary, sampling=sampling) ** 2
 
 
 #: Context kept around a requested window when transforming it. A voxel
@@ -188,16 +204,21 @@ class WindowedMaskCostField:
     of context; any voxel whose distance in the crop is not provably its
     distance in the volume is looked up from the mask's surface (see
     :mod:`haemolynx.preprocessing.pointwise_distance`). Distances are in
-    voxels, so each is the square root of an integer however it is found.
+    voxels of the finest axis of *voxel_size_zyx*, as for
+    :func:`mask_cost_field`.
     """
 
-    def __init__(self, mask: np.ndarray):
+    def __init__(self, mask: np.ndarray, voxel_size_zyx: Sequence[float] | None = None):
         from haemolynx.preprocessing.pointwise_distance import FeatureDistance
 
         self.mask = mask
         self.shape = tuple(mask.shape)
         self.ndim = len(self.shape)
-        self._distance = FeatureDistance(mask, feature_value=True)
+        relative = _relative_spacing(voxel_size_zyx)
+        self._sampling = np.ones(self.ndim) if relative is None else relative
+        self._distance = FeatureDistance(
+            mask, feature_value=True, sampling=tuple(self._sampling)
+        )
         # With no mask surface the volume is all-mask (distance 0 everywhere,
         # cost 1) or mask-free, where scipy's transform is not a distance at
         # all and only the whole-volume call reproduces it.
@@ -222,15 +243,16 @@ class WindowedMaskCostField:
         )
         inner = tuple(slice(a - p, b - p) for a, b, p in zip(lo, hi, plo))
         if crop.any():
-            distance = distance_transform_edt(~crop)[inner]
+            distance = distance_transform_edt(~crop, sampling=tuple(self._sampling))[inner]
             # A mask voxel outside the crop is at least this far away.
             index = np.indices(tuple(hi - lo)).reshape(self.ndim, -1).T + lo
             reach = np.full(len(index), np.inf)
             for axis in range(self.ndim):
+                step = float(self._sampling[axis])
                 if plo[axis] > 0:
-                    reach = np.minimum(reach, index[:, axis] - plo[axis] + 1)
+                    reach = np.minimum(reach, (index[:, axis] - plo[axis] + 1) * step)
                 if phi[axis] < self.shape[axis]:
-                    reach = np.minimum(reach, phi[axis] - index[:, axis])
+                    reach = np.minimum(reach, (phi[axis] - index[:, axis]) * step)
             flat = distance.reshape(-1)
             unsure = flat > reach
             if unsure.any():
@@ -266,15 +288,20 @@ def _straight_line_path(start: np.ndarray, end: np.ndarray) -> np.ndarray:
 
 
 def astar_path(
-    cost_field: np.ndarray, start_vox: Sequence[float], end_vox: Sequence[float]
+    cost_field: np.ndarray,
+    start_vox: Sequence[float],
+    end_vox: Sequence[float],
+    *,
+    voxel_size_zyx: Sequence[float] | None = None,
 ) -> np.ndarray:
     """Cheapest voxel path from *start_vox* to *end_vox* through *cost_field*.
 
-    Thin wrapper over :func:`skimage.graph.route_through_array`, the same
-    call ``graph.reconnect`` makes (``fully_connected=True``), so a branch
-    drawn here costs a path the same way a reconnected secondary loop edge
-    does. Returns voxel-index coordinates, not physical microns -- see
-    :func:`voxel_path_to_microns`.
+    The same 26-connected geometric routing ``graph.reconnect`` does, each
+    step weighted by its physical length on *voxel_size_zyx* (cube voxels
+    without one -- ``skimage.graph.route_through_array`` exactly): weighted
+    per voxel, a drawn branch zigged through a coarse z, and its length fed
+    the new vessel's resistance. Returns voxel-index coordinates, not
+    physical microns -- see :func:`voxel_path_to_microns`.
 
     Runs only over a local window around the two points, padded by
     :data:`_ASTAR_WINDOW_PAD` -- see its own docstring for why. Both points
@@ -297,9 +324,16 @@ def astar_path(
     start_local = tuple((start - lo).astype(int))
     end_local = tuple((end - lo).astype(int))
     try:
-        path_coords, _cost = route_through_array(
-            window, start_local, end_local, fully_connected=True
+        from skimage.graph import MCP_Geometric
+
+        relative = _relative_spacing(voxel_size_zyx)
+        router = MCP_Geometric(
+            np.asarray(window, dtype=float),
+            fully_connected=True,
+            sampling=(1.0,) * len(start_local) if relative is None else tuple(relative),
         )
+        router.find_costs([start_local], [end_local])
+        path_coords = router.traceback(end_local)
         return np.asarray(path_coords, dtype=float) + lo
     except Exception:
         logger.debug(

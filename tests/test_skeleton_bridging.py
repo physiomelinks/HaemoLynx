@@ -296,3 +296,126 @@ def test_gap_distances_are_the_same_in_parallel(monkeypatch):
     assert np.array_equal(
         inter_component_gap_distances(skeleton, voxel_size_zyx=(1.3, 0.4, 0.4)), serial
     )
+
+
+# --- closing and gap bridging reach physical distances -----------------------
+
+_ANISOTROPIC_ZYX = (2.0, 0.5, 0.5)
+
+
+def _two_lines(offset_axis: int, offset_voxels: int) -> np.ndarray:
+    volume = np.zeros((20, 60, 60), dtype=bool)
+    volume[5, 30, 5:55] = True
+    index = [5, 30]
+    index[offset_axis] += offset_voxels
+    volume[index[0], index[1], 5:55] = True
+    return volume
+
+
+@pytest.mark.parametrize("axis, voxels", [(0, 5), (1, 20)])
+def test_two_vessels_10_um_apart_stay_apart_along_any_axis(axis, voxels):
+    """Regression (audit): closing and gap bridging counted voxels on every
+    axis alike, so two vessels 10 um apart in z -- five 2 um slices -- were
+    fused into one, while the same 10 um in-plane (twenty 0.5 um voxels)
+    kept them apart."""
+    result = preprocess_skeleton_for_graph(
+        _two_lines(axis, voxels), **{**_PIPELINE_DEFAULTS, "max_bridge_distance": 0},
+        voxel_size_zyx=_ANISOTROPIC_ZYX,
+    )
+
+    assert _count(result) == 2
+
+
+def test_closing_reaches_a_physical_radius_on_every_axis():
+    from haemolynx.preprocessing.skeleton import close_binary_mask
+
+    # Solid slabs: closing fills a gap between thick parts, never in a line
+    # one voxel thin (its erosion needs the whole footprint inside).
+    in_plane = np.zeros((9, 9, 21), dtype=bool)
+    in_plane[:, :, :10] = in_plane[:, :, 11:] = True  # a 0.5 um gap along x
+    along_z = np.zeros((21, 9, 9), dtype=bool)
+    along_z[:10] = along_z[11:] = True  # a 2 um gap along z
+
+    closed_x = close_binary_mask(in_plane, 2, voxel_size_zyx=_ANISOTROPIC_ZYX)
+    closed_z = close_binary_mask(along_z, 2, voxel_size_zyx=_ANISOTROPIC_ZYX)
+
+    assert closed_x[4, 4, 10]  # 0.5 um is within the 1 um radius
+    assert not closed_z[10, 4, 4]  # 2 um is not
+    # Without a voxel size every voxel is a cube, as before.
+    assert close_binary_mask(along_z, 2)[10, 4, 4]
+
+
+@pytest.mark.parametrize("gap", [2, 5])
+def test_gap_bridging_reaches_a_physical_distance_on_the_low_ram_path_too(tmp_path, gap):
+    from haemolynx.preprocessing.skeleton import bridge_gaps
+
+    volume = np.zeros((12, 30, 30), dtype=bool)
+    volume[6, 15, 3:27] = True
+
+    in_ram = bridge_gaps(volume, gap, voxel_size_zyx=_ANISOTROPIC_ZYX)
+    on_disk = bridge_gaps(
+        volume, gap, voxel_size_zyx=_ANISOTROPIC_ZYX, use_memmap=True, memmap_directory=tmp_path
+    )
+
+    assert np.array_equal(np.asarray(on_disk), in_ram)
+    # gap x 0.5 um reaches floor(gap / 4) slices in z and gap voxels in y.
+    assert in_ram[6, 15 + gap, 15] and not in_ram[6, 15 + gap + 1, 15]
+    assert in_ram[6 + gap // 4, 15, 15] and not in_ram[6 + gap // 4 + 1, 15, 15]
+
+
+def test_a_short_piece_is_judged_by_its_length_in_microns():
+    """Regression (audit): the size filter counted voxels, so three voxels
+    along a 2 um z (6 um) went the same way as three along a 0.5 um x
+    (1.5 um). At a minimum of 5 finest-axis voxels (2.5 um), the z piece is a
+    vessel and the x piece is not."""
+    from haemolynx.preprocessing.skeleton import drop_small_components
+
+    volume = np.zeros((20, 20, 40), dtype=bool)
+    volume[2:5, 5, 5] = True  # 3 voxels along z: 6 um
+    volume[10, 10, 5:8] = True  # 3 voxels along x: 1.5 um
+    volume[10, 15, 10:30] = True  # a long piece, kept either way
+
+    kept = drop_small_components(volume, min_size=5, connectivity=3, voxel_size_zyx=(2.0, 0.5, 0.5))
+
+    assert kept[2:5, 5, 5].all()
+    assert not kept[10, 10, 5:8].any()
+    assert kept[10, 15, 10:30].all()
+
+
+def test_on_cube_voxels_the_size_filter_is_the_voxel_count(tmp_path):
+    from haemolynx.preprocessing.skeleton import drop_small_components
+    from skimage.morphology import remove_small_objects
+
+    rng = np.random.default_rng(3)
+    volume = rng.random((16, 16, 16)) > 0.9
+    expected = remove_small_objects(volume, min_size=4, connectivity=3)
+
+    for kwargs in ({}, {"voxel_size_zyx": (1.3, 1.3, 1.3)}):
+        assert np.array_equal(drop_small_components(volume, min_size=4, connectivity=3, **kwargs), expected)
+    on_disk = drop_small_components(
+        volume, min_size=4, connectivity=3, voxel_size_zyx=(2.0, 0.5, 0.5),
+        use_memmap=True, memmap_directory=tmp_path,
+    )
+    in_ram = drop_small_components(volume, min_size=4, connectivity=3, voxel_size_zyx=(2.0, 0.5, 0.5))
+    assert np.array_equal(np.asarray(on_disk), in_ram)
+
+
+def test_a_bridge_routed_through_the_mask_measures_its_steps_in_microns():
+    """Regression (audit): routed per voxel, a step along a 2 um z cost the
+    same as one along a 0.5 um x. Here an obstacle sits between the bridge's
+    ends in their own slice: around it in-plane is 10.5 voxel steps (5.2 um),
+    over it through the next slice 8.8 steps -- but 7.1 um. The router took
+    the slice above."""
+    from haemolynx.preprocessing.skeleton import _bridge_path_through_mask
+
+    mask = np.zeros((3, 9, 13), dtype=bool)
+    mask[0, 1:8, :] = True
+    mask[0, 2:7, 6] = False  # the obstacle, in the ends' own slice
+    mask[1, 1:8, :] = True  # the slice above, open
+    start, end = np.array([0, 4, 2]), np.array([0, 4, 10])
+
+    physical = _bridge_path_through_mask(mask, start, end, np.array([4.0, 1.0, 1.0]))
+    per_voxel = _bridge_path_through_mask(mask, start, end)
+
+    assert physical is not None and set(physical[:, 0].tolist()) == {0}
+    assert per_voxel is not None and 1 in set(per_voxel[:, 0].tolist())

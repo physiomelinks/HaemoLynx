@@ -547,7 +547,7 @@ def vessel_path_between(
         return straight, "straight"
     scale = np.asarray(voxel_size_zyx, dtype=float)
     try:
-        path_vox = astar_path(cost_field, start / scale, end / scale)
+        path_vox = astar_path(cost_field, start / scale, end / scale, voxel_size_zyx=scale)
         points = voxel_path_to_microns(path_vox, scale)
     except Exception:  # noqa: BLE001 - any routing failure falls back to straight
         return straight, "straight"
@@ -785,7 +785,9 @@ def trace_path(
     if cost_field is None or len(straight) < 2:
         return straight
     scale = np.asarray(voxel_size_zyx, dtype=float)
-    points = voxel_path_to_microns(astar_path(cost_field, start / scale, end / scale), scale)
+    points = voxel_path_to_microns(
+        astar_path(cost_field, start / scale, end / scale, voxel_size_zyx=scale), scale
+    )
     if len(points) < 2:
         return straight
     return _dedupe([start, *points[1:-1], end])

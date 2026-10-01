@@ -135,6 +135,8 @@ def constriction_strategy_kwargs(
         max_pericyte_diameter_um=settings.get("pericyte_max_diameter_um", 12.0),
         axis_order=settings.get("image_axis_order", CANONICAL_AXIS_ORDER),
         seed=settings.get("pericyte_constriction_seed"),
+        voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
+        voxel_size_policy=settings.get("voxel_size_policy", "auto"),
     )
 
 
@@ -163,6 +165,8 @@ def set_resistances_for_constriction_strategy(
     axis_order: str = CANONICAL_AXIS_ORDER,
     rng: np.random.Generator | None = None,
     seed: int | None = None,
+    voxel_size_override_xyz=None,
+    voxel_size_policy: str = "auto",
 ) -> tuple[nx.MultiGraph, str, dict[str, Any]]:
     """Apply one constriction strategy to ``graph``.
 
@@ -222,6 +226,8 @@ def set_resistances_for_constriction_strategy(
             axis_order=axis_order,
             rng=rng,
             seed=seed,
+            voxel_size_override_xyz=voxel_size_override_xyz,
+            voxel_size_policy=voxel_size_policy,
         )
         return graph, PERICYTE_MASK_STRATEGY, results
 

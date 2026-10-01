@@ -236,7 +236,12 @@ def _bridge_mask_from_line(
     shape: tuple[int, int, int],
     *,
     radius_voxels: int,
+    sampling_zyx: tuple[float, float, float] | None = None,
 ) -> np.ndarray:
+    """The voxels within *radius_voxels* voxels of the finest axis of a line,
+    on every axis the same physical half-width (a box, as iterating the
+    26-neighbour cube gives on cube voxels): iterated in voxels, a bridge was
+    four times fatter along a 2 um z than in-plane."""
     bridge = np.zeros(shape, dtype=bool)
     if line_zyx.size == 0:
         return bridge
@@ -245,10 +250,12 @@ def _bridge_mask_from_line(
         return bridge
     bridge[line_zyx[:, 0], line_zyx[:, 1], line_zyx[:, 2]] = True
     if int(radius_voxels) > 0:
+        spacing = np.ones(3) if sampling_zyx is None else np.asarray(sampling_zyx, dtype=float)
+        reach = [
+            int(np.rint(int(radius_voxels) * float(spacing.min()) / float(s))) for s in spacing
+        ]
         bridge = binary_dilation(
-            bridge,
-            structure=np.ones((3, 3, 3), dtype=bool),
-            iterations=int(radius_voxels),
+            bridge, structure=np.ones([2 * r + 1 for r in reach], dtype=bool)
         )
     return bridge
 
@@ -382,6 +389,7 @@ def _attempt_cylinder_bridge(
         line_zyx,
         shape,
         radius_voxels=bridge_radius_voxels,
+        sampling_zyx=sampling_zyx,
     )
     return True, bridge, "bridged"
 
@@ -507,10 +515,14 @@ def _enforce_type_locked_continuity_for_small_mask(
         if not candidate_targets:
             continue
 
+        # Nearest in microns first: the first target accepted wins.
         candidate_targets = sorted(
             candidate_targets,
             key=lambda c: float(
-                np.linalg.norm(np.asarray(c["centroid_zyx"], dtype=float) - source_centroid)
+                np.linalg.norm(
+                    (np.asarray(c["centroid_zyx"], dtype=float) - source_centroid)
+                    * np.asarray(sampling_zyx, dtype=float)
+                )
             ),
         )
 

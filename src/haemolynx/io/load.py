@@ -20,7 +20,7 @@ try:
 except ImportError:
     h5py = None
 
-from .axis_order import CANONICAL_AXIS_ORDER, apply_axis_order
+from .axis_order import CANONICAL_AXIS_ORDER, apply_axis_order, voxel_size_xyz_from_file_axes
 
 logger = logging.getLogger(__name__)
 
@@ -54,19 +54,25 @@ def _coerce_triplet(value) -> tuple[float, float, float] | None:
     return None
 
 
-def _extract_h5_voxel_size(dataset, h5_file) -> tuple[tuple[float, float, float], dict[str, object]]:
-    """Extract (x, y, z) voxel size and metadata status from HDF5 attrs."""
+def _extract_h5_voxel_size(
+    dataset, h5_file, axis_order: str = CANONICAL_AXIS_ORDER
+) -> tuple[tuple[float, float, float], dict[str, object]]:
+    """Extract (x, y, z) voxel size and metadata status from HDF5 attrs.
+
+    ``element_size_um`` gives the spacing along each of the dataset's own
+    axes, which *axis_order* says the meaning of (see
+    :func:`haemolynx.io.axis_order.voxel_size_xyz_from_file_axes`); the named
+    keys below are physical by name."""
     attrs = {}
     for source in (h5_file.attrs, dataset.attrs):
         for key in source.keys():
             attrs[str(key).lower()] = source[key]
 
-    # Most common in microscopy exports: element_size_um is usually stored as (z, y, x).
+    # Most common in microscopy exports: element_size_um, one per dataset axis.
     if "element_size_um" in attrs:
-        zyx = _coerce_triplet(attrs["element_size_um"])
-        if zyx is not None:
-            z, y, x = zyx
-            voxel_size_xyz = (x, y, z)
+        per_axis = _coerce_triplet(attrs["element_size_um"])
+        if per_axis is not None:
+            voxel_size_xyz = voxel_size_xyz_from_file_axes(per_axis, axis_order)
             if _is_valid_voxel_size_triplet(voxel_size_xyz):
                 return voxel_size_xyz, _default_voxel_meta_status(
                     source="h5_attributes",
@@ -411,13 +417,20 @@ def crop_tiff_volume_from_corners(
     }
 
 
-def _voxel_size_xyz_from_tiff(tif) -> tuple[float, float, float, dict[str, object]]:
+def _voxel_size_xyz_from_tiff(
+    tif, axis_order: str = CANONICAL_AXIS_ORDER
+) -> tuple[float, float, float, dict[str, object]]:
     """Voxel size (x, y, z) and its provenance, from an open TIFF's tags.
 
     Split out from :func:`load_3d_tif_with_voxel_size` so the size can be read
     without the pixels: the tags are in the first page's header, and a caller
     that only wants to know how big a voxel is should not have to read a
     300 MB stack to find out. See :func:`read_voxel_size_xyz`.
+
+    The tags describe the file's own axes -- ``XResolution`` its width,
+    ``YResolution`` its height, ImageJ's ``spacing`` its pages -- and
+    *axis_order* says which physical axis each of those is (see
+    :func:`haemolynx.io.axis_order.voxel_size_xyz_from_file_axes`).
     """
     meta = tif.imagej_metadata or {}
     tags = tif.pages[0].tags
@@ -448,9 +461,11 @@ def _voxel_size_xyz_from_tiff(tif) -> tuple[float, float, float, dict[str, objec
         z_res = 1.0
         missing_axes.append("z")
 
-    voxel_size_x = 1.0 / x_res if x_res else 1.0
-    voxel_size_y = 1.0 / y_res if y_res else 1.0
-    voxel_size_z = z_res
+    width_spacing = 1.0 / x_res if x_res else 1.0
+    height_spacing = 1.0 / y_res if y_res else 1.0
+    voxel_size_x, voxel_size_y, voxel_size_z = voxel_size_xyz_from_file_axes(
+        (z_res, height_spacing, width_spacing), axis_order
+    )
 
     if x_res <= 0:
         invalid_axes.append("x")
@@ -464,7 +479,10 @@ def _voxel_size_xyz_from_tiff(tif) -> tuple[float, float, float, dict[str, objec
         invalid_axes.append("y")
     if not np.isfinite(voxel_size_z):
         invalid_axes.append("z")
-    invalid_axes = sorted(set(invalid_axes))
+    # Tags are named for the file's axes; report the physical axis each is.
+    physical = dict(zip("zyx", str(axis_order).strip().lower()))
+    missing_axes = [physical[axis] for axis in missing_axes]
+    invalid_axes = sorted({physical[axis] for axis in invalid_axes})
 
     if invalid_axes and len(invalid_axes) == 3:
         status = "invalid"
@@ -489,6 +507,7 @@ def _voxel_size_xyz_from_tiff(tif) -> tuple[float, float, float, dict[str, objec
 
 def read_voxel_size_xyz(
     filepath: str | Path,
+    axis_order: str = CANONICAL_AXIS_ORDER,
 ) -> tuple[tuple[float, float, float], dict[str, object]] | None:
     """Physical voxel size ``(x, y, z)`` of a TIFF, without reading the pixels.
 
@@ -496,13 +515,15 @@ def read_voxel_size_xyz(
     tags say nothing -- a size of all ones is the absence of an answer, not an
     answer. The panel uses this to give an opened layer the scale its own file
     describes, which is a header read rather than a second copy of the stack.
+    *axis_order* is what the file's axes are, as for
+    :func:`load_3d_tif_with_voxel_size`.
     """
     path = Path(filepath)
     if path.suffix.lower() not in {".tif", ".tiff"}:
         return None
     try:
         with tifffile.TiffFile(path) as tif:
-            x, y, z, status = _voxel_size_xyz_from_tiff(tif)
+            x, y, z, status = _voxel_size_xyz_from_tiff(tif, axis_order)
     except Exception:  # noqa: BLE001 - an unreadable file simply has no size
         logger.debug("Could not read a voxel size from %s", path, exc_info=True)
         return None
@@ -563,14 +584,16 @@ def load_3d_tif_with_voxel_size(
         else:
             out = None
         raw = tif.asarray(out=out)
-        if allow_2d and raw.ndim == 2:
+        flat = allow_2d and raw.ndim == 2
+        if flat:
             image = raw
         else:
             image = apply_axis_order(
                 raw, axis_order, use_memmap=use_memmap, memmap_directory=memmap_directory
             )
+        # A 2D image is not reordered, so its tags keep their own meaning.
         voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status = (
-            _voxel_size_xyz_from_tiff(tif)
+            _voxel_size_xyz_from_tiff(tif, CANONICAL_AXIS_ORDER if flat else axis_order)
         )
     return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
@@ -668,7 +691,7 @@ def load_3d_h5_with_voxel_size(
         (
             (voxel_size_x, voxel_size_y, voxel_size_z),
             voxel_meta_status,
-        ) = _extract_h5_voxel_size(dataset, f)
+        ) = _extract_h5_voxel_size(dataset, f, axis_order)
 
     if image.ndim == 2 and allow_2d:
         return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
@@ -706,17 +729,38 @@ def load_volume_and_voxel_size(
     :func:`load_3d_tif_with_voxel_size` / :func:`load_3d_h5_with_voxel_size`
     actually reads the file.
     """
+    image, voxel_size_xyz, _status = _load_volume_voxel_size_and_status(
+        volume_path,
+        h5_dataset_name=h5_dataset_name,
+        axis_order=axis_order,
+        description=description,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+    )
+    return image, voxel_size_xyz
+
+
+def _load_volume_voxel_size_and_status(
+    volume_path: str | Path,
+    *,
+    h5_dataset_name: str | None = None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    description: str = "mask",
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+) -> tuple[np.ndarray, tuple[float, float, float], dict[str, object]]:
+    """:func:`load_volume_and_voxel_size`, plus the voxel size's metadata status."""
     path = Path(volume_path)
     suffix = path.suffix.lower()
     if suffix in {".tif", ".tiff"}:
-        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_tif_with_voxel_size(
+        image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_3d_tif_with_voxel_size(
             str(path),
             axis_order=axis_order,
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
         )
     elif suffix == ".h5":
-        image, voxel_x, voxel_y, voxel_z, _voxel_meta_status = load_3d_h5_with_voxel_size(
+        image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_3d_h5_with_voxel_size(
             str(path),
             dataset_name=h5_dataset_name,
             axis_order=axis_order,
@@ -728,7 +772,39 @@ def load_volume_and_voxel_size(
             f"Unsupported {description} format '{suffix}'. "
             "Expected .tif, .tiff, or .h5."
         )
-    return image, (float(voxel_x), float(voxel_y), float(voxel_z))
+    return image, (float(voxel_x), float(voxel_y), float(voxel_z)), voxel_meta_status
+
+
+def load_binary_mask_voxel_size_and_status(
+    mask_path: str | Path,
+    *,
+    h5_dataset_name: str | None = None,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    description: str = "mask",
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+) -> tuple[np.ndarray, tuple[float, float, float], dict[str, object]]:
+    """:func:`load_binary_mask_and_voxel_size`, plus how complete the file's
+    voxel-size metadata was -- what
+    :func:`haemolynx.io.voxel_validation.resolve_voxel_size_xyz` needs to apply
+    the run's override and policy to it, as it does to the main image. The one
+    place a binary mask is read; :func:`load_binary_mask_and_voxel_size` is
+    this without the status."""
+    path = resolve_image_path_with_optional_zip(Path(mask_path))
+    image, voxel_size_xyz, status = _load_volume_voxel_size_and_status(
+        path,
+        h5_dataset_name=h5_dataset_name,
+        axis_order=axis_order,
+        description=description,
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+    )
+    if image.ndim != 3:
+        raise ValueError(f"Expected a 3D {description}, got shape {image.shape}.")
+    binary = _to_binary_volume_for_skeletonization(
+        image, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
+    return binary, voxel_size_xyz, status
 
 
 def load_binary_mask_and_voxel_size(
@@ -755,23 +831,15 @@ def load_binary_mask_and_voxel_size(
     in *memmap_directory*, which the caller releases; the mask is the same
     either way.
     """
-    path = resolve_image_path_with_optional_zip(Path(mask_path))
-    image, voxel_size_xyz = load_volume_and_voxel_size(
-        path,
+    mask_bool, voxel_size_xyz, _status = load_binary_mask_voxel_size_and_status(
+        mask_path,
         h5_dataset_name=h5_dataset_name,
         axis_order=axis_order,
         description=description,
         use_memmap=use_memmap,
         memmap_directory=memmap_directory,
     )
-    if image.ndim != 3:
-        raise ValueError(f"Expected a 3D {description}, got shape {image.shape}.")
-    return (
-        _to_binary_volume_for_skeletonization(
-            image, use_memmap=use_memmap, memmap_directory=memmap_directory
-        ),
-        voxel_size_xyz,
-    )
+    return mask_bool, voxel_size_xyz
 
 
 def _skeletonize_loaded_volume(

@@ -529,6 +529,7 @@ def load_and_validate_vessel_masks(
                 venule_mask,
                 max_size_ratio=float(swap_max_size_ratio),
                 min_contact_fraction=float(swap_min_contact_fraction),
+                voxel_size_zyx=voxel_size_zyx_from_xyz(main_voxel_size_xyz),
             )
         )
         # Largest first, so a mask with thousands of mislabelled specks still

@@ -164,6 +164,45 @@ def test_optimise_fwhm_settings_starts_the_background_worker(panel, monkeypatch,
     assert kwargs["run_state"] is panel._haemolynx_run_state
 
 
+@pytest.mark.parametrize("skeletonised", [True, False])
+def test_optimise_fwhm_settings_hands_the_worker_the_runs_segmented_image(
+    panel, monkeypatch, tmp_path, skeletonised
+):
+    """The segmented image the skeletonise stage kept is what the optimiser
+    places decoys and reads the mask's own widths from; a run with no such
+    checkpoint (a loaded one) optimises without them."""
+    import numpy as np
+
+    from haemolynx.gui.stage_checkpoints import StageCheckpoint
+
+    started = []
+    monkeypatch.setattr(
+        widget_mod,
+        "_run_fwhm_optimisation_in_background",
+        lambda *args, **kwargs: started.append(kwargs),
+    )
+    mask = np.ones((3, 3, 11), dtype=bool)
+    if skeletonised:
+        panel._haemolynx_checkpoints.replace_all(
+            [StageCheckpoint(stage="skeletonise", title="2. Skeletonise", group=None,
+                             output=SimpleNamespace(image=mask))]
+        )
+    panel._haemolynx_view.results = _fake_results(_tiny_graph())
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    panel._haemolynx_rows()["fwhm_raw_tiff_path"].value = raw_file
+
+    panel._haemolynx_optimise_fwhm_settings()
+
+    assert (started[0]["vessel_mask"] is mask) if skeletonised else started[0]["vessel_mask"] is None
+
+
+def test_the_settings_the_fwhm_optimiser_reads_are_real_settings():
+    from haemolynx.pipeline.schema import SCHEMA
+
+    assert set(widget_mod._FWHM_OPTIMISER_READS) <= {setting.name for setting in SCHEMA}
+
+
 def test_clicking_the_native_fwhm_button_triggers_optimisation(panel, monkeypatch, tmp_path):
     started = []
     monkeypatch.setattr(

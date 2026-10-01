@@ -90,6 +90,78 @@ def test_visualize_3d_plotly_falls_back_to_a_node_to_node_segment():
     assert real_x == pytest.approx([0.0, 5.0])
 
 
+def _two_vessels() -> nx.MultiGraph:
+    G = nx.MultiGraph()
+    for node, pos in {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 100.0), 2: (0.0, 50.0, 100.0)}.items():
+        G.add_node(node, pos=pos)
+    # A straight run stored one point per micron, as a centreline is.
+    G.add_edge(0, 1, diameter_um=6.0, voxels=[(0.0, 0.0, float(x)) for x in range(101)])
+    G.add_edge(1, 2, diameter_um=12.0, voxels=[(0.0, float(y), 100.0) for y in range(51)])
+    return G
+
+
+def test_the_3d_plot_colours_each_vessel_by_its_diameter():
+    """Regression: every vessel was one plain colour."""
+    fig = visualize_3d_plotly(_two_vessels(), show=False)
+
+    edge_trace = fig.data[0]
+    assert edge_trace.name == "Edges (colour: diameter_um)"
+    assert edge_trace.line.colorbar.title.text == "diameter_um"
+    colours = list(edge_trace.line.color)
+    assert len(colours) == len(edge_trace.x)
+    assert set(colours) == {6.0, 12.0}
+
+
+def test_the_3d_plot_can_still_draw_every_vessel_one_colour():
+    fig = visualize_3d_plotly(_two_vessels(), show=False, colour_by=None)
+
+    assert fig.data[0].line.color == "cyan"
+
+
+def test_the_3d_plot_draws_a_straight_run_from_its_two_ends():
+    """Regression: every centreline point was written -- a hundred for a
+    straight hundred-micron vessel that two draw exactly."""
+    fig = visualize_3d_plotly(_two_vessels(), show=False)
+
+    points = [x for x in fig.data[0].x if x is not None]
+    assert len(points) == 4
+
+
+def test_thinning_keeps_a_centreline_within_its_tolerance():
+    from haemolynx.visualization import thin_polyline
+
+    t = np.linspace(0.0, 4.0 * np.pi, 400)
+    wavy = np.column_stack([np.zeros_like(t), 3.0 * np.sin(t), 10.0 * t])
+
+    thinned = thin_polyline(wavy, 0.25)
+
+    assert 4 < len(thinned) < 100
+    assert np.array_equal(thinned[0], wavy[0]) and np.array_equal(thinned[-1], wavy[-1])
+    # Every original point lies within the tolerance of the thinned polyline.
+    segments = list(zip(thinned[:-1], thinned[1:]))
+
+    def distance(point):
+        best = np.inf
+        for a, b in segments:
+            ab = b - a
+            s = np.clip(np.dot(point - a, ab) / np.dot(ab, ab), 0.0, 1.0)
+            best = min(best, float(np.linalg.norm(point - (a + s * ab))))
+        return best
+
+    assert max(distance(point) for point in wavy) <= 0.25 + 1e-9
+
+
+def test_a_saved_3d_plot_opens_without_the_internet(tmp_path):
+    """Regression: plotly.js was loaded from its CDN, so a saved page stayed
+    blank offline."""
+    path = tmp_path / "network.html"
+    visualize_3d_plotly(_two_vessels(), show=False, save_html_path=str(path))
+
+    html = path.read_text(encoding="utf-8")
+    assert 'src="https://cdn.plot.ly' not in html  # no script loaded from the CDN
+    assert len(html) > 1_000_000  # plotly.js itself is inside the page
+
+
 def test_sort_branch_orders_numerically():
     out = sort_branch_orders_numerically(["BO3", "BO1", "B10"])
     assert out[0] == "BO1"

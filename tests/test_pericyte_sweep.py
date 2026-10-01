@@ -346,6 +346,65 @@ def test_pericyte_sweep_solve_raises_for_a_disconnected_inlet_and_outlet():
         _solve(G, inlet_nodes=[0], outlet_nodes=[3])
 
 
+
+def test_a_sweep_solves_each_dilation_once_whatever_the_pressures(tmp_path, monkeypatch):
+    """Regression: flow is linear in the pressure drop, yet every inlet
+    pressure repeated the whole solve -- here 2 dilations x 4 pressures cost 8
+    solves where 2 do."""
+    import haemolynx.haemodynamics.pericyte_sweep as sweep_module
+
+    solves = []
+    real = sweep_module.calc_laplacian_from_conductance_matrix
+
+    def counted(conductance):
+        solves.append(1)
+        return real(conductance)
+
+    monkeypatch.setattr(sweep_module, "calc_laplacian_from_conductance_matrix", counted)
+    sweep = _run_synthetic_sweep(tmp_path, min_dilation_percent=1, max_dilation_percent=2)
+
+    assert len(sweep["results"]) == 8
+    assert len(solves) == 2
+
+
+@pytest.mark.parametrize("inlet_p, outlet_p", [(1000.0, 500.0), (300.0, 500.0), (7000.0, 0.0)])
+def test_scaling_one_unit_solve_matches_a_fresh_solve_at_each_pressure(inlet_p, outlet_p):
+    from haemolynx.haemodynamics.pericyte_sweep import unit_pressure_solve
+    from haemolynx.haemodynamics.resistance import solve_flow_from_conductance_matrix
+
+    G = _disconnected_network()
+    conductance, node_list = build_conductance_matrix_from_graph(G)
+    boundaries = {"inlet_nodes": [0], "outlet_nodes": [3]}
+    unit = unit_pressure_solve(conductance, node_list, **boundaries)
+
+    scaled = unit.at(inlet_p, outlet_p)
+    fresh = solve_flow_from_conductance_matrix(
+        conductance, node_list, inlet_p_bc=inlet_p, outlet_p_bc=outlet_p, **boundaries
+    )
+
+    np.testing.assert_allclose(scaled["pressure"], fresh["pressure"], rtol=1e-12, atol=1e-9)
+    inlet = node_list.index(0)
+    fresh_inflow = float(np.sum(conductance[inlet] * (fresh["pressure"][inlet] - fresh["pressure"])))
+    assert scaled["total_inlet_flow"] == pytest.approx(fresh_inflow, rel=1e-12)
+    assert scaled["total_outlet_flow"] == pytest.approx(-fresh_inflow, rel=1e-9)
+    assert scaled["equivalent_resistance"] == pytest.approx(
+        (inlet_p - outlet_p) / fresh_inflow, rel=1e-12
+    )
+
+
+def test_equal_boundary_pressures_carry_no_flow_even_with_the_ends_apart():
+    """As before: an inlet and outlet at one pressure need no path between
+    them; there is simply no flow."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, conductance=_SI_CONDUCTANCE)
+    G.add_edge(2, 3, conductance=_SI_CONDUCTANCE)
+
+    solved = _solve(G, inlet_nodes=[0], outlet_nodes=[3], inlet_p_bc=500.0, outlet_p_bc=500.0)
+
+    assert solved["total_inlet_flow"] == 0.0
+    assert solved["equivalent_resistance"] == np.inf
+
+
 if __name__ == "__main__":
     demo_output_dir = REPO_ROOT / "examples" / "outputs" / "synthetic_dilation_sweep"
     demo_output_dir.mkdir(parents=True, exist_ok=True)

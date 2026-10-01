@@ -27,8 +27,7 @@ import numpy as np
 from .arteriole import percent_change_to_scale
 from .constriction import is_capillary_branch_order
 from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
-from .resistance import build_conductance_matrix_from_graph
-from .sweep_flows import build_sweep_flow_grid, record_flows_after_solve
+from .sweep_flows import build_sweep_flow_grid
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +139,9 @@ def run_capillary_dilation_pressure_sweep(
     from .pericyte_sweep import (
         _inlet_pressures,
         apply_baseline_overrides,
-        solve_pressure_and_boundary_flow,
+        haematocrit_sweep_report,
+        solve_sweep_point,
+        sweep_rows_at_pressures,
         write_sweep_csv,
     )
 
@@ -169,10 +170,11 @@ def run_capillary_dilation_pressure_sweep(
 
     results: list[dict[str, Any]] = []
     recorded_flows: list[dict[str, np.ndarray]] = []
+    iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for dilation_percent in dilation_values:
         scale = percent_change_to_scale(float(dilation_percent))
-        scaled, _table, _summary = scale_capillary_diameters(
+        scaled, scaled_table, _summary = scale_capillary_diameters(
             G,
             diameter_by_branch_order,
             scale,
@@ -180,34 +182,34 @@ def run_capillary_dilation_pressure_sweep(
             prefer_edge_fwhm_diameter=prefer_measured,
         )
         apply_baseline_overrides(scaled, settings, poiseuille_model)
-        conductance, node_list = build_conductance_matrix_from_graph(scaled)
-        last_node_list = list(node_list)
-        for inlet_pressure_pa in inlet_pressures:
-            solved = solve_pressure_and_boundary_flow(
-                conductance,
-                node_list,
-                inlet_p_bc=float(inlet_pressure_pa),
-                outlet_p_bc=outlet_pressure_pa,
-                inlet_nodes=inlet_nodes,
-                outlet_nodes=outlet_nodes,
+
+        def recompute_resistances(graph=scaled, table=scaled_table) -> None:
+            # The diameters are already scaled on the edges; this only moves
+            # resistance, from the edges' current discharge_haematocrit.
+            poiseuille_model.set_poiseuille_resistances(
+                graph, table, prefer_edge_fwhm_diameter=prefer_measured
             )
-            recorded_flows.append(
-                record_flows_after_solve(scaled, node_list, solved["pressure"])
-            )
-            results.append(
-                {
-                    "dilation_percent": int(dilation_percent),
-                    "dilation_factor": float(scale),
-                    "inlet_pressure_pa": inlet_pressure_pa,
-                    "outlet_pressure_pa": outlet_pressure_pa,
-                    "total_inlet_flow": solved["total_inlet_flow"],
-                    "total_outlet_flow": solved["total_outlet_flow"],
-                    "flow_balance_error": (
-                        solved["total_inlet_flow"] + solved["total_outlet_flow"]
-                    ),
-                    "equivalent_resistance": solved["equivalent_resistance"],
-                }
-            )
+            apply_baseline_overrides(graph, settings, poiseuille_model)
+
+        unit, node_list, iterated = solve_sweep_point(
+            scaled,
+            settings,
+            recompute_resistances=recompute_resistances,
+            inlet_nodes=inlet_nodes,
+            outlet_nodes=outlet_nodes,
+        )
+        iterations.append(iterated)
+        last_node_list = node_list
+        rows, flows = sweep_rows_at_pressures(
+            unit,
+            scaled,
+            node_list,
+            inlet_pressures,
+            outlet_pressure_pa,
+            {"dilation_percent": int(dilation_percent), "dilation_factor": float(scale)},
+        )
+        results.extend(rows)
+        recorded_flows.extend(flows)
 
     if sweep_dilation and sweep_pressure:
         csv_name = "capillary_dilation_pressure_sweep.csv"
@@ -244,4 +246,5 @@ def run_capillary_dilation_pressure_sweep(
         "results": results,
         "csv_path": str(csv_path),
         "sweep_flows": sweep_flows,
+        "haematocrit_distribution": haematocrit_sweep_report(iterations),
     }

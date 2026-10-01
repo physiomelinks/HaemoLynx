@@ -7,7 +7,7 @@ import networkx as nx
 import numpy as np
 import plotly.graph_objects as go
 
-from .plot import _is_pytest_runtime
+from .plot import _is_pytest_runtime, write_plotly_html
 
 #: Plotly ``Volume`` styling for mask overlays. Pipeline HTML and the GUI
 #: final-graph writer share these so a selected arteriole/venule volume looks
@@ -58,37 +58,44 @@ def _nonzero_bbox_slices_zyx(mask: np.ndarray) -> tuple[slice, slice, slice] | N
     )
 
 
+def _axis_strides(
+    stride: int, voxel_size_zyx: tuple[float, float, float]
+) -> tuple[int, int, int]:
+    """Per-axis block size for a *stride* counted in voxels of the finest
+    axis: a coarser axis is pooled over proportionally fewer voxels (at least
+    one), so a block is as near a cube in microns as whole voxels allow. The
+    same stride on every axis pooled 8 um of a 2 um z into a block 2 um wide
+    in-plane, and two vessels 6 um apart in depth drew as one."""
+    stride = max(1, int(stride))
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    finest = float(spacing.min())
+    return tuple(max(1, int(round(stride * finest / float(s)))) for s in spacing)
+
+
 def _downsample_binary_mask_max(
     mask: np.ndarray,
-    stride: int,
+    stride: int | tuple[int, int, int],
 ) -> np.ndarray:
-    """Downsample a 3D binary mask via block max-pooling."""
-    if stride <= 1:
+    """Downsample a 3D binary mask via block max-pooling, *stride* voxels per
+    block on every axis or one per axis."""
+    strides = (int(stride),) * 3 if np.isscalar(stride) else tuple(int(s) for s in stride)
+    if all(s <= 1 for s in strides):
         return mask.astype(bool, copy=False)
+    strides = tuple(max(1, s) for s in strides)
 
-    z, y, x = mask.shape
-    pad_z = (-z) % stride
-    pad_y = (-y) % stride
-    pad_x = (-x) % stride
-    if pad_z or pad_y or pad_x:
+    pads = tuple((-n) % s for n, s in zip(mask.shape, strides))
+    if any(pads):
         padded = np.pad(
             mask.astype(bool, copy=False),
-            ((0, pad_z), (0, pad_y), (0, pad_x)),
+            tuple((0, p) for p in pads),
             mode="constant",
             constant_values=False,
         )
     else:
         padded = mask.astype(bool, copy=False)
 
-    z2, y2, x2 = padded.shape
-    pooled = padded.reshape(
-        z2 // stride,
-        stride,
-        y2 // stride,
-        stride,
-        x2 // stride,
-        stride,
-    )
+    (z2, y2, x2), (sz, sy, sx) = padded.shape, strides
+    pooled = padded.reshape(z2 // sz, sz, y2 // sy, sy, x2 // sx, sx)
     return np.max(pooled, axis=(1, 3, 5))
 
 
@@ -104,9 +111,10 @@ def add_binary_mask_volume_trace(
 ) -> bool:
     """Add one pipeline-style Plotly ``Volume`` trace for a binary mask.
 
-    Crops to the nonzero bounding box then max-pools by ``stride`` — the same
-    path ``visualize_3d_plotly_large_vessel_assignment`` uses. Returns True
-    when a trace was added.
+    Crops to the nonzero bounding box then max-pools by ``stride`` voxels of
+    the finest axis, fewer along a coarser one (:func:`_axis_strides`) — the
+    same path ``visualize_3d_plotly_large_vessel_assignment`` uses. Returns
+    True when a trace was added.
     """
     mask_bool = mask.astype(bool, copy=False)
     bbox = _nonzero_bbox_slices_zyx(mask_bool)
@@ -119,18 +127,16 @@ def add_binary_mask_volume_trace(
     )
     z_slice, y_slice, x_slice = bbox
     cropped = mask_bool[z_slice, y_slice, x_slice]
-    stride = max(1, int(volume_downsample_stride))
-    downsampled = _downsample_binary_mask_max(cropped, stride)
+    strides = _axis_strides(volume_downsample_stride, voxel_size_zyx)
+    downsampled = _downsample_binary_mask_max(cropped, strides)
     if not np.any(downsampled):
         # Safety fallback for very sparse masks.
         downsampled = cropped
-        effective_stride = 1
-    else:
-        effective_stride = stride
+        strides = (1, 1, 1)
     zz, yy, xx = np.indices(downsampled.shape, dtype=float)
-    xx = (xx * float(effective_stride)) + float(x_slice.start)
-    yy = (yy * float(effective_stride)) + float(y_slice.start)
-    zz = (zz * float(effective_stride)) + float(z_slice.start)
+    xx = (xx * float(strides[2])) + float(x_slice.start)
+    yy = (yy * float(strides[1])) + float(y_slice.start)
+    zz = (zz * float(strides[0])) + float(z_slice.start)
     fig.add_trace(
         go.Volume(
             x=(xx * x_scale).ravel(),
@@ -543,7 +549,7 @@ def visualize_3d_plotly_large_vessel_assignment(
         ),
     )
     if save_html_path:
-        fig.write_html(str(save_html_path), include_plotlyjs="cdn")
+        write_plotly_html(fig, save_html_path)
     if show and not _is_pytest_runtime():
         fig.show()
     return fig
@@ -773,7 +779,7 @@ def visualize_3d_plotly_large_vessel_assignment_flow_direction(
 
     fig.update_layout(title=title)
     if save_html_path:
-        fig.write_html(str(save_html_path), include_plotlyjs="cdn")
+        write_plotly_html(fig, save_html_path)
     if show and not _is_pytest_runtime():
         fig.show()
     return fig

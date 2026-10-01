@@ -8,6 +8,9 @@ opposite state while the four ``skeleton_bundle_*`` settings were declared in
 """
 from __future__ import annotations
 
+import numpy as np
+import pytest
+
 from haemolynx.gui.form import fields_for, label_for
 from haemolynx.parsers import parameters_of, prefixed_arguments
 from haemolynx.pipeline import default_schema
@@ -154,3 +157,49 @@ def test_the_link_cap_keeps_the_farthest_branches():
 
     assert result[13, 10, 10] or result[13, 11, 11] or result[13, 10, 11] or result[13, 11, 10]
     assert not (result[10, 12, 11] or result[10, 13, 11] or result[11, 12, 11] or result[11, 13, 12])
+
+
+def _clump_in_three_slices() -> np.ndarray:
+    mask = np.zeros((11, 28, 28), dtype=bool)
+    mask[4:7, 10:19, 10:19] = True  # 6 x 4.5 x 4.5 um on a 0.5 x 0.5 x 2 um stack
+    return mask
+
+
+@pytest.mark.parametrize("use_memmap", [False, True])
+def test_the_density_window_is_the_same_width_in_microns_on_every_axis(
+    monkeypatch, tmp_path, use_memmap
+):
+    """Regression (audit): a window of 9 voxels on every axis spanned 18 um in
+    z but 4.5 um in-plane, diluting a clump a few slices deep -- here a dense
+    6 x 4.5 x 4.5 um one read as a third full, under the 0.35 a bundle needs,
+    and was never collapsed to a hub."""
+    import haemolynx.preprocessing.skeleton as skeleton_module
+
+    hubs = []
+    real = skeleton_module._collapse_hubs
+
+    def recording(result, mask, dense, selected, scan, max_connections):
+        hubs.append((len(selected), tuple(scan)))
+        return real(result, mask, dense, selected, scan, max_connections)
+
+    monkeypatch.setattr(skeleton_module, "_collapse_hubs", recording)
+    kwargs = {"use_memmap": True, "memmap_directory": tmp_path} if use_memmap else {}
+
+    skeleton_module.skeletonize_voxel_bundles_into_paths(
+        _clump_in_three_slices(), 9, voxel_size_zyx=(2.0, 0.5, 0.5), **kwargs
+    )
+
+    assert hubs and hubs[0][0] >= 1
+    assert hubs[0][1] == (3, 9, 9)
+
+
+def test_hub_spacing_is_measured_in_microns():
+    """Two peaks three 2 um slices apart are 6 um apart: both are hubs when
+    hubs must be 4 finest-axis voxels (2 um) apart."""
+    from haemolynx.preprocessing.skeleton import _select_hub_centres
+
+    peaks = np.array([[2, 10, 10], [5, 10, 10]])
+    density = np.array([0.9, 0.8])
+
+    assert len(_select_hub_centres(peaks, density, 4, np.array([4.0, 1.0, 1.0]))) == 2
+    assert len(_select_hub_centres(peaks, density, 4)) == 1  # voxel cubes, as before

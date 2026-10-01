@@ -284,7 +284,7 @@ def test_low_ram_reconnect_threads_share_one_window_budget(monkeypatch):
     active = [0]
     peak = [0]
     lock = threading.Lock()
-    real = reconnect_mod.route_through_array
+    real = reconnect_mod._route
 
     def slow_route(*args, **kwargs):
         with lock:
@@ -297,7 +297,7 @@ def test_low_ram_reconnect_threads_share_one_window_budget(monkeypatch):
             with lock:
                 active[0] -= 1
 
-    monkeypatch.setattr(reconnect_mod, "route_through_array", slow_route)
+    monkeypatch.setattr(reconnect_mod, "_route", slow_route)
 
     unbudgeted = reconnect_mod.reconnect_secondary_loop_edges(
         G.copy(), skeleton, debug=False, max_workers=3

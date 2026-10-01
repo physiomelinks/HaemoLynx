@@ -22,6 +22,16 @@ import numpy as np
 #: constant so this module has no dependency on that one.
 _GUARD_PENALTY = 1000.0
 
+#: How much a decoy FWHM gives a width to costs, against a vessel it
+#: measures: one for one, so a looser setting that reads as many specks in
+#: vessel-free tissue as extra vessels gains nothing.
+DECOY_FALSE_POSITIVE_WEIGHT = 1.0
+
+#: Edge attribute naming why an FWHM width is set aside -- the value of
+#: `haemolynx.haemodynamics.poiseuille.FWHM_DEMOTED_ATTR`, repeated so this
+#: module stays free of the haemodynamics package.
+_DEMOTED_ATTR = "fwhm_demoted"
+
 
 @dataclass(frozen=True)
 class FwhmMeasurementQuality:
@@ -53,22 +63,43 @@ class FwhmMeasurementQuality:
     #: that edge's own coefficient of variation across its accepted
     #: per-sample diameters -- a same-edge-consistency signal.
     median_diameter_cv: float
+    #: Measured edges whose width the run's own checks set aside (``fwhm_demoted``:
+    #: in the decoys' speck-width range, or disagreeing with the mask's width).
+    n_edges_demoted: int = 0
+    #: Lower is better: the share of decoys -- the sampled vessels moved into
+    #: vessel-free tissue -- FWHM gave a width to. 0.0 when no decoys were
+    #: measured (no vessel mask).
+    decoy_false_positive_rate: float = 0.0
+    #: The share of measured edges whose width disagrees with the mask's own
+    #: (``fwhm_low_confidence_vs_edt``); reported, and already counted through
+    #: :attr:`n_edges_demoted`.
+    edt_disagreement_fraction: float = 0.0
+
+    @property
+    def usable_fraction(self) -> float:
+        """Higher is better: the share of edges with a width the run would
+        use -- measured, and not set aside by the decoy or EDT checks."""
+        if self.n_edges_total <= 0:
+            return 0.0
+        return max(self.n_edges_measured - self.n_edges_demoted, 0) / float(self.n_edges_total)
 
     @property
     def score(self) -> float:
         """Lower is better -- the general-purpose combination every sweep
         group other than ``rejection_gates`` scores its candidates with
         (see :func:`rejection_gates_score` for that group's own combined
-        score). Weights favour measuring more edges first (the biggest,
-        most concrete failure mode this optimiser exists to fix), then fit
-        quality and achieved extent, with same-edge consistency as a light
-        tie-breaker.
+        score). Weights favour measuring more edges first -- counting only
+        widths the run would use, so a setting loose enough to fit specks
+        gains nothing from them -- then fit quality and achieved extent, with
+        same-edge consistency as a light tie-breaker, and a width given to a
+        decoy costs as much as one given to a vessel gains.
         """
         return (
-            -self.measured_fraction
+            -self.usable_fraction
             - 0.5 * self.mean_fit_r2
             - 0.25 * min(self.mean_achieved_extent_ratio, 1.0)
             + 0.1 * self.median_diameter_cv
+            + DECOY_FALSE_POSITIVE_WEIGHT * self.decoy_false_positive_rate
         )
 
 
@@ -77,10 +108,12 @@ def fwhm_measurement_quality(
     summary: Mapping[str, Any],
     *,
     min_total_extent_multiplier: float,
+    decoy_report: Mapping[str, Any] | None = None,
 ) -> FwhmMeasurementQuality:
     """Build a :class:`FwhmMeasurementQuality` from one trial's own graph and
     the summary dict ``measure_edge_diameters_fwhm_from_raw_tiff`` returned
-    for it."""
+    for it -- plus, when the trial's decoys were measured, the
+    ``speck_width_report`` of them (its ``false_positive_rate``)."""
     n_edges_total = G.number_of_edges()
     n_edges_measured = int(summary.get("edges_measured", 0))
     measured_fraction = (
@@ -91,10 +124,14 @@ def fwhm_measurement_quality(
     extent_ratios: list[float] = []
     diameter_cvs: list[float] = []
     mult = max(float(min_total_extent_multiplier), 1e-9)
+    n_edges_demoted = 0
+    n_edt_disagreeing = 0
 
     for _u, _v, data in G.edges(data=True):
         if data.get("fwhm_status") != "measured":
             continue
+        n_edges_demoted += bool(data.get(_DEMOTED_ATTR))
+        n_edt_disagreeing += bool(data.get("fwhm_low_confidence_vs_edt"))
         r2_samples = data.get("fwhm_diameter_r2_samples") or []
         all_r2.extend(float(r2) for r2 in r2_samples if r2 is not None)
 
@@ -121,6 +158,11 @@ def fwhm_measurement_quality(
         median_fit_r2=float(np.median(all_r2)) if all_r2 else 0.0,
         mean_achieved_extent_ratio=float(np.mean(extent_ratios)) if extent_ratios else 0.0,
         median_diameter_cv=float(np.median(diameter_cvs)) if diameter_cvs else 0.0,
+        n_edges_demoted=n_edges_demoted,
+        decoy_false_positive_rate=float((decoy_report or {}).get("false_positive_rate", 0.0)),
+        edt_disagreement_fraction=(
+            n_edt_disagreeing / float(n_edges_measured) if n_edges_measured > 0 else 0.0
+        ),
     )
 
 
@@ -128,8 +170,13 @@ def rejection_gates_score(quality: FwhmMeasurementQuality) -> float:
     """The ``rejection_gates`` group's own combined score: a looser gate
     that measures more edges but craters fit quality must not look like a
     win, and vice versa -- multiplying the two, not adding them, means
-    either one collapsing to ~0 drags the whole score down."""
-    return -(quality.measured_fraction * quality.mean_fit_r2)
+    either one collapsing to ~0 drags the whole score down. Only usable
+    widths count, and decoy widths cost, as in :attr:`FwhmMeasurementQuality.score`:
+    the gates are what keeps a speck's fit out."""
+    return (
+        -(quality.usable_fraction * quality.mean_fit_r2)
+        + DECOY_FALSE_POSITIVE_WEIGHT * quality.decoy_false_positive_rate
+    )
 
 
 def regression_penalty(current: float, baseline: float, tolerance: float) -> float:

@@ -119,7 +119,7 @@ vessel_masks:
   large_vessel_swap_minority_components: false
   # Swap a large-vessel component only when its volume is at most this fraction of the touching other-class component's (1 = any smaller component, 0.5 = at most half the size)  [fraction; range 0.01..1.0; needs use_large_vessel_masks and automated_vessel_assignment and large_vessel_swap_minority_components]
   large_vessel_swap_max_size_ratio: 1.0
-  # Swap a large-vessel component only when at least this fraction of its surface touches the larger other-class component. A vessel whose labels split across its width shares about half its surface; one merely running beside or across another touches about 0.15-0.2, and is kept. Lower it to catch a short piece joined end to end  [fraction; range 0.0..1.0; needs use_large_vessel_masks and automated_vessel_assignment and large_vessel_swap_minority_components]
+  # Swap a large-vessel component only when at least this fraction of its surface area faces the larger other-class component. A vessel whose labels split lengthwise faces the other part over about a third of its surface; one merely running beside or across another, a few percent, and is kept; a short piece joined end to end, its end (about 0.1-0.15). Lower it to catch those  [fraction; range 0.0..1.0; needs use_large_vessel_masks and automated_vessel_assignment and large_vessel_swap_minority_components]
   large_vessel_swap_min_contact_fraction: 0.3
   # Remove tiny large-vessel components that sit attached near the opposite-type mask surface (suppresses small mislabelled attachments)  [needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_remove_small_opposite_attached_components: true
@@ -155,7 +155,7 @@ vessel_masks:
   automated_vessel_conservative_max_dilation_microns: 15.0
   # Write before/after Plotly HTML diagnostics of large-vessel masks around fast-mode overlap cleanup  [needs use_large_vessel_masks and automated_vessel_assignment and automated_vessel_assignment_fast_mode]
   write_fast_mode_preassignment_large_vessel_debug_3d_html: false
-  # Block-max downsample stride for large/small vessel volume traces in the automated-assignment Plotly HTML view  [range 1..; needs use_large_vessel_masks and automated_vessel_assignment]
+  # Block-max downsample stride for large/small vessel volume traces in the automated-assignment Plotly HTML view, in voxels of the finest axis: a coarser axis is pooled over proportionally fewer voxels, so each block is about the same size in microns every way  [range 1..; needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_3d_volume_downsample_stride: 1
   # Before automated terminal assignment, cut the graph at large arteriole/venule mask boundaries: remove edges inside the volume and split crossing edges so new degree-1 terminals sit on the exterior side of the cut. Runs by default whenever large-vessel masks drive automated assignment; turn off only when you deliberately want interior branches kept  [needs use_large_vessel_masks and automated_vessel_assignment]
   cut_network_at_large_vessel_volumes: true
@@ -255,7 +255,7 @@ vessel_masks:
   small_vessel_swap_minority_components: false
   # Swap a small-vessel component only when its volume is at most this fraction of the touching other-class component's (1 = any smaller component, 0.5 = at most half the size)  [fraction; range 0.01..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_swap_minority_components]
   small_vessel_swap_max_size_ratio: 1.0
-  # Swap a small-vessel component only when at least this fraction of its surface touches the larger other-class component. A vessel whose labels split across its width shares about half its surface; one merely running beside or across another touches about 0.15-0.2, and is kept. Lower it to catch a short piece joined end to end  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_swap_minority_components]
+  # Swap a small-vessel component only when at least this fraction of its surface area faces the larger other-class component. A vessel whose labels split lengthwise faces the other part over about a third of its surface; one merely running beside or across another, a few percent, and is kept; a short piece joined end to end, its end (about 0.1-0.15). Lower it to catch those  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and small_vessel_swap_minority_components]
   small_vessel_swap_min_contact_fraction: 0.3
   # Write an interactive 3D HTML diagnostic of the small-vessel boundary labelling  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   write_small_vessel_boundary_labelling_3d_html: true
@@ -378,11 +378,11 @@ pipeline_stages:
   do_equiv_resistance_calculation: true
   # Prefix every VTK artifact and cached stage file with this output path
   vtk_output_prefix: examples/outputs/carotid/carotid_network
-  # Close gaps in the mask with a structuring element of this radius before skeletonizing  [voxels; range 0..; needs do_skeletonize]
+  # Close gaps in the mask with a structuring element of this radius before skeletonizing, in voxels of the finest axis: a physical radius of this many times the smallest voxel size, so it reaches fewer voxels along a coarser z  [voxels; range 0..; needs do_skeletonize]
   skeleton_closing_radius: 2
-  # Bridge skeleton gaps no larger than this many voxels  [voxels; range 0..; needs do_skeletonize]
+  # Bridge skeleton gaps no larger than this many voxels of the finest axis: a physical distance of this many times the smallest voxel size, so fewer voxels along a coarser z  [voxels; range 0..; needs do_skeletonize]
   skeleton_bridge_gap_size: 3
-  # Drop skeleton branches shorter than this many voxels during cleaning  [voxels; range 0..; needs do_skeletonize]
+  # Drop skeleton pieces shorter than this many voxels of the finest axis during cleaning, each voxel counting for its physical length -- one along a coarser z counts for more  [voxels; range 0..; needs do_skeletonize]
   skeleton_min_branch_length: 3
   # Reconnect a skeleton fragment's branch end to another fragment no further away than this, counted in voxels of the finest axis and measured physically, so a gap along a coarse z axis counts for its real length  [voxels; range 0..; needs do_skeletonize]
   skeleton_max_bridge_distance: 0
@@ -679,6 +679,8 @@ diameters_and_pericytes:
   max_branch_order: 51
   # Use this vessel diameter where no branch-order override applies  [um; range 0.0..]
   default_diameter: 4.0
+  # Give a vessel no method measured the median measured diameter of this run's vessels with the same branch-order label, when at least this many of them were measured, before falling back to the branch-order table (which has no entry for a large arteriole or venule, so it takes default_diameter). 0 goes straight to the table  [range 0..]
+  diameter_class_median_min_edges: 3
   # Global focal constriction/dilation factor for every branch order (1.0 = no local change; <1 narrows, >1 widens at pericyte sites). constriction_by_branch_order replaces this for listed orders only — empty map means this global factor alone  [range 0.0..; needs run_haemodynamics]
   pericyte_constriction_factor: 1.0
   # Sparse per-order overrides of pericyte_constriction_factor (<1 constricts, >1 dilates locally). Empty or unset makes no change (global factor only). A listed order replaces the global factor for that order alone (e.g. {B01: 1.0} with global 0.8 leaves B01 unchanged)
@@ -876,6 +878,8 @@ perturbation_runs:
   capillary_block_probability: 0.1
   # Draw the blocked vessels from this seed, so a run repeats; another seed blocks a different set, and null draws a fresh set every run. Read when blocking by branch order and probability  [needs capillary_block_selection = branch_order_probability]
   capillary_block_seed: 20240917
+  # Draw the random block this many times -- from the seed, then the seeds after it -- and report each comparison metric's mean, standard deviation and 2.5-97.5% range over the draws, beside the first draw's own results. One draw is one outcome: which vessels a block happens to hit can matter as much as how many. Read when blocking by branch order and probability  [range 1..; needs capillary_block_selection = branch_order_probability]
+  capillary_block_replicates: 1
   # Vessels to block, by the branchID shown when hovering a vessel after the Solve stage (e.g. [12, 40]), or as [u, v, key]. Read when blocking listed vessels  [needs capillary_block_selection = vessel_ids]
   capillary_block_vessel_ids: []
   # Multiply a blocked vessel's resistance by this -- near infinite, so it carries about a millionth of its flow, but still solvable where removing it would cut part of the network off from every inlet and outlet  [range 1.0..]

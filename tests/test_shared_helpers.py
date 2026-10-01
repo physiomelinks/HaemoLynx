@@ -125,12 +125,39 @@ def test_load_binary_mask_rejects_non_3d_volume(tmp_path):
 
 
 def test_load_binary_mask_is_the_one_used_by_both_consumers():
+    """The pericyte mask also needs its voxel-size metadata status (to apply
+    the run's override and policy, as the main image does), so it reads
+    through the status variant -- which is the one loader the plain one wraps,
+    not a second reading path."""
     from haemolynx import io
     from haemolynx.haemodynamics import pericyte_mask
+    from haemolynx.io import load
     from haemolynx.statistics import three_dim_distances as distances
 
-    assert pericyte_mask.load_binary_mask_and_voxel_size is io.load_binary_mask_and_voxel_size
+    assert (
+        pericyte_mask.load_binary_mask_voxel_size_and_status
+        is load.load_binary_mask_voxel_size_and_status
+    )
     assert distances.load_binary_mask_and_voxel_size is io.load_binary_mask_and_voxel_size
+
+
+def test_the_plain_mask_loader_reads_through_the_status_one(monkeypatch, tmp_path):
+    from haemolynx.io import load
+
+    calls = []
+
+    def fake(mask_path, **kwargs):
+        calls.append((mask_path, kwargs))
+        return np.ones((2, 2, 2), dtype=bool), (0.5, 0.5, 2.0), {"complete": True}
+
+    monkeypatch.setattr(load, "load_binary_mask_voxel_size_and_status", fake)
+    mask, voxel_size_xyz = load.load_binary_mask_and_voxel_size(
+        tmp_path / "m.tif", use_memmap=True, memmap_directory=tmp_path
+    )
+
+    assert mask.shape == (2, 2, 2) and voxel_size_xyz == (0.5, 0.5, 2.0)
+    assert calls and calls[0][1]["use_memmap"] is True
+    assert calls[0][1]["memmap_directory"] == tmp_path
 
 
 # --- deliberately-not-merged pairs -----------------------------------------

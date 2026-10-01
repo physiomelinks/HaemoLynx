@@ -23,6 +23,11 @@ sets its flows against the baseline's: total flow and equivalent resistance,
 how many vessels (and how much length) lost most of their flow, how many
 reversed, how much each outlet still drains, the transit-time distribution,
 and all of it per branch order.
+
+One random draw is one outcome: which vessels a 10% block happens to hit can
+matter as much as the 10%. ``capillary_block_replicates`` draws the block that
+many times (:func:`replicate_seeds`), and :func:`summarise_block_replicates`
+gives each comparison metric's mean, spread and 95% interval over the draws.
 """
 from __future__ import annotations
 
@@ -41,7 +46,9 @@ __all__ = [
     "FLOW_CHANGE_EDGE_ATTRIBUTE",
     "block_vessels",
     "compare_block_to_baseline",
+    "replicate_seeds",
     "resolve_blocked_vessels",
+    "summarise_block_replicates",
 ]
 
 #: The two ways of choosing what to block.
@@ -142,6 +149,58 @@ def resolve_blocked_vessels(
     blocked = [edges[index][:3] for index in chosen]
     summary["blocked_vessels"] = len(blocked)
     return blocked, summary
+
+
+def replicate_seeds(seed: int | None, count: int) -> list[int | None]:
+    """The seed of each of *count* draws of a block: *seed* itself first, so
+    draw one is the block a single run makes, then the seeds after it. With no
+    seed, the first draw stays unseeded, as a single run's is, and the rest get
+    fresh seeds of their own, recorded so any one can be drawn again."""
+    count = max(1, int(count))
+    if seed is None:
+        fresh = np.random.default_rng().integers(0, 2**31 - 1, size=count - 1)
+        return [None] + [int(value) for value in fresh]
+    return [int(seed) + index for index in range(count)]
+
+
+#: The interval :func:`summarise_block_replicates` reports, as percentiles.
+REPLICATE_INTERVAL_PERCENTILES = (2.5, 97.5)
+
+
+def summarise_block_replicates(
+    comparisons: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, float]]:
+    """``{metric: {mean, sd, low, high, draws}}`` over the draws' comparisons
+    (:func:`compare_block_to_baseline` summaries), for every metric that is a
+    number in at least one of them; ``low``/``high`` are the
+    :data:`REPLICATE_INTERVAL_PERCENTILES` of the draws, and ``draws`` how many
+    gave the metric a finite value. ``sd`` is the sample standard deviation
+    (NaN from a single draw)."""
+    metrics: dict[str, list[float]] = {}
+    for comparison in comparisons:
+        for name, value in comparison.items():
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number)):
+                continue
+            metrics.setdefault(name, [])
+            if math.isfinite(float(value)):
+                metrics[name].append(float(value))
+    summary: dict[str, dict[str, float]] = {}
+    for name, values in metrics.items():
+        array = np.asarray(values, dtype=float)
+        if array.size == 0:
+            summary[name] = {
+                "mean": math.nan, "sd": math.nan, "low": math.nan, "high": math.nan, "draws": 0,
+            }
+            continue
+        low, high = np.percentile(array, REPLICATE_INTERVAL_PERCENTILES)
+        summary[name] = {
+            "mean": float(np.mean(array)),
+            "sd": float(np.std(array, ddof=1)) if array.size > 1 else math.nan,
+            "low": float(low),
+            "high": float(high),
+            "draws": int(array.size),
+        }
+    return summary
 
 
 def _hashable(value: Any) -> Any:

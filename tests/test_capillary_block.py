@@ -367,6 +367,91 @@ def test_a_bad_vessel_id_fails_that_perturbation_and_not_the_others(tmp_path):
     assert good.error is None
 
 
+def test_replicate_seeds_start_from_the_runs_own_seed():
+    from haemolynx.haemodynamics import replicate_seeds
+
+    assert replicate_seeds(7, 3) == [7, 8, 9]
+    assert replicate_seeds(7, 1) == [7]
+    fresh = replicate_seeds(None, 3)
+    assert fresh[0] is None and all(isinstance(seed, int) for seed in fresh[1:])
+
+
+def test_replicate_statistics_are_over_the_numeric_metrics_of_every_draw():
+    from haemolynx.haemodynamics import summarise_block_replicates
+
+    draws = [
+        {"total_inflow_percent_change": -2.0, "reversed_vessels": 1, "status": "ok", "flag": True},
+        {"total_inflow_percent_change": -4.0, "reversed_vessels": 3, "status": "ok", "flag": False},
+        {"total_inflow_percent_change": -6.0, "reversed_vessels": math.nan},
+    ]
+
+    spread = summarise_block_replicates(draws)
+
+    assert set(spread) == {"total_inflow_percent_change", "reversed_vessels"}
+    inflow = spread["total_inflow_percent_change"]
+    assert inflow["mean"] == pytest.approx(-4.0)
+    assert inflow["sd"] == pytest.approx(2.0)
+    assert inflow["low"] == pytest.approx(np.percentile([-2.0, -4.0, -6.0], 2.5))
+    assert inflow["high"] == pytest.approx(np.percentile([-2.0, -4.0, -6.0], 97.5))
+    assert inflow["draws"] == 3
+    assert spread["reversed_vessels"]["draws"] == 2  # the NaN draw gave it no value
+
+
+def test_replicates_report_the_spread_over_several_draws_of_a_block(tmp_path):
+    """Regression: a random block was one draw per seed, so its result was a
+    single outcome with no spread; replicates draw it again from the seeds
+    after the run's own and report every metric's mean and range."""
+    entry = {
+        "name": "tenth",
+        "type": "capillary_block",
+        "overrides": {
+            "capillary_block_branch_orders": "BO2",
+            "capillary_block_probability": 0.5,
+            "capillary_block_replicates": 4,
+        },
+    }
+
+    run = run_perturbations(
+        _settings(tmp_path, [entry], capillary_block_seed=11), _model(), _boundaries(), SCHEMA
+    )
+
+    result = run.results[0]
+    assert result.error is None, result.error
+    draws = _read(result.output_dir / "tenth_block_replicates.csv")
+    assert [row["seed"] for row in draws] == ["11", "12", "13", "14"]
+    assert all(row["blocked_vessels"] == "2" for row in draws)
+    changes = [float(row["total_inflow_percent_change"]) for row in draws]
+    comparison = {
+        row["metric"]: row["value"]
+        for row in _read(result.output_dir / "tenth_block_comparison.csv")
+    }
+    # The first draw is the block the perturbation's own network carries.
+    assert float(comparison["total_inflow_percent_change"]) == pytest.approx(changes[0])
+    assert comparison["draws"] == "4"
+    assert float(comparison["total_inflow_percent_change_draws_mean"]) == pytest.approx(
+        np.mean(changes)
+    )
+    assert float(comparison["total_inflow_percent_change_draws_low"]) == pytest.approx(
+        np.percentile(changes, 2.5)
+    )
+    assert result.summary["comparison"]["draws"] == 4
+
+
+def test_one_draw_writes_no_replicates(tmp_path):
+    entry = {
+        "name": "once",
+        "type": "capillary_block",
+        "overrides": {"capillary_block_branch_orders": "BO2", "capillary_block_probability": 0.5},
+    }
+
+    run = run_perturbations(_settings(tmp_path, [entry]), _model(), _boundaries(), SCHEMA)
+
+    result = run.results[0]
+    assert result.error is None, result.error
+    assert not (result.output_dir / "once_block_replicates.csv").exists()
+    assert "draws" not in result.summary["comparison"]
+
+
 def test_blocks_survive_the_haematocrit_iteration(tmp_path):
     """Distributed haematocrit recomputes every resistance each pass: the
     blocks must be re-applied on top, or they would silently vanish."""

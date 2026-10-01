@@ -236,9 +236,7 @@ def test_a_routing_worker_that_dies_falls_back_to_routing_in_thread():
         result = router(cost, (0, 0, 0), (4, 5, 6))
 
         assert router._broken
-        assert result == reconnect_mod.route_through_array(
-            cost, (0, 0, 0), (4, 5, 6), fully_connected=True
-        )
+        assert result == reconnect_mod._route(cost, (0, 0, 0), (4, 5, 6), (1.0, 1.0, 1.0))
     finally:
         router.close()
 
@@ -250,11 +248,20 @@ def test_a_routing_error_in_a_worker_is_raised_as_in_thread():
         with pytest.raises(Exception) as in_worker:
             router(cost, (0, 0, 0), (9, 9, 9))  # end outside the array
         with pytest.raises(Exception) as in_thread:
-            reconnect_mod.route_through_array(cost, (0, 0, 0), (9, 9, 9), fully_connected=True)
+            reconnect_mod._route(cost, (0, 0, 0), (9, 9, 9), (1.0, 1.0, 1.0))
         assert type(in_worker.value) is type(in_thread.value)
         assert not router._broken
     finally:
         router.close()
+
+
+def test_on_cube_voxels_routing_is_route_through_array():
+    from skimage.graph import route_through_array
+
+    cost = 1 + np.random.default_rng(1).random((6, 9, 8)) * 4
+    path, total = reconnect_mod._route(cost, (0, 0, 0), (5, 8, 7), (1.0, 1.0, 1.0))
+    expected_path, expected_total = route_through_array(cost, (0, 0, 0), (5, 8, 7), fully_connected=True)
+    assert path == expected_path and total == pytest.approx(expected_total)
 
 
 def test_small_runs_route_in_thread(monkeypatch):

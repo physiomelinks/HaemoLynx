@@ -780,3 +780,38 @@ def test_every_edges_length_is_measured_from_its_path_smoothed_or_not():
         assert data["length"] == pytest.approx(
             float(np.linalg.norm(np.diff(np.asarray(data["voxels"]), axis=0), axis=1).sum())
         )
+
+
+def _smoothed_wave_amplitude(along_axis: int) -> float:
+    """A centreline waving 1 um either side over a 16 um wavelength, 64 um
+    long, running along *along_axis* on 2 x 0.5 x 0.5 um voxels -- a vertex
+    every 2 um along z, every 0.5 um along x -- smoothed; its amplitude after."""
+    spacing = np.array([2.0, 0.5, 0.5])
+    s = np.arange(0.0, 64.0 + 1e-9, spacing[along_axis])
+    points = np.zeros((len(s), 3))
+    points[:, along_axis] = s
+    points[:, 1] = 10.0 + np.round(np.sin(2 * np.pi * s / 16.0) / 0.5) * 0.5
+    points[:, 2 if along_axis == 0 else 0] = 10.0
+    index = np.rint(points / spacing).astype(int)
+    skeleton = np.zeros(index.max(axis=0) + 3, dtype=bool)
+    skeleton[tuple(index.T)] = True
+    G = nx.MultiGraph()
+    G.add_node(0, pos=points[0])
+    G.add_node(1, pos=points[-1])
+    G.add_edge(0, 1, voxels=points.tolist())
+
+    smooth_graph_centrelines(G, skeleton, voxel_size_zyx=tuple(spacing), iterations=10, max_deviation=5.0)
+
+    out = np.asarray(G[0][1][0]["voxels"])
+    middle = out[(out[:, along_axis] > 8) & (out[:, along_axis] < 56)]
+    return float(np.abs(middle[:, 1] - 10.0).max())
+
+
+def test_a_vessel_running_along_z_is_smoothed_over_the_same_distance_as_one_in_plane():
+    """Regression (audit): each pass averaged neighbouring vertices, a voxel
+    apart -- four times further along a 2 um z than in-plane -- so the same
+    wave was flattened to 0.74 um running along z but kept 1.04 um in-plane."""
+    along_z = _smoothed_wave_amplitude(0)
+    along_x = _smoothed_wave_amplitude(2)
+
+    assert along_z / along_x > 0.85

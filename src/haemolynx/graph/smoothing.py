@@ -37,6 +37,8 @@ from typing import Any, Callable, Mapping, Optional
 import networkx as nx
 import numpy as np
 
+from haemolynx.geometry import resample_at_step
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -284,6 +286,9 @@ def smooth_graph_centrelines(
         logger.warning("No skeleton voxels: centrelines are left as they are.")
         return counts
     tree = cKDTree(support * np.asarray(voxel_size_zyx, dtype=float))
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    finest_step = float(spacing.min())
+    anisotropic = not np.allclose(spacing, spacing[0])
 
     edges = G.edges(keys=True, data=True) if G.is_multigraph() else (
         (u, v, 0, data) for u, v, data in G.edges(data=True)
@@ -298,11 +303,16 @@ def smooth_graph_centrelines(
             continue
 
         original = np.asarray(voxels, dtype=float)
-        smoothed = smooth_polyline(original, method=method, iterations=iterations)
+        # On anisotropic voxels the centreline's vertices are a voxel apart --
+        # four times further along a 2 um z than in-plane -- and a pass of the
+        # filter averages neighbouring vertices, so z runs were smoothed over
+        # four times the distance. Evenly spaced points first.
+        even = resample_at_step(original, finest_step) if anisotropic else original
+        smoothed = smooth_polyline(even, method=method, iterations=iterations)
         tolerance = edge_tolerance_um(
             original, max_deviation=max_deviation, voxel_size_zyx=voxel_size_zyx, radius_at=radius_at
         )
-        accepted, outcome = _accept(original, smoothed, tree, tolerance)
+        accepted, outcome = _accept(even, smoothed, tree, tolerance)
 
         counts[outcome] += 1
         data["centreline_smoothing"] = outcome

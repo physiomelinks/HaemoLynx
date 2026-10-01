@@ -24,6 +24,7 @@ from haemolynx.haemodynamics.apply import (  # noqa: E402
     assign_edge_diameters,
 )
 from haemolynx.haemodynamics.poiseuille import (  # noqa: E402
+    DIAMETER_SOURCE_CLASS_MEDIAN,
     DIAMETER_SOURCE_EDT,
     DIAMETER_SOURCE_MEASURED,
     DIAMETER_SOURCE_OVERRIDE,
@@ -962,6 +963,114 @@ def test_a_speck_width_steps_aside_for_the_next_source():
 
     assert counts == {"speck_width": graph.number_of_edges(), "edt_disagreement": 0}
     assert set(_sources(graph).values()) == {DIAMETER_SOURCE_EDT}
+
+
+# --- class median: an unmeasured vessel takes its label's measured median -----
+
+
+def _labelled_network(widths_by_label: dict[str, list]) -> nx.MultiGraph:
+    """A chain of edges, one per width; ``None`` is an edge nothing measured."""
+    graph = nx.MultiGraph()
+    node = 0
+    graph.add_node(node, pos=np.asarray([0.0, 0.0, 0.0]))
+    for label, widths in widths_by_label.items():
+        for width in widths:
+            graph.add_node(node + 1, pos=np.asarray([0.0, 0.0, 10.0 * (node + 1)]))
+            attrs = {"branch_order": label, "length": 10.0}
+            if width is not None:
+                attrs["fwhm_diameter_um"] = float(width)
+            graph.add_edge(node, node + 1, key=0, **attrs)
+            node += 1
+    return graph
+
+
+def _unmeasured(graph: nx.MultiGraph) -> list[dict]:
+    return [data for _u, _v, data in graph.edges(data=True) if "fwhm_diameter_um" not in data]
+
+
+_LARGE_TABLE = build_diameter_by_branch_order(
+    all_diams_const=False, max_branch_order=3, default_diameter=4.0
+)
+
+
+def test_an_unmeasured_large_arteriole_takes_its_labels_median_not_the_default():
+    """Regression: a large arteriole nothing measured fell back to the table,
+    which has no entry for it, so it was modelled at default_diameter (4 um)
+    beside measured neighbours of ~30 um -- thousands of times their
+    resistance."""
+    graph = _labelled_network({"Large_Art1": [28.0, 30.0, 34.0, None]})
+
+    counts = stamp_edge_diameters(graph, _LARGE_TABLE, class_median_min_edges=3)
+
+    (edge,) = _unmeasured(graph)
+    assert edge["diameter_source"] == DIAMETER_SOURCE_CLASS_MEDIAN
+    assert edge["diameter_um"] == pytest.approx(30.0)
+    assert counts["class_median"] == 1 and counts["table"] == 0
+
+
+def test_too_few_measured_edges_leave_the_table():
+    graph = _labelled_network({"Large_Art1": [28.0, 30.0, None]})
+
+    stamp_edge_diameters(graph, _LARGE_TABLE, class_median_min_edges=3)
+
+    (edge,) = _unmeasured(graph)
+    assert edge["diameter_source"] == DIAMETER_SOURCE_TABLE
+
+
+def test_zero_goes_straight_to_the_table():
+    graph = _labelled_network({"Large_Art1": [28.0, 30.0, 34.0, None]})
+
+    stamp_edge_diameters(graph, _LARGE_TABLE, class_median_min_edges=0)
+
+    (edge,) = _unmeasured(graph)
+    assert edge["diameter_source"] == DIAMETER_SOURCE_TABLE
+    assert edge["diameter_um"] == pytest.approx(4.0)
+
+
+def test_the_median_is_per_label_and_only_over_measurements():
+    graph = _labelled_network(
+        {"B01": [5.0, 5.0, 5.0], "Large_Art1": [None, None, None, None]}
+    )
+    # A hand-set width is not this run's measurement of its label.
+    set_edge_diameter_override(_unmeasured(graph)[0], 40.0)
+
+    stamp_edge_diameters(graph, _LARGE_TABLE, class_median_min_edges=3)
+
+    large = [d for d in _unmeasured(graph) if d["diameter_source"] != DIAMETER_SOURCE_OVERRIDE]
+    assert {d["diameter_source"] for d in large} == {DIAMETER_SOURCE_TABLE}
+
+
+def test_a_median_of_endothelial_widths_keeps_their_wall_to_wall_basis():
+    graph = _labelled_network({"Large_Art1": [None, None, None, None]})
+    edges = [data for _u, _v, data in graph.edges(data=True)]
+    for data, width in zip(edges[:3], (30.0, 32.0, 34.0)):
+        data["endothelial_diameter_um"] = width
+
+    stamp_edge_diameters(graph, _LARGE_TABLE, use_endothelial=True, class_median_min_edges=3)
+
+    assert edges[3]["diameter_source"] == DIAMETER_SOURCE_CLASS_MEDIAN
+    assert edges[3]["diameter_um"] == pytest.approx(32.0)
+    assert edges[3]["diameter_basis"] == "anatomical"
+
+
+def test_a_run_uses_the_class_median_by_default():
+    graph = _labelled_network({"Large_Art1": [28.0, 30.0, 34.0, None]})
+    for _u, _v, data in graph.edges(data=True):
+        if "fwhm_diameter_um" in data:
+            data["diameter_um"] = data["fwhm_diameter_um"]
+            data["diameter_source"] = DIAMETER_SOURCE_MEASURED
+
+    stamped, summary, _raw = assign_edge_diameters(
+        graph,
+        HaemodynamicsApplyConfig(
+            diameters={"diameter_by_branch_order": dict(_LARGE_TABLE)},
+            fwhm={"use_fwhm_edge_diameters": True, "do_fwhm_measurement": False},
+        ),
+    )
+
+    (edge,) = _unmeasured(stamped)
+    assert edge["diameter_source"] == DIAMETER_SOURCE_CLASS_MEDIAN
+    assert summary["diameters"]["class_median"] == 1
 
 
 # --- measuring only the vessels an edit touched (the post_process stage) -------
