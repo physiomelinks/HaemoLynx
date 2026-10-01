@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import gzip
 import logging
+import os
 import pickle
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Mapping, Sequence
 
 from haemolynx.gui.results import ResultLayers, copy_graph
@@ -273,21 +274,125 @@ def write_resume_artefacts(
     snapshot: RunSnapshot,
     settings: Mapping[str, Any] | None,
     checkpoints: StageCheckpoints,
-) -> None:
+) -> str | None:
     """Make sure the skeleton ``.npy`` is on disk so Run-from still works.
 
     A loaded run has no stage outputs to hand a resumed run, so that run
     loads its skeleton. Its graph is handed over from the checkpoint, so
     ``{stem}_graph.pkl`` -- graph building's own output -- is not touched.
+
+    Optional: a run saved on another machine names an output folder that may
+    not exist, or not be writable, here (``/home/...`` on a Mac). The load
+    still succeeds; the reason is returned for the panel to show, and None
+    when the skeleton is in place or there was nothing to write.
     """
     located = _stem_and_output_dir(settings)
     if located is None:
-        return
+        return None
     stem, output_dir = located
-    output_dir.mkdir(parents=True, exist_ok=True)
-    existed = skeleton_resume_path(output_dir, stem).is_file()
-    skeleton_path = ensure_skeleton_artefact(replay_groups(snapshot), output_dir, stem)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        existed = skeleton_resume_path(output_dir, stem).is_file()
+        skeleton_path = ensure_skeleton_artefact(replay_groups(snapshot), output_dir, stem)
+    except OSError as error:
+        logger.warning("Could not write the loaded run's skeleton to %s: %s", output_dir, error)
+        return (
+            f"The run's output folder {output_dir} cannot be written on this machine "
+            f"({error.strerror or error}); set the output folder before running from a stage."
+        )
     if skeleton_path is not None and not existed:
         checkpoints.remember_path(skeleton_path)
+    return None
 
 
+
+
+#: Path settings named like these are where a run writes, not files it reads.
+_OUTPUT_SUFFIXES = ("_dir", "_directory", "_prefix")
+#: How deep under the run file's folder a moved input file is looked for.
+_SEARCH_DEPTH = 3
+_SKIPPED_FOLDERS = {".git", ".venv", "venv", "__pycache__", "node_modules"}
+
+
+@dataclass(frozen=True)
+class RelocatedPath:
+    """One path setting a loaded run had to point somewhere else."""
+
+    name: str
+    old: str
+    new: str
+
+
+def _can_create(path: Path) -> bool:
+    """Whether *path* exists as a folder or could be made on this machine."""
+    for candidate in (path, *path.parents):
+        if candidate.exists():
+            return candidate.is_dir() and os.access(candidate, os.W_OK)
+    return False
+
+
+def _find_by_name(name: str, root: Path) -> Path | None:
+    """The shallowest file called *name* under *root*, at most a few folders down."""
+    root = root.resolve()
+    for depth in range(_SEARCH_DEPTH + 1):
+        found = []
+        for folder, dirs, files in os.walk(root):
+            level = len(Path(folder).relative_to(root).parts)
+            dirs[:] = sorted(
+                d for d in dirs if not d.startswith(".") and d not in _SKIPPED_FOLDERS
+            ) if level < depth else []
+            if level == depth and name in files:
+                found.append(Path(folder) / name)
+        if found:
+            return sorted(found)[0]
+    return None
+
+
+def _relocate_one(name: str, value: Any, run_dir: Path) -> Path | None:
+    if value is None or not str(value).strip():
+        return None
+    path = Path(str(value)).expanduser()
+    if name.endswith(_OUTPUT_SUFFIXES):
+        folder = path.parent if name.endswith("_prefix") else path
+        if _can_create(folder):
+            return None
+        outputs = run_dir / "outputs"
+        return outputs if path.name == "outputs" else outputs / path.name
+    if path.exists():
+        return None
+    return _find_by_name(path.name, run_dir)
+
+
+def relocate_run_paths(snapshot: RunSnapshot, run_path: Path | str) -> list[RelocatedPath]:
+    """Point a run made on another machine at this one's files and folders.
+
+    A run saved on the server names ``/home/<user>/...`` paths. For each path
+    setting that does not work here:
+
+    * an input file (any path setting not named ``*_dir``, ``*_directory`` or
+      ``*_prefix``) that is missing is replaced by the file of the same name
+      nearest the run file -- in its folder or up to three folders below;
+    * an output folder or prefix that cannot be created here moves into
+      ``outputs/`` beside the run file, keeping its own name.
+
+    Paths that already work, and inputs with no file of that name nearby,
+    are left as they are. Changes *snapshot*'s settings (and the copy in its
+    saved viewer state) in place and returns what moved.
+    """
+    run_dir = Path(run_path).expanduser().resolve().parent
+    moved: dict[str, RelocatedPath] = {}
+    state = snapshot.results_state
+    copies = [snapshot.settings]
+    if isinstance(state, dict) and isinstance(state.get("settings"), dict):
+        copies.append(state["settings"])
+    for settings in copies:
+        for name, value in list(settings.items()):
+            is_path_setting = "path" in name or name.endswith(_OUTPUT_SUFFIXES)
+            if not isinstance(value, (str, PurePath)) or not is_path_setting:
+                continue
+            new = _relocate_one(name, value, run_dir)
+            if new is None:
+                continue
+            settings[name] = new if isinstance(value, PurePath) else str(new)
+            moved.setdefault(name, RelocatedPath(name, str(value), str(new)))
+    return list(moved.values())

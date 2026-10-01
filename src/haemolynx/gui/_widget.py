@@ -118,6 +118,7 @@ from haemolynx.gui.run_snapshot import (
     ensure_run_suffix,
     read_run_snapshot,
     replay_groups,
+    relocate_run_paths,
     write_resume_artefacts,
     write_run_snapshot,
 )
@@ -10869,6 +10870,11 @@ def settings_widget(napari_viewer=None):
         except Exception as error:
             report.value = f"Could not load run {path}:\n{error}"
             return False
+        # A run made on another machine (the server's /home/...) is pointed
+        # at this one's copies of its files before anything reads them.
+        relocated = relocate_run_paths(snapshot, path)
+        for moved in relocated:
+            logger.info("Loaded run: %s moved from %s to %s", moved.name, moved.old, moved.new)
         _strip_session_for_load()
         loaded_paths.clear()
         loaded_config_dir[0] = Path(path).parent
@@ -10902,7 +10908,7 @@ def settings_widget(napari_viewer=None):
             resolved = _settings()
         except Exception:  # noqa: BLE001 - resume pickles are optional
             resolved = current_values()
-        write_resume_artefacts(snapshot, resolved, checkpoints)
+        resume_note = write_resume_artefacts(snapshot, resolved, checkpoints)
         if snapshot.last_tab_title:
             titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
             if snapshot.last_tab_title in titles:
@@ -10914,6 +10920,13 @@ def settings_widget(napari_viewer=None):
         report.value = (
             f"Loaded run from {path}: {len(snapshot.stages)} stages restored."
         )
+        if relocated:
+            report.value += (
+                f" {len(relocated)} path(s) from the machine it was made on now point "
+                f"here: {', '.join(m.name for m in relocated)}."
+            )
+        if resume_note:
+            report.value += f" {resume_note}"
         if snapshot.paused_after is not None:
             # Saved while paused: pick it up where it stopped, Continue ready.
             run_state.paused_after = snapshot.paused_after
