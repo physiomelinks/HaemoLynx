@@ -55,6 +55,37 @@ After a run (at least through **4. Boundaries**), tab 10 works on a copy of the 
      IDs of later vessels move down.
    - Nodes are picked from the graph itself (`nearest_node`, the node nearest the click ray),
      not by napari's point picking, which needs the layer drawn on screen.
+5a. **Network connectivity box** (on **10. Export**, below its settings; the Post processing page
+   owns it). It has a dropdown, **All vessels in the viewer** or **Only vessels between an inlet and
+   an outlet**. The second uses `inlet_to_outlet_vessels`: dead ends, loops off one node and pieces
+   without both an inlet and an outlet are dropped, and the IDs are unchanged.
+   **Open 2D connectivity map** draws the CSV exported last, or one you pick
+   (`visualization/connectivity_map.py`). It writes `<csv>_map.html` beside the CSV and opens it in
+   the browser. In the map, columns count vessels from an inlet; inlets are green on the left,
+   outlets red on the right, and dead ends orange. Vessels are coloured by branch order, and
+   hovering one shows its Branch ID, nodes, length, diameter and notes.
+   **Export connectivity CSV** saves how the network is connected, one row per
+   vessel (`graph/connectivity.py`: `connectivity_rows`, `write_connectivity_csv`). Columns:
+   Branch ID, From node ID, To node ID, Branch order, Length (um), Diameter (um), Notes, Upstream
+   branch IDs, Downstream branch IDs, Edge u, Edge v, Edge key.
+   - From → to runs away from the inlets, by path length along the vessels (topology only, no
+     solved flow needed). A diverging bifurcation shows as two downstream branch IDs, and a
+     converging one as two upstream.
+   - Inlet vessels have no from node and outlet vessels no to node, where that end is the
+     network's open tip. Notes mark Inlet, Outlet, Dead end, Self-loop, arteriole/venule boundary,
+     and "Not connected to an inlet".
+   - IDs are the ones the other outputs use, so simulation results can be mapped back: Branch ID
+     is the viewer's branchID, which is also the order of the VTK's vessel cells. Node IDs are the
+     graph's (VTK `node_id`). Edge u/v/key are the `.pkl` edge key and the VTK's
+     `edge_u`/`edge_v`/`edge_key`.
+   - It exports the edited network if the tab has scanned one, else the run's graph, and warns if
+     edits aren't regenerated yet. The suggested filename is `{stem}_connectivity.csv` beside the
+     VTK output.
+   - **Load run fixes paths from another machine** (`relocate_run_paths` in `gui/run_snapshot.py`).
+     A missing input file is replaced by the file of the same name nearest the `.haemorun`: its
+     folder, or up to 3 folders below. An output folder or prefix (`*_dir`, `*_directory`,
+     `*_prefix`) that can't be created here moves to `outputs/` beside the run file. The status
+     line names what moved.
 5. **Prune disconnected branches** (just above Regenerate): removes every piece of the network
    that no longer has both an inlet and an outlet, e.g. a branch whose only link to the rest was
    deleted (`prune_disconnected_branches`). The report says how many pieces, vessels and boundary

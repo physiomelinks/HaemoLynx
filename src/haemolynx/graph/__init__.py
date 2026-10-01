@@ -18,6 +18,12 @@ from .edit import (
     mask_cost_field,
     voxel_path_to_microns,
 )
+from .connectivity import (
+    CONNECTIVITY_COLUMNS,
+    connectivity_rows,
+    inlet_to_outlet_vessels,
+    write_connectivity_csv,
+)
 from .post_processing import (
     DEFAULT_SPLIT_CONNECTOR_LENGTH_UM,
     IntensityCostField,
@@ -185,6 +191,10 @@ __all__ = [
     "reconnect_secondary_loop_edges",
     "optimise_graph_topology_fixed",
     "reconnect_orphan_and_dangling_nodes",
+    "CONNECTIVITY_COLUMNS",
+    "connectivity_rows",
+    "inlet_to_outlet_vessels",
+    "write_connectivity_csv",
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
     "IntensityCostField",
     "JunctionVessel",

@@ -7671,6 +7671,7 @@ def _post_processing_controls(
         IntensityCostField,
         VesselEnd,
         add_traced_vessel,
+        connectivity_rows,
         delete_vessels,
         edge_keys,
         has_pending_edits,
@@ -7679,6 +7680,7 @@ def _post_processing_controls(
         split_junction,
         trace_path,
         vessel_path,
+        write_connectivity_csv,
     )
     from haemolynx.gui.chrome_tooltips import POST_PROCESSING_TOOLTIPS as tips
     from haemolynx.gui.post_processing import (
@@ -7694,6 +7696,9 @@ def _post_processing_controls(
         added_nodes_layer,
         added_vessel_ids,
         branch_id_of,
+        CONNECTIVITY_EXPORT_CHOICES,
+        INLET_TO_OUTLET_ONLY,
+        default_connectivity_csv_path,
         describe_vessels,
         junction_label,
         junction_marker_layer,
@@ -7730,6 +7735,8 @@ def _post_processing_controls(
         #: The same for the raw data, and why it could not be had, if not.
         raw=None,
         raw_problem=None,
+        #: The connectivity CSV exported last, for Open 2D connectivity map.
+        connectivity_csv=None,
     )
 
     page = QWidget()
@@ -7811,6 +7818,30 @@ def _post_processing_controls(
 
     prune_button = QPushButton("Prune disconnected branches")
     prune_button.setToolTip(tips["prune"])
+    # The connectivity export: built here, because it exports the network
+    # this page edits, but placed on the Export tab with the run's other files.
+    connectivity_box = QGroupBox("Network connectivity")
+    connectivity_box.setObjectName("haemolynx_connectivity_box")
+    connectivity_layout = QVBoxLayout(connectivity_box)
+    connectivity_choice = QComboBox()
+    connectivity_choice.setObjectName("haemolynx_connectivity_choice")
+    connectivity_choice.addItems(list(CONNECTIVITY_EXPORT_CHOICES))
+    connectivity_choice.setToolTip(tips["connectivity_choice"])
+    export_connectivity_button = QPushButton("Export connectivity CSV")
+    export_connectivity_button.setObjectName("haemolynx_post_processing_export_connectivity")
+    export_connectivity_button.setToolTip(tips["export_connectivity"])
+    connectivity_map_button = QPushButton("Open 2D connectivity map")
+    connectivity_map_button.setObjectName("haemolynx_connectivity_map")
+    connectivity_map_button.setToolTip(tips["connectivity_map"])
+    connectivity_status = QLabel("")
+    connectivity_status.setObjectName("haemolynx_connectivity_status")
+    connectivity_status.setWordWrap(True)
+    connectivity_layout.addWidget(connectivity_choice)
+    connectivity_row = QHBoxLayout()
+    connectivity_row.addWidget(export_connectivity_button)
+    connectivity_row.addWidget(connectivity_map_button)
+    connectivity_layout.addLayout(connectivity_row)
+    connectivity_layout.addWidget(connectivity_status)
     regenerate_button = QPushButton("Regenerate from the edited network")
     regenerate_button.setObjectName("haemolynx_post_processing_regenerate")
     regenerate_button.setToolTip(tips["regenerate"])
@@ -8109,6 +8140,115 @@ def _post_processing_controls(
         attach_click_callbacks()
         report.value = f"Post processing: {state.scan.summary}"
         log_edit(f"Scanned the network: {state.scan.summary}")
+
+    def export_connectivity(path, *, only_inlet_to_outlet: bool | None = None) -> Path | None:
+        """Write how the network on screen is connected to *path*.
+
+        *only_inlet_to_outlet* defaults to the box's dropdown.
+        """
+        if only_inlet_to_outlet is None:
+            only_inlet_to_outlet = connectivity_choice.currentText() == INLET_TO_OUTLET_ONLY
+        graph = state.graph
+        if graph is None:
+            current = results()
+            graph = getattr(current, "_graph", None) if current is not None else None
+        if graph is None:
+            connectivity_status.setText(
+                "Nothing to export yet: run the pipeline through at least Boundaries first."
+            )
+            return None
+        roles = boundary_roles() or {}
+        inlets = tuple(roles.get("inlet", ()) or ())
+        outlets = tuple(roles.get("outlet", ()) or ())
+        if only_inlet_to_outlet and not (
+            any(n in graph for n in inlets) and any(n in graph for n in outlets)
+        ):
+            connectivity_status.setText(
+                "This network has no inlet or no outlet yet, so there is nothing "
+                "between them to export; run through Boundaries first."
+            )
+            return None
+        rows = connectivity_rows(
+            graph,
+            inlets,
+            outlets,
+            arteriole_boundary_nodes=tuple(roles.get("arteriole_boundary", ()) or ()),
+            venule_boundary_nodes=tuple(roles.get("venule_boundary", ()) or ()),
+            only_inlet_to_outlet=only_inlet_to_outlet,
+        )
+        try:
+            written = write_connectivity_csv(path, rows)
+        except OSError as error:
+            connectivity_status.setText(f"Could not write {path}: {error.strerror or error}")
+            return None
+        state.connectivity_csv = written
+        which = (
+            f"{len(rows)} of {graph.number_of_edges()} vessels (inlet to outlet only)"
+            if only_inlet_to_outlet else f"all {len(rows)} vessels"
+        )
+        stale = (
+            " Edits not yet regenerated: their lengths and diameters may be out of date."
+            if has_pending_edits(graph) else ""
+        )
+        log_edit(f"Exported the connectivity of {which} to {written}")
+        connectivity_status.setText(f"Wrote the connectivity of {which} to {written}.{stale}")
+        report.value = f"Connectivity CSV written to {written}."
+        return written
+
+    def open_connectivity_map(csv_path=None) -> Path | None:
+        """Draw a connectivity CSV as a 2D map and open it in the browser.
+
+        *csv_path* defaults to the CSV exported last, else one asked for.
+        """
+        import tempfile
+        import webbrowser
+
+        from haemolynx.visualization.connectivity_map import write_connectivity_map
+
+        source = csv_path or state.connectivity_csv
+        if source is None:
+            from qtpy.QtWidgets import QFileDialog
+
+            source, _filter = QFileDialog.getOpenFileName(
+                _dialog_parent(viewer), "Draw a connectivity CSV", "", "CSV (*.csv)"
+            )
+            if not source:
+                return None
+        source = Path(source)
+        try:
+            try:
+                html_path = write_connectivity_map(source)
+            except OSError:
+                html_path = write_connectivity_map(
+                    source, Path(tempfile.gettempdir()) / f"{source.stem}_map.html"
+                )
+        except Exception as error:  # noqa: BLE001 - a bad file must not crash the panel
+            connectivity_status.setText(f"Could not draw {source}: {error}")
+            return None
+        webbrowser.open(html_path.resolve().as_uri())
+        connectivity_status.setText(f"Opened the 2D connectivity map: {html_path}")
+        return html_path
+
+    def on_export_connectivity() -> None:
+        from qtpy.QtWidgets import QFileDialog
+
+        values = None
+        if settings is not None:
+            try:
+                values = settings()
+            except Exception:  # noqa: BLE001 - only the suggested filename depends on it
+                values = None
+        path, _filter = QFileDialog.getSaveFileName(
+            _dialog_parent(viewer),
+            "Export network connectivity",
+            default_connectivity_csv_path(values),
+            "CSV (*.csv)",
+        )
+        if path:
+            export_connectivity(path)
+
+    def on_connectivity_map() -> None:
+        open_connectivity_map()
 
     def on_delete() -> None:
         if state.graph is None or state.node is None:
@@ -8720,6 +8860,8 @@ def _post_processing_controls(
     split_button.clicked.connect(on_split)
     leave_button.clicked.connect(on_leave)
     prune_button.clicked.connect(on_prune)
+    export_connectivity_button.clicked.connect(on_export_connectivity)
+    connectivity_map_button.clicked.connect(on_connectivity_map)
     click_delete_button.clicked.connect(lambda: arm("delete"))
     add_button.clicked.connect(lambda: arm("add"))
 
@@ -8776,6 +8918,13 @@ def _post_processing_controls(
         branch_ids=branch_ids,
         delete_ids_button=delete_ids_button,
         prune_button=prune_button,
+        export_connectivity_button=export_connectivity_button,
+        export_connectivity=export_connectivity,
+        connectivity_box=connectivity_box,
+        connectivity_choice=connectivity_choice,
+        connectivity_map_button=connectivity_map_button,
+        connectivity_status=connectivity_status,
+        open_connectivity_map=open_connectivity_map,
         regenerate_button=regenerate_button,
         log_box=log_box,
         status=status,
@@ -9036,6 +9185,10 @@ def settings_widget(napari_viewer=None):
         page_layout = QVBoxLayout(page)
         page_layout.setContentsMargins(0, 0, 0, 0)
         page_layout.addWidget(native)
+        if tab.stage.call == "export_results":
+            # Post processing owns the button (it exports the network edited
+            # there, if any); it sits here with the run's other exports.
+            page_layout.addWidget(post_processing.connectivity_box)
         # "Run from this stage" lives in shared chrome below "Show each
         # topology step", not inside the tab page: one button per tab that
         # has a predecessor, shown for the active tab and centered on the
