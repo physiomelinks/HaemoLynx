@@ -3728,16 +3728,41 @@ SCHEMA = Schema(
             requires=("run_haemodynamics",),
         ),
         Setting(
+            name="haematocrit_junction_rule",
+            kind="choice",
+            default="no_separation",
+            choices=["no_separation", "sequential_bifurcations", "split_junctions"],
+            help=(
+                "How red cells divide at a junction the phase-separation law "
+                "does not cover -- it is only defined for one vessel dividing "
+                "in two, not for three or more outflows, or two or more "
+                "inflows meeting two or more outflows. no_separation mixes "
+                "the inflows and gives every outflow that haematocrit "
+                "(Secomb's NetFlow dishem). sequential_bifurcations treats "
+                "the junction as a chain of bifurcations, the widest inflow "
+                "the first parent and the outflows split off largest flow "
+                "first (Secomb's dishem_generalized). split_junctions changes "
+                "the network before the model is built: every junction of "
+                "four or more vessels becomes bifurcations joined by 15 um "
+                "connector vessels, as the Post processing tab's split does, "
+                "which adds their resistance to the network too"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
+        ),
+        Setting(
             name="haematocrit_distribution_max_iterations",
             kind="int",
             default=20,
             help=(
                 "Give up on haematocrit distribution convergence after "
-                "this many flow re-solves. The fixed point converges "
-                "geometrically rather than quickly -- a single strongly "
-                "asymmetric bifurcation (e.g. a 2.5x diameter ratio) can "
-                "need 12-15 iterations to settle within the default "
-                "tolerance below"
+                "this many flow re-solves. A daughter drawing a flow share "
+                "just above the plasma-skimming threshold swings between too "
+                "many red cells and too few on alternate passes; each pass's "
+                "step is damped (0.8 times smaller every five passes, as "
+                "Secomb's NetFlow does) so the swing dies out, and a strongly "
+                "asymmetric bifurcation (e.g. a 2.5x diameter ratio) settles "
+                "in about 10 iterations within the default tolerance below"
             ),
             section=_DIAMETERS_AND_PERICYTES,
             minimum=1,

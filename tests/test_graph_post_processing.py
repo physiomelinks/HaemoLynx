@@ -24,6 +24,7 @@ from haemolynx.graph import (
     mean_incident_diameter,
     prune_disconnected_branches,
     smooth_traced_path,
+    split_high_degree_junctions,
     split_junction,
     split_vessel_at,
     trace_path,
@@ -224,6 +225,51 @@ def test_split_rejects_a_non_positive_connector():
     G = _four_way_with_one_close_pair()
     with pytest.raises(ValueError, match="positive"):
         split_junction(G, 0, connector_length_um=0.0)
+
+
+# --- split_high_degree_junctions (the split_junctions haematocrit rule) -------
+
+
+def test_split_every_high_degree_junction_leaves_only_bifurcations():
+    p4, e4 = _star(4, centre=0, first_arm=1)
+    p5, e5 = _star(5, centre=100, first_arm=101)
+    p3, e3 = _star(3, centre=200, first_arm=201)
+    G = _network({**p4, **p5, **p3}, e4 + e5 + e3, diameter_um=6.0, branch_order="B02")
+
+    split = split_high_degree_junctions(G)
+
+    assert sorted(split) == [0, 100]
+    assert len(split[0]) == 1 and len(split[100]) == 2
+    assert max(degree for _node, degree in G.degree()) == 3
+    assert G.degree(200) == 3  # a bifurcation is left as it was
+    assert G.number_of_edges() == 12 + 3
+
+
+def test_a_split_connector_takes_the_branch_order_of_the_vessels_peeled_onto_it():
+    """A run does not regenerate branch orders afterwards, and an edge with no
+    branch_order gets no resistance, so each connector is given one: the order
+    its two vessels share, else the wider one's."""
+    G = _four_way_with_one_close_pair()
+    shared = split_high_degree_junctions(G)
+    (new,) = shared[0]
+    assert G.get_edge_data(0, new)[0]["branch_order"] == "B03"
+
+    G = _four_way_with_one_close_pair()
+    # The close pair (arms 1 and 2) is peeled together; give them different
+    # orders and widths.
+    G.edges[0, 1, 0].update(branch_order="B04", diameter_um=5.0)
+    G.edges[0, 2, 0].update(branch_order="Art2", diameter_um=9.0)
+    (new,) = split_high_degree_junctions(G)[0]
+    connector = G.get_edge_data(0, new)[0]
+    assert connector["branch_order"] == "Art2"
+    assert connector["junction_split_connector"] is True
+
+
+def test_split_high_degree_junctions_leaves_an_unlabelled_connector_unlabelled():
+    positions, edges = _star(4)
+    G = _network(positions, edges)
+    (new,) = split_high_degree_junctions(G)[0]
+    assert "branch_order" not in G.get_edge_data(0, new)[0]
 
 
 # --- a new vessel between two nodes -------------------------------------------
@@ -622,6 +668,14 @@ def test_splitting_a_junction_marks_its_connector_and_the_vessels_it_moved():
     assert len(moved) == 2 and all(frozenset(e[:2]) in marked for e in moved)
     still_there = [e for e in untouched if G.has_edge(*e)]
     assert all(EDITED not in G.edges[e] for e in still_there)
+
+
+def test_a_run_splitting_junctions_itself_marks_nothing():
+    """The haematocrit junction rule splits after post_process, for the model only."""
+    positions, edges = _star(4)
+    G = _network(positions, edges)
+    split_high_degree_junctions(G)
+    assert not has_pending_edits(G)
 
 
 def test_a_deletion_marks_the_network_and_the_vessel_its_merge_made():

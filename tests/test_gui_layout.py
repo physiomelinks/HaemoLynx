@@ -283,6 +283,11 @@ def test_the_haemodynamics_tab_leads_with_its_master_toggle():
     assert layout.boxes[0].rows == ("run_haemodynamics",)
     iteration = layout.disclosure_of("haematocrit_distribution_tolerance")
     assert iteration.anchor == "haematocrit_model"
+    # The junction rule is a dropdown in plain view, under the model it
+    # belongs to, not behind that model's Advanced button.
+    blood = layout.boxes[2].rows
+    assert blood.index("haematocrit_junction_rule") == blood.index("haematocrit_model") + 1
+    assert layout.disclosure_of("haematocrit_junction_rule") is None
 
 
 def test_the_export_tab_leads_with_where_the_outputs_go():

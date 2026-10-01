@@ -40,6 +40,7 @@ from .apply import (
 )
 from .haematocrit_distribution import (
     DISCHARGE_HAEMATOCRIT_ATTR,
+    JUNCTION_RULES,
     distribute_discharge_haematocrit,
     iterate_flow_and_haematocrit,
     pries_secomb_daughter_haematocrit,
@@ -99,6 +100,7 @@ __all__ = [
     "apply_poiseuille_resistances",
     "assign_edge_diameters",
     "DISCHARGE_HAEMATOCRIT_ATTR",
+    "JUNCTION_RULES",
     "distribute_discharge_haematocrit",
     "iterate_flow_and_haematocrit",
     "pries_secomb_daughter_haematocrit",

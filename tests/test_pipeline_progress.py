@@ -583,6 +583,7 @@ def test_the_solve_stage_shows_its_settings_on_the_haemodynamics_tab():
         "outlet_p_bc",
         "do_equiv_resistance_calculation",
         "haematocrit_model",
+        "haematocrit_junction_rule",
         "haematocrit_distribution_max_iterations",
         "haematocrit_distribution_tolerance",
     )

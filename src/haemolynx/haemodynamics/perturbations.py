@@ -264,13 +264,15 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
 #: against. The viscosity law, the diameter basis and the haematocrit each
 #: change *every* resistance in the network -- roughly doubling a capillary's
 #: between the two laws -- so a perturbation that moved one of them would
-#: report that change as its effect. A run picks one blood model for all of its
-#: arms; comparing two models means two runs.
+#: report that change as its effect; the junction rule moves the haematocrit
+#: downstream of every junction it decides. A run picks one blood model for all
+#: of its arms; comparing two models means two runs.
 INCOMPARABLE_OVERRIDES: tuple[str, ...] = (
     "viscosity_law",
     "diameter_basis",
     "haematocrit",
     "haematocrit_model",
+    "haematocrit_junction_rule",
 )
 
 #: Types that run a sweep helper and write a sweep CSV rather than one re-solve.

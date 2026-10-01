@@ -75,6 +75,7 @@ _COMPARISON_SETTINGS_HIDDEN_FROM_DIAMETERS = _LEGACY_SETTINGS_HIDDEN_FROM_DIAMET
 #: tab beside the flow solve they configure, not on Diameters.
 _HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB: tuple[str, ...] = (
     "haematocrit_model",
+    "haematocrit_junction_rule",
     "haematocrit_distribution_max_iterations",
     "haematocrit_distribution_tolerance",
 )

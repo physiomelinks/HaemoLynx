@@ -99,6 +99,12 @@ def _used_haematocrit_distribution(settings: Mapping[str, Any]) -> bool:
     )
 
 
+def _used_secomb_junction_rule(settings: Mapping[str, Any]) -> bool:
+    return _used_haematocrit_distribution(settings) and settings.get(
+        "haematocrit_junction_rule", "no_separation"
+    ) in ("no_separation", "sequential_bifurcations")
+
+
 #: Perturbation types that place focal pericyte constrictions -- kept as a
 #: literal tuple rather than importing haemodynamics.perturbations, so this
 #: module (and the settings-only text it produces) stays a leaf the rest of
@@ -321,6 +327,20 @@ MODEL_CITATIONS: tuple[Citation, ...] = (
             "Physiology, 289(6), H2657-H2664."
         ),
         applies=_used_haematocrit_distribution,
+    ),
+    Citation(
+        name="Secomb's network-flow junction rules (haematocrit_junction_rule)",
+        reason=(
+            "how red cells divide at junctions the phase-separation law does "
+            "not cover: no separation (dishem.cpp) or a chain of bifurcations "
+            "(dishem_generalized.cpp)"
+        ),
+        reference=(
+            "Secomb, T.W. NetFlowV2: simulation of microvascular network "
+            "hemodynamics (dishem.cpp, dishem_generalized.cpp). "
+            "https://github.com/secomb/NetFlowV2"
+        ),
+        applies=_used_secomb_junction_rule,
     ),
     Citation(
         name="Focal (pericyte) constriction model",

@@ -75,6 +75,7 @@ __all__ = [
     "mean_incident_diameter",
     "prune_disconnected_branches",
     "smooth_traced_path",
+    "split_high_degree_junctions",
     "split_junction",
     "split_vessel_at",
     "trace_path",
@@ -436,6 +437,48 @@ def split_junction(
         connectors.add((node, new_node, key))
         new_nodes.append(new_node)
     return new_nodes
+
+
+def split_high_degree_junctions(
+    G: nx.MultiGraph,
+    *,
+    connector_length_um: float = DEFAULT_SPLIT_CONNECTOR_LENGTH_UM,
+) -> dict[Any, list[Any]]:
+    """:func:`split_junction` every junction of four or more vessels, for a run.
+
+    What the ``split_junctions`` haematocrit junction rule does to the network
+    before its model is built, so the phase-separation law has one parent and
+    two daughters at every junction. Unlike the Post processing tab's splits,
+    these come after the ``post_process`` stage and are not marked for it, so
+    each connector also takes a ``branch_order`` here -- without one it would
+    get no resistance. It takes the order the two vessels peeled onto it
+    share, else the wider one's: the connector is the first stretch of their
+    common trunk.
+
+    Returns ``{junction: [new node ids]}`` for every junction split.
+    """
+    split: dict[Any, list[Any]] = {}
+    for node in high_degree_junctions(G):
+        new_nodes = split_junction(
+            G, node, connector_length_um=connector_length_um, mark=False
+        )
+        if not new_nodes:
+            continue
+        split[node] = new_nodes
+        for new_node in new_nodes:
+            connector = None
+            peeled = []
+            for _u, _v, _k, data in G.edges(new_node, keys=True, data=True):
+                if data.get("junction_split_connector") and connector is None:
+                    connector = data
+                else:
+                    peeled.append(data)
+            labelled = [data for data in peeled if data.get("branch_order") is not None]
+            if connector is None or not labelled:
+                continue
+            widest = max(labelled, key=lambda data: _optional_float(data.get("diameter_um")) or 0.0)
+            connector["branch_order"] = widest["branch_order"]
+    return split
 
 
 def mean_incident_diameter(G: nx.MultiGraph, nodes: Iterable[Any]) -> float | None:

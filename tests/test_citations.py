@@ -224,6 +224,30 @@ def test_haematocrit_distribution_citation_follows_haematocrit_model(tmp_path):
     assert name in _names(used_citations(distributed, MODEL_CITATIONS))
 
 
+@pytest.mark.parametrize(
+    "rule, cited",
+    [
+        ("no_separation", True),
+        ("sequential_bifurcations", True),
+        # This pipeline's own split, not Secomb's rule.
+        ("split_junctions", False),
+    ],
+)
+def test_secombs_junction_rules_are_cited_when_a_run_uses_one(tmp_path, rule, cited):
+    name = "Secomb's network-flow junction rules (haematocrit_junction_rule)"
+    distributed = _settings(
+        tmp_path,
+        run_haemodynamics=True,
+        haematocrit_model="distributed_iterative",
+        haematocrit_junction_rule=rule,
+    )
+    fixed = _settings(
+        tmp_path, run_haemodynamics=True, haematocrit_model="fixed", haematocrit_junction_rule=rule
+    )
+    assert (name in _names(used_citations(distributed, MODEL_CITATIONS))) is cited
+    assert name not in _names(used_citations(fixed, MODEL_CITATIONS))
+
+
 def test_pericyte_constriction_citation_follows_configured_perturbations(tmp_path):
     none_configured = _settings(tmp_path, run_perturbations=True, perturbations=[])
     non_pericyte = _settings(

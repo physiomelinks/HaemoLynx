@@ -91,7 +91,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 407 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 408 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -365,7 +365,9 @@ are only caught locally.
   diameter the edit gave as a provisional override, and bridges them with
   `graph.insert_thick_vessel_junction_nodes(edges=...)`, which never re-splits an existing bridge. `apply_network_handling(settings, model, boundaries, network)` is
   the "Network handling" box on the Haemodynamics tab (pruning components without both an inlet
-  and an outlet; `boundary_handling`), run at the start of the haemodynamics stage — not at the
+  and an outlet; `boundary_handling`; and, with `haematocrit_junction_rule="split_junctions"`,
+  splitting every 4+ junction into bifurcations on a copy of the graph via
+  `graph.split_high_degree_junctions`), run at the start of the haemodynamics stage — not at the
   end of `assign_boundaries`, where it used to be — so "Run from this stage" on that tab honours
   it. A caller running the stages by hand calls it between `assign_diameters` and
   `build_haemodynamic_model`, as the examples do.
@@ -411,8 +413,14 @@ are only caught locally.
   or those edges revert to full vessels and the change is reported as the perturbation's effect.
 - **`haemodynamics/viscosity.py`** / **`haematocrit_distribution.py`** — the viscosity laws (see
   *Viscosity model* above) and, with `haematocrit_model="distributed_iterative"`, a per-edge
-  discharge haematocrit from Pries & Secomb's phase-separation law, iterated with the flow solve.
-  The default, `"fixed"`, uses one `haematocrit` everywhere.
+  discharge haematocrit from Pries & Secomb's phase-separation law (their 2005 A, B and
+  X0 = 0.964(1 − H_D)/D_F), iterated with the flow solve and under-relaxed each pass as Secomb's
+  NetFlow does, or a daughter near the skimming threshold oscillates instead of converging.
+  The law covers one vessel dividing in two; `haematocrit_junction_rule` decides every other
+  junction: `no_separation` (default, NetFlow's `dishem.cpp`), `sequential_bifurcations`
+  (`dishem_generalized.cpp`, outflows taken largest flow first) or `split_junctions` (the network
+  is split, see `apply_network_handling` above). The default, `"fixed"`, uses one `haematocrit`
+  everywhere.
 - **`haemodynamics/perturbations.py`** — a perturbation is a named, typed settings override
   (`PerturbationSpec`) that `pipeline/stages.py`'s `run_perturbations` re-solves a copy of the
   solved network for, writing into `{name}_{type}` under `perturbation_output_dir`. Thirteen types

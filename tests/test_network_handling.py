@@ -205,6 +205,105 @@ def test_run_from_the_haemodynamics_tab_applies_the_pruning(monkeypatch):
     assert seen["solve_boundaries"].inlet_nodes == [0]
 
 
+# --- haematocrit_junction_rule=split_junctions ---------------------------------
+
+SPLIT = {
+    "run_haemodynamics": True,
+    "haematocrit_model": "distributed_iterative",
+    "haematocrit_junction_rule": "split_junctions",
+}
+
+
+def _four_way() -> nx.MultiGraph:
+    """Inlet 0 -> junction 1 -> outlets 2, 3, 4; 3 and 4 leave 1 close together."""
+    positions = {
+        0: (0.0, 0.0, 0.0),
+        1: (0.0, 0.0, 50.0),
+        2: (0.0, 60.0, 80.0),
+        3: (0.0, -10.0, 110.0),
+        4: (0.0, -40.0, 100.0),
+    }
+    graph = nx.MultiGraph()
+    for node, pos in positions.items():
+        graph.add_node(node, pos=pos)
+    for v, diameter in zip((1, 2, 3, 4), (15.0, 12.0, 8.0, 10.0)):
+        u = 0 if v == 1 else 1
+        graph.add_edge(u, v, diameter_um=diameter, branch_order="B01", length=50.0)
+    return graph
+
+
+def test_split_junctions_splits_every_four_way_on_a_copy():
+    graph = _four_way()
+    model = HaemodynamicModel(graph=graph)
+    network = VesselNetwork(graph=graph, volume=None)
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2, 3, 4], graph=graph)
+
+    apply_network_handling(dict(SPLIT), model, boundaries, network)
+
+    assert model.graph is not graph
+    assert boundaries.graph is model.graph and network.graph is model.graph
+    assert max(degree for _node, degree in model.graph.degree()) == 3
+    assert model.graph.number_of_edges() == 5
+    # The graph handed in -- a stage checkpoint, on a rerun -- is untouched.
+    assert graph.degree(1) == 4 and graph.number_of_edges() == 4
+    assert boundaries.inlet_nodes == [0] and boundaries.outlet_nodes == [2, 3, 4]
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {**SPLIT, "haematocrit_junction_rule": "no_separation"},
+        {**SPLIT, "haematocrit_junction_rule": "sequential_bifurcations"},
+        # The rule belongs to the distributed model; a fixed haematocrit has
+        # nothing for it to decide.
+        {**SPLIT, "haematocrit_model": "fixed"},
+        {**SPLIT, "run_haemodynamics": False},
+    ],
+)
+def test_only_split_junctions_with_distributed_haematocrit_changes_the_network(settings):
+    graph = _four_way()
+    model = HaemodynamicModel(graph=graph)
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2, 3, 4], graph=graph)
+
+    apply_network_handling(settings, model, boundaries)
+
+    assert model.graph is graph and graph.degree(1) == 4
+
+
+def test_split_junctions_leaves_a_network_of_bifurcations_alone():
+    graph = _four_way()
+    graph.remove_edge(1, 4)
+    model = HaemodynamicModel(graph=graph)
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2, 3], graph=graph)
+
+    apply_network_handling(dict(SPLIT), model, boundaries)
+
+    assert model.graph is graph
+
+
+def test_run_from_the_haemodynamics_tab_splits_the_junctions(monkeypatch):
+    """The checkpoint a rerun resumes from is unsplit; the split happens in
+    this stage, so choosing split_junctions there and rerunning takes effect."""
+    seen = _stub_stages(monkeypatch)
+    graph = _four_way()
+    resume = PipelineResume(
+        start_from="build_haemodynamic_model",
+        graph=graph,
+        inlet_nodes=(0,),
+        outlet_nodes=(2, 3, 4),
+    )
+
+    run_pipeline_stages(
+        dict(SPLIT),
+        schema=None,
+        start_from="build_haemodynamic_model",
+        resume=resume,
+    )
+
+    assert max(degree for _node, degree in seen["model_graph"].degree()) == 3
+    assert graph.degree(1) == 4
+
+
 def test_assign_boundaries_no_longer_prunes():
     """It used to prune at its own end; the step now belongs to Haemodynamics."""
     import inspect

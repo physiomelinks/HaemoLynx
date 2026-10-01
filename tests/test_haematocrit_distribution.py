@@ -4,17 +4,22 @@ The rest of the haemodynamics package treats haematocrit as one scalar
 shared by every edge (`viscosity.DEFAULT_HAEMATOCRIT`,
 `PoiseuilleModel.haematocrit`). This tests the second model: local discharge
 haematocrit computed from Pries, Ley, Claassen & Gaehtgens' (1989)
-bifurcation phase-separation law -- driven by parent/daughter diameters and
-the flow fraction at the bifurcation, not by bifurcation angle -- and the
-outer loop that iterates it together with the flow solve to a fixed point.
+bifurcation phase-separation law, with Pries & Secomb's (2005) parameters --
+driven by parent/daughter diameters and the flow fraction at the bifurcation,
+not by bifurcation angle -- the three rules for the junctions that law does
+not cover (``haematocrit_junction_rule``), and the outer loop that iterates it
+together with the flow solve to a fixed point.
 """
 from __future__ import annotations
+
+import math
 
 import networkx as nx
 import numpy as np
 import pytest
 
 from haemolynx.haemodynamics.haematocrit_distribution import (
+    JUNCTION_RULES,
     _fqe_pries_secomb,
     distribute_discharge_haematocrit,
     iterate_flow_and_haematocrit,
@@ -88,9 +93,14 @@ def test_the_narrow_low_flow_daughter_is_skimmed_below_its_own_flow_share():
     assert h_narrow < 0.45  # below the parent's own haematocrit.
 
 
+def _x0_2005(parent_diameter_um: float, parent_haematocrit: float) -> float:
+    """Pries & Secomb (2005): X0 = 0.964 (1 - Hd) / D_parent."""
+    return 0.964 * (1.0 - parent_haematocrit) / parent_diameter_um
+
+
 def test_a_flow_fraction_at_or_below_the_plasma_skimming_threshold_gets_no_red_cells():
-    """Below X0 = 0.4 / D_parent, the daughter is plasma-skimmed entirely."""
-    x0 = 0.4 / 20.0
+    """Below X0 = 0.964 (1 - Hd) / D_parent, the daughter is plasma-skimmed entirely."""
+    x0 = _x0_2005(20.0, 0.45)
     fqe = _fqe_pries_secomb(
         fractional_flow=x0 / 2.0,
         parent_diameter_um=20.0,
@@ -110,7 +120,7 @@ def test_a_flow_fraction_at_or_below_the_plasma_skimming_threshold_gets_no_red_c
 
 
 def test_a_flow_fraction_at_or_above_one_minus_the_threshold_gets_every_red_cell():
-    x0 = 0.4 / 20.0
+    x0 = _x0_2005(20.0, 0.45)
     fqe = _fqe_pries_secomb(
         fractional_flow=1.0 - x0 / 2.0,
         parent_diameter_um=20.0,
@@ -119,6 +129,64 @@ def test_a_flow_fraction_at_or_above_one_minus_the_threshold_gets_every_red_cell
         parent_haematocrit=0.45,
     )
     assert fqe == 1.0
+
+
+@pytest.mark.parametrize("parent_haematocrit", [0.2, 0.45, 0.6])
+def test_the_skimming_threshold_is_pries_and_secombs_2005_one(parent_haematocrit):
+    """Regression: X0 was the 1990 value, 0.4 / D_parent, paired with the 2005
+    A and B. The 2005 threshold is 0.964 (1 - Hd) / D_parent -- higher at any
+    haematocrit below 0.585 -- so a daughter drawing a flow share between the
+    two got red cells it should not have."""
+    parent_diameter = 20.0
+    x0 = _x0_2005(parent_diameter, parent_haematocrit)
+
+    def fqe(fractional_flow: float) -> float:
+        return _fqe_pries_secomb(
+            fractional_flow=fractional_flow,
+            parent_diameter_um=parent_diameter,
+            own_diameter_um=10.0,
+            other_diameter_um=15.0,
+            parent_haematocrit=parent_haematocrit,
+        )
+
+    assert fqe(x0 * 0.999) == 0.0
+    assert fqe(x0 * 1.001) > 0.0
+    assert fqe(1.0 - x0 * 0.999) == 1.0
+    assert fqe(1.0 - x0 * 1.001) < 1.0
+
+
+def test_a_daughter_between_the_1990_and_2005_thresholds_is_skimmed_bare():
+    """The case the old threshold got wrong, at the default haematocrit: a 2.3%
+    flow share off a 20 um parent is above 0.4 / 20 = 2% but below
+    0.964 * 0.55 / 20 = 2.65%."""
+    assert 0.4 / 20.0 < 0.023 < _x0_2005(20.0, 0.45)
+    h = pries_secomb_daughter_haematocrit(
+        fractional_flow=0.023,
+        parent_diameter_um=20.0,
+        own_diameter_um=10.0,
+        other_diameter_um=15.0,
+        parent_haematocrit=0.45,
+    )
+    assert h == 0.0
+
+
+def test_the_law_matches_its_published_form_at_an_interior_split():
+    """A hand evaluation of Pries & Secomb (2005), Eq. 3-5, diameters in um."""
+    d_parent, d_own, d_other, hd, fqb = 12.0, 6.0, 9.0, 0.45, 0.3
+    ratio_sq = (d_own / d_other) ** 2
+    a = -13.29 * (ratio_sq - 1) / (ratio_sq + 1) * (1 - hd) / d_parent
+    b = 1 + 6.98 * (1 - hd) / d_parent
+    x0 = 0.964 * (1 - hd) / d_parent
+    scaled = (fqb - x0) / (1 - 2 * x0)
+    expected = 1 / (1 + math.exp(-(a + b * math.log(scaled / (1 - scaled)))))
+
+    assert _fqe_pries_secomb(
+        fractional_flow=fqb,
+        parent_diameter_um=d_parent,
+        own_diameter_um=d_own,
+        other_diameter_um=d_other,
+        parent_haematocrit=hd,
+    ) == pytest.approx(expected, rel=1e-12)
 
 
 def test_a_daughter_with_no_flow_carries_no_haematocrit():
@@ -168,7 +236,12 @@ def test_a_diverging_bifurcation_conserves_red_cell_mass():
     _directed(G, 1, 3, diameter_um=15.0, flow=0.8)
 
     diag = distribute_discharge_haematocrit(G, inlet_haematocrit=0.45)
-    assert diag == {"dead_edges": 0, "compound_junctions": 0, "unresolved_edges": 0}
+    assert diag == {
+        "dead_edges": 0,
+        "compound_junctions": 0,
+        "non_bifurcation_junctions": 0,
+        "unresolved_edges": 0,
+    }
 
     h_parent = _hct(G, 0, 1)
     h_narrow = _hct(G, 1, 2)
@@ -247,18 +320,186 @@ def test_a_dead_zero_flow_edge_gets_the_inlet_default_and_is_excluded_from_order
     assert G[1][3][0]["discharge_haematocrit"] == pytest.approx(0.45)
 
 
-def test_three_way_divergence_falls_back_to_flow_proportional():
-    """1 in, 3 out: no 2-daughter Pries-Secomb split defined -- flow-
-    proportional (== inlet default here, since there is nothing upstream
-    to have skewed it away from that) is the documented fallback."""
+# --- junctions the law does not cover: haematocrit_junction_rule -------------
+
+
+def _trifurcation(outflow_order=(2, 3, 4)) -> nx.MultiGraph:
+    """An upstream bifurcation, so the trifurcation's parent is not at the
+    inlet haematocrit: 9 -> 0 -> {5 (a narrow side branch), 1}, then 1 splits
+    three ways into 2 (8 um, flow 0.2), 3 (12 um, 0.5) and 4 (10 um, 0.3).
+    *outflow_order* is the order the three are added in."""
+    daughters = {2: (8.0, 0.2), 3: (12.0, 0.5), 4: (10.0, 0.3)}
+    G = nx.MultiGraph()
+    _directed(G, 9, 0, diameter_um=20.0, flow=1.1)
+    _directed(G, 0, 5, diameter_um=6.0, flow=0.1)
+    _directed(G, 0, 1, diameter_um=20.0, flow=1.0)
+    for node in outflow_order:
+        diameter, flow = daughters[node]
+        _directed(G, 1, node, diameter_um=diameter, flow=flow)
+    return G
+
+
+def _two_in_two_out() -> nx.MultiGraph:
+    """Two inflows at different haematocrits meet two outflows at node 4:
+    0 -> 1 -> {2 (narrow), 4}, and 3 -> 4 straight from an inlet; then
+    4 -> 5 (wide) and 4 -> 6 (narrow)."""
     G = nx.MultiGraph()
     _directed(G, 0, 1, diameter_um=20.0, flow=1.0)
-    _directed(G, 1, 2, diameter_um=8.0, flow=0.2)
-    _directed(G, 1, 3, diameter_um=8.0, flow=0.3)
-    _directed(G, 1, 4, diameter_um=8.0, flow=0.5)
-    distribute_discharge_haematocrit(G, inlet_haematocrit=0.45)
-    for edge in ((0, 1), (1, 2), (1, 3), (1, 4)):
-        assert _hct(G, *edge) == pytest.approx(0.45)
+    _directed(G, 1, 2, diameter_um=6.0, flow=0.15)
+    _directed(G, 1, 4, diameter_um=14.0, flow=0.85)
+    _directed(G, 3, 4, diameter_um=9.0, flow=0.35)
+    _directed(G, 4, 5, diameter_um=16.0, flow=0.9)
+    _directed(G, 4, 6, diameter_um=7.0, flow=0.3)
+    return G
+
+
+def test_every_rule_gives_a_plain_bifurcation_the_law():
+    """The rules only decide what the law leaves open."""
+    results = []
+    for rule in JUNCTION_RULES:
+        G = nx.MultiGraph()
+        _directed(G, 0, 1, diameter_um=20.0, flow=1.0)
+        _directed(G, 1, 2, diameter_um=10.0, flow=0.2)
+        _directed(G, 1, 3, diameter_um=15.0, flow=0.8)
+        distribute_discharge_haematocrit(G, inlet_haematocrit=0.45, junction_rule=rule)
+        results.append((_hct(G, 1, 2), _hct(G, 1, 3)))
+    expected = pries_secomb_daughter_haematocrit(
+        fractional_flow=0.2,
+        parent_diameter_um=20.0,
+        own_diameter_um=10.0,
+        other_diameter_um=15.0,
+        parent_haematocrit=0.45,
+    )
+    for narrow, _wide in results:
+        assert narrow == pytest.approx(expected, rel=1e-12)
+    assert results[1:] == [results[0]] * (len(results) - 1)
+
+
+@pytest.mark.parametrize("rule", ["no_separation", "split_junctions"])
+def test_a_trifurcation_gets_no_phase_separation_by_default(rule):
+    """Secomb's dishem.cpp: every outflow of a junction the law does not cover
+    gets the mixed inflow's haematocrit. split_junctions has already split
+    every such junction by the time this runs, and mixes any it could not."""
+    G = _trifurcation()
+    diag = distribute_discharge_haematocrit(G, inlet_haematocrit=0.45, junction_rule=rule)
+
+    parent = _hct(G, 0, 1)
+    assert parent != pytest.approx(0.45)  # the upstream split moved it
+    for daughter in (2, 3, 4):
+        assert _hct(G, 1, daughter) == pytest.approx(parent, rel=1e-12)
+    assert diag["non_bifurcation_junctions"] == 1
+
+
+def test_two_inflows_meeting_two_outflows_get_no_phase_separation_by_default():
+    """Regression: a 2-in 2-out junction was split with the law, taking a
+    flow-weighted mean inflow diameter as its parent. Secomb's published rule
+    (dishem.cpp) mixes the inflows and applies no separation."""
+    G = _two_in_two_out()
+    diag = distribute_discharge_haematocrit(G, inlet_haematocrit=0.45)
+
+    mixed = (0.85 * _hct(G, 1, 4) + 0.35 * _hct(G, 3, 4)) / 1.2
+    assert _hct(G, 1, 4) != pytest.approx(_hct(G, 3, 4))  # a genuine mix
+    assert _hct(G, 4, 5) == pytest.approx(mixed, rel=1e-12)
+    assert _hct(G, 4, 6) == pytest.approx(mixed, rel=1e-12)
+    assert diag["compound_junctions"] == 1
+    assert diag["non_bifurcation_junctions"] == 1
+
+
+def test_a_chain_of_bifurcations_follows_secombs_generalised_rule():
+    """dishem_generalized.cpp, outflows largest flow first: 3 (0.5) split off
+    against 4 with the parent's diameter, then 4 (0.3) against 2 with 4's
+    diameter as the parent of what is left, and 2 takes the rest."""
+    G = _trifurcation()
+    distribute_discharge_haematocrit(
+        G, inlet_haematocrit=0.45, junction_rule="sequential_bifurcations"
+    )
+    h_parent = _hct(G, 0, 1)
+
+    rbc = h_parent * 1.0
+    fqe_3 = _fqe_pries_secomb(
+        fractional_flow=0.5 / 1.0,
+        parent_diameter_um=20.0,
+        own_diameter_um=12.0,
+        other_diameter_um=10.0,
+        parent_haematocrit=h_parent,
+    )
+    expected_3 = fqe_3 * rbc / 0.5
+    rbc *= 1 - fqe_3
+    fqe_4 = _fqe_pries_secomb(
+        fractional_flow=0.3 / 0.5,
+        parent_diameter_um=10.0,
+        own_diameter_um=10.0,
+        other_diameter_um=8.0,
+        parent_haematocrit=rbc / 0.5,
+    )
+    expected_4 = fqe_4 * rbc / 0.3
+    expected_2 = rbc * (1 - fqe_4) / 0.2
+
+    assert _hct(G, 1, 3) == pytest.approx(expected_3, rel=1e-12)
+    assert _hct(G, 1, 4) == pytest.approx(expected_4, rel=1e-12)
+    assert _hct(G, 1, 2) == pytest.approx(expected_2, rel=1e-12)
+    # Red cells are conserved, and they really were separated: the narrow,
+    # low-flow branch is skimmed below its parent.
+    assert 0.2 * _hct(G, 1, 2) + 0.5 * _hct(G, 1, 3) + 0.3 * _hct(G, 1, 4) == pytest.approx(
+        1.0 * h_parent
+    )
+    assert _hct(G, 1, 2) < h_parent
+
+
+def test_a_chain_of_bifurcations_does_not_depend_on_how_the_graph_was_built():
+    """Secomb takes outflows in file order; here the order is by flow, so
+    adding the same vessels in another order gives the same answer."""
+    answers = []
+    for order in [(2, 3, 4), (4, 2, 3), (3, 4, 2)]:
+        G = _trifurcation(order)
+        distribute_discharge_haematocrit(
+            G, inlet_haematocrit=0.45, junction_rule="sequential_bifurcations"
+        )
+        answers.append([_hct(G, 1, node) for node in (2, 3, 4)])
+    for answer in answers[1:]:
+        assert answer == pytest.approx(answers[0], rel=1e-12)
+
+
+def test_a_chain_splits_two_inflows_meeting_two_outflows_from_the_widest_inflow():
+    """dishem_generalized.cpp: the mixed inflow, with the widest inflow (14 um,
+    not the flow-weighted mean) as the parent."""
+    G = _two_in_two_out()
+    distribute_discharge_haematocrit(
+        G, inlet_haematocrit=0.45, junction_rule="sequential_bifurcations"
+    )
+    mixed = (0.85 * _hct(G, 1, 4) + 0.35 * _hct(G, 3, 4)) / 1.2
+    fqe_5 = _fqe_pries_secomb(
+        fractional_flow=0.9 / 1.2,
+        parent_diameter_um=14.0,
+        own_diameter_um=16.0,
+        other_diameter_um=7.0,
+        parent_haematocrit=mixed,
+    )
+    assert _hct(G, 4, 5) == pytest.approx(fqe_5 * mixed * 1.2 / 0.9, rel=1e-12)
+    assert _hct(G, 4, 6) == pytest.approx((1 - fqe_5) * mixed * 1.2 / 0.3, rel=1e-12)
+    assert _hct(G, 4, 6) < mixed < _hct(G, 4, 5)
+
+
+def test_an_unknown_junction_rule_is_refused():
+    G = _trifurcation()
+    with pytest.raises(ValueError, match="junction_rule"):
+        distribute_discharge_haematocrit(G, inlet_haematocrit=0.45, junction_rule="average")
+
+
+def test_the_schema_offers_exactly_these_rules_as_a_dropdown():
+    """The setting and the module name the same three rules, in the same
+    order, the dropdown labels each one, and it only shows once the
+    distributed haematocrit model is picked."""
+    from haemolynx.gui.form import CHOICE_VALUE_LABELS, widget_type_for
+    from haemolynx.pipeline import default_schema
+
+    setting = default_schema()["haematocrit_junction_rule"]
+    assert tuple(setting.choices) == JUNCTION_RULES
+    assert setting.default == "no_separation"
+    assert widget_type_for(setting) == "ComboBox"
+    assert "haematocrit_model=distributed_iterative" in setting.requires
+    labels = CHOICE_VALUE_LABELS["haematocrit_junction_rule"]
+    assert [labels[rule][:2] for rule in JUNCTION_RULES] == ["1.", "2.", "3."]
 
 
 # --- iterate_flow_and_haematocrit -------------------------------------------
@@ -346,6 +587,47 @@ def test_iterate_flow_and_haematocrit_converges_and_changes_the_baseline():
         )
         assert data["resistance"] == pytest.approx(expected), (u, v, key)
         assert data["conductance"] == pytest.approx(1.0 / expected), (u, v, key)
+
+
+def test_a_daughter_near_the_skimming_threshold_converges_within_the_default_iterations():
+    """Regression: the 8 um daughter here draws ~5% of the flow, just above the
+    2005 threshold (3.5% off a 15 um parent). Unrelaxed, its haematocrit
+    swung between ~0.02 and ~0.12 on alternate passes and was still 0.002
+    from settling after 60; with NetFlow's relaxation schedule it settles
+    well within the setting's default 20, at the same fixed point."""
+    G = _bifurcating_network()
+    model = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", haematocrit=0.45)
+    _seed_uniform_resistances(G, model)
+
+    def _recompute():
+        from haemolynx.haemodynamics.poiseuille import set_edge_resistance
+
+        for _u, _v, _key, data in G.edges(keys=True, data=True):
+            resistance = model.resistance_of_uniform_segment(
+                data["length"], data["diameter_um"], haematocrit=data.get("discharge_haematocrit")
+            )
+            set_edge_resistance(data, resistance)
+
+    result = iterate_flow_and_haematocrit(
+        G,
+        recompute_resistances=_recompute,
+        inlet_haematocrit=0.45,
+        inlet_p_bc=1000.0,
+        outlet_p_bc=0.0,
+        inlet_nodes=[0],
+        outlet_nodes=[2, 3],
+        max_iterations=20,
+        tolerance=1e-3,
+    )
+    assert result["converged"] is True
+
+    # A fixed point: one more distribution over the flow it left changes
+    # nothing beyond the tolerance.
+    settled = {edge: G.edges[edge]["discharge_haematocrit"] for edge in G.edges(keys=True)}
+    distribute_discharge_haematocrit(G, inlet_haematocrit=0.45)
+    for edge, h in settled.items():
+        assert G.edges[edge]["discharge_haematocrit"] == pytest.approx(h, abs=2e-3)
+    assert 0.0 < settled[(1, 3, 0)] < 0.45  # skimmed, not emptied
 
 
 def test_bifurcating_network_produces_a_pinned_median_haematocrit_signature():
@@ -439,6 +721,126 @@ def test_solve_stage_with_the_toggle_on_converges_and_changes_resistances():
     assert on.graph[1][3][0]["resistance"] != pytest.approx(
         off.graph[1][3][0]["resistance"]
     )
+
+
+TRIFURCATION_DIAMETERS = {"B01": 15.0, "B02": 12.0, "B03": 8.0, "B04": 10.0}
+
+
+def _trifurcating_network() -> nx.MultiGraph:
+    """0 (inlet) -> 1, which divides three ways to outlets 2, 3 and 4. Positions
+    are (z, y, x): 3 and 4 leave 1 in the closest directions, so a split peels
+    those two off onto a connector together."""
+    positions = {
+        0: (0.0, 0.0, 0.0),
+        1: (0.0, 0.0, 50.0),
+        2: (0.0, 60.0, 80.0),
+        3: (0.0, -10.0, 110.0),
+        4: (0.0, -40.0, 100.0),
+    }
+    G = nx.MultiGraph()
+    for node, pos in positions.items():
+        G.add_node(node, pos=np.asarray(pos))
+    for (u, v), order in zip([(0, 1), (1, 2), (1, 3), (1, 4)], TRIFURCATION_DIAMETERS):
+        a, b = np.asarray(positions[u]), np.asarray(positions[v])
+        G.add_edge(
+            u, v, key=0,
+            length=float(np.linalg.norm(b - a)),
+            voxels=[list(positions[u]), list(positions[v])],
+            diameter_um=TRIFURCATION_DIAMETERS[order],
+            branch_order=order,
+        )
+    G.graph["image_voxel_size_zyx"] = (1.0, 1.0, 1.0)
+    return G
+
+
+def _solve_trifurcation(rule: str):
+    from haemolynx.pipeline import (
+        BoundaryNodes,
+        HaemodynamicModel,
+        apply_network_handling,
+        default_schema,
+        resolve_settings,
+    )
+    from haemolynx.pipeline.stages import build_haemodynamic_model, solve
+
+    schema = default_schema()
+    values = {setting.name: setting.default for setting in schema}
+    values.update(
+        {
+            "run_haemodynamics": True,
+            "viscosity_law": "pries",
+            "haematocrit": 0.45,
+            "all_diams_const": False,
+            "haematocrit_model": "distributed_iterative",
+            "haematocrit_junction_rule": rule,
+            "haematocrit_distribution_max_iterations": 60,
+            "haematocrit_distribution_tolerance": 1e-4,
+            "inlet_p_bc": 1000.0,
+            "outlet_p_bc": 0.0,
+            "inlet_nodes": [0],
+            "outlet_nodes": [2, 3, 4],
+            "do_equiv_resistance_calculation": False,
+            "diameter_by_branch_order": dict(TRIFURCATION_DIAMETERS),
+        }
+    )
+    settings = resolve_settings(values, schema=schema, config_path=None)
+    model = HaemodynamicModel(graph=_trifurcating_network())
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2, 3, 4], resistance_node_pair=(0, 2))
+    model = apply_network_handling(settings, model, boundaries)
+    model = build_haemodynamic_model(settings, model, schema)
+    return solve(settings, model, boundaries, schema)
+
+
+def _outflow_haematocrits(G: nx.MultiGraph, node) -> dict:
+    """``{neighbour: (|flow|, haematocrit)}`` for every vessel leaving *node*
+    (the ones running down to a lower pressure)."""
+    here = G.nodes[node]["pressure"]
+    return {
+        other: (data["flow_abs"], data["discharge_haematocrit"])
+        for _node, other, data in G.edges(node, data=True)
+        if G.nodes[other]["pressure"] < here
+    }
+
+
+def test_the_solve_stage_divides_a_trifurcation_by_the_chosen_junction_rule():
+    """All three dropdown options, through the real stage calls a run makes."""
+    mixed = _solve_trifurcation("no_separation")
+    chained = _solve_trifurcation("sequential_bifurcations")
+    split = _solve_trifurcation("split_junctions")
+    for solution in (mixed, chained, split):
+        assert solution.statistics["haematocrit_distribution"]["converged"] is True
+
+    # 1. Every daughter carries the parent's haematocrit.
+    diag = mixed.statistics["haematocrit_distribution"]
+    assert diag["junction_rule"] == "no_separation"
+    assert diag["non_bifurcation_junctions"] == 1
+    for _flow, h in _outflow_haematocrits(mixed.graph, 1).values():
+        assert h == pytest.approx(0.45, rel=1e-12)
+
+    # 2. Separated, red cells conserved.
+    diag = chained.statistics["haematocrit_distribution"]
+    assert diag["junction_rule"] == "sequential_bifurcations"
+    assert diag["non_bifurcation_junctions"] == 1
+    daughters = _outflow_haematocrits(chained.graph, 1)
+    assert len({round(h, 9) for _flow, h in daughters.values()}) == 3
+    total_flow = sum(flow for flow, _h in daughters.values())
+    assert sum(flow * h for flow, h in daughters.values()) == pytest.approx(0.45 * total_flow)
+
+    # 3. The network itself was split: no junction is left for a rule to
+    # decide, and the connector carries a resistance like any vessel.
+    diag = split.statistics["haematocrit_distribution"]
+    assert diag["junction_rule"] == "split_junctions"
+    assert diag["non_bifurcation_junctions"] == 0
+    assert max(degree for _node, degree in split.graph.degree()) == 3
+    (connector,) = [
+        data for _u, _v, data in split.graph.edges(data=True) if data.get("junction_split_connector")
+    ]
+    assert connector["branch_order"] == "B04"  # the wider of the two peeled onto it
+    assert connector["resistance"] > 0
+    assert split.graph.number_of_edges() == 5
+    h_3 = split.graph.edges[next(e for e in split.graph.edges(3, keys=True))]["discharge_haematocrit"]
+    h_4 = split.graph.edges[next(e for e in split.graph.edges(4, keys=True))]["discharge_haematocrit"]
+    assert h_3 != pytest.approx(h_4)
 
 
 def test_iterate_flow_and_haematocrit_reports_the_iteration_count_honestly():

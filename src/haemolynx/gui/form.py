@@ -420,6 +420,11 @@ CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
         "fixed": "Fixed haematocrit",
         "distributed_iterative": "Calculated haematocrit distribution - iterative",
     },
+    "haematocrit_junction_rule": {
+        "no_separation": "1. No phase separation beyond bifurcations (Secomb)",
+        "sequential_bifurcations": "2. Chain of bifurcations (Secomb, generalised)",
+        "split_junctions": "3. Split 4+ vessel junctions into bifurcations",
+    },
 }
 
 

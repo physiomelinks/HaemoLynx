@@ -1255,7 +1255,7 @@ def test_an_arteriole_perturbation_re_equilibrates_haematocrit_for_its_own_geome
 
     perturbed_narrow_h = result.graph[1][3][0]["discharge_haematocrit"]
     # A 50% wider Art1/Art2/Art3 moves the plasma-skimming threshold
-    # (x0 = 0.4 / parent_diameter_um) and, through viscosity's own
+    # (x0 = 0.964 * (1 - Hd) / parent_diameter_um) and, through viscosity's own
     # diameter-dependence, the flow split at the bifurcation -- so a
     # genuinely re-equilibrated haematocrit differs from the value frozen on
     # the baseline. A perturbation that only carried that value forward
@@ -1355,6 +1355,95 @@ def test_a_sweep_perturbation_keeps_the_frozen_baseline_haematocrit_and_says_so(
         and "discharge_haematocrit the baseline converged to" in message
         for message in caplog.messages
     )
+
+
+TRIFURCATION_DIAMETERS = {"Art1": 15.0, "Art2": 20.0, "Art3": 8.0, "Art4": 12.0}
+
+
+def _hct_trifurcation_baseline(tmp_path: Path, perturbations: list[dict], rule: str):
+    """0 --Art1--> 1, which divides three ways to outlets 2, 3 and 4: a
+    junction only ``haematocrit_junction_rule`` can decide."""
+    graph = nx.MultiGraph()
+    ends = {0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 300.0), 2: (0.0, 100.0, 600.0),
+            3: (0.0, 0.0, 600.0), 4: (0.0, -100.0, 600.0)}
+    for node, pos in ends.items():
+        graph.add_node(node, pos=np.asarray(pos))
+    for (u, v), order in zip([(0, 1), (1, 2), (1, 3), (1, 4)], TRIFURCATION_DIAMETERS):
+        graph.add_edge(
+            u, v, key=0, length=300.0, diameter_um=TRIFURCATION_DIAMETERS[order],
+            branch_order=order, voxels=[list(ends[u]), list(ends[v])],
+        )
+    graph.graph["image_voxel_size_zyx"] = (1.0, 1.0, 1.0)
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2, 3, 4], resistance_node_pair=(0, 2))
+    settings = _settings(
+        tmp_path,
+        perturbations,
+        diameter_by_branch_order=dict(TRIFURCATION_DIAMETERS),
+        constriction_by_branch_order={order: 1.0 for order in TRIFURCATION_DIAMETERS},
+        viscosity_law="pries",
+        haematocrit=0.45,
+        haematocrit_model="distributed_iterative",
+        haematocrit_junction_rule=rule,
+        haematocrit_distribution_max_iterations=60,
+        haematocrit_distribution_tolerance=1e-4,
+        inlet_p_bc=1000.0,
+        outlet_p_bc=0.0,
+        inlet_nodes=[0],
+        outlet_nodes=[2, 3, 4],
+        do_equiv_resistance_calculation=False,
+    )
+    model = build_haemodynamic_model(settings, HaemodynamicModel(graph=graph), SCHEMA)
+    solution = solve(settings, model, boundaries, SCHEMA)
+    assert solution.statistics["haematocrit_distribution"]["converged"] is True
+    return settings, model, boundaries
+
+
+@pytest.mark.parametrize("rule", ["no_separation", "sequential_bifurcations"])
+def test_a_perturbation_divides_a_trifurcation_by_the_runs_junction_rule(tmp_path, rule):
+    """A re-solve re-runs the haematocrit loop, with the run's junction rule."""
+    settings, model, boundaries = _hct_trifurcation_baseline(
+        tmp_path,
+        [
+            {
+                "name": "art_dilate_50",
+                "type": "arteriole_diameter_change",
+                "overrides": {"arteriole_diameter_change_percent": 50},
+            },
+        ],
+        rule,
+    )
+
+    run = run_perturbations(settings, model, boundaries, SCHEMA)
+
+    (single,) = run.results
+    assert single.ok, single.error
+    daughters = [single.graph[1][node][0]["discharge_haematocrit"] for node in (2, 3, 4)]
+    if rule == "no_separation":
+        assert daughters == pytest.approx([0.45] * 3)
+    else:
+        assert len({round(h, 9) for h in daughters}) == 3
+
+
+def test_the_junction_rule_changes_a_trifurcations_flow(tmp_path):
+    """The two rules give the same dilation different flows."""
+    flows = []
+    for rule in ("no_separation", "sequential_bifurcations"):
+        (tmp_path / rule).mkdir()
+        settings, model, boundaries = _hct_trifurcation_baseline(
+            tmp_path / rule,
+            [
+                {
+                    "name": "art_dilate_50",
+                    "type": "arteriole_diameter_change",
+                    "overrides": {"arteriole_diameter_change_percent": 50},
+                },
+            ],
+            rule,
+        )
+        (result,) = run_perturbations(settings, model, boundaries, SCHEMA).results
+        assert result.ok, result.error
+        flows.append(result.summary["total_inlet_flow"])
+    assert flows[0] != pytest.approx(flows[1], rel=1e-5, abs=0)
 
 
 # --- review regressions: what a perturbation's resistance recompute keeps ------

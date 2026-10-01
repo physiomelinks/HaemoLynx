@@ -49,6 +49,8 @@ from haemolynx.haemodynamics.constriction_strategy import (
     set_resistances_for_constriction_strategy,
 )
 from haemolynx.haemodynamics.haematocrit_distribution import (
+    JUNCTION_RULE_NO_SEPARATION,
+    JUNCTION_RULE_SPLIT_JUNCTIONS,
     iterate_flow_and_haematocrit,
 )
 from haemolynx.haemodynamics.perturbations import (
@@ -2536,14 +2538,63 @@ def apply_network_handling(
     resistance node pair follow the pruned graph, which becomes *model*'s,
     *boundaries*' and *network*'s. ``boundary_handling`` has only ``None``
     so far, which changes nothing.
+
+    Then, with ``haematocrit_junction_rule`` at ``split_junctions`` (and the
+    distributed haematocrit model it belongs to), every junction of four or
+    more vessels is split into bifurcations
+    (:func:`haemolynx.graph.split_high_degree_junctions`), on a copy that
+    likewise becomes all three's graph.
     """
+    _remove_components_without_io(settings, model, boundaries, network)
+    _split_junctions_for_haematocrit(settings, model, boundaries, network)
+    return model
+
+
+def _splits_junctions(settings: dict) -> bool:
+    return bool(
+        settings.get("run_haemodynamics")
+        and _distributes_haematocrit(settings)
+        and settings.get("haematocrit_junction_rule") == JUNCTION_RULE_SPLIT_JUNCTIONS
+    )
+
+
+def _split_junctions_for_haematocrit(
+    settings: dict,
+    model: HaemodynamicModel,
+    boundaries: BoundaryNodes,
+    network: VesselNetwork | None,
+) -> None:
+    if not _splits_junctions(settings) or not graph.high_degree_junctions(model.graph):
+        return
+    # A copy: the graph handed in may be a stage checkpoint, which a rerun
+    # with another junction rule must find unsplit.
+    G_split = model.graph.copy()
+    split = graph.split_high_degree_junctions(G_split)
+    model.graph = G_split
+    boundaries.graph = G_split
+    if network is not None:
+        network.graph = G_split
+    logger.info(
+        "haematocrit_junction_rule=split_junctions: split %d junction(s) of four "
+        "or more vessels into bifurcations, adding %d connector vessel(s).",
+        len(split),
+        sum(len(new_nodes) for new_nodes in split.values()),
+    )
+
+
+def _remove_components_without_io(
+    settings: dict,
+    model: HaemodynamicModel,
+    boundaries: BoundaryNodes,
+    network: VesselNetwork | None,
+) -> None:
     if not bool(settings.get("remove_disconnected_io_components_after_final_assignment", False)):
-        return model
+        return
     G_pruned, io_prune_stats = graph.remove_components_without_connected_io(
         model.graph, boundaries.inlet_nodes, boundaries.outlet_nodes
     )
     if int(io_prune_stats["removed_components"]) == 0:
-        return model
+        return
     model.graph = G_pruned
     boundaries.graph = G_pruned
     if network is not None:
@@ -2571,7 +2622,6 @@ def apply_network_handling(
     if pair is None or any(node_id not in G_pruned for node_id in pair):
         boundaries.resistance_node_pair = (boundaries.inlet_nodes[0], boundaries.outlet_nodes[0])
         logger.info(f"Re-selected resistance node pair: {boundaries.resistance_node_pair}")
-    return model
 
 
 def build_haemodynamic_model(
@@ -2615,6 +2665,11 @@ def _distributes_haematocrit(settings: dict) -> bool:
     """Whether ``haematocrit_model`` picked the iterative bifurcation model
     rather than the uniform fixed value."""
     return settings.get("haematocrit_model") == "distributed_iterative"
+
+
+def _junction_rule(settings: dict) -> str:
+    """``haematocrit_junction_rule``, for a caller whose settings predate it."""
+    return settings.get("haematocrit_junction_rule") or JUNCTION_RULE_NO_SEPARATION
 
 
 def solve(
@@ -2674,6 +2729,7 @@ def solve(
                 outlet_nodes=settings["outlet_nodes"],
                 max_iterations=int(settings["haematocrit_distribution_max_iterations"]),
                 tolerance=float(settings["haematocrit_distribution_tolerance"]),
+                junction_rule=_junction_rule(settings),
             )
             node_list = hct_result["node_list"]
             node_to_idx = hct_result["node_to_idx"]
@@ -2695,6 +2751,8 @@ def solve(
                 "max_delta": hct_result["max_delta"],
                 "dead_edges": hct_result.get("dead_edges", 0),
                 "compound_junctions": hct_result.get("compound_junctions", 0),
+                "junction_rule": _junction_rule(settings),
+                "non_bifurcation_junctions": hct_result.get("non_bifurcation_junctions", 0),
             }
             logger.info(
                 "Haematocrit distribution %s after %d iteration(s) (max "
@@ -2887,6 +2945,7 @@ def _solve_network(
             outlet_nodes=list(boundaries.outlet_nodes),
             max_iterations=int(settings["haematocrit_distribution_max_iterations"]),
             tolerance=float(settings["haematocrit_distribution_tolerance"]),
+            junction_rule=_junction_rule(settings),
         )
         # iterate_flow_and_haematocrit's own pressure is solved from the pass
         # before its last resistance recompute (see its docstring) -- a fresh
