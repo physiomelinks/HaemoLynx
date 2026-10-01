@@ -5,6 +5,10 @@
     python3 examples/cb_h1_th_metrics.py --all            # both groups, SHR caveated
     python3 examples/cb_h1_th_metrics.py --all --th-threshold 0.5 0.7 0.9
 
+The WKY-only run writes ``examples/outputs/cb_h1_th_metrics.json``; ``--all`` writes
+``cb_h1_th_metrics_all.json`` beside it, so neither table overwrites the other. ``--out``
+overrides both.
+
 Section 1.3 is the parenchymal volume of the TH-positive clusters and the centreline length
 density within them. Section 1.5 is the distance from every TH-positive voxel to the nearest
 lectin-positive centreline.
@@ -48,6 +52,10 @@ from ImageLynx import cb_settings                                      # noqa: E
 FROZEN_VESSEL_THRESHOLD = cb_settings.FROZEN_THRESHOLD
 ROI = cb_settings.ROI_VOXELS
 BATCH = Path(__file__).resolve().parents[1] / "examples/outputs/cb_h1_batch"
+#: Default outputs. Separate files, so an --all run cannot replace the WKY-only table
+#: (re-run notes 2026-10-01, item 7).
+WKY_OUT = Path("examples/outputs/cb_h1_th_metrics.json")
+ALL_OUT = Path("examples/outputs/cb_h1_th_metrics_all.json")
 
 #: Why any SHR row here is provisional. Carried into the JSON and printed beside the table,
 #: because a caveat that lives only in a commit message is a caveat nobody reads.
@@ -139,7 +147,8 @@ def main():
                     help="Include SHR. Every SHR row carries the labelling caveat.")
     ap.add_argument("--th-threshold", type=float, nargs="+", default=[0.5, 0.7, 0.9],
                     help="TH probability cutoffs. Several so the sensitivity is visible.")
-    ap.add_argument("--out", default="examples/outputs/cb_h1_th_metrics.json")
+    ap.add_argument("--out", default=None,
+                    help=f"Output JSON (default: {WKY_OUT}, or {ALL_OUT} with --all).")
     args = ap.parse_args()
 
     specimens = [s for s in SPECIMENS if args.all or s.group == "WKY"]
@@ -179,7 +188,7 @@ def main():
             print(line)
         payload["by_threshold"][str(th_threshold)] = [r.as_dict() for r in rows]
 
-    out = Path(args.out)
+    out = Path(args.out) if args.out else (ALL_OUT if args.all else WKY_OUT)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2))
     print(f"\nWrote {out}")
