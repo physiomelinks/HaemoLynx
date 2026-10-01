@@ -381,7 +381,9 @@ are only caught locally.
   **9. Additional measurements** is a tab with no stage function (its settings are read by
   `export_results`). **6. Post processing** (`post_process`, between Diameters and
   Haemodynamics) has no settings: its tab is its own page (`gui/_widget.py`'s
-  `_post_processing_controls`), with no "Run from this stage". Its Regenerate graph runs
+  `_post_processing_controls`), with no "Run from this stage"; its 4+ junction list, table
+  and their Delete/Leave/Split buttons sit behind a "Manual 4+ vessel junction correction"
+  checkbox, off by default (off, a scan neither marks the junctions nor zooms to one). Its Regenerate graph runs
   `post_process` alone while a run is paused there (`gui/run_state.py`), else re-solves to Export
   like Regenerate from the edited network; Continue carries a paused run on.
   Plus what a run reports through:

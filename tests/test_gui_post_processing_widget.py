@@ -64,7 +64,11 @@ def _four_way_network() -> nx.MultiGraph:
 
 @pytest.fixture
 def page(make_napari_viewer):
-    viewer = make_napari_viewer()
+    """The tab on the four-way network, its junction correction ticked."""
+    return _four_way_page(make_napari_viewer(), junction_correction=True)
+
+
+def _four_way_page(viewer, *, junction_correction: bool):
     results = ResultLayers()
     _apply_layers(viewer, results.stage_finished("build_network", network(_four_way_network())))
     report = SimpleNamespace(value="")
@@ -90,6 +94,7 @@ def page(make_napari_viewer):
         complete=lambda: run.complete,
     )
     controls.refresh()
+    controls.junction_toggle.setChecked(junction_correction)
     return SimpleNamespace(
         controls=controls, viewer=viewer, results=results, report=report,
         regenerated=regenerated, stops=stops, run=run,
@@ -166,6 +171,59 @@ def test_scan_before_a_run_reports_instead_of_raising(make_napari_viewer):
     controls.scan_button.click()
     assert "Nothing to check yet" in controls.status.text()
     assert HIGH_DEGREE_JUNCTIONS not in viewer.layers
+
+
+def test_junction_correction_is_off_and_hidden_until_ticked(make_napari_viewer):
+    """Unticked, a scan picks no junction, marks none, tints none cyan and
+    leaves the camera where it was; ticking brings all of it, unticking
+    takes it away again. The other edits work either way."""
+    page = _four_way_page(make_napari_viewer(), junction_correction=False)
+    c, viewer = page.controls, page.viewer
+    assert c.junction_toggle.text() == "Manual 4+ vessel junction correction"
+    assert c.junction_toggle.toolTip()
+    fresh = _post_processing_controls(
+        viewer, SimpleNamespace(value=""), results=lambda: None,
+        boundary_roles=lambda: {}, regenerate=lambda graph: None, running=lambda: False,
+    )
+    assert not fresh.junction_toggle.isChecked(), "off by default"
+    assert fresh.junction_box.isHidden()
+    for widget in (c.junction_list, c.table, c.delete_button, c.leave_button,
+                   c.split_button, c.connector):
+        assert c.junction_box.isAncestorOf(widget)
+    for widget in (c.scan_button, c.click_delete_button, c.add_button, c.prune_button):
+        assert not c.junction_box.isAncestorOf(widget)
+
+    centre_before = np.asarray(viewer.camera.center, dtype=float).copy()
+    c.scan_button.click()
+    graph = c.state.graph
+    assert graph is not None
+    assert c.state.node is None and c.table.rowCount() == 0
+    assert HIGH_DEGREE_JUNCTIONS not in viewer.layers
+    assert _colour_of(viewer, graph, (1, 2)) == _rgba(CONNECTED)
+    assert np.allclose(viewer.camera.center, centre_before)
+    assert c.status.text() == "1 junction(s) where 4+ vessels meet, in 6 vessels."
+
+    # An edit rescans: still no junction picked or marked.
+    keys = edge_keys(graph)
+    c.branch_ids.setText(str(next(i for i, k in enumerate(keys) if set(k[:2]) == {2, 4})))
+    c.delete_ids_button.click()
+    assert c.state.graph.degree(1) == 4
+    assert c.state.node is None and HIGH_DEGREE_JUNCTIONS not in viewer.layers
+
+    c.junction_toggle.setChecked(True)
+    graph = c.state.graph
+    assert not c.junction_box.isHidden()
+    assert c.state.node == 1 and c.table.rowCount() == 4
+    assert np.allclose(viewer.layers[HIGH_DEGREE_JUNCTIONS].data, [[10, 0, 0]])
+    assert _colour_of(viewer, graph, (1, 5)) == _rgba(AT_JUNCTION)
+    centre = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
+    assert np.allclose(centre, [10, 0, 0][-len(viewer.dims.displayed):], atol=1e-6)
+
+    c.junction_toggle.setChecked(False)
+    assert c.junction_box.isHidden()
+    assert c.state.node is None and c.table.rowCount() == 0
+    assert HIGH_DEGREE_JUNCTIONS not in viewer.layers
+    assert _colour_of(viewer, graph, (1, 5)) == _rgba(CONNECTED)
 
 
 def test_scan_lists_the_junction_recolours_the_vessels_and_zooms(page):
@@ -586,6 +644,7 @@ def test_the_log_records_each_change_with_its_branch_ids(make_napari_viewer):
         boundary_roles=lambda: {"inlet": (0,), "outlet": (4,)},
         regenerate=lambda graph: None, running=lambda: False,
     )
+    c.junction_toggle.setChecked(True)
     c.scan_button.click()
     keys = edge_keys(c.state.graph)
     to_5 = next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})

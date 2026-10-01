@@ -150,8 +150,13 @@ LOAD_RUN_TOOLTIP = (
 #: "6. Post processing" tab.
 POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     "scan": (
-        "Look at the last run's network and list every junction where four "
-        "or more vessels meet"
+        "Take the last run's network into this tab to edit it, and count the "
+        "junctions where four or more vessels meet"
+    ),
+    "junction_correction": (
+        "Show the junctions where four or more vessels meet, to delete some "
+        "of their vessels or split them into bifurcations; while it is off "
+        "they are neither marked in the viewer nor zoomed to"
     ),
     "junctions": (
         "Junctions where four or more vessels meet; click one to zoom to it "

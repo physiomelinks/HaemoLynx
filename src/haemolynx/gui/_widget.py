@@ -7633,7 +7633,10 @@ def _post_processing_controls(
 
     The page edits one working copy of the graph: the junction table's
     Delete and Split, and the edit box's click-in-the-viewer Delete vessel and
-    Add vessel. Add vessel traces a vessel click by click: from a node, or a
+    Add vessel. The junction list, its table and their buttons sit behind the
+    "Manual 4+ vessel junction correction" checkbox, off at first; while it
+    is off a scan neither marks the 4+ junctions in the viewer nor zooms to
+    one. Add vessel traces a vessel click by click: from a node, or a
     point on a vessel (where a node will form), through each point clicked
     after it -- every leg found by A* through the segmented mask or the raw
     data, as the box's dropdown says, and drawn as soon as it is -- until a
@@ -7645,6 +7648,7 @@ def _post_processing_controls(
     """
     from qtpy.QtWidgets import (
         QAbstractItemView,
+        QCheckBox,
         QComboBox,
         QDoubleSpinBox,
         QGroupBox,
@@ -7731,18 +7735,21 @@ def _post_processing_controls(
     page.setObjectName("haemolynx_post_processing")
     layout = QVBoxLayout(page)
     intro = QLabel(
-        "Fix the network by hand: junctions where four or more vessels meet, "
-        "and vessels to add or delete. The chosen junction's vessels are cyan "
-        "and the ones selected in the table yellow. Edits stay in the viewer "
-        "until Regenerate graph brings them in line with the rest of the "
-        "network. With Mid-run postprocessing on (1. Input), a run pauses here "
-        "after Diameters and Continue runs Haemodynamics onwards."
+        "Fix the network by hand: vessels to add or delete and, with Manual 4+ "
+        "vessel junction correction on, junctions where four or more vessels "
+        "meet. Edits stay in the viewer until Regenerate graph brings them in "
+        "line with the rest of the network. With Mid-run postprocessing on "
+        "(1. Input), a run pauses here after Diameters and Continue runs "
+        "Haemodynamics onwards."
     )
     intro.setWordWrap(True)
     scan_button = QPushButton("Scan network")
     scan_button.setToolTip(tips["scan"])
     status = QLabel("Not scanned yet.")
     status.setWordWrap(True)
+    junction_toggle = QCheckBox("Manual 4+ vessel junction correction")
+    junction_toggle.setObjectName("haemolynx_post_processing_junction_toggle")
+    junction_toggle.setToolTip(tips["junction_correction"])
     junction_list = QListWidget()
     junction_list.setObjectName("haemolynx_post_processing_junctions")
     junction_list.setToolTip(tips["junctions"])
@@ -7821,21 +7828,37 @@ def _post_processing_controls(
     log_box.setToolTip(tips["log"])
     log_box.setMinimumHeight(110)
 
-    layout.addWidget(intro)
-    layout.addWidget(scan_button)
-    layout.addWidget(status)
-    layout.addWidget(QLabel("Junctions where 4+ vessels meet:"))
-    layout.addWidget(junction_list)
-    layout.addWidget(QLabel("Vessels at the selected junction:"))
-    layout.addWidget(table)
+    # Everything the 4+ junction correction needs, nested under its checkbox
+    # and hidden until it is ticked.
+    junction_box = QWidget()
+    junction_box.setObjectName("haemolynx_post_processing_junction_box")
+    junction_layout = QVBoxLayout(junction_box)
+    junction_layout.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 0)
+    colours = QLabel(
+        "The chosen junction's vessels are cyan and the ones selected in the "
+        "table yellow."
+    )
+    colours.setWordWrap(True)
+    junction_layout.addWidget(colours)
+    junction_layout.addWidget(QLabel("Junctions where 4+ vessels meet:"))
+    junction_layout.addWidget(junction_list)
+    junction_layout.addWidget(QLabel("Vessels at the selected junction:"))
+    junction_layout.addWidget(table)
     row = QHBoxLayout()
     row.addWidget(delete_button)
     row.addWidget(leave_button)
-    layout.addLayout(row)
+    junction_layout.addLayout(row)
     row = QHBoxLayout()
     row.addWidget(split_button)
     row.addWidget(connector)
-    layout.addLayout(row)
+    junction_layout.addLayout(row)
+    junction_box.setVisible(False)
+
+    layout.addWidget(intro)
+    layout.addWidget(scan_button)
+    layout.addWidget(status)
+    layout.addWidget(junction_toggle)
+    layout.addWidget(junction_box)
     layout.addWidget(edit_box)
     layout.addWidget(prune_button)
     layout.addWidget(QLabel("What was changed:"))
@@ -7881,15 +7904,16 @@ def _post_processing_controls(
         if not getattr(vessels, "_haemolynx_follow_tubes", False):
             _maybe_retint_vessel_tubes(vessels)
 
+    def junctions_on() -> bool:
+        return junction_toggle.isChecked()
+
     def draw_markers() -> None:
         if viewer is None or state.graph is None or state.scan is None:
             return
+        drop_layer(HIGH_DEGREE_JUNCTIONS)
+        if not junctions_on():
+            return
         spec = junction_marker_layer(state.graph, state.scan)
-        existing = layer(HIGH_DEGREE_JUNCTIONS)
-        if existing is not None:
-            _process_pending_qt_events()
-            viewer.layers.remove(existing)
-            _process_pending_qt_events()
         if len(spec.data):
             viewer.add_points(
                 spec.data,
@@ -7983,6 +8007,11 @@ def _post_processing_controls(
         for node in junctions:
             junction_list.addItem(junction_label(state.graph, node, state.decisions.get(node)))
         junction_list.blockSignals(False)
+        if not junctions_on():
+            # Picking one would list its vessels, turn them cyan and zoom to it.
+            show_vessels(None)
+            recolour()
+            return
         if prefer not in junctions:
             prefer = next((n for n in junctions if n not in state.decisions), None)
             if prefer is None and junctions:
@@ -8034,6 +8063,14 @@ def _post_processing_controls(
         else:
             text = ""
         commit_status.setText(text)
+
+    def on_junction_correction_toggled(on: bool) -> None:
+        """Show the 4+ junctions and their edits, picking one; or put them away."""
+        junction_box.setVisible(on)
+        if state.scan is None:
+            return
+        draw_markers()
+        fill_list(prefer=state.node)
 
     def on_junction_changed(row: int) -> None:
         if state.scan is None or not 0 <= row < len(state.scan.junctions):
@@ -8675,6 +8712,7 @@ def _post_processing_controls(
         )
 
     scan_button.clicked.connect(on_scan)
+    junction_toggle.toggled.connect(on_junction_correction_toggled)
     junction_list.currentRowChanged.connect(on_junction_changed)
     table.itemSelectionChanged.connect(recolour)
     delete_button.clicked.connect(on_delete)
@@ -8723,6 +8761,8 @@ def _post_processing_controls(
         continue_button=continue_button,
         commit_status=commit_status,
         scan_button=scan_button,
+        junction_toggle=junction_toggle,
+        junction_box=junction_box,
         junction_list=junction_list,
         table=table,
         delete_button=delete_button,
