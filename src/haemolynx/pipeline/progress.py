@@ -76,6 +76,7 @@ _COMPARISON_SETTINGS_HIDDEN_FROM_DIAMETERS = _LEGACY_SETTINGS_HIDDEN_FROM_DIAMET
 _HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB: tuple[str, ...] = (
     "haematocrit_model",
     "haematocrit_junction_rule",
+    "haematocrit_split_connector_length_um",
     "haematocrit_distribution_max_iterations",
     "haematocrit_distribution_tolerance",
 )

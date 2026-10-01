@@ -272,6 +272,41 @@ def test_split_high_degree_junctions_leaves_an_unlabelled_connector_unlabelled()
     assert "branch_order" not in G.get_edge_data(0, new)[0]
 
 
+def test_a_run_splits_each_junction_with_connectors_as_long_as_its_vessels_are_wide():
+    """Two merged bifurcations were about a vessel diameter apart, so each
+    junction's connector length is its own vessels' mean diameter -- one
+    length for a capillary junction, another for an arteriole's."""
+    p4, e4 = _star(4, centre=0, first_arm=1)
+    q4, f4 = _star(4, centre=100, first_arm=101)
+    G = _network({**p4, **q4}, e4 + f4)
+    for u, v, k in edge_keys(G):
+        G.edges[u, v, k]["diameter_um"] = 6.0 if 0 in (u, v) else 12.0
+
+    split = split_high_degree_junctions(G)
+
+    for junction, width in ((0, 6.0), (100, 12.0)):
+        (new,) = split[junction]
+        connector = G.get_edge_data(junction, new)[0]
+        assert connector["length"] == pytest.approx(width)
+        assert connector["diameter_um"] == pytest.approx(width)
+        assert np.linalg.norm(G.nodes[new]["pos"] - G.nodes[junction]["pos"]) == pytest.approx(width)
+
+
+def test_a_run_split_takes_a_fixed_connector_length_when_given_one():
+    G = _four_way_with_one_close_pair()
+    (new,) = split_high_degree_junctions(G, connector_length_um=20.0)[0]
+    assert G.get_edge_data(0, new)[0]["length"] == pytest.approx(20.0)
+
+
+def test_a_junction_with_no_diameters_falls_back_to_the_tabs_connector_length():
+    positions, edges = _star(4)
+    G = _network(positions, edges)
+    (new,) = split_high_degree_junctions(G)[0]
+    assert G.get_edge_data(0, new)[0]["length"] == pytest.approx(
+        DEFAULT_SPLIT_CONNECTOR_LENGTH_UM
+    )
+
+
 # --- a new vessel between two nodes -------------------------------------------
 
 

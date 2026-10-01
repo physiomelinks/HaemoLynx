@@ -3743,12 +3743,35 @@ SCHEMA = Schema(
                 "the first parent and the outflows split off largest flow "
                 "first (Secomb's dishem_generalized). split_junctions changes "
                 "the network before the model is built: every junction of "
-                "four or more vessels becomes bifurcations joined by 15 um "
+                "four or more vessels becomes bifurcations joined by short "
                 "connector vessels, as the Post processing tab's split does, "
                 "which adds their resistance to the network too"
             ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics", "haematocrit_model=distributed_iterative"),
+        ),
+        Setting(
+            name="haematocrit_split_connector_length_um",
+            kind="float",
+            default=0.0,
+            help=(
+                "Length of each connector split_junctions adds. 0 makes each "
+                "junction's connectors as long as its vessels are wide (their "
+                "mean diameter, which is also the connector's diameter): a "
+                "four-way node is usually two bifurcations graph building "
+                "merged, about that far apart, and a fixed length would "
+                "re-plumb a capillary bed while falling inside an arteriole's "
+                "own junction. The Post processing tab's split defaults to 15"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            unit="um",
+            minimum=0.0,
+            requires=(
+                "run_haemodynamics",
+                "haematocrit_model=distributed_iterative",
+                "haematocrit_junction_rule=split_junctions",
+            ),
+            advanced=True,
         ),
         Setting(
             name="haematocrit_distribution_max_iterations",

@@ -2543,7 +2543,9 @@ def apply_network_handling(
     distributed haematocrit model it belongs to), every junction of four or
     more vessels is split into bifurcations
     (:func:`haemolynx.graph.split_high_degree_junctions`), on a copy that
-    likewise becomes all three's graph.
+    likewise becomes all three's graph. Its connectors are
+    ``haematocrit_split_connector_length_um`` long, or with that at 0 as long
+    as each junction's vessels are wide.
     """
     _remove_components_without_io(settings, model, boundaries, network)
     _split_junctions_for_haematocrit(settings, model, boundaries, network)
@@ -2569,7 +2571,11 @@ def _split_junctions_for_haematocrit(
     # A copy: the graph handed in may be a stage checkpoint, which a rerun
     # with another junction rule must find unsplit.
     G_split = model.graph.copy()
-    split = graph.split_high_degree_junctions(G_split)
+    # 0 (the default): as long as the junction's vessels are wide.
+    length = float(settings.get("haematocrit_split_connector_length_um") or 0.0)
+    split = graph.split_high_degree_junctions(
+        G_split, connector_length_um=length if length > 0 else None
+    )
     model.graph = G_split
     boundaries.graph = G_split
     if network is not None:

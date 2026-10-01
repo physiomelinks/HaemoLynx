@@ -288,6 +288,11 @@ def test_the_haemodynamics_tab_leads_with_its_master_toggle():
     blood = layout.boxes[2].rows
     assert blood.index("haematocrit_junction_rule") == blood.index("haematocrit_model") + 1
     assert layout.disclosure_of("haematocrit_junction_rule") is None
+    # The split's connector length only matters to split_junctions, so it sits
+    # behind a button of its own under the rule, not with the iteration's.
+    splitting = layout.disclosure_of("haematocrit_split_connector_length_um")
+    assert splitting.anchor == "haematocrit_junction_rule"
+    assert splitting.title == "Advanced junction splitting"
 
 
 def test_the_export_tab_leads_with_where_the_outputs_go():

@@ -270,6 +270,35 @@ def test_only_split_junctions_with_distributed_haematocrit_changes_the_network(s
     assert model.graph is graph and graph.degree(1) == 4
 
 
+@pytest.mark.parametrize(
+    "setting, expected",
+    [
+        # 0, the default: the junction's mean diameter, (15 + 12 + 8 + 10) / 4.
+        (0.0, 11.25),
+        (20.0, 20.0),
+    ],
+)
+def test_the_connector_length_setting_reaches_the_split(setting, expected):
+    graph = _four_way()
+    model = HaemodynamicModel(graph=graph)
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[2, 3, 4], graph=graph)
+
+    apply_network_handling(
+        {**SPLIT, "haematocrit_split_connector_length_um": setting}, model, boundaries
+    )
+
+    (connector,) = [
+        data for _u, _v, data in model.graph.edges(data=True) if data.get("junction_split_connector")
+    ]
+    assert connector["length"] == pytest.approx(expected)
+
+
+def test_the_connector_length_only_shows_with_split_junctions():
+    setting = SCHEMA["haematocrit_split_connector_length_um"]
+    assert "haematocrit_junction_rule=split_junctions" in setting.requires
+    assert setting.default == 0.0 and setting.unit == "um" and setting.advanced
+
+
 def test_split_junctions_leaves_a_network_of_bifurcations_alone():
     graph = _four_way()
     graph.remove_edge(1, 4)

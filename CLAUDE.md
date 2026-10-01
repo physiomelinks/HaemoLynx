@@ -91,7 +91,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 408 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 409 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -367,7 +367,9 @@ are only caught locally.
   the "Network handling" box on the Haemodynamics tab (pruning components without both an inlet
   and an outlet; `boundary_handling`; and, with `haematocrit_junction_rule="split_junctions"`,
   splitting every 4+ junction into bifurcations on a copy of the graph via
-  `graph.split_high_degree_junctions`), run at the start of the haemodynamics stage — not at the
+  `graph.split_high_degree_junctions`, with connectors as long as the junction's vessels are wide
+  unless `haematocrit_split_connector_length_um` fixes one), run at the start of the haemodynamics
+  stage — not at the
   end of `assign_boundaries`, where it used to be — so "Run from this stage" on that tab honours
   it. A caller running the stages by hand calls it between `assign_diameters` and
   `build_haemodynamic_model`, as the examples do.

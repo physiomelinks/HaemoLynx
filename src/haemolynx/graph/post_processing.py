@@ -442,7 +442,7 @@ def split_junction(
 def split_high_degree_junctions(
     G: nx.MultiGraph,
     *,
-    connector_length_um: float = DEFAULT_SPLIT_CONNECTOR_LENGTH_UM,
+    connector_length_um: float | None = None,
 ) -> dict[Any, list[Any]]:
     """:func:`split_junction` every junction of four or more vessels, for a run.
 
@@ -455,13 +455,22 @@ def split_high_degree_junctions(
     share, else the wider one's: the connector is the first stretch of their
     common trunk.
 
+    Without *connector_length_um*, each junction's connectors are as long as
+    its vessels are wide (:func:`mean_incident_diameter`, which is also the
+    connector's diameter). A four-way node in a traced network is usually two
+    bifurcations that graph building merged, and they were about that far
+    apart; a fixed length would re-plumb a capillary bed and fall inside an
+    arteriole's own junction. A junction with no diameters takes
+    :data:`DEFAULT_SPLIT_CONNECTOR_LENGTH_UM`.
+
     Returns ``{junction: [new node ids]}`` for every junction split.
     """
     split: dict[Any, list[Any]] = {}
     for node in high_degree_junctions(G):
-        new_nodes = split_junction(
-            G, node, connector_length_um=connector_length_um, mark=False
-        )
+        length = connector_length_um
+        if length is None:
+            length = mean_incident_diameter(G, [node]) or DEFAULT_SPLIT_CONNECTOR_LENGTH_UM
+        new_nodes = split_junction(G, node, connector_length_um=length, mark=False)
         if not new_nodes:
             continue
         split[node] = new_nodes
