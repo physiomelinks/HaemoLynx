@@ -404,6 +404,30 @@ def test_the_export_stage_measures_nothing_with_the_setting_off(tmp_path):
     assert rows["Tissue Volume Source"] == "bounding box of the network's nodes"
 
 
+def test_a_hand_built_settings_dict_without_the_setting_exports_with_it_off(tmp_path):
+    """Regression: callers that build export_results' settings by hand list
+    only the keys an export reads; one written before measure_tissue_volume
+    existed must still export, measuring nothing."""
+    _settings, network, G, _vessel = _stage_inputs(tmp_path)
+    settings = {
+        "statistics": False,
+        "measurement_3d_to_cell_mask": False,
+        "run_haemodynamics": False,
+        "vtk_export": False,
+        "visualize_vtk": False,
+        "visualize_results": False,
+        "export_citations": False,
+        "compute_vascular_communities": False,
+        "plot_dir": tmp_path,
+        "input_path": tmp_path / "seg.tif",
+    }
+    solution = stages.Solution(graph=G)
+    stages.export_results(settings, network, stages.HaemodynamicModel(graph=G), solution)
+    assert solution.tissue is None
+    assert not (tmp_path / "seg_tissue_volume.csv").exists()
+    assert stages.tissue_measurement({}, network) is None
+
+
 def test_one_network_is_measured_once_and_again_when_a_setting_changes(tmp_path, monkeypatch):
     settings, network, _G, _vessel = _stage_inputs(tmp_path)
     calls = []

@@ -3944,8 +3944,12 @@ def tissue_measurement(
     tissue. Kept on *network*, and measured again only when the settings, the
     raw file or the segmentation it was measured against changed -- a resumed
     run carries its network over.
+
+    A settings dict that does not name ``measure_tissue_volume`` at all --
+    one a caller built by hand with only the keys an export reads -- has it
+    off, as it was before the setting existed.
     """
-    if network is None or not settings["measure_tissue_volume"]:
+    if network is None or not settings.get("measure_tissue_volume"):
         return None
     if network.volume is None:
         logger.warning("measure_tissue_volume: no loaded segmentation to measure against; skipped.")
