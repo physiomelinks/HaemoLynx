@@ -127,6 +127,8 @@ def compute_comprehensive_vessel_statistics(
     occlusion_hypoperfusion_fraction: float = 0.5,
     occlusion_curve_max_fraction: float = 0.5,
     topology_communities: "tuple[list, str] | None" = None,
+    tissue_volume_um3: Optional[float] = None,
+    vessel_volume_um3: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Combine all vessel statistics.
 
@@ -157,6 +159,12 @@ def compute_comprehensive_vessel_statistics(
     exact greedy modularity in ``full`` mode, ``communities_for_weighting(G,
     "topology")`` in ``fast`` -- computed once by a caller that also needs it
     (the vessels-layer vascular communities) and used instead of repeating it.
+
+    *tissue_volume_um3* and *vessel_volume_um3*, when given, are the tissue
+    measured from the raw image and the segmented vessel volume inside it
+    (:func:`~haemolynx.statistics.tissue_volume.measure_tissue_volume`):
+    "vessel_density" then divides by the tissue rather than by the box the
+    network spans, and adds the vascular volume fraction.
     """
     assert_no_forbidden_edge_attributes(G, context="vessel statistics")
     valid_modes = {"fast", "full"}
@@ -198,7 +206,15 @@ def compute_comprehensive_vessel_statistics(
         base.update(compute_fractal_dimension(G, node_positions))
     if "vessel_density" in enabled:
         base.update(
-            compute_vessel_density(G, node_positions, voxel_size, image_dimensions, is_mg)
+            compute_vessel_density(
+                G,
+                node_positions,
+                voxel_size,
+                image_dimensions,
+                is_mg,
+                tissue_volume_um3=tissue_volume_um3,
+                vessel_volume_um3=vessel_volume_um3,
+            )
         )
     if "murray_law" in enabled:
         # The original G, not G_simple, for the same reason as fractal

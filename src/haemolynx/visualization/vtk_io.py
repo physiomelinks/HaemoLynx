@@ -226,6 +226,25 @@ def graph_to_vtk(
     }
 
 
+def surface_mesh_to_vtk(
+    vertices: np.ndarray, faces: np.ndarray, output_path: str | Path
+) -> Path:
+    """Write a triangle mesh -- the tissue surface -- as VTK PolyData.
+
+    *vertices* are written as given: physical ``(z, y, x)`` microns, the order
+    :func:`graph_to_vtk` writes node ``pos`` in, so the two overlay.
+    """
+    import pyvista as pv
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    faces = np.asarray(faces, dtype=np.int64).reshape(-1, 3)
+    cells = np.hstack([np.full((len(faces), 1), 3, dtype=np.int64), faces]).ravel()
+    mesh = pv.PolyData(np.asarray(vertices, dtype=float).reshape(-1, 3), cells)
+    mesh.save(output_path)
+    return output_path
+
+
 def visualize_vtk_network(
     vessels_path: str | Path,
     pericytes_path: str | Path | None = None,

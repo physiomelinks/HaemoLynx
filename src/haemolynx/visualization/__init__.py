@@ -18,6 +18,7 @@ from .large_vessel_assignment import (
 from .vtk_io import (
     derive_pericyte_points_from_graph,
     graph_to_vtk,
+    surface_mesh_to_vtk,
     visualize_vtk_network,
 )
 from .pipeline_artifacts import (
@@ -50,6 +51,7 @@ __all__ = [
     "visualize_skeleton",
     "derive_pericyte_points_from_graph",
     "graph_to_vtk",
+    "surface_mesh_to_vtk",
     "visualize_vtk_network",
     "save_graph_snapshot",
     "plot_dilation_curves",

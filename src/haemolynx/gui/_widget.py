@@ -2899,6 +2899,13 @@ def _add_or_update(viewer, spec) -> None:
     saved_mode = getattr(existing, "mode", None) if existing is not None else None
 
     if existing is not None and existing.__class__.__name__.lower() == _CLASS_FOR[spec.kind]:
+        if spec.kind == "surface":
+            # A new mesh and its colours land together, or vispy redraws one
+            # against the other's length (see _set_tube_mesh).
+            vertices, faces = spec.data[:2]
+            _set_tube_mesh(existing, vertices, faces, spec.options.get("vertex_colors", ()))
+            _keep_layer_interaction(existing, spec, visible=saved_visible, mode=saved_mode)
+            return
         # Shrinking Vectors/Points in place leaves stale segments on screen.
         if spec.kind in {"vectors", "points"}:
             new_count = len(np.asarray(spec.data))
@@ -3709,7 +3716,7 @@ def _format_sweep_value(axis_name: str, value) -> str:
 #: layer I already have?".
 _CLASS_FOR = {
     "image": "image", "labels": "labels", "points": "points",
-    "vectors": "vectors", "shapes": "shapes",
+    "vectors": "vectors", "shapes": "shapes", "surface": "surface",
 }
 
 

@@ -49,6 +49,7 @@ from .topology import (
 )
 
 from .three_dim_distances import run_3d_measurement_to_cell_mask
+from .tissue_volume import TISSUE_THRESHOLD_METHODS, TissueVolume, measure_tissue_volume
 
 __all__ = [
     "STATISTIC_MEASURES",
@@ -89,4 +90,7 @@ __all__ = [
     "compute_algebraic_connectivity",
     "export_branch_order_statistics_to_csv",
     "run_3d_measurement_to_cell_mask",
+    "TISSUE_THRESHOLD_METHODS",
+    "TissueVolume",
+    "measure_tissue_volume",
 ]

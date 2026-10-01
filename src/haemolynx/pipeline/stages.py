@@ -90,6 +90,7 @@ from haemolynx.visualization.perturbation_plots import (
     export_sweep_perturbation_plots,
 )
 from haemolynx.parsers import Schema, parameters_of, prefixed_arguments
+from haemolynx.pipeline.checks import tissue_raw_image
 from haemolynx.pipeline.citations import write_citations
 from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProgress
 
@@ -170,6 +171,19 @@ class VesselNetwork:
     large_venule_mask: np.ndarray | None = None
     small_arteriole_mask: np.ndarray | None = None
     small_venule_mask: np.ndarray | None = None
+    #: The tissue measured from the raw image, with what it was measured from
+    #: -- see `tissue_measurement`, which fills it on first use and measures
+    #: again when a re-run changed either.
+    tissue: "TissueCache | None" = None
+
+
+@dataclass(frozen=True)
+class TissueCache:
+    """One tissue measurement, and the settings and segmentation it came from."""
+
+    key: tuple
+    segmentation: Any
+    tissue: statistics.TissueVolume
 
 
 @dataclass
@@ -221,6 +235,9 @@ class Solution:
     statistics: dict[str, Any] = field(default_factory=dict)
     #: The network that was solved (same object ``solve`` wrote flows onto).
     graph: nx.MultiGraph | None = None
+    #: The tissue `export_results` measured (``measure_tissue_volume``), for
+    #: the viewer's tissue surface; None when it measured none.
+    tissue: statistics.TissueVolume | None = None
 
 
 @dataclass
@@ -3243,6 +3260,7 @@ def _perturb_one(
     image: np.ndarray | None = None,
     baseline_graph: nx.MultiGraph | None = None,
     voxel_size_zyx: tuple[float, float, float] | None = None,
+    tissue_statistics: Mapping[str, Any] | None = None,
 ) -> PerturbationResult:
     """Run one perturbation from the baseline network, and write its output.
 
@@ -3251,7 +3269,8 @@ def _perturb_one(
     by vessel; `model.graph` stands in when a caller has none.
     *voxel_size_zyx* is the baseline image's own voxel size, which every
     statistic and plot of this perturbation scales by -- see
-    `_baseline_voxel_size_zyx`.
+    `_baseline_voxel_size_zyx`. *tissue_statistics* is the baseline's tissue
+    volume (`tissue_statistics_arguments`), which its vessel density divides by.
     """
     if voxel_size_zyx is None:
         voxel_size_zyx = _baseline_voxel_size_zyx(model.graph, None)
@@ -3587,6 +3606,7 @@ def _perturb_one(
             )
             summary["vascular_communities"] = community_summary.community_count
         perturbation_statistics = statistics_arguments(perturbed)
+        perturbation_statistics.update(tissue_statistics or {})
         if shared_partition is not None:
             perturbation_statistics["topology_communities"] = shared_partition
         result.outputs.extend(
@@ -3688,6 +3708,13 @@ def run_perturbations(
     image = None if network is None else getattr(network.volume, "image", None)
     voxel_size_zyx = _baseline_voxel_size_zyx(model.graph, network)
     logger.info(f"Perturbations use the baseline image's voxel size (z, y, x): {voxel_size_zyx}")
+    # The tissue the baseline's vessel density divides by, so each re-solve's
+    # statistics divide by the same one. Only re-solves write statistics.
+    tissue_statistics = (
+        tissue_statistics_arguments(tissue_measurement(settings, network))
+        if any(not is_sweep_perturbation(spec.type) for spec in specs)
+        else {}
+    )
     for spec in specs:
         if progress is not None:
             progress.step(spec.name, total=len(specs))
@@ -3704,6 +3731,7 @@ def run_perturbations(
                     image=image,
                     baseline_graph=baseline_graph,
                     voxel_size_zyx=voxel_size_zyx,
+                    tissue_statistics=tissue_statistics,
                 )
             )
         except Exception as error:
@@ -3791,6 +3819,123 @@ def statistics_arguments(settings: dict) -> dict[str, Any]:
     }
 
 
+#: What a tissue measurement reads besides its raw image and the segmentation.
+_TISSUE_SETTINGS: tuple[str, ...] = (
+    "tissue_threshold_method",
+    "tissue_manual_threshold",
+    "tissue_smoothing_sigma_um",
+    "tissue_working_voxel_size_um",
+    "tissue_min_component_fraction",
+    "tissue_fill_holes",
+)
+
+
+def tissue_measurement(
+    settings: dict, network: VesselNetwork | None
+) -> statistics.TissueVolume | None:
+    """The tissue in the run's raw image (``measure_tissue_volume``), or None.
+
+    Measured once per network: the perturbations' statistics and the
+    baseline's both divide vessel density by it, and must divide by the same
+    tissue. Kept on *network*, and measured again only when the settings, the
+    raw file or the segmentation it was measured against changed -- a resumed
+    run carries its network over.
+    """
+    if network is None or not settings["measure_tissue_volume"]:
+        return None
+    if network.volume is None:
+        logger.warning("measure_tissue_volume: no loaded segmentation to measure against; skipped.")
+        return None
+    path, channel, path_name, _channel_name = tissue_raw_image(settings)
+    if not path:
+        raise ValueError(
+            "measure_tissue_volume needs the raw image to find the tissue in: set "
+            "tissue_raw_tiff_path, or fwhm_raw_tiff_path for it to share."
+        )
+    resolved = io.resolve_image_path_with_optional_zip(Path(path))
+    stat = resolved.stat()
+    key = (
+        str(resolved),
+        stat.st_mtime_ns,
+        stat.st_size,
+        channel,
+        settings["image_axis_order"],
+        tuple(network.volume.voxel_size_zyx),
+        tuple(settings[name] for name in _TISSUE_SETTINGS),
+    )
+    segmentation = network.volume.image
+    cached = network.tissue
+    if cached is not None and cached.key == key and cached.segmentation is segmentation:
+        return cached.tissue
+
+    from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    logger.info(f"Measuring the tissue volume in {resolved} (from {path_name})...")
+    use_memmap, memmap_directory = settings["use_memmap_loading"], settings["memmap_directory"]
+    raw = load_single_channel_tiff_volume(
+        resolved,
+        axis_order=settings["image_axis_order"],
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+        channel=channel,
+    )
+    # The segmentation as loaded, which may be labels (an ilastik 1/2 image):
+    # its vessels are what skeletonisation called foreground.
+    vessel_mask = _to_binary_volume_for_skeletonization(
+        segmentation, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
+    try:
+        tissue = statistics.measure_tissue_volume(
+            raw,
+            network.volume.voxel_size_zyx,
+            vessel_mask=vessel_mask,
+            working_voxel_size_um=float(settings["tissue_working_voxel_size_um"]),
+            smoothing_sigma_um=float(settings["tissue_smoothing_sigma_um"]),
+            threshold_method=settings["tissue_threshold_method"],
+            manual_threshold=settings["tissue_manual_threshold"],
+            min_component_fraction=float(settings["tissue_min_component_fraction"]),
+            fill_holes=bool(settings["tissue_fill_holes"]),
+        )
+    finally:
+        if isinstance(raw, np.memmap):
+            preprocessing.release_memmap_array(raw)
+        if isinstance(vessel_mask, np.memmap) and vessel_mask is not segmentation:
+            preprocessing.release_memmap_array(vessel_mask)
+    network.tissue = TissueCache(key=key, segmentation=segmentation, tissue=tissue)
+    return tissue
+
+
+def tissue_statistics_arguments(tissue: statistics.TissueVolume | None) -> dict[str, Any]:
+    """*tissue* as keyword arguments to
+    `statistics.compute_comprehensive_vessel_statistics`: what vessel density
+    divides by. Empty without one, so density falls back to the network's box."""
+    if tissue is None:
+        return {}
+    return {
+        "tissue_volume_um3": tissue.volume_um3,
+        "vessel_volume_um3": tissue.vessel_volume_um3,
+    }
+
+
+def export_tissue_measurement(
+    settings: dict, tissue: statistics.TissueVolume, output_dir: Path
+) -> list[Path]:
+    """Write *tissue*'s measurements (CSV) and surface (``.vtp``, points in
+    the ``(z, y, x)`` order the vessels' own ``.vtp`` uses) beside the run's
+    other outputs."""
+    stem = settings["input_path"].stem
+    csv_path = statistics.export_statistics_to_csv(
+        tissue.rows(), output_dir / f"{stem}_tissue_volume.csv"
+    )
+    surface_path = visualization.surface_mesh_to_vtk(
+        tissue.vertices, tissue.faces, output_dir / f"{stem}_tissue_surface.vtp"
+    )
+    logger.info(f"Saved the tissue volume to: {csv_path}")
+    logger.info(f"Saved the tissue surface to: {surface_path}")
+    return [csv_path, surface_path]
+
+
 def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicModel, solution: Solution):
     """Write VTK, statistics and distance measurements, and draw the plots."""
     G = model.graph
@@ -3817,6 +3962,15 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         weighted_report=bool(settings["statistics"]),
     )
 
+    # 6b) Optional: the tissue's own volume and surface, from the raw image --
+    # what vessel density divides by when it is measured.
+    tissue = tissue_measurement(settings, network)
+    if tissue is not None:
+        export_tissue_measurement(settings, tissue, output_dir)
+    else:
+        logger.info("Tissue volume measurement skipped.")
+    solution.tissue = tissue
+
     # 7) Compute and print vessel statistics.
     logger.info("Computing vessel statistics...")
     if settings["statistics"]:
@@ -3840,6 +3994,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                 shared_vascular_communities if vascular_weighting == "topology" else None
             ),
             **statistics_arguments(settings),
+            **tissue_statistics_arguments(tissue),
         )
 
         logger.info("=== Statistics ===")

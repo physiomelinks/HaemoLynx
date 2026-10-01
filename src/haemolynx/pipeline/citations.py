@@ -180,7 +180,9 @@ PACKAGE_CITATIONS: tuple[Citation, ...] = (
             "(2014). scikit-image: image processing in Python. PeerJ, 2, "
             "e453. https://doi.org/10.7717/peerj.453"
         ),
-        applies=lambda settings: bool(settings.get("do_skeletonize", True)),
+        applies=lambda settings: bool(
+            settings.get("do_skeletonize", True) or settings.get("measure_tissue_volume")
+        ),
     ),
     Citation(
         name="skan",
@@ -355,6 +357,77 @@ MODEL_CITATIONS: tuple[Citation, ...] = (
 )
 
 
+def _used_tissue_threshold(method: str) -> Callable[[Mapping[str, Any]], bool]:
+    def applies(settings: Mapping[str, Any]) -> bool:
+        return bool(settings.get("measure_tissue_volume")) and (
+            settings.get("tissue_threshold_method", "otsu") == method
+        )
+
+    return applies
+
+
+#: Image-analysis methods outside the haemodynamics model: listed only when a
+#: run used one, so a run without them renders exactly as it always has.
+IMAGE_ANALYSIS_CITATIONS: tuple[Citation, ...] = (
+    Citation(
+        name="Tissue surface (measure_tissue_volume)",
+        reason=(
+            "the tissue's surface and volume: marching cubes through the raw "
+            "image's background, smoothed by normalised convolution"
+        ),
+        reference=(
+            "Lorensen, W.E., Cline, H.E. (1987). Marching cubes: a high "
+            "resolution 3D surface construction algorithm. ACM SIGGRAPH "
+            "Computer Graphics, 21(4), 163-169. "
+            "https://doi.org/10.1145/37402.37422\n"
+            "    Lewiner, T., Lopes, H., Vieira, A.W., Tavares, G. (2003). "
+            "Efficient implementation of Marching Cubes' cases with "
+            "topological guarantees. Journal of Graphics Tools, 8(2), 1-15. "
+            "https://doi.org/10.1080/10867651.2003.10487582\n"
+            "    Knutsson, H., Westin, C.-F. (1993). Normalized and "
+            "differential convolution. Proceedings of IEEE Conference on "
+            "Computer Vision and Pattern Recognition, 515-523. "
+            "https://doi.org/10.1109/CVPR.1993.341081"
+        ),
+        applies=lambda settings: bool(settings.get("measure_tissue_volume")),
+    ),
+    Citation(
+        name="Otsu threshold (tissue_threshold_method='otsu')",
+        reason="splitting tissue from empty space in the raw image",
+        reference=(
+            "Otsu, N. (1979). A threshold selection method from gray-level "
+            "histograms. IEEE Transactions on Systems, Man, and Cybernetics, "
+            "9(1), 62-66. https://doi.org/10.1109/TSMC.1979.4310076"
+        ),
+        applies=_used_tissue_threshold("otsu"),
+    ),
+    Citation(
+        name="Li minimum cross-entropy threshold (tissue_threshold_method='li')",
+        reason="splitting tissue from empty space in the raw image",
+        reference=(
+            "Li, C.H., Lee, C.K. (1993). Minimum cross entropy thresholding. "
+            "Pattern Recognition, 26(4), 617-625. "
+            "https://doi.org/10.1016/0031-3203(93)90115-D\n"
+            "    Li, C.H., Tam, P.K.S. (1998). An iterative algorithm for "
+            "minimum cross entropy thresholding. Pattern Recognition Letters, "
+            "19(8), 771-776. https://doi.org/10.1016/S0167-8655(98)00057-9"
+        ),
+        applies=_used_tissue_threshold("li"),
+    ),
+    Citation(
+        name="Triangle threshold (tissue_threshold_method='triangle')",
+        reason="splitting tissue from empty space in the raw image",
+        reference=(
+            "Zack, G.W., Rogers, W.E., Latt, S.A. (1977). Automatic "
+            "measurement of sister chromatid exchange frequency. Journal of "
+            "Histochemistry & Cytochemistry, 25(7), 741-753. "
+            "https://doi.org/10.1177/25.7.70454"
+        ),
+        applies=_used_tissue_threshold("triangle"),
+    ),
+)
+
+
 def used_citations(
     settings: Mapping[str, Any], citations: tuple[Citation, ...]
 ) -> list[Citation]:
@@ -408,6 +481,9 @@ def render_citations(settings: Mapping[str, Any]) -> str:
             "(none detected -- haemodynamics was not run)",
         )
     )
+    image_analysis = used_citations(settings, IMAGE_ANALYSIS_CITATIONS)
+    if image_analysis:
+        lines.extend(_render_section("Image analysis methods", image_analysis, ""))
     return "\n".join(lines).rstrip() + "\n"
 
 

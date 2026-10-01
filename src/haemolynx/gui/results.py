@@ -67,6 +67,17 @@ FWHM_WIDTHS = f"{PREFIX}FWHM measured widths"
 #: The "Edit" window's in-progress "Add branch" path, drawn separately from
 #: VESSELS since it is not part of the graph until the draft is committed.
 EDIT_DRAFT = f"{PREFIX}edit draft"
+#: The tissue surface ``measure_tissue_volume`` found in the raw image; from Export.
+TISSUE_SURFACE = f"{PREFIX}tissue surface"
+
+#: A pale tissue colour, and see-through without writing depth, so the vessels
+#: the surface encloses still show through it.
+TISSUE_SURFACE_COLOUR: tuple[float, float, float, float] = (0.95, 0.72, 0.68, 1.0)
+TISSUE_SURFACE_OPTIONS: dict[str, Any] = {
+    "opacity": 0.25,
+    "shading": "smooth",
+    "blending": "translucent_no_depth",
+}
 
 #: Napari Points ``size`` (data pixels). Values match the original viewer style
 #: on ``origin/main`` / the first GUI results commit. Branch hover used to be a
@@ -772,7 +783,7 @@ PERTURBATION_COLOUR = "flow_abs"
 class LayerSpec:
     """One layer to add or update, described without napari."""
 
-    kind: str  # image | labels | points | vectors | shapes
+    kind: str  # image | labels | points | vectors | shapes | surface
     name: str
     data: Any
     scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
@@ -849,6 +860,24 @@ def merge_stage_layers(groups: Sequence[StageLayers]) -> StageLayers | None:
         recolour=tuple(recolour.items()),
         note=last.note,
         ndisplay=ndisplay,
+    )
+
+
+def tissue_surface_layer(tissue: Any) -> LayerSpec | None:
+    """The tissue surface (``statistics.TissueVolume``) as a Surface spec, or
+    None without one. Its vertices are physical ``(z, y, x)`` microns, like the
+    graph's, so the layer takes ``scale=(1, 1, 1)``."""
+    if tissue is None or len(tissue.faces) == 0:
+        return None
+    vertices = np.asarray(tissue.vertices, dtype=float)
+    return LayerSpec(
+        kind="surface",
+        name=TISSUE_SURFACE,
+        data=(vertices, np.asarray(tissue.faces, dtype=np.int64)),
+        options={
+            **TISSUE_SURFACE_OPTIONS,
+            "vertex_colors": np.tile(TISSUE_SURFACE_COLOUR, (len(vertices), 1)),
+        },
     )
 
 
@@ -2351,6 +2380,14 @@ class ResultLayers:
             note += f" Flow direction: {len(flow_layers[0].data)} arrows."
         else:
             note += " Flow direction layer skipped (no signed flows)."
+        tissue = getattr(output, "tissue", None)
+        tissue_layer = tissue_surface_layer(tissue)
+        if tissue_layer is not None:
+            layers += (tissue_layer,)
+            note += (
+                f" Tissue: {tissue.volume_um3:.4g} µm³, "
+                f"{100.0 * tissue.tissue_fraction:.1f}% of the image."
+            )
         return StageLayers(
             stage="export_results",
             title=_title_for("export_results"),

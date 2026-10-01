@@ -302,8 +302,17 @@ def compute_vessel_density(
     voxel_size,
     image_dimensions,
     is_multigraph: bool,
+    tissue_volume_um3: Optional[float] = None,
+    vessel_volume_um3: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Compute vessel density."""
+    """Compute vessel density.
+
+    "In Tissue" divides by *tissue_volume_um3* when it is given -- the tissue
+    measured from the raw image (:mod:`~haemolynx.statistics.tissue_volume`) --
+    and otherwise by the box the network's nodes span, which counts any empty
+    space inside that box as tissue. *vessel_volume_um3*, the segmented vessel
+    volume inside the tissue, adds the vascular volume fraction.
+    """
     if is_multigraph:
         lengths = [
             d.get("length", 0)
@@ -334,6 +343,20 @@ def compute_vessel_density(
             )
     else:
         out["Vessel Density in Tissue (microns/micron³)"] = "N/A (no position data)"
+    if tissue_volume_um3 is not None:
+        tissue_volume = float(tissue_volume_um3)
+        out["Tissue Volume (micron³)"] = tissue_volume
+        out["Vessel Density in Tissue (microns/micron³)"] = (
+            total_length / tissue_volume if tissue_volume > 0 else 0
+        )
+        out["Tissue Volume Source"] = "tissue surface measured from the raw image"
+        if vessel_volume_um3 is not None:
+            out["Vessel Volume in Tissue (micron³)"] = float(vessel_volume_um3)
+            out["Vascular Volume Fraction in Tissue"] = (
+                float(vessel_volume_um3) / tissue_volume if tissue_volume > 0 else 0
+            )
+    elif "Vessel-Occupied Volume (micron³)" in out:
+        out["Tissue Volume Source"] = "bounding box of the network's nodes"
 
     if image_dimensions is not None and voxel_size is not None:
         img_vol = np.prod(

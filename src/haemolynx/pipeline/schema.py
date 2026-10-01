@@ -3295,6 +3295,134 @@ SCHEMA = Schema(
             requires=("statistics",),
             advanced=True,
         ),
+        # The tissue's own volume, for vessel density: see
+        # haemolynx.statistics.tissue_volume. Its own toggle, independent of
+        # Statistics -- it writes its own CSV and surface either way, and
+        # vessel density reads it when Statistics runs too.
+        Setting(
+            name="measure_tissue_volume",
+            kind="bool",
+            default=False,
+            help=(
+                "Measure the tissue's volume and surface mesh from the raw image -- the "
+                "region whose background is brighter than the empty space around it -- "
+                "and divide vessel density by that volume instead of by the box the "
+                "network spans"
+            ),
+            section=_STATISTICS,
+        ),
+        Setting(
+            name="tissue_raw_tiff_path",
+            kind="path",
+            default=None,
+            help=(
+                "Find the tissue in this raw image, on the segmentation's own grid; "
+                "leave unset to use fwhm_raw_tiff_path"
+            ),
+            section=_STATISTICS,
+            requires=("measure_tissue_volume",),
+            must_exist=True,
+            placeholder="the FWHM raw image",
+        ),
+        Setting(
+            name="tissue_raw_channel",
+            kind="int",
+            default=None,
+            help=(
+                "Which channel of a multi-channel raw image the tissue is found in, "
+                "counting from 0 (the panel lists them as Fiji names them: C1 is 0) -- "
+                "one where the tissue's own background shows; leave unset for a "
+                "single-channel file, or for fwhm_raw_channel when the FWHM raw image is used"
+            ),
+            section=_STATISTICS,
+            minimum=0,
+            requires=("measure_tissue_volume",),
+            placeholder="single-channel file",
+        ),
+        Setting(
+            name="tissue_threshold_method",
+            kind="choice",
+            default="otsu",
+            # statistics.TISSUE_THRESHOLD_METHODS, written out so the schema
+            # imports no library code; test_tissue_volume pins the two together.
+            choices=("otsu", "li", "triangle", "manual"),
+            help=(
+                "How to tell tissue from empty space in the raw image, vessels left "
+                "out: an automatic split (otsu, li, triangle), after which the "
+                "surface sits halfway between the empty-space and tissue intensity "
+                "levels, where a blurred edge actually is -- or manual, an intensity "
+                "of your own"
+            ),
+            section=_STATISTICS,
+            requires=("measure_tissue_volume",),
+            advanced=True,
+        ),
+        Setting(
+            name="tissue_manual_threshold",
+            kind="float",
+            default=None,
+            help=(
+                "The raw intensity the tissue surface passes through: tissue above it, "
+                "empty space below"
+            ),
+            section=_STATISTICS,
+            requires=("measure_tissue_volume", "tissue_threshold_method=manual"),
+            advanced=True,
+        ),
+        Setting(
+            name="tissue_smoothing_sigma_um",
+            kind="float",
+            default=5.0,
+            help=(
+                "Smooth the raw image this much before finding the tissue's edge, "
+                "so noise and cell texture do not roughen it; convex tissue edges "
+                "round off by about this much"
+            ),
+            section=_STATISTICS,
+            minimum=0.0,
+            unit="um",
+            requires=("measure_tissue_volume",),
+            advanced=True,
+        ),
+        Setting(
+            name="tissue_working_voxel_size_um",
+            kind="float",
+            default=4.0,
+            help=(
+                "Average the raw image into blocks of about this size before finding "
+                "the tissue, which bounds the time and memory a large stack takes; "
+                "the surface still falls between blocks, not on them"
+            ),
+            section=_STATISTICS,
+            minimum=0.0,
+            unit="um",
+            requires=("measure_tissue_volume",),
+            advanced=True,
+        ),
+        Setting(
+            name="tissue_min_component_fraction",
+            kind="float",
+            default=0.01,
+            help=(
+                "Drop separate pieces of tissue smaller than this fraction of the "
+                "largest -- specks of debris or noise in the empty space"
+            ),
+            section=_STATISTICS,
+            minimum=0.0,
+            maximum=1.0,
+            unit="fraction",
+            requires=("measure_tissue_volume",),
+            advanced=True,
+        ),
+        Setting(
+            name="tissue_fill_holes",
+            kind="bool",
+            default=True,
+            help="Count dark cavities enclosed by tissue on every side as tissue",
+            section=_STATISTICS,
+            requires=("measure_tissue_volume",),
+            advanced=True,
+        ),
         # ------------------------------------------------------------------
         # Connectivity/Network Analysis -- nests under `statistics`, then its
         # own `statistics_network_analysis` toggle, exactly like "EDT mask

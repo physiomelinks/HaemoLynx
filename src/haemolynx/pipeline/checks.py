@@ -459,31 +459,85 @@ def check_image_channels(settings: Mapping[str, Any]) -> CheckReport:
     """A multi-channel image needs a channel chosen, and one it has; a
     single-channel one needs none. Caught here rather than as the load fails
     partway through a run."""
-    from haemolynx.io import tiff_channels
-
     report = CheckReport()
     for path_name, channel_name, used_by in _CHANNEL_IMAGES:
         path = settings.get(path_name)
         if not settings.get(used_by) or not path or not Path(path).is_file():
             continue
-        channels = tiff_channels(path)
-        channel = settings.get(channel_name)
-        listing = ", ".join(c.label for c in channels)
-        if channels and channel is None:
+        _check_image_channel(report, path_name, path, channel_name, settings.get(channel_name))
+    return report
+
+
+def _check_image_channel(
+    report: CheckReport, path_name: str, path: Any, channel_name: str, channel: Any
+) -> None:
+    from haemolynx.io import tiff_channels
+
+    channels = tiff_channels(path)
+    listing = ", ".join(c.label for c in channels)
+    if channels and channel is None:
+        report.add_error(
+            f"{path_name} has {len(channels)} channels ({listing}); choose one with "
+            f"{channel_name}."
+        )
+    elif channel is not None and not channels:
+        report.add_error(
+            f"{path_name} is a single-channel image, but {channel_name} is {channel}; "
+            "leave it unset."
+        )
+    elif channel is not None and int(channel) >= len(channels):
+        report.add_error(
+            f"{channel_name} is {channel} (C{int(channel) + 1}), but {path_name} has "
+            f"{len(channels)} channels ({listing})."
+        )
+
+
+def tissue_raw_image(settings: Mapping[str, Any]) -> tuple[Any, Any, str, str]:
+    """``(path, channel, path setting, channel setting)``: the raw image the
+    tissue volume is measured in. ``tissue_raw_tiff_path``, else the FWHM raw
+    image -- and the FWHM channel with it, unless ``tissue_raw_channel`` picks
+    another channel of that same file."""
+    if settings.get("tissue_raw_tiff_path"):
+        return (
+            settings["tissue_raw_tiff_path"], settings.get("tissue_raw_channel"),
+            "tissue_raw_tiff_path", "tissue_raw_channel",
+        )
+    if settings.get("tissue_raw_channel") is not None:
+        return (
+            settings.get("fwhm_raw_tiff_path"), settings["tissue_raw_channel"],
+            "fwhm_raw_tiff_path", "tissue_raw_channel",
+        )
+    return (
+        settings.get("fwhm_raw_tiff_path"), settings.get("fwhm_raw_channel"),
+        "fwhm_raw_tiff_path", "fwhm_raw_channel",
+    )
+
+
+def check_tissue_volume_image(settings: Mapping[str, Any]) -> CheckReport:
+    """``measure_tissue_volume`` needs a raw image -- its own, or the FWHM one
+    -- that is there, with a channel chosen if it has several."""
+    report = CheckReport()
+    if not settings.get("measure_tissue_volume"):
+        return report
+    path, channel, path_name, channel_name = tissue_raw_image(settings)
+    if not path:
+        report.add_error(
+            "measure_tissue_volume needs the raw image to find the tissue in: set "
+            "tissue_raw_tiff_path, or fwhm_raw_tiff_path for it to share."
+        )
+        return report
+    if not Path(path).is_file():
+        # tissue_raw_tiff_path's own must_exist reports it; the FWHM image's
+        # does not when FWHM itself is off.
+        if path_name == "fwhm_raw_tiff_path" and not settings.get("use_fwhm_edge_diameters"):
             report.add_error(
-                f"{path_name} has {len(channels)} channels ({listing}); choose one with "
-                f"{channel_name}."
+                f"measure_tissue_volume reads fwhm_raw_tiff_path, which does not exist: {path}"
             )
-        elif channel is not None and not channels:
-            report.add_error(
-                f"{path_name} is a single-channel image, but {channel_name} is {channel}; "
-                "leave it unset."
-            )
-        elif channel is not None and int(channel) >= len(channels):
-            report.add_error(
-                f"{channel_name} is {channel} (C{int(channel) + 1}), but {path_name} has "
-                f"{len(channels)} channels ({listing})."
-            )
+        return report
+    shared_with_fwhm = (path_name, channel_name) == ("fwhm_raw_tiff_path", "fwhm_raw_channel")
+    if not (shared_with_fwhm and settings.get("use_fwhm_edge_diameters")):
+        # The FWHM measurement's own check already covers that pair.
+        _check_image_channel(report, path_name, path, channel_name, channel)
     return report
 
 
@@ -521,5 +575,6 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_segmentation_quality(settings))
     report.extend(check_one_primary_diameter_measurement(settings))
     report.extend(check_image_channels(settings))
+    report.extend(check_tissue_volume_image(settings))
     report.print("Preflight")
     return report

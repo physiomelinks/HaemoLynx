@@ -542,6 +542,24 @@ statistics_and_measurements:
   statistics_daughter_angles: true
   # Typical spacing between neighbouring capillaries  [needs statistics]
   statistics_intercapillary_distance: true
+  # Measure the tissue's volume and surface mesh from the raw image -- the region whose background is brighter than the empty space around it -- and divide vessel density by that volume instead of by the box the network spans
+  measure_tissue_volume: false
+  # Find the tissue in this raw image, on the segmentation's own grid; leave unset to use fwhm_raw_tiff_path  [needs measure_tissue_volume; must exist]
+  tissue_raw_tiff_path: null
+  # Which channel of a multi-channel raw image the tissue is found in, counting from 0 (the panel lists them as Fiji names them: C1 is 0) -- one where the tissue's own background shows; leave unset for a single-channel file, or for fwhm_raw_channel when the FWHM raw image is used  [range 0..; needs measure_tissue_volume]
+  tissue_raw_channel: null
+  # How to tell tissue from empty space in the raw image, vessels left out: an automatic split (otsu, li, triangle), after which the surface sits halfway between the empty-space and tissue intensity levels, where a blurred edge actually is -- or manual, an intensity of your own  [one of: otsu, li, triangle, manual; needs measure_tissue_volume]
+  tissue_threshold_method: otsu
+  # The raw intensity the tissue surface passes through: tissue above it, empty space below  [needs measure_tissue_volume and tissue_threshold_method = manual]
+  tissue_manual_threshold: null
+  # Smooth the raw image this much before finding the tissue's edge, so noise and cell texture do not roughen it; convex tissue edges round off by about this much  [um; range 0.0..; needs measure_tissue_volume]
+  tissue_smoothing_sigma_um: 5.0
+  # Average the raw image into blocks of about this size before finding the tissue, which bounds the time and memory a large stack takes; the surface still falls between blocks, not on them  [um; range 0.0..; needs measure_tissue_volume]
+  tissue_working_voxel_size_um: 4.0
+  # Drop separate pieces of tissue smaller than this fraction of the largest -- specks of debris or noise in the empty space  [fraction; range 0.0..1.0; needs measure_tissue_volume]
+  tissue_min_component_fraction: 0.01
+  # Count dark cavities enclosed by tissue on every side as tissue  [needs measure_tissue_volume]
+  tissue_fill_holes: true
 
 # ------------------------------------------------------------------------
 # Connectivity/Network Analysis

@@ -116,6 +116,8 @@ DIMENSIONLESS = {
     "fwhm_diameter_guess_edge_attribute",
     # Graph hop count (edge steps), not a physical distance.
     "small_vessel_boundary_fallback_hop_distance",
+    # A raw image intensity, in whatever units the microscope wrote.
+    "tissue_manual_threshold",
     # Edge-count threshold for orphan cleanup after large-vessel volume cuts.
     "orphaned_branch_max_edge_count",
     # Voxel index stride for Plotly volume downsampling (not a physical length).

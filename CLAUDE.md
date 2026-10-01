@@ -61,7 +61,9 @@ haemolynx/
 │   │                       #   transit_time, territories, current_flow, occlusion, loops,
 │   │                       #   strahler, spectral, over _route_graph.py / _flow_system.py;
 │   │                       #   csv_export.py, _sampling.py (one shared seed constant),
-│   │                       #   three_dim_distances.py (cell-to-vessel distances)
+│   │                       #   three_dim_distances.py (cell-to-vessel distances),
+│   │                       #   tissue_volume.py (the tissue's volume and surface mesh
+│   │                       #   from the raw image, what vessel density divides by)
 │   ├── optimisation/       # "Optimise settings": search.py (segmentation cleanup,
 │   │                       #   Skeletonise and Graph settings), fwhm_search.py (FWHM
 │   │                       #   settings), candidates/metrics (+ fwhm_ variants), report,
@@ -91,7 +93,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 409 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 418 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -155,7 +157,7 @@ Users may also supply **pre-segmented** masks only (no ilastik call) — typical
 5. **Post processing (hand edits)** — `post_process` brings vessels edited by hand in the panel (`graph/post_processing.py`) in line with the rest: lengths, branch orders, diameters by the run's own methods (only the edited vessels are measured), zero-resistance bridges where one opens into a thick vessel. A no-op on an unedited network. With `mid_run_postprocessing` on, a panel run pauses before it (`run_pipeline_stages(stop_after="assign_diameters")`) and Continue resumes at it  
 6. **Haemodynamics** — `haemodynamics.apply_poiseuille_haemodynamics`, conductance matrix, two-point resistance, flow solve (optionally iterating a distributed haematocrit, `haematocrit_model="distributed_iterative"`)  
 7. **Perturbations (optional)** — `run_perturbations` re-solves copies of the solved network, once per configured entry in `perturbations` (see `haemodynamics/perturbations.py`)  
-8. **Export & stats** — `visualization.graph_to_vtk`, `statistics.compute_comprehensive_vessel_statistics` (with the selected network analyses), vascular communities
+8. **Export & stats** — `visualization.graph_to_vtk`, the tissue volume from the raw image (`measure_tissue_volume`, optional), `statistics.compute_comprehensive_vessel_statistics` (with the selected network analyses), vascular communities
 
 `pipeline/stages.py` runs these as ten stage functions: `segment`, `skeletonise`, `build_network`,
 `assign_boundaries`, `assign_diameters`, `post_process`, `build_haemodynamic_model`, `solve`,
@@ -218,7 +220,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), FWHM/pericyte integration tests |
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_sweep_flow_layers.py` |
-| `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py` |
+| `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight) |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py` |
 | `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text |
@@ -463,6 +465,22 @@ are only caught locally.
   `.haemorun` file and load it back; keep per-stage snapshots so a tab can re-run from its stage
   (`run_pipeline_stages(start_from=..., resume=...)`) without rebuilding everything before it.
 - **`statistics/three_dim_distances.py`** — cell-to-vessel distances.
+- **`statistics/tissue_volume.py`** — `measure_tissue_volume` (`measure_tissue_volume` on the
+  Additional measurements tab, off by default): the tissue in the raw image (`tissue_raw_tiff_path`,
+  else the FWHM raw image) as a closed surface mesh, so vessel density can divide by tissue rather
+  than by the box the network spans, which counts the image's empty space. Block-averaged onto a
+  ~4 µm working grid with the vessel voxels left out of the threshold (else Otsu splits vessels
+  from everything else), split by Otsu/Li/triangle or a manual intensity, and the surface placed
+  **halfway between the two classes' median levels** — where a blurred edge is, whatever the
+  blur. Vessel voxels then read as the tissue's own level in the normalised-convolution smoothing
+  (leaving them out pulls the edge inward), and marching cubes runs through the smoothed field,
+  closed on the image faces. `pipeline/stages.py`'s `tissue_measurement` measures it once per
+  network (cached on `VesselNetwork.tissue`, keyed on the settings, the raw file and the
+  segmentation) so the perturbations' statistics divide by the same tissue as the baseline's;
+  `export_results` writes `{stem}_tissue_volume.csv` and `{stem}_tissue_surface.vtp` and hands
+  it to the viewer on `Solution.tissue` (`gui/results.py`'s `TISSUE_SURFACE` Surface layer).
+  Smoothing rounds convex tissue edges by about `tissue_smoothing_sigma_um`; a stack with no
+  empty space at all logs a warning, since an automatic split then cuts the tissue itself.
 - **`visualization/geometry.py`** — `edge_polyline`: an edge's `voxels` (or its two node positions)
   turned into a polyline that runs `u`→`v` and touches both nodes. The VTK export, the pericyte
   point derivation and two plotly writers each answered that separately, and drew vessels in

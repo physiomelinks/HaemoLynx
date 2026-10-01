@@ -2387,3 +2387,48 @@ def test_an_unedited_post_processing_pass_draws_nothing_again():
 
     assert group.layers == ()
     assert results._graph is graph
+
+
+# --- the tissue surface (export_results) ---------------------------------------
+
+
+def _measured_tissue():
+    from haemolynx.statistics import measure_tissue_volume
+
+    raw = np.full((10, 20, 20), 10.0)
+    raw[2:8, :12, :] = 100.0  # a block of tissue cut by three image faces
+    return measure_tissue_volume(raw, (2.0, 1.0, 1.0), working_voxel_size_um=1.0)
+
+
+def test_export_results_draws_the_measured_tissue_surface_in_physical_microns():
+    from haemolynx.gui.results import TISSUE_SURFACE, TISSUE_SURFACE_COLOUR
+
+    tissue = _measured_tissue()
+    graph = a_graph()
+    group = built(graph).stage_finished(
+        "export_results", SimpleNamespace(graph=graph, tissue=tissue)
+    )
+    surface = spec_named(group, TISSUE_SURFACE)
+
+    assert surface.kind == "surface"
+    # Vertices are physical (z, y, x) microns already, like node pos.
+    assert surface.scale == (1.0, 1.0, 1.0)
+    vertices, faces = surface.data
+    assert vertices == pytest.approx(tissue.vertices)
+    assert np.array_equal(faces, tissue.faces)
+    colours = surface.options["vertex_colors"]
+    assert colours.shape == (len(vertices), 4)
+    assert tuple(colours[0]) == TISSUE_SURFACE_COLOUR
+    # See-through, without hiding the vessels it encloses.
+    assert surface.options["blending"] == "translucent_no_depth"
+    assert f"{tissue.volume_um3:.4g}" in group.note
+
+
+def test_export_results_draws_no_tissue_surface_when_none_was_measured():
+    from haemolynx.gui.results import TISSUE_SURFACE
+
+    graph = a_graph()
+    for output in (SimpleNamespace(graph=graph), SimpleNamespace(graph=graph, tissue=None)):
+        group = built(graph).stage_finished("export_results", output)
+        assert TISSUE_SURFACE not in {spec.name for spec in group.layers}
+        assert "Tissue" not in group.note

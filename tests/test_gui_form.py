@@ -864,7 +864,7 @@ def test_visible_statistics_settings_nests_under_measurement_3d_to_cell_mask():
         "measurement_3d_to_cell_mask": False,
     }
     shown = visible_statistics_settings(SCHEMA, off)
-    assert shown == {"statistics", "measurement_3d_to_cell_mask"}
+    assert shown == {"statistics", "measurement_3d_to_cell_mask", "measure_tissue_volume"}
     for name in _MEASUREMENT_3D_CHILDREN:
         assert name not in shown, name
     assert "statistics_mode" not in shown
@@ -886,8 +886,8 @@ def test_visible_statistics_settings_nests_under_measurement_3d_to_cell_mask():
     stats_on = {**off, "statistics": True}
     shown = visible_statistics_settings(SCHEMA, stats_on)
     assert shown == {
-        "statistics", "measurement_3d_to_cell_mask", "statistics_network_analysis",
-        *_STATISTICS_MEASURE_CHILDREN,
+        "statistics", "measurement_3d_to_cell_mask", "measure_tissue_volume",
+        "statistics_network_analysis", *_STATISTICS_MEASURE_CHILDREN,
     }
     # statistics_network_analysis itself shows (nested one level under
     # statistics), but its own children stay hidden until it is on too --

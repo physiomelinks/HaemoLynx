@@ -407,6 +407,7 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "use_thick_vessel_skeletonisation": "Use alternate skeletonisation for thick vessels",
     "use_memmap_loading": "Low RAM option for large networks (Slow)",
     "measurement_3d_to_cell_mask": "Measure distance between vessels and 3D object mask",
+    "measure_tissue_volume": "Measure tissue volume from the raw image (for vessel density)",
     "mid_run_postprocessing": "Mid-run postprocessing",
 }
 
@@ -498,6 +499,7 @@ def _options_for(setting: Setting, widget_type: str, value: Any = None) -> dict[
 CHANNEL_SETTINGS = {
     "endothelial_channel": "endothelial_image_path",
     "fwhm_raw_channel": "fwhm_raw_tiff_path",
+    "tissue_raw_channel": "tissue_raw_tiff_path",
 }
 
 #: The drop-down's "no channel" entry: a single-channel file has nothing to
