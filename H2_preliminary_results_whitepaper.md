@@ -192,7 +192,7 @@ Measured as the spread of the shunt ratio while each rule's own free parameters 
 An 8.3-fold reduction (13.3% against 75.8% on the earlier tissue-centred boxes). Axis 1 was
 chosen on those boxes as the only axis with terminals on both faces in all six specimens; on the
 placed boxes all three axes qualify, and axis 1 is kept as the frozen choice. Which axis is used is
-itself a lever: moving it spreads the ratio by 34 to 35% under every rule, more than any rule's
+itself a lever: moving it spreads the ratio by 33 to 34% under every rule, more than any rule's
 own parameters.
 
 One measurement pointed the wrong way and is recorded rather than dropped. On the centred boxes, varying only the axis,
@@ -643,7 +643,7 @@ specimen at any metabolic contrast.
 
 **Boundary sensitivity.** The residual spread of a ratio under the face rule is 8.9%, against
 measured differences of 13% (shunt index), 12% (flow ratio), 8% (haematocrit ratio) and 3%
-(transit ratio). The axis itself, held at 1, would spread the ratio by 34 to 35% if it were free.
+(transit ratio). The axis itself, held at 1, would spread the ratio by 33 to 34% if it were free.
 
 **Calibre quantisation.** Inherited from H1 §1.2: the distance transform returns a coarse
 diameter distribution, and resistance goes as the inverse fourth power of diameter.

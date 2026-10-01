@@ -125,29 +125,32 @@ def select_boundary_terminal_nodes_by_face(
     terminals within ``face_tolerance_voxels`` of the low face of ``axis`` are inlets, those on
     the high face are outlets, and everything else is not a pressure boundary.
 
-    **Measured against the band rule** on the six CB3 graphs, varying each rule's own free
-    parameter over its plausible range and taking the spread of the shunt ratio per specimen:
+    **Measured against the band rule** on the six CB graphs, varying each rule's own free
+    parameter over its plausible range and taking the spread of the shunt ratio per specimen
+    (``examples/cb_h2_boundary_selection.py``; placed boxes, with the earlier centred boxes in
+    brackets):
 
     ========================================  ==============
     Rule and parameter range                  Ratio spread
     ========================================  ==============
-    band, axis 1, band width 10/25/40%              75.8%
-    face, axis 1, tolerance 1/2/4 voxels            13.3%
+    band, axis 1, band width 10/25/40%        73.9% (75.8%)
+    face, axis 1, tolerance 1/2/4 voxels       8.9% (13.3%)
     ========================================  ==============
 
-    A 5.7-fold reduction, and it comes from the parameter rather than the axis. The band width
+    An 8.3-fold reduction, and it comes from the parameter rather than the axis. The band width
     has no principled value, so its whole plausible range is live. The face tolerance is
     anchored to the voxel size: one voxel means "on the face", and the other values are only
     there to show the answer does not depend on it.
 
     Comparing at a *fixed* second parameter is misleading and initially pointed the other way.
-    Axis spread alone is 28.4% for the band rule against 31.5% here, which flatters the band
-    rule by holding the parameter that damages it at its default. Both parameters have to move.
+    Axis spread alone is 34.2% for the band rule against 33.6% here (28.4% and 31.5% on the
+    centred boxes), which flatters the band rule by holding the parameter that damages it at its
+    default. Both parameters have to move.
 
-    ``axis`` remains a choice without anatomical justification in a mid-organ region. For this
-    cohort axis 1 is the only one solvable in all six specimens; axis 0 has no outlet terminal
-    in SHR-A and axis 2 has no inlet terminal in SHR-C. That is a selection criterion rather
-    than a preference, but it is a property of these graphs and not a general rule.
+    ``axis`` remains a choice without anatomical justification in a mid-organ region. On the
+    centred boxes axis 1 was the only one solvable in all six specimens (axis 0 had no outlet
+    terminal in SHR-A, axis 2 no inlet terminal in SHR-C). On the placed boxes all three are
+    solvable, and axis 1 is kept because ``cb_settings.BOUNDARY_AXIS`` pins it.
 
     Raises rather than falling back when a face carries no terminals. The band method drops to
     the extreme 10% of *all* nodes in that case, which converts an unsolvable region into a

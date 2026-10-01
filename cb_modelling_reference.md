@@ -1383,15 +1383,22 @@ of the shunt ratio per specimen:
 | **Face, axis 1, tolerance 1/2/4 voxels** | **8.9%** |
 
 Re-measured on the 2026-09-28 networks (`cb_h2_boundary_selection.py`; 75.8% and 13.3% on the
-centred boxes before). An 8.3-fold reduction, and it comes from the *parameter*, not the axis. The band width has no
+centred boxes before), and unchanged when the script moved from the ParaView export to the batch
+MultiGraph (re-run package O, 2026-10-02). An 8.3-fold reduction, and it comes from the *parameter*, not the axis. The band width has no
 principled value, so its whole plausible range is live. The face tolerance is anchored to the voxel
 size — one voxel means "on the face" — and the other values exist only to show the answer does not
 depend on it.
 
 > **Comparing at a fixed second parameter is misleading, and initially pointed the other way.**
-> Axis spread alone is 34.2% for the band rule against 34.9% for the face rule (28.4% and 31.5%
-> before the re-run), which flatters the band rule by holding the parameter that damages it at its
-> default. Both parameters have to move: total spread 113.7% (band) against 44.9% (face).
+> Axis spread alone is 34.2% for the band rule against 33.6% for the face rule (28.4% and 31.5%
+> on the centred boxes), which flatters the band rule by holding the parameter that damages it at its
+> default. Both parameters have to move: total spread 113.5% (band) against 40.0% (face).
+> These multi-axis figures are from the batch graph (package O). The ParaView-frame run gave 34.9%
+> and 113.7% / 44.9%. It read graph-order (z, y, x) node coordinates against the mask's (x, y, z)
+> bounds and voxel sizes, so on axes 0 and 2 the face cut used the other axis's extent and spacing.
+> Node coordinates sit on voxel planes, so that dropped the plane one voxel in from the axis-0
+> outlet face and the axis-2 inlet face (WKY-A, axis 2: 16 inlets against 31). Axis 1 (y) is the
+> same in both frames, so the pinned-axis table above did not move.
 
 **Why axis 1.** Not anatomy — availability. On the centred-box graphs it was the only axis solvable
 in all six specimens: axis 0 had no outlet terminal in SHR-A, and axis 2 no inlet terminal in
@@ -3415,9 +3422,10 @@ become a confound. With n = 3 it is noted, not established.
 ### 13.4 Boundary selection is the largest single lever
 
 Larger than calibre error. The face-crossing rule on axis 1 holds residual boundary sensitivity to
-**8.9%**, against **73.9%** for the alternative band rule, and cuts total sensitivity from 113.7%
-to 44.9% (`cb_h2_boundary_selection.py` on the 2026-09-28 networks; 13.3% / 75.8% and 118.8% /
-43.1% on the centred boxes). On the centred boxes axis 1 was the only axis with terminals on both
+**8.9%**, against **73.9%** for the alternative band rule, and cuts total sensitivity from 113.5%
+to 40.0% (`cb_h2_boundary_selection.py` on the 2026-09-28 batch graphs, package O; 113.7% / 44.9%
+from the ParaView export before, whose axis-0 and axis-2 faces were misplaced (§2.8); 13.3% / 75.8%
+and 118.8% / 43.1% on the centred boxes). On the centred boxes axis 1 was the only axis with terminals on both
 faces in all six specimens; on the new networks all three axes are (§2.8).
 
 **Measured in the error-propagation frame too** (`cb_h2_error_propagation.py` S20, 2026-09-30, face

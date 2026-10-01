@@ -102,9 +102,10 @@ BOUNDARY_AXIS: int = 1
 #:
 #: One voxel means "on the face". The other values in the sweep (2 and 4) exist only to
 #: show the answer does not depend on this one: varying each rule's own free parameter
-#: over its plausible range gives a shunt-ratio spread of 13.3% for the face rule against
-#: 75.8% for the band rule - a 5.7-fold reduction, and section 13.4's reason for calling
-#: boundary selection the largest single lever in the model.
+#: over its plausible range gives a shunt-ratio spread of 8.9% for the face rule against
+#: 73.9% for the band rule on the placed boxes (13.3% against 75.8% on the centred boxes) -
+#: an 8.3-fold reduction, and section 13.4's reason for calling boundary selection the
+#: largest single lever in the model.
 BOUNDARY_FACE_TOLERANCE_VOXELS: float = 1.0
 
 #: Arteriolar to venular, in mmHg. Every published H2 number used this pair.

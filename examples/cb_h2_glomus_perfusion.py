@@ -13,9 +13,10 @@ along the whole polyline rather than at the endpoints: a capillary penetrating a
 usually starts and ends in stroma, so an endpoint test would classify exactly the vessels
 §2.1 is about as extra-glomus.
 
-Boundary conditions use the face-crossing rule on axis 1 (S21), which is the only axis with
-terminals on both faces in all six specimens and which cuts the residual boundary sensitivity
-from 75.8% to 13.3%. The band rule this replaces put arterial pressure mostly on interior
+Boundary conditions use the face-crossing rule on axis 1 (S21), pinned in
+``cb_settings.BOUNDARY_AXIS``, which cuts the residual boundary sensitivity from 73.9% to 8.9%
+(75.8% to 13.3% on the centred boxes, where axis 1 was the only axis with terminals on both faces
+in all six specimens). The band rule this replaces put arterial pressure mostly on interior
 skeletonisation spurs.
 
 Diameters come from `per_edge_morphometry.csv` rather than the cached graph, which carries no

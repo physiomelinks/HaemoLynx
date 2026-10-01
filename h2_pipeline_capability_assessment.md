@@ -997,34 +997,45 @@ carries none.
 **Measured**, as the spread of the shunt ratio per specimen while each rule's free parameters
 move over their plausible range:
 
-| Rule | Parameters varied | Ratio spread | Failed solves |
-|---|---|---|---|
-| band | axis 0/1/2 x width 10/25/40% | **118.8%** | 0 of 54 |
-| face | axis 0/1/2 x tolerance 1/2/4 voxels | **43.1%** | 6 of 54 |
-| band, axis fixed at 1 | width 10/25/40% | **75.8%** | 0 of 18 |
-| face, axis fixed at 1 | tolerance 1/2/4 voxels | **13.3%** | 0 of 18 |
+| Rule | Parameters varied | Ratio spread, centred boxes | Failed | Ratio spread, placed boxes | Failed |
+|---|---|---|---|---|---|
+| band | axis 0/1/2 x width 10/25/40% | **118.8%** | 0 of 54 | **113.5%** | 0 of 54 |
+| face | axis 0/1/2 x tolerance 1/2/4 voxels | **43.1%** | 6 of 54 | **40.0%** | 0 of 54 |
+| band, axis fixed at 1 | width 10/25/40% | **75.8%** | 0 of 18 | **73.9%** | 0 of 18 |
+| face, axis fixed at 1 | tolerance 1/2/4 voxels | **13.3%** | 0 of 18 | **8.9%** | 0 of 18 |
 
-**A 5.7-fold reduction at fixed axis**, and it comes from the parameter rather than the axis. The
+The placed-box column is from the batch MultiGraph and morphometry CSV, ROI-checked, with
+inlets and outlets from the package's own band and face functions (re-run package O, 2026-10-02,
+on the 2026-09-28 networks). The script had read the H1 ParaView export until then. That run gave
+the same axis-1 rows but 113.7% and 44.9% for the first two. It read graph-order (z, y, x) node
+coordinates against the mask's (x, y, z) bounds and voxel sizes, so on axes 0 and 2 the face cut
+used the other axis's extent and spacing. Node coordinates sit on voxel planes, so that dropped
+the plane one voxel in from the axis-0 outlet face and the axis-2 inlet face (WKY-A, axis 2: 16
+inlets against 31). The centred-box column is the original measurement, also from the ParaView export.
+
+**A 5.7-fold reduction at fixed axis** (8.3-fold on the placed boxes), and it comes from the parameter rather than the axis. The
 band width has no principled value, so its whole range is live. The face tolerance is anchored to
 the voxel size: one voxel means "on the face", and the other values exist only to show the answer
 does not depend on it.
 
-**Axis 1 is a selection, not a preference.** It is the only axis with terminals on both faces in
-all six specimens. Axis 0 has no outlet terminal in SHR-A; axis 2 has no inlet terminal in SHR-C.
-That is a property of these graphs rather than a general rule, and it is why the face rule raises
-on an empty face instead of inventing boundaries.
+**Axis 1 is a selection, not a preference.** On the centred boxes it was the only axis with
+terminals on both faces in all six specimens: axis 0 had no outlet terminal in SHR-A, axis 2 no
+inlet terminal in SHR-C. That is a property of those graphs rather than a general rule, and it is
+why the face rule raises on an empty face instead of inventing boundaries. On the placed boxes all
+three axes are solvable in all six, so axis 1 is kept because it is pinned in
+`cb_settings.BOUNDARY_AXIS`, not because it is the only choice.
 
 **A comparison that pointed the wrong way first.** Holding each rule's second parameter at its
-default and varying only the axis gives 28.4% for the band rule against 31.5% for the face rule,
-which reads as the face rule being worse. That comparison flatters the band rule by fixing the
-parameter that damages it. Both parameters have to move, and when they do the ordering reverses
+default and varying only the axis gives 28.4% for the band rule against 31.5% for the face rule
+on the centred boxes (34.2% against 33.6% on the placed boxes), which reads as the face rule being
+no better. That comparison flatters the band rule by fixing the parameter that damages it. Both parameters have to move, and when they do the ordering reverses
 by a factor of nearly three. This is recorded because the first measurement was taken that way
 and was briefly believed.
 
 **What this does not do.** It does not make the boundary anatomical. There is still no anatomical
 inlet inside a mid-organ cube, and the axis choice is still a choice. It reduces the residual to
-13.3%, which is below the ~26% operative floor S20 reported and below the 27 to 40% effects H1
-measures, so a within-specimen ratio is no longer boundary-dominated.
+13.3% (8.9% on the placed boxes), which is below the ~26% operative floor S20 reported and below the
+27 to 40% effects H1 measures, so a within-specimen ratio is no longer boundary-dominated.
 
 Reproduced by `examples/cb_h2_boundary_selection.py`.
 
