@@ -50,7 +50,8 @@ def slab(mesh, reference, thickness=SLAB_UM):
     b = np.array(reference.bounds)
     centre = (b[4] + b[5]) / 2.0
     box = (b[0], b[1], b[2], b[3], centre - thickness / 2, centre + thickness / 2)
-    return mesh.clip_box(box, invert=False).extract_surface()
+    # Pinned to PyVista's current default so a future default change cannot alter the renders.
+    return mesh.clip_box(box, invert=False).extract_surface(algorithm="dataset_surface")
 
 
 def tubes(lines, radius=0.75):
