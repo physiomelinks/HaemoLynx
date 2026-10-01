@@ -306,6 +306,84 @@ def test_loading_a_run_leaves_graph_building_and_skeleton_files_alone(tmp_path):
     assert loaded.session_artefact_paths == ()
 
 
+def test_a_run_whose_output_folder_cannot_be_made_here_still_loads(tmp_path):
+    """A run saved on a Linux server names /home/<user>/outputs, which a Mac
+    cannot create; Load run crashed on it instead of skipping the optional
+    resume skeleton."""
+    from haemolynx.gui.run_snapshot import write_resume_artefacts
+
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(checkpoints=checkpoints, results=results, settings=settings)
+    blocker = tmp_path / "not_a_folder"
+    blocker.write_text("a file where the output folder's parent should be")
+    elsewhere = dict(settings, vtk_output_prefix=blocker / "outputs" / "stack")
+    loaded = StageCheckpoints()
+
+    note = write_resume_artefacts(snapshot, elsewhere, loaded)
+
+    assert note is not None and str(blocker / "outputs") in note
+    assert "set the output folder" in note
+    assert loaded.session_artefact_paths == ()
+    # Where the folder can be made, nothing is reported.
+    assert write_resume_artefacts(snapshot, settings, StageCheckpoints()) is None
+
+
+def test_a_run_from_another_machine_is_pointed_at_this_ones_files(tmp_path):
+    """A run saved on the server names /home/<user>/... paths; loading it here
+    finds the same files beside the run file and moves the outputs next to it."""
+    from pathlib import PurePosixPath
+
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+
+    resources = tmp_path / "resources" / "masks"
+    resources.mkdir(parents=True)
+    (tmp_path / "resources" / "stack.tiff").write_bytes(b"image")
+    (resources / "Large_arteriole.tiff").write_bytes(b"mask")
+    here = tmp_path / "already_here.tif"
+    here.write_bytes(b"raw")
+    blocker = tmp_path / "server_home"
+    blocker.write_text("a file, so nothing can be created under it")
+    server = blocker / "sliu205"
+    settings = {
+        "input_path": PurePosixPath(server / "data" / "stack.tiff"),
+        "large_arteriole_mask_path": str(server / "segs" / "Large_arteriole.tiff"),
+        "fwhm_raw_tiff_path": here,
+        "ilastik_classifier_path": server / "classifiers" / "nowhere.ilp",
+        "vtk_output_prefix": server / "outputs" / "run",
+        "base_plot_dir": server / "project" / "outputs",
+        "sweep_output_dir": tmp_path / "writable" / "sweep",
+        "verbose_logging": True,
+    }
+    snapshot = RunSnapshot(settings=settings, results_state={"settings": dict(settings)})
+
+    moved = relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+
+    got = snapshot.settings
+    assert Path(got["input_path"]) == tmp_path / "resources" / "stack.tiff"
+    assert isinstance(got["input_path"], Path)  # a path stays a path, a string a string
+    assert got["large_arteriole_mask_path"] == str(resources / "Large_arteriole.tiff")
+    assert got["fwhm_raw_tiff_path"] == here                      # already works
+    assert got["ilastik_classifier_path"] == server / "classifiers" / "nowhere.ilp"  # nothing to find
+    assert got["vtk_output_prefix"] == tmp_path / "outputs" / "run"
+    assert got["base_plot_dir"] == tmp_path / "outputs"
+    assert got["sweep_output_dir"] == tmp_path / "writable" / "sweep"  # can be made here
+    assert snapshot.results_state["settings"]["vtk_output_prefix"] == tmp_path / "outputs" / "run"
+    assert {m.name for m in moved} == {
+        "input_path", "large_arteriole_mask_path", "vtk_output_prefix", "base_plot_dir",
+    }
+
+
+def test_relocation_prefers_the_file_nearest_the_run(tmp_path):
+    from haemolynx.gui.run_snapshot import RunSnapshot, relocate_run_paths
+
+    (tmp_path / "a" / "b").mkdir(parents=True)
+    (tmp_path / "a" / "b" / "stack.tiff").write_bytes(b"deep")
+    (tmp_path / "a" / "stack.tiff").write_bytes(b"near")
+    snapshot = RunSnapshot(settings={"input_path": "/nowhere/stack.tiff"})
+    relocate_run_paths(snapshot, tmp_path / "run.haemorun")
+    assert snapshot.settings["input_path"] == str(tmp_path / "a" / "stack.tiff")
+
+
 # --- a run paused for post-processing, and runs saved before that stage existed ----------
 
 
