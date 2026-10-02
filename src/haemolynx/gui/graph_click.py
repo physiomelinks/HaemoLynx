@@ -18,7 +18,7 @@ import numpy as np
 
 from .branch_hover import BRANCH_HOVER_MAX_DISTANCE, nearest_vector_index
 
-__all__ = ["EdgeHit", "NodeHit", "hit_test_nodes", "hit_test_vessels"]
+__all__ = ["EdgeHit", "NodeHit", "hit_test_nodes", "hit_test_vessels", "nearest_node_hit"]
 
 
 @dataclass(frozen=True)
@@ -122,3 +122,31 @@ def hit_test_nodes(get_value_result: Any, features: Mapping[str, Any]) -> NodeHi
     if node_ids is None or index < 0 or index >= len(node_ids):
         return None
     return NodeHit(node_id=node_ids[index])
+
+
+def nearest_node_hit(
+    points: Any,
+    features: Mapping[str, Any],
+    position: Any,
+    *,
+    max_distance: float,
+    view_direction: Any | None = None,
+    dims: Sequence[int] | None = None,
+) -> NodeHit | None:
+    """The node nearest a click, within *max_distance*, or None.
+
+    For a click napari's own Points picking missed: a node dot a few microns
+    across is a few pixels on screen in a whole-volume 3D view. Each node is a
+    zero-length segment to :func:`nearest_vector_index`, so with a
+    *view_direction* the distance is measured across the line of sight -- how
+    far from the cursor the node *looks* -- whatever its depth.
+    """
+    data = np.asarray(points, dtype=float)
+    if data.ndim != 2 or not len(data):
+        return None
+    segments = np.stack([data, np.zeros_like(data)], axis=1)
+    index = nearest_vector_index(
+        position, segments, max_distance=max_distance,
+        view_direction=view_direction, dims=dims,
+    )
+    return hit_test_nodes(index, features)

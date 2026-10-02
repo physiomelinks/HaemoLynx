@@ -29,6 +29,12 @@ This turns those settings into two napari layers and back:
     an ``edge_percent`` role selects from. Drawn from the settings only, so it
     is never edited and never read back, and it is the one that shows in 3D.
 
+``HaemoLynx BC node IDs``
+    A Points layer marking the nodes each ``node_ids`` role lists, at their
+    positions in the run's graph. The IDs are the setting, not the positions,
+    so this one is drawn from the settings and never read back: a node is
+    added or removed by clicking it on the graph (:func:`toggle_node_id`).
+
 The coordinates and regions layers are editable, and everything here is pure:
 settings in, layer specs out, layer data in, settings out. Nothing imports
 napari, so it is all testable without a display -- the same contract
@@ -65,6 +71,7 @@ __all__ = [
     "BC_BOX_NAMES",
     "BC_COORDINATES",
     "BC_LAYER_NAMES",
+    "BC_NODE_IDS",
     "BC_REGION_NAMES",
     "boxes_name",
     "regions_name",
@@ -83,6 +90,9 @@ __all__ = [
     "region_shapes",
     "role_boxes",
     "coordinate_setting",
+    "node_id_note",
+    "node_id_points",
+    "node_id_setting",
     "orderable_settings",
     "role_manual_controls_enabled",
     "settings_for_method",
@@ -95,6 +105,7 @@ __all__ = [
     "snap",
     "specs_for",
     "terminal_points",
+    "toggle_node_id",
     "PERCENT_FOR_NODE_ROLE",
     "band_boxes",
     "terminal_axis_span",
@@ -183,6 +194,9 @@ DISABLED_ROLE_TOOLTIP: dict[str, str] = {
 
 BC_COORDINATES = f"{PREFIX}BC coordinates"
 
+#: The nodes the ``node_ids`` roles list, marked where the graph has them.
+BC_NODE_IDS = f"{PREFIX}BC node IDs"
+
 #: How many decimal places a picked coordinate keeps. A micron is the unit and
 #: a nanometre is far below what a click can mean, so three keeps the config
 #: readable without throwing anything away.
@@ -194,6 +208,7 @@ DECIMALS = 3
 METHOD_SETTINGS: Mapping[str, str] = {
     "coordinates": "coordinates",
     "volume": "volume_boxes",
+    "node_ids": "node_ids",
 }
 
 #: Settings shared by every role that selects by band or by distance, so they
@@ -261,6 +276,7 @@ def role_settings(role: str) -> tuple[str, ...]:
         method_setting(role),
         coordinate_setting(role),
         volume_setting(role),
+        node_id_setting(role),
         f"{role}_nodes",
     ]
     return tuple(dict.fromkeys(names))
@@ -302,7 +318,7 @@ BC_REGION_NAMES = tuple(regions_name(role) for role in ROLES)
 BC_BOX_NAMES = tuple(boxes_name(role) for role in ROLES)
 
 #: All of them, for "is this one of the picking layers?".
-BC_LAYER_NAMES = frozenset({BC_COORDINATES, *BC_REGION_NAMES, *BC_BOX_NAMES})
+BC_LAYER_NAMES = frozenset({BC_COORDINATES, BC_NODE_IDS, *BC_REGION_NAMES, *BC_BOX_NAMES})
 
 
 def outside_extent(
@@ -353,6 +369,11 @@ def method_setting(role: str) -> str:
     return BOUNDARY_ROLE_SETTINGS[role]["method"]
 
 
+def node_id_setting(role: str) -> str:
+    """The setting holding the node IDs *role* takes with ``node_ids``."""
+    return BOUNDARY_ROLE_SETTINGS[role]["node_ids"]
+
+
 def plain(value: Any) -> Any:
     """*value* as builtin floats and lists, however deeply nested.
 
@@ -396,6 +417,32 @@ def _finite_point(value: Any) -> list[float] | None:
     if len(numbers) != 3 or not all(math.isfinite(n) for n in numbers):
         return None
     return numbers
+
+
+def _node_id(value: Any) -> Any | None:
+    """*value* as a plain node ID, or None if it cannot be one.
+
+    Node IDs are ints; one that arrived as ``np.int64`` or ``12.0`` is the
+    same node, and goes back to a row as a plain int (see :func:`plain`).
+    """
+    value = plain(value)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value.is_integer() else None
+    if isinstance(value, str) and value.strip():
+        text = value.strip()
+        return int(text) if text.lstrip("-").isdigit() else text
+    return None
+
+
+def _node_id_entries(value: Any) -> list[Any]:
+    """A node-ID setting as a list of entries: a lone ID typed bare is one."""
+    if isinstance(value, (str, int, float, np.generic)) and not isinstance(value, bool):
+        return [value]
+    return _entries(value)
 
 
 def _corner_pair(value: Any) -> list[list[float]] | None:
@@ -723,14 +770,29 @@ class BoundaryPicks:
     #: must not fall over on a hand-edited config; the run raises for the same
     #: value later, which is the right place for a hard error.
     problems: tuple[str, ...] = field(default=())
+    #: The node IDs each role lists for the ``node_ids`` method, in order.
+    node_ids: Mapping[str, tuple[Any, ...]] = field(default_factory=dict)
 
     @classmethod
     def from_settings(cls, values: Mapping[str, Any]) -> "BoundaryPicks":
         """Read all four roles out of a settings dict, skipping what will not read."""
         coordinates: dict[str, tuple] = {}
         volumes: dict[str, tuple] = {}
+        node_ids: dict[str, tuple] = {}
         problems: list[str] = []
         for role in ROLES:
+            ids: list[Any] = []
+            for index, entry in enumerate(_node_id_entries(values.get(node_id_setting(role)))):
+                node = _node_id(entry)
+                if node is None:
+                    problems.append(
+                        f"{node_id_setting(role)}[{index}] is not a node ID: {entry!r}"
+                    )
+                    continue
+                if node not in ids:
+                    ids.append(node)
+            node_ids[role] = tuple(ids)
+
             points: list[tuple[float, float, float]] = []
             for index, entry in enumerate(_entries(values.get(coordinate_setting(role)))):
                 point = _finite_point(entry)
@@ -754,7 +816,7 @@ class BoundaryPicks:
                     continue
                 boxes.append((tuple(pair[0]), tuple(pair[1])))
             volumes[role] = tuple(boxes)
-        return cls(coordinates, volumes, tuple(problems))
+        return cls(coordinates, volumes, tuple(problems), node_ids)
 
     def to_settings(self) -> dict[str, list]:
         """The eight settings these picks describe, as plain lists of floats."""
@@ -818,12 +880,86 @@ class BoundaryPicks:
             for role in ROLES
             if self.volumes.get(role)
         ]
+        parts += [
+            f"{role} node ID{'' if len(self.node_ids[role]) == 1 else 's'} "
+            f"{list(self.node_ids[role])}"
+            for role in ROLES
+            if self.node_ids.get(role)
+        ]
         if not parts:
             return "No boundary conditions configured."
         return ", ".join(parts)
 
 
-def specs_for(values: Mapping[str, Any]) -> tuple[LayerSpec, ...]:
+def toggle_node_id(
+    values: Mapping[str, Any], role: str, node_id: Any
+) -> tuple[dict[str, list], str]:
+    """The node-ID settings after clicking *node_id* for *role*, and what changed.
+
+    A click adds the node to *role*, or takes it off again if *role* already
+    has it -- so a misclick is undone by clicking the same node. A node another
+    role lists moves to this one rather than being listed twice: a run gives
+    each node to the first role that claims it (inlets, outlets, then the
+    vessel boundaries), so a second listing would only be silently ignored.
+    Entries that cannot be read are kept as they are; the report box names them.
+    """
+    node = _node_id(node_id)
+    if node is None:
+        return {}, f"{node_id!r} is not a node ID."
+    proposed: dict[str, list] = {}
+    moved_from: list[str] = []
+    for other in ROLES:
+        if other == role:
+            continue
+        entries = _node_id_entries(values.get(node_id_setting(other)))
+        kept = [plain(entry) for entry in entries if _node_id(entry) != node]
+        if len(kept) != len(entries):
+            proposed[node_id_setting(other)] = kept
+            moved_from.append(other)
+    entries = _node_id_entries(values.get(node_id_setting(role)))
+    mine = [plain(entry) for entry in entries if _node_id(entry) != node]
+    if len(mine) != len(entries) and not moved_from:
+        proposed[node_id_setting(role)] = mine
+        return proposed, f"Removed node {node} from {role}."
+    proposed[node_id_setting(role)] = [*mine, node]
+    moved = f" (moved from {', '.join(moved_from)})" if moved_from else ""
+    return proposed, f"Added node {node} to {role}{moved}."
+
+
+def node_id_points(
+    graph: Any, values: Mapping[str, Any]
+) -> tuple[np.ndarray, dict[str, np.ndarray], dict[str, list]]:
+    """Where each listed node is, its role and ID, and the IDs *graph* lacks.
+
+    Without a graph nothing can be placed and nothing can be called missing:
+    node IDs only mean something against the graph a run built.
+    """
+    picks = BoundaryPicks.from_settings(values)
+    positions: list[np.ndarray] = []
+    roles: list[str] = []
+    ids: list[Any] = []
+    missing: dict[str, list] = {}
+    for role in ROLES:
+        for node in picks.node_ids.get(role, ()):
+            if graph is None:
+                continue
+            # `_node_id` has already turned "12" into 12, as the run does.
+            position = graph.nodes[node].get("pos") if node in graph.nodes else None
+            if position is None:
+                missing.setdefault(role, []).append(node)
+                continue
+            positions.append(np.asarray(position, dtype=float)[:3])
+            roles.append(role)
+            ids.append(node)
+    data = np.asarray(positions, dtype=float) if positions else np.empty((0, 3), dtype=float)
+    features = {
+        "role": np.asarray(roles, dtype=object),
+        "node_id": np.asarray(ids, dtype=object),
+    }
+    return data, features, missing
+
+
+def specs_for(values: Mapping[str, Any], graph: Any = None) -> tuple[LayerSpec, ...]:
     """The editable layers that draw what *values* describes.
 
     The coordinates layer is emitted even when empty -- it is the surface the
@@ -831,7 +967,9 @@ def specs_for(values: Mapping[str, Any]) -> tuple[LayerSpec, ...]:
     regions layer is not: an empty Shapes layer draws nothing and would only be
     one more row in the layer list until a region is drawn. The box layers are
     not specs at all: napari has no Surface in `LayerSpec`'s vocabulary, and
-    they are drawn from :func:`role_boxes` by the panel.
+    they are drawn from :func:`role_boxes` by the panel. The node IDs layer is
+    emitted whenever a role lists any, placed on *graph* -- empty without one,
+    since an ID has no position until a run has built the graph it names.
     """
     picks = BoundaryPicks.from_settings(values)
     points, point_features = picks.points()
@@ -870,23 +1008,66 @@ def specs_for(values: Mapping[str, Any]) -> tuple[LayerSpec, ...]:
                 options={"shape_type": kinds, "edge_width": 1.5, "opacity": 0.25},
             )
         )
+    if any(picks.node_ids.values()):
+        nodes, node_features, _missing = node_id_points(graph, values)
+        specs.append(
+            LayerSpec(
+                kind="points",
+                name=BC_NODE_IDS,
+                data=nodes,
+                features=node_features,
+                colour_by="role",
+                colour_kind="categorical",
+                colour_cycle=role_colours(),
+                options={
+                    # A square, so a listed node cannot be mistaken for a
+                    # coordinate's ring or for the run's own boundary nodes.
+                    "symbol": "square",
+                    "size": BOUNDARY_COORDINATE_POINT_SIZE,
+                    "border_width": 0.25,
+                    "out_of_slice_display": True,
+                },
+            )
+        )
     return tuple(specs)
 
 
-def group_for(values: Mapping[str, Any], bands=None) -> StageLayers:
+def node_id_note(graph: Any, values: Mapping[str, Any]) -> str:
+    """What the report box says about the listed node IDs, if anything."""
+    picks = BoundaryPicks.from_settings(values)
+    if not any(picks.node_ids.values()):
+        return ""
+    if graph is None:
+        return (
+            "  Node IDs are placed once a run has built the graph ('3. Graph'); "
+            "until then they cannot be shown or checked."
+        )
+    _points, _features, missing = node_id_points(graph, values)
+    if not missing:
+        return ""
+    listed = "; ".join(f"{role} {ids}" for role, ids in missing.items())
+    return (
+        f"  Not in the current graph: {listed}. A run with these IDs stops and "
+        "says so -- rebuilding the graph renumbers its nodes, so pick them again."
+    )
+
+
+def group_for(values: Mapping[str, Any], bands=None, graph: Any = None) -> StageLayers:
     """The picking layers as a group the panel can hand to `_apply_layers`."""
     picks = BoundaryPicks.from_settings(values)
     note = picks.summary()
     if bands:
         drawn = ", ".join(f"{role} band" for role in bands)
-        configured = any(picks.coordinates.values()) or any(picks.volumes.values())
+        configured = (any(picks.coordinates.values()) or any(picks.volumes.values())
+                      or any(picks.node_ids.values()))
         note = f"{note}, {drawn}" if configured else drawn
     if picks.problems:
         note = f"{note} ({len(picks.problems)} entry could not be read: {picks.problems[0]})"
+    note += node_id_note(graph, values)
     return StageLayers(
         stage="boundary_picking",
         title="Boundary conditions",
-        layers=specs_for(values),
+        layers=specs_for(values, graph),
         note=note,
     )
 

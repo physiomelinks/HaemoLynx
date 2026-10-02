@@ -45,6 +45,7 @@ NODE_SELECTION_METHODS = (
     "volume",
     "edge_percent",
     "degree_1_from_inlet",
+    "node_ids",
 )
 
 #: The large-vessel inlet/outlet roles' own methods: everything the other four
@@ -2132,6 +2133,54 @@ SCHEMA = Schema(
             help="Select the large-vessel outlet node(s) falling inside these (min corner, max corner) boxes, each corner (z, y, x)",
             section=_BOUNDARY_ASSIGNMENT,
             unit="um",
+        ),
+        # The node lists below apply whenever a role's selection method is
+        # "node_ids". Unlike every other method they are not limited to
+        # terminals: an arteriole/venule boundary is where a vessel hands
+        # over to the capillaries, which is usually a junction. A node ID
+        # names a node in one build of the graph, so these are empty by
+        # default for the same reason the coordinates are.
+        Setting(
+            name="inlet_node_ids",
+            kind="any",
+            default=[],
+            help="Use exactly these graph node IDs as inlet nodes when the node_ids method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+        ),
+        Setting(
+            name="outlet_node_ids",
+            kind="any",
+            default=[],
+            help="Use exactly these graph node IDs as outlet nodes when the node_ids method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+        ),
+        Setting(
+            name="arteriole_boundary_node_ids",
+            kind="any",
+            default=[],
+            help="Use exactly these graph node IDs as arteriole boundary nodes when the node_ids method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+        ),
+        Setting(
+            name="venule_boundary_node_ids",
+            kind="any",
+            default=[],
+            help="Use exactly these graph node IDs as venule boundary nodes when the node_ids method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+        ),
+        Setting(
+            name="large_vessel_inlet_node_ids",
+            kind="any",
+            default=[],
+            help="Use exactly these graph node IDs as the large-vessel inlet node(s) when the node_ids method is used",
+            section=_BOUNDARY_ASSIGNMENT,
+        ),
+        Setting(
+            name="large_vessel_outlet_node_ids",
+            kind="any",
+            default=[],
+            help="Use exactly these graph node IDs as the large-vessel outlet node(s) when the node_ids method is used",
+            section=_BOUNDARY_ASSIGNMENT,
         ),
         Setting(
             # The pipeline fills these in place (`inlet_nodes[:] = []`), so

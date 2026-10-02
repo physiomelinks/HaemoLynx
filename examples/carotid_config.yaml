@@ -266,17 +266,17 @@ vessel_masks:
 boundary_assignment:
   # Write plot artifacts under this base directory
   base_plot_dir: plots
-  # Choose how manual inlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet; needs automated_vessel_assignment off]
+  # Choose how manual inlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids; needs automated_vessel_assignment off]
   inlet_node_selection_method: edge_percent
-  # Choose how manual outlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet; needs automated_vessel_assignment off]
+  # Choose how manual outlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids; needs automated_vessel_assignment off]
   outlet_node_selection_method: edge_percent
-  # Choose how manual arteriole boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
+  # Choose how manual arteriole boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids]
   arteriole_boundary_selection_method: coordinates
-  # Choose how manual venule boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet]
+  # Choose how manual venule boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids]
   venule_boundary_selection_method: coordinates
-  # Choose how the large-vessel network's inlet node(s) are picked. mask_stump reads them from the large arteriole mask's own geometry (where the mask is truncated by the image's field of view); the other methods override that with a manual pick  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, mask_stump; needs assign_large_vessel_branch_orders]
+  # Choose how the large-vessel network's inlet node(s) are picked. mask_stump reads them from the large arteriole mask's own geometry (where the mask is truncated by the image's field of view); the other methods override that with a manual pick  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids, mask_stump; needs assign_large_vessel_branch_orders]
   large_vessel_inlet_node_selection_method: mask_stump
-  # Choose how the large-vessel network's outlet node(s) are picked. mask_stump reads them from the large venule mask's own geometry (where the mask is truncated by the image's field of view); the other methods override that with a manual pick  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, mask_stump; needs assign_large_vessel_branch_orders]
+  # Choose how the large-vessel network's outlet node(s) are picked. mask_stump reads them from the large venule mask's own geometry (where the mask is truncated by the image's field of view); the other methods override that with a manual pick  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids, mask_stump; needs assign_large_vessel_branch_orders]
   large_vessel_outlet_node_selection_method: mask_stump
   # Split inlets from outlets along this array axis when the edge_percent method is used (0=z, 1=y, 2=x)  [range 0..2]
   boundary_axis: 1
@@ -312,6 +312,18 @@ boundary_assignment:
   large_vessel_inlet_node_volumes: []
   # Select the large-vessel outlet node(s) falling inside these (min corner, max corner) boxes, each corner (z, y, x)  [um]
   large_vessel_outlet_node_volumes: []
+  # Use exactly these graph node IDs as inlet nodes when the node_ids method is used
+  inlet_node_ids: []
+  # Use exactly these graph node IDs as outlet nodes when the node_ids method is used
+  outlet_node_ids: []
+  # Use exactly these graph node IDs as arteriole boundary nodes when the node_ids method is used
+  arteriole_boundary_node_ids: []
+  # Use exactly these graph node IDs as venule boundary nodes when the node_ids method is used
+  venule_boundary_node_ids: []
+  # Use exactly these graph node IDs as the large-vessel inlet node(s) when the node_ids method is used
+  large_vessel_inlet_node_ids: []
+  # Use exactly these graph node IDs as the large-vessel outlet node(s) when the node_ids method is used
+  large_vessel_outlet_node_ids: []
   # Hold the inlet node IDs chosen during the run; leave empty to let the pipeline fill it
   inlet_nodes: []
   # Hold the outlet node IDs chosen during the run; leave empty to let the pipeline fill it

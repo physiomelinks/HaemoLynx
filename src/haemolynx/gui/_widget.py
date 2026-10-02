@@ -5979,6 +5979,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         BC_BOX_NAMES,
         BC_COORDINATES,
         BC_LAYER_NAMES,
+        BC_NODE_IDS,
         BC_REGION_NAMES,
         DISABLED_ROLE_TOOLTIP,
         band_boxes,
@@ -5999,12 +6000,15 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         coordinate_setting,
         group_for,
         method_setting,
+        node_id_note,
+        node_id_setting,
         settings_for_method,
         settings_from_layers,
         regions_name,
         snap,
         terminal_axis_span,
         terminal_points,
+        toggle_node_id,
         volume_setting,
         wanted_rows,
     )
@@ -6012,7 +6016,9 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         ACTION_TOOLTIPS,
         SHOW_BOUNDARIES_TOOLTIP,
         SNAP_BOUNDARIES_TOOLTIP,
+        STOP_PICKING_NODES_TOOLTIP,
     )
+    from haemolynx.gui.graph_click import hit_test_nodes, nearest_node_hit
     from haemolynx.gui.results import role_colours
 
     #: Which role a new point or region belongs to. Not shown: the sub-tab bar
@@ -6027,6 +6033,11 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     snap_button = PushButton(text="Snap selected to nearest terminal")
     snap_button.tooltip = SNAP_BOUNDARIES_TOOLTIP
 
+    #: The node-picking button says which way it will go: one press starts
+    #: clicking nodes for the role, the next stops it.
+    PICK_NODES_TEXT = "Pick nodes in the viewer"
+    STOP_PICKING_NODES_TEXT = "Stop picking nodes"
+
     #: Everything else, once per role, so it sits on that role's own page next
     #: to the settings it fills in. A control that acts on "the chosen role"
     #: from a page that is not that role's is a control that can be pressed by
@@ -6040,6 +6051,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             move=PushButton(text="Move or delete what you picked"),
             assign=PushButton(text="Assign selected to this role"),
             clear=PushButton(text="Clear this role's regions"),
+            pick_nodes=PushButton(text=PICK_NODES_TEXT),
+            clear_nodes=PushButton(text="Clear this role's node IDs"),
         )
         for name in ROLES
     }
@@ -6051,11 +6064,16 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     ACTIONS_FOR_METHOD = {
         "coordinates": ("pick", "move", "assign"),
         "volume": ("draw", "depth", "move", "assign", "clear"),
+        "node_ids": ("pick_nodes", "clear_nodes"),
     }
+    CONTROLS = ("pick", "draw", "depth", "move", "assign", "clear",
+                "pick_nodes", "clear_nodes")
 
+    #: `node_pick` is the role a click on a graph node goes to, or None when
+    #: clicks are the camera's alone.
     state = SimpleNamespace(applying=False, results=None, connected=set(),
                         visible=frozenset(), hidden=frozenset(), tabs=None,
-                        actions={}, draw3d=None)
+                        actions={}, draw3d=None, node_pick=None)
 
     #: Each role's page, and where each shared row currently sits. Filled in
     #: by `page`; empty until the panel has been laid out.
@@ -6099,15 +6117,20 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     def unused_warning(values) -> str:
         """Say when a role's picks will not be read, rather than silently fixing it."""
         notes = []
+        listed_ids = BoundaryPicks.from_settings(values).node_ids
         for name in ROLES:
             method = values.get(method_setting(name))
             picked = len(values.get(coordinate_setting(name)) or ())
             boxed = len(values.get(volume_setting(name)) or ())
+            listed = len(listed_ids.get(name, ()))
             if picked and method != "coordinates":
                 notes.append(f"{picked} {name} coordinate(s) but "
                              f"{method_setting(name)} is {method!r}")
             if boxed and method != "volume":
                 notes.append(f"{boxed} {name} region(s) but "
+                             f"{method_setting(name)} is {method!r}")
+            if listed and method != "node_ids":
+                notes.append(f"{listed} {name} node ID(s) but "
                              f"{method_setting(name)} is {method!r}")
         return "  Not used: " + "; ".join(notes) + "." if notes else ""
 
@@ -6175,7 +6198,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         try:
             values = current_values()
             bands, measured = bands_now(values)
-            group = group_for(values, bands)
+            group = group_for(values, bands, graph())
             # Straight to `_add_or_update`, not through `_apply_layers`: that
             # also rebuilds the vessel tube mesh and re-runs the Z-depth
             # filter, neither of which a boundary edit touches, and doing both
@@ -6211,8 +6234,15 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                     viewer.layers.remove(stale)
                 elif len(stale.data):
                     stale.data = []
+            # Drawn from the settings and never edited, so it simply goes
+            # once no role lists a node.
+            stale = layer(BC_NODE_IDS)
+            if BC_NODE_IDS not in drawn and stale is not None and _is_ours(stale):
+                viewer.layers.remove(stale)
             draw_boxes(values, bands)
             set_depth_range()
+            if state.node_pick is not None:
+                focus_nodes()
         finally:
             state.applying = False
 
@@ -6545,7 +6575,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             useful = set(ACTIONS_FOR_METHOD.get(method, ()))
             # Automated assignment overrides the matching manual role tabs.
             overridden = not role_manual_controls_enabled(name, values)
-            for control in ("pick", "draw", "depth", "move", "assign", "clear"):
+            for control in CONTROLS:
                 widget = getattr(action, control)
                 widget.visible = control in useful
                 if overridden:
@@ -6555,13 +6585,18 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                     widget.enabled = True
                     widget.tooltip = ACTION_TOOLTIPS[control]
             state.actions[name] = frozenset(useful)
+            if state.node_pick == name and ("pick_nodes" not in useful or overridden):
+                # The method moved off node_ids, or automation took the role
+                # over: a click must not go on writing IDs nothing reads.
+                disarm_nodes()
+        label_pick_nodes()
 
     def on_settings_changed(*_args) -> None:
         """Follow the form: the layers show what the settings currently say."""
         refresh_rows()
         if state.applying:
             return
-        if any(name in viewer.layers for name in our_layer_names()):
+        if any(name in viewer.layers for name in (*our_layer_names(), BC_NODE_IDS)):
             redraw()
 
     def on_show() -> None:
@@ -6569,6 +6604,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
     def on_pick() -> None:
         disarm_3d()
+        disarm_nodes()
         redraw()
         target = layer(BC_COORDINATES)
         if target is None:
@@ -6583,6 +6619,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
 
     def on_draw() -> None:
         disarm_3d()
+        disarm_nodes()
         if viewer.dims.ndisplay == 3 and image_extent() is None:
             report.value = (
                 "Open an image first: a box drawn in 3D runs through the image "
@@ -6745,6 +6782,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             )
             return
         disarm_3d()
+        disarm_nodes()
         viewer.layers.selection.active = target
         target.mode = "select"
         report.value = (
@@ -6819,10 +6857,173 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         write_rows({volume_setting(str(role.value)): []})
         redraw()
 
+    # --- node_ids: click a node of the graph to list it for the role. The
+    # click is caught at the viewer rather than on the nodes layer, because a
+    # run replaces that layer whenever its node count changes and a callback
+    # on the old one would silently stop answering.
+
+    #: How far, in screen pixels, the mouse may wander between press and
+    #: release and still be a click rather than a drag that turns the view.
+    CLICK_SLOP_PX = 4.0
+    #: How far from a node dot, in screen pixels, a 3D click may land and
+    #: still take that node.
+    NODE_PICK_SLOP_PX = 8.0
+
+    def label_pick_nodes() -> None:
+        """Each role's button says what pressing it will do."""
+        for name, action in actions.items():
+            armed = state.node_pick == name
+            action.pick_nodes.text = STOP_PICKING_NODES_TEXT if armed else PICK_NODES_TEXT
+            if action.pick_nodes.enabled:
+                action.pick_nodes.tooltip = (STOP_PICKING_NODES_TOOLTIP if armed
+                                             else ACTION_TOOLTIPS["pick_nodes"])
+
+    def focus_nodes() -> None:
+        """Show the nodes layer and make it the active one.
+
+        Active, so napari's status bar names the node under the cursor --
+        that is how the ID being clicked can be read before clicking it.
+        """
+        nodes = layer(NODES)
+        if nodes is None:
+            return
+        nodes.visible = True
+        if viewer.layers.selection.active is not nodes:
+            viewer.layers.selection.active = nodes
+        if getattr(nodes, "mode", "pan_zoom") != "pan_zoom":
+            nodes.mode = "pan_zoom"
+
+    def arm_nodes(owner: str) -> None:
+        state.node_pick = owner
+        if pick_node_click not in viewer.mouse_drag_callbacks:
+            viewer.mouse_drag_callbacks.append(pick_node_click)
+        label_pick_nodes()
+
+    def disarm_nodes() -> None:
+        """Give clicks back to the camera."""
+        state.node_pick = None
+        if pick_node_click in viewer.mouse_drag_callbacks:
+            viewer.mouse_drag_callbacks.remove(pick_node_click)
+        label_pick_nodes()
+
+    def on_pick_nodes() -> None:
+        """Start (or stop) clicking nodes for the open role's node IDs."""
+        owner = str(role.value)
+        if state.node_pick == owner:
+            disarm_nodes()
+            report.value = f"Stopped picking {owner} nodes."
+            return
+        nodes = layer(NODES)
+        if graph() is None or nodes is None or not len(nodes.data):
+            report.value = (
+                "Nothing to pick yet: node IDs name the nodes of the graph a run "
+                "builds, so run at least '3. Graph' first, then click its nodes."
+            )
+            return
+        disarm_3d()
+        arm_nodes(owner)
+        redraw()
+        focus_nodes()
+        report.value = (
+            f"Click a node in the viewer to add it to {owner}'s node IDs; click "
+            "it again to take it off. The status bar names the node under the "
+            "cursor. Dragging still turns the view -- only a click picks. Press "
+            f"'{STOP_PICKING_NODES_TEXT}' when done."
+        )
+
+    def pick_node_at(position, view_direction=None, dims_displayed=None) -> None:
+        """Toggle the node under *position* in the armed role's node IDs."""
+        owner = state.node_pick
+        nodes = layer(NODES)
+        if owner is None or nodes is None:
+            return
+        if not role_manual_controls_enabled(owner, current_values()):
+            disarm_nodes()
+            report.value = DISABLED_ROLE_TOOLTIP[owner]
+            return
+        dims = list(dims_displayed or ())
+        try:
+            index = nodes.get_value(
+                position, view_direction=view_direction if len(dims) == 3 else None,
+                dims_displayed=dims or None, world=True,
+            )
+        except TypeError:
+            index = nodes.get_value(position, world=True)
+        hit = hit_test_nodes(index, _layer_features(nodes))
+        if hit is None and len(dims) == 3 and view_direction is not None:
+            # A whole volume in 3D makes each dot a few pixels across, so a
+            # near miss takes the node it was aimed at. Not in 2D, where the
+            # dot is on the slice and a projected miss could reach through
+            # to another slice's node.
+            zoom = float(getattr(viewer.camera, "zoom", 0.0) or 0.0)
+            hit = nearest_node_hit(
+                nodes.data, _layer_features(nodes), position,
+                max_distance=NODE_PICK_SLOP_PX / zoom if zoom > 0 else 0.0,
+                view_direction=view_direction, dims=dims,
+            )
+        if hit is None:
+            report.value = (
+                f"No node under that click. Click on one of the node dots to "
+                f"add it to {owner}'s node IDs."
+            )
+            return
+        proposed, action = toggle_node_id(current_values(), owner, hit.node_id)
+        write_rows(proposed)
+        if BC_NODE_IDS not in viewer.layers:
+            # `on_settings_changed` redraws only once something is drawn.
+            redraw()
+        focus_nodes()
+        listed = BoundaryPicks.from_settings(current_values()).node_ids.get(owner, ())
+        report.value = (
+            f"{action} {owner} node IDs: {list(listed)}. Click another node, click "
+            f"one again to take it off, or press '{STOP_PICKING_NODES_TEXT}'."
+            f"{node_id_note(graph(), current_values())}"
+        )
+
+    def _moved_far(start, now) -> bool:
+        if start is None or now is None:
+            return False
+        return float(np.hypot(*(np.asarray(now, dtype=float)[:2]
+                                - np.asarray(start, dtype=float)[:2]))) > CLICK_SLOP_PX
+
+    def pick_node_click(_viewer, event):
+        """A press and release with no drag between them picks a node."""
+        if state.node_pick is None or getattr(event, "button", None) not in (None, 1):
+            return
+        # napari hands the generator the same event object with each later
+        # event swapped in, so the press has to be copied now.
+        position = tuple(float(v) for v in event.position)
+        view_direction = getattr(event, "view_direction", None)
+        if view_direction is not None:
+            view_direction = tuple(float(v) for v in view_direction)
+        dims = list(getattr(event, "dims_displayed", ()) or ())
+        start_pixel = getattr(event, "pos", None)
+        start_pixel = None if start_pixel is None else tuple(start_pixel)
+        dragged = False
+        yield
+        while event.type == "mouse_move":
+            pixel = getattr(event, "pos", None)
+            if _moved_far(start_pixel, pixel) or (
+                pixel is None and tuple(float(v) for v in event.position) != position
+            ):
+                dragged = True
+            yield
+        if dragged:
+            return
+        try:
+            pick_node_at(position, view_direction, dims)
+        except Exception as exc:  # noqa: BLE001 - report it, don't crash the viewer
+            logger.exception("picking a boundary node failed")
+            report.value = f"Picking a node failed: {exc}"
+
+    def on_clear_nodes() -> None:
+        write_rows({node_id_setting(str(role.value)): []})
+        redraw()
+
     for _name in (
         *(name for _role in ROLES
           for name in (method_setting(_role), coordinate_setting(_role),
-                       volume_setting(_role))),
+                       volume_setting(_role), node_id_setting(_role))),
         # The band settings draw a box too, so they move the picture as much
         # as a coordinate does.
         *shared_settings(),
@@ -6862,6 +7063,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         wire(_name, _action.assign, on_assign)
         wire(_name, _action.clear, on_clear)
         wire(_name, _action.depth, on_depth_changed)
+        wire(_name, _action.pick_nodes, on_pick_nodes)
+        wire(_name, _action.clear_nodes, on_clear_nodes)
 
     def on_ndisplay(*_args) -> None:
         # A drag armed in 3D would, back in 2D, fight napari's own tools for
@@ -6906,6 +7109,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                     *(rows[n] for n in ordinary),
                     action.pick, action.draw, action.depth,
                     action.move, action.assign, action.clear,
+                    action.pick_nodes, action.clear_nodes,
                     *((nodes.container,) if nodes is not None else ()),
                 ],
                 labels=True,
@@ -6975,6 +7179,14 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         place_shared()
         if state.draw3d is not None and state.draw3d.owner != str(role.value):
             disarm_3d()
+        if state.node_pick is not None and state.node_pick != str(role.value):
+            # Clicks follow the page being looked at, as a picked point does:
+            # a node clicked with the Outlet page open is an outlet.
+            if "pick_nodes" in state.actions.get(str(role.value), ()) and \
+                    role_manual_controls_enabled(str(role.value), current_values()):
+                arm_nodes(str(role.value))
+            else:
+                disarm_nodes()
         for name in our_layer_names():
             target = layer(name)
             if target is not None:
@@ -6990,7 +7202,9 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         show=on_show, pick=on_pick, draw=on_draw, snap=on_snap, move=on_move,
         assign=on_assign, clear=on_clear, redraw=redraw, sync=sync,
         draw_in_3d=draw_in_3d,
-        layer_names=(BC_COORDINATES, *BC_REGION_NAMES, *BC_BOX_NAMES),
+        pick_nodes=on_pick_nodes, clear_nodes=on_clear_nodes,
+        pick_node_at=pick_node_at, pick_node_click=pick_node_click,
+        layer_names=(BC_COORDINATES, BC_NODE_IDS, *BC_REGION_NAMES, *BC_BOX_NAMES),
         shared_ilastik_holder=lambda: getattr(state, "shared_ilastik_holder", None),
         disclosures=lambda: dict(getattr(state, "disclosures", {})),
         group_boxes=lambda: dict(getattr(state, "group_boxes", {})),

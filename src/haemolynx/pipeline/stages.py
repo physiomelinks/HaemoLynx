@@ -1335,6 +1335,18 @@ def _large_vessel_role_terminal_nodes(
     )
 
 
+def _vessel_boundary_configured(settings: dict, vessel: str) -> bool:
+    """Whether the arteriole or venule boundary has anything to select from.
+
+    Coordinates, volume boxes or node IDs: whichever the role's method reads,
+    an empty one of those raises inside the selector, naming the setting.
+    """
+    return any(
+        settings.get(f"{vessel}_boundary_node_{kind}")
+        for kind in ("coordinates", "volumes", "ids")
+    )
+
+
 def assign_boundaries(settings: dict, network: VesselNetwork):
     """Choose the inlet, outlet and vessel-boundary nodes for this network."""
     G = network.graph
@@ -1691,14 +1703,14 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         settings["large_vessel_inlet_nodes"][:] = list(auto_inlet_nodes)
         settings["large_vessel_outlet_nodes"][:] = list(auto_outlet_nodes)
     used_nodes = set(settings["inlet_nodes"]) | set(settings["outlet_nodes"])
-    if settings["arteriole_boundary_node_coordinates"] or settings["arteriole_boundary_node_volumes"]:
+    if _vessel_boundary_configured(settings, "arteriole"):
         art_boundary = graph.select_boundary_nodes_for_role(
             G, image.shape, settings, "arteriole_boundary", exclude_nodes=list(used_nodes)
         )
         settings["arteriole_boundary_nodes"].extend(art_boundary)
         used_nodes.update(settings["arteriole_boundary_nodes"])
 
-    if settings["venule_boundary_node_coordinates"] or settings["venule_boundary_node_volumes"]:
+    if _vessel_boundary_configured(settings, "venule"):
         ven_boundary = graph.select_boundary_nodes_for_role(
             G, image.shape, settings, "venule_boundary", exclude_nodes=list(used_nodes)
         )
@@ -2155,7 +2167,7 @@ def _assign_branch_orders(
         large_venule_boundary_nodes=settings["large_venule_boundary_nodes"],
         strict_hierarchical=settings["strict_branch_order_assignment"],
         # Hierarchical Art*/Ven* labelling needs small-vessel terminals
-        # (auto masks or manual A/V coords/volumes). Large-vessel
+        # (auto masks or manual A/V coords/volumes/node IDs). Large-vessel
         # automation alone only fills inlets/outlets. Large_Art/Large_Ven
         # sits above Art/Ven, so it also needs hierarchical mode to
         # actually fire -- turning it on without small-vessel/manual A-V
@@ -2163,10 +2175,8 @@ def _assign_branch_orders(
         # anything.
         expects_hierarchical=bool(
             settings["use_small_vessel_masks_for_boundary_assignment"]
-            or settings["arteriole_boundary_node_coordinates"]
-            or settings["arteriole_boundary_node_volumes"]
-            or settings["venule_boundary_node_coordinates"]
-            or settings["venule_boundary_node_volumes"]
+            or _vessel_boundary_configured(settings, "arteriole")
+            or _vessel_boundary_configured(settings, "venule")
             or settings["assign_large_vessel_branch_orders"]
         ),
         post_assign_callback=post_assign_callback,

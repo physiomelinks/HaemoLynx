@@ -242,8 +242,10 @@ def check_large_vessel_branch_order_mode_prerequisites(
         "use_small_vessel_masks_for_boundary_assignment",
         "arteriole_boundary_node_coordinates",
         "arteriole_boundary_node_volumes",
+        "arteriole_boundary_node_ids",
         "venule_boundary_node_coordinates",
         "venule_boundary_node_volumes",
+        "venule_boundary_node_ids",
     )
     if not any(bool(settings.get(name)) for name in hierarchical_sources):
         report.add_warning(

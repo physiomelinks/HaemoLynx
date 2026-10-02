@@ -89,3 +89,32 @@ def test_hit_test_nodes_unpacks_a_tuple_result():
 def test_hit_test_nodes_returns_none_for_a_miss_or_bad_index(result):
     features = {"node_id": [10, 20, 30]}
     assert hit_test_nodes(result, features) is None
+
+
+# --- a near miss on a node, for the Boundaries tab's node picking -----------
+
+
+def test_nearest_node_hit_measures_across_the_line_of_sight():
+    """Looking down z, a node far behind the cursor but right under it is the
+    one it points at; one beside it, however close in depth, is not."""
+    from haemolynx.gui.graph_click import nearest_node_hit
+
+    points = np.array([[90.0, 50.0, 50.0], [10.0, 50.0, 58.0]])
+    features = {"node_id": np.array([7, 8], dtype=object)}
+
+    hit = nearest_node_hit(points, features, (10.0, 51.0, 50.0), max_distance=4.0,
+                           view_direction=(1.0, 0.0, 0.0), dims=(0, 1, 2))
+
+    assert hit == NodeHit(node_id=7)
+
+
+def test_nearest_node_hit_takes_nothing_beyond_its_reach():
+    from haemolynx.gui.graph_click import nearest_node_hit
+
+    points = np.array([[10.0, 50.0, 50.0]])
+    features = {"node_id": np.array([7], dtype=object)}
+
+    assert nearest_node_hit(points, features, (10.0, 60.0, 50.0), max_distance=4.0,
+                            view_direction=(1.0, 0.0, 0.0), dims=(0, 1, 2)) is None
+    assert nearest_node_hit(np.empty((0, 3)), {"node_id": []}, (0.0, 0.0, 0.0),
+                            max_distance=4.0) is None

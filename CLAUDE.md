@@ -93,7 +93,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 420 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 426 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -292,7 +292,11 @@ are only caught locally.
   `(z, y, x)` microns, the same units as node `pos`. The `coordinates` method snaps to the
   *nearest* terminal, so a point in voxel indices never fails, it just selects the wrong node;
   `graph.BoundaryCoordinateWarning` reports a snap that went too far and names the voxel-index
-  reading when that is what it looks like (`graph/boundaries.py`).
+  reading when that is what it looks like (`graph/boundaries.py`). The `node_ids` method instead
+  takes exactly the nodes in `*_node_ids` -- any node, junctions included, since an
+  arteriole/venule boundary usually is one -- and an ID the graph lacks stops the run: IDs name
+  nodes of one build of the graph, and rebuilding it renumbers them. The Boundaries tab fills
+  these lists by clicking nodes (`gui/boundary_picking.py`'s `toggle_node_id`).
 - **Graph** — `nx.MultiGraph` with `pos` on nodes and `voxels` on edges, both in physical
   `(z, y, x)` microns; haemodynamics uses `branch_order` on edges.
 - **Edge attributes & units** — `length` (µm), `resistance` (Pa·s/m³), `conductance` (m³/(Pa·s)).

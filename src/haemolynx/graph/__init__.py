@@ -106,6 +106,7 @@ from .boundaries import (
     select_boundary_nodes_by_method,
     select_boundary_nodes_for_role,
     select_boundary_terminal_nodes,
+    select_nodes_by_id,
 )
 from .boundary_node_fallback import (
     seed_edges_have_full_mask_coverage,
@@ -254,6 +255,7 @@ __all__ = [
     "select_boundary_terminal_nodes",
     "select_boundary_nodes_by_method",
     "select_boundary_nodes_for_role",
+    "select_nodes_by_id",
     "compute_overlapping_terminal_assignment_metrics",
     "filter_io_nodes_to_terminal_degree1",
     "infer_boundary_nodes_from_small_vessel_masks",

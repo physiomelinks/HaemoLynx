@@ -40,7 +40,19 @@ ACTION_TOOLTIPS: dict[str, str] = {
         "Remove every volume region belonging to this role from the BC "
         "shapes layer"
     ),
+    "pick_nodes": (
+        "Click nodes of the run's graph to list their IDs for this role; "
+        "clicking a listed node again takes it off. Needs '3. Graph' run first"
+    ),
+    "clear_nodes": (
+        "Empty this role's node ID list"
+    ),
 }
+
+#: The node-picking button while clicks are going to its role.
+STOP_PICKING_NODES_TOOLTIP = (
+    "Stop picking nodes: clicks in the viewer go back to turning the view"
+)
 
 #: Panel chrome below the stage tabs.
 LOAD_CONFIG_TOOLTIP = (

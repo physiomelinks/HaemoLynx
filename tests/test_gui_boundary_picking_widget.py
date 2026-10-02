@@ -1509,3 +1509,281 @@ def test_a_box_drawn_in_3d_can_be_trimmed_with_the_depth_slider(panel):
     (lo, hi), = widget._haemolynx_values()["outlet_node_volumes"]
     assert hi[0] - lo[0] == pytest.approx(20.0)
     assert lo[1:] == pytest.approx([20.0, 30.0]), "across the screen it stays put"
+
+
+# --- node IDs, picked by clicking the graph -----------------------------------
+
+
+#: A Y on the z = 20 um plane: terminal 0, junction 1, terminals 2 and 3.
+Y_NODES = {0: (20.0, 40.0, 100.0), 1: (20.0, 80.0, 100.0),
+           2: (20.0, 120.0, 60.0), 3: (20.0, 120.0, 140.0)}
+
+
+def with_graph(viewer, bc):
+    """The nodes and vessels layers a '3. Graph' run leaves, from the real converter."""
+    import networkx as nx
+    from types import SimpleNamespace
+
+    from haemolynx.gui._widget import _apply_layers
+    from haemolynx.gui.results import ResultLayers
+
+    graph = nx.MultiGraph()
+    for node, pos in Y_NODES.items():
+        graph.add_node(node, pos=np.asarray(pos))
+    for u, v in ((0, 1), (1, 2), (1, 3)):
+        graph.add_edge(u, v, key=0, length=1.0, voxels=[list(Y_NODES[u]), list(Y_NODES[v])])
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("build_network", SimpleNamespace(
+        graph=graph,
+        volume=SimpleNamespace(image=None, skeleton=None, voxel_size_xyz=(1.0, 1.0, 1.0),
+                               voxel_size_zyx=(1.0, 1.0, 1.0)),
+        large_arteriole_mask=None, large_venule_mask=None,
+        small_arteriole_mask=None, small_venule_mask=None,
+    )))
+    # The real converter, not a stand-in: what the tab reads off it is `graph`.
+    bc.state.results = results
+    viewer.dims.ndisplay = 2
+    viewer.dims.set_point(0, 20.0)
+    return graph
+
+
+def click(viewer, position, *, drag_to_pixel=None):
+    """A left press and release through napari's own viewer dispatch."""
+    from napari.utils._test_utils import read_only_mouse_event
+    from napari.utils.interactions import (
+        mouse_move_callbacks, mouse_press_callbacks, mouse_release_callbacks,
+    )
+
+    common = {"button": 1, "dims_displayed": [1, 2]}
+    mouse_press_callbacks(viewer, read_only_mouse_event(
+        type="mouse_press", position=tuple(position), pos=np.array([100.0, 100.0]),
+        **common))
+    if drag_to_pixel is not None:
+        mouse_move_callbacks(viewer, read_only_mouse_event(
+            type="mouse_move", is_dragging=True, position=tuple(position),
+            pos=np.asarray(drag_to_pixel, dtype=float), **common))
+    mouse_release_callbacks(viewer, read_only_mouse_event(
+        type="mouse_release", position=tuple(position),
+        pos=np.asarray(drag_to_pixel if drag_to_pixel is not None else (100.0, 100.0)),
+        **common))
+
+
+def by_node_ids(widget, role="inlet"):
+    from haemolynx.gui.boundary_picking import method_setting
+
+    rows_of(widget)[method_setting(role)].value = "node_ids"
+
+
+def test_choosing_node_ids_offers_its_own_row_and_buttons(panel):
+    widget, viewer, bc = panel
+    by_node_ids(widget, "venule_boundary")
+
+    assert bc.state.actions["venule_boundary"] == {"pick_nodes", "clear_nodes"}
+    assert rows_of(widget)["venule_boundary_node_ids"] in list(bc.holders["venule_boundary"])
+    assert bc.actions["venule_boundary"].pick_nodes in list(bc.holders["venule_boundary"])
+
+
+def test_picking_nodes_before_a_graph_exists_says_why(panel):
+    widget, viewer, bc = panel
+    by_node_ids(widget)
+
+    bc.pick_nodes()
+
+    assert "run at least '3. Graph'" in widget._haemolynx_report()
+    assert bc.state.node_pick is None
+
+
+def test_a_click_on_a_node_lists_it_and_marks_it(panel):
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+    from haemolynx.gui.results import NODES
+
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+
+    bc.pick_nodes()
+    assert bc.state.node_pick == "inlet"
+    assert bc.actions["inlet"].pick_nodes.text == "Stop picking nodes"
+    assert viewer.layers[NODES].visible, "the nodes have to be seen to be clicked"
+    assert viewer.layers.selection.active is viewer.layers[NODES], (
+        "active, so the status bar names the node under the cursor"
+    )
+
+    click(viewer, Y_NODES[2])
+
+    assert widget._haemolynx_values()["inlet_node_ids"] == [2]
+    assert "Added node 2 to inlet" in widget._haemolynx_report()
+    marked = viewer.layers[BC_NODE_IDS]
+    assert np.allclose(marked.data, [Y_NODES[2]])
+    assert list(marked.features["role"]) == ["inlet"]
+
+
+def test_clicking_a_listed_node_again_takes_it_off(panel):
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+    bc.pick_nodes()
+
+    click(viewer, Y_NODES[0])
+    click(viewer, Y_NODES[3])
+    click(viewer, Y_NODES[0])
+
+    assert widget._haemolynx_values()["inlet_node_ids"] == [3]
+    click(viewer, Y_NODES[3])
+    assert widget._haemolynx_values()["inlet_node_ids"] == []
+    assert BC_NODE_IDS not in viewer.layers, "nothing listed, nothing marked"
+
+
+def test_a_junction_can_be_clicked_for_a_vessel_boundary(panel):
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget, "arteriole_boundary")
+    bc.role.value = "arteriole_boundary"
+
+    bc.pick_nodes()
+    click(viewer, Y_NODES[1])
+
+    assert widget._haemolynx_values()["arteriole_boundary_node_ids"] == [1]
+
+
+def test_a_drag_turns_the_view_and_picks_nothing(panel):
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+    bc.pick_nodes()
+
+    click(viewer, Y_NODES[2], drag_to_pixel=(160.0, 100.0))
+
+    assert widget._haemolynx_values()["inlet_node_ids"] == []
+
+
+def test_a_click_on_empty_space_says_so(panel):
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+    bc.pick_nodes()
+
+    click(viewer, (20.0, 200.0, 10.0))
+
+    assert widget._haemolynx_values()["inlet_node_ids"] == []
+    assert "No node under that click" in widget._haemolynx_report()
+
+
+def test_pressing_the_button_again_gives_clicks_back_to_the_camera(panel):
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+
+    bc.pick_nodes()
+    assert bc.pick_node_click in viewer.mouse_drag_callbacks
+    bc.pick_nodes()
+
+    assert bc.state.node_pick is None
+    assert bc.pick_node_click not in viewer.mouse_drag_callbacks
+    assert bc.actions["inlet"].pick_nodes.text == "Pick nodes in the viewer"
+    click(viewer, Y_NODES[2])
+    assert widget._haemolynx_values()["inlet_node_ids"] == []
+
+
+def test_moving_the_method_off_node_ids_stops_picking(panel):
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+    bc.pick_nodes()
+
+    rows_of(widget)["inlet_node_selection_method"].value = "coordinates"
+
+    assert bc.state.node_pick is None
+    assert bc.pick_node_click not in viewer.mouse_drag_callbacks
+
+
+def test_clicks_follow_the_role_page_being_looked_at(panel):
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget, "inlet")
+    by_node_ids(widget, "outlet")
+    bc.pick_nodes()
+
+    bc.role.value = "outlet"
+    click(viewer, Y_NODES[3])
+
+    values = widget._haemolynx_values()
+    assert values["outlet_node_ids"] == [3]
+    assert values["inlet_node_ids"] == []
+    assert bc.actions["outlet"].pick_nodes.text == "Stop picking nodes"
+    assert bc.actions["inlet"].pick_nodes.text == "Pick nodes in the viewer"
+
+    rows_of(widget)["venule_boundary_selection_method"].value = "edge_percent"
+    bc.role.value = "venule_boundary"
+    assert bc.state.node_pick is None, "a page that does not pick nodes takes none"
+
+
+def test_clearing_a_roles_node_ids(panel):
+    widget, viewer, bc = panel
+    by_node_ids(widget)
+    rows_of(widget)["inlet_node_ids"].value = [0, 2]
+
+    bc.clear_nodes()
+
+    assert widget._haemolynx_values()["inlet_node_ids"] == []
+
+
+def test_typed_node_ids_are_marked_when_shown(panel):
+    """Picking is one way in; the row is the other, and the layer follows it."""
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget, "outlet")
+    rows_of(widget)["outlet_node_ids"].value = [3, 42]
+
+    bc.show()
+
+    assert np.allclose(viewer.layers[BC_NODE_IDS].data, [Y_NODES[3]])
+    report = widget._haemolynx_report()
+    assert "Not in the current graph: outlet [42]" in report
+
+
+def test_node_ids_the_method_will_not_read_are_called_out(panel):
+    widget, viewer, bc = panel
+    rows_of(widget)["outlet_node_selection_method"].value = "edge_percent"
+    rows_of(widget)["outlet_node_ids"].value = [3]
+
+    bc.show()
+
+    assert "1 outlet node ID(s) but outlet_node_selection_method is 'edge_percent'" in (
+        widget._haemolynx_report()
+    )
+
+
+def test_a_near_miss_in_3d_takes_the_node_it_was_aimed_at(panel):
+    """A dot a few microns across is a few pixels in a whole-volume 3D view;
+    a click 5 um off it at zoom 1 (8 px of slack) still takes it, and one
+    40 um away takes nothing."""
+    from napari.utils._test_utils import read_only_mouse_event
+    from napari.utils.interactions import mouse_press_callbacks, mouse_release_callbacks
+
+    widget, viewer, bc = panel
+    with_graph(viewer, bc)
+    by_node_ids(widget)
+    viewer.dims.ndisplay = 3
+    viewer.camera.zoom = 1.0
+    bc.pick_nodes()
+
+    def click_3d(position):
+        common = {"button": 1, "dims_displayed": [0, 1, 2],
+                  "view_direction": [1.0, 0.0, 0.0], "pos": np.array([5.0, 5.0])}
+        mouse_press_callbacks(viewer, read_only_mouse_event(
+            type="mouse_press", position=tuple(position), **common))
+        mouse_release_callbacks(viewer, read_only_mouse_event(
+            type="mouse_release", position=tuple(position), **common))
+
+    z, y, x = Y_NODES[2]
+    click_3d((0.0, y + 5.0, x))
+    assert widget._haemolynx_values()["inlet_node_ids"] == [2]
+
+    click_3d((0.0, y + 40.0, x))
+    assert widget._haemolynx_values()["inlet_node_ids"] == [2]
+    assert "No node under that click" in widget._haemolynx_report()

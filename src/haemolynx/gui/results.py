@@ -1301,6 +1301,16 @@ class ResultLayers:
         """Every layer name produced so far, in order."""
         return tuple(self._emitted)
 
+    @property
+    def graph(self) -> Any | None:
+        """The graph the nodes and vessels layers were last drawn from.
+
+        What the Boundaries tab snaps coordinates to, measures bands across
+        and places node IDs on -- so a node clicked in the viewer is a node
+        of this graph.
+        """
+        return self._graph
+
     def reset(self) -> None:
         """Forget the run so far, so the next one starts from nothing.
 

@@ -253,6 +253,68 @@ def _normalize_point(point: Iterable[float], *, name: str) -> np.ndarray:
     return arr
 
 
+def _resolve_node_id(G: nx.Graph, value: Any) -> Any | None:
+    """*value* as the graph node it names, or None when it names none.
+
+    Node IDs are ints, but a hand-edited config can quote one ("12") or a
+    numpy-typed list can carry ``12.0``; either still means node 12.
+    """
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, bool):  # True == 1, but nobody means node 1 by it
+        return None
+    if isinstance(value, float):
+        # Before the lookup: 4.0 finds node 4 (they hash alike), and would
+        # then go on through the run as a float key.
+        if not value.is_integer():
+            return None
+        value = int(value)
+    try:
+        if value in G:
+            return value
+    except TypeError:  # unhashable, e.g. a list typed where an ID belongs
+        return None
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        as_int = int(value.strip())
+        return as_int if as_int in G else None
+    return None
+
+
+def select_nodes_by_id(
+    G: nx.Graph,
+    node_ids: Iterable[Any],
+    *,
+    setting_name: str = "node_ids",
+) -> list[Any]:
+    """The graph nodes *node_ids* name, raising for any the graph lacks.
+
+    Any node, not only terminals: this is the method for saying exactly which
+    node is meant, and an arteriole/venule boundary -- where a vessel hands
+    over to the capillaries -- is usually a junction. A missing ID raises
+    rather than being skipped, because a node ID names a node in one build of
+    the graph: rebuilding with other settings renumbers them, and a run that
+    quietly dropped the stale ones would solve with different boundaries.
+    """
+    resolved: list[Any] = []
+    missing: list[Any] = []
+    for value in node_ids:
+        node = _resolve_node_id(G, value)
+        if node is None:
+            missing.append(value)
+        else:
+            resolved.append(node)
+    if missing:
+        raise ValueError(
+            f"{setting_name} lists node ID(s) {missing} that are not in the graph "
+            f"({G.number_of_nodes()} nodes). A node ID names a node in one build "
+            "of the graph: changing the Skeletonise or Graph settings, or cutting "
+            "the network at the large-vessel volumes, can renumber or remove "
+            f"nodes. Fix: pick the nodes again on the graph this run builds, or "
+            "choose another selection method."
+        )
+    return resolved
+
+
 def select_boundary_nodes_by_method(
     G: nx.Graph,
     image_shape: tuple[int, ...],
@@ -269,11 +331,17 @@ def select_boundary_nodes_by_method(
     distance_from_inlet_node: float = 0.0,
     coordinates_setting_name: str = "coordinates",
     open_end_max_distance_um: float | None = DEFAULT_OPEN_END_MAX_DISTANCE_UM,
+    node_ids: Iterable[Any] | None = None,
+    node_ids_setting_name: str = "node_ids",
 ) -> list[Any]:
     """Select boundary nodes for one role using the specified method.
 
     ``coordinates_setting_name`` only names the setting the points came from,
-    so a :class:`BoundaryCoordinateWarning` can say which one to edit.
+    so a :class:`BoundaryCoordinateWarning` can say which one to edit;
+    ``node_ids_setting_name`` does the same for ``node_ids``.
+
+    ``node_ids`` takes exactly the nodes listed (see
+    :func:`select_nodes_by_id`), terminals or not.
 
     The two methods that choose terminals by position alone,
     ``edge_percent`` and ``degree_1_from_inlet``, keep only *open ends* --
@@ -288,13 +356,18 @@ def select_boundary_nodes_by_method(
     if node_role not in {"inlet", "outlet"}:
         raise ValueError("node_role must be 'inlet' or 'outlet'.")
 
-    terminals, pos = _terminal_nodes_and_position_map(G)
-    if not terminals:
-        return []
-
     method_norm = str(method).strip().lower()
     excluded = set(exclude_nodes or [])
     selected: list[Any]
+
+    if method_norm == "node_ids":
+        # Before the terminal check: these need not be terminals.
+        selected = select_nodes_by_id(G, node_ids or [], setting_name=node_ids_setting_name)
+        return [node for node in sort_nodes(selected) if node not in excluded]
+
+    terminals, pos = _terminal_nodes_and_position_map(G)
+    if not terminals:
+        return []
 
     if method_norm == "all_degree_1":
         selected = terminals
@@ -391,50 +464,56 @@ def select_boundary_nodes_by_method(
         raise ValueError(
             "Unknown boundary-node method. Supported methods are: "
             "'coordinates', 'all_degree_1', 'volume', 'edge_percent', "
-            "'degree_1_from_inlet'."
+            "'degree_1_from_inlet', 'node_ids'."
         )
 
     return [node for node in sort_nodes(selected) if node not in excluded]
 
 
 
-#: Config settings naming each boundary role's selection method, coordinates and
-#: volume boxes, plus the ``node_role`` the selector expects.
+#: Config settings naming each boundary role's selection method, coordinates,
+#: volume boxes and node IDs, plus the ``node_role`` the selector expects.
 BOUNDARY_ROLE_SETTINGS: dict[str, dict[str, str]] = {
     "inlet": {
         "method": "inlet_node_selection_method",
         "coordinates": "inlet_node_coordinates",
         "volume_boxes": "inlet_node_volumes",
+        "node_ids": "inlet_node_ids",
         "node_role": "inlet",
     },
     "outlet": {
         "method": "outlet_node_selection_method",
         "coordinates": "outlet_node_coordinates",
         "volume_boxes": "outlet_node_volumes",
+        "node_ids": "outlet_node_ids",
         "node_role": "outlet",
     },
     "arteriole_boundary": {
         "method": "arteriole_boundary_selection_method",
         "coordinates": "arteriole_boundary_node_coordinates",
         "volume_boxes": "arteriole_boundary_node_volumes",
+        "node_ids": "arteriole_boundary_node_ids",
         "node_role": "inlet",
     },
     "venule_boundary": {
         "method": "venule_boundary_selection_method",
         "coordinates": "venule_boundary_node_coordinates",
         "volume_boxes": "venule_boundary_node_volumes",
+        "node_ids": "venule_boundary_node_ids",
         "node_role": "outlet",
     },
     "large_vessel_inlet": {
         "method": "large_vessel_inlet_node_selection_method",
         "coordinates": "large_vessel_inlet_node_coordinates",
         "volume_boxes": "large_vessel_inlet_node_volumes",
+        "node_ids": "large_vessel_inlet_node_ids",
         "node_role": "inlet",
     },
     "large_vessel_outlet": {
         "method": "large_vessel_outlet_node_selection_method",
         "coordinates": "large_vessel_outlet_node_coordinates",
         "volume_boxes": "large_vessel_outlet_node_volumes",
+        "node_ids": "large_vessel_outlet_node_ids",
         "node_role": "outlet",
     },
 }
@@ -450,6 +529,60 @@ BOUNDARY_BAND_SETTINGS: dict[str, str] = {
     "boundary_last_percent": "end_percent",
     "boundary_distance_from_inlet_node": "distance_from_inlet_node",
 }
+
+
+#: Roles whose nodes hold a pressure or a flow in the solve. A node ID picked
+#: for one of these off a junction is most often a click that missed the
+#: terminal beside it, so it is reported; the arteriole/venule boundaries are
+#: where branch ordering stops, and a junction is what they usually are.
+_FLOW_BOUNDARY_ROLES = frozenset(
+    {"inlet", "outlet", "large_vessel_inlet", "large_vessel_outlet"}
+)
+
+
+def _node_id_list(value: Any) -> list[Any]:
+    """A node-ID setting as a list: a lone ID typed without brackets is one."""
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes, int, float, np.generic)):
+        return [value]
+    try:
+        return list(value)
+    except TypeError:
+        return [value]
+
+
+def _report_node_id_picks(
+    G: nx.Graph,
+    role: str,
+    setting_name: str,
+    requested: list[Any],
+    chosen: list[Any],
+) -> None:
+    """Log what a ``node_ids`` pick did not do as asked.
+
+    A listed node an earlier role already took is left out (inlets before
+    outlets before the vessel boundaries, as every method does), which would
+    otherwise be silent.
+    """
+    resolved = select_nodes_by_id(G, requested, setting_name=setting_name)
+    kept = set(chosen)
+    taken = [node for node in sort_nodes(resolved) if node not in kept]
+    if taken:
+        logger.warning(
+            "%s: node(s) %s already belong to an earlier boundary role, so %s "
+            "does not take them.", setting_name, taken, role,
+        )
+    if role in _FLOW_BOUNDARY_ROLES:
+        interior = [node for node in chosen if G.degree(node) != 1]
+        if interior:
+            logger.warning(
+                "%s: node(s) %s are not terminals (degree %s), so the %s "
+                "boundary is held inside the network rather than where a vessel "
+                "leaves the image. Check they are the nodes you meant.",
+                setting_name, interior, [G.degree(node) for node in interior],
+                role.replace("_", " "),
+            )
 
 
 def select_boundary_nodes_for_role(
@@ -479,7 +612,29 @@ def select_boundary_nodes_for_role(
     method = str(settings[names["method"]]).strip().lower()
     coordinates = list(settings.get(names["coordinates"]) or [])
     volume_boxes = list(settings.get(names["volume_boxes"]) or [])
+    node_ids = _node_id_list(settings.get(names["node_ids"]))
     inlet_nodes = list(settings.get("inlet_nodes") or [])
+
+    if method == "node_ids":
+        if not node_ids:
+            raise ValueError(
+                f"{names['method']}='node_ids' takes exactly the nodes listed in "
+                f"{names['node_ids']}, but that setting is empty. Fix: list the "
+                f"node IDs in {names['node_ids']} (or pick them in the viewer on "
+                f"the Boundaries tab), or set {names['method']} to "
+                "'edge_percent', which needs no node IDs from this dataset."
+            )
+        chosen = select_boundary_nodes_by_method(
+            G,
+            image_shape,
+            method=method,
+            node_role=names["node_role"],
+            node_ids=node_ids,
+            node_ids_setting_name=names["node_ids"],
+            exclude_nodes=exclude_nodes,
+        )
+        _report_node_id_picks(G, role, names["node_ids"], node_ids, chosen)
+        return chosen
 
     if method == "coordinates" and not coordinates:
         raise ValueError(

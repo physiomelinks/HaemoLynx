@@ -619,7 +619,7 @@ def test_the_band_settings_appear_for_any_role_that_uses_them():
 
 @pytest.mark.parametrize(
     "method", ["coordinates", "volume", "edge_percent", "all_degree_1",
-               "degree_1_from_inlet"]
+               "degree_1_from_inlet", "node_ids"]
 )
 def test_every_method_the_schema_allows_is_accounted_for(method):
     """A method with no rule would silently show nothing."""
@@ -655,6 +655,7 @@ def test_a_roles_settings_start_with_the_method_that_chooses_them(role):
         BOUNDARY_ROLE_SETTINGS[role]["method"],
         coordinate_setting(role),
         volume_setting(role),
+        BOUNDARY_ROLE_SETTINGS[role]["node_ids"],
         f"{role}_nodes",
     }
     for name in mine:
@@ -1081,7 +1082,133 @@ def test_the_layer_names_say_which_role_they_are():
 
 def test_every_picking_layer_is_named_in_one_place():
     """`_clear_our_layers` and the "is this ours?" check both read this."""
-    from haemolynx.gui.boundary_picking import BC_BOX_NAMES, BC_LAYER_NAMES
+    from haemolynx.gui.boundary_picking import BC_BOX_NAMES, BC_LAYER_NAMES, BC_NODE_IDS
 
-    assert BC_LAYER_NAMES == {BC_COORDINATES, *BC_REGION_NAMES, *BC_BOX_NAMES}
+    assert BC_LAYER_NAMES == {BC_COORDINATES, BC_NODE_IDS, *BC_REGION_NAMES, *BC_BOX_NAMES}
     assert BC_LAYER_NAMES.isdisjoint(LAYER_NAMES), "never a run's own layer"
+
+
+# --- node IDs: picked by clicking a node, drawn where the graph has it -------
+
+
+def _y_graph():
+    """Terminal 0 -- junction 1 -- terminals 2 and 3."""
+    import networkx as nx
+
+    graph = nx.MultiGraph()
+    for node, pos in {0: (0.0, 0.0, 0.0), 1: (0.0, 10.0, 0.0),
+                      2: (0.0, 20.0, -5.0), 3: (0.0, 20.0, 5.0)}.items():
+        graph.add_node(node, pos=np.asarray(pos))
+    graph.add_edges_from([(0, 1), (1, 2), (1, 3)])
+    return graph
+
+
+def test_the_node_ids_method_shows_its_own_list():
+    from haemolynx.gui.boundary_picking import node_id_setting, visible_settings
+
+    wanted = visible_settings({"venule_boundary_selection_method": "node_ids"})
+
+    assert node_id_setting("venule_boundary") == "venule_boundary_node_ids"
+    assert "venule_boundary_node_ids" in wanted
+    assert "venule_boundary_node_coordinates" not in wanted
+    assert "inlet_node_ids" not in visible_settings(
+        {"inlet_node_selection_method": "coordinates"}
+    )
+
+
+def test_clicking_a_node_adds_it_and_clicking_it_again_takes_it_off():
+    from haemolynx.gui.boundary_picking import toggle_node_id
+
+    added, said = toggle_node_id({"inlet_node_ids": [3]}, "inlet", np.int64(7))
+    assert added == {"inlet_node_ids": [3, 7]}
+    assert type(added["inlet_node_ids"][1]) is int, "a numpy int would break the row"
+    assert "Added node 7" in said
+
+    removed, said = toggle_node_id(added, "inlet", 7)
+    assert removed == {"inlet_node_ids": [3]}
+    assert "Removed node 7" in said
+
+
+def test_a_node_another_role_lists_moves_rather_than_being_listed_twice():
+    from haemolynx.gui.boundary_picking import toggle_node_id
+
+    proposed, said = toggle_node_id(
+        {"inlet_node_ids": [4, 9], "outlet_node_ids": [1]}, "outlet", 9
+    )
+
+    assert proposed == {"inlet_node_ids": [4], "outlet_node_ids": [1, 9]}
+    assert "moved from inlet" in said
+
+
+def test_toggling_keeps_an_entry_it_cannot_read():
+    """The report box names it; a click must not quietly delete it."""
+    from haemolynx.gui.boundary_picking import toggle_node_id
+
+    proposed, _ = toggle_node_id({"inlet_node_ids": [[1, 2]]}, "inlet", 5)
+
+    assert proposed == {"inlet_node_ids": [[1, 2], 5]}
+
+
+def test_listed_node_ids_are_read_and_summarised():
+    picks = BoundaryPicks.from_settings(
+        {"inlet_node_ids": [3, "3", 4.0], "venule_boundary_node_ids": 12,
+         "outlet_node_ids": [[1, 2]]}
+    )
+
+    assert picks.node_ids["inlet"] == (3, 4), "the same node written twice is one"
+    assert picks.node_ids["venule_boundary"] == (12,), "a bare ID is a list of one"
+    assert any("outlet_node_ids[0]" in problem for problem in picks.problems)
+    assert "inlet node IDs [3, 4]" in picks.summary()
+
+
+def test_no_node_ids_no_node_ids_layer():
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+
+    assert BC_NODE_IDS not in [spec.name for spec in specs_for(CONFIGURED, _y_graph())]
+
+
+def test_listed_nodes_are_drawn_where_the_graph_has_them():
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+
+    values = {"inlet_node_ids": [0], "arteriole_boundary_node_ids": [1]}
+    spec = {s.name: s for s in specs_for(values, _y_graph())}[BC_NODE_IDS]
+
+    assert spec.data.tolist() == [[0.0, 0.0, 0.0], [0.0, 10.0, 0.0]]
+    assert spec.features["role"].tolist() == ["inlet", "arteriole_boundary"]
+    assert spec.features["node_id"].tolist() == [0, 1]
+    assert spec.scale == (1.0, 1.0, 1.0), "node pos is physical microns already"
+    assert spec.colour_cycle == role_colours()
+
+
+def test_without_a_graph_the_ids_are_listed_but_not_placed():
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+
+    values = {"inlet_node_ids": [0]}
+    spec = {s.name: s for s in specs_for(values)}[BC_NODE_IDS]
+
+    assert spec.data.shape == (0, 3)
+    assert "once a run has built the graph" in group_for(values).note
+
+
+def test_ids_the_graph_lacks_are_named_in_the_report():
+    values = {"outlet_node_ids": [2, 77]}
+
+    note = group_for(values, graph=_y_graph()).note
+
+    assert "Not in the current graph: outlet [77]" in note
+    assert "pick them again" in note
+
+
+def test_the_result_layers_expose_the_graph_the_tab_picks_from():
+    """`_boundary_controls` reads `results.graph`; it used to find nothing,
+    because the converter only kept `_graph`, so snapping never had a graph."""
+    from types import SimpleNamespace
+
+    from haemolynx.gui.results import ResultLayers
+
+    graph = _y_graph()
+    results = ResultLayers()
+    assert results.graph is None
+    results.stage_finished("build_network", SimpleNamespace(graph=graph, volume=None))
+
+    assert results.graph is graph
