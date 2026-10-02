@@ -581,7 +581,9 @@ def test_the_solve_stage_shows_its_settings_on_the_haemodynamics_tab():
     assert solve.settings == (
         "inlet_p_bc",
         "outlet_p_bc",
+        "haemodynamics_solver",
         "do_equiv_resistance_calculation",
+        "equivalent_resistance_solver",
         "haematocrit_model",
         "haematocrit_junction_rule",
         "haematocrit_split_connector_length_um",

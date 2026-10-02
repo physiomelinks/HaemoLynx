@@ -5,8 +5,51 @@ import logging
 import math
 import numpy as np
 import networkx as nx
+import scipy.sparse as sp
+from scipy.sparse.csgraph import connected_components
+from scipy.sparse.linalg import splu
 
 logger = logging.getLogger(__name__)
+
+#: ``haemodynamics_solver``: how a flow solve holds and solves the network.
+#: ``dense`` is an N x N array and a dense solve -- 8 N^2 bytes, 3.2 GB at
+#: 20,000 nodes, with several copies alive at once. ``sparse`` stores only the
+#: vessels and factorises the same equations; the same pressures to rounding.
+FLOW_SOLVER_DENSE = "dense"
+FLOW_SOLVER_SPARSE = "sparse"
+FLOW_SOLVERS = (FLOW_SOLVER_DENSE, FLOW_SOLVER_SPARSE)
+
+#: ``equivalent_resistance_solver``: how the two-point resistance is found.
+#: ``eigendecomposition`` is every eigenpair of the dense Laplacian (cubic in
+#: the node count: minutes at 5,000 nodes, hours at 20,000); ``sparse`` is
+#: one sparse solve with a unit current in at one node and the other grounded.
+EQUIVALENT_RESISTANCE_EIGENDECOMPOSITION = "eigendecomposition"
+EQUIVALENT_RESISTANCE_SPARSE = "sparse"
+EQUIVALENT_RESISTANCE_SOLVERS = (
+    EQUIVALENT_RESISTANCE_EIGENDECOMPOSITION,
+    EQUIVALENT_RESISTANCE_SPARSE,
+)
+
+_NOT_CONNECTED_MESSAGE = (
+    "Inlet and outlet boundary nodes are not connected by "
+    "conductance-carrying edges; cannot solve for flow. After a "
+    "large-vessel cut or boundary reassignment, check that the inlet "
+    "and outlet land on the same conductive part of the network."
+)
+_ZERO_ROW_MESSAGE = (
+    "Reduced Laplacian has a zero row; the boundary nodes do not "
+    "constrain every conductive node that the solver would solve for."
+)
+_SINGULAR_MESSAGE = (
+    "Conductance network Laplacian is singular and cannot be solved. "
+    "Check that inlet and outlet boundary nodes lie on the same "
+    "connected, conductance-carrying part of the network and that "
+    "boundary pressures differ."
+)
+_NON_FINITE_PRESSURE_MESSAGE = (
+    "Flow solve produced non-finite nodal pressures; the conductance "
+    "network is likely ill-conditioned or disconnected."
+)
 
 #: Smallest |flow| passed to log10 so zero-flow edges stay finite, not -inf.
 FLOW_ABS_LOG10_FLOOR = 1e-20
@@ -24,7 +67,8 @@ def build_conductance_matrix_from_graph(
     node_list: list | None = None,
     node_to_idx: dict | None = None,
     out: np.ndarray | None = None,
-) -> tuple[np.ndarray, list]:
+    solver: str = FLOW_SOLVER_DENSE,
+) -> tuple[np.ndarray | sp.csr_matrix, list]:
     """Build symmetric conductance matrix from graph edge conductances.
 
     Returns:
@@ -42,12 +86,36 @@ def build_conductance_matrix_from_graph(
     zeroed array. *out* is filled in place and returned as-is, not replaced
     with a new array; its shape must match ``(len(node_list), len(node_list))``
     for whichever *node_list* this call ends up using (explicit or rebuilt).
+
+    *solver* ``"sparse"`` (``haemodynamics_solver``) returns a
+    ``scipy.sparse`` CSR matrix holding only the vessels, the same entries the
+    dense array has; every solve in this package takes either. *out* is a
+    dense array, so it cannot be combined with it.
     """
+    _check_flow_solver(solver)
     if node_list is None:
         node_list = list(G.nodes())
     if node_to_idx is None:
         node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
     n = len(node_list)
+    if solver == FLOW_SOLVER_SPARSE:
+        if out is not None:
+            raise ValueError("out is a dense array; the sparse solver builds its own matrix.")
+        rows: list[int] = []
+        cols: list[int] = []
+        values: list[float] = []
+        for u, v, data in G.edges(data=True):
+            edge_conductance = data.get(conductance_attr)
+            if edge_conductance is None or edge_conductance <= 0:
+                continue
+            i = node_to_idx[u]
+            j = node_to_idx[v]
+            rows += [i, j]
+            cols += [j, i]
+            values += [float(edge_conductance)] * 2
+        # Converting from COO sums duplicate entries: parallel edges add up.
+        matrix = sp.coo_matrix((values, (rows, cols)), shape=(n, n)).tocsr()
+        return matrix, node_list
     if out is None:
         conductance = np.zeros((n, n), dtype=float)
     else:
@@ -71,8 +139,27 @@ def build_conductance_matrix_from_graph(
     return conductance, node_list
 
 
+def _check_flow_solver(solver: str) -> None:
+    if solver not in FLOW_SOLVERS:
+        raise ValueError(f"Unknown flow solver {solver!r}; expected one of {FLOW_SOLVERS}.")
+
+
 def calc_laplacian_from_conductance_matrix(C: np.ndarray) -> np.ndarray:
-    """Compute graph Laplacian from conductance matrix. L = diag(sum(C,1)) - C."""
+    """Compute graph Laplacian from conductance matrix. L = diag(sum(C,1)) - C.
+
+    A ``scipy.sparse`` *C* gives a sparse CSR Laplacian, checked the same way.
+    """
+    if sp.issparse(C):
+        C = C.tocsr()
+        # np.allclose's own test, |C - C^T| <= atol + rtol |C^T|, on the
+        # stored entries (an absent one is zero on both sides).
+        excess = abs(C - C.T) - abs(C.T) * 1e-5
+        if excess.nnz and excess.max() > 1e-8:
+            raise ValueError("Conductance matrix must be symmetric")
+        if np.any(C.diagonal() != 0):
+            raise ValueError("Conductance matrix diagonal must be zero")
+        degree = np.asarray(C.sum(axis=1)).ravel()
+        return (sp.diags(degree) - C).tocsr()
     if not np.allclose(C, C.T):
         raise ValueError("Conductance matrix must be symmetric")
     if not np.all(np.diagonal(C) == 0):
@@ -106,10 +193,131 @@ def calc_two_point_from_laplacian_matrix_nodeID(
     return R
 
 
+def calc_two_point_resistance_sparse(
+    conductance: np.ndarray | sp.spmatrix,
+    node_list: list,
+    node_id1,
+    node_id2,
+    *,
+    node_to_idx: dict | None = None,
+) -> float:
+    """Effective resistance between two nodes by one sparse solve.
+
+    One unit of current in at *node_id1*, *node_id2* grounded: the potential
+    *node_id1* rises to is the resistance between them (Pa.s/m^3 for
+    conductances in m^3/(Pa.s)). The same number
+    :func:`calc_two_point_from_laplacian_matrix_nodeID` gives, to rounding,
+    without the eigendecomposition. Two nodes on separate conductive pieces of
+    the network have no path for a current, so the answer is ``inf`` (with a
+    warning) -- where the eigendecomposition returns a finite number.
+    *conductance* may be dense or sparse; *node_list* gives its node order.
+    """
+    if node_to_idx is None:
+        node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    try:
+        idx1 = node_to_idx[node_id1]
+        idx2 = node_to_idx[node_id2]
+    except KeyError as e:
+        raise ValueError(f"Node {e} not found in graph")
+    if idx1 == idx2:
+        return 0.0
+    matrix = conductance.tocsr() if sp.issparse(conductance) else sp.csr_matrix(conductance)
+    labels = _component_labels(matrix)
+    if labels[idx1] != labels[idx2]:
+        logger.warning(
+            f"Two-point resistance: nodes {node_id1} and {node_id2} are on separate "
+            "conductive parts of the network, so no current can pass; it is infinite."
+        )
+        return float("inf")
+    component = np.nonzero(labels == labels[idx1])[0]
+    keep = component[component != idx2]
+    laplacian = calc_laplacian_from_conductance_matrix(matrix)
+    current = np.zeros(len(keep), dtype=float)
+    position = int(np.searchsorted(keep, idx1))
+    current[position] = 1.0
+    potential = _sparse_factor(laplacian[keep][:, keep]).solve(current)
+    return float(potential[position])
+
+
+def boundary_flow(
+    conductance: np.ndarray | sp.spmatrix,
+    pressure: np.ndarray,
+    node_idx,
+) -> float:
+    """Total flow (m^3/s) out of the nodes at *node_idx* into the rest of the
+    network: each node's conductances times its pressure drops, summed. Dense
+    or sparse *conductance*."""
+    idx = np.unique(np.asarray(node_idx, dtype=int))
+    if idx.size == 0:
+        return 0.0
+    rows = conductance.tocsr()[idx] if sp.issparse(conductance) else conductance[idx]
+    degree = np.asarray(rows.sum(axis=1)).ravel()
+    neighbours = np.asarray(rows @ pressure).ravel()
+    return float(np.sum(degree * pressure[idx] - neighbours))
+
+
+def network_resistance(
+    conductance: np.ndarray | sp.spmatrix,
+    node_list: list,
+    pressure: np.ndarray,
+    *,
+    inlet_nodes: list,
+    inlet_p_bc: float,
+    outlet_p_bc: float,
+    node_to_idx: dict | None = None,
+) -> float | None:
+    """The whole network's resistance from a solved flow: the inlet-to-outlet
+    pressure drop over the total flow in through the inlets (Pa.s/m^3).
+
+    Every inlet and every outlet takes part, unlike the two-point resistance
+    between one inlet and one outlet with every other boundary left floating.
+    ``inf`` when no flow enters, ``None`` when the drop is zero (no flow to
+    divide by).
+    """
+    drop = float(inlet_p_bc) - float(outlet_p_bc)
+    if drop == 0.0:
+        return None
+    if node_to_idx is None:
+        node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
+    inflow = boundary_flow(
+        conductance, pressure, [node_to_idx[n] for n in inlet_nodes if n in node_to_idx]
+    )
+    # Exact zero only: flows are ~1e-14 m^3/s, so any tolerance would swallow them.
+    return float("inf") if inflow == 0.0 else drop / inflow
+
+
+def _sparse_factor(matrix: sp.spmatrix):
+    """LU factors of a reduced Laplacian -- symmetric positive definite, so
+    ordered and pivoted as one (as :mod:`haemolynx.statistics._flow_system`
+    does)."""
+    return splu(
+        matrix.tocsc(),
+        permc_spec="MMD_AT_PLUS_A",
+        diag_pivot_thresh=0.0,
+        options={"SymmetricMode": True},
+    )
+
+
+def _component_labels(conductance: sp.spmatrix) -> np.ndarray:
+    """Each node's conductive component: nodes joined by edges with a
+    positive conductance share a label."""
+    _count, labels = connected_components(conductance.tocsr() > 0, directed=False)
+    return labels
+
+
+def _has_conductance(conductance: sp.spmatrix) -> np.ndarray:
+    return np.diff((conductance.tocsr() > 0).indptr) > 0
+
+
 def reachable_through_conductances(
     adjacency: np.ndarray, seed_idx: np.ndarray
 ) -> np.ndarray:
-    """Boolean mask of nodes connected to any seed through conductive edges."""
+    """Boolean mask of nodes connected to any seed through conductive edges.
+
+    A ``scipy.sparse`` *adjacency* is labelled by connected components."""
+    if sp.issparse(adjacency):
+        labels = _component_labels(adjacency)
+        return np.isin(labels, labels[np.asarray(seed_idx, dtype=int)])
     reached = np.zeros(adjacency.shape[0], dtype=bool)
     reached[seed_idx] = True
     frontier = np.asarray(seed_idx, dtype=int)
@@ -144,9 +352,18 @@ def reachable_unknown_node_indices(
 
     Returns the restricted ``unknown_idx`` and how many additional nodes
     carry a conductance but were excluded as unreachable, for the caller to
-    warn about.
+    warn about. *conductance* may be dense or sparse.
     """
     n_nodes = conductance.shape[0]
+    if sp.issparse(conductance):
+        reached = reachable_through_conductances(conductance, known_idx)
+        unknown_mask = np.ones(n_nodes, dtype=bool)
+        unknown_mask[known_idx] = False
+        unknown_idx = np.nonzero(unknown_mask & reached)[0]
+        stranded_conductive = int(
+            np.sum(unknown_mask & ~reached & _has_conductance(conductance))
+        )
+        return unknown_idx, stranded_conductive
     adjacency = conductance > 0
     reached = reachable_through_conductances(adjacency, known_idx)
     unknown_mask = np.ones(n_nodes, dtype=bool)
@@ -161,6 +378,23 @@ def _warn_components_pinned_to_one_pressure(
 ) -> None:
     """Warn for each conductive component whose boundary nodes all impose the
     same pressure — nothing drives it, so its every flow solves to zero."""
+    if sp.issparse(adjacency):
+        labels = _component_labels(adjacency)
+        conductive = _has_conductance(adjacency)
+        pressures_by_label: dict[int, set] = {}
+        for idx in sorted(bc_idx_to_p):
+            if conductive[idx]:
+                pressures_by_label.setdefault(int(labels[idx]), set()).add(bc_idx_to_p[idx])
+        for label, pressures in pressures_by_label.items():
+            if len(pressures) == 1:
+                logger.warning(
+                    f"A conductive component of {int(np.sum(labels == label))} node(s) only "
+                    f"reaches boundary nodes at {pressures.pop()} Pa; with no "
+                    "pressure difference across it, its every flow solves to zero. "
+                    "Check that the inlet and outlet boundary nodes land on the "
+                    "same connected, conductance-carrying part of the network."
+                )
+        return
     visited = np.zeros(adjacency.shape[0], dtype=bool)
     for start in sorted(bc_idx_to_p):
         if visited[start] or not adjacency[start].any():
@@ -201,6 +435,10 @@ def solve_flow_from_conductance_matrix(
     (e.g. alongside *node_list* from :func:`build_conductance_matrix_from_graph`)
     skip rebuilding it here. Not validated against *node_list* for cost
     reasons; passing a mismatched mapping is the caller's error.
+
+    A ``scipy.sparse`` *conductance* (``haemodynamics_solver="sparse"``) is
+    solved by sparse LU factorisation, with the same checks, warnings and
+    errors; the pressures agree with the dense solve to rounding.
     """
     if conductance.ndim != 2 or conductance.shape[0] != conductance.shape[1]:
         raise ValueError("conductance must be a square matrix")
@@ -231,7 +469,8 @@ def solve_flow_from_conductance_matrix(
             f"{sorted(overlap)}"
         )
 
-    if not np.all(np.isfinite(conductance)):
+    is_sparse = sp.issparse(conductance)
+    if not np.all(np.isfinite(conductance.data if is_sparse else conductance)):
         raise ValueError(
             "Conductance matrix contains non-finite values; cannot solve for flow."
         )
@@ -255,6 +494,19 @@ def solve_flow_from_conductance_matrix(
     for idx in known_idx:
         pressure[idx] = bc_idx_to_p[idx]
 
+    if is_sparse:
+        _solve_free_pressures_sparse(
+            conductance.tocsr(),
+            laplacian,
+            pressure,
+            known_idx=known_idx,
+            inlet_idx=np.array([node_to_idx[n] for n in inlet_nodes], dtype=int),
+            outlet_idx=np.array([node_to_idx[n] for n in outlet_nodes], dtype=int),
+            bc_idx_to_p=bc_idx_to_p,
+            pressure_differs=float(inlet_p_bc) != float(outlet_p_bc),
+        )
+        return {"node_list": node_list, "pressure": pressure}
+
     # A node with no conductive path to any boundary node gives the reduced
     # Laplacian a zero row; np.linalg.solve then raises and the lstsq
     # fallback degrades the pressure of *every* node, not just the
@@ -267,12 +519,7 @@ def solve_flow_from_conductance_matrix(
     if float(inlet_p_bc) != float(outlet_p_bc) and not _conductively_connected(
         adjacency, inlet_idx, outlet_idx
     ):
-        raise ValueError(
-            "Inlet and outlet boundary nodes are not connected by "
-            "conductance-carrying edges; cannot solve for flow. After a "
-            "large-vessel cut or boundary reassignment, check that the inlet "
-            "and outlet land on the same conductive part of the network."
-        )
+        raise ValueError(_NOT_CONNECTED_MESSAGE)
     unknown_idx, stranded_conductive = reachable_unknown_node_indices(
         conductance, known_idx
     )
@@ -301,27 +548,76 @@ def solve_flow_from_conductance_matrix(
         p_k = pressure[known_idx]
         rhs = -l_uk @ p_k
         if np.any(np.sum(np.abs(l_uu), axis=1) == 0):
-            raise ValueError(
-                "Reduced Laplacian has a zero row; the boundary nodes do not "
-                "constrain every conductive node that the solver would solve for."
-            )
+            raise ValueError(_ZERO_ROW_MESSAGE)
         try:
             p_u = np.linalg.solve(l_uu, rhs)
         except np.linalg.LinAlgError as exc:
-            raise ValueError(
-                "Conductance network Laplacian is singular and cannot be solved. "
-                "Check that inlet and outlet boundary nodes lie on the same "
-                "connected, conductance-carrying part of the network and that "
-                "boundary pressures differ."
-            ) from exc
+            raise ValueError(_SINGULAR_MESSAGE) from exc
         if not np.all(np.isfinite(p_u)):
-            raise ValueError(
-                "Flow solve produced non-finite nodal pressures; the conductance "
-                "network is likely ill-conditioned or disconnected."
-            )
+            raise ValueError(_NON_FINITE_PRESSURE_MESSAGE)
         pressure[unknown_idx] = p_u
 
     return {"node_list": node_list, "pressure": pressure}
+
+
+def solve_reduced_laplacian_sparse(
+    laplacian: sp.spmatrix,
+    pressure: np.ndarray,
+    unknown_idx: np.ndarray,
+    known_idx: np.ndarray,
+) -> np.ndarray:
+    """The free nodes' pressures, given the boundary nodes' in *pressure*: the
+    reduced system ``L_uu p_u = -L_uk p_k`` by sparse LU, with the dense
+    solve's own errors for a zero row, a singular system or a non-finite
+    answer."""
+    laplacian = laplacian.tocsr()
+    l_rows = laplacian[unknown_idx]
+    l_uu = l_rows[:, unknown_idx]
+    rhs = -np.asarray(l_rows[:, known_idx] @ pressure[known_idx]).ravel()
+    if np.any(np.asarray(abs(l_uu).sum(axis=1)).ravel() == 0):
+        raise ValueError(_ZERO_ROW_MESSAGE)
+    try:
+        p_u = _sparse_factor(l_uu).solve(rhs)
+    except RuntimeError as exc:  # splu: "Factor is exactly singular"
+        raise ValueError(_SINGULAR_MESSAGE) from exc
+    if not np.all(np.isfinite(p_u)):
+        raise ValueError(_NON_FINITE_PRESSURE_MESSAGE)
+    return p_u
+
+
+def _solve_free_pressures_sparse(
+    conductance: sp.csr_matrix,
+    laplacian: sp.csr_matrix,
+    pressure: np.ndarray,
+    *,
+    known_idx: np.ndarray,
+    inlet_idx: np.ndarray,
+    outlet_idx: np.ndarray,
+    bc_idx_to_p: dict,
+    pressure_differs: bool,
+) -> None:
+    """:func:`solve_flow_from_conductance_matrix` from its boundary pressures
+    on, for a sparse matrix: the same connectivity policy, warnings and
+    errors, in the same order, then the reduced solve. Fills *pressure*."""
+    if pressure_differs and not _conductively_connected(conductance, inlet_idx, outlet_idx):
+        raise ValueError(_NOT_CONNECTED_MESSAGE)
+    unknown_idx, stranded_conductive = reachable_unknown_node_indices(conductance, known_idx)
+    if stranded_conductive:
+        logger.warning(
+            f"{stranded_conductive} node(s) carry conductances but have no "
+            "conductive path to any boundary node; their pressure stays 0 "
+            "and their edges carry zero flow."
+        )
+    if pressure_differs:
+        _warn_components_pinned_to_one_pressure(conductance, bc_idx_to_p)
+    logger.info(
+        f"[flow-solve] Sparse solve: n={conductance.shape[0]}, "
+        f"n_free={len(unknown_idx)}, stored conductances={conductance.nnz}."
+    )
+    if len(unknown_idx):
+        pressure[unknown_idx] = solve_reduced_laplacian_sparse(
+            laplacian, pressure, unknown_idx, known_idx
+        )
 
 
 def set_edge_flows(

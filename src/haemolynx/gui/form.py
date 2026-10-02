@@ -426,6 +426,14 @@ CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
         "sequential_bifurcations": "2. Chain of bifurcations (Secomb, generalised)",
         "split_junctions": "3. Split 4+ vessel junctions into bifurcations",
     },
+    "haemodynamics_solver": {
+        "dense": "Dense solver",
+        "sparse": "Sparse solver",
+    },
+    "equivalent_resistance_solver": {
+        "eigendecomposition": "Eigendecomposition solver",
+        "sparse": "Sparse solver",
+    },
 }
 
 

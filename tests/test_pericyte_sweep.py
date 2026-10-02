@@ -104,6 +104,7 @@ def _run_synthetic_sweep(
     *,
     min_dilation_percent: int,
     max_dilation_percent: int,
+    **extra_settings,
 ) -> dict:
     """Run a reduced sweep and return its results and output paths."""
     (
@@ -130,6 +131,7 @@ def _run_synthetic_sweep(
         "inlet_pressure_min_pa": 4500,
         "inlet_pressure_max_pa": 6000,
         "inlet_pressure_step_pa": 500,
+        **extra_settings,
     }
     sweep = run_pericyte_dilation_pressure_sweep(
         G,
@@ -403,6 +405,57 @@ def test_equal_boundary_pressures_carry_no_flow_even_with_the_ends_apart():
 
     assert solved["total_inlet_flow"] == 0.0
     assert solved["equivalent_resistance"] == np.inf
+
+
+def test_a_sparse_unit_solve_matches_the_dense_one():
+    import scipy.sparse as sp
+
+    from haemolynx.haemodynamics.pericyte_sweep import unit_pressure_solve
+
+    G = _disconnected_network()
+    G.add_edge(3, 4, conductance=0.5 * _SI_CONDUCTANCE)  # a second outlet beyond the first
+    boundaries = {"inlet_nodes": [0], "outlet_nodes": [3, 4]}
+    dense_matrix, node_list = build_conductance_matrix_from_graph(G)
+    sparse_matrix, _ = build_conductance_matrix_from_graph(G, solver="sparse")
+    assert sp.issparse(sparse_matrix)
+
+    dense = unit_pressure_solve(dense_matrix, node_list, **boundaries)
+    sparse = unit_pressure_solve(sparse_matrix, node_list, **boundaries)
+
+    np.testing.assert_allclose(sparse.pressure, dense.pressure, rtol=1e-12, atol=1e-15)
+    np.testing.assert_array_equal(sparse.reached, dense.reached)
+    assert sparse.inlet_flow == pytest.approx(dense.inlet_flow, rel=1e-12)
+    assert sparse.outlet_flow == pytest.approx(dense.outlet_flow, rel=1e-12)
+    assert sparse.connected is dense.connected is True
+
+
+def test_a_sweep_on_the_sparse_solver_gives_the_dense_curves(tmp_path: Path, monkeypatch):
+    import scipy.sparse as sp
+
+    import haemolynx.haemodynamics.pericyte_sweep as sweep_module
+
+    kinds = []
+    real = sweep_module.unit_pressure_solve
+
+    def recording(conductance, *args, **kwargs):
+        kinds.append(sp.issparse(conductance))
+        return real(conductance, *args, **kwargs)
+
+    monkeypatch.setattr(sweep_module, "unit_pressure_solve", recording)
+    dense = _run_synthetic_sweep(
+        tmp_path / "dense", min_dilation_percent=1, max_dilation_percent=2
+    )
+    assert kinds == [False, False]
+    kinds.clear()
+    sparse = _run_synthetic_sweep(
+        tmp_path / "sparse", min_dilation_percent=1, max_dilation_percent=2,
+        haemodynamics_solver="sparse",
+    )
+    assert kinds == [True, True]
+    assert len(sparse["results"]) == len(dense["results"]) == 8
+    for sparse_row, dense_row in zip(sparse["results"], dense["results"]):
+        for column in ("total_inlet_flow", "equivalent_resistance"):
+            assert sparse_row[column] == pytest.approx(dense_row[column], rel=1e-10)
 
 
 if __name__ == "__main__":

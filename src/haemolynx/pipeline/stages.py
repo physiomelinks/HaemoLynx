@@ -231,7 +231,14 @@ class Solution:
 
     pressure: np.ndarray | None = None
     node_list: list[int] = field(default_factory=list)
+    #: Two-point resistance (Pa.s/m^3) between `equivalent_resistance_nodes`
+    #: -- the first inlet and the first outlet -- with every other boundary
+    #: node left floating.
     equivalent_resistance: float | None = None
+    equivalent_resistance_nodes: tuple[Any, Any] | None = None
+    #: The whole network's resistance (Pa.s/m^3): the inlet-to-outlet pressure
+    #: drop over the total flow in through every inlet.
+    network_resistance: float | None = None
     statistics: dict[str, Any] = field(default_factory=dict)
     #: The network that was solved (same object ``solve`` wrote flows onto).
     graph: nx.MultiGraph | None = None
@@ -2142,6 +2149,7 @@ def _haemodynamics_apply_config(
         voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
         axis_order=settings["image_axis_order"],
         comparison_output_csv_path=None,
+        equivalent_resistance_solver=_equivalent_resistance_solver(settings),
         use_memmap=settings["use_memmap_loading"],
         memmap_directory=settings["memmap_directory"],
     )
@@ -2700,6 +2708,37 @@ def _distributes_haematocrit(settings: dict) -> bool:
     return settings.get("haematocrit_model") == "distributed_iterative"
 
 
+def _flow_solver(settings: Mapping[str, Any]) -> str:
+    """``haemodynamics_solver``, dense when a hand-built settings dict has none."""
+    return settings.get("haemodynamics_solver") or haemodynamics.FLOW_SOLVER_DENSE
+
+
+def _equivalent_resistance_solver(settings: Mapping[str, Any]) -> str:
+    """``equivalent_resistance_solver``, the eigendecomposition when unset."""
+    return (
+        settings.get("equivalent_resistance_solver")
+        or haemodynamics.EQUIVALENT_RESISTANCE_EIGENDECOMPOSITION
+    )
+
+
+def resistance_statistics(solution: Solution) -> dict[str, Any]:
+    """The solve's two resistances, as the statistics CSV's Haemodynamics
+    section: the two-point one between the first inlet and the first outlet,
+    and the whole network's (pressure drop over total inflow). Empty when the
+    solve produced neither."""
+    rows: dict[str, Any] = {}
+    equivalent = getattr(solution, "equivalent_resistance", None)
+    if equivalent is not None:
+        rows["Two-Point Equivalent Resistance (Pa.s/m^3)"] = float(equivalent)
+        nodes = getattr(solution, "equivalent_resistance_nodes", None)
+        if nodes is not None:
+            rows["Two-Point Resistance Nodes"] = f"{nodes[0]} -> {nodes[1]}"
+    network = getattr(solution, "network_resistance", None)
+    if network is not None:
+        rows["Network Resistance, Pressure Drop / Total Inflow (Pa.s/m^3)"] = float(network)
+    return {"Haemodynamics": rows} if rows else {}
+
+
 def _junction_rule(settings: dict) -> str:
     """``haematocrit_junction_rule``, for a caller whose settings predate it."""
     return settings.get("haematocrit_junction_rule") or JUNCTION_RULE_NO_SEPARATION
@@ -2727,6 +2766,7 @@ def solve(
         settings["run_haemodynamics"] and _distributes_haematocrit(settings)
     )
     hct_result: dict[str, Any] | None = None
+    flow_solver = _flow_solver(settings)
 
     # 6) Solve for flow (and, on the way, the conductance matrix effective
     # resistance below reads).
@@ -2763,21 +2803,14 @@ def solve(
                 max_iterations=int(settings["haematocrit_distribution_max_iterations"]),
                 tolerance=float(settings["haematocrit_distribution_tolerance"]),
                 junction_rule=_junction_rule(settings),
+                solver=flow_solver,
             )
             node_list = hct_result["node_list"]
             node_to_idx = hct_result["node_to_idx"]
-            # recompute_resistances() ran once more after the loop's own
-            # last conductance-matrix build (see iterate_flow_and_
-            # haematocrit's docstring), so the matrix itself is stale and
-            # must be rebuilt -- but node order never changes, so reuse
-            # node_list/node_to_idx/the array instead of paying for all
-            # three again.
-            conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(
-                G,
-                node_list=node_list,
-                node_to_idx=node_to_idx,
-                out=hct_result["conductance_matrix"],
-            )
+            # The loop ends with a flow solve from the resistances its last
+            # pass left (see iterate_flow_and_haematocrit), so its matrix and
+            # pressures match the graph: no rebuild.
+            conductance = hct_result["conductance_matrix"]
             solution.statistics["haematocrit_distribution"] = {
                 "converged": hct_result["converged"],
                 "iterations": hct_result["iterations"],
@@ -2795,9 +2828,14 @@ def solve(
                 hct_result["max_delta"],
             )
         else:
-            conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
+            conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(
+                G, solver=flow_solver
+            )
             node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
-        logger.info(f"Conductance matrix built with shape {conductance.shape} and node_list length {len(node_list)}.")
+        logger.info(
+            f"Conductance matrix built with shape {conductance.shape} ({flow_solver}) "
+            f"and node_list length {len(node_list)}."
+        )
 
     # 7) Compute effective resistance between two selected nodes, from
     # whichever conductance matrix the flow solve above finished with.
@@ -2811,16 +2849,30 @@ def solve(
         else:
             source_node, target_node = resistance_node_pair
             if source_node in node_to_idx and target_node in node_to_idx:
-                laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(conductance)
-                solution.equivalent_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
-                    laplacian,
-                    G,
-                    source_node,
-                    target_node,
-                )
+                method = _equivalent_resistance_solver(settings)
+                if method == haemodynamics.EQUIVALENT_RESISTANCE_SPARSE:
+                    solution.equivalent_resistance = (
+                        haemodynamics.calc_two_point_resistance_sparse(
+                            conductance,
+                            node_list,
+                            source_node,
+                            target_node,
+                            node_to_idx=node_to_idx,
+                        )
+                    )
+                else:
+                    dense = conductance.toarray() if hasattr(conductance, "toarray") else conductance
+                    laplacian = haemodynamics.calc_laplacian_from_conductance_matrix(dense)
+                    solution.equivalent_resistance = haemodynamics.calc_two_point_from_laplacian_matrix_nodeID(
+                        laplacian,
+                        G,
+                        source_node,
+                        target_node,
+                    )
+                solution.equivalent_resistance_nodes = (source_node, target_node)
                 logger.info(
-                    f"Effective resistance between nodes {source_node} and "
-                    f"{target_node}: {solution.equivalent_resistance}"
+                    f"Two-point resistance between nodes {source_node} and "
+                    f"{target_node} ({method}): {solution.equivalent_resistance}"
                 )
             else:
                 logger.warning(
@@ -2851,6 +2903,21 @@ def solve(
         solution.node_list = list(node_list)
     else:
         logger.info("Haemodynamics solve skipped (run_haemodynamics=False).")
+
+    if settings["run_haemodynamics"] and solution.pressure is not None:
+        solution.network_resistance = haemodynamics.network_resistance(
+            conductance,
+            node_list,
+            solution.pressure,
+            inlet_nodes=settings["inlet_nodes"],
+            inlet_p_bc=settings["inlet_p_bc"],
+            outlet_p_bc=settings["outlet_p_bc"],
+            node_to_idx=node_to_idx,
+        )
+        logger.info(
+            "Network resistance (pressure drop / total inflow): "
+            f"{solution.network_resistance}"
+        )
 
     solution.graph = G
     return solution
@@ -2982,18 +3049,24 @@ def _solve_network(
             max_iterations=int(settings["haematocrit_distribution_max_iterations"]),
             tolerance=float(settings["haematocrit_distribution_tolerance"]),
             junction_rule=_junction_rule(settings),
+            solver=_flow_solver(settings),
+            # The solve just below, with boundary flows, is that final solve.
+            final_solve=False,
         )
-        # iterate_flow_and_haematocrit's own pressure is solved from the pass
-        # before its last resistance recompute (see its docstring) -- a fresh
-        # solve on the now-converged resistances is what a perturbation's own
-        # equivalent-resistance comparison wants to be self-consistent with.
-        # Node order never changes across that loop, so reuse its node_list/
-        # node_to_idx/array instead of rebuilding all three from scratch.
+        # A fresh solve on the now-converged resistances is what a
+        # perturbation's own equivalent-resistance comparison wants to be
+        # self-consistent with. Node order never changes across that loop, so
+        # reuse its node_list/node_to_idx (and a dense run's array).
         conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(
             G,
             node_list=hct_result["node_list"],
             node_to_idx=hct_result["node_to_idx"],
-            out=hct_result["conductance_matrix"],
+            out=(
+                hct_result["conductance_matrix"]
+                if _flow_solver(settings) == haemodynamics.FLOW_SOLVER_DENSE
+                else None
+            ),
+            solver=_flow_solver(settings),
         )
         node_to_idx = hct_result["node_to_idx"]
         solved = solve_pressure_and_boundary_flow(
@@ -3020,7 +3093,9 @@ def _solve_network(
             "so it keeps the discharge_haematocrit already on the graph and "
             "solves flow once instead of re-equilibrating it."
         )
-    conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G)
+    conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(
+        G, solver=_flow_solver(settings)
+    )
     solved = solve_pressure_and_boundary_flow(
         conductance,
         list(node_list),
@@ -4116,6 +4191,8 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             **statistics_arguments(settings),
             **tissue_statistics_arguments(tissue),
         )
+
+        stats.update(resistance_statistics(solution))
 
         logger.info("=== Statistics ===")
         for key, value in stats.items():

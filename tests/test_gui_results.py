@@ -516,6 +516,25 @@ def test_the_equivalent_resistance_is_reported():
     assert "1.2500e+16" in group.note
 
 
+def test_both_resistances_are_reported_and_named():
+    group = built().stage_finished(
+        "solve",
+        SimpleNamespace(pressure=np.zeros(4), node_list=[0, 1, 2, 3],
+                        equivalent_resistance=1.25e16, network_resistance=7.5e15),
+    )
+    assert "Two-point equivalent resistance (first inlet to first outlet) 1.2500e+16" in group.note
+    assert "Network resistance (pressure drop / total inflow) 7.5000e+15" in group.note
+
+
+def test_a_solve_with_neither_resistance_just_says_solved():
+    group = built().stage_finished(
+        "solve",
+        SimpleNamespace(pressure=np.zeros(4), node_list=[0, 1, 2, 3],
+                        equivalent_resistance=None),
+    )
+    assert group.note == "Solved."
+
+
 # --- pericytes ---------------------------------------------------------------
 
 

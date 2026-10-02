@@ -268,7 +268,9 @@ STAGES: tuple[Stage, ...] = (
         settings=(
             "inlet_p_bc",
             "outlet_p_bc",
+            "haemodynamics_solver",
             "do_equiv_resistance_calculation",
+            "equivalent_resistance_solver",
             *_HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB,
         ),
         tab="7. Haemodynamics",

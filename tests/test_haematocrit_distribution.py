@@ -863,3 +863,102 @@ def test_iterate_flow_and_haematocrit_reports_the_iteration_count_honestly():
     )
     assert result["iterations"] == 1
     assert result["converged"] is False
+
+
+def _recompute_for(G, model: PoiseuilleModel):
+    """Every edge's resistance from its own discharge haematocrit."""
+    from haemolynx.haemodynamics.poiseuille import set_edge_resistance
+
+    def _recompute():
+        for _u, _v, _key, data in G.edges(keys=True, data=True):
+            resistance = model.resistance_of_uniform_segment(
+                data["length"], data["diameter_um"],
+                haematocrit=data.get("discharge_haematocrit", 0.45),
+            )
+            set_edge_resistance(data, resistance)
+
+    return _recompute
+
+
+def _iterate(G, model, **kwargs):
+    arguments = dict(
+        recompute_resistances=_recompute_for(G, model),
+        inlet_haematocrit=0.45,
+        inlet_p_bc=1000.0,
+        outlet_p_bc=0.0,
+        inlet_nodes=[0],
+        outlet_nodes=[2, 3],
+        max_iterations=2,
+        tolerance=1e-9,
+    )
+    arguments.update(kwargs)
+    return iterate_flow_and_haematocrit(G, **arguments)
+
+
+@pytest.mark.parametrize("solver", ["dense", "sparse"])
+def test_the_returned_flows_obey_the_resistances_left_on_the_graph(solver):
+    """Regression: the loop recomputed resistances after its last solve and
+    returned that solve's flows, so a vessel's flow was not its pressure drop
+    over its reported resistance -- by a whole haematocrit update when the
+    loop stopped at its cap unconverged, as two passes at this tolerance do.
+    A final solve from the last resistances closes the gap."""
+    G = _bifurcating_network()
+    model = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", haematocrit=0.45)
+    _seed_uniform_resistances(G, model)
+
+    result = _iterate(G, model, solver=solver)
+
+    assert result["converged"] is False
+    for u, v, key, data in G.edges(keys=True, data=True):
+        assert data["flow_signed"] == pytest.approx(
+            data["conductance"] * data["pressure_drop"], rel=1e-12
+        ), (u, v, key)
+    from haemolynx.haemodynamics.resistance import flow_conservation_residuals
+
+    residual = flow_conservation_residuals(G, boundary_nodes=[0, 2, 3])[1]
+    assert abs(residual) < 1e-12 * G.edges[0, 1, 0]["flow_abs"]
+    index = {node: i for i, node in enumerate(result["node_list"])}
+    for node in G.nodes:
+        assert G.nodes[node]["pressure"] == result["pressure"][index[node]]
+
+
+@pytest.mark.parametrize("final_solve, extra", [(True, 1), (False, 0)])
+def test_the_final_solve_is_one_more_solve_and_can_be_left_to_the_caller(
+    monkeypatch, final_solve, extra
+):
+    import haemolynx.haemodynamics.haematocrit_distribution as module
+
+    calls = []
+    real = module.solve_flow_from_conductance_matrix
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(module, "solve_flow_from_conductance_matrix", counting)
+    G = _bifurcating_network()
+    model = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", haematocrit=0.45)
+    _seed_uniform_resistances(G, model)
+
+    result = _iterate(G, model, max_iterations=3, final_solve=final_solve)
+
+    assert result["iterations"] == 3
+    assert len(calls) == 3 + extra
+
+
+def test_the_sparse_solver_reaches_the_dense_fixed_point():
+    model = PoiseuilleModel(40.0, 100.0, viscosity_law="pries", haematocrit=0.45)
+    results = {}
+    for solver in ("dense", "sparse"):
+        G = _bifurcating_network()
+        _seed_uniform_resistances(G, model)
+        result = _iterate(G, model, solver=solver, max_iterations=30, tolerance=1e-6)
+        assert result["converged"] is True
+        results[solver] = (G, result)
+    (dense_G, dense), (sparse_G, sparse) = results["dense"], results["sparse"]
+    assert sparse["iterations"] == dense["iterations"]
+    np.testing.assert_allclose(sparse["pressure"], dense["pressure"], rtol=1e-10)
+    for u, v, key, data in dense_G.edges(keys=True, data=True):
+        assert sparse_G.edges[u, v, key]["discharge_haematocrit"] == pytest.approx(
+            data["discharge_haematocrit"], rel=1e-9
+        )

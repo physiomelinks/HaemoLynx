@@ -586,6 +586,71 @@ def test_wider_arterioles_lower_the_networks_resistance(tmp_path):
     assert narrowed.summary["equivalent_resistance"] > baseline
 
 
+def _record_matrix_kinds(monkeypatch) -> list[bool]:
+    """Whether each perturbation re-solve was handed a sparse matrix."""
+    import scipy.sparse as sp
+
+    import haemolynx.pipeline.stages as stages_module
+
+    kinds: list[bool] = []
+    real = stages_module.solve_pressure_and_boundary_flow
+
+    def recording(conductance, *args, **kwargs):
+        kinds.append(sp.issparse(conductance))
+        return real(conductance, *args, **kwargs)
+
+    monkeypatch.setattr(stages_module, "solve_pressure_and_boundary_flow", recording)
+    return kinds
+
+
+def test_perturbations_re_solve_with_the_runs_haemodynamics_solver(tmp_path, monkeypatch):
+    """haemodynamics_solver reaches every perturbation's re-solve, and the
+    sparse one reports the dense one's resistances to rounding."""
+    kinds = _record_matrix_kinds(monkeypatch)
+    dense = _run(tmp_path / "dense", [ARTERIOLE_DILATION, ARTERIOLE_CONSTRICTION])
+    assert kinds and not any(kinds)
+    kinds.clear()
+    sparse = _run(
+        tmp_path / "sparse", [ARTERIOLE_DILATION, ARTERIOLE_CONSTRICTION],
+        haemodynamics_solver="sparse",
+    )
+    assert kinds and all(kinds)
+
+    assert sparse.baseline["equivalent_resistance"] == pytest.approx(
+        dense.baseline["equivalent_resistance"], rel=1e-10
+    )
+    for sparse_result, dense_result in zip(sparse.results, dense.results):
+        assert sparse_result.summary["equivalent_resistance"] == pytest.approx(
+            dense_result.summary["equivalent_resistance"], rel=1e-10
+        )
+
+
+def test_a_perturbation_re_equilibrates_haematocrit_on_the_sparse_solver_too(
+    tmp_path, monkeypatch
+):
+    entry = {
+        "name": "art_dilate_50",
+        "type": "arteriole_diameter_change",
+        "overrides": {"arteriole_diameter_change_percent": 50},
+    }
+    runs = {}
+    for solver in ("dense", "sparse"):
+        settings, model, boundaries = _hct_baseline(
+            tmp_path / solver, [entry], haemodynamics_solver=solver
+        )
+        runs[solver] = run_perturbations(settings, model, boundaries, SCHEMA)
+    dense, sparse = runs["dense"].results[0], runs["sparse"].results[0]
+    assert sparse.ok and dense.ok
+    assert sparse.summary["haematocrit_distribution"]["converged"] is True
+    assert sparse.summary["equivalent_resistance"] == pytest.approx(
+        dense.summary["equivalent_resistance"], rel=1e-9
+    )
+    for u, v, key, data in dense.graph.edges(keys=True, data=True):
+        assert sparse.graph.edges[u, v, key]["discharge_haematocrit"] == pytest.approx(
+            data["discharge_haematocrit"], rel=1e-9
+        )
+
+
 def test_combined_arteriole_and_pericyte_applies_both_mechanisms(tmp_path):
     """Whole-branch arteriole scale and focal pericyte sites both land.
 

@@ -25,6 +25,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import networkx as nx
 import numpy as np
+import scipy.sparse as sp
 
 from .apply import apply_final_resistance_overrides
 from .constriction_strategy import (
@@ -34,10 +35,13 @@ from .constriction_strategy import (
 from .haematocrit_distribution import JUNCTION_RULE_NO_SEPARATION, iterate_flow_and_haematocrit
 from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
 from .resistance import (
+    FLOW_SOLVER_DENSE,
+    boundary_flow,
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
     reachable_through_conductances,
     reachable_unknown_node_indices,
+    solve_reduced_laplacian_sparse,
 )
 from .sweep_flows import (
     PericyteSites,
@@ -145,7 +149,10 @@ def unit_pressure_solve(
     outlet_nodes: list[int],
 ) -> UnitPressureSolve:
     """Solve *conductance* once at a unit pressure drop -- see
-    :class:`UnitPressureSolve` for how that answers every other drop."""
+    :class:`UnitPressureSolve` for how that answers every other drop.
+
+    A ``scipy.sparse`` *conductance* (``haemodynamics_solver="sparse"``) is
+    solved by sparse LU, to the same pressures to rounding."""
     if not inlet_nodes:
         raise ValueError("inlet_nodes cannot be empty for flow/resistance sweep.")
     if not outlet_nodes:
@@ -200,7 +207,11 @@ def unit_pressure_solve(
             "conductive path to any boundary node; their pressure stays 0 "
             "and their edges carry zero flow."
         )
-    if unknown_idx.size:
+    if unknown_idx.size and sp.issparse(laplacian):
+        pressure[unknown_idx] = solve_reduced_laplacian_sparse(
+            laplacian, pressure, unknown_idx, known_idx
+        )
+    elif unknown_idx.size:
         l_uu = laplacian[np.ix_(unknown_idx, unknown_idx)]
         l_uk = laplacian[np.ix_(unknown_idx, known_idx)]
         rhs = -l_uk @ pressure[known_idx]
@@ -215,6 +226,8 @@ def unit_pressure_solve(
             ) from exc
 
     def _boundary_flow(nodes: Iterable[int]) -> float:
+        if sp.issparse(conductance):
+            return boundary_flow(conductance, pressure, [node_to_idx[n] for n in nodes])
         total = 0.0
         for node_id in nodes:
             i = node_to_idx[node_id]
@@ -251,11 +264,14 @@ def solve_sweep_point(
     (:func:`~haemolynx.haemodynamics.haematocrit_distribution.iterate_flow_and_haematocrit`),
     at the run's own boundary pressures: the haematocrit follows how flow
     divides at each junction, which scaling the pressure drop leaves alone,
-    so the one fixed point serves every inlet pressure. Then one unit solve.
+    so the one fixed point serves every inlet pressure. Then one unit solve,
+    from the resistances that fixed point left, with the run's
+    ``haemodynamics_solver``.
 
     Returns the unit solve, its node order, and the haematocrit iteration's
     report (``None`` without one).
     """
+    solver = settings.get("haemodynamics_solver") or FLOW_SOLVER_DENSE
     iterated = None
     if settings.get("haematocrit_model") == "distributed_iterative":
         outlet_p = float(settings["outlet_p_bc"])
@@ -273,8 +289,11 @@ def solve_sweep_point(
             max_iterations=int(settings.get("haematocrit_distribution_max_iterations", 20)),
             tolerance=float(settings.get("haematocrit_distribution_tolerance", 0.01)),
             junction_rule=settings.get("haematocrit_junction_rule") or JUNCTION_RULE_NO_SEPARATION,
+            solver=solver,
+            # The unit solve just below is that final solve.
+            final_solve=False,
         )
-    conductance, node_list = build_conductance_matrix_from_graph(G)
+    conductance, node_list = build_conductance_matrix_from_graph(G, solver=solver)
     unit = unit_pressure_solve(
         conductance, list(node_list), inlet_nodes=inlet_nodes, outlet_nodes=outlet_nodes
     )

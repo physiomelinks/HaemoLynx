@@ -2450,6 +2450,42 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="haemodynamics_solver",
+            kind="choice",
+            default="dense",
+            choices=["dense", "sparse"],
+            help=(
+                "How every flow solve holds and solves the network -- the "
+                "baseline, each haematocrit pass, perturbations and sweeps. "
+                "dense is an N x N table of conductances solved densely: 8 N^2 "
+                "bytes (3.2 GB at 20,000 nodes, several copies alive at once) "
+                "and time cubic in N. sparse stores only the vessels and "
+                "factorises the same equations: the same pressures and flows "
+                "to rounding, in about a second at 50,000 nodes"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("run_haemodynamics",),
+            advanced=True,
+        ),
+        Setting(
+            name="equivalent_resistance_solver",
+            kind="choice",
+            default="eigendecomposition",
+            choices=["eigendecomposition", "sparse"],
+            help=(
+                "How the two-point equivalent resistance (first inlet to first "
+                "outlet) is found. eigendecomposition computes every eigenvalue and eigenvector "
+                "of the network's Laplacian: minutes at 5,000 nodes, hours at "
+                "20,000. sparse is one sparse solve, a unit current in at one "
+                "node and the other grounded: the same resistance to rounding, "
+                "and infinite rather than a finite number when no conductive "
+                "path joins the two nodes"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_equiv_resistance_calculation",),
+            advanced=True,
+        ),
+        Setting(
             name="vtk_output_prefix",
             kind="path",
             default=f"{_OUTPUTS}/resistance_network",

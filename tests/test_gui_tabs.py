@@ -390,6 +390,8 @@ def test_a_tab_carries_the_rows_for_its_settings():
         "inlet_p_bc",
         "outlet_p_bc",
         "do_equiv_resistance_calculation",
+        "haemodynamics_solver",
+        "equivalent_resistance_solver",
         "haematocrit_model",
         "haematocrit_junction_rule",
         "haematocrit_split_connector_length_um",

@@ -93,7 +93,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 426 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 428 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -430,7 +430,20 @@ are only caught locally.
   junction: `no_separation` (default, NetFlow's `dishem.cpp`), `sequential_bifurcations`
   (`dishem_generalized.cpp`, outflows taken largest flow first) or `split_junctions` (the network
   is split, see `apply_network_handling` above). The default, `"fixed"`, uses one `haematocrit`
-  everywhere.
+  everywhere. The loop ends with one more flow solve from the resistances its last pass left
+  (`final_solve=True`), so a vessel's flow is its pressure drop over its reported resistance even
+  when it stops unconverged; a caller that re-solves itself passes `final_solve=False`.
+- **`haemodynamics/resistance.py`** — the flow solve and the two-point resistance, each with a
+  setting on the Haemodynamics tab's Advanced button. `haemodynamics_solver` (`dense` default, as
+  before, or `sparse`) is how *every* flow solve holds the network — baseline, haematocrit passes,
+  perturbations, sweeps (`build_conductance_matrix_from_graph(solver=)`; the solves take either
+  matrix): dense is N × N (3.2 GB at 20,000 nodes), sparse stores the vessels and factorises by
+  sparse LU, same pressures to rounding. `equivalent_resistance_solver` (`eigendecomposition`
+  default, as before, or `sparse`: `calc_two_point_resistance_sparse`, one solve, `inf` between
+  unconnected nodes) finds the two-point resistance between the first inlet and the first outlet.
+  The solve also reports `Solution.network_resistance`, pressure drop over total inflow through
+  every inlet (`network_resistance`); both go in the statistics CSV's Haemodynamics section.
+  Perturbation summaries' `equivalent_resistance` is that network resistance, not the two-point one.
 - **`haemodynamics/perturbations.py`** — a perturbation is a named, typed settings override
   (`PerturbationSpec`) that `pipeline/stages.py`'s `run_perturbations` re-solves a copy of the
   solved network for, writing into `{name}_{type}` under `perturbation_output_dir`. Thirteen types

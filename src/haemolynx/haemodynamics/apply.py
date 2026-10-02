@@ -133,6 +133,9 @@ class HaemodynamicsApplyConfig:
     # Computed per run, not configured.
     comparison_output_csv_path: Path | None = None
     resistance_node_pair: tuple[int, int] | None = None
+    #: How the pericyte comparison finds each arm's two-point resistance:
+    #: ``"eigendecomposition"`` or ``"sparse"`` (``equivalent_resistance_solver``).
+    equivalent_resistance_solver: str = "eigendecomposition"
     #: Generator for the probabilistic pericyte cohort. Wins over the seed in
     #: ``diameters``, for a caller driving several runs off one stream.
     rng: np.random.Generator | None = None
@@ -833,6 +836,7 @@ def _run_pericyte_comparison(
         diameter_basis=config.diameter("diameter_basis"),
         axis_order=config.axis_order,
         rng=rng,
+        equivalent_resistance_solver=config.equivalent_resistance_solver,
     )
 
     active_pericyte_indices: list[int] | None = None

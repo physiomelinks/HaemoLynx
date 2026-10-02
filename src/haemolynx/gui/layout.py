@@ -209,7 +209,12 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
         BoxSpec(
             "haemodynamics",
             None,
-            names=("run_haemodynamics", "do_equiv_resistance_calculation"),
+            names=(
+                "run_haemodynamics",
+                "haemodynamics_solver",
+                "do_equiv_resistance_calculation",
+                "equivalent_resistance_solver",
+            ),
         ),
         BoxSpec("boundary_pressures", "Boundary pressures", names=("inlet_p_bc", "outlet_p_bc")),
         BoxSpec(

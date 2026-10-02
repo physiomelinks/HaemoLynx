@@ -2123,9 +2123,19 @@ class ResultLayers:
                     )
                 )
         equivalent = getattr(output, "equivalent_resistance", None)
-        note = "Solved."
+        network = getattr(output, "network_resistance", None)
+        parts = []
         if equivalent is not None:
-            note = f"Equivalent resistance {float(equivalent):.4e} Pa.s/m^3."
+            parts.append(
+                f"Two-point equivalent resistance (first inlet to first outlet) "
+                f"{float(equivalent):.4e} Pa.s/m^3."
+            )
+        if network is not None:
+            parts.append(
+                f"Network resistance (pressure drop / total inflow) "
+                f"{float(network):.4e} Pa.s/m^3."
+            )
+        note = " ".join(parts) if parts else "Solved."
         return StageLayers(
             stage="solve", title=_title_for("solve"), layers=tuple(layers), note=note
         )

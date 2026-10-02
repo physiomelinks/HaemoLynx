@@ -51,6 +51,7 @@ import networkx as nx
 import numpy as np
 
 from .resistance import (
+    FLOW_SOLVER_DENSE,
     build_conductance_matrix_from_graph,
     set_edge_flows,
     solve_flow_from_conductance_matrix,
@@ -458,6 +459,8 @@ def iterate_flow_and_haematocrit(
     max_iterations: int,
     tolerance: float,
     junction_rule: str = JUNCTION_RULE_NO_SEPARATION,
+    solver: str = FLOW_SOLVER_DENSE,
+    final_solve: bool = True,
 ) -> dict[str, Any]:
     """Solve flow and distribute haematocrit together, to a fixed point.
 
@@ -482,11 +485,18 @@ def iterate_flow_and_haematocrit(
     *recompute_resistances* runs on every pass, including the one that
     converges: ``resistance``/``conductance`` on *G* always end up derived
     from the ``discharge_haematocrit`` this function is reporting, not from
-    one pass behind it. The unavoidable residual is on the other side of
-    that recompute instead -- the *flow* this returns was solved from the
-    previous pass's resistance, so it is very slightly stale relative to
-    the resistance now on the graph, bounded by the same *tolerance* rather
-    than a full haematocrit update.
+    one pass behind it. With *final_solve* (the default) flow is then solved
+    once more from those resistances, so every vessel's pressure drop is its
+    flow times the resistance on the graph -- without it, the flows came from
+    the previous pass's resistances: within *tolerance* of them when the loop
+    converged, a whole update out when it stopped at *max_iterations*, the
+    case that matters. The haematocrit stays the one the last pass
+    distributed. A caller that solves again itself (a perturbation, a sweep's
+    unit solve) passes ``final_solve=False``.
+
+    *solver* is ``haemodynamics_solver``: ``"sparse"`` builds and solves a
+    sparse matrix on every pass, ``"dense"`` (the default) reuses one N x N
+    array.
 
     *G* must already carry an initial resistance/conductance on every edge
     (the uniform-haematocrit baseline) before the first call -- this
@@ -496,8 +506,10 @@ def iterate_flow_and_haematocrit(
 
     Returns a dict with ``pressure``, ``node_list`` (matching
     :func:`~haemolynx.haemodynamics.resistance.solve_flow_from_conductance_matrix`'s
-    own return shape), plus ``converged`` (bool), ``iterations`` (how many
-    solves ran), ``max_delta`` (largest unrelaxed per-edge haematocrit change
+    own return shape), ``node_to_idx``, ``conductance_matrix`` (the matrix the
+    returned pressure was solved from -- current with *G* after a final
+    solve), plus ``converged`` (bool), ``iterations`` (how many passes ran,
+    not counting the final solve), ``max_delta`` (largest unrelaxed per-edge haematocrit change
     on the final pass), and the last :func:`distribute_discharge_haematocrit`
     diagnostic's ``dead_edges``/``compound_junctions``/
     ``non_bifurcation_junctions``/``unresolved_edges``.
@@ -519,12 +531,19 @@ def iterate_flow_and_haematocrit(
     # node_to_idx rebuild on every outer iteration.
     node_list = list(G.nodes())
     node_to_idx = {node_id: idx for idx, node_id in enumerate(node_list)}
-    conductance_matrix = np.zeros((len(node_list), len(node_list)), dtype=float)
+    dense = solver == FLOW_SOLVER_DENSE
+    conductance_matrix = (
+        np.zeros((len(node_list), len(node_list)), dtype=float) if dense else None
+    )
+
+    def build_matrix():
+        return build_conductance_matrix_from_graph(
+            G, node_list=node_list, node_to_idx=node_to_idx, out=conductance_matrix,
+            solver=solver,
+        )
 
     for iteration in range(1, max_iterations + 1):
-        conductance, node_list = build_conductance_matrix_from_graph(
-            G, node_list=node_list, node_to_idx=node_to_idx, out=conductance_matrix,
-        )
+        conductance, node_list = build_matrix()
         flow = solve_flow_from_conductance_matrix(
             conductance,
             node_list,
@@ -580,6 +599,19 @@ def iterate_flow_and_haematocrit(
             max_iterations, max_delta, tolerance,
         )
 
+    if final_solve:
+        conductance, node_list = build_matrix()
+        flow = solve_flow_from_conductance_matrix(
+            conductance,
+            node_list,
+            inlet_p_bc=inlet_p_bc,
+            outlet_p_bc=outlet_p_bc,
+            inlet_nodes=inlet_nodes,
+            outlet_nodes=outlet_nodes,
+            node_to_idx=node_to_idx,
+        )
+        set_edge_flows(G, node_list, flow["pressure"], node_to_idx=node_to_idx)
+
     return {
         "pressure": flow["pressure"],
         "node_list": node_list,
@@ -590,7 +622,7 @@ def iterate_flow_and_haematocrit(
         # instead of paying the node_to_idx rebuild and the (n, n)
         # allocation a second time.
         "node_to_idx": node_to_idx,
-        "conductance_matrix": conductance_matrix,
+        "conductance_matrix": conductance,
         "converged": converged,
         "iterations": iteration,
         "max_delta": 0.0 if max_delta == float("inf") else max_delta,

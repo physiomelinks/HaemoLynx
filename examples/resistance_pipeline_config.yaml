@@ -408,6 +408,10 @@ pipeline_stages:
   run_haemodynamics: true
   # Compute the two-point equivalent resistance between the chosen node pair  [needs run_haemodynamics]
   do_equiv_resistance_calculation: true
+  # How every flow solve holds and solves the network -- the baseline, each haematocrit pass, perturbations and sweeps. dense is an N x N table of conductances solved densely: 8 N^2 bytes (3.2 GB at 20,000 nodes, several copies alive at once) and time cubic in N. sparse stores only the vessels and factorises the same equations: the same pressures and flows to rounding, in about a second at 50,000 nodes  [one of: dense, sparse; needs run_haemodynamics]
+  haemodynamics_solver: dense
+  # How the two-point equivalent resistance (first inlet to first outlet) is found. eigendecomposition computes every eigenvalue and eigenvector of the network's Laplacian: minutes at 5,000 nodes, hours at 20,000. sparse is one sparse solve, a unit current in at one node and the other grounded: the same resistance to rounding, and infinite rather than a finite number when no conductive path joins the two nodes  [one of: eigendecomposition, sparse; needs do_equiv_resistance_calculation]
+  equivalent_resistance_solver: eigendecomposition
   # Prefix every VTK artifact and cached stage file with this output path
   vtk_output_prefix: examples/outputs/resistance_network
   # Close gaps in the mask with a structuring element of this radius before skeletonizing, in voxels of the finest axis: a physical radius of this many times the smallest voxel size, so it reaches fewer voxels along a coarser z  [voxels; range 0..; needs do_skeletonize]
