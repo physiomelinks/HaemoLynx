@@ -248,7 +248,6 @@ def calculate_edge_length(node1: int, node2: int, edge_data: dict, voxel_size: T
     
 
 
-# For merge_edges_with_topology_improvement
 def is_path_curved(voxels: List, ratio_threshold: float = 1.15) -> bool:
     """True if path length / straight-line distance > threshold."""
     if len(voxels) < 3:
@@ -295,22 +294,6 @@ def orient_path_from_startpoint(voxels, target_pos):
         return list(voxels)  # Already starts from target
     else:
         return voxels[::-1]  # Reverse to start from target
-
-def improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug=False, voxel_size=(1.0, 1.0, 1.0)):
-    """
-    Improve a straight edge by tracing through skeleton topology.
-    Returns improved voxel path (physical coords) or None if not possible.
-    """
-    if skeleton_data is None:
-        return None
-    
-    traced_path = trace_skeleton_path(skeleton_data, start_pos, end_pos, debug, voxel_size=voxel_size)
-    
-    if traced_path and len(traced_path) >= 2:
-        if is_path_curved(traced_path) or len(traced_path) > 3:
-            return traced_path
-    
-    return None
 
 def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_size=(1.0, 1.0, 1.0)):
     """
@@ -591,12 +574,6 @@ def voxel_path_overlap_ratio(path_a: List, path_b: List) -> float:
         return 0.0
     overlap = len(set_a.intersection(set_b))
     return overlap / max(len(set_a), len(set_b))
-
-def improve_straight_path_with_skeleton(start_pos, end_pos, skeleton_data, debug=False, voxel_size=(1.0, 1.0, 1.0)):
-    """
-    Improve an entire straight path between two endpoints using skeleton.
-    """
-    return improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug, voxel_size=voxel_size)
 
 
 def points_inside_mask(

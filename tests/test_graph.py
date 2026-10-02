@@ -13,7 +13,6 @@ from haemolynx.graph import (
     trivial_remove_all_degree2_nodes,
     create_trivial_merged_edge,
     smart_multigraph_degree2_removal,
-    merge_edges_with_topology_improvement,
     prune_vascular_stubs,
     assign_branch_orders,
     select_boundary_nodes_by_method,
@@ -59,17 +58,6 @@ def test_create_trivial_merged_edge():
     assert "weight" not in merged
     assert merged["length"] == 2
     assert len(merged["voxels"]) >= 3
-
-
-def test_merge_edges_with_topology_improvement():
-    v1 = [(0, 0, 0), (1, 0, 0)]
-    v2 = [(1, 0, 0), (2, 0, 0)]
-    skel = np.zeros((5, 5, 5))
-    skel[1, 0, 0] = 1
-    out = merge_edges_with_topology_improvement(
-        v1, v2, np.array([0, 0, 0]), np.array([1, 0, 0]), np.array([2, 0, 0]), skel
-    )
-    assert len(out) >= 2
 
 
 def _degree2_count(G):
@@ -288,6 +276,61 @@ def test_smart_multigraph_degree2_removal(simple_graph):
     assert _degree2_count(G2) == 0
     assert G2.number_of_nodes() < before_nodes
     assert _total_edge_length(G2) == pytest.approx(before_length)
+
+
+def _two_spurs_bridged_at_their_tips():
+    """A vessel A-J-X-K-B (with a side branch X-C) and two spurs, J-N (bent)
+    and K-M (straight), whose tips a gap bridge N-M joins: the shape the
+    build step's terminal reconnection leaves. N and M are degree 2. The
+    skeleton has no voxels across the gap, so the only skeleton route from N
+    to M runs back down J-N, along the vessel and up K-M."""
+    z = 4
+    skeleton = np.zeros((8, 20, 26), dtype=bool)
+    paths = {
+        ("A", "J"): [(z, 8, x) for x in range(0, 7)],
+        ("J", "X"): [(z, 8, x) for x in range(6, 13)],
+        ("X", "K"): [(z, 8, x) for x in range(12, 19)],
+        ("K", "B"): [(z, 8, x) for x in range(18, 25)],
+        ("X", "C"): [(z, y, 12) for y in range(8, 1, -1)],
+        ("J", "N"): [(z, 8, 6), (z, 9, 7), (z, 10, 8), (z, 11, 9), (z, 12, 9),
+                     (z, 13, 8), (z, 14, 7), (z, 15, 6), (z, 16, 6)],
+        ("K", "M"): [(z, y, 18) for y in range(8, 17)],
+    }
+    G = nx.MultiGraph(voxel_size=(1.0, 1.0, 1.0))
+    for name in ("A", "J", "X", "K", "B", "C", "N", "M"):
+        end = next(p[0] if a == name else p[-1] for (a, b), p in paths.items() if name in (a, b))
+        G.add_node(name, pos=np.array(end, dtype=float))
+    for (a, b), path in paths.items():
+        skeleton[tuple(np.array(path).T)] = True
+        voxels = [tuple(float(c) for c in p) for p in path]
+        G.add_edge(a, b, voxels=voxels, length=calculate_path_length(voxels))
+    bridge = [tuple(G.nodes["N"]["pos"]), tuple(G.nodes["M"]["pos"])]
+    G.add_edge("N", "M", voxels=bridge, length=calculate_path_length(bridge), reconnected=True)
+    return G, skeleton
+
+
+def test_degree2_merge_joins_a_spur_and_a_gap_bridge_without_retracing():
+    """Regression: merging a degree-2 node re-traced a straight leg through the
+    skeleton by A*. A gap bridge has no skeleton across its gap, so the trace
+    from spur tip N to M went back down the spur it had just come up and along
+    the vessel -- an edge that ran out to N and back over the same voxels,
+    duplicating the vessel's own, and here measured 61% too long. On an
+    E14.5 stack, 209 of 3772 edges ran out and back like this.
+
+    A merged edge is its two legs, each run once."""
+    G, skeleton = _two_spurs_bridged_at_their_tips()
+    lengths = {(a, b): d["length"] for a, b, d in G.edges(data=True)}
+    loop_length = lengths[("J", "N")] + lengths[("N", "M")] + lengths[("K", "M")]
+
+    merged = smart_multigraph_degree2_removal(G.copy(), skeleton_data=skeleton, debug=False)
+
+    assert not merged.has_node("N") and not merged.has_node("M")
+    for u, v, data in merged.edges(data=True):
+        points = [tuple(np.round(p, 6)) for p in data["voxels"]]
+        assert len(points) == len(set(points)), f"edge {u}-{v} passes a point twice"
+    (loop,) = [d for u, v, d in merged.edges(data=True) if {u, v} == {"J", "K"}]
+    assert loop["length"] == pytest.approx(loop_length)
+    assert _total_edge_length(merged) == pytest.approx(_total_edge_length(G))
 
 
 def test_degree2_diagnostics(simple_graph):
