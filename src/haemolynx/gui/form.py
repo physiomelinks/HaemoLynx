@@ -434,6 +434,10 @@ CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
         "eigendecomposition": "Eigendecomposition solver",
         "sparse": "Sparse solver",
     },
+    "boundary_handling": {
+        "leave_unsolved": "Leave unsolved",
+        "remove_disconnected": "Remove disconnected branches/trees",
+    },
 }
 
 

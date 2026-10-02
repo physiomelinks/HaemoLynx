@@ -22,6 +22,14 @@ from haemolynx.visualization.flow_direction import (
 )
 
 
+def _colormap_name(layer) -> str | None:
+    """The map on *layer* as the panel names it: the panel colours through a
+    grey-NaN copy of each map (see ``_widget._grey_nan_colormap``)."""
+    from haemolynx.gui._widget import _colormap_name as name_of
+
+    return name_of(layer)
+
+
 def _two_node_edge(*, flow_signed: float, voxels=None) -> nx.MultiGraph:
     """One edge along +z from u=0 at origin to v=1 at z=10."""
     graph = nx.MultiGraph()
@@ -609,7 +617,7 @@ def test_flow_dir_rgb_combo_switch_to_flow_abs_uses_colormap(make_napari_viewer)
     controls._haemolynx_feature.native.setCurrentText("flow_abs")
     assert _active_column(layer) == "flow_abs"
     assert layer.edge_color_mode == "colormap"
-    assert layer.edge_colormap.name == "viridis"
+    assert _colormap_name(layer) == "viridis"
 
 
 # --- colour-map dropdown on layer controls ----------------------------------
@@ -655,11 +663,11 @@ def test_column_defaults_use_the_real_colormap_property(make_napari_viewer):
     assert not hasattr(type(layer), "edge_color_colormap")
 
     _colour_layer(layer, "flow_dir_z", "continuous")
-    assert layer.edge_colormap.name == "coolwarm"
+    assert _colormap_name(layer) == "coolwarm"
     _colour_layer(layer, "flow_heading_deg", "continuous")
-    assert layer.edge_colormap.name == "hsv"
+    assert _colormap_name(layer) == "hsv"
     _colour_layer(layer, "flow_abs", "continuous")
-    assert layer.edge_colormap.name == "viridis"
+    assert _colormap_name(layer) == "viridis"
 
 
 def _colormap_combo(viewer, layer):
@@ -719,11 +727,11 @@ def test_flow_direction_colormap_combo_applies_a_selected_map(make_napari_viewer
     assert chooser.shown is True
     assert chooser.native.isEnabled()
     assert chooser.native.currentText() == "coolwarm"
-    assert layer.edge_colormap.name == "coolwarm"
+    assert _colormap_name(layer) == "coolwarm"
 
     before = np.array(layer.edge_color, copy=True)
     chooser.native.setCurrentText("plasma")
-    assert layer.edge_colormap.name == "plasma"
+    assert _colormap_name(layer) == "plasma"
     after = np.asarray(layer.edge_color)
     assert not np.allclose(before, after)
     assert layer.edge_contrast_limits == pytest.approx((-1.0, 1.0))
@@ -747,10 +755,10 @@ def test_colour_by_change_resets_colormap_to_the_column_default(make_napari_view
     controls = _layer_controls(viewer, layer)
     controls._haemolynx_feature.native.setCurrentText("flow_abs")
     controls._haemolynx_colormap.native.setCurrentText("plasma")
-    assert layer.edge_colormap.name == "plasma"
+    assert _colormap_name(layer) == "plasma"
 
     controls._haemolynx_feature.native.setCurrentText("flow_heading_deg")
-    assert layer.edge_colormap.name == "hsv"
+    assert _colormap_name(layer) == "hsv"
     assert controls._haemolynx_colormap.native.currentText() == "hsv"
     assert layer.edge_contrast_limits == pytest.approx((0.0, 360.0))
 

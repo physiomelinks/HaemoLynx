@@ -185,6 +185,15 @@ class Setting:
         whenever the second use is what set the value. `requires` itself is
         untouched -- `must_exist`/GUI-enabled-state gating still only applies
         when the prerequisite is met.
+    value_aliases:
+        Former spellings of this setting's values, ``{old: new}``: a config
+        written before a choice was renamed still loads, reading as the new
+        value.
+    replaces:
+        Retired settings this one took over, ``{old name: {old value: value
+        here}}``. A config still naming one loads, and sets this setting from
+        it unless the config gives this one a value other than its default;
+        an old value with no entry says nothing about this one.
     """
 
     name: str
@@ -204,6 +213,8 @@ class Setting:
     #: ``"auto"`` for a setting whose blank value means "compute it from
     #: something else". Cosmetic only -- never becomes the value.
     placeholder: str | None = None
+    value_aliases: Mapping[Any, Any] | None = None
+    replaces: Mapping[str, Mapping[Any, Any]] | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -249,11 +260,20 @@ class Setting:
             # A default that its own rules reject is a schema bug, not a user
             # error, so surface it the moment the schema is imported.
             self.coerce(self.default)
+        # The same for what an old value is read as.
+        for value in (self.value_aliases or {}).values():
+            self.coerce(value)
+        for old_name, values in (self.replaces or {}).items():
+            if old_name == self.name:
+                raise ConfigError(f"Setting '{self.name}' cannot replace itself.")
+            for value in values.values():
+                self.coerce(value)
 
     def coerce(self, value: Any) -> Any:
         """Return *value* converted to this setting's kind, or raise ConfigError."""
         if value is None:
             return None
+        value = _lookup(self.value_aliases, value, value)
         try:
             return self._coerce(value)
         except ConfigError:
@@ -346,6 +366,24 @@ class Setting:
         }
 
 
+def _lookup(table: Mapping[Any, Any] | None, key: Any, missing: Any) -> Any:
+    """``table[key]``, or *missing* -- also for a key that cannot be one (a list)."""
+    if not table:
+        return missing
+    try:
+        return table.get(key, missing)
+    except TypeError:
+        return missing
+
+
+def _is_default(setting: Setting, value: Any) -> bool:
+    """Whether *value* is *setting*'s default; a value it rejects is not."""
+    try:
+        return setting.coerce(value) == setting.coerce(setting.default)
+    except ConfigError:
+        return False
+
+
 def _copy_container(value: Any) -> Any:
     """Fresh list/dict so one run cannot mutate the next run's default."""
     if isinstance(value, list):
@@ -380,6 +418,8 @@ class Schema:
     title: str = ""
     description: str = ""
     _by_name: dict[str, Setting] = field(init=False, repr=False, compare=False)
+    #: Each retired setting's name -> the setting that replaced it.
+    _replaced: dict[str, str] = field(init=False, repr=False, compare=False)
 
     def __init__(
         self,
@@ -434,10 +474,25 @@ class Schema:
                     f"a setting name. Rename one of them, or the section heading "
                     "and the setting cannot be told apart when the file is read."
                 )
+        replaced: dict[str, str] = {}
+        for setting in settings:
+            for old_name in setting.replaces or {}:
+                if old_name in by_name:
+                    raise ConfigError(
+                        f"Setting '{setting.name}' replaces '{old_name}', which "
+                        "is still in the schema."
+                    )
+                if old_name in replaced:
+                    raise ConfigError(
+                        f"'{old_name}' is replaced by both '{replaced[old_name]}' "
+                        f"and '{setting.name}'."
+                    )
+                replaced[old_name] = setting.name
         object.__setattr__(self, "settings", settings)
         object.__setattr__(self, "title", title)
         object.__setattr__(self, "description", description)
         object.__setattr__(self, "_by_name", by_name)
+        object.__setattr__(self, "_replaced", replaced)
 
     def __iter__(self) -> Iterator[Setting]:
         return iter(self.settings)
@@ -504,6 +559,41 @@ class Schema:
         hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
         return f"Unknown setting '{name}'.{hint}"
 
+    def upgrade(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        """*values* as this schema spells them, nothing else checked or changed.
+
+        A retired setting is read into the one whose ``replaces`` names it --
+        only while that one is at its default: a config saved while both
+        existed carries both, and then the old one is what decided -- and a
+        former spelling of a value (``value_aliases``) becomes the current
+        one. :meth:`validate` starts here; a caller writing saved settings
+        straight into a form, which validates nothing, needs this alone.
+        """
+        upgraded: dict[str, Any] = {}
+        retired: dict[str, Any] = {}
+        for key, value in values.items():
+            if key in self._replaced:
+                retired[key] = value
+                continue
+            setting = self._by_name.get(key)
+            upgraded[key] = (
+                value if setting is None else _lookup(setting.value_aliases, value, value)
+            )
+        for old_name, value in retired.items():
+            setting = self._by_name[self._replaced[old_name]]
+            if setting.name in upgraded and not _is_default(setting, upgraded[setting.name]):
+                continue
+            missing = object()
+            replacement = _lookup((setting.replaces or {})[old_name], value, missing)
+            if replacement is missing:
+                continue
+            upgraded[setting.name] = replacement
+            logger.info(
+                f"Setting '{old_name}' is retired; read {value!r} as "
+                f"{setting.name}={replacement!r}."
+            )
+        return upgraded
+
     def validate(
         self,
         values: Mapping[str, Any],
@@ -516,12 +606,14 @@ class Schema:
         to its declared kind, enforces choices and bounds, and reports a value
         whose ``requires`` prerequisites are switched off rather than letting it
         be silently ignored. Every problem is collected before raising, so one
-        run of the checker tells the user everything that is wrong.
+        run of the checker tells the user everything that is wrong. A retired
+        setting is not unknown: it is read into the setting whose ``replaces``
+        names it (see :meth:`upgrade`).
         """
         errors: list[str] = []
         resolved: dict[str, Any] = self.defaults() if fill_defaults else {}
 
-        for key, value in values.items():
+        for key, value in self.upgrade(values).items():
             if key not in self._by_name:
                 errors.append(self._unknown_key_message(key))
                 continue

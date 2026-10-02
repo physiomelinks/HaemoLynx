@@ -17,6 +17,7 @@ from typing import Any, Mapping, Optional
 
 import numpy as np
 
+from haemolynx.graph.prune import FLOW_SOLVED
 from haemolynx.haemodynamics.resistance import flow_abs_log10_value
 from haemolynx.visualization.geometry import edge_polyline
 
@@ -44,7 +45,12 @@ def edge_flow_direction_sign(
     Same priority as the Plotly flow-direction helper:
     1) numeric sign of ``signed_flow_attr`` (default ``flow_signed``)
     2) string labels on ``direction_attr`` (e.g. ``u_to_v`` / ``v_to_u``)
+
+    None for a vessel the solve left unsolved (``FLOW_SOLVED`` False): its
+    flow is rounding, not a direction.
     """
+    if edge_data.get(FLOW_SOLVED) is False:
+        return None
     flow_val = edge_data.get(signed_flow_attr)
     if flow_val is not None:
         try:

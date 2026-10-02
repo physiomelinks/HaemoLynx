@@ -63,6 +63,7 @@ from haemolynx.gui.results import (
     FLOW_DIR_COLUMNS,
     FLOW_DIR_RGB_COLUMN,
     FLOW_HEADING_COLUMN,
+    FLOW_SOLUTION,
     IMAGE,
     NODES,
     SKELETON,
@@ -78,6 +79,7 @@ from haemolynx.gui.results import (
     filter_vectors_by_z,
     is_z_depth_filtered_layer,
     is_z_depth_windowed_volume_layer,
+    mask_unsolved_flow_columns,
     perturbation_layer_names,
     z_window_is_full,
 )
@@ -2672,11 +2674,18 @@ def _flow_dir_rgba(layer) -> np.ndarray:
     features = getattr(layer, "features", {})
     if n == 0 or "flow_dir_z" not in features:
         return np.zeros((n, 4), dtype=float)
-    return flow_direction_rgba(
+    rgba = flow_direction_rgba(
         features["flow_dir_z"],
         features["flow_dir_y"],
         features["flow_dir_x"],
     )
+    if FLOW_SOLUTION in features:
+        from haemolynx.gui.branch_hover import FLOW_SOLUTION_TEXT
+
+        # The same grey every other flow-based colouring draws them in.
+        unsolved = np.asarray(features[FLOW_SOLUTION], dtype=object) == FLOW_SOLUTION_TEXT[False]
+        rgba[unsolved] = UNCOLOURED_RGBA
+    return rgba
 
 
 def _flow_heading_colormap() -> str:
@@ -2699,6 +2708,40 @@ def _default_colormap_for(column: str | None) -> str:
     if column in FLOW_DIR_COLUMNS or column == BRANCH_ORDER_SIGNED:
         return "coolwarm"
     return "viridis"
+
+
+#: Ends the name of the copy :func:`_grey_nan_colormap` makes of a map.
+GREY_NAN_SUFFIX = " (grey NaN)"
+
+
+def _grey_nan_colormap(name: str):
+    """Colormap *name*, drawing NaN in the uncoloured grey.
+
+    NaN is a value a row has not got -- the flow of a vessel the solve left
+    unsolved, above all (``results.SOLVED_FLOW_COLUMNS``) -- and napari's own
+    maps draw it transparent, so those vessels vanished instead of showing
+    light grey. *name* itself for anything napari cannot read as a map.
+    """
+    from napari.utils.colormaps import Colormap, ensure_colormap
+
+    try:
+        base = ensure_colormap(_base_colormap_name(name))
+    except (KeyError, ValueError, TypeError):
+        return name
+    return Colormap(
+        colors=base.colors,
+        controls=base.controls,
+        interpolation=base.interpolation,
+        name=f"{base.name}{GREY_NAN_SUFFIX}",
+        nan_color=UNCOLOURED_RGBA,
+        low_color=base.low_color,
+        high_color=base.high_color,
+    )
+
+
+def _base_colormap_name(name: str) -> str:
+    """The map a :func:`_grey_nan_colormap` copy was made from."""
+    return name[: -len(GREY_NAN_SUFFIX)] if name.endswith(GREY_NAN_SUFFIX) else name
 
 
 def _categorical_colours(layer, column: str, cycle) -> np.ndarray:
@@ -2789,7 +2832,7 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
             _record_colour(layer, column)
             _maybe_retint_vessel_tubes(layer)
             return
-        colormap = _default_colormap_for(column)
+        colormap = _grey_nan_colormap(_default_colormap_for(column))
         for attribute in attributes:
             cmap_attr = f"{attribute.replace('_color', '')}_colormap"
             if hasattr(layer, cmap_attr):
@@ -3575,6 +3618,7 @@ def _apply_sweep_index(layer, indices: tuple[int, ...]) -> None:
         for name, values in per_edge.items():
             if name == "flow_abs" or name in updated:
                 updated[name] = values[segment_owner]
+        mask_unsolved_flow_columns(updated)
         return updated
 
     layer.features = _with_grid_point(layer.features, owner)
@@ -3787,6 +3831,9 @@ NOT_WORTH_COLOURING_BY = frozenset(
     {
         "u", "v", "key", "edge_index", "node_id", "tooltip", "branch_id",
         "flow", "order", "tortuosity",
+        # Not a colouring of its own: under any flow-based colouring the
+        # unsolved vessels are the grey ones.
+        FLOW_SOLUTION,
     }
 )
 
@@ -3965,10 +4012,11 @@ def _colormap_attribute(layer) -> str:
 
 
 def _colormap_name(layer) -> str | None:
-    """The LUT currently on *layer*, or None if it has none."""
+    """The LUT currently on *layer*, or None if it has none -- named as the
+    map a grey-NaN copy was made from."""
     cmap = getattr(layer, _colormap_attribute(layer), None)
     name = getattr(cmap, "name", None)
-    return str(name) if name else None
+    return _base_colormap_name(str(name)) if name else None
 
 
 def _colormap_usable(layer) -> bool:
@@ -3994,7 +4042,7 @@ def _apply_colormap(layer, name: str) -> bool:
         if not hasattr(layer, cmap_attr):
             continue
         try:
-            setattr(layer, cmap_attr, name)
+            setattr(layer, cmap_attr, _grey_nan_colormap(name))
         except (ValueError, TypeError, KeyError):
             logger.debug("could not set %s = %s", cmap_attr, name, exc_info=True)
             return False
@@ -11144,7 +11192,9 @@ def settings_widget(napari_viewer=None):
         loaded_paths.clear()
         loaded_config_dir[0] = Path(path).parent
         last_run_path[0] = str(path)
-        for name, value in snapshot.settings.items():
+        # A run saved by an older version may name a retired setting or spell
+        # a value the way it used to; the rows only take today's.
+        for name, value in schema.upgrade(snapshot.settings).items():
             if name not in rows:
                 continue
             if schema[name].kind == "path" and value is not None:

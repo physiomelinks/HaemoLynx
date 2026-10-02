@@ -119,11 +119,50 @@ def test_available_metrics_full_solved_graph():
         branch_order="C0",
         resistance=2e14,
         flow_abs=3e-13,
+        flow_solved=True,
         diameter_um=5.0,
         diameter_source="measured",
         fwhm_status="measured",
     )
     assert available_branch_hover_metrics(graph) == BRANCH_HOVER_METRICS
+
+
+def test_flow_solution_is_available_once_the_solve_has_marked_the_vessels():
+    assert "flow_solution" not in available_branch_hover_metrics(a_graph(flow_abs=1e-12))
+    assert "flow_solution" in available_branch_hover_metrics(
+        a_graph(flow_abs=1e-12, flow_solved=False)
+    )
+
+
+def _one_unsolved() -> nx.MultiGraph:
+    """``a_graph``'s three vessels solved, then the middle one marked unsolved."""
+    graph = a_graph(flow_abs=2e-12, flow_solved=True)
+    edges = list(graph.edges(keys=True, data=True))
+    edges[1][3]["flow_solved"] = False
+    return graph
+
+
+def test_hover_names_each_vessel_solved_or_unsolved_and_hides_an_unsolved_flow():
+    """An unsolved vessel's flow is rounding, not a result, so it gets no
+    flow line -- only the label saying why."""
+    _ids, features = branch_hover_rows(_one_unsolved(), selected=("flow_solution", "flow"))
+    solved_flow = f"branch flow: {format_metric_value('flow', 2e-12)}"
+
+    assert list(features["tooltip"]) == [
+        f"branchID: 0\nflow solution: Solved\n{solved_flow}",
+        "branchID: 1\nflow solution: Unsolved",
+        f"branchID: 2\nflow solution: Solved\n{solved_flow}",
+    ]
+    assert list(features["flow_solution"]) == ["Solved", "Unsolved", "Solved"]
+    assert np.isnan(features["flow"][1]) and features["flow"][0] == pytest.approx(2e-12)
+
+
+def test_rebuilt_tooltips_keep_the_solved_and_unsolved_lines():
+    selected = ("flow_solution", "flow")
+    _ids, features = branch_hover_rows(_one_unsolved(), selected=selected)
+
+    assert list(tooltips_from_feature_table(features, selected)) == list(features["tooltip"])
+    assert list(tooltips_from_feature_table(features, ("flow",)))[1] == "branchID: 1"
 
 
 def test_empty_branch_order_does_not_count_as_available():
@@ -372,6 +411,7 @@ def test_branch_hover_hides_flow_until_attrs_exist_on_graph():
 
     for _u, _v, _key, data in graph.edges(keys=True, data=True):
         data["flow_abs"] = 1e-12
+        data["flow_solved"] = True
         data["resistance"] = 1e15
         data["branch_order"] = "C0"
         data["diameter_um"] = 5.0

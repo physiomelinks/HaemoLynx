@@ -13,8 +13,11 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from haemolynx.graph.prune import FLOW_SOLVED
+
 #: Optional metrics the panel can offer, in display order.
 BRANCH_HOVER_METRICS: tuple[str, ...] = (
+    "flow_solution",
     "flow",
     "order",
     "diameter",
@@ -27,6 +30,7 @@ BRANCH_HOVER_METRICS: tuple[str, ...] = (
 
 #: Checkbox / tooltip label for each optional metric key.
 BRANCH_HOVER_LABELS: dict[str, str] = {
+    "flow_solution": "flow solution",
     "flow": "branch flow",
     "order": "branch order",
     "diameter": "branch diameter",
@@ -39,6 +43,7 @@ BRANCH_HOVER_LABELS: dict[str, str] = {
 
 #: Graph edge attribute that supplies each metric (``None`` = computed).
 _METRIC_ATTR: dict[str, str | None] = {
+    "flow_solution": FLOW_SOLVED,
     "flow": "flow_abs",
     "order": "branch_order",
     "diameter": "diameter_um",
@@ -49,7 +54,10 @@ _METRIC_ATTR: dict[str, str | None] = {
     "length": "length",
 }
 
-_TEXT_HOVER_METRICS = frozenset({"order", "diameter_source", "fwhm_status"})
+_TEXT_HOVER_METRICS = frozenset({"flow_solution", "order", "diameter_source", "fwhm_status"})
+
+#: What ``flow_solution`` reads for each value of the edge's FLOW_SOLVED.
+FLOW_SOLUTION_TEXT = {True: "Solved", False: "Unsolved"}
 
 _BRANCH_ID_LINE = "branchID: {branch_id}"
 
@@ -94,6 +102,11 @@ def _metric_value(
     assert attr is not None
     value = data.get(attr)
     if value is None:
+        return None
+    if metric == "flow_solution":
+        return FLOW_SOLUTION_TEXT[bool(value)]
+    if metric == "flow" and data.get(FLOW_SOLVED) is False:
+        # The flow of an unsolved vessel is rounding, not a result.
         return None
     if metric in _TEXT_HOVER_METRICS:
         text = str(value).strip()

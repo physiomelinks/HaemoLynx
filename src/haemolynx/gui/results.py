@@ -555,6 +555,68 @@ FLOW_DERIVED_EDGE_COLUMNS: frozenset[str] = frozenset(
     }
 )
 
+#: Per-vessel column saying whether the solve reached the vessel: "Solved" or
+#: "Unsolved" (see :data:`haemolynx.graph.FLOW_SOLVED`), "" before a solve.
+#: The hover tooltip's own column of the same name says the same.
+FLOW_SOLUTION = "flow_solution"
+
+#: Columns read off the solved flow -- written by the solve, or computed from
+#: it by an analysis. An unsolved vessel has none of them (NaN), so a
+#: flow-based colouring draws it in the uncoloured grey and leaves it out of
+#: its colour range.
+SOLVED_FLOW_COLUMNS: frozenset[str] = frozenset(
+    {
+        name
+        for name, stage in {**EDGE_COLUMNS, **OPTIONAL_EDGE_COLUMNS}.items()
+        if stage == "solve"
+    }
+    | {
+        "transit_time_s",
+        "arrival_time_s",
+        "current_flow_share",
+        "occlusion_flow_loss",
+        "occlusion_hypoperfused_length_um",
+        "flow_change_vs_baseline",
+    }
+)
+
+
+def flow_solution_values(graph: Any, edge_index: np.ndarray) -> np.ndarray:
+    """:data:`FLOW_SOLUTION` for the drawable edges *edge_index* names (their
+    places in the graph's own edge order)."""
+    from haemolynx.graph.prune import FLOW_SOLVED
+    from haemolynx.gui.branch_hover import FLOW_SOLUTION_TEXT
+
+    text = [
+        "" if data.get(FLOW_SOLVED) is None else FLOW_SOLUTION_TEXT[bool(data[FLOW_SOLVED])]
+        for _u, _v, _key, data in _iter_edges(graph)
+    ]
+    return np.asarray(text, dtype=object)[np.asarray(edge_index, dtype=int)]
+
+
+def mask_unsolved_flow_columns(columns: dict[str, Any]) -> None:
+    """NaN in every :data:`SOLVED_FLOW_COLUMNS` column on the rows of an
+    unsolved vessel, as the rows' own :data:`FLOW_SOLUTION` column says."""
+    from haemolynx.gui.branch_hover import FLOW_SOLUTION_TEXT
+
+    status = columns.get(FLOW_SOLUTION)
+    if status is None:
+        return
+    unsolved = np.asarray(status, dtype=object) == FLOW_SOLUTION_TEXT[False]
+    if not unsolved.any():
+        return
+    for name in SOLVED_FLOW_COLUMNS.intersection(columns):
+        values = np.array(columns[name], dtype=float)
+        values[unsolved] = np.nan
+        columns[name] = values
+
+
+def _mark_unsolved(columns: dict[str, Any], graph: Any) -> None:
+    """Give per-drawable-edge *columns* their :data:`FLOW_SOLUTION`, and
+    blank the flow-based ones on the vessels it calls unsolved."""
+    columns[FLOW_SOLUTION] = flow_solution_values(graph, columns["edge_index"])
+    mask_unsolved_flow_columns(columns)
+
 
 def edge_columns_for_settings(
     settings: Mapping[str, Any] | None = None,
@@ -1545,6 +1607,7 @@ class ResultLayers:
             include_axis_components=bool(self.settings.get("flow_direction_colouring", True)),
         )
         _add_branch_order_scales(columns)
+        _mark_unsolved(columns, graph)
 
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {
@@ -2173,6 +2236,7 @@ class ResultLayers:
             include_axis_components=bool(self.settings.get("flow_direction_colouring", True)),
         )
         _add_branch_order_scales(columns)
+        _mark_unsolved(columns, graph)
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {
             name: np.asarray(values)[owner] for name, values in columns.items()
@@ -2318,6 +2382,9 @@ class ResultLayers:
         drop0 = sweep.pressure_drop_at(*([0] * len(sweep.axis_names)))
         if drop0 is not None:
             columns["pressure_drop"] = np.asarray(drop0, dtype=float)[edge_index]
+        # Its own column too, so the sliders blank every grid point's flows on
+        # the same vessels (see _apply_sweep_index).
+        _mark_unsolved(columns, graph)
 
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {

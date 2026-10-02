@@ -403,7 +403,7 @@ def test_assign_boundaries_passes_the_settings_and_shows_the_relabelled_masks(
             "automated_vessel_assignment_use_legacy_mode": True,
             "large_vessel_assignment_max_dilation_microns": 0.0,
             "write_fast_mode_preassignment_large_vessel_debug_3d_html": False,
-            "remove_disconnected_io_components_after_final_assignment": False,
+            "boundary_handling": "leave_unsolved",
             "use_small_vessel_masks_for_boundary_assignment": True,
             "small_vessel_tangential_redefinition_enable": True,
             "small_vessel_tangential_redefinition_min_contact_fraction": 0.4,

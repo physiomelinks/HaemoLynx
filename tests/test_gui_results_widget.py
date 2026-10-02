@@ -26,6 +26,7 @@ from haemolynx.gui._widget import (  # noqa: E402
     _add_or_update,
     _apply_layers,
     _clear_our_layers,
+    _colormap_name,
     _process_pending_qt_events,
     _run_in_background,
 )
@@ -2116,7 +2117,7 @@ def test_the_vessels_and_nodes_get_a_colormap_dropdown(make_napari_viewer):
     assert set(offered) <= set(colormap_choices())
     assert vessel_maps.shown is True
     assert node_maps.shown is True
-    assert vessels.edge_colormap.name == "viridis"
+    assert _colormap_name(vessels) == "viridis"
     assert vessel_maps.native.currentText() == "viridis"
 
 
@@ -2127,7 +2128,7 @@ def test_vessel_colormap_combo_changes_the_layer_lut(make_napari_viewer):
     chooser = _layer_controls(viewer, vessels)._haemolynx_colormap
     before = np.array(vessels.edge_color, copy=True)
     chooser.native.setCurrentText("plasma")
-    assert vessels.edge_colormap.name == "plasma"
+    assert _colormap_name(vessels) == "plasma"
     assert not np.allclose(before, np.asarray(vessels.edge_color))
 
 
@@ -2305,7 +2306,7 @@ def test_the_vessels_colour_by_branch_order_from_the_dropdown_as_tubes_and_lines
         assert len(set(colour_per_order().values())) == 3
         tube_colours_follow_the_lines()
     # Signed: a diverging map, centred on the capillary bed.
-    assert vessels.edge_colormap.name == "coolwarm"
+    assert _colormap_name(vessels) == "coolwarm"
     assert tuple(vessels.edge_contrast_limits) == (-1.0, 1.0)
 
     chooser.native.setCurrentText("branch_order")

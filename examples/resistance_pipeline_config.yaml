@@ -728,10 +728,8 @@ diameters_and_pericytes:
 # Network handling
 # ------------------------------------------------------------------------
 network_handling:
-  # Before building the haemodynamic model, drop graph components that do not have both an inlet and an outlet node  [needs automated_vessel_assignment]
-  remove_disconnected_io_components_after_final_assignment: false
-  # How the network's boundaries are handled before the haemodynamic model is built; None leaves them as assigned  [one of: None]
-  boundary_handling: None
+  # What happens, before the haemodynamic model is built, to each branch or tree of vessels without both an inlet and an outlet: no pressure difference drives a flow through one, so the solve has no answer for it. leave_unsolved keeps them, marked unsolved: the viewer draws them light grey, leaves them out of every flow-based colouring and names each vessel Solved or Unsolved on hover. remove_disconnected deletes them  [one of: leave_unsolved, remove_disconnected]
+  boundary_handling: leave_unsolved
 
 # ------------------------------------------------------------------------
 # FWHM diameter measurement

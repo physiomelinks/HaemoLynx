@@ -397,7 +397,6 @@ def test_a_tab_carries_the_rows_for_its_settings():
         "haematocrit_split_connector_length_um",
         "haematocrit_distribution_max_iterations",
         "haematocrit_distribution_tolerance",
-        "remove_disconnected_io_components_after_final_assignment",
         "boundary_handling",
     }
 

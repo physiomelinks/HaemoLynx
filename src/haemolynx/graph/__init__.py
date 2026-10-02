@@ -60,6 +60,8 @@ from .degree2 import (
     merge_edges_with_topology_improvement,
 )
 from .prune import (
+    FLOW_SOLVED,
+    mark_flow_solved_edges,
     prune_vascular_stubs,
     remove_components_without_connected_io,
     remove_edges_for_self_connected_nodes,
@@ -221,6 +223,8 @@ __all__ = [
     "smart_multigraph_degree2_removal",
     "merge_edges_with_topology_improvement",
     "prune_vascular_stubs",
+    "FLOW_SOLVED",
+    "mark_flow_solved_edges",
     "remove_components_without_connected_io",
     "diagnose_degree2_nodes",
     "diagnose_graph_against_mask",

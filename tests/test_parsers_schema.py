@@ -350,3 +350,94 @@ def test_a_not_equals_prerequisite_must_name_a_choice_and_one_of_its_values():
             Setting("gate", "bool", False, "A flag", "S"),
             Setting("a", "int", 1, "Dependent", "S", requires=("gate!=x",)),
         ])
+
+
+# --- renamed values and retired settings ----------------------------------------
+
+
+def _handling(**extra) -> Setting:
+    """A choice that took over a retired toggle and renamed one of its values."""
+    return Setting(
+        "handling", "choice", "keep", "What to do", "S",
+        choices=("keep", "drop"),
+        value_aliases={"None": "keep"},
+        replaces={"drop_old": {True: "drop"}},
+        **extra,
+    )
+
+
+def test_a_former_spelling_of_a_value_reads_as_the_current_one():
+    setting = _handling()
+    assert setting.coerce("None") == "keep"
+    assert setting.coerce("drop") == "drop"
+    with pytest.raises(ConfigError, match="allowed values"):
+        setting.coerce("nothing")
+
+
+def test_an_unhashable_value_is_no_alias_and_fails_as_itself():
+    with pytest.raises(ConfigError, match="allowed values"):
+        _handling().coerce(["keep"])
+
+
+@pytest.mark.parametrize(
+    "values, expected",
+    [
+        ({"drop_old": True}, "drop"),
+        # An old value with no entry says nothing.
+        ({"drop_old": False}, "keep"),
+        # Saved while both existed: the new one at its default, so the old decides.
+        ({"drop_old": True, "handling": "keep"}, "drop"),
+        ({"drop_old": True, "handling": "None"}, "drop"),
+        # A value of the new one's own is not overridden.
+        ({"drop_old": False, "handling": "drop"}, "drop"),
+    ],
+)
+def test_a_retired_setting_is_read_into_the_one_that_replaced_it(values, expected):
+    resolved = Schema([_handling()]).validate(values)
+    assert resolved["handling"] == expected
+    assert "drop_old" not in resolved
+
+
+def test_upgrade_renames_and_nothing_else():
+    schema = Schema([_handling(), Setting("n", "int", 1, "A number", "S")])
+    assert schema.upgrade({"drop_old": True, "handling": "None", "n": "x", "stray": 3}) == {
+        "handling": "drop",
+        # Not checked: that is validate's job.
+        "n": "x",
+        "stray": 3,
+    }
+
+
+def test_a_misspelt_retired_name_is_still_unknown():
+    with pytest.raises(ConfigError, match="Unknown setting 'drop_older'"):
+        Schema([_handling()]).validate({"drop_older": True})
+
+
+def test_what_old_values_are_read_as_must_be_valid():
+    with pytest.raises(ConfigError, match="allowed values"):
+        Setting(
+            "handling", "choice", "keep", "What to do", "S",
+            choices=("keep", "drop"), value_aliases={"None": "toss"},
+        )
+    with pytest.raises(ConfigError, match="allowed values"):
+        Setting(
+            "handling", "choice", "keep", "What to do", "S",
+            choices=("keep", "drop"), replaces={"drop_old": {True: "toss"}},
+        )
+
+
+def test_a_retired_name_must_be_retired_and_replaced_once():
+    with pytest.raises(ConfigError, match="still in the schema"):
+        Schema([_handling(), Setting("drop_old", "bool", False, "Old toggle", "S")])
+    with pytest.raises(ConfigError, match="replaced by both"):
+        Schema([
+            _handling(),
+            Setting("other", "bool", False, "Other", "S", replaces={"drop_old": {True: True}}),
+        ])
+    with pytest.raises(ConfigError, match="cannot replace itself"):
+        Setting("x", "bool", False, "X", "S", replaces={"x": {True: True}})
+
+
+def test_a_subset_keeps_what_its_settings_replace():
+    schema = Schema([_handling(), Setting("n", "int", 1, "A number", "S")]).subset(["handling"])
+    assert schema.validate({"drop_old": True})["handling"] == "drop"

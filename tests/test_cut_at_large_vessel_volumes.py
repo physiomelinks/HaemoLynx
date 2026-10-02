@@ -415,7 +415,7 @@ def _assign_boundaries_settings(**overrides):
             "venule_boundary_node_volumes": [],
             "inlet_node_coordinates": [],
             "outlet_node_coordinates": [],
-            "remove_disconnected_io_components_after_final_assignment": False,
+            "boundary_handling": "leave_unsolved",
         }
     )
     settings.update(overrides)
@@ -844,7 +844,7 @@ def test_default_schema_cuts_interior_edges_with_large_mask_assignment(
             "venule_boundary_node_volumes": [],
             "inlet_node_coordinates": [],
             "outlet_node_coordinates": [],
-            "remove_disconnected_io_components_after_final_assignment": False,
+            "boundary_handling": "leave_unsolved",
         }
     )
     assert settings["cut_network_at_large_vessel_volumes"] is True

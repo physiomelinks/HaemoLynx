@@ -148,7 +148,7 @@ def _assign_boundaries_settings(**overrides):
             "venule_boundary_node_volumes": [],
             "inlet_node_coordinates": [],
             "outlet_node_coordinates": [],
-            "remove_disconnected_io_components_after_final_assignment": False,
+            "boundary_handling": "leave_unsolved",
         }
     )
     settings.update(overrides)

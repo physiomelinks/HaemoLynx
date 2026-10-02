@@ -4038,27 +4038,29 @@ SCHEMA = Schema(
         # stage" from the Haemodynamics tab.
         # ------------------------------------------------------------------
         Setting(
-            name="remove_disconnected_io_components_after_final_assignment",
-            kind="bool",
-            default=False,
-            help=(
-                "Before building the haemodynamic model, drop graph components "
-                "that do not have both an inlet and an outlet node"
-            ),
-            section=_NETWORK_HANDLING,
-            requires=("automated_vessel_assignment",),
-        ),
-        Setting(
             name="boundary_handling",
             kind="choice",
-            default="None",
+            default="leave_unsolved",
             help=(
-                "How the network's boundaries are handled before the haemodynamic "
-                "model is built; None leaves them as assigned"
+                "What happens, before the haemodynamic model is built, to each "
+                "branch or tree of vessels without both an inlet and an outlet: "
+                "no pressure difference drives a flow through one, so the solve "
+                "has no answer for it. leave_unsolved keeps them, marked "
+                "unsolved: the viewer draws them light grey, leaves them out of "
+                "every flow-based colouring and names each vessel Solved or "
+                "Unsolved on hover. remove_disconnected deletes them"
             ),
             section=_NETWORK_HANDLING,
-            choices=("None",),
+            choices=("leave_unsolved", "remove_disconnected"),
             advanced=True,
+            # Its first value used to be spelled "None", and removing was its
+            # own checkbox.
+            value_aliases={"None": "leave_unsolved"},
+            replaces={
+                "remove_disconnected_io_components_after_final_assignment": {
+                    True: "remove_disconnected"
+                },
+            },
         ),
         Setting(
             name="all_diams_const",

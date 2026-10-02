@@ -2546,6 +2546,11 @@ def post_process(
     return model
 
 
+#: ``boundary_handling``: what happens to a branch or tree of vessels without
+#: both an inlet and an outlet -- kept and marked unsolved, or removed.
+BOUNDARY_HANDLING_LEAVE_UNSOLVED = "leave_unsolved"
+BOUNDARY_HANDLING_REMOVE_DISCONNECTED = "remove_disconnected"
+
 #: The boundary-node lists a network-handling step keeps in step with the graph.
 _BOUNDARY_NODE_LISTS = (
     "inlet_nodes",
@@ -2567,12 +2572,13 @@ def apply_network_handling(
 
     Runs at the start of the haemodynamics stage, before the model is built,
     so a change on the Haemodynamics tab takes effect when the run restarts
-    there. ``remove_disconnected_io_components_after_final_assignment`` drops
-    every graph component that does not have both an inlet and an outlet;
-    the boundary-node lists (on *boundaries* and in *settings*) and the
+    there. ``boundary_handling="remove_disconnected"`` drops every graph
+    component that does not have both an inlet and an outlet; the
+    boundary-node lists (on *boundaries* and in *settings*) and the
     resistance node pair follow the pruned graph, which becomes *model*'s,
-    *boundaries*' and *network*'s. ``boundary_handling`` has only ``None``
-    so far, which changes nothing.
+    *boundaries*' and *network*'s. ``"leave_unsolved"`` (the default) keeps
+    them, and :func:`solve` marks their vessels unsolved
+    (:data:`haemolynx.graph.FLOW_SOLVED`).
 
     Then, with ``haematocrit_junction_rule`` at ``split_junctions`` (and the
     distributed haematocrit model it belongs to), every junction of four or
@@ -2629,7 +2635,7 @@ def _remove_components_without_io(
     boundaries: BoundaryNodes,
     network: VesselNetwork | None,
 ) -> None:
-    if not bool(settings.get("remove_disconnected_io_components_after_final_assignment", False)):
+    if settings.get("boundary_handling") != BOUNDARY_HANDLING_REMOVE_DISCONNECTED:
         return
     G_pruned, io_prune_stats = graph.remove_components_without_connected_io(
         model.graph, boundaries.inlet_nodes, boundaries.outlet_nodes
@@ -2919,8 +2925,24 @@ def solve(
             f"{solution.network_resistance}"
         )
 
+    if solution.pressure is not None:
+        _mark_flow_solved(G, settings["inlet_nodes"], settings["outlet_nodes"])
+
     solution.graph = G
     return solution
+
+
+def _mark_flow_solved(G: nx.MultiGraph, inlet_nodes, outlet_nodes) -> None:
+    """Mark each vessel solved or not (:data:`haemolynx.graph.FLOW_SOLVED`),
+    and say how many were left unsolved."""
+    unsolved = graph.mark_flow_solved_edges(G, inlet_nodes, outlet_nodes)
+    if unsolved:
+        logger.info(
+            f"boundary_handling={BOUNDARY_HANDLING_LEAVE_UNSOLVED}: {unsolved} of "
+            f"{G.number_of_edges()} vessel(s) lie in branches or trees without both "
+            "an inlet and an outlet. Nothing drives a flow through them, so they "
+            "are marked unsolved and their flows are not a result."
+        )
 
 
 #: Per-edge columns of a perturbation's `<name>_edges.csv`, in order.

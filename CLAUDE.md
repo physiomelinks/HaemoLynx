@@ -265,7 +265,9 @@ are only caught locally.
   its `requires`, so `pipeline/checks.py` can check it and the config file and the CLI both grow a
   line for free. A `requires` entry is `name` (a bool on), `!name` (off), `name=value` (a choice
   holding one value) or `name!=value` (holding any other); read them through
-  `parsers.parse_prerequisite` rather than by hand. Mark a setting `advanced=True` unless most runs
+  `parsers.parse_prerequisite` rather than by hand. A choice value renamed, or a setting folded
+  into another, keeps old configs and saved runs loading through the setting's `value_aliases` /
+  `replaces` (read by `Schema.upgrade`) rather than breaking them. Mark a setting `advanced=True` unless most runs
   change it: the panel then shows it behind an Advanced button under the row it depends on (see
   `gui/layout.py`), and `tests/test_gui_layout.py` fails if it lands nowhere.
 - **Generated configs** — `examples/*_config.yaml` are written by `examples/regenerate_configs.py`
@@ -370,8 +372,13 @@ are only caught locally.
   (`haemodynamics.apply.assign_edge_diameters(edges=...)`, FWHM's and EDT's own `edges=`), keeps the
   diameter the edit gave as a provisional override, and bridges them with
   `graph.insert_thick_vessel_junction_nodes(edges=...)`, which never re-splits an existing bridge. `apply_network_handling(settings, model, boundaries, network)` is
-  the "Network handling" box on the Haemodynamics tab (pruning components without both an inlet
-  and an outlet; `boundary_handling`; and, with `haematocrit_junction_rule="split_junctions"`,
+  the "Network handling" box on the Haemodynamics tab (`boundary_handling`: `remove_disconnected`
+  prunes every component without both an inlet and an outlet, `leave_unsolved` — the default —
+  keeps them and `solve` marks their vessels `graph.FLOW_SOLVED=False`, which the viewer draws
+  light grey, blanks in every flow-based colour column (`gui/results.py`'s
+  `SOLVED_FLOW_COLUMNS`) and labels Solved/Unsolved on hover; the retired
+  `remove_disconnected_io_components_after_final_assignment` checkbox still loads, through
+  `Setting.replaces`; and, with `haematocrit_junction_rule="split_junctions"`,
   splitting every 4+ junction into bifurcations on a copy of the graph via
   `graph.split_high_degree_junctions`, with connectors as long as the junction's vessels are wide
   unless `haematocrit_split_connector_length_um` fixes one), run at the start of the haemodynamics

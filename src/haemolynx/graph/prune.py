@@ -148,6 +148,54 @@ def prune_vascular_stubs(
     return G_pruned
 
 
+#: Edge attribute the flow solve writes: False on a vessel in a branch or tree
+#: without both an inlet and an outlet -- no pressure difference drives a
+#: flow through it, so its flow and pressures are not a result -- and True
+#: everywhere else. Exactly the vessels
+#: :func:`remove_components_without_connected_io` would remove are False.
+FLOW_SOLVED = "flow_solved"
+
+
+def _components_by_io(
+    G: Union[nx.Graph, nx.MultiGraph],
+    starting_nodes: Sequence[int],
+    output_nodes: Sequence[int],
+):
+    """Each connected component's nodes, and whether it holds both a start
+    and an output node. Node IDs not present in ``G`` are ignored."""
+    start_node_set = {
+        int(node_id) for node_id in starting_nodes if int(node_id) in G.nodes
+    }
+    output_node_set = {
+        int(node_id) for node_id in output_nodes if int(node_id) in G.nodes
+    }
+    for component_nodes in nx.connected_components(G):
+        component_node_set = {int(node_id) for node_id in component_nodes}
+        yield component_node_set, bool(
+            component_node_set & start_node_set and component_node_set & output_node_set
+        )
+
+
+def mark_flow_solved_edges(
+    G: Union[nx.Graph, nx.MultiGraph],
+    starting_nodes: Sequence[int],
+    output_nodes: Sequence[int],
+) -> int:
+    """Write :data:`FLOW_SOLVED` on every edge of *G*; return how many are
+    unsolved (in a component without both a start and an output node)."""
+    unsolved_nodes: set[int] = set()
+    for component_node_set, has_io in _components_by_io(G, starting_nodes, output_nodes):
+        if not has_io:
+            unsolved_nodes |= component_node_set
+    unsolved = 0
+    for u, _v, data in G.edges(data=True):
+        # One end tells: both ends of an edge share a component.
+        solved = int(u) not in unsolved_nodes
+        data[FLOW_SOLVED] = solved
+        unsolved += not solved
+    return unsolved
+
+
 def remove_components_without_connected_io(
     G: Union[nx.Graph, nx.MultiGraph],
     starting_nodes: list[int],
@@ -158,22 +206,12 @@ def remove_components_without_connected_io(
     Components that do not include at least one node from each boundary set
     are removed. Node IDs not present in ``G`` are ignored.
     """
-    start_node_set = {
-        int(node_id) for node_id in starting_nodes if int(node_id) in G.nodes
-    }
-    output_node_set = {
-        int(node_id) for node_id in output_nodes if int(node_id) in G.nodes
-    }
-
     keep_nodes: set[int] = set()
     removed_component_count = 0
     removed_node_count = 0
 
-    for component_nodes in nx.connected_components(G):
-        component_node_set = {int(node_id) for node_id in component_nodes}
-        has_start_node = bool(component_node_set.intersection(start_node_set))
-        has_output_node = bool(component_node_set.intersection(output_node_set))
-        if has_start_node and has_output_node:
+    for component_node_set, has_io in _components_by_io(G, starting_nodes, output_nodes):
+        if has_io:
             keep_nodes.update(component_node_set)
         else:
             removed_component_count += 1
