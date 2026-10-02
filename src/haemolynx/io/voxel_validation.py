@@ -1,7 +1,11 @@
 """Helpers for validating and resolving voxel-size metadata."""
 from __future__ import annotations
 
+import logging
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def validate_voxel_size_xyz(
@@ -63,5 +67,23 @@ def resolve_voxel_size_xyz(
         return metadata_voxel_size_xyz, "metadata"
     if override_xyz is not None:
         return override_xyz, "manual_override"
+    # The one outcome where a 1.0 default reaches the run, so the one place to
+    # warn: the loader cannot, as it does not know an override is coming.
+    axes = ", ".join(_axes_without_metadata(metadata_status))
+    logger.warning(
+        "No voxel spacing in the image metadata for %s; running on 1.0 micron there "
+        "(voxel size x, y, z = %s). Set voxel_size_override_xyz if that is wrong.",
+        axes,
+        metadata_voxel_size_xyz,
+    )
     return metadata_voxel_size_xyz, "metadata_fallback"
+
+
+def _axes_without_metadata(metadata_status: dict[str, object] | None) -> list[str]:
+    """The physical axes a loader's status says it could not read a spacing for."""
+    status = metadata_status or {}
+    axes = set(status.get("missing_axes") or ()) | set(status.get("invalid_axes") or ())
+    if not axes and "available_axes" in status:
+        axes = set("xyz") - set(status["available_axes"] or ())
+    return sorted(axes) or ["x", "y", "z"]
 

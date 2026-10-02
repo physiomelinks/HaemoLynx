@@ -437,27 +437,30 @@ def _voxel_size_xyz_from_tiff(
 
     x_res_tag = tags.get("XResolution")
     y_res_tag = tags.get("YResolution")
+    # A missing tag is only debug here: the status says which axes defaulted,
+    # and resolve_voxel_size_xyz warns if a default is what the run ends up on
+    # (not when voxel_size_override_xyz replaces it).
     missing_axes: list[str] = []
     invalid_axes: list[str] = []
 
     if x_res_tag:
         x_res = x_res_tag.value[0] / x_res_tag.value[1]
     else:
-        logger.warning("No x resolution tag found; defaulting to 1.0")
+        logger.debug("No x resolution tag found; defaulting to 1.0")
         x_res = 1.0
         missing_axes.append("x")
 
     if y_res_tag:
         y_res = y_res_tag.value[0] / y_res_tag.value[1]
     else:
-        logger.warning("No y resolution tag found; defaulting to 1.0")
+        logger.debug("No y resolution tag found; defaulting to 1.0")
         y_res = 1.0
         missing_axes.append("y")
 
     if "spacing" in meta:
         z_res = float(meta.get("spacing"))
     else:
-        logger.warning("No z resolution (spacing) found; defaulting to 1.0")
+        logger.debug("No z resolution (spacing) found; defaulting to 1.0")
         z_res = 1.0
         missing_axes.append("z")
 

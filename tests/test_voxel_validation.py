@@ -12,9 +12,17 @@ Two failure modes matter most and both are silent:
 """
 from __future__ import annotations
 
-import pytest
+import logging
 
-from haemolynx.io import resolve_voxel_size_xyz, validate_voxel_size_xyz
+import numpy as np
+import pytest
+import tifffile
+
+from haemolynx.io import (
+    load_3d_tif_with_voxel_size,
+    resolve_voxel_size_xyz,
+    validate_voxel_size_xyz,
+)
 
 # Coarse z, fine x — the usual confocal case, and all three differ.
 METADATA_XYZ = (0.4, 0.5, 2.0)
@@ -161,3 +169,75 @@ def test_a_resolved_override_keeps_x_y_z_order():
     resolved, _ = resolve_voxel_size_xyz(METADATA_XYZ, MISSING, [0.25, 0.75, 3.0], "auto")
     assert resolved[0] == pytest.approx(0.25)
     assert resolved[2] == pytest.approx(3.0)
+
+
+# --- the missing-spacing warning ---------------------------------------------
+
+
+def _warnings(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def _tiff_without_z_spacing(tmp_path):
+    """An x/y-calibrated stack with no ImageJ ``spacing``: what ilastik writes."""
+    path = tmp_path / "no_z_spacing.tif"
+    tifffile.imwrite(
+        path,
+        np.zeros((3, 4, 5), dtype=np.uint8),
+        imagej=True,
+        resolution=(1.0 / 0.4, 1.0 / 0.5),
+        metadata={"unit": "um"},
+    )
+    return path
+
+
+def test_an_override_replacing_a_missing_z_spacing_logs_no_warning(tmp_path, caplog):
+    """Regression: the loader warned 'defaulting to 1.0' for every file it read,
+    even though the run went on to use voxel_size_override_xyz instead."""
+    with caplog.at_level(logging.DEBUG, logger="haemolynx"):
+        _image, x, y, z, status = load_3d_tif_with_voxel_size(
+            str(_tiff_without_z_spacing(tmp_path))
+        )
+        resolved, source = resolve_voxel_size_xyz((x, y, z), status, OVERRIDE_XYZ, "auto")
+    assert status["missing_axes"] == ["z"]
+    assert (resolved, source) == (OVERRIDE_XYZ, "manual_override")
+    assert _warnings(caplog) == []
+
+
+def test_running_on_a_missing_z_spacing_warns_once_naming_the_axis_and_the_setting(
+    tmp_path, caplog
+):
+    with caplog.at_level(logging.DEBUG, logger="haemolynx"):
+        _image, x, y, z, status = load_3d_tif_with_voxel_size(
+            str(_tiff_without_z_spacing(tmp_path))
+        )
+        resolved, source = resolve_voxel_size_xyz((x, y, z), status, None, "auto")
+    assert source == "metadata_fallback"
+    assert resolved == pytest.approx((0.4, 0.5, 1.0))
+    [warning] = _warnings(caplog)
+    assert "for z;" in warning
+    assert "voxel_size_override_xyz" in warning
+
+
+@pytest.mark.parametrize(
+    "status, axes",
+    [
+        (PARTIAL, "z"),
+        (MISSING, "x, y, z"),
+        (None, "x, y, z"),
+        # H5 statuses list the axes they found, not the ones they did not.
+        ({"source": "h5_attributes", "status": "partial", "available_axes": ["x", "z"]}, "y"),
+    ],
+)
+def test_the_fallback_warning_names_the_axes_that_defaulted(status, axes, caplog):
+    with caplog.at_level(logging.WARNING, logger="haemolynx"):
+        resolve_voxel_size_xyz(METADATA_XYZ, status, None, "auto")
+    [warning] = _warnings(caplog)
+    assert f"metadata for {axes};" in warning
+
+
+@pytest.mark.parametrize("override", [None, OVERRIDE_XYZ])
+def test_complete_metadata_logs_no_warning(override, caplog):
+    with caplog.at_level(logging.WARNING, logger="haemolynx"):
+        resolve_voxel_size_xyz(METADATA_XYZ, COMPLETE, override, "auto")
+    assert _warnings(caplog) == []
