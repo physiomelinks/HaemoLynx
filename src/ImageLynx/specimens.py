@@ -419,17 +419,45 @@ GROUPS: Tuple[str, str] = ("WKY", "SHR")
 #: that was made in advance rather than a discovery made afterwards.
 WEAKEST_SPECIMEN_ID = "WKY-C"
 
-#: The trained project every measured number in this module was taken on.
+#: The trained project every measured number in this module was taken on: the relabelled
+#: pooled classifier the study runs. Measured 2026-10-02 (re-run package U), below. The
+#: 2026-08-10 record after it describes the earlier, lopsided project (sha256 79a5f6ac...),
+#: kept as the baseline the relabel had to beat. Its acceptance was withdrawn and it is no
+#: longer run.
 #:
-#: NOT an accepted state. The acceptance it originally recorded has been withdrawn: the plan
-#: is now to relabel before generating the probability maps the study keeps, because the
-#: measurement below showed the imbalance reaching the group contrast rather than staying a
-#: background risk. What survives is the record of what this classifier does, which is the
-#: baseline a relabelled one has to beat.
+#: 2026-10-02, project 49283a27...: labels WKY 55528 against SHR 107507, a factor of 1.9 the
+#: other way, so SHR is still the heavier cohort but by half the old margin. All six maps
+#: measured, over the whole volume and over the placed 160^3 ROI (place_roi, the boxes the
+#: batch ran on). Cuts are inclusive (at_or_above), so p>=0.95 is also fg at the frozen
+#: threshold. r_med is the distance transform of the p>=0.5 mask (PROCESSING_VOXEL_UM)
+#: sampled at its skeleton voxels; it moves in distance-transform steps, so read it coarsely.
+#: The 2026-08-10 commit does not record its method for this column.
 #:
-#: 2026-08-10: the project verified but was lopsided - SHR 79388 labelled voxels against WKY
-#: 20142, a factor of 3.9, and WKY-C thinnest of all at 4488 with vessel:background 2.32
-#: where the SHR volumes sit near 0.9. A forest weights by labelled voxel count, so this
+#:     specimen  group  region  mean p  p<0.05  p>=0.95  uncertain  fg@0.5  r_med@0.5 um
+#:     WKY-A     WKY    whole   0.2142   0.582    0.072      0.345   0.201          5.60
+#:     WKY-B     WKY    whole   0.2186   0.576    0.079      0.345   0.204          5.60
+#:     WKY-C     WKY    whole   0.3532   0.334    0.127      0.539   0.333          5.89
+#:     SHR-A     SHR    whole   0.2161   0.592    0.076      0.332   0.206          5.89
+#:     SHR-B     SHR    whole   0.2513   0.523    0.088      0.389   0.238          5.60
+#:     SHR-C     SHR    whole   0.1793   0.647    0.059      0.294   0.167          5.28
+#:     WKY-A     WKY    roi     0.6152   0.078    0.274      0.648   0.631          5.90
+#:     WKY-B     WKY    roi     0.5307   0.120    0.209      0.671   0.529          5.28
+#:     WKY-C     WKY    roi     0.5413   0.094    0.205      0.702   0.537          5.60
+#:     SHR-A     SHR    roi     0.5737   0.111    0.231      0.658   0.590          5.60
+#:     SHR-B     SHR    roi     0.5534   0.076    0.212      0.711   0.552          5.27
+#:     SHR-C     SHR    roi     0.5596   0.089    0.201      0.710   0.567          5.27
+#:
+#: No group-correlated shift survives. In every column the WKY and SHR ranges overlap, and
+#: WKY-A and WKY-B sit among the SHR volumes. The whole-volume WKY mean (mean p 0.262 against
+#: 0.216, fg@0.95 0.093 against 0.074) is raised by WKY-C alone, the WEAKEST_SPECIMEN_ID
+#: named in advance: one volume, not a cohort. Inside the ROIs the study measures, the groups
+#: agree (fg@0.5 0.566 against 0.570, fg@0.95 0.229 against 0.215, the highest a WKY). The
+#: calibre bias below is unchanged: r_med@0.5 is still 5.3-5.9 um, which is why the study
+#: cuts at 0.95.
+#:
+#: 2026-08-10, pre-relabel baseline 79a5f6ac...: the project verified but was lopsided -
+#: SHR 79388 labelled voxels against WKY 20142, a factor of 3.9, and WKY-C thinnest of all
+#: at 4488 with vessel:background 2.32 where the SHR volumes sit near 0.9. A forest weights by labelled voxel count, so this
 #: classifier is better calibrated on SHR. Three volumes were predicted to find out whether
 #: that reaches the output. It does:
 #:
@@ -451,11 +479,11 @@ WEAKEST_SPECIMEN_ID = "WKY-C"
 #: under-labelled everywhere rather than at either cohort specifically.
 #:
 #: The hash makes this record self-invalidating, and is_measured_baseline makes that operate
-#: rather than merely be asserted: once the project is relabelled the hash moves, every
-#: number above describes something that is no longer being run, and verify_classifier says
-#: so instead of leaving a stale measurement to be read as current.
+#: rather than merely be asserted: once the project is retrained the hash moves, the
+#: 2026-10-02 numbers above describe something that is no longer being run, and
+#: verify_classifier says so instead of leaving a stale measurement to be read as current.
 MEASURED_BASELINE_CLASSIFIER_SHA256 = (
-    "79a5f6ac5a5e3d6f5c56d0656deb7f78ec95c5f06be6013e4f0143331136c17a"
+    "49283a27d82ef0180ef19d0dbeecf8880703407a53873f1204cdfd2829381c0a"
 )
 
 

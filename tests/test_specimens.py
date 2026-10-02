@@ -620,6 +620,23 @@ def test_the_baseline_measurement_record_knows_when_it_no_longer_applies(tmp_pat
         assert isinstance(is_measured_baseline(), bool)
 
 
+def test_the_pooled_classifier_in_use_is_the_measured_baseline():
+    """The recorded measurements describe the classifier the study actually runs.
+
+    Package U re-measured calibration and foreground on the relabelled project and moved the
+    hash to it. If the project is retrained this fails, which is the point: the numbers in
+    specimens.py then need measuring again.
+    """
+    from ImageLynx.specimens import is_measured_baseline, verify_classifier
+
+    if not POOLED_CLASSIFIER.exists():
+        pytest.skip("pooled classifier not available on this machine")
+
+    assert is_measured_baseline() is True
+    warnings = " ".join(verify_classifier(POOLED_CLASSIFIER)["warnings"])
+    assert "measured baseline" not in warnings
+
+
 def test_a_retrained_classifier_is_flagged_in_the_warnings(tmp_path):
     """The recorded imbalance measurement is superseded, and the report has to say so."""
     from ImageLynx.specimens import verify_classifier
