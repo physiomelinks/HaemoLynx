@@ -507,12 +507,18 @@ are only caught locally.
   above it. `_widget.py`'s `_AdvancedDisclosure` draws a button; tests open them all with
   `panel._haemolynx_expand_advanced()`.
 - **`gui/layer_sets.py`** — what the view panel's "Showing" menu swaps: the baseline network or one
-  perturbation's (vessels, nodes, flow direction, vessel tubes), every other network hidden, and
-  which kinds of layer were on carried across. A perturbation's `LayerSpec`s carry
+  perturbation's (vessels, nodes, flow direction, pericytes, vessel tubes), every other network
+  hidden, and which kinds of layer were on carried across (`carried_roles`: a kind the network
+  being left has no layer of -- the baseline's pericytes, usually -- keeps the answer the swap
+  before carried). A perturbation's `LayerSpec`s carry
   `layer_set=<its name>`, stored in the layer's `OURS` tag; the baseline's are `None`. The shown
   network is the one `_sync_vessel_tubes` draws as tubes or lines. A sweep perturbation's grid
   sliders sit in the view panel's Sweep box (not docks of their own) and show only while that
-  perturbation is the one shown. The view panel's "Colour by" menu (`_VesselColourMenu` in
+  perturbation is the one shown. Every perturbation type in `PERICYTE_PERTURBATION_TYPES`
+  (`haemodynamics/perturbations.py`) gets a hidden `HaemoLynx {name} pericytes` Points layer from
+  the edges' `pericyte_centers_um`, which all three constriction strategies record; a sweep
+  records each grid point's sites on its `SweepFlowGrid` (`pericyte_sites`, since spacing and
+  length sweeps move them), and the same sliders swap them in (`_apply_sweep_points`). The view panel's "Colour by" menu (`_VesselColourMenu` in
   `_widget.py`) colours the shown network's vessels Vectors layer — tubes take their colours from
   it — through `_choose_colour_by`, the same path as the layer controls' own Colour by.
 - **`gui/vessel_tubes.py`** — the vessel tube mesh. `tube_mesh(..., quality=)` is driven by the

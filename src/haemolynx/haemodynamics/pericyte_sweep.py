@@ -39,7 +39,12 @@ from .resistance import (
     reachable_through_conductances,
     reachable_unknown_node_indices,
 )
-from .sweep_flows import build_sweep_flow_grid, record_flows_after_solve
+from .sweep_flows import (
+    PericyteSites,
+    build_sweep_flow_grid,
+    edge_pericyte_sites,
+    record_flows_after_solve,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -481,6 +486,7 @@ def run_pericyte_dilation_pressure_sweep(
 
     results: list[dict[str, Any]] = []
     recorded_flows: list[dict[str, np.ndarray]] = []
+    recorded_sites: list[PericyteSites] = []
     iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for dilation_percent in dilation_values:
@@ -523,6 +529,10 @@ def run_pericyte_dilation_pressure_sweep(
         )
         results.extend(rows)
         recorded_flows.extend(flows)
+        if sweep_dilation:
+            # Only a dilation sweep places constrictions; every inlet pressure
+            # at this dilation shares its sites.
+            recorded_sites.extend([edge_pericyte_sites(dilated)] * len(flows))
 
     if sweep_dilation and sweep_pressure:
         csv_name = "pericyte_dilation_pressure_sweep.csv"
@@ -549,6 +559,7 @@ def run_pericyte_dilation_pressure_sweep(
         axis_values=axis_values,
         recorded=recorded_flows,
         node_list=last_node_list,
+        pericyte_sites=recorded_sites if sweep_dilation else None,
     )
     logger.info(
         f"{label}: {len(results)} points "

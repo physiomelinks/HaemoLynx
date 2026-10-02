@@ -3,7 +3,9 @@
 Sweep helpers solve many networks; napari needs one Vectors geometry and a way
 to swap ``flow_abs`` (and related columns) as the user moves along the grid.
 Keeping a full ``MultiGraph`` per grid point is wasteful; this module records
-only the edge-feature arrays, in the graph's ``edges(keys=True)`` order.
+only the edge-feature arrays, in the graph's ``edges(keys=True)`` order -- and,
+for a sweep that places pericytes, where each grid point put them, since a
+spacing or length sweep moves them from one point to the next.
 """
 from __future__ import annotations
 
@@ -16,8 +18,10 @@ import numpy as np
 from .resistance import set_edge_flows
 
 __all__ = [
+    "PericyteSites",
     "SweepFlowGrid",
     "edge_attr_array",
+    "edge_pericyte_sites",
     "node_pressure_array",
     "record_flows_after_solve",
     "build_sweep_flow_grid",
@@ -52,6 +56,41 @@ def node_pressure_array(G: nx.Graph, node_list: Sequence[Any]) -> np.ndarray:
     )
 
 
+@dataclass(frozen=True, eq=False)
+class PericyteSites:
+    """Where one solved network put its pericyte constrictions.
+
+    Site ``i`` is on edge ``edge_index[i]``, counted in ``edges(keys=True)``
+    order like every array here, ``arc_length_um[i]`` microns along it: the
+    ``pericyte_centers_um`` that ``constriction.apply_constriction_sites``
+    records on each edge, flattened.
+    """
+
+    edge_index: np.ndarray
+    arc_length_um: np.ndarray
+
+    def __len__(self) -> int:
+        return int(len(self.edge_index))
+
+
+def edge_pericyte_sites(G: nx.Graph) -> PericyteSites:
+    """Every constriction site on *G*, as :class:`PericyteSites`."""
+    if getattr(G, "is_multigraph", lambda: False)():
+        edges = (data for _u, _v, _key, data in G.edges(keys=True, data=True))
+    else:
+        edges = (data for _u, _v, data in G.edges(data=True))
+    edge_index: list[int] = []
+    arc_length: list[float] = []
+    for index, data in enumerate(edges):
+        for centre in data.get("pericyte_centers_um") or ():
+            edge_index.append(index)
+            arc_length.append(float(centre))
+    return PericyteSites(
+        edge_index=np.asarray(edge_index, dtype=int),
+        arc_length_um=np.asarray(arc_length, dtype=float),
+    )
+
+
 def record_flows_after_solve(
     G: nx.Graph, node_list: Sequence[Any], pressure: np.ndarray
 ) -> dict[str, np.ndarray]:
@@ -81,6 +120,10 @@ class SweepFlowGrid:
     pressure_drop: np.ndarray | None = None
     node_pressure: np.ndarray | None = None  # (n_points, n_nodes)
     node_list: tuple[Any, ...] = ()
+    #: Each grid point's pericyte sites, in the same row order as *flow_abs*;
+    #: None for a sweep that places none. Points differing only in inlet
+    #: pressure share one geometry, and one object.
+    pericyte_sites: tuple[PericyteSites, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.flow_abs.ndim != 2:
@@ -96,6 +139,11 @@ class SweepFlowGrid:
         if self.flow_abs.shape[0] != expected:
             raise ValueError(
                 f"flow_abs has {self.flow_abs.shape[0]} rows but axes "
+                f"{self.axis_names} imply {expected} grid points."
+            )
+        if self.pericyte_sites is not None and len(self.pericyte_sites) != expected:
+            raise ValueError(
+                f"pericyte_sites has {len(self.pericyte_sites)} entries but axes "
                 f"{self.axis_names} imply {expected} grid points."
             )
 
@@ -147,6 +195,11 @@ class SweepFlowGrid:
             return None
         return self.node_pressure[self.flat_index(*indices)]
 
+    def pericyte_sites_at(self, *indices: int) -> PericyteSites | None:
+        if self.pericyte_sites is None:
+            return None
+        return self.pericyte_sites[self.flat_index(*indices)]
+
     def global_flow_abs_limits(self) -> tuple[float, float] | None:
         """Contrast limits spanning every grid point (nan-aware)."""
         values = self.flow_abs[np.isfinite(self.flow_abs)]
@@ -165,8 +218,10 @@ def build_sweep_flow_grid(
     axis_values: Mapping[str, Sequence[Any]],
     recorded: Sequence[Mapping[str, np.ndarray]],
     node_list: Sequence[Any] | None = None,
+    pericyte_sites: Sequence[PericyteSites] | None = None,
 ) -> SweepFlowGrid:
-    """Stack per-point ``record_flows_after_solve`` dicts into a grid."""
+    """Stack per-point ``record_flows_after_solve`` dicts into a grid, with
+    each point's :func:`edge_pericyte_sites` when the sweep placed any."""
     if not recorded:
         raise ValueError("recorded must contain at least one grid point.")
     names = tuple(str(name) for name in axis_names)
@@ -194,4 +249,5 @@ def build_sweep_flow_grid(
         pressure_drop=pressure_drop,
         node_pressure=node_pressure,
         node_list=tuple(node_list or ()),
+        pericyte_sites=None if pericyte_sites is None else tuple(pericyte_sites),
     )

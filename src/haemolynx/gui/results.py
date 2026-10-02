@@ -300,6 +300,11 @@ def perturbation_flow_direction_layer_name(name: str) -> str:
     return f"{PREFIX}{name} flow direction"
 
 
+def perturbation_pericyte_layer_name(name: str) -> str:
+    """Where one pericyte-placing perturbation put its pericytes."""
+    return f"{PREFIX}{name} pericytes"
+
+
 def image_z_extent_um(
     voxel_size_zyx: Sequence[float], image_shape_z: int
 ) -> float:
@@ -809,6 +814,10 @@ class LayerSpec:
     #: baseline's and for everything that is not a network (see
     #: :mod:`haemolynx.gui.layer_sets`, which swaps whole networks).
     layer_set: str | None = None
+    #: A Points layer whose points move along a sweep: ``(data, features)``
+    #: per grid point, in the grid's row order. Its network's sweep sliders
+    #: swap them in (a spacing or length sweep moves the pericytes).
+    sweep_points: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -1097,7 +1106,9 @@ def colour_cycle_for(
     return tuple((label, tuple(float(c) for c in mapping[label])) for label in ordered)
 
 
-def pericyte_points(graph: Any) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+def pericyte_points(
+    graph: Any, sites: Any = None
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """Where the constrictions actually are, from each edge's own centres.
 
     `constriction.py` records `pericyte_centers_um` per edge -- arclengths along
@@ -1106,6 +1117,10 @@ def pericyte_points(graph: Any) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     them: it re-derives positions periodically from the spacing settings, which
     is right for the periodic strategy and wrong for the mask one, where the
     sites came from a segmented image. Here we want where they are.
+
+    *sites* (a ``haemodynamics.sweep_flows.PericyteSites``) are one sweep grid
+    point's centres instead, placed on *graph*'s geometry: a sweep solves each
+    point on a copy, so the graph it keeps carries none of its own.
     """
     from haemolynx.geometry import cumulative_lengths
     from haemolynx.visualization.vtk_io import _interpolate_at_length
@@ -1115,8 +1130,17 @@ def pericyte_points(graph: Any) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     branch_order: list[str] = []
     arclength: list[float] = []
 
+    by_edge: dict[int, list[float]] | None = None
+    if sites is not None:
+        by_edge = {}
+        for index, centre in zip(sites.edge_index, sites.arc_length_um):
+            by_edge.setdefault(int(index), []).append(float(centre))
+
     for index, (u, v, _key, data) in enumerate(_iter_edges(graph)):
-        centres = data.get("pericyte_centers_um")
+        if by_edge is None:
+            centres = data.get("pericyte_centers_um")
+        else:
+            centres = by_edge.get(index)
         if not centres:
             continue
         try:
@@ -1130,13 +1154,42 @@ def pericyte_points(graph: Any) -> tuple[np.ndarray, dict[str, np.ndarray]]:
             branch_order.append(str(data.get("branch_order", "")))
             arclength.append(float(centre))
 
-    if not points:
-        return np.empty((0, 3), dtype=float), {}
-    return np.stack(points), {
+    features = {
         "edge_index": np.asarray(edge_index, dtype=int),
         "branch_order": np.asarray(branch_order, dtype=object),
         "arc_length_um": np.asarray(arclength, dtype=float),
     }
+    if not points:
+        return np.empty((0, 3), dtype=float), features
+    return np.stack(points), features
+
+
+def pericyte_layer(
+    name: str,
+    points: np.ndarray,
+    features: Mapping[str, np.ndarray],
+    *,
+    visible: bool = True,
+    labels: Iterable[Any] | None = None,
+) -> LayerSpec:
+    """Pericyte sites as Points coloured by their vessel's branch order.
+
+    *labels* are every branch order the colours have to cover, when that is
+    more than these points hold -- a sweep's points at every grid point, so a
+    pericyte keeps its colour as the slider moves.
+    """
+    return LayerSpec(
+        kind="points", name=name, data=points, features=features,
+        colour_by="branch_order", colour_kind="categorical",
+        colour_cycle=colour_cycle_for(
+            features.get("branch_order", ()) if labels is None else labels
+        ),
+        visible=visible,
+        options={
+            "size": PERICYTE_POINT_SIZE,
+            "out_of_slice_display": True,
+        },
+    )
 
 
 def midpoints_of(paths: Sequence[np.ndarray]) -> np.ndarray:
@@ -1922,17 +1975,7 @@ class ResultLayers:
             np.empty((0, 3)), {}
         )
         if len(points):
-            layers.append(
-                LayerSpec(
-                    kind="points", name=PERICYTES, data=points, features=features,
-                    colour_by="branch_order", colour_kind="categorical",
-                    colour_cycle=colour_cycle_for(features.get("branch_order", ())),
-                    options={
-                        "size": PERICYTE_POINT_SIZE,
-                        "out_of_slice_display": True,
-                    },
-                )
-            )
+            layers.append(pericyte_layer(PERICYTES, points, features))
         fwhm_raw = getattr(output, "fwhm_raw", None)
         if fwhm_raw is not None:
             layers.append(
@@ -2099,7 +2142,12 @@ class ResultLayers:
         baseline with different numbers on it, so a visible one lies exactly on
         top of the vessels it is meant to be compared with and whichever was
         added last wins. Ticking one on is the comparison.
+
+        A perturbation that places pericytes also gets a layer of where it
+        put them.
         """
+        from haemolynx.haemodynamics.perturbations import places_pericytes
+
         graph = result.graph
         vessels_name, nodes_name = perturbation_layer_names(result.name)
         paths, identity = edge_polylines(graph)
@@ -2174,6 +2222,16 @@ class ResultLayers:
                 graph, name=perturbation_flow_direction_layer_name(result.name), visible=False
             )
         )
+        if places_pericytes(getattr(result, "type", "")):
+            # Even when it placed none: an empty layer says so, and replaces
+            # the sites a previous run of this perturbation left on screen.
+            layers.append(
+                pericyte_layer(
+                    perturbation_pericyte_layer_name(result.name),
+                    *pericyte_points(graph),
+                    visible=False,
+                )
+            )
         return tuple(layers)
 
     def _sweep_perturbation_layers(self, result: Any) -> tuple[LayerSpec, ...]:
@@ -2181,7 +2239,8 @@ class ResultLayers:
 
         Initial colouring is grid point 0; the widget attaches slider(s) that
         swap ``flow_abs`` (and signed / drop columns) via *segment_owner*
-        without rebuilding polylines.
+        without rebuilding polylines. A sweep that places pericytes also gets
+        a Points layer of them, which the same sliders move.
         """
         graph = result.graph
         sweep = getattr(result, "sweep_flows", None)
@@ -2277,6 +2336,42 @@ class ResultLayers:
                 sweep_edge_index=edge_index,
                 sweep_directions=directions,
             ),
+        ) + self._sweep_pericyte_layers(result.name, graph, sweep)
+
+    def _sweep_pericyte_layers(
+        self, name: str, graph: Any, sweep: Any
+    ) -> tuple[LayerSpec, ...]:
+        """Where a sweep's pericytes are at each grid point, as one Points layer.
+
+        Built for every point now (conversion is eager, see the module notes)
+        and starting at point 0, like the vessels; their sliders swap the
+        rest in. Points that differ only in inlet pressure share one geometry,
+        so each set of sites is placed once.
+        """
+        rows = getattr(sweep, "pericyte_sites", None)
+        if rows is None:
+            return ()
+        placed: dict[int, tuple[np.ndarray, dict[str, np.ndarray]]] = {}
+        for sites in rows:
+            if id(sites) not in placed:
+                placed[id(sites)] = pericyte_points(graph, sites)
+        per_row = tuple(placed[id(sites)] for sites in rows)
+        labels = [
+            label for _points, features in placed.values()
+            for label in features["branch_order"]
+        ]
+        points, features = per_row[0]
+        return (
+            replace(
+                pericyte_layer(
+                    perturbation_pericyte_layer_name(name),
+                    points,
+                    features,
+                    visible=False,
+                    labels=labels,
+                ),
+                sweep_points=per_row,
+            ),
         )
 
     def _from_run_perturbations(self, output: Any) -> StageLayers:
@@ -2284,6 +2379,7 @@ class ResultLayers:
 
         Non-sweeps get vessels+nodes from their graph. Sweeps get one Vectors
         layer backed by retained per-grid flow arrays (slider UI in the widget).
+        Either kind gets a pericytes layer when it places pericytes.
         """
         from haemolynx.haemodynamics.perturbations import is_sweep_perturbation
 

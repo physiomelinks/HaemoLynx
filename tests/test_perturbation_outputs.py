@@ -458,3 +458,85 @@ def test_a_pressure_only_sweep_layer_keeps_geometry_but_not_flow_magnitudes():
     assert "diameter_um" in features
     # Transit time is volume / flow: it moves with the inlet pressure.
     assert "transit_time_s" not in features
+
+
+# --- where each perturbation put its pericytes --------------------------------
+
+
+def test_exactly_the_perturbations_that_place_pericytes_get_a_pericytes_layer(tmp_path):
+    """One worked entry of every type, run together: a pericytes layer for
+    each type that places sites, and none for the rest."""
+    from haemolynx.gui.results import perturbation_pericyte_layer_name
+    from haemolynx.haemodynamics import PERICYTE_PERTURBATION_TYPES, places_pericytes
+    from test_perturbation_stage import ENTRY_FOR_TYPE
+
+    assert PERICYTE_PERTURBATION_TYPES == {
+        "pressure_and_pericyte_sweep",
+        "pericyte_dilation_sweep",
+        "pericyte_spacing_sweep",
+        "pericyte_length_sweep",
+        "pericyte_diameter_change",
+        "arteriole_and_pericyte_diameter_change",
+    }
+    run = _run(tmp_path, [ENTRY_FOR_TYPE[name] for name in PERTURBATION_TYPES])
+    assert not run.failures, [(result.name, result.error) for result in run.failures]
+    names = {
+        spec.name
+        for spec in ResultLayers().stage_finished("run_perturbations", run).layers
+    }
+
+    for result in run.solved:
+        has_layer = perturbation_pericyte_layer_name(result.name) in names
+        assert has_layer == places_pericytes(result.type), result.type
+
+
+def test_a_pericyte_change_draws_its_sites_on_the_vessels_it_narrows(tmp_path):
+    """Its own sites, hidden like the rest of its network: on the two
+    capillaries the entry halves, not on the arteriole or venule it leaves be."""
+    import numpy as np
+
+    from haemolynx.gui.results import perturbation_pericyte_layer_name
+    from test_perturbation_stage import EDGE_LENGTH_UM, PERICYTE_TONE
+
+    result = _run(tmp_path, [PERICYTE_TONE]).results[0]
+    group = ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)
+    )
+    (pericytes,) = [
+        spec for spec in group.layers
+        if spec.name == perturbation_pericyte_layer_name(result.name)
+    ]
+
+    assert pericytes.kind == "points"
+    assert pericytes.visible is False
+    assert pericytes.layer_set == result.name
+    assert pericytes.sweep_points is None
+    assert set(pericytes.features["branch_order"]) == {"B01"}
+    # The fixture's vessels run end to end along the last axis; the two
+    # capillaries are its second and third, a constriction every 100 µm from
+    # 20 µm in.
+    expected = [
+        EDGE_LENGTH_UM * edge + centre
+        for edge in (1, 2)
+        for centre in (20.0, 120.0, 220.0, 320.0)
+    ]
+    np.testing.assert_allclose(np.asarray(pericytes.data)[:, 2], expected)
+    np.testing.assert_allclose(np.asarray(pericytes.data)[:, :2], 0.0)
+
+
+def test_a_pericyte_change_that_places_none_still_gets_its_empty_layer():
+    """Empty rather than absent, so a re-run never leaves the sites from a
+    previous run of the same perturbation on screen."""
+    from test_gui_results import a_perturbation_run, solved_graph
+    from haemolynx.gui.results import perturbation_pericyte_layer_name
+
+    result = PerturbationResult(
+        name="no_sites", type="pericyte_diameter_change", graph=solved_graph()
+    )
+    group = ResultLayers().stage_finished("run_perturbations", a_perturbation_run(result))
+    (pericytes,) = [
+        spec for spec in group.layers
+        if spec.name == perturbation_pericyte_layer_name("no_sites")
+    ]
+    assert len(pericytes.data) == 0
+    assert set(pericytes.features) == {"edge_index", "branch_order", "arc_length_um"}

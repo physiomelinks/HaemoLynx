@@ -92,6 +92,37 @@ def test_set_poiseuille_resistances_with_constrictions_fwhm_fallback(multigraph_
     assert np.isclose(r_fallback, G2[0][1][0]["resistance"])
 
 
+def test_constriction_centres_sit_mid_window_every_spacing_to_the_vessel_end():
+    assert MODEL.constriction_centres(400.0) == [20.0, 120.0, 220.0, 320.0]
+    assert MODEL.constriction_centres(320.0) == [20.0, 120.0, 220.0, 320.0]
+    assert MODEL.constriction_centres(10.0) == []  # ends before its first middle
+    assert MODEL.constriction_centres(0.0) == []
+    # The middle of the narrowest stretch of the diameter profile itself.
+    assert MODEL.get_diameter_at_position(120.0, 400.0, 6.0, 3.0) == 3.0
+
+
+def test_periodic_constrictions_record_where_they_narrow_the_vessel():
+    """Regression: the default strategy integrated its constrictions but
+    recorded none, so the viewer had no pericytes to draw for it."""
+    G = nx.MultiGraph()
+    G.add_edge(0, 1, length=400.0, branch_order="B01")
+    G.add_edge(1, 2, length=400.0, branch_order="Art1")
+
+    G, _results = MODEL.set_poiseuille_resistances_with_constrictions(
+        G,
+        {"B01": 6.0, "Art1": 6.0},
+        prefer_edge_fwhm_baseline=True,
+        constriction_factor_by_branch_order={"B01": 0.5, "Art1": 1.0},
+    )
+
+    capillary, arteriole = G[0][1][0], G[1][2][0]
+    assert capillary["pericyte_centers_um"] == [20.0, 120.0, 220.0, 320.0]
+    assert capillary["pericyte_count_assigned"] == 4
+    # A factor of 1 narrows nothing, so there is nothing there to draw.
+    assert arteriole["pericyte_centers_um"] == []
+    assert arteriole["pericyte_count_assigned"] == 0
+
+
 def test_set_poiseuille_edge_resistances(multigraph_with_branch_order):
     G = multigraph_with_branch_order.copy()
     out_graph, res = MODEL.set_poiseuille_edge_resistances(

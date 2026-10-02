@@ -2922,8 +2922,10 @@ def _perturbation_copy(G: nx.MultiGraph) -> nx.MultiGraph:
     * `arteriole.scale_arteriole_diameters`,
       `capillary.scale_capillary_diameters` and
       `pericyte_sweep.dilate_graph_diameters` -- `fwhm_diameter_um`
-    * `constriction.apply_constriction_sites` -- `pericyte_count_assigned`,
-      and `pericyte_centers_um` rebound to a freshly built list
+    * `constriction.apply_constriction_sites` and
+      `PoiseuilleModel.set_poiseuille_resistances_with_constrictions` --
+      `pericyte_count_assigned`, and `pericyte_centers_um` rebound to a
+      freshly built list
 
     Nothing reachable from a perturbation mutates a shared value in place, and
     the geometry (`voxels`, `pos`) is only ever read. Deep-copying it instead

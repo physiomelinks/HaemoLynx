@@ -1,22 +1,24 @@
 """The view panel's "Showing" menu, in a real viewer: baseline or a perturbation.
 
 A perturbation's layers lie exactly on the baseline's, so the menu swaps
-whole networks -- vessels (as tubes or lines), nodes and flow direction --
-and only appears once there is a perturbation to swap to.
+whole networks -- vessels (as tubes or lines), nodes, flow direction and
+pericytes -- and only appears once there is a perturbation to swap to.
 """
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 napari = pytest.importorskip("napari")
 pytest.importorskip("magicgui")
 
-from haemolynx.gui._widget import _apply_layers, settings_widget  # noqa: E402
+from haemolynx.gui._widget import OURS, _apply_layers, settings_widget  # noqa: E402
 from haemolynx.gui.results import (  # noqa: E402
     NODES,
     VESSEL_TUBES,
     VESSELS,
     perturbation_layer_names,
+    perturbation_pericyte_layer_name,
 )
 from haemolynx.gui.vessel_tubes import vessel_tubes_layer_name  # noqa: E402
 from test_gui_results import a_perturbation, a_perturbation_run, built  # noqa: E402
@@ -297,3 +299,58 @@ def test_each_sweep_keeps_its_grid_point_while_another_is_shown(sweeps):
     _choose(panel, first)
 
     assert _sweep_slider(panel, first)[1].value() == slider.maximum()
+
+
+# --- each network's pericytes -------------------------------------------------
+
+
+@pytest.fixture
+def pericytes(run, tmp_path):
+    """The baseline plus a pericyte re-solve and a spacing sweep."""
+    from haemolynx.gui.results import ResultLayers
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import PERICYTE_TONE, SPACING_SWEEP, _run
+
+    panel, viewer = run
+    results = _run(tmp_path, [PERICYTE_TONE, SPACING_SWEEP]).results
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=results, output_dir=tmp_path)))
+    return panel, viewer, results
+
+
+def test_pericytes_ticked_on_in_one_perturbation_are_on_in_the_next(pericytes):
+    """Even past the baseline, which has no pericytes layer to carry the answer."""
+    panel, viewer, (tone, sweep) = pericytes
+    tone_layer = perturbation_pericyte_layer_name(tone.name)
+    sweep_layer = perturbation_pericyte_layer_name(sweep.name)
+    assert len(viewer.layers[tone_layer].data) > 0
+    assert not viewer.layers[tone_layer].visible  # hidden, like its vessels
+
+    _choose(panel, tone.name)
+    viewer.layers[tone_layer].visible = True
+    _choose(panel, "Baseline")
+    assert not viewer.layers[tone_layer].visible
+    _choose(panel, sweep.name)
+
+    assert viewer.layers[sweep_layer].visible
+    assert not viewer.layers[tone_layer].visible
+
+
+def test_the_sweep_slider_moves_the_sweeps_pericytes(pericytes):
+    panel, viewer, (tone, sweep) = pericytes
+    name = perturbation_pericyte_layer_name(sweep.name)
+    first, second = viewer.layers[name].metadata[OURS]["sweep_points"]
+    tone_points = np.asarray(viewer.layers[perturbation_pericyte_layer_name(tone.name)].data)
+    _choose(panel, sweep.name)
+    _container, slider = _sweep_slider(panel, sweep.name)
+
+    slider.setValue(1)
+    np.testing.assert_allclose(viewer.layers[name].data, second[0])
+    assert list(viewer.layers[name].features["arc_length_um"]) == list(second[1]["arc_length_um"])
+
+    slider.setValue(0)
+    np.testing.assert_allclose(viewer.layers[name].data, first[0])
+    # Another network's pericytes are not the sweep's to move.
+    np.testing.assert_array_equal(
+        viewer.layers[perturbation_pericyte_layer_name(tone.name)].data, tone_points
+    )

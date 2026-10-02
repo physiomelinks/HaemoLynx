@@ -40,6 +40,7 @@ import numpy as np
 __all__ = [
     "INCOMPARABLE_OVERRIDES",
     "PERTURBATION_TYPES",
+    "PERICYTE_PERTURBATION_TYPES",
     "PERICYTE_CONSTRICTION_SETTINGS",
     "PERICYTE_ENTRY_GEOMETRY_SETTINGS",
     "PERICYTE_DILATION_SWEEP_SETTINGS",
@@ -53,6 +54,7 @@ __all__ = [
     "SWEEP_PERTURBATION_TYPES",
     "PerturbationSpec",
     "is_sweep_perturbation",
+    "places_pericytes",
     "perturbation_folder_name",
     "perturbation_output_dir",
     "perturbation_problems",
@@ -296,6 +298,22 @@ def is_sweep_perturbation(perturbation_type: Any) -> bool:
     if text in SWEEP_PERTURBATION_TYPES:
         return True
     return "sweep" in text and text != "none"
+
+
+#: Types that put pericyte constriction sites on the network they solve, so
+#: there is something to draw where the pericytes are. A type places sites
+#: exactly when it reads where they come from (the mask or the seeded cohort),
+#: so this is derived from :data:`SETTINGS_FOR_TYPE` rather than listed twice.
+PERICYTE_PERTURBATION_TYPES: frozenset[str] = frozenset(
+    name
+    for name, settings in SETTINGS_FOR_TYPE.items()
+    if "use_pericyte_mask_constriction" in settings
+)
+
+
+def places_pericytes(perturbation_type: Any) -> bool:
+    """Whether a perturbation of *perturbation_type* places pericyte sites."""
+    return str(perturbation_type) in PERICYTE_PERTURBATION_TYPES
 
 
 def settings_for_perturbation_type(perturbation_type: Any) -> tuple[str, ...]:

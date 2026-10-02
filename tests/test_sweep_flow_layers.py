@@ -13,18 +13,27 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from haemolynx.haemodynamics.sweep_flows import (  # noqa: E402
+    PericyteSites,
     SweepFlowGrid,
     build_sweep_flow_grid,
+    edge_pericyte_sites,
 )
-from haemolynx.gui.results import ResultLayers, perturbation_layer_names  # noqa: E402
-from haemolynx.pipeline import PerturbationResult  # noqa: E402
+from haemolynx.gui.results import (  # noqa: E402
+    ResultLayers,
+    perturbation_layer_names,
+    perturbation_pericyte_layer_name,
+)
+from haemolynx.pipeline import PerturbationResult, PerturbationRun  # noqa: E402
 from haemolynx.visualization.perturbation_plots import wants_napari_flow_layer  # noqa: E402
 
 from test_gui_results import a_perturbation_run, solved_graph  # noqa: E402
 from test_perturbation_stage import (  # noqa: E402
     DILATION_SWEEP,
+    EDGE_LENGTH_UM,
+    LENGTH_SWEEP,
     PRESSURE_AND_PERICYTE_SWEEP,
     PRESSURE_SWEEP,
+    SPACING_SWEEP,
     _run,
 )
 
@@ -200,3 +209,108 @@ def test_sweeps_want_a_napari_flow_layer():
     assert wants_napari_flow_layer("pressure_and_arteriole_sweep")
     assert wants_napari_flow_layer("arteriole_diameter_change")
     assert not wants_napari_flow_layer("none")
+
+
+# --- where each grid point put its pericytes ---------------------------------
+
+
+def _sites_by_edge(sites: PericyteSites) -> dict[int, list[float]]:
+    by_edge: dict[int, list[float]] = {}
+    for index, centre in zip(sites.edge_index.tolist(), sites.arc_length_um.tolist()):
+        by_edge.setdefault(index, []).append(centre)
+    return by_edge
+
+
+def test_edge_pericyte_sites_flatten_each_edges_centres_in_edge_order():
+    graph = solved_graph()
+    edges = list(graph.edges(keys=True, data=True))
+    edges[0][3]["pericyte_centers_um"] = [1.0, 2.0]
+    edges[2][3]["pericyte_centers_um"] = [3.0]
+    edges[1][3]["pericyte_centers_um"] = []
+
+    sites = edge_pericyte_sites(graph)
+
+    assert len(sites) == 3
+    assert sites.edge_index.tolist() == [0, 0, 2]
+    assert sites.arc_length_um.tolist() == [1.0, 2.0, 3.0]
+    assert len(edge_pericyte_sites(solved_graph())) == 0
+
+
+def test_a_grid_refuses_pericyte_sites_that_do_not_match_its_points():
+    one = PericyteSites(edge_index=np.asarray([0]), arc_length_um=np.asarray([1.0]))
+    with pytest.raises(ValueError, match="pericyte_sites has 1 entries"):
+        SweepFlowGrid(
+            axis_names=("dilation_percent",),
+            axis_values={"dilation_percent": np.asarray([0, 10])},
+            flow_abs=np.ones((2, 2)),
+            pericyte_sites=(one,),
+        )
+
+
+def test_a_spacing_sweep_records_where_each_grid_point_put_its_pericytes(tmp_path):
+    """The sites move with the spacing; the graph the sweep keeps has none."""
+    result = _run(tmp_path, [SPACING_SWEEP]).results[0]
+    assert result.error is None, result.error
+    sweep = result.sweep_flows
+
+    close, wide = (_sites_by_edge(sweep.pericyte_sites_at(i)) for i in (0, 1))
+
+    # Spacing 50 then 100 µm, a 40 µm constriction centred 20 µm in, on each
+    # of the four vessels the fixture's factors narrow.
+    assert sorted(close) == sorted(wide) == [0, 1, 2, 3]
+    assert close[1] == [20.0 + 50.0 * k for k in range(8)]
+    assert wide[1] == [20.0, 120.0, 220.0, 320.0]
+    assert all(
+        not data.get("pericyte_centers_um")
+        for *_edge, data in result.graph.edges(keys=True, data=True)
+    )
+
+
+def test_a_length_sweep_moves_the_first_site_with_the_length(tmp_path):
+    result = _run(tmp_path, [LENGTH_SWEEP]).results[0]
+    assert result.error is None, result.error
+
+    short, long_ = (_sites_by_edge(result.sweep_flows.pericyte_sites_at(i)) for i in (0, 1))
+
+    assert short[1] == [10.0, 110.0, 210.0, 310.0]  # 20 µm long
+    assert long_[1] == [20.0, 120.0, 220.0, 320.0]  # 40 µm long
+
+
+def test_a_dilation_and_pressure_sweep_places_each_dilations_sites_once(tmp_path):
+    sweep = _run(tmp_path, [PRESSURE_AND_PERICYTE_SWEEP]).results[0].sweep_flows
+
+    # 2 dilations x 2 pressures: the pressures at one dilation share its sites.
+    assert sweep.pericyte_sites_at(0, 0) is sweep.pericyte_sites_at(0, 1)
+    assert sweep.pericyte_sites_at(1, 0) is sweep.pericyte_sites_at(1, 1)
+    assert len(sweep.pericyte_sites_at(1, 1)) > 0
+
+
+def test_a_pressure_only_sweep_places_no_pericytes(tmp_path):
+    sweep = _run(tmp_path, [PRESSURE_SWEEP]).results[0].sweep_flows
+    assert sweep.pericyte_sites is None
+    assert sweep.pericyte_sites_at(0) is None
+
+
+def test_a_sweeps_pericyte_layer_holds_every_grid_points_sites(tmp_path):
+    result = _run(tmp_path, [SPACING_SWEEP]).results[0]
+    group = ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)
+    )
+    name = perturbation_pericyte_layer_name(result.name)
+    (pericytes,) = [spec for spec in group.layers if spec.name == name]
+
+    assert pericytes.kind == "points"
+    assert pericytes.visible is False
+    assert pericytes.layer_set == result.name
+    # It follows its network's sliders rather than growing its own.
+    assert pericytes.sweep is None
+    assert len(pericytes.sweep_points) == result.sweep_flows.n_points
+    first, second = pericytes.sweep_points
+    np.testing.assert_array_equal(pericytes.data, first[0])
+    assert len(first[0]) == 32 and len(second[0]) == 16
+    # The fixture's vessels run along the last axis, end to end.
+    capillary = second[0][second[1]["edge_index"] == 1]
+    assert capillary[:, 2].tolist() == [EDGE_LENGTH_UM + c for c in (20.0, 120.0, 220.0, 320.0)]
+    # One colour per branch order across every grid point, so none changes
+    # colour as the slider moves.
+    assert {label for label, _colour in pericytes.colour_cycle} == {"Art1", "B01", "Ven1"}

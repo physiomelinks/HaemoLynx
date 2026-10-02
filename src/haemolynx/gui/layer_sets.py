@@ -4,13 +4,15 @@ A perturbation is the baseline's geometry with its own flows on it, so its
 layers lie exactly on top of the baseline's and whichever is drawn last wins.
 Comparing them one layer tick at a time means finding the right three of a
 dozen layers each time. The view panel's "Showing" menu swaps the whole set
-instead: the chosen network's vessels, nodes and flow-direction arrows, every
-other network's hidden.
+instead: the chosen network's vessels, nodes, flow-direction arrows and
+pericytes, every other network's hidden.
 
 What carries across a swap is *which kinds* of layer were on -- nodes on in
 the baseline stay on in the perturbation -- so flipping back and forth
-compares like with like. The vessels are always on for the network shown,
-exactly as the baseline's are today (the tubes/lines drawing keeps them so).
+compares like with like, and a kind the network left behind has no layer of
+(the baseline's pericytes, usually) is remembered from the one before it. The
+vessels are always on for the network shown, exactly as the baseline's are
+today (the tubes/lines drawing keeps them so).
 
 Pure: layer names and visibilities in, visibilities out. A set is named by
 its perturbation, and :data:`BASELINE` (``None``) is the baseline, so a
@@ -23,9 +25,11 @@ from typing import Iterable, Mapping, Sequence
 from haemolynx.gui.results import (
     FLOW_DIRECTION,
     NODES,
+    PERICYTES,
     VESSELS,
     perturbation_flow_direction_layer_name,
     perturbation_layer_names,
+    perturbation_pericyte_layer_name,
 )
 from haemolynx.gui.vessel_tubes import vessel_tubes_layer_name
 
@@ -33,6 +37,7 @@ __all__ = [
     "BASELINE",
     "BASELINE_LABEL",
     "ROLES",
+    "carried_roles",
     "layer_set",
     "layer_set_choices",
     "role_visibility",
@@ -45,18 +50,24 @@ BASELINE = None
 BASELINE_LABEL = "Baseline"
 
 #: The kinds of layer one network has, in the order they are listed.
-ROLES = ("vessels", "nodes", "flow direction")
+ROLES = ("vessels", "nodes", "flow direction", "pericytes")
 
 
 def layer_set(key: str | None) -> dict[str, str]:
     """``{role: layer name}`` for the baseline (``None``) or one perturbation."""
     if key is BASELINE:
-        return {"vessels": VESSELS, "nodes": NODES, "flow direction": FLOW_DIRECTION}
+        return {
+            "vessels": VESSELS,
+            "nodes": NODES,
+            "flow direction": FLOW_DIRECTION,
+            "pericytes": PERICYTES,
+        }
     vessels, nodes = perturbation_layer_names(key)
     return {
         "vessels": vessels,
         "nodes": nodes,
         "flow direction": perturbation_flow_direction_layer_name(key),
+        "pericytes": perturbation_pericyte_layer_name(key),
     }
 
 
@@ -89,6 +100,23 @@ def role_visibility(key: str | None, visible: Mapping[str, bool]) -> dict[str, b
         elif name in visible:
             shown[role] = bool(visible[name])
     return shown
+
+
+def carried_roles(
+    incoming: Mapping[str, bool],
+    outgoing: Mapping[str, bool],
+    remembered: Mapping[str, bool],
+) -> dict[str, bool]:
+    """Which kinds of layer to have on after a swap.
+
+    *outgoing* is :func:`role_visibility` of the network being left -- what
+    the user has on now -- and wins. A kind it has no layer of keeps
+    *remembered*, the answer the swap before carried, so pericytes ticked on
+    in one perturbation are still on in the next after a stop at a baseline
+    that has none. *incoming*, the new network's own visibility, answers only
+    for a kind neither has ever said anything about.
+    """
+    return {**incoming, **remembered, **outgoing}
 
 
 def visibility_for(

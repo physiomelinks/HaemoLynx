@@ -32,7 +32,7 @@ from .pericyte_sweep import (
     sweep_rows_at_pressures,
 )
 from .poiseuille import PoiseuilleModel
-from .sweep_flows import build_sweep_flow_grid
+from .sweep_flows import PericyteSites, build_sweep_flow_grid, edge_pericyte_sites
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +211,9 @@ def run_pericyte_geometry_sweep(
 
     results: list[dict[str, Any]] = []
     recorded_flows: list[dict[str, np.ndarray]] = []
+    # The sites move with the axis: spacing sets how far apart they are,
+    # length where the first one sits.
+    recorded_sites: list[PericyteSites] = []
     iterations: list[dict[str, Any] | None] = []
     last_node_list: list[int] = []
     for axis_value in axis_values:
@@ -258,6 +261,7 @@ def run_pericyte_geometry_sweep(
         )
         results.extend(rows)
         recorded_flows.extend(flows)
+        recorded_sites.extend([edge_pericyte_sites(step_graph)] * len(flows))
 
     if sweep_axis == "spacing":
         flow_axis_name = "constriction_spacing_um"
@@ -268,6 +272,7 @@ def run_pericyte_geometry_sweep(
         axis_values={flow_axis_name: axis_values},
         recorded=recorded_flows,
         node_list=last_node_list,
+        pericyte_sites=recorded_sites,
     )
 
     csv_path = write_geometry_sweep_csv(results, output_dir / csv_name)

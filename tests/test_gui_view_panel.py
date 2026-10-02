@@ -1108,6 +1108,51 @@ def test_a_sweep_layer_keeps_its_grid_point_through_a_z_depth_change(make_napari
     np.testing.assert_allclose(shown(), expected(0))
 
 
+def test_a_sweeps_pericytes_follow_its_slider_inside_a_z_depth_window(make_napari_viewer, tmp_path):
+    """A spacing sweep moves the pericytes themselves. Moved inside a depth
+    window, only the moved points in the window show; widened again, the
+    window gives back that grid point's points, not the first one's."""
+    from qtpy.QtWidgets import QAbstractSlider
+
+    from haemolynx.gui._widget import OURS as RESULT_OURS
+    from haemolynx.gui.results import (
+        ResultLayers,
+        perturbation_layer_names,
+        perturbation_pericyte_layer_name,
+    )
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import SPACING_SWEEP, _run
+
+    result = _run(tmp_path, [SPACING_SWEEP]).results[0]
+    # Along z, as in the test above, so a depth window leaves some out.
+    for _node, data in result.graph.nodes(data=True):
+        data["pos"] = np.asarray(data["pos"], dtype=float)[::-1].copy()
+    for *_ends, data in result.graph.edges(keys=True, data=True):
+        data["voxels"] = [list(point)[::-1] for point in data["voxels"]]
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)))
+    panel._haemolynx_after_layers_applied()
+    name = perturbation_pericyte_layer_name(result.name)
+    _key, sliders = panel._haemolynx_sweep_controls[perturbation_layer_names(result.name)[0]]
+    (grid_slider,) = sliders.native.findChildren(QAbstractSlider)
+    first, second = viewer.layers[name].metadata[RESULT_OURS]["sweep_points"]
+    assert len(first[0]) > len(second[0])  # spacing 50, then 100 µm
+    full = panel._haemolynx_z_depth_slider.value()
+
+    panel._haemolynx_z_depth_slider.setValue((0.0, 900.0))
+    grid_slider.setValue(1)
+
+    shown = np.asarray(viewer.layers[name].data)
+    np.testing.assert_allclose(shown, second[0][second[0][:, 0] <= 900.0])
+    assert 0 < len(shown) < len(second[0])
+    assert set(viewer.layers[name].features["branch_order"]) <= {"Art1", "B01", "Ven1"}
+
+    panel._haemolynx_z_depth_slider.setValue(full)
+    np.testing.assert_allclose(viewer.layers[name].data, second[0])
+
+
 def _sweep_sliders(panel, viewer) -> list[str]:
     """The layers with sweep sliders: in the view panel, or any stray dock."""
     docks = [name for name in viewer.window._wrapped_dock_widgets if name.endswith(" sweep")]

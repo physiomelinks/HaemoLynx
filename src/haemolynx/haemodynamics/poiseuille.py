@@ -625,6 +625,21 @@ class PoiseuilleModel:
             return d2 + (d1 - d2) * ((phase - 30) / 10)
         return d1
 
+    def constriction_centres(self, length: float) -> list[float]:
+        """The middle of each constriction :meth:`get_diameter_at_position`
+        puts on a vessel *length* um long: one every ``constriction_spacing``
+        from ``constriction_length / 2``, as far as the vessel's end -- the
+        same sites the probabilistic strategy places before drawing which are
+        active."""
+        if length <= 0 or self.constriction_length <= 0 or self.constriction_spacing <= 0:
+            return []
+        centres: list[float] = []
+        centre = float(self.constriction_length) / 2.0
+        while centre <= float(length):
+            centres.append(centre)
+            centre += float(self.constriction_spacing)
+        return centres
+
     def calculate_viscosity(
         self,
         diameter: float,
@@ -1025,6 +1040,13 @@ class PoiseuilleModel:
                 results["edges_set"] += 1
             except Exception as e:
                 raise ValueError(f"Resistance calculation failed for edge ({u}, {v}, {key}): {e}")
+            # Where the pattern narrows this vessel, recorded the way
+            # `constriction.apply_constriction_sites` records its sites, so the
+            # viewer can draw this strategy's pericytes too. An edge whose
+            # factor leaves d2 == d1 has a pattern that changes nothing.
+            centres = self.constriction_centres(float(length)) if d2 != d1 else []
+            G[u][v][key]["pericyte_count_assigned"] = len(centres)
+            G[u][v][key]["pericyte_centers_um"] = centres
         return G, results
 
     def set_poiseuille_edge_resistances(

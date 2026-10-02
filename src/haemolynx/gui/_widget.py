@@ -2766,7 +2766,7 @@ def _colour_layer(layer, column: str | None, kind: str = "continuous",
         _record_colour(layer, column)
         _maybe_retint_vessel_tubes(layer)
         return
-    if kind == "categorical" and cycle:
+    if kind == "categorical" and cycle and len(layer.features[column]):
         # One colour per item, looked up by label, rather than handing napari
         # the cycle and the column and letting it pair them up. It pairs them
         # by the order the values are first *encountered*, not by the labels
@@ -3019,6 +3019,12 @@ def _store_sweep_metadata(layer, spec) -> None:
         tag.pop("segment_owner", None)
         tag.pop("sweep_edge_index", None)
         tag.pop("sweep_directions", None)
+    if getattr(spec, "sweep_points", None) is not None:
+        tag["sweep_points"] = spec.sweep_points
+        tag["sweep_points_colour_cycle"] = spec.colour_cycle
+    else:
+        tag.pop("sweep_points", None)
+        tag.pop("sweep_points_colour_cycle", None)
     metadata = dict(getattr(layer, "metadata", {}) or {})
     metadata[OURS] = tag
     layer.metadata = metadata
@@ -3073,13 +3079,13 @@ def _apply_layer_set_visibility(viewer, key, roles) -> None:
 
 def show_layer_set(viewer, key: str | None) -> None:
     """Show one network -- the baseline (None) or a perturbation -- and hide
-    every other network's vessels, nodes and flow direction.
+    every other network's vessels, nodes, flow direction and pericytes.
 
     Which kinds of layer were on carries across from the network shown
     before (see :mod:`haemolynx.gui.layer_sets`). A perturbation with no
     layers in the viewer shows the baseline instead.
     """
-    from haemolynx.gui.layer_sets import role_visibility
+    from haemolynx.gui.layer_sets import carried_roles, role_visibility
 
     if viewer is None:
         return
@@ -3087,12 +3093,12 @@ def show_layer_set(viewer, key: str | None) -> None:
         key = None
     shown = _layer_set_shown(viewer)
     visible = {layer.name: bool(layer.visible) for layer in viewer.layers if _is_ours(layer)}
-    roles = role_visibility(key, visible)
+    remembered = getattr(viewer, "_haemolynx_layer_set_roles", {}) or {}
     outgoing = role_visibility(shown, visible)
     if shown is not None and shown not in _perturbation_sets_in(viewer):
         # What was shown has gone: fall back to how the baseline was left.
-        outgoing = getattr(viewer, "_haemolynx_layer_set_roles", {}) or {}
-    roles.update(outgoing)
+        outgoing = remembered
+    roles = carried_roles(role_visibility(key, visible), outgoing, remembered)
     viewer._haemolynx_layer_set = key
     viewer._haemolynx_layer_set_roles = roles
     _apply_layer_set_visibility(viewer, key, roles)
@@ -3593,6 +3599,52 @@ def _apply_sweep_index(layer, indices: tuple[int, ...]) -> None:
     _colour_layer(layer, colour_by, "continuous", (), limits)
 
 
+def _apply_sweep_points(viewer, layer_set: str | None, row: int) -> None:
+    """Move network *layer_set*'s sweep-following Points layers to grid *row*.
+
+    A spacing or length sweep moves the pericytes themselves, so this swaps
+    the points, not a column. The Z-depth filter's cache takes the grid
+    point's whole set, and the layer shows the part inside the current
+    window, as the filter would have drawn it.
+    """
+    for layer in list(viewer.layers):
+        if not _is_ours(layer) or _layer_set_of(layer) != layer_set:
+            continue
+        tag = getattr(layer, "metadata", {}).get(OURS) or {}
+        per_row = tag.get("sweep_points")
+        if per_row is None or not 0 <= row < len(per_row):
+            continue
+        data, features = per_row[row]
+        rule = _colouring_rule(layer)
+        _store_z_filter_cache(layer, data, features)
+        shown, shown_features = data, features
+        window = _current_z_depth_window(viewer)
+        if window is not None:
+            shown, shown_features = filter_points_by_z(data, features, window[0], window[1])
+        # Fewer points than before recreates the layer (see
+        # _set_z_filtered_layer_data), so its colour controls go back on as
+        # the Z-depth filter puts them back.
+        layer = _set_z_filtered_layer_data(
+            viewer, layer, "points", shown, dict(shown_features), None
+        )
+        try:
+            _attach_colour_scale(viewer, layer)
+        except Exception:  # noqa: BLE001 - a missing colour bar is survivable
+            logger.debug("could not reattach colour controls to %s", layer.name, exc_info=True)
+        if len(layer.data):
+            cycle = tag.get("sweep_points_colour_cycle")
+            if rule is not None and rule["column"] == "branch_order" and cycle:
+                # The cycle covers every grid point's branch orders, so a
+                # pericyte keeps its colour as the slider moves.
+                _colour_layer(layer, "branch_order", "categorical", cycle)
+            else:
+                _reapply_colouring(layer, rule, features)
+        try:
+            _refresh_layer_controls(viewer, layer)
+        except Exception:  # noqa: BLE001 - a stale readout is survivable
+            logger.debug("could not refresh colour controls on %s", layer.name, exc_info=True)
+
+
 def _sweep_dock_name(layer_name: str) -> str:
     return f"{layer_name} sweep"
 
@@ -3661,12 +3713,17 @@ def _attach_sweep_sliders(viewer, layer, spec) -> None:
         value_labels.append(readout)
 
     layer_name = layer.name
+    network = getattr(spec, "layer_set", None)
 
     def on_change(_event=None) -> None:
         indices = tuple(int(slider.value) for _name, slider, _vals, _lab in sliders)
         for (_name, slider, values, readout), index in zip(sliders, indices):
             if 0 <= index < len(values):
                 readout.value = _format_sweep_value(_name, values[index])
+        try:
+            _apply_sweep_points(viewer, network, sweep.flat_index(*indices))
+        except Exception:  # noqa: BLE001 - the flows below still move
+            logger.debug("could not move %s's sweep points", network, exc_info=True)
         # By name, not the layer object this slider was built for: narrowing
         # the Z-depth filter replaces the layer with a new one, and a slider
         # still holding the old object moved flows on a layer no longer shown.
