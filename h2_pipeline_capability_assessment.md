@@ -1311,7 +1311,7 @@ the limit** at a twenty-seventh of native resolution's cost. Before the fix the 
 needing the 70-minute-per-specimen run T1.1 priced.
 
 > **Superseded (open item 30).** This held while diffusion was 750× too strong (open item 22).
-> With it fixed, median PO2 on WKY-C runs 91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm
+> With it fixed, median PO2 on WKY-C (centred boxes) runs 91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm
 > and does not converge: vessels are mapped by centreline, so a finer grid draws them thinner
 > (`cb_modelling_reference.md` §6.8). Vessels are now mapped over their cross-section, which
 > settles by 3 µm (every measure within 0.21 mmHg from 3 to 2 µm), and §2.3 runs at 3 µm.

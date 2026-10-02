@@ -242,7 +242,7 @@ source was exactly proportional to the mean cells crossed per edge:
 
 Shared by length, the total is grid-independent to the digit. The solution then converged (median
 PO2 27.34, 27.92, 28.21 at 10, 6 and 4 µm); after open items 22 and 29 it ran 91.38, 90.46, 89.52,
-89.19, 87.90 down to 2 µm and did not converge, until vessels were mapped over their cross-section
+89.19, 87.90 down to 2 µm (centred boxes) and did not converge, until vessels were mapped over their cross-section
 (§10.3).
 
 ### 4.6 Claims corrected by measurement
@@ -563,32 +563,34 @@ the choice between the two grids (S29) no longer matters.
 
 **§2.3 runs at 3 µm with vessels mapped over their cross-section, and is converged there to
 0.5 mmHg.** All six specimens, contrast 1, unpadded, cross-section mapping, on the placed boxes with
-the converged loop and the exact TH fraction (re-measured 2026-09-30). Two specimens shown, the
+the converged loop, the exact TH fraction and the centred TH lookup (re-measured in the
+2026-10-01 re-run; the 3 µm row equals the main run). Two specimens shown, the
 extremes of the cohort:
 
 | Grid | WKY-C median PO2 | WKY-C PO2 in TH | SHR-C median PO2 | SHR-C PO2 in TH | TH < 20 mmHg, any specimen |
 |---|---|---|---|---|---|
-| 10 µm | 92.44 | 93.25 | 89.77 | 88.90 | 0% |
-| 6 µm | 92.35 | 92.77 | 89.59 | 88.58 | 0% |
-| 4 µm | 92.29 | 92.54 | 89.52 | 88.46 | 0% |
-| 3 µm | 92.69 | 92.67 | 90.01 | 88.62 | 0% |
-| 2 µm | 92.58 | 92.54 | 89.86 | 88.55 | 0% |
+| 10 µm | 92.44 | 93.23 | 89.77 | 88.81 | 0% |
+| 6 µm | 92.35 | 92.74 | 89.59 | 88.50 | 0% |
+| 4 µm | 92.29 | 92.50 | 89.52 | 88.38 | 0% |
+| 3 µm | 92.69 | 92.62 | 90.01 | 88.54 | 0% |
+| 2 µm | 92.58 | 92.49 | 89.86 | 88.48 | 0% |
 
 "PO2 in TH" is the TH-weighted mean. The criterion is that both PO2 measures move less than
-0.5 mmHg per step in every specimen. Over all six, the largest step is 0.48 mmHg from 10 to 6 µm,
-0.23 from 6 to 4, 0.495 from 4 to 3 and 0.16 from 3 to 2. So 4 µm passes by 0.005 mmHg and 3 µm,
+0.5 mmHg per step in every specimen. Over all six, the largest step is 0.49 mmHg from 10 to 6 µm,
+0.235 from 6 to 4, 0.495 from 4 to 3 and 0.155 from 3 to 2. So 4 µm passes by 0.005 mmHg and 3 µm,
 the frozen grid, with a margin. 3 µm gives the highest median of 4, 3 and 2 µm in every specimen,
 a bump the TH fraction fix did not remove. It is the grid extent, not the solve (open item 39,
 closed): the default grid's side is 304 µm at 4 µm but 300 µm at 3 and 2 µm, and the extra
 vessel-free cells pull the 4 µm median down. On a grid pinned to 300 µm at every h, both measures
-fall steadily with h (−0.09 to −0.16 mmHg per step). It is within the criterion either way. The sweep predates the centred TH lookup of open item 40, which moves
-PO2 in TH at 3 µm by at most 0.08 mmHg.
+fall steadily with h (−0.09 to −0.16 mmHg per step). It is within the criterion either way.
 
 **Why the grid had to be revisited.** Until open item 30 each vessel was placed only in the cells
 its centreline crosses, whatever its width, so a finer grid drew a thinner vessel; in the limit it
-is a line source, and the field around a line goes as ln r. Mapped that way, WKY-C median PO2 ran
-91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm (SHR-C 80.28, 79.95, 78.35, 78.12, 75.85):
-about 1.5 and 1.9 mmHg lost per halving and no limit. On a single straight 9 µm vessel the
+is a line source, and the field around a line goes as ln r. Mapped that way on the old centred boxes, WKY-C median PO2
+ran 91.38, 90.46, 89.52, 89.19, 87.90 at 10, 6, 4, 3, 2 µm (SHR-C 80.28, 79.95, 78.35, 78.12, 75.85):
+about 1.5 and 1.9 mmHg lost per halving and no limit. Re-run on the placed boxes (2026-10-01) it
+runs 90.58, 89.66, 88.38, 86.86 at 10, 6, 3, 2 µm (SHR-C 87.44, 86.27, 84.83, 83.04), 1.2–1.8 mmHg
+lost per halving across the six, with the steps still growing. On a single straight 9 µm vessel the
 centreline mapping falls 17.0, 11.5, 8.6, 6.8 mmHg at 9, 3, 1, ⅓ µm, while the cross-section mapping
 gives 17.0, 23.4, 23.8, 23.2 (`tests/test_perfusion_tier1_grid_refinement.py`). Median calibre here
 is 7.5–8.4 µm, so at 4 µm most vessels were drawn thinner than they are, and the tissue read as
@@ -601,7 +603,8 @@ overcount of consumption (reference §11 row 24).
 Before items 22 and 29 the centreline sequence was 27.34, 27.92, 28.21, halving and extrapolating
 to about 28.5; before the sharing fix of §4.5 it ran 42.0, 46.9, 50.5. Outputs:
 `examples/outputs/cb_h2_hypoxic_fraction_xsec_grid{10,6,4,3,2}.json` (cross-section, all six), and
-for the centreline mapping `..._grid{10,6,3,2}.json` (all six).
+for the centreline mapping `..._grid{10,6,3,2}.json` (placed boxes, all six; the centred-box
+sequence is archived as `..._grid{10,6,3,2}_2026-09-29_pre_rerun.json`).
 
 ---
 
