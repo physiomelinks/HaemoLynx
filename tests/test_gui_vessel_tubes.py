@@ -271,10 +271,44 @@ def _helix(turns=3, points=200):
     return np.stack([3.0 * np.cos(t), 3.0 * np.sin(t), 0.8 * t], axis=1)
 
 
-def test_quality_zero_is_the_original_drawing_exactly():
+def _distance_to_polyline(points, polyline) -> np.ndarray:
+    """Each point's distance to the nearest point of *polyline*."""
+    polyline = np.asarray(polyline, dtype=float)
+    a, ab = polyline[:-1], np.diff(polyline, axis=0)
+    t = np.einsum("pij,ij->pi", points[:, None] - a[None], ab) / np.einsum("ij,ij->i", ab, ab)
+    closest = a[None] + np.clip(t, 0.0, 1.0)[..., None] * ab[None]
+    return np.linalg.norm(points[:, None] - closest, axis=2).min(axis=1)
+
+
+def _staircase(steps=40):
+    """A vessel running at 45 degrees through the voxel grid: unit steps along
+    x then y, turning a right angle at every step."""
+    moves = np.tile([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], (steps // 2, 1))
+    return np.vstack([np.zeros((1, 3)), np.cumsum(moves, axis=0)])
+
+
+def _cut_widths(vertices, faces, point, normal, across) -> list[float]:
+    """How wide the mesh's cut by the plane through *point*, square to
+    *normal*, is along each direction in *across*."""
+    side = (vertices - point) @ normal
+    cut = []
+    for i, j in ((0, 1), (1, 2), (2, 0)):
+        si, sj = side[faces[:, i]], side[faces[:, j]]
+        crosses = (si < 0) != (sj < 0)
+        w = si[crosses] / (si[crosses] - sj[crosses])
+        vi, vj = vertices[faces[crosses, i]], vertices[faces[crosses, j]]
+        cut.append(vi + w[:, None] * (vj - vi))
+    cut = np.concatenate(cut)
+    return [float(np.ptp(cut @ direction)) for direction in across]
+
+
+def test_quality_zero_is_the_separate_prisms():
     vectors = _polyline_vectors(_helix())
-    expected = tubes_from_vectors(vectors, radius=1.5, sides=TUBE_QUALITY_SIDES[0])
-    for got, want in zip(tube_mesh(vectors, radius=1.5, quality=0), expected):
+    groups = np.repeat([4, 9], [100, len(vectors) - 100])
+    expected = tubes_from_vectors(
+        vectors, radius=1.5, sides=TUBE_QUALITY_SIDES[0], groups=groups
+    )
+    for got, want in zip(tube_mesh(vectors, radius=1.5, quality=0, groups=groups), expected):
         np.testing.assert_array_equal(got, want)
     assert TUBE_QUALITY_SIDES[0] == DEFAULT_TUBE_SIDES
     assert DEFAULT_TUBE_QUALITY == 0
@@ -312,21 +346,77 @@ def test_a_straight_tube_keeps_its_radius():
     np.testing.assert_allclose(np.linalg.norm(rings[:, :2], axis=1), 1.0)
 
 
-def test_a_bend_is_mitred_so_the_tube_keeps_its_width():
-    bend = _polyline_vectors([[0, 0, 0], [0, 0, 5], [0, 5, 5]])
-    vertices, _faces, _index = joined_tubes_from_vectors(bend, radius=1.0, sides=8)
+def test_a_bend_keeps_the_vessels_width():
+    """The ring at a bend is the vessel's own circle, not a mitre stretched
+    across the bend: nothing of the tube lies further than its radius from
+    the centreline."""
+    bend = np.array([[0, 0, 0], [0, 0, 5], [0, 5, 5]], dtype=float)
+    vertices, _faces, _index = joined_tubes_from_vectors(
+        _polyline_vectors(bend), radius=1.0, sides=8
+    )
     joint = np.linalg.norm(vertices[8:16] - [0, 0, 5], axis=1)
-    # A 90-degree mitre is a sqrt(2)-stretched ellipse across the bend.
-    assert joint.min() == pytest.approx(1.0)
-    assert joint.max() == pytest.approx(np.sqrt(2.0))
+    np.testing.assert_allclose(joint, 1.0)
+    assert _distance_to_polyline(vertices, bend).max() <= 1.0 + 1e-9
 
 
-def test_a_joined_tube_does_not_twist():
+@pytest.mark.parametrize("quality", range(len(TUBE_QUALITY_SIDES)))
+def test_a_staircase_centreline_is_drawn_one_width(quality):
+    """A real capillary: steps under a micron, the vessel three across, the
+    centreline kinking at every voxel. A ring square to its own step tilts
+    with each kink; a mitre stretched across each kink sticks out of the
+    tube. Either way one vessel is drawn several widths. Facing the way the
+    vessel runs over its own radius, every cut across it is the vessel's
+    circle, as wide as the polygon allows."""
+    radius = 3.0
+    points = _staircase()
+    vertices, faces, _index = tube_mesh(
+        _polyline_vectors(points), radius=radius, quality=quality
+    )
+    assert _distance_to_polyline(vertices, points).max() <= radius + 1e-9
+
+    course = np.array([1.0, 1.0, 0.0]) / np.sqrt(2.0)
+    across = (np.array([-1.0, 1.0, 0.0]) / np.sqrt(2.0), np.array([0.0, 0.0, 1.0]))
+    across_flats = 2.0 * radius * np.cos(np.pi / TUBE_QUALITY_SIDES[quality])
+    for along in np.linspace(8.0, 20.0, 25):  # clear of both ends
+        for width in _cut_widths(vertices, faces, along * course, course, across):
+            assert across_flats - 1e-6 <= width <= 2.0 * radius + 1e-6, (along, width)
+
+
+def test_the_prisms_and_the_joined_tube_stand_on_the_same_rings():
+    """So a vessel is the same width at every render quality."""
+    vectors = _polyline_vectors(_helix(points=30))
+    steps = len(vectors)
+    prisms, _faces, _index = tubes_from_vectors(vectors, radius=1.0, sides=6)
+    joined, _faces, _index = joined_tubes_from_vectors(vectors, radius=1.0, sides=6)
+    rings = joined[: (steps + 1) * 6].reshape(steps + 1, 6, 3)
+    per_prism = prisms.reshape(steps, 2, 6, 3)
+    np.testing.assert_allclose(per_prism[:, 0], rings[:-1], atol=1e-9)
+    np.testing.assert_allclose(per_prism[:, 1], rings[1:], atol=1e-9)
+
+
+def test_a_ring_at_a_shared_node_faces_along_its_own_vessel():
+    """Two vessels meeting at a right angle: each one's ring at the node is
+    square to that vessel, not turned halfway towards the other."""
+    vectors = np.concatenate([
+        _polyline_vectors([[0, 0, 0], [0, 0, 5], [0, 0, 10]]),
+        _polyline_vectors([[0, 0, 10], [0, 5, 10], [0, 10, 10]]),
+    ])
+    groups = [1, 1, 2, 2]
+    prisms, _faces, index = tubes_from_vectors(vectors, radius=1.0, sides=8, groups=groups)
+    np.testing.assert_allclose(prisms[index == 1][8:, 2], 10.0)  # the first vessel's last ring
+    np.testing.assert_allclose(prisms[index == 2][:8, 1], 0.0)  # the second's first
+    joined, _faces, _index = joined_tubes_from_vectors(vectors, radius=1.0, sides=8, groups=groups)
+    np.testing.assert_allclose(joined[16:24, 2], 10.0)
+    np.testing.assert_allclose(joined[24:32, 1], 0.0)
+
+
+@pytest.mark.parametrize("build", [joined_tubes_from_vectors, tubes_from_vectors])
+def test_a_tube_does_not_twist(build):
     """Each ring's own frame differs; the rings are lined up, not left twisted."""
     helix = _helix()
     vectors = _polyline_vectors(helix)
     sides = 16
-    vertices, faces, _index = joined_tubes_from_vectors(vectors, radius=1.0, sides=sides)
+    vertices, faces, _index = build(vectors, radius=1.0, sides=sides)
     side_faces = faces[: len(vectors) * sides * 2]
     step = np.linalg.norm(vectors[:, 1], axis=1).max()
     across = 2.0 * np.pi * 1.0 / sides
