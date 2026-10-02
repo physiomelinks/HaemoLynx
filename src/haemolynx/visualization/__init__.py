@@ -30,8 +30,7 @@ from .pipeline_artifacts import (
 )
 from .dilation_curves import plot_dilation_curves
 from .connectivity_map import (
-    connectivity_map_figure,
-    connectivity_map_layout,
+    connectivity_map_html,
     read_connectivity_csv,
     write_connectivity_map,
 )
@@ -43,8 +42,7 @@ from .perturbation_plots import (
 )
 
 __all__ = [
-    "connectivity_map_figure",
-    "connectivity_map_layout",
+    "connectivity_map_html",
     "read_connectivity_csv",
     "write_connectivity_map",
     "overlay_z_projection",
