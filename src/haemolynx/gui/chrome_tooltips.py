@@ -221,6 +221,23 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "Remove every piece of the network that no longer has both an inlet "
         "and an outlet, such as a branch whose only link to the rest was deleted"
     ),
+    "connectivity_choice": (
+        "Which vessels the connectivity CSV lists: every vessel of the network "
+        "in the viewer, or only those some inlet-to-outlet path runs through "
+        "(no dead ends, loops off a single node or pieces without both an "
+        "inlet and an outlet)"
+    ),
+    "connectivity_map": (
+        "Draw the connectivity CSV exported last (or one you pick) as a 2D map "
+        "in the browser: inlets on the left, outlets on the right, every "
+        "vessel a line you can hover for its IDs, length and diameter"
+    ),
+    "export_connectivity": (
+        "Save a CSV of how the network is connected: one row per vessel, from "
+        "node to node oriented away from the inlets, with its branch order, "
+        "length, diameter, upstream and downstream vessels, and the IDs the "
+        "VTK and .pkl exports use"
+    ),
     "log": (
         "Every change made in this tab, oldest first, with the branchIDs as "
         "they were when it was made; the same lines go to the napari log"

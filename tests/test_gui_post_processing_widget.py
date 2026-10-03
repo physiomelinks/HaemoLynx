@@ -799,3 +799,86 @@ def test_mid_run_postprocessing_is_an_input_tab_checkbox_off_by_default(make_nap
     from haemolynx.pipeline import default_schema
 
     assert assign_to_stages(default_schema())["mid_run_postprocessing"] == "1. Input"
+
+
+def test_export_connectivity_writes_the_network_on_screen(page, tmp_path):
+    import csv
+
+    c = page.controls
+    # Before a scan it exports the run's own graph.
+    path = c.export_connectivity(tmp_path / "before.csv")
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 6
+    inlet = next(r for r in rows if r["Edge u"] == "0")
+    assert (inlet["From node ID"], inlet["To node ID"], inlet["Notes"]) == ("", "1", "Inlet")
+    assert next(r for r in rows if r["Edge v"] == "5")["Notes"] == "Dead end"
+
+    # After an edit it exports the edited network, and says so in the log.
+    c.scan_button.click()
+    keys = edge_keys(c.state.graph)
+    c.branch_ids.setText(str(next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})))
+    c.delete_ids_button.click()
+    path = c.export_connectivity(tmp_path / "after.csv")
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 5
+    assert "Exported the connectivity of all 5 vessels" in c.log_box.toPlainText()
+    assert "may be out of date" in c.connectivity_status.text()
+
+
+def test_export_connectivity_before_a_run_reports_instead_of_raising(make_napari_viewer, tmp_path):
+    viewer = make_napari_viewer()
+    controls = _post_processing_controls(
+        viewer, SimpleNamespace(value=""), results=lambda: None,
+        boundary_roles=lambda: {}, regenerate=lambda graph, stop_after=None: True,
+        running=lambda: False,
+    )
+    assert controls.export_connectivity(tmp_path / "x.csv") is None
+    assert "Nothing to export yet" in controls.connectivity_status.text()
+    assert not (tmp_path / "x.csv").exists()
+    assert controls.export_connectivity_button.toolTip()
+
+
+def test_export_connectivity_sits_on_the_export_tab(make_napari_viewer):
+    from qtpy.QtWidgets import QGroupBox, QPushButton, QTabWidget
+
+    panel = settings_widget(napari_viewer=make_napari_viewer())
+    tabs = panel.findChild(QTabWidget)
+    box = panel.findChild(QGroupBox, "haemolynx_connectivity_box")
+    export_page = next(
+        tabs.widget(i) for i in range(tabs.count()) if tabs.tabText(i) == "10. Export"
+    )
+    assert export_page.isAncestorOf(box)
+    for name in ("haemolynx_post_processing_export_connectivity", "haemolynx_connectivity_map"):
+        assert box.isAncestorOf(panel.findChild(QPushButton, name))
+    assert not panel._haemolynx_post_processing.page.isAncestorOf(box)
+
+
+def test_export_only_inlet_to_outlet_drops_the_dead_end(page, tmp_path):
+    import csv
+
+    from haemolynx.gui.post_processing import INLET_TO_OUTLET_ONLY
+
+    c = page.controls
+    c.connectivity_choice.setCurrentText(INLET_TO_OUTLET_ONLY)
+    path = c.export_connectivity(tmp_path / "through.csv")
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    # 1 -> 5 leads nowhere; the five vessels from inlet 0 to outlet 4 remain.
+    assert len(rows) == 5
+    assert all(r["Edge v"] != "5" for r in rows)
+    assert "5 of 6 vessels (inlet to outlet only)" in c.connectivity_status.text()
+
+
+def test_open_connectivity_map_draws_the_last_export(page, tmp_path, monkeypatch):
+    import webbrowser
+
+    c = page.controls
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", opened.append)
+    c.export_connectivity(tmp_path / "net.csv")
+    html_path = c.open_connectivity_map()
+    assert html_path == tmp_path / "net_map.html" and html_path.is_file()
+    assert opened == [html_path.resolve().as_uri()]
+    assert "Opened the 2D connectivity map" in c.connectivity_status.text()

@@ -55,6 +55,57 @@ After a run (at least through **4. Boundaries**), tab 10 works on a copy of the 
      IDs of later vessels move down.
    - Nodes are picked from the graph itself (`nearest_node`, the node nearest the click ray),
      not by napari's point picking, which needs the layer drawn on screen.
+5a. **Network connectivity box** (on **10. Export**, below its settings; the Post processing page
+   owns it). It has a dropdown, **All vessels in the viewer** or **Only vessels between an inlet and
+   an outlet**. The second uses `inlet_to_outlet_vessels`: dead ends, loops off one node and pieces
+   without both an inlet and an outlet are dropped, and the IDs are unchanged.
+   **Open 2D connectivity map** draws the CSV exported last, or one you pick
+   (`visualization/connectivity_map.py`). It writes `<csv>_map.html` beside the CSV and opens it in
+   the browser. The page draws itself: Python only embeds the CSV's text, a config (branch-order
+   sort groups from `visualization/_helpers.py`, colours) and `visualization/connectivity_map.js`
+   (package data); the layout, both views and the hovering are in that script, which
+   `tests/test_connectivity_map.py` runs under Node (skipped without Node).
+   - **Load CSV…** at the top of the page (or dropping a CSV on it) draws any other connectivity
+     CSV in the same page, no Python needed.
+   - **View** dropdown: **Vessels from an inlet** (default): columns count vessels from an inlet;
+     inlets green on the left, outlets red on the right, dead ends orange. **By branch order**:
+     one column per branch order, left to right Large_Art1.., Art1.., B01.., then Ven and
+     Large_Ven counting down to 1 (they count up from the outlets); each vessel a short line in its
+     order's column, level with the vessels feeding it; thin grey lines join a vessel to the
+     vessels it feeds; vessels with no branch order go in a last `(none)` column.
+   - Vessels are coloured by branch order. Inlet and outlet vessels (the arterioles and venules at
+     the network's open ends) are drawn bolder than the rest.
+   - **Branch order stats** (button in the top bar) opens a table, one row per branch order in
+     column order, then **All** (`orderStats`): vessels, mean length, mean diameter, mean vessels
+     in and out (counted from the Upstream/Downstream branch IDs, so 0 at an inlet or outlet
+     vessel's open end), mean connections = (in + out) / 2, and how many are inlet / outlet
+     vessels. Blank lengths/diameters are left out of their means. **Save table CSV** downloads it
+     (4 decimals). It follows whichever CSV is loaded.
+   - Hovering is the script's own, not plotly's (plotly only answers near a data point, so once
+     zoomed in most of a line gave no box): the vessel or node nearest the mouse in pixels shows
+     its Branch ID, nodes, length, diameter and notes at any zoom, and the vessel is highlighted.
+   **Export connectivity CSV** saves how the network is connected, one row per
+   vessel (`graph/connectivity.py`: `connectivity_rows`, `write_connectivity_csv`). Columns:
+   Branch ID, From node ID, To node ID, Branch order, Length (um), Diameter (um), Notes, Upstream
+   branch IDs, Downstream branch IDs, Edge u, Edge v, Edge key.
+   - From → to runs away from the inlets, by path length along the vessels (topology only, no
+     solved flow needed). A diverging bifurcation shows as two downstream branch IDs, and a
+     converging one as two upstream.
+   - Inlet vessels have no from node and outlet vessels no to node, where that end is the
+     network's open tip. Notes mark Inlet, Outlet, Dead end, Self-loop, arteriole/venule boundary,
+     and "Not connected to an inlet".
+   - IDs are the ones the other outputs use, so simulation results can be mapped back: Branch ID
+     is the viewer's branchID, which is also the order of the VTK's vessel cells. Node IDs are the
+     graph's (VTK `node_id`). Edge u/v/key are the `.pkl` edge key and the VTK's
+     `edge_u`/`edge_v`/`edge_key`.
+   - It exports the edited network if the tab has scanned one, else the run's graph, and warns if
+     edits aren't regenerated yet. The suggested filename is `{stem}_connectivity.csv` beside the
+     VTK output.
+   - **Load run fixes paths from another machine** (`relocate_run_paths` in `gui/run_snapshot.py`).
+     A missing input file is replaced by the file of the same name nearest the `.haemorun`: its
+     folder, or up to 3 folders below. An output folder or prefix (`*_dir`, `*_directory`,
+     `*_prefix`) that can't be created here moves to `outputs/` beside the run file. The status
+     line names what moved.
 5. **Prune disconnected branches** (just above Regenerate): removes every piece of the network
    that no longer has both an inlet and an outlet, e.g. a branch whose only link to the rest was
    deleted (`prune_disconnected_branches`). The report says how many pieces, vessels and boundary
@@ -237,3 +288,19 @@ Known unrelated failures in this environment:
   (override), so every vessel tab 10 adds uses the neighbours' average.
 - **2026-09-30, commit 7:** "What was changed" log at the bottom of tab 10, mirrored to napari's
   log. It records every change, with pre-edit branchIDs and every vessel a prune removed.
+- **2026-10-03:** Cherry-picked the Export tab's connectivity CSV and 2D map (`28284eb` from
+  `Mason_topology_map`) onto `Devel_GUI_improvements_HD` as `fb04d55` and pushed it.
+- **2026-10-03:** 2D connectivity map: a **By branch order** view behind a dropdown on the page,
+  and bolder inlet and outlet vessels in both views (`visualization/connectivity_map.py` only).
+  Checked on `ZStack_Haemolynx_connectivity.csv` (1,334 vessels): 23 columns, Art1 → B19 → Ven2 →
+  Ven1. Tests: `test_connectivity_map.py` (8, 4 new) and `test_graph_connectivity.py` pass.
+- **2026-10-03:** 2D connectivity map: hovering works at any zoom (the page finds the nearest
+  vessel itself), and **Load CSV…** / drop a CSV on the page to draw another one. The layout moved
+  from Python into `visualization/connectivity_map.js` so the page can do that without Python;
+  `connectivity_map_figure` / `connectivity_map_layout` / `branch_order_layout` are gone, replaced
+  by `connectivity_map_html`. Checked in headless Chrome on `ZStack_Haemolynx_connectivity.csv`:
+  zoomed to 0.1 column wide, a point a quarter along Branch 33 gives its box; a dropped CSV
+  redraws. Tests: `test_connectivity_map.py` (17, 13 run the script under Node).
+- **2026-10-03:** 2D connectivity map: **Branch order stats** table (per order and All: vessels,
+  mean length, diameter, vessels in/out, connections = (in + out) / 2, inlet/outlet vessels), with
+  Save table CSV. Tests: `test_connectivity_map.py` (20).
