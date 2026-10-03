@@ -106,3 +106,129 @@ def test_build_report_text_does_not_double_count_a_failed_trial_as_guarded():
     text = build_report_text(result)
     assert "1 failed" in text
     assert "rejected by an input-data guard" not in text
+
+
+def _closing_sweep(*, chosen_value: int) -> tuple[TrialRecord, ...]:
+    """One closing-radius sweep starting from 0, with what each candidate measured."""
+    measured = {0: 1.0, 2: 3.0}
+    return tuple(
+        TrialRecord(
+            group="closing_radius", setting="skeleton_closing_radius", value=value,
+            score=-measured[value], seconds=1.5,
+            metrics={"components_merged": measured[value], "guard_penalty": 0.0},
+            sweep=0, incumbent=value == 0, chosen=value == chosen_value,
+        )
+        for value in (0, 2)
+    )
+
+
+def test_the_report_says_what_each_moved_setting_moved_for():
+    result = OptimisationResult(
+        settings={"skeleton_closing_radius": 2}, trials=_closing_sweep(chosen_value=2),
+    )
+    text = build_report_text(result)
+    assert (
+        "    skeleton_closing_radius: 0 -> 2 (score -1 -> -3, components_merged 1 -> 3)"
+        in text.splitlines()
+    )
+
+
+def test_the_report_lists_no_change_for_a_sweep_that_kept_its_value():
+    result = OptimisationResult(
+        settings={"skeleton_closing_radius": 0}, trials=_closing_sweep(chosen_value=0),
+    )
+    assert "->" not in build_report_text(result).split("skeleton_closing_radius=0")[1]
+
+
+def test_the_report_names_a_choice_whose_starting_value_was_not_a_candidate():
+    trials = (
+        TrialRecord(
+            group="min_stub_length", setting="min_stub_length", value=4.0, score=-2.0,
+            metrics={"nodes_removed": 6.0}, sweep=3, chosen=True,
+        ),
+    )
+    result = OptimisationResult(settings={"min_stub_length": 4.0}, trials=trials)
+    assert "    min_stub_length: set to 4.0 (score -2, nodes_removed 6)" in build_report_text(result)
+
+
+def test_the_report_gives_the_search_time_beside_autos_estimate():
+    result = OptimisationResult(
+        settings={"skeleton_closing_radius": 2}, trials=_closing_sweep(chosen_value=2),
+        seconds=125.0, estimated_seconds=60.0, group_seconds={"closing_radius": 12.0},
+    )
+    lines = build_report_text(result).splitlines()
+    assert lines[1] == "Search took 2 min 05 s (Auto estimated 1 min 00 s)."
+    group_line = next(line for line in lines if line.startswith("- closing_radius"))
+    assert group_line.endswith("(took 12 s)")
+
+
+def test_the_report_times_a_group_from_its_trials_without_a_group_time():
+    result = OptimisationResult(
+        settings={"skeleton_closing_radius": 2}, trials=_closing_sweep(chosen_value=2), seconds=4.0,
+    )
+    lines = build_report_text(result).splitlines()
+    assert lines[1] == "Search took 4.0 s."
+    assert next(line for line in lines if line.startswith("- closing_radius")).endswith("(took 3.0 s)")
+
+
+def test_the_report_names_what_a_joint_sweep_chose():
+    """Regression: centreline smoothing tries its method, iterations and
+    deviation as one value, under a name no setting has, so its line said
+    '-> ' and nothing else."""
+    combo = ("taubin", 10, 1.0)
+    trials = (
+        TrialRecord(
+            group="centreline_smoothing", setting="centreline_smoothing", value=combo, score=-0.9,
+            sweep=9, incumbent=True, chosen=True,
+        ),
+    )
+    result = OptimisationResult(settings={"centreline_smoothing_method": "taubin"}, trials=trials)
+    assert "-> centreline_smoothing=('taubin', 10, 1.0)" in build_report_text(result)
+
+
+def test_the_report_says_what_auto_measured_and_how_coarse_it_allowed():
+    result = OptimisationResult(
+        settings={}, trials=(), downsample_factor=2, typical_radius_um=3.671, resolution_cap=2,
+    )
+    assert (
+        "Auto measured a typical vessel radius of 3.67 um, so searched no coarser than 2x, "
+        "which keeps such a vessel at least 3 search-grid voxels across."
+    ) in build_report_text(result).splitlines()
+
+
+def test_the_report_lists_settings_finer_than_the_search_grid():
+    result = OptimisationResult(
+        settings={"skeleton_closing_radius": 2, "skeleton_min_branch_length": 3},
+        trials=(),
+        downsample_factor=16,
+        finer_than_search_grid=("skeleton_closing_radius", "skeleton_min_branch_length"),
+    )
+    assert (
+        "Under one voxel of the 16x search grid, so left as you had them: "
+        "skeleton_closing_radius=2, skeleton_min_branch_length=3"
+    ) in build_report_text(result).splitlines()
+
+
+def test_a_voxel_settings_change_on_a_downsampled_search_is_in_search_grid_voxels():
+    """The trials hold the search grid's values; the settings above them are
+    back in full-resolution voxels, so the change line says which it is."""
+    result = OptimisationResult(
+        settings={"skeleton_closing_radius": 4},
+        trials=_closing_sweep(chosen_value=2),
+        downsample_factor=2,
+    )
+    assert "    skeleton_closing_radius: 0 -> 2 [search-grid voxels] (" in build_report_text(result)
+
+
+def test_the_report_heading_can_be_given():
+    result = OptimisationResult(settings={}, trials=())
+    assert build_report_text(result, heading="FWHM settings:") == "FWHM settings:"
+
+
+def test_format_seconds():
+    from haemolynx.optimisation.report import format_seconds
+
+    assert format_seconds(4.24) == "4.2 s"
+    assert format_seconds(38.4) == "38 s"
+    assert format_seconds(185) == "3 min 05 s"
+    assert format_seconds(3720) == "1 h 02 min"

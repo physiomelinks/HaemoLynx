@@ -13,15 +13,18 @@ Running the real measurement on every one of a real graph's thousands of
 edges for every one of ~30 real candidate trials would be far too slow, so
 this search runs against one representative subgraph
 (:func:`_representative_subgraph`) instead -- a fixed-size, length-stratified
-sample of the real graph's own edges, picked once up front -- and only
-applies the winning settings to the caller's full graph *once*, for real, at
-the end (mirroring how the skeleton/graph search re-derives
-``self.current_skeleton`` at full fidelity rather than leaving it at a
-downsampled approximation).
+sample of the real graph's own edges, picked once up front. The caller's own
+graph is left as it was unless it asks for the winners to be measured on it
+(``measure_full_graph``): the panel only wants the settings, and measuring
+every edge of a large network can take longer than the search itself.
 
-A candidate that raises is scored as a loss and the sweep continues; if every
-candidate in a sweep fails, the setting simply keeps its incoming value --
-same fallback as :mod:`.search`.
+Everything a trial reads is fixed for the run but its settings, so a trial
+asked for twice -- every sweep's baseline is its current value's own
+candidate -- is measured once (:class:`~.trial_cache.TrialCache`). A sweep
+keeps the current value unless a candidate beats it by
+:data:`.search.SWEEP_MIN_IMPROVEMENT`. A candidate that raises is scored as a
+loss and the sweep continues; if every candidate in a sweep fails, the
+setting simply keeps its incoming value -- same fallback as :mod:`.search`.
 
 Given the segmented vessel mask, every trial is also checked the way a run
 checks its own FWHM widths: a fixed set of decoys (sampled vessels moved into
@@ -51,13 +54,9 @@ from haemolynx.haemodynamics.poiseuille import (
 
 from . import fwhm_candidates as cand
 from . import fwhm_metrics as met
-from .progress import (
-    CANDIDATE_EVALUATED,
-    GROUP_FINISHED,
-    GROUP_STARTED,
-    ProgressCallback,
-)
+from .progress import ProgressCallback
 from .search import OptimisationResult, _SweepBookkeeping
+from .trial_cache import TrialCache
 
 #: The seven independently selectable groups this search runs, in the order
 #: :meth:`_FwhmSearch.run` runs them: exclusion and extent decide *which*
@@ -154,6 +153,11 @@ _GUARD_PENALTY = met._GUARD_PENALTY
 #: similar candidates never falsely trips the guard.
 _MAX_USABLE_FRACTION_REGRESSION = 0.05
 _MAX_FIT_R2_REGRESSION = 0.05
+#: ...but never less than this many edges' worth of the sample: on a sample
+#: of ten, 5% is half an edge, and a candidate measuring one edge fewer
+#: tripped the guard while one measuring an edge more was rewarded -- a pull
+#: towards looser settings. One edge lost is allowed, two are not.
+_USABLE_EDGES_REGRESSION_ALLOWED = 1.5
 
 #: The FWHM/EDT disagreement ratio a width is set aside at, when the
 #: settings do not give ``edt_fwhm_disagreement_warn_ratio`` -- its default.
@@ -241,6 +245,14 @@ def _sample_edge_count_from_probe_seconds(
     return max(_MIN_SAMPLE_EDGE_COUNT, min(budget_edges, total_edges))
 
 
+def _estimated_search_seconds(probe_seconds: float, probe_edge_count: int, sample_edge_count: int) -> float:
+    """How long a whole search on *sample_edge_count* edges is estimated to
+    take -- the arithmetic :func:`_sample_edge_count_from_probe_seconds`
+    compares with its budget."""
+    per_edge_seconds = probe_seconds / float(max(probe_edge_count, 1))
+    return per_edge_seconds * _SWEEP_TOTAL_UPPER_BOUND * _AVERAGE_CANDIDATES_PER_SWEEP * sample_edge_count
+
+
 def estimate_sample_edge_count_for_time_budget(
     G: nx.MultiGraph,
     *,
@@ -262,9 +274,31 @@ def estimate_sample_edge_count_for_time_budget(
     if the probe itself cannot run at all, so "Auto" never fails a run just
     because estimating its own runtime did.
     """
+    return _time_budget_sample(
+        G,
+        raw_volume=raw_volume,
+        voxel_size_zyx=voxel_size_zyx,
+        starting_values=starting_values,
+        target_seconds=target_seconds,
+        psf_sigma_zyx=psf_sigma_zyx,
+    )[0]
+
+
+def _time_budget_sample(
+    G: nx.MultiGraph,
+    *,
+    raw_volume: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float],
+    starting_values: Mapping[str, Any],
+    target_seconds: float,
+    psf_sigma_zyx: tuple[float, float, float] | None,
+) -> tuple[int, Optional[float]]:
+    """:func:`estimate_sample_edge_count_for_time_budget`'s count, and the
+    search time it estimated for that count -- ``None`` when it did not time
+    a probe -- which the run's report sets beside the time the search took."""
     total_edges = G.number_of_edges()
     if total_edges <= _MIN_SAMPLE_EDGE_COUNT:
-        return total_edges
+        return total_edges, None
     probe_edge_count = min(10, total_edges)
     probe_graph = _representative_subgraph(G, probe_edge_count)
     kwargs = _measurement_kwargs(starting_values)
@@ -289,11 +323,14 @@ def estimate_sample_edge_count_for_time_budget(
         _probe_once()
         probe_seconds = time.perf_counter() - t0
     except Exception:  # noqa: BLE001 - estimating runtime must never block a real run
-        return total_edges
+        return total_edges, None
 
-    return _sample_edge_count_from_probe_seconds(
+    count = _sample_edge_count_from_probe_seconds(
         probe_seconds, probe_edge_count, total_edges, target_seconds
     )
+    if probe_seconds <= 0.0:
+        return count, None
+    return count, _estimated_search_seconds(probe_seconds, probe_edge_count, count)
 
 
 class _FwhmSearch(_SweepBookkeeping):
@@ -336,6 +373,9 @@ class _FwhmSearch(_SweepBookkeeping):
             group_total=len(FWHM_GROUP_NAMES) * 4,
         )
         self.passes_run: int = 0
+        #: Every trial's outcome, by the settings it measured with: nothing
+        #: else a trial reads changes during a run (see `_trial_outcome`).
+        self._outcomes = TrialCache(max_entries=None, max_bytes=None)
 
     # -- real-measurement trial helpers ------------------------------------------
     def _prepare_checks(self, vessel_mask: np.ndarray) -> None:
@@ -413,23 +453,44 @@ class _FwhmSearch(_SweepBookkeeping):
         mark_fwhm_demotions(graph_trial, enabled=True)
         return graph_trial, summary, decoy_report
 
-    def _quality(self, overrides: Mapping[str, Any]) -> met.FwhmMeasurementQuality:
-        graph_trial, summary, decoy_report = self._checked_trial(overrides)
-        mult = float({**self.current, **overrides}["fwhm_min_total_extent_multiplier"])
-        return met.fwhm_measurement_quality(
-            graph_trial, summary, min_total_extent_multiplier=mult, decoy_report=decoy_report
+    def _trial_outcome(
+        self, overrides: Mapping[str, Any]
+    ) -> tuple[met.FwhmMeasurementQuality, np.ndarray]:
+        """:meth:`_checked_trial`'s quality and accepted per-sample diameters
+        for ``self.current`` plus *overrides*, measured once per distinct set
+        of settings. The sample, its decoys, the raw image, the PSF and the
+        EDT ratio are fixed for the run, so the settings a measurement reads
+        are the whole key."""
+        settings = {**self.current, **overrides}
+        key = (
+            _measurement_kwargs(settings),
+            bool(settings.get("fwhm_fix_blur_to_image_psf", True)),
+            settings.get("fwhm_min_total_extent_multiplier"),
         )
+
+        def measure() -> tuple[met.FwhmMeasurementQuality, np.ndarray]:
+            graph_trial, summary, decoy_report = self._checked_trial(overrides)
+            quality = met.fwhm_measurement_quality(
+                graph_trial,
+                summary,
+                min_total_extent_multiplier=float(settings["fwhm_min_total_extent_multiplier"]),
+                decoy_report=decoy_report,
+            )
+            diameters: list[float] = []
+            for _u, _v, data in graph_trial.edges(data=True):
+                diameters.extend(float(d) for d in (data.get("fwhm_diameter_samples_um") or []))
+            return quality, np.asarray(diameters, dtype=float)
+
+        return self._outcomes.get_or_compute((), key, measure)
+
+    def _quality(self, overrides: Mapping[str, Any]) -> met.FwhmMeasurementQuality:
+        return self._trial_outcome(overrides)[0]
 
     def _baseline_diameters_um(self) -> np.ndarray:
         """This edge sample's own accepted FWHM diameters under
-        `self.current` right now -- a fresh real measurement, not cached
-        across calls at different points in the run (`self.current` keeps
-        changing as earlier groups decide their own settings)."""
-        graph_trial, _summary = self._run_trial({})
-        diameters: list[float] = []
-        for _u, _v, data in graph_trial.edges(data=True):
-            diameters.extend(float(d) for d in (data.get("fwhm_diameter_samples_um") or []))
-        return np.asarray(diameters, dtype=float)
+        `self.current` right now (`self.current` keeps changing as earlier
+        groups decide their own settings)."""
+        return self._trial_outcome({})[1]
 
     def _inter_sample_arc_distances_um(self) -> np.ndarray:
         """The actual along-edge spacing between consecutive samples this
@@ -453,25 +514,16 @@ class _FwhmSearch(_SweepBookkeeping):
         return np.asarray(spacings, dtype=float)
 
     # -- sweeps -------------------------------------------------------------------
-    def _sweep(self, group: str, setting: str, candidate_values: list, cost_fn) -> Any:
-        self._emit(GROUP_STARTED, group)
-        best_score = float("inf")
-        best_value = self.current.get(setting)
-        for index, value in enumerate(candidate_values):
-            note = ""
-            try:
-                score = float(cost_fn(value))
-            except Exception as error:  # noqa: BLE001 - one bad candidate must not end the sweep
-                score = float("inf")
-                note = f"failed: {error}"
-            self._record(group, setting, value, score, note)
-            self._emit(CANDIDATE_EVALUATED, group, candidate_index=index, candidate_total=len(candidate_values))
-            if score < best_score:
-                best_score, best_value = score, value
-        self.current[setting] = best_value
-        self._emit(GROUP_FINISHED, group, winner={setting: best_value})
-        self._group_index += 1
-        return best_value
+    @staticmethod
+    def _usable_fraction_tolerance(n_edges: int) -> float:
+        """How far `usable_fraction` may fall below a sweep's baseline, on a
+        sample of *n_edges*, before the guard trips:
+        :data:`_MAX_USABLE_FRACTION_REGRESSION`, or
+        :data:`_USABLE_EDGES_REGRESSION_ALLOWED` edges of the sample when that
+        is more."""
+        return max(
+            _MAX_USABLE_FRACTION_REGRESSION, _USABLE_EDGES_REGRESSION_ALLOWED / max(int(n_edges), 1)
+        )
 
     def _guarded_sweep(
         self, group: str, setting: str, candidate_values: list, *, score_fn=None
@@ -485,14 +537,23 @@ class _FwhmSearch(_SweepBookkeeping):
         """
         score_of = score_fn or (lambda quality: quality.score)
         baseline = self._quality({})
+        usable_tolerance = self._usable_fraction_tolerance(baseline.n_edges_total)
 
         def cost_fn(value: Any) -> float:
             quality = self._quality({setting: value})
             penalty = met.regression_penalty(
-                quality.usable_fraction, baseline.usable_fraction, _MAX_USABLE_FRACTION_REGRESSION
+                quality.usable_fraction, baseline.usable_fraction, usable_tolerance
             )
             penalty += met.regression_penalty(
                 quality.mean_fit_r2, baseline.mean_fit_r2, _MAX_FIT_R2_REGRESSION
+            )
+            self._note(
+                usable_fraction=quality.usable_fraction,
+                mean_fit_r2=quality.mean_fit_r2,
+                extent_ratio=quality.mean_achieved_extent_ratio,
+                diameter_cv=quality.median_diameter_cv,
+                decoy_false_positive_rate=quality.decoy_false_positive_rate,
+                guard_penalty=penalty,
             )
             return score_of(quality) + penalty
 
@@ -707,8 +768,7 @@ class _FwhmSearch(_SweepBookkeeping):
             ("diameter_guess", self._group_diameter_guess),
             ("rejection_gates", self._group_rejection_gates),
         ):
-            if self._group_enabled(name):
-                method()
+            self._run_group(name, method)
 
 
 def optimise_fwhm_settings(
@@ -725,6 +785,7 @@ def optimise_fwhm_settings(
     axis_order: str = automated.CANONICAL_AXIS_ORDER,
     raw_channel: int | None = None,
     vessel_mask: Optional[np.ndarray] = None,
+    measure_full_graph: bool = False,
 ) -> OptimisationResult:
     """Empirically choose every FWHM setting in :data:`FWHM_SETTING_NAMES`
     for *G* against the raw image at *raw_tiff_path*.
@@ -747,9 +808,10 @@ def optimise_fwhm_settings(
     fixes the sample size directly (a value at or above *G*'s own edge count
     runs against every edge, no subsampling). The search always runs
     against a fixed, length-stratified sample (see
-    :func:`_representative_subgraph`) rather than the full graph, and
-    applies the winning settings to *G* itself, for real, exactly once at
-    the end -- *G* is never mutated before that point.
+    :func:`_representative_subgraph`) rather than the full graph, and never
+    changes *G* -- unless *measure_full_graph* asks for the winning settings
+    to be measured on every edge of *G* at the end, which on a large network
+    can take longer than the search did.
 
     *groups* restricts the search to some of :data:`FWHM_GROUP_NAMES` --
     ``None`` (the default) runs all seven; any other setting simply keeps
@@ -776,16 +838,20 @@ def optimise_fwhm_settings(
         vessel_mask=vessel_mask,
     )
 
+    estimated_seconds: Optional[float] = None
     if sample_edge_count is None:
-        sample_edge_count = estimate_sample_edge_count_for_time_budget(
+        # Each trial measures a decoy per sampled edge as well, doubling it.
+        decoy_factor = 2.0 if vessel_mask is not None else 1.0
+        sample_edge_count, estimated_seconds = _time_budget_sample(
             G,
             raw_volume=raw_volume,
             voxel_size_zyx=voxel_size_zyx,
             starting_values=starting_values,
-            # Each trial measures a decoy per sampled edge as well, doubling it.
-            target_seconds=auto_sample_target_seconds / (2.0 if vessel_mask is not None else 1.0),
+            target_seconds=auto_sample_target_seconds / decoy_factor,
             psf_sigma_zyx=psf_sigma_zyx,
         )
+        if estimated_seconds is not None:
+            estimated_seconds *= decoy_factor
     sample_edge_count = max(1, min(int(sample_edge_count), total_edges))
 
     sample_graph = _representative_subgraph(G, sample_edge_count)
@@ -800,16 +866,14 @@ def optimise_fwhm_settings(
         vessel_mask=vessel_mask,
         psf_sigma_zyx=psf_sigma_zyx,
     )
+    start = time.perf_counter()
     search.run(max_passes=max_passes)
+    seconds = time.perf_counter() - start
 
     settings = {name: search.current[name] for name in FWHM_SETTING_NAMES if name in search.current}
 
-    # Apply the winning settings to the caller's full graph, for real, once
-    # -- mirrors `optimise_skeleton_and_graph_settings` re-deriving
-    # `self.current_skeleton` at full fidelity rather than leaving it at a
-    # downsampled approximation.
-    final_settings = {**starting_values, **settings}
-    search._measure(G, final_settings, debug=True)
+    if measure_full_graph:
+        search._measure(G, {**starting_values, **settings}, debug=True)
 
     return OptimisationResult(
         settings=settings,
@@ -817,4 +881,7 @@ def optimise_fwhm_settings(
         downsample_factor=max(1, round(total_edges / sample_edge_count)),
         groups_run=tuple(dict.fromkeys(search.groups_run)),
         passes_run=search.passes_run,
+        seconds=seconds,
+        estimated_seconds=estimated_seconds,
+        group_seconds=dict(search.group_seconds),
     )
