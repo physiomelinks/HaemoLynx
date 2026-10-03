@@ -111,7 +111,10 @@ def test_representative_subgraph_does_not_mutate_the_caller_graph(multi_vessel):
 # ---------------------------------------------------------------------------
 # optimise_fwhm_settings -- end to end
 # ---------------------------------------------------------------------------
-def test_optimise_fwhm_settings_measures_the_full_graph(multi_vessel):
+def test_optimise_fwhm_settings_leaves_the_callers_graph_alone_by_default(multi_vessel):
+    """Regression: the search measured every edge of the caller's graph with
+    the winners at the end, and the panel -- its only caller -- passed a copy
+    and threw it away: on a large network, a full FWHM pass for nothing."""
     G, raw_path = multi_vessel
     starting_values = _fwhm_starting_values()
     result = s.optimise_fwhm_settings(
@@ -123,7 +126,23 @@ def test_optimise_fwhm_settings_measures_the_full_graph(multi_vessel):
     )
     assert result.settings  # at least one setting decided
     assert result.trials
-    # The full caller's graph must be measured for real at the end.
+    assert all("fwhm_status" not in data for _u, _v, data in G.edges(data=True))
+    assert result.seconds > 0.0
+    assert result.estimated_seconds is None  # the sample size was given: nothing estimated
+    assert set(result.group_seconds) == set(result.groups_run)
+
+
+def test_optimise_fwhm_settings_measures_the_full_graph_when_asked(multi_vessel):
+    G, raw_path = multi_vessel
+    s.optimise_fwhm_settings(
+        G,
+        raw_tiff_path=raw_path,
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        starting_values=_fwhm_starting_values(),
+        sample_edge_count=4,
+        groups=["exclusion_zones"],
+        measure_full_graph=True,
+    )
     assert all(data.get("fwhm_status") == "measured" for _u, _v, data in G.edges(data=True))
 
 
@@ -234,6 +253,15 @@ def test_sample_edge_count_from_probe_seconds_zero_probe_time_uses_every_edge():
     assert result == 42
 
 
+def test_the_estimate_auto_reports_is_the_one_it_chose_the_sample_by():
+    count = s._sample_edge_count_from_probe_seconds(
+        probe_seconds=0.1, probe_edge_count=10, total_edges=1000, target_seconds=180.0
+    )
+    assert 10 < count < 1000
+    assert s._estimated_search_seconds(0.1, 10, count) <= 180.0
+    assert s._estimated_search_seconds(0.1, 10, count + 1) > 180.0
+
+
 def test_fwhm_search_shares_its_bookkeeping_base_class_with_search():
     """Regression: _FwhmSearch used to copy-paste _emit/_record/_group_enabled
     from search._Search verbatim instead of sharing them. Both now subclass
@@ -243,7 +271,7 @@ def test_fwhm_search_shares_its_bookkeeping_base_class_with_search():
 
     assert issubclass(s._FwhmSearch, _SweepBookkeeping)
     assert issubclass(_Search, _SweepBookkeeping)
-    for method in ("_emit", "_record", "_group_enabled"):
+    for method in ("_emit", "_record", "_group_enabled", "_sweep", "_run_candidates", "_run_group"):
         assert getattr(s._FwhmSearch, method) is getattr(_Search, method), (
             f"{method} is no longer the shared _SweepBookkeeping implementation"
         )
@@ -404,3 +432,80 @@ def FwhmQuality(*, measured: int, demoted: int, fp: float):
         mean_fit_r2=0.9, median_fit_r2=0.9, mean_achieved_extent_ratio=1.0,
         median_diameter_cv=0.0, n_edges_demoted=demoted, decoy_false_positive_rate=fp,
     )
+
+
+def test_the_guard_lets_a_small_sample_lose_one_edge_but_not_two(monkeypatch):
+    """Regression: on a sample of ten edges the 5% tolerance was half an
+    edge, so a candidate measuring one edge fewer was vetoed while one
+    measuring an edge more was rewarded -- a pull towards looser settings."""
+    baseline = FwhmQuality(measured=10, demoted=0, fp=0.0)
+    by_value = {
+        "one_fewer": FwhmQuality(measured=9, demoted=0, fp=0.0),
+        "two_fewer": FwhmQuality(measured=8, demoted=0, fp=0.0),
+    }
+    search = _search(_multi_vessel_graph(), _multi_vessel_raw_volume())
+    monkeypatch.setattr(
+        search, "_quality",
+        lambda overrides: by_value[overrides["fwhm_profile_baseline_mode"]] if overrides else baseline,
+    )
+
+    search._guarded_sweep(
+        "baseline_estimation", "fwhm_profile_baseline_mode", ["one_fewer", "two_fewer"],
+    )
+
+    scores = {t.value: t.score for t in search.trials}
+    assert scores["one_fewer"] < 100.0
+    assert scores["two_fewer"] > 500.0
+
+
+def test_the_guard_tolerance_is_five_percent_on_a_large_sample():
+    assert s._FwhmSearch._usable_fraction_tolerance(10) == pytest.approx(0.15)
+    assert s._FwhmSearch._usable_fraction_tolerance(200) == pytest.approx(0.05)
+
+
+def test_a_sweeps_baseline_is_its_current_values_own_trial_measured_once(monkeypatch):
+    """Regression: every sweep measured its current value twice -- once as
+    the baseline and once as a candidate -- about a quarter of every FWHM
+    search. A trial asked for again, in a later sweep or pass, is free."""
+    import functools
+
+    calls = {"n": 0}
+    real = s.automated.measure_edge_diameters_fwhm_from_raw_tiff
+
+    @functools.wraps(real)  # the search reads its keyword arguments off the signature
+    def counting(graph, **kwargs):
+        calls["n"] += 1
+        return real(graph, **kwargs)
+
+    monkeypatch.setattr(s.automated, "measure_edge_diameters_fwhm_from_raw_tiff", counting)
+    search = _search(_multi_vessel_graph(), _multi_vessel_raw_volume())
+    current = float(search.current["fwhm_branch_endpoint_exclusion_um"])
+    candidates = sorted({0.0, current, current + 2.0})
+
+    search._guarded_sweep("exclusion_zones", "fwhm_branch_endpoint_exclusion_um", candidates)
+    assert calls["n"] == len(candidates)
+
+    search._guarded_sweep("exclusion_zones", "fwhm_branch_endpoint_exclusion_um", candidates)
+    assert calls["n"] == len(candidates)
+
+
+def test_the_baseline_diameters_are_the_current_settings_trial(monkeypatch):
+    import functools
+
+    calls = {"n": 0}
+    real = s.automated.measure_edge_diameters_fwhm_from_raw_tiff
+
+    @functools.wraps(real)
+    def counting(graph, **kwargs):
+        calls["n"] += 1
+        return real(graph, **kwargs)
+
+    monkeypatch.setattr(s.automated, "measure_edge_diameters_fwhm_from_raw_tiff", counting)
+    search = _search(_multi_vessel_graph(), _multi_vessel_raw_volume())
+
+    diameters = search._baseline_diameters_um()
+    quality = search._quality({})
+
+    assert calls["n"] == 1
+    assert diameters.size > 0 and np.all(diameters > 0)
+    assert quality.n_edges_measured > 0

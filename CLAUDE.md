@@ -67,7 +67,7 @@ haemolynx/
 │   ├── optimisation/       # "Optimise settings": search.py (segmentation cleanup,
 │   │                       #   Skeletonise and Graph settings), fwhm_search.py (FWHM
 │   │                       #   settings), candidates/metrics (+ fwhm_ variants), report,
-│   │                       #   progress
+│   │                       #   progress, trial_cache (a trial asked for again is not rerun)
 │   ├── gui/                # napari plugin: form.py (schema -> form rows, pure),
 │   │                       #   tabs.py (one tab per stage), layout.py (each tab's
 │   │                       #   boxes and nested Advanced buttons, pure),

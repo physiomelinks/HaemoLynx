@@ -5804,7 +5804,12 @@ def _run_fwhm_optimisation_in_background(
         documented_schema = Schema(
             list(schema.subset(_names_with_prerequisite_closure(schema, FWHM_SETTING_NAMES))),
             title="HaemoLynx optimised FWHM settings",
-            description=build_report_text(result, group_names=FWHM_GROUP_NAMES),
+            description=build_report_text(
+                result,
+                group_names=FWHM_GROUP_NAMES,
+                heading="HaemoLynx FWHM settings, optimised on a sample of the network's "
+                "vessels in the raw image:",
+            ),
         )
         try:
             dump_config(out_path, documented_schema, values=result.settings)
@@ -10003,8 +10008,8 @@ def settings_widget(napari_viewer=None):
         "Empirically choose the FWHM exclusion, extent, clipping, "
         "same-edge-geometry, baseline and rejection-gate settings by "
         "running the real measurement on a sample of the current graph's "
-        "own edges against its raw image, then applying the winners to the "
-        "whole graph"
+        "own edges against its raw image. The winners are set on this tab "
+        "for the next run; the current network's diameters are not changed"
     )
     if diameters_settings is not None:
         raw_tiff_row_index = list(diameters_settings).index(rows["fwhm_raw_tiff_path"])
