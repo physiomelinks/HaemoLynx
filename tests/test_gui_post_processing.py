@@ -23,6 +23,7 @@ from haemolynx.gui.post_processing import (
     added_vessel_ids,
     branch_id_of,
     camera_center_for,
+    default_connectivity_csv_path,
     describe_vessels,
     edits_lost_by_running_from,
     junction_label,
@@ -347,3 +348,12 @@ def test_added_nodes_layer_marks_the_new_nodes_still_in_the_graph():
     assert list(spec.features["node_id"]) == [5]
     assert np.allclose(spec.data, [(0, 20, 10)])
     assert len(added_nodes_layer(G, []).data) == 0
+
+
+def test_default_connectivity_csv_path_sits_beside_the_vtk_output(tmp_path):
+    values = {"vtk_output_prefix": tmp_path / "stack"}
+    assert default_connectivity_csv_path(values) == str(tmp_path / "stack_connectivity.csv")
+    # A run from another machine names a folder that is not here: just the name.
+    elsewhere = {"vtk_output_prefix": tmp_path / "missing" / "stack"}
+    assert default_connectivity_csv_path(elsewhere) == "stack_connectivity.csv"
+    assert default_connectivity_csv_path(None) == "haemolynx_connectivity.csv"

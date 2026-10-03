@@ -39,6 +39,10 @@ from haemolynx.graph.post_processing import (
 from haemolynx.gui.results import PREFIX, LayerSpec, node_points, polylines_to_vectors
 
 __all__ = [
+    "ALL_VESSELS_IN_VIEWER",
+    "CONNECTIVITY_EXPORT_CHOICES",
+    "INLET_TO_OUTLET_ONLY",
+    "default_connectivity_csv_path",
     "ADDED",
     "ADDED_NODES",
     "AT_JUNCTION",
@@ -610,3 +614,27 @@ def edits_lost_by_running_from(
         return True
     graph_attrs = getattr(post_processed_graph, "graph", None) or {}
     return bool(graph_attrs.get(APPLIED))
+
+
+def default_connectivity_csv_path(values: Any) -> str:
+    """Suggested name for the connectivity CSV: beside the run's VTK output.
+
+    ``{stem}_connectivity.csv`` in the folder of ``vtk_output_prefix`` when that
+    folder exists on this machine (a run loaded from another one may name a
+    folder that does not), otherwise just the filename.
+    """
+    from pathlib import Path
+
+    from haemolynx.gui.stage_checkpoints import output_dir_from_prefix
+
+    prefix = values.get("vtk_output_prefix") if values else None
+    stem = Path(str(prefix)).name if prefix else "haemolynx"
+    name = f"{stem}_connectivity.csv"
+    folder = output_dir_from_prefix(prefix)
+    return str(folder / name) if folder is not None and folder.is_dir() else name
+
+
+#: The Export tab's connectivity choices, in dropdown order.
+ALL_VESSELS_IN_VIEWER = "All vessels in the viewer"
+INLET_TO_OUTLET_ONLY = "Only vessels between an inlet and an outlet"
+CONNECTIVITY_EXPORT_CHOICES = (ALL_VESSELS_IN_VIEWER, INLET_TO_OUTLET_ONLY)

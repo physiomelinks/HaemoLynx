@@ -29,6 +29,11 @@ from .pipeline_artifacts import (
     write_final_graph_3d_html,
 )
 from .dilation_curves import plot_dilation_curves
+from .connectivity_map import (
+    connectivity_map_html,
+    read_connectivity_csv,
+    write_connectivity_map,
+)
 from .perturbation_plots import (
     export_non_sweep_perturbation_artifacts,
     export_sweep_perturbation_plots,
@@ -37,6 +42,9 @@ from .perturbation_plots import (
 )
 
 __all__ = [
+    "connectivity_map_html",
+    "read_connectivity_csv",
+    "write_connectivity_map",
     "overlay_z_projection",
     "plot_node_degree_distribution",
     "visualize_3d_plotly",
