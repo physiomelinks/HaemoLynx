@@ -1,23 +1,22 @@
-"""Per-segment vessel tubes from Vectors origin+direction data.
+"""Vessel tubes from Vectors origin+direction data.
 
 Napari Vectors ``vector_style="line"`` draws two world-fixed ribbons. An
 axis-aligned centreline step collapses a ribbon, and ``edge_width=0.6`` µm
-then vanishes edge-on. A short N-gon prism per segment stays visible from
-every camera angle.
+then vanishes edge-on. A tube stays visible from every camera angle.
 
-A vessel has one diameter, so its tube is drawn as one: every ring is a
-circle of the vessel's own radius, facing the way the vessel runs over that
-radius rather than the way one centreline step does. A step is under a
-micron and a capillary's radius three, so a ring set square to its own step
-tilts with every voxel kink and the tube pinches and bulges where the
-vessel does not.
+A vessel has one diameter, so it is drawn as one smooth tube of that
+diameter. The centreline it follows is the skeleton's voxel path: steps
+under a micron that kink at every voxel, round a capillary six microns
+across. A tube built ring by ring on that path pinches, bulges and folds
+where the vessel does none of those things. So each tube follows its
+centreline smoothed over about half its own radius, with rings spaced in
+proportion to that radius, ends kept on the vessel's two nodes and rounded,
+so vessels meeting at a node join there.
 
 Nothing here imports napari. The widget hides the Vectors visual and shows a
 Surface built from these arrays; hover and colour-by still read the Vectors.
 """
 from __future__ import annotations
-
-from typing import NamedTuple
 
 import numpy as np
 
@@ -29,22 +28,24 @@ from haemolynx.gui.results import VESSELS, VESSEL_TUBES
 #: e.g. before the Diameters stage has run) when tubes are drawn per-vessel
 #: diameter -- see :func:`tube_radii_um`.
 TUBE_RADIUS_UM = 2.0
-DEFAULT_TUBE_SIDES = 6
 
-#: napari Surface shading the tubes layer starts with. Flat lights each face
-#: on its own, so a tube's sides and bends read as 3D; ``"none"`` draws every
-#: face the same flat colour. Only the starting value: a stage that redraws
-#: the tubes keeps whatever the user has since chosen in the layer controls.
-TUBE_SHADING = "flat"
+#: napari Surface shading the tubes layer starts with. Smooth lights each
+#: vertex from the surface round it, so a tube reads as round; ``"flat"``
+#: shows its facets and ``"none"`` draws every face one flat colour. Only the
+#: starting value: a stage that redraws the tubes keeps whatever the user has
+#: since chosen in the layer controls.
+TUBE_SHADING = "smooth"
 
-#: How round and how joined the tubes are drawn, by the tubes layer's "Render
-#: quality" slider. Level 0 is one separate hexagonal prism per centreline
-#: step, flat shaded -- cheap, but it reads as a stack of bands. Every level
-#: above it draws one continuous, capped tube per vessel, smooth shaded, with
-#: more sides each step. Both are built on the same rings, so a vessel is
-#: the same width at every level.
+#: Sides round each tube, by the tubes layer's "Render quality" slider: the
+#: same smooth tube at every level, rounder and slower to build each step.
 TUBE_QUALITY_SIDES = (6, 8, 12, 18, 32)
-DEFAULT_TUBE_QUALITY = 0
+DEFAULT_TUBE_QUALITY = 2
+#: Rings along a tube are this fraction of its radius apart.
+_RING_SPACING_PER_RADIUS = 1.0 / 3.0
+#: The ring centres are smoothed this many times with a 1-4-6-4-1 kernel:
+#: three passes at a third of a radius apart is about half a radius.
+_SMOOTHING_PASSES = 3
+_KERNEL = ((-2, 1.0), (-1, 4.0), (0, 6.0), (1, 4.0), (2, 1.0))
 #: Two steps join when one ends this close to where the next starts (µm).
 _JOIN_TOLERANCE_UM = 1e-6
 
@@ -58,7 +59,7 @@ _EMPTY_INDEX = np.empty((0,), dtype=np.intp)
 
 
 def tube_radius_um(edge_width: float | None = None) -> float:
-    """Radius used for the prism mesh: at least :data:`TUBE_RADIUS_UM`."""
+    """Radius used for the tube mesh: at least :data:`TUBE_RADIUS_UM`."""
     try:
         width = float(edge_width) if edge_width is not None else 0.0
     except (TypeError, ValueError):
@@ -139,32 +140,68 @@ def _step_radii(radius: float | np.ndarray, count: int) -> np.ndarray:
     return radii
 
 
-class _Rings(NamedTuple):
-    """The rings both tube drawings are built on.
+def _smooth_tubes(centre: np.ndarray, first: np.ndarray, last: np.ndarray) -> np.ndarray:
+    """Each tube's ring centres smoothed along it, its two end rings left in place.
 
-    Consecutive steps that join make one tube; its rings, in drawing order,
-    are each step's start ring and then one ring closing the tube.
+    *first* and *last* give, for every ring, its tube's first and last ring.
+    Past an end the tube is continued by reflection through that end, which
+    carries a straight tube on straight and leaves the end where it was.
     """
+    from scipy.sparse import csr_matrix
 
-    keep: np.ndarray  # the Vectors row of each drawn step
-    radii: np.ndarray  # each drawn step's radius
-    start_ring: np.ndarray  # the ring each drawn step starts at
-    starts: np.ndarray  # whether a drawn step begins a tube
-    end_rings: np.ndarray  # the ring closing each tube
-    centre: np.ndarray  # (rings, 3)
-    radius: np.ndarray  # (rings,)
-    step: np.ndarray  # the drawn step each ring belongs to
-    around: np.ndarray  # (rings, sides, 3) unit offsets round each ring
+    count = len(centre)
+    index = np.arange(count)
+    pinned = (index == first) | (index == last)
+    rows, cols, weights = [index[pinned]], [index[pinned]], [np.ones(int(pinned.sum()))]
+    free = index[~pinned]
+    lo, hi = first[~pinned], last[~pinned]
+    for offset, weight in _KERNEL:
+        at = free + offset
+        before, after = at < lo, at > hi
+        mirror = np.clip(np.where(before, 2 * lo - at, np.where(after, 2 * hi - at, at)), lo, hi)
+        reflected = before | after
+        anchor = np.where(before, lo, hi)
+        w = weight / 16.0
+        # A point past an end is the end doubled less its mirror image.
+        rows += [free, free[reflected]]
+        cols += [mirror, anchor[reflected]]
+        weights += [np.where(reflected, -w, w), np.full(int(reflected.sum()), 2.0 * w)]
+    smoothing = csr_matrix(
+        (np.concatenate(weights), (np.concatenate(rows), np.concatenate(cols))),
+        shape=(count, count),
+    )
+    for _ in range(_SMOOTHING_PASSES):
+        centre = smoothing @ centre
+    return centre
 
 
-def _tube_rings(vectors, radius, sides, groups) -> _Rings | None:
-    """Where every ring sits, how wide it is and which way it faces.
+def tubes_from_vectors(
+    vectors: np.ndarray,
+    *,
+    radius: float | np.ndarray = TUBE_RADIUS_UM,
+    sides: int = TUBE_QUALITY_SIDES[DEFAULT_TUBE_QUALITY],
+    groups: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """One smooth, closed tube with rounded ends per run of joined steps.
 
-    ``None`` when there is nothing to draw. Raises on malformed input.
+    *vectors* is ``(M, 2, 3)`` origin+direction data. Consecutive rows join
+    when one ends where the next starts and, given *groups* (one label per
+    row, e.g. each step's ``edge_index``), both carry the same label -- so
+    two vessels meeting at a node stay two tubes. Zero-length and non-finite
+    rows are skipped.
+
+    *radius* is one value for every row, or one per row -- e.g. each
+    vessel's own measured/set diameter halved (see :func:`tube_radii_um`). A
+    non-finite or non-positive entry falls back to :data:`TUBE_RADIUS_UM`.
+
+    Returns ``(vertices, faces, segment_index)``: ``segment_index[i]`` is
+    the Vectors row ``vertices[i]`` was drawn for, so per-row colours can be
+    repeated onto the mesh.
     """
+    empty = (_EMPTY_VERTICES.copy(), _EMPTY_FACES.copy(), _EMPTY_INDEX.copy())
     data = np.asarray(vectors, dtype=float)
     if data.size == 0:
-        return None
+        return empty
     if data.ndim != 3 or data.shape[1:] != (2, 3):
         raise ValueError(f"expected Vectors data of shape (M, 2, 3); got {data.shape!r}")
     sides = int(sides)
@@ -176,10 +213,10 @@ def _tube_rings(vectors, radius, sides, groups) -> _Rings | None:
     keep = np.flatnonzero(np.isfinite(lengths) & (lengths > 0.0))
     n = int(keep.size)
     if n == 0:
-        return None
+        return empty
     origin = data[keep, 0, :]
     end = origin + data[keep, 1, :]
-    tangent = data[keep, 1, :] / lengths[keep, None]
+    step_length = lengths[keep]
     radii = radii[keep]
 
     # Does step i carry on from step i - 1?
@@ -191,208 +228,130 @@ def _tube_rings(vectors, radius, sides, groups) -> _Rings | None:
             joins[1:] &= labels[1:] == labels[:-1]
     starts = ~joins
     ends = np.append(starts[1:], True)
+    tube_of_step = np.cumsum(starts) - 1
+    n_tubes = int(starts.sum())
 
-    start_ring = np.arange(n) + np.cumsum(ends) - ends
-    n_rings = n + int(ends.sum())
-    end_rings = start_ring[ends] + 1
-    centre = np.empty((n_rings, 3))
-    ring_radius = np.empty(n_rings)
-    step = np.empty(n_rings, dtype=np.intp)
-    local = np.empty((n_rings, 3))
-    centre[start_ring] = origin
-    ring_radius[start_ring] = radii
-    step[start_ring] = np.arange(n)
-    local[start_ring] = tangent
-    centre[end_rings] = end[ends]
-    ring_radius[end_rings] = radii[ends]
-    step[end_rings] = np.flatnonzero(ends)
-    local[end_rings] = tangent[ends]
-    joint = np.flatnonzero(joins)
-    if joint.size:
-        rings = start_ring[joint]
-        ring_radius[rings] = 0.5 * (radii[joint - 1] + radii[joint])
-        bisector = tangent[joint - 1] + tangent[joint]
-        norm = np.linalg.norm(bisector, axis=1)
-        turned = norm > 1e-9  # a step straight back on itself keeps its own plane
-        local[rings[turned]] = bisector[turned] / norm[turned, None]
-
-    first = np.zeros(n_rings, dtype=bool)
-    first[start_ring[starts]] = True
-    tube = np.cumsum(first) - 1
-    first_ring = start_ring[starts]
-
-    # Each ring faces along the chord from one radius behind it on the
-    # centreline to one radius ahead, clamped to its tube's ends: the way the
-    # vessel runs at the scale it is drawn at. On a circular arc that chord is
-    # the exact tangent; on a staircase it is the stair's own course.
-    gap = np.linalg.norm(np.diff(centre, axis=0), axis=1)
-    gap[end_rings[:-1]] = 1.0  # between tubes; never inside a query's range
+    # Each tube's centreline: its steps' starts, then its last step's end.
+    point_of_step = np.arange(n) + np.cumsum(ends) - ends
+    last_point = point_of_step[ends] + 1
+    points = np.empty((n + n_tubes, 3))
+    points[point_of_step] = origin
+    points[last_point] = end[ends]
+    step_of_point = np.empty(n + n_tubes, dtype=np.intp)
+    step_of_point[point_of_step] = np.arange(n)
+    gap = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    gap[last_point[:-1]] = 1.0  # between tubes; no ring falls in it
     along = np.concatenate([[0.0], np.cumsum(gap)])
-    lowest = along[first_ring][tube]
-    highest = along[end_rings][tube]
-    ahead = np.minimum(along + ring_radius, highest)
-    behind = np.maximum(along - ring_radius, lowest)
-    chord = np.stack(
-        [
-            np.interp(ahead, along, centre[:, axis]) - np.interp(behind, along, centre[:, axis])
-            for axis in range(3)
-        ],
-        axis=1,
+    tube_start = along[point_of_step[starts]]
+    tube_length = along[last_point] - tube_start
+
+    # Rings evenly along each tube, a fixed fraction of its radius apart.
+    tube_radius = np.bincount(tube_of_step, weights=radii * step_length) / np.bincount(
+        tube_of_step, weights=step_length
     )
-    chord_norm = np.linalg.norm(chord, axis=1)
-    usable = chord_norm > 1e-9  # a tube closing on itself keeps its local course
-    facing = local.copy()
-    facing[usable] = chord[usable] / chord_norm[usable, None]
+    segments = np.maximum(
+        1, np.ceil(tube_length / (tube_radius * _RING_SPACING_PER_RADIUS))
+    ).astype(np.intp)
+    ring_tube = np.repeat(np.arange(n_tubes), segments + 1)
+    first_ring = np.concatenate([[0], np.cumsum(segments + 1)[:-1]])
+    last_ring = first_ring + segments
+    rank = np.arange(len(ring_tube)) - first_ring[ring_tube]
+    at = tube_start[ring_tube] + tube_length[ring_tube] * rank / segments[ring_tube]
+    centre = np.stack([np.interp(at, along, points[:, axis]) for axis in range(3)], axis=1)
+    # The step each ring lies on gives it its radius and its colour.
+    on_point = np.minimum(
+        np.searchsorted(along, at, side="right") - 1, last_point[ring_tube] - 1
+    )
+    ring_step = step_of_point[on_point]
+    ring_radius = radii[ring_step]
+    first, last = first_ring[ring_tube], last_ring[ring_tube]
+    centre = _smooth_tubes(centre, first, last)
+
+    index = np.arange(len(centre))
+    tangent = centre[np.minimum(index + 1, last)] - centre[np.maximum(index - 1, first)]
+    norm = np.linalg.norm(tangent, axis=1)
+    still = norm <= 1e-12  # a tube folded onto itself: take its step's own way
+    tangent[still] = data[keep[ring_step[still]], 1, :]
+    norm[still] = step_length[ring_step[still]]
+    tangent /= norm[:, None]
 
     # Carry each ring's frame on from the last one's, so the tube does not
     # twist: theta is how far round a ring's own frame its first vertex sits.
-    normal, binormal = _normal_plane_frames(facing)
-    has_next = np.ones(n_rings, dtype=bool)
-    has_next[end_rings] = False
-    before = np.flatnonzero(has_next)
-    turn = np.zeros(n_rings)
+    normal, binormal = _normal_plane_frames(tangent)
+    has_next = index < last
+    before = index[has_next]
+    turn = np.zeros(len(centre))
     turn[before + 1] = np.arctan2(
         np.einsum("ij,ij->i", normal[before], binormal[before + 1]),
         np.einsum("ij,ij->i", normal[before], normal[before + 1]),
     )
     theta = np.cumsum(turn)
-    theta -= theta[first_ring][tube]
+    theta -= theta[first]
     angles = np.linspace(0.0, 2.0 * np.pi, sides, endpoint=False)[None, :] + theta[:, None]
     around = (
         np.cos(angles)[:, :, None] * normal[:, None, :]
         + np.sin(angles)[:, :, None] * binormal[:, None, :]
     )
-    return _Rings(
-        keep=keep,
-        radii=radii,
-        start_ring=start_ring,
-        starts=starts,
-        end_rings=end_rings,
-        centre=centre,
-        radius=ring_radius,
-        step=step,
-        around=around,
-    )
+    ring_vertices = (centre[:, None, :] + around * ring_radius[:, None, None]).reshape(-1, 3)
 
-
-def tubes_from_vectors(
-    vectors: np.ndarray,
-    *,
-    radius: float | np.ndarray = TUBE_RADIUS_UM,
-    sides: int = DEFAULT_TUBE_SIDES,
-    groups: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build independent N-gon prisms from ``(M, 2, 3)`` origin+direction data.
-
-    Returns ``(vertices, faces, segment_index)``. ``segment_index[i]`` is the
-    Vectors row that owns ``vertices[i]``, so per-segment colours can be
-    repeated onto the prism. Zero-length and non-finite segments are skipped.
-    Each prism has its own vertices and open ends; consecutive steps of a
-    polyline (of one *groups* label, if given) share the ring between them,
-    so their prisms meet edge to edge and the tube keeps its width.
-
-    *radius* is either one value for every segment, or an array of shape
-    ``(M,)`` matching *vectors*' own row count -- one radius per segment,
-    e.g. each vessel's own measured/set diameter halved (see
-    :func:`tube_radii_um`). A non-finite or non-positive entry in a
-    per-segment array falls back to :data:`TUBE_RADIUS_UM` rather than
-    breaking that segment's prism.
-    """
-    rings = _tube_rings(vectors, radius, sides, groups)
-    if rings is None:
-        return _EMPTY_VERTICES.copy(), _EMPTY_FACES.copy(), _EMPTY_INDEX.copy()
-    sides = int(sides)
-    n_keep = int(rings.keep.size)
-    verts_per = sides * 2
-
-    # Each prism is its own step's radius at both ends, so a vessel is drawn
-    # at its own width right up to a node it shares with a wider one.
-    width = rings.radii[:, None, None]
-    first = rings.start_ring
-    last = rings.start_ring + 1
-    vertices = np.stack(
-        [
-            rings.centre[first][:, None, :] + rings.around[first] * width,
-            rings.centre[last][:, None, :] + rings.around[last] * width,
-        ],
-        axis=1,
-    ).reshape(n_keep * verts_per, 3)
-    segment_index = np.repeat(rings.keep.astype(np.intp), verts_per)
-
-    base = np.arange(n_keep, dtype=np.intp)[:, None] * verts_per  # (n_keep, 1)
-    k = np.arange(sides, dtype=np.intp)[None, :]  # (1, sides)
-    nxt = (k + 1) % sides
-    a = base + k
-    b = base + nxt
-    c = base + sides + k
-    d = base + sides + nxt
-    triangles = np.stack([np.stack([a, b, d], axis=-1), np.stack([a, d, c], axis=-1)], axis=2)
-    faces = triangles.reshape(n_keep * sides * 2, 3)
-    return vertices, faces, segment_index
-
-
-def joined_tubes_from_vectors(vectors, *, radius=TUBE_RADIUS_UM, sides=12, groups=None):
-    """One continuous, capped tube per run of joined steps.
-
-    Consecutive Vectors rows join when one ends where the next starts and,
-    given *groups* (one label per row, e.g. each step's ``edge_index``), both
-    carry the same label -- so two vessels meeting at a node stay two tubes.
-    Returns ``(vertices, faces, segment_index)`` like
-    :func:`tubes_from_vectors`: each vertex belongs to the step that starts
-    at its ring (the last ring and the end cap to the last step), so colours
-    by step still apply, blending along a step towards the next one's.
-    """
-    rings = _tube_rings(vectors, radius, sides, groups)
-    if rings is None:
-        return _EMPTY_VERTICES.copy(), _EMPTY_FACES.copy(), _EMPTY_INDEX.copy()
-    sides = int(sides)
-    n_rings = len(rings.centre)
-    ring_vertices = (
-        rings.centre[:, None, :] + rings.around * rings.radius[:, None, None]
-    ).reshape(n_rings * sides, 3)
-
-    # Side faces between each step's two rings, whose frames already line up.
     k = np.arange(sides, dtype=np.intp)[None, :]
-    a = rings.start_ring[:, None] * sides + k
-    b = rings.start_ring[:, None] * sides + (k + 1) % sides
-    c = a + sides
-    d = b + sides
-    side_faces = np.stack(
-        [np.stack([a, b, d], axis=-1), np.stack([a, d, c], axis=-1)], axis=2
-    ).reshape(-1, 3)
 
-    # Caps: a centre vertex fanned to each open end, facing outward.
-    start_rings = rings.start_ring[rings.starts]
-    cap_rings = np.concatenate([start_rings, rings.end_rings])
-    n_caps = cap_rings.size
-    centre_index = n_rings * sides + np.arange(n_caps, dtype=np.intp)
-    rim = cap_rings[:, None] * sides
-    j, j1 = rim + k, rim + (k + 1) % sides
-    centre = np.broadcast_to(centre_index[:, None], j.shape)
-    is_start = np.arange(n_caps) < start_rings.size
-    cap_faces = np.where(
-        is_start[:, None, None],
-        np.stack([centre, j1, j], axis=-1),
-        np.stack([centre, j, j1], axis=-1),
-    ).reshape(-1, 3)
+    def band(inner, outer, outward=True):
+        """Faces joining two rings of vertex indices, ``(count, sides)`` each."""
+        a, b = inner, np.roll(inner, -1, axis=1)
+        c, d = outer, np.roll(outer, -1, axis=1)
+        if outward:
+            triangles = [np.stack([a, b, d], axis=-1), np.stack([a, d, c], axis=-1)]
+        else:
+            triangles = [np.stack([a, d, b], axis=-1), np.stack([a, c, d], axis=-1)]
+        return np.stack(triangles, axis=2).reshape(-1, 3)
 
-    vertices = np.concatenate([ring_vertices, rings.centre[cap_rings]])
-    faces = np.concatenate([side_faces, cap_faces]).astype(np.intp)
+    ring_index = index[:, None] * sides + k
+    faces = [band(ring_index[before], ring_index[before + 1])]
+
+    # Rounded ends: a hemisphere of latitude rings on each end ring, closed
+    # by a pole on the tube's own course.
+    levels = max(2, sides // 4)
+    rims = np.concatenate([first_ring, last_ring])
+    outward = np.concatenate([-tangent[first_ring], tangent[last_ring]])
+    cap_radius = ring_radius[rims]
+    latitude = 0.5 * np.pi * np.arange(1, levels) / levels
+    cap_vertices = (
+        centre[rims][:, None, None, :]
+        + outward[:, None, None, :] * (cap_radius[:, None] * np.sin(latitude))[:, :, None, None]
+        + around[rims][:, None, :, :] * (cap_radius[:, None] * np.cos(latitude))[:, :, None, None]
+    ).reshape(-1, 3)
+    poles = centre[rims] + outward * cap_radius[:, None]
+    n_caps = rims.size
+    cap_base = len(ring_vertices)
+    pole_base = cap_base + len(cap_vertices)
+    cap_index = (
+        cap_base + (np.arange(n_caps)[:, None] * (levels - 1) + np.arange(levels - 1)[None, :])
+        * sides
+    )[:, :, None] + k[None]  # (caps, levels - 1, sides)
+    is_end = np.arange(n_caps) >= n_tubes
+    rows = [ring_index[rims]] + [cap_index[:, level] for level in range(levels - 1)]
+    for inner, outer in zip(rows[:-1], rows[1:]):
+        faces.append(band(inner[is_end], outer[is_end]))
+        faces.append(band(inner[~is_end], outer[~is_end], outward=False))
+    top = rows[-1]
+    pole = np.broadcast_to((pole_base + np.arange(n_caps))[:, None], top.shape)
+    turned = np.roll(top, -1, axis=1)
+    fans = np.where(
+        is_end[:, None, None],
+        np.stack([top, turned, pole], axis=-1),
+        np.stack([top, pole, turned], axis=-1),
+    )
+    faces.append(fans.reshape(-1, 3))
+
+    cap_step = ring_step[rims]
+    vertices = np.concatenate([ring_vertices, cap_vertices, poles])
     segment_index = np.concatenate([
-        np.repeat(rings.keep[rings.step], sides),
-        rings.keep[rings.step[cap_rings]],
+        np.repeat(keep[ring_step], sides),
+        np.repeat(keep[cap_step], (levels - 1) * sides),
+        keep[cap_step],
     ]).astype(np.intp)
-    return vertices, faces, segment_index
-
-
-def tube_shading_for_quality(quality: int) -> str:
-    """The Surface shading a quality level is drawn with.
-
-    Flat at level 0, where each prism is its own set of vertices and smooth
-    shading would have nothing to smooth across; smooth above it, where the
-    rings are shared and the light runs round the tube.
-    """
-    return TUBE_SHADING if clamp_tube_quality(quality) == 0 else "smooth"
+    return vertices, np.concatenate(faces).astype(np.intp), segment_index
 
 
 def clamp_tube_quality(quality) -> int:
@@ -411,23 +370,16 @@ def tube_mesh(
     quality: int = DEFAULT_TUBE_QUALITY,
     groups: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """The tube mesh for one quality level (see :data:`TUBE_QUALITY_SIDES`).
-
-    Level 0 is :func:`tubes_from_vectors`'s separate prisms; every level
-    above is :func:`joined_tubes_from_vectors` with that level's sides. Both
-    stand on the same rings, so a vessel is the same width at every level.
-    """
-    level = clamp_tube_quality(quality)
-    sides = TUBE_QUALITY_SIDES[level]
-    if level == 0:
-        return tubes_from_vectors(vectors, radius=radius, sides=sides, groups=groups)
-    return joined_tubes_from_vectors(vectors, radius=radius, sides=sides, groups=groups)
+    """:func:`tubes_from_vectors` with one quality level's sides
+    (see :data:`TUBE_QUALITY_SIDES`)."""
+    sides = TUBE_QUALITY_SIDES[clamp_tube_quality(quality)]
+    return tubes_from_vectors(vectors, radius=radius, sides=sides, groups=groups)
 
 
 def colors_for_tube_vertices(
     segment_index: np.ndarray, segment_colors: np.ndarray
 ) -> np.ndarray:
-    """Repeat per-segment RGBA (or RGB) onto the prism vertices."""
+    """Repeat per-segment RGBA (or RGB) onto the tube vertices."""
     index = np.asarray(segment_index, dtype=int)
     colours = np.asarray(segment_colors, dtype=float)
     if index.size == 0:

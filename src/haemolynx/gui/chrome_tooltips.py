@@ -142,10 +142,9 @@ SWEEP_TOOLTIP = (
     "each sweep keeps its own position while another is shown"
 )
 TUBE_QUALITY_TOOLTIP = (
-    "How the vessel tubes are drawn. Left: separate six-sided prisms per "
-    "centreline step, flat shaded (fastest; reads as bands). Each step right: "
-    "one continuous, capped tube per vessel with rounder cross-sections and "
-    "smooth shading -- slower to build on a large network"
+    "How round the vessel tubes are drawn: one smooth tube per vessel at its "
+    "own diameter, with more sides round it each step right -- slower to "
+    "build on a large network"
 )
 SNAPSHOT_TOOLTIP = (
     "Write a TIFF of the current napari view into the pipeline "

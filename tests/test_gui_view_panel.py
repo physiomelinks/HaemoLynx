@@ -33,6 +33,21 @@ from test_gui_results_widget import a_run  # noqa: E402
 pytestmark = pytest.mark.gui
 
 
+def _tubes_of_the_shown_vessels(viewer) -> int:
+    """How many tube vertices the vessels layer as it now stands should give."""
+    from haemolynx.gui import _widget as widget_mod
+    from haemolynx.gui.vessel_tubes import tube_mesh, tube_radii_um
+
+    vessels = viewer.layers[VESSELS]
+    vertices, _faces, _index = tube_mesh(
+        vessels.data,
+        radius=tube_radii_um(np.asarray(vessels.features["diameter_um"], dtype=float)),
+        quality=widget_mod._tube_quality,
+        groups=np.asarray(vessels.features["edge_index"]),
+    )
+    return len(vertices)
+
+
 def _stack_results():
     from types import SimpleNamespace
 
@@ -641,9 +656,8 @@ def test_vessels_default_to_tubes_and_toggle_to_lines(make_napari_viewer):
     assert viewer.layers[VESSEL_TUBES].visible is True
     assert panel._haemolynx_vessel_draw.currentText() == "Tubes"
 
-    n_segments = len(viewer.layers[VESSELS].data)
     n_verts = len(viewer.layers[VESSEL_TUBES].data[0])
-    assert n_verts == n_segments * 6 * 2
+    assert n_verts == _tubes_of_the_shown_vessels(viewer) > 0
 
     panel._haemolynx_vessel_draw.setCurrentText("Lines")
     assert viewer.layers[VESSELS].visible is True
@@ -661,9 +675,9 @@ def test_vessel_draw_activated_toggles_visibility_both_ways(make_napari_viewer):
     for group in a_run():
         _apply_layers(viewer, group)
     combo = panel._haemolynx_vessel_draw
-    n_segments = len(viewer.layers[VESSELS].data)
-    assert n_segments > 0
-    assert len(viewer.layers[VESSEL_TUBES].data[0]) == n_segments * 12
+    n_verts = _tubes_of_the_shown_vessels(viewer)
+    assert n_verts > 0
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) == n_verts
 
     _choose_vessel_draw(combo, "Lines")
     assert combo.currentText() == "Lines"
@@ -675,7 +689,7 @@ def test_vessel_draw_activated_toggles_visibility_both_ways(make_napari_viewer):
     assert combo.currentText() == "Tubes"
     assert viewer.layers[VESSELS].visible is False
     assert viewer.layers[VESSEL_TUBES].visible is True
-    assert len(viewer.layers[VESSEL_TUBES].data[0]) == n_segments * 12
+    assert len(viewer.layers[VESSEL_TUBES].data[0]) == n_verts
 
     _choose_vessel_draw(combo, "Lines")
     _choose_vessel_draw(combo, "Tubes")
@@ -711,12 +725,13 @@ def test_z_depth_filter_rebuilds_tubes_from_filtered_vectors(make_napari_viewer)
     assert panel._haemolynx_vessel_draw.currentText() == "Tubes"
     full_segments = len(viewer.layers[VESSELS].data)
     full_verts = len(viewer.layers[VESSEL_TUBES].data[0])
-    assert full_verts == full_segments * 12
+    assert full_verts == _tubes_of_the_shown_vessels(viewer)
 
     panel._haemolynx_z_depth_slider.setValue((0.0, 5.0))
     clipped_segments = len(viewer.layers[VESSELS].data)
     assert clipped_segments < full_segments
-    assert len(viewer.layers[VESSEL_TUBES].data[0]) == clipped_segments * 12
+    clipped_verts = len(viewer.layers[VESSEL_TUBES].data[0])
+    assert clipped_verts == _tubes_of_the_shown_vessels(viewer) < full_verts
     assert viewer.layers[VESSEL_TUBES].visible is True
     assert viewer.layers[VESSELS].visible is False
 

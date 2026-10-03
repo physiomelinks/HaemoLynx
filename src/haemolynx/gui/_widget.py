@@ -128,6 +128,7 @@ from haemolynx.gui.vessel_tubes import (
     DEFAULT_TUBE_QUALITY,
     DEFAULT_VESSEL_DRAW,
     TUBE_QUALITY_SIDES,
+    TUBE_SHADING,
     VESSEL_DRAW_LINES,
     VESSEL_DRAW_TUBES,
     clamp_tube_quality,
@@ -135,7 +136,6 @@ from haemolynx.gui.vessel_tubes import (
     tube_mesh,
     tube_radii_um,
     tube_radius_um,
-    tube_shading_for_quality,
     vessel_tubes_layer_name,
 )
 from haemolynx.io import resolve_voxel_size_xyz
@@ -1347,7 +1347,7 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> str:
             name=name,
             scale=scale,
             vertex_colors=colours,
-            shading=tube_shading_for_quality(_tube_quality),
+            shading=TUBE_SHADING,
             blending="translucent",
             metadata={OURS: ours},
         )
@@ -1376,9 +1376,8 @@ def _tube_quality_sliders(viewer) -> list:
 def set_tube_quality(viewer, quality: int) -> None:
     """Redraw every tube at *quality* (see ``TUBE_QUALITY_SIDES``).
 
-    The shading goes with it -- flat for the separate prisms of level 0,
-    smooth for the joined tubes above -- and every tubes layer's slider is
-    moved to match, since the level is the session's, not one layer's.
+    Every tubes layer's slider is moved to match, since the level is the
+    session's, not one layer's. The shading is left as the user has it.
     """
     global _tube_quality
     _tube_quality = clamp_tube_quality(quality)
@@ -1387,13 +1386,6 @@ def set_tube_quality(viewer, quality: int) -> None:
             slider.blockSignals(True)
             slider.setValue(_tube_quality)
             slider.blockSignals(False)
-    shading = tube_shading_for_quality(_tube_quality)
-    for layer in list(viewer.layers):
-        if _is_vessel_tubes_layer(layer):
-            try:
-                layer.shading = shading
-            except Exception:  # noqa: BLE001 - shading is cosmetic
-                logger.debug("could not set tube shading", exc_info=True)
     _sync_vessel_tubes(viewer)
 
 
@@ -1401,10 +1393,9 @@ def _attach_tube_quality_slider(viewer, layer) -> bool:
     """Put the "Render quality" slider on a tubes layer's controls, once.
 
     It lives on the layer's own controls, so napari shows it only while a
-    tubes layer is selected. The left end is the original banded prisms;
-    each step right draws smoother, rounder, continuous tubes (and costs
-    more to draw). It acts on release, not while dragging: a big network
-    takes a moment to rebuild.
+    tubes layer is selected. Each step right draws the same tubes with more
+    sides round them, rounder and costlier to draw. It acts on release, not
+    while dragging: a big network takes a moment to rebuild.
     """
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import QLabel, QSlider

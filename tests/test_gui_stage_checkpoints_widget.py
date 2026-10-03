@@ -357,11 +357,11 @@ def test_revert_restores_tube_radii_from_the_replayed_diameter_column(panel):
     origins = vectors[:, 0, :]
     directions = vectors[:, 1, :]
     segment_index = tubes.metadata["haemolynx"]["segment_index"]
-    tangents = directions[segment_index]
-    tangents = tangents / np.linalg.norm(tangents, axis=1, keepdims=True)
+    along = directions[segment_index]
     rel = vertices - origins[segment_index]
-    axial = np.einsum("ij,ij->i", rel, tangents)
-    radial = np.linalg.norm(rel - axial[:, None] * tangents, axis=1)
+    t = np.clip(np.einsum("ij,ij->i", rel, along) / np.einsum("ij,ij->i", along, along), 0.0, 1.0)
+    # Distance to each vertex's own straight vessel, its rounded ends included.
+    radial = np.linalg.norm(rel - t[:, None] * along, axis=1)
     # Each edge's own diameter (8.0 um), halved -- not the 2.0 um fallback.
     assert np.all(radial > TUBE_RADIUS_UM + 0.5)
     np.testing.assert_allclose(radial, diameter_um / 2.0, atol=1e-6)

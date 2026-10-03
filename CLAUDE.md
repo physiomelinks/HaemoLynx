@@ -541,12 +541,14 @@ are only caught locally.
   length sweeps move them), and the same sliders swap them in (`_apply_sweep_points`). The view panel's "Colour by" menu (`_VesselColourMenu` in
   `_widget.py`) colours the shown network's vessels Vectors layer — tubes take their colours from
   it — through `_choose_colour_by`, the same path as the layer controls' own Colour by.
-- **`gui/vessel_tubes.py`** — the vessel tube mesh. `tube_mesh(..., quality=)` is driven by the
-  "render quality" slider on a tubes layer's own controls: level 0 is the original separate
-  six-sided prisms per centreline step, flat shaded (cheap, but reads as bands); every level above
-  is `joined_tubes_from_vectors` — one closed, capped tube per vessel (steps grouped by
-  `edge_index`), rings mitred at bends and lined up so the tube cannot twist, smooth shaded, with
-  more sides per level (`TUBE_QUALITY_SIDES`). The level is the session's, shared by every tubes layer.
+- **`gui/vessel_tubes.py`** — the vessel tube mesh: `tubes_from_vectors` draws one closed,
+  smooth-shaded tube per vessel (steps grouped by `edge_index`) at that vessel's own diameter, with
+  rounded ends on its two nodes. It follows the centreline smoothed over about half its radius, with
+  rings a third of a radius apart, not the voxel path ring by ring: steps under a micron kinking at
+  every voxel round a vessel several microns wide made the tube pinch, bulge and fold where the vessel
+  does not. `tube_mesh(..., quality=)` is driven by the "render quality" slider on a tubes layer's own
+  controls, which only sets the sides round the tube (`TUBE_QUALITY_SIDES`); the level is the
+  session's, shared by every tubes layer.
 - **`examples/pipeline_presets.py`** — `PRESETS`, named partial configs; every setting name is
   checked against the schema at import, so a preset cannot quietly set something that no longer
   exists. The override engine itself is library code, in `parsers/cli.py` and `parsers/config.py`.
