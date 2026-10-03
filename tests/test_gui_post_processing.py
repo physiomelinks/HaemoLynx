@@ -1,4 +1,4 @@
-"""What the "6. Post processing" tab draws and lists (pure, no napari)."""
+"""What the "7. Post processing" tab draws and lists (pure, no napari)."""
 from __future__ import annotations
 
 import networkx as nx
@@ -172,6 +172,9 @@ def test_a_run_from_before_post_processing_would_lose_the_edits_still_in_the_tab
     add_vessel_between(G, 0, 4)
     assert edits_lost_by_running_from("assign_diameters", G, None)
     assert edits_lost_by_running_from("skeletonise", G, None)
+    # Post processing follows the solve: a run from Haemodynamics starts again
+    # from Diameters' network, which never had the edits.
+    assert edits_lost_by_running_from("build_haemodynamic_model", G, None)
 
 
 def test_a_run_from_before_post_processing_would_lose_edits_already_applied():
@@ -191,7 +194,7 @@ def test_a_run_from_post_processing_or_later_loses_nothing():
     add_vessel_between(G, 0, 4)
     applied = _network()
     applied.graph[APPLIED] = True
-    for start in ("post_process", "build_haemodynamic_model", "export_results", None, "nope"):
+    for start in ("post_process", "run_perturbations", "export_results", None, "nope"):
         assert not edits_lost_by_running_from(start, G, applied)
 
 

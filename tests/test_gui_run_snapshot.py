@@ -285,16 +285,40 @@ def test_loading_a_run_leaves_graph_building_and_skeleton_files_alone(tmp_path):
 # --- a run paused for post-processing, and runs saved before that stage existed ----------
 
 
-def test_a_paused_run_is_saved_and_loaded_paused(tmp_path):
+def _paused_after_haemodynamics(tmp_path):
     checkpoints, results, settings = _recorded(tmp_path)
+    for stage in ("assign_boundaries", "assign_diameters", "build_haemodynamic_model", "solve"):
+        checkpoints.record(stage, _group(stage), results, settings=settings)
+    return checkpoints, results, settings
+
+
+def test_a_paused_run_is_saved_and_loaded_paused(tmp_path):
+    checkpoints, results, settings = _paused_after_haemodynamics(tmp_path)
+    snapshot = capture_run(
+        checkpoints=checkpoints, results=results, settings=settings,
+        paused_after="solve",
+    )
+
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "paused", snapshot))
+
+    assert loaded.paused_after == "solve"
+    assert loaded.stages[-1] == "solve", "no Post processing stand-in for a paused run"
+
+
+def test_a_run_paused_before_haemodynamics_is_not_loaded_paused(tmp_path):
+    """Saved while Post processing came before Haemodynamics: there is no solve
+    for Continue to pick up from, so the run is picked up from Haemodynamics."""
+    checkpoints, results, settings = _recorded(tmp_path)
+    for stage in ("assign_boundaries", "assign_diameters"):
+        checkpoints.record(stage, _group(stage), results, settings=settings)
     snapshot = capture_run(
         checkpoints=checkpoints, results=results, settings=settings,
         paused_after="assign_diameters",
     )
 
-    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "paused", snapshot))
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "old", snapshot))
 
-    assert loaded.paused_after == "assign_diameters"
+    assert loaded.paused_after is None
 
 
 def test_a_finished_run_is_not_loaded_paused(tmp_path):
@@ -312,30 +336,70 @@ def _through(stages):
     return checkpoints.records()
 
 
+#: A whole run's stages as they were recorded before Post processing existed.
+_BEFORE_POST_PROCESSING = (
+    "assign_boundaries", "assign_diameters", "build_haemodynamic_model", "solve",
+    "run_perturbations", "export_results",
+)
+
+
 def test_a_run_saved_before_post_processing_existed_gets_its_checkpoint():
-    """Such a run went straight from Diameters to Haemodynamics: Post
-    processing's end-of-tab state is Diameters' own, which "Run from this
-    stage" on Haemodynamics now needs."""
+    """An unedited network passes Post processing untouched, so its end-of-tab
+    state is the solve's own -- which "Run from this stage" on Perturbations
+    needs."""
     from haemolynx.gui.run_snapshot import with_post_process_checkpoint
 
-    old = _through(("assign_boundaries", "assign_diameters", "build_haemodynamic_model", "solve"))
+    upgraded = with_post_process_checkpoint(_through(_BEFORE_POST_PROCESSING))
+
+    assert [c.stage for c in upgraded] == [
+        "assign_boundaries", "assign_diameters", "build_haemodynamic_model", "solve",
+        "post_process", "run_perturbations", "export_results",
+    ]
+    stand_in = upgraded[4]
+    assert stand_in.title == "7. Post processing"
+    assert stand_in.graph is upgraded[3].graph
+
+
+def test_a_run_saved_with_post_processing_before_haemodynamics_is_reordered():
+    """Its Post processing checkpoint held the network before the solve; the
+    solve's, which already has the edits, stands in for it after the solve."""
+    from haemolynx.gui.run_snapshot import with_post_process_checkpoint
+
+    old = _through((
+        "assign_boundaries", "assign_diameters", "post_process",
+        "build_haemodynamic_model", "solve", "run_perturbations", "export_results",
+    ))
     upgraded = with_post_process_checkpoint(old)
 
     assert [c.stage for c in upgraded] == [
-        "assign_boundaries", "assign_diameters", "post_process",
-        "build_haemodynamic_model", "solve",
+        "assign_boundaries", "assign_diameters", "build_haemodynamic_model", "solve",
+        "post_process", "run_perturbations", "export_results",
     ]
-    stand_in = upgraded[2]
-    assert stand_in.title == "6. Post processing"
-    assert stand_in.graph is upgraded[1].graph
+    assert upgraded[4].graph is upgraded[3].graph is old[4].graph
 
 
-def test_a_run_that_stopped_at_diameters_or_has_the_stage_is_left_alone():
+def test_an_old_pause_keeps_its_edits_on_diameters():
+    """Paused before Haemodynamics with the edits brought in line: "Run from
+    this stage" on Haemodynamics starts from Diameters' checkpoint, so that is
+    where the edited network goes."""
     from haemolynx.gui.run_snapshot import with_post_process_checkpoint
 
-    paused = _through(("assign_boundaries", "assign_diameters"))
-    assert [c.stage for c in with_post_process_checkpoint(paused)] == [
-        "assign_boundaries", "assign_diameters",
-    ]
-    current = _through(("assign_diameters", "post_process", "build_haemodynamic_model"))
-    assert with_post_process_checkpoint(current) == tuple(current)
+    old = _through(("assign_boundaries", "assign_diameters", "post_process"))
+    upgraded = with_post_process_checkpoint(old)
+
+    assert [c.stage for c in upgraded] == ["assign_boundaries", "assign_diameters"]
+    assert upgraded[1].graph is old[2].graph
+    assert upgraded[1].group is old[1].group
+
+
+def test_a_run_that_stopped_at_the_solve_or_has_the_stage_is_left_alone():
+    from haemolynx.gui.run_snapshot import with_post_process_checkpoint
+
+    for stopped in (
+        ("assign_boundaries", "assign_diameters"),
+        ("assign_diameters", "build_haemodynamic_model", "solve"),
+        ("assign_diameters", "build_haemodynamic_model", "solve", "post_process"),
+        (*_BEFORE_POST_PROCESSING[:4], "post_process", *_BEFORE_POST_PROCESSING[4:]),
+    ):
+        current = _through(stopped)
+        assert with_post_process_checkpoint(current) == tuple(current), stopped

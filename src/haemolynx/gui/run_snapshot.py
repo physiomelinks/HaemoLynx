@@ -188,6 +188,7 @@ def read_run_snapshot(path: Path | str) -> RunSnapshot:
     )
     if any(not isinstance(item, StageCheckpoint) for item in checkpoints):
         raise RunSnapshotError(f"{source} has a checkpoint that is not a stage snapshot.")
+    checkpoints = with_post_process_checkpoint(checkpoints)
     return RunSnapshot(
         settings=dict(payload.get("settings") or {}),
         skip_toggle_snapshot=dict(payload.get("skip_toggle_snapshot") or {}),
@@ -195,33 +196,66 @@ def read_run_snapshot(path: Path | str) -> RunSnapshot:
         show_steps=bool(payload.get("show_steps", False)),
         report=str(payload.get("report") or ""),
         results_state=payload.get("results_state"),
-        checkpoints=with_post_process_checkpoint(checkpoints),
-        paused_after=payload.get("paused_after"),
+        checkpoints=checkpoints,
+        paused_after=_paused_after(payload.get("paused_after"), checkpoints),
     )
+
+
+def _paused_after(paused_after: str | None, checkpoints: Sequence[StageCheckpoint]) -> str | None:
+    """Where a loaded run was paused, if Continue can still pick it up.
+
+    A run pauses for Post processing after its solve. One saved paused when
+    Post processing came before Haemodynamics has no solve to continue from;
+    "Run from this stage" on Haemodynamics picks that one up instead.
+    """
+    if paused_after is None or any(item.stage == "solve" for item in checkpoints):
+        return paused_after
+    logger.info(
+        "This run was paused before Haemodynamics, where Post processing used "
+        "to be; run it on from the Haemodynamics tab."
+    )
+    return None
 
 
 def with_post_process_checkpoint(
     checkpoints: Sequence[StageCheckpoint],
 ) -> tuple[StageCheckpoint, ...]:
-    """*checkpoints*, with one for ``post_process`` when a run saved before that
-    stage existed went past it.
+    """*checkpoints* in today's stage order, with one for ``post_process``
+    wherever the run went past that stage.
 
-    Such a run went straight from Diameters to Haemodynamics, so Post
-    processing's end-of-tab state is Diameters' own -- the checkpoint "Run from
-    this stage" on Haemodynamics now needs.
+    Post processing comes after Haemodynamics. A run saved while it came
+    between Diameters and Haemodynamics recorded it before the solve: that
+    checkpoint goes -- its edits are in every checkpoint after it -- and for
+    a run that stopped before Haemodynamics, its edited network becomes
+    Diameters', so "Run from this stage" on Haemodynamics starts from it.
+
+    A run that went past the stage without recording it (saved before it
+    existed, or just upgraded) gets the solve's checkpoint standing in for
+    it: an unedited network passes Post processing untouched, so that is
+    Post processing's end-of-tab state -- the one "Run from this stage" on
+    Perturbations needs.
     """
-    stages = [item.stage for item in checkpoints]
-    if "post_process" in stages or "assign_diameters" not in stages:
-        return tuple(checkpoints)
+    records = list(checkpoints)
+    stages = [item.stage for item in records]
+    if "post_process" in stages and (
+        "solve" not in stages or stages.index("post_process") < stages.index("solve")
+    ):
+        edited = records.pop(stages.index("post_process"))
+        stages.remove("post_process")
+        if "solve" not in stages and "assign_diameters" in stages:
+            at = stages.index("assign_diameters")
+            records[at] = replace(records[at], graph=edited.graph)
+    if "post_process" in stages or "solve" not in stages:
+        return tuple(records)
     order = [stage.call for stage in STAGES if stage.call]
     later = order[order.index("post_process") + 1:]
     if not any(stage in later for stage in stages):
-        return tuple(checkpoints)
-    diameters = checkpoints[stages.index("assign_diameters")]
+        return tuple(records)
+    solved = records[stages.index("solve")]
     title = next(stage.title for stage in STAGES if stage.call == "post_process")
-    stand_in = replace(diameters, stage="post_process", title=title)
-    at = stages.index("assign_diameters") + 1
-    return (*checkpoints[:at], stand_in, *checkpoints[at:])
+    stand_in = replace(solved, stage="post_process", title=title)
+    at = stages.index("solve") + 1
+    return (*records[:at], stand_in, *records[at:])
 
 
 def replay_groups(snapshot: RunSnapshot) -> tuple[Any, ...]:

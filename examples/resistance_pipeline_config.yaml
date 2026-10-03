@@ -29,7 +29,7 @@ input_and_segmentation:
   voxel_size_policy: auto
   # Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load  [one of: zyx, zxy, yzx, yxz, xzy, xyz]
   image_axis_order: zyx
-  # Pause a napari panel run after Diameters, on the Post processing tab, to fix the network by hand before haemodynamics; the tab's Continue button brings the edits in line and runs the rest. A command-line run does not pause
+  # Pause a napari panel run after Haemodynamics, on the Post processing tab, to fix the solved network by hand; the tab's Continue button brings the edits in line, solves the haemodynamics again and runs the rest. A command-line run does not pause
   mid_run_postprocessing: false
   # Load the input image, and any vessel/pericyte/cell masks, into a disk-backed array instead of RAM, and write the largest full-volume working buffers (connected-component labels, distance transforms) to disk too, instead of a fresh in-RAM array each time. Same result, much less peak RAM, at the cost of disk space (as large as the volume itself) and slower reads -- turn on for a volume too large to hold in memory outright. Does not cover use_thick_vessel_skeletonisation's own centreline-tree computation, which still allocates full-volume buffers regardless of this setting
   use_memmap_loading: false

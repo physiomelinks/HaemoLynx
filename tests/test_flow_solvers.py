@@ -324,7 +324,7 @@ def test_both_dropdowns_are_behind_the_haemodynamics_tabs_advanced_button():
     from haemolynx.gui.layout import layout_for
     from haemolynx.gui.tabs import tabs_for
 
-    tab = next(t for t in tabs_for(SCHEMA) if t.stage.title == "7. Haemodynamics")
+    tab = next(t for t in tabs_for(SCHEMA) if t.stage.title == "6. Haemodynamics")
     layout = layout_for(tab.stage.call, [field.name for field in tab.fields], SCHEMA)
     flow = layout.disclosure_of("haemodynamics_solver")
     equivalent = layout.disclosure_of("equivalent_resistance_solver")

@@ -203,7 +203,7 @@ def test_the_whole_section_is_on_the_stage_that_hands_it_over():
     for name in retabbed_to_perturbations:
         assert owner[name] == "8. Perturbations", name
     for name in retabbed_to_haemodynamics:
-        assert owner[name] == "7. Haemodynamics", name
+        assert owner[name] == "6. Haemodynamics", name
 
 
 # --- the stages themselves ---------------------------------------------------
@@ -220,9 +220,9 @@ def test_the_tabs_are_the_pipeline_stages_in_order():
         "build_network",
         "assign_boundaries",
         "assign_diameters",
-        "post_process",
         "build_haemodynamic_model",
         "solve",
+        "post_process",
         "run_perturbations",
         "export_results",
     ]
@@ -249,10 +249,10 @@ def test_the_tabs_read_in_pipeline_order():
         "3. Graph",
         "4. Boundaries",
         "5. Diameters",
-        "6. Post processing",
-        "7. Haemodynamics",
+        "6. Haemodynamics",
         # `solve` renders its rows onto the haemodynamics tab rather than
         # opening one of its own.
+        "7. Post processing",
         "8. Perturbations",
         "9. Additional measurements",
         "10. Export",
@@ -382,7 +382,7 @@ def test_a_tab_carries_the_rows_for_its_settings():
     handling -- which runs at the start of `build_haemodynamic_model`.
     """
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
-    haemodynamics = tabs["7. Haemodynamics"]
+    haemodynamics = tabs["6. Haemodynamics"]
     assert {field.name for field in haemodynamics.fields} == {
         "run_haemodynamics",
         "viscosity_law",
@@ -494,7 +494,7 @@ def test_the_perturbations_tab_shows_only_the_always_on_run_settings():
 
 def test_supplied_values_reach_the_right_tab():
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA, {"inlet_p_bc": 1234.0})}
-    row = next(f for f in tabs["7. Haemodynamics"].fields if f.name == "inlet_p_bc")
+    row = next(f for f in tabs["6. Haemodynamics"].fields if f.name == "inlet_p_bc")
     assert row.value == 1234.0
 
 
@@ -907,7 +907,7 @@ def test_every_tab_starts_with_a_number_so_the_order_is_visible(title):
 
 def test_the_haemodynamics_tab_titles_its_blood_model_box_blood_model():
     """The viscosity/haematocrit rows are declared in "Diameters and
-    pericytes", but on "7. Haemodynamics" that name describes another tab."""
+    pericytes", but on "6. Haemodynamics" that name describes another tab."""
     from haemolynx.gui.tabs import section_box_title, tabs_for
 
     haemodynamics = next(t for t in tabs_for(SCHEMA) if t.stage.call == "build_haemodynamic_model")

@@ -49,8 +49,9 @@ ALREADY_RUNNING = (
 )
 
 #: The stage a run pauses after when ``mid_run_postprocessing`` is on: the one
-#: before Post processing, so the network can be edited before it runs.
-MID_RUN_PAUSE_AFTER = "assign_diameters"
+#: before Post processing -- the solve -- so the network is edited with its
+#: flows on screen.
+MID_RUN_PAUSE_AFTER = "solve"
 #: The stage a run from Post processing starts at, and a Regenerate graph
 #: during a pause stops after.
 POST_PROCESS = "post_process"
@@ -60,9 +61,9 @@ def mid_run_stop_after(settings, start_from: str | None) -> str | None:
     """Where a run started at *start_from* stops, or None to run to the end.
 
     With ``mid_run_postprocessing`` on, a run that reaches the Post processing
-    stage from before it -- a full run, or one from Diameters or earlier --
-    pauses just before it. One that starts at Post processing or later does
-    not: it has already been past the pause.
+    stage from before it -- a full run, or one from Haemodynamics or earlier
+    -- pauses just before it. One that starts at Post processing or later
+    does not: it has already been past the pause.
     """
     if not settings or not settings.get("mid_run_postprocessing"):
         return None
@@ -76,7 +77,7 @@ def mid_run_stop_after(settings, start_from: str | None) -> str | None:
 
 
 def post_processing_tab_title() -> str:
-    """The Post processing stage's tab title, e.g. ``"6. Post processing"``."""
+    """The Post processing stage's tab title, e.g. ``"7. Post processing"``."""
     from haemolynx.pipeline.progress import STAGES
 
     for stage in STAGES:
@@ -95,19 +96,22 @@ def paused_message(stop_after: str, nodes: int, vessels: int) -> str:
     tab = post_processing_tab_title()
     if stop_after == POST_PROCESS:
         return (
-            f"Graph regenerated: {nodes} nodes, {vessels} vessels. Edit more on "
-            f"{tab}, or press Continue there to run Haemodynamics onwards."
+            f"Graph regenerated and its haemodynamics solved again: {nodes} nodes, "
+            f"{vessels} vessels. Edit more on {tab}, or press Continue there to "
+            "run Perturbations onwards."
         )
     return (
-        f"Paused after Diameters: {nodes} nodes, {vessels} vessels. Fix the "
-        f"network on {tab}, then press Continue there to run Haemodynamics onwards."
+        f"Paused after Haemodynamics: {nodes} nodes, {vessels} vessels. Fix the "
+        f"network on {tab}, then press Continue there to solve it again and run "
+        "Perturbations onwards."
     )
 
 
 def regenerate_stop_after(paused: bool) -> str | None:
-    """Where Regenerate graph's run stops: after Post processing while the run
-    is paused (it stays paused, for Continue), else nowhere -- a finished run
-    is re-solved from Haemodynamics to Export."""
+    """Where Regenerate graph's run stops: after Post processing -- the edits
+    in line and the haemodynamics solved again -- while the run is paused (it
+    stays paused, for Continue), else nowhere: a finished run goes on through
+    Perturbations to Export."""
     return POST_PROCESS if paused else None
 
 

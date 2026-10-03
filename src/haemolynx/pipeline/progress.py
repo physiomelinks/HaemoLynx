@@ -233,20 +233,8 @@ STAGES: tuple[Stage, ...] = (
         ),
     ),
     Stage(
-        # Hand edits to the network, between the diameters and the flow they
-        # set: the panel can pause a run here (mid_run_postprocessing, on
-        # Input). The stage brings the edits in line with the rest of the
-        # network; it has no settings, and its tab lays out its own page.
-        call="post_process",
-        title="6. Post processing",
-        summary=(
-            "Fix the network by hand before haemodynamics: junctions where four "
-            "or more vessels meet, and vessels to add or delete."
-        ),
-    ),
-    Stage(
         call="build_haemodynamic_model",
-        title="7. Haemodynamics",
+        title="6. Haemodynamics",
         summary=(
             "Whether to solve the flow, the blood model it solves with, and "
             "the pressures to solve it at."
@@ -273,7 +261,21 @@ STAGES: tuple[Stage, ...] = (
             "equivalent_resistance_solver",
             *_HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB,
         ),
-        tab="7. Haemodynamics",
+        tab="6. Haemodynamics",
+    ),
+    Stage(
+        # Hand edits to the solved network, with its flows on screen: the
+        # panel can pause a run here (mid_run_postprocessing, on Input). The
+        # stage brings the edits in line with the rest of the network and
+        # solves its haemodynamics again; it has no settings, and its tab
+        # lays out its own page.
+        call="post_process",
+        title="7. Post processing",
+        summary=(
+            "Fix the solved network by hand: junctions where four or more "
+            "vessels meet, and vessels to add or delete; then solve its "
+            "haemodynamics again."
+        ),
     ),
     Stage(
         call="run_perturbations",

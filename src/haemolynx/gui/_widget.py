@@ -7869,8 +7869,8 @@ class _GraphEditorWindow:
         return bool(self.native.isVisible())
 
 
-#: The Post processing stage's tab, between Diameters and Haemodynamics. Its
-#: page is its own (no setting rows), and it has no "Run from this stage": its
+#: The Post processing stage's tab, between Haemodynamics and Perturbations.
+#: Its page is its own (no setting rows), and it has no "Run from this stage": its
 #: Regenerate graph / Continue / Regenerate from the edited network are that.
 POST_PROCESSING_TAB = post_processing_tab_title()
 
@@ -7927,7 +7927,7 @@ def _post_processing_controls(
     viewer, report, *, results, boundary_roles, regenerate, running, settings=None,
     paused=None, complete=None,
 ):
-    """The "6. Post processing" page: fix the network by hand before haemodynamics.
+    """The "7. Post processing" page: fix the solved network by hand.
 
     *results* returns the panel's current ResultLayers (or None), *boundary_roles*
     the run's boundary node ids by role, *regenerate(graph, stop_after=...)*
@@ -7941,10 +7941,11 @@ def _post_processing_controls(
 
     Three buttons at the foot of the page take the edits on. Regenerate graph
     brings them in line -- branch orders, lengths, diameters by the run's own
-    methods, thick-vessel bridges (the pipeline's ``post_process`` stage) --
-    and, when a run is paused here, stays paused; after a finished run it goes
-    on to re-solve Haemodynamics to Export, as Regenerate from the edited
-    network does. Continue, while paused, does the same and carries the run on.
+    methods, thick-vessel bridges -- and reruns Haemodynamics on the edited
+    network (the pipeline's ``post_process`` stage); when a run is paused
+    here it stays paused, and after a finished run it goes on through
+    Perturbations to Export, as Regenerate from the edited network does.
+    Continue, while paused, does the same and carries the run on.
 
     The page edits one working copy of the graph: the junction table's
     Delete and Split, and the edit box's click-in-the-viewer Delete vessel and
@@ -8060,9 +8061,9 @@ def _post_processing_controls(
         "Fix the network by hand: vessels to add or delete and, with Manual 4+ "
         "vessel junction correction on, junctions where four or more vessels "
         "meet. Edits stay in the viewer until Regenerate graph brings them in "
-        "line with the rest of the network. With Mid-run postprocessing on "
-        "(1. Input), a run pauses here after Diameters and Continue runs "
-        "Haemodynamics onwards."
+        "line with the rest of the network and reruns Haemodynamics on it. With "
+        "Mid-run postprocessing on (1. Input), a run pauses here after "
+        "Haemodynamics and Continue runs Perturbations onwards."
     )
     intro.setWordWrap(True)
     scan_button = QPushButton("Scan network")
@@ -8395,16 +8396,16 @@ def _post_processing_controls(
             text = "A run is going."
         elif held and pending:
             text = (
-                "Paused before Haemodynamics, with edits not yet in the model. "
-                "Regenerate graph brings them in line and stays paused; Continue "
-                "brings them in line and runs Haemodynamics onwards."
+                "Paused after Haemodynamics, with edits not yet in the model. "
+                "Regenerate graph brings them in line, reruns Haemodynamics and "
+                "stays paused; Continue does the same and runs Perturbations onwards."
             )
         elif held:
-            text = "Paused before Haemodynamics. Continue runs Haemodynamics onwards."
+            text = "Paused after Haemodynamics. Continue runs Perturbations onwards."
         elif pending:
             text = (
-                "Edits not yet in the model. Regenerate graph brings them in line "
-                "and re-solves Haemodynamics through Export."
+                "Edits not yet in the model. Regenerate graph brings them in line, "
+                "reruns Haemodynamics on them and runs Perturbations through Export."
             )
         else:
             text = ""
@@ -9097,7 +9098,8 @@ def _post_processing_controls(
         refresh_buttons()
 
     def on_regenerate() -> None:
-        """After a finished run: the edits in line, then Haemodynamics to Export."""
+        """After a finished run: the edits in line, Haemodynamics rerun on
+        them, then Perturbations to Export."""
         if state.graph is None:
             status.setText("Scan the network first; there is nothing edited to regenerate from.")
             return
@@ -9108,14 +9110,16 @@ def _post_processing_controls(
             state.graph,
             stop_after=None,
             note=(
-                f"Regenerating from the edited network: the edits in line, then "
-                f"Haemodynamics to Export ({state.graph.number_of_edges()} vessels)"
+                f"Regenerating from the edited network: the edits in line, "
+                f"Haemodynamics rerun on it, then Perturbations to Export "
+                f"({state.graph.number_of_edges()} vessels)"
             ),
             waiting="Regenerating from the edited network; scan again once it finishes.",
         )
 
     def on_regenerate_graph() -> None:
-        """The edits in line; paused, the run stays paused, else it re-solves."""
+        """The edits in line and Haemodynamics rerun; paused, the run stays
+        paused, else it goes on to Export."""
         if state.graph is None or not has_pending_edits(state.graph):
             status.setText("No outstanding edits to regenerate: the network is in line.")
             return
@@ -9128,8 +9132,9 @@ def _post_processing_controls(
             stop_after=regenerate_stop_after(held),
             note=(
                 f"Regenerating the graph ({state.graph.number_of_edges()} vessels): "
-                "branch orders, lengths, diameters and bridges of the edited vessels"
-                + ("; the run stays paused" if held else "; then Haemodynamics to Export")
+                "branch orders, lengths, diameters and bridges of the edited vessels, "
+                "then Haemodynamics rerun on it"
+                + ("; the run stays paused" if held else "; then Perturbations to Export")
             ),
             waiting=(
                 "Regenerating the graph; the tab scans it again once it is done."
@@ -9139,11 +9144,12 @@ def _post_processing_controls(
         )
 
     def on_continue() -> None:
-        """A paused run: the edits (if any) in line, then Haemodynamics onwards."""
+        """A paused run: the edits (if any) in line with Haemodynamics rerun
+        on them, then Perturbations onwards."""
         if not is_paused():
             status.setText(
                 "No run is paused here. Turn on Mid-run postprocessing (1. Input) "
-                "for a run to stop here after Diameters."
+                "for a run to stop here after Haemodynamics."
             )
             return
         if running():
@@ -9161,7 +9167,8 @@ def _post_processing_controls(
             stop_after=None,
             note=(
                 f"Continuing the run from the edited network ({graph.number_of_edges()} "
-                "vessels): the edits in line, then Haemodynamics onwards"
+                "vessels): the edits in line and Haemodynamics rerun on them, then "
+                "Perturbations onwards"
             ),
             waiting="Continuing the run; scan again once it finishes.",
         )
@@ -9401,7 +9408,7 @@ def settings_widget(napari_viewer=None):
     perturbations = _perturbation_controls(viewer, rows, fields, schema, report)
     if perturbations is not None:
         pages["run_perturbations"] = perturbations.page
-    # Hand edits between Diameters and Haemodynamics: the post_process stage's
+    # Hand edits between Haemodynamics and Perturbations: the post_process stage's
     # page, which has no setting rows of its own. Its callables read `view`,
     # `checkpoints` and `run_state` when clicked, all of which exist by then.
     post_processing = _post_processing_controls(
@@ -11187,8 +11194,9 @@ def settings_widget(napari_viewer=None):
         at its ``post_process`` stage, which brings the edits in line --
         boundary lists cut to the nodes left (the tab's Prune drops inlets on
         purpose), bridges into thick vessels, lengths, branch orders, and the
-        edited vessels measured by the run's own diameter methods -- and goes
-        on to *stop_after*, or to the end. Diameters and everything before it
+        edited vessels measured by the run's own diameter methods -- then
+        solves the haemodynamics again on the edited network, and goes on to
+        *stop_after*, or to the end. Haemodynamics and everything before it
         keep what they recorded: the tab comes after them.
 
         From the Edit window the run starts at Diameters, as it always has.
@@ -11225,8 +11233,8 @@ def settings_widget(napari_viewer=None):
             replace_checkpoints=False,
             # From the Edit window, Boundaries is recorded again, from the
             # edited graph, so a later "Run from this stage" on Diameters keeps
-            # the edit. From Post processing the edit comes after Diameters:
-            # every stage before it keeps its own record.
+            # the edit. From Post processing the edit comes after
+            # Haemodynamics: every stage before it keeps its own record.
             restored_stages=stages_before(
                 start_from if from_post_processing else "assign_boundaries"
             ),
@@ -11451,7 +11459,7 @@ def settings_widget(napari_viewer=None):
     run_file_layout.addStretch(1)
     run_file_layout.addWidget(view_button.native)
     run_file_layout.addWidget(edit_button.native)
-    # Editing lives in the "6. Post processing" tab now: the button keeps
+    # Editing lives in the "7. Post processing" tab now: the button keeps
     # its place in the row (and the floating Edit window its code) but is
     # hidden.
     edit_button.visible = False

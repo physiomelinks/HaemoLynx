@@ -111,9 +111,9 @@ STAGE_CALLS: tuple[str, ...] = (
     "build_network",
     "assign_boundaries",
     "assign_diameters",
-    "post_process",
     "build_haemodynamic_model",
     "solve",
+    "post_process",
     "run_perturbations",
     "export_results",
 )
@@ -245,6 +245,10 @@ class Solution:
     #: The tissue `export_results` measured (``measure_tissue_volume``), for
     #: the viewer's tissue surface; None when it measured none.
     tissue: statistics.TissueVolume | None = None
+    #: What `post_process` brought in line before this solve, when this is
+    #: the solve it ran again on a hand-edited network (its
+    #: ``model.results["post_process"]``); None for the Haemodynamics stage's.
+    post_processed: dict[str, Any] | None = None
 
 
 @dataclass
@@ -2459,9 +2463,12 @@ def post_process(
 ) -> HaemodynamicModel:
     """Bring a network edited by hand in line with the rest of the run.
 
-    The Post processing tab's stage, between Diameters and Haemodynamics. The
-    tab's edits (:mod:`haemolynx.graph.post_processing`) mark what they
-    touched; this does to those vessels what the stages before it did to
+    The first half of the Post processing tab's stage, which comes after
+    Haemodynamics -- so the network is edited with its flows on screen -- and
+    before Perturbations; :func:`solve_post_processed` is the second half,
+    the haemodynamics solved again on the network this leaves. The tab's
+    edits (:mod:`haemolynx.graph.post_processing`) mark what they touched;
+    this does to those vessels what the stages before Haemodynamics did to
     every vessel:
 
     1. the boundary-node lists follow the graph -- a prune can drop an inlet;
@@ -2544,6 +2551,32 @@ def post_process(
         + "."
     )
     return model
+
+
+def solve_post_processed(
+    settings: dict,
+    model: HaemodynamicModel,
+    boundaries: BoundaryNodes,
+    schema: Schema,
+    *,
+    network: VesselNetwork | None = None,
+) -> Solution:
+    """The haemodynamics again, on a network :func:`post_process` brought in line.
+
+    Post processing comes after the solve, so an edited network still carries
+    the resistances and flows of the network before the edit. This runs what
+    the Haemodynamics tab runs -- :func:`apply_network_handling`,
+    :func:`build_haemodynamic_model` and :func:`solve` -- on the edited one,
+    so perturbations and the export start from the network as edited. Every
+    vessel's resistance is written again, and every flow solved again.
+
+    The returned solution's ``post_processed`` is what was brought in line.
+    """
+    model = apply_network_handling(settings, model, boundaries, network)
+    model = build_haemodynamic_model(settings, model, schema)
+    solution = solve(settings, model, boundaries, schema)
+    solution.post_processed = model.results.get("post_process")
+    return solution
 
 
 #: ``boundary_handling``: what happens to a branch or tree of vessels without
@@ -4635,8 +4668,10 @@ def run_pipeline_stages(
     *stop_after* names the last stage call to run: the run returns the graph
     as that stage left it (None before there is one), and the stages after it
     neither run nor report. How the napari panel pauses a run on its Post
-    processing tab -- ``stop_after="assign_diameters"`` -- and later picks it
-    up again with ``start_from="post_process"``.
+    processing tab -- ``stop_after="solve"`` -- and later picks it up again
+    with ``start_from="post_process"``. That stage brings a hand-edited
+    network in line (:func:`post_process`) and solves its haemodynamics again
+    (:func:`solve_post_processed`); a network nobody edited passes through.
 
     Both run on whatever thread the run is on, and must not raise: a run is not
     stopped, or changed in any way, by whoever is watching it. Note the outputs
@@ -4728,19 +4763,6 @@ def run_pipeline_stages(
     _produced(on_stage_output, "assign_diameters", diameters)
     if stop_after == "assign_diameters":
         return diameters.graph
-    with run.stage("post_process"):
-        if _run_stage_body("post_process", start_from):
-            diameters = post_process(
-                settings,
-                diameters,
-                boundaries,
-                schema,
-                network=network,
-                thick_vessel_mask=resume.thick_vessel_mask if resume is not None else None,
-            )
-    _produced(on_stage_output, "post_process", diameters)
-    if stop_after == "post_process":
-        return diameters.graph
     with run.stage("build_haemodynamic_model"):
         if _run_stage_body("build_haemodynamic_model", start_from):
             diameters = apply_network_handling(settings, diameters, boundaries, network)
@@ -4757,6 +4779,24 @@ def run_pipeline_stages(
             solution = _solution_from_graph(model.graph)
     _produced(on_stage_output, "solve", solution)
     if stop_after == "solve":
+        return model.graph
+    with run.stage("post_process"):
+        if _run_stage_body("post_process", start_from):
+            edited = graph.has_pending_edits(model.graph)
+            model = post_process(
+                settings,
+                model,
+                boundaries,
+                schema,
+                network=network,
+                thick_vessel_mask=resume.thick_vessel_mask if resume is not None else None,
+            )
+            if edited:
+                solution = solve_post_processed(
+                    settings, model, boundaries, schema, network=network
+                )
+    _produced(on_stage_output, "post_process", solution)
+    if stop_after == "post_process":
         return model.graph
     # After the baseline is solved, so each perturbation has a solved network to
     # difference against, and before the export, which writes that baseline out.

@@ -62,6 +62,7 @@ from .stages import (
     segment,
     skeletonise,
     solve,
+    solve_post_processed,
 )
 
 __all__ = [
@@ -106,6 +107,7 @@ __all__ = [
     "segment",
     "skeletonise",
     "solve",
+    "solve_post_processed",
     "write_citations",
     "write_default_config",
 ]

@@ -1,14 +1,16 @@
 """The Post processing stage: a hand-edited network brought in line with the run.
 
-`post_process` sits between Diameters and Haemodynamics. The panel's Post
-processing tab edits the network (``haemolynx.graph.post_processing``), each
-edit marking what it touched; this stage then does to those vessels what the
-stages before it did to every vessel -- a length, a branch order, a diameter by
-the run's own methods, and a zero-resistance bridge where one opens into a
-thick vessel -- and leaves an unedited network exactly as it was.
+The stage sits between Haemodynamics and Perturbations, so the network is
+edited solved. The panel's Post processing tab edits it
+(``haemolynx.graph.post_processing``), each edit marking what it touched;
+`post_process` then does to those vessels what the stages before Haemodynamics
+did to every vessel -- a length, a branch order, a diameter by the run's own
+methods, and a zero-resistance bridge where one opens into a thick vessel --
+and `solve_post_processed` solves the haemodynamics again on the result. An
+unedited network passes through exactly as it was, and is not solved again.
 
 The graphs are test_diameter_assignment's straight Art1-B01-B01-Ven1 chain,
-driven through the real Diameters, Post processing and Haemodynamics stages.
+driven through the real Diameters, Haemodynamics and Post processing stages.
 """
 from __future__ import annotations
 
@@ -89,12 +91,14 @@ def _pendant(G, from_node=2, *, diameter_um=None):
 # --- the stage is part of the run -------------------------------------------
 
 
-def test_post_processing_is_the_stage_between_diameters_and_haemodynamics():
+def test_post_processing_is_the_stage_between_haemodynamics_and_perturbations():
     calls = [stage.call for stage in STAGES if stage.call]
     at = calls.index("post_process")
-    assert calls[at - 1] == "assign_diameters"
-    assert calls[at + 1] == "build_haemodynamic_model"
+    assert calls[at - 1] == "solve"
+    assert calls[at + 1] == "run_perturbations"
     assert stages.STAGE_CALLS == tuple(calls)
+    titles = [stage.title for stage in STAGES]
+    assert titles.index("6. Haemodynamics") < titles.index("7. Post processing")
 
 
 # --- an unedited network ----------------------------------------------------
@@ -440,69 +444,173 @@ def _stub_early_stages(monkeypatch, tmp_path):
     return network
 
 
-def test_a_run_paused_after_diameters_and_continued_solves_as_one_run(tmp_path, monkeypatch):
-    options = {}
-    _stub_early_stages(monkeypatch, tmp_path / "straight")
-    straight = run_pipeline_stages(_settings(tmp_path / "straight", **options), SCHEMA)
-
-    _stub_early_stages(monkeypatch, tmp_path / "paused")
-    ran: list[str] = []
-    paused = run_pipeline_stages(
-        _settings(tmp_path / "paused", **options),
-        SCHEMA,
-        on_stage_output=lambda stage, _output: ran.append(stage),
-        stop_after="assign_diameters",
-    )
-    assert ran == ["segment", "skeletonise", "build_network", "assign_boundaries", "assign_diameters"]
-    assert all("resistance" not in d for *_e, d in paused.edges(data=True))
-
-    resume = PipelineResume(
+def _resume_from_post_processing(graph) -> PipelineResume:
+    """What the panel's Continue / Regenerate hands the run: *graph*, the chain's boundaries."""
+    return PipelineResume(
         start_from="post_process",
-        graph=copy.deepcopy(paused),
+        graph=graph,
         inlet_nodes=(0,),
         outlet_nodes=(LAST,),
         arteriole_boundary_nodes=(0,),
         venule_boundary_nodes=(LAST,),
         resistance_node_pair=(0, LAST),
     )
+
+
+def _shortcut(G):
+    """A vessel drawn by hand from node 1 straight to node 3, beside the chain."""
+    a, b = np.asarray(G.nodes[1]["pos"]), np.asarray(G.nodes[3]["pos"])
+    return add_vessel_between(G, 1, 3, [a, (a + b) / 2 + [30.0, 0.0, 0.0], b])
+
+
+def test_a_run_pauses_after_haemodynamics_with_the_network_solved(tmp_path, monkeypatch):
+    """The pause comes after the solve, so the network is edited with its flows."""
+    _stub_early_stages(monkeypatch, tmp_path)
+    ran: list[str] = []
+    paused = run_pipeline_stages(
+        _settings(tmp_path),
+        SCHEMA,
+        on_stage_output=lambda stage, _output: ran.append(stage),
+        stop_after="solve",
+    )
+
+    assert ran == [
+        "segment", "skeletonise", "build_network", "assign_boundaries",
+        "assign_diameters", "build_haemodynamic_model", "solve",
+    ]
+    for *_e, data in paused.edges(data=True):
+        assert np.isfinite(data["resistance"]) and abs(data["flow_signed"]) > 0
+    assert all("pressure" in data for _n, data in paused.nodes(data=True))
+
+
+def test_a_run_paused_after_haemodynamics_and_continued_solves_as_one_run(tmp_path, monkeypatch):
+    options = {}
+    _stub_early_stages(monkeypatch, tmp_path / "straight")
+    straight = run_pipeline_stages(_settings(tmp_path / "straight", **options), SCHEMA)
+
+    _stub_early_stages(monkeypatch, tmp_path / "paused")
+    paused = run_pipeline_stages(
+        _settings(tmp_path / "paused", **options), SCHEMA, stop_after="solve"
+    )
     continued = run_pipeline_stages(
-        _settings(tmp_path / "paused", **options), SCHEMA, start_from="post_process", resume=resume
+        _settings(tmp_path / "paused", **options),
+        SCHEMA,
+        start_from="post_process",
+        resume=_resume_from_post_processing(copy.deepcopy(paused)),
     )
 
     for node, data in straight.nodes(data=True):
         assert continued.nodes[node]["pressure"] == pytest.approx(data["pressure"])
     for u, v, k, data in straight.edges(keys=True, data=True):
         assert continued.edges[u, v, k]["resistance"] == pytest.approx(data["resistance"])
+        assert continued.edges[u, v, k]["flow_signed"] == pytest.approx(data["flow_signed"])
+
+
+def test_an_unedited_network_is_not_solved_again(tmp_path, monkeypatch):
+    """Continue without an edit: the solve the pause made is the run's."""
+    _stub_early_stages(monkeypatch, tmp_path)
+    paused = run_pipeline_stages(_settings(tmp_path), SCHEMA, stop_after="solve")
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("an unedited network must not be solved again")
+
+    monkeypatch.setattr(stages, "solve", refuse)
+    monkeypatch.setattr(stages, "build_haemodynamic_model", refuse)
+    outputs: dict = {}
+    run_pipeline_stages(
+        _settings(tmp_path),
+        SCHEMA,
+        start_from="post_process",
+        resume=_resume_from_post_processing(copy.deepcopy(paused)),
+        on_stage_output=outputs.__setitem__,
+    )
+
+    assert outputs["post_process"].post_processed is None
 
 
 def test_a_vessel_drawn_while_paused_is_solved_with_the_rest(tmp_path, monkeypatch):
+    """Regenerating reruns Haemodynamics on the edited network, so the new
+    vessel carries a resistance and a flow, and the chain it bypasses carries
+    less than it did before the edit."""
     options = {}
     _stub_early_stages(monkeypatch, tmp_path)
-    paused = run_pipeline_stages(
-        _settings(tmp_path, **options), SCHEMA, stop_after="assign_diameters"
-    )
+    paused = run_pipeline_stages(_settings(tmp_path, **options), SCHEMA, stop_after="solve")
     edited = copy.deepcopy(paused)
-    # A shortcut from node 1 straight to node 3, beside the chain.
-    a, b = np.asarray(edited.nodes[1]["pos"]), np.asarray(edited.nodes[3]["pos"])
-    edge = add_vessel_between(edited, 1, 3, [a, (a + b) / 2 + [30.0, 0.0, 0.0], b])
+    edge = _shortcut(edited)
+    bypassed_before = abs(paused.edges[1, 2, 0]["flow_signed"])
 
-    resume = PipelineResume(
-        start_from="post_process",
-        graph=edited,
-        inlet_nodes=(0,),
-        outlet_nodes=(LAST,),
-        arteriole_boundary_nodes=(0,),
-        venule_boundary_nodes=(LAST,),
-        resistance_node_pair=(0, LAST),
-    )
+    outputs: dict = {}
     solved = run_pipeline_stages(
-        _settings(tmp_path, **options), SCHEMA, start_from="post_process", resume=resume
+        _settings(tmp_path, **options),
+        SCHEMA,
+        start_from="post_process",
+        resume=_resume_from_post_processing(edited),
+        on_stage_output=outputs.__setitem__,
     )
 
     data = solved.edges[edge]
     assert data["branch_order"] and data["diameter_um"] > 0
     assert np.isfinite(data["resistance"]) and data["resistance"] > 0
     assert abs(data["flow_signed"]) > 0, "blood takes the new vessel too"
+    assert abs(solved.edges[1, 2, 0]["flow_signed"]) < bypassed_before
+    # What the stage hands the viewer is the solve it ran again.
+    solution = outputs["post_process"]
+    assert solution.graph is solved
+    assert solution.post_processed["edited_vessels"] == 1
+    assert len(solution.pressure) == solved.number_of_nodes()
+
+
+def test_perturbations_and_the_export_get_the_solve_run_again(tmp_path, monkeypatch):
+    _stub_early_stages(monkeypatch, tmp_path)
+    paused = run_pipeline_stages(_settings(tmp_path), SCHEMA, stop_after="solve")
+    edited = copy.deepcopy(paused)
+    edge = _shortcut(edited)
+    handed: dict = {}
+
+    def perturb(settings, model, *_args, **_kwargs):
+        handed["perturbed"] = model.graph
+        return stages.PerturbationRun()
+
+    monkeypatch.setattr(stages, "run_perturbations", perturb)
+    monkeypatch.setattr(
+        stages, "export_results",
+        lambda settings, network, model, solution: handed.update(exported=solution),
+    )
+
+    run_pipeline_stages(
+        _settings(tmp_path),
+        SCHEMA,
+        start_from="post_process",
+        resume=_resume_from_post_processing(edited),
+    )
+
+    assert abs(handed["perturbed"].edges[edge]["flow_signed"]) > 0
+    assert handed["exported"].graph is handed["perturbed"]
+    assert handed["exported"].post_processed["edited_vessels"] == 1
+
+
+def test_solve_post_processed_runs_the_network_handling_on_the_edited_network(
+    tmp_path, monkeypatch
+):
+    """The Haemodynamics tab's "Network handling" applies to the edited network too."""
+    run_settings, network, boundaries, model = _diameters_run(tmp_path)
+    (u, v, k), _new = _pendant(model.graph)
+    model = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+    handled: list = []
+    real = stages.apply_network_handling
+
+    def spy(settings, handed_model, *args, **kwargs):
+        handled.append(handed_model.graph.has_edge(u, v, k))
+        return real(settings, handed_model, *args, **kwargs)
+
+    monkeypatch.setattr(stages, "apply_network_handling", spy)
+    solution = stages.solve_post_processed(
+        run_settings, model, boundaries, SCHEMA, network=network
+    )
+
+    assert handled == [True]
+    assert np.isfinite(solution.graph.edges[u, v, k]["resistance"])
+    assert solution.post_processed == model.results["post_process"]
 
 
 # --- a resumed run keeps the Large_Art/Large_Ven hand-off nodes ----------------------

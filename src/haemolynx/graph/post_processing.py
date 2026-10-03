@@ -1,6 +1,6 @@
 """Post-processing a network by hand: junctions where four or more vessels meet.
 
-Pure graph logic behind the panel's "6. Post processing" tab -- no Qt, no
+Pure graph logic behind the panel's "7. Post processing" tab -- no Qt, no
 napari -- so every rule here is testable on a hand-built graph. A vessel is
 an edge and a junction a node, as everywhere else; a vessel's *branchID* is
 its position in ``G.edges(keys=True)``, the same index the viewer's hover

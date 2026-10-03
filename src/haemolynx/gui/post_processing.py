@@ -1,4 +1,4 @@
-"""What the "6. Post processing" tab draws and lists, described without napari.
+"""What the "7. Post processing" tab draws and lists, described without napari.
 
 Pure, like :mod:`haemolynx.gui.results`: a graph in, colours, layer specs
 and table rows out. ``_widget.py`` owns the Qt page,
@@ -597,8 +597,8 @@ def edits_lost_by_running_from(
 ) -> bool:
     """Whether a run starting at *start_from* would throw hand edits away.
 
-    The tab comes after Diameters, so a run from Diameters or earlier starts
-    again from a graph that never had the edits: the ones still in the tab's
+    The tab comes after Haemodynamics, so a run from Haemodynamics or earlier
+    starts again from a graph that never had the edits: the ones still in the tab's
     *working_graph*, and the ones the ``post_process`` stage already brought
     into the network (*post_processed_graph*, its checkpoint's, marked
     :data:`~haemolynx.graph.post_processing.APPLIED`).

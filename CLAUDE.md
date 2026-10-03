@@ -82,7 +82,7 @@ haemolynx/
 │   │                       #   network swap for the view panel's "Showing" menu, pure),
 │   │                       #   perturbation_editing.py, graph_editor.py
 │   │                       #   + graph_click.py (the Edit window), post_processing.py
-│   │                       #   (what the "6. Post processing" tab draws, pure), branch_hover.py,
+│   │                       #   (what the "7. Post processing" tab draws, pure), branch_hover.py,
 │   │                       #   vessel_tubes.py, run_state.py, run_log.py + log_view.py,
 │   │                       #   run_snapshot.py (.haemorun save/load), stage_checkpoints.py
 │   │                       #   (re-run from a tab), optimise_progress.py, chrome_tooltips.py
@@ -154,13 +154,13 @@ Users may also supply **pre-segmented** masks only (no ilastik call) — typical
 2. **Vessel masks (optional)** — `io.load_and_validate_vessel_masks` (large/small arteriole/venule; from disk or ilastik)  
 3. **Graph build** — `graph.build_graph_from_skeleton` (eleven topology steps in `graph/assemble.py`), then `graph.smooth_graph_centrelines`  
 4. **Boundary & branch order** — manual volume/coordinates or mask-based assignment; `graph.assign_vessel_branch_orders` / hierarchical orders  
-5. **Post processing (hand edits)** — `post_process` brings vessels edited by hand in the panel (`graph/post_processing.py`) in line with the rest: lengths, branch orders, diameters by the run's own methods (only the edited vessels are measured), zero-resistance bridges where one opens into a thick vessel. A no-op on an unedited network. With `mid_run_postprocessing` on, a panel run pauses before it (`run_pipeline_stages(stop_after="assign_diameters")`) and Continue resumes at it  
-6. **Haemodynamics** — `haemodynamics.apply_poiseuille_haemodynamics`, conductance matrix, two-point resistance, flow solve (optionally iterating a distributed haematocrit, `haematocrit_model="distributed_iterative"`)  
+5. **Haemodynamics** — `haemodynamics.apply_poiseuille_haemodynamics`, conductance matrix, two-point resistance, flow solve (optionally iterating a distributed haematocrit, `haematocrit_model="distributed_iterative"`)  
+6. **Post processing (hand edits)** — on the *solved* network: `post_process` brings vessels edited by hand in the panel (`graph/post_processing.py`) in line with the rest: lengths, branch orders, diameters by the run's own methods (only the edited vessels are measured), zero-resistance bridges where one opens into a thick vessel; then `solve_post_processed` reruns the haemodynamics on the edited network (network handling, resistances, solve). A no-op on an unedited network, which is not solved again. With `mid_run_postprocessing` on, a panel run pauses before it (`run_pipeline_stages(stop_after="solve")`) and Continue resumes at it  
 7. **Perturbations (optional)** — `run_perturbations` re-solves copies of the solved network, once per configured entry in `perturbations` (see `haemodynamics/perturbations.py`)  
 8. **Export & stats** — `visualization.graph_to_vtk`, the tissue volume from the raw image (`measure_tissue_volume`, optional), `statistics.compute_comprehensive_vessel_statistics` (with the selected network analyses), vascular communities
 
 `pipeline/stages.py` runs these as ten stage functions: `segment`, `skeletonise`, `build_network`,
-`assign_boundaries`, `assign_diameters`, `post_process`, `build_haemodynamic_model`, `solve`,
+`assign_boundaries`, `assign_diameters`, `build_haemodynamic_model`, `solve`, `post_process`,
 `run_perturbations`, `export_results`. The vessel masks (step 2) are loaded at the start of `build_network`, and the
 statistics, network analyses and communities (step 8) all run inside `export_results`.
 
@@ -360,7 +360,7 @@ are only caught locally.
   the path it came from; each edge records which of `smoothed` / `relaxed` / `kept_raw` /
   `too_short` happened to it.
 - **`pipeline/stages.py`** — one function per stage (`segment`, `skeletonise`, `build_network`,
-  `assign_boundaries`, `assign_diameters`, `post_process`, `build_haemodynamic_model`, `solve`,
+  `assign_boundaries`, `assign_diameters`, `build_haemodynamic_model`, `solve`, `post_process`,
   `run_perturbations`, `export_results`), each taking settings plus the previous stage's
   dataclass, so a caller can run them one at a time and intervene. `run_pipeline_stages` is the
   orchestrator that runs all ten in order and returns the graph; its `start_from` / `resume`
@@ -371,7 +371,10 @@ are only caught locally.
   thick-vessel region. `post_process` measures only the vessels an edit marked
   (`haemodynamics.apply.assign_edge_diameters(edges=...)`, FWHM's and EDT's own `edges=`), keeps the
   diameter the edit gave as a provisional override, and bridges them with
-  `graph.insert_thick_vessel_junction_nodes(edges=...)`, which never re-splits an existing bridge. `apply_network_handling(settings, model, boundaries, network)` is
+  `graph.insert_thick_vessel_junction_nodes(edges=...)`, which never re-splits an existing bridge;
+  the stage then calls `solve_post_processed` (network handling, `build_haemodynamic_model`,
+  `solve` on the edited network), whose `Solution.post_processed` is what the viewer draws the
+  stage from -- only when there were edits. `apply_network_handling(settings, model, boundaries, network)` is
   the "Network handling" box on the Haemodynamics tab (`boundary_handling`: `remove_disconnected`
   prunes every component without both an inlet and an outlet, `leave_unsolved` — the default —
   keeps them and `solve` marks their vessels `graph.FLOW_SOLVED=False`, which the viewer draws
@@ -388,15 +391,17 @@ are only caught locally.
   `build_haemodynamic_model`, as the examples do.
 - **`pipeline/progress.py`** — `STAGES`, the run's stages in order (the panel draws one tab
   per entry and a progress bar counts them — one list, not two). It has eleven entries for ten
-  stage functions: `solve` has no tab of its own (it shares **7. Haemodynamics**), and
+  stage functions: `solve` has no tab of its own (it shares **6. Haemodynamics**), and
   **9. Additional measurements** is a tab with no stage function (its settings are read by
-  `export_results`). **6. Post processing** (`post_process`, between Diameters and
-  Haemodynamics) has no settings: its tab is its own page (`gui/_widget.py`'s
+  `export_results`). **7. Post processing** (`post_process`, between Haemodynamics and
+  Perturbations, so the network is edited solved) has no settings: its tab is its own page (`gui/_widget.py`'s
   `_post_processing_controls`), with no "Run from this stage"; its 4+ junction list, table
   and their Delete/Leave/Split buttons sit behind a "Manual 4+ vessel junction correction"
   checkbox, off by default (off, a scan neither marks the junctions nor zooms to one). Its Regenerate graph runs
-  `post_process` alone while a run is paused there (`gui/run_state.py`), else re-solves to Export
-  like Regenerate from the edited network; Continue carries a paused run on.
+  the `post_process` stage alone (edits in line, Haemodynamics rerun) while a run is paused there
+  (`gui/run_state.py`), else goes on to Export like Regenerate from the edited network; Continue
+  carries a paused run on. A `.haemorun` saved in the old order (Post processing before
+  Haemodynamics) is reordered on load (`gui/run_snapshot.py`'s `with_post_process_checkpoint`).
   Plus what a run reports through:
   `run_pipeline_stages(settings, schema, progress=callback)` hands the callback a `ProgressEvent`
   as each stage starts, finishes or fails, and one per topology step inside graph building.

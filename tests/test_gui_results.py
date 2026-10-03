@@ -2321,7 +2321,7 @@ def test_merging_stage_groups_keeps_each_layers_final_state():
         StageLayers(stage="assign_boundaries", title="4. Boundaries",
                     layers=(spec(VESSELS, 7), spec(BOUNDARY_NODES, 2)),
                     recolour=((NODES, "degree"), (IMAGE, "x"))),
-        StageLayers(stage="solve", title="7. Haemodynamics", layers=(spec(IMAGE, 3),),
+        StageLayers(stage="solve", title="6. Haemodynamics", layers=(spec(IMAGE, 3),),
                     recolour=((VESSELS, "flow_abs"),), note="solved"),
     ]
 
@@ -2332,7 +2332,7 @@ def test_merging_stage_groups_keeps_each_layers_final_state():
     # IMAGE's recolour came before its last spec, which redraws it.
     assert dict(merged.recolour) == {NODES: "degree", VESSELS: "flow_abs"}
     assert merged.ndisplay == 3
-    assert (merged.stage, merged.title, merged.note) == ("solve", "7. Haemodynamics", "solved")
+    assert (merged.stage, merged.title, merged.note) == ("solve", "6. Haemodynamics", "solved")
     assert merge_stage_layers([]) is None
 
 
@@ -2368,6 +2368,26 @@ def test_a_restored_stage_is_followed_without_building_its_layers(monkeypatch):
     assert restored._graph is cut_graph
 
 
+def _post_processed_solution(graph, edited_vessels=1):
+    """What the Post processing stage hands on after solving an edited network
+    again: that solve, carrying what was brought in line."""
+    node_list = list(graph)
+    pressure = np.linspace(100.0, 0.0, len(node_list))
+    for node, value in zip(node_list, pressure):
+        graph.nodes[node]["pressure"] = float(value)
+    for u, v, _key, data in graph.edges(keys=True, data=True):
+        data["flow_signed"] = 1e-12
+        data["flow_abs"] = 1e-12
+    return SimpleNamespace(
+        graph=graph,
+        pressure=pressure,
+        node_list=node_list,
+        equivalent_resistance=None,
+        network_resistance=1.0e15,
+        post_processed={"edited_vessels": edited_vessels},
+    )
+
+
 def test_post_processing_draws_the_edited_network_even_when_it_has_more_vessels():
     """A later stage's larger graph is normally a stale copy and refused; the
     Post processing stage changes the network on purpose -- a vessel drawn by
@@ -2381,30 +2401,51 @@ def test_post_processing_draws_the_edited_network_even_when_it_has_more_vessels(
     edited = a_graph()
     edited.add_edge(0, 3, key=0, voxels=[[0.0, 0.0, 0.0], [30.0, 5.0, 0.0]], length=30.4)
 
-    group = results.stage_finished(
-        "post_process",
-        SimpleNamespace(graph=edited, results={"post_process": {"edited_vessels": 1}}),
-    )
+    group = results.stage_finished("post_process", _post_processed_solution(edited))
 
     assert results._graph is edited
     (vessels,) = [spec for spec in group.layers if spec.name == VESSELS]
     assert set(np.asarray(vessels.features["edge_index"])) == {0, 1, 2, 3}
     # And the later stages keep it: it is the canonical graph now.
-    results.stage_finished("build_haemodynamic_model", SimpleNamespace(graph=edited))
+    results.stage_finished("export_results", SimpleNamespace(graph=edited))
     assert results._graph is edited
 
 
+def test_post_processing_draws_the_edited_network_as_the_solve_does():
+    """The stage solves the edited network again, so it is drawn as a solve
+    is: vessels by flow, nodes by pressure, and the note says it re-solved."""
+    from haemolynx.gui.results import NODES, VESSELS
+
+    results = ResultLayers()
+    graph = a_graph()
+    results.stage_finished("build_network", network(graph))
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph))
+
+    group = results.stage_finished("post_process", _post_processed_solution(graph, 2))
+
+    (vessels,) = [spec for spec in group.layers if spec.name == VESSELS]
+    assert vessels.colour_by == DEFAULT_VESSEL_COLOUR["solve"] == "flow_abs"
+    (nodes,) = [spec for spec in group.layers if spec.name == NODES]
+    assert nodes.colour_by == "pressure"
+    assert list(nodes.features["pressure"]) == pytest.approx([100.0, 200.0 / 3, 100.0 / 3, 0.0])
+    assert group.stage == "post_process"
+    assert "2 edited vessel(s) in line" in group.note and "solved again" in group.note
+
+
 def test_an_unedited_post_processing_pass_draws_nothing_again():
-    """Diameters' layers already show the network; redrawing a whole-brain
+    """Haemodynamics' layers already show the network; redrawing a whole-brain
     vessels layer for a stage that did nothing would be wasted."""
     results = ResultLayers()
     graph = a_graph()
     results.stage_finished("build_network", network(graph))
     results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph))
 
-    group = results.stage_finished("post_process", SimpleNamespace(graph=graph, results={}))
+    group = results.stage_finished(
+        "post_process", SimpleNamespace(graph=graph, post_processed=None)
+    )
 
     assert group.layers == ()
+    assert group.note == "No edits."
     assert results._graph is graph
 
 

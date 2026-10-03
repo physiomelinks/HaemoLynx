@@ -69,7 +69,7 @@ def stubbed(monkeypatch):
                     reporter = kwargs["progress"]
                     for label in steps:
                         reporter.step(label, total=len(steps))
-                if name == "build_haemodynamic_model":
+                if name in ("build_haemodynamic_model", "post_process"):
                     return model
                 return f"{name}-result"
 
@@ -97,9 +97,9 @@ def test_the_stages_are_the_pipeline_functions_in_order():
         "build_network",
         "assign_boundaries",
         "assign_diameters",
-        "post_process",
         "build_haemodynamic_model",
         "solve",
+        "post_process",
         "run_perturbations",
         "export_results",
     ]
@@ -506,12 +506,12 @@ def test_a_run_nobody_is_watching_still_returns_its_graph(stubbed):
     assert _run() is model.graph
 
 
-def test_the_seventh_stage_is_named_haemodynamics():
+def test_the_sixth_stage_is_named_haemodynamics():
     """#125. One place defines it; the napari tab and the bars both read it.
 
-    Post processing sits between Diameters and Haemodynamics: the network is
-    edited by hand after its diameters are known and before a flow is solved
-    on it.
+    Post processing sits between Haemodynamics and Perturbations: the network
+    is edited by hand once its flow is solved, with the flow to go by, and
+    solved again before anything is perturbed or exported.
     """
     titles = [stage.title for stage in STAGES]
 
@@ -521,16 +521,16 @@ def test_the_seventh_stage_is_named_haemodynamics():
         "3. Graph",
         "4. Boundaries",
         "5. Diameters",
-        "6. Post processing",
-        "7. Haemodynamics",
+        "6. Haemodynamics",
         "Solve",
+        "7. Post processing",
         "8. Perturbations",
         "9. Additional measurements",
         "10. Export",
     ]
-    haemodynamics = next(s for s in STAGES if s.title == "7. Haemodynamics")
+    haemodynamics = next(s for s in STAGES if s.title == "6. Haemodynamics")
     assert haemodynamics.call == "build_haemodynamic_model"
-    post_processing = next(s for s in STAGES if s.title == "6. Post processing")
+    post_processing = next(s for s in STAGES if s.title == "7. Post processing")
     assert post_processing.call == "post_process"
     assert post_processing.tab is None, "it opens its own tab"
 
@@ -577,7 +577,7 @@ def test_the_solve_stage_shows_its_settings_on_the_haemodynamics_tab():
     """
     solve = next(stage for stage in STAGES if stage.call == "solve")
 
-    assert solve.tab == "7. Haemodynamics"
+    assert solve.tab == "6. Haemodynamics"
     assert solve.settings == (
         "inlet_p_bc",
         "outlet_p_bc",
@@ -802,27 +802,23 @@ def test_the_bars_do_not_move_for_a_heartbeat():
 # --- stopping part-way on purpose (the panel's mid-run post-processing) ------------
 
 
-def test_stop_after_ends_the_run_after_that_stage(stubbed, monkeypatch):
+def test_stop_after_ends_the_run_after_that_stage(stubbed):
+    """The panel's pause for Post processing: after the solve."""
     called, model = stubbed()
-
-    def diameters(*_args, **_kwargs):
-        called.append("assign_diameters")
-        return model
-
-    monkeypatch.setattr(stages, "assign_diameters", diameters)
     events: list[ProgressEvent] = []
     outputs: list[str] = []
 
     graph = _run(
         events.append,
         on_stage_output=lambda stage, _output: outputs.append(stage),
-        stop_after="assign_diameters",
+        stop_after="solve",
     )
 
-    first_five = STAGE_NAMES[: STAGE_NAMES.index("assign_diameters") + 1]
-    assert called == first_five
-    assert outputs == first_five
-    assert [e.stage for e in events if e.kind == STAGE_FINISHED] == first_five
+    through_solve = STAGE_NAMES[: STAGE_NAMES.index("solve") + 1]
+    assert "post_process" not in through_solve
+    assert called == through_solve
+    assert outputs == through_solve
+    assert [e.stage for e in events if e.kind == STAGE_FINISHED] == through_solve
     # Still out of the whole run's stages: a paused bar is not a finished one.
     assert {event.total for event in events} == {len(STAGE_NAMES)}
     assert graph is model.graph
@@ -841,4 +837,4 @@ def test_stop_after_must_name_a_stage():
 
 def test_stop_after_cannot_come_before_the_start():
     with pytest.raises(ValueError, match="comes before"):
-        _run(start_from="post_process", stop_after="assign_diameters")
+        _run(start_from="post_process", stop_after="solve")

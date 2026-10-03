@@ -835,7 +835,6 @@ TEXT_COLUMNS = frozenset(
 DEFAULT_VESSEL_COLOUR = {
     "build_network": "segment_id",
     "assign_diameters": "diameter_um",
-    "post_process": "diameter_um",
     "build_haemodynamic_model": "resistance",
     "solve": "flow_abs",
 }
@@ -2095,23 +2094,26 @@ class ResultLayers:
 
     def _from_post_process(self, output: Any) -> StageLayers:
         """The network as Post processing left it: the edited vessels in line,
-        split into bridges where they open into a thick vessel, so the vessels
-        are drawn again (coloured by diameter, as after Diameters).
+        split into bridges where they open into a thick vessel, and its
+        haemodynamics solved again -- *output* is that solve's
+        :class:`~haemolynx.pipeline.stages.Solution` -- so the vessels and
+        nodes are drawn again as the solve draws them (flow and pressure).
 
         Like Boundaries' cut, the edits change the network on purpose -- a
         vessel drawn by hand adds an edge -- so this graph becomes the
         canonical one rather than being refused as a stale copy. A network
-        nobody edited passed through untouched: Diameters' layers already
-        show it, so nothing is drawn again."""
+        nobody edited passed through untouched: Haemodynamics' layers
+        already show it, so nothing is drawn again."""
+        done = getattr(output, "post_processed", None)
         graph = getattr(output, "graph", None)
-        if graph is not None:
+        if graph is not None and done:
             self._graph = graph
             self._canonical_graph = graph
-        done = (getattr(output, "results", None) or {}).get("post_process")
         if self._graph is None or not done:
             return StageLayers(
                 stage="post_process", title=_title_for("post_process"), note="No edits."
             )
+        solved = self._from_solve(output)
         note = f"{done.get('edited_vessels', 0)} edited vessel(s) in line"
         if done.get("diameters"):
             measured = {name: count for name, count in done["diameters"].items() if count}
@@ -2121,8 +2123,8 @@ class ResultLayers:
         return StageLayers(
             stage="post_process",
             title=_title_for("post_process"),
-            layers=tuple(self._vessel_layers("post_process")),
-            note=note,
+            layers=solved.layers,
+            note=f"{note}; solved again. {solved.note}",
         )
 
     def _from_build_haemodynamic_model(self, output: Any) -> StageLayers:

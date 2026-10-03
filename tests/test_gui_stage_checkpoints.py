@@ -52,7 +52,7 @@ def _settings(tmp_path: Path, stem: str = "stack") -> dict:
 
 def test_haemodynamics_tab_ends_at_solve_not_build_model():
     """Solve shares the Haemodynamics tab; revert must land after pressures."""
-    assert tab_end_stage("7. Haemodynamics") == "solve"
+    assert tab_end_stage("6. Haemodynamics") == "solve"
 
 
 def test_additional_measurements_tab_shares_export_results_with_no_call_of_its_own():
@@ -137,8 +137,12 @@ def test_revert_from_diameters_targets_boundaries():
     assert revert_target_stage("5. Diameters") == "assign_boundaries"
 
 
-def test_revert_from_perturbations_targets_solve():
-    assert revert_target_stage("8. Perturbations") == "solve"
+def test_revert_from_perturbations_targets_post_processing():
+    assert revert_target_stage("8. Perturbations") == "post_process"
+
+
+def test_revert_from_haemodynamics_targets_diameters():
+    assert revert_target_stage("6. Haemodynamics") == "assign_diameters"
 
 
 def test_can_revert_requires_a_checkpoint_for_the_previous_tab():
@@ -258,23 +262,23 @@ def test_plan_restore_hands_the_graph_over_and_leaves_graph_pkl_alone(tmp_path):
     (tmp_path / "out").mkdir()
     graph_pkl = tmp_path / "out" / "stack_graph.pkl"
     graph_pkl.write_bytes(b"what graph building made")
-    # Haemodynamics' previous tab is Post processing: its checkpoint is the one.
+    # Haemodynamics' previous tab is Diameters: its checkpoint is the one.
     checkpoints.record(
-        "post_process",
-        _group("post_process", "6. Post processing"),
+        "assign_diameters",
+        _group("assign_diameters", "5. Diameters"),
         results,
         settings=settings,
     )
 
-    plan = checkpoints.plan_restore("7. Haemodynamics", settings=settings)
+    plan = checkpoints.plan_restore("6. Haemodynamics", settings=settings)
 
     assert plan is not None
-    assert plan.stage == "post_process"
+    assert plan.stage == "assign_diameters"
     assert plan.skip_settings == ("do_fwhm_measurement",)
     assert graph_pkl.read_bytes() == b"what graph building made"
     assert graph_pkl not in checkpoints.session_artefact_paths
     assert plan.resume.graph.edges[0, 1, 0]["resistance"] == 1.0
-    assert plan.resume.graph is not checkpoints.get("post_process").graph
+    assert plan.resume.graph is not checkpoints.get("assign_diameters").graph
 
 
 def test_plan_restore_writes_skeleton_npy_when_no_skeleton_is_stored(tmp_path):
@@ -425,7 +429,7 @@ def test_skip_settings_for_start_from_diameters_does_not_disable_fwhm():
 def test_tab_start_stage_of_haemodynamics_is_build_model_not_solve():
     from haemolynx.gui.stage_checkpoints import tab_start_stage
 
-    assert tab_start_stage("7. Haemodynamics") == "build_haemodynamic_model"
+    assert tab_start_stage("6. Haemodynamics") == "build_haemodynamic_model"
     assert tab_start_stage("5. Diameters") == "assign_diameters"
 
 
@@ -653,7 +657,7 @@ def test_run_from_replays_only_stages_ahead_of_the_start(tmp_path):
         ("skeletonise", "2. Skeletonise"),
         ("build_network", "3. Graph"),
         ("assign_boundaries", "4. Boundaries"),
-        ("build_haemodynamic_model", "7. Haemodynamics"),  # no assign_diameters
+        ("build_haemodynamic_model", "6. Haemodynamics"),  # no assign_diameters
     ):
         checkpoints.record(stage, _group(stage, title), results, settings=settings)
 
@@ -671,7 +675,7 @@ def test_a_plan_can_keep_the_later_work_until_the_run_is_known_to_start(tmp_path
     then fails its checks used to have thrown away every later tab's work."""
     settings = _settings(tmp_path)
     (tmp_path / "out").mkdir()
-    checkpoints, _ = _through_solve(tmp_path, settings)
+    checkpoints, _ = _through_post_processing(tmp_path, settings)
     recorded = checkpoints.stages
 
     plan = checkpoints.plan_run_from("8. Perturbations", settings=settings, drop=False)
@@ -683,7 +687,6 @@ def test_a_plan_can_keep_the_later_work_until_the_run_is_known_to_start(tmp_path
     checkpoints.drop_from("build_haemodynamic_model")
     assert checkpoints.stages == (
         "skeletonise", "build_network", "assign_boundaries", "assign_diameters",
-        "post_process",
     )
 
     regenerate = checkpoints.plan_regenerate(a_graph(), settings=settings, drop=False)
@@ -699,13 +702,13 @@ def test_a_run_from_leaves_the_pipelines_own_skeleton_to_the_pipeline(tmp_path):
     (tmp_path / "out").mkdir()
     skeleton_path = skeleton_resume_path(tmp_path / "out", "stack")
 
-    checkpoints, _ = _through_solve(tmp_path, settings)
-    checkpoints.plan_run_from("7. Haemodynamics", settings=settings)
+    checkpoints, _ = _through_post_processing(tmp_path, settings)
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
     assert skeleton_path.is_file()
     assert skeleton_path in checkpoints.session_artefact_paths  # written by the resume
 
-    checkpoints, _ = _through_solve(tmp_path, settings)
-    checkpoints.plan_run_from("7. Haemodynamics", settings=settings)
+    checkpoints, _ = _through_post_processing(tmp_path, settings)
+    checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
     assert skeleton_path.is_file()
     assert skeleton_path not in checkpoints.session_artefact_paths  # already there
 
@@ -713,7 +716,7 @@ def test_a_run_from_leaves_the_pipelines_own_skeleton_to_the_pipeline(tmp_path):
 # --- Regenerate after a hand edit --------------------------------------------
 
 
-def _through_solve(tmp_path, settings):
+def _through_post_processing(tmp_path, settings):
     checkpoints = StageCheckpoints()
     results = built(a_graph(resistance=1.0))
     skeleton = np.zeros((2, 3, 4), dtype=bool)
@@ -729,7 +732,7 @@ def _through_solve(tmp_path, settings):
         settings=settings,
     )
     for stage in ("build_network", "assign_boundaries", "assign_diameters",
-                  "post_process", "build_haemodynamic_model", "solve"):
+                  "build_haemodynamic_model", "solve", "post_process"):
         checkpoints.record(stage, _group(stage), results, settings=settings)
     return checkpoints, skeleton
 
@@ -740,7 +743,7 @@ def test_regenerate_hands_over_the_edited_graph_instead_of_rebuilding(tmp_path):
     over {stem}_graph.pkl. It is handed the edit instead."""
     settings = _settings(tmp_path)
     (tmp_path / "out").mkdir()
-    checkpoints, skeleton = _through_solve(tmp_path, settings)
+    checkpoints, skeleton = _through_post_processing(tmp_path, settings)
     edited = a_graph(resistance=1.0)
     edited.add_edge(0, 3, voxels=[[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]])
 
@@ -760,7 +763,7 @@ def test_regenerate_forgets_the_checkpoints_made_before_the_edit(tmp_path):
     one of those tabs must not continue the unedited network."""
     settings = _settings(tmp_path)
     (tmp_path / "out").mkdir()
-    checkpoints, _ = _through_solve(tmp_path, settings)
+    checkpoints, _ = _through_post_processing(tmp_path, settings)
 
     checkpoints.plan_regenerate(a_graph(), settings=settings)
 
@@ -775,16 +778,19 @@ def test_regenerate_needs_boundaries_first(tmp_path):
     assert checkpoints.plan_regenerate(a_graph(), settings=settings) is None
 
 
-# --- Post processing, between Diameters and Haemodynamics ------------------------
+# --- Post processing, between Haemodynamics and Perturbations --------------------
 
 
-def test_post_processing_sits_between_diameters_and_haemodynamics():
-    assert previous_tab("6. Post processing") == "5. Diameters"
-    assert previous_tab("7. Haemodynamics") == "6. Post processing"
-    assert tab_start_stage("6. Post processing") == "post_process"
-    assert tab_end_stage("6. Post processing") == "post_process"
-    # A run from Haemodynamics starts from the edited network, not Diameters'.
-    assert revert_target_stage("7. Haemodynamics") == "post_process"
+def test_post_processing_sits_between_haemodynamics_and_perturbations():
+    assert previous_tab("6. Haemodynamics") == "5. Diameters"
+    assert previous_tab("7. Post processing") == "6. Haemodynamics"
+    assert previous_tab("8. Perturbations") == "7. Post processing"
+    assert tab_start_stage("7. Post processing") == "post_process"
+    assert tab_end_stage("7. Post processing") == "post_process"
+    # The network is edited solved: Post processing follows the solve.
+    assert revert_target_stage("7. Post processing") == "solve"
+    # A run from Perturbations starts from the edited, re-solved network.
+    assert revert_target_stage("8. Perturbations") == "post_process"
 
 
 def _boundaries_output(graph):
@@ -845,19 +851,20 @@ def test_the_thick_vessel_region_reaches_a_resumed_run(tmp_path):
     assert plan.resume.thick_vessel_mask is thick
 
 
-def test_regenerate_from_post_processing_keeps_diameters_and_drops_what_came_after(tmp_path):
+def test_regenerate_from_post_processing_keeps_haemodynamics_and_drops_what_came_after(tmp_path):
     settings = _settings(tmp_path)
     (tmp_path / "out").mkdir()
-    checkpoints, _skeleton = _through_solve(tmp_path, settings)
+    checkpoints, _skeleton = _through_post_processing(tmp_path, settings)
     edited = a_graph(resistance=1.0)
 
     plan = checkpoints.plan_regenerate(
         edited, settings=settings, start_from="post_process", drop=False
     )
     assert plan.start_from == "post_process" and plan.resume.start_from == "post_process"
-    assert stages_before("post_process")[-1] == "assign_diameters"
+    assert stages_before("post_process")[-1] == "solve"
 
     checkpoints.drop_from(plan.start_from)
     assert checkpoints.stages == (
-        "skeletonise", "build_network", "assign_boundaries", "assign_diameters"
+        "skeletonise", "build_network", "assign_boundaries", "assign_diameters",
+        "build_haemodynamic_model", "solve",
     )

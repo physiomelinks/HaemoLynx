@@ -35,8 +35,8 @@ def _stage_event(kind, name, **extra):
 
 
 def test_the_run_has_as_many_stages_as_the_pipeline_does():
-    """Ten since Post processing became a stage between Diameters and
-    Haemodynamics (nine since the perturbations became one)."""
+    """Ten since Post processing became a stage, now between Haemodynamics
+    and Perturbations (nine since the perturbations became one)."""
     assert TOTAL_STAGES == 10
 
 
@@ -105,11 +105,11 @@ def test_a_paused_run_leaves_the_bar_where_it_stopped():
         display.update(_stage_event(STAGE_STARTED, stage.call))
         display.update(_stage_event(STAGE_FINISHED, stage.call))
 
-    display.pause("Paused at 6. Post processing")
+    display.pause("Paused at 7. Post processing")
 
     assert display.stages.value == 5
     assert display.stages.total == TOTAL_STAGES
-    assert display.stages.text == "Paused at 6. Post processing"
+    assert display.stages.text == "Paused at 7. Post processing"
     assert display.stages.visible
     assert not display.steps.visible
 

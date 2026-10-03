@@ -102,8 +102,8 @@ def test_the_panel_builds_with_no_viewer():
 def test_there_is_one_tab_per_stage_that_opens_one(panel):
     """Not one per stage: `solve` shows its rows on the haemodynamics tab.
 
-    Post processing is one of them now, between Diameters and Haemodynamics,
-    not a page appended after the stages.
+    Post processing is one of them now, between Haemodynamics and
+    Perturbations, not a page appended after the stages.
     """
     from qtpy.QtWidgets import QTabWidget
 
@@ -115,7 +115,7 @@ def test_there_is_one_tab_per_stage_that_opens_one(panel):
     titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
     assert titles == list(tab_titles())
     assert titles.count(POST_PROCESSING_TAB) == 1
-    assert titles.index(POST_PROCESSING_TAB) == titles.index("5. Diameters") + 1
+    assert titles.index(POST_PROCESSING_TAB) == titles.index("6. Haemodynamics") + 1
 
 
 def test_a_long_tab_asks_for_far_less_room_than_its_contents_need(panel):
@@ -561,7 +561,7 @@ def test_the_haemodynamics_tab_is_named_for_what_it_does(panel):
     tabs = widget.findChild(QTabWidget)
     titles = [tabs.tabText(i) for i in range(tabs.count())]
 
-    assert "7. Haemodynamics" in titles, titles
+    assert "6. Haemodynamics" in titles, titles
     assert not any("Resistances" in title for title in titles), titles
 
 

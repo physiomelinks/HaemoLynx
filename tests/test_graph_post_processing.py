@@ -1,4 +1,4 @@
-"""Post-processing rules behind the "6. Post processing" tab.
+"""Post-processing rules behind the "7. Post processing" tab.
 
 Junctions where four or more vessels meet: list them, delete vessels, split
 with a connector -- pure graph logic, pinned on small hand-built networks

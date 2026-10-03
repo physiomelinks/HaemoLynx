@@ -307,15 +307,19 @@ from haemolynx.gui.run_state import (  # noqa: E402
 
 
 def test_mid_run_postprocessing_pauses_a_run_that_reaches_it_from_before():
+    """The pause is after Haemodynamics' solve, so the network is edited solved."""
     on = {"mid_run_postprocessing": True}
-    assert MID_RUN_PAUSE_AFTER == "assign_diameters"
-    for start in (None, "segment", "skeletonise", "assign_boundaries", "assign_diameters"):
-        assert mid_run_stop_after(on, start) == "assign_diameters", start
+    assert MID_RUN_PAUSE_AFTER == "solve"
+    for start in (
+        None, "segment", "skeletonise", "assign_boundaries", "assign_diameters",
+        "build_haemodynamic_model",
+    ):
+        assert mid_run_stop_after(on, start) == "solve", start
 
 
 def test_a_run_from_post_processing_or_later_does_not_pause_again():
     on = {"mid_run_postprocessing": True}
-    for start in ("post_process", "build_haemodynamic_model", "run_perturbations"):
+    for start in ("post_process", "run_perturbations", "export_results"):
         assert mid_run_stop_after(on, start) is None, start
 
 
@@ -332,18 +336,21 @@ def test_regenerate_graph_stays_paused_only_when_the_run_is_paused():
 
 def test_a_paused_run_says_where_to_carry_it_on():
     tab = post_processing_tab_title()
-    assert tab == "6. Post processing"
-    assert paused_bar_text("assign_diameters") == f"Paused at {tab}"
-    message = paused_message("assign_diameters", 12, 30)
+    assert tab == "7. Post processing"
+    assert paused_bar_text("solve") == f"Paused at {tab}"
+    message = paused_message("solve", 12, 30)
+    assert message.startswith("Paused after Haemodynamics")
     assert "12 nodes" in message and "30 vessels" in message
     assert tab in message and "Continue" in message
-    assert paused_message("post_process", 12, 31).startswith("Graph regenerated")
+    regenerated = paused_message("post_process", 12, 31)
+    assert regenerated.startswith("Graph regenerated")
+    assert "haemodynamics solved again" in regenerated
 
 
 def test_the_paused_flag_is_the_panels_to_set_and_survives_other_runs():
     state = RunState()
     assert not state.paused and state.paused_after is None
-    state.paused_after = "assign_diameters"
+    state.paused_after = "solve"
     assert state.paused
     # An optimisation run during the pause leaves it paused.
     state.start(worker=None)

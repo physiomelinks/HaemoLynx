@@ -1,4 +1,4 @@
-"""The "6. Post processing" tab, built for real, with a viewer.
+"""The "7. Post processing" tab, built for real, with a viewer.
 
 The graph rules are pinned in ``test_graph_post_processing.py`` and the
 colours in ``test_gui_post_processing.py``; these check the Qt glue between
@@ -134,16 +134,16 @@ def _click(page, position):
     page.controls.on_click(page.viewer.layers[VESSELS], event)
 
 
-def test_the_post_processing_tab_sits_between_diameters_and_haemodynamics(make_napari_viewer):
+def test_the_post_processing_tab_sits_between_haemodynamics_and_perturbations(make_napari_viewer):
     from qtpy.QtWidgets import QStackedWidget, QTabWidget
 
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
     tabs = panel.findChild(QTabWidget)
     titles = [tabs.tabText(i) for i in range(tabs.count())]
-    assert POST_PROCESSING_TAB == "6. Post processing"
+    assert POST_PROCESSING_TAB == "7. Post processing"
     at = titles.index(POST_PROCESSING_TAB)
-    assert titles[at - 1] == "5. Diameters" and titles[at + 1] == "7. Haemodynamics"
+    assert titles[at - 1] == "6. Haemodynamics" and titles[at + 1] == "8. Perturbations"
     assert titles[-1] == "10. Export"
     # Its own buttons start a run there, not "Run from this stage".
     assert POST_PROCESSING_TAB not in panel._haemolynx_revert_buttons
