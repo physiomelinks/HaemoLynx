@@ -14,12 +14,122 @@ from scipy import sparse
 from skan import csr
 
 from ._platform import iter_python_work, map_python_work
+from .cartwheel_guard import _incident_edge_items, _spoke_direction_and_length
 
 logger = logging.getLogger(__name__)
 
 #: Foreground voxels whose 26 neighbours are looked up at once when building
 #: the pixel adjacency without the image: bounds the ``(n, 26)`` temporaries.
 _ADJACENCY_BATCH_NODES = 500_000
+
+#: A gap bridge stands in for a missing piece of the vessel its terminal ends,
+#: so it has to leave the terminal the way that vessel was heading. One that
+#: turns further than this from either terminal's end direction folds back:
+#: most often onto another spur of the junction the terminal's own spur left,
+#: which degree-2 merging then turns into one hairpin edge running out and
+#: straight back. Off the voxel lattice's 90 degrees, so a staircase step
+#: does not decide it.
+MAX_GAP_BRIDGE_TURN_DEG = 80.0
+
+#: How far back along a terminal's own centreline its end direction is read:
+#: a few voxel steps, so one staircase step at the tip does not set it.
+GAP_BRIDGE_TANGENT_LENGTH_UM = 5.0
+
+#: A terminal at the end of less centreline than this is not bridged at all.
+#: skan splits the skeleton at every junction voxel, which leaves 1-3 um arms
+#: round a junction's voxel cluster: not vessel ends, and pointing whichever of
+#: the lattice's 26 directions the cluster happened to take. Judged by
+#: direction alone they reach out to terminals up to the reconnect threshold
+#: away; on the E14.5 MCA stack 3,225 of the 3,743 bridges built without a
+#: direction check started from one.
+MIN_GAP_BRIDGE_END_LENGTH_UM = 3.0
+
+
+def _terminal_end(G, node, tangent_length_um):
+    """``(direction, length)``: the unit vector out of the open end of the
+    vessel *node* terminates (``None`` when its edge gives none), and that
+    edge's length -- or ``None`` unless *node* has exactly one edge."""
+    items = list(_incident_edge_items(G, node))
+    if len(items) != 1:
+        return None
+    neighbor, _key, data = items[0]
+    inward, length = _spoke_direction_and_length(
+        G, node, neighbor, data, tangent_length_um=tangent_length_um
+    )
+    return (None if inward is None else -inward), length
+
+
+def _bridge_continues_end(end, from_pos, to_pos, max_turn_deg, min_end_length_um):
+    if end is None:
+        return True
+    direction, length = end
+    if length < min_end_length_um:
+        return False
+    if direction is None:
+        return True
+    chord = np.asarray(to_pos, dtype=float) - np.asarray(from_pos, dtype=float)
+    norm = float(np.linalg.norm(chord))
+    if norm <= 0.0:
+        return True
+    return float(chord @ direction) / norm >= np.cos(np.radians(max_turn_deg))
+
+
+def gap_bridge_continues_terminal(
+    G,
+    node,
+    to_pos,
+    *,
+    max_turn_deg=MAX_GAP_BRIDGE_TURN_DEG,
+    min_end_length_um=MIN_GAP_BRIDGE_END_LENGTH_UM,
+    tangent_length_um=GAP_BRIDGE_TANGENT_LENGTH_UM,
+):
+    """Whether a straight bridge from *node* to *to_pos* continues the vessel
+    *node* ends: that vessel is at least *min_end_length_um* of centreline,
+    and the bridge turns at most *max_turn_deg* from the way it was heading.
+
+    True for a node that does not end exactly one edge -- a junction, a vessel
+    part way along, an orphan -- which has no end direction to continue; and
+    for a long enough edge that gives no direction, so a missing direction
+    never blocks a bridge.
+    """
+    return _bridge_continues_end(
+        _terminal_end(G, node, tangent_length_um),
+        G.nodes[node]["pos"],
+        to_pos,
+        max_turn_deg,
+        min_end_length_um,
+    )
+
+
+def gap_bridge_pairs_following_ends(
+    G,
+    pairs,
+    *,
+    max_turn_deg=MAX_GAP_BRIDGE_TURN_DEG,
+    min_end_length_um=MIN_GAP_BRIDGE_END_LENGTH_UM,
+    tangent_length_um=GAP_BRIDGE_TANGENT_LENGTH_UM,
+):
+    """The ``(dist, src, tgt)`` candidate bridges that continue the vessels
+    at both their ends (see :func:`gap_bridge_continues_terminal`).
+
+    Filtered before any is added, so a terminal whose nearest partner folds
+    back stays free for the next one along.
+    """
+    ends = {}
+
+    def end(node):
+        if node not in ends:
+            ends[node] = _terminal_end(G, node, tangent_length_um)
+        return ends[node]
+
+    kept = []
+    for dist, src, tgt in pairs:
+        src_pos, tgt_pos = G.nodes[src]["pos"], G.nodes[tgt]["pos"]
+        if _bridge_continues_end(
+            end(src), src_pos, tgt_pos, max_turn_deg, min_end_length_um
+        ) and _bridge_continues_end(end(tgt), tgt_pos, src_pos, max_turn_deg, min_end_length_um):
+            kept.append((dist, src, tgt))
+    return kept
 
 
 class _SkeletonPaths:
@@ -117,6 +227,7 @@ def build_graph_segment_skan_stitched_loops(
     max_voxel_graph_size=100000,
     use_spatial_index=True,
     voxel_size=(1.0, 1.0, 1.0),
+    max_bridge_turn_deg=MAX_GAP_BRIDGE_TURN_DEG,
 ):
     """Build NetworkX graph from skan Skeleton with loop detection and terminal reconnection.
 
@@ -124,6 +235,13 @@ def build_graph_segment_skan_stitched_loops(
     order, so node ``pos`` and edge ``voxels`` come out as physical ``(z, y, x)``
     coordinates. Image metadata reports ``(x, y, z)``; convert with
     ``haemolynx.io.voxel_size_zyx_from_xyz`` first.
+
+    Terminals within ``reconnect_threshold`` of each other are joined by a
+    straight gap bridge, nearest pairs first, unless the bridge turns more than
+    ``max_bridge_turn_deg`` from either terminal's end direction (see
+    :data:`MAX_GAP_BRIDGE_TURN_DEG`) or either terminal ends less than
+    :data:`MIN_GAP_BRIDGE_END_LENGTH_UM` of centreline; ``None`` bridges every
+    pair.
     """
     if sk is None or skeleton_image is None:
         raise ValueError("sk and skeleton_image cannot be None")
@@ -282,6 +400,16 @@ def build_graph_segment_skan_stitched_loops(
                         dist = np.linalg.norm(src_pos - tgt_pos)
                         if dist <= reconnect_threshold:
                             pairs.append((dist, src, tgt))
+            if max_bridge_turn_deg is not None:
+                candidates = len(pairs)
+                pairs = gap_bridge_pairs_following_ends(
+                    G, pairs, max_turn_deg=max_bridge_turn_deg
+                )
+                logger.info(
+                    "Gap bridges: %d of %d terminal pairs within %.1f um do not continue "
+                    "the vessels they would join and are not bridged",
+                    candidates - len(pairs), candidates, reconnect_threshold,
+                )
             heapq.heapify(pairs)
             reconnected = 0
             while pairs:

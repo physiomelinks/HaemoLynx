@@ -1,12 +1,18 @@
 """Optimise graph topology: terminal reconnection with skeleton validation."""
 import logging
 import heapq
+from typing import Optional
 
 import numpy as np
 import networkx as nx
 from scipy.spatial import cKDTree
 
 from ._helpers import add_edge_safe, calculate_path_length
+from .build import (
+    MAX_GAP_BRIDGE_TURN_DEG,
+    gap_bridge_continues_terminal,
+    gap_bridge_pairs_following_ends,
+)
 from .cartwheel_guard import (
     DEFAULT_MAX_RADIAL_DISPERSION,
     DEFAULT_MIN_DEGREE,
@@ -41,8 +47,15 @@ def optimise_graph_topology_fixed(
     preserve_multigraph=True,
     validate_reconnections=True,
     aggressive_degree2_cleanup_level=1,
+    max_bridge_turn_deg=MAX_GAP_BRIDGE_TURN_DEG,
 ):
-    """Reconnect nearby terminals with optional skeleton validation."""
+    """Reconnect nearby terminals with optional skeleton validation.
+
+    A pair is not joined when the join turns more than *max_bridge_turn_deg*
+    from either terminal's end direction, or either terminal ends too short a
+    vessel to have one -- the rule ``build.build_graph_segment_skan_stitched_loops``
+    bridges by; ``None`` turns it off.
+    """
     vs = tuple(G.graph.get("voxel_size", (1.0, 1.0, 1.0)))
 
     if reconnect_threshold and reconnect_threshold > 0:
@@ -89,6 +102,10 @@ def optimise_graph_topology_fixed(
                         if dist <= reconnect_threshold:
                             pairs.append((dist, src, tgt))
 
+            if max_bridge_turn_deg is not None:
+                pairs = gap_bridge_pairs_following_ends(
+                    G, pairs, max_turn_deg=max_bridge_turn_deg
+                )
             heapq.heapify(pairs)
             reconnected = 0
             while pairs:
@@ -228,6 +245,7 @@ def reconnect_orphan_and_dangling_nodes(
     max_radial_dispersion: float = DEFAULT_MAX_RADIAL_DISPERSION,
     min_degree_for_dispersion_check: int = DEFAULT_MIN_DEGREE,
     tangent_length_um: float = DEFAULT_TANGENT_LENGTH_UM,
+    max_bridge_turn_deg: Optional[float] = MAX_GAP_BRIDGE_TURN_DEG,
 ) -> nx.MultiGraph:
     """Reconnect degree-0/degree-1 nodes to nearby nodes via skeleton path.
 
@@ -238,6 +256,12 @@ def reconnect_orphan_and_dangling_nodes(
     on ``cluster_collapse_method="direction_aware"``'s own guard on the
     earlier collapse step alone. Off by default, matching every other
     caller of this function that predates the option.
+
+    A reconnection that does not continue a dangling end it starts or lands
+    on (either end of degree 1) -- turning more than *max_bridge_turn_deg*
+    from that vessel's end direction, or from an end too short to have one --
+    is refused, as gap bridges are in
+    ``build.build_graph_segment_skan_stitched_loops``; ``None`` turns that off.
     """
     if reconnect_threshold <= 0:
         return G
@@ -310,8 +334,15 @@ def reconnect_orphan_and_dangling_nodes(
         tgt_pos = np.array(G.nodes[tgt]["pos"], dtype=float)
         voxel_path = None
 
-        # Cheap direction check first: no point paying for skeleton-path
-        # validation below on a reconnection this would reject anyway.
+        # Cheap direction checks first: no point paying for skeleton-path
+        # validation below on a reconnection these would reject anyway. End
+        # directions are read now, not up front: an earlier reconnection in
+        # this loop can have given either node a second edge.
+        if max_bridge_turn_deg is not None and not (
+            gap_bridge_continues_terminal(G, src, tgt_pos, max_turn_deg=max_bridge_turn_deg)
+            and gap_bridge_continues_terminal(G, tgt, src_pos, max_turn_deg=max_bridge_turn_deg)
+        ):
+            continue
         if direction_aware and not _reconnection_is_direction_safe(
             G, tgt, tgt_pos, src_pos,
             min_degree_for_dispersion_check=min_degree_for_dispersion_check,
