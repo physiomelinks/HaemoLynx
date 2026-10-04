@@ -13,18 +13,24 @@ one-dimensional Gaussian blurs.
 """
 from __future__ import annotations
 
+from collections import defaultdict
+
 import numpy as np
 from scipy.ndimage import gaussian_filter, map_coordinates
 
-from .automated import _interpolate_centerline
+from .automated import _arc_length_parameterize, _interpolate_centerline
 from .edt_diameter import _centreline_tangents
+from .poiseuille import edge_selection
 
 __all__ = [
     "averaged_section",
+    "bootstrap_interval",
+    "calibration_sites",
     "lumen_image",
     "nearest_section",
     "projected_sigma",
     "psf_from_section_blurs",
+    "relative_half_width",
     "ring_images",
     "section_axes",
 ]
@@ -51,9 +57,12 @@ def default_worker_count() -> int:
     return max(1, min(MAX_DEFAULT_WORKERS, (os.cpu_count() or 2) - 1))
 
 
-def _load_worker_volume(path: str, dtype: str, shape: tuple[int, ...]) -> None:
+def _load_worker_volume(specs: list[tuple[str, str, tuple[int, ...]]], as_tuple: bool) -> None:
     global _WORKER_VOLUME
-    _WORKER_VOLUME = np.memmap(path, dtype=np.dtype(dtype), mode="r", shape=shape)
+    volumes = tuple(
+        np.memmap(path, dtype=np.dtype(dtype), mode="r", shape=shape) for path, dtype, shape in specs
+    )
+    _WORKER_VOLUME = volumes if as_tuple else volumes[0]
 
 
 _NATIVE_THREAD_VARIABLES = (
@@ -66,7 +75,10 @@ def _run_on_worker_volume(task_and_payload):
     return task(_WORKER_VOLUME, payload)
 
 
-def run_edge_tasks(task, payloads, *, volume: np.ndarray, workers: int = 1, memmap_directory=None):
+def run_edge_tasks(
+    task, payloads, *, volume: np.ndarray | tuple[np.ndarray, ...], workers: int = 1,
+    memmap_directory=None,
+):
     """``[task(volume, payload) for payload in payloads]``, spread over
     *workers* processes when there are enough payloads to repay starting them.
 
@@ -74,9 +86,11 @@ def run_edge_tasks(task, payloads, *, volume: np.ndarray, workers: int = 1, memm
     so the results are the same, in the same order, however many processes
     compute them. The workers read the volume from one temporary memory-mapped
     file rather than each receiving a copy, so memory stays one volume's
-    worth. *task* must be a module-level function (it is sent to the workers
-    by name). Falls back to this process, with a warning, if workers cannot
-    be started.
+    worth. *volume* may be a tuple of volumes (an image and its mask, say),
+    each shared the same way and handed to *task* as that tuple; a boolean
+    one stays boolean, any other is read as float32. *task* must be a
+    module-level function (it is sent to the workers by name). Falls back to
+    this process, with a warning, if workers cannot be started.
     """
     payloads = list(payloads)
     if workers <= 1 or len(payloads) < MIN_EDGES_FOR_WORKERS:
@@ -88,22 +102,33 @@ def run_edge_tasks(task, payloads, *, volume: np.ndarray, workers: int = 1, memm
 
     import os
 
-    shared = new_memmap_array(volume.shape, np.float32, directory=memmap_directory)
+    volumes = volume if isinstance(volume, tuple) else (volume,)
+    shared = [
+        new_memmap_array(
+            each.shape, np.bool_ if each.dtype == np.bool_ else np.float32,
+            directory=memmap_directory,
+        )
+        for each in volumes
+    ]
     # Workers read these as they load numpy: one native thread each, since
     # the workers already fill the cores and a BLAS/OpenMP team in each would
     # oversubscribe them.
     single_threaded = {name: "1" for name in _NATIVE_THREAD_VARIABLES}
     saved = {name: os.environ.get(name) for name in single_threaded}
     try:
-        shared[...] = volume
-        shared.flush()
+        for copy, each in zip(shared, volumes):
+            copy[...] = each
+            copy.flush()
         chunk = max(1, len(payloads) // (4 * workers))
         os.environ.update(single_threaded)
         try:
             with ProcessPoolExecutor(
                 max_workers=workers,
                 initializer=_load_worker_volume,
-                initargs=(str(shared.filename), "float32", tuple(shared.shape)),
+                initargs=(
+                    [(str(copy.filename), copy.dtype.str, tuple(copy.shape)) for copy in shared],
+                    isinstance(volume, tuple),
+                ),
             ) as pool:
                 return list(pool.map(_run_on_worker_volume, [(task, p) for p in payloads], chunksize=chunk))
         except (OSError, RuntimeError) as error:  # e.g. no process spawning here
@@ -117,7 +142,8 @@ def run_edge_tasks(task, payloads, *, volume: np.ndarray, workers: int = 1, memm
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
-        release_memmap_array(shared)
+        for copy in shared:
+            release_memmap_array(copy)
 
 
 def section_axes(tangent: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -249,3 +275,87 @@ def psf_from_section_blurs(sigma_a, sigma_b, other_axis_z) -> tuple[float, float
         weights = 1.0 / np.maximum(1.0, np.abs(residual) / (1.5 * scale))
     sigma_xy, sigma_z = (float(np.sqrt(max(c, 1e-6))) for c in coef)
     return sigma_xy, sigma_z
+
+
+#: A whole-image calibration (the blur, the endothelial wall) reads each wide
+#: vessel at its middle and then every this many um out from it -- or every
+#: twice the length a section is averaged over, if more, so no two sections
+#: share voxels. On a real stack (E14.5 MCA, 1,029 sections of 557 vessels)
+#: the blurs read 8 um apart along one vessel were nearly independent
+#: (intra-vessel correlation 0.18), so they add almost as much as new vessels.
+CALIBRATION_SECTION_SPACING_UM = 8.0
+
+#: Resamplings behind a calibration's 95% interval. With a thousand sections
+#: each takes about a millisecond.
+CALIBRATION_BOOTSTRAP_RESAMPLES = 400
+
+
+def calibration_sites(
+    G, *, guide_um, min_guide_um: float, average_um: float, max_sections: int, seed: int = 0,
+    edges=None,
+) -> list[tuple[tuple, np.ndarray]]:
+    """Where a whole-image calibration reads: ``[((u, v, key), arc lengths), ...]``.
+
+    Every edge whose ``guide_um(data)`` is at least *min_guide_um* -- among
+    *edges* (``(u, v, key)``) when given -- is read at its middle, then every
+    :data:`CALIBRATION_SECTION_SPACING_UM` (or twice *average_um*) out from it
+    while the averaged section still fits on the edge. Every edge's middle
+    comes before any edge's second section, so with more than *max_sections*
+    sections the most vessels are read and *seed* picks which; with fewer,
+    every section is read and *seed* changes nothing.
+    """
+    chosen = edge_selection(edges)
+    spacing = max(CALIBRATION_SECTION_SPACING_UM, 2.0 * float(average_um))
+    margin = 0.5 * max(float(average_um), 0.0)
+    candidates = []
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if chosen is not None and (frozenset((u, v)), key) not in chosen:
+            continue
+        vox = data.get("voxels")
+        if not vox or len(vox) < 2 or guide_um(data) < min_guide_um:
+            continue
+        _s, total_len = _arc_length_parameterize(np.asarray(vox, dtype=float))
+        if total_len <= 0:
+            continue
+        middle = 0.5 * total_len
+        candidates.append(((u, v, key), middle, int(max(0.0, middle - margin) // spacing)))
+    rank = np.random.default_rng(seed).permutation(len(candidates))
+    sites = sorted(
+        (step, int(rank[index]), side, index)
+        for index, (_edge, _middle, reach) in enumerate(candidates)
+        for step in range(reach + 1)
+        for side in ((0,) if step == 0 else (-1, 1))
+    )[:max(0, int(max_sections))]
+    targets: dict[int, list[float]] = defaultdict(list)
+    for step, _rank, side, index in sites:
+        targets[index].append(candidates[index][1] + side * step * spacing)
+    return [(candidates[index][0], np.asarray(targets[index])) for index in sorted(targets)]
+
+
+def bootstrap_interval(
+    statistic, groups, *, resamples: int = CALIBRATION_BOOTSTRAP_RESAMPLES, seed: int = 0,
+) -> list[tuple[float, float]]:
+    """The 95% interval ``[(low, high), ...]`` of each value that
+    ``statistic(indices)`` returns, over *resamples* resamplings of the
+    readings with replacement -- a whole group at a time (*groups* labels
+    each reading; one vessel's sections share its shape, so they go together)."""
+    labels, group_of = np.unique(np.asarray(groups), return_inverse=True)
+    members = [np.flatnonzero(group_of == group) for group in range(len(labels))]
+    rng = np.random.default_rng(seed)
+    values = np.asarray(
+        [
+            np.atleast_1d(statistic(np.concatenate(
+                [members[group] for group in rng.integers(0, len(members), len(members))]
+            )))
+            for _resample in range(resamples)
+        ],
+        dtype=float,
+    )
+    low, high = np.percentile(values, [2.5, 97.5], axis=0)
+    return [(float(lo), float(hi)) for lo, hi in zip(low, high)]
+
+
+def relative_half_width(interval: tuple[float, float], estimate: float) -> float:
+    """Half *interval*'s width as a fraction of *estimate*: 0.1 is +-10%."""
+    low, high = interval
+    return 0.5 * (high - low) / estimate if estimate > 0 else float("inf")

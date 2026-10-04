@@ -283,6 +283,7 @@ def image_psf_for_fwhm(
         raw_volume=raw_volume,
         vessel_mask=vessel_mask,
         edges=edges,
+        memmap_directory=config.memmap_directory,
     )
 
 
@@ -294,18 +295,22 @@ def image_psf_from_settings(
     raw_volume: np.ndarray | None,
     vessel_mask: np.ndarray | None = None,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    workers: int | None = None,
+    memmap_directory=None,
 ) -> tuple[tuple[float, float, float] | None, dict[str, Any]]:
     """The one PSF the raw image's width measurements share, and how it was got.
 
     The raw-section settings' PSF when set; otherwise estimated from the
     image's own wide vessels (:func:`raw_section.estimate_psf_sigma`, among
-    *edges* when given), the same estimate the raw-section fallback makes.
-    ``None`` -- FWHM then fits each profile's blur itself -- when
-    ``fwhm_fix_blur_to_image_psf`` is off,
+    *edges* when given, over *workers* processes -- by default
+    :func:`sections.default_worker_count`), the same estimate the
+    raw-section fallback makes. ``None`` -- FWHM then fits each profile's
+    blur itself -- when ``fwhm_fix_blur_to_image_psf`` is off,
     the profile model is not ``blurred_lumen``, there is no raw image, or too
-    few wide vessels show their blur. *settings* holds the FWHM settings
-    (and the raw-section PSF, when set); *voxel_size_zyx* is the raw image's
-    unless the graph records its own (``image_voxel_size_zyx``).
+    few wide vessels show their blur, or they disagree on it. *settings*
+    holds the FWHM settings (and the raw-section PSF, when set);
+    *voxel_size_zyx* is the raw image's unless the graph records its own
+    (``image_voxel_size_zyx``).
     """
     if not bool(settings.get("fwhm_fix_blur_to_image_psf", True)):
         return None, {"source": "per_profile", "reason": "fwhm_fix_blur_to_image_psf is off"}
@@ -327,6 +332,8 @@ def image_psf_from_settings(
             settings.get("fwhm_longitudinal_average_um", raw_section.DEFAULT_AVERAGE_ALONG_VESSEL_UM)
         ),
         edges=edges,
+        workers=sections.default_worker_count() if workers is None else int(workers),
+        memmap_directory=memmap_directory,
     )
     if psf is None:
         return None, {"source": "per_profile", **details}
@@ -445,6 +452,8 @@ def _measure_raw_section_diameters(
         guide_attribute=config.fwhm_setting("fwhm_diameter_guess_edge_attribute", "edt_diameter_um"),
         fallback_guide_um=float(config.fwhm_setting("fwhm_diameter_guess_um", None) or 4.0),
         calibration_edges=calibration_edges,
+        calibration_workers=sections.default_worker_count(),
+        memmap_directory=config.memmap_directory,
     )
 
 

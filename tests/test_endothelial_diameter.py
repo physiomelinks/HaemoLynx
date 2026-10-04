@@ -192,15 +192,115 @@ def test_the_blur_and_wall_are_estimated_only_from_the_edges_given(monkeypatch):
     psf, wall, details = calibrate_from_rings(graph, volume, VOXEL, edges=[(3, 2, 0), (6, 7, 0)])
 
     assert psf is None and wall is None
-    assert details["sections_tried"] == 2
-    assert sorted(fitted) == sorted([tuple(lines[1][0]), tuple(lines[3][0])])
+    assert details["edges_tried"] == 2
+    assert set(fitted) == {tuple(lines[1][0]), tuple(lines[3][0])}
 
     fitted.clear()
     summary = measure_edge_diameters_from_endothelium(
         graph, endothelial_volume=volume, voxel_size_zyx=VOXEL, calibration_edges=[(0, 1, 0)],
     )
     assert summary["skipped"] is True
-    assert fitted == [tuple(lines[0][0])]
+    assert set(fitted) == {tuple(lines[0][0])}
+
+
+def _scattered_rings(monkeypatch, *, scatter, wall_scatter=0.1):
+    """Stand in for the ring fit: each section's blur is :data:`PSF`
+    projected onto its axes (or the blur it is given), and each wall
+    :data:`WALL`, times factors of log-sd *scatter* and *wall_scatter* that
+    depend only on where the section is."""
+    def fit(_volume, poly, _s, _total_len, at, *_args, psf_sigma_zyx=None, **_kwargs):
+        where = (*np.asarray(poly[0], dtype=float), float(at))
+        rng = np.random.default_rng([int(round(abs(v) * 1000)) for v in where])
+        tilt = float(rng.uniform(0.0, 1.0))
+        sigma_z, sigma_xy, _ = PSF if psf_sigma_zyx is None else psf_sigma_zyx
+        other = np.hypot(sigma_xy * np.sqrt(1.0 - tilt ** 2), sigma_z * tilt)
+        return endothelial.RingFit(
+            diameter_um=9.0, wall_um=float(WALL * np.exp(wall_scatter * rng.normal())), contrast=10.0,
+            resolution=3.0, wall_coverage=1.0, centre_offset_um=0.0, aspect=1.0,
+            sigma_across_um=float(sigma_xy * np.exp(scatter * rng.normal())),
+            sigma_other_um=float(other * np.exp(scatter * rng.normal())),
+            other_axis_z=tilt,
+        ), "ok"
+
+    monkeypatch.setattr(endothelial, "fit_ring_section", fit)
+
+
+def _short_wide_lines(count):
+    """*count* 4 um edges, each read once, at its middle."""
+    return [np.array([[float(i % 20), float(i // 20), 0.0], [float(i % 20), float(i // 20), 4.0]])
+            for i in range(count)]
+
+
+EMPTY = np.zeros((4, 4, 4), dtype=np.float32)
+
+
+def test_every_wide_vessel_is_read_so_the_rings_do_not_depend_on_the_seed(monkeypatch):
+    """Regression: the rings of 150 random wide vessels set the blur and the
+    wall, so they changed with the seed. Every vessel read, the seed has
+    nothing left to choose, and each value comes with its 95% interval."""
+    graph = _graph(_short_wide_lines(400), 9.0)
+    _scattered_rings(monkeypatch, scatter=0.3)
+
+    calibrations = [calibrate_from_rings(graph, EMPTY, VOXEL, seed=seed) for seed in range(4)]
+
+    psf, wall, details = calibrations[0]
+    assert details["edges_tried"] == 400
+    assert all(other[:2] == (psf, wall) for other in calibrations)
+    assert psf[1] == pytest.approx(PSF[1], rel=0.1)
+    assert psf[0] == pytest.approx(PSF[0], rel=0.1)
+    for value, name in ((psf[1], "sigma_xy"), (psf[0], "sigma_z"), (wall, "wall")):
+        low, high = details[name + "_interval_um"]
+        assert low < value < high
+
+
+def test_rings_that_disagree_on_the_blur_are_not_used(monkeypatch):
+    graph = _graph(_short_wide_lines(40), 9.0)
+    _scattered_rings(monkeypatch, scatter=1.0)
+
+    psf, wall, details = calibrate_from_rings(graph, EMPTY, VOXEL)
+
+    assert psf is None and wall is None
+    assert "do not agree" in details["reason"]
+
+    summary = measure_edge_diameters_from_endothelium(graph, endothelial_volume=EMPTY, voxel_size_zyx=VOXEL)
+    assert summary["skipped"] is True
+    assert "do not agree" in summary["reason"]
+
+
+def test_with_the_blur_given_only_the_wall_is_estimated_and_its_interval_reported(monkeypatch):
+    """The blur the rings would disagree on is not theirs to set here."""
+    graph = _graph(_short_wide_lines(40), 9.0)
+    _scattered_rings(monkeypatch, scatter=1.0)
+
+    psf, wall, details = calibrate_from_rings(graph, EMPTY, VOXEL, psf_sigma_zyx=PSF)
+
+    assert psf == pytest.approx(PSF)
+    assert wall == pytest.approx(WALL, rel=0.1)
+    low, high = details["wall_interval_um"]
+    assert low < wall < high
+    assert "sigma_xy_interval_um" not in details
+
+
+def test_worker_processes_calibrate_the_same_as_one(monkeypatch):
+    from haemolynx.haemodynamics import sections
+
+    monkeypatch.setattr(sections, "MIN_EDGES_FOR_WORKERS", 1)
+    shape = (44, 60, 60)
+    rings = [((0, 0, 1), (0, -9.0, 0)), ((0, 1, 0), (0, 0, 9.0)), ((1, 0.3, 0.2), (0, 7.0, -9.0))]
+    volume = np.zeros(shape, dtype=np.float32)
+    lines = []
+    for index, (direction, shift) in enumerate(rings):
+        part, line = _ring(9.0, direction, shape=shape, shift=shift, seed=20 + index, background=0.0)
+        volume = np.maximum(volume, part)
+        lines += [line[i * 4:(i + 1) * 4 + 1] for i in range(6)]
+    graph = _graph(lines, 9.0)
+
+    one = calibrate_from_rings(graph, volume, VOXEL, workers=1)
+    two = calibrate_from_rings(graph, volume, VOXEL, workers=2)
+
+    assert one[0] is not None
+    assert two[0] == pytest.approx(one[0], rel=1e-9)
+    assert two[1] == pytest.approx(one[1], rel=1e-9)
 
 
 def test_an_edge_needs_two_readings_and_records_its_widths():

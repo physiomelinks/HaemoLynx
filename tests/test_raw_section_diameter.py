@@ -154,20 +154,26 @@ def test_only_the_edges_asked_for_are_read():
     assert graph[2][3][0]["raw_section_status"] == "measured"
 
 
-def test_the_blur_is_estimated_from_wide_vessels():
-    """Wide vessels show their edges' blur apart from their width; sections
-    tilted towards z show the axial blur, the others the lateral one."""
+def _wide_vessels():
+    """Three 9 um vessels, along x, along y and tilted towards z, as six
+    edges each -- short enough that the estimate reads one section at each's
+    middle. ``(raw, mask, graph)``."""
     raw, mask, lines = _render(
         [(9.0, (0, 0, 1), (0, -9.0, 0)), (9.0, (0, 1, 0), (0, 0, 9.0)), (9.0, (1, 0.3, 0.2), (0, 6.0, -9.0))],
         shape=(40, 56, 56), peak_counts=8.0, seed=17,
     )
-    # Six edges per vessel: the estimate reads one section at each's middle.
     pieces = [
         line[chunk[0]:chunk[-1] + 2]
         for line in lines
         for chunk in np.array_split(np.arange(len(line) - 1), 6)
     ]
-    graph = _graph(pieces, [9.0] * len(pieces))
+    return raw, mask, _graph(pieces, [9.0] * len(pieces))
+
+
+def test_the_blur_is_estimated_from_wide_vessels():
+    """Wide vessels show their edges' blur apart from their width; sections
+    tilted towards z show the axial blur, the others the lateral one."""
+    raw, mask, graph = _wide_vessels()
 
     psf, details = estimate_psf_sigma(graph, raw, VOXEL, vessel_mask=mask)
 
@@ -203,12 +209,12 @@ def test_the_blur_is_estimated_only_from_the_edges_given(monkeypatch):
     psf, details = estimate_psf_sigma(graph, raw, VOXEL, edges=[(0, 1, 0), (5, 4, 0)])
 
     assert psf is None
-    assert details["sections_tried"] == 2
-    assert sorted(fitted) == sorted([tuple(lines[0][0]), tuple(lines[2][0])])
+    assert details["edges_tried"] == 2
+    assert set(fitted) == {tuple(lines[0][0]), tuple(lines[2][0])}
 
     fitted.clear()
     estimate_psf_sigma(graph, raw, VOXEL)
-    assert len(fitted) == 4  # no edges given: every wide vessel
+    assert len(set(fitted)) == 4  # no edges given: every wide vessel
 
 
 def test_the_fallbacks_own_blur_estimate_samples_the_calibration_edges(monkeypatch):
@@ -223,7 +229,184 @@ def test_the_fallbacks_own_blur_estimate_samples_the_calibration_edges(monkeypat
     )
 
     assert summary["skipped"] is True
-    assert fitted == [tuple(lines[1][0])]
+    assert set(fitted) == {tuple(lines[1][0])}
+
+
+#: The blur ``(sigma_z, sigma_y, sigma_x)`` the stand-in section fits scatter round.
+SCATTERED_PSF = (2.0, 0.8, 0.8)
+
+
+def _scattered_fits(monkeypatch, *, scatter, seen=None):
+    """Stand in for the section fit: each section's blur is the true one
+    projected onto its axes, times a factor of log-sd *scatter* that depends
+    only on where the section is -- what a real stack's speckle and vessel
+    shapes do to the fits, without their cost. *seen* collects the arc
+    lengths read."""
+    sigma_z, sigma_xy, _ = SCATTERED_PSF
+
+    def fit(_raw, poly, _s, _total_len, at, *_args, **_kwargs):
+        where = (*np.asarray(poly[0], dtype=float), float(at))
+        rng = np.random.default_rng([int(round(abs(v) * 1000)) for v in where])
+        tilt = float(rng.uniform(0.0, 1.0))
+        other = np.hypot(sigma_xy * np.sqrt(1.0 - tilt ** 2), sigma_z * tilt)
+        if seen is not None:
+            seen.append(float(at))
+        return raw_section.SectionFit(
+            diameter_um=9.0, contrast=10.0, centre_offset_um=0.0, aspect=1.0,
+            sigma_across_um=float(sigma_xy * np.exp(scatter * rng.normal())),
+            sigma_other_um=float(other * np.exp(scatter * rng.normal())),
+            other_axis_z=tilt,
+        ), "ok"
+
+    monkeypatch.setattr(raw_section, "fit_section", fit)
+
+
+def _short_wide_lines(count):
+    """*count* 4 um edges, each read once, at its middle."""
+    return [np.array([[float(i % 20), float(i // 20), 0.0], [float(i % 20), float(i // 20), 4.0]])
+            for i in range(count)]
+
+
+EMPTY = np.zeros((4, 4, 4), dtype=np.float32)
+
+
+def test_every_wide_vessel_is_read_so_the_blur_does_not_depend_on_the_seed(monkeypatch):
+    """Regression: one section of each of 150 random wide vessels left 20-33
+    fits on a real stack (E14.5 MCA, 2,157 wide vessels), and sigma_xy
+    anywhere from 0.63 to 1.02 um and sigma_z from 1.70 to 2.36 um depending
+    on the seed. Every vessel read, the seed has nothing left to choose."""
+    graph = _graph(_short_wide_lines(400), [9.0] * 400)
+    _scattered_fits(monkeypatch, scatter=0.3)
+
+    estimates = [estimate_psf_sigma(graph, EMPTY, VOXEL, seed=seed) for seed in range(4)]
+
+    assert estimates[0][1]["edges_tried"] == 400
+    assert all(psf == estimates[0][0] for psf, _details in estimates)
+    sigma_z, sigma_xy, _ = estimates[0][0]
+    assert sigma_xy == pytest.approx(SCATTERED_PSF[1], rel=0.1)
+    assert sigma_z == pytest.approx(SCATTERED_PSF[0], rel=0.1)
+
+
+def test_a_long_vessel_is_read_every_few_microns_out_from_its_middle(monkeypatch):
+    """Blurs read 8 um apart along one real vessel were nearly independent,
+    so a long vessel gives several sections -- each clear of the edge's ends
+    and of the next section by the length it is averaged over."""
+    line = np.array([[10.0, 10.0, x] for x in np.linspace(0.0, 40.0, 41)])
+    graph = _graph([line], [9.0])
+    seen = []
+    _scattered_fits(monkeypatch, scatter=0.0, seen=seen)
+
+    _psf, details = estimate_psf_sigma(graph, EMPTY, VOXEL)
+
+    assert sorted(seen) == pytest.approx([4.0, 12.0, 20.0, 28.0, 36.0])
+    assert details["sections_tried"] == 5
+
+    seen.clear()
+    estimate_psf_sigma(graph, EMPTY, VOXEL, average_um=6.0)
+    assert sorted(seen) == pytest.approx([8.0, 20.0, 32.0])
+
+
+def test_past_the_cap_every_vessel_is_read_once_before_any_twice(monkeypatch):
+    monkeypatch.setattr(raw_section, "PSF_CALIBRATION_MAX_SECTIONS", 7)
+    lines = [np.array([[10.0, 10.0 * i, x] for x in np.linspace(0.0, 40.0, 41)]) for i in range(5)]
+    graph = _graph(lines, [9.0] * 5)
+    seen = []
+    _scattered_fits(monkeypatch, scatter=0.0, seen=seen)
+
+    _psf, details = estimate_psf_sigma(graph, EMPTY, VOXEL)
+
+    assert details["sections_tried"] == 7
+    assert details["edges_tried"] == 5
+    assert seen.count(20.0) == 5  # every middle
+
+
+def test_one_long_vessel_read_many_times_is_still_one_vessel(monkeypatch):
+    """The blur needs twelve vessels showing it, as when each was read once:
+    one long vessel's twenty-five sections share its shape, and resampled
+    on its own it would claim no uncertainty at all."""
+    line = np.array([[10.0, 10.0, x] for x in np.linspace(0.0, 200.0, 201)])
+    graph = _graph([line], [9.0])
+    _scattered_fits(monkeypatch, scatter=0.3)
+
+    psf, details = estimate_psf_sigma(graph, EMPTY, VOXEL)
+
+    assert details["sections_fitted"] >= raw_section.PSF_CALIBRATION_MIN_FITS
+    assert psf is None
+    assert "of 1 wide vessels" in details["reason"]
+
+
+def test_the_blur_comes_with_its_95_percent_interval(monkeypatch, caplog):
+    graph = _graph(_short_wide_lines(200), [9.0] * 200)
+    _scattered_fits(monkeypatch, scatter=0.3)
+
+    with caplog.at_level("INFO", logger="haemolynx.haemodynamics.raw_section"):
+        psf, details = estimate_psf_sigma(graph, EMPTY, VOXEL)
+
+    sigma_z, sigma_xy, _ = psf
+    for value, (low, high) in ((sigma_xy, details["sigma_xy_interval_um"]),
+                               (sigma_z, details["sigma_z_interval_um"])):
+        assert low < value < high
+        assert (high - low) / 2 < raw_section.PSF_CALIBRATION_MAX_RELATIVE_INTERVAL * value
+    assert "95%" in caplog.text
+
+
+def test_a_blur_the_wide_vessels_disagree_on_is_not_used(monkeypatch):
+    """A blur held wrong moves every width read with it, so one the wide
+    vessels leave this uncertain is not used: FWHM fits each profile's blur
+    itself, and the raw-section fallback, which cannot, measures nothing."""
+    from haemolynx.haemodynamics.apply import image_psf_from_settings
+
+    graph = _graph(_short_wide_lines(40), [9.0] * 40)
+    _scattered_fits(monkeypatch, scatter=1.0)
+
+    psf, details = estimate_psf_sigma(graph, EMPTY, VOXEL)
+
+    assert psf is None
+    assert "do not agree" in details["reason"]
+    widest = max(
+        (high - low) / 2 / details[name + "_um"]
+        for name in ("sigma_xy", "sigma_z")
+        for low, high in [details[name + "_interval_um"]]
+    )
+    assert widest > raw_section.PSF_CALIBRATION_MAX_RELATIVE_INTERVAL
+
+    fwhm_psf, fwhm_details = image_psf_from_settings(graph, {}, voxel_size_zyx=VOXEL, raw_volume=EMPTY)
+    assert fwhm_psf is None
+    assert fwhm_details["source"] == "per_profile"
+
+    summary = _measure(graph, EMPTY, psf_sigma_zyx=None)
+    assert summary["skipped"] is True
+    assert "do not agree" in summary["reason"]
+
+
+def test_a_vessels_sections_are_resampled_together():
+    """Sections of one vessel share its shape, so the interval resamples
+    vessels, not sections: one vessel read many times is still one vessel."""
+    from haemolynx.haemodynamics.sections import bootstrap_interval
+
+    values = np.random.default_rng(0).normal(size=40)
+
+    ((low, high),) = bootstrap_interval(lambda pick: values[pick].mean(), [0] * 40)
+    assert low == pytest.approx(high)
+
+    ((low, high),) = bootstrap_interval(lambda pick: values[pick].mean(), list(range(40)))
+    assert high - low > 0.3
+
+
+def test_worker_processes_estimate_the_same_blur_as_one(monkeypatch):
+    """The sections are fitted in worker processes, which read the raw image
+    and its mask from shared memory-mapped copies."""
+    from haemolynx.haemodynamics import sections
+
+    monkeypatch.setattr(sections, "MIN_EDGES_FOR_WORKERS", 1)
+    raw, mask, graph = _wide_vessels()
+
+    one = estimate_psf_sigma(graph, raw, VOXEL, vessel_mask=mask, workers=1)
+    two = estimate_psf_sigma(graph, raw, VOXEL, vessel_mask=mask, workers=2)
+
+    assert one[0] is not None
+    assert two[0] == pytest.approx(one[0], rel=1e-9)
+    assert two[1]["sections_fitted"] == one[1]["sections_fitted"]
 
 
 def test_without_wide_vessels_to_estimate_the_blur_nothing_is_measured():

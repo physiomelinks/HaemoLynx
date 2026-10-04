@@ -45,6 +45,7 @@ diameter chain becomes endothelium -> segmentation mask -> branch-order table.
 """
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal
@@ -55,15 +56,19 @@ from scipy.optimize import least_squares
 
 from .automated import _aggregate_edge_diameter, _arc_length_parameterize
 from .edt_diameter import _centreline_tangents, edge_sample_targets
-from .poiseuille import edge_selection
 from .sections import (
     averaged_section,
+    bootstrap_interval,
+    calibration_sites,
     projected_sigma,
     psf_from_section_blurs,
+    relative_half_width,
     ring_images,
     run_edge_tasks,
     section_axes,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "ENDOTHELIAL_MIN_RING_CONTRAST",
@@ -100,11 +105,19 @@ MAX_READINGS_PER_EDGE = 5
 #: How far a section is averaged along the vessel (um).
 DEFAULT_AVERAGE_ALONG_VESSEL_UM = 4.0
 
-#: Rings the PSF is estimated from: vessels at least this wide by their guide.
+#: Rings the PSF is estimated from: vessels at least this wide by their guide,
+#: read at the same sites as the raw image's blur estimate (see
+#: :func:`~haemolynx.haemodynamics.sections.calibration_sites`), up to this
+#: many sections.
 PSF_CALIBRATION_MIN_GUIDE_UM = 6.0
-PSF_CALIBRATION_MAX_SECTIONS = 150
+PSF_CALIBRATION_MAX_SECTIONS = 5000
+#: The fewest vessels (edges) with a ring that passes the calibration is made from.
 PSF_CALIBRATION_MIN_FITS = 12
 PSF_CALIBRATION_MIN_AXIAL_FITS = 5
+#: The widest 95% interval (half its width, as a fraction of the estimate)
+#: the blur may have and still be used, as for the raw image's
+#: (:data:`~haemolynx.haemodynamics.raw_section.PSF_CALIBRATION_MAX_RELATIVE_INTERVAL`).
+PSF_CALIBRATION_MAX_RELATIVE_INTERVAL = 0.15
 _AXIAL_TILT = 0.5
 
 _PLANE_STEP_UM = 0.25
@@ -366,76 +379,145 @@ def calibrate_from_rings(
     min_contrast: float = ENDOTHELIAL_MIN_RING_CONTRAST,
     seed: int = 0,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    workers: int = 1,
+    memmap_directory=None,
 ) -> tuple[tuple[float, float, float] | None, float | None, dict[str, Any]]:
     """``(psf_sigma_zyx, wall_um, details)`` from the image's wide vessels'
-    rings; ``(None, None, details)`` when too few show them.
+    rings; ``(None, None, details)`` when too few show them, or they do not
+    agree on the blur.
 
-    The middle section of each of up to :data:`PSF_CALIBRATION_MAX_SECTIONS`
-    edges at least :data:`PSF_CALIBRATION_MIN_GUIDE_UM` wide -- among *edges*
-    (``(u, v, key)``) when given -- is fitted with its wall free, and its blur free too unless *psf_sigma_zyx* is given. A
-    robust fit over their blurs gives sigma_xy and sigma_z (see
+    Every edge at least :data:`PSF_CALIBRATION_MIN_GUIDE_UM` wide -- among
+    *edges* (``(u, v, key)``) when given -- is read at its middle and every
+    few microns out from it, as the raw image's blur estimate reads them
+    (:func:`~haemolynx.haemodynamics.raw_section.estimate_psf_sigma`; up to
+    :data:`PSF_CALIBRATION_MAX_SECTIONS` sections), each fitted with its wall
+    free, and its blur free too unless *psf_sigma_zyx* is given. A robust fit
+    over their blurs gives sigma_xy and sigma_z (see
     :func:`~haemolynx.haemodynamics.sections.psf_from_section_blurs`); their
     median wall is the wall every other section is fitted with. Across the
     y-x plane a thin wall's thickness and the blur trade against each other,
     so this pair is the image's, consistent with each other rather than each
     exact: the ring's middle -- what fixes a lumen -- is what they agree on.
+
+    ``details`` reports each value's 95% interval (``sigma_xy_interval_um``,
+    ``sigma_z_interval_um``, ``wall_interval_um``; a vessel's sections
+    resampled together, *seed* seeding the resampling); a blur interval wider
+    than :data:`PSF_CALIBRATION_MAX_RELATIVE_INTERVAL` either way gives
+    ``(None, None, details)``. *seed* otherwise only picks which vessels when
+    there are more sections than the cap. *workers* processes fit the
+    sections; the answer is the same however many.
     """
-    rng = np.random.default_rng(seed)
-    chosen = edge_selection(edges)
-    candidates = [
-        (u, v, key)
-        for u, v, key, data in G.edges(keys=True, data=True)
-        if (chosen is None or (frozenset((u, v)), key) in chosen)
-        and data.get("voxels") and len(data["voxels"]) >= 2
-        and _guide_diameter(data, guide_attribute, 0.0) >= PSF_CALIBRATION_MIN_GUIDE_UM
+    sites = calibration_sites(
+        G, guide_um=lambda data: _guide_diameter(data, guide_attribute, 0.0),
+        min_guide_um=PSF_CALIBRATION_MIN_GUIDE_UM, average_um=average_um,
+        max_sections=PSF_CALIBRATION_MAX_SECTIONS, seed=seed, edges=edges,
+    )
+    payloads = [
+        {
+            "poly": np.asarray(G.edges[edge]["voxels"], dtype=float),
+            "targets": targets,
+            "guide": _guide_diameter(G.edges[edge], guide_attribute, 0.0),
+            "spacing": tuple(float(v) for v in voxel_size_zyx),
+            "psf": None if psf_sigma_zyx is None else tuple(float(v) for v in psf_sigma_zyx),
+            "average": float(average_um),
+        }
+        for edge, targets in sites
     ]
-    order = rng.permutation(len(candidates))[:PSF_CALIBRATION_MAX_SECTIONS]
+    readings = run_edge_tasks(
+        _calibration_rings, payloads, volume=volume, workers=workers,
+        memmap_directory=memmap_directory,
+    )
     fits: list[RingFit] = []
-    for index in order:
-        data = G.edges[candidates[index]]
-        poly = np.asarray(data["voxels"], dtype=float)
-        s, total_len = _arc_length_parameterize(poly)
-        if total_len <= 0:
-            continue
-        fit, _why = fit_ring_section(
-            volume, poly, s, total_len, 0.5 * total_len, voxel_size_zyx,
-            guide_um=_guide_diameter(data, guide_attribute, 0.0), psf_sigma_zyx=psf_sigma_zyx,
-            average_um=average_um,
-        )
-        if fit is None or _gate(fit, min_contrast=min_contrast, min_diameter_um=0.0) != "ok":
-            continue
-        if psf_sigma_zyx is None and not all(
-            _SIGMA_BOUNDS_UM[0] * 1.01 < v < _SIGMA_BOUNDS_UM[1] * 0.99
-            for v in (fit.sigma_across_um, fit.sigma_other_um)
-        ):
-            continue
-        if not _WALL_BOUNDS_UM[0] * 1.01 < fit.wall_um < _WALL_BOUNDS_UM[1] * 0.99:
-            continue
-        fits.append(fit)
+    groups: list[int] = []
+    for group, edge_readings in enumerate(readings):
+        for fit, _why in edge_readings:
+            if fit is None or _gate(fit, min_contrast=min_contrast, min_diameter_um=0.0) != "ok":
+                continue
+            if psf_sigma_zyx is None and not all(
+                _SIGMA_BOUNDS_UM[0] * 1.01 < v < _SIGMA_BOUNDS_UM[1] * 0.99
+                for v in (fit.sigma_across_um, fit.sigma_other_um)
+            ):
+                continue
+            if not _WALL_BOUNDS_UM[0] * 1.01 < fit.wall_um < _WALL_BOUNDS_UM[1] * 0.99:
+                continue
+            fits.append(fit)
+            groups.append(group)
     axial = sum(1 for f in fits if f.other_axis_z >= _AXIAL_TILT)
     details: dict[str, Any] = {
-        "sections_tried": int(len(order)), "sections_fitted": len(fits), "axial_sections": axial,
+        "sections_tried": int(sum(len(targets) for _edge, targets in sites)),
+        "edges_tried": len(sites),
+        "sections_fitted": len(fits),
+        "edges_fitted": len(set(groups)),
+        "axial_sections": axial,
     }
     needs_axial = psf_sigma_zyx is None
-    if len(fits) < PSF_CALIBRATION_MIN_FITS or (needs_axial and axial < PSF_CALIBRATION_MIN_AXIAL_FITS):
+    if details["edges_fitted"] < PSF_CALIBRATION_MIN_FITS or (
+        needs_axial and axial < PSF_CALIBRATION_MIN_AXIAL_FITS
+    ):
         details["reason"] = (
-            f"{len(fits)} wide-vessel rings showed their wall ({axial} tilted towards z); "
-            f"at least {PSF_CALIBRATION_MIN_FITS}"
-            + (f" ({PSF_CALIBRATION_MIN_AXIAL_FITS} tilted)" if needs_axial else "")
+            f"{len(fits)} rings of {details['edges_fitted']} wide vessels showed their wall "
+            f"({axial} tilted towards z); at least {PSF_CALIBRATION_MIN_FITS} vessels"
+            + (f" ({PSF_CALIBRATION_MIN_AXIAL_FITS} tilted rings)" if needs_axial else "")
             + " are needed"
         )
+        logger.warning("Endothelial rings not calibrated: %s.", details["reason"])
         return None, None, details
+    walls = np.array([f.wall_um for f in fits])
+    wall = float(np.median(walls))
+    details["wall_um"] = wall
     if psf_sigma_zyx is None:
-        sigma_xy, sigma_z = psf_from_section_blurs(
-            [f.sigma_across_um for f in fits],
-            [f.sigma_other_um for f in fits],
-            [f.other_axis_z for f in fits],
+        across = np.array([f.sigma_across_um for f in fits])
+        other = np.array([f.sigma_other_um for f in fits])
+        tilt = np.array([f.other_axis_z for f in fits])
+        sigma_xy, sigma_z = psf_from_section_blurs(across, other, tilt)
+        xy_interval, z_interval, wall_interval = bootstrap_interval(
+            lambda pick: (*psf_from_section_blurs(across[pick], other[pick], tilt[pick]),
+                          np.median(walls[pick])),
+            groups, seed=seed,
+        )
+        details.update(
+            sigma_xy_um=sigma_xy, sigma_z_um=sigma_z,
+            sigma_xy_interval_um=xy_interval, sigma_z_interval_um=z_interval,
         )
         psf_sigma_zyx = (sigma_z, sigma_xy, sigma_xy)
-        details.update(sigma_xy_um=sigma_xy, sigma_z_um=sigma_z)
-    wall = float(np.median([f.wall_um for f in fits]))
-    details["wall_um"] = wall
+        blur = (
+            f"sigma_xy {sigma_xy:.2f} um (95% {xy_interval[0]:.2f}-{xy_interval[1]:.2f}), "
+            f"sigma_z {sigma_z:.2f} um (95% {z_interval[0]:.2f}-{z_interval[1]:.2f}), "
+        )
+        widest = max(relative_half_width(xy_interval, sigma_xy), relative_half_width(z_interval, sigma_z))
+    else:
+        (wall_interval,) = bootstrap_interval(lambda pick: np.median(walls[pick]), groups, seed=seed)
+        blur, widest = "", 0.0
+    details["wall_interval_um"] = wall_interval
+    described = (
+        f"{blur}wall {wall:.2f} um (95% {wall_interval[0]:.2f}-{wall_interval[1]:.2f}) from "
+        f"{len(fits)} rings of {details['edges_fitted']} wide vessels ({details['sections_tried']} tried)"
+    )
+    if widest > PSF_CALIBRATION_MAX_RELATIVE_INTERVAL:
+        details["reason"] = (
+            f"the wide vessels' rings do not agree on the blur: {described}, an interval of "
+            f"+-{widest:.0%}, past +-{PSF_CALIBRATION_MAX_RELATIVE_INTERVAL:.0%}"
+        )
+        logger.warning("Endothelial rings not calibrated: %s.", details["reason"])
+        return None, None, details
+    logger.info("Endothelial rings: %s.", described)
     return tuple(float(v) for v in psf_sigma_zyx), wall, details
+
+
+def _calibration_rings(volume: np.ndarray, payload: dict) -> list[tuple[RingFit | None, str]]:
+    """One edge's calibration sections, each fitted with its wall free (and
+    its blur, unless the payload fixes it). Self-contained, so it runs the
+    same in a worker process (see
+    :func:`~haemolynx.haemodynamics.sections.run_edge_tasks`)."""
+    poly = payload["poly"]
+    s, total_len = _arc_length_parameterize(poly)
+    return [
+        fit_ring_section(
+            volume, poly, s, total_len, float(at), payload["spacing"], guide_um=payload["guide"],
+            psf_sigma_zyx=payload["psf"], average_um=payload["average"],
+        )
+        for at in payload["targets"]
+    ]
 
 
 _EDGE_ATTRIBUTES = (
@@ -500,7 +582,7 @@ def measure_edge_diameters_from_endothelium(
 ) -> dict[str, Any]:
     """Measure *edges* (default every edge) from their endothelial rings.
 
-    *workers* processes share the edges (see
+    *workers* processes share the edges, and the calibration's sections (see
     :func:`~haemolynx.haemodynamics.sections.run_edge_tasks`); the results
     are the same however many there are.
 
@@ -531,7 +613,8 @@ def measure_edge_diameters_from_endothelium(
         psf_found, wall_found, calibration = calibrate_from_rings(
             G, endothelial_volume, spacing, psf_sigma_zyx=psf_sigma_zyx,
             guide_attribute=guide_attribute, average_um=average_along_vessel_um,
-            min_contrast=min_ring_contrast, edges=calibration_edges,
+            min_contrast=min_ring_contrast, edges=calibration_edges, workers=int(workers),
+            memmap_directory=memmap_directory,
         )
         summary["calibration"] = calibration
         if psf_found is None:

@@ -53,6 +53,7 @@ across its middle.
 """
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal
@@ -63,15 +64,20 @@ from scipy.optimize import least_squares
 
 from .automated import _aggregate_edge_diameter, _arc_length_parameterize, _interpolate_centerline
 from .edt_diameter import _centreline_tangents, edge_sample_targets
-from .poiseuille import edge_selection
 from .sections import (
     averaged_section,
+    bootstrap_interval,
+    calibration_sites,
     lumen_image,
     nearest_section,
     projected_sigma,
     psf_from_section_blurs,
+    relative_half_width,
+    run_edge_tasks,
     section_axes,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "MIN_ACCEPTED_READINGS",
@@ -108,12 +114,26 @@ MAX_READINGS_PER_EDGE = 5
 #: The PSF is estimated from vessels at least this wide by their guide
 #: diameter, whose edges show the blur separately from the width.
 PSF_CALIBRATION_MIN_GUIDE_UM = 6.0
-PSF_CALIBRATION_MAX_SECTIONS = 150
+#: The most sections the estimate fits (see
+#: :func:`~haemolynx.haemodynamics.sections.calibration_sites`). One section
+#: of each of 150 random vessels, as it used to be, left 20-33 fits on the
+#: E14.5 MCA stack (2,157 wide vessels), and sigma_xy anywhere from 0.63 to
+#: 1.02 um and sigma_z from 1.70 to 2.36 um depending on which 150. Every
+#: one of its 4,803 sections leaves about a thousand.
+PSF_CALIBRATION_MAX_SECTIONS = 5000
+#: The fewest vessels (edges) with a section showing its blur the estimate is
+#: made from: one long vessel read many times is still one vessel's shape.
 PSF_CALIBRATION_MIN_FITS = 12
 #: Sections tilted this much towards z (the across axis ``b``'s z component)
 #: are the ones that see the axial blur; at least this many are needed to
 #: estimate it.
 PSF_CALIBRATION_MIN_AXIAL_FITS = 5
+#: The widest 95% interval (half its width, as a fraction of the estimate)
+#: either blur may have and still be used: past it the sections do not pin
+#: the blur down, and FWHM fits each profile's blur itself instead. On the
+#: E14.5 MCA stack 150 random sections gave sigma_xy +-41-73% and sigma_z
+#: +-18-47%, depending on which 150; all of its sections, about +-6%.
+PSF_CALIBRATION_MAX_RELATIVE_INTERVAL = 0.15
 _AXIAL_TILT = 0.5
 
 _PLANE_STEP_UM = 0.25
@@ -335,66 +355,133 @@ def estimate_psf_sigma(
     min_contrast: float = RAW_SECTION_MIN_LUMEN_CONTRAST,
     seed: int = 0,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    workers: int = 1,
+    memmap_directory=None,
 ) -> tuple[tuple[float, float, float] | None, dict[str, Any]]:
     """The image's own blur ``(sigma_z, sigma_y, sigma_x)`` in um, from its
     wide vessels -- among *edges* (``(u, v, key)``) when given -- or ``None``
-    when too few of them show it.
+    when too few of them show it, or they do not agree on it.
 
     A wide lumen's width and its edges' blur are separately measurable, so
-    each of up to :data:`PSF_CALIBRATION_MAX_SECTIONS` sections, at the
-    middle of an edge at least :data:`PSF_CALIBRATION_MIN_GUIDE_UM` wide, is
+    every edge at least :data:`PSF_CALIBRATION_MIN_GUIDE_UM` wide is read at
+    its middle and every few microns out from it (up to
+    :data:`PSF_CALIBRATION_MAX_SECTIONS` sections; see
+    :func:`~haemolynx.haemodynamics.sections.calibration_sites`), each section
     fitted with the blur free. The across axis lies in the y-x plane, so its
     blur is sigma_xy; the other axis's is ``sigma_xy^2 (1 - b_z^2) +
     sigma_z^2 b_z^2``, and a robust least-squares fit over all of them gives
     both. This is the blur the image shows -- the optics, the voxels and the
     interpolation together -- which is what the fit needs.
+
+    Reading every wide vessel rather than a random sample makes the estimate
+    the image's, not the *seed*'s: *seed* only picks which vessels when there
+    are more sections than the cap, and resamples the 95% interval that
+    ``details`` reports (``sigma_xy_interval_um``, ``sigma_z_interval_um``;
+    a vessel's sections resampled together). An interval wider than
+    :data:`PSF_CALIBRATION_MAX_RELATIVE_INTERVAL` either way gives ``None``.
+    Every section's blur is weighted alike: weighting by the fits' own
+    standard errors favours sections whose blur came out small, and on a real
+    stack moved sigma_xy a quarter to a third lower without narrowing the
+    interval.
+    *workers* processes fit the sections (see
+    :func:`~haemolynx.haemodynamics.sections.run_edge_tasks`); the answer is
+    the same however many.
     """
-    rng = np.random.default_rng(seed)
-    chosen = edge_selection(edges)
-    candidates = []
-    for u, v, key, data in G.edges(keys=True, data=True):
-        if chosen is not None and (frozenset((u, v)), key) not in chosen:
-            continue
-        vox = data.get("voxels")
-        if not vox or len(vox) < 2:
-            continue
-        if _guide_diameter(data, guide_attribute, 0.0) >= PSF_CALIBRATION_MIN_GUIDE_UM:
-            candidates.append((u, v, key))
-    order = rng.permutation(len(candidates))[:PSF_CALIBRATION_MAX_SECTIONS]
-    fits: list[SectionFit] = []
-    for index in order:
-        data = G.edges[candidates[index]]
-        poly = np.asarray(data["voxels"], dtype=float)
-        s, total_len = _arc_length_parameterize(poly)
-        if total_len <= 0:
-            continue
-        fit, _why = fit_section(
-            raw, poly, s, total_len, 0.5 * total_len, voxel_size_zyx,
-            guide_um=_guide_diameter(data, guide_attribute, 0.0),
-            psf_sigma_zyx=None, vessel_mask=vessel_mask, average_um=average_um,
-        )
-        if fit is None or _gate(fit, min_contrast=min_contrast, min_diameter_um=0.0) != "ok":
-            continue
-        if not all(_SIGMA_BOUNDS_UM[0] * 1.01 < v < _SIGMA_BOUNDS_UM[1] * 0.99
-                   for v in (fit.sigma_across_um, fit.sigma_other_um)):
-            continue  # pinned at a bound: the fit could not see the blur
-        fits.append(fit)
-    details: dict[str, Any] = {"sections_tried": int(len(order)), "sections_fitted": len(fits)}
-    axial = sum(1 for f in fits if f.other_axis_z >= _AXIAL_TILT)
-    details["axial_sections"] = axial
-    if len(fits) < PSF_CALIBRATION_MIN_FITS or axial < PSF_CALIBRATION_MIN_AXIAL_FITS:
-        details["reason"] = (
-            f"{len(fits)} wide-vessel sections showed their blur ({axial} tilted towards z); "
-            f"at least {PSF_CALIBRATION_MIN_FITS} ({PSF_CALIBRATION_MIN_AXIAL_FITS}) are needed"
-        )
-        return None, details
-    sigma_xy, sigma_z = psf_from_section_blurs(
-        [f.sigma_across_um for f in fits],
-        [f.sigma_other_um for f in fits],
-        [f.other_axis_z for f in fits],
+    spacing = tuple(float(v) for v in voxel_size_zyx)
+    sites = calibration_sites(
+        G, guide_um=lambda data: _guide_diameter(data, guide_attribute, 0.0),
+        min_guide_um=PSF_CALIBRATION_MIN_GUIDE_UM, average_um=average_um,
+        max_sections=PSF_CALIBRATION_MAX_SECTIONS, seed=seed, edges=edges,
     )
-    details.update(sigma_xy_um=sigma_xy, sigma_z_um=sigma_z)
+    payloads = [
+        {
+            "poly": np.asarray(G.edges[edge]["voxels"], dtype=float),
+            "targets": targets,
+            "guide": _guide_diameter(G.edges[edge], guide_attribute, 0.0),
+            "spacing": spacing,
+            "average": float(average_um),
+        }
+        for edge, targets in sites
+    ]
+    readings = run_edge_tasks(
+        _calibration_readings, payloads,
+        volume=(raw,) if vessel_mask is None else (raw, vessel_mask),
+        workers=workers, memmap_directory=memmap_directory,
+    )
+    fits: list[SectionFit] = []
+    groups: list[int] = []
+    for group, edge_readings in enumerate(readings):
+        for fit, _why in edge_readings:
+            if fit is None or _gate(fit, min_contrast=min_contrast, min_diameter_um=0.0) != "ok":
+                continue
+            if not all(_SIGMA_BOUNDS_UM[0] * 1.01 < v < _SIGMA_BOUNDS_UM[1] * 0.99
+                       for v in (fit.sigma_across_um, fit.sigma_other_um)):
+                continue  # pinned at a bound: the fit could not see the blur
+            fits.append(fit)
+            groups.append(group)
+    axial = sum(1 for f in fits if f.other_axis_z >= _AXIAL_TILT)
+    details: dict[str, Any] = {
+        "sections_tried": int(sum(len(targets) for _edge, targets in sites)),
+        "edges_tried": len(sites),
+        "sections_fitted": len(fits),
+        "edges_fitted": len(set(groups)),
+        "axial_sections": axial,
+    }
+    if details["edges_fitted"] < PSF_CALIBRATION_MIN_FITS or axial < PSF_CALIBRATION_MIN_AXIAL_FITS:
+        details["reason"] = (
+            f"{len(fits)} sections of {details['edges_fitted']} wide vessels showed their blur "
+            f"({axial} tilted towards z); at least {PSF_CALIBRATION_MIN_FITS} vessels "
+            f"({PSF_CALIBRATION_MIN_AXIAL_FITS} tilted sections) are needed"
+        )
+        logger.warning("Image blur not estimated: %s.", details["reason"])
+        return None, details
+    across = np.array([f.sigma_across_um for f in fits])
+    other = np.array([f.sigma_other_um for f in fits])
+    tilt = np.array([f.other_axis_z for f in fits])
+    sigma_xy, sigma_z = psf_from_section_blurs(across, other, tilt)
+    xy_interval, z_interval = bootstrap_interval(
+        lambda pick: psf_from_section_blurs(across[pick], other[pick], tilt[pick]), groups, seed=seed,
+    )
+    details.update(
+        sigma_xy_um=sigma_xy, sigma_z_um=sigma_z,
+        sigma_xy_interval_um=xy_interval, sigma_z_interval_um=z_interval,
+    )
+    widest = max(relative_half_width(xy_interval, sigma_xy), relative_half_width(z_interval, sigma_z))
+    described = (
+        f"sigma_xy {sigma_xy:.2f} um (95% {xy_interval[0]:.2f}-{xy_interval[1]:.2f}), "
+        f"sigma_z {sigma_z:.2f} um (95% {z_interval[0]:.2f}-{z_interval[1]:.2f}) from "
+        f"{len(fits)} sections of {details['edges_fitted']} wide vessels "
+        f"({details['sections_tried']} tried)"
+    )
+    if widest > PSF_CALIBRATION_MAX_RELATIVE_INTERVAL:
+        details["reason"] = (
+            f"the wide vessels do not agree on the blur: {described}, an interval of "
+            f"+-{widest:.0%}, past +-{PSF_CALIBRATION_MAX_RELATIVE_INTERVAL:.0%}"
+        )
+        logger.warning("Image blur not estimated: %s.", details["reason"])
+        return None, details
+    logger.info("Image blur: %s.", described)
     return (sigma_z, sigma_xy, sigma_xy), details
+
+
+def _calibration_readings(volumes: tuple[np.ndarray, ...], payload: dict) -> list[tuple[SectionFit | None, str]]:
+    """One edge's calibration sections, each fitted with the blur free.
+
+    Self-contained -- the centreline, where to read it and every setting
+    travel in *payload* -- so it runs the same in a worker process (see
+    :func:`~haemolynx.haemodynamics.sections.run_edge_tasks`). *volumes* is
+    the raw image, then its vessel mask when there is one."""
+    raw = volumes[0]
+    vessel_mask = volumes[1] if len(volumes) > 1 else None
+    poly = payload["poly"]
+    s, total_len = _arc_length_parameterize(poly)
+    return [
+        fit_section(
+            raw, poly, s, total_len, float(at), payload["spacing"], guide_um=payload["guide"],
+            psf_sigma_zyx=None, vessel_mask=vessel_mask, average_um=payload["average"],
+        )
+        for at in payload["targets"]
+    ]
 
 
 def measure_edge_diameters_from_raw_sections(
@@ -414,6 +501,8 @@ def measure_edge_diameters_from_raw_sections(
     guide_attribute: str | None = "edt_diameter_um",
     fallback_guide_um: float = 4.0,
     calibration_edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    calibration_workers: int = 1,
+    memmap_directory=None,
 ) -> dict[str, Any]:
     """Measure *edges* (default every edge) from their raw cross-sections.
 
@@ -423,8 +512,8 @@ def measure_edge_diameters_from_raw_sections(
     (``"measured"`` or ``"failed:<commonest reason>"``) on each edge it
     reads, and the PSF used in ``G.graph["raw_section_psf_sigma_zyx"]``.
     *psf_sigma_zyx* ``None`` estimates it (:func:`estimate_psf_sigma`, from
-    *calibration_edges* when given); when that cannot, nothing is measured
-    and the summary says why.
+    *calibration_edges* when given, over *calibration_workers* processes);
+    when that cannot, nothing is measured and the summary says why.
 
     A reading is kept when its lumen's contrast against the section's
     texture is at least *min_lumen_contrast*, its centre lies within FWHM's
@@ -443,7 +532,8 @@ def measure_edge_diameters_from_raw_sections(
         psf_sigma_zyx, calibration = estimate_psf_sigma(
             G, raw_volume, spacing, vessel_mask=vessel_mask, guide_attribute=guide_attribute,
             average_um=average_along_vessel_um, min_contrast=min_lumen_contrast,
-            edges=calibration_edges,
+            edges=calibration_edges, workers=calibration_workers,
+            memmap_directory=memmap_directory,
         )
         summary["psf_calibration"] = calibration
         if psf_sigma_zyx is None:
