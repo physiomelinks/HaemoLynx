@@ -4,6 +4,7 @@ from typing import List, Tuple, Dict, Any, Union
 
 import numpy as np
 import networkx as nx
+from scipy.spatial import cKDTree
 
 logger = logging.getLogger(__name__)
 
@@ -527,8 +528,29 @@ def astar_skeleton_path(skeleton_array, start, end, debug=False, spacing=None):
     
     return None
 
+def path_separation(path_a: List, path_b: List, step_um: float = 0.5) -> float:
+    """Furthest either polyline strays from the other (symmetric Hausdorff distance).
+
+    Both paths are sampled every *step_um* along their length, so the result
+    is within ``step_um / 2`` of the exact distance however sparse the inputs.
+    """
+    a = densify_polyline(np.asarray(path_a, dtype=float), max_step_um=step_um)
+    b = densify_polyline(np.asarray(path_b, dtype=float), max_step_um=step_um)
+    if a.ndim != 2 or b.ndim != 2 or len(a) == 0 or len(b) == 0:
+        return float("inf")
+    a_to_b = cKDTree(b).query(a)[0].max()
+    b_to_a = cKDTree(a).query(b)[0].max()
+    return float(max(a_to_b, b_to_a))
+
+
 def are_paths_similar(voxels1, voxels2, tolerance=3.0):
-    """Check if two paths connect similar endpoints."""
+    """True when two paths trace the same route, to within *tolerance* microns.
+
+    They must join the same end points *and* never stray further than
+    *tolerance* from each other. Shared end points alone are not enough: two
+    distinct vessels between the same two junctions (a loop) share them too,
+    and treating those as one path deletes a vessel.
+    """
     if len(voxels1) < 2 or len(voxels2) < 2:
         return False
     
@@ -539,7 +561,9 @@ def are_paths_similar(voxels1, voxels2, tolerance=3.0):
     dist_same = np.linalg.norm(start1 - start2) + np.linalg.norm(end1 - end2)
     dist_flipped = np.linalg.norm(start1 - end2) + np.linalg.norm(end1 - start2)
     
-    return min(dist_same, dist_flipped) <= tolerance * 2
+    if min(dist_same, dist_flipped) > tolerance * 2:
+        return False
+    return path_separation(voxels1, voxels2) <= tolerance
     
 def should_add_merged_edge(G, n1, n2, new_voxels, new_attrs, debug=False):
     """

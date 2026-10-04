@@ -29,6 +29,9 @@ from haemolynx.graph._helpers import (
     calculate_edge_length,
     add_edge_safe,
     get_all_edge_data,
+    are_paths_similar,
+    path_separation,
+    should_add_merged_edge,
 )
 
 
@@ -296,6 +299,141 @@ def test_degree2_diagnostics(simple_graph):
     assert "reason_counts" in report
     text = format_degree2_diagnostics_report(report)
     assert "Degree-2 diagnostics" in text
+
+
+def _line(start, end, n_points):
+    """`n_points` evenly spaced physical points from *start* to *end*."""
+    return [tuple(p) for p in np.linspace(start, end, n_points)]
+
+
+def _junction_pair(a=(0.0, 0.0, 0.0), b=(0.0, 0.0, 20.0), stubs=1):
+    """Junctions "a" and "b" with *stubs* terminal branches each, so neither is degree-2 itself."""
+    G = nx.MultiGraph()
+    for name, pos in (("a", a), ("b", b)):
+        G.add_node(name, pos=np.asarray(pos, dtype=float))
+    for i in range(stubs):
+        offset = np.array([10.0 * i, 0.0, 10.0])
+        for junction, stub_pos in (("a", np.subtract(a, offset)), ("b", np.add(b, offset))):
+            stub = f"stub_{junction}{i}"
+            G.add_node(stub, pos=stub_pos)
+            _add_path_edge(G, junction, stub, _line(G.nodes[junction]["pos"], stub_pos, 11))
+    return G
+
+
+def _add_path_edge(G, u, v, voxels):
+    length = calculate_path_length(voxels)
+    G.add_edge(u, v, voxels=voxels, length=length)
+    return length
+
+
+def _add_route_through(G, mid, mid_pos, n_points=11):
+    """A two-edge route a -> *mid* -> b, *mid* being the degree-2 node to remove."""
+    G.add_node(mid, pos=np.asarray(mid_pos, dtype=float))
+    return _add_path_edge(G, "a", mid, _line(G.nodes["a"]["pos"], mid_pos, n_points)) + _add_path_edge(
+        G, mid, "b", _line(mid_pos, G.nodes["b"]["pos"], n_points)
+    )
+
+
+def _straight_and_bowed_routes():
+    G = _junction_pair()
+    straight = _add_path_edge(G, "a", "b", _line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21))
+    bow = _add_route_through(G, "bow", (0.0, 10.0, 10.0))
+    return G, [straight, bow]
+
+
+def _two_bows_of_different_length():
+    G = _junction_pair()
+    near = _add_route_through(G, "near_bow", (0.0, 6.0, 10.0))
+    far = _add_route_through(G, "far_bow", (0.0, -12.0, 10.0))
+    return G, [near, far]
+
+
+def _short_vessel_and_folded_hairpin():
+    """A 3 um vessel a-b, and a spur out of "a" whose gap bridge folds back to "b"."""
+    G = _junction_pair(b=(0.0, 0.0, 3.0))
+    vessel = _add_path_edge(G, "a", "b", _line((0.0, 0.0, 0.0), (0.0, 0.0, 3.0), 4))
+    hairpin = _add_route_through(G, "spur_tip", (0.0, 15.0, 0.0), n_points=16)
+    return G, [vessel, hairpin]
+
+
+@pytest.mark.parametrize(
+    "build",
+    [_straight_and_bowed_routes, _two_bows_of_different_length, _short_vessel_and_folded_hairpin],
+)
+def test_degree2_removal_keeps_distinct_parallel_vessels(build):
+    """Two different routes between the same junctions are two vessels, not one.
+
+    The duplicate check used to compare only the paths' end points, which any
+    two parallel edges share, so merging the route through the degree-2 node
+    either replaced the other vessel (curved beats straight, or >5% shorter) or
+    was refused and left the degree-2 node behind.
+    """
+    G, vessel_lengths = build()
+    before_length = _total_edge_length(G)
+
+    G2 = smart_multigraph_degree2_removal(G, skeleton_data=None, debug=False)
+
+    assert _degree2_count(G2) == 0
+    assert _total_edge_length(G2) == pytest.approx(before_length)
+    # Both vessels are still there, as parallel a-b edges at their own lengths.
+    parallel_lengths = sorted(d["length"] for d in G2["a"]["b"].values())
+    assert parallel_lengths == pytest.approx(sorted(vessel_lengths))
+
+
+def test_degree2_removal_still_drops_a_route_that_retraces_an_existing_edge():
+    """A merged path lying along an existing a-b edge is that vessel twice: one copy stays."""
+    # Two stubs each, so "a" and "b" are still junctions once the copy is gone.
+    G = _junction_pair(stubs=2)
+    straight = _add_path_edge(G, "a", "b", _line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21))
+    # The same vessel traced again, as a voxel staircase never more than 1 um off it.
+    staircase = [(0.0, float(i % 2), float(i)) for i in range(21)]
+    G.add_node("mid", pos=np.asarray(staircase[10], dtype=float))
+    _add_path_edge(G, "a", "mid", staircase[:11])
+    _add_path_edge(G, "mid", "b", staircase[10:])
+    before_length = _total_edge_length(G)
+
+    G2 = smart_multigraph_degree2_removal(G, skeleton_data=None, max_degree=8, debug=False)
+
+    assert not G2.has_node("mid")
+    assert G2.number_of_edges("a", "b") == 1
+    # The straight copy gave way to the staircase one (curved is preferred).
+    assert _total_edge_length(G2) == pytest.approx(before_length - straight)
+
+
+def test_path_separation_is_the_furthest_either_path_strays():
+    straight = _line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21)
+    assert path_separation(straight, [(0.0, 5.0, p[2]) for p in straight]) == pytest.approx(5.0)
+    # A two-point chord is sampled along its length, not only at its ends.
+    bow = [(0.0, 0.0, 0.0), (0.0, 10.0, 10.0), (0.0, 0.0, 20.0)]
+    chord = [(0.0, 0.0, 0.0), (0.0, 0.0, 20.0)]
+    assert path_separation(chord, bow) == pytest.approx(10.0, abs=0.25)
+    assert path_separation(bow, chord) == path_separation(chord, bow)
+
+
+def test_paths_with_shared_end_points_are_similar_only_if_they_coincide():
+    straight = _line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21)
+    staircase = [(0.0, float(i % 2), float(i)) for i in range(21)]
+    bow = _line((0.0, 0.0, 0.0), (0.0, 10.0, 10.0), 11) + _line((0.0, 10.0, 10.0), (0.0, 0.0, 20.0), 11)[1:]
+    assert are_paths_similar(straight, staircase)
+    assert are_paths_similar(straight, staircase[::-1])
+    assert not are_paths_similar(straight, bow)
+    # Coinciding along the way is not enough when the ends differ.
+    assert not are_paths_similar(straight, straight[:12])
+
+
+def test_should_add_merged_edge_replaces_only_a_coinciding_edge():
+    G = _junction_pair()
+    straight = _line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21)
+    key = G.add_edge("a", "b", voxels=straight, length=20.0)
+    staircase = [(0.0, float(i % 2), float(i)) for i in range(21)]
+    bow = _line((0.0, 0.0, 0.0), (0.0, 10.0, 10.0), 11) + _line((0.0, 10.0, 10.0), (0.0, 0.0, 20.0), 11)[1:]
+
+    assert should_add_merged_edge(
+        G, "a", "b", staircase, {"length": calculate_path_length(staircase)}
+    ) == (True, key)
+    assert should_add_merged_edge(
+        G, "a", "b", bow, {"length": calculate_path_length(bow)}
+    ) == (True, None)
 
 
 def test_build_graph_requires_skan(tiny_skeleton):
