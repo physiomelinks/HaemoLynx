@@ -269,3 +269,15 @@ def test_embedded_csv_cannot_close_its_script_element():
 def test_unknown_view_is_refused():
     with pytest.raises(ValueError):
         connectivity_map_html("", view="sideways")
+
+
+def test_the_module_is_valid_python_3_9():
+    """A backslash inside an f-string's braces parses on 3.12 only; on 3.9 to
+    3.11 it stopped the whole package importing."""
+    import ast
+    from pathlib import Path
+
+    import haemolynx.visualization.connectivity_map as module
+
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    ast.parse(source, feature_version=(3, 9))
