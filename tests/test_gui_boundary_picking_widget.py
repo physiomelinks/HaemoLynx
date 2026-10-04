@@ -1964,3 +1964,26 @@ def test_show_draws_no_inlet_outlet_band_while_the_masks_choose(panel):
     bc.show()
     assert boxes_name("inlet") in viewer.layers
     assert "chosen by the large-vessel masks" not in widget._haemolynx_report()
+
+
+def test_box_lists_nodes_of_the_network_boundaries_runs_on(panel):
+    """After a run the network on screen is the final one -- cut at the large
+    vessels, pruned. A boundary node is chosen for the next Boundaries run, so
+    the box lists the '3. Graph' network, where a large vessel's end still is."""
+    import networkx as nx
+    from types import SimpleNamespace
+
+    widget, viewer, bc = _box_panel(panel)
+    built = nx.MultiGraph()
+    built.add_node(77, pos=np.asarray((20.0, 50.0, 60.0)))   # cut away later
+    built.add_node(78, pos=np.asarray((40.0, 150.0, 150.0)))
+    built.add_edge(77, 78)
+    checkpoints = widget._haemolynx_checkpoints
+    checkpoints.get = lambda stage: SimpleNamespace(graph=built) if stage == "build_network" else None
+
+    bc.insert_box()
+
+    assert _table_ids(bc) == ["77"]
+    bc.actions["inlet"].box_nodes.table.selectRow(0)
+    bc.use_node()
+    assert rows_of(widget)["inlet_node_ids"].value == [77]

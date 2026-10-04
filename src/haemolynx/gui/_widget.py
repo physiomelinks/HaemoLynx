@@ -6189,7 +6189,7 @@ def _box_tool_widgets(role: str) -> dict[str, Any]:
     }
 
 
-def _boundary_controls(viewer, rows, fields, schema, report):
+def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=None):
     """The Boundaries tab's "point at it instead of typing it" controls.
 
     Two layers, both editable, both holding exactly what the settings hold --
@@ -6200,6 +6200,11 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     "Show" is pressed.* The two directions are therefore never both live, which
     is why there is no cycle to break -- the `applying` guard below is for the
     fact that `events.data` fires twice per edit, not for a feedback loop.
+
+    *boundaries_input* (optional) returns the graph the Boundaries stage would
+    run on -- the '3. Graph' network, before any large-vessel cut -- which is
+    what the box tools list nodes from: a node chosen there has an ID the next
+    Boundaries run will find.
 
     Returns None without a viewer: the panel is buildable outside napari.
     """
@@ -6364,6 +6369,22 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         """The graph a run built, if there is one yet."""
         results = state.results
         return getattr(results, "graph", None) if results is not None else None
+
+    def box_graph():
+        """The graph boundary nodes are chosen from: what Boundaries runs on.
+
+        Not the network on screen, which after a run is the final one -- cut
+        at the large vessels, pruned -- and lacks nodes (and IDs) the
+        Boundaries stage will have. Falls back to it before 3. Graph is saved.
+        """
+        if boundaries_input is not None:
+            try:
+                found = boundaries_input()
+            except Exception:  # noqa: BLE001 - a missing checkpoint is not an error here
+                found = None
+            if found is not None:
+                return found
+        return graph()
 
     def layer(name):
         return viewer.layers[name] if name in viewer.layers else None
@@ -7294,7 +7315,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         from qtpy.QtWidgets import QTableWidgetItem
 
         values = current_values()
-        g = graph()
+        g = box_graph()
         was = state.applying
         state.applying = True
         try:
@@ -9809,7 +9830,11 @@ def settings_widget(napari_viewer=None):
     #: belong to rather than by the tab's title, so renaming a tab cannot
     #: silently drop them. Any future stage-specific page has a home here.
     pages: dict[str, Any] = {}
-    boundaries = _boundary_controls(viewer, rows, fields, schema, report)
+    boundaries = _boundary_controls(
+        viewer, rows, fields, schema, report,
+        # `checkpoints` is created below; read only when a box is listed.
+        boundaries_input=lambda: getattr(checkpoints.get("build_network"), "graph", None),
+    )
     if boundaries is not None:
         pages["assign_boundaries"] = boundaries.page
     perturbations = _perturbation_controls(viewer, rows, fields, schema, report)
