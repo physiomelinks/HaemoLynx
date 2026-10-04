@@ -12,6 +12,8 @@ from ._helpers import (
     add_edge_safe,
     has_edge_safe,
     remove_edge_safe,
+    are_paths_similar,
+    is_path_curved,
     merge_curved_edges,
     should_add_merged_edge,
     calculate_path_length,
@@ -244,6 +246,91 @@ def create_trivial_merged_edge(
     return merged_attributes
 
 
+def duplicate_parallel_edges(
+    G: nx.MultiGraph,
+    inside_lumen: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+) -> List[Tuple[Any, Any, Any]]:
+    """The ``(u, v, key)`` edges that repeat another edge between the same two
+    nodes: the same vessel twice (``are_paths_similar``: within 3 um of each
+    other or, given *inside_lumen*, through one lumen).
+
+    Of each such group the edge kept -- left out of the list -- is a curved
+    one over a straight one, then the shortest, as when degree-2 merging
+    meets a duplicate: a straight edge is usually a bridge across a gap, not
+    the vessel. An edge without a path is never a duplicate. Self-loops are
+    not considered.
+    """
+    duplicates: List[Tuple[Any, Any, Any]] = []
+    seen = set()
+    for u, v in G.edges():
+        if u == v or (u, v) in seen or G.number_of_edges(u, v) < 2:
+            continue
+        seen.update({(u, v), (v, u)})
+        preferred_first = sorted(
+            G[u][v].items(),
+            key=lambda item: (
+                not is_path_curved(item[1].get("voxels") or []),
+                item[1].get("length", float("inf")),
+            ),
+        )
+        kept: List[Any] = []
+        for key, data in preferred_first:
+            voxels = data.get("voxels") or []
+            if any(
+                are_paths_similar(voxels, G[u][v][other].get("voxels") or [], inside_lumen=inside_lumen)
+                for other in kept
+            ):
+                duplicates.append((u, v, key))
+            else:
+                kept.append(key)
+    return duplicates
+
+
+def remove_duplicate_parallel_edges(
+    G: nx.MultiGraph,
+    inside_lumen: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+) -> int:
+    """Remove every edge :func:`duplicate_parallel_edges` names; how many.
+
+    Never disconnects anything: each removed edge leaves the one it repeats.
+    """
+    duplicates = duplicate_parallel_edges(G, inside_lumen)
+    for u, v, key in duplicates:
+        G.remove_edge(u, v, key=key)
+    return len(duplicates)
+
+
+def duplicate_vessel_routes(
+    G: nx.MultiGraph,
+    inside_lumen: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+) -> List[Any]:
+    """The degree-2 nodes whose route -- their two edges joined -- repeats an
+    edge already joining their two neighbours (``are_paths_similar``, as for
+    :func:`duplicate_parallel_edges`): the same vessel twice, once as an edge
+    and once through the node.
+
+    Degree-2 merging leaves none; this is the check that it did.
+    """
+    routes: List[Any] = []
+    for node in G.nodes():
+        if G.degree[node] != 2 or G.nodes[node].get("pos") is None:
+            continue
+        edges = list(G.edges(node, data=True))
+        if len(edges) != 2:
+            continue
+        (_, n1, d1), (_, n2, d2) = edges
+        voxels1, voxels2 = d1.get("voxels") or [], d2.get("voxels") or []
+        if n1 == n2 or not G.has_edge(n1, n2) or len(voxels1) < 2 or len(voxels2) < 2:
+            continue
+        route = merge_curved_edges(voxels1, voxels2, np.asarray(G.nodes[node]["pos"], dtype=float))
+        if any(
+            are_paths_similar(route, data.get("voxels") or [], inside_lumen=inside_lumen)
+            for data in G[n1][n2].values()
+        ):
+            routes.append(node)
+    return routes
+
+
 def smart_multigraph_degree2_removal(
     G: nx.MultiGraph,
     skeleton_data: np.ndarray = None,
@@ -263,6 +350,16 @@ def smart_multigraph_degree2_removal(
     "duplicate" mean one lumen as well as "within 3 um": Lee thinning leaves
     strands 5-10 um apart through one wide vessel.
 
+    Each round of merges starts by removing every duplicate parallel edge
+    already there (:func:`remove_duplicate_parallel_edges`) -- the loops
+    skeletonisation leaves round one lumen, which no merge ever compares, and
+    whatever the steps between passes join twice -- and the last round merges
+    nothing, so adds none. A degree-2 node beside a junction of *max_degree*
+    or more, otherwise left alone, still goes when its route repeats an edge
+    joining its neighbours: a graph this returns has no vessel twice between
+    the same two nodes (:func:`duplicate_parallel_edges` and
+    :func:`duplicate_vessel_routes` are empty).
+
     *skeleton_data* is accepted and not read. Straight legs used to be
     re-traced through the skeleton by A*, whose route was not tied to the
     edges being merged: across a gap bridge, which has no skeleton, it went
@@ -273,8 +370,9 @@ def smart_multigraph_degree2_removal(
     if not isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         raise ValueError("This function is designed for MultiGraphs")
 
-    total_removed = 0
+    total_removed = duplicates_removed = 0
     for iteration in range(max_iterations):
+        duplicates_removed += remove_duplicate_parallel_edges(G, inside_lumen)
         removed_this_iter = 0
 
         for node in list(G.nodes()):
@@ -293,7 +391,11 @@ def smart_multigraph_degree2_removal(
             if n1 == n2:
                 continue
 
-            if G.degree[n1] >= max_degree or G.degree[n2] >= max_degree:
+            # Beside a junction of max_degree or more the node stays -- unless
+            # its route repeats an edge already joining n1 and n2, which is
+            # resolved below whatever the degrees: one vessel, kept once.
+            busy = G.degree[n1] >= max_degree or G.degree[n2] >= max_degree
+            if busy and not G.has_edge(n1, n2):
                 continue
 
             node_pos = G.nodes[node].get("pos", None)
@@ -316,6 +418,8 @@ def smart_multigraph_degree2_removal(
             should_add, replace_key = should_add_merged_edge(
                 G, n1, n2, merged_voxels, merged_attrs, debug, inside_lumen=inside_lumen
             )
+            if busy and should_add and replace_key is None:
+                continue  # a separate vessel beside the edge, at a busy junction
             # The node goes either way: its route becomes one edge or, when
             # refused as a duplicate of a better n1-n2 edge, is dropped.
             G.remove_node(node)
@@ -334,8 +438,10 @@ def smart_multigraph_degree2_removal(
             break
 
     logger.info(
-        "Smart removal: %d removed, graph now has %d nodes / %d edges",
+        "Smart removal: %d removed (and %d duplicate parallel edges), "
+        "graph now has %d nodes / %d edges",
         total_removed,
+        duplicates_removed,
         G.number_of_nodes(),
         G.number_of_edges(),
     )

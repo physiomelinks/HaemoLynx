@@ -62,6 +62,9 @@ from .degree2 import (
     safer_simple_remove_all_degree2_nodes,
     trivial_remove_all_degree2_nodes,
     create_trivial_merged_edge,
+    duplicate_parallel_edges,
+    duplicate_vessel_routes,
+    remove_duplicate_parallel_edges,
     smart_multigraph_degree2_removal,
 )
 from .prune import (
@@ -229,6 +232,9 @@ __all__ = [
     "safer_simple_remove_all_degree2_nodes",
     "trivial_remove_all_degree2_nodes",
     "create_trivial_merged_edge",
+    "duplicate_parallel_edges",
+    "duplicate_vessel_routes",
+    "remove_duplicate_parallel_edges",
     "smart_multigraph_degree2_removal",
     "prune_vascular_stubs",
     "FLOW_SOLVED",

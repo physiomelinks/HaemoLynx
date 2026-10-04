@@ -19,12 +19,20 @@ from pathlib import Path
 import pytest
 
 import haemolynx.graph as graph_package
-from haemolynx.graph import assert_no_forbidden_edge_attributes, detect_cartwheel_hubs
+from haemolynx.graph import (
+    assert_no_forbidden_edge_attributes,
+    detect_cartwheel_hubs,
+    duplicate_parallel_edges,
+    duplicate_vessel_routes,
+)
+from haemolynx.graph.assemble import mask_lumen_test
+from haemolynx.io.load import _to_binary_volume_for_skeletonization
 from haemolynx.pipeline import default_schema, resolve_settings, run_pipeline_stages
 from haemolynx.pipeline.stages import TOPOLOGY_STEP
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = REPO_ROOT / "tests" / "data" / "seven_vessel_noisy_3d.tif"
+NERVE_FIXTURE = REPO_ROOT / "tests" / "data" / "Nerve_capillaries_cropped.tif"
 
 
 @pytest.mark.slow
@@ -74,6 +82,48 @@ def test_no_stage_after_the_graph_is_built_changes_its_topology(tmp_path):
             "stage that edits topology needs that design revisited."
         )
         assert edges == built_edges, f"{stage} changed the graph's edges, likewise"
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+@pytest.mark.parametrize("collapse_method", ["distance_only", "direction_aware"])
+def test_no_vessel_is_built_twice_between_the_same_two_nodes(tmp_path, collapse_method):
+    """No two edges joining the same two nodes, and no route through a
+    degree-2 node beside an edge, run through one lumen: one vessel, drawn
+    twice. Regression test: on this capillary bed distance_only collapse
+    left two such pairs; on the E14.5 MCA stack direction-aware collapse and
+    degree-2 merging left hundreds, drawn in the viewer as parallel vessels
+    inside one segmented branch."""
+    schema = default_schema()
+    values = {setting.name: setting.default for setting in schema}
+    values.update(
+        {
+            "input_path": NERVE_FIXTURE,
+            "vtk_output_prefix": tmp_path / "run",
+            "plot_dir": tmp_path / "plots",
+            "statistics": False,
+            "show_plots_in_ide": False,
+            "interactive_plots": False,
+            "cluster_collapse_method": collapse_method,
+        }
+    )
+    settings = resolve_settings(values, schema=schema, config_path=None)
+    built = {}
+
+    def keep(stage: str, output) -> None:
+        if stage == "build_network":
+            built["network"] = output
+
+    run_pipeline_stages(settings, schema, on_stage_output=keep, stop_after="build_network")
+
+    network = built["network"]
+    G = network.graph
+    assert G.number_of_edges() > 100, "the fixture's capillary bed did not build; the test proves nothing"
+    inside_lumen = mask_lumen_test(
+        _to_binary_volume_for_skeletonization(network.volume.image), network.volume.voxel_size_zyx
+    )
+    assert duplicate_parallel_edges(G, inside_lumen) == []
+    assert duplicate_vessel_routes(G, inside_lumen) == []
 
 
 @pytest.mark.slow
