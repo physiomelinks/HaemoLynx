@@ -1925,3 +1925,42 @@ def test_box_nodes_go_when_the_role_leaves_the_box_method(panel):
     assert BC_BOX_NODES in viewer.layers
     rows_of(widget)["inlet_node_selection_method"].value = "coordinates"
     assert BC_BOX_NODES not in viewer.layers
+
+
+def test_show_draws_no_inlet_outlet_band_while_the_masks_choose(panel):
+    """The bands an unused edge_percent method describes are not what a run
+    picks while the large-vessel masks choose the inlets and outlets; drawing
+    them made the masks' choice look wrong. The run's own picks are shown."""
+    from haemolynx.gui._widget import _apply_layers
+    from haemolynx.gui.results import BOUNDARY_NODES, LayerSpec, StageLayers
+
+    widget, viewer, bc = panel
+    rows = rows_of(widget)
+    rows["inlet_node_selection_method"].value = "edge_percent"
+    rows["outlet_node_selection_method"].value = "edge_percent"
+    rows["automated_vessel_assignment"].value = True
+    rows["inlets_outlets_from_vessel_masks"].value = True
+    _apply_layers(viewer, StageLayers(
+        stage="assign_boundaries", title="Boundaries", note="",
+        layers=(LayerSpec(
+            kind="points", name=BOUNDARY_NODES,
+            data=np.asarray([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]),
+            features={"role": np.asarray(["inlet", "inlet", "outlet"], dtype=object)},
+            options={"visible": False},
+        ),),
+    ))
+
+    bc.show()
+
+    assert boxes_name("inlet") not in viewer.layers
+    assert boxes_name("outlet") not in viewer.layers
+    report = widget._haemolynx_report()
+    assert "inlet band" not in report
+    assert "2 inlet(s) and 1 outlet(s)" in report
+    assert viewer.layers[BOUNDARY_NODES].visible
+
+    # Choosing them by hand again draws the band that will be used.
+    rows["inlets_outlets_from_vessel_masks"].value = False
+    bc.show()
+    assert boxes_name("inlet") in viewer.layers
+    assert "chosen by the large-vessel masks" not in widget._haemolynx_report()

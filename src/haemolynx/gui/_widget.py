@@ -6267,6 +6267,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         use_node_for_role,
         view_centre_zyx,
     )
+    from haemolynx.graph.boundaries import inlets_outlets_from_vessel_masks
+    from haemolynx.gui.results import BOUNDARY_NODES
     from haemolynx.gui.chrome_tooltips import (
         ACTION_TOOLTIPS,
         SHOW_BOUNDARIES_TOOLTIP,
@@ -6447,7 +6449,32 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             return {}, True
         axis = values.get("boundary_axis")
         span = terminal_axis_span(graph(), axis) if graph() is not None else None
-        return band_boxes(values, *box, axis_span=span), span is not None
+        bands = band_boxes(values, *box, axis_span=span)
+        # A role the masks (or another automation) choose for never reads its
+        # band: drawing one would show a selection the run does not make.
+        bands = {owner: band for owner, band in bands.items()
+                 if role_manual_controls_enabled(owner, values)}
+        return bands, span is not None
+
+    def masks_choose_note(values) -> str:
+        """While the masks choose the inlets/outlets, say which ones they chose.
+
+        Shows the run's own boundary-nodes layer (hidden by default) -- the
+        nodes the masks picked -- since there is no band or box to draw for a
+        choice the run makes from the masks.
+        """
+        if not inlets_outlets_from_vessel_masks(values):
+            return ""
+        chosen = layer(BOUNDARY_NODES)
+        if chosen is None or not len(chosen.data):
+            return ("  Inlets and outlets: chosen by the large-vessel masks when a run "
+                    "reaches '4. Boundaries' -- none chosen yet.")
+        chosen.visible = True
+        roles = [str(r) for r in _layer_features(chosen).get("role", ())]
+        return (f"  Inlets and outlets: chosen by the large-vessel masks -- "
+                f"{roles.count('inlet')} inlet(s) and {roles.count('outlet')} "
+                f"outlet(s), shown in '{BOUNDARY_NODES}'. Untick 'Inlets outlets "
+                "from vessel masks' to choose them yourself.")
 
     def redraw() -> None:
         """Settings -> layers. One of the two authoritative directions.
@@ -6480,6 +6507,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                     logger.exception("could not show layer %s", spec.name)
             report.value = (f"Boundary conditions: {group.note}"
                             f"{band_note(bands, measured)}"
+                            f"{masks_choose_note(values)}"
                             f"{unused_warning(values)}{offscreen_warning(values)}")
             for name in our_layer_names():
                 listen(layer(name))
