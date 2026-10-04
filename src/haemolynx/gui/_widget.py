@@ -6260,6 +6260,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         wanted_rows,
         BC_BOX_NODES,
         BOX_NODE_COLUMNS,
+        rectangle_from_box,
         DEFAULT_BOX_SIZE_UM,
         MOVE_DIRECTIONS,
         box_around,
@@ -6344,7 +6345,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
     state = SimpleNamespace(applying=False, results=None, connected=set(),
                         visible=frozenset(), hidden=frozenset(), tabs=None,
                         actions={}, draw3d=None, node_pick=None,
-                        active_box={}, box_nodes={})
+                        active_box={}, box_nodes={}, pending_boxes={})
 
     #: Each role's page, and where each shared row currently sits. Filled in
     #: by `page`; empty until the panel has been laid out.
@@ -6507,6 +6508,8 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         """
         if state.applying:
             return
+        # A box mid-move is written first, so the redraw reads where it is.
+        flush_boxes()
         state.applying = True
         try:
             values = current_values()
@@ -7178,8 +7181,70 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
     # --- the box tools: insert a box, size and move it, choose a node in it.
 
     def boxes_of(owner: str, values=None) -> list:
+        """*owner*'s boxes: the ones being moved if any, else the setting's."""
+        if owner in state.pending_boxes:
+            return [list(map(list, box)) for box in state.pending_boxes[owner]]
         values = current_values() if values is None else values
         return BoundaryPicks.from_settings(values).to_settings()[volume_setting(owner)]
+
+    from qtpy.QtCore import QTimer
+
+    #: Moving or resizing a box redraws only its own two layers at once; the
+    #: setting, the node list and the box's nodes follow once the clicks stop.
+    #: Writing the row on every click redrew every boundary layer twice and
+    #: rebuilt six roles' node lists, which in a full viewer -- vessel tubes
+    #: and all, redrawn per layer change -- made each press lag.
+    BOX_SETTLE_MS = 250
+    settle_timer = QTimer()
+    settle_timer.setSingleShot(True)
+    settle_timer.setInterval(BOX_SETTLE_MS)
+
+    def preview_boxes(owner: str, boxes) -> None:
+        """Show *owner*'s boxes where they now are: its rectangle and 3D box only."""
+        state.pending_boxes[owner] = boxes
+        was = state.applying
+        state.applying = True
+        try:
+            regions = layer(regions_name(owner))
+            if regions is not None and _is_ours(regions) and len(regions.data) == len(boxes):
+                regions.data = [rectangle_from_box(lo, hi)[0] for lo, hi in boxes]
+            solids = layer(boxes_name(owner))
+            if solids is not None and _is_ours(solids) and boxes:
+                vertices, faces, which = box_mesh(boxes)
+                shades = np.asarray(
+                    box_colours(dict(role_colours())[owner], len(boxes)), dtype=float
+                )[which]
+                _set_tube_mesh(solids, vertices, faces, shades)
+        finally:
+            state.applying = was
+        settle_timer.start()
+
+    def flush_boxes() -> None:
+        """Write the boxes moved since the last write, then list their nodes."""
+        settle_timer.stop()
+        pending, state.pending_boxes = state.pending_boxes, {}
+        if not pending:
+            return
+        was = state.applying
+        state.applying = True
+        try:
+            write_rows({volume_setting(owner): boxes for owner, boxes in pending.items()})
+        finally:
+            state.applying = was
+        refresh_box_tools(only=tuple(pending))
+        owner = str(role.value)
+        if owner in pending:
+            boxes = pending[owner]
+            index = active_index(owner, boxes)
+            found = state.box_nodes.get(owner, [])
+            if index is not None:
+                report.value = (
+                    f"{owner} box {index + 1}: {boxes[index][0]} to {boxes[index][1]} um "
+                    f"(z, y, x). {len(found)} node(s) in it, "
+                    f"{sum(n.open_end for n in found)} open end(s)."
+                )
+
+    settle_timer.timeout.connect(flush_boxes)
 
     def active_index(owner: str, boxes) -> int | None:
         """Which of *owner*'s boxes the tools act on: the chosen one, else the last."""
@@ -7208,6 +7273,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
 
     def on_insert_box() -> None:
         owner = str(role.value)
+        flush_boxes()
         disarm_3d()
         disarm_nodes()
         try:
@@ -7227,6 +7293,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
 
     def on_box_choice() -> None:
         owner = str(role.value)
+        flush_boxes()
         choice = str(actions[owner].box_choice.value or "")
         if choice.startswith("Box "):
             state.active_box[owner] = int(choice.split()[1]) - 1
@@ -7243,7 +7310,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         except ValueError as error:
             report.value = f"Could not resize the box: {error}"
             return
-        write_boxes(owner, boxes, index)
+        preview_boxes(owner, boxes)
 
     def on_move_box(direction: str) -> None:
         owner = str(role.value)
@@ -7255,16 +7322,11 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         displayed = [int(a) - max(0, viewer.dims.ndim - 3) for a in viewer.dims.displayed]
         boxes[index] = move_box(boxes[index], direction, float(actions[owner].box_step.value),
                                 displayed)
-        write_boxes(owner, boxes, index)
-        found = state.box_nodes.get(owner, [])
-        report.value = (
-            f"Moved {owner} box {index + 1} {direction}: {boxes[index][0]} to "
-            f"{boxes[index][1]} um. {len(found)} node(s) in it, "
-            f"{sum(n.open_end for n in found)} open end(s)."
-        )
+        preview_boxes(owner, boxes)
 
     def on_remove_box() -> None:
         owner = str(role.value)
+        flush_boxes()
         boxes = boxes_of(owner)
         index = active_index(owner, boxes)
         if index is None:
@@ -7293,6 +7355,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
 
     def on_use_node() -> None:
         owner = str(role.value)
+        flush_boxes()
         chosen = selected_box_node(owner)
         if chosen is None:
             report.value = "Click a node in the list of nodes in the box first."
@@ -7310,8 +7373,11 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             f"{list(listed)} (method node_ids); the box stays as a finder."
         )
 
-    def refresh_box_tools() -> None:
-        """Each role's box list, size, node table, and the box's nodes drawn."""
+    def refresh_box_tools(only: Sequence[str] | None = None) -> None:
+        """Each role's box list, size, node table, and the box's nodes drawn.
+
+        *only* limits it to those roles -- after a move, the one role moved.
+        """
         from qtpy.QtWidgets import QTableWidgetItem
 
         values = current_values()
@@ -7320,6 +7386,8 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         state.applying = True
         try:
             for owner, action in actions.items():
+                if only is not None and owner not in only:
+                    continue
                 boxes = boxes_of(owner, values)
                 index = active_index(owner, boxes)
                 choices = [f"Box {i + 1}" for i in range(len(boxes))] or ["(no box yet)"]
@@ -7728,7 +7796,10 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         assign=on_assign, clear=on_clear, redraw=redraw, sync=sync,
         draw_in_3d=draw_in_3d,
         pick_nodes=on_pick_nodes, clear_nodes=on_clear_nodes,
-        insert_box=on_insert_box, move_box=on_move_box, remove_box=on_remove_box,
+        insert_box=on_insert_box, remove_box=on_remove_box, flush_boxes=flush_boxes,
+        # Moves wait for the clicks to stop before they are written; called
+        # directly (a script, a test) a move is written at once.
+        move_box=lambda direction: (on_move_box(direction), flush_boxes()),
         use_node=on_use_node, refresh_box_tools=refresh_box_tools,
         pick_node_at=pick_node_at, pick_node_click=pick_node_click,
         layer_names=(BC_COORDINATES, BC_NODE_IDS, *BC_REGION_NAMES, *BC_BOX_NAMES),

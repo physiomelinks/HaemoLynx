@@ -1849,17 +1849,20 @@ def test_box_size_and_arrows_edit_the_box(panel):
     action = bc.actions["inlet"]
 
     action.box_size[2].value = 30.0          # x
+    bc.flush_boxes()                          # what the settle timer does
     assert rows_of(widget)["inlet_node_volumes"].value == [
         [[15.0, 45.0, 45.0], [25.0, 55.0, 75.0]]
     ]
     action.box_step.value = 100.0
     action.box_move["right"].changed()
+    bc.flush_boxes()
     assert rows_of(widget)["inlet_node_volumes"].value == [
         [[15.0, 45.0, 145.0], [25.0, 55.0, 175.0]]
     ]
     assert _table_ids(bc) == [], "moved off the vessel end"
     action.box_move["left"].changed()
     action.box_move["forward"].changed()      # through the slices: z
+    bc.flush_boxes()
     assert rows_of(widget)["inlet_node_volumes"].value == [
         [[115.0, 45.0, 45.0], [125.0, 55.0, 75.0]]
     ]
@@ -1987,3 +1990,27 @@ def test_box_lists_nodes_of_the_network_boundaries_runs_on(panel):
     bc.actions["inlet"].box_nodes.table.selectRow(0)
     bc.use_node()
     assert rows_of(widget)["inlet_node_ids"].value == [77]
+
+
+def test_clicking_the_arrows_moves_the_box_at_once_and_writes_it_once_settled(panel):
+    """Each press only moves the role's own rectangle and 3D box; the setting,
+    the node list and the box's nodes follow once the presses stop -- writing
+    the row per press redrew every boundary layer twice, which lagged."""
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.show()
+    before = rows_of(widget)["inlet_node_volumes"].value
+    action = bc.actions["inlet"]
+    action.box_step.value = 100.0
+    for _ in range(3):
+        action.box_move["right"].changed()
+
+    rectangle = np.asarray(viewer.layers[regions_name("inlet")].data[0])
+    assert rectangle[:, 2].min() == pytest.approx(355.0), "drawn where it now is"
+    assert rows_of(widget)["inlet_node_volumes"].value == before, "not written yet"
+
+    bc.flush_boxes()
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[15.0, 45.0, 355.0], [25.0, 55.0, 365.0]]
+    ]
+    assert _table_ids(bc) == []
