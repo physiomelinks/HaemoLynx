@@ -257,10 +257,15 @@ def test_vessel_mask_rows_hide_when_requires_unmet_rather_than_only_greying():
 
     # Non-vessel sections still show when unmet (greyed by the panel, not hidden)
     # unless they are themselves a hide-when-unmet section (Input).
+    large_inlet = fields["large_vessel_inlet_node_selection_method"]
+    assert not large_inlet.hide_when_unmet
+    assert large_inlet.is_visible({"assign_large_vessel_branch_orders": False})
+    assert not large_inlet.is_enabled({"assign_large_vessel_branch_orders": False})
+    # The plain inlet method no longer hangs on automated_vessel_assignment:
+    # whether the masks choose the inlets is inlets_outlets_from_vessel_masks,
+    # which greys the Inlet tab as a whole (boundary_picking).
     inlet = fields["inlet_node_selection_method"]
-    assert not inlet.hide_when_unmet
-    assert inlet.is_visible({"automated_vessel_assignment": True})
-    assert not inlet.is_enabled({"automated_vessel_assignment": True})
+    assert inlet.is_enabled({"automated_vessel_assignment": True})
 
 
 def test_input_ilastik_rows_hide_when_use_ilastik_segmentation_is_off():
@@ -917,6 +922,7 @@ def test_visible_vessel_mask_settings_nests_under_automated_and_parents():
     shown = visible_vessel_mask_settings(SCHEMA, auto_only)
     assert shown == {
         "automated_vessel_assignment",
+        "inlets_outlets_from_vessel_masks",
         "use_large_vessel_masks",
         "use_small_vessel_masks_for_boundary_assignment",
     }

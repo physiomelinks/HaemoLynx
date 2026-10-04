@@ -90,7 +90,7 @@ input_and_segmentation:
 # Vessel masks
 # ------------------------------------------------------------------------
 vessel_masks:
-  # Use the large arteriole and venule masks: for the large-vessel treatment and, while inlets_outlets_from_vessel_masks is on, to choose the inlet and outlet nodes
+  # Use the large arteriole and venule masks for the large-vessel treatment. While inlets_outlets_from_vessel_masks is also on, they also choose the inlet and outlet nodes, which overrides the manual inlet/outlet selection methods
   automated_vessel_assignment: false
   # Choose the inlet and outlet nodes where the large arteriole and venule masks meet the network's open ends. Off: set them on the Inlet and Outlet tabs, while the masks still drive the large-vessel treatment  [needs automated_vessel_assignment]
   inlets_outlets_from_vessel_masks: true

@@ -588,9 +588,10 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help=(
-                "Use the large arteriole and venule masks: for the large-vessel "
-                "treatment and, while inlets_outlets_from_vessel_masks is on, to "
-                "choose the inlet and outlet nodes"
+                "Use the large arteriole and venule masks for the large-vessel "
+                "treatment. While inlets_outlets_from_vessel_masks is also on, "
+                "they also choose the inlet and outlet nodes, which overrides the "
+                "manual inlet/outlet selection methods"
             ),
             section=_VESSEL_MASKS,
         ),
