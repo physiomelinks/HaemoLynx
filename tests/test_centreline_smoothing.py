@@ -394,24 +394,29 @@ def test_a_chaikin_path_that_would_leave_the_vessel_is_blended_back_without_cras
     original -- corner-cutting subdivision (`_chaikin_once`) roughly doubles
     the point count each iteration, unlike Taubin, which perturbs the same
     points it was given. When the direct chaikin candidate is rejected (as
-    here, the same hairpin-corner case the Taubin version of this test
-    uses) and the relaxation loop tries to blend it back towards the
-    original, elementwise blending used to crash with a shape mismatch
-    instead of falling back cleanly.
+    here, the hairpin-corner case the Taubin version of this test uses) and
+    the relaxation loop tries to blend it back towards the original,
+    elementwise blending used to crash with a shape mismatch instead of
+    falling back cleanly.
+
+    Four times the size and three passes, so that the corner is cut by
+    nearly 2 um: one pass only places points along the hairpin's own legs,
+    which -- off the skeleton between its few voxels -- are what a path is
+    judged against there, so that candidate is accepted.
     """
-    corner = np.array([[0, 0, 0], [5, 0, 0], [10, 0, 0], [10, 5, 0], [10, 10, 0]], dtype=float)
-    skeleton = np.zeros((16, 16, 4), dtype=bool)
+    corner = 4.0 * np.array([[0, 0, 0], [5, 0, 0], [10, 0, 0], [10, 5, 0], [10, 10, 0]], dtype=float)
+    skeleton = np.zeros((44, 44, 4), dtype=bool)
     for point in corner:
         skeleton[int(point[0]), int(point[1]), int(point[2])] = True
 
     graph = nx.MultiGraph()
     graph.add_node(0, pos=corner[0])
     graph.add_node(1, pos=corner[-1])
-    graph.add_edge(0, 1, key=0, voxels=corner.tolist(), length=20.0)
+    graph.add_edge(0, 1, key=0, voxels=corner.tolist(), length=80.0)
 
     counts = smooth_graph_centrelines(
         graph, skeleton, voxel_size_zyx=(1.0, 1.0, 1.0),
-        method="chaikin", iterations=1, max_deviation=0.5,
+        method="chaikin", iterations=3, max_deviation=0.5,
     )
 
     assert counts["smoothed"] == 0
@@ -815,3 +820,130 @@ def test_a_vessel_running_along_z_is_smoothed_over_the_same_distance_as_one_in_p
     along_x = _smoothed_wave_amplitude(2)
 
     assert along_z / along_x > 0.85
+
+
+# --- a path the graph build bridged across a gap in the skeleton ------------
+
+
+def _bridged_staircase(spacing):
+    """A straight vessel running 1 in 2 across the y-x plane, traced as a voxel
+    staircase with a gap in the middle that graph building has bridged: a
+    straight 10-voxel step with no skeleton along it. The path in microns, the
+    skeleton, and the bridge's two ends."""
+    first = [(0, x // 2, x) for x in range(0, 15)]
+    second = [(0, x // 2, x) for x in range(24, 39)]
+    index = np.array(first + second)
+    skeleton = np.zeros((1, 21, 40), dtype=bool)
+    skeleton[tuple(index.T)] = True
+    path = index * np.asarray(spacing, dtype=float)
+    return path, skeleton, (path[len(first) - 1], path[len(first)])
+
+
+def _distance_to_segment(points, start, end):
+    along = np.clip((points - start) @ (end - start) / np.dot(end - start, end - start), 0.0, 1.0)
+    return np.linalg.norm(points - (start + along[:, None] * (end - start)), axis=1)
+
+
+@pytest.mark.parametrize("spacing", [(1.0, 0.98, 0.98), (1.0, 1.0, 1.0), (2.0, 0.5, 0.5)])
+def test_a_staircase_with_a_bridge_across_a_gap_is_smoothed_and_shorter(spacing):
+    """Regression: a straight step the graph build added across a gap in the
+    skeleton has no voxel along it, so its points -- resampled every voxel on
+    anisotropic voxels, slid into it by the filter on isotropic ones -- lay up
+    to half the gap from the skeleton. Nothing passed, not even the original:
+    an edge with a bridge kept its staircase (1137 of 3305 edges, 31 of 61 mm,
+    on the E14.5 MCA graph), or on isotropic voxels was only relaxed."""
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph.smoothing import edge_tolerance_um
+
+    path, skeleton, (start, end) = _bridged_staircase(spacing)
+    graph = nx.MultiGraph()
+    graph.add_node(0, pos=path[0])
+    graph.add_node(1, pos=path[-1])
+    graph.add_edge(0, 1, key=0, voxels=path.tolist())
+    raw_length = float(np.linalg.norm(np.diff(path, axis=0), axis=1).sum())
+
+    smooth_graph_centrelines(graph, skeleton, voxel_size_zyx=spacing)
+
+    edge = graph.edges[0, 1, 0]
+    assert edge["centreline_smoothing"] == "smoothed"
+    # The staircase is 6% longer than the straight vessel it traces.
+    assert edge["length"] < 0.96 * raw_length
+    smoothed = np.asarray(edge["voxels"])
+    assert np.allclose(smoothed[0], path[0]) and np.allclose(smoothed[-1], path[-1])
+    # Still on the vessel: near the skeleton, or near the bridge where there is none.
+    tolerance = edge_tolerance_um(path, max_deviation=1.0, voxel_size_zyx=spacing)
+    off_skeleton = cKDTree(np.argwhere(skeleton) * np.asarray(spacing)).query(smoothed)[0] > tolerance
+    assert np.all(_distance_to_segment(smoothed[off_skeleton], start, end) <= tolerance)
+
+
+def test_a_candidate_bowed_off_the_bridge_is_pulled_back():
+    """Along a bridge the path itself is the reference, with the same
+    tolerance: a candidate bowed 2 um off it -- shorter than the original, so
+    only the distance can refuse it -- is blended back to within 1 um."""
+    from scipy.spatial import cKDTree
+
+    from haemolynx.geometry import resample_at_step
+    from haemolynx.graph.smoothing import _accept, _polyline_length
+
+    spacing = (1.0, 0.98, 0.98)
+    path, skeleton, (start, end) = _bridged_staircase(spacing)
+    original = resample_at_step(path, min(spacing))
+    candidate = graph_tools.taubin_smooth_polyline(original)
+    across = np.array([0.0, 2.0, -1.0]) / np.sqrt(5.0)
+    from_middle = np.linalg.norm(candidate - 0.5 * (start + end), axis=1)
+    candidate = candidate + 2.0 * np.clip(1.0 - from_middle / 5.0, 0.0, None)[:, None] * across
+    assert _polyline_length(candidate) < _polyline_length(original)
+    tree = cKDTree(np.argwhere(skeleton) * np.asarray(spacing))
+
+    accepted, outcome = _accept(original, candidate, tree, 1.0)
+
+    assert outcome == "relaxed"
+    off_skeleton = tree.query(accepted)[0] > 1.0
+    assert off_skeleton.any()
+    assert np.all(_distance_to_segment(accepted[off_skeleton], start, end) <= 1.0)
+
+
+def test_a_bridge_widens_nothing_where_the_path_is_on_the_skeleton():
+    """Where the path is on the skeleton it is judged against the skeleton
+    alone: a candidate cutting a real corner 2 um short is pulled back, though
+    the same path bridges a gap further on."""
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph.smoothing import _accept, edge_tolerance_um
+
+    leg_a = [(0, 0, x) for x in range(0, 11)]
+    leg_b = [(0, y, 10) for y in range(1, 11)]
+    beyond_the_gap = [(0, y, 10) for y in range(20, 26)]
+    path = np.array(leg_a + leg_b + beyond_the_gap, dtype=float)
+    skeleton = np.zeros((1, 26, 11), dtype=bool)
+    skeleton[tuple(path.astype(int).T)] = True
+    tree = cKDTree(np.argwhere(skeleton).astype(float))
+    candidate = path.copy()
+    candidate[6:15] = np.linspace(path[6], path[14], 9)   # a chord across the corner at (0, 0, 10)
+    tolerance = edge_tolerance_um(path, max_deviation=0.5, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    accepted, outcome = _accept(path, candidate, tree, tolerance)
+
+    assert outcome == "relaxed"
+    near_corner = np.linalg.norm(accepted - np.array([0.0, 0.0, 10.0]), axis=1) < 5.0
+    assert tree.query(accepted[near_corner])[0].max() <= tolerance
+
+
+@pytest.mark.parametrize("spacing", [(2.0, 0.5, 0.5), (1.0, 1.0, 1.0), (1.0, 0.98, 0.98)])
+def test_a_staircase_on_its_own_skeleton_has_no_off_skeleton_stretch(spacing):
+    """The tolerance is often exactly half the voxel diagonal, how far a
+    diagonal step's midpoint is from the two voxels it joins: those midpoints
+    sit on the tolerance, and must not round their way past it into the
+    stretches a smoothed path may be judged against instead of the skeleton."""
+    from scipy.spatial import cKDTree
+
+    from haemolynx.geometry import resample_at_step
+    from haemolynx.graph.smoothing import _off_skeleton_stretches, edge_tolerance_um
+
+    path = np.array([[i, i, i] for i in range(12)], dtype=float) * np.asarray(spacing)
+    tolerance = edge_tolerance_um(path, max_deviation=0.5, voxel_size_zyx=spacing)
+    assert tolerance == pytest.approx(0.5 * np.linalg.norm(spacing))
+
+    for original in (path, resample_at_step(path, min(spacing))):
+        assert len(_off_skeleton_stretches(original, cKDTree(path), tolerance)) == 0
