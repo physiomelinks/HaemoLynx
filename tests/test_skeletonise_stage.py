@@ -867,3 +867,34 @@ def test_graph_building_judges_stubs_by_the_mask_it_was_skeletonised_from(tmp_pa
     radius_at = captured["stub_radius_at"]
     assert radius_at(np.array([4.0, 10.0, 20.0])) > 0  # inside the vessel
     assert radius_at(np.array([0.0, 0.0, 0.0])) == 0  # background
+
+
+def test_graph_building_tells_duplicate_edges_apart_by_the_mask(tmp_path, monkeypatch):
+    """build_network hands graph building the binary mask the skeleton came
+    from, which is what decides whether two edges joining the same two nodes
+    are one vessel -- even with stub radii and centreline smoothing, the
+    mask's other readers, both off."""
+    import haemolynx.graph as graph_module
+    from haemolynx.pipeline.stages import build_network
+
+    captured = {}
+    real = graph_module.build_graph_from_skeleton
+
+    def spy(skeleton, **kwargs):
+        captured.update(kwargs)
+        return real(skeleton, **kwargs)
+
+    monkeypatch.setattr(graph_module, "build_graph_from_skeleton", spy)
+    mask = np.zeros((9, 20, 40), dtype=bool)
+    mask[3:6, 8:12, 2:38] = True
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        min_stub_length_radius_multiple=0.0,
+        smooth_centrelines=False,
+    )
+    volume = skeletonise(settings, segment(settings))
+    build_network(settings, volume, SCHEMA)
+
+    assert captured["stub_radius_at"] is None
+    np.testing.assert_array_equal(captured["segmentation_mask"], mask)

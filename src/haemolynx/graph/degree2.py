@@ -1,6 +1,6 @@
 """Degree-2 node removal and edge merging."""
 import logging
-from typing import List, Tuple, Union, Any
+from typing import Any, Callable, List, Optional, Tuple, Union
 
 import numpy as np
 import networkx as nx
@@ -250,9 +250,18 @@ def smart_multigraph_degree2_removal(
     max_degree: int = 4,
     debug: bool = False,
     max_iterations: int = 500,
+    inside_lumen: Optional[Callable[[np.ndarray], np.ndarray]] = None,
 ) -> nx.MultiGraph:
     """Degree-2 removal for MultiGraphs: each removed node's two edges become
     one, whose path is the two edges' own paths joined at the node.
+
+    Where the node's neighbours are already joined, the merged path is
+    compared with that edge (``should_add_merged_edge``): a different vessel
+    is added beside it, a duplicate replaces it or, when the existing edge is
+    the better of the two, is dropped with the node. *inside_lumen*, the
+    segmentation the skeleton came from (``assemble.mask_lumen_test``), lets
+    "duplicate" mean one lumen as well as "within 3 um": Lee thinning leaves
+    strands 5-10 um apart through one wide vessel.
 
     *skeleton_data* is accepted and not read. Straight legs used to be
     re-traced through the skeleton by A*, whose route was not tied to the
@@ -304,16 +313,16 @@ def smart_multigraph_degree2_removal(
                 "original_edges": 2,
             }
 
-            # Decide whether a replacement edge is acceptable BEFORE deleting
-            # the degree-2 node; otherwise a "reject" decision would erase the
-            # original vessel segment.
             should_add, replace_key = should_add_merged_edge(
-                G, n1, n2, merged_voxels, merged_attrs, debug
+                G, n1, n2, merged_voxels, merged_attrs, debug, inside_lumen=inside_lumen
             )
-            if not should_add:
-                continue
-
+            # The node goes either way: its route becomes one edge or, when
+            # refused as a duplicate of a better n1-n2 edge, is dropped.
             G.remove_node(node)
+            if not should_add:
+                removed_this_iter += 1
+                total_removed += 1
+                continue
             if replace_key is not None:
                 G.remove_edge(n1, n2, key=replace_key)
             G.add_edge(n1, n2, **merged_attrs)

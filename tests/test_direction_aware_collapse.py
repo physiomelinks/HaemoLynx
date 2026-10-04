@@ -10,6 +10,7 @@ import math
 
 import numpy as np
 import networkx as nx
+from scipy.spatial import cKDTree
 
 from haemolynx.graph._helpers import calculate_path_length, path_separation
 import pytest
@@ -202,6 +203,48 @@ def test_cluster_members_reaching_one_neighbour_by_separate_vessels_keep_both(me
     centroid = [0.75, 0.0, 0.0]
     expected = sorted(calculate_path_length([centroid] + path[1:]) for path in (straight, bowed))
     assert sorted(d["length"] for _, _, d in out.edges(data=True)) == pytest.approx(expected)
+
+
+def _lumen_round(paths, radius_um, shape=(32, 14, 1)):
+    """`inside_lumen` for a mask of 1 um voxels: tubes of *radius_um* round each path."""
+    from haemolynx.graph._helpers import densify_polyline
+    from haemolynx.graph.assemble import mask_lumen_test
+
+    grid = np.stack(np.indices(shape), axis=-1).reshape(-1, 3).astype(float)
+    mask = np.zeros(len(grid), dtype=bool)
+    for path in paths:
+        points = densify_polyline(np.asarray(path, dtype=float), max_step_um=0.5)
+        mask |= cKDTree(points).query(grid)[0] <= radius_um
+    return mask_lumen_test(mask.reshape(shape), (1.0, 1.0, 1.0))
+
+
+@pytest.mark.parametrize("lumen", ["one", "two"])
+def test_cluster_members_reaching_one_neighbour_through_one_lumen_keep_one_edge(lumen):
+    """Regression test: the two vessels of the test above, 10 um apart, are
+    one vessel when the segmentation has lumen all the way between them --
+    Lee thinning leaves strands that far apart through one wide vessel, and
+    keeping both left the E14.5 MCA graph with parallel edges inside one
+    segmented vessel. Where the segmentation has tissue between them they
+    stay two."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([1.5, 0.0, 0.0]))
+    G.add_node(2, pos=np.array([30.0, 0.0, 0.0]))
+    straight = _bowed_path([0.0, 0.0, 0.0], [30.0, 0.0, 0.0], bulge=0.0)
+    bowed = _bowed_path([1.5, 0.0, 0.0], [30.0, 0.0, 0.0], bulge=10.0)
+    G.add_edge(0, 2, voxels=straight, length=calculate_path_length(straight))
+    G.add_edge(1, 2, voxels=bowed, length=calculate_path_length(bowed))
+    # One lumen: tubes wide enough to meet, so the space between the two is
+    # lumen all the way; two vessels: 2 um tubes, with tissue between.
+    inside_lumen = _lumen_round([straight, bowed], 6.0 if lumen == "one" else 2.0)
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0, inside_lumen=inside_lumen)
+
+    assert out.number_of_nodes() == 2
+    centroid = [0.75, 0.0, 0.0]
+    lengths = sorted(calculate_path_length([centroid] + path[1:]) for path in (straight, bowed))
+    kept = sorted(d["length"] for _, _, d in out.edges(data=True))
+    assert kept == pytest.approx(lengths[:1] if lumen == "one" else lengths)
 
 
 def test_a_members_noise_route_is_merged_even_when_its_rewired_end_jumps_past_the_tolerance():

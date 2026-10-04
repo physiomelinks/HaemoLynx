@@ -1,6 +1,6 @@
 """Internal helpers for graph operations."""
 import logging
-from typing import List, Tuple, Dict, Any, Union
+from typing import List, Tuple, Dict, Any, Callable, Union
 
 import numpy as np
 import networkx as nx
@@ -538,13 +538,78 @@ def path_separation(
     return float(max(a_to_b, b_to_a))
 
 
-def are_paths_similar(voxels1, voxels2, tolerance=3.0):
-    """True when two paths trace the same route, to within *tolerance* microns.
+def paths_separated_by_background(
+    path_a: List,
+    path_b: List,
+    inside_lumen: Callable[[np.ndarray], np.ndarray],
+    *,
+    step_um: float = 0.5,
+    min_gap_um: float = 1.0,
+    ignore_within=None,
+) -> bool:
+    """Whether the segmentation shows two vessels along two paths, not one.
 
-    They must join the same end points *and* never stray further than
-    *tolerance* from each other. Shared end points alone are not enough: two
-    distinct vessels between the same two junctions (a loop) share them too,
-    and treating those as one path deletes a vessel.
+    Each sample of either path (every *step_um*) is joined by a straight
+    chord to the nearest point of the other. A chord with both ends in the
+    lumen *separates* the paths when at least *min_gap_um* of it crosses
+    background: two lumens with tissue between them. The paths are two
+    vessels when at least half of those chords separate them.
+
+    A chord with an end outside the lumen is not counted: a path running
+    outside the mask (a straight shortcut, a gap bridge) is no evidence of a
+    second vessel. Nor is a chord shorter than ``2 * min_gap_um``, where the
+    paths meet. With no chord left to judge, the paths are one vessel.
+
+    *inside_lumen* maps ``(N, 3)`` physical ``(z, y, x)`` points to one bool
+    each (see ``assemble.mask_lumen_test``); *ignore_within* is as for
+    :func:`path_separation`.
+    """
+    a = densify_polyline(np.asarray(path_a, dtype=float), max_step_um=step_um)
+    b = densify_polyline(np.asarray(path_b, dtype=float), max_step_um=step_um)
+    if a.ndim != 2 or b.ndim != 2 or len(a) < 2 or len(b) < 2:
+        return False
+    starts, ends = [], []
+    for here, there in ((a, b), (b, a)):
+        if ignore_within is not None:
+            centre, radius = np.asarray(ignore_within[0], dtype=float), float(ignore_within[1])
+            here = here[np.linalg.norm(here - centre, axis=1) > radius]
+        if len(here):
+            starts.append(here)
+            ends.append(there[cKDTree(there).query(here)[1]])
+    if not starts:
+        return False
+    p, q = np.vstack(starts), np.vstack(ends)
+    length = np.linalg.norm(q - p, axis=1)
+    long_enough = length >= 2.0 * min_gap_um
+    p, q, length = p[long_enough], q[long_enough], length[long_enough]
+    if not len(p):
+        return False
+    # Every chord gets as many samples as the longest needs, so each sample
+    # stands for length / (n - 1) of its own chord.
+    n = int(np.ceil(length.max() / step_um)) + 1
+    t = np.linspace(0.0, 1.0, n)
+    samples = p[:, None, :] + t[None, :, None] * (q - p)[:, None, :]
+    inside = np.asarray(inside_lumen(samples.reshape(-1, 3)), dtype=bool).reshape(len(p), n)
+    judged = inside[:, 0] & inside[:, -1]
+    if not judged.any():
+        return False
+    background_um = (~inside).sum(axis=1) * length / (n - 1)
+    separating = judged & (background_um >= min_gap_um)
+    return bool(separating.sum() >= 0.5 * judged.sum())
+
+
+def are_paths_similar(voxels1, voxels2, tolerance=3.0, inside_lumen=None):
+    """True when two paths are the same vessel.
+
+    They must join the same end points, and either never stray further than
+    *tolerance* microns from each other or, given *inside_lumen* (the
+    segmentation the skeleton came from), run through one lumen: not
+    separated by background (:func:`paths_separated_by_background`). Shared
+    end points alone are not enough: two distinct vessels between the same
+    two junctions (a loop) share them too, and treating those as one path
+    deletes a vessel. Distance alone is not enough either: Lee thinning
+    leaves two or more strands 5-10 um apart through one wide vessel, and
+    those are one vessel.
     """
     if len(voxels1) < 2 or len(voxels2) < 2:
         return False
@@ -558,11 +623,18 @@ def are_paths_similar(voxels1, voxels2, tolerance=3.0):
     
     if min(dist_same, dist_flipped) > tolerance * 2:
         return False
-    return path_separation(voxels1, voxels2) <= tolerance
+    if path_separation(voxels1, voxels2) <= tolerance:
+        return True
+    return inside_lumen is not None and not paths_separated_by_background(
+        voxels1, voxels2, inside_lumen
+    )
     
-def should_add_merged_edge(G, n1, n2, new_voxels, new_attrs, debug=False):
+def should_add_merged_edge(G, n1, n2, new_voxels, new_attrs, debug=False, inside_lumen=None):
     """
     Check if we should add this merged edge, avoiding duplicates.
+
+    *inside_lumen*, when given, lets a duplicate be judged by the
+    segmentation as well as by distance (see :func:`are_paths_similar`).
     """
     if not G.has_edge(n1, n2):
         return True, None
@@ -577,7 +649,7 @@ def should_add_merged_edge(G, n1, n2, new_voxels, new_attrs, debug=False):
         existing_is_curved = is_path_curved(existing_voxels)
         
         # Check if paths are similar
-        if are_paths_similar(new_voxels, existing_voxels):
+        if are_paths_similar(new_voxels, existing_voxels, inside_lumen=inside_lumen):
             # Prefer curved over straight
             if new_is_curved and not existing_is_curved:
                 if debug:

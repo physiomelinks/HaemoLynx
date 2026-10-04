@@ -535,7 +535,9 @@ def _probe_time_model(
 
         def build_and_check():
             graph = graph_mod.build_graph_from_skeleton(
-                skeleton, **{"voxel_size": voxel, **from_settings(_graph_kwargs, voxel)}
+                skeleton,
+                segmentation_mask=mask,
+                **{"voxel_size": voxel, **from_settings(_graph_kwargs, voxel)},
             )
             graph_mod.diagnose_skeleton_graph_consistency(graph, skeleton, voxel_size_zyx=voxel)
             return graph
@@ -1054,7 +1056,9 @@ def _scorecard_measures(
         if kwargs["min_stub_length_radius_multiple"] > 0
         else None
     )
-    G = graph_mod.build_graph_from_skeleton(skeleton, stub_radius_at=stub_radius_at, **kwargs)
+    G = graph_mod.build_graph_from_skeleton(
+        skeleton, stub_radius_at=stub_radius_at, segmentation_mask=cleaned, **kwargs
+    )
 
     if input_radius_map is None:
         input_radius_map = preprocessing.inscribed_radius_map(mask, voxel)
@@ -2232,12 +2236,14 @@ class _Search(_SweepBookkeeping):
         kwargs = _graph_kwargs({**self.current, **overrides}, self.voxel_size_zyx)
         radius_multiple = kwargs["min_stub_length_radius_multiple"]
         return self._graph_cache.get_or_compute(
-            # The mask too: the stub-radius sampler reads it.
+            # The mask too: the stub-radius sampler and the duplicate-edge
+            # check read it.
             (self.current_skeleton, self.raw_mask),
             kwargs,
             lambda: graph_mod.build_graph_from_skeleton(
                 self.current_skeleton,
                 stub_radius_at=self._stub_radius_sampler() if radius_multiple > 0 else None,
+                segmentation_mask=self.raw_mask,
                 **kwargs,
             ),
         )

@@ -23,9 +23,9 @@ for redundant parallel wiring to the same neighbour (several original nodes
 in a cluster reaching the same external node by slightly different
 skeleton-noise paths), keeping only the shorter of any resulting duplicates
 -- collapsing a hairball should not inflate a real neighbour's edge count
-either. Only paths that trace the same route count as duplicates: a member
-reaching that neighbour along a separate vessel keeps it, as a parallel
-edge.
+either. Only paths that trace the same vessel count as duplicates -- the
+same route or, given the segmentation, one lumen: a member reaching that
+neighbour along a separate vessel keeps it, as a parallel edge.
 
 Opt-in via ``cluster_collapse_method="direction_aware"`` (default
 ``"distance_only"``, the unmodified legacy behaviour); deliberately kept in
@@ -36,13 +36,13 @@ two settings without touching either of those modules if it does not help.
 from __future__ import annotations
 
 import logging
-from typing import Any, Union
+from typing import Any, Callable, Union
 
 import numpy as np
 import networkx as nx
 from scipy.spatial import cKDTree
 
-from ._helpers import path_separation
+from ._helpers import path_separation, paths_separated_by_background
 from .cartwheel_guard import (
     DEFAULT_TANGENT_LENGTH_UM,
     _incident_edge_items,
@@ -141,12 +141,19 @@ def _merge_is_direction_safe(
 
 
 def _traces_the_same_vessel(
-    data_a: dict, data_b: dict, rep_pos: np.ndarray, moved_by: float
+    data_a: dict,
+    data_b: dict,
+    rep_pos: np.ndarray,
+    moved_by: float,
+    inside_lumen: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> bool:
     """Whether two edges from a merged cluster to one neighbour are one vessel.
 
     Their paths must stay within ``DEFAULT_DUPLICATE_PATH_TOLERANCE_UM`` of
-    each other everywhere outside *moved_by* of *rep_pos*: rewiring re-ends a
+    each other everywhere outside *moved_by* of *rep_pos* or, given
+    *inside_lumen*, run through one lumen there (no background between them:
+    ``paths_separated_by_background``) -- Lee thinning of a wide vessel
+    leaves strands further apart than that inside it. Rewiring re-ends a
     member's path at the representative with a straight jump as long as the
     member's own offset, which says nothing about whether the two vessels
     differ. Edges without a path cannot be told apart, so they count as the
@@ -155,8 +162,12 @@ def _traces_the_same_vessel(
     voxels_a, voxels_b = data_a.get("voxels"), data_b.get("voxels")
     if voxels_a is None or voxels_b is None or len(voxels_a) < 2 or len(voxels_b) < 2:
         return True
-    separation = path_separation(voxels_a, voxels_b, ignore_within=(rep_pos, moved_by))
-    return separation <= DEFAULT_DUPLICATE_PATH_TOLERANCE_UM
+    moved_end = (rep_pos, moved_by)
+    if path_separation(voxels_a, voxels_b, ignore_within=moved_end) <= DEFAULT_DUPLICATE_PATH_TOLERANCE_UM:
+        return True
+    return inside_lumen is not None and not paths_separated_by_background(
+        voxels_a, voxels_b, inside_lumen, ignore_within=moved_end
+    )
 
 
 def _rewire_edges_deduplicating(
@@ -166,6 +177,7 @@ def _rewire_edges_deduplicating(
     is_multi: bool,
     *,
     protected_loop_neighbors: set | None = None,
+    inside_lumen: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> None:
     """Move every edge incident to *old_node* onto *new_node*.
 
@@ -176,10 +188,10 @@ def _rewire_edges_deduplicating(
     same external neighbour by slightly different noise paths should not
     inflate that neighbour's apparent number of distinct connections. "The
     same route" means within ``DEFAULT_DUPLICATE_PATH_TOLERANCE_UM`` away from
-    the moved end (see :func:`_traces_the_same_vessel`); a path that strays
-    further is a separate vessel to that neighbour and is added as a
-    parallel edge. A plain ``nx.Graph`` cannot hold one, so there the
-    shorter edge is always kept.
+    the moved end or, given *inside_lumen*, through one lumen (see
+    :func:`_traces_the_same_vessel`); any other path is a separate vessel to
+    that neighbour and is added as a parallel edge. A plain ``nx.Graph``
+    cannot hold one, so there the shorter edge is always kept.
 
     *protected_loop_neighbors*, when given, names neighbours *new_node*
     already reached by two or more parallel edges before this cluster's
@@ -207,7 +219,7 @@ def _rewire_edges_deduplicating(
             existing = G.get_edge_data(new_node, neighbor) or {}
             duplicates = [] if neighbor in protected_loop_neighbors else [
                 k for k in existing
-                if _traces_the_same_vessel(existing[k], patched, new_pos, moved_by)
+                if _traces_the_same_vessel(existing[k], patched, new_pos, moved_by, inside_lumen)
             ]
             if duplicates:
                 shortest_key = min(
@@ -246,6 +258,7 @@ def collapse_node_clusters_direction_aware(
     tangent_length_um: float = DEFAULT_TANGENT_LENGTH_UM,
     debug: bool = False,
     max_iterations: int = 10,
+    inside_lumen: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> Union[nx.Graph, nx.MultiGraph]:
     """Collapse nearby node clusters, refusing a merge that would cartwheel.
 
@@ -258,6 +271,10 @@ def collapse_node_clusters_direction_aware(
     component that would otherwise become one cartwheel-shaped hub instead
     stops growing where it would start looking like one, leaving separate
     representative nodes for what proximity alone could not tell apart.
+
+    *inside_lumen* (see ``assemble.mask_lumen_test``) lets the check for
+    duplicate edges to one neighbour read the segmentation -- see
+    :func:`_rewire_edges_deduplicating`.
 
     Raises
     ------
@@ -372,6 +389,7 @@ def collapse_node_clusters_direction_aware(
                 _rewire_edges_deduplicating(
                     G, other, rep, is_multi,
                     protected_loop_neighbors=protected_loop_neighbors,
+                    inside_lumen=inside_lumen,
                 )
                 G.remove_node(other)
                 merged_this_iter += 1

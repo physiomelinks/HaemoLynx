@@ -7,6 +7,7 @@ import networkx as nx
 import numpy as np
 from skan import csr
 
+from ._helpers import points_inside_mask
 from ._platform import skan_numba_warmup_skeleton
 from .build import (
     MAX_GAP_BRIDGE_TURN_DEG,
@@ -112,6 +113,28 @@ def mask_radius_sampler(
     return radius
 
 
+def mask_lumen_test(
+    mask: np.ndarray | None,
+    voxel_size: tuple[float, float, float],
+) -> Callable[[np.ndarray], np.ndarray] | None:
+    """``inside(points_um)``: whether each physical ``(z, y, x)`` point falls in
+    the mask's lumen (a True voxel; outside the volume is background) -- or
+    ``None`` when there is no mask to read.
+
+    What degree-2 merging and direction-aware collapse ask when two edges
+    join the same two nodes: one vessel, or two with background between
+    (``_helpers.paths_separated_by_background``).
+    """
+    if mask is None:
+        return None
+    binary = np.asanyarray(mask, dtype=bool)
+
+    def inside(points_um: np.ndarray) -> np.ndarray:
+        return points_inside_mask(points_um, binary, voxel_size_zyx=voxel_size)
+
+    return inside
+
+
 def _log_degree2_diagnostics(G: nx.MultiGraph, max_degree: int, debug: bool) -> None:
     if not debug:
         return
@@ -202,7 +225,13 @@ def build_graph_from_skeleton(
         With the binary mask the skeleton came from and a positive multiple,
         a stub is pruned when shorter than that many radii of the vessel it
         leaves (the mask's distance to background at the junction), instead
-        of *min_stub_length* -- see ``prune.prune_vascular_stubs``.
+        of *min_stub_length* -- see ``prune.prune_vascular_stubs``. Whatever
+        the multiple, the mask also decides when two edges joining the same
+        two nodes are one vessel: degree-2 merging and direction-aware
+        collapse keep both only where background separates them
+        (:func:`mask_lumen_test`), not wherever they are more than 3-5 um
+        apart -- Lee thinning leaves strands 5-10 um apart through one wide
+        vessel. Without a mask, distance alone decides.
     stub_radius_at
         A ready-made ``radius(position_um)`` (see :func:`mask_radius_sampler`)
         used in place of building one from *segmentation_mask* -- for a
@@ -226,6 +255,7 @@ def build_graph_from_skeleton(
     """
     degree2_pass1_max_degree = 4
     degree2_pass2_max_degree = 8
+    inside_lumen = mask_lumen_test(segmentation_mask, voxel_size)
 
     logger.info("Building skan Skeleton object...")
     warmup = skan_numba_warmup_skeleton()
@@ -270,6 +300,7 @@ def build_graph_from_skeleton(
         skeleton,
         max_degree=degree2_pass1_max_degree,
         debug=debug,
+        inside_lumen=inside_lumen,
     )
     _notify_step(G, "smart_multigraph_degree2_removal_pass1", step_callback)
     _log_degree2_diagnostics(G, degree2_pass1_max_degree, debug)
@@ -282,6 +313,7 @@ def build_graph_from_skeleton(
             min_degree_for_dispersion_check=cluster_collapse_direction_aware_min_degree,
             tangent_length_um=cluster_collapse_direction_aware_tangent_length_um,
             debug=debug,
+            inside_lumen=inside_lumen,
         )
     elif cluster_collapse_method == "persistence":
         G = collapse_node_clusters_persistence(
@@ -308,6 +340,7 @@ def build_graph_from_skeleton(
         skeleton,
         max_degree=degree2_pass2_max_degree,
         debug=debug,
+        inside_lumen=inside_lumen,
     )
     _notify_step(G, "smart_multigraph_degree2_removal_post_collapse", step_callback)
 
@@ -335,6 +368,7 @@ def build_graph_from_skeleton(
         skeleton,
         max_degree=degree2_pass2_max_degree,
         debug=debug,
+        inside_lumen=inside_lumen,
     )
     _notify_step(G, "smart_multigraph_degree2_removal_post_prune", step_callback)
     _log_degree2_diagnostics(G, degree2_pass2_max_degree, debug)
@@ -370,6 +404,7 @@ def build_graph_from_skeleton(
         skeleton,
         max_degree=degree2_pass1_max_degree,
         debug=debug,
+        inside_lumen=inside_lumen,
     )
     _notify_step(G, "smart_multigraph_degree2_removal_post_orphan_reconnect", step_callback)
     _log_degree2_diagnostics(G, degree2_pass2_max_degree, debug)

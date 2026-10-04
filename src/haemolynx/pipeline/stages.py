@@ -1145,20 +1145,22 @@ def build_network(
                 extra_plot_names=(plot_png,),
             )
 
-        # Stubs are judged against the radius of the vessel they leave, and a
-        # smoothed centreline may stray further inside a wider vessel: both
-        # read the radius from the same binary mask the skeleton was made
-        # from, through one sampler.
+        # Stubs are judged against the radius of the vessel they leave, a
+        # smoothed centreline may stray further inside a wider vessel, and two
+        # edges joining the same two nodes are one vessel unless background
+        # separates them: all three read the binary mask the skeleton was
+        # made from, the radius through one sampler.
         stub_radius_multiple = float(settings.get("min_stub_length_radius_multiple", 0.0) or 0.0)
-        radius_mask = None
+        binary_mask = None
         radius_at = None
-        if stub_radius_multiple > 0 or settings["smooth_centrelines"]:
-            radius_mask = _to_binary_volume_for_skeletonization(
+        if image is not None:
+            binary_mask = _to_binary_volume_for_skeletonization(
                 image,
                 use_memmap=settings["use_memmap_loading"],
                 memmap_directory=settings["memmap_directory"],
             )
-            radius_at = graph.assemble.mask_radius_sampler(radius_mask, voxel_size_zyx, 1.0)
+        if binary_mask is not None and (stub_radius_multiple > 0 or settings["smooth_centrelines"]):
+            radius_at = graph.assemble.mask_radius_sampler(binary_mask, voxel_size_zyx, 1.0)
         G = graph.build_graph_from_skeleton(
             skeleton,
             voxel_size=voxel_size_zyx,
@@ -1168,6 +1170,7 @@ def build_network(
             min_stub_length=settings["min_stub_length"],
             min_stub_length_radius_multiple=stub_radius_multiple,
             stub_radius_at=radius_at,
+            segmentation_mask=binary_mask,
             debug=settings["verbose_logging"],
             step_callback=_graph_build_step_callback,
             cluster_collapse_method=settings["cluster_collapse_method"],
@@ -1200,9 +1203,9 @@ def build_network(
                 max_deviation=settings["centreline_max_deviation"],
                 radius_at=radius_at,
             )
-        if radius_mask is not None:
-            preprocessing.release_superseded(radius_mask, G, keep=image)
-            radius_mask = radius_at = None
+        if binary_mask is not None:
+            preprocessing.release_superseded(binary_mask, G, keep=image)
+            binary_mask = radius_at = None
 
         # Last thing before the graph is saved, after every topology step and
         # the centreline smoothing above: a thin-vessel-to-fat-vessel join

@@ -196,10 +196,10 @@ def test_cluster_collapse_method_direction_aware_reaches_the_direction_aware_col
 
     def fake_direction_aware(
         G, *, distance_threshold, max_radial_dispersion,
-        min_degree_for_dispersion_check, tangent_length_um, debug,
+        min_degree_for_dispersion_check, tangent_length_um, debug, inside_lumen,
     ):
         calls.append(
-            (max_radial_dispersion, min_degree_for_dispersion_check, tangent_length_um)
+            (max_radial_dispersion, min_degree_for_dispersion_check, tangent_length_um, inside_lumen)
         )
         return assemble_module.collapse_node_clusters(G, distance_threshold=distance_threshold, debug=debug)
 
@@ -215,7 +215,41 @@ def test_cluster_collapse_method_direction_aware_reaches_the_direction_aware_col
         cluster_collapse_direction_aware_tangent_length_um=15.0,
     )
 
-    assert calls == [(pytest.approx(0.7), 9, pytest.approx(15.0))]
+    # No segmentation mask given, so nothing to judge a duplicate edge by but distance.
+    assert calls == [(pytest.approx(0.7), 9, pytest.approx(15.0), None)]
+
+
+def test_a_segmentation_mask_reaches_every_duplicate_edge_check(monkeypatch):
+    """Degree-2 merging (all four passes) and direction-aware collapse decide
+    whether two edges joining the same two nodes are one vessel; given the
+    mask, each is handed a test that reads it, in physical microns."""
+    import haemolynx.graph.assemble as assemble_module
+
+    seen = []
+    real_degree2 = assemble_module.smart_multigraph_degree2_removal
+    real_collapse = assemble_module.collapse_node_clusters_direction_aware
+
+    def degree2(G, *args, inside_lumen=None, **kwargs):
+        seen.append(("degree2", inside_lumen))
+        return real_degree2(G, *args, inside_lumen=inside_lumen, **kwargs)
+
+    def collapse(G, *, inside_lumen=None, **kwargs):
+        seen.append(("collapse", inside_lumen))
+        return real_collapse(G, inside_lumen=inside_lumen, **kwargs)
+
+    monkeypatch.setattr(assemble_module, "smart_multigraph_degree2_removal", degree2)
+    monkeypatch.setattr(assemble_module, "collapse_node_clusters_direction_aware", collapse)
+    skeleton = _t_skeleton()
+    mask = np.zeros_like(skeleton)
+    mask[:, 18:23, 18:23] = True  # round the trunk only
+
+    _build(skeleton, cluster_collapse_method="direction_aware", segmentation_mask=mask)
+
+    assert [name for name, _ in seen] == ["degree2", "collapse", "degree2", "degree2", "degree2"]
+    on_trunk = np.multiply((20, 20, 20), VOXEL_SIZE_ZYX)
+    on_branch = np.multiply((20, 30, 20), VOXEL_SIZE_ZYX)
+    for _, inside_lumen in seen:
+        assert inside_lumen(np.array([on_trunk, on_branch])).tolist() == [True, False]
 
 
 def test_cluster_collapse_method_distance_only_never_calls_direction_aware_collapse(monkeypatch):

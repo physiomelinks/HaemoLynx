@@ -30,8 +30,10 @@ from haemolynx.graph._helpers import (
     get_all_edge_data,
     are_paths_similar,
     path_separation,
+    paths_separated_by_background,
     should_add_merged_edge,
 )
+from haemolynx.graph.assemble import mask_lumen_test
 
 
 def test_get_line_points_3d():
@@ -490,6 +492,124 @@ def test_should_add_merged_edge_replaces_only_a_coinciding_edge():
     assert should_add_merged_edge(
         G, "a", "b", bow, {"length": calculate_path_length(bow)}
     ) == (True, None)
+
+
+def _lumen(shape, *boxes):
+    """`inside_lumen` for a mask of 1 um voxels, True inside each box of index slices."""
+    mask = np.zeros(shape, dtype=bool)
+    for box in boxes:
+        mask[box] = True
+    return mask_lumen_test(mask, (1.0, 1.0, 1.0))
+
+
+def test_paths_separated_by_background_reads_the_mask_between_them():
+    """Two strands 7 um apart are one vessel or two depending on what lies
+    between them -- Lee thinning leaves strands that far apart through one
+    wide vessel, so distance cannot tell."""
+    a = _line((5.0, 10.0, 5.0), (5.0, 10.0, 35.0), 31)
+    b = _line((5.0, 17.0, 5.0), (5.0, 17.0, 35.0), 31)
+    shape = (11, 30, 41)
+    one_lumen = _lumen(shape, np.s_[2:9, 7:21, :])
+    two_vessels = _lumen(shape, np.s_[2:9, 8:13, :], np.s_[2:9, 15:20, :])  # 2 um of tissue between
+    only_a = _lumen(shape, np.s_[2:9, 8:13, :])
+
+    assert not paths_separated_by_background(a, b, one_lumen)
+    assert paths_separated_by_background(a, b, two_vessels)
+    assert paths_separated_by_background(b, a, two_vessels)
+    # A path running outside the mask is no evidence of a second vessel.
+    assert not paths_separated_by_background(a, b, only_a)
+    # Nor is anything between paths that coincide.
+    assert not paths_separated_by_background(a, a, two_vessels)
+
+
+def test_paths_separated_by_background_needs_most_of_the_way_separated():
+    """A vessel with a short hole in its lumen (a cell, a dark speck) is
+    still one vessel; tissue between the strands most of the way is two."""
+    a = _line((5.0, 10.0, 5.0), (5.0, 10.0, 35.0), 31)
+    b = _line((5.0, 17.0, 5.0), (5.0, 17.0, 35.0), 31)
+    shape = (11, 30, 41)
+    holed = np.zeros(shape, dtype=bool)
+    holed[2:9, 7:21, :] = True
+    holed[:, 12:16, 17:23] = False  # 6 um of the 30 um have tissue between
+    assert not paths_separated_by_background(a, b, mask_lumen_test(holed, (1.0, 1.0, 1.0)))
+    holed[:, 12:16, 8:32] = False  # 24 of the 30
+    assert paths_separated_by_background(a, b, mask_lumen_test(holed, (1.0, 1.0, 1.0)))
+
+
+def _square_detour(width=7.0):
+    """From "a" (0, 0, 0) out *width* um, along, and back to "b" (0, 0, 20)."""
+    return (
+        _line((0.0, 0.0, 0.0), (0.0, width, 4.0), 9)
+        + _line((0.0, width, 4.0), (0.0, width, 16.0), 13)[1:]
+        + _line((0.0, width, 16.0), (0.0, 0.0, 20.0), 9)[1:]
+    )
+
+
+#: Masks for _square_detour beside the straight a-b vessel: one lumen round
+#: both, or two vessels 4 um apart that meet at the two junctions.
+_DETOUR_SHAPE = (2, 10, 22)
+_ONE_LUMEN = (np.s_[0:1, 0:9, 0:21],)
+_TWO_VESSELS = (
+    np.s_[0:1, 0:2, 0:21],
+    np.s_[0:1, 6:9, 0:21],
+    np.s_[0:1, 0:9, 0:3],
+    np.s_[0:1, 0:9, 18:21],
+)
+
+
+def test_are_paths_similar_counts_two_strands_through_one_lumen_as_one_vessel():
+    straight = _line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21)
+    detour = _square_detour()
+    # 7 um apart: two vessels, by distance alone.
+    assert not are_paths_similar(straight, detour)
+    assert are_paths_similar(straight, detour, inside_lumen=_lumen(_DETOUR_SHAPE, *_ONE_LUMEN))
+    assert not are_paths_similar(straight, detour, inside_lumen=_lumen(_DETOUR_SHAPE, *_TWO_VESSELS))
+
+
+@pytest.mark.parametrize("route_is", ["the detour", "straight"])
+def test_degree2_removal_keeps_one_vessel_of_two_strands_through_one_lumen(route_is):
+    """Regression test: strands 5-10 um apart through one lumen are one
+    vessel. Judged by distance alone (> 3 um apart) the merged route was
+    added beside the existing edge: pairs of parallel edges in the E14.5 MCA
+    graph went from 23 to 157, nearly all inside one segmented vessel.
+    Whichever copy is kept, the
+    other goes -- including a refused route, which used to stay behind as
+    its degree-2 node and two edges."""
+    G = _junction_pair(stubs=2)
+    detour, straight = _square_detour(), _line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21)
+    edge, route = (straight, detour) if route_is == "the detour" else (detour, straight)
+    _add_path_edge(G, "a", "b", edge)
+    G.add_node("mid", pos=np.asarray(route[len(route) // 2], dtype=float))
+    _add_path_edge(G, "a", "mid", route[: len(route) // 2 + 1])
+    _add_path_edge(G, "mid", "b", route[len(route) // 2 :])
+    nodes_before = G.number_of_nodes()
+
+    G2 = smart_multigraph_degree2_removal(
+        G.copy(), max_degree=8, inside_lumen=_lumen(_DETOUR_SHAPE, *_ONE_LUMEN)
+    )
+
+    assert not G2.has_node("mid")
+    assert G2.number_of_nodes() == nodes_before - 1
+    # One a-b vessel, and it is the detour either way: curved is preferred to straight.
+    assert [d["length"] for d in G2["a"]["b"].values()] == pytest.approx([calculate_path_length(detour)])
+
+
+def test_degree2_removal_keeps_both_strands_when_the_mask_separates_them():
+    G = _junction_pair(stubs=2)
+    straight = _add_path_edge(G, "a", "b", _line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21))
+    detour = _square_detour()
+    G.add_node("mid", pos=np.asarray(detour[len(detour) // 2], dtype=float))
+    _add_path_edge(G, "a", "mid", detour[: len(detour) // 2 + 1])
+    _add_path_edge(G, "mid", "b", detour[len(detour) // 2 :])
+
+    G2 = smart_multigraph_degree2_removal(
+        G, max_degree=8, inside_lumen=_lumen(_DETOUR_SHAPE, *_TWO_VESSELS)
+    )
+
+    assert not G2.has_node("mid")
+    assert sorted(d["length"] for d in G2["a"]["b"].values()) == pytest.approx(
+        sorted([straight, calculate_path_length(detour)])
+    )
 
 
 def test_build_graph_requires_skan(tiny_skeleton):
