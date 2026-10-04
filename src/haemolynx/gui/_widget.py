@@ -6163,7 +6163,7 @@ def _box_tool_widgets(role: str) -> dict[str, Any]:
         widgets=[PushButton(text=arrows[d], name=d) for d in MOVE_DIRECTIONS],
         layout="horizontal", labels=False, label="Move the box",
     )
-    note = Label(value="Insert a box to list the nodes inside it.")
+    note = Label(value="Insert a box, move it over the vessel end, then press Scan.")
     nodes = Container(widgets=[note], labels=False, label="Nodes in the box")
     table = QTableWidget(0, len(BOX_NODE_COLUMNS))
     table.setObjectName(f"haemolynx_box_nodes_{role}")
@@ -6184,6 +6184,7 @@ def _box_tool_widgets(role: str) -> dict[str, Any]:
         "box_step": FloatSpinBox(value=5.0, min=0.1, max=1000.0, step=1.0,
                                  label="Move step (um)"),
         "box_move": move,
+        "box_scan": PushButton(text="Scan the box for nodes"),
         "box_nodes": nodes,
         "use_node": PushButton(text=f"Use selected node as {role_title(role)}"),
         "remove_box": PushButton(text="Remove this box"),
@@ -6342,7 +6343,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
     #: and choose one. A volume role's page is these; a node-ID role keeps
     #: them as a way to find the node to list.
     BOX_TOOLS = ("insert_box", "box_choice", "box_size", "box_step", "box_move",
-                 "box_nodes", "use_node", "remove_box")
+                 "box_scan", "box_nodes", "use_node", "remove_box")
     #: Which of a role's controls its chosen method has any use for.
     ACTIONS_FOR_METHOD = {
         "coordinates": ("pick", "move", "assign"),
@@ -6359,7 +6360,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
     state = SimpleNamespace(applying=False, results=None, connected=set(),
                         visible=frozenset(), hidden=frozenset(), tabs=None,
                         actions={}, draw3d=None, node_pick=None,
-                        active_box={}, box_nodes={}, pending_boxes={})
+                        active_box={}, box_nodes={}, pending_boxes={}, scanned={})
 
     #: Each role's page, and where each shared row currently sits. Filled in
     #: by `page`; empty until the panel has been laid out.
@@ -7213,17 +7214,17 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
     settle_timer.setSingleShot(True)
     settle_timer.setInterval(BOX_SETTLE_MS)
 
-    def preview_boxes(owner: str, boxes) -> None:
-        """Show *owner*'s boxes where they now are: its rectangle and 3D box only."""
-        state.pending_boxes[owner] = boxes
+    def draw_role_boxes(owner: str, boxes, *, flat: bool, solid: bool) -> None:
+        """Put *owner*'s rectangles (*flat*) and/or 3D boxes (*solid*) at *boxes*."""
         was = state.applying
         state.applying = True
         try:
             regions = layer(regions_name(owner))
-            if regions is not None and _is_ours(regions) and len(regions.data) == len(boxes):
+            if flat and regions is not None and _is_ours(regions) \
+                    and len(regions.data) == len(boxes):
                 regions.data = [rectangle_from_box(lo, hi)[0] for lo, hi in boxes]
             solids = layer(boxes_name(owner))
-            if solids is not None and _is_ours(solids) and boxes:
+            if solid and solids is not None and _is_ours(solids) and boxes:
                 vertices, faces, which = box_mesh(boxes)
                 shades = np.asarray(
                     box_colours(dict(role_colours())[owner], len(boxes)), dtype=float
@@ -7231,6 +7232,18 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
                 _set_tube_mesh(solids, vertices, faces, shades)
         finally:
             state.applying = was
+
+    def preview_boxes(owner: str, boxes) -> None:
+        """Show *owner*'s boxes where they now are, touching one layer only.
+
+        Every layer change makes napari recompute the whole scene's extent --
+        vessel tubes included -- and redraw. So a press updates only what the
+        view shows: the translucent 3D box in 3D, the rectangle in 2D. The
+        other follows once, when the presses stop (:func:`flush_boxes`).
+        """
+        state.pending_boxes[owner] = boxes
+        in_3d = viewer.dims.ndisplay == 3
+        draw_role_boxes(owner, boxes, flat=not in_3d, solid=in_3d)
         settle_timer.start()
 
     def flush_boxes() -> None:
@@ -7239,6 +7252,10 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         pending, state.pending_boxes = state.pending_boxes, {}
         if not pending:
             return
+        in_3d = viewer.dims.ndisplay == 3
+        for owner, boxes in pending.items():
+            # The layer the presses skipped catches up, once.
+            draw_role_boxes(owner, boxes, flat=in_3d, solid=not in_3d)
         was = state.applying
         state.applying = True
         try:
@@ -7250,12 +7267,10 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         if owner in pending:
             boxes = pending[owner]
             index = active_index(owner, boxes)
-            found = state.box_nodes.get(owner, [])
             if index is not None:
                 report.value = (
                     f"{owner} box {index + 1}: {boxes[index][0]} to {boxes[index][1]} um "
-                    f"(z, y, x). {len(found)} node(s) in it, "
-                    f"{sum(n.open_end for n in found)} open end(s)."
+                    "(z, y, x). Press 'Scan the box for nodes' to list what is in it."
                 )
 
     settle_timer.timeout.connect(flush_boxes)
@@ -7297,12 +7312,10 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             return
         boxes = [*boxes_of(owner), box]
         write_boxes(owner, boxes, len(boxes) - 1)
-        found = state.box_nodes.get(owner, [])
         report.value = (
             f"Inserted box {len(boxes)} for {owner} at the middle of the view: "
             f"{box[0]} to {box[1]} um (z, y, x). Move it with the arrows, change "
-            f"its size above, then choose a node from the list "
-            f"({len(found)} in it, {sum(n.open_end for n in found)} open end(s))."
+            "its size above, then press 'Scan the box for nodes' and choose one."
         )
 
     def on_box_choice() -> None:
@@ -7357,6 +7370,24 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             state.active_box.pop(owner, None)
         report.value = f"Removed {owner} box {index + 1}."
 
+    def on_box_scan() -> None:
+        """List and mark the nodes inside the chosen box -- only when asked."""
+        owner = str(role.value)
+        flush_boxes()
+        boxes = boxes_of(owner)
+        if active_index(owner, boxes) is None:
+            report.value = "Insert a box first, then scan it."
+            return
+        refresh_box_tools(only=(owner,), scan=True)
+        found = state.box_nodes.get(owner, [])
+        report.value = (
+            f"{len(found)} node(s) in the box, {sum(n.open_end for n in found)} open "
+            "end(s), listed and drawn yellow (open ends larger, red-rimmed). Click "
+            "one to focus on it."
+            if found else
+            "No nodes in the box. Move or enlarge it, then scan again."
+        )
+
     def selected_box_node(owner: str):
         table = actions[owner].box_nodes.table
         rows_chosen = sorted({i.row() for i in table.selectionModel().selectedRows()})
@@ -7410,15 +7441,18 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             f"{list(listed)} (method node_ids); the box stays as a finder."
         )
 
-    def refresh_box_tools(only: Sequence[str] | None = None) -> None:
-        """Each role's box list, size, node table, and the box's nodes drawn.
+    def refresh_box_tools(only: Sequence[str] | None = None, *, scan: bool = False) -> None:
+        """Each role's box list and size, and -- with *scan* -- the nodes in it.
 
-        *only* limits it to those roles -- after a move, the one role moved.
+        *only* limits it to those roles. The nodes are found only when asked
+        (the Scan button): scanning on every move was the lag that made the
+        box hard to steer. A box that has moved since its scan has its list
+        and markers cleared, so nodes from where it used to be are never shown.
         """
         from qtpy.QtWidgets import QTableWidgetItem
 
         values = current_values()
-        g = box_graph()
+        g = box_graph() if scan else None
         was = state.applying
         state.applying = True
         try:
@@ -7433,17 +7467,27 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
                 if index is not None:
                     for widget, size in zip(action.box_size, box_size(boxes[index])):
                         widget.value = max(float(widget.min), min(float(widget.max), size))
-                found = nodes_in_box(g, boxes[index]) if index is not None else []
-                state.box_nodes[owner] = found
+                here = (index, tuple(map(tuple, boxes[index]))) if index is not None else None
+                if scan and here is not None and g is not None:
+                    state.box_nodes[owner] = nodes_in_box(g, boxes[index])
+                    state.scanned[owner] = here
+                elif state.scanned.get(owner) != here:
+                    # Moved, resized or another box chosen since the scan.
+                    state.box_nodes[owner] = []
+                    state.scanned.pop(owner, None)
+                found = state.box_nodes.get(owner, [])
                 table = action.box_nodes.table
-                table.setRowCount(len(found))
-                for r, cells in enumerate(box_node_rows(found)):
-                    for c, text in enumerate(cells):
-                        table.setItem(r, c, QTableWidgetItem(text))
+                if table.rowCount() != len(found) or scan:
+                    table.setRowCount(len(found))
+                    for r, cells in enumerate(box_node_rows(found)):
+                        for c, text in enumerate(cells):
+                            table.setItem(r, c, QTableWidgetItem(text))
                 if index is None:
-                    note = "Insert a box to list the nodes inside it."
-                elif g is None:
+                    note = "Insert a box, move it over the vessel end, then press Scan."
+                elif scan and g is None:
                     note = "Run at least '3. Graph' to list the nodes inside the box."
+                elif owner not in state.scanned:
+                    note = "Press 'Scan the box for nodes' to list the nodes inside it."
                 else:
                     note = (f"{len(found)} node(s) in box {index + 1}, "
                             f"{sum(n.open_end for n in found)} of them open ends "
@@ -7464,8 +7508,8 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             if existing is not None and _is_ours(existing):
                 viewer.layers.remove(existing)
             return
-        if not found and existing is None:
-            return
+        if not found and (existing is None or not len(existing.data)):
+            return  # nothing drawn and nothing to draw: no layer update at all
         # Updated in place, never removed and re-added: removing a layer
         # rebuilds napari's whole scene graph and forces a garbage collection
         # (~0.4 s on a full run), and `_add_or_update` removes a Points layer
@@ -7697,6 +7741,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         wire(_name, _action.pick_nodes, on_pick_nodes)
         wire(_name, _action.clear_nodes, on_clear_nodes)
         wire(_name, _action.insert_box, on_insert_box)
+        wire(_name, _action.box_scan, on_box_scan)
         wire(_name, _action.box_choice, on_box_choice)
         wire(_name, _action.remove_box, on_remove_box)
         wire(_name, _action.use_node, on_use_node)
@@ -7752,7 +7797,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
                     *(rows[n] for n in ordinary),
                     action.pick,
                     action.insert_box, action.box_choice, action.box_size,
-                    action.box_step, action.box_move, action.box_nodes,
+                    action.box_step, action.box_move, action.box_scan, action.box_nodes,
                     action.use_node, action.remove_box,
                     action.draw, action.depth,
                     action.move, action.assign, action.clear,
@@ -7852,6 +7897,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         draw_in_3d=draw_in_3d,
         pick_nodes=on_pick_nodes, clear_nodes=on_clear_nodes,
         insert_box=on_insert_box, remove_box=on_remove_box, flush_boxes=flush_boxes,
+        scan_box=on_box_scan,
         # Moves wait for the clicks to stop before they are written; called
         # directly (a script, a test) a move is written at once.
         move_box=lambda direction: (on_move_box(direction), flush_boxes()),

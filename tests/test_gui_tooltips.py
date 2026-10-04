@@ -121,6 +121,7 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         "box_size",
         "box_step",
         "box_move",
+        "box_scan",
         "box_nodes",
         "use_node",
         "remove_box",

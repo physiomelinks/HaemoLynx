@@ -890,7 +890,7 @@ def test_a_method_only_shows_the_controls_it_can_use(panel):
 
     assert bc.state.actions["inlet"] == {"pick", "move", "assign"}
     # A volume role inserts a box rather than drawing one.
-    assert bc.state.actions["outlet"] == {"insert_box", "box_choice", "box_size", "box_step", "box_move", "box_nodes", "use_node", "remove_box"} | {"clear"}
+    assert bc.state.actions["outlet"] == {"insert_box", "box_choice", "box_size", "box_step", "box_move", "box_scan", "box_nodes", "use_node", "remove_box"} | {"clear"}
     assert bc.state.actions["venule_boundary"] == set(), "nothing to point at"
 
 
@@ -1580,7 +1580,7 @@ def test_choosing_node_ids_offers_its_own_row_and_buttons(panel):
     by_node_ids(widget, "venule_boundary")
 
     # The box tools stay, to find the node to list.
-    assert bc.state.actions["venule_boundary"] == {"pick_nodes", "clear_nodes"} | {"insert_box", "box_choice", "box_size", "box_step", "box_move", "box_nodes", "use_node", "remove_box"}
+    assert bc.state.actions["venule_boundary"] == {"pick_nodes", "clear_nodes"} | {"insert_box", "box_choice", "box_size", "box_step", "box_move", "box_scan", "box_nodes", "use_node", "remove_box"}
     assert rows_of(widget)["venule_boundary_node_ids"] in list(bc.holders["venule_boundary"])
     assert bc.actions["venule_boundary"].pick_nodes in list(bc.holders["venule_boundary"])
 
@@ -1833,6 +1833,8 @@ def test_insert_a_box_puts_a_10um_box_in_the_middle_of_the_view(panel):
     assert rows_of(widget)["inlet_node_volumes"].value == [
         [[15.0, 45.0, 55.0], [25.0, 55.0, 65.0]]
     ]
+    assert _table_ids(bc) == [], "nothing is scanned until Scan is pressed"
+    bc.actions["inlet"].box_scan.changed()
     # Every node in the box is listed, the open end first.
     assert _table_ids(bc) == ["1", "2", "4"]
     assert bc.actions["inlet"].box_nodes.table.item(0, 2).text() == "open end"
@@ -1859,6 +1861,7 @@ def test_box_size_and_arrows_edit_the_box(panel):
     assert rows_of(widget)["inlet_node_volumes"].value == [
         [[15.0, 45.0, 145.0], [25.0, 55.0, 175.0]]
     ]
+    bc.scan_box()
     assert _table_ids(bc) == [], "moved off the vessel end"
     action.box_move["left"].changed()
     action.box_move["forward"].changed()      # through the slices: z
@@ -1873,6 +1876,7 @@ def test_choosing_a_node_from_the_box_makes_it_the_inlet(panel):
 
     widget, viewer, bc = _box_panel(panel)
     bc.insert_box()
+    bc.scan_box()
     bc.actions["inlet"].box_nodes.table.selectRow(0)
     bc.actions["inlet"].use_node.changed()
 
@@ -1903,9 +1907,11 @@ def test_several_boxes_and_remove(panel):
     action = bc.actions["inlet"]
     assert list(action.box_choice.choices) == ["Box 1", "Box 2"]
     assert action.box_choice.value == "Box 2"
+    bc.scan_box()
     assert _table_ids(bc) == []                      # nothing near (150, 150)
 
     action.box_choice.value = "Box 1"
+    bc.scan_box()
     assert _table_ids(bc) == ["1", "2", "4"]
     action.remove_box.changed()
     assert len(rows_of(widget)["inlet_node_volumes"].value) == 1
@@ -1916,6 +1922,7 @@ def test_without_a_graph_the_box_list_says_to_run_graph_first(panel):
     widget, viewer, bc = _box_panel(panel)
     bc.state.results = None
     bc.insert_box()
+    bc.scan_box()
     assert _table_ids(bc) == []
     assert "3. Graph" in bc.actions["inlet"].box_nodes.note.value
 
@@ -1925,6 +1932,7 @@ def test_box_nodes_go_when_the_role_leaves_the_box_method(panel):
 
     widget, viewer, bc = _box_panel(panel)
     bc.insert_box()
+    bc.scan_box()
     assert BC_BOX_NODES in viewer.layers
     rows_of(widget)["inlet_node_selection_method"].value = "coordinates"
     assert BC_BOX_NODES not in viewer.layers
@@ -1985,6 +1993,7 @@ def test_box_lists_nodes_of_the_network_boundaries_runs_on(panel):
     checkpoints.get = lambda stage: SimpleNamespace(graph=built) if stage == "build_network" else None
 
     bc.insert_box()
+    bc.scan_box()
 
     assert _table_ids(bc) == ["77"]
     bc.actions["inlet"].box_nodes.table.selectRow(0)
@@ -2013,7 +2022,7 @@ def test_clicking_the_arrows_moves_the_box_at_once_and_writes_it_once_settled(pa
     assert rows_of(widget)["inlet_node_volumes"].value == [
         [[15.0, 45.0, 355.0], [25.0, 55.0, 365.0]]
     ]
-    assert _table_ids(bc) == []
+    assert _table_ids(bc) == [], "settling never scans"
 
 
 def test_moving_off_the_nodes_empties_the_box_nodes_layer_in_place(panel):
@@ -2024,13 +2033,18 @@ def test_moving_off_the_nodes_empties_the_box_nodes_layer_in_place(panel):
 
     widget, viewer, bc = _box_panel(panel)
     bc.insert_box()
+    bc.scan_box()
     drawn = viewer.layers[BC_BOX_NODES]
     assert len(drawn.data) == 3
 
     bc.actions["inlet"].box_step.value = 100.0
     bc.move_box("right")
+    # Moved since the scan: the old nodes are cleared, the same layer kept.
     assert viewer.layers[BC_BOX_NODES] is drawn and len(drawn.data) == 0
+    assert "Scan" in bc.actions["inlet"].box_nodes.note.value
     bc.move_box("left")
+    assert len(drawn.data) == 0, "not scanned again until asked"
+    bc.scan_box()
     assert viewer.layers[BC_BOX_NODES] is drawn and len(drawn.data) == 3
     assert drawn.size[0] > drawn.size[1], "the open end still drawn larger"
 
@@ -2040,6 +2054,7 @@ def test_clicking_a_listed_node_marks_it_and_centres_the_view_on_it(panel):
 
     widget, viewer, bc = _box_panel(panel)
     bc.insert_box()
+    bc.scan_box()
     viewer.camera.center = (0.0, 0.0, 0.0)
     table = bc.actions["inlet"].box_nodes.table
     table.selectRow(1)                                   # node 2, a junction
@@ -2051,3 +2066,27 @@ def test_clicking_a_listed_node_marks_it_and_centres_the_view_on_it(panel):
     assert np.allclose(centre, [52.0, 62.0])             # node 2's (y, x)
     assert viewer.dims.point[0] == pytest.approx(22.0, abs=1.0)   # its slice
     assert "Node 2" in widget._haemolynx_report()
+
+
+def test_in_3d_a_press_moves_only_the_3d_box_until_the_presses_stop(panel):
+    """Each layer change makes napari recompute the whole scene, so a press in
+    3D touches only the translucent box; the flat rectangle follows once."""
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.show()
+    viewer.dims.ndisplay = 3
+    viewer.camera.angles = (0, 0, 0)           # looking down -z, -y up the screen
+    solid = viewer.layers[boxes_name("inlet")]
+    flat = viewer.layers[regions_name("inlet")]
+    flat_before = np.asarray(flat.data[0]).copy()
+    bc.actions["inlet"].box_step.value = 7.0
+
+    bc.actions["inlet"].box_move["back"].changed()     # towards you: +z
+
+    assert np.asarray(solid.data[0])[:, 0].min() == pytest.approx(22.0)
+    assert np.allclose(np.asarray(flat.data[0]), flat_before), "rectangle not yet"
+    bc.flush_boxes()
+    assert np.asarray(flat.data[0])[0, 0] == pytest.approx(27.0)   # its z centre
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[22.0, 45.0, 55.0], [32.0, 55.0, 65.0]]
+    ]

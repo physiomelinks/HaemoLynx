@@ -66,6 +66,11 @@ ACTION_TOOLTIPS: dict[str, str] = {
         "up/down across the screen; back/forward through the slices in 2D, "
         "towards or away from you in 3D however the view is turned"
     ),
+    "box_scan": (
+        "List and mark the nodes inside the chosen box. Moving or resizing "
+        "the box does not scan, so it stays quick to steer; scan once it is "
+        "where you want it"
+    ),
     "box_nodes": (
         "Every node inside the chosen box, open ends (vessel ends) first; they "
         "are drawn yellow in the viewer, open ends larger with a red rim. "
