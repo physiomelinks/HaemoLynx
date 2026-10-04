@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import tifffile
 
+from haemolynx.io import file_axis_spacing_from_xyz
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PIPELINE_PATH = REPO_ROOT / "examples" / "resistance_network_pipeline.py"
@@ -69,13 +70,20 @@ def _run_pipeline(pipeline, *, input_path, plot_dir, output_dir, image_axis_orde
         return pickle.load(fh)
 
 
-def _write_anisotropic_tiff(volume: np.ndarray, path: Path) -> None:
+def _write_anisotropic_tiff(volume: np.ndarray, path: Path, axis_order: str = "zyx") -> None:
+    """Write *volume*, stored in *axis_order*, with VOXEL_SIZE_XYZ in its tags.
+
+    The tags describe the file's own axes (pages, height, width), so a stack
+    stored (x, y, z) carries the x spacing as its page spacing -- what the
+    loader reads them as (``io.voxel_size_xyz_from_file_axes``).
+    """
+    page, height, width = file_axis_spacing_from_xyz(VOXEL_SIZE_XYZ, axis_order)
     tifffile.imwrite(
         str(path),
         volume,
         imagej=True,
-        resolution=(1.0 / VOXEL_SIZE_XYZ[0], 1.0 / VOXEL_SIZE_XYZ[1]),
-        metadata={"spacing": VOXEL_SIZE_XYZ[2], "unit": "um"},
+        resolution=(1.0 / width, 1.0 / height),
+        metadata={"spacing": page, "unit": "um"},
     )
 
 
@@ -122,24 +130,34 @@ def test_pipeline_axis_order_transposed_input_matches_canonical_run(tmp_path):
     canonical_tiff = tmp_path / "canonical.tif"
     transposed_tiff = tmp_path / "transposed.tif"
     _write_anisotropic_tiff(volume, canonical_tiff)
-    # Same data stored as (x, y, z) instead of (z, y, x).
-    _write_anisotropic_tiff(np.transpose(volume, (2, 1, 0)), transposed_tiff)
+    # Same data and voxels stored as (x, y, z) instead of (z, y, x).
+    _write_anisotropic_tiff(np.transpose(volume, (2, 1, 0)), transposed_tiff, "xyz")
 
     pipeline = _load_pipeline_module()
+    canonical_output = TESTS_DIR / "outputs" / "axis_order_canonical"
+    transposed_output = TESTS_DIR / "outputs" / "axis_order_transposed"
     canonical_graph = _run_pipeline(
         pipeline,
         input_path=canonical_tiff,
         plot_dir=TESTS_DIR / "plots" / "plots_axis_order_canonical",
-        output_dir=TESTS_DIR / "outputs" / "axis_order_canonical",
+        output_dir=canonical_output,
         image_axis_order="zyx",
     )
     transposed_graph = _run_pipeline(
         pipeline,
         input_path=transposed_tiff,
         plot_dir=TESTS_DIR / "plots" / "plots_axis_order_transposed",
-        output_dir=TESTS_DIR / "outputs" / "axis_order_transposed",
+        output_dir=transposed_output,
         image_axis_order="xyz",
     )
+
+    # Both runs must read the same physical voxel; if they do not, every
+    # geometric comparison below fails for that reason alone.
+    for output_dir, stem in ((canonical_output, "canonical"), (transposed_output, "transposed")):
+        voxel_meta = json.loads((output_dir / f"{stem}_voxel_size.json").read_text())
+        assert tuple(voxel_meta["voxel_size"]) == pytest.approx(VOXEL_SIZE_XYZ)
+    assert transposed_graph.graph["voxel_size"] == pytest.approx((2.0, 0.5, 0.4))
+    assert canonical_graph.graph["voxel_size"] == pytest.approx((2.0, 0.5, 0.4))
 
     assert transposed_graph.number_of_nodes() == canonical_graph.number_of_nodes()
     assert transposed_graph.number_of_edges() == canonical_graph.number_of_edges()
