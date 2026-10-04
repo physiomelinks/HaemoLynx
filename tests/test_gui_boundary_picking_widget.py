@@ -889,7 +889,8 @@ def test_a_method_only_shows_the_controls_it_can_use(panel):
     rows_of(widget)["venule_boundary_selection_method"].value = "edge_percent"
 
     assert bc.state.actions["inlet"] == {"pick", "move", "assign"}
-    assert bc.state.actions["outlet"] == {"draw", "depth", "move", "assign", "clear"}
+    # A volume role inserts a box rather than drawing one.
+    assert bc.state.actions["outlet"] == {"insert_box", "box_choice", "box_size", "box_step", "box_move", "box_nodes", "use_node", "remove_box"} | {"clear"}
     assert bc.state.actions["venule_boundary"] == set(), "nothing to point at"
 
 
@@ -1578,7 +1579,8 @@ def test_choosing_node_ids_offers_its_own_row_and_buttons(panel):
     widget, viewer, bc = panel
     by_node_ids(widget, "venule_boundary")
 
-    assert bc.state.actions["venule_boundary"] == {"pick_nodes", "clear_nodes"}
+    # The box tools stay, to find the node to list.
+    assert bc.state.actions["venule_boundary"] == {"pick_nodes", "clear_nodes"} | {"insert_box", "box_choice", "box_size", "box_step", "box_move", "box_nodes", "use_node", "remove_box"}
     assert rows_of(widget)["venule_boundary_node_ids"] in list(bc.holders["venule_boundary"])
     assert bc.actions["venule_boundary"].pick_nodes in list(bc.holders["venule_boundary"])
 
@@ -1787,3 +1789,139 @@ def test_a_near_miss_in_3d_takes_the_node_it_was_aimed_at(panel):
     click_3d((0.0, y + 40.0, x))
     assert widget._haemolynx_values()["inlet_node_ids"] == [2]
     assert "No node under that click" in widget._haemolynx_report()
+
+
+# --- the volume method: insert a box, move it, choose a node in it ------------
+
+
+def _box_panel(panel, method="volume"):
+    """The panel with a small graph, automation off and the inlet on *method*.
+
+    Open end 1 sits at (20, 50, 60); junction 2 just beside it; 3 far away.
+    """
+    import networkx as nx
+    from types import SimpleNamespace
+
+    widget, viewer, bc = panel
+    no_bands(widget)
+    rows_of(widget)["automated_vessel_assignment"].value = False
+    rows_of(widget)["inlet_node_selection_method"].value = method
+    graph = nx.MultiGraph()
+    for node, pos in {1: (20, 50, 60), 2: (22, 52, 62), 3: (40, 150, 150),
+                      4: (19, 47, 58)}.items():
+        graph.add_node(node, pos=np.asarray(pos, dtype=float))
+    graph.add_edges_from([(1, 2), (2, 3), (2, 4), (4, 3)])
+    bc.state.results = SimpleNamespace(graph=graph)
+    bc.role.value = "inlet"
+    viewer.dims.ndisplay = 2
+    viewer.dims.set_point(0, 20.0)
+    viewer.camera.center = (20.0, 50.0, 60.0)
+    return widget, viewer, bc
+
+
+def _table_ids(bc, role="inlet"):
+    table = bc.actions[role].box_nodes.table
+    return [table.item(r, 0).text() for r in range(table.rowCount())]
+
+
+def test_insert_a_box_puts_a_10um_box_in_the_middle_of_the_view(panel):
+    from haemolynx.gui.boundary_picking import BC_BOX_NODES
+
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[15.0, 45.0, 55.0], [25.0, 55.0, 65.0]]
+    ]
+    # Every node in the box is listed, the open end first.
+    assert _table_ids(bc) == ["1", "2", "4"]
+    assert bc.actions["inlet"].box_nodes.table.item(0, 2).text() == "open end"
+    drawn = viewer.layers[BC_BOX_NODES]
+    assert len(drawn.data) == 3
+    assert drawn.size[0] > drawn.size[1], "the open end is drawn larger"
+    # The region and its box are drawn like any other volume.
+    assert regions_name("inlet") in viewer.layers and boxes_name("inlet") in viewer.layers
+
+
+def test_box_size_and_arrows_edit_the_box(panel):
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    action = bc.actions["inlet"]
+
+    action.box_size[2].value = 30.0          # x
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[15.0, 45.0, 45.0], [25.0, 55.0, 75.0]]
+    ]
+    action.box_step.value = 100.0
+    action.box_move["right"].changed()
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[15.0, 45.0, 145.0], [25.0, 55.0, 175.0]]
+    ]
+    assert _table_ids(bc) == [], "moved off the vessel end"
+    action.box_move["left"].changed()
+    action.box_move["forward"].changed()      # through the slices: z
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[115.0, 45.0, 45.0], [125.0, 55.0, 75.0]]
+    ]
+
+
+def test_choosing_a_node_from_the_box_makes_it_the_inlet(panel):
+    from haemolynx.gui.boundary_picking import BC_NODE_IDS
+
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.actions["inlet"].box_nodes.table.selectRow(0)
+    bc.actions["inlet"].use_node.changed()
+
+    assert rows_of(widget)["inlet_node_ids"].value == [1]
+    assert rows_of(widget)["inlet_node_selection_method"].value == "node_ids"
+    assert BC_NODE_IDS in viewer.layers
+    # The box tools stay, so another node can be found the same way.
+    assert "insert_box" in bc.state.actions["inlet"]
+    assert "now one of inlet's nodes" in widget._haemolynx_report()
+    # Under node_ids the box is how the node was found, not a pick left unread.
+    bc.show()
+    assert "Not used" not in widget._haemolynx_report()
+
+
+def test_use_node_without_a_selection_says_so(panel):
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.use_node()
+    assert rows_of(widget)["inlet_node_ids"].value == []
+    assert rows_of(widget)["inlet_node_selection_method"].value == "volume"
+
+
+def test_several_boxes_and_remove(panel):
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    viewer.camera.center = (20.0, 150.0, 150.0)
+    bc.insert_box()
+    action = bc.actions["inlet"]
+    assert list(action.box_choice.choices) == ["Box 1", "Box 2"]
+    assert action.box_choice.value == "Box 2"
+    assert _table_ids(bc) == []                      # nothing near (150, 150)
+
+    action.box_choice.value = "Box 1"
+    assert _table_ids(bc) == ["1", "2", "4"]
+    action.remove_box.changed()
+    assert len(rows_of(widget)["inlet_node_volumes"].value) == 1
+    assert rows_of(widget)["inlet_node_volumes"].value[0][0][1] == 145.0
+
+
+def test_without_a_graph_the_box_list_says_to_run_graph_first(panel):
+    widget, viewer, bc = _box_panel(panel)
+    bc.state.results = None
+    bc.insert_box()
+    assert _table_ids(bc) == []
+    assert "3. Graph" in bc.actions["inlet"].box_nodes.note.value
+
+
+def test_box_nodes_go_when_the_role_leaves_the_box_method(panel):
+    from haemolynx.gui.boundary_picking import BC_BOX_NODES
+
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    assert BC_BOX_NODES in viewer.layers
+    rows_of(widget)["inlet_node_selection_method"].value = "coordinates"
+    assert BC_BOX_NODES not in viewer.layers

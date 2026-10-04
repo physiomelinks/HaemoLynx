@@ -1082,9 +1082,13 @@ def test_the_layer_names_say_which_role_they_are():
 
 def test_every_picking_layer_is_named_in_one_place():
     """`_clear_our_layers` and the "is this ours?" check both read this."""
-    from haemolynx.gui.boundary_picking import BC_BOX_NAMES, BC_LAYER_NAMES, BC_NODE_IDS
+    from haemolynx.gui.boundary_picking import (
+        BC_BOX_NAMES, BC_BOX_NODES, BC_LAYER_NAMES, BC_NODE_IDS,
+    )
 
-    assert BC_LAYER_NAMES == {BC_COORDINATES, BC_NODE_IDS, *BC_REGION_NAMES, *BC_BOX_NAMES}
+    assert BC_LAYER_NAMES == {
+        BC_COORDINATES, BC_NODE_IDS, BC_BOX_NODES, *BC_REGION_NAMES, *BC_BOX_NAMES,
+    }
     assert BC_LAYER_NAMES.isdisjoint(LAYER_NAMES), "never a run's own layer"
 
 
@@ -1212,3 +1216,134 @@ def test_the_result_layers_expose_the_graph_the_tab_picks_from():
     results.stage_finished("build_network", SimpleNamespace(graph=graph, volume=None))
 
     assert results.graph is graph
+
+
+# --- inserting a box and choosing a node from it ------------------------------
+
+
+def test_a_box_is_inserted_round_a_centre_at_the_default_size():
+    from haemolynx.gui.boundary_picking import (
+        DEFAULT_BOX_SIZE_UM, box_around, box_centre, box_size,
+    )
+
+    box = box_around((20.0, 50.0, 60.0))
+    assert DEFAULT_BOX_SIZE_UM == (10.0, 10.0, 10.0)
+    assert box == [[15.0, 45.0, 55.0], [25.0, 55.0, 65.0]]
+    assert box_centre(box) == [20.0, 50.0, 60.0] and box_size(box) == [10.0, 10.0, 10.0]
+    with pytest.raises(ValueError):
+        box_around((1.0, 2.0), (10.0, 10.0, 10.0))
+
+
+def test_resizing_keeps_the_centre():
+    from haemolynx.gui.boundary_picking import box_around, box_centre, resize_box
+
+    box = resize_box(box_around((20.0, 50.0, 60.0)), (4.0, 30.0, 2.0))
+    assert box == [[18.0, 35.0, 59.0], [22.0, 65.0, 61.0]]
+    assert box_centre(box) == [20.0, 50.0, 60.0]
+
+
+@pytest.mark.parametrize(
+    "displayed, direction, shift",
+    [
+        # The usual XY view: x across, y down the screen, z the slices.
+        ((1, 2), "right", (0, 0, 5)),
+        ((1, 2), "left", (0, 0, -5)),
+        ((1, 2), "up", (0, -5, 0)),   # napari draws rows downwards
+        ((1, 2), "down", (0, 5, 0)),
+        ((1, 2), "forward", (5, 0, 0)),
+        ((1, 2), "back", (-5, 0, 0)),
+        # An XZ view: x across, z down, y through the slices.
+        ((0, 2), "up", (-5, 0, 0)),
+        ((0, 2), "forward", (0, 5, 0)),
+        # 3D: back/forward go along z.
+        ((0, 1, 2), "forward", (5, 0, 0)),
+        ((0, 1, 2), "right", (0, 0, 5)),
+    ],
+)
+def test_moving_a_box_follows_the_screen(displayed, direction, shift):
+    from haemolynx.gui.boundary_picking import box_around, move_box
+
+    box = box_around((20.0, 50.0, 60.0))
+    moved = move_box(box, direction, 5.0, displayed)
+    assert np.allclose(np.asarray(moved) - np.asarray(box), [shift, shift])
+
+
+def test_move_box_refuses_an_unknown_direction():
+    from haemolynx.gui.boundary_picking import box_around, move_box
+
+    with pytest.raises(ValueError, match="direction"):
+        move_box(box_around((0, 0, 0)), "sideways", 1.0)
+
+
+def _box_graph():
+    """Open end 1 at the centre, junction 2 near it, 4 on the box's face, 3 outside."""
+    import networkx as nx
+
+    G = nx.MultiGraph()
+    for node, pos in {1: (20, 50, 60), 2: (21, 52, 61), 3: (40, 90, 90), 4: (25, 50, 60),
+                      5: (20, 54, 64)}.items():
+        G.add_node(node, pos=np.asarray(pos, dtype=float))
+    G.add_edges_from([(1, 2), (2, 3), (2, 4), (4, 3), (5, 3)])
+    return G
+
+
+def test_nodes_in_box_lists_open_ends_first_then_by_distance():
+    from haemolynx.gui.boundary_picking import box_around, box_node_rows, nodes_in_box
+
+    found = nodes_in_box(_box_graph(), box_around((20.0, 50.0, 60.0)))
+    # 3 is outside; 4 sits on the box's face and counts.
+    assert [n.node_id for n in found] == [1, 5, 2, 4]
+    assert [n.open_end for n in found] == [True, True, False, False]
+    rows = box_node_rows(found)
+    assert rows[0] == ("1", "1", "open end", "20.0", "50.0", "60.0")
+    assert rows[2][:3] == ("2", "3", "")
+    assert nodes_in_box(None, box_around((0, 0, 0))) == []
+
+
+def test_box_nodes_are_drawn_yellow_and_open_ends_larger():
+    from haemolynx.gui.boundary_picking import (
+        BC_BOX_NODES, box_around, box_nodes_spec, nodes_in_box,
+    )
+
+    found = nodes_in_box(_box_graph(), box_around((20.0, 50.0, 60.0)))
+    spec = box_nodes_spec(found)
+    assert spec.name == BC_BOX_NODES and len(spec.data) == 4
+    sizes = np.asarray(spec.options["size"])
+    assert sizes[0] > sizes[2] and sizes[1] == sizes[0]
+    assert np.allclose(spec.options["face_color"][:, :3], [1.0, 0.9, 0.0])
+    assert not np.allclose(spec.options["border_color"][0], spec.options["border_color"][2])
+    assert list(spec.features["node_id"]) == [1, 5, 2, 4]
+
+
+def test_using_a_node_lists_it_and_switches_the_role_to_node_ids():
+    from haemolynx.gui.boundary_picking import use_node_for_role
+
+    values = {"inlet_node_selection_method": "volume", "inlet_node_ids": [7],
+              "outlet_node_ids": [3]}
+    proposed, message = use_node_for_role(values, "inlet", 3)
+    assert proposed["inlet_node_ids"] == [7, 3]
+    assert proposed["outlet_node_ids"] == []          # one node, one role
+    assert proposed["inlet_node_selection_method"] == "node_ids"
+    assert "3" in message
+
+    already = {"inlet_node_selection_method": "node_ids", "inlet_node_ids": [3]}
+    assert use_node_for_role(already, "inlet", 3) == ({}, "Node 3 is already one of inlet's nodes.")
+    assert use_node_for_role(values, "inlet", None)[0] == {}
+
+
+@pytest.mark.parametrize(
+    "point, displayed, camera, expected",
+    [
+        ((12.0, 0.0, 0.0), (1, 2), (0.0, 40.0, 70.0), [12.0, 40.0, 70.0]),
+        ((12.0, 5.0, 0.0), (0, 2), (0.0, 30.0, 70.0), [30.0, 5.0, 70.0]),
+        ((0.0, 0.0, 0.0), (0, 1, 2), (8.0, 40.0, 70.0), [8.0, 40.0, 70.0]),
+        # A 4D viewer: the leading (time) axis is dropped.
+        ((3.0, 12.0, 0.0, 0.0), (2, 3), (0.0, 40.0, 70.0), [12.0, 40.0, 70.0]),
+    ],
+)
+def test_view_centre_takes_the_camera_on_screen_and_the_slice_off_it(
+    point, displayed, camera, expected
+):
+    from haemolynx.gui.boundary_picking import view_centre_zyx
+
+    assert view_centre_zyx(point, displayed, camera) == expected

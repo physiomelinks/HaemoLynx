@@ -29,6 +29,13 @@ This turns those settings into two napari layers and back:
     an ``edge_percent`` role selects from. Drawn from the settings only, so it
     is never edited and never read back, and it is the one that shows in 3D.
 
+``HaemoLynx BC box nodes``
+    A Points layer marking every node inside the box being edited on a role's
+    page (:func:`nodes_in_box`): yellow and larger than the network's own
+    dots, open ends (degree 1) larger still with a red rim. Drawn from the
+    graph and the box, never read back; choosing one of those nodes for the
+    role writes its ID (:func:`use_node_for_role`).
+
 ``HaemoLynx BC node IDs``
     A Points layer marking the nodes each ``node_ids`` role lists, at their
     positions in the run's graph. The IDs are the setting, not the positions,
@@ -69,7 +76,22 @@ from haemolynx.gui.results import (
 __all__ = [
     "AUTOMATED_OVERRIDES_MANUAL_NOTE",
     "BC_BOX_NAMES",
+    "BC_BOX_NODES",
     "BC_COORDINATES",
+    "BOX_NODE_COLUMNS",
+    "BoxNode",
+    "DEFAULT_BOX_SIZE_UM",
+    "MOVE_DIRECTIONS",
+    "box_around",
+    "box_centre",
+    "box_node_rows",
+    "box_nodes_spec",
+    "box_size",
+    "move_box",
+    "nodes_in_box",
+    "resize_box",
+    "use_node_for_role",
+    "view_centre_zyx",
     "BC_LAYER_NAMES",
     "BC_NODE_IDS",
     "BC_REGION_NAMES",
@@ -318,7 +340,12 @@ BC_REGION_NAMES = tuple(regions_name(role) for role in ROLES)
 BC_BOX_NAMES = tuple(boxes_name(role) for role in ROLES)
 
 #: All of them, for "is this one of the picking layers?".
-BC_LAYER_NAMES = frozenset({BC_COORDINATES, BC_NODE_IDS, *BC_REGION_NAMES, *BC_BOX_NAMES})
+#: The nodes inside the box being edited, drawn to choose from.
+BC_BOX_NODES = f"{PREFIX}BC box nodes"
+
+BC_LAYER_NAMES = frozenset(
+    {BC_COORDINATES, BC_NODE_IDS, BC_BOX_NODES, *BC_REGION_NAMES, *BC_BOX_NAMES}
+)
 
 
 def outside_extent(
@@ -1166,3 +1193,218 @@ def snap(points: Any, candidates: Any) -> tuple[np.ndarray, np.ndarray]:
     distances = np.linalg.norm(moved[:, None, :] - targets[None, :, :], axis=2)
     nearest = np.argmin(distances, axis=1)          # ties take the lowest index
     return targets[nearest].copy(), distances[np.arange(len(moved)), nearest]
+
+
+# --- inserting a box and choosing a node from it ------------------------------
+
+#: The size, (z, y, x) in microns, of a box Insert a box places.
+DEFAULT_BOX_SIZE_UM: tuple[float, float, float] = (10.0, 10.0, 10.0)
+
+#: The box-moving buttons, in the order the panel lays them out, each with the
+#: screen direction it stands for. "back"/"forward" move through the axis not
+#: on screen -- the slices, in the usual XY view.
+MOVE_DIRECTIONS: tuple[str, ...] = ("left", "right", "up", "down", "back", "forward")
+
+#: Header of the "nodes in this box" table, one entry per :func:`box_node_rows` cell.
+BOX_NODE_COLUMNS = ("Node ID", "Vessels", "Open end", "z (um)", "y (um)", "x (um)")
+
+
+def _corners(box: Sequence[Sequence[float]]) -> tuple[np.ndarray, np.ndarray]:
+    pair = _corner_pair(box)
+    if pair is None:
+        raise ValueError(f"A box is two (z, y, x) corners, got {box!r}")
+    a, b = np.asarray(pair[0], dtype=float), np.asarray(pair[1], dtype=float)
+    return np.minimum(a, b), np.maximum(a, b)
+
+
+def _as_box(lo: np.ndarray, hi: np.ndarray) -> list[list[float]]:
+    return [plain([round(float(v), DECIMALS) for v in lo]),
+            plain([round(float(v), DECIMALS) for v in hi])]
+
+
+def box_around(
+    centre: Sequence[float], size: Sequence[float] = DEFAULT_BOX_SIZE_UM
+) -> list[list[float]]:
+    """The box of *size* (z, y, x) microns centred on *centre*, as two corners."""
+    middle = np.asarray(centre, dtype=float)[-3:]
+    half = np.abs(np.asarray(size, dtype=float)[-3:]) / 2.0
+    if middle.shape != (3,) or half.shape != (3,) or not np.all(np.isfinite([*middle, *half])):
+        raise ValueError(f"A box needs a (z, y, x) centre and size, got {centre!r}, {size!r}")
+    return _as_box(middle - half, middle + half)
+
+
+def box_centre(box: Sequence[Sequence[float]]) -> list[float]:
+    """The (z, y, x) middle of *box*."""
+    lo, hi = _corners(box)
+    return plain([round(float(v), DECIMALS) for v in (lo + hi) / 2.0])
+
+
+def box_size(box: Sequence[Sequence[float]]) -> list[float]:
+    """The (z, y, x) extent of *box*, in microns."""
+    lo, hi = _corners(box)
+    return plain([round(float(v), DECIMALS) for v in hi - lo])
+
+
+def resize_box(box: Sequence[Sequence[float]], size: Sequence[float]) -> list[list[float]]:
+    """*box* at a new (z, y, x) *size*, about the same centre."""
+    return box_around(box_centre(box), size)
+
+
+def move_box(
+    box: Sequence[Sequence[float]],
+    direction: str,
+    step: float,
+    displayed: Sequence[int] = (1, 2),
+) -> list[list[float]]:
+    """*box* moved *step* microns in a screen *direction*.
+
+    *displayed* is napari's ``dims.displayed``: the last axis runs across the
+    screen (left/right), the one before it down the screen (up/down -- napari
+    draws rows downwards, so "up" lowers that coordinate), and the axis not on
+    screen is what back/forward step through. In 3D, where all three are on
+    screen, back/forward move along z.
+    """
+    if direction not in MOVE_DIRECTIONS:
+        raise ValueError(f"direction must be one of {MOVE_DIRECTIONS}, not {direction!r}")
+    axes = [int(a) for a in displayed if 0 <= int(a) < 3][-2:]
+    if len(axes) < 2:
+        axes = [1, 2]
+    vertical, horizontal = axes
+    depth = next((a for a in range(3) if a not in axes), 0)
+    axis, sign = {
+        "left": (horizontal, -1.0), "right": (horizontal, 1.0),
+        "up": (vertical, -1.0), "down": (vertical, 1.0),
+        "back": (depth, -1.0), "forward": (depth, 1.0),
+    }[direction]
+    lo, hi = _corners(box)
+    shift = np.zeros(3)
+    shift[axis] = sign * abs(float(step))
+    return _as_box(lo + shift, hi + shift)
+
+
+@dataclass(frozen=True)
+class BoxNode:
+    """One node of the graph inside a box, as the panel lists it."""
+
+    node_id: Any
+    degree: int
+    position: tuple[float, float, float]
+
+    @property
+    def open_end(self) -> bool:
+        """A vessel ends here: the kind of node an inlet or outlet usually is."""
+        return self.degree == 1
+
+
+def nodes_in_box(graph: Any, box: Sequence[Sequence[float]]) -> list[BoxNode]:
+    """Every node of *graph* inside *box* (edges included), open ends first.
+
+    Then by distance from the box's centre, so the node the box was put round
+    comes to the top of its group.
+    """
+    if graph is None:
+        return []
+    lo, hi = _corners(box)
+    middle = (lo + hi) / 2.0
+    found = []
+    for node, degree in graph.degree():
+        pos = graph.nodes[node].get("pos")
+        if pos is None:
+            continue
+        p = np.asarray(pos, dtype=float)[:3]
+        if np.all(p >= lo) and np.all(p <= hi):
+            found.append(BoxNode(node, int(degree), tuple(float(v) for v in p)))
+    found.sort(key=lambda n: (not n.open_end,
+                              float(np.linalg.norm(np.asarray(n.position) - middle)), str(n.node_id)))
+    return found
+
+
+def box_node_rows(nodes: Sequence[BoxNode]) -> list[tuple[str, ...]]:
+    """The "nodes in this box" table's cells, one row per node, in order."""
+    return [
+        (
+            str(n.node_id),
+            str(n.degree),
+            "open end" if n.open_end else "",
+            *(f"{v:.1f}" for v in n.position),
+        )
+        for n in nodes
+    ]
+
+
+def box_nodes_spec(nodes: Sequence[BoxNode]) -> LayerSpec:
+    """The nodes in the box, yellow and larger than the network's own dots.
+
+    Open ends are larger again and rimmed in red, so the candidates for an
+    inlet or outlet stand out from the junctions around them.
+    """
+    data = (np.asarray([n.position for n in nodes], dtype=float)
+            if nodes else np.empty((0, 3), dtype=float))
+    open_end = np.asarray([n.open_end for n in nodes], dtype=bool)
+    yellow, red = (1.0, 0.9, 0.0, 1.0), (1.0, 0.15, 0.1, 1.0)
+    return LayerSpec(
+        kind="points",
+        name=BC_BOX_NODES,
+        data=data,
+        features={
+            "node_id": np.asarray([n.node_id for n in nodes], dtype=object),
+            "open_end": open_end,
+        },
+        options={
+            "size": np.where(open_end, BOUNDARY_COORDINATE_POINT_SIZE * 1.5,
+                             BOUNDARY_COORDINATE_POINT_SIZE),
+            "face_color": np.asarray([yellow] * len(nodes)).reshape(-1, 4),
+            "border_color": np.asarray(
+                [red if o else yellow for o in open_end]).reshape(-1, 4),
+            "border_width": 0.3,
+            "out_of_slice_display": True,
+        },
+    )
+
+
+def use_node_for_role(
+    values: Mapping[str, Any], role: str, node_id: Any
+) -> tuple[dict[str, Any], str]:
+    """The settings that make *node_id* one of *role*'s nodes, and what changed.
+
+    The node is added to the role's node IDs (taken off any other role that
+    listed it, as a click does -- :func:`toggle_node_id`) and the role is
+    switched to the ``node_ids`` method, so a run takes exactly the nodes
+    chosen rather than every open end in the box. Choosing a node the role
+    already has changes nothing.
+    """
+    node = _node_id(node_id)
+    if node is None:
+        return {}, f"{node_id!r} is not a node ID."
+    proposed: dict[str, Any] = {}
+    already = node in [_node_id(e) for e in _node_id_entries(values.get(node_id_setting(role)))]
+    if not already:
+        proposed, _toggled = toggle_node_id(values, role, node)
+    if str(values.get(method_setting(role))) != "node_ids":
+        proposed[method_setting(role)] = "node_ids"
+    if already and not proposed:
+        return {}, f"Node {node} is already one of {role}'s nodes."
+    return proposed, f"Node {node} is now one of {role}'s nodes."
+
+
+def view_centre_zyx(
+    point: Sequence[float], displayed: Sequence[int], camera_centre: Sequence[float]
+) -> list[float]:
+    """The (z, y, x) micron point in the middle of what the viewer shows.
+
+    *point* is napari's ``dims.point`` (the slice each axis is at, in world
+    units), *displayed* its ``dims.displayed`` and *camera_centre* its
+    ``camera.center``, whose last entries are the on-screen axes in displayed
+    order. Axes on screen take the camera's centre, the rest the slice -- so a
+    box inserted in the XY view lands on the slice being looked at.
+    """
+    full = [float(v) for v in point]
+    offset = max(0, len(full) - 3)
+    centre = [float(v) for v in camera_centre][-len(displayed):] if displayed else []
+    for axis, value in zip(displayed, centre):
+        if 0 <= int(axis) < len(full):
+            full[int(axis)] = value
+    out = full[offset:offset + 3]
+    while len(out) < 3:
+        out.insert(0, 0.0)
+    return out

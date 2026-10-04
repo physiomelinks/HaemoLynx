@@ -6130,6 +6130,65 @@ def about_widget():
     return report.native
 
 
+def _box_tool_widgets(role: str) -> dict[str, Any]:
+    """One role page's box tools, as magicgui widgets in the tab's own style.
+
+    The size is three spin boxes on one labelled row and the six moves one row
+    of buttons, each button named for its direction; the node list is a Qt
+    table in a container of its own, reachable as ``.table`` (and its line of
+    explanation as ``.note``).
+    """
+    from magicgui.widgets import ComboBox, Container, FloatSpinBox, Label, PushButton
+    from qtpy.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget
+
+    from haemolynx.gui.boundary_picking import (
+        BOX_NODE_COLUMNS,
+        DEFAULT_BOX_SIZE_UM,
+        MOVE_DIRECTIONS,
+        role_title,
+    )
+
+    size = Container(
+        widgets=[
+            FloatSpinBox(value=v, min=0.5, max=5000.0, step=1.0, label=axis, name=f"size_{axis}")
+            for axis, v in zip("zyx", DEFAULT_BOX_SIZE_UM)
+        ],
+        layout="horizontal", labels=True, label="Box size (um)",
+    )
+    arrows = {"left": "\u25c0 Left", "right": "Right \u25b6", "up": "\u25b2 Up",
+              "down": "\u25bc Down", "back": "Back (slice \u2212)",
+              "forward": "Forward (slice +)"}
+    move = Container(
+        widgets=[PushButton(text=arrows[d], name=d) for d in MOVE_DIRECTIONS],
+        layout="horizontal", labels=False, label="Move the box",
+    )
+    note = Label(value="Insert a box to list the nodes inside it.")
+    nodes = Container(widgets=[note], labels=False, label="Nodes in the box")
+    table = QTableWidget(0, len(BOX_NODE_COLUMNS))
+    table.setObjectName(f"haemolynx_box_nodes_{role}")
+    table.setHorizontalHeaderLabels(list(BOX_NODE_COLUMNS))
+    table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    table.setSelectionMode(QAbstractItemView.SingleSelection)
+    table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table.verticalHeader().setVisible(False)
+    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    table.setMinimumHeight(110)
+    nodes.native.layout().addWidget(table)
+    nodes.table = table
+    nodes.note = note
+    return {
+        "insert_box": PushButton(text="Insert a box"),
+        "box_choice": ComboBox(choices=["(no box yet)"], label="Box"),
+        "box_size": size,
+        "box_step": FloatSpinBox(value=5.0, min=0.1, max=1000.0, step=1.0,
+                                 label="Move step (um)"),
+        "box_move": move,
+        "box_nodes": nodes,
+        "use_node": PushButton(text=f"Use selected node as {role_title(role)}"),
+        "remove_box": PushButton(text="Remove this box"),
+    }
+
+
 def _boundary_controls(viewer, rows, fields, schema, report):
     """The Boundaries tab's "point at it instead of typing it" controls.
 
@@ -6148,7 +6207,14 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         return None
 
     import napari
-    from magicgui.widgets import ComboBox, Container, FloatSlider, Label, PushButton
+    from magicgui.widgets import (
+        ComboBox,
+        Container,
+        FloatSlider,
+        FloatSpinBox,
+        Label,
+        PushButton,
+    )
 
     from haemolynx.gui.boundary_picking import (
         AUTOMATED_OVERRIDES_MANUAL_NOTE,
@@ -6187,6 +6253,19 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         toggle_node_id,
         volume_setting,
         wanted_rows,
+        BC_BOX_NODES,
+        BOX_NODE_COLUMNS,
+        DEFAULT_BOX_SIZE_UM,
+        MOVE_DIRECTIONS,
+        box_around,
+        box_node_rows,
+        box_nodes_spec,
+        box_size,
+        move_box,
+        nodes_in_box,
+        resize_box,
+        use_node_for_role,
+        view_centre_zyx,
     )
     from haemolynx.gui.chrome_tooltips import (
         ACTION_TOOLTIPS,
@@ -6229,6 +6308,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             clear=PushButton(text="Clear this role's regions"),
             pick_nodes=PushButton(text=PICK_NODES_TEXT),
             clear_nodes=PushButton(text="Clear this role's node IDs"),
+            **_box_tool_widgets(name),
         )
         for name in ROLES
     }
@@ -6236,20 +6316,28 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         for _control, _tip in ACTION_TOOLTIPS.items():
             getattr(_action, _control).tooltip = _tip
 
+    #: The box tools: insert a box, size and move it, list the nodes in it
+    #: and choose one. A volume role's page is these; a node-ID role keeps
+    #: them as a way to find the node to list.
+    BOX_TOOLS = ("insert_box", "box_choice", "box_size", "box_step", "box_move",
+                 "box_nodes", "use_node", "remove_box")
     #: Which of a role's controls its chosen method has any use for.
     ACTIONS_FOR_METHOD = {
         "coordinates": ("pick", "move", "assign"),
-        "volume": ("draw", "depth", "move", "assign", "clear"),
-        "node_ids": ("pick_nodes", "clear_nodes"),
+        "volume": (*BOX_TOOLS, "clear"),
+        "node_ids": ("pick_nodes", "clear_nodes", *BOX_TOOLS),
     }
     CONTROLS = ("pick", "draw", "depth", "move", "assign", "clear",
-                "pick_nodes", "clear_nodes")
+                "pick_nodes", "clear_nodes", *BOX_TOOLS)
 
     #: `node_pick` is the role a click on a graph node goes to, or None when
     #: clicks are the camera's alone.
+    #: `active_box` is, per role, which of its boxes the box tools act on;
+    #: `box_nodes` the nodes listed for each role's box, in table order.
     state = SimpleNamespace(applying=False, results=None, connected=set(),
                         visible=frozenset(), hidden=frozenset(), tabs=None,
-                        actions={}, draw3d=None, node_pick=None)
+                        actions={}, draw3d=None, node_pick=None,
+                        active_box={}, box_nodes={})
 
     #: Each role's page, and where each shared row currently sits. Filled in
     #: by `page`; empty until the panel has been laid out.
@@ -6302,7 +6390,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             if picked and method != "coordinates":
                 notes.append(f"{picked} {name} coordinate(s) but "
                              f"{method_setting(name)} is {method!r}")
-            if boxed and method != "volume":
+            # Under node_ids a box is how the nodes were found, not a pick.
+            if boxed and method not in ("volume", "node_ids"):
                 notes.append(f"{boxed} {name} region(s) but "
                              f"{method_setting(name)} is {method!r}")
             if listed and method != "node_ids":
@@ -6421,6 +6510,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
                 focus_nodes()
         finally:
             state.applying = False
+        refresh_box_tools()
 
     #: What a layer's `events.data` says once an edit is complete. The same
     #: edit also fires "adding"/"changing"/"removing" first, and napari's
@@ -6774,6 +6864,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             return
         if any(name in viewer.layers for name in (*our_layer_names(), BC_NODE_IDS)):
             redraw()
+        else:
+            refresh_box_tools()
 
     def on_show() -> None:
         redraw()
@@ -7033,6 +7125,195 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         write_rows({volume_setting(str(role.value)): []})
         redraw()
 
+    # --- the box tools: insert a box, size and move it, choose a node in it.
+
+    def boxes_of(owner: str, values=None) -> list:
+        values = current_values() if values is None else values
+        return BoundaryPicks.from_settings(values).to_settings()[volume_setting(owner)]
+
+    def active_index(owner: str, boxes) -> int | None:
+        """Which of *owner*'s boxes the tools act on: the chosen one, else the last."""
+        if not boxes:
+            return None
+        index = state.active_box.get(owner, len(boxes) - 1)
+        index = min(max(int(index), 0), len(boxes) - 1)
+        state.active_box[owner] = index
+        return index
+
+    def entered_size(owner: str) -> list[float]:
+        return [float(w.value) for w in actions[owner].box_size]
+
+    def view_centre() -> list[float]:
+        dims = viewer.dims
+        return view_centre_zyx(
+            dims.point, tuple(int(a) for a in dims.displayed), viewer.camera.center
+        )
+
+    def write_boxes(owner: str, boxes, active: int | None) -> None:
+        if active is not None:
+            state.active_box[owner] = active
+        write_rows({volume_setting(owner): boxes})
+        # Writing the row only redraws once the BC layers are on screen.
+        redraw()
+
+    def on_insert_box() -> None:
+        owner = str(role.value)
+        disarm_3d()
+        disarm_nodes()
+        try:
+            box = box_around(view_centre(), entered_size(owner))
+        except ValueError as error:
+            report.value = f"Could not insert a box: {error}"
+            return
+        boxes = [*boxes_of(owner), box]
+        write_boxes(owner, boxes, len(boxes) - 1)
+        found = state.box_nodes.get(owner, [])
+        report.value = (
+            f"Inserted box {len(boxes)} for {owner} at the middle of the view: "
+            f"{box[0]} to {box[1]} um (z, y, x). Move it with the arrows, change "
+            f"its size above, then choose a node from the list "
+            f"({len(found)} in it, {sum(n.open_end for n in found)} open end(s))."
+        )
+
+    def on_box_choice() -> None:
+        owner = str(role.value)
+        choice = str(actions[owner].box_choice.value or "")
+        if choice.startswith("Box "):
+            state.active_box[owner] = int(choice.split()[1]) - 1
+        refresh_box_tools()
+
+    def on_box_size() -> None:
+        owner = str(role.value)
+        boxes = boxes_of(owner)
+        index = active_index(owner, boxes)
+        if index is None:
+            return
+        try:
+            boxes[index] = resize_box(boxes[index], entered_size(owner))
+        except ValueError as error:
+            report.value = f"Could not resize the box: {error}"
+            return
+        write_boxes(owner, boxes, index)
+
+    def on_move_box(direction: str) -> None:
+        owner = str(role.value)
+        boxes = boxes_of(owner)
+        index = active_index(owner, boxes)
+        if index is None:
+            report.value = "Insert a box first, then move it."
+            return
+        displayed = [int(a) - max(0, viewer.dims.ndim - 3) for a in viewer.dims.displayed]
+        boxes[index] = move_box(boxes[index], direction, float(actions[owner].box_step.value),
+                                displayed)
+        write_boxes(owner, boxes, index)
+        found = state.box_nodes.get(owner, [])
+        report.value = (
+            f"Moved {owner} box {index + 1} {direction}: {boxes[index][0]} to "
+            f"{boxes[index][1]} um. {len(found)} node(s) in it, "
+            f"{sum(n.open_end for n in found)} open end(s)."
+        )
+
+    def on_remove_box() -> None:
+        owner = str(role.value)
+        boxes = boxes_of(owner)
+        index = active_index(owner, boxes)
+        if index is None:
+            report.value = f"{owner} has no box to remove."
+            return
+        del boxes[index]
+        write_boxes(owner, boxes, max(index - 1, 0) if boxes else None)
+        if not boxes:
+            state.active_box.pop(owner, None)
+        report.value = f"Removed {owner} box {index + 1}."
+
+    def selected_box_node(owner: str):
+        table = actions[owner].box_nodes.table
+        rows_chosen = sorted({i.row() for i in table.selectionModel().selectedRows()})
+        listed = state.box_nodes.get(owner, [])
+        return listed[rows_chosen[0]] if rows_chosen and rows_chosen[0] < len(listed) else None
+
+    def on_box_node_selected(owner: str) -> None:
+        """Mark the chosen row's node in the viewer, among the box's nodes."""
+        target = layer(BC_BOX_NODES)
+        chosen = selected_box_node(owner)
+        if target is None or chosen is None:
+            return
+        listed = state.box_nodes.get(owner, [])
+        target.selected_data = {listed.index(chosen)}
+
+    def on_use_node() -> None:
+        owner = str(role.value)
+        chosen = selected_box_node(owner)
+        if chosen is None:
+            report.value = "Click a node in the list of nodes in the box first."
+            return
+        if not role_manual_controls_enabled(owner, current_values()):
+            report.value = DISABLED_ROLE_TOOLTIP[owner]
+            return
+        proposed, message = use_node_for_role(current_values(), owner, chosen.node_id)
+        write_rows(proposed)
+        redraw()
+        listed = BoundaryPicks.from_settings(current_values()).node_ids.get(owner, ())
+        kind = "an open end" if chosen.open_end else f"a junction of {chosen.degree} vessels"
+        report.value = (
+            f"{message} It is {kind}. {role_title(owner)} now takes exactly node(s) "
+            f"{list(listed)} (method node_ids); the box stays as a finder."
+        )
+
+    def refresh_box_tools() -> None:
+        """Each role's box list, size, node table, and the box's nodes drawn."""
+        from qtpy.QtWidgets import QTableWidgetItem
+
+        values = current_values()
+        g = graph()
+        was = state.applying
+        state.applying = True
+        try:
+            for owner, action in actions.items():
+                boxes = boxes_of(owner, values)
+                index = active_index(owner, boxes)
+                choices = [f"Box {i + 1}" for i in range(len(boxes))] or ["(no box yet)"]
+                action.box_choice.choices = choices
+                action.box_choice.value = choices[index if index is not None else 0]
+                if index is not None:
+                    for widget, size in zip(action.box_size, box_size(boxes[index])):
+                        widget.value = max(float(widget.min), min(float(widget.max), size))
+                found = nodes_in_box(g, boxes[index]) if index is not None else []
+                state.box_nodes[owner] = found
+                table = action.box_nodes.table
+                table.setRowCount(len(found))
+                for r, cells in enumerate(box_node_rows(found)):
+                    for c, text in enumerate(cells):
+                        table.setItem(r, c, QTableWidgetItem(text))
+                if index is None:
+                    note = "Insert a box to list the nodes inside it."
+                elif g is None:
+                    note = "Run at least '3. Graph' to list the nodes inside the box."
+                else:
+                    note = (f"{len(found)} node(s) in box {index + 1}, "
+                            f"{sum(n.open_end for n in found)} of them open ends "
+                            "(listed first). Click one, then Use selected node.")
+                action.box_nodes.note.value = note
+        finally:
+            state.applying = was
+        draw_box_nodes(values)
+
+    def draw_box_nodes(values) -> None:
+        """The open role's box nodes in the viewer, if its page shows the box tools."""
+        owner = str(role.value)
+        shows = "box_nodes" in state.actions.get(owner, ()) and \
+            role_manual_controls_enabled(owner, values)
+        found = state.box_nodes.get(owner, []) if shows else []
+        existing = layer(BC_BOX_NODES)
+        if not found:
+            if existing is not None and _is_ours(existing):
+                viewer.layers.remove(existing)
+            return
+        try:
+            _add_or_update(viewer, box_nodes_spec(found))
+        except Exception:  # noqa: BLE001 - drawing must never stop the tab
+            logger.exception("could not draw the nodes in the box")
+
     # --- node_ids: click a node of the graph to list it for the role. The
     # click is caught at the viewer rather than on the nodes layer, because a
     # run replaces that layer whenever its node count changes and a callback
@@ -7241,6 +7522,18 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         wire(_name, _action.depth, on_depth_changed)
         wire(_name, _action.pick_nodes, on_pick_nodes)
         wire(_name, _action.clear_nodes, on_clear_nodes)
+        wire(_name, _action.insert_box, on_insert_box)
+        wire(_name, _action.box_choice, on_box_choice)
+        wire(_name, _action.remove_box, on_remove_box)
+        wire(_name, _action.use_node, on_use_node)
+        for _spin in _action.box_size:
+            wire(_name, _spin, on_box_size)
+        for _button in _action.box_move:
+            wire(_name, _button, lambda d=_button.name: on_move_box(d))
+        _action.box_nodes.table.itemSelectionChanged.connect(
+            lambda owner=_name: on_box_node_selected(owner))
+        _action.box_nodes.table.itemDoubleClicked.connect(
+            lambda _item, owner=_name: (setattr(role, "value", owner), on_use_node()))
 
     def on_ndisplay(*_args) -> None:
         # A drag armed in 3D would, back in 2D, fight napari's own tools for
@@ -7283,7 +7576,11 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             holder = Container(
                 widgets=[
                     *(rows[n] for n in ordinary),
-                    action.pick, action.draw, action.depth,
+                    action.pick,
+                    action.insert_box, action.box_choice, action.box_size,
+                    action.box_step, action.box_move, action.box_nodes,
+                    action.use_node, action.remove_box,
+                    action.draw, action.depth,
                     action.move, action.assign, action.clear,
                     action.pick_nodes, action.clear_nodes,
                     *((nodes.container,) if nodes is not None else ()),
@@ -7367,6 +7664,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
             target = layer(name)
             if target is not None:
                 set_defaults(target)
+        draw_box_nodes(current_values())
 
     role.changed.connect(on_role_changed)
 
@@ -7379,6 +7677,8 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         assign=on_assign, clear=on_clear, redraw=redraw, sync=sync,
         draw_in_3d=draw_in_3d,
         pick_nodes=on_pick_nodes, clear_nodes=on_clear_nodes,
+        insert_box=on_insert_box, move_box=on_move_box, remove_box=on_remove_box,
+        use_node=on_use_node, refresh_box_tools=refresh_box_tools,
         pick_node_at=pick_node_at, pick_node_click=pick_node_click,
         layer_names=(BC_COORDINATES, BC_NODE_IDS, *BC_REGION_NAMES, *BC_BOX_NAMES),
         shared_ilastik_holder=lambda: getattr(state, "shared_ilastik_holder", None),

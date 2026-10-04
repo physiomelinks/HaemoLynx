@@ -47,6 +47,37 @@ ACTION_TOOLTIPS: dict[str, str] = {
     "clear_nodes": (
         "Empty this role's node ID list"
     ),
+    "insert_box": (
+        "Put a box of the size below in the middle of the view, then move and "
+        "resize it to take in the vessel end you want"
+    ),
+    "box_choice": (
+        "Which of this role's boxes the size, arrows and node list act on"
+    ),
+    "box_size": (
+        "The box's size along z, y and x in microns; changing it resizes the "
+        "chosen box about its centre"
+    ),
+    "box_step": (
+        "How far, in microns, one press of an arrow moves the box"
+    ),
+    "box_move": (
+        "Move the box across the screen (left/right, up/down) or through the "
+        "slices (back/forward), by the step above"
+    ),
+    "box_nodes": (
+        "Every node inside the chosen box, open ends (vessel ends) first; they "
+        "are drawn yellow in the viewer, open ends larger with a red rim. "
+        "Click one to mark it; double-click to use it"
+    ),
+    "use_node": (
+        "Make the node selected in the list one of this role's nodes: it is "
+        "added to the role's node IDs and the role switches to node_ids, so a "
+        "run takes exactly that node"
+    ),
+    "remove_box": (
+        "Delete the chosen box"
+    ),
 }
 
 #: The node-picking button while clicks are going to its role.

@@ -116,6 +116,14 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         "clear",
         "pick_nodes",
         "clear_nodes",
+        "insert_box",
+        "box_choice",
+        "box_size",
+        "box_step",
+        "box_move",
+        "box_nodes",
+        "use_node",
+        "remove_box",
     }
     for text in named:
         assert len(text.strip().split()) >= 3, text
