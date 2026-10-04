@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import networkx as nx
 import pytest
 
+from haemolynx import graph as graph_module
 from haemolynx.gui.tabs import assign_to_stages, tabs_for
 from haemolynx.pipeline import apply_network_handling, default_schema, stages
 from haemolynx.pipeline.progress import STAGES
@@ -255,6 +256,65 @@ def test_run_from_the_haemodynamics_tab_applies_the_pruning(monkeypatch):
 
     assert sorted(seen["model_graph"].nodes) == [0, 1, 2]
     assert seen["solve_boundaries"].inlet_nodes == [0]
+
+
+# --- the diameters stage calibrates on what will be kept ---------------------
+
+
+def test_the_kept_edges_are_exactly_what_the_removal_keeps():
+    graph = _two_components()
+    graph.add_edge(1, 2)  # a parallel vessel keeps its own key
+    graph.add_edge(20, 21)  # an outlet and no inlet
+
+    kept = graph_module.edges_with_connected_io(graph, [10, 0], [2, 21])
+    pruned, _stats = graph_module.remove_components_without_connected_io(graph, [10, 0], [2, 21])
+
+    assert sorted(kept) == sorted(pruned.edges(keys=True)) == [(0, 1, 0), (1, 2, 0), (1, 2, 1)]
+
+
+def _diameters_stage(tmp_path, monkeypatch, handling):
+    """The diameters stage on a chain from inlet to outlet plus a stray vessel
+    with neither, recording which vessels it asks the measurements to
+    calibrate on."""
+    from test_diameter_assignment import _boundaries, _network, _settings, _vessel_network
+
+    graph = _network()
+    for node, z in ((90, 0.0), (91, 50.0)):
+        graph.add_node(node, pos=[z, 100.0, 0.0])
+    graph.add_edge(90, 91, key=0, branch_order="B01", length=50.0,
+                   voxels=[[0.0, 100.0, 0.0], [50.0, 100.0, 0.0]])
+    calibrated = []
+
+    def fake_assign(G, _config, *, mask_volume=None, calibration_edges=None):
+        calibrated.append(calibration_edges)
+        return G, {}, None
+
+    monkeypatch.setattr(stages, "assign_edge_diameters", fake_assign)
+    model = stages.assign_diameters(
+        _settings(tmp_path, **handling), _vessel_network(tmp_path, graph), _boundaries(), SCHEMA
+    )
+    return model, calibrated
+
+
+def test_the_diameters_stage_calibrates_on_the_vessels_remove_disconnected_keeps(
+    tmp_path, monkeypatch
+):
+    """The FWHM lines over a stray segmented blob: its vessel was measured,
+    then removed at the start of the haemodynamics stage -- after its widths
+    had joined the decoy check and the blur estimate the kept vessels'
+    widths were fitted with."""
+    model, calibrated = _diameters_stage(tmp_path, monkeypatch, REMOVE)
+
+    assert sorted(calibrated[0]) == [(0, 1, 0), (1, 2, 0), (2, 3, 0), (3, 4, 0)]
+    # The removal itself stays where it was, at the start of Haemodynamics.
+    assert model.graph.has_edge(90, 91)
+
+
+def test_leave_unsolved_calibrates_on_every_vessel(tmp_path, monkeypatch):
+    model, calibrated = _diameters_stage(tmp_path, monkeypatch, LEAVE)
+
+    assert calibrated == [None]
+    assert model.graph.has_edge(90, 91)
 
 
 # --- haematocrit_junction_rule=split_junctions ---------------------------------

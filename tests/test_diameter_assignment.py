@@ -906,6 +906,43 @@ def test_fwhm_and_the_raw_section_fallback_share_one_image_psf(monkeypatch, tmp_
     assert summary["fwhm_psf"]["source"] == "settings"
 
 
+def test_image_calibrations_sample_only_the_calibration_edges(monkeypatch, tmp_path):
+    """What the diameters stage passes when the haemodynamics will remove a
+    branch without an inlet and an outlet: the blur, the decoys and the
+    fallback's own blur come from the vessels kept, while every vessel is
+    still measured."""
+    import haemolynx.haemodynamics.apply as apply_module
+
+    _seen, raw_path = _fake_measurements(monkeypatch, tmp_path, fwhm_um=3.0)
+    sampled = {}
+
+    def fake_psf(_G, _raw, _voxel, **kwargs):
+        sampled["psf"] = kwargs.get("edges")
+        return None, {"reason": "too few wide vessels"}
+
+    def fake_decoys(_G, _measure, **kwargs):
+        sampled["decoys"] = kwargs.get("edges")
+        return {"skipped": True, "reason": "not under test"}
+
+    def fake_raw(_G, **kwargs):
+        sampled["raw_section"] = kwargs.get("calibration_edges")
+        return {"edges_measured": 0, "edges_skipped": []}
+
+    monkeypatch.setattr(apply_module.raw_section, "estimate_psf_sigma", fake_psf)
+    monkeypatch.setattr(apply_module.fwhm_decoys, "fwhm_decoy_check", fake_decoys)
+    monkeypatch.setattr(apply_module.raw_section, "measure_edge_diameters_from_raw_sections", fake_raw)
+    graph = _network()
+    kept = [(0, 1, 0), (1, 2, 0)]
+
+    assign_edge_diameters(
+        graph, _fwhm_config(raw_path, fwhm_decoy_check=True, fwhm_demote_flagged_edges=False),
+        calibration_edges=iter(kept),
+    )
+
+    assert sampled == {"psf": kept, "decoys": kept, "raw_section": kept}
+    assert all(d["fwhm_diameter_um"] == 3.0 for _u, _v, d in graph.edges(data=True))
+
+
 def test_fwhm_fits_each_profiles_blur_when_the_shared_psf_is_switched_off(monkeypatch, tmp_path):
     seen, raw_path = _fake_measurements(monkeypatch, tmp_path)
 

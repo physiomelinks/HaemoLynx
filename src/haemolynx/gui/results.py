@@ -2030,6 +2030,39 @@ class ResultLayers:
             note=counts or "No boundary nodes found.",
         )
 
+    def _fwhm_line_layers(self) -> list[LayerSpec]:
+        """FWHM's profile lines and measured widths on the vessels of the graph
+        held now.
+
+        A layer already drawn is drawn again even with no line left: else the
+        lines of vessels removed since -- by network handling, or by hand --
+        stay on screen over segmented vessels the network no longer has.
+        """
+        if self._graph is None:
+            return []
+        layers = []
+        for name, paths, colour, width in (
+            (FWHM_PROFILES, fwhm_profile_polylines(self._graph), "cyan", 0.35),
+            (FWHM_WIDTHS, fwhm_measured_polylines(self._graph), "magenta", 0.7),
+        ):
+            if not paths and name not in self._emitted:
+                continue
+            vectors, _owner = polylines_to_vectors(paths)
+            layers.append(
+                LayerSpec(
+                    kind="vectors",
+                    name=name,
+                    data=vectors,
+                    options={
+                        "vector_style": "line",
+                        "edge_width": width,
+                        "edge_color": colour,
+                        "out_of_slice_display": True,
+                    },
+                )
+            )
+        return layers
+
     def _from_assign_diameters(self, output: Any) -> StageLayers:
         self._sync_graph_from_output(output)
         layers = list(self._vessel_layers("assign_diameters"))
@@ -2049,27 +2082,7 @@ class ResultLayers:
                     options={"blending": "additive", "colormap": "gray", "opacity": 0.8},
                 )
             )
-        if self._graph is not None:
-            for name, paths, colour, width in (
-                (FWHM_PROFILES, fwhm_profile_polylines(self._graph), "cyan", 0.35),
-                (FWHM_WIDTHS, fwhm_measured_polylines(self._graph), "magenta", 0.7),
-            ):
-                if not paths:
-                    continue
-                vectors, _owner = polylines_to_vectors(paths)
-                layers.append(
-                    LayerSpec(
-                        kind="vectors",
-                        name=name,
-                        data=vectors,
-                        options={
-                            "vector_style": "line",
-                            "edge_width": width,
-                            "edge_color": colour,
-                            "out_of_slice_display": True,
-                        },
-                    )
-                )
+        layers.extend(self._fwhm_line_layers())
         orders = sorted(
             {str(o) for o in edge_features(self._graph, ["branch_order"])["branch_order"] if o}
         ) if self._graph is not None else []
@@ -2201,6 +2214,9 @@ class ResultLayers:
                 f"{float(network):.4e} Pa.s/m^3."
             )
         note = " ".join(parts) if parts else "Solved."
+        # Network handling may have removed vessels since Diameters drew their
+        # lines, and Post processing (which draws through here) edits them.
+        layers.extend(self._fwhm_line_layers())
         return StageLayers(
             stage="solve", title=_title_for("solve"), layers=tuple(layers), note=note
         )

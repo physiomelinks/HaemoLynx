@@ -55,6 +55,7 @@ from scipy.optimize import least_squares
 
 from .automated import _aggregate_edge_diameter, _arc_length_parameterize
 from .edt_diameter import _centreline_tangents, edge_sample_targets
+from .poiseuille import edge_selection
 from .sections import (
     averaged_section,
     projected_sigma,
@@ -364,13 +365,14 @@ def calibrate_from_rings(
     average_um: float = DEFAULT_AVERAGE_ALONG_VESSEL_UM,
     min_contrast: float = ENDOTHELIAL_MIN_RING_CONTRAST,
     seed: int = 0,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> tuple[tuple[float, float, float] | None, float | None, dict[str, Any]]:
     """``(psf_sigma_zyx, wall_um, details)`` from the image's wide vessels'
     rings; ``(None, None, details)`` when too few show them.
 
     The middle section of each of up to :data:`PSF_CALIBRATION_MAX_SECTIONS`
-    edges at least :data:`PSF_CALIBRATION_MIN_GUIDE_UM` wide is fitted with
-    its wall free, and its blur free too unless *psf_sigma_zyx* is given. A
+    edges at least :data:`PSF_CALIBRATION_MIN_GUIDE_UM` wide -- among *edges*
+    (``(u, v, key)``) when given -- is fitted with its wall free, and its blur free too unless *psf_sigma_zyx* is given. A
     robust fit over their blurs gives sigma_xy and sigma_z (see
     :func:`~haemolynx.haemodynamics.sections.psf_from_section_blurs`); their
     median wall is the wall every other section is fitted with. Across the
@@ -379,10 +381,12 @@ def calibrate_from_rings(
     exact: the ring's middle -- what fixes a lumen -- is what they agree on.
     """
     rng = np.random.default_rng(seed)
+    chosen = edge_selection(edges)
     candidates = [
         (u, v, key)
         for u, v, key, data in G.edges(keys=True, data=True)
-        if data.get("voxels") and len(data["voxels"]) >= 2
+        if (chosen is None or (frozenset((u, v)), key) in chosen)
+        and data.get("voxels") and len(data["voxels"]) >= 2
         and _guide_diameter(data, guide_attribute, 0.0) >= PSF_CALIBRATION_MIN_GUIDE_UM
     ]
     order = rng.permutation(len(candidates))[:PSF_CALIBRATION_MAX_SECTIONS]
@@ -492,6 +496,7 @@ def measure_edge_diameters_from_endothelium(
     wall_um: float | None = None,
     workers: int = 1,
     memmap_directory=None,
+    calibration_edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> dict[str, Any]:
     """Measure *edges* (default every edge) from their endothelial rings.
 
@@ -505,8 +510,9 @@ def measure_edge_diameters_from_endothelium(
     (``"measured"`` or ``"failed:<commonest reason>"``) on each edge it
     reads, and the PSF and wall in ``G.graph["endothelial_psf_sigma_zyx"]``
     and ``G.graph["endothelial_wall_um"]``. Either left ``None`` is estimated
-    from the wide vessels' rings (:func:`calibrate_from_rings`); when that
-    cannot, nothing is measured and the summary says why.
+    from the wide vessels' rings (:func:`calibrate_from_rings`, among
+    *calibration_edges* when given); when that cannot, nothing is measured
+    and the summary says why.
 
     A reading is kept when its ring's contrast is at least
     *min_ring_contrast*, its centre lies within FWHM's centring limit of the
@@ -525,7 +531,7 @@ def measure_edge_diameters_from_endothelium(
         psf_found, wall_found, calibration = calibrate_from_rings(
             G, endothelial_volume, spacing, psf_sigma_zyx=psf_sigma_zyx,
             guide_attribute=guide_attribute, average_um=average_along_vessel_um,
-            min_contrast=min_ring_contrast,
+            min_contrast=min_ring_contrast, edges=calibration_edges,
         )
         summary["calibration"] = calibration
         if psf_found is None:

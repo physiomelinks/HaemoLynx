@@ -393,7 +393,11 @@ are only caught locally.
   stage — not at the
   end of `assign_boundaries`, where it used to be — so "Run from this stage" on that tab honours
   it. A caller running the stages by hand calls it between `assign_diameters` and
-  `build_haemodynamic_model`, as the examples do.
+  `build_haemodynamic_model`, as the examples do. Because `assign_diameters` runs before the
+  removal, it samples its whole-image calibrations (the FWHM/raw-section PSF, the endothelial
+  wall, the FWHM decoy check) only from the vessels `remove_disconnected` will keep
+  (`edges_network_handling_keeps` → `assign_edge_diameters(calibration_edges=)`), and the viewer
+  redraws the FWHM line layers from the solved network (`gui/results.py`'s `_fwhm_line_layers`).
 - **`pipeline/progress.py`** — `STAGES`, the run's stages in order (the panel draws one tab
   per entry and a progress bar counts them — one list, not two). It has eleven entries for ten
   stage functions: `solve` has no tab of its own (it shares **6. Haemodynamics**), and

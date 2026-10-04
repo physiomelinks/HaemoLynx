@@ -23,10 +23,12 @@ decoys measured, at 2.3-3.7 um, with 20% of the 112 in that range.
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import networkx as nx
 import numpy as np
+
+from .poiseuille import edge_selection
 
 __all__ = [
     "DECOY_SAMPLE_SIZE",
@@ -202,6 +204,7 @@ def fwhm_decoy_check(
     sample_size: int = DECOY_SAMPLE_SIZE,
     seed: int = 0,
     guide_attribute: str | None = "edt_diameter_um",
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> dict[str, Any]:
     """Measure decoys of up to *sample_size* FWHM-measured edges of *G* with
     *measure* (the run's own FWHM, on a graph) and report how often, and how
@@ -212,6 +215,10 @@ def fwhm_decoy_check(
     on every FWHM-measured edge. Returns the report; it has ``skipped`` and
     a ``reason`` when there is no mask to find vessel-free tissue with, or
     nothing FWHM measured.
+
+    With *edges* (``(u, v, key)``), decoys are made only beside those, and
+    ``measured_in_speck_width_range`` is their share; every measured edge is
+    still flagged, since the speck range is the image's.
     """
     report: dict[str, Any] = {}
     for _u, _v, data in G.edges(data=True):
@@ -228,10 +235,18 @@ def fwhm_decoy_check(
     if not measured:
         report.update(skipped=True, reason="FWHM measured no edge")
         return report
+    chosen = edge_selection(edges)
+    pool = [
+        (u, v, key) for u, v, key in measured
+        if chosen is None or (frozenset((u, v)), key) in chosen
+    ]
+    if not pool:
+        report.update(skipped=True, reason="FWHM measured none of the edges to sample")
+        return report
     rng = np.random.default_rng(seed)
-    order = rng.permutation(len(measured))[: max(1, int(sample_size))]
+    order = rng.permutation(len(pool))[: max(1, int(sample_size))]
     probe = decoy_probe_graph(
-        G, [measured[i] for i in order], vessel_mask, voxel_size_zyx,
+        G, [pool[i] for i in order], vessel_mask, voxel_size_zyx,
         rng=rng, guide_attribute=guide_attribute,
     )
     if probe is None:
@@ -239,6 +254,10 @@ def fwhm_decoy_check(
         return report
     measure(probe)
     report.update(speck_width_report(G, probe, measured))
+    if "measured_in_speck_width_range" in report and len(pool) < len(measured):
+        report["measured_in_speck_width_range"] = float(
+            np.mean([bool(G.edges[edge]["fwhm_in_speck_width_range"]) for edge in pool])
+        )
     G.graph["fwhm_decoy_check"] = dict(report)
     return report
 

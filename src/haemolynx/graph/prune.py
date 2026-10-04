@@ -196,6 +196,22 @@ def mark_flow_solved_edges(
     return unsolved
 
 
+def edges_with_connected_io(
+    G: nx.MultiGraph,
+    starting_nodes: Sequence[int],
+    output_nodes: Sequence[int],
+) -> list[tuple[int, int, int]]:
+    """The edges ``(u, v, key)`` of *G* in a component holding both a start
+    and an output node: the ones :func:`remove_components_without_connected_io`
+    keeps."""
+    kept_nodes: set[int] = set()
+    for component_node_set, has_io in _components_by_io(G, starting_nodes, output_nodes):
+        if has_io:
+            kept_nodes |= component_node_set
+    # One end tells: both ends of an edge share a component.
+    return [(u, v, key) for u, v, key in G.edges(keys=True) if int(u) in kept_nodes]
+
+
 def remove_components_without_connected_io(
     G: Union[nx.Graph, nx.MultiGraph],
     starting_nodes: list[int],

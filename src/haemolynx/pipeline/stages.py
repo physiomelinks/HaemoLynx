@@ -2254,8 +2254,18 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                 schema,
                 voxel_size_zyx=voxel_size_zyx,
             )
+            calibration_edges = edges_network_handling_keeps(settings, G, boundaries)
+            if calibration_edges is not None and len(calibration_edges) < G.number_of_edges():
+                logger.info(
+                    "Image calibrations (PSF, endothelial wall, FWHM decoy check) sample "
+                    f"only the {len(calibration_edges)} of {G.number_of_edges()} vessels "
+                    "in a branch/tree with both an inlet and an outlet: "
+                    "boundary_handling=remove_disconnected removes the rest at the start "
+                    "of the haemodynamics stage."
+                )
             G, haemo_results, fwhm_raw = assign_edge_diameters(
-                G, haemo_config, mask_volume=network.volume.image
+                G, haemo_config, mask_volume=network.volume.image,
+                calibration_edges=calibration_edges,
             )
             if "fwhm" in haemo_results:
                 logger.info(f"FWHM diameter measurement summary: {haemo_results['fwhm']}")
@@ -2660,6 +2670,24 @@ def _split_junctions_for_haematocrit(
         len(split),
         sum(len(new_nodes) for new_nodes in split.values()),
     )
+
+
+def edges_network_handling_keeps(
+    settings: dict, G: nx.MultiGraph, boundaries: BoundaryNodes
+) -> list[tuple[Any, Any, Any]] | None:
+    """The vessels ``(u, v, key)`` of *G* that :func:`apply_network_handling`
+    will keep; ``None`` -- every vessel -- with ``leave_unsolved``.
+
+    With ``boundary_handling="remove_disconnected"``, those in a component
+    holding both an inlet and an outlet, by the rule the removal itself
+    applies. The diameters stage, which runs first, samples its image
+    calibrations from these, so a vessel about to be removed cannot shape
+    the widths of the ones kept; the removal stays in the haemodynamics
+    stage, so a rerun from that tab still applies it.
+    """
+    if settings.get("boundary_handling") != BOUNDARY_HANDLING_REMOVE_DISCONNECTED:
+        return None
+    return graph.edges_with_connected_io(G, boundaries.inlet_nodes, boundaries.outlet_nodes)
 
 
 def _remove_components_without_io(

@@ -67,6 +67,7 @@ from .degree2 import (
 )
 from .prune import (
     FLOW_SOLVED,
+    edges_with_connected_io,
     mark_flow_solved_edges,
     prune_vascular_stubs,
     remove_components_without_connected_io,
@@ -234,6 +235,7 @@ __all__ = [
     "merge_edges_with_topology_improvement",
     "prune_vascular_stubs",
     "FLOW_SOLVED",
+    "edges_with_connected_io",
     "mark_flow_solved_edges",
     "remove_components_without_connected_io",
     "diagnose_degree2_nodes",

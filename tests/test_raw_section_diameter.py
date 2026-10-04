@@ -178,6 +178,54 @@ def test_the_blur_is_estimated_from_wide_vessels():
     assert sigma_z > 1.5 * sigma_y
 
 
+def _sections_fitted_by(monkeypatch):
+    """Record the first point of each edge whose section the blur estimate fits."""
+    fitted = []
+
+    def record(_raw, poly, *_args, **_kwargs):
+        fitted.append(tuple(poly[0]))
+        return None, "low_contrast"
+
+    monkeypatch.setattr(raw_section, "fit_section", record)
+    return fitted
+
+
+def test_the_blur_is_estimated_only_from_the_edges_given(monkeypatch):
+    """What a run passes when its haemodynamics will remove a branch without
+    an inlet and an outlet: a vessel about to go must not shape the blur the
+    kept ones are fitted with. Either way round names an edge."""
+    lines = [np.array([[10.0, 10.0 + 10.0 * i, x] for x in np.linspace(0.0, 20.0, 5)])
+             for i in range(4)]
+    graph = _graph(lines, [9.0] * 4)
+    raw = np.zeros((4, 4, 4), dtype=np.float32)
+    fitted = _sections_fitted_by(monkeypatch)
+
+    psf, details = estimate_psf_sigma(graph, raw, VOXEL, edges=[(0, 1, 0), (5, 4, 0)])
+
+    assert psf is None
+    assert details["sections_tried"] == 2
+    assert sorted(fitted) == sorted([tuple(lines[0][0]), tuple(lines[2][0])])
+
+    fitted.clear()
+    estimate_psf_sigma(graph, raw, VOXEL)
+    assert len(fitted) == 4  # no edges given: every wide vessel
+
+
+def test_the_fallbacks_own_blur_estimate_samples_the_calibration_edges(monkeypatch):
+    lines = [np.array([[10.0, 10.0 + 10.0 * i, x] for x in np.linspace(0.0, 20.0, 5)])
+             for i in range(3)]
+    graph = _graph(lines, [9.0] * 3)
+    fitted = _sections_fitted_by(monkeypatch)
+
+    summary = _measure(
+        graph, np.zeros((4, 4, 4), dtype=np.float32), psf_sigma_zyx=None,
+        calibration_edges=[(2, 3, 0)],
+    )
+
+    assert summary["skipped"] is True
+    assert fitted == [tuple(lines[1][0])]
+
+
 def test_without_wide_vessels_to_estimate_the_blur_nothing_is_measured():
     """A PSF guessed wrong reads small vessels far off (1.5x too wide reads a
     3 um vessel ~0.65 of its width), so with no way to estimate it the

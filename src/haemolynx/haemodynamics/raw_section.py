@@ -63,6 +63,7 @@ from scipy.optimize import least_squares
 
 from .automated import _aggregate_edge_diameter, _arc_length_parameterize, _interpolate_centerline
 from .edt_diameter import _centreline_tangents, edge_sample_targets
+from .poiseuille import edge_selection
 from .sections import (
     averaged_section,
     lumen_image,
@@ -333,9 +334,11 @@ def estimate_psf_sigma(
     average_um: float = DEFAULT_AVERAGE_ALONG_VESSEL_UM,
     min_contrast: float = RAW_SECTION_MIN_LUMEN_CONTRAST,
     seed: int = 0,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> tuple[tuple[float, float, float] | None, dict[str, Any]]:
     """The image's own blur ``(sigma_z, sigma_y, sigma_x)`` in um, from its
-    wide vessels, or ``None`` when too few of them show it.
+    wide vessels -- among *edges* (``(u, v, key)``) when given -- or ``None``
+    when too few of them show it.
 
     A wide lumen's width and its edges' blur are separately measurable, so
     each of up to :data:`PSF_CALIBRATION_MAX_SECTIONS` sections, at the
@@ -347,8 +350,11 @@ def estimate_psf_sigma(
     interpolation together -- which is what the fit needs.
     """
     rng = np.random.default_rng(seed)
+    chosen = edge_selection(edges)
     candidates = []
     for u, v, key, data in G.edges(keys=True, data=True):
+        if chosen is not None and (frozenset((u, v)), key) not in chosen:
+            continue
         vox = data.get("voxels")
         if not vox or len(vox) < 2:
             continue
@@ -407,6 +413,7 @@ def measure_edge_diameters_from_raw_sections(
     aggregation: Literal["median", "mean"] = "median",
     guide_attribute: str | None = "edt_diameter_um",
     fallback_guide_um: float = 4.0,
+    calibration_edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> dict[str, Any]:
     """Measure *edges* (default every edge) from their raw cross-sections.
 
@@ -415,8 +422,9 @@ def measure_edge_diameters_from_raw_sections(
     ``raw_section_contrast_samples`` and ``raw_section_status``
     (``"measured"`` or ``"failed:<commonest reason>"``) on each edge it
     reads, and the PSF used in ``G.graph["raw_section_psf_sigma_zyx"]``.
-    *psf_sigma_zyx* ``None`` estimates it (:func:`estimate_psf_sigma`); when
-    that cannot, nothing is measured and the summary says why.
+    *psf_sigma_zyx* ``None`` estimates it (:func:`estimate_psf_sigma`, from
+    *calibration_edges* when given); when that cannot, nothing is measured
+    and the summary says why.
 
     A reading is kept when its lumen's contrast against the section's
     texture is at least *min_lumen_contrast*, its centre lies within FWHM's
@@ -435,6 +443,7 @@ def measure_edge_diameters_from_raw_sections(
         psf_sigma_zyx, calibration = estimate_psf_sigma(
             G, raw_volume, spacing, vessel_mask=vessel_mask, guide_attribute=guide_attribute,
             average_um=average_along_vessel_um, min_contrast=min_lumen_contrast,
+            edges=calibration_edges,
         )
         summary["psf_calibration"] = calibration
         if psf_sigma_zyx is None:

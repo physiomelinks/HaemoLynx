@@ -272,6 +272,7 @@ def image_psf_for_fwhm(
     *,
     raw_volume: np.ndarray | None,
     vessel_mask: np.ndarray | None = None,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> tuple[tuple[float, float, float] | None, dict[str, Any]]:
     """The one PSF the raw image's width measurements share, and how it was got
     -- :func:`image_psf_from_settings` with this run's FWHM settings."""
@@ -281,6 +282,7 @@ def image_psf_for_fwhm(
         voxel_size_zyx=config.voxel_size_zyx,
         raw_volume=raw_volume,
         vessel_mask=vessel_mask,
+        edges=edges,
     )
 
 
@@ -291,13 +293,15 @@ def image_psf_from_settings(
     voxel_size_zyx: tuple[float, float, float],
     raw_volume: np.ndarray | None,
     vessel_mask: np.ndarray | None = None,
+    edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> tuple[tuple[float, float, float] | None, dict[str, Any]]:
     """The one PSF the raw image's width measurements share, and how it was got.
 
     The raw-section settings' PSF when set; otherwise estimated from the
-    image's own wide vessels (:func:`raw_section.estimate_psf_sigma`), the
-    same estimate the raw-section fallback makes. ``None`` -- FWHM then fits
-    each profile's blur itself -- when ``fwhm_fix_blur_to_image_psf`` is off,
+    image's own wide vessels (:func:`raw_section.estimate_psf_sigma`, among
+    *edges* when given), the same estimate the raw-section fallback makes.
+    ``None`` -- FWHM then fits each profile's blur itself -- when
+    ``fwhm_fix_blur_to_image_psf`` is off,
     the profile model is not ``blurred_lumen``, there is no raw image, or too
     few wide vessels show their blur. *settings* holds the FWHM settings
     (and the raw-section PSF, when set); *voxel_size_zyx* is the raw image's
@@ -322,6 +326,7 @@ def image_psf_from_settings(
         average_um=float(
             settings.get("fwhm_longitudinal_average_um", raw_section.DEFAULT_AVERAGE_ALONG_VESSEL_UM)
         ),
+        edges=edges,
     )
     if psf is None:
         return None, {"source": "per_profile", **details}
@@ -372,6 +377,7 @@ def _measure_raw_section_diameters(
     vessel_mask: np.ndarray | None = None,
     psf_sigma_zyx: tuple[float, float, float] | None = None,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    calibration_edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> dict[str, Any]:
     """Fit the raw cross-sections of the edges FWHM left without a width --
     or whose width was demoted (see :func:`poiseuille.fwhm_demotion_reason`),
@@ -381,7 +387,7 @@ def _measure_raw_section_diameters(
     section is averaged along the vessel, aggregation) and first guess, so
     the two read a vessel at the same places -- and, when *psf_sigma_zyx* is
     given, the same PSF FWHM held its blur at, rather than estimating it
-    again."""
+    again (from *calibration_edges*, when given)."""
     if raw_volume is None:
         path = _fwhm_raw_path(config)
         if path is None:
@@ -438,6 +444,7 @@ def _measure_raw_section_diameters(
         aggregation=config.fwhm_setting("fwhm_edge_diameter_aggregation", "median"),
         guide_attribute=config.fwhm_setting("fwhm_diameter_guess_edge_attribute", "edt_diameter_um"),
         fallback_guide_um=float(config.fwhm_setting("fwhm_diameter_guess_um", None) or 4.0),
+        calibration_edges=calibration_edges,
     )
 
 
@@ -445,13 +452,14 @@ def _measure_endothelial_diameters(
     G: nx.MultiGraph,
     config: HaemodynamicsApplyConfig,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    calibration_edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> dict[str, Any]:
     """Read each edge's internal diameter off the endothelial stain.
 
     Reads the configured channel of ``endothelial_image_path`` and hands the
     measurement the PSF and wall thickness the settings give (each estimated
-    from the image when unset). Samples where the mask estimate does, clear
-    of the same junction zones."""
+    from the image when unset, from *calibration_edges* when given). Samples
+    where the mask estimate does, clear of the same junction zones."""
     path = config.endothelial_setting("endothelial_image_path")
     if path is None:
         return {"skipped": True, "reason": "no endothelial_image_path to read the wall from"}
@@ -497,6 +505,7 @@ def _measure_endothelial_diameters(
             ),
             workers=workers,
             memmap_directory=config.memmap_directory,
+            calibration_edges=calibration_edges,
             **_subset(edges),
         )
     finally:
@@ -576,11 +585,19 @@ def assign_edge_diameters(
     *,
     mask_volume: np.ndarray | None = None,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    calibration_edges: Iterable[tuple[Any, Any, Any]] | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     """Stamp modelled diameters on *G* without writing resistance.
 
     Measures FWHM when that is enabled and ``do_fwhm_measurement`` is on.
     Otherwise keeps measured / override values already on the graph.
+
+    With *calibration_edges* (``(u, v, key)``), what is learnt from the
+    whole image -- the PSF the width fits share, the endothelial wall, the
+    FWHM decoy check's sample -- comes from those vessels alone, while every
+    edge is still measured: the pipeline passes the vessels its
+    haemodynamics stage will keep, so ones it is about to remove cannot
+    shape the widths of the ones it keeps.
 
     With *edges* (``(u, v, key)``), only those are measured -- EDT, FWHM,
     the raw-section fit and the endothelium, whichever the run uses, FWHM
@@ -617,6 +634,8 @@ def assign_edge_diameters(
     summary: dict[str, Any] = {}
     loaded_mask: np.ndarray | None = None
     edges = None if edges is None else [tuple(edge) for edge in edges]
+    if calibration_edges is not None:
+        calibration_edges = [tuple(edge) for edge in calibration_edges]
     wants_mask = (edges is None or bool(edges)) and (
         config.use_edt_diameter_crosscheck
         or (
@@ -630,7 +649,9 @@ def assign_edge_diameters(
         # for both the EDT widths and FWHM's neighbouring-vessel stops.
         mask_volume = loaded_mask = load_edt_mask_volume(config)
     try:
-        return _assign_edge_diameters_binarised(G, config, summary, mask_volume, edges)
+        return _assign_edge_diameters_binarised(
+            G, config, summary, mask_volume, edges, calibration_edges
+        )
     finally:
         if isinstance(loaded_mask, np.memmap):
             release_memmap_array(loaded_mask)
@@ -642,6 +663,7 @@ def _assign_edge_diameters_binarised(
     summary: dict[str, Any],
     mask_volume: np.ndarray | None,
     edges: list[tuple[Any, Any, Any]] | None = None,
+    calibration_edges: list[tuple[Any, Any, Any]] | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     if mask_volume is not None:
         # The segmentation exactly as the skeleton was made from it -- the
@@ -664,7 +686,9 @@ def _assign_edge_diameters_binarised(
     else:
         made_binary_on_disk = False
     try:
-        return _assign_edge_diameters_with_mask(G, config, summary, mask_volume, edges)
+        return _assign_edge_diameters_with_mask(
+            G, config, summary, mask_volume, edges, calibration_edges
+        )
     finally:
         if made_binary_on_disk:
             release_memmap_array(mask_volume)
@@ -676,6 +700,7 @@ def _assign_edge_diameters_with_mask(
     summary: dict[str, Any],
     mask_volume: np.ndarray | None,
     edges: list[tuple[Any, Any, Any]] | None = None,
+    calibration_edges: list[tuple[Any, Any, Any]] | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     raw_volume: np.ndarray | None = None
     subset = edges is not None
@@ -714,7 +739,9 @@ def _assign_edge_diameters_with_mask(
     )
     use_endothelial = bool(config.endothelial_setting("use_endothelial_diameters", False))
     if use_endothelial and measuring:
-        summary["endothelial"] = _measure_endothelial_diameters(G, config, **_subset(edges))
+        summary["endothelial"] = _measure_endothelial_diameters(
+            G, config, calibration_edges=calibration_edges, **_subset(edges)
+        )
     demote_flagged = bool(config.fwhm_setting("fwhm_demote_flagged_edges", True))
     if config.use_fwhm_edge_diameters and measuring:
         raw_volume = load_fwhm_raw_volume(config)
@@ -725,7 +752,8 @@ def _assign_edge_diameters_with_mask(
                 summary["fwhm_psf"] = {"source": "recorded", "psf_sigma_zyx": psf}
             else:
                 psf, psf_details = image_psf_for_fwhm(
-                    G, config, raw_volume=raw_volume, vessel_mask=mask_volume
+                    G, config, raw_volume=raw_volume, vessel_mask=mask_volume,
+                    edges=calibration_edges,
                 )
                 summary["fwhm_psf"] = psf_details
                 if psf is not None:
@@ -761,6 +789,7 @@ def _assign_edge_diameters_with_mask(
                     guide_attribute=config.fwhm_setting(
                         "fwhm_diameter_guess_edge_attribute", "edt_diameter_um"
                     ),
+                    edges=calibration_edges,
                 )
             # Flagged before anything reads the widths, so a flagged width can
             # hand its edge on to the next source -- the raw-section fit
@@ -773,7 +802,7 @@ def _assign_edge_diameters_with_mask(
             if use_raw_section_fallback:
                 summary["raw_section"] = _measure_raw_section_diameters(
                     G, config, raw_volume=raw_volume, vessel_mask=mask_volume, psf_sigma_zyx=psf,
-                    **_subset(edges),
+                    calibration_edges=calibration_edges, **_subset(edges),
                 )
         else:
             summary["fwhm"] = {

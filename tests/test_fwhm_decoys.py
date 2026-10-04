@@ -182,6 +182,41 @@ def test_the_sample_size_caps_the_decoys():
     assert report["decoys"] == 3
 
 
+def test_decoys_are_made_only_beside_the_edges_given():
+    """What a run passes when its haemodynamics will remove a branch without
+    an inlet and an outlet: the vessels it keeps. The speck range is the
+    image's, so every measured vessel is still judged by it; the share in
+    range is the kept vessels'."""
+    widths = [2.5, 3.0, 8.0, 12.0, 3.5, 20.0, 2.8, 9.0, 4.0, 6.0]
+    graph, mask = _measured_network(widths)
+    kept = [(2 * i, 2 * i + 1, 0) for i in range(6)]  # 2.5, 3.0, 8.0, 12.0, 3.5, 20.0
+    measure, seen = _fake_measure([2.0, 3.0, 2.5, 4.0, 3.5, 2.2])
+
+    report = fwhm_decoy_check(
+        graph, measure, vessel_mask=mask, voxel_size_zyx=VOXEL, edges=kept[::-1],
+    )
+
+    (probe,) = seen
+    assert probe.number_of_edges() == report["decoys"] == 6
+    beside = sorted(float(np.mean(np.asarray(d["voxels"])[:, 1])) for _u, _v, d in probe.edges(data=True))
+    assert all(abs(y - (20.0 + 25.0 * i)) < 12.5 for i, y in enumerate(beside))
+    flagged = {graph[u][v][k]["fwhm_diameter_um"] for u, v, k in graph.edges(keys=True)
+               if graph[u][v][k]["fwhm_in_speck_width_range"]}
+    assert flagged == {2.5, 3.0, 3.5, 2.8}  # the removed 2.8 um vessel too
+    assert report["measured_in_speck_width_range"] == pytest.approx(3 / 6)
+
+
+def test_no_measured_vessel_among_the_edges_given_makes_no_decoys():
+    graph, mask = _measured_network([3.0, 4.0])
+    del graph[0][1][0]["fwhm_diameter_um"]
+    measure, seen = _fake_measure([3.0])
+
+    report = fwhm_decoy_check(graph, measure, vessel_mask=mask, voxel_size_zyx=VOXEL, edges=[(0, 1, 0)])
+
+    assert report["skipped"] and "none of the edges" in report["reason"]
+    assert seen == []
+
+
 # --- in a run ---------------------------------------------------------------------
 
 

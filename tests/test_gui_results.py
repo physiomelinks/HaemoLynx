@@ -611,6 +611,86 @@ def test_the_fwhm_layers_draw_the_sampled_line_and_the_measured_width_apart():
     assert total_length(FWHM_WIDTHS) == pytest.approx(10.0)
 
 
+def _measured_with_a_stray():
+    """The three-vessel line plus a stray vessel (nodes 10-11) far off along
+    y, every vessel with one FWHM line across its middle."""
+    graph = a_graph(diameter_um=5.0, diameter_source="measured")
+    for node_id, z in ((10, 0.0), (11, 10.0)):
+        graph.add_node(node_id, pos=np.array([z, 100.0, 0.0]))
+    graph.add_edge(10, 11, key=0, voxels=[[0.0, 100.0, 0.0], [10.0, 100.0, 0.0]],
+                   length=10.0, segment_id=10, diameter_um=5.0, diameter_source="measured")
+    for u, v, _key, data in graph.edges(keys=True, data=True):
+        z, y = (graph.nodes[u]["pos"][0] + graph.nodes[v]["pos"][0]) / 2, graph.nodes[u]["pos"][1]
+        data["fwhm_profile_lines_phys"] = [[[z, y - 7.5, 0.0], [z, y + 7.5, 0.0]]]
+        data["fwhm_measured_lines_phys"] = [[[z, y - 2.5, 0.0], [z, y + 2.5, 0.0]]]
+    return graph
+
+
+def _solved(graph):
+    nodes = list(graph)
+    return SimpleNamespace(graph=graph, pressure=np.zeros(len(nodes)), node_list=nodes,
+                           equivalent_resistance=None)
+
+
+def test_the_fwhm_lines_of_vessels_network_handling_removed_are_not_drawn():
+    """Regression: the lines were drawn once, from the Diameters stage's
+    network, and never again -- so a vessel removed at the start of the
+    haemodynamics (no inlet and outlet in its branch) kept its lines over a
+    segmented blob the network no longer had."""
+    from haemolynx.gui.results import FWHM_WIDTHS
+
+    graph = _measured_with_a_stray()
+    results = built(graph)
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph))
+    diameters = results.stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+    assert len(spec_named(diameters, FWHM_PROFILES).data) == 4
+    pruned = graph.subgraph([0, 1, 2, 3]).copy()
+
+    solved = results.stage_finished("solve", _solved(pruned))
+
+    for name in (FWHM_PROFILES, FWHM_WIDTHS):
+        vectors = spec_named(solved, name).data
+        assert len(vectors) == 3, name
+        assert np.all(vectors[:, 0, 1] < 50.0), name  # none at the stray's y=100
+
+
+def test_a_fwhm_layer_left_with_no_line_is_emptied_not_left_standing():
+    graph = _measured_with_a_stray()
+    for u, v, _key, data in graph.edges(keys=True, data=True):
+        if u != 10:
+            del data["fwhm_profile_lines_phys"], data["fwhm_measured_lines_phys"]
+    results = built(graph)
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph))
+    results.stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+
+    solved = results.stage_finished("solve", _solved(graph.subgraph([0, 1, 2, 3]).copy()))
+
+    assert spec_named(solved, FWHM_PROFILES).data.shape == (0, 2, 3)
+
+
+def test_a_run_that_drew_no_fwhm_lines_gets_no_fwhm_layer_from_the_solve():
+    graph = a_graph()
+    results = built(graph)
+    results.stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+
+    solved = results.stage_finished("solve", _solved(graph))
+
+    assert FWHM_PROFILES not in [spec.name for spec in solved.layers]
+
+
+def test_post_processing_drops_the_fwhm_lines_of_a_vessel_deleted_by_hand():
+    graph = _measured_with_a_stray()
+    results = built(graph)
+    results.stage_finished("assign_boundaries", SimpleNamespace(graph=graph))
+    results.stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+    edited = graph.copy()
+    edited.remove_edge(2, 3, key=0)
+
+    group = results.stage_finished("post_process", _post_processed_solution(edited))
+
+    assert len(spec_named(group, FWHM_PROFILES).data) == 3
+
+
 def test_assign_diameters_note_counts_diameter_sources():
     graph = a_graph(diameter_um=6.0, diameter_source="table", branch_order="B01")
     group = built(graph).stage_finished("assign_diameters", SimpleNamespace(graph=graph))

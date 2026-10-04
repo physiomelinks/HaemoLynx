@@ -173,6 +173,36 @@ def test_the_blur_and_wall_are_estimated_from_wide_vessels():
     assert wall == pytest.approx(WALL, abs=0.5)
 
 
+def test_the_blur_and_wall_are_estimated_only_from_the_edges_given(monkeypatch):
+    """What a run passes when its haemodynamics will remove a branch without
+    an inlet and an outlet: a vessel about to go must not set the blur and
+    wall the kept ones are read with."""
+    lines = [np.array([[10.0, 10.0 + 10.0 * i, x] for x in np.linspace(0.0, 20.0, 5)])
+             for i in range(4)]
+    graph = _graph(lines, 9.0)
+    fitted = []
+
+    def record(_volume, poly, *_args, **_kwargs):
+        fitted.append(tuple(poly[0]))
+        return None, "low_contrast"
+
+    monkeypatch.setattr(endothelial, "fit_ring_section", record)
+    volume = np.zeros((4, 4, 4), dtype=np.float32)
+
+    psf, wall, details = calibrate_from_rings(graph, volume, VOXEL, edges=[(3, 2, 0), (6, 7, 0)])
+
+    assert psf is None and wall is None
+    assert details["sections_tried"] == 2
+    assert sorted(fitted) == sorted([tuple(lines[1][0]), tuple(lines[3][0])])
+
+    fitted.clear()
+    summary = measure_edge_diameters_from_endothelium(
+        graph, endothelial_volume=volume, voxel_size_zyx=VOXEL, calibration_edges=[(0, 1, 0)],
+    )
+    assert summary["skipped"] is True
+    assert fitted == [tuple(lines[0][0])]
+
+
 def test_an_edge_needs_two_readings_and_records_its_widths():
     volume, line = _ring(7.0, (1, 1, 1), seed=13)
     graph = _graph([line], 5.0)
