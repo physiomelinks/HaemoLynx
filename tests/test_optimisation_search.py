@@ -1062,11 +1062,11 @@ def test_estimate_downsample_factor_for_time_budget_picks_full_resolution_for_a_
 
 
 def _proportional_model():
-    """Cost in proportion to voxels only: 0.01 s per evaluation on the 16x
-    grid of a volume of 16**3 voxels (one voxel there)."""
+    """Graph builds timed at 0.01 s on a one-voxel grid -- the 16x grid of a
+    volume of 16**3 voxels."""
     from haemolynx.optimisation.search import _SearchTimeModel
 
-    return _SearchTimeModel(overhead_seconds=0.0, seconds_per_voxel=0.01)
+    return _SearchTimeModel({"graph": 0.01}, probe_voxels=1.0)
 
 
 def test_factor_from_time_model_picks_the_coarsest_factor_for_a_tiny_budget():
@@ -1105,7 +1105,7 @@ def test_factor_from_time_model_free_evaluations_mean_full_resolution():
     default to full detail."""
     from haemolynx.optimisation.search import _factor_from_time_model, _SearchTimeModel
 
-    assert _factor_from_time_model(_SearchTimeModel(0.0, 0.0), 1e9, 1e-9) == DOWNSAMPLE_FACTORS[0]
+    assert _factor_from_time_model(_SearchTimeModel({}, 1.0), 1e9, 1e-9) == DOWNSAMPLE_FACTORS[0]
 
 
 def test_optimise_settings_auto_downsample_uses_the_time_budget_resolver(monkeypatch):
@@ -1124,9 +1124,9 @@ def test_optimise_settings_auto_downsample_uses_the_time_budget_resolver(monkeyp
 
     recorded = {}
 
-    def fake_estimate(raw_mask, voxel_size_zyx, *, target_seconds, use_thick_vessel_skeletonisation):
+    def fake_estimate(raw_mask, voxel_size_zyx, *, target_seconds, starting_values):
         recorded["target_seconds"] = target_seconds
-        recorded["use_thick_vessel_skeletonisation"] = use_thick_vessel_skeletonisation
+        recorded["use_thick_vessel_skeletonisation"] = starting_values["use_thick_vessel_skeletonisation"]
         return search_module._AutoDownsample(
             4, estimated_seconds=123.0, typical_radius_um=9.0, resolution_cap=4,
         )
@@ -1823,11 +1823,12 @@ def test_the_estimate_auto_reports_is_the_one_it_chose_its_factor_by():
         _voxel_reduction,
     )
 
-    model, total, target = _SearchTimeModel(0.5, 1e-6), 75e6, 300.0
+    # Graph builds timed at 1 s on a million-voxel grid; a 75M-voxel stack.
+    model, total, target = _SearchTimeModel({"graph": 1.0}, probe_voxels=1e6), 75e6, 300.0
     factor = _factor_from_time_model(model, total, target)
     finer = DOWNSAMPLE_FACTORS[DOWNSAMPLE_FACTORS.index(factor) - 1]
 
-    assert factor == 4
+    assert factor == 2
     assert model.search_seconds(total / _voxel_reduction(factor, None)) <= target
     assert model.search_seconds(total / _voxel_reduction(finer, None)) > target
 
@@ -1837,7 +1838,7 @@ def test_auto_reports_no_estimate_when_it_falls_back_to_the_voxel_count():
 
     auto = _auto_downsample(
         np.zeros((8, 8, 8), dtype=bool), (1.0, 1.0, 1.0),
-        target_seconds=300.0, use_thick_vessel_skeletonisation=False,
+        target_seconds=300.0, starting_values=dict(_DEFAULT_STARTING_VALUES),
     )
     assert auto.factor == 1
     assert auto.estimated_seconds is None
@@ -1934,55 +1935,38 @@ def test_a_downsampled_search_that_changes_nothing_returns_the_starting_values(m
 # ---------------------------------------------------------------------------
 # Auto: a fixed overhead per evaluation, and a grid that still sees the vessels
 # ---------------------------------------------------------------------------
-def test_the_time_model_is_the_line_through_its_two_probes():
-    from haemolynx.optimisation.search import _SearchTimeModel
+def test_a_search_time_is_each_step_times_how_often_a_search_runs_it():
+    from haemolynx.optimisation.search import _SEARCH_STEP_CALLS, _SearchTimeModel
 
-    model = _SearchTimeModel.fit((1000.0, 2.0 + 1000 * 1e-6), (8000.0, 2.0 + 8000 * 1e-6))
+    model = _SearchTimeModel({"graph": 1.0, "smooth": 0.5}, probe_voxels=1000.0)
 
-    assert model.overhead_seconds == pytest.approx(2.0)
-    assert model.seconds_per_voxel == pytest.approx(1e-6)
-
-
-@pytest.mark.parametrize(
-    "fine_seconds", [1.9, 2.0], ids=["finer_probe_faster", "finer_probe_no_slower"],
-)
-def test_a_time_model_from_noisy_probes_reads_cost_in_proportion_to_voxels(fine_seconds):
-    """Two tiny grids timed within noise of each other say nothing about the
-    slope; the cautious reading is cost in proportion to the finer probe's
-    voxels, which can only make finer grids look slower."""
-    from haemolynx.optimisation.search import _SearchTimeModel
-
-    model = _SearchTimeModel.fit((1000.0, 2.0), (8000.0, fine_seconds))
-
-    assert model.overhead_seconds == 0.0
-    assert model.seconds_per_voxel == pytest.approx(fine_seconds / 8000.0)
+    one_search = _SEARCH_STEP_CALLS["graph"] * 1.0 + _SEARCH_STEP_CALLS["smooth"] * 0.5
+    assert model.search_seconds(1000.0) == pytest.approx(one_search)
+    assert model.search_seconds(8000.0) == pytest.approx(8 * one_search)  # scaled with voxels
+    assert _SearchTimeModel({"not a step": 9.0}, 1.0).search_seconds(1.0) == 0.0
 
 
-def test_a_time_model_that_would_need_a_negative_overhead_reads_cost_in_proportion():
-    from haemolynx.optimisation.search import _SearchTimeModel
+def test_auto_times_the_search_on_the_grid_it_will_search(monkeypatch):
+    """Regression: Auto timed one whole pipeline cycle at 16x and scaled it
+    with voxel count, which read a 4x search on the E14.5 stack as 637 s;
+    it took 57 s. Coarse grids do not predict fine ones -- vessels merge into
+    blobs there -- so the steps are timed on the grid the resolution cap
+    allows."""
+    import haemolynx.optimisation.search as search_module
 
-    model = _SearchTimeModel.fit((1000.0, 0.1), (8000.0, 8.0))
+    probed = []
 
-    assert model.overhead_seconds == 0.0
-    assert model.seconds_per_voxel == pytest.approx(8.0 / 8000.0)
+    def recording_probe(raw_mask, voxel_size_zyx, *, factor, starting_values=None):
+        probed.append(factor)
+        return search_module._SearchTimeModel({"graph": 0.001}, probe_voxels=raw_mask.size / 8)
 
+    monkeypatch.setattr(search_module, "_probe_time_model", recording_probe)
+    auto = search_module._auto_downsample(
+        _y_shaped_vessel(shape=(64, 64, 64), radius=4), (1.0, 1.0, 1.0),
+        target_seconds=300.0, starting_values=dict(_DEFAULT_STARTING_VALUES),
+    )
 
-def test_a_fixed_overhead_no_longer_drives_auto_to_the_coarsest_grid():
-    """Regression, with the E14.5 stack's own numbers (287 x 512 x 512 at
-    0.98 um): one probe at 16x, scaled with voxel count alone, put every
-    finer grid over the five-minute budget and chose 16x. Most of that probe
-    is a fixed overhead per graph build; with it fitted, 4x fits."""
-    from haemolynx.optimisation.search import _factor_from_time_model, _SearchTimeModel
-
-    voxel = (1.0, 0.98, 0.98)
-    total = 287.0 * 512 * 512
-    coarse, fine = (18.0 * 32 * 32, 2.07), (36.0 * 64 * 64, 2.2)
-
-    two_probes = _SearchTimeModel.fit(coarse, fine)
-    one_probe = _SearchTimeModel(0.0, coarse[1] / coarse[0])
-
-    assert _factor_from_time_model(one_probe, total, 300.0, voxel_size_zyx=voxel) == 16
-    assert _factor_from_time_model(two_probes, total, 300.0, voxel_size_zyx=voxel) == 4
+    assert probed == [auto.resolution_cap] == [2]
 
 
 @pytest.mark.parametrize(
@@ -2008,19 +1992,19 @@ def test_auto_caps_a_time_budget_that_would_go_coarser_than_the_vessels_allow(mo
     import haemolynx.optimisation.search as search_module
 
     # Evaluations so slow that only the coarsest grid fits any budget.
+    mask = _y_shaped_vessel(shape=(64, 64, 64), radius=4)  # ridge radius 5 voxels
     monkeypatch.setattr(
         search_module, "_probe_time_model",
-        lambda *_a, **_k: search_module._SearchTimeModel(overhead_seconds=1e6, seconds_per_voxel=0.0),
+        lambda *_a, **_k: search_module._SearchTimeModel({"graph": 1e6}, probe_voxels=mask.size / 8),
     )
-    mask = _y_shaped_vessel(shape=(64, 64, 64), radius=4)  # ridge radius 5 voxels
     auto = search_module._auto_downsample(
-        mask, (1.0, 1.0, 1.0), target_seconds=300.0, use_thick_vessel_skeletonisation=False,
+        mask, (1.0, 1.0, 1.0), target_seconds=300.0, starting_values=dict(_DEFAULT_STARTING_VALUES),
     )
 
     assert 4.0 <= auto.typical_radius_um <= 5.5
     assert auto.resolution_cap == 2
     assert auto.factor == 2
-    assert auto.estimated_seconds == pytest.approx(1e6 * search_module._GROUP_TOTAL_UPPER_BOUND)
+    assert auto.estimated_seconds == pytest.approx(1e6 * search_module._SEARCH_STEP_CALLS["graph"])
 
 
 def _tube_lattice(n: int = 160, spacing: int = 40, radius: int = 3) -> np.ndarray:
@@ -2033,17 +2017,22 @@ def _tube_lattice(n: int = 160, spacing: int = 40, radius: int = 3) -> np.ndarra
     return binary_dilation(skeleton, structure=np.ones((2 * radius + 1,) * 3, dtype=bool))
 
 
-def test_auto_times_real_evaluations_at_two_grids():
-    from haemolynx.optimisation.search import _auto_downsample, _probe_time_model
-
-    mask = _tube_lattice()
-    model = _probe_time_model(mask, (1.0, 1.0, 1.0), use_thick_vessel_skeletonisation=False)
-    auto = _auto_downsample(
-        mask, (1.0, 1.0, 1.0), target_seconds=300.0, use_thick_vessel_skeletonisation=False,
+def test_auto_times_every_costly_step_for_real():
+    from haemolynx.optimisation.search import (
+        _SEARCH_STEP_CALLS,
+        _auto_downsample,
+        _probe_time_model,
     )
 
+    mask = _tube_lattice()
+    starting = dict(_DEFAULT_STARTING_VALUES)
+    model = _probe_time_model(mask, (1.0, 1.0, 1.0), factor=4, starting_values=starting)
+    auto = _auto_downsample(mask, (1.0, 1.0, 1.0), target_seconds=300.0, starting_values=starting)
+
     assert model is not None
-    assert model.overhead_seconds >= 0.0 and model.seconds_per_voxel > 0.0
+    assert set(model.step_seconds) == set(_SEARCH_STEP_CALLS)
+    assert all(seconds >= 0.0 for seconds in model.step_seconds.values())
+    assert model.probe_voxels == pytest.approx((160 / 4) ** 3)
     assert auto.estimated_seconds is not None and auto.estimated_seconds > 0.0
     assert auto.factor <= auto.resolution_cap
 
@@ -2074,3 +2063,133 @@ def test_the_densest_crop_is_found_anywhere_in_a_large_volume():
 
     assert crop.shape == (25, 25, 25)
     assert np.count_nonzero(crop) > 0
+
+
+# ---------------------------------------------------------------------------
+# Cleanup without a raw image: the input's own vessels guard it
+# ---------------------------------------------------------------------------
+def _thin_vessels_beside_a_thick_one() -> np.ndarray:
+    """Eight capillaries three voxels across and one vessel nine across, each
+    well over the 20 um3 floor at 1 um voxels."""
+    skeleton = np.zeros((40, 48, 48), dtype=bool)
+    for i in range(8):
+        skeleton[5:35, 4 + 5 * i, 6] = True
+    mask = binary_dilation(skeleton, structure=np.ones((3, 3, 3), dtype=bool))
+    thick = np.zeros_like(skeleton)
+    thick[5:35, 24, 30] = True
+    return mask | binary_dilation(thick, structure=np.ones((9, 9, 9), dtype=bool))
+
+
+def test_real_vessels_kept_counts_a_vessel_while_half_of_it_is_left():
+    from haemolynx.optimisation.search import _Search
+
+    mask = _thin_vessels_beside_a_thick_one()
+    search = _Search(mask, (1.0, 1.0, 1.0), dict(_DEFAULT_STARTING_VALUES), progress=None)
+    without_two = mask.copy()
+    without_two[:, 2:12, :20] = False  # the first two capillaries
+    thinned = mask.copy()
+    thinned[:20, :, :20] = False  # a third of every capillary: still kept
+
+    assert search._real_vessels_kept_fraction(mask) == 1.0
+    assert search._real_vessels_kept_fraction(without_two) == pytest.approx(7 / 9)
+    assert search._real_vessels_kept_fraction(thinned) == 1.0
+
+
+def test_cleanup_without_a_raw_image_cannot_erase_the_capillaries(monkeypatch):
+    """Regression: with no raw image, nothing but the mask's own score judged
+    a cleanup candidate, and a radius erasing thin vessels can score better
+    -- confirmed on real data, where a too-large smoothing erased ~88% of a
+    capillary network. Here the score prefers whatever removes most, so only
+    the guard stands between the search and erasing all eight capillaries."""
+    from types import SimpleNamespace
+
+    from haemolynx import preprocessing as preprocessing_module
+    from haemolynx.optimisation.search import _Search
+
+    # On the real score's 0-10 scale: 10 for an empty mask, 0 for a full one.
+    monkeypatch.setattr(
+        preprocessing_module, "score_segmented_mask",
+        lambda mask, **_kwargs: SimpleNamespace(total=10.0 * (1.0 - float(np.mean(mask)))),
+    )
+    mask = _thin_vessels_beside_a_thick_one()
+    search = _Search(mask, (1.0, 1.0, 1.0), dict(_DEFAULT_STARTING_VALUES), progress=None)
+
+    search._group_segmentation_cleanup()
+
+    from scipy.ndimage import label
+
+    labels, n_vessels = label(mask, structure=np.ones((3, 3, 3), dtype=bool))
+    sizes = np.bincount(labels.ravel())
+    left = np.bincount(labels[search.raw_mask], minlength=sizes.size)
+    assert n_vessels == 9
+    assert all(left[i] >= 0.5 * sizes[i] for i in range(1, n_vessels + 1)), left
+    guarded = [t for t in search.trials if t.metrics.get("guard_penalty", 0.0) > 0.0]
+    assert guarded, "no candidate was ever rejected: the test did not exercise the guard"
+
+
+# ---------------------------------------------------------------------------
+# The scorecard: the starting settings against the chosen ones
+# ---------------------------------------------------------------------------
+def test_the_result_scores_the_starting_and_the_chosen_settings_alike(y_shaped_mask):
+    from haemolynx.optimisation.search import _SCORECARD_MEASURES
+
+    result = optimise_skeleton_and_graph_settings(
+        y_shaped_mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=_DEFAULT_STARTING_VALUES,
+        downsample_factor=1,
+    )
+
+    assert [row.name for row in result.scorecard] == [name for name, _h, _t in _SCORECARD_MEASURES]
+    by_name = {row.name: row for row in result.scorecard}
+    assert by_name["input vessels the skeleton reaches"].before == pytest.approx(1.0)
+    assert by_name["graph components"].after >= 1.0
+
+
+def test_a_search_ending_worse_than_it_started_says_so(monkeypatch):
+    """Regression: every sweep guards against its own starting point, so
+    small losses could add up -- or a destructive choice slip through -- and
+    nothing compared the run's result with what it was given."""
+    import haemolynx.optimisation.search as search_module
+    from haemolynx.optimisation.report import build_report_text
+    from haemolynx.optimisation.scorecard import worse_rows
+
+    class _DestructiveSearch:
+        """Ends with a whisker radius that erases every capillary."""
+
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None):
+            self.current = dict(starting_values)
+            self.trials = []
+            self.groups_run = list(search_module.GROUP_NAMES)
+            self.passes_run = 1
+            self.group_seconds = {}
+
+        def run(self, *, max_passes=1):
+            self.current.update(
+                segmentation_cleanup=True,
+                segmentation_cleanup_remove_whiskers=True,
+                segmentation_cleanup_whisker_radius_um=2.0,
+            )
+
+    monkeypatch.setattr(search_module, "_Search", _DestructiveSearch)
+    result = optimise_skeleton_and_graph_settings(
+        _thin_vessels_beside_a_thick_one(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=_DEFAULT_STARTING_VALUES, downsample_factor=1,
+    )
+
+    worse = {row.name for row in worse_rows(result.scorecard)}
+    assert "input vessels the skeleton reaches" in worse
+    assert "WARNING: worse than your starting settings on" in build_report_text(result)
+
+
+def test_a_scorecard_that_cannot_be_measured_does_not_fail_the_search(monkeypatch):
+    import haemolynx.optimisation.search as search_module
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("no graph")
+
+    monkeypatch.setattr(search_module, "_scorecard_measures", boom)
+    result = optimise_skeleton_and_graph_settings(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=_DEFAULT_STARTING_VALUES,
+        downsample_factor=1, groups=["min_stub_length"],
+    )
+    assert result.scorecard == ()
+    assert result.settings

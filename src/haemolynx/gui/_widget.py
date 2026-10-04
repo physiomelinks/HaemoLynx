@@ -84,6 +84,7 @@ from haemolynx.gui.results import (
     z_window_is_full,
 )
 from haemolynx.gui.optimise_progress import OptimisationProgressDisplay
+from haemolynx.gui.optimise_review import proposed_changes, review_text
 from haemolynx.gui.progress import ProgressDisplay
 from haemolynx.gui.run_state import (
     ALREADY_RUNNING,
@@ -140,6 +141,7 @@ from haemolynx.gui.vessel_tubes import (
 )
 from haemolynx.io import resolve_voxel_size_xyz
 from haemolynx.io.load import _to_binary_volume_for_skeletonization
+from haemolynx.optimisation.scorecard import worse_rows
 from haemolynx.optimisation import (
     FWHM_GROUP_NAMES,
     FWHM_SETTING_NAMES,
@@ -923,6 +925,85 @@ class ProgressBars:
             bar.setTextVisible(bool(state.text))
             bar.setFormat(state.text or "%p%")
             bar.setVisible(state.visible)
+
+
+class _OptimiseReview:
+    """One optimiser's proposal, shown under its button until Apply or Discard.
+
+    An optimisation run hands :meth:`propose` its result and a function that
+    writes it into the panel; this shows what would change against the
+    panel's current values (see :mod:`haemolynx.gui.optimise_review`) and
+    keeps the function until the user decides. Nothing reaches the panel's
+    rows before Apply. Built and used on the GUI thread only.
+    """
+
+    def __init__(self, current_values, report, *, what: str) -> None:
+        from magicgui.widgets import Container, PushButton, TextEdit
+
+        from haemolynx.gui.chrome_tooltips import OPTIMISE_TOOLTIPS
+
+        self._current_values = current_values
+        self._report = report
+        self._what = what
+        self._apply = None
+        self.text = TextEdit(value="")
+        self.text.read_only = True
+        self.text.tooltip = OPTIMISE_TOOLTIPS["review"]
+        self.apply_button = PushButton(text="Apply")
+        self.apply_button.tooltip = OPTIMISE_TOOLTIPS["apply"]
+        self.discard_button = PushButton(text="Discard")
+        self.discard_button.tooltip = OPTIMISE_TOOLTIPS["discard"]
+        buttons = Container(
+            widgets=[self.apply_button, self.discard_button], layout="horizontal", labels=False
+        )
+        self.container = Container(widgets=[self.text, buttons], labels=False)
+        self.container.visible = False
+        self.apply_button.changed.connect(lambda *_args: self.apply())
+        self.discard_button.changed.connect(lambda *_args: self.discard())
+
+    @property
+    def pending(self) -> bool:
+        return self._apply is not None
+
+    def propose(self, result, apply) -> str:
+        """Show *result*'s proposal and keep *apply* for the Apply button; the
+        status line to report."""
+        changes = proposed_changes(result.settings, self._current_values())
+        self.text.value = review_text(changes, result.scorecard)
+        self._apply = apply
+        self.container.visible = True
+        count = len(changes)
+        worse = worse_rows(result.scorecard)
+        warning = (
+            f" WARNING: worse than your settings on {len(worse)} measure"
+            f"{'s' if len(worse) != 1 else ''}."
+            if worse
+            else ""
+        )
+        return (
+            f"{self._what[0].upper()}{self._what[1:]} ready to review below: {count} "
+            f"change{'s' if count != 1 else ''}.{warning} Apply or Discard."
+        )
+
+    def apply(self) -> None:
+        if self._apply is None:
+            return
+        apply, self._apply = self._apply, None
+        apply()
+        self.container.visible = False
+        self._report.value = f"Applied the {self._what}."
+
+    def discard(self) -> None:
+        if self._apply is None:
+            return
+        self._apply = None
+        self.container.visible = False
+        self._report.value = f"Discarded the {self._what}; the panel is unchanged."
+
+    def clear(self) -> None:
+        """Forget a proposal without a word: the state it belonged to is gone."""
+        self._apply = None
+        self.container.visible = False
 
 
 class OptimiseProgressBars:
@@ -5589,8 +5670,15 @@ def _run_optimisation_in_background(
     run_state: RunState,
     downsample_factor: "int | None" = None,
     groups: "tuple[str, ...] | None" = None,
+    max_passes: int = 1,
+    propose,
 ):
     """Run the settings optimiser off the GUI thread, reporting progress as it goes.
+
+    The run writes nothing into *rows* itself: when it finishes it hands
+    *propose* the result and a function writing it into *rows*, and the panel
+    shows the proposal for the user to Apply (which calls that function) or
+    Discard.
 
     Structurally parallel to `_run_in_background`, but not a reuse of it: that
     one is tightly coupled to `run_pipeline_stages` / `ResultLayers` /
@@ -5639,6 +5727,7 @@ def _run_optimisation_in_background(
             downsample_factor=downsample_factor,
             groups=groups,
             raw_image=raw_image,
+            max_passes=max_passes,
         )
         return result, local_settings["input_path"], raw_image_error
 
@@ -5651,10 +5740,13 @@ def _run_optimisation_in_background(
             report.value = FINISHED_FIRST
             return
         result, input_path, raw_image_error = payload
-        for name, value in result.settings.items():
-            if name in rows:
-                rows[name].value = display_value_for(schema[name], value)
-        apply_prerequisites()
+
+        def apply_result() -> None:
+            for name, value in result.settings.items():
+                if name in rows:
+                    rows[name].value = display_value_for(schema[name], value)
+            apply_prerequisites()
+
         out_path = Path(input_path).parent / config_filename(input_path)
         # OPTIMISE_SETTING_NAMES are quality knobs only -- several of them
         # (and "input_path" itself) `requires` a stage toggle or upstream
@@ -5681,14 +5773,14 @@ def _run_optimisation_in_background(
                 out_path, documented_schema, values={**result.settings, "input_path": input_path}
             )
             wrote_note = f" Wrote {out_path}."
-        except Exception:  # noqa: BLE001 - the optimised settings are already applied
+        except Exception:  # noqa: BLE001 - the proposal stands without its file
             logger.exception("could not write optimised config to %s", out_path)
             wrote_note = f" Could not write {out_path} (see log)."
         bars.finish("Optimised")
         raw_note = (
             f" Raw-image cross-check skipped: {raw_image_error}" if raw_image_error else ""
         )
-        report.value = "Optimised settings applied." + wrote_note + raw_note
+        report.value = propose(result, apply_result) + wrote_note + raw_note
 
     def failed(error: Exception) -> None:
         if not still_ours():
@@ -5744,6 +5836,9 @@ def _run_fwhm_optimisation_in_background(
     run_state: RunState,
     groups: "tuple[str, ...] | None" = None,
     vessel_mask: "np.ndarray | None" = None,
+    sample_edge_count: "int | None" = None,
+    max_passes: int = 1,
+    propose,
 ):
     """Run the FWHM settings optimiser off the GUI thread, reporting progress
     as it goes -- the Diameters tab's own analogue of
@@ -5754,7 +5849,9 @@ def _run_fwhm_optimisation_in_background(
     pipeline" and "Optimise settings" purely for mutual exclusion and
     cooperative cancellation -- only one of the three may run at a time
     against the same `rows`. *vessel_mask*, the run's segmented image, lets
-    every trial be checked against decoys and the mask's own widths.
+    every trial be checked against decoys and the mask's own widths. Like
+    `_run_optimisation_in_background`, it proposes rather than applies: see
+    *propose* there.
     """
     from napari.qt.threading import thread_worker
 
@@ -5779,6 +5876,8 @@ def _run_fwhm_optimisation_in_background(
             axis_order=local_settings["image_axis_order"],
             raw_channel=local_settings.get("fwhm_raw_channel"),
             vessel_mask=vessel_mask,
+            sample_edge_count=sample_edge_count,
+            max_passes=max_passes,
         )
         return result, raw_path
 
@@ -5791,10 +5890,13 @@ def _run_fwhm_optimisation_in_background(
             report.value = FINISHED_FIRST
             return
         result, raw_path = payload
-        for name, value in result.settings.items():
-            if name in rows:
-                rows[name].value = display_value_for(schema[name], value)
-        apply_prerequisites()
+
+        def apply_result() -> None:
+            for name, value in result.settings.items():
+                if name in rows:
+                    rows[name].value = display_value_for(schema[name], value)
+            apply_prerequisites()
+
         out_path = Path(raw_path).parent / config_filename(raw_path)
         # Same reasoning as `_run_optimisation_in_background`'s own
         # `documented_schema`: FWHM_SETTING_NAMES are quality knobs only, so
@@ -5814,11 +5916,11 @@ def _run_fwhm_optimisation_in_background(
         try:
             dump_config(out_path, documented_schema, values=result.settings)
             wrote_note = f" Wrote {out_path}."
-        except Exception:  # noqa: BLE001 - the optimised settings are already applied
+        except Exception:  # noqa: BLE001 - the proposal stands without its file
             logger.exception("could not write optimised FWHM config to %s", out_path)
             wrote_note = f" Could not write {out_path} (see log)."
         bars.finish("Optimised")
-        report.value = "Optimised FWHM settings applied." + wrote_note
+        report.value = propose(result, apply_result) + wrote_note
 
     def failed(error: Exception) -> None:
         if not still_ours():
@@ -9274,6 +9376,7 @@ def settings_widget(napari_viewer=None):
         FileEdit,
         Label,
         PushButton,
+        SpinBox,
         TextEdit,
     )
     from qtpy.QtCore import Qt
@@ -9450,6 +9553,8 @@ def settings_widget(napari_viewer=None):
     #: first call -- see the `thick_vessel_row` guard just below for the
     #: same "not built yet" pattern.
     optimise_fwhm_button: Any = None
+    #: The FWHM optimiser's options and its review box, shown with the button.
+    fwhm_optimise_box: Any = None
     #: A nested QGroupBox (e.g. "Connectivity/Network Analysis" on "8.
     #: Additional measurements") boxes a run of settings that all share one
     #: `requires` gate on the section above it. Left always visible, an
@@ -9784,6 +9889,8 @@ def settings_widget(napari_viewer=None):
         # other `hide_when_unmet` FWHM row right next to it.
         if optimise_fwhm_button is not None:
             optimise_fwhm_button.visible = bool(values.get("use_fwhm_edge_diameters"))
+        if fwhm_optimise_box is not None:
+            fwhm_optimise_box.visible = bool(values.get("use_fwhm_edge_diameters"))
 
         thick_vessel_row = rows.get("use_thick_vessel_skeletonisation")
         if thick_vessel_row is not None:
@@ -10020,6 +10127,9 @@ def settings_widget(napari_viewer=None):
     optimise_button.tooltip = OPTIMISE_SETTINGS_TOOLTIP
     into_check_box(optimise_button, 0)
     optimise_bars = OptimiseProgressBars()
+    #: What a run would change, under the button, until Apply or Discard.
+    optimise_review = _OptimiseReview(current_values, report, what="optimised settings")
+    into_check_box(optimise_review.container, 1)
 
     #: "Optimisation downsampling": how coarse a copy of the image the search
     #: runs on, independent of the resolution a real pipeline run always uses
@@ -10042,10 +10152,19 @@ def settings_widget(napari_viewer=None):
     downsample_dropdown.tooltip = (
         "How coarse a copy of the image to search on for speed -- applies "
         "only to Optimise settings, never to the pipeline run itself. Auto "
-        "times one real evaluation on this image and picks a factor aiming "
-        "to keep the whole search under about five minutes"
+        "never goes so coarse that a typical vessel is under three voxels "
+        "across, and goes finer only while its timing of this image says the "
+        "search stays under about five minutes"
     )
     behind_check_advanced(downsample_dropdown)
+
+    from haemolynx.gui.chrome_tooltips import OPTIMISE_TOOLTIPS
+
+    #: "Optimisation passes": repeat the whole search from where the last pass
+    #: ended (`max_passes`), stopping early once a pass changes nothing.
+    passes_spinbox = SpinBox(label="Optimisation passes", value=1, min=1, max=5)
+    passes_spinbox.tooltip = OPTIMISE_TOOLTIPS["passes"]
+    behind_check_advanced(passes_spinbox)
 
     #: "Choose optimisation types": restricts Optimise settings to a subset of
     #: its eleven groups. The per-group checkboxes stay hidden until asked for --
@@ -10171,9 +10290,53 @@ def settings_widget(napari_viewer=None):
         "own edges against its raw image. The winners are set on this tab "
         "for the next run; the current network's diameters are not changed"
     )
+    #: Its options -- which groups, how many vessels, how many passes -- behind
+    #: a toggle, and its review box: one box under the button, shown with it.
+    from haemolynx.optimisation import FWHM_GROUP_LABELS
+
+    fwhm_options_toggle = CheckBox(text="FWHM optimiser options", value=False)
+    fwhm_options_toggle.tooltip = OPTIMISE_TOOLTIPS["fwhm_options"]
+    fwhm_choose_groups = CheckBox(text="Choose FWHM optimisation types", value=False)
+    fwhm_choose_groups.tooltip = OPTIMISE_TOOLTIPS["fwhm_choose_groups"]
+    fwhm_group_checkboxes: dict[str, Any] = {
+        name: CheckBox(text=FWHM_GROUP_LABELS[name], value=True) for name in FWHM_GROUP_NAMES
+    }
+    fwhm_group_container = Container(widgets=list(fwhm_group_checkboxes.values()), labels=False)
+    fwhm_group_container.visible = False
+    #: Display label -> sample size; ``None`` is Auto (see
+    #: `optimise_fwhm_settings`'s own `sample_edge_count`).
+    _FWHM_SAMPLE_CHOICES: dict[str, Any] = {
+        "Auto": None,
+        "25 vessels": 25,
+        "50 vessels": 50,
+        "100 vessels": 100,
+        "200 vessels": 200,
+        "Every vessel": 2**31 - 1,
+    }
+    fwhm_sample_dropdown = ComboBox(
+        label="FWHM optimisation sample", choices=list(_FWHM_SAMPLE_CHOICES), value="Auto"
+    )
+    fwhm_sample_dropdown.tooltip = OPTIMISE_TOOLTIPS["fwhm_sample"]
+    fwhm_passes_spinbox = SpinBox(label="Optimisation passes", value=1, min=1, max=5)
+    fwhm_passes_spinbox.tooltip = OPTIMISE_TOOLTIPS["passes"]
+    fwhm_options_container = Container(
+        widgets=[fwhm_choose_groups, fwhm_group_container, fwhm_sample_dropdown, fwhm_passes_spinbox]
+    )
+    fwhm_options_container.visible = False
+    fwhm_review = _OptimiseReview(current_values, report, what="optimised FWHM settings")
+    fwhm_optimise_box = Container(
+        widgets=[fwhm_options_toggle, fwhm_options_container, fwhm_review.container], labels=False
+    )
+    fwhm_options_toggle.changed.connect(
+        lambda *_args: setattr(fwhm_options_container, "visible", bool(fwhm_options_toggle.value))
+    )
+    fwhm_choose_groups.changed.connect(
+        lambda *_args: setattr(fwhm_group_container, "visible", bool(fwhm_choose_groups.value))
+    )
     if diameters_settings is not None:
         raw_tiff_row_index = list(diameters_settings).index(rows["fwhm_raw_tiff_path"])
         diameters_settings.insert(raw_tiff_row_index + 1, optimise_fwhm_button)
+        diameters_settings.insert(raw_tiff_row_index + 2, fwhm_optimise_box)
     # OptimiseProgressBars.native is a plain Qt widget, not a magicgui one --
     # like the Input tab's own `optimise_bars`, it joins the shared bottom
     # chrome (below the tabs, added further down) rather than the magicgui
@@ -10202,6 +10365,10 @@ def settings_widget(napari_viewer=None):
             float(v) for v in getattr(results, "_voxel_size_zyx", (1.0, 1.0, 1.0))
         )
         skeletonised = checkpoints.get("skeletonise")
+        groups = None
+        if fwhm_choose_groups.value:
+            groups = tuple(name for name, box in fwhm_group_checkboxes.items() if box.value)
+        fwhm_review.clear()
         _run_fwhm_optimisation_in_background(
             graph,
             voxel_size_zyx,
@@ -10213,7 +10380,11 @@ def settings_widget(napari_viewer=None):
             optimise_fwhm_bars,
             apply_prerequisites=apply_prerequisites,
             run_state=run_state,
+            groups=groups,
             vessel_mask=getattr(getattr(skeletonised, "output", None), "image", None),
+            sample_edge_count=_FWHM_SAMPLE_CHOICES.get(fwhm_sample_dropdown.value),
+            max_passes=int(fwhm_passes_spinbox.value),
+            propose=fwhm_review.propose,
         )
 
     optimise_fwhm_button.changed.connect(lambda *_args: on_optimise_fwhm_settings())
@@ -10684,6 +10855,7 @@ def settings_widget(napari_viewer=None):
         groups = None
         if choose_groups_checkbox.value:
             groups = tuple(name for name, box in group_checkboxes.items() if box.value)
+        optimise_review.clear()
         _run_optimisation_in_background(
             _settings(),
             schema,
@@ -10695,6 +10867,8 @@ def settings_widget(napari_viewer=None):
             run_state=run_state,
             downsample_factor=downsample_factor,
             groups=groups,
+            max_passes=int(passes_spinbox.value),
+            propose=optimise_review.propose,
         )
 
     def on_check_segmented_image() -> None:
@@ -10872,6 +11046,8 @@ def settings_widget(napari_viewer=None):
             optimise_fwhm_button.enabled = True
             optimise_fwhm_bars.reset()
             log_view.cancelled()
+        optimise_review.clear()
+        fwhm_review.clear()
         removed = 0
         if viewer is not None:
             removed = _clear_our_layers(viewer)
@@ -11316,6 +11492,8 @@ def settings_widget(napari_viewer=None):
             optimise_fwhm_button.enabled = True
             optimise_fwhm_bars.reset()
             log_view.cancelled()
+        optimise_review.clear()
+        fwhm_review.clear()
         if viewer is not None:
             _clear_our_layers(viewer)
             reparent_arrow_length_slider()
@@ -11703,6 +11881,16 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_optimise_choose_groups = choose_groups_checkbox
     panel._haemolynx_optimise_group_checkboxes = group_checkboxes
     panel._haemolynx_optimise_group_checkboxes_container = group_checkboxes_container
+    panel._haemolynx_optimise_review = optimise_review
+    panel._haemolynx_optimise_passes = passes_spinbox
+    panel._haemolynx_optimise_fwhm_review = fwhm_review
+    panel._haemolynx_optimise_fwhm_box = fwhm_optimise_box
+    panel._haemolynx_optimise_fwhm_options = fwhm_options_toggle
+    panel._haemolynx_optimise_fwhm_options_container = fwhm_options_container
+    panel._haemolynx_optimise_fwhm_choose_groups = fwhm_choose_groups
+    panel._haemolynx_optimise_fwhm_group_checkboxes = fwhm_group_checkboxes
+    panel._haemolynx_optimise_fwhm_sample = fwhm_sample_dropdown
+    panel._haemolynx_optimise_fwhm_passes = fwhm_passes_spinbox
     panel._haemolynx_check_image_button = check_image_button
     panel._haemolynx_raw_data_row = raw_data_row
     panel._haemolynx_raw_channel_row = raw_channel_row

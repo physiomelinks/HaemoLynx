@@ -133,6 +133,8 @@ def test_optimise_settings_starts_the_background_worker(panel, monkeypatch, tmp_
     assert bars is panel._haemolynx_optimise_bars
     assert kwargs["apply_prerequisites"] is not None
     assert kwargs["run_state"] is panel._haemolynx_run_state
+    assert kwargs["max_passes"] == 1
+    assert kwargs["propose"] == panel._haemolynx_optimise_review.propose
     assert kwargs["downsample_factor"] is None  # "Auto" is the default dropdown value
     assert kwargs["groups"] is None  # "Choose optimisation types" is unticked by default
 
@@ -536,7 +538,7 @@ def test_optimise_settings_raw_image_shape_mismatch_degrades_instead_of_crashing
         pytest.fail("optimiser worker did not finish within 30s")
 
     final_report = panel._haemolynx_report()
-    assert "Optimised settings applied" in final_report
+    assert "Optimised settings ready to review below" in final_report
     assert "skipped" in final_report.lower()
 
 
@@ -584,11 +586,20 @@ def test_optimise_settings_end_to_end_on_a_real_fixture(panel, tmp_path):
         pytest.fail("optimisation did not finish within 120s")
 
     report = panel._haemolynx_report()
-    assert "Optimised settings applied" in report, report
+    assert "Optimised settings ready to review below" in report, report
+    assert panel._haemolynx_optimise_review.pending
 
     yaml_files = list(tmp_path.glob("*.yaml"))
     assert yaml_files, "no config file was written beside the input image"
     assert yaml_files[0].name.endswith(f"_{copy_path.stem}.yaml")
+
+    # Nothing reaches the panel before Apply.
+    assert {
+        "skeleton_closing_radius": rows["skeleton_closing_radius"].value,
+        "graph_reconnect_threshold": rows["graph_reconnect_threshold"].value,
+    } == before
+    panel._haemolynx_optimise_review.apply()
+    assert panel._haemolynx_report() == "Applied the optimised settings."
 
     after = {
         "skeleton_closing_radius": rows["skeleton_closing_radius"].value,
@@ -598,3 +609,102 @@ def test_optimise_settings_end_to_end_on_a_real_fixture(panel, tmp_path):
     # defaults) -- only that the round trip through the optimiser and back
     # into the rows completed without error.
     assert set(before) == set(after)
+
+
+# --- a run proposes; the panel changes only on Apply --------------------------
+
+
+def _proposal(settings, scorecard=()):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(settings=settings, scorecard=scorecard)
+
+
+def _writer(rows, settings):
+    """What a run hands the review: a function writing its settings into the rows."""
+    calls = []
+
+    def apply():
+        calls.append(dict(settings))
+        for name, value in settings.items():
+            rows[name].value = value
+
+    return apply, calls
+
+
+def test_a_proposal_changes_nothing_until_apply(panel):
+    panel.show()
+    rows = panel._haemolynx_rows()
+    review = panel._haemolynx_optimise_review
+    was = int(rows["skeleton_min_branch_length"].value)
+    apply, calls = _writer(rows, {"skeleton_min_branch_length": was + 2})
+
+    message = review.propose(_proposal({"skeleton_min_branch_length": was + 2}), apply)
+
+    assert message == "Optimised settings ready to review below: 1 change. Apply or Discard."
+    assert review.pending and review.container.visible
+    assert f"skeleton_min_branch_length: {was} -> {was + 2}" in review.text.value
+    assert rows["skeleton_min_branch_length"].value == was
+    assert calls == []
+
+    review.apply()
+
+    assert calls == [{"skeleton_min_branch_length": was + 2}]
+    assert rows["skeleton_min_branch_length"].value == was + 2
+    assert not review.pending and not review.container.visible
+    assert panel._haemolynx_report() == "Applied the optimised settings."
+
+
+def test_discard_leaves_the_panel_as_it_was(panel):
+    rows = panel._haemolynx_rows()
+    review = panel._haemolynx_optimise_review
+    was = int(rows["skeleton_min_branch_length"].value)
+    apply, calls = _writer(rows, {"skeleton_min_branch_length": was + 2})
+    review.propose(_proposal({"skeleton_min_branch_length": was + 2}), apply)
+
+    review.discard()
+    review.apply()  # nothing left to apply
+
+    assert calls == []
+    assert rows["skeleton_min_branch_length"].value == was
+    assert panel._haemolynx_report() == "Discarded the optimised settings; the panel is unchanged."
+
+
+def test_a_proposal_worse_than_the_current_settings_says_so(panel):
+    from haemolynx.optimisation.scorecard import ScoreRow
+
+    review = panel._haemolynx_optimise_review
+    scorecard = (ScoreRow("input vessels the skeleton reaches", 0.95, 0.8, True, 0.02),)
+
+    message = review.propose(_proposal({}, scorecard), lambda: None)
+
+    assert "WARNING: worse than your settings on 1 measure." in message
+    assert "WARNING: worse than your current settings on input vessels" in review.text.value
+
+
+def test_clear_drops_a_pending_proposal(panel):
+    review = panel._haemolynx_optimise_review
+    apply, calls = _writer(panel._haemolynx_rows(), {})
+    review.propose(_proposal({"skeleton_min_branch_length": 9}), apply)
+
+    panel._haemolynx_clear(ask=False)
+    review.apply()
+
+    assert not review.pending
+    assert calls == []
+
+
+def test_passes_are_passed_through(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    real_input = tmp_path / "mask.tif"
+    real_input.write_bytes(b"")
+    panel._haemolynx_rows()["input_path"].value = real_input
+    panel._haemolynx_optimise_passes.value = 3
+
+    panel._haemolynx_optimise_settings()
+
+    assert started[0][1]["max_passes"] == 3
+    assert panel._haemolynx_optimise_passes.tooltip.strip()

@@ -103,6 +103,7 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         *chrome.ACTION_TOOLTIPS.values(),
         chrome.STOP_PICKING_NODES_TOOLTIP,
         *chrome.POST_PROCESSING_TOOLTIPS.values(),
+        *chrome.OPTIMISE_TOOLTIPS.values(),
     ]
     empty = [text for text in named if not text.strip()]
     assert not empty

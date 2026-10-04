@@ -130,6 +130,28 @@ def test_optimise_fwhm_settings_leaves_the_callers_graph_alone_by_default(multi_
     assert result.seconds > 0.0
     assert result.estimated_seconds is None  # the sample size was given: nothing estimated
     assert set(result.group_seconds) == set(result.groups_run)
+    assert [row.name for row in result.scorecard] == [
+        name for name, _field, _higher, _tolerance in s._SCORECARD_MEASURES
+    ]
+
+
+def test_the_fwhm_scorecard_compares_the_starting_and_chosen_quality():
+    from haemolynx.optimisation.fwhm_metrics import FwhmMeasurementQuality
+
+    def quality(measured: int, r2: float) -> FwhmMeasurementQuality:
+        return FwhmMeasurementQuality(
+            n_edges_total=10, n_edges_measured=measured, measured_fraction=measured / 10,
+            mean_fit_r2=r2, median_fit_r2=r2, mean_achieved_extent_ratio=1.0,
+            median_diameter_cv=0.1,
+        )
+
+    rows = {row.name: row for row in s._scorecard(quality(10, 0.95), quality(8, 0.90))}
+
+    usable = rows["sampled vessels with a usable width"]
+    assert (usable.before, usable.after) == (1.0, 0.8)
+    assert usable.worse  # two edges of ten: past the one-and-a-half the guard allows
+    assert rows["mean fit R2"].worse
+    assert not rows["width spread along a vessel (CV)"].worse
 
 
 def test_optimise_fwhm_settings_measures_the_full_graph_when_asked(multi_vessel):

@@ -306,6 +306,22 @@ def test_bundle_scan_size_candidates_are_odd_and_bounded():
     assert all(v % 2 == 1 for v in result)
 
 
+def test_bundle_density_fraction_candidates_never_offer_floating_point_noise():
+    """Regression: a uniform filter of a 0/1 volume leaves ~1e-16 where the
+    density is zero; counted as density on a sparse mask, they made the
+    60th percentile 1e-16 -- a threshold calling every voxel near the
+    skeleton a bundle, which took most of a 29-minute search on the E14.5
+    stack. Every real density is at least one voxel's share of the window."""
+    # A block at one end of a long, empty volume: the filter's running sums
+    # leave crumbs all the way along it, five times as many as real values.
+    mask = np.zeros((20, 20, 400), dtype=bool)
+    mask[2:18, 2:18, 0:30] = True
+
+    result = c.bundle_density_fraction_candidates(mask, scan_size=5, default=0.35)
+
+    assert min(result) >= 1.0 / 5**3
+
+
 def test_bundle_density_fraction_candidates_empty_mask_falls_back_to_default():
     empty = np.zeros((10, 10, 10), dtype=bool)
     assert c.bundle_density_fraction_candidates(empty, scan_size=9, default=0.35) == [0.35]

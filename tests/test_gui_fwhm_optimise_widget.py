@@ -162,6 +162,10 @@ def test_optimise_fwhm_settings_starts_the_background_worker(panel, monkeypatch,
     assert bars is panel._haemolynx_optimise_fwhm_bars
     assert kwargs["apply_prerequisites"] is not None
     assert kwargs["run_state"] is panel._haemolynx_run_state
+    assert kwargs["groups"] is None
+    assert kwargs["sample_edge_count"] is None  # Auto
+    assert kwargs["max_passes"] == 1
+    assert kwargs["propose"] == panel._haemolynx_optimise_fwhm_review.propose
 
 
 @pytest.mark.parametrize("skeletonised", [True, False])
@@ -325,3 +329,80 @@ def test_start_optimisation_worker_wires_up_button_bars_and_report(qapp):
     assert report.value == "Optimising for a test..."
     assert started_calls == ["start"]
     assert run_state.running is True
+
+
+# --- the FWHM optimiser's own options, and its review -----------------------------
+
+
+def test_the_fwhm_options_are_passed_through(panel, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(
+        widget_mod, "_run_fwhm_optimisation_in_background", lambda *a, **k: started.append((a, k))
+    )
+    panel._haemolynx_view.results = _fake_results(_tiny_graph())
+    raw_file = tmp_path / "raw.tif"
+    raw_file.write_bytes(b"")
+    panel._haemolynx_rows()["fwhm_raw_tiff_path"].value = raw_file
+    panel._haemolynx_optimise_fwhm_choose_groups.value = True
+    for name, box in panel._haemolynx_optimise_fwhm_group_checkboxes.items():
+        box.value = name in ("exclusion_zones", "rejection_gates")
+    panel._haemolynx_optimise_fwhm_sample.value = "50 vessels"
+    panel._haemolynx_optimise_fwhm_passes.value = 2
+
+    panel._haemolynx_optimise_fwhm_settings()
+
+    kwargs = started[0][1]
+    assert kwargs["groups"] == ("exclusion_zones", "rejection_gates")
+    assert kwargs["sample_edge_count"] == 50
+    assert kwargs["max_passes"] == 2
+
+
+def test_the_fwhm_options_and_review_show_only_with_fwhm_measurement(panel):
+    from haemolynx.gui.tabs import tab_titles
+
+    panel.show()
+    panel._haemolynx_tabs.setCurrentIndex(list(tab_titles()).index("5. Diameters"))
+    rows = panel._haemolynx_rows()
+    box = panel._haemolynx_optimise_fwhm_box
+
+    rows["use_fwhm_edge_diameters"].value = False
+    assert box.visible is False
+    rows["use_fwhm_edge_diameters"].value = True
+    assert box.visible is True
+    assert panel._haemolynx_optimise_fwhm_options_container.visible is False
+
+    panel._haemolynx_optimise_fwhm_options.value = True
+    assert panel._haemolynx_optimise_fwhm_options_container.visible is True
+
+
+def test_the_fwhm_options_sit_right_under_the_button(panel):
+    widgets = list(panel._haemolynx_diameters_settings)
+    button_index = widgets.index(panel._haemolynx_optimise_fwhm_button)
+    assert widgets.index(panel._haemolynx_optimise_fwhm_box) == button_index + 1
+
+
+def test_an_fwhm_proposal_applies_only_on_apply(panel):
+    from types import SimpleNamespace
+
+    review = panel._haemolynx_optimise_fwhm_review
+    applied = []
+    message = review.propose(
+        SimpleNamespace(settings={"fwhm_min_fit_r2": 0.5}, scorecard=()), lambda: applied.append(1)
+    )
+
+    assert message.startswith("Optimised FWHM settings ready to review below: 1 change.")
+    assert applied == []
+    review.apply()
+    assert applied == [1]
+    assert panel._haemolynx_report() == "Applied the optimised FWHM settings."
+
+
+def test_on_clear_drops_a_pending_fwhm_proposal(panel):
+    from types import SimpleNamespace
+
+    review = panel._haemolynx_optimise_fwhm_review
+    review.propose(SimpleNamespace(settings={"fwhm_min_fit_r2": 0.5}, scorecard=()), lambda: None)
+
+    panel._haemolynx_clear(ask=False)
+
+    assert not review.pending

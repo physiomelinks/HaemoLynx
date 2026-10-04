@@ -67,7 +67,8 @@ haemolynx/
 │   ├── optimisation/       # "Optimise settings": search.py (segmentation cleanup,
 │   │                       #   Skeletonise and Graph settings), fwhm_search.py (FWHM
 │   │                       #   settings), candidates/metrics (+ fwhm_ variants), report,
-│   │                       #   progress, trial_cache (a trial asked for again is not rerun)
+│   │                       #   progress, trial_cache (a trial asked for again is not rerun),
+│   │                       #   scorecard (the starting settings against the chosen ones)
 │   ├── gui/                # napari plugin: form.py (schema -> form rows, pure),
 │   │                       #   tabs.py (one tab per stage), layout.py (each tab's
 │   │                       #   boxes and nested Advanced buttons, pure),
@@ -85,7 +86,8 @@ haemolynx/
 │   │                       #   (what the "7. Post processing" tab draws, pure), branch_hover.py,
 │   │                       #   vessel_tubes.py, run_state.py, run_log.py + log_view.py,
 │   │                       #   run_snapshot.py (.haemorun save/load), stage_checkpoints.py
-│   │                       #   (re-run from a tab), optimise_progress.py, chrome_tooltips.py
+│   │                       #   (re-run from a tab), optimise_progress.py, optimise_review.py
+│   │                       #   (an optimiser's proposal before Apply, pure), chrome_tooltips.py
 │   │                       #   (hover text for non-setting controls), _widget.py (the
 │   │                       #   panel), napari.yaml (npe2 manifest)
 │   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py,

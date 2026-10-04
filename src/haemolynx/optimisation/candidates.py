@@ -346,14 +346,21 @@ def bundle_density_fraction_candidates(
     (:func:`haemolynx.preprocessing.skeleton.bundle_scan_window`). A cube of
     ``scan_size`` voxels on every axis spanned four times the depth it did
     in-plane on a 2 um z, diluting every density and offering thresholds the
-    refinement's own window never reaches."""
+    refinement's own window never reaches.
+
+    A density is counted only from one voxel's share of the window up: a
+    uniform filter of a 0/1 volume leaves floating-point crumbs of ~1e-16
+    where the density is really zero, and on a sparse mask they outnumbered
+    the real values -- the 60th percentile came out as 1e-16, a threshold
+    calling every voxel near the skeleton a bundle, and that one candidate
+    took most of a 29-minute search."""
     from scipy.ndimage import uniform_filter
 
     from haemolynx.preprocessing.skeleton import bundle_scan_window
 
     window = bundle_scan_window(int(scan_size), voxel_size_zyx, raw_mask.ndim)
     density = uniform_filter(raw_mask.astype(float), size=window)
-    nonzero = density[density > 0]
+    nonzero = density[density >= 0.5 / float(np.prod(window))]
     candidates = {float(default)} | set(_percentiles(nonzero, (60.0, 75.0, 90.0)))
     return sorted(v for v in candidates if 0.0 < v <= 1.0) or [float(default)]
 

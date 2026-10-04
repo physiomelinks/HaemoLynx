@@ -55,6 +55,7 @@ from haemolynx.haemodynamics.poiseuille import (
 from . import fwhm_candidates as cand
 from . import fwhm_metrics as met
 from .progress import ProgressCallback
+from .scorecard import ScoreRow
 from .search import OptimisationResult, _SweepBookkeeping
 from .trial_cache import TrialCache
 
@@ -158,6 +159,35 @@ _MAX_FIT_R2_REGRESSION = 0.05
 #: tripped the guard while one measuring an edge more was rewarded -- a pull
 #: towards looser settings. One edge lost is allowed, two are not.
 _USABLE_EDGES_REGRESSION_ALLOWED = 1.5
+
+#: The before/after scorecard (see :mod:`.scorecard`): each measure's name,
+#: the :class:`.fwhm_metrics.FwhmMeasurementQuality` field it reads, whether
+#: higher is better, and how far it may move the wrong way and still count
+#: as the same (``None``: the sample-size tolerance the guard uses).
+_SCORECARD_MEASURES: tuple[tuple[str, str, bool, Optional[float]], ...] = (
+    ("sampled vessels with a usable width", "usable_fraction", True, None),
+    ("mean fit R2", "mean_fit_r2", True, 0.02),
+    ("profile length reached (of the target)", "mean_achieved_extent_ratio", True, 0.05),
+    ("width spread along a vessel (CV)", "median_diameter_cv", False, 0.02),
+    ("decoys given a width", "decoy_false_positive_rate", False, 0.0),
+)
+
+
+def _scorecard(
+    before: met.FwhmMeasurementQuality, after: met.FwhmMeasurementQuality
+) -> tuple[ScoreRow, ...]:
+    usable_tolerance = _FwhmSearch._usable_fraction_tolerance(before.n_edges_total)
+    return tuple(
+        ScoreRow(
+            name,
+            float(getattr(before, field)),
+            float(getattr(after, field)),
+            higher_is_better,
+            usable_tolerance if tolerance is None else tolerance,
+        )
+        for name, field, higher_is_better, tolerance in _SCORECARD_MEASURES
+    )
+
 
 #: The FWHM/EDT disagreement ratio a width is set aside at, when the
 #: settings do not give ``edt_fwhm_disagreement_warn_ratio`` -- its default.
@@ -866,9 +896,19 @@ def optimise_fwhm_settings(
         vessel_mask=vessel_mask,
         psf_sigma_zyx=psf_sigma_zyx,
     )
+    # The scorecard's starting end: the first sweep's own baseline, so the
+    # trial cache makes it free.
+    try:
+        before: Optional[met.FwhmMeasurementQuality] = search._quality({})
+    except Exception:  # noqa: BLE001 - a scorecard must never fail the search it reports on
+        before = None
     start = time.perf_counter()
     search.run(max_passes=max_passes)
     seconds = time.perf_counter() - start
+    try:
+        scorecard = _scorecard(before, search._quality({})) if before is not None else ()
+    except Exception:  # noqa: BLE001
+        scorecard = ()
 
     settings = {name: search.current[name] for name in FWHM_SETTING_NAMES if name in search.current}
 
@@ -884,4 +924,5 @@ def optimise_fwhm_settings(
         seconds=seconds,
         estimated_seconds=estimated_seconds,
         group_seconds=dict(search.group_seconds),
+        scorecard=scorecard,
     )

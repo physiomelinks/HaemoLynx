@@ -97,7 +97,8 @@ USE_LAYER_TOOLTIP = (
 )
 OPTIMISE_SETTINGS_TOOLTIP = (
     "Empirically choose Skeletonise and Graph tab settings from the "
-    "segmented input image, and write a config file beside it"
+    "segmented input image, write a config file beside it, and show what "
+    "would change for you to Apply or Discard"
 )
 CHECK_SEGMENTED_IMAGE_TOOLTIP = (
     "Score the segmented input image out of 10 -- fragmentation, "
@@ -276,3 +277,29 @@ ADVANCED_SETTINGS_TOOLTIP = (
     "Show or hide the less often changed settings for the option above; "
     "the count says how many of them differ from their defaults"
 )
+
+#: The optimisers' own controls: the review of a run's proposal, and the
+#: options each search takes.
+OPTIMISE_TOOLTIPS = {
+    "review": (
+        "What the last optimisation run would change, from your value to its "
+        "choice, and any measure it made worse than your settings"
+    ),
+    "apply": "Write the proposed settings into the panel",
+    "discard": "Leave the panel as it is and drop the proposed settings",
+    "passes": (
+        "Run the whole search this many times, each pass starting where the "
+        "last one ended, to catch settings that only help together; stops "
+        "early once a pass changes nothing"
+    ),
+    "fwhm_options": "Show or hide the FWHM optimiser's own options",
+    "fwhm_choose_groups": (
+        "Restrict Optimise FWHM settings to only the ticked group(s) below, "
+        "instead of every FWHM setting"
+    ),
+    "fwhm_sample": (
+        "How many of the network's vessels each FWHM trial measures; Auto "
+        "times one measurement and picks a count to keep the search near "
+        "three minutes"
+    ),
+}

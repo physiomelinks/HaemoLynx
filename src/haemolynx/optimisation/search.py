@@ -81,6 +81,7 @@ from .progress import (
     OptimisationEvent,
     ProgressCallback,
 )
+from .scorecard import ScoreRow
 from .trial_cache import TrialCache
 
 #: Settings this search decides, on the Input tab's segmentation-cleanup
@@ -325,42 +326,48 @@ AUTO_MIN_VOXELS_ACROSS_TYPICAL_RADIUS = 1.5
 _AUTO_RADIUS_CROP_VOXELS = 8_000_000
 
 
+#: How many times a search runs each of its costly steps, counted on the
+#: E14.5 MCA stack (287 x 512 x 512): real searches at 16x and 4x made within
+#: two of the same calls of each, the scorecard's own two runs not counted.
+#: A mask whose thick vessels win (use_thick_vessel_skeletonisation chosen)
+#: runs the thick skeleton about fifteen more times, so its estimate reads low.
+_SEARCH_STEP_CALLS: dict[str, int] = {
+    "cleanup": 15,
+    "mask score": 24,
+    "plain skeleton": 2,
+    "thick skeleton": 2,
+    "preprocess": 22,
+    "graph": 19,
+    "smooth": 40,
+}
+
+
 @dataclass(frozen=True)
 class _SearchTimeModel:
-    """How long one evaluation takes on a grid of *voxels* voxels: a fixed
-    overhead plus a share per voxel.
+    """A whole search's time: each costly step timed once on one search grid
+    of *probe_voxels* voxels, times how often a search runs it
+    (:data:`_SEARCH_STEP_CALLS`) -- and, for any other grid, scaled with its
+    voxel count.
 
-    The overhead is real and large -- on that E14.5 stack a 16x search spent
-    34 of its 42 s building graphs from an 18 x 32 x 32 grid -- so timing one
-    probe and scaling it with voxel count alone (what "Auto" used to do) read
-    every finer grid as far slower than it is, and chose the coarsest.
+    Timed on the grid itself, because a coarser one does not predict it.
+    What this replaced timed one whole cleanup-skeletonise-build-graph cycle
+    at 16x, scaled it with voxel count and multiplied it by 44: it read a 4x
+    search on the E14.5 stack as 637 s, and the search took 57 s. A search
+    repeats the cheap steps far more often than the costly ones, and the
+    cheap ones are not cheap on a very coarse grid, where vessels merge into
+    blobs whose tangled skeletons are slow to turn into graphs -- a graph
+    build took 2 s at 8x there and 1.2 s at 4x. Scaling with voxel count is
+    cautious for a finer grid, where cost grows more slowly than voxels do.
     """
 
-    overhead_seconds: float
-    seconds_per_voxel: float
+    step_seconds: Mapping[str, float]
+    probe_voxels: float
 
     def search_seconds(self, voxels: float) -> float:
-        """A whole search: :data:`_GROUP_TOTAL_UPPER_BOUND` evaluations."""
-        return (
-            self.overhead_seconds + self.seconds_per_voxel * float(voxels)
-        ) * _GROUP_TOTAL_UPPER_BOUND
-
-    @classmethod
-    def fit(cls, coarse: tuple[float, float], fine: tuple[float, float]) -> "_SearchTimeModel":
-        """The line through two timed probes, each ``(voxels, seconds)``.
-
-        When the finer probe took no longer than the coarser one (timing
-        noise on two tiny grids), or the line would need a negative overhead,
-        cost in proportion to the finer probe's voxels alone: the cautious
-        reading, which can only make finer grids look slower.
-        """
-        (coarse_voxels, coarse_seconds), (fine_voxels, fine_seconds) = coarse, fine
-        if fine_voxels > coarse_voxels and fine_seconds > coarse_seconds:
-            slope = (fine_seconds - coarse_seconds) / (fine_voxels - coarse_voxels)
-            overhead = coarse_seconds - slope * coarse_voxels
-            if overhead >= 0.0:
-                return cls(overhead, slope)
-        return cls(0.0, max(fine_seconds, 0.0) / max(float(fine_voxels), 1.0))
+        one_search = sum(
+            _SEARCH_STEP_CALLS.get(name, 0) * seconds for name, seconds in self.step_seconds.items()
+        )
+        return one_search * float(voxels) / max(float(self.probe_voxels), 1.0)
 
 
 @dataclass(frozen=True)
@@ -393,11 +400,11 @@ def estimate_downsample_factor_for_time_budget(
     rate, which is wrong in two ways a real dataset exposes: it does not
     know how fast *this* machine is, and it does not know how
     topologically complex *this* mask's own vessel network is. This times
-    one real cleanup-and-skeletonise-and-build-graph cycle on *this* mask at
-    the two coarsest offered factors, fits a fixed overhead plus a cost per
-    voxel through them (:class:`_SearchTimeModel`), and multiplies by
-    :data:`_GROUP_TOTAL_UPPER_BOUND`, this module's own estimate of how many
-    such real evaluations a full run does.
+    each of a search's costly steps once on *this* mask, on the grid the
+    resolution cap below allows (the coarsest offered, without one), and
+    adds them up as often as a search runs each one
+    (:class:`_SearchTimeModel`); a finer grid is chosen only if that time,
+    scaled with its voxel count, still fits the budget.
 
     The time budget is then capped by resolution: no factor at which the
     mask's typical vessel radius is fewer than
@@ -414,7 +421,7 @@ def estimate_downsample_factor_for_time_budget(
         raw_mask,
         voxel_size_zyx,
         target_seconds=target_seconds,
-        use_thick_vessel_skeletonisation=use_thick_vessel_skeletonisation,
+        starting_values={"use_thick_vessel_skeletonisation": use_thick_vessel_skeletonisation},
     ).factor
 
 
@@ -423,11 +430,11 @@ def _auto_downsample(
     voxel_size_zyx: tuple[float, float, float],
     *,
     target_seconds: float,
-    use_thick_vessel_skeletonisation: bool,
+    starting_values: Optional[Mapping[str, Any]] = None,
 ) -> _AutoDownsample:
     """:func:`estimate_downsample_factor_for_time_budget`'s factor, with the
     search time it estimated and the resolution cap it applied, for the
-    run's report."""
+    run's report. *starting_values* give the timed steps their settings."""
     typical_radius_um = (
         _typical_vessel_radius_um(_densest_crop(raw_mask, _AUTO_RADIUS_CROP_VOXELS), voxel_size_zyx)
         if raw_mask.any()
@@ -443,7 +450,9 @@ def _auto_downsample(
         return factor if cap is None else min(factor, cap)
 
     model = _probe_time_model(
-        raw_mask, voxel_size_zyx, use_thick_vessel_skeletonisation=use_thick_vessel_skeletonisation
+        raw_mask, voxel_size_zyx,
+        factor=cap if cap is not None else DOWNSAMPLE_FACTORS[-1],
+        starting_values=starting_values,
     )
     if model is None:
         return _AutoDownsample(
@@ -467,12 +476,22 @@ def _probe_time_model(
     raw_mask: np.ndarray,
     voxel_size_zyx: tuple[float, float, float],
     *,
-    use_thick_vessel_skeletonisation: bool,
+    factor: int,
+    starting_values: Optional[Mapping[str, Any]] = None,
 ) -> Optional[_SearchTimeModel]:
-    """One real evaluation timed at the two coarsest offered factors, and the
-    :class:`_SearchTimeModel` through them; ``None`` when there is nothing
-    to time (an empty mask) or timing it failed."""
-    coarse_factor, fine_factor = DOWNSAMPLE_FACTORS[-1], DOWNSAMPLE_FACTORS[-2]
+    """Each of a search's costly steps (see :data:`_SEARCH_STEP_CALLS`)
+    timed once on the search grid *factor* gives, with *starting_values*
+    where they give the step's settings; ``None`` when there is nothing to
+    time (an empty mask) or timing it failed."""
+    settings = dict(starting_values or {})
+
+    def from_settings(make, *args) -> dict[str, Any]:
+        """A step's keyword arguments from *settings*, or none -- the
+        function's own defaults -- when they do not give them all."""
+        try:
+            return make(settings, *args)
+        except (KeyError, TypeError, ValueError):
+            return {}
 
     def probe_grid(factor: int) -> tuple[np.ndarray, tuple[float, ...]]:
         mask = _downsample_mask(raw_mask, factor, voxel_size_zyx)
@@ -481,37 +500,84 @@ def _probe_time_model(
         )
         return mask, voxel
 
-    def probe_once(mask: np.ndarray, voxel: tuple[float, ...]) -> float:
-        start = time.perf_counter()
-        cleaned, _raw = preprocessing.clean_segmented_mask_for_skeletonisation(mask, voxel_size_zyx=voxel)
-        preprocessing.score_segmented_mask(cleaned, voxel_size_zyx=voxel)
-        if use_thick_vessel_skeletonisation:
-            skeleton = preprocessing.skeletonize_thickness_gated(mask, voxel_size_zyx=voxel)
-        else:
-            skeleton = preprocessing.skeletonize_volume(mask)
-        graph_mod.build_graph_from_skeleton(skeleton, voxel_size=voxel)
-        return time.perf_counter() - start
+    def time_steps(mask: np.ndarray, voxel: tuple[float, ...]) -> dict[str, float]:
+        seconds: dict[str, float] = {}
+
+        def timed(name: str, step, *args, **kwargs):
+            start = time.perf_counter()
+            out = step(*args, **kwargs)
+            seconds[name] = seconds.get(name, 0.0) + time.perf_counter() - start
+            return out
+
+        cleaned, _raw = timed(
+            "cleanup", preprocessing.clean_segmented_mask_for_skeletonisation,
+            mask, voxel_size_zyx=voxel, **from_settings(_cleanup_kwargs),
+        )
+        timed("mask score", preprocessing.score_segmented_mask, cleaned, voxel_size_zyx=voxel)
+        plain = timed("plain skeleton", preprocessing.skeletonize_volume, mask)
+        thick = timed(
+            "thick skeleton", preprocessing.skeletonize_thickness_gated,
+            mask, **{"voxel_size_zyx": voxel, **from_settings(_thick_vessel_kwargs, voxel)},
+        )
+        raw_skeleton = thick if settings.get("use_thick_vessel_skeletonisation") else plain
+        radius_map = preprocessing.inscribed_radius_map(mask, voxel)  # once per search: untimed
+
+        def preprocess_and_check() -> np.ndarray:
+            skeleton = preprocessing.preprocess_skeleton_for_graph(
+                raw_skeleton, segmentation_mask=mask, voxel_size_zyx=voxel, **from_settings(_skeleton_kwargs)
+            )
+            preprocessing.diagnose_skeleton_mask_consistency(
+                skeleton, mask, voxel_size_zyx=voxel, local_radius_map=radius_map
+            )
+            return skeleton
+
+        skeleton = timed("preprocess", preprocess_and_check)
+
+        def build_and_check():
+            graph = graph_mod.build_graph_from_skeleton(
+                skeleton, **{"voxel_size": voxel, **from_settings(_graph_kwargs, voxel)}
+            )
+            graph_mod.diagnose_skeleton_graph_consistency(graph, skeleton, voxel_size_zyx=voxel)
+            return graph
+
+        graph = timed("graph", build_and_check)
+        smoothing = {
+            key: settings[name]
+            for key, name in (
+                ("method", "centreline_smoothing_method"),
+                ("iterations", "centreline_smoothing_iterations"),
+                ("max_deviation", "centreline_max_deviation"),
+            )
+            if name in settings
+        }
+        timed(
+            "smooth", graph_mod.smooth_graph_centrelines,
+            graph.copy(), skeleton, voxel_size_zyx=voxel, **smoothing,
+        )
+        return seconds
 
     try:
-        coarse_mask, coarse_voxel = probe_grid(coarse_factor)
+        coarse_mask, coarse_voxel = probe_grid(DOWNSAMPLE_FACTORS[-1])
         if not coarse_mask.any():
             return None
-        fine_mask, fine_voxel = probe_grid(fine_factor)
-        # One untimed warm-up call first: scipy/skimage/networkx do a lot of
+        probe_mask, probe_voxel = probe_grid(factor)
+        # One untimed warm-up pass first, on the coarsest grid where it is
+        # cheapest: scipy/skimage/networkx do a lot of
         # lazy, one-time work (imports, numba/compiled-kernel setup, disk
         # cache checks) on their own first real use in a fresh process --
         # confirmed on this machine to cost seconds on a call that settles
         # to milliseconds immediately after. Timing that cold-start cost
         # would inflate the estimate by orders of magnitude and pick a far
-        # coarser factor than the search actually needs.
-        probe_once(coarse_mask, coarse_voxel)
-        coarse_seconds = probe_once(coarse_mask, coarse_voxel)
-        fine_seconds = probe_once(fine_mask, fine_voxel)
+        # coarser factor than the search actually needs. Only the warming
+        # matters, so a grid too coarse to keep a skeleton at all is no loss.
+        try:
+            time_steps(coarse_mask, coarse_voxel)
+        except Exception:  # noqa: BLE001
+            pass
+        step_seconds = time_steps(probe_mask, probe_voxel)
     except Exception:  # noqa: BLE001 - estimating runtime must never block a real run
         return None
-    return _SearchTimeModel.fit(
-        (float(coarse_mask.size), coarse_seconds), (float(fine_mask.size), fine_seconds)
-    )
+    return _SearchTimeModel(step_seconds, float(probe_mask.size))
 
 
 def _factor_from_time_model(
@@ -674,6 +740,18 @@ _MAX_RAW_REMOVED_FRACTION_REGRESSION = 0.02
 #: resolutions the way a physical volume does.
 _MIN_VESSEL_VOLUME_UM3_FOR_GUARD = 20.0
 
+#: Without a raw image to compare a cleaned mask with, cleanup is guarded by
+#: the input mask's own real vessels -- its components of at least
+#: `_MIN_VESSEL_VOLUME_UM3_FOR_GUARD`, the floor the skeleton guards use. A
+#: vessel counts as kept while at least this share of its voxels is still
+#: foreground: a smoothing radius several times too large erased ~88% of a
+#: real capillary network (see `_MAX_RAW_REMOVED_FRACTION_REGRESSION`), and
+#: nothing else in the mask's own score sees that.
+_MIN_SHARE_OF_A_VESSEL_KEPT = 0.5
+#: A cleanup candidate keeping this much less of the input's real vessels
+#: than its sweep's starting point did is rejected.
+_MAX_REAL_VESSELS_LOST_REGRESSION = 0.02
+
 
 #: A sweep moves a setting off its current value only for a candidate scoring
 #: lower by more than this share of the current value's own score -- and by
@@ -782,6 +860,9 @@ class OptimisationResult:
     #: Voxel-counted settings whose starting value is under one voxel of the
     #: search grid, which the search did not move: returned as they were.
     finer_than_search_grid: tuple[str, ...] = ()
+    #: The starting settings against the chosen ones, on the same measures
+    #: (see :mod:`.scorecard`); empty when they could not be measured.
+    scorecard: tuple[ScoreRow, ...] = ()
 
 
 def _skeleton_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
@@ -829,6 +910,190 @@ def _thick_vessel_kwargs(
         max_bridge_radius_multiple=settings["skeleton_thick_vessel_max_bridge_radius_multiple"],
         max_bridge_distance_um=settings["skeleton_thick_vessel_max_bridge_distance_um"],
         bridge_radius_smoothing_um=float(settings["skeleton_thick_vessel_bridge_radius_smoothing_um"]),
+    )
+
+
+def _cleanup_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """``clean_segmented_mask_for_skeletonisation`` keyword arguments from
+    a settings dict -- the ``segmentation_cleanup_``-prefixed schema names
+    stripped down to the plain names that function actually takes."""
+    return dict(
+        fill_cavities=bool(settings["segmentation_cleanup_fill_cavities"]),
+        remove_whiskers=bool(settings["segmentation_cleanup_remove_whiskers"]),
+        whisker_radius_um=float(settings["segmentation_cleanup_whisker_radius_um"]),
+        split_narrow_necks=bool(settings["segmentation_cleanup_split_narrow_necks"]),
+        split_min_marker_separation_um=float(
+            settings["segmentation_cleanup_split_min_marker_separation_um"]
+        ),
+        split_min_pinch_radius_ratio=float(
+            settings["segmentation_cleanup_split_min_pinch_radius_ratio"]
+        ),
+        split_min_body_radius_um=float(settings["segmentation_cleanup_split_min_body_radius_um"]),
+        close_gaps=bool(settings["segmentation_cleanup_close_gaps"]),
+        close_gaps_radius_um=float(settings["segmentation_cleanup_close_gaps_radius_um"]),
+        reconnect_gaps=bool(settings["segmentation_cleanup_reconnect_gaps"]),
+        reconnect_max_bridge_distance_um=float(
+            settings["segmentation_cleanup_reconnect_max_bridge_distance_um"]
+        ),
+        reconnect_min_cylindricality=float(
+            settings["segmentation_cleanup_reconnect_min_cylindricality"]
+        ),
+        reconnect_max_axis_angle_degrees=float(
+            settings["segmentation_cleanup_reconnect_max_axis_angle_degrees"]
+        ),
+        reconnect_min_facing_cosine=float(
+            settings["segmentation_cleanup_reconnect_min_facing_cosine"]
+        ),
+        reconnect_max_radius_ratio=float(
+            settings["segmentation_cleanup_reconnect_max_radius_ratio"]
+        ),
+        smooth_surfaces=bool(settings["segmentation_cleanup_smooth_surfaces"]),
+        smooth_sigma_um=float(settings["segmentation_cleanup_smooth_sigma_um"]),
+        smooth_method=str(settings["segmentation_cleanup_smooth_method"]),
+        smooth_morphological_radius_um=float(
+            settings["segmentation_cleanup_smooth_morphological_radius_um"]
+        ),
+        remove_small_volumes=bool(settings["segmentation_cleanup_remove_small_volumes"]),
+        remove_small_min_volume_um3=float(
+            settings["segmentation_cleanup_remove_small_min_volume_um3"]
+        ),
+    )
+
+
+def _graph_kwargs(settings: Mapping[str, Any], voxel_size_zyx: Sequence[float]) -> dict[str, Any]:
+    """``build_graph_from_skeleton`` keyword arguments from a settings dict,
+    all but the stub-radius sampler (which needs the mask)."""
+    return dict(
+        voxel_size=tuple(voxel_size_zyx),
+        graph_reconnect_threshold=float(settings["graph_reconnect_threshold"]),
+        final_orphan_reconnect_threshold=float(settings["final_orphan_reconnect_threshold"]),
+        cluster_collapse_distance=float(settings["cluster_collapse_distance"]),
+        min_stub_length=float(settings["min_stub_length"]),
+        min_stub_length_radius_multiple=float(settings.get("min_stub_length_radius_multiple", 0.0) or 0.0),
+        cluster_collapse_method=str(settings["cluster_collapse_method"]),
+        cluster_collapse_max_radial_dispersion=float(settings["cluster_collapse_max_radial_dispersion"]),
+        cluster_collapse_persistence_search_multiple=float(
+            settings["cluster_collapse_persistence_search_multiple"]
+        ),
+    )
+
+
+def _cartwheel_hub_count(G, settings: Mapping[str, Any]) -> int:
+    """How many of *G*'s nodes are "cartwheel" artifacts -- one node
+    with many spoke edges radiating in every direction instead of the
+    two or three branches a real vessel junction has (see
+    `graph.cartwheel_guard`'s own module docstring). Uses the same
+    detection thresholds a real pipeline run's own end-of-run check
+    would (`cartwheel_hub_min_degree`/`cartwheel_hub_max_radial_dispersion`/
+    `cartwheel_hub_tangent_length_um`) when present in *settings*,
+    the function's own reasoned defaults otherwise -- these three are
+    deliberately not settings this search tunes (see this module's own
+    docstring), so a caller's `starting_values` will not always include
+    them.
+    """
+    return len(
+        graph_mod.detect_cartwheel_hubs(
+            G,
+            min_degree=int(settings.get("cartwheel_hub_min_degree", cartwheel_guard.DEFAULT_MIN_DEGREE)),
+            max_radial_dispersion=float(
+                settings.get(
+                    "cartwheel_hub_max_radial_dispersion", cartwheel_guard.DEFAULT_MAX_RADIAL_DISPERSION
+                )
+            ),
+            tangent_length_um=float(
+                settings.get("cartwheel_hub_tangent_length_um", cartwheel_guard.DEFAULT_TANGENT_LENGTH_UM)
+            ),
+        )
+    )
+
+
+#: The before/after scorecard (see :mod:`.scorecard`): each measure's name,
+#: whether higher is better, and how far it may move the wrong way and still
+#: count as the same. The coverage tolerances are the guards' own.
+_SCORECARD_MEASURES: tuple[tuple[str, bool, float], ...] = (
+    ("mask score (0-10)", True, 0.05),
+    ("input vessels the skeleton reaches", True, 0.02),
+    ("input mask the skeleton runs through", True, 0.02),
+    ("largest connected share of the skeleton", True, 0.01),
+    ("skeleton the graph traces", True, 0.02),
+    ("graph components", False, 0.0),
+    ("self-loops", False, 0.0),
+    ("cartwheel hubs", False, 0.0),
+)
+
+
+def _scorecard_measures(
+    input_mask: np.ndarray,
+    voxel_size_zyx: Sequence[float],
+    settings: Mapping[str, Any],
+    *,
+    input_radius_map: Optional[np.ndarray] = None,
+) -> dict[str, float]:
+    """Everything this search decides -- cleanup, skeleton, graph -- run
+    from *input_mask* with *settings*, and measured against *input_mask*
+    itself, so the settings a search started from and the ones it chose are
+    judged alike. Cleanup applies only while its master switch is on, as in
+    a real run."""
+    voxel = tuple(float(v) for v in voxel_size_zyx)
+    mask = np.asarray(input_mask, dtype=bool)
+    if settings.get("segmentation_cleanup"):
+        cleaned, _raw = preprocessing.clean_segmented_mask_for_skeletonisation(
+            mask, voxel_size_zyx=voxel, **_cleanup_kwargs(settings)
+        )
+    else:
+        cleaned = mask
+    skeleton = preprocessing.preprocess_skeleton_for_graph(
+        _raw_skeleton(cleaned, settings, voxel),
+        segmentation_mask=cleaned,
+        voxel_size_zyx=voxel,
+        **_skeleton_kwargs(settings),
+    )
+    kwargs = _graph_kwargs(settings, voxel)
+    stub_radius_at = (
+        graph_mod.assemble.mask_radius_sampler(cleaned, voxel, 1.0)
+        if kwargs["min_stub_length_radius_multiple"] > 0
+        else None
+    )
+    G = graph_mod.build_graph_from_skeleton(skeleton, stub_radius_at=stub_radius_at, **kwargs)
+
+    if input_radius_map is None:
+        input_radius_map = preprocessing.inscribed_radius_map(mask, voxel)
+    voxel_volume_um3 = float(np.prod(voxel))
+    min_vessel_voxels = max(2, int(round(_MIN_VESSEL_VOLUME_UM3_FOR_GUARD / max(1e-9, voxel_volume_um3))))
+    connectivity = int(settings["skeleton_component_connectivity"])
+    topology = met.graph_topology_metrics(G)
+    return {
+        "mask score (0-10)": float(preprocessing.score_segmented_mask(cleaned, voxel_size_zyx=voxel).total),
+        "input vessels the skeleton reaches": float(
+            preprocessing.diagnose_vessels_missing_from_skeleton(
+                skeleton, mask, voxel_size_zyx=voxel, min_vessel_voxels=min_vessel_voxels,
+                local_radius_map=input_radius_map,
+            )["explained_vessel_fraction"]
+        ),
+        "input mask the skeleton runs through": float(
+            preprocessing.diagnose_skeleton_mask_consistency(
+                skeleton, mask, voxel_size_zyx=voxel, local_radius_map=input_radius_map,
+            )["coverage_fraction"]
+        ),
+        "largest connected share of the skeleton": float(
+            preprocessing.compute_skeleton_connectivity_stats(skeleton, connectivity).largest_fraction
+        ),
+        "skeleton the graph traces": float(
+            graph_mod.diagnose_skeleton_graph_consistency(G, skeleton, voxel_size_zyx=voxel)[
+                "coverage_fraction"
+            ]
+        ),
+        "graph components": float(topology.n_components),
+        "self-loops": float(topology.n_selfloops),
+        "cartwheel hubs": float(_cartwheel_hub_count(G, settings)),
+    }
+
+
+def _scorecard(before: Mapping[str, float], after: Mapping[str, float]) -> tuple[ScoreRow, ...]:
+    return tuple(
+        ScoreRow(name, before[name], after[name], higher_is_better, tolerance)
+        for name, higher_is_better, tolerance in _SCORECARD_MEASURES
+        if name in before and name in after
     )
 
 
@@ -1046,6 +1311,9 @@ class _Search(_SweepBookkeeping):
         self._fusion_baseline_coverage: float = 1.0
         #: (id(self.raw_mask), radius_map) -- see `_raw_mask_local_radius_map`.
         self._raw_mask_local_radius_map_cache: Optional[tuple[int, np.ndarray]] = None
+        #: The input mask's components and which are real vessels -- see
+        #: `_input_vessels`.
+        self._input_vessels_cache: Optional[tuple[np.ndarray, np.ndarray, np.ndarray]] = None
         #: Precomputed once (Otsu threshold + labelled foreground of
         #: `self.raw_image`) so `_group_segmentation_cleanup` does not redo
         #: that -- mask-independent -- work for every one of its ~20
@@ -1155,57 +1423,11 @@ class _Search(_SweepBookkeeping):
         return int(self.current["skeleton_component_connectivity"])
 
     # -- group 0: segmentation cleanup (raw mask, before skeletonisation) --------
-    def _cleanup_kwargs(self, settings: Mapping[str, Any]) -> dict[str, Any]:
-        """``clean_segmented_mask_for_skeletonisation`` keyword arguments from
-        a settings dict -- the ``segmentation_cleanup_``-prefixed schema names
-        stripped down to the plain names that function actually takes."""
-        return dict(
-            fill_cavities=bool(settings["segmentation_cleanup_fill_cavities"]),
-            remove_whiskers=bool(settings["segmentation_cleanup_remove_whiskers"]),
-            whisker_radius_um=float(settings["segmentation_cleanup_whisker_radius_um"]),
-            split_narrow_necks=bool(settings["segmentation_cleanup_split_narrow_necks"]),
-            split_min_marker_separation_um=float(
-                settings["segmentation_cleanup_split_min_marker_separation_um"]
-            ),
-            split_min_pinch_radius_ratio=float(
-                settings["segmentation_cleanup_split_min_pinch_radius_ratio"]
-            ),
-            split_min_body_radius_um=float(settings["segmentation_cleanup_split_min_body_radius_um"]),
-            close_gaps=bool(settings["segmentation_cleanup_close_gaps"]),
-            close_gaps_radius_um=float(settings["segmentation_cleanup_close_gaps_radius_um"]),
-            reconnect_gaps=bool(settings["segmentation_cleanup_reconnect_gaps"]),
-            reconnect_max_bridge_distance_um=float(
-                settings["segmentation_cleanup_reconnect_max_bridge_distance_um"]
-            ),
-            reconnect_min_cylindricality=float(
-                settings["segmentation_cleanup_reconnect_min_cylindricality"]
-            ),
-            reconnect_max_axis_angle_degrees=float(
-                settings["segmentation_cleanup_reconnect_max_axis_angle_degrees"]
-            ),
-            reconnect_min_facing_cosine=float(
-                settings["segmentation_cleanup_reconnect_min_facing_cosine"]
-            ),
-            reconnect_max_radius_ratio=float(
-                settings["segmentation_cleanup_reconnect_max_radius_ratio"]
-            ),
-            smooth_surfaces=bool(settings["segmentation_cleanup_smooth_surfaces"]),
-            smooth_sigma_um=float(settings["segmentation_cleanup_smooth_sigma_um"]),
-            smooth_method=str(settings["segmentation_cleanup_smooth_method"]),
-            smooth_morphological_radius_um=float(
-                settings["segmentation_cleanup_smooth_morphological_radius_um"]
-            ),
-            remove_small_volumes=bool(settings["segmentation_cleanup_remove_small_volumes"]),
-            remove_small_min_volume_um3=float(
-                settings["segmentation_cleanup_remove_small_min_volume_um3"]
-            ),
-        )
-
     def _cleanup_trial(self, overrides: Mapping[str, Any]) -> np.ndarray:
         """Re-clean :attr:`original_raw_mask` (never a previous trial's own
         output -- matches how ``_preprocess_trial`` always re-runs from
         ``self.raw_skeleton``) with ``self.current`` plus *overrides*."""
-        kwargs = self._cleanup_kwargs({**self.current, **overrides})
+        kwargs = _cleanup_kwargs({**self.current, **overrides})
 
         def clean() -> np.ndarray:
             cleaned, _raw = preprocessing.clean_segmented_mask_for_skeletonisation(
@@ -1235,6 +1457,9 @@ class _Search(_SweepBookkeeping):
         # directions come from the one `compare_segmentation_to_raw_image`
         # call, so guarding the second costs nothing extra.
         baseline_comparison: Optional[preprocessing.SegmentationRawComparison] = None
+        # Without a raw image: the share of the input's real vessels this
+        # sub-sweep's starting point keeps (see `_real_vessels_kept_fraction`).
+        baseline_vessels_kept: Optional[float] = None
 
         def quality(mask_trial: np.ndarray) -> float:
             mask_score = preprocessing.score_segmented_mask(
@@ -1242,6 +1467,13 @@ class _Search(_SweepBookkeeping):
             ).total
             self._note(mask_score=mask_score)
             score = -mask_score
+            if baseline_vessels_kept is not None:
+                vessels_kept = self._real_vessels_kept_fraction(mask_trial)
+                penalty = self._regression_penalty(
+                    vessels_kept, baseline_vessels_kept, _MAX_REAL_VESSELS_LOST_REGRESSION,
+                )
+                self._note(real_vessels_kept=vessels_kept, guard_penalty=penalty)
+                score += penalty
             if baseline_comparison is not None:
                 comparison = preprocessing.compare_segmentation_to_raw_image(
                     mask_trial, self.raw_image, voxel_size_zyx=self.voxel_size_zyx,
@@ -1289,12 +1521,14 @@ class _Search(_SweepBookkeeping):
             itself was generated with, so refining cannot reintroduce the
             failure mode that bound exists for.
             """
-            nonlocal baseline_comparison
+            nonlocal baseline_comparison, baseline_vessels_kept
             if self.raw_image is not None:
                 baseline_comparison = preprocessing.compare_segmentation_to_raw_image(
                     self._cleanup_trial({}), self.raw_image, voxel_size_zyx=self.voxel_size_zyx,
                     precomputed=self._raw_image_foreground,
                 )
+            else:
+                baseline_vessels_kept = self._real_vessels_kept_fraction(self._cleanup_trial({}))
             cost_fn = lambda value: quality(self._cleanup_trial({setting: value}))
             if refine:
                 return self._sweep_with_refinement(
@@ -1486,6 +1720,37 @@ class _Search(_SweepBookkeeping):
             return radius_map
         return cached[1]
 
+    def _input_vessels(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The input mask's components (26-connected), each one's voxel
+        count, and which are real vessels (at least
+        `_MIN_VESSEL_VOLUME_UM3_FOR_GUARD`) -- labelled once per search."""
+        if self._input_vessels_cache is None:
+            from scipy.ndimage import label as label_components
+
+            labels, n_components = label_components(
+                self.original_raw_mask, structure=np.ones((3, 3, 3), dtype=bool)
+            )
+            sizes = np.bincount(labels.ravel(), minlength=n_components + 1)
+            voxel_volume_um3 = float(np.prod(self.voxel_size_zyx))
+            min_voxels = max(
+                2, int(round(_MIN_VESSEL_VOLUME_UM3_FOR_GUARD / max(1e-9, voxel_volume_um3)))
+            )
+            real = sizes >= min_voxels
+            real[0] = False
+            self._input_vessels_cache = (labels, sizes, real)
+        return self._input_vessels_cache
+
+    def _real_vessels_kept_fraction(self, mask: np.ndarray) -> float:
+        """Share of the input mask's real vessels (see `_input_vessels`)
+        that *mask* keeps at least `_MIN_SHARE_OF_A_VESSEL_KEPT` of; 1.0
+        when the input has none."""
+        labels, sizes, real = self._input_vessels()
+        if not real.any():
+            return 1.0
+        kept_voxels = np.bincount(labels[np.asarray(mask, dtype=bool)], minlength=sizes.size)
+        kept = real & (kept_voxels >= _MIN_SHARE_OF_A_VESSEL_KEPT * sizes)
+        return float(np.count_nonzero(kept)) / float(np.count_nonzero(real))
+
     def _vessels_represented_fraction(self, skeleton: np.ndarray) -> float:
         """Fraction of self.raw_mask's own real vessels (see
         preprocessing.diagnose_vessels_missing_from_skeleton) with at least
@@ -1543,20 +1808,7 @@ class _Search(_SweepBookkeeping):
         docstring), so a caller's `starting_values` will not always include
         them.
         """
-        return len(
-            graph_mod.detect_cartwheel_hubs(
-                G,
-                min_degree=int(self.current.get("cartwheel_hub_min_degree", cartwheel_guard.DEFAULT_MIN_DEGREE)),
-                max_radial_dispersion=float(
-                    self.current.get(
-                        "cartwheel_hub_max_radial_dispersion", cartwheel_guard.DEFAULT_MAX_RADIAL_DISPERSION
-                    )
-                ),
-                tangent_length_um=float(
-                    self.current.get("cartwheel_hub_tangent_length_um", cartwheel_guard.DEFAULT_TANGENT_LENGTH_UM)
-                ),
-            )
-        )
+        return _cartwheel_hub_count(G, self.current)
 
     @staticmethod
     def _regression_penalty(current: float, baseline: float, tolerance: float) -> float:
@@ -1977,21 +2229,8 @@ class _Search(_SweepBookkeeping):
         return cached[1]
 
     def _build_graph(self, overrides: Mapping[str, Any]):
-        settings = {**self.current, **overrides}
-        radius_multiple = float(settings.get("min_stub_length_radius_multiple", 0.0) or 0.0)
-        kwargs = dict(
-            voxel_size=self.voxel_size_zyx,
-            graph_reconnect_threshold=float(settings["graph_reconnect_threshold"]),
-            final_orphan_reconnect_threshold=float(settings["final_orphan_reconnect_threshold"]),
-            cluster_collapse_distance=float(settings["cluster_collapse_distance"]),
-            min_stub_length=float(settings["min_stub_length"]),
-            min_stub_length_radius_multiple=radius_multiple,
-            cluster_collapse_method=str(settings["cluster_collapse_method"]),
-            cluster_collapse_max_radial_dispersion=float(settings["cluster_collapse_max_radial_dispersion"]),
-            cluster_collapse_persistence_search_multiple=float(
-                settings["cluster_collapse_persistence_search_multiple"]
-            ),
-        )
+        kwargs = _graph_kwargs({**self.current, **overrides}, self.voxel_size_zyx)
+        radius_multiple = kwargs["min_stub_length_radius_multiple"]
         return self._graph_cache.get_or_compute(
             # The mask too: the stub-radius sampler reads it.
             (self.current_skeleton, self.raw_mask),
@@ -2465,9 +2704,7 @@ def optimise_skeleton_and_graph_settings(
             raw_mask,
             voxel_size_zyx,
             target_seconds=auto_downsample_target_seconds,
-            use_thick_vessel_skeletonisation=bool(
-                starting_values.get("use_thick_vessel_skeletonisation", False)
-            ),
+            starting_values=starting_values,
         )
         factor = auto.factor
     if factor not in DOWNSAMPLE_FACTORS:
@@ -2496,9 +2733,29 @@ def optimise_skeleton_and_graph_settings(
         search_mask, search_voxel_size_xyz, search_starting_values, progress,
         enabled_groups=groups, raw_image=search_raw_image,
     )
+    # The scorecard's two ends, on the search's own grid: before any sweep
+    # moves anything, and after the last.
+    input_radius_map: Optional[np.ndarray] = None
+
+    def measured(settings: Mapping[str, Any]) -> dict[str, float]:
+        nonlocal input_radius_map
+        try:
+            if input_radius_map is None and search_mask.any():
+                input_radius_map = preprocessing.inscribed_radius_map(
+                    search_mask, tuple(reversed(search_voxel_size_xyz))
+                )
+            return _scorecard_measures(
+                search_mask, tuple(reversed(search_voxel_size_xyz)), settings,
+                input_radius_map=input_radius_map,
+            )
+        except Exception:  # noqa: BLE001 - a scorecard must never fail the search it reports on
+            return {}
+
+    before = measured({**starting_values, **search_starting_values})
     start = time.perf_counter()
     search.run(max_passes=max_passes)
     seconds = time.perf_counter() - start
+    after = measured({**starting_values, **search.current})
     settings = {name: search.current[name] for name in OPTIMISE_SETTING_NAMES if name in search.current}
     finer_than_search_grid: tuple[str, ...] = ()
     if factor > 1:
@@ -2519,4 +2776,5 @@ def optimise_skeleton_and_graph_settings(
         typical_radius_um=auto.typical_radius_um if auto is not None else None,
         resolution_cap=auto.resolution_cap if auto is not None else None,
         finer_than_search_grid=finer_than_search_grid,
+        scorecard=_scorecard(before, after),
     )

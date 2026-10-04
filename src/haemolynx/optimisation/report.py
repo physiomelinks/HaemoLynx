@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
+from .scorecard import scorecard_lines
 from .search import (
     _GUARD_PENALTY,
     _VOXEL_SCALED_SETTING_NAMES,
@@ -161,6 +162,7 @@ def build_report_text(
                 if name in result.settings
             )
         )
+    lines.extend(scorecard_lines(result.scorecard))
     skipped_groups = [name for name in group_names if name not in result.groups_run]
     if skipped_groups:
         lines.append(

@@ -308,3 +308,56 @@ def test_reconnect_threads_follow_the_core_count(monkeypatch, cores):
 
     assert threads == [min(cores, 3)]
     assert routers == [min(cores, 3)]
+
+
+# --- hub selection -------------------------------------------------------------
+
+
+def _hub_centres_against_every_hub(peak_coords, peak_density, hub_min_spacing, relative_spacing=None):
+    """Hub selection as it was: every peak checked against every hub kept."""
+    weights = np.ones(peak_coords.shape[1]) if relative_spacing is None else relative_spacing
+    order = np.argsort(peak_density)[::-1]
+    selected_hubs = []
+    for idx in order:
+        candidate = peak_coords[idx]
+        if all(
+            np.linalg.norm((candidate - existing) * weights) >= hub_min_spacing
+            for existing in selected_hubs
+        ):
+            selected_hubs.append(candidate)
+    return selected_hubs
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("hub_min_spacing", [0, 1, 2.5, 4, 7])
+@pytest.mark.parametrize("relative_spacing", [None, np.array([4.0, 1.0, 1.0]), np.array([2.04, 1.0, 1.0])])
+def test_hub_selection_keeps_exactly_the_hubs_it_kept_before(seed, hub_min_spacing, relative_spacing):
+    """Hubs filed in cells checked only against their neighbours: the same
+    hubs, in the same order, as checking every hub kept."""
+    rng = np.random.default_rng(seed)
+    peaks = rng.integers(0, 40, size=(400, 3))
+    density = rng.choice([0.4, 0.5, 0.6], size=400)  # few values: ties, as on a skeleton
+
+    expected = _hub_centres_against_every_hub(peaks, density, hub_min_spacing, relative_spacing)
+    got = _select_hub_centres(peaks, density, hub_min_spacing, relative_spacing)
+
+    assert len(got) == len(expected)
+    assert all(np.array_equal(a, b) for a, b in zip(got, expected))
+
+
+def test_hub_selection_on_a_plateau_of_tied_peaks_is_not_quadratic():
+    """Regression: a skeleton's density ties across whole plateaus, every
+    voxel of one a peak, and checking each against every hub kept took
+    bundle refinement 24 minutes of a 2x optimiser run on the E14.5 stack."""
+    import time
+
+    zz, yy, xx = np.indices((30, 120, 120))
+    peaks = np.stack([zz.ravel(), yy.ravel(), xx.ravel()], axis=1)  # 432,000 tied peaks
+    density = np.full(len(peaks), 0.5)
+
+    start = time.perf_counter()
+    hubs = _select_hub_centres(peaks, density, 3.0)
+    seconds = time.perf_counter() - start
+
+    assert len(hubs) > 1000
+    assert seconds < 60.0, seconds

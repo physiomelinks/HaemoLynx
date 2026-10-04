@@ -735,17 +735,38 @@ def _select_hub_centres(
     """Density peaks, densest first, keeping each only if it is at least
     *hub_min_spacing* from every hub already kept -- measured in voxels of
     the finest axis, each axis weighted by *relative_spacing* (see
-    :func:`_finest_axis_spacing`)."""
+    :func:`_finest_axis_spacing`).
+
+    Each kept hub is filed in a grid of cells a hair wider than
+    *hub_min_spacing*, so a peak is checked only against the hubs in its own
+    cell and the ones next to it: any hub nearer than the spacing is in one
+    of those. Checking every hub kept so far made this quadratic, and a
+    skeleton's local density takes few distinct values, so its maxima tie
+    across whole plateaus of peaks -- on a 2x grid of the E14.5 stack, bundle
+    refinement took 24 minutes of a 29-minute optimiser run. Distances are
+    the same arithmetic on the same integer coordinates as before, so the
+    hubs kept are exactly the same.
+    """
     weights = np.ones(peak_coords.shape[1]) if relative_spacing is None else relative_spacing
     order = np.argsort(peak_density)[::-1]
     selected_hubs: list[np.ndarray] = []
+    if not hub_min_spacing > 0:
+        return [peak_coords[idx] for idx in order]
+    cell = float(hub_min_spacing) * (1.0 + 1e-9)
+    cell_of = np.floor(peak_coords * np.asarray(weights, dtype=float) / cell).astype(np.int64)
+    neighbours = np.array(np.meshgrid(*([(-1, 0, 1)] * peak_coords.shape[1]), indexing="ij"))
+    neighbours = neighbours.reshape(peak_coords.shape[1], -1).T
+    kept_in_cell: dict[tuple[int, ...], list[np.ndarray]] = {}
     for idx in order:
         candidate = peak_coords[idx]
+        home = cell_of[idx]
         if all(
             np.linalg.norm((candidate - existing) * weights) >= hub_min_spacing
-            for existing in selected_hubs
+            for offset in neighbours
+            for existing in kept_in_cell.get(tuple((home + offset).tolist()), ())
         ):
             selected_hubs.append(candidate)
+            kept_in_cell.setdefault(tuple(home.tolist()), []).append(candidate)
     return selected_hubs
 
 
