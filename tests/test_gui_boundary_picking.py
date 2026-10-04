@@ -1347,3 +1347,30 @@ def test_view_centre_takes_the_camera_on_screen_and_the_slice_off_it(
     from haemolynx.gui.boundary_picking import view_centre_zyx
 
     assert view_centre_zyx(point, displayed, camera) == expected
+
+
+@pytest.mark.parametrize(
+    "view, up, direction, shift",
+    [
+        # napari's default 3D camera looks down -z with -y up the screen: it
+        # reads like the 2D view, so right is +x and up is -y; forward goes
+        # away from you, along the line of sight.
+        ((-1, 0, 0), (0, -1, 0), "right", (0, 0, 5)),
+        ((-1, 0, 0), (0, -1, 0), "up", (0, -5, 0)),
+        ((-1, 0, 0), (0, -1, 0), "forward", (-5, 0, 0)),
+        ((-1, 0, 0), (0, -1, 0), "back", (5, 0, 0)),
+        # Turned to look along +y with -z up the screen.
+        ((0, 1, 0), (-1, 0, 0), "right", (0, 0, 5)),
+        ((0, 1, 0), (-1, 0, 0), "up", (-5, 0, 0)),
+        ((0, 1, 0), (-1, 0, 0), "forward", (0, 5, 0)),
+        # At an angle, the box goes along the image axis nearest the screen's.
+        # right = cross(view, up) = (-0.8, 0, 0.6): mostly -z.
+        ((-0.6, 0.0, -0.8), (0.0, -1.0, 0.0), "right", (-5, 0, 0)),
+    ],
+)
+def test_moving_a_box_in_3d_follows_the_camera(view, up, direction, shift):
+    from haemolynx.gui.boundary_picking import box_around, move_box
+
+    box = box_around((20.0, 50.0, 60.0))
+    moved = move_box(box, direction, 5.0, (0, 1, 2), view_direction=view, up_direction=up)
+    assert np.allclose(np.asarray(moved) - np.asarray(box), [shift, shift])

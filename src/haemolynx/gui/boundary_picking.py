@@ -1263,20 +1263,39 @@ def move_box(
     direction: str,
     step: float,
     displayed: Sequence[int] = (1, 2),
+    *,
+    view_direction: Sequence[float] | None = None,
+    up_direction: Sequence[float] | None = None,
 ) -> list[list[float]]:
-    """*box* moved *step* microns in a screen *direction*.
+    """*box* moved *step* microns in a *direction* as the viewer shows it.
 
-    *displayed* is napari's ``dims.displayed``: the last axis runs across the
-    screen (left/right), the one before it down the screen (up/down -- napari
-    draws rows downwards, so "up" lowers that coordinate), and the axis not on
-    screen is what back/forward step through. In 3D, where all three are on
-    screen, back/forward move along z.
+    In 2D, *displayed* is napari's ``dims.displayed``: the last axis runs
+    across the screen (left/right), the one before it down the screen
+    (up/down -- napari draws rows downwards, so "up" lowers that coordinate),
+    and back/forward step through the axis not on screen, the slices.
+
+    In 3D, pass the camera's *view_direction* and *up_direction* (napari's,
+    in displayed-axis order): left/right follow the screen's right, up/down
+    its up, and forward/back run away from and towards you. The box moves
+    along whichever image axis lies closest to that direction, so it stays
+    aligned with the image and moves by exactly *step* -- left is left however
+    the view is turned. Without the camera, 3D falls back to z/y/x.
     """
     if direction not in MOVE_DIRECTIONS:
         raise ValueError(f"direction must be one of {MOVE_DIRECTIONS}, not {direction!r}")
-    axes = [int(a) for a in displayed if 0 <= int(a) < 3][-2:]
-    if len(axes) < 2:
-        axes = [1, 2]
+    axes = [int(a) for a in displayed if 0 <= int(a) < 3]
+    lo, hi = _corners(box)
+    shift = np.zeros(3)
+    if len(axes) == 3 and view_direction is not None and up_direction is not None:
+        view = np.asarray(view_direction, dtype=float)[-3:]
+        up = np.asarray(up_direction, dtype=float)[-3:]
+        right = np.cross(view, up)
+        on_screen = {"right": right, "left": -right, "up": up, "down": -up,
+                     "forward": view, "back": -view}[direction]
+        index = int(np.argmax(np.abs(on_screen)))
+        shift[axes[index]] = np.sign(on_screen[index]) * abs(float(step))
+        return _as_box(lo + shift, hi + shift)
+    axes = axes[-2:] if len(axes) >= 2 else [1, 2]
     vertical, horizontal = axes
     depth = next((a for a in range(3) if a not in axes), 0)
     axis, sign = {
@@ -1284,8 +1303,6 @@ def move_box(
         "up": (vertical, -1.0), "down": (vertical, 1.0),
         "back": (depth, -1.0), "forward": (depth, 1.0),
     }[direction]
-    lo, hi = _corners(box)
-    shift = np.zeros(3)
     shift[axis] = sign * abs(float(step))
     return _as_box(lo + shift, hi + shift)
 

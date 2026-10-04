@@ -19,6 +19,7 @@ import weakref
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
+import functools
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
@@ -6156,8 +6157,7 @@ def _box_tool_widgets(role: str) -> dict[str, Any]:
         layout="horizontal", labels=True, label="Box size (um)",
     )
     arrows = {"left": "\u25c0 Left", "right": "Right \u25b6", "up": "\u25b2 Up",
-              "down": "\u25bc Down", "back": "Back (slice \u2212)",
-              "forward": "Forward (slice +)"}
+              "down": "\u25bc Down", "back": "Back", "forward": "Forward"}
     move = Container(
         widgets=[PushButton(text=arrows[d], name=d) for d in MOVE_DIRECTIONS],
         layout="horizontal", labels=False, label="Move the box",
@@ -6187,6 +6187,18 @@ def _box_tool_widgets(role: str) -> dict[str, Any]:
         "use_node": PushButton(text=f"Use selected node as {role_title(role)}"),
         "remove_box": PushButton(text="Remove this box"),
     }
+
+
+@functools.lru_cache(maxsize=512)
+def _resolved_path(path: str) -> Path:
+    """``Path(path).resolve()``, once per path.
+
+    The panel compares every loaded path with its row on each read of the
+    settings, and resolving touches the file system -- on a Mac, a run made on
+    a server names ``/home/...`` paths, an automount point that makes each
+    lookup slow enough that every settings change lagged by half a second.
+    """
+    return Path(path).resolve()
 
 
 def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=None):
@@ -7320,8 +7332,13 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             report.value = "Insert a box first, then move it."
             return
         displayed = [int(a) - max(0, viewer.dims.ndim - 3) for a in viewer.dims.displayed]
+        camera = {}
+        if viewer.dims.ndisplay == 3:
+            # Relative to how the 3D view is turned, not to the image's axes.
+            camera = {"view_direction": viewer.camera.view_direction,
+                      "up_direction": viewer.camera.up_direction}
         boxes[index] = move_box(boxes[index], direction, float(actions[owner].box_step.value),
-                                displayed)
+                                displayed, **camera)
         preview_boxes(owner, boxes)
 
     def on_remove_box() -> None:
@@ -7423,12 +7440,30 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             role_manual_controls_enabled(owner, values)
         found = state.box_nodes.get(owner, []) if shows else []
         existing = layer(BC_BOX_NODES)
-        if not found:
+        if not shows:
             if existing is not None and _is_ours(existing):
                 viewer.layers.remove(existing)
             return
+        if not found and existing is None:
+            return
+        # Updated in place, never removed and re-added: removing a layer
+        # rebuilds napari's whole scene graph and forces a garbage collection
+        # (~0.4 s on a full run), and `_add_or_update` removes a Points layer
+        # whenever it shrinks -- which a box moving off a node does every time.
+        spec = box_nodes_spec(found)
         try:
-            _add_or_update(viewer, box_nodes_spec(found))
+            if existing is not None and _is_ours(existing) and \
+                    existing.__class__.__name__ == "Points":
+                options = spec.options
+                existing.data = spec.data
+                existing.features = dict(spec.features)
+                if len(spec.data):
+                    existing.size = options["size"]
+                    existing.face_color = options["face_color"]
+                    existing.border_color = options["border_color"]
+                existing.visible = True
+            else:
+                _add_or_update(viewer, spec)
         except Exception:  # noqa: BLE001 - drawing must never stop the tab
             logger.exception("could not draw the nodes in the box")
 
@@ -10098,7 +10133,7 @@ def settings_widget(napari_viewer=None):
             if current is None:
                 continue
             try:
-                unchanged = Path(current) == Path(original).resolve()
+                unchanged = Path(current) == _resolved_path(str(original))
             except (TypeError, ValueError, OSError):
                 continue
             if unchanged:

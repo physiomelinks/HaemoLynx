@@ -62,8 +62,9 @@ ACTION_TOOLTIPS: dict[str, str] = {
         "How far, in microns, one press of an arrow moves the box"
     ),
     "box_move": (
-        "Move the box across the screen (left/right, up/down) or through the "
-        "slices (back/forward), by the step above"
+        "Move the box by the step above, as the view shows it: left/right and "
+        "up/down across the screen; back/forward through the slices in 2D, "
+        "towards or away from you in 3D however the view is turned"
     ),
     "box_nodes": (
         "Every node inside the chosen box, open ends (vessel ends) first; they "

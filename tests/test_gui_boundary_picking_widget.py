@@ -2014,3 +2014,22 @@ def test_clicking_the_arrows_moves_the_box_at_once_and_writes_it_once_settled(pa
         [[15.0, 45.0, 355.0], [25.0, 55.0, 365.0]]
     ]
     assert _table_ids(bc) == []
+
+
+def test_moving_off_the_nodes_empties_the_box_nodes_layer_in_place(panel):
+    """Removing a layer rebuilds napari's scene graph and forces a garbage
+    collection -- the half-second pause after each move. The layer is kept
+    and emptied instead."""
+    from haemolynx.gui.boundary_picking import BC_BOX_NODES
+
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    drawn = viewer.layers[BC_BOX_NODES]
+    assert len(drawn.data) == 3
+
+    bc.actions["inlet"].box_step.value = 100.0
+    bc.move_box("right")
+    assert viewer.layers[BC_BOX_NODES] is drawn and len(drawn.data) == 0
+    bc.move_box("left")
+    assert viewer.layers[BC_BOX_NODES] is drawn and len(drawn.data) == 3
+    assert drawn.size[0] > drawn.size[1], "the open end still drawn larger"
