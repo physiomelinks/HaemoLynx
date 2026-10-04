@@ -83,11 +83,14 @@ def decoy_centrelines(
     *,
     rng: np.random.Generator,
     guide_attribute: str | None = "edt_diameter_um",
+    min_clearance_um: float | None = None,
 ) -> list[tuple[tuple, np.ndarray, float]]:
     """``(edge, decoy centreline, guide width)`` for each of *edges* that one
     fits beside: its own centreline moved sideways -- perpendicular to its
     overall direction, nearest distance first -- to where it stays clear of
-    every vessel voxel (see :data:`DECOY_MIN_CLEARANCE_UM`)."""
+    every vessel voxel (see :data:`DECOY_MIN_CLEARANCE_UM`), or of
+    *min_clearance_um* when that is given (a planted vessel needs room for
+    its whole profile, see :mod:`.fwhm_planted`)."""
     spacing = np.asarray(voxel_size_zyx, dtype=float)
     found = []
     for edge in edges:
@@ -100,7 +103,10 @@ def decoy_centrelines(
         direction /= norm
         guide = data.get(guide_attribute) if guide_attribute else None
         guide = float(guide) if guide is not None and np.isfinite(float(guide)) and float(guide) > 0 else 4.0
-        clearance = max(DECOY_MIN_CLEARANCE_UM, 0.75 * guide)
+        clearance = max(
+            DECOY_MIN_CLEARANCE_UM,
+            0.75 * guide if min_clearance_um is None else float(min_clearance_um),
+        )
         placed = None
         for distance in DECOY_DISTANCES_UM:
             for _attempt in range(_DIRECTIONS_PER_DISTANCE):

@@ -27,6 +27,13 @@ _GUARD_PENALTY = 1000.0
 #: vessel-free tissue as extra vessels gains nothing.
 DECOY_FALSE_POSITIVE_WEIGHT = 1.0
 
+#: How much the planted vessels' width error costs (see
+#: :attr:`FwhmMeasurementQuality.planted_error`): twice its size, so a setting
+#: reading them 10% further off costs what losing a fifth of the sample's
+#: usable widths does. Accuracy is what the run's diameters are for; how many
+#: vessels are measured matters only as long as their widths are right.
+PLANTED_ERROR_WEIGHT = 2.0
+
 #: Edge attribute naming why an FWHM width is set aside -- the value of
 #: `haemolynx.haemodynamics.poiseuille.FWHM_DEMOTED_ATTR`, repeated so this
 #: module stays free of the haemodynamics package.
@@ -74,6 +81,14 @@ class FwhmMeasurementQuality:
     #: (``fwhm_low_confidence_vs_edt``); reported, and already counted through
     #: :attr:`n_edges_demoted`.
     edt_disagreement_fraction: float = 0.0
+    #: Lower is better: the median relative width error on vessels of known
+    #: width planted in the image (see
+    #: ``haemolynx.haemodynamics.fwhm_planted.planted_width_report``), an
+    #: unmeasured one counting as 1. 0.0, and not scored, when none were
+    #: planted (no vessel mask).
+    planted_error: float = 0.0
+    n_planted: int = 0
+    planted_measured_fraction: float = 0.0
 
     @property
     def usable_fraction(self) -> float:
@@ -92,7 +107,9 @@ class FwhmMeasurementQuality:
         widths the run would use, so a setting loose enough to fit specks
         gains nothing from them -- then fit quality and achieved extent, with
         same-edge consistency as a light tie-breaker, and a width given to a
-        decoy costs as much as one given to a vessel gains.
+        decoy costs as much as one given to a vessel gains. With vessels
+        planted, their width error weighs most (:data:`PLANTED_ERROR_WEIGHT`):
+        none of the rest can tell a right width from a wrong one.
         """
         return (
             -self.usable_fraction
@@ -100,7 +117,13 @@ class FwhmMeasurementQuality:
             - 0.25 * min(self.mean_achieved_extent_ratio, 1.0)
             + 0.1 * self.median_diameter_cv
             + DECOY_FALSE_POSITIVE_WEIGHT * self.decoy_false_positive_rate
+            + self.planted_cost
         )
+
+    @property
+    def planted_cost(self) -> float:
+        """What the planted vessels' width error adds to a score; 0 without them."""
+        return PLANTED_ERROR_WEIGHT * self.planted_error if self.n_planted else 0.0
 
 
 def fwhm_measurement_quality(
@@ -109,11 +132,13 @@ def fwhm_measurement_quality(
     *,
     min_total_extent_multiplier: float,
     decoy_report: Mapping[str, Any] | None = None,
+    planted_report: Mapping[str, Any] | None = None,
 ) -> FwhmMeasurementQuality:
     """Build a :class:`FwhmMeasurementQuality` from one trial's own graph and
     the summary dict ``measure_edge_diameters_fwhm_from_raw_tiff`` returned
     for it -- plus, when the trial's decoys were measured, the
-    ``speck_width_report`` of them (its ``false_positive_rate``)."""
+    ``speck_width_report`` of them (its ``false_positive_rate``), and when
+    vessels were planted, the ``planted_width_report`` of them."""
     n_edges_total = G.number_of_edges()
     n_edges_measured = int(summary.get("edges_measured", 0))
     measured_fraction = (
@@ -163,6 +188,9 @@ def fwhm_measurement_quality(
         edt_disagreement_fraction=(
             n_edt_disagreeing / float(n_edges_measured) if n_edges_measured > 0 else 0.0
         ),
+        planted_error=float((planted_report or {}).get("relative_error", 0.0)),
+        n_planted=int((planted_report or {}).get("planted", 0)),
+        planted_measured_fraction=float((planted_report or {}).get("measured_fraction", 0.0)),
     )
 
 
@@ -176,6 +204,7 @@ def rejection_gates_score(quality: FwhmMeasurementQuality) -> float:
     return (
         -(quality.usable_fraction * quality.mean_fit_r2)
         + DECOY_FALSE_POSITIVE_WEIGHT * quality.decoy_false_positive_rate
+        + quality.planted_cost
     )
 
 

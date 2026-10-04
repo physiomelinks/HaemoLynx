@@ -130,8 +130,10 @@ def test_optimise_fwhm_settings_leaves_the_callers_graph_alone_by_default(multi_
     assert result.seconds > 0.0
     assert result.estimated_seconds is None  # the sample size was given: nothing estimated
     assert set(result.group_seconds) == set(result.groups_run)
+    # No vessel mask, so no vessels planted: no planted-width row.
     assert [row.name for row in result.scorecard] == [
-        name for name, _field, _higher, _tolerance in s._SCORECARD_MEASURES
+        name for name, field, _higher, _tolerance in s._SCORECARD_MEASURES
+        if field != "planted_error"
     ]
 
 
@@ -531,3 +533,67 @@ def test_the_baseline_diameters_are_the_current_settings_trial(monkeypatch):
     assert calls["n"] == 1
     assert diameters.size > 0 and np.all(diameters > 0)
     assert quality.n_edges_measured > 0
+
+
+# ---------------------------------------------------------------------------
+# Accuracy: vessels of known width planted beside the sampled ones
+# ---------------------------------------------------------------------------
+def test_the_measurement_model_is_left_alone_with_nothing_to_judge_it_by():
+    """Coverage and fit quality cannot tell a right width from a wrong one;
+    without the segmentation to plant vessels beside, these settings keep
+    their values."""
+    search = _search(_multi_vessel_graph(), _multi_vessel_raw_volume())
+
+    search._group_measurement_model()
+
+    assert search.planted is None
+    assert [(t.group, t.note) for t in search.trials] == [
+        ("measurement_model",
+         "skipped: no vessels planted to judge accuracy by (needs the run's segmentation)")
+    ]
+
+
+def test_with_the_segmentation_every_trial_is_scored_on_planted_vessels():
+    search = _search(_multi_vessel_graph(), _multi_vessel_raw_volume(), vessel_mask=_vessel_mask())
+
+    quality = search._quality({})
+
+    assert search.planted is not None
+    assert quality.n_planted == search.planted.probe.number_of_edges() > 0
+    assert 0.0 <= quality.planted_error <= 1.0
+
+
+def test_the_scorecard_shows_the_planted_vessels_error_when_there_are_some():
+    from haemolynx.optimisation.fwhm_metrics import FwhmMeasurementQuality
+
+    def quality(error):
+        return FwhmMeasurementQuality(
+            n_edges_total=10, n_edges_measured=10, measured_fraction=1.0, mean_fit_r2=0.9,
+            median_fit_r2=0.9, mean_achieved_extent_ratio=1.0, median_diameter_cv=0.1,
+            planted_error=error, n_planted=9,
+        )
+
+    rows = {row.name: row for row in s._scorecard(quality(0.05), quality(0.12))}
+    assert rows["planted vessels' width error"].worse
+
+
+def test_the_sample_is_spread_over_the_vessels_widths():
+    """Regression: spread over lengths, a sample of a network of capillaries
+    of every length rarely drew one of its few wide vessels."""
+    G = nx.MultiGraph()
+    for index in range(40):
+        wide = index in (7, 23)
+        G.add_edge(2 * index, 2 * index + 1, length=10.0 + index, edt_diameter_um=12.0 if wide else 3.0)
+
+    sample = s._representative_subgraph(G, 5)
+
+    widths = [data["edt_diameter_um"] for _u, _v, data in sample.edges(data=True)]
+    assert 12.0 in widths
+
+
+def test_without_widths_the_sample_is_spread_over_lengths():
+    G = nx.MultiGraph()
+    for index in range(40):
+        G.add_edge(2 * index, 2 * index + 1, length=float(index))
+    lengths = sorted(d["length"] for _u, _v, d in s._representative_subgraph(G, 5).edges(data=True))
+    assert lengths[0] < 8 and lengths[-1] >= 32  # one from each fifth

@@ -183,3 +183,27 @@ def test_a_setting_that_measures_more_by_fitting_specks_does_not_win():
 def test_rejection_gates_score_counts_usable_widths_and_charges_decoys():
     quality = _quality(n_edges_demoted=5, decoy_false_positive_rate=0.2)
     assert met.rejection_gates_score(quality) == pytest.approx(-(0.5 * 0.9) + 0.2)
+
+
+def test_the_planted_vessels_width_error_weighs_on_the_score():
+    """Accuracy on vessels of known width is a main term: a setting reading
+    them 10% further off costs what losing a fifth of the usable widths does."""
+    accurate = _quality(planted_error=0.05, n_planted=12)
+    off = _quality(planted_error=0.15, n_planted=12)
+
+    assert off.score - accurate.score == pytest.approx(met.PLANTED_ERROR_WEIGHT * 0.10)
+    assert met.rejection_gates_score(off) > met.rejection_gates_score(accurate)
+    assert _quality(n_edges_measured=8).score - _quality().score == pytest.approx(0.2)
+
+
+def test_without_planted_vessels_the_score_is_as_before():
+    assert _quality(planted_error=0.9, n_planted=0).score == _quality().score
+
+
+def test_the_quality_reads_the_planted_report():
+    G = _graph_with_edges([{"fwhm_status": "measured", "fwhm_diameter_r2_samples": [0.9]}])
+    quality = met.fwhm_measurement_quality(
+        G, {"edges_measured": 1}, min_total_extent_multiplier=3.0,
+        planted_report={"planted": 6, "measured_fraction": 0.5, "relative_error": 0.3},
+    )
+    assert (quality.n_planted, quality.planted_measured_fraction, quality.planted_error) == (6, 0.5, 0.3)

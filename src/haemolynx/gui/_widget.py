@@ -10284,11 +10284,13 @@ def settings_widget(napari_viewer=None):
     #: nothing to search until FWHM measurement itself is turned on.
     optimise_fwhm_button = PushButton(text="Optimise FWHM settings")
     optimise_fwhm_button.tooltip = (
-        "Empirically choose the FWHM exclusion, extent, clipping, "
-        "same-edge-geometry, baseline and rejection-gate settings by "
-        "running the real measurement on a sample of the current graph's "
-        "own edges against its raw image. The winners are set on this tab "
-        "for the next run; the current network's diameters are not changed"
+        "Empirically choose the FWHM profile model and sampling, exclusion, "
+        "extent, clipping, same-edge-geometry, baseline and rejection-gate "
+        "settings by running the real measurement on a sample of the current "
+        "graph's own edges against its raw image -- judged, once the pipeline "
+        "has segmented the image, on vessels of known width planted beside "
+        "them. Proposes the winners for this tab; the current network's "
+        "diameters are not changed"
     )
     #: Its options -- which groups, how many vessels, how many passes -- behind
     #: a toggle, and its review box: one box under the button, shown with it.

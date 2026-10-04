@@ -203,3 +203,11 @@ def test_max_plateau_shape_ratio_candidates_include_default_and_bounded():
     result = c.max_plateau_shape_ratio_candidates(default=0.85)
     assert 0.85 in result
     assert all(0.0 <= v <= 1.0 for v in result)
+
+
+def test_measurement_model_candidates_bracket_the_defaults():
+    assert c.longitudinal_average_candidates(4.0) == [0.0, 2.0, 4.0, 8.0]
+    assert 6.0 in c.longitudinal_average_candidates(6.0)
+    assert c.sample_spacing_candidates(2.0) == [1.0, 2.0, 4.0]
+    assert c.min_accepted_samples_candidates(2) == [1, 2, 3]
+    assert 5 in c.min_accepted_samples_candidates(5)

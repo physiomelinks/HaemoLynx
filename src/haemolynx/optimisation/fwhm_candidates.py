@@ -49,6 +49,30 @@ def _sorted_with_none_first(values: set) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Measurement model: what decides whether a width is right, so only judged on
+# vessels planted at a known width (see fwhm_search's own measurement_model)
+# ---------------------------------------------------------------------------
+def longitudinal_average_candidates(default: float = 4.0) -> list[float]:
+    """0 (one line per sample) and lengths either side of the schema
+    default -- averaging along a vessel trades noise for detail, and only the
+    image says which wins."""
+    candidates = {float(default)} | {0.0, 2.0, 4.0, 8.0}
+    return sorted(v for v in candidates if v >= 0.0) or [float(default)]
+
+
+def sample_spacing_candidates(default: float = 2.0) -> list[float]:
+    """Sample spacings either side of the schema default; a closer one
+    measures more samples per edge, at that much more cost per trial."""
+    candidates = {float(default)} | {1.0, 2.0, 4.0}
+    return sorted(v for v in candidates if v > 0.0) or [float(default)]
+
+
+def min_accepted_samples_candidates(default: int = 2) -> list[int]:
+    candidates = {int(default)} | {1, 2, 3}
+    return sorted(v for v in candidates if v >= 1) or [int(default)]
+
+
+# ---------------------------------------------------------------------------
 # Group 1: exclusion zones
 # ---------------------------------------------------------------------------
 def exclusion_zone_candidates(edge_lengths_um: np.ndarray, default: float) -> list[float]:

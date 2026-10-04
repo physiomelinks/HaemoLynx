@@ -45,7 +45,7 @@ from typing import Any, Iterable, Mapping, Optional
 import networkx as nx
 import numpy as np
 
-from haemolynx.haemodynamics import automated, edt_diameter, fwhm_decoys
+from haemolynx.haemodynamics import automated, edt_diameter, fwhm_decoys, fwhm_planted
 from haemolynx.haemodynamics.apply import image_psf_from_settings
 from haemolynx.haemodynamics.poiseuille import (
     flag_fwhm_edt_disagreement,
@@ -59,12 +59,14 @@ from .scorecard import ScoreRow
 from .search import OptimisationResult, _SweepBookkeeping
 from .trial_cache import TrialCache
 
-#: The seven independently selectable groups this search runs, in the order
-#: :meth:`_FwhmSearch.run` runs them: exclusion and extent decide *which*
-#: samples exist at all before clipping/geometry/baseline decide how they
-#: are fitted, and rejection gates run last since they act on the
+#: The eight independently selectable groups this search runs, in the order
+#: :meth:`_FwhmSearch.run` runs them: the measurement model first, since it
+#: changes what every other setting acts on; exclusion and extent decide
+#: *which* samples exist at all before clipping/geometry/baseline decide how
+#: they are fitted, and rejection gates run last since they act on the
 #: already-tuned fits.
 FWHM_GROUP_NAMES: tuple[str, ...] = (
+    "measurement_model",
     "exclusion_zones",
     "extent_and_widening",
     "central_lobe_clipping",
@@ -77,6 +79,7 @@ FWHM_GROUP_NAMES: tuple[str, ...] = (
 #: A short, human-readable label for each group, for a GUI checkbox list --
 #: mirrors :data:`.search.GROUP_LABELS`.
 FWHM_GROUP_LABELS: dict[str, str] = {
+    "measurement_model": "Profile model and sampling (judged on planted vessels)",
     "exclusion_zones": "Exclusion zones (branch endpoints, junctions)",
     "extent_and_widening": "Transverse extent and widening",
     "central_lobe_clipping": "Central-lobe clipping",
@@ -86,11 +89,17 @@ FWHM_GROUP_LABELS: dict[str, str] = {
     "rejection_gates": "Rejection-gate thresholds",
 }
 
-#: Every FWHM setting this search can decide, across all seven groups --
+#: Every FWHM setting this search can decide, across all eight groups --
 #: a setting missing from :attr:`OptimisationResult.settings` simply kept
 #: its starting value (its own group was disabled, or a conditional
 #: sub-sweep never ran because its prerequisite toggle stayed off).
 FWHM_SETTING_NAMES: tuple[str, ...] = (
+    "fwhm_transverse_sampling_mode",
+    "fwhm_profile_model",
+    "fwhm_longitudinal_average_um",
+    "fwhm_sample_spacing_along_edge_um",
+    "fwhm_min_accepted_samples",
+    "fwhm_edge_diameter_aggregation",
     "fwhm_branch_endpoint_exclusion_um",
     "fwhm_junction_proximity_exclusion_um",
     "fwhm_transverse_half_extent_um",
@@ -125,7 +134,7 @@ FWHM_SETTING_NAMES: tuple[str, ...] = (
 #: for the time-budget estimate below -- mirrors
 #: `.search._GROUP_TOTAL_UPPER_BOUND`. Guarded sub-sweeps that never run
 #: (a toggle stayed off) mean a real run can finish before reaching this.
-_SWEEP_TOTAL_UPPER_BOUND = 28
+_SWEEP_TOTAL_UPPER_BOUND = 34
 #: Reasoned, not measured: this search's own candidate lists mostly have
 #: 3-4 entries each (a handful have 2, for a bare on/off toggle) -- used
 #: only to convert a per-edge timing probe into a whole-run time estimate.
@@ -170,6 +179,7 @@ _SCORECARD_MEASURES: tuple[tuple[str, str, bool, Optional[float]], ...] = (
     ("profile length reached (of the target)", "mean_achieved_extent_ratio", True, 0.05),
     ("width spread along a vessel (CV)", "median_diameter_cv", False, 0.02),
     ("decoys given a width", "decoy_false_positive_rate", False, 0.0),
+    ("planted vessels' width error", "planted_error", False, 0.02),
 )
 
 
@@ -186,6 +196,7 @@ def _scorecard(
             usable_tolerance if tolerance is None else tolerance,
         )
         for name, field, higher_is_better, tolerance in _SCORECARD_MEASURES
+        if field != "planted_error" or before.n_planted
     )
 
 
@@ -215,15 +226,48 @@ def _measurement_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _representative_subgraph(G: nx.MultiGraph, sample_edge_count: int) -> nx.MultiGraph:
-    """A fixed-size, length-stratified sample of *G*'s own edges.
+#: Edge attributes the sample is spread by, first that most edges carry.
+_SAMPLE_WIDTH_ATTRIBUTES = ("edt_diameter_um", "diameter_um")
 
-    Quantile-bucketed by each edge's own ``length`` (so short, typical, and
-    long edges are all represented, not just whichever the network happens
-    to have most of), then a fixed number drawn from each bucket -- a plain
-    random sample of a network with a long tail of short capillaries and a
-    few long trunks would rarely draw enough of the rare, long ones to say
-    anything about how well they measure. Deterministic (seeded), so a
+
+def _sample_buckets(G: nx.MultiGraph, edge_keys, n_buckets: int) -> np.ndarray:
+    """Which of up to *n_buckets* (plus one, for edges with no width) each
+    edge is drawn from: by width when most edges have one
+    (:data:`_SAMPLE_WIDTH_ATTRIBUTES`), in bins even in log width between
+    the narrowest and the widest -- widths cluster, and quantile bins of 38
+    capillaries at 3 um and two vessels at 12 um all fell on 3 um -- else by
+    length, in quantile bins."""
+    for name in _SAMPLE_WIDTH_ATTRIBUTES:
+        widths = np.asarray(
+            [float(G.edges[e].get(name) or 0.0) for e in edge_keys], dtype=float
+        )
+        widths[~np.isfinite(widths)] = 0.0
+        has_width = widths > 0
+        if np.count_nonzero(has_width) * 2 < len(edge_keys):
+            continue
+        logs = np.log(np.where(has_width, widths, 1.0))
+        lo, hi = float(logs[has_width].min()), float(logs[has_width].max())
+        span = hi - lo
+        bins = np.zeros(len(edge_keys), dtype=int) if span <= 0 else np.clip(
+            np.floor((logs - lo) / span * n_buckets).astype(int), 0, n_buckets - 1
+        )
+        return np.where(has_width, bins, n_buckets)
+    lengths = np.asarray(
+        [float(G.edges[e].get("length", 0.0) or 0.0) for e in edge_keys], dtype=float
+    )
+    quantile_edges = np.quantile(lengths, np.linspace(0.0, 1.0, n_buckets + 1))
+    return np.clip(np.searchsorted(quantile_edges[1:-1], lengths, side="right"), 0, n_buckets - 1)
+
+
+def _representative_subgraph(G: nx.MultiGraph, sample_edge_count: int) -> nx.MultiGraph:
+    """A fixed-size sample of *G*'s own edges, spread over their widths.
+
+    Bucketed by each edge's width -- its mask (EDT) width, or its diameter,
+    when most edges have one; its ``length`` otherwise (see
+    :func:`_sample_buckets`) -- then a fixed number drawn from each bucket. A plain random sample of a network
+    of mostly capillaries would rarely draw enough of the few wide vessels
+    to say anything about how well they measure, and width, not length, is
+    what decides how FWHM fares on a vessel. Deterministic (seeded), so a
     repeated call against the same graph and count picks the same edges.
     """
     total_edges = G.number_of_edges()
@@ -232,19 +276,13 @@ def _representative_subgraph(G: nx.MultiGraph, sample_edge_count: int) -> nx.Mul
         return G.copy()
 
     edge_keys = list(G.edges(keys=True))
-    lengths = np.asarray(
-        [float(G.edges[e].get("length", 0.0) or 0.0) for e in edge_keys], dtype=float
-    )
-    n_buckets = min(5, max(1, sample_edge_count))
-    quantile_edges = np.quantile(lengths, np.linspace(0.0, 1.0, n_buckets + 1))
-    bucket_of = np.clip(
-        np.searchsorted(quantile_edges[1:-1], lengths, side="right"), 0, n_buckets - 1
-    )
+    bucket_of = _sample_buckets(G, edge_keys, min(5, max(1, sample_edge_count)))
+    buckets = [int(b) for b in np.unique(bucket_of)]
 
     rng = np.random.default_rng(0)
-    per_bucket = max(1, sample_edge_count // n_buckets)
+    per_bucket = max(1, sample_edge_count // len(buckets))
     selected: list[int] = []
-    for bucket in range(n_buckets):
+    for bucket in buckets:
         idx_in_bucket = np.flatnonzero(bucket_of == bucket)
         rng.shuffle(idx_in_bucket)
         selected.extend(int(i) for i in idx_in_bucket[:per_bucket])
@@ -377,6 +415,7 @@ class _FwhmSearch(_SweepBookkeeping):
         enabled_groups: Optional[Iterable[str]] = None,
         vessel_mask: Optional[np.ndarray] = None,
         psf_sigma_zyx: tuple[float, float, float] | None = None,
+        planting_psf_um: tuple[float, float, float] | None = None,
     ) -> None:
         #: Never mutated by a trial -- every trial copies this fresh (see
         #: `_run_trial`), matching `.search._Search`'s own "always re-derive
@@ -395,6 +434,11 @@ class _FwhmSearch(_SweepBookkeeping):
         #: One decoy per sampled edge (up to the decoy check's own sample
         #: size), placed once so every trial is judged on the same tissue.
         self.decoy_probe: nx.MultiGraph | None = None
+        #: Vessels of known width drawn into a copy of the raw image beside
+        #: sampled ones (see `haemodynamics.fwhm_planted`), with the blur the
+        #: image shows -- *planting_psf_um*, whatever the trials hold theirs at.
+        self.planting_psf_um = planting_psf_um
+        self.planted: Optional[fwhm_planted.PlantedVessels] = None
         if vessel_mask is not None:
             self._prepare_checks(vessel_mask)
         super().__init__(
@@ -410,7 +454,8 @@ class _FwhmSearch(_SweepBookkeeping):
     # -- real-measurement trial helpers ------------------------------------------
     def _prepare_checks(self, vessel_mask: np.ndarray) -> None:
         """Give the sampled edges the mask's own width, when they lack one, and
-        place their decoys -- once, before any trial."""
+        place their decoys and plant their known-width vessels -- once, before
+        any trial."""
         template = self.sample_graph_template
         if not any(
             float(data.get("edt_diameter_um") or 0.0) > 0.0
@@ -436,16 +481,33 @@ class _FwhmSearch(_SweepBookkeeping):
             guide_attribute="edt_diameter_um",
             copy_attributes=("diameter_um",),
         )
+        self.planted = fwhm_planted.plant_vessels(
+            self.raw_volume,
+            template,
+            [edges[i] for i in order],
+            vessel_mask,
+            self.voxel_size_zyx,
+            image_psf_um=self.planting_psf_um,
+            rng=np.random.default_rng(1),
+        )
 
     def _measure(
-        self, graph: nx.MultiGraph, settings: Mapping[str, Any], *, debug: bool
+        self,
+        graph: nx.MultiGraph,
+        settings: Mapping[str, Any],
+        *,
+        debug: bool,
+        volume: Optional[np.ndarray] = None,
     ) -> dict[str, Any]:
-        """The real FWHM measurement of *graph* with *settings*, its blur held
-        at the image PSF while ``fwhm_fix_blur_to_image_psf`` is on."""
-        fixed_blur = bool(settings.get("fwhm_fix_blur_to_image_psf", True))
+        """The real FWHM measurement of *graph* with *settings* on *volume*
+        (the raw image unless given), its blur held at the image PSF while
+        ``fwhm_fix_blur_to_image_psf`` is on and the profile model has one."""
+        fixed_blur = bool(settings.get("fwhm_fix_blur_to_image_psf", True)) and (
+            settings.get("fwhm_profile_model", "blurred_lumen") == "blurred_lumen"
+        )
         return automated.measure_edge_diameters_fwhm_from_raw_tiff(
             graph,
-            raw_volume=self.raw_volume,
+            raw_volume=self.raw_volume if volume is None else volume,
             voxel_size_zyx=self.voxel_size_zyx,
             store_profile_debug=debug,
             profile_psf_sigma_zyx=self.psf_sigma_zyx if fixed_blur else None,
@@ -463,12 +525,18 @@ class _FwhmSearch(_SweepBookkeeping):
 
     def _checked_trial(
         self, overrides: Mapping[str, Any]
-    ) -> tuple[nx.MultiGraph, dict[str, Any], dict[str, Any] | None]:
+    ) -> tuple[nx.MultiGraph, dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
         """:meth:`_run_trial`, then the run's own checks on its widths: the
         decoys measured with the same settings, the EDT cross-check, and the
-        widths either sets aside marked ``fwhm_demoted``. Returns the decoy
-        report too, or ``None`` without decoys."""
+        widths either sets aside marked ``fwhm_demoted``; and the planted
+        vessels measured with them too. Returns the decoy and planted-vessel
+        reports, each ``None`` without its vessels."""
         graph_trial, summary = self._run_trial(overrides)
+        planted_report = None
+        if self.planted is not None:
+            planted = self.planted.probe.copy()
+            self._measure(planted, {**self.current, **overrides}, debug=False, volume=self.planted.volume)
+            planted_report = fwhm_planted.planted_width_report(planted)
         decoy_report = None
         if self.decoy_probe is not None:
             probe = self.decoy_probe.copy()
@@ -481,7 +549,7 @@ class _FwhmSearch(_SweepBookkeeping):
             decoy_report = fwhm_decoys.speck_width_report(graph_trial, probe, measured)
         flag_fwhm_edt_disagreement(graph_trial, warn_ratio=self.edt_warn_ratio)
         mark_fwhm_demotions(graph_trial, enabled=True)
-        return graph_trial, summary, decoy_report
+        return graph_trial, summary, decoy_report, planted_report
 
     def _trial_outcome(
         self, overrides: Mapping[str, Any]
@@ -499,12 +567,13 @@ class _FwhmSearch(_SweepBookkeeping):
         )
 
         def measure() -> tuple[met.FwhmMeasurementQuality, np.ndarray]:
-            graph_trial, summary, decoy_report = self._checked_trial(overrides)
+            graph_trial, summary, decoy_report, planted_report = self._checked_trial(overrides)
             quality = met.fwhm_measurement_quality(
                 graph_trial,
                 summary,
                 min_total_extent_multiplier=float(settings["fwhm_min_total_extent_multiplier"]),
                 decoy_report=decoy_report,
+                planted_report=planted_report,
             )
             diameters: list[float] = []
             for _u, _v, data in graph_trial.edges(data=True):
@@ -584,10 +653,49 @@ class _FwhmSearch(_SweepBookkeeping):
                 diameter_cv=quality.median_diameter_cv,
                 decoy_false_positive_rate=quality.decoy_false_positive_rate,
                 guard_penalty=penalty,
+                **({"planted_width_error": quality.planted_error} if quality.n_planted else {}),
             )
             return score_of(quality) + penalty
 
         return self._sweep(group, setting, candidate_values, cost_fn)
+
+    # -- group 0: measurement model -------------------------------------------------
+    def _group_measurement_model(self) -> None:
+        """Which way profiles are drawn, how they are fitted, how much each is
+        averaged along the vessel, how closely they are spaced, how many an
+        edge needs and how they are pooled: the settings that decide whether
+        a width is right. Coverage and fit quality cannot judge them -- a
+        Gaussian fits a plasma-filled lumen well and reads it narrow -- so
+        they are swept only with vessels planted at a known width to judge
+        them by; without the run's segmentation to plant beside, they keep
+        their values."""
+        group = "measurement_model"
+        if self.planted is None:
+            self._record(
+                group, "measurement_model", None, 0.0,
+                note="skipped: no vessels planted to judge accuracy by (needs the run's segmentation)",
+            )
+            return
+        self._guarded_sweep(
+            group, "fwhm_transverse_sampling_mode", ["in_plane_yx", "true_3d_perpendicular"]
+        )
+        self._guarded_sweep(group, "fwhm_profile_model", ["blurred_lumen", "gaussian"])
+        self._guarded_sweep(
+            group,
+            "fwhm_longitudinal_average_um",
+            cand.longitudinal_average_candidates(self.current["fwhm_longitudinal_average_um"]),
+        )
+        self._guarded_sweep(
+            group,
+            "fwhm_sample_spacing_along_edge_um",
+            cand.sample_spacing_candidates(self.current["fwhm_sample_spacing_along_edge_um"]),
+        )
+        self._guarded_sweep(
+            group,
+            "fwhm_min_accepted_samples",
+            cand.min_accepted_samples_candidates(self.current["fwhm_min_accepted_samples"]),
+        )
+        self._guarded_sweep(group, "fwhm_edge_diameter_aggregation", ["median", "mean"])
 
     # -- group 1: exclusion zones --------------------------------------------------
     def _group_exclusion_zones(self) -> None:
@@ -790,6 +898,7 @@ class _FwhmSearch(_SweepBookkeeping):
 
     def _run_one_pass(self) -> None:
         for name, method in (
+            ("measurement_model", self._group_measurement_model),
             ("exclusion_zones", self._group_exclusion_zones),
             ("extent_and_widening", self._group_extent_and_widening),
             ("central_lobe_clipping", self._group_central_lobe_clipping),
@@ -860,18 +969,25 @@ def optimise_fwhm_settings(
     raw_volume = automated.load_single_channel_tiff_volume(
         raw_tiff_path, axis_order=axis_order, channel=raw_channel
     )
-    psf_sigma_zyx, _psf_details = image_psf_from_settings(
+    # The blur the image shows, estimated as for the blurred-lumen model
+    # whatever the run starts with: the planted vessels are drawn with it,
+    # and a trial switching to that model holds its fit at it.
+    image_psf, _psf_details = image_psf_from_settings(
         G,
-        starting_values,
+        {**starting_values, "fwhm_fix_blur_to_image_psf": True, "fwhm_profile_model": "blurred_lumen"},
         voxel_size_zyx=voxel_size_zyx,
         raw_volume=raw_volume,
         vessel_mask=vessel_mask,
     )
+    psf_sigma_zyx = (
+        image_psf if bool(starting_values.get("fwhm_fix_blur_to_image_psf", True)) else None
+    )
 
     estimated_seconds: Optional[float] = None
     if sample_edge_count is None:
-        # Each trial measures a decoy per sampled edge as well, doubling it.
-        decoy_factor = 2.0 if vessel_mask is not None else 1.0
+        # Each trial measures a decoy and a planted vessel per sampled edge
+        # as well, tripling it.
+        decoy_factor = 3.0 if vessel_mask is not None else 1.0
         sample_edge_count, estimated_seconds = _time_budget_sample(
             G,
             raw_volume=raw_volume,
@@ -895,6 +1011,7 @@ def optimise_fwhm_settings(
         enabled_groups=groups,
         vessel_mask=vessel_mask,
         psf_sigma_zyx=psf_sigma_zyx,
+        planting_psf_um=image_psf,
     )
     # The scorecard's starting end: the first sweep's own baseline, so the
     # trial cache makes it free.
