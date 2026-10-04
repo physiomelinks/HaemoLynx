@@ -363,7 +363,10 @@ are only caught locally.
   is pickled — so a caller assembling a graph by hand gets no smoothing unless it asks. A smoothed
   path is only accepted if it stays within `max_deviation` of a skeleton voxel and is no longer than
   the path it came from; each edge records which of `smoothed` / `relaxed` / `kept_raw` /
-  `too_short` happened to it.
+  `too_short` happened to it. Where the path it came from is itself off the skeleton -- a straight
+  bridge the graph build added across a gap, or the first step off a node cluster collapse moved --
+  the distance is measured from that path instead; judged against the skeleton alone, every edge
+  with a bridge was kept raw.
 - **`pipeline/stages.py`** — one function per stage (`segment`, `skeletonise`, `build_network`,
   `assign_boundaries`, `assign_diameters`, `build_haemodynamic_model`, `solve`, `post_process`,
   `run_perturbations`, `export_results`), each taking settings plus the previous stage's

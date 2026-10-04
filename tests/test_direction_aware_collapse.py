@@ -11,12 +11,13 @@ import math
 import numpy as np
 import networkx as nx
 
-from haemolynx.graph._helpers import calculate_path_length
+from haemolynx.graph._helpers import calculate_path_length, path_separation
 import pytest
 
 from haemolynx.graph.cartwheel_guard import detect_cartwheel_hubs
 from haemolynx.graph.collapse import collapse_node_clusters
 from haemolynx.graph.direction_aware_collapse import (
+    DEFAULT_DUPLICATE_PATH_TOLERANCE_UM,
     DEFAULT_MAX_RADIAL_DISPERSION,
     DEFAULT_MIN_DEGREE_FOR_DISPERSION_CHECK,
     collapse_node_clusters_direction_aware,
@@ -163,6 +164,109 @@ def test_two_cluster_members_reaching_the_same_neighbour_keep_only_the_shorter_e
     # The straight path, now starting at the merged node's centroid (0.5, 0, 0).
     assert len(remaining["voxels"]) == 2
     assert remaining["length"] == pytest.approx(19.5)
+
+
+def _bowed_path(start, end, bulge, n_points=31):
+    """*n_points* from *start* to *end*, bowing *bulge* um out along y at the middle."""
+    t = np.linspace(0.0, 1.0, n_points)
+    points = np.outer(1.0 - t, start) + np.outer(t, end)
+    points[:, 1] += bulge * np.sin(np.pi * t)
+    return points.tolist()
+
+
+@pytest.mark.parametrize("member_takes", ["the bowed vessel", "the straight vessel"])
+def test_cluster_members_reaching_one_neighbour_by_separate_vessels_keep_both(member_takes):
+    """Regression test: two vessels from a cluster to one neighbour, 10 um
+    apart, are two vessels. Deduplication used to keep only the shorter edge
+    whatever its route, so merging the member either dropped its own vessel
+    (longer) or deleted the representative's (shorter) -- as at E14.5 MCA
+    node 4932, whose 31 um vessel to node 3643 vanished behind the
+    representative's 28 um one, 11 um away."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([1.5, 0.0, 0.0]))
+    G.add_node(2, pos=np.array([30.0, 0.0, 0.0]))
+    straight = _bowed_path([0.0, 0.0, 0.0], [30.0, 0.0, 0.0], bulge=0.0)
+    bowed = _bowed_path([1.5, 0.0, 0.0], [30.0, 0.0, 0.0], bulge=10.0)
+    if member_takes == "the straight vessel":
+        straight = _bowed_path([1.5, 0.0, 0.0], [30.0, 0.0, 0.0], bulge=0.0)
+        bowed = _bowed_path([0.0, 0.0, 0.0], [30.0, 0.0, 0.0], bulge=10.0)
+    for path in (straight, bowed):
+        node = 0 if path[0] == [0.0, 0.0, 0.0] else 1
+        G.add_edge(node, 2, voxels=path, length=calculate_path_length(path))
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    assert out.number_of_nodes() == 2  # 0 and 1 merged into one representative
+    assert out.number_of_edges(0, 2) == 2
+    centroid = [0.75, 0.0, 0.0]
+    expected = sorted(calculate_path_length([centroid] + path[1:]) for path in (straight, bowed))
+    assert sorted(d["length"] for _, _, d in out.edges(data=True)) == pytest.approx(expected)
+
+
+def test_a_members_noise_route_is_merged_even_when_its_rewired_end_jumps_past_the_tolerance():
+    """A chained cluster 0-1-2-3-4 (4.5 um steps) collapses onto node 2, its
+    centroid. Node 4 reaches neighbour 5 by skeleton noise -- an approach
+    onto node 2's route, then a voxel staircase never more than 1 um off it
+    -- so that is node 2's vessel twice, and only the shorter copy stays.
+    Re-ending node 4's path at node 2 adds a straight 9 um jump running up
+    to 8 um from node 2's route: that is where the member was, not a second
+    vessel, so it must not count."""
+    G = nx.MultiGraph()
+    positions = {
+        0: [0, 0, 0], 1: [4.5, 0, 0], 2: [9, 0, 0], 3: [13.5, 0, 0], 4: [18, 0, 0],
+        5: [9, 30, 0], 6: [9, -30, 0], 7: [-30, 0, 0],
+    }
+    for node, pos in positions.items():
+        G.add_node(node, pos=np.array(pos, dtype=float))
+    route = [[9.0, float(y), 0.0] for y in range(31)]
+    noise = (
+        [[18.0 - k, float(k), 0.0] for k in range(9)]
+        + [[9.0, float(y), float(y % 2)] for y in range(9, 30)]
+        + [[9.0, 30.0, 0.0]]
+    )
+    for u, v, path in (
+        (2, 5, route),
+        (4, 5, noise),
+        (2, 6, [[9.0, 0.0, 0.0], [9.0, -30.0, 0.0]]),  # node 2 is the best-connected,
+        (0, 7, [[0.0, 0.0, 0.0], [-30.0, 0.0, 0.0]]),  # so it represents the cluster
+    ):
+        G.add_edge(u, v, voxels=path, length=calculate_path_length(path))
+    # Whole-path separation alone would call the rewired noise a second vessel.
+    assert path_separation(route, [[9.0, 0.0, 0.0]] + noise[1:]) > DEFAULT_DUPLICATE_PATH_TOLERANCE_UM
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    assert sorted(out.nodes) == [2, 5, 6, 7]
+    assert out.number_of_edges(2, 5) == 1
+    remaining = next(iter(out.get_edge_data(2, 5).values()))
+    assert remaining["voxels"] == route
+    assert remaining["length"] == pytest.approx(30.0)
+
+
+def test_two_centrelines_of_one_wide_vessel_are_merged():
+    """Two cluster members 4 um apart, each reaching the neighbour along its
+    own centreline 4 um from the other: one wide vessel skeletonised twice
+    (on real data, such pairs mostly have lumen between them), so it keeps
+    one edge -- though the paths are further apart than degree-2 merging's
+    3 um tolerance."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    G.add_node(1, pos=np.array([0.0, 4.0, 0.0]))
+    G.add_node(2, pos=np.array([30.0, 2.0, 0.0]))
+    near = [[float(x), 0.0, 0.0] for x in range(30)] + [[30.0, 2.0, 0.0]]
+    far = [[float(x), 4.0, 0.0] for x in range(30)] + [[30.0, 2.0, 0.0]]
+    G.add_edge(0, 2, voxels=near, length=calculate_path_length(near))
+    G.add_edge(1, 2, voxels=far, length=calculate_path_length(far))
+    assert 3.0 < path_separation(near, far) <= DEFAULT_DUPLICATE_PATH_TOLERANCE_UM
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    assert out.number_of_nodes() == 2
+    assert out.number_of_edges(0, 2) == 1
+    remaining = next(iter(out.get_edge_data(0, 2).values()))
+    # Equally long, so the representative's own copy stays, re-ended at the centroid.
+    assert remaining["voxels"] == [[0.0, 2.0, 0.0]] + near[1:]
 
 
 def test_a_genuine_pre_existing_loop_survives_a_merged_members_shorter_edge():

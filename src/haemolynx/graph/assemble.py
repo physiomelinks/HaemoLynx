@@ -8,7 +8,11 @@ import numpy as np
 from skan import csr
 
 from ._platform import skan_numba_warmup_skeleton
-from .build import build_graph_segment_skan_stitched_loops, skan_skeleton
+from .build import (
+    MAX_GAP_BRIDGE_TURN_DEG,
+    build_graph_segment_skan_stitched_loops,
+    skan_skeleton,
+)
 from .collapse import collapse_node_clusters
 from .direction_aware_collapse import (
     DEFAULT_MAX_RADIAL_DISPERSION,
@@ -134,6 +138,7 @@ def build_graph_from_skeleton(
     min_stub_length_radius_multiple: float = 0.0,
     protect_image_face_stubs: bool = True,
     stub_radius_at: Callable[[np.ndarray], float] | None = None,
+    gap_bridge_max_turn_deg: float | None = MAX_GAP_BRIDGE_TURN_DEG,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -206,6 +211,13 @@ def build_graph_from_skeleton(
         Keep a short stub whose end lies within its pruning threshold of an
         image face: a vessel cut by the image, the open ends inlets and
         outlets are chosen from.
+    gap_bridge_max_turn_deg
+        A straight bridge between two terminals (*graph_reconnect_threshold*,
+        *final_orphan_reconnect_threshold*) is refused when it turns more than
+        this from a terminal's own end direction, i.e. folds back on the
+        vessel it should continue, or when a terminal ends less than
+        ``build.MIN_GAP_BRIDGE_END_LENGTH_UM`` of centreline -- see
+        ``build.MAX_GAP_BRIDGE_TURN_DEG``. ``None`` bridges regardless.
 
     Returns
     -------
@@ -229,6 +241,7 @@ def build_graph_from_skeleton(
         debug=debug,
         voxel_size=voxel_size,
         reconnect_threshold=graph_reconnect_threshold,
+        max_bridge_turn_deg=gap_bridge_max_turn_deg,
     )
     _notify_step(G, "build_graph_segment_skan_stitched_loops", step_callback)
 
@@ -248,6 +261,7 @@ def build_graph_from_skeleton(
         skeleton_data=skeleton,
         debug=debug,
         reconnect_threshold=graph_reconnect_threshold,
+        max_bridge_turn_deg=gap_bridge_max_turn_deg,
     )
     _notify_step(G, "optimise_graph_topology_fixed", step_callback)
 
@@ -347,6 +361,7 @@ def build_graph_from_skeleton(
         max_radial_dispersion=cluster_collapse_max_radial_dispersion,
         min_degree_for_dispersion_check=cluster_collapse_direction_aware_min_degree,
         tangent_length_um=cluster_collapse_direction_aware_tangent_length_um,
+        max_bridge_turn_deg=gap_bridge_max_turn_deg,
     )
     _notify_step(G, "reconnect_orphan_and_dangling_nodes", step_callback)
 
