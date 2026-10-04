@@ -1703,6 +1703,17 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         )
     if io_from_masks:
         if not auto_inlet_nodes:
+            if settings["assign_large_vessel_branch_orders"]:
+                method = settings["large_vessel_inlet_node_selection_method"]
+                raise ValueError(
+                    f"large_vessel_inlet_node_selection_method={method!r} found no "
+                    "inlet node for the arteriole mask"
+                    + (" -- the large arteriole mask touches no edge of the image, so it "
+                       "has no stump" if method == "mask_stump" else "")
+                    + ". Fix: on the 'Large vessel inlet' tab, choose the node with "
+                    "the volume method (Insert a box, then Use selected node) or "
+                    "node_ids."
+                )
             raise ValueError(
                 "automated_vessel_assignment=True found no terminal nodes in the "
                 "arteriole mask (after any configured dilation). Fix: widen the "
@@ -1710,6 +1721,17 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "choose the inlets on the Inlet tab."
             )
         if not auto_outlet_nodes:
+            if settings["assign_large_vessel_branch_orders"]:
+                method = settings["large_vessel_outlet_node_selection_method"]
+                raise ValueError(
+                    f"large_vessel_outlet_node_selection_method={method!r} found no "
+                    "outlet node for the venule mask"
+                    + (" -- the large venule mask touches no edge of the image, so it "
+                       "has no stump" if method == "mask_stump" else "")
+                    + ". Fix: on the 'Large vessel outlet' tab, choose the node with "
+                    "the volume method (Insert a box, then Use selected node) or "
+                    "node_ids."
+                )
             raise ValueError(
                 "automated_vessel_assignment=True found no terminal nodes in the "
                 "venule mask (after any configured dilation). Fix: widen the "

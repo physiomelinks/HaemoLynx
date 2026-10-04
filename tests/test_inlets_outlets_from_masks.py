@@ -93,3 +93,31 @@ def test_with_the_switch_off_the_hand_picked_inlets_are_used_and_the_masks_kept(
     # Nothing the user set is overwritten with the masks' choice.
     assert settings["inlet_node_coordinates"] == []
     assert settings["outlet_node_coordinates"] == []
+
+
+def test_a_venule_mask_with_no_stump_names_the_tab_to_pick_the_outlet_on(tmp_path):
+    """A large venule mask that never reaches the image's edge has no stump:
+    the run says where to choose the outlet instead of only that none was found."""
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    venule[:] = False
+    venule[5:7, 4:6, 4:6] = True        # inside the image, touching no face
+    settings = _assign_boundaries_settings(plot_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="Large vessel outlet") as caught:
+        assign_boundaries(settings, _network_for_large_vessel_mode(G, arteriole, venule, tmp_path))
+    assert "no stump" in str(caught.value)
+
+
+def test_picking_the_large_vessel_outlet_by_node_id_runs(tmp_path):
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    venule[:] = False
+    venule[5:7, 4:6, 4:6] = True
+    settings = _assign_boundaries_settings(
+        plot_dir=tmp_path,
+        large_vessel_outlet_node_selection_method="node_ids",
+        large_vessel_outlet_node_ids=[9],
+    )
+
+    assign_boundaries(settings, _network_for_large_vessel_mode(G, arteriole, venule, tmp_path))
+
+    assert settings["inlet_nodes"] == [0] and settings["outlet_nodes"] == [9]
