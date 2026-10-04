@@ -14,8 +14,10 @@ import networkx as nx
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 from scipy.spatial.distance import directed_hausdorff
 
+from haemolynx.preprocessing.bridge_mask_support import BridgeMaskSupport, MaskSupport
 from haemolynx.preprocessing.memmap_support import LOW_MEMORY_BLOCK_VOXELS
 
+from ._helpers import EdgeSampleIndex, duplicates_existing_vessel
 from ._platform import nested_native_thread_limit
 
 logger = logging.getLogger(__name__)
@@ -94,6 +96,122 @@ def _route(cost, start, end, sampling):
     router = MCP_Geometric(cost, fully_connected=True, sampling=tuple(sampling))
     costs, _ = router.find_costs([tuple(start)], [tuple(end)])
     return router.traceback(tuple(end)), float(costs[tuple(end)])
+
+
+#: Voxels of the finest axis searched round a bridge's own two ends when it is
+#: routed through the mask: room to follow a bend, not to wander off along
+#: the next vessel over.
+MASK_BRIDGE_WINDOW_PAD = 3
+
+
+def route_through_mask(
+    mask: np.ndarray,
+    start_um,
+    end_um,
+    voxel_size,
+    *,
+    pad: int = MASK_BRIDGE_WINDOW_PAD,
+):
+    """The cheapest path from *start_um* to *end_um* through cost
+    ``1 + d^2``, ``d`` the distance to the mask in voxels of the finest axis
+    (the skeleton router's cost, built from the mask), over the two ends'
+    bounding box padded by *pad*: an ``(N, 3)`` physical path from exactly
+    *start_um* to exactly *end_um*, or ``None`` when the window holds no
+    mask or routing fails.
+    """
+    spacing = np.asarray(voxel_size, dtype=float)
+    relative = _relative_spacing(spacing)
+    start, end = np.asarray(start_um, dtype=float), np.asarray(end_um, dtype=float)
+    shape = np.asarray(mask.shape)
+    a = np.clip(np.rint(start / spacing), 0, shape - 1).astype(int)
+    b = np.clip(np.rint(end / spacing), 0, shape - 1).astype(int)
+    reach = np.ceil(pad / relative - 1e-9).astype(int)
+    lo = np.maximum(np.minimum(a, b) - reach, 0)
+    hi = np.minimum(np.maximum(a, b) + reach + 1, shape)
+    window = np.asarray(mask[tuple(slice(int(l), int(h)) for l, h in zip(lo, hi))], dtype=bool)
+    if not window.any():
+        return None
+    distance = (
+        np.zeros(window.shape) if window.all()
+        else distance_transform_edt(~window, sampling=tuple(relative))
+    )
+    try:
+        path, _cost = _route(1.0 + distance**2, a - lo, b - lo, relative)
+    except Exception:
+        logger.debug("Routing a bridge through the mask failed", exc_info=True)
+        return None
+    interior = (np.asarray(path, dtype=float)[1:-1] + lo) * spacing
+    return np.vstack([start, interior.reshape(-1, 3), end])
+
+
+class MaskBridges:
+    """The test one graph reconnect pass runs on each bridge it would draw.
+
+    A bridge is routed through the mask (:func:`route_through_mask`) and kept
+    when that route, or failing it the straight line, passes the mask-support
+    test (``MaskSupport.accepts``) and does not run beside an existing edge
+    in the same lumen (``_helpers.duplicates_existing_vessel``). *kind* is
+    what the edges it accepts are tagged with (``bridge_kind``), alongside
+    their longest run through background (``bridge_background_um``).
+    """
+
+    def __init__(self, G: nx.MultiGraph, support: MaskSupport, kind: str):
+        self.G = G
+        self.support = support
+        self.kind = kind
+        self._index = None
+        self.accepted = 0
+        self.refused_background = 0
+        self.refused_duplicate = 0
+
+    def bridge(self, start_um, end_um, preferred=None):
+        """``(path, support)`` for an acceptable bridge, else ``None``.
+        *preferred*, a physical path the caller already has (a skeleton
+        path), is tried before the mask route."""
+        def candidates():
+            if preferred is not None and len(preferred) >= 2:
+                yield np.asarray(preferred, dtype=float).reshape(-1, 3)
+            routed = route_through_mask(
+                self.support.mask, start_um, end_um, self.support.voxel_size_zyx
+            )
+            if routed is not None:
+                yield routed
+            yield np.vstack([np.asarray(start_um, float), np.asarray(end_um, float)])
+
+        for path in candidates():
+            measured = self.support.support(path)
+            if self.support.accepts_support(measured):
+                break
+        else:
+            self.refused_background += 1
+            return None
+        if self._index is None:
+            self._index = EdgeSampleIndex(self.G)
+        if duplicates_existing_vessel(
+            path, self.G, self.support.inside, self.support.radius, index=self._index
+        ):
+            self.refused_duplicate += 1
+            return None
+        self._index.add(path)
+        self.accepted += 1
+        return path, measured
+
+    def attributes(self, measured: BridgeMaskSupport) -> dict:
+        return {
+            "bridge_kind": self.kind,
+            "bridge_background_um": float(measured.longest_background_um),
+        }
+
+    def log_summary(self) -> None:
+        if self.accepted or self.refused_background or self.refused_duplicate:
+            logger.info(
+                "%s bridges: %d drawn through the mask; refused %d crossing background "
+                "and %d running beside a vessel in the same lumen",
+                self.kind.capitalize(),
+                self.accepted,
+                self.refused_background,
+                self.refused_duplicate,
+            )
 
 
 #: Candidate pairs from which routing is handed to worker processes. skimage's

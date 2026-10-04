@@ -25,7 +25,7 @@ from haemolynx.pipeline.stages import (
 )
 
 SCHEMA = default_schema()
-#: The checkbox that "Remove disconnected branches/trees" replaced.
+#: The checkbox that "Remove disconnected and dead-end branches/trees" replaced.
 OLD_PRUNE = "remove_disconnected_io_components_after_final_assignment"
 REMOVE = {"boundary_handling": "remove_disconnected"}
 LEAVE = {"boundary_handling": "leave_unsolved"}
@@ -78,7 +78,7 @@ def test_the_drop_down_reads_as_sentences():
     field = field_for(SCHEMA["boundary_handling"])
     assert field.options["choices"] == [
         ("Leave unsolved", "leave_unsolved"),
-        ("Remove disconnected branches/trees", "remove_disconnected"),
+        ("Remove disconnected and dead-end branches/trees", "remove_disconnected"),
     ]
 
 
@@ -207,6 +207,190 @@ def test_nothing_left_to_solve_is_an_error():
 
     with pytest.raises(ValueError, match="no valid boundary nodes"):
         apply_network_handling(dict(REMOVE), HaemodynamicModel(graph=graph), boundaries)
+
+
+# --- dead ends off a perfused network -------------------------------------------
+
+
+def _vessels(graph) -> list[tuple]:
+    return sorted((min(u, v), max(u, v), k) for u, v, k in graph.edges(keys=True))
+
+
+def _remove(graph, inlets, outlets, **lists) -> tuple[HaemodynamicModel, BoundaryNodes]:
+    model = HaemodynamicModel(graph=graph)
+    boundaries = BoundaryNodes(inlet_nodes=list(inlets), outlet_nodes=list(outlets),
+                               graph=graph, **lists)
+    apply_network_handling(dict(REMOVE), model, boundaries)
+    return model, boundaries
+
+
+def _chain(*nodes) -> nx.MultiGraph:
+    graph = nx.MultiGraph()
+    nx.add_path(graph, nodes, length=10.0)
+    return graph
+
+
+def test_remove_drops_a_dead_end_tree_off_a_perfused_path():
+    """The reported case: a tree leaving a perfused vessel and reaching no
+    outlet sits in the inlet-outlet component, so a component test kept it."""
+    graph = _chain(0, 1, 2, 3)
+    graph.add_edges_from([(1, 4), (4, 5), (4, 6), (6, 7)], length=10.0)
+
+    model, _boundaries = _remove(graph, [0], [3])
+
+    assert _vessels(model.graph) == [(0, 1, 0), (1, 2, 0), (2, 3, 0)]
+    assert sorted(model.graph.nodes) == [0, 1, 2, 3]
+    # The graph handed in -- a stage checkpoint, on a rerun -- is untouched.
+    assert graph.number_of_edges() == 7
+
+
+def test_remove_drops_a_dead_end_loop_hanging_off_one_node():
+    """A loop joined to the rest at node 2 alone, its stem 4-5, and a
+    self-loop: every pressure on them equals node 2's (or 1's), so no flow."""
+    graph = _chain(0, 1, 2, 3)
+    graph.add_edges_from([(2, 4), (4, 5), (5, 6), (6, 7), (7, 5), (1, 1)], length=10.0)
+
+    model, _boundaries = _remove(graph, [0], [3])
+
+    assert _vessels(model.graph) == [(0, 1, 0), (1, 2, 0), (2, 3, 0)]
+
+
+def test_remove_keeps_loops_on_the_inlet_to_outlet_route():
+    """Parallel vessels and a detour both carry flow between inlet and outlet."""
+    graph = _chain(0, 1, 2, 3)
+    graph.add_edge(1, 2, length=12.0)  # a parallel vessel: key 1
+    graph.add_edges_from([(1, 4), (4, 2)], length=10.0)
+
+    model, _boundaries = _remove(graph, [0], [3])
+
+    assert model.graph is graph
+    assert _vessels(model.graph) == [(0, 1, 0), (1, 2, 0), (1, 2, 1), (1, 4, 0), (2, 3, 0),
+                                     (2, 4, 0)]
+
+
+def test_remove_keeps_every_inlet_and_outlet_branch_of_several():
+    """Inlets 0 and 4, outlets 3 and 6: each one's branch is kept, a dead end
+    off an inlet's branch (4-8) or an outlet's (5-7) is not."""
+    graph = _chain(0, 1, 2, 3)
+    graph.add_edges_from([(4, 1), (2, 5), (5, 6), (5, 7), (4, 8)], length=10.0)
+
+    model, boundaries = _remove(graph, [0, 4], [3, 6])
+
+    assert _vessels(model.graph) == [(0, 1, 0), (1, 2, 0), (1, 4, 0), (2, 3, 0), (2, 5, 0),
+                                     (5, 6, 0)]
+    assert boundaries.inlet_nodes == [0, 4] and boundaries.outlet_nodes == [3, 6]
+
+
+def test_remove_still_drops_components_without_an_inlet_and_an_outlet():
+    graph = _chain(0, 1, 2)
+    graph.add_edges_from([(10, 11), (11, 12), (20, 21)], length=10.0)
+
+    model, boundaries = _remove(graph, [0, 10], [2])
+
+    assert _vessels(model.graph) == [(0, 1, 0), (1, 2, 0)]
+    assert boundaries.inlet_nodes == [0]
+
+
+def test_remove_reports_dead_ends_and_components_apart(caplog):
+    import logging
+
+    graph = _chain(0, 1, 2)
+    graph.add_edges_from([(1, 3), (3, 4)], length=15.0)  # dead end: 2 vessels, 30 um
+    graph.add_edge(10, 11, length=7.0)  # a component with an inlet only
+
+    with caplog.at_level(logging.INFO, logger="haemolynx"):
+        _remove(graph, [0, 10], [2])
+
+    (message,) = [r.getMessage() for r in caplog.records if "remove_disconnected" in r.getMessage()]
+    assert "1 disconnected component(s)" in message
+    assert "(1 vessel(s), 2 node(s), 7.0 um)" in message
+    assert "2 dead-end vessel(s) that reach no outlet (2 node(s), 30.0 um)" in message
+    assert "2 vessel(s) and 3 node(s) remain" in message
+
+
+def test_the_removal_counts_what_it_removed_without_touching_the_graph():
+    graph = _chain(0, 1, 2)
+    graph.add_edges_from([(1, 3), (3, 4)], length=15.0)
+    graph.add_edge(1, 1, length=5.0)
+    graph.add_edge(10, 11, length=7.0)
+    graph.add_node(30)  # an isolated node: a component of its own
+
+    pruned, stats = graph_module.remove_vessels_off_inlet_outlet_paths(graph, [0, 10], [2])
+
+    assert _vessels(pruned) == [(0, 1, 0), (1, 2, 0)]
+    assert stats == {
+        "removed_components": 2,
+        "removed_component_vessels": 1,
+        "removed_component_nodes": 3,
+        "removed_component_length_um": 7.0,
+        "removed_dead_end_vessels": 3,
+        "removed_dead_end_nodes": 2,
+        "removed_dead_end_length_um": 35.0,
+        "remaining_nodes": 3,
+        "remaining_vessels": 2,
+    }
+    assert graph.number_of_edges() == 6 and graph.number_of_nodes() == 8
+
+
+def test_boundary_lists_follow_the_dead_ends_removed():
+    """A boundary node on a dead end goes from every list, on *boundaries*
+    and in the settings both; the resistance pair is chosen again."""
+    graph = _chain(0, 1, 2, 3)
+    graph.add_edges_from([(1, 4), (4, 5)], length=10.0)
+    model = HaemodynamicModel(graph=graph)
+    network = VesselNetwork(graph=graph, volume=None)
+    boundaries = BoundaryNodes(
+        inlet_nodes=[0],
+        outlet_nodes=[3],
+        arteriole_boundary_nodes=[1, 4],
+        venule_boundary_nodes=[2, 5],
+        large_arteriole_boundary_nodes=[4],
+        large_venule_boundary_nodes=[2],
+        resistance_node_pair=(0, 5),
+        graph=graph,
+    )
+    settings = {
+        **REMOVE,
+        "inlet_nodes": boundaries.inlet_nodes,
+        "arteriole_boundary_nodes": [1, 4],
+        "large_arteriole_boundary_nodes": [4],
+    }
+
+    apply_network_handling(settings, model, boundaries, network)
+
+    assert boundaries.graph is model.graph and network.graph is model.graph
+    assert boundaries.arteriole_boundary_nodes == [1]
+    assert boundaries.venule_boundary_nodes == [2]
+    assert boundaries.large_arteriole_boundary_nodes == []
+    assert boundaries.large_venule_boundary_nodes == [2]
+    assert settings["arteriole_boundary_nodes"] == [1]
+    assert settings["large_arteriole_boundary_nodes"] == []
+    assert boundaries.resistance_node_pair == (0, 3)
+
+
+def test_the_kept_edges_with_dead_ends_are_exactly_what_the_removal_keeps():
+    graph = _chain(0, 1, 2, 3)
+    graph.add_edge(1, 2)  # a parallel vessel keeps its own key
+    graph.add_edges_from([(2, 4), (4, 5), (5, 6), (6, 4), (3, 3), (20, 21)])
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[3], graph=graph)
+
+    kept = stages.edges_network_handling_keeps(dict(REMOVE), graph, boundaries)
+    pruned, _stats = graph_module.remove_vessels_off_inlet_outlet_paths(graph, [0], [3])
+
+    assert kept == list(pruned.edges(keys=True))
+    assert _vessels(pruned) == [(0, 1, 0), (1, 2, 0), (1, 2, 1), (2, 3, 0)]
+    assert stages.edges_network_handling_keeps(dict(LEAVE), graph, boundaries) is None
+
+
+def test_leave_unsolved_keeps_dead_ends():
+    graph = _chain(0, 1, 2, 3)
+    graph.add_edges_from([(1, 4), (4, 5), (2, 6), (6, 7), (7, 2)], length=10.0)
+    model = HaemodynamicModel(graph=graph)
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[3], graph=graph)
+
+    apply_network_handling(dict(LEAVE), model, boundaries)
+
+    assert model.graph is graph and graph.number_of_edges() == 8
 
 
 # --- it runs in the haemodynamics stage ---------------------------------------
@@ -456,9 +640,12 @@ def test_assign_boundaries_no_longer_prunes():
 # --- leave_unsolved: the solve marks what it could not solve -------------------
 
 
-def _bifurcation_and_strays() -> nx.MultiGraph:
+def _bifurcation_and_strays(dead_ends: bool = False) -> nx.MultiGraph:
     """0 (inlet) -> 1 -> {2, 3} (outlets); 10-11-12 has inlet 10 and no
-    outlet; 20-21 has no boundary at all. Real diameters, lengths in um."""
+    outlet; 20-21 has no boundary at all. Real diameters, lengths in um.
+
+    With *dead_ends*, also a dead-end branch 1-4-5 and a loop 2-6-7-2
+    joined to the rest at node 2 alone."""
     import numpy as np
 
     graph = nx.MultiGraph()
@@ -467,12 +654,19 @@ def _bifurcation_and_strays() -> nx.MultiGraph:
         10: (0, 200, 0), 11: (0, 200, 50), 12: (0, 200, 100),
         20: (0, 400, 0), 21: (0, 400, 50),
     }
-    for node, pos in positions.items():
-        graph.add_node(node, pos=np.asarray(pos, dtype=float))
-    for u, v, order, diameter in [
+    vessels = [
         (0, 1, "B01", 15.0), (1, 2, "B02", 20.0), (1, 3, "B03", 8.0),
         (10, 11, "B02", 10.0), (11, 12, "B03", 8.0), (20, 21, "B03", 8.0),
-    ]:
+    ]
+    if dead_ends:
+        positions.update({4: (0, 0, 100), 5: (0, 0, 150), 6: (0, 60, 130), 7: (0, 30, 140)})
+        vessels += [
+            (1, 4, "B03", 8.0), (4, 5, "B03", 8.0),
+            (2, 6, "B03", 8.0), (6, 7, "B03", 8.0), (7, 2, "B03", 8.0),
+        ]
+    for node, pos in positions.items():
+        graph.add_node(node, pos=np.asarray(pos, dtype=float))
+    for u, v, order, diameter in vessels:
         length = float(np.linalg.norm(graph.nodes[u]["pos"] - graph.nodes[v]["pos"]))
         graph.add_edge(u, v, key=0, length=length, branch_order=order, diameter_um=diameter,
                        voxels=[list(graph.nodes[u]["pos"]), list(graph.nodes[v]["pos"])])
@@ -480,7 +674,7 @@ def _bifurcation_and_strays() -> nx.MultiGraph:
     return graph
 
 
-def _solve_with_strays(**overrides):
+def _solve_with_strays(dead_ends: bool = False, **overrides):
     from haemolynx.pipeline import resolve_settings
     from haemolynx.pipeline.stages import build_haemodynamic_model, solve
 
@@ -498,7 +692,7 @@ def _solve_with_strays(**overrides):
     )
     values.update(overrides)
     settings = resolve_settings(values, schema=SCHEMA, config_path=None)
-    graph = _bifurcation_and_strays()
+    graph = _bifurcation_and_strays(dead_ends)
     boundaries = BoundaryNodes(
         inlet_nodes=settings["inlet_nodes"],
         outlet_nodes=settings["outlet_nodes"],
@@ -539,9 +733,156 @@ def test_remove_disconnected_leaves_nothing_unsolved():
     assert _solved_by_edge(solution.graph) == {(0, 1): True, (1, 2): True, (1, 3): True}
 
 
+@pytest.mark.parametrize("haematocrit_model", ["fixed", "distributed_iterative"])
+def test_remove_disconnected_solves_the_network_without_its_dead_ends(haematocrit_model):
+    solution = _solve_with_strays(dead_ends=True, **REMOVE, haematocrit_model=haematocrit_model)
+
+    assert _solved_by_edge(solution.graph) == {(0, 1): True, (1, 2): True, (1, 3): True}
+    inflow = solution.graph.edges[0, 1, 0]["flow_abs"]
+    assert inflow > 0
+    assert inflow == pytest.approx(
+        solution.graph.edges[1, 2, 0]["flow_abs"] + solution.graph.edges[1, 3, 0]["flow_abs"]
+    )
+
+
+DEAD_ENDS = [(1, 4), (4, 5), (2, 6), (6, 7), (2, 7)]
+
+
+@pytest.mark.parametrize("haematocrit_model", ["fixed", "distributed_iterative"])
+def test_leave_unsolved_marks_dead_ends_unsolved(haematocrit_model, caplog):
+    """A dead end on a component with an inlet and an outlet carries no flow
+    either: it is marked unsolved, like a component without both."""
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="haemolynx"):
+        solution = _solve_with_strays(dead_ends=True, **LEAVE, haematocrit_model=haematocrit_model)
+
+    assert _solved_by_edge(solution.graph) == {
+        (0, 1): True, (1, 2): True, (1, 3): True,
+        **{edge: False for edge in DEAD_ENDS},
+        (10, 11): False, (11, 12): False, (20, 21): False,
+    }
+    inflow = solution.graph.edges[0, 1, 0]["flow_abs"]
+    assert inflow > 0
+    for u, v in DEAD_ENDS:
+        assert solution.graph.edges[u, v, 0]["flow_abs"] == pytest.approx(0.0, abs=1e-9 * inflow)
+    assert any("8 of 11 vessel(s) lie on no inlet-to-outlet path" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_the_viewer_blanks_a_dead_ends_flow_columns():
+    """The solve's mark is what the vessels layers read: a dead end is
+    named Unsolved and left out of every flow-based colouring."""
+    import numpy as np
+
+    from haemolynx.gui.results import (
+        FLOW_SOLUTION,
+        flow_solution_values,
+        mask_unsolved_flow_columns,
+    )
+
+    graph = _solve_with_strays(dead_ends=True, **LEAVE).graph
+    edges = [(min(u, v), max(u, v)) for u, v in graph.edges()]
+    index = np.arange(len(edges))
+    columns = {
+        "edge_index": index,
+        "flow_abs": [data["flow_abs"] for _u, _v, data in graph.edges(data=True)],
+        "pressure_drop": [data["pressure_drop"] for _u, _v, data in graph.edges(data=True)],
+        "length": [data["length"] for _u, _v, data in graph.edges(data=True)],
+        FLOW_SOLUTION: flow_solution_values(graph, index),
+    }
+    mask_unsolved_flow_columns(columns)
+
+    for row, edge in enumerate(edges):
+        if edge in DEAD_ENDS:
+            assert columns[FLOW_SOLUTION][row] == "Unsolved"
+            assert np.isnan(columns["flow_abs"][row]) and np.isnan(columns["pressure_drop"][row])
+        assert np.isfinite(columns["length"][row])
+    perfused = [row for row, edge in enumerate(edges) if edge in {(0, 1), (1, 2), (1, 3)}]
+    assert all(columns[FLOW_SOLUTION][row] == "Solved" for row in perfused)
+    assert all(np.isfinite(columns["flow_abs"][row]) for row in perfused)
+
+
+def test_marking_reads_parallel_vessels_and_simple_graphs():
+    from haemolynx.graph import FLOW_SOLVED, mark_flow_solved_edges
+
+    multi = _chain(0, 1, 2)
+    multi.add_edge(1, 2)  # parallel: on the route
+    multi.add_edges_from([(2, 3), (1, 1)])  # a dead end and a self-loop
+    assert mark_flow_solved_edges(multi, [0], [2]) == 2
+    assert {(u, v, k): d[FLOW_SOLVED] for u, v, k, d in multi.edges(keys=True, data=True)} == {
+        (0, 1, 0): True, (1, 2, 0): True, (1, 2, 1): True, (2, 3, 0): False, (1, 1, 0): False,
+    }
+
+    simple = nx.Graph([(0, 1), (1, 2), (2, 3), (3, 1), (2, 4)])
+    assert mark_flow_solved_edges(simple, [0], [3]) == 1
+    assert simple.edges[2, 4][FLOW_SOLVED] is False
+    assert simple.edges[1, 2][FLOW_SOLVED] is True
+
+
 def test_no_solve_marks_nothing():
     from haemolynx.graph import FLOW_SOLVED
 
     solution = _solve_with_strays(**LEAVE, run_haemodynamics=False)
 
     assert not any(FLOW_SOLVED in data for _u, _v, data in solution.graph.edges(data=True))
+
+
+# --- the Post processing tab's "Prune" button: the same rule -----------------
+
+
+def test_the_prune_button_removes_dead_ends_and_keeps_parallel_routes():
+    """Inlet 0 -> 1 => 2 -> outlet 3, with 1-2 twice and a detour 1-8-2;
+    a dead-end tree 1-4-5 / 4-6, a loop 2-7-9-2 hanging off node 2 and a
+    piece 20-21 with inlet 20 only."""
+    graph = _chain(0, 1, 2, 3)
+    graph.add_edge(1, 2, length=10.0)
+    graph.add_edges_from(
+        [(1, 8), (8, 2), (1, 4), (4, 5), (4, 6), (2, 7), (7, 9), (9, 2), (20, 21)], length=10.0
+    )
+
+    pruned, stats = graph_module.prune_disconnected_branches(graph, [0, 20], [3])
+
+    assert _vessels(pruned) == [(0, 1, 0), (1, 2, 0), (1, 2, 1), (1, 8, 0), (2, 3, 0),
+                                (2, 8, 0)]
+    assert stats["removed_components"] == 1
+    assert stats["removed_dead_end_vessels"] == 6
+    assert stats["removed_vessels"] == 7
+    assert stats["removed_nodes"] == 7
+    assert stats["removed_boundary_nodes"] == [20]
+    assert graph_module.has_pending_edits(pruned)
+    assert graph.number_of_edges() == 13  # the graph on screen is left as it was
+
+
+def test_the_prune_button_and_network_handling_keep_the_same_vessels():
+    graph = _chain(0, 1, 2, 3)
+    graph.add_edges_from([(1, 4), (4, 5), (2, 6), (6, 7), (7, 2), (3, 3), (20, 21)])
+    boundaries = BoundaryNodes(inlet_nodes=[0], outlet_nodes=[3], graph=graph)
+
+    pruned, _stats = graph_module.prune_disconnected_branches(graph, [0], [3])
+
+    assert stages.edges_network_handling_keeps(dict(REMOVE), graph, boundaries) == list(
+        pruned.edges(keys=True)
+    )
+
+
+def test_boundary_lists_follow_a_prune_on_regenerate():
+    """The button only prunes the graph; the post-processing stage then
+    trims every boundary list to it, as network handling does."""
+    graph = _chain(0, 1, 2, 3)
+    graph.add_edges_from([(1, 4), (4, 5)], length=10.0)
+    pruned, _stats = graph_module.prune_disconnected_branches(graph, [0], [3])
+    boundaries = BoundaryNodes(
+        inlet_nodes=[0], outlet_nodes=[3],
+        arteriole_boundary_nodes=[1, 4], venule_boundary_nodes=[2, 5],
+        large_arteriole_boundary_nodes=[4], resistance_node_pair=(0, 5), graph=pruned,
+    )
+    settings = {"arteriole_boundary_nodes": [1, 4]}
+
+    stages._trim_boundary_lists(settings, boundaries, pruned)
+
+    assert boundaries.arteriole_boundary_nodes == [1]
+    assert boundaries.venule_boundary_nodes == [2]
+    assert boundaries.large_arteriole_boundary_nodes == []
+    assert settings["arteriole_boundary_nodes"] == [1]
+    assert boundaries.resistance_node_pair == (0, 3)

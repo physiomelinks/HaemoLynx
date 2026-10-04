@@ -768,6 +768,79 @@ def densify_polyline(
     return np.asarray(dense, dtype=float)
 
 
+class EdgeSampleIndex:
+    """Every edge's centreline points in one KD-tree, for
+    :func:`duplicates_existing_vessel`: built once per pass, not per question.
+
+    Paths a pass adds after building it go in with :meth:`add`; they are
+    judged against separately, so the tree is never rebuilt. Each edge is
+    sampled at least every *step_um*, so a straight edge stored as its two
+    ends still has a point beside every point along it.
+    """
+
+    def __init__(self, G: nx.MultiGraph, step_um: float = 1.0):
+        from haemolynx.preprocessing.bridge_mask_support import _densify
+
+        node_pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True) if "pos" in d}
+        points, owners = [], []
+        for u, v, key, data in G.edges(keys=True, data=True):
+            if u not in node_pos or v not in node_pos:
+                continue
+            path = _densify(edge_sample_points(u, v, data, node_pos), step_um)
+            points.append(path)
+            owners.extend([edge_id(u, v, key)] * len(path))
+        self.points = np.vstack(points) if points else np.empty((0, 3))
+        self.owners = owners
+        self.tree = cKDTree(self.points) if len(self.points) else None
+        self.added: List[np.ndarray] = []
+
+    def add(self, path: Any) -> None:
+        from haemolynx.preprocessing.bridge_mask_support import _densify
+
+        self.added.append(_densify(np.asarray(path, dtype=float).reshape(-1, 3), 1.0))
+
+
+def duplicates_existing_vessel(
+    new_path: Any,
+    G: nx.MultiGraph,
+    inside_lumen: Callable[[np.ndarray], np.ndarray],
+    radius_at: Callable[[np.ndarray], np.ndarray],
+    *,
+    index: "EdgeSampleIndex | None" = None,
+    step_um: float = 0.5,
+) -> bool:
+    """Whether a path about to be added to *G* runs beside one of its edges
+    in the same lumen: a second, parallel vessel inside one segmented branch.
+
+    The test is ``preprocessing.bridge_mask_support.path_shadows_existing_vessel``
+    against every edge's centreline (*index*, built from *G* when ``None``)
+    and, separately, every path :meth:`EdgeSampleIndex.add` recorded since.
+    The new path's own two ends are left out, so a branch meeting the vessel
+    it joins, or a bridge continuing one, is not a duplicate. *inside_lumen*
+    and *radius_at* map ``(N, 3)`` physical points to a bool / the lumen
+    radius in microns each.
+    """
+    from haemolynx.preprocessing.bridge_mask_support import path_shadows_existing_vessel
+
+    index = EdgeSampleIndex(G) if index is None else index
+    if index.tree is not None and path_shadows_existing_vessel(
+        new_path, index.tree, index.points, inside_lumen, radius_at, step_um=step_um
+    ):
+        return True
+    if not index.added:
+        return False
+    path = np.asarray(new_path, dtype=float).reshape(-1, 3)
+    reach = 2.0 * float(np.max(radius_at(path))) + 1.0
+    lo, hi = path.min(axis=0) - reach, path.max(axis=0) + reach
+    nearby = [
+        added for added in index.added
+        if np.all(added.max(axis=0) >= lo) and np.all(added.min(axis=0) <= hi)
+    ]
+    return bool(nearby) and path_shadows_existing_vessel(
+        path, None, np.vstack(nearby), inside_lumen, radius_at, step_um=step_um
+    )
+
+
 def next_node_id(G: nx.MultiGraph, reserved: "set[Any]") -> int:
     """A numeric node id not already used by ``G`` or ``reserved``."""
     numeric = [

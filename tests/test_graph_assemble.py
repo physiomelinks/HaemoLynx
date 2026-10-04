@@ -1,6 +1,6 @@
 """Tests for graph.assemble.build_graph_from_skeleton, the topology orchestrator.
 
-`build_graph_from_skeleton` runs eleven topology steps in a fixed order and is
+`build_graph_from_skeleton` runs thirteen topology steps in a fixed order and is
 the only caller of most of them. The things that can go wrong at this level are
 orchestration mistakes rather than algorithm mistakes: a step dropped or run out
 of order, a threshold routed to the wrong step, or a `step_callback` label that
@@ -42,6 +42,8 @@ EXPECTED_STEP_LABELS = [
     "smart_multigraph_degree2_removal_post_prune",
     "remove_edges_for_self_connected_nodes",
     "reconnect_orphan_and_dangling_nodes",
+    "recover_uncovered_mask_vessels",
+    "prune_vascular_stubs_final",
     "smart_multigraph_degree2_removal_post_orphan_reconnect",
 ]
 
@@ -275,7 +277,7 @@ def _loop_masks() -> dict:
     # Two tubes with 2.5 um of tissue between them, meeting where the strands do.
     two_vessels = np.zeros_like(one_lumen)
     two_vessels[:, 17:24, 16:25] = True
-    two_vessels[:, 29:36, 16:25] = True
+    two_vessels[7:32, 29:36, 16:25] = True
     two_vessels[7:14, 17:36, 16:25] = True
     two_vessels[25:32, 17:36, 16:25] = True
     return {"one lumen": one_lumen, "two vessels": two_vessels, "no mask": None}
@@ -470,6 +472,147 @@ def test_the_callback_receives_the_live_graph_at_that_step():
 def test_building_without_a_callback_is_supported():
     G = _build(_t_skeleton(), step_callback=None)
     assert G.number_of_edges() == 3
+
+
+# --- the segmentation's gates: bridges, recovery, the final prune ------------
+
+_RECONNECTS = (
+    "build_graph_segment_skan_stitched_loops",
+    "optimise_graph_topology_fixed",
+    "reconnect_orphan_and_dangling_nodes",
+)
+
+
+def _t_mask(skeleton):
+    from scipy.ndimage import binary_dilation
+
+    return binary_dilation(skeleton, iterations=2)
+
+
+def _spy_on_the_mask_gates(monkeypatch):
+    """Which MaskSupport each reconnect is handed, and what recovery is asked."""
+    import haemolynx.graph.assemble as assemble_module
+
+    handed, recovery = {}, {}
+
+    def spy(name):
+        real = getattr(assemble_module, name)
+
+        def wrapped(*args, mask_support=None, **kwargs):
+            handed[name] = mask_support
+            return real(*args, mask_support=mask_support, **kwargs)
+
+        return wrapped
+
+    for name in _RECONNECTS:
+        monkeypatch.setattr(assemble_module, name, spy(name))
+
+    def recover(G, support, **kwargs):
+        recovery.update(kwargs, support=support)
+        return G
+
+    monkeypatch.setattr(assemble_module, "_recover_uncovered_mask_vessels", recover)
+    return handed, recovery
+
+
+def test_the_mask_gate_settings_reach_every_reconnect_and_the_recovery(monkeypatch):
+    handed, recovery = _spy_on_the_mask_gates(monkeypatch)
+    skeleton = _t_skeleton()
+
+    _build(
+        skeleton, segmentation_mask=_t_mask(skeleton), final_orphan_reconnect_threshold=2.5,
+        bridge_max_background_gap_um=1.5, bridge_min_mask_fraction=0.6,
+        recovery_min_region_volume_um3=12.0, recovery_min_length_um=7.0,
+    )
+
+    assert sorted(handed) == sorted(_RECONNECTS)
+    support = handed[_RECONNECTS[0]]
+    assert all(handed[name] is support for name in _RECONNECTS)
+    assert support.max_background_gap_um == 1.5 and support.min_mask_fraction == 0.6
+    assert support.voxel_size_zyx == pytest.approx(VOXEL_SIZE_ZYX)
+    assert recovery == dict(
+        support=support, attach_reach_um=2.5,
+        min_region_volume_um3=12.0, min_length_um=7.0,
+    )
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        dict(segmentation_mask="T's own", bridge_require_mask_support=False,
+             recover_uncovered_mask_vessels=False),
+        dict(segmentation_mask=None),
+    ],
+    ids=["gates off", "no mask"],
+)
+def test_without_the_mask_or_with_the_gates_off_nothing_reads_it(monkeypatch, settings):
+    handed, recovery = _spy_on_the_mask_gates(monkeypatch)
+    skeleton = _t_skeleton()
+    if settings["segmentation_mask"] is not None:
+        settings = {**settings, "segmentation_mask": _t_mask(skeleton)}
+
+    _build(skeleton, **settings)
+
+    assert handed == {name: None for name in _RECONNECTS}
+    assert recovery == {}
+
+
+def test_with_the_gates_off_the_loop_through_two_vessels_builds_as_before():
+    """The second tube of the two-vessel loop running the image's whole height,
+    with the skeleton strand in only the middle of it: before recovery that
+    was four nodes and four edges, and with the gates off still is; on,
+    recovery traces the two ends of the tube the skeleton never reached."""
+    mask = _loop_masks()["two vessels"]
+    mask[:, 29:36, 16:25] = True
+    after_recovery = {}
+
+    def keep(graph, label):
+        if label == "recover_uncovered_mask_vessels":
+            after_recovery["graph"] = graph.copy()
+
+    off = _build(
+        _loop_skeleton(), segmentation_mask=mask,
+        bridge_require_mask_support=False, recover_uncovered_mask_vessels=False,
+    )
+    on = _build(_loop_skeleton(), segmentation_mask=mask, step_callback=keep)
+
+    assert (off.number_of_nodes(), off.number_of_edges()) == (4, 4)
+    assert not any(data.get("recovered") for *_, data in off.edges(data=True))
+    recovered = after_recovery["graph"]
+    assert any(data.get("recovered") for *_, data in recovered.edges(data=True))
+    assert on.number_of_edges() > off.number_of_edges()
+    assert sorted(dict(on.degree).values()).count(1) == 4
+
+
+@pytest.mark.parametrize("gated", [True, False])
+def test_a_stub_the_orphan_reconnect_leaves_goes_in_the_final_prune(monkeypatch, gated):
+    """The stub prune ran before the orphan reconnect, so a stub that pass
+    attached stayed in the network. With the mask, a prune runs after it too."""
+    import haemolynx.graph.assemble as assemble_module
+
+    real = assemble_module.reconnect_orphan_and_dangling_nodes
+    stub = 10_000
+
+    def reconnect_and_leave_a_stub(G, *args, **kwargs):
+        G = real(G, *args, **kwargs)
+        junction = next(node for node in G if G.degree[node] == 3)
+        where = np.asarray(G.nodes[junction]["pos"], dtype=float)
+        tip = where + np.array([0.0, 0.0, 1.2])
+        G.add_node(stub, pos=tip)
+        G.add_edge(junction, stub, voxels=[where.tolist(), tip.tolist()], length=1.2)
+        return G
+
+    monkeypatch.setattr(
+        assemble_module, "reconnect_orphan_and_dangling_nodes", reconnect_and_leave_a_stub
+    )
+    skeleton = _t_skeleton()
+
+    G = _build(
+        skeleton, segmentation_mask=_t_mask(skeleton), min_stub_length=5.0,
+        bridge_require_mask_support=gated,
+    )
+
+    assert (stub in G) is not gated
 
 
 # --- debug output -----------------------------------------------------------

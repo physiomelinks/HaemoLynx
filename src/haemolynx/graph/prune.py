@@ -5,9 +5,12 @@ from typing import Any, Callable, Optional, Sequence, Tuple, Union
 import networkx as nx
 import numpy as np
 
-from ._helpers import calculate_edge_length
+from ._helpers import calculate_edge_length, densify_polyline, edge_sample_points
 
 logger = logging.getLogger(__name__)
+
+#: How far back from its tip a stub's outward direction is read.
+STUB_TANGENT_LENGTH_UM = 3.0
 
 
 def prune_vascular_stubs(
@@ -20,6 +23,8 @@ def prune_vascular_stubs(
     radius_at: Optional[Callable[[np.ndarray], float]] = None,
     radius_multiple: float = 0.0,
     image_extent_um: Optional[Sequence[float]] = None,
+    inside_lumen: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    mask_continues_at: Optional[Callable[[np.ndarray, np.ndarray], bool]] = None,
 ) -> Union[nx.Graph, nx.MultiGraph]:
     """Iteratively remove short terminal stubs until convergence.
 
@@ -36,6 +41,23 @@ def prune_vascular_stubs(
     positions running from 0 to it), a terminal no further from an image face
     than its own threshold is kept: that is a vessel the image cut through --
     exactly the open ends inlets and outlets are chosen from -- not a spur.
+
+    The mask can say more about a stub (each read only when given, so
+    without them nothing changes):
+
+    - *inside_lumen* (``points_um -> bool``): a stub less than half of which
+      lies in the mask is pruned whatever its length -- not a vessel there.
+    - *radius_at*: a stub whose tip lies within the parent's radius + 1 um of
+      the junction it hangs from is pruned whatever its length -- a Lee spur
+      inside the parent's own lumen. Only with *inside_lumen* too.
+    - *mask_continues_at* ``(tip_um, outward_direction) -> bool``: where the
+      mask runs on past the tip, the tip is not a vessel end but a vessel
+      the network lost track of, so the threshold is the larger of the
+      radius rule and *min_stub_length*. A tip at a dead end of the mask (a
+      blind sprout) keeps the radius rule.
+
+    Stubs at an image face are kept as before; the two whatever-its-length
+    rules apply there too, since neither is a vessel the image cut through.
     """
     if min_stub_length < 0:
         raise ValueError("min_stub_length must be non-negative")
@@ -65,7 +87,34 @@ def prune_vascular_stubs(
         position = np.asarray(G_pruned.nodes[node]["pos"], dtype=float)
         return float(np.min(np.minimum(position, extent - position))) <= threshold
 
+    def stub_path(node: Any, junction: Any) -> Optional[np.ndarray]:
+        if "pos" not in G_pruned.nodes[node] or "pos" not in G_pruned.nodes[junction]:
+            return None
+        node_pos = {n: np.asarray(G_pruned.nodes[n]["pos"], dtype=float) for n in (node, junction)}
+        data = G_pruned[junction][node]
+        if G_pruned.is_multigraph():
+            data = next(iter(data.values()))
+        return densify_polyline(edge_sample_points(junction, node, data, node_pos), max_step_um=0.5)
+
+    def not_a_vessel(path: np.ndarray, junction: Any) -> bool:
+        if 2 * int(np.count_nonzero(inside_lumen(path))) < len(path):
+            return True
+        if radius_at is None:
+            return False
+        junction_pos = path[0]
+        parent_radius = float(radius_at(junction_pos))
+        return parent_radius > 0 and float(np.linalg.norm(path[-1] - junction_pos)) < parent_radius + 1.0
+
+    def mask_continues(path: np.ndarray) -> bool:
+        reverse = path[::-1]
+        arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(reverse, axis=0), axis=1))])
+        tip = reverse[0]
+        outward = tip - reverse[min(int(np.searchsorted(arc, STUB_TANGENT_LENGTH_UM)), len(reverse) - 1)]
+        norm = float(np.linalg.norm(outward))
+        return norm > 0 and bool(mask_continues_at(tip, outward / norm))
+
     total_removed = 0
+    not_vessels = 0
     protected: set = set()
     iteration = 0
 
@@ -101,6 +150,18 @@ def prune_vascular_stubs(
                         node, neighbor, edge_data, voxel_size
                     )
                 threshold = threshold_for(neighbor)
+                path = (
+                    stub_path(node, neighbor)
+                    if inside_lumen is not None or mask_continues_at is not None
+                    else None
+                )
+                if path is not None and len(path) > 1:
+                    if inside_lumen is not None and not_a_vessel(path, neighbor):
+                        nodes_to_remove.append(node)
+                        not_vessels += 1
+                        continue
+                    if mask_continues_at is not None and mask_continues(path):
+                        threshold = max(threshold, float(min_stub_length))
                 if edge_length < threshold and at_an_image_face(node, threshold):
                     protected.add(node)
                     continue
@@ -145,14 +206,22 @@ def prune_vascular_stubs(
         G_pruned.number_of_nodes(),
         G_pruned.number_of_edges(),
     )
+    if inside_lumen is not None:
+        logger.info(
+            "Pruning: %d of those stubs were mostly outside the mask or inside their "
+            "parent's lumen, and went whatever their length",
+            not_vessels,
+        )
     return G_pruned
 
 
-#: Edge attribute the flow solve writes: False on a vessel in a branch or tree
-#: without both an inlet and an outlet -- no pressure difference drives a
-#: flow through it, so its flow and pressures are not a result -- and True
-#: everywhere else. Exactly the vessels
-#: :func:`remove_components_without_connected_io` would remove are False.
+#: Edge attribute the flow solve writes: False on a vessel no inlet-to-outlet
+#: path runs along -- in a branch or tree without both an inlet and an
+#: outlet, or a dead end hanging off one that has both -- since no pressure
+#: difference drives a flow through it, so its flow and pressures are not a
+#: result; True everywhere else. Exactly the vessels
+#: :func:`haemolynx.graph.remove_vessels_off_inlet_outlet_paths` would
+#: remove are False.
 FLOW_SOLVED = "flow_solved"
 
 
@@ -182,15 +251,23 @@ def mark_flow_solved_edges(
     output_nodes: Sequence[int],
 ) -> int:
     """Write :data:`FLOW_SOLVED` on every edge of *G*; return how many are
-    unsolved (in a component without both a start and an output node)."""
-    unsolved_nodes: set[int] = set()
-    for component_node_set, has_io in _components_by_io(G, starting_nodes, output_nodes):
-        if not has_io:
-            unsolved_nodes |= component_node_set
+    unsolved (on no path from a start to an output node, by
+    :func:`haemolynx.graph.inlet_to_outlet_vessels`)."""
+    from .connectivity import inlet_to_outlet_vessels
+
+    multi = G if G.is_multigraph() else nx.MultiGraph(G)
+    through = {
+        (frozenset((u, v)), k)
+        for u, v, k in inlet_to_outlet_vessels(multi, list(starting_nodes), list(output_nodes))
+    }
+    edges = (
+        G.edges(keys=True, data=True)
+        if G.is_multigraph()
+        else ((u, v, 0, data) for u, v, data in G.edges(data=True))
+    )
     unsolved = 0
-    for u, _v, data in G.edges(data=True):
-        # One end tells: both ends of an edge share a component.
-        solved = int(u) not in unsolved_nodes
+    for u, v, k, data in edges:
+        solved = (frozenset((u, v)), k) in through
         data[FLOW_SOLVED] = solved
         unsolved += not solved
     return unsolved

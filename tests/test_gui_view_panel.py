@@ -36,14 +36,14 @@ pytestmark = pytest.mark.gui
 def _tubes_of_the_shown_vessels(viewer) -> int:
     """How many tube vertices the vessels layer as it now stands should give."""
     from haemolynx.gui import _widget as widget_mod
-    from haemolynx.gui.vessel_tubes import tube_mesh, tube_radii_um
+    from haemolynx.gui.vessel_tubes import vessel_tube_mesh
 
     vessels = viewer.layers[VESSELS]
-    vertices, _faces, _index = tube_mesh(
+    vertices, _faces, _index = vessel_tube_mesh(
         vessels.data,
-        radius=tube_radii_um(np.asarray(vessels.features["diameter_um"], dtype=float)),
+        vessels.features,
         quality=widget_mod._tube_quality,
-        groups=np.asarray(vessels.features["edge_index"]),
+        edge_width=vessels.edge_width,
     )
     return len(vertices)
 

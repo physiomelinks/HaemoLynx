@@ -36,6 +36,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.visualization._helpers import create_color_mapping
 from haemolynx.pipeline.stages import TOPOLOGY_STEP
 from haemolynx.visualization.geometry import edge_polyline
@@ -616,6 +617,15 @@ def _mark_unsolved(columns: dict[str, Any], graph: Any) -> None:
     blank the flow-based ones on the vessels it calls unsolved."""
     columns[FLOW_SOLUTION] = flow_solution_values(graph, columns["edge_index"])
     mask_unsolved_flow_columns(columns)
+
+
+def _mark_bridges(columns: dict[str, Any], graph: Any) -> None:
+    """Give per-drawable-edge *columns* each edge's :data:`IS_ZERO_RESISTANCE`
+    flag, which the vessel tubes draw a bridge by."""
+    flags = [bool(data.get(IS_ZERO_RESISTANCE)) for _u, _v, _key, data in _iter_edges(graph)]
+    columns[IS_ZERO_RESISTANCE] = np.asarray(flags, dtype=bool)[
+        np.asarray(columns["edge_index"], dtype=int)
+    ]
 
 
 def edge_columns_for_settings(
@@ -1383,8 +1393,8 @@ class ResultLayers:
         settings: Mapping[str, Any] | None = None,
     ) -> None:
         self.prefix = prefix
-        #: Redraw the vessels after each of graph building's eleven topology
-        #: steps. Off by default: it is eleven extra rebuilds of the geometry
+        #: Redraw the vessels after each of graph building's thirteen topology
+        #: steps. Off by default: it is thirteen extra rebuilds of the geometry
         #: in the middle of the slowest stage.
         self.show_steps = show_steps
         #: Run settings (Export-tab toggles such as ``flow_arrow_scale``).
@@ -1607,6 +1617,7 @@ class ResultLayers:
         )
         _add_branch_order_scales(columns)
         _mark_unsolved(columns, graph)
+        _mark_bridges(columns, graph)
 
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {
@@ -2255,6 +2266,7 @@ class ResultLayers:
         )
         _add_branch_order_scales(columns)
         _mark_unsolved(columns, graph)
+        _mark_bridges(columns, graph)
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {
             name: np.asarray(values)[owner] for name, values in columns.items()
@@ -2403,6 +2415,7 @@ class ResultLayers:
         # Its own column too, so the sliders blank every grid point's flows on
         # the same vessels (see _apply_sweep_index).
         _mark_unsolved(columns, graph)
+        _mark_bridges(columns, graph)
 
         vectors, owner = polylines_to_vectors(paths)
         per_segment = {

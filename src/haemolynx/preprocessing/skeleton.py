@@ -20,8 +20,14 @@ from scipy.ndimage import (
 )
 from skimage.morphology import remove_small_objects, skeletonize
 
+from .bridge_mask_support import (
+    DEFAULT_MAX_BACKGROUND_GAP_UM,
+    DEFAULT_MIN_MASK_FRACTION,
+    MaskSupport,
+)
 from .memmap_support import (
     LOW_MEMORY_BLOCK_VOXELS,
+    argwhere_by_slab,
     bincount_by_slab,
     iter_blocks,
     map_blockwise,
@@ -413,6 +419,7 @@ def bridge_gaps(
     voxel_size_zyx: tuple[float, float, float] | None = None,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
+    within: np.ndarray | None = None,
 ) -> np.ndarray:
     """Fill small gaps in a binary mask.
 
@@ -437,24 +444,72 @@ def bridge_gaps(
     feature-transform indices, an ``np.indices`` grid and float64 copies of
     both internally -- roughly 70 bytes per voxel of plain RAM whatever the
     output array is.
+
+    *within*, a boolean array of the same shape, is where the fill may add
+    voxels: one outside it is added nowhere (the segmentation, so a gap
+    through background stays a gap).
     """
     if max_gap <= 0:
         return binary_skeleton
     max_gap = int(max_gap)
     relative = _finest_axis_spacing(voxel_size_zyx, np.ndim(binary_skeleton))
     if use_memmap:
-        return _bridge_gaps_blockwise(binary_skeleton, max_gap, relative, memmap_directory)
-    if max_gap <= MAX_BALL_DILATION_RADIUS:
-        return binary_dilation(
+        grown = _bridge_gaps_blockwise(binary_skeleton, max_gap, relative, memmap_directory)
+    elif max_gap <= MAX_BALL_DILATION_RADIUS:
+        grown = binary_dilation(
             binary_skeleton, structure=_physical_footprint(max_gap, relative, norm=2)
         )
     # scipy's distance transform of an array with no background voxel is not
     # all-infinite but measured from a corner: nothing must dilate to nothing.
-    if not binary_skeleton.any():
+    elif not binary_skeleton.any():
         return binary_skeleton.copy()
-    inverted = ~binary_skeleton
-    distance = distance_transform_edt(inverted, sampling=relative)
-    return binary_skeleton | ((distance <= max_gap) & inverted)
+    else:
+        inverted = ~binary_skeleton
+        distance = distance_transform_edt(inverted, sampling=relative)
+        grown = binary_skeleton | ((distance <= max_gap) & inverted)
+    return _additions_within(grown, binary_skeleton, within)
+
+
+def _additions_within(grown: np.ndarray, original: np.ndarray, within: np.ndarray | None) -> np.ndarray:
+    """*grown* with every voxel it added outside *within* taken back out; in
+    place on a memmap, which is the step's own fresh output."""
+    if within is None:
+        return grown
+    if isinstance(grown, np.memmap):
+        _combine_per_slice(grown, lambda g, o, w: g & (o | w), grown, original, within)
+        return grown
+    return grown & (np.asarray(original, dtype=bool) | np.asarray(within, dtype=bool))
+
+
+def _restore_thinned_away(before: np.ndarray, after: np.ndarray, reach_voxels: float) -> int:
+    """Put back, into *after*, each 26-connected piece of the skeleton
+    *before* that no voxel of *after* lies within *reach_voxels* of. Growth
+    held to the mask can leave a piece as thin as its vessel, and Lee
+    thinning erases some such solids outright (a 4 x 4 voxel rod, for one);
+    a vessel is then better kept unjoined than lost. Returns how many."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+
+    coords = argwhere_by_slab(before)
+    if len(coords) == 0:
+        return 0
+    kept = argwhere_by_slab(after)
+    if len(kept):
+        distance, _ = cKDTree(kept).query(coords, distance_upper_bound=float(reach_voxels) + 1e-6)
+        reached = np.isfinite(distance)
+    else:
+        reached = np.zeros(len(coords), dtype=bool)
+    if reached.all():
+        return 0
+    pairs = cKDTree(coords).query_pairs(r=np.sqrt(3.0) + 1e-6, output_type="ndarray")
+    n = len(coords)
+    links = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
+    n_pieces, labels = connected_components(links, directed=False)
+    lost = np.bincount(labels, weights=reached, minlength=n_pieces) == 0
+    restore = coords[lost[labels]]
+    after[tuple(restore.T)] = True
+    return int(np.count_nonzero(lost))
 
 
 def _bridge_gaps_blockwise(
@@ -494,6 +549,7 @@ def close_binary_mask(
     voxel_size_zyx: tuple[float, float, float] | None = None,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
+    within: np.ndarray | None = None,
 ) -> np.ndarray:
     """Morphologically close a binary mask to seal small gaps.
 
@@ -523,6 +579,9 @@ def close_binary_mask(
         closed value depends only on the input within ``2 * radius`` voxels
         of it (``radius`` for the dilation, ``radius`` more for the erosion
         that reads it), so that halo makes every block exact.
+    within:
+        Where the closing may add voxels, as :func:`bridge_gaps` takes it;
+        ``None`` places no limit.
     """
     from scipy.ndimage import binary_closing
 
@@ -535,13 +594,16 @@ def close_binary_mask(
     if use_memmap:
         binary_bool = np.asanyarray(binary, dtype=bool)
         result = new_memmap_array(binary_bool.shape, bool, directory=memmap_directory)
-        return map_blockwise(
+        closed = map_blockwise(
             binary_bool,
             lambda block: binary_closing(block, structure=struct),
             result,
             halo=2 * radius,
         )
-    return binary_closing(binary.astype(bool), structure=struct)
+        return _additions_within(closed, binary_bool, within)
+    return _additions_within(
+        binary_closing(binary.astype(bool), structure=struct), binary, within
+    )
 
 
 def skeletonize_volume(img: np.ndarray) -> np.ndarray:
@@ -808,12 +870,25 @@ def _draw_hub_links(
     octant got one link between them, and the other, its voxels inside the
     window already erased, was left cut off.
     """
+    for target in _hub_link_targets(center, boundary_points, max_connections_per_hub):
+        _draw_line_3d(result, center, target)
+
+
+def _hub_link_targets(
+    center: np.ndarray,
+    boundary_points: np.ndarray,
+    max_connections_per_hub: int,
+    accept_link=None,
+) -> list[np.ndarray]:
+    """The voxels :func:`_draw_hub_links` links *center* to, farthest branch
+    first; with *accept_link* ``(center, target) -> bool``, only the links it
+    accepts, still at most *max_connections_per_hub* of them."""
     from scipy.spatial import cKDTree
 
     points = np.asarray(boundary_points)
     points = points[np.any(points != np.asarray(center), axis=1)]
     if points.shape[0] == 0:
-        return
+        return []
     parent = list(range(points.shape[0]))
 
     def find(i: int) -> int:
@@ -834,6 +909,8 @@ def _draw_hub_links(
             farthest[root] = (dist2, i)
 
     branches = sorted(farthest.values(), key=lambda item: (-item[0], item[1]))
+    if accept_link is not None:
+        branches = [item for item in branches if accept_link(center, points[item[1]])]
     if len(branches) > max_connections_per_hub:
         logger.debug(
             "Bundle hub at %s has %d branches; linking the %d farthest.",
@@ -841,8 +918,7 @@ def _draw_hub_links(
             len(branches),
             max_connections_per_hub,
         )
-    for _, index in branches[:max_connections_per_hub]:
-        _draw_line_3d(result, center, points[index])
+    return [points[index] for _, index in branches[:max_connections_per_hub]]
 
 
 def _collapse_hubs(
@@ -852,9 +928,15 @@ def _collapse_hubs(
     selected_hubs: list[np.ndarray],
     scan: tuple[int, ...],
     max_connections_per_hub: int,
+    accept_link=None,
 ) -> None:
     """Collapse each hub's dense window of *result* to one centre voxel,
     relinked to the skeleton just outside it, in place.
+
+    With *accept_link* ``(center, target) -> bool`` (voxel indices), a link
+    it refuses is not drawn, and a hub left fewer than two links is not
+    collapsed at all: erasing its window would cut off the branches it could
+    not relink.
 
     Each hub reads and writes only its own scan window plus one voxel -- the
     boundary shell's dilation reaches no further -- so this works in that
@@ -896,6 +978,18 @@ def _collapse_hubs(
         result_box = result[box]
         boundary_points = np.argwhere(np.asarray(result_box) & shell) + box_lo
 
+        if accept_link is not None:
+            targets = _hub_link_targets(
+                center, boundary_points, max_connections_per_hub, accept_link
+            )
+            if len(targets) < 2:
+                continue
+            result_box[local_dense] = False
+            result[center_t] = True
+            for target in targets:
+                _draw_line_3d(result, center, target)
+            continue
+
         result_box[local_dense] = False
         result[center_t] = True
 
@@ -917,6 +1011,7 @@ def skeletonize_voxel_bundles_into_paths(
     tile_large_components: bool = False,
     tile_max_voxels: int = 200_000_000,
     tile_halo_voxels: int = 0,
+    mask_support: MaskSupport | None = None,
 ) -> np.ndarray:
     """Scan for dense local volumes and collapse each into a hub node.
 
@@ -956,6 +1051,11 @@ def skeletonize_voxel_bundles_into_paths(
         :func:`_skeletonize_voxel_bundles_into_paths_low_memory` -- the same
         steps without any whole-volume plain-RAM array. The tiling settings
         are forwarded to its two skeletonize calls.
+    mask_support:
+        A :class:`~haemolynx.preprocessing.bridge_mask_support.MaskSupport`
+        over the segmentation: a hub's link is drawn only where it accepts
+        the straight line, and a hub left fewer than two is not collapsed.
+        ``None`` links every branch, as before.
     """
     mask = np.asanyarray(binary_mask, dtype=bool) if use_memmap else binary_mask.astype(bool)
     if not mask.any():
@@ -967,6 +1067,7 @@ def skeletonize_voxel_bundles_into_paths(
     max_connections_per_hub = max(1, int(max_connections_per_hub))
     if hub_min_spacing is None:
         hub_min_spacing = max(1, int(min(s * r for s, r in zip(scan, relative)) / 2))
+    accept_link = _hub_link_gate(mask_support)
 
     if use_memmap:
         return _skeletonize_voxel_bundles_into_paths_low_memory(
@@ -980,6 +1081,7 @@ def skeletonize_voxel_bundles_into_paths(
             tile_large_components=tile_large_components,
             tile_max_voxels=tile_max_voxels,
             tile_halo_voxels=tile_halo_voxels,
+            accept_link=accept_link,
         )
 
     base_skeleton = skeletonize_volume(mask)
@@ -998,9 +1100,24 @@ def skeletonize_voxel_bundles_into_paths(
     )
 
     result = base_skeleton.astype(bool).copy()
-    _collapse_hubs(result, mask, dense_volume, selected_hubs, scan, max_connections_per_hub)
+    _collapse_hubs(
+        result, mask, dense_volume, selected_hubs, scan, max_connections_per_hub, accept_link
+    )
 
     return skeletonize_volume(result.astype(bool)).astype(bool)
+
+
+def _hub_link_gate(mask_support: MaskSupport | None):
+    """``(center, target) -> bool`` for :func:`_collapse_hubs`: whether
+    *mask_support* accepts the straight link between two voxels."""
+    if mask_support is None:
+        return None
+    spacing = np.asarray(mask_support.voxel_size_zyx, dtype=float)
+
+    def accept_link(center: np.ndarray, target: np.ndarray) -> bool:
+        return mask_support.accepts(np.vstack([center, target]).astype(float) * spacing)
+
+    return accept_link
 
 
 def _skeletonize_voxel_bundles_into_paths_low_memory(
@@ -1015,6 +1132,7 @@ def _skeletonize_voxel_bundles_into_paths_low_memory(
     tile_large_components: bool,
     tile_max_voxels: int,
     tile_halo_voxels: int,
+    accept_link=None,
 ) -> np.ndarray:
     """:func:`skeletonize_voxel_bundles_into_paths` without a whole-volume
     array in RAM.
@@ -1080,7 +1198,8 @@ def _skeletonize_voxel_bundles_into_paths_low_memory(
 
         result = base_skeleton
         _collapse_hubs(
-            result, mask, dense_volume, selected_hubs, scan, max_connections_per_hub
+            result, mask, dense_volume, selected_hubs, scan, max_connections_per_hub,
+            accept_link,
         )
 
     final = skeletonize_all(result)
@@ -1218,6 +1337,82 @@ class _TipGeometry:
         return cls(weighted, cKDTree(weighted), _tip_directions(coords, neighbours, weights))
 
 
+#: Targets a tip's bridge is put to the mask test for before the tip is given
+#: up on: the nearest few voxels ahead, not every one within reach.
+_MAX_MASK_TESTED_TARGETS_PER_TIP = 8
+
+
+def _straight_voxel_path(start: np.ndarray, end: np.ndarray) -> np.ndarray:
+    """The voxels :func:`_draw_line_3d` sets between *start* and *end*."""
+    n_steps = max(int(np.linalg.norm(end.astype(float) - start.astype(float))) + 1, 2)
+    t = np.linspace(0.0, 1.0, n_steps)[:, None]
+    return np.round(start + t * (end - start)).astype(int)
+
+
+class _SkeletonBridgeGate:
+    """The mask test :func:`connect_skeleton_components` puts each bridge
+    to: its path (straight, or routed through the mask -- whichever
+    *routed_first* tries first, then the other) must pass *support*'s
+    background test and must not run beside the skeleton, or beside a bridge
+    drawn before it, in the same lumen. The path it accepted is the one
+    drawn."""
+
+    def __init__(self, support: MaskSupport, coords: np.ndarray, *, routed_first: bool):
+        self.support = support
+        self.spacing = np.asarray(support.voxel_size_zyx, dtype=float)
+        self.relative = self.spacing / float(self.spacing.min())
+        self.points = coords * self.spacing
+        self.routed_first = routed_first
+        self._tree = None
+        self.paths: dict[tuple[int, int], np.ndarray] = {}
+        self.drawn: list[np.ndarray] = []
+        self.refused_background = 0
+        self.refused_duplicate = 0
+
+    def accept(self, coords: np.ndarray, tip: int, end: int) -> bool:
+        start, stop = coords[tip], coords[end]
+        straight = _straight_voxel_path(start, stop)
+
+        def routed():
+            return _bridge_path_through_mask(self.support.mask, start, stop, self.relative)
+
+        order = (routed, lambda: straight) if self.routed_first else (lambda: straight, routed)
+        for make in order:
+            path = make()
+            if path is not None and self.support.accepts(path * self.spacing):
+                break
+        else:
+            self.refused_background += 1
+            return False
+        if self._tree is None:
+            from scipy.spatial import cKDTree
+
+            self._tree = cKDTree(self.points)
+        if self.support.shadows(path * self.spacing, self._tree, self.points):
+            self.refused_duplicate += 1
+            return False
+        self.paths[(tip, end)] = path
+        return True
+
+    def path_to_draw(self, tip: int, end: int) -> np.ndarray | None:
+        """The accepted path, or ``None`` when it runs beside a bridge
+        already drawn in the same lumen."""
+        path = self.paths[(tip, end)]
+        physical = path * self.spacing
+        if self.drawn:
+            reach = 2.0 * float(np.max(self.support.radius(physical))) + 1.0
+            lo, hi = physical.min(axis=0) - reach, physical.max(axis=0) + reach
+            nearby = [
+                drawn for drawn in self.drawn
+                if np.all(drawn.max(axis=0) >= lo) and np.all(drawn.min(axis=0) <= hi)
+            ]
+            if nearby and self.support.shadows(physical, None, np.vstack(nearby)):
+                self.refused_duplicate += 1
+                return None
+        self.drawn.append(physical)
+        return path
+
+
 def _bridge_candidates(
     tips: _TipGeometry,
     labels: np.ndarray,
@@ -1226,6 +1421,7 @@ def _bridge_candidates(
     *,
     source: np.ndarray | None = None,
     target: np.ndarray | None = None,
+    accept=None,
 ) -> tuple[list[tuple[float, int, int]], int]:
     """The bridges :func:`connect_skeleton_components` may draw, shortest
     first, as ``(length, tip, target)`` indices into the skeleton's voxels,
@@ -1234,7 +1430,10 @@ def _bridge_candidates(
     Each tip goes to its nearest voxel of another component (*labels*) that is
     within *reach* and ahead of it, and that, if itself a tip, faces back.
     *source* and *target*, boolean over the voxels, restrict which tips may
-    start a bridge and which voxels it may end on.
+    start a bridge and which voxels it may end on. *accept* ``(tip, target)
+    -> bool``, when given, may refuse a target, and the tip then tries its
+    next nearest (up to :data:`_MAX_MASK_TESTED_TARGETS_PER_TIP` of them); a
+    tip whose every target was refused is not counted as declined.
     """
     weighted, directions = tips.weighted, tips.directions
     candidates: list[tuple[float, int, int]] = []
@@ -1253,16 +1452,24 @@ def _bridge_candidates(
         # Elementwise, not `vectors @ heading`: see thick_vessels._matvec_3x3.
         along = vectors[:, 0] * heading[0] + vectors[:, 1] * heading[1] + vectors[:, 2] * heading[2]
         facing = along >= float(min_facing_cosine) * distances
+        tested = 0
         for end in nearby[facing][np.argsort(distances[facing], kind="stable")]:
             back = directions.get(int(end))
             if back is not None:
                 gap = weighted[tip] - weighted[int(end)]
                 if float(np.dot(back, gap)) < float(min_facing_cosine) * float(np.linalg.norm(gap)):
                     continue
+            if accept is not None:
+                if tested >= _MAX_MASK_TESTED_TARGETS_PER_TIP:
+                    break
+                tested += 1
+                if not accept(tip, int(end)):
+                    continue
             candidates.append((float(np.linalg.norm(weighted[int(end)] - weighted[tip])), tip, int(end)))
             break
         else:
-            declined += 1
+            if not tested:
+                declined += 1
     candidates.sort(key=lambda row: (row[0], row[1], row[2]))
     return candidates, declined
 
@@ -1282,6 +1489,7 @@ def connect_skeleton_components(
     tile_large_components: bool = False,
     tile_max_voxels: int = 200_000_000,
     tile_halo_voxels: int = 0,
+    mask_support: MaskSupport | None = None,
 ) -> np.ndarray:
     """Bridge a branch end of one skeleton component to a nearby voxel of
     another, where the end points at it.
@@ -1327,8 +1535,16 @@ def connect_skeleton_components(
         When true and *segmentation_mask* is given, each accepted bridge is
         drawn by routing through the mask (preferring to stay inside real
         segmented signal) rather than an unconditional straight line --
-        see :func:`_bridge_path_through_mask`. This only changes the path's
-        shape, never whether two components get connected.
+        see :func:`_bridge_path_through_mask`. On its own this only changes
+        the path's shape, never whether two components get connected.
+    mask_support:
+        A :class:`~haemolynx.preprocessing.bridge_mask_support.MaskSupport`
+        over the segmentation (same shape as *skeleton*). A bridge is then
+        drawn only along a path it accepts -- the straight line, or the route
+        through the mask, tried first when *weight_by_segmentation* is set --
+        and only when that path does not run beside the skeleton, or another
+        bridge, in the same lumen. A tip refused its nearest target tries the
+        next. ``None`` draws every bridge within reach, as before.
     use_memmap, memmap_directory:
         Back the labelled array (see :func:`_labeled_components`), the
         working copy of *skeleton* that bridges are drawn into, and (via
@@ -1356,7 +1572,15 @@ def connect_skeleton_components(
         labels = np.asarray(labeled[tuple(coords.T)])
         tips = _TipGeometry.of(coords, weights)
         directions = tips.directions
-        candidates, declined = _bridge_candidates(tips, labels, reach, min_facing_cosine)
+        gate = None
+        if mask_support is not None and np.shape(mask_support.mask) == skeleton.shape:
+            gate = _SkeletonBridgeGate(
+                mask_support, coords, routed_first=bool(weight_by_segmentation)
+            )
+        candidates, declined = _bridge_candidates(
+            tips, labels, reach, min_facing_cosine,
+            accept=None if gate is None else (lambda tip, end: gate.accept(coords, tip, end)),
+        )
 
         parent: dict[int, int] = {int(c): int(c) for c in np.unique(labels)}
 
@@ -1379,7 +1603,11 @@ def connect_skeleton_components(
                 continue
             start, end = coords[tip], coords[target]
             path = None
-            if weight_by_segmentation and segmentation_mask is not None:
+            if gate is not None:
+                path = gate.path_to_draw(tip, target)
+                if path is None:
+                    continue
+            elif weight_by_segmentation and segmentation_mask is not None:
                 if segmentation_mask.shape == skeleton.shape:
                     path = _bridge_path_through_mask(
                         segmentation_mask, start, end,
@@ -1400,6 +1628,13 @@ def connect_skeleton_components(
         reach,
         declined,
     )
+    if gate is not None:
+        logger.info(
+            "Skeleton bridging: refused %d bridge(s) crossing background and %d running "
+            "beside a vessel in the same lumen.",
+            gate.refused_background,
+            gate.refused_duplicate,
+        )
     # `labeled` is released above (or was never disk-backed) before the
     # re-skeletonize step's own, potentially large, working buffers exist.
     if bridged:
@@ -1735,6 +1970,9 @@ def preprocess_skeleton_for_graph(
     tile_large_components: bool = False,
     tile_max_voxels: int = 200_000_000,
     tile_halo_voxels: int = 0,
+    bridge_require_mask_support: bool = True,
+    bridge_max_background_gap_um: float = DEFAULT_MAX_BACKGROUND_GAP_UM,
+    bridge_min_mask_fraction: float = DEFAULT_MIN_MASK_FRACTION,
 ) -> np.ndarray:
     """Refine dense bundles, close and re-skeletonize, reconnect fragments,
     then remove what is still too small.
@@ -1809,20 +2047,54 @@ def preprocess_skeleton_for_graph(
         (reached only once a bridge is actually drawn) -- see either
         docstring. :func:`_filter_components_by_total_fraction` has no
         skeletonize call of its own, so these do not apply there.
+    bridge_require_mask_support, bridge_max_background_gap_um, bridge_min_mask_fraction:
+        With a *segmentation_mask* of the skeleton's shape and
+        *bridge_require_mask_support* on, everything this function joins is
+        held to the segmentation: closing and ``bridge_gaps`` add voxels only
+        within one voxel of it, and a bundle hub's link and a
+        :func:`connect_skeleton_components` bridge are drawn only along a
+        path crossing at most *bridge_max_background_gap_um* of background in
+        one run with at least *bridge_min_mask_fraction* of it in the mask
+        (a :class:`~haemolynx.preprocessing.bridge_mask_support.MaskSupport`).
+        Without a mask, or off, nothing changes.
     """
     conn = _resolve_component_connectivity(skeleton_image.ndim, component_connectivity)
+    mask_support = None
+    within = None
+    if (
+        bridge_require_mask_support
+        and segmentation_mask is not None
+        and np.shape(segmentation_mask) == np.shape(skeleton_image)
+    ):
+        segmentation_bool = np.asanyarray(segmentation_mask, dtype=bool)
+        mask_support = MaskSupport(
+            segmentation_bool,
+            voxel_size_zyx if voxel_size_zyx is not None else (1.0,) * skeleton_image.ndim,
+            max_background_gap_um=bridge_max_background_gap_um,
+            min_mask_fraction=bridge_min_mask_fraction,
+        )
+        if closing_radius > 0 or bridge_gap_size > 0:
+            within = bridge_gaps(
+                segmentation_bool,
+                max_gap=1,
+                voxel_size_zyx=voxel_size_zyx,
+                use_memmap=use_memmap,
+                memmap_directory=memmap_directory,
+            )
     tiling = {
         "tile_large_components": tile_large_components,
         "tile_max_voxels": tile_max_voxels,
         "tile_halo_voxels": tile_halo_voxels,
     }
     cleaned = skeleton_image
+    before_growth = None
 
     def advance(new: np.ndarray) -> np.ndarray:
         # Under use_memmap every step below writes a fresh volume-sized file;
         # the one it replaces is this function's own and nobody else's, so
         # it is deleted now rather than left in the temp directory.
-        release_superseded(cleaned, new, keep=skeleton_image)
+        if cleaned is not before_growth:
+            release_superseded(cleaned, new, keep=skeleton_image)
         return new
 
     # Specks go before closing and bridge_gaps can grow them into fragments
@@ -1856,9 +2128,12 @@ def preprocess_skeleton_for_graph(
             voxel_size_zyx=voxel_size_zyx,
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
+            mask_support=mask_support,
             **tiling,
         )
     )
+    if within is not None:
+        before_growth = cleaned
 
     # Morphological closing seals narrow gaps without expanding boundaries.
     if closing_radius > 0:
@@ -1869,6 +2144,7 @@ def preprocess_skeleton_for_graph(
                 voxel_size_zyx=voxel_size_zyx,
                 use_memmap=use_memmap,
                 memmap_directory=memmap_directory,
+                within=within,
             )
         )
 
@@ -1881,8 +2157,11 @@ def preprocess_skeleton_for_graph(
                 voxel_size_zyx=voxel_size_zyx,
                 use_memmap=use_memmap,
                 memmap_directory=memmap_directory,
+                within=within,
             )
         )
+    if isinstance(within, np.memmap):
+        release_memmap_array(within)
 
     # Not skeletonize_volume: that is the plain, untiled, single-component
     # skimage.morphology.skeletonize call this whole module exists to avoid
@@ -1899,6 +2178,17 @@ def preprocess_skeleton_for_graph(
             **tiling,
         )
     )
+    if before_growth is not None:
+        restored = _restore_thinned_away(
+            before_growth, cleaned, reach_voxels=closing_radius + bridge_gap_size + 1
+        )
+        if restored:
+            logger.info(
+                f"Mask-held closing/gap filling: {restored} skeleton piece(s) thinned "
+                "away entirely were put back as they were."
+            )
+        release_superseded(before_growth, cleaned, keep=skeleton_image)
+        before_growth = None
 
     # Bridge remaining disconnected components BEFORE filtering by size --
     # both filters below -- so that small fragments get a chance to merge
@@ -1916,6 +2206,7 @@ def preprocess_skeleton_for_graph(
                 weight_by_segmentation=bridge_weight_by_segmentation,
                 use_memmap=use_memmap,
                 memmap_directory=memmap_directory,
+                mask_support=mask_support,
                 **tiling,
             )
         )

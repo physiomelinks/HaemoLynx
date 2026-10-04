@@ -248,19 +248,28 @@ def _total_length(graph) -> float:
 
 
 def _deviations(graph, skeleton, voxel_size_zyx) -> np.ndarray:
-    """How far every centreline point sits from the nearest skeleton voxel."""
+    """How far every centreline point sits from the nearest skeleton voxel.
+
+    A mask continuation joined onto a vessel -- recovered, or a bridge merged
+    into it -- leaves the skeleton only at an end. That end is not what
+    smoothing traced, so it is left out; a point off the skeleton between two
+    points on it is kept.
+    """
     from scipy.spatial import cKDTree
 
     support = np.argwhere(skeleton).astype(float) * np.asarray(voxel_size_zyx)
     tree = cKDTree(support)
-    points = np.concatenate(
-        [
-            np.asarray(data["voxels"], dtype=float)
-            for *_ids, data in graph.edges(keys=True, data=True)
-            if data.get("voxels") is not None and len(data["voxels"]) >= 2
-        ]
-    )
-    return tree.query(points)[0]
+    kept = []
+    for *_ids, data in graph.edges(keys=True, data=True):
+        voxels = data.get("voxels")
+        if voxels is None or len(voxels) < 2:
+            continue
+        deviation = tree.query(np.asarray(voxels, dtype=float))[0]
+        on_it = np.flatnonzero(deviation < 1.6)
+        if len(on_it):
+            deviation = deviation[on_it[0] : on_it[-1] + 1]
+        kept.append(deviation)
+    return np.concatenate(kept)
 
 
 @pytest.mark.slow

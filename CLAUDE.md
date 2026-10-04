@@ -22,7 +22,9 @@ haemolynx/
 │   │                       #   (pre-skeleton mask cleanup), segmentation_quality.py and
 │   │                       #   segmentation_raw_comparison.py ("Check segmented image");
 │   │                       #   skeleton_consistency.py (skeleton vs mask), memmap_support.py
-│   │                       #   (disk-backed volumes, the low-RAM option), pointwise_distance.py
+│   │                       #   (disk-backed volumes, the low-RAM option), pointwise_distance.py,
+│   │                       #   bridge_mask_support.py (whether a bridge path stays in the mask
+│   │                       #   and off a vessel already in the same lumen)
 │   ├── graph/              # assemble.py (orchestrator) + build, reconnect, optimise, degree2,
 │   │                       #   prune, collapse (+ direction_aware_collapse, persistence_collapse,
 │   │                       #   cartwheel_guard), branch_order, boundaries, boundary_node_fallback,
@@ -37,7 +39,8 @@ haemolynx/
 │   │                       #   graph edits), post_processing.py (4+ junctions: delete
 │   │                       #   vessels / split with a connector; Add vessel's click-by-click
 │   │                       #   A* traces through mask or raw data), automated_vessel_assignment.py
-│   │                       #   (terminal-node assignment)
+│   │                       #   (terminal-node assignment), mask_recovery.py (segmented vessels
+│   │                       #   the graph lost, traced and joined back through the mask)
 │   ├── haemodynamics/      # poiseuille, viscosity (the laws), resistance, apply,
 │   │                       #   automated.py (FWHM diameters), raw_section.py (the raw
 │   │                       #   cross-section fitted where FWHM fails, opt-in), edt_diameter.py
@@ -98,7 +101,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 427 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 433 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -157,7 +160,7 @@ Users may also supply **pre-segmented** masks only (no ilastik call) — typical
 0. **Segmentation (optional)** — ilastik headless on raw TIFF/H5 → binary mask; or skip if input is already segmented  
 1. **Load & skeletonize** — `io.load_and_skeletonize_3d_tif` / `_h5`; `preprocessing.preprocess_skeleton_for_graph`  
 2. **Vessel masks (optional)** — `io.load_and_validate_vessel_masks` (large/small arteriole/venule; from disk or ilastik)  
-3. **Graph build** — `graph.build_graph_from_skeleton` (eleven topology steps in `graph/assemble.py`), then `graph.smooth_graph_centrelines`  
+3. **Graph build** — `graph.build_graph_from_skeleton` (thirteen topology steps in `graph/assemble.py`), then `graph.smooth_graph_centrelines`  
 4. **Boundary & branch order** — manual volume/coordinates or mask-based assignment; `graph.assign_vessel_branch_orders` / hierarchical orders  
 5. **Haemodynamics** — `haemodynamics.apply_poiseuille_haemodynamics`, conductance matrix, two-point resistance, flow solve (optionally iterating a distributed haematocrit, `haematocrit_model="distributed_iterative"`)  
 6. **Post processing (hand edits)** — on the *solved* network: `post_process` brings vessels edited by hand in the panel (`graph/post_processing.py`) in line with the rest: lengths, branch orders, diameters by the run's own methods (only the edited vessels are measured), zero-resistance bridges where one opens into a thick vessel; then `solve_post_processed` reruns the haemodynamics on the edited network (network handling, resistances, solve). A no-op on an unedited network, which is not solved again. With `mid_run_postprocessing` on, a panel run pauses before it (`run_pipeline_stages(stop_after="solve")`) and Continue resumes at it  
@@ -221,8 +224,8 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | Change area | Typical test location |
 |-------------|----------------------|
 | `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py` |
-| `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
-| `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, boundary/assignment tests |
+| `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
+| `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_parallel_duplicates.py`, boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), FWHM/pericyte integration tests |
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_sweep_flow_layers.py` |
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight) |
@@ -233,7 +236,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py` |
 | Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
 | Packaging / the installed wheel | `tests/test_installed_package.py`, `test_packaging_metadata.py`, `test_napari_manifest.py` |
-| Full pipeline / examples | `tests/integration/test_image_to_model_pipeline.py`, `test_nerve_pipeline.py`, `test_axis_order_pipeline.py`, `test_simple_network_haemodynamics.py`, `test_progress_reporting.py`, `test_step_artifacts_setting.py` |
+| Full pipeline / examples | `tests/integration/test_image_to_model_pipeline.py`, `test_nerve_pipeline.py`, `test_axis_order_pipeline.py`, `test_simple_network_haemodynamics.py`, `test_progress_reporting.py`, `test_step_artifacts_setting.py`, `test_dense_capillary_bed.py` (skeleton cleaning and graph building on `tests/dense_capillary_fixtures.py`'s synthetic capillary bed) |
 | Tutorial notebook | `tests/integration/test_pipeline_tutorial.py` (exports notebook → `.py`, then runs) |
 
 ### Tutorial notebook workflow
@@ -355,7 +358,31 @@ are only caught locally.
 - **`io/ilastik.py`** — `run_ilastik_headless_segmentation` (subprocess call to user-installed ilastik + `.ilp` project).
 - **`io/automated_vessel_assignment.py`** — mask **loading & validation**: `load_large_vessel_masks`, `load_and_validate_vessel_masks` (includes ilastik path for large/small masks). *Despite the name, this is I/O, not graph assignment.*
 - **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks: `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`, overlap-resolution + 3D HTML diagnostics. *Same filename as the io module but a different concern — a known source of confusion (see Cleanup Plan).*
-- **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after each topology step, one per label in `STEP_LABELS` (eleven of them).
+- **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after each topology step, one per label in `STEP_LABELS` (thirteen of them).
+- **Mask-supported bridging** (`preprocessing/bridge_mask_support.py`, `bridge_require_mask_support`,
+  on by default) — with the segmented mask, nothing that joins two pieces of skeleton or graph
+  (closing and `bridge_gaps`, a bundle hub's links, `connect_skeleton_components`, and graph
+  building's gap, optimise and orphan reconnects through `graph/reconnect.py`'s `MaskBridges`)
+  is drawn across background: a bridge follows a route through the mask (`route_through_mask`)
+  crossing at most `bridge_max_background_gap_um` (2 µm) in one run — a dropout in the
+  segmentation, not tissue between two vessels — with `bridge_min_mask_fraction` of it in the
+  mask unless all its background adds up to no more than that run. A path beside a vessel
+  already in the same lumen is refused too (`MaskSupport.shadows`, the ends excluded so a branch
+  meeting its parent is not one), so no reconnect draws one segmented vessel twice;
+  `graph.diagnose_parallel_duplicates_in_lumen` reports any pair that does, in `build_network`'s
+  graph checks. A graph bridge records `bridge_kind` and `bridge_background_um`. Closing and gap
+  filling held to the mask can grow a thin vessel into a rod Lee thinning erases outright, so a
+  piece of skeleton thinned away entirely is put back as it was. The stub prunes read the mask
+  too (`prune.prune_vascular_stubs`): a stub mostly off it, or ending inside its parent's lumen,
+  goes whatever its length, and one whose tip the mask runs on past is held to
+  `min_stub_length` as well, while a blind sprout keeps the radius rule.
+- **`graph/mask_recovery.py`** — `recover_uncovered_mask_vessels` (`recover_uncovered_mask_vessels`,
+  on by default; its own step after the orphan reconnect, then `prune_vascular_stubs_final`):
+  the mask no centreline's local lumen covers, in pieces of at least
+  `recovery_min_region_volume_um3` and wider than a voxel and a half, Lee-thinned and joined to
+  the network through the mask where an end lies within `final_orphan_reconnect_threshold` of a
+  covered lumen. Never an island, never across background, never beside an existing vessel.
+  Without a mask, or with both settings off, the two steps leave the graph as it is.
 - **`graph/smoothing.py`** — `smooth_graph_centrelines`: takes the voxel staircase out of each
   centreline and **re-measures `length`**, which moves every resistance (a path stepping voxel to
   voxel comes back ~7% longer than the vessel it traces). It is *not* one of the `STEP_LABELS` —
@@ -383,9 +410,13 @@ are only caught locally.
   the stage then calls `solve_post_processed` (network handling, `build_haemodynamic_model`,
   `solve` on the edited network), whose `Solution.post_processed` is what the viewer draws the
   stage from -- only when there were edits. `apply_network_handling(settings, model, boundaries, network)` is
-  the "Network handling" box on the Haemodynamics tab (`boundary_handling`: `remove_disconnected`
-  prunes every component without both an inlet and an outlet, `leave_unsolved` — the default —
-  keeps them and `solve` marks their vessels `graph.FLOW_SOLVED=False`, which the viewer draws
+  the "Network handling" box on the Haemodynamics tab (`boundary_handling` acts on every vessel no
+  inlet-to-outlet path runs along, `graph.inlet_to_outlet_vessels`: each component without both an
+  inlet and an outlet, and every dead-end branch, tree or loop hanging off a perfused one.
+  `remove_disconnected` deletes them (`graph.remove_vessels_off_inlet_outlet_paths`), logging dead
+  ends and disconnected components apart, and the boundary-node lists and resistance pair follow
+  the pruned graph; `leave_unsolved` — the default — keeps them and `solve` marks exactly those
+  vessels `graph.FLOW_SOLVED=False`, which the viewer draws
   light grey, blanks in every flow-based colour column (`gui/results.py`'s
   `SOLVED_FLOW_COLUMNS`) and labels Solved/Unsolved on hover; the retired
   `remove_disconnected_io_components_after_final_assignment` checkbox still loads, through
@@ -409,7 +440,10 @@ are only caught locally.
   Perturbations, so the network is edited solved) has no settings: its tab is its own page (`gui/_widget.py`'s
   `_post_processing_controls`), with no "Run from this stage"; its 4+ junction list, table
   and their Delete/Leave/Split buttons sit behind a "Manual 4+ vessel junction correction"
-  checkbox, off by default (off, a scan neither marks the junctions nor zooms to one). Its Regenerate graph runs
+  checkbox, off by default (off, a scan neither marks the junctions nor zooms to one). Its
+  "Prune disconnected and dead-end branches" button (`graph.prune_disconnected_branches`) applies
+  the same rule as `remove_disconnected`; the boundary lists are trimmed to the pruned graph when
+  the `post_process` stage runs. Its Regenerate graph runs
   the `post_process` stage alone (edits in line, Haemodynamics rerun) while a run is paused there
   (`gui/run_state.py`), else goes on to Export like Regenerate from the edited network; Continue
   carries a paused run on. A `.haemorun` saved in the old order (Post processing before
@@ -558,14 +592,23 @@ are only caught locally.
   length sweeps move them), and the same sliders swap them in (`_apply_sweep_points`). The view panel's "Colour by" menu (`_VesselColourMenu` in
   `_widget.py`) colours the shown network's vessels Vectors layer — tubes take their colours from
   it — through `_choose_colour_by`, the same path as the layer controls' own Colour by.
-- **`gui/vessel_tubes.py`** — the vessel tube mesh: `tubes_from_vectors` draws one closed,
-  smooth-shaded tube per vessel (steps grouped by `edge_index`) at that vessel's own diameter, with
-  rounded ends on its two nodes. It follows the centreline smoothed over about half its radius, with
-  rings a third of a radius apart, not the voxel path ring by ring: steps under a micron kinking at
-  every voxel round a vessel several microns wide made the tube pinch, bulge and fold where the vessel
-  does not. `tube_mesh(..., quality=)` is driven by the "render quality" slider on a tubes layer's own
-  controls, which only sets the sides round the tube (`TUBE_QUALITY_SIDES`); the level is the
-  session's, shared by every tubes layer.
+- **`gui/vessel_tubes.py`** — the vessel tube mesh, display only (the graph and its diameters are
+  untouched): `vessel_tube_mesh(vectors, features)` is what `_sync_vessel_tubes` calls, reading
+  `diameter_um`, `edge_index` and `is_zero_resistance` (`gui/results.py`'s `_mark_bridges`).
+  `tubes_from_vectors` draws one closed, smooth-shaded tube per chain of vessels through degree-2
+  nodes, each ring still carrying its own vessel's step so colours and hover split per edge; rounded
+  ends close it only at terminals and junctions. Mid-vessel a vessel is its own diameter; within
+  min(L/2, 2r) of each end it eases (smoothstep) to the node's radius: the length-weighted mean of
+  the two vessels at a degree-2 node, min(own, widest other) at a junction, so a wide vessel's end
+  never stands out of its narrower daughters as a ball. Drawn diameters are clipped to ½–2× the
+  length-weighted median of the chain and the vessels carrying it straight on through junctions, and
+  a zero-resistance bridge is drawn at the vessel it bridges. Rings are spaced a third of the local
+  radius (at least three per vessel) along the centreline smoothed with the ends pinned; bends
+  tighter than 1.1 r get extra local passes, and where adjacent rings would still cross the ring's
+  radius is cut (`_FOLD_MARGIN`): voxel staircases, snapped ends and tight bends used to make the
+  tube pinch, bulge and fold. `tube_mesh(..., quality=)` is driven by the "render quality" slider
+  on a tubes layer's own controls, which only sets the sides round the tube (`TUBE_QUALITY_SIDES`);
+  the level is the session's, shared by every tubes layer.
 - **`examples/pipeline_presets.py`** — `PRESETS`, named partial configs; every setting name is
   checked against the schema at import, so a preset cannot quietly set something that no longer
   exists. The override engine itself is library code, in `parsers/cli.py` and `parsers/config.py`.

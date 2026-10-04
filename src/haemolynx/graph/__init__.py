@@ -22,6 +22,7 @@ from .connectivity import (
     CONNECTIVITY_COLUMNS,
     connectivity_rows,
     inlet_to_outlet_vessels,
+    remove_vessels_off_inlet_outlet_paths,
     write_connectivity_csv,
 )
 from .post_processing import (
@@ -79,10 +80,12 @@ from .diagnostics import (
     diagnose_degree2_nodes,
     diagnose_graph_against_mask,
     diagnose_graph_mask_consistency,
+    diagnose_parallel_duplicates_in_lumen,
     diagnose_skeleton_graph_consistency,
     diagnose_vessels_missing_from_graph,
     format_degree2_diagnostics_report,
     format_graph_mask_consistency_report,
+    format_parallel_duplicates_report,
     format_skeleton_graph_consistency_report,
     format_vessels_missing_from_graph_report,
 )
@@ -182,10 +185,14 @@ from ._helpers import (
     astar_skeleton_path,
     are_paths_similar,
     should_add_merged_edge,
+    duplicates_existing_vessel,
 )
 
 __all__ = [
     "STEP_LABELS",
+    "duplicates_existing_vessel",
+    "diagnose_parallel_duplicates_in_lumen",
+    "format_parallel_duplicates_report",
     "build_graph_from_skeleton",
     "SMOOTHING_METHODS",
     "smooth_graph_centrelines",
@@ -199,6 +206,7 @@ __all__ = [
     "CONNECTIVITY_COLUMNS",
     "connectivity_rows",
     "inlet_to_outlet_vessels",
+    "remove_vessels_off_inlet_outlet_paths",
     "write_connectivity_csv",
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
     "IntensityCostField",

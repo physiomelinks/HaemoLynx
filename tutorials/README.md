@@ -156,7 +156,7 @@ paths at the size of a real run; the per-vessel numbers ride on a hidden Points
 layer at each vessel's midpoint, so hovering still identifies one.
 
 **Show each topology step** additionally redraws the network after each of graph
-building's eleven repair steps — worth switching on when skeletonisation is
+building's thirteen repair steps — worth switching on when skeletonisation is
 behaving oddly, and not otherwise.
 
 A second run updates its own layers in place, so anything you hid stays hidden,

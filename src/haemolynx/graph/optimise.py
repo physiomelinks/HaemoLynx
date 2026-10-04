@@ -13,6 +13,7 @@ from .build import (
     gap_bridge_continues_terminal,
     gap_bridge_pairs_following_ends,
 )
+from .reconnect import MaskBridges
 from .cartwheel_guard import (
     DEFAULT_MAX_RADIAL_DISPERSION,
     DEFAULT_MIN_DEGREE,
@@ -48,13 +49,18 @@ def optimise_graph_topology_fixed(
     validate_reconnections=True,
     aggressive_degree2_cleanup_level=1,
     max_bridge_turn_deg=MAX_GAP_BRIDGE_TURN_DEG,
+    mask_support=None,
 ):
     """Reconnect nearby terminals with optional skeleton validation.
 
     A pair is not joined when the join turns more than *max_bridge_turn_deg*
     from either terminal's end direction, or either terminal ends too short a
     vessel to have one -- the rule ``build.build_graph_segment_skan_stitched_loops``
-    bridges by; ``None`` turns it off.
+    bridges by; ``None`` turns it off. With *mask_support* (a
+    ``preprocessing.MaskSupport``) a join passing those checks is also put to
+    ``reconnect.MaskBridges``: the skeleton path, else a route through the
+    mask, must cross no more background than it allows and not run beside
+    another edge in the same lumen.
     """
     vs = tuple(G.graph.get("voxel_size", (1.0, 1.0, 1.0)))
 
@@ -107,6 +113,7 @@ def optimise_graph_topology_fixed(
                     G, pairs, max_turn_deg=max_bridge_turn_deg
                 )
             heapq.heapify(pairs)
+            bridges = None if mask_support is None else MaskBridges(G, mask_support, "optimise")
             reconnected = 0
             while pairs:
                 dist, src, tgt = heapq.heappop(pairs)
@@ -137,6 +144,12 @@ def optimise_graph_topology_fixed(
                         phys_path = [(np.array(p, dtype=float) * vs_arr).tolist() for p in voxel_path]
                     else:
                         phys_path = [src_pos.tolist(), tgt_pos.tolist()]
+                    tags = {}
+                    if bridges is not None:
+                        found = bridges.bridge(src_pos, tgt_pos, preferred=phys_path)
+                        if found is None:
+                            continue
+                        phys_path, tags = found[0].tolist(), bridges.attributes(found[1])
                     path_length = _physical_path_length(phys_path)
                     add_edge_safe(
                         G,
@@ -146,6 +159,7 @@ def optimise_graph_topology_fixed(
                         voxels=phys_path,
                         reconnected=True,
                         validated=True,
+                        **tags,
                     )
                 else:
                     conservative_threshold = min(reconnect_threshold * 0.5, 1.5)
@@ -159,18 +173,27 @@ def optimise_graph_topology_fixed(
                                 conservative_threshold,
                             )
                         continue
+                    phys_path, tags = [src_pos.tolist(), tgt_pos.tolist()], {}
+                    if bridges is not None:
+                        found = bridges.bridge(src_pos, tgt_pos)
+                        if found is None:
+                            continue
+                        phys_path, tags = found[0].tolist(), bridges.attributes(found[1])
                     add_edge_safe(
                         G,
                         src,
                         tgt,
-                        length=dist,
-                        voxels=[src_pos.tolist(), tgt_pos.tolist()],
+                        length=dist if not tags else _physical_path_length(phys_path),
+                        voxels=phys_path,
                         reconnected=True,
                         conservative=True,
+                        **tags,
                     )
                 reconnected += 1
                 if debug:
                     logger.debug("Reconnected %s-%s, d=%.2f", src, tgt, dist)
+            if bridges is not None:
+                bridges.log_summary()
             if debug and reconnected > 0:
                 logger.info("Reconnected %d terminal pairs", reconnected)
 
@@ -246,6 +269,7 @@ def reconnect_orphan_and_dangling_nodes(
     min_degree_for_dispersion_check: int = DEFAULT_MIN_DEGREE,
     tangent_length_um: float = DEFAULT_TANGENT_LENGTH_UM,
     max_bridge_turn_deg: Optional[float] = MAX_GAP_BRIDGE_TURN_DEG,
+    mask_support=None,
 ) -> nx.MultiGraph:
     """Reconnect degree-0/degree-1 nodes to nearby nodes via skeleton path.
 
@@ -262,6 +286,10 @@ def reconnect_orphan_and_dangling_nodes(
     from that vessel's end direction, or from an end too short to have one --
     is refused, as gap bridges are in
     ``build.build_graph_segment_skan_stitched_loops``; ``None`` turns that off.
+
+    With *mask_support* (a ``preprocessing.MaskSupport``) each reconnection
+    is also put to ``reconnect.MaskBridges`` and drawn along the path it
+    accepts, as ``optimise_graph_topology_fixed`` does.
     """
     if reconnect_threshold <= 0:
         return G
@@ -314,6 +342,7 @@ def reconnect_orphan_and_dangling_nodes(
         return G
 
     heapq.heapify(candidate_pairs)
+    bridges = None if mask_support is None else MaskBridges(G, mask_support, "orphan")
     added_edges_per_node = {n: 0 for n in source_nodes}
     reconnect_count = 0
 
@@ -367,6 +396,14 @@ def reconnect_orphan_and_dangling_nodes(
                 phys_path = [src_pos.tolist(), tgt_pos.tolist()]
         else:
             phys_path = [src_pos.tolist(), tgt_pos.tolist()]
+        tags = {}
+        if bridges is not None:
+            found = bridges.bridge(
+                src_pos, tgt_pos, preferred=phys_path if voxel_path else None
+            )
+            if found is None:
+                continue
+            phys_path, tags = found[0].tolist(), bridges.attributes(found[1])
 
         length = _physical_path_length(phys_path)
         if length <= 0:
@@ -380,10 +417,13 @@ def reconnect_orphan_and_dangling_nodes(
             reconnected=True,
             orphan_reconnect=True,
             validated=bool(validate_reconnections and skeleton_data is not None),
+            **tags,
         )
         added_edges_per_node[src] = added_edges_per_node.get(src, 0) + 1
         reconnect_count += 1
 
+    if bridges is not None:
+        bridges.log_summary()
     if debug and reconnect_count > 0:
         logger.info("Reconnected %d orphan/dangling node edge(s)", reconnect_count)
     return G

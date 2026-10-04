@@ -589,7 +589,7 @@ def test_a_stage_banner_reaches_the_buffer(library_logger) -> None:
 
 
 def test_a_topology_step_is_not_shown_at_info(library_logger) -> None:
-    """Eleven per graph build, and DEBUG: `Info` is a bounded amount of output."""
+    """Thirteen per graph build, and DEBUG: `Info` is a bounded amount of output."""
     log = RunLog(level=logging.INFO)
     with attach(log):
         log_progress(

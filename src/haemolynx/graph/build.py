@@ -15,6 +15,7 @@ from skan import csr
 
 from ._platform import iter_python_work, map_python_work
 from .cartwheel_guard import _incident_edge_items, _spoke_direction_and_length
+from .reconnect import MaskBridges
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +229,7 @@ def build_graph_segment_skan_stitched_loops(
     use_spatial_index=True,
     voxel_size=(1.0, 1.0, 1.0),
     max_bridge_turn_deg=MAX_GAP_BRIDGE_TURN_DEG,
+    mask_support=None,
 ):
     """Build NetworkX graph from skan Skeleton with loop detection and terminal reconnection.
 
@@ -242,6 +244,12 @@ def build_graph_segment_skan_stitched_loops(
     :data:`MAX_GAP_BRIDGE_TURN_DEG`) or either terminal ends less than
     :data:`MIN_GAP_BRIDGE_END_LENGTH_UM` of centreline; ``None`` bridges every
     pair.
+
+    With *mask_support* (a ``preprocessing.MaskSupport``) a bridge is drawn
+    only where ``reconnect.MaskBridges`` accepts it: routed through the mask,
+    through no more background than it allows, and not beside another edge
+    in the same lumen. A terminal refused one bridge may still take the next
+    nearest.
     """
     if sk is None or skeleton_image is None:
         raise ValueError("sk and skeleton_image cannot be None")
@@ -411,6 +419,7 @@ def build_graph_segment_skan_stitched_loops(
                     candidates - len(pairs), candidates, reconnect_threshold,
                 )
             heapq.heapify(pairs)
+            bridges = None if mask_support is None else MaskBridges(G, mask_support, "gap")
             reconnected = 0
             while pairs:
                 dist, src, tgt = heapq.heappop(pairs)
@@ -418,19 +427,35 @@ def build_graph_segment_skan_stitched_loops(
                     continue
                 src_pos = np.array(G.nodes[src]["pos"])
                 tgt_pos = np.array(G.nodes[tgt]["pos"])
-                G.add_edge(
-                    src,
-                    tgt,
-                    length=dist,
-                    voxels=[
-                        src_pos.tolist(),
-                        tgt_pos.tolist(),
-                    ],
-                    reconnected=True,
-                )
+                if bridges is None:
+                    G.add_edge(
+                        src,
+                        tgt,
+                        length=dist,
+                        voxels=[
+                            src_pos.tolist(),
+                            tgt_pos.tolist(),
+                        ],
+                        reconnected=True,
+                    )
+                else:
+                    found = bridges.bridge(src_pos, tgt_pos)
+                    if found is None:
+                        continue
+                    path, measured = found
+                    G.add_edge(
+                        src,
+                        tgt,
+                        length=float(np.sum(np.linalg.norm(np.diff(path, axis=0), axis=1))),
+                        voxels=path.tolist(),
+                        reconnected=True,
+                        **bridges.attributes(measured),
+                    )
                 reconnected += 1
                 if debug:
                     logger.debug("Reconnected %s-%s, d=%.2f", src, tgt, dist)
+            if bridges is not None:
+                bridges.log_summary()
             if debug and reconnected > 0:
                 logger.info("Reconnected %d terminal pairs", reconnected)
 

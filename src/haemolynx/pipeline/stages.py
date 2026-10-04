@@ -788,8 +788,9 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         visualization.visualize_skeleton(skeleton, save_path=settings["plot_dir"] / "raw_skeleton.png")
 
         # The `skeleton_*` settings are this function's parameters with a
-        # prefix, so they go in as a group; the percentage and the mask
-        # (not a scalar setting) are the exceptions.
+        # prefix, so they go in as a group; the percentage, the mask (not a
+        # scalar setting) and the bridge gates graph building shares are the
+        # exceptions.
         tile_halo_voxels = _skeletonize_tile_halo_voxels(
             settings, io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size))
         )
@@ -804,6 +805,9 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             min_component_fraction=settings["skeleton_min_component_percent"] / 100.0,
             voxel_size_zyx=io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size)),
             segmentation_mask=binary,
+            bridge_require_mask_support=settings["bridge_require_mask_support"],
+            bridge_max_background_gap_um=settings["bridge_max_background_gap_um"],
+            bridge_min_mask_fraction=settings["bridge_min_mask_fraction"],
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
             tile_large_components=settings["skeletonize_tile_large_components"],
@@ -987,7 +991,7 @@ def _write_run_final_graph_3d_html(
 def _log_graph_consistency_diagnostics(
     settings: dict, G: nx.Graph, skeleton: np.ndarray, image: np.ndarray, voxel_size_zyx
 ) -> None:
-    """The three read-only graph checks build_network logs. Never change G."""
+    """The four read-only graph checks build_network logs. Never change G."""
     # How much of the skeleton the graph still traces -- see
     # graph.diagnostics.diagnose_skeleton_graph_consistency.
     graph_consistency = graph.diagnose_skeleton_graph_consistency(
@@ -1033,6 +1037,17 @@ def _log_graph_consistency_diagnostics(
     else:
         logger.info(missing_vessels_report)
 
+    # One segmented vessel drawn as two edges side by side -- see
+    # graph.diagnostics.diagnose_parallel_duplicates_in_lumen.
+    duplicates = graph.diagnose_parallel_duplicates_in_lumen(
+        G, image, voxel_size_zyx=voxel_size_zyx
+    )
+    duplicates_report = graph.format_parallel_duplicates_report(duplicates)
+    if duplicates["duplicate_pair_count"]:
+        logger.warning(duplicates_report)
+    else:
+        logger.info(duplicates_report)
+
 
 def build_network(
     settings: dict,
@@ -1044,7 +1059,7 @@ def build_network(
 ):
     """Load the vessel masks and turn the skeleton into a graph.
 
-    This is the long stage, so it reports the eleven topology steps of
+    This is the long stage, so it reports the thirteen topology steps of
     :func:`graph.build_graph_from_skeleton` to *progress* as they land -- a
     run's only finer-grained progress than "graph building is happening".
 
@@ -1110,7 +1125,7 @@ def build_network(
         # Every snapshot draws the same volume, and projecting it reads the whole
         # stack, so it is projected once here rather than once per step. Graph
         # building reads `image` and never writes to it, which is what makes one
-        # projection good for all eleven steps.
+        # projection good for all thirteen steps.
         step_projection = (
             visualization.overlay_z_projection(image)
             if settings["save_step_artifacts"]
@@ -1187,6 +1202,12 @@ def build_network(
                 settings["cartwheel_hub_tangent_length_um"]
             ),
             use_memmap=settings["use_memmap_loading"],
+            bridge_require_mask_support=settings["bridge_require_mask_support"],
+            bridge_max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
+            bridge_min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+            recover_uncovered_mask_vessels=settings["recover_uncovered_mask_vessels"],
+            recovery_min_region_volume_um3=float(settings["recovery_min_region_volume_um3"]),
+            recovery_min_length_um=float(settings["recovery_min_length_um"]),
         )
 
         # Last thing before the graph is saved: take the voxel staircase out of
@@ -2262,7 +2283,7 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                 logger.info(
                     "Image calibrations (PSF, endothelial wall, FWHM decoy check) sample "
                     f"only the {len(calibration_edges)} of {G.number_of_edges()} vessels "
-                    "in a branch/tree with both an inlet and an outlet: "
+                    "on an inlet-to-outlet path: "
                     "boundary_handling=remove_disconnected removes the rest at the start "
                     "of the haemodynamics stage."
                 )
@@ -2592,8 +2613,9 @@ def solve_post_processed(
     return solution
 
 
-#: ``boundary_handling``: what happens to a branch or tree of vessels without
-#: both an inlet and an outlet -- kept and marked unsolved, or removed.
+#: ``boundary_handling``: what happens to a vessel no inlet-to-outlet path
+#: runs along (a branch or tree without both an inlet and an outlet, or a
+#: dead end that reaches no outlet) -- kept and marked unsolved, or removed.
 BOUNDARY_HANDLING_LEAVE_UNSOLVED = "leave_unsolved"
 BOUNDARY_HANDLING_REMOVE_DISCONNECTED = "remove_disconnected"
 
@@ -2618,12 +2640,15 @@ def apply_network_handling(
 
     Runs at the start of the haemodynamics stage, before the model is built,
     so a change on the Haemodynamics tab takes effect when the run restarts
-    there. ``boundary_handling="remove_disconnected"`` drops every graph
-    component that does not have both an inlet and an outlet; the
+    there. ``boundary_handling="remove_disconnected"`` drops every vessel no
+    inlet-to-outlet path runs along
+    (:func:`haemolynx.graph.remove_vessels_off_inlet_outlet_paths`): each
+    graph component without both an inlet and an outlet, and the dead-end
+    branches, trees and loops hanging off one that has both. The
     boundary-node lists (on *boundaries* and in *settings*) and the
     resistance node pair follow the pruned graph, which becomes *model*'s,
     *boundaries*' and *network*'s. ``"leave_unsolved"`` (the default) keeps
-    them, and :func:`solve` marks their vessels unsolved
+    them all, and :func:`solve` marks exactly those vessels unsolved
     (:data:`haemolynx.graph.FLOW_SOLVED`).
 
     Then, with ``haematocrit_junction_rule`` at ``split_junctions`` (and the
@@ -2634,7 +2659,7 @@ def apply_network_handling(
     ``haematocrit_split_connector_length_um`` long, or with that at 0 as long
     as each junction's vessels are wide.
     """
-    _remove_components_without_io(settings, model, boundaries, network)
+    _remove_vessels_off_inlet_outlet_paths(settings, model, boundaries, network)
     _split_junctions_for_haematocrit(settings, model, boundaries, network)
     return model
 
@@ -2681,8 +2706,8 @@ def edges_network_handling_keeps(
     """The vessels ``(u, v, key)`` of *G* that :func:`apply_network_handling`
     will keep; ``None`` -- every vessel -- with ``leave_unsolved``.
 
-    With ``boundary_handling="remove_disconnected"``, those in a component
-    holding both an inlet and an outlet, by the rule the removal itself
+    With ``boundary_handling="remove_disconnected"``, those some
+    inlet-to-outlet path runs along, by the rule the removal itself
     applies. The diameters stage, which runs first, samples its image
     calibrations from these, so a vessel about to be removed cannot shape
     the widths of the ones kept; the removal stays in the haemodynamics
@@ -2690,10 +2715,11 @@ def edges_network_handling_keeps(
     """
     if settings.get("boundary_handling") != BOUNDARY_HANDLING_REMOVE_DISCONNECTED:
         return None
-    return graph.edges_with_connected_io(G, boundaries.inlet_nodes, boundaries.outlet_nodes)
+    kept = graph.inlet_to_outlet_vessels(G, boundaries.inlet_nodes, boundaries.outlet_nodes)
+    return [edge for edge in G.edges(keys=True) if edge in kept]
 
 
-def _remove_components_without_io(
+def _remove_vessels_off_inlet_outlet_paths(
     settings: dict,
     model: HaemodynamicModel,
     boundaries: BoundaryNodes,
@@ -2701,10 +2727,12 @@ def _remove_components_without_io(
 ) -> None:
     if settings.get("boundary_handling") != BOUNDARY_HANDLING_REMOVE_DISCONNECTED:
         return
-    G_pruned, io_prune_stats = graph.remove_components_without_connected_io(
+    G_pruned, io_prune_stats = graph.remove_vessels_off_inlet_outlet_paths(
         model.graph, boundaries.inlet_nodes, boundaries.outlet_nodes
     )
-    if int(io_prune_stats["removed_components"]) == 0:
+    if G_pruned.number_of_nodes() == model.graph.number_of_nodes() and (
+        G_pruned.number_of_edges() == model.graph.number_of_edges()
+    ):
         return
     model.graph = G_pruned
     boundaries.graph = G_pruned
@@ -2719,10 +2747,18 @@ def _remove_components_without_io(
         if isinstance(in_settings, list) and in_settings is not kept:
             in_settings[:] = [node_id for node_id in in_settings if node_id in G_pruned]
     logger.info(
-        "Removed disconnected graph component(s) lacking inlet or outlet nodes: "
-        f"removed_components={int(io_prune_stats['removed_components'])}, "
-        f"removed_nodes={int(io_prune_stats['removed_nodes'])}, "
-        f"remaining_nodes={int(io_prune_stats['remaining_nodes'])}."
+        "boundary_handling=remove_disconnected: removed "
+        f"{int(io_prune_stats['removed_components'])} disconnected component(s) "
+        "without both an inlet and an outlet "
+        f"({int(io_prune_stats['removed_component_vessels'])} vessel(s), "
+        f"{int(io_prune_stats['removed_component_nodes'])} node(s), "
+        f"{io_prune_stats['removed_component_length_um']:.1f} um) and "
+        f"{int(io_prune_stats['removed_dead_end_vessels'])} dead-end vessel(s) "
+        "that reach no outlet "
+        f"({int(io_prune_stats['removed_dead_end_nodes'])} node(s), "
+        f"{io_prune_stats['removed_dead_end_length_um']:.1f} um); "
+        f"{int(io_prune_stats['remaining_vessels'])} vessel(s) and "
+        f"{int(io_prune_stats['remaining_nodes'])} node(s) remain."
     )
     if not boundaries.inlet_nodes or not boundaries.outlet_nodes:
         raise ValueError(
@@ -3003,8 +3039,9 @@ def _mark_flow_solved(G: nx.MultiGraph, inlet_nodes, outlet_nodes) -> None:
     if unsolved:
         logger.info(
             f"boundary_handling={BOUNDARY_HANDLING_LEAVE_UNSOLVED}: {unsolved} of "
-            f"{G.number_of_edges()} vessel(s) lie in branches or trees without both "
-            "an inlet and an outlet. Nothing drives a flow through them, so they "
+            f"{G.number_of_edges()} vessel(s) lie on no inlet-to-outlet path: in "
+            "branches or trees without both an inlet and an outlet, or dead ends "
+            "that reach no outlet. Nothing drives a flow through them, so they "
             "are marked unsolved and their flows are not a result."
         )
 

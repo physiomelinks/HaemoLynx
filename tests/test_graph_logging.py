@@ -30,7 +30,7 @@ from haemolynx.graph import (
 GRAPH_LOGGER = "haemolynx.graph"
 
 #: How many records a build of a tiny skeleton may emit at ``debug=False``.
-#: Three lines of preamble, eleven steps, one summary per pass, and slack for
+#: Three lines of preamble, thirteen steps, one summary per pass, and slack for
 #: a warning; anything that adds a record *per node* or *per edge* blows
 #: through it long before a real volume does.
 RECORD_CEILING = 40
@@ -140,7 +140,7 @@ def test_degree2_removal_says_how_many_nodes_it_removed(caplog) -> None:
 
 
 def test_each_topology_step_reports_its_node_and_edge_count(caplog, tiny_skeleton) -> None:
-    """Eleven lines per run: the label, and the graph it left behind.
+    """Thirteen lines per run: the label, and the graph it left behind.
 
     This is the "total number of branches, as per pipeline" the user reads off
     a run, and it has to be the count *at that step* rather than at the end.

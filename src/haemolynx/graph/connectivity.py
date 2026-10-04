@@ -31,6 +31,7 @@ __all__ = [
     "CONNECTIVITY_COLUMNS",
     "connectivity_rows",
     "inlet_to_outlet_vessels",
+    "remove_vessels_off_inlet_outlet_paths",
     "write_connectivity_csv",
 ]
 
@@ -107,6 +108,78 @@ def inlet_to_outlet_vessels(
         for u, v, k in G.edges(keys=True)
         if u != v and frozenset((u, v)) in through
     }
+
+
+def _summed_length(data: dict) -> float:
+    try:
+        length = float(data.get("length"))
+    except (TypeError, ValueError):
+        return 0.0
+    return length if np.isfinite(length) else 0.0
+
+
+def remove_vessels_off_inlet_outlet_paths(
+    G: nx.MultiGraph,
+    inlet_nodes: Sequence[Any],
+    outlet_nodes: Sequence[Any],
+) -> tuple[nx.MultiGraph, dict[str, float]]:
+    """A copy of *G* holding only the vessels :func:`inlet_to_outlet_vessels`
+    keeps, and the counts of what went.
+
+    That removes every piece with no inlet or no outlet, as
+    :func:`haemolynx.graph.remove_components_without_connected_io` does, and
+    also what hangs off a piece that has both: dead-end branches and trees,
+    loops attached to the rest at a single node, and self-loops -- no
+    pressure difference drives a flow along any of them. The inlets and
+    outlets of a kept piece stay, as does every node a kept vessel ends on.
+
+    The counts separate the two: ``removed_components`` with
+    ``removed_component_vessels`` / ``_nodes`` / ``_length_um``, and
+    ``removed_dead_end_vessels`` / ``_nodes`` / ``_length_um``; then
+    ``remaining_nodes`` and ``remaining_vessels``.
+    """
+    kept_edges = inlet_to_outlet_vessels(G, inlet_nodes, outlet_nodes)
+    boundary = {n for n in (*inlet_nodes, *outlet_nodes) if n in G}
+    inlets = {n for n in inlet_nodes if n in G}
+    outlets = {n for n in outlet_nodes if n in G}
+    in_kept_piece: set[Any] = set()
+    removed_components = 0
+    for component in nx.connected_components(G):
+        if component & inlets and component & outlets:
+            in_kept_piece |= component
+        else:
+            removed_components += 1
+    kept_nodes = {n for u, v, _k in kept_edges for n in (u, v)}
+    kept_nodes |= boundary & in_kept_piece
+
+    stats: dict[str, float] = {
+        "removed_components": removed_components,
+        "removed_component_vessels": 0,
+        "removed_component_nodes": 0,
+        "removed_component_length_um": 0.0,
+        "removed_dead_end_vessels": 0,
+        "removed_dead_end_nodes": 0,
+        "removed_dead_end_length_um": 0.0,
+    }
+    removed_edges = []
+    for u, v, k, data in G.edges(keys=True, data=True):
+        if (u, v, k) in kept_edges:
+            continue
+        removed_edges.append((u, v, k))
+        kind = "dead_end" if u in in_kept_piece else "component"
+        stats[f"removed_{kind}_vessels"] += 1
+        stats[f"removed_{kind}_length_um"] += _summed_length(data)
+    removed_nodes = [n for n in G if n not in kept_nodes]
+    for n in removed_nodes:
+        kind = "dead_end" if n in in_kept_piece else "component"
+        stats[f"removed_{kind}_nodes"] += 1
+
+    pruned = G.copy()
+    pruned.remove_edges_from(removed_edges)
+    pruned.remove_nodes_from(removed_nodes)
+    stats["remaining_nodes"] = pruned.number_of_nodes()
+    stats["remaining_vessels"] = pruned.number_of_edges()
+    return pruned, stats
 
 
 def connectivity_rows(

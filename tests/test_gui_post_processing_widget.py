@@ -599,8 +599,9 @@ def test_delete_by_branch_id_reports_bad_input_and_protects_boundaries(page):
     assert c.branch_ids.text() != ""  # kept, so it can be corrected
 
 
-def test_prune_removes_a_branch_a_delete_cut_off(make_napari_viewer):
-    """1 -> 5 -> 6 hangs off the junction; deleting 1 -> 5 cuts 5 -> 6 off."""
+def test_prune_removes_a_dead_end_tree_and_keeps_the_routes(make_napari_viewer):
+    """1 -> 5 -> 6 hangs off the junction and reaches no outlet: pruned, with
+    no delete first. The two routes 1 -> {2, 3} -> 4 stay."""
     viewer = make_napari_viewer()
     G = _four_way_network()
     G.add_node(6, pos=np.asarray((10.0, 30.0, 0.0)))
@@ -616,19 +617,16 @@ def test_prune_removes_a_branch_a_delete_cut_off(make_napari_viewer):
     )
     c.scan_button.click()
     c.prune_button.click()
-    assert "Nothing to prune" in c.status.text()
-
-    keys = edge_keys(c.state.graph)
-    c.branch_ids.setText(str(next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})))
-    c.delete_ids_button.click()
-    assert c.state.graph.has_edge(5, 6)  # cut off, but still there
-    c.prune_button.click()
 
     graph = c.state.graph
     assert 5 not in graph and 6 not in graph
     assert graph.number_of_edges() == 5
+    assert all(graph.has_edge(u, v) for u, v in [(0, 1), (1, 2), (1, 3), (2, 4), (3, 4)])
     assert len(viewer.layers[VESSELS].data) == 5
-    assert "pruned 1 disconnected piece(s), 1 vessel(s)" in report.value
+    assert "pruned 0 disconnected piece(s) and 2 dead-end vessel(s), 2 vessel(s)" in report.value
+
+    c.prune_button.click()
+    assert "Nothing to prune" in c.status.text()
 
 
 def test_the_log_records_each_change_with_its_branch_ids(make_napari_viewer):
@@ -659,7 +657,7 @@ def test_the_log_records_each_change_with_its_branch_ids(make_napari_viewer):
     assert "Scanned the network: 1 junction(s) where 4+ vessels meet, in 7 vessels." in lines[0]
     assert f"Node 1 (4 vessels): deleted branchID {to_5} (node 1-5, 20 µm, 5 µm)" in lines[1]
     # The prune names the vessel it removed by its branchID at the time.
-    assert "Pruned 1 disconnected piece(s), 1 vessel(s): branchID" in lines[2]
+    assert "Pruned 1 disconnected piece(s) and 0 dead-end vessel(s), 1 vessel(s): branchID" in lines[2]
     assert "(node 5-6, 10 µm, 5 µm)" in lines[2]
     assert "refused" in lines[3] and "boundary node" in lines[3]
     assert all(line[:2].isdigit() and line[2] == ":" for line in lines)  # timestamped

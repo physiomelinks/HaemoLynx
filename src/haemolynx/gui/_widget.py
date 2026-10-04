@@ -44,6 +44,7 @@ from haemolynx.gui.diameter_source import (
     settings_for,
     source_from,
 )
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.gui.layers import input_for_layer, voxel_size_xyz_from_scale
 from haemolynx.gui.layout import (
     Disclosure,
@@ -134,9 +135,7 @@ from haemolynx.gui.vessel_tubes import (
     VESSEL_DRAW_TUBES,
     clamp_tube_quality,
     colors_for_tube_vertices,
-    tube_mesh,
-    tube_radii_um,
-    tube_radius_um,
+    vessel_tube_mesh,
     vessel_tubes_layer_name,
 )
 from haemolynx.io import resolve_voxel_size_xyz
@@ -1310,24 +1309,6 @@ def _request_canvas_redraw(viewer) -> None:
         update()
 
 
-def _vessel_segment_diameters_um(vessels) -> np.ndarray | None:
-    """Per-segment ``diameter_um`` off a vessels Vectors layer, if present.
-
-    ``_vessel_layers`` (results.py) always writes this column onto every
-    vessels layer it builds (NaN before the Diameters stage has assigned
-    one), aligned one row per Vectors segment the same way ``edge_color``
-    is -- so tube radii can follow it directly. ``None`` for a layer this
-    codebase did not build (no ``features``, or missing the column).
-    """
-    features = getattr(vessels, "features", None)
-    if features is None:
-        return None
-    try:
-        return np.asarray(features["diameter_um"], dtype=float)
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
 def _make_surfaces_follow_the_dims_order() -> None:
     """Draw a 3D Surface in the displayed axis order, as napari 0.8 did.
 
@@ -1381,21 +1362,11 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> str:
         _hide_tube_surface(existing)
         return name
 
-    radii = tube_radii_um(_vessel_segment_diameters_um(vessels))
-    features = getattr(vessels, "features", None)
-    groups = None
-    if features is not None and "edge_index" in features:
-        # One tube per vessel: steps of two vessels meeting at a node stay apart.
-        groups = np.asarray(features["edge_index"])
-    vertices, faces, segment_index = tube_mesh(
+    vertices, faces, segment_index = vessel_tube_mesh(
         getattr(vessels, "data", ()),
-        radius=(
-            radii
-            if radii is not None
-            else tube_radius_um(getattr(vessels, "edge_width", None))
-        ),
+        getattr(vessels, "features", None),
         quality=_tube_quality,
-        groups=groups,
+        edge_width=getattr(vessels, "edge_width", None),
     )
     if len(vertices) == 0:
         vessels.visible = False
@@ -3906,6 +3877,8 @@ NOT_WORTH_COLOURING_BY = frozenset(
         # Not a colouring of its own: under any flow-based colouring the
         # unsolved vessels are the grey ones.
         FLOW_SOLUTION,
+        # What the tubes draw a bridge by, not a quantity.
+        IS_ZERO_RESISTANCE,
     }
 )
 
@@ -5290,7 +5263,7 @@ def _run_in_background(
 
         `run_pipeline_stages` takes no cancel argument, so this and `produced`
         are where a cancellation acts.         Both are called between stages, or
-        between graph building's eleven topology steps, so a run stops with
+        between graph building's thirteen topology steps, so a run stops with
         nothing half-written -- and soon after being asked, rather than at the
         end of whatever stage it is in.
 
@@ -8233,7 +8206,7 @@ def _post_processing_controls(
     ids_row.addWidget(delete_ids_button)
     edit_layout.addLayout(ids_row)
 
-    prune_button = QPushButton("Prune disconnected branches")
+    prune_button = QPushButton("Prune disconnected and dead-end branches")
     prune_button.setToolTip(tips["prune"])
     # The connectivity export: built here, because it exports the network
     # this page edits, but placed on the Export tab with the run's other files.
@@ -8749,15 +8722,19 @@ def _post_processing_controls(
             status.setText(str(error))
             log_edit(f"Prune refused, {error}")
             return
-        if not stats["removed_components"]:
-            status.setText("Nothing to prune: every piece has an inlet and an outlet.")
-            log_edit("Prune: nothing to remove, every piece has an inlet and an outlet")
+        if not stats["removed_vessels"] and not stats["removed_nodes"]:
+            status.setText("Nothing to prune: every vessel is on an inlet-to-outlet path.")
+            log_edit("Prune: nothing to remove, every vessel is on an inlet-to-outlet path")
             return
-        removed = [e for e in edge_keys(state.graph) if e[0] not in pruned]
+        removed = [e for e in edge_keys(state.graph) if not pruned.has_edge(*e)]
         lost = stats["removed_boundary_nodes"]
+        what = (
+            f"{stats['removed_components']} disconnected piece(s) and "
+            f"{stats['removed_dead_end_vessels']} dead-end vessel(s), "
+            f"{stats['removed_vessels']} vessel(s)"
+        )
         log_edit(
-            f"Pruned {stats['removed_components']} disconnected piece(s), "
-            f"{stats['removed_vessels']} vessel(s): {describe_vessels(state.graph, removed)}"
+            f"Pruned {what}: {describe_vessels(state.graph, removed)}"
             + (f"; boundary node(s) removed with them: {', '.join(map(str, lost))}" if lost else "")
         )
         stop_editing()
@@ -8769,10 +8746,7 @@ def _post_processing_controls(
         extra = (
             f", with boundary node(s) {', '.join(str(n) for n in dropped)}" if dropped else ""
         )
-        report.value = (
-            f"Post processing: pruned {stats['removed_components']} disconnected "
-            f"piece(s), {stats['removed_vessels']} vessel(s){extra}. {state.scan.summary}"
-        )
+        report.value = f"Post processing: pruned {what}{extra}. {state.scan.summary}"
 
     def on_leave() -> None:
         if state.scan is None or state.node is None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from haemolynx.graph import IS_ZERO_RESISTANCE
 from haemolynx.gui.results import VESSELS, VESSEL_TUBES
 from haemolynx.gui.vessel_tubes import (
     DEFAULT_TUBE_QUALITY,
@@ -74,6 +75,85 @@ def _cut(vertices, faces, point, normal):
     return np.concatenate(cut)
 
 
+def _resampled(start, stop, step=0.5):
+    count = int(np.ceil(np.linalg.norm(np.subtract(stop, start)) / step)) + 1
+    return np.linspace(np.asarray(start, dtype=float), np.asarray(stop, dtype=float), count)
+
+
+def _network(paths, radii):
+    """Vectors for *paths*, with each row's radius and the vessel it is on."""
+    vectors = np.concatenate([_polyline_vectors(path) for path in paths])
+    owner = np.repeat(np.arange(len(paths)), [len(path) - 1 for path in paths])
+    return vectors, np.asarray(radii, dtype=float)[owner], owner
+
+
+def _poles(faces, sides):
+    """The tips of the rounded ends: the only vertices *sides* faces share,
+    for any *sides* over six."""
+    return np.flatnonzero(np.bincount(faces.ravel()) == sides)
+
+
+def _pieces(faces):
+    """How many separate surfaces *faces* make."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    count = int(faces.max()) + 1
+    links = coo_matrix(
+        (np.ones(2 * len(faces)), (np.repeat(faces[:, 0], 2), faces[:, 1:].ravel())),
+        shape=(count, count),
+    )
+    return connected_components(links, directed=False)[0]
+
+
+def _ring_frames(rings):
+    """Each ring's centre, radius and the way it faces along the tube."""
+    centre = rings.mean(axis=1)
+    radius = np.linalg.norm(rings - centre[:, None], axis=2).max(axis=1)
+    facing = np.cross(rings[:, 0] - centre, rings[:, rings.shape[1] // 4] - centre)
+    facing /= np.linalg.norm(facing, axis=1, keepdims=True)
+    return centre, radius, facing
+
+
+def _assert_no_ring_reaches_through_the_next(rings):
+    """Each ring wholly ahead of the one before it, and that one wholly behind it."""
+    centre, _radius, facing = _ring_frames(rings)
+    ahead = np.einsum("isk,ik->is", rings[1:] - centre[:-1, None], facing[:-1])
+    behind = np.einsum("isk,ik->is", rings[:-1] - centre[1:, None], facing[1:])
+    assert ahead.min() > 0.0 and behind.max() < 0.0
+
+
+def _assert_the_tube_faces_outward(vertices, faces, rings):
+    """Every face between two rings lit from outside the axis joining them."""
+    count = rings.shape[0] * rings.shape[1]
+    band = faces[(faces < count).all(axis=1)]
+    a, b, c = vertices[band[:, 0]], vertices[band[:, 1]], vertices[band[:, 2]]
+    centroid = (a + b + c) / 3.0
+    centre = rings.mean(axis=1)
+    ring = band // rings.shape[1]
+    p, q = centre[ring.min(axis=1)], centre[ring.max(axis=1)]
+    t = np.clip(
+        np.einsum("ij,ij->i", centroid - p, q - p)
+        / np.maximum(np.einsum("ij,ij->i", q - p, q - p), 1e-12),
+        0.0, 1.0,
+    )
+    foot = p + t[:, None] * (q - p)
+    assert np.all(np.einsum("ij,ij->i", np.cross(b - a, c - a), centroid - foot) > 0.0)
+
+
+def _cap_volume_share(vertices, faces, sides):
+    """The rounded ends' share of all the volume the tubes enclose."""
+    levels = max(2, sides // 4)
+    caps = len(_poles(faces, sides))
+    first_level = vertices[len(vertices) - caps - caps * (levels - 1) * sides : len(vertices) - caps]
+    first_level = first_level.reshape(caps, levels - 1, sides, 3)[:, 0]
+    centre = first_level.mean(axis=1)
+    radius = np.linalg.norm(first_level[:, 0] - centre, axis=1) / np.cos(0.5 * np.pi / levels)
+    a, b, c = vertices[faces[:, 0]], vertices[faces[:, 1]], vertices[faces[:, 2]]
+    enclosed = np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6.0
+    return float((2.0 / 3.0) * np.pi * (radius ** 3).sum() / enclosed)
+
+
 def test_empty_vectors_yield_empty_mesh():
     vertices, faces, index = tubes_from_vectors(np.empty((0, 2, 3)))
     assert vertices.shape == (0, 3)
@@ -108,10 +188,11 @@ def test_bad_input_raises():
         tubes_from_vectors(np.array([[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]]]), radius=0.0)
 
 
-def test_a_straight_vessel_is_its_own_radius_everywhere():
-    """Each vessel's own diameter, halved, round its whole length and over
-    its rounded ends -- along every axis, where a single cross product
-    would vanish."""
+def test_a_vessel_is_its_own_radius_mid_vessel_and_its_nodes_at_its_ends():
+    """Each vessel's own diameter, halved, along its middle; at each end the
+    radius of the node there. A vessel ending on nothing is its own radius
+    to the end and over its rounded end -- along every axis, where a single
+    cross product would vanish."""
     vectors = np.array(
         [
             [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
@@ -127,6 +208,29 @@ def test_a_straight_vessel_is_its_own_radius_everywhere():
         segment = np.stack([vectors[row, 0], vectors[row, 0] + vectors[row, 1]])
         distance, _ = _nearest_on_polyline(own, segment)
         np.testing.assert_allclose(distance, radius, atol=1e-9)
+
+    # At a junction each vessel ends no wider than the widest of the others.
+    node = np.array([0.0, 0.0, 30.0])
+    paths = [_resampled([0.0, 0.0, 0.0], node), _resampled(node, [0.0, 30.0, 30.0]),
+             _resampled(node, [0.0, -30.0, 30.0])]
+    vectors, radii, owner = _network(paths, [4.0, 3.0, 2.0])
+    sides = 12
+    vertices, faces, index = tubes_from_vectors(vectors, radius=radii, sides=sides, groups=owner)
+    assert _edge_use(faces) == {2}
+    rings = _ring_vertices(vertices, sides, tubes=3)
+    centre, radius, _facing = _ring_frames(rings)
+    ring_owner = owner[index[: rings.shape[0] * sides : sides]]
+    for vessel, (own, at_node) in enumerate(((4.0, 3.0), (3.0, 3.0), (2.0, 2.0))):
+        path = paths[vessel]
+        mine = np.flatnonzero(ring_owner == vessel)
+
+        def radius_at(point):
+            return radius[mine[np.argmin(np.linalg.norm(centre[mine] - point, axis=1))]]
+
+        far = path[0] if vessel == 0 else path[-1]
+        assert radius_at(0.5 * (path[0] + path[-1])) == pytest.approx(own)
+        assert radius_at(far) == pytest.approx(own)
+        assert radius_at(node) == pytest.approx(at_node)
 
 
 def test_an_unknown_radius_falls_back_to_the_default():
@@ -158,15 +262,21 @@ def test_a_tube_is_one_closed_surface_facing_outward():
     assert np.all(np.einsum("ij,ij->i", np.cross(b - a, c - a), centroid - foot) > 0.0)
 
 
-def test_the_tube_runs_from_node_to_node():
-    """Its ends are where the vessel's own are, so vessels meeting at a node
-    meet there, and each is rounded off one radius beyond its node."""
+def test_the_tube_runs_from_end_node_to_end_node():
+    """A vessel cut in two at a node only the two halves meet is still one
+    tube: its ends where the vessel's are, each rounded off one radius
+    beyond its node, and no rounded end at the node between."""
     helix = _helix(points=60)
     sides = 12
-    vertices, _faces, _index = tubes_from_vectors(_polyline_vectors(helix), radius=1.5, sides=sides)
+    groups = np.repeat([0, 1], [30, 29])
+    vertices, faces, _index = tubes_from_vectors(
+        _polyline_vectors(helix), radius=1.5, sides=sides, groups=groups
+    )
+    assert _pieces(faces) == 1
     rings = _ring_vertices(vertices, sides)
     np.testing.assert_allclose(rings[0].mean(axis=0), helix[0], atol=1e-9)
     np.testing.assert_allclose(rings[-1].mean(axis=0), helix[-1], atol=1e-9)
+    np.testing.assert_array_equal(_poles(faces, sides), [len(vertices) - 2, len(vertices) - 1])
     start_pole, end_pole = vertices[-2], vertices[-1]
     assert np.linalg.norm(start_pole - helix[0]) == pytest.approx(1.5)
     assert np.linalg.norm(end_pole - helix[-1]) == pytest.approx(1.5)
@@ -222,35 +332,43 @@ def test_a_sharp_bend_is_drawn_as_a_curve():
     assert facing[-1] @ [0, 1, 0] == pytest.approx(1.0)
 
 
-def test_two_vessels_meeting_at_a_node_stay_two_tubes():
-    """Each one straight to the node and rounded off there, not bent towards
-    the other."""
+def test_two_vessels_meeting_at_a_node_are_one_tube_coloured_apart():
+    """Only the two of them at the node: one tube turning through it, with no
+    rounded end there, and each vessel's steps still its own colour."""
     first, second = [[0, 0, 0], [0, 0, 5], [0, 0, 10]], [[0, 0, 10], [0, 5, 10], [0, 10, 10]]
     vectors = np.concatenate([_polyline_vectors(first), _polyline_vectors(second)])
-    vertices, faces, index = tubes_from_vectors(vectors, radius=1.0, sides=8, groups=[7, 7, 9, 9])
+    sides = 8
+    vertices, faces, index = tubes_from_vectors(vectors, radius=1.0, sides=sides, groups=[7, 7, 9, 9])
     assert _edge_use(faces) == {2}
-    assert set(index.tolist()) == {0, 1, 2, 3}
-    for rows, line in (([0, 1], first), ([2, 3], second)):
-        own = vertices[np.isin(index, rows)]
-        distance, _ = _nearest_on_polyline(own, np.asarray(line, dtype=float))
-        np.testing.assert_allclose(distance, 1.0, atol=1e-9)
+    assert _pieces(faces) == 1
+    poles = vertices[_poles(faces, sides)]
+    assert len(poles) == 2
+    assert np.linalg.norm(poles - [0.0, 0.0, 10.0], axis=1).min() > 5.0
+    rings = _ring_vertices(vertices, sides)
+    ring_owner = index[: rings.shape[0] * sides : sides]
+    assert set(ring_owner.tolist()) == {0, 1, 2, 3}
+    assert np.all(np.diff(ring_owner) >= 0)
+    colours = np.eye(4)
+    np.testing.assert_array_equal(colors_for_tube_vertices(index, colours), colours[index])
 
 
 def test_each_vertex_belongs_to_the_step_it_was_drawn_on():
-    """Per-step radius and colour: a ring takes them from the step it lies on."""
+    """A ring takes its colour from the step it lies on, and its radius from
+    the vessel: its own mid-vessel, easing to the node's at each end."""
     points = np.stack([np.zeros(4), np.zeros(4), [0.0, 4.0, 8.0, 12.0]], axis=1)
     sides = 8
     vertices, _faces, index = tubes_from_vectors(
         _polyline_vectors(points), radius=np.array([1.0, 3.0, np.nan]), sides=sides
     )
-    ring_count = len(_ring_vertices(vertices, sides)) * sides
-    rings, owner = vertices[:ring_count], index[:ring_count]
-    radial = np.linalg.norm(rings[:, :2], axis=1)
-    for row, radius in enumerate([1.0, 3.0, TUBE_RADIUS_UM]):
-        assert np.any(owner == row)
-        np.testing.assert_allclose(radial[owner == row], radius)
-        z = rings[owner == row, 2]
-        assert z.min() >= 4.0 * row - 1e-9 and z.max() <= 4.0 * (row + 1) + 1e-9
+    rings = _ring_vertices(vertices, sides)
+    centre, radius, _facing = _ring_frames(rings)
+    owner = index[: rings.shape[0] * sides : sides]
+    for row in range(3):
+        z = centre[owner == row, 2]
+        assert z.size and z.min() >= 4.0 * row - 0.2 and z.max() <= 4.0 * (row + 1) + 0.2
+    for z, want in ((0.0, 1.0), (4.0, 2.0), (8.0, 2.5), (12.0, TUBE_RADIUS_UM)):
+        assert radius[np.argmin(np.abs(centre[:, 2] - z))] == pytest.approx(want)
+    assert radius[owner == 1].max() == pytest.approx(3.0, abs=0.05)
 
     colours = np.array([[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]])
     repeated = colors_for_tube_vertices(index, colours)
@@ -266,6 +384,201 @@ def test_a_tube_does_not_twist():
     longest = np.linalg.norm(vertices[edges[:, 0]] - vertices[edges[:, 1]], axis=1).max()
     # One ring along and one side round at most -- never across the tube.
     assert longest < 1.0
+
+
+def test_a_junctions_widest_vessel_narrows_into_its_widest_neighbour():
+    """A 12 µm vessel dividing into two of 5 µm. Drawn its own width to the
+    node, its rounded end stood out of both daughters as a ball."""
+    node = np.zeros(3)
+    angle = np.radians(40.0)
+    parent = _resampled([-40.0, 0.0, 0.0], node)
+    daughters = [
+        _resampled(node, [40.0 * np.cos(angle), sign * 40.0 * np.sin(angle), 0.0])
+        for sign in (1.0, -1.0)
+    ]
+    vectors, radii, owner = _network([parent, *daughters], [6.0, 2.5, 2.5])
+    sides = 12
+    vertices, faces, index = tubes_from_vectors(vectors, radius=radii, sides=sides, groups=owner)
+    assert _edge_use(faces) == {2}
+    # One rounded end per vessel end: three terminals, three at the junction.
+    assert len(_poles(faces, sides)) == 6
+
+    own = vertices[owner[index] == 0]
+    assert np.hypot(own[:, 1], own[:, 2]).max() <= 6.0 + 1e-9
+    past = own[own[:, 0] > 1e-9]
+    assert np.linalg.norm(past, axis=1).max() <= 2.5 + 1e-9
+    beyond = own[own[:, 0] > 0.1 * 6.0]
+    inside = np.zeros(len(beyond), dtype=bool)
+    for daughter in daughters:
+        distance, _ = _nearest_on_polyline(beyond, daughter)
+        inside |= distance <= 2.5 + 1e-9
+    assert inside.all()
+
+    rings = _ring_vertices(vertices, sides, tubes=3)
+    centre, radius, _facing = _ring_frames(rings)
+    mine = owner[index[: rings.shape[0] * sides : sides]] == 0
+    profile = radius[mine][np.argsort(centre[mine, 0])]
+    assert profile[0] == pytest.approx(6.0) and profile[-1] == pytest.approx(2.5)
+    assert np.all(np.diff(profile) <= 1e-9)
+
+
+def test_a_vessel_narrowing_at_a_node_tapers_without_overshoot():
+    """6 µm into 3 µm through a node only the two meet: one tube whose width
+    falls steadily from one to the other, not a step."""
+    wide = _resampled([0.0, 0.0, 0.0], [0.0, 0.0, 20.0])
+    narrow = _resampled([0.0, 0.0, 20.0], [0.0, 0.0, 40.0])
+    vectors, radii, owner = _network([wide, narrow], [3.0, 1.5])
+    sides = 12
+    vertices, faces, _index = tubes_from_vectors(vectors, radius=radii, sides=sides, groups=owner)
+    assert _edge_use(faces) == {2}
+    assert _pieces(faces) == 1
+    assert len(_poles(faces, sides)) == 2
+    centre, radius, _facing = _ring_frames(_ring_vertices(vertices, sides))
+    profile = radius[np.argsort(centre[:, 2])]
+    assert profile[0] == pytest.approx(3.0) and profile[-1] == pytest.approx(1.5)
+    assert profile.min() >= 1.5 - 1e-9 and profile.max() <= 3.0 + 1e-9
+    assert np.all(np.diff(profile) <= 1e-9)
+    assert np.abs(np.diff(profile)).max() < 0.25
+
+
+def test_a_chain_of_short_vessels_is_mostly_tube_not_rounded_ends():
+    """Ten vessels each half as long as they are wide, end to end: rounded
+    off at every node, they were more ball than tube."""
+    paths = [_resampled([0.0, 0.0, 3.0 * i], [0.0, 0.0, 3.0 * (i + 1)]) for i in range(10)]
+    vectors, radii, owner = _network(paths, [3.0] * 10)
+    sides = 12
+    vertices, faces, _index = tubes_from_vectors(vectors, radius=radii, sides=sides, groups=owner)
+    assert _edge_use(faces) == {2}
+    assert len(_poles(faces, sides)) == 2
+    assert _cap_volume_share(vertices, faces, sides) < 0.15
+
+
+def test_a_short_fat_vessel_is_drawn_within_twice_its_neighbours():
+    """A 2 µm long vessel measured 14 µm across between two of 6 µm: drawn
+    no wider than 12 µm. Only drawn: the radius it was given is not changed."""
+    paths = [
+        _resampled([0.0, 0.0, 0.0], [0.0, 0.0, 20.0]),
+        _resampled([0.0, 0.0, 20.0], [0.0, 0.0, 22.0]),
+        _resampled([0.0, 0.0, 22.0], [0.0, 0.0, 42.0]),
+    ]
+    vectors, radii, owner = _network(paths, [3.0, 7.0, 3.0])
+    given = radii.copy()
+    vertices, faces, _index = tubes_from_vectors(vectors, radius=radii, sides=12, groups=owner)
+    assert _edge_use(faces) == {2}
+    assert np.hypot(vertices[:, 0], vertices[:, 1]).max() <= 6.0 + 1e-9
+    np.testing.assert_array_equal(radii, given)
+
+
+def test_a_zero_resistance_bridge_is_drawn_at_the_vessel_it_bridges():
+    """The bridge from a 3 µm vessel into a 12 µm one carries the wide
+    vessel's lumen diameter; it is drawn at the 3 µm vessel's."""
+    thin = _resampled([0.0, 0.0, 0.0], [0.0, 0.0, 15.0])
+    bridge = _resampled([0.0, 0.0, 15.0], [0.0, 0.0, 21.0])
+    fat = [_resampled([0.0, -30.0, 21.0], [0.0, 0.0, 21.0]),
+           _resampled([0.0, 0.0, 21.0], [0.0, 30.0, 21.0])]
+    vectors, radii, owner = _network([thin, bridge, *fat], [1.5, 6.0, 6.0, 6.0])
+    sides = 12
+    vertices, faces, index = tubes_from_vectors(
+        vectors, radius=radii, sides=sides, groups=owner, bridges=owner == 1
+    )
+    assert _edge_use(faces) == {2}
+    rings = _ring_vertices(vertices, sides, tubes=3)
+    centre, radius, _facing = _ring_frames(rings)
+    ring_owner = owner[index[: rings.shape[0] * sides : sides]]
+    np.testing.assert_allclose(radius[ring_owner == 1], 1.5)
+    np.testing.assert_allclose(radius[ring_owner == 0], 1.5)
+    for vessel in (2, 3):
+        mine = np.flatnonzero(ring_owner == vessel)
+        middle = mine[np.argmin(np.abs(np.abs(centre[mine, 1]) - 15.0))]
+        assert radius[middle] == pytest.approx(6.0)
+
+    _v, _f, unflagged = tubes_from_vectors(vectors, radius=radii, sides=sides, groups=owner)
+    unflagged_vertices = _v[owner[unflagged] == 1]
+    assert np.hypot(unflagged_vertices[:, 0], unflagged_vertices[:, 1]).max() > 1.5 + 0.5
+
+
+def test_a_bend_tighter_than_the_tube_is_wide_does_not_fold():
+    """A hairpin of 4 µm radius on a 12 µm vessel: no ring reaches through
+    the next, and the tube still faces outward all the way round."""
+    t = np.linspace(0.0, np.pi, 60)
+    arc = np.stack([4.0 * np.cos(t), 4.0 * np.sin(t), np.zeros_like(t)], axis=1)
+    path = np.vstack([
+        _resampled([4.0, -20.0, 0.0], arc[0])[:-1], arc, _resampled(arc[-1], [-4.0, -20.0, 0.0])[1:],
+    ])
+    sides = 12
+    vertices, faces, _index = tubes_from_vectors(_polyline_vectors(path), radius=6.0, sides=sides)
+    assert _edge_use(faces) == {2}
+    rings = _ring_vertices(vertices, sides)
+    _assert_no_ring_reaches_through_the_next(rings)
+    _assert_the_tube_faces_outward(vertices, faces, rings)
+    np.testing.assert_allclose(rings[0].mean(axis=0), path[0], atol=1e-9)
+    np.testing.assert_allclose(rings[-1].mean(axis=0), path[-1], atol=1e-9)
+
+
+def test_an_end_snapped_off_its_path_does_not_fold():
+    """Cluster collapse moved the node 5 µm off the vessel's path and the
+    snap put the end there. The end stays on the node, facing the tube's
+    own course rather than the jump onto it, and nothing folds."""
+    path = _resampled([0.0, 5.0, 0.0], [40.0, 5.0, 0.0])
+    path[0] = [0.0, 0.0, 0.0]
+    sides = 12
+    vertices, faces, _index = tubes_from_vectors(_polyline_vectors(path), radius=6.0, sides=sides)
+    assert _edge_use(faces) == {2}
+    rings = _ring_vertices(vertices, sides)
+    _assert_no_ring_reaches_through_the_next(rings)
+    _assert_the_tube_faces_outward(vertices, faces, rings)
+    centre, _radius, facing = _ring_frames(rings)
+    np.testing.assert_allclose(centre[0], path[0], atol=1e-9)
+    two_along = (centre[2] - centre[0]) / np.linalg.norm(centre[2] - centre[0])
+    assert facing[0] @ two_along == pytest.approx(1.0)
+
+
+def test_a_vessels_layer_draws_each_vessel_at_its_own_diameter():
+    """The Vectors layer's own ``diameter_um`` column, halved; without one,
+    the layer's edge width."""
+    from haemolynx.gui.vessel_tubes import vessel_tube_mesh
+
+    vectors = np.array(
+        [
+            [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+            [[10.0, 0.0, 0.0], [0.0, 4.0, 0.0]],
+            [[20.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
+        ]
+    )
+
+    def distances(vertices, index, row):
+        segment = np.stack([vectors[row, 0], vectors[row, 0] + vectors[row, 1]])
+        return _nearest_on_polyline(vertices[index == row], segment)[0]
+
+    features = {"diameter_um": [4.0, np.nan, 8.5], "edge_index": [0, 1, 2]}
+    vertices, _faces, index = vessel_tube_mesh(vectors, features)
+    for row, radius in enumerate([2.0, TUBE_RADIUS_UM, 4.25]):
+        np.testing.assert_allclose(distances(vertices, index, row), radius, atol=1e-9)
+    for missing in ({}, None):
+        vertices, _faces, index = vessel_tube_mesh(vectors, missing, edge_width=3.0)
+        for row in range(3):
+            np.testing.assert_allclose(distances(vertices, index, row), 3.0, atol=1e-9)
+
+
+def test_a_vessels_layer_is_drawn_as_its_columns_say():
+    """A napari features table: diameters, which steps are which vessel and
+    which vessels are bridges, at the session's quality."""
+    from haemolynx.gui.vessel_tubes import vessel_tube_mesh
+
+    pandas = pytest.importorskip("pandas")
+    thin = _resampled([0.0, 0.0, 0.0], [0.0, 0.0, 15.0])
+    bridge = _resampled([0.0, 0.0, 15.0], [0.0, 0.0, 21.0])
+    fat = _resampled([0.0, -30.0, 21.0], [0.0, 0.0, 21.0])
+    vectors, radii, owner = _network([thin, bridge, fat, fat[::-1] * [1, -1, 1]], [1.5, 6.0, 6.0, 6.0])
+    flags = owner == 1
+    features = pandas.DataFrame(
+        {"diameter_um": 2.0 * radii, "edge_index": owner, IS_ZERO_RESISTANCE: flags}
+    )
+    for quality in (0, len(TUBE_QUALITY_SIDES) - 1):
+        got = vessel_tube_mesh(vectors, features, quality=quality)
+        want = tube_mesh(vectors, radius=radii, quality=quality, groups=owner, bridges=flags)
+        for got_array, want_array in zip(got, want):
+            np.testing.assert_array_equal(got_array, want_array)
 
 
 def test_tube_radius_is_at_least_two_microns():
@@ -314,6 +627,33 @@ def test_the_top_quality_is_fast_enough_for_a_large_network():
     started = time.perf_counter()
     tube_mesh(vectors, quality=len(TUBE_QUALITY_SIDES) - 1, groups=groups)
     assert time.perf_counter() - started < 10.0
+
+
+@pytest.mark.slow
+def test_a_network_of_junctions_builds_fast():
+    """A lattice of 3-way to 6-way junctions, about 30,000 vessels: every
+    node's radius and every tube's neighbours worked out at once."""
+    import time
+
+    n = 22
+    grid = np.stack(np.meshgrid(*[np.arange(n) * 12.0] * 3, indexing="ij"), axis=-1).reshape(-1, 3)
+    index = np.arange(n ** 3).reshape(n, n, n)
+    pairs = np.concatenate([
+        np.stack([index[:-1].ravel(), index[1:].ravel()], axis=1),
+        np.stack([index[:, :-1].ravel(), index[:, 1:].ravel()], axis=1),
+        np.stack([index[:, :, :-1].ravel(), index[:, :, 1:].ravel()], axis=1),
+    ])
+    rng = np.random.default_rng(2)
+    paths = [_resampled(grid[a], grid[b], step=1.0) for a, b in pairs]
+    vectors, radii, owner = _network(paths, rng.uniform(1.0, 4.0, len(paths)))
+
+    started = time.perf_counter()
+    vertices, faces, index = tube_mesh(vectors, radius=radii, groups=owner)
+    elapsed = time.perf_counter() - started
+
+    assert set(np.unique(owner[index]).tolist()) == set(range(len(paths)))
+    assert faces.max() < len(vertices)
+    assert elapsed < 10.0, f"tube_mesh took {elapsed:.2f}s for {len(paths)} vessels"
 
 
 @pytest.mark.slow

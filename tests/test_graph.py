@@ -1147,3 +1147,206 @@ def test_orphan_reconnection_does_not_fold_a_dangling_end_back():
     assert old.has_edge("N", "T") and old.has_edge("S", "U")
     assert not new.has_edge("N", "T") and new.has_edge("S", "U")
     assert new.degree["N"] == 1
+
+
+# --- reconnects held to the segmentation ---------------------------------------
+
+
+def _mask_support(mask):
+    from haemolynx.preprocessing import MaskSupport
+
+    return MaskSupport(mask, (1.0, 1.0, 1.0))
+
+
+def _broken_vessel(background_voxels: int):
+    """A centreline broken at x=12..14 (terminals at x=11 and x=15), in a
+    tube of mask with *background_voxels* of background in that break."""
+    skeleton = np.zeros((5, 5, 30), dtype=bool)
+    skeleton[2, 2, 2:12] = True
+    skeleton[2, 2, 15:28] = True
+    mask = np.zeros_like(skeleton)
+    mask[1:4, 1:4, :] = True
+    first = 12 + (3 - background_voxels) // 2
+    mask[:, :, first:first + background_voxels] = False
+    return skeleton, mask
+
+
+@pytest.mark.parametrize("background_voxels, bridged", [(1, True), (3, False)])
+def test_a_gap_bridge_is_drawn_only_through_the_mask(background_voxels, bridged):
+    """Regression: every pair of facing terminals within the threshold was
+    bridged with a straight line, though three microns of background lay
+    between them."""
+    pytest.importorskip("skan")
+    from skan import csr
+
+    skeleton, mask = _broken_vessel(background_voxels)
+    ends = frozenset({(2.0, 2.0, 11.0), (2.0, 2.0, 15.0)})
+
+    plain, _, _ = build_graph_segment_skan_stitched_loops(
+        csr.Skeleton(skeleton), skeleton, reconnect_threshold=5.0
+    )
+    gated, _, _ = build_graph_segment_skan_stitched_loops(
+        csr.Skeleton(skeleton), skeleton, reconnect_threshold=5.0,
+        mask_support=_mask_support(mask),
+    )
+
+    assert ends in _bridged_end_pairs(plain)
+    assert (ends in _bridged_end_pairs(gated)) is bridged
+    for *_, data in plain.edges(data=True):
+        assert "bridge_kind" not in data
+    for *_, data in gated.edges(data=True):
+        if data.get("reconnected"):
+            assert data["bridge_kind"] == "gap"
+            assert data["bridge_background_um"] == pytest.approx(1.0, abs=0.05)
+            assert data["length"] == pytest.approx(4.0)
+
+
+def test_a_bridge_round_a_bend_follows_the_mask_not_the_chord():
+    """The straight line between two ends of an L-shaped vessel cuts the
+    corner through background; the route through the mask goes round it."""
+    from haemolynx.graph.reconnect import MaskBridges, route_through_mask
+
+    mask = np.zeros((3, 15, 15), dtype=bool)
+    mask[0:3, 1:4, 1:14] = True  # along x at y=2
+    mask[0:3, 1:14, 11:14] = True  # along y at x=12
+    start, end = np.array([1.0, 2.0, 5.0]), np.array([1.0, 9.0, 12.0])
+    support = _mask_support(mask)
+
+    routed = route_through_mask(mask, start, end, (1.0, 1.0, 1.0))
+    found = MaskBridges(nx.MultiGraph(), support, "gap").bridge(start, end)
+
+    assert not support.accepts(np.vstack([start, end]))
+    assert np.array_equal(routed[0], start) and np.array_equal(routed[-1], end)
+    assert support.accepts(routed)
+    assert found is not None and len(found[0]) > 2
+    assert found[1].longest_background_um < 1.0
+
+
+def _a_dangling_end_facing_a_vessel(joined_by_mask: bool):
+    """Spur K -> S heading +y, ending 4 um short of a vessel through U; the
+    mask either runs on from the spur into the vessel or leaves three
+    microns of background between them."""
+    G = _graph_from(
+        {
+            "K": (5, 2, 10), "S": (5, 8, 10),
+            "U0": (5, 12, 0), "U": (5, 12, 10), "U1": (5, 12, 20),
+        },
+        [("K", "S"), ("U0", "U"), ("U", "U1")],
+    )
+    mask = np.zeros((11, 16, 22), dtype=bool)
+    mask[4:7, 11:14, :] = True  # the vessel, y 11..13
+    mask[4:7, 1:(11 if joined_by_mask else 8), 9:12] = True  # the spur
+    return G, mask
+
+
+@pytest.mark.parametrize("joined_by_mask", [True, False])
+def test_an_orphan_reconnect_needs_the_mask_between_its_ends(joined_by_mask):
+    G, mask = _a_dangling_end_facing_a_vessel(joined_by_mask)
+    settings = dict(reconnect_threshold=5.0, validate_reconnections=False)
+
+    plain = reconnect_orphan_and_dangling_nodes(G.copy(), **settings)
+    gated = reconnect_orphan_and_dangling_nodes(G.copy(), mask_support=_mask_support(mask), **settings)
+
+    assert plain.has_edge("S", "U")
+    assert gated.has_edge("S", "U") is joined_by_mask
+    if joined_by_mask:
+        data = gated.edges["S", "U", 0]
+        assert data["bridge_kind"] == "orphan" and data["bridge_background_um"] == 0.0
+
+
+def test_an_optimise_reconnect_is_tagged_with_what_it_crossed():
+    plain, _ = optimise_graph_topology_fixed(
+        _two_terminal_pairs(), [], set(), reconnect_threshold=3.0, validate_reconnections=False,
+    )
+    mask = np.zeros((3, 45, 3), dtype=bool)
+    mask[:, 18:42, :] = True
+    gated, _ = optimise_graph_topology_fixed(
+        _two_terminal_pairs(), [], set(), reconnect_threshold=3.0, validate_reconnections=False,
+        mask_support=_mask_support(mask),
+    )
+
+    assert "bridge_kind" not in plain.edges["P", "Q", 0]
+    assert gated.edges["P", "Q", 0]["bridge_kind"] == "optimise"
+    assert gated.edges["P", "Q", 0]["bridge_background_um"] == 0.0
+
+
+# --- stubs judged by the segmentation ------------------------------------------
+
+
+def _vessel_with_a_stub(tip):
+    """A vessel along x through junction J at (10, 10, 20), and a straight
+    stub J -> T."""
+    return _graph_from(
+        {"A": (10, 10, 0), "J": (10, 10, 20), "B": (10, 10, 40), "T": tip},
+        [("A", "J"), ("J", "B"), ("J", "T")],
+    )
+
+
+def _mask_rules(mask):
+    from haemolynx.graph.assemble import mask_continues_past
+
+    support = _mask_support(mask)
+    return dict(
+        inside_lumen=mask_lumen_test(mask, (1.0, 1.0, 1.0)),
+        radius_at=lambda p: float(support.radius(np.asarray(p, dtype=float).reshape(1, 3))[0]),
+        mask_continues_at=mask_continues_past(support),
+    )
+
+
+def test_a_lee_spur_inside_its_parents_lumen_is_pruned_whatever_its_length():
+    """Regression: a 4 um spur from the centreline of a 12 um vessel to its
+    wall was kept by a 3 um threshold; its tip is inside the parent's lumen."""
+    G = _vessel_with_a_stub((10, 14, 20))
+    mask = np.zeros((21, 21, 41), dtype=bool)
+    mask[4:17, 4:17, :] = True
+
+    plain = prune_vascular_stubs(G, min_stub_length=3.0)
+    judged = prune_vascular_stubs(G, min_stub_length=3.0, **_mask_rules(mask))
+
+    assert "T" in plain
+    assert "T" not in judged
+    assert {"A", "J", "B"} <= set(judged)
+
+
+def test_a_stub_mostly_off_the_mask_is_pruned_whatever_its_length():
+    G = _vessel_with_a_stub((10, 22, 20))
+    mask = np.zeros((21, 25, 41), dtype=bool)
+    mask[8:13, 8:13, :] = True
+
+    plain = prune_vascular_stubs(G, min_stub_length=10.0)
+    judged = prune_vascular_stubs(G, min_stub_length=10.0, **_mask_rules(mask))
+
+    assert "T" in plain
+    assert "T" not in judged
+
+
+@pytest.mark.parametrize("mask_runs_on", [False, True])
+def test_a_short_sprout_is_kept_only_where_the_mask_ends_with_it(mask_runs_on):
+    """An 8 um blind sprout (E14.5) ends where its mask does: the radius rule
+    keeps it. Where the mask runs on past the tip, the tip is a vessel the
+    network lost track of, held to min_stub_length as well, and pruned."""
+    G = _vessel_with_a_stub((10, 18, 20))
+    mask = np.zeros((21, 34, 41), dtype=bool)
+    mask[8:13, 8:13, :] = True
+    mask[9:12, 8:(32 if mask_runs_on else 19), 19:22] = True
+    settings = dict(min_stub_length=10.0, radius_multiple=1.5)
+
+    rules = _mask_rules(mask)
+    plain = prune_vascular_stubs(G, radius_at=rules["radius_at"], **settings)
+    judged = prune_vascular_stubs(G, **settings, **rules)
+
+    assert "T" in plain
+    assert ("T" in judged) is not mask_runs_on
+
+
+def test_a_short_stub_at_an_image_face_is_still_kept():
+    G = _vessel_with_a_stub((10, 25, 20))
+    mask = np.zeros((21, 26, 41), dtype=bool)
+    mask[8:13, 8:13, :] = True
+    mask[9:12, 8:, 19:22] = True
+
+    judged = prune_vascular_stubs(
+        G, min_stub_length=20.0, image_extent_um=(20.0, 25.0, 40.0), **_mask_rules(mask)
+    )
+
+    assert "T" in judged

@@ -178,9 +178,9 @@ def test_the_density_window_is_the_same_width_in_microns_on_every_axis(
     hubs = []
     real = skeleton_module._collapse_hubs
 
-    def recording(result, mask, dense, selected, scan, max_connections):
+    def recording(result, mask, dense, selected, scan, *rest):
         hubs.append((len(selected), tuple(scan)))
-        return real(result, mask, dense, selected, scan, max_connections)
+        return real(result, mask, dense, selected, scan, *rest)
 
     monkeypatch.setattr(skeleton_module, "_collapse_hubs", recording)
     kwargs = {"use_memmap": True, "memmap_directory": tmp_path} if use_memmap else {}

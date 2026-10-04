@@ -218,8 +218,11 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "inlets, outlets and boundary nodes are never cut off"
     ),
     "prune": (
-        "Remove every piece of the network that no longer has both an inlet "
-        "and an outlet, such as a branch whose only link to the rest was deleted"
+        "Remove every vessel no inlet-to-outlet path runs along: each piece "
+        "of the network that no longer has both an inlet and an outlet, such "
+        "as a branch whose only link to the rest was deleted, and each "
+        "dead-end branch, tree or loop that reaches no outlet. The same rule "
+        "as Network handling's remove_disconnected"
     ),
     "connectivity_choice": (
         "Which vessels the connectivity CSV lists: every vessel of the network "

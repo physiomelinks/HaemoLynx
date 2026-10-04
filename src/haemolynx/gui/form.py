@@ -436,7 +436,7 @@ CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
     },
     "boundary_handling": {
         "leave_unsolved": "Leave unsolved",
-        "remove_disconnected": "Remove disconnected branches/trees",
+        "remove_disconnected": "Remove disconnected and dead-end branches/trees",
     },
 }
 

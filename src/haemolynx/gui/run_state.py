@@ -20,7 +20,7 @@ wrapper.
 takes no cancel argument, so a run is stopped where it already reports:
 :meth:`RunState.check` raises :class:`RunCancelled` from the progress and
 stage-output callbacks. Every one of those lands between stages, or between
-graph building's eleven topology steps, so the run stops with nothing
+graph building's thirteen topology steps, so the run stops with nothing
 half-written -- and it stops within a topology step of being asked, rather than
 at the end of the stage.
 

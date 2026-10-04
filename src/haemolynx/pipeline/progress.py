@@ -13,7 +13,7 @@ The callback is a plain function taking one event, so what "showing progress"
 means is the consumer's decision: nothing here imports napari, Qt or tqdm, and
 nothing here writes to the console unless asked to (:func:`log_progress`).
 
-Graph building reports a second, finer level -- the eleven topology steps of
+Graph building reports a second, finer level -- the thirteen topology steps of
 :func:`haemolynx.graph.build_graph_from_skeleton` -- through the same callback,
 so a consumer that only cares about stages can ignore ``kind == "step"``.
 
@@ -155,6 +155,10 @@ STAGES: tuple[Stage, ...] = (
             "skeleton_bridge_weight_by_segmentation",
             "skeleton_bridge_z_distance_weight",
             "skeleton_bridge_min_facing_cosine",
+            # Graph building's reconnects read them too.
+            "bridge_require_mask_support",
+            "bridge_max_background_gap_um",
+            "bridge_min_mask_fraction",
             "skeleton_component_connectivity",
             "skeleton_min_component_percent",
             "skeleton_bundle_scan_size",
@@ -182,6 +186,9 @@ STAGES: tuple[Stage, ...] = (
             "cluster_collapse_persistence_search_multiple",
             "min_stub_length",
             "min_stub_length_radius_multiple",
+            "recover_uncovered_mask_vessels",
+            "recovery_min_region_volume_um3",
+            "recovery_min_length_um",
             "save_step_artifacts",
             # Centreline smoothing is the last thing graph building does.
             "smooth_centrelines",

@@ -71,6 +71,10 @@ import numpy as np
 from haemolynx import graph as graph_mod
 from haemolynx import preprocessing
 from haemolynx.graph import cartwheel_guard
+from haemolynx.preprocessing.bridge_mask_support import (
+    DEFAULT_MAX_BACKGROUND_GAP_UM,
+    DEFAULT_MIN_MASK_FRACTION,
+)
 
 from . import candidates as cand
 from . import metrics as met
@@ -888,6 +892,21 @@ def _skeleton_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
                 preprocessing.skeleton.DEFAULT_BRIDGE_MIN_FACING_COSINE,
             )
         ),
+        **_bridge_gate_kwargs(settings),
+    )
+
+
+def _bridge_gate_kwargs(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The mask-support gate on bridges, which skeleton cleaning and graph
+    building share."""
+    return dict(
+        bridge_require_mask_support=bool(settings.get("bridge_require_mask_support", True)),
+        bridge_max_background_gap_um=float(
+            settings.get("bridge_max_background_gap_um", DEFAULT_MAX_BACKGROUND_GAP_UM)
+        ),
+        bridge_min_mask_fraction=float(
+            settings.get("bridge_min_mask_fraction", DEFAULT_MIN_MASK_FRACTION)
+        ),
     )
 
 
@@ -976,6 +995,17 @@ def _graph_kwargs(settings: Mapping[str, Any], voxel_size_zyx: Sequence[float]) 
         cluster_collapse_max_radial_dispersion=float(settings["cluster_collapse_max_radial_dispersion"]),
         cluster_collapse_persistence_search_multiple=float(
             settings["cluster_collapse_persistence_search_multiple"]
+        ),
+        **_bridge_gate_kwargs(settings),
+        recover_uncovered_mask_vessels=bool(settings.get("recover_uncovered_mask_vessels", True)),
+        recovery_min_region_volume_um3=float(
+            settings.get(
+                "recovery_min_region_volume_um3",
+                graph_mod.mask_recovery.DEFAULT_MIN_REGION_VOLUME_UM3,
+            )
+        ),
+        recovery_min_length_um=float(
+            settings.get("recovery_min_length_um", graph_mod.mask_recovery.DEFAULT_MIN_LENGTH_UM)
         ),
     )
 

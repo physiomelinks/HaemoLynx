@@ -4,22 +4,34 @@ Napari Vectors ``vector_style="line"`` draws two world-fixed ribbons. An
 axis-aligned centreline step collapses a ribbon, and ``edge_width=0.6`` µm
 then vanishes edge-on. A tube stays visible from every camera angle.
 
-A vessel has one diameter, so it is drawn as one smooth tube of that
-diameter. The centreline it follows is the skeleton's voxel path: steps
-under a micron that kink at every voxel, round a capillary six microns
-across. A tube built ring by ring on that path pinches, bulges and folds
-where the vessel does none of those things. So each tube follows its
-centreline smoothed over about half its own radius, with rings spaced in
-proportion to that radius, ends kept on the vessel's two nodes and rounded,
-so vessels meeting at a node join there.
+Each vessel is drawn at its own diameter, and vessels joined end to end at a
+node no other vessel meets are drawn as one smooth tube through it. The
+centreline it follows is the skeleton's voxel path: steps under a micron
+that kink at every voxel, round a capillary six microns across. A tube built
+ring by ring on that path pinches, bulges and folds where the vessel does
+none of those things. So each tube follows its centreline smoothed over
+about half its own radius, and again where it still bends tighter than it
+is wide, with rings spaced in proportion to the local radius and its ends
+kept on their nodes and rounded.
+
+Where vessels meet, each one's radius eases to the node's: the mean of the
+two where two join, and at a junction no wider than the widest of the
+others, so the widest vessel's rounded end is inside its widest neighbour
+instead of standing out as a ball. This is drawing only, and so is the rest:
+a diameter far from its neighbours' is drawn within a factor of two of
+theirs, and a zero-resistance bridge at the width of the vessel it bridges,
+while the graph keeps the values it has.
 
 Nothing here imports napari. The widget hides the Vectors visual and shows a
 Surface built from these arrays; hover and colour-by still read the Vectors.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.gui.results import VESSELS, VESSEL_TUBES
 
 #: Tube radius in microns. Vectors ``edge_width=0.6`` µm is half a voxel and
@@ -40,14 +52,36 @@ TUBE_SHADING = "smooth"
 #: same smooth tube at every level, rounder and slower to build each step.
 TUBE_QUALITY_SIDES = (6, 8, 12, 18, 32)
 DEFAULT_TUBE_QUALITY = 2
-#: Rings along a tube are this fraction of its radius apart.
+#: Rings along a tube are this fraction of its local radius apart.
 _RING_SPACING_PER_RADIUS = 1.0 / 3.0
+#: Fewest ring-to-ring segments along one vessel, so that a vessel shorter
+#: than it is wide still eases to the radius of each of its nodes.
+_MIN_SEGMENTS_PER_VESSEL = 3
+#: Samples along a vessel its ring spacing is worked out from.
+_SPACING_SAMPLES = 16
 #: The ring centres are smoothed this many times with a 1-4-6-4-1 kernel:
 #: three passes at a third of a radius apart is about half a radius.
 _SMOOTHING_PASSES = 3
 _KERNEL = ((-2, 1.0), (-1, 4.0), (0, 6.0), (1, 4.0), (2, 1.0))
+#: A ring whose centreline bends tighter than this many of its radii is
+#: smoothed again, up to this many more passes; where that is not enough its
+#: radius is cut to this fraction of what clears its neighbouring rings, but
+#: never below this fraction of its vessel's own.
+_TIGHT_BEND_PER_RADIUS = 1.1
+_MAX_BEND_PASSES = 24
+_FOLD_MARGIN = 0.95
+_MIN_RADIUS_FRACTION = 0.05
 #: Two steps join when one ends this close to where the next starts (µm).
 _JOIN_TOLERANCE_UM = 1e-6
+#: Vessel ends this close together (µm) are at the same node. Wider than the
+#: join tolerance: two vessels' ends there are separate copies of its position.
+_NODE_TOLERANCE_UM = 1e-3
+#: A vessel is drawn no more than this factor wider or narrower than the
+#: length-weighted median of its tube and the vessels it runs straight into.
+_DIAMETER_CLIP_FACTOR = 2.0
+#: Another vessel at a junction carries this one straight on when their
+#: directions out of it are at least this opposed (cosine).
+_THROUGH_COSINE = -0.5
 
 VESSEL_DRAW_TUBES = "tubes"
 VESSEL_DRAW_LINES = "lines"
@@ -140,16 +174,172 @@ def _step_radii(radius: float | np.ndarray, count: int) -> np.ndarray:
     return radii
 
 
-def _smooth_tubes(centre: np.ndarray, first: np.ndarray, last: np.ndarray) -> np.ndarray:
-    """Each tube's ring centres smoothed along it, its two end rings left in place.
+def _step_flags(flags: np.ndarray | None, count: int) -> np.ndarray:
+    """One flag per Vectors row; anything but ``True`` (NaN, None) is unflagged."""
+    if flags is None:
+        return np.zeros(count, dtype=bool)
+    values = np.asarray(flags)
+    if values.shape != (count,):
+        raise ValueError(
+            "bridges must have one entry per vectors row "
+            f"({count},); got shape {values.shape!r}"
+        )
+    return np.asarray(values == True, dtype=bool)  # noqa: E712
+
+
+def _node_ids(tips: np.ndarray) -> np.ndarray:
+    """One label per vessel end, shared by the ends at the same place."""
+    keys = np.round(tips / _NODE_TOLERANCE_UM).astype(np.int64)
+    _unique, inverse = np.unique(keys, axis=0, return_inverse=True)
+    return inverse.reshape(-1)
+
+
+def _walk_chains(partner: np.ndarray, count: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The vessels in tube order: runs of vessels joined end to end.
+
+    *partner* gives, for each vessel end -- all *count* starts, then all
+    ends -- the end it is joined to, or -1. Returns the vessels in turn,
+    whether each is walked from its end back to its start, and where each
+    run begins. A closed loop of vessels is opened at one of its nodes.
+    """
+    link = partner.tolist()
+    seen = bytearray(count)
+    order: list[int] = []
+    flipped: list[bool] = []
+    runs: list[int] = []
+
+    def walk(vessel: int, entered_at_end: bool) -> None:
+        runs.append(len(order))
+        while True:
+            seen[vessel] = 1
+            order.append(vessel)
+            flipped.append(entered_at_end)
+            joined = link[vessel if entered_at_end else count + vessel]
+            if joined < 0:
+                return
+            vessel, entered_at_end = joined % count, joined >= count
+            if seen[vessel]:
+                return
+
+    open_ends = np.flatnonzero((partner[:count] < 0) | (partner[count:] < 0))
+    for vessel in open_ends.tolist():
+        if not seen[vessel]:
+            walk(vessel, link[vessel] >= 0)
+    for vessel in range(count):
+        if not seen[vessel]:
+            walk(vessel, False)
+    return (
+        np.asarray(order, dtype=np.intp),
+        np.asarray(flipped, dtype=bool),
+        np.asarray(runs, dtype=np.intp),
+    )
+
+
+def _bridged_radius(
+    radius: np.ndarray,
+    bridge: np.ndarray,
+    node: np.ndarray,
+    partner: np.ndarray,
+    at_node: np.ndarray,
+) -> np.ndarray:
+    """Each vessel's radius, a bridge's taken from the vessel it bridges.
+
+    That is the vessel joining it alone at one of its nodes; failing that,
+    the narrowest vessel that is not a bridge at a junction it ends on.
+    """
+    count = len(radius)
+    end_radius = np.tile(radius, 2)
+    end_bridge = np.tile(bridge, 2)
+    joined = np.full(2 * count, np.inf)
+    paired = np.flatnonzero(partner >= 0)
+    paired = paired[~end_bridge[partner[paired]]]
+    joined[paired] = end_radius[partner[paired]]
+    narrowest = np.full(int(node.max()) + 1, np.inf)
+    np.minimum.at(narrowest, node[~end_bridge], end_radius[~end_bridge])
+    at_junction = np.where(at_node >= 3, narrowest[node], np.inf)
+    from_joined = np.minimum(joined[:count], joined[count:])
+    from_junction = np.minimum(at_junction[:count], at_junction[count:])
+    bridged = np.where(
+        np.isfinite(from_joined),
+        from_joined,
+        np.where(np.isfinite(from_junction), from_junction, radius),
+    )
+    return np.where(bridge, bridged, radius)
+
+
+def _weighted_median(
+    group: np.ndarray, value: np.ndarray, weight: np.ndarray, count: int
+) -> np.ndarray:
+    """The weighted median of *value* in each of *count* groups, none empty:
+    midway between the two middle values where the weight splits exactly."""
+    order = np.lexsort((value, group))
+    group, value, weight = group[order], value[order], weight[order]
+    total = np.bincount(group, weights=weight, minlength=count)
+    offset = np.repeat(np.cumsum(total) - total, np.bincount(group, minlength=count))
+    within = np.cumsum(weight) - offset
+    half = 0.5 * total[group]
+
+    def first_where(reached):
+        reached = np.flatnonzero(reached)
+        return reached[np.r_[True, group[reached][1:] != group[reached][:-1]]]
+
+    lower = first_where(within >= half * (1.0 - 1e-9))
+    upper = first_where((within > half * (1.0 + 1e-9)) | (within >= total[group]))
+    median = np.empty(count)
+    median[group[lower]] = 0.5 * (value[lower] + value[upper])
+    return median
+
+
+def _ramped_radius(own, start, end, length, ramp, s):
+    """A vessel's radius *s* along it: its own, eased to each node's over *ramp*."""
+
+    def eased(x):
+        x = np.clip(x, 0.0, 1.0)
+        return x * x * (3.0 - 2.0 * x)
+
+    return (
+        own
+        + (start - own) * (1.0 - eased(s / ramp))
+        + (end - own) * (1.0 - eased((length - s) / ramp))
+    )
+
+
+def _bend_radius(
+    centre: np.ndarray, first: np.ndarray, last: np.ndarray, index: np.ndarray
+) -> np.ndarray:
+    """Radius of the circle through each *index* ring's centre and its two
+    neighbours'; infinite at a tube's ends and wherever it runs straight."""
+    bend = np.full(len(index), np.inf)
+    keep = (index > first[index]) & (index < last[index])
+    inner = index[keep]
+    a = centre[inner] - centre[inner - 1]
+    b = centre[inner + 1] - centre[inner]
+    sides = np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1) * np.linalg.norm(a + b, axis=1)
+    twice_area = np.linalg.norm(np.cross(a, b), axis=1)
+    curved = twice_area > 1e-12 * sides
+    bend[np.flatnonzero(keep)[curved]] = sides[curved] / (2.0 * twice_area[curved])
+    return bend
+
+
+def _around(index: np.ndarray, reach: int, count: int) -> np.ndarray:
+    """*index* with every ring up to *reach* either side of one, sorted."""
+    near = np.zeros(count, dtype=bool)
+    for offset in range(-reach, reach + 1):
+        near[np.clip(index + offset, 0, count - 1)] = True
+    return np.flatnonzero(near)
+
+
+def _smoothing_matrix(first: np.ndarray, last: np.ndarray):
+    """One smoothing pass over each tube's ring centres, its two end rings left in place.
 
     *first* and *last* give, for every ring, its tube's first and last ring.
     Past an end the tube is continued by reflection through that end, which
-    carries a straight tube on straight and leaves the end where it was.
+    carries a straight tube on straight and leaves the end where it was, but
+    not the direction it leaves in.
     """
     from scipy.sparse import csr_matrix
 
-    count = len(centre)
+    count = len(first)
     index = np.arange(count)
     pinned = (index == first) | (index == last)
     rows, cols, weights = [index[pinned]], [index[pinned]], [np.ones(int(pinned.sum()))]
@@ -166,13 +356,34 @@ def _smooth_tubes(centre: np.ndarray, first: np.ndarray, last: np.ndarray) -> np
         rows += [free, free[reflected]]
         cols += [mirror, anchor[reflected]]
         weights += [np.where(reflected, -w, w), np.full(int(reflected.sum()), 2.0 * w)]
-    smoothing = csr_matrix(
+    return csr_matrix(
         (np.concatenate(weights), (np.concatenate(rows), np.concatenate(cols))),
         shape=(count, count),
     )
-    for _ in range(_SMOOTHING_PASSES):
-        centre = smoothing @ centre
-    return centre
+
+
+def _through_neighbours(
+    ends: np.ndarray,
+    inward: np.ndarray,
+    node: np.ndarray,
+    at_node: np.ndarray,
+    order: np.ndarray,
+    first_at_node: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """For each of *ends* on a junction, the other end there that carries it
+    straight on, if any: ``(which of ends, that other end)``."""
+    on_junction = np.flatnonzero(at_node[ends] >= 3)
+    count = at_node[ends[on_junction]]
+    asked = np.repeat(on_junction, count)
+    rank = np.arange(len(asked)) - np.repeat(np.cumsum(count) - count, count)
+    other = order[first_at_node[node[ends[asked]]] + rank]
+    distinct = other != ends[asked]
+    asked, other = asked[distinct], other[distinct]
+    cosine = np.einsum("ij,ij->i", inward[ends[asked]], inward[other])
+    best = np.lexsort((cosine, asked))
+    best = best[np.r_[True, asked[best][1:] != asked[best][:-1]]] if best.size else best
+    best = best[cosine[best] < _THROUGH_COSINE]
+    return asked[best], other[best]
 
 
 def tubes_from_vectors(
@@ -181,18 +392,25 @@ def tubes_from_vectors(
     radius: float | np.ndarray = TUBE_RADIUS_UM,
     sides: int = TUBE_QUALITY_SIDES[DEFAULT_TUBE_QUALITY],
     groups: np.ndarray | None = None,
+    bridges: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """One smooth, closed tube with rounded ends per run of joined steps.
+    """One smooth, closed tube with rounded ends per chain of joined vessels.
 
-    *vectors* is ``(M, 2, 3)`` origin+direction data. Consecutive rows join
-    when one ends where the next starts and, given *groups* (one label per
-    row, e.g. each step's ``edge_index``), both carry the same label -- so
-    two vessels meeting at a node stay two tubes. Zero-length and non-finite
-    rows are skipped.
+    *vectors* is ``(M, 2, 3)`` origin+direction data. Consecutive rows are
+    one vessel when one ends where the next starts with the same radius and,
+    given *groups* (one label per row, e.g. each step's ``edge_index``), the
+    same label. Vessel ends in the same place are one node, and vessels that
+    are the only two at a node are drawn as one tube through it. Zero-length
+    and non-finite rows are skipped.
 
     *radius* is one value for every row, or one per row -- e.g. each
     vessel's own measured/set diameter halved (see :func:`tube_radii_um`). A
     non-finite or non-positive entry falls back to :data:`TUBE_RADIUS_UM`.
+    Each vessel is drawn at that radius along its middle, easing at each end
+    to its node's: its own at a terminal, the two vessels' length-weighted
+    mean where two meet, and at a junction no wider than the widest of the
+    others there. *bridges* (one flag per row) marks zero-resistance
+    bridges, drawn at the radius of the vessel they bridge.
 
     Returns ``(vertices, faces, segment_index)``: ``segment_index[i]`` is
     the Vectors row ``vertices[i]`` was drawn for, so per-row colours can be
@@ -208,6 +426,7 @@ def tubes_from_vectors(
     if sides < 3:
         raise ValueError(f"sides must be >= 3; got {sides}")
     radii = _step_radii(radius, data.shape[0])
+    flagged = _step_flags(bridges, data.shape[0])
 
     lengths = np.linalg.norm(data[:, 1, :], axis=1)
     keep = np.flatnonzero(np.isfinite(lengths) & (lengths > 0.0))
@@ -218,68 +437,224 @@ def tubes_from_vectors(
     end = origin + data[keep, 1, :]
     step_length = lengths[keep]
     radii = radii[keep]
+    flagged = flagged[keep]
 
-    # Does step i carry on from step i - 1?
+    # Does step i carry on the vessel of step i - 1?
     joins = np.zeros(n, dtype=bool)
     if n > 1:
         joins[1:] = np.all(np.abs(origin[1:] - end[:-1]) <= _JOIN_TOLERANCE_UM, axis=1)
+        joins[1:] &= radii[1:] == radii[:-1]
         if groups is not None:
             labels = np.asarray(groups)[keep]
             joins[1:] &= labels[1:] == labels[:-1]
     starts = ~joins
     ends = np.append(starts[1:], True)
-    tube_of_step = np.cumsum(starts) - 1
-    n_tubes = int(starts.sum())
+    vessel_of_step = np.cumsum(starts) - 1
+    n_vessels = int(starts.sum())
 
-    # Each tube's centreline: its steps' starts, then its last step's end.
+    # Each vessel's centreline: its steps' starts, then its last step's end.
     point_of_step = np.arange(n) + np.cumsum(ends) - ends
+    first_point = point_of_step[starts]
     last_point = point_of_step[ends] + 1
-    points = np.empty((n + n_tubes, 3))
+    points = np.empty((n + n_vessels, 3))
     points[point_of_step] = origin
     points[last_point] = end[ends]
-    step_of_point = np.empty(n + n_tubes, dtype=np.intp)
+    step_of_point = np.empty(n + n_vessels, dtype=np.intp)
     step_of_point[point_of_step] = np.arange(n)
     gap = np.linalg.norm(np.diff(points, axis=0), axis=1)
-    gap[last_point[:-1]] = 1.0  # between tubes; no ring falls in it
+    gap[last_point[:-1]] = 1.0  # between vessels; no ring falls in it
     along = np.concatenate([[0.0], np.cumsum(gap)])
-    tube_start = along[point_of_step[starts]]
-    tube_length = along[last_point] - tube_start
-
-    # Rings evenly along each tube, a fixed fraction of its radius apart.
-    tube_radius = np.bincount(tube_of_step, weights=radii * step_length) / np.bincount(
-        tube_of_step, weights=step_length
+    vessel_start = along[first_point]
+    vessel_length = along[last_point] - vessel_start
+    own_radius = np.bincount(vessel_of_step, weights=radii * step_length) / np.bincount(
+        vessel_of_step, weights=step_length
     )
-    segments = np.maximum(
-        1, np.ceil(tube_length / (tube_radius * _RING_SPACING_PER_RADIUS))
-    ).astype(np.intp)
-    ring_tube = np.repeat(np.arange(n_tubes), segments + 1)
-    first_ring = np.concatenate([[0], np.cumsum(segments + 1)[:-1]])
-    last_ring = first_ring + segments
-    rank = np.arange(len(ring_tube)) - first_ring[ring_tube]
-    at = tube_start[ring_tube] + tube_length[ring_tube] * rank / segments[ring_tube]
-    centre = np.stack([np.interp(at, along, points[:, axis]) for axis in range(3)], axis=1)
-    # The step each ring lies on gives it its radius and its colour.
-    on_point = np.minimum(
-        np.searchsorted(along, at, side="right") - 1, last_point[ring_tube] - 1
+    is_bridge = np.bincount(vessel_of_step, weights=flagged.astype(float)) > 0.0
+
+    def on_centreline(at):
+        return np.stack([np.interp(at, along, points[:, axis]) for axis in range(3)], axis=1)
+
+    # Vessel ends: every vessel's start, then every vessel's end.
+    tips = np.concatenate([points[first_point], points[last_point]])
+    node = _node_ids(tips)
+    degree = np.bincount(node)
+    at_node = degree[node]
+    order = np.argsort(node, kind="stable")
+    first_at_node = np.concatenate([[0], np.cumsum(degree)[:-1]])
+    rank = np.empty_like(order)
+    rank[order] = np.arange(len(order)) - first_at_node[node[order]]
+    partner = np.full(2 * n_vessels, -1, dtype=np.intp)
+    paired = np.flatnonzero(at_node == 2)
+    partner[paired] = order[first_at_node[node[paired]] + 1 - rank[paired]]
+
+    chain_vessels, flipped, chain_first = _walk_chains(partner, n_vessels)
+    n_tubes = len(chain_first)
+    entry_chain = np.repeat(np.arange(n_tubes), np.diff(np.append(chain_first, n_vessels)))
+    chain_of_vessel = np.empty(n_vessels, dtype=np.intp)
+    chain_of_vessel[chain_vessels] = entry_chain
+
+    # The radius each vessel is drawn at: a bridge's that of the vessel it
+    # bridges, then each within a factor of the length-weighted median of
+    # its tube and of the vessels carrying the tube straight on.
+    bridged = _bridged_radius(own_radius, is_bridge, node, partner, at_node)
+    chain_last = np.append(chain_first[1:], n_vessels) - 1
+    head = chain_vessels[chain_first] + np.where(flipped[chain_first], n_vessels, 0)
+    tail = chain_vessels[chain_last] + np.where(flipped[chain_last], 0, n_vessels)
+    tube_ends = np.concatenate([head, tail])
+    junction_ends = np.flatnonzero(at_node >= 3)
+    junction_vessel = junction_ends % n_vessels
+    reach = np.minimum(vessel_length[junction_vessel] / 2.0, bridged[junction_vessel])
+    inward = np.zeros((2 * n_vessels, 3))
+    inward[junction_ends] = on_centreline(
+        vessel_start[junction_vessel]
+        + np.where(junction_ends < n_vessels, reach, vessel_length[junction_vessel] - reach)
+    ) - tips[junction_ends]
+    inward /= np.maximum(np.linalg.norm(inward, axis=1, keepdims=True), 1e-12)
+    asked, through = _through_neighbours(tube_ends, inward, node, at_node, order, first_at_node)
+    through_vessel = through % n_vessels
+    through_chain = np.tile(np.arange(n_tubes), 2)[asked]
+    chain_length = np.bincount(chain_of_vessel, weights=vessel_length, minlength=n_tubes)
+    median = _weighted_median(
+        np.concatenate([chain_of_vessel, through_chain]),
+        np.concatenate([bridged, bridged[through_vessel]]),
+        np.concatenate([
+            vessel_length,
+            np.minimum(vessel_length[through_vessel], chain_length[through_chain]),
+        ]),
+        n_tubes,
+    )[chain_of_vessel]
+    drawn = np.clip(bridged, median / _DIAMETER_CLIP_FACTOR, median * _DIAMETER_CLIP_FACTOR)
+
+    # The radius each vessel eases to at each of its ends.
+    end_radius = np.tile(drawn, 2)
+    end_length = np.tile(vessel_length, 2)
+    target = end_radius.copy()
+    other = partner[paired]
+    target[paired] = (
+        end_radius[paired] * end_length[paired] + end_radius[other] * end_length[other]
+    ) / (end_length[paired] + end_length[other])
+    if junction_ends.size:
+        widest_first = junction_ends[
+            np.lexsort((-end_radius[junction_ends], node[junction_ends]))
+        ]
+        lead = np.flatnonzero(np.r_[True, node[widest_first][1:] != node[widest_first][:-1]])
+        widest = np.zeros(len(degree))
+        runner_up = np.zeros(len(degree))
+        widest[node[widest_first[lead]]] = end_radius[widest_first[lead]]
+        runner_up[node[widest_first[lead + 1]]] = end_radius[widest_first[lead + 1]]
+        is_widest = np.zeros(2 * n_vessels, dtype=bool)
+        is_widest[widest_first[lead]] = True
+        others = np.where(
+            is_widest[junction_ends],
+            runner_up[node[junction_ends]],
+            widest[node[junction_ends]],
+        )
+        target[junction_ends] = np.minimum(end_radius[junction_ends], others)
+    start_target, end_target = target[:n_vessels], target[n_vessels:]
+    ramp = np.minimum(vessel_length / 2.0, 2.0 * drawn)
+
+    # Rings along each vessel a fixed fraction of the local radius apart,
+    # worked out on samples along it.
+    sample_s = vessel_length[:, None] * np.linspace(0.0, 1.0, _SPACING_SAMPLES + 1)[None, :]
+    density = 1.0 / (
+        _RING_SPACING_PER_RADIUS
+        * _ramped_radius(
+            drawn[:, None], start_target[:, None], end_target[:, None],
+            vessel_length[:, None], ramp[:, None], sample_s,
+        )
+    )
+    rings_along = np.concatenate(
+        [
+            np.zeros((n_vessels, 1)),
+            np.cumsum(
+                0.5 * (density[:, 1:] + density[:, :-1]) * (sample_s[:, 1:] - sample_s[:, :-1]),
+                axis=1,
+            ),
+        ],
+        axis=1,
+    )
+    total = rings_along[:, -1]
+    segments = np.maximum(_MIN_SEGMENTS_PER_VESSEL, np.ceil(total - 1e-9)).astype(np.intp)
+    # One increasing table over every vessel: vessel v's fractions sit in [2v, 2v + 1].
+    warp = (2.0 * np.arange(n_vessels))[:, None] + rings_along / total[:, None]
+
+    # The rings in tube order; a vessel after the first in its tube shares
+    # its first ring with the end of the one before.
+    opens = np.zeros(n_vessels, dtype=bool)
+    opens[chain_first] = True
+    entry_segments = segments[chain_vessels]
+    count = entry_segments + opens
+    ring_entry = np.repeat(np.arange(n_vessels), count)
+    k = (
+        np.arange(len(ring_entry))
+        - np.repeat(np.cumsum(count) - count, count)
+        + (~opens)[ring_entry]
+    )
+    seg = entry_segments[ring_entry]
+    k = np.where(flipped[ring_entry], seg - k, k)
+    ring_vessel = chain_vessels[ring_entry]
+    s = np.interp(2.0 * ring_vessel + k / seg, warp.ravel(), sample_s.ravel())
+    at = vessel_start[ring_vessel] + s
+    centre = on_centreline(at)
+    # The step each ring lies on gives it its colour.
+    on_point = np.clip(
+        np.searchsorted(along, at, side="right") - 1,
+        first_point[ring_vessel],
+        last_point[ring_vessel] - 1,
     )
     ring_step = step_of_point[on_point]
-    ring_radius = radii[ring_step]
-    first, last = first_ring[ring_tube], last_ring[ring_tube]
-    centre = _smooth_tubes(centre, first, last)
+    ring_radius = _ramped_radius(
+        drawn[ring_vessel], start_target[ring_vessel], end_target[ring_vessel],
+        vessel_length[ring_vessel], ramp[ring_vessel], s,
+    )
+    ring_chain = entry_chain[ring_entry]
+    rings_in_tube = np.bincount(ring_chain, minlength=n_tubes)
+    first_ring = np.concatenate([[0], np.cumsum(rings_in_tube)[:-1]])
+    last_ring = first_ring + rings_in_tube - 1
+    first, last = first_ring[ring_chain], last_ring[ring_chain]
 
+    smoothing = _smoothing_matrix(first, last)
+    for _ in range(_SMOOTHING_PASSES):
+        centre = smoothing @ centre
+    # Only rings next to one that moved can bend any differently.
+    candidates = np.arange(len(centre))
+    for _ in range(_MAX_BEND_PASSES):
+        bend = _bend_radius(centre, first, last, candidates)
+        tight = candidates[bend < _TIGHT_BEND_PER_RADIUS * ring_radius[candidates]]
+        if not tight.size:
+            break
+        rows = _around(tight, 2, len(centre))
+        centre[rows] = smoothing[rows] @ centre
+        candidates = _around(rows, 1, len(centre))
+
+    # An end ring faces the ring two along, not the first step off its node.
     index = np.arange(len(centre))
-    tangent = centre[np.minimum(index + 1, last)] - centre[np.maximum(index - 1, first)]
+    ahead = np.minimum(np.where(index == first, index + 2, index + 1), last)
+    behind = np.maximum(np.where(index == last, index - 2, index - 1), first)
+    tangent = centre[ahead] - centre[behind]
     norm = np.linalg.norm(tangent, axis=1)
     still = norm <= 1e-12  # a tube folded onto itself: take its step's own way
     tangent[still] = data[keep[ring_step[still]], 1, :]
     norm[still] = step_length[ring_step[still]]
     tangent /= norm[:, None]
 
+    # Each ring narrowed where it would reach through the plane of the next.
+    has_next = index < last
+    before = index[has_next]
+    step = centre[before + 1] - centre[before]
+    sine = np.linalg.norm(np.cross(tangent[before], tangent[before + 1]), axis=1)
+    bent = sine > 1e-12
+    clear_ahead = np.full(len(before), np.inf)
+    clear_behind = np.full(len(before), np.inf)
+    clear_ahead[bent] = np.einsum("ij,ij->i", step[bent], tangent[before][bent]) / sine[bent]
+    clear_behind[bent] = np.einsum("ij,ij->i", step[bent], tangent[before + 1][bent]) / sine[bent]
+    ring_radius[before + 1] = np.minimum(ring_radius[before + 1], _FOLD_MARGIN * clear_ahead)
+    ring_radius[before] = np.minimum(ring_radius[before], _FOLD_MARGIN * clear_behind)
+    ring_radius = np.maximum(ring_radius, _MIN_RADIUS_FRACTION * drawn[ring_vessel])
+
     # Carry each ring's frame on from the last one's, so the tube does not
     # twist: theta is how far round a ring's own frame its first vertex sits.
     normal, binormal = _normal_plane_frames(tangent)
-    has_next = index < last
-    before = index[has_next]
     turn = np.zeros(len(centre))
     turn[before + 1] = np.arctan2(
         np.einsum("ij,ij->i", normal[before], binormal[before + 1]),
@@ -369,11 +744,56 @@ def tube_mesh(
     radius: float | np.ndarray = TUBE_RADIUS_UM,
     quality: int = DEFAULT_TUBE_QUALITY,
     groups: np.ndarray | None = None,
+    bridges: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """:func:`tubes_from_vectors` with one quality level's sides
     (see :data:`TUBE_QUALITY_SIDES`)."""
     sides = TUBE_QUALITY_SIDES[clamp_tube_quality(quality)]
-    return tubes_from_vectors(vectors, radius=radius, sides=sides, groups=groups)
+    return tubes_from_vectors(
+        vectors, radius=radius, sides=sides, groups=groups, bridges=bridges
+    )
+
+
+def _feature_column(features: Any, name: str) -> np.ndarray | None:
+    """One column of a layer's features (a DataFrame or a mapping), if it has it."""
+    if features is None:
+        return None
+    try:
+        if name not in features:
+            return None
+        return np.asarray(features[name])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def vessel_tube_mesh(
+    vectors: np.ndarray,
+    features: Any = None,
+    *,
+    quality: int = DEFAULT_TUBE_QUALITY,
+    edge_width: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """:func:`tube_mesh` for a vessels Vectors layer's data and features.
+
+    Each vessel at its own ``diameter_um`` (or, with none, the
+    :func:`tube_radius_um` of *edge_width*), its steps told apart from the
+    next vessel's by ``edge_index``, and the
+    :data:`~haemolynx.graph.IS_ZERO_RESISTANCE` column marking bridges.
+    """
+    diameters = _feature_column(features, "diameter_um")
+    radii = None
+    if diameters is not None:
+        try:
+            radii = tube_radii_um(diameters.astype(float))
+        except (TypeError, ValueError):
+            radii = None
+    return tube_mesh(
+        vectors,
+        radius=radii if radii is not None else tube_radius_um(edge_width),
+        quality=quality,
+        groups=_feature_column(features, "edge_index"),
+        bridges=_feature_column(features, IS_ZERO_RESISTANCE),
+    )
 
 
 def colors_for_tube_vertices(

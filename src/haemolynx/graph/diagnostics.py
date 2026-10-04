@@ -327,6 +327,81 @@ def diagnose_graph_against_mask(
     )
 
 
+def diagnose_parallel_duplicates_in_lumen(
+    G: Union[nx.Graph, nx.MultiGraph],
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
+    mask_support=None,
+) -> Dict[str, Any]:
+    """Pairs of edges that run beside each other in one lumen over at least
+    half of either's length: one segmented vessel represented twice.
+
+    Each edge is judged against every other edge's centreline by
+    ``preprocessing.bridge_mask_support.path_shadows_existing_vessel`` --
+    the guard every reconnect and the mask recovery apply to a path before
+    adding it -- so two vessels with background between them, a branch
+    meeting the vessel it leaves, and two edges continuing each other are
+    not pairs. *mask_support*, a ``MaskSupport`` over *mask*, is used in
+    place of building one.
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.preprocessing.bridge_mask_support import (
+        MaskSupport,
+        _densify,
+        _sample_step,
+        _shadowing_points,
+    )
+    from scipy.spatial import cKDTree
+
+    from ._helpers import EdgeSampleIndex, edge_id, edge_sample_points
+
+    if mask_support is None:
+        mask_support = MaskSupport(_to_binary_volume_for_skeletonization(mask), voxel_size_zyx)
+    step = _sample_step(mask_support.voxel_size_zyx)
+    index = EdgeSampleIndex(G)
+    ids: Dict[Any, int] = {}
+    owners = np.asarray([ids.setdefault(owner, len(ids)) for owner in index.owners], dtype=np.intp)
+    edges = list(ids)
+    node_pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True) if "pos" in d}
+    pairs = set()
+    for u, v, key, data in G.edges(keys=True, data=True):
+        own = ids.get(edge_id(u, v, key))
+        if own is None:
+            continue
+        path = _densify(edge_sample_points(u, v, data, node_pos), step)
+        reach = 2.0 * float(np.max(mask_support.radius(path))) + 1.0
+        found = index.tree.query_ball_point(path, r=reach)
+        near = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in found]))
+        near = near[owners[near] != own]
+        if not len(near):
+            continue
+        judged, shadowing = _shadowing_points(
+            path, cKDTree(index.points[near]), index.points[near],
+            mask_support.inside, mask_support.radius, step_um=step,
+        )
+        if judged and 2 * len(shadowing) >= judged:
+            partner = edges[int(np.bincount(owners[near[shadowing]]).argmax())]
+            pairs.add(tuple(sorted((edges[own], partner), key=str)))
+    return {
+        "edge_count": len(edges),
+        "duplicate_pair_count": len(pairs),
+        "duplicate_pairs": sorted(pairs, key=str),
+    }
+
+
+def format_parallel_duplicates_report(report: Dict[str, Any]) -> str:
+    """A one-line summary of :func:`diagnose_parallel_duplicates_in_lumen`."""
+    pairs = report.get("duplicate_pairs", [])
+    return (
+        "Parallel duplicates in a lumen: "
+        f"{report.get('duplicate_pair_count', 0)} pair(s) of the graph's "
+        f"{report.get('edge_count', 0)} edges run beside each other inside one "
+        "segmented vessel"
+        + (f" (e.g. {pairs[:3]})." if pairs else ".")
+    )
+
+
 def format_vessels_missing_from_graph_report(report: Dict[str, Any]) -> str:
     """A one-line summary of :func:`diagnose_vessels_missing_from_graph`."""
     return (

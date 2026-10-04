@@ -34,7 +34,7 @@ with the mean diameter of the vessels already at its ends
 (:func:`mean_incident_diameter`). :func:`vessel_path_between` and
 :func:`add_vessel_between` are the two-node version. After deleting,
 :func:`prune_disconnected_branches` removes whatever the deletions cut off
-from every inlet-to-outlet piece.
+from every inlet-to-outlet piece, and every dead end that reaches no outlet.
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ import numpy as np
 from ._helpers import calculate_path_length, next_node_id
 from .degree2 import create_trivial_merged_edge
 from .edit import astar_path, voxel_path_to_microns
-from .prune import remove_components_without_connected_io
+from .connectivity import remove_vessels_off_inlet_outlet_paths
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 
 __all__ = [
@@ -989,19 +989,19 @@ def prune_disconnected_branches(
     inlet_nodes: Sequence[Any],
     outlet_nodes: Sequence[Any],
 ) -> tuple[nx.MultiGraph, dict[str, Any]]:
-    """Drop every piece of *G* that has no inlet or no outlet.
+    """Drop every vessel of *G* that no inlet-to-outlet path runs along.
 
     What a deletion leaves behind when it cut the last vessel joining a
-    branch to the rest: a piece that blood cannot cross, which has no
-    boundary condition to solve with. The rule is
-    :func:`haemolynx.graph.remove_components_without_connected_io`'s; this
-    adds what was removed -- ``removed_vessels`` and ``removed_boundary_nodes``
-    (inlets or outlets that sat on a dropped piece) -- to its counts, and
+    branch to the rest -- a piece that blood cannot cross, which has no
+    boundary condition to solve with -- and every dead-end branch, tree or
+    loop that reaches no outlet. The rule is
+    :func:`haemolynx.graph.remove_vessels_off_inlet_outlet_paths`'s, the
+    one ``boundary_handling="remove_disconnected"`` applies; this adds
+    ``removed_nodes``, ``removed_vessels`` and ``removed_boundary_nodes``
+    (inlets or outlets that sat on a dropped piece) to its counts, and
     refuses to drop everything.
     """
-    pruned, stats = remove_components_without_connected_io(
-        G, list(inlet_nodes), list(outlet_nodes)
-    )
+    pruned, stats = remove_vessels_off_inlet_outlet_paths(G, inlet_nodes, outlet_nodes)
     if G.number_of_edges() and not pruned.number_of_edges():
         raise ValueError(
             "No piece of the network has both an inlet and an outlet; pruning "
@@ -1009,6 +1009,7 @@ def prune_disconnected_branches(
         )
     boundary = dict.fromkeys([*inlet_nodes, *outlet_nodes])
     stats = dict(stats)
+    stats["removed_nodes"] = G.number_of_nodes() - pruned.number_of_nodes()
     stats["removed_vessels"] = G.number_of_edges() - pruned.number_of_edges()
     stats["removed_boundary_nodes"] = [n for n in boundary if n in G and n not in pruned]
     if stats["removed_vessels"] or G.graph.get(PENDING):

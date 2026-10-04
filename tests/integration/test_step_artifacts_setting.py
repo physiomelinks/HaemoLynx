@@ -1,6 +1,6 @@
 """`save_step_artifacts` decides whether a run writes per-step debug artefacts.
 
-Writing a graph pickle and a full-stack overlay after each of the eleven
+Writing a graph pickle and a full-stack overlay after each of the
 topology steps was 40% of the wall time of a real run, so a run only does it
 when asked. The steps themselves must still be reported either way -- the
 progress bar and the napari panel read those, and they are not artefacts.

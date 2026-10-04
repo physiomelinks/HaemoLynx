@@ -2558,8 +2558,10 @@ SCHEMA = Schema(
                 "Draw skeleton bridges by routing through the segmented mask "
                 "instead of a straight line -- prefers a path that stays "
                 "inside real segmented tissue over one that cuts through "
-                "background. A bridge within skeleton_max_bridge_distance "
-                "is always drawn either way; this only changes its shape"
+                "background. With bridge_require_mask_support on, a bridge "
+                "is tried along the route through the mask anyway, and one "
+                "with no route through it is not drawn; this setting decides "
+                "which path is tried first"
             ),
             section=_PIPELINE_STAGES,
             requires=("do_skeletonize",),
@@ -2596,6 +2598,55 @@ SCHEMA = Schema(
             minimum=-1.0,
             maximum=1.0,
             requires=("do_skeletonize",),
+            advanced=True,
+        ),
+        Setting(
+            name="bridge_require_mask_support",
+            kind="bool",
+            default=True,
+            help=(
+                "Draw a bridge across a gap -- in skeleton cleaning, and in "
+                "graph building's gap, topology and orphan reconnects -- only "
+                "along a route through the segmented mask, and not beside a "
+                "vessel already in the same lumen. Two vessels with background "
+                "between them are then never joined across it, however close; "
+                "a vessel broken by a short dropout in the segmentation still "
+                "is. Off draws every bridge within its distance limit, as "
+                "before. No effect without the segmented mask"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_skeletonize",),
+            advanced=True,
+        ),
+        Setting(
+            name="bridge_max_background_gap_um",
+            kind="float",
+            default=2.0,
+            help=(
+                "The longest single run of background a mask-supported bridge "
+                "may cross: a dropout in the segmentation of a vessel, not "
+                "tissue between two vessels"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("do_skeletonize", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="bridge_min_mask_fraction",
+            kind="float",
+            default=0.8,
+            help=(
+                "The least fraction of a mask-supported bridge's length that "
+                "must lie in the mask, unless all the background it crosses "
+                "adds up to no more than bridge_max_background_gap_um"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=("do_skeletonize", "bridge_require_mask_support"),
             advanced=True,
         ),
         Setting(
@@ -2659,6 +2710,48 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             minimum=0.0,
             requires=("do_graph_building",),
+        ),
+        Setting(
+            name="recover_uncovered_mask_vessels",
+            kind="bool",
+            default=True,
+            help=(
+                "After the reconnects, trace the segmented vessels the graph "
+                "does not run through (a capillary the skeleton lost) and join "
+                "each to the network through the mask, where one of its ends "
+                "reaches it. No effect without the segmented mask"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building",),
+            advanced=True,
+        ),
+        Setting(
+            name="recovery_min_region_volume_um3",
+            kind="float",
+            default=30.0,
+            help=(
+                "Recover only uncovered mask regions at least this large: "
+                "smaller ones are segmentation specks, not vessels"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um3",
+            minimum=0.0,
+            requires=("do_graph_building", "recover_uncovered_mask_vessels"),
+            advanced=True,
+        ),
+        Setting(
+            name="recovery_min_length_um",
+            kind="float",
+            default=5.0,
+            help=(
+                "Recover only traced vessels at least this long, unless both "
+                "their ends join the network"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("do_graph_building", "recover_uncovered_mask_vessels"),
+            advanced=True,
         ),
         Setting(
             name="cluster_collapse_distance",
@@ -4044,12 +4137,15 @@ SCHEMA = Schema(
             default="leave_unsolved",
             help=(
                 "What happens, before the haemodynamic model is built, to each "
-                "branch or tree of vessels without both an inlet and an outlet: "
-                "no pressure difference drives a flow through one, so the solve "
-                "has no answer for it. leave_unsolved keeps them, marked "
+                "vessel no inlet-to-outlet path runs along: every branch or tree "
+                "without both an inlet and an outlet, and every branch, tree or "
+                "loop that leaves a perfused vessel and reaches no outlet (a dead "
+                "end). No pressure difference drives a flow through one, so the "
+                "solve has no answer for it. leave_unsolved keeps them, marked "
                 "unsolved: the viewer draws them light grey, leaves them out of "
                 "every flow-based colouring and names each vessel Solved or "
-                "Unsolved on hover. remove_disconnected deletes them"
+                "Unsolved on hover. remove_disconnected deletes them, so only "
+                "vessels on some inlet-to-outlet path are kept"
             ),
             section=_NETWORK_HANDLING,
             choices=("leave_unsolved", "remove_disconnected"),

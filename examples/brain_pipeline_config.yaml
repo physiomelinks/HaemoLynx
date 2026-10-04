@@ -420,12 +420,18 @@ pipeline_stages:
   skeleton_min_branch_length: 3
   # Reconnect a skeleton fragment's branch end to another fragment no further away than this, counted in voxels of the finest axis and measured physically, so a gap along a coarse z axis counts for its real length  [voxels; range 0..; needs do_skeletonize]
   skeleton_max_bridge_distance: 4
-  # Draw skeleton bridges by routing through the segmented mask instead of a straight line -- prefers a path that stays inside real segmented tissue over one that cuts through background. A bridge within skeleton_max_bridge_distance is always drawn either way; this only changes its shape  [needs do_skeletonize]
+  # Draw skeleton bridges by routing through the segmented mask instead of a straight line -- prefers a path that stays inside real segmented tissue over one that cuts through background. With bridge_require_mask_support on, a bridge is tried along the route through the mask anyway, and one with no route through it is not drawn; this setting decides which path is tried first  [needs do_skeletonize]
   skeleton_bridge_weight_by_segmentation: false
   # Multiplies the z-component of a gap distance, on top of the physical voxel size, before it is compared to skeleton_max_bridge_distance. Above 1.0 discourages bridging mostly through z; below 1.0 does the reverse; 1.0 measures plain microns  [range 0.0..; needs do_skeletonize]
   skeleton_bridge_z_distance_weight: 1.0
   # Only bridge from a fragment's branch end toward something roughly ahead of it: the cosine of the largest angle allowed between the end's direction and the bridge (0.5 is 60 degrees). Stops side-by-side vessels being cross-linked; -1 allows any direction  [range -1.0..1.0; needs do_skeletonize]
   skeleton_bridge_min_facing_cosine: 0.5
+  # Draw a bridge across a gap -- in skeleton cleaning, and in graph building's gap, topology and orphan reconnects -- only along a route through the segmented mask, and not beside a vessel already in the same lumen. Two vessels with background between them are then never joined across it, however close; a vessel broken by a short dropout in the segmentation still is. Off draws every bridge within its distance limit, as before. No effect without the segmented mask  [needs do_skeletonize]
+  bridge_require_mask_support: true
+  # The longest single run of background a mask-supported bridge may cross: a dropout in the segmentation of a vessel, not tissue between two vessels  [um; range 0.0..; needs do_skeletonize and bridge_require_mask_support]
+  bridge_max_background_gap_um: 2.0
+  # The least fraction of a mask-supported bridge's length that must lie in the mask, unless all the background it crosses adds up to no more than bridge_max_background_gap_um  [fraction; range 0.0..1.0; needs do_skeletonize and bridge_require_mask_support]
+  bridge_min_mask_fraction: 0.8
   # Use this voxel connectivity when analysing skeleton components  [range 1..3; needs do_skeletonize]
   skeleton_component_connectivity: 3
   # Reconnect graph fragments whose endpoints lie within this distance  [um; range 0.0..; needs do_graph_building]
@@ -436,6 +442,12 @@ pipeline_stages:
   min_stub_length: 10.0
   # Prune a terminal stub shorter than this many radii of the vessel it branches from, read from the segmented mask: a skeleton spur on a wide vessel is about as long as the vessel is thick, and one fixed length removes those or real short capillary ends, never just the spurs. 0 uses min_stub_length for every stub  [range 0.0..; needs do_graph_building]
   min_stub_length_radius_multiple: 1.5
+  # After the reconnects, trace the segmented vessels the graph does not run through (a capillary the skeleton lost) and join each to the network through the mask, where one of its ends reaches it. No effect without the segmented mask  [needs do_graph_building]
+  recover_uncovered_mask_vessels: true
+  # Recover only uncovered mask regions at least this large: smaller ones are segmentation specks, not vessels  [um3; range 0.0..; needs do_graph_building and recover_uncovered_mask_vessels]
+  recovery_min_region_volume_um3: 30.0
+  # Recover only traced vessels at least this long, unless both their ends join the network  [um; range 0.0..; needs do_graph_building and recover_uncovered_mask_vessels]
+  recovery_min_length_um: 5.0
   # Collapse clusters of nodes lying within this distance of each other  [um; range 0.0..; needs do_graph_building]
   cluster_collapse_distance: 5.0
   # distance_only collapses every node within cluster_collapse_distance of another however far that chains -- the original behaviour. direction_aware additionally refuses a merge that would turn the collapsed node's incident edges into a cartwheel shape (see the cartwheel hub guard below), leaving separate nodes where proximity alone could not tell two nearby real junctions apart. persistence cuts each local cluster at its own natural gap in single-linkage merge distance (0-dimensional persistent homology) instead of one global distance -- see graph.persistence_collapse  [one of: distance_only, direction_aware, persistence; needs do_graph_building]
@@ -726,7 +738,7 @@ diameters_and_pericytes:
 # Network handling
 # ------------------------------------------------------------------------
 network_handling:
-  # What happens, before the haemodynamic model is built, to each branch or tree of vessels without both an inlet and an outlet: no pressure difference drives a flow through one, so the solve has no answer for it. leave_unsolved keeps them, marked unsolved: the viewer draws them light grey, leaves them out of every flow-based colouring and names each vessel Solved or Unsolved on hover. remove_disconnected deletes them  [one of: leave_unsolved, remove_disconnected]
+  # What happens, before the haemodynamic model is built, to each vessel no inlet-to-outlet path runs along: every branch or tree without both an inlet and an outlet, and every branch, tree or loop that leaves a perfused vessel and reaches no outlet (a dead end). No pressure difference drives a flow through one, so the solve has no answer for it. leave_unsolved keeps them, marked unsolved: the viewer draws them light grey, leaves them out of every flow-based colouring and names each vessel Solved or Unsolved on hover. remove_disconnected deletes them, so only vessels on some inlet-to-outlet path are kept  [one of: leave_unsolved, remove_disconnected]
   boundary_handling: leave_unsolved
 
 # ------------------------------------------------------------------------

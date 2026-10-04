@@ -351,6 +351,18 @@ def test_the_vessels_layer_carries_the_identity_of_each_edge():
         assert len(vessels.features[column]) == len(vessels.data)
 
 
+def test_the_vessels_layer_flags_the_zero_resistance_bridges():
+    """What the tubes draw a bridge by, row for row with the Vectors."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    graph = a_graph()
+    list(graph.edges(keys=True, data=True))[1][3][IS_ZERO_RESISTANCE] = True
+    vessels = spec_named(built(graph).stage_finished("build_network", network(graph)), VESSELS)
+    flags = np.asarray(vessels.features[IS_ZERO_RESISTANCE])
+    assert len(flags) == len(vessels.data)
+    np.testing.assert_array_equal(flags, np.asarray(vessels.features["edge_index"]) == 1)
+
+
 def test_a_column_is_empty_until_its_stage_runs_but_never_absent():
     """Declared from the first layer, filled when its stage gets to it.
 
@@ -1409,7 +1421,7 @@ def test_no_napari_import_appears_in_the_source():
 
 
 def test_topology_steps_are_not_drawn_unless_asked_for():
-    """Eleven extra rebuilds in the middle of the slowest stage, so: opt in."""
+    """Thirteen extra rebuilds in the middle of the slowest stage, so: opt in."""
     results = built()
     group = results.stage_finished("topology_step:prune_vascular_stubs", a_graph())
     assert group.layers == ()

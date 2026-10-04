@@ -179,7 +179,11 @@ def test_the_drawn_flow_is_the_graphs_flow(run_in_a_viewer):
     edges = (graph.edges(keys=True, data=True) if graph.is_multigraph()
              else ((u, v, 0, d) for u, v, d in graph.edges(data=True)))
     from_graph = np.array(
-        [float(d["flow_abs"]) for *_ids, d in edges if d.get("flow_abs") is not None]
+        [
+            float(d["flow_abs"])
+            for *_ids, d in edges
+            if d.get("flow_abs") is not None and d.get("flow_solved") is not False
+        ]
     )
 
     assert len(from_graph) > 0

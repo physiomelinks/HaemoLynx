@@ -70,6 +70,13 @@ from .segmentation_raw_comparison import (
     compare_segmentation_to_raw_image,
     format_segmentation_raw_comparison_report,
 )
+from .bridge_mask_support import (
+    BridgeMaskSupport,
+    MaskSupport,
+    bridge_is_supported,
+    bridge_mask_support,
+    path_shadows_existing_vessel,
+)
 from .memmap_support import (
     new_memmap_array,
     release_memmap_array,
@@ -135,6 +142,11 @@ __all__ = [
     "analyze_raw_image_foreground",
     "compare_segmentation_to_raw_image",
     "format_segmentation_raw_comparison_report",
+    "BridgeMaskSupport",
+    "MaskSupport",
+    "bridge_is_supported",
+    "bridge_mask_support",
+    "path_shadows_existing_vessel",
     "new_memmap_array",
     "release_memmap_array",
     "release_superseded",

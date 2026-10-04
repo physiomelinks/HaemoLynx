@@ -7,6 +7,12 @@ import networkx as nx
 import numpy as np
 from skan import csr
 
+from haemolynx.preprocessing.bridge_mask_support import (
+    DEFAULT_MAX_BACKGROUND_GAP_UM,
+    DEFAULT_MIN_MASK_FRACTION,
+    MaskSupport,
+)
+
 from ._helpers import points_inside_mask
 from ._platform import skan_numba_warmup_skeleton
 from .build import (
@@ -27,6 +33,11 @@ from .persistence_collapse import (
 )
 from .degree2 import smart_multigraph_degree2_removal
 from .diagnostics import diagnose_degree2_nodes, format_degree2_diagnostics_report
+from .mask_recovery import (
+    DEFAULT_MIN_LENGTH_UM,
+    DEFAULT_MIN_REGION_VOLUME_UM3,
+    recover_uncovered_mask_vessels as _recover_uncovered_mask_vessels,
+)
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
 from .reconnect import reconnect_secondary_loop_edges
@@ -51,13 +62,15 @@ STEP_LABELS: tuple[str, ...] = (
     "smart_multigraph_degree2_removal_post_prune",
     "remove_edges_for_self_connected_nodes",
     "reconnect_orphan_and_dangling_nodes",
+    "recover_uncovered_mask_vessels",
+    "prune_vascular_stubs_final",
     "smart_multigraph_degree2_removal_post_orphan_reconnect",
 )
 
 
 #: Where each label comes in the run, for the line every step logs. A step
 #: names itself in that line, and `collapse_node_clusters` names itself in its
-#: own summary too, so the `Step n/11` prefix is what tells the two apart.
+#: own summary too, so the `Step n/13` prefix is what tells the two apart.
 _STEP_POSITIONS: dict[str, int] = {
     label: position for position, label in enumerate(STEP_LABELS, start=1)
 }
@@ -68,7 +81,7 @@ def _notify_step(
     label: str,
     step_callback: StepCallback | None,
 ) -> None:
-    # Eleven lines a run, ungated: what a step left behind is the answer to
+    # Thirteen lines a run, ungated: what a step left behind is the answer to
     # "how many branches does the pipeline think there are", and asking for it
     # should not mean asking for the per-node detail as well.
     logger.info(
@@ -110,7 +123,27 @@ def mask_radius_sampler(
         index = np.clip(np.rint(np.asarray(position_um, dtype=float) / spacing), 0, upper)
         return float(distance.at(index.astype(np.intp).reshape(1, -1))[0])
 
+    # Shared with the mask-support checks, so one mask's surface tree is built once.
+    radius.feature_distance = distance
     return radius
+
+
+def mask_continues_past(support: MaskSupport) -> Callable[[np.ndarray, np.ndarray], bool]:
+    """``continues(tip_um, outward)``: whether the mask runs on past a stub's
+    tip -- one and two voxels of the finest axis beyond the tip's own lumen
+    radius, along *outward*, both in the mask. A blind end does not."""
+    finest = float(min(support.voxel_size_zyx))
+
+    def continues(tip_um: np.ndarray, outward: np.ndarray) -> bool:
+        tip = np.asarray(tip_um, dtype=float).reshape(1, 3)
+        reach = float(support.radius(tip)[0]) + finest * np.array([1.0, 2.0])
+        return bool(np.all(support.inside(tip + reach[:, None] * np.asarray(outward, dtype=float))))
+
+    return continues
+
+
+def _scalar_radius(support: MaskSupport) -> Callable[[np.ndarray], float]:
+    return lambda position_um: float(support.radius(np.asarray(position_um, dtype=float).reshape(1, 3))[0])
 
 
 def mask_lumen_test(
@@ -162,6 +195,12 @@ def build_graph_from_skeleton(
     protect_image_face_stubs: bool = True,
     stub_radius_at: Callable[[np.ndarray], float] | None = None,
     gap_bridge_max_turn_deg: float | None = MAX_GAP_BRIDGE_TURN_DEG,
+    bridge_require_mask_support: bool = True,
+    bridge_max_background_gap_um: float = DEFAULT_MAX_BACKGROUND_GAP_UM,
+    bridge_min_mask_fraction: float = DEFAULT_MIN_MASK_FRACTION,
+    recover_uncovered_mask_vessels: bool = True,
+    recovery_min_region_volume_um3: float = DEFAULT_MIN_REGION_VOLUME_UM3,
+    recovery_min_length_um: float = DEFAULT_MIN_LENGTH_UM,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -247,6 +286,24 @@ def build_graph_from_skeleton(
         vessel it should continue, or when a terminal ends less than
         ``build.MIN_GAP_BRIDGE_END_LENGTH_UM`` of centreline -- see
         ``build.MAX_GAP_BRIDGE_TURN_DEG``. ``None`` bridges regardless.
+    bridge_require_mask_support, bridge_max_background_gap_um, bridge_min_mask_fraction
+        With a *segmentation_mask* and *bridge_require_mask_support* on, the
+        gap, optimise and orphan reconnects draw a bridge only along a route
+        through the mask crossing at most *bridge_max_background_gap_um* of
+        background in one run, with at least *bridge_min_mask_fraction* of it
+        in the mask, and not beside another edge in the same lumen
+        (``reconnect.MaskBridges``); the stub prunes also drop stubs mostly
+        off the mask or inside their parent's lumen, and hold one whose tip
+        the mask runs on past to *min_stub_length* as well
+        (``prune.prune_vascular_stubs``); and a final prune runs after the
+        orphan reconnect and recovery, so the stubs they leave are judged
+        too. Without a mask, or off, none of it happens and the final prune
+        step leaves the graph as it is.
+    recover_uncovered_mask_vessels, recovery_min_region_volume_um3, recovery_min_length_um
+        With a *segmentation_mask*, trace the mask the graph does not cover
+        and join it to the network through the mask -- see
+        ``mask_recovery.recover_uncovered_mask_vessels``. Without a mask, or
+        off, the step leaves the graph as it is.
 
     Returns
     -------
@@ -256,6 +313,48 @@ def build_graph_from_skeleton(
     degree2_pass1_max_degree = 4
     degree2_pass2_max_degree = 8
     inside_lumen = mask_lumen_test(segmentation_mask, voxel_size)
+    stub_radius_at = (
+        stub_radius_at
+        if stub_radius_at is not None
+        else mask_radius_sampler(segmentation_mask, voxel_size, min_stub_length_radius_multiple)
+    )
+    mask_support = None
+    if segmentation_mask is not None and (
+        bridge_require_mask_support or recover_uncovered_mask_vessels
+    ):
+        mask_support = MaskSupport(
+            np.asanyarray(segmentation_mask, dtype=bool),
+            voxel_size,
+            max_background_gap_um=bridge_max_background_gap_um,
+            min_mask_fraction=bridge_min_mask_fraction,
+            feature_distance=getattr(stub_radius_at, "feature_distance", None),
+        )
+    bridge_support = mask_support if bridge_require_mask_support else None
+    stub_mask_rules = {}
+    if bridge_support is not None:
+        stub_mask_rules = dict(
+            inside_lumen=inside_lumen,
+            mask_continues_at=mask_continues_past(bridge_support),
+        )
+    image_extent_um = (
+        (np.asarray(skeleton.shape, dtype=float) - 1.0) * np.asarray(voxel_size, dtype=float)
+        if protect_image_face_stubs
+        else None
+    )
+
+    def prune_stubs(G: nx.MultiGraph) -> nx.MultiGraph:
+        radius_at = stub_radius_at
+        if radius_at is None and bridge_support is not None:
+            radius_at = _scalar_radius(bridge_support)
+        return prune_vascular_stubs(
+            G,
+            debug=debug,
+            min_stub_length=min_stub_length,
+            radius_at=radius_at,
+            radius_multiple=float(min_stub_length_radius_multiple),
+            image_extent_um=image_extent_um,
+            **stub_mask_rules,
+        )
 
     logger.info("Building skan Skeleton object...")
     warmup = skan_numba_warmup_skeleton()
@@ -272,6 +371,7 @@ def build_graph_from_skeleton(
         voxel_size=voxel_size,
         reconnect_threshold=graph_reconnect_threshold,
         max_bridge_turn_deg=gap_bridge_max_turn_deg,
+        mask_support=bridge_support,
     )
     _notify_step(G, "build_graph_segment_skan_stitched_loops", step_callback)
 
@@ -292,6 +392,7 @@ def build_graph_from_skeleton(
         debug=debug,
         reconnect_threshold=graph_reconnect_threshold,
         max_bridge_turn_deg=gap_bridge_max_turn_deg,
+        mask_support=bridge_support,
     )
     _notify_step(G, "optimise_graph_topology_fixed", step_callback)
 
@@ -344,22 +445,7 @@ def build_graph_from_skeleton(
     )
     _notify_step(G, "smart_multigraph_degree2_removal_post_collapse", step_callback)
 
-    G = prune_vascular_stubs(
-        G,
-        debug=debug,
-        min_stub_length=min_stub_length,
-        radius_at=(
-            stub_radius_at
-            if stub_radius_at is not None
-            else mask_radius_sampler(segmentation_mask, voxel_size, min_stub_length_radius_multiple)
-        ),
-        radius_multiple=float(min_stub_length_radius_multiple),
-        image_extent_um=(
-            (np.asarray(skeleton.shape, dtype=float) - 1.0) * np.asarray(voxel_size, dtype=float)
-            if protect_image_face_stubs
-            else None
-        ),
-    )
+    G = prune_stubs(G)
     _notify_step(G, "prune_vascular_stubs", step_callback)
     _log_degree2_diagnostics(G, degree2_pass2_max_degree, debug)
 
@@ -396,8 +482,23 @@ def build_graph_from_skeleton(
         min_degree_for_dispersion_check=cluster_collapse_direction_aware_min_degree,
         tangent_length_um=cluster_collapse_direction_aware_tangent_length_um,
         max_bridge_turn_deg=gap_bridge_max_turn_deg,
+        mask_support=bridge_support,
     )
     _notify_step(G, "reconnect_orphan_and_dangling_nodes", step_callback)
+
+    if recover_uncovered_mask_vessels and mask_support is not None:
+        G = _recover_uncovered_mask_vessels(
+            G,
+            mask_support,
+            attach_reach_um=final_orphan_reconnect_threshold,
+            min_region_volume_um3=recovery_min_region_volume_um3,
+            min_length_um=recovery_min_length_um,
+        )
+    _notify_step(G, "recover_uncovered_mask_vessels", step_callback)
+
+    if bridge_support is not None:
+        G = prune_stubs(G)
+    _notify_step(G, "prune_vascular_stubs_final", step_callback)
 
     G = smart_multigraph_degree2_removal(
         G,

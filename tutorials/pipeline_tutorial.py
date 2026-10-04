@@ -443,7 +443,7 @@ show_stage_plots(
 
 # ## Stage 2: `build_network()`
 # 
-# Turns the skeleton into an `nx.MultiGraph` and repairs its topology in eleven
+# Turns the skeleton into an `nx.MultiGraph` and repairs its topology in thirteen
 # steps — stitching loops, reconnecting broken segments, collapsing clusters of
 # nearby junctions, pruning stubs, and merging away degree-2 nodes so one vessel
 # is one edge rather than a chain of them. It also loads any large/small vessel
