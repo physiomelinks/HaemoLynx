@@ -12,10 +12,7 @@ from ._helpers import (
     add_edge_safe,
     has_edge_safe,
     remove_edge_safe,
-    is_path_curved,
     merge_curved_edges,
-    improve_straight_edge_with_skeleton,
-    improve_straight_path_with_skeleton,
     should_add_merged_edge,
     calculate_path_length,
     merge_edge_voxels_at_node,
@@ -247,45 +244,6 @@ def create_trivial_merged_edge(
     return merged_attributes
 
 
-def merge_edges_with_topology_improvement(
-    voxels1: List,
-    voxels2: List,
-    pos1: np.ndarray,
-    node_pos: np.ndarray,
-    pos2: np.ndarray,
-    skeleton_data,
-    debug: bool = False,
-    voxel_size: tuple = (1.0, 1.0, 1.0),
-) -> List:
-    """Merge two edges while improving straight segments using skeleton."""
-    if skeleton_data is None or skeleton_data.size == 0:
-        return merge_curved_edges(voxels1, voxels2, node_pos, debug)
-    is_curved1 = is_path_curved(voxels1)
-    is_curved2 = is_path_curved(voxels2)
-    if is_curved1 and is_curved2:
-        return merge_curved_edges(voxels1, voxels2, node_pos, debug)
-    if is_curved1 and not is_curved2:
-        improved_voxels2 = improve_straight_edge_with_skeleton(
-            node_pos, pos2, skeleton_data, debug, voxel_size=voxel_size
-        )
-        if improved_voxels2:
-            return merge_curved_edges(voxels1, improved_voxels2, node_pos, debug)
-        return merge_curved_edges(voxels1, voxels2, node_pos, debug)
-    if not is_curved1 and is_curved2:
-        improved_voxels1 = improve_straight_edge_with_skeleton(
-            pos1, node_pos, skeleton_data, debug, voxel_size=voxel_size
-        )
-        if improved_voxels1:
-            return merge_curved_edges(improved_voxels1, voxels2, node_pos, debug)
-        return merge_curved_edges(voxels1, voxels2, node_pos, debug)
-    improved_full_path = improve_straight_path_with_skeleton(
-        pos1, pos2, skeleton_data, debug, voxel_size=voxel_size
-    )
-    if improved_full_path:
-        return improved_full_path
-    return merge_curved_edges(voxels1, voxels2, node_pos, debug)
-
-
 def smart_multigraph_degree2_removal(
     G: nx.MultiGraph,
     skeleton_data: np.ndarray = None,
@@ -293,11 +251,18 @@ def smart_multigraph_degree2_removal(
     debug: bool = False,
     max_iterations: int = 500,
 ) -> nx.MultiGraph:
-    """Smart degree-2 removal for MultiGraphs with topology improvement."""
+    """Degree-2 removal for MultiGraphs: each removed node's two edges become
+    one, whose path is the two edges' own paths joined at the node.
+
+    *skeleton_data* is accepted and not read. Straight legs used to be
+    re-traced through the skeleton by A*, whose route was not tied to the
+    edges being merged: across a gap bridge, which has no skeleton, it went
+    round through other vessels -- often back down the leg it had just come
+    up -- and elsewhere it cut through other junctions' voxels. Either way the
+    merged edge ran over voxels that it, or another edge, already covered.
+    """
     if not isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         raise ValueError("This function is designed for MultiGraphs")
-
-    vs = tuple(G.graph.get("voxel_size", (1.0, 1.0, 1.0)))
 
     total_removed = 0
     for iteration in range(max_iterations):
@@ -331,16 +296,7 @@ def smart_multigraph_degree2_removal(
             voxels1 = d1.get("voxels", [])
             voxels2 = d2.get("voxels", [])
 
-            merged_voxels = merge_edges_with_topology_improvement(
-                voxels1,
-                voxels2,
-                np.array(n1_pos),
-                np.array(node_pos),
-                np.array(n2_pos),
-                skeleton_data,
-                debug,
-                voxel_size=vs,
-            )
+            merged_voxels = merge_curved_edges(voxels1, voxels2, np.array(node_pos), debug)
             merged_attrs = {
                 "length": calculate_path_length(merged_voxels),
                 "voxels": merged_voxels,

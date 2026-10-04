@@ -28,6 +28,16 @@ voxel's staircase is itself wider (half the voxel diagonal -- on 2 um z steps a
 straight line lies up to ~1 um from every voxel centre) and in a wide vessel (a
 fraction of its radius): a fixed 1 um kept the staircase exactly where it was
 largest.
+
+Where the original path is itself off the skeleton, the tolerance is measured
+from the path instead. Graph building bridges gaps in the skeleton with straight
+steps, often 5-20 um long, and a node moved by cluster collapse starts its
+edges off the skeleton too; no voxel lies along either, so judged against the
+skeleton alone not even the original passed, and an edge with a bridge kept its
+staircase. On the E14.5 MCA graph that kept 1137 of 3305 edges raw, 31 of its
+61 mm of vessel, nearly all for a straight step of 2 um or more; measured from
+the path where it leaves the skeleton, none are, and those edges came back 7%
+shorter.
 """
 from __future__ import annotations
 
@@ -71,6 +81,11 @@ _RADIUS_SAMPLES = 7
 #: Tried in turn when a smoothed path strays too far: each is the weight given
 #: to the smoothed path against the original.
 RELAXATION_STEPS = (0.75, 0.5, 0.25, 0.1)
+
+#: Samples per tolerance along an original path's off-skeleton stretches. A
+#: point exactly the tolerance from the path is at most 0.8% further than that
+#: from the nearest sample, so sampling rejects next to nothing the path allows.
+_OFF_SKELETON_SAMPLES_PER_TOLERANCE = 4
 
 
 def taubin_smooth_polyline(points: Any, iterations: int = 10) -> np.ndarray:
@@ -167,18 +182,47 @@ def _polyline_length(points: np.ndarray) -> float:
     return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
 
 
+def _off_skeleton_stretches(original: np.ndarray, tree, max_deviation: float) -> np.ndarray:
+    """Points along *original* that lie further than *max_deviation* from the
+    skeleton: its straight bridges across gaps, and its first steps off a node
+    that cluster collapse moved. Empty for a path that never leaves the skeleton.
+
+    Sampled :data:`_OFF_SKELETON_SAMPLES_PER_TOLERANCE` to the tolerance, and
+    at the path's own vertices -- so the original always passes, and a blend
+    close to it can, even where it strays only a sliver past the tolerance that
+    the samples fall either side of.
+
+    The tolerance is often exactly half the voxel diagonal, which is how far a
+    diagonal step's midpoint is from the voxels it joins, so a staircase on its
+    own skeleton must not round its way in: hence the margin.
+    """
+    dense = np.vstack(
+        [original, resample_at_step(original, max_deviation / _OFF_SKELETON_SAMPLES_PER_TOLERANCE)]
+    )
+    return dense[_deviation(dense, tree) > max_deviation * (1.0 + 1e-9)]
+
+
 def _is_acceptable(
-    original: np.ndarray, candidate: np.ndarray, tree, max_deviation: float
+    original: np.ndarray,
+    candidate: np.ndarray,
+    tree,
+    max_deviation: float,
+    off_skeleton: Optional[np.ndarray] = None,
 ) -> bool:
     """Whether *candidate* still describes the vessel *original* traced.
 
     Two conditions, and both are needed.
 
-    Every interior point must stay within *max_deviation* of a skeleton voxel.
-    Only interior points are judged: the endpoints are the graph's node
-    positions, which smoothing never moves and which cluster collapse has often
-    already placed off the skeleton, so judging them would reject a path for a
-    fault it does not have.
+    Every interior point must stay within *max_deviation* of a skeleton voxel,
+    or, where the original is itself off the skeleton, of the original:
+    *off_skeleton* is those stretches of it (:func:`_off_skeleton_stretches`).
+    Graph building bridges gaps with straight steps that no voxel lies along,
+    so judged against the skeleton alone a path with a bridge failed whatever
+    was done to it -- the original included. Where the original is on the
+    skeleton the test is the skeleton's alone. Only interior points are
+    judged: the endpoints are the graph's node positions, which smoothing never
+    moves and which cluster collapse has often already placed off the skeleton,
+    so judging them would reject a path for a fault it does not have.
 
     And it must not be longer than the path it came from. Removing a staircase
     can only shorten a centreline, so a longer result means the filter has
@@ -191,7 +235,15 @@ def _is_acceptable(
     """
     if _polyline_length(candidate) > _polyline_length(original) * (1.0 + 1e-9):
         return False
-    return float(_deviation(candidate[1:-1], tree).max()) <= max_deviation
+    interior = candidate[1:-1]
+    strayed = interior[_deviation(interior, tree) > max_deviation]
+    if not len(strayed):
+        return True
+    if off_skeleton is None or not len(off_skeleton):
+        return False
+    from scipy.spatial import cKDTree
+
+    return float(cKDTree(off_skeleton).query(strayed)[0].max()) <= max_deviation
 
 
 def _accept(
@@ -201,7 +253,8 @@ def _accept(
     if len(smoothed) < 3:
         return original, "too_short"
 
-    if _is_acceptable(original, smoothed, tree, max_deviation):
+    off_skeleton = _off_skeleton_stretches(original, tree, max_deviation)
+    if _is_acceptable(original, smoothed, tree, max_deviation, off_skeleton):
         return smoothed, "smoothed"
 
     # Elementwise blending needs matching point counts; see
@@ -214,7 +267,7 @@ def _accept(
     for weight in RELAXATION_STEPS:
         blended = (1.0 - weight) * original + weight * smoothed_for_blend
         blended[0], blended[-1] = original[0], original[-1]
-        if _is_acceptable(original, blended, tree, max_deviation):
+        if _is_acceptable(original, blended, tree, max_deviation, off_skeleton):
             return blended, "relaxed"
 
     return original, "kept_raw"

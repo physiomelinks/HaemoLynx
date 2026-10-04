@@ -63,7 +63,6 @@ from .degree2 import (
     trivial_remove_all_degree2_nodes,
     create_trivial_merged_edge,
     smart_multigraph_degree2_removal,
-    merge_edges_with_topology_improvement,
 )
 from .prune import (
     FLOW_SOLVED,
@@ -174,7 +173,6 @@ from ._helpers import (
     merge_curved_edges,
     orient_path_to_endpoint,
     orient_path_from_startpoint,
-    improve_straight_edge_with_skeleton,
     trace_skeleton_path,
     parse_skeleton_data,
     find_nearest_skeleton_voxel,
@@ -232,7 +230,6 @@ __all__ = [
     "trivial_remove_all_degree2_nodes",
     "create_trivial_merged_edge",
     "smart_multigraph_degree2_removal",
-    "merge_edges_with_topology_improvement",
     "prune_vascular_stubs",
     "FLOW_SOLVED",
     "edges_with_connected_io",
@@ -318,7 +315,6 @@ __all__ = [
     "merge_curved_edges",
     "orient_path_to_endpoint",
     "orient_path_from_startpoint",
-    "improve_straight_edge_with_skeleton",
     "trace_skeleton_path",
     "parse_skeleton_data",
     "find_nearest_skeleton_voxel",

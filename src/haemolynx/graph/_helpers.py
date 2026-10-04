@@ -249,7 +249,6 @@ def calculate_edge_length(node1: int, node2: int, edge_data: dict, voxel_size: T
     
 
 
-# For merge_edges_with_topology_improvement
 def is_path_curved(voxels: List, ratio_threshold: float = 1.15) -> bool:
     """True if path length / straight-line distance > threshold."""
     if len(voxels) < 3:
@@ -296,22 +295,6 @@ def orient_path_from_startpoint(voxels, target_pos):
         return list(voxels)  # Already starts from target
     else:
         return voxels[::-1]  # Reverse to start from target
-
-def improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug=False, voxel_size=(1.0, 1.0, 1.0)):
-    """
-    Improve a straight edge by tracing through skeleton topology.
-    Returns improved voxel path (physical coords) or None if not possible.
-    """
-    if skeleton_data is None:
-        return None
-    
-    traced_path = trace_skeleton_path(skeleton_data, start_pos, end_pos, debug, voxel_size=voxel_size)
-    
-    if traced_path and len(traced_path) >= 2:
-        if is_path_curved(traced_path) or len(traced_path) > 3:
-            return traced_path
-    
-    return None
 
 def trace_skeleton_path(skeleton_data, start_pos, end_pos, debug=False, voxel_size=(1.0, 1.0, 1.0)):
     """
@@ -528,18 +511,30 @@ def astar_skeleton_path(skeleton_array, start, end, debug=False, spacing=None):
     
     return None
 
-def path_separation(path_a: List, path_b: List, step_um: float = 0.5) -> float:
+def path_separation(
+    path_a: List, path_b: List, step_um: float = 0.5, *, ignore_within=None
+) -> float:
     """Furthest either polyline strays from the other (symmetric Hausdorff distance).
 
     Both paths are sampled every *step_um* along their length, so the result
     is within ``step_um / 2`` of the exact distance however sparse the inputs.
+
+    *ignore_within*, a ``(centre, radius)`` pair, leaves the samples of either
+    path within *radius* of *centre* out of the measurement (they are still
+    what the other path's samples are measured to); 0.0 when nothing is left
+    to measure.
     """
     a = densify_polyline(np.asarray(path_a, dtype=float), max_step_um=step_um)
     b = densify_polyline(np.asarray(path_b, dtype=float), max_step_um=step_um)
     if a.ndim != 2 or b.ndim != 2 or len(a) == 0 or len(b) == 0:
         return float("inf")
-    a_to_b = cKDTree(b).query(a)[0].max()
-    b_to_a = cKDTree(a).query(b)[0].max()
+    from_a, from_b = a, b
+    if ignore_within is not None:
+        centre, radius = np.asarray(ignore_within[0], dtype=float), float(ignore_within[1])
+        from_a = a[np.linalg.norm(a - centre, axis=1) > radius]
+        from_b = b[np.linalg.norm(b - centre, axis=1) > radius]
+    a_to_b = cKDTree(b).query(from_a)[0].max() if len(from_a) else 0.0
+    b_to_a = cKDTree(a).query(from_b)[0].max() if len(from_b) else 0.0
     return float(max(a_to_b, b_to_a))
 
 
@@ -615,12 +610,6 @@ def voxel_path_overlap_ratio(path_a: List, path_b: List) -> float:
         return 0.0
     overlap = len(set_a.intersection(set_b))
     return overlap / max(len(set_a), len(set_b))
-
-def improve_straight_path_with_skeleton(start_pos, end_pos, skeleton_data, debug=False, voxel_size=(1.0, 1.0, 1.0)):
-    """
-    Improve an entire straight path between two endpoints using skeleton.
-    """
-    return improve_straight_edge_with_skeleton(start_pos, end_pos, skeleton_data, debug, voxel_size=voxel_size)
 
 
 def points_inside_mask(

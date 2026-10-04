@@ -13,7 +13,6 @@ from haemolynx.graph import (
     trivial_remove_all_degree2_nodes,
     create_trivial_merged_edge,
     smart_multigraph_degree2_removal,
-    merge_edges_with_topology_improvement,
     prune_vascular_stubs,
     assign_branch_orders,
     select_boundary_nodes_by_method,
@@ -62,17 +61,6 @@ def test_create_trivial_merged_edge():
     assert "weight" not in merged
     assert merged["length"] == 2
     assert len(merged["voxels"]) >= 3
-
-
-def test_merge_edges_with_topology_improvement():
-    v1 = [(0, 0, 0), (1, 0, 0)]
-    v2 = [(1, 0, 0), (2, 0, 0)]
-    skel = np.zeros((5, 5, 5))
-    skel[1, 0, 0] = 1
-    out = merge_edges_with_topology_improvement(
-        v1, v2, np.array([0, 0, 0]), np.array([1, 0, 0]), np.array([2, 0, 0]), skel
-    )
-    assert len(out) >= 2
 
 
 def _degree2_count(G):
@@ -293,6 +281,61 @@ def test_smart_multigraph_degree2_removal(simple_graph):
     assert _total_edge_length(G2) == pytest.approx(before_length)
 
 
+def _two_spurs_bridged_at_their_tips():
+    """A vessel A-J-X-K-B (with a side branch X-C) and two spurs, J-N (bent)
+    and K-M (straight), whose tips a gap bridge N-M joins: the shape the
+    build step's terminal reconnection leaves. N and M are degree 2. The
+    skeleton has no voxels across the gap, so the only skeleton route from N
+    to M runs back down J-N, along the vessel and up K-M."""
+    z = 4
+    skeleton = np.zeros((8, 20, 26), dtype=bool)
+    paths = {
+        ("A", "J"): [(z, 8, x) for x in range(0, 7)],
+        ("J", "X"): [(z, 8, x) for x in range(6, 13)],
+        ("X", "K"): [(z, 8, x) for x in range(12, 19)],
+        ("K", "B"): [(z, 8, x) for x in range(18, 25)],
+        ("X", "C"): [(z, y, 12) for y in range(8, 1, -1)],
+        ("J", "N"): [(z, 8, 6), (z, 9, 7), (z, 10, 8), (z, 11, 9), (z, 12, 9),
+                     (z, 13, 8), (z, 14, 7), (z, 15, 6), (z, 16, 6)],
+        ("K", "M"): [(z, y, 18) for y in range(8, 17)],
+    }
+    G = nx.MultiGraph(voxel_size=(1.0, 1.0, 1.0))
+    for name in ("A", "J", "X", "K", "B", "C", "N", "M"):
+        end = next(p[0] if a == name else p[-1] for (a, b), p in paths.items() if name in (a, b))
+        G.add_node(name, pos=np.array(end, dtype=float))
+    for (a, b), path in paths.items():
+        skeleton[tuple(np.array(path).T)] = True
+        voxels = [tuple(float(c) for c in p) for p in path]
+        G.add_edge(a, b, voxels=voxels, length=calculate_path_length(voxels))
+    bridge = [tuple(G.nodes["N"]["pos"]), tuple(G.nodes["M"]["pos"])]
+    G.add_edge("N", "M", voxels=bridge, length=calculate_path_length(bridge), reconnected=True)
+    return G, skeleton
+
+
+def test_degree2_merge_joins_a_spur_and_a_gap_bridge_without_retracing():
+    """Regression: merging a degree-2 node re-traced a straight leg through the
+    skeleton by A*. A gap bridge has no skeleton across its gap, so the trace
+    from spur tip N to M went back down the spur it had just come up and along
+    the vessel -- an edge that ran out to N and back over the same voxels,
+    duplicating the vessel's own, and here measured 61% too long. On an
+    E14.5 stack, 209 of 3772 edges ran out and back like this.
+
+    A merged edge is its two legs, each run once."""
+    G, skeleton = _two_spurs_bridged_at_their_tips()
+    lengths = {(a, b): d["length"] for a, b, d in G.edges(data=True)}
+    loop_length = lengths[("J", "N")] + lengths[("N", "M")] + lengths[("K", "M")]
+
+    merged = smart_multigraph_degree2_removal(G.copy(), skeleton_data=skeleton, debug=False)
+
+    assert not merged.has_node("N") and not merged.has_node("M")
+    for u, v, data in merged.edges(data=True):
+        points = [tuple(np.round(p, 6)) for p in data["voxels"]]
+        assert len(points) == len(set(points)), f"edge {u}-{v} passes a point twice"
+    (loop,) = [d for u, v, d in merged.edges(data=True) if {u, v} == {"J", "K"}]
+    assert loop["length"] == pytest.approx(loop_length)
+    assert _total_edge_length(merged) == pytest.approx(_total_edge_length(G))
+
+
 def test_degree2_diagnostics(simple_graph):
     report = diagnose_degree2_nodes(simple_graph, max_degree=4)
     assert "total_degree2" in report
@@ -408,6 +451,19 @@ def test_path_separation_is_the_furthest_either_path_strays():
     chord = [(0.0, 0.0, 0.0), (0.0, 0.0, 20.0)]
     assert path_separation(chord, bow) == pytest.approx(10.0, abs=0.25)
     assert path_separation(bow, chord) == path_separation(chord, bow)
+
+
+def test_path_separation_can_leave_out_the_samples_near_a_point():
+    straight = [(0.0, 0.0, 0.0), (0.0, 0.0, 20.0)]
+    # The same vessel, except that it starts 4 um to the side and cuts back in.
+    side_start = [(0.0, 4.0, 0.0), (0.0, 0.0, 5.0), (0.0, 0.0, 20.0)]
+    assert path_separation(straight, side_start) == pytest.approx(4.0)
+    assert path_separation(straight, side_start, ignore_within=((0.0, 0.0, 0.0), 5.0)) == pytest.approx(0.0)
+    # Outside the ball the far side still counts, measured to the whole other path.
+    bow = [(0.0, 0.0, 0.0), (0.0, 10.0, 10.0), (0.0, 0.0, 20.0)]
+    assert path_separation(straight, bow, ignore_within=((0.0, 0.0, 0.0), 5.0)) == pytest.approx(10.0, abs=0.25)
+    # Nothing left to measure: nothing tells the paths apart.
+    assert path_separation(straight, bow, ignore_within=((0.0, 0.0, 10.0), 50.0)) == 0.0
 
 
 def test_paths_with_shared_end_points_are_similar_only_if_they_coincide():
@@ -704,3 +760,186 @@ def test_a_connection_is_near_the_skeleton_within_the_same_physical_tolerance_ev
 
     assert not one_slice_off
     assert on_it and one_voxel_off_in_plane
+
+
+def _spur_beside_a_vessel_end_skeleton() -> np.ndarray:
+    """One z slice: vessel A along x with an 8-voxel spur off its junction J
+    (+y, tip N); vessel B ending at M two voxels short of A, beside J; and
+    vessel C broken by a 4-voxel gap whose two ends face each other.
+
+    N and M are 10 voxels apart, inside the reconnect threshold the tests
+    use: a straight bridge between them runs from the spur's tip back to
+    beside the junction the spur left.
+    """
+    skeleton = np.zeros((9, 64, 64), dtype=bool)
+    skeleton[4, 30, 2:62] = True  # A; junction J at (4, 30, 30)
+    skeleton[4, 31:39, 30] = True  # the spur off J, tip N at (4, 38, 30)
+    skeleton[4, 6:29, 31] = True  # B; end M at (4, 28, 31)
+    skeleton[4, 50, 2:20] = True  # C ...
+    skeleton[4, 50, 24:44] = True  # ... and its other half, across the gap
+    return skeleton
+
+
+_SPUR_TIP = (4.0, 38.0, 30.0)
+_VESSEL_B_END = (4.0, 28.0, 31.0)
+_VESSEL_C_GAP = frozenset({(4.0, 50.0, 19.0), (4.0, 50.0, 24.0)})
+
+
+def _bridged_end_pairs(G) -> set:
+    return {
+        frozenset(tuple(float(c) for c in G.nodes[n]["pos"]) for n in (u, v))
+        for u, v, data in G.edges(data=True)
+        if data.get("reconnected")
+    }
+
+
+def _sharpest_turn_deg(voxels) -> float:
+    points = np.asarray(voxels, dtype=float)
+    steps = np.diff(points, axis=0)
+    steps = steps[np.linalg.norm(steps, axis=1) > 1e-9]
+    if len(steps) < 2:
+        return 0.0
+    steps /= np.linalg.norm(steps, axis=1)[:, None]
+    cosines = np.einsum("ij,ij->i", steps[:-1], steps[1:])
+    return float(np.degrees(np.arccos(np.clip(cosines, -1.0, 1.0))).max())
+
+
+def test_a_gap_bridge_does_not_fold_back_against_its_terminals_vessel():
+    """Regression: terminals within the reconnect threshold were bridged
+    nearest first with no regard to direction, so the spur's tip N was
+    bridged to M -- straight back past the junction the spur came from --
+    while the gap C's two facing ends span is still to be closed."""
+    pytest.importorskip("skan")
+    from skan import csr
+
+    skeleton = _spur_beside_a_vessel_end_skeleton()
+
+    G, _, _ = build_graph_segment_skan_stitched_loops(
+        csr.Skeleton(skeleton), skeleton, reconnect_threshold=12.0
+    )
+    unguarded, _, _ = build_graph_segment_skan_stitched_loops(
+        csr.Skeleton(skeleton), skeleton, reconnect_threshold=12.0, max_bridge_turn_deg=None
+    )
+
+    folding_back = frozenset({_SPUR_TIP, _VESSEL_B_END})
+    assert folding_back in _bridged_end_pairs(unguarded)
+    assert _bridged_end_pairs(G) == {_VESSEL_C_GAP}
+
+
+def test_a_built_network_has_no_hairpin_where_a_spur_tip_was_bridged_beside_its_junction():
+    """Regression: degree-2 merging turned junction -> spur tip -> bridge ->
+    vessel end beside the junction into one edge running 8 um out and
+    straight back (a 174 degree turn). Vessel B still joins A, at the
+    junction rather than through the spur."""
+    from haemolynx.graph import build_graph_from_skeleton
+
+    G = build_graph_from_skeleton(_spur_beside_a_vessel_end_skeleton(), graph_reconnect_threshold=12.0)
+
+    assert max(_sharpest_turn_deg(data["voxels"]) for *_, data in G.edges(data=True)) < 100.0
+    by_position = {tuple(float(c) for c in G.nodes[n]["pos"]): n for n in G.nodes}
+    assert nx.has_path(G, by_position[(4.0, 6.0, 31.0)], by_position[(4.0, 30.0, 2.0)])
+
+
+def _straight_edge(G, a, b, **attrs):
+    start, end = np.asarray(G.nodes[a]["pos"], float), np.asarray(G.nodes[b]["pos"], float)
+    n = int(np.ceil(np.linalg.norm(end - start)))
+    voxels = [(start + (end - start) * t).tolist() for t in np.linspace(0.0, 1.0, n + 1)]
+    G.add_edge(a, b, length=float(np.linalg.norm(end - start)), voxels=voxels, **attrs)
+
+
+def _graph_from(positions, edges) -> nx.MultiGraph:
+    G = nx.MultiGraph()
+    G.graph["voxel_size"] = (1.0, 1.0, 1.0)
+    for name, pos in positions.items():
+        G.add_node(name, pos=np.asarray(pos, dtype=float))
+    for a, b in edges:
+        _straight_edge(G, a, b)
+    return G
+
+
+def _two_terminal_pairs() -> nx.MultiGraph:
+    """Spur J->N heading +y, with the end M of a vessel coming down z 1.4 um
+    behind and beside N; and two vessel ends P, Q 1 um apart, facing."""
+    return _graph_from(
+        {
+            "J": (0, 0, 0), "N": (0, 6, 0),
+            "D": (0, 5, 10), "M": (0, 5, 1),
+            "C": (0, 20, 0), "P": (0, 30, 0),
+            "E": (0, 40, 0), "Q": (0, 31, 0),
+        },
+        [("J", "N"), ("D", "M"), ("C", "P"), ("E", "Q")],
+    )
+
+
+def test_optimise_graph_topology_does_not_join_terminals_folding_back():
+    """The same rule as the initial gap bridges: N -> M turns 135 degrees from
+    the way the spur was heading, so only P and Q are joined."""
+    def joined(G):
+        return {frozenset((u, v)) for u, v, d in G.edges(data=True) if d.get("reconnected")}
+
+    old, _ = optimise_graph_topology_fixed(
+        _two_terminal_pairs(), [], set(), reconnect_threshold=3.0,
+        validate_reconnections=False, max_bridge_turn_deg=None,
+    )
+    new, _ = optimise_graph_topology_fixed(
+        _two_terminal_pairs(), [], set(), reconnect_threshold=3.0, validate_reconnections=False,
+    )
+
+    assert joined(old) == {frozenset("NM"), frozenset("PQ")}
+    assert joined(new) == {frozenset("PQ")}
+
+
+def test_a_short_junction_arm_is_not_bridged_however_well_it_lines_up():
+    """skan leaves 1-3 um arms round a junction's voxel cluster. They are not
+    vessel ends, so the end R of a vessel stopping 1 um short of the arm S
+    off junction H is not bridged to it, though the two point at each other."""
+    def arm_facing_a_vessel_end():
+        return _graph_from(
+            {
+                "F": (0, 50, 0), "R": (0, 60, 0),
+                "H0": (0, 62, -10), "H": (0, 62, 0), "H1": (0, 62, 10), "S": (0, 61, 0),
+            },
+            [("F", "R"), ("H0", "H"), ("H", "H1"), ("H", "S")],
+        )
+
+    old, _ = optimise_graph_topology_fixed(
+        arm_facing_a_vessel_end(), [], set(), reconnect_threshold=3.0,
+        validate_reconnections=False, max_bridge_turn_deg=None,
+    )
+    new, _ = optimise_graph_topology_fixed(
+        arm_facing_a_vessel_end(), [], set(), reconnect_threshold=3.0, validate_reconnections=False,
+    )
+
+    assert old.has_edge("R", "S")
+    assert not new.has_edge("R", "S")
+
+
+def _dangling_ends_beside_vessels() -> nx.MultiGraph:
+    """Spur J->N heading +y with a vessel running along z through T, 2.8 um
+    behind and beside N; and spur K->S heading +y with a vessel through U
+    2 um straight ahead of S."""
+    return _graph_from(
+        {
+            "J": (0, 0, 0), "N": (0, 6, 0),
+            "T0": (0, 4, -8), "T": (0, 4, 2), "T1": (0, 4, 12),
+            "K": (20, 0, 0), "S": (20, 6, 0),
+            "U0": (20, 8, -10), "U": (20, 8, 0), "U1": (20, 8, 10),
+        },
+        [("J", "N"), ("T0", "T"), ("T", "T1"), ("K", "S"), ("U0", "U"), ("U", "U1")],
+    )
+
+
+def test_orphan_reconnection_does_not_fold_a_dangling_end_back():
+    """A dangling end is joined to a vessel it runs into (S -> U), not to
+    one lying behind it (N -> T)."""
+    old = reconnect_orphan_and_dangling_nodes(
+        _dangling_ends_beside_vessels(), reconnect_threshold=3.0,
+        validate_reconnections=False, max_bridge_turn_deg=None,
+    )
+    new = reconnect_orphan_and_dangling_nodes(
+        _dangling_ends_beside_vessels(), reconnect_threshold=3.0, validate_reconnections=False,
+    )
+
+    assert old.has_edge("N", "T") and old.has_edge("S", "U")
+    assert not new.has_edge("N", "T") and new.has_edge("S", "U")
+    assert new.degree["N"] == 1
