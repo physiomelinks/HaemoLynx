@@ -1690,15 +1690,31 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             )
         large_arteriole_mask = assignment_large_arteriole_mask
         large_venule_mask = assignment_large_venule_mask
+    # Whether the masks also choose the inlets and outlets; off, they only
+    # drive the large-vessel treatment and the Inlet/Outlet methods choose.
+    io_from_masks = graph.inlets_outlets_from_vessel_masks(settings)
+    if settings["automated_vessel_assignment"] and not io_from_masks:
+        logger.info(
+            "inlets_outlets_from_vessel_masks is off: the large-vessel masks found "
+            f"{len(auto_inlet_nodes)} arteriole and {len(auto_outlet_nodes)} venule "
+            "terminal(s), but the inlets and outlets come from "
+            f"inlet_node_selection_method={settings['inlet_node_selection_method']!r} "
+            f"and outlet_node_selection_method={settings['outlet_node_selection_method']!r}."
+        )
+    if io_from_masks:
         if not auto_inlet_nodes:
             raise ValueError(
                 "automated_vessel_assignment=True found no terminal nodes in the "
-                "arteriole mask (after any configured dilation)."
+                "arteriole mask (after any configured dilation). Fix: widen the "
+                "mask's dilation, or turn inlets_outlets_from_vessel_masks off and "
+                "choose the inlets on the Inlet tab."
             )
         if not auto_outlet_nodes:
             raise ValueError(
                 "automated_vessel_assignment=True found no terminal nodes in the "
-                "venule mask (after any configured dilation)."
+                "venule mask (after any configured dilation). Fix: widen the "
+                "mask's dilation, or turn inlets_outlets_from_vessel_masks off and "
+                "choose the outlets on the Outlet tab."
             )
         settings["inlet_node_coordinates"] = [
             tuple(np.asarray(G.nodes[node_id]["pos"], dtype=float))
@@ -1720,7 +1736,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     settings["venule_boundary_nodes"][:] = []
     settings["large_vessel_inlet_nodes"][:] = []
     settings["large_vessel_outlet_nodes"][:] = []
-    if settings["automated_vessel_assignment"]:
+    if io_from_masks:
         # Use direct terminal-node overlap assignment from vessel masks.
         inlet_nodes = auto_inlet_nodes
         outlet_nodes = [node_id for node_id in auto_outlet_nodes if node_id not in set(inlet_nodes)]
@@ -2043,7 +2059,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 logger.warning(
                     "Small-vessel boundary 3D HTML not written (install plotly to enable)."
                 )
-    if settings["automated_vessel_assignment"]:
+    if io_from_masks:
         logger.info(
             f"Selected {len(settings['inlet_nodes'])} STARTING_NODES and {len(settings['outlet_nodes'])} "
             "OUTPUT_NODES directly from terminal-node overlap with vessel masks."
@@ -2113,7 +2129,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         resistance_node_pair = (settings["inlet_nodes"][0], settings["outlet_nodes"][0])
         logger.info(f"Auto-selected resistance node pair: {resistance_node_pair}")
     else:
-        if settings["automated_vessel_assignment"]:
+        if io_from_masks:
             raise ValueError(
                 "No inlet or outlet nodes found from terminal-node overlap with "
                 "arteriole/venule masks."

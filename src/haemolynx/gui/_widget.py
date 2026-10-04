@@ -6812,8 +6812,9 @@ def _boundary_controls(viewer, rows, fields, schema, report):
     def refresh_role_tabs() -> None:
         """Grey out role sub-tabs when automated assignment owns that role.
 
-        Large-vessel auto (``automated_vessel_assignment``) disables Inlet and
-        Outlet; small-vessel auto disables Arteriole and Venule. Tabs stay
+        The masks choosing the inlets and outlets (``automated_vessel_assignment``
+        and ``inlets_outlets_from_vessel_masks``) disables Inlet and Outlet;
+        small-vessel auto disables Arteriole and Venule. Tabs stay
         visible -- greyed, not hidden -- unlike vessel-mask option rows.
         """
         tabs = getattr(state, "tabs", None)
@@ -7485,6 +7486,7 @@ def _boundary_controls(viewer, rows, fields, schema, report):
         # as a coordinate does.
         *shared_settings(),
         "automated_vessel_assignment",
+        "inlets_outlets_from_vessel_masks",
         "use_small_vessel_masks_for_boundary_assignment",
         "assign_large_vessel_branch_orders",
     ):

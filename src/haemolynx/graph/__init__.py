@@ -117,6 +117,7 @@ from .communities import (
 )
 from .boundaries import (
     BoundaryCoordinateWarning,
+    inlets_outlets_from_vessel_masks,
     select_boundary_nodes_by_method,
     select_boundary_nodes_for_role,
     select_boundary_terminal_nodes,
@@ -282,6 +283,7 @@ __all__ = [
     "select_boundary_terminal_nodes",
     "select_boundary_nodes_by_method",
     "select_boundary_nodes_for_role",
+    "inlets_outlets_from_vessel_masks",
     "select_nodes_by_id",
     "compute_overlapping_terminal_assignment_metrics",
     "filter_io_nodes_to_terminal_degree1",

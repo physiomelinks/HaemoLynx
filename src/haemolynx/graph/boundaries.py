@@ -472,6 +472,20 @@ def select_boundary_nodes_by_method(
 
 
 #: Config settings naming each boundary role's selection method, coordinates,
+def inlets_outlets_from_vessel_masks(settings: Mapping[str, Any]) -> bool:
+    """Whether the large-vessel masks choose the inlet and outlet nodes.
+
+    True only with ``automated_vessel_assignment`` *and*
+    ``inlets_outlets_from_vessel_masks`` on. Off, the inlets and outlets come
+    from the manual Inlet/Outlet methods even while the masks drive the
+    large-vessel treatment. The one place this is decided: the Boundaries
+    stage, the panel's greying and preflight all ask here.
+    """
+    return bool(settings.get("automated_vessel_assignment")) and bool(
+        settings.get("inlets_outlets_from_vessel_masks", True)
+    )
+
+
 #: volume boxes and node IDs, plus the ``node_role`` the selector expects.
 BOUNDARY_ROLE_SETTINGS: dict[str, dict[str, str]] = {
     "inlet": {

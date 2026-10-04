@@ -64,7 +64,10 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from haemolynx.graph.boundaries import BOUNDARY_ROLE_SETTINGS
+from haemolynx.graph.boundaries import (
+    BOUNDARY_ROLE_SETTINGS,
+    inlets_outlets_from_vessel_masks,
+)
 from haemolynx.gui.results import (
     BOUNDARY_COORDINATE_POINT_SIZE,
     PREFIX,
@@ -143,8 +146,11 @@ __all__ = [
 #: manual role controls. Kept here so tests can assert the exact wording
 #: without importing Qt.
 AUTOMATED_OVERRIDES_MANUAL_NOTE = (
-    "When automated vessel assignment is on, it overrides the other "
-    "(manual) inlet/outlet selection methods below."
+    "While automated vessel assignment and 'Inlets outlets from vessel masks' "
+    "are both on, the masks choose the inlets and outlets and override the "
+    "manual Inlet and Outlet tabs below. Turn 'Inlets outlets from vessel "
+    "masks' off to set them by hand; the masks still drive the large-vessel "
+    "treatment."
 )
 
 #: The boundary roles, in the order a run assigns them. Taken from the
@@ -152,8 +158,8 @@ AUTOMATED_OVERRIDES_MANUAL_NOTE = (
 #: panel without anything here changing.
 ROLES: tuple[str, ...] = tuple(BOUNDARY_ROLE_SETTINGS)
 
-#: Inlet/outlet: greyed when ``automated_vessel_assignment`` is on (large-
-#: vessel automatic assignment; ``use_large_vessel_masks`` loads the masks).
+#: Inlet/outlet: greyed while the large-vessel masks choose them
+#: (``automated_vessel_assignment`` and ``inlets_outlets_from_vessel_masks``).
 LARGE_AUTO_ROLES: frozenset[str] = frozenset({"inlet", "outlet"})
 
 #: Arteriole/venule: greyed when small-vessel mask boundary assignment is on.
@@ -173,13 +179,15 @@ LARGE_VESSEL_NETWORK_ROLES: frozenset[str] = frozenset(
 def role_manual_controls_enabled(role: str, values: Mapping[str, Any]) -> bool:
     """Whether *role*'s manual sub-tab should stay interactive.
 
-    Large-vessel automated assignment (``automated_vessel_assignment``)
-    replaces manual inlet/outlet picking; small-vessel mask assignment
+    The large-vessel masks replace manual inlet/outlet picking only while
+    they choose the inlets and outlets (:func:`inlets_outlets_from_vessel_masks`:
+    ``automated_vessel_assignment`` and ``inlets_outlets_from_vessel_masks``);
+    small-vessel mask assignment
     (``use_small_vessel_masks_for_boundary_assignment``) replaces manual
     arteriole/venule boundary picking. The sub-tab stays visible but is
     greyed out -- unlike vessel-mask option rows, which hide.
     """
-    if role in LARGE_AUTO_ROLES and values.get("automated_vessel_assignment"):
+    if role in LARGE_AUTO_ROLES and inlets_outlets_from_vessel_masks(values):
         return False
     if role in SMALL_AUTO_ROLES and values.get(
         "use_small_vessel_masks_for_boundary_assignment"

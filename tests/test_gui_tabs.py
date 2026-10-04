@@ -880,21 +880,26 @@ def test_measurement_3d_fields_on_export_declare_hide_when_unmet():
     )
 
 
-def test_automated_assignment_documents_that_it_overrides_manual_methods():
+def test_the_masks_choose_inlets_outlets_only_while_that_switch_is_on():
+    """Large-vessel masks and choosing the inlets/outlets are separate switches.
+
+    automated_vessel_assignment used to lock the manual Inlet/Outlet methods
+    (``requires=("!automated_vessel_assignment",)``), so keeping the masks for
+    the large-vessel treatment meant never setting an inlet by hand.
+    """
     from haemolynx.gui.boundary_picking import AUTOMATED_OVERRIDES_MANUAL_NOTE
 
-    help_text = SCHEMA["automated_vessel_assignment"].help.lower()
-    assert "override" in help_text
-    assert "manual" in help_text
-    assert "override" in AUTOMATED_OVERRIDES_MANUAL_NOTE.lower()
-    assert "manual" in AUTOMATED_OVERRIDES_MANUAL_NOTE.lower()
-    assert SCHEMA["inlet_node_selection_method"].requires == (
-        "!automated_vessel_assignment",
-    )
-    assert SCHEMA["outlet_node_selection_method"].requires == (
-        "!automated_vessel_assignment",
-    )
-
+    note = AUTOMATED_OVERRIDES_MANUAL_NOTE.lower()
+    assert "override" in note and "manual" in note
+    assert "inlets outlets from vessel masks" in note
+    switch = SCHEMA["inlets_outlets_from_vessel_masks"]
+    assert switch.kind == "bool" and switch.default is True
+    assert switch.requires == ("automated_vessel_assignment",)
+    assert "inlets_outlets_from_vessel_masks" in SCHEMA["automated_vessel_assignment"].help
+    # The manual methods apply unless the masks choose: no `requires` can say
+    # that, so they carry none and preflight warns instead.
+    assert SCHEMA["inlet_node_selection_method"].requires == ()
+    assert SCHEMA["outlet_node_selection_method"].requires == ()
 
 @pytest.mark.parametrize("title", tab_titles())
 def test_every_tab_starts_with_a_number_so_the_order_is_visible(title):

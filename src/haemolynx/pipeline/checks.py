@@ -179,6 +179,37 @@ def check_input_is_not_a_large_vessel_mask(
     return report
 
 
+def check_manual_inlets_outlets_while_masks_choose(
+    settings: Mapping[str, Any],
+) -> CheckReport:
+    """Warn when inlets/outlets are set by hand but the masks will choose them.
+
+    The manual Inlet/Outlet methods have no schema ``requires`` (they apply
+    unless the masks choose, which ``requires`` cannot express), so this is
+    what says a hand-picked node would be ignored -- and which switch to turn.
+    """
+    from haemolynx.graph.boundaries import inlets_outlets_from_vessel_masks
+
+    report = CheckReport()
+    if not inlets_outlets_from_vessel_masks(settings):
+        return report
+    set_by_hand = [
+        name
+        for role in ("inlet", "outlet")
+        for name in (f"{role}_node_ids", f"{role}_node_volumes")
+        if settings.get(name)
+    ]
+    if set_by_hand:
+        report.add_warning(
+            f"{', '.join(set_by_hand)} set, but the large-vessel masks choose the "
+            "inlets and outlets (automated_vessel_assignment and "
+            "inlets_outlets_from_vessel_masks are on), so they will not be used. "
+            "Fix: turn inlets_outlets_from_vessel_masks off to use them; the masks "
+            "still drive the large-vessel treatment."
+        )
+    return report
+
+
 def check_large_vessel_cut_when_masks_enabled(
     settings: Mapping[str, Any],
 ) -> CheckReport:
@@ -569,6 +600,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_cached_artefacts(settings))
     report.extend(check_ilastik_executable(settings))
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
+    report.extend(check_manual_inlets_outlets_while_masks_choose(settings))
     report.extend(check_large_vessel_cut_when_masks_enabled(settings))
     report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
     report.extend(check_ilastik_vessel_mask_prerequisites(settings))

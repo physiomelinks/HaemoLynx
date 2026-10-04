@@ -588,11 +588,28 @@ SCHEMA = Schema(
             kind="bool",
             default=False,
             help=(
-                "Select inlet and outlet nodes automatically from the large-vessel "
-                "masks instead of manually. When applied, automated assignment "
-                "overrides the other (manual) inlet/outlet selection methods"
+                "Use the large arteriole and venule masks: for the large-vessel "
+                "treatment and, while inlets_outlets_from_vessel_masks is on, to "
+                "choose the inlet and outlet nodes"
             ),
             section=_VESSEL_MASKS,
+        ),
+        Setting(
+            # Split from automated_vessel_assignment: the masks drive the
+            # large-vessel treatment either way, and this alone decides
+            # whether they also pick the inlets and outlets -- so a run can
+            # keep its masks and still set its inlets and outlets by hand.
+            name="inlets_outlets_from_vessel_masks",
+            kind="bool",
+            default=True,
+            help=(
+                "Choose the inlet and outlet nodes where the large arteriole and "
+                "venule masks meet the network's open ends. Off: set them on the "
+                "Inlet and Outlet tabs, while the masks still drive the "
+                "large-vessel treatment"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("automated_vessel_assignment",),
         ),
         Setting(
             name="use_large_vessel_masks",
@@ -1914,19 +1931,27 @@ SCHEMA = Schema(
             name="inlet_node_selection_method",
             kind="choice",
             default="edge_percent",
+            # No `requires`: it applies unless the masks choose the inlets,
+            # which is automated_vessel_assignment AND
+            # inlets_outlets_from_vessel_masks -- an "and" `requires` cannot
+            # negate. graph.inlets_outlets_from_vessel_masks is that test, and
+            # pipeline/checks.py warns when a manual inlet would be ignored.
             help="Choose how manual inlet nodes are picked from the graph",
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
-            requires=("!automated_vessel_assignment",),
         ),
         Setting(
             name="outlet_node_selection_method",
             kind="choice",
             default="edge_percent",
+            # No `requires`: it applies unless the masks choose the outlets,
+            # which is automated_vessel_assignment AND
+            # inlets_outlets_from_vessel_masks -- an "and" `requires` cannot
+            # negate. graph.inlets_outlets_from_vessel_masks is that test, and
+            # pipeline/checks.py warns when a manual outlet would be ignored.
             help="Choose how manual outlet nodes are picked from the graph",
             section=_BOUNDARY_ASSIGNMENT,
             choices=NODE_SELECTION_METHODS,
-            requires=("!automated_vessel_assignment",),
         ),
         Setting(
             name="arteriole_boundary_selection_method",

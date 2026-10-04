@@ -91,8 +91,10 @@ input_and_segmentation:
 # Vessel masks
 # ------------------------------------------------------------------------
 vessel_masks:
-  # Select inlet and outlet nodes automatically from the large-vessel masks instead of manually. When applied, automated assignment overrides the other (manual) inlet/outlet selection methods
+  # Use the large arteriole and venule masks: for the large-vessel treatment and, while inlets_outlets_from_vessel_masks is on, to choose the inlet and outlet nodes
   automated_vessel_assignment: false
+  # Choose the inlet and outlet nodes where the large arteriole and venule masks meet the network's open ends. Off: set them on the Inlet and Outlet tabs, while the masks still drive the large-vessel treatment  [needs automated_vessel_assignment]
+  inlets_outlets_from_vessel_masks: true
   # Load large arteriole and venule masks for automated inlet/outlet node assignment  [needs automated_vessel_assignment]
   use_large_vessel_masks: false
   # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation off; must exist]
@@ -266,9 +268,9 @@ vessel_masks:
 boundary_assignment:
   # Write plot artifacts under this base directory
   base_plot_dir: examples/plots
-  # Choose how manual inlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids; needs automated_vessel_assignment off]
+  # Choose how manual inlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids]
   inlet_node_selection_method: coordinates
-  # Choose how manual outlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids; needs automated_vessel_assignment off]
+  # Choose how manual outlet nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids]
   outlet_node_selection_method: coordinates
   # Choose how manual arteriole boundary nodes are picked from the graph  [one of: coordinates, all_degree_1, volume, edge_percent, degree_1_from_inlet, node_ids]
   arteriole_boundary_selection_method: coordinates
