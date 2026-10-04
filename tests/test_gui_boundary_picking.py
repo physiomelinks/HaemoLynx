@@ -1363,9 +1363,12 @@ def test_view_centre_takes_the_camera_on_screen_and_the_slice_off_it(
         ((0, 1, 0), (-1, 0, 0), "right", (0, 0, 5)),
         ((0, 1, 0), (-1, 0, 0), "up", (-5, 0, 0)),
         ((0, 1, 0), (-1, 0, 0), "forward", (0, 5, 0)),
-        # At an angle, the box goes along the image axis nearest the screen's.
-        # right = cross(view, up) = (-0.8, 0, 0.6): mostly -z.
-        ((-0.6, 0.0, -0.8), (0.0, -1.0, 0.0), "right", (-5, 0, 0)),
+        # At an angle, exactly along the camera's directions -- not the
+        # nearest image axis, which made forward/back slide sideways.
+        # right = cross(view, up) = (-0.8, 0, 0.6).
+        ((-0.6, 0.0, -0.8), (0.0, -1.0, 0.0), "right", (-4, 0, 3)),
+        ((-0.6, 0.0, -0.8), (0.0, -1.0, 0.0), "forward", (-3, 0, -4)),
+        ((-0.6, 0.0, -0.8), (0.0, -1.0, 0.0), "back", (3, 0, 4)),
     ],
 )
 def test_moving_a_box_in_3d_follows_the_camera(view, up, direction, shift):
@@ -1374,3 +1377,17 @@ def test_moving_a_box_in_3d_follows_the_camera(view, up, direction, shift):
     box = box_around((20.0, 50.0, 60.0))
     moved = move_box(box, direction, 5.0, (0, 1, 2), view_direction=view, up_direction=up)
     assert np.allclose(np.asarray(moved) - np.asarray(box), [shift, shift])
+
+
+def test_the_chosen_box_node_is_cyan_and_largest():
+    from haemolynx.gui.boundary_picking import (
+        CHOSEN_BOX_NODE_COLOUR, box_around, box_node_styles, nodes_in_box,
+    )
+
+    found = nodes_in_box(_box_graph(), box_around((20.0, 50.0, 60.0)))
+    sizes, faces, rims = box_node_styles(found, chosen=2)
+    assert sizes[2] == max(sizes) and sizes[2] > sizes[0] > sizes[3]
+    assert tuple(faces[2]) == CHOSEN_BOX_NODE_COLOUR
+    assert tuple(faces[0]) != CHOSEN_BOX_NODE_COLOUR
+    plain, *_ = box_node_styles(found)
+    assert plain[2] < sizes[2]

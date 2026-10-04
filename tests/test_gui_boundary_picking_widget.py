@@ -2033,3 +2033,21 @@ def test_moving_off_the_nodes_empties_the_box_nodes_layer_in_place(panel):
     bc.move_box("left")
     assert viewer.layers[BC_BOX_NODES] is drawn and len(drawn.data) == 3
     assert drawn.size[0] > drawn.size[1], "the open end still drawn larger"
+
+
+def test_clicking_a_listed_node_marks_it_and_centres_the_view_on_it(panel):
+    from haemolynx.gui.boundary_picking import BC_BOX_NODES, CHOSEN_BOX_NODE_COLOUR
+
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    viewer.camera.center = (0.0, 0.0, 0.0)
+    table = bc.actions["inlet"].box_nodes.table
+    table.selectRow(1)                                   # node 2, a junction
+
+    drawn = viewer.layers[BC_BOX_NODES]
+    assert tuple(np.round(drawn.face_color[1], 3)) == CHOSEN_BOX_NODE_COLOUR
+    assert drawn.size[1] == max(drawn.size)
+    centre = np.asarray(viewer.camera.center)[-2:]
+    assert np.allclose(centre, [52.0, 62.0])             # node 2's (y, x)
+    assert viewer.dims.point[0] == pytest.approx(22.0, abs=1.0)   # its slice
+    assert "Node 2" in widget._haemolynx_report()

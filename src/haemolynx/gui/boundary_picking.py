@@ -88,6 +88,8 @@ __all__ = [
     "box_around",
     "box_centre",
     "box_node_rows",
+    "box_node_styles",
+    "CHOSEN_BOX_NODE_COLOUR",
     "box_nodes_spec",
     "box_size",
     "move_box",
@@ -1275,11 +1277,13 @@ def move_box(
     and back/forward step through the axis not on screen, the slices.
 
     In 3D, pass the camera's *view_direction* and *up_direction* (napari's,
-    in displayed-axis order): left/right follow the screen's right, up/down
-    its up, and forward/back run away from and towards you. The box moves
-    along whichever image axis lies closest to that direction, so it stays
-    aligned with the image and moves by exactly *step* -- left is left however
-    the view is turned. Without the camera, 3D falls back to z/y/x.
+    in displayed-axis order): the box moves *step* microns exactly along the
+    screen's right (left/right), its up (up/down), or the line of sight
+    (forward = away from you, back = towards you), however the view is
+    turned. Only its position follows the view; it stays a box square to the
+    image. (Snapping each move to the nearest image axis instead made
+    back/forward slide sideways in a turned view.) Without the camera, 3D
+    falls back to z/y/x.
     """
     if direction not in MOVE_DIRECTIONS:
         raise ValueError(f"direction must be one of {MOVE_DIRECTIONS}, not {direction!r}")
@@ -1292,8 +1296,11 @@ def move_box(
         right = np.cross(view, up)
         on_screen = {"right": right, "left": -right, "up": up, "down": -up,
                      "forward": view, "back": -view}[direction]
-        index = int(np.argmax(np.abs(on_screen)))
-        shift[axes[index]] = np.sign(on_screen[index]) * abs(float(step))
+        length = float(np.linalg.norm(on_screen))
+        if length == 0.0:
+            return _as_box(lo, hi)
+        for index, axis in enumerate(axes):
+            shift[axis] = on_screen[index] / length * abs(float(step))
         return _as_box(lo + shift, hi + shift)
     axes = axes[-2:] if len(axes) >= 2 else [1, 2]
     vertical, horizontal = axes
@@ -1357,16 +1364,39 @@ def box_node_rows(nodes: Sequence[BoxNode]) -> list[tuple[str, ...]]:
     ]
 
 
-def box_nodes_spec(nodes: Sequence[BoxNode]) -> LayerSpec:
-    """The nodes in the box, yellow and larger than the network's own dots.
+#: The node chosen in the box's list: cyan, and this much larger again.
+CHOSEN_BOX_NODE_COLOUR = (0.0, 0.9, 1.0, 1.0)
+CHOSEN_BOX_NODE_SCALE = 1.8
 
-    Open ends are larger again and rimmed in red, so the candidates for an
-    inlet or outlet stand out from the junctions around them.
+
+def box_node_styles(
+    nodes: Sequence[BoxNode], chosen: int | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-node size, face colour and rim colour for the box's nodes.
+
+    Yellow and larger than the network's dots; open ends larger again with a
+    red rim; the *chosen* one (an index into *nodes*) cyan and larger still,
+    so the node picked in the list is the one that stands out.
     """
+    open_end = np.asarray([n.open_end for n in nodes], dtype=bool)
+    yellow, red = (1.0, 0.9, 0.0, 1.0), (1.0, 0.15, 0.1, 1.0)
+    sizes = np.where(open_end, BOUNDARY_COORDINATE_POINT_SIZE * 1.5,
+                     BOUNDARY_COORDINATE_POINT_SIZE).astype(float)
+    faces = np.asarray([yellow] * len(nodes), dtype=float).reshape(-1, 4)
+    rims = np.asarray([red if o else yellow for o in open_end], dtype=float).reshape(-1, 4)
+    if chosen is not None and 0 <= chosen < len(nodes):
+        sizes[chosen] *= CHOSEN_BOX_NODE_SCALE
+        faces[chosen] = CHOSEN_BOX_NODE_COLOUR
+        rims[chosen] = CHOSEN_BOX_NODE_COLOUR
+    return sizes, faces, rims
+
+
+def box_nodes_spec(nodes: Sequence[BoxNode], chosen: int | None = None) -> LayerSpec:
+    """The nodes in the box, styled by :func:`box_node_styles`."""
     data = (np.asarray([n.position for n in nodes], dtype=float)
             if nodes else np.empty((0, 3), dtype=float))
     open_end = np.asarray([n.open_end for n in nodes], dtype=bool)
-    yellow, red = (1.0, 0.9, 0.0, 1.0), (1.0, 0.15, 0.1, 1.0)
+    sizes, faces, rims = box_node_styles(nodes, chosen)
     return LayerSpec(
         kind="points",
         name=BC_BOX_NODES,
@@ -1376,11 +1406,9 @@ def box_nodes_spec(nodes: Sequence[BoxNode]) -> LayerSpec:
             "open_end": open_end,
         },
         options={
-            "size": np.where(open_end, BOUNDARY_COORDINATE_POINT_SIZE * 1.5,
-                             BOUNDARY_COORDINATE_POINT_SIZE),
-            "face_color": np.asarray([yellow] * len(nodes)).reshape(-1, 4),
-            "border_color": np.asarray(
-                [red if o else yellow for o in open_end]).reshape(-1, 4),
+            "size": sizes,
+            "face_color": faces,
+            "border_color": rims,
             "border_width": 0.3,
             "out_of_slice_display": True,
         },

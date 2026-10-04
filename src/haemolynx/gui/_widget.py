@@ -6273,6 +6273,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         wanted_rows,
         BC_BOX_NODES,
         BOX_NODE_COLUMNS,
+        box_node_styles,
         rectangle_from_box,
         DEFAULT_BOX_SIZE_UM,
         MOVE_DIRECTIONS,
@@ -7363,13 +7364,31 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         return listed[rows_chosen[0]] if rows_chosen and rows_chosen[0] < len(listed) else None
 
     def on_box_node_selected(owner: str) -> None:
-        """Mark the chosen row's node in the viewer, among the box's nodes."""
+        """Pick out the chosen row's node and bring the view to it.
+
+        That node turns cyan and larger among the box's yellow nodes, and the
+        view centres on it, zoomed to a few box-widths -- in 2D on its slice.
+        The 3D angle is kept: any angle can look at a point, and centring is
+        what brings it into focus.
+        """
         target = layer(BC_BOX_NODES)
         chosen = selected_box_node(owner)
         if target is None or chosen is None:
             return
         listed = state.box_nodes.get(owner, [])
-        target.selected_data = {listed.index(chosen)}
+        index = listed.index(chosen)
+        if len(target.data) == len(listed):
+            sizes, faces, rims = box_node_styles(listed, index)
+            target.size = sizes
+            target.face_color = faces
+            target.border_color = rims
+        boxes = boxes_of(owner)
+        active = active_index(owner, boxes)
+        span = max(box_size(boxes[active])) if active is not None else 10.0
+        _zoom_viewer_to(viewer, chosen.position, box_um=max(4.0 * span, 30.0))
+        kind = "open end" if chosen.open_end else f"junction of {chosen.degree} vessels"
+        report.value = (f"Node {chosen.node_id} ({kind}) at {chosen.position} um, in cyan. "
+                        f"Press 'Use selected node as {role_title(owner)}' to choose it.")
 
     def on_use_node() -> None:
         owner = str(role.value)
