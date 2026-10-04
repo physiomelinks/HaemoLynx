@@ -16,7 +16,13 @@ import pytest
 
 pytest.importorskip("skan")
 
-from haemolynx.graph import STEP_LABELS, build_graph_from_skeleton
+from haemolynx.graph import (
+    STEP_LABELS,
+    build_graph_from_skeleton,
+    duplicate_parallel_edges,
+    duplicate_vessel_routes,
+)
+from haemolynx.graph.assemble import mask_lumen_test
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 
 # Coarse z, fine x, all three distinct so a (z, y, x) / (x, y, z) swap shows up.
@@ -250,6 +256,51 @@ def test_a_segmentation_mask_reaches_every_duplicate_edge_check(monkeypatch):
     on_branch = np.multiply((20, 30, 20), VOXEL_SIZE_ZYX)
     for _, inside_lumen in seen:
         assert inside_lumen(np.array([on_trunk, on_branch])).tolist() == [True, False]
+
+
+def _loop_skeleton() -> np.ndarray:
+    """A trunk along z with a second strand 6 um beside it from z = 20 to
+    56 um: a loop, as Lee thinning leaves through a wide vessel."""
+    skeleton = np.zeros((40, 40, 40), dtype=bool)
+    skeleton[2:38, 20, 20] = True
+    skeleton[10, 20:33, 20] = True
+    skeleton[10:29, 32, 20] = True
+    skeleton[28, 20:33, 20] = True
+    return skeleton
+
+
+def _loop_masks() -> dict:
+    one_lumen = np.zeros((40, 40, 40), dtype=bool)
+    one_lumen[:, 16:37, 16:25] = True
+    # Two tubes with 2.5 um of tissue between them, meeting where the strands do.
+    two_vessels = np.zeros_like(one_lumen)
+    two_vessels[:, 17:24, 16:25] = True
+    two_vessels[:, 29:36, 16:25] = True
+    two_vessels[7:14, 17:36, 16:25] = True
+    two_vessels[25:32, 17:36, 16:25] = True
+    return {"one lumen": one_lumen, "two vessels": two_vessels, "no mask": None}
+
+
+@pytest.mark.parametrize("mask_name", ["one lumen", "two vessels", "no mask"])
+def test_a_loop_through_one_lumen_is_built_as_one_vessel(mask_name):
+    """Regression test: a skeleton loop round one lumen came out of the build
+    as two edges between the same two junctions -- the same vessel drawn
+    twice. Given the mask, it is one vessel; with tissue between the strands,
+    or no mask to tell, the loop stays."""
+    masks = _loop_masks()
+    G = _build(_loop_skeleton(), segmentation_mask=masks[mask_name])
+
+    inside_one_lumen = mask_lumen_test(masks["one lumen"], VOXEL_SIZE_ZYX)
+    if mask_name == "one lumen":
+        assert duplicate_parallel_edges(G, inside_one_lumen) == []
+        assert duplicate_vessel_routes(G, inside_one_lumen) == []
+        assert (G.number_of_nodes(), G.number_of_edges()) == (2, 1)
+    else:
+        # The two junctions, joined by the trunk and by the strand beside it.
+        junctions = [n for n in G.nodes if G.degree[n] == 3]
+        assert len(junctions) == 2
+        assert G.number_of_edges(*junctions) == 2
+        assert (G.number_of_nodes(), G.number_of_edges()) == (4, 4)
 
 
 def test_cluster_collapse_method_distance_only_never_calls_direction_aware_collapse(monkeypatch):

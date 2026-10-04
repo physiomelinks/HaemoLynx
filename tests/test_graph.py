@@ -12,6 +12,9 @@ from haemolynx.graph import (
     safer_simple_remove_all_degree2_nodes,
     trivial_remove_all_degree2_nodes,
     create_trivial_merged_edge,
+    duplicate_parallel_edges,
+    duplicate_vessel_routes,
+    remove_duplicate_parallel_edges,
     smart_multigraph_degree2_removal,
     prune_vascular_stubs,
     assign_branch_orders,
@@ -610,6 +613,87 @@ def test_degree2_removal_keeps_both_strands_when_the_mask_separates_them():
     assert sorted(d["length"] for d in G2["a"]["b"].values()) == pytest.approx(
         sorted([straight, calculate_path_length(detour)])
     )
+
+
+def _ab_edges(*paths, stubs=2):
+    """Junctions "a" and "b" (see _junction_pair) joined directly by each of *paths*, keys 0, 1, ..."""
+    G = _junction_pair(stubs=stubs)
+    for path in paths:
+        _add_path_edge(G, "a", "b", path)
+    return G
+
+
+@pytest.mark.parametrize(
+    "lumen, duplicate_keys",
+    [
+        # Without a mask only the staircase's straight twin, 1 um off it, repeats.
+        (None, {0}),
+        # One lumen: all three are one vessel; the detour (curved, shortest) stays.
+        (_ONE_LUMEN, {0, 1}),
+        # Tissue between the detour and the other two: two vessels, one of them twice.
+        (_TWO_VESSELS, {0}),
+    ],
+)
+def test_duplicate_parallel_edges_names_every_copy_but_one_of_each_vessel(lumen, duplicate_keys):
+    straight = _line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21)
+    staircase = [(0.0, float(i % 2), float(i)) for i in range(21)]
+    G = _ab_edges(straight, staircase, _square_detour())
+    inside_lumen = None if lumen is None else _lumen(_DETOUR_SHAPE, *lumen)
+
+    duplicates = duplicate_parallel_edges(G, inside_lumen)
+
+    assert {key for _, _, key in duplicates} == duplicate_keys
+    assert remove_duplicate_parallel_edges(G, inside_lumen) == len(duplicate_keys)
+    assert set(G["a"]["b"]) == {0, 1, 2} - duplicate_keys
+    assert duplicate_parallel_edges(G, inside_lumen) == []
+
+
+def test_degree2_removal_removes_duplicate_parallel_edges_it_did_not_make():
+    """Regression test: skeletonisation leaves loops round one lumen as two
+    edges between the same junctions, with no degree-2 node between them for
+    a merge to compare -- so no step removed them, and at E14.5 MCA 20 such
+    pairs came straight through from the first graph build."""
+    detour = _square_detour()
+    G = _ab_edges(_line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21), detour)
+
+    kept_apart = smart_multigraph_degree2_removal(
+        G.copy(), max_degree=8, inside_lumen=_lumen(_DETOUR_SHAPE, *_TWO_VESSELS)
+    )
+    one_vessel = smart_multigraph_degree2_removal(
+        G.copy(), max_degree=8, inside_lumen=_lumen(_DETOUR_SHAPE, *_ONE_LUMEN)
+    )
+
+    assert kept_apart.number_of_edges("a", "b") == 2
+    assert [d["length"] for d in one_vessel["a"]["b"].values()] == pytest.approx(
+        [calculate_path_length(detour)]
+    )
+    assert set(one_vessel.nodes) == set(G.nodes)
+
+
+@pytest.mark.parametrize("lumen", ["one", "two"])
+def test_degree2_removal_resolves_a_duplicate_route_even_beside_a_busy_junction(lumen):
+    """Regression test: merging leaves a degree-2 node alone beside a junction
+    of max_degree or more, and with it any route through it repeating the
+    edge its neighbours already share -- at E14.5 MCA three were left that
+    way, one vessel drawn twice. A route the mask separates from that edge
+    is a vessel of its own and stays as it was."""
+    G = _ab_edges(_line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21), stubs=4)
+    detour = _square_detour()
+    G.add_node("mid", pos=np.asarray(detour[len(detour) // 2], dtype=float))
+    _add_path_edge(G, "a", "mid", detour[: len(detour) // 2 + 1])
+    _add_path_edge(G, "mid", "b", detour[len(detour) // 2 :])
+    inside_lumen = _lumen(_DETOUR_SHAPE, *(_ONE_LUMEN if lumen == "one" else _TWO_VESSELS))
+    assert G.degree["a"] >= 4
+    assert duplicate_vessel_routes(G, inside_lumen) == (["mid"] if lumen == "one" else [])
+
+    G2 = smart_multigraph_degree2_removal(G.copy(), max_degree=4, inside_lumen=inside_lumen)
+
+    assert duplicate_vessel_routes(G2, inside_lumen) == []
+    if lumen == "one":
+        assert not G2.has_node("mid")
+        assert G2.number_of_edges("a", "b") == 1
+    else:
+        assert G2.has_node("mid") and G2.number_of_edges("a", "b") == 1
 
 
 def test_build_graph_requires_skan(tiny_skeleton):
