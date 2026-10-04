@@ -410,6 +410,19 @@ def test_path_separation_is_the_furthest_either_path_strays():
     assert path_separation(bow, chord) == path_separation(chord, bow)
 
 
+def test_path_separation_can_leave_out_the_samples_near_a_point():
+    straight = [(0.0, 0.0, 0.0), (0.0, 0.0, 20.0)]
+    # The same vessel, except that it starts 4 um to the side and cuts back in.
+    side_start = [(0.0, 4.0, 0.0), (0.0, 0.0, 5.0), (0.0, 0.0, 20.0)]
+    assert path_separation(straight, side_start) == pytest.approx(4.0)
+    assert path_separation(straight, side_start, ignore_within=((0.0, 0.0, 0.0), 5.0)) == pytest.approx(0.0)
+    # Outside the ball the far side still counts, measured to the whole other path.
+    bow = [(0.0, 0.0, 0.0), (0.0, 10.0, 10.0), (0.0, 0.0, 20.0)]
+    assert path_separation(straight, bow, ignore_within=((0.0, 0.0, 0.0), 5.0)) == pytest.approx(10.0, abs=0.25)
+    # Nothing left to measure: nothing tells the paths apart.
+    assert path_separation(straight, bow, ignore_within=((0.0, 0.0, 10.0), 50.0)) == 0.0
+
+
 def test_paths_with_shared_end_points_are_similar_only_if_they_coincide():
     straight = _line((0.0, 0.0, 0.0), (0.0, 0.0, 20.0), 21)
     staircase = [(0.0, float(i % 2), float(i)) for i in range(21)]

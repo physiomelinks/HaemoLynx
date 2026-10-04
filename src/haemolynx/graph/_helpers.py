@@ -528,18 +528,30 @@ def astar_skeleton_path(skeleton_array, start, end, debug=False, spacing=None):
     
     return None
 
-def path_separation(path_a: List, path_b: List, step_um: float = 0.5) -> float:
+def path_separation(
+    path_a: List, path_b: List, step_um: float = 0.5, *, ignore_within=None
+) -> float:
     """Furthest either polyline strays from the other (symmetric Hausdorff distance).
 
     Both paths are sampled every *step_um* along their length, so the result
     is within ``step_um / 2`` of the exact distance however sparse the inputs.
+
+    *ignore_within*, a ``(centre, radius)`` pair, leaves the samples of either
+    path within *radius* of *centre* out of the measurement (they are still
+    what the other path's samples are measured to); 0.0 when nothing is left
+    to measure.
     """
     a = densify_polyline(np.asarray(path_a, dtype=float), max_step_um=step_um)
     b = densify_polyline(np.asarray(path_b, dtype=float), max_step_um=step_um)
     if a.ndim != 2 or b.ndim != 2 or len(a) == 0 or len(b) == 0:
         return float("inf")
-    a_to_b = cKDTree(b).query(a)[0].max()
-    b_to_a = cKDTree(a).query(b)[0].max()
+    from_a, from_b = a, b
+    if ignore_within is not None:
+        centre, radius = np.asarray(ignore_within[0], dtype=float), float(ignore_within[1])
+        from_a = a[np.linalg.norm(a - centre, axis=1) > radius]
+        from_b = b[np.linalg.norm(b - centre, axis=1) > radius]
+    a_to_b = cKDTree(b).query(from_a)[0].max() if len(from_a) else 0.0
+    b_to_a = cKDTree(a).query(from_b)[0].max() if len(from_b) else 0.0
     return float(max(a_to_b, b_to_a))
 
 
