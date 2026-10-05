@@ -1303,25 +1303,15 @@ def write_automated_vessel_assignment_3d_html(
         return xs, ys, zs
 
     def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: Any) -> None:
-        if not np.any(mask):
-            return
-        z_scale, y_scale, x_scale = voxel_size_zyx
-        zz, yy, xx = np.indices(mask.shape, dtype=float)
-        fig.add_trace(
-            go.Volume(
-                x=(xx * float(x_scale)).ravel(),
-                y=(yy * float(y_scale)).ravel(),
-                z=(zz * float(z_scale)).ravel(),
-                value=mask.astype(float).ravel(),
-                isomin=0.5,
-                isomax=1.0,
-                opacity=0.12,
-                surface_count=1,
-                caps=dict(x_show=False, y_show=False, z_show=False),
-                colorscale=[[0.0, color], [1.0, color]],
-                showscale=False,
-                name=name,
-            )
+        # Cropped and pooled to a size a page can hold: drawn whole, two
+        # 124 x 1024 x 1024 masks ran a 62 GB machine out of memory.
+        from haemolynx.visualization.large_vessel_assignment import (
+            add_binary_mask_volume_trace,
+        )
+
+        add_binary_mask_volume_trace(
+            fig, mask, name=name, color=color, opacity=0.12,
+            voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
         )
 
     fig = go.Figure()
@@ -1478,25 +1468,15 @@ def write_small_vessel_mask_boundary_labelling_3d_html(
         return xs, ys, zs
 
     def _add_volume_trace(mask: np.ndarray, *, name: str, color: str, fig: Any) -> None:
-        if not np.any(mask):
-            return
-        z_scale, y_scale, x_scale = voxel_size_zyx
-        zz, yy, xx = np.indices(mask.shape, dtype=float)
-        fig.add_trace(
-            go.Volume(
-                x=(xx * float(x_scale)).ravel(),
-                y=(yy * float(y_scale)).ravel(),
-                z=(zz * float(z_scale)).ravel(),
-                value=mask.astype(float).ravel(),
-                isomin=0.5,
-                isomax=1.0,
-                opacity=0.12,
-                surface_count=1,
-                caps=dict(x_show=False, y_show=False, z_show=False),
-                colorscale=[[0.0, color], [1.0, color]],
-                showscale=False,
-                name=name,
-            )
+        # Cropped and pooled to a size a page can hold: drawn whole, two
+        # 124 x 1024 x 1024 masks ran a 62 GB machine out of memory.
+        from haemolynx.visualization.large_vessel_assignment import (
+            add_binary_mask_volume_trace,
+        )
+
+        add_binary_mask_volume_trace(
+            fig, mask, name=name, color=color, opacity=0.12,
+            voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
         )
 
     art_b = set(arteriole_boundary_nodes)

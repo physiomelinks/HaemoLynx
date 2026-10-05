@@ -606,3 +606,62 @@ def test_axis_strides_on_cube_voxels_is_the_stride_everywhere():
 
     assert _axis_strides(3, (1.0, 1.0, 1.0)) == (3, 3, 3)
     assert _axis_strides(1, (2.0, 0.5, 0.5)) == (1, 1, 1)
+
+
+def test_a_whole_image_mask_is_pooled_to_a_volume_a_page_can_hold():
+    """Drawn whole, two 124 x 1024 x 1024 masks ran a 62 GB machine out of
+    memory writing the HTML. A stride too fine is coarsened to fit."""
+    import plotly.graph_objects as go
+
+    from haemolynx.visualization.large_vessel_assignment import MAX_VOLUME_TRACE_POINTS
+
+    mask = np.zeros((40, 400, 400), dtype=bool)
+    mask[:, 50:350, 50:350] = True          # 3.6 million voxels in its box
+    fig = go.Figure()
+    assert add_binary_mask_volume_trace(
+        fig, mask, name="big", color="#00FF7F", opacity=0.1,
+        voxel_size_zyx=(2.0, 0.59, 0.59), volume_downsample_stride=1,
+    )
+    trace = fig.data[0]
+    assert len(trace.value) <= MAX_VOLUME_TRACE_POINTS
+    # Still spans the mask, in microns.
+    assert float(np.max(trace.x)) > 300 * 0.59 and float(np.min(trace.x)) < 60 * 0.59
+
+    small = np.zeros((10, 20, 20), dtype=bool)
+    small[2:8, 5:15, 5:15] = True
+    fig = go.Figure()
+    add_binary_mask_volume_trace(fig, small, name="small", color="#000", opacity=0.1,
+                                 voxel_size_zyx=(1.0, 1.0, 1.0))
+    assert len(fig.data[0].value) == 6 * 10 * 10, "a small mask is drawn as it is"
+
+
+def test_the_small_vessel_labelling_view_pools_its_masks_too(tmp_path):
+    from haemolynx.graph.automated_vessel_assignment import (
+        write_small_vessel_mask_boundary_labelling_3d_html,
+    )
+    from haemolynx.visualization.large_vessel_assignment import MAX_VOLUME_TRACE_POINTS
+
+    art = np.zeros((40, 400, 400), dtype=bool)
+    art[:, :, :] = True
+    ven = np.zeros_like(art)
+    ven[10:20, 100:200, 100:200] = True
+    captured = []
+    import plotly.graph_objects as go
+    real_add = go.Figure.add_trace
+
+    def spy(self, trace, *a, **k):
+        captured.append(trace)
+        return real_add(self, trace, *a, **k)
+
+    go.Figure.add_trace = spy
+    try:
+        assert write_small_vessel_mask_boundary_labelling_3d_html(
+            _tiny_graph(), small_arteriole_mask=art, small_venule_mask=ven,
+            arteriole_boundary_nodes=[], venule_boundary_nodes=[],
+            voxel_size_zyx=(2.0, 0.59, 0.59), output_html_path=tmp_path / "v.html",
+        )
+    finally:
+        go.Figure.add_trace = real_add
+    volumes = [t for t in captured if isinstance(t, go.Volume)]
+    assert len(volumes) == 2
+    assert all(len(t.value) <= MAX_VOLUME_TRACE_POINTS for t in volumes)

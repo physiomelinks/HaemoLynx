@@ -1,6 +1,7 @@
 """3D visualization for automated large-vessel input/output assignment."""
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 import networkx as nx
@@ -8,6 +9,8 @@ import numpy as np
 import plotly.graph_objects as go
 
 from .plot import _is_pytest_runtime, write_plotly_html
+
+logger = logging.getLogger(__name__)
 
 #: Plotly ``Volume`` styling for mask overlays. Pipeline HTML and the GUI
 #: final-graph writer share these so a selected arteriole/venule volume looks
@@ -99,6 +102,30 @@ def _downsample_binary_mask_max(
     return np.max(pooled, axis=(1, 3, 5))
 
 
+#: Most grid points one mask's Volume trace may hold. Plotly writes every
+#: point into the page as text, several numbers each; a full-resolution
+#: 124 x 1024 x 1024 mask is 130 million of them and ran a 62 GB machine out of
+#: memory. A stride too fine for this is coarsened until the mask fits.
+MAX_VOLUME_TRACE_POINTS = 1_000_000
+
+
+def _volume_stride_within(
+    shape: tuple[int, ...],
+    stride: int,
+    voxel_size_zyx: tuple[float, float, float],
+    max_points: int = MAX_VOLUME_TRACE_POINTS,
+) -> int:
+    """The smallest stride, at least *stride*, whose pooled grid of *shape*
+    has no more than *max_points* points."""
+    stride = max(1, int(stride))
+    while True:
+        strides = _axis_strides(stride, voxel_size_zyx)
+        points = int(np.prod([-(-n // s) for n, s in zip(shape, strides)]))
+        if points <= max_points or all(s >= n for n, s in zip(shape, strides)):
+            return stride
+        stride += 1
+
+
 def add_binary_mask_volume_trace(
     fig: go.Figure,
     mask: np.ndarray,
@@ -113,8 +140,9 @@ def add_binary_mask_volume_trace(
 
     Crops to the nonzero bounding box then max-pools by ``stride`` voxels of
     the finest axis, fewer along a coarser one (:func:`_axis_strides`) — the
-    same path ``visualize_3d_plotly_large_vessel_assignment`` uses. Returns
-    True when a trace was added.
+    same path ``visualize_3d_plotly_large_vessel_assignment`` uses. A stride
+    too fine for :data:`MAX_VOLUME_TRACE_POINTS` is coarsened. Returns True
+    when a trace was added.
     """
     mask_bool = mask.astype(bool, copy=False)
     bbox = _nonzero_bbox_slices_zyx(mask_bool)
@@ -127,7 +155,14 @@ def add_binary_mask_volume_trace(
     )
     z_slice, y_slice, x_slice = bbox
     cropped = mask_bool[z_slice, y_slice, x_slice]
-    strides = _axis_strides(volume_downsample_stride, voxel_size_zyx)
+    stride = _volume_stride_within(cropped.shape, volume_downsample_stride, voxel_size_zyx)
+    if stride != max(1, int(volume_downsample_stride)):
+        logger.info(
+            "%s: drawn %d voxel(s) per block, not %d, to keep the 3D view under "
+            "%d points.", name, stride, max(1, int(volume_downsample_stride)),
+            MAX_VOLUME_TRACE_POINTS,
+        )
+    strides = _axis_strides(stride, voxel_size_zyx)
     downsampled = _downsample_binary_mask_max(cropped, strides)
     if not np.any(downsampled):
         # Safety fallback for very sparse masks.
