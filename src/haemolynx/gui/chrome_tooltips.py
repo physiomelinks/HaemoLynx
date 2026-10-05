@@ -128,6 +128,9 @@ SHOW_RESULTS_TOOLTIP = (
 SHOW_STEPS_TOOLTIP = (
     "During graph build, also show each topology step as its own layer set"
 )
+HELP_TOOLTIP = (
+    "Open the help menu on the tab that is currently open"
+)
 USE_LAYER_TOOLTIP = (
     "Point the run at the image layer chosen above (its path, or an export "
     "of its array)"

@@ -10917,6 +10917,7 @@ def settings_widget(napari_viewer=None):
         RUN_CHECKS_TOOLTIP,
         RUN_PIPELINE_TOOLTIP,
         SAVE_CONFIG_TOOLTIP,
+        HELP_TOOLTIP,
         SAVE_RUN_TOOLTIP,
         SCALE_BAR_TOOLTIP,
         SHOW_RESULTS_TOOLTIP,
@@ -12158,11 +12159,24 @@ def settings_widget(napari_viewer=None):
     edit_button.visible = False
     run_file_layout.addWidget(save_run_button.native)
     run_file_layout.addWidget(load_run_button.native)
-    view_controls = Container(
+    # The two checkboxes stay stacked. The ? sits immediately to their right,
+    # under the tab scrollbar, and opens help on whichever tab is showing.
+    show_toggles = Container(
         widgets=[show_results, show_steps],
         labels=True,
     )
-    view_controls.native.setObjectName("haemolynx_view_controls")
+    help_button = QPushButton("?")
+    help_button.setObjectName("haemolynx_help")
+    help_button.setToolTip(HELP_TOOLTIP)
+    help_button.setFixedWidth(help_button.sizeHint().width())
+    view_controls_row = QWidget()
+    view_controls_row.setObjectName("haemolynx_view_controls")
+    view_controls_layout = QHBoxLayout(view_controls_row)
+    view_controls_layout.setContentsMargins(0, 0, 0, 0)
+    view_controls_layout.addWidget(show_toggles.native)
+    view_controls_layout.addWidget(help_button, 0, Qt.AlignVCenter)
+    view_controls_layout.addStretch(1)
+    view_controls = SimpleNamespace(native=view_controls_row)
 
     view_panel = QWidget()
     view_panel.setObjectName("haemolynx_view_panel")
@@ -12347,6 +12361,31 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_show_results = show_results
     panel._haemolynx_show_steps = show_steps
     panel._haemolynx_view_controls = view_controls
+    panel._haemolynx_help_button = help_button
+
+    def on_help() -> None:
+        """Open the help window on the tab that is showing."""
+        from haemolynx.gui.help_view import help_window
+        from haemolynx.gui.stage_help import topics_for_tabs
+
+        title = tab_widget.tabText(tab_widget.currentIndex())
+        window = getattr(panel, "_haemolynx_help_window", None)
+        try:
+            alive = window is not None and window.isVisible() is not None
+        except RuntimeError:
+            alive = False
+        if not alive:
+            titles = [tab_widget.tabText(i) for i in range(tab_widget.count())]
+            window = help_window(panel, topics_for_tabs(titles), title)
+            panel._haemolynx_help_window = window
+        else:
+            window.show_topic(title)
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    help_button.clicked.connect(on_help)
+    panel._haemolynx_show_help = on_help
     panel._haemolynx_z_depth_slider = z_depth_slider
     panel._haemolynx_z_depth_row = z_depth_row
     panel._haemolynx_vessel_draw = vessel_draw

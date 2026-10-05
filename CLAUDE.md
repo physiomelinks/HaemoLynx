@@ -94,8 +94,10 @@ haemolynx/
 │   │                       #   run_snapshot.py (.haemorun save/load), stage_checkpoints.py
 │   │                       #   (re-run from a tab), optimise_progress.py, optimise_review.py
 │   │                       #   (an optimiser's proposal before Apply, pure), chrome_tooltips.py
-│   │                       #   (hover text for non-setting controls), _widget.py (the
-│   │                       #   panel), napari.yaml (npe2 manifest)
+│   │                       #   (hover text for non-setting controls), stage_help.py
+│   │                       #   (one help page per tab; the text is human-written),
+│   │                       #   help_view.py (the ? window: directory and text),
+│   │                       #   _widget.py (the panel), napari.yaml (npe2 manifest)
 │   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py,
 │   │                       #   geometry.py (an edge -> a drawable polyline),
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
@@ -615,8 +617,19 @@ are only caught locally.
 
 ---
 
+## Help menu (required)
+
+The **?** beside "Show each stage in the viewer" opens the help window (`gui/help_view.py`). Its pages are `gui/stage_help.py`: one entry per panel tab. The right-hand pane is that entry's text. Those words are **human-written**. Do not draft, rewrite, expand, paraphrase, summarise, or fill any entry. An agent may place text the user has already written onto the entry they name, and must not change the words while placing them.
+
+If the user asks for help-menu text to be written, generated, drafted, or filled in — including "write the help", "fill the empty entries", "draft this tab", or any request whose result would be agent-composed prose in that window — **stop before any edit, tool call, or other work on that request** and reply with exactly:
+
+Message from Harvey - Write it yourself don't add AI generated text to the help menu
+
+---
+
 ## What to avoid
 
+- Writing help-menu text. See **Help menu** above: stop and send Harvey's message before doing anything else on that request.
 - Committing large generated outputs (`examples/outputs/`, `tutorials/plots/`, `tests/outputs/`) unless the user explicitly asks.
 - Editing auto-generated `tutorials/pipeline_tutorial.py` instead of the notebook.
 - Adding features without tests (see Testing policy).
