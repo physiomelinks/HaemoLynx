@@ -10648,6 +10648,14 @@ def settings_widget(napari_viewer=None):
                 continue
             if unchanged:
                 values[name] = original
+        if not values.get("use_fwhm_edge_diameters"):
+            # The Diameter measurement menu turns this off for every choice
+            # but FWHM, and hides the checkbox. Nothing reads the flag while
+            # FWHM is off, and a value other than the schema default would
+            # warn on every save and every run. The widget stays off; a run
+            # and a saved config see the default. A resumed run that still
+            # has FWHM selected reports the widget, including off.
+            values["do_fwhm_measurement"] = schema["do_fwhm_measurement"].default
         return values
 
     def use_layer(layer) -> None:
@@ -10768,6 +10776,15 @@ def settings_widget(napari_viewer=None):
                 widget.enabled = True
                 widget.tooltip = fields[name].help
                 continue
+            if name == "do_fwhm_measurement":
+                # The Diameter measurement choice turns this on for FWHM and
+                # off for the other two. The row stays in the layout so the
+                # decoy-check button and the raw-section fallback keep their
+                # place, but the checkbox itself is not shown.
+                widget.visible = False
+                widget.enabled = True
+                widget.tooltip = fields[name].help
+                continue
             if name in FORCED_HIDDEN_SETTINGS:
                 # Value already pinned above -- just keep it hidden.
                 widget.visible = False
@@ -10870,6 +10887,12 @@ def settings_widget(napari_viewer=None):
             for name in sorted(wanted, key=lambda n: wanted[n]):
                 if rows[name].value != wanted[name]:
                     rows[name].value = wanted[name]
+            # The same choice owns "Do FWHM measurement": on for FWHM, off
+            # otherwise. A resumed run may still turn it off on its own, to
+            # keep diameters already measured, without moving this choice.
+            measure = bool(wanted["use_fwhm_edge_diameters"])
+            if rows["do_fwhm_measurement"].value != measure:
+                rows["do_fwhm_measurement"].value = measure
         finally:
             diameter_source_syncing["active"] = False
 
@@ -10917,6 +10940,8 @@ def settings_widget(napari_viewer=None):
     diameter_source.changed.connect(on_diameter_source_chosen)
     for name in DIAMETER_SOURCE_SETTINGS:
         rows[name].changed.connect(on_diameter_setting_changed)
+    # The menu already reads "None", so measurement starts off with it.
+    on_diameter_source_chosen()
 
     #: User-facing values of the resume skip toggles before Revert turns them
     #: off. Restored by "Clear layers and state".

@@ -68,6 +68,38 @@ def test_the_tab_shows_one_choice_where_the_two_checkboxes_were(panel):
     assert choice.value == NO_MEASUREMENT
 
 
+def test_do_fwhm_measurement_follows_the_choice_and_stays_hidden(panel):
+    """The checkbox repeats the menu: on for FWHM, off for the other two,
+    and never shown. While FWHM is off a run still sees the schema default,
+    so saving does not warn that an unread flag was changed."""
+    import warnings
+
+    rows = panel._haemolynx_rows()
+    choice = panel._haemolynx_diameter_source
+    assert not _shown(panel, rows["do_fwhm_measurement"])
+    assert rows["do_fwhm_measurement"].value is False
+
+    choice.value = FWHM
+    _process()
+    assert rows["do_fwhm_measurement"].value is True
+    assert panel._haemolynx_values()["do_fwhm_measurement"] is True
+    assert not _shown(panel, rows["do_fwhm_measurement"])
+
+    choice.value = ENDOTHELIAL
+    _process()
+    assert rows["do_fwhm_measurement"].value is False
+
+    choice.value = NO_MEASUREMENT
+    _process()
+    assert rows["do_fwhm_measurement"].value is False
+    assert not _shown(panel, rows["do_fwhm_measurement"])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        resolved = SCHEMA.validate(panel._haemolynx_values())
+    assert [str(item.message) for item in caught] == []
+    assert resolved["do_fwhm_measurement"] is True
+
+
 def test_choosing_a_source_writes_the_two_settings_and_shows_its_rows(panel):
     rows = panel._haemolynx_rows()
     choice = panel._haemolynx_diameter_source

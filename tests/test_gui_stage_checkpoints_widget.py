@@ -383,7 +383,9 @@ def test_revert_hands_the_graph_over_and_never_writes_graph_pkl(panel):
 
     assert rows["do_skeletonize"].value is False
     assert rows["do_graph_building"].value is True
-    assert rows["do_fwhm_measurement"].value is True
+    # The menu starts on None, so measurement is off, and reverting here
+    # puts that back. Nothing had selected FWHM.
+    assert rows["do_fwhm_measurement"].value is False
     assert "do_skeletonize" in widget._haemolynx_report()
     assert not list(tmp_path.rglob("*_graph.pkl"))
 
@@ -399,6 +401,7 @@ def test_revert_from_haemodynamics_turns_off_fwhm_remeasurement(panel):
     widget._haemolynx_revert("6. Haemodynamics")
 
     assert rows["do_fwhm_measurement"].value is False
+    assert widget._haemolynx_values()["do_fwhm_measurement"] is False
     assert rows["do_graph_building"].value is True
     tabs = widget._haemolynx_tabs
     assert tabs.tabText(tabs.currentIndex()) == "6. Haemodynamics"

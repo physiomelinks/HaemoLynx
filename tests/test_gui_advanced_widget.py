@@ -92,6 +92,7 @@ def test_the_decoy_check_is_behind_a_button_under_do_fwhm_measurement(panel):
     decoy = panel._haemolynx_advanced["assign_diameters:do_fwhm_measurement"]
     fwhm = panel._haemolynx_advanced["assign_diameters:use_fwhm_edge_diameters"]
     rows["use_fwhm_edge_diameters"].value = True
+    rows["do_fwhm_measurement"].value = True
     _process()
 
     assert "fwhm_decoy_check" in decoy.names
@@ -114,9 +115,10 @@ def test_the_decoy_check_is_behind_a_button_under_do_fwhm_measurement(panel):
 def test_viscosity_law_is_an_ordinary_row(panel):
     rows = panel._haemolynx_rows()
     assert _shown(panel, "Haemodynamics", rows["viscosity_law"])
-    assert _shown(panel, "Diameters", rows["do_fwhm_measurement"]) is bool(
-        rows["use_fwhm_edge_diameters"].value
-    )
+    # The Diameter measurement menu owns this; the checkbox stays hidden.
+    rows["use_fwhm_edge_diameters"].value = True
+    _process()
+    assert not _shown(panel, "Diameters", rows["do_fwhm_measurement"])
 
 
 def test_the_count_says_how_many_hidden_settings_are_changed(panel):
