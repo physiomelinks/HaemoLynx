@@ -151,6 +151,57 @@ def test_a_vessel_behind_background_is_not_joined_across_it():
     assert G.number_of_edges() == 1
 
 
+def test_a_strand_with_no_join_is_not_left_as_an_island(monkeypatch):
+    """Two strands in one piece: only the one that joins is added.
+
+    The piece used to count as attached once any single end joined, so the
+    other strand stayed in the graph with no path to the network.
+    """
+    from haemolynx.graph.mask_recovery import _Piece
+
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 8, 30)
+    _tube(mask, 2, (7, 35, 0), 2, 12, 40)
+    near = np.array([[7.0, float(y), 30.0] for y in range(11, 27)])
+    far = np.array([[7.0, 35.0, float(x)] for x in range(14, 38)])
+    calls = {"n": 0}
+
+    def both_strands(region, support, pad):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            return _Piece()
+        piece = _Piece()
+        piece.paths = [near, far]
+        piece.ends = [((7, 11, 30), (7, 26, 30)), ((7, 35, 14), (7, 35, 37))]
+        return piece
+
+    monkeypatch.setattr("haemolynx.graph.mask_recovery._trace_piece", both_strands)
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+    assert nx.number_connected_components(G) == 1
+    recovered = [d for *_, d in G.edges(data=True) if d.get("recovered")]
+    assert recovered
+    points = np.vstack([np.asarray(d["voxels"]) for d in recovered])
+    assert points[:, 1].max() < 32.0
+
+
+def test_a_join_that_cannot_be_made_does_not_leave_the_strand(monkeypatch):
+    """Paths used to be added before the join, so a failed attach left them."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 7, 35)
+    monkeypatch.setattr(
+        "haemolynx.graph.mask_recovery._Attachments.attach_node",
+        lambda self, owner, point_um, reserved: None,
+    )
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+    assert G.number_of_edges() == 1
+    assert nx.number_connected_components(G) == 1
+    assert not any(data.get("recovered") for *_, data in G.edges(data=True))
+
+
 def test_a_piece_whose_centreline_is_only_isolated_voxels_traces_nothing():
     """Cut to an uncovered region, the mask's centreline can be a scatter of
     lone voxels, which skan cannot build a skeleton from at all."""

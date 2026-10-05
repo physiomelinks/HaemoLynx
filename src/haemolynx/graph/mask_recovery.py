@@ -139,6 +139,37 @@ def _trace_piece(region: np.ndarray, support: MaskSupport, pad: int) -> _Piece:
     return piece
 
 
+def _strands(paths):
+    """Accepted paths grouped by the ends they share.
+
+    A path the mask test refused is already absent, so the two sides of a
+    broken centreline are separate strands. Each has to join the network on
+    its own: adding one because the other joined would leave an island.
+    """
+    parent: dict[tuple[int, ...], tuple[int, ...]] = {}
+
+    def find(end: tuple[int, ...]) -> tuple[int, ...]:
+        parent.setdefault(end, end)
+        root = end
+        while parent[root] != root:
+            root = parent[root]
+        while parent[end] != root:
+            parent[end], end = root, parent[end]
+        return root
+
+    def union(a: tuple[int, ...], b: tuple[int, ...]) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for _path, a, b, _background in paths:
+        union(a, b)
+    groups: dict[tuple[int, ...], list] = {}
+    for item in paths:
+        groups.setdefault(find(item[1]), []).append(item)
+    return list(groups.values())
+
+
 def _path_length(path: np.ndarray) -> float:
     return float(np.sum(np.linalg.norm(np.diff(path, axis=0), axis=1))) if len(path) > 1 else 0.0
 
@@ -247,9 +278,11 @@ def recover_uncovered_mask_vessels(
     of it shorter than *min_length_um* with both ends free is dropped. Each
     free end is joined, by a route through the mask, to the centreline whose
     covered lumen it lies within *attach_reach_um* of -- splitting that edge
-    where needed. A piece is only added when at least one end joins, and
-    each path and join must pass *support*'s mask test and not run beside an
-    existing vessel in the same lumen. Recovered edges carry
+    where needed. A strand -- one connected run of accepted paths -- is added
+    only when one of its own ends joins. A strand with no join, or whose join
+    cannot be made, is left out, so recovery never adds an island. Each path
+    and join must pass *support*'s mask test and not run beside an existing
+    vessel in the same lumen. Recovered edges carry
     ``recovered=True``; the joins also ``reconnected=True``,
     ``bridge_kind="recovered"`` and ``bridge_background_um``.
     """
@@ -287,60 +320,81 @@ def recover_uncovered_mask_vessels(
                 paths.append((path, a, b, background))
         if not paths or sum(_path_length(p[0]) for p in paths) < float(min_length_um):
             continue
-        ends_used = {}
-        for _path, a, b, _bg in paths:
-            for end in (a, b):
-                ends_used[end] = ends_used.get(end, 0) + 1
-        plans = []
-        for end, count in ends_used.items():
-            if count != 1:
+        for strand in _strands(paths):
+            ends_used: dict[tuple[int, ...], int] = {}
+            for _path, a, b, _bg in strand:
+                for end in (a, b):
+                    ends_used[end] = ends_used.get(end, 0) + 1
+            plans = []
+            for end, count in ends_used.items():
+                if count != 1:
+                    continue
+                end_um = np.asarray(end, dtype=float) * spacing
+                target = attachments.nearest(end_um)
+                if target is None:
+                    continue
+                point, owner = target
+                join = route_through_mask(support.mask, end_um, point, spacing)
+                if join is None:
+                    continue
+                ok, background = _accepted_path(G, support, index, join)
+                if ok:
+                    plans.append((end, point, owner, join, background))
+            if not plans:
+                unattached += 1
                 continue
-            end_um = np.asarray(end, dtype=float) * spacing
-            target = attachments.nearest(end_um)
-            if target is None:
-                continue
-            point, owner = target
-            join = route_through_mask(support.mask, end_um, point, spacing)
-            if join is None:
-                continue
-            ok, background = _accepted_path(G, support, index, join)
-            if ok:
-                plans.append((end, point, owner, join, background))
-        if not plans:
-            unattached += 1
-            continue
-        node_of: dict[tuple[int, ...], Any] = {}
+            node_of: dict[tuple[int, ...], Any] = {}
+            created: list[Any] = []
 
-        def node_for(end):
-            if end not in node_of:
-                node = next_node_id(G, reserved)
-                reserved.add(node)
-                G.add_node(node, pos=np.asarray(end, dtype=float) * spacing)
-                node_of[end] = node
-            return node_of[end]
+            def node_for(end):
+                if end not in node_of:
+                    node = next_node_id(G, reserved)
+                    reserved.add(node)
+                    G.add_node(node, pos=np.asarray(end, dtype=float) * spacing)
+                    node_of[end] = node
+                    created.append(node)
+                return node_of[end]
 
-        for path, a, b, background in paths:
-            G.add_edge(
-                node_for(a), node_for(b),
-                length=_path_length(path), voxels=path.tolist(),
-                recovered=True, bridge_background_um=float(background),
-            )
-            index.add(path)
-            added_paths += 1
-        for end, point, owner, join, background in plans:
-            target = attachments.attach_node(owner, point, reserved)
-            if target is None:
+            added_edges = []
+            for path, a, b, background in strand:
+                u, v = node_for(a), node_for(b)
+                key = G.add_edge(
+                    u, v,
+                    length=_path_length(path), voxels=path.tolist(),
+                    recovered=True, bridge_background_um=float(background),
+                )
+                added_edges.append((u, v, key))
+            made = []
+            for end, point, owner, join, background in plans:
+                target = attachments.attach_node(owner, point, reserved)
+                if target is None:
+                    continue
+                join = np.vstack([join[:-1], np.asarray(G.nodes[target]["pos"], dtype=float)])
+                key = G.add_edge(
+                    node_for(end), target,
+                    length=_path_length(join), voxels=join.tolist(),
+                    reconnected=True, recovered=True, bridge_kind="recovered",
+                    bridge_background_um=float(background),
+                )
+                made.append(join)
+                joins += 1
+            if not made:
+                # attach_node returns before it changes the graph, so the
+                # strand's own edges are the only thing to take back.
+                for u, v, key in added_edges:
+                    if G.has_edge(u, v, key):
+                        G.remove_edge(u, v, key)
+                for node in created:
+                    if G.has_node(node) and G.degree(node) == 0:
+                        G.remove_node(node)
+                unattached += 1
                 continue
-            join = np.vstack([join[:-1], np.asarray(G.nodes[target]["pos"], dtype=float)])
-            G.add_edge(
-                node_for(end), target,
-                length=_path_length(join), voxels=join.tolist(),
-                reconnected=True, recovered=True, bridge_kind="recovered",
-                bridge_background_um=float(background),
-            )
-            index.add(join)
-            joins += 1
-        pieces += 1
+            for path, _a, _b, _background in strand:
+                index.add(path)
+            for join in made:
+                index.add(join)
+            added_paths += len(strand)
+            pieces += 1
     for node in list(G.nodes):
         G.nodes[node].pop("_recovery_split", None)
     logger.info(

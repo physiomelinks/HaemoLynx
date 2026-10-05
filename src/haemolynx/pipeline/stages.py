@@ -1371,15 +1371,14 @@ def _large_vessel_role_terminal_nodes(
 
 
 def _vessel_boundary_configured(settings: dict, vessel: str) -> bool:
-    """Whether the arteriole or venule boundary has anything to select from.
+    """Whether the arteriole or venule boundary has the list its method reads.
 
-    Coordinates, volume boxes or node IDs: whichever the role's method reads,
-    an empty one of those raises inside the selector, naming the setting.
+    A list another method left behind does not count. Node IDs still set
+    after switching back to coordinates used to make the selector raise,
+    because it was given no coordinates; with ``edge_percent`` the same
+    leftover list made it pick terminals.
     """
-    return any(
-        settings.get(f"{vessel}_boundary_node_{kind}")
-        for kind in ("coordinates", "volumes", "ids")
-    )
+    return graph.boundary_role_configured(settings, f"{vessel}_boundary")
 
 
 def assign_boundaries(settings: dict, network: VesselNetwork):
@@ -3067,6 +3066,7 @@ def solve(
         _mark_flow_solved(G, settings["inlet_nodes"], settings["outlet_nodes"])
 
     solution.graph = G
+    _stamp_solution(G, solution)
     return solution
 
 
@@ -4732,13 +4732,55 @@ def _boundaries_from_resume(
     )
 
 
+#: Where ``solve`` leaves the results that live only on the Solution, so a
+#: later stage that skips the solve (Continue, or Regenerate with nothing
+#: edited) can rebuild them. Pressures already sit on the nodes.
+_SOLUTION_RECORD = "solution_record"
+
+
+def _plain_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _stamp_solution(G: nx.MultiGraph, solution: Solution) -> None:
+    """Record the solve's resistances and diagnostics on *G* itself.
+
+    Continue starts at post-processing and does not solve an unedited
+    network again. The two resistances and the haematocrit-distribution
+    report exist only on the Solution, so without this the statistics CSV
+    loses its Haemodynamics section.
+    """
+    nodes = solution.equivalent_resistance_nodes
+    G.graph[_SOLUTION_RECORD] = {
+        "equivalent_resistance": _plain_optional_float(solution.equivalent_resistance),
+        "equivalent_resistance_nodes": None if nodes is None else (nodes[0], nodes[1]),
+        "network_resistance": _plain_optional_float(solution.network_resistance),
+        "statistics": {
+            key: dict(value) if isinstance(value, dict) else value
+            for key, value in solution.statistics.items()
+        },
+    }
+
+
 def _solution_from_graph(solved: nx.MultiGraph) -> Solution:
     node_list = list(solved)
     pressure = np.asarray(
         [solved.nodes[node_id].get("pressure", np.nan) for node_id in node_list],
         dtype=float,
     )
-    return Solution(pressure=pressure, node_list=node_list, graph=solved)
+    record = solved.graph.get(_SOLUTION_RECORD) or {}
+    nodes = record.get("equivalent_resistance_nodes")
+    return Solution(
+        pressure=pressure,
+        node_list=node_list,
+        graph=solved,
+        equivalent_resistance=record.get("equivalent_resistance"),
+        equivalent_resistance_nodes=None if nodes is None else tuple(nodes),
+        network_resistance=record.get("network_resistance"),
+        statistics=dict(record.get("statistics") or {}),
+    )
 
 
 def run_pipeline_stages(

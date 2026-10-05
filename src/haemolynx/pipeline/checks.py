@@ -11,6 +11,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
+from haemolynx.graph.boundaries import boundary_role_configured
 from haemolynx.haemodynamics.perturbations import (
     perturbation_problems,
     perturbations_from_settings,
@@ -269,21 +270,22 @@ def check_large_vessel_branch_order_mode_prerequisites(
             "material must stay in the network to be tagged Large_Art/"
             "Large_Ven, not be cut away."
         )
-    hierarchical_sources = (
-        "use_small_vessel_masks_for_boundary_assignment",
-        "arteriole_boundary_node_coordinates",
-        "arteriole_boundary_node_volumes",
-        "arteriole_boundary_node_ids",
-        "venule_boundary_node_coordinates",
-        "venule_boundary_node_volumes",
-        "venule_boundary_node_ids",
-    )
-    if not any(bool(settings.get(name)) for name in hierarchical_sources):
+    # The same rule as assign_boundaries: a list the current method does not
+    # read (node IDs left behind after switching back to coordinates) is not
+    # a source, and edge_percent does not name arteriole or venule boundaries.
+    vessel_boundaries = boundary_role_configured(
+        settings, "arteriole_boundary"
+    ) or boundary_role_configured(settings, "venule_boundary")
+    if not (
+        bool(settings.get("use_small_vessel_masks_for_boundary_assignment"))
+        or vessel_boundaries
+    ):
         report.add_warning(
-            "assign_large_vessel_branch_orders is on, but none of "
-            f"{', '.join(hierarchical_sources)} is set, so hierarchical "
-            "Art*/Ven* labelling -- and the Large_Art/Large_Ven tier with "
-            "it -- will never actually run."
+            "assign_large_vessel_branch_orders is on, but no small-vessel "
+            "masks are in use and neither the arteriole nor the venule "
+            "boundary method has the coordinates, volume boxes or node IDs "
+            "it reads, so hierarchical Art*/Ven* labelling -- and the "
+            "Large_Art/Large_Ven tier with it -- will never actually run."
         )
     return report
 

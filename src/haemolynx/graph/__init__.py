@@ -117,6 +117,7 @@ from .communities import (
 )
 from .boundaries import (
     BoundaryCoordinateWarning,
+    boundary_role_configured,
     inlets_outlets_from_vessel_masks,
     select_boundary_nodes_by_method,
     select_boundary_nodes_for_role,
@@ -280,6 +281,7 @@ __all__ = [
     "DegenerateCommunityWeightingWarning",
     "MissingSmallVesselAssignmentWarning",
     "BoundaryCoordinateWarning",
+    "boundary_role_configured",
     "select_boundary_terminal_nodes",
     "select_boundary_nodes_by_method",
     "select_boundary_nodes_for_role",

@@ -507,9 +507,26 @@ def test_a_run_paused_after_haemodynamics_and_continued_solves_as_one_run(tmp_pa
 
 
 def test_an_unedited_network_is_not_solved_again(tmp_path, monkeypatch):
-    """Continue without an edit: the solve the pause made is the run's."""
+    """Continue without an edit keeps the solve, including what the CSV needs.
+
+    Post processing is after the solve, so Continue does not solve again, and
+    neither does Regenerate when nothing was edited. The two resistances and
+    the haematocrit-distribution report have to travel with the graph: they
+    used to exist only on the Solution, and the statistics CSV then lost its
+    Haemodynamics section.
+    """
+    import pickle
+
+    run_settings = _settings(tmp_path, haematocrit_model="distributed_iterative")
     _stub_early_stages(monkeypatch, tmp_path)
-    paused = run_pipeline_stages(_settings(tmp_path), SCHEMA, stop_after="solve")
+    paused_out: dict = {}
+    paused = run_pipeline_stages(
+        run_settings, SCHEMA, stop_after="solve", on_stage_output=paused_out.__setitem__
+    )
+    solved = paused_out["solve"]
+    assert solved.equivalent_resistance is not None
+    assert solved.network_resistance is not None
+    assert solved.statistics["haematocrit_distribution"]
 
     def refuse(*_args, **_kwargs):
         raise AssertionError("an unedited network must not be solved again")
@@ -517,15 +534,25 @@ def test_an_unedited_network_is_not_solved_again(tmp_path, monkeypatch):
     monkeypatch.setattr(stages, "solve", refuse)
     monkeypatch.setattr(stages, "build_haemodynamic_model", refuse)
     outputs: dict = {}
+    # The panel's checkpoint is a pickle of the graph, not a live Solution.
     run_pipeline_stages(
-        _settings(tmp_path),
+        run_settings,
         SCHEMA,
         start_from="post_process",
-        resume=_resume_from_post_processing(copy.deepcopy(paused)),
+        resume=_resume_from_post_processing(pickle.loads(pickle.dumps(paused))),
         on_stage_output=outputs.__setitem__,
     )
 
-    assert outputs["post_process"].post_processed is None
+    continued = outputs["post_process"]
+    assert continued.post_processed is None
+    assert continued.equivalent_resistance == pytest.approx(solved.equivalent_resistance)
+    assert continued.network_resistance == pytest.approx(solved.network_resistance)
+    assert continued.equivalent_resistance_nodes == solved.equivalent_resistance_nodes
+    assert (
+        continued.statistics["haematocrit_distribution"]
+        == solved.statistics["haematocrit_distribution"]
+    )
+    assert "Haemodynamics" in stages.resistance_statistics(continued)
 
 
 def test_a_vessel_drawn_while_paused_is_solved_with_the_rest(tmp_path, monkeypatch):

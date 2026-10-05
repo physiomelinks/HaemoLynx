@@ -263,11 +263,53 @@ def test_vessel_boundaries_named_only_by_id_are_selected(tmp_path):
 
 def test_vessel_boundary_ids_ask_for_hierarchical_branch_orders():
     assert stages._vessel_boundary_configured(
-        {"arteriole_boundary_node_ids": [1]}, "arteriole"
+        {
+            "arteriole_boundary_selection_method": "node_ids",
+            "arteriole_boundary_node_ids": [1],
+        },
+        "arteriole",
     )
     assert not stages._vessel_boundary_configured(
-        {"arteriole_boundary_node_ids": [], "venule_boundary_node_ids": [3]}, "arteriole"
+        {
+            "arteriole_boundary_selection_method": "node_ids",
+            "arteriole_boundary_node_ids": [],
+            "venule_boundary_node_ids": [3],
+        },
+        "arteriole",
     )
+
+
+def test_leftover_node_ids_do_not_configure_another_method(tmp_path):
+    """Switching off node IDs leaves the list set. That must not run the role.
+
+    Coordinates with an empty coordinate list used to raise. edge_percent
+    used to pick terminals instead, because the leftover IDs counted as
+    configuration whatever the method was.
+    """
+    leftover = {
+        "arteriole_boundary_node_ids": [1],
+        "venule_boundary_node_ids": [3],
+    }
+    assert not stages._vessel_boundary_configured(
+        {**leftover, "arteriole_boundary_selection_method": "coordinates"}, "arteriole"
+    )
+    assert not stages._vessel_boundary_configured(
+        {**leftover, "arteriole_boundary_selection_method": "edge_percent"}, "arteriole"
+    )
+
+    for method in ("coordinates", "edge_percent"):
+        settings = _defaults(
+            arteriole_boundary_selection_method=method,
+            arteriole_boundary_node_ids=[1],
+            venule_boundary_selection_method=method,
+            venule_boundary_node_ids=[3],
+            plot_dir=tmp_path,
+        )
+        boundaries = stages.assign_boundaries(
+            settings, _network_for_stages(_branching_network(), tmp_path)
+        )
+        assert boundaries.arteriole_boundary_nodes == []
+        assert boundaries.venule_boundary_nodes == []
 
 
 def test_preflight_counts_node_ids_as_a_source_of_vessel_boundaries():
@@ -281,8 +323,20 @@ def test_preflight_counts_node_ids_as_a_source_of_vessel_boundaries():
 
     without = check_large_vessel_branch_order_mode_prerequisites(settings)
     with_ids = check_large_vessel_branch_order_mode_prerequisites(
-        {**settings, "arteriole_boundary_node_ids": [7]}
+        {
+            **settings,
+            "arteriole_boundary_selection_method": "node_ids",
+            "arteriole_boundary_node_ids": [7],
+        }
+    )
+    leftover = check_large_vessel_branch_order_mode_prerequisites(
+        {
+            **settings,
+            "arteriole_boundary_selection_method": "coordinates",
+            "arteriole_boundary_node_ids": [7],
+        }
     )
 
     assert without.warnings
     assert not with_ids.warnings
+    assert leftover.warnings

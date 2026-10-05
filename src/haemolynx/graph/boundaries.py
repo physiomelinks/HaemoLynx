@@ -599,6 +599,36 @@ def _report_node_id_picks(
             )
 
 
+#: Methods that take a list. Anything else (``edge_percent``,
+#: ``all_degree_1``, ``degree_1_from_inlet``, ``mask_stump``) reads none, so a
+#: list left over from another method is not a reason to run it.
+_METHOD_LIST = {
+    "coordinates": "coordinates",
+    "volume": "volume_boxes",
+    "node_ids": "node_ids",
+}
+
+
+def boundary_role_configured(settings: Mapping[str, Any], role: str) -> bool:
+    """Whether *role* has the list its selection method reads.
+
+    The arteriole and venule roles are optional: they run only when that list
+    is non-empty. A list the method does not read is ignored, so node IDs left
+    behind after switching back to coordinates do not make the selector raise
+    on the empty coordinate list, and do not make ``edge_percent`` pick
+    terminals. Methods that read no list are not a configuration of these
+    roles. An unknown role is not configured.
+    """
+    names = BOUNDARY_ROLE_SETTINGS.get(role)
+    if names is None:
+        return False
+    method = str(settings.get(names["method"]) or "coordinates").strip().lower()
+    listed = _METHOD_LIST.get(method)
+    if listed is None:
+        return False
+    return bool(settings.get(names[listed]))
+
+
 def select_boundary_nodes_for_role(
     G: nx.Graph,
     image_shape: tuple[int, ...],
