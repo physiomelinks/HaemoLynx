@@ -321,6 +321,22 @@ def test_z_depth_filter_is_on_the_left_panel_not_the_right(make_napari_viewer):
     assert panel.layout().indexOf(row) == -1
 
 
+def test_z_depth_labels_show_the_selected_microns(make_napari_viewer):
+    """Before a stack the handles are labelled min and max. Afterwards they
+    show the window in microns, and follow the handles."""
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    slider = panel._haemolynx_z_depth_slider
+    assert slider.edge_labels() == ("min", "max")
+
+    panel._haemolynx_view.results = _stack_results()
+    panel._haemolynx_after_layers_applied()
+    assert slider.edge_labels() == ("0 µm", "8 µm")
+
+    slider.setValue((2.5, 5.0))
+    assert slider.edge_labels() == ("2.5 µm", "5 µm")
+
+
 def test_z_depth_clips_every_layer_and_full_range_restores(make_napari_viewer):
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)

@@ -2249,6 +2249,8 @@ def _double_range_pair(object_name: str):
             self._hi.setValue(0.0)
             self._lo_label = QLabel("min")
             self._hi_label = QLabel("max")
+            self._lo_label.setObjectName(f"{object_name}_min_label")
+            self._hi_label.setObjectName(f"{object_name}_max_label")
             form = QFormLayout(self)
             form.setContentsMargins(0, 0, 0, 0)
             form.setSpacing(2)
@@ -2322,6 +2324,14 @@ def _double_range_pair(object_name: str):
                     self._updating = False
             self.valueChanged.emit(self.value())
 
+        def edge_labels(self) -> tuple[str, str]:
+            """Text beside the lower and upper handles."""
+            return (self._lo_label.text(), self._hi_label.text())
+
+        def set_edge_labels(self, low: str, high: str) -> None:
+            self._lo_label.setText(str(low))
+            self._hi_label.setText(str(high))
+
         def value(self) -> tuple[float, float]:
             lo, hi = float(self._lo.value()), float(self._hi.value())
             return (min(lo, hi), max(lo, hi))
@@ -2389,6 +2399,28 @@ def _z_extent_and_step(results: ResultLayers | None, viewer=None) -> tuple[float
     return extent, step
 
 
+def format_z_depth_microns(value: float) -> str:
+    """A Z position for the view-panel labels, in microns."""
+    text = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    if text in {"", "-0"}:
+        text = "0"
+    return f"{text} µm"
+
+
+def _refresh_z_depth_labels(slider, results: ResultLayers | None, viewer=None) -> None:
+    """Show the selected Z window in microns, or min/max before a stack is loaded."""
+    try:
+        extent, _step = _z_extent_and_step(results, viewer)
+        ready = bool(getattr(slider, "_haemolynx_extent_ready", False))
+        if extent is None or extent <= 0.0 or not ready:
+            slider.set_edge_labels("min", "max")
+            return
+        z_min, z_max = slider.value()
+        slider.set_edge_labels(format_z_depth_microns(z_min), format_z_depth_microns(z_max))
+    except RuntimeError:
+        logger.debug("Z-depth slider is gone; skipping its labels", exc_info=True)
+
+
 def _sync_z_depth_slider(slider, results: ResultLayers | None, viewer=None) -> None:
     """Set the Z-depth range from the image/skeleton; stay visible on the left.
 
@@ -2409,6 +2441,7 @@ def _sync_z_depth_slider(slider, results: ResultLayers | None, viewer=None) -> N
         extent, step = _z_extent_and_step(results, viewer)
         if extent is None or extent <= 0.0:
             slider.setEnabled(False)
+            _refresh_z_depth_labels(slider, results, viewer)
             return
         slider.blockSignals(True)
         try:
@@ -2428,6 +2461,7 @@ def _sync_z_depth_slider(slider, results: ResultLayers | None, viewer=None) -> N
         finally:
             slider.blockSignals(False)
         slider.setEnabled(True)
+        _refresh_z_depth_labels(slider, results, viewer)
     except RuntimeError:
         logger.debug("Z-depth slider is gone; skipping this sync", exc_info=True)
 
@@ -11177,6 +11211,7 @@ def settings_widget(napari_viewer=None):
         return not bool(slider.isSliderDown())
 
     def on_z_depth_changed(*_args) -> None:
+        _refresh_z_depth_labels(z_depth_slider, view.results, viewer)
         if _z_slider_should_apply(z_depth_slider):
             apply_view_z()
 
@@ -11560,6 +11595,7 @@ def settings_widget(napari_viewer=None):
             reparent_arrow_length_slider()
             z_depth_slider._haemolynx_extent_ready = False
             z_depth_slider.setEnabled(False)
+            z_depth_slider.set_edge_labels("min", "max")
             arrow_length_slider.setEnabled(False)
             arrow_length_slider.setVisible(False)
             apply_view_z(force=True)
@@ -12003,6 +12039,7 @@ def settings_widget(napari_viewer=None):
             reparent_arrow_length_slider()
             z_depth_slider._haemolynx_extent_ready = False
             z_depth_slider.setEnabled(False)
+            z_depth_slider.set_edge_labels("min", "max")
             arrow_length_slider.setEnabled(False)
             arrow_length_slider.setVisible(False)
             apply_view_z(force=True)
