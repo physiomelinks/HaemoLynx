@@ -2070,6 +2070,13 @@ class ResultLayers:
                         "edge_color": colour,
                         "out_of_slice_display": True,
                     },
+                    # Start hidden: the lines sit on the vessels, and the
+                    # user turns a layer on to inspect a fit. Only the first
+                    # emission sets this. Solve and post processing redraw
+                    # the same lines with visible defaulting back to True,
+                    # which keeps a layer the user has switched on (see
+                    # _add_or_update's saved_visible handling).
+                    visible=name in self._emitted,
                 )
             )
         return layers
@@ -2091,6 +2098,9 @@ class ResultLayers:
                     data=fwhm_raw,
                     scale=tuple(float(v) for v in self._voxel_size_zyx),
                     options={"blending": "additive", "colormap": "gray", "opacity": 0.8},
+                    # Same as the profile lines: off until the user selects
+                    # it. A second pass through this stage leaves the choice.
+                    visible=FWHM_RAW in self._emitted,
                 )
             )
         layers.extend(self._fwhm_line_layers())

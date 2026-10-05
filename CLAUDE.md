@@ -85,7 +85,8 @@ haemolynx/
 │   │                       #   layer -> run settings, pure), boundary_picking.py
 │   │                       #   (boundary settings <-> napari Points/Shapes, pure),
 │   │                       #   view_snap.py (XY/XZ/YZ plane -> dims order / camera
-│   │                       #   directions, pure), layer_sets.py (baseline/perturbation
+│   │                       #   directions, pure), canvas_illumination.py (the view
+│   │                       #   window's surface lamp), layer_sets.py (baseline/perturbation
 │   │                       #   network swap for the view panel's "Showing" menu, pure),
 │   │                       #   perturbation_editing.py, graph_editor.py
 │   │                       #   + graph_click.py (the Edit window), post_processing.py

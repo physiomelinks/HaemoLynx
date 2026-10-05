@@ -623,6 +623,39 @@ def test_the_fwhm_layers_draw_the_sampled_line_and_the_measured_width_apart():
     assert total_length(FWHM_WIDTHS) == pytest.approx(10.0)
 
 
+def test_fwhm_layers_start_hidden():
+    """The fit lines and the raw image sit on the vessels. They stay in the
+    layer list, off, until the user selects one."""
+    from haemolynx.gui.results import FWHM_WIDTHS
+
+    graph = a_graph(diameter_um=5.0, diameter_source="measured")
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["fwhm_profile_lines_phys"] = [[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]
+        data["fwhm_measured_lines_phys"] = [[[0.0, 0.0, 0.0], [0.0, 0.5, 0.0]]]
+    raw = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    group = built(graph).stage_finished(
+        "assign_diameters", SimpleNamespace(graph=graph, fwhm_raw=raw)
+    )
+    for name in (FWHM_RAW, FWHM_PROFILES, FWHM_WIDTHS):
+        assert spec_named(group, name).visible is False
+
+
+def test_a_later_stage_does_not_force_the_fwhm_layers_hidden_again():
+    """Solve redraws the lines. That redraw must not set visible=False, or
+    a layer the user has switched on is turned off again."""
+    from haemolynx.gui.results import FWHM_WIDTHS
+
+    graph = a_graph(diameter_um=5.0, diameter_source="measured")
+    for _u, _v, _key, data in graph.edges(keys=True, data=True):
+        data["fwhm_profile_lines_phys"] = [[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]
+        data["fwhm_measured_lines_phys"] = [[[0.0, 0.0, 0.0], [0.0, 0.5, 0.0]]]
+    results = built(graph)
+    results.stage_finished("assign_diameters", SimpleNamespace(graph=graph))
+    solved = results.stage_finished("solve", _solved(graph))
+    for name in (FWHM_PROFILES, FWHM_WIDTHS):
+        assert spec_named(solved, name).visible is True
+
+
 def _measured_with_a_stray():
     """The three-vessel line plus a stray vessel (nodes 10-11) far off along
     y, every vessel with one FWHM line across its middle."""

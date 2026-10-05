@@ -12295,8 +12295,12 @@ def settings_widget(napari_viewer=None):
     snapshot_button.clicked.connect(on_save_snapshot)
     snapshot_layout.addWidget(snapshot_button)
     snapshot_group.setMinimumHeight(48)
+    from haemolynx.gui.canvas_illumination import illumination_box
+
+    illumination = illumination_box(viewer)
     view_layout = QVBoxLayout(view_panel)
     view_layout.addWidget(display_group)
+    view_layout.addWidget(illumination.group)
     view_layout.addWidget(sweep_group)
     view_layout.addWidget(snapshot_group)
 
@@ -12396,6 +12400,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_choose_layer_set = choose_layer_set
     panel._haemolynx_colour_by = colour_by
     panel._haemolynx_view_panel = view_panel
+    panel._haemolynx_illumination = illumination
+    panel._haemolynx_illumination_group = illumination.group
     panel._haemolynx_view_dock = view_dock
     panel._haemolynx_view_button = view_button
     panel._haemolynx_reopen_view = on_reopen_view

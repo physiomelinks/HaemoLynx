@@ -171,6 +171,26 @@ COLOUR_BY_TOOLTIP = (
 SCALE_BAR_TOOLTIP = (
     "Show napari's scale bar in the bottom-right of the canvas, in microns when voxel size is known"
 )
+#: The view window's Illumination box: how the canvas lights every surface.
+ILLUMINATION_TOOLTIPS = {
+    "shading": (
+        "How the canvas lights a surface: no lighting, flat facets, or "
+        "smooth shading"
+    ),
+    "ambient": (
+        "Light that fills every surface equally, including the parts facing "
+        "away from the lamp"
+    ),
+    "diffuse": (
+        "Light from the lamp on the canvas, stronger on surfaces facing it"
+    ),
+    "specular": (
+        "Brightness of the highlight on surfaces facing the lamp"
+    ),
+    "shininess": (
+        "How small that highlight is: a higher value is a tighter glint"
+    ),
+}
 #: Canvas buttons, bottom-left: centre the data and look straight at a plane.
 VIEW_SNAP_TOOLTIPS = {
     "XY": "Centre the view and look down z at the XY plane",

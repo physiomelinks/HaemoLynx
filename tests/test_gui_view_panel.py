@@ -128,12 +128,15 @@ def test_the_view_panel_floats_over_the_canvas(make_napari_viewer):
     assert snapshot.parentWidget() is panel._haemolynx_view_panel
     layout = panel._haemolynx_view_panel.layout()
     assert layout.indexOf(panel._haemolynx_display_group) >= 0
-    # Display, then a sweep perturbation's sliders (hidden until one is shown),
-    # then Snapshot.
+    # Display, then the canvas lamp, then a sweep perturbation's sliders
+    # (hidden until one is shown), then Snapshot.
+    illumination = panel._haemolynx_illumination_group
+    assert illumination.objectName() == "haemolynx_illumination_group"
+    assert layout.indexOf(illumination) == layout.indexOf(panel._haemolynx_display_group) + 1
     sweep = panel._haemolynx_sweep_group
     assert sweep.objectName() == "haemolynx_sweep_group"
     assert sweep.isHidden()
-    assert layout.indexOf(sweep) == layout.indexOf(panel._haemolynx_display_group) + 1
+    assert layout.indexOf(sweep) == layout.indexOf(illumination) + 1
     assert layout.indexOf(snapshot) == layout.indexOf(sweep) + 1
     button = panel._haemolynx_snapshot_button
     assert button.objectName() == "haemolynx_snapshot_button"
