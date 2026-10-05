@@ -890,7 +890,7 @@ def test_a_method_only_shows_the_controls_it_can_use(panel):
 
     assert bc.state.actions["inlet"] == {"pick", "move", "assign"}
     # A volume role inserts a box rather than drawing one.
-    assert bc.state.actions["outlet"] == {"insert_box", "box_choice", "box_size", "box_step", "box_move", "box_scan", "box_nodes", "use_node", "remove_box"} | {"clear"}
+    assert bc.state.actions["outlet"] == {"insert_box", "box_choice", "box_size", "box_colour", "box_step", "box_move", "box_scan", "box_nodes", "use_node", "remove_box"}
     assert bc.state.actions["venule_boundary"] == set(), "nothing to point at"
 
 
@@ -1579,8 +1579,8 @@ def test_choosing_node_ids_offers_its_own_row_and_buttons(panel):
     widget, viewer, bc = panel
     by_node_ids(widget, "venule_boundary")
 
-    # The box tools stay, to find the node to list.
-    assert bc.state.actions["venule_boundary"] == {"pick_nodes", "clear_nodes"} | {"insert_box", "box_choice", "box_size", "box_step", "box_move", "box_scan", "box_nodes", "use_node", "remove_box"}
+    # The box tools are the volume method's alone.
+    assert bc.state.actions["venule_boundary"] == {"pick_nodes", "clear_nodes"}
     assert rows_of(widget)["venule_boundary_node_ids"] in list(bc.holders["venule_boundary"])
     assert bc.actions["venule_boundary"].pick_nodes in list(bc.holders["venule_boundary"])
 
@@ -1883,8 +1883,8 @@ def test_choosing_a_node_from_the_box_makes_it_the_inlet(panel):
     assert rows_of(widget)["inlet_node_ids"].value == [1]
     assert rows_of(widget)["inlet_node_selection_method"].value == "node_ids"
     assert BC_NODE_IDS in viewer.layers
-    # The box tools stay, so another node can be found the same way.
-    assert "insert_box" in bc.state.actions["inlet"]
+    # The box tools are the volume method's alone, so they go with it.
+    assert "insert_box" not in bc.state.actions["inlet"]
     assert "now one of inlet's nodes" in widget._haemolynx_report()
     # Under node_ids the box is how the node was found, not a pick left unread.
     bc.show()
@@ -2066,6 +2066,57 @@ def test_clicking_a_listed_node_marks_it_and_centres_the_view_on_it(panel):
     assert np.allclose(centre, [52.0, 62.0])             # node 2's (y, x)
     assert viewer.dims.point[0] == pytest.approx(22.0, abs=1.0)   # its slice
     assert "Node 2" in widget._haemolynx_report()
+
+
+def test_in_2d_back_and_forward_take_the_view_with_the_box(panel):
+    """A 2D box is drawn on the slice through its centre, so moving it through
+    the slices left the slice being looked at, and it vanished. The view now
+    goes with it."""
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.show()
+    flat = viewer.layers[regions_name("inlet")]
+    bc.actions["inlet"].box_step.value = 10.0
+
+    bc.actions["inlet"].box_move["forward"].changed()
+    bc.flush_boxes()
+
+    assert rows_of(widget)["inlet_node_volumes"].value == [
+        [[25.0, 45.0, 55.0], [35.0, 55.0, 65.0]]
+    ]
+    assert viewer.dims.point[0] == pytest.approx(30.0, abs=1.0)
+    assert len(flat._indices_view) == 1, "the rectangle is on the slice shown"
+
+    bc.actions["inlet"].box_move["back"].changed()
+    bc.actions["inlet"].box_move["back"].changed()
+    bc.flush_boxes()
+    assert viewer.dims.point[0] == pytest.approx(10.0, abs=1.0)
+    assert len(flat._indices_view) == 1
+
+
+def test_a_roles_boxes_can_be_given_a_colour_of_their_own(panel):
+    widget, viewer, bc = _box_panel(panel)
+    bc.insert_box()
+    bc.show()
+    before = rows_of(widget)["inlet_node_volumes"].value
+
+    bc.set_box_colour("inlet", (0.1, 0.2, 0.9))
+
+    solid = viewer.layers[boxes_name("inlet")]
+    assert np.allclose(np.asarray(solid.vertex_colors)[:, :3], (0.1, 0.2, 0.9))
+    flat = viewer.layers[regions_name("inlet")]
+    assert np.allclose(flat.edge_color[:, :3], (0.1, 0.2, 0.9))
+    assert "rgb(26, 51, 230)" in bc.actions["inlet"].box_colour.native.styleSheet()
+    assert rows_of(widget)["inlet_node_volumes"].value == before, "display only"
+
+    # It holds through a redraw and a move, and other roles keep theirs.
+    bc.actions["inlet"].box_move["right"].changed()
+    bc.flush_boxes()
+    bc.redraw()
+    assert np.allclose(viewer.layers[regions_name("inlet")].edge_color[:, :3], (0.1, 0.2, 0.9))
+    assert np.allclose(np.asarray(viewer.layers[boxes_name("inlet")].vertex_colors)[:, :3],
+                       (0.1, 0.2, 0.9))
+    assert "outlet" not in bc.state.box_colour
 
 
 def test_in_3d_a_press_moves_only_the_3d_box_until_the_presses_stop(panel):

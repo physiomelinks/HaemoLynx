@@ -121,6 +121,7 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         "insert_box",
         "box_choice",
         "box_size",
+        "box_colour",
         "box_step",
         "box_move",
         "box_scan",

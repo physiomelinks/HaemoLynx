@@ -58,6 +58,10 @@ ACTION_TOOLTIPS: dict[str, str] = {
         "The box's size along z, y and x in microns; changing it resizes the "
         "chosen box about its centre"
     ),
+    "box_colour": (
+        "Choose the colour this role's boxes are drawn in, in 3D and 2D. "
+        "Display only: it changes no setting"
+    ),
     "box_step": (
         "How far, in microns, one press of an arrow moves the box"
     ),

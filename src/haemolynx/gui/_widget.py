@@ -6339,6 +6339,7 @@ def _box_tool_widgets(role: str) -> dict[str, Any]:
         "insert_box": PushButton(text="Insert a box"),
         "box_choice": ComboBox(choices=["(no box yet)"], label="Box"),
         "box_size": size,
+        "box_colour": PushButton(text="Box colour..."),
         "box_step": FloatSpinBox(value=5.0, min=0.1, max=1000.0, step=1.0,
                                  label="Move step (um)"),
         "box_move": move,
@@ -6437,6 +6438,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         DEFAULT_BOX_SIZE_UM,
         MOVE_DIRECTIONS,
         box_around,
+        box_centre,
         box_node_rows,
         box_nodes_spec,
         box_size,
@@ -6498,15 +6500,15 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             getattr(_action, _control).tooltip = _tip
 
     #: The box tools: insert a box, size and move it, list the nodes in it
-    #: and choose one. A volume role's page is these; a node-ID role keeps
-    #: them as a way to find the node to list.
-    BOX_TOOLS = ("insert_box", "box_choice", "box_size", "box_step", "box_move",
+    #: and choose one. A volume role's page is these and nothing else; no
+    #: other method shows them.
+    BOX_TOOLS = ("insert_box", "box_choice", "box_size", "box_colour", "box_step", "box_move",
                  "box_scan", "box_nodes", "use_node", "remove_box")
     #: Which of a role's controls its chosen method has any use for.
     ACTIONS_FOR_METHOD = {
         "coordinates": ("pick", "move", "assign"),
-        "volume": (*BOX_TOOLS, "clear"),
-        "node_ids": ("pick_nodes", "clear_nodes", *BOX_TOOLS),
+        "volume": BOX_TOOLS,
+        "node_ids": ("pick_nodes", "clear_nodes"),
     }
     CONTROLS = ("pick", "draw", "depth", "move", "assign", "clear",
                 "pick_nodes", "clear_nodes", *BOX_TOOLS)
@@ -6518,7 +6520,8 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
     state = SimpleNamespace(applying=False, results=None, connected=set(),
                         visible=frozenset(), hidden=frozenset(), tabs=None,
                         actions={}, draw3d=None, node_pick=None,
-                        active_box={}, box_nodes={}, pending_boxes={}, scanned={})
+                        active_box={}, box_nodes={}, pending_boxes={}, scanned={},
+                        box_colour={})
 
     #: Each role's page, and where each shared row currently sits. Filled in
     #: by `page`; empty until the panel has been laid out.
@@ -6730,6 +6733,8 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             if BC_NODE_IDS not in drawn and stale is not None and _is_ours(stale):
                 viewer.layers.remove(stale)
             draw_boxes(values, bands)
+            for owner in state.box_colour:
+                tint_regions(owner)
             set_depth_range()
             if state.node_pick is not None:
                 focus_nodes()
@@ -6837,7 +6842,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         if bands is None:
             bands, _measured = bands_now(values)
         boxes = role_boxes(BoundaryPicks.from_settings(values), bands, extra=extra)
-        colours = dict(role_colours())
+        colours = {**dict(role_colours()), **state.box_colour}
         for owner in ROLES:
             name = boxes_name(owner)
             existing = layer(name)
@@ -7381,15 +7386,75 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             if flat and regions is not None and _is_ours(regions) \
                     and len(regions.data) == len(boxes):
                 regions.data = [rectangle_from_box(lo, hi)[0] for lo, hi in boxes]
+                tint_regions(owner)
             solids = layer(boxes_name(owner))
             if solid and solids is not None and _is_ours(solids) and boxes:
                 vertices, faces, which = box_mesh(boxes)
                 shades = np.asarray(
-                    box_colours(dict(role_colours())[owner], len(boxes)), dtype=float
+                    box_colours(box_colour_of(owner), len(boxes)), dtype=float
                 )[which]
                 _set_tube_mesh(solids, vertices, faces, shades)
         finally:
             state.applying = was
+
+    def box_colour_of(owner: str):
+        """*owner*'s box colour: the one chosen with Box colour, else the role's."""
+        return state.box_colour.get(owner, dict(role_colours())[owner])
+
+    def tint_regions(owner: str) -> None:
+        """Give *owner*'s 2D rectangles its chosen box colour, if one was chosen.
+
+        The regions layer is drawn in the role's colour from its spec, so a
+        chosen colour is laid over it after every redraw.
+        """
+        colour = state.box_colour.get(owner)
+        regions = layer(regions_name(owner))
+        if colour is None or regions is None or not _is_ours(regions) or not len(regions.data):
+            return
+        rgba = np.tile(np.asarray(colour, dtype=float), (len(regions.data), 1))
+        was = state.applying
+        state.applying = True
+        try:
+            regions.edge_color = rgba
+            regions.face_color = rgba
+        finally:
+            state.applying = was
+
+    def show_box_colour(owner: str) -> None:
+        """The Box colour button wears the colour it will draw in."""
+        r, g, b = (int(round(255 * float(v))) for v in box_colour_of(owner)[:3])
+        text = "black" if 0.299 * r + 0.587 * g + 0.114 * b > 150 else "white"
+        actions[owner].box_colour.native.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); color: {text};")
+
+    def set_box_colour(owner: str, colour) -> None:
+        """Draw *owner*'s boxes, 3D and 2D, in *colour* (RGB or RGBA, 0-1).
+
+        Display only: no setting changes, so a run is unaffected.
+        """
+        rgba = [float(v) for v in colour][:4]
+        if len(rgba) == 3:
+            rgba.append(1.0)
+        state.box_colour[owner] = tuple(rgba)
+        show_box_colour(owner)
+        flush_boxes()
+        draw_boxes()
+        tint_regions(owner)
+
+    def on_box_colour() -> None:
+        from qtpy.QtGui import QColor
+        from qtpy.QtWidgets import QColorDialog
+
+        owner = str(role.value)
+        r, g, b, a = box_colour_of(owner)
+        chosen = QColorDialog.getColor(
+            QColor.fromRgbF(r, g, b, a), actions[owner].box_colour.native,
+            f"{owner.replace('_', ' ')} box colour",
+        )
+        if not chosen.isValid():
+            return
+        set_box_colour(owner, chosen.getRgbF()[:3])
+        report.value = f"{owner} boxes are now drawn in the colour chosen."
 
     def preview_boxes(owner: str, boxes) -> None:
         """Show *owner*'s boxes where they now are, touching one layer only.
@@ -7513,6 +7578,29 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         boxes[index] = move_box(boxes[index], direction, float(actions[owner].box_step.value),
                                 displayed, **camera)
         preview_boxes(owner, boxes)
+        if direction not in ("back", "forward"):
+            return
+        centre = box_centre(boxes[index])
+        if viewer.dims.ndisplay == 2:
+            # A 2D box is drawn on the slice through its centre, so it left
+            # the view with the slice it moved off. The view follows it.
+            offset = max(0, viewer.dims.ndim - 3)
+            depth = next((a for a in range(3) if a not in displayed), None)
+            if depth is not None:
+                viewer.dims.set_point(depth + offset, centre[depth])
+            report.value = (
+                f"{owner} box {index + 1} moved {direction} to the slice at "
+                f"{'zyx'[depth] if depth is not None else 'z'} = "
+                f"{centre[depth if depth is not None else 0]:.1f} um; the view went with it."
+            )
+        else:
+            # Along the line of sight, which a flat (orthographic) 3D view
+            # cannot show: the box looks the same until the view is turned.
+            report.value = (
+                f"{owner} box {index + 1} moved {direction} along your line of sight; "
+                f"centre now (z, y, x) = ({centre[0]:.1f}, {centre[1]:.1f}, {centre[2]:.1f}) um. "
+                "Turn the view to see how deep it sits."
+            )
 
     def on_remove_box() -> None:
         owner = str(role.value)
@@ -7899,6 +7987,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         wire(_name, _action.pick_nodes, on_pick_nodes)
         wire(_name, _action.clear_nodes, on_clear_nodes)
         wire(_name, _action.insert_box, on_insert_box)
+        wire(_name, _action.box_colour, on_box_colour)
         wire(_name, _action.box_scan, on_box_scan)
         wire(_name, _action.box_choice, on_box_choice)
         wire(_name, _action.remove_box, on_remove_box)
@@ -7955,7 +8044,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
                     *(rows[n] for n in ordinary),
                     action.pick,
                     action.insert_box, action.box_choice, action.box_size,
-                    action.box_step, action.box_move, action.box_scan, action.box_nodes,
+                    action.box_colour, action.box_step, action.box_move, action.box_scan, action.box_nodes,
                     action.use_node, action.remove_box,
                     action.draw, action.depth,
                     action.move, action.assign, action.clear,
@@ -8055,6 +8144,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         draw_in_3d=draw_in_3d,
         pick_nodes=on_pick_nodes, clear_nodes=on_clear_nodes,
         insert_box=on_insert_box, remove_box=on_remove_box, flush_boxes=flush_boxes,
+        set_box_colour=set_box_colour,
         scan_box=on_box_scan,
         # Moves wait for the clicks to stop before they are written; called
         # directly (a script, a test) a move is written at once.
