@@ -1374,6 +1374,20 @@ def _large_vessel_role_terminal_nodes(
     )
 
 
+def _reset_run_node_list(settings: dict, name: str) -> None:
+    """Empty the run-filled node list *name*, in place when it is a list.
+
+    In place, because the panel reuses one settings dict across runs and
+    holds these lists. A config can hold something else -- a lone node ID
+    typed into the row (``large_vessel_outlet_nodes: 3316``) -- which has no
+    ``[:]`` to clear, so that is replaced with a fresh list.
+    """
+    if isinstance(settings.get(name), list):
+        settings[name][:] = []
+    else:
+        settings[name] = []
+
+
 def _vessel_boundary_configured(settings: dict, vessel: str) -> bool:
     """Whether the arteriole or venule boundary has the list its method reads.
 
@@ -1597,8 +1611,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             # left over from an earlier run of this same settings dict (the
             # napari GUI reuses one across runs). They are recomputed from
             # scratch below regardless of which branch this run takes.
-            settings["inlet_nodes"][:] = []
-            settings["outlet_nodes"][:] = []
+            _reset_run_node_list(settings, "inlet_nodes")
+            _reset_run_node_list(settings, "outlet_nodes")
             auto_inlet_nodes = _large_vessel_role_terminal_nodes(
                 G,
                 image.shape,
@@ -1755,12 +1769,12 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             f"and {len(settings['outlet_node_coordinates'])} outlet coordinates from venule-mask overlap."
         )
 
-    settings["inlet_nodes"][:] = []
-    settings["outlet_nodes"][:] = []
-    settings["arteriole_boundary_nodes"][:] = []
-    settings["venule_boundary_nodes"][:] = []
-    settings["large_vessel_inlet_nodes"][:] = []
-    settings["large_vessel_outlet_nodes"][:] = []
+    _reset_run_node_list(settings, "inlet_nodes")
+    _reset_run_node_list(settings, "outlet_nodes")
+    _reset_run_node_list(settings, "arteriole_boundary_nodes")
+    _reset_run_node_list(settings, "venule_boundary_nodes")
+    _reset_run_node_list(settings, "large_vessel_inlet_nodes")
+    _reset_run_node_list(settings, "large_vessel_outlet_nodes")
     if io_from_masks:
         # Use direct terminal-node overlap assignment from vessel masks.
         inlet_nodes = auto_inlet_nodes
@@ -1792,8 +1806,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         )
         settings["venule_boundary_nodes"].extend(ven_boundary)
 
-    settings["large_arteriole_boundary_nodes"][:] = []
-    settings["large_venule_boundary_nodes"][:] = []
+    _reset_run_node_list(settings, "large_arteriole_boundary_nodes")
+    _reset_run_node_list(settings, "large_venule_boundary_nodes")
     if settings["assign_large_vessel_branch_orders"] and settings["automated_vessel_assignment"]:
         # Which edges fall inside the large-vessel masks, and where that
         # coverage ends -- the Large_Art/Large_Ven <-> Art/Ven hand-off

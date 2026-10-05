@@ -340,3 +340,33 @@ def test_a_roles_volumes_are_ignored_unless_its_method_is_volume(role):
         f"{names['volume_boxes']!r} changed {role!r}'s selected nodes even "
         f"though {names['method']!r} is 'all_degree_1', not 'volume'."
     )
+
+
+def test_a_lone_node_id_in_a_run_filled_list_does_not_stop_the_stage(tmp_path):
+    """The ``*_nodes`` lists are the run's to fill, and the stage empties them
+    in place first. A config with a bare ID typed into one
+    (``large_vessel_outlet_nodes: 3316``) stopped Boundaries at
+    ``'int' object does not support item assignment``."""
+    settings = _defaults(
+        plot_dir=tmp_path,
+        large_vessel_outlet_nodes=3316,
+        venule_boundary_nodes=7,
+        outlet_nodes=None,
+    )
+    network = _network_for_stages(_branching_network(), tmp_path)
+
+    stages.assign_boundaries(settings, network)
+
+    assert settings["large_vessel_outlet_nodes"] == []
+    assert settings["venule_boundary_nodes"] == []
+    assert settings["outlet_nodes"] and isinstance(settings["outlet_nodes"], list)
+
+
+def test_a_run_filled_list_is_emptied_in_place():
+    """The panel holds these lists across runs, so a list stays the same list."""
+    held = [1, 2]
+    settings = {"inlet_nodes": held, "outlet_nodes": 5}
+    stages._reset_run_node_list(settings, "inlet_nodes")
+    stages._reset_run_node_list(settings, "outlet_nodes")
+    assert settings["inlet_nodes"] is held and held == []
+    assert settings["outlet_nodes"] == []
