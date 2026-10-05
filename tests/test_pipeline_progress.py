@@ -310,6 +310,39 @@ def test_a_step_total_given_once_holds_for_the_steps_after_it():
     assert [event.step_total for event in events if event.kind == STEP] == [2, 2]
 
 
+def test_a_step_carries_the_step_starting_after_it():
+    events: list[ProgressEvent] = []
+    run = RunProgress(events.append)
+    with run.stage("build_network") as reporter:
+        reporter.step("first", total=2, next_step="second")
+        reporter.step("second")
+
+    assert [event.next_step for event in events if event.kind == STEP] == ["second", None]
+
+
+def test_each_graph_step_names_the_one_that_starts_after_it():
+    from haemolynx.graph.assemble import step_after
+
+    assert [step_after(label) for label in STEP_LABELS] == [*STEP_LABELS[1:], None]
+    assert step_after("not_a_step") is None
+
+
+def test_log_progress_names_the_step_now_running(caplog):
+    import logging
+
+    event = ProgressEvent(
+        STEP, "build_network", "3. Graph", index=2, total=8,
+        step="reconnect_orphan_and_dangling_nodes", step_index=9, step_total=13,
+        next_step="recover_uncovered_mask_vessels",
+    )
+    with caplog.at_level(logging.DEBUG, logger="haemolynx.pipeline.progress"):
+        log_progress(event)
+
+    (line,) = [record.getMessage() for record in caplog.records]
+    assert "reconnect_orphan_and_dangling_nodes done" in line
+    assert line.endswith("now recover_uncovered_mask_vessels")
+
+
 def test_completed_counts_the_stage_that_just_finished():
     event = ProgressEvent(STAGE_FINISHED, "solve", "Solve", index=6, total=8)
     assert event.completed == 7

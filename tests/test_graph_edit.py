@@ -58,6 +58,18 @@ def test_insert_node_on_edge_splits_at_the_closest_existing_vertex():
     assert G[new_node][1][0]["length"] == pytest.approx(1.0)
 
 
+def test_insert_node_on_edge_takes_the_id_it_is_given():
+    """A caller adding many nodes counts its own ids: the default scans the
+    whole graph for a free one, once per split."""
+    G = _chain_graph()
+
+    assert insert_node_on_edge(G, 0, 1, 0, point_um=(2.1, 0.0, 0.0), node_id=42) == 42
+    assert G.nodes[42]["pos"] == (2.0, 0.0, 0.0)
+    assert G.has_edge(0, 42) and G.has_edge(42, 1)
+    assert insert_node_on_edge(G, 42, 1, 0, point_um=(3.0, 0.0, 0.0), node_id=43) == 1
+    assert not G.has_node(43)
+
+
 def test_insert_node_on_edge_near_an_end_reuses_the_existing_node():
     G = _chain_graph()
     assert insert_node_on_edge(G, 0, 1, 0, point_um=(0.1, 0.0, 0.0)) == 0

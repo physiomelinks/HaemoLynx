@@ -68,6 +68,7 @@ def insert_node_on_edge(
     point_um: Sequence[float],
     *,
     reserved_ids: set[Any] | None = None,
+    node_id: Any = None,
 ) -> Any:
     """Split edge ``(u, v, key)`` at the vertex of its own path closest to
     *point_um*, inserting a new node there. Returns the node id at the split
@@ -78,6 +79,10 @@ def insert_node_on_edge(
     An edge drawn straight (no ``voxels``, per :func:`haemolynx.visualization.geometry.edge_polyline`'s
     own fallback) is split against a synthetic 2-point line between its
     nodes' ``pos`` instead.
+
+    *node_id* is the id a new node takes, for a caller adding many that keeps
+    its own count; by default the next numeric id free in *G* and
+    *reserved_ids*, which scans the whole graph.
     """
     data = G.get_edge_data(u, v, key)
     if data is None:
@@ -93,7 +98,7 @@ def insert_node_on_edge(
     if index == len(voxels) - 1:
         return v
 
-    new_node = next_node_id(G, set(reserved_ids or ()))
+    new_node = next_node_id(G, set(reserved_ids or ())) if node_id is None else node_id
     split_point = tuple(float(c) for c in voxels[index])
     G.add_node(new_node, pos=split_point)
 

@@ -101,6 +101,27 @@ def test_paths_added_after_the_index_was_built_are_judged_too():
     )
 
 
+def test_the_added_paths_near_a_box_are_those_whose_bounds_meet_it_in_order_added():
+    """Kept as box arrays rather than tested path by path: mask recovery adds
+    thousands, and the per-path test was 87% of its run time on E14.5."""
+    rng = np.random.default_rng(0)
+    index = EdgeSampleIndex(_graph([((7, 7, 2), (7, 7, 3))]))
+    for _ in range(50):  # past the boxes' first growth
+        start = rng.uniform(0, 100, 3)
+        index.add(np.vstack([start, start + rng.uniform(-8, 8, 3)]))
+
+    for _ in range(200):
+        lo = rng.uniform(-10, 100, 3)
+        hi = lo + rng.uniform(0, 30, 3)
+        expected = [
+            path for path in index.added
+            if np.all(path.max(axis=0) >= lo) and np.all(path.min(axis=0) <= hi)
+        ]
+        found = index.added_near(lo, hi)
+        assert len(found) == len(expected)
+        assert all(a is b for a, b in zip(found, expected))
+
+
 def test_the_diagnostic_reports_two_edges_in_one_lumen_and_nothing_else():
     wide = _wide_vessel()
     doubled = _graph([((7, 4, 2), (7, 4, 57)), ((7, 10, 2), (7, 10, 57))])

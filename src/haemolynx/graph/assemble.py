@@ -38,6 +38,7 @@ from .mask_recovery import (
     DEFAULT_MIN_REGION_VOLUME_UM3,
     recover_uncovered_mask_vessels as _recover_uncovered_mask_vessels,
 )
+from .lumen_loops import remove_loops_inside_one_lumen
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
 from .reconnect import reconnect_secondary_loop_edges
@@ -63,6 +64,7 @@ STEP_LABELS: tuple[str, ...] = (
     "remove_edges_for_self_connected_nodes",
     "reconnect_orphan_and_dangling_nodes",
     "recover_uncovered_mask_vessels",
+    "remove_loops_inside_one_lumen",
     "prune_vascular_stubs_final",
     "smart_multigraph_degree2_removal_post_orphan_reconnect",
 )
@@ -70,10 +72,19 @@ STEP_LABELS: tuple[str, ...] = (
 
 #: Where each label comes in the run, for the line every step logs. A step
 #: names itself in that line, and `collapse_node_clusters` names itself in its
-#: own summary too, so the `Step n/13` prefix is what tells the two apart.
+#: own summary too, so the `Step n/14` prefix is what tells the two apart.
 _STEP_POSITIONS: dict[str, int] = {
     label: position for position, label in enumerate(STEP_LABELS, start=1)
 }
+
+
+def step_after(label: str) -> str | None:
+    """The topology step that starts once *label* finishes: ``None`` after
+    the last step, or for a label that is not one of :data:`STEP_LABELS`."""
+    position = _STEP_POSITIONS.get(label)
+    if position is None or position >= len(STEP_LABELS):
+        return None
+    return STEP_LABELS[position]
 
 
 def _notify_step(
@@ -81,16 +92,20 @@ def _notify_step(
     label: str,
     step_callback: StepCallback | None,
 ) -> None:
-    # Thirteen lines a run, ungated: what a step left behind is the answer to
+    # Fourteen lines a run, ungated: what a step left behind is the answer to
     # "how many branches does the pipeline think there are", and asking for it
-    # should not mean asking for the per-node detail as well.
+    # should not mean asking for the per-node detail as well. The line names
+    # the step starting next: it is the last line until that step ends, and
+    # read alone it blamed the step just finished for the next one's time.
+    following = step_after(label)
     logger.info(
-        "Step %d/%d %s: %d nodes / %d edges",
+        "Step %d/%d %s: %d nodes / %d edges%s",
         _STEP_POSITIONS.get(label, 0),
         len(STEP_LABELS),
         label,
         G.number_of_nodes(),
         G.number_of_edges(),
+        f"; running {following}" if following else "",
     )
     if step_callback is not None:
         step_callback(G, label)
@@ -295,10 +310,12 @@ def build_graph_from_skeleton(
         (``reconnect.MaskBridges``); the stub prunes also drop stubs mostly
         off the mask or inside their parent's lumen, and hold one whose tip
         the mask runs on past to *min_stub_length* as well
-        (``prune.prune_vascular_stubs``); and a final prune runs after the
-        orphan reconnect and recovery, so the stubs they leave are judged
-        too. Without a mask, or off, none of it happens and the final prune
-        step leaves the graph as it is.
+        (``prune.prune_vascular_stubs``); every loop lying inside one lumen
+        -- a Lee-thinning ring, round nothing or a dropout rather than tissue
+        -- loses an arc (``lumen_loops.remove_loops_inside_one_lumen``); and
+        a final prune runs after the orphan reconnect and recovery, so the
+        stubs they leave are judged too. Without a mask, or off, none of it
+        happens and those two steps leave the graph as it is.
     recover_uncovered_mask_vessels, recovery_min_region_volume_um3, recovery_min_length_um
         With a *segmentation_mask*, trace the mask the graph does not cover
         and join it to the network through the mask -- see
@@ -495,6 +512,13 @@ def build_graph_from_skeleton(
             min_length_um=recovery_min_length_um,
         )
     _notify_step(G, "recover_uncovered_mask_vessels", step_callback)
+
+    # Lee thinning rings every tunnel through the mask, and the steps above
+    # can close more loops inside one vessel: one segmented vessel is drawn
+    # once, so each loop that does not run round tissue loses an arc.
+    if bridge_support is not None:
+        G = remove_loops_inside_one_lumen(G, bridge_support)
+    _notify_step(G, "remove_loops_inside_one_lumen", step_callback)
 
     if bridge_support is not None:
         G = prune_stubs(G)

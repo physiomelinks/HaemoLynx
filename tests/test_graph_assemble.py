@@ -1,6 +1,6 @@
 """Tests for graph.assemble.build_graph_from_skeleton, the topology orchestrator.
 
-`build_graph_from_skeleton` runs thirteen topology steps in a fixed order and is
+`build_graph_from_skeleton` runs fourteen topology steps in a fixed order and is
 the only caller of most of them. The things that can go wrong at this level are
 orchestration mistakes rather than algorithm mistakes: a step dropped or run out
 of order, a threshold routed to the wrong step, or a `step_callback` label that
@@ -43,6 +43,7 @@ EXPECTED_STEP_LABELS = [
     "remove_edges_for_self_connected_nodes",
     "reconnect_orphan_and_dangling_nodes",
     "recover_uncovered_mask_vessels",
+    "remove_loops_inside_one_lumen",
     "prune_vascular_stubs_final",
     "smart_multigraph_degree2_removal_post_orphan_reconnect",
 ]
@@ -225,6 +226,28 @@ def test_cluster_collapse_method_direction_aware_reaches_the_direction_aware_col
 
     # No segmentation mask given, so nothing to judge a duplicate edge by but distance.
     assert calls == [(pytest.approx(0.7), 9, pytest.approx(15.0), None)]
+
+
+@pytest.mark.parametrize("with_mask", [True, False])
+def test_loops_inside_one_lumen_are_broken_only_given_the_mask(monkeypatch, with_mask):
+    import haemolynx.graph.assemble as assemble_module
+
+    calls = []
+
+    def record(G, support):
+        calls.append(support)
+        return G
+
+    monkeypatch.setattr(assemble_module, "remove_loops_inside_one_lumen", record)
+    skeleton = _t_skeleton()
+    mask = skeleton.copy() if with_mask else None
+
+    _build(skeleton, segmentation_mask=mask)
+
+    assert len(calls) == (1 if with_mask else 0)
+    if with_mask:
+        assert calls[0].voxel_size_zyx == VOXEL_SIZE_ZYX
+        assert calls[0].mask.shape == skeleton.shape
 
 
 def test_a_segmentation_mask_reaches_every_duplicate_edge_check(monkeypatch):

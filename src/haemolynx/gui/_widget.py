@@ -5299,7 +5299,7 @@ def _run_in_background(
 
         `run_pipeline_stages` takes no cancel argument, so this and `produced`
         are where a cancellation acts.         Both are called between stages, or
-        between graph building's thirteen topology steps, so a run stops with
+        between graph building's fourteen topology steps, so a run stops with
         nothing half-written -- and soon after being asked, rather than at the
         end of whatever stage it is in.
 

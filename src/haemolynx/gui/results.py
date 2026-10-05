@@ -1393,8 +1393,8 @@ class ResultLayers:
         settings: Mapping[str, Any] | None = None,
     ) -> None:
         self.prefix = prefix
-        #: Redraw the vessels after each of graph building's thirteen topology
-        #: steps. Off by default: it is thirteen extra rebuilds of the geometry
+        #: Redraw the vessels after each of graph building's fourteen topology
+        #: steps. Off by default: it is fourteen extra rebuilds of the geometry
         #: in the middle of the slowest stage.
         self.show_steps = show_steps
         #: Run settings (Export-tab toggles such as ``flow_arrow_scale``).

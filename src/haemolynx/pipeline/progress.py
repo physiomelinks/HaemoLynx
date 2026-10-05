@@ -13,7 +13,7 @@ The callback is a plain function taking one event, so what "showing progress"
 means is the consumer's decision: nothing here imports napari, Qt or tqdm, and
 nothing here writes to the console unless asked to (:func:`log_progress`).
 
-Graph building reports a second, finer level -- the thirteen topology steps of
+Graph building reports a second, finer level -- the fourteen topology steps of
 :func:`haemolynx.graph.build_graph_from_skeleton` -- through the same callback,
 so a consumer that only cares about stages can ignore ``kind == "step"``.
 
@@ -371,6 +371,9 @@ class ProgressEvent:
     step_index: Optional[int] = None
     #: For ``STEP``: how many steps the stage has, when it knows.
     step_total: Optional[int] = None
+    #: For ``STEP``: the step now running, when the stage knows it -- what a
+    #: watcher should be shown until the next event, rather than ``step``.
+    next_step: Optional[str] = None
     #: For ``STAGE_FAILED``: what was raised.
     error: Optional[BaseException] = None
 
@@ -404,13 +407,19 @@ class StageProgress:
         """How many steps this stage has reported so far."""
         return self._done
 
-    def step(self, label: str, total: Optional[int] = None) -> None:
+    def step(
+        self, label: str, total: Optional[int] = None, next_step: Optional[str] = None
+    ) -> None:
         """Report that the step named *label* has just finished.
 
         *total* is how many steps the stage will report in all; it is passed on
         every call because the caller usually has the list to hand, and the
         most recent value is the one reported. Without it a consumer gets a
         step count but no end point, and should show an indeterminate bar.
+
+        *next_step* names the step starting now. A watcher shown only *label*
+        reads the step just finished as the one running, and blames it for
+        however long the next one takes.
         """
         if total is not None:
             self._total = total
@@ -424,6 +433,7 @@ class StageProgress:
                 step=label,
                 step_index=self._done,
                 step_total=self._total,
+                next_step=next_step,
             )
         )
         self._done += 1
@@ -531,6 +541,8 @@ def log_progress(event: ProgressEvent) -> None:
         logger.error(f"Stage {position} failed: {event.title}: {event.error}")
     elif event.kind == STEP:
         of_total = f"/{event.step_total}" if event.step_total else ""
+        running = f"; now {event.next_step}" if event.next_step else ""
         logger.debug(
-            f"Stage {position} step {(event.step_index or 0) + 1}{of_total}: {event.step}"
+            f"Stage {position} step {(event.step_index or 0) + 1}{of_total}: "
+            f"{event.step} done{running}"
         )

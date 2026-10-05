@@ -91,12 +91,14 @@ class ProgressDisplay:
             done = (event.step_index or 0) + 1
             total = event.step_total or 0
             of_total = f"/{total}" if total else ""
-            self.steps = BarState(
-                value=done,
-                total=total,
-                text=f"{event.step} ({done}{of_total})",
-                visible=True,
+            # The step running, not the one just finished: shown the finished
+            # one, a watcher blames it for however long the next one takes.
+            text = (
+                f"{event.next_step}... ({done}{of_total} done)"
+                if event.next_step
+                else f"{event.step} ({done}{of_total})"
             )
+            self.steps = BarState(value=done, total=total, text=text, visible=True)
 
     def finish(self, message: str = "Finished") -> None:
         """The run is over: fill the bar in, and drop the step one."""

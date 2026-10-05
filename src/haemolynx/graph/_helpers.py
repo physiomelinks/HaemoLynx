@@ -793,11 +793,26 @@ class EdgeSampleIndex:
         self.owners = owners
         self.tree = cKDTree(self.points) if len(self.points) else None
         self.added: List[np.ndarray] = []
+        # Each added path's bounding box, (lo, hi) per row, grown by doubling:
+        # mask recovery adds thousands of paths and asks about each new one,
+        # and a box test per added path in Python made that quadratic.
+        self._boxes = np.empty((16, 2, 3))
 
     def add(self, path: Any) -> None:
         from haemolynx.preprocessing.bridge_mask_support import _densify
 
-        self.added.append(_densify(np.asarray(path, dtype=float).reshape(-1, 3), 1.0))
+        dense = _densify(np.asarray(path, dtype=float).reshape(-1, 3), 1.0)
+        if len(self.added) == len(self._boxes):
+            self._boxes = np.concatenate([self._boxes, np.empty_like(self._boxes)])
+        self._boxes[len(self.added)] = (dense.min(axis=0), dense.max(axis=0))
+        self.added.append(dense)
+
+    def added_near(self, lo: np.ndarray, hi: np.ndarray) -> List[np.ndarray]:
+        """The added paths whose bounding box meets the box *lo*..*hi*, in
+        the order they were added."""
+        boxes = self._boxes[: len(self.added)]
+        meets = np.all(boxes[:, 1] >= lo, axis=1) & np.all(boxes[:, 0] <= hi, axis=1)
+        return [self.added[i] for i in np.flatnonzero(meets)]
 
 
 def duplicates_existing_vessel(
@@ -832,10 +847,7 @@ def duplicates_existing_vessel(
     path = np.asarray(new_path, dtype=float).reshape(-1, 3)
     reach = 2.0 * float(np.max(radius_at(path))) + 1.0
     lo, hi = path.min(axis=0) - reach, path.max(axis=0) + reach
-    nearby = [
-        added for added in index.added
-        if np.all(added.max(axis=0) >= lo) and np.all(added.min(axis=0) <= hi)
-    ]
+    nearby = index.added_near(lo, hi)
     return bool(nearby) and path_shadows_existing_vessel(
         path, None, np.vstack(nearby), inside_lumen, radius_at, step_um=step_um
     )

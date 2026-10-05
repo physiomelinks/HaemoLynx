@@ -25,8 +25,14 @@ from scipy.spatial import cKDTree
 from haemolynx.preprocessing.bridge_mask_support import SAME_LUMEN_MARGIN_UM, MaskSupport
 from haemolynx.preprocessing.memmap_support import LOW_MEMORY_BLOCK_VOXELS, slab_step
 
-from ._helpers import EdgeSampleIndex, duplicates_existing_vessel, next_node_id
+from ._helpers import (
+    EdgeSampleIndex,
+    duplicates_existing_vessel,
+    edge_sample_points,
+    next_node_id,
+)
 from .edit import insert_node_on_edge
+from .lumen_loops import LOOP_SEARCH_UM, loop_inside_one_lumen
 from .reconnect import route_through_mask
 
 logger = logging.getLogger(__name__)
@@ -179,6 +185,51 @@ def _voxels_of(data) -> np.ndarray:
     return np.asarray([] if voxels is None else voxels, dtype=float).reshape(-1, 3)
 
 
+def _oriented(path: np.ndarray, a, from_end) -> np.ndarray:
+    return path if from_end == a else path[::-1]
+
+
+def _without_loops_in_one_lumen(strand, support: MaskSupport):
+    """``(kept, dropped)``: a strand's ``(path, a, b, background)`` paths less
+    each one that closes a loop inside one lumen with the rest.
+
+    Paths are taken longest first, so what such a loop loses is its shortest
+    path. A path closing a loop round tissue is kept; the kept paths are in
+    their original order.
+    """
+    kept_graph = nx.MultiGraph()
+    keep = set()
+    for i in sorted(range(len(strand)), key=lambda i: -_path_length(strand[i][0])):
+        path, a, b, _background = strand[i]
+        try:
+            route = nx.shortest_path(kept_graph, b, a, weight="length")
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            route = None
+        if route is not None:
+            pieces = [path]
+            for x, y in zip(route[:-1], route[1:]):
+                data = min(kept_graph[x][y].values(), key=lambda d: d["length"])
+                pieces.append(_oriented(data["path"], data["a"], x))
+            if loop_inside_one_lumen(np.vstack(pieces), support):
+                continue
+        kept_graph.add_edge(a, b, length=_path_length(path), path=path, a=a)
+        keep.add(i)
+    return [strand[i] for i in sorted(keep)], len(strand) - len(keep)
+
+
+class _NodeIds:
+    """New numeric node ids, in the order :func:`next_node_id` would give
+    them, without rescanning the graph for each. An id is never handed out
+    twice, so one whose node is taken out again is not reused."""
+
+    def __init__(self, G: nx.MultiGraph):
+        self.next = next_node_id(G, set())
+
+    def take(self) -> int:
+        node, self.next = self.next, self.next + 1
+        return node
+
+
 class _Attachments:
     """Where a recovered end may join the network: the centreline sample
     minimising ``distance - radius(sample)``, within *reach_um* of the
@@ -208,15 +259,21 @@ class _Attachments:
             return None
         return self.index.points[best[1]], self.index.owners[best[1]]
 
-    def attach_node(self, owner, point_um, reserved) -> Any:
+    def _current(self, owner, point_um):
+        """*owner*, or the piece of it now holding *point_um* once an earlier
+        attachment has split it; ``None`` when there is none."""
+        u, v, key = owner
+        if self.G.has_edge(u, v, key):
+            return owner
+        return self._sub_edge(u, v, point_um)
+
+    def attach_node(self, owner, point_um, ids: _NodeIds) -> Any:
         """The node *point_um* joins the network at, splitting the edge
         holding it."""
+        owner = self._current(owner, point_um)
+        if owner is None:
+            return None
         u, v, key = owner
-        if not self.G.has_edge(u, v, key):
-            owner = self._sub_edge(u, v, point_um)
-            if owner is None:
-                return None
-            u, v, key = owner
         data = self.G.edges[u, v, key]
         voxels = _voxels_of(data)
         if len(voxels) > 1:
@@ -225,14 +282,52 @@ class _Attachments:
             from_u = np.linalg.norm(start - np.asarray(self.G.nodes[u]["pos"], dtype=float))
             from_v = np.linalg.norm(start - np.asarray(self.G.nodes[v]["pos"], dtype=float))
             data["voxels"] = (voxels[::-1] if from_v < from_u else voxels).tolist()
-        node = insert_node_on_edge(self.G, u, v, key, point_um, reserved_ids=reserved)
+        node = insert_node_on_edge(self.G, u, v, key, point_um, node_id=ids.next)
         if node not in (u, v):
+            ids.take()
             self.G.nodes[node]["_recovery_split"] = True
         return node
 
+    def _polyline(self, x, y, data) -> np.ndarray:
+        positions = {n: np.asarray(self.G.nodes[n]["pos"], dtype=float) for n in (x, y)}
+        return edge_sample_points(x, y, data, positions)
+
+    def loop_through(self, start, owner, point_um, join: np.ndarray, reach_um: float):
+        """The closed path a join from node *start* to *point_um* on *owner*
+        would make with the network -- round from *start* to the nearer end
+        of *owner*, along it to *point_um*, and back along *join* -- or
+        ``None`` when the network holds no way round within *reach_um*."""
+        owner = self._current(owner, point_um)
+        if owner is None:
+            return None
+        u, v, key = owner
+        distance, routes = nx.single_source_dijkstra(self.G, start, cutoff=reach_um, weight="length")
+        along = self._polyline(u, v, self.G.edges[u, v, key])
+        cut = int(np.argmin(np.linalg.norm(along - np.asarray(point_um, dtype=float), axis=1)))
+        best = None
+        for end, piece in ((u, along[: cut + 1]), (v, along[cut:][::-1])):
+            if end not in distance:
+                continue
+            total = distance[end] + _path_length(piece)
+            if best is None or total < best[0]:
+                best = (total, routes[end], piece)
+        if best is None:
+            return None
+        _total, route, piece = best
+        pieces = []
+        for x, y in zip(route[:-1], route[1:]):
+            data = min(self.G[x][y].values(), key=lambda d: d.get("length", np.inf))
+            pieces.append(self._polyline(x, y, data))
+        pieces += [piece, np.asarray(join, dtype=float).reshape(-1, 3)[::-1]]
+        return np.vstack(pieces)
+
     def _sub_edge(self, u, v, point_um):
         """The edge now holding *point_um*, among the edges reachable from
-        *u* or *v* through nodes an earlier split added."""
+        *u* or *v* through nodes an earlier split added.
+
+        Only pieces of the vessel are searched: an earlier join hangs off
+        each split node too, and taking the point to be on it attached the
+        next strand to that join instead of to the vessel."""
         best, best_distance = None, np.inf
         frontier, seen = [u, v], set()
         while frontier:
@@ -241,6 +336,8 @@ class _Attachments:
                 continue
             seen.add(node)
             for _, other, key, data in self.G.edges(node, keys=True, data=True):
+                if data.get("recovered"):
+                    continue
                 voxels = _voxels_of(data)
                 if len(voxels):
                     distance = float(np.min(np.linalg.norm(voxels - point_um, axis=1)))
@@ -282,7 +379,12 @@ def recover_uncovered_mask_vessels(
     only when one of its own ends joins. A strand with no join, or whose join
     cannot be made, is left out, so recovery never adds an island. Each path
     and join must pass *support*'s mask test and not run beside an existing
-    vessel in the same lumen. Recovered edges carry
+    vessel in the same lumen. A vessel loop runs round tissue, so a path
+    closing a loop within its strand, or a join after the strand's first
+    (ends nearest the network first), is left out when that loop lies inside
+    one lumen (``lumen_loops.loop_inside_one_lumen``): Lee thinning of a blob, or a
+    strand joined back again and again to the vessel whose rim it lies in,
+    otherwise made tangles of short loops. Recovered edges carry
     ``recovered=True``; the joins also ``reconnected=True``,
     ``bridge_kind="recovered"`` and ``bridge_background_um``.
     """
@@ -294,9 +396,9 @@ def recover_uncovered_mask_vessels(
         return G
     index, radii = _centreline_samples(G, support)
     attachments = _Attachments(G, index, radii, margin_um + float(attach_reach_um))
-    reserved: set[Any] = set()
+    ids = _NodeIds(G)
     pieces = added_paths = joins = 0
-    small = thin = unattached = 0
+    small = thin = unattached = loops_in_lumen = 0
     for region in _components(uncovered):
         if len(region) * voxel_volume < float(min_region_volume_um3):
             small += 1
@@ -330,31 +432,30 @@ def recover_uncovered_mask_vessels(
             for _path, a, b, _bg in strand:
                 for end in (a, b):
                     ends_used[end] = ends_used.get(end, 0) + 1
-            plans = []
+            # Free ends, nearest the network first: the first join is made
+            # untested, so it should be the most direct one.
+            candidates = []
             for end, count in ends_used.items():
                 if count != 1:
                     continue
                 end_um = np.asarray(end, dtype=float) * spacing
                 target = attachments.nearest(end_um)
-                if target is None:
-                    continue
-                point, owner = target
-                join = route_through_mask(support.mask, end_um, point, spacing)
-                if join is None:
-                    continue
-                ok, background = _accepted_path(G, support, index, join)
-                if ok:
-                    plans.append((end, point, owner, join, background))
-            if not plans:
+                if target is not None:
+                    candidates.append((float(np.linalg.norm(target[0] - end_um)), end, end_um, target))
+            if not candidates:
                 unattached += 1
                 continue
+            candidates.sort(key=lambda candidate: candidate[0])
+            # A free end only ever has one path, and a path closing a loop
+            # has two at each end, so dropping one leaves the free ends free.
+            strand, dropped = _without_loops_in_one_lumen(strand, support)
+            loops_in_lumen += dropped
             node_of: dict[tuple[int, ...], Any] = {}
             created: list[Any] = []
 
             def node_for(end):
                 if end not in node_of:
-                    node = next_node_id(G, reserved)
-                    reserved.add(node)
+                    node = ids.take()
                     G.add_node(node, pos=np.asarray(end, dtype=float) * spacing)
                     node_of[end] = node
                     created.append(node)
@@ -370,8 +471,25 @@ def recover_uncovered_mask_vessels(
                 )
                 added_edges.append((u, v, key))
             made = []
-            for end, point, owner, join, background in plans:
-                target = attachments.attach_node(owner, point, reserved)
+            for _distance, end, end_um, (point, owner) in candidates:
+                # Once the strand is joined, every further join closes a
+                # loop; one inside a single lumen -- the strand lying in the
+                # vessel's own rim, or in a blob round it -- is not a vessel.
+                # Judged on the straight join: its route runs beside it.
+                if made:
+                    loop = attachments.loop_through(
+                        node_for(end), owner, point, np.vstack([end_um, point]), LOOP_SEARCH_UM
+                    )
+                    if loop is not None and loop_inside_one_lumen(loop, support):
+                        loops_in_lumen += 1
+                        continue
+                join = route_through_mask(support.mask, end_um, point, spacing)
+                if join is None:
+                    continue
+                ok, background = _accepted_path(G, support, index, join)
+                if not ok:
+                    continue
+                target = attachments.attach_node(owner, point, ids)
                 if target is None:
                     continue
                 join = np.vstack([join[:-1], np.asarray(G.nodes[target]["pos"], dtype=float)])
@@ -404,8 +522,10 @@ def recover_uncovered_mask_vessels(
         G.nodes[node].pop("_recovery_split", None)
     logger.info(
         "Mask recovery: %d uncovered mask voxel(s); traced %d piece(s) (%d path(s), %d join(s)); "
-        "skipped %d below %.3g um^3, %d too thin to be a vessel, %d with no end to join",
+        "skipped %d below %.3g um^3, %d too thin to be a vessel, %d with no end to join; "
+        "left out %d path(s) and join(s) closing a loop inside one lumen",
         len(uncovered), pieces, added_paths, joins, small, float(min_region_volume_um3), thin, unattached,
+        loops_in_lumen,
     )
     return G
 

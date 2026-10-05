@@ -1059,7 +1059,7 @@ def build_network(
 ):
     """Load the vessel masks and turn the skeleton into a graph.
 
-    This is the long stage, so it reports the thirteen topology steps of
+    This is the long stage, so it reports the fourteen topology steps of
     :func:`graph.build_graph_from_skeleton` to *progress* as they land -- a
     run's only finer-grained progress than "graph building is happening".
 
@@ -1125,7 +1125,7 @@ def build_network(
         # Every snapshot draws the same volume, and projecting it reads the whole
         # stack, so it is projected once here rather than once per step. Graph
         # building reads `image` and never writes to it, which is what makes one
-        # projection good for all thirteen steps.
+        # projection good for all fourteen steps.
         step_projection = (
             visualization.overlay_z_projection(image)
             if settings["save_step_artifacts"]
@@ -1136,7 +1136,11 @@ def build_network(
             # Report before drawing: the snapshots below are the slow part of
             # this step, so a watcher should see it tick over on arrival.
             if progress is not None:
-                progress.step(label, total=len(graph.STEP_LABELS))
+                progress.step(
+                    label,
+                    total=len(graph.STEP_LABELS),
+                    next_step=graph.assemble.step_after(label),
+                )
             # The graph as it stands, for anyone drawing the repair as it
             # happens. It is mid-repair and will change again, which is why it
             # goes out here rather than being kept.

@@ -246,3 +246,135 @@ def test_a_piece_whose_centreline_is_only_isolated_voxels_traces_nothing():
     piece = _trace_piece(region, _support(mask), pad=1)
 
     assert piece.paths == [] and piece.ends == []
+
+
+# --- loops: round tissue, or inside one lumen ---------------------------------
+
+
+def _square_loop(z, lo, hi):
+    """A closed square in the plane *z* with corners (lo, lo) and (hi, hi) in (y, x)."""
+    corners = [(lo, lo), (lo, hi), (hi, hi), (hi, lo), (lo, lo)]
+    return np.array([[z, y, x] for y, x in corners], dtype=float)
+
+
+def _slab():
+    mask = np.zeros((9, 30, 30), dtype=bool)
+    mask[2:7, 2:28, 2:28] = True
+    return mask
+
+
+def test_a_ring_inside_one_lumen_loses_a_path_and_one_round_tissue_keeps_both():
+    """Lee thinning of a blob traces rings: two paths between the same ends."""
+    from haemolynx.graph.mask_recovery import _without_loops_in_one_lumen
+
+    loop = _square_loop(4.0, 6.0, 22.0)
+    a, b = (4, 6, 6), (4, 22, 22)
+    strand = [(loop[:3], a, b, 0.0), (loop[2:][::-1], a, b, 0.0)]
+    round_tissue = _slab()
+    round_tissue[:, 9:20, 9:20] = False
+
+    kept, dropped = _without_loops_in_one_lumen(strand, _support(_slab()))
+    assert dropped == 1 and len(kept) == 1
+    kept, dropped = _without_loops_in_one_lumen(strand, _support(round_tissue))
+    assert dropped == 0 and len(kept) == 2
+
+
+def _arch_off_the_trunk(filled: bool):
+    """A vessel leaving the trunk at x = 20, running along y = 20 and back
+    down to the trunk at x = 40, and its centreline. *filled* segments the
+    tissue it encloses too, as a blob joined to the trunk."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 20), 2, 8, 20)
+    _tube(mask, 1, (7, 0, 40), 2, 8, 20)
+    _tube(mask, 2, (7, 20, 0), 2, 20, 40)
+    if filled:
+        mask[5:10, 7:21, 20:41] = True
+    path = np.array(
+        [[7.0, float(y), 20.0] for y in range(11, 20)]
+        + [[7.0, 20.0, float(x)] for x in range(20, 41)]
+        + [[7.0, float(y), 40.0] for y in range(19, 10, -1)]
+    )
+    return mask, path
+
+
+def _recover_one_strand(monkeypatch, mask, path):
+    from haemolynx.graph.mask_recovery import _Piece
+
+    calls = {"n": 0}
+
+    def the_strand(region, support, pad):
+        calls["n"] += 1
+        piece = _Piece()
+        if calls["n"] == 1:
+            piece.paths = [path]
+            piece.ends = [((7, 11, 20), (7, 11, 40))]
+        return piece
+
+    monkeypatch.setattr("haemolynx.graph.mask_recovery._trace_piece", the_strand)
+    return recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+
+def _joins(G):
+    return [d for *_, d in G.edges(data=True) if d.get("reconnected")]
+
+
+def test_a_strand_in_a_blob_beside_its_vessel_is_joined_once(monkeypatch):
+    """Regression: every free end was joined, so a strand lying in a blob
+    round the vessel it came off was joined back to it again and again --
+    on the E14.5 stack 3,667 such joins, one strand joined 251 times, and
+    tangles of loops the vessel's lumen holds none of."""
+    mask, path = _arch_off_the_trunk(filled=True)
+
+    G = _recover_one_strand(monkeypatch, mask, path)
+
+    assert any(d.get("recovered") for *_, d in G.edges(data=True))
+    assert len(_joins(G)) == 1
+    assert nx.cycle_basis(nx.Graph(G)) == []
+    assert nx.number_connected_components(G) == 1
+
+
+def test_a_vessel_leaving_and_rejoining_round_tissue_keeps_both_joins(monkeypatch):
+    mask, path = _arch_off_the_trunk(filled=False)
+
+    G = _recover_one_strand(monkeypatch, mask, path)
+
+    assert len(_joins(G)) == 2
+    assert len(nx.cycle_basis(nx.Graph(G))) == 1
+
+
+def test_a_split_vessel_is_searched_without_the_joins_hanging_off_it():
+    """Regression: a point on a vessel already split by a join could be taken
+    to lie on that join, and the next strand was attached to the join -- 206
+    times on the E14.5 stack -- instead of to the vessel."""
+    from haemolynx.graph.mask_recovery import _Attachments
+
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([7.0, 7.0, 0.0]))
+    G.add_node(1, pos=np.array([7.0, 7.0, 20.0]))
+    G.add_node(2, pos=np.array([7.0, 7.0, 10.0]), _recovery_split=True)
+    G.add_node(3, pos=np.array([7.0, 12.0, 14.0]))
+    G.add_edge(0, 2, voxels=[[7.0, 7.0, float(x)] for x in range(0, 11)])
+    G.add_edge(2, 1, voxels=[[7.0, 7.0, float(x)] for x in range(10, 21)])
+    point = np.array([7.0, 7.4, 10.6])
+    G.add_edge(2, 3, voxels=[[7.0, 7.0, 10.0], point.tolist(), [7.0, 12.0, 14.0]],
+               recovered=True, reconnected=True)
+    attachments = _Attachments(G, None, np.zeros(0), 4.0)
+
+    u, v, _key = attachments._sub_edge(0, 1, point)
+
+    assert {u, v} == {1, 2}
+
+
+def test_new_node_ids_follow_on_from_the_graph_and_are_never_reused():
+    from haemolynx.graph._helpers import next_node_id
+    from haemolynx.graph.mask_recovery import _NodeIds
+
+    G = nx.MultiGraph()
+    G.add_nodes_from([0, 5, "a"])
+    ids = _NodeIds(G)
+
+    first = ids.take()
+    assert first == next_node_id(G, set()) == 6
+    G.add_node(first)
+    G.remove_node(first)
+    assert ids.take() == 7

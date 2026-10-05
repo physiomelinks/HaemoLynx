@@ -3,7 +3,7 @@
 `tests/test_pipeline_progress.py` stubs every stage out, so it pins the
 reporting and nothing else. This one runs the pipeline for real on the smallest
 committed fixture, because the thing a stub cannot check is that graph building
-fires its thirteen steps through the reporter it was handed. That a run with no
+fires its fourteen steps through the reporter it was handed. That a run with no
 callback still works is what every other integration test here does already.
 """
 from __future__ import annotations
@@ -81,5 +81,6 @@ def test_a_real_run_reports_every_stage_and_every_graph_step(tmp_path):
     assert [event.step for event in steps] == list(STEP_LABELS)
     assert {event.stage for event in steps} == {"build_network"}
     assert {event.step_total for event in steps} == {len(STEP_LABELS)}
+    assert [event.next_step for event in steps] == [*STEP_LABELS[1:], None]
     assert graph.number_of_nodes() > 0
     assert graph.number_of_edges() > 0

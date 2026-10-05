@@ -134,6 +134,28 @@ def test_a_step_shows_the_second_bar():
     assert "collapse_node_clusters" in display.steps.text
 
 
+def test_a_step_bar_names_the_step_running_not_the_one_just_done():
+    """Regression: the bar named the step just finished, so for the twelve
+    minutes mask recovery took on E14.5 it read "reconnect_orphan_and_dangling_nodes",
+    and the orphan reconnect (0.05 s) was blamed for it."""
+    display = ProgressDisplay()
+    display.update(
+        _stage_event(
+            STEP,
+            "build_network",
+            step="reconnect_orphan_and_dangling_nodes",
+            step_index=9,
+            step_total=14,
+            next_step="recover_uncovered_mask_vessels",
+        )
+    )
+
+    assert display.steps.value == 10
+    assert display.steps.text.startswith("recover_uncovered_mask_vessels")
+    assert "reconnect_orphan_and_dangling_nodes" not in display.steps.text
+    assert "10/14 done" in display.steps.text
+
+
 def test_a_step_with_no_known_total_asks_for_a_busy_bar():
     """Qt animates a bar whose maximum is 0, which is the honest reading."""
     display = ProgressDisplay()
