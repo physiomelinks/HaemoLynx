@@ -1437,3 +1437,66 @@ def test_clear_hides_colour_by(make_napari_viewer):
     assert colour_by.shown is False
     assert colour_by.row.isHidden()
     assert _offered(colour_by) == []
+
+
+def test_dragging_the_layer_list_title_bar_resizes_it(make_napari_viewer):
+    """The dots on the layer list's title bar looked like a size handle but
+    moved the whole dock; dragged, they now move its boundary with the
+    layer controls."""
+    from qtpy.QtCore import QPoint, Qt
+    from qtpy.QtTest import QTest
+
+    from haemolynx.gui._widget import LAYER_LIST_GRIP_TOOLTIP
+
+    viewer = make_napari_viewer(show=True)
+    settings_widget(napari_viewer=viewer)
+    qt_viewer = viewer.window._qt_viewer
+    layer_list, controls = qt_viewer.dockLayerList, qt_viewer.dockLayerControls
+    viewer.window._qt_window.resize(1200, 900)
+    QTest.qWait(50)
+    title = layer_list.titleBarWidget()
+    assert title.toolTip() == LAYER_LIST_GRIP_TOOLTIP
+    assert title.cursor().shape() == Qt.CursorShape.SizeVerCursor
+
+    def drag(dy: int) -> None:
+        start = title.rect().center()
+        QTest.mousePress(title, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(title, start + QPoint(0, dy))
+        QTest.mouseRelease(title, Qt.MouseButton.LeftButton, pos=start + QPoint(0, dy))
+        QTest.qWait(50)
+
+    list_before, controls_before = layer_list.height(), controls.height()
+    drag(-120)
+    assert layer_list.height() > list_before + 60
+    assert controls.height() < controls_before - 60
+    assert not layer_list.isFloating()
+
+    list_before = layer_list.height()
+    drag(80)
+    assert layer_list.height() < list_before - 40
+
+
+def test_the_layer_list_drags_up_past_the_layer_controls_own_height(make_napari_viewer):
+    """An image layer's controls are ~310 px at their smallest, and the drag
+    stopped there; they now scroll, so the layer list takes nearly all of it."""
+    import numpy as np
+    from qtpy.QtCore import Qt
+    from qtpy.QtTest import QTest
+    from qtpy.QtWidgets import QScrollArea
+
+    viewer = make_napari_viewer(show=True)
+    viewer.add_image(np.zeros((10, 10)))
+    settings_widget(napari_viewer=viewer)
+    qt_viewer = viewer.window._qt_viewer
+    layer_list, controls = qt_viewer.dockLayerList, qt_viewer.dockLayerControls
+    main_window = viewer.window._qt_window
+    main_window.resize(1200, 900)
+    QTest.qWait(50)
+    assert isinstance(controls.widget(), QScrollArea)
+    assert controls.widget().widget() is qt_viewer.controls
+    natural = qt_viewer.controls.minimumSizeHint().height()
+
+    main_window.resizeDocks([controls, layer_list], [10, 5000], Qt.Orientation.Vertical)
+    QTest.qWait(50)
+
+    assert controls.height() < natural / 2

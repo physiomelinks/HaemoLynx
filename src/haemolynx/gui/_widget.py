@@ -299,6 +299,130 @@ def _float_dock_over_canvas(viewer, dock) -> None:
     QTimer.singleShot(0, place)
 
 
+#: Tooltip on the layer list's title bar once dragging it resizes the dock.
+LAYER_LIST_GRIP_TOOLTIP = "drag up or down to resize. double-click toggles floating"
+
+
+def _let_layer_controls_scroll(controls) -> None:
+    """Put the layer controls dock's contents in a scroll area.
+
+    An image layer's controls are ~310 px tall at their smallest, and Qt
+    holds a dock at least as tall as its contents, so dragging the layer
+    list up stopped there. Scrolled, the controls shrink as far as the dock.
+    """
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QFrame, QScrollArea
+
+    inner = controls.widget()
+    if inner is None or isinstance(inner, QScrollArea):
+        return
+    scroller = QScrollArea()
+    scroller.setWidgetResizable(True)
+    scroller.setFrameShape(QFrame.Shape.NoFrame)
+    scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroller.setWidget(inner)
+    controls.setWidget(scroller)
+    # Qt has already raised the dock's own minimum to its old contents';
+    # back to napari's 50 px, which the scroller no longer pushes up.
+    controls.setMinimumHeight(50)
+
+
+def _resize_layer_list_by_its_title_bar(viewer):
+    """Dragging the layer list's dotted title bar resizes it, not moves it.
+
+    napari's title bar drags the whole dock somewhere else, so the dots look
+    like a size handle but never change the panel's height. While the layer
+    list is docked, a vertical drag on it now moves the boundary between the
+    layer controls above and the layer list below. Double-click still floats
+    the dock, and a floating dock still drags as napari's does. The filter
+    sits on the dock, not the title bar, because napari rebuilds the title
+    bar every time the dock floats or moves. None without a Qt window.
+    """
+    from qtpy.QtCore import QEvent, QObject, Qt, QTimer
+
+    window = getattr(viewer, "window", None)
+    qt_viewer = getattr(window, "_qt_viewer", None) if window is not None else None
+    main_window = getattr(window, "_qt_window", None) if window is not None else None
+    if qt_viewer is None or main_window is None:
+        return None
+    layer_list = getattr(qt_viewer, "dockLayerList", None)
+    controls = getattr(qt_viewer, "dockLayerControls", None)
+    if layer_list is None or controls is None:
+        return None
+    existing = getattr(layer_list, "_haemolynx_resize_grip", None)
+    if existing is not None:
+        return existing
+    heights = [controls.height(), layer_list.height()]
+    _let_layer_controls_scroll(controls)
+    # Freed of their floor, the controls would otherwise open squeezed.
+    QTimer.singleShot(
+        0, lambda: main_window.resizeDocks([controls, layer_list], heights, Qt.Orientation.Vertical)
+    )
+
+    def dress_title_bar() -> None:
+        title = layer_list.titleBarWidget()
+        if title is None or layer_list.isFloating():
+            return
+        title.setCursor(Qt.CursorShape.SizeVerCursor)
+        title.setToolTip(LAYER_LIST_GRIP_TOOLTIP)
+
+    def resizable() -> bool:
+        return (
+            not layer_list.isFloating()
+            and not controls.isFloating()
+            and controls.isVisible()
+            and main_window.dockWidgetArea(layer_list)
+            == main_window.dockWidgetArea(controls)
+        )
+
+    class _Grip(QObject):
+        def __init__(self, parent):
+            super().__init__(parent)
+            self.start = None
+
+        def eventFilter(self, _watched, event):  # noqa: N802 - Qt's name
+            kind = event.type()
+            if kind == QEvent.MouseButtonPress:
+                title = layer_list.titleBarWidget()
+                if (
+                    event.button() == Qt.MouseButton.LeftButton
+                    and title is not None
+                    and title.geometry().contains(event.position().toPoint())
+                    and resizable()
+                ):
+                    self.start = (
+                        int(event.globalPosition().y()),
+                        controls.height(),
+                        layer_list.height(),
+                    )
+                    return True
+            elif kind == QEvent.MouseMove and self.start is not None:
+                y0, controls_h, list_h = self.start
+                dy = int(event.globalPosition().y()) - y0
+                # Neither dock collapses to nothing under the drag.
+                dy = max(-(controls_h - 40), min(dy, list_h - 40))
+                main_window.resizeDocks(
+                    [controls, layer_list],
+                    [controls_h + dy, list_h - dy],
+                    Qt.Orientation.Vertical,
+                )
+                return True
+            elif kind == QEvent.MouseButtonRelease and self.start is not None:
+                self.start = None
+                return True
+            return False
+
+    grip = _Grip(layer_list)
+    layer_list.installEventFilter(grip)
+    # napari swaps in a new title bar after it floats or docks again.
+    later = lambda *_: QTimer.singleShot(0, dress_title_bar)  # noqa: E731
+    layer_list.topLevelChanged.connect(later)
+    layer_list.dockLocationChanged.connect(later)
+    dress_title_bar()
+    layer_list._haemolynx_resize_grip = grip
+    return grip
+
+
 #: Gap between the view-snap buttons and the canvas's bottom-left corner (px).
 VIEW_SNAP_MARGIN = 8
 
@@ -12372,6 +12496,10 @@ def settings_widget(napari_viewer=None):
             _install_view_snap_buttons(viewer)
         except Exception:  # noqa: BLE001 - a missing overlay must not stop the panel
             logger.debug("could not add the view-snap buttons", exc_info=True)
+        try:
+            _resize_layer_list_by_its_title_bar(viewer)
+        except Exception:  # noqa: BLE001 - a missing grip must not stop the panel
+            logger.debug("could not make the layer list resizable", exc_info=True)
     else:
         view_panel.setVisible(False)
 
