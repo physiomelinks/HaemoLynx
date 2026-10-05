@@ -12304,26 +12304,33 @@ def settings_widget(napari_viewer=None):
     view_layout.addWidget(sweep_group)
     view_layout.addWidget(snapshot_group)
 
-    view_dock = None
-    if viewer is not None:
+    def _open_view_dock():
+        """Dock *view_panel* over the canvas and remember that dock."""
+        nonlocal view_dock
         dock_kwargs = {
             "name": VIEW_DOCK_NAME,
             "area": "left",
             "allowed_areas": ["left", "right"],
         }
         try:
-            view_dock = viewer.window.add_dock_widget(
+            dock = viewer.window.add_dock_widget(
                 view_panel, add_vertical_stretch=False, **dock_kwargs
             )
         except TypeError:
-            view_dock = viewer.window.add_dock_widget(view_panel, **dock_kwargs)
+            dock = viewer.window.add_dock_widget(view_panel, **dock_kwargs)
         try:
-            view_dock.setObjectName("haemolynx_view_dock")
+            dock.setObjectName("haemolynx_view_dock")
         except Exception:  # noqa: BLE001
             pass
-        view_dock_holder["dock"] = view_dock
+        view_dock = dock
+        view_dock_holder["dock"] = dock
         _give_bottom_docks_the_corners(viewer)
-        _float_dock_over_canvas(viewer, view_dock)
+        _float_dock_over_canvas(viewer, dock)
+        return dock
+
+    view_dock = None
+    if viewer is not None:
+        _open_view_dock()
         try:
             _install_view_snap_buttons(viewer)
         except Exception:  # noqa: BLE001 - a missing overlay must not stop the panel
@@ -12332,15 +12339,30 @@ def settings_widget(napari_viewer=None):
         view_panel.setVisible(False)
 
     def on_reopen_view() -> None:
-        """Bring the view panel back after its own close button hid it.
+        """Bring the view panel back after it was hidden or its dock closed.
 
-        A no-op while it is already open, so the button never steals focus
-        or re-floats a dock the user has deliberately moved or docked.
+        The dock's close button deletes that dock and detaches the panel.
+        Asking the deleted dock whether it is visible raises, so a closed
+        dock is built again around the same panel. A dock that was only
+        hidden is shown. Already open is a no-op, so the button never
+        re-floats a dock the user has deliberately moved or docked.
         """
-        if view_dock is None or view_dock.isVisible():
+        nonlocal view_dock
+        try:
+            holding = view_dock is not None and view_dock.widget() is view_panel
+            visible = bool(holding and view_dock.isVisible())
+        except RuntimeError:
+            holding = False
+            visible = False
+        if visible:
             return
-        view_dock.show()
-        _float_dock_over_canvas(viewer, view_dock)
+        if holding:
+            view_dock.show()
+            _float_dock_over_canvas(viewer, view_dock)
+            return
+        if viewer is None:
+            return
+        panel._haemolynx_view_dock = _open_view_dock()
 
     view_button.changed.connect(lambda *_args: on_reopen_view())
 

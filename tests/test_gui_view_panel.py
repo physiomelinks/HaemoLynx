@@ -250,6 +250,31 @@ def test_the_view_button_reopens_a_closed_view_panel(make_napari_viewer):
     panel._haemolynx_view_button.native.click()
 
     assert dock.isVisible()
+    assert panel._haemolynx_view_dock is dock
+
+
+def test_the_view_button_rebuilds_a_dock_the_close_button_deleted(make_napari_viewer):
+    """The dock's close button deletes the dock. View used to ask that
+    deleted object if it was visible, which raises."""
+    from qtpy.QtWidgets import QApplication
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    dock = panel._haemolynx_view_dock
+    dock.destroyOnClose()
+    QApplication.processEvents()
+
+    panel._haemolynx_view_button.native.click()
+    QApplication.processEvents()
+
+    rebuilt = panel._haemolynx_view_dock
+    assert rebuilt is not dock
+    assert rebuilt.isVisible()
+    assert rebuilt.widget() is panel._haemolynx_view_panel
+    assert panel._haemolynx_illumination_group.parentWidget() is panel._haemolynx_view_panel
+
+    panel._haemolynx_view_button.native.click()
+    assert panel._haemolynx_view_dock is rebuilt
 
 
 def test_the_view_panel_is_not_on_the_right_settings_column(make_napari_viewer):
