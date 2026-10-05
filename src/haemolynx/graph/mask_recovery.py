@@ -17,7 +17,7 @@ from typing import Any
 
 import networkx as nx
 import numpy as np
-from scipy.ndimage import convolve
+from scipy.ndimage import convolve, label
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
@@ -131,6 +131,15 @@ def _trace_piece(region: np.ndarray, support: MaskSupport, pad: int) -> _Piece:
     skeleton &= inside
     piece = _Piece()
     neighbours = convolve(skeleton.astype(np.uint8), np.ones((3,) * skeleton.ndim, np.uint8), mode="constant")
+    # A component every voxel of which has two neighbours is a closed ring:
+    # its one path ends where it starts, a self-loop the caller drops, and
+    # skan sizes its path buffer too small for a ring of a few voxels
+    # ("index pointer size 1 should be 2").
+    labels, n_components = label(skeleton, structure=np.ones((3,) * skeleton.ndim, bool))
+    if n_components:
+        not_ring = np.zeros(n_components + 1, dtype=bool)
+        not_ring[labels[skeleton & (neighbours != 3)]] = True
+        skeleton &= not_ring[labels]
     # skan raises on a skeleton whose every voxel is isolated.
     if not np.any(skeleton & (neighbours > 1)):
         return piece

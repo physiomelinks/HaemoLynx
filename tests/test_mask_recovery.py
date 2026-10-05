@@ -248,6 +248,34 @@ def test_a_piece_whose_centreline_is_only_isolated_voxels_traces_nothing():
     assert piece.paths == [] and piece.ends == []
 
 
+def test_a_piece_whose_centreline_is_a_tiny_ring_traces_nothing(monkeypatch):
+    """Lee thinning of a small blob can leave a three-voxel ring, for which
+    skan's path buffer is too small ("index pointer size 1 should be 2").
+    Its one path would be a self-loop, which recovery drops anyway."""
+    from haemolynx.graph.mask_recovery import _trace_piece
+
+    mask = np.zeros((5, 6, 6), dtype=bool)
+    mask[2, 2, 2] = mask[2, 2, 3] = mask[2, 3, 2] = True
+    monkeypatch.setattr("skimage.morphology.skeletonize", lambda image, method=None: image.copy())
+
+    piece = _trace_piece(np.argwhere(mask), _support(mask), pad=1)
+
+    assert piece.paths == [] and piece.ends == []
+
+
+def test_a_tiny_ring_beside_a_centreline_goes_and_the_centreline_stays(monkeypatch):
+    from haemolynx.graph.mask_recovery import _trace_piece
+
+    mask = np.zeros((5, 8, 12), dtype=bool)
+    mask[2, 2, 1:11] = True
+    mask[2, 5, 1] = mask[2, 5, 2] = mask[2, 6, 1] = True
+    monkeypatch.setattr("skimage.morphology.skeletonize", lambda image, method=None: image.copy())
+
+    piece = _trace_piece(np.argwhere(mask), _support(mask), pad=1)
+
+    assert piece.ends == [((2, 2, 1), (2, 2, 10))]
+
+
 # --- loops: round tissue, or inside one lumen ---------------------------------
 
 
