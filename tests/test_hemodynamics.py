@@ -161,6 +161,25 @@ def test_build_conductance_matrix_from_graph():
     assert np.isclose(C[i0, i2], 0.0)
 
 
+@pytest.mark.parametrize("solver", ["dense", "sparse"])
+def test_a_self_loop_carries_no_flow_and_does_not_break_the_laplacian(solver):
+    """Regression: a recovered ring left a self-loop in the graph, its
+    conductance landed on the diagonal and every run stopped with
+    "Conductance matrix diagonal must be zero"."""
+    G = nx.MultiGraph()
+    G.add_nodes_from([0, 1])
+    G.add_edge(0, 1, conductance=2.0)
+    G.add_edge(1, 1, conductance=5.0)
+
+    C, node_list = build_conductance_matrix_from_graph(G, solver=solver)
+    dense = C.toarray() if hasattr(C, "toarray") else C
+    L = calc_laplacian_from_conductance_matrix(C)
+    L = L.toarray() if hasattr(L, "toarray") else L
+
+    assert np.all(np.diagonal(dense) == 0)
+    assert np.allclose(L, [[2.0, -2.0], [-2.0, 2.0]])
+
+
 def test_build_conductance_matrix_from_graph_reuses_a_caller_supplied_array():
     """A repeat caller that already knows the node ordering (the haematocrit
     distribution loop, once per outer iteration) can pass node_list/

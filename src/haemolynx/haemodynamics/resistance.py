@@ -87,6 +87,9 @@ def build_conductance_matrix_from_graph(
     with a new array; its shape must match ``(len(node_list), len(node_list))``
     for whichever *node_list* this call ends up using (explicit or rebuilt).
 
+    Self-loops are left out: both ends sit at one pressure, so they carry no
+    flow, and on the diagonal they would break the Laplacian.
+
     *solver* ``"sparse"`` (``haemodynamics_solver``) returns a
     ``scipy.sparse`` CSR matrix holding only the vessels, the same entries the
     dense array has; every solve in this package takes either. *out* is a
@@ -106,7 +109,7 @@ def build_conductance_matrix_from_graph(
         values: list[float] = []
         for u, v, data in G.edges(data=True):
             edge_conductance = data.get(conductance_attr)
-            if edge_conductance is None or edge_conductance <= 0:
+            if edge_conductance is None or edge_conductance <= 0 or u == v:
                 continue
             i = node_to_idx[u]
             j = node_to_idx[v]
@@ -128,7 +131,8 @@ def build_conductance_matrix_from_graph(
 
     for u, v, data in G.edges(data=True):
         edge_conductance = data.get(conductance_attr)
-        if edge_conductance is None or edge_conductance <= 0:
+        # A self-loop has one pressure at both ends, so it carries no flow.
+        if edge_conductance is None or edge_conductance <= 0 or u == v:
             continue
         i = node_to_idx[u]
         j = node_to_idx[v]

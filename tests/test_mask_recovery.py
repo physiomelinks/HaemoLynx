@@ -186,6 +186,38 @@ def test_a_strand_with_no_join_is_not_left_as_an_island(monkeypatch):
     assert points[:, 1].max() < 32.0
 
 
+def test_a_ring_round_a_hole_in_the_mask_is_not_added_as_a_self_loop(monkeypatch):
+    """Regression: Lee thinning round a hole traces a path that ends where it
+    starts. It was added as a self-loop -- 193 on the E14.5 stack, 33 of them
+    left as islands once the stub prune took their tails -- and the flow
+    solve refused the graph."""
+    from haemolynx.graph.mask_recovery import _Piece
+
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 8, 30)
+    branch = np.array([[7.0, float(y), 30.0] for y in range(11, 27)])
+    ring = np.array([[7.0, 26.0, 30.0], [7.0, 27.0, 31.0], [7.0, 28.0, 30.0],
+                     [7.0, 27.0, 29.0], [7.0, 26.0, 30.0]])
+    calls = {"n": 0}
+
+    def branch_and_ring(region, support, pad):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            return _Piece()
+        piece = _Piece()
+        piece.paths = [branch, ring]
+        piece.ends = [((7, 11, 30), (7, 26, 30)), ((7, 26, 30), (7, 26, 30))]
+        return piece
+
+    monkeypatch.setattr("haemolynx.graph.mask_recovery._trace_piece", branch_and_ring)
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
+
+    assert nx.number_of_selfloops(G) == 0
+    assert any(d.get("recovered") for *_, d in G.edges(data=True))
+    assert nx.number_connected_components(G) == 1
+
+
 def test_a_join_that_cannot_be_made_does_not_leave_the_strand(monkeypatch):
     """Paths used to be added before the join, so a failed attach left them."""
     mask = _trunk_mask()

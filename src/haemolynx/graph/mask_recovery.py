@@ -313,6 +313,11 @@ def recover_uncovered_mask_vessels(
             degree[b] = degree.get(b, 0) + 1
         paths = []
         for path, (a, b) in zip(piece.paths, piece.ends):
+            # A path ending where it starts is Lee thinning round a hole in
+            # the mask; as an edge it would be a self-loop, which carries no
+            # flow and which the conductance matrix refuses.
+            if a == b:
+                continue
             if degree[a] == 1 and degree[b] == 1 and _path_length(path) < float(min_length_um):
                 continue
             ok, background = _accepted_path(G, support, index, path)
