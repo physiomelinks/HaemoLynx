@@ -538,3 +538,15 @@ def test_flow_direction_layer_carries_the_same_tooltip_table():
         origin, flow.data, max_distance=BRANCH_HOVER_MAX_DISTANCE
     )
     assert hit == 0
+
+
+def test_a_node_tooltip_leads_with_its_id():
+    from haemolynx.gui.branch_hover import format_node_tooltip
+
+    assert format_node_tooltip(3316, (214.0, 5.26, 2.94), degree=1.0).splitlines() == [
+        "Node ID: 3316", "Vessels: 1 (open end)", "z, y, x: 214.0, 5.3, 2.9 um",
+    ]
+    assert format_node_tooltip("7", (1, 2, 3), degree=3, pressure=float("nan")).splitlines() == [
+        "Node ID: 7", "Vessels: 3", "z, y, x: 1.0, 2.0, 3.0 um",
+    ]
+    assert format_node_tooltip(7, (1, 2, 3), pressure=1234.5).splitlines()[-1].startswith("Pressure: ")

@@ -278,3 +278,33 @@ def test_z_filter_shrink_reattaches_branch_hover_after_layer_recreate(
     controls = _layer_controls(viewer, shrunk)
     assert controls is not None
     assert controls._haemolynx_branch_hover is not None
+
+
+def test_hovering_a_node_shows_its_id_before_the_vessel_under_it(make_napari_viewer, monkeypatch):
+    """The node ID lists take IDs, and a node is where two vessels meet --
+    so over a node the hover names the node, not the vessel beneath it."""
+    from haemolynx.gui.results import NODES
+
+    shown: list[str | None] = []
+    monkeypatch.setattr(
+        "qtpy.QtWidgets.QToolTip.showText",
+        lambda _pos, text, *a, **k: shown.append(str(text)),
+    )
+    monkeypatch.setattr(
+        "qtpy.QtWidgets.QToolTip.hideText",
+        lambda *a, **k: shown.append(None),
+    )
+    viewer = make_napari_viewer()
+    _draw_hover(viewer)
+    assert not viewer.layers[NODES].visible, "hidden by default, and hovered anyway"
+
+    _branch_hover_viewer_mouse_move(viewer, _fake_event((10.0, 0.0, 0.0)))
+    assert shown[-1].splitlines() == [
+        "Node ID: 1", "Vessels: 2", "z, y, x: 10.0, 0.0, 0.0 um",
+    ]
+    _branch_hover_viewer_mouse_move(viewer, _fake_event((30.0, 0.0, 0.0)))
+    assert shown[-1].splitlines()[:2] == ["Node ID: 3", "Vessels: 1 (open end)"]
+
+    # Between nodes, the vessel.
+    _branch_hover_viewer_mouse_move(viewer, _fake_event((15.0, 0.0, 0.0)))
+    assert shown[-1].startswith("branchID: 1")

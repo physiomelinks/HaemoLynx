@@ -167,6 +167,36 @@ def format_branch_tooltip(
     return "\n".join(lines)
 
 
+def format_node_tooltip(
+    node_id: Any,
+    position: Sequence[float],
+    degree: Any = None,
+    pressure: Any = None,
+) -> str:
+    """Hover text for one graph node: its ID first, as the node ID lists take it.
+
+    Then how many vessels meet there (an open end is where a vessel ends, the
+    kind of node an inlet or outlet usually is), its (z, y, x) position in
+    microns, and its pressure once the network is solved.
+    """
+    lines = [f"Node ID: {node_id}"]
+    try:
+        count = int(float(degree))
+    except (TypeError, ValueError):
+        count = None
+    if count is not None:
+        lines.append(f"Vessels: {count}" + (" (open end)" if count == 1 else ""))
+    z, y, x = (float(v) for v in list(position)[-3:])
+    lines.append(f"z, y, x: {z:.1f}, {y:.1f}, {x:.1f} um")
+    try:
+        value = float(pressure)
+    except (TypeError, ValueError):
+        value = float("nan")
+    if np.isfinite(value):
+        lines.append(f"Pressure: {format_metric_value('pressure', value)}")
+    return "\n".join(lines)
+
+
 def panel_metric_options(
     available: Sequence[str],
 ) -> tuple[tuple[str, str], ...]:

@@ -5084,11 +5084,80 @@ def _branch_hover_mouse_move(layer, event) -> None:
     _show_branch_tooltip(layer, index)
 
 
+def _is_node_hover_layer(layer) -> bool:
+    """One of our Points layers whose points are graph nodes, hoverable now.
+
+    The network's own nodes layer answers hidden too, as the vessels do when
+    drawn as tubes: it starts hidden, and its IDs are what the boundary node
+    ID lists need. Any other node layer only while it is shown.
+    """
+    from haemolynx.gui.results import NODES
+
+    return bool(
+        _is_ours(layer)
+        and layer.__class__.__name__.lower() == "points"
+        and (getattr(layer, "visible", False) or layer.name == NODES)
+        and "node_id" in _layer_features(layer)
+        and len(getattr(layer, "data", ()))
+    )
+
+
+def _node_hover_index(layer, event) -> int | None:
+    """The node under the cursor, by distance, so a hidden layer answers too.
+
+    napari's own picking only works on a layer it has sliced, which a hidden
+    one is not. In 3D the distance is across the line of sight, as clicking
+    a node measures it (``graph_click.nearest_node_hit``).
+    """
+    from haemolynx.gui.branch_hover import nearest_vector_index
+
+    data = np.asarray(getattr(layer, "data", ()), dtype=float)
+    if data.ndim != 2 or not len(data):
+        return None
+    dims = list(getattr(event, "dims_displayed", ()) or ())
+    view_direction = getattr(event, "view_direction", None) if len(dims) == 3 else None
+    sizes = np.asarray(getattr(layer, "size", 0.0), dtype=float).reshape(-1)
+    radius = max(float(np.nanmax(sizes)) / 2.0 if sizes.size else 0.0, 1.5)
+    segments = np.stack([data, np.zeros_like(data)], axis=1)
+    return nearest_vector_index(
+        getattr(event, "position", None), segments, max_distance=radius,
+        view_direction=view_direction, dims=dims or None,
+    )
+
+
+def _show_node_tooltip(layer, index: int) -> bool:
+    from qtpy.QtGui import QCursor
+    from qtpy.QtWidgets import QToolTip
+
+    from haemolynx.gui.branch_hover import format_node_tooltip
+
+    features = _layer_features(layer)
+    try:
+        node_id = features["node_id"][int(index)]
+        position = np.asarray(layer.data[int(index)], dtype=float)
+    except (IndexError, KeyError, TypeError, ValueError):
+        return False
+    extra = {name: features[name][int(index)] for name in ("degree", "pressure")
+             if name in features}
+    QToolTip.showText(QCursor.pos(), format_node_tooltip(node_id, position, **extra))
+    return True
+
+
 def _branch_hover_viewer_mouse_move(viewer, event) -> None:
-    """Hover the drawn branch even when another HaemoLynx layer is selected."""
+    """Hover the drawn branch even when another HaemoLynx layer is selected.
+
+    A node under the cursor comes first: it sits on the vessels it joins, and
+    its ID is what the boundary node ID lists take.
+    """
     from qtpy.QtWidgets import QToolTip
 
     layers = getattr(viewer, "layers", ())
+    for layer in reversed(list(layers)):
+        if not _is_node_hover_layer(layer):
+            continue
+        index = _node_hover_index(layer, event)
+        if index is not None and _show_node_tooltip(layer, index):
+            return
     for layer in reversed(list(layers)):
         if not _is_branch_hover_layer(layer):
             continue
