@@ -810,7 +810,7 @@ def test_masks_are_shown_as_translucent_volume_layers():
     assert mask.options["rendering"] == "mip"
     assert mask.options["blending"] == "translucent"
     assert mask.options["mask_colour"] == MASK_COLOURS["large_arteriole_mask"]
-    assert mask.data.dtype == np.float32
+    assert mask.data.dtype == np.uint8, "one byte a voxel, not a float32 copy"
 
 
 def test_boundaries_show_the_small_masks_boundary_labelling_read():

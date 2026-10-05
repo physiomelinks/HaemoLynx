@@ -988,11 +988,15 @@ def vessel_mask_volume_layers(
         if mask is None:
             continue
         colour = MASK_COLOURS[attribute]
+        # One byte a voxel, not a float32 copy: four whole-image masks were
+        # 2 GB to hold and send to the GPU at every stage drawing them. A
+        # copy, so a stage cleaning the mask in place cannot change what the
+        # layer holds behind napari's back.
         layers.append(
             LayerSpec(
                 kind="image",
                 name=name,
-                data=np.asarray(mask, dtype=np.float32),
+                data=(np.asarray(mask) != 0).astype(np.uint8),
                 scale=scale,  # type: ignore[arg-type]
                 contrast_limits=(0.0, 1.0),
                 visible=visible,

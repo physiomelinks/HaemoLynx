@@ -2431,3 +2431,96 @@ def test_user_arrow_length_survives_layer_refresh(make_napari_viewer):
 
     _apply_layers(viewer, group)
     assert viewer.layers[FLOW_DIRECTION].length == pytest.approx(4.2)
+
+
+# --- drawing a stage without redoing what has not changed ---------------------
+
+
+def test_recolouring_the_tubes_keeps_their_mesh_normals(viewer):
+    """A recolour changes colours only. Through napari's data path it had vispy
+    recompute every vertex normal, 0.4-0.8 s a time on a real network, several
+    times a stage."""
+    from haemolynx.gui._widget import _colour_layer
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    assert viewer.dims.ndisplay == 3
+    tubes = viewer.layers[VESSEL_TUBES]
+    mesh = viewer.window._qt_viewer.layer_to_visual[tubes].node.mesh_data
+    normals = mesh.get_vertex_normals(indexed="faces")
+
+    _colour_layer(viewer.layers[VESSELS], "none")
+
+    assert mesh.get_vertex_normals(indexed="faces") is normals, "no recompute"
+    edge = np.asarray(viewer.layers[VESSELS].edge_color)
+    np.testing.assert_allclose(mesh.get_vertex_colors()[0, :3], edge[0, :3], atol=0.05)
+    np.testing.assert_allclose(np.asarray(tubes.vertex_colors)[0, :3], edge[0, :3], atol=0.05)
+
+
+def test_a_stage_that_leaves_the_vessels_alone_keeps_the_tube_mesh(viewer, monkeypatch):
+    """Every stage ended by rebuilding the tubes, even one drawing nothing."""
+    from haemolynx.gui import _widget as widget_mod
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    built = []
+    real = widget_mod.vessel_tube_mesh
+    monkeypatch.setattr(widget_mod, "vessel_tube_mesh",
+                        lambda *a, **k: built.append(1) or real(*a, **k))
+    vertices = np.asarray(viewer.layers[VESSEL_TUBES].vertices).copy()
+
+    _apply_layers(viewer, StageLayers(stage="post_process", title="7. Post processing"))
+    assert built == []
+    np.testing.assert_array_equal(viewer.layers[VESSEL_TUBES].vertices, vertices)
+
+    # New widths are a new mesh.
+    vessels = viewer.layers[VESSELS]
+    features = dict(vessels.features)
+    features["diameter_um"] = np.full(len(vessels.data), 9.0)
+    vessels.features = features
+    _apply_layers(viewer, StageLayers(stage="solve", title="Solve"))
+    assert built == [1]
+
+
+def test_a_full_range_depth_filter_leaves_fresh_layers_alone(viewer, monkeypatch):
+    """At full range the filter is the identity, yet it rewrote every graph
+    layer and rebuilt the tubes after each stage."""
+    from haemolynx.gui import _widget as widget_mod
+
+    for group in a_run():
+        _apply_layers(viewer, group)
+    rewrites = []
+    real = widget_mod._set_z_filtered_layer_data
+    monkeypatch.setattr(widget_mod, "_set_z_filtered_layer_data",
+                        lambda viewer, layer, *a: rewrites.append(layer.name) or real(viewer, layer, *a))
+
+    widget_mod._apply_z_filter(viewer, 0.0, 100.0, z_extent=100.0)
+    assert rewrites == []
+
+    widget_mod._apply_z_filter(viewer, 0.0, 15.0, z_extent=100.0)
+    assert VESSELS in rewrites
+    narrowed = len(viewer.layers[VESSELS].data)
+    rewrites.clear()
+    widget_mod._apply_z_filter(viewer, 0.0, 100.0, z_extent=100.0)
+    assert VESSELS in rewrites, "back to full range puts the rest back"
+    assert len(viewer.layers[VESSELS].data) > narrowed
+
+
+def test_an_unchanged_volume_is_not_sent_again(viewer):
+    """Most stages hand back the image as it was; setting it again re-sliced
+    and re-uploaded the whole volume."""
+    image = np.zeros((4, 4, 4), dtype=np.uint8)
+    image[1, 1, 1] = 1
+    spec = LayerSpec(kind="image", name=IMAGE, data=image, scale=(1.0, 1.0, 1.0))
+    _add_or_update(viewer, spec)
+    sent = []
+    viewer.layers[IMAGE].events.data.connect(lambda *_: sent.append(1))
+
+    _add_or_update(viewer, LayerSpec(kind="image", name=IMAGE, data=image.copy(),
+                                     scale=(1.0, 1.0, 1.0)))
+    assert sent == []
+    changed = image.copy()
+    changed[2, 2, 2] = 1
+    _add_or_update(viewer, LayerSpec(kind="image", name=IMAGE, data=changed,
+                                     scale=(1.0, 1.0, 1.0)))
+    assert sent and int(viewer.layers[IMAGE].data[2, 2, 2]) == 1

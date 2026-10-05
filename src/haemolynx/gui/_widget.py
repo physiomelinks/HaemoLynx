@@ -1335,13 +1335,46 @@ def _retint_vessel_tubes(viewer, vessels) -> None:
     if segment_index is None:
         return
     try:
-        tubes.vertex_colors = colors_for_tube_vertices(
-            np.asarray(segment_index), _vector_edge_rgba(vessels)
+        _set_tube_colours(
+            viewer, tubes,
+            colors_for_tube_vertices(np.asarray(segment_index), _vector_edge_rgba(vessels)),
         )
     except Exception:  # noqa: BLE001 - a missed retint must not break a run
         logger.debug(
             "could not retint vessel tubes for %s", vessels.name, exc_info=True
         )
+
+
+def _set_tube_colours(viewer, tubes, colours) -> None:
+    """Recolour a tube Surface without rebuilding its mesh on screen.
+
+    napari answers any ``vertex_colors`` change with its whole data path,
+    which has vispy recompute the normals of every vertex: 0.4-0.8 s on a
+    network of 1,500 vessels, several times a stage. Only the colours changed,
+    so in 3D they go straight to the vispy mesh, whose normals stay cached;
+    the layer still records them, for its next full refresh. Anything else
+    -- 2D, a different vertex count, no vispy visual -- takes napari's path.
+    """
+    colours = np.asarray(colours, dtype=float)
+    qt_viewer = getattr(getattr(viewer, "window", None), "_qt_viewer", None)
+    mapping = getattr(qt_viewer, "layer_to_visual", None) if qt_viewer is not None else None
+    node = getattr(mapping.get(tubes) if mapping else None, "node", None)
+    mesh = getattr(node, "mesh_data", None)
+    blocker = getattr(tubes, "_block_refresh", None)
+    if (
+        mesh is not None
+        and callable(blocker)
+        and viewer.dims.ndisplay == 3
+        and not mesh.is_empty()
+        and colours.ndim == 2
+        and len(colours) == mesh.n_vertices == len(tubes.vertices)
+    ):
+        with blocker():
+            tubes.vertex_colors = colours
+        mesh.set_vertex_colors(colours.astype(np.float32))
+        node.mesh_data_changed()
+        return
+    tubes.vertex_colors = colours
 
 
 def _maybe_retint_vessel_tubes(layer) -> None:
@@ -1473,6 +1506,34 @@ def _make_surfaces_follow_the_dims_order() -> None:
     _SurfaceSliceRequest.__call__ = __call__
 
 
+def _tube_mesh_key(vessels) -> str:
+    """A fingerprint of everything a vessels layer's tube mesh is built from.
+
+    Its geometry, the three columns :func:`vessel_tube_mesh` reads, the
+    quality level, edge width and scale. Colours are not in it: those change
+    without the mesh changing.
+    """
+    import hashlib
+
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    digest = hashlib.blake2b(digest_size=16)
+    data = np.ascontiguousarray(np.asarray(getattr(vessels, "data", ()), dtype=float))
+    digest.update(repr(data.shape).encode())
+    digest.update(data.tobytes())
+    features = getattr(vessels, "features", None)
+    for column in ("diameter_um", "edge_index", IS_ZERO_RESISTANCE):
+        digest.update(column.encode())
+        if features is not None and column in features:
+            digest.update(repr(np.asarray(features[column]).tolist()).encode())
+    digest.update(repr((
+        _tube_quality,
+        np.asarray(getattr(vessels, "edge_width", 0.0)).tolist(),
+        tuple(float(v) for v in getattr(vessels, "scale", (1.0, 1.0, 1.0))),
+    )).encode())
+    return digest.hexdigest()
+
+
 def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> str:
     """Show tubes or line ribbons for one vessels Vectors layer; the name of
     its tubes layer, whether or not it has one yet."""
@@ -1487,6 +1548,25 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> str:
         vessels.visible = True
         _hide_tube_surface(existing)
         return name
+
+    key = _tube_mesh_key(vessels)
+    if existing is not None and existing.__class__.__name__.lower() == "surface":
+        held = getattr(existing, "metadata", {}).get(OURS) or {}
+        segment_index = held.get("segment_index")
+        if (
+            held.get("mesh_key") == key
+            and segment_index is not None
+            and len(np.asarray(segment_index)) == len(existing.vertices) > 0
+        ):
+            # The vessels are as the tubes were built from; most stages and
+            # every Z-depth or layer change land here. Rebuilding the mesh
+            # took about a second for 1,500 vessels, so only the colours go.
+            _set_tube_colours(viewer, existing, colors_for_tube_vertices(
+                np.asarray(segment_index), _vector_edge_rgba(vessels)))
+            existing.visible = True
+            vessels.visible = False
+            _ensure_tube_colour_follow(viewer, vessels)
+            return name
 
     vertices, faces, segment_index = vessel_tube_mesh(
         getattr(vessels, "data", ()),
@@ -1503,6 +1583,7 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> str:
         "kind": "surface",
         "role": "vessel_tubes",
         "segment_index": np.asarray(segment_index),
+        "mesh_key": key,
     }
     scale = tuple(float(v) for v in getattr(vessels, "scale", (1.0, 1.0, 1.0)))
     if existing is not None and existing.__class__.__name__.lower() == "surface":
@@ -1669,6 +1750,17 @@ def _store_z_filter_cache(
     if owner is not None:
         cache["segment_owner"] = np.asarray(owner)
     tag["z_filter_full"] = cache
+    # Fresh, whole data: no Z window is applied to it yet.
+    tag["z_filter_window"] = None
+    metadata = dict(getattr(layer, "metadata", {}) or {})
+    metadata[OURS] = tag
+    layer.metadata = metadata
+
+
+def _note_z_filter_window(layer, window) -> None:
+    """Record the Z window *layer* now shows; None when it shows everything."""
+    tag = dict(getattr(layer, "metadata", {}).get(OURS) or {})
+    tag["z_filter_window"] = window
     metadata = dict(getattr(layer, "metadata", {}) or {})
     metadata[OURS] = tag
     layer.metadata = metadata
@@ -1779,6 +1871,7 @@ def _apply_z_filter(
 ) -> None:
     """Redraw graph Vectors/Points layers filtered to a physical Z band."""
     full_range = z_window_is_full(z_min, z_max, z_extent)
+    changed = False
     # A snapshot, not the live list: recreating a layer on shrink removes it
     # and appends the replacement, which reindexes viewer.layers mid-loop and
     # silently skips whichever layer landed on the vacated index.
@@ -1795,6 +1888,11 @@ def _apply_z_filter(
             tag = getattr(layer, "metadata", {}).get(OURS) or {}
             cache = tag.get("z_filter_full")
         if cache is None:
+            continue
+        if full_range and tag.get("z_filter_window") is None:
+            # Already whole: new data clears the window, and so does a
+            # return to full range. Rewriting it anyway rebuilt the vessel
+            # tubes and every colouring after each stage, for nothing.
             continue
         if full_range:
             data = cache["data"]
@@ -1817,6 +1915,8 @@ def _apply_z_filter(
         layer = _set_z_filtered_layer_data(
             viewer, layer, kind, data, features, segment_owner
         )
+        _note_z_filter_window(layer, None if full_range else (float(z_min), float(z_max)))
+        changed = True
         # Controls first: a recreated layer's new colour-range control takes
         # its column as newly chosen and fits the range to the rows left in
         # the window. The rule, applied after, puts back the full layer's.
@@ -1855,7 +1955,10 @@ def _apply_z_filter(
                 "could not reattach branch-hover controls to %s",
                 getattr(layer, "name", "?"), exc_info=True,
             )
-    _sync_vessel_tubes(viewer)
+    if changed:
+        # The tubes follow the vessels they were drawn from; untouched
+        # vessels leave them as they are (each rebuild is about a second).
+        _sync_vessel_tubes(viewer)
 
 
 def _colouring_rule(layer) -> dict[str, Any] | None:
@@ -3134,6 +3237,24 @@ def _keep_layer_interaction(layer, spec, *, visible, mode) -> None:
             logger.debug("could not restore layer mode %s on %s", mode, spec.name)
 
 
+def _same_volume(held: Any, new: Any) -> bool:
+    """Whether a volume layer holding *held* already shows *new*.
+
+    The same array, or the same shape, type and values. Anything not a plain
+    array (a multiscale list, a dask array) counts as different.
+    """
+    if held is new:
+        return True
+    if not isinstance(held, np.ndarray) or not isinstance(new, np.ndarray):
+        return False
+    if held.shape != new.shape or held.dtype != new.dtype:
+        return False
+    try:
+        return bool(np.array_equal(held, new))
+    except Exception:  # noqa: BLE001 - when unsure, redraw
+        return False
+
+
 def _add_or_update(viewer, spec) -> None:
     """Add *spec*, or update the layer of ours already carrying its name."""
     import pandas as pd  # noqa: F401  (napari builds features through pandas)
@@ -3176,6 +3297,11 @@ def _add_or_update(viewer, spec) -> None:
             if shape_type is not None:
                 existing.data = []
                 existing.add(list(spec.data), shape_type=list(shape_type))
+            elif spec.kind in {"image", "labels"} and _same_volume(existing.data, spec.data):
+                # Most stages hand back the image, skeleton and masks as they
+                # were. Setting them again re-slices and re-uploads a whole
+                # volume to the GPU for nothing.
+                pass
             else:
                 existing.data = spec.data
             if spec.features:
@@ -3874,6 +4000,7 @@ def _apply_sweep_points(viewer, layer_set: str | None, row: int) -> None:
         layer = _set_z_filtered_layer_data(
             viewer, layer, "points", shown, dict(shown_features), None
         )
+        _note_z_filter_window(layer, None if window is None else tuple(window))
         try:
             _attach_colour_scale(viewer, layer)
         except Exception:  # noqa: BLE001 - a missing colour bar is survivable
