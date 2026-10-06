@@ -38,7 +38,7 @@ from .mask_recovery import (
     DEFAULT_MIN_REGION_VOLUME_UM3,
     recover_uncovered_mask_vessels as _recover_uncovered_mask_vessels,
 )
-from .lumen_loops import remove_loops_inside_one_lumen
+from .lumen_loops import remove_loops_inside_one_lumen, remove_parallel_edges_in_lumen
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
 from .reconnect import reconnect_secondary_loop_edges
@@ -518,6 +518,10 @@ def build_graph_from_skeleton(
     # once, so each loop that does not run round tissue loses an arc.
     if bridge_support is not None:
         G = remove_loops_inside_one_lumen(G, bridge_support)
+        # The same question the diagnostic already asks: two edges through
+        # one lumen. The loop breaker above does not see a pair that never
+        # closes.
+        G = remove_parallel_edges_in_lumen(G, bridge_support)
     _notify_step(G, "remove_loops_inside_one_lumen", step_callback)
 
     if bridge_support is not None:

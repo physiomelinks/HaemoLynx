@@ -31,7 +31,8 @@ from ._helpers import (
     edge_sample_points,
     next_node_id,
 )
-from .edit import insert_node_on_edge
+from .build import gap_bridge_continues_terminal
+from .edit import delete_edge_and_collapse, insert_node_on_edge
 from .lumen_loops import LOOP_SEARCH_UM, loop_inside_one_lumen
 from .reconnect import route_through_mask
 
@@ -187,6 +188,84 @@ def _strands(paths):
 
 def _path_length(path: np.ndarray) -> float:
     return float(np.sum(np.linalg.norm(np.diff(path, axis=0), axis=1))) if len(path) > 1 else 0.0
+
+
+def _on_image_face(point_um: np.ndarray, support: MaskSupport, outward: np.ndarray | None = None) -> bool:
+    """Whether *point_um* is a vessel the image cut through.
+
+    A tip within one voxel of the finest axis of the volume boundary is.
+    So is one whose mask, walked along *outward*, reaches that boundary
+    within four voxels of the coarsest axis before it reaches background.
+    A centreline often stops a few voxels short of a face the tube itself
+    runs into; a tip in the middle of the volume, however continuous the
+    mask beyond it, does not.
+    """
+    spacing = np.asarray(support.voxel_size_zyx, dtype=float)
+    extent = (np.asarray(support.mask.shape, dtype=float) - 1.0) * spacing
+    point = np.asarray(point_um, dtype=float)
+    if float(np.min(np.minimum(point, extent - point))) <= float(spacing.min()) + 1e-6:
+        return True
+    if outward is None:
+        return False
+    direction = np.asarray(outward, dtype=float)
+    limits = []
+    for axis in range(3):
+        if direction[axis] > 1e-8:
+            limits.append((extent[axis] - point[axis]) / direction[axis])
+        elif direction[axis] < -1e-8:
+            limits.append(point[axis] / -direction[axis])
+    if not limits:
+        return False
+    reach = float(min(limits))
+    if reach > 4.0 * float(spacing.max()) + 1e-6:
+        return False
+    if reach <= float(spacing.min()) + 1e-6:
+        return True
+    step = float(spacing.min())
+    samples = point + (np.arange(1, int(np.ceil(reach / step)) + 1) * step)[:, None] * direction
+    # The last step can land just past the boundary; that voxel is not the face.
+    samples = samples[np.all((samples >= -1e-6) & (samples <= extent + 1e-6), axis=1)]
+    return len(samples) > 0 and bool(np.all(support.inside(samples)))
+
+
+def _outward_at(strand, end, spacing) -> tuple[np.ndarray, np.ndarray | None]:
+    """The tip position and the unit vector pointing out of it, from the
+    strand path that ends there."""
+    spacing = np.asarray(spacing, dtype=float)
+    end_um = np.asarray(end, dtype=float) * spacing
+    for path, a, b, _background in strand:
+        if end not in (a, b):
+            continue
+        points = np.asarray(path, dtype=float)
+        points = points if end == a else points[::-1]
+        if len(points) < 2:
+            return end_um, None
+        arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))])
+        behind = int(np.searchsorted(arc, 3.0))
+        behind = min(max(behind, 1), len(points) - 1)
+        vector = points[0] - points[behind]
+        norm = float(np.linalg.norm(vector))
+        if norm == 0.0:
+            return points[0], None
+        return points[0], vector / norm
+    return end_um, None
+
+
+def _trim_recovered_spur(G: nx.MultiGraph, tip) -> int:
+    """Delete the recovered chain hanging from *tip*, stopping at a node that
+    still has another connection. A split left with nothing recovered on it
+    is collapsed by :func:`delete_edge_and_collapse`."""
+    removed = 0
+    node = tip
+    while G.has_node(node) and G.degree(node) == 1:
+        neighbour = next(G.neighbors(node))
+        key = next((k for k, data in G[node][neighbour].items() if data.get("recovered")), None)
+        if key is None:
+            break
+        delete_edge_and_collapse(G, node, neighbour, key)
+        removed += 1
+        node = neighbour
+    return removed
 
 
 def _voxels_of(data) -> np.ndarray:
@@ -388,14 +467,16 @@ def recover_uncovered_mask_vessels(
     only when one of its own ends joins. A strand with no join, or whose join
     cannot be made, is left out, so recovery never adds an island. Each path
     and join must pass *support*'s mask test and not run beside an existing
-    vessel in the same lumen. A vessel loop runs round tissue, so a path
-    closing a loop within its strand, or a join after the strand's first
-    (ends nearest the network first), is left out when that loop lies inside
-    one lumen (``lumen_loops.loop_inside_one_lumen``): Lee thinning of a blob, or a
-    strand joined back again and again to the vessel whose rim it lies in,
-    otherwise made tangles of short loops. Recovered edges carry
-    ``recovered=True``; the joins also ``reconnected=True``,
-    ``bridge_kind="recovered"`` and ``bridge_background_um``.
+    vessel in the same lumen. Every join, the first included, must also
+    continue the recovered end (``graph.build.gap_bridge_continues_terminal``)
+    and must not close a loop inside one lumen
+    (``lumen_loops.loop_inside_one_lumen``). A loop round tissue is kept.
+    A free end that then has no join is taken back along its recovered chain,
+    unless the mask ends there and nothing was in reach, or the end lies on
+    the image face. A split that join had opened, left with nothing on it,
+    is collapsed. Recovered edges carry ``recovered=True``; the joins also
+    ``reconnected=True``, ``bridge_kind="recovered"`` and
+    ``bridge_background_um``.
     """
     spacing = np.asarray(support.voxel_size_zyx, dtype=float)
     voxel_volume = float(np.prod(spacing))
@@ -406,8 +487,11 @@ def recover_uncovered_mask_vessels(
     index, radii = _centreline_samples(G, support)
     attachments = _Attachments(G, index, radii, margin_um + float(attach_reach_um))
     ids = _NodeIds(G)
-    pieces = added_paths = joins = 0
+    pieces = added_paths = joins = dead_ends = 0
     small = thin = unattached = loops_in_lumen = 0
+    from haemolynx.graph.assemble import mask_continues_past
+
+    mask_runs_on = mask_continues_past(support)
     for region in _components(uncovered):
         if len(region) * voxel_volume < float(min_region_volume_um3):
             small += 1
@@ -437,12 +521,15 @@ def recover_uncovered_mask_vessels(
         if not paths or sum(_path_length(p[0]) for p in paths) < float(min_length_um):
             continue
         for strand in _strands(paths):
-            ends_used: dict[tuple[int, ...], int] = {}
+            # A free end only ever has one path, and a path closing a loop
+            # has two at each end, so dropping one leaves the free ends free.
+            strand, dropped = _without_loops_in_one_lumen(strand, support)
+            loops_in_lumen += dropped
+            ends_used = {}
             for _path, a, b, _bg in strand:
                 for end in (a, b):
                     ends_used[end] = ends_used.get(end, 0) + 1
-            # Free ends, nearest the network first: the first join is made
-            # untested, so it should be the most direct one.
+            # Free ends, nearest the network first.
             candidates = []
             for end, count in ends_used.items():
                 if count != 1:
@@ -455,10 +542,6 @@ def recover_uncovered_mask_vessels(
                 unattached += 1
                 continue
             candidates.sort(key=lambda candidate: candidate[0])
-            # A free end only ever has one path, and a path closing a loop
-            # has two at each end, so dropping one leaves the free ends free.
-            strand, dropped = _without_loops_in_one_lumen(strand, support)
-            loops_in_lumen += dropped
             node_of: dict[tuple[int, ...], Any] = {}
             created: list[Any] = []
 
@@ -480,18 +563,19 @@ def recover_uncovered_mask_vessels(
                 )
                 added_edges.append((u, v, key))
             made = []
+            joined: set[tuple[int, ...]] = set()
             for _distance, end, end_um, (point, owner) in candidates:
-                # Once the strand is joined, every further join closes a
-                # loop; one inside a single lumen -- the strand lying in the
-                # vessel's own rim, or in a blob round it -- is not a vessel.
-                # Judged on the straight join: its route runs beside it.
-                if made:
-                    loop = attachments.loop_through(
-                        node_for(end), owner, point, np.vstack([end_um, point]), LOOP_SEARCH_UM
-                    )
-                    if loop is not None and loop_inside_one_lumen(loop, support):
-                        loops_in_lumen += 1
-                        continue
+                # Every join, including the first. One that folds back on the
+                # recovered end, or that closes a loop inside one lumen, is
+                # not a vessel meeting a vessel. A loop round tissue is.
+                if not gap_bridge_continues_terminal(G, node_for(end), point):
+                    continue
+                loop = attachments.loop_through(
+                    node_for(end), owner, point, np.vstack([end_um, point]), LOOP_SEARCH_UM
+                )
+                if loop is not None and loop_inside_one_lumen(loop, support):
+                    loops_in_lumen += 1
+                    continue
                 join = route_through_mask(support.mask, end_um, point, spacing)
                 if join is None:
                     continue
@@ -508,7 +592,8 @@ def recover_uncovered_mask_vessels(
                     reconnected=True, recovered=True, bridge_kind="recovered",
                     bridge_background_um=float(background),
                 )
-                made.append(join)
+                made.append((end, join))
+                joined.add(end)
                 joins += 1
             if not made:
                 # attach_node returns before it changes the graph, so the
@@ -521,20 +606,48 @@ def recover_uncovered_mask_vessels(
                         G.remove_node(node)
                 unattached += 1
                 continue
-            for path, _a, _b, _background in strand:
-                index.add(path)
-            for join in made:
-                index.add(join)
-            added_paths += len(strand)
+            candidate_ends = {end for _distance, end, _end_um, _target in candidates}
+            for end, count in ends_used.items():
+                if count != 1 or end in joined or end not in node_of:
+                    continue
+                if not G.has_node(node_of[end]) or G.degree(node_of[end]) != 1:
+                    continue
+                tip, outward = _outward_at(strand, end, spacing)
+                if _on_image_face(tip, support, outward):
+                    continue
+                # A real vessel end: the mask stops here and no branch was in reach.
+                if end not in candidate_ends and (outward is None or not mask_runs_on(tip, outward)):
+                    continue
+                if _trim_recovered_spur(G, node_of[end]) > 0:
+                    dead_ends += 1
+            strand_nodes = set(node_of.values())
+            remaining = [
+                data for u, v, data in G.edges(data=True)
+                if data.get("recovered") and (u in strand_nodes or v in strand_nodes)
+            ]
+            kept_joins = [
+                join for end, join in made
+                if G.has_node(node_of[end]) and G.degree(node_of[end]) > 1
+            ]
+            joins -= len(made) - len(kept_joins)
+            if not remaining:
+                unattached += 1
+                continue
+            for data in remaining:
+                index.add(np.asarray(data["voxels"], dtype=float))
+            added_paths += sum(1 for data in remaining if not data.get("reconnected"))
             pieces += 1
     for node in list(G.nodes):
         G.nodes[node].pop("_recovery_split", None)
+    G.graph["recovered_joins"] = int(G.graph.get("recovered_joins", 0)) + joins
+    G.graph["recovered_dead_ends_removed"] = int(G.graph.get("recovered_dead_ends_removed", 0)) + dead_ends
     logger.info(
         "Mask recovery: %d uncovered mask voxel(s); traced %d piece(s) (%d path(s), %d join(s)); "
         "skipped %d below %.3g um^3, %d too thin to be a vessel, %d with no end to join; "
-        "left out %d path(s) and join(s) closing a loop inside one lumen",
+        "left out %d path(s) and join(s) closing a loop inside one lumen; "
+        "removed %d recovered dead end(s) that could not join",
         len(uncovered), pieces, added_paths, joins, small, float(min_region_volume_um3), thin, unattached,
-        loops_in_lumen,
+        loops_in_lumen, dead_ends,
     )
     return G
 

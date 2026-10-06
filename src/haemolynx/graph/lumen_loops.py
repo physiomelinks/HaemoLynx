@@ -254,4 +254,44 @@ def remove_loops_inside_one_lumen(
     return G
 
 
-__all__ = ["LOOP_SEARCH_UM", "loop_inside_one_lumen", "remove_loops_inside_one_lumen"]
+def remove_parallel_edges_in_lumen(G: nx.MultiGraph, support: MaskSupport) -> nx.MultiGraph:
+    """Drop, in place, one edge of each pair
+    :func:`graph.diagnostics.diagnose_parallel_duplicates_in_lumen` reports.
+
+    The edge nearer the wall goes (``_wall_hugging``), so the centreline
+    that stays is the one nearer the lumen's middle. A branch meeting its
+    parent, and two vessels with background between them, are not pairs in
+    that report and are left alone.
+    """
+    from haemolynx.graph.diagnostics import diagnose_parallel_duplicates_in_lumen
+
+    report = diagnose_parallel_duplicates_in_lumen(
+        G,
+        support.mask,
+        voxel_size_zyx=tuple(float(v) for v in support.voxel_size_zyx),
+        mask_support=support,
+    )
+    removed = 0
+    for left, right in report["duplicate_pairs"]:
+        present = [edge for edge in (left, right) if G.has_edge(*edge)]
+        if len(present) < 2:
+            continue
+        drop = min(present, key=lambda edge: _wall_hugging(G, [edge], support))
+        u, v, key = drop
+        G.remove_edge(u, v, key)
+        removed += 1
+        for node in (u, v):
+            if G.has_node(node) and G.degree(node) == 0:
+                G.remove_node(node)
+    G.graph["parallel_lumen_edges_removed"] = int(G.graph.get("parallel_lumen_edges_removed", 0)) + removed
+    if removed:
+        logger.info("Removed %d parallel edge(s) lying beside another in one lumen", removed)
+    return G
+
+
+__all__ = [
+    "LOOP_SEARCH_UM",
+    "loop_inside_one_lumen",
+    "remove_loops_inside_one_lumen",
+    "remove_parallel_edges_in_lumen",
+]

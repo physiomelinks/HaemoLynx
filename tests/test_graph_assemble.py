@@ -239,12 +239,19 @@ def test_loops_inside_one_lumen_are_broken_only_given_the_mask(monkeypatch, with
         return G
 
     monkeypatch.setattr(assemble_module, "remove_loops_inside_one_lumen", record)
+    parallel = []
+    monkeypatch.setattr(
+        assemble_module,
+        "remove_parallel_edges_in_lumen",
+        lambda G, support: parallel.append(support) or G,
+    )
     skeleton = _t_skeleton()
     mask = skeleton.copy() if with_mask else None
 
     _build(skeleton, segmentation_mask=mask)
 
     assert len(calls) == (1 if with_mask else 0)
+    assert len(parallel) == (1 if with_mask else 0)
     if with_mask:
         assert calls[0].voxel_size_zyx == VOXEL_SIZE_ZYX
         assert calls[0].mask.shape == skeleton.shape
