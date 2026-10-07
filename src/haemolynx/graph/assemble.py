@@ -37,6 +37,7 @@ from .mask_recovery import (
     DEFAULT_MIN_LENGTH_UM,
     DEFAULT_MIN_REGION_VOLUME_UM3,
     recover_uncovered_mask_vessels as _recover_uncovered_mask_vessels,
+    remove_edges_off_the_mask,
 )
 from .lumen_loops import remove_loops_inside_one_lumen, remove_parallel_edges_in_lumen
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
@@ -537,5 +538,11 @@ def build_graph_from_skeleton(
     )
     _notify_step(G, "smart_multigraph_degree2_removal_post_orphan_reconnect", step_callback)
     _log_degree2_diagnostics(G, degree2_pass2_max_degree, debug)
+
+    # After every merge: an edge through empty space (a straight reconnect,
+    # a collapsed chord) is not a vessel. A short dropout the bridge test
+    # already allows stays.
+    if bridge_support is not None:
+        G = remove_edges_off_the_mask(G, bridge_support)
 
     return G

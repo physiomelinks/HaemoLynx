@@ -12,7 +12,11 @@ import numpy as np
 import pytest
 
 from haemolynx.graph import diagnose_parallel_duplicates_in_lumen
-from haemolynx.graph.mask_recovery import recover_uncovered_mask_vessels, uncovered_mask_voxels
+from haemolynx.graph.mask_recovery import (
+    recover_uncovered_mask_vessels,
+    remove_edges_off_the_mask,
+    uncovered_mask_voxels,
+)
 from haemolynx.preprocessing import MaskSupport
 
 pytest.importorskip("skan")
@@ -441,9 +445,10 @@ def test_a_tip_within_reach_joins_across_a_short_dropout_at_a_new_node():
     assert diagnose_parallel_duplicates_in_lumen(G, mask)["duplicate_pair_count"] == 0
 
 
-def test_a_tip_beyond_reach_whose_mask_runs_on_is_removed(monkeypatch):
-    """Nothing in reach, and the mask continues past the tip: not a vessel
-    end, so the recovered chain and the split it opened both go."""
+def test_a_joined_branch_whose_tip_stops_inside_the_mask_is_kept(monkeypatch):
+    """The trace stops short of the mask end and nothing further is in reach.
+    That tip is the vessel: it stays, joined at the near end, instead of the
+    whole branch being deleted."""
     mask = _trunk_mask()
     _tube(mask, 1, (7, 0, 30), 2, 8, 35)
     path = np.array([[7.0, float(y), 30.0] for y in range(11, 22)])
@@ -451,10 +456,37 @@ def test_a_tip_beyond_reach_whose_mask_runs_on_is_removed(monkeypatch):
 
     G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask))
 
-    assert G.number_of_edges() == 1
-    assert set(G.nodes) == {0, 1}
-    assert G.graph["recovered_dead_ends_removed"] == 1
-    assert G.graph["recovered_joins"] == 0
+    recovered = [d for *_, d in G.edges(data=True) if d.get("recovered") and not d.get("reconnected")]
+    assert recovered
+    tips = [n for n in G.nodes if G.degree[n] == 1 and n not in (0, 1)]
+    assert len(tips) == 1
+    assert float(np.asarray(G.nodes[tips[0]]["pos"])[1]) > 18.0
+    assert G.graph["recovered_dead_ends_removed"] == 0
+    assert G.graph["recovered_joins"] >= 1
+
+
+def test_an_edge_through_empty_space_is_removed_and_one_in_the_mask_stays():
+    """A centreline in the gap is not a vessel. The trunk stays, and so does
+    a vessel that only clips outside the mask. The floating edge's nodes go
+    with it."""
+    mask = _trunk_mask()
+    G = _trunk_graph()
+    G.add_node(2, pos=np.array([2.0, 30.0, 10.0]))
+    G.add_node(3, pos=np.array([2.0, 30.0, 25.0]))
+    G.add_edge(2, 3, voxels=[[2.0, 30.0, float(x)] for x in range(10, 26)], length=15.0)
+    clip = [[7.0, 7.0, float(x)] for x in range(0, 20)]
+    clip += [[7.0, 12.0, float(x)] for x in range(20, 25)]
+    clip += [[7.0, 7.0, float(x)] for x in range(25, 45)]
+    G.add_node(4, pos=np.array([7.0, 7.0, 0.0]))
+    G.add_node(5, pos=np.array([7.0, 7.0, 44.0]))
+    G.add_edge(4, 5, voxels=clip, length=44.0)
+
+    remove_edges_off_the_mask(G, _support(mask))
+
+    assert G.has_edge(0, 1)
+    assert G.has_edge(4, 5)
+    assert not G.has_node(2) and not G.has_node(3)
+    assert G.graph["edges_off_mask_removed"] == 1
 
 
 def test_a_recovered_end_on_the_image_face_is_kept(monkeypatch):

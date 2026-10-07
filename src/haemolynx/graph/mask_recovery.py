@@ -471,10 +471,13 @@ def recover_uncovered_mask_vessels(
     continue the recovered end (``graph.build.gap_bridge_continues_terminal``)
     and must not close a loop inside one lumen
     (``lumen_loops.loop_inside_one_lumen``). A loop round tissue is kept.
-    A free end that then has no join is taken back along its recovered chain,
-    unless the mask ends there and nothing was in reach, or the end lies on
-    the image face. A split that join had opened, left with nothing on it,
-    is collapsed. Recovered edges carry ``recovered=True``; the joins also
+    A free end that was in reach, but whose join was refused, is taken back
+    along its recovered chain, unless that end lies on the image face. A free
+    end nothing was in reach of is the end of the vessel just traced: it
+    stays, even when the mask runs on a little past the tip, so a segmented
+    branch is not deleted for stopping short of its last voxel. A split that
+    join had opened, left with nothing on it, is collapsed. Recovered edges
+    carry ``recovered=True``; the joins also
     ``reconnected=True``, ``bridge_kind="recovered"`` and
     ``bridge_background_um``.
     """
@@ -489,9 +492,6 @@ def recover_uncovered_mask_vessels(
     ids = _NodeIds(G)
     pieces = added_paths = joins = dead_ends = 0
     small = thin = unattached = loops_in_lumen = 0
-    from haemolynx.graph.assemble import mask_continues_past
-
-    mask_runs_on = mask_continues_past(support)
     for region in _components(uncovered):
         if len(region) * voxel_volume < float(min_region_volume_um3):
             small += 1
@@ -615,8 +615,10 @@ def recover_uncovered_mask_vessels(
                 tip, outward = _outward_at(strand, end, spacing)
                 if _on_image_face(tip, support, outward):
                     continue
-                # A real vessel end: the mask stops here and no branch was in reach.
-                if end not in candidate_ends and (outward is None or not mask_runs_on(tip, outward)):
+                # Nothing in reach: this is the end of the vessel just traced.
+                # Lee stops inside the mask, so a little mask past the tip is
+                # still that end, not a reason to delete the branch.
+                if end not in candidate_ends:
                     continue
                 if _trim_recovered_spur(G, node_of[end]) > 0:
                     dead_ends += 1
@@ -652,9 +654,50 @@ def recover_uncovered_mask_vessels(
     return G
 
 
+#: An edge this far out of the mask, or further, is the floating strand:
+#: most of its centreline is background. A real vessel that merely clips a
+#: corner stays.
+_OFF_MASK_FRACTION = 0.5
+
+
+def remove_edges_off_the_mask(G: nx.MultiGraph, support: MaskSupport) -> nx.MultiGraph:
+    """Drop, in place, edges whose centreline lies mostly outside the mask.
+
+    A short dropout the bridge test already allows stays, and so does a
+    vessel that only leaves the mask in passing. An edge with less than
+    half its length in the mask is the strand drawn through empty space;
+    it goes, and the two sides are not joined back across the gap. Nodes
+    left with no edge are removed.
+    """
+    doomed = []
+    for u, v, key, data in G.edges(keys=True, data=True):
+        voxels = data.get("voxels")
+        if voxels is not None and len(voxels) >= 2:
+            path = voxels
+        else:
+            path = [
+                np.asarray(G.nodes[u]["pos"], dtype=float),
+                np.asarray(G.nodes[v]["pos"], dtype=float),
+            ]
+        measured = support.support(path)
+        if measured.inside_fraction < _OFF_MASK_FRACTION and not support.accepts_support(measured):
+            doomed.append((u, v, key))
+    for u, v, key in doomed:
+        if G.has_edge(u, v, key):
+            G.remove_edge(u, v, key)
+    for node in [n for n in G.nodes if G.degree(n) == 0]:
+        G.remove_node(node)
+    removed = len(doomed)
+    G.graph["edges_off_mask_removed"] = int(G.graph.get("edges_off_mask_removed", 0)) + removed
+    if removed:
+        logger.info("Removed %d edge(s) that do not lie in the segmented mask", removed)
+    return G
+
+
 __all__ = [
     "DEFAULT_MIN_LENGTH_UM",
     "DEFAULT_MIN_REGION_VOLUME_UM3",
     "recover_uncovered_mask_vessels",
+    "remove_edges_off_the_mask",
     "uncovered_mask_voxels",
 ]
