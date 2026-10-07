@@ -707,7 +707,8 @@ def test_every_edge_is_tagged_with_its_smoothing_provenance():
 
     tags = [d.get("centreline_smoothing") for _, _, d in G.edges(data=True)]
     assert all(t is not None for t in tags), "some edges carry no smoothing provenance"
-    assert set(tags) <= {"bspline", "chaikin", "bspline_relaxed", "raw_fallback", "raw_too_short"}
+    assert set(tags) <= {"bspline", "chaikin", "bspline_relaxed", "raw_fallback", "raw_too_short",
+                         "raw_unchanged"}
     assert sum(stats["centreline_smoothing_counts"].values()) == G.number_of_edges()
 
 
@@ -725,6 +726,37 @@ def test_two_point_edges_are_tagged_as_structurally_unsplinable():
     two_point = [d for u, v, d in G.edges(data=True) if len(d["voxels"]) == 2]
     assert two_point, "fixture no longer contains a 2-point edge"
     assert all(d["centreline_smoothing"] == "raw_too_short" for d in two_point)
+
+
+def test_edges_the_spline_returns_unchanged_are_not_corridor_fallbacks(caplog):
+    """A 3-point edge cannot be splined, so it comes back as it went in (package T).
+
+    It was tagged raw_fallback and warned about as if it had left the skeleton corridor. It
+    did not: smoothing was a no-op, and it needs its own tag so the warning stays true.
+    """
+    import logging
+
+    from ImageLynx.graph._helpers import smooth_graph_edge_centerlines_continuous
+
+    voxels = [[0.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0, 2.0, 1.0]]
+    G = nx.MultiGraph()
+    G.add_node("a", pos=np.array(voxels[0]))
+    G.add_node("b", pos=np.array(voxels[-1]))
+    G.add_edge("a", "b", voxels=[list(p) for p in voxels], length=3.0)
+    skeleton = np.zeros((1, 3, 2), dtype=bool)
+    for z, y, x in voxels:
+        skeleton[int(z), int(y), int(x)] = True
+
+    with caplog.at_level(logging.WARNING, logger="ImageLynx.graph._helpers"):
+        stats = smooth_graph_edge_centerlines_continuous(G, skeleton, voxel_size=(1.0, 1.0, 1.0))
+
+    data = G["a"]["b"][0]
+    assert data["centreline_smoothing"] == "raw_unchanged"
+    assert data["voxels"] == [list(p) for p in voxels]
+    assert data["length"] == 3.0
+    assert stats["unchanged_edges"] == 1
+    assert stats["fallback_edges"] == 0
+    assert "raw centreline" not in caplog.text
 
 
 def test_unsmoothed_edges_keep_the_longer_staircase_numerator():

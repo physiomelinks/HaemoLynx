@@ -53,7 +53,8 @@ CODES = {
     "diameter_provenance": ["measured_edt", "measured_fwhm", "constant",
                             "synthetic_branch_order"],
     "edt_junction_trim": ["trimmed", "untrimmed_too_short", "no_junction", "not_applied"],
-    "centreline_smoothing": ["bspline", "bspline_relaxed", "raw_fallback", "raw_too_short"],
+    "centreline_smoothing": ["bspline", "bspline_relaxed", "raw_fallback", "raw_too_short",
+                             "raw_unchanged"],
 }
 
 FLOAT_COLUMNS = ("length_um", "euclidean_um", "tortuosity", "curvature",

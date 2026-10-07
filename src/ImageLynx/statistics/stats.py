@@ -74,11 +74,14 @@ def export_per_edge_morphometry(
 
     - ``diameter_provenance``   measured_edt / measured_fwhm / constant / synthetic_branch_order.
       A distribution mixing measured and fabricated diameters is not a measurement (79baf86).
-    - ``centreline_smoothing``  bspline / bspline_relaxed / raw_fallback / raw_too_short.
-      ``length`` is only rewritten for edges that smooth, so the tortuosity numerator mixes a
-      B-spline arc length with a raw 26-connected staircase that runs about 8% longer, and
-      ``raw_too_short`` edges are 2-point reconnections whose tortuosity is 1.0 by construction
-      rather than by anatomy (610da99).
+    - ``centreline_smoothing``  bspline / bspline_relaxed / raw_fallback / raw_too_short /
+      raw_unchanged. ``length`` is only rewritten for edges that smooth, so the tortuosity
+      numerator mixes a B-spline arc length with the raw skeleton polyline. ``raw_too_short``
+      edges are 2-point reconnections whose tortuosity is 1.0 by construction rather than by
+      anatomy (610da99). ``raw_unchanged`` edges are ones the spline returned as they were
+      (mostly 3-point edges); package T measured that no smoothing could shorten them.
+      ``raw_fallback`` marks a real corridor failure, where every smoothed candidate left the
+      skeleton support.
     - ``edt_junction_trim``     trimmed / untrimmed_too_short / no_junction / not_applied.
       Within about one radius of a bifurcation the EDT returns the junction's inscribed
       sphere, so segments too short to survive the exclusion keep a radius known to be

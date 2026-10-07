@@ -56,7 +56,7 @@ seen from outside, so:
 | `radius_um` | Ready-made for **Tube** radius, though constant radius reads better |
 | `diameter_provenance_code` | 0 measured_edt · 1 measured_fwhm · 2 constant · 3 synthetic |
 | `edt_junction_trim_code` | 0 trimmed · 1 untrimmed_too_short · 2 no_junction · 3 not_applied |
-| `centreline_smoothing_code` | 0 bspline · 1 bspline_relaxed · 2 raw_fallback · 3 raw_too_short |
+| `centreline_smoothing_code` | 0 bspline · 1 bspline_relaxed · 2 raw_fallback · 3 raw_too_short · 4 raw_unchanged |
 | `reconnected` | 1 where terminal reconnection created the edge |
 
 The `_code` arrays exist because ParaView cannot colour by a string. The string version is

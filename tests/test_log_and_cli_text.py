@@ -88,6 +88,8 @@ def test_centreline_fallback_is_logged(caplog):
     with caplog.at_level(logging.WARNING, logger="ImageLynx.graph._helpers"):
         stats = smooth_graph_edge_centerlines_continuous(G, skeleton, voxel_size=(1.0, 1.0, 1.0))
     assert stats["fallback_edges"] == 1
+    assert stats["unchanged_edges"] == 0
+    assert G["a"]["b"][0]["centreline_smoothing"] == "raw_fallback"
     assert "1 of 1 edges kept the raw centreline" in caplog.text
 
 

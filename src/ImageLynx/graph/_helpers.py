@@ -861,8 +861,12 @@ def _smooth_single_edge_centerline(
             "was_relaxed": was_relaxed,
             "provenance": "bspline_relaxed" if was_relaxed else method,
         }
-    else:
-        return id_tuple, {"status": "fallback", "provenance": "raw_fallback"}
+    if accepted is not None:
+        # The spline returned the polyline as it was: under 4 points ``bspline_smooth_polyline``
+        # returns its input, and on short edges at this smoothness the fit passes through every
+        # point. Smoothing was a no-op, not a corridor failure (package T).
+        return id_tuple, {"status": "unchanged", "provenance": "raw_unchanged"}
+    return id_tuple, {"status": "fallback", "provenance": "raw_fallback"}
 
 
 def smooth_graph_edge_centerlines_continuous(
@@ -909,6 +913,7 @@ def smooth_graph_edge_centerlines_continuous(
             "method": method,
             "smoothed_edges": 0,
             "fallback_edges": 0,
+            "unchanged_edges": 0,
             "skipped_edges": 0,
         }
 
@@ -945,6 +950,7 @@ def smooth_graph_edge_centerlines_continuous(
     smoothed_edges = 0
     relaxed_edges = 0
     fallback_edges = 0
+    unchanged_edges = 0
     skipped_edges = 0
 
     for id_tuple, res in results:
@@ -953,13 +959,12 @@ def smooth_graph_edge_centerlines_continuous(
         data = G[u][v][key] if is_multi else G[u][v]
 
         # Every edge is tagged, including the untouched ones. `length` is only rewritten for
-        # edges that smooth, so an untagged graph silently mixes two different operators in the
-        # section 1.4 tortuosity numerator: a B-spline arc length for some edges and a raw
-        # 26-connected staircase for the rest. Measured, the staircase runs about 8% longer, so
-        # unsmoothed edges carry a proportionally inflated tortuosity. That bias also tracks
-        # tortuosity itself - twisty edges are the ones whose spline leaves the corridor and
-        # falls back - so unlike most defects in this pipeline it can manufacture a between-group
-        # difference rather than suppress one. Consumers must be able to stratify or exclude.
+        # edges that smooth; the rest keep the skeleton polyline, so consumers must be able to
+        # stratify the section 1.4 tortuosity numerator by operator. `raw_too_short` (under 3
+        # points) and `raw_unchanged` (the spline returned the input) are edges the spline cannot
+        # change; package T measured that no smoothing could shorten them. `raw_fallback` is
+        # reserved for a real corridor failure, where every candidate left the skeleton support
+        # (none in the six 0.95 batch networks).
         data["centreline_smoothing"] = res.get("provenance", "raw_fallback")
 
         if status == "skipped":
@@ -967,6 +972,9 @@ def smooth_graph_edge_centerlines_continuous(
             continue
         if status == "fallback":
             fallback_edges += 1
+            continue
+        if status == "unchanged":
+            unchanged_edges += 1
             continue
 
         # Apply the smoothed data to the graph
@@ -983,7 +991,8 @@ def smooth_graph_edge_centerlines_continuous(
             "Continuous centerline smoothing: "
             f"method={method}, smoothed="
             f"{smoothed_edges}, relaxed={relaxed_edges}, "
-            f"fallback={fallback_edges}, skipped={skipped_edges}"
+            f"fallback={fallback_edges}, unchanged={unchanged_edges}, "
+            f"skipped={skipped_edges}"
         )
     if fallback_edges:
         logger.warning(
@@ -1001,6 +1010,7 @@ def smooth_graph_edge_centerlines_continuous(
         "smoothed_edges": smoothed_edges,
         "relaxed_edges": relaxed_edges,
         "fallback_edges": fallback_edges,
+        "unchanged_edges": unchanged_edges,
         "skipped_edges": skipped_edges,
         "centreline_smoothing_counts": provenance_counts,
     }

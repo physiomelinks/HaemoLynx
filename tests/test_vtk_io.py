@@ -192,3 +192,19 @@ def test_nodes_carry_degree_which_is_the_section_1_1_readout(tmp_path):
     by_id = dict(zip(nodes.point_data["node_id"], nodes.point_data["degree"]))
     assert by_id[0] == 1 and by_id[1] == 2 and by_id[2] == 1
     assert "is_branch_node" in nodes.point_data
+
+
+def test_smoothing_tag_codes_keep_their_meaning():
+    """raw_unchanged was added after .vtp files and the ParaView guide fixed codes 0-3.
+
+    Appending it as code 4 keeps every older rendering readable; the batch VTK driver must
+    use the same list as the package exporter.
+    """
+    from cb_h1_vtk import CODES
+
+    from ImageLynx.visualization.vtk_io import _PROVENANCE_LEVELS
+
+    levels = _PROVENANCE_LEVELS["centreline_smoothing"]
+    assert levels == ("bspline", "bspline_relaxed", "raw_fallback", "raw_too_short",
+                      "raw_unchanged")
+    assert list(levels) == CODES["centreline_smoothing"]

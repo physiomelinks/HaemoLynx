@@ -1109,8 +1109,8 @@ no Optuna objective can see tortuosity, so tuning it would optimise against a pr
 thing being measured. It is also why the EDT lattice is broken by the time calibre is read (§13.3).
 
 **Step 7 leaves 15–17% of edges raw, and that does not move H1** (re-run package T, measured
-2026-10-07 on the six 0.95 batch networks). These edges are tagged `raw_fallback`, and the pipeline
-warning says the spline left the skeleton corridor. It did not. 85% of them are 3-point polylines,
+2026-10-07 on the six 0.95 batch networks). These edges were tagged `raw_fallback`, and the pipeline
+warning said the spline left the skeleton corridor. It did not. 85% of them are 3-point polylines,
 which `bspline_smooth_polyline` returns unchanged (it needs 4 points), and the rest have 4–8 points,
 where the spline at this smoothness passes through the points (99th percentile departure 0.0005
 voxel). The edge is tagged raw because the result equals the input, not because it failed the
@@ -1124,6 +1124,10 @@ specimen and total length by 0.5–0.7%. The SHR/WKY tortuosity ratio stays 0.99
 `assess_cohort_split` does not flag. The fallback share is not group-correlated (WKY 15.1–16.8%,
 SHR 16.2–16.4%, p 0.7). With the spline run unchecked, §1.3 length within TH moves by under 0.06%
 at all three TH cuts, and the density ratio stays 1.18 / 1.21 / 1.26. No re-run is needed.
+Since re-run package V these edges are tagged `raw_unchanged`. `raw_fallback` and its warning are
+kept for a real corridor failure, where every candidate leaves the skeleton support; none occurred
+in the six batch networks. The batch outputs on disk carry the old tag until the batch is next
+re-run (package X); every number stays the same.
 
 **Step 8 is the second largest-component cut.** §2.4 step 3 already kept one component of the
 *mask*. This keeps one component of the *graph*, because the topology operators above can sever
