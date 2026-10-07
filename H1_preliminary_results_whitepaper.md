@@ -565,7 +565,7 @@ Absolute levels moved as expected. WKY parenchymal volume runs 0.00769, 0.00778 
 
 ## 10. Interpretation against the published prior
 
-§1.2 of the hypothesis document cites stereological data reporting that SHR capillary network length approximately doubles (10.66 m vs 5.36 m) while mean capillary cross-sectional area decreases (20.6 µm² vs 57.8 µm²): a hypervascular state accommodated by elongation of narrower vessels rather than by vasodilation.
+§1.2 of the hypothesis document cites stereological data reporting that SHR capillary network length approximately doubles (10.66 ± 0.60 mm vs 5.36 ± 0.36 mm) while mean capillary cross-sectional area decreases (20.6 ± 1.14 µm² vs 57.80 ± 1.23 µm²): a hypervascular state accommodated by elongation of narrower vessels rather than by vasodilation. The source is Ivanov, Atanasova and Lazarov, *Microvasc Res* 2026;167:104978 (doi:10.1016/j.mvr.2026.104978), checked against its abstract on 2026-10-08. It is an electron-microscopy stereology study, and its controls are normotensive Wistar rats, not WKY.
 
 The present results point the same way on both axes, but **the length effect is too small to count as agreement**:
 
@@ -576,13 +576,13 @@ The present results point the same way on both axes, but **the length effect is 
 
 A +2% length difference, against a within-group spread of 18–24%, is not a smaller version of a doubling; it is no measurable difference. The calibre direction matches, but §8.2 does not support it as a finding.
 
-Three readings are available and the data cannot presently distinguish them. Over-inclusive segmentation compresses differences: fusing adjacent capillaries reduces apparent branch and loop counts, and does so more in the denser cohort, which would make the measured effects lower bounds (§6.4 supports this weakly, by a few percent). The sampled region may not show it: a 0.0266 mm³ tissue-placed box measures density, not whole-organ length, and an organ can double its capillary length by growing without changing its density (§10.1 makes the same point for parenchyma). Or the prior is not directly comparable: it derives from a different preparation and quantification method, and the hypothesis document itself flags these values as requiring verification against their source before use.
+Three readings are available and the data cannot presently distinguish them. Over-inclusive segmentation compresses differences: fusing adjacent capillaries reduces apparent branch and loop counts, and does so more in the denser cohort, which would make the measured effects lower bounds (§6.4 supports this weakly, by a few percent). The sampled region may not show it: a 0.0266 mm³ tissue-placed box measures density, not whole-organ length, and an organ can double its capillary length by growing without changing its density (§10.1 makes the same point for parenchyma). Or the prior is not directly comparable: it derives from a different preparation and quantification method (electron-microscopy stereology of the whole organ), and it compares SHR with Wistar rather than WKY controls, so part of its difference may be strain rather than hypertension.
 
-**This comparison is orientation, not corroboration**, and on length it is not even orientation, until the classifier is final, the provenance of the cited values is confirmed, and whole-organ quantities can be measured.
+**This comparison is orientation, not corroboration**, and on length it is not even orientation, until the classifier is final and whole-organ quantities can be measured. The cited values are confirmed against their source; their Wistar control remains a difference in design.
 
 ### 10.1 The parenchymal prior, which the measurement opposes
 
-§1.3 of the hypothesis document states that CB parenchyma expands up to threefold in SHR through glomus and sustentacular cell hyperplasia. §9A.3 measures TH-positive parenchymal volume at **0.61 times** WKY (group means; the ranges overlap at SHR-A): a contraction, not an expansion, and in the opposite direction to a prior that anticipated a factor of three.
+§1.3 of the hypothesis document states that CB parenchyma expands up to threefold in SHR through glomus and sustentacular cell hyperplasia. Unlike the §1.2 prior, this figure has no source on record: a PubMed search on 2026-10-08 did not find one. §9A.3 measures TH-positive parenchymal volume at **0.61 times** WKY (group means; the ranges overlap at SHR-A): a contraction, not an expansion, and in the opposite direction to a prior that anticipated a factor of three.
 
 A result that opposes its prior carries a higher burden than one that confirms it, and three things are worth separating.
 
@@ -649,7 +649,7 @@ Each claim is graded: **Established** (evidenced and robust to the known limitat
 | C7 | SHR show a higher branch-node fraction | §7.3 | SHR-C ties WKY-B and is below WKY-A | **Not supported** (was Provisional, weak) |
 | C8 | The direction of C4–C6 is robust to the segmentation threshold | §6.4 | Three thresholds, 9/9 group-mean comparisons; the overlap is robust too | **Established** |
 | C8b | The reported effect is a lower bound on what this instrument would measure with less inclusive segmentation | §6.4 | Two clean points (0.93, 0.95); rises of 0.01 to 0.04; n = 3 group means | **Provisional** |
-| C9 | The direction is consistent with the published stereological prior | §10 | Length +2% against a doubling is no measurable difference; calibre not supported (C10); prior unverified against source | **Not supported** (was Provisional) |
+| C9 | The direction is consistent with the published stereological prior | §10 | Length +2% against a doubling is no measurable difference; calibre not supported (C10); prior confirmed against source (§10) but uses Wistar, not WKY, controls | **Not supported** (was Provisional) |
 | C10 | SHR capillaries are narrower | §8 | Medians separate (0.50 µm gap, p 0.10), but below one voxel, not at 0.93 or 0.97, with a group-correlated threshold shift larger than the gap and an unmeasured one-voxel EDT bias | **Not supported** |
 | C11 | Tortuosity differs between cohorts | §9 | Ratio 0.991, groups overlap; no longer confounded (r +0.11) | **Not supported** |
 | C12 | The absolute densities represent the whole organ | §5.3 | Region placed on signal | **Not supported** |
@@ -671,7 +671,7 @@ The document's defensible position is C1, C2, C8, C13 and C17 (Established) plus
 | 1 | Complete perivascular boundary labelling on WKY-A, WKY-C, SHR-A, SHR-C | All results; §1.2 and the §6.3 inclusiveness check in particular | Hours of GUI work; 40 min prediction; 45 min re-run |
 | 2 | Level the TH positive class between cohorts, from the residual 2.1× | The stated bound on §9A; the confidence of all four H2 methods | Hours of GUI work; 6 min prediction; minutes to re-run §9A |
 | 3 | Hand-labelled held-out regions in both cohorts | Per-cohort validation scores | Hours |
-| 4 | Verify the §1.2 stereological prior against its source | §10 | Literature check |
+| ~~4~~ | ~~Verify the §1.2 stereological prior against its source~~ **Done 2026-10-08:** values confirmed (Ivanov et al. 2026); lengths are mm, controls are Wistar. The §1.3 parenchymal prior is still unsourced | §10 | Literature check |
 | 5 | Out-of-core processing, or accept region sampling | Whole-organ densities | Engineering |
 | 6 | Unbinned 1×1×1 data | Radius accuracy (±16% rather than ±31%) | Full relabelling; classifier does not transfer |
 | 7 | Measure and correct the EDT half-voxel bias per edge (reference open item 42) | §1.2 absolute calibre; the calibre window check in §8.2 | Code and a batch re-run |
