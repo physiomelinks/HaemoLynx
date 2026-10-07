@@ -1108,6 +1108,23 @@ deliberately not tuned**: it sets the centreline curvature that H1 §1.4 reads t
 no Optuna objective can see tortuosity, so tuning it would optimise against a proxy for the very
 thing being measured. It is also why the EDT lattice is broken by the time calibre is read (§13.3).
 
+**Step 7 leaves 15–17% of edges raw, and that does not move H1** (re-run package T, measured
+2026-10-07 on the six 0.95 batch networks). These edges are tagged `raw_fallback`, and the pipeline
+warning says the spline left the skeleton corridor. It did not. 85% of them are 3-point polylines,
+which `bspline_smooth_polyline` returns unchanged (it needs 4 points), and the rest have 4–8 points,
+where the spline at this smoothness passes through the points (99th percentile departure 0.0005
+voxel). The edge is tagged raw because the result equals the input, not because it failed the
+corridor test. Every raw polyline lies on the skeleton. So the spline cannot shorten them: run
+without the corridor check, or with the corridor widened to 1.5 or 2 voxels, mean tortuosity moves
+by at most 0.0003 per specimen and total length by at most 0.012%. They are short (median 5.3 µm)
+and the least tortuous smoothed class, not the most (WKY-A mean 1.12, against 1.19 for `bspline`).
+At the hard bound, every such edge set to its chord, mean tortuosity falls by 1.5–1.9% in every
+specimen and total length by 0.5–0.7%. The SHR/WKY tortuosity ratio stays 0.991 (median ratio
+1.001); the groups then separate by 0.0008 against a within-group spread of 0.018, which
+`assess_cohort_split` does not flag. The fallback share is not group-correlated (WKY 15.1–16.8%,
+SHR 16.2–16.4%, p 0.7). With the spline run unchecked, §1.3 length within TH moves by under 0.06%
+at all three TH cuts, and the density ratio stays 1.18 / 1.21 / 1.26. No re-run is needed.
+
 **Step 8 is the second largest-component cut.** §2.4 step 3 already kept one component of the
 *mask*. This keeps one component of the *graph*, because the topology operators above can sever
 pieces that the mask held together. Both are on.
