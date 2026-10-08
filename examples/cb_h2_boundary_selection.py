@@ -12,9 +12,9 @@ This compares the band rule against a face-crossing rule on the six CB graphs. T
 the shunt ratio, flow through the widest decile of edges over total inlet throughput, and the
 comparison is the spread of that ratio as each rule's free parameters move.
 
-**Inputs are the batch outputs**, read through ``cb_h2_error_propagation.load_network``: the
-cached MultiGraph for topology and ``per_edge_morphometry.csv`` for calibre and length, each
-checked against the placed ROI before it is read. Until package O of the 2026-10-01 re-run notes
+**Inputs are the batch outputs**, opened through ``batch_outputs.open_batch_run``: the cached
+MultiGraph for topology and ``per_edge_morphometry.csv`` for calibre and length, checked against
+the placed ROI before either is read. Until package O of the 2026-10-01 re-run notes
 this script read the H1 ParaView export instead, in the VTK frame, with no ROI check. Axes are now
 graph axes (z, y, x): axis 1 is y in both frames, while 0 and 2 swap relative to the older logs.
 
@@ -45,12 +45,22 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cb_h2_error_propagation import ROI, SPECIMENS, load_network, solve_edge_flows  # noqa: E402
+from cb_h2_error_propagation import (                                               # noqa: E402
+    ROI, SPECIMENS, network_arrays, solve_edge_flows,
+)
+from ImageLynx.batch_outputs import open_batch_run                                  # noqa: E402
 from ImageLynx.graph.boundaries import (                                            # noqa: E402
     select_boundary_terminal_nodes,
     select_boundary_terminal_nodes_by_face,
 )
-from ImageLynx.specimens import PROCESSING_VOXEL_UM                                 # noqa: E402
+from ImageLynx.specimens import PROCESSING_VOXEL_UM, get_specimen                   # noqa: E402
+
+
+def load_network(specimen_id):
+    """The batch run's MultiGraph and its per-edge arrays, for the placed ROI only."""
+    run = open_batch_run(get_specimen(specimen_id))
+    G = run.graph()
+    return (G, *network_arrays(G, run.edge_table()))
 
 
 def boundaries(G, index, axis, mode, tol=1.0, percent=25.0):

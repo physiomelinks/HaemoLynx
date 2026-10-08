@@ -38,8 +38,6 @@ Run with::
     venv/bin/python examples/cb_h2_error_propagation.py --perturbation-um 0.740
 """
 import argparse
-import csv
-import pickle
 import sys
 from pathlib import Path
 
@@ -52,14 +50,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from ImageLynx import cb_settings                                     # noqa: E402
+from ImageLynx.batch_outputs import open_batch_run                     # noqa: E402
 from ImageLynx.graph.boundaries import (                               # noqa: E402
     select_boundary_terminal_nodes_by_face,
 )
-from ImageLynx.roi_placement import check_output_roi                   # noqa: E402
-from ImageLynx.specimens import PROCESSING_VOXEL_UM                    # noqa: E402
-from ImageLynx.specimens import SPECIMENS as REGISTRY                  # noqa: E402
+from ImageLynx.specimens import PROCESSING_VOXEL_UM, get_specimen      # noqa: E402
 
-BATCH = Path(__file__).resolve().parent / "outputs" / "cb_h1_batch"
 SPECIMENS = ("WKY-A", "WKY-B", "WKY-C", "SHR-A", "SHR-B", "SHR-C")
 
 # Analysis settings come from ImageLynx.cb_settings, which is their single owner.
@@ -77,36 +73,30 @@ DRAWS = 24
 SEED = 20260815
 
 
-def _specimen(specimen_id):
-    return next(s for s in REGISTRY if s.specimen_id == specimen_id)
+def network_arrays(G, edge_table):
+    """Per-edge arrays over the MultiGraph: calibre from the graph, length from the edge table.
 
-
-def network_arrays(G, csv_path):
-    """Per-edge arrays over the MultiGraph, with calibre and length joined from the CSV.
-
-    Returns ``(u, v, length, diameter, index)``: ``u`` and ``v`` are 0-based node indices and
-    ``index`` maps each graph node to its index. Parallel edges stay separate conductances.
-    Raises if any edge has no morphometry row, rather than solving on a partial network.
+    ``G`` and ``edge_table`` are what ``BatchRun.graph()`` and ``BatchRun.edge_table()`` return:
+    the graph carries ``assigned_diameter_um`` on every edge and the table is keyed by the same
+    forward integer ``(u, v, key)``. Returns ``(u, v, length, diameter, index)``: ``u`` and ``v``
+    are 0-based node indices and ``index`` maps each graph node to its index. Parallel edges stay
+    separate conductances. Raises if any edge has no table row, rather than solving on a partial
+    network.
     """
-    by_edge = {}
-    with open(csv_path) as handle:
-        for row in csv.DictReader(handle):
-            by_edge[(row["u"], row["v"], row["key"])] = row
-
     index = {node: i for i, node in enumerate(G.nodes())}
     u, v, length, diameter, missing = [], [], [], [], []
-    for a, b, key in G.edges(keys=True):
-        row = by_edge.get((str(a), str(b), str(key))) or by_edge.get((str(b), str(a), str(key)))
+    for a, b, key, data in G.edges(keys=True, data=True):
+        row = edge_table.get((a, b, key))
         if row is None:
             missing.append((a, b, key))
             continue
         u.append(index[a])
         v.append(index[b])
         length.append(float(row["length_um"] or "nan"))
-        diameter.append(float(row["assigned_diameter_um"] or "nan"))
+        diameter.append(data["assigned_diameter_um"])
     if missing:
-        raise ValueError(f"{len(missing)} graph edges have no row in {csv_path}, "
-                         f"e.g. {missing[:3]}; the CSV and the cached graph are out of step.")
+        raise ValueError(f"{len(missing)} graph edges have no row in the edge table, "
+                         f"e.g. {missing[:3]}; the table and the cached graph are out of step.")
 
     u, v = np.array(u, int), np.array(v, int)
     length, diameter = np.array(length, float), np.array(diameter, float)
@@ -124,12 +114,10 @@ def network_arrays(G, csv_path):
 
 def load_network(specimen_id):
     """The batch run's MultiGraph and its per-edge arrays, for the placed ROI only."""
-    directory = BATCH / specimen_id
-    # Refuse a graph cut anywhere but the placed ROI (item 27).
-    check_output_roi(directory, _specimen(specimen_id), ROI)
-    with open(next(directory.glob("*_cache/network_graph.pkl")), "rb") as handle:
-        G = pickle.load(handle)
-    return (G, *network_arrays(G, directory / "per_edge_morphometry.csv"))
+    # Opening the run refuses a graph cut anywhere but the placed ROI (item 27).
+    run = open_batch_run(get_specimen(specimen_id))
+    G = run.graph()
+    return (G, *network_arrays(G, run.edge_table()))
 
 
 def face_boundaries(G, index, axis=BOUNDARY_AXIS, tolerance=FACE_TOLERANCE):

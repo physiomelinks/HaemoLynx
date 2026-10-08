@@ -12,12 +12,14 @@ import pytest
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
-# Drivers switched to the reader so far (batch-run reader tickets 01 and 02).
+# Drivers switched to the reader so far (batch-run reader tickets 01 to 03).
 ON_THE_READER = [
     "cb_h2_glomus_perfusion.py",
     "cb_h2_absolute_perfusion.py",
     "cb_h2_hypoxic_fraction.py",
     "cb_h2_vtk.py",
+    "cb_h2_error_propagation.py",
+    "cb_h2_boundary_selection.py",
 ]
 # Modules a driver only needs if it reads batch-run files itself.
 FILE_READERS = {"csv", "h5py", "pickle"}

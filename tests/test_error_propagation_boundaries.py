@@ -38,16 +38,15 @@ def _graph():
     return G
 
 
-def _csv(tmp_path, G, skip=None):
-    path = tmp_path / "per_edge_morphometry.csv"
-    lines = ["u,v,key,length_um,assigned_diameter_um"]
-    for a, b, k in G.edges(keys=True):
+def _inputs(G, skip=None):
+    """What the batch-run reader hands out: the graph with calibre on each edge, and the table."""
+    table = {}
+    for a, b, k, data in G.edges(keys=True, data=True):
+        data["assigned_diameter_um"] = 6.0
         if (a, b, k) != skip:
-            # Written the other way round for some edges: the join must accept either order.
-            first, second = (b, a) if a % 2 else (a, b)
-            lines.append(f"{first},{second},{k},40.0,6.0")
-    path.write_text("\n".join(lines) + "\n")
-    return path
+            table[(a, b, k)] = {"u": str(a), "v": str(b), "key": str(k),
+                                "length_um": "40.0", "assigned_diameter_um": "6.0"}
+    return G, table
 
 
 def test_face_boundaries_are_the_library_face_rule():
@@ -88,25 +87,23 @@ def test_edge_count_keeps_parallel_edges():
     assert solvable == 9
 
 
-def test_network_arrays_keep_parallel_edges_as_separate_conductances(tmp_path):
+def test_network_arrays_keep_parallel_edges_as_separate_conductances():
     G = _graph()
-    u, v, length, diameter, index = module.network_arrays(G, _csv(tmp_path, G))
+    u, v, length, diameter, index = module.network_arrays(*_inputs(G))
     assert len(u) == 9
     pair = sorted([index[0], index[7]])
     assert sum(sorted([a, b]) == pair for a, b in zip(u.tolist(), v.tolist())) == 2
 
 
-def test_a_missing_morphometry_row_raises(tmp_path):
+def test_a_missing_morphometry_row_raises():
     G = _graph()
     with pytest.raises(ValueError, match="no row"):
-        module.network_arrays(G, _csv(tmp_path, G, skip=(0, 7, 1)))
+        module.network_arrays(*_inputs(G, skip=(0, 7, 1)))
 
 
-def test_a_node_left_without_edges_raises(tmp_path):
-    G = _graph()
-    path = _csv(tmp_path, G)
+def test_a_node_left_without_edges_raises():
+    G, table = _inputs(_graph())
     # A zero length on the only edge to node 8 would leave it as a zero Laplacian row.
-    text = path.read_text().replace("7,8,0,40.0", "7,8,0,0.0").replace("8,7,0,40.0", "8,7,0,0.0")
-    path.write_text(text)
+    table[(7, 8, 0)]["length_um"] = "0.0"
     with pytest.raises(ValueError, match="singular"):
-        module.network_arrays(G, path)
+        module.network_arrays(G, table)

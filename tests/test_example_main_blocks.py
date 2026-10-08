@@ -7,6 +7,7 @@ prints the within-specimen ratio ``main`` measured instead of a hard-coded 6.3%.
 """
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
 import networkx as nx
 import numpy as np
@@ -51,11 +52,11 @@ def test_the_check_catches_a_call_above_its_definition(tmp_path):
     assert _calls_defined_after_main(script) == ["later (called line 2, defined line 5)"]
 
 
-def _cross_network(tmp_path):
+def _cross_network():
     """Centre node joined to one terminal on each of the six ROI faces, in micrometres.
 
     One extra branch reaches the low axis-1 face through a parallel pair, so the MultiGraph path
-    is exercised. Calibre and length come from a CSV, as they do from the batch output.
+    is exercised. Calibre and length come from an edge table, as they do from the batch-run reader.
     """
     G = nx.MultiGraph()
     mid, top = 148.0, 296.0
@@ -70,20 +71,20 @@ def _cross_network(tmp_path):
     G.add_edge(0, 7)
     G.add_edge(0, 7)
     G.add_edge(7, 8)
-    path = tmp_path / "per_edge_morphometry.csv"
-    lines = ["u,v,key,length_um,assigned_diameter_um"]
+    table = {}
     for n, (a, b, k) in enumerate(G.edges(keys=True)):
-        lines.append(f"{a},{b},{k},{50.0 + 5 * n},{4.0 + n}")
-    path.write_text("\n".join(lines) + "\n")
-    return G, path
+        G.edges[a, b, k]["assigned_diameter_um"] = 4.0 + n
+        table[(a, b, k)] = {"u": str(a), "v": str(b), "key": str(k),
+                            "length_um": str(50.0 + 5 * n), "assigned_diameter_um": str(4.0 + n)}
+    return G, table
 
 
 @pytest.fixture
-def propagation(monkeypatch, tmp_path):
+def propagation(monkeypatch):
     import cb_h2_error_propagation as module
-    G, csv_path = _cross_network(tmp_path)
-    monkeypatch.setattr(module, "load_network",
-                        lambda specimen_id: (G, *module.network_arrays(G, csv_path)))
+    G, table = _cross_network()
+    run = SimpleNamespace(graph=lambda: G, edge_table=lambda: table)
+    monkeypatch.setattr(module, "open_batch_run", lambda specimen: run)
     return module
 
 
