@@ -10,6 +10,10 @@ Issues and specs for this repo live as markdown files in `.scratch/`. `.scratch/
 - Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
 
+## Closing a ticket
+
+After the commit that implements a ticket, set its `Status:` line to `done (<hash>)`, using every hash if it took more than one commit. When the last ticket of a feature closes, set `Status: done` in that feature's `spec.md` too. These are the closing states for implementation tickets; the roles in `triage-labels.md` cover only the states before work starts.
+
 ## When a skill says "publish to the issue tracker"
 
 Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
