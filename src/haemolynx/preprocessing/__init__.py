@@ -76,6 +76,7 @@ from .bridge_mask_support import (
     bridge_is_supported,
     bridge_mask_support,
     path_shadows_existing_vessel,
+    shadowed_samples,
 )
 from .memmap_support import (
     new_memmap_array,
@@ -147,6 +148,7 @@ __all__ = [
     "bridge_is_supported",
     "bridge_mask_support",
     "path_shadows_existing_vessel",
+    "shadowed_samples",
     "new_memmap_array",
     "release_memmap_array",
     "release_superseded",

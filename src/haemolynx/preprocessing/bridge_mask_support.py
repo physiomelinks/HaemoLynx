@@ -32,6 +32,7 @@ __all__ = [
     "bridge_is_supported",
     "bridge_mask_support",
     "path_shadows_existing_vessel",
+    "shadowed_samples",
 ]
 
 #: Longest run of background a bridge may cross: a one- or two-voxel dropout
@@ -214,6 +215,67 @@ def path_shadows_existing_vessel(
     return judged > 0 and 2 * len(shadowing) >= judged
 
 
+def _judged_samples(path_um, radius_at, *, step_um: float, margin_um: float):
+    """*path_um* sampled every *step_um*, each sample's tangent, and which
+    samples are judged: those further than (the lumen radius at that end +
+    *margin_um*) from both ends, where a branch meets the vessel it joins."""
+    samples = _densify(np.asarray(path_um, dtype=float), step_um)
+    if len(samples) < 2:
+        return samples, np.zeros_like(samples), np.zeros(len(samples), dtype=bool)
+    tangents = np.gradient(samples, axis=0)
+    ends = samples[[0, -1]]
+    end_radii = np.asarray(radius_at(ends), dtype=float).reshape(2)
+    keep = (np.linalg.norm(samples - ends[0], axis=1) > end_radii[0] + margin_um) & (
+        np.linalg.norm(samples - ends[1], axis=1) > end_radii[1] + margin_um
+    )
+    return samples, tangents, keep
+
+
+def _same_lumen_neighbours(
+    samples,
+    tangents,
+    existing_tree,
+    existing,
+    inside,
+    radius_at,
+    *,
+    step_um: float,
+    margin_um: float,
+    max_cosine: float,
+    min_share: float = 0.0,
+) -> np.ndarray:
+    """Per sample, the index into *existing* of its nearest centreline point
+    when that point lies beside it in the same lumen, else -1. With
+    *min_share*, every sample is -1 as soon as fewer than that share of them
+    could qualify: no chord is then sampled against the mask."""
+    neighbour = np.full(len(samples), -1, dtype=np.intp)
+    if len(samples) == 0:
+        return neighbour
+    tree = existing_tree if existing_tree is not None else cKDTree(existing)
+    chord_length, nearest = tree.query(samples)
+    chords = existing[nearest] - samples
+    tangent_norm = np.linalg.norm(tangents, axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cosine = np.abs(np.sum(chords * tangents, axis=1)) / (chord_length * tangent_norm)
+    beside = (chord_length < 1e-9) | (np.nan_to_num(cosine, nan=0.0) < max_cosine)
+    close = chord_length <= 2.0 * np.asarray(radius_at(samples), dtype=float) + margin_um
+    candidates = np.flatnonzero(beside & close)
+    if len(candidates) == 0 or len(candidates) < min_share * len(samples):
+        return neighbour
+    lengths = chord_length[candidates]
+    n = int(np.ceil(lengths.max() / step_um)) + 1
+    if n > 1:
+        t = np.linspace(0.0, 1.0, n)
+        points = samples[candidates][:, None, :] + t[None, :, None] * chords[candidates][:, None, :]
+        flags = np.asarray(inside(points.reshape(-1, 3)), dtype=bool).reshape(len(candidates), n)
+        background_um = (~flags).sum(axis=1) * lengths / (n - 1)
+        same_lumen = background_um < margin_um
+    else:
+        same_lumen = np.ones(len(candidates), dtype=bool)
+    neighbour[candidates[same_lumen]] = nearest[candidates[same_lumen]]
+    return neighbour
+
+
 def _shadowing_points(
     path_um,
     existing_tree,
@@ -231,40 +293,47 @@ def _shadowing_points(
     existing = np.asarray(existing_points_um, dtype=float).reshape(-1, 3)
     if len(existing) == 0:
         return nothing
-    samples = _densify(np.asarray(path_um, dtype=float), step_um)
-    if len(samples) < 2:
-        return nothing
-    tangents = np.gradient(samples, axis=0)
-    ends = samples[[0, -1]]
-    end_radii = np.asarray(radius_at(ends), dtype=float).reshape(2)
-    keep = (np.linalg.norm(samples - ends[0], axis=1) > end_radii[0] + margin_um) & (
-        np.linalg.norm(samples - ends[1], axis=1) > end_radii[1] + margin_um
-    )
+    samples, tangents, keep = _judged_samples(path_um, radius_at, step_um=step_um, margin_um=margin_um)
     samples, tangents = samples[keep], tangents[keep]
     if len(samples) == 0:
         return nothing
-    tree = existing_tree if existing_tree is not None else cKDTree(existing)
-    chord_length, nearest = tree.query(samples)
-    chords = existing[nearest] - samples
-    tangent_norm = np.linalg.norm(tangents, axis=1)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        cosine = np.abs(np.sum(chords * tangents, axis=1)) / (chord_length * tangent_norm)
-    beside = (chord_length < 1e-9) | (np.nan_to_num(cosine, nan=0.0) < max_cosine)
-    close = chord_length <= 2.0 * np.asarray(radius_at(samples), dtype=float) + margin_um
-    candidates = np.flatnonzero(beside & close)
-    if 2 * len(candidates) < len(samples):
-        return len(samples), nothing[1]
-    lengths = chord_length[candidates]
-    n = int(np.ceil(lengths.max() / step_um)) + 1 if len(lengths) else 1
-    if n > 1:
-        t = np.linspace(0.0, 1.0, n)
-        points = samples[candidates][:, None, :] + t[None, :, None] * chords[candidates][:, None, :]
-        flags = np.asarray(inside(points.reshape(-1, 3)), dtype=bool).reshape(len(candidates), n)
-        background_um = (~flags).sum(axis=1) * lengths / (n - 1)
-        same_lumen = background_um < margin_um
-    else:
-        same_lumen = np.ones(len(candidates), dtype=bool)
-    return len(samples), nearest[candidates[same_lumen]]
+    neighbour = _same_lumen_neighbours(
+        samples, tangents, existing_tree, existing, inside, radius_at,
+        step_um=step_um, margin_um=margin_um, max_cosine=max_cosine, min_share=0.5,
+    )
+    return len(samples), neighbour[neighbour >= 0]
+
+
+def shadowed_samples(
+    path_um,
+    existing_tree: cKDTree | None,
+    existing_points_um: np.ndarray,
+    inside: Callable[[np.ndarray], np.ndarray],
+    radius_at: Callable[[np.ndarray], np.ndarray],
+    *,
+    step_um: float = 0.5,
+    margin_um: float = SAME_LUMEN_MARGIN_UM,
+    max_cosine: float = MAX_SHADOW_COSINE,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(samples, judged, beside)``: *path_um* sampled every *step_um*, which
+    samples are judged (away from both ends), and which run beside an existing
+    centreline in the same lumen -- :func:`path_shadows_existing_vessel` sample
+    by sample, without its verdict on the path as a whole.
+
+    That verdict needs half the judged samples; this answers how much of a
+    path is a second strand, so a doubled stretch of a long edge counts too.
+    """
+    existing = np.asarray(existing_points_um, dtype=float).reshape(-1, 3)
+    samples, tangents, judged = _judged_samples(path_um, radius_at, step_um=step_um, margin_um=margin_um)
+    beside = np.zeros(len(samples), dtype=bool)
+    if len(existing) == 0 or not judged.any():
+        return samples, judged, beside
+    neighbour = _same_lumen_neighbours(
+        samples[judged], tangents[judged], existing_tree, existing, inside, radius_at,
+        step_um=step_um, margin_um=margin_um, max_cosine=max_cosine,
+    )
+    beside[np.flatnonzero(judged)] = neighbour >= 0
+    return samples, judged, beside
 
 
 class MaskSupport:

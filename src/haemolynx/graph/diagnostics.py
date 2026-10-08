@@ -402,6 +402,221 @@ def format_parallel_duplicates_report(report: Dict[str, Any]) -> str:
     )
 
 
+#: A dead end this close to an image face, in microns, is a vessel the image
+#: cut through: the open ends inlets and outlets are chosen from.
+IMAGE_FACE_MARGIN_UM = 10.0
+
+#: The dead-end kinds :func:`diagnose_lumen_artefacts` counts, in report order.
+DEAD_END_KINDS = (
+    "inside_other_lumen",
+    "beside_vessel",
+    "off_mask",
+    "mask_continues",
+    "short",
+)
+
+
+def _sample_weights(samples: np.ndarray) -> np.ndarray:
+    """The length of centreline each sample of a polyline stands for."""
+    if len(samples) < 2:
+        return np.zeros(len(samples))
+    spacing = np.linalg.norm(np.diff(samples, axis=0), axis=1)
+    return np.concatenate([[spacing[0] / 2], (spacing[:-1] + spacing[1:]) / 2, [spacing[-1] / 2]])
+
+
+def diagnose_lumen_artefacts(
+    G: Union[nx.Graph, nx.MultiGraph],
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
+    mask_support=None,
+    stub_radius_multiple: float = 3.0,
+    image_face_margin_um: float = IMAGE_FACE_MARGIN_UM,
+) -> Dict[str, Any]:
+    """What graph building can leave in a segmented vessel that is not a
+    vessel, measured against the mask: one report, read-only.
+
+    - **Two edges in one lumen**: the pairs
+      :func:`diagnose_parallel_duplicates_in_lumen` reports, those of them
+      sharing one node (a *fork*: two edges leaving a junction side by side
+      through one lumen), and the length of centreline, counted sample by
+      sample (``preprocessing.shadowed_samples``), that runs beside another
+      in the same lumen -- a doubled stretch of a long edge included.
+    - **Loops inside one lumen**: of each edge's shortest loop
+      (``lumen_loops.iter_short_loops``), those
+      ``lumen_loops.loop_inside_one_lumen`` says run round no tissue.
+    - **Dead ends** further than *image_face_margin_um* from every image
+      face, by kind (one dead end can be several): its tip inside another
+      vessel's lumen; at least half of it beside another centreline in the
+      same lumen; less than half of it in the mask; the mask running on past
+      its tip (``assemble.mask_continues_past``); shorter than
+      *stub_radius_multiple* radii of the vessel it leaves. Isolated single
+      edges are counted apart.
+
+    *mask_support*, a ``MaskSupport`` over *mask*, is used in place of
+    building one; without one *mask* is binarised as the loaders do.
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.preprocessing.bridge_mask_support import (
+        MaskSupport,
+        _densify,
+        _sample_step,
+        shadowed_samples,
+    )
+    from scipy.spatial import cKDTree
+
+    from ._helpers import EdgeSampleIndex, edge_id, edge_sample_points
+    from .assemble import mask_continues_past
+    from .lumen_loops import iter_short_loops, loop_inside_one_lumen
+
+    support = mask_support
+    if support is None:
+        support = MaskSupport(_to_binary_volume_for_skeletonization(mask), voxel_size_zyx)
+    step = _sample_step(support.voxel_size_zyx)
+    duplicates = diagnose_parallel_duplicates_in_lumen(
+        G, support.mask, voxel_size_zyx=support.voxel_size_zyx, mask_support=support
+    )
+    forks = [
+        (a, b) for a, b in duplicates["duplicate_pairs"]
+        if len({a[0], a[1]} & {b[0], b[1]}) == 1
+    ]
+
+    node_pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True) if "pos" in d}
+    index = EdgeSampleIndex(G)
+    ids: Dict[Any, int] = {}
+    owners = np.asarray([ids.setdefault(owner, len(ids)) for owner in index.owners], dtype=np.intp)
+
+    def other_points_near(points: np.ndarray, own: Any, reach: float) -> np.ndarray:
+        if index.tree is None:
+            return np.empty(0, dtype=np.intp)
+        found = index.tree.query_ball_point(points, r=reach)
+        near = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in np.atleast_1d(found)]))
+        return near[owners[near] != own] if own is not None else near
+
+    total_um = duplicated_um = 0.0
+    beside_share: Dict[Any, float] = {}
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if u not in node_pos or v not in node_pos:
+            continue
+        own = ids.get(edge_id(u, v, key))
+        path = edge_sample_points(u, v, data, node_pos)
+        dense = _densify(path, step)
+        if len(dense) < 2:
+            continue
+        total_um += float(_sample_weights(dense).sum())
+        near = other_points_near(dense, own, 2.0 * float(np.max(support.radius(dense))) + 1.0)
+        if not len(near):
+            continue
+        samples, judged, beside = shadowed_samples(
+            path, cKDTree(index.points[near]), index.points[near],
+            support.inside, support.radius, step_um=step,
+        )
+        duplicated_um += float(_sample_weights(samples)[beside].sum())
+        if judged.any():
+            beside_share[edge_id(u, v, key)] = float(beside[judged].mean())
+
+    loop_count = 0
+    loops_in_lumen: List[Any] = []
+    for cycle, polyline in iter_short_loops(G):
+        loop_count += 1
+        if loop_inside_one_lumen(polyline, support):
+            loops_in_lumen.append(cycle)
+
+    extent = (np.asarray(support.mask.shape, dtype=float) - 1.0) * np.asarray(support.voxel_size_zyx)
+    continues = mask_continues_past(support)
+    dead_ends: Dict[str, List[Any]] = {kind: [] for kind in DEAD_END_KINDS}
+    isolated = sum(1 for u, v in G.edges() if u != v and G.degree[u] == 1 and G.degree[v] == 1)
+    at_face = interior = 0
+    for node in G.nodes:
+        if G.degree[node] != 1 or node not in node_pos:
+            continue
+        (_, other, key, data), = G.edges(node, keys=True, data=True)
+        if G.degree[other] == 1 or other not in node_pos:
+            continue
+        tip = node_pos[node]
+        if float(np.min(np.minimum(tip, extent - tip))) <= image_face_margin_um:
+            at_face += 1
+            continue
+        interior += 1
+        path = _densify(edge_sample_points(other, node, data, node_pos), step)
+        if len(path) < 2:
+            continue
+        if 2 * int(np.count_nonzero(support.inside(path))) < len(path):
+            dead_ends["off_mask"].append(node)
+        own = ids.get(edge_id(node, other, key))
+        near = other_points_near(tip.reshape(1, 3), own, 2.0 * float(support.radius(tip.reshape(1, 3))[0]) + 30.0)
+        if len(near):
+            distance = np.linalg.norm(index.points[near] - tip, axis=1)
+            nearest = index.points[near[int(np.argmin(distance))]].reshape(1, 3)
+            if float(distance.min()) <= float(support.radius(nearest)[0]) + 1.0:
+                dead_ends["inside_other_lumen"].append(node)
+        if beside_share.get(edge_id(node, other, key), 0.0) >= 0.5:
+            dead_ends["beside_vessel"].append(node)
+        arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path[::-1], axis=0), axis=1))])
+        outward = tip - path[::-1][min(int(np.searchsorted(arc, 3.0)), len(path) - 1)]
+        norm = float(np.linalg.norm(outward))
+        if norm > 0 and continues(tip, outward / norm):
+            dead_ends["mask_continues"].append(node)
+        parent_radius = float(support.radius(node_pos[other].reshape(1, 3))[0])
+        length = float(data.get("length") or _sample_weights(path).sum())
+        if parent_radius > 0 and length < stub_radius_multiple * parent_radius:
+            dead_ends["short"].append(node)
+
+    return {
+        "edge_count": duplicates["edge_count"],
+        "centreline_um": total_um,
+        "duplicate_pair_count": duplicates["duplicate_pair_count"],
+        "duplicate_pairs": duplicates["duplicate_pairs"],
+        "fork_pair_count": len(forks),
+        "duplicated_centreline_um": duplicated_um,
+        "duplicated_centreline_fraction": duplicated_um / total_um if total_um else 0.0,
+        "short_loop_count": loop_count,
+        "loops_inside_one_lumen": len(loops_in_lumen),
+        "loop_cycles_inside_one_lumen": loops_in_lumen,
+        "dead_ends_at_image_face": at_face,
+        "interior_dead_ends": interior,
+        "isolated_single_edges": isolated,
+        "dead_end_counts": {kind: len(nodes) for kind, nodes in dead_ends.items()},
+        "dead_ends": dead_ends,
+        "stub_radius_multiple": float(stub_radius_multiple),
+    }
+
+
+def lumen_artefacts_found(report: Dict[str, Any]) -> bool:
+    """Whether :func:`diagnose_lumen_artefacts` found anything that is never
+    a vessel: two edges in one lumen, a loop inside one, or a dead end whose
+    tip lies in another vessel's lumen."""
+    return bool(
+        report.get("duplicate_pair_count", 0)
+        or report.get("loops_inside_one_lumen", 0)
+        or report.get("dead_end_counts", {}).get("inside_other_lumen", 0)
+    )
+
+
+def format_lumen_artefacts_report(report: Dict[str, Any]) -> str:
+    """A one-line summary of :func:`diagnose_lumen_artefacts`."""
+    counts = report.get("dead_end_counts", {})
+    return (
+        "Lumen artefacts: "
+        f"{report.get('duplicate_pair_count', 0)} pair(s) of edges share one lumen "
+        f"({report.get('fork_pair_count', 0)} leaving one node side by side), and "
+        f"{report.get('duplicated_centreline_um', 0.0):.0f} um "
+        f"({report.get('duplicated_centreline_fraction', 0.0):.1%}) of centreline runs beside "
+        "another in the same lumen; "
+        f"{report.get('loops_inside_one_lumen', 0)} of {report.get('short_loop_count', 0)} "
+        "short loops lie inside one lumen; "
+        f"{report.get('interior_dead_ends', 0)} dead ends away from the image faces "
+        f"({counts.get('inside_other_lumen', 0)} ending inside another vessel's lumen, "
+        f"{counts.get('beside_vessel', 0)} beside another centreline, "
+        f"{counts.get('off_mask', 0)} mostly off the mask, "
+        f"{counts.get('mask_continues', 0)} where the mask runs on past the tip, "
+        f"{counts.get('short', 0)} shorter than "
+        f"{report.get('stub_radius_multiple', 3.0):g} radii of their vessel), "
+        f"{report.get('dead_ends_at_image_face', 0)} at an image face, and "
+        f"{report.get('isolated_single_edges', 0)} isolated single edge(s)."
+    )
+
+
 def format_vessels_missing_from_graph_report(report: Dict[str, Any]) -> str:
     """A one-line summary of :func:`diagnose_vessels_missing_from_graph`."""
     return (

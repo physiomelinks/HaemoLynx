@@ -44,9 +44,7 @@ EXPECTED_STEP_LABELS = [
     "reconnect_orphan_and_dangling_nodes",
     "recover_uncovered_mask_vessels",
     "join_facing_dead_ends",
-    "remove_loops_inside_one_lumen",
-    "prune_vascular_stubs_final",
-    "smart_multigraph_degree2_removal_post_orphan_reconnect",
+    "consolidate_lumen",
 ]
 
 
@@ -490,7 +488,8 @@ def test_step_labels_are_unique_so_snapshots_do_not_overwrite_each_other():
     _build(_t_skeleton(), step_callback=lambda graph, label: seen.append(label))
 
     assert len(set(seen)) == len(seen)
-    assert sum(label.startswith("smart_multigraph_degree2_removal") for label in seen) == 4
+    # The fourth merge is consolidate_lumen's own, not a step of its own.
+    assert sum(label.startswith("smart_multigraph_degree2_removal") for label in seen) == 3
 
 
 def test_the_callback_receives_the_live_graph_at_that_step():

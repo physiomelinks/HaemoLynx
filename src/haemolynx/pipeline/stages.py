@@ -1037,16 +1037,49 @@ def _log_graph_consistency_diagnostics(
     else:
         logger.info(missing_vessels_report)
 
-    # One segmented vessel drawn as two edges side by side -- see
-    # graph.diagnostics.diagnose_parallel_duplicates_in_lumen.
-    duplicates = graph.diagnose_parallel_duplicates_in_lumen(
-        G, image, voxel_size_zyx=voxel_size_zyx
+    # What is left in a segmented vessel that is not a vessel: two edges in
+    # one lumen, loops inside one, dead ends by kind -- see
+    # graph.diagnostics.diagnose_lumen_artefacts. On the graph that is saved,
+    # after the smoothing and the thick-vessel split.
+    artefacts = graph.diagnose_lumen_artefacts(
+        G, image, voxel_size_zyx=voxel_size_zyx,
+        stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
     )
-    duplicates_report = graph.format_parallel_duplicates_report(duplicates)
-    if duplicates["duplicate_pair_count"]:
-        logger.warning(duplicates_report)
+    artefacts_report = graph.format_lumen_artefacts_report(artefacts)
+    if graph.lumen_artefacts_found(artefacts):
+        logger.warning(artefacts_report)
     else:
-        logger.info(duplicates_report)
+        logger.info(artefacts_report)
+
+
+def graph_build_arguments(settings: dict) -> dict[str, Any]:
+    """The keyword arguments ``graph.build_graph_from_skeleton`` takes from a
+    run's settings: everything but the skeleton, the voxel size, the mask and
+    the callbacks. One mapping, for :func:`build_network` and for anything that
+    rebuilds a run's graph outside the pipeline (``scripts/graph_artefacts.py``)."""
+    return dict(
+        graph_reconnect_threshold=settings["graph_reconnect_threshold"],
+        final_orphan_reconnect_threshold=settings["final_orphan_reconnect_threshold"],
+        cluster_collapse_distance=settings["cluster_collapse_distance"],
+        min_stub_length=settings["min_stub_length"],
+        min_stub_length_radius_multiple=float(settings.get("min_stub_length_radius_multiple", 0.0) or 0.0),
+        debug=settings["verbose_logging"],
+        cluster_collapse_method=settings["cluster_collapse_method"],
+        cluster_collapse_max_radial_dispersion=float(settings["cluster_collapse_max_radial_dispersion"]),
+        cluster_collapse_persistence_search_multiple=float(
+            settings["cluster_collapse_persistence_search_multiple"]
+        ),
+        cluster_collapse_direction_aware_min_degree=int(settings["cartwheel_hub_min_degree"]),
+        cluster_collapse_direction_aware_tangent_length_um=float(settings["cartwheel_hub_tangent_length_um"]),
+        use_memmap=settings["use_memmap_loading"],
+        bridge_require_mask_support=settings["bridge_require_mask_support"],
+        bridge_max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
+        bridge_min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+        recover_uncovered_mask_vessels=settings["recover_uncovered_mask_vessels"],
+        recovery_min_region_volume_um3=float(settings["recovery_min_region_volume_um3"]),
+        recovery_min_length_um=float(settings["recovery_min_length_um"]),
+        facing_dead_end_max_gap_um=float(settings["facing_dead_end_max_gap_um"]),
+    )
 
 
 def build_network(
@@ -1183,36 +1216,10 @@ def build_network(
         G = graph.build_graph_from_skeleton(
             skeleton,
             voxel_size=voxel_size_zyx,
-            graph_reconnect_threshold=settings["graph_reconnect_threshold"],
-            final_orphan_reconnect_threshold=settings["final_orphan_reconnect_threshold"],
-            cluster_collapse_distance=settings["cluster_collapse_distance"],
-            min_stub_length=settings["min_stub_length"],
-            min_stub_length_radius_multiple=stub_radius_multiple,
             stub_radius_at=radius_at,
             segmentation_mask=binary_mask,
-            debug=settings["verbose_logging"],
             step_callback=_graph_build_step_callback,
-            cluster_collapse_method=settings["cluster_collapse_method"],
-            cluster_collapse_max_radial_dispersion=float(
-                settings["cluster_collapse_max_radial_dispersion"]
-            ),
-            cluster_collapse_persistence_search_multiple=float(
-                settings["cluster_collapse_persistence_search_multiple"]
-            ),
-            cluster_collapse_direction_aware_min_degree=int(
-                settings["cartwheel_hub_min_degree"]
-            ),
-            cluster_collapse_direction_aware_tangent_length_um=float(
-                settings["cartwheel_hub_tangent_length_um"]
-            ),
-            use_memmap=settings["use_memmap_loading"],
-            bridge_require_mask_support=settings["bridge_require_mask_support"],
-            bridge_max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
-            bridge_min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
-            recover_uncovered_mask_vessels=settings["recover_uncovered_mask_vessels"],
-            recovery_min_region_volume_um3=float(settings["recovery_min_region_volume_um3"]),
-            recovery_min_length_um=float(settings["recovery_min_length_um"]),
-            facing_dead_end_max_gap_um=float(settings["facing_dead_end_max_gap_um"]),
+            **graph_build_arguments(settings),
         )
 
         # Last thing before the graph is saved: take the voxel staircase out of
@@ -1229,6 +1236,25 @@ def build_network(
                 max_deviation=settings["centreline_max_deviation"],
                 radius_at=radius_at,
             )
+            # Smoothing moves every centreline, so what graph building's last
+            # step judged is judged again on the curves that are saved: on
+            # E14.5 smoothing alone turned 2 loops inside one lumen into 12.
+            if binary_mask is not None:
+                G = graph.assemble.consolidate_lumen(
+                    G,
+                    graph.assemble.lumen_cleanup(
+                        binary_mask,
+                        voxel_size_zyx,
+                        image_shape=skeleton.shape,
+                        min_stub_length=settings["min_stub_length"],
+                        min_stub_length_radius_multiple=stub_radius_multiple,
+                        stub_radius_at=radius_at,
+                        bridge_require_mask_support=settings["bridge_require_mask_support"],
+                        bridge_max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
+                        bridge_min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+                        debug=settings["verbose_logging"],
+                    ),
+                )
         if binary_mask is not None:
             preprocessing.release_superseded(binary_mask, G, keep=image)
             binary_mask = radius_at = None

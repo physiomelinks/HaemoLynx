@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 import networkx as nx
 import numpy as np
 from skan import csr
@@ -67,15 +68,20 @@ STEP_LABELS: tuple[str, ...] = (
     "reconnect_orphan_and_dangling_nodes",
     "recover_uncovered_mask_vessels",
     "join_facing_dead_ends",
-    "remove_loops_inside_one_lumen",
-    "prune_vascular_stubs_final",
-    "smart_multigraph_degree2_removal_post_orphan_reconnect",
+    "consolidate_lumen",
 )
+
+#: At most this many rounds of :func:`consolidate_lumen`. Every round that
+#: changes anything takes nodes or edges away, so it always settles. On the
+#: E14.5 stack it takes 9: after the first three, each round's pair removal
+#: leaves a degree-2 node whose merge shows the next pair (6, 3, 1, 1 of them),
+#: one pass of the pair search -- about 7 s there -- a round.
+CONSOLIDATION_MAX_ROUNDS = 12
 
 
 #: Where each label comes in the run, for the line every step logs. A step
 #: names itself in that line, and `collapse_node_clusters` names itself in its
-#: own summary too, so the `Step n/15` prefix is what tells the two apart.
+#: own summary too, so the `Step n/13` prefix is what tells the two apart.
 _STEP_POSITIONS: dict[str, int] = {
     label: position for position, label in enumerate(STEP_LABELS, start=1)
 }
@@ -95,7 +101,7 @@ def _notify_step(
     label: str,
     step_callback: StepCallback | None,
 ) -> None:
-    # Fifteen lines a run, ungated: what a step left behind is the answer to
+    # Thirteen lines a run, ungated: what a step left behind is the answer to
     # "how many branches does the pipeline think there are", and asking for it
     # should not mean asking for the per-node detail as well. The line names
     # the step starting next: it is the last line until that step ends, and
@@ -191,6 +197,132 @@ def _log_degree2_diagnostics(G: nx.MultiGraph, max_degree: int, debug: bool) -> 
         return
     degree2_diag = diagnose_degree2_nodes(G, max_degree=max_degree)
     logger.debug(format_degree2_diagnostics_report(degree2_diag))
+
+
+@dataclass(frozen=True)
+class LumenCleanup:
+    """What :func:`consolidate_lumen` reads.
+
+    *support* is the mask the clean-up judges by, or ``None`` without one
+    (or with mask-supported bridging off), when only degree-2 merging runs;
+    *inside_lumen* is the lumen test degree-2 merging judges a duplicate
+    route by; *prune* is the stub prune with the build's thresholds.
+    """
+
+    support: MaskSupport | None
+    inside_lumen: Callable[[np.ndarray], np.ndarray] | None
+    prune: Callable[[nx.MultiGraph], nx.MultiGraph]
+    max_degree: int = 4
+    debug: bool = False
+
+
+def lumen_cleanup(
+    segmentation_mask: np.ndarray | None,
+    voxel_size: tuple[float, float, float],
+    *,
+    image_shape: tuple[int, ...],
+    min_stub_length: float = 10.0,
+    min_stub_length_radius_multiple: float = 0.0,
+    stub_radius_at: Callable[[np.ndarray], float] | None = None,
+    protect_image_face_stubs: bool = True,
+    bridge_require_mask_support: bool = True,
+    bridge_max_background_gap_um: float = DEFAULT_MAX_BACKGROUND_GAP_UM,
+    bridge_min_mask_fraction: float = DEFAULT_MIN_MASK_FRACTION,
+    mask_support: MaskSupport | None = None,
+    max_degree: int = 4,
+    debug: bool = False,
+) -> LumenCleanup:
+    """The clean-up the end of graph building runs, built from the same
+    settings :func:`build_graph_from_skeleton` takes -- so a caller that
+    changes the graph afterwards (the pipeline smooths its centrelines) can
+    run it again and save a graph that was judged.
+
+    *image_shape* is the skeleton's: the stub prune keeps a short stub at an
+    image face. *mask_support*, a ``MaskSupport`` over the mask, is used in
+    place of building one.
+    """
+    inside_lumen = mask_lumen_test(segmentation_mask, voxel_size)
+    support = None
+    if segmentation_mask is not None and bridge_require_mask_support:
+        support = mask_support if mask_support is not None else MaskSupport(
+            np.asanyarray(segmentation_mask, dtype=bool),
+            voxel_size,
+            max_background_gap_um=bridge_max_background_gap_um,
+            min_mask_fraction=bridge_min_mask_fraction,
+            feature_distance=getattr(stub_radius_at, "feature_distance", None),
+        )
+    stub_mask_rules = {}
+    if support is not None:
+        stub_mask_rules = dict(inside_lumen=inside_lumen, mask_continues_at=mask_continues_past(support))
+    radius_at = stub_radius_at
+    if radius_at is None and support is not None:
+        radius_at = _scalar_radius(support)
+    image_extent_um = (
+        (np.asarray(image_shape, dtype=float) - 1.0) * np.asarray(voxel_size, dtype=float)
+        if protect_image_face_stubs
+        else None
+    )
+
+    def prune(G: nx.MultiGraph) -> nx.MultiGraph:
+        return prune_vascular_stubs(
+            G,
+            debug=debug,
+            min_stub_length=min_stub_length,
+            radius_at=radius_at,
+            radius_multiple=float(min_stub_length_radius_multiple),
+            image_extent_um=image_extent_um,
+            **stub_mask_rules,
+        )
+
+    return LumenCleanup(support, inside_lumen, prune, max_degree=max_degree, debug=debug)
+
+
+def consolidate_lumen(
+    G: nx.MultiGraph,
+    cleanup: LumenCleanup,
+    *,
+    max_rounds: int = CONSOLIDATION_MAX_ROUNDS,
+) -> nx.MultiGraph:
+    """The clean-up that ends graph building, repeated until a round changes
+    nothing: degree-2 merging and then, with the mask, edges lying mostly off
+    it (``mask_recovery.remove_edges_off_the_mask``), two edges in one lumen
+    (``lumen_loops.remove_parallel_edges_in_lumen``), loops inside one lumen
+    (``lumen_loops.remove_loops_inside_one_lumen``) and the stub prune.
+
+    Each of them leaves work for the others -- a duplicate taken out leaves
+    a dead end, a pruned stub leaves a degree-2 node whose merge makes a
+    longer edge to judge again -- and run once, in a fixed order, what the
+    later ones left was never judged: on E14.5 the last merge alone raised
+    the pairs of edges in one lumen from 94 to 126. Merging first in every
+    round also means each is judged on whole vessels, not on the pieces mask
+    recovery split them into. The graph that comes back is merged.
+    """
+    rounds = 0
+    for rounds in range(1, max_rounds + 1):
+        before = (G.number_of_nodes(), G.number_of_edges())
+        G = smart_multigraph_degree2_removal(
+            G, None, max_degree=cleanup.max_degree, debug=cleanup.debug,
+            inside_lumen=cleanup.inside_lumen,
+        )
+        if cleanup.support is None:
+            return G
+        G = remove_edges_off_the_mask(G, cleanup.support)
+        G = remove_parallel_edges_in_lumen(G, cleanup.support)
+        G = remove_loops_inside_one_lumen(G, cleanup.support)
+        G = cleanup.prune(G)
+        if (G.number_of_nodes(), G.number_of_edges()) == before:
+            break
+    else:
+        G = smart_multigraph_degree2_removal(
+            G, None, max_degree=cleanup.max_degree, debug=cleanup.debug,
+            inside_lumen=cleanup.inside_lumen,
+        )
+        logger.info("Lumen clean-up stopped after its limit of %d rounds", max_rounds)
+    logger.info(
+        "Lumen clean-up settled after %d round(s): %d nodes / %d edges",
+        rounds, G.number_of_nodes(), G.number_of_edges(),
+    )
+    return G
 
 
 def build_graph_from_skeleton(
@@ -314,12 +446,13 @@ def build_graph_from_skeleton(
         (``reconnect.MaskBridges``); the stub prunes also drop stubs mostly
         off the mask or inside their parent's lumen, and hold one whose tip
         the mask runs on past to *min_stub_length* as well
-        (``prune.prune_vascular_stubs``); every loop lying inside one lumen
-        -- a Lee-thinning ring, round nothing or a dropout rather than tissue
-        -- loses an arc (``lumen_loops.remove_loops_inside_one_lumen``); and
-        a final prune runs after the orphan reconnect and recovery, so the
-        stubs they leave are judged too. Without a mask, or off, none of it
-        happens and those two steps leave the graph as it is.
+        (``prune.prune_vascular_stubs``); and the last step,
+        :func:`consolidate_lumen`, takes out edges lying mostly off the mask,
+        the second of two edges through one lumen, an arc of every loop lying
+        inside one lumen -- a Lee-thinning ring, round nothing or a dropout
+        rather than tissue -- and the stubs all of that leaves, round after
+        round until nothing changes. Without a mask, or off, none of it
+        happens and the last step only merges degree-2 nodes.
     recover_uncovered_mask_vessels, recovery_min_region_volume_um3, recovery_min_length_um
         With a *segmentation_mask*, trace the mask the graph does not cover
         and join it to the network through the mask -- see
@@ -356,31 +489,20 @@ def build_graph_from_skeleton(
             feature_distance=getattr(stub_radius_at, "feature_distance", None),
         )
     bridge_support = mask_support if bridge_require_mask_support else None
-    stub_mask_rules = {}
-    if bridge_support is not None:
-        stub_mask_rules = dict(
-            inside_lumen=inside_lumen,
-            mask_continues_at=mask_continues_past(bridge_support),
-        )
-    image_extent_um = (
-        (np.asarray(skeleton.shape, dtype=float) - 1.0) * np.asarray(voxel_size, dtype=float)
-        if protect_image_face_stubs
-        else None
+    cleanup = lumen_cleanup(
+        segmentation_mask,
+        voxel_size,
+        image_shape=skeleton.shape,
+        min_stub_length=min_stub_length,
+        min_stub_length_radius_multiple=min_stub_length_radius_multiple,
+        stub_radius_at=stub_radius_at,
+        protect_image_face_stubs=protect_image_face_stubs,
+        bridge_require_mask_support=bridge_require_mask_support,
+        mask_support=mask_support,
+        max_degree=degree2_pass1_max_degree,
+        debug=debug,
     )
-
-    def prune_stubs(G: nx.MultiGraph) -> nx.MultiGraph:
-        radius_at = stub_radius_at
-        if radius_at is None and bridge_support is not None:
-            radius_at = _scalar_radius(bridge_support)
-        return prune_vascular_stubs(
-            G,
-            debug=debug,
-            min_stub_length=min_stub_length,
-            radius_at=radius_at,
-            radius_multiple=float(min_stub_length_radius_multiple),
-            image_extent_um=image_extent_um,
-            **stub_mask_rules,
-        )
+    prune_stubs = cleanup.prune
 
     logger.info("Building skan Skeleton object...")
     warmup = skan_numba_warmup_skeleton()
@@ -528,35 +650,12 @@ def build_graph_from_skeleton(
         G = join_facing_dead_ends(G, bridge_support, max_gap_um=facing_dead_end_max_gap_um)
     _notify_step(G, "join_facing_dead_ends", step_callback)
 
-    # Lee thinning rings every tunnel through the mask, and the steps above
-    # can close more loops inside one vessel: one segmented vessel is drawn
-    # once, so each loop that does not run round tissue loses an arc.
-    if bridge_support is not None:
-        G = remove_loops_inside_one_lumen(G, bridge_support)
-        # The same question the diagnostic already asks: two edges through
-        # one lumen. The loop breaker above does not see a pair that never
-        # closes.
-        G = remove_parallel_edges_in_lumen(G, bridge_support)
-    _notify_step(G, "remove_loops_inside_one_lumen", step_callback)
-
-    if bridge_support is not None:
-        G = prune_stubs(G)
-    _notify_step(G, "prune_vascular_stubs_final", step_callback)
-
-    G = smart_multigraph_degree2_removal(
-        G,
-        skeleton,
-        max_degree=degree2_pass1_max_degree,
-        debug=debug,
-        inside_lumen=inside_lumen,
-    )
-    _notify_step(G, "smart_multigraph_degree2_removal_post_orphan_reconnect", step_callback)
+    # One segmented vessel is drawn once: edges through empty space, a second
+    # edge through one lumen, loops round no tissue (Lee rings every tunnel
+    # through the mask) and the stubs all of that leaves go, round after
+    # round, until nothing changes -- see consolidate_lumen.
+    G = consolidate_lumen(G, cleanup)
+    _notify_step(G, "consolidate_lumen", step_callback)
     _log_degree2_diagnostics(G, degree2_pass2_max_degree, debug)
-
-    # After every merge: an edge through empty space (a straight reconnect,
-    # a collapsed chord) is not a vessel. A short dropout the bridge test
-    # already allows stays.
-    if bridge_support is not None:
-        G = remove_edges_off_the_mask(G, bridge_support)
 
     return G

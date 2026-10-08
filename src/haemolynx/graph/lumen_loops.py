@@ -158,6 +158,26 @@ def _polyline(G: nx.MultiGraph, cycle) -> np.ndarray:
     return np.vstack(pieces)
 
 
+def iter_short_loops(G: nx.MultiGraph, search_um: float = LOOP_SEARCH_UM):
+    """Each distinct loop of *G* that is some edge's shortest loop within
+    *search_um*, as ``(cycle, polyline)``: the ``[(a, b, key), ...]`` edges in
+    order round it and its points in physical microns. The loops
+    :func:`remove_loops_inside_one_lumen` judges, without changing *G*."""
+    if G.number_of_edges() == 0:
+        return
+    pairs = _Pairs(G)
+    seen: set[frozenset] = set()
+    for u, v in pairs.pairs:
+        cycle = pairs.shortest_cycle(u, v, search_um)
+        if cycle is None:
+            continue
+        signature = frozenset((a, b, key) if str(a) <= str(b) else (b, a, key) for a, b, key in cycle)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        yield cycle, _polyline(G, cycle)
+
+
 def _arcs(G: nx.MultiGraph, cycle):
     """The cycle cut at every node with an edge off it: the runs of edges
     between the places the rest of the network meets it."""
@@ -254,14 +274,49 @@ def remove_loops_inside_one_lumen(
     return G
 
 
+def _joined_without(G: nx.MultiGraph, u, v) -> bool:
+    """Whether *u* and *v* stay connected with the one edge between them taken
+    out: searched from both ends at once, without changing *G*."""
+    if G.number_of_edges(u, v) > 1:
+        return True
+    seen = ({u}, {v})
+    fronts = ([u], [v])
+    while fronts[0] and fronts[1]:
+        side = 0 if len(fronts[0]) <= len(fronts[1]) else 1
+        grown = []
+        for node in fronts[side]:
+            for other in G.neighbors(node):
+                if {node, other} == {u, v}:
+                    continue
+                if other in seen[1 - side]:
+                    return True
+                if other not in seen[side]:
+                    seen[side].add(other)
+                    grown.append(other)
+        fronts = (grown, fronts[1]) if side == 0 else (fronts[0], grown)
+    return False
+
+
+def cuts_off_vessels(G: nx.MultiGraph, edge) -> bool:
+    """Whether taking *edge* out would cut part of the network off from the
+    rest -- more than the edge's own dead end, which simply goes with it."""
+    u, v, _key = edge
+    if u == v or G.degree[u] == 1 or G.degree[v] == 1:
+        return False
+    return not _joined_without(G, u, v)
+
+
 def remove_parallel_edges_in_lumen(G: nx.MultiGraph, support: MaskSupport) -> nx.MultiGraph:
     """Drop, in place, one edge of each pair
     :func:`graph.diagnostics.diagnose_parallel_duplicates_in_lumen` reports.
 
     The edge nearer the wall goes (``_wall_hugging``), so the centreline
-    that stays is the one nearer the lumen's middle. A branch meeting its
-    parent, and two vessels with background between them, are not pairs in
-    that report and are left alone.
+    that stays is the one nearer the lumen's middle -- unless taking it out
+    would cut vessels off from the rest of the network
+    (:func:`cuts_off_vessels`), when the other goes instead, or, when that
+    would too, both stay. A branch meeting its parent, and two vessels with
+    background between them, are not pairs in that report and are left
+    alone.
     """
     from haemolynx.graph.diagnostics import diagnose_parallel_duplicates_in_lumen
 
@@ -271,12 +326,16 @@ def remove_parallel_edges_in_lumen(G: nx.MultiGraph, support: MaskSupport) -> nx
         voxel_size_zyx=tuple(float(v) for v in support.voxel_size_zyx),
         mask_support=support,
     )
-    removed = 0
+    removed = kept_connected = 0
     for left, right in report["duplicate_pairs"]:
         present = [edge for edge in (left, right) if G.has_edge(*edge)]
         if len(present) < 2:
             continue
-        drop = min(present, key=lambda edge: _wall_hugging(G, [edge], support))
+        candidates = sorted(present, key=lambda edge: _wall_hugging(G, [edge], support))
+        drop = next((edge for edge in candidates if not cuts_off_vessels(G, edge)), None)
+        if drop is None:
+            kept_connected += 1
+            continue
         u, v, key = drop
         G.remove_edge(u, v, key)
         removed += 1
@@ -284,13 +343,20 @@ def remove_parallel_edges_in_lumen(G: nx.MultiGraph, support: MaskSupport) -> nx
             if G.has_node(node) and G.degree(node) == 0:
                 G.remove_node(node)
     G.graph["parallel_lumen_edges_removed"] = int(G.graph.get("parallel_lumen_edges_removed", 0)) + removed
-    if removed:
-        logger.info("Removed %d parallel edge(s) lying beside another in one lumen", removed)
+    if removed or kept_connected:
+        logger.info(
+            "Removed %d parallel edge(s) lying beside another in one lumen; kept %d pair(s) "
+            "where either edge was the only link to vessels beyond it",
+            removed,
+            kept_connected,
+        )
     return G
 
 
 __all__ = [
     "LOOP_SEARCH_UM",
+    "cuts_off_vessels",
+    "iter_short_loops",
     "loop_inside_one_lumen",
     "remove_loops_inside_one_lumen",
     "remove_parallel_edges_in_lumen",
