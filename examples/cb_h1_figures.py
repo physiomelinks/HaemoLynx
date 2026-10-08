@@ -20,8 +20,8 @@ Figure 2 draws the quantisation grid deliberately, so that a group gap can be re
 the EDT step it has to be resolved by.
 """
 import collections
-import csv
 import dataclasses
+import functools
 import json
 from pathlib import Path
 
@@ -30,13 +30,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS
+from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS, get_specimen
 from ImageLynx import cb_settings
-from ImageLynx.roi_placement import check_output_roi
+from ImageLynx.batch_outputs import open_batch_run
 from ImageLynx.statistics.cohort_split import CohortSplit, assess_cohort_split
 from ImageLynx.statistics.threshold_selection import CAPILLARY_DIAMETER_RANGE_UM
 
-from cb_h1_batch import SENSITIVITY_DIR, sensitivity_thresholds
+from cb_h1_batch import OUTPUT_DIR, SENSITIVITY_DIR, sensitivity_thresholds
 
 # Categorical slots 1 and 2 of the reference palette, validated for CVD separation
 # (worst adjacent pair dE 24.7 protan) and >= 3:1 contrast on the light surface.
@@ -46,7 +46,6 @@ INK = "#0b0b0b"
 INK_MUTED = "#52514e"
 GRID = "#e3e2df"
 
-RESULTS = Path(__file__).resolve().parent / "outputs" / "cb_h1_batch"
 ROI_VOXELS = int(np.prod(cb_settings.ROI_VOXELS))
 ROI_MM3 = ROI_VOXELS * float(np.prod(PROCESSING_VOXEL_UM)) / 1e9
 VOXEL_UM = PROCESSING_VOXEL_UM[1]
@@ -71,14 +70,18 @@ def _style(ax):
     ax.yaxis.label.set_color(INK_MUTED)
 
 
+@functools.lru_cache(maxsize=None)
 def _rows(run_dir, specimen_id):
-    """One specimen's per-edge table. A missing table raises: a figure must not drop a specimen."""
-    path = Path(run_dir) / specimen_id / "per_edge_morphometry.csv"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{path} is missing. Run cb_h1_batch.py for {specimen_id} before drawing the figures.")
-    with path.open() as handle:
-        return list(csv.DictReader(handle))
+    """One specimen's per-edge table, in file order, read through the batch-run reader.
+
+    ``run_dir`` is a sensitivity threshold's folder holding one run per specimen, or None for
+    the batch. Opening the run checks its placed ROI (open item 27), and a missing table raises:
+    a figure must not drop a specimen. Cached, because an open places the ROI and the figures
+    read each run several times.
+    """
+    specimen = get_specimen(specimen_id)
+    run = open_batch_run(specimen, None if run_dir is None else Path(run_dir) / specimen_id)
+    return tuple(run.edge_table().values())
 
 
 def _degrees(rows):
@@ -90,7 +93,7 @@ def _degrees(rows):
     return degree
 
 
-def network_measures(run_dir):
+def network_measures(run_dir=None):
     """Per-specimen loop, junction and vessel length density per mm3, from the per-edge table.
 
     beta-1 = E - V + C, the loop count H1 s1.1 names and the pipeline does not report. C = 1
@@ -137,10 +140,10 @@ def group_summary(values_by_specimen, quantity="value"):
 
 
 def sensitivity_runs():
-    """Run directory per threshold: the frozen batch and its two grid neighbours."""
+    """Run folder per threshold: the frozen batch (None, the default run) and its two neighbours."""
     low, high = sensitivity_thresholds(cb_settings.FROZEN_THRESHOLD)
     return {low: SENSITIVITY_DIR / f"t{low:.2f}",
-            cb_settings.FROZEN_THRESHOLD: RESULTS,
+            cb_settings.FROZEN_THRESHOLD: None,
             high: SENSITIVITY_DIR / f"t{high:.2f}"}
 
 
@@ -158,7 +161,7 @@ def sensitivity_series():
 
 def fragmentation_onsets():
     """Each specimen's fragmentation onset from the threshold stage; None if it never fragments."""
-    path = RESULTS / "threshold_selection.json"
+    path = OUTPUT_DIR / "threshold_selection.json"
     data = json.loads(path.read_text())
     if "fragmentation_onset" not in data:
         raise KeyError(f"{path} has no 'fragmentation_onset'. Re-run cb_h1_batch.py "
@@ -179,7 +182,7 @@ def junction_trim_shares():
     """Share of each specimen's edges the junction radius correction was applied to."""
     out = {}
     for specimen in SPECIMENS:
-        rows = _rows(RESULTS, specimen.specimen_id)
+        rows = _rows(None, specimen.specimen_id)
         out[specimen.specimen_id] = (
             sum(1 for r in rows if r["edt_junction_trim"] == "trimmed") / len(rows))
     return out
@@ -198,7 +201,7 @@ def junction_exclusion_um():
 def _load_diameters():
     out = {}
     for specimen in SPECIMENS:
-        rows = _rows(RESULTS, specimen.specimen_id)
+        rows = _rows(None, specimen.specimen_id)
         out[specimen.specimen_id] = np.asarray(
             [float(row["edt_diameter_um"]) for row in rows
              if row.get("edt_diameter_um") not in (None, "", "None")])
@@ -219,7 +222,7 @@ def _draw_groups(ax, values):
 
 
 def figure_density(path):
-    measures = network_measures(RESULTS)
+    measures = network_measures()
     fig, axes = plt.subplots(1, 3, figsize=(12.6, 4.4), facecolor=SURFACE)
 
     for ax, (key, title, ylabel, scale, suffix) in zip(axes, MEASURES):
@@ -333,28 +336,18 @@ def figure_diameter(path, diameters):
     plt.close(fig)
 
 
-def _check_rois():
-    """Refuse morphometry cut anywhere but each specimen's placed ROI (open item 27)."""
-    for run_dir in sensitivity_runs().values():
-        for specimen in SPECIMENS:
-            if (run_dir / specimen.specimen_id / "per_edge_morphometry.csv").exists():
-                check_output_roi(run_dir / specimen.specimen_id, specimen,
-                                 cb_settings.ROI_VOXELS)
-
-
 def main():
-    RESULTS.mkdir(parents=True, exist_ok=True)
-    _check_rois()
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     diameters = _load_diameters()
-    density_path = RESULTS / "figure1_network_density.png"
-    diameter_path = RESULTS / "figure2_diameter_distribution.png"
+    density_path = OUTPUT_DIR / "figure1_network_density.png"
+    diameter_path = OUTPUT_DIR / "figure2_diameter_distribution.png"
     figure_density(density_path)
     figure_diameter(diameter_path, diameters)
-    sensitivity_path = RESULTS / "figure3_threshold_sensitivity.png"
+    sensitivity_path = OUTPUT_DIR / "figure3_threshold_sensitivity.png"
     figure_sensitivity(sensitivity_path)
-    degree_path = RESULTS / "figure7_node_degree.png"
+    degree_path = OUTPUT_DIR / "figure7_node_degree.png"
     figure_degree(degree_path)
-    length_path = RESULTS / "figure8_segment_length.png"
+    length_path = OUTPUT_DIR / "figure8_segment_length.png"
     figure_segment_length(length_path)
     for written in (density_path, diameter_path, sensitivity_path, degree_path, length_path):
         print(f"wrote {written}")
@@ -446,7 +439,7 @@ def _degree_and_length():
     """Node degree distribution and segment lengths, per specimen, from the per-edge table."""
     degrees, lengths = {}, {}
     for specimen in SPECIMENS:
-        rows = _rows(RESULTS, specimen.specimen_id)
+        rows = _rows(None, specimen.specimen_id)
         counter = _degrees(rows)
         histogram = collections.Counter(counter.values())
         total = len(counter)

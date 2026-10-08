@@ -21,14 +21,13 @@ Run with::
     venv/bin/python examples/cb_h2_threshold_calibre.py
 """
 import numpy as np
-import pandas as pd
-from pathlib import Path
 
 from ImageLynx import cb_settings
-from ImageLynx.roi_placement import check_output_roi
+from ImageLynx.batch_outputs import open_batch_run
 from ImageLynx.specimens import get_specimen
 
-OUTPUTS = Path(__file__).resolve().parent / "outputs"
+from cb_h1_batch import SENSITIVITY_DIR
+
 SPECIMENS = ("WKY-A", "WKY-B", "WKY-C", "SHR-A", "SHR-B", "SHR-C")
 VOXEL_UM = 1.866
 
@@ -38,21 +37,22 @@ LOWER, FROZEN, UPPER = (f"{t:.2f}" for t in _GRID[_FROZEN - 1:_FROZEN + 2])
 
 
 def _sensitivity(label):
-    return lambda s: OUTPUTS / "cb_h1_sensitivity" / f"t{label}" / s / "per_edge_morphometry.csv"
+    return lambda specimen_id: SENSITIVITY_DIR / f"t{label}" / specimen_id
 
 
+# Each run is the folder to open for a specimen; None is the specimen's batch run.
 RUNS = (
     (LOWER, _sensitivity(LOWER)),
-    (FROZEN, lambda s: OUTPUTS / "cb_h1_batch" / s / "per_edge_morphometry.csv"),
+    (FROZEN, lambda specimen_id: None),
     (UPPER, _sensitivity(UPPER)),
 )
 
 
-def median_calibre(path):
-    # Refuse a run cut anywhere but the placed ROI (open item 27).
-    specimen = get_specimen(path.parent.name)
-    check_output_roi(path.parent, specimen, cb_settings.ROI_VOXELS)
-    d = pd.read_csv(path, usecols=["edt_diameter_um"])["edt_diameter_um"].to_numpy(float)
+def median_calibre(specimen_id, run_dir):
+    """Median EDT calibre of one run's edge table; opening it checks the placed ROI."""
+    run = open_batch_run(get_specimen(specimen_id), run_dir)
+    d = np.array([float(row["edt_diameter_um"]) for row in run.edge_table().values()
+                  if row["edt_diameter_um"] != ""], dtype=float)
     d = d[np.isfinite(d) & (d > 0)]
     return float(np.median(d))
 
@@ -63,7 +63,7 @@ def main():
           + f"{LOWER + '->' + FROZEN:>13}{FROZEN + '->' + UPPER:>13}")
     table = []
     for specimen_id in SPECIMENS:
-        medians = [median_calibre(path(specimen_id)) for _, path in RUNS]
+        medians = [median_calibre(specimen_id, folder(specimen_id)) for _, folder in RUNS]
         table.append(medians)
         print(f"{specimen_id:10}" + "".join(f"{m:9.3f}" for m in medians)
               + f"{medians[1]-medians[0]:13.3f}{medians[2]-medians[1]:13.3f}")

@@ -7,6 +7,7 @@ tables and check that each figure reads them.
 """
 import csv
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -47,6 +48,36 @@ def _ring(n_extra):
     return edges
 
 
+class _FakeReader:
+    """Stands in for ``open_batch_run``: serves the tiny CSVs these tests write.
+
+    ``run_dir`` None is the batch (``batch_root / specimen``); otherwise the folder passed.
+    ``opened`` records every (specimen, folder) so a test can see what was opened how.
+    """
+
+    def __init__(self, batch_root):
+        self.batch_root = batch_root
+        self.opened = []
+
+    def __call__(self, specimen, run_dir=None):
+        self.opened.append((specimen.specimen_id, run_dir))
+        folder = self.batch_root / specimen.specimen_id if run_dir is None else Path(run_dir)
+        path = folder / "per_edge_morphometry.csv"
+        if not path.exists():
+            raise FileNotFoundError(f"{specimen.specimen_id} ({folder}): no {path.name}.")
+        with path.open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        return SimpleNamespace(edge_table=lambda: {(i, 0, 0): row for i, row in enumerate(rows)})
+
+
+@pytest.fixture(autouse=True)
+def _fresh_tables():
+    """The driver caches each run's table; a test's tmp folders must not see the last one's."""
+    cb_h1_figures._rows.cache_clear()
+    yield
+    cb_h1_figures._rows.cache_clear()
+
+
 @pytest.fixture
 def outputs(tmp_path, monkeypatch):
     """Batch plus both sensitivity runs; SHR carries one more loop than WKY at every threshold."""
@@ -65,17 +96,19 @@ def outputs(tmp_path, monkeypatch):
         "frozen": cb_settings.FROZEN_THRESHOLD,
         "fragmentation_onset": {s.specimen_id: (high if i < 4 else None)
                                 for i, s in enumerate(SPECIMENS)}}))
-    monkeypatch.setattr(cb_h1_figures, "RESULTS", results)
+    reader = _FakeReader(results)
+    monkeypatch.setattr(cb_h1_figures, "OUTPUT_DIR", results)
     monkeypatch.setattr(cb_h1_figures, "SENSITIVITY_DIR", sensitivity)
-    monkeypatch.setattr(cb_h1_figures, "check_output_roi", lambda *a, **k: None)
-    return SimpleNamespace(results=results, sensitivity=sensitivity, runs=runs)
+    monkeypatch.setattr(cb_h1_figures, "open_batch_run", reader)
+    return SimpleNamespace(results=results, sensitivity=sensitivity, runs=runs, reader=reader)
 
 
 def test_the_hand_copied_topology_table_is_gone():
     assert not hasattr(cb_h1_figures, "TOPOLOGY")
 
 
-def test_network_measures_counts_loops_junctions_and_length_on_the_multigraph(tmp_path):
+def test_network_measures_counts_loops_junctions_and_length_on_the_multigraph(tmp_path, monkeypatch):
+    monkeypatch.setattr(cb_h1_figures, "open_batch_run", _FakeReader(tmp_path))
     for specimen in SPECIMENS:
         _write(tmp_path, specimen.specimen_id, BASE_EDGES, length_um=10.0)
     measures = cb_h1_figures.network_measures(tmp_path)
@@ -86,11 +119,33 @@ def test_network_measures_counts_loops_junctions_and_length_on_the_multigraph(tm
         assert values["length"] == pytest.approx(50.0 / roi)
 
 
-def test_a_missing_table_raises_rather_than_dropping_the_specimen(tmp_path):
+def test_a_missing_table_raises_rather_than_dropping_the_specimen(tmp_path, monkeypatch):
+    monkeypatch.setattr(cb_h1_figures, "open_batch_run", _FakeReader(tmp_path))
     for specimen in SPECIMENS[1:]:
         _write(tmp_path, specimen.specimen_id, BASE_EDGES)
     with pytest.raises(FileNotFoundError, match=SPECIMENS[0].specimen_id):
         cb_h1_figures.network_measures(tmp_path)
+
+
+def test_the_batch_is_opened_by_default_and_each_sensitivity_run_by_its_folder(outputs):
+    cb_h1_figures.sensitivity_series()
+    low, high = cb_h1_batch.sensitivity_thresholds(cb_settings.FROZEN_THRESHOLD)
+    for specimen in SPECIMENS:
+        sid = specimen.specimen_id
+        assert (sid, None) in outputs.reader.opened
+        assert (sid, outputs.sensitivity / f"t{low:.2f}" / sid) in outputs.reader.opened
+        assert (sid, outputs.sensitivity / f"t{high:.2f}" / sid) in outputs.reader.opened
+    # Opened once each, however many figures read the run.
+    assert len(outputs.reader.opened) == len(set(outputs.reader.opened)) == 3 * len(SPECIMENS)
+    cb_h1_figures.junction_trim_shares()
+    cb_h1_figures.network_measures()
+    assert len(outputs.reader.opened) == 3 * len(SPECIMENS)
+
+
+def test_a_missing_batch_table_stops_the_figures(outputs):
+    (outputs.results / "SHR-C" / "per_edge_morphometry.csv").unlink()
+    with pytest.raises(FileNotFoundError, match="SHR-C"):
+        cb_h1_figures.network_measures()
 
 
 @pytest.mark.parametrize("values, state", [

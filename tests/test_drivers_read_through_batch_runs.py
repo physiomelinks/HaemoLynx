@@ -12,7 +12,7 @@ import pytest
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
-# Drivers switched to the reader so far (batch-run reader tickets 01 to 04).
+# Drivers switched to the reader so far (batch-run reader tickets 01 to 05).
 ON_THE_READER = [
     "cb_h2_glomus_perfusion.py",
     "cb_h2_absolute_perfusion.py",
@@ -22,6 +22,8 @@ ON_THE_READER = [
     "cb_h2_boundary_selection.py",
     "cb_h1_th_metrics.py",
     "cb_h1_vtk.py",
+    "cb_h1_figures.py",
+    "cb_h2_threshold_calibre.py",
 ]
 # Modules a driver only needs if it reads batch-run files itself.
 FILE_READERS = {"csv", "h5py", "pickle"}
@@ -61,4 +63,4 @@ def test_the_driver_reads_no_batch_run_file_itself(name):
 def test_the_driver_defines_no_batch_root_of_its_own(name):
     names = {target.id for node in _tree(name).body if isinstance(node, ast.Assign)
              for target in node.targets if isinstance(target, ast.Name)}
-    assert "BATCH" not in names
+    assert not names & {"BATCH", "RESULTS", "OUTPUTS"}

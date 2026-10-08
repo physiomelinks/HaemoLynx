@@ -2,6 +2,8 @@
 
 It hard-coded 0.85 / 0.90 / 0.95 until the 2026-09-28 re-selection moved the freeze to 0.95.
 """
+from types import SimpleNamespace
+
 import pytest
 
 from ImageLynx import cb_settings
@@ -18,8 +20,22 @@ def test_the_three_runs_bracket_the_frozen_threshold_on_the_grid():
     assert labels == [calibre.LOWER, calibre.FROZEN, calibre.UPPER]
 
 
-def test_the_frozen_run_is_the_batch_and_the_neighbours_are_sensitivity_runs():
-    paths = [str(path("WKY-A")) for _, path in calibre.RUNS]
-    assert "cb_h1_batch" in paths[1]
-    assert f"cb_h1_sensitivity/t{calibre.LOWER}" in paths[0]
-    assert f"cb_h1_sensitivity/t{calibre.UPPER}" in paths[2]
+def test_the_frozen_run_is_the_default_batch_run_and_the_neighbours_are_sensitivity_runs():
+    folders = {label: folder("WKY-A") for label, folder in calibre.RUNS}
+    assert folders[calibre.FROZEN] is None
+    assert folders[calibre.LOWER] == calibre.SENSITIVITY_DIR / f"t{calibre.LOWER}" / "WKY-A"
+    assert folders[calibre.UPPER] == calibre.SENSITIVITY_DIR / f"t{calibre.UPPER}" / "WKY-A"
+
+
+def test_the_median_calibre_comes_from_the_opened_run_and_skips_unmeasured_edges(monkeypatch):
+    asked = []
+
+    def fake_open(specimen, run_dir=None):
+        asked.append((specimen.specimen_id, run_dir))
+        rows = {(i, 0, 0): {"edt_diameter_um": d}
+                for i, d in enumerate(["4.0", "", "8.0", "0", "6.0"])}
+        return SimpleNamespace(edge_table=lambda: rows)
+
+    monkeypatch.setattr(calibre, "open_batch_run", fake_open)
+    assert calibre.median_calibre("SHR-B", "somewhere") == 6.0
+    assert asked == [("SHR-B", "somewhere")]
