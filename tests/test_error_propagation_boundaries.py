@@ -39,14 +39,14 @@ def _graph():
 
 
 def _inputs(G, skip=None):
-    """What the batch-run reader hands out: the graph with calibre on each edge, and the table."""
-    table = {}
+    """What the batch-run reader hands out: the graph with calibre on each edge, and the
+    ``length_um`` column as a float per edge."""
+    lengths = {}
     for a, b, k, data in G.edges(keys=True, data=True):
         data["assigned_diameter_um"] = 6.0
         if (a, b, k) != skip:
-            table[(a, b, k)] = {"u": str(a), "v": str(b), "key": str(k),
-                                "length_um": "40.0", "assigned_diameter_um": "6.0"}
-    return G, table
+            lengths[(a, b, k)] = 40.0
+    return G, lengths
 
 
 def test_face_boundaries_are_the_library_face_rule():
@@ -102,8 +102,27 @@ def test_a_missing_morphometry_row_raises():
 
 
 def test_a_node_left_without_edges_raises():
-    G, table = _inputs(_graph())
+    G, lengths = _inputs(_graph())
     # A zero length on the only edge to node 8 would leave it as a zero Laplacian row.
-    table[(7, 8, 0)]["length_um"] = "0.0"
+    lengths[(7, 8, 0)] = 0.0
     with pytest.raises(ValueError, match="singular"):
-        module.network_arrays(G, table)
+        module.network_arrays(G, lengths)
+
+
+def test_load_network_reads_lengths_through_the_reader_and_refuses_a_blank_one(
+        tmp_path, monkeypatch):
+    """A blank length used to become NaN and the edge was quietly dropped from the solve."""
+    from types import SimpleNamespace
+    from ImageLynx.batch_outputs import EDGE_TABLE_NAME, BatchRun
+
+    G, lengths = _inputs(_graph())
+    rows = ["u,v,key,length_um,assigned_diameter_um"]
+    rows += [f"{a},{b},{k},{'' if (a, b, k) == (0, 7, 1) else 40.0},6.0" for a, b, k in lengths]
+    (tmp_path / EDGE_TABLE_NAME).write_text("\n".join(rows) + "\n")
+    run = BatchRun(SimpleNamespace(specimen_id="TEST-A"), tmp_path, None, None)
+    monkeypatch.setattr(run, "graph", lambda: G)
+    monkeypatch.setattr(module, "open_batch_run", lambda specimen: run)
+    monkeypatch.setattr(module, "get_specimen", lambda specimen_id: None)
+
+    with pytest.raises(ValueError, match=r"TEST-A.*empty or non-finite length_um.*\(0, 7, 1\)"):
+        module.load_network("TEST-A")

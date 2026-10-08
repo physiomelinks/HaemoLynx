@@ -129,6 +129,49 @@ def private_names_taken_from_other_drivers(tree):
     return found
 
 
+# Calls that turn a string cell into a number.
+NUMBER_CALLS = {"float", "int", "float64"}
+
+
+def _is_nan(node):
+    """``np.nan``, ``numpy.nan``, ``math.nan`` or ``float("nan")``."""
+    if isinstance(node, ast.Attribute):
+        return node.attr == "nan"
+    return (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "float"
+            and len(node.args) == 1 and isinstance(node.args[0], ast.Constant)
+            and str(node.args[0].value).lower() == "nan")
+
+
+def _catches_parse_errors(handler):
+    caught = handler.type
+    names = caught.elts if isinstance(caught, ast.Tuple) else [caught]
+    return any(getattr(name, "id", None) in ("ValueError", "TypeError") for name in names)
+
+
+def cells_turned_into_numbers_outside_the_reader(tree):
+    """Ways a driver turns an edge-table cell into a number itself, where a blank or text cell
+    would become NaN or raise without naming the run. ``BatchRun.numeric_column`` does it once."""
+    found = []
+    for node in ast.walk(tree):
+        func = node.func if isinstance(node, ast.Call) else None
+        if (func is not None
+                and (getattr(func, "id", None) or getattr(func, "attr", None)) in NUMBER_CALLS
+                and node.args and isinstance(node.args[0], ast.Subscript)
+                and isinstance(node.args[0].slice, ast.Constant)
+                and isinstance(node.args[0].slice.value, str)):
+            found.append(f"line {node.lineno}: a number made from the cell "
+                         f"{node.args[0].slice.value!r}")
+        elif isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or) and any(
+                isinstance(value, ast.Constant) and str(value.value).lower() == "nan"
+                for value in node.values):
+            found.append(f'line {node.lineno}: `or "nan"`')
+        elif isinstance(node, ast.ExceptHandler) and node.type and _catches_parse_errors(node):
+            if any(isinstance(n, ast.Return) and n.value is not None and _is_nan(n.value)
+                   for n in ast.walk(node)):
+                found.append(f"line {node.lineno}: a parse error handled by returning NaN")
+    return found
+
+
 @pytest.mark.parametrize("name", ON_THE_READER)
 def test_the_driver_reads_no_batch_run_file_by_other_means(name):
     assert other_ways_to_read_a_batch_run(_tree(name)) == []
@@ -137,3 +180,41 @@ def test_the_driver_reads_no_batch_run_file_by_other_means(name):
 @pytest.mark.parametrize("name", ON_THE_READER)
 def test_the_driver_takes_no_private_name_from_another_driver(name):
     assert private_names_taken_from_other_drivers(_tree(name)) == []
+
+
+# --- Cells become numbers only in the reader --------------------------------------------------
+
+@pytest.mark.parametrize("source", [
+    'x = float(row["length_um"])',
+    "x = float(row['edt_diameter_um'])",
+    'x = float(row["length_um"] or "nan")',
+    "x = value or 'NaN'",
+    'n = int(row["n_centreline_points"])',
+    'd = np.float64(row["edt_diameter_um"])',
+    'd = numpy.float64(row["edt_diameter_um"])',
+    "def _float(v):\n    try:\n        return float(v)\n    except (TypeError, ValueError):\n"
+    "        return np.nan",
+    "def parse(v):\n    try:\n        return float(v)\n    except ValueError:\n"
+    "        return float('nan')",
+], ids=["float of a cell", "single quotes", "or nan", "or NaN", "int of a cell",
+        "np.float64 of a cell", "numpy.float64 of a cell", "_float helper",
+        "float nan helper"])
+def test_the_cell_check_flags_a_cell_turned_into_a_number_outside_the_reader(source):
+    assert cells_turned_into_numbers_outside_the_reader(ast.parse(source)) != []
+
+
+@pytest.mark.parametrize("source", [
+    'x = float(data.get("flow_abs", np.nan))',
+    "x = float(np.mean(values))",
+    "x = flow / total if total else float('nan')",
+    "x = float(values[k])",
+    "def parse(v):\n    try:\n        return float(v)\n    except ValueError:\n        raise",
+], ids=["graph attribute", "a computed result", "a nan result", "a non-string key",
+        "a handler that raises"])
+def test_the_cell_check_passes_numbers_that_are_not_edge_table_cells(source):
+    assert cells_turned_into_numbers_outside_the_reader(ast.parse(source)) == []
+
+
+@pytest.mark.parametrize("name", ON_THE_READER)
+def test_the_driver_turns_no_cell_into_a_number_itself(name):
+    assert cells_turned_into_numbers_outside_the_reader(_tree(name)) == []

@@ -71,17 +71,27 @@ def _style(ax):
 
 
 @functools.lru_cache(maxsize=None)
-def _rows(run_dir, specimen_id):
-    """One specimen's per-edge table, in file order, read through the batch-run reader.
+def _run(run_dir, specimen_id):
+    """One specimen's opened batch run.
 
     ``run_dir`` is a sensitivity threshold's folder holding one run per specimen, or None for
-    the batch. Opening the run checks its placed ROI (open item 27), and a missing table raises:
-    a figure must not drop a specimen. Cached, because an open places the ROI and the figures
-    read each run several times.
+    the batch. Opening the run checks its placed ROI (open item 27). Cached, because an open
+    places the ROI and the figures read each run several times.
     """
     specimen = get_specimen(specimen_id)
-    run = open_batch_run(specimen, None if run_dir is None else Path(run_dir) / specimen_id)
-    return tuple(run.edge_table().values())
+    return open_batch_run(specimen, None if run_dir is None else Path(run_dir) / specimen_id)
+
+
+def _rows(run_dir, specimen_id):
+    """One specimen's per-edge table, in file order. A missing table raises: a figure must not
+    drop a specimen."""
+    return tuple(_run(run_dir, specimen_id).edge_table().values())
+
+
+def _column(run_dir, specimen_id, column):
+    """One numeric column of a specimen's per-edge table as Python floats, in file order. A
+    blank or non-finite cell raises in the reader rather than being skipped here."""
+    return tuple(_run(run_dir, specimen_id).numeric_column(column).values())
 
 
 def _degrees(rows):
@@ -108,7 +118,7 @@ def network_measures(run_dir=None):
         out[specimen.specimen_id] = {
             "beta1": (len(rows) - len(degree) + 1) / ROI_MM3,
             "junctions": sum(1 for d in degree.values() if d >= 3) / ROI_MM3,
-            "length": sum(float(row["length_um"]) for row in rows) / ROI_MM3,
+            "length": sum(_column(run_dir, specimen.specimen_id, "length_um")) / ROI_MM3,
         }
     return out
 
@@ -201,10 +211,8 @@ def junction_exclusion_um():
 def _load_diameters():
     out = {}
     for specimen in SPECIMENS:
-        rows = _rows(None, specimen.specimen_id)
-        out[specimen.specimen_id] = np.asarray(
-            [float(row["edt_diameter_um"]) for row in rows
-             if row.get("edt_diameter_um") not in (None, "", "None")])
+        out[specimen.specimen_id] = np.asarray(_column(None, specimen.specimen_id,
+                                                       "edt_diameter_um"))
     return out
 
 
@@ -444,8 +452,8 @@ def _degree_and_length():
         histogram = collections.Counter(counter.values())
         total = len(counter)
         degrees[specimen.specimen_id] = {d: histogram.get(d, 0) / total for d in range(1, 7)}
-        lengths[specimen.specimen_id] = np.array(
-            [float(r["length_um"]) for r in rows if r.get("length_um")])
+        lengths[specimen.specimen_id] = np.array(_column(None, specimen.specimen_id,
+                                                         "length_um"))
     return degrees, lengths
 
 

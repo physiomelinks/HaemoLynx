@@ -71,19 +71,18 @@ def _cross_network():
     G.add_edge(0, 7)
     G.add_edge(0, 7)
     G.add_edge(7, 8)
-    table = {}
+    lengths = {}
     for n, (a, b, k) in enumerate(G.edges(keys=True)):
         G.edges[a, b, k]["assigned_diameter_um"] = 4.0 + n
-        table[(a, b, k)] = {"u": str(a), "v": str(b), "key": str(k),
-                            "length_um": str(50.0 + 5 * n), "assigned_diameter_um": str(4.0 + n)}
-    return G, table
+        lengths[(a, b, k)] = 50.0 + 5 * n
+    return G, lengths
 
 
 @pytest.fixture
 def propagation(monkeypatch):
     import cb_h2_error_propagation as module
-    G, table = _cross_network()
-    run = SimpleNamespace(graph=lambda: G, edge_table=lambda: table)
+    G, lengths = _cross_network()
+    run = SimpleNamespace(graph=lambda: G, numeric_column={"length_um": lengths}.__getitem__)
     monkeypatch.setattr(module, "open_batch_run", lambda specimen: run)
     return module
 

@@ -16,10 +16,11 @@ import pytest
 import cb_h1_batch
 import cb_h1_figures
 from ImageLynx import cb_settings
+from ImageLynx.batch_outputs import EDGE_TABLE_NAME, BatchRun
 from ImageLynx.specimens import SPECIMENS
 from ImageLynx.statistics.cohort_split import assess_cohort_split
 
-FIELDS = ["u", "v", "length_um", "edt_diameter_um", "edt_junction_trim"]
+FIELDS = ["u", "v", "key", "length_um", "edt_diameter_um", "edt_junction_trim"]
 
 # A triangle 0-1-2 with a parallel 0-1 edge and a tail 2-3: E = 5, V = 4, so beta-1 = 2;
 # nodes 0, 1 and 2 have degree 3 on the MultiGraph, node 3 degree 1.
@@ -29,11 +30,11 @@ BASE_EDGES = [(0, 1), (0, 1), (1, 2), (2, 0), (2, 3)]
 def _write(run_dir, specimen_id, edges, length_um=10.0, diameter_um=6.0, trimmed=1):
     folder = run_dir / specimen_id
     folder.mkdir(parents=True, exist_ok=True)
-    with (folder / "per_edge_morphometry.csv").open("w", newline="") as handle:
+    with (folder / EDGE_TABLE_NAME).open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS)
         writer.writeheader()
         for i, (u, v) in enumerate(edges):
-            writer.writerow({"u": u, "v": v, "length_um": length_um,
+            writer.writerow({"u": u, "v": v, "key": i, "length_um": length_um,
                              "edt_diameter_um": diameter_um,
                              "edt_junction_trim": "trimmed" if i < trimmed
                              else "untrimmed_too_short"})
@@ -49,7 +50,8 @@ def _ring(n_extra):
 
 
 class _FakeReader:
-    """Stands in for ``open_batch_run``: serves the tiny CSVs these tests write.
+    """Stands in for ``open_batch_run``: a real ``BatchRun`` over the tiny CSVs these tests
+    write, without the placed-ROI and cache checks.
 
     ``run_dir`` None is the batch (``batch_root / specimen``); otherwise the folder passed.
     ``opened`` records every (specimen, folder) so a test can see what was opened how.
@@ -62,20 +64,18 @@ class _FakeReader:
     def __call__(self, specimen, run_dir=None):
         self.opened.append((specimen.specimen_id, run_dir))
         folder = self.batch_root / specimen.specimen_id if run_dir is None else Path(run_dir)
-        path = folder / "per_edge_morphometry.csv"
+        path = folder / EDGE_TABLE_NAME
         if not path.exists():
             raise FileNotFoundError(f"{specimen.specimen_id} ({folder}): no {path.name}.")
-        with path.open(newline="") as handle:
-            rows = list(csv.DictReader(handle))
-        return SimpleNamespace(edge_table=lambda: {(i, 0, 0): row for i, row in enumerate(rows)})
+        return BatchRun(specimen, folder, None, None)
 
 
 @pytest.fixture(autouse=True)
 def _fresh_tables():
-    """The driver caches each run's table; a test's tmp folders must not see the last one's."""
-    cb_h1_figures._rows.cache_clear()
+    """The driver caches each opened run; a test's tmp folders must not see the last one's."""
+    cb_h1_figures._run.cache_clear()
     yield
-    cb_h1_figures._rows.cache_clear()
+    cb_h1_figures._run.cache_clear()
 
 
 @pytest.fixture
@@ -127,6 +127,24 @@ def test_a_missing_table_raises_rather_than_dropping_the_specimen(tmp_path, monk
         cb_h1_figures.network_measures(tmp_path)
 
 
+@pytest.mark.parametrize("column, read", [
+    ("length_um", lambda: cb_h1_figures.network_measures()),
+    ("edt_diameter_um", lambda: cb_h1_figures._load_diameters()),
+    ("length_um", lambda: cb_h1_figures._degree_and_length()),
+], ids=["density length", "diameter figure", "segment-length figure"])
+def test_a_blank_cell_stops_the_figures_rather_than_being_skipped(outputs, column, read):
+    path = outputs.results / "SHR-C" / EDGE_TABLE_NAME
+    with path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    rows[1][column] = ""
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    with pytest.raises(ValueError, match=rf"SHR-C.*empty or non-finite {column}.*\(0, 1, 1\)"):
+        read()
+
+
 def test_the_batch_is_opened_by_default_and_each_sensitivity_run_by_its_folder(outputs):
     cb_h1_figures.sensitivity_series()
     low, high = cb_h1_batch.sensitivity_thresholds(cb_settings.FROZEN_THRESHOLD)
@@ -143,7 +161,7 @@ def test_the_batch_is_opened_by_default_and_each_sensitivity_run_by_its_folder(o
 
 
 def test_a_missing_batch_table_stops_the_figures(outputs):
-    (outputs.results / "SHR-C" / "per_edge_morphometry.csv").unlink()
+    (outputs.results / "SHR-C" / EDGE_TABLE_NAME).unlink()
     with pytest.raises(FileNotFoundError, match="SHR-C"):
         cb_h1_figures.network_measures()
 

@@ -139,6 +139,36 @@ def test_a_duplicate_edge_table_row_is_refused(batch_run):
         open_batch_run(batch_run.specimen).edge_table()
 
 
+# --- Numeric columns -------------------------------------------------------------------------
+
+def test_a_numeric_column_is_a_float_per_edge_in_file_order(batch_run):
+    lengths = open_batch_run(batch_run.specimen).numeric_column("length_um")
+    assert lengths == {(0, 1, 0): 10.0, (1, 2, 0): 20.0, (1, 2, 1): 20.0, (2, 3, 0): 30.0}
+    assert list(lengths) == [(0, 1, 0), (1, 2, 0), (1, 2, 1), (2, 3, 0)]
+    assert all(type(value) is float for value in lengths.values())
+
+
+@pytest.mark.parametrize("cell", ["", "nan", "None", "inf", "-inf"],
+                         ids=["blank", "nan", "text", "inf", "-inf"])
+def test_a_cell_that_is_not_a_finite_number_is_refused_not_turned_into_nan(batch_run, cell):
+    _write_edge_table(batch_run.run_dir, [EDGES[0], (1, 2, 0, cell), (1, 2, 1, cell), EDGES[3]])
+    with pytest.raises(ValueError, match=r"2 rows .*empty or non-finite assigned_diameter_um"
+                                         r".*\(1, 2, 0\), \(1, 2, 1\)") as raised:
+        open_batch_run(batch_run.specimen).numeric_column("assigned_diameter_um")
+    assert "TEST-A" in str(raised.value) and str(batch_run.run_dir) in str(raised.value)
+
+
+def test_an_edge_table_with_no_rows_is_refused(batch_run):
+    _write_edge_table(batch_run.run_dir, [])
+    with pytest.raises(ValueError, match=r"TEST-A.*per_edge_morphometry.csv has no rows"):
+        open_batch_run(batch_run.specimen).numeric_column("length_um")
+
+
+def test_a_column_the_edge_table_lacks_is_refused(batch_run):
+    with pytest.raises(KeyError, match=r"TEST-A.*no column 'fwhm_diameter_um'.*length_um"):
+        open_batch_run(batch_run.specimen).numeric_column("fwhm_diameter_um")
+
+
 # --- The graph and its diameters -------------------------------------------------------------
 
 def test_the_graph_carries_each_rows_diameter_on_its_own_edge(batch_run):

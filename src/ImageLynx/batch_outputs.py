@@ -97,38 +97,56 @@ class BatchRun:
                 f"{duplicates[:10]}.")
         return table
 
+    def numeric_column(self, column: str) -> dict:
+        """One edge-table column as a float per edge, keyed and ordered as ``edge_table()``.
+
+        The one place an edge-table cell becomes a number. A blank, text, NaN or infinite cell
+        raises, naming the column and edges, rather than becoming NaN, 0 or a dropped row.
+        """
+        table = self.edge_table()
+        if not table:
+            raise ValueError(f"{self._where()}: {EDGE_TABLE_NAME} has no rows.")
+        columns = next(iter(table.values())).keys()
+        if column not in columns:
+            raise KeyError(f"{self._where()}: {EDGE_TABLE_NAME} has no column {column!r}; it has "
+                           f"{sorted(columns)}.")
+        values = {edge: _finite_or_none(row[column]) for edge, row in table.items()}
+        bad = [edge for edge, value in values.items() if value is None]
+        if bad:
+            raise ValueError(
+                f"{self._where()}: {len(bad)} rows of {EDGE_TABLE_NAME} have an empty or "
+                f"non-finite {column}: {bad[:10]}.")
+        return values
+
     def graph(self):
         """The cached network, unpickled afresh, with ``assigned_diameter_um`` on every edge.
 
         The cached graph carries no calibre, so it comes from the edge table under a strict
         one-to-one join on forward integer ``(u, v, key)``: every edge has a row, every row has
-        an edge, and every diameter is a finite number. Any break raises rather than leaving an edge without
-        a calibre or putting one on the wrong edge. A fresh copy each call, because the
-        rheology solve writes onto the graph it is given.
+        an edge, and every diameter is a finite number (read through ``numeric_column``). Any
+        break raises rather than leaving an edge without a calibre or putting one on the wrong
+        edge. A fresh copy each call, because the rheology solve writes onto the graph it is
+        given.
         """
         with (self.cache_dir / GRAPH_NAME).open("rb") as handle:
             G = pickle.load(handle)
-        table = self.edge_table()
+        diameters = self.numeric_column(DIAMETER)
 
         edges = {(int(u), int(v), int(k)) for u, v, k in G.edges(keys=True)}
-        missing = [edge for edge in sorted(edges) if edge not in table]
-        extra = [edge for edge in table if edge not in edges]
-        empty = [edge for edge, row in table.items() if _finite_or_none(row.get(DIAMETER)) is None]
+        missing = [edge for edge in sorted(edges) if edge not in diameters]
+        extra = [edge for edge in diameters if edge not in edges]
         problems = []
         if missing:
             problems.append(f"{len(missing)} graph edges have no edge-table row: {missing[:10]}")
         if extra:
             problems.append(f"{len(extra)} edge-table rows match no graph edge: {extra[:10]}")
-        if empty:
-            problems.append(f"{len(empty)} rows have an empty or non-finite {DIAMETER}: "
-                            f"{empty[:10]}")
         if problems:
             raise ValueError(
                 f"{self._where()}: the graph and {EDGE_TABLE_NAME} do not match one-to-one on "
                 f"forward (u, v, key); " + "; ".join(problems) + ".")
 
         for u, v, k, data in G.edges(keys=True, data=True):
-            data[DIAMETER] = float(table[(int(u), int(v), int(k))][DIAMETER])
+            data[DIAMETER] = diameters[(int(u), int(v), int(k))]
         return G
 
     def skeleton(self) -> np.ndarray:

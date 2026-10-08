@@ -26,8 +26,9 @@ SOURCE = Path(module.__file__).read_text()
 def _cross_network(drop=None):
     """Centre node with a terminal on both faces of every axis, plus an interior dead end.
 
-    ``drop`` removes one node before the edge table is built. The edge to node 3, the
+    ``drop`` removes one node before the lengths are built. The edge to node 3, the
     axis-1 inlet, is the widest, so on axis 1 the widest decile carries all the inlet flow.
+    Returns the graph and its ``length_um`` column, as ``BatchRun.numeric_column`` gives it.
     """
     G = nx.MultiGraph()
     mid, top = 148.0, 296.0
@@ -44,19 +45,17 @@ def _cross_network(drop=None):
     G.add_edge(7, 8)
     if drop is not None:
         G.remove_node(drop)
-    table = {}
+    lengths = {}
     for n, (a, b, k) in enumerate(G.edges(keys=True)):
-        diameter = 10.0 if (a, b) == (0, 3) else 4.0
-        G.edges[a, b, k]["assigned_diameter_um"] = diameter
-        table[(a, b, k)] = {"u": str(a), "v": str(b), "key": str(k),
-                            "length_um": str(50.0 + 5 * n), "assigned_diameter_um": str(diameter)}
-    return G, table
+        G.edges[a, b, k]["assigned_diameter_um"] = 10.0 if (a, b) == (0, 3) else 4.0
+        lengths[(a, b, k)] = 50.0 + 5 * n
+    return G, lengths
 
 
 @pytest.fixture
 def network():
-    G, table = _cross_network()
-    return (G, *propagation.network_arrays(G, table))
+    G, lengths = _cross_network()
+    return (G, *propagation.network_arrays(G, lengths))
 
 
 def test_the_script_no_longer_reads_the_paraview_export():
@@ -99,8 +98,8 @@ def test_face_sink_makes_every_other_terminal_an_outlet(network):
 
 
 def test_an_empty_face_is_a_failed_solve_not_a_fallback():
-    G, table = _cross_network(drop=4)  # 4 is the only terminal on the high face of axis 1
-    trimmed = (G, *propagation.network_arrays(G, table))
+    G, lengths = _cross_network(drop=4)  # 4 is the only terminal on the high face of axis 1
+    trimmed = (G, *propagation.network_arrays(G, lengths))
     assert module.ratio(trimmed, 1, "face") is None
     assert module.ratio(trimmed, 0, "face") is not None
 
@@ -118,12 +117,12 @@ def test_ratio_is_widest_decile_flow_over_inlet_throughput(network):
 
 
 def test_main_reads_each_specimen_once_and_prints_every_section(monkeypatch, capsys):
-    G, table = _cross_network()
+    G, lengths = _cross_network()
     opened = []
 
     def fake_open(specimen):
         opened.append(specimen.specimen_id)
-        return SimpleNamespace(graph=lambda: G, edge_table=lambda: table)
+        return SimpleNamespace(graph=lambda: G, numeric_column={"length_um": lengths}.__getitem__)
 
     monkeypatch.setattr(propagation, "open_batch_run", fake_open)
     module.main()

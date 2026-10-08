@@ -51,9 +51,10 @@ RUNS = (
 def median_calibre(specimen_id, run_dir):
     """Median EDT calibre of one run's edge table; opening it checks the placed ROI."""
     run = open_batch_run(get_specimen(specimen_id), run_dir)
-    d = np.array([float(row["edt_diameter_um"]) for row in run.edge_table().values()
-                  if row["edt_diameter_um"] != ""], dtype=float)
-    d = d[np.isfinite(d) & (d > 0)]
+    d = np.array(list(run.numeric_column("edt_diameter_um").values()), dtype=float)
+    # A calibre of zero or less is no vessel to take a median over; the reader has already
+    # refused blank and non-finite cells.
+    d = d[d > 0]
     return float(np.median(d))
 
 

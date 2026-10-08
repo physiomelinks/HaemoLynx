@@ -73,26 +73,25 @@ DRAWS = 24
 SEED = 20260815
 
 
-def network_arrays(G, edge_table):
+def network_arrays(G, lengths):
     """Per-edge arrays over the MultiGraph: calibre from the graph, length from the edge table.
 
-    ``G`` and ``edge_table`` are what ``BatchRun.graph()`` and ``BatchRun.edge_table()`` return:
-    the graph carries ``assigned_diameter_um`` on every edge and the table is keyed by the same
-    forward integer ``(u, v, key)``. Returns ``(u, v, length, diameter, index)``: ``u`` and ``v``
-    are 0-based node indices and ``index`` maps each graph node to its index. Parallel edges stay
-    separate conductances. Raises if any edge has no table row, rather than solving on a partial
-    network.
+    ``G`` and ``lengths`` are what ``BatchRun.graph()`` and
+    ``BatchRun.numeric_column("length_um")`` return: the graph carries ``assigned_diameter_um``
+    on every edge and ``lengths`` is a finite float per forward integer ``(u, v, key)``. Returns
+    ``(u, v, length, diameter, index)``: ``u`` and ``v`` are 0-based node indices and ``index``
+    maps each graph node to its index. Parallel edges stay separate conductances. Raises if any
+    edge has no table row, rather than solving on a partial network.
     """
     index = {node: i for i, node in enumerate(G.nodes())}
     u, v, length, diameter, missing = [], [], [], [], []
     for a, b, key, data in G.edges(keys=True, data=True):
-        row = edge_table.get((a, b, key))
-        if row is None:
+        if (a, b, key) not in lengths:
             missing.append((a, b, key))
             continue
         u.append(index[a])
         v.append(index[b])
-        length.append(float(row["length_um"] or "nan"))
+        length.append(lengths[(a, b, key)])
         diameter.append(data["assigned_diameter_um"])
     if missing:
         raise ValueError(f"{len(missing)} graph edges have no row in the edge table, "
@@ -102,7 +101,8 @@ def network_arrays(G, edge_table):
     length, diameter = np.array(length, float), np.array(diameter, float)
     # Self-loops carry no pressure drop and a non-positive length or diameter would make the
     # conductance singular. Both are dropped rather than clamped, so nothing silently contributes.
-    keep = (u != v) & np.isfinite(length) & (length > 0) & np.isfinite(diameter) & (diameter > 0)
+    # Every value is finite already: the reader refuses a blank or non-finite cell.
+    keep = (u != v) & (length > 0) & (diameter > 0)
     u, v, length, diameter = u[keep], v[keep], length[keep], diameter[keep]
     # A node left with no edge would be a zero row in the Laplacian and make the solve singular.
     stranded = len(index) - len(np.union1d(u, v))
@@ -117,7 +117,7 @@ def load_network(specimen_id):
     # Opening the run refuses a graph cut anywhere but the placed ROI (item 27).
     run = open_batch_run(get_specimen(specimen_id))
     G = run.graph()
-    return (G, *network_arrays(G, run.edge_table()))
+    return (G, *network_arrays(G, run.numeric_column("length_um")))
 
 
 def face_boundaries(G, index, axis=BOUNDARY_AXIS, tolerance=FACE_TOLERANCE):

@@ -57,16 +57,13 @@ CODES = {
                              "raw_unchanged"],
 }
 
+# Numbers copied from the edge table onto every cell, through the reader, so a blank or
+# non-finite cell raises. The pipeline's .vtp already carries the same values; the table is the
+# one source. fwhm_diameter_um is left out: the CB pipeline never measures it, so the .vtp's
+# array is left as the pipeline wrote it.
 FLOAT_COLUMNS = ("length_um", "euclidean_um", "tortuosity", "curvature",
-                 "edt_diameter_um", "fwhm_diameter_um", "assigned_diameter_um")
+                 "edt_diameter_um", "assigned_diameter_um")
 INT_COLUMNS = ("n_centreline_points",)
-
-
-def _float(value):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return np.nan
 
 
 def stamp(mesh, specimen, extra=None):
@@ -86,11 +83,21 @@ def stamp(mesh, specimen, extra=None):
     return mesh
 
 
+def _check_tags(run, keys, edges, column, known):
+    unknown = [k for k in keys if edges[k][column] not in known]
+    if unknown:
+        raise ValueError(
+            f"{run.specimen.specimen_id} ({run.run_dir}): {len(unknown)} cells have a {column} "
+            f"the export does not know (one of {sorted(known)}): {unknown[:10]}, e.g. "
+            f"{edges[unknown[0]][column]!r}.")
+
+
 def enrich_vessels(run, edges, report):
     """The run's analysed centrelines, with every cell's edge-table row copied onto it.
 
-    The join is strict: a cell whose ``(u, v, key)`` has no row raises, rather than being
-    written as NaN, 0 or "" and read in ParaView as a measurement.
+    The join is strict: a cell whose ``(u, v, key)`` has no row raises, and so does a blank or
+    non-finite number in a matched row (read through ``BatchRun.numeric_column``), rather than
+    being written as NaN, 0 or "" and read in ParaView as a measurement.
     """
     src = run.run_dir / "resistance_network_vessels.vtp"
     if not src.exists():
@@ -108,23 +115,29 @@ def enrich_vessels(run, edges, report):
     report["vessels_matched"] = len(keys)
 
     for column in FLOAT_COLUMNS:
-        if column in mesh.cell_data:
-            continue
-        mesh.cell_data[column] = np.array([_float(edges[k][column]) for k in keys],
-                                          dtype=float)
+        values = run.numeric_column(column)
+        mesh.cell_data[column] = np.array([values[k] for k in keys], dtype=float)
     for column in INT_COLUMNS:
-        mesh.cell_data[column] = np.array(
-            [int(_float(edges[k][column]) or 0) for k in keys], dtype=np.int32)
+        values = run.numeric_column(column)
+        fractional = [k for k in keys if not values[k].is_integer()]
+        if fractional:
+            raise ValueError(
+                f"{run.specimen.specimen_id} ({run.run_dir}): {len(fractional)} cells have a "
+                f"fractional {column} in the edge table: {fractional[:10]}.")
+        mesh.cell_data[column] = np.array([int(values[k]) for k in keys], dtype=np.int32)
 
+    # A tag the export does not know raises rather than being coded as 0 or -1.
+    flags = {"False": 0, "True": 1}
+    _check_tags(run, keys, edges, "reconnected", flags)
     mesh.cell_data["reconnected"] = np.array(
-        [1 if edges[k]["reconnected"] == "True" else 0 for k in keys], dtype=np.int8)
+        [flags[edges[k]["reconnected"]] for k in keys], dtype=np.int8)
 
     for column, levels in CODES.items():
+        lookup = {name: i for i, name in enumerate(levels)}
+        _check_tags(run, keys, edges, column, lookup)
         values = [edges[k][column] for k in keys]
         mesh.cell_data[column] = np.asarray(values, dtype=f"<U{max(len(l) for l in levels)}")
-        lookup = {name: i for i, name in enumerate(levels)}
-        mesh.cell_data[f"{column}_code"] = np.array(
-            [lookup.get(v, -1) for v in values], dtype=np.int8)
+        mesh.cell_data[f"{column}_code"] = np.array([lookup[v] for v in values], dtype=np.int8)
 
     # Radius is the natural glyph scale in ParaView and is worth having ready-made.
     mesh.cell_data["radius_um"] = mesh.cell_data["assigned_diameter_um"] / 2.0
