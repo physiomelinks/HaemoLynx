@@ -17,7 +17,7 @@ venv/bin/python -m pytest tests/test_cb_settings.py::test_frozen_threshold_lies_
 venv/bin/python -m pytest -m "not slow and not integration" # skip heavy tests
 ```
 
-Markers: `slow`, `integration`, `plotting`. Whole-pipeline tests are in `tests/integration/`; small fixture volumes in `tests/data/`. `pyproject.toml` sets `pythonpath = ["src"]`, and `tests/conftest.py` puts `examples/` on `sys.path`, so tests import driver scripts directly. No linter or formatter is configured. Install from `requirements.txt`: `pyproject.toml` omits several runtime deps (`pyyaml`, `joblib`, `optuna`, …), and CI installs only `pyproject.toml`'s, so tests needing them can skip or fail there.
+Markers: `slow`, `integration`, `plotting`. Whole-pipeline tests are in `tests/integration/`; small fixture volumes in `tests/data/`. `pyproject.toml` sets `pythonpath = ["src"]`, and `tests/conftest.py` puts `examples/` on `sys.path`, so tests import driver scripts directly. No linter or formatter is configured. Install from `requirements.txt`: `pyproject.toml` omits several runtime deps (`pyyaml`, `joblib`, `optuna`, `dask`, `numba`, `python-igraph`, …), and CI installs only `pyproject.toml`'s, so tests needing them can skip or fail there.
 
 CB study workflow, in order (`python`/`python3` below means the venv interpreter):
 
@@ -38,9 +38,9 @@ python3 examples/cb_h1_th_metrics.py --all    # adds SHR; writes cb_h1_th_metric
 python3 examples/cb_h1_figures.py
 python3 examples/cb_h1_vtk.py                 # VTK of the H1 network (--verify checks frames only)
 python3 examples/cb_h1_renders.py             # renders cb_h1_vtk.py's .vtp files
-python3 examples/cb_h2_glomus_perfusion.py    # H2 §2.1, 2.2, 2.4
+python3 examples/cb_h2_glomus_perfusion.py    # H2 §2.1, 2.2, 2.4 (--penetration)
 python3 examples/cb_h2_hypoxic_fraction.py    # H2 §2.3; --pad-grid, --grid-um, --vessel-mapping, --contrast for the variant/sweep JSONs; ~40 min per run
-python3 examples/cb_h2_vtk.py                 # VTK of the H2 fields (--verify checks frames only); ~14 min
+python3 examples/cb_h2_vtk.py                 # VTK of the H2 fields (--verify checks frames only; also --specimen, --pad-grid, --vessel-mapping, --decimate); ~14 min
 ```
 
 `carotid_image_to_model.py` thresholds the Ilastik probability map itself, with a hysteresis band that defaults to the frozen `cb_settings` values. Every cut is inclusive (`p ≥ t`, `preprocessing.at_or_above`). Given `--roi-voxels`, it places the ROI with `place_roi` and writes `roi_placement.json`; `--roi-centred` opts out. `--boundary-mode` (`caged` / `universal_sink` / `robin_resistance`) sets tissue-edge permeability; it does not choose the inlet/outlet rule. For its flags use `--help`, not `pipeline_cli_arguments.md`.
@@ -103,7 +103,7 @@ The repo root also holds many plan, handover and scratch files (`*_plan.md`, `ch
 - `h2_pipeline_capability_assessment.md` — defines the numbered findings (S10, S14, S15, …) that H2 docstrings and comments cite.
 - `H1_preliminary_results_whitepaper.md`, `H2_preliminary_results_whitepaper.md` — current write-ups of results.
 - `pipeline_rerun_2026-09-29_notes.md` (untracked) — defines the lettered re-run packages (A, B, … N) that commit messages cite, with what each fixed and which scripts still need re-running.
-- `pipeline_rerun_2026-10-01_notes.md` (untracked) — the full re-run on `c190de2`: step log, run times, issues found, and the next packages (O, P, …).
+- `pipeline_rerun_2026-10-01_notes.md` (untracked) — the full re-run on `c190de2`: step log, run times, issues found, and the current package table (O onward), where newly found packages are added. Its open rows list outputs on disk that lag the code.
 - `open_items_followups.md` (untracked) — working notes on the Open items table in `cb_modelling_reference.md`: which items were closed by which commit, and plans for the rest.
 - `CB-SEGMENTATION-METHODS.md` and `examples/preprocessing/README.md` — how the Ilastik project was built and driven, and the preprocessing steps for both channels.
 
