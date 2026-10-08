@@ -36,11 +36,13 @@ Coverage is reported separately and does not block writing. The perfusion grid i
 node bounding box, so a specimen whose vessels stop short of the region edge gets a grid
 smaller than the glomus mask: SHR-A loses 4.35% of its glomus volume that way and SHR-C 7.54%.
 Those exports are correctly registered and simply have no oxygen field in the gap.
+
+The network, its diameters and the TH channel come from the batch run through
+``batch_outputs.open_batch_run``, which checks the placed ROI and joins every edge's diameter
+from the edge table strictly (the cached graph carries no calibre).
 """
 import argparse
-import csv
 import json
-import pickle
 import sys
 from pathlib import Path
 
@@ -48,10 +50,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import h5py                                                              # noqa: E402
 import pyvista as pv                                                     # noqa: E402
 from scipy import ndimage as ndi                                         # noqa: E402
 
+from ImageLynx.batch_outputs import open_batch_run                       # noqa: E402
 from ImageLynx.graph.boundaries import (                                 # noqa: E402
     select_boundary_terminal_nodes_by_face,
 )
@@ -72,13 +74,11 @@ from ImageLynx.haemodynamics.tissue_regions import (                     # noqa:
     mask_fraction_per_cell,
 )
 from ImageLynx.haemodynamics.transit import transit_time_from_inlets     # noqa: E402
-from ImageLynx.roi_placement import check_output_roi, place_roi          # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS           # noqa: E402
 from ImageLynx import cb_settings                                        # noqa: E402
 # The §2.3 driver owns the vessel mapping, so the exported field is the one §2.3 reports.
 from cb_h2_hypoxic_fraction import VESSEL_MAPPING                        # noqa: E402
 
-BATCH = Path(__file__).resolve().parents[1] / "examples/outputs/cb_h1_batch"
 OUT = Path(__file__).resolve().parents[1] / "examples/outputs/cb_h2_paraview"
 # Analysis settings come from ImageLynx.cb_settings, which is their single owner.
 # They used to be written out here; four open items were drivers drifting from the config.
@@ -94,42 +94,12 @@ PerfConfig = cb_settings.PerfusionSettings
 
 # --- inputs ---------------------------------------------------------------------------------
 
-def load_graph(specimen):
-    """The cached graph, with calibre attached from the morphometry export.
-
-    The graph carries no diameter of its own. Without this the flow solve silently falls back,
-    and transit time, which is quadratic in diameter, would be fabricated with it.
-    """
-    # Refuse a graph cut anywhere but the placed ROI the TH channel is cropped at (item 27).
-    check_output_roi(BATCH / specimen.specimen_id, specimen, ROI)
-    with open(next((BATCH / specimen.specimen_id).glob("*_cache/network_graph.pkl")), "rb") as h:
-        G = pickle.load(h)
-    by_edge = {}
-    with open(BATCH / specimen.specimen_id / "per_edge_morphometry.csv") as handle:
-        for row in csv.DictReader(handle):
-            if row.get("assigned_diameter_um"):
-                by_edge[(row["u"], row["v"], row["key"])] = float(row["assigned_diameter_um"])
-    attached = 0
-    for u, v, key, data in G.edges(keys=True, data=True):
-        for probe in ((str(u), str(v), str(key)), (str(v), str(u), str(key))):
-            if probe in by_edge:
-                data["assigned_diameter_um"] = by_edge[probe]
-                attached += 1
-                break
-    return G, attached
-
-
-def load_th(specimen):
-    bounds = place_roi(specimen, ROI).bounds
-    with h5py.File(specimen.th_probabilities_path, "r") as handle:
-        block = np.asarray(
-            handle["exported_data"][bounds[0], bounds[1], bounds[2], 0], dtype=np.float32)
-    return block / 255.0 if block.max() > 1.5 else block
-
-
 def solve(specimen, pad_grid=False, vessel_mapping=VESSEL_MAPPING):
     """Everything the exports need, computed once."""
-    G, attached = load_graph(specimen)
+    run = open_batch_run(specimen)
+    G = run.graph()
+    # The reader's join is strict, so every edge has its diameter.
+    attached = G.number_of_edges()
     inlets, outlets = select_boundary_terminal_nodes_by_face(
         G, ROI, axis=BOUNDARY_AXIS, voxel_size=PROCESSING_VOXEL_UM)
     G, _ = solve_coupled_flow_and_hematocrit(
@@ -137,8 +107,8 @@ def solve(specimen, pad_grid=False, vessel_mapping=VESSEL_MAPPING):
     rheology = rheology_status(G)
     report_unconverged(rheology, specimen.specimen_id)
 
-    prob = load_th(specimen)
-    mask = prob > TH_THRESHOLD
+    prob = run.th_probabilities()
+    mask = run.th_mask()
     frac = edge_tissue_fraction(G, mask, PROCESSING_VOXEL_UM)
     arrival = transit_time_from_inlets(G, inlets)
 

@@ -25,11 +25,13 @@ from 4 to 3 µm, so the grid is 3 µm (H2 whitepaper §10.3).
 **The metabolic contrast is an assumption, not a measurement.** Nothing in this study measures
 the ratio of glomus to stromal oxygen consumption, so it is a parameter here and the answer is
 reported across a range of it rather than at one value.
+
+The network, its diameters and the TH mask come from the batch run through
+``batch_outputs.open_batch_run``, which checks the placed ROI and joins every edge's diameter
+from the edge table strictly (the cached graph carries no calibre).
 """
 import argparse
-import csv
 import json
-import pickle
 import sys
 from pathlib import Path
 
@@ -37,7 +39,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import h5py                                                              # noqa: E402
+from ImageLynx.batch_outputs import open_batch_run                       # noqa: E402
 from ImageLynx.graph.boundaries import (                                 # noqa: E402
     select_boundary_terminal_nodes_by_face,
 )
@@ -53,11 +55,9 @@ from ImageLynx.haemodynamics.rheology import (                           # noqa:
 from ImageLynx.haemodynamics.tissue_regions import (                     # noqa: E402
     blend_per_cell_rate, mask_bounds_um, mask_fraction_per_cell,
 )
-from ImageLynx.roi_placement import check_output_roi, place_roi          # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS           # noqa: E402
 from ImageLynx import cb_settings                                       # noqa: E402
 
-BATCH = Path(__file__).resolve().parents[1] / "examples/outputs/cb_h1_batch"
 # Analysis settings come from ImageLynx.cb_settings, which is their single owner.
 ROI = cb_settings.ROI_VOXELS
 BOUNDARY_AXIS = cb_settings.BOUNDARY_AXIS
@@ -72,34 +72,6 @@ VESSEL_MAPPING = "cross_section"
 PerfConfig = cb_settings.PerfusionSettings
 
 
-def _load_graph(specimen):
-    # Refuse a graph cut anywhere but the placed ROI the TH channel is cropped at (item 27).
-    check_output_roi(BATCH / specimen.specimen_id, specimen, ROI)
-    with open(next((BATCH / specimen.specimen_id).glob("*_cache/network_graph.pkl")), "rb") as h:
-        G = pickle.load(h)
-    by_edge = {}
-    with open(BATCH / specimen.specimen_id / "per_edge_morphometry.csv") as handle:
-        for row in csv.DictReader(handle):
-            if row.get("assigned_diameter_um"):
-                by_edge[(row["u"], row["v"], row["key"])] = float(row["assigned_diameter_um"])
-    for u, v, key, data in G.edges(keys=True, data=True):
-        for probe in ((str(u), str(v), str(key)), (str(v), str(u), str(key))):
-            if probe in by_edge:
-                data["assigned_diameter_um"] = by_edge[probe]
-                break
-    return G
-
-
-def _th_mask(specimen):
-    bounds = place_roi(specimen, ROI).bounds
-    with h5py.File(specimen.th_probabilities_path, "r") as handle:
-        block = np.asarray(
-            handle["exported_data"][bounds[0], bounds[1], bounds[2], 0], dtype=np.float32)
-    if block.max() > 1.5:
-        block = block / 255.0
-    return block > TH_THRESHOLD
-
-
 def _unsupplied_pct(q_total):
     """Share of cells receiving no oxygen source at all. Padding raises this by construction."""
     q = np.asarray(q_total, dtype=float)
@@ -107,7 +79,8 @@ def _unsupplied_pct(q_total):
 
 
 def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False, vessel_mapping=VESSEL_MAPPING):
-    G = _load_graph(specimen)
+    run = open_batch_run(specimen)
+    G = run.graph()
     inlets, outlets = select_boundary_terminal_nodes_by_face(
         G, ROI, axis=BOUNDARY_AXIS, voxel_size=PROCESSING_VOXEL_UM)
     G, _ = solve_coupled_flow_and_hematocrit(
@@ -115,7 +88,7 @@ def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False, vessel_mapping=
     rheology = rheology_status(G)
     report_unconverged(rheology, specimen.specimen_id)
 
-    mask = _th_mask(specimen)
+    mask = run.th_mask()
     # Default: the grid stops at the vasculature, and glomus tissue beyond it is dropped (S28).
     # --pad-grid extends it to the segmented volume, which represents that tissue at the cost
     # of solving it with no vessels in it. Neither is free; see the flag's help.
