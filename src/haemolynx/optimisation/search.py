@@ -54,9 +54,9 @@ candidate in a sweep fails, the setting simply keeps its incoming value. A
 sweep that has nothing to build on (an empty mask, a skeleton with no
 foreground) never crashes -- the guarded groups (thick-vessel gating) skip
 outright, and the metric functions all handle empty input -- except the graph
-sweeps, which need a real graph to hold anything on: if every
-``graph_reconnect_threshold`` candidate fails to build a graph at all, the
-search raises, because there is nothing later sweeps could run on.
+sweeps, which need a real graph to hold anything on: when no graph can be
+built, the search stops there, and the later graph groups keep their starting
+values.
 """
 from __future__ import annotations
 
@@ -2334,12 +2334,6 @@ class _Search(_SweepBookkeeping):
         self._sweep(group, "final_orphan_reconnect_threshold", orphan_candidates, cost_orphan)
 
         self.current_graph = self._build_graph({})
-        if self.current_graph.number_of_nodes() == 0:
-            raise RuntimeError(
-                "No graph could be built from the optimised skeleton at any "
-                "candidate reconnect threshold; cannot continue optimising "
-                "graph settings."
-            )
 
     # -- group 8: cluster collapse (distance, method, and the method's own knob) -------
     def _group_cluster_collapse(self) -> None:
@@ -2599,12 +2593,12 @@ class _Search(_SweepBookkeeping):
 
         if not self._run_group("reconnect_thresholds", self._group_reconnect_thresholds):
             self.current_graph = self._build_graph({})
-            if self.current_graph.number_of_nodes() == 0:
-                raise RuntimeError(
-                    "No graph could be built from the optimised skeleton with "
-                    "the current graph settings; cannot continue optimising "
-                    "graph settings."
-                )
+        # Noise with no vessel in it builds no graph. The later graph groups
+        # have nothing to hold a setting on, so they keep their starting
+        # values and the report lists them as not optimised, as for an
+        # empty skeleton above.
+        if self.current_graph.number_of_nodes() == 0:
+            return
 
         for name, method in (
             ("cluster_collapse_distance", self._group_cluster_collapse),

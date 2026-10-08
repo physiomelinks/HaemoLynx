@@ -984,6 +984,26 @@ def test_optimise_settings_on_scattered_speckle_does_not_raise():
     assert set(result.settings) == set(OPTIMISE_SETTING_NAMES)
 
 
+def test_a_search_whose_graph_comes_back_empty_keeps_the_graph_settings(monkeypatch):
+    import haemolynx.optimisation.search as search_module
+    from haemolynx.optimisation.report import build_report_text
+
+    monkeypatch.setattr(
+        search_module.graph_mod, "build_graph_from_skeleton", lambda *a, **k: nx.MultiGraph()
+    )
+    result = optimise_skeleton_and_graph_settings(
+        _y_shaped_vessel(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        starting_values=_DEFAULT_STARTING_VALUES, downsample_factor=1,
+    )
+    later = ("cluster_collapse_distance", "min_stub_length", "centreline_smoothing")
+    assert not set(later) & set(result.groups_run)
+    assert result.settings["min_stub_length"] == _DEFAULT_STARTING_VALUES["min_stub_length"]
+    not_optimised = next(
+        line for line in build_report_text(result).splitlines() if line.startswith("Not optimised")
+    )
+    assert all(group in not_optimised for group in later)
+
+
 def test_optimise_settings_respects_anisotropic_voxel_size(y_shaped_mask):
     result = optimise_skeleton_and_graph_settings(
         y_shaped_mask, voxel_size_xyz=(1.0, 1.0, 2.0), starting_values=_DEFAULT_STARTING_VALUES,
