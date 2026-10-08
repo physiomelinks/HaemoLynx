@@ -446,9 +446,8 @@ def test_a_tip_within_reach_joins_across_a_short_dropout_at_a_new_node():
 
 
 def test_a_joined_branch_whose_tip_stops_inside_the_mask_is_kept(monkeypatch):
-    """The trace stops short of the mask end and nothing further is in reach.
-    That tip is the vessel: it stays, joined at the near end, instead of the
-    whole branch being deleted."""
+    """The far tip can see the trunk, but the route back to it folds along
+    the branch. That is not a spur: the branch stays, joined at the near end."""
     mask = _trunk_mask()
     _tube(mask, 1, (7, 0, 30), 2, 8, 35)
     path = np.array([[7.0, float(y), 30.0] for y in range(11, 22)])
@@ -463,6 +462,29 @@ def test_a_joined_branch_whose_tip_stops_inside_the_mask_is_kept(monkeypatch):
     assert float(np.asarray(G.nodes[tips[0]]["pos"])[1]) > 18.0
     assert G.graph["recovered_dead_ends_removed"] == 0
     assert G.graph["recovered_joins"] >= 1
+
+
+def test_a_later_piece_joins_the_branch_recovered_ahead_of_it():
+    """Two lengths of one vessel with a one-voxel dropout between them. The
+    far length is out of reach of the trunk, and joins the length recovered
+    first."""
+    mask = np.zeros((15, 20, 80), dtype=bool)
+    _tube(mask, 2, (7, 7, 0), 3, 0, 15)
+    _tube(mask, 2, (7, 7, 0), 2, 16, 40)
+    _tube(mask, 2, (7, 7, 0), 2, 42, 70)
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([7.0, 7.0, 0.0]))
+    G.add_node(1, pos=np.array([7.0, 7.0, 15.0]))
+    G.add_edge(0, 1, voxels=[[7.0, 7.0, float(x)] for x in range(16)], length=15.0)
+
+    G = recover_uncovered_mask_vessels(G, _support(mask))
+
+    far = [
+        n for n in G.nodes
+        if float(np.asarray(G.nodes[n]["pos"])[2]) > 60.0
+    ]
+    assert far
+    assert nx.number_connected_components(G) == 1
 
 
 def test_an_edge_through_empty_space_is_removed_and_one_in_the_mask_stays():
