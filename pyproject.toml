@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "pyflakes"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

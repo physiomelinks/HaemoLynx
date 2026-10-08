@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Local guardrail (CI only runs on PRs to origin). Enable once per clone:
+#   git config core.hooksPath scripts/git-hooks
+# 1. Error-class lint (undefined names, redefinitions) on staged Python files.
+# 2. Fast tests. Bypass in an emergency with `git commit --no-verify`.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+PY=venv/bin/python
+[ -x "$PY" ] || PY=python3
+
+# examples/OLD is an archive and has known undefined names.
+mapfile -t files < <(git diff --cached --name-only --diff-filter=ACM -- '*.py' ':!examples/OLD')
+
+if [ "${#files[@]}" -gt 0 ]; then
+    # pyflakes also reports style classes (unused imports, star imports, ...).
+    # Keep only the error classes, so old warnings don't block commits.
+    out=$("$PY" -m pyflakes "${files[@]}" 2>&1 \
+        | grep -E "undefined name '|redefinition of unused" || true)
+    if [ -n "$out" ]; then
+        echo "pre-commit: pyflakes error-class findings in staged files:" >&2
+        echo "$out" >&2
+        exit 1
+    fi
+fi
+
+MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true "$PY" -m pytest -q -m "not slow and not integration"

@@ -1,5 +1,6 @@
 """Plotting functions for vascular networks."""
 from typing import Optional, Tuple, Any
+import logging
 import os
 
 import numpy as np
@@ -13,6 +14,8 @@ from ._helpers import (
     create_color_mapping,
     group_branch_orders_for_legend,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_voxel_size(
