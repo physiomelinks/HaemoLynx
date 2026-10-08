@@ -67,6 +67,37 @@ def test_a_radius_relative_threshold_prunes_the_spur_and_keeps_the_capillary():
     assert "capillary_end" in out  # 8 um >= 1.5 x 2.5 um
 
 
+def test_the_pipeline_default_prunes_a_blind_spur_three_radii_long_and_no_more():
+    """Lee thinning leaves spurs about as long as a capillary is wide, ending
+    where the mask does. At 1.5 radii (3 um on a 2 um capillary) they stayed:
+    on E14.5, 1,037 of 1,234 dead ends were blind ends kept by that rule."""
+    from haemolynx.pipeline import default_schema
+
+    multiple = default_schema()["min_stub_length_radius_multiple"].default
+    G = nx.MultiGraph()
+    for node, pos in (("start", (50, 50, 0)), ("junction", (50, 50, 50)), ("end", (50, 50, 100)),
+                      ("spur", (50, 55, 50)), ("capillary_end", (50, 43, 50))):
+        G.add_node(node, pos=np.asarray(pos, dtype=float))
+    for u, v in (("start", "junction"), ("junction", "end"),
+                 ("junction", "spur"), ("junction", "capillary_end")):
+        _straight(G, u, v)
+
+    def radius_at(position):
+        return 2.0 if float(position[2]) == 50.0 else 0.0
+
+    def prune(radius_multiple):
+        return prune_vascular_stubs(
+            G, min_stub_length=10.0, max_iterations=1,
+            radius_at=radius_at, radius_multiple=radius_multiple,
+        )
+
+    assert "spur" in prune(1.5)  # 5 um >= 1.5 x 2 um
+    out = prune(multiple)
+    assert "spur" not in out  # 5 um < 3 x 2 um
+    assert "capillary_end" in out  # 7 um >= 3 x 2 um
+    assert {"start", "end"} <= set(out.nodes)
+
+
 def test_min_stub_length_still_applies_where_no_radius_can_be_read():
     G, _ = _two_junctions()
 

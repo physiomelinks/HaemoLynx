@@ -1059,7 +1059,7 @@ def build_network(
 ):
     """Load the vessel masks and turn the skeleton into a graph.
 
-    This is the long stage, so it reports the fourteen topology steps of
+    This is the long stage, so it reports the fifteen topology steps of
     :func:`graph.build_graph_from_skeleton` to *progress* as they land -- a
     run's only finer-grained progress than "graph building is happening".
 
@@ -1125,7 +1125,7 @@ def build_network(
         # Every snapshot draws the same volume, and projecting it reads the whole
         # stack, so it is projected once here rather than once per step. Graph
         # building reads `image` and never writes to it, which is what makes one
-        # projection good for all fourteen steps.
+        # projection good for all fifteen steps.
         step_projection = (
             visualization.overlay_z_projection(image)
             if settings["save_step_artifacts"]
@@ -1212,6 +1212,7 @@ def build_network(
             recover_uncovered_mask_vessels=settings["recover_uncovered_mask_vessels"],
             recovery_min_region_volume_um3=float(settings["recovery_min_region_volume_um3"]),
             recovery_min_length_um=float(settings["recovery_min_length_um"]),
+            facing_dead_end_max_gap_um=float(settings["facing_dead_end_max_gap_um"]),
         )
 
         # Last thing before the graph is saved: take the voxel staircase out of

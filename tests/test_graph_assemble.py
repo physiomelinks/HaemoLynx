@@ -1,6 +1,6 @@
 """Tests for graph.assemble.build_graph_from_skeleton, the topology orchestrator.
 
-`build_graph_from_skeleton` runs fourteen topology steps in a fixed order and is
+`build_graph_from_skeleton` runs fifteen topology steps in a fixed order and is
 the only caller of most of them. The things that can go wrong at this level are
 orchestration mistakes rather than algorithm mistakes: a step dropped or run out
 of order, a threshold routed to the wrong step, or a `step_callback` label that
@@ -43,6 +43,7 @@ EXPECTED_STEP_LABELS = [
     "remove_edges_for_self_connected_nodes",
     "reconnect_orphan_and_dangling_nodes",
     "recover_uncovered_mask_vessels",
+    "join_facing_dead_ends",
     "remove_loops_inside_one_lumen",
     "prune_vascular_stubs_final",
     "smart_multigraph_degree2_removal_post_orphan_reconnect",

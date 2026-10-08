@@ -1454,7 +1454,7 @@ def test_no_napari_import_appears_in_the_source():
 
 
 def test_topology_steps_are_not_drawn_unless_asked_for():
-    """Fourteen extra rebuilds in the middle of the slowest stage, so: opt in."""
+    """Fifteen extra rebuilds in the middle of the slowest stage, so: opt in."""
     results = built()
     group = results.stage_finished("topology_step:prune_vascular_stubs", a_graph())
     assert group.layers == ()

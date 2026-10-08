@@ -13,7 +13,7 @@ The callback is a plain function taking one event, so what "showing progress"
 means is the consumer's decision: nothing here imports napari, Qt or tqdm, and
 nothing here writes to the console unless asked to (:func:`log_progress`).
 
-Graph building reports a second, finer level -- the fourteen topology steps of
+Graph building reports a second, finer level -- the fifteen topology steps of
 :func:`haemolynx.graph.build_graph_from_skeleton` -- through the same callback,
 so a consumer that only cares about stages can ignore ``kind == "step"``.
 
@@ -189,6 +189,7 @@ STAGES: tuple[Stage, ...] = (
             "recover_uncovered_mask_vessels",
             "recovery_min_region_volume_um3",
             "recovery_min_length_um",
+            "facing_dead_end_max_gap_um",
             "save_step_artifacts",
             # Centreline smoothing is the last thing graph building does.
             "smooth_centrelines",

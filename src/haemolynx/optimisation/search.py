@@ -1007,6 +1007,9 @@ def _graph_kwargs(settings: Mapping[str, Any], voxel_size_zyx: Sequence[float]) 
         recovery_min_length_um=float(
             settings.get("recovery_min_length_um", graph_mod.mask_recovery.DEFAULT_MIN_LENGTH_UM)
         ),
+        facing_dead_end_max_gap_um=float(
+            settings.get("facing_dead_end_max_gap_um", graph_mod.facing_ends.DEFAULT_FACING_MAX_GAP_UM)
+        ),
     )
 
 

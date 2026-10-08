@@ -39,6 +39,7 @@ from .mask_recovery import (
     recover_uncovered_mask_vessels as _recover_uncovered_mask_vessels,
     remove_edges_off_the_mask,
 )
+from .facing_ends import DEFAULT_FACING_MAX_GAP_UM, join_facing_dead_ends
 from .lumen_loops import remove_loops_inside_one_lumen, remove_parallel_edges_in_lumen
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
@@ -65,6 +66,7 @@ STEP_LABELS: tuple[str, ...] = (
     "remove_edges_for_self_connected_nodes",
     "reconnect_orphan_and_dangling_nodes",
     "recover_uncovered_mask_vessels",
+    "join_facing_dead_ends",
     "remove_loops_inside_one_lumen",
     "prune_vascular_stubs_final",
     "smart_multigraph_degree2_removal_post_orphan_reconnect",
@@ -73,7 +75,7 @@ STEP_LABELS: tuple[str, ...] = (
 
 #: Where each label comes in the run, for the line every step logs. A step
 #: names itself in that line, and `collapse_node_clusters` names itself in its
-#: own summary too, so the `Step n/14` prefix is what tells the two apart.
+#: own summary too, so the `Step n/15` prefix is what tells the two apart.
 _STEP_POSITIONS: dict[str, int] = {
     label: position for position, label in enumerate(STEP_LABELS, start=1)
 }
@@ -93,7 +95,7 @@ def _notify_step(
     label: str,
     step_callback: StepCallback | None,
 ) -> None:
-    # Fourteen lines a run, ungated: what a step left behind is the answer to
+    # Fifteen lines a run, ungated: what a step left behind is the answer to
     # "how many branches does the pipeline think there are", and asking for it
     # should not mean asking for the per-node detail as well. The line names
     # the step starting next: it is the last line until that step ends, and
@@ -217,6 +219,7 @@ def build_graph_from_skeleton(
     recover_uncovered_mask_vessels: bool = True,
     recovery_min_region_volume_um3: float = DEFAULT_MIN_REGION_VOLUME_UM3,
     recovery_min_length_um: float = DEFAULT_MIN_LENGTH_UM,
+    facing_dead_end_max_gap_um: float = DEFAULT_FACING_MAX_GAP_UM,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -322,6 +325,11 @@ def build_graph_from_skeleton(
         and join it to the network through the mask -- see
         ``mask_recovery.recover_uncovered_mask_vessels``. Without a mask, or
         off, the step leaves the graph as it is.
+    facing_dead_end_max_gap_um
+        With a *segmentation_mask* and *bridge_require_mask_support* on, join
+        two dead ends pointing at each other across a gap in the segmentation
+        up to this long -- see ``facing_ends.join_facing_dead_ends``. 0, or
+        without a mask, leaves the graph as it is.
 
     Returns
     -------
@@ -513,6 +521,12 @@ def build_graph_from_skeleton(
             min_length_um=recovery_min_length_um,
         )
     _notify_step(G, "recover_uncovered_mask_vessels", step_callback)
+
+    # A vessel the segmentation broke leaves two dead ends heading for each
+    # other: joined here, before the loop breaker and the last stub prune.
+    if bridge_support is not None and facing_dead_end_max_gap_um > 0:
+        G = join_facing_dead_ends(G, bridge_support, max_gap_um=facing_dead_end_max_gap_um)
+    _notify_step(G, "join_facing_dead_ends", step_callback)
 
     # Lee thinning rings every tunnel through the mask, and the steps above
     # can close more loops inside one vessel: one segmented vessel is drawn

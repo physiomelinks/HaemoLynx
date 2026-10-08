@@ -2724,7 +2724,7 @@ SCHEMA = Schema(
         Setting(
             name="min_stub_length_radius_multiple",
             kind="float",
-            default=1.5,
+            default=3.0,
             help=(
                 "Prune a terminal stub shorter than this many radii of the "
                 "vessel it branches from, read from the segmented mask: a "
@@ -2777,6 +2777,24 @@ SCHEMA = Schema(
             unit="um",
             minimum=0.0,
             requires=("do_graph_building", "recover_uncovered_mask_vessels"),
+            advanced=True,
+        ),
+        Setting(
+            name="facing_dead_end_max_gap_um",
+            kind="float",
+            default=10.0,
+            help=(
+                "Join two dead ends that point at each other across a gap in "
+                "the segmentation up to this long: a vessel the mask broke. "
+                "The join may cross one stretch of background, never a third "
+                "vessel, and never runs beside a vessel already in the same "
+                "lumen. 0 turns it off. No effect without the segmented mask "
+                "or with bridge_require_mask_support off"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("do_graph_building",),
             advanced=True,
         ),
         Setting(

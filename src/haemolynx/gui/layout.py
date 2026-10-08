@@ -395,6 +395,7 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "recover_uncovered_mask_vessels",
                 "recovery_min_region_volume_um3",
                 "recovery_min_length_um",
+                "facing_dead_end_max_gap_um",
             ),
         ),
         ("Debugging", ("save_step_artifacts",)),
