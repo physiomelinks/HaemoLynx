@@ -95,6 +95,8 @@ The TH (glomus cell) channel is a parallel track: `preprocess_th.py` (reuses `pr
 
 ## Rules for this repo
 
+Review rules that tests can't fully check (unparseable values raise, a path or constant is defined once, review findings are fixed or declined in writing) are in `CODING_STANDARDS.md`.
+
 - **Don't silently change `cb_settings.py` values.** Changing one invalidates published results in `cb_modelling_reference.md` (§7, §13). Import the constants from `ImageLynx.cb_settings`; don't copy them. `tests/test_cb_settings.py` fails if an `examples/cb_*.py` driver redefines an owned constant as a literal, and checks that the pipeline config and example YAMLs agree with the settings.
 - **No silent fallbacks.** Raise rather than substitute a made-up value (e.g. a default 5 µm diameter). See `check_diameter_provenance` in `haemodynamics/poiseuille.py` and `tests/test_silent_fallback_guards.py`.
 - **Avoid group-correlated choices.** One classifier, one threshold, one voxel size and one ROI rule for all six specimens. Per-specimen tuning would confound WKY-vs-SHR differences.
