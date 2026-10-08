@@ -125,7 +125,7 @@ def test_main_reads_each_specimen_once_and_prints_every_section(monkeypatch, cap
         opened.append(specimen.specimen_id)
         return SimpleNamespace(graph=lambda: G, edge_table=lambda: table)
 
-    monkeypatch.setattr(module, "open_batch_run", fake_open)
+    monkeypatch.setattr(propagation, "open_batch_run", fake_open)
     module.main()
     out = capsys.readouterr().out
     assert sorted(opened) == sorted(module.SPECIMENS)
@@ -133,6 +133,11 @@ def test_main_reads_each_specimen_once_and_prints_every_section(monkeypatch, cap
                    "=== residual sensitivity"):
         assert header in out
     assert "graph axes (z, y, x)" in out
+
+
+def test_boundary_selection_shares_the_error_propagation_loader():
+    """One loader for both drivers, so a fix to how they read the batch run reaches both."""
+    assert module.load_network is propagation.load_network
 
 
 @pytest.mark.parametrize("driver", [module, propagation], ids=["boundary_selection", "error_propagation"])

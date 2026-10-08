@@ -46,21 +46,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cb_h2_error_propagation import (                                               # noqa: E402
-    ROI, SPECIMENS, network_arrays, solve_edge_flows,
+    ROI, SPECIMENS, load_network, solve_edge_flows,
 )
-from ImageLynx.batch_outputs import open_batch_run                                  # noqa: E402
 from ImageLynx.graph.boundaries import (                                            # noqa: E402
     select_boundary_terminal_nodes,
     select_boundary_terminal_nodes_by_face,
 )
-from ImageLynx.specimens import PROCESSING_VOXEL_UM, get_specimen                   # noqa: E402
-
-
-def load_network(specimen_id):
-    """The batch run's MultiGraph and its per-edge arrays, for the placed ROI only."""
-    run = open_batch_run(get_specimen(specimen_id))
-    G = run.graph()
-    return (G, *network_arrays(G, run.edge_table()))
+from ImageLynx.specimens import PROCESSING_VOXEL_UM                                 # noqa: E402
 
 
 def boundaries(G, index, axis, mode, tol=1.0, percent=25.0):

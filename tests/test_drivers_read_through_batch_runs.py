@@ -25,6 +25,11 @@ ON_THE_READER = [
     "cb_h1_figures.py",
     "cb_h2_threshold_calibre.py",
 ]
+# Drivers that open their runs through another reader driver's public loader instead of calling
+# ``open_batch_run`` themselves: driver -> (module, loader).
+SHARED_LOADERS = {
+    "cb_h2_boundary_selection.py": ("cb_h2_error_propagation", "load_network"),
+}
 # Modules a driver only needs if it reads batch-run files itself.
 FILE_READERS = {"csv", "h5py", "pickle"}
 # Calls the reader makes once at open; a driver making them again places the ROI twice.
@@ -44,9 +49,17 @@ def _tree(name):
 
 @pytest.mark.parametrize("name", ON_THE_READER)
 def test_the_driver_opens_its_batch_runs_through_the_reader(name):
+    tree = _tree(name)
     calls = {getattr(n.func, "id", None) or getattr(n.func, "attr", None)
-             for n in ast.walk(_tree(name)) if isinstance(n, ast.Call)}
-    assert "open_batch_run" in calls
+             for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    if name not in SHARED_LOADERS:
+        assert "open_batch_run" in calls
+        return
+    module, loader = SHARED_LOADERS[name]
+    assert f"{module}.py" in ON_THE_READER
+    assert loader in calls
+    assert any(isinstance(n, ast.ImportFrom) and n.module == module
+               and loader in {alias.name for alias in n.names} for n in ast.walk(tree))
 
 
 @pytest.mark.parametrize("name", ON_THE_READER)
