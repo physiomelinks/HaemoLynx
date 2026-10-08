@@ -15,8 +15,8 @@ measured rather than assumed. Both rules use `cb_settings.BOUNDARY_AXIS`.
 
 The flow solve is the coupled flow / haematocrit / viscosity solve the H2 drivers run
 (`solve_coupled_flow_and_hematocrit`, pressures in mmHg), so its flow is converted to um^3/s
-with `poiseuille_flow_to_um3_per_s`. Diameters come from `per_edge_morphometry.csv`, as in
-`cb_h2_glomus_perfusion.py`.
+with `poiseuille_flow_to_um3_per_s`. The network and its diameters come from the batch run
+through `batch_outputs.open_batch_run`, as in `cb_h2_glomus_perfusion.py`.
 
 Reported per specimen and rule:
 
@@ -35,9 +35,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from cb_h2_glomus_perfusion import _attach_diameters, _load_graph      # noqa: E402
+from ImageLynx.batch_outputs import open_batch_run                     # noqa: E402
 from ImageLynx.graph.boundaries import (                               # noqa: E402
     select_boundary_terminal_nodes,
     select_boundary_terminal_nodes_by_face,
@@ -119,9 +118,10 @@ def perfusion_summary(G, inlets, pressure_drop_mmhg,
     }
 
 
-def analyse(specimen, rule):
-    G = _load_graph(specimen)
-    _attach_diameters(G, specimen)
+def analyse(run, rule):
+    """One rule's solve on a fresh copy of the opened batch run's network."""
+    specimen = run.specimen
+    G = run.graph()
     inlets, outlets = select_boundaries(G, rule)
     G, _pressure = solve_coupled_flow_and_hematocrit(
         G, inlets, outlets, INLET_P, OUTLET_P, **cb_settings.rheology_solver_kwargs())
@@ -154,8 +154,9 @@ def main():
     results = []
     for specimen in chosen:
         row = {"specimen_id": specimen.specimen_id, "group": specimen.group}
+        run = open_batch_run(specimen)
         for rule in RULES:
-            row[rule] = analyse(specimen, rule)
+            row[rule] = analyse(run, rule)
         results.append(row)
 
     for rule in RULES:

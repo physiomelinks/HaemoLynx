@@ -331,6 +331,7 @@ def read_ilastik_probabilities(
     dataset: str | None = None,
     expected_shape_zyx: tuple | None = None,
     check_calibration: bool = True,
+    crop_zyx: tuple | None = None,
 ) -> np.ndarray:
     """Read one class channel from an Ilastik headless probability export.
 
@@ -344,7 +345,15 @@ def read_ilastik_probabilities(
     ``vessel_class_index`` defaults to ``specimens.VESSEL_CLASS_INDEX``, which is unset until
     the trained project's label order is recorded, and raises while it is.
 
-    ``expected_shape_zyx`` catches a probability map paired with the wrong specimen.
+    ``expected_shape_zyx`` catches a probability map paired with the wrong specimen. It is
+    compared with the stored volume, not the crop.
+
+    ``crop_zyx`` is three slices; only that box is read from disk, after the class axis and
+    index have been checked, and each bound is checked against the stored shape. The
+    calibration check is a whole-volume test, so it has to be turned off for a crop.
+
+    The value range is judged against the stored dtype: [0, 1] for a float export, [0, 255]
+    for an integer one (the TH exports are uint8). An integer export comes back unscaled.
 
     Returns the selected channel as float32 in (z, y, x).
     """
@@ -357,6 +366,12 @@ def read_ilastik_probabilities(
     dataset = PROBABILITIES_DATASET if dataset is None else dataset
     path = Path(path)
 
+    if crop_zyx is not None and check_calibration:
+        raise ValueError(
+            f"{path.name}: the calibration check is a whole-volume test and cannot run on a "
+            f"crop (a placed box is mostly vessel). Pass check_calibration=False with crop_zyx."
+        )
+
     with h5py.File(path, "r") as handle:
         available = list(handle.keys())
         if dataset not in handle:
@@ -364,46 +379,75 @@ def read_ilastik_probabilities(
                 f"{path.name} has no dataset {dataset!r}. Available: {available}. Ilastik "
                 f"writes {PROBABILITIES_DATASET!r} by default; --output_internal_path sets it."
             )
-        volume = np.squeeze(np.asarray(handle[dataset]))
+        stored = handle[dataset]
+        # Squeeze by shape alone, so the box can be read without loading the whole file.
+        kept = [axis for axis, n in enumerate(stored.shape) if n != 1]
+        shape = tuple(stored.shape[axis] for axis in kept)
 
-    if volume.ndim != 4:
-        raise ValueError(
-            f"{path.name}/{dataset} has shape {volume.shape}, which carries no class axis "
-            f"after squeezing. A 3D export has already collapsed the classes, so which one "
-            f"survived cannot be recovered - re-export with every class channel."
-        )
+        if len(shape) != 4:
+            raise ValueError(
+                f"{path.name}/{dataset} has shape {shape}, which carries no class axis "
+                f"after squeezing. A 3D export has already collapsed the classes, so which one "
+                f"survived cannot be recovered - re-export with every class channel."
+            )
 
-    # The class axis is whichever is short; the other three are spatial. Ilastik writes it
-    # last, but the raw acquisitions in this study are ZCYX, so position is not reliable.
-    class_axis = int(np.argmin(volume.shape))
-    n_classes = volume.shape[class_axis]
-    if n_classes > 8:
-        raise ValueError(
-            f"{path.name}/{dataset} has shape {volume.shape} and no axis short enough to be "
-            f"a class axis; the smallest is {n_classes}."
-        )
-    if index >= n_classes:
-        raise ValueError(
-            f"vessel class index {index} is out of range for {n_classes} classes in "
-            f"{path.name}."
-        )
+        # The class axis is whichever is short; the other three are spatial. Ilastik writes it
+        # last, but the raw acquisitions in this study are ZCYX, so position is not reliable.
+        class_axis = int(np.argmin(shape))
+        n_classes = shape[class_axis]
+        if n_classes > 8:
+            raise ValueError(
+                f"{path.name}/{dataset} has shape {shape} and no axis short enough to be "
+                f"a class axis; the smallest is {n_classes}."
+            )
+        if index >= n_classes:
+            raise ValueError(
+                f"vessel class index {index} is out of range for {n_classes} classes in "
+                f"{path.name}."
+            )
 
-    probabilities = np.ascontiguousarray(
-        np.take(volume, index, axis=class_axis)
-    ).astype(np.float32)
+        spatial = tuple(n for axis, n in enumerate(shape) if axis != class_axis)
+        if expected_shape_zyx is not None and spatial != tuple(expected_shape_zyx):
+            raise ValueError(
+                f"{path.name} has shape {spatial}, expected "
+                f"{tuple(expected_shape_zyx)}. This is a probability map paired with the wrong "
+                f"specimen, not a reshaping problem."
+            )
 
-    if expected_shape_zyx is not None and probabilities.shape != tuple(expected_shape_zyx):
-        raise ValueError(
-            f"{path.name} has shape {probabilities.shape}, expected "
-            f"{tuple(expected_shape_zyx)}. This is a probability map paired with the wrong "
-            f"specimen, not a reshaping problem."
-        )
+        box = [slice(None)] * 3
+        if crop_zyx is not None:
+            if len(crop_zyx) != 3:
+                raise ValueError(f"crop_zyx needs three slices (z, y, x), got {crop_zyx!r}.")
+            box = []
+            for name, cut, n in zip("zyx", crop_zyx, spatial):
+                if (cut.step not in (None, 1) or cut.start is None or cut.stop is None
+                        or not 0 <= cut.start < cut.stop <= n):
+                    raise ValueError(
+                        f"{path.name}: crop {name}={cut.start}:{cut.stop} is out of range for "
+                        f"the stored extent {n} on that axis (shape {spatial})."
+                    )
+                box.append(slice(int(cut.start), int(cut.stop)))
 
+        selection = [0] * len(stored.shape)
+        boxes = iter(box)
+        for position, axis in enumerate(kept):
+            selection[axis] = index if position == class_axis else next(boxes)
+        integer_storage = stored.dtype.kind in "ui"
+        # The calibration check below is on the [0, 1] scale, and the vessel reads that use it
+        # threshold the result directly, so an 8-bit vessel export is still refused here.
+        if integer_storage and check_calibration:
+            raise ValueError(
+                f"{path.name} is stored as {stored.dtype}, not a probability. Export with "
+                f"--export_dtype=float32 rather than 8-bit."
+            )
+        probabilities = np.ascontiguousarray(stored[tuple(selection)]).astype(np.float32)
+
+    upper = 255.0 if integer_storage else 1.0
     lo, hi = float(probabilities.min()), float(probabilities.max())
-    if lo < -1e-6 or hi > 1.0 + 1e-6:
+    if lo < -1e-6 or hi > upper + 1e-6:
         raise ValueError(
             f"{path.name} class {index} spans [{lo:.4f}, {hi:.4f}], which is not a "
-            f"probability. Export with --export_dtype=float32 rather than 8-bit."
+            f"probability on its stored scale [0, {upper:g}]."
         )
 
     # Deliberately the whole-volume mean, not the mean of any sub-volume. A swapped class

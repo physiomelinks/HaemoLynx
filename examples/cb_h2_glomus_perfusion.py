@@ -19,13 +19,12 @@ Boundary conditions use the face-crossing rule on axis 1 (S21), pinned in
 in all six specimens). The band rule this replaces put arterial pressure mostly on interior
 skeletonisation spurs.
 
-Diameters come from `per_edge_morphometry.csv` rather than the cached graph, which carries no
-calibre: without them the solver silently falls back to 5 µm for every edge.
+The network, its diameters and the TH mask come from the batch run through
+``batch_outputs.open_batch_run``, which checks the placed ROI and joins every edge's diameter
+from the edge table strictly (the cached graph carries no calibre).
 """
 import argparse
-import csv
 import json
-import pickle
 import sys
 from pathlib import Path
 
@@ -33,7 +32,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import h5py                                                            # noqa: E402
+from ImageLynx.batch_outputs import open_batch_run                     # noqa: E402
 from ImageLynx.graph.boundaries import (                               # noqa: E402
     select_boundary_terminal_nodes_by_face,
 )
@@ -44,11 +43,9 @@ from ImageLynx.haemodynamics.rheology import (                         # noqa: E
 )
 from ImageLynx.haemodynamics.tissue_regions import edge_tissue_fraction  # noqa: E402
 from ImageLynx.haemodynamics.transit import transit_time_from_inlets     # noqa: E402
-from ImageLynx.roi_placement import check_output_roi, place_roi        # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS         # noqa: E402
 from ImageLynx import cb_settings                                     # noqa: E402
 
-BATCH = Path(__file__).resolve().parents[1] / "examples/outputs/cb_h1_batch"
 # Analysis settings come from ImageLynx.cb_settings, which is their single owner.
 ROI = cb_settings.ROI_VOXELS
 BOUNDARY_AXIS = cb_settings.BOUNDARY_AXIS
@@ -58,46 +55,11 @@ PENETRATION = cb_settings.PENETRATION_FRACTION
 INLET_P, OUTLET_P = cb_settings.INLET_PRESSURE_MMHG, cb_settings.OUTLET_PRESSURE_MMHG
 
 
-def _load_graph(specimen):
-    # Refuse a graph cut anywhere but the placed ROI the TH channel is cropped at (item 27).
-    check_output_roi(BATCH / specimen.specimen_id, specimen, ROI)
-    path = next((BATCH / specimen.specimen_id).glob("*_cache/network_graph.pkl"))
-    with open(path, "rb") as handle:
-        return pickle.load(handle)
-
-
-def _attach_diameters(G, specimen):
-    """The cached graph has no calibre; the morphometry export does."""
-    path = BATCH / specimen.specimen_id / "per_edge_morphometry.csv"
-    by_edge = {}
-    with open(path) as handle:
-        for row in csv.DictReader(handle):
-            d = row.get("assigned_diameter_um")
-            if d:
-                by_edge[(row["u"], row["v"], row["key"])] = float(d)
-    attached = 0
-    for u, v, key, data in G.edges(keys=True, data=True):
-        for probe in ((str(u), str(v), str(key)), (str(v), str(u), str(key))):
-            if probe in by_edge:
-                data["assigned_diameter_um"] = by_edge[probe]
-                attached += 1
-                break
-    return attached
-
-
-def _th_mask(specimen):
-    bounds = place_roi(specimen, ROI).bounds
-    with h5py.File(specimen.th_probabilities_path, "r") as handle:
-        block = np.asarray(
-            handle["exported_data"][bounds[0], bounds[1], bounds[2], 0], dtype=np.float32)
-    if block.max() > 1.5:
-        block = block / 255.0
-    return block > TH_THRESHOLD
-
-
 def analyse(specimen):
-    G = _load_graph(specimen)
-    attached = _attach_diameters(G, specimen)
+    run = open_batch_run(specimen)
+    G = run.graph()
+    # The reader's join is strict, so every edge has its diameter.
+    attached = G.number_of_edges()
     inlets, outlets = select_boundary_terminal_nodes_by_face(
         G, ROI, axis=BOUNDARY_AXIS, voxel_size=PROCESSING_VOXEL_UM)
 
@@ -106,7 +68,7 @@ def analyse(specimen):
     rheology = rheology_status(G)
     report_unconverged(rheology, specimen.specimen_id)
 
-    frac = edge_tissue_fraction(G, _th_mask(specimen), PROCESSING_VOXEL_UM)
+    frac = edge_tissue_fraction(G, run.th_mask(), PROCESSING_VOXEL_UM)
     # §2.4: accumulated transit time from the arterial inlets to every node, along the solved
     # flow directions. Absolute values are in arbitrary units, so only the ratio is reported.
     arrival = transit_time_from_inlets(G, inlets)

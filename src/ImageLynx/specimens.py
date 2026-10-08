@@ -95,6 +95,10 @@ ILASTIK_INPUT_DIR = CB_DATA_ROOT / "ilastik_inputs"
 #: Headless prediction output, one *_Probabilities.h5 per volume.
 PROBABILITIES_DIR = CB_DATA_ROOT / "ilastik_probabilities"
 
+#: cb_h1_batch.py --stage run output, one batch run per specimen. Inside the repository, not
+#: the data root: these are analysis outputs, not derived image artefacts.
+BATCH_RUN_ROOT = _ROOT / "examples" / "outputs" / "cb_h1_batch"
+
 #: prob_to_mask.py output: the binary mask and the calibrated distance transform this
 #: pipeline consumes.
 MASK_DIR = CB_DATA_ROOT / "masks"
@@ -329,6 +333,12 @@ class Specimen:
         """The TH channel's export, named after its own input for the same reason."""
         return PROBABILITIES_DIR / TH_CHANNEL.input_name(self).replace(
             ".h5", "_Probabilities.h5")
+
+    # --- Batch run: cb_h1_batch.py --stage run ---
+    @property
+    def batch_run_dir(self) -> Path:
+        """This specimen's batch run. Open it with ``batch_outputs.open_batch_run``."""
+        return BATCH_RUN_ROOT / self.specimen_id
 
     # --- Stage 3: prob_to_mask.py ---
     @property

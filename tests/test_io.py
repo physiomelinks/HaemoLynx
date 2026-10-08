@@ -192,3 +192,55 @@ def test_checks_the_volume_against_the_expected_shape(probability_h5):
     path, _ = probability_h5
     with pytest.raises(ValueError, match="shape"):
         read_ilastik_probabilities(path, vessel_class_index=0, expected_shape_zyx=(435, 456, 507))
+
+
+def test_crops_a_box_checked_against_the_stored_shape(probability_h5):
+    """The TH read takes the placed ROI straight from disk, so its box is checked, not trusted.
+
+    Calibration is a whole-volume test (a placed box is mostly vessel), so asking for it on a
+    crop is refused rather than quietly run on the wrong volume.
+    """
+    from ImageLynx.io import read_ilastik_probabilities
+
+    path, vessel = probability_h5
+    box = (slice(2, 6), slice(4, 8), slice(3, 12))
+    got = read_ilastik_probabilities(path, vessel_class_index=0, crop_zyx=box,
+                                     check_calibration=False)
+    assert got.dtype == np.float32
+    assert got == pytest.approx(vessel[box])
+
+    with pytest.raises(ValueError, match="out of range"):
+        read_ilastik_probabilities(path, vessel_class_index=0, check_calibration=False,
+                                   crop_zyx=(slice(2, 6), slice(4, 8), slice(3, 13)))
+    with pytest.raises(ValueError, match="whole-volume"):
+        read_ilastik_probabilities(path, vessel_class_index=0, crop_zyx=box)
+
+
+def test_an_8_bit_export_is_read_on_its_own_0_to_255_scale(tmp_path):
+    """The TH exports are uint8. Their range is judged against the stored dtype, and the
+    values come back unscaled: rescaling to [0, 1] is the caller's decision."""
+    h5py = pytest.importorskip("h5py")
+    from ImageLynx.io import read_ilastik_probabilities
+
+    glomus = np.zeros((4, 6, 6), dtype=np.uint8)
+    glomus[:, 2:4, 2:4] = 255
+    path = tmp_path / "TH_ilastik_Probabilities.h5"
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("exported_data", data=np.stack([glomus, 255 - glomus], axis=-1))
+
+    got = read_ilastik_probabilities(path, vessel_class_index=0, check_calibration=False)
+    assert got.dtype == np.float32
+    assert got.max() == 255.0
+    assert got == pytest.approx(glomus.astype(np.float32))
+
+    # The vessel reads keep calibration on and threshold the result, so they still refuse it.
+    with pytest.raises(ValueError, match="8-bit"):
+        read_ilastik_probabilities(path, vessel_class_index=0)
+
+    # A float export still has to be a probability.
+    bad = tmp_path / "bad.h5"
+    with h5py.File(bad, "w") as handle:
+        handle.create_dataset("exported_data",
+                              data=np.stack([glomus, 255 - glomus], axis=-1).astype(np.float32))
+    with pytest.raises(ValueError, match="not a probability"):
+        read_ilastik_probabilities(bad, vessel_class_index=0, check_calibration=False)
