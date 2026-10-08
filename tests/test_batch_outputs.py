@@ -161,8 +161,16 @@ def test_each_graph_is_a_fresh_copy(batch_run):
     (EDGES[:-1], r"no edge-table row.*\(2, 3, 0\)"),
     (EDGES + [(3, 4, 0, "5.0")], r"no graph edge.*\(3, 4, 0\)"),
     ([(1, 0, 0, "12.5")] + EDGES[1:], r"no edge-table row.*\(0, 1, 0\)"),
-    ([EDGES[0], (1, 2, 0, ""), *EDGES[2:]], r"empty assigned_diameter_um.*\(1, 2, 0\)"),
-], ids=["missing row", "extra row", "reversed row", "empty diameter"])
+    ([EDGES[0], (1, 2, 0, ""), *EDGES[2:]],
+     r"empty or non-finite assigned_diameter_um.*\(1, 2, 0\)"),
+    ([EDGES[0], (1, 2, 0, "nan"), *EDGES[2:]],
+     r"empty or non-finite assigned_diameter_um.*\(1, 2, 0\)"),
+    ([EDGES[0], (1, 2, 0, "None"), *EDGES[2:]],
+     r"empty or non-finite assigned_diameter_um.*\(1, 2, 0\)"),
+    ([EDGES[0], (1, 2, 0, "inf"), *EDGES[2:]],
+     r"empty or non-finite assigned_diameter_um.*\(1, 2, 0\)"),
+], ids=["missing row", "extra row", "reversed row", "empty diameter", "nan diameter",
+        "text diameter", "infinite diameter"])
 def test_the_join_is_strictly_one_to_one(batch_run, rows, message):
     """Forward (u, v, key) only: a row written the other way round matches nothing."""
     _write_edge_table(batch_run.run_dir, rows)
@@ -258,10 +266,18 @@ def test_the_th_mask_takes_a_threshold_override(batch_run):
 # --- Where batch runs live -------------------------------------------------------------------
 
 def test_each_specimens_batch_run_dir_is_where_the_batch_driver_writes_it():
-    """The batch driver is not changed, so its own OUTPUT_DIR has to agree with the registry."""
+    """The batch driver takes its output root from the registry, so the path is set once."""
     import cb_h1_batch
     from ImageLynx.specimens import BATCH_RUN_ROOT, SPECIMENS
 
-    assert BATCH_RUN_ROOT == cb_h1_batch.OUTPUT_DIR
+    assert cb_h1_batch.OUTPUT_DIR is BATCH_RUN_ROOT
     for specimen in SPECIMENS:
         assert specimen.batch_run_dir == cb_h1_batch.OUTPUT_DIR / specimen.specimen_id
+
+
+def test_the_batch_driver_does_not_spell_out_the_batch_run_root():
+    import cb_h1_batch
+    from pathlib import Path
+
+    source = Path(cb_h1_batch.__file__).read_text()
+    assert '"cb_h1_batch"' not in source

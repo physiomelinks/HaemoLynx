@@ -53,6 +53,15 @@ def open_batch_run(specimen, run_dir=None) -> "BatchRun":
     return BatchRun(specimen, run_dir, placement, caches[0])
 
 
+def _finite_or_none(cell):
+    """The cell as a finite float, or None if it is blank, not a number, NaN or infinite."""
+    try:
+        value = float(cell)
+    except (TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) else None
+
+
 class BatchRun:
     """An opened batch run. Build it with ``open_batch_run``, which does the checks."""
 
@@ -93,7 +102,7 @@ class BatchRun:
 
         The cached graph carries no calibre, so it comes from the edge table under a strict
         one-to-one join on forward integer ``(u, v, key)``: every edge has a row, every row has
-        an edge, and no diameter is empty. Any break raises rather than leaving an edge without
+        an edge, and every diameter is a finite number. Any break raises rather than leaving an edge without
         a calibre or putting one on the wrong edge. A fresh copy each call, because the
         rheology solve writes onto the graph it is given.
         """
@@ -104,14 +113,15 @@ class BatchRun:
         edges = {(int(u), int(v), int(k)) for u, v, k in G.edges(keys=True)}
         missing = [edge for edge in sorted(edges) if edge not in table]
         extra = [edge for edge in table if edge not in edges]
-        empty = [edge for edge, row in table.items() if not (row.get(DIAMETER) or "").strip()]
+        empty = [edge for edge, row in table.items() if _finite_or_none(row.get(DIAMETER)) is None]
         problems = []
         if missing:
             problems.append(f"{len(missing)} graph edges have no edge-table row: {missing[:10]}")
         if extra:
             problems.append(f"{len(extra)} edge-table rows match no graph edge: {extra[:10]}")
         if empty:
-            problems.append(f"{len(empty)} rows have an empty {DIAMETER}: {empty[:10]}")
+            problems.append(f"{len(empty)} rows have an empty or non-finite {DIAMETER}: "
+                            f"{empty[:10]}")
         if problems:
             raise ValueError(
                 f"{self._where()}: the graph and {EDGE_TABLE_NAME} do not match one-to-one on "
