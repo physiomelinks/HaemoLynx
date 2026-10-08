@@ -98,7 +98,7 @@ The TH (glomus cell) channel is a parallel track: `preprocess_th.py` (reuses `pr
 - **Don't silently change `cb_settings.py` values.** Changing one invalidates published results in `cb_modelling_reference.md` (§7, §13). Import the constants from `ImageLynx.cb_settings`; don't copy them. `tests/test_cb_settings.py` fails if an `examples/cb_*.py` driver redefines an owned constant as a literal, and checks that the pipeline config and example YAMLs agree with the settings.
 - **No silent fallbacks.** Raise rather than substitute a made-up value (e.g. a default 5 µm diameter). See `check_diameter_provenance` in `haemodynamics/poiseuille.py` and `tests/test_silent_fallback_guards.py`.
 - **Avoid group-correlated choices.** One classifier, one threshold, one voxel size and one ROI rule for all six specimens. Per-specimen tuning would confound WKY-vs-SHR differences.
-- **Commit messages** use a conventional prefix (`fix: …`, `feat: …`, `docs: …`, `refactor: …`), with an issue number when there is one (`fix (#98): …`). Write the subject as a plain statement of the change.
+- **Commit messages** use a conventional prefix (`fix: …`, `feat: …`, `docs: …`, `refactor: …`), with a GitHub issue number when there is one (`fix (#98): …`). A local `.scratch` ticket goes in the body, not the subject, as a line `Ticket: <feature>/<NN>` (e.g. `Ticket: batch-run-reader/03`). Write the subject as a plain statement of the change.
 
 ## Key references
 
