@@ -4,6 +4,7 @@ None of these change a number. Each one made a run's output say something that w
 or hid a fallback in a stats dict, so the text is pinned here.
 """
 import logging
+from types import SimpleNamespace
 
 import networkx as nx
 import numpy as np
@@ -153,12 +154,12 @@ def _stub_export(monkeypatch, tmp_path):
     out = tmp_path / "cb_h1_paraview"
     monkeypatch.setattr(cb_h1_vtk, "OUTPUT", out)
     monkeypatch.setattr(cb_h1_vtk, "SPECIMENS", [_Spec()])
-    monkeypatch.setattr(cb_h1_vtk, "read_edges", lambda s: {})
-    monkeypatch.setattr(cb_h1_vtk, "check_output_roi", lambda *a, **k: None)
-    monkeypatch.setattr(cb_h1_vtk, "enrich_vessels", lambda s, e, r: pv.Line((0, 0, 0), (9, 9, 9)))
-    monkeypatch.setattr(cb_h1_vtk, "build_nodes", lambda s, e, r: None)
-    monkeypatch.setattr(cb_h1_vtk, "build_skeleton", lambda s, r: None)
-    monkeypatch.setattr(cb_h1_vtk, "build_surface", lambda s, r: (None, _box_grid()))
+    monkeypatch.setattr(cb_h1_vtk, "open_batch_run",
+                        lambda s: SimpleNamespace(specimen=s, edge_table=lambda: {}))
+    monkeypatch.setattr(cb_h1_vtk, "enrich_vessels", lambda run, e, r: pv.Line((0, 0, 0), (9, 9, 9)))
+    monkeypatch.setattr(cb_h1_vtk, "build_nodes", lambda run, e, r: None)
+    monkeypatch.setattr(cb_h1_vtk, "build_skeleton", lambda run, r: None)
+    monkeypatch.setattr(cb_h1_vtk, "build_surface", lambda run, r: (None, _box_grid()))
     monkeypatch.setattr(cb_h1_vtk, "stamp", lambda mesh, s: mesh)
     return cb_h1_vtk, out
 

@@ -10,7 +10,9 @@ edges retained a known-biased radius, is not possible from the pipeline's own ou
 All of it can be recovered without re-running anything. ``per_edge_morphometry.csv`` and
 ``*_vessels.vtp`` both carry ``(u, v, key)`` for every edge, and the join is exact - 4512 of
 4512 cells on WKY-A, with ``assigned_diameter_um`` agreeing on every one, which is what
-establishes that the join is correct rather than merely complete.
+establishes that the join is correct rather than merely complete. The rows and the skeleton
+come from ``batch_outputs.open_batch_run``, which checks the placed ROI before either is read,
+and a cell with no row raises.
 
 Writes, per specimen, into one shared directory so all six load into a single ParaView
 session:
@@ -28,7 +30,6 @@ skeleton is mapped identically. ``--verify`` checks this against the data rather
 trusting the reasoning, and writes nothing.
 """
 import argparse
-import csv
 import json
 import sys
 from pathlib import Path
@@ -39,11 +40,10 @@ import pyvista as pv
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ImageLynx.artefact_provenance import read_provenance          # noqa: E402
-from ImageLynx.roi_placement import check_output_roi                # noqa: E402
+from ImageLynx.batch_outputs import open_batch_run                  # noqa: E402
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS     # noqa: E402
 from ImageLynx import cb_settings                                 # noqa: E402
 
-RESULTS = Path(__file__).resolve().parent / "outputs" / "cb_h1_batch"
 OUTPUT = Path(__file__).resolve().parent / "outputs" / "cb_h1_paraview"
 FROZEN_THRESHOLD = cb_settings.FROZEN_THRESHOLD
 
@@ -69,16 +69,6 @@ def _float(value):
         return np.nan
 
 
-def read_edges(specimen):
-    """Per-edge morphometry keyed by (u, v, key)."""
-    path = RESULTS / specimen.specimen_id / "per_edge_morphometry.csv"
-    if not path.exists():
-        return None
-    with path.open() as handle:
-        rows = list(csv.DictReader(handle))
-    return {(int(r["u"]), int(r["v"]), int(r["key"])): r for r in rows}
-
-
 def stamp(mesh, specimen, extra=None):
     """Identity travels with the geometry, so six specimens can share one session."""
     mesh.field_data["specimen_id"] = np.array([specimen.specimen_id])
@@ -96,34 +86,41 @@ def stamp(mesh, specimen, extra=None):
     return mesh
 
 
-def enrich_vessels(specimen, edges, report):
-    src = RESULTS / specimen.specimen_id / "resistance_network_vessels.vtp"
+def enrich_vessels(run, edges, report):
+    """The run's analysed centrelines, with every cell's edge-table row copied onto it.
+
+    The join is strict: a cell whose ``(u, v, key)`` has no row raises, rather than being
+    written as NaN, 0 or "" and read in ParaView as a measurement.
+    """
+    src = run.run_dir / "resistance_network_vessels.vtp"
     if not src.exists():
         return None
     mesh = pv.read(src)
     keys = list(zip(mesh.cell_data["edge_u"].tolist(),
                     mesh.cell_data["edge_v"].tolist(),
                     mesh.cell_data["edge_key"].tolist()))
-    matched = sum(1 for k in keys if k in edges)
+    missing = [k for k in keys if k not in edges]
+    if missing:
+        raise ValueError(
+            f"{run.specimen.specimen_id}: {len(missing)} of {len(keys)} cells in {src} have "
+            f"no edge-table row: {missing[:10]}.")
     report["vessels_cells"] = mesh.n_cells
-    report["vessels_matched"] = matched
+    report["vessels_matched"] = len(keys)
 
     for column in FLOAT_COLUMNS:
         if column in mesh.cell_data:
             continue
-        mesh.cell_data[column] = np.array(
-            [_float(edges[k][column]) if k in edges else np.nan for k in keys], dtype=float)
+        mesh.cell_data[column] = np.array([_float(edges[k][column]) for k in keys],
+                                          dtype=float)
     for column in INT_COLUMNS:
         mesh.cell_data[column] = np.array(
-            [int(_float(edges[k][column]) or 0) if k in edges else 0 for k in keys],
-            dtype=np.int32)
+            [int(_float(edges[k][column]) or 0) for k in keys], dtype=np.int32)
 
     mesh.cell_data["reconnected"] = np.array(
-        [1 if k in edges and edges[k]["reconnected"] == "True" else 0 for k in keys],
-        dtype=np.int8)
+        [1 if edges[k]["reconnected"] == "True" else 0 for k in keys], dtype=np.int8)
 
     for column, levels in CODES.items():
-        values = [edges[k][column] if k in edges else "" for k in keys]
+        values = [edges[k][column] for k in keys]
         mesh.cell_data[column] = np.asarray(values, dtype=f"<U{max(len(l) for l in levels)}")
         lookup = {name: i for i, name in enumerate(levels)}
         mesh.cell_data[f"{column}_code"] = np.array(
@@ -131,11 +128,11 @@ def enrich_vessels(specimen, edges, report):
 
     # Radius is the natural glyph scale in ParaView and is worth having ready-made.
     mesh.cell_data["radius_um"] = mesh.cell_data["assigned_diameter_um"] / 2.0
-    return stamp(mesh, specimen)
+    return stamp(mesh, run.specimen)
 
 
-def build_nodes(specimen, edges, report):
-    src = RESULTS / specimen.specimen_id / "resistance_network_nodes.vtp"
+def build_nodes(run, edges, report):
+    src = run.run_dir / "resistance_network_nodes.vtp"
     if not src.exists():
         return None
     mesh = pv.read(src)
@@ -151,34 +148,23 @@ def build_nodes(specimen, edges, report):
     mesh.point_data["is_endpoint"] = (values == 1).astype(np.int8)
     report["nodes"] = mesh.n_points
     report["branch_nodes"] = int((values >= 3).sum())
-    return stamp(mesh, specimen)
+    return stamp(mesh, run.specimen)
 
 
-def _cache_dir(specimen):
-    parent = RESULTS / specimen.specimen_id
-    for candidate in parent.glob("*_cache"):
-        return candidate
-    return None
-
-
-def build_skeleton(specimen, report):
+def build_skeleton(run, report):
     """Raw skeleton voxels as points, in the same frame as the mask and the centrelines."""
-    cache = _cache_dir(specimen)
-    if cache is None or not (cache / "skeleton.npy").exists():
-        return None
-    skeleton = np.load(cache / "skeleton.npy")
-    iz, iy, ix = np.nonzero(skeleton)
+    iz, iy, ix = np.nonzero(run.skeleton())
     vz, vy, vx = PROCESSING_VOXEL_UM
     # Array (z, y, x) maps to VTK (x, y, z) - the convention the mask .vti already uses.
     points = np.column_stack([iz * vz, iy * vy, ix * vx]).astype(float)
     mesh = pv.PolyData(points)
     mesh.point_data["skeleton"] = np.ones(len(points), dtype=np.uint8)
     report["skeleton_voxels"] = int(len(points))
-    return stamp(mesh, specimen)
+    return stamp(mesh, run.specimen)
 
 
-def build_surface(specimen, report, smoothing=30):
-    src = RESULTS / specimen.specimen_id / "resistance_network_vessel_mask.vti"
+def build_surface(run, report, smoothing=30):
+    src = run.run_dir / "resistance_network_vessel_mask.vti"
     if not src.exists():
         return None, None
     grid = pv.read(src)
@@ -187,7 +173,7 @@ def build_surface(specimen, report, smoothing=30):
         surface = surface.smooth(n_iter=smoothing, relaxation_factor=0.1)
         surface = surface.compute_normals(auto_orient_normals=True)
     report["surface_points"] = surface.n_points
-    return stamp(surface, specimen), grid
+    return stamp(surface, run.specimen), grid
 
 
 def verify(specimen, vessels, skeleton, grid):
@@ -238,17 +224,15 @@ def main():
         OUTPUT.mkdir(parents=True, exist_ok=True)
     summary = {}
     for specimen in SPECIMENS:
-        edges = read_edges(specimen)
-        if edges is None:
-            print(f"{specimen.specimen_id}: no morphometry, skipped")
-            continue
-        # Refuse morphometry cut anywhere but the placed ROI (open item 27).
-        check_output_roi(RESULTS / specimen.specimen_id, specimen, cb_settings.ROI_VOXELS)
+        # Opening refuses morphometry cut anywhere but the placed ROI (open item 27), before
+        # the edge table is read.
+        run = open_batch_run(specimen)
+        edges = run.edge_table()
         report = {}
-        vessels = enrich_vessels(specimen, edges, report)
-        nodes = build_nodes(specimen, edges, report)
-        skeleton = build_skeleton(specimen, report)
-        surface, grid = build_surface(specimen, report)
+        vessels = enrich_vessels(run, edges, report)
+        nodes = build_nodes(run, edges, report)
+        skeleton = build_skeleton(run, report)
+        surface, grid = build_surface(run, report)
 
         if not args.verify:
             stem = OUTPUT / specimen.specimen_id

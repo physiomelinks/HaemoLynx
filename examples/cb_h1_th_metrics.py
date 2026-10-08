@@ -13,14 +13,15 @@ Section 1.3 is the parenchymal volume of the TH-positive clusters and the centre
 density within them. Section 1.5 is the distance from every TH-positive voxel to the nearest
 lectin-positive centreline.
 
-The vessel side is the batch network, read from ``examples/outputs/cb_h1_batch/<specimen>/``:
-its graph gives the length (the same edges as per_edge_morphometry.csv), its cached skeleton
-the distance, and its cached mask the vessel volume. All three were built with the frozen
+The vessel side is the batch network, read through ``batch_outputs.open_batch_run``: its
+graph gives the length (the same edges as per_edge_morphometry.csv), its cached skeleton the
+distance, and its cached mask the vessel volume. All three were built with the frozen
 hysteresis band (cb_settings.HYSTERESIS_LOW / HYSTERESIS_HIGH). Until open item 40 this script
 cut the probability map plainly and skeletonised that itself, which measured a different
 vessel set from the network, with a length estimator that over-counted corners. Run
-``cb_h1_batch.py --stage run`` first. The TH channel is cropped to the same placed ROI, and a
-batch output cut anywhere else is refused (``check_output_roi``).
+``cb_h1_batch.py --stage run`` first. Opening the run refuses a batch output cut anywhere but
+the placed ROI, and the TH mask comes from the same run, cropped to that box and cut strictly
+(``p > t``, see ``BatchRun.th_mask``) at each ``--th-threshold``.
 
 **On SHR.** The classifier that produced the TH channel carries 22.9x more glomus labels in
 WKY than SHR, and SHR-B and SHR-C carry none at all. A between-group contrast drawn from it
@@ -33,17 +34,12 @@ import json
 import sys
 from pathlib import Path
 
-import pickle
-
-import h5py
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ImageLynx.roi_placement import check_output_roi, place_roi        # noqa: E402
-from ImageLynx.specimens import (                                      # noqa: E402
-    PROCESSING_VOXEL_UM, SPECIMENS, TH_CHANNEL,
-)
+from ImageLynx.batch_outputs import open_batch_run                     # noqa: E402
+from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS         # noqa: E402
 from ImageLynx.statistics.th_morphometry import ThMorphometry, summarise  # noqa: E402
 from ImageLynx import cb_settings                                      # noqa: E402
 
@@ -51,7 +47,6 @@ from ImageLynx import cb_settings                                      # noqa: E
 #: the batch network was built from the hysteresis band with this as its low end.
 FROZEN_VESSEL_THRESHOLD = cb_settings.FROZEN_THRESHOLD
 ROI = cb_settings.ROI_VOXELS
-BATCH = Path(__file__).resolve().parents[1] / "examples/outputs/cb_h1_batch"
 #: Default outputs. Separate files, so an --all run cannot replace the WKY-only table
 #: (re-run notes 2026-10-01, item 7).
 WKY_OUT = Path("examples/outputs/cb_h1_th_metrics.json")
@@ -67,51 +62,15 @@ SHR_CAVEAT = (
 )
 
 
-def _crop(path, bounds, channel_index):
-    with h5py.File(path, "r") as handle:
-        data = handle["exported_data"]
-        block = np.asarray(data[bounds[0], bounds[1], bounds[2], channel_index],
-                           dtype=np.float32)
-    # Ilastik writes uint8 when the export is 8-bit; rescale so the thresholds mean the same
-    # thing whichever dtype the export happened to use.
-    return block / 255.0 if block.max() > 1.5 else block
-
-
-def _load_batch(specimen):
-    """The batch network's graph, skeleton and vessel mask, refused if cut at another box."""
-    directory = BATCH / specimen.specimen_id
-    check_output_roi(directory, specimen, ROI)
-    caches = sorted(directory.glob("*_cache"))
-    if len(caches) != 1:
-        raise FileNotFoundError(
-            f"{specimen.specimen_id}: expected one *_cache directory in {directory}, found "
-            f"{len(caches)}. Run cb_h1_batch.py --stage run.")
-    cache = caches[0]
-    with open(cache / "network_graph.pkl", "rb") as handle:
-        graph = pickle.load(handle)
-    skeleton = np.load(cache / "skeleton.npy")
-    vessel = np.load(cache / "vessel_mask.npy")
-    for name, volume in (("skeleton.npy", skeleton), ("vessel_mask.npy", vessel)):
-        if tuple(volume.shape) != tuple(ROI):
-            raise ValueError(
-                f"{specimen.specimen_id}: {cache / name} has shape {volume.shape}, not the "
-                f"ROI {tuple(ROI)}")
-    return graph, skeleton.astype(bool), vessel.astype(bool)
-
-
 def analyse(specimen, th_threshold):
-    bounds = place_roi(specimen, ROI).bounds
-    graph, skeleton, vessel = _load_batch(specimen)
-    # The TH cut stays strict: TH_THRESHOLD was not chosen on the vessel sweep.
-    th = _crop(specimen.th_probabilities_path, bounds,
-               TH_CHANNEL.target_index) > th_threshold
+    run = open_batch_run(specimen)
     return summarise(
         specimen_id=specimen.specimen_id,
         group=specimen.group,
-        graph=graph,
-        th_mask=th,
-        vessel_mask=vessel,
-        skeleton=skeleton,
+        graph=run.graph(),
+        th_mask=run.th_mask(threshold=th_threshold),
+        vessel_mask=run.vessel_mask(),
+        skeleton=run.skeleton(),
         voxel_um=PROCESSING_VOXEL_UM,
         th_threshold=th_threshold,
         vessel_threshold=FROZEN_VESSEL_THRESHOLD,

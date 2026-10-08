@@ -58,3 +58,33 @@ def test_explicit_out_overrides_the_default(stubbed, tmp_path):
     assert json.loads((tmp_path / "custom.json").read_text())["shr_included"] is True
     assert not wky_out.exists()
     assert not all_out.exists()
+
+
+def test_analyse_takes_every_part_from_the_opened_run_and_passes_the_th_threshold(monkeypatch):
+    """Batch-run reader ticket 04: --th-threshold is the TH mask's override, not a crop here."""
+    asked = {}
+
+    class _Run:
+        def graph(self):
+            return "graph"
+
+        def skeleton(self):
+            return "skeleton"
+
+        def vessel_mask(self):
+            return "vessel"
+
+        def th_mask(self, threshold=None):
+            asked["threshold"] = threshold
+            return "th"
+
+    specimen = SimpleNamespace(specimen_id="WKY-A", group="WKY")
+    monkeypatch.setattr(cb_h1_th_metrics, "open_batch_run",
+                        lambda s: _Run() if s is specimen else pytest.fail("wrong specimen"))
+    monkeypatch.setattr(cb_h1_th_metrics, "summarise", lambda **kwargs: kwargs)
+
+    out = cb_h1_th_metrics.analyse(specimen, 0.7)
+    assert asked["threshold"] == 0.7
+    assert (out["graph"], out["skeleton"], out["vessel_mask"], out["th_mask"]) == (
+        "graph", "skeleton", "vessel", "th")
+    assert out["th_threshold"] == 0.7
