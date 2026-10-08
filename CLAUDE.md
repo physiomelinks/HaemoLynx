@@ -110,3 +110,17 @@ The repo root also holds many plan, handover and scratch files (`*_plan.md`, `ch
 ### Obsidian vault (outside the repo)
 
 `/home/dsas627/Desktop/obsidian_vaults/me_bioeng_cb_pipeline` is the companion knowledge base for this pipeline. Code, configs and data stay in the repo. The vault holds everything else. Read it for context on design rationale, run history or the literature behind a choice. **Do not edit it unless the user asks.** It has its own `CLAUDE.md` with writing rules (no em dashes, NZ spelling, thesis-methods prose in `pipeline-notes/`) that apply to any edit made there. Start from its `index.md`. Method rationale is in `pipeline-notes/` (one folder per phase), run history in `experiment-logs/`, and paper notes in `literature_review/`.
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown under `.scratch/<feature>/` (gitignored); never GitHub Issues, since `origin` is not ours. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), recorded as a `Status:` line in each ticket file. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.

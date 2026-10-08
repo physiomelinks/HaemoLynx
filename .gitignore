@@ -57,3 +57,6 @@ examples/thesis_methods_computational_modelling.tex
 
 # Claude Code local state: settings plus a nested git worktree (23 MB).
 .claude/
+
+# Local issue tracker (agent skills)
+.scratch/
