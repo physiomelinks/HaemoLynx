@@ -48,7 +48,7 @@ from ImageLynx.roi_placement import (                                   # noqa: 
     check_output_roi, format_placement_table, place_roi,
 )
 from ImageLynx.specimens import (                                       # noqa: E402
-    PROCESSING_VOXEL_UM, SPECIMENS, get_specimen,
+    BATCH_RUN_ROOT, PROCESSING_VOXEL_UM, SPECIMENS, get_specimen,
 )
 from ImageLynx.statistics.cohort_split import assess_cohort_split       # noqa: E402
 from ImageLynx import cb_settings                                       # noqa: E402
@@ -59,7 +59,8 @@ from ImageLynx.statistics.threshold_selection import (                  # noqa: 
 # Analysis settings come from ImageLynx.cb_settings, which is their single owner.
 DEFAULT_ROI = cb_settings.ROI_VOXELS
 DEFAULT_GRID = list(cb_settings.THRESHOLD_GRID)
-OUTPUT_DIR = Path(__file__).resolve().parent / "outputs" / "cb_h1_batch"
+# The registry owns where batch runs live, so Specimen.batch_run_dir and this writer agree.
+OUTPUT_DIR = BATCH_RUN_ROOT
 SENSITIVITY_DIR = Path(__file__).resolve().parent / "outputs" / "cb_h1_sensitivity"
 PIPELINE = Path(__file__).resolve().parent / "carotid_image_to_model.py"
 
