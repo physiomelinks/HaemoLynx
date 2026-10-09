@@ -17,6 +17,8 @@ COLUMNS: tuple[tuple[str, str], ...] = (
     ("centreline_um", "centreline um"),
     ("pairs", "pairs in one lumen"),
     ("forks", "of them forks"),
+    ("bridge_pairs", "of them with a thick-vessel bridge"),
+    ("bridges", "thick-vessel bridges"),
     ("doubled_um", "doubled centreline um"),
     ("loops", "short loops"),
     ("loops_in_lumen", "loops inside one lumen"),
@@ -35,18 +37,26 @@ COLUMNS: tuple[tuple[str, str], ...] = (
 def measure(G: nx.MultiGraph, support, *, stub_radius_multiple: float = 3.0, coverage: bool = False) -> dict[str, Any]:
     """One row: the graph's size and its lumen artefacts; with *coverage*, the
     share of mask voxels some centreline's lumen covers (slower)."""
-    from haemolynx.graph import diagnose_lumen_artefacts
+    from haemolynx.graph import IS_ZERO_RESISTANCE, diagnose_lumen_artefacts
 
     report = diagnose_lumen_artefacts(
         G, support.mask, voxel_size_zyx=support.voxel_size_zyx, mask_support=support,
         stub_radius_multiple=stub_radius_multiple,
     )
     counts = report["dead_end_counts"]
+
+    def bridge(edge) -> bool:
+        return G.has_edge(*edge) and bool(G.edges[edge].get(IS_ZERO_RESISTANCE))
+
     row: dict[str, Any] = {
         "edges": G.number_of_edges(),
         "centreline_um": report["centreline_um"],
         "pairs": report["duplicate_pair_count"],
         "forks": report["fork_pair_count"],
+        # The split's bridges run inside the fat lumen: a pair with one is
+        # what Phase 6 of the one-centreline-per-lumen plan is about.
+        "bridge_pairs": sum(bridge(a) or bridge(b) for a, b in report["duplicate_pairs"]),
+        "bridges": sum(bool(d.get(IS_ZERO_RESISTANCE)) for *_, d in G.edges(data=True)),
         "doubled_um": report["duplicated_centreline_um"],
         "loops": report["short_loop_count"],
         "loops_in_lumen": report["loops_inside_one_lumen"],

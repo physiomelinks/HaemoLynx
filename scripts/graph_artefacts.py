@@ -8,7 +8,10 @@ graph from the run's saved skeleton in a process of its own, with its own code
 and the graph-building settings the config gives (``pipeline.stages.
 graph_build_arguments``; a setting an older version lacks is left out and
 named in the report). Every graph is then measured by this checkout, so the
-versions are compared with one ruler. The thick-vessel split is not run.
+versions are compared with one ruler. When the config uses thickness-gated
+skeletonisation, each side's final graph is split at the thick-vessel region
+as ``build_network`` saves it (the region found once, by this checkout, and
+shared); ``--no-thick-split`` measures the graph before that split.
 
 This is not part of the test suite: a full E14.5 build takes about seven
 minutes a side.
@@ -69,6 +72,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ref", action="append", default=[], help="a git ref to build as well (repeatable)")
     parser.add_argument("--out", default=str(REPO / "outputs" / "graph_artefacts"))
     parser.add_argument("--steps", action="store_true", help="also measure the graph after every topology step")
+    parser.add_argument("--no-thick-split", action="store_true",
+                        help="measure the graph before the thick-vessel split build_network ends with")
+    parser.add_argument("--thick-vessel-mask",
+                        help="a .npy thick-vessel region to split at (default: found from the mask "
+                             "and the config, as a resumed run does)")
     args = parser.parse_args(argv)
 
     import numpy as np
@@ -77,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     from haemolynx import io as hio
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
     from haemolynx.pipeline import default_schema, resolve_settings
-    from haemolynx.pipeline.stages import graph_build_arguments
+    from haemolynx.pipeline.stages import graph_build_arguments, thick_vessel_mask_from_image
     from haemolynx.preprocessing import MaskSupport
 
     settings = resolve_settings(schema=default_schema(), config_path=args.config)
@@ -93,6 +101,17 @@ def main(argv: list[str] | None = None) -> int:
     mask = raw == args.mask_value if args.mask_value is not None else _to_binary_volume_for_skeletonization(raw)
     mask_path = out / "mask.npy"
     np.save(mask_path, np.asarray(mask, dtype=bool))
+    thick_path = None
+    if args.thick_vessel_mask and not args.no_thick_split:
+        thick_path = Path(args.thick_vessel_mask)
+    elif not args.no_thick_split and settings.get("use_thick_vessel_skeletonisation"):
+        print("Finding the thick-vessel region ...", flush=True)
+        thick = thick_vessel_mask_from_image(
+            settings, np.asarray(mask, dtype=bool), hio.voxel_size_xyz_from_zyx(voxel_size)
+        )
+        if thick is not None:
+            thick_path = out / "thick_vessel_mask.npy"
+            np.save(thick_path, np.asarray(thick, dtype=bool))
     smoothing = None
     if settings["smooth_centrelines"]:
         smoothing = {
@@ -115,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             "voxel_size_zyx": list(voxel_size),
             "build": graph_build_arguments(settings),
             "smoothing": smoothing,
+            "thick_vessel_mask": None if thick_path is None else str(thick_path.resolve()),
         }
         (side / "job.json").write_text(json.dumps(job, indent=1), encoding="utf-8")
         print(f"Building {name} ...", flush=True)
@@ -130,7 +150,8 @@ def main(argv: list[str] | None = None) -> int:
     for name, info in sides.items():
         with open(_side_dir(out, name) / "final.pkl", "rb") as f:
             finals[name] = measure(pickle.load(f), support, stub_radius_multiple=multiple, coverage=True)
-    lines += ["## Final graph (after smoothing)", "", comparison_table(finals), ""]
+    saved_as = "after smoothing and the thick-vessel split" if thick_path else "after smoothing"
+    lines += [f"## Final graph ({saved_as})", "", comparison_table(finals), ""]
     for name, info in sides.items():
         lines.append(f"- **{name}**: built in {info['seconds']:.0f} s"
                      + (f"; settings it does not take: {', '.join(info['arguments_not_taken'])}"

@@ -460,3 +460,55 @@ def test_missing_vessel_warn_below_settings_choose_the_right_log_level(tmp_path,
         assert not any(
             r.levelname == "WARNING" and substring in r.getMessage() for r in low_records
         ), f"{name}=0.0 must never produce a WARNING containing {substring!r}"
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_the_built_network_draws_each_lumen_once(tmp_path):
+    """What graph building leaves in one segmented vessel that is not a
+    vessel (``graph.diagnose_lumen_artefacts``, on the graph build_network
+    hands over): no loop lying inside one lumen, no dead end whose tip is in
+    another vessel's lumen, beside another centreline or mostly off the
+    mask, and no two edges through one lumen unless taking either out would
+    cut vessels off (``lumen_loops.cuts_off_vessels``, the only pairs the
+    end-of-build clean-up keeps). The one-centreline-per-lumen work's
+    regression guard: on E14.5 the build used to leave 124 such pairs and 12
+    loops inside one lumen."""
+    from haemolynx.graph import diagnose_lumen_artefacts
+    from haemolynx.graph.lumen_loops import cuts_off_vessels
+
+    schema = default_schema()
+    values = {setting.name: setting.default for setting in schema}
+    values.update(
+        {
+            "input_path": NERVE_FIXTURE,
+            "vtk_output_prefix": tmp_path / "run",
+            "plot_dir": tmp_path / "plots",
+            "statistics": False,
+            "show_plots_in_ide": False,
+            "interactive_plots": False,
+        }
+    )
+    settings = resolve_settings(values, schema=schema, config_path=None)
+    built = {}
+
+    def keep(stage: str, output) -> None:
+        if stage == "build_network":
+            built["network"] = output
+
+    run_pipeline_stages(settings, schema, on_stage_output=keep, stop_after="build_network")
+
+    network = built["network"]
+    G = network.graph
+    assert G.number_of_edges() > 100, "the fixture's capillary bed did not build; the test proves nothing"
+    report = diagnose_lumen_artefacts(
+        G,
+        _to_binary_volume_for_skeletonization(network.volume.image),
+        voxel_size_zyx=network.volume.voxel_size_zyx,
+    )
+    assert report["short_loop_count"] > 0, "no loops to judge; the loop check proves nothing"
+    assert report["loops_inside_one_lumen"] == 0
+    for kind in ("inside_other_lumen", "beside_vessel", "off_mask"):
+        assert report["dead_end_counts"][kind] == 0, kind
+    for left, right in report["duplicate_pairs"]:
+        assert cuts_off_vessels(G, left) and cuts_off_vessels(G, right), (left, right)

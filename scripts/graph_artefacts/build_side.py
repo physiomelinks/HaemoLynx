@@ -2,9 +2,12 @@
 
 The job names the ``src`` directory to import ``haemolynx`` from, so an older
 version (a ``git archive`` of a ref) builds with its own code. It writes the
-graph after every topology step (``steps/<label>.pkl``), the final graph after
-smoothing (``final.pkl``) and ``side.json`` (timings, and the build arguments
-this version does not take).
+graph after every topology step (``steps/<label>.pkl``), the graph as
+``build_network`` saves it (``final.pkl``: after smoothing, the clean-up run
+again on the smoothed curves, and -- when the job names a thick-vessel region
+-- the thick-vessel split), the graph before that split
+(``before_thick_split.pkl``) and ``side.json`` (timings, and the build
+arguments this version does not take).
 """
 from __future__ import annotations
 
@@ -82,6 +85,15 @@ def main(job_path: str) -> None:
                 **{name: job["build"][name] for name in _CLEANUP_ARGUMENTS if name in job["build"]},
             )
             G = assemble.consolidate_lumen(G, cleanup)
+    thick_split = False
+    if job.get("thick_vessel_mask"):
+        # As build_network does last, before it saves the graph.
+        with open(os.path.join(out, "before_thick_split.pkl"), "wb") as f:
+            pickle.dump(G, f)
+        G = graph.insert_thick_vessel_junction_nodes(
+            G, np.load(job["thick_vessel_mask"]), voxel_size_zyx=voxel_size
+        )
+        thick_split = True
     with open(os.path.join(out, "final.pkl"), "wb") as f:
         pickle.dump(G, f)
     with open(os.path.join(out, "side.json"), "w", encoding="utf-8") as f:
@@ -90,6 +102,7 @@ def main(job_path: str) -> None:
             "step_seconds": step_seconds,
             "steps": list(step_seconds),
             "arguments_not_taken": dropped,
+            "thick_split": thick_split,
         }, f, indent=1)
 
 

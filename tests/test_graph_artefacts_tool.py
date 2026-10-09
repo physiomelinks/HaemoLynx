@@ -99,3 +99,58 @@ def test_a_side_builds_with_its_own_code_and_leaves_every_step(tmp_path):
     with open(tmp_path / "side" / "final.pkl", "rb") as f:
         G = pickle.load(f)
     assert G.number_of_edges() == 3
+
+
+def test_a_side_given_a_thick_vessel_region_splits_the_graph_as_build_network_saves_it(tmp_path):
+    """With the thick-vessel region in the job, the graph measured is the
+    graph saved: the branch opening into the fat trunk is split at the
+    region's edge, its part inside a zero-resistance bridge. Before the split
+    is kept too."""
+    from scipy import ndimage
+
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    skeleton = np.zeros((40, 40, 40), dtype=bool)
+    skeleton[2:38, 20, 20] = True
+    skeleton[20, 21:38, 20] = True
+    mask = ndimage.binary_dilation(skeleton, iterations=2)
+    trunk = np.zeros_like(skeleton)
+    trunk[2:38, 20, 20] = True
+    thick = ndimage.binary_dilation(trunk, iterations=4)
+    for name, volume in (("skeleton", skeleton), ("mask", mask), ("thick", thick)):
+        np.save(tmp_path / f"{name}.npy", volume)
+    job = {
+        "src": str(REPO / "src"), "out": str(tmp_path / "side"),
+        "skeleton": str(tmp_path / "skeleton.npy"), "mask": str(tmp_path / "mask.npy"),
+        "voxel_size_zyx": [1.0, 1.0, 1.0],
+        "build": graph_build_arguments(default_schema().defaults()),
+        "smoothing": None,
+        "thick_vessel_mask": str(tmp_path / "thick.npy"),
+    }
+    (tmp_path / "job.json").write_text(json.dumps(job))
+
+    build_side.main(str(tmp_path / "job.json"))
+
+    side = tmp_path / "side"
+    assert json.loads((side / "side.json").read_text())["thick_split"] is True
+    with open(side / "before_thick_split.pkl", "rb") as f:
+        before = pickle.load(f)
+    with open(side / "final.pkl", "rb") as f:
+        saved = pickle.load(f)
+    bridges = [d for *_, d in saved.edges(data=True) if d.get(IS_ZERO_RESISTANCE)]
+    assert len(bridges) == 1
+    assert not any(d.get(IS_ZERO_RESISTANCE) for *_, d in before.edges(data=True))
+    assert saved.number_of_edges() == before.number_of_edges() + 1
+
+
+def test_a_row_counts_the_pairs_a_thick_vessel_bridge_is_in():
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    mask, G = two_strands_in_one_lumen()
+    assert measure(G, MaskSupport(mask, VOXEL_SIZE))["bridge_pairs"] == 0
+    u, v, key = next(iter(G.edges(keys=True)))
+    G.edges[u, v, key][IS_ZERO_RESISTANCE] = True
+
+    row = measure(G, MaskSupport(mask, VOXEL_SIZE))
+
+    assert (row["pairs"], row["bridge_pairs"], row["bridges"]) == (1, 1, 1)
