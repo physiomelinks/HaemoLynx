@@ -20,17 +20,27 @@ the path so far and :data:`NEW_VESSEL_POINTS` the clicks along it
 (:func:`trace_layers`); and :data:`ADDED_NODES` marks the nodes Add vessel
 formed on existing vessels (:func:`added_nodes_layer`).
 
-Manual loop review lists the network's short loops still to review
+The Review dropdown (:data:`REVIEW_LISTS`) picks which list a scan makes.
+Short loops lists the network's short loops still to review
 (:func:`loops_to_review`, :func:`loop_label`), the chosen loop's sides
 (:func:`loop_side_rows`) and where the camera goes to look at it
 (:func:`loop_view`); the loop is cyan and the side selected yellow, as at a
 junction. Each decision is a :class:`LoopReview`, kept with the run and
 written as a :func:`loop_review_row` to ``{stem}_loop_review.csv``.
+
+Every other list is one of :mod:`haemolynx.graph.network_review`'s: its
+items (:func:`review_label`), the chosen item's vessels
+(:func:`review_table_rows`), a ring round each item
+(:func:`review_marker_layer`), and the buttons :class:`ReviewList` names.
+Each decision is a :class:`ReviewDecision`, kept with the run and written as
+a :func:`review_record` to ``{stem}_{kind}_review.csv``. A regenerate is
+summed up before and after by :func:`network_summary` and
+:func:`summary_change`.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -46,6 +56,47 @@ from haemolynx.graph.post_processing import (
 from haemolynx.gui.results import PREFIX, LayerSpec, node_points, polylines_to_vectors
 
 __all__ = [
+    "ACTION_DELETE_ITEM",
+    "ACTION_DELETE_SELECTED",
+    "ACTION_JOIN",
+    "ACTION_KEEP",
+    "ACTION_LABELS",
+    "ACTION_MERGE",
+    "ACTION_SET_DIAMETER",
+    "ACTION_TRACE_ON",
+    "NEEDS_BOUNDARIES",
+    "NEEDS_FLOW",
+    "NEEDS_MASK",
+    "NetworkSummary",
+    "REVIEW_CSV_COLUMNS",
+    "REVIEW_JUNCTIONS",
+    "REVIEW_LISTS",
+    "REVIEW_LIST_BY_KEY",
+    "REVIEW_LIST_BY_LABEL",
+    "REVIEW_LOOPS",
+    "REVIEW_MARKERS",
+    "REVIEW_MATCH_UM",
+    "REVIEW_NONE",
+    "REVIEW_REGION",
+    "REVIEW_TABLE_COLUMNS",
+    "ReviewDecision",
+    "ReviewList",
+    "append_review_record",
+    "find_review_items",
+    "review_mask_support",
+    "review_needs_missing",
+    "item_still_there",
+    "items_to_review",
+    "network_summary",
+    "review_box_um",
+    "review_csv_path",
+    "review_label",
+    "review_marker_layer",
+    "review_record",
+    "review_region_layer",
+    "review_table_rows",
+    "summary_change",
+    "view_centre_zyx",
     "ALL_VESSELS_IN_VIEWER",
     "CONNECTIVITY_EXPORT_CHOICES",
     "INLET_TO_OUTLET_ONLY",
@@ -111,8 +162,14 @@ NEW_VESSEL_TRACE = f"{PREFIX}new vessel trace"
 NEW_VESSEL_POINTS = f"{PREFIX}new vessel points"
 #: The nodes Add vessel formed on existing vessels, until Regenerate.
 ADDED_NODES = f"{PREFIX}added nodes"
+#: A ring round each item of the review list shown, and the voxels of the
+#: piece of uncovered mask chosen in it.
+REVIEW_MARKERS = f"{PREFIX}review items"
+REVIEW_REGION = f"{PREFIX}review region"
 #: Every layer this tab adds, for removing them all at once.
-POST_PROCESSING_LAYERS = (HIGH_DEGREE_JUNCTIONS, NEW_VESSEL_TRACE, NEW_VESSEL_POINTS, ADDED_NODES)
+POST_PROCESSING_LAYERS = (
+    HIGH_DEGREE_JUNCTIONS, NEW_VESSEL_TRACE, NEW_VESSEL_POINTS, ADDED_NODES, REVIEW_MARKERS, REVIEW_REGION,
+)
 
 CONNECTED = "connected"
 ADDED = "added"
@@ -1007,3 +1064,537 @@ def append_loop_review(path: Any, rows: Iterable[dict[str, str]]) -> "Path":
         for row in rows:
             writer.writerow({name: row.get(name, "") for name in LOOP_REVIEW_COLUMNS})
     return target
+
+
+# --- Review lists ----------------------------------------------------------------
+
+#: The Review dropdown's entries that are not a :mod:`haemolynx.graph.network_review`
+#: kind: nothing listed, and the two lists with pages of their own.
+REVIEW_NONE = "none"
+REVIEW_JUNCTIONS = "junctions_4plus"
+REVIEW_LOOPS = "short_loops"
+
+#: What a list needs from the run before it can be made.
+NEEDS_MASK = "the segmented image in the viewer"
+NEEDS_BOUNDARIES = "inlet and outlet nodes"
+NEEDS_FLOW = "a solved network"
+
+#: The buttons a review list offers for its chosen item.
+ACTION_DELETE_SELECTED = "delete_selected"
+ACTION_DELETE_ITEM = "delete_item"
+ACTION_MERGE = "merge"
+ACTION_TRACE_ON = "trace_on"
+ACTION_JOIN = "join"
+ACTION_SET_DIAMETER = "set_diameter"
+ACTION_KEEP = "keep"
+ACTION_LABELS = {
+    ACTION_DELETE_SELECTED: "Delete selected vessels",
+    ACTION_DELETE_ITEM: "Delete all its vessels",
+    ACTION_MERGE: "Merge into one junction",
+    ACTION_TRACE_ON: "Trace on from the tip",
+    ACTION_JOIN: "Join the two ends",
+    ACTION_SET_DIAMETER: "Set diameter of selected vessels to",
+    ACTION_KEEP: "Keep",
+}
+
+
+@dataclass(frozen=True)
+class ReviewList:
+    """One entry of the Review dropdown."""
+
+    key: str
+    label: str
+    #: What it cannot be made without (``NEEDS_*``).
+    needs: tuple[str, ...] = ()
+    #: Its item's buttons (``ACTION_*``), in the order they are shown.
+    actions: tuple[str, ...] = ()
+
+    @property
+    def uses_mask(self) -> bool:
+        return NEEDS_MASK in self.needs
+
+
+def _review_lists() -> tuple[ReviewList, ...]:
+    from haemolynx.graph import network_review as nr
+
+    return (
+        ReviewList(REVIEW_NONE, "None (edit by clicking only)"),
+        ReviewList(REVIEW_JUNCTIONS, "4+ junctions"),
+        ReviewList(REVIEW_LOOPS, "Short loops"),
+        ReviewList(nr.CLOSE_JUNCTIONS, "Junctions close together", (),
+                   (ACTION_MERGE, ACTION_DELETE_SELECTED, ACTION_KEEP)),
+        ReviewList(nr.HAIRPINS, "Hairpin vessels", (), (ACTION_DELETE_SELECTED, ACTION_KEEP)),
+        ReviewList(nr.DEAD_ENDS, "Dead ends", (NEEDS_MASK,),
+                   (ACTION_DELETE_ITEM, ACTION_TRACE_ON, ACTION_KEEP)),
+        ReviewList(nr.TWO_IN_ONE_LUMEN, "Two vessels in one lumen", (NEEDS_MASK,),
+                   (ACTION_DELETE_SELECTED, ACTION_KEEP)),
+        ReviewList(nr.FACING_ENDS, "Facing dead ends not joined", (NEEDS_MASK,), (ACTION_JOIN, ACTION_KEEP)),
+        ReviewList(nr.UNCOVERED_MASK, "Segmented vessels without a centreline", (NEEDS_MASK,), (ACTION_KEEP,)),
+        ReviewList(nr.UNSOLVED_PIECES, "Unsolved pieces", (NEEDS_BOUNDARIES,),
+                   (ACTION_DELETE_ITEM, ACTION_KEEP)),
+        ReviewList(nr.FLOW_AGAINST_ORDER, "Flow against branch order", (NEEDS_FLOW,),
+                   (ACTION_DELETE_SELECTED, ACTION_KEEP)),
+        ReviewList(nr.FLOW_OUTLIERS, "Flow outliers", (NEEDS_FLOW,), (ACTION_SET_DIAMETER, ACTION_KEEP)),
+        ReviewList(nr.BOUNDARY_NODES, "Boundary nodes", (NEEDS_BOUNDARIES,), (ACTION_KEEP,)),
+        ReviewList(nr.UNMEASURED_DIAMETERS, "Unmeasured diameters", (), (ACTION_SET_DIAMETER, ACTION_KEEP)),
+        ReviewList(nr.DIAMETER_JUMPS, "Diameter jumps", (), (ACTION_SET_DIAMETER, ACTION_KEEP)),
+    )
+
+
+#: Every entry of the Review dropdown, in its order; the first is the default.
+REVIEW_LISTS: tuple[ReviewList, ...] = _review_lists()
+REVIEW_LIST_BY_KEY = {entry.key: entry for entry in REVIEW_LISTS}
+REVIEW_LIST_BY_LABEL = {entry.label: entry for entry in REVIEW_LISTS}
+
+#: Header of the table of a review item's vessels.
+REVIEW_TABLE_COLUMNS = ("branchID", "length (µm)", "diameter (µm)", "diameter source", "branch order", "flow share")
+
+
+def _measure(item: Any, name: str, default: Any = None) -> Any:
+    value = (item.measures or {}).get(name, default)
+    return default if value is None else value
+
+
+def _g(value: Any) -> str:
+    try:
+        return f"{float(value):.3g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def review_label(item: Any, number: int) -> str:
+    """One line of a review list: its place in it and what it is, briefly."""
+    from haemolynx.graph import network_review as nr
+
+    kind, m = item.kind, item.measures or {}
+    nodes = ", ".join(str(n) for n in item.nodes)
+    if kind == nr.CLOSE_JUNCTIONS:
+        text = f"Nodes {nodes}: {_g(m.get('connector_um'))} µm apart, {m.get('vessels')} vessels"
+    elif kind == nr.HAIRPINS:
+        text = f"{_g(m.get('length_um'))} µm vessel, ends {_g(m.get('chord_um'))} µm apart"
+    elif kind == nr.DEAD_ENDS:
+        kinds = str(m.get("kinds") or "none of the artefact kinds").replace("_", " ").replace(";", ", ")
+        text = f"Node {item.nodes[0]}: {kinds}, {_g(m.get('length_um'))} µm"
+    elif kind == nr.TWO_IN_ONE_LUMEN:
+        text = f"Two vessels side by side, the shorter {_g(m.get('shorter_um'))} µm"
+    elif kind == nr.FACING_ENDS:
+        text = f"Nodes {nodes}: {_g(m.get('gap_um'))} µm apart, {m.get('refused') or 'joinable'}"
+    elif kind == nr.UNCOVERED_MASK:
+        text = f"{_g(m.get('volume_um3'))} µm³ of mask, up to {_g(2 * float(m.get('radius_um') or 0))} µm across"
+    elif kind == nr.UNSOLVED_PIECES:
+        where = f"off node {m.get('attached_at')}" if m.get("attached_at") else "on its own"
+        text = f"{m.get('vessels')} vessel(s), {_g(m.get('length_um'))} µm, {where}"
+    elif kind == nr.FLOW_AGAINST_ORDER:
+        text = f"Node {nodes}: {str(m.get('orders', '')).replace(';', ', ')}"
+    elif kind == nr.FLOW_OUTLIERS:
+        z = float(m.get("robust_z") or 0.0)
+        text = (
+            f"{_g(m.get('velocity_mm_s'))} mm/s in a {str(m.get('class', '')).replace('_', ' ')}"
+            + ("" if not np.isfinite(z) else f" ({z:+.2g} SD)")
+        )
+    elif kind == nr.BOUNDARY_NODES:
+        text = f"Node {nodes} ({m.get('role') or 'no role'}): {m.get('issue')}"
+    elif kind == nr.UNMEASURED_DIAMETERS:
+        share = m.get("flow_share")
+        text = f"{m.get('diameter_source') or 'flagged'} width" + (
+            f", {float(share):.1%} of the flow" if share is not None else ", unsolved"
+        )
+    elif kind == nr.DIAMETER_JUMPS:
+        text = f"Node {nodes}: ×{_g(m.get('ratio'))} ({m.get('at')})"
+    else:
+        text = item.why
+    return f"{number}. {text}"
+
+
+def review_table_rows(
+    graph: Any, item: Any, *, flow_reference: float | None = None
+) -> tuple[list[tuple[Any, Any, Any]], list[tuple[str, ...]]]:
+    """The vessels of *item* still in *graph*, and their table cells in the
+    same order. *flow_reference* is what a flow share is a share of (the
+    network's inflow)."""
+    index = _branch_index(graph)
+    edges, rows = [], []
+    for edge in item.edges:
+        edge = tuple(edge)
+        if not graph.has_edge(*edge):
+            continue
+        data = graph.edges[edge]
+        flow = data.get("flow_abs")
+        try:
+            share = float(flow) / float(flow_reference) if flow_reference else None
+        except (TypeError, ValueError):
+            share = None
+        edges.append(edge)
+        rows.append((
+            str(index.get(edge, "")),
+            _cell(_optional_number(data.get("length"))),
+            _cell(_optional_number(data.get("diameter_um"))),
+            str(data.get("diameter_source") or ""),
+            str(data.get("branch_order") or ""),
+            "" if share is None or not np.isfinite(share) else f"{share:.2%}",
+        ))
+    return edges, rows
+
+
+def _optional_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
+def review_box_um(item: Any) -> float:
+    """The box, in microns, zooming to *item* fits on screen: its points'
+    widest reach from its centre, with room round it."""
+    points = np.asarray(getattr(item, "points_um", ()), dtype=float).reshape(-1, 3)
+    if not len(points):
+        return LOOP_ZOOM_MIN_BOX_UM
+    span = 2.0 * float(np.linalg.norm(points - np.asarray(item.centre_um), axis=1).max())
+    return max(LOOP_ZOOM_MIN_BOX_UM, LOOP_ZOOM_MARGIN * span)
+
+
+def review_marker_layer(items: Sequence[Any]) -> LayerSpec:
+    """A magenta ring round each item of a review list."""
+    centres = np.asarray([item.centre_um for item in items], dtype=float).reshape(-1, 3)
+    return LayerSpec(
+        kind="points",
+        name=REVIEW_MARKERS,
+        data=centres,
+        features={"item": np.arange(1, len(centres) + 1, dtype=float)},
+        options={
+            "size": 8.0,
+            "face_color": "transparent",
+            "border_color": "magenta",
+            "border_width": 0.2,
+            "out_of_slice_display": True,
+        },
+    )
+
+
+def review_region_layer(item: Any) -> LayerSpec:
+    """The voxels of the chosen piece of uncovered mask, in orange."""
+    points = np.asarray(getattr(item, "points_um", ()), dtype=float).reshape(-1, 3)
+    return LayerSpec(
+        kind="points",
+        name=REVIEW_REGION,
+        data=points,
+        features={},
+        options={"size": 1.0, "face_color": TRACE_COLOUR, "border_width": 0.0, "out_of_slice_display": True},
+    )
+
+
+def view_centre_zyx(
+    camera_center: Sequence[float], displayed: Sequence[int], dims_point: Sequence[float]
+) -> tuple[float, float, float]:
+    """The point mid-screen, physical ``(z, y, x)``: the camera centre on the
+    displayed dims (in their order, as :func:`camera_center_for` writes it)
+    and the slider's point on the others. The inverse of
+    :func:`camera_center_for`."""
+    point = [float(c) for c in dims_point]
+    centre = [float(c) for c in camera_center][-len(displayed):] if displayed else []
+    for axis, value in zip(displayed, centre):
+        if 0 <= int(axis) < len(point):
+            point[int(axis)] = value
+    return tuple(point[-3:])  # type: ignore[return-value]
+
+
+#: A listed item is one already decided when it is of the same kind and its
+#: centre lies within this many microns of the decided one's.
+REVIEW_MATCH_UM = 1.0
+
+
+@dataclass(frozen=True)
+class ReviewDecision:
+    """What a person decided about one item of a review list, kept with the run."""
+
+    kind: str
+    centre_um: tuple[float, float, float]
+    #: :data:`KEPT`, or what was done (``"deleted"``, ``"merged"`` ...).
+    decision: str
+    time: str = ""
+
+    @classmethod
+    def of(cls, item: Any, decision: str, *, time: str = "") -> "ReviewDecision":
+        return cls(
+            kind=str(item.kind),
+            centre_um=tuple(float(c) for c in item.centre_um),  # type: ignore[arg-type]
+            decision=str(decision),
+            time=str(time),
+        )
+
+    def matches(self, item: Any) -> bool:
+        if str(item.kind) != self.kind:
+            return False
+        offset = np.linalg.norm(np.asarray(item.centre_um, dtype=float) - np.asarray(self.centre_um))
+        return bool(offset <= REVIEW_MATCH_UM)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"kind": self.kind, "centre_um": list(self.centre_um), "decision": self.decision, "time": self.time}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "ReviewDecision | None":
+        """One decision back from :meth:`as_dict`; None for anything unreadable."""
+        try:
+            centre = tuple(float(c) for c in data["centre_um"])
+            if len(centre) != 3:
+                return None
+            return cls(
+                kind=str(data["kind"]),
+                centre_um=centre,  # type: ignore[arg-type]
+                decision=str(data["decision"]),
+                time=str(data.get("time") or ""),
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
+
+
+def items_to_review(items: Iterable[Any], decisions: Iterable[ReviewDecision]) -> list[Any]:
+    """*items* less the ones a decision kept, in the same order. An item
+    whose vessels were edited is listed again if it is back."""
+    kept = [decision for decision in decisions if decision.decision == KEPT]
+    return [item for item in items if not any(decision.matches(item) for decision in kept)]
+
+
+def item_still_there(graph: Any, item: Any) -> bool:
+    """Whether every vessel and node *item* names is still in *graph*: an
+    edit since the scan can take it away."""
+    return all(graph.has_edge(*tuple(edge)) for edge in item.edges) and all(n in graph for n in item.nodes)
+
+
+#: The first columns of ``{stem}_{kind}_review.csv``; each item's own
+#: measures follow, so a rule can be fitted to the decisions later.
+REVIEW_CSV_COLUMNS = (
+    "time",
+    "decision",
+    "kind",
+    "centre_z_um",
+    "centre_y_um",
+    "centre_x_um",
+    "centre_zyx_vox",
+    "nodes",
+    "branch_ids",
+    "why",
+)
+
+
+def review_record(
+    graph: Any,
+    item: Any,
+    decision: ReviewDecision,
+    *,
+    voxel_size_zyx: Sequence[float] = (1.0, 1.0, 1.0),
+) -> dict[str, str]:
+    """One CSV row for *decision* about *item*, read off *graph* before the
+    edit it records changes it."""
+    index = _branch_index(graph)
+    centre = np.asarray(item.centre_um, dtype=float)
+    voxel = np.rint(centre / np.asarray(voxel_size_zyx, dtype=float)).astype(int)
+    row: dict[str, Any] = {
+        "time": decision.time,
+        "decision": decision.decision,
+        "kind": item.kind,
+        "centre_z_um": centre[0],
+        "centre_y_um": centre[1],
+        "centre_x_um": centre[2],
+        "centre_zyx_vox": " ".join(str(int(c)) for c in voxel),
+        "nodes": ";".join(str(n) for n in item.nodes),
+        "branch_ids": [index[tuple(e)] for e in item.edges if tuple(e) in index],
+        "why": item.why,
+    }
+    for name, value in (item.measures or {}).items():
+        row.setdefault(str(name), value)
+    return {name: _csv_value(value) for name, value in row.items()}
+
+
+def review_csv_path(values: Any, kind: str) -> "Path | None":
+    """Where a review list's decisions are written: ``{stem}_{kind}_review.csv``
+    beside the VTK output; None when there is no such folder on this machine."""
+    path = loop_review_csv_path(values)
+    if path is None:
+        return None
+    stem = path.name[: -len("_loop_review.csv")]
+    return path.with_name(f"{stem}_{kind}_review.csv")
+
+
+def append_review_record(path: Any, row: dict[str, str]) -> "Path":
+    """Add *row* to the CSV at *path*, its header the row's own columns when
+    the file is new, else the file's (a column it lacks is left out)."""
+    import csv
+    from pathlib import Path
+
+    target = Path(path)
+    header = list(row)
+    if target.is_file() and target.stat().st_size > 0:
+        with target.open(newline="", encoding="utf-8") as handle:
+            header = next(csv.reader(handle), header) or header
+        new = False
+    else:
+        new = True
+    with target.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header, extrasaction="ignore")
+        if new:
+            writer.writeheader()
+        writer.writerow({name: row.get(name, "") for name in header})
+    return target
+
+
+# --- Before and after a regenerate ------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NetworkSummary:
+    """The few numbers that say how a regenerate changed the network."""
+
+    vessels: int
+    length_um: float
+    #: Vessels on no inlet-to-outlet path; None without inlets and outlets.
+    unsolved: int | None
+    #: Flow in through the inlets (m^3/s); None before a solve.
+    inflow: float | None
+    #: Inlet-to-outlet pressure drop over the inflow (Pa.s/m^3).
+    resistance: float | None
+
+
+def network_summary(graph: Any, inlets: Sequence[Any], outlets: Sequence[Any]) -> NetworkSummary:
+    """:class:`NetworkSummary` of *graph*, its flows read from the solve."""
+    from haemolynx.graph.connectivity import inlet_to_outlet_vessels
+    from haemolynx.graph.network_review import total_inflow
+
+    length = 0.0
+    for _u, _v, data in graph.edges(data=True):
+        value = _optional_number(data.get("length"))
+        length += value or 0.0
+    inlets = [n for n in inlets if n in graph]
+    outlets = [n for n in outlets if n in graph]
+    unsolved = None
+    if inlets and outlets:
+        unsolved = graph.number_of_edges() - len(inlet_to_outlet_vessels(graph, inlets, outlets))
+    inflow = total_inflow(graph, inlets)
+    resistance = None
+    pressures_in = [_optional_number(graph.nodes[n].get("pressure")) for n in inlets]
+    pressures_out = [_optional_number(graph.nodes[n].get("pressure")) for n in outlets]
+    if inflow and pressures_in and pressures_out and None not in pressures_in + pressures_out:
+        drop = float(np.mean(pressures_in)) - float(np.mean(pressures_out))
+        resistance = drop / inflow if drop else None
+    return NetworkSummary(graph.number_of_edges(), length, unsolved, inflow, resistance)
+
+
+def summary_change(before: NetworkSummary, after: NetworkSummary) -> str:
+    """One line saying what a regenerate changed, e.g.
+    ``"vessels 1,234 → 1,220; unsolved 40 → 12; network resistance 1.2e+13 →
+    1.1e+13 Pa·s/m³ (−8.3%)"``."""
+
+    def change(name: str, a: Any, b: Any, fmt: str, unit: str = "", relative: bool = False) -> str | None:
+        if a is None or b is None:
+            return None
+        text = f"{name} {format(a, fmt)} → {format(b, fmt)}{unit}"
+        if relative and a:
+            text += f" ({(b - a) / a:+.1%})".replace("-", "−")
+        return text
+
+    parts = [
+        change("vessels", before.vessels, after.vessels, ","),
+        change("length", before.length_um, after.length_um, ",.0f", " µm"),
+        change("unsolved", before.unsolved, after.unsolved, ","),
+        change("inflow", before.inflow, after.inflow, ".3g", " m³/s", relative=True),
+        change("network resistance", before.resistance, after.resistance, ".3g", " Pa·s/m³", relative=True),
+    ]
+    return "; ".join(p for p in parts if p)
+
+
+# --- Making a review list ------------------------------------------------------
+
+
+def review_needs_missing(
+    entry: ReviewList, graph: Any, *, has_mask: bool, inlets: Sequence[Any], outlets: Sequence[Any]
+) -> str | None:
+    """What *entry* needs that this run cannot give it (a ``NEEDS_*``), or None."""
+    if NEEDS_MASK in entry.needs and not has_mask:
+        return NEEDS_MASK
+    if NEEDS_BOUNDARIES in entry.needs and not (
+        any(n in graph for n in inlets) and any(n in graph for n in outlets)
+    ):
+        return NEEDS_BOUNDARIES
+    if NEEDS_FLOW in entry.needs and not any(
+        _optional_number(data.get("flow_abs")) is not None for _u, _v, data in graph.edges(data=True)
+    ):
+        return NEEDS_FLOW
+    return None
+
+
+def review_mask_support(image: Any, voxel_size_zyx: Sequence[float], settings: Any = None):
+    """The segmented image as the review lists judge vessels against it: a
+    ``MaskSupport`` binarised the way the loaders do, held to the run's own
+    bridge settings."""
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.preprocessing.bridge_mask_support import (
+        DEFAULT_MAX_BACKGROUND_GAP_UM,
+        DEFAULT_MIN_MASK_FRACTION,
+        MaskSupport,
+    )
+
+    values = settings or {}
+    gap = _optional_number(values.get("bridge_max_background_gap_um"))
+    fraction = _optional_number(values.get("bridge_min_mask_fraction"))
+    return MaskSupport(
+        _to_binary_volume_for_skeletonization(np.asanyarray(image)),
+        tuple(float(v) for v in voxel_size_zyx),
+        max_background_gap_um=DEFAULT_MAX_BACKGROUND_GAP_UM if gap is None else gap,
+        min_mask_fraction=DEFAULT_MIN_MASK_FRACTION if fraction is None else fraction,
+    )
+
+
+def find_review_items(
+    key: str,
+    graph: Any,
+    *,
+    support: Any = None,
+    roles: Mapping[str, Sequence[Any]] | None = None,
+    settings: Any = None,
+    extent_um: Sequence[float] | None = None,
+    z_range: tuple[int, int] | None = None,
+) -> list[Any]:
+    """Make review list *key* (one of :data:`~haemolynx.graph.network_review.REVIEW_KINDS`)
+    on *graph*, with the run's own settings where a list reads one:
+    ``min_stub_length_radius_multiple`` (dead ends), ``facing_dead_end_max_gap_um``
+    and ``recovery_min_region_volume_um3``. *support* is the segmented image
+    (:func:`review_mask_support`), *roles* the boundary nodes by role,
+    *extent_um* the image's size in microns and *z_range* the slices a mask
+    scan reads."""
+    from haemolynx.graph import network_review as nr
+
+    values = settings or {}
+    roles = roles or {}
+    inlets = tuple(roles.get("inlet") or ())
+    outlets = tuple(roles.get("outlet") or ())
+    if key == nr.CLOSE_JUNCTIONS:
+        return nr.find_close_junctions(graph)
+    if key == nr.HAIRPINS:
+        return nr.find_hairpins(graph)
+    if key == nr.DEAD_ENDS:
+        multiple = _optional_number(values.get("min_stub_length_radius_multiple"))
+        return nr.find_dead_ends(graph, support, stub_radius_multiple=3.0 if multiple is None else multiple)
+    if key == nr.TWO_IN_ONE_LUMEN:
+        return nr.find_two_in_one_lumen(graph, support)
+    if key == nr.FACING_ENDS:
+        return nr.find_facing_ends(graph, support, max_gap_um=_optional_number(values.get("facing_dead_end_max_gap_um")))
+    if key == nr.UNCOVERED_MASK:
+        return nr.find_uncovered_mask(
+            graph, support,
+            min_region_volume_um3=_optional_number(values.get("recovery_min_region_volume_um3")),
+            z_range=z_range,
+        )
+    if key == nr.UNSOLVED_PIECES:
+        return nr.find_unsolved_pieces(graph, inlets, outlets)
+    if key == nr.FLOW_AGAINST_ORDER:
+        return nr.find_flow_against_branch_order(graph, inlets)
+    if key == nr.FLOW_OUTLIERS:
+        return nr.find_flow_outliers(graph)
+    if key == nr.BOUNDARY_NODES:
+        return nr.find_boundary_issues(graph, roles, extent_um=extent_um)
+    if key == nr.UNMEASURED_DIAMETERS:
+        return nr.find_unmeasured_diameters(graph, inlets)
+    if key == nr.DIAMETER_JUMPS:
+        return nr.find_diameter_jumps(graph)
+    raise ValueError(f"{key!r} is not a review list")

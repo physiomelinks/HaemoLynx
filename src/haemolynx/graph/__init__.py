@@ -21,8 +21,10 @@ from .edit import (
 from .connectivity import (
     CONNECTIVITY_COLUMNS,
     connectivity_rows,
+    UnsolvedPiece,
     inlet_to_outlet_vessels,
     remove_vessels_off_inlet_outlet_paths,
+    unsolved_pieces,
     write_connectivity_csv,
 )
 from .post_processing import (
@@ -46,7 +48,9 @@ from .post_processing import (
     junction_vessels,
     mark_edited,
     mean_incident_diameter,
+    merge_junctions,
     prune_disconnected_branches,
+    set_vessel_diameter,
     short_loops,
     smooth_traced_path,
     split_high_degree_junctions,
@@ -80,6 +84,7 @@ from .prune import (
     remove_edges_for_self_connected_nodes,
 )
 from .diagnostics import (
+    classify_dead_ends,
     diagnose_degree2_nodes,
     diagnose_graph_against_mask,
     diagnose_graph_mask_consistency,
@@ -202,6 +207,7 @@ __all__ = [
     "diagnose_parallel_duplicates_in_lumen",
     "format_parallel_duplicates_report",
     "diagnose_lumen_artefacts",
+    "classify_dead_ends",
     "format_lumen_artefacts_report",
     "lumen_artefacts_found",
     "build_graph_from_skeleton",
@@ -216,8 +222,10 @@ __all__ = [
     "reconnect_orphan_and_dangling_nodes",
     "CONNECTIVITY_COLUMNS",
     "connectivity_rows",
+    "UnsolvedPiece",
     "inlet_to_outlet_vessels",
     "remove_vessels_off_inlet_outlet_paths",
+    "unsolved_pieces",
     "write_connectivity_csv",
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
     "IntensityCostField",
@@ -239,7 +247,9 @@ __all__ = [
     "junction_vessels",
     "mark_edited",
     "mean_incident_diameter",
+    "merge_junctions",
     "prune_disconnected_branches",
+    "set_vessel_diameter",
     "short_loops",
     "smooth_traced_path",
     "split_high_degree_junctions",

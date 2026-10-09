@@ -49,6 +49,7 @@ __all__ = [
     "find_uncovered_mask",
     "find_unmeasured_diameters",
     "find_unsolved_pieces",
+    "flow_reference",
     "total_inflow",
     "within",
     "z_range_around",
@@ -245,7 +246,7 @@ def _flow_share(data: Mapping[str, Any], reference: float | None) -> float | Non
     return flow / reference
 
 
-def _flow_reference(G: nx.MultiGraph, inlets: Iterable[Any]) -> float | None:
+def flow_reference(G: nx.MultiGraph, inlets: Iterable[Any]) -> float | None:
     """What a flow share is a share of: the inflow, else the largest flow."""
     inflow = total_inflow(G, inlets)
     if inflow:
@@ -439,7 +440,7 @@ def find_unmeasured_diameters(G: nx.MultiGraph, inlets: Iterable[Any] = ()) -> l
     )
 
     pos = _node_pos(G)
-    reference = _flow_reference(G, inlets)
+    reference = flow_reference(G, inlets)
     items = []
     for u, v, key, data in G.edges(keys=True, data=True):
         if data.get(IS_ZERO_RESISTANCE):
@@ -541,7 +542,7 @@ def find_flow_against_branch_order(G: nx.MultiGraph, inlets: Iterable[Any] = ())
     generation = dict(zip(
         solved, branch_order_signed_values(G.edges[e].get("branch_order") for e in solved)
     ))
-    reference = _flow_reference(G, inlets)
+    reference = flow_reference(G, inlets)
     into: dict[Any, list[EdgeKey]] = {}
     out_of: dict[Any, list[EdgeKey]] = {}
     for edge in solved:
@@ -689,7 +690,7 @@ def find_boundary_issues(
             return None
         return float(np.min(np.minimum(pos[node], extent - pos[node])))
 
-    reference = _flow_reference(G, roles.get("inlet") or ())
+    reference = flow_reference(G, roles.get("inlet") or ())
     found: list[tuple[int, ReviewItem]] = []
 
     def add(order: int, node, issue: str, why: str) -> None:

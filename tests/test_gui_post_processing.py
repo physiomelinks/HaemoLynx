@@ -590,3 +590,219 @@ def test_decisions_collect_in_one_csv_under_one_header(tmp_path):
     assert [r["decision"] for r in rows] == [KEPT, SIDE_DELETED]
     assert rows[0] == first and rows[1] == second
     assert path.read_text(encoding="utf-8").count("loop_length_um") == 1
+
+
+# --- Review lists ------------------------------------------------------------------
+
+from haemolynx.graph import network_review as nr  # noqa: E402
+from haemolynx.gui.chrome_tooltips import POST_PROCESSING_TOOLTIPS  # noqa: E402
+from haemolynx.gui.post_processing import (  # noqa: E402
+    ACTION_LABELS,
+    KEPT,
+    NEEDS_BOUNDARIES,
+    NEEDS_FLOW,
+    NEEDS_MASK,
+    REVIEW_CSV_COLUMNS,
+    REVIEW_JUNCTIONS,
+    REVIEW_LIST_BY_KEY,
+    REVIEW_LISTS,
+    REVIEW_LOOPS,
+    REVIEW_MARKERS,
+    REVIEW_NONE,
+    REVIEW_REGION,
+    POST_PROCESSING_LAYERS,
+    ReviewDecision,
+    append_review_record,
+    find_review_items,
+    item_still_there,
+    items_to_review,
+    network_summary,
+    review_box_um,
+    review_csv_path,
+    review_label,
+    review_marker_layer,
+    review_needs_missing,
+    review_record,
+    review_region_layer,
+    review_table_rows,
+    summary_change,
+    view_centre_zyx,
+)
+
+
+def _item(kind=nr.DEAD_ENDS, centre=(0.0, 0.0, 10.0), edges=((1, 5, 0),), nodes=(5, 1), **measures):
+    points = np.asarray([[0.0, 0.0, 10.0], [0.0, 20.0, 10.0]])
+    return nr.ReviewItem(kind, tuple(nodes), tuple(edges), tuple(centre), "Why it is listed.", measures, points)
+
+
+def test_the_dropdown_lists_none_first_then_junctions_loops_and_every_check_once():
+    keys = [entry.key for entry in REVIEW_LISTS]
+    assert keys[:3] == [REVIEW_NONE, REVIEW_JUNCTIONS, REVIEW_LOOPS]
+    assert keys[3:] == list(nr.REVIEW_KINDS)
+    assert len({entry.label for entry in REVIEW_LISTS}) == len(REVIEW_LISTS)
+    assert all(not entry.actions for entry in REVIEW_LISTS[:3])
+    for entry in REVIEW_LISTS[3:]:
+        assert entry.actions[-1] == "keep", entry.key
+        assert set(entry.actions) <= set(ACTION_LABELS)
+    for action in ACTION_LABELS:
+        assert POST_PROCESSING_TOOLTIPS[f"review_{action}"].strip()
+    mask_lists = {entry.key for entry in REVIEW_LISTS if entry.uses_mask}
+    assert mask_lists == {nr.DEAD_ENDS, nr.TWO_IN_ONE_LUMEN, nr.FACING_ENDS, nr.UNCOVERED_MASK}
+    assert REVIEW_MARKERS in POST_PROCESSING_LAYERS and REVIEW_REGION in POST_PROCESSING_LAYERS
+
+
+def test_each_kind_of_item_reads_as_one_short_line():
+    assert review_label(_item(kinds="off_mask;short", length_um=12.0), 3) == "3. Node 5: off mask, short, 12 µm"
+    assert review_label(_item(kinds="", length_um=20.0), 1) == "1. Node 5: none of the artefact kinds, 20 µm"
+    assert review_label(
+        _item(nr.CLOSE_JUNCTIONS, nodes=(1, 2), connector_um=1.0, vessels=4), 1
+    ) == "1. Nodes 1, 2: 1 µm apart, 4 vessels"
+    assert review_label(
+        _item(nr.UNSOLVED_PIECES, nodes=(), vessels=2, length_um=30.0, attached_at=""), 2
+    ) == "2. 2 vessel(s), 30 µm, on its own"
+    assert review_label(
+        _item(nr.UNMEASURED_DIAMETERS, diameter_source="table", flow_share=0.25), 1
+    ) == "1. table width, 25.0% of the flow"
+    assert review_label(
+        _item(nr.FLOW_OUTLIERS, velocity_mm_s=5.0, robust_z=-float("inf"), **{"class": "capillary"}), 1
+    ) == "1. 5 mm/s in a capillary"
+    for kind in nr.REVIEW_KINDS:
+        assert review_label(_item(kind), 1).startswith("1. ")
+
+
+def test_an_items_table_lists_its_vessels_still_there_with_their_share_of_the_flow():
+    G = _network()
+    G.edges[1, 5, 0].update(flow_abs=2.0, diameter_source="table")
+    item = _item(edges=((1, 5, 0), (5, 9, 0)))
+
+    edges, rows = review_table_rows(G, item, flow_reference=8.0)
+
+    assert edges == [(1, 5, 0)]
+    (row,) = rows
+    assert row[0] == str(branch_id_of(G, (1, 5, 0)))
+    assert row[2:] == ("5", "table", "B01", "25.00%")
+    assert review_table_rows(G, item)[1][0][5] == ""
+
+
+def test_a_decision_matches_its_item_by_kind_and_place_and_keep_hides_it():
+    item = _item()
+    kept = ReviewDecision.of(item, KEPT, time="t")
+    assert kept.matches(item)
+    assert kept.matches(_item(centre=(0.0, 0.5, 10.0)))
+    assert not kept.matches(_item(centre=(0.0, 5.0, 10.0)))
+    assert not kept.matches(_item(nr.HAIRPINS))
+    assert ReviewDecision.from_dict(kept.as_dict()) == kept
+    assert ReviewDecision.from_dict({"kind": "x"}) is None
+    assert ReviewDecision.from_dict("nonsense") is None
+
+    other = _item(centre=(0.0, 50.0, 10.0))
+    assert items_to_review([item, other], [kept]) == [other]
+    assert items_to_review([item, other], [ReviewDecision.of(item, "deleted")]) == [item, other]
+
+
+def test_an_item_whose_vessels_or_nodes_an_edit_took_away_is_gone():
+    G = _network()
+    assert item_still_there(G, _item())
+    G.remove_edge(1, 5)
+    assert not item_still_there(G, _item())
+    assert not item_still_there(G, _item(edges=(), nodes=(99,)))
+
+
+def test_a_decision_is_a_csv_row_beside_the_run_with_the_items_measures(tmp_path):
+    G = _network()
+    item = _item(kinds="short", length_um=12.0)
+    decision = ReviewDecision.of(item, KEPT, time="2026-10-09T16:00:00")
+
+    row = review_record(G, item, decision, voxel_size_zyx=(2.0, 1.0, 1.0))
+
+    assert list(row)[: len(REVIEW_CSV_COLUMNS)] == list(REVIEW_CSV_COLUMNS)
+    assert row["centre_zyx_vox"] == "0 0 10"
+    assert row["branch_ids"] == str(branch_id_of(G, (1, 5, 0)))
+    assert row["kinds"] == "short" and row["length_um"] == "12"
+    path = review_csv_path({"vtk_output_prefix": str(tmp_path / "run")}, item.kind)
+    assert path == tmp_path / "run_dead_ends_review.csv"
+    assert review_csv_path({"vtk_output_prefix": str(tmp_path / "missing" / "run")}, item.kind) is None
+    append_review_record(path, row)
+    append_review_record(path, {**row, "decision": "deleted", "extra": "dropped"})
+    import csv
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [r["decision"] for r in rows] == [KEPT, "deleted"]
+    assert "extra" not in rows[1]
+
+
+def test_an_item_is_zoomed_to_with_room_round_it_and_marked_with_a_ring():
+    item = _item()
+    assert review_box_um(item) == pytest.approx(1.6 * 40.0)
+    assert review_box_um(_item(centre=(0.0, 10.0, 10.0))) == pytest.approx(32.0)
+    layer = review_marker_layer([item, _item(centre=(1.0, 2.0, 3.0))])
+    assert layer.name == REVIEW_MARKERS and np.allclose(layer.data, [[0, 0, 10], [1, 2, 3]])
+    region = review_region_layer(item)
+    assert region.name == REVIEW_REGION and len(region.data) == 2
+
+
+def test_the_view_centre_reads_back_what_camera_center_for_wrote():
+    for displayed in ((1, 2), (0, 2), (0, 1, 2), (2, 0, 1)):
+        centre = camera_center_for((5.0, 6.0, 7.0), displayed)
+        point = [5.0, 6.0, 7.0] if len(displayed) == 3 else [5.0 if 0 not in displayed else 0.0,
+                                                               6.0 if 1 not in displayed else 0.0,
+                                                               7.0 if 2 not in displayed else 0.0]
+        assert view_centre_zyx(centre, displayed, point) == pytest.approx((5.0, 6.0, 7.0))
+
+
+def test_a_list_says_what_it_needs_that_the_run_lacks():
+    G = _network()
+    dead_ends, unsolved, outliers = (REVIEW_LIST_BY_KEY[k] for k in (nr.DEAD_ENDS, nr.UNSOLVED_PIECES, nr.FLOW_OUTLIERS))
+    assert review_needs_missing(dead_ends, G, has_mask=False, inlets=(0,), outlets=(4,)) == NEEDS_MASK
+    assert review_needs_missing(dead_ends, G, has_mask=True, inlets=(), outlets=()) is None
+    assert review_needs_missing(unsolved, G, has_mask=False, inlets=(0,), outlets=()) == NEEDS_BOUNDARIES
+    assert review_needs_missing(unsolved, G, has_mask=False, inlets=(0,), outlets=(4,)) is None
+    assert review_needs_missing(outliers, G, has_mask=True, inlets=(0,), outlets=(4,)) == NEEDS_FLOW
+    G.edges[0, 1, 0]["flow_abs"] = 1.0
+    assert review_needs_missing(outliers, G, has_mask=True, inlets=(0,), outlets=(4,)) is None
+
+
+def test_every_list_without_a_mask_is_made_from_the_graph_alone():
+    G = _network()
+    G.add_node(9, pos=np.asarray((0.0, 40.0, 10.0)))
+    _add(G, 5, 9, branch_order="B01", diameter_um=5.0)
+    roles = {"inlet": (0,), "outlet": (4,)}
+    for entry in REVIEW_LISTS[3:]:
+        if entry.uses_mask:
+            continue
+        items = find_review_items(entry.key, G, roles=roles, extent_um=(0.0, 40.0, 30.0))
+        assert all(item.kind == entry.key for item in items), entry.key
+    (piece,) = find_review_items(nr.UNSOLVED_PIECES, G, roles=roles)
+    assert piece.nodes == (1,)
+    with pytest.raises(ValueError, match="not a review list"):
+        find_review_items(REVIEW_JUNCTIONS, G)
+
+
+def _solved_chain(scale: float = 1.0) -> nx.MultiGraph:
+    G = nx.MultiGraph()
+    for n in range(3):
+        G.add_node(n, pos=np.asarray((0.0, 0.0, 10.0 * n)), pressure=100.0 - 50.0 * n)
+    for n in range(2):
+        _add(G, n, n + 1, flow_abs=2.0 * scale)
+    return G
+
+
+def test_a_regenerate_is_summed_up_before_and_after():
+    before = network_summary(_solved_chain(), [0], [2])
+    assert (before.vessels, before.length_um, before.unsolved) == (2, 20.0, 0)
+    assert before.inflow == pytest.approx(2.0)
+    assert before.resistance == pytest.approx(50.0)
+    G = _solved_chain(scale=1.25)
+    G.add_node(7, pos=np.asarray((0.0, 10.0, 10.0)))  # 10 um off node 1
+    _add(G, 1, 7)
+    after = network_summary(G, [0], [2])
+    assert after.unsolved == 1
+
+    line = summary_change(before, after)
+
+    assert line.startswith("vessels 2 → 3; length 20 → 30 µm; unsolved 0 → 1; inflow 2 → 2.5 m³/s (+25.0%)")
+    assert "network resistance 50 → 40 Pa·s/m³ (−20.0%)" in line
+    unsolved_only = network_summary(_network(), [], [])
+    assert unsolved_only.unsolved is None and unsolved_only.inflow is None
+    assert "unsolved" not in summary_change(unsolved_only, unsolved_only)

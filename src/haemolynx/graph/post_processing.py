@@ -39,6 +39,11 @@ from every inlet-to-outlet piece, and every dead end that reaches no outlet.
 For Manual loop review: :func:`short_loops` lists the network's short loops,
 shortest first, each split into the sides a person chooses between, and
 :func:`delete_loop_side` takes one side out.
+
+For the other review lists (:mod:`haemolynx.graph.network_review`):
+:func:`merge_junctions` makes two junctions a sliver apart one, and
+:func:`set_vessel_diameter` gives vessels a width by hand that Regenerate
+keeps (the vessels are not marked for measuring again).
 """
 from __future__ import annotations
 
@@ -79,7 +84,9 @@ __all__ = [
     "junction_vessels",
     "mark_edited",
     "mean_incident_diameter",
+    "merge_junctions",
     "prune_disconnected_branches",
+    "set_vessel_diameter",
     "short_loops",
     "smooth_traced_path",
     "split_high_degree_junctions",
@@ -559,6 +566,84 @@ def split_high_degree_junctions(
             widest = max(labelled, key=lambda data: _optional_float(data.get("diameter_um")) or 0.0)
             connector["branch_order"] = widest["branch_order"]
     return split
+
+
+def merge_junctions(
+    G: nx.MultiGraph, u: Any, v: Any, key: Any, *, protected: Iterable[Any] = ()
+) -> Any:
+    """Take out the vessel ``(u, v, key)`` between two junctions and make the
+    two one node: one junction drawn as two, a sliver of vessel apart.
+
+    The merged node is *u*, at the middle of the two -- or whichever end is
+    *protected* (a boundary node), where it is. Every other vessel at either
+    end now starts at the merged node, its path drawn on to it, and is marked
+    :data:`EDITED` for the ``post_process`` stage to measure again. Raises
+    ``ValueError`` for two protected ends, a loop on one node, or two
+    junctions joined by more than one vessel. Returns the merged node.
+    """
+    if not G.has_edge(u, v, key=key):
+        raise ValueError(f"No vessel ({u!r}, {v!r}, {key!r}) to merge across")
+    if u == v:
+        raise ValueError("A loop on one node has no second junction to merge with")
+    protected_set = set(protected)
+    if u in protected_set and v in protected_set:
+        raise ValueError(f"Nodes {u} and {v} are both boundary nodes; the solve needs each of them")
+    if G.number_of_edges(u, v) > 1:
+        raise ValueError(
+            f"Nodes {u} and {v} are joined by {G.number_of_edges(u, v)} vessels: delete all but one first"
+        )
+    keep, gone = (v, u) if v in protected_set else (u, v)
+    if keep in protected_set:
+        position = _node_position(G, keep)
+    else:
+        position = (_node_position(G, u) + _node_position(G, v)) / 2.0
+    G.remove_edge(u, v, key)
+    moved: list[EdgeKey] = []
+    keep_moves = not np.allclose(position, _node_position(G, keep))
+    for end in (keep, gone):
+        if end == keep and not keep_moves:
+            continue
+        for _end, other, k, data in list(G.edges(end, keys=True, data=True)):
+            path = _dedupe([position, *_path_from(G, end, other, data)])
+            attrs = dict(data)
+            attrs["voxels"] = [list(p) for p in path]
+            attrs["length"] = float(calculate_path_length(attrs["voxels"]))
+            if end == keep:
+                G.edges[end, other, k].update(attrs)
+                moved.append((end, other, k))
+            else:
+                G.remove_edge(end, other, k)
+                target = keep if other == gone else other
+                moved.append((keep, target, G.add_edge(keep, target, **attrs)))
+    G.nodes[keep]["pos"] = np.asarray(position, dtype=float)
+    G.remove_node(gone)
+    mark_edited(G, [e for e in moved if G.has_edge(*e)])
+    return keep
+
+
+def set_vessel_diameter(G: nx.MultiGraph, edges: Iterable[EdgeKey], diameter_um: float) -> None:
+    """Give *edges* the diameter *diameter_um*, by hand.
+
+    A human value (``diameter_source="override"``), which outranks the
+    branch-order table and the class median. The vessels are *not* marked
+    :data:`EDITED` -- the ``post_process`` stage measures an edited vessel
+    afresh, and a measurement replaces an override -- only the graph is
+    marked :data:`PENDING`, so Regenerate graph solves it again with the new
+    width. Raises ``ValueError`` for a width that is not finite and positive,
+    or a vessel the network does not have, before changing anything.
+    """
+    from haemolynx.haemodynamics.poiseuille import set_edge_diameter_override
+
+    selected = [tuple(edge) for edge in edges]
+    width = _optional_float(diameter_um)
+    if width is None or width <= 0:
+        raise ValueError(f"A diameter must be a positive number of microns, not {diameter_um!r}")
+    for edge in selected:
+        if not G.has_edge(*edge):
+            raise ValueError(f"No vessel {edge!r} to set the diameter of")
+    for edge in selected:
+        set_edge_diameter_override(G.edges[edge], width)
+    mark_edited(G)
 
 
 def mean_incident_diameter(G: nx.MultiGraph, nodes: Iterable[Any]) -> float | None:

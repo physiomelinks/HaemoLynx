@@ -43,7 +43,8 @@ haemolynx/
 │   │                       #   the graph lost, traced and joined back through the mask),
 │   │                       #   lumen_loops.py (loops lying inside one lumen: Lee rings, broken),
 │   │                       #   facing_ends.py (two dead ends heading for each other across a
-│   │                       #   gap in the segmentation, joined)
+│   │                       #   gap in the segmentation, joined), network_review.py (what the
+│   │                       #   Post processing tab's review lists find, one finder per list)
 │   ├── haemodynamics/      # poiseuille, viscosity (the laws), resistance, apply,
 │   │                       #   automated.py (FWHM diameters), raw_section.py (the raw
 │   │                       #   cross-section fitted where FWHM fails, opt-in), edt_diameter.py
@@ -231,7 +232,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 |-------------|----------------------|
 | `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py` |
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
-| `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, boundary/assignment tests |
+| `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), FWHM/pericyte integration tests |
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_sweep_flow_layers.py` |
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight) |
@@ -492,10 +493,27 @@ are only caught locally.
   **9. Additional measurements** is a tab with no stage function (its settings are read by
   `export_results`). **7. Post processing** (`post_process`, between Haemodynamics and
   Perturbations, so the network is edited solved) has no settings: its tab is its own page (`gui/_widget.py`'s
-  `_post_processing_controls`), with no "Run from this stage"; its 4+ junction list, table
-  and their Delete/Leave/Split buttons sit behind a "Manual 4+ vessel junction correction"
-  checkbox, off by default (off, a scan neither marks the junctions nor zooms to one). A
-  "Manual loop review" checkbox (off by default) lists the short loops still to review
+  `_post_processing_controls`), with no "Run from this stage". Its Review dropdown
+  (`gui/post_processing.REVIEW_LISTS`) chooses the one list Scan network makes -- only that
+  one, so a scan does no more work than it needs -- optionally only within a radius of the
+  view centre; None, the default, lists, marks and zooms to nothing. "4+ junctions" shows the
+  junction list, table and Delete/Leave/Split buttons. The other twelve are
+  `graph/network_review.py`'s read-only finders, each returning `ReviewItem`s ranked as the list
+  shows them: junctions close together (Merge into one junction, `graph.merge_junctions`),
+  hairpin vessels, dead ends by kind (`graph.classify_dead_ends`, the lumen-artefact report's
+  dead ends; Trace on from the tip starts Add vessel there), two vessels in one lumen, facing
+  dead ends the join left open (`facing_ends.facing_dead_end_pairs`, with why; Join the two
+  ends), segmented vessels without a centreline (`mask_recovery.uncovered_mask_regions`),
+  unsolved pieces (`graph.unsolved_pieces`), flow against the branch orders, flow outliers,
+  boundary-node issues, unmeasured diameters and diameter jumps (Set diameter,
+  `graph.set_vessel_diameter`: an override, the vessel *not* marked edited, so `post_process`
+  does not measure it again and replace it). The four that read the segmented image run off
+  the GUI thread, and after an edit only drop what it took away (the list says it may be out
+  of date); the others are made again. Their thresholds only decide what is listed. Each
+  decision is a `ReviewDecision`, matched by kind and centre, kept with the run (the
+  `.haemorun`'s `review_decisions`) and appended to `{stem}_{kind}_review.csv` with the item's
+  measures, so a rule can be fitted to the marks later; the scan after a regenerate says what
+  it changed (`network_summary` / `summary_change`). "Short loops" lists the short loops still to review
   (`graph.short_loops`, up to `lumen_loops.LOOP_SEARCH_UM` round), shortest first: picking one
   zooms to it -- in its own plane in 3D (`gui/post_processing.loop_view`) -- and lists its sides
   (`lumen_loops.loop_sides`, cut where vessels or boundary nodes meet it), and Delete this side

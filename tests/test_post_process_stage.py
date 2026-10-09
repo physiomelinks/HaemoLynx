@@ -36,6 +36,7 @@ from haemolynx.graph import (  # noqa: E402
     delete_vessels,
     has_pending_edits,
     mark_edited,
+    set_vessel_diameter,
 )
 from haemolynx.graph.post_processing import APPLIED, EDITED  # noqa: E402
 from haemolynx.pipeline import stages  # noqa: E402
@@ -664,3 +665,34 @@ def test_a_resume_hands_the_large_vessel_hand_off_nodes_on(tmp_path):
     assert run_settings["large_venule_boundary_nodes"] == [3]
     assert boundaries.large_arteriole_boundary_nodes == [1]
     assert boundaries.large_venule_boundary_nodes == [3]
+
+
+def test_a_diameter_set_by_hand_survives_post_processing_and_moves_the_resistance(tmp_path, monkeypatch):
+    """Set diameter on the review lists: the vessel is not measured again --
+    a measurement would replace the hand value -- and its resistance follows
+    the new width when the haemodynamics is built again."""
+    run_settings, network, boundaries, model = _diameters_run(
+        tmp_path, use_edt_diameter_crosscheck=True,
+        edt_diameter_prefer_over_table_on_fwhm_failure=True,
+    )
+    model = build_haemodynamic_model(run_settings, model, SCHEMA)
+    G = model.graph
+    u, v, k = next(iter(G.edges(keys=True)))
+    G.edges[u, v, k]["edt_diameter_um"] = 7.5  # a measurement it could fall back on
+    before = G.edges[u, v, k]["resistance"]
+    width = 2.0 * G.edges[u, v, k]["diameter_um"]
+    measured: list = []
+    monkeypatch.setattr(
+        "haemolynx.haemodynamics.apply._measure_edt_diameters",
+        lambda G, _config, *, mask_volume=None, edges=None: measured.append(edges) or {},
+    )
+
+    set_vessel_diameter(G, [(u, v, k)], width)
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    data = out.graph.edges[u, v, k]
+    assert measured == []
+    assert data["diameter_source"] == "override"
+    assert data["diameter_um"] == pytest.approx(width)
+    out = build_haemodynamic_model(run_settings, out, SCHEMA)
+    assert out.graph.edges[u, v, k]["resistance"] < before / 8.0

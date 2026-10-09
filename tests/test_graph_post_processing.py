@@ -21,8 +21,11 @@ from haemolynx.graph import (
     high_degree_junctions,
     junction_vessels,
     mask_cost_field,
+    has_pending_edits,
     mean_incident_diameter,
+    merge_junctions,
     prune_disconnected_branches,
+    set_vessel_diameter,
     smooth_traced_path,
     split_high_degree_junctions,
     split_junction,
@@ -32,6 +35,7 @@ from haemolynx.graph import (
     vessel_path_between,
 )
 from haemolynx.graph._helpers import calculate_path_length
+from haemolynx.graph.post_processing import EDITED
 
 
 def _straight(a, b, step: float = 1.0) -> list[tuple[float, float, float]]:
@@ -889,3 +893,84 @@ def test_deleting_a_side_the_loop_does_not_have_or_no_longer_has_is_refused():
     delete_loop_side(G, wide, 0)
     with pytest.raises(ValueError, match="No vessel"):
         delete_loop_side(G, wide, 0)
+
+
+# --- merge_junctions / set_vessel_diameter (the review lists' edits) ---------
+
+
+def _two_close_junctions() -> nx.MultiGraph:
+    """Junctions 1 and 2 a micron apart, each with two vessels of its own."""
+    return _network(
+        {1: (0, 0, 0), 2: (0, 0, 1), 10: (0, 20, -10), 11: (0, -20, -10), 20: (0, 20, 11), 21: (0, -20, 11)},
+        [(1, 2), (1, 10), (1, 11), (2, 20), (2, 21)],
+        diameter_um=6.0,
+    )
+
+
+def test_merging_two_close_junctions_makes_one_four_way_junction_between_them():
+    G = _two_close_junctions()
+
+    merged = merge_junctions(G, 1, 2, 0)
+
+    assert merged == 1 and 2 not in G
+    assert G.degree(1) == 4
+    assert sorted(G.neighbors(1)) == [10, 11, 20, 21]
+    assert np.allclose(G.nodes[1]["pos"], (0, 0, 0.5))
+    for _u, other, data in G.edges(1, data=True):
+        path = np.asarray(data["voxels"])
+        assert np.allclose(path[0], (0, 0, 0.5)) or np.allclose(path[-1], (0, 0, 0.5))
+        assert data["length"] == pytest.approx(calculate_path_length(data["voxels"]))
+        assert data[EDITED] is True
+    assert has_pending_edits(G)
+
+
+def test_a_boundary_node_keeps_its_id_and_place_and_two_are_never_merged():
+    G = _two_close_junctions()
+    merged = merge_junctions(G, 1, 2, 0, protected={2})
+    assert merged == 2 and 1 not in G
+    assert np.allclose(G.nodes[2]["pos"], (0, 0, 1))
+    assert sorted(G.neighbors(2)) == [10, 11, 20, 21]
+
+    G = _two_close_junctions()
+    before = sorted(G.edges(keys=True))
+    with pytest.raises(ValueError, match="both boundary nodes"):
+        merge_junctions(G, 1, 2, 0, protected={1, 2})
+    assert sorted(G.edges(keys=True)) == before
+
+
+def test_merging_refuses_a_loop_two_parallel_vessels_or_a_missing_one():
+    G = _two_close_junctions()
+    G.add_edge(1, 2, voxels=_straight((0, 0, 0), (0, 0, 1)), length=1.0)
+    with pytest.raises(ValueError, match="joined by 2 vessels"):
+        merge_junctions(G, 1, 2, 0)
+    with pytest.raises(ValueError, match="No vessel"):
+        merge_junctions(_two_close_junctions(), 1, 2, 5)
+    G = _two_close_junctions()
+    G.add_edge(1, 1, length=3.0)
+    with pytest.raises(ValueError, match="loop on one node"):
+        merge_junctions(G, 1, 1, 0)
+
+
+def test_a_diameter_set_by_hand_is_an_override_and_marks_only_the_graph():
+    G = _two_close_junctions()
+    edges = [(1, 10, 0), (2, 20, 0)]
+
+    set_vessel_diameter(G, edges, 9.5)
+
+    for edge in edges:
+        assert G.edges[edge]["diameter_um"] == 9.5
+        assert G.edges[edge]["diameter_source"] == "override"
+        assert EDITED not in G.edges[edge]
+    assert G.edges[1, 11, 0]["diameter_um"] == 6.0
+    assert has_pending_edits(G)
+
+
+def test_setting_a_diameter_refuses_a_bad_width_or_vessel_and_changes_nothing():
+    G = _two_close_junctions()
+    for width in (0.0, -2.0, float("nan"), "wide"):
+        with pytest.raises(ValueError, match="positive number"):
+            set_vessel_diameter(G, [(1, 10, 0)], width)
+    with pytest.raises(ValueError, match="No vessel"):
+        set_vessel_diameter(G, [(1, 10, 0), (1, 99, 0)], 4.0)
+    assert G.edges[1, 10, 0]["diameter_um"] == 6.0
+    assert not has_pending_edits(G)

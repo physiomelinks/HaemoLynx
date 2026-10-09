@@ -226,13 +226,65 @@ LOAD_RUN_TOOLTIP = (
 #: "7. Post processing" tab.
 POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     "scan": (
-        "Take the last run's network into this tab to edit it, and count the "
-        "junctions where four or more vessels meet"
+        "Take the last run's network into this tab to edit it, and make the "
+        "list chosen under Review -- only that one, so a scan does no more "
+        "work than it needs"
     ),
-    "junction_correction": (
-        "Show the junctions where four or more vessels meet, to delete some "
-        "of their vessels or split them into bifurcations; while it is off "
-        "they are neither marked in the viewer nor zoomed to"
+    "review_choice": (
+        "Which list Scan network makes: junctions where four or more vessels "
+        "meet, short loops, or one of the checks on the network's geometry, "
+        "segmentation, flow, boundaries and diameters. None lists nothing "
+        "and leaves the network to edit by clicking"
+    ),
+    "region": (
+        "Make the list only round the middle of the view, within this many "
+        "microns of it; 0 lists the whole network. A check against the "
+        "segmented image then reads only that part of it, which is faster "
+        "on a large stack"
+    ),
+    "review_items": (
+        "What the chosen check found, in the order it ranks them; click one "
+        "to zoom to it and list its vessels below. Kept items are not listed "
+        "again"
+    ),
+    "review_table": (
+        "The chosen item's vessels; click or shift/ctrl-click rows to select "
+        "vessels, drawn yellow in the viewer"
+    ),
+    "review_delete_selected": (
+        "Remove the vessels selected in the table; a junction left joining "
+        "just two vessels is merged into one, and inlets, outlets and "
+        "boundary nodes are never removed"
+    ),
+    "review_delete_item": (
+        "Remove every vessel of the chosen item -- a dead end back to its "
+        "junction, or a whole unsolved piece; inlets, outlets and boundary "
+        "nodes are never removed"
+    ),
+    "review_merge": (
+        "Take out the short vessel between the two junctions and make them "
+        "one node, between the two (or where a boundary node is); the "
+        "vessels at both now meet there"
+    ),
+    "review_trace_on": (
+        "Start Add vessel at the chosen dead end's tip: click along the "
+        "vessel it should go on to, and on a node or vessel to finish it"
+    ),
+    "review_join": (
+        "Join the chosen pair of dead ends with a vessel traced between "
+        "them through the image Add vessel uses, as wide as the vessels "
+        "at its ends"
+    ),
+    "review_set_diameter": (
+        "Give the vessels selected in the table -- or the chosen item's one "
+        "vessel -- the diameter beside this button; Regenerate graph keeps "
+        "it and solves the network again with it"
+    ),
+    "review_diameter": "The diameter Set diameter gives, in microns",
+    "review_keep": (
+        "Keep the chosen item as it is, take it off the list and move on to "
+        "the next one; every decision is kept with the run and written to "
+        "{stem}_{list}_review.csv beside the run's output"
     ),
     "junctions": (
         "Junctions where four or more vessels meet; click one to zoom to it "
@@ -257,11 +309,6 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "bifurcations, in microns"
     ),
     "leave": "Keep the chosen junction as it is and move on to the next one",
-    "loop_review": (
-        "List the network's short loops, shortest first, to keep each one or "
-        "open it by deleting one of its sides; every decision is kept with "
-        "the run and written to {stem}_loop_review.csv beside the run's output"
-    ),
     "loops": (
         "Short loops not yet reviewed, shortest first; click one to zoom to "
         "it, in its own plane in a 3D view, and list its sides below"

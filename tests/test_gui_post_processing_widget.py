@@ -34,6 +34,7 @@ from haemolynx.gui.post_processing import (  # noqa: E402
     HIGH_DEGREE_JUNCTIONS,
     NEW_VESSEL_POINTS,
     NEW_VESSEL_TRACE,
+    REVIEW_LISTS,
     SELECTED,
     STATUS_COLOURS,
     TRACE_SOURCES,
@@ -62,15 +63,31 @@ def _four_way_network() -> nx.MultiGraph:
     return G
 
 
+#: The Review dropdown's entries the tests choose.
+NO_LIST = "None (edit by clicking only)"
+JUNCTIONS = "4+ junctions"
+LOOPS = "Short loops"
+
+
 @pytest.fixture
 def page(make_napari_viewer):
-    """The tab on the four-way network, its junction correction ticked."""
+    """The tab on the four-way network, 4+ junctions chosen under Review."""
     return _four_way_page(make_napari_viewer(), junction_correction=True)
 
 
-def _four_way_page(viewer, *, junction_correction: bool):
+def _four_way_page(viewer, *, junction_correction: bool, graph=None, settings=None, image=None):
     results = ResultLayers()
-    _apply_layers(viewer, results.stage_finished("build_network", network(_four_way_network())))
+    if image is not None:
+        _apply_layers(viewer, results.stage_finished(
+            "skeletonise",
+            SimpleNamespace(
+                image=image, skeleton=np.zeros_like(image, dtype=bool),
+                voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+            ),
+        ))
+    _apply_layers(viewer, results.stage_finished(
+        "build_network", network(graph if graph is not None else _four_way_network())
+    ))
     report = SimpleNamespace(value="")
     regenerated: list = []
     stops: list = []
@@ -90,11 +107,12 @@ def _four_way_page(viewer, *, junction_correction: bool):
         boundary_roles=lambda: {"inlet": (0,), "outlet": (4,)},
         regenerate=regenerate,
         running=lambda: False,
+        settings=settings,
         paused=lambda: run.paused,
         complete=lambda: run.complete,
     )
     controls.refresh()
-    controls.junction_toggle.setChecked(junction_correction)
+    controls.review_choice.setCurrentText(JUNCTIONS if junction_correction else NO_LIST)
     return SimpleNamespace(
         controls=controls, viewer=viewer, results=results, report=report,
         regenerated=regenerated, stops=stops, run=run,
@@ -173,20 +191,22 @@ def test_scan_before_a_run_reports_instead_of_raising(make_napari_viewer):
     assert HIGH_DEGREE_JUNCTIONS not in viewer.layers
 
 
-def test_junction_correction_is_off_and_hidden_until_ticked(make_napari_viewer):
-    """Unticked, a scan picks no junction, marks none, tints none cyan and
-    leaves the camera where it was; ticking brings all of it, unticking
-    takes it away again. The other edits work either way."""
+def test_no_list_is_chosen_at_first_and_choosing_one_waits_for_a_scan(make_napari_viewer):
+    """With no list chosen a scan picks no junction, marks none, tints none
+    cyan and leaves the camera where it was. Choosing 4+ junctions shows its
+    page; the next scan lists, marks and zooms; choosing None again takes it
+    all away. The other edits work either way."""
     page = _four_way_page(make_napari_viewer(), junction_correction=False)
     c, viewer = page.controls, page.viewer
-    assert c.junction_toggle.text() == "Manual 4+ vessel junction correction"
-    assert c.junction_toggle.toolTip()
+    assert c.review_choice.toolTip() and c.region.toolTip()
     fresh = _post_processing_controls(
         viewer, SimpleNamespace(value=""), results=lambda: None,
         boundary_roles=lambda: {}, regenerate=lambda graph: None, running=lambda: False,
     )
-    assert not fresh.junction_toggle.isChecked(), "off by default"
-    assert fresh.junction_box.isHidden()
+    assert fresh.review_choice.currentText() == NO_LIST, "nothing listed by default"
+    choices = [fresh.review_choice.itemText(i) for i in range(fresh.review_choice.count())]
+    assert choices == [entry.label for entry in REVIEW_LISTS]
+    assert fresh.junction_box.isHidden() and fresh.loop_box.isHidden() and fresh.review_box.isHidden()
     for widget in (c.junction_list, c.table, c.delete_button, c.leave_button,
                    c.split_button, c.connector):
         assert c.junction_box.isAncestorOf(widget)
@@ -201,7 +221,7 @@ def test_junction_correction_is_off_and_hidden_until_ticked(make_napari_viewer):
     assert HIGH_DEGREE_JUNCTIONS not in viewer.layers
     assert _colour_of(viewer, graph, (1, 2)) == _rgba(CONNECTED)
     assert np.allclose(viewer.camera.center, centre_before)
-    assert c.status.text() == "1 junction(s) where 4+ vessels meet, in 6 vessels."
+    assert c.status.text() == "6 vessels; no list chosen."
 
     # An edit rescans: still no junction picked or marked.
     keys = edge_keys(graph)
@@ -210,16 +230,19 @@ def test_junction_correction_is_off_and_hidden_until_ticked(make_napari_viewer):
     assert c.state.graph.degree(1) == 4
     assert c.state.node is None and HIGH_DEGREE_JUNCTIONS not in viewer.layers
 
-    c.junction_toggle.setChecked(True)
-    graph = c.state.graph
+    c.review_choice.setCurrentText(JUNCTIONS)
     assert not c.junction_box.isHidden()
+    assert c.state.node is None and c.junction_list.count() == 0, "listed only by a scan"
+    assert c.status.text() == "Press Scan network to list 4+ junctions."
+    c.scan_button.click()
+    graph = c.state.graph
     assert c.state.node == 1 and c.table.rowCount() == 4
     assert np.allclose(viewer.layers[HIGH_DEGREE_JUNCTIONS].data, [[10, 0, 0]])
     assert _colour_of(viewer, graph, (1, 5)) == _rgba(AT_JUNCTION)
     centre = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
     assert np.allclose(centre, [10, 0, 0][-len(viewer.dims.displayed):], atol=1e-6)
 
-    c.junction_toggle.setChecked(False)
+    c.review_choice.setCurrentText(NO_LIST)
     assert c.junction_box.isHidden()
     assert c.state.node is None and c.table.rowCount() == 0
     assert HIGH_DEGREE_JUNCTIONS not in viewer.layers
@@ -642,7 +665,7 @@ def test_the_log_records_each_change_with_its_branch_ids(make_napari_viewer):
         boundary_roles=lambda: {"inlet": (0,), "outlet": (4,)},
         regenerate=lambda graph: None, running=lambda: False,
     )
-    c.junction_toggle.setChecked(True)
+    c.review_choice.setCurrentText(JUNCTIONS)
     c.scan_button.click()
     keys = edge_keys(c.state.graph)
     to_5 = next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})
@@ -891,7 +914,7 @@ from haemolynx.gui.post_processing import KEPT, SIDE_DELETED  # noqa: E402
 
 def _loop_page(viewer, tmp_path, *, loop_review: bool = True):
     """The tab on the four-way network, whose loop 1-{2,3}-4 runs through
-    outlet 4, with Manual loop review ticked and the run's output in *tmp_path*."""
+    outlet 4, with Short loops chosen under Review and the run's output in *tmp_path*."""
     results = ResultLayers()
     _apply_layers(viewer, results.stage_finished("build_network", network(_four_way_network())))
     report = SimpleNamespace(value="")
@@ -907,7 +930,7 @@ def _loop_page(viewer, tmp_path, *, loop_review: bool = True):
         complete=lambda: True,
     )
     controls.refresh()
-    controls.loop_toggle.setChecked(loop_review)
+    controls.review_choice.setCurrentText(LOOPS if loop_review else NO_LIST)
     return SimpleNamespace(
         controls=controls, viewer=viewer, report=report, csv=tmp_path / "run_loop_review.csv",
     )
@@ -924,11 +947,10 @@ def _csv_rows(path):
         return list(csv.DictReader(handle))
 
 
-def test_manual_loop_review_is_off_and_hidden_until_ticked(make_napari_viewer, tmp_path):
+def test_short_loops_are_listed_only_once_chosen_and_scanned(make_napari_viewer, tmp_path):
     page = _loop_page(make_napari_viewer(), tmp_path, loop_review=False)
     c, viewer = page.controls, page.viewer
-    assert c.loop_toggle.text() == "Manual loop review" and c.loop_toggle.toolTip()
-    assert not c.loop_toggle.isChecked() and c.loop_box.isHidden()
+    assert c.loop_box.isHidden()
     for widget in (c.loop_list, c.loop_table, c.loop_delete_button, c.loop_keep_button):
         assert c.loop_box.isAncestorOf(widget) and widget.toolTip()
 
@@ -937,8 +959,11 @@ def test_manual_loop_review_is_off_and_hidden_until_ticked(make_napari_viewer, t
     assert c.loop_list.count() == 0 and c.state.loop is None
     assert _colour_of(viewer, graph, (2, 4)) == _rgba(CONNECTED)
 
-    c.loop_toggle.setChecked(True)
+    c.review_choice.setCurrentText(LOOPS)
     assert not c.loop_box.isHidden()
+    assert c.loop_list.count() == 0, "listed only by a scan"
+    c.scan_button.click()
+    graph = c.state.graph
     assert c.loop_list.count() == 1
     assert c.loop_list.item(0).text() == "Loop 1: 56.6 µm round, 2 side(s)"
     assert c.loop_table.rowCount() == 2, "cut at outlet 4 as well as at junction 1"
@@ -949,7 +974,7 @@ def test_manual_loop_review_is_off_and_hidden_until_ticked(make_napari_viewer, t
     centre = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
     assert np.allclose(centre, [20, 0, 0][-len(viewer.dims.displayed):], atol=1e-6)
 
-    c.loop_toggle.setChecked(False)
+    c.review_choice.setCurrentText(NO_LIST)
     assert c.loop_box.isHidden() and c.state.loop is None and c.loop_list.count() == 0
     assert _colour_of(viewer, graph, (2, 4)) == _rgba(CONNECTED)
 
@@ -1030,3 +1055,254 @@ def test_a_loop_decision_without_an_output_folder_still_counts(make_napari_viewe
     assert [review.decision for review in c.state.loop_reviews] == [KEPT]
     assert "Not written to a CSV" in c.loop_summary.text()
     assert not page.csv.exists()
+
+
+# --- the other review lists ------------------------------------------------------
+
+from haemolynx.gui.post_processing import (  # noqa: E402
+    ACTION_DELETE_ITEM,
+    ACTION_DELETE_SELECTED,
+    ACTION_KEEP,
+    ACTION_MERGE,
+    ACTION_SET_DIAMETER,
+    ACTION_TRACE_ON,
+    REVIEW_MARKERS,
+)
+
+UNSOLVED = "Unsolved pieces"
+UNMEASURED = "Unmeasured diameters"
+DEAD_ENDS = "Dead ends"
+CLOSE = "Junctions close together"
+
+
+def _review_page(viewer, tmp_path=None, **kwargs):
+    settings = (lambda: {"vtk_output_prefix": str(tmp_path / "run")}) if tmp_path is not None else None
+    return _four_way_page(viewer, junction_correction=False, settings=settings, **kwargs)
+
+
+def _shown_buttons(c) -> set:
+    return {action for action, button in c.review_buttons.items() if not button.isHidden()}
+
+
+def test_a_review_list_shows_its_own_page_and_buttons_and_lists_only_once_scanned(make_napari_viewer, tmp_path):
+    page = _review_page(make_napari_viewer(), tmp_path)
+    c, viewer = page.controls, page.viewer
+    for widget in (c.review_items, c.review_table, c.review_diameter, *c.review_buttons.values()):
+        assert c.review_box.isAncestorOf(widget) and widget.toolTip()
+    c.scan_button.click()
+
+    c.review_choice.setCurrentText(UNSOLVED)
+    assert not c.review_box.isHidden() and c.junction_box.isHidden() and c.loop_box.isHidden()
+    assert _shown_buttons(c) == {ACTION_DELETE_ITEM, ACTION_KEEP}
+    assert c.review_items.count() == 0 and c.status.text() == "Press Scan network to list unsolved pieces."
+    c.scan_button.click()
+
+    # 1 -> 5 is a dead end: no inlet-to-outlet path runs along it.
+    assert c.review_items.count() == 1
+    assert c.review_items.item(0).text() == "1. 1 vessel(s), 20 µm, off node 1"
+    assert c.review_table.rowCount() == 1
+    graph = c.state.graph
+    assert _colour_of(viewer, graph, (1, 5)) == _rgba(AT_JUNCTION)
+    assert _colour_of(viewer, graph, (1, 2)) == _rgba(CONNECTED)
+    assert np.allclose(viewer.layers[REVIEW_MARKERS].data, [[10, 10, 0]])
+    centre = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
+    assert np.allclose(centre, [10, 10, 0][-len(viewer.dims.displayed):], atol=1e-6)
+    assert "1 item(s) in unsolved pieces to review" in c.review_summary.text()
+
+    c.review_choice.setCurrentText(UNMEASURED)
+    assert c.review_items.count() == 0 and REVIEW_MARKERS not in viewer.layers
+    assert _shown_buttons(c) == {ACTION_SET_DIAMETER, ACTION_KEEP} and not c.review_diameter.isHidden()
+
+
+def test_deleting_an_unsolved_piece_records_the_decision_and_empties_the_list(make_napari_viewer, tmp_path):
+    page = _review_page(make_napari_viewer(), tmp_path)
+    c, viewer = page.controls, page.viewer
+    c.review_choice.setCurrentText(UNSOLVED)
+    c.scan_button.click()
+
+    c.review_buttons[ACTION_DELETE_ITEM].click()
+
+    graph = c.state.graph
+    assert 5 not in graph and graph.number_of_edges() == 5
+    assert len(viewer.layers[VESSELS].data) == 5
+    assert c.review_items.count() == 0 and REVIEW_MARKERS not in viewer.layers
+    assert [d.decision for d in c.state.review_decisions] == ["deleted"]
+    (row,) = _csv_rows(tmp_path / "run_unsolved_pieces_review.csv")
+    assert row["decision"] == "deleted" and row["kind"] == "unsolved_pieces"
+    assert row["attached_at"] == "1" and row["length_um"] == "20"
+    assert "Deleted branchID" in c.log_box.toPlainText()
+    assert c.regenerate_graph_button.isEnabled()
+
+
+def test_a_kept_item_is_not_listed_again(make_napari_viewer):
+    page = _review_page(make_napari_viewer())
+    c = page.controls
+    c.review_choice.setCurrentText(UNSOLVED)
+    c.scan_button.click()
+    before = sorted(edge_keys(c.state.graph))
+
+    c.review_buttons[ACTION_KEEP].click()
+
+    assert c.review_items.count() == 0
+    assert sorted(edge_keys(c.state.graph)) == before, "keeping changes nothing"
+    assert [d.decision for d in c.state.review_decisions] == [KEPT]
+    assert "Not written to a CSV" in c.review_summary.text()
+    c.scan_button.click()
+    assert c.review_items.count() == 0
+    c.forget()
+    assert c.state.review_decisions == []
+
+
+def test_set_diameter_gives_the_vessel_a_width_regenerate_keeps(make_napari_viewer):
+    G = _four_way_network()
+    G.edges[1, 5, 0]["diameter_source"] = "table"
+    page = _review_page(make_napari_viewer(), graph=G)
+    c = page.controls
+    c.review_choice.setCurrentText(UNMEASURED)
+    c.scan_button.click()
+    assert c.review_items.count() == 1
+
+    c.review_diameter.setValue(9.0)
+    c.review_buttons[ACTION_SET_DIAMETER].click()
+
+    data = c.state.graph.edges[1, 5, 0]
+    assert data["diameter_um"] == 9.0 and data["diameter_source"] == "override"
+    assert "post_processing_edited" not in data
+    assert c.review_items.count() == 0, "an override is no longer unmeasured"
+    assert c.regenerate_graph_button.isEnabled()
+    assert "to 9 µm" in c.log_box.toPlainText()
+
+
+def test_merge_makes_two_close_junctions_one(make_napari_viewer):
+    G = _four_way_network()
+    G.remove_edge(1, 2)
+    G.add_node(6, pos=np.asarray((11.0, 0.0, 0.0)))  # a micron past junction 1
+    for u, v in [(1, 6), (6, 2)]:
+        voxels = [tuple(map(float, G.nodes[u]["pos"])), tuple(map(float, G.nodes[v]["pos"]))]
+        G.add_edge(u, v, voxels=voxels, length=calculate_path_length(voxels), branch_order="B01", diameter_um=5.0)
+    G.add_node(7, pos=np.asarray((11.0, -20.0, 0.0)))
+    G.add_edge(6, 7, voxels=[(11.0, 0.0, 0.0), (11.0, -20.0, 0.0)], length=20.0, diameter_um=5.0)
+    page = _review_page(make_napari_viewer(), graph=G)
+    c = page.controls
+    c.review_choice.setCurrentText(CLOSE)
+    c.scan_button.click()
+    assert c.review_items.item(0).text().startswith("1. Nodes 1, 6: 1 µm apart")
+    assert _shown_buttons(c) == {ACTION_MERGE, ACTION_DELETE_SELECTED, ACTION_KEEP}
+
+    c.review_buttons[ACTION_MERGE].click()
+
+    graph = c.state.graph
+    assert 6 not in graph and graph.degree(1) == 5
+    assert c.review_items.count() == 0
+    assert "Merged junctions 1 and 6 into node 1" in c.log_box.toPlainText()
+
+
+def test_a_list_without_what_it_needs_says_so(make_napari_viewer):
+    page = _review_page(make_napari_viewer())
+    c = page.controls
+    c.review_choice.setCurrentText(DEAD_ENDS)
+    c.scan_button.click()
+    assert c.review_items.count() == 0
+    assert "Dead ends needs the segmented image in the viewer" in c.review_summary.text()
+    c.review_choice.setCurrentText("Flow outliers")
+    c.scan_button.click()
+    assert "needs a solved network" in c.status.text()
+
+
+def test_the_region_limits_a_list_to_round_the_view_centre(make_napari_viewer):
+    page = _review_page(make_napari_viewer())
+    c, viewer = page.controls, page.viewer
+    c.review_choice.setCurrentText(UNSOLVED)
+    viewer.camera.center = (0.0, 500.0, 500.0)
+    c.region.setValue(30.0)
+    c.scan_button.click()
+    assert c.review_items.count() == 0
+    viewer.camera.center = (0.0, 10.0, 10.0)
+    c.scan_button.click()
+    assert c.review_items.count() == 1
+    c.region.setValue(0.0)
+    viewer.camera.center = (0.0, 500.0, 500.0)
+    c.scan_button.click()
+    assert c.review_items.count() == 1
+
+
+def _t_network_and_mask():
+    """A trunk 0 - 1 - 2 along x in a segmented tube, and 1 -> 3 off it into
+    background: a dead end mostly off the mask, well inside the image."""
+    mask = np.zeros((25, 60, 60), dtype=np.uint8)
+    idx = np.indices(mask.shape)
+    mask[((idx[0] - 12) ** 2 + (idx[1] - 10) ** 2) <= 9] = 1
+    G = nx.MultiGraph()
+    for node, pos in {0: (12, 10, 0), 1: (12, 10, 30), 2: (12, 10, 59), 3: (12, 35, 30)}.items():
+        G.add_node(node, pos=np.asarray(pos, dtype=float))
+    for u, v in [(0, 1), (1, 2), (1, 3)]:
+        voxels = [tuple(map(float, G.nodes[u]["pos"])), tuple(map(float, G.nodes[v]["pos"]))]
+        G.add_edge(u, v, voxels=voxels, length=calculate_path_length(voxels), branch_order="B01", diameter_um=6.0)
+    return G, mask
+
+
+def _t_page(viewer, tmp_path):
+    G, mask = _t_network_and_mask()
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(image=mask, skeleton=np.zeros_like(mask, dtype=bool),
+                        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0)),
+    ))
+    _apply_layers(viewer, results.stage_finished("build_network", network(G)))
+    c = _post_processing_controls(
+        viewer, SimpleNamespace(value=""), results=lambda: results,
+        boundary_roles=lambda: {"inlet": (0,), "outlet": (2,)},
+        regenerate=lambda graph, stop_after=None: True, running=lambda: False,
+        settings=lambda: {"vtk_output_prefix": str(tmp_path / "run")},
+    )
+    c.refresh()
+    c.review_choice.setCurrentText(DEAD_ENDS)
+    return c
+
+
+def test_a_mask_list_is_made_in_the_background_and_its_dead_end_traced_on(make_napari_viewer, qtbot, tmp_path):
+    viewer = make_napari_viewer()
+    c = _t_page(viewer, tmp_path)
+
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+
+    assert c.scan_button.isEnabled()
+    assert c.review_items.count() == 1
+    assert c.review_items.item(0).text() == "1. Node 3: off mask, 25 µm"
+    assert _shown_buttons(c) == {ACTION_DELETE_ITEM, ACTION_TRACE_ON, ACTION_KEEP}
+    assert c.state.support is not None, "the segmented image is read once and kept"
+
+    c.review_buttons[ACTION_TRACE_ON].click()
+    assert c.state.mode == "add" and c.state.trace.start.node == 3
+    assert "Starting at node 3" in c.edit_status.text()
+    assert [d.decision for d in c.state.review_decisions] == ["traced on"]
+    c.add_button.click()  # cancel the trace
+
+    c.review_buttons[ACTION_DELETE_ITEM].click()
+    assert 3 not in c.state.graph
+    assert c.review_items.count() == 0
+    assert "Scan network again" in c.review_summary.text(), "a mask list may be out of date after an edit"
+    rows = _csv_rows(tmp_path / "run_dead_ends_review.csv")
+    assert [r["decision"] for r in rows] == ["traced on", "deleted"]
+    assert rows[0]["kinds"] == "off_mask"
+
+
+def test_the_scan_after_a_regenerate_says_what_it_changed(page):
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    keys = edge_keys(c.state.graph)
+    c.branch_ids.setText(str(next(i for i, k in enumerate(keys) if set(k[:2]) == {1, 5})))
+    c.delete_ids_button.click()
+    c.regenerate_button.click()
+    (edited,) = page.regenerated
+
+    # The regenerated run puts a new network in the viewer.
+    _apply_layers(viewer, page.results.stage_finished("build_network", network(edited.copy())))
+    c.scan_button.click()
+
+    assert "Since Regenerate: vessels 6 → 5; length 87 → 67 µm; unsolved 1 → 0." in c.status.text()
+    assert "Since Regenerate" in c.log_box.toPlainText()
+    c.scan_button.click()
+    assert "Since Regenerate" not in c.status.text(), "said once"

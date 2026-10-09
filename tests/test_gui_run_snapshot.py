@@ -549,3 +549,49 @@ def test_a_run_saved_before_loop_review_loads_with_none_and_a_bad_entry_is_left_
     with gzip.open(path, "wb") as handle:
         pickle.dump(payload, handle)
     assert read_run_snapshot(path).loop_reviews == _reviews()[:1]
+
+
+# --- the other review lists' decisions -----------------------------------------
+
+from haemolynx.gui.post_processing import ReviewDecision  # noqa: E402
+
+
+def _decisions():
+    return (
+        ReviewDecision("dead_ends", (1.0, 2.0, 3.0), KEPT, time="2026-10-09T16:00:00"),
+        ReviewDecision("close_junctions", (4.0, 5.0, 6.0), "merged", time="2026-10-09T16:01:00"),
+    )
+
+
+def test_a_runs_review_decisions_are_saved_and_loaded_with_it(tmp_path):
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(
+        checkpoints=checkpoints, results=results, settings=settings,
+        loop_reviews=_reviews(), review_decisions=_decisions(),
+    )
+
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "reviewed", snapshot))
+
+    assert loaded.review_decisions == _decisions()
+    assert loaded.loop_reviews == _reviews()
+
+
+def test_a_run_saved_before_the_review_lists_loads_with_no_decisions(tmp_path):
+    import gzip
+    import pickle
+
+    checkpoints, results, settings = _recorded(tmp_path)
+    path = write_run_snapshot(
+        tmp_path / "old", capture_run(checkpoints=checkpoints, results=results, settings=settings)
+    )
+    with gzip.open(path, "rb") as handle:
+        payload = pickle.load(handle)
+    del payload["review_decisions"]
+    with gzip.open(path, "wb") as handle:
+        pickle.dump(payload, handle)
+    assert read_run_snapshot(path).review_decisions == ()
+
+    payload["review_decisions"] = [_decisions()[1].as_dict(), {"kind": "dead_ends"}, None]
+    with gzip.open(path, "wb") as handle:
+        pickle.dump(payload, handle)
+    assert read_run_snapshot(path).review_decisions == _decisions()[1:]

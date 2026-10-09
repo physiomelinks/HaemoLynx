@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePath
 from typing import Any, Mapping, Sequence
 
-from haemolynx.gui.post_processing import LoopReview
+from haemolynx.gui.post_processing import LoopReview, ReviewDecision
 from haemolynx.gui.results import ResultLayers, copy_graph
 from haemolynx.gui.stage_checkpoints import (
     StageCheckpoint,
@@ -64,6 +64,8 @@ class RunSnapshot:
     paused_after: str | None = None
     #: Manual loop review's decisions, so a loaded run does not ask again.
     loop_reviews: tuple[LoopReview, ...] = ()
+    #: The other review lists' decisions (Post processing), likewise.
+    review_decisions: tuple[ReviewDecision, ...] = ()
 
     @property
     def stages(self) -> tuple[str, ...]:
@@ -120,6 +122,7 @@ def capture_run(
     report: str = "",
     paused_after: str | None = None,
     loop_reviews: Sequence[LoopReview] = (),
+    review_decisions: Sequence[ReviewDecision] = (),
 ) -> RunSnapshot:
     """Copy the live panel's run into a snapshot. Raises if there is none."""
     if not can_capture(checkpoints):
@@ -141,6 +144,7 @@ def capture_run(
         checkpoints=records,
         paused_after=paused_after,
         loop_reviews=tuple(loop_reviews),
+        review_decisions=tuple(review_decisions),
     )
 
 
@@ -162,6 +166,7 @@ def write_run_snapshot(path: Path | str, snapshot: RunSnapshot) -> Path:
         # Plain values, so a loop review read back does not depend on the
         # class it was saved from.
         "loop_reviews": [review.as_dict() for review in snapshot.loop_reviews],
+        "review_decisions": [decision.as_dict() for decision in snapshot.review_decisions],
     }
     with gzip.open(dest, "wb") as handle:
         pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
@@ -216,6 +221,7 @@ def read_run_snapshot(path: Path | str) -> RunSnapshot:
         checkpoints=checkpoints,
         paused_after=_paused_after(payload.get("paused_after"), checkpoints),
         loop_reviews=_loop_reviews(payload.get("loop_reviews")),
+        review_decisions=_review_decisions(payload.get("review_decisions")),
     )
 
 
@@ -224,6 +230,13 @@ def _loop_reviews(saved: Any) -> tuple[LoopReview, ...]:
     loop review existed. An entry that cannot be read is left out."""
     reviews = (LoopReview.from_dict(item) for item in (saved or ()))
     return tuple(review for review in reviews if review is not None)
+
+
+def _review_decisions(saved: Any) -> tuple[ReviewDecision, ...]:
+    """The review lists' decisions of a saved run; none for a run saved
+    before the lists existed. An entry that cannot be read is left out."""
+    decisions = (ReviewDecision.from_dict(item) for item in (saved or ()))
+    return tuple(decision for decision in decisions if decision is not None)
 
 
 def _paused_after(paused_after: str | None, checkpoints: Sequence[StageCheckpoint]) -> str | None:

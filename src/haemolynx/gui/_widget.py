@@ -9015,10 +9015,16 @@ def _post_processing_controls(
 
     The page edits one working copy of the graph: the junction table's
     Delete and Split, and the edit box's click-in-the-viewer Delete vessel and
-    Add vessel. The junction list, its table and their buttons sit behind the
-    "Manual 4+ vessel junction correction" checkbox, off at first; while it
-    is off a scan neither marks the 4+ junctions in the viewer nor zooms to
-    one. "Manual loop review", off at first too, lists the short loops still
+    Add vessel. The Review dropdown chooses the one list Scan network makes
+    (None at first: a scan then neither lists, marks nor zooms to anything).
+    "4+ junctions" shows the junction list, its table and their buttons.
+    The others are :mod:`haemolynx.graph.network_review`'s checks, made off
+    the GUI thread when they read the segmented image, optionally only round
+    the view centre; each item's buttons act on it, and every decision is
+    kept with the run (``state.review_decisions``) and added to
+    ``{stem}_{kind}_review.csv``. A regenerate's change to the network is
+    reported on the scan after it. "Short loops"
+    lists the short loops still
     to review, shortest first: picking one zooms to it and lists its sides,
     and Delete this side or Keep decides it -- a decision kept with the run
     (``state.loop_reviews``, saved in the ``.haemorun``) and added to
@@ -9035,7 +9041,6 @@ def _post_processing_controls(
     """
     from qtpy.QtWidgets import (
         QAbstractItemView,
-        QCheckBox,
         QComboBox,
         QDoubleSpinBox,
         QGroupBox,
@@ -9063,7 +9068,9 @@ def _post_processing_controls(
         edge_keys,
         has_pending_edits,
         mask_cost_field,
+        merge_junctions,
         prune_disconnected_branches,
+        set_vessel_diameter,
         short_loops,
         split_junction,
         trace_path,
@@ -9071,8 +9078,44 @@ def _post_processing_controls(
         write_connectivity_csv,
     )
     from haemolynx.graph.lumen_loops import LOOP_SEARCH_UM
+    from haemolynx.graph.network_review import REVIEW_KINDS, UNCOVERED_MASK, flow_reference, within, z_range_around
     from haemolynx.gui.chrome_tooltips import POST_PROCESSING_TOOLTIPS as tips
     from haemolynx.gui.post_processing import (
+        ACTION_DELETE_ITEM,
+        ACTION_DELETE_SELECTED,
+        ACTION_JOIN,
+        ACTION_KEEP,
+        ACTION_LABELS,
+        ACTION_MERGE,
+        ACTION_SET_DIAMETER,
+        ACTION_TRACE_ON,
+        NEEDS_MASK,
+        REVIEW_JUNCTIONS,
+        REVIEW_LIST_BY_KEY,
+        REVIEW_LIST_BY_LABEL,
+        REVIEW_LISTS,
+        REVIEW_LOOPS,
+        REVIEW_MARKERS,
+        REVIEW_NONE,
+        REVIEW_REGION,
+        REVIEW_TABLE_COLUMNS,
+        ReviewDecision,
+        append_review_record,
+        find_review_items,
+        item_still_there,
+        items_to_review,
+        network_summary,
+        review_box_um,
+        review_csv_path,
+        review_label,
+        review_marker_layer,
+        review_mask_support,
+        review_needs_missing,
+        review_record,
+        review_region_layer,
+        review_table_rows,
+        summary_change,
+        view_centre_zyx,
         ADDED_NODES,
         HIGH_DEGREE_JUNCTIONS,
         JUNCTION_TABLE_COLUMNS,
@@ -9148,28 +9191,65 @@ def _post_processing_controls(
         loop_reviews=[],
         #: Where the decisions were written last.
         loop_csv=None,
+        #: The review list a scan made (a network_review kind, or None), its
+        #: items still to review, the one picked, its row, and its vessels
+        #: as the table lists them.
+        review_key=None,
+        review_items=[],
+        review_item=None,
+        review_row=None,
+        review_edges=[],
+        #: An edit since a mask list was made: its items may be out of date.
+        review_stale=False,
+        #: The decisions made since the list was made: an item acted on stays
+        #: off it until the next scan, though a list made again would find it.
+        review_acted=[],
+        #: (centre, radius) the list was made round; radius 0 is everywhere.
+        review_scope=(None, 0.0),
+        #: A list being made off the GUI thread, and the worker making it.
+        scanning=False,
+        review_worker=None,
+        #: Every decision made about a review item (ReviewDecisions), kept
+        #: with the run: a kept item is not listed again.
+        review_decisions=[],
+        #: (segmented image, its MaskSupport): made once per image.
+        support=None,
+        #: The network as the run that was scanned solved it (a
+        #: NetworkSummary), and as it was before the regenerate under way,
+        #: for the next scan to say what changed.
+        summary_scanned=None,
+        summary_before=None,
     )
 
     page = QWidget()
     page.setObjectName("haemolynx_post_processing")
     layout = QVBoxLayout(page)
     intro = QLabel(
-        "Fix the network by hand: vessels to add or delete; with Manual 4+ "
-        "vessel junction correction on, junctions where four or more vessels "
-        "meet; and with Manual loop review on, short loops to keep or open. "
+        "Fix the network by hand: vessels to add or delete, and the list "
+        "chosen under Review -- junctions where four or more vessels meet, "
+        "short loops, or one of the checks on the network -- to work through. "
         "Edits stay in the viewer until Regenerate graph brings them in "
         "line with the rest of the network and reruns Haemodynamics on it. With "
         "Mid-run postprocessing on (1. Input), a run pauses here after "
         "Haemodynamics and Continue runs Perturbations onwards."
     )
     intro.setWordWrap(True)
+    review_choice = QComboBox()
+    review_choice.setObjectName("haemolynx_post_processing_review_choice")
+    review_choice.addItems([entry.label for entry in REVIEW_LISTS])
+    review_choice.setToolTip(tips["review_choice"])
+    region = QDoubleSpinBox()
+    region.setObjectName("haemolynx_post_processing_region")
+    region.setRange(0.0, 100000.0)
+    region.setDecimals(0)
+    region.setSingleStep(50.0)
+    region.setSuffix(" µm")
+    region.setSpecialValueText("the whole network")
+    region.setToolTip(tips["region"])
     scan_button = QPushButton("Scan network")
     scan_button.setToolTip(tips["scan"])
     status = QLabel("Not scanned yet.")
     status.setWordWrap(True)
-    junction_toggle = QCheckBox("Manual 4+ vessel junction correction")
-    junction_toggle.setObjectName("haemolynx_post_processing_junction_toggle")
-    junction_toggle.setToolTip(tips["junction_correction"])
     junction_list = QListWidget()
     junction_list.setObjectName("haemolynx_post_processing_junctions")
     junction_list.setToolTip(tips["junctions"])
@@ -9298,11 +9378,8 @@ def _post_processing_controls(
     junction_layout.addLayout(row)
     junction_box.setVisible(False)
 
-    # Manual loop review: the same shape -- a list, a table of the chosen
-    # loop's sides and the buttons deciding it -- under its own checkbox.
-    loop_toggle = QCheckBox("Manual loop review")
-    loop_toggle.setObjectName("haemolynx_post_processing_loop_toggle")
-    loop_toggle.setToolTip(tips["loop_review"])
+    # Short loops: the same shape -- a list, a table of the chosen loop's
+    # sides and the buttons deciding it -- shown while it is the list chosen.
     loop_list = QListWidget()
     loop_list.setObjectName("haemolynx_post_processing_loops")
     loop_list.setToolTip(tips["loops"])
@@ -9344,13 +9421,82 @@ def _post_processing_controls(
     loop_layout.addLayout(row)
     loop_box.setVisible(False)
 
+    # Every other review list: its items, the chosen item's vessels, and the
+    # buttons its list offers (ReviewList.actions), the others hidden.
+    review_box = QWidget()
+    review_box.setObjectName("haemolynx_post_processing_review_box")
+    review_layout = QVBoxLayout(review_box)
+    review_layout.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 0)
+    review_colours = QLabel(
+        "A magenta ring marks each item; the chosen item's vessels are cyan "
+        "and the ones selected in its table yellow."
+    )
+    review_colours.setWordWrap(True)
+    review_summary = QLabel("")
+    review_summary.setObjectName("haemolynx_post_processing_review_summary")
+    review_summary.setWordWrap(True)
+    review_items = QListWidget()
+    review_items.setObjectName("haemolynx_post_processing_review_items")
+    review_items.setToolTip(tips["review_items"])
+    review_items.setMinimumHeight(80)
+    review_why = QLabel("")
+    review_why.setObjectName("haemolynx_post_processing_review_why")
+    review_why.setWordWrap(True)
+    review_table = QTableWidget(0, len(REVIEW_TABLE_COLUMNS))
+    review_table.setObjectName("haemolynx_post_processing_review_table")
+    review_table.setToolTip(tips["review_table"])
+    review_table.setHorizontalHeaderLabels(list(REVIEW_TABLE_COLUMNS))
+    review_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    review_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+    review_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    review_table.verticalHeader().setVisible(False)
+    review_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    review_table.setMinimumHeight(90)
+    review_buttons = {}
+    for action, text in ACTION_LABELS.items():
+        button = QPushButton(text)
+        button.setObjectName(f"haemolynx_post_processing_review_{action}")
+        button.setToolTip(tips[f"review_{action}"])
+        review_buttons[action] = button
+    review_diameter = QDoubleSpinBox()
+    review_diameter.setObjectName("haemolynx_post_processing_review_diameter")
+    review_diameter.setToolTip(tips["review_diameter"])
+    review_diameter.setRange(0.1, 1000.0)
+    review_diameter.setDecimals(2)
+    review_diameter.setSuffix(" µm")
+    review_diameter.setValue(5.0)
+    review_layout.addWidget(review_colours)
+    review_layout.addWidget(review_summary)
+    review_layout.addWidget(review_items)
+    review_layout.addWidget(review_why)
+    review_layout.addWidget(QLabel("Vessels of the chosen item:"))
+    review_layout.addWidget(review_table)
+    row = QHBoxLayout()
+    for action in (ACTION_MERGE, ACTION_DELETE_SELECTED, ACTION_DELETE_ITEM, ACTION_TRACE_ON, ACTION_JOIN):
+        row.addWidget(review_buttons[action])
+    review_layout.addLayout(row)
+    row = QHBoxLayout()
+    row.addWidget(review_buttons[ACTION_SET_DIAMETER])
+    row.addWidget(review_diameter)
+    row.addWidget(review_buttons[ACTION_KEEP])
+    review_layout.addLayout(row)
+    review_box.setVisible(False)
+
     layout.addWidget(intro)
+    row = QHBoxLayout()
+    row.addWidget(QLabel("Review:"))
+    row.addWidget(review_choice, 1)
+    layout.addLayout(row)
+    row = QHBoxLayout()
+    row.addWidget(QLabel("Only within"))
+    row.addWidget(region, 1)
+    row.addWidget(QLabel("of the view centre"))
+    layout.addLayout(row)
     layout.addWidget(scan_button)
     layout.addWidget(status)
-    layout.addWidget(junction_toggle)
     layout.addWidget(junction_box)
-    layout.addWidget(loop_toggle)
     layout.addWidget(loop_box)
+    layout.addWidget(review_box)
     layout.addWidget(edit_box)
     layout.addWidget(prune_button)
     layout.addWidget(QLabel("What was changed:"))
@@ -9381,6 +9527,10 @@ def _post_processing_controls(
         rows = sorted({index.row() for index in loop_table.selectionModel().selectedRows()})
         return rows[0] if rows and rows[0] < len(state.loop.sides) else None
 
+    def selected_review_rows() -> list[int]:
+        rows = sorted({index.row() for index in review_table.selectionModel().selectedRows()})
+        return [r for r in rows if r < len(state.review_edges)]
+
     def recolour() -> None:
         """Colour the vessels layer (and its tubes) by status: cheap, no rebuild."""
         vessels = layer(VESSELS)
@@ -9397,10 +9547,16 @@ def _post_processing_controls(
             side = selected_side()
             if side is not None:
                 loop_side = loop_branch_ids(state.graph, state.loop, side)
+        in_item: list[int] = []
+        item_selected: list[int] = []
+        if state.review_item is not None and state.graph is not None:
+            ids = [branch_id_of(state.graph, edge) for edge in state.review_edges]
+            in_item = [i for i in ids if i is not None]
+            item_selected = [ids[r] for r in selected_review_rows() if ids[r] is not None]
         labels = vessel_status(
             np.asarray(features["edge_index"]),
-            at_junction=[v.branch_id for v in state.vessels] + in_loop,
-            selected=[state.vessels[r].branch_id for r in chosen] + loop_side,
+            at_junction=[v.branch_id for v in state.vessels] + in_loop + in_item,
+            selected=[state.vessels[r].branch_id for r in chosen] + loop_side + item_selected,
             added=added_vessel_ids(state.graph) if state.graph is not None else (),
         )
         vessels.edge_color = status_colours(labels)
@@ -9410,8 +9566,12 @@ def _post_processing_controls(
         if not getattr(vessels, "_haemolynx_follow_tubes", False):
             _maybe_retint_vessel_tubes(vessels)
 
+    def review_entry():
+        """The Review dropdown's entry (a ReviewList)."""
+        return REVIEW_LIST_BY_LABEL.get(review_choice.currentText(), REVIEW_LISTS[0])
+
     def junctions_on() -> bool:
-        return junction_toggle.isChecked()
+        return review_entry().key == REVIEW_JUNCTIONS
 
     def draw_markers() -> None:
         if viewer is None or state.graph is None or state.scan is None:
@@ -9538,6 +9698,7 @@ def _post_processing_controls(
         draw_added_nodes()
         fill_list(prefer)
         rescan_loops(state.loop_row)
+        refresh_review(state.review_row)
         refresh_buttons()
 
     def is_paused() -> bool:
@@ -9571,13 +9732,29 @@ def _post_processing_controls(
             text = ""
         commit_status.setText(text)
 
-    def on_junction_correction_toggled(on: bool) -> None:
-        """Show the 4+ junctions and their edits, picking one; or put them away."""
-        junction_box.setVisible(on)
+    def on_review_choice_changed(_text) -> None:
+        """Show the chosen list's page and put the others' away. Nothing is
+        listed until Scan network makes the list: a mask check can take a
+        while on a large stack."""
+        key = review_entry().key
+        junction_box.setVisible(key == REVIEW_JUNCTIONS)
+        loop_box.setVisible(key == REVIEW_LOOPS)
+        review_box.setVisible(key in REVIEW_KINDS)
         if state.scan is None:
             return
-        draw_markers()
-        fill_list(prefer=state.node)
+        drop_layer(HIGH_DEGREE_JUNCTIONS)
+        junction_list.clear()
+        show_vessels(None)
+        state.loops, state.loop, state.loop_row = [], None, None
+        loop_list.clear()
+        show_loop(None)
+        loop_summary.setText("")
+        clear_review()
+        recolour()
+        if key == REVIEW_NONE:
+            status.setText(f"{state.scan.vessel_count} vessels; no list chosen.")
+        else:
+            status.setText(f"Press Scan network to list {review_entry().label.lower()}.")
 
     def on_junction_changed(row: int) -> None:
         if state.scan is None or not 0 <= row < len(state.scan.junctions):
@@ -9605,16 +9782,41 @@ def _post_processing_controls(
         stop_editing()
         # The viewer shows this tab's own edited graph until Regenerate: its
         # added nodes are still the ones to mark. Any other graph is a new run.
-        if graph is not state.graph:
+        new_run = graph is not state.graph
+        if new_run:
             state.added_nodes = []
         state.raw = state.raw_problem = None
         state.graph = copy_graph(graph)
         state.decisions = {}
+        clear_review()
         # The vessels on screen are already this graph: recolour, no rebuild.
         rescan(redraw=False)
         attach_click_callbacks()
-        report.value = f"Post processing: {state.scan.summary}"
-        log_edit(f"Scanned the network: {state.scan.summary}")
+        text = scanned_text()
+        status.setText(text)
+        if new_run:
+            # A new run's network as solved: what the next regenerate is
+            # measured against, and -- after one -- what it changed.
+            summary = network_summary(graph, state.inlets, state.outlets)
+            if state.summary_before is not None:
+                change = summary_change(state.summary_before, summary)
+                if change:
+                    text = f"{text} Since Regenerate: {change}."
+                    status.setText(text)
+                state.summary_before = None
+            state.summary_scanned = summary
+        report.value = f"Post processing: {text}"
+        log_edit(f"Scanned the network: {text}")
+        scan_review()
+
+    def scanned_text() -> str:
+        """What the status line says a scan found, for the list chosen."""
+        key = review_entry().key
+        if key == REVIEW_LOOPS:
+            return loop_counts()
+        if key == REVIEW_JUNCTIONS:
+            return state.scan.summary
+        return f"{state.scan.vessel_count} vessels" + ("; no list chosen." if key == REVIEW_NONE else ".")
 
     def export_connectivity(path, *, only_inlet_to_outlet: bool | None = None) -> Path | None:
         """Write how the network on screen is connected to *path*.
@@ -9843,7 +10045,7 @@ def _post_processing_controls(
     # --- Manual loop review ------------------------------------------------------
 
     def loops_on() -> bool:
-        return loop_toggle.isChecked()
+        return review_entry().key == REVIEW_LOOPS
 
     def show_loop(loop) -> None:
         """List *loop*'s sides in the table (None: an empty table)."""
@@ -9910,13 +10112,6 @@ def _post_processing_controls(
             except Exception:  # noqa: BLE001 - turning is a convenience, never fatal
                 logger.exception("could not turn the viewer to the loop's plane")
         _zoom_viewer_to(viewer, view.centre_um, box_um=view.box_um)
-
-    def on_loop_review_toggled(on: bool) -> None:
-        """List the short loops and pick one, or put them away."""
-        loop_box.setVisible(on)
-        if state.scan is None:
-            return
-        rescan_loops(state.loop_row)
 
     def on_loop_changed(row: int) -> None:
         if not 0 <= row < len(state.loops):
@@ -10003,6 +10198,408 @@ def _post_processing_controls(
             f"Post processing: deleted side {side + 1} of a {loop.length_um:.3g} µm loop. "
             f"{len(state.loops)} short loop(s) left to review."
         )
+
+    # --- the other review lists -----------------------------------------------------
+
+    def view_centre():
+        """The point mid-screen, physical (z, y, x); None without a viewer."""
+        if viewer is None:
+            return None
+        try:
+            offset = max(0, int(viewer.dims.ndim) - 3)
+            displayed = [int(axis) - offset for axis in viewer.dims.displayed]
+            point = [float(p) for p in list(viewer.dims.point)[offset:]]
+            return view_centre_zyx(viewer.camera.center, displayed, point)
+        except Exception:  # noqa: BLE001 - the whole network is listed instead
+            logger.exception("could not read the view centre")
+            return None
+
+    def region_scope():
+        """``(centre, radius)`` a scan is limited to; radius 0 is everywhere."""
+        radius = float(region.value())
+        return (view_centre() if radius > 0 else None), radius
+
+    def segmented_image():
+        image = layer(IMAGE)
+        return None if image is None else image.data
+
+    def image_extent(image, voxel):
+        if image is None:
+            return None
+        return tuple((np.asarray(np.shape(image)[-3:], dtype=float) - 1.0) * np.asarray(voxel, dtype=float))
+
+    def review_roles() -> dict:
+        """The boundary nodes by role, as the network on the tab has them."""
+        roles = dict(boundary_roles() or {})
+        roles["inlet"], roles["outlet"] = state.inlets, state.outlets
+        graph = state.graph
+        return {
+            role: tuple(n for n in (nodes or ()) if graph is not None and n in graph)
+            for role, nodes in roles.items()
+        }
+
+    def review_counts() -> str:
+        entry = REVIEW_LIST_BY_KEY.get(state.review_key) or review_entry()
+        mine = [d for d in state.review_decisions if d.kind == entry.key]
+        kept = sum(d.decision == KEPT for d in mine)
+        text = (
+            f"{len(state.review_items)} item(s) in {entry.label.lower()} to review; "
+            f"{kept} kept and {len(mine) - kept} acted on so far."
+        )
+        if state.review_stale:
+            text += " The network was edited since this list was made: Scan network again to bring it up to date."
+        return text
+
+    def refresh_review_buttons() -> None:
+        """Show the chosen list's buttons only, usable once an item is picked."""
+        entry = review_entry()
+        for action, button in review_buttons.items():
+            button.setVisible(action in entry.actions)
+            button.setEnabled(state.review_item is not None and not state.scanning)
+        review_diameter.setVisible(ACTION_SET_DIAMETER in entry.actions)
+        scan_button.setEnabled(not state.scanning)
+
+    def show_review_item(item) -> None:
+        """List *item*'s vessels in the table (None: an empty table)."""
+        state.review_item = item
+        review_table.blockSignals(True)
+        review_table.clearSelection()
+        if item is None or state.graph is None:
+            state.review_edges = []
+            review_table.setRowCount(0)
+            review_why.setText("")
+        else:
+            state.review_edges, rows = review_table_rows(
+                state.graph, item, flow_reference=flow_reference(state.graph, state.inlets)
+            )
+            review_table.setRowCount(len(rows))
+            for r, cells in enumerate(rows):
+                for c, text in enumerate(cells):
+                    review_table.setItem(r, c, QTableWidgetItem(text))
+            review_why.setText(item.why)
+            widths = [state.graph.edges[e].get("diameter_um") for e in state.review_edges]
+            suggested = (item.measures or {}).get("edt_diameter_um") or next(
+                (float(w) for w in widths if w), None
+            )
+            if suggested:
+                review_diameter.setValue(float(suggested))
+        review_table.blockSignals(False)
+        region_layer = [review_region_layer(item)] if item is not None and item.kind == UNCOVERED_MASK else []
+        put_layers(region_layer, (REVIEW_REGION,))
+        refresh_review_buttons()
+
+    def fill_review(prefer_row=None) -> None:
+        """List the review items and pick the one at *prefer_row* -- where the
+        item just decided was, so the next one comes up -- or the first."""
+        review_items.blockSignals(True)
+        review_items.clear()
+        for number, item in enumerate(state.review_items, start=1):
+            review_items.addItem(review_label(item, number))
+        review_items.blockSignals(False)
+        review_summary.setText(review_counts() if state.review_key else "")
+        put_layers([review_marker_layer(state.review_items)] if state.review_items else [], (REVIEW_MARKERS,))
+        if not state.review_items:
+            state.review_row = None
+            show_review_item(None)
+            recolour()
+            return
+        row = prefer_row if isinstance(prefer_row, int) else 0
+        review_items.setCurrentRow(min(max(row, 0), len(state.review_items) - 1))
+
+    def clear_review() -> None:
+        """Forget the list made last, and take its markers away."""
+        state.review_key = None
+        state.review_items, state.review_item, state.review_row, state.review_edges = [], None, None, []
+        state.review_stale = False
+        state.review_acted = []
+        review_items.blockSignals(True)
+        review_items.clear()
+        review_items.blockSignals(False)
+        review_summary.setText("")
+        show_review_item(None)
+        put_layers((), (REVIEW_MARKERS, REVIEW_REGION))
+
+    def on_review_item_changed(row: int) -> None:
+        if not 0 <= row < len(state.review_items):
+            return
+        state.review_row = row
+        item = state.review_items[row]
+        show_review_item(item)
+        recolour()
+        _zoom_viewer_to(viewer, item.centre_um, box_um=review_box_um(item))
+
+    def make_review(key, graph, *, image, roles, values, scope, voxel, support):
+        """The items of list *key* on *graph*, and the MaskSupport used (made
+        here when *support* is None and the list reads the mask). Touches no
+        widget, so a mask list can run off the GUI thread."""
+        uses_mask = REVIEW_LIST_BY_KEY[key].uses_mask
+        centre, radius = scope
+        z_range = None
+        if uses_mask:
+            if support is None:
+                support = review_mask_support(image, voxel, values)
+            z_range = z_range_around(centre, radius, voxel, int(np.shape(image)[-3]))
+        items = find_review_items(
+            key, graph, support=support if uses_mask else None, roles=roles, settings=values,
+            extent_um=image_extent(image, voxel), z_range=z_range,
+        )
+        return within(items, centre, radius), support
+
+    def finish_review(key, items, image=None, support=None) -> None:
+        """A list was made: show it, unless the tab has moved on since."""
+        state.scanning = False
+        if support is not None and image is not None:
+            state.support = (image, support)
+        entry = REVIEW_LIST_BY_KEY[key]
+        if review_entry().key != key or state.graph is None:
+            refresh_review_buttons()
+            return
+        state.review_key = key
+        state.review_items = items_to_review(
+            [item for item in items if item_still_there(state.graph, item)], state.review_decisions
+        )
+        state.review_stale = False
+        state.review_acted = []
+        fill_review()
+        status.setText(review_counts())
+        report.value = f"Post processing: {review_counts()}"
+        log_edit(f"Listed {entry.label.lower()}: {len(state.review_items)} item(s)")
+        refresh_review_buttons()
+
+    def scan_review() -> None:
+        """Make the review list chosen -- off the GUI thread when it reads
+        the segmented image, which can take a while on a large stack."""
+        entry = review_entry()
+        if entry.key not in REVIEW_KINDS or state.graph is None:
+            return
+        image = segmented_image()
+        roles = review_roles()
+        missing = review_needs_missing(
+            entry, state.graph, has_mask=image is not None,
+            inlets=roles.get("inlet", ()), outlets=roles.get("outlet", ()),
+        )
+        if missing:
+            text = f"{entry.label} needs {missing}, which this run does not have."
+            review_summary.setText(text)
+            status.setText(text)
+            return
+        values = read_settings() or {}
+        voxel = voxel_size()
+        state.review_scope = region_scope()
+        cached = state.support[1] if state.support is not None and state.support[0] is image else None
+        options = dict(image=image, roles=roles, values=values, scope=state.review_scope, voxel=voxel, support=cached)
+        if not entry.uses_mask:
+            items, _support = make_review(entry.key, state.graph, **options)
+            finish_review(entry.key, items)
+            return
+        from napari.qt.threading import thread_worker
+
+        graph = copy_graph(state.graph)
+        state.scanning = True
+        refresh_review_buttons()
+        status.setText(f"Scanning the network for {entry.label.lower()}...")
+
+        @thread_worker
+        def work():
+            return make_review(entry.key, graph, **options)
+
+        def failed(error) -> None:
+            state.scanning = False
+            refresh_review_buttons()
+            status.setText(f"Could not list {entry.label.lower()}: {error}")
+            logger.error("could not list %s: %s", entry.label, error)
+
+        worker = work()
+        worker.returned.connect(lambda result: finish_review(entry.key, result[0], image, result[1]))
+        worker.errored.connect(failed)
+        state.review_worker = worker
+        worker.start()
+
+    def refresh_review(prefer_row=None) -> None:
+        """After an edit: a list that does not read the mask is made again; a
+        mask list loses what the edit took away and says it may be out of
+        date. Either way an item acted on stays off it until the next scan."""
+        if state.review_key is None or state.graph is None or state.scanning:
+            return
+        entry = REVIEW_LIST_BY_KEY[state.review_key]
+        if entry.uses_mask:
+            items = [item for item in state.review_items if item_still_there(state.graph, item)]
+            state.review_stale = True
+        else:
+            image = segmented_image()
+            items, _support = make_review(
+                entry.key, state.graph, image=image, roles=review_roles(), values=read_settings() or {},
+                scope=state.review_scope, voxel=voxel_size(), support=None,
+            )
+            items = items_to_review(items, state.review_decisions)
+        state.review_items = [item for item in items if not any(d.matches(item) for d in state.review_acted)]
+        fill_review(prefer_row)
+
+    def record_for(item, decision: str):
+        """The decision about *item* and its CSV row, read before the edit
+        it records changes the network."""
+        review = ReviewDecision.of(item, decision, time=now())
+        return review, review_record(state.graph, item, review, voxel_size_zyx=voxel_size())
+
+    def keep_record(review, row) -> str:
+        """Keep *review* with the run and add *row* to its list's CSV; what to say about it."""
+        state.review_decisions.append(review)
+        state.review_acted = [*state.review_acted, review]
+        path = review_csv_path(read_settings(), review.kind)
+        if path is None:
+            return (
+                " Not written to a CSV: there is no output folder for the VTK "
+                "output prefix (10. Export) on this machine yet."
+            )
+        try:
+            written = append_review_record(path, row)
+        except OSError as error:
+            return f" Could not write {path}: {error.strerror or error}."
+        return f" Recorded in {written.name}."
+
+    def chosen_item():
+        if state.graph is None or state.review_item is None:
+            review_summary.setText("Scan the network and pick an item first.")
+            return None
+        return state.review_item
+
+    def after_review_edit(text: str, written: str) -> None:
+        drop_trace_after_edit()
+        rescan(prefer=state.node)
+        review_summary.setText(review_counts() + written)
+        report.value = f"Post processing: {text}. {review_counts()}"
+
+    def on_review_keep() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        written = keep_record(*record_for(item, KEPT))
+        log_edit(f"Kept: {item.why}")
+        state.review_items = [i for i in state.review_items if i is not item]
+        fill_review(state.review_row)
+        review_summary.setText(review_counts() + written)
+
+    def on_review_delete(selected_only: bool) -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        if selected_only:
+            rows = selected_review_rows()
+            if not rows:
+                review_summary.setText("Select one or more vessels in the table first.")
+                return
+            edges = [state.review_edges[r] for r in rows]
+        else:
+            edges = list(state.review_edges)
+        described = describe_vessels(state.graph, edges)
+        review, row = record_for(item, "deleted")
+        try:
+            delete_vessels(state.graph, edges, protected=state.protected)
+        except ValueError as error:
+            review_summary.setText(str(error))
+            log_edit(f"Delete of {described} refused, {error}")
+            return
+        written = keep_record(review, row)
+        log_edit(f"Deleted {described} ({item.why})")
+        after_review_edit(f"deleted {len(edges)} vessel(s)", written)
+
+    def on_review_merge() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        u, v, key = item.edges[0]
+        review, row = record_for(item, "merged")
+        try:
+            merged = merge_junctions(state.graph, u, v, key, protected=state.protected)
+        except ValueError as error:
+            review_summary.setText(str(error))
+            log_edit(f"Merge of junctions {u} and {v} refused, {error}")
+            return
+        written = keep_record(review, row)
+        log_edit(f"Merged junctions {u} and {v} into node {merged}")
+        after_review_edit(f"merged junctions {u} and {v} into node {merged}", written)
+
+    def on_review_trace_on() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        tip = item.nodes[0]
+        if tip not in state.graph:
+            review_summary.setText(f"Node {tip} is no longer in the network: scan it again.")
+            return
+        written = keep_record(*record_for(item, "traced on"))
+        log_edit(f"Tracing on from dead end {tip}")
+        drop_trace()
+        state.mode = "add"
+        attach_click_callbacks()
+        vessels = layer(VESSELS)
+        if vessels is not None:
+            viewer.layers.selection.active = vessels
+        state.trace = VesselTrace.starting_at(VesselEnd.at_node(tip), state.graph)
+        show_mode()
+        draw_trace()
+        set_edit_status(
+            f"Starting at node {tip}. Click along the vessel to trace it; click another "
+            "node or vessel to finish it, or press Add vessel to cancel."
+        )
+        review_summary.setText(review_counts() + written)
+
+    def on_review_join() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        a, b = item.nodes[:2]
+        if a not in state.graph or b not in state.graph:
+            review_summary.setText("An end of this pair is no longer in the network: scan it again.")
+            return
+        route = trace_route()
+        path = trace_path(
+            route.cost,
+            tuple(np.asarray(state.graph.nodes[a]["pos"], dtype=float)[:3]),
+            tuple(np.asarray(state.graph.nodes[b]["pos"], dtype=float)[:3]),
+            voxel_size_zyx=voxel_size(),
+        )
+        review, row = record_for(item, "joined")
+        try:
+            added = add_traced_vessel(
+                state.graph, VesselEnd.at_node(a), VesselEnd.at_node(b), path,
+                reserved_ids=state.protected, voxel_size_zyx=voxel_size(),
+                smoothing=smoothing_settings(),
+            )
+        except ValueError as error:
+            review_summary.setText(str(error))
+            log_edit(f"Join of dead ends {a} and {b} refused, {error}")
+            return
+        written = keep_record(review, row)
+        state.added_nodes.extend(added.new_nodes)
+        log_edit(
+            f"Joined dead ends {a} and {b}: added {describe_vessels(state.graph, [added.edge])}, "
+            f"traced {route.how}{route.note}"
+        )
+        after_review_edit(f"joined dead ends {a} and {b}", written)
+
+    def on_review_set_diameter() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        rows = selected_review_rows()
+        edges = [state.review_edges[r] for r in rows]
+        if not edges and len(state.review_edges) == 1:
+            edges = list(state.review_edges)
+        if not edges:
+            review_summary.setText("Select the vessels to give the diameter in the table first.")
+            return
+        width = float(review_diameter.value())
+        described = describe_vessels(state.graph, edges)
+        review, row = record_for(item, f"diameter set to {width:g} um")
+        try:
+            set_vessel_diameter(state.graph, edges, width)
+        except ValueError as error:
+            review_summary.setText(str(error))
+            return
+        written = keep_record(review, row)
+        log_edit(f"Set the diameter of {described} to {width:g} µm")
+        after_review_edit(f"set {len(edges)} vessel(s) to {width:g} µm across", written)
 
     # --- editing by clicking in the viewer ------------------------------------
 
@@ -10413,12 +11010,15 @@ def _post_processing_controls(
             refresh_buttons()
             return
         log_edit(note)
+        # What the regenerated network is compared with when it is scanned.
+        state.summary_before = state.summary_scanned
+        clear_review()
         remove_layers()
         state.graph = state.scan = state.node = None
         state.vessels = []
         state.added_nodes = []
-        # The loop decisions stay: they are the run's, and are matched to the
-        # regenerated network's loops by position.
+        # The loop and review decisions stay: they are the run's, and are
+        # matched to the regenerated network's loops and items by position.
         state.loops, state.loop, state.loop_row = [], None, None
         junction_list.clear()
         table.setRowCount(0)
@@ -10505,13 +11105,22 @@ def _post_processing_controls(
         )
 
     scan_button.clicked.connect(on_scan)
-    junction_toggle.toggled.connect(on_junction_correction_toggled)
+    review_choice.currentTextChanged.connect(on_review_choice_changed)
     junction_list.currentRowChanged.connect(on_junction_changed)
     table.itemSelectionChanged.connect(recolour)
     delete_button.clicked.connect(on_delete)
     split_button.clicked.connect(on_split)
     leave_button.clicked.connect(on_leave)
-    loop_toggle.toggled.connect(on_loop_review_toggled)
+    review_items.currentRowChanged.connect(on_review_item_changed)
+    review_table.itemSelectionChanged.connect(recolour)
+    review_buttons[ACTION_KEEP].clicked.connect(on_review_keep)
+    review_buttons[ACTION_DELETE_SELECTED].clicked.connect(lambda: on_review_delete(True))
+    review_buttons[ACTION_DELETE_ITEM].clicked.connect(lambda: on_review_delete(False))
+    review_buttons[ACTION_MERGE].clicked.connect(on_review_merge)
+    review_buttons[ACTION_TRACE_ON].clicked.connect(on_review_trace_on)
+    review_buttons[ACTION_JOIN].clicked.connect(on_review_join)
+    review_buttons[ACTION_SET_DIAMETER].clicked.connect(on_review_set_diameter)
+    refresh_review_buttons()
     loop_list.currentRowChanged.connect(on_loop_changed)
     loop_table.itemSelectionChanged.connect(recolour)
     loop_delete_button.clicked.connect(on_loop_delete)
@@ -10549,6 +11158,10 @@ def _post_processing_controls(
         state.loops, state.loop, state.loop_row = [], None, None
         state.loop_reviews = []
         state.loop_csv = None
+        clear_review()
+        state.review_decisions = []
+        state.support = None
+        state.summary_scanned = state.summary_before = None
         junction_list.clear()
         table.setRowCount(0)
         loop_list.clear()
@@ -10567,7 +11180,8 @@ def _post_processing_controls(
         continue_button=continue_button,
         commit_status=commit_status,
         scan_button=scan_button,
-        junction_toggle=junction_toggle,
+        review_choice=review_choice,
+        region=region,
         junction_box=junction_box,
         junction_list=junction_list,
         table=table,
@@ -10575,13 +11189,19 @@ def _post_processing_controls(
         split_button=split_button,
         connector=connector,
         leave_button=leave_button,
-        loop_toggle=loop_toggle,
         loop_box=loop_box,
         loop_list=loop_list,
         loop_table=loop_table,
         loop_delete_button=loop_delete_button,
         loop_keep_button=loop_keep_button,
         loop_summary=loop_summary,
+        review_box=review_box,
+        review_items=review_items,
+        review_table=review_table,
+        review_buttons=review_buttons,
+        review_diameter=review_diameter,
+        review_why=review_why,
+        review_summary=review_summary,
         click_delete_button=click_delete_button,
         add_button=add_button,
         trace_source=trace_source,
@@ -12746,6 +13366,7 @@ def settings_widget(napari_viewer=None):
                 report=str(report.value or ""),
                 paused_after=run_state.paused_after,
                 loop_reviews=tuple(post_processing.state.loop_reviews),
+                review_decisions=tuple(post_processing.state.review_decisions),
             )
         except RunSnapshotError as error:
             report.value = str(error)
@@ -12812,9 +13433,10 @@ def settings_widget(napari_viewer=None):
         for moved in relocated:
             logger.info("Loaded run: %s moved from %s to %s", moved.name, moved.old, moved.new)
         _strip_session_for_load()
-        # Manual loop review's decisions came with the run: its kept loops are
-        # not listed again.
+        # The review decisions came with the run: its kept loops and items
+        # are not listed again.
         post_processing.state.loop_reviews = list(snapshot.loop_reviews)
+        post_processing.state.review_decisions = list(snapshot.review_decisions)
         loaded_paths.clear()
         loaded_config_dir[0] = Path(path).parent
         last_run_path[0] = str(path)
