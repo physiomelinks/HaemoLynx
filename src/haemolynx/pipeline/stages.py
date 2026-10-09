@@ -93,6 +93,7 @@ from haemolynx.parsers import Schema, parameters_of, prefixed_arguments
 from haemolynx.pipeline.checks import tissue_raw_image
 from haemolynx.pipeline.citations import write_citations
 from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProgress
+from haemolynx.preprocessing.memmap_support import bincount_by_slab
 
 #: Called with each stage's name and the object that stage returned, so
 #: something watching a run can look at its work as it happens rather than
@@ -1082,6 +1083,56 @@ def graph_build_arguments(settings: dict) -> dict[str, Any]:
     )
 
 
+def _no_vessels_left_error(
+    settings: dict,
+    skeleton: np.ndarray,
+    binary_mask: np.ndarray | None,
+    edges_after_step: Sequence[tuple[str, int]],
+) -> ValueError:
+    """What :func:`build_network` raises when graph building left no vessels:
+    the step that took the last one, how much of the skeleton the image's
+    foreground covers, and the settings that remove vessels."""
+    if binary_mask is not None:
+        # The mask's value at each skeleton voxel, a slab at a time.
+        off_mask, on_mask = (
+            int(n) for n in bincount_by_slab(binary_mask, where=skeleton, minlength=2)[:2]
+        )
+        skeleton_voxels = off_mask + on_mask
+    else:
+        skeleton_voxels = int(np.count_nonzero(skeleton))
+    last_taken_at = None
+    before = 0
+    for label, count in edges_after_step:
+        if before and not count:
+            last_taken_at = label
+        before = count
+    if last_taken_at is not None:
+        built = (
+            f"The skeleton's {skeleton_voxels} voxels built "
+            f"{max(count for _, count in edges_after_step)} vessel(s), and the last went at "
+            f"the {last_taken_at} step."
+        )
+    else:
+        built = f"The skeleton's {skeleton_voxels} voxels built no vessel at all."
+    if binary_mask is not None:
+        built += f" {on_mask} of those {skeleton_voxels} voxels lie in the image's foreground."
+    radius_multiple = settings.get("min_stub_length_radius_multiple", 0.0) or 0.0
+    reasons = [
+        f"cluster_collapse_distance ({settings['cluster_collapse_distance']} um) merges nodes "
+        "closer than that, so a skeleton whose branches are all shorter collapses to one point",
+        f"min_stub_length ({settings['min_stub_length']} um) and min_stub_length_radius_multiple "
+        f"({radius_multiple}) set how short a blind end the stub prune removes",
+    ]
+    if binary_mask is not None:
+        reasons.append(
+            "the image: edges and stubs lying mostly outside its foreground are removed, so it "
+            "must be the segmentation the skeleton was made from"
+        )
+    return ValueError(
+        f"Graph building left no vessels. {built} Settings to check: " + "; ".join(reasons) + "."
+    )
+
+
 def build_network(
     settings: dict,
     volume: SkeletonisedVolume,
@@ -1164,8 +1215,12 @@ def build_network(
             if settings["save_step_artifacts"]
             else None
         )
+        # The vessels left after each step, so a build that ends with none
+        # can say which step took the last one.
+        edges_after_step: list[tuple[str, int]] = []
 
         def _graph_build_step_callback(graph_obj, label: str) -> None:
+            edges_after_step.append((label, graph_obj.number_of_edges()))
             # Report before drawing: the snapshots below are the slow part of
             # this step, so a watcher should see it tick over on arrival.
             if progress is not None:
@@ -1255,9 +1310,22 @@ def build_network(
                         debug=settings["verbose_logging"],
                     ),
                 )
+                edges_after_step.append(
+                    ("consolidate_lumen after centreline smoothing", G.number_of_edges())
+                )
+        # Nothing after this can run on no vessels, and what tried failed on
+        # something else (the 3D drawing on no node positions, boundary
+        # assignment on no terminals). Raised before the graph is saved, so
+        # an empty one never replaces a saved graph; the reason is read first,
+        # while the mask is still here.
+        no_vessels = None
+        if G.number_of_edges() == 0:
+            no_vessels = _no_vessels_left_error(settings, skeleton, binary_mask, edges_after_step)
         if binary_mask is not None:
             preprocessing.release_superseded(binary_mask, G, keep=image)
             binary_mask = radius_at = None
+        if no_vessels is not None:
+            raise no_vessels
 
         # Last thing before the graph is saved, after every topology step and
         # the centreline smoothing above: a thin-vessel-to-fat-vessel join
@@ -1283,6 +1351,11 @@ def build_network(
         with graph_path.open("rb") as f:
             G = pickle.load(f)
         logger.info(f"Loaded graph from: {graph_path}")
+        if G.number_of_edges() == 0:
+            raise ValueError(
+                f"The graph loaded from {graph_path} has no vessels. "
+                "Turn do_graph_building on to build it again from the skeleton."
+            )
 
     _record_graph_voxel_metadata(
         G, main_voxel_size_xyz, voxel_size_zyx,

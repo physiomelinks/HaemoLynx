@@ -218,11 +218,22 @@ def _run_skeletonise(overrides: Mapping[str, Any], tmp_dir: Path):
 
 
 def _tiny_skeleton() -> np.ndarray:
-    """A short trunk with one side branch -- more than one edge to build."""
-    skeleton = np.zeros((10, 10, 10), dtype=bool)
-    skeleton[2:8, 5, 5] = True
-    skeleton[5, 5, 2:8] = True
+    """A cross -- four edges to build. Its arms, ~14 um, are longer than the
+    5 um cluster_collapse_distance: at 3 um they collapsed into one point and
+    the graph was left with no vessels."""
+    skeleton = np.zeros((32, 32, 32), dtype=bool)
+    skeleton[2:30, 16, 16] = True
+    skeleton[16, 16, 2:30] = True
     return skeleton
+
+
+def _tiny_skeleton_mask() -> np.ndarray:
+    """The segmented vessels under the cross. Graph building removes what
+    lies outside the image's foreground, so an all-zero image builds nothing."""
+    mask = np.zeros((32, 32, 32), dtype=np.uint8)
+    mask[2:30, 14:19, 14:19] = 1
+    mask[14:19, 14:19, 2:30] = 1
+    return mask
 
 
 def _run_build_network(overrides: Mapping[str, Any], tmp_dir: Path):
@@ -234,7 +245,7 @@ def _run_build_network(overrides: Mapping[str, Any], tmp_dir: Path):
             _run_build_network({"do_graph_building": True}, tmp_dir)
     skeleton = _tiny_skeleton()
     volume = SkeletonisedVolume(
-        image=np.zeros(skeleton.shape, dtype=np.uint8),
+        image=_tiny_skeleton_mask(),
         skeleton=skeleton,
         voxel_size_xyz=(1.0, 1.0, 1.0),
         voxel_size_zyx=(1.0, 1.0, 1.0),
