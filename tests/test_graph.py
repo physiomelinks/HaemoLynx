@@ -113,7 +113,7 @@ def test_reconnect_secondary_loop_edges(tiny_skeleton):
     from skan import csr
     import networkx as nx
     sk = csr.Skeleton(tiny_skeleton)
-    G, _, _ = build_graph_segment_skan_stitched_loops(sk, tiny_skeleton)
+    G = build_graph_segment_skan_stitched_loops(sk, tiny_skeleton)
     G = nx.MultiGraph(G)
     G2 = reconnect_secondary_loop_edges(G, tiny_skeleton, debug=False)
     assert G2.number_of_nodes() == G.number_of_nodes()
@@ -171,10 +171,8 @@ def test_optimise_graph_topology_fixed(tiny_skeleton):
     from skan import csr
     import networkx as nx
     sk = csr.Skeleton(tiny_skeleton)
-    G, loops, loop_edges = build_graph_segment_skan_stitched_loops(sk, tiny_skeleton)
-    G2, _ = optimise_graph_topology_fixed(
-        G, loops, loop_edges, skeleton_data=tiny_skeleton, debug=False
-    )
+    G = build_graph_segment_skan_stitched_loops(sk, tiny_skeleton)
+    G2 = optimise_graph_topology_fixed(G, skeleton_data=tiny_skeleton, debug=False)
     assert isinstance(G2, nx.Graph)
 
 
@@ -700,12 +698,66 @@ def test_build_graph_requires_skan(tiny_skeleton):
     pytest.importorskip("skan")
     from skan import csr
     sk = csr.Skeleton(tiny_skeleton)
-    G, loops, loop_edges = build_graph_segment_skan_stitched_loops(
-        sk, tiny_skeleton, debug=False
+    G = build_graph_segment_skan_stitched_loops(sk, tiny_skeleton, debug=False)
+    assert isinstance(G, nx.MultiGraph)
+    assert G.number_of_nodes() == 2 and G.number_of_edges() == 1
+
+
+def _short_segments_skeleton(count: int) -> np.ndarray:
+    """*count* separate 4-voxel segments along z, each with its two ends 3 um
+    apart and every segment 10 voxels from the next."""
+    skeleton = np.zeros((8, 8, 10 * count), dtype=bool)
+    for i in range(count):
+        skeleton[2:6, 4, 10 * i + 4] = True
+    return skeleton
+
+
+@pytest.mark.parametrize("segments", [1, 6])
+def test_a_segment_is_not_bridged_to_itself(segments):
+    """Two ends of one short segment lie within the reconnect threshold of each
+    other, so they are a candidate pair -- but joining them would draw a
+    second, parallel copy of the segment. Up to 10 terminals the candidates
+    come from a plain double loop, above that from a k-d tree; neither may
+    offer such a pair. The fold-back rule is off so that nothing else would
+    refuse it."""
+    pytest.importorskip("skan")
+    from skan import csr
+
+    skeleton = _short_segments_skeleton(segments)
+    G = build_graph_segment_skan_stitched_loops(
+        csr.Skeleton(skeleton), skeleton, reconnect_threshold=3.5, max_bridge_turn_deg=None
     )
-    assert isinstance(G, nx.Graph)
-    assert isinstance(loops, list)
-    assert isinstance(loop_edges, set)
+
+    assert sum(1 for n in G if G.degree[n] == 1) == 2 * segments
+    assert G.number_of_edges() == segments
+    assert not any(data.get("reconnected") for *_, data in G.edges(data=True))
+
+
+def test_building_the_graph_does_not_search_the_skeleton_for_voxel_cycles(monkeypatch):
+    """Regression: every build turned each skeleton voxel into a voxel-graph
+    node and ran ``nx.cycle_basis`` over it -- ~22 s of the E14.5 build -- and
+    the offsets included (0, 0, 0), so every voxel was a "loop". What it found
+    only ever excluded terminal pairs an edge already joined. A real vessel
+    loop in the skeleton still comes out as a cycle in the graph."""
+    pytest.importorskip("skan")
+    from skan import csr
+
+    searched = []
+    cycle_basis = nx.cycle_basis
+    # Recorded, not raised: the old block caught any exception and carried on.
+    monkeypatch.setattr(nx, "cycle_basis", lambda *a, **k: searched.append(a) or cycle_basis(*a, **k))
+    # A square ring with a branch leaving it at three places, so the ring is
+    # three edges between three junctions rather than one self-loop.
+    skeleton = np.zeros((5, 24, 24), dtype=bool)
+    skeleton[2, 4, 4:20] = skeleton[2, 19, 4:20] = True
+    skeleton[2, 4:20, 4] = skeleton[2, 4:20, 19] = True
+    skeleton[2, 19:23, 12] = skeleton[2, 1:4, 12] = skeleton[2, 12, 1:4] = True
+
+    G = build_graph_segment_skan_stitched_loops(csr.Skeleton(skeleton), skeleton)
+
+    monkeypatch.undo()
+    assert searched == []
+    assert len(nx.cycle_basis(nx.Graph(G))) == 1
 
 
 def _network_short_of_the_image_border(scale: float = 1.0) -> nx.MultiGraph:
@@ -1018,10 +1070,10 @@ def test_a_gap_bridge_does_not_fold_back_against_its_terminals_vessel():
 
     skeleton = _spur_beside_a_vessel_end_skeleton()
 
-    G, _, _ = build_graph_segment_skan_stitched_loops(
+    G = build_graph_segment_skan_stitched_loops(
         csr.Skeleton(skeleton), skeleton, reconnect_threshold=12.0
     )
-    unguarded, _, _ = build_graph_segment_skan_stitched_loops(
+    unguarded = build_graph_segment_skan_stitched_loops(
         csr.Skeleton(skeleton), skeleton, reconnect_threshold=12.0, max_bridge_turn_deg=None
     )
 
@@ -1081,12 +1133,12 @@ def test_optimise_graph_topology_does_not_join_terminals_folding_back():
     def joined(G):
         return {frozenset((u, v)) for u, v, d in G.edges(data=True) if d.get("reconnected")}
 
-    old, _ = optimise_graph_topology_fixed(
-        _two_terminal_pairs(), [], set(), reconnect_threshold=3.0,
+    old = optimise_graph_topology_fixed(
+        _two_terminal_pairs(), reconnect_threshold=3.0,
         validate_reconnections=False, max_bridge_turn_deg=None,
     )
-    new, _ = optimise_graph_topology_fixed(
-        _two_terminal_pairs(), [], set(), reconnect_threshold=3.0, validate_reconnections=False,
+    new = optimise_graph_topology_fixed(
+        _two_terminal_pairs(), reconnect_threshold=3.0, validate_reconnections=False,
     )
 
     assert joined(old) == {frozenset("NM"), frozenset("PQ")}
@@ -1106,12 +1158,12 @@ def test_a_short_junction_arm_is_not_bridged_however_well_it_lines_up():
             [("F", "R"), ("H0", "H"), ("H", "H1"), ("H", "S")],
         )
 
-    old, _ = optimise_graph_topology_fixed(
-        arm_facing_a_vessel_end(), [], set(), reconnect_threshold=3.0,
+    old = optimise_graph_topology_fixed(
+        arm_facing_a_vessel_end(), reconnect_threshold=3.0,
         validate_reconnections=False, max_bridge_turn_deg=None,
     )
-    new, _ = optimise_graph_topology_fixed(
-        arm_facing_a_vessel_end(), [], set(), reconnect_threshold=3.0, validate_reconnections=False,
+    new = optimise_graph_topology_fixed(
+        arm_facing_a_vessel_end(), reconnect_threshold=3.0, validate_reconnections=False,
     )
 
     assert old.has_edge("R", "S")
@@ -1182,10 +1234,10 @@ def test_a_gap_bridge_is_drawn_only_through_the_mask(background_voxels, bridged)
     skeleton, mask = _broken_vessel(background_voxels)
     ends = frozenset({(2.0, 2.0, 11.0), (2.0, 2.0, 15.0)})
 
-    plain, _, _ = build_graph_segment_skan_stitched_loops(
+    plain = build_graph_segment_skan_stitched_loops(
         csr.Skeleton(skeleton), skeleton, reconnect_threshold=5.0
     )
-    gated, _, _ = build_graph_segment_skan_stitched_loops(
+    gated = build_graph_segment_skan_stitched_loops(
         csr.Skeleton(skeleton), skeleton, reconnect_threshold=5.0,
         mask_support=_mask_support(mask),
     )
@@ -1254,14 +1306,33 @@ def test_an_orphan_reconnect_needs_the_mask_between_its_ends(joined_by_mask):
         assert data["bridge_kind"] == "orphan" and data["bridge_background_um"] == 0.0
 
 
+@pytest.mark.parametrize("segments", [1, 6])
+def test_optimise_does_not_bridge_a_segment_to_itself(segments):
+    """The optimise pass's own candidate pairs, as for the initial gap bridges:
+    a segment whose two ends lie 1 um apart is not joined end to end, through
+    the double loop (2 terminals) or the k-d tree (12)."""
+    positions, edges = {}, []
+    for i in range(segments):
+        positions[f"a{i}"], positions[f"b{i}"] = (0, 0, 20 * i), (1, 0, 20 * i)
+        edges.append((f"a{i}", f"b{i}"))
+
+    G = optimise_graph_topology_fixed(
+        _graph_from(positions, edges), reconnect_threshold=3.0,
+        validate_reconnections=False, max_bridge_turn_deg=None,
+    )
+
+    assert G.number_of_edges() == segments
+    assert not any(data.get("reconnected") for *_, data in G.edges(data=True))
+
+
 def test_an_optimise_reconnect_is_tagged_with_what_it_crossed():
-    plain, _ = optimise_graph_topology_fixed(
-        _two_terminal_pairs(), [], set(), reconnect_threshold=3.0, validate_reconnections=False,
+    plain = optimise_graph_topology_fixed(
+        _two_terminal_pairs(), reconnect_threshold=3.0, validate_reconnections=False,
     )
     mask = np.zeros((3, 45, 3), dtype=bool)
     mask[:, 18:42, :] = True
-    gated, _ = optimise_graph_topology_fixed(
-        _two_terminal_pairs(), [], set(), reconnect_threshold=3.0, validate_reconnections=False,
+    gated = optimise_graph_topology_fixed(
+        _two_terminal_pairs(), reconnect_threshold=3.0, validate_reconnections=False,
         mask_support=_mask_support(mask),
     )
 

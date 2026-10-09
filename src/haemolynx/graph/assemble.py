@@ -369,7 +369,7 @@ def build_graph_from_skeleton(
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
 
-    Runs the full topology pipeline: skan extraction, loop stitching, secondary
+    Runs the full topology pipeline: skan extraction with gap bridges, secondary
     loop reconnection, topology optimisation, degree-2 removal passes, cluster
     collapse, stub pruning, self-edge removal, and orphan reconnection.
 
@@ -525,8 +525,8 @@ def build_graph_from_skeleton(
     sk = skan_skeleton(skeleton, use_memmap=use_memmap)
     logger.info(f"skan Skeleton built: {sk.n_paths} paths")
 
-    logger.info("Building graph (loop detection + segment extraction)...")
-    G, voxel_loops, loop_edges = build_graph_segment_skan_stitched_loops(
+    logger.info("Building graph (segment extraction + gap bridges)...")
+    G = build_graph_segment_skan_stitched_loops(
         sk,
         skeleton,
         debug=debug,
@@ -546,10 +546,8 @@ def build_graph_from_skeleton(
     )
     _notify_step(G, "reconnect_secondary_loop_edges", step_callback)
 
-    G, _ = optimise_graph_topology_fixed(
+    G = optimise_graph_topology_fixed(
         G,
-        voxel_loops,
-        loop_edges,
         skeleton_data=skeleton,
         debug=debug,
         reconnect_threshold=graph_reconnect_threshold,

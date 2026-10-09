@@ -36,8 +36,6 @@ def _physical_path_length(points) -> float:
 
 def optimise_graph_topology_fixed(
     G,
-    voxel_loops,
-    loop_edges,
     skeleton_data=None,
     debug=False,
     reconnect_threshold=3.0,
@@ -76,10 +74,8 @@ def optimise_graph_topology_fixed(
                 pairs = []
                 for i, j in pairs_indices:
                     src, tgt = terminals[i], terminals[j]
-                    edge_norm = tuple(sorted([src, tgt]))
                     if (
                         G.has_edge(src, tgt)
-                        or edge_norm in loop_edges
                         or G.degree[src] > 1
                         or G.degree[tgt] > 1
                     ):
@@ -95,9 +91,8 @@ def optimise_graph_topology_fixed(
                         tgt = terminals[j]
                         if "pos" not in G.nodes[tgt]:
                             continue
-                        edge_norm = tuple(sorted([src, tgt]))
                         if (
-                            edge_norm in loop_edges
+                            G.has_edge(src, tgt)
                             or G.degree[src] > 1
                             or G.degree[tgt] > 1
                         ):
@@ -197,7 +192,7 @@ def optimise_graph_topology_fixed(
             if debug and reconnected > 0:
                 logger.info("Reconnected %d terminal pairs", reconnected)
 
-    return G, voxel_loops
+    return G
 
 
 def _reconnection_is_direction_safe(

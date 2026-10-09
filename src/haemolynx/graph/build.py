@@ -5,7 +5,6 @@ import time
 
 import numpy as np
 import networkx as nx
-from scipy.ndimage import generate_binary_structure
 from scipy.spatial import cKDTree
 import heapq
 from itertools import product
@@ -13,7 +12,7 @@ from itertools import product
 from scipy import sparse
 from skan import csr
 
-from ._platform import iter_python_work, map_python_work
+from ._platform import map_python_work
 from .cartwheel_guard import _incident_edge_items, _spoke_direction_and_length
 from .reconnect import MaskBridges
 
@@ -263,13 +262,12 @@ def build_graph_segment_skan_stitched_loops(
     skeleton_image,
     debug=False,
     reconnect_threshold=3.0,
-    max_voxel_graph_size=100000,
     use_spatial_index=True,
     voxel_size=(1.0, 1.0, 1.0),
     max_bridge_turn_deg=MAX_GAP_BRIDGE_TURN_DEG,
     mask_support=None,
 ):
-    """Build NetworkX graph from skan Skeleton with loop detection and terminal reconnection.
+    """Build NetworkX graph from skan Skeleton with terminal reconnection.
 
     ``voxel_size`` is the spacing of each array axis in canonical ``(z, y, x)``
     order, so node ``pos`` and edge ``voxels`` come out as physical ``(z, y, x)``
@@ -294,60 +292,10 @@ def build_graph_segment_skan_stitched_loops(
 
     if sk.n_paths == 0:
         logger.warning("No paths found in skeleton")
-        return nx.MultiGraph(), [], set()
+        return nx.MultiGraph()
 
     paths = [(i, sk.path_coordinates(i)) for i in range(sk.n_paths)]
     skel = skeleton_image
-    ndim = skel.ndim
-    foreground = np.argwhere(skel)
-    voxel_loops = []
-
-    if len(foreground) <= max_voxel_graph_size:
-        offsets = np.argwhere(generate_binary_structure(ndim, 1)) - 1
-        voxel_graph = nx.Graph()
-
-        def process_pt_batch(pts_batch):
-            edges = []
-            for pt in pts_batch:
-                for off in offsets:
-                    nb = pt + off
-                    if np.all(nb >= 0) and np.all(nb < skel.shape) and skel[tuple(nb)]:
-                        edges.append((tuple(pt), tuple(nb)))
-            return edges
-
-        batch_size = min(1000, len(foreground))
-        batches = [
-            foreground[i : i + batch_size]
-            for i in range(0, len(foreground), batch_size)
-        ]
-        max_workers = min(4, os.cpu_count() or 1)
-        for batch_edges in iter_python_work(process_pt_batch, batches, max_workers):
-            voxel_graph.add_edges_from(batch_edges)
-        logger.info(
-            "Voxel graph built: %d nodes, %d edges. Running cycle_basis...",
-            voxel_graph.number_of_nodes(), voxel_graph.number_of_edges(),
-        )
-        try:
-            voxel_loops = nx.cycle_basis(voxel_graph)
-            logger.info("cycle_basis complete: found %d loops", len(voxel_loops))
-            if debug:
-                logger.debug("Found %d voxel loops", len(voxel_loops))
-        except Exception as e:
-            logger.warning("Loop detection failed: %s", e)
-            voxel_loops = []
-    else:
-        if debug:
-            logger.warning(
-                "Skeleton too large (%d voxels) for loop detection", len(foreground)
-            )
-
-    t0 = time.perf_counter()
-    loop_vox = set()
-    for loop in voxel_loops:
-        for v in loop:
-            if isinstance(v, (list, tuple, np.ndarray)):
-                loop_vox.add(tuple(np.round(v).astype(int)))
-    logger.info("loop_vox built (%d voxels) in %.1fs", len(loop_vox), time.perf_counter() - t0)
 
     def make_segment_safe(pid_path):
         pid, path = pid_path
@@ -372,12 +320,11 @@ def build_graph_segment_skan_stitched_loops(
 
     if not segments:
         logger.warning("No valid segments found")
-        return nx.MultiGraph(), voxel_loops, set()
+        return nx.MultiGraph()
 
     # Use MultiGraph so distinct vessel segments between the same two
     # junction nodes are preserved instead of overwritten.
     G = nx.MultiGraph()
-    loop_edges = set()
     mapping = {}
     voxel_size_arr = np.asarray(voxel_size, dtype=float)
 
@@ -405,10 +352,8 @@ def build_graph_segment_skan_stitched_loops(
             voxels=seg_array_phys.tolist(),
             segment_id=seg_idx,
         )
-        if u_vox in loop_vox and v_vox in loop_vox:
-            loop_edges.add(tuple(sorted([uid, vid])))
 
-    logger.info("Graph built: %d nodes, %d edges, %d loop_edges", G.number_of_nodes(), G.number_of_edges(), len(loop_edges))
+    logger.info("Graph built: %d nodes, %d edges", G.number_of_nodes(), G.number_of_edges())
     if reconnect_threshold and reconnect_threshold > 0:
         terminals = [n for n in G.nodes if G.degree[n] == 1]
         if len(terminals) > 1:
@@ -419,10 +364,8 @@ def build_graph_segment_skan_stitched_loops(
                 pairs = []
                 for i, j in pairs_indices:
                     src, tgt = terminals[i], terminals[j]
-                    edge_norm = tuple(sorted([src, tgt]))
                     if (
                         G.has_edge(src, tgt)
-                        or edge_norm in loop_edges
                         or G.degree[src] > 1
                         or G.degree[tgt] > 1
                     ):
@@ -434,9 +377,8 @@ def build_graph_segment_skan_stitched_loops(
                 for i, src in enumerate(terminals):
                     for j in range(i + 1, len(terminals)):
                         tgt = terminals[j]
-                        edge_norm = tuple(sorted([src, tgt]))
                         if (
-                            edge_norm in loop_edges
+                            G.has_edge(src, tgt)
                             or G.degree[src] > 1
                             or G.degree[tgt] > 1
                         ):
@@ -505,10 +447,9 @@ def build_graph_segment_skan_stitched_loops(
 
     if debug:
         logger.info(
-            "Final graph: %d nodes, %d edges, %d loop edges",
+            "Final graph: %d nodes, %d edges",
             G.number_of_nodes(),
             G.number_of_edges(),
-            len(loop_edges),
         )
     G.graph["voxel_size"] = tuple(float(v) for v in voxel_size_arr)
-    return G, voxel_loops, loop_edges
+    return G

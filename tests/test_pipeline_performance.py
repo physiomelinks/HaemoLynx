@@ -340,7 +340,7 @@ def test_reconnect_secondary_loop_edges_still_runs_on_a_tiny_skeleton(tiny_skele
     )
 
     sk = csr.Skeleton(tiny_skeleton)
-    G, _, _ = build_graph_segment_skan_stitched_loops(sk, tiny_skeleton)
+    G = build_graph_segment_skan_stitched_loops(sk, tiny_skeleton)
     G = nx.MultiGraph(G)
     result = reconnect_secondary_loop_edges(G, tiny_skeleton, debug=False)
     assert result.number_of_nodes() == G.number_of_nodes()
