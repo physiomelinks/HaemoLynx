@@ -1004,6 +1004,31 @@ def test_a_search_whose_graph_comes_back_empty_keeps_the_graph_settings(monkeypa
     assert all(group in not_optimised for group in later)
 
 
+def test_a_skeleton_of_isolated_voxels_stops_the_search_at_the_graph_settings():
+    """Regression: three single-voxel specks skeletonise to three isolated
+    voxels -- not an empty skeleton, so the graph groups ran, and graph
+    building raised scipy's "index pointer size 0 should be 1" out of skan.
+    It now builds an empty graph, and the search stops there."""
+    specks = np.zeros((20, 20, 20), dtype=bool)
+    specks[4, 4, 4] = specks[10, 10, 10] = specks[15, 5, 12] = True
+    # Nothing in the skeleton cleaning that would remove or join them.
+    starting_values = {
+        **_DEFAULT_STARTING_VALUES,
+        "skeleton_min_branch_length": 0,
+        "skeleton_closing_radius": 0,
+        "skeleton_bridge_gap_size": 0,
+        "skeleton_max_bridge_distance": 0,
+    }
+
+    result = optimise_skeleton_and_graph_settings(
+        specks, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=starting_values,
+        downsample_factor=1, groups=("reconnect_thresholds", "cluster_collapse_distance"),
+    )
+
+    assert result.groups_run == ("reconnect_thresholds",)
+    assert result.settings["cluster_collapse_distance"] == starting_values["cluster_collapse_distance"]
+
+
 def test_optimise_settings_respects_anisotropic_voxel_size(y_shaped_mask):
     result = optimise_skeleton_and_graph_settings(
         y_shaped_mask, voxel_size_xyz=(1.0, 1.0, 2.0), starting_values=_DEFAULT_STARTING_VALUES,

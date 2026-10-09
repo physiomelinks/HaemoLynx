@@ -153,14 +153,14 @@ class _SkeletonPaths:
         return self.coordinates[self.path(index)]
 
 
-def _skeleton_adjacency_from_coordinates(coords, shape):
-    """The 26-connected pixel graph skan builds, from foreground coordinates.
+def _foreground_neighbours(coords, shape):
+    """Each foreground voxel's 26-connected foreground neighbours, a batch of
+    voxels at a time.
 
-    Edge weights are the Euclidean length of each step, in voxels, as skan's
-    own ``pixel_graph`` gives them for a boolean skeleton. Neighbours are
-    found by ``searchsorted`` over the raveled coordinates, so nothing the
-    size of the volume is allocated: skan instead copies the image to bool
-    and pads it, two whole-volume temporaries.
+    Yields ``(source, neighbour, step_length)`` arrays: indices into *coords*
+    and the Euclidean length of each step, in voxels. Neighbours are found by
+    ``searchsorted`` over the raveled coordinates, so nothing the size of the
+    volume is allocated.
     """
     n = len(coords)
     ndim = len(shape)
@@ -178,7 +178,6 @@ def _skeleton_adjacency_from_coordinates(coords, shape):
     step_keys = offsets @ strides
     step_lengths = np.linalg.norm(offsets, axis=1)
 
-    rows, cols, data = [], [], []
     for start in range(0, n, _ADJACENCY_BATCH_NODES):
         stop = min(start + _ADJACENCY_BATCH_NODES, n)
         neighbour_keys = keys[start:stop, None] + step_keys[None, :]
@@ -186,9 +185,42 @@ def _skeleton_adjacency_from_coordinates(coords, shape):
         np.minimum(found, n - 1, out=found)
         present = keys[found] == neighbour_keys
         source, step = np.nonzero(present)
-        rows.append(source + start)
-        cols.append(found[source, step])
-        data.append(step_lengths[step])
+        yield source + start, found[source, step], step_lengths[step]
+
+
+def skeleton_has_path(skeleton) -> bool:
+    """Whether any two foreground voxels of *skeleton* touch (26-connected).
+
+    skan's paths run between touching voxels, so a skeleton without such a
+    pair -- empty, or only isolated voxels -- has no path, and
+    ``skan.csr.Skeleton`` cannot be built from it at all (scipy refuses the
+    empty path matrix: "index pointer size 0 should be 1"). Stops at the
+    first batch of voxels with a neighbour, so on a real skeleton this costs
+    little more than finding the foreground.
+    """
+    coords = np.argwhere(skeleton)
+    return any(len(source) for source, _, _ in _foreground_neighbours(coords, skeleton.shape))
+
+
+def _no_skeleton_paths(ndim):
+    return _SkeletonPaths(sparse.csr_matrix((0, 0)), np.empty((0, ndim), dtype=np.int64))
+
+
+def _skeleton_adjacency_from_coordinates(coords, shape):
+    """The 26-connected pixel graph skan builds, from foreground coordinates.
+
+    Edge weights are the Euclidean length of each step, in voxels, as skan's
+    own ``pixel_graph`` gives them for a boolean skeleton. Built from
+    :func:`_foreground_neighbours`, so nothing the size of the volume is
+    allocated: skan instead copies the image to bool and pads it, two
+    whole-volume temporaries.
+    """
+    n = len(coords)
+    rows, cols, data = [], [], []
+    for source, neighbour, step_length in _foreground_neighbours(coords, shape):
+        rows.append(source)
+        cols.append(neighbour)
+        data.append(step_length)
     adjacency = sparse.coo_matrix(
         (np.concatenate(data), (np.concatenate(rows), np.concatenate(cols))),
         shape=(n, n),
@@ -205,16 +237,22 @@ def skan_skeleton(skeleton, *, use_memmap=False):
     memory-mapped volume means two in-RAM copies of the thing that was mapped
     to keep it out of RAM. Only ``n_paths`` and ``path_coordinates`` are
     provided in that mode, the two things the graph builder reads.
+
+    Either way, a skeleton with no two voxels touching (see
+    :func:`skeleton_has_path`) has no paths, where skan's own constructor
+    raises on it.
     """
     if not use_memmap:
+        if not skeleton_has_path(skeleton):
+            return _no_skeleton_paths(skeleton.ndim)
         return csr.Skeleton(skeleton)
 
     coords = np.argwhere(skeleton)
     if len(coords) == 0:
-        return _SkeletonPaths(
-            sparse.csr_matrix((0, 0)), np.empty((0, skeleton.ndim), dtype=np.int64)
-        )
+        return _no_skeleton_paths(skeleton.ndim)
     adjacency = _skeleton_adjacency_from_coordinates(coords, skeleton.shape)
+    if adjacency.nnz == 0:
+        return _no_skeleton_paths(skeleton.ndim)
     adjacency = csr._mst_junctions(adjacency)
     paths = csr._build_skeleton_path_graph(csr.csr_to_nbgraph(adjacency))
     return _SkeletonPaths(paths, coords)

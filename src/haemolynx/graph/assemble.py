@@ -471,7 +471,8 @@ def build_graph_from_skeleton(
     Returns
     -------
     nx.MultiGraph
-        Cleaned vascular graph.
+        Cleaned vascular graph. Empty when no two skeleton voxels touch (an
+        empty skeleton, or isolated points): there is no vessel to trace.
     """
     degree2_pass1_max_degree = 4
     degree2_pass2_max_degree = 8
