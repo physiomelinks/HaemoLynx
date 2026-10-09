@@ -18,15 +18,15 @@ from haemolynx.pipeline import stages
 from test_hidden_settings_cannot_affect_a_run import (
     SCHEMA,
     _settings_for,
-    _tiny_skeleton,
+    _small_vessel_tree,
     _write_mask,
 )
 
 
 def _volume(tmp_path):
-    skeleton = _tiny_skeleton()
+    skeleton, image = _small_vessel_tree()
     return SkeletonisedVolume(
-        image=np.zeros(skeleton.shape, dtype=np.uint8),
+        image=image,
         skeleton=skeleton,
         voxel_size_xyz=(1.0, 1.0, 1.0),
         voxel_size_zyx=(1.0, 1.0, 1.0),

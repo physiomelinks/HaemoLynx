@@ -50,6 +50,7 @@ import networkx as nx
 import numpy as np
 import pytest
 import tifffile
+from scipy import ndimage
 
 from haemolynx.pipeline import (
     BoundaryNodes,
@@ -217,12 +218,23 @@ def _run_skeletonise(overrides: Mapping[str, Any], tmp_dir: Path):
     return skeletonise(settings, inputs)
 
 
-def _tiny_skeleton() -> np.ndarray:
-    """A short trunk with one side branch -- more than one edge to build."""
-    skeleton = np.zeros((10, 10, 10), dtype=bool)
-    skeleton[2:8, 5, 5] = True
-    skeleton[5, 5, 2:8] = True
-    return skeleton
+def _small_vessel_tree() -> tuple[np.ndarray, np.ndarray]:
+    """A trunk with two side branches, and the vessel mask it was traced from.
+
+    Default graph building must leave a real network here, or no
+    graph-building setting can show an effect: each arm is at least 10 um,
+    past the 5 um cluster collapse and the blind-end stub prune (3 radii of
+    2.2 um), and the mask holds the whole skeleton, since edges off the mask
+    are dropped. One branch slopes, so its centreline is a voxel staircase
+    smoothing changes.
+    """
+    skeleton = np.zeros((40, 32, 32), dtype=bool)
+    skeleton[2:38, 16, 16] = True
+    for step in range(1, 13):
+        skeleton[12, 16, 16 + step] = True
+        skeleton[26, 16 - step, 16 - (step + 1) // 2] = True
+    mask = ndimage.distance_transform_edt(~skeleton) <= 2.0
+    return skeleton, np.where(mask, 255, 0).astype(np.uint8)
 
 
 def _run_build_network(overrides: Mapping[str, Any], tmp_dir: Path):
@@ -232,9 +244,9 @@ def _run_build_network(overrides: Mapping[str, Any], tmp_dir: Path):
         graph_path = tmp_dir / "out" / "input_graph.pkl"
         if not graph_path.exists():
             _run_build_network({"do_graph_building": True}, tmp_dir)
-    skeleton = _tiny_skeleton()
+    skeleton, image = _small_vessel_tree()
     volume = SkeletonisedVolume(
-        image=np.zeros(skeleton.shape, dtype=np.uint8),
+        image=image,
         skeleton=skeleton,
         voxel_size_xyz=(1.0, 1.0, 1.0),
         voxel_size_zyx=(1.0, 1.0, 1.0),
@@ -468,6 +480,16 @@ def test_the_stage_level_check_covers_most_gated_settings():
         f"only checked {len(_STAGE_CASES)} of {total} non-export-owned gated "
         f"settings behaviourally (skipped: {_STAGE_SKIPPED})"
     )
+
+
+def test_the_build_network_fixture_builds_a_real_network(tmp_path):
+    """Two equal empty graphs would hide any graph-building setting: the
+    fixture must keep both junctions and all five vessels under the defaults
+    (the old 10-voxel cross collapsed to one node, then to nothing)."""
+    G = _run_build_network({}, tmp_path).graph
+
+    assert G.number_of_edges() == 5
+    assert sorted(degree for _, degree in G.degree()) == [1, 1, 1, 1, 3, 3]
 
 
 # --- export_results: compare written files, not its inert return value -----
