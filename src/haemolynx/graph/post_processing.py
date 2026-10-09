@@ -808,7 +808,10 @@ def smooth_traced_path(
     vessels the pipeline built were smoothed. The same smoother and the same
     acceptance rule apply, judged against the traced path itself: the result
     may not stray further from it than :func:`haemolynx.graph.smoothing.edge_tolerance_um`
-    allows, nor be longer. Returns the path and what happened to it
+    allows, nor be longer. It must also still pass every traced point within
+    that distance: each straight leg between two clicks counts as a bridge
+    (no point lies along it), and a chord cutting off a trace that turns back
+    on itself lies along the way back. Returns the path and what happened to it
     (``smoothed``, ``relaxed``, ``kept_raw`` or ``too_short``).
     """
     from scipy.spatial import cKDTree
@@ -824,7 +827,9 @@ def smooth_traced_path(
         max_deviation=DEFAULT_MAX_DEVIATION_UM if max_deviation is None else float(max_deviation),
         voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
     )
-    accepted, outcome = _accept(original, smoothed, cKDTree(original), tolerance)
+    accepted, outcome = _accept(
+        original, smoothed, cKDTree(original), tolerance, must_pass=original
+    )
     return _dedupe(accepted), outcome
 
 

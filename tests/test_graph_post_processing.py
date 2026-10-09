@@ -561,6 +561,19 @@ def test_smooth_traced_path_takes_out_the_staircase_without_moving_the_ends():
     assert smooth_traced_path(stairs[:2]) == (stairs[:2], "too_short")
 
 
+@pytest.mark.parametrize("method", ["taubin", "chaikin"])
+def test_smooth_traced_path_keeps_a_trace_that_turns_back_on_itself(method):
+    # Clicked straight legs: out to (0, 10, 0), then back past the start. A
+    # chord from the start lies along the way back, so being near the trace
+    # was not enough: Taubin cut the turn off and the vessel came back 15.8 um.
+    turn = (0.0, 10.0, 0.0)
+    trace = [(10.0, 10.0, 0.0), turn, (25.0, 5.0, 0.0)]
+    smoothed, outcome = smooth_traced_path(trace, method=method)
+    nearest = min(np.linalg.norm(np.subtract(p, turn)) for p in smoothed)
+    assert nearest <= 1.0, f"{outcome}: the turn is {nearest:.1f} um from the vessel"
+    assert calculate_path_length(smoothed) == pytest.approx(10.0 + np.hypot(25.0, 5.0))
+
+
 def test_add_traced_vessel_from_a_node_to_a_point_on_a_vessel_forms_a_node():
     G = _two_ends()
     # 1 -> a waypoint -> 4 um along 3 -> 4 (which runs x = 0..10 at y = 20).

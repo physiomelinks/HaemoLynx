@@ -202,12 +202,24 @@ def _off_skeleton_stretches(original: np.ndarray, tree, max_deviation: float) ->
     return dense[_deviation(dense, tree) > max_deviation * (1.0 + 1e-9)]
 
 
+def _distance_to_polyline(points: np.ndarray, polyline: np.ndarray) -> np.ndarray:
+    """How far each of *points* is from the nearest point of *polyline*'s segments."""
+    a, b = polyline[:-1], polyline[1:]
+    d = b - a
+    length_sq = np.einsum("ij,ij->i", d, d)
+    rel = points[:, None, :] - a[None, :, :]
+    t = np.einsum("mij,ij->mi", rel, d) / np.where(length_sq > 0, length_sq, 1.0)
+    t = np.clip(np.where(length_sq > 0, t, 0.0), 0.0, 1.0)
+    return np.linalg.norm(rel - t[..., None] * d, axis=2).min(axis=1)
+
+
 def _is_acceptable(
     original: np.ndarray,
     candidate: np.ndarray,
     tree,
     max_deviation: float,
     off_skeleton: Optional[np.ndarray] = None,
+    must_pass: Optional[np.ndarray] = None,
 ) -> bool:
     """Whether *candidate* still describes the vessel *original* traced.
 
@@ -232,8 +244,17 @@ def _is_acceptable(
     inflated curve wiggles *within* the tolerance and still adds length. Left
     unchecked, a thousand passes measured 8.2% over the true length, which is
     worse than not smoothing at all.
+
+    Given *must_pass*, it must also run within *max_deviation* of each of those
+    points. Being near the original is not enough where the original turns back
+    on itself: a chord across the turn lies along the way back, and only the
+    turn's own points show that it was cut off.
     """
     if _polyline_length(candidate) > _polyline_length(original) * (1.0 + 1e-9):
+        return False
+    if must_pass is not None and len(must_pass) and float(
+        _distance_to_polyline(must_pass, candidate).max()
+    ) > max_deviation * (1.0 + 1e-9):
         return False
     interior = candidate[1:-1]
     strayed = interior[_deviation(interior, tree) > max_deviation]
@@ -247,14 +268,19 @@ def _is_acceptable(
 
 
 def _accept(
-    original: np.ndarray, smoothed: np.ndarray, tree, max_deviation: float
+    original: np.ndarray,
+    smoothed: np.ndarray,
+    tree,
+    max_deviation: float,
+    must_pass: Optional[np.ndarray] = None,
 ) -> tuple[np.ndarray, str]:
-    """The most smoothed version that still describes the same vessel."""
+    """The most smoothed version that still describes the same vessel (and runs
+    within *max_deviation* of each of *must_pass*, when given)."""
     if len(smoothed) < 3:
         return original, "too_short"
 
     off_skeleton = _off_skeleton_stretches(original, tree, max_deviation)
-    if _is_acceptable(original, smoothed, tree, max_deviation, off_skeleton):
+    if _is_acceptable(original, smoothed, tree, max_deviation, off_skeleton, must_pass):
         return smoothed, "smoothed"
 
     # Elementwise blending needs matching point counts; see
@@ -267,7 +293,7 @@ def _accept(
     for weight in RELAXATION_STEPS:
         blended = (1.0 - weight) * original + weight * smoothed_for_blend
         blended[0], blended[-1] = original[0], original[-1]
-        if _is_acceptable(original, blended, tree, max_deviation, off_skeleton):
+        if _is_acceptable(original, blended, tree, max_deviation, off_skeleton, must_pass):
             return blended, "relaxed"
 
     return original, "kept_raw"
