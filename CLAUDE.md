@@ -609,8 +609,12 @@ are only caught locally.
 - **`preprocessing/thick_vessels.py`** — `use_thick_vessel_skeletonisation`: Lee thinning of the
   fat part of a plasma-labelled mask gives a medial *sheet* (several polylines for one vessel), so
   the fat region (an inscribed-radius gate, not a volume gate) gets a centreline *tree* instead,
-  and the thin capillaries fused to it are joined onto that tree; `thick_vessel_braid_guard.py`
-  flags braided segments that remain. `graph/thick_vessel_junctions.py` then splits each joined
+  and the thin capillaries fused to it are joined onto that tree (`_join_thin_arms_to_fat_ridge`:
+  each arm aims at the tree as it was before any arm joined, and at an earlier arm's bridge only
+  when the tree is past the bridge cap -- aimed at whatever was nearest, a second capillary joined
+  the first one's bridge by the wall and the bridges ran side by side through the fat lumen, 21 of
+  E14.5's 33 pairs in one lumen); `thick_vessel_braid_guard.py` flags braided segments that
+  remain. `graph/thick_vessel_junctions.py` then splits each joined
   edge where it crosses the fat-mask boundary and tags the part inside as an `IS_ZERO_RESISTANCE`
   bridge — the small vessel opening into the lumen, not vessel material (see `apply.py` above).
 - **`optimisation/`** — the panel's **Optimise settings**: a sequential, image-informed search

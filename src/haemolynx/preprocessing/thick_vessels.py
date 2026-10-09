@@ -1385,6 +1385,18 @@ def _join_thin_arms_to_fat_ridge(
     tail end; sampling exactly there would otherwise report an
     unrepresentatively small radius even though the trunk is genuinely wide
     again a short distance further along the very same ridge.
+
+    Arms are joined one at a time, and each aims at the fat ridge first --
+    the ridge as it was before any arm was joined -- so its bridge runs from
+    the wall to the centreline, the way a capillary opens into a vessel.
+    Only an arm whose nearest ridge point is past the cap joins the nearest
+    earlier bridge instead (within the cap), so an arm that can reach the
+    network only through another arm's opening is still joined. Aimed at
+    whatever was nearest, the second of two capillaries entering side by
+    side joined the first one's bridge near the wall, and the bridges ran
+    beside each other and the ridge inside the fat lumen: on E14.5 MCA, 21
+    of the 33 pairs of edges in one lumen once the thick-vessel split
+    (``graph.insert_thick_vessel_junction_nodes``) cut them out.
     """
     result = np.asarray(skeleton, dtype=bool).copy()
     thick_b = np.asarray(thick, dtype=bool)
@@ -1467,6 +1479,33 @@ def _join_thin_arms_to_fat_ridge(
     fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
     fat_now = result & thick_b
 
+    # What each arm aims at first: the ridge before any arm was joined (no
+    # arm voxel is fat, so that is fat_skel), per physically connected
+    # structure -- built once per structure, not once per arm. fat_coords
+    # grows with every bridge (a new array each time), these never do.
+    ridge_coords = fat_coords
+    ridge_component_labels = fat_component_labels
+    ridge_trees: dict[int, tuple[np.ndarray, cKDTree] | None] = {}
+
+    def _ridge_tree_for(label_key: int):
+        if label_key not in ridge_trees:
+            coords = ridge_coords[ridge_component_labels == label_key]
+            ridge_trees[label_key] = (
+                (coords, cKDTree(coords.astype(np.float64, copy=False) * scale))
+                if len(coords)
+                else None
+            )
+        return ridge_trees[label_key]
+
+    def _nearest_point(points_um: np.ndarray, coords: np.ndarray, tree: cKDTree):
+        """``(index into the arm's points, distance in microns, target voxel)``
+        of the arm point nearest any of *coords*."""
+        distance, index = tree.query(points_um, k=1)
+        distance, index = np.atleast_1d(distance), np.atleast_1d(index)
+        nearest = int(np.argmin(distance))
+        target = tuple(int(v) for v in coords[int(index[nearest])])
+        return nearest, float(distance[nearest]), target
+
     # Memoized per physically-connected structure: the fallback's EDT and
     # Dijkstra graph depend only on that structure's shape, not on which arm
     # needed it, so a component with many arms needing the fallback (a real
@@ -1537,6 +1576,15 @@ def _join_thin_arms_to_fat_ridge(
         local = tuple(int(v) for v in (np.array(voxel) - origin))
         return float(crop[local])
 
+    def _bridge_cap_um(end: tuple[int, int, int]) -> float | None:
+        """How long a bridge ending at *end* may be: the tighter of the fixed
+        cap and the radius multiple there, None when neither is set."""
+        cap = max_bridge_distance_um
+        if max_bridge_radius_multiple is not None:
+            radius_cap = float(max_bridge_radius_multiple) * _local_fat_radius_um_at(end)
+            cap = radius_cap if cap is None else min(cap, radius_cap)
+        return cap
+
     logger.info(
         "_join_thin_arms_to_fat_ridge: joining up to %d thin-arm components to the "
         "fat ridge",
@@ -1567,23 +1615,28 @@ def _join_thin_arms_to_fat_ridge(
             # to join it to -- keep it as already-drawn Lee output, and do
             # not manufacture a connection to an unrelated nearby network.
             continue
-        scoped_fat_coords = fat_coords[same_component]
-        scoped_kdt = (
-            fat_kdt
-            if same_component.all()
-            else cKDTree(scoped_fat_coords.astype(np.float64, copy=False) * scale)
-        )
-        _d, nn = scoped_kdt.query(pts.astype(np.float64, copy=False) * scale, k=1)
-        nearest = int(np.argmin(np.atleast_1d(_d)))
-        nearest_distance = float(np.atleast_1d(_d)[nearest])
-        start = tuple(int(v) for v in pts[nearest])
-        end = tuple(int(v) for v in scoped_fat_coords[int(np.atleast_1d(nn)[nearest])])
-        effective_cap = max_bridge_distance_um
-        if max_bridge_radius_multiple is not None:
-            radius_cap = float(max_bridge_radius_multiple) * _local_fat_radius_um_at(end)
-            effective_cap = (
-                radius_cap if effective_cap is None else min(effective_cap, radius_cap)
+        arm_points_um = pts.astype(np.float64, copy=False) * scale
+        # The ridge first; the nearest of everything already connected (the
+        # ridge and every earlier bridge) only when the ridge is past the cap.
+        # The walk below stops on what the arm aimed at.
+        ridge = _ridge_tree_for(arm_component_label)
+        stop_on = fat_skel
+        if ridge is not None:
+            nearest, nearest_distance, end = _nearest_point(arm_points_um, *ridge)
+            effective_cap = _bridge_cap_um(end)
+        if ridge is None or (effective_cap is not None and nearest_distance > effective_cap):
+            scoped_fat_coords = fat_coords[same_component]
+            scoped_kdt = (
+                fat_kdt
+                if same_component.all()
+                else cKDTree(scoped_fat_coords.astype(np.float64, copy=False) * scale)
             )
+            nearest, nearest_distance, end = _nearest_point(
+                arm_points_um, scoped_fat_coords, scoped_kdt
+            )
+            effective_cap = _bridge_cap_um(end)
+            stop_on = fat_now
+        start = tuple(int(v) for v in pts[nearest])
         if effective_cap is not None and nearest_distance > effective_cap:
             logger.info(
                 "Arm's nearest fat ridge point is %.1f microns away, past "
@@ -1623,19 +1676,19 @@ def _join_thin_arms_to_fat_ridge(
         # fat_now must stay exactly what it was before this arm while the
         # walk below tests against it (the walk stops on first touching the
         # *pre-existing* ridge, not on becoming its own touch); voxels this
-        # arm adds are folded in afterwards instead.
+        # arm adds are folded in afterwards instead. An arm aimed at the
+        # ridge stops on the ridge alone, not on an earlier bridge it passes.
         drawn: list[tuple[int, int, int]] = []
         for voxel in path:
             if not allowed_b[voxel]:
                 continue
             result[voxel] = True
             drawn.append(voxel)
-            if _touches_tree(fat_now, voxel):
+            if _touches_tree(stop_on, voxel):
                 break
-        # Requery against what's now connected, including this join's own
-        # bridge and any earlier arm: otherwise every later arm keeps
-        # targeting the pre-join ridge alone, picking a farther "nearest"
-        # point than the one this loop just made available. Every voxel
+        # This join's own bridge becomes something a later arm can fall back
+        # on, when its ridge is past the cap (see above): an arm that can
+        # reach the network only through another arm's opening. Every voxel
         # this arm could have added to the fat set is already known from
         # `drawn` -- no need to recompute `result & thick_b` or re-argwhere
         # it (both full-image scans) to find out what changed.

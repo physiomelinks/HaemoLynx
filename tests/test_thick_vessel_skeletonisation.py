@@ -1887,3 +1887,66 @@ def test_the_pipeline_finds_the_region_its_skeletonise_stage_found(tmp_path):
     assert thick is not None and np.array_equal(again, thick)
     settings["use_thick_vessel_skeletonisation"] = False
     assert thick_vessel_mask_from_image(settings, mask, (1.0, 1.0, 1.0)) is None
+
+
+# --- which point an arm aims at: the ridge first, an earlier bridge past the cap ---
+
+
+def _two_arms_into_a_fat_band(arm_xs, *, ridge_x=slice(None)):
+    """A fat band (rows 10-30) with its ridge along row 20 (over *ridge_x*),
+    and one thin arm per x in *arm_xs* coming down to the band's wall from
+    the top, each its own component."""
+    shape = (1, 40, 40)
+    thick = np.zeros(shape, dtype=bool)
+    thick[0, 10:31, :] = True
+    skeleton = np.zeros(shape, dtype=bool)
+    skeleton[0, 20, ridge_x] = True
+    for x in arm_xs:
+        skeleton[0, 0:10, x] = True
+    allowed = thick | skeleton
+    return skeleton, thick, allowed
+
+
+def _bridge_voxels(joined, skeleton, thick):
+    return np.argwhere(joined & ~skeleton & thick)
+
+
+def test_two_arms_entering_side_by_side_each_run_to_the_ridge():
+    """Regression: the second arm joined the first arm's bridge beside the
+    wall instead of running to the centreline, so the two bridges ran side by
+    side through the fat lumen -- 21 of E14.5 MCA's 33 pairs of edges in one
+    lumen once the thick-vessel split cut them out."""
+    skeleton, thick, allowed = _two_arms_into_a_fat_band((18, 21))
+
+    joined = _join_thin_arms_to_fat_ridge(skeleton, thick, allowed, min_arm_extent_um=0.0)
+
+    _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
+    assert n_cc == 1
+    bridges = _bridge_voxels(joined, skeleton, thick)
+    for x in (18, 21):
+        near = bridges[np.abs(bridges[:, 2] - x) <= 1]
+        assert near[:, 1].max() >= 19, f"the arm at x={x} must reach the ridge on row 20"
+    # Each bridge is its own straight run down from the wall: no voxel of
+    # the second wanders across to the first one's column.
+    assert not np.any((bridges[:, 2] >= 19) & (bridges[:, 2] <= 20) & (bridges[:, 1] <= 12))
+
+
+def test_an_arm_whose_ridge_is_past_the_cap_still_joins_an_earlier_bridge_within_it():
+    """The ridge ends at x = 15. The arm at x = 12 reaches it within the cap
+    (11 um); the arm at x = 19 does not (11.7 um), but the first arm's bridge
+    is 7 um away, and it joins that instead of being left unjoined."""
+    skeleton, thick, allowed = _two_arms_into_a_fat_band((12, 19), ridge_x=slice(0, 16))
+
+    joined = _join_thin_arms_to_fat_ridge(
+        skeleton, thick, allowed, min_arm_extent_um=0.0, max_bridge_distance_um=11.5
+    )
+
+    _, n_cc = label(joined, structure=generate_binary_structure(3, 3))
+    assert n_cc == 1, "the second arm reaches the network through the first arm's bridge"
+    lone = _join_thin_arms_to_fat_ridge(
+        *_two_arms_into_a_fat_band((19,), ridge_x=slice(0, 16)),
+        min_arm_extent_um=0.0,
+        max_bridge_distance_um=11.5,
+    )
+    _, n_alone = label(lone, structure=generate_binary_structure(3, 3))
+    assert n_alone == 2, "on its own the second arm is past the cap"
