@@ -2068,6 +2068,15 @@ def test_clicking_a_listed_node_marks_it_and_centres_the_view_on_it(panel):
     assert "Node 2" in widget._haemolynx_report()
 
 
+def _drawn_on_the_slice_shown(viewer, layer, box) -> bool:
+    """Whether *layer*'s one rectangle is drawn on the slice shown: in 2D,
+    ``get_value`` hit-tests only the shapes on the current slice. (The private
+    list of those shapes was renamed in napari 0.9.)"""
+    centre = np.mean(np.asarray(box, dtype=float), axis=0)
+    position = (viewer.dims.point[0], centre[1], centre[2])
+    return len(layer.data) == 1 and layer.get_value(position, world=True) == (0, None)
+
+
 def test_in_2d_back_and_forward_take_the_view_with_the_box(panel):
     """A 2D box is drawn on the slice through its centre, so moving it through
     the slices left the slice being looked at, and it vanished. The view now
@@ -2085,13 +2094,15 @@ def test_in_2d_back_and_forward_take_the_view_with_the_box(panel):
         [[25.0, 45.0, 55.0], [35.0, 55.0, 65.0]]
     ]
     assert viewer.dims.point[0] == pytest.approx(30.0, abs=1.0)
-    assert len(flat._indices_view) == 1, "the rectangle is on the slice shown"
+    box = rows_of(widget)["inlet_node_volumes"].value[0]
+    assert _drawn_on_the_slice_shown(viewer, flat, box), "the rectangle is on the slice shown"
 
     bc.actions["inlet"].box_move["back"].changed()
     bc.actions["inlet"].box_move["back"].changed()
     bc.flush_boxes()
     assert viewer.dims.point[0] == pytest.approx(10.0, abs=1.0)
-    assert len(flat._indices_view) == 1
+    box = rows_of(widget)["inlet_node_volumes"].value[0]
+    assert _drawn_on_the_slice_shown(viewer, flat, box)
 
 
 def test_a_roles_boxes_can_be_given_a_colour_of_their_own(panel):
