@@ -253,7 +253,11 @@ def lumen_cleanup(
         )
     stub_mask_rules = {}
     if support is not None:
-        stub_mask_rules = dict(inside_lumen=inside_lumen, mask_continues_at=mask_continues_past(support))
+        stub_mask_rules = dict(
+            inside_lumen=inside_lumen,
+            mask_continues_at=mask_continues_past(support),
+            lumen_radius_at=support.radius,
+        )
     radius_at = stub_radius_at
     if radius_at is None and support is not None:
         radius_at = _scalar_radius(support)

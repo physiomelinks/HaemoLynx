@@ -37,7 +37,9 @@ RECORD_CEILING = 40
 
 
 def _graph_with_two_short_stubs() -> nx.MultiGraph:
-    """A three-node vessel with a two-micron stub hanging off each end node."""
+    """A vessel through two junctions with a two-micron stub hanging off
+    each. (A stub is judged from its tip to the junction it hangs from, so
+    each needs a junction, not a node the vessel merely runs on through.)"""
     G = nx.MultiGraph()
     for node, pos in {
         0: (0.0, 0.0, 0.0),
@@ -45,12 +47,14 @@ def _graph_with_two_short_stubs() -> nx.MultiGraph:
         2: (0.0, 0.0, 40.0),
         3: (0.0, 2.0, 20.0),
         4: (0.0, 2.0, 40.0),
+        5: (0.0, 0.0, 60.0),
     }.items():
         G.add_node(node, pos=pos)
     G.add_edge(0, 1, length=20.0)
     G.add_edge(1, 2, length=20.0)
     G.add_edge(1, 3, length=2.0)
     G.add_edge(2, 4, length=2.0)
+    G.add_edge(2, 5, length=20.0)
     return G
 
 

@@ -387,8 +387,12 @@ are only caught locally.
   `graph.diagnose_lumen_artefacts` reports any pair that does -- with loops inside one lumen and
   dead ends by kind -- in `build_network`'s graph checks, on the graph that is saved. A graph bridge records `bridge_kind` and `bridge_background_um`. Closing and gap
   filling held to the mask can grow a thin vessel into a rod Lee thinning erases outright, so a
-  piece of skeleton thinned away entirely is put back as it was. The stub prunes read the mask
-  too (`prune.prune_vascular_stubs`): a stub mostly off it, or ending inside its parent's lumen,
+  piece of skeleton thinned away entirely is put back as it was. The stub prunes judge a dead end
+  as its whole chain, tip to the junction it hangs from (length summed, the parent radius read at
+  that junction; piece by piece, a long dead end in short pieces was worn away), and read the mask
+  too (`prune.prune_vascular_stubs`): a stub mostly off it, ending inside its parent's lumen, or
+  never more than its own radius outside another centreline's lumen (`STUB_PROTRUSION_RADII`, with
+  `lumen_radius_at`: a hair along a vessel's wall, which the tip-to-junction test misses)
   goes whatever its length, and one whose tip the mask runs on past is held to
   `min_stub_length` as well, while a blind sprout keeps the radius rule
   (`min_stub_length_radius_multiple`, 3 radii by default: at 1.5, 3 um on a capillary, Lee's

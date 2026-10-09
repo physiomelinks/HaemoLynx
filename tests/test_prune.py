@@ -158,3 +158,85 @@ def test_graph_building_prunes_a_spur_by_the_vessel_it_leaves():
     for G in (fixed, by_radius):
         ends = [G.nodes[n]["pos"][2] for n in G.nodes if G.degree(n) == 1]
         assert 0.0 in ends and 59.0 in ends
+
+
+# --- dead ends judged as whole chains, and against other vessels' lumens -------
+
+
+def _wide_trunk_with(*paths):
+    """A 12 um trunk along x (centre y = 7) through a junction at x = 10, and
+    the given extra paths, each an edge; nodes are named by position."""
+    from lumen_artefact_fixtures import polyline_graph
+
+    return polyline_graph([[(7, 7, 0), (7, 7, 10)], [(7, 7, 10), (7, 7, 59)], *paths])
+
+
+def _rules(mask):
+    from haemolynx.graph.assemble import mask_continues_past, mask_lumen_test
+    from haemolynx.preprocessing import MaskSupport
+
+    support = MaskSupport(mask, (1.0, 1.0, 1.0))
+    return dict(
+        inside_lumen=mask_lumen_test(mask, (1.0, 1.0, 1.0)),
+        radius_at=lambda p: float(support.radius(np.asarray(p, dtype=float).reshape(1, 3))[0]),
+        mask_continues_at=mask_continues_past(support),
+        lumen_radius_at=support.radius,
+    )
+
+
+def test_a_hair_along_a_vessels_wall_is_pruned_whatever_its_length():
+    """30 um along the inside of a 12 um trunk: long enough for the length
+    rule, its tip far from the junction -- but it never leaves the lumen."""
+    from lumen_artefact_fixtures import wide_vessel
+
+    G = _wide_trunk_with([(7, 7, 10), (7, 10, 14), (7, 10, 44)])
+    rules = _rules(wide_vessel())
+    without = prune_vascular_stubs(G, min_stub_length=10.0, radius_multiple=1.5,
+                                   **{k: v for k, v in rules.items() if k != "lumen_radius_at"})
+    judged = prune_vascular_stubs(G, min_stub_length=10.0, radius_multiple=1.5, **rules)
+    assert (7.0, 10.0, 44.0) in without
+    assert (7.0, 10.0, 44.0) not in judged
+    assert {(7.0, 7.0, 0.0), (7.0, 7.0, 10.0), (7.0, 7.0, 59.0)} <= set(judged)
+
+
+def test_a_branch_that_leaves_the_vessel_stays():
+    from lumen_artefact_fixtures import capsule
+
+    mask = capsule(np.zeros((15, 40, 60), dtype=bool), (7, 7, -10), (7, 7, 70), 6)
+    capsule(mask, (7, 7, 30), (7, 33, 30), 2)
+    G = _wide_trunk_with([(7, 7, 10), (7, 7, 30)], [(7, 7, 30), (7, 31, 30)])
+    G.remove_edge((7.0, 7.0, 10.0), (7.0, 7.0, 59.0))
+    G.add_edge((7.0, 7.0, 30.0), (7.0, 7.0, 59.0), voxels=[[7.0, 7.0, float(x)] for x in range(30, 60)], length=29.0)
+    judged = prune_vascular_stubs(G, min_stub_length=10.0, radius_multiple=1.5, **_rules(mask))
+    assert (7.0, 31.0, 30.0) in judged
+
+
+def test_a_hair_beside_a_real_branch_does_not_take_the_branch_with_it():
+    """Two dead ends leave one junction side by side; neither is judged against
+    the other, so the real branch, which leaves the trunk, stays."""
+    from lumen_artefact_fixtures import capsule
+
+    mask = capsule(np.zeros((15, 40, 60), dtype=bool), (7, 7, -10), (7, 7, 70), 6)
+    capsule(mask, (7, 7, 30), (7, 33, 30), 2)
+    G = _wide_trunk_with([(7, 7, 10), (7, 7, 30)], [(7, 7, 30), (7, 31, 30)], [(7, 7, 30), (7, 8, 31), (7, 20, 31)])
+    G.remove_edge((7.0, 7.0, 10.0), (7.0, 7.0, 59.0))
+    G.add_edge((7.0, 7.0, 30.0), (7.0, 7.0, 59.0), voxels=[[7.0, 7.0, float(x)] for x in range(30, 60)], length=29.0)
+    judged = prune_vascular_stubs(G, min_stub_length=10.0, radius_multiple=1.5, **_rules(mask))
+    assert (7.0, 31.0, 30.0) in judged
+
+
+def test_a_dead_end_in_short_pieces_is_judged_whole():
+    """Three 5 um pieces joined at degree-2 nodes: each is under the 10 um
+    threshold, the dead end is not. Judged piece by piece it was worn away."""
+    from lumen_artefact_fixtures import polyline_graph
+
+    G = polyline_graph([
+        [(0, 0, 0), (0, 0, 20)], [(0, 0, 20), (0, 0, 40)], [(0, 0, 20), (0, 5, 20)],
+        [(0, 5, 20), (0, 10, 20)], [(0, 10, 20), (0, 15, 20)],
+    ])
+    pruned = prune_vascular_stubs(G, min_stub_length=10.0)
+    assert (0.0, 15.0, 20.0) in pruned
+    short = prune_vascular_stubs(G, min_stub_length=20.0)
+    assert not any(n in short for n in ((0.0, 5.0, 20.0), (0.0, 10.0, 20.0), (0.0, 15.0, 20.0)))
+    assert (0.0, 0.0, 20.0) in short or (0.0, 0.0, 0.0) in short
+

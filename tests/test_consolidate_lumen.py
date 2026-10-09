@@ -68,12 +68,16 @@ def test_a_second_strand_in_pieces_is_found_once_merged_and_taken_out():
 
 def test_the_old_single_pass_left_that_strand_behind():
     """Loops, pairs and prune before the last merge, as graph building ran
-    them before: the pair only exists after the merge, and nothing judges it."""
+    them before: the pair only exists after the merge, and nothing judges it.
+    (The prune of the time: no length rule, and none of today's mask rules,
+    one of which would take this strand out on its own.)"""
+    from haemolynx.graph.prune import prune_vascular_stubs
+
     mask, G = _strands_in_pieces()
     cleanup = _no_length_prune(mask)
     G = remove_loops_inside_one_lumen(G, cleanup.support)
     G = remove_parallel_edges_in_lumen(G, cleanup.support)
-    G = cleanup.prune(G)
+    G = prune_vascular_stubs(G, min_stub_length=0.0)
     G = smart_multigraph_degree2_removal(G, None, max_degree=4, inside_lumen=cleanup.inside_lumen)
     G = remove_edges_off_the_mask(G, cleanup.support)
     assert _pairs(G, mask) == 1
