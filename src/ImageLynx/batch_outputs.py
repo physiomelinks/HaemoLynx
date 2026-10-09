@@ -3,10 +3,15 @@
 A batch run is one specimen's output folder, from ``--stage run`` (``Specimen.batch_run_dir``)
 or ``--stage sensitivity`` (opened by passing its folder). ``open_batch_run`` does the
 one-time checks - the placed ROI against ``place_roi``, exactly one ``*_cache`` folder - and
-returns a ``BatchRun``, which hands out each part only when asked:
+returns a ``BatchRun``. The placement is kept on ``run.placement``, so nothing places the ROI
+again. The run hands out each part only when asked:
 
-- ``edge_table()``: ``per_edge_morphometry.csv`` keyed by integer ``(u, v, key)``;
-- ``graph()``: the cached network with ``assigned_diameter_um`` joined on from the edge table;
+- ``edge_table()``: ``per_edge_morphometry.csv`` keyed by integer ``(u, v, key)``, without
+  loading the graph, so a driver that needs only the table stays fast;
+- ``numeric_column(column)``: one edge-table column as a finite float per edge, the one place
+  a cell becomes a number;
+- ``graph()``: the cached network with ``assigned_diameter_um`` joined on from the edge table,
+  one-to-one on forward ``(u, v, key)``, with no reverse-direction fallback;
 - ``skeleton()`` and ``vessel_mask()``: boolean, shape-checked against the placed ROI;
 - ``th_probabilities()`` and ``th_mask()``: the TH channel cropped to the placed ROI.
 

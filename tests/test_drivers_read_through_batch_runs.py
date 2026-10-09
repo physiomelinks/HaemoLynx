@@ -13,7 +13,10 @@ import pytest
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 PACKAGE = Path(__file__).resolve().parents[1] / "src"
 
-# Drivers that read batch runs, all through the reader.
+# Drivers that read batch runs, all through the reader. A driver keeps only its own analysis
+# filtering (``cb_h2_error_propagation.py`` drops self-loops and non-positive lengths or
+# diameters, and raises on stranded nodes). ``cb_h1_renders.py`` is not listed: it reads
+# ``cb_h1_vtk.py``'s ``.vtp`` files, not a batch run.
 ON_THE_READER = [
     "cb_h2_glomus_perfusion.py",
     "cb_h2_absolute_perfusion.py",
