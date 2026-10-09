@@ -129,14 +129,22 @@ from haemolynx.gui.run_snapshot import (
 )
 from haemolynx.gui.tabs import tabs_for
 from haemolynx.gui.vessel_tubes import (
+    DEFAULT_TUBE_DIAMETER,
     DEFAULT_TUBE_QUALITY,
+    DEFAULT_UNIFORM_TUBE_DIAMETER_UM,
     DEFAULT_VESSEL_DRAW,
+    TUBE_DIAMETER_LABELS,
+    TUBE_DIAMETER_UNIFORM,
+    TUBE_DIAMETERS,
     TUBE_QUALITY_SIDES,
     TUBE_SHADING,
+    UNIFORM_TUBE_DIAMETER_RANGE_UM,
     VESSEL_DRAW_LINES,
     VESSEL_DRAW_TUBES,
     clamp_tube_quality,
     colors_for_tube_vertices,
+    valid_tube_diameter,
+    valid_uniform_tube_diameter_um,
     vessel_tube_mesh,
     vessel_tubes_layer_name,
 )
@@ -1202,6 +1210,13 @@ _vessel_draw_mode: str = DEFAULT_VESSEL_DRAW
 #: The tubes' render quality (see ``TUBE_QUALITY_SIDES``), shared by every
 #: tubes layer in the session and set from the slider on their controls.
 _tube_quality: int = DEFAULT_TUBE_QUALITY
+#: Each tube at its vessel's own diameter or every one at the same width (see
+#: ``TUBE_DIAMETERS``): the session's too, set from the view panel or from
+#: any tubes layer's controls.
+_tube_diameter: str = DEFAULT_TUBE_DIAMETER
+#: The width (µm) every tube is drawn at while that choice is Uniform, from
+#: the µm box beside it.
+_tube_uniform_diameter_um: float = DEFAULT_UNIFORM_TUBE_DIAMETER_UM
 
 #: Keys stashed on a branch-hover LayerSpec that must not reach napari.
 _BRANCH_HOVER_OPTION_KEYS = frozenset(
@@ -1510,8 +1525,8 @@ def _tube_mesh_key(vessels) -> str:
     """A fingerprint of everything a vessels layer's tube mesh is built from.
 
     Its geometry, the three columns :func:`vessel_tube_mesh` reads, the
-    quality level, edge width and scale. Colours are not in it: those change
-    without the mesh changing.
+    quality level, the diameter choice, edge width and scale. Colours are not
+    in it: those change without the mesh changing.
     """
     import hashlib
 
@@ -1528,6 +1543,8 @@ def _tube_mesh_key(vessels) -> str:
             digest.update(repr(np.asarray(features[column]).tolist()).encode())
     digest.update(repr((
         _tube_quality,
+        _tube_diameter,
+        _tube_uniform_diameter_um if _tube_diameter == TUBE_DIAMETER_UNIFORM else None,
         np.asarray(getattr(vessels, "edge_width", 0.0)).tolist(),
         tuple(float(v) for v in getattr(vessels, "scale", (1.0, 1.0, 1.0))),
     )).encode())
@@ -1573,6 +1590,8 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> str:
         getattr(vessels, "features", None),
         quality=_tube_quality,
         edge_width=getattr(vessels, "edge_width", None),
+        diameter=_tube_diameter,
+        uniform_diameter_um=_tube_uniform_diameter_um,
     )
     if len(vertices) == 0:
         vessels.visible = False
@@ -1612,10 +1631,11 @@ def _sync_one_vessel_tubes(viewer, vessels, tubes_on: bool) -> str:
         )
     vessels.visible = False
     _ensure_tube_colour_follow(viewer, vessels)
-    try:
-        _attach_tube_quality_slider(viewer, tubes_layer)
-    except Exception:  # noqa: BLE001 - a missing slider must not stop drawing
-        logger.debug("could not attach the tube quality slider", exc_info=True)
+    for attach in (_attach_tube_quality_slider, _attach_tube_diameter_choice):
+        try:
+            attach(viewer, tubes_layer)
+        except Exception:  # noqa: BLE001 - a missing control must not stop drawing
+            logger.debug("could not run %s", attach.__name__, exc_info=True)
     return name
 
 
@@ -1689,6 +1709,137 @@ def _attach_tube_quality_slider(viewer, layer) -> bool:
     slider.valueChanged.connect(lambda value: set_tube_quality(viewer, value))
     layout.addRow(label, slider)
     controls._haemolynx_tube_quality = slider
+    return True
+
+
+def _tube_diameter_controls(viewer) -> list:
+    """The controls of every tubes layer that carry the tube-diameter choice."""
+    found = []
+    for layer in list(getattr(viewer, "layers", ())):
+        if not _is_vessel_tubes_layer(layer):
+            continue
+        controls = _layer_controls(viewer, layer)
+        if getattr(controls, "_haemolynx_tube_diameter", None) is not None:
+            found.append(controls)
+    return found
+
+
+def _show_uniform_width(box) -> None:
+    """Put a uniform-width box on the session's width without it answering."""
+    if box.value() != _tube_uniform_diameter_um:
+        with _blocked(box):
+            box.setValue(_tube_uniform_diameter_um)
+
+
+def _show_tube_diameter(controls) -> None:
+    """Put a tubes layer's diameter choice and width box on the session's,
+    without either answering; the width only while the choice is Uniform."""
+    combo = controls._haemolynx_tube_diameter
+    index = combo.findData(_tube_diameter)
+    if index >= 0 and combo.currentIndex() != index:
+        with _blocked(combo):
+            combo.setCurrentIndex(index)
+    box = getattr(controls, "_haemolynx_tube_uniform_width", None)
+    if box is not None:
+        _show_uniform_width(box)
+        uniform = _tube_diameter == TUBE_DIAMETER_UNIFORM
+        box.setVisible(uniform)
+        controls._haemolynx_tube_uniform_width_label.setVisible(uniform)
+
+
+def _uniform_width_box(object_name: str):
+    """A µm box for the uniform tube width. It applies on Enter, on leaving
+    it or on an arrow step, not on every key: a big network takes a moment
+    to redraw, and typing 40 would draw it 4 µm wide on the way."""
+    from qtpy.QtWidgets import QDoubleSpinBox
+
+    from haemolynx.gui.chrome_tooltips import TUBE_UNIFORM_WIDTH_TOOLTIP
+
+    box = QDoubleSpinBox()
+    box.setObjectName(object_name)
+    box.setRange(*UNIFORM_TUBE_DIAMETER_RANGE_UM)
+    box.setDecimals(1)
+    box.setSingleStep(1.0)
+    box.setSuffix(" µm")
+    box.setKeyboardTracking(False)
+    box.setValue(_tube_uniform_diameter_um)
+    box.setToolTip(TUBE_UNIFORM_WIDTH_TOOLTIP)
+    return box
+
+
+def _show_tube_diameter_everywhere(viewer) -> None:
+    """Move every tube-diameter control to the session's choice and width,
+    the view panel's included, and redraw the tubes."""
+    for controls in _tube_diameter_controls(viewer):
+        _show_tube_diameter(controls)
+    refresh = getattr(viewer, "_haemolynx_refresh_tube_diameter", None)
+    if callable(refresh):
+        refresh()
+    _sync_vessel_tubes(viewer)
+
+
+def set_tube_diameter(viewer, diameter: str) -> None:
+    """Redraw every tube at its vessel's own diameter, or every one at the
+    same width (see ``TUBE_DIAMETERS``).
+
+    The choice is the session's, as the quality is: every tubes layer's
+    combo and the view panel's menu are moved to match. Only the drawing
+    changes; the vessels keep their diameters.
+    """
+    global _tube_diameter
+    _tube_diameter = valid_tube_diameter(diameter)
+    _show_tube_diameter_everywhere(viewer)
+
+
+def set_tube_uniform_diameter(viewer, diameter_um: float) -> None:
+    """Draw every tube *diameter_um* across while the choice is Uniform,
+    held to ``UNIFORM_TUBE_DIAMETER_RANGE_UM`` and to the box's one decimal.
+    The session's, like the choice."""
+    global _tube_uniform_diameter_um
+    _tube_uniform_diameter_um = round(valid_uniform_tube_diameter_um(diameter_um), 1)
+    _show_tube_diameter_everywhere(viewer)
+
+
+def _attach_tube_diameter_choice(viewer, layer) -> bool:
+    """Put the "tube diameter" choice and its uniform width on a tubes
+    layer's controls, once, under its render quality: the same as the view
+    panel's."""
+    from qtpy.QtWidgets import QComboBox, QLabel
+
+    from haemolynx.gui.chrome_tooltips import (
+        TUBE_DIAMETER_TOOLTIP,
+        TUBE_UNIFORM_WIDTH_TOOLTIP,
+    )
+
+    controls = _layer_controls(viewer, layer)
+    if controls is None:
+        return False
+    if getattr(controls, "_haemolynx_tube_diameter", None) is not None:
+        _show_tube_diameter(controls)
+        return True
+    layout = controls.layout()
+    if not hasattr(layout, "addRow"):
+        return False
+    combo = QComboBox()
+    combo.setObjectName("haemolynx_tube_diameter")
+    for key in TUBE_DIAMETERS:
+        combo.addItem(TUBE_DIAMETER_LABELS[key], key)
+    combo.setToolTip(TUBE_DIAMETER_TOOLTIP)
+    label = QLabel("tube diameter:")
+    label.setToolTip(TUBE_DIAMETER_TOOLTIP)
+    combo.currentIndexChanged.connect(
+        lambda index: set_tube_diameter(viewer, combo.itemData(index))
+    )
+    layout.addRow(label, combo)
+    box = _uniform_width_box("haemolynx_tube_uniform_width")
+    width_label = QLabel("uniform width:")
+    width_label.setToolTip(TUBE_UNIFORM_WIDTH_TOOLTIP)
+    box.valueChanged.connect(lambda value: set_tube_uniform_diameter(viewer, value))
+    layout.addRow(width_label, box)
+    controls._haemolynx_tube_diameter = combo
+    controls._haemolynx_tube_uniform_width = box
+    controls._haemolynx_tube_uniform_width_label = width_label
+    _show_tube_diameter(controls)
     return True
 
 
@@ -12320,6 +12471,7 @@ def settings_widget(napari_viewer=None):
         SNAPSHOT_TOOLTIP,
         SWEEP_TOOLTIP,
         LAYER_SET_TOOLTIP,
+        TUBE_DIAMETER_TOOLTIP,
         VESSEL_DRAW_TOOLTIP,
         Z_DEPTH_TOOLTIP,
     )
@@ -12400,6 +12552,72 @@ def settings_widget(napari_viewer=None):
         lines_radio.setChecked(True)
     else:
         tubes_radio.setChecked(True)
+
+    # Each tube at its vessel's own diameter, or every one at the same width:
+    # the tubes layer's own "tube diameter" choice, without selecting it. A
+    # menu on a button, as Showing is, for the reason the radios are radios.
+    tube_diameter_label = QLabel("Tube diameter")
+    tube_diameter_label.setObjectName("haemolynx_tube_diameter_label")
+    tube_diameter_button = QToolButton()
+    tube_diameter_button.setObjectName("haemolynx_tube_diameter")
+    tube_diameter_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+    tube_diameter_menu = QMenu(tube_diameter_button)
+    tube_diameter_menu.setObjectName("haemolynx_tube_diameter_menu")
+    tube_diameter_button.setMenu(tube_diameter_menu)
+    tube_diameter_label.setToolTip(TUBE_DIAMETER_TOOLTIP)
+    tube_diameter_button.setToolTip(TUBE_DIAMETER_TOOLTIP)
+    # Uniform's width, beside the button while Uniform is the choice.
+    tube_uniform_width = _uniform_width_box("haemolynx_view_tube_uniform_width")
+    tube_diameter_field = QWidget()
+    tube_diameter_field.setObjectName("haemolynx_tube_diameter_field")
+    tube_diameter_field_layout = QHBoxLayout(tube_diameter_field)
+    tube_diameter_field_layout.setContentsMargins(0, 0, 0, 0)
+    tube_diameter_field_layout.addWidget(tube_diameter_button)
+    tube_diameter_field_layout.addWidget(tube_uniform_width)
+    tube_diameter_field_layout.addStretch(1)
+    #: The view dock's fit, once it is defined further down.
+    tube_diameter_resize: dict[str, Any] = {"fit": None}
+
+    def choose_tube_diameter(key: str) -> None:
+        set_tube_diameter(viewer, key)
+        refresh_tube_diameter()
+
+    def on_tube_uniform_width_changed(value: float) -> None:
+        set_tube_uniform_diameter(viewer, value)
+        refresh_tube_diameter()
+
+    def refresh_tube_diameter(*_args) -> None:
+        """Tick the session's choice and show its width, the width only for
+        Uniform; greyed out while lines are drawn."""
+        try:
+            for action in tube_diameter_menu.actions():
+                action.setChecked(action.data() == _tube_diameter)
+            tube_diameter_button.setText(TUBE_DIAMETER_LABELS[_tube_diameter])
+            _show_uniform_width(tube_uniform_width)
+            uniform = _tube_diameter == TUBE_DIAMETER_UNIFORM
+            was_shown = not tube_uniform_width.isHidden()
+            tube_uniform_width.setVisible(uniform)
+            tubes = _vessel_draw_mode == VESSEL_DRAW_TUBES
+            for widget in (tube_diameter_label, tube_diameter_button, tube_uniform_width):
+                widget.setEnabled(tubes)
+        except RuntimeError:
+            # The dock's Qt widgets outlive the panel on teardown.
+            logger.debug("tube-diameter menu is gone", exc_info=True)
+            return
+        if uniform != was_shown and callable(tube_diameter_resize["fit"]):
+            tube_diameter_resize["fit"]()
+
+    tube_uniform_width.valueChanged.connect(on_tube_uniform_width_changed)
+    for key in TUBE_DIAMETERS:
+        action = tube_diameter_menu.addAction(TUBE_DIAMETER_LABELS[key])
+        action.setCheckable(True)
+        action.setData(key)
+        action.triggered.connect(
+            lambda _checked=False, key=key: choose_tube_diameter(key)
+        )
+    refresh_tube_diameter()
+    if viewer is not None:
+        viewer._haemolynx_refresh_tube_diameter = refresh_tube_diameter
 
     # Which network is drawn: the baseline, or one perturbation. A menu on a
     # button rather than a QComboBox, whose popup over the floating dock
@@ -12592,6 +12810,7 @@ def settings_widget(napari_viewer=None):
             VESSEL_DRAW_LINES if lines_radio.isChecked() else VESSEL_DRAW_TUBES
         )
         _vessel_draw_mode = mode
+        refresh_tube_diameter()
         if viewer is not None:
             _sync_vessel_tubes(viewer)
 
@@ -13599,6 +13818,12 @@ def settings_widget(napari_viewer=None):
     vessel_draw_form.setContentsMargins(0, 0, 0, 0)
     vessel_draw_form.addRow(vessel_draw_label, vessel_draw)
     display_form.addRow(vessel_draw_row)
+    tube_diameter_row = QWidget()
+    tube_diameter_row.setObjectName("haemolynx_tube_diameter_row")
+    tube_diameter_form = QFormLayout(tube_diameter_row)
+    tube_diameter_form.setContentsMargins(0, 0, 0, 0)
+    tube_diameter_form.addRow(tube_diameter_label, tube_diameter_field)
+    display_form.addRow(tube_diameter_row)
     layer_set_row = QWidget()
     layer_set_row.setObjectName("haemolynx_layer_set_row")
     layer_set_form = QFormLayout(layer_set_row)
@@ -13636,6 +13861,8 @@ def settings_widget(napari_viewer=None):
                         max(int(hint.height()) + 24, 220))
         except RuntimeError:
             logger.debug("view dock is gone", exc_info=True)
+
+    tube_diameter_resize["fit"] = fit_view_dock
 
     def refresh_sweep_controls() -> None:
         shown = _layer_set_shown(viewer) if viewer is not None else None
@@ -13824,6 +14051,11 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_z_depth_row = z_depth_row
     panel._haemolynx_vessel_draw = vessel_draw
     panel._haemolynx_vessel_draw_row = vessel_draw_row
+    panel._haemolynx_tube_diameter = tube_diameter_button
+    panel._haemolynx_tube_diameter_menu = tube_diameter_menu
+    panel._haemolynx_tube_diameter_row = tube_diameter_row
+    panel._haemolynx_tube_uniform_width = tube_uniform_width
+    panel._haemolynx_choose_tube_diameter = choose_tube_diameter
     panel._haemolynx_layer_set_row = layer_set_row
     panel._haemolynx_layer_set_button = layer_set_button
     panel._haemolynx_layer_set_menu = layer_set_menu

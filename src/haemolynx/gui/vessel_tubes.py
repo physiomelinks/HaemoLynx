@@ -4,8 +4,9 @@ Napari Vectors ``vector_style="line"`` draws two world-fixed ribbons. An
 axis-aligned centreline step collapses a ribbon, and ``edge_width=0.6`` µm
 then vanishes edge-on. A tube stays visible from every camera angle.
 
-Each vessel is drawn at its own diameter, and vessels joined end to end at a
-node no other vessel meets are drawn as one smooth tube through it. The
+Each vessel is drawn at its own diameter (or, by the Tube diameter choice,
+every vessel at one width), and vessels joined end to end at a node no
+other vessel meets are drawn as one smooth tube through it. The
 centreline it follows is the skeleton's voxel path: steps under a micron
 that kink at every voxel, round a capillary six microns across. A tube built
 ring by ring on that path pinches, bulges and folds where the vessel does
@@ -52,6 +53,24 @@ TUBE_SHADING = "smooth"
 #: same smooth tube at every level, rounder and slower to build each step.
 TUBE_QUALITY_SIDES = (6, 8, 12, 18, 32)
 DEFAULT_TUBE_QUALITY = 2
+
+#: How wide the tubes are drawn, by the "Tube diameter" choice on the view
+#: panel and on a tubes layer's controls: each vessel at its own diameter,
+#: measured or assigned, or every vessel at the one width
+#: :func:`tube_radius_um` gives a vessel with no diameter yet.
+TUBE_DIAMETER_PER_VESSEL = "per_vessel"
+TUBE_DIAMETER_UNIFORM = "uniform"
+TUBE_DIAMETERS = (TUBE_DIAMETER_PER_VESSEL, TUBE_DIAMETER_UNIFORM)
+TUBE_DIAMETER_LABELS = {
+    TUBE_DIAMETER_PER_VESSEL: "Per vessel",
+    TUBE_DIAMETER_UNIFORM: "Uniform",
+}
+DEFAULT_TUBE_DIAMETER = TUBE_DIAMETER_PER_VESSEL
+#: The width (µm) every tube is drawn at while the choice is Uniform, set in
+#: the µm box beside it: to start, the width of a vessel with no diameter
+#: yet, and never outside this range.
+DEFAULT_UNIFORM_TUBE_DIAMETER_UM = 2.0 * TUBE_RADIUS_UM
+UNIFORM_TUBE_DIAMETER_RANGE_UM = (0.5, 1000.0)
 #: Rings along a tube are this fraction of its local radius apart.
 _RING_SPACING_PER_RADIUS = 1.0 / 3.0
 #: Fewest ring-to-ring segments along one vessel, so that a vessel shorter
@@ -738,6 +757,24 @@ def clamp_tube_quality(quality) -> int:
     return min(max(level, 0), len(TUBE_QUALITY_SIDES) - 1)
 
 
+def valid_tube_diameter(diameter) -> str:
+    """*diameter* if it is one of :data:`TUBE_DIAMETERS`, else the default."""
+    return diameter if diameter in TUBE_DIAMETERS else DEFAULT_TUBE_DIAMETER
+
+
+def valid_uniform_tube_diameter_um(diameter_um) -> float:
+    """*diameter_um* held to :data:`UNIFORM_TUBE_DIAMETER_RANGE_UM`; the
+    default for anything that is not a number."""
+    try:
+        value = float(diameter_um)
+    except (TypeError, ValueError):
+        return DEFAULT_UNIFORM_TUBE_DIAMETER_UM
+    if not np.isfinite(value):
+        return DEFAULT_UNIFORM_TUBE_DIAMETER_UM
+    low, high = UNIFORM_TUBE_DIAMETER_RANGE_UM
+    return min(max(value, low), high)
+
+
 def tube_mesh(
     vectors: np.ndarray,
     *,
@@ -772,6 +809,8 @@ def vessel_tube_mesh(
     *,
     quality: int = DEFAULT_TUBE_QUALITY,
     edge_width: float | None = None,
+    diameter: str = DEFAULT_TUBE_DIAMETER,
+    uniform_diameter_um: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """:func:`tube_mesh` for a vessels Vectors layer's data and features.
 
@@ -779,9 +818,16 @@ def vessel_tube_mesh(
     :func:`tube_radius_um` of *edge_width*), its steps told apart from the
     next vessel's by ``edge_index``, and the
     :data:`~haemolynx.graph.IS_ZERO_RESISTANCE` column marking bridges.
+    With *diameter* :data:`TUBE_DIAMETER_UNIFORM`, every vessel is drawn
+    *uniform_diameter_um* across whatever its ``diameter_um`` -- or, with no
+    width given, at that one :func:`tube_radius_um`.
     """
     diameters = _feature_column(features, "diameter_um")
     radii = None
+    if valid_tube_diameter(diameter) == TUBE_DIAMETER_UNIFORM:
+        diameters = None
+        if uniform_diameter_um is not None:
+            radii = valid_uniform_tube_diameter_um(uniform_diameter_um) / 2.0
     if diameters is not None:
         try:
             radii = tube_radii_um(diameters.astype(float))

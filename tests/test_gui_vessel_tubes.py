@@ -581,6 +581,137 @@ def test_a_vessels_layer_is_drawn_as_its_columns_say():
             np.testing.assert_array_equal(got_array, want_array)
 
 
+def test_uniform_draws_every_vessel_at_one_width_whatever_its_diameter():
+    """The "Tube diameter" choice: Uniform leaves ``diameter_um`` out and
+    draws each vessel as wide as one with no diameter yet; Per vessel, the
+    default, is the drawing there was before the choice."""
+    from haemolynx.gui.vessel_tubes import (
+        TUBE_DIAMETER_PER_VESSEL,
+        TUBE_DIAMETER_UNIFORM,
+        vessel_tube_mesh,
+    )
+
+    vectors = np.array(
+        [
+            [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+            [[10.0, 0.0, 0.0], [0.0, 4.0, 0.0]],
+            [[20.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
+        ]
+    )
+
+    def distances(vertices, index, row):
+        segment = np.stack([vectors[row, 0], vectors[row, 0] + vectors[row, 1]])
+        return _nearest_on_polyline(vertices[index == row], segment)[0]
+
+    features = {"diameter_um": [4.0, 12.0, 8.5], "edge_index": [0, 1, 2]}
+    vertices, _faces, index = vessel_tube_mesh(vectors, features, diameter=TUBE_DIAMETER_UNIFORM)
+    for row in range(3):
+        np.testing.assert_allclose(distances(vertices, index, row), TUBE_RADIUS_UM, atol=1e-9)
+    vertices, _faces, index = vessel_tube_mesh(
+        vectors, features, edge_width=3.0, diameter=TUBE_DIAMETER_UNIFORM)
+    for row in range(3):
+        np.testing.assert_allclose(distances(vertices, index, row), 3.0, atol=1e-9)
+
+    uniform = vessel_tube_mesh(vectors, features, diameter=TUBE_DIAMETER_UNIFORM)
+    for got, want in zip(uniform, vessel_tube_mesh(vectors, {"edge_index": [0, 1, 2]})):
+        np.testing.assert_array_equal(got, want)
+    per_vessel = vessel_tube_mesh(vectors, features, diameter=TUBE_DIAMETER_PER_VESSEL)
+    for got, want in zip(per_vessel, vessel_tube_mesh(vectors, features)):
+        np.testing.assert_array_equal(got, want)
+    vertices, _faces, index = per_vessel
+    np.testing.assert_allclose(distances(vertices, index, 1), 6.0, atol=1e-9)
+    # The column itself is left as it was.
+    assert features["diameter_um"] == [4.0, 12.0, 8.5]
+
+
+def test_uniform_draws_every_vessel_at_the_width_it_is_given():
+    """The µm box beside Uniform: every vessel that wide, whatever its own
+    diameter or the layer's edge width; Per vessel takes no notice of it."""
+    from haemolynx.gui.vessel_tubes import (
+        TUBE_DIAMETER_PER_VESSEL,
+        TUBE_DIAMETER_UNIFORM,
+        UNIFORM_TUBE_DIAMETER_RANGE_UM,
+        vessel_tube_mesh,
+    )
+
+    vectors = np.array(
+        [
+            [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+            [[10.0, 0.0, 0.0], [0.0, 4.0, 0.0]],
+            [[20.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
+        ]
+    )
+
+    def distances(vertices, index, row):
+        segment = np.stack([vectors[row, 0], vectors[row, 0] + vectors[row, 1]])
+        return _nearest_on_polyline(vertices[index == row], segment)[0]
+
+    features = {"diameter_um": [4.0, 12.0, 8.5], "edge_index": [0, 1, 2]}
+    for width in (10.0, 1.0):
+        vertices, _faces, index = vessel_tube_mesh(
+            vectors, features, edge_width=3.0,
+            diameter=TUBE_DIAMETER_UNIFORM, uniform_diameter_um=width,
+        )
+        for row in range(3):
+            np.testing.assert_allclose(distances(vertices, index, row), width / 2, atol=1e-9)
+    # Held to the box's range.
+    vertices, _faces, index = vessel_tube_mesh(
+        vectors, features, diameter=TUBE_DIAMETER_UNIFORM, uniform_diameter_um=1e6)
+    np.testing.assert_allclose(
+        distances(vertices, index, 0), UNIFORM_TUBE_DIAMETER_RANGE_UM[1] / 2, atol=1e-6)
+
+    per_vessel = vessel_tube_mesh(
+        vectors, features, diameter=TUBE_DIAMETER_PER_VESSEL, uniform_diameter_um=10.0)
+    for got, want in zip(per_vessel, vessel_tube_mesh(vectors, features)):
+        np.testing.assert_array_equal(got, want)
+
+
+def test_a_uniform_width_that_is_not_a_number_is_the_default():
+    from haemolynx.gui.vessel_tubes import (
+        DEFAULT_UNIFORM_TUBE_DIAMETER_UM,
+        UNIFORM_TUBE_DIAMETER_RANGE_UM,
+        valid_uniform_tube_diameter_um,
+    )
+
+    low, high = UNIFORM_TUBE_DIAMETER_RANGE_UM
+    # To start, as wide as a vessel with no diameter yet is drawn.
+    assert DEFAULT_UNIFORM_TUBE_DIAMETER_UM == 2 * TUBE_RADIUS_UM
+    assert low <= DEFAULT_UNIFORM_TUBE_DIAMETER_UM <= high
+    assert valid_uniform_tube_diameter_um(25.0) == 25.0
+    assert valid_uniform_tube_diameter_um("25") == 25.0
+    assert valid_uniform_tube_diameter_um(0.0) == low
+    assert valid_uniform_tube_diameter_um(-3.0) == low
+    assert valid_uniform_tube_diameter_um(high * 10) == high
+    for odd in (None, "wide", np.nan, np.inf):
+        assert valid_uniform_tube_diameter_um(odd) == DEFAULT_UNIFORM_TUBE_DIAMETER_UM
+
+
+def test_a_diameter_choice_it_does_not_know_is_per_vessel():
+    from haemolynx.gui.vessel_tubes import (
+        DEFAULT_TUBE_DIAMETER,
+        TUBE_DIAMETER_LABELS,
+        TUBE_DIAMETER_PER_VESSEL,
+        TUBE_DIAMETER_UNIFORM,
+        TUBE_DIAMETERS,
+        valid_tube_diameter,
+    )
+
+    assert DEFAULT_TUBE_DIAMETER == TUBE_DIAMETER_PER_VESSEL
+    assert set(TUBE_DIAMETER_LABELS) == set(TUBE_DIAMETERS)
+    for choice in TUBE_DIAMETERS:
+        assert valid_tube_diameter(choice) == choice
+    # A label is not a choice.
+    for odd in (None, "", 3, TUBE_DIAMETER_LABELS[TUBE_DIAMETER_UNIFORM]):
+        assert valid_tube_diameter(odd) == TUBE_DIAMETER_PER_VESSEL
+
+
+def test_the_tooltip_gives_the_width_uniform_tubes_start_at():
+    from haemolynx.gui.chrome_tooltips import TUBE_DIAMETER_TOOLTIP
+    from haemolynx.gui.vessel_tubes import DEFAULT_UNIFORM_TUBE_DIAMETER_UM
+
+    assert f"{DEFAULT_UNIFORM_TUBE_DIAMETER_UM:g} µm to start" in TUBE_DIAMETER_TOOLTIP
+
+
 def test_tube_radius_is_at_least_two_microns():
     assert tube_radius_um(0.6) == pytest.approx(TUBE_RADIUS_UM)
     assert tube_radius_um(3.0) == pytest.approx(3.0)

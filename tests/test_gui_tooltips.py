@@ -98,6 +98,8 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         *chrome.ILLUMINATION_TOOLTIPS.values(),
         chrome.SNAPSHOT_TOOLTIP,
         chrome.TUBE_QUALITY_TOOLTIP,
+        chrome.TUBE_DIAMETER_TOOLTIP,
+        chrome.TUBE_UNIFORM_WIDTH_TOOLTIP,
         chrome.SWEEP_TOOLTIP,
         chrome.ADVANCED_SETTINGS_TOOLTIP,
         chrome.DIAMETER_SOURCE_TOOLTIP,

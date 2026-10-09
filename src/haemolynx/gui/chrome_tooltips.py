@@ -207,9 +207,20 @@ SWEEP_TOOLTIP = (
     "each sweep keeps its own position while another is shown"
 )
 TUBE_QUALITY_TOOLTIP = (
-    "How round the vessel tubes are drawn: one smooth tube per vessel at its "
-    "own diameter, with more sides round it each step right -- slower to "
-    "build on a large network"
+    "How round the vessel tubes are drawn: one smooth tube per vessel, with "
+    "more sides round it each step right -- slower to build on a large "
+    "network"
+)
+TUBE_DIAMETER_TOOLTIP = (
+    "How wide the vessel tubes are drawn. Per vessel: each at its own "
+    "diameter, measured or assigned. Uniform: every vessel at the width in "
+    "the µm box beside it, 4 µm to start, so wide vessels do not hide the "
+    "narrow ones. Display only -- the network keeps its diameters"
+)
+TUBE_UNIFORM_WIDTH_TOOLTIP = (
+    "The width every vessel tube is drawn at while Tube diameter is Uniform, "
+    "in microns; applied on Enter, on leaving the box or on each arrow step. "
+    "Display only -- the network keeps its diameters"
 )
 SNAPSHOT_TOOLTIP = (
     "Write a TIFF of the current napari view into the pipeline "

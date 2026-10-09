@@ -689,7 +689,11 @@ are only caught locally.
   radius is cut (`_FOLD_MARGIN`): voxel staircases, snapped ends and tight bends used to make the
   tube pinch, bulge and fold. `tube_mesh(..., quality=)` is driven by the "render quality" slider
   on a tubes layer's own controls, which only sets the sides round the tube (`TUBE_QUALITY_SIDES`);
-  the level is the session's, shared by every tubes layer.
+  the level is the session's, shared by every tubes layer. `vessel_tube_mesh(..., diameter=)` is
+  the "Tube diameter" choice, on the view panel and on the same controls (`set_tube_diameter`, also
+  the session's): `per_vessel` (default) as above, or `uniform`, every vessel `uniform_diameter_um`
+  across whatever its `diameter_um`, which stays as it was. That width is the µm box shown beside
+  the choice while it is Uniform (`set_tube_uniform_diameter`; 4 µm to start, 0.5-1000 µm).
 - **`examples/pipeline_presets.py`** — `PRESETS`, named partial configs; every setting name is
   checked against the schema at import, so a preset cannot quietly set something that no longer
   exists. The override engine itself is library code, in `parsers/cli.py` and `parsers/config.py`.
