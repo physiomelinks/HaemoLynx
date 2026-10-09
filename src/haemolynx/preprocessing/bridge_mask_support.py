@@ -368,10 +368,15 @@ class MaskSupport:
         """Distance to background at each point's nearest voxel, in microns
         (0 outside the mask)."""
         if self._distance is None:
-            from .pointwise_distance import FeatureDistance
+            from .pointwise_distance import LUMEN_RADII_REMEMBERED, FeatureDistance
 
+            # Remembering: the same centreline voxels are asked about again
+            # by every check a path or a clean-up round makes.
             self._distance = FeatureDistance(
-                self.mask, feature_value=False, sampling=self.voxel_size_zyx
+                self.mask,
+                feature_value=False,
+                sampling=self.voxel_size_zyx,
+                remember=LUMEN_RADII_REMEMBERED,
             )
         points = np.asarray(points_um, dtype=float).reshape(-1, 3)
         if not self._distance.has_surface:

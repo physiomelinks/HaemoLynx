@@ -40,6 +40,11 @@ _STRUCTURE_26 = np.ones((3, 3, 3), dtype=bool)
 #: search. Any feature tied with the nearest one must be among them.
 _CANDIDATES = 8
 
+#: How many voxels' lumen radii graph building's lookups remember
+#: (``FeatureDistance(remember=...)``): more than the centreline voxels and
+#: their neighbours a large stack's clean-up reads, at about 100 bytes each.
+LUMEN_RADII_REMEMBERED = 2_000_000
+
 
 def surface_feature_voxels(
     features: np.ndarray,
@@ -87,6 +92,14 @@ class FeatureDistance:
     lookup. ``features`` and ``feature_value`` are as for
     :func:`surface_feature_voxels`; *sampling* is the per-axis spacing, as
     ``distance_transform_edt`` takes it (``None`` for unit spacing).
+
+    *remember* keeps the distances of up to that many voxels once measured,
+    for a caller that asks about the same voxels again and again: graph
+    building's clean-up reads the lumen radius along the same centrelines
+    round after round, and on E14.5 MCA these lookups were over a third of
+    its time. Off (0) by default -- a caller visiting every voxel once, as
+    :func:`distance_transform_edt_blockwise` does, would only pay its memory
+    (about 100 bytes a voxel).
     """
 
     def __init__(
@@ -96,6 +109,7 @@ class FeatureDistance:
         feature_value: bool = True,
         sampling: Sequence[float] | None = None,
         block_voxels: int = LOW_MEMORY_BLOCK_VOXELS,
+        remember: int = 0,
     ):
         self.features = features
         self.feature_value = bool(feature_value)
@@ -106,6 +120,9 @@ class FeatureDistance:
             features, feature_value=feature_value, block_voxels=block_voxels
         )
         self._tree = cKDTree(self.surface * self.sampling) if len(self.surface) else None
+        self._remember = int(remember)
+        #: Distances already measured, by flat voxel index.
+        self._known: dict[int, float] = {}
 
     @property
     def has_surface(self) -> bool:
@@ -116,9 +133,39 @@ class FeatureDistance:
     def at(self, voxels: np.ndarray) -> np.ndarray:
         """Distance at each integer voxel of *voxels*, shape ``(n, ndim)``.
 
-        A feature voxel is at distance 0.
+        A feature voxel is at distance 0. With *remember* on, a voxel
+        measured before is answered from memory: the same value.
         """
         voxels = np.asarray(voxels, dtype=np.intp).reshape(-1, self.features.ndim)
+        shape = self.features.shape
+        if (
+            self._remember <= 0
+            or not len(voxels)
+            or not self.has_surface
+            or (voxels < 0).any()
+            or (voxels >= np.asarray(shape)).any()
+        ):
+            # Out-of-range voxels keep plain indexing's behaviour (a negative
+            # index wraps, one past the end raises), never a remembered value.
+            return self._measure(voxels)
+        keys = np.ravel_multi_index(tuple(voxels.T), shape).tolist()
+        known = self._known
+        found = [known.get(key) for key in keys]
+        missing = np.fromiter((value is None for value in found), dtype=bool, count=len(found))
+        out = np.fromiter(
+            (0.0 if value is None else value for value in found), dtype=np.float64, count=len(found)
+        )
+        if missing.any():
+            fresh = self._measure(voxels[missing])
+            out[missing] = fresh
+            room = self._remember - len(known)
+            if room > 0:
+                new = [key for key, absent in zip(keys, missing) if absent]
+                known.update(zip(new[:room], fresh[:room].tolist()))
+        return out
+
+    def _measure(self, voxels: np.ndarray) -> np.ndarray:
+        """:meth:`at` without memory: the KD-tree lookup itself."""
         out = np.zeros(len(voxels), dtype=np.float64)
         if not len(voxels):
             return out

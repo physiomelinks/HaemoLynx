@@ -1,5 +1,5 @@
 """Diagnostics utilities for graph topology cleanup."""
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import networkx as nx
 import numpy as np
@@ -327,12 +327,22 @@ def diagnose_graph_against_mask(
     )
 
 
+def _edge_signature(eid, data: dict, pos_u, pos_v) -> tuple:
+    """What an edge's centreline is drawn from: its id, its voxels and its
+    two nodes' positions. Equal signatures, equal paths."""
+    voxels = data.get("voxels")
+    body = np.asarray(voxels if voxels is not None else (), dtype=float).tobytes()
+    ends = np.asarray([pos_u, pos_v], dtype=float).tobytes()
+    return (eid, len(body), hash(body), ends)
+
+
 def diagnose_parallel_duplicates_in_lumen(
     G: Union[nx.Graph, nx.MultiGraph],
     mask: np.ndarray,
     *,
     voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
     mask_support=None,
+    memo: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Pairs of edges that run beside each other in one lumen over at least
     half of either's length: one segmented vessel represented twice.
@@ -344,6 +354,14 @@ def diagnose_parallel_duplicates_in_lumen(
     meeting the vessel it leaves, and two edges continuing each other are
     not pairs. *mask_support*, a ``MaskSupport`` over *mask*, is used in
     place of building one.
+
+    *memo*, a dict a caller passes to every call on one graph (and one
+    mask), keeps each edge's verdict for the next call: an edge whose
+    centreline is unchanged, with no edge added, changed or removed since
+    within the distance it is judged over, is not judged again -- its
+    verdict reads only its own path and the centrelines in that reach.
+    Graph building's clean-up asks again after every round, of a graph each
+    round changes in a few places.
     """
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
     from haemolynx.preprocessing.bridge_mask_support import (
@@ -364,25 +382,65 @@ def diagnose_parallel_duplicates_in_lumen(
     owners = np.asarray([ids.setdefault(owner, len(ids)) for owner in index.owners], dtype=np.intp)
     edges = list(ids)
     node_pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True) if "pos" in d}
-    pairs = set()
+    remembered: Dict[tuple, tuple] = memo.get("edges", {}) if memo is not None else {}
+    entries = []
     for u, v, key, data in G.edges(keys=True, data=True):
-        own = ids.get(edge_id(u, v, key))
+        eid = edge_id(u, v, key)
+        own = ids.get(eid)
         if own is None:
             continue
-        path = _densify(edge_sample_points(u, v, data, node_pos), step)
-        reach = 2.0 * float(np.max(mask_support.radius(path))) + 1.0
+        signature = (
+            _edge_signature(eid, data, node_pos[u], node_pos[v]) if memo is not None else None
+        )
+        if signature in remembered:
+            path, reach, _partner = remembered[signature]
+        else:
+            path = _densify(edge_sample_points(u, v, data, node_pos), step)
+            reach = 2.0 * float(np.max(mask_support.radius(path))) + 1.0
+        entries.append((own, signature, path, reach))
+    changed_tree = None
+    if remembered:
+        # What changed since the last call: centrelines gone and centrelines new.
+        present = {signature for _own, signature, _path, _reach in entries}
+        changed = [remembered[s][0] for s in remembered if s not in present]
+        changed += [path for _own, s, path, _reach in entries if s not in remembered]
+        if changed:
+            changed_tree = cKDTree(np.vstack(changed))
+    signature_of_edge = {own: signature for own, signature, _path, _reach in entries}
+    edge_of_signature = {signature: own for own, signature, _path, _reach in entries}
+    kept: Dict[tuple, tuple] = {}
+    pairs = set()
+    for own, signature, path, reach in entries:
+        if signature in remembered:
+            partner_signature = remembered[signature][2]
+            # The judging path is denser than the index's samples a judgement
+            # reads, so a change one sample step further out still counts.
+            untouched = changed_tree is None or not np.isfinite(
+                changed_tree.query(path, k=1, distance_upper_bound=reach + step)[0]
+            ).any()
+            if untouched and (partner_signature is None or partner_signature in edge_of_signature):
+                if partner_signature is not None:
+                    partner = edges[edge_of_signature[partner_signature]]
+                    pairs.add(tuple(sorted((edges[own], partner), key=str)))
+                kept[signature] = (path, reach, partner_signature)
+                continue
         found = index.tree.query_ball_point(path, r=reach)
         near = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in found]))
         near = near[owners[near] != own]
-        if not len(near):
-            continue
-        judged, shadowing = _shadowing_points(
-            path, cKDTree(index.points[near]), index.points[near],
-            mask_support.inside, mask_support.radius, step_um=step,
-        )
-        if judged and 2 * len(shadowing) >= judged:
-            partner = edges[int(np.bincount(owners[near[shadowing]]).argmax())]
-            pairs.add(tuple(sorted((edges[own], partner), key=str)))
+        partner_signature = None
+        if len(near):
+            judged, shadowing = _shadowing_points(
+                path, cKDTree(index.points[near]), index.points[near],
+                mask_support.inside, mask_support.radius, step_um=step,
+            )
+            if judged and 2 * len(shadowing) >= judged:
+                partner_index = int(np.bincount(owners[near[shadowing]]).argmax())
+                pairs.add(tuple(sorted((edges[own], edges[partner_index]), key=str)))
+                partner_signature = signature_of_edge.get(partner_index)
+        if memo is not None:
+            kept[signature] = (path, reach, partner_signature)
+    if memo is not None:
+        memo["edges"] = kept
     return {
         "edge_count": len(edges),
         "duplicate_pair_count": len(pairs),

@@ -134,10 +134,16 @@ def mask_radius_sampler(
     """
     if mask is None or radius_multiple <= 0:
         return None
-    from haemolynx.preprocessing.pointwise_distance import FeatureDistance
+    from haemolynx.preprocessing.pointwise_distance import (
+        LUMEN_RADII_REMEMBERED,
+        FeatureDistance,
+    )
 
     binary = np.asanyarray(mask, dtype=bool)
-    distance = FeatureDistance(binary, feature_value=False, sampling=voxel_size)
+    # Remembering: the end-of-build clean-up reads the same voxels each round.
+    distance = FeatureDistance(
+        binary, feature_value=False, sampling=voxel_size, remember=LUMEN_RADII_REMEMBERED
+    )
     if not distance.has_surface:
         return None
     spacing = np.asarray(voxel_size, dtype=float)
@@ -302,6 +308,9 @@ def consolidate_lumen(
     recovery split them into. The graph that comes back is merged.
     """
     rounds = 0
+    # The pair check's verdicts, kept from round to round: a round changes a
+    # few places, and only the edges near them are judged again.
+    pairs_memo: dict = {}
     for rounds in range(1, max_rounds + 1):
         before = (G.number_of_nodes(), G.number_of_edges())
         G = smart_multigraph_degree2_removal(
@@ -311,7 +320,7 @@ def consolidate_lumen(
         if cleanup.support is None:
             return G
         G = remove_edges_off_the_mask(G, cleanup.support)
-        G = remove_parallel_edges_in_lumen(G, cleanup.support)
+        G = remove_parallel_edges_in_lumen(G, cleanup.support, memo=pairs_memo)
         G = remove_loops_inside_one_lumen(G, cleanup.support)
         G = cleanup.prune(G)
         if (G.number_of_nodes(), G.number_of_edges()) == before:

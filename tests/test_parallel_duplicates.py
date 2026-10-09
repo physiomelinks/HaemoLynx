@@ -174,3 +174,88 @@ def test_an_orphan_reconnect_does_not_lay_a_second_strand_in_one_lumen():
     assert not guarded.has_edge(*ends) and pairs(guarded) == before
     assert alone.has_edge(*ends)
     assert alone.edges[(*ends, 0)]["bridge_kind"] == "orphan"
+
+
+# --- the diagnostic's memo: judging again only what changed ------------------------
+
+
+def _two_doubled_vessels():
+    """Two 12 um vessels 30 um apart: the near one drawn as two strands, the
+    far one as three."""
+    from lumen_artefact_fixtures import capsule, polyline_graph
+
+    mask = np.zeros((15, 45, 60), dtype=bool)
+    capsule(mask, (7, 7, -10), (7, 7, 70), 6)
+    capsule(mask, (7, 37, -10), (7, 37, 70), 6)
+    G = polyline_graph([
+        [(7, 5, 2), (7, 5, 57)], [(7, 9, 2), (7, 9, 57)],
+        [(7, 34, 2), (7, 34, 57)], [(7, 37, 2), (7, 37, 57)], [(7, 40, 2), (7, 40, 57)],
+    ])
+    return mask, G
+
+
+def _counting_judgements(monkeypatch):
+    import importlib
+
+    # The module, not the function of the same name the package exports.
+    bridge_mask_support = importlib.import_module("haemolynx.preprocessing.bridge_mask_support")
+
+    calls = []
+    real = bridge_mask_support._shadowing_points
+
+    def counted(path, *args, **kwargs):
+        calls.append(np.asarray(path)[0].copy())
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(bridge_mask_support, "_shadowing_points", counted)
+    return calls
+
+
+def test_the_memo_gives_the_fresh_answer_and_judges_an_unchanged_graph_not_at_all(monkeypatch):
+    mask, G = _two_doubled_vessels()
+    fresh = diagnose_parallel_duplicates_in_lumen(G, mask)
+    memo: dict = {}
+    first = diagnose_parallel_duplicates_in_lumen(G, mask, memo=memo)
+    calls = _counting_judgements(monkeypatch)
+
+    again = diagnose_parallel_duplicates_in_lumen(G, mask, memo=memo)
+
+    assert first == fresh and again == fresh
+    assert fresh["duplicate_pair_count"] >= 2
+    assert calls == [], "nothing changed, so nothing is judged again"
+
+
+def test_the_memo_judges_again_only_near_what_changed(monkeypatch):
+    mask, G = _two_doubled_vessels()
+    memo: dict = {}
+    diagnose_parallel_duplicates_in_lumen(G, mask, memo=memo)
+    (gone,) = [e for e in G.edges(keys=True) if e[0][1] == 40.0]
+    G.remove_edge(*gone)
+    calls = _counting_judgements(monkeypatch)
+
+    report = diagnose_parallel_duplicates_in_lumen(G, mask, memo=memo)
+    judged_again = sorted(float(point[1]) for point in calls)
+
+    assert report == diagnose_parallel_duplicates_in_lumen(G, mask)
+    assert report["duplicate_pair_count"] == 2
+    assert judged_again == [34.0, 37.0], "only the strands beside the removed one are judged again"
+
+
+def test_an_edge_added_beside_a_remembered_one_is_judged_with_it():
+    mask, G = _two_doubled_vessels()
+    memo: dict = {}
+    diagnose_parallel_duplicates_in_lumen(G, mask, memo=memo)
+    for edge in [e for e in G.edges(keys=True) if e[0][1] in (5.0, 9.0)][:1]:
+        G.remove_edge(*edge)
+    diagnose_parallel_duplicates_in_lumen(G, mask, memo=memo)
+    from lumen_artefact_fixtures import polyline_graph
+
+    extra = polyline_graph([[(7, 6, 2), (7, 6, 57)]])
+    G.add_nodes_from(extra.nodes(data=True))
+    G.add_edges_from(extra.edges(data=True))
+
+    report = diagnose_parallel_duplicates_in_lumen(G, mask, memo=memo)
+
+    assert report == diagnose_parallel_duplicates_in_lumen(G, mask)
+    added = (7.0, 6.0, 2.0)
+    assert any(added in edge[:2] for pair in report["duplicate_pairs"] for edge in pair)

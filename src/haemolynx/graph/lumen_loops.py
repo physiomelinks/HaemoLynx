@@ -451,7 +451,9 @@ def cuts_off_vessels(G: nx.MultiGraph, edge) -> bool:
     return not _joined_without(G, u, v)
 
 
-def remove_parallel_edges_in_lumen(G: nx.MultiGraph, support: MaskSupport) -> nx.MultiGraph:
+def remove_parallel_edges_in_lumen(
+    G: nx.MultiGraph, support: MaskSupport, *, memo: dict | None = None
+) -> nx.MultiGraph:
     """Drop, in place, one edge of each pair
     :func:`graph.diagnostics.diagnose_parallel_duplicates_in_lumen` reports.
 
@@ -461,7 +463,8 @@ def remove_parallel_edges_in_lumen(G: nx.MultiGraph, support: MaskSupport) -> nx
     (:func:`cuts_off_vessels`), when the other goes instead, or, when that
     would too, both stay. A branch meeting its parent, and two vessels with
     background between them, are not pairs in that report and are left
-    alone.
+    alone. *memo* is the report's own, for a caller asking again and again
+    of one graph (``assemble.consolidate_lumen``).
     """
     from haemolynx.graph.diagnostics import diagnose_parallel_duplicates_in_lumen
 
@@ -470,6 +473,7 @@ def remove_parallel_edges_in_lumen(G: nx.MultiGraph, support: MaskSupport) -> nx
         support.mask,
         voxel_size_zyx=tuple(float(v) for v in support.voxel_size_zyx),
         mask_support=support,
+        memo=memo,
     )
     removed = kept_connected = 0
     for left, right in report["duplicate_pairs"]:

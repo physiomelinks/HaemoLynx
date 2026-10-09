@@ -244,7 +244,7 @@ def test_loops_inside_one_lumen_are_broken_only_given_the_mask(monkeypatch, with
     monkeypatch.setattr(
         assemble_module,
         "remove_parallel_edges_in_lumen",
-        lambda G, support: parallel.append(support) or G,
+        lambda G, support, **_: parallel.append(support) or G,
     )
     off_mask = []
     monkeypatch.setattr(
