@@ -360,3 +360,233 @@ def test_default_connectivity_csv_path_sits_beside_the_vtk_output(tmp_path):
     elsewhere = {"vtk_output_prefix": tmp_path / "missing" / "stack"}
     assert default_connectivity_csv_path(elsewhere) == "stack_connectivity.csv"
     assert default_connectivity_csv_path(None) == "haemolynx_connectivity.csv"
+
+
+# --- Manual loop review -----------------------------------------------------------
+
+import csv  # noqa: E402
+from dataclasses import replace  # noqa: E402
+
+from haemolynx.graph import short_loops  # noqa: E402
+from haemolynx.gui.post_processing import (  # noqa: E402
+    KEPT,
+    LOOP_MATCH_UM,
+    LOOP_REVIEW_COLUMNS,
+    LOOP_TABLE_COLUMNS,
+    LOOP_ZOOM_MARGIN,
+    LOOP_ZOOM_MIN_BOX_UM,
+    SIDE_DELETED,
+    LoopReview,
+    append_loop_review,
+    loop_branch_ids,
+    loop_label,
+    loop_review_csv_path,
+    loop_review_row,
+    loop_side_rows,
+    loop_view,
+    loops_to_review,
+)
+
+
+def _loop_network() -> nx.MultiGraph:
+    """The 1-{2,3}-4 loop of :func:`_network`, met at 1 and at 4 (a vessel
+    on to node 6), with a 7 um vessel on one side."""
+    G = _network()
+    G.add_node(6, pos=np.asarray((0.0, 0.0, 40.0)))
+    _add(G, 4, 6, branch_order="B01", diameter_um=5.0)
+    for u, v, k in edge_keys(G):
+        if {u, v} == {2, 4}:
+            G.edges[u, v, k]["diameter_um"] = 7.0
+    return G
+
+
+def _the_loop(G):
+    (loop,) = short_loops(G)
+    return loop
+
+
+def _ids(G, pairs) -> list[int]:
+    return sorted(i for i, k in enumerate(edge_keys(G)) if set(k[:2]) in [set(p) for p in pairs])
+
+
+def test_a_loop_is_listed_by_its_place_length_and_sides():
+    loop = _the_loop(_loop_network())
+    assert loop_label(loop, 3) == f"Loop 3: {loop.length_um:.3g} µm round, 2 side(s)"
+
+
+def test_the_loop_table_lists_each_side_with_its_vessels_length_and_diameter():
+    G = _loop_network()
+    loop = _the_loop(G)
+
+    rows = loop_side_rows(G, loop)
+
+    assert len(rows) == 2 and all(len(row) == len(LOOP_TABLE_COLUMNS) for row in rows)
+    assert [row[0] for row in rows] == ["1", "2"]
+    by_side = {frozenset(n for e in side for n in e[:2]): row for side, row in zip(loop.sides, rows)}
+    upper = by_side[frozenset({1, 2, 4})]
+    assert sorted(int(i) for i in upper[1].split(", ")) == _ids(G, [(1, 2), (2, 4)])
+    assert float(upper[2]) == pytest.approx(2 * np.hypot(10, 10), rel=1e-2)
+    assert float(upper[3]) == pytest.approx(6.0, rel=1e-2), "length-weighted mean of 5 and 7"
+    assert {upper[4], upper[5]} == {"1", "4"}
+
+
+def test_loop_branch_ids_name_the_loop_or_one_side_and_skip_what_has_gone():
+    G = _loop_network()
+    loop = _the_loop(G)
+    loop_ids = _ids(G, [(1, 2), (2, 4), (1, 3), (3, 4)])
+
+    assert sorted(loop_branch_ids(G, loop)) == loop_ids
+    assert sorted(loop_branch_ids(G, loop, 0) + loop_branch_ids(G, loop, 1)) == loop_ids
+    assert loop_branch_ids(G, loop, 5) == []
+    G.remove_edge(*loop.edges[0])
+    assert len(loop_branch_ids(G, loop)) == 3
+
+
+def test_a_review_matches_its_loop_by_position_and_length_not_node_ids():
+    loop = _the_loop(_loop_network())
+    review = LoopReview.of(loop, KEPT, time="2026-10-09T15:00:00")
+    centre = np.asarray(loop.centre_um)
+
+    assert review.matches(loop)
+    assert review.matches(replace(loop, centre_um=tuple(centre + [0, 0.5 * LOOP_MATCH_UM, 0])))
+    assert not review.matches(replace(loop, centre_um=tuple(centre + [0, 2 * LOOP_MATCH_UM, 0])))
+    assert review.matches(replace(loop, length_um=loop.length_um * 1.03))
+    assert not review.matches(replace(loop, length_um=loop.length_um * 1.2))
+    renumbered = replace(loop, edges=(), sides=())
+    assert renumbered != loop and review.matches(renumbered)
+
+
+def test_a_review_survives_a_round_trip_through_plain_values():
+    loop = _the_loop(_loop_network())
+    review = LoopReview.of(loop, SIDE_DELETED, side=2, time="2026-10-09T15:00:00")
+
+    assert LoopReview.from_dict(review.as_dict()) == review
+    assert LoopReview.from_dict({"decision": KEPT}) is None
+    assert LoopReview.from_dict("not a review") is None
+    assert LoopReview.from_dict({**review.as_dict(), "centre_um": [1.0, 2.0]}) is None
+
+
+def test_kept_loops_are_not_listed_again_but_an_opened_one_that_came_back_is():
+    loop = _the_loop(_loop_network())
+
+    assert loops_to_review([loop], []) == [loop]
+    assert loops_to_review([loop], [LoopReview.of(loop, KEPT)]) == []
+    assert loops_to_review([loop], [LoopReview.of(loop, SIDE_DELETED, side=1)]) == [loop]
+
+
+def _tilted_circle(radius=10.0, centre=(5.0, 20.0, 30.0)):
+    t = np.linspace(0.0, 2 * np.pi, 361)
+    e1 = np.array([0.0, 1.0, 0.0])
+    e2 = np.array([1.0, 0.0, 1.0]) / np.sqrt(2)
+    normal = np.cross(e1, e2)
+    points = np.asarray(centre) + radius * (np.cos(t)[:, None] * e1 + np.sin(t)[:, None] * e2)
+    return points, normal
+
+
+def test_the_loop_view_centres_fits_and_looks_along_the_loops_normal():
+    points, normal = _tilted_circle()
+
+    view = loop_view(points, towards=normal)
+
+    assert view.centre_um == pytest.approx((5.0, 20.0, 30.0), abs=1e-6)
+    assert view.box_um == pytest.approx(LOOP_ZOOM_MARGIN * 20.0, rel=1e-3)
+    assert np.dot(view.view_direction, normal) == pytest.approx(1.0, abs=1e-6)
+    assert np.dot(view.up_direction, normal) == pytest.approx(0.0, abs=1e-6)
+    assert np.linalg.norm(view.up_direction) == pytest.approx(1.0)
+    flipped = loop_view(points, towards=-normal)
+    assert np.dot(flipped.view_direction, normal) == pytest.approx(-1.0, abs=1e-6)
+
+
+def test_the_loop_view_keeps_the_cameras_up_laid_into_the_loops_plane():
+    points, normal = _tilted_circle()
+    wanted = np.array([0.0, -1.0, 0.0])  # already in the plane
+
+    view = loop_view(points, towards=normal, up=wanted)
+
+    assert view.up_direction == pytest.approx(tuple(wanted), abs=1e-6)
+    along_normal = loop_view(points, towards=normal, up=normal)
+    assert np.dot(along_normal.up_direction, normal) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_small_loop_is_zoomed_to_no_tighter_than_the_smallest_box():
+    points, _normal = _tilted_circle(radius=2.0)
+    assert loop_view(points).box_um == LOOP_ZOOM_MIN_BOX_UM
+
+
+def test_a_review_row_has_every_column_with_the_loop_its_sides_and_the_decision():
+    G = _loop_network()
+    loop = _the_loop(G)
+    review = LoopReview.of(loop, SIDE_DELETED, side=1, time="2026-10-09T15:00:00")
+
+    row = loop_review_row(G, loop, review)
+
+    assert list(row) == list(LOOP_REVIEW_COLUMNS)
+    assert row["decision"] == SIDE_DELETED and row["side_deleted"] == "1"
+    assert row["time"] == "2026-10-09T15:00:00"
+    assert float(row["loop_length_um"]) == pytest.approx(loop.length_um, rel=1e-3)
+    assert row["sides"] == "2"
+    assert sorted(int(i) for i in row["loop_branch_ids"].split(";")) == sorted(loop_branch_ids(G, loop))
+    assert row["centre_zyx_vox"] == "0 0 20"
+    assert row["zero_resistance_bridges"] == "0"
+    # Without a mask, what the mask would say is left blank.
+    assert row["path_in"] == "" and row["wall_side"] == "" and row["inside_one_lumen"] == ""
+    assert float(row["out_of_plane"]) == pytest.approx(0.0, abs=1e-6)
+
+
+def _shifted(G, offset):
+    """*G* moved by *offset* microns, so all of it sits inside a mask."""
+    H = G.copy()
+    for node in H.nodes:
+        H.nodes[node]["pos"] = np.asarray(H.nodes[node]["pos"], dtype=float) + offset
+    for _u, _v, _k, data in H.edges(keys=True, data=True):
+        data["voxels"] = [tuple(np.asarray(p, dtype=float) + offset) for p in data["voxels"]]
+    return H
+
+
+def _tube_round(G, edges, shape, radius=2.0) -> np.ndarray:
+    """A mask of tubes *radius* microns round *edges* of *G*, on 1 um voxels."""
+    points = np.indices(shape).reshape(3, -1).T.astype(float)
+    inside = np.zeros(len(points), dtype=bool)
+    for a, b, _k in edges:
+        pa, pb = (np.asarray(G.nodes[n]["pos"], dtype=float) for n in (a, b))
+        t = np.clip((points - pa) @ (pb - pa) / np.dot(pb - pa, pb - pa), 0.0, 1.0)
+        inside |= np.linalg.norm(points - (pa + t[:, None] * (pb - pa)), axis=1) <= radius
+    return inside.reshape(shape)
+
+
+def test_a_review_row_reads_the_mask_round_the_loop_when_given_one():
+    H = _shifted(_loop_network(), np.array([4.0, 15.0, 5.0]))
+    loop = _the_loop(H)
+    mask = _tube_round(H, loop.edges, (9, 31, 40))
+
+    row = loop_review_row(H, loop, LoopReview.of(loop, KEPT), mask=mask)
+
+    assert float(row["path_in"]) == pytest.approx(1.0)
+    assert row["inside_one_lumen"] == "False", "a loop round tissue"
+    assert float(row["chords_in_lumen"]) < 0.5
+    assert row["wall_side"] in {"1", "2"}
+    assert len(row["side_lumen_r_um"].split(";")) == 2
+
+
+def test_the_loop_review_csv_sits_beside_the_vtk_output(tmp_path):
+    expected = tmp_path / "run1_loop_review.csv"
+    assert loop_review_csv_path({"vtk_output_prefix": str(tmp_path / "run1")}) == expected
+    assert loop_review_csv_path({"vtk_output_prefix": str(tmp_path / "missing" / "run1")}) is None
+    assert loop_review_csv_path({}) is None and loop_review_csv_path(None) is None
+
+
+def test_decisions_collect_in_one_csv_under_one_header(tmp_path):
+    G = _loop_network()
+    loop = _the_loop(G)
+    first = loop_review_row(G, loop, LoopReview.of(loop, KEPT, time="t1"))
+    second = loop_review_row(G, loop, LoopReview.of(loop, SIDE_DELETED, side=2, time="t2"))
+    path = tmp_path / "run_loop_review.csv"
+
+    append_loop_review(path, [first])
+    append_loop_review(path, [second])
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [r["decision"] for r in rows] == [KEPT, SIDE_DELETED]
+    assert rows[0] == first and rows[1] == second
+    assert path.read_text(encoding="utf-8").count("loop_length_um") == 1

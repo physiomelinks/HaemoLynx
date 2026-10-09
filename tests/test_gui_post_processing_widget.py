@@ -880,3 +880,153 @@ def test_open_connectivity_map_draws_the_last_export(page, tmp_path, monkeypatch
     assert html_path == tmp_path / "net_map.html" and html_path.is_file()
     assert opened == [html_path.resolve().as_uri()]
     assert "Opened the 2D connectivity map" in c.connectivity_status.text()
+
+
+# --- Manual loop review ------------------------------------------------------------
+
+import csv  # noqa: E402
+
+from haemolynx.gui.post_processing import KEPT, SIDE_DELETED  # noqa: E402
+
+
+def _loop_page(viewer, tmp_path, *, loop_review: bool = True):
+    """The tab on the four-way network, whose loop 1-{2,3}-4 runs through
+    outlet 4, with Manual loop review ticked and the run's output in *tmp_path*."""
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("build_network", network(_four_way_network())))
+    report = SimpleNamespace(value="")
+    controls = _post_processing_controls(
+        viewer,
+        report,
+        results=lambda: results,
+        boundary_roles=lambda: {"inlet": (0,), "outlet": (4,)},
+        regenerate=lambda graph, stop_after=None: True,
+        running=lambda: False,
+        settings=lambda: {"vtk_output_prefix": str(tmp_path / "run")},
+        paused=lambda: False,
+        complete=lambda: True,
+    )
+    controls.refresh()
+    controls.loop_toggle.setChecked(loop_review)
+    return SimpleNamespace(
+        controls=controls, viewer=viewer, report=report, csv=tmp_path / "run_loop_review.csv",
+    )
+
+
+def _side_through(controls, node) -> int:
+    return next(
+        i for i, side in enumerate(controls.state.loop.sides) if any(node in e[:2] for e in side)
+    )
+
+
+def _csv_rows(path):
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def test_manual_loop_review_is_off_and_hidden_until_ticked(make_napari_viewer, tmp_path):
+    page = _loop_page(make_napari_viewer(), tmp_path, loop_review=False)
+    c, viewer = page.controls, page.viewer
+    assert c.loop_toggle.text() == "Manual loop review" and c.loop_toggle.toolTip()
+    assert not c.loop_toggle.isChecked() and c.loop_box.isHidden()
+    for widget in (c.loop_list, c.loop_table, c.loop_delete_button, c.loop_keep_button):
+        assert c.loop_box.isAncestorOf(widget) and widget.toolTip()
+
+    c.scan_button.click()
+    graph = c.state.graph
+    assert c.loop_list.count() == 0 and c.state.loop is None
+    assert _colour_of(viewer, graph, (2, 4)) == _rgba(CONNECTED)
+
+    c.loop_toggle.setChecked(True)
+    assert not c.loop_box.isHidden()
+    assert c.loop_list.count() == 1
+    assert c.loop_list.item(0).text() == "Loop 1: 56.6 µm round, 2 side(s)"
+    assert c.loop_table.rowCount() == 2, "cut at outlet 4 as well as at junction 1"
+    for pair in [(1, 2), (2, 4), (3, 4), (1, 3)]:
+        assert _colour_of(viewer, graph, pair) == _rgba(AT_JUNCTION)
+    assert _colour_of(viewer, graph, (0, 1)) == _rgba(CONNECTED)
+    # Zoomed to the loop's middle, (20, 0, 0).
+    centre = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
+    assert np.allclose(centre, [20, 0, 0][-len(viewer.dims.displayed):], atol=1e-6)
+
+    c.loop_toggle.setChecked(False)
+    assert c.loop_box.isHidden() and c.state.loop is None and c.loop_list.count() == 0
+    assert _colour_of(viewer, graph, (2, 4)) == _rgba(CONNECTED)
+
+
+def test_picking_a_loop_in_3d_looks_at_it_in_its_own_plane(make_napari_viewer, tmp_path):
+    viewer = make_napari_viewer()
+    viewer.dims.ndisplay = 3
+    page = _loop_page(viewer, tmp_path)
+
+    page.controls.scan_button.click()
+
+    # The loop lies in x = 0, so the camera looks along x at its middle.
+    view = np.asarray(viewer.camera.view_direction, dtype=float)
+    assert abs(view[2]) == pytest.approx(1.0, abs=1e-3)
+    assert np.allclose(np.asarray(viewer.camera.center), [20, 0, 0], atol=1e-3)
+
+
+def test_keep_records_the_loop_takes_it_off_the_list_and_writes_the_csv(make_napari_viewer, tmp_path):
+    page = _loop_page(make_napari_viewer(), tmp_path)
+    c = page.controls
+    c.scan_button.click()
+    before = sorted(edge_keys(c.state.graph))
+
+    c.loop_keep_button.click()
+
+    assert c.loop_list.count() == 0 and c.state.loop is None
+    assert sorted(edge_keys(c.state.graph)) == before, "keeping changes nothing"
+    assert [review.decision for review in c.state.loop_reviews] == [KEPT]
+    assert [row["decision"] for row in _csv_rows(page.csv)] == [KEPT]
+    assert "kept" in c.log_box.toPlainText()
+    assert "0 short loop(s) to review" in c.loop_summary.text()
+    assert "1 kept" in c.loop_summary.text() and page.csv.name in c.loop_summary.text()
+    assert not c.regenerate_graph_button.isEnabled(), "nothing to regenerate"
+    # A kept loop is not asked about again.
+    c.scan_button.click()
+    assert c.loop_list.count() == 0
+
+
+def test_delete_this_side_opens_the_loop_and_records_which_side(make_napari_viewer, tmp_path):
+    page = _loop_page(make_napari_viewer(), tmp_path)
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    c.loop_delete_button.click()
+    assert "Select the side" in c.loop_summary.text()
+    assert c.state.graph.has_edge(1, 2)
+
+    side = _side_through(c, 2)
+    c.loop_table.selectRow(side)
+    graph = c.state.graph
+    assert _colour_of(viewer, graph, (1, 2)) == _rgba(SELECTED)
+    assert _colour_of(viewer, graph, (2, 4)) == _rgba(SELECTED)
+    assert _colour_of(viewer, graph, (1, 3)) == _rgba(AT_JUNCTION)
+    c.loop_delete_button.click()
+
+    graph = c.state.graph
+    assert 2 not in graph and graph.degree(1) == 3 and graph.degree(4) == 1
+    assert len(viewer.layers[VESSELS].data) == 4
+    assert c.loop_list.count() == 0
+    assert [(r.decision, r.side) for r in c.state.loop_reviews] == [(SIDE_DELETED, side + 1)]
+    (row,) = _csv_rows(page.csv)
+    assert row["decision"] == SIDE_DELETED and row["side_deleted"] == str(side + 1)
+    assert row["sides"] == "2"
+    assert c.regenerate_graph_button.isEnabled()
+    assert "opened: deleted side" in c.log_box.toPlainText()
+    assert "deleted side" in page.report.value
+
+    c.forget()
+    assert c.state.loop_reviews == [] and c.loop_list.count() == 0
+
+
+def test_a_loop_decision_without_an_output_folder_still_counts(make_napari_viewer, tmp_path):
+    page = _loop_page(make_napari_viewer(), tmp_path / "not made yet")
+    c = page.controls
+    c.scan_button.click()
+
+    c.loop_keep_button.click()
+
+    assert [review.decision for review in c.state.loop_reviews] == [KEPT]
+    assert "Not written to a CSV" in c.loop_summary.text()
+    assert not page.csv.exists()

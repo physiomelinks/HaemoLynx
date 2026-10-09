@@ -18,7 +18,11 @@ import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 
-from haemolynx.preprocessing.bridge_mask_support import MaskSupport, _sample_step
+from haemolynx.preprocessing.bridge_mask_support import (
+    DEFAULT_MAX_BACKGROUND_GAP_UM,
+    MaskSupport,
+    _sample_step,
+)
 
 from ._helpers import edge_sample_points
 
@@ -32,6 +36,31 @@ LOOP_SEARCH_UM = 200.0
 _UNUSABLE = 1e12
 
 
+def _chord_background_um(loop_um: np.ndarray, support: MaskSupport) -> np.ndarray | None:
+    """The background each antipodal chord of a closed path crosses, in
+    microns: from each point of the path, evenly spaced, to the point half
+    the path away. None when the path is too short to have chords."""
+    loop = np.asarray(loop_um, dtype=float).reshape(-1, 3)
+    step = _sample_step(support.voxel_size_zyx)
+    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(loop, axis=0), axis=1))])
+    count = int(np.ceil(arc[-1] / step))
+    if count < 4:
+        return None
+    along = np.arange(count) * (arc[-1] / count)
+    points = np.column_stack([np.interp(along, arc, loop[:, axis]) for axis in range(3)])
+    half = count // 2
+    start, chords = points[:half], points[half:2 * half] - points[:half]
+    lengths = np.linalg.norm(chords, axis=1)
+    samples = int(np.ceil(lengths.max() / step)) + 1
+    if samples < 2:
+        return None
+    t = np.linspace(0.0, 1.0, samples)
+    flags = support.inside(
+        (start[:, None, :] + t[None, :, None] * chords[:, None, :]).reshape(-1, 3)
+    ).reshape(half, samples)
+    return (~flags).sum(axis=1) * lengths / (samples - 1)
+
+
 def loop_inside_one_lumen(loop_um: np.ndarray, support: MaskSupport) -> bool:
     """Whether a closed path lies inside one lumen rather than round tissue.
 
@@ -43,27 +72,11 @@ def loop_inside_one_lumen(loop_um: np.ndarray, support: MaskSupport) -> bool:
     rings a one-voxel tunnel through a vessel. The loop is inside one lumen
     when at least half its chords cross no more than that.
     """
-    loop = np.asarray(loop_um, dtype=float).reshape(-1, 3)
-    step = _sample_step(support.voxel_size_zyx)
-    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(loop, axis=0), axis=1))])
-    count = int(np.ceil(arc[-1] / step))
-    if count < 4:
+    background_um = _chord_background_um(loop_um, support)
+    if background_um is None:
         return True
-    along = np.arange(count) * (arc[-1] / count)
-    points = np.column_stack([np.interp(along, arc, loop[:, axis]) for axis in range(3)])
-    half = count // 2
-    start, chords = points[:half], points[half:2 * half] - points[:half]
-    lengths = np.linalg.norm(chords, axis=1)
-    samples = int(np.ceil(lengths.max() / step)) + 1
-    if samples < 2:
-        return True
-    t = np.linspace(0.0, 1.0, samples)
-    flags = support.inside(
-        (start[:, None, :] + t[None, :, None] * chords[:, None, :]).reshape(-1, 3)
-    ).reshape(half, samples)
-    background_um = (~flags).sum(axis=1) * lengths / (samples - 1)
     dropout = np.sum(background_um <= support.max_background_gap_um + 1e-9)
-    return 2 * int(dropout) >= half
+    return 2 * int(dropout) >= len(background_um)
 
 
 def _length(data: dict) -> float:
@@ -178,22 +191,157 @@ def iter_short_loops(G: nx.MultiGraph, search_um: float = LOOP_SEARCH_UM):
         yield cycle, _polyline(G, cycle)
 
 
-def _arcs(G: nx.MultiGraph, cycle):
-    """The cycle cut at every node with an edge off it: the runs of edges
-    between the places the rest of the network meets it."""
-    meets = [G.degree[a] > 2 for a, _b, _key in cycle]
-    if not any(meets):
+def _arcs(G: nx.MultiGraph, cycle, cut_at: frozenset = frozenset()):
+    """The cycle cut at every node with an edge off it, and at every node of
+    *cut_at*: the runs of edges between the places the rest of the network
+    meets it."""
+
+    def meets(node) -> bool:
+        return G.degree[node] > 2 or node in cut_at
+
+    starts = [meets(a) for a, _b, _key in cycle]
+    if not any(starts):
         return []
-    first = meets.index(True)
+    first = starts.index(True)
     turned = cycle[first:] + cycle[:first]
     arcs, current = [], []
     for edge in turned:
-        if current and G.degree[edge[0]] > 2:
+        if current and meets(edge[0]):
             arcs.append(current)
             current = []
         current.append(edge)
     arcs.append(current)
     return arcs
+
+
+def loop_sides(G: nx.MultiGraph, cycle, *, cut_at=()) -> list[list[tuple[Any, Any, Any]]]:
+    """The sides of a loop: the runs of its ``(a, b, key)`` edges between
+    the places the rest of the network meets it -- and any node of *cut_at*,
+    such as an outlet the loop runs through -- in order round it.
+
+    A loop met at one place is one side, the whole loop; a loop nothing else
+    meets has each of its edges as a side.
+    """
+    cycle = list(cycle)
+    return _arcs(G, cycle, frozenset(cut_at)) or [[edge] for edge in cycle]
+
+
+#: Mask kept round a loop when :func:`loop_measures` reads it, in microns:
+#: wider than any lumen radius read there.
+MEASURE_MARGIN_UM = 10.0
+
+
+def _arc_length(points: np.ndarray) -> float:
+    return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum()) if len(points) > 1 else 0.0
+
+
+def _evenly_round(loop: np.ndarray, step_um: float) -> np.ndarray:
+    """Points evenly spaced round a closed path, the closing point not repeated."""
+    keep = np.concatenate([[True], np.linalg.norm(np.diff(loop, axis=0), axis=1) > 0])
+    loop = loop[keep]
+    if len(loop) < 2:
+        return loop
+    if not np.allclose(loop[0], loop[-1]):
+        loop = np.vstack([loop, loop[:1]])
+    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(loop, axis=0), axis=1))])
+    count = max(16, int(np.ceil(arc[-1] / step_um)))
+    along = np.arange(count) * (arc[-1] / count)
+    return np.column_stack([np.interp(along, arc, loop[:, axis]) for axis in range(3)])
+
+
+def loop_centre_um(loop_um: np.ndarray, step_um: float = 0.5) -> np.ndarray:
+    """The middle of a closed path: the mean of points evenly spaced round
+    it, so a side drawn with more points does not pull it over."""
+    points = _evenly_round(np.asarray(loop_um, dtype=float).reshape(-1, 3), step_um)
+    return points.mean(axis=0) if len(points) else np.zeros(3)
+
+
+def loop_measures(
+    loop_um: np.ndarray,
+    *,
+    mask: Any = None,
+    voxel_size_zyx=(1.0, 1.0, 1.0),
+    max_background_gap_um: float = DEFAULT_MAX_BACKGROUND_GAP_UM,
+    sides_um=(),
+) -> dict[str, Any]:
+    """What a loop looks like, for a person's judgement of it to be fitted
+    against later: its size and shape, and -- given the segmented *mask*
+    (voxel-indexed, *voxel_size_zyx* apart) -- the mask along and across it.
+
+    * ``loop_length_um``, ``centre_{z,y,x}_um``, ``span_um`` (its widest
+      extent) and ``area_um2`` (enclosed, in its best-fitting plane);
+    * ``out_of_plane``: its third over its second singular value, 0 for a
+      flat loop -- how far it bends out of that plane;
+    * with a mask: ``path_in``, the share of the loop in the mask;
+      ``lumen_r_um``, the median lumen radius along it; ``chords_in_lumen``,
+      the share of its antipodal chords crossing no more than a dropout
+      (*max_background_gap_um*) of background, and ``chord_bg_median_um``
+      their median background; ``inside_one_lumen``
+      (:func:`loop_inside_one_lumen`); and, for each of *sides_um* (the
+      sides' polylines), ``side_lumen_r_um``, its mean lumen radius, and
+      ``wall_side``, the side the build's loop breaker would take out
+      (nearest the wall, then longest). None for each without a mask.
+
+    Only a box round the loop is read from the mask, so a memory-mapped
+    volume is not loaded whole.
+    """
+    loop = np.asarray(loop_um, dtype=float).reshape(-1, 3)
+    sides = [np.asarray(side, dtype=float).reshape(-1, 3) for side in sides_um]
+    voxel = np.asarray(voxel_size_zyx, dtype=float)
+    points = _evenly_round(loop, 0.5 * float(voxel.min()))
+    centre = points.mean(axis=0) if len(points) else np.zeros(3)
+    measures: dict[str, Any] = {
+        "loop_length_um": _arc_length(loop),
+        "centre_z_um": float(centre[0]),
+        "centre_y_um": float(centre[1]),
+        "centre_x_um": float(centre[2]),
+        "span_um": 0.0,
+        "area_um2": 0.0,
+        "out_of_plane": 0.0,
+    }
+    if len(points) >= 3:
+        centred = points - centre
+        _u, singular, axes = np.linalg.svd(centred, full_matrices=False)
+        if singular[1] > 1e-9:
+            measures["out_of_plane"] = float(singular[2] / singular[1])
+        flat = centred @ axes[:2].T
+        measures["area_um2"] = float(
+            0.5 * abs(np.sum(flat[:, 0] * np.roll(flat[:, 1], -1) - np.roll(flat[:, 0], -1) * flat[:, 1]))
+        )
+        sample = points[:: max(1, len(points) // 256)]
+        measures["span_um"] = float(
+            np.linalg.norm(sample[:, None, :] - sample[None, :, :], axis=2).max()
+        )
+    for name in ("path_in", "lumen_r_um", "chords_in_lumen", "chord_bg_median_um", "inside_one_lumen"):
+        measures[name] = None
+    measures["side_lumen_r_um"] = None
+    measures["wall_side"] = None
+    if mask is None or len(points) < 2:
+        return measures
+
+    everything = np.vstack([loop, *sides]) / voxel
+    margin = np.ceil(MEASURE_MARGIN_UM / voxel).astype(int)
+    shape = np.asarray(np.shape(mask)[-3:])
+    lo = np.clip(np.floor(everything.min(axis=0)).astype(int) - margin, 0, shape)
+    hi = np.clip(np.ceil(everything.max(axis=0)).astype(int) + margin + 1, 0, shape)
+    crop = np.asarray(mask[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]) > 0
+    offset = lo * voxel
+    support = MaskSupport(crop, tuple(voxel), max_background_gap_um=max_background_gap_um)
+    local = points - offset
+    measures["path_in"] = float(np.mean(support.inside(local)))
+    measures["lumen_r_um"] = float(np.median(support.radius(local)))
+    background = _chord_background_um(loop - offset, support)
+    if background is not None:
+        measures["chords_in_lumen"] = float(np.mean(background <= max_background_gap_um + 1e-9))
+        measures["chord_bg_median_um"] = float(np.median(background))
+    measures["inside_one_lumen"] = bool(loop_inside_one_lumen(loop - offset, support))
+    if sides:
+        radii = [float(np.mean(support.radius(side - offset))) for side in sides]
+        measures["side_lumen_r_um"] = radii
+        measures["wall_side"] = int(
+            min(range(len(sides)), key=lambda i: (radii[i], -_arc_length(sides[i])))
+        )
+    return measures
 
 
 def _wall_hugging(G: nx.MultiGraph, run, support: MaskSupport) -> tuple[float, float]:
@@ -211,10 +359,7 @@ def _break(G: nx.MultiGraph, cycle, support: MaskSupport) -> list[tuple[Any, Any
     The arc kept is the one nearest the lumen's middle: the arc along the
     rim covered less of the lumen, and the diameter read off the mask along
     it would come out too small."""
-    arcs = _arcs(G, cycle)
-    if not arcs:
-        arcs = [[edge] for edge in cycle]
-    arc = min(arcs, key=lambda run: _wall_hugging(G, run, support))
+    arc = min(loop_sides(G, cycle), key=lambda run: _wall_hugging(G, run, support))
     for a, b, key in arc:
         G.remove_edge(a, b, key)
     for a, b, _key in arc:
@@ -355,9 +500,13 @@ def remove_parallel_edges_in_lumen(G: nx.MultiGraph, support: MaskSupport) -> nx
 
 __all__ = [
     "LOOP_SEARCH_UM",
+    "MEASURE_MARGIN_UM",
     "cuts_off_vessels",
     "iter_short_loops",
+    "loop_centre_um",
     "loop_inside_one_lumen",
+    "loop_measures",
+    "loop_sides",
     "remove_loops_inside_one_lumen",
     "remove_parallel_edges_in_lumen",
 ]

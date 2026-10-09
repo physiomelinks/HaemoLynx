@@ -802,3 +802,90 @@ def test_a_bridge_is_never_merged_with_the_vessel_it_opens():
     bridges = [data for *_e, data in G.edges(2, data=True) if data.get(IS_ZERO_RESISTANCE)]
     ordinary = [data for *_e, data in G.edges(2, data=True) if not data.get(IS_ZERO_RESISTANCE)]
     assert len(bridges) == 1 and len(ordinary) == 1
+
+
+# --- short loops: Manual loop review ---------------------------------------------
+
+from haemolynx.graph import ShortLoop, delete_loop_side, has_pending_edits, short_loops  # noqa: E402
+
+
+def _two_loops() -> nx.MultiGraph:
+    """Inlet 0 -> a wide loop 1-{2,3}-4 -> a narrow loop 5-{6,7}-8 -> outlet 9."""
+    positions = {
+        0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 10, 20), 3: (0, -10, 20), 4: (0, 0, 30),
+        5: (0, 0, 40), 6: (0, 4, 45), 7: (0, -4, 45), 8: (0, 0, 50), 9: (0, 0, 60),
+    }
+    edges = [(0, 1), (1, 2), (1, 3), (2, 4), (3, 4), (4, 5), (5, 6), (5, 7), (6, 8), (7, 8), (8, 9)]
+    return _network(positions, edges, diameter_um=5.0)
+
+
+def _nodes_of(side) -> set:
+    return {n for edge in side for n in edge[:2]}
+
+
+def test_short_loops_lists_each_loop_once_shortest_first_with_its_sides():
+    G = _two_loops()
+
+    narrow, wide = short_loops(G)
+
+    assert isinstance(narrow, ShortLoop)
+    assert narrow.length_um == pytest.approx(4 * np.hypot(4, 5))
+    assert wide.length_um == pytest.approx(4 * np.hypot(10, 10))
+    assert narrow.centre_um == pytest.approx((0.0, 0.0, 45.0), abs=1e-6)
+    assert wide.centre_um == pytest.approx((0.0, 0.0, 20.0), abs=1e-6)
+    # Two places meet each loop, so each has two sides of two vessels.
+    assert sorted(_nodes_of(side) for side in wide.sides) == sorted([{1, 2, 4}, {1, 3, 4}], key=sorted)
+    assert {frozenset(e[:2]) for e in wide.edges} == {
+        frozenset(p) for p in [(1, 2), (2, 4), (3, 4), (1, 3)]
+    }
+    assert len(narrow.points_um) >= 4
+    assert [loop.length_um for loop in short_loops(G)] == [narrow.length_um, wide.length_um]
+
+
+def test_short_loops_leave_out_loops_longer_than_the_search_and_cut_sides_at_boundaries():
+    G = _two_loops()
+
+    (narrow,) = short_loops(G, search_um=40.0)
+    wide = short_loops(G, cut_at={2})[1]
+
+    assert narrow.centre_um == pytest.approx((0.0, 0.0, 45.0), abs=1e-6)
+    assert sorted(len(side) for side in wide.sides) == [1, 1, 2]
+
+
+def test_deleting_a_loop_side_opens_the_loop_and_tidies_its_ends():
+    G = _two_loops()
+    wide = short_loops(G)[1]
+    side = next(i for i, s in enumerate(wide.sides) if 2 in _nodes_of(s))
+
+    delete_loop_side(G, wide, side)
+
+    assert 2 not in G, "the side's own node went with it"
+    # Nodes 1 and 4 were left joining two vessels each, so they merged away.
+    assert 1 not in G and 4 not in G
+    assert G.has_edge(0, 3) and G.has_edge(3, 5)
+    assert nx.has_path(G, 0, 9)
+    assert has_pending_edits(G)
+    assert [loop.centre_um for loop in short_loops(G)] == [pytest.approx((0.0, 0.0, 45.0), abs=1e-6)]
+
+
+def test_deleting_a_loop_side_never_strands_a_boundary_node_and_changes_nothing():
+    G = _two_loops()
+    wide = short_loops(G)[1]
+    side = next(i for i, s in enumerate(wide.sides) if 2 in _nodes_of(s))
+    before = sorted(edge_keys(G))
+
+    with pytest.raises(ValueError, match="boundary node"):
+        delete_loop_side(G, wide, side, protected={2})
+
+    assert sorted(edge_keys(G)) == before
+
+
+def test_deleting_a_side_the_loop_does_not_have_or_no_longer_has_is_refused():
+    G = _two_loops()
+    wide = short_loops(G)[1]
+
+    with pytest.raises(ValueError, match="sides 1 to 2"):
+        delete_loop_side(G, wide, 2)
+    delete_loop_side(G, wide, 0)
+    with pytest.raises(ValueError, match="No vessel"):
+        delete_loop_side(G, wide, 0)

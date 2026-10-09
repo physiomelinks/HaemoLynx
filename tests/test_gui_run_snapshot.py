@@ -505,3 +505,47 @@ def test_a_run_that_stopped_at_the_solve_or_has_the_stage_is_left_alone():
     ):
         current = _through(stopped)
         assert with_post_process_checkpoint(current) == tuple(current), stopped
+
+
+# --- Manual loop review's decisions ------------------------------------------------
+
+from haemolynx.gui.post_processing import KEPT, SIDE_DELETED, LoopReview  # noqa: E402
+
+
+def _reviews():
+    return (
+        LoopReview((1.0, 2.0, 3.0), 25.0, KEPT, time="2026-10-09T15:00:00"),
+        LoopReview((4.0, 5.0, 6.0), 40.0, SIDE_DELETED, side=2, time="2026-10-09T15:01:00"),
+    )
+
+
+def test_a_runs_loop_reviews_are_saved_and_loaded_with_it(tmp_path):
+    checkpoints, results, settings = _recorded(tmp_path)
+    snapshot = capture_run(
+        checkpoints=checkpoints, results=results, settings=settings, loop_reviews=_reviews()
+    )
+
+    loaded = read_run_snapshot(write_run_snapshot(tmp_path / "reviewed", snapshot))
+
+    assert loaded.loop_reviews == _reviews()
+
+
+def test_a_run_saved_before_loop_review_loads_with_none_and_a_bad_entry_is_left_out(tmp_path):
+    import gzip
+    import pickle
+
+    checkpoints, results, settings = _recorded(tmp_path)
+    path = write_run_snapshot(
+        tmp_path / "old", capture_run(checkpoints=checkpoints, results=results, settings=settings)
+    )
+    with gzip.open(path, "rb") as handle:
+        payload = pickle.load(handle)
+    del payload["loop_reviews"]
+    with gzip.open(path, "wb") as handle:
+        pickle.dump(payload, handle)
+    assert read_run_snapshot(path).loop_reviews == ()
+
+    payload["loop_reviews"] = [_reviews()[0].as_dict(), {"decision": KEPT}, "garbage"]
+    with gzip.open(path, "wb") as handle:
+        pickle.dump(payload, handle)
+    assert read_run_snapshot(path).loop_reviews == _reviews()[:1]

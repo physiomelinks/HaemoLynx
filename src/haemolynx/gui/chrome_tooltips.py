@@ -257,6 +257,26 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "bifurcations, in microns"
     ),
     "leave": "Keep the chosen junction as it is and move on to the next one",
+    "loop_review": (
+        "List the network's short loops, shortest first, to keep each one or "
+        "open it by deleting one of its sides; every decision is kept with "
+        "the run and written to {stem}_loop_review.csv beside the run's output"
+    ),
+    "loops": (
+        "Short loops not yet reviewed, shortest first; click one to zoom to "
+        "it, in its own plane in a 3D view, and list its sides below"
+    ),
+    "loop_table": (
+        "The chosen loop's sides: the runs of vessels between the places "
+        "other vessels, or a boundary node, meet it. Click a row to select "
+        "that side, drawn yellow in the viewer"
+    ),
+    "loop_delete": (
+        "Remove the side selected in the table, opening the loop; a junction "
+        "left joining just two vessels is merged into one, and inlets, "
+        "outlets and boundary nodes are never removed"
+    ),
+    "loop_keep": "Keep the chosen loop as it is, take it off the list and move on to the next one",
     "click_delete": (
         "Then click vessels in the viewer to remove them, one per click; "
         "inlets, outlets and boundary nodes are never cut off. Press it again "

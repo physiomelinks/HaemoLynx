@@ -898,3 +898,24 @@ def test_a_run_pauses_for_post_processing_and_continue_finishes_it(
     resolved = checkpoints.get("post_process").graph
     assert resolved.number_of_edges() == expected
     assert all("flow_signed" in d for *_e, d in resolved.edges(data=True))
+
+
+def test_a_saved_runs_loop_reviews_come_back_when_it_is_loaded(panel):
+    """Manual loop review's decisions are the run's: Clear forgets them, and
+    loading the run brings them back, so its kept loops are not asked about
+    again."""
+    from haemolynx.gui.post_processing import KEPT, LoopReview
+
+    widget, viewer, tmp_path = panel
+    _seed_run(widget, viewer, through="post_process")
+    controls = widget._haemolynx_post_processing
+    review = LoopReview((1.0, 2.0, 3.0), 30.0, KEPT, time="2026-10-09T15:00:00")
+    controls.state.loop_reviews = [review]
+    dest = tmp_path / "reviewed.haemorun"
+    assert widget._haemolynx_save_run(dest) is True
+
+    widget._haemolynx_clear()
+    assert controls.state.loop_reviews == []
+
+    assert widget._haemolynx_load_run(dest) is True
+    assert controls.state.loop_reviews == [review]

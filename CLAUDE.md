@@ -494,7 +494,16 @@ are only caught locally.
   Perturbations, so the network is edited solved) has no settings: its tab is its own page (`gui/_widget.py`'s
   `_post_processing_controls`), with no "Run from this stage"; its 4+ junction list, table
   and their Delete/Leave/Split buttons sit behind a "Manual 4+ vessel junction correction"
-  checkbox, off by default (off, a scan neither marks the junctions nor zooms to one). Its
+  checkbox, off by default (off, a scan neither marks the junctions nor zooms to one). A
+  "Manual loop review" checkbox (off by default) lists the short loops still to review
+  (`graph.short_loops`, up to `lumen_loops.LOOP_SEARCH_UM` round), shortest first: picking one
+  zooms to it -- in its own plane in 3D (`gui/post_processing.loop_view`) -- and lists its sides
+  (`lumen_loops.loop_sides`, cut where vessels or boundary nodes meet it), and Delete this side
+  (`graph.delete_loop_side`) or Keep decides it. A decision is a `LoopReview`, matched to a loop
+  by centre and length rather than node ids (deleting a side renumbers the edges beside it),
+  kept with the run (the `.haemorun`'s `loop_reviews`) so a kept loop is not listed again, and
+  appended to `{stem}_loop_review.csv` beside the VTK output with `lumen_loops.loop_measures`,
+  so a rule can be fitted to the marks later. Its
   "Prune disconnected and dead-end branches" button (`graph.prune_disconnected_branches`) applies
   the same rule as `remove_disconnected`; the boundary lists are trimmed to the pruned graph when
   the `post_process` stage runs. Its Regenerate graph runs

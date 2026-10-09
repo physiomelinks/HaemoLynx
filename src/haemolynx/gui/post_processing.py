@@ -19,6 +19,13 @@ more vessels meet; while Add vessel traces, :data:`NEW_VESSEL_TRACE` draws
 the path so far and :data:`NEW_VESSEL_POINTS` the clicks along it
 (:func:`trace_layers`); and :data:`ADDED_NODES` marks the nodes Add vessel
 formed on existing vessels (:func:`added_nodes_layer`).
+
+Manual loop review lists the network's short loops still to review
+(:func:`loops_to_review`, :func:`loop_label`), the chosen loop's sides
+(:func:`loop_side_rows`) and where the camera goes to look at it
+(:func:`loop_view`); the loop is cyan and the side selected yellow, as at a
+junction. Each decision is a :class:`LoopReview`, kept with the run and
+written as a :func:`loop_review_row` to ``{stem}_loop_review.csv``.
 """
 from __future__ import annotations
 
@@ -49,11 +56,21 @@ __all__ = [
     "CONNECTED",
     "HIGH_DEGREE_JUNCTIONS",
     "JUNCTION_TABLE_COLUMNS",
+    "KEPT",
+    "LOOP_MATCH_LENGTH_FRACTION",
+    "LOOP_MATCH_UM",
+    "LOOP_REVIEW_COLUMNS",
+    "LOOP_TABLE_COLUMNS",
+    "LOOP_ZOOM_MARGIN",
+    "LOOP_ZOOM_MIN_BOX_UM",
+    "LoopReview",
+    "LoopView",
     "NEW_VESSEL_POINTS",
     "NEW_VESSEL_TRACE",
     "NetworkScan",
     "POST_PROCESSING_LAYERS",
     "SELECTED",
+    "SIDE_DELETED",
     "STATUS_COLOURS",
     "TRACE_SOURCES",
     "TRACE_THROUGH_MASK",
@@ -61,6 +78,7 @@ __all__ = [
     "VesselTrace",
     "added_nodes_layer",
     "added_vessel_ids",
+    "append_loop_review",
     "branch_id_of",
     "camera_center_for",
     "describe_vessels",
@@ -68,6 +86,13 @@ __all__ = [
     "junction_label",
     "junction_marker_layer",
     "junction_table_rows",
+    "loop_branch_ids",
+    "loop_label",
+    "loop_review_csv_path",
+    "loop_review_row",
+    "loop_side_rows",
+    "loop_view",
+    "loops_to_review",
     "nearest_node",
     "parse_branch_ids",
     "point_on_path_under_click",
@@ -638,3 +663,347 @@ def default_connectivity_csv_path(values: Any) -> str:
 ALL_VESSELS_IN_VIEWER = "All vessels in the viewer"
 INLET_TO_OUTLET_ONLY = "Only vessels between an inlet and an outlet"
 CONNECTIVITY_EXPORT_CHOICES = (ALL_VESSELS_IN_VIEWER, INLET_TO_OUTLET_ONLY)
+
+
+# --- Manual loop review ---------------------------------------------------------
+
+#: Header of the table of the chosen loop's sides, one column per
+#: :func:`loop_side_rows` cell.
+LOOP_TABLE_COLUMNS = ("side", "branchIDs", "length (µm)", "diameter (µm)", "from node", "to node")
+
+#: What was decided about a loop: kept as it is, or opened by deleting a side.
+KEPT = "kept"
+SIDE_DELETED = "side deleted"
+
+#: A listed loop is one already reviewed when its centre is within this many
+#: microns of the reviewed one's and its length within this many microns or
+#: :data:`LOOP_MATCH_LENGTH_FRACTION` of it, whichever is more. Positions, not
+#: node ids: deleting a side merges the vessels left at its ends, which
+#: renumbers the edges of the loops beside it.
+LOOP_MATCH_UM = 1.0
+LOOP_MATCH_LENGTH_FRACTION = 0.05
+
+#: The smallest box (microns) zooming to a loop fits on screen.
+LOOP_ZOOM_MIN_BOX_UM = 20.0
+#: The box is the loop's widest extent times this, so its surroundings show.
+LOOP_ZOOM_MARGIN = 1.6
+
+
+@dataclass(frozen=True)
+class LoopReview:
+    """What a person decided about one short loop, kept with the run."""
+
+    centre_um: tuple[float, float, float]
+    length_um: float
+    #: :data:`KEPT` or :data:`SIDE_DELETED`.
+    decision: str
+    #: The side deleted, numbered from 1 as the table lists them.
+    side: int | None = None
+    #: When it was decided (ISO 8601, to the second).
+    time: str = ""
+
+    @classmethod
+    def of(cls, loop: Any, decision: str, *, side: int | None = None, time: str = "") -> "LoopReview":
+        return cls(
+            centre_um=tuple(float(c) for c in loop.centre_um),
+            length_um=float(loop.length_um),
+            decision=str(decision),
+            side=None if side is None else int(side),
+            time=str(time),
+        )
+
+    def matches(self, loop: Any) -> bool:
+        """Whether *loop* (a :class:`~haemolynx.graph.ShortLoop`) is the one reviewed."""
+        offset = np.linalg.norm(np.asarray(loop.centre_um, dtype=float) - np.asarray(self.centre_um))
+        tolerance = max(LOOP_MATCH_UM, LOOP_MATCH_LENGTH_FRACTION * float(self.length_um))
+        return bool(offset <= LOOP_MATCH_UM and abs(float(loop.length_um) - self.length_um) <= tolerance)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "centre_um": list(self.centre_um),
+            "length_um": self.length_um,
+            "decision": self.decision,
+            "side": self.side,
+            "time": self.time,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "LoopReview | None":
+        """One review back from :meth:`as_dict`; None for anything unreadable."""
+        try:
+            centre = tuple(float(c) for c in data["centre_um"])
+            if len(centre) != 3:
+                return None
+            side = data.get("side")
+            return cls(
+                centre_um=centre,  # type: ignore[arg-type]
+                length_um=float(data["length_um"]),
+                decision=str(data["decision"]),
+                side=None if side is None else int(side),
+                time=str(data.get("time") or ""),
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
+
+
+def loops_to_review(loops: Iterable[Any], reviews: Iterable[LoopReview]) -> list[Any]:
+    """*loops* less the ones a review kept, in the same order.
+
+    A loop whose side was deleted is listed again if it is back -- a run
+    from an earlier stage rebuilt the network without that edit.
+    """
+    kept = [review for review in reviews if review.decision == KEPT]
+    return [loop for loop in loops if not any(review.matches(loop) for review in kept)]
+
+
+def loop_label(loop: Any, number: int) -> str:
+    """One line of the loop list: its place in it, length and number of sides."""
+    return f"Loop {number}: {loop.length_um:.3g} µm round, {len(loop.sides)} side(s)"
+
+
+def _side_ids(index: dict, side: Iterable[Sequence[Any]]) -> list[int]:
+    return [index[tuple(edge)] for edge in side if tuple(edge) in index]
+
+
+def loop_branch_ids(graph: Any, loop: Any, side: int | None = None) -> list[int]:
+    """branchIDs of *loop*'s vessels still in *graph* -- of side *side* only
+    (numbered from 0) when given."""
+    index = _branch_index(graph)
+    if side is None:
+        return _side_ids(index, loop.edges)
+    if not 0 <= side < len(loop.sides):
+        return []
+    return _side_ids(index, loop.sides[side])
+
+
+def loop_side_rows(graph: Any, loop: Any) -> list[tuple[str, ...]]:
+    """The table cells of *loop*'s sides, in order round it: number, its
+    vessels' branchIDs, summed length, length-weighted diameter and the
+    nodes it runs between."""
+    index = _branch_index(graph)
+    rows = []
+    for number, side in enumerate(loop.sides, start=1):
+        lengths, diameters = [], []
+        for edge in side:
+            data = graph.edges[tuple(edge)] if graph.has_edge(*edge) else {}
+            try:
+                length = float(data.get("length"))
+            except (TypeError, ValueError):
+                length = float("nan")
+            try:
+                diameter = float(data.get("diameter_um"))
+            except (TypeError, ValueError):
+                diameter = float("nan")
+            lengths.append(length)
+            diameters.append(diameter)
+        length = np.asarray(lengths, dtype=float)
+        diameter = np.asarray(diameters, dtype=float)
+        usable = np.isfinite(length) & np.isfinite(diameter) & (length > 0)
+        rows.append(
+            (
+                str(number),
+                ", ".join(str(i) for i in _side_ids(index, side)),
+                _cell(float(np.nansum(length))) if np.isfinite(length).any() else "",
+                _cell(float(np.average(diameter[usable], weights=length[usable]))) if usable.any() else "",
+                str(side[0][0]),
+                str(side[-1][1]),
+            )
+        )
+    return rows
+
+
+@dataclass(frozen=True)
+class LoopView:
+    """Where the camera goes to look at a loop: physical ``(z, y, x)``."""
+
+    centre_um: tuple[float, float, float]
+    #: The box, in microns, to fit on screen.
+    box_um: float
+    #: In a 3D view, look along the loop's normal with this up: unit vectors.
+    view_direction: tuple[float, float, float]
+    up_direction: tuple[float, float, float]
+
+
+def _unit(vector: np.ndarray) -> np.ndarray | None:
+    norm = float(np.linalg.norm(vector))
+    return vector / norm if norm > 1e-9 else None
+
+
+def loop_view(
+    points_um: Sequence[Sequence[float]],
+    *,
+    towards: Sequence[float] | None = None,
+    up: Sequence[float] | None = None,
+) -> LoopView:
+    """The view of a loop in its own plane: centred on it, fitting its
+    widest extent with room round it, looking along its normal.
+
+    The normal is turned to agree with *towards* (the camera's current view
+    direction, so a zoom from one loop to the next does not flip the scene),
+    and up is *up* laid into the loop's plane, or the loop's long axis when
+    *up* is along its normal.
+    """
+    from haemolynx.graph.lumen_loops import loop_centre_um
+
+    points = np.asarray(points_um, dtype=float).reshape(-1, 3)
+    centre = loop_centre_um(points)
+    centred = points - centre
+    span = float(np.linalg.norm(centred, axis=1).max()) * 2.0 if len(points) else 0.0
+    box = max(LOOP_ZOOM_MIN_BOX_UM, LOOP_ZOOM_MARGIN * span)
+    normal, long_axis = np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])
+    if len(points) >= 3 and np.linalg.norm(centred) > 1e-9:
+        _u, _s, axes = np.linalg.svd(centred, full_matrices=False)
+        normal, long_axis = axes[2], axes[0]
+    view = normal
+    reference = None if towards is None else _unit(np.asarray(towards, dtype=float)[-3:])
+    if reference is not None and float(np.dot(view, reference)) < 0:
+        view = -view
+    in_plane = None
+    if up is not None:
+        wanted = np.asarray(up, dtype=float)[-3:]
+        in_plane = _unit(wanted - np.dot(wanted, view) * view)
+    if in_plane is None:
+        in_plane = _unit(long_axis - np.dot(long_axis, view) * view)
+    return LoopView(
+        centre_um=tuple(float(c) for c in centre),  # type: ignore[arg-type]
+        box_um=float(box),
+        view_direction=tuple(float(c) + 0.0 for c in view),  # type: ignore[arg-type]
+        up_direction=tuple(float(c) + 0.0 for c in in_plane),  # type: ignore[arg-type]
+    )
+
+
+#: Columns of ``{stem}_loop_review.csv``, one row per decision: when and
+#: what, the loop's vessels, and the measures of
+#: :func:`haemolynx.graph.lumen_loops.loop_measures` a rule can be fitted to.
+LOOP_REVIEW_COLUMNS = (
+    "time",
+    "decision",
+    "side_deleted",
+    "wall_side",
+    "loop_length_um",
+    "sides",
+    "loop_branch_ids",
+    "loop_edges",
+    "centre_z_um",
+    "centre_y_um",
+    "centre_x_um",
+    "centre_zyx_vox",
+    "span_um",
+    "area_um2",
+    "out_of_plane",
+    "path_in",
+    "lumen_r_um",
+    "chords_in_lumen",
+    "chord_bg_median_um",
+    "inside_one_lumen",
+    "side_lengths_um",
+    "side_diameters_um",
+    "side_lumen_r_um",
+    "zero_resistance_bridges",
+    "recovered_um",
+    "bridged_um",
+)
+
+
+def _csv_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (bool, np.bool_)):
+        return str(bool(value))
+    if isinstance(value, (float, np.floating)):
+        return f"{float(value):.4g}" if np.isfinite(value) else ""
+    if isinstance(value, (list, tuple)):
+        return ";".join(_csv_value(v) for v in value)
+    return str(value)
+
+
+def loop_review_row(
+    graph: Any,
+    loop: Any,
+    review: LoopReview,
+    *,
+    mask: Any = None,
+    voxel_size_zyx: Sequence[float] = (1.0, 1.0, 1.0),
+    max_background_gap_um: float | None = None,
+) -> dict[str, str]:
+    """One ``{stem}_loop_review.csv`` row for *review* of *loop*, measured on
+    *graph* as it was when the decision was made (before a deletion): the
+    measures need the side that is about to go."""
+    from haemolynx.graph.lumen_loops import loop_measures
+    from haemolynx.graph.post_processing import vessel_path
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    present = [side for side in loop.sides if all(graph.has_edge(*e) for e in side)]
+    sides_um = (
+        [np.vstack([vessel_path(graph, tuple(e)) for e in side]) for side in loop.sides]
+        if len(present) == len(loop.sides) else []
+    )
+    options: dict[str, Any] = {"mask": mask, "voxel_size_zyx": voxel_size_zyx, "sides_um": sides_um}
+    if max_background_gap_um is not None:
+        options["max_background_gap_um"] = float(max_background_gap_um)
+    measures = loop_measures(loop.points_um, **options)
+    rows = loop_side_rows(graph, loop)
+    edges = [graph.edges[tuple(e)] for e in loop.edges if graph.has_edge(*e)]
+
+    def length(data) -> float:
+        try:
+            return float(data.get("length") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    voxel = np.asarray(voxel_size_zyx, dtype=float)
+    centre_vox = np.rint(np.asarray(loop.centre_um, dtype=float) / voxel).astype(int)
+    wall = measures.get("wall_side")
+    row: dict[str, Any] = {
+        "time": review.time,
+        "decision": review.decision,
+        "side_deleted": review.side,
+        "wall_side": None if wall is None else int(wall) + 1,
+        "sides": len(loop.sides),
+        "loop_branch_ids": loop_branch_ids(graph, loop),
+        "loop_edges": ";".join(f"{a}-{b}" for a, b, _k in loop.edges),
+        "centre_zyx_vox": " ".join(str(int(c)) for c in centre_vox),
+        "side_lengths_um": [r[2] for r in rows],
+        "side_diameters_um": [r[3] for r in rows],
+        "zero_resistance_bridges": sum(bool(d.get(IS_ZERO_RESISTANCE)) for d in edges),
+        "recovered_um": sum(length(d) for d in edges if d.get("recovered")),
+        "bridged_um": sum(length(d) for d in edges if d.get("bridge_kind")),
+    }
+    for name in LOOP_REVIEW_COLUMNS:
+        if name not in row:
+            row[name] = measures.get(name)
+    return {name: _csv_value(row[name]) for name in LOOP_REVIEW_COLUMNS}
+
+
+def loop_review_csv_path(values: Any) -> "Path | None":
+    """Where the loop decisions are written: ``{stem}_loop_review.csv`` in the
+    folder of ``vtk_output_prefix``. None when there is no such folder on
+    this machine, as for a run loaded from another one before it is run."""
+    from pathlib import Path
+
+    from haemolynx.gui.stage_checkpoints import output_dir_from_prefix
+
+    prefix = values.get("vtk_output_prefix") if values else None
+    if not prefix:
+        return None
+    folder = output_dir_from_prefix(prefix)
+    if folder is None or not folder.is_dir():
+        return None
+    return Path(folder) / f"{Path(str(prefix)).name}_loop_review.csv"
+
+
+def append_loop_review(path: Any, rows: Iterable[dict[str, str]]) -> "Path":
+    """Add *rows* to the CSV at *path*, writing its header first when the
+    file is new or empty: every session's decisions collect in one file."""
+    import csv
+    from pathlib import Path
+
+    target = Path(path)
+    new = not target.is_file() or target.stat().st_size == 0
+    with target.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(LOOP_REVIEW_COLUMNS))
+        if new:
+            writer.writeheader()
+        for row in rows:
+            writer.writerow({name: row.get(name, "") for name in LOOP_REVIEW_COLUMNS})
+    return target

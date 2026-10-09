@@ -8965,6 +8965,30 @@ def _zoom_viewer_to(viewer, position_zyx, box_um: float = JUNCTION_ZOOM_BOX_UM) 
         logger.exception("could not zoom the viewer to %s", position_zyx)
 
 
+def _zyx_to_camera_vector(viewer, vector_zyx) -> tuple[float, ...]:
+    """A ``(z, y, x)`` direction the way napari's 3D camera takes one: in the
+    order of the displayed dims, which a snap or a dims reorder permutes."""
+    offset = max(0, int(viewer.dims.ndim) - 3)
+    vector = np.asarray(vector_zyx, dtype=float)[-3:]
+    return tuple(float(vector[int(axis) - offset]) for axis in viewer.dims.displayed)
+
+
+def _camera_vector_to_zyx(viewer, vector) -> np.ndarray | None:
+    """napari's camera direction *vector* (displayed-dims order) as ``(z, y, x)``;
+    None when there is none or the view is not of the three spatial dims."""
+    if vector is None:
+        return None
+    offset = max(0, int(viewer.dims.ndim) - 3)
+    values = np.asarray(vector, dtype=float).ravel()
+    displayed = [int(axis) - offset for axis in viewer.dims.displayed]
+    if len(values) != 3 or sorted(displayed) != [0, 1, 2]:
+        return None
+    zyx = np.zeros(3)
+    for value, axis in zip(values, displayed):
+        zyx[axis] = value
+    return zyx
+
+
 def _post_processing_controls(
     viewer, report, *, results, boundary_roles, regenerate, running, settings=None,
     paused=None, complete=None,
@@ -8994,7 +9018,12 @@ def _post_processing_controls(
     Add vessel. The junction list, its table and their buttons sit behind the
     "Manual 4+ vessel junction correction" checkbox, off at first; while it
     is off a scan neither marks the 4+ junctions in the viewer nor zooms to
-    one. Add vessel traces a vessel click by click: from a node, or a
+    one. "Manual loop review", off at first too, lists the short loops still
+    to review, shortest first: picking one zooms to it and lists its sides,
+    and Delete this side or Keep decides it -- a decision kept with the run
+    (``state.loop_reviews``, saved in the ``.haemorun``) and added to
+    ``{stem}_loop_review.csv`` with the loop's measures. Add vessel traces a
+    vessel click by click: from a node, or a
     point on a vessel (where a node will form), through each point clicked
     after it -- every leg found by A* through the segmented mask or the raw
     data, as the box's dropdown says, and drawn as soon as it is -- until a
@@ -9029,30 +9058,45 @@ def _post_processing_controls(
         VesselEnd,
         add_traced_vessel,
         connectivity_rows,
+        delete_loop_side,
         delete_vessels,
         edge_keys,
         has_pending_edits,
         mask_cost_field,
         prune_disconnected_branches,
+        short_loops,
         split_junction,
         trace_path,
         vessel_path,
         write_connectivity_csv,
     )
+    from haemolynx.graph.lumen_loops import LOOP_SEARCH_UM
     from haemolynx.gui.chrome_tooltips import POST_PROCESSING_TOOLTIPS as tips
     from haemolynx.gui.post_processing import (
         ADDED_NODES,
         HIGH_DEGREE_JUNCTIONS,
         JUNCTION_TABLE_COLUMNS,
+        KEPT,
+        LOOP_TABLE_COLUMNS,
         NEW_VESSEL_POINTS,
         NEW_VESSEL_TRACE,
         POST_PROCESSING_LAYERS,
+        SIDE_DELETED,
         TRACE_SOURCES,
         TRACE_THROUGH_RAW,
+        LoopReview,
         VesselTrace,
         added_nodes_layer,
         added_vessel_ids,
+        append_loop_review,
         branch_id_of,
+        loop_branch_ids,
+        loop_label,
+        loop_review_csv_path,
+        loop_review_row,
+        loop_side_rows,
+        loop_view,
+        loops_to_review,
         CONNECTIVITY_EXPORT_CHOICES,
         INLET_TO_OUTLET_ONLY,
         default_connectivity_csv_path,
@@ -9094,15 +9138,26 @@ def _post_processing_controls(
         raw_problem=None,
         #: The connectivity CSV exported last, for Open 2D connectivity map.
         connectivity_csv=None,
+        #: Manual loop review: the short loops still to review (ShortLoops,
+        #: shortest first), the one picked and its row in the list.
+        loops=[],
+        loop=None,
+        loop_row=None,
+        #: Every decision made about a loop (LoopReviews), kept with the run:
+        #: a kept loop is not listed again.
+        loop_reviews=[],
+        #: Where the decisions were written last.
+        loop_csv=None,
     )
 
     page = QWidget()
     page.setObjectName("haemolynx_post_processing")
     layout = QVBoxLayout(page)
     intro = QLabel(
-        "Fix the network by hand: vessels to add or delete and, with Manual 4+ "
+        "Fix the network by hand: vessels to add or delete; with Manual 4+ "
         "vessel junction correction on, junctions where four or more vessels "
-        "meet. Edits stay in the viewer until Regenerate graph brings them in "
+        "meet; and with Manual loop review on, short loops to keep or open. "
+        "Edits stay in the viewer until Regenerate graph brings them in "
         "line with the rest of the network and reruns Haemodynamics on it. With "
         "Mid-run postprocessing on (1. Input), a run pauses here after "
         "Haemodynamics and Continue runs Perturbations onwards."
@@ -9243,11 +9298,59 @@ def _post_processing_controls(
     junction_layout.addLayout(row)
     junction_box.setVisible(False)
 
+    # Manual loop review: the same shape -- a list, a table of the chosen
+    # loop's sides and the buttons deciding it -- under its own checkbox.
+    loop_toggle = QCheckBox("Manual loop review")
+    loop_toggle.setObjectName("haemolynx_post_processing_loop_toggle")
+    loop_toggle.setToolTip(tips["loop_review"])
+    loop_list = QListWidget()
+    loop_list.setObjectName("haemolynx_post_processing_loops")
+    loop_list.setToolTip(tips["loops"])
+    loop_list.setMinimumHeight(80)
+    loop_table = QTableWidget(0, len(LOOP_TABLE_COLUMNS))
+    loop_table.setObjectName("haemolynx_post_processing_loop_sides")
+    loop_table.setToolTip(tips["loop_table"])
+    loop_table.setHorizontalHeaderLabels(list(LOOP_TABLE_COLUMNS))
+    loop_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    loop_table.setSelectionMode(QAbstractItemView.SingleSelection)
+    loop_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    loop_table.verticalHeader().setVisible(False)
+    loop_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    loop_table.setMinimumHeight(90)
+    loop_delete_button = QPushButton("Delete this side")
+    loop_delete_button.setToolTip(tips["loop_delete"])
+    loop_keep_button = QPushButton("Keep")
+    loop_keep_button.setToolTip(tips["loop_keep"])
+    loop_summary = QLabel("")
+    loop_summary.setObjectName("haemolynx_post_processing_loop_summary")
+    loop_summary.setWordWrap(True)
+    loop_box = QWidget()
+    loop_box.setObjectName("haemolynx_post_processing_loop_box")
+    loop_layout = QVBoxLayout(loop_box)
+    loop_layout.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 0)
+    loop_colours = QLabel(
+        "The chosen loop's vessels are cyan and the side selected in its table yellow."
+    )
+    loop_colours.setWordWrap(True)
+    loop_layout.addWidget(loop_colours)
+    loop_layout.addWidget(loop_summary)
+    loop_layout.addWidget(QLabel("Short loops, shortest first:"))
+    loop_layout.addWidget(loop_list)
+    loop_layout.addWidget(QLabel("Sides of the selected loop:"))
+    loop_layout.addWidget(loop_table)
+    row = QHBoxLayout()
+    row.addWidget(loop_delete_button)
+    row.addWidget(loop_keep_button)
+    loop_layout.addLayout(row)
+    loop_box.setVisible(False)
+
     layout.addWidget(intro)
     layout.addWidget(scan_button)
     layout.addWidget(status)
     layout.addWidget(junction_toggle)
     layout.addWidget(junction_box)
+    layout.addWidget(loop_toggle)
+    layout.addWidget(loop_box)
     layout.addWidget(edit_box)
     layout.addWidget(prune_button)
     layout.addWidget(QLabel("What was changed:"))
@@ -9271,6 +9374,13 @@ def _post_processing_controls(
         rows = sorted({index.row() for index in table.selectionModel().selectedRows()})
         return [r for r in rows if r < len(state.vessels)]
 
+    def selected_side() -> int | None:
+        """The side of the chosen loop selected in its table (from 0), if any."""
+        if state.loop is None:
+            return None
+        rows = sorted({index.row() for index in loop_table.selectionModel().selectedRows()})
+        return rows[0] if rows and rows[0] < len(state.loop.sides) else None
+
     def recolour() -> None:
         """Colour the vessels layer (and its tubes) by status: cheap, no rebuild."""
         vessels = layer(VESSELS)
@@ -9280,10 +9390,17 @@ def _post_processing_controls(
         if "edge_index" not in features or len(features["edge_index"]) != len(vessels.data):
             return
         chosen = selected_rows()
+        in_loop: list[int] = []
+        loop_side: list[int] = []
+        if state.loop is not None and state.graph is not None:
+            in_loop = loop_branch_ids(state.graph, state.loop)
+            side = selected_side()
+            if side is not None:
+                loop_side = loop_branch_ids(state.graph, state.loop, side)
         labels = vessel_status(
             np.asarray(features["edge_index"]),
-            at_junction=[v.branch_id for v in state.vessels],
-            selected=[state.vessels[r].branch_id for r in chosen],
+            at_junction=[v.branch_id for v in state.vessels] + in_loop,
+            selected=[state.vessels[r].branch_id for r in chosen] + loop_side,
             added=added_vessel_ids(state.graph) if state.graph is not None else (),
         )
         vessels.edge_color = status_colours(labels)
@@ -9420,6 +9537,7 @@ def _post_processing_controls(
         draw_markers()
         draw_added_nodes()
         fill_list(prefer)
+        rescan_loops(state.loop_row)
         refresh_buttons()
 
     def is_paused() -> bool:
@@ -9721,6 +9839,170 @@ def _post_processing_controls(
         state.decisions[state.node] = "left as is"
         log_edit(f"Node {state.node} ({state.graph.degree(state.node)} vessels): left as is")
         fill_list()
+
+    # --- Manual loop review ------------------------------------------------------
+
+    def loops_on() -> bool:
+        return loop_toggle.isChecked()
+
+    def show_loop(loop) -> None:
+        """List *loop*'s sides in the table (None: an empty table)."""
+        state.loop = loop
+        loop_table.blockSignals(True)
+        loop_table.clearSelection()
+        if loop is None or state.graph is None:
+            loop_table.setRowCount(0)
+        else:
+            rows = loop_side_rows(state.graph, loop)
+            loop_table.setRowCount(len(rows))
+            for r, cells in enumerate(rows):
+                for c, text in enumerate(cells):
+                    loop_table.setItem(r, c, QTableWidgetItem(text))
+        loop_table.blockSignals(False)
+
+    def loop_counts() -> str:
+        kept = sum(review.decision == KEPT for review in state.loop_reviews)
+        opened = len(state.loop_reviews) - kept
+        return (
+            f"{len(state.loops)} short loop(s) to review, up to "
+            f"{LOOP_SEARCH_UM:g} µm round; {kept} kept and {opened} opened so far."
+        )
+
+    def rescan_loops(prefer_row=None) -> None:
+        """List the loops still to review and pick the one at *prefer_row* --
+        where the loop just decided was, so the next one comes up -- or the first."""
+        state.loops = []
+        if state.graph is not None and loops_on():
+            state.loops = loops_to_review(
+                short_loops(state.graph, cut_at=state.protected), state.loop_reviews
+            )
+        loop_list.blockSignals(True)
+        loop_list.clear()
+        for number, loop in enumerate(state.loops, start=1):
+            loop_list.addItem(loop_label(loop, number))
+        loop_list.blockSignals(False)
+        loop_summary.setText(loop_counts() if state.graph is not None else "")
+        if not state.loops:
+            state.loop_row = None
+            show_loop(None)
+            recolour()
+            return
+        row = prefer_row if isinstance(prefer_row, int) else 0
+        loop_list.setCurrentRow(min(max(row, 0), len(state.loops) - 1))
+
+    def zoom_to_loop(loop) -> None:
+        """Centre the camera on *loop* and fit it; in 3D, look along its normal."""
+        if viewer is None:
+            return
+        camera = viewer.camera
+        three_d = int(viewer.dims.ndisplay) == 3
+        towards = up = None
+        if three_d:
+            towards = _camera_vector_to_zyx(viewer, getattr(camera, "view_direction", None))
+            up = _camera_vector_to_zyx(viewer, getattr(camera, "up_direction", None))
+        view = loop_view(loop.points_um, towards=towards, up=up)
+        if three_d:
+            try:
+                camera.set_view_direction(
+                    _zyx_to_camera_vector(viewer, view.view_direction),
+                    _zyx_to_camera_vector(viewer, view.up_direction),
+                )
+            except Exception:  # noqa: BLE001 - turning is a convenience, never fatal
+                logger.exception("could not turn the viewer to the loop's plane")
+        _zoom_viewer_to(viewer, view.centre_um, box_um=view.box_um)
+
+    def on_loop_review_toggled(on: bool) -> None:
+        """List the short loops and pick one, or put them away."""
+        loop_box.setVisible(on)
+        if state.scan is None:
+            return
+        rescan_loops(state.loop_row)
+
+    def on_loop_changed(row: int) -> None:
+        if not 0 <= row < len(state.loops):
+            return
+        state.loop_row = row
+        loop = state.loops[row]
+        show_loop(loop)
+        recolour()
+        zoom_to_loop(loop)
+
+    def loop_review_record(loop, review):
+        """The CSV row for *review*, measured on the network as it stands now
+        -- before a deletion takes the side away -- with the segmented mask in
+        the viewer when there is one."""
+        image = layer(IMAGE)
+        local = read_settings() or {}
+        gap = local.get("bridge_max_background_gap_um")
+        try:
+            return loop_review_row(
+                state.graph, loop, review,
+                mask=None if image is None else image.data,
+                voxel_size_zyx=voxel_size(),
+                max_background_gap_um=None if gap is None else float(gap),
+            )
+        except Exception:  # noqa: BLE001 - the decision still counts without the mask's measures
+            logger.exception("could not measure the loop against the segmented mask")
+            return loop_review_row(state.graph, loop, review, voxel_size_zyx=voxel_size())
+
+    def write_loop_review(row) -> str:
+        """Add *row* to the run's loop review CSV; what to say about it."""
+        path = loop_review_csv_path(read_settings())
+        if path is None:
+            return (
+                " Not written to a CSV: there is no output folder for the VTK "
+                "output prefix (10. Export) on this machine yet."
+            )
+        try:
+            state.loop_csv = append_loop_review(path, [row])
+        except OSError as error:
+            return f" Could not write {path}: {error.strerror or error}."
+        return f" Recorded in {state.loop_csv.name}."
+
+    def now() -> str:
+        return datetime.now().isoformat(timespec="seconds")
+
+    def on_loop_keep() -> None:
+        if state.graph is None or state.loop is None:
+            loop_summary.setText("Scan the network and pick a loop first.")
+            return
+        loop = state.loop
+        described = describe_vessels(state.graph, loop.edges)
+        review = LoopReview.of(loop, KEPT, time=now())
+        written = write_loop_review(loop_review_record(loop, review))
+        state.loop_reviews.append(review)
+        log_edit(f"Loop of {loop.length_um:.3g} µm round kept: {described}")
+        rescan_loops(state.loop_row)
+        loop_summary.setText(loop_counts() + written)
+
+    def on_loop_delete() -> None:
+        if state.graph is None or state.loop is None:
+            loop_summary.setText("Scan the network and pick a loop first.")
+            return
+        side = selected_side()
+        if side is None:
+            loop_summary.setText("Select the side to delete in the table first.")
+            return
+        loop = state.loop
+        described = describe_vessels(state.graph, loop.sides[side])
+        review = LoopReview.of(loop, SIDE_DELETED, side=side + 1, time=now())
+        record = loop_review_record(loop, review)
+        try:
+            delete_loop_side(state.graph, loop, side, protected=state.protected)
+        except ValueError as error:
+            loop_summary.setText(str(error))
+            log_edit(f"Loop of {loop.length_um:.3g} µm round: delete of side {side + 1} refused, {error}")
+            return
+        written = write_loop_review(record)
+        state.loop_reviews.append(review)
+        log_edit(f"Loop of {loop.length_um:.3g} µm round opened: deleted side {side + 1}, {described}")
+        drop_trace_after_edit()
+        rescan(prefer=state.node)
+        loop_summary.setText(loop_counts() + written)
+        report.value = (
+            f"Post processing: deleted side {side + 1} of a {loop.length_um:.3g} µm loop. "
+            f"{len(state.loops)} short loop(s) left to review."
+        )
 
     # --- editing by clicking in the viewer ------------------------------------
 
@@ -10135,8 +10417,14 @@ def _post_processing_controls(
         state.graph = state.scan = state.node = None
         state.vessels = []
         state.added_nodes = []
+        # The loop decisions stay: they are the run's, and are matched to the
+        # regenerated network's loops by position.
+        state.loops, state.loop, state.loop_row = [], None, None
         junction_list.clear()
         table.setRowCount(0)
+        loop_list.clear()
+        loop_table.setRowCount(0)
+        loop_summary.setText("")
         status.setText(waiting)
         refresh_buttons()
 
@@ -10223,6 +10511,11 @@ def _post_processing_controls(
     delete_button.clicked.connect(on_delete)
     split_button.clicked.connect(on_split)
     leave_button.clicked.connect(on_leave)
+    loop_toggle.toggled.connect(on_loop_review_toggled)
+    loop_list.currentRowChanged.connect(on_loop_changed)
+    loop_table.itemSelectionChanged.connect(recolour)
+    loop_delete_button.clicked.connect(on_loop_delete)
+    loop_keep_button.clicked.connect(on_loop_keep)
     prune_button.clicked.connect(on_prune)
     export_connectivity_button.clicked.connect(on_export_connectivity)
     connectivity_map_button.clicked.connect(on_connectivity_map)
@@ -10253,8 +10546,14 @@ def _post_processing_controls(
         state.added_nodes = []
         state.decisions = {}
         state.raw = state.raw_problem = None
+        state.loops, state.loop, state.loop_row = [], None, None
+        state.loop_reviews = []
+        state.loop_csv = None
         junction_list.clear()
         table.setRowCount(0)
+        loop_list.clear()
+        loop_table.setRowCount(0)
+        loop_summary.setText("")
         status.setText("Not scanned yet.")
         refresh_buttons()
 
@@ -10276,6 +10575,13 @@ def _post_processing_controls(
         split_button=split_button,
         connector=connector,
         leave_button=leave_button,
+        loop_toggle=loop_toggle,
+        loop_box=loop_box,
+        loop_list=loop_list,
+        loop_table=loop_table,
+        loop_delete_button=loop_delete_button,
+        loop_keep_button=loop_keep_button,
+        loop_summary=loop_summary,
         click_delete_button=click_delete_button,
         add_button=add_button,
         trace_source=trace_source,
@@ -12439,6 +12745,7 @@ def settings_widget(napari_viewer=None):
                 show_steps=bool(show_steps.value),
                 report=str(report.value or ""),
                 paused_after=run_state.paused_after,
+                loop_reviews=tuple(post_processing.state.loop_reviews),
             )
         except RunSnapshotError as error:
             report.value = str(error)
@@ -12505,6 +12812,9 @@ def settings_widget(napari_viewer=None):
         for moved in relocated:
             logger.info("Loaded run: %s moved from %s to %s", moved.name, moved.old, moved.new)
         _strip_session_for_load()
+        # Manual loop review's decisions came with the run: its kept loops are
+        # not listed again.
+        post_processing.state.loop_reviews = list(snapshot.loop_reviews)
         loaded_paths.clear()
         loaded_config_dir[0] = Path(path).parent
         last_run_path[0] = str(path)

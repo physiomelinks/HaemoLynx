@@ -35,11 +35,15 @@ with the mean diameter of the vessels already at its ends
 :func:`add_vessel_between` are the two-node version. After deleting,
 :func:`prune_disconnected_branches` removes whatever the deletions cut off
 from every inlet-to-outlet piece, and every dead end that reaches no outlet.
+
+For Manual loop review: :func:`short_loops` lists the network's short loops,
+shortest first, each split into the sides a person chooses between, and
+:func:`delete_loop_side` takes one side out.
 """
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 import networkx as nx
@@ -60,11 +64,13 @@ __all__ = [
     "MIN_ROUTED_INSIDE_FRACTION",
     "PENDING",
     "SPLIT_SNAP_UM",
+    "ShortLoop",
     "TracedVessel",
     "VesselEnd",
     "add_traced_vessel",
     "add_vessel_between",
     "clear_edit_marks",
+    "delete_loop_side",
     "delete_vessels",
     "edge_keys",
     "edited_edges",
@@ -74,6 +80,7 @@ __all__ = [
     "mark_edited",
     "mean_incident_diameter",
     "prune_disconnected_branches",
+    "short_loops",
     "smooth_traced_path",
     "split_high_degree_junctions",
     "split_junction",
@@ -300,6 +307,70 @@ def delete_vessels(
         changed.update({node, n1, n2})
     mark_edited(G)
     return changed
+
+
+@dataclass(frozen=True)
+class ShortLoop:
+    """One short loop of the network, as Manual loop review lists it."""
+
+    #: Its ``(a, b, key)`` edges, in order round it.
+    edges: tuple[EdgeKey, ...]
+    #: Those edges in runs between the places the rest of the network -- or
+    #: a boundary node -- meets the loop (:func:`~haemolynx.graph.lumen_loops.loop_sides`):
+    #: what Delete this side takes out, one run at a time.
+    sides: tuple[tuple[EdgeKey, ...], ...]
+    #: Summed vessel length round it, in microns.
+    length_um: float
+    #: The middle of the loop, physical microns ``(z, y, x)``.
+    centre_um: tuple[float, float, float]
+    #: Its points in order round it, physical microns ``(z, y, x)``.
+    points_um: np.ndarray = field(compare=False, repr=False)
+
+
+def short_loops(
+    G: nx.MultiGraph, *, search_um: float | None = None, cut_at: Iterable[Any] = ()
+) -> list[ShortLoop]:
+    """The loops of *G* shorter than *search_um* round (default
+    :data:`~haemolynx.graph.lumen_loops.LOOP_SEARCH_UM`), shortest first.
+
+    Each is some vessel's shortest loop, listed once
+    (:func:`~haemolynx.graph.lumen_loops.iter_short_loops`, the loops graph
+    building judges); loops of equal length keep the order they were found
+    in, so an unchanged graph lists the same way every time. Their sides are
+    cut at the nodes of *cut_at* (boundary nodes) as well as wherever another
+    vessel leaves them.
+    """
+    from .lumen_loops import LOOP_SEARCH_UM, iter_short_loops, loop_centre_um, loop_sides
+
+    limit = LOOP_SEARCH_UM if search_um is None else float(search_um)
+    cut = frozenset(cut_at)
+    found = []
+    for cycle, polyline in iter_short_loops(G, limit):
+        edges = tuple(tuple(edge) for edge in cycle)
+        found.append(
+            ShortLoop(
+                edges=edges,
+                sides=tuple(tuple(tuple(e) for e in side) for side in loop_sides(G, edges, cut_at=cut)),
+                length_um=float(sum(_optional_float(G.edges[e].get("length")) or 0.0 for e in edges)),
+                centre_um=tuple(float(c) for c in loop_centre_um(polyline)),
+                points_um=np.asarray(polyline, dtype=float),
+            )
+        )
+    found.sort(key=lambda loop: loop.length_um)
+    return found
+
+
+def delete_loop_side(
+    G: nx.MultiGraph, loop: ShortLoop, side: int, *, protected: Iterable[Any] = ()
+) -> set[Any]:
+    """Delete side *side* of *loop* -- its run of vessels -- through
+    :func:`delete_vessels`, which tidies the nodes it touched and never
+    strands a *protected* (boundary) node. Raises ``ValueError`` for a side
+    the loop does not have, or one an earlier edit already changed.
+    Returns the node ids whose drawing changed."""
+    if not 0 <= int(side) < len(loop.sides):
+        raise ValueError(f"The loop has sides 1 to {len(loop.sides)}, not {int(side) + 1}")
+    return delete_vessels(G, loop.sides[int(side)], protected=protected)
 
 
 def _node_position(G: nx.MultiGraph, node: Any) -> np.ndarray:

@@ -9,8 +9,15 @@ from __future__ import annotations
 
 import networkx as nx
 import numpy as np
+import pytest
 
-from haemolynx.graph.lumen_loops import loop_inside_one_lumen, remove_loops_inside_one_lumen
+from haemolynx.graph.lumen_loops import (
+    loop_centre_um,
+    loop_inside_one_lumen,
+    loop_measures,
+    loop_sides,
+    remove_loops_inside_one_lumen,
+)
 from haemolynx.preprocessing import MaskSupport
 
 
@@ -172,3 +179,151 @@ def test_a_graph_without_loops_is_left_alone():
     remove_loops_inside_one_lumen(G, _support(_tube_mask()))
 
     assert sorted(G.edges(keys=True)) == before
+
+
+# --- what Manual loop review reads ---------------------------------------------
+
+
+def _parallel_cycle(G, u, v):
+    """The loop the two edges between *u* and *v* close, in order round it."""
+    first, second = sorted(G[u][v])
+    return [(u, v, first), (v, u, second)]
+
+
+def test_a_loop_has_one_side_between_each_two_places_the_network_meets_it():
+    G = _vessel_with(4, 9)
+    cycle = _parallel_cycle(G, "u", "v")
+
+    assert loop_sides(G, cycle) == [[cycle[0]], [cycle[1]]]
+
+
+def _triangle_off(node_off_it: bool) -> nx.MultiGraph:
+    G = nx.MultiGraph()
+    for node, pos in {0: (0, 0, 0), 1: (0, 10, 0), 2: (0, 0, 10), 3: (0, -10, -10)}.items():
+        G.add_node(node, pos=np.asarray(pos, dtype=float))
+    for u, v in ((0, 1), (1, 2), (2, 0)):
+        G.add_edge(u, v, length=10.0)
+    if node_off_it:
+        G.add_edge(0, 3, length=14.0)
+    return G
+
+
+def test_a_loop_met_once_is_one_side_and_one_met_nowhere_has_a_side_per_edge():
+    cycle = [(0, 1, 0), (1, 2, 0), (2, 0, 0)]
+
+    assert loop_sides(_triangle_off(True), cycle) == [cycle]
+    assert loop_sides(_triangle_off(False), cycle) == [[edge] for edge in cycle]
+
+
+def test_a_boundary_node_on_a_loop_cuts_it_into_sides_too():
+    cycle = [(0, 1, 0), (1, 2, 0), (2, 0, 0)]
+
+    assert loop_sides(_triangle_off(True), cycle, cut_at={2}) == [cycle[:2], cycle[2:]]
+
+
+def _circle(radius: float, centre, e1, e2, count: int = 400) -> np.ndarray:
+    e1 = np.asarray(e1, dtype=float) / np.linalg.norm(e1)
+    e2 = np.asarray(e2, dtype=float) / np.linalg.norm(e2)
+    t = np.linspace(0.0, 2 * np.pi, count + 1)
+    return np.asarray(centre, dtype=float) + radius * (
+        np.cos(t)[:, None] * e1 + np.sin(t)[:, None] * e2
+    )
+
+
+def test_loop_measures_read_the_size_and_shape_of_a_circle_in_a_tilted_plane():
+    circle = _circle(5.0, (20.0, 30.0, 40.0), (0, 1, 0), (1, 0, 1))
+
+    measures = loop_measures(circle)
+
+    assert measures["loop_length_um"] == pytest.approx(2 * np.pi * 5.0, rel=1e-3)
+    assert measures["area_um2"] == pytest.approx(np.pi * 25.0, rel=1e-2)
+    assert measures["span_um"] == pytest.approx(10.0, rel=1e-2)
+    assert measures["out_of_plane"] == pytest.approx(0.0, abs=1e-6)
+    centre = [measures[f"centre_{axis}_um"] for axis in "zyx"]
+    assert centre == pytest.approx([20.0, 30.0, 40.0], abs=1e-6)
+    assert loop_centre_um(circle) == pytest.approx([20.0, 30.0, 40.0], abs=1e-6)
+    for name in ("path_in", "lumen_r_um", "chords_in_lumen", "inside_one_lumen", "wall_side"):
+        assert measures[name] is None, "no mask, no mask measures"
+
+
+def test_a_loop_bent_out_of_its_plane_reads_as_bent_by_as_much():
+    """A saddle rising *depth* out of a 6 um circle's plane: its third
+    singular value over its second is about depth / 6."""
+    t = np.linspace(0.0, 2 * np.pi, 401)
+    bends = [
+        loop_measures(np.column_stack([depth * np.cos(2 * t), 6.0 * np.cos(t), 6.0 * np.sin(t)]))[
+            "out_of_plane"
+        ]
+        for depth in (0.0, 0.6, 3.0)
+    ]
+
+    assert bends[0] == pytest.approx(0.0, abs=1e-6)
+    assert bends[0] < bends[1] < bends[2]
+    assert bends[1] == pytest.approx(0.1, abs=0.02)
+    assert bends[2] == pytest.approx(0.5, abs=0.05)
+
+
+def test_loop_measures_tell_a_ring_in_one_lumen_from_a_loop_round_tissue():
+    loop = _square_loop(4.0, 6.0, 22.0)
+    round_tissue = _slab()
+    round_tissue[:, 9:20, 9:20] = False
+
+    ring = loop_measures(loop, mask=_slab())
+    vessel_loop = loop_measures(loop, mask=round_tissue)
+
+    assert ring["path_in"] == 1.0 and vessel_loop["path_in"] == 1.0
+    assert ring["inside_one_lumen"] is True and vessel_loop["inside_one_lumen"] is False
+    assert ring["chords_in_lumen"] == 1.0 and ring["chord_bg_median_um"] == 0.0
+    assert vessel_loop["chords_in_lumen"] < 0.5 and vessel_loop["chord_bg_median_um"] > 5.0
+    # The slab is five voxels deep and the loop runs through its middle.
+    assert 1.0 < ring["lumen_r_um"] < 4.0
+
+
+class _Reads:
+    """A mask that remembers the boxes read from it."""
+
+    def __init__(self, array):
+        self.array = array
+        self.shape = array.shape
+        self.boxes = []
+
+    def __getitem__(self, key):
+        self.boxes.append(key)
+        return self.array[key]
+
+
+def test_loop_measures_read_only_a_box_round_the_loop_and_place_it_right():
+    loop = _square_loop(4.0, 6.0, 22.0)
+    round_tissue = _slab()
+    round_tissue[:, 9:20, 9:20] = False
+    offset = np.array([30, 60, 70])
+    big = np.zeros((60, 120, 140), dtype=bool)
+    big[30:39, 60:90, 70:100] = round_tissue
+    reads = _Reads(big)
+
+    near = loop_measures(loop, mask=round_tissue)
+    far = loop_measures(loop + offset, mask=reads)
+
+    for name in ("path_in", "lumen_r_um", "chords_in_lumen", "chord_bg_median_um", "inside_one_lumen"):
+        assert far[name] == pytest.approx(near[name]), name
+    (box,) = reads.boxes
+    read = np.prod([s.stop - s.start for s in box])
+    assert read < big.size / 10
+
+
+def test_the_wall_side_is_the_side_the_loop_breaker_would_take_out():
+    from haemolynx.graph.lumen_loops import iter_short_loops
+
+    G = _vessel_with(4, 9)  # row 4 runs on the wall, row 9 a voxel inside it
+    ((cycle, polyline),) = list(iter_short_loops(G))
+    sides = loop_sides(G, cycle)
+    sides_um = [np.vstack([G.edges[e]["voxels"] for e in side]) for side in sides]
+    rows = [G.edges[side[0]]["row"] for side in sides]
+
+    measures = loop_measures(polyline, mask=_tube_mask(), sides_um=sides_um)
+
+    assert rows[measures["wall_side"]] == 4
+    radii = measures["side_lumen_r_um"]
+    assert radii[rows.index(4)] < radii[rows.index(9)]
+    remove_loops_inside_one_lumen(G, _support(_tube_mask()))
+    assert _rows(G) == [9], "the breaker took out the same side"
