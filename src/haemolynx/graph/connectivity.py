@@ -21,6 +21,7 @@ graph and the VTK's ``edge_u`` / ``edge_v`` / ``edge_key`` cell data.
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -29,9 +30,11 @@ import numpy as np
 
 __all__ = [
     "CONNECTIVITY_COLUMNS",
+    "UnsolvedPiece",
     "connectivity_rows",
     "inlet_to_outlet_vessels",
     "remove_vessels_off_inlet_outlet_paths",
+    "unsolved_pieces",
     "write_connectivity_csv",
 ]
 
@@ -116,6 +119,71 @@ def _summed_length(data: dict) -> float:
     except (TypeError, ValueError):
         return 0.0
     return length if np.isfinite(length) else 0.0
+
+
+@dataclass(frozen=True)
+class UnsolvedPiece:
+    """Vessels no inlet-to-outlet path runs along, joined to each other."""
+
+    #: Its vessels ``(u, v, key)``, in the graph's edge order.
+    edges: tuple[tuple[Any, Any, Any], ...]
+    nodes: tuple[Any, ...]
+    length_um: float
+    #: Where it meets the vessels that are solved; empty for a piece of its own.
+    attached_at: tuple[Any, ...]
+
+    @property
+    def disconnected(self) -> bool:
+        """A piece of its own, rather than one hanging off the solved network."""
+        return not self.attached_at
+
+
+def unsolved_pieces(
+    G: nx.MultiGraph,
+    inlet_nodes: Sequence[Any],
+    outlet_nodes: Sequence[Any],
+) -> list[UnsolvedPiece]:
+    """The vessels :func:`inlet_to_outlet_vessels` leaves out, in pieces,
+    longest first: each piece of the graph with no inlet or no outlet, and
+    each dead-end branch, tree or loop hanging off one that has both (two
+    hanging off the same node are two pieces). These are the vessels a solve
+    marks unsolved and ``remove_disconnected`` removes. With no inlet or no
+    outlet every vessel is in one."""
+    through = inlet_to_outlet_vessels(G, inlet_nodes, outlet_nodes)
+    solved_nodes = {n for u, v, _k in through for n in (u, v)}
+    unsolved = [(u, v, k) for u, v, k in G.edges(keys=True) if (u, v, k) not in through]
+    parent = list(range(len(unsolved)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    first_at: dict[Any, int] = {}
+    for i, (u, v, _k) in enumerate(unsolved):
+        for node in (u, v):
+            if node in solved_nodes:
+                continue
+            if node in first_at:
+                parent[find(i)] = find(first_at[node])
+            else:
+                first_at[node] = i
+    groups: dict[int, list[int]] = {}
+    for i in range(len(unsolved)):
+        groups.setdefault(find(i), []).append(i)
+    pieces = []
+    for members in groups.values():
+        edges = tuple(unsolved[i] for i in sorted(members))
+        nodes = tuple(dict.fromkeys(n for u, v, _k in edges for n in (u, v)))
+        pieces.append(UnsolvedPiece(
+            edges=edges,
+            nodes=nodes,
+            length_um=float(sum(_summed_length(G.edges[e]) for e in edges)),
+            attached_at=tuple(n for n in nodes if n in solved_nodes),
+        ))
+    pieces.sort(key=lambda piece: -piece.length_um)
+    return pieces
 
 
 def remove_vessels_off_inlet_outlet_paths(

@@ -30,12 +30,16 @@ from __future__ import annotations
 
 import logging
 import pickle
-import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from haemolynx.graph.branch_order import (
+    branch_order_rank_values,
+    branch_order_signed_values,
+    flow_path_key,
+)
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.visualization._helpers import create_color_mapping
 from haemolynx.pipeline.stages import TOPOLOGY_STEP
@@ -716,92 +720,6 @@ BRANCH_ORDER_RANK = "branch_order_rank"
 #: the arterial side negative (-1 feeds the capillaries), the venous side
 #: positive (+1 drains them).
 BRANCH_ORDER_SIGNED = "branch_order_signed"
-
-_TIER_LABEL = re.compile(r"^(.*?)(\d+)\s*$")
-
-#: Label prefix -> (tier along the flow path, side of the capillary bed).
-#: Ven and Large_Ven are numbered from the outlet (graph.branch_order), so
-#: along the path their numbers run down: Ven2 comes before Ven1.
-_FLOW_PATH_TIERS = {
-    "large_art": (0, -1),
-    "art": (1, -1),
-    "b": (2, 0),
-    "bo": (2, 0),
-    "ven": (3, 1),
-    "large_ven": (4, 1),
-}
-
-
-def _tier_and_number(label: Any) -> tuple[str, int] | None:
-    """``("art", 3)`` for ``Art3``; None for a label with no trailing number."""
-    match = _TIER_LABEL.match(str(label or "").strip())
-    if match is None:
-        return None
-    return match.group(1).lower(), int(match.group(2))
-
-
-def flow_path_key(label: Any) -> tuple:
-    """Sort key putting branch-order labels in the order blood passes them.
-
-    Any other label keeps the order the plots use for it (after every
-    branch-order tier; labels with no number last), so this also serves text
-    columns that are not branch orders.
-    """
-    parsed = _tier_and_number(label)
-    if parsed is None:
-        return (99, 0, str(label))
-    prefix, number = parsed
-    tier = _FLOW_PATH_TIERS.get(prefix)
-    if tier is None:
-        return (len(_FLOW_PATH_TIERS), number, str(label))
-    position, side = tier
-    return (position, -number if side > 0 else number, str(label))
-
-
-def branch_order_signed_values(labels: Iterable[Any]) -> np.ndarray:
-    """Generations from the capillary bed, per label, for *labels* together.
-
-    Capillaries are 0. Upstream of them, the arteriole that feeds them is
-    -1 and the count grows through Art to the most upstream Large_Art (so
-    ``Art`` n is ``-(Art_max - n + 1)``, and a Large_Art lies beyond every
-    Art). Downstream, the venule that drains them is +1 and the count grows
-    through Ven to Large_Ven1 at the outlet. The maxima are the network's
-    own; a label of no known tier is NaN.
-    """
-    labels = [str(label) for label in labels]
-    most: dict[str, int] = {}
-    for label in set(labels):
-        parsed = _tier_and_number(label)
-        if parsed is not None:
-            most[parsed[0]] = max(most.get(parsed[0], 0), parsed[1])
-    art, ven = most.get("art", 0), most.get("ven", 0)
-
-    def signed(label: str) -> float:
-        parsed = _tier_and_number(label)
-        if parsed is None:
-            return float("nan")
-        prefix, number = parsed
-        if prefix in {"b", "bo"}:
-            return 0.0
-        if prefix == "art":
-            return -float(art - number + 1)
-        if prefix == "large_art":
-            return -float(art + most["large_art"] - number + 1)
-        if prefix == "ven":
-            return float(ven - number + 1)
-        if prefix == "large_ven":
-            return float(ven + most["large_ven"] - number + 1)
-        return float("nan")
-
-    return np.asarray([signed(label) for label in labels], dtype=float)
-
-
-def branch_order_rank_values(labels: Iterable[Any]) -> np.ndarray:
-    """Each label's place along the flow path, 1..N over the labels present."""
-    labels = [str(label) for label in labels]
-    present = sorted({label for label in labels if _tier_and_number(label)}, key=flow_path_key)
-    rank = {label: float(index) for index, label in enumerate(present, start=1)}
-    return np.asarray([rank.get(label, np.nan) for label in labels], dtype=float)
 
 
 def _add_branch_order_scales(columns: dict[str, np.ndarray]) -> None:

@@ -10,7 +10,15 @@ from __future__ import annotations
 import networkx as nx
 import numpy as np
 
-from haemolynx.graph.facing_ends import join_facing_dead_ends
+from haemolynx.graph.facing_ends import (
+    REFUSED_BESIDE_VESSEL,
+    REFUSED_GAP_TOO_WIDE,
+    REFUSED_SHORT_END,
+    REFUSED_STRETCHES,
+    REFUSED_TURN,
+    facing_dead_end_pairs,
+    join_facing_dead_ends,
+)
 from haemolynx.preprocessing import MaskSupport
 
 
@@ -142,3 +150,68 @@ def test_a_heading_is_read_along_a_chain_of_short_edges():
 
     (join,) = _joins(G)
     assert {join[0], join[1]} == {"left", "right"}
+
+
+# --- facing_dead_end_pairs: the pairs, and why each is or is not joined ------
+
+
+def _pair(pairs, a, b):
+    (found,) = [p for p in pairs if {p.a, p.b} == {a, b}]
+    return found
+
+
+def test_listing_the_pairs_reads_the_join_and_changes_nothing():
+    G, mask = _broken_vessel()
+    before = sorted(G.edges(keys=True))
+
+    pair = _pair(facing_dead_end_pairs(G, _support(mask)), "left", "right")
+
+    assert sorted(G.edges(keys=True)) == before
+    assert pair.refused is None
+    assert pair.gap_um == 6.0
+    assert pair.turn_deg < 1.0
+    join_facing_dead_ends(G, _support(mask))
+    assert facing_dead_end_pairs(G, _support(mask)) == []
+
+
+def test_a_gap_past_the_limit_is_listed_as_too_wide_when_the_search_reaches_it():
+    G, mask = _broken_vessel(gap_from=21, gap_to=33)  # ends 14 um apart
+
+    assert facing_dead_end_pairs(G, _support(mask), max_gap_um=10.0) == []
+    pair = _pair(
+        facing_dead_end_pairs(G, _support(mask), max_gap_um=10.0, search_gap_um=20.0), "left", "right"
+    )
+    assert pair.refused == REFUSED_GAP_TOO_WIDE
+    assert pair.gap_um == 14.0
+
+
+def test_each_refusal_says_which_test_the_pair_failed():
+    side_by_side = nx.MultiGraph()
+    for node, pos in (("a0", (7, 7, 0)), ("a", (7, 7, 30)), ("b0", (7, 13, 0)), ("b", (7, 13, 30))):
+        side_by_side.add_node(node, pos=np.array(pos, dtype=float))
+    _straight(side_by_side, "a0", "a")
+    _straight(side_by_side, "b0", "b")
+    mask = np.zeros((15, 30, 60), dtype=bool)
+    assert _pair(facing_dead_end_pairs(side_by_side, _support(mask)), "a", "b").refused == REFUSED_TURN
+
+    G, mask = _broken_vessel()
+    _tube(mask, 1, (7, 0, 23), 1, 0, 19)  # a third vessel in the gap
+    assert _pair(facing_dead_end_pairs(G, _support(mask)), "left", "right").refused == REFUSED_STRETCHES
+
+    G, mask = _broken_vessel()
+    G.remove_edge("right", "end")
+    G.add_node("stub_end", pos=np.array([7.0, 7.0, 28.0]))
+    _straight(G, "right", "stub_end")
+    assert _pair(facing_dead_end_pairs(G, _support(mask)), "left", "right").refused == REFUSED_SHORT_END
+
+
+def test_a_join_beside_a_vessel_in_the_same_lumen_is_refused_as_such():
+    G, mask = _broken_vessel(gap_from=21, gap_to=29)  # ends 10 um apart
+    _tube(mask, 2, (7, 7, 0), 3, 0, 59)  # the gap filled: the mask runs on through it
+    G.add_node("over0", pos=np.array([7.0, 9.0, 12.0]))
+    G.add_node("over1", pos=np.array([7.0, 9.0, 38.0]))
+    _straight(G, "over0", "over1")  # a strand already through the gap's lumen
+
+    pairs = [p for p in facing_dead_end_pairs(G, _support(mask)) if {p.a, p.b} == {"left", "right"}]
+
+    assert [p.refused for p in pairs] == [REFUSED_BESIDE_VESSEL]

@@ -208,6 +208,7 @@ def uncovered_mask_voxels(
     margin_um: float = SAME_LUMEN_MARGIN_UM,
     block_voxels: int = LOW_MEMORY_BLOCK_VOXELS,
     cross_section_reach_radii: float = CROSS_SECTION_REACH_RADII,
+    z_range: tuple[int, int] | None = None,
 ) -> np.ndarray:
     """Voxel indices of the mask no centreline sample of *G* covers. A sample
     ``p`` covers a voxel within ``radius(p) + margin_um`` of it, and -- with a
@@ -217,7 +218,8 @@ def uncovered_mask_voxels(
     radii (+ *margin_um*; :data:`CROSS_SECTION_REACH_RADII`). The radius is
     the distance to the nearest wall, so the radius rule alone leaves the far
     side of every flattened lumen uncovered. 0 keeps the radius rule only.
-    Read a slab of whole z-slices at a time, so the mask may be a memmap."""
+    Read a slab of whole z-slices at a time, so the mask may be a memmap;
+    *z_range* ``(first, stop)`` reads only those slices."""
     mask = support.mask
     spacing = np.asarray(support.voxel_size_zyx, dtype=float)
     index, radii = _centreline_samples(G, support)
@@ -230,8 +232,11 @@ def uncovered_mask_voxels(
     reach = float(radii.max()) + margin_um if len(radii) else 0.0
     section_reach = float(sections.reach.max()) + margin_um if sections is not None else 0.0
     axial = float(spacing.min())
-    for start in range(0, mask.shape[0], step):
-        coords = np.argwhere(np.asarray(mask[start:start + step], dtype=bool))
+    first, stop = (0, mask.shape[0]) if z_range is None else (
+        max(int(z_range[0]), 0), min(int(z_range[1]), mask.shape[0])
+    )
+    for start in range(first, stop, step):
+        coords = np.argwhere(np.asarray(mask[start:min(start + step, stop)], dtype=bool))
         if not len(coords):
             continue
         coords[:, 0] += start
@@ -269,6 +274,64 @@ def _components(coords: np.ndarray) -> list[np.ndarray]:
     order = np.argsort(labels, kind="stable")
     bounds = np.flatnonzero(np.diff(labels[order])) + 1
     return np.split(coords[order], bounds)
+
+
+#: Voxels of an uncovered region :func:`uncovered_mask_regions` hands back to
+#: draw it: enough to show its shape, few enough to draw at once.
+REGION_SAMPLE_VOXELS = 2000
+
+
+@dataclass(frozen=True)
+class UncoveredRegion:
+    """One piece of the mask no centreline covers."""
+
+    voxel_count: int
+    volume_um3: float
+    #: Its middle, physical microns ``(z, y, x)``.
+    centre_um: tuple[float, float, float]
+    #: Its widest point's distance to background, in microns.
+    radius_um: float
+    #: Up to :data:`REGION_SAMPLE_VOXELS` of its voxels, physical microns.
+    sample_um: np.ndarray = field(compare=False, repr=False)
+
+
+def uncovered_mask_regions(
+    G: nx.MultiGraph,
+    support: MaskSupport,
+    *,
+    min_region_volume_um3: float = DEFAULT_MIN_REGION_VOLUME_UM3,
+    margin_um: float = SAME_LUMEN_MARGIN_UM,
+    z_range: tuple[int, int] | None = None,
+) -> list[UncoveredRegion]:
+    """The pieces of mask :func:`recover_uncovered_mask_vessels` would trace,
+    largest first -- read-only: 26-connected regions of
+    :func:`uncovered_mask_voxels` holding at least *min_region_volume_um3*
+    and wider somewhere than :data:`MIN_INSCRIBED_RADIUS_VOXELS` (a thinner
+    one is a sliver of a covered vessel's wall). On a graph recovery has
+    already run on, each is a segmented vessel it could not join."""
+    spacing = np.asarray(support.voxel_size_zyx, dtype=float)
+    voxel_volume = float(np.prod(spacing))
+    finest = float(spacing.min())
+    rng = np.random.default_rng(0)
+    regions = []
+    for region in _components(uncovered_mask_voxels(G, support, margin_um=margin_um, z_range=z_range)):
+        if len(region) * voxel_volume < float(min_region_volume_um3):
+            continue
+        points = region * spacing
+        radius = float(np.max(support.radius(points)))
+        if radius < MIN_INSCRIBED_RADIUS_VOXELS * finest:
+            continue
+        if len(points) > REGION_SAMPLE_VOXELS:
+            points = points[np.sort(rng.choice(len(points), REGION_SAMPLE_VOXELS, replace=False))]
+        regions.append(UncoveredRegion(
+            voxel_count=int(len(region)),
+            volume_um3=float(len(region) * voxel_volume),
+            centre_um=tuple(float(c) for c in (region * spacing).mean(axis=0)),  # type: ignore[arg-type]
+            radius_um=radius,
+            sample_um=points,
+        ))
+    regions.sort(key=lambda r: -r.voxel_count)
+    return regions
 
 
 def _trace_piece(region: np.ndarray, support: MaskSupport, pad: int) -> _Piece:
@@ -953,7 +1016,10 @@ def remove_edges_off_the_mask(G: nx.MultiGraph, support: MaskSupport) -> nx.Mult
 __all__ = [
     "DEFAULT_MIN_LENGTH_UM",
     "DEFAULT_MIN_REGION_VOLUME_UM3",
+    "REGION_SAMPLE_VOXELS",
+    "UncoveredRegion",
     "recover_uncovered_mask_vessels",
     "remove_edges_off_the_mask",
+    "uncovered_mask_regions",
     "uncovered_mask_voxels",
 ]

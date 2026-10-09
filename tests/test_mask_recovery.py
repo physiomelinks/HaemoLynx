@@ -13,8 +13,10 @@ import pytest
 
 from haemolynx.graph import diagnose_parallel_duplicates_in_lumen
 from haemolynx.graph.mask_recovery import (
+    REGION_SAMPLE_VOXELS,
     recover_uncovered_mask_vessels,
     remove_edges_off_the_mask,
+    uncovered_mask_regions,
     uncovered_mask_voxels,
 )
 from haemolynx.preprocessing import MaskSupport
@@ -650,3 +652,46 @@ def test_a_lost_branch_narrower_than_its_vessel_stays_uncovered_past_the_wall():
     assert len(uncovered) >= 0.9 * branch_past_wall
     assert int(np.min(uncovered[:, 1])) <= 12
 
+
+# --- uncovered_mask_regions: what recovery would trace, for review ----------
+
+
+def test_the_regions_left_to_trace_are_listed_largest_first_without_changing_the_graph():
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 7, 35)  # a branch along y off the trunk
+    _tube(mask, 1, (7, 0, 50), 2, 7, 20)  # a shorter one
+    G = _trunk_graph()
+
+    regions = uncovered_mask_regions(G, _support(mask))
+
+    assert G.number_of_edges() == 1
+    assert len(regions) == 2
+    assert regions[0].volume_um3 > regions[1].volume_um3
+    assert regions[0].centre_um[2] == pytest.approx(30.0, abs=1.0)
+    assert regions[1].centre_um[2] == pytest.approx(50.0, abs=1.0)
+    assert regions[0].radius_um >= 1.5
+    assert 0 < len(regions[0].sample_um) <= REGION_SAMPLE_VOXELS
+    assert regions[0].voxel_count == len(regions[0].sample_um) or len(regions[0].sample_um) == REGION_SAMPLE_VOXELS
+
+
+def test_specks_and_wall_slivers_are_not_listed():
+    mask = _trunk_mask()
+    mask[7, 30:32, 10:12] = True  # 4 um^3 of speck
+    mask[3, 12:20, 10:40] = True  # one voxel thick, beside the trunk
+
+    assert uncovered_mask_regions(_trunk_graph(), _support(mask)) == []
+
+
+def test_a_z_range_reads_only_those_slices():
+    mask = np.zeros((40, 15, 60), dtype=bool)
+    _tube(mask, 2, (7, 7, 0), 3, 0, 59)
+    _tube(mask, 2, (30, 7, 0), 3, 0, 59)  # a second vessel, deeper, untraced
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([7.0, 7.0, 0.0]))
+    G.add_node(1, pos=np.array([7.0, 7.0, 59.0]))
+    G.add_edge(0, 1, voxels=[[7.0, 7.0, float(x)] for x in range(60)], length=59.0)
+
+    assert len(uncovered_mask_regions(G, _support(mask))) == 1
+    assert uncovered_mask_regions(G, _support(mask), z_range=(0, 15)) == []
+    (deep,) = uncovered_mask_regions(G, _support(mask), z_range=(20, 40))
+    assert deep.centre_um[0] == pytest.approx(30.0, abs=0.5)

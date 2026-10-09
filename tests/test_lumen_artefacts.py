@@ -18,6 +18,7 @@ from haemolynx.graph import (
     format_lumen_artefacts_report,
     lumen_artefacts_found,
 )
+from haemolynx.graph.diagnostics import DEAD_END_KINDS, classify_dead_ends
 from haemolynx.graph.lumen_loops import iter_short_loops
 from haemolynx.preprocessing import MaskSupport, path_shadows_existing_vessel, shadowed_samples
 
@@ -192,3 +193,31 @@ def test_an_empty_graph_reports_nothing():
     assert report["short_loop_count"] == 0
     assert report["interior_dead_ends"] == 0
     assert not lumen_artefacts_found(report)
+
+
+# --- classify_dead_ends: the dead ends alone, tip by tip ---------------------
+
+
+def test_classifying_dead_ends_alone_agrees_with_the_report_tip_for_tip():
+    mask, G, tips = dead_end_cases()
+    for margin in (0.0, 10.0):
+        report = _report(mask, G, image_face_margin_um=margin)
+        judged = classify_dead_ends(G, mask, voxel_size_zyx=VOXEL_SIZE, image_face_margin_um=margin)
+
+        assert judged["dead_ends"] == report["dead_ends"]
+        assert len(judged["interior"]) == report["interior_dead_ends"]
+        assert len(judged["at_image_face"]) == report["dead_ends_at_image_face"]
+        assert judged["isolated_single_edges"] == report["isolated_single_edges"]
+        for tip, kinds in judged["kinds"].items():
+            assert kinds == tuple(k for k in DEAD_END_KINDS if tip in report["dead_ends"][k])
+
+
+def test_each_tip_carries_its_own_kinds_and_a_real_branch_none():
+    mask, G, tips = dead_end_cases()
+    kinds = classify_dead_ends(G, mask, voxel_size_zyx=VOXEL_SIZE, image_face_margin_um=0.0)["kinds"]
+
+    assert kinds[tips["real_branch"]] == ()
+    assert "off_mask" in kinds[tips["off_mask"]]
+    assert "short" in kinds[tips["short"]]
+    assert kinds[tips["inside_other_lumen"]][0] == "inside_other_lumen"
+    assert set(kinds) == set(tips.values())

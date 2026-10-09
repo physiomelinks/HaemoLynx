@@ -424,6 +424,173 @@ def _sample_weights(samples: np.ndarray) -> np.ndarray:
     return np.concatenate([[spacing[0] / 2], (spacing[:-1] + spacing[1:]) / 2, [spacing[-1] / 2]])
 
 
+class _CentrelineNeighbours:
+    """Every edge's centreline samples over one mask, for asking what runs
+    beside an edge in the same lumen: what :func:`diagnose_lumen_artefacts`
+    and :func:`classify_dead_ends` share."""
+
+    def __init__(self, G: Union[nx.Graph, nx.MultiGraph], support):
+        from haemolynx.preprocessing.bridge_mask_support import _sample_step
+
+        from ._helpers import EdgeSampleIndex
+
+        self.support = support
+        self.step = _sample_step(support.voxel_size_zyx)
+        self.node_pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True) if "pos" in d}
+        self.index = EdgeSampleIndex(G)
+        self.ids: Dict[Any, int] = {}
+        self.owners = np.asarray(
+            [self.ids.setdefault(owner, len(self.ids)) for owner in self.index.owners], dtype=np.intp
+        )
+
+    def other_points_near(self, points: np.ndarray, own: Any, reach: float) -> np.ndarray:
+        if self.index.tree is None:
+            return np.empty(0, dtype=np.intp)
+        found = self.index.tree.query_ball_point(points, r=reach)
+        near = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in np.atleast_1d(found)]))
+        return near[self.owners[near] != own] if own is not None else near
+
+    def beside(self, u: Any, v: Any, key: Any, data: dict):
+        """``(centreline_um, beside_um, share)`` for edge ``(u, v, key)``: its
+        length as sampled, how much of that runs beside another centreline in
+        the same lumen, and the share of its judged samples that do (None when
+        none were judged). None for an edge with no samples to judge."""
+        from haemolynx.preprocessing.bridge_mask_support import _densify, shadowed_samples
+        from scipy.spatial import cKDTree
+
+        from ._helpers import edge_id, edge_sample_points
+
+        if u not in self.node_pos or v not in self.node_pos:
+            return None
+        own = self.ids.get(edge_id(u, v, key))
+        path = edge_sample_points(u, v, data, self.node_pos)
+        dense = _densify(path, self.step)
+        if len(dense) < 2:
+            return None
+        total = float(_sample_weights(dense).sum())
+        near = self.other_points_near(dense, own, 2.0 * float(np.max(self.support.radius(dense))) + 1.0)
+        if not len(near):
+            return total, 0.0, None
+        samples, judged, beside = shadowed_samples(
+            path, cKDTree(self.index.points[near]), self.index.points[near],
+            self.support.inside, self.support.radius, step_um=self.step,
+        )
+        share = float(beside[judged].mean()) if judged.any() else None
+        return total, float(_sample_weights(samples)[beside].sum()), share
+
+
+def _judge_dead_ends(
+    G: Union[nx.Graph, nx.MultiGraph],
+    neighbours: _CentrelineNeighbours,
+    beside_share: Dict[Any, float],
+    *,
+    stub_radius_multiple: float,
+    image_face_margin_um: float,
+) -> Dict[str, Any]:
+    from haemolynx.preprocessing.bridge_mask_support import _densify
+
+    from ._helpers import edge_id, edge_sample_points
+    from .assemble import mask_continues_past
+
+    support, node_pos, index, step = neighbours.support, neighbours.node_pos, neighbours.index, neighbours.step
+    extent = (np.asarray(support.mask.shape, dtype=float) - 1.0) * np.asarray(support.voxel_size_zyx)
+    continues = mask_continues_past(support)
+    dead_ends: Dict[str, List[Any]] = {kind: [] for kind in DEAD_END_KINDS}
+    isolated = sum(1 for u, v in G.edges() if u != v and G.degree[u] == 1 and G.degree[v] == 1)
+    at_face: List[Any] = []
+    interior: List[Any] = []
+    for node in G.nodes:
+        if G.degree[node] != 1 or node not in node_pos:
+            continue
+        (_, other, key, data), = G.edges(node, keys=True, data=True)
+        if G.degree[other] == 1 or other not in node_pos:
+            continue
+        tip = node_pos[node]
+        if float(np.min(np.minimum(tip, extent - tip))) <= image_face_margin_um:
+            at_face.append(node)
+            continue
+        interior.append(node)
+        path = _densify(edge_sample_points(other, node, data, node_pos), step)
+        if len(path) < 2:
+            continue
+        if 2 * int(np.count_nonzero(support.inside(path))) < len(path):
+            dead_ends["off_mask"].append(node)
+        own = neighbours.ids.get(edge_id(node, other, key))
+        near = neighbours.other_points_near(
+            tip.reshape(1, 3), own, 2.0 * float(support.radius(tip.reshape(1, 3))[0]) + 30.0
+        )
+        if len(near):
+            distance = np.linalg.norm(index.points[near] - tip, axis=1)
+            nearest = index.points[near[int(np.argmin(distance))]].reshape(1, 3)
+            if float(distance.min()) <= float(support.radius(nearest)[0]) + 1.0:
+                dead_ends["inside_other_lumen"].append(node)
+        if beside_share.get(edge_id(node, other, key), 0.0) >= 0.5:
+            dead_ends["beside_vessel"].append(node)
+        arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path[::-1], axis=0), axis=1))])
+        outward = tip - path[::-1][min(int(np.searchsorted(arc, 3.0)), len(path) - 1)]
+        norm = float(np.linalg.norm(outward))
+        if norm > 0 and continues(tip, outward / norm):
+            dead_ends["mask_continues"].append(node)
+        parent_radius = float(support.radius(node_pos[other].reshape(1, 3))[0])
+        length = float(data.get("length") or _sample_weights(path).sum())
+        if parent_radius > 0 and length < stub_radius_multiple * parent_radius:
+            dead_ends["short"].append(node)
+    return {"dead_ends": dead_ends, "at_image_face": at_face, "interior": interior, "isolated": isolated}
+
+
+def classify_dead_ends(
+    G: Union[nx.Graph, nx.MultiGraph],
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
+    mask_support=None,
+    stub_radius_multiple: float = 3.0,
+    image_face_margin_um: float = IMAGE_FACE_MARGIN_UM,
+) -> Dict[str, Any]:
+    """The dead ends of :func:`diagnose_lumen_artefacts`, tip by tip, without
+    the rest of its report: what Post processing's dead-end review lists.
+
+    A dead end is a degree-1 node whose vessel leads to a node of degree two
+    or more. Returns ``kinds`` (each interior tip's :data:`DEAD_END_KINDS`,
+    in that order; empty for a dead end that is none of them),
+    ``dead_ends`` (the tips of each kind), ``interior`` and
+    ``at_image_face`` (the tips either side of *image_face_margin_um*, in
+    node order) and ``isolated_single_edges``. Only the dead ends' own
+    vessels are judged for running beside another, so this is cheaper than
+    the whole report and agrees with it tip for tip.
+    """
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+    from haemolynx.preprocessing.bridge_mask_support import MaskSupport
+
+    from ._helpers import edge_id
+
+    support = mask_support
+    if support is None:
+        support = MaskSupport(_to_binary_volume_for_skeletonization(mask), voxel_size_zyx)
+    neighbours = _CentrelineNeighbours(G, support)
+    beside_share: Dict[Any, float] = {}
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if G.degree[u] != 1 and G.degree[v] != 1:
+            continue
+        measured = neighbours.beside(u, v, key, data)
+        if measured is not None and measured[2] is not None:
+            beside_share[edge_id(u, v, key)] = measured[2]
+    judged = _judge_dead_ends(
+        G, neighbours, beside_share,
+        stub_radius_multiple=stub_radius_multiple, image_face_margin_um=image_face_margin_um,
+    )
+    found = judged["dead_ends"]
+    return {
+        "kinds": {
+            tip: tuple(kind for kind in DEAD_END_KINDS if tip in found[kind]) for tip in judged["interior"]
+        },
+        "dead_ends": found,
+        "interior": judged["interior"],
+        "at_image_face": judged["at_image_face"],
+        "isolated_single_edges": judged["isolated"],
+    }
+
+
 def diagnose_lumen_artefacts(
     G: Union[nx.Graph, nx.MultiGraph],
     mask: np.ndarray,
@@ -451,28 +618,20 @@ def diagnose_lumen_artefacts(
       same lumen; less than half of it in the mask; the mask running on past
       its tip (``assemble.mask_continues_past``); shorter than
       *stub_radius_multiple* radii of the vessel it leaves. Isolated single
-      edges are counted apart.
+      edges are counted apart. :func:`classify_dead_ends` lists them alone.
 
     *mask_support*, a ``MaskSupport`` over *mask*, is used in place of
     building one; without one *mask* is binarised as the loaders do.
     """
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
-    from haemolynx.preprocessing.bridge_mask_support import (
-        MaskSupport,
-        _densify,
-        _sample_step,
-        shadowed_samples,
-    )
-    from scipy.spatial import cKDTree
+    from haemolynx.preprocessing.bridge_mask_support import MaskSupport
 
-    from ._helpers import EdgeSampleIndex, edge_id, edge_sample_points
-    from .assemble import mask_continues_past
+    from ._helpers import edge_id
     from .lumen_loops import iter_short_loops, loop_inside_one_lumen
 
     support = mask_support
     if support is None:
         support = MaskSupport(_to_binary_volume_for_skeletonization(mask), voxel_size_zyx)
-    step = _sample_step(support.voxel_size_zyx)
     duplicates = diagnose_parallel_duplicates_in_lumen(
         G, support.mask, voxel_size_zyx=support.voxel_size_zyx, mask_support=support
     )
@@ -481,39 +640,18 @@ def diagnose_lumen_artefacts(
         if len({a[0], a[1]} & {b[0], b[1]}) == 1
     ]
 
-    node_pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True) if "pos" in d}
-    index = EdgeSampleIndex(G)
-    ids: Dict[Any, int] = {}
-    owners = np.asarray([ids.setdefault(owner, len(ids)) for owner in index.owners], dtype=np.intp)
-
-    def other_points_near(points: np.ndarray, own: Any, reach: float) -> np.ndarray:
-        if index.tree is None:
-            return np.empty(0, dtype=np.intp)
-        found = index.tree.query_ball_point(points, r=reach)
-        near = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in np.atleast_1d(found)]))
-        return near[owners[near] != own] if own is not None else near
-
+    neighbours = _CentrelineNeighbours(G, support)
     total_um = duplicated_um = 0.0
     beside_share: Dict[Any, float] = {}
     for u, v, key, data in G.edges(keys=True, data=True):
-        if u not in node_pos or v not in node_pos:
+        measured = neighbours.beside(u, v, key, data)
+        if measured is None:
             continue
-        own = ids.get(edge_id(u, v, key))
-        path = edge_sample_points(u, v, data, node_pos)
-        dense = _densify(path, step)
-        if len(dense) < 2:
-            continue
-        total_um += float(_sample_weights(dense).sum())
-        near = other_points_near(dense, own, 2.0 * float(np.max(support.radius(dense))) + 1.0)
-        if not len(near):
-            continue
-        samples, judged, beside = shadowed_samples(
-            path, cKDTree(index.points[near]), index.points[near],
-            support.inside, support.radius, step_um=step,
-        )
-        duplicated_um += float(_sample_weights(samples)[beside].sum())
-        if judged.any():
-            beside_share[edge_id(u, v, key)] = float(beside[judged].mean())
+        centreline_um, beside_um, share = measured
+        total_um += centreline_um
+        duplicated_um += beside_um
+        if share is not None:
+            beside_share[edge_id(u, v, key)] = share
 
     loop_count = 0
     loops_in_lumen: List[Any] = []
@@ -522,46 +660,11 @@ def diagnose_lumen_artefacts(
         if loop_inside_one_lumen(polyline, support):
             loops_in_lumen.append(cycle)
 
-    extent = (np.asarray(support.mask.shape, dtype=float) - 1.0) * np.asarray(support.voxel_size_zyx)
-    continues = mask_continues_past(support)
-    dead_ends: Dict[str, List[Any]] = {kind: [] for kind in DEAD_END_KINDS}
-    isolated = sum(1 for u, v in G.edges() if u != v and G.degree[u] == 1 and G.degree[v] == 1)
-    at_face = interior = 0
-    for node in G.nodes:
-        if G.degree[node] != 1 or node not in node_pos:
-            continue
-        (_, other, key, data), = G.edges(node, keys=True, data=True)
-        if G.degree[other] == 1 or other not in node_pos:
-            continue
-        tip = node_pos[node]
-        if float(np.min(np.minimum(tip, extent - tip))) <= image_face_margin_um:
-            at_face += 1
-            continue
-        interior += 1
-        path = _densify(edge_sample_points(other, node, data, node_pos), step)
-        if len(path) < 2:
-            continue
-        if 2 * int(np.count_nonzero(support.inside(path))) < len(path):
-            dead_ends["off_mask"].append(node)
-        own = ids.get(edge_id(node, other, key))
-        near = other_points_near(tip.reshape(1, 3), own, 2.0 * float(support.radius(tip.reshape(1, 3))[0]) + 30.0)
-        if len(near):
-            distance = np.linalg.norm(index.points[near] - tip, axis=1)
-            nearest = index.points[near[int(np.argmin(distance))]].reshape(1, 3)
-            if float(distance.min()) <= float(support.radius(nearest)[0]) + 1.0:
-                dead_ends["inside_other_lumen"].append(node)
-        if beside_share.get(edge_id(node, other, key), 0.0) >= 0.5:
-            dead_ends["beside_vessel"].append(node)
-        arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path[::-1], axis=0), axis=1))])
-        outward = tip - path[::-1][min(int(np.searchsorted(arc, 3.0)), len(path) - 1)]
-        norm = float(np.linalg.norm(outward))
-        if norm > 0 and continues(tip, outward / norm):
-            dead_ends["mask_continues"].append(node)
-        parent_radius = float(support.radius(node_pos[other].reshape(1, 3))[0])
-        length = float(data.get("length") or _sample_weights(path).sum())
-        if parent_radius > 0 and length < stub_radius_multiple * parent_radius:
-            dead_ends["short"].append(node)
-
+    judged = _judge_dead_ends(
+        G, neighbours, beside_share,
+        stub_radius_multiple=stub_radius_multiple, image_face_margin_um=image_face_margin_um,
+    )
+    dead_ends = judged["dead_ends"]
     return {
         "edge_count": duplicates["edge_count"],
         "centreline_um": total_um,
@@ -573,9 +676,9 @@ def diagnose_lumen_artefacts(
         "short_loop_count": loop_count,
         "loops_inside_one_lumen": len(loops_in_lumen),
         "loop_cycles_inside_one_lumen": loops_in_lumen,
-        "dead_ends_at_image_face": at_face,
-        "interior_dead_ends": interior,
-        "isolated_single_edges": isolated,
+        "dead_ends_at_image_face": len(judged["at_image_face"]),
+        "interior_dead_ends": len(judged["interior"]),
+        "isolated_single_edges": judged["isolated"],
         "dead_end_counts": {kind: len(nodes) for kind, nodes in dead_ends.items()},
         "dead_ends": dead_ends,
         "stub_radius_multiple": float(stub_radius_multiple),

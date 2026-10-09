@@ -11,6 +11,7 @@ where crossing more is the vessel and not the tissue.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import networkx as nx
@@ -70,6 +71,102 @@ def _background(path: np.ndarray, support: MaskSupport) -> tuple[int, float]:
     return stretches, float(weights[outside].sum())
 
 
+#: Why :func:`facing_dead_end_pairs` says a pair is not joined, in the order
+#: :func:`join_facing_dead_ends` asks.
+REFUSED_SHORT_END = f"an end shorter than {MIN_GAP_BRIDGE_END_LENGTH_UM:g} um"
+REFUSED_GAP_LONGER_THAN_ENDS = "gap longer than the two ends together"
+REFUSED_TURN = "turns too far from an end's heading"
+REFUSED_GAP_TOO_WIDE = "gap wider than the limit"
+REFUSED_STRETCHES = "crosses more than one stretch of background"
+REFUSED_BESIDE_VESSEL = "runs beside a vessel in the same lumen"
+
+
+@dataclass(frozen=True)
+class FacingPair:
+    """Two dead ends within reach of each other, and what the join made of them."""
+
+    a: Any
+    b: Any
+    gap_um: float
+    #: The larger of the two ends' turns onto the straight join, in degrees.
+    turn_deg: float
+    #: Why the pair is not joined (one of the ``REFUSED_*``); None when
+    #: :func:`join_facing_dead_ends` would join it.
+    refused: Optional[str]
+
+
+def _tips_and_headings(G: nx.MultiGraph):
+    tips = [n for n in G.nodes if G.degree(n) == 1 and "pos" in G.nodes[n]]
+    positions = np.array([G.nodes[n]["pos"] for n in tips], dtype=float).reshape(-1, 3)
+    return tips, positions, {n: _heading(G, n) for n in tips}
+
+
+def _candidate_pairs(tips, positions, headings, *, search_gap_um, max_gap_um, max_turn_deg):
+    """``(gap, i, j, turn_deg, refused)`` for each pair of tips within
+    *search_gap_um* that both have a heading, judged by the geometric tests
+    alone (refused None: they pass)."""
+    found = []
+    if len(tips) < 2:
+        return found
+    cosine = float(np.cos(np.radians(max_turn_deg)))
+    for i, j in cKDTree(positions).query_pairs(float(search_gap_um), output_type="ndarray"):
+        (out_i, length_i), (out_j, length_j) = headings[tips[i]], headings[tips[j]]
+        if out_i is None or out_j is None:
+            continue
+        chord = positions[j] - positions[i]
+        gap = float(np.linalg.norm(chord))
+        if gap <= 0.0:
+            continue
+        cos_i, cos_j = float(chord @ out_i / gap), float(-chord @ out_j / gap)
+        turn = float(np.degrees(np.arccos(np.clip(min(cos_i, cos_j), -1.0, 1.0))))
+        if min(length_i, length_j) < MIN_GAP_BRIDGE_END_LENGTH_UM:
+            refused = REFUSED_SHORT_END
+        elif gap > length_i + length_j:
+            refused = REFUSED_GAP_LONGER_THAN_ENDS
+        elif cos_i < cosine or cos_j < cosine:
+            refused = REFUSED_TURN
+        elif search_gap_um > max_gap_um and gap > max_gap_um:
+            refused = REFUSED_GAP_TOO_WIDE
+        else:
+            refused = None
+        found.append((gap, int(i), int(j), turn, refused))
+    return found
+
+
+def facing_dead_end_pairs(
+    G: nx.MultiGraph,
+    support: MaskSupport,
+    *,
+    max_gap_um: float = DEFAULT_FACING_MAX_GAP_UM,
+    max_turn_deg: float = FACING_MAX_TURN_DEG,
+    search_gap_um: Optional[float] = None,
+) -> list[FacingPair]:
+    """Every pair of dead ends within *search_gap_um* (default *max_gap_um*)
+    of each other, closest first, with why :func:`join_facing_dead_ends`
+    would not join it -- read-only. On a graph the join has already run on,
+    every pair listed is one it left open."""
+    tips, positions, headings = _tips_and_headings(G)
+    search = float(max_gap_um if search_gap_um is None else search_gap_um)
+    if search <= 0:
+        return []
+    index = None
+    pairs = []
+    for gap, i, j, turn, refused in sorted(_candidate_pairs(
+        tips, positions, headings, search_gap_um=search, max_gap_um=max_gap_um, max_turn_deg=max_turn_deg,
+    )):
+        if refused is None:
+            path = densify_polyline(np.vstack([positions[i], positions[j]]), max_step_um=1.0)
+            if _background(path, support)[0] > 1:
+                refused = REFUSED_STRETCHES
+            else:
+                if index is None:
+                    index = EdgeSampleIndex(G)
+                if duplicates_existing_vessel(path, G, support.inside, support.radius, index=index):
+                    refused = REFUSED_BESIDE_VESSEL
+        pairs.append(FacingPair(tips[i], tips[j], gap, turn, refused))
+    return pairs
+
+
 def join_facing_dead_ends(
     G: nx.MultiGraph,
     support: MaskSupport,
@@ -88,30 +185,22 @@ def join_facing_dead_ends(
     vessel, and it must not run beside a vessel already in the same lumen.
     Closest pairs go first, and each end joins once. Joins carry
     ``reconnected=True``, ``bridge_kind="facing_ends"`` and
-    ``bridge_background_um``.
+    ``bridge_background_um``. :func:`facing_dead_end_pairs` lists the pairs
+    and why each is or is not joined.
     """
     if max_gap_um <= 0:
         return G
-    tips = [n for n in G.nodes if G.degree(n) == 1 and "pos" in G.nodes[n]]
+    tips, positions, headings = _tips_and_headings(G)
     if len(tips) < 2:
         return G
-    positions = np.array([G.nodes[n]["pos"] for n in tips], dtype=float)
-    headings = {n: _heading(G, n) for n in tips}
-    cosine = float(np.cos(np.radians(max_turn_deg)))
-    pairs = []
-    for i, j in cKDTree(positions).query_pairs(float(max_gap_um), output_type="ndarray"):
-        (out_i, length_i), (out_j, length_j) = headings[tips[i]], headings[tips[j]]
-        if out_i is None or out_j is None:
-            continue
-        if min(length_i, length_j) < MIN_GAP_BRIDGE_END_LENGTH_UM:
-            continue
-        chord = positions[j] - positions[i]
-        gap = float(np.linalg.norm(chord))
-        if gap <= 0.0 or gap > length_i + length_j:
-            continue
-        if chord @ out_i / gap < cosine or -chord @ out_j / gap < cosine:
-            continue
-        pairs.append((gap, int(i), int(j)))
+    pairs = [
+        (gap, i, j)
+        for gap, i, j, _turn, refused in _candidate_pairs(
+            tips, positions, headings,
+            search_gap_um=max_gap_um, max_gap_um=max_gap_um, max_turn_deg=max_turn_deg,
+        )
+        if refused is None
+    ]
 
     index = None
     joined = refused_stretches = refused_duplicate = 0
@@ -146,4 +235,16 @@ def join_facing_dead_ends(
     return G
 
 
-__all__ = ["DEFAULT_FACING_MAX_GAP_UM", "FACING_MAX_TURN_DEG", "join_facing_dead_ends"]
+__all__ = [
+    "DEFAULT_FACING_MAX_GAP_UM",
+    "FACING_MAX_TURN_DEG",
+    "FacingPair",
+    "REFUSED_BESIDE_VESSEL",
+    "REFUSED_GAP_LONGER_THAN_ENDS",
+    "REFUSED_GAP_TOO_WIDE",
+    "REFUSED_SHORT_END",
+    "REFUSED_STRETCHES",
+    "REFUSED_TURN",
+    "facing_dead_end_pairs",
+    "join_facing_dead_ends",
+]

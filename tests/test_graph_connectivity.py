@@ -16,6 +16,7 @@ from haemolynx.graph import (
     inlet_to_outlet_vessels,
     write_connectivity_csv,
 )
+from haemolynx.graph.connectivity import unsolved_pieces
 
 
 def _example() -> nx.MultiGraph:
@@ -186,3 +187,34 @@ def test_an_outlet_left_as_a_tip_by_the_filter_is_written_blank():
     assert last["To node ID"] == ""
     full = connectivity_rows(G, [0], [3])
     assert next(r for r in full if "Outlet" in r["Notes"])["To node ID"] == "3"
+
+
+# --- unsolved_pieces: what a solve leaves unsolved, piece by piece ----------
+
+
+def test_unsolved_vessels_come_in_pieces_longest_first():
+    G = _example()
+    G.add_edge(2, 9, length=20.0)       # a dead end off the split
+    G.add_edge(9, 10, length=15.0)      # ... and on, a tree
+    G.add_edge(9, 11, length=5.0)
+    G.add_edge(2, 12, length=4.0)       # a second dead end off the same node
+    G.add_edge(20, 21, length=50.0)     # a piece no inlet reaches
+    G.add_edge(7, 7, length=3.0)        # a self-loop on a solved node
+
+    pieces = unsolved_pieces(G, [0], [8])
+
+    assert [p.length_um for p in pieces] == [50.0, 40.0, 4.0, 3.0]
+    island, tree, stub, loop = pieces
+    assert island.disconnected and island.attached_at == () and set(island.nodes) == {20, 21}
+    assert tree.attached_at == (2,) and len(tree.edges) == 3 and not tree.disconnected
+    assert stub.attached_at == (2,) and len(stub.edges) == 1
+    assert loop.attached_at == (7,) and loop.edges == ((7, 7, 0),)
+    solved = inlet_to_outlet_vessels(G, [0], [8])
+    assert not solved & {e for p in pieces for e in p.edges}
+    assert len(solved) + sum(len(p.edges) for p in pieces) == G.number_of_edges()
+
+
+def test_a_network_with_every_vessel_solved_has_no_pieces_and_one_without_an_outlet_is_all_one():
+    assert unsolved_pieces(_example(), [0], [8]) == []
+    (everything,) = unsolved_pieces(_example(), [0], [])
+    assert len(everything.edges) == 7 and everything.disconnected
