@@ -623,9 +623,16 @@ def _mark_unsolved(columns: dict[str, Any], graph: Any) -> None:
     mask_unsolved_flow_columns(columns)
 
 
+#: A zero-resistance bridge joins a vessel to the lumen of a thick one it
+#: opens into; it is not vessel. So it is drawn dashed, as lines and as tubes:
+#: dashes this long (µm) with gaps this long, fitted to each bridge's length.
+BRIDGE_DASH_UM = 2.0
+BRIDGE_GAP_UM = 1.5
+
+
 def _mark_bridges(columns: dict[str, Any], graph: Any) -> None:
     """Give per-drawable-edge *columns* each edge's :data:`IS_ZERO_RESISTANCE`
-    flag, which the vessel tubes draw a bridge by."""
+    flag, which the vessels are drawn dashed by, as lines and as tubes."""
     flags = [bool(data.get(IS_ZERO_RESISTANCE)) for _u, _v, _key, data in _iter_edges(graph)]
     columns[IS_ZERO_RESISTANCE] = np.asarray(flags, dtype=bool)[
         np.asarray(columns["edge_index"], dtype=int)
@@ -966,15 +973,57 @@ def _iter_edges(graph: Any) -> Iterable[tuple[Any, Any, int, Mapping[str, Any]]]
     return ((u, v, 0, data) for u, v, data in graph.edges(data=True))
 
 
+def dash_polyline(
+    points: np.ndarray,
+    *,
+    dash_um: float = BRIDGE_DASH_UM,
+    gap_um: float = BRIDGE_GAP_UM,
+) -> list[np.ndarray]:
+    """*points* as dashes along it, each a polyline on the path.
+
+    The pattern is stretched or squeezed to fit, so the dashes start and end
+    on the path's two ends, and there are always at least two: a bridge
+    shorter than one dash and gap would otherwise be drawn solid. A path with
+    no length is returned whole.
+    """
+    points = np.asarray(points, dtype=float)
+    if len(points) < 2:
+        return [points]
+    along = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))])
+    length = float(along[-1])
+    if not np.isfinite(length) or length <= 0.0:
+        return [points]
+    count = max(2, int(round((length + gap_um) / (dash_um + gap_um))))
+    fit = length / (count * dash_um + (count - 1) * gap_um)
+    starts = np.arange(count) * (dash_um + gap_um) * fit
+    stops = np.minimum(starts + dash_um * fit, length)
+    stops[-1] = length
+    dashes = []
+    for start, stop in zip(starts, stops):
+        inner = along[(along > start) & (along < stop)]
+        at = np.concatenate([[start], inner, [stop]])
+        dashes.append(
+            np.stack([np.interp(at, along, points[:, axis]) for axis in range(points.shape[1])], axis=1)
+        )
+    return dashes
+
+
 def polylines_to_vectors(
     paths: Sequence[np.ndarray],
+    dashed: Sequence[bool] | np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Polylines as (M, 2, 3) origin+direction segments, and which path each came from.
 
     A Vectors layer draws every segment separately, so a per-edge value has to
     be repeated across that edge's segments -- the second array is the index to
-    repeat by.
+    repeat by. A path *dashed* flags (one flag per path) is drawn as
+    :func:`dash_polyline`'s dashes, with nothing in the gaps.
     """
+    flags = (
+        np.zeros(len(paths), dtype=bool)
+        if dashed is None
+        else np.asarray(dashed) == True  # noqa: E712 - NaN or None is not dashed
+    )
     origins: list[np.ndarray] = []
     directions: list[np.ndarray] = []
     owner: list[int] = []
@@ -982,10 +1031,11 @@ def polylines_to_vectors(
         points = np.asarray(path, dtype=float)
         if len(points) < 2:
             continue
-        starts = points[:-1]
-        origins.append(starts)
-        directions.append(points[1:] - starts)
-        owner.extend([index] * len(starts))
+        for piece in dash_polyline(points) if flags[index] else (points,):
+            starts = piece[:-1]
+            origins.append(starts)
+            directions.append(piece[1:] - starts)
+            owner.extend([index] * len(starts))
 
     if not origins:
         return np.empty((0, 2, 3), dtype=float), np.empty(0, dtype=int)
@@ -1541,7 +1591,7 @@ class ResultLayers:
         _mark_unsolved(columns, graph)
         _mark_bridges(columns, graph)
 
-        vectors, owner = polylines_to_vectors(paths)
+        vectors, owner = polylines_to_vectors(paths, dashed=columns[IS_ZERO_RESISTANCE])
         per_segment = {
             name: np.asarray(values)[owner] for name, values in columns.items()
         }
@@ -2199,7 +2249,7 @@ class ResultLayers:
         _add_branch_order_scales(columns)
         _mark_unsolved(columns, graph)
         _mark_bridges(columns, graph)
-        vectors, owner = polylines_to_vectors(paths)
+        vectors, owner = polylines_to_vectors(paths, dashed=columns[IS_ZERO_RESISTANCE])
         per_segment = {
             name: np.asarray(values)[owner] for name, values in columns.items()
         }
@@ -2349,7 +2399,7 @@ class ResultLayers:
         _mark_unsolved(columns, graph)
         _mark_bridges(columns, graph)
 
-        vectors, owner = polylines_to_vectors(paths)
+        vectors, owner = polylines_to_vectors(paths, dashed=columns[IS_ZERO_RESISTANCE])
         per_segment = {
             name: np.asarray(values)[owner] for name, values in columns.items()
         }

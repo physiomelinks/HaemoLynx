@@ -351,6 +351,13 @@ def test_the_vessels_layer_carries_the_identity_of_each_edge():
         assert len(vessels.features[column]) == len(vessels.data)
 
 
+def _runs(rows):
+    """Runs of consecutive Vectors rows each starting where the last ended."""
+    rows = np.asarray(rows, dtype=float)
+    joined = np.all(np.isclose(rows[1:, 0], rows[:-1, 0] + rows[:-1, 1]), axis=1)
+    return 1 + int((~joined).sum())
+
+
 def test_the_vessels_layer_flags_the_zero_resistance_bridges():
     """What the tubes draw a bridge by, row for row with the Vectors."""
     from haemolynx.graph import IS_ZERO_RESISTANCE
@@ -361,6 +368,95 @@ def test_the_vessels_layer_flags_the_zero_resistance_bridges():
     flags = np.asarray(vessels.features[IS_ZERO_RESISTANCE])
     assert len(flags) == len(vessels.data)
     np.testing.assert_array_equal(flags, np.asarray(vessels.features["edge_index"]) == 1)
+
+
+def test_a_bridge_is_drawn_dashed_and_every_vessel_else_whole():
+    """A zero-resistance bridge is not vessel, and the vessels layer says so:
+    its 10 µm are drawn as three dashes, every other vessel in one piece."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    graph = a_graph()
+    list(graph.edges(keys=True, data=True))[1][3][IS_ZERO_RESISTANCE] = True
+    vessels = spec_named(built(graph).stage_finished("build_network", network(graph)), VESSELS)
+    edge = np.asarray(vessels.features["edge_index"])
+    data = np.asarray(vessels.data, dtype=float)
+    bridge = data[edge == 1]
+    assert _runs(bridge) == 3
+    assert np.linalg.norm(bridge[:, 1], axis=1).sum() < 10.0
+    np.testing.assert_allclose(bridge[0, 0], [10.0, 0.0, 0.0])
+    np.testing.assert_allclose(bridge[-1, 0] + bridge[-1, 1], [20.0, 0.0, 0.0])
+    for whole in (0, 2):
+        assert _runs(data[edge == whole]) == 1
+        assert np.linalg.norm(data[edge == whole][:, 1], axis=1).sum() == pytest.approx(10.0)
+
+
+def test_a_perturbations_vessels_draw_its_bridges_dashed_too():
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    result = a_perturbation("art_dilate_20")
+    list(result.graph.edges(keys=True, data=True))[1][3][IS_ZERO_RESISTANCE] = True
+    group = built().stage_finished("run_perturbations", a_perturbation_run(result))
+    vessels = spec_named(group, perturbation_layer_names("art_dilate_20")[0])
+    edge = np.asarray(vessels.features["edge_index"])
+    assert len(edge) == len(vessels.data)
+    assert _runs(np.asarray(vessels.data)[edge == 1]) == 3
+    assert np.asarray(vessels.features[IS_ZERO_RESISTANCE])[edge == 1].all()
+
+
+def test_dashes_lie_on_the_path_from_its_first_point_to_its_last():
+    """Equal dashes and equal gaps, in the proportion asked for, stretched to
+    fit: the pattern starts and ends on a dash."""
+    from haemolynx.gui.results import BRIDGE_DASH_UM, BRIDGE_GAP_UM, dash_polyline
+
+    path = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 12.0], [0.0, 8.0, 12.0]])
+    dashes = dash_polyline(path)
+    assert len(dashes) == round((20.0 + BRIDGE_GAP_UM) / (BRIDGE_DASH_UM + BRIDGE_GAP_UM))
+    np.testing.assert_allclose(dashes[0][0], path[0])
+    np.testing.assert_allclose(dashes[-1][-1], path[-1])
+    corner = [dash for dash in dashes if dash[0, 2] < 12.0 and dash[-1, 1] > 0.0]
+    assert len(corner) == 1 and [0.0, 0.0, 12.0] in corner[0].tolist()
+    for dash in dashes:
+        on_first = np.isclose(dash[:, 1], 0.0) & (dash[:, 2] <= 12.0 + 1e-9)
+        on_second = np.isclose(dash[:, 2], 12.0)
+        assert np.all(on_first | on_second) and np.allclose(dash[:, 0], 0.0)
+
+    def along(point):
+        return point[2] + point[1]
+
+    lengths = np.array([along(dash[-1]) - along(dash[0]) for dash in dashes])
+    gaps = np.array([along(b[0]) - along(a[-1]) for a, b in zip(dashes, dashes[1:])])
+    np.testing.assert_allclose(lengths, lengths[0])
+    np.testing.assert_allclose(gaps, gaps[0])
+    assert lengths[0] / gaps[0] == pytest.approx(BRIDGE_DASH_UM / BRIDGE_GAP_UM)
+    assert lengths.sum() + gaps.sum() == pytest.approx(20.0)
+
+
+def test_a_bridge_shorter_than_a_dash_is_still_two_dashes():
+    """Else it would be drawn solid, like the vessels round it."""
+    from haemolynx.gui.results import dash_polyline
+
+    dashes = dash_polyline(np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]))
+    assert len(dashes) == 2
+    assert dashes[0][-1, 2] < dashes[1][0, 2]
+    still = np.array([[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]])
+    assert [dash.tolist() for dash in dash_polyline(still)] == [still.tolist()]
+
+
+def test_vectors_draw_only_the_dashes_of_a_dashed_path():
+    """Each dash's own segments, owned by the path; a flag that is not True
+    -- NaN, None -- leaves its path whole."""
+    from haemolynx.gui.results import dash_polyline
+
+    paths, _ = edge_polylines(a_graph())
+    vectors, owner = polylines_to_vectors(paths, dashed=[np.nan, True, None])
+    for whole in (0, 2):
+        mine = vectors[owner == whole]
+        np.testing.assert_allclose(mine[:, 0] + mine[:, 1], paths[whole][1:])
+    want = np.concatenate([
+        np.stack([dash[:-1], np.diff(dash, axis=0)], axis=1) for dash in dash_polyline(paths[1])
+    ])
+    np.testing.assert_allclose(vectors[owner == 1], want)
+    assert owner.tolist() == sorted(owner.tolist())
 
 
 def test_a_column_is_empty_until_its_stage_runs_but_never_absent():

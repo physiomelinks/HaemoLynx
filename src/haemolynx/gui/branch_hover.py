@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 from haemolynx.graph.prune import FLOW_SOLVED
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 
 #: Optional metrics the panel can offer, in display order.
 BRANCH_HOVER_METRICS: tuple[str, ...] = (
@@ -60,6 +61,9 @@ _TEXT_HOVER_METRICS = frozenset({"flow_solution", "order", "diameter_source", "f
 FLOW_SOLUTION_TEXT = {True: "Solved", False: "Unsolved"}
 
 _BRANCH_ID_LINE = "branchID: {branch_id}"
+#: Under the branch ID of a zero-resistance bridge, whatever metrics are
+#: chosen: what its dashes are.
+BRIDGE_LINE = "zero-resistance bridge: artificial, inside a thick vessel's lumen"
 
 #: Pickup radius in data coordinates (µm). Matches the old midpoint-circle
 #: diameter of 2 so a branch is still easy to hit, but the target is the
@@ -148,15 +152,20 @@ def format_branch_tooltip(
     branch_id: str,
     values: Mapping[str, Any],
     selected: Sequence[str],
+    *,
+    bridge: bool = False,
 ) -> str:
     """Deterministic multi-line tooltip text.
 
-    Always starts with ``branchID`` (the graph-edge enumeration index). Then
-    one line per *selected* metric that both is offered by
-    :data:`BRANCH_HOVER_METRICS` and has a non-``None`` value in *values*.
-    Unselected and unavailable metrics are omitted.
+    Always starts with ``branchID`` (the graph-edge enumeration index), and
+    for a *bridge* :data:`BRIDGE_LINE`. Then one line per *selected* metric
+    that both is offered by :data:`BRANCH_HOVER_METRICS` and has a
+    non-``None`` value in *values*. Unselected and unavailable metrics are
+    omitted.
     """
     lines = [_BRANCH_ID_LINE.format(branch_id=branch_id)]
+    if bridge:
+        lines.append(BRIDGE_LINE)
     for metric in BRANCH_HOVER_METRICS:
         if metric not in selected:
             continue
@@ -238,6 +247,7 @@ def branch_hover_rows(
 
     branch_ids: list[str] = []
     tooltips: list[str] = []
+    bridges: list[bool] = []
     columns: dict[str, list[Any]] = {metric: [] for metric in BRANCH_HOVER_METRICS}
 
     for index, (u, v, _key, data) in enumerate(_iter_edges(graph)):
@@ -251,13 +261,15 @@ def branch_hover_rows(
             for metric in BRANCH_HOVER_METRICS
         }
         branch_ids.append(branch_id)
-        tooltips.append(format_branch_tooltip(branch_id, values, chosen))
+        bridges.append(bool(data.get(IS_ZERO_RESISTANCE)))
+        tooltips.append(format_branch_tooltip(branch_id, values, chosen, bridge=bridges[-1]))
         for metric in BRANCH_HOVER_METRICS:
             columns[metric].append(values[metric])
 
     features: dict[str, np.ndarray] = {
         "branch_id": np.asarray(branch_ids, dtype=object),
         "tooltip": np.asarray(tooltips, dtype=object),
+        IS_ZERO_RESISTANCE: np.asarray(bridges, dtype=bool),
     }
     for metric in BRANCH_HOVER_METRICS:
         if metric in _TEXT_HOVER_METRICS:
@@ -304,6 +316,11 @@ def tooltips_from_feature_table(
         for metric in BRANCH_HOVER_METRICS
         if metric in features
     }
+    bridges = (
+        (np.asarray(features[IS_ZERO_RESISTANCE]) == True).tolist()  # noqa: E712
+        if IS_ZERO_RESISTANCE in features
+        else [False] * n
+    )
     composed: dict[tuple, str] = {}
     tooltips: list[str] = []
     for index in range(n):
@@ -324,10 +341,15 @@ def tooltips_from_feature_table(
                     values[metric] = None
                 else:
                     values[metric] = None if not np.isfinite(number) else number
-        key = (branch_ids[index], *(values[metric] for metric in BRANCH_HOVER_METRICS))
+        key = (
+            branch_ids[index], bridges[index],
+            *(values[metric] for metric in BRANCH_HOVER_METRICS),
+        )
         text = composed.get(key)
         if text is None:
-            text = format_branch_tooltip(branch_ids[index], values, chosen)
+            text = format_branch_tooltip(
+                branch_ids[index], values, chosen, bridge=bridges[index]
+            )
             composed[key] = text
         tooltips.append(text)
     return np.asarray(tooltips, dtype=object)

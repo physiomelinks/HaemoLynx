@@ -686,8 +686,13 @@ are only caught locally.
   min(L/2, 2r) of each end it eases (smoothstep) to the node's radius: the length-weighted mean of
   the two vessels at a degree-2 node, min(own, widest other) at a junction, so a wide vessel's end
   never stands out of its narrower daughters as a ball. Drawn diameters are clipped to ½–2× the
-  length-weighted median of the chain and the vessels carrying it straight on through junctions, and
-  a zero-resistance bridge is drawn at the vessel it bridges. Rings are spaced a third of the local
+  length-weighted median of the chain and the vessels carrying it straight on through junctions. A
+  zero-resistance bridge is not vessel, and is drawn so: `gui/results.py` cuts its rows on the
+  vessels layer into dashes (`dash_polyline`, `BRIDGE_DASH_UM` / `BRIDGE_GAP_UM`, at least two), so
+  lines show it dashed, and the tubes leave it out of the chains -- the vessel ends cut square where
+  it meets the lumen, the thick vessel runs on through the junction the bridge made -- drawing each
+  dash as its own flat-ended piece at `BRIDGE_RADIUS_FRACTION` (½) of the narrowest vessel the
+  bridge meets; its hover says what it is (`branch_hover.BRIDGE_LINE`). Rings are spaced a third of the local
   radius (at least three per vessel) along the centreline smoothed with the ends pinned; bends
   tighter than 1.1 r get extra local passes, and where adjacent rings would still cross the ring's
   radius is cut (`_FOLD_MARGIN`): voxel staircases, snapped ends and tight bends used to make the

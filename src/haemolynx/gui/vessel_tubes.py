@@ -20,8 +20,14 @@ two where two join, and at a junction no wider than the widest of the
 others, so the widest vessel's rounded end is inside its widest neighbour
 instead of standing out as a ball. This is drawing only, and so is the rest:
 a diameter far from its neighbours' is drawn within a factor of two of
-theirs, and a zero-resistance bridge at the width of the vessel it bridges,
-while the graph keeps the values it has.
+theirs, while the graph keeps the values it has.
+
+A zero-resistance bridge, where a vessel opens into a thick one's lumen, is
+not vessel, and is not drawn as one: it is left out of the tubes, so the
+vessel ends, cut square, where it meets the lumen and the thick vessel runs
+on through the junction the bridge made, and its dashes (the vessels layer
+draws it dashed) are thin flat-ended pieces of their own, half as wide as
+the narrowest vessel it meets.
 
 Nothing here imports napari. The widget hides the Vectors visual and shows a
 Surface built from these arrays; hover and colour-by still read the Vectors.
@@ -71,6 +77,9 @@ DEFAULT_TUBE_DIAMETER = TUBE_DIAMETER_PER_VESSEL
 #: yet, and never outside this range.
 DEFAULT_UNIFORM_TUBE_DIAMETER_UM = 2.0 * TUBE_RADIUS_UM
 UNIFORM_TUBE_DIAMETER_RANGE_UM = (0.5, 1000.0)
+#: A zero-resistance bridge's dashes are drawn this fraction of the radius
+#: of the narrowest vessel it meets: thinner than any vessel beside them.
+BRIDGE_RADIUS_FRACTION = 0.5
 #: Rings along a tube are this fraction of its local radius apart.
 _RING_SPACING_PER_RADIUS = 1.0 / 3.0
 #: Fewest ring-to-ring segments along one vessel, so that a vessel shorter
@@ -254,38 +263,6 @@ def _walk_chains(partner: np.ndarray, count: int) -> tuple[np.ndarray, np.ndarra
     )
 
 
-def _bridged_radius(
-    radius: np.ndarray,
-    bridge: np.ndarray,
-    node: np.ndarray,
-    partner: np.ndarray,
-    at_node: np.ndarray,
-) -> np.ndarray:
-    """Each vessel's radius, a bridge's taken from the vessel it bridges.
-
-    That is the vessel joining it alone at one of its nodes; failing that,
-    the narrowest vessel that is not a bridge at a junction it ends on.
-    """
-    count = len(radius)
-    end_radius = np.tile(radius, 2)
-    end_bridge = np.tile(bridge, 2)
-    joined = np.full(2 * count, np.inf)
-    paired = np.flatnonzero(partner >= 0)
-    paired = paired[~end_bridge[partner[paired]]]
-    joined[paired] = end_radius[partner[paired]]
-    narrowest = np.full(int(node.max()) + 1, np.inf)
-    np.minimum.at(narrowest, node[~end_bridge], end_radius[~end_bridge])
-    at_junction = np.where(at_node >= 3, narrowest[node], np.inf)
-    from_joined = np.minimum(joined[:count], joined[count:])
-    from_junction = np.minimum(at_junction[:count], at_junction[count:])
-    bridged = np.where(
-        np.isfinite(from_joined),
-        from_joined,
-        np.where(np.isfinite(from_junction), from_junction, radius),
-    )
-    return np.where(bridge, bridged, radius)
-
-
 def _weighted_median(
     group: np.ndarray, value: np.ndarray, weight: np.ndarray, count: int
 ) -> np.ndarray:
@@ -428,17 +405,22 @@ def tubes_from_vectors(
     Each vessel is drawn at that radius along its middle, easing at each end
     to its node's: its own at a terminal, the two vessels' length-weighted
     mean where two meet, and at a junction no wider than the widest of the
-    others there. *bridges* (one flag per row) marks zero-resistance
-    bridges, drawn at the radius of the vessel they bridge.
+    others there.
+
+    *bridges* (one flag per row) marks zero-resistance bridges, which are not
+    vessel: they are left out of the vessels' tubes and drawn apart, each run
+    of joined rows (a dash, as the vessels layer cuts them) as its own
+    flat-ended piece, :data:`BRIDGE_RADIUS_FRACTION` of the radius of the
+    narrowest vessel the bridge meets. A vessel's open end where a bridge
+    starts is cut square too, else its rounding hides the first dash.
 
     Returns ``(vertices, faces, segment_index)``: ``segment_index[i]`` is
     the Vectors row ``vertices[i]`` was drawn for, so per-row colours can be
     repeated onto the mesh.
     """
-    empty = (_EMPTY_VERTICES.copy(), _EMPTY_FACES.copy(), _EMPTY_INDEX.copy())
     data = np.asarray(vectors, dtype=float)
     if data.size == 0:
-        return empty
+        return _empty_mesh()
     if data.ndim != 3 or data.shape[1:] != (2, 3):
         raise ValueError(f"expected Vectors data of shape (M, 2, 3); got {data.shape!r}")
     sides = int(sides)
@@ -446,7 +428,88 @@ def tubes_from_vectors(
         raise ValueError(f"sides must be >= 3; got {sides}")
     radii = _step_radii(radius, data.shape[0])
     flagged = _step_flags(bridges, data.shape[0])
+    labels = None if groups is None else np.asarray(groups)
+    if not flagged.any():
+        return _tubes(data, radii, sides, labels)
 
+    vessel_rows, bridge_rows = np.flatnonzero(~flagged), np.flatnonzero(flagged)
+    bridge_labels = (
+        labels[bridge_rows] if labels is not None
+        else np.cumsum(np.r_[True, np.diff(bridge_rows) > 1])
+    )
+    bridge_radii = BRIDGE_RADIUS_FRACTION * _bridged_radius(
+        data, radii, vessel_rows, bridge_rows, bridge_labels
+    )
+    pieces = [
+        (vessel_rows, _tubes(
+            data[vessel_rows], radii[vessel_rows], sides,
+            None if labels is None else labels[vessel_rows],
+            flat_at=np.concatenate([data[bridge_rows, 0], data[bridge_rows].sum(axis=1)]),
+        )),
+        (bridge_rows, _tubes(
+            data[bridge_rows], bridge_radii, sides, bridge_labels, flat_ends=True
+        )),
+    ]
+    vertices, faces, index, offset = [], [], [], 0
+    for rows, (piece_vertices, piece_faces, piece_index) in pieces:
+        vertices.append(piece_vertices)
+        faces.append(piece_faces + offset)
+        index.append(rows[piece_index])
+        offset += len(piece_vertices)
+    return (
+        np.concatenate(vertices),
+        np.concatenate(faces).astype(np.intp),
+        np.concatenate(index).astype(np.intp),
+    )
+
+
+def _empty_mesh() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    return _EMPTY_VERTICES.copy(), _EMPTY_FACES.copy(), _EMPTY_INDEX.copy()
+
+
+def _bridged_radius(
+    data: np.ndarray,
+    radii: np.ndarray,
+    vessel_rows: np.ndarray,
+    bridge_rows: np.ndarray,
+    bridge_labels: np.ndarray,
+) -> np.ndarray:
+    """For each of *bridge_rows*, the radius of the narrowest vessel its
+    bridge (its rows sharing a label) meets at a row's end, else its own."""
+
+    def row_ends(rows):
+        return np.concatenate([data[rows, 0, :], data[rows, 0, :] + data[rows, 1, :]])
+
+    node = _node_ids(np.concatenate([row_ends(vessel_rows), row_ends(bridge_rows)]))
+    at_vessel, at_bridge = node[: 2 * len(vessel_rows)], node[2 * len(vessel_rows) :]
+    narrowest = np.full(int(node.max()) + 1, np.inf)
+    np.minimum.at(narrowest, at_vessel, np.tile(radii[vessel_rows], 2))
+    met = narrowest[at_bridge].reshape(2, -1).min(axis=0)
+    bridge = np.unique(bridge_labels, return_inverse=True)[1].reshape(-1)
+    met_by_bridge = np.full(int(bridge.max()) + 1, np.inf)
+    np.minimum.at(met_by_bridge, bridge, met)
+    met = met_by_bridge[bridge]
+    return np.where(np.isfinite(met), met, radii[bridge_rows])
+
+
+def _tubes(
+    data: np.ndarray,
+    radii: np.ndarray,
+    sides: int,
+    groups: np.ndarray | None,
+    *,
+    flat_ends: bool = False,
+    flat_at: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """:func:`tubes_from_vectors` for checked data and one radius per row.
+
+    Every end is rounded, or with *flat_ends* cut square; so is an open end
+    on one of the points *flat_at*, where a vessel stops and a bridge
+    starts, which the rounding would hide the bridge's first dash in.
+    """
+    empty = _empty_mesh()
+    if data.size == 0:
+        return empty
     lengths = np.linalg.norm(data[:, 1, :], axis=1)
     keep = np.flatnonzero(np.isfinite(lengths) & (lengths > 0.0))
     n = int(keep.size)
@@ -456,7 +519,6 @@ def tubes_from_vectors(
     end = origin + data[keep, 1, :]
     step_length = lengths[keep]
     radii = radii[keep]
-    flagged = flagged[keep]
 
     # Does step i carry on the vessel of step i - 1?
     joins = np.zeros(n, dtype=bool)
@@ -488,7 +550,6 @@ def tubes_from_vectors(
     own_radius = np.bincount(vessel_of_step, weights=radii * step_length) / np.bincount(
         vessel_of_step, weights=step_length
     )
-    is_bridge = np.bincount(vessel_of_step, weights=flagged.astype(float)) > 0.0
 
     def on_centreline(at):
         return np.stack([np.interp(at, along, points[:, axis]) for axis in range(3)], axis=1)
@@ -512,17 +573,16 @@ def tubes_from_vectors(
     chain_of_vessel = np.empty(n_vessels, dtype=np.intp)
     chain_of_vessel[chain_vessels] = entry_chain
 
-    # The radius each vessel is drawn at: a bridge's that of the vessel it
-    # bridges, then each within a factor of the length-weighted median of
-    # its tube and of the vessels carrying the tube straight on.
-    bridged = _bridged_radius(own_radius, is_bridge, node, partner, at_node)
+    # The radius each vessel is drawn at: within a factor of the
+    # length-weighted median of its tube and of the vessels carrying the
+    # tube straight on.
     chain_last = np.append(chain_first[1:], n_vessels) - 1
     head = chain_vessels[chain_first] + np.where(flipped[chain_first], n_vessels, 0)
     tail = chain_vessels[chain_last] + np.where(flipped[chain_last], 0, n_vessels)
     tube_ends = np.concatenate([head, tail])
     junction_ends = np.flatnonzero(at_node >= 3)
     junction_vessel = junction_ends % n_vessels
-    reach = np.minimum(vessel_length[junction_vessel] / 2.0, bridged[junction_vessel])
+    reach = np.minimum(vessel_length[junction_vessel] / 2.0, own_radius[junction_vessel])
     inward = np.zeros((2 * n_vessels, 3))
     inward[junction_ends] = on_centreline(
         vessel_start[junction_vessel]
@@ -535,14 +595,14 @@ def tubes_from_vectors(
     chain_length = np.bincount(chain_of_vessel, weights=vessel_length, minlength=n_tubes)
     median = _weighted_median(
         np.concatenate([chain_of_vessel, through_chain]),
-        np.concatenate([bridged, bridged[through_vessel]]),
+        np.concatenate([own_radius, own_radius[through_vessel]]),
         np.concatenate([
             vessel_length,
             np.minimum(vessel_length[through_vessel], chain_length[through_chain]),
         ]),
         n_tubes,
     )[chain_of_vessel]
-    drawn = np.clip(bridged, median / _DIAMETER_CLIP_FACTOR, median * _DIAMETER_CLIP_FACTOR)
+    drawn = np.clip(own_radius, median / _DIAMETER_CLIP_FACTOR, median * _DIAMETER_CLIP_FACTOR)
 
     # The radius each vessel eases to at each of its ends.
     end_radius = np.tile(drawn, 2)
@@ -704,18 +764,24 @@ def tubes_from_vectors(
     faces = [band(ring_index[before], ring_index[before + 1])]
 
     # Rounded ends: a hemisphere of latitude rings on each end ring, closed
-    # by a pole on the tube's own course.
+    # by a pole on the tube's own course; flat, those rings and the pole
+    # lie in the end ring's own plane.
     levels = max(2, sides // 4)
     rims = np.concatenate([first_ring, last_ring])
+    rise = np.full(len(rims), 0.0 if flat_ends else 1.0)
+    if flat_at is not None and len(flat_at):
+        at = _node_ids(np.concatenate([tips[tube_ends], flat_at]))
+        rise[np.isin(at[: len(tube_ends)], at[len(tube_ends) :]) & (at_node[tube_ends] == 1)] = 0.0
     outward = np.concatenate([-tangent[first_ring], tangent[last_ring]])
     cap_radius = ring_radius[rims]
     latitude = 0.5 * np.pi * np.arange(1, levels) / levels
     cap_vertices = (
         centre[rims][:, None, None, :]
-        + outward[:, None, None, :] * (cap_radius[:, None] * np.sin(latitude))[:, :, None, None]
+        + outward[:, None, None, :]
+        * ((rise * cap_radius)[:, None] * np.sin(latitude))[:, :, None, None]
         + around[rims][:, None, :, :] * (cap_radius[:, None] * np.cos(latitude))[:, :, None, None]
     ).reshape(-1, 3)
-    poles = centre[rims] + outward * cap_radius[:, None]
+    poles = centre[rims] + outward * (rise * cap_radius)[:, None]
     n_caps = rims.size
     cap_base = len(ring_vertices)
     pole_base = cap_base + len(cap_vertices)

@@ -324,3 +324,53 @@ def test_the_width_is_kept_through_per_vessel_and_back(run):
     assert panel._haemolynx_tube_uniform_width.value() == 20.0
     for got, want in zip(_mesh(viewer), wide):
         np.testing.assert_array_equal(got, want)
+
+
+def test_a_bridge_is_thin_dashes_as_lines_and_at_either_tube_diameter(make_napari_viewer):
+    """The middle vessel made a zero-resistance bridge, in a real viewer: its
+    rows on the vessels layer are three dashes, and the tubes draw each dash
+    as a piece of its own, half as wide as the 3 µm vessel it meets per
+    vessel, and half the uniform width. Its hover says what it is, still
+    after a metric is ticked."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+    from haemolynx.gui._widget import OURS, _apply_branch_hover_selection
+    from haemolynx.gui.branch_hover import BRIDGE_LINE
+    from test_gui_vessel_tubes import _pieces
+
+    graph = a_graph_with_diameters()
+    list(graph.edges(keys=True, data=True))[1][3][IS_ZERO_RESISTANCE] = True
+    results = ResultLayers()
+    shape = (32, 4, 4)
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in (
+        results.stage_finished("skeletonise", SimpleNamespace(
+            image=np.zeros(shape, dtype=np.uint8), skeleton=np.zeros(shape, dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0),
+        )),
+        results.stage_finished("build_network", network(graph)),
+        results.stage_finished("assign_diameters", SimpleNamespace(graph=graph)),
+    ):
+        _apply_layers(viewer, group)
+    vessels = viewer.layers[VESSELS]
+    edge = np.asarray(vessels.features["edge_index"])
+    rows = np.asarray(vessels.data, dtype=float)[edge == 1]
+    starts_anew = ~np.all(np.isclose(rows[1:, 0], rows[:-1, 0] + rows[:-1, 1]), axis=1)
+    assert 1 + int(starts_anew.sum()) == 3
+
+    def bridge_pieces():
+        tubes = viewer.layers[VESSEL_TUBES]
+        vertices, faces = (np.asarray(part) for part in tubes.data[:2])
+        on_bridge = edge[np.asarray(tubes.metadata[OURS]["segment_index"])] == 1
+        mine = faces[on_bridge[faces].all(axis=1)]
+        _used, compact = np.unique(mine, return_inverse=True)
+        radius = np.linalg.norm(vertices[on_bridge][:, 1:], axis=1).max()
+        return _pieces(compact.reshape(mine.shape)), radius
+
+    assert bridge_pieces() == (3, pytest.approx(0.5 * DIAMETERS_UM[0] / 2))
+    _pick(panel, TUBE_DIAMETER_UNIFORM)
+    assert bridge_pieces() == (3, pytest.approx(0.5 * DEFAULT_UNIFORM_TUBE_DIAMETER_UM / 2))
+
+    _apply_branch_hover_selection(vessels, ("length",))
+    said = np.asarray([BRIDGE_LINE in tip for tip in vessels.features["tooltip"]])
+    np.testing.assert_array_equal(said, edge == 1)

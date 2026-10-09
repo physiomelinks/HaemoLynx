@@ -165,6 +165,58 @@ def test_rebuilt_tooltips_keep_the_solved_and_unsolved_lines():
     assert list(tooltips_from_feature_table(features, ("flow",)))[1] == "branchID: 1"
 
 
+def _middle_a_bridge() -> nx.MultiGraph:
+    """``a_graph``'s three vessels, the middle one a zero-resistance bridge."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    graph = a_graph()
+    list(graph.edges(keys=True, data=True))[1][3][IS_ZERO_RESISTANCE] = True
+    return graph
+
+
+def test_hover_says_a_bridge_is_artificial_whatever_metrics_are_chosen():
+    """Under its branch ID, chosen metrics or none: what the dashes are."""
+    from haemolynx.gui.branch_hover import BRIDGE_LINE
+
+    for selected in ((), ("length",)):
+        _ids, features = branch_hover_rows(_middle_a_bridge(), selected=selected)
+        tips = [tip.splitlines() for tip in features["tooltip"]]
+        assert tips[1][:2] == ["branchID: 1", BRIDGE_LINE]
+        assert BRIDGE_LINE not in tips[0] + tips[2]
+        assert len(tips[1]) == len(tips[0]) + 1
+
+
+def test_rebuilt_tooltips_keep_the_bridge_line():
+    """Ticking a metric rebuilds the tooltips from the layer's own table,
+    which carries the bridge flag; NaN or a missing column is no bridge."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+    from haemolynx.gui.branch_hover import BRIDGE_LINE
+
+    _ids, features = branch_hover_rows(_middle_a_bridge(), selected=())
+    assert list(tooltips_from_feature_table(features, ())) == list(features["tooltip"])
+    rebuilt = tooltips_from_feature_table(features, ("length",))
+    assert [BRIDGE_LINE in tip for tip in rebuilt] == [False, True, False]
+
+    table = {"branch_id": np.asarray(["0", "1"], dtype=object), "length": np.asarray([1.0, 2.0])}
+    assert BRIDGE_LINE not in "".join(tooltips_from_feature_table(table, ("length",)))
+    table[IS_ZERO_RESISTANCE] = np.asarray([np.nan, True], dtype=object)
+    assert [BRIDGE_LINE in tip for tip in tooltips_from_feature_table(table, ())] == [False, True]
+
+
+def test_hovering_a_dash_of_a_bridge_says_what_it_is():
+    """The vessels layer's rows are dashes along a bridge; every one of them
+    carries the line, and no other vessel's row does."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+    from haemolynx.gui.branch_hover import BRIDGE_LINE
+
+    graph = _middle_a_bridge()
+    vessels = spec_named(built(graph).stage_finished("build_network", network(graph)), VESSELS)
+    edge = np.asarray(vessels.features["edge_index"])
+    said = np.asarray([BRIDGE_LINE in tip for tip in vessels.features["tooltip"]])
+    np.testing.assert_array_equal(said, edge == 1)
+    np.testing.assert_array_equal(np.asarray(vessels.features[IS_ZERO_RESISTANCE]), edge == 1)
+
+
 def test_empty_branch_order_does_not_count_as_available():
     graph = a_graph(branch_order="")
     assert "order" not in available_branch_hover_metrics(graph)
@@ -353,9 +405,9 @@ def test_each_distinct_vessel_row_is_composed_once(monkeypatch):
     calls = []
     real = branch_hover.format_branch_tooltip
 
-    def counting(branch_id, values, selected):
+    def counting(branch_id, values, selected, **options):
         calls.append(branch_id)
-        return real(branch_id, values, selected)
+        return real(branch_id, values, selected, **options)
 
     monkeypatch.setattr(branch_hover, "format_branch_tooltip", counting)
     segments_per_vessel = 50

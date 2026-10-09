@@ -160,7 +160,9 @@ Z_DEPTH_TOOLTIP = (
 )
 VESSEL_DRAW_TOOLTIP = (
     "Tubes: each centreline step as a 3D prism that stays visible from every "
-    "camera angle. Lines: napari vector ribbons (faster, can vanish edge-on)"
+    "camera angle. Lines: napari vector ribbons (faster, can vanish edge-on). "
+    "Zero-resistance bridges, artificial joins inside a thick vessel's lumen, "
+    "are dashed in both"
 )
 LAYER_SET_TOOLTIP = (
     "Which network the vessels, nodes and flow-direction layers show: the "

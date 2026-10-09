@@ -204,6 +204,33 @@ def test_sweep_layer_initial_flow_matches_grid_point_zero():
     assert np.allclose(np.asarray(vessels.features["flow_abs"], dtype=float), expected)
 
 
+def test_a_sweeps_bridge_is_dashed_and_follows_the_slider():
+    """A zero-resistance bridge is drawn dashed on a sweep's vessels too, and
+    each of its dashes takes the bridge's own flow at the grid point."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    graph = solved_graph(flow=9.0)
+    list(graph.edges(keys=True, data=True))[1][3][IS_ZERO_RESISTANCE] = True
+    sweep_flows = _sweep_for_graph(graph, n_points=3)
+    group = ResultLayers().stage_finished(
+        "run_perturbations",
+        a_perturbation_run(PerturbationResult(
+            name="dilate_grid", type="pericyte_dilation_sweep", graph=graph,
+            sweep_flows=sweep_flows,
+        )),
+    )
+    vessels = group.layers[0]
+    owner = np.asarray(vessels.segment_owner)
+    assert len(owner) == len(vessels.data) > graph.number_of_edges()
+    edge = np.asarray(vessels.features["edge_index"])
+    np.testing.assert_array_equal(edge, np.asarray(vessels.sweep_edge_index)[owner])
+    np.testing.assert_array_equal(np.asarray(vessels.features[IS_ZERO_RESISTANCE]), edge == 1)
+    np.testing.assert_allclose(
+        np.asarray(vessels.features["flow_abs"], dtype=float),
+        sweep_flows.flow_abs_at(0)[edge],
+    )
+
+
 def test_sweeps_want_a_napari_flow_layer():
     assert wants_napari_flow_layer("pericyte_dilation_sweep")
     assert wants_napari_flow_layer("pressure_and_arteriole_sweep")

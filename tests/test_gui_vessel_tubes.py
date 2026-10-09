@@ -469,32 +469,120 @@ def test_a_short_fat_vessel_is_drawn_within_twice_its_neighbours():
     np.testing.assert_array_equal(radii, given)
 
 
-def test_a_zero_resistance_bridge_is_drawn_at_the_vessel_it_bridges():
-    """The bridge from a 3 µm vessel into a 12 µm one carries the wide
-    vessel's lumen diameter; it is drawn at the 3 µm vessel's."""
+def _a_thin_vessel_opening_into_a_fat_one():
+    """A 3 µm vessel up z, its 6 µm bridge into the lumen of a 12 µm vessel
+    running along y, and that vessel's two halves either side of the
+    junction the bridge made. The bridge carries the wide lumen's diameter,
+    as a measured one does."""
     thin = _resampled([0.0, 0.0, 0.0], [0.0, 0.0, 15.0])
     bridge = _resampled([0.0, 0.0, 15.0], [0.0, 0.0, 21.0])
     fat = [_resampled([0.0, -30.0, 21.0], [0.0, 0.0, 21.0]),
            _resampled([0.0, 0.0, 21.0], [0.0, 30.0, 21.0])]
-    vectors, radii, owner = _network([thin, bridge, *fat], [1.5, 6.0, 6.0, 6.0])
+    return _network([thin, bridge, *fat], [1.5, 6.0, 6.0, 6.0])
+
+
+def test_a_zero_resistance_bridge_is_left_out_of_the_vessels_tubes():
+    """The bridge is not vessel: the thin vessel ends where it meets the fat
+    one's lumen, cut square so its end does not hide the bridge's first dash,
+    and the fat vessel is one tube through the junction the bridge made,
+    with no end there; its own two ends stay rounded."""
+    from haemolynx.gui.vessel_tubes import BRIDGE_RADIUS_FRACTION
+
+    vectors, radii, owner = _a_thin_vessel_opening_into_a_fat_one()
     sides = 12
     vertices, faces, index = tubes_from_vectors(
         vectors, radius=radii, sides=sides, groups=owner, bridges=owner == 1
     )
     assert _edge_use(faces) == {2}
-    rings = _ring_vertices(vertices, sides, tubes=3)
-    centre, radius, _facing = _ring_frames(rings)
-    ring_owner = owner[index[: rings.shape[0] * sides : sides]]
-    np.testing.assert_allclose(radius[ring_owner == 1], 1.5)
-    np.testing.assert_allclose(radius[ring_owner == 0], 1.5)
-    for vessel in (2, 3):
-        mine = np.flatnonzero(ring_owner == vessel)
-        middle = mine[np.argmin(np.abs(np.abs(centre[mine, 1]) - 15.0))]
-        assert radius[middle] == pytest.approx(6.0)
+    assert _pieces(faces) == 3
+    on_bridge = owner[index] == 1
+    assert not any(on_bridge[faces].any(axis=1) & ~on_bridge[faces].all(axis=1))
 
-    _v, _f, unflagged = tubes_from_vectors(vectors, radius=radii, sides=sides, groups=owner)
-    unflagged_vertices = _v[owner[unflagged] == 1]
-    assert np.hypot(unflagged_vertices[:, 0], unflagged_vertices[:, 1]).max() > 1.5 + 0.5
+    vessel = vertices[~on_bridge]
+    thin = vessel[owner[index[~on_bridge]] == 0]
+    assert thin[:, 2].max() == pytest.approx(15.0)
+    assert thin[:, 2].min() == pytest.approx(-1.5)
+    fat_poles = [pole for pole in _poles(faces, sides) if owner[index[pole]] in (2, 3)]
+    assert sorted(np.round(vertices[fat_poles, 1]).tolist()) == [-36.0, 36.0]
+
+    bridge = vertices[on_bridge]
+    assert bridge[:, 2].min() == pytest.approx(15.0)
+    assert bridge[:, 2].max() == pytest.approx(21.0)
+    np.testing.assert_allclose(
+        np.hypot(bridge[:, 0], bridge[:, 1]).max(), BRIDGE_RADIUS_FRACTION * 1.5
+    )
+
+
+def test_vessels_meeting_at_a_junction_a_bridge_ends_on_keep_rounded_ends():
+    """Only an open end where a bridge starts is cut square: three vessels
+    meeting where the bridge ends are still a junction, each end rounded."""
+    thin = _resampled([0.0, 0.0, 0.0], [0.0, 0.0, 15.0])
+    bridge = _resampled([0.0, 0.0, 15.0], [0.0, 0.0, 21.0])
+    fat = [_resampled([0.0, -30.0, 21.0], [0.0, 0.0, 21.0]),
+           _resampled([0.0, 0.0, 21.0], [0.0, 30.0, 21.0]),
+           _resampled([0.0, 0.0, 21.0], [30.0, 0.0, 21.0])]
+    vectors, radii, owner = _network([thin, bridge, *fat], [1.5, 6.0, 4.0, 4.0, 4.0])
+    vertices, faces, index = tubes_from_vectors(
+        vectors, radius=radii, sides=12, groups=owner, bridges=owner == 1
+    )
+    assert _edge_use(faces) == {2}
+    branch = vertices[owner[index] == 4]
+    assert branch[:, 0].min() < -1.0
+    assert vertices[owner[index] == 0][:, 2].max() == pytest.approx(15.0)
+
+
+def test_a_dashed_bridge_is_one_flat_ended_piece_per_dash():
+    """The vessels layer cuts a bridge into dashes; each is drawn on its own,
+    ending square where its dash does, all as wide as each other."""
+    from haemolynx.gui.results import dash_polyline
+    from haemolynx.gui.vessel_tubes import BRIDGE_RADIUS_FRACTION
+
+    thin = _resampled([0.0, 0.0, 0.0], [0.0, 0.0, 15.0])
+    dashes = dash_polyline(_resampled([0.0, 0.0, 15.0], [0.0, 0.0, 30.0]))
+    fat = [_resampled([0.0, -30.0, 30.0], [0.0, 0.0, 30.0]),
+           _resampled([0.0, 0.0, 30.0], [0.0, 30.0, 30.0])]
+    vectors, radii, piece = _network([thin, *dashes, *fat], [1.5] + [6.0] * (len(dashes) + 2))
+    vessel = np.where(piece == 0, 0, np.where(piece <= len(dashes), 1, piece - len(dashes) + 1))
+    sides = 12
+    vertices, faces, index = tubes_from_vectors(
+        vectors, radius=radii, sides=sides, groups=vessel, bridges=vessel == 1
+    )
+    assert len(dashes) >= 3
+    assert _edge_use(faces) == {2}
+    assert _pieces(faces) == 2 + len(dashes)
+    for number, dash in enumerate(dashes, start=1):
+        mine = vertices[piece[index] == number]
+        assert mine[:, 2].min() == pytest.approx(dash[0, 2])
+        assert mine[:, 2].max() == pytest.approx(dash[-1, 2])
+        np.testing.assert_allclose(
+            np.hypot(mine[:, 0], mine[:, 1]).max(), BRIDGE_RADIUS_FRACTION * 1.5
+        )
+
+
+def test_a_bridge_is_half_as_wide_as_the_narrowest_vessel_it_meets():
+    """With no labels too, and a bridge meeting no vessel at all is half its
+    own width. However wide the bridge's own diameter."""
+    from haemolynx.gui.vessel_tubes import BRIDGE_RADIUS_FRACTION
+
+    vectors, radii, owner = _a_thin_vessel_opening_into_a_fat_one()
+    sides = 12
+
+    def bridge_radius(vectors, radii, bridges, groups=None):
+        vertices, _faces, index = tubes_from_vectors(
+            vectors, radius=radii, sides=sides, groups=groups, bridges=bridges
+        )
+        mine = vertices[np.asarray(bridges)[index]]
+        return np.hypot(mine[:, 0], mine[:, 1]).max()
+
+    assert bridge_radius(vectors, radii, owner == 1) == pytest.approx(BRIDGE_RADIUS_FRACTION * 1.5)
+    alone = owner == 1
+    assert bridge_radius(vectors[alone], radii[alone], np.ones(alone.sum(), dtype=bool)) == (
+        pytest.approx(BRIDGE_RADIUS_FRACTION * 6.0)
+    )
+    uniform = np.full(len(radii), 2.0)
+    assert bridge_radius(vectors, uniform, owner == 1, owner) == pytest.approx(
+        BRIDGE_RADIUS_FRACTION * 2.0
+    )
 
 
 def test_a_bend_tighter_than_the_tube_is_wide_does_not_fold():
