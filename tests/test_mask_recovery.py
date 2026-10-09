@@ -610,3 +610,43 @@ def test_parallel_edges_in_one_lumen_lose_the_wall_side_and_a_tissue_loop_stays(
         around.add_edge("u", "v", voxels=path, length=24.0, row=row)
     remove_loops_inside_one_lumen(around, _support(holed))
     assert sorted(d["row"] for *_, d in around.edges(data=True)) == [4, 9]
+
+
+def _ribbon():
+    """A flattened lumen along x: 3 um thick in z, 16 um wide in y, with one
+    centreline down its middle. Its radius there is the 2 um to the nearest
+    (flat) wall, far short of the 8 um to either side edge."""
+    mask = np.zeros((15, 20, 60), dtype=bool)
+    mask[6:9, 2:18, :] = True
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([7.0, 10.0, 0.0]))
+    G.add_node(1, pos=np.array([7.0, 10.0, 59.0]))
+    G.add_edge(0, 1, voxels=[[7.0, 10.0, float(x)] for x in range(60)], length=59.0)
+    return G, mask
+
+
+def test_the_far_sides_of_a_flattened_lumen_are_covered_by_its_cross_section():
+    G, mask = _ribbon()
+    by_radius = uncovered_mask_voxels(G, _support(mask), cross_section_reach_radii=0.0)
+    by_section = uncovered_mask_voxels(G, _support(mask))
+    assert len(by_radius) > 0.3 * mask.sum()  # the radius rule leaves both side edges
+    assert len(by_section) < 0.03 * mask.sum()
+
+
+def test_recovery_draws_no_second_strand_along_a_flattened_lumen():
+    G, mask = _ribbon()
+    G = recover_uncovered_mask_vessels(G, _support(mask))
+    assert G.number_of_edges() == 1
+    assert not any(d.get("recovered") for *_, d in G.edges(data=True))
+
+
+def test_a_lost_branch_narrower_than_its_vessel_stays_uncovered_past_the_wall():
+    """Its base lies in the trunk's cross-section, but it is not there a trunk
+    radius ahead and behind, so the outline stops at the trunk's wall."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 7, 35)
+    uncovered = uncovered_mask_voxels(_trunk_graph(), _support(mask))
+    branch_past_wall = mask[:, 12:36, :].sum()
+    assert len(uncovered) >= 0.9 * branch_past_wall
+    assert int(np.min(uncovered[:, 1])) <= 12
+

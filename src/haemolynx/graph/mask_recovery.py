@@ -53,6 +53,126 @@ MIN_INSCRIBED_RADIUS_VOXELS = 1.5
 #: Nearest centreline samples each mask voxel is judged against.
 _COVERAGE_NEIGHBOURS = 4
 
+#: How far out from a centreline, in lumen radii (+ the margin), its lumen's
+#: cross-section is followed to the wall. A flattened lumen's far side lies
+#: well past its radius -- the radius is the distance to the *nearest* wall --
+#: and on E14.5 79% of the mask the radius rule left uncovered had a straight
+#: line through the mask to its nearest centreline, a median 2 radii out, 90%
+#: within 3.2. Recovery traced it as a second strand. A branch the graph lost
+#: runs on past this reach, so its far part stays uncovered and is recovered.
+CROSS_SECTION_REACH_RADII = 4.0
+
+#: Directions round a centreline sample its cross-section is followed in:
+#: enough that the outline of a thin, flat lumen keeps its corners.
+_CROSS_SECTION_RAYS = 32
+
+#: Samples whose cross-sections are followed at once (memory, not result).
+_CROSS_SECTION_CHUNK = 2048
+
+
+@dataclass
+class _CrossSections:
+    """Each centreline sample's plane across the vessel (unit vectors *e1*,
+    *e2* perpendicular to the tangent *t*) and how far the mask runs from the
+    sample in each of :data:`_CROSS_SECTION_RAYS` directions in that plane."""
+
+    t: np.ndarray
+    e1: np.ndarray
+    e2: np.ndarray
+    reach: np.ndarray
+
+
+def _sample_tangents(index: EdgeSampleIndex) -> np.ndarray:
+    """A unit tangent at every sample, read along the sample's own edge (an
+    index holds each edge's samples one after another)."""
+    points = index.points
+    tangents = np.zeros_like(points)
+    owners = index.owners
+    start = 0
+    for stop in range(1, len(points) + 1):
+        if stop < len(points) and owners[stop] == owners[start]:
+            continue
+        block = points[start:stop]
+        if len(block) > 1:
+            tangents[start:stop] = np.gradient(block, axis=0)
+        start = stop
+    norm = np.linalg.norm(tangents, axis=1, keepdims=True)
+    tangents = np.where(norm > 1e-9, tangents / np.maximum(norm, 1e-9), np.array([1.0, 0.0, 0.0]))
+    return tangents
+
+
+def _cross_sections(index: EdgeSampleIndex, radii: np.ndarray, support: MaskSupport, *,
+                    reach_radii: float, margin_um: float) -> _CrossSections:
+    from haemolynx.preprocessing.bridge_mask_support import _sample_step
+
+    t = _sample_tangents(index)
+    helper = np.eye(3)[np.argmin(np.abs(t), axis=1)]
+    e1 = np.cross(t, helper)
+    e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
+    e2 = np.cross(t, e1)
+    angles = np.linspace(0.0, 2.0 * np.pi, _CROSS_SECTION_RAYS, endpoint=False)
+    step = _sample_step(support.voxel_size_zyx)
+    caps = reach_radii * radii + margin_um
+    reach = np.zeros((len(radii), _CROSS_SECTION_RAYS))
+    for lo in range(0, len(radii), _CROSS_SECTION_CHUNK):
+        hi = min(lo + _CROSS_SECTION_CHUNK, len(radii))
+        cap = caps[lo:hi]
+        distances = np.arange(1, int(np.ceil(float(cap.max()) / step)) + 1) * step
+        directions = (np.cos(angles)[None, :, None] * e1[lo:hi, None, :]
+                      + np.sin(angles)[None, :, None] * e2[lo:hi, None, :])
+        points = (index.points[lo:hi, None, None, :]
+                  + distances[None, None, :, None] * directions[:, :, None, :])
+        shape = (hi - lo, len(angles), len(distances))
+        inside = support.inside(points.reshape(-1, 3)).reshape(shape)
+        # A flattened lumen's far side runs on along the vessel; a branch
+        # leaving it is only as wide as itself. The outline stops where the
+        # mask is not there a lumen radius ahead and behind as well, so a
+        # branch narrower than its vessel is left uncovered, to be recovered.
+        along = (radii[lo:hi, None] * t[lo:hi])[:, None, None, :]
+        for sign in (1.0, -1.0):
+            inside &= support.inside((points + sign * along).reshape(-1, 3)).reshape(shape)
+        inside &= distances[None, None, :] <= cap[:, None, None]
+        out = ~inside
+        first_out = np.argmax(out, axis=2)
+        never_out = ~out.any(axis=2)
+        reach[lo:hi] = np.where(
+            never_out, cap[:, None], np.where(first_out > 0, distances[np.maximum(first_out - 1, 0)], 0.0)
+        )
+    return _CrossSections(t, e1, e2, reach)
+
+
+def _inside_cross_section(points_um, candidates, sections: _CrossSections, sample_points,
+                          *, axial_um: float, margin_um: float) -> np.ndarray:
+    """Whether each point lies inside the cross-section outline of any of its
+    candidate samples (``candidates``: ``(n, k)`` indices, the sample count
+    where there is none): within *axial_um* of the sample's plane and no
+    further from it than the mask runs in that direction, read between the
+    two rays either side."""
+    n, k = candidates.shape
+    covered = np.zeros(n, dtype=bool)
+    rays = sections.reach.shape[1]
+    sector = 2.0 * np.pi / rays
+    for j in range(k):
+        index = candidates[:, j]
+        valid = index < len(sample_points)
+        if not valid.any():
+            continue
+        at = np.flatnonzero(valid & ~covered)
+        if not len(at):
+            break
+        s = index[at]
+        v = points_um[at] - sample_points[s]
+        axial = np.sum(v * sections.t[s], axis=1)
+        w = v - axial[:, None] * sections.t[s]
+        rho = np.linalg.norm(w, axis=1)
+        theta = np.mod(np.arctan2(np.sum(w * sections.e2[s], axis=1), np.sum(w * sections.e1[s], axis=1)), 2.0 * np.pi)
+        lower = np.floor(theta / sector).astype(int) % rays
+        upper = (lower + 1) % rays
+        fraction = theta / sector - np.floor(theta / sector)
+        limit = (1.0 - fraction) * sections.reach[s, lower] + fraction * sections.reach[s, upper]
+        covered[at] = (np.abs(axial) <= axial_um) & (rho <= limit + margin_um)
+    return covered
+
 #: How far past a covered lumen, in microns of slack (distance minus that
 #: lumen's radius), a recovered end may look for a vessel to join. The
 #: traced end sits inside the uncovered mask, and the nearest sample is
@@ -87,17 +207,29 @@ def uncovered_mask_voxels(
     *,
     margin_um: float = SAME_LUMEN_MARGIN_UM,
     block_voxels: int = LOW_MEMORY_BLOCK_VOXELS,
+    cross_section_reach_radii: float = CROSS_SECTION_REACH_RADII,
 ) -> np.ndarray:
-    """Voxel indices of the mask farther than its lumen radius + *margin_um*
-    from every centreline sample of *G*: a mask voxel is covered by a sample
-    ``p`` when within ``radius(p) + margin_um`` of it. Read a slab of whole
-    z-slices at a time, so the mask may be a memmap."""
+    """Voxel indices of the mask no centreline sample of *G* covers. A sample
+    ``p`` covers a voxel within ``radius(p) + margin_um`` of it, and -- with a
+    positive *cross_section_reach_radii* -- one inside its lumen's
+    cross-section: in the plane across the vessel at ``p``, no further out than
+    the mask runs from ``p`` in that direction, followed to at most that many
+    radii (+ *margin_um*; :data:`CROSS_SECTION_REACH_RADII`). The radius is
+    the distance to the nearest wall, so the radius rule alone leaves the far
+    side of every flattened lumen uncovered. 0 keeps the radius rule only.
+    Read a slab of whole z-slices at a time, so the mask may be a memmap."""
     mask = support.mask
     spacing = np.asarray(support.voxel_size_zyx, dtype=float)
     index, radii = _centreline_samples(G, support)
+    sections = None
+    if index.tree is not None and cross_section_reach_radii > 0:
+        sections = _cross_sections(index, radii, support, reach_radii=cross_section_reach_radii,
+                                   margin_um=margin_um)
     step = slab_step(mask.shape, block_voxels) if np.ndim(mask) == 3 else mask.shape[0]
     uncovered = []
     reach = float(radii.max()) + margin_um if len(radii) else 0.0
+    section_reach = float(sections.reach.max()) + margin_um if sections is not None else 0.0
+    axial = float(spacing.min())
     for start in range(0, mask.shape[0], step):
         coords = np.argwhere(np.asarray(mask[start:start + step], dtype=bool))
         if not len(coords):
@@ -113,7 +245,16 @@ def uncovered_mask_voxels(
         distance, nearest = distance.reshape(len(coords), k), nearest.reshape(len(coords), k)
         found = nearest < len(radii)
         slack = np.where(found, distance - radii[np.minimum(nearest, len(radii) - 1)], np.inf)
-        uncovered.append(coords[~np.any(slack <= margin_um + 1e-9, axis=1)])
+        left = coords[~np.any(slack <= margin_um + 1e-9, axis=1)]
+        if sections is not None and len(left):
+            points = left * spacing
+            _d, candidates = index.tree.query(
+                points, k=k, distance_upper_bound=section_reach + 1e-9, workers=-1
+            )
+            candidates = candidates.reshape(len(left), k)
+            left = left[~_inside_cross_section(points, candidates, sections, index.points,
+                                               axial_um=axial, margin_um=margin_um)]
+        uncovered.append(left)
     return np.concatenate(uncovered) if uncovered else np.empty((0, np.ndim(mask)), dtype=np.intp)
 
 

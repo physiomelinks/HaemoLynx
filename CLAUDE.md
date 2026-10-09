@@ -395,7 +395,12 @@ are only caught locally.
   blind spurs stayed -- 1,037 of E14.5's 1,234 dead ends).
 - **`graph/mask_recovery.py`** — `recover_uncovered_mask_vessels` (`recover_uncovered_mask_vessels`,
   on by default; its own step after the orphan reconnect, then `consolidate_lumen`):
-  the mask no centreline's local lumen covers, in pieces of at least
+  the mask no centreline's lumen covers (`uncovered_mask_voxels`: within a sample's radius, or
+  inside its lumen's cross-section, followed out in 32 directions across the vessel to the wall,
+  at most `CROSS_SECTION_REACH_RADII` = 4 radii, and only while the mask is also there a radius
+  ahead and behind -- so a flattened lumen's far side is covered, while a branch narrower than
+  its vessel stops the outline at the wall; on E14.5 79% of the mask the radius rule alone left
+  uncovered was that far side, and recovery traced it as second strands), in pieces of at least
   `recovery_min_region_volume_um3` and wider than a voxel and a half, Lee-thinned and joined to
   the network through the mask where an end lies within `final_orphan_reconnect_threshold` of a
   covered lumen. Never an island, never across background, never beside an existing vessel,

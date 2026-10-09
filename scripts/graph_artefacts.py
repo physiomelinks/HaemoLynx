@@ -102,7 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         }
 
     sides = {}
-    for name in [WORKING_TREE, *args.ref]:
+    # Refs first, so a two-side table's change column reads ref -> working tree.
+    for name in [*args.ref, WORKING_TREE]:
         side = _side_dir(out, name)
         side.mkdir(parents=True, exist_ok=True)
         src = REPO / "src" if name == WORKING_TREE else _export_ref(name, side / "code")
