@@ -17,7 +17,7 @@ venv/bin/python -m pytest tests/test_cb_settings.py::test_frozen_threshold_lies_
 venv/bin/python -m pytest -m "not slow and not integration" # skip heavy tests
 ```
 
-Markers: `slow`, `integration`, `plotting`. Whole-pipeline tests are in `tests/integration/`; small fixture volumes in `tests/data/`. `pyproject.toml` sets `pythonpath = ["src"]`, and `tests/conftest.py` puts `examples/` on `sys.path`, so tests import driver scripts directly. No linter or formatter is configured. Install from `requirements.txt`: `pyproject.toml` omits several runtime deps (`pyyaml`, `joblib`, `optuna`, `dask`, `numba`, `python-igraph`, …), and CI installs only `pyproject.toml`'s, so tests needing them can skip or fail there.
+Markers: `slow`, `integration`, `plotting`. Whole-pipeline tests are in `tests/integration/`; small fixture volumes in `tests/data/`. `pyproject.toml` sets `pythonpath = ["src"]`, and `tests/conftest.py` puts `examples/` on `sys.path`, so tests import driver scripts directly. There is no formatter. A pre-commit hook (`scripts/git-hooks/pre-commit`, turned on with `git config core.hooksPath scripts/git-hooks`) runs pyflakes on staged files, failing only on undefined names and redefinitions, then the `not slow and not integration` tests; so `git commit` runs tests, and `--no-verify` skips the hook. The `[dev]` extra is `pytest` and `pyflakes`. Install from `requirements.txt`: `pyproject.toml` omits several runtime deps (`pyyaml`, `joblib`, `optuna`, `dask`, `numba`, `python-igraph`, …), and CI installs only `pyproject.toml`'s, so tests needing them can skip or fail there.
 
 CB study workflow, in order (`python`/`python3` below means the venv interpreter):
 
@@ -47,7 +47,7 @@ python3 examples/cb_h2_vtk.py                 # VTK of the H2 fields (--verify c
 
 `examples/preprocessing/prob_to_mask.py` is a standalone tool, not a pipeline step. `cb_h2_absolute_perfusion.py` measures throughput and flow-weighted velocity under the face and band rules (reference §13.5, S30). The other `cb_h2_*.py` scripts (`boundary_selection`, `error_propagation`, `threshold_calibre`) are one-off measurements behind the H2 capability assessment.
 
-Nerve/resistance pipeline: `python examples/resistance_network_pipeline.py --list-presets | --preset NAME | --config file.yaml | --wizard | --preflight-only | --set KEY=VALUE`; `--save-config out.yaml` writes the resolved configuration. `--wizard` and `--preflight-only` come from `examples/wizard.py` and `examples/preflight.py`. Every `image_to_model_pipeline(...)` kwarg is also exposed as `--kwarg-name`. That function lives in the example script itself, not the package; a second copy is in `examples/resistance_network_pipeline_for_Alice.py` (tested by `tests/test_alice.py`), so a change to one may need the other. Its defaults are module-level constants in `examples/resistance_pipeline_settings.py`; named presets are in `examples/presets.py`, with user overrides in `examples/local_presets.py` (`LOCAL_PRESET_DEFINITIONS`).
+Nerve/resistance pipeline: `python examples/resistance_network_pipeline.py --list-presets | --preset NAME | --config file.yaml | --wizard | --preflight-only | --set KEY=VALUE`; `--save-config out.yaml` writes the resolved configuration. Every `image_to_model_pipeline(...)` kwarg is also exposed as `--kwarg-name`. That function lives in the example script itself, not the package; a second copy is in `examples/resistance_network_pipeline_for_Alice.py` (tested by `tests/test_alice.py`), so a change to one may need the other. Its defaults are module-level constants in `examples/resistance_pipeline_settings.py`; named presets are in `examples/presets.py`, with user overrides in `examples/local_presets.py` (`LOCAL_PRESET_DEFINITIONS`).
 
 ## Architecture
 
@@ -56,7 +56,7 @@ Nerve/resistance pipeline: `python examples/resistance_network_pipeline.py --lis
 - `preprocessing/` — `image.py` (filters, `at_or_above` inclusive cut, `hysteresis_threshold`, `crop_roi`), `mask.py` (`build_vessel_mask`: probability → binary mask via hysteresis), `skeleton.py`. `pipeline/map_reduce.py` tiles a volume into overlapping chunks, masks them in parallel (joblib) and stitches the result.
 - `graph/` — skeleton → `networkx` MultiGraph (`build.py`), then conditioning modules (`prune.py`, `collapse.py`, `reconnect.py`, `degree2.py`, `large_vessels.py`, `optimise.py`). `boundaries.py` picks inlet/outlet terminals (face and band rules, see CB data flow); `branch_order.py` assigns hierarchy; `tiling.py` makes map-reduce chunk boxes.
 - `haemodynamics/` — `poiseuille.py` (diameters → resistance, diameter-provenance guards), `resistance.py` (sparse Laplacian solve), `rheology.py` (coupled flow–haematocrit–viscosity: Pries phase separation, one-vs-rest at 3+ daughters, Fåhræus–Lindqvist; `rheology_status(G)` reports how it stopped), `perfusion.py` (3D tissue advection–diffusion–reaction grid coupled to the 1D network, three tiers — see below), `transit.py`, `tissue_regions.py`. Use British spelling: `ImageLynx.hemodynamics` is a deprecated alias. `pericyte_mask.py`, `pericyte_comparison.py` and `probability.py` are frozen for CB work but live for the nerve pipeline.
-- `io/` loads images and Ilastik outputs; `visualization/` holds plots, reporting and VTK export (`vtk_io.py`).
+- `io/` (image and Ilastik loading), `visualization/` (plots, reporting, VTK export).
 - `statistics/` — morphometry, threshold selection, cohort-split checks, Optuna auto-tuner. `th_morphometry.py` joins the vessel and TH channels (H1 §1.3, 1.5); `label_placement.py` audits where Ilastik training labels sit.
 - CB-study modules at the top level:
   - `specimens.py` — the specimen registry. Holds each specimen's file stems (WKY and SHR are named differently), resolves data roots (`IMAGELYNX_CB_DATA_ROOT`, `IMAGELYNX_CB_ACQUISITION_ROOT`), and holds the single `POOLED_CLASSIFIER` and `PROCESSING_VOXEL_UM`. Each `Specimen` exposes every stage's path as a property (`probabilities_path`, `th_probabilities_path`, …); use these rather than building paths. Preprocessing QC sidecars are committed under `src/ImageLynx/data/preprocessing_qc/`.
@@ -64,6 +64,7 @@ Nerve/resistance pipeline: `python examples/resistance_network_pipeline.py --lis
   - `roi_placement.py` — places each specimen's matched ROI on tissue, not the array centre: z from the QC peak slice, y/x from the grayscale centroid over the box's slices.
   - `artefact_provenance.py` — `.provenance.json` sidecars recording which classifier made a probability map.
   - `batch_outputs.py` — `open_batch_run`, the single reader of a batch run (edge table, graph with diameters joined on, skeleton, mask, TH channel), checked against `place_roi` once at open.
+  - `batch_compare.py` — compares two batch runs part by part through the reader; behind `examples/cb_compare_batch_runs.py` (exit 0 match, 1 differ, 2 usage error, 3 could not compare).
 
 ### CB data flow
 
@@ -113,8 +114,7 @@ The repo root also holds many plan, handover and scratch files (`*_plan.md`, `ch
 - `h1_pipeline_capability_assessment.md` (gitignored) — the 2026-07-30 stage-by-stage review of the pipeline against H1, kept as a dated snapshot, with status updates at the top.
 - `h2_pipeline_capability_assessment.md` — defines the numbered findings (S10, S14, S15, …) that H2 docstrings and comments cite.
 - `H1_preliminary_results_whitepaper.md`, `H2_preliminary_results_whitepaper.md` — current write-ups of results.
-- `pipeline_rerun_2026-09-29_notes.md` (untracked) — defines the lettered re-run packages (A, B, … N) that commit messages cite, with what each fixed and which scripts still need re-running.
-- `pipeline_rerun_2026-10-01_notes.md` (untracked) — the full re-run on `c190de2`: step log, run times, issues found, and the current package table (O onward), where newly found packages are added. Its open rows list outputs on disk that lag the code.
+- `pipeline_rerun_*_notes.md` (untracked) — the lettered re-run packages that commit messages cite. The newest (`2026-10-01`, the full re-run on `c190de2`) holds the current package table (O onward), where newly found packages are added; its open rows list outputs on disk that lag the code. Older ones define earlier letters (A … N).
 - `open_items_followups.md` (untracked) — working notes on the Open items table in `cb_modelling_reference.md`: which items were closed by which commit, and plans for the rest.
 - `CB-SEGMENTATION-METHODS.md` and `examples/preprocessing/README.md` — how the Ilastik project was built and driven, and the preprocessing steps for both channels.
 
