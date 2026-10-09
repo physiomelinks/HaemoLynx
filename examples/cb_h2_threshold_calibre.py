@@ -24,7 +24,7 @@ import numpy as np
 
 from ImageLynx import cb_settings
 from ImageLynx.batch_outputs import open_batch_run
-from ImageLynx.specimens import get_specimen
+from ImageLynx.specimens import get_specimen, sensitivity_run_name
 
 from cb_h1_batch import SENSITIVITY_DIR
 
@@ -37,7 +37,7 @@ LOWER, FROZEN, UPPER = (f"{t:.2f}" for t in _GRID[_FROZEN - 1:_FROZEN + 2])
 
 
 def _sensitivity(label):
-    return lambda specimen_id: SENSITIVITY_DIR / f"t{label}" / specimen_id
+    return lambda specimen_id: SENSITIVITY_DIR / sensitivity_run_name(float(label)) / specimen_id
 
 
 # Each run is the folder to open for a specimen; None is the specimen's batch run.

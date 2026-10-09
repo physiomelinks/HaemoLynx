@@ -11,8 +11,9 @@ from pathlib import Path
 import pytest
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+PACKAGE = Path(__file__).resolve().parents[1] / "src"
 
-# Drivers switched to the reader so far (batch-run reader tickets 01 to 05).
+# Drivers that read batch runs, all through the reader.
 ON_THE_READER = [
     "cb_h2_glomus_perfusion.py",
     "cb_h2_absolute_perfusion.py",
@@ -24,11 +25,17 @@ ON_THE_READER = [
     "cb_h1_vtk.py",
     "cb_h1_figures.py",
     "cb_h2_threshold_calibre.py",
+    "cb_compare_batch_runs.py",
 ]
 # Drivers that open their runs through another reader driver's public loader instead of calling
 # ``open_batch_run`` themselves: driver -> (module, loader).
 SHARED_LOADERS = {
     "cb_h2_boundary_selection.py": ("cb_h2_error_propagation", "load_network"),
+}
+# Drivers that open their runs through a package module's function, which itself calls
+# ``open_batch_run``: driver -> (module, function).
+PACKAGE_LOADERS = {
+    "cb_compare_batch_runs.py": ("ImageLynx.batch_compare", "compare_roots"),
 }
 # Modules a driver only needs if it reads batch-run files itself.
 FILE_READERS = {"csv", "h5py", "pickle"}
@@ -52,6 +59,14 @@ def test_the_driver_opens_its_batch_runs_through_the_reader(name):
     tree = _tree(name)
     calls = {getattr(n.func, "id", None) or getattr(n.func, "attr", None)
              for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    if name in PACKAGE_LOADERS:
+        module, loader = PACKAGE_LOADERS[name]
+        source = ast.parse((PACKAGE / Path(*module.split("."))).with_suffix(".py").read_text(
+            encoding="utf-8"))
+        assert "open_batch_run" in {getattr(n.func, "id", None) for n in ast.walk(source)
+                                    if isinstance(n, ast.Call)}
+        assert loader in calls
+        return
     if name not in SHARED_LOADERS:
         assert "open_batch_run" in calls
         return

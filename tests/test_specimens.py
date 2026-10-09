@@ -25,8 +25,10 @@ from ImageLynx.specimens import (
     Specimen,
     assert_single_classifier,
     get_specimen,
+    is_sensitivity_run_name,
     resolve_vessel_class_index,
     segmentation_status,
+    sensitivity_run_name,
     specimens_in_group,
 )
 
@@ -921,3 +923,10 @@ def test_a_balanced_project_raises_neither_new_warning(tmp_path):
     assert "weights by labelled voxel count" not in joined
     assert report["target_label_counts_by_group"]["WKY"] == \
            report["target_label_counts_by_group"]["SHR"]
+
+
+def test_a_sensitivity_run_folder_is_named_for_its_threshold():
+    assert sensitivity_run_name(0.93) == "t0.93"
+    assert [is_sensitivity_run_name(name) for name in
+            ("t0.93", "t0.97", "tmp", "t0.9", "t", "tnan", "tinf", "WKY-A")] == [
+        True, True, False, False, False, False, False, False]

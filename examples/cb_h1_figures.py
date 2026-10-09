@@ -30,7 +30,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS, get_specimen
+from ImageLynx.specimens import (
+    PROCESSING_VOXEL_UM, SPECIMENS, get_specimen, sensitivity_run_name,
+)
 from ImageLynx import cb_settings
 from ImageLynx.batch_outputs import open_batch_run
 from ImageLynx.statistics.cohort_split import CohortSplit, assess_cohort_split
@@ -152,9 +154,9 @@ def group_summary(values_by_specimen, quantity="value"):
 def sensitivity_runs():
     """Run folder per threshold: the frozen batch (None, the default run) and its two neighbours."""
     low, high = sensitivity_thresholds(cb_settings.FROZEN_THRESHOLD)
-    return {low: SENSITIVITY_DIR / f"t{low:.2f}",
+    return {low: SENSITIVITY_DIR / sensitivity_run_name(low),
             cb_settings.FROZEN_THRESHOLD: None,
-            high: SENSITIVITY_DIR / f"t{high:.2f}"}
+            high: SENSITIVITY_DIR / sensitivity_run_name(high)}
 
 
 def sensitivity_series():

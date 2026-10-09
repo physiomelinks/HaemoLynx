@@ -48,7 +48,7 @@ from ImageLynx.roi_placement import (                                   # noqa: 
     check_output_roi, format_placement_table, place_roi,
 )
 from ImageLynx.specimens import (                                       # noqa: E402
-    BATCH_RUN_ROOT, PROCESSING_VOXEL_UM, SPECIMENS, get_specimen,
+    BATCH_RUN_ROOT, PROCESSING_VOXEL_UM, SPECIMENS, get_specimen, sensitivity_run_name,
 )
 from ImageLynx.statistics.cohort_split import assess_cohort_split       # noqa: E402
 from ImageLynx import cb_settings                                       # noqa: E402
@@ -251,7 +251,7 @@ def stage_sensitivity(roi, frozen):
     for low in thresholds:
         print(f"\n########## threshold {low:.2f}, seed {seed} ##########")
         for specimen in _predicted():
-            out = SENSITIVITY_DIR / f"t{low:.2f}" / specimen.specimen_id
+            out = SENSITIVITY_DIR / sensitivity_run_name(low) / specimen.specimen_id
             results[f"{specimen.specimen_id}@{low:.2f}"] = _run_pipeline(
                 specimen, roi, out, low, seed)
     _report(results)

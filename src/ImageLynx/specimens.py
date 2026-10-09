@@ -27,6 +27,7 @@ section, where a group-correlated acquisition difference belongs. The gap is 0.0
 no result, which is the reason to record it once rather than discover it twice.
 """
 import hashlib
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,6 +99,20 @@ PROBABILITIES_DIR = CB_DATA_ROOT / "ilastik_probabilities"
 #: cb_h1_batch.py --stage run output, one batch run per specimen. Inside the repository, not
 #: the data root: these are analysis outputs, not derived image artefacts.
 BATCH_RUN_ROOT = _ROOT / "examples" / "outputs" / "cb_h1_batch"
+
+
+def sensitivity_run_name(threshold: float) -> str:
+    """The folder cb_h1_batch.py --stage sensitivity writes one threshold's runs under."""
+    return f"t{threshold:.2f}"
+
+
+def is_sensitivity_run_name(name: str) -> bool:
+    """Whether ``name`` is a folder name ``sensitivity_run_name`` gives for some threshold."""
+    try:
+        threshold = float(name[1:])
+    except ValueError:
+        return False            # not a threshold folder at all, such as "tmp"
+    return math.isfinite(threshold) and name == sensitivity_run_name(threshold)
 
 #: prob_to_mask.py output: the binary mask and the calibrated distance transform this
 #: pipeline consumes.
