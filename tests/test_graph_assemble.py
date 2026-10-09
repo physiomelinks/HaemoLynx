@@ -22,7 +22,9 @@ from haemolynx.graph import (
     duplicate_parallel_edges,
     duplicate_vessel_routes,
 )
+import haemolynx.graph.build as build_module
 from haemolynx.graph.assemble import mask_lumen_test
+from haemolynx.graph.build import skan_skeleton, skeleton_has_path
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 
 # Coarse z, fine x, all three distinct so a (z, y, x) / (x, y, z) swap shows up.
@@ -667,3 +669,74 @@ def test_degree2_diagnostics_are_logged_only_in_debug_mode(caplog):
 
     assert "DEGREE-2" in verbose.upper()
     assert "DEGREE-2" not in quiet.upper()
+
+
+# --- a skeleton with no vessel in it ----------------------------------------
+
+
+def _isolated_voxels() -> np.ndarray:
+    skeleton = np.zeros((10, 10, 10), dtype=bool)
+    skeleton[2, 2, 2] = skeleton[7, 7, 7] = True
+    return skeleton
+
+
+@pytest.mark.parametrize("with_mask", [False, True], ids=["no mask", "mask"])
+@pytest.mark.parametrize("use_memmap", [False, True], ids=["in RAM", "low RAM"])
+@pytest.mark.parametrize(
+    "skeleton",
+    [np.zeros((10, 10, 10), dtype=bool), _isolated_voxels()],
+    ids=["empty", "isolated voxels"],
+)
+def test_a_skeleton_with_no_two_voxels_touching_builds_an_empty_graph(
+    skeleton, use_memmap, with_mask
+):
+    """Regression: skan raised scipy's "index pointer size 0 should be 1" on
+    both. The optimiser reads an empty graph as "no graph could be built" and
+    stops there; the pipeline stage refuses such a skeleton before building
+    (tests/test_build_network_empty_skeleton.py)."""
+    labels = []
+    G = build_graph_from_skeleton(
+        skeleton,
+        voxel_size=(1.0, 1.0, 1.0),
+        use_memmap=use_memmap,
+        segmentation_mask=_t_mask(skeleton) if with_mask else None,
+        step_callback=lambda graph, label: labels.append(label),
+    )
+
+    assert isinstance(G, nx.MultiGraph)
+    assert G.number_of_nodes() == 0
+    assert labels == list(STEP_LABELS)
+
+
+def test_one_touching_pair_is_enough_for_skan_to_trace():
+    """The boundary of the case above: beside an isolated voxel, two touching
+    voxels make one skan path, so building goes ahead as before."""
+    skeleton = _isolated_voxels()
+    skeleton[4, 4, 4] = skeleton[4, 4, 5] = True
+
+    for use_memmap in (False, True):
+        assert skan_skeleton(skeleton, use_memmap=use_memmap).n_paths == 1
+
+
+@pytest.mark.parametrize(
+    ("voxels", "has_path"),
+    [
+        ([], False),
+        ([(2, 2, 2)], False),
+        ([(2, 2, 2), (7, 7, 7)], False),
+        ([(2, 2, 2), (2, 2, 4)], False),
+        ([(2, 2, 2), (2, 2, 3)], True),
+        # Diagonal neighbours touch: skan's paths are 26-connected.
+        ([(2, 2, 2), (3, 3, 3)], True),
+        # Found past the first batch of voxels too.
+        ([(0, 0, 0), (5, 5, 5), (9, 9, 8), (9, 9, 9)], True),
+    ],
+)
+def test_skeleton_has_path_needs_two_touching_voxels(monkeypatch, voxels, has_path):
+    monkeypatch.setattr(build_module, "_ADJACENCY_BATCH_NODES", 1)
+    skeleton = np.zeros((10, 10, 10), dtype=bool)
+    for voxel in voxels:
+        skeleton[voxel] = True
+
+    assert skeleton_has_path(skeleton) is has_path
+    assert (skan_skeleton(skeleton).n_paths > 0) is has_path

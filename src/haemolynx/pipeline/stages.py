@@ -1154,6 +1154,13 @@ def build_network(
         )
 
     if settings["do_graph_building"]:
+        # A vessel is a path between touching skeleton voxels. With none, the
+        # cause is upstream, in the segmentation or skeletonising, so say so
+        # here rather than build an empty graph.
+        if not graph.build.skeleton_has_path(skeleton):
+            raise _skeleton_without_vessels_error(
+                settings, volume, output_dir / f"{settings['input_path'].stem}_skeleton.npy"
+            )
         # 3) Convert skeleton to graph.
         # Every snapshot draws the same volume, and projecting it reads the whole
         # stack, so it is projected once here rather than once per step. Graph
@@ -1339,6 +1346,98 @@ def build_network(
         small_arteriole_mask=small_arteriole_mask,
         small_venule_mask=small_venule_mask,
     )
+
+
+#: The segmentation-cleanup steps, each switched on by ``segmentation_cleanup_<step>``.
+_SEGMENTATION_CLEANUP_STEPS = (
+    "fill_cavities",
+    "remove_whiskers",
+    "split_narrow_necks",
+    "close_gaps",
+    "reconnect_gaps",
+    "smooth_surfaces",
+    "remove_small_volumes",
+)
+
+
+def _skeleton_without_vessels_error(
+    settings: dict, volume: SkeletonisedVolume, skeleton_path: Path
+) -> ValueError:
+    """What :func:`build_network` raises when no two skeleton voxels touch --
+    an empty skeleton, or one thinned to isolated points -- so there is no
+    vessel to build a graph from. The cause is upstream of graph building:
+    says how many voxels the skeleton and the segmented image have, and which
+    segmentation or skeletonise settings to check."""
+
+    def foreground_voxels(image: np.ndarray) -> int:
+        binary = _to_binary_volume_for_skeletonization(
+            image,
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
+        )
+        count = int(np.count_nonzero(binary))
+        preprocessing.release_superseded(binary, None, keep=image)
+        return count
+
+    skeleton_voxels = int(np.count_nonzero(volume.skeleton))
+    if skeleton_voxels:
+        found = (
+            f"The skeleton has {skeleton_voxels} voxel(s) and no two of them touch, "
+            "so there is no vessel to build a graph from."
+        )
+    else:
+        found = "The skeleton is empty, so there is no vessel to build a graph from."
+    if not settings["do_skeletonize"]:
+        found += (
+            f" It was loaded from {skeleton_path}: turn do_skeletonize on to make it "
+            "again from the segmented image."
+        )
+    image_name = settings["input_path"].name
+    image_voxels = None if volume.image is None else foreground_voxels(volume.image)
+    if image_voxels == 0:
+        # `image` is the mask skeletonising read, after any segmentation
+        # cleanup; the mask from before cleanup is kept only when it ran.
+        raw = volume.raw_segmented_image
+        raw_voxels = 0 if raw is None else foreground_voxels(raw)
+        if raw_voxels:
+            cleanup_on = [
+                f"segmentation_cleanup_{step}"
+                for step in _SEGMENTATION_CLEANUP_STEPS
+                if settings.get(f"segmentation_cleanup_{step}")
+            ]
+            return ValueError(
+                f"{found} Segmentation cleanup removed all {raw_voxels} foreground voxels "
+                f"of the segmented image ({image_name}) before skeletonising. Cleanup "
+                f"steps that are on: {', '.join(cleanup_on)}."
+            )
+        return ValueError(
+            f"{found} The segmented image ({image_name}) has no foreground either: check "
+            "the segmentation that made it."
+        )
+
+    if image_voxels:
+        found += (
+            f" The segmented image ({image_name}) has {image_voxels} foreground voxels, "
+            "so skeletonising left no vessel in them."
+        )
+    removes = []
+    if settings["skeleton_min_branch_length"]:
+        removes.append(
+            f"skeleton_min_branch_length ({settings['skeleton_min_branch_length']} voxels) "
+            "drops skeleton pieces shorter than that"
+        )
+    if settings["skeleton_min_component_percent"]:
+        removes.append(
+            f"skeleton_min_component_percent ({settings['skeleton_min_component_percent']}%) "
+            "drops pieces smaller than that share of the skeleton"
+        )
+    check = (
+        "Check the segmentation (isolated specks thin to isolated points, and a solid "
+        "blob can thin to nothing)"
+    )
+    if removes:
+        check += ", and the skeletonise settings that remove skeleton: " + "; ".join(removes)
+    return ValueError(f"{found} {check}.")
 
 
 def _record_graph_voxel_metadata(
