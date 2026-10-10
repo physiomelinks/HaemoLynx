@@ -1,86 +1,31 @@
 """The one batch-run reader every CB driver opens a batch run through.
 
-Each test builds a tiny batch run in ``tmp_path`` - a four-edge graph in one ``*_cache``
-folder, its edge table, a ``roi_placement.json``, skeleton and vessel-mask arrays and an 8-bit
-TH export - and goes through ``open_batch_run`` and the parts it hands out, nothing else.
+Each test gets a tiny batch run from the shared ``make_batch_run`` factory (conftest.py), which
+writes it to ``tmp_path`` - a four-edge graph in one ``*_cache`` folder, its edge table, a
+``roi_placement.json``, skeleton and vessel-mask arrays and an 8-bit TH export - and goes
+through ``open_batch_run`` and the parts it hands out, nothing else.
 ``place_roi`` is replaced by a fixed small box, since the real one reads the specimen's data.
 """
-import csv
 import pickle
+import re
 from types import SimpleNamespace
 
-import networkx as nx
 import numpy as np
 import pytest
+from conftest import EDGES, SHAPE, SIZE, placement, write_edge_table
 
 import ImageLynx.batch_outputs as batch_outputs
 from ImageLynx import cb_settings
 from ImageLynx.batch_outputs import open_batch_run
-from ImageLynx.roi_placement import (
-    RoiPlacement, centre_to_offsets, roi_record, write_roi_record,
-)
+from ImageLynx.roi_placement import roi_record, write_roi_record
 
 h5py = pytest.importorskip("h5py")
 
-SHAPE = (12, 10, 9)          # the specimen's full volume, z y x
-SIZE = (4, 6, 5)             # the placed ROI
-CENTRE = (6, 4, 5)           # bounds z 4:8, y 1:7, x 3:8
-EDGES = [(0, 1, 0, "12.5"), (1, 2, 0, "8.0"), (1, 2, 1, "6.25"), (2, 3, 0, "10.0")]
-COLUMNS = ["u", "v", "key", "length_um", "assigned_diameter_um", "diameter_provenance"]
-
-
-def _placement(specimen_id, centre=CENTRE):
-    return RoiPlacement(specimen_id=specimen_id, centre_zyx=centre, size_zyx=SIZE,
-                        offsets_zyx=centre_to_offsets(centre, SHAPE), peak_slice=centre[0],
-                        source="test")
-
-
-def _write_edge_table(run_dir, rows):
-    with (run_dir / batch_outputs.EDGE_TABLE_NAME).open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(COLUMNS)
-        for u, v, key, diameter in rows:
-            writer.writerow([u, v, key, f"{10.0 * (u + 1):g}", diameter, "measured_edt"])
-
-
-def _glomus_probabilities():
-    """A deterministic 0-255 ramp over the whole volume, so the crop position is checkable."""
-    return (np.arange(np.prod(SHAPE)) % 256).astype(np.uint8).reshape(SHAPE)
-
 
 @pytest.fixture
-def batch_run(tmp_path, monkeypatch):
+def batch_run(make_batch_run):
     """A complete, consistent batch run for a stand-in specimen."""
-    run_dir = tmp_path / "TEST-A"
-    cache = run_dir / "TEST_vessels_ilastik_Probabilities_cache"
-    cache.mkdir(parents=True)
-
-    G = nx.MultiGraph()
-    for u, v, key, _ in EDGES:
-        G.add_edge(u, v, key=key, length=10.0 * (u + 1))
-    with (cache / batch_outputs.GRAPH_NAME).open("wb") as handle:
-        pickle.dump(G, handle)
-    _write_edge_table(run_dir, EDGES)
-
-    skeleton = np.zeros(SIZE, dtype=np.uint8)
-    skeleton[2, 3, :] = 1
-    np.save(cache / batch_outputs.SKELETON_NAME, skeleton)
-    np.save(cache / batch_outputs.VESSEL_MASK_NAME, np.ones(SIZE, dtype=bool))
-
-    th_path = tmp_path / "TEST_TH_ilastik_Probabilities.h5"
-    glomus = _glomus_probabilities()
-    with h5py.File(th_path, "w") as handle:
-        handle.create_dataset("exported_data", data=np.stack([glomus, 255 - glomus], axis=-1))
-
-    specimen = SimpleNamespace(specimen_id="TEST-A", shape_zyx=SHAPE, batch_run_dir=run_dir,
-                               th_probabilities_path=th_path)
-    placed = _placement(specimen.specimen_id)
-    monkeypatch.setattr(batch_outputs, "place_roi",
-                        lambda s, size: placed if tuple(size) == tuple(cb_settings.ROI_VOXELS)
-                        else pytest.fail(f"place_roi asked for {size}, not the frozen ROI"))
-    write_roi_record(run_dir, roi_record(placed, SHAPE, centred=False))
-    return SimpleNamespace(specimen=specimen, run_dir=run_dir, cache=cache, graph=G,
-                           skeleton=skeleton, placed=placed, glomus=glomus, th_path=th_path)
+    return make_batch_run()
 
 
 # --- Opening ---------------------------------------------------------------------------------
@@ -103,7 +48,7 @@ def test_the_edge_table_is_keyed_by_integer_edge_in_file_order(batch_run):
 
 def test_a_run_cut_anywhere_but_the_placed_roi_is_refused_before_anything_else(batch_run):
     """The ROI error wins even when the cache layout is also broken and the table is garbage."""
-    moved = _placement(batch_run.specimen.specimen_id, centre=(7, 4, 5))
+    moved = placement(batch_run.specimen.specimen_id, centre=(7, 4, 5))
     write_roi_record(batch_run.run_dir, roi_record(moved, SHAPE, centred=False))
     (batch_run.run_dir / "second_cache").mkdir()
     (batch_run.run_dir / batch_outputs.EDGE_TABLE_NAME).write_text("not,a\nvalid table")
@@ -134,7 +79,7 @@ def test_a_sensitivity_run_is_opened_by_passing_its_folder(batch_run, tmp_path):
 
 
 def test_a_duplicate_edge_table_row_is_refused(batch_run):
-    _write_edge_table(batch_run.run_dir, EDGES + [(1, 2, 1, "6.5")])
+    write_edge_table(batch_run.run_dir, EDGES + [(1, 2, 1, "6.5")])
     with pytest.raises(ValueError, match=r"TEST-A.*more than one row.*\(1, 2, 1\)"):
         open_batch_run(batch_run.specimen).edge_table()
 
@@ -151,7 +96,7 @@ def test_a_numeric_column_is_a_float_per_edge_in_file_order(batch_run):
 @pytest.mark.parametrize("cell", ["", "nan", "None", "inf", "-inf"],
                          ids=["blank", "nan", "text", "inf", "-inf"])
 def test_a_cell_that_is_not_a_finite_number_is_refused_not_turned_into_nan(batch_run, cell):
-    _write_edge_table(batch_run.run_dir, [EDGES[0], (1, 2, 0, cell), (1, 2, 1, cell), EDGES[3]])
+    write_edge_table(batch_run.run_dir, [EDGES[0], (1, 2, 0, cell), (1, 2, 1, cell), EDGES[3]])
     with pytest.raises(ValueError, match=r"2 rows .*empty or non-finite assigned_diameter_um"
                                          r".*\(1, 2, 0\), \(1, 2, 1\)") as raised:
         open_batch_run(batch_run.specimen).numeric_column("assigned_diameter_um")
@@ -159,8 +104,8 @@ def test_a_cell_that_is_not_a_finite_number_is_refused_not_turned_into_nan(batch
 
 
 def test_an_edge_table_with_no_rows_is_refused(batch_run):
-    _write_edge_table(batch_run.run_dir, [])
-    with pytest.raises(ValueError, match=r"TEST-A.*per_edge_morphometry.csv has no rows"):
+    write_edge_table(batch_run.run_dir, [])
+    with pytest.raises(ValueError, match=rf"TEST-A.*{re.escape(batch_outputs.EDGE_TABLE_NAME)} has no rows"):
         open_batch_run(batch_run.specimen).numeric_column("length_um")
 
 
@@ -203,7 +148,7 @@ def test_each_graph_is_a_fresh_copy(batch_run):
         "text diameter", "infinite diameter"])
 def test_the_join_is_strictly_one_to_one(batch_run, rows, message):
     """Forward (u, v, key) only: a row written the other way round matches nothing."""
-    _write_edge_table(batch_run.run_dir, rows)
+    write_edge_table(batch_run.run_dir, rows)
     with pytest.raises(ValueError, match=message) as raised:
         open_batch_run(batch_run.specimen).graph()
     assert "TEST-A" in str(raised.value) and str(batch_run.run_dir) in str(raised.value)

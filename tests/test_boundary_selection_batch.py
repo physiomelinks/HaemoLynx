@@ -5,7 +5,6 @@ ParaView edge list, no ROI check, and its own hand-written band and face cuts. T
 MultiGraph (through ``load_network``, which checks the ROI) and the package's boundary functions.
 """
 from pathlib import Path
-from types import SimpleNamespace
 
 import networkx as nx
 import numpy as np
@@ -116,13 +115,18 @@ def test_ratio_is_widest_decile_flow_over_inlet_throughput(network):
     assert 0.0 < module.ratio(network, 0, "face_sink") < 1.0
 
 
-def test_main_reads_each_specimen_once_and_prints_every_section(monkeypatch, capsys):
+def test_main_reads_each_specimen_once_and_prints_every_section(
+        monkeypatch, capsys, make_batch_run):
     G, lengths = _cross_network()
+    diameters = {(a, b, k): d["assigned_diameter_um"]
+                 for a, b, k, d in G.edges(keys=True, data=True)}
+    run = make_batch_run(G=G, columns={"length_um": lengths,
+                                       "assigned_diameter_um": diameters}).run
     opened = []
 
     def fake_open(specimen):
         opened.append(specimen.specimen_id)
-        return SimpleNamespace(graph=lambda: G, numeric_column={"length_um": lengths}.__getitem__)
+        return run
 
     monkeypatch.setattr(propagation, "open_batch_run", fake_open)
     module.main()

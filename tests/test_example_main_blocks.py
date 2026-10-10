@@ -7,7 +7,6 @@ prints the within-specimen ratio ``main`` measured instead of a hard-coded 6.3%.
 """
 import ast
 from pathlib import Path
-from types import SimpleNamespace
 
 import networkx as nx
 import numpy as np
@@ -79,10 +78,13 @@ def _cross_network():
 
 
 @pytest.fixture
-def propagation(monkeypatch):
+def propagation(monkeypatch, make_batch_run):
     import cb_h2_error_propagation as module
     G, lengths = _cross_network()
-    run = SimpleNamespace(graph=lambda: G, numeric_column={"length_um": lengths}.__getitem__)
+    diameters = {(a, b, k): d["assigned_diameter_um"]
+                 for a, b, k, d in G.edges(keys=True, data=True)}
+    run = make_batch_run(G=G, columns={"length_um": lengths,
+                                       "assigned_diameter_um": diameters}).run
     monkeypatch.setattr(module, "open_batch_run", lambda specimen: run)
     return module
 

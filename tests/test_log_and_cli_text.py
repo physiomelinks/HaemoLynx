@@ -4,7 +4,6 @@ None of these change a number. Each one made a run's output say something that w
 or hid a fallback in a stats dict, so the text is pinned here.
 """
 import logging
-from types import SimpleNamespace
 
 import networkx as nx
 import numpy as np
@@ -145,7 +144,7 @@ def test_inset_note_only_when_the_network_stops_short(lo, hi, reaches):
     assert ("does not reach that face" in inset) is (not reaches)
 
 
-def _stub_export(monkeypatch, tmp_path):
+def _stub_export(monkeypatch, tmp_path, make_batch_run):
     import cb_h1_vtk
 
     class _Spec:
@@ -154,8 +153,8 @@ def _stub_export(monkeypatch, tmp_path):
     out = tmp_path / "cb_h1_paraview"
     monkeypatch.setattr(cb_h1_vtk, "OUTPUT", out)
     monkeypatch.setattr(cb_h1_vtk, "SPECIMENS", [_Spec()])
-    monkeypatch.setattr(cb_h1_vtk, "open_batch_run",
-                        lambda s: SimpleNamespace(specimen=s, edge_table=lambda: {}))
+    run = make_batch_run(specimen_id=_Spec.specimen_id).run
+    monkeypatch.setattr(cb_h1_vtk, "open_batch_run", lambda s: run)
     monkeypatch.setattr(cb_h1_vtk, "enrich_vessels", lambda run, e, r: pv.Line((0, 0, 0), (9, 9, 9)))
     monkeypatch.setattr(cb_h1_vtk, "build_nodes", lambda run, e, r: None)
     monkeypatch.setattr(cb_h1_vtk, "build_skeleton", lambda run, r: None)
@@ -164,9 +163,9 @@ def _stub_export(monkeypatch, tmp_path):
     return cb_h1_vtk, out
 
 
-def test_h1_verify_writes_nothing(monkeypatch, tmp_path, capsys):
+def test_h1_verify_writes_nothing(monkeypatch, tmp_path, capsys, make_batch_run):
     """Same contract as cb_h2_vtk.py --verify: check, print, write no file (item 19)."""
-    cb_h1_vtk, out = _stub_export(monkeypatch, tmp_path)
+    cb_h1_vtk, out = _stub_export(monkeypatch, tmp_path, make_batch_run)
     monkeypatch.setattr("sys.argv", ["cb_h1_vtk.py", "--verify"])
     cb_h1_vtk.main()
     assert not out.exists()
@@ -175,8 +174,8 @@ def test_h1_verify_writes_nothing(monkeypatch, tmp_path, capsys):
     assert "nothing written" in printed
 
 
-def test_h1_export_still_writes_without_verify(monkeypatch, tmp_path):
-    cb_h1_vtk, out = _stub_export(monkeypatch, tmp_path)
+def test_h1_export_still_writes_without_verify(monkeypatch, tmp_path, make_batch_run):
+    cb_h1_vtk, out = _stub_export(monkeypatch, tmp_path, make_batch_run)
     monkeypatch.setattr("sys.argv", ["cb_h1_vtk.py"])
     cb_h1_vtk.main()
     assert (out / "WKY-A_vessels.vtp").exists()
