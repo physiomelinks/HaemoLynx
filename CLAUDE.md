@@ -757,6 +757,7 @@ loop runs through the mask did.
 - Adding features without tests (see Testing policy).
 - Force-pushing `main`/`master` or amending pushed commits unless explicitly requested.
 - Expanding scope into unrelated refactors when fixing a targeted issue.
+- Raising a release-review score without evidence in its row, or moving a check's target to make it pass (see **Release review** below).
 
 ---
 
@@ -775,6 +776,42 @@ pytest tests/test_graph.py -s
 # Regenerate tutorial Python from notebook
 pytest tests/integration/test_pipeline_tutorial.py -s
 ```
+
+---
+
+# Release review (TEMPORARY — delete this whole section at the final release)
+
+**`RELEASE_REVIEW.md`** scores every aspect of the software **out of 10**, as sixteen aspects:
+graph, diameter and haemodynamic accuracy; statistics; inputs and segmentation; speed; memory;
+usability; visualisation; exports; documentation and help; robustness; reproducibility; testing
+and CI; packaging; and maintainability. For each one it lists the checks that hold the score
+where it is, so it doubles as the list of what to do before release. **`PLAN_release_review.md`**
+is the plan for `scripts/release_review/`, a command that will re-measure the automated checks
+(steps R1–R8). Delete both files, the scorer and this section once the release gate in
+`RELEASE_REVIEW.md` is met. First scoring: 2026-10-10 at `9c6a15a`, lowest score 3, mean 3.8.
+
+Rules for agents:
+
+- **A score comes from its ladder, never from impression.** Each aspect has checks at levels 2,
+  4, 6, 8 and 10. Its score is the highest level at which that level's checks, and every lower
+  level's, all pass, plus one if half of the next level's checks pass. Write only the number the
+  rows give.
+- **A check passes only with evidence in its row.** That means a test (`file:line`), an output
+  file with its commit and dataset, or a person's marks with their name and the date. If the
+  evidence is unknown, the check fails, and the row says what would decide it.
+- **H (human) checks belong to the six named testers**: Harvey, Finbar, Mason, George, Rebecca
+  and Mike (`RELEASE_REVIEW.md` § Testers). Only George, Rebecca and Mike count as "someone
+  other than the developer". Record a tester's result with their name, and never pass an H check
+  on your own judgement. `docs.6a`, the help pages, passes only when Harvey
+  writes them (see **Help menu**).
+- **Never move a check or a target to make it pass.** Record any rubric change in the review
+  log, with its reason. As with marked grids: change the measure, not the marks.
+- **Re-score with the work.** A commit that changes a check's evidence updates that row, the
+  scorecard line and the log in the same commit. A regression lowers the score at once.
+- **Choosing work.** When there is room to choose, prefer whatever passes the lowest aspect's
+  next check. The scorecard's "Work in order" list is that order.
+- **Measure a `git archive` of the commit being scored**, not the live tree: peer sessions edit
+  `src/` mid-run.
 
 ---
 
