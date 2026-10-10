@@ -7,3 +7,5 @@ Domain terms for the carotid body (CB) study code. Use these names in code, docs
 **Edge table**: a batch run's `per_edge_morphometry.csv`. It has one row per graph edge, keyed by `(u, v, key)`. The cached graph carries no calibre, so diameters come from here.
 
 **Placed ROI**: the box `roi_placement.place_roi` picks for a specimen, recorded in a batch run's `roi_placement.json`. Every reader of a batch run checks the record against `place_roi` before using it.
+
+**Driver snapshot**: the files and stdout that one run of chosen `examples/cb_*.py` drivers wrote, kept in one folder so a later run can be compared with it by content. Not a batch run: it holds what the drivers make from batch runs.
