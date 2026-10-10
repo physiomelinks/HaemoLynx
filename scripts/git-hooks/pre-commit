@@ -4,11 +4,15 @@
 # 1. Error-class lint (undefined names, redefinitions) on staged Python files.
 # 2. Fast tests, skipped when every staged file is a Markdown doc (no test reads
 #    a repo .md file). Any other staged file, deletions included, runs them.
+#    Also skipped when .git/hook-stamp/fast-tests-ok matches the staged tree,
+#    the interpreter and its installed packages (see _stamp.sh); a passing run
+#    here, or scripts/stamp-tests.sh, writes it.
 #    Bypass in an emergency with `git commit --no-verify`.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 PY=venv/bin/python
 [ -x "$PY" ] || PY=python3
+. scripts/git-hooks/_stamp.sh
 
 # examples/OLD is an archive and has known undefined names.
 mapfile -t files < <(git diff --cached --name-only --diff-filter=ACM -- '*.py' ':!examples/OLD')
@@ -42,4 +46,10 @@ if [ "$only_docs" -eq 1 ]; then
     exit 0
 fi
 
+if stamp_matches; then
+    echo "pre-commit: tests already passed for this exact staged tree, skipping fast tests." >&2
+    exit 0
+fi
+
 MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true "$PY" -m pytest -q -m "not slow and not integration"
+stamp_write
