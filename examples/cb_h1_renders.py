@@ -18,6 +18,7 @@ short segment carried a large diameter.
 Rendered through VTK's software path, so no display is required and the figures regenerate
 with the rest of the analysis.
 """
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -29,12 +30,11 @@ import pyvista as pv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ImageLynx.specimens import get_specimen  # noqa: E402
+from ImageLynx.specimens import BATCH_RUN_ROOT as OUT, get_specimen  # noqa: E402
+
+from cb_h1_vtk import OUTPUT as VTK  # noqa: E402
 
 pv.OFF_SCREEN = True
-
-VTK = Path(__file__).resolve().parent / "outputs" / "cb_h1_paraview"
-OUT = Path(__file__).resolve().parent / "outputs" / "cb_h1_batch"
 
 # Carried from the plots so cohort identity reads the same throughout the report.
 WKY, SHR = "#2a78d6", "#eb6834"
@@ -72,7 +72,7 @@ def caption(plotter, specimen_id):
     plotter.add_text(specimen_id, position=(16, 16), font_size=13, color=colour)
 
 
-def figure_reconstruction(path, size=(1620, 1120)):
+def figure_reconstruction(path, *, vtk_dir=VTK, size=(1620, 1120)):
     """All six specimens, not a chosen pair.
 
     A single WKY beside a single SHR is a cherry-pick however carefully the pair is chosen -
@@ -87,8 +87,8 @@ def figure_reconstruction(path, size=(1620, 1120)):
         for column, specimen_id in enumerate(specimens):
             plotter.subplot(row, column)
             plotter.set_background(SURFACE)
-            surface = pv.read(VTK / f"{specimen_id}_surface.vtp")
-            vessels = pv.read(VTK / f"{specimen_id}_vessels.vtp")
+            surface = pv.read(vtk_dir / f"{specimen_id}_surface.vtp")
+            vessels = pv.read(vtk_dir / f"{specimen_id}_vessels.vtp")
             colour = WKY if get_specimen(specimen_id).group == "WKY" else SHR
             plotter.add_mesh(slab(surface, surface), color=colour, opacity=0.30,
                              smooth_shading=True, show_scalar_bar=False)
@@ -100,10 +100,10 @@ def figure_reconstruction(path, size=(1620, 1120)):
     plotter.close()
 
 
-def figure_measured(path, specimen_id="SHR-B", size=(1560, 810)):
-    vessels = pv.read(VTK / f"{specimen_id}_vessels.vtp")
-    nodes = pv.read(VTK / f"{specimen_id}_nodes.vtp")
-    surface = pv.read(VTK / f"{specimen_id}_surface.vtp")
+def figure_measured(path, specimen_id="SHR-B", size=(1560, 810), *, vtk_dir=VTK):
+    vessels = pv.read(vtk_dir / f"{specimen_id}_vessels.vtp")
+    nodes = pv.read(vtk_dir / f"{specimen_id}_nodes.vtp")
+    surface = pv.read(vtk_dir / f"{specimen_id}_surface.vtp")
     lines = slab(vessels, surface)
 
     plotter = pv.Plotter(off_screen=True, shape=(1, 2), window_size=size, border=False)
@@ -139,15 +139,15 @@ def figure_measured(path, specimen_id="SHR-B", size=(1560, 810)):
     plotter.close()
 
 
-def figure_skeleton_detail(path, specimen_id="WKY-A", size=(1560, 800)):
+def figure_skeleton_detail(path, specimen_id="WKY-A", size=(1560, 800), *, vtk_dir=VTK):
     """Raw skeleton against the centrelines actually measured.
 
     The difference is stub pruning and B-spline smoothing - the operators section 4
     describes - and is easier to see than to read.
     """
-    skeleton = pv.read(VTK / f"{specimen_id}_skeleton.vtp")
-    vessels = pv.read(VTK / f"{specimen_id}_vessels.vtp")
-    surface = pv.read(VTK / f"{specimen_id}_surface.vtp")
+    skeleton = pv.read(vtk_dir / f"{specimen_id}_skeleton.vtp")
+    vessels = pv.read(vtk_dir / f"{specimen_id}_vessels.vtp")
+    surface = pv.read(vtk_dir / f"{specimen_id}_surface.vtp")
 
     b = np.array(surface.bounds)
     centre = (b[4] + b[5]) / 2.0
@@ -175,12 +175,20 @@ def figure_skeleton_detail(path, specimen_id="WKY-A", size=(1560, 800)):
     plotter.close()
 
 
-def main():
-    OUT.mkdir(parents=True, exist_ok=True)
-    for path, builder in ((OUT / "figure4_reconstruction.png", figure_reconstruction),
-                          (OUT / "figure5_measured_network.png", figure_measured),
-                          (OUT / "figure6_skeleton_detail.png", figure_skeleton_detail)):
-        builder(path)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--out", type=Path, default=OUT,
+                        help="Folder to write the figures into (default: %(default)s).")
+    parser.add_argument("--vtk-dir", type=Path, default=VTK,
+                        help="Folder holding cb_h1_vtk.py's .vtp files (default: %(default)s).")
+    args = parser.parse_args(argv)
+    out = args.out
+    out.mkdir(parents=True, exist_ok=True)
+    for path, builder in ((out / "figure4_reconstruction.png", figure_reconstruction),
+                          (out / "figure5_measured_network.png", figure_measured),
+                          (out / "figure6_skeleton_detail.png", figure_skeleton_detail)):
+        builder(path, vtk_dir=args.vtk_dir)
         print(f"wrote {path}")
 
 

@@ -19,6 +19,7 @@ permutation p of `assess_cohort_split`, whose floor at n = 3 is 0.10.
 Figure 2 draws the quantisation grid deliberately, so that a group gap can be read against
 the EDT step it has to be resolved by.
 """
+import argparse
 import collections
 import dataclasses
 import functools
@@ -346,18 +347,25 @@ def figure_diameter(path, diameters):
     plt.close(fig)
 
 
-def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--out", type=Path, default=OUTPUT_DIR,
+                        help="Folder to write the figures into (default: %(default)s). The "
+                             "tables are always read from the batch and sensitivity runs.")
+    args = parser.parse_args(argv)
+    out = args.out
+    out.mkdir(parents=True, exist_ok=True)
     diameters = _load_diameters()
-    density_path = OUTPUT_DIR / "figure1_network_density.png"
-    diameter_path = OUTPUT_DIR / "figure2_diameter_distribution.png"
+    density_path = out / "figure1_network_density.png"
+    diameter_path = out / "figure2_diameter_distribution.png"
     figure_density(density_path)
     figure_diameter(diameter_path, diameters)
-    sensitivity_path = OUTPUT_DIR / "figure3_threshold_sensitivity.png"
+    sensitivity_path = out / "figure3_threshold_sensitivity.png"
     figure_sensitivity(sensitivity_path)
-    degree_path = OUTPUT_DIR / "figure7_node_degree.png"
+    degree_path = out / "figure7_node_degree.png"
     figure_degree(degree_path)
-    length_path = OUTPUT_DIR / "figure8_segment_length.png"
+    length_path = out / "figure8_segment_length.png"
     figure_segment_length(length_path)
     for written in (density_path, diameter_path, sensitivity_path, degree_path, length_path):
         print(f"wrote {written}")

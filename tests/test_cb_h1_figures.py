@@ -220,7 +220,7 @@ def _figure_texts(monkeypatch):
 @pytest.mark.plotting
 def test_main_writes_every_figure_with_text_computed_from_the_tables(outputs, monkeypatch):
     captured = _figure_texts(monkeypatch)
-    cb_h1_figures.main()
+    cb_h1_figures.main([])
 
     for name in ("figure1_network_density", "figure2_diameter_distribution",
                  "figure3_threshold_sensitivity", "figure7_node_degree",

@@ -226,16 +226,19 @@ def verify(specimen, vessels, skeleton, grid):
     return notes
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--verify", action="store_true",
                         help="Check that the exported frames overlay, and stop without "
                              "writing any file (as cb_h2_vtk.py --verify does).")
-    args = parser.parse_args()
+    parser.add_argument("--out", type=Path, default=OUTPUT,
+                        help="Folder to write the export into (default: %(default)s).")
+    args = parser.parse_args(argv)
+    out = args.out
 
     if not args.verify:
-        OUTPUT.mkdir(parents=True, exist_ok=True)
+        out.mkdir(parents=True, exist_ok=True)
     summary = {}
     for specimen in SPECIMENS:
         # Opening refuses morphometry cut anywhere but the placed ROI (open item 27), before
@@ -249,7 +252,7 @@ def main():
         surface, grid = build_surface(run, report)
 
         if not args.verify:
-            stem = OUTPUT / specimen.specimen_id
+            stem = out / specimen.specimen_id
             if vessels is not None:
                 vessels.save(f"{stem}_vessels.vtp")
             if nodes is not None:
@@ -276,13 +279,13 @@ def main():
     if args.verify:
         print("\n  --verify only; nothing written.")
         return
-    (OUTPUT / "export_summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "export_summary.json").write_text(json.dumps(summary, indent=2))
     # The guide is version-controlled beside the code; examples/outputs/ is gitignored, so a
     # copy travels with the data for anyone handed the directory on its own.
     guide = Path(__file__).resolve().parent / "cb_h1_paraview_guide.md"
     if guide.exists():
-        (OUTPUT / "README.md").write_text(guide.read_text())
-    print(f"\nWrote {OUTPUT}")
+        (out / "README.md").write_text(guide.read_text())
+    print(f"\nWrote {out}")
 
 
 if __name__ == "__main__":
