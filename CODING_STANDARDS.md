@@ -24,6 +24,10 @@ Each one has a single home, and everything else imports it from there:
 ## 3. A review finding is fixed in the same change, or declined in writing
 
 A finding is not "acceptable" or "for later" without a reason. Either fix it in the change
-under review, or decline it with a written reason in the review. If it really belongs to
-other work, add it as a row in the current `pipeline_rerun_*_notes.md` package table, and
-say so in the review.
+under review, or decline it with a written reason in the review.
+
+A small mechanical fix inside a file the change already touches (a rename, a stale comment,
+a literal that should be imported) is fixed in the same change.
+
+A finding goes to a row in the current `pipeline_rerun_*_notes.md` package table only when
+fixing it changes behaviour or output, or needs a re-run. Say so in the review.
