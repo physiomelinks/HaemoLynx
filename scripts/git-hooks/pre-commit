@@ -2,7 +2,9 @@
 # Local guardrail (CI only runs on PRs to origin). Enable once per clone:
 #   git config core.hooksPath scripts/git-hooks
 # 1. Error-class lint (undefined names, redefinitions) on staged Python files.
-# 2. Fast tests. Bypass in an emergency with `git commit --no-verify`.
+# 2. Fast tests, skipped when every staged file is a Markdown doc (no test reads
+#    a repo .md file). Any other staged file, deletions included, runs them.
+#    Bypass in an emergency with `git commit --no-verify`.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 PY=venv/bin/python
@@ -21,6 +23,23 @@ if [ "${#files[@]}" -gt 0 ]; then
         echo "$out" >&2
         exit 1
     fi
+fi
+
+# Every staged path, any status: a deleted .py must still trigger the tests.
+mapfile -t staged < <(git diff --cached --name-only)
+only_docs=0
+if [ "${#staged[@]}" -gt 0 ]; then
+    only_docs=1
+    for f in "${staged[@]}"; do
+        case "$f" in
+            *.md) ;;
+            *) only_docs=0; break ;;
+        esac
+    done
+fi
+if [ "$only_docs" -eq 1 ]; then
+    echo "pre-commit: only .md files staged, skipping fast tests." >&2
+    exit 0
 fi
 
 MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true "$PY" -m pytest -q -m "not slow and not integration"
