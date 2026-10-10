@@ -76,17 +76,17 @@ def write_run(run_dir, specimens, specimen_id, graph=None, rows=None, skeleton=N
     """One consistent batch run, with any part replaced by the caller's version."""
     cache = run_dir / f"{specimen_id}_vessels_ilastik_Probabilities_cache"
     cache.mkdir(parents=True)
-    with (cache / "network_graph.pkl").open("wb") as handle:
+    with (cache / batch_outputs.GRAPH_NAME).open("wb") as handle:
         pickle.dump(_graph() if graph is None else graph, handle)
-    with (run_dir / "per_edge_morphometry.csv").open("w", newline="") as handle:
+    with (run_dir / batch_outputs.EDGE_TABLE_NAME).open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         writer.writerows((_rows() if rows is None else rows).values())
     if skeleton is None:
         skeleton = np.zeros(SIZE, dtype=np.uint8)
         skeleton[2, 3, :] = 1
-    np.save(cache / "skeleton.npy", skeleton)
-    np.save(cache / "vessel_mask.npy",
+    np.save(cache / batch_outputs.SKELETON_NAME, skeleton)
+    np.save(cache / batch_outputs.VESSEL_MASK_NAME,
             np.ones(SIZE, dtype=bool) if vessel_mask is None else vessel_mask)
     write_roi_record(run_dir, roi_record(specimens.placements[specimen_id], SHAPE, centred=False))
     return run_dir

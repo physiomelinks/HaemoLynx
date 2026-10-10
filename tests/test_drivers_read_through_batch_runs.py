@@ -10,8 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from ImageLynx import batch_outputs
+
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 PACKAGE = Path(__file__).resolve().parents[1] / "src"
+TESTS = Path(__file__).resolve().parent
 
 # Drivers that read batch runs, all through the reader. A driver keeps only its own analysis
 # filtering (``cb_h2_error_propagation.py`` drops self-loops and non-positive lengths or
@@ -48,9 +51,10 @@ ROI_CALLS = {"place_roi", "check_output_roi"}
 # threshold selection, is read with ``Path.read_text`` and is not a batch-run file.
 FILE_CALLS = {"read_csv", "read_pickle", "genfromtxt", "loadtxt", "fromfile", "read_bytes", "open"}
 ARRAY_MODULES = {"np", "numpy"}
-# Names and fragments that only the reader should know about.
-BATCH_FILE_NAMES = {"per_edge_morphometry.csv", "network_graph.pkl", "skeleton.npy",
-                    "vessel_mask.npy"}
+# Batch-run file names, which only ``batch_outputs`` spells out: each module-level ``*_NAME``
+# string there.
+BATCH_FILE_NAMES = {value for name, value in vars(batch_outputs).items()
+                    if name.endswith("_NAME") and isinstance(value, str)}
 
 
 def _tree(name):
@@ -236,3 +240,54 @@ def test_the_cell_check_passes_numbers_that_are_not_edge_table_cells(source):
 @pytest.mark.parametrize("name", ON_THE_READER)
 def test_the_driver_turns_no_cell_into_a_number_itself(name):
     assert cells_turned_into_numbers_outside_the_reader(_tree(name)) == []
+
+
+# --- Batch-run file names are spelled only in batch_outputs (CODING_STANDARDS.md rule 2) -------
+
+def batch_file_names_spelled_out(tree):
+    """String literals, other than docstrings, equal to a ``batch_outputs`` file-name constant.
+    A literal copy still works after the name changes in ``batch_outputs``, but finds no file."""
+    return [f"{text!r}" for text in _code_strings(tree) if text in BATCH_FILE_NAMES]
+
+
+@pytest.mark.parametrize("source", [
+    'path = run_dir / "per_edge_morphometry.csv"',
+    "np.save(cache / 'skeleton.npy', array)",
+    'NAME = "network_graph.pkl"',
+], ids=["a path join", "single quotes", "a local constant"])
+def test_the_name_check_flags_a_batch_file_name_spelled_out(source):
+    assert batch_file_names_spelled_out(ast.parse(source)) != []
+
+
+@pytest.mark.parametrize("source", [
+    '"""Reads per_edge_morphometry.csv."""',
+    "def f():\n    '''Writes skeleton.npy.'''",
+    'pytest.raises(ValueError, match=r"A.*per_edge_morphometry.csv has no rows")',
+    'path = out / f"{stem}_skeleton.npy"',
+    "path = run_dir / EDGE_TABLE_NAME",
+], ids=["module docstring", "function docstring", "inside a longer string", "an f-string part",
+        "the constant"])
+def test_the_name_check_passes_text_that_only_mentions_a_name(source):
+    assert batch_file_names_spelled_out(ast.parse(source)) == []
+
+
+def test_the_name_check_knows_every_batch_file_name():
+    """The check reads its names from ``batch_outputs``; a renamed or dropped constant would
+    shrink it silently, so the constants it finds are listed here by name."""
+    assert {name for name, value in vars(batch_outputs).items()
+            if name.endswith("_NAME") and isinstance(value, str)} == {
+        "EDGE_TABLE_NAME", "GRAPH_NAME", "SKELETON_NAME", "VESSEL_MASK_NAME",
+        "VESSELS_VTP_NAME", "NODES_VTP_NAME", "VESSEL_MASK_VTI_NAME", "ROI_RECORD_NAME"}
+
+
+# The reader drivers, the pipeline that writes the files, and every test.
+NAME_CHECKED = ([EXAMPLES / name for name in ON_THE_READER]
+                + [EXAMPLES / "carotid_image_to_model.py"]
+                + sorted(TESTS.rglob("*.py")))
+
+
+@pytest.mark.parametrize("path", NAME_CHECKED, ids=lambda p: str(p.relative_to(p.parents[1])))
+def test_no_batch_file_name_is_spelled_out_outside_batch_outputs(path):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    assert batch_file_names_spelled_out(tree) == [], (
+        f"{path.name} spells out batch-run file names; import them from ImageLynx.batch_outputs.")

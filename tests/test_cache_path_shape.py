@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from ImageLynx import cb_settings
+from ImageLynx.batch_outputs import GRAPH_NAME, SKELETON_NAME, VESSEL_MASK_NAME
 from ImageLynx.graph.boundaries import select_boundary_terminal_nodes_by_face
 
 C = pytest.importorskip("carotid_image_to_model")
@@ -40,9 +41,9 @@ def _cache(tmp_path, G=None):
     config.pre_generated_mask_and_skeleton = True
     cache_dir = tmp_path / "dummy_cache"
     cache_dir.mkdir(parents=True)
-    np.save(cache_dir / "vessel_mask.npy", np.zeros(SHAPE, dtype=np.uint8))
-    np.save(cache_dir / "skeleton.npy", np.zeros(SHAPE, dtype=bool))
-    with open(cache_dir / "network_graph.pkl", "wb") as f:
+    np.save(cache_dir / VESSEL_MASK_NAME, np.zeros(SHAPE, dtype=np.uint8))
+    np.save(cache_dir / SKELETON_NAME, np.zeros(SHAPE, dtype=bool))
+    with open(cache_dir / GRAPH_NAME, "wb") as f:
         pickle.dump(G if G is not None else nx.MultiGraph(), f)
     return config
 

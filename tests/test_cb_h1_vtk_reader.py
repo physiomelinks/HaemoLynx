@@ -15,7 +15,7 @@ import pytest
 pv = pytest.importorskip("pyvista")
 
 import cb_h1_vtk  # noqa: E402
-from ImageLynx.batch_outputs import EDGE_TABLE_NAME, BatchRun  # noqa: E402
+from ImageLynx.batch_outputs import EDGE_TABLE_NAME, VESSELS_VTP_NAME, BatchRun  # noqa: E402
 
 EDGES = [(0, 1, 0), (1, 2, 0), (1, 2, 1)]
 
@@ -40,7 +40,7 @@ def _run(tmp_path, cell_keys, edges, **arrays):
     mesh.cell_data["edge_u"], mesh.cell_data["edge_v"], mesh.cell_data["edge_key"] = u, v, k
     for name, values in arrays.items():
         mesh.cell_data[name] = np.asarray(values, dtype=float)
-    mesh.save(tmp_path / "resistance_network_vessels.vtp")
+    mesh.save(tmp_path / VESSELS_VTP_NAME)
 
     fields = ["u", "v", "key", *_row("0")]
     with (tmp_path / EDGE_TABLE_NAME).open("w", newline="") as handle:

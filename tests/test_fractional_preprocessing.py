@@ -14,6 +14,7 @@ from carotid_image_to_model import (
     PipelineConfig,
     _preprocess_local_mask
 )
+from ImageLynx.batch_outputs import GRAPH_NAME, SKELETON_NAME, VESSEL_MASK_NAME
 from ImageLynx.pipeline.map_reduce import map_reduce_pipeline
 
 def test_local_worker_margin_stripping():
@@ -185,7 +186,7 @@ def test_skeleton_boundary_continuity():
 
 def test_cache_saving_on_full_run(tmp_path):
     """Verify that the holy trinity cache is created on a standard run."""
-    from carotid_image_to_model import carotid_image_to_model, PipelineConfig
+    from carotid_image_to_model import carotid_image_to_model
     
     # We will run the pipeline with dummy data and exit early after skeletonization
     config = PipelineConfig()
@@ -210,16 +211,16 @@ def test_cache_saving_on_full_run(tmp_path):
         
         carotid_image_to_model("dummy.tif", pipeline_config=config)
         
-        cache_dir = tmp_path / "dummy_network".replace("dummy_network", "dummy_cache")
-        # Wait, vtk_output_prefix is dummy_network. parent is tmp_path. stem is dummy. So it will be dummy_cache!
+        # The cache sits beside vtk_output_prefix, named after the image stem.
+        cache_dir = tmp_path / "dummy_cache"
         assert cache_dir.exists(), "Cache directory was not created!"
-        assert (cache_dir / "vessel_mask.npy").exists(), "vessel_mask.npy was not cached!"
-        assert (cache_dir / "skeleton.npy").exists(), "skeleton.npy was not cached!"
-        assert (cache_dir / "network_graph.pkl").exists(), "network_graph.pkl was not cached!"
+        assert (cache_dir / VESSEL_MASK_NAME).exists(), f"{VESSEL_MASK_NAME} was not cached!"
+        assert (cache_dir / SKELETON_NAME).exists(), f"{SKELETON_NAME} was not cached!"
+        assert (cache_dir / GRAPH_NAME).exists(), f"{GRAPH_NAME} was not cached!"
 
 def test_pipeline_short_circuit_loads_cache(tmp_path):
     """Verify that providing the cache dir flag bypasses all heavy processing."""
-    from carotid_image_to_model import carotid_image_to_model, PipelineConfig
+    from carotid_image_to_model import carotid_image_to_model
     
     config = PipelineConfig()
     config.vtk_output_prefix = tmp_path / "dummy_network"
@@ -229,10 +230,10 @@ def test_pipeline_short_circuit_loads_cache(tmp_path):
     # Create the mock cache
     cache_dir = tmp_path / "dummy_cache"
     cache_dir.mkdir(parents=True)
-    np.save(cache_dir / "vessel_mask.npy", np.zeros((10,10,10), dtype=np.uint8))
-    np.save(cache_dir / "skeleton.npy", np.zeros((10,10,10), dtype=bool))
+    np.save(cache_dir / VESSEL_MASK_NAME, np.zeros((10,10,10), dtype=np.uint8))
+    np.save(cache_dir / SKELETON_NAME, np.zeros((10,10,10), dtype=bool))
     import pickle
-    with open(cache_dir / "network_graph.pkl", "wb") as f:
+    with open(cache_dir / GRAPH_NAME, "wb") as f:
         import networkx as nx
         pickle.dump(nx.Graph(), f)
         
@@ -252,7 +253,7 @@ def test_pipeline_short_circuit_loads_cache(tmp_path):
 
 def test_missing_cache_raises_error(tmp_path):
     """Verify failsafe triggers if the cache is missing but flag is True."""
-    from carotid_image_to_model import carotid_image_to_model, PipelineConfig
+    from carotid_image_to_model import carotid_image_to_model
     
     config = PipelineConfig()
     config.vtk_output_prefix = tmp_path / "dummy_network"

@@ -36,7 +36,7 @@ def _placement(specimen_id, centre=CENTRE):
 
 
 def _write_edge_table(run_dir, rows):
-    with (run_dir / "per_edge_morphometry.csv").open("w", newline="") as handle:
+    with (run_dir / batch_outputs.EDGE_TABLE_NAME).open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(COLUMNS)
         for u, v, key, diameter in rows:
@@ -58,14 +58,14 @@ def batch_run(tmp_path, monkeypatch):
     G = nx.MultiGraph()
     for u, v, key, _ in EDGES:
         G.add_edge(u, v, key=key, length=10.0 * (u + 1))
-    with (cache / "network_graph.pkl").open("wb") as handle:
+    with (cache / batch_outputs.GRAPH_NAME).open("wb") as handle:
         pickle.dump(G, handle)
     _write_edge_table(run_dir, EDGES)
 
     skeleton = np.zeros(SIZE, dtype=np.uint8)
     skeleton[2, 3, :] = 1
-    np.save(cache / "skeleton.npy", skeleton)
-    np.save(cache / "vessel_mask.npy", np.ones(SIZE, dtype=bool))
+    np.save(cache / batch_outputs.SKELETON_NAME, skeleton)
+    np.save(cache / batch_outputs.VESSEL_MASK_NAME, np.ones(SIZE, dtype=bool))
 
     th_path = tmp_path / "TEST_TH_ilastik_Probabilities.h5"
     glomus = _glomus_probabilities()
@@ -106,7 +106,7 @@ def test_a_run_cut_anywhere_but_the_placed_roi_is_refused_before_anything_else(b
     moved = _placement(batch_run.specimen.specimen_id, centre=(7, 4, 5))
     write_roi_record(batch_run.run_dir, roi_record(moved, SHAPE, centred=False))
     (batch_run.run_dir / "second_cache").mkdir()
-    (batch_run.run_dir / "per_edge_morphometry.csv").write_text("not,a\nvalid table")
+    (batch_run.run_dir / batch_outputs.EDGE_TABLE_NAME).write_text("not,a\nvalid table")
 
     with pytest.raises(ValueError, match="place_roi now gives"):
         open_batch_run(batch_run.specimen)
@@ -210,7 +210,7 @@ def test_the_join_is_strictly_one_to_one(batch_run, rows, message):
 
 
 def test_the_edge_table_and_masks_never_unpickle_the_graph(batch_run):
-    (batch_run.cache / "network_graph.pkl").write_bytes(b"not a pickle")
+    (batch_run.cache / batch_outputs.GRAPH_NAME).write_bytes(b"not a pickle")
     run = open_batch_run(batch_run.specimen)
     run.edge_table()
     run.skeleton()

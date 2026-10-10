@@ -40,7 +40,8 @@ import pyvista as pv
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ImageLynx.artefact_provenance import read_provenance          # noqa: E402
-from ImageLynx.batch_outputs import open_batch_run                  # noqa: E402
+from ImageLynx.batch_outputs import (NODES_VTP_NAME, VESSEL_MASK_VTI_NAME,  # noqa: E402
+                                     VESSELS_VTP_NAME, open_batch_run)
 from ImageLynx.specimens import PROCESSING_VOXEL_UM, SPECIMENS     # noqa: E402
 from ImageLynx import cb_settings                                 # noqa: E402
 
@@ -99,7 +100,7 @@ def enrich_vessels(run, edges, report):
     non-finite number in a matched row (read through ``BatchRun.numeric_column``), rather than
     being written as NaN, 0 or "" and read in ParaView as a measurement.
     """
-    src = run.run_dir / "resistance_network_vessels.vtp"
+    src = run.run_dir / VESSELS_VTP_NAME
     if not src.exists():
         return None
     mesh = pv.read(src)
@@ -145,7 +146,7 @@ def enrich_vessels(run, edges, report):
 
 
 def build_nodes(run, edges, report):
-    src = run.run_dir / "resistance_network_nodes.vtp"
+    src = run.run_dir / NODES_VTP_NAME
     if not src.exists():
         return None
     mesh = pv.read(src)
@@ -177,7 +178,7 @@ def build_skeleton(run, report):
 
 
 def build_surface(run, report, smoothing=30):
-    src = run.run_dir / "resistance_network_vessel_mask.vti"
+    src = run.run_dir / VESSEL_MASK_VTI_NAME
     if not src.exists():
         return None, None
     grid = pv.read(src)

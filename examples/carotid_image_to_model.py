@@ -11,7 +11,6 @@ import tifffile
 import numpy as np
 import networkx as nx
 from dataclasses import dataclass, field
-import pickle
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -23,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 from ImageLynx import cb_settings, graph, haemodynamics, io, preprocessing, specimens, statistics, visualization
+from ImageLynx.batch_outputs import EDGE_TABLE_NAME, GRAPH_NAME, SKELETON_NAME, VESSEL_MASK_NAME
 from ImageLynx.haemodynamics.resistance import PASCALS_PER_MMHG, POISEUILLE_FLOW_TO_UM3_PER_S
 
 #: The pipeline's pressure unit, mPa, per mmHg. HaemodynamicsConfig holds its pressures in mPa.
@@ -1486,7 +1486,7 @@ def _export_and_solve_haemodynamics(G, image, binary, starting_nodes, output_nod
     # smoothing and reconnection columns are each inhomogeneous in ways that matter.
     per_edge = statistics.export_per_edge_morphometry(G, node_positions=node_positions)
     per_edge_path = statistics.write_per_edge_morphometry_csv(
-        per_edge, pipeline_config.vtk_output_prefix.parent / "per_edge_morphometry.csv")
+        per_edge, pipeline_config.vtk_output_prefix.parent / EDGE_TABLE_NAME)
     print(f"  Per-edge morphometry: {len(per_edge)} edges -> {per_edge_path}")
     for column in ("diameter_provenance", "centreline_smoothing"):
         counts = {}
@@ -1718,12 +1718,12 @@ def carotid_image_to_model(image_path: Path | str,
                 "fwhm_radius measures diameters on image intensities, and the cache holds only the "
                 "mask. Run without --use-cache-dir, or use edt_radius.")
 
-        mask_path = cache_dir / "vessel_mask.npy"
-        skeleton_path = cache_dir / "skeleton.npy"
-        graph_path = cache_dir / "network_graph.pkl"
+        mask_path = cache_dir / VESSEL_MASK_NAME
+        skeleton_path = cache_dir / SKELETON_NAME
+        graph_path = cache_dir / GRAPH_NAME
         
         if not (mask_path.exists() and skeleton_path.exists() and graph_path.exists()):
-            raise FileNotFoundError(f"Cache directory {cache_dir} is incomplete. Expected vessel_mask.npy, skeleton.npy, and network_graph.pkl.")
+            raise FileNotFoundError(f"Cache directory {cache_dir} is incomplete. Expected {VESSEL_MASK_NAME}, {SKELETON_NAME}, and {GRAPH_NAME}.")
             
         print(f"\n--- [Phase 4] Short-Circuiting Pipeline. Loading artifacts from {cache_dir} ---")
         binary = np.load(mask_path)
@@ -1744,9 +1744,9 @@ def carotid_image_to_model(image_path: Path | str,
         
     else:
         # We will write to the cache dir
-        mask_path = cache_dir / "vessel_mask.npy"
-        skeleton_path = cache_dir / "skeleton.npy"
-        graph_path = cache_dir / "network_graph.pkl"
+        mask_path = cache_dir / VESSEL_MASK_NAME
+        skeleton_path = cache_dir / SKELETON_NAME
+        graph_path = cache_dir / GRAPH_NAME
         cache_dir.mkdir(parents=True, exist_ok=True)
 
     projection_path = pipeline_config.plot_dir / "skeleton_projection.png"

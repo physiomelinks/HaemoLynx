@@ -28,13 +28,18 @@ import numpy as np
 
 from . import cb_settings
 from .io.load import read_ilastik_probabilities
-from .roi_placement import check_output_roi, place_roi
+# ROI_RECORD_NAME is defined by the module that writes the record; it is a batch-run file too.
+from .roi_placement import ROI_RECORD_NAME, check_output_roi, place_roi  # noqa: F401
 from .specimens import TH_CHANNEL
 
 EDGE_TABLE_NAME = "per_edge_morphometry.csv"
 GRAPH_NAME = "network_graph.pkl"
 SKELETON_NAME = "skeleton.npy"
 VESSEL_MASK_NAME = "vessel_mask.npy"
+# The pipeline's VTK exports of the network and the mask, in the run folder.
+VESSELS_VTP_NAME = "resistance_network_vessels.vtp"
+NODES_VTP_NAME = "resistance_network_nodes.vtp"
+VESSEL_MASK_VTI_NAME = "resistance_network_vessel_mask.vti"
 DIAMETER = "assigned_diameter_um"
 
 
