@@ -549,6 +549,7 @@ def _judge_dead_ends(
 
     from ._helpers import edge_id, edge_sample_points
     from .assemble import mask_continues_past
+    from .prune import _chain
 
     support, node_pos, index, step = neighbours.support, neighbours.node_pos, neighbours.index, neighbours.step
     extent = (np.asarray(support.mask.shape, dtype=float) - 1.0) * np.asarray(support.voxel_size_zyx)
@@ -589,10 +590,24 @@ def _judge_dead_ends(
         norm = float(np.linalg.norm(outward))
         if norm > 0 and continues(tip, outward / norm):
             dead_ends["mask_continues"].append(node)
-        parent_radius = float(support.radius(node_pos[other].reshape(1, 3))[0])
-        length = float(data.get("length") or _sample_weights(path).sum())
-        if parent_radius > 0 and length < stub_radius_multiple * parent_radius:
-            dead_ends["short"].append(node)
+        # As the stub prune judges a stub (prune._chain): the whole chain from
+        # the tip through degree-2 nodes to the junction it hangs from -- a
+        # thick-vessel bridge included -- against the radius there. Its last
+        # edge alone read short wherever the thick-vessel split had cut the
+        # chain at the fat region's edge (25 of E14.5's 49 "short" dead ends).
+        chain_nodes, chain_edges = _chain(G, node)
+        junction = chain_nodes[-1]
+        if G.degree[junction] > 1 and junction in node_pos:
+            parent_radius = float(support.radius(node_pos[junction].reshape(1, 3))[0])
+            length = 0.0
+            for a, b, k in chain_edges:
+                piece = G.edges[a, b, k] if G.is_multigraph() else G.edges[a, b]
+                length += float(
+                    piece.get("length")
+                    or _sample_weights(_densify(edge_sample_points(a, b, piece, node_pos), step)).sum()
+                )
+            if parent_radius > 0 and length < stub_radius_multiple * parent_radius:
+                dead_ends["short"].append(node)
     return {"dead_ends": dead_ends, "at_image_face": at_face, "interior": interior, "isolated": isolated}
 
 
@@ -675,8 +690,10 @@ def diagnose_lumen_artefacts(
       vessel's lumen; at least half of it beside another centreline in the
       same lumen; less than half of it in the mask; the mask running on past
       its tip (``assemble.mask_continues_past``); shorter than
-      *stub_radius_multiple* radii of the vessel it leaves. Isolated single
-      edges are counted apart. :func:`classify_dead_ends` lists them alone.
+      *stub_radius_multiple* radii of the vessel it leaves -- the whole chain,
+      tip to junction through degree-2 nodes and any thick-vessel bridge,
+      against the radius at that junction, as the stub prune judges it.
+      Isolated single edges are counted apart. :func:`classify_dead_ends` lists them alone.
 
     *mask_support*, a ``MaskSupport`` over *mask*, is used in place of
     building one; without one *mask* is binarised as the loaders do.

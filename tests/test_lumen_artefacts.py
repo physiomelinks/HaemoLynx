@@ -221,3 +221,41 @@ def test_each_tip_carries_its_own_kinds_and_a_real_branch_none():
     assert "short" in kinds[tips["short"]]
     assert kinds[tips["inside_other_lumen"]][0] == "inside_other_lumen"
     assert set(kinds) == set(tips.values())
+
+
+def _dead_end_through_a_bridge():
+    """A 2 um trunk along x with a branch off it at x = 30: a zero-resistance
+    bridge from the trunk's centreline (y = 10) to a wide opening (y = 14, a
+    4 um ball), then 8 um of vessel to its tip -- one dead end in two edges,
+    as the thick-vessel split leaves a capillary opening into a fat vessel."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+    from lumen_artefact_fixtures import capsule
+
+    mask = np.zeros((11, 30, 60), dtype=bool)
+    capsule(mask, (5, 10, -5), (5, 10, 65), 2)
+    capsule(mask, (5, 14, 30), (5, 14, 30), 4)
+    capsule(mask, (5, 14, 30), (5, 22, 30), 1.5)
+    G = polyline_graph([
+        [(5, 10, 0), (5, 10, 30)], [(5, 10, 30), (5, 10, 59)],
+        [(5, 10, 30), (5, 14, 30)], [(5, 14, 30), (5, 22, 30)],
+    ])
+    for u, v, key in G.edges(keys=True):
+        if {u, v} == {(5.0, 10.0, 30.0), (5.0, 14.0, 30.0)}:
+            G.edges[u, v, key][IS_ZERO_RESISTANCE] = True
+    return mask, G, (5.0, 22.0, 30.0)
+
+
+def test_a_dead_end_is_judged_short_as_its_whole_chain_as_the_prune_judges_it():
+    """Regression: the report read a dead end's last edge alone, against the
+    radius at the node it ended on. Where the thick-vessel split had cut the
+    chain at the fat region's edge, that was 8 um of vessel against a 4 um
+    opening -- short -- although the stub prune, judging the chain to its
+    junction (12 um against the 2 um trunk), had rightly kept it: 25 of
+    E14.5's 49 "short" dead ends."""
+    mask, G, tip = _dead_end_through_a_bridge()
+
+    report = _report(mask, G, stub_radius_multiple=3.0)
+
+    assert tip not in report["dead_ends"]["short"]
+    # The same chain, judged against a radius multiple it does not reach, is.
+    assert tip in _report(mask, G, stub_radius_multiple=7.0)["dead_ends"]["short"]
