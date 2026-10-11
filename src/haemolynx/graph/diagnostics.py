@@ -574,10 +574,18 @@ def _judge_dead_ends(
             continue
         if 2 * int(np.count_nonzero(support.inside(path))) < len(path):
             dead_ends["off_mask"].append(node)
-        own = neighbours.ids.get(edge_id(node, other, key))
+        # A dead end is its whole chain, tip to junction through degree-2
+        # nodes and any thick-vessel bridge, as the stub prune reads it
+        # (prune._chain): the tip lies in no lumen of its own chain. Leaving
+        # out its last edge alone, a tip read as inside the lumen of its own
+        # opening into a fat vessel, cut off by the thick-vessel split (15
+        # of E14.5's 21 tips "in another lumen").
+        chain_nodes, chain_edges = _chain(G, node)
+        own_chain = [neighbours.ids.get(edge_id(a, b, k)) for a, b, k in chain_edges]
         near = neighbours.other_points_near(
-            tip.reshape(1, 3), own, 2.0 * float(support.radius(tip.reshape(1, 3))[0]) + 30.0
+            tip.reshape(1, 3), None, 2.0 * float(support.radius(tip.reshape(1, 3))[0]) + 30.0
         )
+        near = near[~np.isin(neighbours.owners[near], [i for i in own_chain if i is not None])]
         if len(near):
             distance = np.linalg.norm(index.points[near] - tip, axis=1)
             nearest = index.points[near[int(np.argmin(distance))]].reshape(1, 3)
@@ -590,12 +598,10 @@ def _judge_dead_ends(
         norm = float(np.linalg.norm(outward))
         if norm > 0 and continues(tip, outward / norm):
             dead_ends["mask_continues"].append(node)
-        # As the stub prune judges a stub (prune._chain): the whole chain from
-        # the tip through degree-2 nodes to the junction it hangs from -- a
-        # thick-vessel bridge included -- against the radius there. Its last
-        # edge alone read short wherever the thick-vessel split had cut the
-        # chain at the fat region's edge (25 of E14.5's 49 "short" dead ends).
-        chain_nodes, chain_edges = _chain(G, node)
+        # Short as the stub prune judges a stub: the whole chain against the
+        # radius at its junction. Its last edge alone read short wherever the
+        # thick-vessel split had cut the chain at the fat region's edge (25 of
+        # E14.5's 49 "short" dead ends).
         junction = chain_nodes[-1]
         if G.degree[junction] > 1 and junction in node_pos:
             parent_radius = float(support.radius(node_pos[junction].reshape(1, 3))[0])
@@ -687,7 +693,8 @@ def diagnose_lumen_artefacts(
       ``lumen_loops.loop_inside_one_lumen`` says run round no tissue.
     - **Dead ends** further than *image_face_margin_um* from every image
       face, by kind (one dead end can be several): its tip inside another
-      vessel's lumen; at least half of it beside another centreline in the
+      vessel's lumen (not one of its own chain's, a thick-vessel bridge
+      included); at least half of it beside another centreline in the
       same lumen; less than half of it in the mask; the mask running on past
       its tip (``assemble.mask_continues_past``); shorter than
       *stub_radius_multiple* radii of the vessel it leaves -- the whole chain,

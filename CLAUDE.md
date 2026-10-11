@@ -374,7 +374,16 @@ are only caught locally.
   pairs in one lumen from 94 to 126). `lumen_cleanup` builds what it reads from the build's own
   settings, so `build_network` runs it again after smoothing. E14.5 settles in 9 rounds
   (`CONSOLIDATION_MAX_ROUNDS` is 12): pairs in one lumen 124 -> 9 (all kept by the guard), loops
-  inside one lumen 12 -> 0, at a cost of 1.9 points of mask coverage and ~35 s.
+  inside one lumen 12 -> 0, at a cost of 1.9 points of mask coverage and ~35 s. A round after
+  the first re-judges only what changed: the pair check keeps each edge's verdict between rounds
+  (`diagnose_parallel_duplicates_in_lumen(memo=)`; an edge is judged again only when it, or a
+  centreline within the reach it is judged over, was added, changed or removed -- its verdict
+  reads nothing else), and the lumen-radius lookup graph building makes remembers the voxels it
+  has measured (`pointwise_distance.FeatureDistance(remember=)`, up to `LUMEN_RADII_REMEMBERED`;
+  off by default, since the low-RAM blockwise EDT visits each voxel once and would only pay its
+  memory). On E14.5 the build went 339 -> 255 s with the graph unchanged node for node. Mask
+  recovery is now the slow step (~134 s): routing its joins through the mask and finding the
+  uncovered mask, not tracing its pieces (Lee thinning there is ~5 s).
 - **Mask-supported bridging** (`preprocessing/bridge_mask_support.py`, `bridge_require_mask_support`,
   on by default) — with the segmented mask, nothing that joins two pieces of skeleton or graph
   (closing and `bridge_gaps`, a bundle hub's links, `connect_skeleton_components`, and graph
@@ -386,7 +395,9 @@ are only caught locally.
   already in the same lumen is refused too (`MaskSupport.shadows`, the ends excluded so a branch
   meeting its parent is not one), so no reconnect draws one segmented vessel twice;
   `graph.diagnose_lumen_artefacts` reports any pair that does -- with loops inside one lumen and
-  dead ends by kind -- in `build_network`'s graph checks, on the graph that is saved. A graph bridge records `bridge_kind` and `bridge_background_um`. Closing and gap
+  dead ends by kind, each judged as its whole chain to its junction as the stub prune judges it
+  (short by the chain's length; its tip in another lumen only if not in one of its own chain's,
+  a thick-vessel bridge included) -- in `build_network`'s graph checks, on the graph that is saved. A graph bridge records `bridge_kind` and `bridge_background_um`. Closing and gap
   filling held to the mask can grow a thin vessel into a rod Lee thinning erases outright, so a
   piece of skeleton thinned away entirely is put back as it was. The stub prunes judge a dead end
   as its whole chain, tip to the junction it hangs from (length summed, the parent radius read at

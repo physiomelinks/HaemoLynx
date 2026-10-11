@@ -259,3 +259,29 @@ def test_a_dead_end_is_judged_short_as_its_whole_chain_as_the_prune_judges_it():
     assert tip not in report["dead_ends"]["short"]
     # The same chain, judged against a radius multiple it does not reach, is.
     assert tip in _report(mask, G, stub_radius_multiple=7.0)["dead_ends"]["short"]
+
+
+def test_a_tip_is_never_inside_its_own_chains_lumen():
+    """Regression: the report left out a dead end's last edge alone, so a
+    tip 3 um beyond the 4 um opening the thick-vessel split cut off as a
+    bridge read as inside "another" lumen -- its own (15 of E14.5's 21)."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+    from lumen_artefact_fixtures import capsule
+
+    mask = np.zeros((11, 30, 60), dtype=bool)
+    capsule(mask, (5, 10, -5), (5, 10, 65), 2)
+    capsule(mask, (5, 14, 30), (5, 14, 30), 4)
+    capsule(mask, (5, 14, 30), (5, 17, 30), 1.5)
+    G = polyline_graph([
+        [(5, 10, 0), (5, 10, 30)], [(5, 10, 30), (5, 10, 59)],
+        [(5, 10, 30), (5, 14, 30)], [(5, 14, 30), (5, 17, 30)],
+    ])
+    for u, v, key in G.edges(keys=True):
+        if {u, v} == {(5.0, 10.0, 30.0), (5.0, 14.0, 30.0)}:
+            G.edges[u, v, key][IS_ZERO_RESISTANCE] = True
+    tip = (5.0, 17.0, 30.0)
+
+    report = _report(mask, G)
+
+    assert report["interior_dead_ends"] == 1, "the branch is the one dead end judged"
+    assert tip not in report["dead_ends"]["inside_other_lumen"]
