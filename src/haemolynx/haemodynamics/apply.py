@@ -636,10 +636,41 @@ def assign_edge_diameters(
     independent of that fallback -- reordering which measurement runs
     first changes neither, since EDT never reads anything FWHM produces.
 
+    A zero-resistance bridge is not measured, and nothing is learnt from
+    it: it is the radius of a thick vessel, not a vessel. Diameters are
+    measured on the vessels alone, and each bridge then takes the diameter
+    of the widest vessel at its ends -- the thick vessel it reaches into --
+    with ``diameter_source`` ``"bridge"``; its resistance is set apart
+    anyway (:func:`apply_final_resistance_overrides`).
+
     Returns the graph, a summary, and the raw FWHM intensity volume when a
     FWHM path is set.
     """
     clear_edge_resistances(G)
+    bridges = [
+        (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
+        if data.get(IS_ZERO_RESISTANCE)
+    ]
+    if bridges:
+        def not_a_bridge(edge_list):
+            if edge_list is None:
+                return None
+            return [e for e in edge_list if not G.edges[tuple(e)].get(IS_ZERO_RESISTANCE)]
+
+        vessels = G.edge_subgraph(
+            (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
+            if not data.get(IS_ZERO_RESISTANCE)
+        )
+        _vessels, summary, raw_volume = assign_edge_diameters(
+            vessels,
+            config,
+            mask_volume=mask_volume,
+            edges=not_a_bridge(edges),
+            calibration_edges=not_a_bridge(calibration_edges),
+        )
+        _stamp_bridge_diameters(G, bridges, default_diameter=float(config.diameter("default_diameter", 4.0)))
+        summary["bridges"] = len(bridges)
+        return G, summary, raw_volume
     summary: dict[str, Any] = {}
     loaded_mask: np.ndarray | None = None
     edges = None if edges is None else [tuple(edge) for edge in edges]
@@ -664,6 +695,23 @@ def assign_edge_diameters(
     finally:
         if isinstance(loaded_mask, np.memmap):
             release_memmap_array(loaded_mask)
+
+
+def _stamp_bridge_diameters(
+    G: nx.MultiGraph, bridges: list[tuple[Any, Any, Any]], *, default_diameter: float
+) -> None:
+    """Each bridge the diameter of the widest vessel at its ends."""
+    for u, v, key in bridges:
+        widths = [
+            float(data["diameter_um"])
+            for node in (u, v)
+            for _a, _b, data in G.edges(node, data=True)
+            if not data.get(IS_ZERO_RESISTANCE)
+            and positive_diameter_um(data.get("diameter_um")) is not None
+        ]
+        data = G.edges[u, v, key]
+        data["diameter_um"] = max(widths) if widths else float(default_diameter)
+        data["diameter_source"] = "bridge"
 
 
 def _assign_edge_diameters_binarised(

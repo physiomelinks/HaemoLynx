@@ -1292,3 +1292,30 @@ def test_emergence_angle_counts_a_bridging_edge_only_once():
     assert angles["BO5"]["Emergence Angle Sample Count"] == 1
     assert angles["BO6"]["Emergence Angle Sample Count"] == 1
     assert angles["Ven2"]["Emergence Angle Sample Count"] == 1
+
+
+def test_statistics_leave_zero_resistance_bridges_out():
+    """A bridge is not a vessel: not counted, not in the length, and a vessel
+    opening into a thick vessel meets its centreline directly; the bridges
+    are reported on their own. Per-vessel results still land on the graph."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    G = nx.MultiGraph()
+    for node, pos in {0: (0, 0, 0), 1: (0, 0, 40), 2: (0, 0, 80), 3: (0, 9, 40), 4: (0, 40, 40)}.items():
+        G.add_node(node, pos=np.asarray(pos, float))
+    for u, v, length in ((0, 1, 40.0), (1, 2, 40.0), (3, 4, 31.0)):
+        G.add_edge(u, v, length=length, voxels=[G.nodes[u]["pos"].tolist(), G.nodes[v]["pos"].tolist()])
+    G.add_edge(1, 3, length=9.0, voxels=[[0, 0, 40], [0, 9, 40]], **{IS_ZERO_RESISTANCE: True})
+
+    stats = compute_comprehensive_vessel_statistics(
+        G, enabled_measures=frozenset({"basic", "strahler"}), inlet_nodes=[0], outlet_nodes=[2]
+    )
+
+    assert stats["Total Edges"] == 3
+    assert stats["Total Nodes"] == 4
+    assert stats["Total Edge Length (microns)"] == pytest.approx(111.0)
+    assert stats["Zero-resistance Bridges (not counted as vessels)"] == 1
+    assert stats["Zero-resistance Bridge Length (microns)"] == pytest.approx(9.0)
+    assert "strahler_order" in G.edges[3, 4, 0]
+    assert "strahler_order" not in G.edges[1, 3, 0]
+    assert G.number_of_edges() == 4, "the graph itself keeps its bridge"

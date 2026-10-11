@@ -1262,21 +1262,23 @@ def build_network(
                         debug=settings["verbose_logging"],
                     ),
                 )
+        # Last thing before the graph is saved, after every topology step and
+        # the centreline smoothing above: a vessel joined to a thick one runs
+        # on through its lumen with no marker of where the vessel ends and the
+        # thick vessel begins. Each gets one bridge, from where it enters the
+        # lumen (the segmentation's radius round the thick centreline) to that
+        # centreline -- see graph.insert_thick_vessel_junction_nodes. Done
+        # once, on the fully-built graph, so nothing has to protect it through
+        # the degree-2/collapse/prune passes.
+        if volume.thick_vessel_mask is not None:
+            G = graph.insert_thick_vessel_junction_nodes(
+                G, volume.thick_vessel_mask, voxel_size_zyx=voxel_size_zyx,
+                segmentation=binary_mask,
+            )
+
         if binary_mask is not None:
             preprocessing.release_superseded(binary_mask, G, keep=image)
             binary_mask = radius_at = None
-
-        # Last thing before the graph is saved, after every topology step and
-        # the centreline smoothing above: a thin-vessel-to-fat-vessel join
-        # became one merged edge running through the fat interior with no
-        # marker of where the real thin vessel ends and the fat vessel's own
-        # centreline begins. Splitting here, once, on the fully-built graph
-        # avoids protecting anything through five separate degree-2/collapse/
-        # prune passes -- see graph.insert_thick_vessel_junction_nodes.
-        if volume.thick_vessel_mask is not None:
-            G = graph.insert_thick_vessel_junction_nodes(
-                G, volume.thick_vessel_mask, voxel_size_zyx=voxel_size_zyx
-            )
 
         with graph_path.open("wb") as f:
             pickle.dump(G, f)
@@ -2628,9 +2630,12 @@ def _bridge_edited_vessels(
             if data.get(graph.IS_ZERO_RESISTANCE) and data.get(graph.post_processing.EDITED)
         )
 
+    segmentation = None
+    if network is not None and network.volume.image is not None:
+        segmentation = _to_binary_volume_for_skeletonization(network.volume.image)
     before = edited_bridges(G)
     bridged = graph.insert_thick_vessel_junction_nodes(
-        G, mask, voxel_size_zyx=voxel_size_zyx, edges=edited
+        G, mask, voxel_size_zyx=voxel_size_zyx, edges=edited, segmentation=segmentation
     )
     added = edited_bridges(bridged) - before
     if added:

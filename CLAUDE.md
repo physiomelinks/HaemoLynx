@@ -625,9 +625,32 @@ are only caught locally.
   when the tree is past the bridge cap -- aimed at whatever was nearest, a second capillary joined
   the first one's bridge by the wall and the bridges ran side by side through the fat lumen, 21 of
   E14.5's 33 pairs in one lumen); `thick_vessel_braid_guard.py` flags braided segments that
-  remain. `graph/thick_vessel_junctions.py` then splits each joined
-  edge where it crosses the fat-mask boundary and tags the part inside as an `IS_ZERO_RESISTANCE`
-  bridge — the small vessel opening into the lumen, not vessel material (see `apply.py` above).
+  remain. `graph/thick_vessel_junctions.py` (`build_network`'s last step, and `post_process` for
+  hand-edited vessels) then makes the bridges, by Harvey's rules: a thick vessel is its centreline
+  alone, and every vessel opening into it is joined by one `IS_ZERO_RESISTANCE` bridge, straight
+  from where it leaves the thick region (the segmentation within the margin of the large-vessel
+  body: the thick vessel's segmented boundary) to the centreline; a bridge is never a dead end nor
+  attached to one. The centreline is the tree `skeletonize_edt_ridge` draws through the region,
+  found again from the region (9 s on E14.5, so nothing new is carried through resume or a
+  `.haemorun`); a sample is on it within 1.5 um or 30% of the local lumen radius, and a stretch
+  near it counts only if long enough (3 um at an edge's end, 6 um within). Every edge reaching the
+  region is labelled outside / centreline / inside: inside stretches joined through their nodes
+  that lead out of the region and meet the centreline, or come within one lumen radius of it, are
+  removed and each exit gets a straight bridge to where the stretch met the centreline (else the
+  nearest centreline point, within 2 radii + 5 um); a stretch that only skims the region's edge
+  stays vessel, and the thick vessel's own path where its centreline strays off the tree (the
+  shortest way between two places a stretch meets the centreline, or a stretch that never leads
+  out) stays as it is. Stretches under 2 um are flicker. Nothing is ever cut off: a stretch whose
+  removal would disconnect anything is left as it was. A vessel beyond a bridge that ends blind
+  inside the image goes with its bridge (one running out of the image stays). On E14.5: 150
+  bridges, each from the region's boundary to the centreline (median length 1.24 lumen radii),
+  every one leading to a junction or the image's edge, against the old rule's 360 inside pieces of
+  which 44 were radius-shaped; 42 blind vessels (529 um) removed. Bridges are not measured
+  (`assign_edge_diameters` runs on the vessels alone; a bridge takes the widest diameter at its
+  ends, `diameter_source="bridge"`), get no branch order and are no step in one
+  (`graph/branch_order.py`), and statistics contract them (`contract_bridges`: the vessel meets
+  the thick centreline directly, sharing the graph's attribute dicts so per-vessel results land on
+  it) and report them on their own rows. See `PLAN_thick_vessel_bridges.md`.
 - **`optimisation/`** — the panel's **Optimise settings**: a sequential, image-informed search
   over segmentation cleanup, Skeletonise and Graph settings (`search.py`) and, separately, the
   FWHM diameter settings (`fwhm_search.py`). Candidates come from the image itself

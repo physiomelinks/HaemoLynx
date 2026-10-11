@@ -1222,3 +1222,27 @@ def test_an_empty_subset_measures_nothing_and_still_restamps_the_table(monkeypat
     assert seen["fwhm"] == [] and seen["raw_loaded"] == 0
     for (u, v), order in zip(((0, 1), (1, 2), (2, 3), (3, 4)), BRANCH_ORDERS):
         assert graph.edges[u, v, 0]["diameter_um"] == pytest.approx(DIAMETERS[order])
+
+
+def test_a_bridge_is_not_measured_and_takes_the_thick_vessels_diameter():
+    """A zero-resistance bridge is the radius of a thick vessel, not a vessel:
+    the vessels are stamped as without it, and the bridge takes the widest
+    diameter at its ends -- the thick vessel's."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    graph = _network()
+    set_edge_diameter_override(graph[1][2][0], 14.0)
+    last = graph.number_of_nodes()
+    graph.add_node(last, pos=np.asarray([0.0, 7.0, EDGE_LENGTH_UM]))
+    graph.add_edge(1, last, key=0, length=7.0, voxels=[[0.0, 0.0, EDGE_LENGTH_UM], [0.0, 7.0, EDGE_LENGTH_UM]],
+                   **{IS_ZERO_RESISTANCE: True})
+
+    stamped, summary, _raw = assign_edge_diameters(graph, _config())
+
+    bridge = stamped[1][last][0]
+    assert bridge["diameter_source"] == "bridge"
+    widest = max(stamped[0][1][0]["diameter_um"], stamped[1][2][0]["diameter_um"])
+    assert bridge["diameter_um"] == pytest.approx(widest)
+    assert summary["bridges"] == 1
+    assert summary["diameters"]["table"] == stamped.number_of_edges() - 2
+    assert summary["diameters"]["override"] == 1

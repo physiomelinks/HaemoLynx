@@ -12,6 +12,7 @@ import networkx as nx
 import numpy as np
 
 from ._helpers import edge_id
+from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,12 @@ def _compute_node_distances(
     inlet_nodes: list[int],
     stop_nodes: set[int] | None = None,
 ) -> dict[int, int]:
-    """Compute unweighted BFS node distances with optional stop nodes."""
+    """Compute unweighted BFS node distances with optional stop nodes.
+
+    A zero-resistance bridge is no step: it is the radius of the thick vessel
+    a vessel opens into, so the vessel is one order from the thick vessel,
+    not two.
+    """
     stop_nodes = stop_nodes or set()
     node_distances: dict[int, int] = {}
     queue: deque[tuple[int, int]] = deque()
@@ -159,14 +165,19 @@ def _compute_node_distances(
             continue
         if current_node in stop_nodes:
             continue
-        for neighbor in G.neighbors(current_node):
-            new_distance = distance + 1
+        for neighbor, between in G.adj[current_node].items():
+            datas = between.values() if G.is_multigraph() else (between,)
+            step = 0 if all(d.get(IS_ZERO_RESISTANCE) for d in datas) else 1
+            new_distance = distance + step
             if (
                 neighbor not in node_distances
                 or node_distances[neighbor] > new_distance
             ):
                 node_distances[neighbor] = new_distance
-                queue.append((neighbor, new_distance))
+                if step:
+                    queue.append((neighbor, new_distance))
+                else:
+                    queue.appendleft((neighbor, new_distance))
     return node_distances
 
 
@@ -178,7 +189,11 @@ def assign_branch_orders(
     excluded_edges: set[tuple[int, int, int]] | None = None,
     included_edges: set[tuple[int, int, int]] | None = None,
 ) -> dict:
-    """Assign branch-order labels to edges from BFS distance to inlet nodes."""
+    """Assign branch-order labels to edges from BFS distance to inlet nodes.
+
+    A zero-resistance bridge gets none (and loses any it had): it is not a
+    vessel of any order.
+    """
     node_distances = _compute_node_distances(
         G,
         inlet_nodes,
@@ -193,9 +208,14 @@ def assign_branch_orders(
         "branch_order_counts": defaultdict(int),
         "unreachable_edges": [],
         "excluded_edges": 0,
+        "bridges": 0,
     }
 
     for u, v, key, data in G.edges(keys=True, data=True):
+        if data.get(IS_ZERO_RESISTANCE):
+            data.pop("branch_order", None)
+            results["bridges"] += 1
+            continue
         edge_identifier = edge_id(u, v, key)
         if included_edges and edge_identifier not in included_edges:
             results["edges_skipped"] += 1

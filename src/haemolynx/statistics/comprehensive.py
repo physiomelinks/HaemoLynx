@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Union
 
 import networkx as nx
 
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE, contract_bridges
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 
 from .bifurcation import compute_daughter_daughter_angles, compute_murray_law_compliance
@@ -113,6 +114,13 @@ NETWORK_ANALYSIS_MEASURES: frozenset[str] = frozenset(
 )
 
 
+def _as_contracted(nodes: Any, became: dict) -> Any:
+    """Boundary nodes as the graph with its bridges contracted names them."""
+    if nodes is None:
+        return None
+    return list(dict.fromkeys(became.get(n, n) for n in nodes))
+
+
 def compute_comprehensive_vessel_statistics(
     G: Union[nx.Graph, nx.MultiGraph],
     node_positions: Optional[dict] = None,
@@ -167,6 +175,21 @@ def compute_comprehensive_vessel_statistics(
     network spans, and adds the vascular volume fraction.
     """
     assert_no_forbidden_edge_attributes(G, context="vessel statistics")
+    # A zero-resistance bridge is not a vessel: every statistic sees a vessel
+    # opening into a thick vessel meet its centreline directly (the bridge's
+    # two ends one node), and the bridges are reported on their own.
+    bridge_lengths = [
+        float(d.get("length") or 0.0) for *_e, d in G.edges(data=True) if d.get(IS_ZERO_RESISTANCE)
+    ]
+    bridge_rows: Dict[str, Any] = {}
+    if bridge_lengths:
+        G, became = contract_bridges(G)
+        inlet_nodes = _as_contracted(inlet_nodes, became)
+        outlet_nodes = _as_contracted(outlet_nodes, became)
+        bridge_rows = {
+            "Zero-resistance Bridges (not counted as vessels)": len(bridge_lengths),
+            "Zero-resistance Bridge Length (microns)": sum(bridge_lengths),
+        }
     valid_modes = {"fast", "full"}
     if statistics_mode not in valid_modes:
         raise ValueError(
@@ -318,6 +341,7 @@ def compute_comprehensive_vessel_statistics(
     if "flow_hierarchy" in enabled:
         base.update(compute_flow_hierarchy(G))
 
+    base.update(bridge_rows)
     if statistics_mode == "full":
         if "path_efficiency" in enabled:
             base.update(compute_path_efficiency(G, is_mg, max_pairs=None))

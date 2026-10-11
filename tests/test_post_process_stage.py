@@ -287,8 +287,10 @@ def test_an_edit_that_removes_every_inlet_is_refused(tmp_path):
 
 # --- thick-vessel bridges ---------------------------------------------------
 
-#: The thick vessel fills x >= THICK_FROM_UM of a 1-um grid.
+#: The thick vessel, 4 um in radius round y = z = 5, runs from x = THICK_FROM_UM
+#: on through the end of a 1-um grid.
 THICK_FROM_UM = 30.0
+THICK_RADIUS_UM = 4.0
 
 
 def _thick_network():
@@ -306,8 +308,9 @@ def _thick_network():
 
 
 def _thick_mask():
-    mask = np.zeros((10, 10, 60), dtype=bool)
-    mask[:, :, int(THICK_FROM_UM):] = True
+    z, y, _x = np.indices((11, 11, 60))
+    mask = (z - 5) ** 2 + (y - 5) ** 2 <= THICK_RADIUS_UM ** 2
+    mask[:, :, : int(THICK_FROM_UM)] = False
     return mask
 
 
@@ -349,17 +352,25 @@ def test_a_vessel_drawn_into_a_thick_vessel_becomes_a_bridge_inside_it(tmp_path)
 
     out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
 
+    # The drawn vessel up to the thick vessel's boundary, one bridge from
+    # there to the thick vessel's centreline, and the drawn vessel's last
+    # stretch, along that centreline, as the thick vessel.
     pieces = _pieces_between(out.graph, 1, 2)
-    assert len(pieces) == 2, "split once, where it enters the thick vessel"
-    (a, joint, outside), (_joint, b, inside) = pieces
-    assert not outside.get(IS_ZERO_RESISTANCE)
-    assert inside.get(IS_ZERO_RESISTANCE)
+    assert len(pieces) == 3
+    (_a, joint, outside), (_j, _k, bridge), (_l, _b, along) = pieces
+    assert not outside.get(IS_ZERO_RESISTANCE) and not along.get(IS_ZERO_RESISTANCE)
+    assert bridge.get(IS_ZERO_RESISTANCE)
     joint_x = float(out.graph.nodes[joint]["pos"][2])
     assert abs(joint_x - THICK_FROM_UM) <= 1.0
-    assert outside["length"] + inside["length"] == pytest.approx(20.0)
-    for piece in (outside, inside):
+    assert bridge["length"] <= THICK_RADIUS_UM + 1.0
+    assert outside["length"] + bridge["length"] + along["length"] == pytest.approx(20.0)
+    for piece in (outside, along):
         assert piece["branch_order"] and piece["diameter_um"] > 0
         assert EDITED not in piece
+    # A bridge is no vessel of any order, and is not measured.
+    assert "branch_order" not in bridge
+    assert bridge["diameter_source"] == "bridge" and bridge["diameter_um"] > 0
+    assert EDITED not in bridge
     # The thick vessel's own centreline, entirely inside, is no bridge.
     (key,) = out.graph[2][3]
     assert not out.graph.edges[2, 3, key].get(IS_ZERO_RESISTANCE)
@@ -390,7 +401,7 @@ def test_the_thick_region_comes_from_the_resume_when_the_volume_has_none(tmp_pat
         run_settings, model, boundaries, SCHEMA, network=network, thick_vessel_mask=_thick_mask()
     )
 
-    assert len(_pieces_between(out.graph, 1, 2)) == 2
+    assert sum(bool(d.get(IS_ZERO_RESISTANCE)) for *_e, d in _pieces_between(out.graph, 1, 2)) == 1
 
 
 def test_without_a_region_to_hand_it_is_found_again_in_the_segmentation(tmp_path, monkeypatch):
@@ -405,7 +416,7 @@ def test_without_a_region_to_hand_it_is_found_again_in_the_segmentation(tmp_path
     out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
 
     assert asked == [(True, (1.0, 1.0, 1.0))]
-    assert len(_pieces_between(out.graph, 1, 2)) == 2
+    assert sum(bool(d.get(IS_ZERO_RESISTANCE)) for *_e, d in _pieces_between(out.graph, 1, 2)) == 1
 
 
 def test_no_bridge_without_thickness_gated_skeletonisation(tmp_path, monkeypatch):

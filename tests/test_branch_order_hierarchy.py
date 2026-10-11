@@ -494,3 +494,38 @@ def test_statistics_and_visualization_branch_order_ranks_agree():
     # consulting its own table -- see _normalize_branch_order_tag) -- it
     # must rank the same as "bo", not a different category.
     assert viz_groups["b"] == viz_groups["bo"]
+
+
+def test_a_bridge_is_no_order_and_no_step():
+    """A zero-resistance bridge is the radius of the thick vessel a vessel
+    opens into: it gets no branch order, and the vessel beyond it is one
+    order from the thick vessel, not two -- with or without the hierarchy."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    def network():
+        G = nx.MultiGraph()
+        G.add_edge(0, 1)  # thick vessel from the inlet
+        G.add_edge(1, 2)  # thick vessel on to the outlet side
+        G.add_edge(1, 3, **{IS_ZERO_RESISTANCE: True, "branch_order": "B02"})
+        G.add_edge(3, 4)  # the vessel opening into it
+        G.add_edge(4, 5)
+        G.add_edge(5, 2)
+        return G
+
+    G = network()
+    summary = assign_vessel_branch_orders(G, [0])
+    assert summary["mode"] == "capillary"
+    assert "branch_order" not in G.edges[1, 3, 0]
+    assert G.edges[0, 1, 0]["branch_order"] == "B01"
+    assert G.edges[3, 4, 0]["branch_order"] == "B02"
+    assert G.edges[4, 5, 0]["branch_order"] == "B03"
+
+    G = network()
+    assign_hierarchical_branch_orders(
+        G, inlet_nodes=[0], outlet_nodes=[2], arteriole_boundary_nodes=[1],
+        venule_boundary_nodes=[5],
+    )
+    assert "branch_order" not in G.edges[1, 3, 0]
+    assert all(
+        d.get("branch_order") for u, v, d in G.edges(data=True) if not d.get(IS_ZERO_RESISTANCE)
+    )
