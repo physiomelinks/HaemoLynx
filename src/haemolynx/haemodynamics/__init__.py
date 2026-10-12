@@ -3,6 +3,7 @@ from . import automated
 from . import edt_diameter
 from . import fwhm_decoys
 from . import raw_section
+from . import open_ends
 from .viscosity import (
     VISCOSITY_LAWS,
     describe_law,
@@ -95,6 +96,7 @@ from .perturbations import (
 
 __all__ = [
     "automated",
+    "open_ends",
     "VISCOSITY_LAWS",
     "describe_law",
     "validity_range_um",

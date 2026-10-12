@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -269,8 +270,14 @@ def solve_sweep_point(
     ``haemodynamics_solver``.
 
     Returns the unit solve, its node order, and the haematocrit iteration's
-    report (``None`` without one).
+    report (``None`` without one). The open-end conditions the baseline's
+    solve kept on the graph (:mod:`haemolynx.haemodynamics.open_ends`) are
+    solved with too: each is a conductance to the inlet or the outlet
+    pressure, so the unit solve still scales with the drop.
     """
+    from .open_ends import augment, conditions_on_graph
+
+    open_ends = conditions_on_graph(G)
     solver = settings.get("haemodynamics_solver") or FLOW_SOLVER_DENSE
     iterated = None
     if settings.get("haematocrit_model") == "distributed_iterative":
@@ -292,11 +299,18 @@ def solve_sweep_point(
             solver=solver,
             # The unit solve just below is that final solve.
             final_solve=False,
+            open_ends=open_ends,
         )
     conductance, node_list = build_conductance_matrix_from_graph(G, solver=solver)
+    matrix, names, _index, extra_in, extra_out = augment(conductance, list(node_list), open_ends)
     unit = unit_pressure_solve(
-        conductance, list(node_list), inlet_nodes=inlet_nodes, outlet_nodes=outlet_nodes
+        matrix, names, inlet_nodes=[*inlet_nodes, *extra_in], outlet_nodes=[*outlet_nodes, *extra_out]
     )
+    if open_ends:
+        # The ghosts' flows stay in the totals (every drop of blood in and
+        # out); their pressures are not the graph's.
+        n = len(node_list)
+        unit = dataclasses.replace(unit, pressure=unit.pressure[:n], reached=unit.reached[:n])
     return unit, list(node_list), iterated
 
 

@@ -1079,6 +1079,10 @@ def graph_build_arguments(settings: dict) -> dict[str, Any]:
         recovery_min_region_volume_um3=float(settings["recovery_min_region_volume_um3"]),
         recovery_min_length_um=float(settings["recovery_min_length_um"]),
         facing_dead_end_max_gap_um=float(settings["facing_dead_end_max_gap_um"]),
+        extend_dead_ends_to_faces=bool(settings.get("extend_dead_ends_to_faces", False)),
+        trace_on_dead_ends=bool(settings.get("trace_on_dead_ends", False)),
+        join_dead_ends_to_vessel_sides=bool(settings.get("join_dead_ends_to_vessel_sides", False)),
+        stub_face_protection=settings.get("stub_face_protection") or "threshold",
     )
 
 
@@ -1092,7 +1096,7 @@ def build_network(
 ):
     """Load the vessel masks and turn the skeleton into a graph.
 
-    This is the long stage, so it reports the fifteen topology steps of
+    This is the long stage, so it reports the topology steps of
     :func:`graph.build_graph_from_skeleton` to *progress* as they land -- a
     run's only finer-grained progress than "graph building is happening".
 
@@ -1165,7 +1169,7 @@ def build_network(
         # Every snapshot draws the same volume, and projecting it reads the whole
         # stack, so it is projected once here rather than once per step. Graph
         # building reads `image` and never writes to it, which is what makes one
-        # projection good for all fifteen steps.
+        # projection good for every step.
         step_projection = (
             visualization.overlay_z_projection(image)
             if settings["save_step_artifacts"]
@@ -1260,6 +1264,7 @@ def build_network(
                         bridge_max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
                         bridge_min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
                         debug=settings["verbose_logging"],
+                        stub_face_protection=settings.get("stub_face_protection") or "threshold",
                     ),
                 )
         # Last thing before the graph is saved, after every topology step and
@@ -1275,6 +1280,13 @@ def build_network(
                 G, volume.thick_vessel_mask, voxel_size_zyx=voxel_size_zyx,
                 segmentation=binary_mask,
             )
+
+        # What each dead end is (graph.dead_ends), judged on the graph that is
+        # saved while the mask is still at hand: those leaving the image are
+        # what the flow's open ends are put on, the rest what the review lists.
+        graph.dead_ends.record_image_extent(G, skeleton.shape, voxel_size_zyx)
+        if binary_mask is not None:
+            _mark_dead_end_kinds(settings, G, binary_mask, voxel_size_zyx, radius_at)
 
         if binary_mask is not None:
             preprocessing.release_superseded(binary_mask, G, keep=image)
@@ -1298,6 +1310,10 @@ def build_network(
         large_arteriole_mask, large_venule_mask,
         large_arteriole_mask_voxel_size, large_venule_mask_voxel_size,
     )
+    if "image_extent_um" not in G.graph:
+        # A graph saved before dead ends were judged: the extent at least.
+        shape = image.shape if image is not None else skeleton.shape
+        graph.dead_ends.record_image_extent(G, shape, voxel_size_zyx)
 
     # Purely diagnostic: off by default, and never changes G even when on --
     # see graph.cartwheel_guard for what this looks for and why.
@@ -1440,6 +1456,30 @@ def _skeleton_without_vessels_error(
     if removes:
         check += ", and the skeletonise settings that remove skeleton: " + "; ".join(removes)
     return ValueError(f"{found} {check}.")
+
+
+def _mark_dead_end_kinds(
+    settings: dict, G: nx.MultiGraph, binary_mask: np.ndarray, voxel_size_zyx, radius_at=None
+) -> None:
+    """Judge every dead end of *G* against the mask and write its kind on its
+    node (``graph.dead_ends``), saying how many of each there are."""
+    support = preprocessing.MaskSupport(
+        binary_mask,
+        voxel_size_zyx,
+        max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
+        min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+        feature_distance=getattr(radius_at, "feature_distance", None),
+    )
+    ends = graph.dead_ends.classify_and_mark(
+        G, support=support,
+        stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
+    )
+    census = graph.dead_ends.dead_end_census(ends)
+    logger.info(
+        "Dead ends: %d -- %s.",
+        len(ends),
+        ", ".join(f"{count} {kind.replace('_', ' ')}" for kind, count in census.items() if count) or "none",
+    )
 
 
 def _record_graph_voxel_metadata(
@@ -3059,6 +3099,10 @@ def solve(
     )
     hct_result: dict[str, Any] | None = None
     flow_solver = _flow_solver(settings)
+    open_ends = (
+        _open_end_conditions(settings, G, flow_solver)
+        if settings["run_haemodynamics"] else haemodynamics.open_ends.OpenEndConditions()
+    )
 
     # 6) Solve for flow (and, on the way, the conductance matrix effective
     # resistance below reads).
@@ -3096,6 +3140,7 @@ def solve(
                 tolerance=float(settings["haematocrit_distribution_tolerance"]),
                 junction_rule=_junction_rule(settings),
                 solver=flow_solver,
+                open_ends=open_ends,
             )
             node_list = hct_result["node_list"]
             node_to_idx = hct_result["node_to_idx"]
@@ -3177,15 +3222,19 @@ def solve(
     # distribution loop above already did this (repeatedly).
     if settings["run_haemodynamics"] and not distribute_hct:
         logger.info("Solving flow through the network...")
+        matrix, names, index, extra_in, extra_out = haemodynamics.open_ends.augment(
+            conductance, node_list, open_ends, node_to_idx=node_to_idx
+        )
         flow = haemodynamics.solve_flow_from_conductance_matrix(
-            conductance,
-            node_list,
+            matrix,
+            names,
             inlet_p_bc=settings["inlet_p_bc"],
             outlet_p_bc=settings["outlet_p_bc"],
-            inlet_nodes=settings["inlet_nodes"],
-            outlet_nodes=settings["outlet_nodes"],
-            node_to_idx=node_to_idx,
+            inlet_nodes=[*settings["inlet_nodes"], *extra_in],
+            outlet_nodes=[*settings["outlet_nodes"], *extra_out],
+            node_to_idx=index,
         )
+        flow["pressure"] = flow["pressure"][: len(node_list)]
         haemodynamics.set_edge_flows(G, node_list, flow["pressure"], node_to_idx=node_to_idx)
         logger.info("Flow through the network solved")
         solution.pressure = flow["pressure"]
@@ -3210,27 +3259,78 @@ def solve(
             "Network resistance (pressure drop / total inflow): "
             f"{solution.network_resistance}"
         )
+        if open_ends:
+            through = haemodynamics.open_ends.open_end_flows(
+                conductance, solution.pressure, node_to_idx, open_ends,
+                inlet_p_bc=settings["inlet_p_bc"], outlet_p_bc=settings["outlet_p_bc"],
+            )
+            solution.statistics["open_ends"] = {
+                "model": open_ends.model,
+                "open_ends": len(open_ends.nodes),
+                "inflow_m3_s": through["in"],
+                "outflow_m3_s": through["out"],
+                **{k: v for k, v in open_ends.info.items() if not isinstance(v, (list, dict))},
+            }
+            logger.info(
+                "Open ends (open_end_model=%s): %d vessel(s) leaving the image given a boundary "
+                "condition; %.4g m^3/s enters the network through them and %.4g m^3/s leaves.",
+                open_ends.model, len(open_ends.nodes), through["in"], through["out"],
+            )
 
     if solution.pressure is not None:
-        _mark_flow_solved(G, settings["inlet_nodes"], settings["outlet_nodes"])
+        _mark_flow_solved(G, settings["inlet_nodes"], settings["outlet_nodes"], open_ends.nodes)
 
     solution.graph = G
     _stamp_solution(G, solution)
     return solution
 
 
-def _mark_flow_solved(G: nx.MultiGraph, inlet_nodes, outlet_nodes) -> None:
-    """Mark each vessel solved or not (:data:`haemolynx.graph.FLOW_SOLVED`),
-    and say how many were left unsolved."""
-    unsolved = graph.mark_flow_solved_edges(G, inlet_nodes, outlet_nodes)
+def _mark_flow_solved(G: nx.MultiGraph, inlet_nodes, outlet_nodes, open_ends=()) -> None:
+    """Mark each vessel solved or not (:data:`haemolynx.graph.FLOW_SOLVED`)
+    and why (:data:`haemolynx.graph.FLOW_STATE`), and say how many were left
+    unsolved and why."""
+    from collections import Counter
+
+    unsolved = graph.mark_flow_solved_edges(G, inlet_nodes, outlet_nodes, open_ends)
     if unsolved:
-        logger.info(
-            f"boundary_handling={BOUNDARY_HANDLING_LEAVE_UNSOLVED}: {unsolved} of "
-            f"{G.number_of_edges()} vessel(s) lie on no inlet-to-outlet path: in "
-            "branches or trees without both an inlet and an outlet, or dead ends "
-            "that reach no outlet. Nothing drives a flow through them, so they "
-            "are marked unsolved and their flows are not a result."
+        states = Counter(
+            data.get(graph.FLOW_STATE) for *_e, data in G.edges(data=True) if not data.get(graph.FLOW_SOLVED)
         )
+        logger.info(
+            f"{unsolved} of {G.number_of_edges()} vessel(s) lie on no inlet-to-outlet path, so "
+            "nothing drives a flow through them: "
+            f"{states.get('blind_end', 0)} hang off the flowing network behind dead ends inside the "
+            f"tissue (their zero flow is the answer), {states.get('closed_end', 0)} hang behind a "
+            "vessel leaving the image that has no boundary condition (open_end_model=closed), and "
+            f"{states.get('no_boundary', 0)} lie in pieces without both an inlet and an outlet. "
+            "They are marked unsolved."
+        )
+
+
+def _open_end_conditions(settings: dict, G: nx.MultiGraph, flow_solver: str):
+    """The conditions ``open_end_model`` puts on the vessels leaving the
+    image (:mod:`haemolynx.haemodynamics.open_ends`), kept on the graph so its
+    perturbations and sweeps solve with them too."""
+    open_ends = haemodynamics.open_ends
+    model = settings.get("open_end_model") or open_ends.CLOSED
+    conductance = node_list = None
+    if model == open_ends.ESTIMATED:
+        conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(G, solver=flow_solver)
+    conditions = open_ends.open_end_conditions(
+        model, G,
+        inlet_nodes=settings["inlet_nodes"], outlet_nodes=settings["outlet_nodes"],
+        inlet_p_bc=float(settings["inlet_p_bc"]), outlet_p_bc=float(settings["outlet_p_bc"]),
+        conductance=conductance, node_list=node_list,
+        terminal_resistance_multiple=float(
+            settings.get("open_end_terminal_resistance_multiple")
+            or open_ends.DEFAULT_TERMINAL_RESISTANCE_MULTIPLE
+        ),
+        pressure_target_pa=_plain_optional_float(settings.get("open_end_estimate_pressure_target_pa")),
+        shear_target_pa=_plain_optional_float(settings.get("open_end_estimate_shear_target_pa")),
+        shear_weight=float(settings.get("open_end_estimate_shear_weight") or open_ends.DEFAULT_SHEAR_WEIGHT),
+    )
+    open_ends.keep_on_graph(G, conditions)
+    return conditions
 
 
 #: Per-edge columns of a perturbation's `<name>_edges.csv`, in order.
@@ -3245,6 +3345,8 @@ PERTURBATION_EDGE_COLUMNS = (
     "conductance",
     "pressure_drop",
     "flow_signed",
+    "flow_solved",
+    "flow_state",
     "baseline_resistance",
     "resistance_ratio",
 )
@@ -3347,6 +3449,9 @@ def _solve_network(
     its own (see ``pericyte_sweep.solve_sweep_point``).
     """
     distribute_hct = _distributes_haematocrit(settings)
+    # The baseline's conditions on the vessels leaving the image, as it kept
+    # them on the graph: a perturbation is compared with the same boundaries.
+    open_ends = haemodynamics.open_ends.conditions_on_graph(G)
     if distribute_hct and recompute_resistances is not None:
         hct_result = iterate_flow_and_haematocrit(
             G,
@@ -3362,6 +3467,7 @@ def _solve_network(
             solver=_flow_solver(settings),
             # The solve just below, with boundary flows, is that final solve.
             final_solve=False,
+            open_ends=open_ends,
         )
         # A fresh solve on the now-converged resistances is what a
         # perturbation's own equivalent-resistance comparison wants to be
@@ -3379,14 +3485,7 @@ def _solve_network(
             solver=_flow_solver(settings),
         )
         node_to_idx = hct_result["node_to_idx"]
-        solved = solve_pressure_and_boundary_flow(
-            conductance,
-            list(node_list),
-            inlet_p_bc=float(settings["inlet_p_bc"]),
-            outlet_p_bc=float(settings["outlet_p_bc"]),
-            inlet_nodes=list(boundaries.inlet_nodes),
-            outlet_nodes=list(boundaries.outlet_nodes),
-        )
+        solved = _solve_with_open_ends(conductance, list(node_list), settings, boundaries, open_ends)
         haemodynamics.set_edge_flows(
             G, list(node_list), solved["pressure"], node_to_idx=node_to_idx
         )
@@ -3406,15 +3505,27 @@ def _solve_network(
     conductance, node_list = haemodynamics.build_conductance_matrix_from_graph(
         G, solver=_flow_solver(settings)
     )
+    solved = _solve_with_open_ends(conductance, list(node_list), settings, boundaries, open_ends)
+    haemodynamics.set_edge_flows(G, list(node_list), solved["pressure"])
+    return solved
+
+
+def _solve_with_open_ends(conductance, node_list: list, settings: dict, boundaries: BoundaryNodes, open_ends):
+    """:func:`solve_pressure_and_boundary_flow` with the open ends' ghosts
+    added, the pressures trimmed back to the graph's own nodes. The boundary
+    flows count the ghosts' too, so the balance closes."""
+    matrix, names, _index, extra_in, extra_out = haemodynamics.open_ends.augment(
+        conductance, node_list, open_ends
+    )
     solved = solve_pressure_and_boundary_flow(
-        conductance,
-        list(node_list),
+        matrix,
+        names,
         inlet_p_bc=float(settings["inlet_p_bc"]),
         outlet_p_bc=float(settings["outlet_p_bc"]),
-        inlet_nodes=list(boundaries.inlet_nodes),
-        outlet_nodes=list(boundaries.outlet_nodes),
+        inlet_nodes=[*boundaries.inlet_nodes, *extra_in],
+        outlet_nodes=[*boundaries.outlet_nodes, *extra_out],
     )
-    haemodynamics.set_edge_flows(G, list(node_list), solved["pressure"])
+    solved["pressure"] = solved["pressure"][: len(node_list)]
     return solved
 
 
@@ -3476,6 +3587,8 @@ def _write_perturbation_csvs(
             baseline_data = baseline_graph.get_edge_data(u, v, key) or {}
             was = baseline_data.get("resistance")
             now = data.get("resistance")
+            # No answer at all where no inlet and outlet reach: blank, not 0.
+            undefined = graph.flow_is_undefined(data)
             writer.writerow(
                 {
                     "u": u,
@@ -3486,8 +3599,10 @@ def _write_perturbation_csvs(
                     "diameter_um": data.get("diameter_um"),
                     "resistance": now,
                     "conductance": data.get("conductance"),
-                    "pressure_drop": data.get("pressure_drop"),
-                    "flow_signed": data.get("flow_signed"),
+                    "pressure_drop": None if undefined else data.get("pressure_drop"),
+                    "flow_signed": None if undefined else data.get("flow_signed"),
+                    "flow_solved": data.get(graph.FLOW_SOLVED),
+                    "flow_state": data.get(graph.FLOW_STATE),
                     "baseline_resistance": was,
                     "resistance_ratio": (
                         float(now) / float(was) if was and now is not None else None

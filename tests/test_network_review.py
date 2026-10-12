@@ -318,13 +318,19 @@ def test_dead_ends_come_artefacts_first_each_with_its_chain_to_the_junction():
 
     items = nr.find_dead_ends(G, support, image_face_margin_um=0.0)
 
+    # Grouped by kind (graph.dead_ends), artefacts first and longest first
+    # within each; the island is listed once, last.
     order = [item.nodes[0] for item in items]
-    assert order == [
-        tips["inside_other_lumen"], tips["off_mask"], tips["mask_continues"], tips["short"], tips["real_branch"],
+    assert order[:5] == [
+        tips["off_mask"], tips["inside_other_lumen"], tips["short"], tips["mask_continues"], tips["real_branch"],
     ]
-    assert items[-1].measures["kinds"] == ""
-    assert "none of the artefact kinds" in items[-1].why
-    off = items[1]
+    assert [item.measures["kind"] for item in items] == [
+        "artefact", "artefact", "artefact", "stops_short", "unknown", "island_end",
+    ]
+    real = items[4]
+    assert real.measures["kinds"] == ""
+    assert "a blind end, or a broken vessel" in real.why
+    off = items[0]
     assert off.nodes == (tips["off_mask"], (5.0, 30.0, 30.0))
     assert off.measures["length_um"] == pytest.approx(20.0)
     assert len(off.edges) == 1 and G.has_edge(*off.edges[0])

@@ -488,6 +488,10 @@ EDGE_COLUMNS: dict[str, str] = {
 #: Optional edge columns gated by run settings (see :func:`edge_columns_for_settings`).
 OPTIONAL_EDGE_COLUMNS: dict[str, str] = {
     "flow_abs_log10": "solve",
+    # Why a vessel carries flow or not (graph.FLOW_STATE): solved, behind a
+    # dead end inside the tissue, behind a closed image-face end, or in a
+    # piece with no inlet and outlet. Text, so a categorical colouring.
+    "flow_state": "solve",
     "flow_dir_z": "solve",
     "flow_dir_y": "solve",
     "flow_dir_x": "solve",
@@ -573,7 +577,8 @@ SOLVED_FLOW_COLUMNS: frozenset[str] = frozenset(
     {
         name
         for name, stage in {**EDGE_COLUMNS, **OPTIONAL_EDGE_COLUMNS}.items()
-        if stage == "solve"
+        # flow_state says why a vessel is unsolved: it is never blanked.
+        if stage == "solve" and name != "flow_state"
     }
     | {
         "transit_time_s",
@@ -608,6 +613,12 @@ def mask_unsolved_flow_columns(columns: dict[str, Any]) -> None:
     if status is None:
         return
     unsolved = np.asarray(status, dtype=object) == FLOW_SOLUTION_TEXT[False]
+    states = columns.get("flow_state")
+    if states is not None:
+        # Behind a dead end inside the tissue, a vessel's zero flow is the
+        # answer, not an unknown (PLAN_dead_ends.md, decision D4): it keeps
+        # its colour, drawn apart from the unsolved grey.
+        unsolved &= np.asarray(states, dtype=object) != "blind_end"
     if not unsolved.any():
         return
     for name in SOLVED_FLOW_COLUMNS.intersection(columns):
@@ -760,6 +771,7 @@ TEXT_COLUMNS = frozenset(
         "watershed",
         "fiedler_side",
         "capillary_block",
+        "flow_state",
     }
 )
 

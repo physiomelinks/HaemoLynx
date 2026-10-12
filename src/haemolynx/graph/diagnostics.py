@@ -460,11 +460,13 @@ def format_parallel_duplicates_report(report: Dict[str, Any]) -> str:
     )
 
 
-#: A dead end this close to an image face, in microns, is a vessel the image
-#: cut through: the open ends inlets and outlets are chosen from.
+#: The fixed face margin dead ends were once judged by, in microns. The face
+#: test is now :func:`haemolynx.graph.dead_ends.leaves_image`; a caller may
+#: still ask for a fixed margin.
 IMAGE_FACE_MARGIN_UM = 10.0
 
-#: The dead-end kinds :func:`diagnose_lumen_artefacts` counts, in report order.
+#: The artefact labels :func:`diagnose_lumen_artefacts` counts, in report
+#: order (what a dead end *is* is its kind, :mod:`haemolynx.graph.dead_ends`).
 DEAD_END_KINDS = (
     "inside_other_lumen",
     "beside_vessel",
@@ -539,82 +541,37 @@ class _CentrelineNeighbours:
 
 def _judge_dead_ends(
     G: Union[nx.Graph, nx.MultiGraph],
-    neighbours: _CentrelineNeighbours,
-    beside_share: Dict[Any, float],
+    support,
     *,
     stub_radius_multiple: float,
-    image_face_margin_um: float,
+    image_face_margin_um: Optional[float],
 ) -> Dict[str, Any]:
-    from haemolynx.preprocessing.bridge_mask_support import _densify
+    """Every dead end, judged by :func:`haemolynx.graph.dead_ends.classify_dead_ends`
+    (the one definition), sorted the way this report has always counted them:
+    those leaving the image, the interior ones with their artefact labels, and
+    the isolated single edges apart."""
+    from .dead_ends import LEAVES_IMAGE
+    from .dead_ends import classify_dead_ends as classify
 
-    from ._helpers import edge_id, edge_sample_points
-    from .assemble import mask_continues_past
-    from .prune import _chain
-
-    support, node_pos, index, step = neighbours.support, neighbours.node_pos, neighbours.index, neighbours.step
     extent = (np.asarray(support.mask.shape, dtype=float) - 1.0) * np.asarray(support.voxel_size_zyx)
-    continues = mask_continues_past(support)
+    ends = classify(
+        G, extent_um=extent, support=support, stub_radius_multiple=stub_radius_multiple,
+        face_margin_um=image_face_margin_um,
+    )
     dead_ends: Dict[str, List[Any]] = {kind: [] for kind in DEAD_END_KINDS}
     isolated = sum(1 for u, v in G.edges() if u != v and G.degree[u] == 1 and G.degree[v] == 1)
     at_face: List[Any] = []
     interior: List[Any] = []
-    for node in G.nodes:
-        if G.degree[node] != 1 or node not in node_pos:
+    for tip, end in ends.items():
+        if all(G.degree[other] == 1 for other in G.neighbors(tip)):
             continue
-        (_, other, key, data), = G.edges(node, keys=True, data=True)
-        if G.degree[other] == 1 or other not in node_pos:
+        if end.kind == LEAVES_IMAGE:
+            at_face.append(tip)
             continue
-        tip = node_pos[node]
-        if float(np.min(np.minimum(tip, extent - tip))) <= image_face_margin_um:
-            at_face.append(node)
-            continue
-        interior.append(node)
-        path = _densify(edge_sample_points(other, node, data, node_pos), step)
-        if len(path) < 2:
-            continue
-        if 2 * int(np.count_nonzero(support.inside(path))) < len(path):
-            dead_ends["off_mask"].append(node)
-        # A dead end is its whole chain, tip to junction through degree-2
-        # nodes and any thick-vessel bridge, as the stub prune reads it
-        # (prune._chain): the tip lies in no lumen of its own chain. Leaving
-        # out its last edge alone, a tip read as inside the lumen of its own
-        # opening into a fat vessel, cut off by the thick-vessel split (15
-        # of E14.5's 21 tips "in another lumen").
-        chain_nodes, chain_edges = _chain(G, node)
-        own_chain = [neighbours.ids.get(edge_id(a, b, k)) for a, b, k in chain_edges]
-        near = neighbours.other_points_near(
-            tip.reshape(1, 3), None, 2.0 * float(support.radius(tip.reshape(1, 3))[0]) + 30.0
-        )
-        near = near[~np.isin(neighbours.owners[near], [i for i in own_chain if i is not None])]
-        if len(near):
-            distance = np.linalg.norm(index.points[near] - tip, axis=1)
-            nearest = index.points[near[int(np.argmin(distance))]].reshape(1, 3)
-            if float(distance.min()) <= float(support.radius(nearest)[0]) + 1.0:
-                dead_ends["inside_other_lumen"].append(node)
-        if beside_share.get(edge_id(node, other, key), 0.0) >= 0.5:
-            dead_ends["beside_vessel"].append(node)
-        arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path[::-1], axis=0), axis=1))])
-        outward = tip - path[::-1][min(int(np.searchsorted(arc, 3.0)), len(path) - 1)]
-        norm = float(np.linalg.norm(outward))
-        if norm > 0 and continues(tip, outward / norm):
-            dead_ends["mask_continues"].append(node)
-        # Short as the stub prune judges a stub: the whole chain against the
-        # radius at its junction. Its last edge alone read short wherever the
-        # thick-vessel split had cut the chain at the fat region's edge (25 of
-        # E14.5's 49 "short" dead ends).
-        junction = chain_nodes[-1]
-        if G.degree[junction] > 1 and junction in node_pos:
-            parent_radius = float(support.radius(node_pos[junction].reshape(1, 3))[0])
-            length = 0.0
-            for a, b, k in chain_edges:
-                piece = G.edges[a, b, k] if G.is_multigraph() else G.edges[a, b]
-                length += float(
-                    piece.get("length")
-                    or _sample_weights(_densify(edge_sample_points(a, b, piece, node_pos), step)).sum()
-                )
-            if parent_radius > 0 and length < stub_radius_multiple * parent_radius:
-                dead_ends["short"].append(node)
-    return {"dead_ends": dead_ends, "at_image_face": at_face, "interior": interior, "isolated": isolated}
+        interior.append(tip)
+        for flag in end.flags:
+            dead_ends[flag].append(tip)
+    return {"dead_ends": dead_ends, "at_image_face": at_face, "interior": interior, "isolated": isolated, "ends": ends}
 
 
 def classify_dead_ends(
@@ -624,39 +581,31 @@ def classify_dead_ends(
     voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
     mask_support=None,
     stub_radius_multiple: float = 3.0,
-    image_face_margin_um: float = IMAGE_FACE_MARGIN_UM,
+    image_face_margin_um: Optional[float] = None,
 ) -> Dict[str, Any]:
     """The dead ends of :func:`diagnose_lumen_artefacts`, tip by tip, without
     the rest of its report: what Post processing's dead-end review lists.
 
-    A dead end is a degree-1 node whose vessel leads to a node of degree two
-    or more. Returns ``kinds`` (each interior tip's :data:`DEAD_END_KINDS`,
-    in that order; empty for a dead end that is none of them),
-    ``dead_ends`` (the tips of each kind), ``interior`` and
-    ``at_image_face`` (the tips either side of *image_face_margin_um*, in
-    node order) and ``isolated_single_edges``. Only the dead ends' own
-    vessels are judged for running beside another, so this is cheaper than
-    the whole report and agrees with it tip for tip.
+    Judged by :func:`haemolynx.graph.dead_ends.classify_dead_ends`, the one
+    definition every module shares: a dead end is a degree-1 node whose
+    vessel leads to a node of degree two or more, judged as its whole chain.
+    Returns ``kinds`` (each interior tip's artefact labels, in
+    :data:`DEAD_END_KINDS` order; empty for a dead end that is none of them),
+    ``dead_ends`` (the tips with each label), ``interior`` and
+    ``at_image_face`` (the tips that do not and do leave the image, in node
+    order), ``isolated_single_edges``, and ``ends``: every dead end's
+    :class:`~haemolynx.graph.dead_ends.DeadEnd`, its kind and measures.
+    *image_face_margin_um*, when given, replaces the face test with a fixed
+    distance (0: no tip leaves the image).
     """
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
     from haemolynx.preprocessing.bridge_mask_support import MaskSupport
 
-    from ._helpers import edge_id
-
     support = mask_support
     if support is None:
         support = MaskSupport(_to_binary_volume_for_skeletonization(mask), voxel_size_zyx)
-    neighbours = _CentrelineNeighbours(G, support)
-    beside_share: Dict[Any, float] = {}
-    for u, v, key, data in G.edges(keys=True, data=True):
-        if G.degree[u] != 1 and G.degree[v] != 1:
-            continue
-        measured = neighbours.beside(u, v, key, data)
-        if measured is not None and measured[2] is not None:
-            beside_share[edge_id(u, v, key)] = measured[2]
     judged = _judge_dead_ends(
-        G, neighbours, beside_share,
-        stub_radius_multiple=stub_radius_multiple, image_face_margin_um=image_face_margin_um,
+        G, support, stub_radius_multiple=stub_radius_multiple, image_face_margin_um=image_face_margin_um,
     )
     found = judged["dead_ends"]
     return {
@@ -667,6 +616,7 @@ def classify_dead_ends(
         "interior": judged["interior"],
         "at_image_face": judged["at_image_face"],
         "isolated_single_edges": judged["isolated"],
+        "ends": judged["ends"],
     }
 
 
@@ -677,7 +627,7 @@ def diagnose_lumen_artefacts(
     voxel_size_zyx: tuple = (1.0, 1.0, 1.0),
     mask_support=None,
     stub_radius_multiple: float = 3.0,
-    image_face_margin_um: float = IMAGE_FACE_MARGIN_UM,
+    image_face_margin_um: Optional[float] = None,
 ) -> Dict[str, Any]:
     """What graph building can leave in a segmented vessel that is not a
     vessel, measured against the mask: one report, read-only.
@@ -691,8 +641,10 @@ def diagnose_lumen_artefacts(
     - **Loops inside one lumen**: of each edge's shortest loop
       (``lumen_loops.iter_short_loops``), those
       ``lumen_loops.loop_inside_one_lumen`` says run round no tissue.
-    - **Dead ends** further than *image_face_margin_um* from every image
-      face, by kind (one dead end can be several): its tip inside another
+    - **Dead ends** that do not leave the image (the face test of
+      :func:`haemolynx.graph.dead_ends.leaves_image`, or a fixed
+      *image_face_margin_um* when given), by label (one dead end can carry
+      several): its tip inside another
       vessel's lumen (not one of its own chain's, a thick-vessel bridge
       included); at least half of it beside another centreline in the
       same lumen; less than half of it in the mask; the mask running on past
@@ -701,6 +653,8 @@ def diagnose_lumen_artefacts(
       tip to junction through degree-2 nodes and any thick-vessel bridge,
       against the radius at that junction, as the stub prune judges it.
       Isolated single edges are counted apart. :func:`classify_dead_ends` lists them alone.
+      Every dead end's kind (:mod:`haemolynx.graph.dead_ends`) is counted too,
+      in ``dead_end_kind_counts``.
 
     *mask_support*, a ``MaskSupport`` over *mask*, is used in place of
     building one; without one *mask* is binarised as the loaders do.
@@ -708,7 +662,6 @@ def diagnose_lumen_artefacts(
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
     from haemolynx.preprocessing.bridge_mask_support import MaskSupport
 
-    from ._helpers import edge_id
     from .lumen_loops import iter_short_loops, loop_inside_one_lumen
 
     support = mask_support
@@ -724,16 +677,13 @@ def diagnose_lumen_artefacts(
 
     neighbours = _CentrelineNeighbours(G, support)
     total_um = duplicated_um = 0.0
-    beside_share: Dict[Any, float] = {}
     for u, v, key, data in G.edges(keys=True, data=True):
         measured = neighbours.beside(u, v, key, data)
         if measured is None:
             continue
-        centreline_um, beside_um, share = measured
+        centreline_um, beside_um, _share = measured
         total_um += centreline_um
         duplicated_um += beside_um
-        if share is not None:
-            beside_share[edge_id(u, v, key)] = share
 
     loop_count = 0
     loops_in_lumen: List[Any] = []
@@ -743,10 +693,10 @@ def diagnose_lumen_artefacts(
             loops_in_lumen.append(cycle)
 
     judged = _judge_dead_ends(
-        G, neighbours, beside_share,
-        stub_radius_multiple=stub_radius_multiple, image_face_margin_um=image_face_margin_um,
+        G, support, stub_radius_multiple=stub_radius_multiple, image_face_margin_um=image_face_margin_um,
     )
     dead_ends = judged["dead_ends"]
+    from .dead_ends import dead_end_census
     return {
         "edge_count": duplicates["edge_count"],
         "centreline_um": total_um,
@@ -763,6 +713,7 @@ def diagnose_lumen_artefacts(
         "isolated_single_edges": judged["isolated"],
         "dead_end_counts": {kind: len(nodes) for kind, nodes in dead_ends.items()},
         "dead_ends": dead_ends,
+        "dead_end_kind_counts": dead_end_census(judged["ends"]),
         "stub_radius_multiple": float(stub_radius_multiple),
     }
 
@@ -797,8 +748,15 @@ def format_lumen_artefacts_report(report: Dict[str, Any]) -> str:
         f"{counts.get('mask_continues', 0)} where the mask runs on past the tip, "
         f"{counts.get('short', 0)} shorter than "
         f"{report.get('stub_radius_multiple', 3.0):g} radii of their vessel), "
-        f"{report.get('dead_ends_at_image_face', 0)} at an image face, and "
+        f"{report.get('dead_ends_at_image_face', 0)} leaving the image, and "
         f"{report.get('isolated_single_edges', 0)} isolated single edge(s)."
+        + (
+            " Dead ends by kind: " + ", ".join(
+                f"{count} {kind.replace('_', ' ')}"
+                for kind, count in report["dead_end_kind_counts"].items() if count
+            ) + "."
+            if report.get("dead_end_kind_counts") else ""
+        )
     )
 
 

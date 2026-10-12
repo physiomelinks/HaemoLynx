@@ -59,6 +59,12 @@ _TEXT_HOVER_METRICS = frozenset({"flow_solution", "order", "diameter_source", "f
 
 #: What ``flow_solution`` reads for each value of the edge's FLOW_SOLVED.
 FLOW_SOLUTION_TEXT = {True: "Solved", False: "Unsolved"}
+#: What it reads instead, for an unsolved vessel whose FLOW_STATE says why.
+FLOW_STATE_TEXT = {
+    "blind_end": "No flow: behind a dead end",
+    "closed_end": "Unsolved: behind a closed image-face end",
+    "no_boundary": "Unsolved: no inlet and outlet",
+}
 
 _BRANCH_ID_LINE = "branchID: {branch_id}"
 #: Under the branch ID of a zero-resistance bridge, whatever metrics are
@@ -108,6 +114,8 @@ def _metric_value(
     if value is None:
         return None
     if metric == "flow_solution":
+        if not value and data.get("flow_state") in FLOW_STATE_TEXT:
+            return FLOW_STATE_TEXT[data["flow_state"]]
         return FLOW_SOLUTION_TEXT[bool(value)]
     if metric == "flow" and data.get(FLOW_SOLVED) is False:
         # The flow of an unsolved vessel is rounding, not a result.

@@ -104,7 +104,19 @@ def graph_to_vtk(
     constriction_length: float = 40.0,
     point_merge_decimals: int = 6,
 ) -> Dict[str, Any]:
-    """Export vessels, pericytes, and nodes to VTK PolyData files."""
+    """Export vessels, pericytes, and nodes to VTK PolyData files.
+
+    Each vessel carries its ``length_um``, ``diameter_um``, ``diameter_source``,
+    ``is_zero_resistance``, ``flow_solved`` and ``flow_state`` (why it carries
+    flow or not, ``graph.FLOW_STATE``) beside its resistance and flows; where
+    its flow is no answer at all (``graph.flow_is_undefined``: a piece no
+    inlet and outlet reach) the flows and pressures are NaN, not the 0 the
+    solve left. Each node carries its ``dead_end_kind`` ("" where it is not a
+    dead end) and a NaN pressure where the solve could not set one. The run's
+    blood model and boundaries (viscosity law, diameter basis, haematocrit,
+    open-end model) and the HaemoLynx version go in the vessels file's field
+    data.
+    """
     try:
         import pyvista as pv
     except ImportError as exc:
@@ -126,6 +138,15 @@ def graph_to_vtk(
     branch_order: List[str] = []
     resistances: List[float] = []
     conductances: List[float] = []
+    lengths: List[float] = []
+    diameters: List[float] = []
+    diameter_sources: List[str] = []
+    zero_resistance: List[int] = []
+    solved_flags: List[int] = []
+    flow_states: List[str] = []
+    haematocrits: List[float] = []
+    from haemolynx.graph.prune import FLOW_SOLVED, FLOW_STATE, flow_is_undefined
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
     #: Written by haemodynamics.set_edge_flows; absent until a run has solved.
     flow_fields: Dict[str, List[float]] = {
         name: [] for name in ("pressure_u", "pressure_v", "pressure_drop",
@@ -169,9 +190,17 @@ def graph_to_vtk(
         c = data.get("conductance")
         resistances.append(float(r) if r is not None else np.nan)
         conductances.append(float(c) if c is not None else np.nan)
+        lengths.append(_number(data.get("length")))
+        diameters.append(_number(data.get("diameter_um")))
+        diameter_sources.append(str(data.get("diameter_source") or ""))
+        zero_resistance.append(int(bool(data.get(IS_ZERO_RESISTANCE))))
+        solved_flags.append(int(data.get(FLOW_SOLVED) is True))
+        flow_states.append(str(data.get(FLOW_STATE) or ""))
+        haematocrits.append(_number(data.get("discharge_haematocrit")))
+        undefined = flow_is_undefined(data)
         for name, values in flow_fields.items():
             value = data.get(name)
-            values.append(float(value) if value is not None else np.nan)
+            values.append(float(value) if value is not None and not undefined else np.nan)
 
     vessel_mesh = pv.PolyData()
     vessel_mesh.points = np.asarray(all_points, dtype=float) if all_points else np.empty((0, 3), dtype=float)
@@ -183,10 +212,20 @@ def graph_to_vtk(
         vessel_mesh.cell_data["branch_order"] = np.asarray(branch_order)
         vessel_mesh.cell_data["resistance"] = np.asarray(resistances, dtype=float)
         vessel_mesh.cell_data["conductance"] = np.asarray(conductances, dtype=float)
+        vessel_mesh.cell_data["length_um"] = np.asarray(lengths, dtype=float)
+        vessel_mesh.cell_data["diameter_um"] = np.asarray(diameters, dtype=float)
+        vessel_mesh.cell_data["diameter_source"] = np.asarray(diameter_sources)
+        vessel_mesh.cell_data["is_zero_resistance"] = np.asarray(zero_resistance, dtype=np.uint8)
+        vessel_mesh.cell_data["flow_solved"] = np.asarray(solved_flags, dtype=np.uint8)
+        vessel_mesh.cell_data["flow_state"] = np.asarray(flow_states)
+        if np.any(np.isfinite(haematocrits)):
+            vessel_mesh.cell_data["discharge_haematocrit"] = np.asarray(haematocrits, dtype=float)
         for name, values in flow_fields.items():
             array = np.asarray(values, dtype=float)
             if np.any(np.isfinite(array)):
                 vessel_mesh.cell_data[name] = array
+    for name, value in _run_metadata(graph).items():
+        vessel_mesh.field_data[name] = np.asarray([value])
     vessel_mesh.save(vessel_path)
 
     pericyte = derive_pericyte_points_from_graph(
@@ -203,17 +242,26 @@ def graph_to_vtk(
 
     node_ids: List[int] = []
     node_points: List[np.ndarray] = []
+    node_kinds: List[str] = []
+    node_pressures: List[float] = []
     for n, data in graph.nodes(data=True):
         pos = data.get("pos")
         if pos is None:
             continue
         node_points.append(np.asarray(pos, dtype=float)[:3])
         node_ids.append(int(n) if isinstance(n, (int, np.integer)) else -1)
+        node_kinds.append(str(data.get("dead_end_kind") or "") if graph.degree(n) == 1 else "")
+        incident = [d for *_e, d in graph.edges(n, data=True)]
+        undefined = bool(incident) and all(flow_is_undefined(d) for d in incident)
+        node_pressures.append(np.nan if undefined else _number(data.get("pressure")))
 
     node_mesh = pv.PolyData(
         np.asarray(node_points, dtype=float) if node_points else np.empty((0, 3), dtype=float)
     )
     node_mesh.point_data["node_id"] = np.asarray(node_ids, dtype=np.int64)
+    node_mesh.point_data["dead_end_kind"] = np.asarray(node_kinds)
+    if np.any(np.isfinite(node_pressures)):
+        node_mesh.point_data["pressure"] = np.asarray(node_pressures, dtype=float)
     node_mesh.save(node_path)
 
     return {
@@ -224,6 +272,29 @@ def graph_to_vtk(
         "pericyte_count": int(len(pericyte["points"])),
         "node_count": len(node_ids),
     }
+
+
+def _number(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    return number if np.isfinite(number) else np.nan
+
+
+def _run_metadata(graph: nx.Graph) -> Dict[str, Any]:
+    """What produced the numbers in a vessels file: the blood model, the
+    boundaries and the version, from the graph a run solved."""
+    from haemolynx import __version__
+
+    meta: Dict[str, Any] = {"haemolynx_version": str(__version__)}
+    for name in ("viscosity_law", "diameter_basis", "haematocrit"):
+        if graph.graph.get(name) is not None:
+            meta[name] = graph.graph[name]
+    record = graph.graph.get("open_end_conditions")
+    if record:
+        meta["open_end_model"] = str(record.get("model", "closed"))
+    return meta
 
 
 def surface_mesh_to_vtk(

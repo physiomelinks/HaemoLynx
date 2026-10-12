@@ -461,6 +461,7 @@ def iterate_flow_and_haematocrit(
     junction_rule: str = JUNCTION_RULE_NO_SEPARATION,
     solver: str = FLOW_SOLVER_DENSE,
     final_solve: bool = True,
+    open_ends=None,
 ) -> dict[str, Any]:
     """Solve flow and distribute haematocrit together, to a fixed point.
 
@@ -504,6 +505,11 @@ def iterate_flow_and_haematocrit(
     *junction_rule* is handed to every
     :func:`distribute_discharge_haematocrit` pass.
 
+    *open_ends* (:class:`~haemolynx.haemodynamics.open_ends.OpenEndConditions`)
+    are the conditions the run put on vessels leaving the image; every solve
+    takes them. An open end feeding the network has no inflow along a vessel,
+    so the distribution seeds it at *inlet_haematocrit*, as any source.
+
     Returns a dict with ``pressure``, ``node_list`` (matching
     :func:`~haemolynx.haemodynamics.resistance.solve_flow_from_conductance_matrix`'s
     own return shape), ``node_to_idx``, ``conductance_matrix`` (the matrix the
@@ -542,18 +548,29 @@ def iterate_flow_and_haematocrit(
             solver=solver,
         )
 
-    for iteration in range(1, max_iterations + 1):
-        conductance, node_list = build_matrix()
-        flow = solve_flow_from_conductance_matrix(
-            conductance,
-            node_list,
+    from .open_ends import augment
+
+    def solve_and_set(conductance) -> dict[str, Any]:
+        """Solve with the open ends' ghosts, and keep the graph's own nodes."""
+        matrix, names, index, extra_in, extra_out = augment(
+            conductance, node_list, open_ends, node_to_idx=node_to_idx
+        )
+        solved = solve_flow_from_conductance_matrix(
+            matrix,
+            names,
             inlet_p_bc=inlet_p_bc,
             outlet_p_bc=outlet_p_bc,
-            inlet_nodes=inlet_nodes,
-            outlet_nodes=outlet_nodes,
-            node_to_idx=node_to_idx,
+            inlet_nodes=[*inlet_nodes, *extra_in],
+            outlet_nodes=[*outlet_nodes, *extra_out],
+            node_to_idx=index,
         )
-        set_edge_flows(G, node_list, flow["pressure"], node_to_idx=node_to_idx)
+        pressure = solved["pressure"][: len(node_list)]
+        set_edge_flows(G, node_list, pressure, node_to_idx=node_to_idx)
+        return {"node_list": node_list, "pressure": pressure}
+
+    for iteration in range(1, max_iterations + 1):
+        conductance, node_list = build_matrix()
+        flow = solve_and_set(conductance)
         diagnostics = distribute_discharge_haematocrit(
             G, inlet_haematocrit=inlet_haematocrit, junction_rule=junction_rule,
         )
@@ -601,16 +618,7 @@ def iterate_flow_and_haematocrit(
 
     if final_solve:
         conductance, node_list = build_matrix()
-        flow = solve_flow_from_conductance_matrix(
-            conductance,
-            node_list,
-            inlet_p_bc=inlet_p_bc,
-            outlet_p_bc=outlet_p_bc,
-            inlet_nodes=inlet_nodes,
-            outlet_nodes=outlet_nodes,
-            node_to_idx=node_to_idx,
-        )
-        set_edge_flows(G, node_list, flow["pressure"], node_to_idx=node_to_idx)
+        flow = solve_and_set(conductance)
 
     return {
         "pressure": flow["pressure"],

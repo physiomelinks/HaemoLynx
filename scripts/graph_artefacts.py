@@ -45,6 +45,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from graph_artefacts.dead_end_census import census, census_markdown, made_by_step  # noqa: E402
 from graph_artefacts.report import comparison_table, measure, steps_table  # noqa: E402
 
 WORKING_TREE = "working tree"
@@ -156,6 +157,31 @@ def main(argv: list[str] | None = None) -> int:
         lines.append(f"- **{name}**: built in {info['seconds']:.0f} s"
                      + (f"; settings it does not take: {', '.join(info['arguments_not_taken'])}"
                         if info["arguments_not_taken"] else ""))
+
+    # What each dead end is (PLAN_dead_ends.md, Phase 0), every side by this
+    # checkout's one definition.
+    from haemolynx.graph.dead_ends import image_extent_um
+
+    extent = image_extent_um(support.mask.shape, support.voxel_size_zyx)
+    censuses = {}
+    for name in sides:
+        with open(_side_dir(out, name) / "final.pkl", "rb") as f:
+            censuses[name] = census(pickle.load(f), support=support, extent_um=extent,
+                                    stub_radius_multiple=multiple)
+    lines += ["", "## Dead ends", "", census_markdown(censuses)]
+    rows = []
+    for name, info in sides.items():
+        for tip, end in censuses[name]["ends"].items():
+            rows.append({"side": name, **end.measures()})
+    if rows:
+        import csv
+
+        keys = list(dict.fromkeys(k for row in rows for k in row))
+        with open(out / "dead_ends.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=keys)
+            writer.writeheader()
+            writer.writerows(rows)
+        lines.append(f"Every dead end and its measures: `{out / 'dead_ends.csv'}`.")
     if args.steps:
         for name, info in sides.items():
             rows = []
@@ -164,6 +190,18 @@ def main(argv: list[str] | None = None) -> int:
                     rows.append((label, measure(pickle.load(f), support, stub_radius_multiple=multiple)))
             rows.append(("final (smoothed)", finals[name]))
             lines += ["", f"## Step by step: {name}", "", steps_table(rows)]
+            with open(_side_dir(out, name) / "final.pkl", "rb") as f:
+                final_graph = pickle.load(f)
+
+            def step_graphs(name=name, info=info):
+                for label in info["steps"]:
+                    with open(_side_dir(out, name) / "steps" / f"{label}.pkl", "rb") as f:
+                        yield label, pickle.load(f)
+
+            made = made_by_step(final_graph, step_graphs())
+            lines += ["", f"Where the final dead ends of {name} first appear:", "",
+                      "| step | dead ends |", "|---|---|"]
+            lines += [f"| {label} | {count} |" for label, count in made.items()]
     report = "\n".join(lines) + "\n"
     (out / "REPORT.md").write_text(report, encoding="utf-8")
     print(report)

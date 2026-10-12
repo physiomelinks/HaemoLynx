@@ -333,6 +333,7 @@ def select_boundary_nodes_by_method(
     open_end_max_distance_um: float | None = DEFAULT_OPEN_END_MAX_DISTANCE_UM,
     node_ids: Iterable[Any] | None = None,
     node_ids_setting_name: str = "node_ids",
+    open_end_test: str = "distance",
 ) -> list[Any]:
     """Select boundary nodes for one role using the specified method.
 
@@ -349,10 +350,23 @@ def select_boundary_nodes_by_method(
     :func:`open_terminal_nodes`). A terminal deep inside the tissue is a
     vessel's dead end (a segmentation gap, most often): holding it at a
     boundary pressure pushes flow in or out where none enters the tissue.
-    ``None`` turns this off. When a method's candidates hold no open end at
-    all, it keeps them all and warns. The other methods take what the user
-    placed or asked for, unfiltered.
+    ``None`` turns this off. *open_end_test* ``"leaves_image"`` uses the
+    dead-end definition instead (``graph.dead_ends.open_end_nodes``: the kind
+    graph building marked, else a tip touching a face). When a method's
+    candidates hold no open end at all, it keeps them all and warns. The
+    other methods take what the user placed or asked for, unfiltered.
     """
+    if open_end_test not in ("distance", "leaves_image"):
+        raise ValueError(f"open_end_test must be 'distance' or 'leaves_image', got {open_end_test!r}")
+
+    def open_ends_of(G) -> list[Any] | None:
+        if open_end_test == "leaves_image":
+            from .dead_ends import open_end_nodes
+
+            return open_end_nodes(G)
+        return open_terminal_nodes(G, image_shape, max_distance_um=open_end_max_distance_um)
+
+    filters = open_end_max_distance_um is not None or open_end_test == "leaves_image"
     if node_role not in {"inlet", "outlet"}:
         raise ValueError("node_role must be 'inlet' or 'outlet'.")
 
@@ -425,13 +439,13 @@ def select_boundary_nodes_by_method(
             axis=axis,
         )
         selected = inlet_nodes if node_role == "inlet" else outlet_nodes
-        if open_end_max_distance_um is not None:
+        if filters:
             selected = _keep_open_ends(
                 selected,
-                open_terminal_nodes(G, image_shape, max_distance_um=open_end_max_distance_um),
+                open_ends_of(G),
                 method=method_norm,
                 node_role=node_role,
-                max_distance_um=float(open_end_max_distance_um),
+                max_distance_um=float(open_end_max_distance_um or 0.0),
             )
     elif method_norm == "degree_1_from_inlet":
         if distance_from_inlet_node < 0:
@@ -452,13 +466,13 @@ def select_boundary_nodes_by_method(
             )
             if nearest_start_dist > distance_from_inlet_node:
                 selected.append(node_id)
-        if open_end_max_distance_um is not None:
+        if filters:
             selected = _keep_open_ends(
                 selected,
-                open_terminal_nodes(G, image_shape, max_distance_um=open_end_max_distance_um),
+                open_ends_of(G),
                 method=method_norm,
                 node_role=node_role,
-                max_distance_um=float(open_end_max_distance_um),
+                max_distance_um=float(open_end_max_distance_um or 0.0),
             )
     else:
         raise ValueError(
@@ -716,6 +730,8 @@ def select_boundary_nodes_for_role(
     # selector's default" -- so an absent setting is the only fall-through.
     if "boundary_open_end_max_distance_um" in settings:
         band["open_end_max_distance_um"] = settings["boundary_open_end_max_distance_um"]
+    if settings.get("boundary_open_end_test"):
+        band["open_end_test"] = settings["boundary_open_end_test"]
     return select_boundary_nodes_by_method(
         G,
         image_shape,

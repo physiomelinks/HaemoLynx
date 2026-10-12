@@ -1330,3 +1330,43 @@ def test_statistics_leave_zero_resistance_bridges_out():
     assert "strahler_order" in G.edges[3, 4, 0]
     assert "strahler_order" not in G.edges[1, 3, 0]
     assert G.number_of_edges() == 4, "the graph itself keeps its bridge"
+
+
+def test_the_dead_ends_section_counts_kinds_density_cut_length_and_why_there_is_no_flow():
+    """PLAN_dead_ends.md Phase 7: by kind, the interior density (open ends
+    and artefacts never in it), chain lengths, the share the faces cut, and
+    the flow states' lengths."""
+    from haemolynx.graph import FLOW_STATE
+    from haemolynx.graph.dead_ends import DEAD_END_KIND
+
+    G = nx.MultiGraph()
+    pos = {0: (5, 5, 0), 1: (5, 5, 30), 2: (5, 5, 60), 3: (5, 5, 99), 4: (5, 0, 30), 5: (5, 8, 60),
+           6: (5, 5, 80), 7: (5, 8, 85)}
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p, dtype=float))
+    states = {(0, 1): "solved", (1, 2): "solved", (2, 3): "solved", (1, 4): "closed_end",
+              (2, 5): "blind_end", (6, 7): "no_boundary"}
+    for (u, v), state in states.items():
+        G.add_edge(u, v, length=float(np.linalg.norm(np.subtract(pos[u], pos[v]))), **{FLOW_STATE: state})
+    for n, kind in {0: "leaves_image", 3: "leaves_image", 4: "leaves_image", 5: "unknown",
+                    6: "island_end", 7: "island_end"}.items():
+        G.nodes[n][DEAD_END_KIND] = kind
+
+    rows = compute_comprehensive_vessel_statistics(
+        G, enabled_measures=frozenset({"dead_ends"}), tissue_volume_um3=1e6,
+    )["Dead Ends"]
+
+    assert rows["Dead Ends"] == 6
+    assert rows["Dead Ends Leaving the Image"] == 3
+    assert rows["Interior Dead Ends, Blind or Broken (unknown)"] == 1
+    assert rows["Ends of Pieces Without a Junction"] == 2
+    total = sum(d["length"] for *_e, d in G.edges(data=True))
+    assert rows["Interior Dead Ends per mm of Vessel (1/mm)"] == pytest.approx(1 / (total / 1000))
+    assert rows["Interior Dead Ends per mm^3 of Tissue (1/mm^3)"] == pytest.approx(1000.0)
+    assert rows["Interior Dead-End Chain Length, median (microns)"] == pytest.approx(3.0)
+    # The chains ending at the three face ends: 0-1, 2-3 and 1-4.
+    assert rows["Vessel Length on Chains Cut by the Image Faces (microns)"] == pytest.approx(30 + 39 + 5)
+    assert rows["Pieces Without a Junction"] == 1
+    assert rows["Vessel Length Behind Interior Dead Ends, No Flow (microns)"] == pytest.approx(3.0)
+    assert rows["Vessel Length Behind Closed Image-Face Ends, No Flow (microns)"] == pytest.approx(5.0)
+    assert rows["Vessel Length Carrying Flow (microns)"] == pytest.approx(99.0)

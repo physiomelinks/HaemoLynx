@@ -140,6 +140,7 @@ def prune_vascular_stubs(
     inside_lumen: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     mask_continues_at: Optional[Callable[[np.ndarray, np.ndarray], bool]] = None,
     lumen_radius_at: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    image_face_test: Optional[Callable[[Any, np.ndarray], bool]] = None,
 ) -> Union[nx.Graph, nx.MultiGraph]:
     """Iteratively remove short terminal stubs until convergence.
 
@@ -183,6 +184,10 @@ def prune_vascular_stubs(
 
     Stubs at an image face are kept as before; the two whatever-its-length
     rules apply there too, since neither is a vessel the image cut through.
+    *image_face_test* ``(tip, path_from_junction) -> bool``, when given,
+    decides which short stubs are at a face instead of *image_extent_um*'s
+    "within its own threshold" -- the dead-end definition's
+    ``leaves_image`` (``assemble.lumen_cleanup``'s ``stub_face_protection``).
     """
     if min_stub_length < 0:
         raise ValueError("min_stub_length must be non-negative")
@@ -292,7 +297,12 @@ def prune_vascular_stubs(
                         continue
                     if mask_continues_at is not None and mask_continues(path):
                         threshold = max(threshold, float(min_stub_length))
-                if edge_length < threshold and at_an_image_face(node, threshold):
+                at_face = (
+                    image_face_test(node, path)
+                    if image_face_test is not None and path is not None and len(path) > 1
+                    else at_an_image_face(node, threshold)
+                ) if edge_length < threshold else False
+                if at_face:
                     protected.add(node)
                     continue
                 if edge_length < threshold:
@@ -354,6 +364,37 @@ def prune_vascular_stubs(
 #: remove are False.
 FLOW_SOLVED = "flow_solved"
 
+#: Edge attribute the flow solve writes beside :data:`FLOW_SOLVED`: why a
+#: vessel carries flow or not (PLAN_dead_ends.md, decision D4). ``solved`` --
+#: on a path between two boundaries; ``blind_end`` -- hanging off the flowing
+#: network behind interior dead ends (or a loop off every path): its zero flow
+#: is the answer, not an unknown; ``closed_end`` -- hanging behind a dead end
+#: that leaves the image but was given no boundary condition
+#: (``open_end_model="closed"``); ``no_boundary`` -- in a piece of the network
+#: no flow reaches at all (no inlet and outlet).
+FLOW_STATE = "flow_state"
+FLOW_STATES = ("solved", "blind_end", "closed_end", "no_boundary")
+
+#: Edge attributes the flow solve writes (``haemodynamics.set_edge_flows``):
+#: what every export blanks where :func:`flow_is_undefined`.
+SOLVE_DERIVED_EDGE_ATTRIBUTES = (
+    "pressure_u", "pressure_v", "pressure_drop", "flow_signed", "flow_abs", "flow_abs_log10",
+)
+
+
+def flow_is_undefined(data: dict) -> bool:
+    """Whether a vessel's solved flow and pressures are no answer at all: in
+    a piece of the network no inlet and outlet reach (``no_boundary``), where
+    the solve left pressure 0 for want of any. A vessel hanging off the
+    flowing network behind dead ends (``blind_end``, ``closed_end``) has a
+    flow of zero and its junction's pressure, which *are* the answer, and the
+    flow state says why. A graph solved before flow states existed: every
+    unsolved vessel."""
+    state = data.get(FLOW_STATE)
+    if state is not None:
+        return state == "no_boundary"
+    return data.get(FLOW_SOLVED) is False
+
 
 def _components_by_io(
     G: Union[nx.Graph, nx.MultiGraph],
@@ -379,16 +420,22 @@ def mark_flow_solved_edges(
     G: Union[nx.Graph, nx.MultiGraph],
     starting_nodes: Sequence[int],
     output_nodes: Sequence[int],
+    open_ends: Sequence[Any] = (),
 ) -> int:
-    """Write :data:`FLOW_SOLVED` on every edge of *G*; return how many are
-    unsolved (on no path from a start to an output node, by
-    :func:`haemolynx.graph.inlet_to_outlet_vessels`)."""
+    """Write :data:`FLOW_SOLVED` and :data:`FLOW_STATE` on every edge of *G*;
+    return how many are unsolved (on no path from a start to an output node,
+    by :func:`haemolynx.graph.inlet_to_outlet_vessels`). *open_ends* -- the
+    vessels leaving the image the solve gave a boundary condition -- can be
+    either, so a path from one to another carries flow too."""
     from .connectivity import inlet_to_outlet_vessels
 
     multi = G if G.is_multigraph() else nx.MultiGraph(G)
+    opened = list(open_ends)
     through = {
         (frozenset((u, v)), k)
-        for u, v, k in inlet_to_outlet_vessels(multi, list(starting_nodes), list(output_nodes))
+        for u, v, k in inlet_to_outlet_vessels(
+            multi, [*starting_nodes, *opened], [*output_nodes, *opened]
+        )
     }
     edges = (
         G.edges(keys=True, data=True)
@@ -396,11 +443,42 @@ def mark_flow_solved_edges(
         else ((u, v, 0, data) for u, v, data in G.edges(data=True))
     )
     unsolved = 0
-    for u, v, k, data in edges:
+    for u, v, k, data in list(edges):
         solved = (frozenset((u, v)), k) in through
         data[FLOW_SOLVED] = solved
+        data[FLOW_STATE] = "solved" if solved else None
         unsolved += not solved
+    _mark_flow_states(multi if G.is_multigraph() else G, set(opened))
     return unsolved
+
+
+def _mark_flow_states(G, opened: set) -> None:
+    """Why each unsolved vessel carries no flow (:data:`FLOW_STATE`), piece by
+    piece of the unsolved network."""
+    from .dead_ends import node_leaves_image
+
+    edges = (
+        list(G.edges(keys=True, data=True)) if G.is_multigraph()
+        else [(u, v, 0, d) for u, v, d in G.edges(data=True)]
+    )
+    flowing = {n for u, v, _k, d in edges if d.get(FLOW_SOLVED) for n in (u, v)}
+    rest = nx.Graph()
+    for u, v, _k, d in edges:
+        if not d.get(FLOW_SOLVED):
+            rest.add_edge(u, v)
+    state_of = {}
+    for piece in nx.connected_components(rest):
+        if not piece & flowing:
+            state = "no_boundary"
+        elif any(G.degree(n) == 1 and n not in opened and node_leaves_image(G, n) for n in piece):
+            state = "closed_end"
+        else:
+            state = "blind_end"
+        for node in piece:
+            state_of[node] = state
+    for u, v, _k, d in edges:
+        if not d.get(FLOW_SOLVED):
+            d[FLOW_STATE] = state_of.get(u, "no_boundary")
 
 
 def edges_with_connected_io(

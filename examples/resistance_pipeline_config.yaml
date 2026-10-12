@@ -289,6 +289,8 @@ boundary_assignment:
   boundary_distance_from_inlet_node: 0.0
   # With edge_percent or degree_1_from_inlet, choose only terminals within this distance of an image face -- vessels the image cut through -- not dead ends inside the tissue, where no flow enters or leaves. Leave empty to allow any terminal  [um; range 0.0..]
   boundary_open_end_max_distance_um: 10.0
+  # How edge_percent and degree_1_from_inlet tell a terminal the image cut through. distance: within boundary_open_end_max_distance_um of a face. leaves_image: the dead end leaves the image as graph building judged it (it touches a face, or the segmented vessel runs on to one)  [one of: distance, leaves_image]
+  boundary_open_end_test: distance
   # Pick inlet nodes nearest to these (z, y, x) coordinates when the coordinates method is used  [um]
   inlet_node_coordinates:
   - - 308.4
@@ -452,8 +454,16 @@ pipeline_stages:
   recovery_min_region_volume_um3: 30.0
   # Recover only traced vessels at least this long, unless both their ends join the network  [um; range 0.0..; needs do_graph_building and recover_uncovered_mask_vessels]
   recovery_min_length_um: 5.0
-  # Join two dead ends that point at each other across a gap in the segmentation up to this long: a vessel the mask broke. The join may cross one stretch of background, never a third vessel, and never runs beside a vessel already in the same lumen. 0 turns it off. No effect without the segmented mask or with bridge_require_mask_support off  [um; range 0.0..; needs do_graph_building]
+  # Join two dead ends that point at each other across a gap in the segmentation up to this long: a vessel the mask broke. The join may cross one stretch of background, never a third vessel, and never runs beside a vessel already in the same lumen. 0 turns it off. No effect without the segmented mask or with bridge_require_mask_support off  [um; range 0.0..; needs do_graph_building and bridge_require_mask_support]
   facing_dead_end_max_gap_um: 10.0
+  # Draw a dead end that leaves the image but stops short of the face (the segmented vessel runs on to it within four radii) on to the face, so its open end sits where the vessel leaves the image. Off until a marked grid calibrates it (PLAN_dead_ends.md, G2)  [needs do_graph_building and bridge_require_mask_support]
+  extend_dead_ends_to_faces: false
+  # From a dead end the segmented vessel runs on past, draw the centreline on through the mask along its heading, up to 30 um: joined to another vessel where it enters that vessel's lumen, ended at an image face or where the mask ends. Never beside a vessel in the same lumen, never closing a loop inside one. Off until a marked grid calibrates it (PLAN_dead_ends.md, G1)  [needs do_graph_building and bridge_require_mask_support]
+  trace_on_dead_ends: false
+  # Join a dead end pointing at another vessel's side, within facing_dead_end_max_gap_um across one stretch of background, to that vessel -- unless that vessel is one of its neighbours in the network (one junction away or closer). Off until a marked grid calibrates it (PLAN_dead_ends.md, G3)  [needs do_graph_building and bridge_require_mask_support]
+  join_dead_ends_to_vessel_sides: false
+  # Which short stubs the prune keeps at an image face. threshold: a tip within its own pruning threshold of a face (as before). leaves_image: only a dead end that leaves the image (it touches a face, or the segmented vessel runs on to one), so a spur near a face is judged like any other  [one of: threshold, leaves_image; needs do_graph_building]
+  stub_face_protection: threshold
   # Collapse clusters of nodes lying within this distance of each other  [um; range 0.0..; needs do_graph_building]
   cluster_collapse_distance: 5.0
   # distance_only collapses every node within cluster_collapse_distance of another however far that chains -- the original behaviour. direction_aware additionally refuses a merge that would turn the collapsed node's incident edges into a cartwheel shape (see the cartwheel hub guard below), leaving separate nodes where proximity alone could not tell two nearby real junctions apart. persistence cuts each local cluster at its own natural gap in single-linkage merge distance (0-dimensional persistent homology) instead of one global distance -- see graph.persistence_collapse  [one of: distance_only, direction_aware, persistence; needs do_graph_building]
@@ -574,6 +584,8 @@ statistics_and_measurements:
   statistics_daughter_angles: true
   # Typical spacing between neighbouring capillaries  [needs statistics]
   statistics_intercapillary_distance: true
+  # Dead ends by kind (leaving the image, stopped short, broken, artefact, blind, unknown, island), the interior ones per mm of vessel and per mm^3 of tissue, their length, the share of the network the image faces cut, and why vessels carry no flow  [needs statistics]
+  statistics_dead_ends: true
   # Measure the tissue's volume and surface mesh from the raw image -- the region whose background is brighter than the empty space around it -- and divide vessel density by that volume instead of by the box the network spans
   measure_tissue_volume: false
   # Find the tissue in this raw image, on the segmentation's own grid; leave unset to use fwhm_raw_tiff_path  [needs measure_tissue_volume; must exist]
@@ -746,6 +758,16 @@ diameters_and_pericytes:
 network_handling:
   # What happens, before the haemodynamic model is built, to each vessel no inlet-to-outlet path runs along: every branch or tree without both an inlet and an outlet, and every branch, tree or loop that leaves a perfused vessel and reaches no outlet (a dead end). No pressure difference drives a flow through one, so the solve has no answer for it. leave_unsolved keeps them, marked unsolved: the viewer draws them light grey, leaves them out of every flow-based colouring and names each vessel Solved or Unsolved on hover. remove_disconnected deletes them, so only vessels on some inlet-to-outlet path are kept  [one of: leave_unsolved, remove_disconnected]
   boundary_handling: leave_unsolved
+  # The boundary condition on vessels that leave the image (dead ends whose vessel runs out through an image face) and are not inlets or outlets. closed: no blood leaves through them, so every vessel that only leads to them carries no flow. terminal_resistance: each drains to the outlet pressure through open_end_terminal_resistance_multiple times its own vessel's resistance. outlet: each is held at the outlet pressure (biased towards draining; for comparison). estimated: their pressures are chosen so the network's pressures and wall shear stresses stay closest to target values (Fry et al. 2012), the targets taken from the closed solve. Only open ends in a piece of the network with an inlet or outlet are opened. Perturbations and sweeps keep the baseline's conditions, and results under different models are not comparable  [one of: closed, terminal_resistance, outlet, estimated; needs run_haemodynamics]
+  open_end_model: closed
+  # How many times its own vessel's resistance an open end drains through, to the outlet pressure  [range 0.0..; needs run_haemodynamics and open_end_model = terminal_resistance]
+  open_end_terminal_resistance_multiple: 10.0
+  # How much the wall shear stress target counts against the pressure target when estimating the open ends' pressures, each term divided by its own scale  [range 0.0..; needs run_haemodynamics and open_end_model = estimated]
+  open_end_estimate_shear_weight: 1.0
+  # The pressure the estimate keeps the network near. Leave unset for the closed solve's mean pressure over the vessels it perfuses  [Pa; needs run_haemodynamics and open_end_model = estimated]
+  open_end_estimate_pressure_target_pa: null
+  # The wall shear stress the estimate keeps each vessel near. Leave unset for the closed solve's median over the vessels it perfuses  [Pa; range 0.0..; needs run_haemodynamics and open_end_model = estimated]
+  open_end_estimate_shear_target_pa: null
 
 # ------------------------------------------------------------------------
 # FWHM diameter measurement

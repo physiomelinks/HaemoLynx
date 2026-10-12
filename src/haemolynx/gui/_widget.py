@@ -9235,13 +9235,17 @@ def _post_processing_controls(
         ACTION_DELETE_ITEM,
         ACTION_DELETE_SELECTED,
         ACTION_JOIN,
+        ACTION_JOIN_AHEAD,
         ACTION_KEEP,
         ACTION_LABELS,
+        ACTION_MARK_BLIND,
+        ACTION_MARK_OPEN,
         ACTION_MERGE,
         ACTION_SET_DIAMETER,
         ACTION_TRACE_ON,
         NEEDS_MASK,
         REVIEW_JUNCTIONS,
+        action_applies,
         REVIEW_LIST_BY_KEY,
         REVIEW_LIST_BY_LABEL,
         REVIEW_LISTS,
@@ -9355,6 +9359,9 @@ def _post_processing_controls(
         #: The decisions made since the list was made: an item acted on stays
         #: off it until the next scan, though a list made again would find it.
         review_acted=[],
+        #: "Trace on from the tip"'s decision, written once the trace is
+        #: finished (dropped with the trace if it is not).
+        pending_review=None,
         #: (centre, radius) the list was made round; radius 0 is everywhere.
         review_scope=(None, 0.0),
         #: A list being made off the GUI thread, and the worker making it.
@@ -9624,6 +9631,10 @@ def _post_processing_controls(
     review_layout.addWidget(review_table)
     row = QHBoxLayout()
     for action in (ACTION_MERGE, ACTION_DELETE_SELECTED, ACTION_DELETE_ITEM, ACTION_TRACE_ON, ACTION_JOIN):
+        row.addWidget(review_buttons[action])
+    review_layout.addLayout(row)
+    row = QHBoxLayout()
+    for action in (ACTION_JOIN_AHEAD, ACTION_MARK_BLIND, ACTION_MARK_OPEN):
         row.addWidget(review_buttons[action])
     review_layout.addLayout(row)
     row = QHBoxLayout()
@@ -10406,7 +10417,10 @@ def _post_processing_controls(
         entry = review_entry()
         for action, button in review_buttons.items():
             button.setVisible(action in entry.actions)
-            button.setEnabled(state.review_item is not None and not state.scanning)
+            button.setEnabled(
+                state.review_item is not None and not state.scanning
+                and action_applies(state.review_item, action)
+            )
         review_diameter.setVisible(ACTION_SET_DIAMETER in entry.actions)
         scan_button.setEnabled(not state.scanning)
 
@@ -10678,9 +10692,12 @@ def _post_processing_controls(
         if tip not in state.graph:
             review_summary.setText(f"Node {tip} is no longer in the network: scan it again.")
             return
-        written = keep_record(*record_for(item, "traced on"))
-        log_edit(f"Tracing on from dead end {tip}")
         drop_trace()
+        # Written when the trace is finished, not before: until then nothing
+        # has been traced on.
+        state.pending_review = record_for(item, "traced on")
+        written = ""
+        log_edit(f"Tracing on from dead end {tip}")
         state.mode = "add"
         attach_click_callbacks()
         vessels = layer(VESSELS)
@@ -10729,6 +10746,65 @@ def _post_processing_controls(
         )
         after_review_edit(f"joined dead ends {a} and {b}", written)
 
+    def on_review_mark_dead_end(kind: str, words: str) -> None:
+        """A person's verdict on the chosen dead end, kept on its node
+        (graph.set_dead_end_kind) and in the decisions."""
+        from haemolynx.graph.dead_ends import set_dead_end_kind
+
+        item = chosen_item()
+        if item is None:
+            return
+        tip = item.nodes[0]
+        if tip not in state.graph or state.graph.degree(tip) != 1:
+            review_summary.setText(f"Node {tip} is no longer a dead end: scan the network again.")
+            return
+        review, row = record_for(item, words)
+        set_dead_end_kind(state.graph, tip, kind)
+        written = keep_record(review, row)
+        log_edit(f"Marked dead end {tip} as {words}")
+        state.review_items = [i for i in state.review_items if i is not item]
+        fill_review(state.review_row)
+        review_summary.setText(review_counts() + written)
+
+    def on_review_join_ahead() -> None:
+        item = chosen_item()
+        if item is None:
+            return
+        tip = item.nodes[0]
+        edge = item.measures.get("ahead_edge")
+        point = item.measures.get("ahead_point_um")
+        if edge is None or point is None:
+            review_summary.setText("No vessel lies straight ahead of this dead end to join it to.")
+            return
+        if tip not in state.graph or not state.graph.has_edge(*edge):
+            review_summary.setText("This dead end or the vessel ahead has changed: scan the network again.")
+            return
+        route = trace_route()
+        path = trace_path(
+            route.cost,
+            tuple(np.asarray(state.graph.nodes[tip]["pos"], dtype=float)[:3]),
+            tuple(float(c) for c in point),
+            voxel_size_zyx=voxel_size(),
+        )
+        review, row = record_for(item, "joined to the vessel ahead")
+        try:
+            added = add_traced_vessel(
+                state.graph, VesselEnd.at_node(tip), VesselEnd.on_vessel(edge, point), path,
+                reserved_ids=state.protected, voxel_size_zyx=voxel_size(),
+                smoothing=smoothing_settings(),
+            )
+        except ValueError as error:
+            review_summary.setText(str(error))
+            log_edit(f"Join of dead end {tip} to the vessel ahead refused, {error}")
+            return
+        written = keep_record(review, row)
+        state.added_nodes.extend(added.new_nodes)
+        log_edit(
+            f"Joined dead end {tip} to the vessel ahead: added "
+            f"{describe_vessels(state.graph, [added.edge])}, traced {route.how}{route.note}"
+        )
+        after_review_edit(f"joined dead end {tip} to the vessel ahead", written)
+
     def on_review_set_diameter() -> None:
         item = chosen_item()
         if item is None:
@@ -10766,6 +10842,7 @@ def _post_processing_controls(
 
     def drop_trace() -> None:
         """Forget the vessel being traced; the network never had it."""
+        state.pending_review = None
         if state.trace is not None:
             state.trace = None
             draw_trace()
@@ -11041,6 +11118,9 @@ def _post_processing_controls(
         routes = " then ".join(dict.fromkeys([*trace.routes, route.how]))
         clicks = len(trace.waypoints_um) + 2
         state.added_nodes.extend(added.new_nodes)
+        if state.pending_review is not None:
+            keep_record(*state.pending_review)
+            state.pending_review = None
         state.trace = None
         state.mode = "idle"
         show_mode()
@@ -11270,6 +11350,13 @@ def _post_processing_controls(
     review_buttons[ACTION_MERGE].clicked.connect(on_review_merge)
     review_buttons[ACTION_TRACE_ON].clicked.connect(on_review_trace_on)
     review_buttons[ACTION_JOIN].clicked.connect(on_review_join)
+    review_buttons[ACTION_JOIN_AHEAD].clicked.connect(on_review_join_ahead)
+    review_buttons[ACTION_MARK_BLIND].clicked.connect(
+        lambda: on_review_mark_dead_end("blind", "a real blind end")
+    )
+    review_buttons[ACTION_MARK_OPEN].clicked.connect(
+        lambda: on_review_mark_dead_end("leaves_image", "leaving the image")
+    )
     review_buttons[ACTION_SET_DIAMETER].clicked.connect(on_review_set_diameter)
     refresh_review_buttons()
     loop_list.currentRowChanged.connect(on_loop_changed)

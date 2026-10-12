@@ -64,6 +64,7 @@ __all__ = [
     "ACTION_MERGE",
     "ACTION_SET_DIAMETER",
     "ACTION_TRACE_ON",
+    "action_applies",
     "NEEDS_BOUNDARIES",
     "NEEDS_FLOW",
     "NEEDS_MASK",
@@ -1087,6 +1088,10 @@ ACTION_TRACE_ON = "trace_on"
 ACTION_JOIN = "join"
 ACTION_SET_DIAMETER = "set_diameter"
 ACTION_KEEP = "keep"
+#: The dead-end list's own buttons (PLAN_dead_ends.md, Phase 9).
+ACTION_JOIN_AHEAD = "join_ahead"
+ACTION_MARK_BLIND = "mark_blind"
+ACTION_MARK_OPEN = "mark_open"
 ACTION_LABELS = {
     ACTION_DELETE_SELECTED: "Delete selected vessels",
     ACTION_DELETE_ITEM: "Delete all its vessels",
@@ -1095,7 +1100,27 @@ ACTION_LABELS = {
     ACTION_JOIN: "Join the two ends",
     ACTION_SET_DIAMETER: "Set diameter of selected vessels to",
     ACTION_KEEP: "Keep",
+    ACTION_JOIN_AHEAD: "Join to the vessel ahead",
+    ACTION_MARK_BLIND: "Mark as a real blind end",
+    ACTION_MARK_OPEN: "Mark as leaving the image",
 }
+
+
+def action_applies(item: Any, action: str) -> bool:
+    """Whether *action* can do anything for review *item*: a dead end joins
+    the vessel ahead only when one was found ahead of it, and is not marked
+    as what it already is. Every other action applies to any item its list
+    offers it for."""
+    from haemolynx.graph.dead_ends import BLIND, LEAVES_IMAGE
+
+    measures = getattr(item, "measures", None) or {}
+    if action == ACTION_JOIN_AHEAD:
+        return measures.get("ahead_edge") is not None and measures.get("ahead_point_um") is not None
+    if action == ACTION_MARK_BLIND:
+        return measures.get("kind") != BLIND
+    if action == ACTION_MARK_OPEN:
+        return measures.get("kind") != LEAVES_IMAGE
+    return True
 
 
 @dataclass(frozen=True)
@@ -1125,7 +1150,8 @@ def _review_lists() -> tuple[ReviewList, ...]:
                    (ACTION_MERGE, ACTION_DELETE_SELECTED, ACTION_KEEP)),
         ReviewList(nr.HAIRPINS, "Hairpin vessels", (), (ACTION_DELETE_SELECTED, ACTION_KEEP)),
         ReviewList(nr.DEAD_ENDS, "Dead ends", (NEEDS_MASK,),
-                   (ACTION_DELETE_ITEM, ACTION_TRACE_ON, ACTION_KEEP)),
+                   (ACTION_DELETE_ITEM, ACTION_TRACE_ON, ACTION_JOIN_AHEAD, ACTION_MARK_BLIND,
+                    ACTION_MARK_OPEN, ACTION_KEEP)),
         ReviewList(nr.TWO_IN_ONE_LUMEN, "Two vessels in one lumen", (NEEDS_MASK,),
                    (ACTION_DELETE_SELECTED, ACTION_KEEP)),
         ReviewList(nr.FACING_ENDS, "Facing dead ends not joined", (NEEDS_MASK,), (ACTION_JOIN, ACTION_KEEP)),
@@ -1573,8 +1599,10 @@ def find_review_items(
     if key == nr.HAIRPINS:
         return nr.find_hairpins(graph)
     if key == nr.DEAD_ENDS:
+        # As the pipeline's own report reads it (stages._log_graph_consistency_diagnostics):
+        # unset or 0 -- the prune's fixed length instead -- judges "short" at 3 radii.
         multiple = _optional_number(values.get("min_stub_length_radius_multiple"))
-        return nr.find_dead_ends(graph, support, stub_radius_multiple=3.0 if multiple is None else multiple)
+        return nr.find_dead_ends(graph, support, stub_radius_multiple=multiple or 3.0)
     if key == nr.TWO_IN_ONE_LUMEN:
         return nr.find_two_in_one_lumen(graph, support)
     if key == nr.FACING_ENDS:

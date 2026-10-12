@@ -806,3 +806,29 @@ def test_a_regenerate_is_summed_up_before_and_after():
     unsolved_only = network_summary(_network(), [], [])
     assert unsolved_only.unsolved is None and unsolved_only.inflow is None
     assert "unsolved" not in summary_change(unsolved_only, unsolved_only)
+
+
+# --- which of a dead end's buttons can do anything -----------------------------
+
+
+def test_a_dead_end_button_is_usable_only_where_it_can_do_something():
+    """Join needs a vessel found ahead; a mark is not offered for what the
+    dead end already is; every other action applies to any item."""
+    from types import SimpleNamespace
+
+    from haemolynx.gui.post_processing import (
+        ACTION_DELETE_ITEM,
+        ACTION_JOIN_AHEAD,
+        ACTION_MARK_BLIND,
+        ACTION_MARK_OPEN,
+        action_applies,
+    )
+
+    nothing_ahead = SimpleNamespace(measures={"kind": "unknown"})
+    ahead = SimpleNamespace(measures={"kind": "broken", "ahead_edge": (4, 5, 0), "ahead_point_um": (1.0, 2.0, 3.0)})
+    assert not action_applies(nothing_ahead, ACTION_JOIN_AHEAD)
+    assert action_applies(ahead, ACTION_JOIN_AHEAD)
+    assert action_applies(nothing_ahead, ACTION_MARK_BLIND) and action_applies(nothing_ahead, ACTION_MARK_OPEN)
+    assert not action_applies(SimpleNamespace(measures={"kind": "blind"}), ACTION_MARK_BLIND)
+    assert not action_applies(SimpleNamespace(measures={"kind": "leaves_image"}), ACTION_MARK_OPEN)
+    assert action_applies(SimpleNamespace(measures=None), ACTION_DELETE_ITEM)

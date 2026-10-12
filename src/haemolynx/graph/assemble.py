@@ -237,6 +237,7 @@ def lumen_cleanup(
     mask_support: MaskSupport | None = None,
     max_degree: int = 4,
     debug: bool = False,
+    stub_face_protection: str = "threshold",
 ) -> LumenCleanup:
     """The clean-up the end of graph building runs, built from the same
     settings :func:`build_graph_from_skeleton` takes -- so a caller that
@@ -272,6 +273,20 @@ def lumen_cleanup(
         if protect_image_face_stubs
         else None
     )
+    if stub_face_protection not in ("threshold", "leaves_image"):
+        raise ValueError(f"stub_face_protection must be 'threshold' or 'leaves_image', got {stub_face_protection!r}")
+    if stub_face_protection == "leaves_image" and support is not None and image_extent_um is not None:
+        from .dead_ends import leaves_image, tip_heading
+
+        def image_face_test(_node, path_from_junction: np.ndarray) -> bool:
+            path = np.asarray(path_from_junction, dtype=float)[::-1]
+            tip = path[0]
+            return leaves_image(
+                tip, image_extent_um, heading=tip_heading(path), support=support,
+                tip_radius_um=float(support.radius(tip.reshape(1, 3))[0]), voxel_size_zyx=voxel_size,
+            )[0]
+
+        stub_mask_rules["image_face_test"] = image_face_test
 
     def prune(G: nx.MultiGraph) -> nx.MultiGraph:
         return prune_vascular_stubs(
@@ -365,6 +380,10 @@ def build_graph_from_skeleton(
     recovery_min_region_volume_um3: float = DEFAULT_MIN_REGION_VOLUME_UM3,
     recovery_min_length_um: float = DEFAULT_MIN_LENGTH_UM,
     facing_dead_end_max_gap_um: float = DEFAULT_FACING_MAX_GAP_UM,
+    extend_dead_ends_to_faces: bool = False,
+    trace_on_dead_ends: bool = False,
+    join_dead_ends_to_vessel_sides: bool = False,
+    stub_face_protection: str = "threshold",
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -476,6 +495,18 @@ def build_graph_from_skeleton(
         two dead ends pointing at each other across a gap in the segmentation
         up to this long -- see ``facing_ends.join_facing_dead_ends``. 0, or
         without a mask, leaves the graph as it is.
+    extend_dead_ends_to_faces, trace_on_dead_ends, join_dead_ends_to_vessel_sides
+        With a *segmentation_mask* and *bridge_require_mask_support* on, and
+        each off by default until marked grids calibrate it
+        (PLAN_dead_ends.md): draw a dead end that leaves the image on to the
+        face, draw the centreline on from a dead end the mask runs on past,
+        and join a dead end to the side of the vessel straight ahead across a
+        gap -- see ``dead_end_extension``. They run in the facing-join step.
+    stub_face_protection
+        Which short stubs the prune keeps at an image face: ``"threshold"``
+        (a tip within its own threshold of a face, as before) or
+        ``"leaves_image"`` (only a dead end that leaves the image, by
+        ``dead_ends.leaves_image``; a near-face spur is judged like any other).
 
     Returns
     -------
@@ -515,6 +546,7 @@ def build_graph_from_skeleton(
         mask_support=mask_support,
         max_degree=degree2_pass1_max_degree,
         debug=debug,
+        stub_face_protection=stub_face_protection,
     )
     prune_stubs = cleanup.prune
 
@@ -660,6 +692,22 @@ def build_graph_from_skeleton(
     # other: joined here, before the loop breaker and the last stub prune.
     if bridge_support is not None and facing_dead_end_max_gap_um > 0:
         G = join_facing_dead_ends(G, bridge_support, max_gap_um=facing_dead_end_max_gap_um)
+    # The dead-end repairs PLAN_dead_ends.md calibrates on marked grids: off
+    # unless a run asks for them.
+    if bridge_support is not None and (
+        extend_dead_ends_to_faces or trace_on_dead_ends or join_dead_ends_to_vessel_sides
+    ):
+        from . import dead_end_extension
+
+        extent = (np.asarray(skeleton.shape, dtype=float) - 1.0) * np.asarray(voxel_size, dtype=float)
+        if extend_dead_ends_to_faces:
+            dead_end_extension.extend_dead_ends_to_faces(G, bridge_support, extent_um=extent)
+        if trace_on_dead_ends:
+            dead_end_extension.trace_on_dead_ends(G, bridge_support, extent_um=extent)
+        if join_dead_ends_to_vessel_sides:
+            dead_end_extension.join_dead_ends_to_vessel_sides(
+                G, bridge_support, extent_um=extent, max_gap_um=facing_dead_end_max_gap_um or None,
+            )
     _notify_step(G, "join_facing_dead_ends", step_callback)
 
     # One segmented vessel is drawn once: edges through empty space, a second

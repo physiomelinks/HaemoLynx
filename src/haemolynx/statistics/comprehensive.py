@@ -59,6 +59,7 @@ STATISTIC_MEASURES: tuple[str, ...] = (
     "murray_law",
     "daughter_angles",
     "intercapillary_distance",
+    "dead_ends",
     "network_robustness",
     "bottlenecks",
     "shunts",
@@ -250,6 +251,10 @@ def compute_comprehensive_vessel_statistics(
         # The original G, not G_simple: each parallel edge is its own
         # vessel with its own spacing to its neighbours.
         base.update(compute_intercapillary_distance(G))
+    if "dead_ends" in enabled:
+        from .dead_ends import compute_dead_end_statistics
+
+        base.update(compute_dead_end_statistics(G, tissue_volume_um3=tissue_volume_um3))
     if "network_robustness" in enabled:
         # The original G, not G_simple: a parallel edge between two
         # junctions is exactly the redundancy that keeps neither of that

@@ -398,6 +398,11 @@ def test_a_tab_carries_the_rows_for_its_settings():
         "haematocrit_distribution_max_iterations",
         "haematocrit_distribution_tolerance",
         "boundary_handling",
+        "open_end_model",
+        "open_end_terminal_resistance_multiple",
+        "open_end_estimate_shear_weight",
+        "open_end_estimate_pressure_target_pa",
+        "open_end_estimate_shear_target_pa",
     }
 
 

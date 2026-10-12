@@ -94,7 +94,16 @@ def test_network_handling_is_the_last_box_on_the_haemodynamics_tab():
     sections = list(dict.fromkeys(SCHEMA[row.name].section for row in tab.fields))
     assert sections[-1] == "Network handling"
     names = [row.name for row in tab.fields if SCHEMA[row.name].section == "Network handling"]
-    assert names == ["boundary_handling"]
+    # What is done to the network's ends: off-path vessels, then the open
+    # ends' boundary condition (PLAN_dead_ends.md, Phase 4).
+    assert names == [
+        "boundary_handling",
+        "open_end_model",
+        "open_end_terminal_resistance_multiple",
+        "open_end_estimate_shear_weight",
+        "open_end_estimate_pressure_target_pa",
+        "open_end_estimate_shear_target_pa",
+    ]
 
 
 def test_nothing_about_pruning_is_on_the_boundaries_tab():

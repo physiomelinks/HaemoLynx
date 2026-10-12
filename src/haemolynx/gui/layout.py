@@ -398,6 +398,15 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "facing_dead_end_max_gap_um",
             ),
         ),
+        (
+            "Dead ends",
+            (
+                "extend_dead_ends_to_faces",
+                "trace_on_dead_ends",
+                "join_dead_ends_to_vessel_sides",
+                "stub_face_protection",
+            ),
+        ),
         ("Debugging", ("save_step_artifacts",)),
     ),
     "use_large_vessel_masks": (

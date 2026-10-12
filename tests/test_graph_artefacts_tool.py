@@ -154,3 +154,78 @@ def test_a_row_counts_the_pairs_a_thick_vessel_bridge_is_in():
     row = measure(G, MaskSupport(mask, VOXEL_SIZE))
 
     assert (row["pairs"], row["bridge_pairs"], row["bridges"]) == (1, 1, 1)
+
+
+# --- the dead-end census (PLAN_dead_ends.md, Phase 0) ------------------------------
+
+
+def test_the_census_counts_each_fixture_by_kind_place_and_what_lies_ahead():
+    from dead_end_fixtures import CASES, SHAPE
+    from graph_artefacts.dead_end_census import census, census_markdown
+    from haemolynx.graph.dead_ends import DEAD_END_KINDS, image_extent_um
+
+    extent = image_extent_um(SHAPE, VOXEL_SIZE)
+    for make in CASES:
+        case = make()
+        row = census(case.graph, support=MaskSupport(case.mask, VOXEL_SIZE), extent_um=extent)
+        assert row["dead_ends"] == sum(row["by_kind"].values())
+        assert tuple(row["by_kind"]) == DEAD_END_KINDS
+        assert row["by_kind"][case.kind] >= 1, case.name
+        assert sum(sum(c.values()) for c in row["by_face_band"].values()) == row["dead_ends"]
+    broken = CASES[4]()
+    row = census(broken.graph, support=MaskSupport(broken.mask, VOXEL_SIZE), extent_um=extent)
+    assert row["interior_with_a_vessel_ahead"] == {"within 5 um": 0, "within 10 um": 1}
+    # The stopped-short tip reaches the face through the mask, 5-10 um out.
+    face = CASES[1]()
+    row = census(face.graph, support=MaskSupport(face.mask, VOXEL_SIZE), extent_um=extent)
+    assert row["by_face_band"]["5-10"] == {"reaches face": 1}
+    assert "| leaves_image | 3 | 3 |" in census_markdown({"a": row, "b": row})
+
+
+def test_each_final_dead_end_is_traced_to_the_step_that_first_left_it():
+    import networkx as nx
+    from graph_artefacts.dead_end_census import made_by_step
+
+    def chain(*points):
+        G = nx.MultiGraph()
+        for p in points:
+            G.add_node(p, pos=np.asarray(p, dtype=float))
+        for a, b in zip(points[:-1], points[1:]):
+            G.add_edge(a, b, length=float(np.linalg.norm(np.subtract(b, a))))
+        return G
+
+    first = chain((0, 0, 0), (0, 0, 10))
+    second = chain((0, 0, 0), (0, 0, 10), (0, 0, 29.5))
+    final = chain((0, 0, 0), (0, 0, 10), (0, 0, 20), (0, 0, 30))
+    # (0, 0, 0) was a dead end from the first step on, (0, 0, 30) from the
+    # second (within a micron of 29.5).
+    assert made_by_step(final, [("first", first), ("second", second)]) == {
+        "first": 1, "second": 1, "after the steps": 0,
+    }
+    assert made_by_step(final, [("first", first)]) == {"first": 1, "after the steps": 1}
+
+
+def test_flow_coverage_says_why_each_unsolved_piece_has_no_flow():
+    import networkx as nx
+    from graph_artefacts.dead_end_census import flow_coverage
+    from haemolynx.graph import FLOW_SOLVED
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, LEAVES_IMAGE, UNKNOWN
+
+    G = nx.MultiGraph()
+    pos = {0: (5, 5, 0), 1: (5, 5, 10), 2: (5, 5, 20), 3: (5, 0, 10), 4: (5, 9, 20), 5: (5, 5, 50), 6: (5, 5, 60)}
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p, dtype=float))
+    for u, v, solved in ((0, 1, True), (1, 2, True), (1, 3, False), (2, 4, False), (5, 6, False)):
+        G.add_edge(u, v, length=10.0, **{FLOW_SOLVED: solved})
+    G.nodes[3][DEAD_END_KIND] = LEAVES_IMAGE   # node 3 on the y = 0 face
+    G.nodes[4][DEAD_END_KIND] = UNKNOWN
+    G.graph["image_extent_um"] = (10.0, 10.0, 100.0)
+    report = flow_coverage(G, inlets=[0], outlets=[2])
+    assert report["solved_share"] == pytest.approx(0.4)
+    assert report["unsolved_um_by_reason"] == {
+        "behind a closed face end": 10.0, "behind interior dead ends": 10.0, "no boundary": 10.0,
+    }
+    # Opening node 3 as a boundary puts 0-1-3 on a path: 1-3 joins the flow.
+    assert report["through_designated_um"] == pytest.approx(20.0)
+    assert report["through_with_open_ends_um"] == pytest.approx(30.0)
+    assert report["boundary_face_distance_um"] == {0: 0.0, 2: pytest.approx(5.0)}

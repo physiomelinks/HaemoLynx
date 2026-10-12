@@ -44,7 +44,10 @@ haemolynx/
 │   │                       #   lumen_loops.py (loops lying inside one lumen: Lee rings, broken),
 │   │                       #   facing_ends.py (two dead ends heading for each other across a
 │   │                       #   gap in the segmentation, joined), network_review.py (what the
-│   │                       #   Post processing tab's review lists find, one finder per list)
+│   │                       #   Post processing tab's review lists find, one finder per list),
+│   │                       #   dead_ends.py (what each dead end is: the one definition),
+│   │                       #   dead_end_extension.py (dead ends drawn on to the face, traced
+│   │                       #   on through the mask, joined to the vessel ahead; opt-in)
 │   ├── haemodynamics/      # poiseuille, viscosity (the laws), resistance, apply,
 │   │                       #   automated.py (FWHM diameters), raw_section.py (the raw
 │   │                       #   cross-section fitted where FWHM fails, opt-in), edt_diameter.py
@@ -61,7 +64,9 @@ haemolynx/
 │   │                       #   pericyte_comparison; perturbations.py (typed settings overrides
 │   │                       #   to re-solve for) and what they run: arteriole, capillary,
 │   │                       #   capillary_block, pericyte_sweep, pericyte_geometry_sweep,
-│   │                       #   sweep_flows (per-grid-point flows for the viewer)
+│   │                       #   sweep_flows (per-grid-point flows for the viewer);
+│   │                       #   open_ends.py (the boundary condition on vessels leaving
+│   │                       #   the image, open_end_model)
 │   ├── statistics/         # comprehensive.py (compute_comprehensive_vessel_statistics,
 │   │                       #   the orchestrator), topology.py, shape.py, bifurcation.py
 │   │                       #   (junction morphometry + per-branch-order aggregation, which
@@ -73,7 +78,8 @@ haemolynx/
 │   │                       #   csv_export.py, _sampling.py (one shared seed constant),
 │   │                       #   three_dim_distances.py (cell-to-vessel distances),
 │   │                       #   tissue_volume.py (the tissue's volume and surface mesh
-│   │                       #   from the raw image, what vessel density divides by)
+│   │                       #   from the raw image, what vessel density divides by),
+│   │                       #   dead_ends.py (the statistics CSV's Dead Ends section)
 │   ├── optimisation/       # "Optimise settings": search.py (segmentation cleanup,
 │   │                       #   Skeletonise and Graph settings), fwhm_search.py (FWHM
 │   │                       #   settings), candidates/metrics (+ fwhm_ variants), report,
@@ -131,7 +137,12 @@ haemolynx/
 ├── scripts/                # Developer tools, not part of the package
 │   ├── compare_branches.py # Run the pipeline on this branch and on a reference
 │   │                       #   ref, and diff the numbers (never runs in CI)
-│   └── branch_comparison/  # metrics/report (pure, unit-tested) + runner
+│   ├── branch_comparison/  # metrics/report (pure, unit-tested) + runner
+│   ├── graph_artefacts.py  # Rebuild a run's graph step by step and measure its lumen
+│   │                       #   artefacts and dead ends (graph_artefacts/: report,
+│   │                       #   dead_end_census: by kind, place, depth, step, flow coverage)
+│   ├── dead_end_review/    # The marked grids dead ends are calibrated on (G1-G3)
+│   └── open_end_sensitivity.py # One solved network under every open_end_model
 ├── tests/                  # Unit + integration tests (see Testing below)
 │   ├── conftest.py         # Shared fixtures; matplotlib Agg backend
 │   └── integration/        # Full-pipeline and tutorial tests (@pytest.mark.integration)
@@ -169,7 +180,7 @@ Users may also supply **pre-segmented** masks only (no ilastik call) — typical
 2. **Vessel masks (optional)** — `io.load_and_validate_vessel_masks` (large/small arteriole/venule; from disk or ilastik)  
 3. **Graph build** — `graph.build_graph_from_skeleton` (thirteen topology steps in `graph/assemble.py`), then `graph.smooth_graph_centrelines`  
 4. **Boundary & branch order** — manual volume/coordinates or mask-based assignment; `graph.assign_vessel_branch_orders` / hierarchical orders  
-5. **Haemodynamics** — `haemodynamics.apply_poiseuille_haemodynamics`, conductance matrix, two-point resistance, flow solve (optionally iterating a distributed haematocrit, `haematocrit_model="distributed_iterative"`)  
+5. **Haemodynamics** — `haemodynamics.apply_poiseuille_haemodynamics`, conductance matrix, two-point resistance, flow solve (optionally iterating a distributed haematocrit, `haematocrit_model="distributed_iterative"`), with the boundary condition `open_end_model` puts on vessels leaving the image (`haemodynamics/open_ends.py`)  
 6. **Post processing (hand edits)** — on the *solved* network: `post_process` brings vessels edited by hand in the panel (`graph/post_processing.py`) in line with the rest: lengths, branch orders, diameters by the run's own methods (only the edited vessels are measured), zero-resistance bridges where one opens into a thick vessel; then `solve_post_processed` reruns the haemodynamics on the edited network (network handling, resistances, solve). A no-op on an unedited network, which is not solved again. With `mid_run_postprocessing` on, a panel run pauses before it (`run_pipeline_stages(stop_after="solve")`) and Continue resumes at it  
 7. **Perturbations (optional)** — `run_perturbations` re-solves copies of the solved network, once per configured entry in `perturbations` (see `haemodynamics/perturbations.py`)  
 8. **Export & stats** — `visualization.graph_to_vtk`, the tissue volume from the raw image (`measure_tissue_volume`, optional), `statistics.compute_comprehensive_vessel_statistics` (with the selected network analyses), vascular communities
@@ -232,8 +243,8 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 |-------------|----------------------|
 | `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py` |
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
-| `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), boundary/assignment tests |
-| `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), FWHM/pericyte integration tests |
+| `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, boundary/assignment tests |
+| `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_sweep_flow_layers.py` |
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight) |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
@@ -325,6 +336,14 @@ are only caught locally.
   conductances back as microns. `graph.assert_no_forbidden_edge_attributes(G)` raises if it
   reappears; NetworkX algorithms must be passed an explicit `weight="length"` / `weight="resistance"`
   rather than relying on their `"weight"` default.
+- **Open ends** — a dead end that leaves the image is open in the tissue; `open_end_model`
+  (default `closed`, as before) chooses its boundary condition: `terminal_resistance` (drains to
+  the outlet pressure through k times its own vessel's resistance), `outlet`, or `estimated`
+  (Fry et al. 2012: pressures chosen to keep the network near a target pressure and wall shear
+  stress, taken from the closed solve). Like the viscosity law it moves every flow, so **flows
+  are not comparable across open-end models**; perturbations may not override it and solve with
+  the baseline's conditions (kept on the graph, `G.graph["open_end_conditions"]`). See
+  `haemodynamics/open_ends.py` below.
 - **Viscosity model** — selectable, and the choice changes every resistance a run produces, so
   **resistances are not comparable across laws or across diameter bases**. The graph records both
   in `G.graph["viscosity_law"]` / `["diameter_basis"]`. All of it is in
@@ -437,6 +456,43 @@ are only caught locally.
   least 3 µm long, the gap no longer than the two together, not beside a vessel in the same
   lumen, closest pairs first. Rare by design: of E14.5's 284 dead-end pairs within 10 µm, 143
   were siblings off one junction, 57 side by side and only 15 pointed at each other.
+- **`graph/dead_ends.py`** — what each dead end (degree-1 node) is, the one definition every
+  module asks (PLAN_dead_ends.md): judged as its whole chain (`chain_to_junction`, the prune's
+  walk), it is `leaves_image` (its tip touches a face, or the segmented vessel runs on from it to
+  a face within `FACE_REACH_RADII` of its radius: `leaves_image`), `island_end`, `artefact` (off
+  the mask, inside a neighbouring lumen, beside a vessel, under the prune's radius rule),
+  `stops_short` (the mask runs on past it), `broken` (another vessel straight ahead across one
+  stretch of background, or a lumen it ends in, that is not one of its neighbours -- 2+ junctions
+  away, the One centreline session's marks), `blind` (a person said so: `set_dead_end_kind`,
+  kept through reclassifying) or `unknown`. These are first proposals. Harvey marked grids
+  G1-G3 (`scripts/dead_end_review/`) on 2026-10-12, and no rule reached 90%. The face rule
+  scored 24/30, against 23 by distance and 20 for all one way. Most ends were marked "not a real
+  vessel", and no measure separated those. So the kinds only label and list, and every repair
+  below stays off. `build_network` marks every dead end's kind on
+  its node (`dead_end_kind`) and the image extent on the graph (`image_extent_um`), so stages
+  without the mask -- boundaries, the solve, statistics, the VTK -- read the same answer
+  (`node_leaves_image`, `open_end_nodes`). Diagnostics, the review lists and the boundary review
+  all classify through it; a fixed `image_face_margin_um` is only a caller's explicit choice.
+  The solve writes `graph.FLOW_STATE` beside `FLOW_SOLVED`: `solved`, `blind_end` (behind dead
+  ends inside the tissue: zero flow is the answer, drawn in colour, not grey), `closed_end`
+  (behind a face end with no boundary condition) or `no_boundary` (no inlet and outlet: the
+  only flows exports blank, `graph.flow_is_undefined`). `graph/dead_end_extension.py` holds the
+  repairs the grids gate, each off until then: `extend_dead_ends_to_faces`,
+  `trace_on_dead_ends`, `join_dead_ends_to_vessel_sides` (run in the facing-join step), with
+  `stub_face_protection` and `boundary_open_end_test` choosing `leaves_image` over the old
+  distances. Morphology (closing, opening) reads past an image face as the vessel running on
+  (`memmap_support.at_faces_as_beyond`), so no vessel the image cut is trimmed at the face.
+- **`haemodynamics/open_ends.py`** — `open_end_conditions(model, G, ...)`: the boundary condition
+  on dead ends leaving the image (in a piece with a designated inlet or outlet). Every model
+  becomes conductances to two ghost nodes held at the inlet and the outlet pressure
+  (`augment`), never added to the graph: `terminal_resistance` drains to the outlet level,
+  `outlet` holds the end at it, and `estimated` (Fry et al. 2012, a constrained least squares
+  over the free pressures with flow directions iterated until those of the vessels carrying flow
+  settle) becomes, exactly, the conductance carrying each end's estimated flow at its estimated
+  pressure -- so the baseline reproduces the estimate and perturbations and sweeps (whose unit
+  solve scales with the drop) keep it. The baseline keeps its conditions on the graph; every
+  solver path (the solve stage, the haematocrit loop, `_solve_network`, `solve_sweep_point`)
+  augments with them. `scripts/open_end_sensitivity.py` re-solves one network under each model.
 - **`graph/lumen_loops.py`** — `remove_loops_inside_one_lumen`, run in every round of
   `consolidate_lumen` whenever `bridge_require_mask_support` has a mask:
   Lee thinning keeps the mask's topology, so every tunnel through a vessel comes back as a ring,

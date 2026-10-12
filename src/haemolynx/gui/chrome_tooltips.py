@@ -283,6 +283,21 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "Start Add vessel at the chosen dead end's tip: click along the "
         "vessel it should go on to, and on a node or vessel to finish it"
     ),
+    "review_join_ahead": (
+        "Join the chosen dead end to the vessel straight ahead of it, with a "
+        "vessel traced from its tip to where its heading meets that vessel "
+        "through the image Add vessel uses; that vessel is split there"
+    ),
+    "review_mark_blind": (
+        "Say the chosen dead end is a real blind end (a sprout, or a vessel "
+        "that ends there). It stays; the mark is kept on its node and in the "
+        "decisions CSV, and later scans and the statistics read it"
+    ),
+    "review_mark_open": (
+        "Say the chosen dead end is a vessel leaving the image. It becomes an "
+        "open end: with an open_end_model other than closed, the next solve "
+        "gives it a boundary condition"
+    ),
     "review_join": (
         "Join the chosen pair of dead ends with a vessel traced between "
         "them through the image Add vessel uses, as wide as the vessels "

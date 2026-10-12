@@ -2058,6 +2058,21 @@ SCHEMA = Schema(
             minimum=0.0,
             advanced=True,
         ),
+        Setting(
+            name="boundary_open_end_test",
+            kind="choice",
+            default="distance",
+            help=(
+                "How edge_percent and degree_1_from_inlet tell a terminal the image "
+                "cut through. distance: within boundary_open_end_max_distance_um of "
+                "a face. leaves_image: the dead end leaves the image as graph "
+                "building judged it (it touches a face, or the segmented vessel "
+                "runs on to one)"
+            ),
+            section=_BOUNDARY_ASSIGNMENT,
+            choices=("distance", "leaves_image"),
+            advanced=True,
+        ),
         # The coordinates below apply whenever a role's selection method is
         # "coordinates". They are empty by default because a coordinate is a
         # statement about one dataset: the previous default named six points in
@@ -2794,6 +2809,67 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="extend_dead_ends_to_faces",
+            kind="bool",
+            default=False,
+            help=(
+                "Draw a dead end that leaves the image but stops short of the face "
+                "(the segmented vessel runs on to it within four radii) on to the "
+                "face, so its open end sits where the vessel leaves the image. Off "
+                "until a marked grid calibrates it (PLAN_dead_ends.md, G2)"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="trace_on_dead_ends",
+            kind="bool",
+            default=False,
+            help=(
+                "From a dead end the segmented vessel runs on past, draw the "
+                "centreline on through the mask along its heading, up to 30 um: "
+                "joined to another vessel where it enters that vessel's lumen, "
+                "ended at an image face or where the mask ends. Never beside a "
+                "vessel in the same lumen, never closing a loop inside one. Off "
+                "until a marked grid calibrates it (PLAN_dead_ends.md, G1)"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="join_dead_ends_to_vessel_sides",
+            kind="bool",
+            default=False,
+            help=(
+                "Join a dead end pointing at another vessel's side, within "
+                "facing_dead_end_max_gap_um across one stretch of background, to "
+                "that vessel -- unless that vessel is one of its neighbours in the "
+                "network (one junction away or closer). Off until a marked grid "
+                "calibrates it (PLAN_dead_ends.md, G3)"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="stub_face_protection",
+            kind="choice",
+            default="threshold",
+            help=(
+                "Which short stubs the prune keeps at an image face. threshold: a "
+                "tip within its own pruning threshold of a face (as before). "
+                "leaves_image: only a dead end that leaves the image (it touches a "
+                "face, or the segmented vessel runs on to one), so a spur near a "
+                "face is judged like any other"
+            ),
+            section=_PIPELINE_STAGES,
+            choices=("threshold", "leaves_image"),
             requires=("do_graph_building",),
             advanced=True,
         ),
@@ -3534,6 +3610,20 @@ SCHEMA = Schema(
             requires=("statistics",),
             advanced=True,
         ),
+        Setting(
+            name="statistics_dead_ends",
+            kind="bool",
+            default=True,
+            help=(
+                "Dead ends by kind (leaving the image, stopped short, broken, "
+                "artefact, blind, unknown, island), the interior ones per mm of "
+                "vessel and per mm^3 of tissue, their length, the share of the "
+                "network the image faces cut, and why vessels carry no flow"
+            ),
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
         # The tissue's own volume, for vessel density: see
         # haemolynx.statistics.tissue_volume. Its own toggle, independent of
         # Statistics -- it writes its own CSV and surface either way, and
@@ -4202,6 +4292,86 @@ SCHEMA = Schema(
                     True: "remove_disconnected"
                 },
             },
+        ),
+        Setting(
+            name="open_end_model",
+            kind="choice",
+            default="closed",
+            help=(
+                "The boundary condition on vessels that leave the image (dead ends "
+                "whose vessel runs out through an image face) and are not inlets or "
+                "outlets. closed: no blood leaves through them, so every vessel that "
+                "only leads to them carries no flow. terminal_resistance: each drains "
+                "to the outlet pressure through open_end_terminal_resistance_multiple "
+                "times its own vessel's resistance. outlet: each is held at the "
+                "outlet pressure (biased towards draining; for comparison). "
+                "estimated: their pressures are chosen so the network's pressures and "
+                "wall shear stresses stay closest to target values (Fry et al. 2012), "
+                "the targets taken from the closed solve. Only open ends in a piece "
+                "of the network with an inlet or outlet are opened. Perturbations and "
+                "sweeps keep the baseline's conditions, and results under different "
+                "models are not comparable"
+            ),
+            section=_NETWORK_HANDLING,
+            choices=("closed", "terminal_resistance", "outlet", "estimated"),
+            requires=("run_haemodynamics",),
+            advanced=True,
+        ),
+        Setting(
+            name="open_end_terminal_resistance_multiple",
+            kind="float",
+            default=10.0,
+            help=(
+                "How many times its own vessel's resistance an open end drains "
+                "through, to the outlet pressure"
+            ),
+            section=_NETWORK_HANDLING,
+            minimum=0.0,
+            requires=("run_haemodynamics", "open_end_model=terminal_resistance"),
+            advanced=True,
+        ),
+        Setting(
+            name="open_end_estimate_shear_weight",
+            kind="float",
+            default=1.0,
+            help=(
+                "How much the wall shear stress target counts against the pressure "
+                "target when estimating the open ends' pressures, each term divided "
+                "by its own scale"
+            ),
+            section=_NETWORK_HANDLING,
+            minimum=0.0,
+            requires=("run_haemodynamics", "open_end_model=estimated"),
+            advanced=True,
+        ),
+        Setting(
+            name="open_end_estimate_pressure_target_pa",
+            kind="float",
+            default=None,
+            help=(
+                "The pressure the estimate keeps the network near. Leave unset for "
+                "the closed solve's mean pressure over the vessels it perfuses"
+            ),
+            section=_NETWORK_HANDLING,
+            unit="Pa",
+            requires=("run_haemodynamics", "open_end_model=estimated"),
+            advanced=True,
+            placeholder="auto",
+        ),
+        Setting(
+            name="open_end_estimate_shear_target_pa",
+            kind="float",
+            default=None,
+            help=(
+                "The wall shear stress the estimate keeps each vessel near. Leave "
+                "unset for the closed solve's median over the vessels it perfuses"
+            ),
+            section=_NETWORK_HANDLING,
+            unit="Pa",
+            minimum=0.0,
+            requires=("run_haemodynamics", "open_end_model=estimated"),
+            advanced=True,
+            placeholder="auto",
         ),
         Setting(
             name="all_diams_const",

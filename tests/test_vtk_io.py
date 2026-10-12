@@ -307,6 +307,46 @@ def test_flow_arrays_appear_once_any_edge_carries_a_flow(tmp_path):
     assert int(np.isnan(flow).sum()) == 1
 
 
+def test_each_vessel_says_whether_its_flow_is_an_answer_and_why(tmp_path):
+    """PLAN_dead_ends.md Phase 8 (and PLAN_dale_review_fixes.md item 5): the
+    flow state, solved flag, length, diameter, its source and bridges go out
+    with every vessel; flows are NaN only where they are no answer at all
+    (no inlet and outlet reach), while a blind end's zero flow is kept; the
+    nodes carry their dead-end kind; the run's blood model is in field data."""
+    from haemolynx.graph import FLOW_SOLVED, FLOW_STATE, IS_ZERO_RESISTANCE
+
+    G = nx.MultiGraph(viscosity_law="pries", diameter_basis="plasma_column", haematocrit=0.45,
+                      open_end_conditions={"model": "terminal_resistance"})
+    pos = {0: (0.0, 0.0, 0.0), 1: (10.0, 0.0, 0.0), 2: (10.0, 10.0, 0.0), 3: (50.0, 0.0, 0.0), 4: (60.0, 0.0, 0.0)}
+    for n, p in pos.items():
+        G.add_node(n, pos=np.asarray(p), pressure=100.0 if n < 3 else 0.0)
+    G.nodes[2]["dead_end_kind"] = "unknown"
+    for (u, v), state, flow in (((0, 1), "solved", 2e-15), ((1, 2), "blind_end", 0.0), ((3, 4), "no_boundary", 0.0)):
+        G.add_edge(u, v, voxels=[pos[u], pos[v]], length=float(np.linalg.norm(np.subtract(pos[u], pos[v]))),
+                   diameter_um=5.0, diameter_source="fwhm", flow_abs=flow, flow_signed=flow, pressure_drop=0.0,
+                   **{FLOW_SOLVED: state == "solved", FLOW_STATE: state})
+    G.edges[0, 1, 0][IS_ZERO_RESISTANCE] = True
+
+    out = graph_to_vtk(G, tmp_path / "states")
+    vessels, nodes = pv.read(out["vessels_path"]), pv.read(out["nodes_path"])
+
+    assert list(vessels.cell_data["flow_state"]) == ["solved", "blind_end", "no_boundary"]
+    assert list(vessels.cell_data["flow_solved"]) == [1, 0, 0]
+    assert vessels.cell_data["flow_solved"].dtype == np.uint8
+    assert list(vessels.cell_data["is_zero_resistance"]) == [1, 0, 0]
+    assert vessels.cell_data["length_um"] == pytest.approx([10.0, 10.0, 10.0])
+    assert vessels.cell_data["diameter_um"] == pytest.approx([5.0, 5.0, 5.0])
+    assert list(vessels.cell_data["diameter_source"]) == ["fwhm", "fwhm", "fwhm"]
+    flow = vessels.cell_data["flow_abs"]
+    assert flow[0] == pytest.approx(2e-15) and flow[1] == 0.0 and np.isnan(flow[2])
+    assert list(nodes.point_data["dead_end_kind"]) == ["", "", "unknown", "", ""]
+    pressure = nodes.point_data["pressure"]
+    assert pressure[2] == 100.0 and np.isnan(pressure[3]) and np.isnan(pressure[4])
+    assert str(vessels.field_data["viscosity_law"][0]) == "pries"
+    assert str(vessels.field_data["open_end_model"][0]) == "terminal_resistance"
+    assert "haemolynx_version" in vessels.field_data
+
+
 # --- degenerate inputs are dropped, not exported as broken cells ------------
 
 

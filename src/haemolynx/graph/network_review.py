@@ -191,19 +191,12 @@ def _namer(G: nx.MultiGraph):
 def _chain_to_junction(G: nx.MultiGraph, tip: Any) -> tuple[list[EdgeKey], Any]:
     """The vessels from a dead end back to the first node that is not a
     plain pass-through, tip first, each named from the tip's side, and that
-    node."""
-    chain: list[EdgeKey] = []
-    previous, current = None, tip
-    while True:
-        onward = [(a, b, k) for a, b, k in G.edges(current, keys=True) if b != previous and b != current]
-        if not onward:
-            break
-        edge = onward[0]
-        chain.append(edge)
-        previous, current = current, edge[1]
-        if G.degree(current) != 2 or current == tip:
-            break
-    return chain, current
+    node: the one chain walk every dead-end question shares
+    (:func:`haemolynx.graph.dead_ends.chain_to_junction`)."""
+    from .dead_ends import chain_to_junction
+
+    nodes, edges = chain_to_junction(G, tip)
+    return list(edges), nodes[-1]
 
 
 def _diameter(data: Mapping[str, Any]) -> float | None:
@@ -667,15 +660,20 @@ def find_boundary_issues(
     min_flow_share: float = BOUNDARY_MIN_FLOW_SHARE,
 ) -> list[ReviewItem]:
     """What looks wrong with the boundary nodes, issue by issue: an inlet or
-    outlet that is not a dead end; one further than *image_face_margin_um*
-    inside the image (*extent_um*, its size in microns, needed); a dead end at
-    an image face that is no boundary node -- a vessel the image cut, left
-    unsolved; and an inlet or outlet carrying less than *min_flow_share* of
+    outlet that is not a dead end; one that does not leave the image; a dead
+    end that leaves the image but is no boundary node -- a vessel the image
+    cut, closed in the solve unless the run gives open ends a boundary
+    condition; and an inlet or outlet carrying less than *min_flow_share* of
     the network's inflow. *roles* maps ``"inlet"``, ``"outlet"`` and the
-    other boundary roles to their nodes."""
-    from .diagnostics import IMAGE_FACE_MARGIN_UM
+    other boundary roles to their nodes.
 
-    margin = IMAGE_FACE_MARGIN_UM if image_face_margin_um is None else float(image_face_margin_um)
+    Whether a dead end leaves the image is the one definition
+    (:func:`haemolynx.graph.dead_ends.node_leaves_image`: its kind when the
+    run marked one, else its distance to a face, the image's extent
+    *extent_um* or the graph's own). *image_face_margin_um*, when given,
+    replaces it with a fixed distance."""
+    from .dead_ends import graph_image_extent_um, leaves_image, node_leaves_image
+
     pos = _node_pos(G)
     name = _namer(G)
     role_of: dict[Any, str] = {}
@@ -683,12 +681,25 @@ def find_boundary_issues(
         for node in nodes or ():
             role_of.setdefault(node, str(role))
     ends = [n for n in (*(roles.get("inlet") or ()), *(roles.get("outlet") or ())) if n in G]
-    extent = None if extent_um is None else np.asarray(extent_um, dtype=float)
+    extent = np.asarray(extent_um, dtype=float) if extent_um is not None else graph_image_extent_um(G)
 
     def depth(node) -> float | None:
         if extent is None or node not in pos:
             return None
         return float(np.min(np.minimum(pos[node], extent - pos[node])))
+
+    def leaves(node) -> bool | None:
+        if image_face_margin_um is not None:
+            inside = depth(node)
+            return None if inside is None else inside <= float(image_face_margin_um)
+        if G.degree(node) != 1:
+            # Not a dead end: whether it at least sits on a face.
+            if extent is None or node not in pos:
+                return None
+            return leaves_image(pos[node], extent, voxel_size_zyx=G.graph.get("image_voxel_size_zyx"))[0]
+        if extent is None and G.nodes[node].get("dead_end_kind") is None:
+            return None
+        return node_leaves_image(G, node, extent)
 
     reference = flow_reference(G, roles.get("inlet") or ())
     found: list[tuple[int, ReviewItem]] = []
@@ -716,30 +727,49 @@ def find_boundary_issues(
         role = role_of[node]
         if G.degree(node) != 1:
             add(0, node, "not a dead end", f"The {role} node {node} is not a dead end: {G.degree(node)} vessels meet there.")
-        inside = depth(node)
-        if inside is not None and inside > margin:
-            add(1, node, "inside the image", f"The {role} node {node} lies {inside:.3g} µm inside the image, not at a face.")
+        if leaves(node) is False:
+            inside = depth(node)
+            add(1, node, "inside the image",
+                f"The {role} node {node} does not leave the image"
+                + (f": it lies {inside:.3g} µm inside it." if inside is not None else "."))
         edges = list(G.edges(node, keys=True))
         shares = [_flow_share(G.edges[e], reference) for e in edges if _is_solved(G.edges[e])]
         shares = [s for s in shares if s is not None]
         if shares and max(shares) < min_flow_share:
             add(3, node, "little flow", f"The {role} node {node} carries {max(shares):.2%} of the inflow.")
-    if extent is not None:
-        for node in G.nodes:
-            if node in role_of or G.degree(node) != 1:
-                continue
-            (_a, other, _k), = G.edges(node, keys=True)
-            if G.degree(other) == 1:
-                continue
-            inside = depth(node)
-            if inside is not None and inside <= margin:
-                add(2, node, "open end at a face",
-                    f"Node {node} is a dead end at an image face but no boundary node: the vessel the image cut is left unsolved.")
+    for node in G.nodes:
+        if node in role_of or G.degree(node) != 1:
+            continue
+        (_a, other, _k), = G.edges(node, keys=True)
+        if G.degree(other) == 1:
+            continue
+        if leaves(node):
+            add(2, node, "open end at a face",
+                f"Node {node} is a dead end leaving the image but no boundary node: the vessel the image cut "
+                "is closed in the solve unless open ends get a boundary condition (open_end_model).")
     found.sort(key=lambda pair: pair[0])
     return [item for _order, item in found]
 
 
 # --- needing the segmented mask ------------------------------------------------------
+
+
+#: What each kind of dead end is, as the dead-end list says it, in the order
+#: the list groups them.
+DEAD_END_WORDS = {
+    "artefact": "not a vessel end",
+    "stops_short": "the segmented vessel runs on past its tip",
+    "broken": "another vessel lies straight ahead across a gap",
+    "unknown": "a blind end, or a broken vessel",
+    "blind": "a real blind end (marked by hand)",
+    "island_end": "an end of a piece with no junction",
+}
+_ARTEFACT_WORDS = {
+    "inside_other_lumen": "its tip lies inside another vessel's lumen",
+    "beside_vessel": "it runs beside another vessel in the same lumen",
+    "off_mask": "it lies mostly off the segmented mask",
+    "mask_continues": "the segmented vessel runs on past its tip",
+}
 
 
 def find_dead_ends(
@@ -749,46 +779,60 @@ def find_dead_ends(
     stub_radius_multiple: float = 3.0,
     image_face_margin_um: float | None = None,
 ) -> list[ReviewItem]:
-    """Every dead end away from the image faces, judged against the mask
-    (:func:`~haemolynx.graph.diagnostics.classify_dead_ends`), each with its
-    chain back to the junction: the artefact kinds first, in
-    :data:`~haemolynx.graph.diagnostics.DEAD_END_KINDS` order (its tip inside
-    another vessel's lumen, beside another vessel, off the mask, the mask
-    running on past the tip, short), then the dead ends that are none of
-    them; longest first within each."""
-    from .diagnostics import DEAD_END_KINDS, IMAGE_FACE_MARGIN_UM, classify_dead_ends
+    """Every dead end that does not leave the image, with its kind
+    (:mod:`haemolynx.graph.dead_ends`, judged against the mask) and its chain
+    back to the junction, grouped by kind in :data:`DEAD_END_WORDS` order --
+    artefacts first -- and longest first within each. A piece with no
+    junction is listed once, not once per end. *image_face_margin_um*, when
+    given, replaces the face test with a fixed distance."""
+    from .dead_ends import LEAVES_IMAGE, classify_dead_ends, image_extent_um
 
-    margin = IMAGE_FACE_MARGIN_UM if image_face_margin_um is None else float(image_face_margin_um)
-    judged = classify_dead_ends(
-        G, support.mask, mask_support=support,
-        stub_radius_multiple=stub_radius_multiple, image_face_margin_um=margin,
+    ends = classify_dead_ends(
+        G, extent_um=image_extent_um(support.mask.shape, support.voxel_size_zyx), support=support,
+        stub_radius_multiple=stub_radius_multiple, face_margin_um=image_face_margin_um,
     )
-    words = {
-        "inside_other_lumen": "its tip lies inside another vessel's lumen",
-        "beside_vessel": "it runs beside another vessel in the same lumen",
-        "off_mask": "it lies mostly off the segmented mask",
-        "mask_continues": "the segmented vessel runs on past its tip",
-        "short": f"it is shorter than {stub_radius_multiple:g} radii of the vessel it leaves",
-    }
+    order = list(DEAD_END_WORDS)
     pos = _node_pos(G)
     name = _namer(G)
+    seen: set = set()
     items = []
-    for tip, kinds in judged["kinds"].items():
-        walked, junction = _chain_to_junction(G, tip)
-        chain = [name(*e) for e in walked]
-        length = float(sum(_length(G, e, pos) for e in chain))
+    for tip, end in ends.items():
+        if end.kind == LEAVES_IMAGE:
+            continue
+        chain = tuple(name(*e) for e in end.chain)
+        if frozenset(chain) in seen:
+            continue
+        seen.add(frozenset(chain))
         points = _points(G, chain, pos)
-        rank = min((DEAD_END_KINDS.index(k) for k in kinds), default=len(DEAD_END_KINDS))
-        items.append((rank, -length, ReviewItem(
+        details = [_ARTEFACT_WORDS[f] for f in end.flags if f in _ARTEFACT_WORDS]
+        if "short" in end.flags:
+            details.append(f"it is shorter than {stub_radius_multiple:g} radii of the vessel it leaves")
+        why = f"A dead end ({end.kind.replace('_', ' ')}): {DEAD_END_WORDS.get(end.kind, end.kind)}"
+        why += ("; " + "; ".join(details) if details and end.kind == "artefact" else "") + "."
+        measures = {
+            "kind": end.kind,
+            "kinds": ";".join(end.flags),
+            "length_um": end.chain_length_um,
+            "vessels": len(chain),
+        }
+        for key in ("tip_radius_um", "junction_radius_um", "mask_run_um", "ahead_um", "ahead_junctions_away",
+                    "face_distance_um", "in_mask_fraction"):
+            measures[key] = getattr(end, key)
+        # Where "Join to the vessel ahead" joins it: the vessel straight ahead
+        # and the point the heading meets it.
+        if end.ahead_um is not None and end.ahead_edge is not None and end.heading is not None:
+            measures["ahead_edge"] = tuple(name(*end.ahead_edge))
+            measures["ahead_point_um"] = tuple(
+                float(c) for c in np.asarray(end.tip_um) + float(end.ahead_um) * np.asarray(end.heading)
+            )
+        rank = order.index(end.kind) if end.kind in order else len(order)
+        items.append((rank, -end.chain_length_um, ReviewItem(
             kind=DEAD_ENDS,
-            nodes=(tip, junction),
-            edges=tuple(chain),
+            nodes=(tip, end.junction),
+            edges=chain,
             centre_um=_centre([pos[tip]]) if tip in pos else _centre(points),
-            why=(
-                "A dead end: " + "; ".join(words[k] for k in kinds) + "."
-                if kinds else "A dead end that is none of the artefact kinds: a blind end, or a broken vessel."
-            ),
-            measures={"kinds": ";".join(kinds), "length_um": length, "vessels": len(chain)},
+            why=why,
+            measures=measures,
             points_um=points,
         )))
     items.sort(key=lambda entry: entry[:2])

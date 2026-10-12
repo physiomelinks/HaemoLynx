@@ -1062,7 +1062,10 @@ def test_a_loop_decision_without_an_output_folder_still_counts(make_napari_viewe
 from haemolynx.gui.post_processing import (  # noqa: E402
     ACTION_DELETE_ITEM,
     ACTION_DELETE_SELECTED,
+    ACTION_JOIN_AHEAD,
     ACTION_KEEP,
+    ACTION_MARK_BLIND,
+    ACTION_MARK_OPEN,
     ACTION_MERGE,
     ACTION_SET_DIAMETER,
     ACTION_TRACE_ON,
@@ -1271,13 +1274,19 @@ def test_a_mask_list_is_made_in_the_background_and_its_dead_end_traced_on(make_n
     assert c.scan_button.isEnabled()
     assert c.review_items.count() == 1
     assert c.review_items.item(0).text() == "1. Node 3: off mask, 25 µm"
-    assert _shown_buttons(c) == {ACTION_DELETE_ITEM, ACTION_TRACE_ON, ACTION_KEEP}
+    assert _shown_buttons(c) == {
+        ACTION_DELETE_ITEM, ACTION_TRACE_ON, ACTION_JOIN_AHEAD, ACTION_MARK_BLIND, ACTION_MARK_OPEN, ACTION_KEEP,
+    }
+    # No vessel was found ahead of this tip, so there is nothing to join it to.
+    assert not c.review_buttons[ACTION_JOIN_AHEAD].isEnabled()
+    assert c.review_buttons[ACTION_MARK_BLIND].isEnabled() and c.review_buttons[ACTION_MARK_OPEN].isEnabled()
     assert c.state.support is not None, "the segmented image is read once and kept"
 
     c.review_buttons[ACTION_TRACE_ON].click()
     assert c.state.mode == "add" and c.state.trace.start.node == 3
     assert "Starting at node 3" in c.edit_status.text()
-    assert [d.decision for d in c.state.review_decisions] == ["traced on"]
+    # Recorded when the trace is finished: until then nothing was traced on.
+    assert c.state.review_decisions == []
     c.add_button.click()  # cancel the trace
 
     c.review_buttons[ACTION_DELETE_ITEM].click()
@@ -1285,8 +1294,78 @@ def test_a_mask_list_is_made_in_the_background_and_its_dead_end_traced_on(make_n
     assert c.review_items.count() == 0
     assert "Scan network again" in c.review_summary.text(), "a mask list may be out of date after an edit"
     rows = _csv_rows(tmp_path / "run_dead_ends_review.csv")
-    assert [r["decision"] for r in rows] == ["traced on", "deleted"]
+    assert [r["decision"] for r in rows] == ["deleted"], "a cancelled trace leaves no decision"
     assert rows[0]["kinds"] == "off_mask"
+
+
+@pytest.mark.parametrize(
+    "action, kind, words",
+    [(ACTION_MARK_BLIND, "blind", "a real blind end"), (ACTION_MARK_OPEN, "leaves_image", "leaving the image")],
+)
+def test_a_dead_end_marked_by_hand_keeps_its_kind_and_leaves_the_list(
+    make_napari_viewer, qtbot, tmp_path, action, kind, words
+):
+    """PLAN_dead_ends.md Phase 9: a person's verdict goes on the node, where
+    reclassifying keeps it, and into the review CSV a rule is fitted from."""
+    from haemolynx.graph.dead_ends import DEAD_END_KIND, classify_and_mark
+
+    c = _t_page(make_napari_viewer(), tmp_path)
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+    assert c.review_buttons[action].isEnabled()
+
+    c.review_buttons[action].click()
+    assert c.state.graph.nodes[3][DEAD_END_KIND] == kind
+    assert c.review_items.count() == 0
+    rows = _csv_rows(tmp_path / "run_dead_ends_review.csv")
+    assert [r["decision"] for r in rows] == [words]
+    classify_and_mark(c.state.graph)
+    assert c.state.graph.nodes[3][DEAD_END_KIND] == kind, "a person's mark outlives reclassifying"
+
+
+def _broken_page(viewer, tmp_path):
+    """dead_end_fixtures' broken vessel: a branch ending 9 um short of
+    another vessel's side across a gap in the segmentation."""
+    from dead_end_fixtures import broken_towards_side
+
+    case = broken_towards_side()
+    G = nx.convert_node_labels_to_integers(case.graph, ordering="sorted")
+    tip = next(n for n, d in G.nodes(data=True) if tuple(map(float, d["pos"])) == case.tip)
+    for _u, _v, d in G.edges(data=True):
+        d.setdefault("branch_order", "B01")
+        d.setdefault("diameter_um", 5.0)
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(image=case.mask.astype(np.uint8), skeleton=np.zeros_like(case.mask, dtype=bool),
+                        voxel_size_xyz=(1.0, 1.0, 1.0), voxel_size_zyx=(1.0, 1.0, 1.0)),
+    ))
+    _apply_layers(viewer, results.stage_finished("build_network", network(G)))
+    c = _post_processing_controls(
+        viewer, SimpleNamespace(value=""), results=lambda: results,
+        boundary_roles=lambda: {"inlet": (), "outlet": ()},
+        regenerate=lambda graph, stop_after=None: True, running=lambda: False,
+        settings=lambda: {"vtk_output_prefix": str(tmp_path / "run")},
+    )
+    c.refresh()
+    c.review_choice.setCurrentText(DEAD_ENDS)
+    return c, tip
+
+
+def test_a_broken_dead_end_is_joined_to_the_side_of_the_vessel_ahead(make_napari_viewer, qtbot, tmp_path):
+    c, tip = _broken_page(make_napari_viewer(), tmp_path)
+    c.scan_button.click()
+    qtbot.waitUntil(lambda: not c.state.scanning, timeout=60000)
+    row = next(i for i, item in enumerate(c.state.review_items) if item.nodes[0] == tip)
+    c.review_items.setCurrentRow(row)
+    assert c.review_buttons[ACTION_JOIN_AHEAD].isEnabled()
+    assert nx.number_connected_components(c.state.graph) == 2
+
+    c.review_buttons[ACTION_JOIN_AHEAD].click()
+    assert c.state.graph.degree(tip) == 2
+    assert nx.number_connected_components(c.state.graph) == 1
+    rows = _csv_rows(tmp_path / "run_dead_ends_review.csv")
+    assert [r["decision"] for r in rows] == ["joined to the vessel ahead"]
 
 
 def test_the_scan_after_a_regenerate_says_what_it_changed(page):

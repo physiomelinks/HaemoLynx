@@ -37,6 +37,7 @@ _CLEANUP_ARGUMENTS = (
     "bridge_require_mask_support",
     "bridge_max_background_gap_um",
     "bridge_min_mask_fraction",
+    "stub_face_protection",
 )
 
 
@@ -90,9 +91,10 @@ def main(job_path: str) -> None:
         # As build_network does last, before it saves the graph.
         with open(os.path.join(out, "before_thick_split.pkl"), "wb") as f:
             pickle.dump(G, f)
-        G = graph.insert_thick_vessel_junction_nodes(
-            G, np.load(job["thick_vessel_mask"]), voxel_size_zyx=voxel_size
-        )
+        # The segmentation too, in the versions whose split reads it.
+        split = graph.insert_thick_vessel_junction_nodes
+        extra = {"segmentation": mask} if "segmentation" in inspect.signature(split).parameters else {}
+        G = split(G, np.load(job["thick_vessel_mask"]), voxel_size_zyx=voxel_size, **extra)
         thick_split = True
     with open(os.path.join(out, "final.pkl"), "wb") as f:
         pickle.dump(G, f)

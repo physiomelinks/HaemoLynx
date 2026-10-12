@@ -77,6 +77,10 @@ from .degree2 import (
 )
 from .prune import (
     FLOW_SOLVED,
+    FLOW_STATE,
+    FLOW_STATES,
+    SOLVE_DERIVED_EDGE_ATTRIBUTES,
+    flow_is_undefined,
     edges_with_connected_io,
     mark_flow_solved_edges,
     prune_vascular_stubs,
@@ -171,6 +175,14 @@ from .large_vessel_network import (
     select_large_vessel_stump_terminal_nodes,
 )
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE, insert_thick_vessel_junction_nodes
+from . import dead_ends
+from .dead_ends import (
+    DEAD_END_KIND,
+    DeadEnd,
+    dead_end_census,
+    open_end_nodes,
+    set_dead_end_kind,
+)
 from .mask_component_volume import (
     remove_small_mask_components_by_volume,
     remove_small_vessel_components_by_volume,
@@ -203,6 +215,12 @@ from ._helpers import (
 
 __all__ = [
     "STEP_LABELS",
+    "DEAD_END_KIND",
+    "DeadEnd",
+    "dead_end_census",
+    "dead_ends",
+    "open_end_nodes",
+    "set_dead_end_kind",
     "duplicates_existing_vessel",
     "diagnose_parallel_duplicates_in_lumen",
     "format_parallel_duplicates_report",
@@ -270,6 +288,10 @@ __all__ = [
     "smart_multigraph_degree2_removal",
     "prune_vascular_stubs",
     "FLOW_SOLVED",
+    "FLOW_STATE",
+    "FLOW_STATES",
+    "SOLVE_DERIVED_EDGE_ATTRIBUTES",
+    "flow_is_undefined",
     "edges_with_connected_io",
     "mark_flow_solved_edges",
     "remove_components_without_connected_io",

@@ -276,6 +276,12 @@ INCOMPARABLE_OVERRIDES: tuple[str, ...] = (
     "haematocrit",
     "haematocrit_model",
     "haematocrit_junction_rule",
+    # The boundaries: every perturbation solves with the baseline's open ends.
+    "open_end_model",
+    "open_end_terminal_resistance_multiple",
+    "open_end_estimate_shear_weight",
+    "open_end_estimate_pressure_target_pa",
+    "open_end_estimate_shear_target_pa",
 )
 
 #: Types that run a sweep helper and write a sweep CSV rather than one re-solve.
