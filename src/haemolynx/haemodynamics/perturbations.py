@@ -272,7 +272,7 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
 #: of its arms; comparing two models means two runs.
 INCOMPARABLE_OVERRIDES: tuple[str, ...] = (
     "viscosity_law",
-    "diameter_basis",
+    "raw_image_stain",
     "haematocrit",
     "haematocrit_model",
     "haematocrit_junction_rule",

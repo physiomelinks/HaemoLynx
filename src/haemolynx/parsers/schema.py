@@ -19,7 +19,7 @@ import logging
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +194,13 @@ class Setting:
         here}}``. A config still naming one loads, and sets this setting from
         it unless the config gives this one a value other than its default;
         an old value with no entry says nothing about this one.
+    migrates / migrate:
+        Retired settings whose values cannot be listed one by one (paths), or
+        that move together (a path and its channel): ``migrates`` names them,
+        and ``migrate(values)`` reads the whole config as written and returns
+        ``{setting: value}`` for the current settings they become. Each is
+        applied unless the config gives that setting a value other than its
+        default, as with ``replaces``.
     """
 
     name: str
@@ -215,6 +222,8 @@ class Setting:
     placeholder: str | None = None
     value_aliases: Mapping[Any, Any] | None = None
     replaces: Mapping[str, Mapping[Any, Any]] | None = None
+    migrates: tuple[str, ...] = ()
+    migrate: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -268,6 +277,11 @@ class Setting:
                 raise ConfigError(f"Setting '{self.name}' cannot replace itself.")
             for value in values.values():
                 self.coerce(value)
+        if bool(self.migrates) != (self.migrate is not None):
+            raise ConfigError(
+                f"Setting '{self.name}' needs both migrates (the retired names) "
+                "and migrate (what they become), or neither."
+            )
 
     def coerce(self, value: Any) -> Any:
         """Return *value* converted to this setting's kind, or raise ConfigError."""
@@ -476,7 +490,7 @@ class Schema:
                 )
         replaced: dict[str, str] = {}
         for setting in settings:
-            for old_name in setting.replaces or {}:
+            for old_name in [*(setting.replaces or {}), *setting.migrates]:
                 if old_name in by_name:
                     raise ConfigError(
                         f"Setting '{setting.name}' replaces '{old_name}', which "
@@ -571,9 +585,15 @@ class Schema:
         """
         upgraded: dict[str, Any] = {}
         retired: dict[str, Any] = {}
+        migrating = {
+            self._replaced[key] for key in values
+            if key in self._replaced and self._by_name[self._replaced[key]].migrates
+            and key in self._by_name[self._replaced[key]].migrates
+        }
         for key, value in values.items():
             if key in self._replaced:
-                retired[key] = value
+                if key not in self._by_name[self._replaced[key]].migrates:
+                    retired[key] = value
                 continue
             setting = self._by_name.get(key)
             upgraded[key] = (
@@ -592,6 +612,16 @@ class Schema:
                 f"Setting '{old_name}' is retired; read {value!r} as "
                 f"{setting.name}={replacement!r}."
             )
+        for name in [s.name for s in self.settings if s.name in migrating]:
+            setting = self._by_name[name]
+            old = {key: values[key] for key in setting.migrates if key in values}
+            for target, value in dict(setting.migrate(values)).items():
+                if target not in self._by_name:
+                    continue
+                if target in upgraded and not _is_default(self._by_name[target], upgraded[target]):
+                    continue
+                upgraded[target] = value
+                logger.info(f"Retired settings {sorted(old)} read as {target}={value!r}.")
         return upgraded
 
     def validate(

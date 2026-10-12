@@ -101,7 +101,7 @@ def _settings(tmp_path: Path, **extra) -> dict:
             "outlet_nodes": [len(BRANCH_ORDERS)],
             "arteriole_boundary_nodes": [0],
             "venule_boundary_nodes": [len(BRANCH_ORDERS)],
-            "use_fwhm_edge_diameters": False,
+            "measure_diameters_from_raw_image": False,
             "viscosity_law": "constant",
             "do_pericyte_construction": True,
             "run_pericyte_resistance_comparison": True,

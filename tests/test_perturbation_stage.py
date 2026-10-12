@@ -117,7 +117,7 @@ def _settings(tmp_path: Path, perturbations: list[dict], **extra) -> dict:
             "perturbations": perturbations,
             "diameter_by_branch_order": dict(DIAMETERS),
             "constriction_by_branch_order": {order: 0.6 for order in DIAMETERS},
-            "use_fwhm_edge_diameters": False,
+            "measure_diameters_from_raw_image": False,
             "viscosity_law": "constant",
             # A four-point sweep: enough to draw a curve, quick enough to run
             # in a unit test.
@@ -1074,7 +1074,7 @@ def test_a_failing_perturbation_is_reported_and_the_others_still_run(tmp_path):
     "name,value",
     (
         ("viscosity_law", "pries"),
-        ("diameter_basis", "anatomical"),
+        ("raw_image_stain", "endothelial"),
         ("haematocrit", 0.3),
     ),
 )

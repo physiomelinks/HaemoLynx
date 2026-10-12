@@ -6,12 +6,16 @@
 # Input and segmentation
 # ------------------------------------------------------------------------
 input_and_segmentation:
-  # Read this already-segmented image as the pipeline input  [needs use_ilastik_segmentation off; must exist]
+  # The segmented image (a vessel mask) the pipeline reads; its raw image is raw_image_path  [needs use_ilastik_segmentation off; must exist]
   input_path: examples/images/carotid_mask.tif
+  # The raw (unsegmented) image of the same field, one channel of it (raw_image_channel): what ilastik segments when it runs, what diameters are measured from, what 'Check segmented image' and 'Optimise settings' compare the segmentation with, and where tissue volume is found unless tissue_raw_tiff_path names another. ilastik reads the whole file, as its project was trained on it  [must exist]
+  raw_image_path: examples/images/carotid.tif
+  # Which channel of a multi-channel raw image to read, counting from 0 (the panel lists them as Fiji names them: C1 is 0); leave unset for a single-channel file  [range 0..]
+  raw_image_channel: null
+  # What the raw image's channel stains: plasma_column for a luminal (plasma) label filling the channel blood flows in, endothelial for the vessel wall (claudin-5, CD31, isolectin...), or auto to tell from how it reads across the segmented vessels, bright in the middle or at the wall. It picks how diameters are measured from it (FWHM, or the lumen inside the wall ring) and what those diameters mean: wall to wall for an endothelial stain, whose viscosity then takes that form of the law. Diameters from the segmentation itself are the plasma column's  [one of: auto, plasma_column, endothelial]
+  raw_image_stain: auto
   # Segment the main input image with ilastik instead of reading a segmented file
   use_ilastik_segmentation: false
-  # Read this raw image as the ilastik input for main-image segmentation  [needs use_ilastik_segmentation; must exist]
-  ilastik_unsegmented_image_path: examples/images/carotid.tif
   # Use this trained ilastik project to segment the main image  [needs use_ilastik_segmentation; must exist]
   ilastik_classifier_path: examples/classifiers/carotid_classifier.ilp
   # Run this ilastik executable name or path in headless mode
@@ -568,9 +572,9 @@ statistics_and_measurements:
   statistics_dead_ends: true
   # Measure the tissue's volume and surface mesh from the raw image -- the region whose background is brighter than the empty space around it -- and divide vessel density by that volume instead of by the box the network spans
   measure_tissue_volume: false
-  # Find the tissue in this raw image, on the segmentation's own grid; leave unset to use fwhm_raw_tiff_path  [needs measure_tissue_volume; must exist]
+  # Find the tissue in this raw image, on the segmentation's own grid; leave unset to use the raw image (raw_image_path)  [needs measure_tissue_volume; must exist]
   tissue_raw_tiff_path: null
-  # Which channel of a multi-channel raw image the tissue is found in, counting from 0 (the panel lists them as Fiji names them: C1 is 0) -- one where the tissue's own background shows; leave unset for a single-channel file, or for fwhm_raw_channel when the FWHM raw image is used  [range 0..; needs measure_tissue_volume]
+  # Which channel of a multi-channel raw image the tissue is found in, counting from 0 (the panel lists them as Fiji names them: C1 is 0) -- one where the tissue's own background shows; leave unset for a single-channel file, or for raw_image_channel when the raw image is used  [range 0..; needs measure_tissue_volume]
   tissue_raw_channel: null
   # How to tell tissue from empty space in the raw image, vessels left out: an automatic split (otsu, li, triangle), after which the surface sits halfway between the empty-space and tissue intensity levels, where a blurred edge actually is -- or manual, an intensity of your own  [one of: otsu, li, triangle, manual; needs measure_tissue_volume]
   tissue_threshold_method: otsu
@@ -653,13 +657,11 @@ vascular_communities:
 # Diameters and pericytes
 # ------------------------------------------------------------------------
 diameters_and_pericytes:
-  # Which apparent-viscosity law sets the resistances: pries covers 3.3-1978 um in one expression and reads diameter_basis, capillary_power_law is the older law calibrated at 5 um with a placeholder constant above 7 um, constant is plasma everywhere. Resistances are not comparable across laws  [one of: pries, capillary_power_law, constant; needs run_haemodynamics]
+  # Which apparent-viscosity law sets the resistances: pries covers 3.3-1978 um in one expression and reads what each diameter measures (raw_image_stain), capillary_power_law is the older law calibrated at 5 um with a placeholder constant above 7 um, constant is plasma everywhere. Resistances are not comparable across laws  [one of: pries, capillary_power_law, constant; needs run_haemodynamics]
   viscosity_law: capillary_power_law
-  # What a vessel diameter in this dataset measures, which the pries law needs and no other reads: plasma_column for the channel the fluid occupies, as a plasma stain images it, or anatomical for a wall-to-wall diameter that includes the ~1.1 um endothelial surface layer. Choosing anatomical for a plasma-stained image subtracts that layer twice and roughly quintuples capillary resistance  [one of: plasma_column, anatomical; needs run_haemodynamics]
-  diameter_basis: plasma_column
   # Discharge haematocrit the pries law is evaluated at; read by no other law  [fraction; range 0.0..0.99; needs run_haemodynamics]
   haematocrit: 0.45
-  # Which haematocrit model a resistance is computed from. fixed applies the haematocrit fraction above uniformly to every edge. distributed_iterative instead computes local discharge haematocrit per edge from Pries and Secomb's bifurcation phase-separation law (parent/daughter diameters and flow fraction, not bifurcation angle) -- only changes a resistance when viscosity_law is pries, the only law that reads haematocrit, but works with either diameter_basis, and iterates the flow solve to convergence since haematocrit, viscosity, resistance and the flow split all depend on each other, so a large network costs more than one solve  [one of: fixed, distributed_iterative; needs run_haemodynamics]
+  # Which haematocrit model a resistance is computed from. fixed applies the haematocrit fraction above uniformly to every edge. distributed_iterative instead computes local discharge haematocrit per edge from Pries and Secomb's bifurcation phase-separation law (parent/daughter diameters and flow fraction, not bifurcation angle) -- only changes a resistance when viscosity_law is pries, the only law that reads haematocrit, but works with either diameter basis, and iterates the flow solve to convergence since haematocrit, viscosity, resistance and the flow split all depend on each other, so a large network costs more than one solve  [one of: fixed, distributed_iterative; needs run_haemodynamics]
   haematocrit_model: fixed
   # How red cells divide at a junction the phase-separation law does not cover -- it is only defined for one vessel dividing in two, not for three or more outflows, or two or more inflows meeting two or more outflows. no_separation mixes the inflows and gives every outflow that haematocrit (Secomb's NetFlow dishem). sequential_bifurcations treats the junction as a chain of bifurcations, the widest inflow the first parent and the outflows split off largest flow first (Secomb's dishem_generalized). split_junctions changes the network before the model is built: every junction of four or more vessels becomes bifurcations joined by short connector vessels, as the Post processing tab's split does, which adds their resistance to the network too  [one of: no_separation, sequential_bifurcations, split_junctions; needs run_haemodynamics and haematocrit_model = distributed_iterative]
   haematocrit_junction_rule: no_separation
@@ -753,107 +755,103 @@ network_handling:
 # FWHM diameter measurement
 # ------------------------------------------------------------------------
 fwhm_diameter_measurement:
-  # Measure per-edge diameters from the raw image by full-width-half-maximum fitting  [needs run_haemodynamics]
-  use_fwhm_edge_diameters: false
-  # Measure FWHM diameters from the raw image; turn off to keep diameters already on the graph  [needs use_fwhm_edge_diameters]
+  # Measure each vessel's diameter from the raw image (raw_image_path), by the method its stain calls for (raw_image_stain): FWHM across a plasma label's lumen, or the lumen inside the wall ring of an endothelial stain. A vessel it cannot read falls back to the segmentation mask, then the table. Diameters read from an endothelial stain run wall to wall, and their viscosity takes that form of the law  [needs run_haemodynamics]
+  measure_diameters_from_raw_image: false
+  # Measure FWHM diameters from the raw image; turn off to keep diameters already on the graph  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   do_fwhm_measurement: true
-  # Measure FWHM diameters from this raw image (one channel of it: fwhm_raw_channel). Also usable, independent of use_fwhm_edge_diameters, as the 'Raw data file' shown next to 'Check segmented image' on the Input tab, so the segmentation can be cross-checked against it without turning FWHM measurement on  [needs use_fwhm_edge_diameters; must exist]
-  fwhm_raw_tiff_path: null
-  # Which channel of a multi-channel raw image FWHM reads, counting from 0 (the panel lists them as Fiji names them: C1 is 0); leave unset for a single-channel file  [range 0..; needs use_fwhm_edge_diameters]
-  fwhm_raw_channel: null
-  # Sample a transverse profile every this far along the centerline  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  # Sample a transverse profile every this far along the centerline  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_sample_spacing_along_edge_um: 2.0
-  # Step this far between points when sampling each transverse profile  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  # Step this far between points when sampling each transverse profile  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_transverse_profile_step_um: 0.25
-  # Sample this far either side of the centerline before any adaptive adjustment  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  # Sample this far either side of the centerline before any adaptive adjustment  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_transverse_half_extent_um: 6.0
-  # Start the Gaussian fit from this diameter guess instead of an automatic one  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  # Start the Gaussian fit from this diameter guess instead of an automatic one  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_diameter_guess_um: null
-  # Seed each edge's own starting diameter guess from this graph attribute when present, instead of the one guess above for every edge  [needs use_fwhm_edge_diameters]
+  # Seed each edge's own starting diameter guess from this graph attribute when present, instead of the one guess above for every edge  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_diameter_guess_edge_attribute: edt_diameter_um
-  # Require the sampled profile to span at least this multiple of the fitted width, unless it runs into another vessel; shorter samples are dropped  [range 0.0..; needs use_fwhm_edge_diameters]
+  # Require the sampled profile to span at least this multiple of the fitted width, unless it runs into another vessel; shorter samples are dropped  [range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_min_total_extent_multiplier: 3.0
-  # Widen the transverse sampling window at most this many times while the fit keeps asking for more room  [range 0..; needs use_fwhm_edge_diameters]
+  # Widen the transverse sampling window at most this many times while the fit keeps asking for more room  [range 0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_max_transverse_widen_passes: 5
-  # Mark background voxels with this label in the rasterized branch label volume  [needs use_fwhm_edge_diameters]
+  # Mark background voxels with this label in the rasterized branch label volume  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_background_label: 0
-  # Mark junction voxels with this label in the rasterized branch label volume  [needs use_fwhm_edge_diameters]
+  # Mark junction voxels with this label in the rasterized branch label volume  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_junction_label: -1
-  # Let a transverse profile pass through junction voxels while sampling  [needs use_fwhm_edge_diameters]
+  # Let a transverse profile pass through junction voxels while sampling  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_allow_junction_crossing: false
-  # Let a transverse profile pass through another edge's own centerline voxel instead of stopping there -- a single nearby centerline is a poor proxy for 'this is a different vessel': a wide vessel split into several nearby graph edges has its own other edges' centerlines well inside its own true radius, which otherwise truncates the profile long before the real background and severely underestimates diameter. The intensity-based single-vessel clip (clip_profile_to_single_vessel) is what actually bounds the profile instead. Disable to restore the stricter, topology-only stop  [needs use_fwhm_edge_diameters]
+  # Let a transverse profile pass through another edge's own centerline voxel instead of stopping there -- a single nearby centerline is a poor proxy for 'this is a different vessel': a wide vessel split into several nearby graph edges has its own other edges' centerlines well inside its own true radius, which otherwise truncates the profile long before the real background and severely underestimates diameter. The intensity-based single-vessel clip (clip_profile_to_single_vessel) is what actually bounds the profile instead. Disable to restore the stricter, topology-only stop  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_allow_crossing_other_edges: true
-  # Estimate the profile baseline from the profile wings or from a percentile  [one of: wings, percentile; needs use_fwhm_edge_diameters]
+  # Estimate the profile baseline from the profile wings or from a percentile  [one of: wings, percentile; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_profile_baseline_mode: wings
-  # Take this fraction of each profile end as the wing used for baseline estimation  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters]
+  # Take this fraction of each profile end as the wing used for baseline estimation  [fraction; range 0.0..1.0; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_profile_baseline_wing_fraction: 0.2
-  # Hold the fitted baseline near the anchor estimate rather than letting it float  [needs use_fwhm_edge_diameters]
+  # Hold the fitted baseline near the anchor estimate rather than letting it float  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_constrain_fitted_baseline: false
-  # Allow the fitted baseline to move this fraction of the profile peak-to-peak range either way  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_constrain_fitted_baseline]
+  # Allow the fitted baseline to move this fraction of the profile peak-to-peak range either way  [fraction; range 0.0..1.0; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_constrain_fitted_baseline]
   fwhm_baseline_constraint_half_width_ptp: 0.35
-  # Clip each profile to the central lobe so neighbouring branches do not bias the fit  [needs use_fwhm_edge_diameters]
+  # Clip each profile to the central lobe so neighbouring branches do not bias the fit  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_clip_profile_to_single_vessel: true
-  # Require the profile to fall by this fraction of the centre value before clipping starts  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_clip_profile_to_single_vessel]
+  # Require the profile to fall by this fraction of the centre value before clipping starts  [fraction; range 0.0..1.0; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_clip_profile_to_single_vessel]
   fwhm_clip_min_drop_fraction_of_center: 0.35
-  # End the clipped lobe once the profile rises again by this fraction of the centre value  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_clip_profile_to_single_vessel]
+  # End the clipped lobe once the profile rises again by this fraction of the centre value  [fraction; range 0.0..1.0; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_clip_profile_to_single_vessel]
   fwhm_clip_re_rise_fraction_of_center: 0.08
-  # Skip sample positions within this distance of a branch endpoint  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  # Skip sample positions within this distance of a branch endpoint  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_branch_endpoint_exclusion_um: 10.0
-  # Skip sample positions within this distance of a detected junction voxel  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  # Skip sample positions within this distance of a detected junction voxel  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_junction_proximity_exclusion_um: 10.0
-  # Require profile samples to stay within a local arc window of the same edge  [needs use_fwhm_edge_diameters]
+  # Require profile samples to stay within a local arc window of the same edge  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_enforce_same_edge_locality: true
-  # Use this absolute arc window when checking same-edge locality  [um; range 0.0..; needs use_fwhm_edge_diameters and fwhm_enforce_same_edge_locality]
+  # Use this absolute arc window when checking same-edge locality  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_enforce_same_edge_locality]
   fwhm_same_edge_arc_window_um: 3.0
-  # Scale the same-edge arc window by this factor  [range 0.0..; needs use_fwhm_edge_diameters and fwhm_enforce_same_edge_locality]
+  # Scale the same-edge arc window by this factor  [range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_enforce_same_edge_locality]
   fwhm_same_edge_arc_window_multiplier: 1.0
-  # Never shrink the same-edge arc window below this size  [um; range 0.0..; needs use_fwhm_edge_diameters and fwhm_enforce_same_edge_locality]
+  # Never shrink the same-edge arc window below this size  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_enforce_same_edge_locality]
   fwhm_same_edge_arc_window_min_um: 1.0
-  # Shorten the profile half-extent when a distant part of the same edge comes close  [needs use_fwhm_edge_diameters]
+  # Shorten the profile half-extent when a distant part of the same edge comes close  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_cap_half_extent_by_nonlocal_same_edge_distance: true
-  # Treat same-edge points separated by more than this arc length as nonlocal  [um; range 0.0..; needs use_fwhm_edge_diameters and fwhm_cap_half_extent_by_nonlocal_same_edge_distance]
+  # Treat same-edge points separated by more than this arc length as nonlocal  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_cap_half_extent_by_nonlocal_same_edge_distance]
   fwhm_nonlocal_same_edge_arc_separation_um: 6.0
-  # Cap the profile half-extent at this fraction of the nearest nonlocal same-edge distance  [fraction; range 0.0..; needs use_fwhm_edge_diameters and fwhm_cap_half_extent_by_nonlocal_same_edge_distance]
+  # Cap the profile half-extent at this fraction of the nearest nonlocal same-edge distance  [fraction; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_cap_half_extent_by_nonlocal_same_edge_distance]
   fwhm_nonlocal_same_edge_half_extent_factor: 0.45
-  # Discard samples whose fitted centre drifts too far from the centerline position  [needs use_fwhm_edge_diameters]
+  # Discard samples whose fitted centre drifts too far from the centerline position  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_reject_samples_with_center_offset: true
-  # Discard a sample once its fitted centre is further than this from the expected centre  [um; range 0.0..; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_center_offset]
+  # Discard a sample once its fitted centre is further than this from the expected centre  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_reject_samples_with_center_offset]
   fwhm_max_fit_center_offset_um: 1.5
-  # Also allow a fitted centre this fraction of the current diameter estimate away, whichever is looser  [fraction; range 0.0..; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_center_offset]
+  # Also allow a fitted centre this fraction of the current diameter estimate away, whichever is looser  [fraction; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_reject_samples_with_center_offset]
   fwhm_max_fit_center_offset_fraction_of_diameter: 0.3
-  # Discard samples whose transverse Gaussian fit quality is too low  [needs use_fwhm_edge_diameters]
+  # Discard samples whose transverse Gaussian fit quality is too low  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_reject_samples_with_low_fit_r2: true
-  # Keep a sample only when its transverse Gaussian fit reaches this R-squared  [range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_low_fit_r2]
+  # Keep a sample only when its transverse Gaussian fit reaches this R-squared  [range 0.0..1.0; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_reject_samples_with_low_fit_r2]
   fwhm_min_fit_r2: 0.85
-  # Fit each transverse profile as a filled lumen seen through the microscope's blur (its half-maximum width is the lumen width), or as a Gaussian, which reads a wide plasma-filled vessel about 10% narrow  [one of: blurred_lumen, gaussian; needs use_fwhm_edge_diameters]
+  # Fit each transverse profile as a filled lumen seen through the microscope's blur (its half-maximum width is the lumen width), or as a Gaussian, which reads a wide plasma-filled vessel about 10% narrow  [one of: blurred_lumen, gaussian; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_profile_model: blurred_lumen
-  # Average each transverse profile over this length along the vessel before fitting, so a dim, noisy channel is not fitted one noise spike at a time (0 reads a single line)  [um; range 0.0..; needs use_fwhm_edge_diameters]
+  # Average each transverse profile over this length along the vessel before fitting, so a dim, noisy channel is not fitted one noise spike at a time (0 reads a single line)  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_longitudinal_average_um: 4.0
-  # End a transverse line where it enters a different vessel of the segmentation (after crossing background), the one case the line may be shorter than the required multiple of the width  [needs use_fwhm_edge_diameters]
+  # End a transverse line where it enters a different vessel of the segmentation (after crossing background), the one case the line may be shorter than the required multiple of the width  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_stop_at_other_vessels_in_mask: true
-  # Reject a sample narrower than this many pixels: a width that small cannot be resolved, and is almost always a fit to a single noise spike (0 disables)  [voxels; range 0.0..; needs use_fwhm_edge_diameters]
+  # Reject a sample narrower than this many pixels: a width that small cannot be resolved, and is almost always a fit to a single noise spike (0 disables)  [voxels; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_min_diameter_pixels: 2.0
-  # Discard samples whose transverse profile looks like a flat plateau rather than a peak (a saturated detector or a probability map); plasma-filled lumens are plateaus, so leave off for those  [needs use_fwhm_edge_diameters]
+  # Discard samples whose transverse profile looks like a flat plateau rather than a peak (a saturated detector or a probability map); plasma-filled lumens are plateaus, so leave off for those  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_reject_samples_with_plateau_shape: false
-  # Reject a sample once its 80%-height width is at least this fraction of its half-max width  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters and fwhm_reject_samples_with_plateau_shape]
+  # Reject a sample once its 80%-height width is at least this fraction of its half-max width  [fraction; range 0.0..1.0; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and fwhm_reject_samples_with_plateau_shape]
   fwhm_max_plateau_shape_ratio: 0.85
-  # Sample transverse profiles in the y-x slice plane, or perpendicular to the true 3D tangent  [one of: in_plane_yx, true_3d_perpendicular; needs use_fwhm_edge_diameters]
+  # Sample transverse profiles in the y-x slice plane, or perpendicular to the true 3D tangent  [one of: in_plane_yx, true_3d_perpendicular; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_transverse_sampling_mode: in_plane_yx
-  # Flag a sample whose tangent's out-of-plane component exceeds this fraction while sampling stays in-plane  [fraction; range 0.0..1.0; needs use_fwhm_edge_diameters]
+  # Flag a sample whose tangent's out-of-plane component exceeds this fraction while sampling stays in-plane  [fraction; range 0.0..1.0; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_warn_out_of_plane_tangent_fraction: 0.3
-  # Collapse an edge's accepted per-sample diameters to one value by median or mean  [one of: median, mean; needs use_fwhm_edge_diameters]
+  # Collapse an edge's accepted per-sample diameters to one value by median or mean  [one of: median, mean; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_edge_diameter_aggregation: median
-  # Give an edge a FWHM width only when at least this many samples along it pass every gate. On a speckled image a line can fit one bright speck cleanly; a speck is one place, a lumen is all along the vessel. 1 accepts a single sample  [range 1..; needs use_fwhm_edge_diameters]
+  # Give an edge a FWHM width only when at least this many samples along it pass every gate. On a speckled image a line can fit one bright speck cleanly; a speck is one place, a lumen is all along the vessel. 1 accepts a single sample  [range 1..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   fwhm_min_accepted_samples: 2
-  # After measuring, copy a sample of the measured vessels into vessel-free tissue and measure them again: reports how often FWHM gives texture a width, and flags every FWHM width in the range it reads there (see fwhm_demote_flagged_edges for what a flag then does)  [needs use_fwhm_edge_diameters and do_fwhm_measurement]
+  # After measuring, copy a sample of the measured vessels into vessel-free tissue and measure them again: reports how often FWHM gives texture a width, and flags every FWHM width in the range it reads there (see fwhm_demote_flagged_edges for what a flag then does)  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial and do_fwhm_measurement]
   fwhm_decoy_check: true
-  # Do not model a vessel with an FWHM width the run's own checks flag -- one in the decoy check's speck-width range, or one disagreeing with the mask's own width past edt_fwhm_disagreement_warn_ratio -- but go on to the next diameter source (raw section, mask, table). The FWHM width stays on the vessel for review  [needs use_fwhm_edge_diameters and do_fwhm_measurement]
+  # Do not model a vessel with an FWHM width the run's own checks flag -- one in the decoy check's speck-width range, or one disagreeing with the mask's own width past edt_fwhm_disagreement_warn_ratio -- but go on to the next diameter source (raw section, mask, table). The FWHM width stays on the vessel for review  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial and do_fwhm_measurement]
   fwhm_demote_flagged_edges: true
-  # Hold each profile's blur at the image's own PSF -- the raw-section PSF settings when set, else estimated from the image's wide vessels, as the raw-section fallback does -- instead of fitting it again in every profile. Falls back to per-profile fitting when too few wide vessels show their blur  [needs use_fwhm_edge_diameters and do_fwhm_measurement]
+  # Hold each profile's blur at the image's own PSF -- the raw-section PSF settings when set, else estimated from the image's wide vessels, as the raw-section fallback does -- instead of fitting it again in every profile. Falls back to per-profile fitting when too few wide vessels show their blur  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial and do_fwhm_measurement]
   fwhm_fix_blur_to_image_psf: true
   # How many measured vessels the decoy check copies  [range 1..; needs fwhm_decoy_check]
   fwhm_decoy_check_sample_size: 100
-  # Where FWHM fails, fit the raw image's whole cross-section of the vessel (a blurred lumen, pooling every photon in the section) before falling back to the segmentation mask. Measures wide and z-running vessels a line cannot; check it against FWHM on your image first, since on a speckled one it reads the halo round a vessel  [needs use_fwhm_edge_diameters and do_fwhm_measurement]
+  # Where FWHM fails, fit the raw image's whole cross-section of the vessel (a blurred lumen, pooling every photon in the section) before falling back to the segmentation mask. Measures wide and z-running vessels a line cannot; check it against FWHM on your image first, since on a speckled one it reads the halo round a vessel  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial and do_fwhm_measurement]
   use_raw_section_fallback: false
   # Keep a cross-section's reading only when its fitted lumen stands this many standard deviations of the section's texture above the background; a vessel needs two such readings  [range 0.0..; needs use_raw_section_fallback]
   raw_section_min_lumen_contrast: 3.0
@@ -866,21 +864,15 @@ fwhm_diameter_measurement:
 # Endothelial diameter
 # ------------------------------------------------------------------------
 endothelial_diameter:
-  # Measure each vessel's internal diameter from an endothelial stain -- the lumen inside the bright wall ring -- instead of FWHM on the plasma label. A vessel whose ring is not resolved falls back to the segmentation mask, then the table. These widths run wall to wall, so their viscosity takes the anatomical form  [needs run_haemodynamics]
-  use_endothelial_diameters: false
-  # The endothelial stain (claudin-5, CD31, isolectin...): a single-channel stack, or a multi-channel one with its channel below  [needs use_endothelial_diameters; must exist]
-  endothelial_image_path: null
-  # Which channel of a multi-channel stack is the endothelial stain, counting from 0 (the panel lists them as Fiji names them: C1 is 0); leave unset for a single-channel file  [range 0..; needs use_endothelial_diameters]
-  endothelial_channel: null
-  # Keep a section's reading only when its fitted wall stands this many times the fit's own scatter above its lumen; a vessel needs two such readings  [range 0.0..; needs use_endothelial_diameters]
+  # Keep a section's reading only when its fitted wall stands this many times the fit's own scatter above its lumen; a vessel needs two such readings  [range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not plasma_column]
   endothelial_min_ring_contrast: 4.0
-  # The stained wall's thickness. Leave unset to estimate it from the image's wide vessels; across the image plane it trades against the blur, so set it when you know it (from EM, say) -- an error here shifts every internal diameter by about as much  [um; range 0.0..; needs use_endothelial_diameters]
+  # The stained wall's thickness. Leave unset to estimate it from the image's wide vessels; across the image plane it trades against the blur, so set it when you know it (from EM, say) -- an error here shifts every internal diameter by about as much  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not plasma_column]
   endothelial_wall_thickness_um: null
-  # Processes to measure vessels in at once; 0 picks up to 8, leaving a core free. The widths are the same however many  [range 0..; needs use_endothelial_diameters]
+  # Processes to measure vessels in at once; 0 picks up to 8, leaving a core free. The widths are the same however many  [range 0..; needs measure_diameters_from_raw_image and raw_image_stain not plasma_column]
   endothelial_workers: 0
-  # The endothelial channel's blur across the y-x plane, as a Gaussian sigma. Leave unset to estimate it from the image's wide vessels  [um; range 0.0..; needs use_endothelial_diameters]
+  # The endothelial channel's blur across the y-x plane, as a Gaussian sigma. Leave unset to estimate it from the image's wide vessels  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not plasma_column]
   endothelial_psf_sigma_xy_um: null
-  # The endothelial channel's blur along z, as a Gaussian sigma. Leave unset to estimate it from the image's wide vessels  [um; range 0.0..; needs use_endothelial_diameters]
+  # The endothelial channel's blur along z, as a Gaussian sigma. Leave unset to estimate it from the image's wide vessels  [um; range 0.0..; needs measure_diameters_from_raw_image and raw_image_stain not plasma_column]
   endothelial_psf_sigma_z_um: null
 
 # ------------------------------------------------------------------------
@@ -899,7 +891,7 @@ edt_mask_diameter_estimate:
   edt_min_resolvable_diameter_um: 2.0
   # Skip EDT sample positions within this distance of a branch endpoint  [um; range 0.0..; needs use_edt_diameter_crosscheck]
   edt_junction_proximity_exclusion_um: 10.0
-  # Flag an edge as low-confidence when its FWHM and EDT diameter estimates differ by at least this ratio  [range 1.0..; needs use_fwhm_edge_diameters and use_edt_diameter_crosscheck]
+  # Flag an edge as low-confidence when its FWHM and EDT diameter estimates differ by at least this ratio  [range 1.0..; needs measure_diameters_from_raw_image and raw_image_stain not endothelial and use_edt_diameter_crosscheck]
   edt_fwhm_disagreement_warn_ratio: 1.5
 
 # ------------------------------------------------------------------------

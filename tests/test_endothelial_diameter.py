@@ -440,25 +440,40 @@ def test_one_channel_of_a_composite_is_read(tmp_path):
         load_single_channel_tiff_volume(tmp_path / "composite.tif", channel=2)
 
 
-def test_endothelial_and_fwhm_diameters_are_alternatives():
-    from haemolynx.pipeline.checks import check_one_primary_diameter_measurement
+@pytest.mark.parametrize(
+    "stain, fwhm_on, endothelial_on",
+    [("plasma_column", True, False), ("endothelial", False, True)],
+)
+def test_the_raw_image_stain_picks_one_measurement(stain, fwhm_on, endothelial_on, tmp_path):
+    """FWHM and the endothelial fit are alternatives: the raw image's stain
+    turns on the one it calls for, and both read the one raw image."""
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.stages import _haemodynamics_apply_config
 
-    both = check_one_primary_diameter_measurement(
-        {"use_endothelial_diameters": True, "use_fwhm_edge_diameters": True}
+    schema = default_schema()
+    settings = schema.defaults()
+    settings.update(
+        measure_diameters_from_raw_image=True,
+        raw_image_path=tmp_path / "composite.tif",
+        raw_image_channel=1,
+        raw_image_stain=stain,
     )
-    one = check_one_primary_diameter_measurement(
-        {"use_endothelial_diameters": True, "use_fwhm_edge_diameters": False}
-    )
 
-    assert not both.ok and one.ok
+    config = _haemodynamics_apply_config(settings, schema, voxel_size_zyx=VOXEL)
+
+    assert config.fwhm["use_fwhm_edge_diameters"] is fwhm_on
+    assert config.endothelial["use_endothelial_diameters"] is endothelial_on
+    assert config.fwhm["fwhm_raw_tiff_path"] == config.endothelial["endothelial_image_path"]
+    assert config.fwhm["fwhm_raw_channel"] == config.endothelial["endothelial_channel"] == 1
 
 
-def test_the_endothelial_option_is_off_by_default():
+def test_measuring_from_the_raw_image_is_off_by_default():
     from haemolynx.pipeline import default_schema
 
     schema = default_schema()
-    assert schema["use_endothelial_diameters"].default is False
-    assert schema["endothelial_channel"].default is None
+    assert schema["measure_diameters_from_raw_image"].default is False
+    assert schema["raw_image_channel"].default is None
+    assert schema["raw_image_stain"].default == "auto"
 
 
 def test_a_run_reads_its_internal_diameters_from_the_stain(tmp_path):
@@ -492,7 +507,7 @@ def test_a_run_reads_its_internal_diameters_from_the_stain(tmp_path):
     data = graph[0][1][0]
     assert summary["endothelial"]["edges_measured"] == 1
     assert data["diameter_source"] == DIAMETER_SOURCE_ENDOTHELIAL
-    assert data[EDGE_DIAMETER_BASIS] == "anatomical"
+    assert data[EDGE_DIAMETER_BASIS] == "endothelial"
     assert data["diameter_um"] == pytest.approx(7.0, rel=0.06)
 
 

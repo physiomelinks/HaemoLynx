@@ -177,24 +177,35 @@ def test_and_into_the_flow_a_network_solves_to():
 
 
 # ---------------------------------------------------------------------------
-# The mistake the diameter_basis setting exists to prevent
+# The mistake the diameter basis exists to prevent
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("diameter", CAPILLARY_DIAMETERS_UM)
-def test_reading_a_plasma_column_as_anatomical_costs_a_factor_of_several(diameter):
+def test_reading_a_plasma_column_as_endothelial_costs_a_factor_of_several(diameter):
     """Subtracting the surface layer from a diameter that never included it.
 
     A plasma stain images the channel the fluid occupies, so the ~1.1 um of
     glycocalyx is already out of the measurement. Calling that diameter
-    anatomical takes it out again, and in a capillary there is little else to
-    take.
+    endothelial (wall to wall) takes it out again, and in a capillary there is
+    little else to take.
     """
     as_measured = viscosity_for(diameter, law="pries")
     double_counted = viscosity_for(
-        diameter, law="pries", diameter_basis="anatomical"
+        diameter, law="pries", diameter_basis="endothelial"
     )
     assert 1.8 < double_counted / as_measured < 6.0
+
+
+def test_anatomical_is_the_old_name_for_endothelial():
+    """Graphs and edges saved before the rename still read as they did."""
+    from haemolynx.haemodynamics.viscosity import normalise_diameter_basis
+
+    assert normalise_diameter_basis("anatomical") == "endothelial"
+    assert viscosity_for(5.0, law="pries", diameter_basis="anatomical") == viscosity_for(
+        5.0, law="pries", diameter_basis="endothelial"
+    )
+    assert PoiseuilleModel(40.0, 100.0, diameter_basis="anatomical").diameter_basis == "endothelial"
 
 
 def test_the_two_bases_are_the_same_physics_read_two_ways():
@@ -219,10 +230,15 @@ def test_the_two_bases_are_the_same_physics_read_two_ways():
 
 
 def test_the_default_basis_is_the_one_this_projects_images_produce():
-    """HaemoLynx segments plasma-stained volumes: the diameter is the channel."""
+    """HaemoLynx segments plasma-stained volumes: the diameter is the channel.
+
+    It is no longer a setting: a vessel measured inside an endothelial stain's
+    walls carries its own basis, and the raw image's stain decides that."""
     from haemolynx.pipeline import default_schema
 
-    assert default_schema()["diameter_basis"].default == "plasma_column"
+    schema = default_schema()
+    assert "diameter_basis" not in schema
+    assert schema.upgrade({"diameter_basis": "anatomical"})["raw_image_stain"] == "endothelial"
     assert PoiseuilleModel(40.0, 100.0).diameter_basis == "plasma_column"
     assert viscosity_for(5.0, law="pries") == pytest.approx(
         pries_in_vitro_viscosity(5.0)
@@ -444,8 +460,8 @@ def test_the_run_records_which_law_and_which_basis_produced_its_numbers():
     assert "0.4" in description
     assert "3.3" in description and "1978" in description
 
-    anatomical = _model("pries", diameter_basis="anatomical").describe_viscosity_law()
-    assert "in vivo" in anatomical and "anatomical" in anatomical
+    endothelial = _model("pries", diameter_basis="endothelial").describe_viscosity_law()
+    assert "in vivo" in endothelial and "endothelial" in endothelial
 
 
 def test_the_law_survives_on_the_graph_a_run_pickles():
@@ -462,7 +478,7 @@ def test_the_law_survives_on_the_graph_a_run_pickles():
         diameters={
             "diameter_by_branch_order": {"B01": 5.0},
             "viscosity_law": "pries",
-            "diameter_basis": "anatomical",
+            "diameter_basis": "endothelial",
             "haematocrit": 0.42,
         },
         fwhm={},
@@ -473,7 +489,7 @@ def test_the_law_survives_on_the_graph_a_run_pickles():
 
     restored = pickle.loads(pickle.dumps(G))
     assert restored.graph["viscosity_law"] == "pries"
-    assert restored.graph["diameter_basis"] == "anatomical"
+    assert restored.graph["diameter_basis"] == "endothelial"
     assert restored.graph["haematocrit"] == pytest.approx(0.42)
     assert "in vivo" in summary["viscosity"]
 

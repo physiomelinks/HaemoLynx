@@ -347,7 +347,7 @@ def test_a_run_from_another_machine_is_pointed_at_this_ones_files(tmp_path):
     settings = {
         "input_path": PurePosixPath(server / "data" / "stack.tiff"),
         "large_arteriole_mask_path": str(server / "segs" / "Large_arteriole.tiff"),
-        "fwhm_raw_tiff_path": here,
+        "raw_image_path": here,
         "ilastik_classifier_path": server / "classifiers" / "nowhere.ilp",
         "vtk_output_prefix": server / "outputs" / "run",
         "base_plot_dir": server / "project" / "outputs",
@@ -362,7 +362,7 @@ def test_a_run_from_another_machine_is_pointed_at_this_ones_files(tmp_path):
     assert Path(got["input_path"]) == tmp_path / "resources" / "stack.tiff"
     assert isinstance(got["input_path"], Path)  # a path stays a path, a string a string
     assert got["large_arteriole_mask_path"] == str(resources / "Large_arteriole.tiff")
-    assert got["fwhm_raw_tiff_path"] == here                      # already works
+    assert got["raw_image_path"] == here                      # already works
     assert got["ilastik_classifier_path"] == server / "classifiers" / "nowhere.ilp"  # nothing to find
     assert got["vtk_output_prefix"] == tmp_path / "outputs" / "run"
     assert got["base_plot_dir"] == tmp_path / "outputs"

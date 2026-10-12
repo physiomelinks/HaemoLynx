@@ -1,7 +1,7 @@
 """The channels of a multi-channel TIFF, named the way Fiji names them.
 
-A setting that picks one channel of a composite (``endothelial_channel``,
-``fwhm_raw_channel``) stores it counting from 0, as numpy does; Fiji calls the
+A setting that picks one channel of a composite (``raw_image_channel``,
+``tissue_raw_channel``) stores it counting from 0, as numpy does; Fiji calls the
 same channels C1, C2, ... So the panel lists them by Fiji's name, with what
 the file says about each: its name, where it has one (OME metadata, or an
 ImageJ hyperstack's slice labels), else the colour of its display LUT --

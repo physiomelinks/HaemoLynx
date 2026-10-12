@@ -63,7 +63,7 @@ def test_segment_uses_a_segmented_image_it_already_has_instead_of_ilastik(tmp_pa
         tmp_path,
         {
             "use_ilastik_segmentation": True,
-            "ilastik_unsegmented_image_path": tmp_path / "raw.tif",
+            "raw_image_path": tmp_path / "raw.tif",
             "ilastik_classifier_path": tmp_path / "classifier.ilp",
             "ilastik_output_dir": tmp_path,
         },

@@ -162,7 +162,7 @@ def run_capillary_dilation_pressure_sweep(
         diameter_basis=settings.get("diameter_basis", "plasma_column"),
     )
     diameter_by_branch_order = settings["diameter_by_branch_order"]
-    prefer_measured = bool(settings.get("use_fwhm_edge_diameters", True))
+    prefer_measured = bool(settings.get("measure_diameters_from_raw_image", True))
     outlet_pressure_pa = float(settings["outlet_p_bc"])
 
     dilation_values = _capillary_dilation_percents(settings, sweep=sweep_dilation)

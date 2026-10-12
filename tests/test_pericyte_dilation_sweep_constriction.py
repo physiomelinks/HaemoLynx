@@ -66,7 +66,7 @@ def _base_settings(diameters: dict[str, float], **overrides) -> dict:
         "viscosity_law": "constant",
         "haematocrit": 0.45,
         "diameter_basis": "plasma_column",
-        "use_fwhm_edge_diameters": False,
+        "measure_diameters_from_raw_image": False,
         "use_pericyte_mask_constriction": False,
         "use_probabilistic_pericyte_constriction": False,
         "constriction_length_um": 40.0,

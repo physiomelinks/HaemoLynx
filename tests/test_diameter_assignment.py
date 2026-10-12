@@ -575,7 +575,7 @@ def test_with_ilastik_the_segmented_input_is_ilastiks_output_not_its_input(tmp_p
     settings = _run_settings(
         use_ilastik_segmentation=True,
         input_path=tmp_path / "an_old_mask.tif",
-        ilastik_unsegmented_image_path=tmp_path / "raw" / "stack.tif",
+        raw_image_path=tmp_path / "raw" / "stack.tif",
         ilastik_output_dir=tmp_path / "ilastik",
         ilastik_output_suffix=".tiff",
     )
@@ -827,7 +827,7 @@ def test_the_raw_section_settings_are_off_by_default_and_follow_fwhm():
 
     assert schema["use_raw_section_fallback"].default is False
     assert set(schema["use_raw_section_fallback"].requires) == {
-        "use_fwhm_edge_diameters", "do_fwhm_measurement",
+        "measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "do_fwhm_measurement",
     }
     for name in ("raw_section_psf_sigma_xy_um", "raw_section_psf_sigma_z_um"):
         assert schema[name].default is None

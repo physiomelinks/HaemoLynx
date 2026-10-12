@@ -561,7 +561,7 @@ def test_add_vessel_reads_the_raw_data_file_from_the_settings(make_napari_viewer
     tifffile = pytest.importorskip("tifffile")
     path = tmp_path / "raw.tif"
     tifffile.imwrite(path, _bright_l())
-    settings = {"fwhm_raw_tiff_path": str(path), "image_axis_order": "zyx"}
+    settings = {"raw_image_path": str(path), "image_axis_order": "zyx"}
     page = _l_page(make_napari_viewer(), image=_l_mask(), settings=lambda: settings)
     c = page.controls
     c.trace_source.setCurrentText(TRACE_THROUGH_RAW)
@@ -580,12 +580,12 @@ def test_add_vessel_without_raw_data_says_so_and_uses_the_mask(make_napari_viewe
     _click(page, (0.0, 20.0, 30.0))
     text = c.edit_status.text()
     assert "through the segmented mask" in text and "no raw data to trace through" in text
-    assert "Raw data file" in text
+    assert "no raw image is set on the Input tab" in text
 
-    # A Raw data file set afterwards is read once Raw data is chosen again.
+    # A raw image set afterwards is read once Raw data is chosen again.
     tifffile = pytest.importorskip("tifffile")
     tifffile.imwrite(tmp_path / "raw.tif", _bright_l())
-    settings["fwhm_raw_tiff_path"] = str(tmp_path / "raw.tif")
+    settings["raw_image_path"] = str(tmp_path / "raw.tif")
     c.trace_source.setCurrentIndex(0)
     c.trace_source.setCurrentText(TRACE_THROUGH_RAW)
     _click(page, (0.0, 20.0, 20.0))

@@ -282,11 +282,16 @@ def test_input_ilastik_rows_hide_when_use_ilastik_segmentation_is_off():
     assert input_path.is_visible({"use_ilastik_segmentation": False})
     assert not input_path.is_visible({"use_ilastik_segmentation": True})
 
-    for name in ("ilastik_unsegmented_image_path", "ilastik_classifier_path"):
-        child = fields[name]
-        assert child.hide_when_unmet, name
-        assert not child.is_visible({"use_ilastik_segmentation": False}), name
-        assert child.is_visible({"use_ilastik_segmentation": True}), name
+    classifier = fields["ilastik_classifier_path"]
+    assert classifier.hide_when_unmet
+    assert not classifier.is_visible({"use_ilastik_segmentation": False})
+    assert classifier.is_visible({"use_ilastik_segmentation": True})
+
+    # The raw image is the run's own, read by ilastik and every raw-image
+    # measurement alike, so it shows whichever way ilastik is set.
+    for name in ("raw_image_path", "raw_image_channel", "raw_image_stain"):
+        assert fields[name].is_visible({"use_ilastik_segmentation": False}), name
+        assert fields[name].is_visible({"use_ilastik_segmentation": True}), name
 
     # Shared across main / large / small ilastik — Input only while main is on.
     for name in SHARED_ILASTIK_SETTINGS:
@@ -325,7 +330,7 @@ def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
     shown_off = visible_input_segmentation_settings(SCHEMA, off)
     assert "use_ilastik_segmentation" in shown_off
     assert "input_path" in shown_off
-    assert "ilastik_unsegmented_image_path" not in shown_off
+    assert "raw_image_path" in shown_off
     assert "ilastik_classifier_path" not in shown_off
     assert "ilastik_executable" not in shown_off
     assert "ilastik_output_dir" not in shown_off
@@ -336,7 +341,7 @@ def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
     on = {"use_ilastik_segmentation": True}
     shown_on = visible_input_segmentation_settings(SCHEMA, on)
     assert "input_path" not in shown_on
-    assert "ilastik_unsegmented_image_path" in shown_on
+    assert "raw_image_path" in shown_on
     assert "ilastik_classifier_path" in shown_on
     assert "ilastik_executable" in shown_on
     assert "ilastik_output_dir" in shown_on
@@ -609,54 +614,40 @@ def test_diameter_rows_hide_when_parent_toggles_are_unmet():
         assert fields[name].is_visible({"all_diams_const": True}), name
         assert fields[name].is_visible({"all_diams_const": False}), name
 
-    fwhm = fields["use_fwhm_edge_diameters"]
-    assert fwhm.hide_when_unmet
-    assert not fwhm.is_visible({"run_haemodynamics": False})
-    assert fwhm.is_visible({"run_haemodynamics": True})
+    raw = fields["measure_diameters_from_raw_image"]
+    assert raw.hide_when_unmet
+    assert not raw.is_visible({"run_haemodynamics": False})
+    assert raw.is_visible({"run_haemodynamics": True})
 
+    # FWHM is the measurement for a plasma label; an endothelial stain's is
+    # the ring fit. Auto may resolve to either, so both stay offered.
     measure = fields["do_fwhm_measurement"]
     assert measure.hide_when_unmet
-    assert SCHEMA["do_fwhm_measurement"].requires == ("use_fwhm_edge_diameters",)
-    assert not measure.is_visible(
-        {"run_haemodynamics": True, "use_fwhm_edge_diameters": False}
+    assert SCHEMA["do_fwhm_measurement"].requires == (
+        "measure_diameters_from_raw_image", "raw_image_stain!=endothelial",
     )
-    assert measure.is_visible(
-        {"run_haemodynamics": True, "use_fwhm_edge_diameters": True}
-    )
+    on = {"run_haemodynamics": True, "measure_diameters_from_raw_image": True}
+    assert not measure.is_visible({**on, "measure_diameters_from_raw_image": False})
+    assert measure.is_visible({**on, "raw_image_stain": "plasma_column"})
+    assert measure.is_visible({**on, "raw_image_stain": "auto"})
+    assert not measure.is_visible({**on, "raw_image_stain": "endothelial"})
 
-    raw = fields["fwhm_raw_tiff_path"]
-    assert raw.hide_when_unmet
-    assert SCHEMA["fwhm_raw_tiff_path"].requires == ("use_fwhm_edge_diameters",)
-    assert not raw.is_visible(
-        {"run_haemodynamics": True, "use_fwhm_edge_diameters": False}
-    )
-    assert raw.is_visible(
-        {"run_haemodynamics": True, "use_fwhm_edge_diameters": True}
-    )
+    wall = fields["endothelial_wall_thickness_um"]
+    assert wall.is_visible({**on, "raw_image_stain": "endothelial"})
+    assert wall.is_visible({**on, "raw_image_stain": "auto"})
+    assert not wall.is_visible({**on, "raw_image_stain": "plasma_column"})
 
     nested = fields["fwhm_baseline_constraint_half_width_ptp"]
     assert nested.hide_when_unmet
-    assert not nested.is_visible(
-        {
-            "run_haemodynamics": True,
-            "use_fwhm_edge_diameters": True,
-            "fwhm_constrain_fitted_baseline": False,
-        }
-    )
-    assert nested.is_visible(
-        {
-            "run_haemodynamics": True,
-            "use_fwhm_edge_diameters": True,
-            "fwhm_constrain_fitted_baseline": True,
-        }
-    )
+    assert not nested.is_visible({**on, "fwhm_constrain_fitted_baseline": False})
+    assert nested.is_visible({**on, "fwhm_constrain_fitted_baseline": True})
 
 
 def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
     const_on = {
         "all_diams_const": True,
         "run_haemodynamics": True,
-        "use_fwhm_edge_diameters": False,
+        "measure_diameters_from_raw_image": False,
     }
     shown = visible_diameter_settings(SCHEMA, const_on)
     assert "all_diams_const" in shown
@@ -666,9 +657,8 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
     assert "manual_arteriole_diameter_by_branch_order" not in shown
     assert "manual_venule_diameter_by_branch_order" not in shown
     assert "diameter_by_branch_order" not in shown
-    assert "use_fwhm_edge_diameters" in shown
+    assert "measure_diameters_from_raw_image" in shown
     assert "do_fwhm_measurement" not in shown
-    assert "fwhm_raw_tiff_path" not in shown
     assert "fwhm_sample_spacing_along_edge_um" not in shown
 
     const_off = {**const_on, "all_diams_const": False}
@@ -677,11 +667,12 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
     assert "manual_arteriole_diameter_by_branch_order" in shown
     assert "manual_venule_diameter_by_branch_order" in shown
     assert "diameter_by_branch_order" in shown
-    assert "fwhm_raw_tiff_path" not in shown
+    assert "do_fwhm_measurement" not in shown
 
     fwhm_on = {
         **const_on,
-        "use_fwhm_edge_diameters": True,
+        "measure_diameters_from_raw_image": True,
+        "raw_image_stain": "plasma_column",
         "fwhm_constrain_fitted_baseline": False,
         "fwhm_clip_profile_to_single_vessel": False,
         "fwhm_enforce_same_edge_locality": False,
@@ -691,7 +682,6 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
     }
     shown = visible_diameter_settings(SCHEMA, fwhm_on)
     assert "do_fwhm_measurement" in shown
-    assert "fwhm_raw_tiff_path" in shown
     assert "fwhm_sample_spacing_along_edge_um" in shown
     assert "fwhm_constrain_fitted_baseline" in shown
     assert "fwhm_baseline_constraint_half_width_ptp" not in shown
@@ -725,7 +715,11 @@ def test_edt_diameter_crosscheck_works_standalone_or_nested_under_fwhm():
     disagreement check genuinely needs FWHM too.
     """
     assert "EDT mask diameter estimate" in HIDE_WHEN_UNMET_SECTIONS
-    base = {"run_haemodynamics": True, "use_fwhm_edge_diameters": False}
+    base = {
+        "run_haemodynamics": True,
+        "measure_diameters_from_raw_image": False,
+        "raw_image_stain": "plasma_column",
+    }
 
     no_haemo = {**base, "run_haemodynamics": False}
     shown = visible_diameter_settings(SCHEMA, no_haemo)
@@ -741,14 +735,14 @@ def test_edt_diameter_crosscheck_works_standalone_or_nested_under_fwhm():
     assert _EDT_FWHM_ONLY_CHILD not in shown
 
     # Both on: every EDT child shows, including the FWHM-disagreement one.
-    both_on = {**edt_on_fwhm_off, "use_fwhm_edge_diameters": True}
+    both_on = {**edt_on_fwhm_off, "measure_diameters_from_raw_image": True}
     shown = visible_diameter_settings(SCHEMA, both_on)
     assert "use_edt_diameter_crosscheck" in shown
     for name in (*_EDT_CHILDREN, _EDT_FWHM_ONLY_CHILD):
         assert name in shown
 
     # FWHM on, EDT off: none of EDT's children show.
-    fwhm_on_edt_off = {**base, "use_fwhm_edge_diameters": True}
+    fwhm_on_edt_off = {**base, "measure_diameters_from_raw_image": True}
     shown = visible_diameter_settings(SCHEMA, fwhm_on_edt_off)
     assert "use_edt_diameter_crosscheck" in shown
     for name in (*_EDT_CHILDREN, _EDT_FWHM_ONLY_CHILD):

@@ -197,7 +197,7 @@ def test_fwhm_buttons_nest_one_level_per_toggle():
     decoy = layout.disclosure_of("fwhm_decoy_check")
     raw = layout.disclosure_of("raw_section_min_lumen_contrast")
     assert (fwhm.anchor, decoy.anchor, raw.anchor) == (
-        "use_fwhm_edge_diameters",
+        "measure_diameters_from_raw_image",
         "do_fwhm_measurement",
         "use_raw_section_fallback",
     )

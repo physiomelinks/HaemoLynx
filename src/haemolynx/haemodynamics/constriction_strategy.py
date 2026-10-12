@@ -112,7 +112,7 @@ def constriction_strategy_kwargs(
         use_probabilistic_constriction=bool(
             settings.get("use_probabilistic_pericyte_constriction", False)
         ),
-        prefer_edge_fwhm_baseline=bool(settings.get("use_fwhm_edge_diameters", False)),
+        prefer_edge_fwhm_baseline=bool(settings.get("measure_diameters_from_raw_image", False)),
         constriction_length=float(
             settings.get("constriction_length_um", 40.0)
             if constriction_length is None

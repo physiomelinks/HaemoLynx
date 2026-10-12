@@ -83,29 +83,9 @@ def test_raw_data_row_is_a_child_of_the_input_tab(panel):
     assert found, "the raw data file row is not on the Input tab"
 
 
-def test_raw_data_row_starts_in_sync_with_fwhm_raw_tiff_path(panel):
-    rows = panel._haemolynx_rows()
-    assert panel._haemolynx_raw_data_row.value == rows["fwhm_raw_tiff_path"].value
-
-
-def test_setting_raw_data_row_updates_fwhm_raw_tiff_path(panel, tmp_path):
-    rows = panel._haemolynx_rows()
-    raw_file = tmp_path / "raw.tif"
-    raw_file.write_bytes(b"")
-
-    panel._haemolynx_raw_data_row.value = raw_file
-
-    assert Path(rows["fwhm_raw_tiff_path"].value) == raw_file
-
-
-def test_setting_fwhm_raw_tiff_path_updates_the_raw_data_row(panel, tmp_path):
-    rows = panel._haemolynx_rows()
-    raw_file = tmp_path / "raw.tif"
-    raw_file.write_bytes(b"")
-
-    rows["fwhm_raw_tiff_path"].value = raw_file
-
-    assert Path(panel._haemolynx_raw_data_row.value) == raw_file
+def test_the_raw_data_row_is_the_raw_image_setting_itself(panel):
+    """One raw image for the run: the check reads the row the run reads."""
+    assert panel._haemolynx_raw_data_row is panel._haemolynx_rows()["raw_image_path"]
 
 
 # --- guards ------------------------------------------------------------------
@@ -362,7 +342,7 @@ def test_check_segmented_image_reports_raw_vs_after_cleanup_when_cleanup_is_on(
 def test_check_segmented_image_cross_checks_against_a_raw_file_when_set(
     panel, monkeypatch, tmp_path
 ):
-    """When the "Raw data file" row (shared with fwhm_raw_tiff_path) names a
+    """When the raw image (raw_image_path, on the Input tab) names a
     file, the report gains an added/removed/missed-structures section
     comparing the segmentation against it."""
     import time

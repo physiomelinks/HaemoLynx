@@ -42,7 +42,7 @@ _BOUNDARIES_FROM_NETWORK_ENDS = {
 CAROTID_DEFAULTS: dict[str, Any] = {
     # Input: an already-segmented mask, or the raw stack when ilastik runs.
     "input_path": "examples/images/carotid_mask.tif",
-    "ilastik_unsegmented_image_path": "examples/images/carotid.tif",
+    "raw_image_path": "examples/images/carotid.tif",
     "ilastik_classifier_path": "examples/classifiers/carotid_classifier.ilp",
     **_BOUNDARIES_FROM_NETWORK_ENDS,
     # Perfusion pressures measured for this preparation.

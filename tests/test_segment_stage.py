@@ -45,7 +45,7 @@ def test_an_empty_input_path_is_not_a_crash_when_ilastik_will_fill_it(tmp_path):
         tmp_path,
         use_ilastik_segmentation=True,
         input_path=None,
-        ilastik_unsegmented_image_path=tmp_path / "raw.tif",
+        raw_image_path=tmp_path / "raw.tif",
         ilastik_classifier_path=tmp_path / "classifier.ilp",
         ilastik_output_dir=tmp_path / "segmentations",
     )
@@ -93,7 +93,7 @@ def test_ilastik_without_a_classifier_is_refused(tmp_path):
         tmp_path,
         use_ilastik_segmentation=True,
         input_path=None,
-        ilastik_unsegmented_image_path=a_segmented_tiff(tmp_path),
+        raw_image_path=a_segmented_tiff(tmp_path),
         ilastik_classifier_path=None,
     )
 
@@ -119,7 +119,7 @@ def test_ilastik_hands_on_the_path_it_produced(tmp_path, monkeypatch):
         tmp_path,
         use_ilastik_segmentation=True,
         input_path=None,
-        ilastik_unsegmented_image_path=raw,
+        raw_image_path=raw,
         ilastik_classifier_path=tmp_path / "classifier.ilp",
         ilastik_output_dir=tmp_path / "segmentations",
     )
@@ -150,7 +150,7 @@ def test_ilastik_timeout_setting_reaches_the_subprocess_call(tmp_path, monkeypat
         tmp_path,
         use_ilastik_segmentation=True,
         input_path=None,
-        ilastik_unsegmented_image_path=raw,
+        raw_image_path=raw,
         ilastik_classifier_path=tmp_path / "classifier.ilp",
         ilastik_output_dir=tmp_path / "segmentations",
         ilastik_timeout_seconds=42.0,
@@ -178,7 +178,7 @@ def test_ilastik_reuse_setting_reaches_the_call_and_defaults_on(tmp_path, monkey
     common = dict(
         use_ilastik_segmentation=True,
         input_path=None,
-        ilastik_unsegmented_image_path=raw,
+        raw_image_path=raw,
         ilastik_classifier_path=tmp_path / "classifier.ilp",
         ilastik_output_dir=tmp_path / "segmentations",
     )
@@ -217,7 +217,7 @@ def test_a_stop_during_ilastik_arrives_through_the_stage_heartbeat(tmp_path, mon
         tmp_path,
         use_ilastik_segmentation=True,
         input_path=None,
-        ilastik_unsegmented_image_path=raw,
+        raw_image_path=raw,
         ilastik_classifier_path=tmp_path / "classifier.ilp",
         ilastik_output_dir=tmp_path / "segmentations",
     )

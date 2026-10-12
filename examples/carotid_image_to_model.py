@@ -13,7 +13,7 @@ The input is an **already-segmented** mask by default
 instead, set in the config file::
 
     use_ilastik_segmentation: true
-    ilastik_unsegmented_image_path: examples/images/carotid.tif
+    raw_image_path: examples/images/carotid.tif
     ilastik_classifier_path: <your trained .ilp>
 
 Training the classifier stays manual, in the ilastik GUI. Either way the image

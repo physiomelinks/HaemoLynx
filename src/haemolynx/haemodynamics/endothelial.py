@@ -4,7 +4,7 @@ A plasma label shows the column blood fills; an endothelial label (claudin-5,
 CD31, isolectin...) shows the wall round it. Across a vessel wide enough to
 resolve it, the endothelial channel is a bright ring round a dark lumen, and
 the ring's inner edge is the vessel's internal diameter -- wall to wall, what
-``diameter_basis="anatomical"`` means, so each edge measured this way carries
+``diameter_basis="endothelial"`` (once ``anatomical``) means, so each edge measured this way carries
 that basis for its own viscosity (see
 ``haemodynamics.poiseuille.edge_diameter_basis``).
 
@@ -40,7 +40,9 @@ across -- a vessel lying in the image plane -- the lumen is fitted round, its
 width set by the sharp axis. A lumen narrower than the blur hiding its edge
 is not resolved, and falls back.
 
-This is the run's alternative to FWHM (``use_endothelial_diameters``): the
+This is how a run measures an endothelial raw image
+(``measure_diameters_from_raw_image`` with ``raw_image_stain`` endothelial),
+where a plasma label would be measured by FWHM: the
 diameter chain becomes endothelium -> segmentation mask -> branch-order table.
 """
 from __future__ import annotations

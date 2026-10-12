@@ -830,7 +830,13 @@ class StageCheckpoints:
         return skip_settings_for_resume(
             skeleton_ready=skeleton_path is not None,
             start_from=start_from,
-            use_fwhm_edge_diameters=bool(settings and settings.get("use_fwhm_edge_diameters")),
+            # FWHM is in use while diameters are measured from a raw image
+            # whose stain is not set to endothelial.
+            use_fwhm_edge_diameters=bool(
+                settings
+                and settings.get("measure_diameters_from_raw_image")
+                and settings.get("raw_image_stain") != "endothelial"
+            ),
         )
 
     def drop_from(self, start_from: str) -> None:

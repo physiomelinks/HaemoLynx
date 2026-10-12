@@ -102,7 +102,6 @@ def test_non_schema_panel_controls_expose_tooltip_strings():
         chrome.TUBE_UNIFORM_WIDTH_TOOLTIP,
         chrome.SWEEP_TOOLTIP,
         chrome.ADVANCED_SETTINGS_TOOLTIP,
-        chrome.DIAMETER_SOURCE_TOOLTIP,
         *chrome.VIEW_SNAP_TOOLTIPS.values(),
         *chrome.ACTION_TOOLTIPS.values(),
         chrome.STOP_PICKING_NODES_TOOLTIP,
