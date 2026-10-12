@@ -222,6 +222,11 @@ class LumenCleanup:
     prune: Callable[[nx.MultiGraph], nx.MultiGraph]
     max_degree: int = 4
     debug: bool = False
+    #: Evidence beyond the mask that two centrelines in one lumen are two
+    #: vessels: called with a ``DoubledStretch`` (``graph.doubled_stretches``)
+    #: or a pair of edge keys (``lumen_loops.remove_parallel_edges_in_lumen``),
+    #: and what it returns True for is left alone. None: the mask decides.
+    keep_apart: Callable[[Any], bool] | None = None
 
 
 def lumen_cleanup(
@@ -240,6 +245,7 @@ def lumen_cleanup(
     max_degree: int = 4,
     debug: bool = False,
     stub_face_protection: str = "threshold",
+    keep_apart: Callable[[Any], bool] | None = None,
 ) -> LumenCleanup:
     """The clean-up the end of graph building runs, built from the same
     settings :func:`build_graph_from_skeleton` takes -- so a caller that
@@ -301,7 +307,7 @@ def lumen_cleanup(
             **stub_mask_rules,
         )
 
-    return LumenCleanup(support, inside_lumen, prune, max_degree=max_degree, debug=debug)
+    return LumenCleanup(support, inside_lumen, prune, max_degree=max_degree, debug=debug, keep_apart=keep_apart)
 
 
 def consolidate_lumen(
@@ -343,11 +349,11 @@ def consolidate_lumen(
         if cleanup.support is None:
             return G
         G = remove_edges_off_the_mask(G, cleanup.support)
-        G = remove_parallel_edges_in_lumen(G, cleanup.support, memo=pairs_memo)
+        G = remove_parallel_edges_in_lumen(G, cleanup.support, memo=pairs_memo, keep_apart=cleanup.keep_apart)
         G = remove_loops_inside_one_lumen(G, cleanup.support)
         # What the whole-edge pair rule leaves: a stretch of an edge beside
         # another, rewired rather than deleted (graph.doubled_stretches).
-        G = resolve_doubled_stretches(G, cleanup.support)
+        G = resolve_doubled_stretches(G, cleanup.support, keep_apart=cleanup.keep_apart)
         # After the thick-vessel split the clean-up runs again, and a strand
         # it takes out can leave the bridge that joined it to the thick
         # centreline with a free end: a bridge is never a dead end.

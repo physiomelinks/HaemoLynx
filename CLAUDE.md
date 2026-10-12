@@ -399,7 +399,16 @@ are only caught locally.
   The last, `consolidate_lumen`, repeats until a round changes nothing: degree-2 merging, then
   with the mask edges mostly off it, the second of two edges through one lumen
   (`lumen_loops.remove_parallel_edges_in_lumen`, which never takes out an edge whose loss would
-  cut vessels off -- `cuts_off_vessels`), loops inside one lumen and the stub prune. Run once in
+  cut vessels off -- `cuts_off_vessels`), loops inside one lumen, the stretches of an edge
+  doubled beside another that the whole-edge pair rule leaves (`graph/doubled_stretches.py`:
+  a dead end cut back to where it leaves its vessel, a fork zipped to where its edges part, a
+  mid-edge stretch cut out and its remainders joined to the edge kept -- rewired, never
+  deleted whole, bridges never touched; every run the report counts, since grids H and H2
+  (2026-10-12) found no mask measure that tells one vessel drawn twice from two touching, and
+  the doubling only the wider vessel's side sees is left to the review list), dangling bridges,
+  and the stub prune; "nothing changed" counts the centreline length. `lumen_cleanup(keep_apart=)`
+  hands both the pair rule and the stretch step a caller's evidence beyond the mask (a raw-image
+  test, `PLAN_raw_confirmation.md`) for what to leave alone. Run once in
   a fixed order, each left work the others never saw (on E14.5 the last merge alone raised the
   pairs in one lumen from 94 to 126). `lumen_cleanup` builds what it reads from the build's own
   settings, so `build_network` runs it again after smoothing. E14.5 settles in 9 rounds

@@ -11,7 +11,7 @@ breaks every such loop in a graph.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import networkx as nx
 import numpy as np
@@ -453,7 +453,8 @@ def cuts_off_vessels(G: nx.MultiGraph, edge) -> bool:
 
 
 def remove_parallel_edges_in_lumen(
-    G: nx.MultiGraph, support: MaskSupport, *, memo: dict | None = None
+    G: nx.MultiGraph, support: MaskSupport, *, memo: dict | None = None,
+    keep_apart: Callable[[tuple], bool] | None = None,
 ) -> nx.MultiGraph:
     """Drop, in place, one edge of each pair
     :func:`graph.diagnostics.diagnose_parallel_duplicates_in_lumen` reports.
@@ -465,7 +466,9 @@ def remove_parallel_edges_in_lumen(
     would too, both stay. A branch meeting its parent, and two vessels with
     background between them, are not pairs in that report and are left
     alone. *memo* is the report's own, for a caller asking again and again
-    of one graph (``assemble.consolidate_lumen``).
+    of one graph (``assemble.consolidate_lumen``). *keep_apart*, called with
+    the pair ``(left, right)`` of edge keys, is evidence beyond the mask
+    that they are two vessels: a pair it returns True for is left alone.
     """
     from haemolynx.graph.diagnostics import diagnose_parallel_duplicates_in_lumen
 
@@ -486,6 +489,8 @@ def remove_parallel_edges_in_lumen(
         # the thick centreline, and it is the join to it, not a second
         # strand. The loop step and the dangling-bridge rule settle those.
         if any(G.edges[edge].get(IS_ZERO_RESISTANCE) for edge in present):
+            continue
+        if keep_apart is not None and keep_apart((left, right)):
             continue
         candidates = sorted(present, key=lambda edge: _wall_hugging(G, [edge], support))
         drop = next((edge for edge in candidates if not cuts_off_vessels(G, edge)), None)

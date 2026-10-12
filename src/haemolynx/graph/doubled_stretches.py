@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import networkx as nx
 import numpy as np
@@ -53,13 +53,16 @@ from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 
 logger = logging.getLogger(__name__)
 
-#: A doubled stretch shorter than this is where vessels meet -- the flare of
-#: a junction, a branch leaving its parent -- not a second strand. Grid H of
-#: PLAN_clean_graph.md calibrates it; until then the parked attempt's figure.
-MIN_DOUBLED_RUN_UM = 3.0
-
-#: ...and shorter than this many lumen radii.
-MIN_DOUBLED_RUN_RADII = 2.0
+#: The shortest stretch resolved, in microns and in lumen radii: every run
+#: the report counts. Grid H of PLAN_clean_graph.md (Harvey, 2026-10-12: 19
+#: of 30 runs one vessel drawn twice, 11 two vessels or a branch leaving)
+#: found no length, angle, gap or neck that tells the two apart, so no
+#: minimum is calibrated and every run is resolved (decision D6): the cost
+#: to two touching vessels is the shared stretch running on one centreline,
+#: nothing deleted. The parked attempt's 3 um and two radii left nine tenths
+#: of E14.5's doubling in place.
+MIN_DOUBLED_RUN_UM = 0.0
+MIN_DOUBLED_RUN_RADII = 0.0
 
 #: Centreline a doubled stretch may skip -- samples beside nothing, or beside
 #: another vessel -- and still be one stretch.
@@ -131,6 +134,16 @@ def doubled_stretches(
         if not judged.any():
             continue
         points = index.points[near]
+        # Each sample is judged with its own lumen radius, as the report's
+        # measure judges it: a stretch counts from the narrower centreline
+        # only when it lies within that vessel's own width of the other --
+        # inside the wider lumen. Judged with the wider of the two radii
+        # instead (tried 2026-10-12), a capillary fused along a trunk's wall
+        # counted as beside the trunk from its own side, and the trim then
+        # took the whole capillary: on E14.5 5.7 mm of centreline and 3.7
+        # points of mask coverage went with 430 um of doubling. What the
+        # wider side alone sees (588 of 906 um left on E14.5) is a grid's
+        # question, not a finder's.
         neighbour_judged = _same_lumen_neighbours(
             samples[judged], tangents[judged], cKDTree(points), points, support.inside, support.radius,
             step_um=step, margin_um=SAME_LUMEN_MARGIN_UM, max_cosine=MAX_SHADOW_COSINE,
@@ -274,10 +287,16 @@ def _zip(editor: _Editor, run: DoubledStretch, shared, at_start: bool) -> bool:
     far = v if at_start else u
     partner_path = editor.path(run.partner, shared)
     partner_far = run.partner[1] if run.partner[0] == shared else run.partner[0]
+    # The chord from the parting point across to the edge kept is not held
+    # to the run's length: the two lie in one lumen (that is what beside
+    # means), and a short shared run with a wide gap -- the flare of a wide
+    # vessel's junction -- was marked one vessel drawn twice as often as a
+    # long one (grid H). A parting point at the partner's far end is a whole
+    # edge doubled: a pair, left to the pair rule.
     if run.radius_um <= run.partner_radius_um:
         # This edge is the outer one: the partner is kept and split.
         where = _nearest_inner(partner_path, samples[part])
-        if where is None or np.linalg.norm(partner_path[where] - samples[part]) >= _length(samples[: part + 1]):
+        if where is None:
             return False
         (node,) = editor.split(run.partner, shared, [where])
         editor.replace(run.edge, [(node, far, np.vstack([editor.pos(node), samples[part:]]))])
@@ -285,8 +304,6 @@ def _zip(editor: _Editor, run: DoubledStretch, shared, at_start: bool) -> bool:
         where = _nearest_inner(partner_path, partner_part)
         inner = _nearest_inner(editor.path(run.edge, shared), samples[part])
         if where is None or inner is None:
-            return False
-        if np.linalg.norm(partner_path[where] - samples[part]) >= _length(partner_path[: where + 1]):
             return False
         (node,) = editor.split(run.edge, shared, [inner])
         if not G.has_edge(*run.partner):
@@ -299,26 +316,36 @@ def _rejoin(editor: _Editor, run: DoubledStretch) -> bool:
     """Cut the stretch out of the edge nearer the wall and join its two
     remaining parts to the partner where they leave it."""
     u, v, _key = run.edge
-    a, _b, _pkey = run.partner
+    a, b, _pkey = run.partner
     partner_path = editor.path(run.partner, a)
-    first = _nearest_inner(partner_path, run.samples[run.start])
-    second = _nearest_inner(partner_path, run.samples[run.stop])
-    if first is None or second is None or first == second:
+    ends = {0: a, len(partner_path) - 1: b}
+
+    def at_partner(point):
+        """The partner's vertex nearest *point*: its index, or the end node
+        it is when that vertex is one of the partner's two ends."""
+        index = int(np.argmin(np.linalg.norm(partner_path - point, axis=1)))
+        return (index, None) if 0 < index < len(partner_path) - 1 else (None, ends[index])
+
+    first, first_node = at_partner(run.samples[run.start])
+    second, second_node = at_partner(run.samples[run.stop])
+    if first_node is not None and second_node is not None and first_node == second_node:
         return False
-    chords = (
-        np.linalg.norm(partner_path[first] - run.samples[run.start])
-        + np.linalg.norm(partner_path[second] - run.samples[run.stop])
-    )
-    if chords >= run.length_um:
-        return False
-    low, high = sorted((first, second))
-    nodes = editor.split(run.partner, a, [low, high])
-    at = dict(zip((low, high), nodes))
-    to_start, to_stop = at[first], at[second]
-    editor.replace(run.edge, [
+    # Split the partner where the two remainders join it -- once where both
+    # join at the same vertex, not at all where they join at its own ends.
+    # The chords are not held to the run's length (see _zip).
+    indices = sorted({i for i in (first, second) if i is not None})
+    nodes = editor.split(run.partner, a, indices) if indices else []
+    at = dict(zip(indices, nodes))
+    to_start = first_node if first is None else at[first]
+    to_stop = second_node if second is None else at[second]
+    # A remainder joining the partner at the node it already starts from
+    # (the edge leaves a node the partner ends on) would be a self-loop: it
+    # has nothing left, and goes.
+    pieces = [
         (u, to_start, np.vstack([run.samples[: run.start + 1], editor.pos(to_start)])),
         (to_stop, v, np.vstack([editor.pos(to_stop), run.samples[run.stop:]])),
-    ])
+    ]
+    editor.replace(run.edge, [(x, y, points) for x, y, points in pieces if x != y])
     return True
 
 
@@ -328,6 +355,7 @@ def resolve_doubled_stretches(
     *,
     min_run_um: float = MIN_DOUBLED_RUN_UM,
     min_run_radii: float = MIN_DOUBLED_RUN_RADII,
+    keep_apart: Callable[[DoubledStretch], bool] | None = None,
 ) -> nx.MultiGraph:
     """Resolve, in place, every stretch of centreline :func:`doubled_stretches`
     finds running beside another in one lumen (see the module docstring).
@@ -335,7 +363,10 @@ def resolve_doubled_stretches(
     Each edge is changed at most once a call; a stretch whose edge or partner
     has already changed waits for the next call (``assemble.consolidate_lumen``
     repeats until nothing changes). Two edges joining the same two nodes are
-    left to degree-2 merging, which drops a duplicate route.
+    left to degree-2 merging, which drops a duplicate route. *keep_apart*,
+    called with each stretch, is evidence beyond the mask that the two
+    centrelines are two vessels (the raw image, say): a stretch it returns
+    True for is left alone. The mask alone cannot tell (grids H and H2).
     """
     runs = doubled_stretches(G, support, min_run_um=min_run_um, min_run_radii=min_run_radii)
     if not runs:
@@ -346,6 +377,8 @@ def resolve_doubled_stretches(
     for run in runs:
         edge, partner = run.edge, run.partner
         if not (G.has_edge(*edge) and G.has_edge(*partner)):
+            continue
+        if keep_apart is not None and keep_apart(run):
             continue
         if edge_id(*edge) in editor.touched or edge_id(*partner) in editor.touched:
             continue

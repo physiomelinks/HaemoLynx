@@ -154,3 +154,30 @@ def test_the_middle_edge_goes_when_it_lies_wholly_beside_one_carrying_a_branch()
     assert nx.number_connected_components(G) == 1
     assert G.has_node((7.0, 40.0, 57.0))
     assert _pairs(G, mask) == 0
+
+
+def test_evidence_beyond_the_mask_keeps_a_stretch_apart():
+    """A caller with evidence the mask lacks (the raw image) says which
+    stretches are two vessels: those are left alone, the rest resolved."""
+    mask, G, _tip, _junction = dead_end_beside_vessel()
+    support = _support(mask)
+    asked = []
+
+    def two_vessels(run):
+        asked.append(run)
+        return True
+
+    edges = sorted(map(str, G.edges(keys=True)))
+    resolve_doubled_stretches(G, support, keep_apart=two_vessels)
+    assert asked and sorted(map(str, G.edges(keys=True))) == edges
+    resolve_doubled_stretches(G, support, keep_apart=lambda run: False)
+    assert sorted(map(str, G.edges(keys=True))) != edges
+
+
+def test_the_clean_up_hands_the_evidence_to_the_pair_rule_and_the_stretch_step():
+    mask, G = two_strands_in_one_lumen()
+    cleanup = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, min_stub_length=0.0,
+                            min_stub_length_radius_multiple=0.0, keep_apart=lambda what: True)
+    assert cleanup.keep_apart is not None
+    G = consolidate_lumen(G, cleanup)
+    assert G.number_of_edges() == 2  # the pair stays: two vessels by the evidence
