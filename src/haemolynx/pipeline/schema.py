@@ -4296,7 +4296,7 @@ SCHEMA = Schema(
         Setting(
             name="open_end_model",
             kind="choice",
-            default="closed",
+            default="estimated",
             help=(
                 "The boundary condition on vessels that leave the image (dead ends "
                 "whose vessel runs out through an image face) and are not inlets or "
@@ -4305,9 +4305,10 @@ SCHEMA = Schema(
                 "to the outlet pressure through open_end_terminal_resistance_multiple "
                 "times its own vessel's resistance. outlet: each is held at the "
                 "outlet pressure (biased towards draining; for comparison). "
-                "estimated: their pressures are chosen so the network's pressures and "
-                "wall shear stresses stay closest to target values (Fry et al. 2012), "
-                "the targets taken from the closed solve. Only open ends in a piece "
+                "estimated (the default): their pressures are chosen so the network's "
+                "pressures and wall shear stresses stay closest to target values (Fry "
+                "et al. 2012), the targets taken from the closed solve; open ends may "
+                "feed the network as well as drain it. Only open ends in a piece "
                 "of the network with an inlet or outlet are opened. Perturbations and "
                 "sweeps keep the baseline's conditions, and results under different "
                 "models are not comparable"

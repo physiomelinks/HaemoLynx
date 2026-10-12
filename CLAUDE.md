@@ -337,10 +337,15 @@ are only caught locally.
   reappears; NetworkX algorithms must be passed an explicit `weight="length"` / `weight="resistance"`
   rather than relying on their `"weight"` default.
 - **Open ends** — a dead end that leaves the image is open in the tissue; `open_end_model`
-  (default `closed`, as before) chooses its boundary condition: `terminal_resistance` (drains to
-  the outlet pressure through k times its own vessel's resistance), `outlet`, or `estimated`
-  (Fry et al. 2012: pressures chosen to keep the network near a target pressure and wall shear
-  stress, taken from the closed solve). Like the viscosity law it moves every flow, so **flows
+  chooses its boundary condition: `estimated` (**default** since 2026-10-12, decision D1 of
+  PLAN_dead_ends.md; Fry et al. 2012: pressures chosen to keep the network near a target
+  pressure and wall shear stress, taken from the closed solve, so an open end may feed the
+  network as well as drain it), `closed` (the behaviour before), `terminal_resistance` (drains to
+  the outlet pressure through k times its own vessel's resistance) or `outlet`. On E14.5 the
+  estimate fed 30% as much blood in through 39 open ends as the designated inlets did, drained
+  through 29, and agreed with closed on 86% of flow directions but with the drain-only models on
+  only 56-65%; network resistance moved under 8% across all five
+  (`outputs/open_end_sensitivity_e14/`). Like the viscosity law it moves every flow, so **flows
   are not comparable across open-end models**; perturbations may not override it and solve with
   the baseline's conditions (kept on the graph, `G.graph["open_end_conditions"]`). See
   `haemodynamics/open_ends.py` below.

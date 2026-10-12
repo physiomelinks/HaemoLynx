@@ -248,6 +248,16 @@ def test_secombs_junction_rules_are_cited_when_a_run_uses_one(tmp_path, rule, ci
     assert name not in _names(used_citations(fixed, MODEL_CITATIONS))
 
 
+@pytest.mark.parametrize("model, cited", [("estimated", True), ("closed", False), ("terminal_resistance", False)])
+def test_fry_is_cited_when_the_open_ends_are_estimated(tmp_path, model, cited):
+    name = "Estimated boundary conditions at open ends (open_end_model='estimated')"
+    settings = _settings(tmp_path, run_haemodynamics=True, open_end_model=model)
+    assert (name in _names(used_citations(settings, MODEL_CITATIONS))) is cited
+    assert name in _names(used_citations(_settings(tmp_path, run_haemodynamics=True), MODEL_CITATIONS)), (
+        "the estimate is the default"
+    )
+
+
 def test_pericyte_constriction_citation_follows_configured_perturbations(tmp_path):
     none_configured = _settings(tmp_path, run_perturbations=True, perturbations=[])
     non_pericyte = _settings(

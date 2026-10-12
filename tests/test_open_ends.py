@@ -253,4 +253,6 @@ def test_a_perturbation_may_not_change_the_open_end_model():
 
     for name in ("open_end_model", "open_end_terminal_resistance_multiple", "open_end_estimate_shear_weight"):
         assert name in INCOMPARABLE_OVERRIDES
-    assert default_schema()["open_end_model"].default == "closed"
+    # D1 (PLAN_dead_ends.md, 2026-10-12): the Fry estimate, chosen from the
+    # E14.5 sensitivity report.
+    assert default_schema()["open_end_model"].default == "estimated"

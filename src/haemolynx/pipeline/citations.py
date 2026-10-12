@@ -99,6 +99,10 @@ def _used_haematocrit_distribution(settings: Mapping[str, Any]) -> bool:
     )
 
 
+def _used_open_end_estimate(settings: Mapping[str, Any]) -> bool:
+    return bool(settings.get("run_haemodynamics")) and settings.get("open_end_model") == "estimated"
+
+
 def _used_secomb_junction_rule(settings: Mapping[str, Any]) -> bool:
     return _used_haematocrit_distribution(settings) and settings.get(
         "haematocrit_junction_rule", "no_separation"
@@ -343,6 +347,19 @@ MODEL_CITATIONS: tuple[Citation, ...] = (
             "https://github.com/secomb/NetFlowV2"
         ),
         applies=_used_secomb_junction_rule,
+    ),
+    Citation(
+        name="Estimated boundary conditions at open ends (open_end_model='estimated')",
+        reason=(
+            "pressures at the vessels leaving the image, chosen to keep the network's "
+            "pressures and wall shear stresses near target values"
+        ),
+        reference=(
+            "Fry, B.C., Lee, J., Smith, N.P., Secomb, T.W. (2012). Estimation of "
+            "blood flow rates in large microvascular networks. Microcirculation, "
+            "19(6), 530-538."
+        ),
+        applies=_used_open_end_estimate,
     ),
     Citation(
         name="Focal (pericyte) constriction model",
