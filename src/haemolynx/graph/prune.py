@@ -396,6 +396,30 @@ def flow_is_undefined(data: dict) -> bool:
     return data.get(FLOW_SOLVED) is False
 
 
+def zero_flows_behind_dead_ends(G: Union[nx.Graph, nx.MultiGraph]) -> int:
+    """Set ``flow_abs``, ``flow_signed`` and ``pressure_drop`` to exactly 0.0
+    (``flow_abs_log10`` to match) on every vessel whose :data:`FLOW_STATE` is
+    ``blind_end`` or ``closed_end``; return how many. Nothing drives a flow
+    through them, so what the pressure solve left there is rounding (up to
+    5e-20 m^3/s on E14.5, either sign). Their ``pressure_u``/``pressure_v``
+    stay as solved: the junction's pressure, which is the answer. Only the
+    attributes a solve wrote are touched. Run after
+    ``haemodynamics.set_edge_flows`` on any graph whose flow states are marked
+    (:func:`mark_flow_solved_edges`, or copied from the baseline that was)."""
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    zero = {"pressure_drop": 0.0, "flow_signed": 0.0, "flow_abs": 0.0,
+            "flow_abs_log10": flow_abs_log10_value(0.0)}
+    zeroed = 0
+    for *_edge, data in G.edges(data=True):
+        if data.get(FLOW_STATE) in ("blind_end", "closed_end") and "flow_signed" in data:
+            for name, value in zero.items():
+                if name in data:
+                    data[name] = value
+            zeroed += 1
+    return zeroed
+
+
 def _components_by_io(
     G: Union[nx.Graph, nx.MultiGraph],
     starting_nodes: Sequence[int],

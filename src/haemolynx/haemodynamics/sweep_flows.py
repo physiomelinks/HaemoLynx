@@ -94,8 +94,13 @@ def edge_pericyte_sites(G: nx.Graph) -> PericyteSites:
 def record_flows_after_solve(
     G: nx.Graph, node_list: Sequence[Any], pressure: np.ndarray
 ) -> dict[str, np.ndarray]:
-    """Write flows onto *G* and return compact edge/node feature arrays."""
+    """Write flows onto *G* and return compact edge/node feature arrays.
+    Vessels behind dead ends (their flow state copied from the baseline) get
+    exactly zero flow, as in the baseline's solve."""
+    from haemolynx.graph.prune import zero_flows_behind_dead_ends
+
     set_edge_flows(G, list(node_list), pressure)
+    zero_flows_behind_dead_ends(G)
     return {
         "flow_abs": edge_attr_array(G, "flow_abs"),
         "flow_signed": edge_attr_array(G, "flow_signed"),

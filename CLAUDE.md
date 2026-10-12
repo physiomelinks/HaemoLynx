@@ -481,7 +481,10 @@ are only caught locally.
   The solve writes `graph.FLOW_STATE` beside `FLOW_SOLVED`: `solved`, `blind_end` (behind dead
   ends inside the tissue: zero flow is the answer, drawn in colour, not grey), `closed_end`
   (behind a face end with no boundary condition) or `no_boundary` (no inlet and outlet: the
-  only flows exports blank, `graph.flow_is_undefined`). `graph/dead_end_extension.py` holds the
+  only flows exports blank, `graph.flow_is_undefined`). The solve, each perturbation re-solve
+  and each sweep point then set `blind_end` and `closed_end` flows and pressure drops to exactly
+  0, not the solve's rounding (`graph.zero_flows_behind_dead_ends`: call it after any new
+  `set_edge_flows` on a marked graph). `graph/dead_end_extension.py` holds the
   repairs the grids gate, each off until then: `extend_dead_ends_to_faces`,
   `trace_on_dead_ends`, `join_dead_ends_to_vessel_sides` (run in the facing-join step), with
   `stub_face_protection` and `boundary_open_end_test` choosing `leaves_image` over the old

@@ -3287,11 +3287,13 @@ def solve(
 
 def _mark_flow_solved(G: nx.MultiGraph, inlet_nodes, outlet_nodes, open_ends=()) -> None:
     """Mark each vessel solved or not (:data:`haemolynx.graph.FLOW_SOLVED`)
-    and why (:data:`haemolynx.graph.FLOW_STATE`), and say how many were left
-    unsolved and why."""
+    and why (:data:`haemolynx.graph.FLOW_STATE`), set the flows of those
+    behind dead ends to exactly zero, and say how many were left unsolved and
+    why."""
     from collections import Counter
 
     unsolved = graph.mark_flow_solved_edges(G, inlet_nodes, outlet_nodes, open_ends)
+    graph.zero_flows_behind_dead_ends(G)
     if unsolved:
         states = Counter(
             data.get(graph.FLOW_STATE) for *_e, data in G.edges(data=True) if not data.get(graph.FLOW_SOLVED)
@@ -3397,7 +3399,8 @@ def _perturbation_copy(G: nx.MultiGraph) -> nx.MultiGraph:
 
     * `poiseuille.set_edge_resistance` -- `resistance`, `conductance`
     * `resistance.set_edge_flows` -- `pressure` on nodes; `pressure_u`,
-      `pressure_v`, `pressure_drop`, `flow_signed`, `flow_abs` on edges
+      `pressure_v`, `pressure_drop`, `flow_signed`, `flow_abs` on edges (and
+      `graph.zero_flows_behind_dead_ends` rebinds the last three to 0.0)
     * `arteriole.scale_arteriole_diameters`,
       `capillary.scale_capillary_diameters` and
       `pericyte_sweep.dilate_graph_diameters` -- `fwhm_diameter_um`
@@ -3489,6 +3492,9 @@ def _solve_network(
         haemodynamics.set_edge_flows(
             G, list(node_list), solved["pressure"], node_to_idx=node_to_idx
         )
+        # The flow states are the baseline's, copied with the graph: a
+        # perturbation changes resistances, not which vessels can carry flow.
+        graph.zero_flows_behind_dead_ends(G)
         solved["haematocrit_distribution"] = {
             "converged": hct_result["converged"],
             "iterations": hct_result["iterations"],
@@ -3507,6 +3513,7 @@ def _solve_network(
     )
     solved = _solve_with_open_ends(conductance, list(node_list), settings, boundaries, open_ends)
     haemodynamics.set_edge_flows(G, list(node_list), solved["pressure"])
+    graph.zero_flows_behind_dead_ends(G)
     return solved
 
 

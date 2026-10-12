@@ -86,6 +86,7 @@ from .prune import (
     prune_vascular_stubs,
     remove_components_without_connected_io,
     remove_edges_for_self_connected_nodes,
+    zero_flows_behind_dead_ends,
 )
 from .diagnostics import (
     classify_dead_ends,
@@ -294,6 +295,7 @@ __all__ = [
     "flow_is_undefined",
     "edges_with_connected_io",
     "mark_flow_solved_edges",
+    "zero_flows_behind_dead_ends",
     "remove_components_without_connected_io",
     "diagnose_degree2_nodes",
     "diagnose_graph_against_mask",
