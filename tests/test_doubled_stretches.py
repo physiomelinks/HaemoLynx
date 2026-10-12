@@ -223,3 +223,58 @@ def test_a_zip_that_would_put_the_junction_back_where_one_was_is_refused():
     # The fork may still be zipped the other way round (the other edge kept,
     # its parting vertex a few um away), but never onto the remembered place.
     assert all(_Editor.place(G.nodes[n]["pos"]) != place for n in G.nodes if G.degree[n] == 3)
+
+
+# --- the finder judges only what changed between rounds ----------------------
+
+
+def test_with_a_memo_an_unchanged_graph_is_not_judged_again_and_gives_the_same_runs(monkeypatch):
+    import haemolynx.graph.doubled_stretches as module
+
+    mask, G, _ends = strand_through_a_trunk()
+    support = _support(mask)
+    judged = []
+    original = module._judge_edge
+
+    def counting(*args, **kwargs):
+        judged.append(args[:3])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_judge_edge", counting)
+    memo = {}
+    first = doubled_stretches(G, support, memo=memo)
+    assert judged and memo["edges"]
+    judged.clear()
+    second = doubled_stretches(G, support, memo=memo)
+    assert judged == [], "nothing changed, so no edge is judged again"
+    assert [(r.edge, r.partner, r.start, r.stop) for r in second] == [(r.edge, r.partner, r.start, r.stop) for r in first]
+
+
+def test_with_a_memo_an_edge_near_a_change_is_judged_again_and_one_far_away_is_not(monkeypatch):
+    import haemolynx.graph.doubled_stretches as module
+
+    mask, G, _ends = strand_through_a_trunk()
+    # A capillary far from the trunk, on its own: judged once, then never again.
+    capsule(mask, (7, 38, 60), (7, 38, 79), 1.5)
+    G.add_node("far_a", pos=np.array([7.0, 38.0, 61.0]))
+    G.add_node("far_b", pos=np.array([7.0, 38.0, 78.0]))
+    G.add_edge("far_a", "far_b", voxels=[(7.0, 38.0, 61.0), (7.0, 38.0, 78.0)], length=17.0)
+    support = _support(mask)
+    judged = []
+    original = module._judge_edge
+
+    def counting(*args, **kwargs):
+        judged.append((args[0], args[1]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_judge_edge", counting)
+    memo = {}
+    doubled_stretches(G, support, memo=memo)
+    judged.clear()
+    # Move the strand a little: the strand and the trunk are judged again, the far capillary is not.
+    strand = next(e for e in G.edges(keys=True) if (7.0, 37.0, 10.0) in e[:2])
+    G.edges[strand]["voxels"] = [tuple(p[:2]) + (p[2] + 0.3,) for p in G.edges[strand]["voxels"]]
+    again = doubled_stretches(G, support, memo=memo)
+    assert again
+    assert ("far_a", "far_b") not in judged and ("far_b", "far_a") not in judged
+    assert len(judged) >= 1

@@ -98,12 +98,24 @@ def doubled_stretches(
     *,
     min_run_um: float = MIN_DOUBLED_RUN_UM,
     min_run_radii: float = MIN_DOUBLED_RUN_RADII,
+    memo: dict | None = None,
 ) -> list[DoubledStretch]:
     """Every stretch of every edge running beside one other centreline in the
     same lumen for at least *min_run_um* and *min_run_radii* lumen radii,
-    longest first. Thick-vessel bridges are neither stretches nor partners."""
+    longest first. Thick-vessel bridges are neither stretches nor partners.
+
+    *memo*, a dict a caller passes to every call on one graph (and one
+    mask), keeps each edge's verdict for the next call: an edge whose
+    centreline is unchanged, with no edge added, changed or removed since
+    within the reach it is judged over, is not judged again -- its runs
+    read only its own path and the centrelines in that reach. The clean-up
+    asks every round of a graph each round changes in a few places; judged
+    whole every round, the finder was ~7-11 s a round on E14.5.
+    """
     if G.number_of_edges() < 2:
         return []
+    from .diagnostics import _edge_signature
+
     step = _sample_step(support.voxel_size_zyx)
     gap_samples = max(1, int(np.ceil(RUN_GAP_UM / step)))
     node_pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True) if "pos" in d}
@@ -114,83 +126,129 @@ def doubled_stretches(
     owners = np.asarray([ids.setdefault(owner, len(ids)) for owner in index.owners], dtype=np.intp)
     edge_of = list(ids)
     bridges = {edge_id(u, v, k) for u, v, k, d in G.edges(keys=True, data=True) if d.get(IS_ZERO_RESISTANCE)}
-    bridge_ids = {ids[b] for b in bridges if b in ids}
-    runs: list[DoubledStretch] = []
+    bridge_ids = np.asarray(sorted(ids[b] for b in bridges if b in ids), dtype=np.intp)
+    remembered: dict = memo.get("edges", {}) if memo is not None else {}
+    entries = []
     for u, v, key, data in G.edges(keys=True, data=True):
         eid = edge_id(u, v, key)
         own = ids.get(eid)
-        if own is None or u == v or eid in bridges:
+        if own is None or u == v or eid in bridges or u not in node_pos or v not in node_pos:
             continue
-        path = edge_sample_points(u, v, data, node_pos)
-        dense = _densify(path, step)
-        if len(dense) < 2:
-            continue
-        found = index.tree.query_ball_point(dense, r=2.0 * float(np.max(support.radius(dense))) + 1.0)
-        near = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in found]))
-        near = near[(owners[near] != own) & ~np.isin(owners[near], list(bridge_ids))]
-        if not len(near):
-            continue
-        samples, tangents, judged = _judged_samples(path, support.radius, step_um=step, margin_um=SAME_LUMEN_MARGIN_UM)
-        if not judged.any():
-            continue
-        points = index.points[near]
-        # Each sample is judged with its own lumen radius, as the report's
-        # measure judges it: a stretch counts from the narrower centreline
-        # only when it lies within that vessel's own width of the other --
-        # inside the wider lumen. Judged with the wider of the two radii
-        # instead (tried 2026-10-12), a capillary fused along a trunk's wall
-        # counted as beside the trunk from its own side, and the trim then
-        # took the whole capillary: on E14.5 5.7 mm of centreline and 3.7
-        # points of mask coverage went with 430 um of doubling. What the
-        # wider side alone sees (588 of 906 um left on E14.5) is a grid's
-        # question, not a finder's.
-        neighbour_judged = _same_lumen_neighbours(
-            samples[judged], tangents[judged], cKDTree(points), points, support.inside, support.radius,
-            step_um=step, margin_um=SAME_LUMEN_MARGIN_UM, max_cosine=MAX_SHADOW_COSINE,
+        signature = _edge_signature(eid, data, node_pos[u], node_pos[v]) if memo is not None else None
+        if signature in remembered:
+            dense, reach, _runs = remembered[signature]
+            path = None
+        else:
+            path = edge_sample_points(u, v, data, node_pos)
+            dense = _densify(path, step)
+            if len(dense) < 2:
+                continue
+            reach = 2.0 * float(np.max(support.radius(dense))) + 1.0
+        entries.append((u, v, key, data, signature, path, dense, reach))
+    changed_tree = None
+    if remembered:
+        present = {e[4] for e in entries}
+        changed = [remembered[sig][0] for sig in remembered if sig not in present]
+        changed += [e[6] for e in entries if e[4] not in remembered]
+        if changed:
+            changed_tree = cKDTree(np.vstack(changed))
+    kept: dict = {}
+    runs: list[DoubledStretch] = []
+    for u, v, key, data, signature, path, dense, reach in entries:
+        if signature in remembered:
+            # The judging path is denser than the index's samples a verdict
+            # reads, so a change one sample step further out still counts.
+            untouched = changed_tree is None or not np.isfinite(
+                changed_tree.query(dense, k=1, distance_upper_bound=reach + step)[0]
+            ).any()
+            if untouched:
+                runs.extend(remembered[signature][2])
+                kept[signature] = remembered[signature]
+                continue
+            path = edge_sample_points(u, v, data, node_pos)
+        edge_runs = _judge_edge(
+            u, v, key, path, dense, reach, ids[edge_id(u, v, key)], index, owners, edge_of, bridge_ids, support,
+            step=step, gap_samples=gap_samples, min_run_um=min_run_um, min_run_radii=min_run_radii,
         )
-        neighbour = np.full(len(samples), -1, dtype=np.intp)
-        neighbour[np.flatnonzero(judged)] = neighbour_judged
-        point_of = np.where(neighbour >= 0, near[np.maximum(neighbour, 0)], -1)
-        partner = np.where(point_of >= 0, owners[np.maximum(point_of, 0)], -1)
-        judged_at = np.flatnonzero(judged)
-        first, last = int(judged_at[0]), int(judged_at[-1])
-        i = 0
-        while i < len(samples):
-            if partner[i] < 0:
-                i += 1
-                continue
-            which, start, stop, gap, j = partner[i], i, i, 0, i + 1
-            while j < len(samples):
-                if partner[j] == which:
-                    stop, gap = j, 0
-                elif gap < gap_samples:
-                    gap += 1
-                else:
-                    break
-                j += 1
-            i = stop + 1
-            stretch = samples[start:stop + 1]
-            length = _length(stretch)
-            radius = float(np.mean(support.radius(stretch)))
-            if length < max(min_run_um, min_run_radii * radius):
-                continue
-            beside = point_of[start:stop + 1]
-            beside = beside[(beside >= 0) & (partner[start:stop + 1] == which)]
-            runs.append(DoubledStretch(
-                edge=(u, v, key),
-                partner=edge_of[int(which)],
-                samples=samples,
-                start=start,
-                stop=stop,
-                partner_start=index.points[point_of[start]],
-                partner_stop=index.points[point_of[stop]],
-                length_um=length,
-                radius_um=radius,
-                partner_radius_um=float(np.mean(support.radius(index.points[beside]))),
-                at_start=start <= first + gap_samples,
-                at_stop=stop >= last - gap_samples,
-            ))
+        runs.extend(edge_runs)
+        if signature is not None:
+            kept[signature] = (dense, reach, edge_runs)
+    if memo is not None:
+        memo["edges"] = kept
     runs.sort(key=lambda run: -run.length_um)
+    return runs
+
+
+def _judge_edge(u, v, key, path, dense, reach, own, index, owners, edge_of, bridge_ids, support, *,
+                step, gap_samples, min_run_um, min_run_radii) -> list[DoubledStretch]:
+    """The doubled stretches of one edge: its judged samples against every
+    other centreline's points within *reach* of its path."""
+    found = index.tree.query_ball_point(dense, r=reach)
+    near = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in found]))
+    near = near[(owners[near] != own) & ~np.isin(owners[near], bridge_ids)]
+    if not len(near):
+        return []
+    samples, tangents, judged = _judged_samples(path, support.radius, step_um=step, margin_um=SAME_LUMEN_MARGIN_UM)
+    if not judged.any():
+        return []
+    points = index.points[near]
+    # Each sample is judged with its own lumen radius, as the report's
+    # measure judges it: a stretch counts from the narrower centreline
+    # only when it lies within that vessel's own width of the other --
+    # inside the wider lumen. Judged with the wider of the two radii
+    # instead (tried 2026-10-12), a capillary fused along a trunk's wall
+    # counted as beside the trunk from its own side, and the trim then
+    # took the whole capillary: on E14.5 5.7 mm of centreline and 3.7
+    # points of mask coverage went with 430 um of doubling. What the
+    # wider side alone sees (588 of 906 um left on E14.5) is a grid's
+    # question, not a finder's.
+    neighbour_judged = _same_lumen_neighbours(
+        samples[judged], tangents[judged], cKDTree(points), points, support.inside, support.radius,
+        step_um=step, margin_um=SAME_LUMEN_MARGIN_UM, max_cosine=MAX_SHADOW_COSINE,
+    )
+    neighbour = np.full(len(samples), -1, dtype=np.intp)
+    neighbour[np.flatnonzero(judged)] = neighbour_judged
+    point_of = np.where(neighbour >= 0, near[np.maximum(neighbour, 0)], -1)
+    partner = np.where(point_of >= 0, owners[np.maximum(point_of, 0)], -1)
+    judged_at = np.flatnonzero(judged)
+    first, last = int(judged_at[0]), int(judged_at[-1])
+    runs: list[DoubledStretch] = []
+    i = 0
+    while i < len(samples):
+        if partner[i] < 0:
+            i += 1
+            continue
+        which, start, stop, gap, j = partner[i], i, i, 0, i + 1
+        while j < len(samples):
+            if partner[j] == which:
+                stop, gap = j, 0
+            elif gap < gap_samples:
+                gap += 1
+            else:
+                break
+            j += 1
+        i = stop + 1
+        stretch = samples[start:stop + 1]
+        length = _length(stretch)
+        radius = float(np.mean(support.radius(stretch)))
+        if length < max(min_run_um, min_run_radii * radius):
+            continue
+        beside = point_of[start:stop + 1]
+        beside = beside[(beside >= 0) & (partner[start:stop + 1] == which)]
+        runs.append(DoubledStretch(
+            edge=(u, v, key),
+            partner=edge_of[int(which)],
+            samples=samples,
+            start=start,
+            stop=stop,
+            partner_start=index.points[point_of[start]],
+            partner_stop=index.points[point_of[stop]],
+            length_um=length,
+            radius_um=radius,
+            partner_radius_um=float(np.mean(support.radius(index.points[beside]))),
+            at_start=start <= first + gap_samples,
+            at_stop=stop >= last - gap_samples,
+        ))
     return runs
 
 
@@ -410,7 +468,7 @@ def resolve_doubled_stretches(
     centrelines are two vessels (the raw image, say): a stretch it returns
     True for is left alone. The mask alone cannot tell (grids H and H2).
     """
-    runs = doubled_stretches(G, support, min_run_um=min_run_um, min_run_radii=min_run_radii)
+    runs = doubled_stretches(G, support, min_run_um=min_run_um, min_run_radii=min_run_radii, memo=memo)
     if not runs:
         return G
     editor = _Editor(G)

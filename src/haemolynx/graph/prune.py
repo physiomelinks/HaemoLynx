@@ -87,7 +87,25 @@ def _centreline_index(G: nx.MultiGraph, lumen_radius_at):
         return None
     points = np.vstack(points)
     radii = np.asarray(lumen_radius_at(points), dtype=float).reshape(-1)
-    return cKDTree(points), radii, np.asarray(owners, dtype=np.intp), ids
+    return cKDTree(points), radii, np.asarray(owners, dtype=np.intp), ids, points
+
+
+def _index_without(index, dead_owners: set):
+    """*index* with the points of the edges *dead_owners* own left out: the
+    tree is rebuilt from the points kept, no lumen radius read again -- the
+    radii were the cost (built afresh every pass, the index was most of the
+    prune's time, and within one call only stubs go)."""
+    from scipy.spatial import cKDTree
+
+    if index is None or not dead_owners:
+        return index
+    _tree, radii, owners, ids, points = index
+    keep = ~np.isin(owners, np.asarray(sorted(dead_owners), dtype=np.intp))
+    if keep.all():
+        return index
+    if not keep.any():
+        return None
+    return cKDTree(points[keep]), radii[keep], owners[keep], ids, points[keep]
 
 
 def _edge_data(G, edge) -> dict:
@@ -225,7 +243,7 @@ def prune_vascular_stubs(
     def inside_other_lumens(path: np.ndarray, edges: list, index) -> bool:
         """Whether the stub never gets more than its own radius outside the
         lumen of a centreline that is not its own."""
-        tree, radii, owners, ids = index
+        tree, radii, owners, ids, _points = index
         own = [ids.get((frozenset((a, b)), key), -1) for a, b, key in edges]
         k = min(16, len(owners))
         distance, nearest = tree.query(path, k=k)
@@ -256,6 +274,7 @@ def prune_vascular_stubs(
     not_vessels = 0
     protected: set = set()
     iteration = 0
+    index = None
 
     while iteration < max_iterations:
         iteration += 1
@@ -268,8 +287,7 @@ def prune_vascular_stubs(
         ]
         nodes_to_remove.extend(n for n in G_pruned.nodes() if G_pruned.degree(n) == 0)
         chains = {node: _chain(G_pruned, node) for node in terminal_nodes}
-        index = None
-        if inside_lumen is not None and lumen_radius_at is not None:
+        if inside_lumen is not None and lumen_radius_at is not None and iteration == 1:
             index = _centreline_index(G_pruned, lumen_radius_at)
         for node in terminal_nodes:
             nodes, edges = chains[node]
@@ -317,6 +335,17 @@ def prune_vascular_stubs(
                     logger.debug(f"  Warning: Could not calculate edge length: {e}")
                 nodes_to_remove.extend(goes)
 
+        if index is not None and nodes_to_remove:
+            # The stubs about to go leave the index: their points would be
+            # read as other vessels' lumens by the stubs judged next pass.
+            dead = {
+                index[3].get((frozenset((a, b)), key)) for n in set(nodes_to_remove)
+                for a, b, key in (
+                    G_pruned.edges(n, keys=True) if G_pruned.is_multigraph()
+                    else ((a, b, None) for a, b in G_pruned.edges(n))
+                )
+            }
+            index = _index_without(index, {d for d in dead if d is not None})
         G_pruned.remove_nodes_from(nodes_to_remove)
         nodes_after = G_pruned.number_of_nodes()
         removed_this_iteration = nodes_before - nodes_after
