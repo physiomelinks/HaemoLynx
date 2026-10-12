@@ -515,7 +515,21 @@ class _CentrelineNeighbours:
         length as sampled, how much of that runs beside another centreline in
         the same lumen, and the share of its judged samples that do (None when
         none were judged). None for an edge with no samples to judge."""
-        from haemolynx.preprocessing.bridge_mask_support import _densify, shadowed_samples
+        measured = self.beside_runs(u, v, key, data)
+        return None if measured is None else measured[:3]
+
+    def beside_runs(self, u: Any, v: Any, key: Any, data: dict):
+        """:meth:`beside` plus the edge's **doubled runs**: each stretch of
+        consecutive judged samples (a gap of one sample allowed) that runs
+        beside another centreline, as ``DoubledRun`` with the edge it runs
+        beside (the one most of the run's samples are nearest to) and
+        whether the run reaches the first or last judged sample -- a run
+        at an edge's end is a fork or a branch meeting its parent, one in
+        the middle a second strand. The report counts the doubled centreline
+        by run length and place from these."""
+        from haemolynx.preprocessing.bridge_mask_support import (
+            MAX_SHADOW_COSINE, SAME_LUMEN_MARGIN_UM, _densify, _judged_samples, _same_lumen_neighbours,
+        )
         from scipy.spatial import cKDTree
 
         from ._helpers import edge_id, edge_sample_points
@@ -530,13 +544,78 @@ class _CentrelineNeighbours:
         total = float(_sample_weights(dense).sum())
         near = self.other_points_near(dense, own, 2.0 * float(np.max(self.support.radius(dense))) + 1.0)
         if not len(near):
-            return total, 0.0, None
-        samples, judged, beside = shadowed_samples(
-            path, cKDTree(self.index.points[near]), self.index.points[near],
-            self.support.inside, self.support.radius, step_um=self.step,
+            return total, 0.0, None, []
+        samples, tangents, judged = _judged_samples(
+            path, self.support.radius, step_um=self.step, margin_um=SAME_LUMEN_MARGIN_UM
         )
+        beside = np.zeros(len(samples), dtype=bool)
+        runs: List[DoubledRun] = []
+        if judged.any():
+            points = self.index.points[near]
+            neighbour = _same_lumen_neighbours(
+                samples[judged], tangents[judged], cKDTree(points), points, self.support.inside,
+                self.support.radius, step_um=self.step, margin_um=SAME_LUMEN_MARGIN_UM,
+                max_cosine=MAX_SHADOW_COSINE,
+            )
+            hit = neighbour >= 0
+            beside[np.flatnonzero(judged)] = hit
+            owners = [self.index.owners[near[k]] if k >= 0 else None for k in neighbour]
+            i, n = 0, len(hit)
+            while i < n:
+                if not hit[i]:
+                    i += 1
+                    continue
+                j = i
+                while j + 1 < n and (hit[j + 1] or (j + 2 < n and hit[j + 2])):
+                    j += 1
+                partners = [owners[k] for k in range(i, j + 1) if owners[k] is not None]
+                partner = max(set(partners), key=partners.count)
+                runs.append(DoubledRun(
+                    edge=edge_id(u, v, key), partner=partner, length_um=(j - i + 1) * self.step,
+                    at_start=i == 0, at_end=j == n - 1,
+                ))
+                i = j + 1
         share = float(beside[judged].mean()) if judged.any() else None
-        return total, float(_sample_weights(samples)[beside].sum()), share
+        return total, float(_sample_weights(samples)[beside].sum()), share, runs
+
+
+class DoubledRun:
+    """One stretch of an edge running beside another centreline in the same
+    lumen: its edge and the edge it runs beside (``_helpers.edge_id`` keys),
+    its length, and whether it reaches the first or last judged sample."""
+
+    __slots__ = ("edge", "partner", "length_um", "at_start", "at_end")
+
+    def __init__(self, edge, partner, length_um: float, at_start: bool, at_end: bool):
+        self.edge, self.partner = edge, partner
+        self.length_um, self.at_start, self.at_end = float(length_um), bool(at_start), bool(at_end)
+
+    def __repr__(self) -> str:
+        return f"DoubledRun({self.edge!r} beside {self.partner!r}, {self.length_um:.1f} um)"
+
+
+#: Where a doubled run lies, in the order the report lists them.
+DOUBLED_RUN_PLACES = ("dead_end_chain", "fork", "mid_edge", "bridge")
+#: A run at least this long is a second strand, not the flare where vessels meet.
+DOUBLED_RUN_LONG_UM = 5.0
+
+
+def _edge_nodes(eid) -> set:
+    return {eid[0], eid[1]}
+
+
+def doubled_run_place(run: DoubledRun, chain_edges: set, bridges: set) -> str:
+    """Which of :data:`DOUBLED_RUN_PLACES` *run* is: with a thick-vessel
+    bridge, on a dead-end chain (a hair or a sprout along its parent), at the
+    junction both edges leave (a fork), or along an edge (a second strand
+    through the lumen, whether or not it reaches the edge's end)."""
+    if run.edge in bridges or run.partner in bridges:
+        return "bridge"
+    if run.edge in chain_edges or run.partner in chain_edges:
+        return "dead_end_chain"
+    if (run.at_start or run.at_end) and (_edge_nodes(run.edge) & _edge_nodes(run.partner)):
+        return "fork"
+    return "mid_edge"
 
 
 def _judge_dead_ends(
@@ -675,22 +754,58 @@ def diagnose_lumen_artefacts(
         if len({a[0], a[1]} & {b[0], b[1]}) == 1
     ]
 
+    from ._helpers import edge_id
+    from .dead_ends import chain_to_junction
+    from .thick_vessel_junctions import IS_ZERO_RESISTANCE
+
     neighbours = _CentrelineNeighbours(G, support)
     total_um = duplicated_um = 0.0
+    runs: List[DoubledRun] = []
     for u, v, key, data in G.edges(keys=True, data=True):
-        measured = neighbours.beside(u, v, key, data)
+        measured = neighbours.beside_runs(u, v, key, data)
         if measured is None:
             continue
-        centreline_um, beside_um, _share = measured
+        centreline_um, beside_um, _share, edge_runs = measured
         total_um += centreline_um
         duplicated_um += beside_um
+        runs.extend(edge_runs)
+
+    # Where each doubled run lies, and how long it is: the census of
+    # PLAN_clean_graph.md, which tells a flare at a junction from a second
+    # strand. A run on a dead-end chain is judged as the whole chain, as
+    # the prune judges it.
+    bridges = {edge_id(a, b, k) for a, b, k, d in G.edges(keys=True, data=True) if d.get(IS_ZERO_RESISTANCE)}
+    chain_edges: set = set()
+    for tip in [n for n in G if G.degree(n) == 1]:
+        nodes, edges = chain_to_junction(G, tip)
+        # A chain hanging from a junction; an isolated piece is no dead end.
+        if G.degree(nodes[-1]) > 1:
+            chain_edges.update(edge_id(*e) for e in edges)
+    by_place = {place: {"runs": 0, "um": 0.0} for place in DOUBLED_RUN_PLACES}
+    long_runs = {"runs": 0, "um": 0.0}
+    for run in runs:
+        counted = by_place[doubled_run_place(run, chain_edges, bridges)]
+        counted["runs"] += 1
+        counted["um"] += run.length_um
+        if run.length_um >= DOUBLED_RUN_LONG_UM:
+            long_runs["runs"] += 1
+            long_runs["um"] += run.length_um
+    doubled_edges = {r.edge for r in runs if r.length_um >= 2.0} | {r.partner for r in runs if r.length_um >= 2.0}
 
     loop_count = 0
     loops_in_lumen: List[Any] = []
+    loops_by_side = {"doubled_side": 0, "through_bridge": 0, "triangle": 0}
     for cycle, polyline in iter_short_loops(G):
         loop_count += 1
         if loop_inside_one_lumen(polyline, support):
             loops_in_lumen.append(cycle)
+        edges_in_loop = {edge_id(*e) for e in cycle}
+        if edges_in_loop & doubled_edges:
+            loops_by_side["doubled_side"] += 1
+        if edges_in_loop & bridges:
+            loops_by_side["through_bridge"] += 1
+        if len(cycle) <= 3:
+            loops_by_side["triangle"] += 1
 
     judged = _judge_dead_ends(
         G, support, stub_radius_multiple=stub_radius_multiple, image_face_margin_um=image_face_margin_um,
@@ -705,7 +820,11 @@ def diagnose_lumen_artefacts(
         "fork_pair_count": len(forks),
         "duplicated_centreline_um": duplicated_um,
         "duplicated_centreline_fraction": duplicated_um / total_um if total_um else 0.0,
+        "doubled_runs": runs,
+        "doubled_runs_by_place": by_place,
+        "doubled_long_runs": long_runs,
         "short_loop_count": loop_count,
+        "short_loops_by_side": loops_by_side,
         "loops_inside_one_lumen": len(loops_in_lumen),
         "loop_cycles_inside_one_lumen": loops_in_lumen,
         "dead_ends_at_image_face": len(judged["at_image_face"]),

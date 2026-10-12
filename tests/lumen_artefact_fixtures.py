@@ -65,6 +65,13 @@ def fork_in_one_lumen():
                                           [(7, 7, 2), (7, 9, 12), (7, 9, 57)]])
 
 
+def hair_along_a_wall():
+    """A dead end leaving a junction and running 20 um along the wide
+    vessel's own lumen beside its centreline: a hair, not a branch."""
+    return wide_vessel(), polyline_graph([[(7, 7, 2), (7, 7, 30)], [(7, 7, 30), (7, 7, 57)],
+                                          [(7, 7, 30), (7, 11, 34), (7, 11, 54)]])
+
+
 def ring_in_one_lumen():
     """A loop of two edges round nothing: both arcs inside one wide lumen."""
     return wide_vessel(), polyline_graph([[(7, 7, 10), (7, 4, 20), (7, 4, 40), (7, 7, 50)],

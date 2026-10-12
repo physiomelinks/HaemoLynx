@@ -20,6 +20,7 @@ from haemolynx.graph import (
 )
 from haemolynx.graph.diagnostics import DEAD_END_KINDS, classify_dead_ends
 from haemolynx.graph.lumen_loops import iter_short_loops
+from lumen_artefact_fixtures import hair_along_a_wall, wide_vessel
 from haemolynx.preprocessing import MaskSupport, path_shadows_existing_vessel, shadowed_samples
 
 from lumen_artefact_fixtures import (
@@ -124,6 +125,75 @@ def test_two_edges_leaving_one_node_through_one_lumen_are_a_fork():
     report = _report(mask, G)
     assert report["duplicate_pair_count"] == 1
     assert report["fork_pair_count"] == 1
+
+
+# --- doubled runs: where the doubled centreline lies ---------------------------
+
+
+def _place_um(report):
+    return {place: round(counts["um"]) for place, counts in report["doubled_runs_by_place"].items() if counts["runs"]}
+
+
+def test_two_strands_are_doubled_in_the_middle_of_each_edge_as_one_long_run_each():
+    mask, G = two_strands_in_one_lumen()
+    report = _report(mask, G)
+    runs = report["doubled_runs"]
+    # One run per strand, each reaching from the first judged sample to the last.
+    assert len(runs) == 2
+    assert all(r.at_start and r.at_end for r in runs)
+    assert {r.edge for r in runs} == {r.partner for r in runs}
+    assert set(_place_um(report)) == {"mid_edge"}
+    assert report["doubled_long_runs"]["runs"] == 2
+    assert report["doubled_long_runs"]["um"] == pytest.approx(report["duplicated_centreline_um"], rel=0.05)
+
+
+def test_a_fork_is_doubled_at_the_junction_the_two_edges_share():
+    mask, G = fork_in_one_lumen()
+    report = _report(mask, G)
+    assert set(_place_um(report)) == {"fork"}
+    assert all(r.at_start or r.at_end for r in report["doubled_runs"])
+
+
+def test_a_hair_along_a_wall_is_doubled_on_a_dead_end_chain():
+    mask, G = hair_along_a_wall()
+    report = _report(mask, G)
+    places = _place_um(report)
+    assert set(places) == {"dead_end_chain"}
+    # The hair runs 20 um beside the trunk; the trunk's own edge is counted
+    # beside the hair too, so the doubled length is about twice that.
+    assert 25 < places["dead_end_chain"] < 50
+    assert report["doubled_long_runs"]["runs"] == 2
+
+
+def test_a_second_strand_in_the_middle_of_a_long_edge_is_a_mid_edge_run():
+    mask = wide_vessel()
+    # A short strand beside the middle of a long one: neither reaches an end.
+    G = polyline_graph([[(7, 7, 2), (7, 7, 57)], [(7, 11, 20), (7, 11, 40)]])
+    report = _report(mask, G)
+    places = _place_um(report)
+    assert "mid_edge" in places and places["mid_edge"] > 10
+    long_run = next(r for r in report["doubled_runs"] if r.edge[0][2] == 2.0 or r.edge[1][2] == 57.0)
+    assert not long_run.at_start and not long_run.at_end
+
+
+def test_a_run_with_a_thick_vessel_bridge_is_counted_with_the_bridge():
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    mask, G = two_strands_in_one_lumen()
+    u, v, key = next(iter(G.edges(keys=True)))
+    G.edges[u, v, key][IS_ZERO_RESISTANCE] = True
+    report = _report(mask, G)
+    assert set(_place_um(report)) == {"bridge"}
+
+
+def test_loops_are_counted_by_what_they_run_through():
+    mask, G = ring_in_one_lumen()
+    report = _report(mask, G)
+    # Two arcs in one lumen: a loop of two edges, each a doubled side of the other.
+    assert report["short_loops_by_side"] == {"doubled_side": 1, "through_bridge": 0, "triangle": 1}
+    mask, G = loop_round_tissue()
+    report = _report(mask, G)
+    assert report["short_loops_by_side"] == {"doubled_side": 0, "through_bridge": 0, "triangle": 0}
 
 
 def test_a_ring_round_nothing_is_a_loop_inside_one_lumen():
