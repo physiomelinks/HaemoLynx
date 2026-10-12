@@ -1337,6 +1337,7 @@ def build_network(
         graph.dead_ends.record_image_extent(G, skeleton.shape, voxel_size_zyx)
         if binary_mask is not None:
             _mark_dead_end_kinds(settings, G, binary_mask, voxel_size_zyx, radius_at)
+            _record_raw_evidence(settings, G, binary_mask, voxel_size_zyx, getattr(volume, "crop", None))
 
         if binary_mask is not None:
             preprocessing.release_superseded(binary_mask, G, keep=image)
@@ -1531,6 +1532,19 @@ def _mark_dead_end_kinds(
         len(ends),
         ", ".join(f"{count} {kind.replace('_', ' ')}" for kind, count in census.items() if count) or "none",
     )
+
+
+def _record_raw_evidence(
+    settings: dict, G: nx.MultiGraph, binary_mask: np.ndarray, voxel_size_zyx, crop: CropBox | None
+) -> None:
+    """Calibrate the run's raw image round the mask (``preprocessing.raw_evidence``)
+    and keep the calibration on the graph, so a saved graph says what the raw-image
+    rules read. Nothing when the run names no raw image, or it has nothing to read."""
+    evidence = preprocessing.raw_evidence_from_settings(settings, binary_mask, voxel_size_zyx, box=crop)
+    if evidence is None:
+        G.graph.pop(preprocessing.raw_evidence.GRAPH_ATTRIBUTE, None)
+        return
+    G.graph[preprocessing.raw_evidence.GRAPH_ATTRIBUTE] = evidence.calibration.as_dict()
 
 
 def _record_crop(G: nx.Graph, crop: CropBox | None, voxel_size_zyx) -> None:
