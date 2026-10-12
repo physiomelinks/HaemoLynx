@@ -1,0 +1,325 @@
+<title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a working sheet. A header with the question and the marks, a sticky bar with progress and
+   display toggles, then one wide card per example: two planes of three channels, then the controls. */
+:root {
+  --bg: #f3f5f6;
+  --surface: #ffffff;
+  --ink: #1b2328;
+  --muted: #5b6870;
+  --line: #d5dcdf;
+  --accent: #1f6f8b;
+  --good: #23864f;
+  --bad: #c23b2f;
+  --unsure: #a06a12;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12171a; --surface: #1a2125; --ink: #e3e8ea; --muted: #97a4ab; --line: #2c363b;
+    --accent: #5cb3d1; --good: #4fc282; --bad: #ef6a5c; --unsure: #d9a441;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12171a; --surface: #1a2125; --ink: #e3e8ea; --muted: #97a4ab; --line: #2c363b;
+  --accent: #5cb3d1; --good: #4fc282; --bad: #ef6a5c; --unsure: #d9a441;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.45; }
+.wrap { padding-inline: 16px; padding-block: 20px 48px; max-width: 1500px; margin: 0 auto; display: grid; gap: 18px; }
+header { display: grid; gap: 10px; }
+h1 { margin: 0; font-size: 1.5rem; font-weight: 600; text-wrap: balance; }
+.lede { margin: 0; max-width: 80ch; color: var(--muted); }
+.steps { margin: 0; padding-left: 1.2em; max-width: 80ch; display: grid; gap: 2px; }
+.bar { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 10px 12px; background: var(--surface);
+       border: 1px solid var(--line); border-radius: 8px; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 2; }
+.progress { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; }
+.bar label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+.status { color: var(--muted); font-size: 0.9rem; }
+.status.warn { color: var(--bad); }
+button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+         padding: 5px 10px; }
+button:hover { border-color: var(--accent); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 560px), 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px; display: grid; gap: 8px; min-width: 0; }
+.card.done { border-color: var(--accent); }
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.id { font-family: var(--font-mono); font-size: 1.25rem; font-weight: 600; }
+.saved { font-size: 0.8rem; color: var(--muted); }
+.saved.warn { color: var(--bad); }
+.plane { display: grid; gap: 4px; }
+.plane-label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.panels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+figure { margin: 0; display: grid; gap: 2px; min-width: 0; }
+figcaption { font-size: 0.78rem; color: var(--muted); }
+canvas { width: 100%; max-width: 100%; aspect-ratio: 1; display: block; border-radius: 4px; background: #000; }
+.verdict { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 6px; }
+.verdict button { font-size: 0.88rem; line-height: 1.2; }
+.verdict button[aria-pressed="true"].good { background: var(--good); border-color: var(--good); color: #fff; }
+.verdict button[aria-pressed="true"].bad { background: var(--bad); border-color: var(--bad); color: #fff; }
+.verdict button[aria-pressed="true"].unsure { background: var(--unsure); border-color: var(--unsure); color: #fff; }
+.evidence { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 0.85rem; color: var(--muted); align-items: center; }
+.evidence label { display: inline-flex; gap: 4px; align-items: center; }
+.note { width: 100%; box-sizing: border-box; font: inherit; font-size: 0.9rem; padding: 6px 8px; border-radius: 6px;
+        border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.85rem; color: var(--muted); }
+.sw { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 5px; border-radius: 2px; }
+@media (prefers-reduced-motion: no-preference) { .card { transition: border-color 0.15s; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1 id="title"></h1>
+    <p class="lede" id="lede"></p>
+    <ol class="steps" id="steps"></ol>
+    <div class="legend" id="legend"></div>
+  </header>
+  <div class="bar" role="region" aria-label="Progress and display">
+    <span class="progress" id="progress">0 / 0 marked</span>
+    <label><input type="checkbox" id="showGraph" checked> Graph lines</label>
+    <label><input type="checkbox" id="showContext" checked> Other centrelines</label>
+    <label><input type="checkbox" id="showOnImages"> All lines on the stains too</label>
+    <button type="button" id="copy">Copy marks as text</button>
+    <span class="status" id="status">Connecting to storage…</span>
+  </div>
+  <main class="grid" id="grid"></main>
+</div>
+
+<script id="examples" type="application/json">__EXAMPLES_JSON__</script>
+<script>
+(function () {
+  const DATA = JSON.parse(document.getElementById("examples").textContent);
+  const BATCH = DATA.batch, EX = DATA.examples, VERDICTS = DATA.verdicts, EVIDENCE = DATA.evidence || [];
+  document.getElementById("title").textContent = DATA.title;
+  document.getElementById("lede").textContent = DATA.lede;
+  DATA.steps.forEach(text => {
+    const li = document.createElement("li");
+    li.textContent = text;
+    document.getElementById("steps").appendChild(li);
+  });
+  DATA.legend.forEach(item => {
+    const span = document.createElement("span"), sw = document.createElement("span");
+    sw.className = "sw";
+    sw.style.background = item.color;
+    span.appendChild(sw);
+    span.appendChild(document.createTextNode(item.label));
+    document.getElementById("legend").appendChild(span);
+  });
+  const state = {}, cards = {};
+  let db = null;
+  const view = { graph: true, context: true, onImages: false };
+  EX.forEach(ex => { state[ex.id] = { verdict: null, evidence: [], note: "" }; });
+
+  function setStatus(text, warn) {
+    const el = document.getElementById("status");
+    el.textContent = text;
+    el.classList.toggle("warn", !!warn);
+  }
+  function progress() {
+    const n = EX.filter(ex => state[ex.id].verdict).length;
+    document.getElementById("progress").textContent = n + " / " + EX.length + " marked";
+  }
+  function toPx(R, W, u, v) { return [(u + R) / (2 * R) * W, (R - v) / (2 * R) * W]; }
+  function polyline(R, W, ctx, points) {
+    ctx.beginPath();
+    let pen = false;
+    for (const p of points) {
+      if (p === null) { pen = false; continue; }
+      const [x, y] = toPx(R, W, p[0], p[1]);
+      pen ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      pen = true;
+    }
+    ctx.stroke();
+  }
+  function drawPanel(panel) {
+    const { canvas, img, plane, withLines } = panel, ctx = canvas.getContext("2d"), W = canvas.width, R = plane.R;
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W, W);
+    if (img.complete && img.naturalWidth) ctx.drawImage(img, 0, 0, W, W);
+    const s = W / 320;
+    {
+      // The images show only the ring round the tip unless asked for every line.
+      const all = withLines || view.onImages;
+      for (const layer of plane.overlays) {
+        if (!all && !layer.marker) continue;
+        if ((layer.group === "context" && !view.context) || (layer.group !== "context" && !view.graph)) continue;
+        if (layer.kind === "dots") {
+          ctx.fillStyle = layer.color;
+          for (const [u, v] of layer.points) { const [x, y] = toPx(R, W, u, v); ctx.fillRect(x - s, y - s, 2 * s, 2 * s); }
+        } else {
+          ctx.strokeStyle = layer.color; ctx.lineWidth = (layer.width || 2) * s; ctx.lineCap = "round"; ctx.lineJoin = "round";
+          polyline(R, W, ctx, layer.points);
+        }
+      }
+    }
+    // 5 um scale bar, bottom left.
+    const [x0, y0] = toPx(R, W, -R + 1.5, -R + 1.5), [x1] = toPx(R, W, -R + 6.5, 0);
+    ctx.strokeStyle = "#ff9f0a"; ctx.lineWidth = 4 * s; ctx.lineCap = "butt";
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); ctx.stroke();
+  }
+  function drawCard(id) {
+    const c = cards[id];
+    c.panels.forEach(drawPanel);
+    c.card.classList.toggle("done", !!state[id].verdict);
+    c.buttons.forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === state[id].verdict)));
+    c.checks.forEach(box => { box.checked = state[id].evidence.includes(box.value); });
+  }
+
+  // One write at a time per example, coalescing changes made while one is in flight.
+  const pending = new Map(), inflight = new Set();
+  function payload(id) {
+    const s = state[id];
+    return { id, batch: BATCH, verdict: s.verdict, evidence: s.evidence.slice(), note: s.note, updated: new Date().toISOString() };
+  }
+  async function save(id) {
+    const c = cards[id];
+    if (!db) { c.saved.textContent = "Not saved"; c.saved.classList.add("warn"); return; }
+    pending.set(id, payload(id));
+    if (inflight.has(id)) return;
+    inflight.add(id);
+    c.saved.textContent = "Saving…"; c.saved.classList.remove("warn");
+    while (pending.has(id)) {
+      const body = pending.get(id); pending.delete(id);
+      try {
+        await db.collection("annotations").doc(id).set(body);
+        c.saved.textContent = "Saved";
+      } catch (e) {
+        c.saved.textContent = "Not saved (" + (e && e.code || "error") + ")";
+        c.saved.classList.add("warn");
+        pending.delete(id);
+        break;
+      }
+    }
+    inflight.delete(id);
+  }
+
+  function makeCard(ex) {
+    const card = document.createElement("article");
+    card.className = "card";
+    const head = document.createElement("div");
+    head.className = "card-head";
+    head.innerHTML = '<span class="id"></span><span class="saved"></span>';
+    head.querySelector(".id").textContent = ex.id;
+    card.appendChild(head);
+    const c = { card, saved: head.querySelector(".saved"), panels: [], buttons: [], checks: [] };
+    cards[ex.id] = c;
+    ex.views.forEach(plane => {
+      const section = document.createElement("div");
+      section.className = "plane";
+      const label = document.createElement("div");
+      label.className = "plane-label";
+      label.textContent = plane.label;
+      section.appendChild(label);
+      const row = document.createElement("div");
+      row.className = "panels";
+      plane.images.forEach((image, k) => {
+        const fig = document.createElement("figure");
+        const canvas = document.createElement("canvas");
+        canvas.width = 400; canvas.height = 400;
+        canvas.setAttribute("role", "img");
+        canvas.setAttribute("aria-label", image.label + ", " + plane.label.toLowerCase() + ", " + ex.id);
+        const cap = document.createElement("figcaption");
+        cap.textContent = image.label;
+        fig.appendChild(canvas); fig.appendChild(cap); row.appendChild(fig);
+        const panel = { canvas, img: new Image(), plane, withLines: k === 0 };
+        panel.img.onload = () => drawPanel(panel);
+        panel.img.src = image.png;
+        c.panels.push(panel);
+      });
+      section.appendChild(row);
+      card.appendChild(section);
+    });
+    const group = document.createElement("div");
+    group.className = "verdict";
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", DATA.question + " (" + ex.id + ")");
+    VERDICTS.forEach(v => {
+      const b = document.createElement("button");
+      b.type = "button"; b.dataset.v = v.value; b.className = v.tone; b.textContent = v.label;
+      b.addEventListener("click", () => {
+        state[ex.id].verdict = state[ex.id].verdict === v.value ? null : v.value;
+        drawCard(ex.id); progress(); save(ex.id);
+      });
+      group.appendChild(b); c.buttons.push(b);
+    });
+    card.appendChild(group);
+    if (EVIDENCE.length) {
+      const ev = document.createElement("div");
+      ev.className = "evidence";
+      ev.appendChild(document.createTextNode("What decided it:"));
+      EVIDENCE.forEach(name => {
+        const lab = document.createElement("label"), box = document.createElement("input");
+        box.type = "checkbox"; box.value = name;
+        box.addEventListener("change", () => {
+          const set = new Set(state[ex.id].evidence);
+          box.checked ? set.add(name) : set.delete(name);
+          state[ex.id].evidence = EVIDENCE.filter(n => set.has(n));
+          save(ex.id);
+        });
+        lab.appendChild(box); lab.appendChild(document.createTextNode(name));
+        ev.appendChild(lab); c.checks.push(box);
+      });
+      card.appendChild(ev);
+    }
+    const note = document.createElement("input");
+    note.className = "note"; note.type = "text"; note.maxLength = 300; note.id = "note-" + ex.id;
+    note.placeholder = "Note (optional): what did you see?";
+    let noteTimer = null;
+    note.addEventListener("input", () => {
+      state[ex.id].note = note.value;
+      clearTimeout(noteTimer);
+      noteTimer = setTimeout(() => save(ex.id), 700);
+    });
+    note.addEventListener("blur", () => { clearTimeout(noteTimer); if (note.value !== (c.lastNote || "")) { c.lastNote = note.value; save(ex.id); } });
+    card.appendChild(note);
+    c.note = note;
+    return card;
+  }
+
+  const grid = document.getElementById("grid");
+  EX.forEach(ex => { grid.appendChild(makeCard(ex)); drawCard(ex.id); });
+  progress();
+  [["showGraph", "graph"], ["showContext", "context"], ["showOnImages", "onImages"]].forEach(([elId, key]) => {
+    document.getElementById(elId).addEventListener("change", e => { view[key] = e.target.checked; EX.forEach(ex => drawCard(ex.id)); });
+  });
+  document.getElementById("copy").addEventListener("click", async () => {
+    const short = Object.fromEntries(VERDICTS.map(v => [v.value, v.short]));
+    const text = EX.map(ex => {
+      const s = state[ex.id];
+      return ex.id + " " + (short[s.verdict] || "-") + (s.evidence.length ? " {" + s.evidence.join("; ") + "}" : "") + (s.note ? " [" + s.note + "]" : "");
+    }).join(", ");
+    try { await navigator.clipboard.writeText(text); setStatus("Copied your marks; paste them into the chat."); }
+    catch (e) { setStatus("Copy was blocked here. Your marks still save to this page."); }
+  });
+
+  (async () => {
+    try { db = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch (e) { db = null; }
+    if (!db) { setStatus("Saving isn't available in this view. Use “Copy marks as text” and paste into the chat.", true); return; }
+    try {
+      const snap = await db.collection("annotations").get();
+      snap.docs.forEach(d => {
+        const body = d.data();
+        if (!body || !state[d.id]) return;
+        state[d.id].verdict = body.verdict || null;
+        state[d.id].evidence = Array.isArray(body.evidence) ? body.evidence.filter(n => EVIDENCE.includes(n)) : [];
+        state[d.id].note = body.note || "";
+        cards[d.id].note.value = state[d.id].note;
+        cards[d.id].lastNote = state[d.id].note;
+        cards[d.id].saved.textContent = "Saved";
+        drawCard(d.id);
+      });
+      progress();
+      setStatus("Saving to this page as you go.");
+    } catch (e) {
+      setStatus("Couldn't load earlier marks (" + (e && e.code || "error") + "). New marks still save.", true);
+    }
+  })();
+})();
+</script>

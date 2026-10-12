@@ -20,11 +20,12 @@ from pathlib import Path
 import numpy as np
 
 #: Which marks each grid's rule separates, as (positive, negative).
-QUESTIONS = {"G1": ("X", "S"), "G2": ("F", "I"), "G3": ("J", "N")}
+QUESTIONS = {"G1": ("X", "S"), "G2": ("F", "I"), "G3": ("J", "N"), "G4": ("N", "V")}
 MEANING = {
     "G1": "X = not a vessel end (remove) against S = a real blind end",
     "G2": "F = leaves the image against I = ends inside it",
     "G3": "J = join (same vessel) against N = not the same vessel",
+    "G4": "N = not a vessel (remove) against V = a vessel (P, partly, reported apart)",
 }
 
 
@@ -124,6 +125,8 @@ def main(argv=None) -> int:
     vs = tuple(args.voxel_size_zyx)
     report = ["# Dead-end marks: the rules fitted", ""]
     for grid, (positive, negative) in QUESTIONS.items():
+        if not (review / f"{grid}_key.csv").exists() or not (review / f"marks_{grid}").exists():
+            continue
         rows = list(csv.DictReader(open(review / f"{grid}_key.csv", encoding="utf-8")))
         marks = read_marks(review / f"marks_{grid}")
         extras = extra_measures(G, rows, mask, raw, vs)
@@ -131,7 +134,8 @@ def main(argv=None) -> int:
         for row in rows:
             mark = marks.get(row["id"], {})
             verdict = mark.get("verdict")
-            table.append({**row, **extras.get(row["id"], {}), "mark": verdict, "note": mark.get("note", "")})
+            table.append({**row, **extras.get(row["id"], {}), "mark": verdict, "note": mark.get("note", ""),
+                          "evidence": ";".join(mark.get("evidence") or [])})
         keys = list(dict.fromkeys(k for r in table for k in r))
         with open(review / f"{grid}_marked.csv", "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=keys)

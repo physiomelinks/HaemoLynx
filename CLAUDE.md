@@ -141,7 +141,8 @@ haemolynx/
 │   ├── graph_artefacts.py  # Rebuild a run's graph step by step and measure its lumen
 │   │                       #   artefacts and dead ends (graph_artefacts/: report,
 │   │                       #   dead_end_census: by kind, place, depth, step, flow coverage)
-│   ├── dead_end_review/    # The marked grids dead ends are calibrated on (G1-G3)
+│   ├── dead_end_review/    # The marked grids dead ends are calibrated on: G1-G3 (build_grids.py),
+│   │                       #   G4 (build_g4.py: segmentation, dextran and claudin-5 side by side)
 │   └── open_end_sensitivity.py # One solved network under every open_end_model
 ├── tests/                  # Unit + integration tests (see Testing below)
 │   ├── conftest.py         # Shared fixtures; matplotlib Agg backend
