@@ -310,6 +310,10 @@ def remove_small_opposite_attached_large_vessel_components(
     A component is removed when:
     - its physical volume is <= ``max_component_volume_um3``, and
     - its minimum distance to the opposite mask is <= ``max_attach_distance_microns``.
+
+    Distances are read at each component's surface voxels
+    (:func:`_component_distances_to_mask`), not from a distance transform of
+    the whole volume.
     """
     stats = {
         "arteriole": {
@@ -390,25 +394,17 @@ def remove_small_opposite_attached_large_vessel_components(
         stats[side_key]["candidate_component_count"] = float(len(candidate_ids))
         stats[side_key]["too_large_component_count"] = float(len(too_large_ids))
 
-        distance_to_opposite = distance_transform_edt(
-            ~opposite_mask, sampling=sampling_zyx
+        component_distance = _component_distances_to_mask(
+            labels, int(component_count), opposite_mask, sampling_zyx=sampling_zyx
         )
         component_slices = find_objects(labels, max_label=int(component_count))
         near_opposite_all = 0
         near_opposite_too_large = 0
         min_component_distance = float("inf")
         for component_id in range(1, int(component_count) + 1):
-            comp_slice = component_slices[int(component_id) - 1]
-            if comp_slice is None:
+            min_distance = float(component_distance[component_id])
+            if not np.isfinite(min_distance):
                 continue
-            local_labels = labels[comp_slice]
-            local_component = local_labels == int(component_id)
-            if not np.any(local_component):
-                continue
-            local_distance = distance_to_opposite[comp_slice][local_component]
-            if local_distance.size == 0:
-                continue
-            min_distance = float(np.min(local_distance))
             if min_distance < min_component_distance:
                 min_component_distance = min_distance
             if min_distance <= max_dist:
@@ -439,10 +435,7 @@ def remove_small_opposite_attached_large_vessel_components(
             local_component = local_labels == int(component_id)
             if not np.any(local_component):
                 continue
-            local_distance = distance_to_opposite[comp_slice][local_component]
-            if local_distance.size == 0:
-                continue
-            min_distance = float(np.min(local_distance))
+            min_distance = float(component_distance[component_id])
             if min_distance <= max_dist:
                 removed_components += 1
                 comp_voxels = int(np.count_nonzero(local_component))
@@ -469,6 +462,44 @@ def remove_small_opposite_attached_large_vessel_components(
         side_key="venule",
     )
     return cleaned_arteriole, cleaned_venule, stats
+
+
+def _component_distances_to_mask(
+    labels: np.ndarray,
+    component_count: int,
+    other_mask: np.ndarray,
+    *,
+    sampling_zyx: tuple[float, float, float],
+) -> np.ndarray:
+    """Each labelled component's distance to the nearest voxel of *other_mask*,
+    in microns, indexed by component id (``inf`` for an empty *other_mask*).
+
+    Read at the components' surface voxels only, from a KD-tree over the
+    other mask's surface (:class:`~haemolynx.preprocessing.pointwise_distance.
+    FeatureDistance`): the voxel of a component nearest to anything outside
+    it is on its surface, so this is the minimum a whole-volume distance
+    transform would give, without the float64 volume (eight bytes a voxel,
+    twice over) that transform costs.
+    """
+    from haemolynx.preprocessing.pointwise_distance import (
+        FeatureDistance,
+        surface_feature_voxels,
+    )
+
+    distances = np.full(int(component_count) + 1, np.inf)
+    other = np.asarray(other_mask, dtype=bool)
+    if component_count <= 0 or not other.any():
+        return distances
+    if other.all():
+        distances[1:] = 0.0
+        return distances
+    surface = surface_feature_voxels(labels > 0)
+    if not len(surface):  # the mask fills the volume: every component touches
+        distances[1:] = 0.0
+        return distances
+    measured = FeatureDistance(other, feature_value=True, sampling=sampling_zyx).at(surface)
+    np.minimum.at(distances, labels[tuple(surface.T)], measured)
+    return distances
 
 
 def _exclude_smaller_overlapping_mask_components(

@@ -89,26 +89,33 @@ def _missing_mask_components(
     Shared by ``diagnose_vessels_missing_from_skeleton`` (this module) and
     ``graph.diagnostics.diagnose_vessels_missing_from_graph``, which differ
     only in what they pass as *explained*.
+
+    The count alone overstates the loss: every component counts once, so a
+    mask whose vasculature is one large component plus hundreds of specks
+    reads as mostly missing (E14.5: 832 of 1,205 "vessels", 0.36% of the
+    mask's volume). ``missing_volume_fraction`` -- the missing components'
+    voxels over every mask voxel, specks below the floor included -- is
+    reported beside it for that reason.
     """
+    mask_voxel_count = int(mask_bool.sum())
+    nothing_missing = {
+        "vessel_count": 0,
+        "missing_vessel_count": 0,
+        "missing_vessel_voxel_counts": [],
+        "explained_vessel_fraction": 1.0,
+        "mask_voxel_count": mask_voxel_count,
+        "missing_voxel_count": 0,
+        "missing_volume_fraction": 0.0,
+    }
     structure = generate_binary_structure(mask_bool.ndim, mask_bool.ndim)
     labeled, n_components = label(mask_bool, structure=structure)
     if n_components == 0:
-        return {
-            "vessel_count": 0,
-            "missing_vessel_count": 0,
-            "missing_vessel_voxel_counts": [],
-            "explained_vessel_fraction": 1.0,
-        }
+        return nothing_missing
 
     sizes = np.bincount(labeled.ravel())
     vessel_ids = [i for i in range(1, n_components + 1) if sizes[i] >= min_vessel_voxels]
     if not vessel_ids:
-        return {
-            "vessel_count": 0,
-            "missing_vessel_count": 0,
-            "missing_vessel_voxel_counts": [],
-            "explained_vessel_fraction": 1.0,
-        }
+        return nothing_missing
 
     # One vectorised pass over the whole volume rather than a fresh
     # full-volume `labeled == vessel_id` boolean array per component --
@@ -124,12 +131,32 @@ def _missing_mask_components(
     ]
     vessel_count = len(vessel_ids)
     missing_vessel_count = len(missing_voxel_counts)
+    missing_voxel_count = sum(missing_voxel_counts)
     return {
         "vessel_count": vessel_count,
         "missing_vessel_count": missing_vessel_count,
         "missing_vessel_voxel_counts": missing_voxel_counts,
         "explained_vessel_fraction": (vessel_count - missing_vessel_count) / vessel_count,
+        "mask_voxel_count": mask_voxel_count,
+        "missing_voxel_count": missing_voxel_count,
+        "missing_volume_fraction": missing_voxel_count / mask_voxel_count,
     }
+
+
+def _missing_volume_clause(report: dict[str, Any]) -> str:
+    """How much of the mask the missing components are, for the two
+    missing-vessel one-liners; empty when nothing is missing (or *report*
+    predates the volume keys)."""
+    counts = report.get("missing_vessel_voxel_counts") or []
+    fraction = report.get("missing_volume_fraction")
+    if not counts or fraction is None:
+        return ""
+    share = "<0.01%" if 0 < fraction < 0.0001 else f"{fraction:.2%}"
+    largest = max(counts)
+    return (
+        f" Together they are {share} of the segmented volume; the largest is "
+        f"{largest} voxel{'' if largest == 1 else 's'}."
+    )
 
 
 def diagnose_skeleton_mask_consistency(
@@ -305,4 +332,5 @@ def format_vessels_missing_from_skeleton_report(report: dict[str, Any]) -> str:
         f"{report.get('vessel_count', 0)} segmented-image vessels have no "
         f"skeleton voxel anywhere within their own local radius "
         f"({report.get('explained_vessel_fraction', 1.0):.1%} represented)."
+        + _missing_volume_clause(report)
     )

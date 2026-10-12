@@ -101,43 +101,103 @@ def _sample_tangents(index: EdgeSampleIndex) -> np.ndarray:
     return tangents
 
 
+def _follow_rays(inside, points: np.ndarray, t: np.ndarray, e1: np.ndarray, e2: np.ndarray,
+                 radii: np.ndarray, caps: np.ndarray, step: float) -> np.ndarray:
+    """How far the mask runs from each sample along each of
+    :data:`_CROSS_SECTION_RAYS` rays in its plane: the last of the distances
+    ``step, 2 step, ...`` no further than the sample's cap at which the mask
+    holds the point, and the points a lumen radius ahead of and behind it
+    along the vessel (0 when the first is already out). *inside* answers
+    whether physical points are in the mask.
+
+    Each ray is followed only until it leaves the mask or passes its cap, so
+    the lookups made are those of the outline itself, not of every distance
+    up to the widest vessel's; the answer is per sample and per ray, the
+    same whichever samples are followed together.
+    """
+    angles = np.linspace(0.0, 2.0 * np.pi, _CROSS_SECTION_RAYS, endpoint=False)
+    directions = (np.cos(angles)[None, :, None] * e1[:, None, :]
+                  + np.sin(angles)[None, :, None] * e2[:, None, :])
+    # A flattened lumen's far side runs on along the vessel; a branch
+    # leaving it is only as wide as itself. The outline stops where the
+    # mask is not there a lumen radius ahead and behind as well, so a
+    # branch narrower than its vessel is left uncovered, to be recovered.
+    along = radii[:, None] * t
+    reach = np.zeros((len(points), _CROSS_SECTION_RAYS))
+    alive = np.ones((len(points), _CROSS_SECTION_RAYS), dtype=bool)
+    previous = 0.0
+    i = 1
+    while True:
+        s, r = np.nonzero(alive)
+        if not len(s):
+            return reach
+        # The same multiples of step whatever the chunk: i * step, never a
+        # running sum.
+        d = i * step
+        at = points[s] + d * directions[s, r]
+        offset = along[s]
+        held = inside(np.concatenate([at, at + offset, at - offset])).reshape(3, len(s)).all(axis=0)
+        held &= d <= caps[s]  # past its cap every ray is out, so this ends
+        gone = ~held
+        reach[s[gone], r[gone]] = previous
+        alive[s[gone], r[gone]] = False
+        previous = d
+        i += 1
+
+
+def _cross_section_task(bits: np.ndarray, payload) -> np.ndarray:
+    """:func:`_follow_rays` for one chunk of samples, reading the mask from
+    its packed bits -- a module-level function, so worker processes can run it."""
+    from haemolynx.preprocessing.bridge_mask_support import PackedMask, _points_in_mask
+
+    points, t, e1, e2, radii, caps, step, spacing, shape = payload
+    packed = PackedMask(bits, shape)
+    return _follow_rays(
+        lambda p: _points_in_mask(p, packed, spacing), points, t, e1, e2, radii, caps, step
+    )
+
+
+#: Fewer centreline samples than this have their cross-sections followed in
+#: this process. Starting the workers costs about ten seconds (each imports
+#: the package afresh), and one process follows roughly 6,000 samples a
+#: second: E14.5's 66,000 stay here, a 16 G-voxel stack's millions go out.
+_WORKER_MIN_SAMPLES = 400_000
+
+
 def _cross_sections(index: EdgeSampleIndex, radii: np.ndarray, support: MaskSupport, *,
-                    reach_radii: float, margin_um: float) -> _CrossSections:
+                    reach_radii: float, margin_um: float, workers: int | None = None) -> _CrossSections:
     from haemolynx.preprocessing.bridge_mask_support import _sample_step
+    from haemolynx.preprocessing.shared_volume_tasks import default_worker_count, run_volume_tasks
 
     t = _sample_tangents(index)
     helper = np.eye(3)[np.argmin(np.abs(t), axis=1)]
     e1 = np.cross(t, helper)
     e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
     e2 = np.cross(t, e1)
-    angles = np.linspace(0.0, 2.0 * np.pi, _CROSS_SECTION_RAYS, endpoint=False)
     step = _sample_step(support.voxel_size_zyx)
     caps = reach_radii * radii + margin_um
     reach = np.zeros((len(radii), _CROSS_SECTION_RAYS))
-    for lo in range(0, len(radii), _CROSS_SECTION_CHUNK):
-        hi = min(lo + _CROSS_SECTION_CHUNK, len(radii))
-        cap = caps[lo:hi]
-        distances = np.arange(1, int(np.ceil(float(cap.max()) / step)) + 1) * step
-        directions = (np.cos(angles)[None, :, None] * e1[lo:hi, None, :]
-                      + np.sin(angles)[None, :, None] * e2[lo:hi, None, :])
-        points = (index.points[lo:hi, None, None, :]
-                  + distances[None, None, :, None] * directions[:, :, None, :])
-        shape = (hi - lo, len(angles), len(distances))
-        inside = support.inside(points.reshape(-1, 3)).reshape(shape)
-        # A flattened lumen's far side runs on along the vessel; a branch
-        # leaving it is only as wide as itself. The outline stops where the
-        # mask is not there a lumen radius ahead and behind as well, so a
-        # branch narrower than its vessel is left uncovered, to be recovered.
-        along = (radii[lo:hi, None] * t[lo:hi])[:, None, None, :]
-        for sign in (1.0, -1.0):
-            inside &= support.inside((points + sign * along).reshape(-1, 3)).reshape(shape)
-        inside &= distances[None, None, :] <= cap[:, None, None]
-        out = ~inside
-        first_out = np.argmax(out, axis=2)
-        never_out = ~out.any(axis=2)
-        reach[lo:hi] = np.where(
-            never_out, cap[:, None], np.where(first_out > 0, distances[np.maximum(first_out - 1, 0)], 0.0)
-        )
+    if not len(radii):
+        return _CrossSections(t, e1, e2, reach)
+    # Samples whose rays run about as far are followed together, so a chunk
+    # is not kept going by its one widest vessel; the lookups go to the
+    # mask's bits, and the chunks to worker processes when there are enough
+    # of them to repay starting one. The result does not depend on either.
+    order = np.argsort(caps, kind="stable")
+    packed = support.pack()
+    spacing = support.voxel_size_zyx
+    payloads = []
+    for lo in range(0, len(order), _CROSS_SECTION_CHUNK):
+        chunk = order[lo:lo + _CROSS_SECTION_CHUNK]
+        payloads.append((index.points[chunk], t[chunk], e1[chunk], e2[chunk], radii[chunk],
+                         caps[chunk], step, spacing, packed.shape))
+    if workers is None:
+        workers = default_worker_count() if len(radii) >= _WORKER_MIN_SAMPLES else 1
+    results = run_volume_tasks(
+        _cross_section_task, payloads, volume=packed.bits, workers=int(workers), min_payloads=2,
+    )
+    for lo, result in zip(range(0, len(order), _CROSS_SECTION_CHUNK), results):
+        reach[order[lo:lo + _CROSS_SECTION_CHUNK]] = result
     return _CrossSections(t, e1, e2, reach)
 
 
@@ -209,6 +269,7 @@ def uncovered_mask_voxels(
     block_voxels: int = LOW_MEMORY_BLOCK_VOXELS,
     cross_section_reach_radii: float = CROSS_SECTION_REACH_RADII,
     z_range: tuple[int, int] | None = None,
+    workers: int | None = None,
 ) -> np.ndarray:
     """Voxel indices of the mask no centreline sample of *G* covers. A sample
     ``p`` covers a voxel within ``radius(p) + margin_um`` of it, and -- with a
@@ -219,14 +280,16 @@ def uncovered_mask_voxels(
     the distance to the nearest wall, so the radius rule alone leaves the far
     side of every flattened lumen uncovered. 0 keeps the radius rule only.
     Read a slab of whole z-slices at a time, so the mask may be a memmap;
-    *z_range* ``(first, stop)`` reads only those slices."""
+    *z_range* ``(first, stop)`` reads only those slices. *workers* is how
+    many processes follow the cross-sections (by default several, once there
+    are :data:`_WORKER_MIN_SAMPLES` samples); the answer is the same with any."""
     mask = support.mask
     spacing = np.asarray(support.voxel_size_zyx, dtype=float)
     index, radii = _centreline_samples(G, support)
     sections = None
     if index.tree is not None and cross_section_reach_radii > 0:
         sections = _cross_sections(index, radii, support, reach_radii=cross_section_reach_radii,
-                                   margin_um=margin_um)
+                                   margin_um=margin_um, workers=workers)
     step = slab_step(mask.shape, block_voxels) if np.ndim(mask) == 3 else mask.shape[0]
     uncovered = []
     reach = float(radii.max()) + margin_um if len(radii) else 0.0

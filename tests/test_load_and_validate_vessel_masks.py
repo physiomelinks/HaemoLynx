@@ -734,3 +734,122 @@ def test_vessel_mask_ilastik_runs_honour_the_reuse_setting(tmp_path, monkeypatch
         main_voxel_size_xyz=VOXEL_SIZE_XYZ,
     )
     assert seen == [reuse, reuse]
+
+
+# --- ilastik outputs named by role ------------------------------------------------
+
+
+def test_the_two_classifiers_run_on_one_raw_stack_write_two_outputs(tmp_path, monkeypatch) -> None:
+    """Regression: both outputs were `{stem}_segmented`, so the venule run
+    overwrote the arteriole's and the masks loaded identical (or, reusing
+    existing output, the venule run read the arteriole's back)."""
+    from haemolynx.io import automated_vessel_assignment as module
+
+    shape = (3, 4, 5)
+    outputs: dict[str, Path] = {}
+
+    def fake_run(**kwargs):
+        outputs[Path(kwargs["classifier_path"]).stem] = Path(kwargs["output_path"])
+        _write_mask_with_voxel_size(kwargs["output_path"], np.zeros(shape, dtype=np.uint8))
+        return Path(kwargs["output_path"])
+
+    monkeypatch.setattr(module, "run_ilastik_headless_segmentation", fake_run)
+    for name in ("raw.tif", "art.ilp", "ven.ilp"):
+        (tmp_path / name).write_bytes(b"x")
+    (tmp_path / "seg").mkdir()
+    for mask_role in ("large", "small"):
+        load_and_validate_vessel_masks(
+            mask_role=mask_role, enabled=True, use_ilastik=True,
+            arteriole_mask_path=None, venule_mask_path=None,
+            image_shape=shape, main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            ilastik_unsegmented_arteriole_path=tmp_path / "raw.tif",
+            ilastik_unsegmented_venule_path=tmp_path / "raw.tif",
+            ilastik_arteriole_classifier_path=tmp_path / "art.ilp",
+            ilastik_venule_classifier_path=tmp_path / "ven.ilp",
+            ilastik_output_dir=tmp_path / "seg",
+        )
+        assert outputs["art"].name == f"raw_{mask_role}_arteriole_segmented.tif"
+        assert outputs["ven"].name == f"raw_{mask_role}_venule_segmented.tif"
+    assert len({p.name for p in outputs.values()}) == 2
+
+
+# --- a mask without spacing takes the main image's --------------------------------
+
+
+def test_a_mask_without_voxel_metadata_takes_the_main_images_spacing(tmp_path: Path) -> None:
+    """An ilastik export carries no spacing; it used to run on (1, 1, 1) and
+    fail the alignment check against the very image it was segmented from."""
+    shape = (4, 5, 6)
+    _write_mask_tif(tmp_path / "arteriole.tif", shape)
+    _write_mask_tif(tmp_path / "venule.tif", shape)
+
+    _a, _v, arteriole_voxel, venule_voxel = load_and_validate_vessel_masks(
+        mask_role="large", enabled=True, use_ilastik=False,
+        arteriole_mask_path=tmp_path / "arteriole.tif", venule_mask_path=tmp_path / "venule.tif",
+        image_shape=shape, main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+    )
+
+    assert arteriole_voxel == VOXEL_SIZE_XYZ
+    assert venule_voxel == VOXEL_SIZE_XYZ
+
+
+def test_metadata_only_policy_still_refuses_a_mask_without_spacing(tmp_path: Path) -> None:
+    shape = (4, 5, 6)
+    _write_mask_tif(tmp_path / "arteriole.tif", shape)
+    _write_mask_tif(tmp_path / "venule.tif", shape)
+
+    with pytest.raises(ValueError, match="complete metadata"):
+        load_and_validate_vessel_masks(
+            mask_role="large", enabled=True, use_ilastik=False,
+            arteriole_mask_path=tmp_path / "arteriole.tif", venule_mask_path=tmp_path / "venule.tif",
+            image_shape=shape, main_voxel_size_xyz=VOXEL_SIZE_XYZ,
+            voxel_size_policy="metadata_only",
+        )
+
+
+# --- the masks loaded last are reused ---------------------------------------------
+
+
+def _loader_call(tmp_path: Path, **options):
+    return dict(
+        mask_role="large", enabled=True, use_ilastik=False,
+        arteriole_mask_path=tmp_path / "arteriole.tif", venule_mask_path=tmp_path / "venule.tif",
+        image_shape=(4, 5, 6), main_voxel_size_xyz=VOXEL_SIZE_XYZ, **options,
+    )
+
+
+def test_the_same_files_and_settings_are_loaded_once_per_process(tmp_path: Path, monkeypatch) -> None:
+    """A run reads its masks in skeletonise (the thick-vessel restriction)
+    and again in build_network; the second read, and a repeated run, reuse
+    the cleaned masks."""
+    from haemolynx.io import automated_vessel_assignment as module
+    from haemolynx.io import clear_vessel_mask_cache
+
+    clear_vessel_mask_cache()
+    volume = np.zeros((4, 5, 6), dtype=np.uint8)
+    volume[1:3, 1:3, 1:3] = 1
+    _write_mask_with_voxel_size(tmp_path / "arteriole.tif", volume)
+    _write_mask_with_voxel_size(tmp_path / "venule.tif", np.zeros_like(volume))
+    loads = []
+    real = module._load_mask_image
+
+    def counted(path, **kwargs):
+        loads.append(Path(path).name)
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(module, "_load_mask_image", counted)
+
+    first = load_and_validate_vessel_masks(**_loader_call(tmp_path))
+    second = load_and_validate_vessel_masks(**_loader_call(tmp_path))
+
+    assert loads == ["arteriole.tif", "venule.tif"], "the second call loaded nothing"
+    assert np.array_equal(first[0], second[0]) and first[2:] == second[2:]
+    assert second[0] is not first[0]
+    first[0][:] = True
+    assert not load_and_validate_vessel_masks(**_loader_call(tmp_path))[0].all(), "a fresh array each time"
+
+    load_and_validate_vessel_masks(**_loader_call(tmp_path, dilation_microns=1.0))
+    assert len(loads) == 4, "a cleanup setting changed: loaded again"
+    _write_mask_with_voxel_size(tmp_path / "arteriole.tif", np.zeros_like(volume))
+    load_and_validate_vessel_masks(**_loader_call(tmp_path, dilation_microns=1.0))
+    assert len(loads) == 6, "a file changed: loaded again"

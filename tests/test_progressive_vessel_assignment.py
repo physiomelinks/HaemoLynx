@@ -255,3 +255,149 @@ def test_a_masks_long_axis_is_measured_in_microns():
     # The cross-section through z = 40 um, centred in y and x.
     assert midpoint[0] == pytest.approx(40.0)
     assert midpoint[2] == pytest.approx(74.5 / 2)
+
+
+# --- each edge keeps the first step that reaches it ------------------------------
+
+
+def _arteriole_then_capillaries():
+    """An arteriole edge in the mask, then edges 0-11 um and 11-21 um past it."""
+    art = np.zeros((5, 5, 40), dtype=bool)
+    art[2, 2, 0:10] = True
+    ven = np.zeros_like(art)
+    G = nx.MultiGraph()
+    for node, x in enumerate((0.0, 9.0, 20.0, 30.0)):
+        G.add_node(node, pos=(2.0, 2.0, x))
+    for node, (x0, x1) in enumerate(((0, 9), (9, 20), (20, 30))):
+        G.add_edge(node, node + 1, voxels=[(2.0, 2.0, float(x)) for x in range(x0, x1 + 1)])
+    return G, art, ven
+
+
+@pytest.mark.parametrize("max_dilation, labelled, boundary", [
+    (0.0, ["arteriole", None, None], [1]),
+    (5.0, ["arteriole", "arteriole", None], [2]),   # half of edge 1-2 within 5 um
+    (15.0, ["arteriole", "arteriole", None], [2]),  # 5 of 11 samples of 2-3 within 15 um
+    (20.0, ["arteriole", "arteriole", "arteriole"], []),  # no transition left
+])
+def test_small_vessel_dilation_labels_the_edges_each_step_reaches(max_dilation, labelled, boundary):
+    """Regression: every edge's label was locked at the first step that
+    labelled *any* edge, the unlabelled ones included, so once the 0 um step
+    found one edge no dilation ever labelled another. The boundary follows
+    the final labels rather than accumulating over the steps."""
+    G, art, ven = _arteriole_then_capillaries()
+
+    result = infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
+        G, art, ven, voxel_size_zyx=(1.0, 1.0, 1.0), max_dilation_microns=max_dilation,
+        dilation_step_microns=5.0, minimum_overlap_fraction=0.5,
+    )
+
+    assert [G.edges[u, v, k].get("mask_vessel_type") for u, v, k in G.edges(keys=True)] == labelled
+    assert result["arteriole_boundary_nodes"] == boundary
+    assert result["arteriole_edge_count"] == sum(label == "arteriole" for label in labelled)
+
+
+def _chains_with_masks(seed):
+    """Short chains hanging off a hub, each leaf's chain reaching no other
+    labelled chain, and two random blobs per mask that never overlap."""
+    rng = np.random.default_rng(seed)
+    shape = (16, 24, 24)
+    G = nx.MultiGraph()
+    hub = 1000
+    G.add_node(hub, pos=np.array([8.0, 12.0, 12.0]))
+    node = 0
+    for _chain in range(8):
+        previous = hub
+        p0 = np.asarray(G.nodes[hub]["pos"], dtype=float)
+        for _edge in range(2):
+            p1 = np.array([rng.integers(0, shape[0]), rng.integers(0, shape[1]), rng.integers(0, shape[2])], dtype=float)
+            G.add_node(node, pos=p1)
+            steps = max(2, int(np.linalg.norm(p1 - p0)))
+            G.add_edge(previous, node, voxels=[tuple(p0 + (p1 - p0) * t) for t in np.linspace(0, 1, steps)])
+            previous, p0, node = node, p1, node + 1
+    zz, yy, xx = np.indices(shape)
+    art = np.zeros(shape, dtype=bool)
+    ven = np.zeros(shape, dtype=bool)
+    for mask in (art, ven):
+        for _ in range(2):
+            c = rng.integers(0, shape[0]), rng.integers(0, shape[1]), rng.integers(0, shape[2])
+            mask |= (zz - c[0]) ** 2 + (yy - c[1]) ** 2 + (xx - c[2]) ** 2 <= int(rng.integers(2, 5)) ** 2
+    ven &= ~art
+    return G, art, ven
+
+
+def _reference_labels_growing_the_masks(G, art, ven, schedule, voxel_size, threshold):
+    """Grow each mask step by step with a whole-volume transform; an edge's
+    label is the first step at which the grown mask covers *threshold* of
+    it (both masks: the one covering more, the arteriole on a tie)."""
+    from scipy.ndimage import distance_transform_edt
+
+    from haemolynx.graph.automated_vessel_assignment import (
+        _edge_sample_points_from_data,
+        _sample_overlap_fraction,
+    )
+
+    d_art = distance_transform_edt(~art, sampling=voxel_size)
+    d_ven = distance_transform_edt(~ven, sampling=voxel_size)
+    labels = {}
+    for dilation in schedule:
+        grown_art = art | (d_art <= dilation)
+        grown_ven = ven | (d_ven <= dilation)
+        for u, v, key, data in G.edges(keys=True, data=True):
+            if (u, v, key) in labels:
+                continue
+            pu, pv = (np.asarray(G.nodes[n]["pos"], dtype=float) for n in (u, v))
+            samples = _edge_sample_points_from_data(data, (pu, pv), step_um=float(min(voxel_size)))
+            fa = _sample_overlap_fraction(samples, grown_art, voxel_size_zyx=voxel_size)
+            fv = _sample_overlap_fraction(samples, grown_ven, voxel_size_zyx=voxel_size)
+            if fa >= threshold and fv >= threshold:
+                labels[(u, v, key)] = "arteriole" if fa >= fv else "venule"
+            elif fa >= threshold:
+                labels[(u, v, key)] = "arteriole"
+            elif fv >= threshold:
+                labels[(u, v, key)] = "venule"
+    return labels
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_small_vessel_progressive_labels_match_growing_the_masks_step_by_step(seed):
+    """Reading each sample's distance once gives every edge the label and
+    step that growing the masks with a whole-volume transform gives it."""
+    G, art, ven = _chains_with_masks(seed)
+    voxel_size = (2.0, 0.5, 0.5)
+    for node in G.nodes:
+        G.nodes[node]["pos"] = np.asarray(G.nodes[node]["pos"], dtype=float) * np.asarray(voxel_size)
+    for _u, _v, data in G.edges(data=True):
+        data["voxels"] = [tuple(np.asarray(p) * np.asarray(voxel_size)) for p in data["voxels"]]
+    schedule = [0.0, 1.0, 1.5, 3.0, 4.5, 5.0]
+    expected = _reference_labels_growing_the_masks(G, art, ven, schedule, voxel_size, 0.5)
+
+    infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
+        G, art, ven, voxel_size_zyx=voxel_size, max_dilation_microns=5.0,
+        dilation_step_microns=1.5, minimum_overlap_fraction=0.5,
+    )
+
+    # Leaves' chains never join two labelled edges of one type, so the gap
+    # fill cannot fire and the labels are the per-edge first steps alone.
+    got = {(u, v, k): d.get("mask_vessel_type") for u, v, k, d in G.edges(keys=True, data=True)}
+    assert {e: l for e, l in got.items() if l is not None} == expected
+
+
+@pytest.mark.parametrize("max_dilation", [0.0, 10.0])
+def test_small_vessel_progressive_labelling_builds_no_whole_volume_transform(monkeypatch, max_dilation):
+    """Regression: two float64 distance transforms of the whole volume were
+    computed before the first step, whatever the schedule, and two volume
+    sized masks built per step."""
+    import haemolynx.graph.automated_vessel_assignment as module
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a whole-volume transform or step mask was built")
+
+    monkeypatch.setattr(module, "distance_transform_edt", refuse)
+    monkeypatch.setattr(module, "_dilated_mask_from_cached_distance", refuse)
+    G, art, ven = _arteriole_then_capillaries()
+
+    result = infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
+        G, art, ven, voxel_size_zyx=(1.0, 1.0, 1.0), max_dilation_microns=max_dilation,
+    )
+
+    assert result["arteriole_edge_count"] >= 1

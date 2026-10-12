@@ -30,6 +30,12 @@ from ._helpers import (
 
 logger = logging.getLogger(__name__)
 
+#: Node attribute a cut writes on each terminal it makes: ``"arteriole"`` or
+#: ``"venule"``, the mask the vessel was cut off at. The terminal itself sits
+#: one sample *outside* that mask, so a terminal selector reading the masks
+#: alone never finds it at 0 um dilation; the tag is how it counts as inside.
+CUT_FROM_LARGE_VESSEL = "cut_from_large_vessel"
+
 
 def _as_large_vessel_foreground(mask: np.ndarray, *, role: str) -> np.ndarray:
     """Boolean foreground mask; rejects raw ``dtype=bool`` casts of 1/2 labels."""
@@ -164,12 +170,26 @@ def cut_graph_at_large_vessel_volumes(
     arteriole and venule masks. Fully interior edges are dropped. Crossing
     edges keep only exterior runs; new degree-1 nodes are created at the last
     exterior sample of each cut so remaining edges contain zero interior
-    voxels.
+    voxels. Each carries ``CUT_FROM_LARGE_VESSEL``, the mask it was cut off
+    at, which the terminal selectors read as "inside that mask": the node
+    itself is one sample outside it, so without the tag the default run (cut
+    on, 0 um dilation) found no inlet at all.
     """
     if not enabled:
         return G.copy()
 
-    mask = _combined_large_vessel_mask(large_arteriole_mask, large_venule_mask)
+    arteriole = _as_large_vessel_foreground(large_arteriole_mask, role="arteriole")
+    venule = _as_large_vessel_foreground(large_venule_mask, role="venule")
+    mask = _combined_large_vessel_mask(arteriole, venule)
+
+    def cut_from(interior_point: np.ndarray) -> str:
+        """Which mask the interior sample beside a cut lies in; the arteriole
+        on an overlap, as the terminal tie-break prefers it."""
+        point = interior_point.reshape(1, 3)
+        if points_inside_mask(point, arteriole, voxel_size_zyx=voxel_size_zyx)[0]:
+            return "arteriole"
+        return "venule"
+
     result = nx.MultiGraph()
     result.graph.update(G.graph)
 
@@ -236,7 +256,11 @@ def cut_graph_at_large_vessel_volumes(
                 start_node = next_node_id(result, reserved_ids)
                 reserved_ids.add(start_node)
                 start_pos = tuple(float(c) for c in segment[0])
-                result.add_node(start_node, pos=start_pos)
+                result.add_node(
+                    start_node,
+                    pos=start_pos,
+                    **{CUT_FROM_LARGE_VESSEL: cut_from(points[run_start - 1])},
+                )
                 node_pos[start_node] = np.asarray(start_pos, dtype=float)
                 cut_nodes_created += 1
 
@@ -246,7 +270,11 @@ def cut_graph_at_large_vessel_volumes(
                 end_node = next_node_id(result, reserved_ids)
                 reserved_ids.add(end_node)
                 end_pos = tuple(float(c) for c in segment[-1])
-                result.add_node(end_node, pos=end_pos)
+                result.add_node(
+                    end_node,
+                    pos=end_pos,
+                    **{CUT_FROM_LARGE_VESSEL: cut_from(points[run_end + 1])},
+                )
                 node_pos[end_node] = np.asarray(end_pos, dtype=float)
                 cut_nodes_created += 1
 

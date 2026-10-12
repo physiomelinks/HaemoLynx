@@ -142,6 +142,7 @@ from .boundaries import (
 )
 from .boundary_node_fallback import (
     seed_edges_have_full_mask_coverage,
+    seed_nodes_without_mask_coverage,
     select_nodes_at_hop_distance,
 )
 from .automated_vessel_assignment import (
@@ -362,6 +363,7 @@ __all__ = [
     "remove_small_vessel_components_by_volume",
     "remove_edges_for_self_connected_nodes",
     "seed_edges_have_full_mask_coverage",
+    "seed_nodes_without_mask_coverage",
     "select_nodes_at_hop_distance",
     "add_edge_safe",
     "has_edge_safe",

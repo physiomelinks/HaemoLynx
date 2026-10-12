@@ -44,6 +44,12 @@ logger = logging.getLogger(__name__)
 #: the same directory, so neither is ever mistaken for the other.
 _CACHE_PREFIX = "haemolynx_raw_cache_"
 
+#: Written into every sidecar; an entry with any other is a miss. Raise it
+#: whenever a load would read the same file differently, or an entry keeps
+#: serving what the old code read. 2: an OME-TIFF's voxel size is read from its
+#: OME header -- before, from its tags, which said 1 micron on every axis.
+_CACHE_FORMAT = 2
+
 
 def _cache_key(resolved_path: Path, stat_result, axis_order: str) -> str:
     payload = f"{resolved_path}|{stat_result.st_mtime_ns}|{stat_result.st_size}|{axis_order}"
@@ -64,6 +70,8 @@ def _read_cache_entry(memmap_path: Path, sidecar_path: Path):
     """
     try:
         meta = json.loads(sidecar_path.read_text())
+        if meta.get("format") != _CACHE_FORMAT:
+            return None
         shape = tuple(int(v) for v in meta["shape"])
         dtype = np.dtype(meta["dtype"])
         expected_bytes = int(np.prod(shape, dtype=np.int64)) * dtype.itemsize
@@ -90,6 +98,7 @@ def _write_sidecar(
     voxel_meta_status: dict[str, object],
 ) -> None:
     meta = {
+        "format": _CACHE_FORMAT,
         "shape": list(image.shape),
         "dtype": str(image.dtype),
         "voxel_size_x": float(voxel_size_x),
@@ -151,7 +160,8 @@ def load_raw_volume_reusing_cache(
             )
             return cached
         logger.warning(
-            "Ignoring an unreadable cached raw volume at %s; reloading from %s.",
+            "Ignoring a cached raw volume at %s that is unreadable or was written "
+            "by an older version; reloading from %s.",
             memmap_path,
             filepath,
         )

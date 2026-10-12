@@ -10,16 +10,23 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import importlib
+
 from haemolynx.preprocessing.bridge_mask_support import (
     DEFAULT_MIN_MASK_FRACTION,
     BridgeMaskSupport,
     MaskSupport,
+    PackedMask,
+    _points_in_mask,
     bridge_is_supported,
     bridge_mask_support,
     path_shadows_existing_vessel,
 )
 
 VOXEL = (0.98, 0.98, 0.98)
+
+# The package re-exports a function of the same name, so the module comes from importlib.
+module = importlib.import_module("haemolynx.preprocessing.bridge_mask_support")
 
 
 def _tube_along_x(shape, centre_zy, radius_vox):
@@ -226,3 +233,66 @@ def test_nothing_to_shadow_is_no_duplicate():
     assert not _shadows(_line(4, 4, 0, 30), np.empty((0, 3)), mask)
     # A path no longer than its own end margins has nothing left to judge.
     assert not _shadows(_line(4, 4, 10, 12), _line(4, 4, 0, 59), mask)
+
+
+# --- the mask as bits -------------------------------------------------------
+
+
+def _all_indices(shape):
+    return np.indices(shape).reshape(len(shape), -1).T
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (20, 7, 9),   # 63 voxels a slice: eight slices make whole bytes
+        (10, 3, 4),   # 12 a slice: two slices do
+        (9, 2, 4),    # 8 a slice: every slice does, and the last slab is short
+        (3, 16, 16),  # fewer slices than one slab needs
+    ],
+)
+def test_a_packed_mask_holds_every_voxel_however_it_is_sliced_into_slabs(shape):
+    rng = np.random.default_rng(int(np.prod(shape)))
+    mask = rng.random(shape) > 0.5
+    whole = PackedMask.from_mask(mask)
+    by_slab = PackedMask.from_mask(mask, block_voxels=100)
+    assert np.array_equal(whole.bits, by_slab.bits)
+    assert whole.shape == shape and whole.bits.nbytes == (mask.size + 7) // 8
+    assert np.array_equal(by_slab.contains(_all_indices(shape)), mask.ravel())
+
+
+def test_a_packed_mask_answers_point_lookups_as_the_mask_does_inside_and_outside_the_volume():
+    rng = np.random.default_rng(3)
+    mask = rng.random((12, 20, 30)) > 0.4
+    packed = PackedMask.from_mask(mask)
+    voxel = (2.0, 0.5, 0.5)
+    points = rng.uniform(-4.0, np.asarray(mask.shape) * voxel + 4.0, size=(5000, 3))
+    assert np.array_equal(_points_in_mask(points, packed, voxel), _points_in_mask(points, mask, voxel))
+    assert len(packed.contains(np.empty((0, 3), dtype=int))) == 0
+
+
+def test_a_memmapped_mask_packs_to_the_same_bits(tmp_path):
+    rng = np.random.default_rng(5)
+    mask = rng.random((17, 7, 9)) > 0.5
+    on_disk = np.memmap(tmp_path / "mask.bin", dtype=bool, mode="w+", shape=mask.shape)
+    on_disk[...] = mask
+    assert np.array_equal(PackedMask.from_mask(on_disk, block_voxels=200).bits, PackedMask.from_mask(mask).bits)
+    on_disk._mmap.close()
+
+
+def test_a_mask_support_packs_its_mask_once_enough_points_have_been_asked_about(monkeypatch):
+    monkeypatch.setattr(module, "PACK_AFTER_POINTS", 50)
+    rng = np.random.default_rng(8)
+    mask = rng.random((6, 10, 10)) > 0.5
+    support = MaskSupport(mask, (1.0, 1.0, 1.0))
+    points = rng.uniform(-1.0, 10.0, size=(30, 3))
+    before = support.inside(points)
+    assert support._packed is None
+    assert np.array_equal(before, _points_in_mask(points, mask, (1.0, 1.0, 1.0)))
+    after = support.inside(points)  # the 60th point crosses the line
+    assert isinstance(support._packed, PackedMask)
+    assert np.array_equal(after, before)
+    assert support.pack() is support._packed
+    shared = MaskSupport(mask, (1.0, 1.0, 1.0), packed=support.pack())
+    assert shared.pack() is support.pack()
+    assert np.array_equal(shared.inside(points), before)

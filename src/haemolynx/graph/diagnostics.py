@@ -762,10 +762,13 @@ def format_lumen_artefacts_report(report: Dict[str, Any]) -> str:
 
 def format_vessels_missing_from_graph_report(report: Dict[str, Any]) -> str:
     """A one-line summary of :func:`diagnose_vessels_missing_from_graph`."""
+    from haemolynx.preprocessing.skeleton_consistency import _missing_volume_clause
+
     return (
         "Vessels missing from graph: "
         f"{report.get('missing_vessel_count', 0)} of "
         f"{report.get('vessel_count', 0)} segmented-image vessels have no "
         f"graph edge anywhere within their own local radius "
         f"({report.get('explained_vessel_fraction', 1.0):.1%} represented)."
+        + _missing_volume_clause(report)
     )

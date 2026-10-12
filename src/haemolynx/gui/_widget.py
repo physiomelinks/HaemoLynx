@@ -9072,7 +9072,10 @@ JUNCTION_ZOOM_BOX_UM = 60.0
 
 #: Status line of the post-processing tab's click-in-the-viewer edits.
 _POST_PROCESSING_EDIT_STATUS = {
-    "idle": "Not editing. Press Delete vessel or Add vessel, then click in the viewer.",
+    "idle": (
+        "Not editing. Press Delete vessel or Add vessel, then click in the viewer. "
+        "A click on a ring chooses its item in the list."
+    ),
     "delete-armed": (
         "Delete vessel: click a vessel in the viewer to remove it. Press Delete "
         "vessel again to stop."
@@ -9288,6 +9291,8 @@ def _post_processing_controls(
         added_vessel_ids,
         append_loop_review,
         branch_id_of,
+        branch_ids_of,
+        junction_under_click,
         loop_branch_ids,
         loop_label,
         loop_review_csv_path,
@@ -9295,6 +9300,9 @@ def _post_processing_controls(
         loop_side_rows,
         loop_view,
         loops_to_review,
+        marker_colours,
+        marker_pick_um,
+        marker_under_click,
         CONNECTIVITY_EXPORT_CHOICES,
         INLET_TO_OUTLET_ONLY,
         default_connectivity_csv_path,
@@ -9517,8 +9525,9 @@ def _post_processing_controls(
     junction_layout = QVBoxLayout(junction_box)
     junction_layout.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 0)
     colours = QLabel(
-        "The chosen junction's vessels are cyan and the ones selected in the "
-        "table yellow."
+        "A magenta ring marks each junction, and its vessels are magenta too. "
+        "The chosen junction's ring and vessels are cyan and the vessels "
+        "selected in the table yellow. Click a ring in the viewer to choose it."
     )
     colours.setWordWrap(True)
     junction_layout.addWidget(colours)
@@ -9586,8 +9595,9 @@ def _post_processing_controls(
     review_layout = QVBoxLayout(review_box)
     review_layout.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 0)
     review_colours = QLabel(
-        "A magenta ring marks each item; the chosen item's vessels are cyan "
-        "and the ones selected in its table yellow."
+        "A magenta ring marks each item, and its vessels are magenta too. The "
+        "chosen item's ring and vessels are cyan and the vessels selected in "
+        "its table yellow. Click a ring in the viewer to choose its item."
     )
     review_colours.setWordWrap(True)
     review_summary = QLabel("")
@@ -9693,8 +9703,35 @@ def _post_processing_controls(
         rows = sorted({index.row() for index in review_table.selectionModel().selectedRows()})
         return [r for r in rows if r < len(state.review_edges)]
 
+    def listed_ids() -> list[int]:
+        """branchIDs of the vessels the rings shown mark: those of every
+        review item listed, or every vessel at a 4+ junction."""
+        if state.graph is None:
+            return []
+        if state.review_items:
+            return branch_ids_of(state.graph, (edge for item in state.review_items for edge in item.edges))
+        if junctions_on() and state.scan is not None:
+            return branch_ids_of(state.graph, state.graph.edges(list(state.scan.junctions), keys=True))
+        return []
+
+    def recolour_rings() -> None:
+        """The chosen item's (or junction's) ring cyan, the others magenta:
+        in place, no rebuild."""
+        rings = layer(REVIEW_MARKERS)
+        if rings is not None and len(rings.data) == len(state.review_items):
+            chosen = next((i for i, item in enumerate(state.review_items) if item is state.review_item), None)
+            rings.border_color = marker_colours(len(rings.data), chosen)
+        rings = layer(HIGH_DEGREE_JUNCTIONS)
+        if rings is not None:
+            ids = list(_layer_features(rings).get("node_id", ()))
+            if len(ids) == len(rings.data):
+                chosen = next((i for i, node in enumerate(ids) if state.node is not None and node == state.node), None)
+                rings.border_color = marker_colours(len(rings.data), chosen)
+
     def recolour() -> None:
-        """Colour the vessels layer (and its tubes) by status: cheap, no rebuild."""
+        """Colour the vessels layer (and its tubes) by status, and the rings
+        by which is chosen: cheap, no rebuild."""
+        recolour_rings()
         vessels = layer(VESSELS)
         if vessels is None or state.scan is None:
             return
@@ -9720,6 +9757,7 @@ def _post_processing_controls(
             at_junction=[v.branch_id for v in state.vessels] + in_loop + in_item,
             selected=[state.vessels[r].branch_id for r in chosen] + loop_side + item_selected,
             added=added_vessel_ids(state.graph) if state.graph is not None else (),
+            listed=listed_ids(),
         )
         vessels.edge_color = status_colours(labels)
         vessels.visible = True
@@ -9918,14 +9956,14 @@ def _post_processing_controls(
         else:
             status.setText(f"Press Scan network to list {review_entry().label.lower()}.")
 
-    def on_junction_changed(row: int) -> None:
+    def on_junction_changed(row: int, zoom: bool = True) -> None:
         if state.scan is None or not 0 <= row < len(state.scan.junctions):
             return
         node = state.scan.junctions[row]
         show_vessels(node)
         recolour()
         pos = state.graph.nodes[node].get("pos")
-        if pos is not None:
+        if zoom and pos is not None:
             _zoom_viewer_to(viewer, pos)
 
     def on_scan() -> None:
@@ -10484,14 +10522,15 @@ def _post_processing_controls(
         show_review_item(None)
         put_layers((), (REVIEW_MARKERS, REVIEW_REGION))
 
-    def on_review_item_changed(row: int) -> None:
+    def on_review_item_changed(row: int, zoom: bool = True) -> None:
         if not 0 <= row < len(state.review_items):
             return
         state.review_row = row
         item = state.review_items[row]
         show_review_item(item)
         recolour()
-        _zoom_viewer_to(viewer, item.centre_um, box_um=review_box_um(item))
+        if zoom:
+            _zoom_viewer_to(viewer, item.centre_um, box_um=review_box_um(item))
 
     def make_review(key, graph, *, image, roles, values, scope, voxel, support):
         """The items of list *key* on *graph*, and the MaskSupport used (made
@@ -11172,12 +11211,54 @@ def _post_processing_controls(
             "vessels after them have moved down: hover a vessel for its new one."
         )
 
+    def rings_shown() -> bool:
+        """Whether rings are on screen for a click to choose from."""
+        if state.review_items:
+            return True
+        return junctions_on() and state.scan is not None and bool(state.scan.junctions)
+
+    def choose_ring(event) -> None:
+        """A click with no edit armed: one landing on a ring chooses its item
+        (or junction) in the list, as picking its row would, but leaves the
+        camera where it is -- the ring is already on screen."""
+        position = np.asarray(event.position, dtype=float)
+        dims = list(getattr(event, "dims_displayed", ()) or ())
+        view = getattr(event, "view_direction", None) if len(dims) == 3 else None
+        reach = marker_pick_um(getattr(getattr(viewer, "camera", None), "zoom", None))
+        if state.review_items:
+            row = marker_under_click(
+                [item.centre_um for item in state.review_items], position,
+                view_direction=view, dims=dims or None, max_distance=reach,
+            )
+            if row is None:
+                return
+            review_items.blockSignals(True)
+            review_items.setCurrentRow(row)
+            review_items.blockSignals(False)
+            on_review_item_changed(row, zoom=False)
+            return
+        if not rings_shown():
+            return
+        junctions = list(state.scan.junctions)
+        node = junction_under_click(
+            state.graph, junctions, position, view_direction=view, dims=dims or None, max_distance=reach,
+        )
+        if node is None:
+            return
+        row = junctions.index(node)
+        junction_list.blockSignals(True)
+        junction_list.setCurrentRow(row)
+        junction_list.blockSignals(False)
+        on_junction_changed(row, zoom=False)
+
     def on_click(_layer, event) -> None:
         """One click in the viewer: a press let go where it was pressed."""
-        if state.mode == "idle" or state.graph is None:
+        if state.graph is None:
             return
         try:
-            if state.mode == "delete":
+            if state.mode == "idle":
+                choose_ring(event)
+            elif state.mode == "delete":
                 hit = vessel_hit(event)
                 if hit is not None:
                     delete_clicked(hit)
@@ -11191,10 +11272,10 @@ def _post_processing_controls(
         """napari's press-drag-release callback, handing :func:`on_click` only clicks.
 
         A press that moves before it is let go is turning or panning the view --
-        between the clicks of a trace, often -- and must not add a point or
-        delete a vessel.
+        between the clicks of a trace, often -- and must not add a point,
+        delete a vessel or choose a ring.
         """
-        if state.mode == "idle" or state.graph is None:
+        if state.graph is None or (state.mode == "idle" and not rings_shown()):
             return
         if getattr(event, "button", 1) not in (None, 1):
             return

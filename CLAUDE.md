@@ -114,7 +114,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 433 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 434 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -167,7 +167,7 @@ haemolynx/
 2. **Large arteriole/venule masks** — `use_ilastik_large_vessel_segmentation` (requires `use_large_vessel_masks=True`).
 3. **Small arteriole/venule masks** — `use_ilastik_small_vessel_segmentation` (requires `use_small_vessel_masks_for_boundary_assignment=True`).
 
-Shared settings: `ilastik_output_dir`, `ilastik_output_suffix`. Every one of them is declared in `pipeline/schema.py`, with its prerequisites; `pipeline/checks.py` (`haemolynx.pipeline.preflight`) is what tells a user which required paths are missing before any work starts.
+Shared settings: `ilastik_output_dir`, `ilastik_output_suffix`. Every one of them is declared in `pipeline/schema.py`, with its prerequisites; `pipeline/checks.py` (`haemolynx.pipeline.preflight`) is what tells a user which required paths are missing before any work starts. Outputs are named `{image stem}_segmented` for the main image and `{image stem}_{large|small}_{arteriole|venule}_segmented` for the masks: the arteriole and venule classifiers are usually run on the one raw stack, and with one name the venule run overwrote the arteriole's (or, reusing existing output, read it back as its own).
 
 Users may also supply **pre-segmented** masks only (no ilastik call) — typical for tutorial data and many tests.
 
@@ -311,7 +311,11 @@ are only caught locally.
   indices takes per-array-axis spacing in **`(z, y, x)`** (`voxel_size_zyx`). Convert once at the
   loader boundary with `io.voxel_size_zyx_from_xyz`. Passing `xyz` where `zyx` is expected silently
   swaps the z and x spacings — invisible for isotropic voxels, wrong for every real stack
-  (see `tests/test_anisotropic_voxel_size.py`). Masks and main image must align in shape and
+  (see `tests/test_anisotropic_voxel_size.py`). A TIFF's size is read from its OME header's
+  `PhysicalSizeX/Y/Z` first (units converted), then, axis by axis, from the resolution tags and
+  ImageJ's `spacing` (`io/load.py`'s `_voxel_size_xyz_from_tiff`): tifffile writes one pixel per
+  unit into the tags of a file given no resolution, so an OME-TIFF's tags say 1 µm whatever its
+  voxels are. Masks and main image must align in shape and
   physical voxel units. **Drawing a run has the same split the other way round:** node `pos` and
   edge `voxels` are physical microns already, so a layer built from the graph takes `scale=(1,1,1)`,
   while `image`, `skeleton` and the masks are voxel-indexed and take `scale=voxel_size_zyx`
@@ -387,8 +391,10 @@ are only caught locally.
 - **`io/axis_order.py`** — canonical `(z, y, x)` convention: `normalize_axis_order`, `apply_axis_order`
   (transposes an input volume to canonical order), `voxel_size_zyx_from_xyz` / `voxel_size_xyz_from_zyx`.
 - **`io/ilastik.py`** — `run_ilastik_headless_segmentation` (subprocess call to user-installed ilastik + `.ilp` project).
-- **`io/automated_vessel_assignment.py`** — mask **loading & validation**: `load_large_vessel_masks`, `load_and_validate_vessel_masks` (includes ilastik path for large/small masks). *Despite the name, this is I/O, not graph assignment.*
-- **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks: `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`, overlap-resolution + 3D HTML diagnostics. *Same filename as the io module but a different concern — a known source of confusion (see Cleanup Plan).*
+- **`io/automated_vessel_assignment.py`** — mask **loading & validation**: `load_large_vessel_masks`, `load_and_validate_vessel_masks` (includes ilastik path for large/small masks). *Despite the name, this is I/O, not graph assignment.* A mask with no voxel spacing of its own (an ilastik export) takes the main image's under the `auto` policy rather than failing the alignment check on 1 µm. The masks loaded last are kept per role, packed one bit a voxel (`_LOADED_MASKS`, `clear_vessel_mask_cache`), keyed on the files' identity and every cleanup setting, so a run that reads them twice (skeletonise's `skeleton_thick_vessel_restrict_to_mask`, then `build_network`) loads and cleans them once and gets a fresh array each time. The opposite-attached cleanup (`graph/large_vessels.py`) reads each component's distance to the other mask at its surface voxels (`_component_distances_to_mask`), not from a whole-volume transform.
+- **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks: `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`, overlap-resolution + 3D HTML diagnostics. *Same filename as the io module but a different concern — a known source of confusion (see Cleanup Plan).* Overlap fractions are read vectorised (`_in_bounds_voxel_indices`; the per-point loop took 7 s per half-million samples). The small-vessel progressive dilation (`small_vessel_mask_dilation_microns`) gives each edge the label of the first step that reaches it and judges the unlabelled ones again at every step, reading each sample's distance to each mask once from the mask's surface -- it used to lock *every* edge, unlabelled ones included, at the first step that labelled anything, so once 0 µm found one edge the dilation did nothing, and it built two whole-volume float64 transforms whatever the schedule; the boundary nodes come from the final labels. A terminal the large-vessel cut made carries `CUT_FROM_LARGE_VESSEL` (`graph/cut_at_large_vessel_volumes.py`), the mask it was cut off at, and every selector (plain, progressive, confidence) counts it as inside that mask: it sits one sample *outside*, so the default run (cut on, 0 µm dilation) found no inlet at all.
+- **`graph/large_vessel_network.py`** — the `mask_stump` method: an inlet/outlet where a large-vessel mask is cut off by the image's edge. Not every face contact is a stump. A component below `large_vessel_stump_min_component_fraction` (5%) of the mask's largest is a speck the classifier left at the face (E14.5's arteriole mask: 468 components, the vessel one of them, the next 0.5% of it); a contact whose footprint spans more than `STUMP_MAX_FOOTPRINT_CROSS_SECTIONS` (4) times the disc of its own inscribed radius is a vessel lying *along* the face -- the pial vessels against the top of the E14.5 stack read 5-27, the real stumps at the x faces 1.6-3.0 (one dataset, one reader, not a marked grid). Together those seeded 8 inlets and 11 outlets on E14.5, each snapped 11-36 µm to a capillary tip; the stump now snaps only to terminals inside the mask (`_snap_stumps_to_terminals`, with the `coordinates` method's own far-snap warning).
+- **`graph/boundary_node_fallback.py`** — `seed_nodes_without_mask_coverage`: whether an inlet's or outlet's own edges touch the small mask of its class, read through `voxel_size_zyx` (edge voxels are microns, the mask is voxel-indexed; rounding microns to indices read the wrong voxels on every non-unit stack). In `assign_boundaries` the large mask of the class counts as coverage when the large vessels stay in the network (the inlet then sits on the large arteriole, which the small arteriole mask never covers, so the fallback fired on every such run), and `small_vessel_boundary_fallback_to_hop_distance` *adds* the hop neighbours of the seeds that are uncovered to the boundary nodes the masks found -- it used to replace the whole list with every inlet's hop neighbours.
 - **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after each topology step, one per label in `STEP_LABELS` (thirteen of them).
   The last, `consolidate_lumen`, repeats until a round changes nothing: degree-2 merging, then
   with the mask edges mostly off it, the second of two edges through one lumen
@@ -450,7 +456,14 @@ are only caught locally.
   (`lumen_loops.loop_inside_one_lumen`). Joining every free end made tangles of short loops (on
   E14.5, 3,232 under 30 µm against 101 before the step). Its duplicate check and node ids are
   kept indexed (`EdgeSampleIndex.added_near`, `_NodeIds`): scanned per path, they were 95% of
-  the step's time. Without a mask, or with both settings off, the two steps leave the graph as it is.
+  the step's time. The cross-section outline (`_follow_rays`) follows each ray only to its first
+  voxel out, with the samples sorted by reach so a chunk is not kept going by its widest vessel,
+  reads the mask as bits (`preprocessing.PackedMask`: 2 GB for a 16 G-voxel stack, in RAM, which
+  every `MaskSupport.inside` switches to after `PACK_AFTER_POINTS` lookups) and spreads its chunks
+  over worker processes (`preprocessing.shared_volume_tasks.run_volume_tasks`, the pool the
+  section diameter methods use) once there are `_WORKER_MIN_SAMPLES`; the outline is per sample
+  and identical with any of that (E14.5's uncovered scan went 108 -> 18 s, bit for bit). Without
+  a mask, or with both settings off, the two steps leave the graph as it is.
 - **`graph/facing_ends.py`** — `join_facing_dead_ends`, its own step after mask recovery
   (`join_facing_dead_ends`, run with a mask and `bridge_require_mask_support`;
   `facing_dead_end_max_gap_um`, 10 µm, 0 off): two dead ends pointing at each other -- the
@@ -571,7 +584,10 @@ are only caught locally.
   `_post_processing_controls`), with no "Run from this stage". Its Review dropdown
   (`gui/post_processing.REVIEW_LISTS`) chooses the one list Scan network makes -- only that
   one, so a scan does no more work than it needs -- optionally only within a radius of the
-  view centre; None, the default, lists, marks and zooms to nothing. "4+ junctions" shows the
+  view centre; None, the default, lists, marks and zooms to nothing. Each item a list rings
+  (and each 4+ junction) is magenta, ring and vessels (the `listed` status), the chosen one
+  cyan (`marker_colours`); with no edit armed, a click on a ring chooses its item without
+  moving the camera (`marker_under_click`, `marker_pick_um`). "4+ junctions" shows the
   junction list, table and Delete/Leave/Split buttons. The other twelve are
   `graph/network_review.py`'s read-only finders, each returning `ReviewItem`s ranked as the list
   shows them: junctions close together (Merge into one junction, `graph.merge_junctions`),

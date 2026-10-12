@@ -73,6 +73,7 @@ from .segmentation_raw_comparison import (
 from .bridge_mask_support import (
     BridgeMaskSupport,
     MaskSupport,
+    PackedMask,
     bridge_is_supported,
     bridge_mask_support,
     path_shadows_existing_vessel,
@@ -145,6 +146,7 @@ __all__ = [
     "format_segmentation_raw_comparison_report",
     "BridgeMaskSupport",
     "MaskSupport",
+    "PackedMask",
     "bridge_is_supported",
     "bridge_mask_support",
     "path_shadows_existing_vessel",
