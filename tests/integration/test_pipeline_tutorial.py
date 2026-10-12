@@ -44,9 +44,12 @@ def test_pipeline_tutorial_notebook_converts_and_runs(tmp_path):
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     existing_pythonpath = __import__("os").environ.get("PYTHONPATH", "")
-    extra_paths = f"{TUTORIAL_DIR}:{REPO_ROOT / 'src'}:{REPO_ROOT / 'examples'}"
+    # os.pathsep, not ":": on Windows ":" left the subprocess without this
+    # tree's src, so it imported whatever haemolynx was installed instead.
+    paths = [str(TUTORIAL_DIR), str(REPO_ROOT / "src"), str(REPO_ROOT / "examples")]
     if existing_pythonpath:
-        extra_paths = f"{extra_paths}:{existing_pythonpath}"
+        paths.append(existing_pythonpath)
+    extra_paths = __import__("os").pathsep.join(paths)
     env = {
         **dict(__import__("os").environ),
         "HAEMOLYNX_REPO_ROOT": str(REPO_ROOT),
