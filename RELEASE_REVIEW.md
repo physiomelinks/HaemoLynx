@@ -29,7 +29,7 @@ confirming.
 | 7 | [Memory and scale](#7-memory-and-scale--memory) | **4** | peak memory never measured (6a); no stated requirements (6b); the default solvers do not scale (6c) |
 | 8 | [Usability](#8-usability--usability) | **4** | no task list walked through (6a); defaults untested end to end (6b); no undo (6c) |
 | 9 | [Visualisation](#9-visualisation--visual) | **4** | figures without units (6a); tube frame rate not measured (6c); mixed dpi (6d) |
-| 10 | [Exports](#10-exports--export) | **3** | blind-end vessels keep a flow of 0 in the VTK, flagged, not blank: a decision (4b) |
+| 10 | [Exports](#10-exports--export) | **3** | blind-end vessels keep their zero flow in the VTK, flagged, not blank: a decision (4b) |
 | 11 | [Documentation and help](#11-documentation-and-help--docs) | **4** | help pages empty, 0 of 10, for Harvey to write (6a); guide skips Post processing and Perturbations (6b) |
 | 12 | [Robustness](#12-robustness--robust) | **4** | no edge-case suite through every stage (6a); open review bugs (6b) |
 | 13 | [Reproducibility](#13-reproducibility--repro) | **4** | no settings, version or commit beside the outputs (6a); no end-to-end identity test (6c) |
@@ -336,7 +336,7 @@ haematocrit, constriction and perturbations.
 |---|---|---|---|---|
 | export.2a | A | A run writes VTK and CSV. | ✓ | `vtk_io.py:116-217`, `csv_export.py` |
 | export.4a | A | Tests read every export back and check its content. | ✓ | `test_vtk_io.py` (23), `test_statistics.py:785`, `test_tissue_volume.py:380`, `test_perturbation_outputs.py`, `test_gui_run_snapshot.py` |
-| export.4b | R | No export can be misread: unsolved vessels' flows are blank, not numbers. | ✗ | Since `b6d9210` the VTK blanks flows and pressures where no inlet and outlet reach (`no_boundary`), and writes `flow_solved` and `flow_state` on every vessel (`test_vtk_io.py:310`). Vessels behind dead ends inside the tissue keep a flow of 0, the model's answer, flagged `flow_solved=0`, `flow_state=blind_end` (the dead-end plan's D4). Harvey decides whether that counts as blank |
+| export.4b | R | No export can be misread: unsolved vessels' flows are blank, not numbers. | ✗ | Since `b6d9210` the VTK blanks flows and pressures where no inlet and outlet reach (`no_boundary`), and writes `flow_solved` and `flow_state` on every vessel (`test_vtk_io.py:310`). Vessels behind dead ends inside the tissue keep the model's answer, no flow (zero to rounding: under 1e-4 of the median solved flow on E14.5), flagged `flow_solved=0`, `flow_state=blind_end` (the dead-end plan's D4). Harvey decides whether that counts as blank |
 | export.6a | R | A data dictionary documents every exported file, column or array, and unit. | ✗ | None. The README and the guide do not describe the outputs |
 | export.6b | A | Units are present and consistent everywhere, VTK arrays and perturbation CSVs included. | ✗ | VTK arrays have no units. Perturbation resistance and flow columns have none |
 | export.6c | A | Outputs carry the HaemoLynx version, the commit and the settings used, with a config beside them. | ✗ | The VTK vessels file now carries the version, viscosity law, diameter basis, haematocrit and open-end model in its field data (`test_vtk_io.py:310`, `b6d9210`). No commit and no settings: those travel only inside `.haemorun` |
