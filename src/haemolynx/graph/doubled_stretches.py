@@ -201,6 +201,10 @@ class _Editor:
         self.G = G
         self.next_id = next_node_id(G, set())
         self.touched: set[tuple] = set()
+        #: Centreline taken out less centreline added, microns: kept here as
+        #: edges go and come, not read off the whole graph after each change
+        #: (that sum, twice per stretch, was 59 of the step's 70 s on E14.5).
+        self.removed_um = 0.0
 
     def pos(self, node) -> np.ndarray:
         return np.asarray(self.G.nodes[node]["pos"], dtype=float)
@@ -217,6 +221,7 @@ class _Editor:
         points = [tuple(float(c) for c in p) for p in points]
         attrs["voxels"] = points
         attrs["length"] = float(calculate_path_length(points))
+        self.removed_um -= attrs["length"]
         key = self.G.add_edge(a, b, **attrs)
         self.touched.add(edge_id(a, b, key))
 
@@ -225,6 +230,7 @@ class _Editor:
         attributes; nodes left with no edge go."""
         u, v, key = edge
         template = dict(self.G.edges[u, v, key])
+        self.removed_um += float(template.get("length", 0.0) or 0.0)
         self.G.remove_edge(u, v, key)
         self.touched.add(edge_id(u, v, key))
         for a, b, points in pieces:
@@ -373,7 +379,6 @@ def resolve_doubled_stretches(
         return G
     editor = _Editor(G)
     counts = {"trimmed": 0, "zipped": 0, "rejoined": 0}
-    removed_um = 0.0
     for run in runs:
         edge, partner = run.edge, run.partner
         if not (G.has_edge(*edge) and G.has_edge(*partner)):
@@ -386,7 +391,6 @@ def resolve_doubled_stretches(
         a, b, _pkey = partner
         if {u, v} == {a, b}:
             continue
-        before = sum(float(d.get("length", 0.0) or 0.0) for _x, _y, d in G.edges(data=True))
         # A dead end beside a vessel is cut back; of two dead ends side by
         # side, the one nearer the wall is.
         trims = run.radius_um <= run.partner_radius_um or min(G.degree[a], G.degree[b]) > 1
@@ -403,12 +407,11 @@ def resolve_doubled_stretches(
             done = "rejoined" if _rejoin(editor, run) else None
         if done:
             counts[done] += 1
-            removed_um += before - sum(float(d.get("length", 0.0) or 0.0) for _x, _y, d in G.edges(data=True))
     if any(counts.values()):
         logger.info(
             "Doubled stretches in one lumen: %d dead end(s) cut back, %d fork(s) zipped, "
             "%d stretch(es) cut out and rejoined; %.0f um of centreline taken out",
-            counts["trimmed"], counts["zipped"], counts["rejoined"], removed_um,
+            counts["trimmed"], counts["zipped"], counts["rejoined"], editor.removed_um,
         )
     G.graph["doubled_stretches_resolved"] = int(G.graph.get("doubled_stretches_resolved", 0)) + sum(counts.values())
     return G
