@@ -123,13 +123,17 @@ def _morphology(
 ) -> np.ndarray:
     """``op(mask)``; under *use_memmap* (the low-RAM option) one padded block
     at a time into a new memmap, exact because *op* reads no further than
-    *reach* voxels (see ``memmap_support.iter_blocks``)."""
+    *reach* voxels (see ``memmap_support.iter_blocks``). Either way the image
+    faces read as the vessels running on past them
+    (``memmap_support.at_faces_as_beyond``), so neither an opening nor a
+    closing trims a vessel the image cut."""
+    from .memmap_support import at_faces_as_beyond
+
+    padded_op = at_faces_as_beyond(op, int(reach))
     if not use_memmap:
-        return op(np.asarray(mask, dtype=bool))
+        return padded_op(np.asarray(mask, dtype=bool))
     out = new_memmap_array(mask.shape, bool, directory=memmap_directory)
-    return map_blockwise(
-        np.asanyarray(mask, dtype=bool), lambda block: op(block), out, halo=int(reach)
-    )
+    return map_blockwise(np.asanyarray(mask, dtype=bool), padded_op, out, halo=int(reach))
 
 
 def fill_enclosed_cavities(

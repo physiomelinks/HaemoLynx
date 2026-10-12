@@ -111,6 +111,31 @@ def map_blockwise(
     return out
 
 
+def at_faces_as_beyond(op: Callable[[np.ndarray], np.ndarray], reach: int) -> Callable[[np.ndarray], np.ndarray]:
+    """*op* run on its input padded by *reach* voxels of edge replication, and
+    cropped back: what morphology reads past an image face is the face itself,
+    a vessel the image cut running straight on past it.
+
+    scipy reads outside the array as background, so a closing's erosion eats
+    the first and last *r* slices of every vessel through a face (it stops
+    being extensive), and an opening caps it there -- moving every face end,
+    and the boundary nodes chosen from them, up to *r* voxels into the image
+    (PLAN_dale_review_fixes.md, item 2). Used block by block it stays exact: a
+    block's own halo is at least *reach* deep wherever it is not a face, so
+    the padding only ever stands in for what lies beyond the image.
+    """
+    reach = int(reach)
+
+    def padded(block: np.ndarray) -> np.ndarray:
+        if reach <= 0:
+            return op(block)
+        grown = np.pad(np.asarray(block), reach, mode="edge")
+        crop = tuple(slice(reach, reach + size) for size in block.shape)
+        return np.asarray(op(grown))[crop]
+
+    return padded
+
+
 def new_memmap_array(
     shape: tuple[int, ...], dtype, *, directory: str | Path | None = None
 ) -> np.memmap:

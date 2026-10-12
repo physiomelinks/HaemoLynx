@@ -27,6 +27,7 @@ from .bridge_mask_support import (
 )
 from .memmap_support import (
     LOW_MEMORY_BLOCK_VOXELS,
+    at_faces_as_beyond,
     argwhere_by_slab,
     bincount_by_slab,
     iter_blocks,
@@ -591,18 +592,16 @@ def close_binary_mask(
     struct = _physical_footprint(
         radius, _finest_axis_spacing(voxel_size_zyx, binary.ndim), norm=1
     )
+    # Past an image face is the face, not background: closing must not eat
+    # the end of every vessel the image cut (at_faces_as_beyond).
+    close = at_faces_as_beyond(lambda block: binary_closing(block, structure=struct), 2 * radius)
     if use_memmap:
         binary_bool = np.asanyarray(binary, dtype=bool)
         result = new_memmap_array(binary_bool.shape, bool, directory=memmap_directory)
-        closed = map_blockwise(
-            binary_bool,
-            lambda block: binary_closing(block, structure=struct),
-            result,
-            halo=2 * radius,
-        )
+        closed = map_blockwise(binary_bool, close, result, halo=2 * radius)
         return _additions_within(closed, binary_bool, within)
     return _additions_within(
-        binary_closing(binary.astype(bool), structure=struct), binary, within
+        close(binary.astype(bool)), binary, within
     )
 
 
