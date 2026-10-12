@@ -240,3 +240,37 @@ def test_a_dead_end_in_short_pieces_is_judged_whole():
     assert not any(n in short for n in ((0.0, 5.0, 20.0), (0.0, 10.0, 20.0), (0.0, 15.0, 20.0)))
     assert (0.0, 0.0, 20.0) in short or (0.0, 0.0, 0.0) in short
 
+
+
+
+def test_the_centreline_index_reads_no_radius_again_for_an_unchanged_edge():
+    """Between the clean-up's rounds the prune keeps each unchanged edge's
+    points and lumen radii: a second call on the same graph reads none."""
+    import networkx as nx
+    import numpy as np
+
+    from haemolynx.graph.prune import _centreline_index
+
+    G = nx.MultiGraph()
+    for n, pos in ((0, (0.0, 0.0, 0.0)), (1, (0.0, 0.0, 20.0)), (2, (0.0, 10.0, 20.0))):
+        G.add_node(n, pos=np.asarray(pos))
+    G.add_edge(0, 1, voxels=[(0.0, 0.0, z) for z in range(0, 21, 5)])
+    G.add_edge(1, 2, voxels=[(0.0, y, 20.0) for y in range(0, 11, 5)])
+    asked = []
+
+    def radius_at(points):
+        asked.append(len(points))
+        return np.full(len(points), 2.0)
+
+    memo = {}
+    first = _centreline_index(G, radius_at, memo=memo)
+    assert sum(asked) == len(first[4]) and len(memo) == 2
+    asked.clear()
+    second = _centreline_index(G, radius_at, memo=memo)
+    assert asked == [] and np.array_equal(first[4], second[4]) and np.array_equal(first[1], second[1])
+    # An edge moved is read again, the other is not.
+    G.edges[1, 2, 0]["voxels"] = [(0.0, y, 20.5) for y in range(0, 11, 5)]
+    asked.clear()
+    third = _centreline_index(G, radius_at, memo=memo)
+    moved = int(np.sum(third[4][:, 2] == 20.5))
+    assert 0 < moved < len(third[4]) and sum(asked) == moved

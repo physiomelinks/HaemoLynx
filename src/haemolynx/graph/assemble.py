@@ -296,6 +296,10 @@ def lumen_cleanup(
 
         stub_mask_rules["image_face_test"] = image_face_test
 
+    # The prune's centreline index, kept between the clean-up's rounds: an
+    # edge unchanged since the last round reads no lumen radius again.
+    index_memo: dict = {}
+
     def prune(G: nx.MultiGraph) -> nx.MultiGraph:
         return prune_vascular_stubs(
             G,
@@ -304,6 +308,7 @@ def lumen_cleanup(
             radius_at=radius_at,
             radius_multiple=float(min_stub_length_radius_multiple),
             image_extent_um=image_extent_um,
+            index_memo=index_memo,
             **stub_mask_rules,
         )
 
