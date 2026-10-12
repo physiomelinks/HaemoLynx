@@ -606,6 +606,9 @@ def test_vessels_missing_from_skeleton_is_trivial_for_an_empty_mask():
         "missing_vessel_count": 0,
         "missing_vessel_voxel_counts": [],
         "explained_vessel_fraction": 1.0,
+        "mask_voxel_count": 0,
+        "missing_voxel_count": 0,
+        "missing_volume_fraction": 0.0,
     }
 
 
@@ -700,6 +703,86 @@ def test_vessels_missing_from_skeleton_report_formatter_reads_the_real_functions
     assert f"{report['explained_vessel_fraction']:.1%}" in text
 
 
+def test_missing_vessels_report_their_share_of_the_whole_mask_volume():
+    """The denominator is every mask voxel, the speck below the noise floor
+    included: 16 missing of 16 + 16 + 1."""
+    mask = _two_vessels_and_a_noise_speck()
+    skeleton = np.zeros(mask.shape, dtype=bool)
+    skeleton[:, 2, :] = True  # explains vessel A only
+
+    report = diagnose_vessels_missing_from_skeleton(skeleton, mask)
+
+    assert report["mask_voxel_count"] == 33
+    assert report["missing_voxel_count"] == 16
+    assert report["missing_volume_fraction"] == pytest.approx(16 / 33)
+
+
+def test_one_large_vessel_among_many_missing_specks_is_mostly_missing_by_count_but_not_by_volume():
+    """The E14.5 case in miniature (832 of 1,205 components missing, 0.36%
+    of the mask): the vasculature is one large component and the skeleton
+    leaves out a hundred 2-voxel specks. By count almost every "vessel" is
+    missing; by volume very little is, and the report must say both."""
+    mask = np.zeros((10, 40, 40), dtype=bool)
+    mask[2:8, 5:35, 5:35] = True  # 5,400 voxels, the vasculature
+    for y in range(0, 40, 4):
+        for x in range(0, 40, 4):
+            mask[0, y, x:x + 2] = True  # 100 separate 2-voxel specks, 200 voxels
+    skeleton = np.zeros(mask.shape, dtype=bool)
+    skeleton[5, 20, 5:35] = True  # runs through the large component only
+
+    report = diagnose_vessels_missing_from_skeleton(skeleton, mask)
+    text = format_vessels_missing_from_skeleton_report(report)
+
+    assert report["vessel_count"] == 101
+    assert report["missing_vessel_count"] == 100
+    assert report["missing_volume_fraction"] == pytest.approx(200 / 5600)
+    assert "100 of 101" in text
+    assert f"{200 / 5600:.2%} of the segmented volume" in text
+    assert "the largest is 2 voxels" in text
+
+
+def test_the_missing_vessels_report_names_the_volume_share_and_the_largest_piece():
+    mask = _two_vessels_and_a_noise_speck()
+    report = diagnose_vessels_missing_from_skeleton(np.zeros(mask.shape, dtype=bool), mask)
+
+    text = format_vessels_missing_from_skeleton_report(report)
+
+    assert f"{32 / 33:.2%} of the segmented volume" in text
+    assert "the largest is 16 voxels" in text
+
+
+def test_the_volume_share_is_left_out_when_no_vessel_is_missing():
+    mask = _two_vessels_and_a_noise_speck()
+    skeleton = np.zeros(mask.shape, dtype=bool)
+    skeleton[:, 2, :] = True
+    skeleton[:, 10, :] = True  # explains both vessels
+
+    report = diagnose_vessels_missing_from_skeleton(skeleton, mask)
+    text = format_vessels_missing_from_skeleton_report(report)
+
+    assert report["missing_volume_fraction"] == 0.0
+    assert text.endswith("(100.0% represented).")
+    assert "segmented volume" not in text
+
+
+def test_a_tiny_missing_share_is_not_printed_as_zero():
+    """A share under 0.01% would round to "0.00%", which reads as nothing
+    missing while the count says otherwise."""
+    report = {
+        "vessel_count": 2,
+        "missing_vessel_count": 1,
+        "missing_vessel_voxel_counts": [1],
+        "explained_vessel_fraction": 0.5,
+        "missing_volume_fraction": 1e-6,
+    }
+
+    text = format_vessels_missing_from_skeleton_report(report)
+
+    assert "<0.01% of the segmented volume" in text
+    assert "0.00%" not in text
+    assert "the largest is 1 voxel." in text
+
+
 # --- diagnose_vessels_missing_from_graph (the inverse question) ------------
 
 
@@ -711,6 +794,9 @@ def test_vessels_missing_from_graph_is_trivial_for_an_empty_mask():
         "missing_vessel_count": 0,
         "missing_vessel_voxel_counts": [],
         "explained_vessel_fraction": 1.0,
+        "mask_voxel_count": 0,
+        "missing_voxel_count": 0,
+        "missing_volume_fraction": 0.0,
     }
 
 
@@ -772,3 +858,19 @@ def test_vessels_missing_from_graph_report_formatter_reads_the_real_functions_ow
     assert str(report["missing_vessel_count"]) in text
     assert str(report["vessel_count"]) in text
     assert f"{report['explained_vessel_fraction']:.1%}" in text
+
+
+def test_vessels_missing_from_graph_report_their_volume_share_too():
+    mask = _two_vessels_and_a_noise_speck()
+    voxels = [[float(z), 2.0, float(x)] for z in range(2) for x in range(4)]
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array(voxels[0]))
+    G.add_node(1, pos=np.array(voxels[-1]))
+    G.add_edge(0, 1, length=1.0, voxels=voxels)  # traces vessel A only
+
+    report = diagnose_vessels_missing_from_graph(G, mask)
+    text = format_vessels_missing_from_graph_report(report)
+
+    assert report["missing_volume_fraction"] == pytest.approx(16 / 33)
+    assert f"{16 / 33:.2%} of the segmented volume" in text
+    assert "the largest is 16 voxels" in text
