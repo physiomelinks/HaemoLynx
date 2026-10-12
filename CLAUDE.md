@@ -300,7 +300,11 @@ are only caught locally.
   indices takes per-array-axis spacing in **`(z, y, x)`** (`voxel_size_zyx`). Convert once at the
   loader boundary with `io.voxel_size_zyx_from_xyz`. Passing `xyz` where `zyx` is expected silently
   swaps the z and x spacings — invisible for isotropic voxels, wrong for every real stack
-  (see `tests/test_anisotropic_voxel_size.py`). Masks and main image must align in shape and
+  (see `tests/test_anisotropic_voxel_size.py`). A TIFF's size is read from its OME header's
+  `PhysicalSizeX/Y/Z` first (units converted), then, axis by axis, from the resolution tags and
+  ImageJ's `spacing` (`io/load.py`'s `_voxel_size_xyz_from_tiff`): tifffile writes one pixel per
+  unit into the tags of a file given no resolution, so an OME-TIFF's tags say 1 µm whatever its
+  voxels are. Masks and main image must align in shape and
   physical voxel units. **Drawing a run has the same split the other way round:** node `pos` and
   edge `voxels` are physical microns already, so a layer built from the graph takes `scale=(1,1,1)`,
   while `image`, `skeleton` and the masks are voxel-indexed and take `scale=voxel_size_zyx`

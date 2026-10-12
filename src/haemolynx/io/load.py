@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import zipfile
 from pathlib import Path
+from xml.etree import ElementTree
 
 import numpy as np
 import tifffile
@@ -417,75 +418,134 @@ def crop_tiff_volume_from_corners(
     }
 
 
+#: Microns per unit, for the OME ``UnitsLength`` values a voxel size is
+#: written in. A size in any other unit (``pixel``, ``reference frame``, ...)
+#: is not a physical length the pipeline can run on.
+_OME_LENGTH_UNIT_UM = {
+    "m": 1e6,
+    "dm": 1e5,
+    "cm": 1e4,
+    "mm": 1e3,
+    "\u00b5m": 1.0,  # MICRO SIGN, as the OME schema spells it
+    "\u03bcm": 1.0,  # GREEK SMALL LETTER MU, which some writers use instead
+    "um": 1.0,
+    "nm": 1e-3,
+    "pm": 1e-6,
+    "\u00c5": 1e-4,
+}
+
+
+def _ome_physical_sizes_um(ome_xml: str | None) -> dict[str, float]:
+    """``PhysicalSizeX/Y/Z`` of an OME-XML header's first image, in microns.
+
+    Keyed ``"x"``, ``"y"``, ``"z"`` as OME names them: the file's width, height
+    and planes, the same axes the TIFF tags describe. An axis the header gives
+    no size for is left out, and so is one it gives in a unit that is not a
+    length or as anything but a positive number -- with a warning, since the
+    tags it falls back to then say 1.0 whatever the voxels are.
+    """
+    if not ome_xml:
+        return {}
+    try:
+        root = ElementTree.fromstring(ome_xml)
+    except ElementTree.ParseError:
+        logger.warning("Could not parse the file's OME-XML header; not reading a voxel size from it.")
+        return {}
+    pixels = root.find("{*}Image/{*}Pixels")
+    if pixels is None:
+        return {}
+    sizes: dict[str, float] = {}
+    for axis in "xyz":
+        name = f"PhysicalSize{axis.upper()}"
+        value = pixels.get(name)
+        if value is None:
+            continue
+        unit = pixels.get(f"{name}Unit", "\u00b5m").strip()
+        microns_per_unit = _OME_LENGTH_UNIT_UM.get(unit)
+        try:
+            size = float(value) * microns_per_unit if microns_per_unit else float("nan")
+        except ValueError:
+            size = float("nan")
+        if not (np.isfinite(size) and size > 0):
+            logger.warning(
+                "The OME header gives %s=%r %s, which is not a voxel size; ignoring it.",
+                name, value, unit,
+            )
+            continue
+        sizes[axis] = size
+    return sizes
+
+
 def _voxel_size_xyz_from_tiff(
     tif, axis_order: str = CANONICAL_AXIS_ORDER
 ) -> tuple[float, float, float, dict[str, object]]:
-    """Voxel size (x, y, z) and its provenance, from an open TIFF's tags.
+    """Voxel size (x, y, z) and its provenance, from an open TIFF's header.
 
     Split out from :func:`load_3d_tif_with_voxel_size` so the size can be read
     without the pixels: the tags are in the first page's header, and a caller
     that only wants to know how big a voxel is should not have to read a
     300 MB stack to find out. See :func:`read_voxel_size_xyz`.
 
-    The tags describe the file's own axes -- ``XResolution`` its width,
-    ``YResolution`` its height, ImageJ's ``spacing`` its pages -- and
-    *axis_order* says which physical axis each of those is (see
-    :func:`haemolynx.io.axis_order.voxel_size_xyz_from_file_axes`).
+    An OME-TIFF's header (``PhysicalSizeX/Y/Z``) is read first: tifffile writes
+    one pixel per unit into the resolution tags of a file it was given no
+    resolution for, so an OME file's tags say 1.0 whatever its voxels are. The
+    tags -- ``XResolution`` and ``YResolution``, and ImageJ's ``spacing`` --
+    are read for an axis the OME header gives no size for. The status's
+    ``axis_sources`` says which each value came from, and ``source`` is
+    ``"ome_metadata"`` when the OME header gave any of them.
+
+    OME's X, Y and Z and the tags all describe the file's own axes -- its
+    width, height and pages -- and *axis_order* says which physical axis each
+    of those is (see :func:`haemolynx.io.axis_order.voxel_size_xyz_from_file_axes`).
     """
+    ome_sizes = _ome_physical_sizes_um(tif.ome_metadata) if tif.is_ome else {}
     meta = tif.imagej_metadata or {}
     tags = tif.pages[0].tags
 
-    x_res_tag = tags.get("XResolution")
-    y_res_tag = tags.get("YResolution")
+    # Keyed by file axis: "x" the width, "y" the height, "z" the pages.
+    spacing: dict[str, float] = {}
+    sources: dict[str, str] = {}
     # A missing tag is only debug here: the status says which axes defaulted,
     # and resolve_voxel_size_xyz warns if a default is what the run ends up on
     # (not when voxel_size_override_xyz replaces it).
     missing_axes: list[str] = []
     invalid_axes: list[str] = []
+    for axis in "xyz":
+        if axis in ome_sizes:
+            spacing[axis] = ome_sizes[axis]
+            sources[axis] = "ome_metadata"
+            continue
+        sources[axis] = "tiff_metadata"
+        if axis == "z":
+            if "spacing" in meta:
+                spacing[axis] = float(meta.get("spacing"))
+                if spacing[axis] <= 0:
+                    invalid_axes.append(axis)
+            else:
+                logger.debug("No z resolution (spacing) found; defaulting to 1.0")
+                spacing[axis] = 1.0
+                missing_axes.append(axis)
+            continue
+        res_tag = tags.get(f"{axis.upper()}Resolution")
+        if res_tag:
+            res = res_tag.value[0] / res_tag.value[1]
+        else:
+            logger.debug("No %s resolution tag found; defaulting to 1.0", axis)
+            res = 1.0
+            missing_axes.append(axis)
+        spacing[axis] = 1.0 / res if res else 1.0
+        if res <= 0:
+            invalid_axes.append(axis)
+    invalid_axes.extend(axis for axis in "xyz" if not np.isfinite(spacing[axis]))
 
-    if x_res_tag:
-        x_res = x_res_tag.value[0] / x_res_tag.value[1]
-    else:
-        logger.debug("No x resolution tag found; defaulting to 1.0")
-        x_res = 1.0
-        missing_axes.append("x")
-
-    if y_res_tag:
-        y_res = y_res_tag.value[0] / y_res_tag.value[1]
-    else:
-        logger.debug("No y resolution tag found; defaulting to 1.0")
-        y_res = 1.0
-        missing_axes.append("y")
-
-    if "spacing" in meta:
-        z_res = float(meta.get("spacing"))
-    else:
-        logger.debug("No z resolution (spacing) found; defaulting to 1.0")
-        z_res = 1.0
-        missing_axes.append("z")
-
-    width_spacing = 1.0 / x_res if x_res else 1.0
-    height_spacing = 1.0 / y_res if y_res else 1.0
     voxel_size_x, voxel_size_y, voxel_size_z = voxel_size_xyz_from_file_axes(
-        (z_res, height_spacing, width_spacing), axis_order
+        (spacing["z"], spacing["y"], spacing["x"]), axis_order
     )
-
-    if x_res <= 0:
-        invalid_axes.append("x")
-    if y_res <= 0:
-        invalid_axes.append("y")
-    if z_res <= 0:
-        invalid_axes.append("z")
-    if not np.isfinite(voxel_size_x):
-        invalid_axes.append("x")
-    if not np.isfinite(voxel_size_y):
-        invalid_axes.append("y")
-    if not np.isfinite(voxel_size_z):
-        invalid_axes.append("z")
-    # Tags are named for the file's axes; report the physical axis each is.
+    # Named for the file's axes so far; report the physical axis each is.
     physical = dict(zip("zyx", str(axis_order).strip().lower()))
     missing_axes = [physical[axis] for axis in missing_axes]
     invalid_axes = sorted({physical[axis] for axis in invalid_axes})
+    axis_sources = dict(sorted((physical[axis], sources[axis]) for axis in "xyz"))
 
     if invalid_axes and len(invalid_axes) == 3:
         status = "invalid"
@@ -499,11 +559,12 @@ def _voxel_size_xyz_from_tiff(
         status = "complete"
 
     voxel_meta_status = _default_voxel_meta_status(
-        source="tiff_metadata",
+        source="ome_metadata" if ome_sizes else "tiff_metadata",
         status=status,
         missing_axes=sorted(set(missing_axes)),
         invalid_axes=invalid_axes,
         fallback_applied=bool(missing_axes or invalid_axes),
+        axis_sources=axis_sources,
     )
     return voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
@@ -515,8 +576,8 @@ def read_voxel_size_xyz(
     """Physical voxel size ``(x, y, z)`` of a TIFF, without reading the pixels.
 
     Returns ``None`` for a file that is not a readable TIFF, and for one whose
-    tags say nothing -- a size of all ones is the absence of an answer, not an
-    answer. The panel uses this to give an opened layer the scale its own file
+    header (OME metadata or tags) says nothing -- a size of all ones is the
+    absence of an answer, not an answer. The panel uses this to give an opened layer the scale its own file
     describes, which is a header read rather than a second copy of the stack.
     *axis_order* is what the file's axes are, as for
     :func:`load_3d_tif_with_voxel_size`.
