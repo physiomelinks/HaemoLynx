@@ -11,11 +11,14 @@ the lines, and a click only swaps colours instead of rebuilding a layer:
 
 * grey -- every other vessel;
 * green -- a vessel Add vessel drew;
+* magenta -- a vessel of an item the list shown rings, like its ring;
 * cyan -- one of the vessels at the junction being looked at;
 * yellow -- a vessel selected in the tab's table.
 
 Its own layers: :data:`HIGH_DEGREE_JUNCTIONS` rings every node where four or
-more vessels meet; while Add vessel traces, :data:`NEW_VESSEL_TRACE` draws
+more vessels meet, magenta, and the one chosen cyan (:func:`marker_colours`);
+with no edit armed, a click on a ring chooses it (:func:`marker_under_click`,
+:func:`junction_under_click`); while Add vessel traces, :data:`NEW_VESSEL_TRACE` draws
 the path so far and :data:`NEW_VESSEL_POINTS` the clicks along it
 (:func:`trace_layers`); and :data:`ADDED_NODES` marks the nodes Add vessel
 formed on existing vessels (:func:`added_nodes_layer`).
@@ -108,6 +111,7 @@ __all__ = [
     "HIGH_DEGREE_JUNCTIONS",
     "JUNCTION_TABLE_COLUMNS",
     "KEPT",
+    "LISTED",
     "LOOP_MATCH_LENGTH_FRACTION",
     "LOOP_MATCH_UM",
     "LOOP_REVIEW_COLUMNS",
@@ -116,6 +120,9 @@ __all__ = [
     "LOOP_ZOOM_MIN_BOX_UM",
     "LoopReview",
     "LoopView",
+    "MARKER_PICK_PX",
+    "MARKER_PICK_UM",
+    "MARKER_SIZE_UM",
     "NEW_VESSEL_POINTS",
     "NEW_VESSEL_TRACE",
     "NetworkScan",
@@ -131,12 +138,14 @@ __all__ = [
     "added_vessel_ids",
     "append_loop_review",
     "branch_id_of",
+    "branch_ids_of",
     "camera_center_for",
     "describe_vessels",
     "edits_lost_by_running_from",
     "junction_label",
     "junction_marker_layer",
     "junction_table_rows",
+    "junction_under_click",
     "loop_branch_ids",
     "loop_label",
     "loop_review_csv_path",
@@ -144,6 +153,9 @@ __all__ = [
     "loop_side_rows",
     "loop_view",
     "loops_to_review",
+    "marker_colours",
+    "marker_pick_um",
+    "marker_under_click",
     "nearest_node",
     "parse_branch_ids",
     "point_on_path_under_click",
@@ -173,15 +185,30 @@ POST_PROCESSING_LAYERS = (
 
 CONNECTED = "connected"
 ADDED = "added"
+#: A vessel of an item the list shown rings: one still to look at.
+LISTED = "listed"
 AT_JUNCTION = "at junction"
 SELECTED = "selected"
 #: RGBA per status, in the precedence :func:`vessel_status` applies them.
 STATUS_COLOURS: dict[str, tuple[float, float, float, float]] = {
     SELECTED: (1.0, 0.9, 0.0, 1.0),
     AT_JUNCTION: (0.0, 0.85, 1.0, 1.0),
+    LISTED: (1.0, 0.0, 1.0, 1.0),
     ADDED: (0.35, 1.0, 0.35, 1.0),
     CONNECTED: (0.62, 0.62, 0.62, 1.0),
 }
+
+#: The rings round 4+ junctions and review items (microns across): a little
+#: larger than a node, so one rings it.
+MARKER_SIZE_UM = 8.0
+#: Their border, as a fraction of their size (napari's relative border width).
+MARKER_BORDER_WIDTH = 0.2
+#: How far from a ring's centre a click may land and still choose it: inside
+#: the ring or on its border...
+MARKER_PICK_UM = 0.5 * MARKER_SIZE_UM * (1.0 + MARKER_BORDER_WIDTH)
+#: ...or within this many screen pixels of it, when the view is zoomed out
+#: so far that the ring is only a few pixels across.
+MARKER_PICK_PX = 8.0
 
 #: What Add vessel traces through, as the tab's dropdown lists them.
 TRACE_THROUGH_MASK = "Segmented mask"
@@ -232,17 +259,19 @@ def vessel_status(
     at_junction: Iterable[int] = (),
     selected: Iterable[int] = (),
     added: Iterable[int] = (),
+    listed: Iterable[int] = (),
 ) -> np.ndarray:
     """Each drawn segment's status, from the branchID it belongs to.
 
     *edge_index* is the vessels layer's own per-segment ``edge_index`` column.
     A selected vessel reads as selected even though it is also at the
-    junction, and a vessel at the junction as at the junction even though
-    Add vessel drew it (*added*).
+    junction, a vessel at the junction as at the junction even though a
+    ring marks it (*listed*), and a ringed vessel as listed even though Add
+    vessel drew it (*added*).
     """
     index = np.asarray(edge_index, dtype=int)
     status = np.full(index.shape, CONNECTED, dtype=object)
-    for label, ids in ((ADDED, added), (AT_JUNCTION, at_junction), (SELECTED, selected)):
+    for label, ids in ((ADDED, added), (LISTED, listed), (AT_JUNCTION, at_junction), (SELECTED, selected)):
         chosen = np.fromiter((int(i) for i in ids), dtype=int)
         if chosen.size:
             status[np.isin(index, chosen)] = label
@@ -283,6 +312,13 @@ def branch_id_of(graph: Any, edge: Sequence[Any]) -> int | None:
     the graph's node order, not necessarily the way it was added.
     """
     return _branch_index(graph).get(tuple(edge))
+
+
+def branch_ids_of(graph: Any, edges: Iterable[Sequence[Any]]) -> list[int]:
+    """The branchIDs of the vessels *edges* still in *graph*, each named
+    either way round, once each and in order."""
+    index = _branch_index(graph)
+    return sorted({index[key] for key in map(tuple, edges) if key in index})
 
 
 def describe_vessels(graph: Any, edges: Iterable[tuple[Any, Any, Any]]) -> str:
@@ -340,9 +376,31 @@ def junction_table_rows(graph: Any, node: Any) -> tuple[list[JunctionVessel], li
     return vessels, rows
 
 
-def junction_marker_layer(graph: Any, scan: NetworkScan) -> LayerSpec:
-    """A magenta ring on each node where four or more vessels meet."""
+def marker_colours(count: int, chosen: int | None = None) -> np.ndarray:
+    """(count, 4) RGBA for a layer of rings: magenta, like the vessels they
+    ring (:data:`LISTED`), and cyan round the *chosen* one (from 0), like
+    its vessels (:data:`AT_JUNCTION`)."""
+    colours = np.tile(np.asarray(STATUS_COLOURS[LISTED], dtype=float), (int(count), 1))
+    if chosen is not None and 0 <= int(chosen) < int(count):
+        colours[int(chosen)] = STATUS_COLOURS[AT_JUNCTION]
+    return colours
+
+
+def _marker_options(colours: np.ndarray) -> dict[str, Any]:
+    return {
+        "size": MARKER_SIZE_UM,
+        "face_color": "transparent",
+        "border_color": colours,
+        "border_width": MARKER_BORDER_WIDTH,
+        "out_of_slice_display": True,
+    }
+
+
+def junction_marker_layer(graph: Any, scan: NetworkScan, chosen: Any = None) -> LayerSpec:
+    """A ring on each node where four or more vessels meet: magenta, and
+    cyan round the *chosen* node."""
     points, ids = node_points(graph, scan.junctions)
+    at = next((i for i, node in enumerate(ids) if chosen is not None and node == chosen), None)
     return LayerSpec(
         kind="points",
         name=HIGH_DEGREE_JUNCTIONS,
@@ -351,13 +409,7 @@ def junction_marker_layer(graph: Any, scan: NetworkScan) -> LayerSpec:
             "node_id": ids,
             "degree": np.asarray([graph.degree(n) for n in ids], dtype=float),
         },
-        options={
-            "size": 8.0,
-            "face_color": "transparent",
-            "border_color": "magenta",
-            "border_width": 0.2,
-            "out_of_slice_display": True,
-        },
+        options=_marker_options(marker_colours(len(ids), at)),
     )
 
 
@@ -407,6 +459,20 @@ def nearest_node(
     from napari's point picking, which needs the layer drawn on screen.
     """
     points, ids = node_points(graph)
+    best = _nearest_under_click(points, position, view_direction, dims, max_distance)
+    return None if best is None else ids[best]
+
+
+def _nearest_under_click(
+    points: Any,
+    position: Sequence[float],
+    view_direction: Sequence[float] | None,
+    dims: Sequence[int] | None,
+    max_distance: float,
+) -> int | None:
+    """The index of the point of *points* a click landed on, as
+    :func:`nearest_node` reads one; None when none is within *max_distance*."""
+    points = np.asarray(points, dtype=float).reshape(-1, 3)
     if not len(points):
         return None
     point = np.asarray(position, dtype=float)[-3:]
@@ -418,7 +484,53 @@ def nearest_node(
         delta = delta - np.outer(delta @ view, view)
     distance = np.linalg.norm(delta, axis=1)
     best = int(np.argmin(distance))
-    return ids[best] if distance[best] <= max_distance else None
+    return best if distance[best] <= max_distance else None
+
+
+def marker_pick_um(zoom: float | None = None) -> float:
+    """How far (microns) from a ring's centre a click chooses it, at a
+    camera *zoom* of that many screen pixels per micron: the ring and its
+    border, or :data:`MARKER_PICK_PX` on screen when that is further."""
+    try:
+        zoom = float(zoom)
+    except (TypeError, ValueError):
+        return MARKER_PICK_UM
+    if not np.isfinite(zoom) or zoom <= 0:
+        return MARKER_PICK_UM
+    return max(MARKER_PICK_UM, MARKER_PICK_PX / zoom)
+
+
+def marker_under_click(
+    centres: Any,
+    position: Sequence[float],
+    *,
+    view_direction: Sequence[float] | None = None,
+    dims: Sequence[int] | None = None,
+    max_distance: float = MARKER_PICK_UM,
+) -> int | None:
+    """Which ring (index into *centres*, microns ``(z, y, x)``) a click at
+    *position* landed in or on, read as :func:`nearest_node` reads a node: in
+    3D along the line of sight, so a ring is picked however deep it sits,
+    the one nearest the cursor winning. None when the click missed them all."""
+    return _nearest_under_click(centres, position, view_direction, dims, max_distance)
+
+
+def junction_under_click(
+    graph: Any,
+    junctions: Sequence[Any],
+    position: Sequence[float],
+    *,
+    view_direction: Sequence[float] | None = None,
+    dims: Sequence[int] | None = None,
+    max_distance: float = MARKER_PICK_UM,
+) -> Any | None:
+    """The node of *junctions* whose ring (:func:`junction_marker_layer`) a
+    click at *position* landed in or on; None when it missed them all."""
+    points, ids = node_points(graph, junctions)
+    best = marker_under_click(
+        points, position, view_direction=view_direction, dims=dims, max_distance=max_distance
+    )
+    return None if best is None else ids[best]
 
 
 def _view_ray(view_direction: Sequence[float] | None, axes: Sequence[int]) -> np.ndarray | None:
@@ -1254,21 +1366,17 @@ def review_box_um(item: Any) -> float:
     return max(LOOP_ZOOM_MIN_BOX_UM, LOOP_ZOOM_MARGIN * span)
 
 
-def review_marker_layer(items: Sequence[Any]) -> LayerSpec:
-    """A magenta ring round each item of a review list."""
+def review_marker_layer(items: Sequence[Any], chosen: Any = None) -> LayerSpec:
+    """A ring round each item of a review list: magenta, and cyan round
+    the *chosen* item (one of *items*)."""
     centres = np.asarray([item.centre_um for item in items], dtype=float).reshape(-1, 3)
+    at = next((i for i, item in enumerate(items) if chosen is not None and item is chosen), None)
     return LayerSpec(
         kind="points",
         name=REVIEW_MARKERS,
         data=centres,
         features={"item": np.arange(1, len(centres) + 1, dtype=float)},
-        options={
-            "size": 8.0,
-            "face_color": "transparent",
-            "border_color": "magenta",
-            "border_width": 0.2,
-            "out_of_slice_display": True,
-        },
+        options=_marker_options(marker_colours(len(centres), at)),
     )
 
 

@@ -806,3 +806,103 @@ def test_a_regenerate_is_summed_up_before_and_after():
     unsolved_only = network_summary(_network(), [], [])
     assert unsolved_only.unsolved is None and unsolved_only.inflow is None
     assert "unsolved" not in summary_change(unsolved_only, unsolved_only)
+
+
+# --- Rings: what they ring is coloured, and a click on one chooses it ----------------
+
+from haemolynx.gui.post_processing import (  # noqa: E402
+    LISTED,
+    MARKER_PICK_PX,
+    MARKER_PICK_UM,
+    MARKER_SIZE_UM,
+    branch_ids_of,
+    junction_under_click,
+    marker_colours,
+    marker_pick_um,
+    marker_under_click,
+)
+
+
+def test_a_ringed_vessel_is_listed_unless_chosen_or_selected_and_over_an_added_one():
+    # Vessels 0 .. 4: 1 added, 1-3 ringed, 2 of the chosen item, 3 selected.
+    status = vessel_status([0, 1, 2, 3, 4], added=[1, 4], listed=[1, 2, 3], at_junction=[2, 3], selected=[3])
+    assert list(status) == [CONNECTED, LISTED, AT_JUNCTION, SELECTED, ADDED]
+    assert tuple(status_colours([LISTED])[0]) == STATUS_COLOURS[LISTED]
+    assert len({STATUS_COLOURS[s] for s in (CONNECTED, ADDED, LISTED, AT_JUNCTION, SELECTED)}) == 5
+
+
+def test_rings_are_the_colour_of_what_they_ring_and_the_chosen_one_cyan():
+    colours = marker_colours(3, 1)
+    assert colours.shape == (3, 4)
+    assert [tuple(row) for row in colours] == [STATUS_COLOURS[LISTED], STATUS_COLOURS[AT_JUNCTION], STATUS_COLOURS[LISTED]]
+    assert all(tuple(row) == STATUS_COLOURS[LISTED] for row in marker_colours(2))
+    assert all(tuple(row) == STATUS_COLOURS[LISTED] for row in marker_colours(2, 5)), "no such ring"
+    assert marker_colours(0).shape == (0, 4)
+
+
+def test_the_chosen_junction_and_item_get_a_cyan_ring():
+    G = _network_with_two_junctions()
+    scan = scan_network(G)
+    assert scan.junctions == (1, 4)
+    for chosen, cyan in ((None, None), (1, 0), (4, 1), (99, None)):
+        border = np.asarray(junction_marker_layer(G, scan, chosen).options["border_color"])
+        expected = marker_colours(2, cyan)
+        assert np.allclose(border, expected), chosen
+    assert junction_marker_layer(G, scan).options["size"] == MARKER_SIZE_UM
+
+    first, second = _item(), _item(centre=(1.0, 2.0, 3.0))
+    border = np.asarray(review_marker_layer([first, second], second).options["border_color"])
+    assert np.allclose(border, marker_colours(2, 1))
+    # An equal item that is not the one listed is not the one chosen.
+    border = np.asarray(review_marker_layer([first, second], _item()).options["border_color"])
+    assert np.allclose(border, marker_colours(2))
+
+
+def _network_with_two_junctions() -> nx.MultiGraph:
+    """:func:`_network`, with node 4 a second 4+ junction: 4 -> 6 and 4 -> 7."""
+    G = _network()
+    G.add_node(6, pos=np.asarray((0.0, 0.0, 40.0)))
+    G.add_node(7, pos=np.asarray((0.0, 10.0, 30.0)))
+    _add(G, 4, 6)
+    _add(G, 4, 7)
+    return G
+
+
+def test_a_click_in_or_on_a_ring_chooses_it_and_the_nearest_wins():
+    centres = [(0.0, 0.0, 10.0), (0.0, 20.0, 10.0)]
+    assert marker_under_click(centres, (0.0, 1.0, 11.0)) == 0
+    assert marker_under_click(centres, (0.0, 20.0, 10.0 + 0.99 * MARKER_PICK_UM)) == 1, "on the border"
+    assert marker_under_click(centres, (0.0, 20.0, 10.0 + 1.01 * MARKER_PICK_UM)) is None
+    assert marker_under_click(centres, (0.0, 10.0, 10.0)) is None, "between them, in neither"
+    assert marker_under_click(centres, (0.0, 12.0, 10.0), max_distance=20.0) == 1
+    assert marker_under_click([], (0.0, 0.0, 0.0)) is None
+    # 3D: along the line of sight, whatever depth the ring sits at.
+    assert marker_under_click(centres, (90.0, 19.0, 10.0), view_direction=(1, 0, 0), dims=(0, 1, 2)) == 1
+    # 2D: only the axes on screen count.
+    assert marker_under_click(centres, (55.0, 0.5, 10.0), dims=(1, 2)) == 0
+    assert MARKER_PICK_UM >= MARKER_SIZE_UM / 2
+
+
+def test_a_click_on_a_junctions_ring_names_the_junction():
+    G = _network_with_two_junctions()  # junction 1 at (0, 0, 10), 4 at (0, 0, 30)
+    junctions = scan_network(G).junctions
+    assert junction_under_click(G, junctions, (0.0, 1.0, 29.0)) == 4
+    assert junction_under_click(G, junctions, (0.0, 0.5, 10.0)) == 1
+    assert junction_under_click(G, junctions, (0.0, 0.0, 20.0)) is None
+    # Node 5 is no junction: a click on it chooses nothing.
+    assert junction_under_click(G, junctions, (0.0, 20.0, 10.0)) is None
+
+
+def test_zoomed_out_a_click_a_few_pixels_off_a_ring_still_chooses_it():
+    assert marker_pick_um(None) == MARKER_PICK_UM
+    assert marker_pick_um(0.0) == MARKER_PICK_UM
+    assert marker_pick_um(float("nan")) == MARKER_PICK_UM
+    assert marker_pick_um(100.0) == MARKER_PICK_UM, "zoomed in: the ring itself"
+    assert marker_pick_um(0.5) == pytest.approx(MARKER_PICK_PX / 0.5), "zoomed out: pixels on screen"
+
+
+def test_the_branch_ids_of_vessels_named_either_way_round_once_each():
+    G = _network()
+    ids = branch_ids_of(G, [(5, 1, 0), (1, 5, 0), (1, 2, 0), (8, 9, 0)])
+    assert ids == sorted({branch_id_of(G, (1, 5, 0)), branch_id_of(G, (1, 2, 0))})
+    assert branch_ids_of(G, []) == []

@@ -513,7 +513,10 @@ are only caught locally.
   `_post_processing_controls`), with no "Run from this stage". Its Review dropdown
   (`gui/post_processing.REVIEW_LISTS`) chooses the one list Scan network makes -- only that
   one, so a scan does no more work than it needs -- optionally only within a radius of the
-  view centre; None, the default, lists, marks and zooms to nothing. "4+ junctions" shows the
+  view centre; None, the default, lists, marks and zooms to nothing. Each item a list rings
+  (and each 4+ junction) is magenta, ring and vessels (the `listed` status), the chosen one
+  cyan (`marker_colours`); with no edit armed, a click on a ring chooses its item without
+  moving the camera (`marker_under_click`, `marker_pick_um`). "4+ junctions" shows the
   junction list, table and Delete/Leave/Split buttons. The other twelve are
   `graph/network_review.py`'s read-only finders, each returning `ReviewItem`s ranked as the list
   shows them: junctions close together (Merge into one junction, `graph.merge_junctions`),

@@ -257,8 +257,8 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     ),
     "review_items": (
         "What the chosen check found, in the order it ranks them; click one "
-        "to zoom to it and list its vessels below. Kept items are not listed "
-        "again"
+        "to zoom to it and list its vessels below, or click its ring in the "
+        "viewer. Kept items are not listed again"
     ),
     "review_table": (
         "The chosen item's vessels; click or shift/ctrl-click rows to select "
@@ -301,7 +301,7 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     ),
     "junctions": (
         "Junctions where four or more vessels meet; click one to zoom to it "
-        "and list its vessels below"
+        "and list its vessels below, or click its ring in the viewer"
     ),
     "table": (
         "The vessels meeting at the chosen junction; click or shift/ctrl-click "
