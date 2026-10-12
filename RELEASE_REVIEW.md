@@ -20,7 +20,7 @@ confirming.
 
 | # | Aspect | Score | What holds it there (the next checks to pass) |
 |---|---|---|---|
-| 1 | [Graph accuracy](#1-graph-accuracy--graph) | **4** | fitted rules' results not saved (6b); coverage measures disagree (6c); morphology erodes the image faces (6d) |
+| 1 | [Graph accuracy](#1-graph-accuracy--graph) | **4** | fitted rules' results not saved for most grids (6b); coverage measures disagree (6c); the prune's protrusion test cannot tell a hair from a vessel's end (6d) |
 | 2 | [Diameter accuracy](#2-diameter-accuracy--diameter) | **4** | no recorded benchmark table (6a); planted-vessel error not reported for real runs (6b) |
 | 3 | [Haemodynamic accuracy](#3-haemodynamic-accuracy--flow) | **3** | the default "in vitro" Pries law is not the law it cites (4b) |
 | 4 | [Statistics](#4-statistics--stats) | **5** | no glossary of definitions and units (6a); 21 of 95 rows carry a unit (6b) |
@@ -29,7 +29,7 @@ confirming.
 | 7 | [Memory and scale](#7-memory-and-scale--memory) | **4** | peak memory never measured (6a); no stated requirements (6b); the default solvers do not scale (6c) |
 | 8 | [Usability](#8-usability--usability) | **4** | no task list walked through (6a); defaults untested end to end (6b); no undo (6c) |
 | 9 | [Visualisation](#9-visualisation--visual) | **4** | figures without units (6a); tube frame rate not measured (6c); mixed dpi (6d) |
-| 10 | [Exports](#10-exports--export) | **3** | VTK writes unsolved vessels' flows as real numbers (4b) |
+| 10 | [Exports](#10-exports--export) | **3** | blind-end vessels keep a flow of 0 in the VTK, flagged, not blank: a decision (4b) |
 | 11 | [Documentation and help](#11-documentation-and-help--docs) | **4** | help pages empty, 0 of 10, for Harvey to write (6a); guide skips Post processing and Perturbations (6b) |
 | 12 | [Robustness](#12-robustness--robust) | **4** | no edge-case suite through every stage (6a); open review bugs (6b) |
 | 13 | [Reproducibility](#13-reproducibility--repro) | **4** | no settings, version or commit beside the outputs (6a); no end-to-end identity test (6c) |
@@ -186,9 +186,9 @@ skeletonisation, graph building, smoothing and lengths.
 | graph.4b | A | Each known artefact kind has a synthetic fixture that pins it. The kinds are: two vessels in one lumen, a loop inside one lumen, dead ends by kind, and uncovered mask. | ✓ | `tests/lumen_artefact_fixtures.py`, `test_lumen_artefacts.py`, `tests/dense_capillary_fixtures.py`, the Nerve invariants in `test_pipeline_invariants.py:467-513` |
 | graph.4c | A | Lengths are within 5% of truth on curves of known length. | ✓ | Helices: total under 2%, worst vessel under 5% (`test_centreline_smoothing.py:184-189`). Anisotropic voxels: `test_anisotropic_voxel_size.py` |
 | graph.6a | A | The lumen-artefact report on a reference dataset's saved graph is recorded at a named commit. | ✓ | E14.5 `REPORT.md`: 33 pairs in one lumen, 0 of 246 short loops inside one lumen, 653 dead ends, 77.7% of the mask covered |
-| graph.6b | H | Every rule that decides what a structure is (loop, doubled edge, bridge, dead end) was fitted to a marked grid, and the fit is saved: right, wrong, and the all-one-way baseline. | ✗ | About 210 marks over seven grids under `outputs/*_review/`, but the only fit saved is `grid_d_fit.py`. `dead_end_review` has keys and no marks |
+| graph.6b | H | Every rule that decides what a structure is (loop, doubled edge, bridge, dead end) was fitted to a marked grid, and the fit is saved: right, wrong, and the all-one-way baseline. | ✗ | Dead ends: Harvey marked G1-G3 on 2026-10-12 (87 judged), and the fit is saved (`scripts/dead_end_review/fit_marks.py`, `outputs/dead_end_review/FIT.md`, E14.5 at 43dcf45). No rule reached 90%. The other grids' ~210 marks still have only `grid_d_fit.py` |
 | graph.6c | R | The coverage measures agree, or the difference is explained. | ✗ | E14.5 at `e2b4830` gives 77.7% of the mask covered in the artefact report, but 47.1% graph/mask and "979 of 1205 vessels missing" (18.8% represented) in the consistency log. By that log's measure the skeleton itself is only 31.0% represented (`outputs/p6/o2_current.log:10-20`), so what it counts as a "vessel" needs explaining before either number becomes a target |
-| graph.6d | R | No correctness bug found in review is open. | ✗ | Unpadded `binary_closing` erodes voxels at the image faces (`PLAN_dale_review_fixes.md`, item 2) |
+| graph.6d | R | No correctness bug found in review is open. | ✗ | Face erosion fixed at `b99758b` (`test_morphology_at_faces.py`). Open: the prune's protrusion test cannot tell a hair along a wall from a vessel's collinear end (`PLAN_one_centreline_per_lumen.md`, 2026-10-11) |
 | graph.8a | A | On phantoms of known topology, at two voxel sizes and two noise levels, junction precision and recall are both ≥ 0.95 and centreline length is within 5% *(proposed)*. | ✗ | No image-to-graph comparison against a known topology exists (plan step R4) |
 | graph.8b | H | Each fitted rule agrees with ≥ 90% *(proposed)* of the marks on a fresh grid it was not fitted on. | ✗ | Doubled-edge rule on fresh grid F: 14 of 30 by the survey's reading of the key files, against 17 for marking everything "vessel". Confirm that reading before acting on it |
 | graph.8c | A | The artefact report is within its targets on two real datasets. | ✗ | No targets are written yet. The Nerve fixture holds the invariants (0 loops inside one lumen, no off-mask dead ends) |
@@ -223,9 +223,9 @@ haematocrit, constriction and perturbations.
 | flow.4b | R | Every law matches the publication it cites, or the citation says what was changed. | ✗ | **The default `plasma_column` "in vitro" Pries law uses the in vivo base `6·exp(−0.085D)`.** Pries 1992's in vitro law is `220·exp(−1.3D)`. That is 3.4× at 5 µm, and the tests pin the hybrid. A decision for Harvey and Finbar (`PLAN_dale_review_fixes.md`, item 1) |
 | flow.6a | A | The viscosity and phase-separation laws are checked against published data points, not only re-derived formulas. | ✗ | The formulas are hand-evaluated (`test_viscosity_laws.py:367-373`). There is no comparison with tabulated data |
 | flow.6b | A | Flow balance is checked on real data. | ✓ | Nerve (`test_nerve_pipeline.py:141`) |
-| flow.6c | A | On each reference dataset, the share of centreline with a solved flow is recorded and the unsolved part is explained. | ✗ | One E14.5 summary lists 1,867 of 3,146 edges unsolved. The script that wrote it is gone, so its meaning is unconfirmed |
+| flow.6c | A | On each reference dataset, the share of centreline with a solved flow is recorded and the unsolved part is explained. | ✗ | The solve now logs and records why each unsolved vessel carries no flow (`graph.FLOW_STATE`, `test_open_ends.py`; at `b6d9210`). E14.5: 1,539 of 2,839 vessels lie on no inlet-to-outlet path: 585 behind dead ends inside the tissue, 954 in pieces without an inlet and an outlet, 0 behind a closed face end (`outputs/e14_full/run.log`). Nerve not yet recorded |
 | flow.8a | A | An independent solver (NetFlow) on the same network agrees within 1% *(proposed)*, with distributed haematocrit included. | ✗ | NetFlow is cited for the relaxation schedule but never compared |
-| flow.8b | A | The sensitivity of network resistance to diameter error and to boundary placement is quantified and reported. | ✗ | |
+| flow.8b | A | The sensitivity of network resistance to diameter error and to boundary placement is quantified and reported. | ✗ | Only the boundary condition at open ends: across five models network resistance moves under 8% on E14.5 (`scripts/open_end_sensitivity.py`, `outputs/open_end_sensitivity_e14/`, at `cd71285`). Diameter error and boundary placement are not measured |
 | flow.10a | H | Flow is compared with measured in vivo flow or red-cell velocity for at least one network, and the differences are explained. | ✗ | |
 
 ### 4. Statistics — `stats`
@@ -336,11 +336,11 @@ haematocrit, constriction and perturbations.
 |---|---|---|---|---|
 | export.2a | A | A run writes VTK and CSV. | ✓ | `vtk_io.py:116-217`, `csv_export.py` |
 | export.4a | A | Tests read every export back and check its content. | ✓ | `test_vtk_io.py` (23), `test_statistics.py:785`, `test_tissue_volume.py:380`, `test_perturbation_outputs.py`, `test_gui_run_snapshot.py` |
-| export.4b | R | No export can be misread: unsolved vessels' flows are blank, not numbers. | ✗ | The VTK writes unsolved vessels' flows as real values and has no solved flag (`PLAN_dale_review_fixes.md`, item 5) |
+| export.4b | R | No export can be misread: unsolved vessels' flows are blank, not numbers. | ✗ | Since `b6d9210` the VTK blanks flows and pressures where no inlet and outlet reach (`no_boundary`), and writes `flow_solved` and `flow_state` on every vessel (`test_vtk_io.py:310`). Vessels behind dead ends inside the tissue keep a flow of 0, the model's answer, flagged `flow_solved=0`, `flow_state=blind_end` (the dead-end plan's D4). Harvey decides whether that counts as blank |
 | export.6a | R | A data dictionary documents every exported file, column or array, and unit. | ✗ | None. The README and the guide do not describe the outputs |
 | export.6b | A | Units are present and consistent everywhere, VTK arrays and perturbation CSVs included. | ✗ | VTK arrays have no units. Perturbation resistance and flow columns have none |
-| export.6c | A | Outputs carry the HaemoLynx version, the commit and the settings used, with a config beside them. | ✗ | `__version__` appears only in the About text. Settings travel only inside `.haemorun` |
-| export.6d | A | The VTK carries each vessel's diameter and its solved flag. | ✗ | |
+| export.6c | A | Outputs carry the HaemoLynx version, the commit and the settings used, with a config beside them. | ✗ | The VTK vessels file now carries the version, viscosity law, diameter basis, haematocrit and open-end model in its field data (`test_vtk_io.py:310`, `b6d9210`). No commit and no settings: those travel only inside `.haemorun` |
+| export.6d | A | The VTK carries each vessel's diameter and its solved flag. | ✓ | `diameter_um` and `flow_solved` on every vessel cell (`test_vtk_io.py:310-339`), at `b6d9210` |
 | export.8a | A | The graph is exported in an open format (GraphML or node-link JSON) besides the pickle. | ✗ | Pickle only |
 | export.8b | A | A script checks that each export opens in a third-party tool (ParaView or VTK, pandas, NetworkX). | ✗ | |
 | export.10a | A | The export format is versioned, and the previous release's outputs and `.haemorun` files still load (tested). | ✗ | `.haemorun` rejects any version but 1 (`run_snapshot.py:201`) |
@@ -373,7 +373,7 @@ haematocrit, constriction and perturbations.
 | robust.4a | A | Invalid inputs raise a named error, each with a test: empty skeleton, empty graph, mask shape mismatch, bad axis order. | ✓ | `test_build_network_empty_skeleton.py`, about 109 empty-input tests, `test_shape_mismatch_raises`, `test_axis_order.py`. 252 `pytest.raises` |
 | robust.4b | A | A failed stage in the panel keeps the earlier stages' results, and the panel stays usable. | ✓ | `gui/run_state.py`, `stage_checkpoints.py` |
 | robust.6a | A | An edge-case suite runs every stage and finishes or names its error: empty mask, one vessel, one voxel thick, 2D, strong anisotropy, vessels touching the border, no inlets or outlets. | ✗ | The pieces exist, but there is no suite through every stage. The 3D-only features are unverified on 2D input (`load_2d.py` docstring) |
-| robust.6b | R | No crash or wrong-answer bug found in review is open. | ✗ | Face erosion and the ilastik label guess (`PLAN_dale_review_fixes.md`, items 2 and 4) |
+| robust.6b | R | No crash or wrong-answer bug found in review is open. | ✗ | The ilastik label guess (`PLAN_dale_review_fixes.md`, item 4). Face erosion fixed at `b99758b`; the pericyte perturbation and statistics crashes on thick-vessel bridges fixed at `dd570cb`, and the pericyte perturbation on pieces no inlet and outlet reach at `213476a` |
 | robust.6c | H | There is no open report of a crash or freeze. | ✗ | The 2026-09-29 freeze (`hang_debug.*`) has no recorded outcome |
 | robust.8a | A | Three or more datasets from different labs or tissues run at one commit without code changes. | ✗ | E14.5, Nerve, Mason SM, Ross and carotid exist, but none has a recorded joint run |
 | robust.10a | A | Random masks (fuzzing) run with no unhandled exception. | ✗ | |
@@ -455,3 +455,4 @@ Add a row for every scoring, and for every change to a check or a target.
 | 2026-10-10 | `9c6a15a` | Claude | First scoring of all 16 aspects from code, tests and recorded outputs. Headline 3, mean 3.8. No H checks marked yet. Every *(proposed)* target still needs Harvey to confirm it. |
 | 2026-10-10 | `9c6a15a` | Harvey | Named the testers: Harvey, Finbar, Mason, George, Rebecca and Mike. George, Rebecca and Mike are independent (no commits). `usability.8a` and `visual.8a` now name them instead of saying "someone other than the developer". No score changes. |
 | 2026-10-10 | `9c6a15a` | Harvey | George, Rebecca and Mike are all first-time users and all domain experts (`stats.10a`). `package.6b` assigned: Windows to Harvey, macOS to Mason, Linux to Finbar. No score changes. |
+| 2026-10-12 | `b6d9210` | Claude | Dead-end work (`PLAN_dead_ends.md`). `export.6d` passes. Evidence updated for `graph.6b` (dead-end fit saved), `graph.6d` and `robust.6b` (face erosion fixed; bridge crashes fixed), `flow.6c`, `flow.8b`, `export.4b` and `export.6c`; each still fails. No score changes: exports stay 3 on `export.4b`. |
