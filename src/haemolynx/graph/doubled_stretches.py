@@ -205,6 +205,14 @@ class _Editor:
         #: edges go and come, not read off the whole graph after each change
         #: (that sum, twice per stretch, was 59 of the step's 70 s on E14.5).
         self.removed_um = 0.0
+        #: Positions (rounded) of the junctions zips have left behind, across
+        #: the clean-up's rounds: a zip that would put its new junction back
+        #: on one is the previous round's zip undone, and is refused.
+        self.zipped_at: set = set()
+
+    @staticmethod
+    def place(point) -> tuple:
+        return tuple(np.round(np.asarray(point, dtype=float) * 2.0).astype(int).tolist())
 
     def pos(self, node) -> np.ndarray:
         return np.asarray(self.G.nodes[node]["pos"], dtype=float)
@@ -283,8 +291,25 @@ def _trim(editor: _Editor, run: DoubledStretch, tip_at_stop: bool) -> bool:
     return True
 
 
-def _zip(editor: _Editor, run: DoubledStretch, shared, at_start: bool) -> bool:
-    """Make two edges leaving *shared* side by side one up to where they part."""
+def _part_together(along_edge: float, along_partner: float, min_shared_um: float) -> bool:
+    """Whether two edges leaving one node part at about the same distance
+    along each (within a factor of two, and past *min_shared_um*). A fork
+    does; where the parting points disagree, the edge re-attached at the
+    other's parting point doubled back along the stretch kept, and the next
+    round zipped it the other way: on E14.5 11 forks moved 4 um to and fro
+    to the round limit."""
+    if along_edge < min_shared_um or along_partner < min_shared_um:
+        return False
+    return 0.5 * along_edge <= along_partner <= 2.0 * along_edge
+
+
+def _zip(editor: _Editor, run: DoubledStretch, shared, at_start: bool, min_shared_um: float = 0.0) -> bool:
+    """Make two edges leaving *shared* side by side one up to where they part.
+
+    A parting point less than *min_shared_um* along the edge kept from
+    *shared* is refused: zipped there, the roles reverse at the new
+    junction and the next round zips the other way (E14.5: 11 forks
+    moving 0.4 um back and forth to the round limit)."""
     G = editor.G
     u, v, _key = run.edge
     samples = run.samples if at_start else run.samples[::-1]
@@ -302,15 +327,23 @@ def _zip(editor: _Editor, run: DoubledStretch, shared, at_start: bool) -> bool:
     if run.radius_um <= run.partner_radius_um:
         # This edge is the outer one: the partner is kept and split.
         where = _nearest_inner(partner_path, samples[part])
-        if where is None:
+        if where is None or not _part_together(_length(samples[: part + 1]), _length(partner_path[: where + 1]), min_shared_um):
             return False
+        if editor.place(partner_path[where]) in editor.zipped_at:
+            return False
+        editor.zipped_at.add(editor.place(editor.pos(shared)))
         (node,) = editor.split(run.partner, shared, [where])
         editor.replace(run.edge, [(node, far, np.vstack([editor.pos(node), samples[part:]]))])
     else:
         where = _nearest_inner(partner_path, partner_part)
         inner = _nearest_inner(editor.path(run.edge, shared), samples[part])
-        if where is None or inner is None:
+        if where is None or inner is None or not _part_together(
+            _length(samples[: part + 1]), _length(partner_path[: where + 1]), min_shared_um
+        ):
             return False
+        if editor.place(editor.path(run.edge, shared)[inner]) in editor.zipped_at:
+            return False
+        editor.zipped_at.add(editor.place(editor.pos(shared)))
         (node,) = editor.split(run.edge, shared, [inner])
         if not G.has_edge(*run.partner):
             return False
@@ -362,6 +395,7 @@ def resolve_doubled_stretches(
     min_run_um: float = MIN_DOUBLED_RUN_UM,
     min_run_radii: float = MIN_DOUBLED_RUN_RADII,
     keep_apart: Callable[[DoubledStretch], bool] | None = None,
+    memo: dict | None = None,
 ) -> nx.MultiGraph:
     """Resolve, in place, every stretch of centreline :func:`doubled_stretches`
     finds running beside another in one lumen (see the module docstring).
@@ -369,7 +403,9 @@ def resolve_doubled_stretches(
     Each edge is changed at most once a call; a stretch whose edge or partner
     has already changed waits for the next call (``assemble.consolidate_lumen``
     repeats until nothing changes). Two edges joining the same two nodes are
-    left to degree-2 merging, which drops a duplicate route. *keep_apart*,
+    left to degree-2 merging, which drops a duplicate route. *memo*, a dict
+    a caller passes to every call on one graph, remembers across calls where
+    zips have put junctions, so none is zipped back. *keep_apart*,
     called with each stretch, is evidence beyond the mask that the two
     centrelines are two vessels (the raw image, say): a stretch it returns
     True for is left alone. The mask alone cannot tell (grids H and H2).
@@ -378,9 +414,20 @@ def resolve_doubled_stretches(
     if not runs:
         return G
     editor = _Editor(G)
+    if memo is not None:
+        # Across the clean-up's rounds: where zips have put junctions, so no
+        # round zips a fork back to where the round before had it.
+        editor.zipped_at = memo.setdefault("zipped_at", set())
     counts = {"trimmed": 0, "zipped": 0, "rejoined": 0}
+    # A run of a single sample has no length to rewire: zipping it moved the
+    # junction one vertex along and left the same one-sample run at the new
+    # junction, so the clean-up never settled (E14.5: ~24 forks re-zipped
+    # every round to its limit).
+    too_short = 0.5 * _sample_step(support.voxel_size_zyx)
     for run in runs:
         edge, partner = run.edge, run.partner
+        if run.length_um < too_short:
+            continue
         if not (G.has_edge(*edge) and G.has_edge(*partner)):
             continue
         if keep_apart is not None and keep_apart(run):
@@ -399,10 +446,18 @@ def resolve_doubled_stretches(
             done = "trimmed" if _trim(editor, run, tip_at_stop=True) else None
         elif run.at_start and G.degree[u] == 1 and trims:
             done = "trimmed" if _trim(editor, run, tip_at_stop=False) else None
-        elif run.at_start and u in (a, b):
-            done = "zipped" if _zip(editor, run, u, at_start=True) else None
-        elif run.at_stop and v in (a, b):
-            done = "zipped" if _zip(editor, run, v, at_start=False) else None
+        elif run.at_start and run.at_stop:
+            # The whole edge runs beside the partner: a whole-edge pair, the
+            # pair rule's case, not a stretch to rewire.
+            pass
+        elif run.at_start and u in (a, b) and G.degree[u] >= 3:
+            # A fork is two edges leaving a junction. At a degree-2 node the
+            # two are one vessel folding back (a hairpin) or kinking: zipped,
+            # the degree-2 merge joined the pieces again and the next round
+            # zipped them again, 11 of them on E14.5 to the round limit.
+            done = "zipped" if _zip(editor, run, u, at_start=True, min_shared_um=2 * too_short) else None
+        elif run.at_stop and v in (a, b) and G.degree[v] >= 3:
+            done = "zipped" if _zip(editor, run, v, at_start=False, min_shared_um=2 * too_short) else None
         elif run.radius_um < run.partner_radius_um:
             done = "rejoined" if _rejoin(editor, run) else None
         if done:

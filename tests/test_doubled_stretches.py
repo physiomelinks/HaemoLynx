@@ -181,3 +181,45 @@ def test_the_clean_up_hands_the_evidence_to_the_pair_rule_and_the_stretch_step()
     assert cleanup.keep_apart is not None
     G = consolidate_lumen(G, cleanup)
     assert G.number_of_edges() == 2  # the pair stays: two vessels by the evidence
+
+
+# --- the clean-up settles: no round zips a fork back ---------------------------
+
+
+def test_a_fork_is_zipped_only_where_its_edges_part_at_a_similar_distance():
+    from haemolynx.graph.doubled_stretches import _part_together
+
+    assert _part_together(10.0, 12.0, 1.0)
+    assert _part_together(10.0, 5.0, 1.0) and _part_together(10.0, 20.0, 1.0)
+    assert not _part_together(10.0, 4.9, 1.0) and not _part_together(10.0, 20.1, 1.0)
+    assert not _part_together(0.5, 0.5, 1.0)  # shorter than the minimum shared stretch
+
+
+def test_the_memo_remembers_where_zips_put_junctions_and_a_second_pass_changes_nothing():
+    mask, G, _ends = fork_that_parts()
+    support = _support(mask)
+    memo = {}
+    resolve_doubled_stretches(G, support, memo=memo)
+    assert memo["zipped_at"], "the zip recorded the junction it left"
+    edges = sorted(map(str, G.edges(keys=True)))
+    resolve_doubled_stretches(G, support, memo=memo)
+    assert sorted(map(str, G.edges(keys=True))) == edges
+
+
+def test_a_zip_that_would_put_the_junction_back_where_one_was_is_refused():
+    """A fork is not zipped to a junction a previous round's zip left behind:
+    the memo holds that place and the zip is refused, so no round undoes
+    the one before (E14.5's forks moved to and fro to the round limit)."""
+    from haemolynx.graph.doubled_stretches import _Editor
+
+    mask, G, (trunk_end, _a, _b) = fork_that_parts()
+    support = _support(mask)
+    resolve_doubled_stretches(G, support)
+    (landed,) = [n for n in G.nodes if G.degree[n] == 3]
+    place = _Editor.place(G.nodes[landed]["pos"])
+
+    mask, G, _ends = fork_that_parts()
+    resolve_doubled_stretches(G, _support(mask), memo={"zipped_at": {place}})
+    # The fork may still be zipped the other way round (the other edge kept,
+    # its parting vertex a few um away), but never onto the remembered place.
+    assert all(_Editor.place(G.nodes[n]["pos"]) != place for n in G.nodes if G.degree[n] == 3)

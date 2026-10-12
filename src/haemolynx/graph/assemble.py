@@ -334,6 +334,7 @@ def consolidate_lumen(
     # The pair check's verdicts, kept from round to round: a round changes a
     # few places, and only the edges near them are judged again.
     pairs_memo: dict = {}
+    stretch_memo: dict = {}
     def state(G):
         # A rewired stretch can leave the counts as they were and shorten
         # the centreline: the length is part of what "changed" means.
@@ -353,7 +354,7 @@ def consolidate_lumen(
         G = remove_loops_inside_one_lumen(G, cleanup.support)
         # What the whole-edge pair rule leaves: a stretch of an edge beside
         # another, rewired rather than deleted (graph.doubled_stretches).
-        G = resolve_doubled_stretches(G, cleanup.support, keep_apart=cleanup.keep_apart)
+        G = resolve_doubled_stretches(G, cleanup.support, keep_apart=cleanup.keep_apart, memo=stretch_memo)
         # After the thick-vessel split the clean-up runs again, and a strand
         # it takes out can leave the bridge that joined it to the thick
         # centreline with a free end: a bridge is never a dead end.
