@@ -86,10 +86,15 @@ ENDOTHELIAL_CORE_SHARE = 0.5
 #: of the background above it, or there is nothing to read.
 SIGNAL_OVER_SPREAD = 1.0
 #: Gaussian blur (voxels) of each window before sampling, so a question is
-#: not answered by one bright speck of noise. Light: the image's own PSF has
-#: blurred it already, and a whole voxel halves the height of a wall one or
-#: two voxels thick.
-WINDOW_SMOOTHING_SIGMA_VOX = 0.5
+#: not answered by one speck of shot noise: E14.5's dextran channel has a
+#: median of 3 counts inside the mask and 0 outside, and only once blurred by
+#: a voxel do 98% of lumen voxels stand above the background's 99th
+#: percentile. The calibration reads its levels on blocks blurred the same
+#: way, so a wall thinner than the blur still normalises to 1.
+WINDOW_SMOOTHING_SIGMA_VOX = 1.0
+#: The lumen core is never asked to lie deeper than this (um): the middle of
+#: a thick vessel is dim under a plasma label, and is not its level.
+CORE_DEPTH_MAX_UM = 3.0
 #: A sample counts as vessel at or above this normalised brightness.
 BRIGHT_THRESHOLD = 0.5
 #: Paths and chords are sampled this many voxels apart (of the finest axis).
@@ -115,6 +120,8 @@ class RawCalibration:
     #: ``(vessel - wall) / (|vessel| + |wall|)`` above the background.
     contrast: float
     blocks: int
+    #: The blur (voxels) the levels were read under; the questions use the same.
+    sigma_vox: float = WINDOW_SMOOTHING_SIGMA_VOX
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -129,6 +136,7 @@ class RawCalibration:
             background_spread=float(record["background_spread"]),
             contrast=float(record.get("contrast", 0.0)),
             blocks=int(record.get("blocks", 0)),
+            sigma_vox=float(record.get("sigma_vox", WINDOW_SMOOTHING_SIGMA_VOX)),
         )
 
     @classmethod
@@ -217,6 +225,7 @@ def calibrate_raw(
     blocks: int = CALIBRATION_BLOCKS,
     block_um: float = CALIBRATION_BLOCK_UM,
     seed: int = 0,
+    sigma_vox: float = WINDOW_SMOOTHING_SIGMA_VOX,
 ) -> Optional[RawCalibration]:
     """The run's lumen, wall and background levels, read in *blocks* blocks of
     *block_um* round sampled mask voxels (each block its own distance
@@ -256,7 +265,9 @@ def calibrate_raw(
         in_vessel = inner & vessel
         if not in_vessel.any():
             continue
-        core = in_vessel & (depth >= max(CORE_DEPTH_UM, CORE_DEPTH_FRACTION * float(depth[in_vessel].max())))
+        core = in_vessel & (
+            depth >= max(CORE_DEPTH_UM, min(CORE_DEPTH_FRACTION * float(depth[in_vessel].max()), CORE_DEPTH_MAX_UM))
+        )
         outside = ndimage.distance_transform_edt(~vessel, sampling=vs)
         # The wall sits just inside the mask's surface (a segmentation of the
         # wall itself) or just outside it (a lumen segmentation under a wall
@@ -266,7 +277,11 @@ def calibrate_raw(
         background = inner & ~vessel & (outside >= BACKGROUND_FROM_UM)
         if core.sum() < 8 or (wall_in.sum() < 8 and wall_out.sum() < 8) or background.sum() < 8:
             continue
-        values = np.asarray(raw[box], dtype=np.float64)
+        # Read as the questions read: blurred, with the margin as context.
+        values = np.asarray(raw[box], dtype=np.float32)
+        if sigma_vox > 0:
+            values = ndimage.gaussian_filter(values, sigma_vox)
+        values = values.astype(np.float64)
         core_values.append(values[core])
         wall_in_values.append(values[wall_in])
         wall_out_values.append(values[wall_out])
@@ -310,7 +325,7 @@ def calibrate_raw(
             return None
     calibration = RawCalibration(
         stain=stain, vessel=core_level, wall=wall_level, background=background_level,
-        background_spread=spread, contrast=contrast, blocks=used,
+        background_spread=spread, contrast=contrast, blocks=used, sigma_vox=float(sigma_vox),
     )
     if calibration.level - background_level <= SIGNAL_OVER_SPREAD * max(spread, 0.0):
         logger.info(
@@ -440,7 +455,7 @@ class RawEvidence:
         voxel_size_zyx: Sequence[float],
         calibration: RawCalibration,
         *,
-        sigma_vox: float = WINDOW_SMOOTHING_SIGMA_VOX,
+        sigma_vox: Optional[float] = None,
     ):
         shape = tuple(int(n) for n in np.shape(raw))
         if len(shape) != 3:
@@ -449,7 +464,8 @@ class RawEvidence:
         self.shape = shape
         self.voxel_size_zyx = tuple(float(v) for v in voxel_size_zyx)
         self.calibration = calibration
-        self.sigma_vox = float(sigma_vox)
+        # The blur the levels were read under, unless a caller insists.
+        self.sigma_vox = float(calibration.sigma_vox if sigma_vox is None else sigma_vox)
         self.stats = RawEvidenceStats()
         self._spacing = np.asarray(self.voxel_size_zyx, dtype=float)
         self._step_um = SAMPLE_STEP_VOXELS * float(self._spacing.min())
@@ -566,9 +582,18 @@ class RawEvidence:
         raise NotImplementedError
 
     def _chord(self, a_um, b_um) -> np.ndarray:
+        """The raw profile along the chord, above the background, in units of
+        the stain's level -- unclipped, so a vessel brighter than the run's
+        level (a wide one, or one near the top of the stack) keeps its dip."""
         a = np.asarray(a_um, dtype=float).reshape(3)
         b = np.asarray(b_um, dtype=float).reshape(3)
-        return self.brightness(_along(np.vstack([a, b]), self._step_um))
+        values = self._values(_along(np.vstack([a, b]), self._step_um))
+        return (values - self.calibration.background) / self._scale
+
+    def _own_level(self, loop_um: np.ndarray) -> float:
+        """The loop's own vessels' brightness (median along it, unclipped)."""
+        samples = _along(np.asarray(loop_um, dtype=float).reshape(-1, 3), self._step_um)
+        return float(np.median((self._values(samples) - self.calibration.background) / self._scale))
 
     def hole_interior(self, loop_um: np.ndarray, radius_um: float) -> tuple[np.ndarray, np.ndarray]:
         """Points filling the loop's hole in the loop's own plane, one per
@@ -623,7 +648,11 @@ class RawEvidencePlasma(RawEvidence):
         points, _ = self.hole_interior(loop_um, radius_um)
         if not len(points):
             return float("nan")
-        return float(np.median(self.brightness(points)))
+        # Against the loop's own vessels, not the run's level: a loop on a
+        # wide bright vessel has a bright hole only if it is as bright as they are.
+        own = max(self._own_level(loop_um), BRIGHT_THRESHOLD)
+        hole = np.median((self._values(points) - self.calibration.background) / self._scale)
+        return float(np.clip(hole / own, 0.0, 1.0))
 
 
 class RawEvidenceEndothelial(RawEvidence):

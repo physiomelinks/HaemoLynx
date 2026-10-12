@@ -88,10 +88,13 @@ def test_calibration_reads_a_plasma_label():
     calibration = calibrate_raw(_noisy(raw), mask, VOXEL)
     assert calibration is not None
     assert calibration.stain == PLASMA_COLUMN
-    assert calibration.vessel == pytest.approx(BRIGHT, abs=30)
+    # Levels are read under the blur the questions sample with, so a thin
+    # tube's lumen reads a little under its peak.
+    assert 0.85 * BRIGHT <= calibration.vessel <= BRIGHT
     assert calibration.background == pytest.approx(BACKGROUND, abs=20)
     assert calibration.contrast > 0
     assert calibration.blocks >= 1
+    assert calibration.sigma_vox == module.WINDOW_SMOOTHING_SIGMA_VOX
 
 
 def test_calibration_reads_an_endothelial_label():
@@ -107,8 +110,11 @@ def test_calibration_takes_the_stain_it_is_told_when_that_level_has_signal():
     raw, mask = _endothelial_tube()
     told = calibrate_raw(_noisy(raw), mask, VOXEL, stain=ENDOTHELIAL)
     assert told is not None and told.stain == ENDOTHELIAL
-    # Told the lumen is the label when the lumen is dark: nothing to read.
-    assert calibrate_raw(_noisy(raw), mask, VOXEL, stain=PLASMA_COLUMN) is None
+    # Told the lumen is the label when the wall is: read as told, with the
+    # contrast saying the wall is the brighter.
+    as_plasma = calibrate_raw(_noisy(raw), mask, VOXEL, stain=PLASMA_COLUMN)
+    assert as_plasma is not None and as_plasma.stain == PLASMA_COLUMN
+    assert as_plasma.contrast < 0 and as_plasma.vessel < as_plasma.wall
     with pytest.raises(ValueError, match="stain must be one of"):
         calibrate_raw(raw, mask, VOXEL, stain="nuclear")
 
@@ -405,7 +411,7 @@ def test_build_network_keeps_the_calibration_on_the_graph(tmp_path):
     record = network.graph.graph[GRAPH_ATTRIBUTE]
     calibration = RawCalibration.from_record(record)
     assert calibration.stain == PLASMA_COLUMN
-    assert calibration.vessel == pytest.approx(BRIGHT, abs=30)
+    assert 0.7 * BRIGHT <= calibration.vessel <= BRIGHT  # a 3 x 4 voxel rod, read blurred
     assert calibration.background == pytest.approx(BACKGROUND, abs=20)
 
 
