@@ -8,6 +8,7 @@ from typing import Literal, Mapping
 import numpy as np
 
 from .axis_order import CANONICAL_AXIS_ORDER, voxel_size_zyx_from_xyz
+from .crop import CropBox, crop_volume
 from .ilastik import run_ilastik_headless_segmentation
 from .load import (
     _to_binary_volume_for_skeletonization,
@@ -373,13 +374,20 @@ def load_and_validate_vessel_masks(
     axis_order: str = CANONICAL_AXIS_ORDER,
     voxel_size_override_xyz=None,
     voxel_size_policy: str = "auto",
+    crop: CropBox | None = None,
 ) -> tuple[
     np.ndarray | None,
     np.ndarray | None,
     tuple[float, float, float] | None,
     tuple[float, float, float] | None,
 ]:
-    """Resolve, optionally segment with ilastik, load, and validate arteriole/venule masks."""
+    """Resolve, optionally segment with ilastik, load, and validate arteriole/venule masks.
+
+    *crop* is the ``crop_on_import`` box the main image was cut to (see
+    :mod:`haemolynx.io.crop`): each mask must have the whole image's shape, and
+    is cut to the same box before anything else is done to it, so *image_shape*
+    is the cropped image's.
+    """
     config = _vessel_mask_config(mask_role)
     scale_label = mask_role
 
@@ -476,6 +484,7 @@ def load_and_validate_vessel_masks(
             opposite_attached_max_component_volume_um3=opposite_attached_max_component_volume_um3,
             opposite_attached_max_distance_microns=opposite_attached_max_distance_microns,
             exclude_smaller_overlapping_volumes=exclude_smaller_overlapping_volumes,
+            crop=crop,
         )
         cached = _LOADED_MASKS.get(mask_role)
         if cached is not None and cached[0] == cache_key:
@@ -503,6 +512,20 @@ def load_and_validate_vessel_masks(
     if arteriole_mask is None or venule_mask is None:
         logger.info(config["disabled_message"])
         return None, None, None, None
+
+    if crop is not None and not crop.is_whole_volume:
+        for name, mask in (
+            (config["arteriole_mask_attr"], arteriole_mask),
+            (config["venule_mask_attr"], venule_mask),
+        ):
+            if mask.shape != tuple(crop.source_shape_zyx):
+                raise ValueError(
+                    f"{name} shape does not match input image shape before "
+                    f"crop_on_import cut it: {mask.shape} != {tuple(crop.source_shape_zyx)}"
+                )
+        logger.info(f"Crop on import, {scale_label}-vessel masks: {crop.describe()}")
+        arteriole_mask = crop_volume(arteriole_mask, crop)
+        venule_mask = crop_volume(venule_mask, crop)
 
     if arteriole_mask.shape != image_shape:
         raise ValueError(

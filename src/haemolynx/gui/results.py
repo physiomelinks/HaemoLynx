@@ -1838,11 +1838,16 @@ class ResultLayers:
                 )
             )
             self._skeleton = skeleton
+        note = f"Voxel size (z, y, x): {scale}"
+        crop = getattr(output, "crop", None)
+        if crop is not None and not crop.is_whole_volume:
+            # The run's layers sit at the box's corner, not the whole image's.
+            note += f". Cropped on import to {crop.describe()}; results are drawn from the crop's corner"
         return StageLayers(
             stage="skeletonise",
             title=_title_for("skeletonise"),
             layers=tuple(layers),
-            note=f"Voxel size (z, y, x): {scale}",
+            note=note,
         )
 
     def _from_build_network(self, output: Any) -> StageLayers:

@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..io.crop import CROP_LOCATIONS, CROP_METHODS, CROP_Z_LOCATIONS
 from ..parsers import Schema, Setting, dump_config
 
 # Path defaults are relative, and so are resolved against the directory a run
@@ -530,6 +531,93 @@ SCHEMA = Schema(
             unit="um3",
             minimum=0.0,
             requires=("segmentation_cleanup", "segmentation_cleanup_remove_small_volumes"),
+        ),
+        # ------------------------------------------------------------------
+        # Crop on import (Input tab, under Segmentation cleanup): one box of
+        # voxels cut out of the main image and every volume read alongside it,
+        # as each is loaded (see io.crop). Off by default.
+        # ------------------------------------------------------------------
+        Setting(
+            name="crop_on_import",
+            kind="bool",
+            default=False,
+            help=(
+                "Analyse only one box of the image: crop the input image, and every "
+                "mask and raw image read alongside it, to the same box of voxels as "
+                "each is loaded. Every position after that -- node positions, the "
+                "exports, boundary node coordinates and volumes -- is measured from "
+                "the box's corner, not the whole image's"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+        ),
+        Setting(
+            name="crop_method",
+            kind="choice",
+            default="size",
+            help=(
+                "Give the box as a size in voxels placed at a location (size), or as "
+                "the voxel coordinates of two opposite corners (coordinates)"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            choices=CROP_METHODS,
+            requires=("crop_on_import",),
+        ),
+        Setting(
+            name="crop_size_xyz",
+            kind="int_list",
+            default=None,
+            help=(
+                "Keep this many voxels along x, y and z; an axis shorter than this "
+                "is kept whole"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            unit="voxels",
+            requires=("crop_on_import", "crop_method=size"),
+        ),
+        Setting(
+            name="crop_location",
+            kind="choice",
+            default="centre",
+            help=(
+                "Place the box here in the x-y plane, as napari draws a slice "
+                "(top is y = 0, left is x = 0)"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            choices=CROP_LOCATIONS,
+            requires=("crop_on_import", "crop_method=size"),
+        ),
+        Setting(
+            name="crop_z_location",
+            kind="choice",
+            default="centre",
+            help="Take the box's slices from the start of the stack (z = 0), its middle, or its end",
+            section=_INPUT_AND_SEGMENTATION,
+            choices=CROP_Z_LOCATIONS,
+            requires=("crop_on_import", "crop_method=size"),
+        ),
+        Setting(
+            name="crop_start_xyz",
+            kind="int_list",
+            default=None,
+            help=(
+                "Start the box at this voxel (x, y, z), the corner with the smallest "
+                "index on every axis, as napari shows it under the cursor"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            unit="voxels",
+            requires=("crop_on_import", "crop_method=coordinates"),
+        ),
+        Setting(
+            name="crop_end_xyz",
+            kind="int_list",
+            default=None,
+            help=(
+                "End the box at this voxel (x, y, z), which is kept: the opposite "
+                "corner to crop_start_xyz. A corner past the image's edge stops at it"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            unit="voxels",
+            requires=("crop_on_import", "crop_method=coordinates"),
         ),
         # ------------------------------------------------------------------
         # Segmented-image quality check (Input tab): dataset-specific

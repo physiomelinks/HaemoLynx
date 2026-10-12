@@ -80,6 +80,8 @@ from haemolynx.haemodynamics.poiseuille import (
     positive_diameter_um,
     set_edge_diameter_override,
 )
+from haemolynx.io.crop import GRAPH_ATTRIBUTE as CROP_GRAPH_ATTRIBUTE
+from haemolynx.io.crop import CropBox, crop_volume_and_box, crop_volume_like_graph
 from haemolynx.io.load import (
     _skeletonize_loaded_volume,
     _to_binary_volume_for_skeletonization,
@@ -159,6 +161,10 @@ class SkeletonisedVolume:
     #: every step is off, or a resume that skipped skeletonise entirely) --
     #: same "None costs nothing extra" convention as thick_vessel_mask.
     raw_segmented_image: np.ndarray | None = None
+    #: Where ``image`` was cut from the whole input image (``crop_on_import``);
+    #: None when it was not cropped. Every position after this is measured
+    #: from its corner.
+    crop: CropBox | None = None
 
 
 @dataclass
@@ -474,7 +480,19 @@ def load_volume_for_skeletonise(settings: dict, input_format: str):
     With both use_memmap_loading and memmap_directory set, this is the one
     load a later run against the same input can skip re-decompressing --
     see io.load_raw_volume_reusing_cache for the invalidation rules.
+
+    With ``crop_on_import`` the image comes back cut to its box (io.crop):
+    the cache keeps the whole volume, so changing the box reloads nothing.
     """
+    image, metadata_voxel_size, voxel_meta_status, _crop = _load_and_crop_volume(
+        settings, input_format
+    )
+    return image, metadata_voxel_size, voxel_meta_status
+
+
+def _load_and_crop_volume(settings: dict, input_format: str):
+    """:func:`load_volume_for_skeletonise`, and the box ``crop_on_import`` cut
+    (None while it is off)."""
     if input_format not in {"tif", "tiff", "h5"}:
         raise ValueError("INPUT_FORMAT must be 'tif', 'tiff', or 'h5'.")
     if settings["use_memmap_loading"] and settings["memmap_directory"]:
@@ -509,11 +527,12 @@ def load_volume_for_skeletonise(settings: dict, input_format: str):
         float(voxel_size_y),
         float(voxel_size_z),
     )
-    return image, metadata_voxel_size, voxel_meta_status
+    image, crop = crop_volume_and_box(image, settings, description="input image")
+    return image, metadata_voxel_size, voxel_meta_status, crop
 
 
 def _thick_vessel_restriction_mask(
-    binary_image: np.ndarray, settings: dict, voxel_size_xyz
+    binary_image: np.ndarray, settings: dict, voxel_size_xyz, crop: CropBox | None = None
 ) -> np.ndarray | None:
     """Union of the configured large/small vessel masks, per
     ``skeleton_thick_vessel_restrict_to_mask`` -- or ``None`` for no
@@ -532,6 +551,9 @@ def _thick_vessel_restriction_mask(
     mask's own voxels mostly do not fall on it at all; see
     preprocessing.diagnose_mask_restriction_alignment for what that
     measures and why a low fraction matters here specifically.
+
+    *crop* is the ``crop_on_import`` box *binary_image* was cut to, which the
+    masks are cut to as well.
     """
     choice = str(settings["skeleton_thick_vessel_restrict_to_mask"]).strip().lower()
     if choice == "off":
@@ -544,6 +566,7 @@ def _thick_vessel_restriction_mask(
             **io.vessel_mask_arguments(settings, "large"),
             image_shape=image_shape,
             main_voxel_size_xyz=voxel_size_xyz,
+            crop=crop,
         )
         if large_arteriole_mask is not None:
             restriction |= large_arteriole_mask
@@ -556,6 +579,7 @@ def _thick_vessel_restriction_mask(
             **io.vessel_mask_arguments(settings, "small"),
             image_shape=image_shape,
             main_voxel_size_xyz=voxel_size_xyz,
+            crop=crop,
         )
         if small_arteriole_mask is not None:
             restriction |= small_arteriole_mask
@@ -590,7 +614,9 @@ def _skeletonize_tile_halo_voxels(settings: dict, voxel_size_zyx) -> int:
     return round(float(settings["skeletonize_tile_halo_um"]) / voxel_size_zyx[0])
 
 
-def _thick_region_arguments(settings: dict, binary: np.ndarray, voxel_size_xyz) -> dict:
+def _thick_region_arguments(
+    settings: dict, binary: np.ndarray, voxel_size_xyz, crop: CropBox | None = None
+) -> dict:
     """What decides the thick-vessel region: shared by skeletonisation and by
     :func:`thick_vessel_mask_from_image`, so the two find the same voxels."""
     return {
@@ -598,43 +624,47 @@ def _thick_region_arguments(settings: dict, binary: np.ndarray, voxel_size_xyz) 
         "voxel_size_zyx": io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz)),
         "fill_mask_holes": bool(settings["skeleton_fill_mask_holes_before_thickness"]),
         "wall_absorption_um": settings["skeleton_thick_vessel_wall_absorption_um"],
-        "restrict_thick_to_mask": _thick_vessel_restriction_mask(binary, settings, voxel_size_xyz),
+        "restrict_thick_to_mask": _thick_vessel_restriction_mask(
+            binary, settings, voxel_size_xyz, crop
+        ),
         "use_memmap": settings["use_memmap_loading"],
         "memmap_directory": settings["memmap_directory"],
     }
 
 
 def thick_vessel_mask_from_image(
-    settings: dict, image: np.ndarray, voxel_size_xyz
+    settings: dict, image: np.ndarray, voxel_size_xyz, crop: CropBox | None = None
 ) -> np.ndarray | None:
     """The thick-vessel region skeletonisation found in *image*, found again.
 
     For a run that needs the region but loaded its skeleton instead of making
     it (a resume with no stored stage outputs). None when thickness-gated
-    skeletonisation is off, or finds no thick vessel.
+    skeletonisation is off, or finds no thick vessel. *crop* is the
+    ``crop_on_import`` box *image* was cut to.
     """
     if not settings.get("use_thick_vessel_skeletonisation"):
         return None
     binary = _to_binary_volume_for_skeletonization(image)
     return preprocessing.thick_vessel_region(
-        binary, **_thick_region_arguments(settings, binary, voxel_size_xyz)
+        binary, **_thick_region_arguments(settings, binary, voxel_size_xyz, crop)
     )
 
 
 def _skeletonize_loaded_mask(
-    image, settings: dict, voxel_size_xyz
+    image, settings: dict, voxel_size_xyz, crop: CropBox | None = None
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Lee on the whole mask, or a thickness-gated tree when the GUI toggle is on.
 
     Returns ``(skeleton, thick_vessel_mask)`` -- the mask is None on the
-    plain-Lee path, where there is no fat/thin split at all.
+    plain-Lee path, where there is no fat/thin split at all. *crop* is the
+    ``crop_on_import`` box *image* was cut to.
     """
     voxel_size_zyx = io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
     if settings["use_thick_vessel_skeletonisation"]:
         binary = _to_binary_volume_for_skeletonization(image)
         return preprocessing.skeletonize_thickness_gated(
             binary,
-            **_thick_region_arguments(settings, binary, voxel_size_xyz),
+            **_thick_region_arguments(settings, binary, voxel_size_xyz, crop),
             flake_filter_um=settings["skeleton_thick_vessel_flake_filter_um"],
             max_bridge_radius_multiple=settings[
                 "skeleton_thick_vessel_max_bridge_radius_multiple"
@@ -681,7 +711,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     raw_segmented_image: np.ndarray | None = None
 
     if settings["do_skeletonize"]:
-        image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
+        image, metadata_voxel_size, voxel_meta_status, crop = _load_and_crop_volume(
             settings, input_format
         )
         voxel_size, voxel_size_source = resolve_voxel_size_xyz(
@@ -755,7 +785,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
         )
-        skeleton, thick_vessel_mask = _skeletonize_loaded_mask(binary, settings, voxel_size)
+        skeleton, thick_vessel_mask = _skeletonize_loaded_mask(binary, settings, voxel_size, crop)
 
         # Purely diagnostic: off by default, and never changes `skeleton` even
         # when on -- see preprocessing.thick_vessel_braid_guard for what this
@@ -846,11 +876,21 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             # Copy-on-write: read straight from the saved file, and any later
             # in-place edit stays in RAM for just the pages it touches.
             skeleton = np.load(skeleton_path, mmap_mode="c")
-            image, _metadata, _status = load_volume_for_skeletonise(settings, input_format)
+            image, _metadata, _status, crop = _load_and_crop_volume(settings, input_format)
         else:
             skeleton = np.load(skeleton_path)
-            image = io.apply_axis_order(
-                tifffile.imread(settings["input_path"]), settings["image_axis_order"]
+            image, crop = crop_volume_and_box(
+                io.apply_axis_order(
+                    tifffile.imread(settings["input_path"]), settings["image_axis_order"]
+                ),
+                settings,
+                description="input image",
+            )
+        if skeleton.shape != image.shape:
+            raise ValueError(
+                f"The saved skeleton {skeleton_path} is {skeleton.shape} voxels but the "
+                f"image is {image.shape}: it was made with a different crop_on_import "
+                "box, or none. Turn do_skeletonize back on to make it again."
             )
         if voxel_meta_path.exists():
             cached_voxel_meta = json.loads(voxel_meta_path.read_text())
@@ -928,6 +968,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         output_dir=output_dir,
         thick_vessel_mask=thick_vessel_mask,
         raw_segmented_image=raw_segmented_image,
+        crop=crop,
     )
 
 
@@ -1125,6 +1166,7 @@ def build_network(
         **io.vessel_mask_arguments(mask_settings, "large"),
         image_shape=image.shape,
         main_voxel_size_xyz=main_voxel_size_xyz,
+        crop=getattr(volume, "crop", None),
     )
     (
         small_arteriole_mask,
@@ -1135,6 +1177,7 @@ def build_network(
         **io.vessel_mask_arguments(mask_settings, "small"),
         image_shape=image.shape,
         main_voxel_size_xyz=main_voxel_size_xyz,
+        crop=getattr(volume, "crop", None),
         loaded_message_suffix=(
             f"min_overlap_fraction={float(settings['small_vessel_mask_min_overlap_fraction']):.3f}"
         ),
@@ -1148,6 +1191,7 @@ def build_network(
             large_arteriole_mask, large_venule_mask,
             large_arteriole_mask_voxel_size, large_venule_mask_voxel_size,
         )
+        _record_crop(resumed_graph, getattr(volume, "crop", None), voxel_size_zyx)
         return VesselNetwork(
             graph=resumed_graph,
             volume=volume,
@@ -1316,6 +1360,7 @@ def build_network(
         large_arteriole_mask, large_venule_mask,
         large_arteriole_mask_voxel_size, large_venule_mask_voxel_size,
     )
+    _record_crop(G, getattr(volume, "crop", None), voxel_size_zyx)
     if "image_extent_um" not in G.graph:
         # A graph saved before dead ends were judged: the extent at least.
         shape = image.shape if image is not None else skeleton.shape
@@ -1486,6 +1531,16 @@ def _mark_dead_end_kinds(
         len(ends),
         ", ".join(f"{count} {kind.replace('_', ' ')}" for kind, count in census.items() if count) or "none",
     )
+
+
+def _record_crop(G: nx.Graph, crop: CropBox | None, voxel_size_zyx) -> None:
+    """Keep the ``crop_on_import`` box on the graph (io.crop.GRAPH_ATTRIBUTE):
+    what every later volume read alongside the image is cut by, and what to add
+    to a node ``pos`` to place it on the whole image."""
+    if crop is None or crop.is_whole_volume:
+        G.graph.pop(CROP_GRAPH_ATTRIBUTE, None)
+        return
+    G.graph[CROP_GRAPH_ATTRIBUTE] = crop.to_record(voxel_size_zyx)
 
 
 def _record_graph_voxel_metadata(
@@ -2653,7 +2708,8 @@ def _bridge_edited_vessels(
             "again (this run loaded its skeleton rather than making it)."
         )
         mask = thick_vessel_mask_from_image(
-            settings, network.volume.image, network.volume.voxel_size_xyz
+            settings, network.volume.image, network.volume.voxel_size_xyz,
+            getattr(network.volume, "crop", None),
         )
         if mask is None:
             return G  # no thick vessel anywhere: graph building made no bridges either
@@ -4499,13 +4555,20 @@ def tissue_measurement(
 
     logger.info(f"Measuring the tissue volume in {resolved} (from {path_name})...")
     use_memmap, memmap_directory = settings["use_memmap_loading"], settings["memmap_directory"]
-    raw = load_single_channel_tiff_volume(
+    whole_raw = load_single_channel_tiff_volume(
         resolved,
         axis_order=settings["image_axis_order"],
         use_memmap=use_memmap,
         memmap_directory=memmap_directory,
         channel=channel,
     )
+    # Cut to the crop_on_import box the segmentation was, when it was.
+    raw = crop_volume_like_graph(
+        whole_raw, network.graph, description="tissue raw image",
+        use_memmap=use_memmap, memmap_directory=memmap_directory,
+    )
+    if raw is not whole_raw and isinstance(whole_raw, np.memmap):
+        preprocessing.release_memmap_array(whole_raw)
     # The segmentation as loaded, which may be labels (an ilastik 1/2 image):
     # its vessels are what skeletonisation called foreground.
     vessel_mask = _to_binary_volume_for_skeletonization(

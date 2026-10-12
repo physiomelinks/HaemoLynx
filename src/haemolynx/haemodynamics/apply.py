@@ -13,6 +13,7 @@ import numpy as np
 from haemolynx import io
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
+from haemolynx.io.crop import crop_volume_like_graph
 from haemolynx.parsers import prefixed_arguments
 from haemolynx.preprocessing.memmap_support import release_memmap_array
 from haemolynx.haemodynamics import automated
@@ -250,6 +251,23 @@ def load_fwhm_raw_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
     )
 
 
+def _cropped_like_graph(
+    volume: np.ndarray | None, G: nx.MultiGraph, config: HaemodynamicsApplyConfig, description: str
+) -> np.ndarray | None:
+    """*volume*, read from disk, cut to the ``crop_on_import`` box *G* was
+    built in (io.crop), so its voxels lie under the graph's positions. A
+    disk-backed whole volume it replaces is released."""
+    if volume is None:
+        return None
+    cropped = crop_volume_like_graph(
+        volume, G, description=description,
+        use_memmap=config.use_memmap, memmap_directory=config.memmap_directory,
+    )
+    if cropped is not volume and isinstance(volume, np.memmap):
+        release_memmap_array(volume)
+    return cropped
+
+
 def _fwhm_raw_channel(config: HaemodynamicsApplyConfig) -> int | None:
     """The channel of the FWHM raw image to read, or ``None`` for a single-channel file."""
     channel = config.fwhm_setting("fwhm_raw_channel")
@@ -399,9 +417,12 @@ def _measure_raw_section_diameters(
         path = _fwhm_raw_path(config)
         if path is None:
             return {"skipped": True, "reason": "no fwhm_raw_tiff_path to read sections from"}
-        raw_volume = automated.load_single_channel_tiff_volume(
-            path, axis_order=config.axis_order, use_memmap=config.use_memmap,
-            memmap_directory=config.memmap_directory, channel=_fwhm_raw_channel(config),
+        raw_volume = _cropped_like_graph(
+            automated.load_single_channel_tiff_volume(
+                path, axis_order=config.axis_order, use_memmap=config.use_memmap,
+                memmap_directory=config.memmap_directory, channel=_fwhm_raw_channel(config),
+            ),
+            G, config, "FWHM raw image",
         )
     voxel_sz = tuple(
         float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
@@ -473,12 +494,15 @@ def _measure_endothelial_diameters(
     if path is None:
         return {"skipped": True, "reason": "no endothelial_image_path to read the wall from"}
     channel = config.endothelial_setting("endothelial_channel")
-    volume = automated.load_single_channel_tiff_volume(
-        io.resolve_image_path_with_optional_zip(Path(path)),
-        axis_order=config.axis_order,
-        use_memmap=config.use_memmap,
-        memmap_directory=config.memmap_directory,
-        channel=None if channel is None else int(channel),
+    volume = _cropped_like_graph(
+        automated.load_single_channel_tiff_volume(
+            io.resolve_image_path_with_optional_zip(Path(path)),
+            axis_order=config.axis_order,
+            use_memmap=config.use_memmap,
+            memmap_directory=config.memmap_directory,
+            channel=None if channel is None else int(channel),
+        ),
+        G, config, "endothelial image",
     )
     voxel_sz = tuple(
         float(v) for v in G.graph.get("image_voxel_size_zyx", config.voxel_size_zyx)
@@ -687,7 +711,9 @@ def assign_edge_diameters(
         # No segmentation in memory (e.g. a resumed run): read it from
         # edt_mask_path -- the run's own segmented input unless set -- once,
         # for both the EDT widths and FWHM's neighbouring-vessel stops.
-        mask_volume = loaded_mask = load_edt_mask_volume(config)
+        mask_volume = loaded_mask = _cropped_like_graph(
+            load_edt_mask_volume(config), G, config, "EDT mask"
+        )
     try:
         return _assign_edge_diameters_binarised(
             G, config, summary, mask_volume, edges, calibration_edges
@@ -777,7 +803,9 @@ def _assign_edge_diameters_with_mask(
     if config.use_edt_diameter_crosscheck and not measuring:
         use_edt_fallback = config.edt_diameter_prefer_over_table_on_fwhm_failure
     elif config.use_edt_diameter_crosscheck:
-        edt_mask = mask_volume if mask_volume is not None else load_edt_mask_volume(config)
+        edt_mask = mask_volume if mask_volume is not None else _cropped_like_graph(
+            load_edt_mask_volume(config), G, config, "EDT mask"
+        )
         if edt_mask is not None:
             summary["edt"] = _measure_edt_diameters(
                 G, config, mask_volume=edt_mask, **_subset(edges)
@@ -801,7 +829,7 @@ def _assign_edge_diameters_with_mask(
         )
     demote_flagged = bool(config.fwhm_setting("fwhm_demote_flagged_edges", True))
     if config.use_fwhm_edge_diameters and measuring:
-        raw_volume = load_fwhm_raw_volume(config)
+        raw_volume = _cropped_like_graph(load_fwhm_raw_volume(config), G, config, "FWHM raw image")
         if remeasure:
             recorded = G.graph.get("fwhm_psf_sigma_zyx") if subset else None
             if recorded is not None:

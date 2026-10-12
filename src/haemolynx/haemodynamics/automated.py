@@ -1705,13 +1705,23 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             raw_volume, use_memmap=use_memmap, memmap_directory=memmap_directory
         )
     else:
-        raw = load_single_channel_tiff_volume(
+        from haemolynx.io.crop import crop_volume_like_graph
+
+        whole = load_single_channel_tiff_volume(
             raw_tiff_path,
             axis_order=axis_order,
             use_memmap=use_memmap,
             memmap_directory=memmap_directory,
             channel=raw_channel,
         )
+        # The graph's positions are measured from the crop_on_import box's
+        # corner when the image was cut on import; so are the raw voxels then.
+        raw = crop_volume_like_graph(
+            whole, G, description="FWHM raw image",
+            use_memmap=use_memmap, memmap_directory=memmap_directory,
+        )
+        if raw is not whole and isinstance(whole, np.memmap):
+            release_memmap_array(whole)
     if use_memmap and isinstance(raw, np.memmap) and raw is not raw_volume:
         owned.append(raw)
     if vessel_mask is not None and tuple(vessel_mask.shape) != tuple(raw.shape):
