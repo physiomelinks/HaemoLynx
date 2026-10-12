@@ -474,6 +474,49 @@ def test_an_edge_without_the_required_attributes_is_rejected(attribute, message)
         )
 
 
+def _graph_with_a_bridge() -> nx.MultiGraph:
+    """A B01 vessel and, past it, a thick-vessel bridge: no branch order
+    (bridges have none since 43dcf45), its negligible resistance already set."""
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    graph = _one_edge_graph()
+    graph.add_node(2, pos=np.asarray([0.0, 0.0, 110.0]))
+    graph.add_edge(1, 2, key=0, length=10.0, resistance=1.0, conductance=1.0, **{IS_ZERO_RESISTANCE: True})
+    return graph
+
+
+def test_a_thick_vessel_bridge_is_left_to_the_overrides_by_both_constriction_paths():
+    """E14.5's pericyte perturbation stopped at its first bridge (2026-10-12):
+    both paths demanded a branch order of every edge. A bridge is no vessel
+    -- apply_final_resistance_overrides sets it -- so both skip it, and still
+    refuse a vessel without one."""
+    graph = _graph_with_a_bridge()
+    _graph, results = apply_constriction_sites(
+        graph,
+        _FixedSites([]),
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.8},
+        prefer_edge_fwhm_baseline=False,
+        constriction_length=40.0,
+        num_integration_points=101,
+    )
+    assert results["edges_set"] == 1
+    assert graph.edges[1, 2, 0]["resistance"] == 1.0
+    assert "pericyte_count_assigned" not in graph.edges[1, 2, 0]
+
+    graph = _graph_with_a_bridge()
+    _graph, results = PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances_with_constrictions(
+        graph, {"B01": {"d1": 5.0, "d2": 4.0}}
+    )
+    assert results["edges_set"] == 1
+    assert graph.edges[1, 2, 0]["resistance"] == 1.0
+
+    graph = _graph_with_a_bridge()
+    del graph.edges[0, 1, 0]["branch_order"]
+    with pytest.raises(ValueError, match="missing required 'branch_order'"):
+        PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances_with_constrictions(graph, {"B01": {"d1": 5.0, "d2": 4.0}})
+
+
 # --- the strategies agree ---------------------------------------------------
 
 

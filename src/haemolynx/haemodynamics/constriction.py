@@ -389,9 +389,15 @@ def apply_constriction_sites(
     ``pericyte_count_assigned`` and ``pericyte_centers_um``, so a later
     visualization or diagnostic can show where the model put them.
     """
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
     results: dict[str, Any] = {"edges_set": 0, "used_fwhm_baseline": 0}
 
     for u, v, key, edge_data in graph.edges(keys=True, data=True):
+        if edge_data.get(IS_ZERO_RESISTANCE):
+            # A thick-vessel bridge: no branch order, no pericytes, and its
+            # resistance comes from apply_final_resistance_overrides.
+            continue
         branch_order = edge_data.get("branch_order")
         if branch_order is None:
             raise ValueError(

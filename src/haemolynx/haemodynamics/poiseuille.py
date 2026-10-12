@@ -975,8 +975,13 @@ class PoiseuilleModel:
                     "prefer_edge_fwhm_baseline=True."
                 )
         constr_map = constriction_factor_by_branch_order
+        from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 
         for u, v, key, data in G.edges(keys=True, data=True):
+            if data.get(IS_ZERO_RESISTANCE):
+                # A thick-vessel bridge has no branch order and is no vessel:
+                # apply_final_resistance_overrides gives it its resistance.
+                continue
             branch_order = data.get("branch_order")
             if branch_order is None:
                 raise ValueError(

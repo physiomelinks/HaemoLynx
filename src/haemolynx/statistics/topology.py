@@ -422,6 +422,17 @@ def compute_degree_assortativity(G: Union[nx.Graph, nx.MultiGraph]) -> Dict[str,
     return {"Degree Assortativity": float(value)}
 
 
+def _simple_without_self_loops(G: Union[nx.Graph, nx.MultiGraph]) -> nx.Graph:
+    """*G* as a simple graph with no self-loops, which both NetworkX measures
+    below refuse. A loop vessel leaving and re-entering one node joins it to
+    no other node, so it changes neither; contracting thick-vessel bridges for
+    statistics makes one wherever a vessel opens into one thick vessel at
+    both ends."""
+    simple = nx.Graph(G)
+    simple.remove_edges_from(list(nx.selfloop_edges(simple)))
+    return simple
+
+
 def compute_rich_club_coefficient(G: Union[nx.Graph, nx.MultiGraph]) -> Dict[str, Any]:
     """Whether the highest-degree vessels/junctions preferentially connect
     to each other, rather than to lower-degree ones -- a "rich club" of
@@ -436,8 +447,7 @@ def compute_rich_club_coefficient(G: Union[nx.Graph, nx.MultiGraph]) -> Dict[str
     coefficient at the tightest tier available (the highest degree threshold
     the graph has any node above), the club of the most-connected vessels.
     """
-    is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
-    G_simple = nx.Graph(G) if is_mg else G
+    G_simple = _simple_without_self_loops(G)
     if G_simple.number_of_edges() == 0:
         return {"Rich Club Coefficient": "N/A (no edges)"}
     curve = nx.rich_club_coefficient(G_simple, normalized=False)
@@ -462,8 +472,7 @@ def compute_k_core_structure(G: Union[nx.Graph, nx.MultiGraph]) -> Dict[str, Any
     number regardless of its size, while a denser capillary mesh reaches
     higher. Needs a simple graph, like ``compute_rich_club_coefficient``.
     """
-    is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
-    G_simple = nx.Graph(G) if is_mg else G
+    G_simple = _simple_without_self_loops(G)
     if G_simple.number_of_nodes() == 0:
         return {"Max Core Number": 0, "Mean Core Number": "N/A (no nodes)", "Innermost Core Size": 0}
     core_numbers = nx.core_number(G_simple)
