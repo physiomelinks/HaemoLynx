@@ -791,3 +791,177 @@ def test_worker_processes_follow_the_same_outline_as_this_one(monkeypatch):
     pooled = module._cross_sections(index, radii, support, workers=2, **kw)
     assert np.array_equal(alone.reach, pooled.reach)
     assert len(radii) > 16 and alone.reach.any()
+
+
+def _pair_search_components(coords):
+    """The 26-connected grouping _components replaced: every neighbouring
+    pair from a KD-tree, then connected components over the voxels."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+
+    if len(coords) == 0:
+        return []
+    pairs = cKDTree(coords).query_pairs(r=np.sqrt(3.0) + 1e-6, output_type="ndarray")
+    n = len(coords)
+    graph = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
+    _, labels = connected_components(graph, directed=False)
+    order = np.argsort(labels, kind="stable")
+    return np.split(coords[order], np.flatnonzero(np.diff(labels[order])) + 1)
+
+
+def _same_groups(a, b):
+    return len(a) == len(b) and all(np.array_equal(x, y) for x, y in zip(a, b))
+
+
+def test_slab_labelled_components_are_the_pair_searchs_whatever_the_slab_and_the_order():
+    from haemolynx.graph import mask_recovery as module
+
+    rng = np.random.default_rng(21)
+    cases = 0
+    for trial in range(24):
+        shape = rng.integers(3, 20, 3)
+        coords = np.argwhere(rng.random(shape) > rng.uniform(0.55, 0.9))
+        if trial % 2:
+            coords = coords[rng.permutation(len(coords))]
+        expected = _pair_search_components(coords)
+        # Slabs of one slice, a few slices, and the whole volume at once.
+        for block_voxels in (1, 5 * int(shape[1] * shape[2]), 10**9):
+            assert _same_groups(module._components(coords, block_voxels=block_voxels), expected)
+            cases += 1
+    assert cases == 72
+    assert module._components(np.empty((0, 3), dtype=int)) == []
+
+
+def test_components_come_in_the_order_their_first_voxel_does_and_keep_each_voxels_order():
+    from haemolynx.graph import mask_recovery as module
+
+    # Two groups: a diagonal chain across slab boundaries, given before a
+    # lone voxel, with the chain's voxels interleaved in the input.
+    chain = np.array([[0, 0, 0], [1, 1, 1], [2, 2, 2], [3, 3, 3], [4, 3, 4]])
+    lone = np.array([[2, 7, 7]])
+    coords = np.vstack([chain[[4]], lone, chain[[0, 2, 1, 3]]])
+    groups = module._components(coords, block_voxels=64)  # one slice a slab
+    assert len(groups) == 2
+    assert np.array_equal(groups[0], chain[[4, 0, 2, 1, 3]])
+    assert np.array_equal(groups[1], lone)
+
+
+def test_recovered_samples_rank_as_one_tree_over_all_of_them_would(monkeypatch):
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph import mask_recovery as module
+
+    monkeypatch.setattr(module, "_LOOSE_SAMPLES", 16)  # trees of 16, 32, 64, ...
+    rng = np.random.default_rng(22)
+    attachments = module._Attachments(nx.MultiGraph(), _EmptyIndex(), np.zeros(0), 4.0)
+    points, radii, owners = np.empty((0, 3)), np.empty(0), []
+    for step in range(120):
+        m = int(rng.integers(1, 12))
+        p, r = rng.random((m, 3)) * 60.0, rng.uniform(0.5, 3.0, m)
+        o = [(step, j) for j in range(m)]
+        attachments.recovered.add(p, r, o)
+        points, radii, owners = np.vstack([points, p]), np.concatenate([radii, r]), owners + o
+        query = rng.random(3) * 60.0
+        # The attachment's own ranking over one tree holding every sample.
+        expected = module._Attachments._ranked(cKDTree(points), points, radii, owners, query, 16.0)
+        got = attachments._ranked_recovered(query, 16.0)
+        assert [(round(s, 9), o) for s, _p, o in got] == [(round(s, 9), o) for s, _p, o in expected]
+        assert all(np.array_equal(a[1], b[1]) for a, b in zip(got, expected))
+    assert len(attachments.recovered._trees) >= 2 and attachments.recovered.count == len(points)
+
+
+class _EmptyIndex:
+    """An EdgeSampleIndex stand-in with no samples, for _Attachments."""
+
+    tree = None
+    points = np.empty((0, 3))
+    owners: list = []
+
+
+def test_remembering_a_path_no_longer_rebuilds_a_tree_over_everything(monkeypatch):
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph import mask_recovery as module
+
+    built = []
+
+    class Counting(cKDTree):
+        def __init__(self, data, *args, **kwargs):
+            built.append(len(data))
+            super().__init__(data, *args, **kwargs)
+
+    monkeypatch.setattr(module, "cKDTree", Counting)
+    support = _support(_trunk_mask())
+    attachments = module._Attachments(nx.MultiGraph(), _EmptyIndex(), np.zeros(0), 4.0)
+    for i in range(300):
+        path = np.array([[7.0, 7.0, 1.0 + 0.1 * i], [7.0, 7.0, 5.0 + 0.1 * i]])
+        attachments.remember(path, (i, i + 1, 0), support)
+    # 300 paths of 5 samples: one tree per path before, none yet at 1,500 loose.
+    assert attachments.recovered.count == 1500 and built == []
+    assert len(attachments.targets(np.array([7.0, 7.0, 8.0]), 16.0)) == module._JOIN_TARGETS
+    monkeypatch.setattr(module, "_LOOSE_SAMPLES", 50)
+    for i in range(300, 600):
+        path = np.array([[7.0, 7.0, 1.0 + 0.1 * i], [7.0, 7.0, 5.0 + 0.1 * i]])
+        attachments.remember(path, (i, i + 1, 0), support)
+    # Packed every ten paths, the trees merging as they double: far fewer
+    # builds than paths, and every sample still found.
+    assert 0 < len(built) < 100
+    assert attachments.recovered.count == 3000
+    assert len(attachments.targets(np.array([7.0, 7.0, 40.0]), 16.0)) == module._JOIN_TARGETS
+
+
+class _CountingEdges:
+    """A graph's edge view that counts the whole-graph scans made through it."""
+
+    def __init__(self, view, scans):
+        self._view, self._scans = view, scans
+
+    def __call__(self, nbunch=None, data=False, *args, **kwargs):
+        if nbunch is None and data:
+            self._scans.append(1)
+        return self._view(nbunch, data, *args, **kwargs)
+
+    def __getitem__(self, item):
+        return self._view[item]
+
+    def __iter__(self):
+        return iter(self._view)
+
+    def __len__(self):
+        return len(self._view)
+
+    def __contains__(self, item):
+        return item in self._view
+
+
+class _ScanCountingGraph(nx.MultiGraph):
+    scans: list = []
+
+    @property
+    def edges(self):
+        prop = nx.MultiGraph.edges  # a cached_property in networkx 3, a property before
+        return _CountingEdges(getattr(prop, "func", getattr(prop, "fget", None))(self), self.scans)
+
+
+def test_the_join_loop_reads_each_strands_edges_from_its_own_nodes_not_the_whole_graph():
+    """Two pieces of one vessel are recovered one after the other. The two
+    scans of every edge are the sample indexes built before the loop (one
+    by the coverage pass, one by recovery); the loop itself used to make
+    another per strand."""
+    mask = np.zeros((15, 20, 80), dtype=bool)
+    _tube(mask, 2, (7, 7, 0), 3, 0, 15)
+    _tube(mask, 2, (7, 7, 0), 2, 16, 40)
+    _tube(mask, 2, (7, 7, 0), 2, 42, 70)
+    G = _ScanCountingGraph()
+    G.scans = []
+    G.add_node(0, pos=np.array([7.0, 7.0, 0.0]))
+    G.add_node(1, pos=np.array([7.0, 7.0, 15.0]))
+    G.add_edge(0, 1, voxels=[[7.0, 7.0, float(x)] for x in range(16)], length=15.0)
+
+    G = recover_uncovered_mask_vessels(G, _support(mask))
+    scans = len(G.scans)
+
+    recovered = [d for _u, _v, d in G.edges(data=True) if d.get("recovered") and not d.get("reconnected")]
+    assert len(recovered) >= 2 and nx.number_connected_components(G) == 1
+    assert scans == 2

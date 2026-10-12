@@ -456,7 +456,13 @@ are only caught locally.
   (`lumen_loops.loop_inside_one_lumen`). Joining every free end made tangles of short loops (on
   E14.5, 3,232 under 30 µm against 101 before the step). Its duplicate check and node ids are
   kept indexed (`EdgeSampleIndex.added_near`, `_NodeIds`): scanned per path, they were 95% of
-  the step's time. The cross-section outline (`_follow_rays`) follows each ray only to its first
+  the step's time. The join loop reads each strand's edges from the strand's own nodes, keeps
+  the samples recovered so far in trees that double in size (`_RecoveredSamples`: loose until
+  `_LOOSE_SAMPLES`, then merged) rather than one tree rebuilt per strand, and groups the
+  uncovered mask by labelling a slab of slices at a time (`_components`) rather than a KD-tree
+  pair search: on a 43,000-edge skeletal-muscle crop the whole-graph scan and the rebuild were
+  three quarters of the step, and the pair search holds 13 pairs a voxel, gigabytes on a large
+  stack. The cross-section outline (`_follow_rays`) follows each ray only to its first
   voxel out, with the samples sorted by reach so a chunk is not kept going by its widest vessel,
   reads the mask as bits (`preprocessing.PackedMask`: 2 GB for a 16 G-voxel stack, in RAM, which
   every `MaskSupport.inside` switches to after `PACK_AFTER_POINTS` lookups) and spreads its chunks

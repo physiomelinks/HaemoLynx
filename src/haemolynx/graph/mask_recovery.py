@@ -326,17 +326,73 @@ def uncovered_mask_voxels(
     return np.concatenate(uncovered) if uncovered else np.empty((0, np.ndim(mask)), dtype=np.intp)
 
 
-def _components(coords: np.ndarray) -> list[np.ndarray]:
-    """26-connected groups of voxel indices."""
-    if len(coords) == 0:
-        return []
-    pairs = cKDTree(coords).query_pairs(r=np.sqrt(3.0) + 1e-6, output_type="ndarray")
+def _components(coords: np.ndarray, *, block_voxels: int = LOW_MEMORY_BLOCK_VOXELS) -> list[np.ndarray]:
+    """26-connected groups of voxel indices ``(z, y, x)``: the groups in the
+    order their first voxel comes in *coords*, each in *coords*' own order.
+
+    Labelled a slab of z-slices at a time, as a dense block over the slab's
+    bounding box of at most *block_voxels* (``scipy.ndimage.label``), the
+    slabs joined wherever a voxel in one's last slice touches one in the
+    next's first. The KD-tree pair search this replaces held every pair of
+    neighbouring voxels at once -- 13 a voxel in a solid region, a hundred
+    bytes each -- which is gigabytes for the uncovered mask of a large stack,
+    and took six times as long on two million voxels.
+    """
+    coords = np.asarray(coords, dtype=np.intp).reshape(-1, 3)
     n = len(coords)
-    graph = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
-    _, labels = connected_components(graph, directed=False)
-    order = np.argsort(labels, kind="stable")
-    bounds = np.flatnonzero(np.diff(labels[order])) + 1
-    return np.split(coords[order], bounds)
+    if n == 0:
+        return []
+    lo = coords.min(axis=0)
+    extent = coords.max(axis=0) - lo + 1
+    order = np.lexsort((coords[:, 2], coords[:, 1], coords[:, 0]))
+    local = coords[order] - lo
+    z = local[:, 0]
+    slice_voxels = int(extent[1]) * int(extent[2])
+    dz = max(1, int(block_voxels) // max(slice_voxels, 1))
+    structure = np.ones((3, 3, 3), dtype=bool)
+    ids = np.zeros(n, dtype=np.intp)
+    links = []
+    offset = 0
+    previous = None  # the slab before's last slice, as ids; None across an empty slab
+    for z0 in range(0, int(extent[0]), dz):
+        z1 = min(z0 + dz, int(extent[0]))
+        a, b = np.searchsorted(z, [z0, z1])
+        if a == b:
+            previous = None
+            continue
+        slab = local[a:b]
+        block = np.zeros((z1 - z0, int(extent[1]), int(extent[2])), dtype=bool)
+        block[slab[:, 0] - z0, slab[:, 1], slab[:, 2]] = True
+        labelled, count = label(block, structure=structure)
+        ids[a:b] = labelled[slab[:, 0] - z0, slab[:, 1], slab[:, 2]] + offset
+        if previous is not None:
+            first = labelled[0]
+            rows, cols = first.shape
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    p = previous[max(0, -dy):rows - max(0, dy), max(0, -dx):cols - max(0, dx)]
+                    c = first[max(0, dy):rows - max(0, -dy), max(0, dx):cols - max(0, -dx)]
+                    both = (p > 0) & (c > 0)
+                    if both.any():
+                        links.append(np.column_stack([p[both], c[both] + offset]))
+        last = labelled[-1]
+        previous = np.where(last > 0, last + offset, 0)
+        offset += int(count)
+    if links:
+        pairs = np.concatenate(links)
+        graph = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(offset + 1,) * 2)
+        _, group_of_id = connected_components(graph, directed=False)
+    else:
+        group_of_id = np.arange(offset + 1)
+    group = np.empty(n, dtype=np.intp)
+    group[order] = group_of_id[ids]
+    groups, first_index, dense = np.unique(group, return_index=True, return_inverse=True)
+    rank = np.empty(len(groups), dtype=np.intp)
+    rank[np.argsort(first_index, kind="stable")] = np.arange(len(groups))
+    final = rank[dense.reshape(-1)]
+    out = np.argsort(final, kind="stable")
+    bounds = np.flatnonzero(np.diff(final[out])) + 1
+    return np.split(coords[out], bounds)
 
 
 #: Voxels of an uncovered region :func:`uncovered_mask_regions` hands back to
@@ -599,6 +655,77 @@ class _NodeIds:
         return node
 
 
+#: Centreline samples a join is chosen among: the nearest this many within
+#: reach, before the lumen slack ranks them.
+_NEAREST_SAMPLES = 48
+
+#: Recovered samples kept loose -- searched by their distance to the point
+#: outright -- before they are put in a tree: building one costs more than
+#: searching this many.
+_LOOSE_SAMPLES = 2048
+
+
+class _RecoveredSamples:
+    """The centreline samples of the branches recovered so far in this pass,
+    added a path at a time and searchable at once.
+
+    One KD-tree over all of them, rebuilt after every strand, cost the size
+    of everything recovered so far per strand -- a fifth of recovery's time
+    on a 43,000-edge graph, and growing with it. Here the newest samples lie
+    loose until there are :data:`_LOOSE_SAMPLES`, then go into a tree, merged
+    with the trees before it while those are no bigger: trees double in
+    size, each sample is indexed about ``log2(n / _LOOSE_SAMPLES)`` times,
+    and a query reads every tree and the loose samples. The answer is the
+    k nearest within reach, as one tree over all of them would give.
+    """
+
+    def __init__(self):
+        self._loose: list[tuple[np.ndarray, np.ndarray, list]] = []
+        self._loose_count = 0
+        self._trees: list[tuple[cKDTree, np.ndarray, np.ndarray, list]] = []
+        self.count = 0
+        self.max_radius = 0.0
+
+    def add(self, points: np.ndarray, radii: np.ndarray, owners: list) -> None:
+        points = np.asarray(points, dtype=float).reshape(-1, 3)
+        if not len(points):
+            return
+        radii = np.asarray(radii, dtype=float).reshape(-1)
+        self._loose.append((points, radii, list(owners)))
+        self._loose_count += len(points)
+        self.count += len(points)
+        self.max_radius = max(self.max_radius, float(radii.max()))
+        if self._loose_count >= _LOOSE_SAMPLES:
+            self._pack()
+
+    def _pack(self) -> None:
+        points = np.vstack([p for p, _r, _o in self._loose])
+        radii = np.concatenate([r for _p, r, _o in self._loose])
+        owners = [o for _p, _r, os in self._loose for o in os]
+        self._loose, self._loose_count = [], 0
+        while self._trees and len(self._trees[-1][1]) <= len(points):
+            _tree, p, r, o = self._trees.pop()
+            points, radii, owners = np.vstack([p, points]), np.concatenate([r, radii]), o + owners
+        self._trees.append((cKDTree(points), points, radii, owners))
+
+    def nearest(self, point_um: np.ndarray, k: int, upper: float) -> list:
+        """The *k* nearest samples within *upper* of *point_um*, nearest
+        first, each ``(distance, point, radius, owner)``."""
+        point_um = np.asarray(point_um, dtype=float).reshape(3)
+        found = []
+        for tree, points, radii, owners in self._trees:
+            distance, nearest = tree.query(point_um, k=min(k, len(points)), distance_upper_bound=upper)
+            for d, i in zip(np.atleast_1d(distance), np.atleast_1d(nearest)):
+                if np.isfinite(d):
+                    found.append((float(d), points[int(i)], float(radii[int(i)]), owners[int(i)]))
+        for points, radii, owners in self._loose:
+            distance = np.linalg.norm(points - point_um, axis=1)
+            for i in np.flatnonzero(distance < upper):
+                found.append((float(distance[i]), points[i], float(radii[i]), owners[i]))
+        found.sort(key=lambda item: item[0])
+        return found[:k]
+
+
 class _Attachments:
     """Where a recovered end may join the network: the centreline sample
     minimising ``distance - radius(sample)``, within *reach_um* of the
@@ -611,10 +738,7 @@ class _Attachments:
         self.radii = radii
         self.reach_um = float(reach_um)
         self.upper = (float(radii.max()) if len(radii) else 0.0) + self.reach_um
-        self.extra_points = np.empty((0, 3))
-        self.extra_radii = np.empty(0)
-        self.extra_owners: list = []
-        self.extra_tree = None
+        self.recovered = _RecoveredSamples()
 
     def targets(self, point_um: np.ndarray, reach_um: float, limit: int = _JOIN_TARGETS):
         """Up to *limit* ``(slack, point, owner)`` attachments within
@@ -624,9 +748,7 @@ class _Attachments:
         found.extend(self._ranked(
             self.index.tree, self.index.points, self.radii, self.index.owners, point_um, reach_um
         ))
-        found.extend(self._ranked(
-            self.extra_tree, self.extra_points, self.extra_radii, self.extra_owners, point_um, reach_um
-        ))
+        found.extend(self._ranked_recovered(point_um, reach_um))
         found.sort(key=lambda item: item[0])
         kept, seen = [], set()
         for slack, point, owner in found:
@@ -646,10 +768,21 @@ class _Attachments:
         if len(samples) == 0:
             return
         radii = np.asarray(support.radius(samples), dtype=float).reshape(-1)
-        self.extra_points = np.vstack([self.extra_points, samples]) if len(self.extra_points) else samples
-        self.extra_radii = np.concatenate([self.extra_radii, radii])
-        self.extra_owners.extend([owner] * len(samples))
-        self.extra_tree = cKDTree(self.extra_points)
+        self.recovered.add(samples, radii, [owner] * len(samples))
+
+    def _ranked_recovered(self, point_um, reach_um):
+        """:meth:`_ranked` over the samples recovered so far."""
+        samples = self.recovered
+        if samples.count == 0:
+            return []
+        upper = samples.max_radius + float(reach_um)
+        k = min(_NEAREST_SAMPLES, samples.count)
+        ranked = []
+        for distance, point, radius, owner in samples.nearest(point_um, k, upper + 1e-9):
+            slack = float(distance) - float(radius)
+            if slack <= float(reach_um):
+                ranked.append((slack, point, owner))
+        return ranked
 
     @staticmethod
     def _ranked(tree, points, radii, owners, point_um, reach_um):
@@ -657,7 +790,7 @@ class _Attachments:
             return []
         radii = np.asarray(radii, dtype=float)
         upper = float(radii.max()) + float(reach_um)
-        k = min(48, len(points))
+        k = min(_NEAREST_SAMPLES, len(points))
         distance, nearest = tree.query(point_um, k=k, distance_upper_bound=upper + 1e-9)
         ranked = []
         for d, i in zip(np.atleast_1d(distance), np.atleast_1d(nearest)):
@@ -1000,12 +1133,14 @@ def recover_uncovered_mask_vessels(
                     continue
                 if _trim_recovered_spur(G, node_of[end]) > 0:
                     dead_ends += 1
-            strand_nodes = set(node_of.values())
-            remaining = [
-                (u, v, key, data)
-                for u, v, key, data in G.edges(keys=True, data=True)
-                if data.get("recovered") and (u in strand_nodes or v in strand_nodes)
-            ]
+            # The strand's own edges and its joins all touch its nodes, so
+            # they are read from those nodes (ones a trimmed spur took out are
+            # skipped), not by scanning the whole graph for every strand.
+            remaining, seen = [], set()
+            for u, v, key, data in G.edges(list(node_of.values()), keys=True, data=True):
+                if data.get("recovered") and edge_id(u, v, key) not in seen:
+                    seen.add(edge_id(u, v, key))
+                    remaining.append((u, v, key, data))
             kept_joins = [
                 join for end, join in made
                 if G.has_node(node_of[end]) and G.degree(node_of[end]) > 1
