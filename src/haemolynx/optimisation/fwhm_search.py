@@ -51,6 +51,7 @@ from haemolynx.haemodynamics.poiseuille import (
     flag_fwhm_edt_disagreement,
     mark_fwhm_demotions,
 )
+from haemolynx.io.crop import crop_volume_like_graph
 
 from . import fwhm_candidates as cand
 from . import fwhm_metrics as met
@@ -966,8 +967,13 @@ def optimise_fwhm_settings(
     if total_edges == 0:
         raise ValueError("Graph has no edges to measure FWHM diameters on.")
 
-    raw_volume = automated.load_single_channel_tiff_volume(
-        raw_tiff_path, axis_order=axis_order, channel=raw_channel
+    # Cut to the crop_on_import box G was built in, when the image was cut.
+    raw_volume = crop_volume_like_graph(
+        automated.load_single_channel_tiff_volume(
+            raw_tiff_path, axis_order=axis_order, channel=raw_channel
+        ),
+        G,
+        description="FWHM raw image",
     )
     # The blur the image shows, estimated as for the blurred-lumen model
     # whatever the run starts with: the planted vessels are drawn with it,

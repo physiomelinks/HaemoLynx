@@ -408,14 +408,15 @@ def test_without_a_region_to_hand_it_is_found_again_in_the_segmentation(tmp_path
     run_settings, network, boundaries, model, _edge = _thick_run(tmp_path, volume_mask=False)
     asked: list = []
 
-    def found_again(settings, image, voxel_size_xyz):
-        asked.append((image is network.volume.image, tuple(voxel_size_xyz)))
+    def found_again(settings, image, voxel_size_xyz, crop):
+        asked.append((image is network.volume.image, tuple(voxel_size_xyz), crop))
         return _thick_mask()
 
     monkeypatch.setattr(stages, "thick_vessel_mask_from_image", found_again)
     out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
 
-    assert asked == [(True, (1.0, 1.0, 1.0))]
+    # The image was not cropped on import, so the vessel masks are not either.
+    assert asked == [(True, (1.0, 1.0, 1.0), None)]
     assert sum(bool(d.get(IS_ZERO_RESISTANCE)) for *_e, d in _pieces_between(out.graph, 1, 2)) == 1
 
 

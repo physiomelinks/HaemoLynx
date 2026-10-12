@@ -149,6 +149,7 @@ from haemolynx.gui.vessel_tubes import (
     vessel_tubes_layer_name,
 )
 from haemolynx.io import resolve_voxel_size_xyz
+from haemolynx.io.crop import crop_volume_from_settings, crop_volume_like_graph
 from haemolynx.io.load import _to_binary_volume_for_skeletonization
 from haemolynx.optimisation.scorecard import worse_rows
 from haemolynx.optimisation import (
@@ -6054,6 +6055,8 @@ def _load_raw_reference_image_or_none(
             axis_order=local_settings["image_axis_order"],
             channel=None if channel is None else int(channel),
         )
+        # The mask came through crop_on_import's box; the raw image goes too.
+        raw_image = crop_volume_from_settings(raw_image, local_settings, description="raw image")
         if raw_image.shape != expected_shape:
             raise ValueError(
                 "raw_image shape does not match the segmented mask shape: "
@@ -10992,6 +10995,12 @@ def _post_processing_controls(
                 use_memmap=bool(local.get("use_memmap_loading")),
                 memmap_directory=local.get("memmap_directory"),
                 channel=None if channel is None else int(channel),
+            )
+            # Cut to the crop_on_import box the network was built in, if any.
+            raw = crop_volume_like_graph(
+                raw, state.graph, description="raw data file",
+                use_memmap=bool(local.get("use_memmap_loading")),
+                memmap_directory=local.get("memmap_directory"),
             )
         except Exception as error:  # noqa: BLE001 - reported; the mask is used instead
             return None, f"could not read {path}: {error}"
