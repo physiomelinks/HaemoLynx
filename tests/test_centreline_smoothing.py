@@ -15,6 +15,7 @@ came from.
 """
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import networkx as nx
@@ -238,17 +239,38 @@ def nerve_graph(tmp_path_factory):
         }
     )
     settings = resolve_settings(values, schema=schema, config_path=None)
+    traced = {}
+
+    def keep_the_graph_smoothing_is_given(label, graph):
+        if label == graph_tools.STEP_LABELS[-1]:
+            traced["graph"] = copy.deepcopy(graph)
+
     volume = skeletonise(settings, segment(settings))
-    network = build_network(settings, volume, schema)
-    return network.graph, volume.skeleton, volume.voxel_size_zyx
+    network = build_network(settings, volume, schema, on_step_graph=keep_the_graph_smoothing_is_given)
+    return network.graph, volume.skeleton, volume.voxel_size_zyx, traced["graph"]
 
 
 def _total_length(graph) -> float:
     return sum(float(data["length"]) for *_ids, data in graph.edges(keys=True, data=True))
 
 
-def _deviations(graph, skeleton, voxel_size_zyx) -> np.ndarray:
-    """How far every centreline point sits from the nearest skeleton voxel.
+def _path_points(graph, step_um: float = 0.25) -> np.ndarray:
+    """Every edge's path, sampled every *step_um*."""
+    points = []
+    for *_ids, data in graph.edges(keys=True, data=True):
+        voxels = np.asarray(data.get("voxels", []), dtype=float)
+        for a, b in zip(voxels[:-1], voxels[1:]):
+            n = max(1, int(np.ceil(np.linalg.norm(b - a) / step_um)))
+            points.append(a + (b - a) * np.linspace(0.0, 1.0, n + 1)[:, None])
+    return np.concatenate(points)
+
+
+def _deviations(graph, skeleton, voxel_size_zyx, traced=None) -> np.ndarray:
+    """How far every centreline point sits from what smoothing was given: the
+    nearest skeleton voxel, or a point of the path the build drew (*traced*,
+    the graph before smoothing) where that path itself leaves the skeleton
+    -- a straight bridge across a gap in it, which is what smoothing measures
+    from too (graph/smoothing.py).
 
     A mask continuation joined onto a vessel -- recovered, or a bridge merged
     into it -- leaves the skeleton only at an end. That end is not what
@@ -258,6 +280,8 @@ def _deviations(graph, skeleton, voxel_size_zyx) -> np.ndarray:
     from scipy.spatial import cKDTree
 
     support = np.argwhere(skeleton).astype(float) * np.asarray(voxel_size_zyx)
+    if traced is not None:
+        support = np.vstack([support, _path_points(traced)])
     tree = cKDTree(support)
     kept = []
     for *_ids, data in graph.edges(keys=True, data=True):
@@ -275,26 +299,34 @@ def _deviations(graph, skeleton, voxel_size_zyx) -> np.ndarray:
 @pytest.mark.slow
 @pytest.mark.integration
 def test_the_nerve_total_length_is_smoothed_but_not_oversmoothed(nerve_graph):
-    """Bounded both ways, on real data.
+    """Bounded both ways, on real data, as a share of the path smoothing was
+    given (the graph before smoothing, measured in the same run).
 
-    The raw skeleton path totals about 5610 um on this fixture and the vessels
-    it traces are around 5170. Above the upper bound the staircase is still
-    being measured; below the lower bound the centrelines have been pulled
-    straighter than the vessels are.
+    The bounds were 4,900-5,400 um when that path was 5,847 um (smoothed
+    5,314, 0.909 of it). Since morphology stopped eroding the image faces
+    (b99758b) the build traces 186 um more vessel there and smoothing takes
+    out the same share (0.909), so the bounds are those shares: above the
+    upper one the staircase is still being measured; below the lower one the
+    centrelines have been pulled straighter than the vessels are.
     """
-    graph, _skeleton, _voxel_size = nerve_graph
-    total = _total_length(graph)
+    graph, _skeleton, _voxel_size, traced = nerve_graph
+    share = _total_length(graph) / _total_length(traced)
 
-    assert total < 5_400.0, f"{total:.0f} um: the voxel staircase is still in the length"
-    assert total > 4_900.0, f"{total:.0f} um: the centrelines have been oversmoothed"
+    assert share < 5_400.0 / 5_847.0, f"{share:.3f} of the path: the voxel staircase is still in the length"
+    assert share > 4_900.0 / 5_847.0, f"{share:.3f} of the path: the centrelines have been oversmoothed"
 
 
 @pytest.mark.slow
 @pytest.mark.integration
 def test_the_nerve_centrelines_stay_on_the_skeleton(nerve_graph):
-    """Smoothing must not move a vessel off the thing it was traced from."""
-    graph, skeleton, voxel_size = nerve_graph
-    deviations = _deviations(graph, skeleton, voxel_size)
+    """Smoothing must not move a vessel off the thing it was traced from.
+
+    Measured from the skeleton alone, a vessel lying in the z = 0 face
+    slice -- kept since b99758b -- read 4.5 um off it: Lee thinning left a
+    9 um gap there and the build bridged it straight through the mask.
+    """
+    graph, skeleton, voxel_size, traced = nerve_graph
+    deviations = _deviations(graph, skeleton, voxel_size, traced)
 
     assert deviations.mean() < 0.40, (
         f"mean deviation {deviations.mean():.3f} um: the centrelines have drifted"
@@ -308,7 +340,7 @@ def test_the_nerve_centrelines_stay_on_the_skeleton(nerve_graph):
 @pytest.mark.integration
 def test_every_vessel_says_what_happened_to_it(nerve_graph):
     """Provenance, so a surprising length can be traced to a decision."""
-    graph, _skeleton, _voxel_size = nerve_graph
+    graph, _skeleton, _voxel_size, _traced = nerve_graph
     outcomes = {
         data.get("centreline_smoothing")
         for *_ids, data in graph.edges(keys=True, data=True)
