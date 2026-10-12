@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import networkx as nx
 import numpy as np
 from skan import csr
@@ -227,6 +227,12 @@ class LumenCleanup:
     #: or a pair of edge keys (``lumen_loops.remove_parallel_edges_in_lumen``),
     #: and what it returns True for is left alone. None: the mask decides.
     keep_apart: Callable[[Any], bool] | None = None
+    #: The pair rule's and the stretch finder's verdicts, kept from round to
+    #: round and from one consolidate_lumen call to the next on the same
+    #: object: build_network cleans up after smoothing and again after the
+    #: thick-vessel split, and the split changes only the edges near the
+    #: thick region, so the second clean-up judges only those again.
+    memos: dict = field(default_factory=dict)
 
 
 def lumen_cleanup(
@@ -338,8 +344,8 @@ def consolidate_lumen(
     rounds = 0
     # The pair check's verdicts, kept from round to round: a round changes a
     # few places, and only the edges near them are judged again.
-    pairs_memo: dict = {}
-    stretch_memo: dict = {}
+    pairs_memo: dict = cleanup.memos.setdefault("pairs", {})
+    stretch_memo: dict = cleanup.memos.setdefault("stretches", {})
     def state(G):
         # A rewired stretch can leave the counts as they were and shorten
         # the centreline: the length is part of what "changed" means.

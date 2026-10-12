@@ -242,3 +242,22 @@ def test_a_bridge_left_dangling_by_a_clean_up_goes_too():
     assert not _bridges(G)
     assert G.number_of_edges() == 1
     assert 54.0 <= _centreline_um(G) <= 56.0
+
+
+
+def test_a_second_clean_up_on_the_same_object_judges_only_what_changed(monkeypatch):
+    """build_network cleans up after smoothing and again after the split:
+    the verdicts live on the LumenCleanup, so the second call judges no
+    unchanged edge again."""
+    import haemolynx.graph.doubled_stretches as stretches
+
+    mask, G = _strands_in_pieces()
+    cleanup = _no_length_prune(mask)
+    G = consolidate_lumen(G, cleanup)
+    assert cleanup.memos["stretches"] is not None and "pairs" in cleanup.memos
+    judged = []
+    original = stretches._judge_edge
+    monkeypatch.setattr(stretches, "_judge_edge", lambda *a, **k: (judged.append(1), original(*a, **k))[1])
+    again = consolidate_lumen(G.copy(), cleanup)
+    assert judged == []
+    assert sorted(map(str, again.edges(keys=True))) == sorted(map(str, G.edges(keys=True)))
