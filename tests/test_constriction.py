@@ -517,6 +517,50 @@ def test_a_thick_vessel_bridge_is_left_to_the_overrides_by_both_constriction_pat
         PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances_with_constrictions(graph, {"B01": {"d1": 5.0, "d2": 4.0}})
 
 
+def _graph_with_a_piece(state: str) -> nx.MultiGraph:
+    """A B01 vessel and, apart from it, a vessel with no branch order whose
+    solve left it in *state* (``graph.FLOW_STATE``)."""
+    from haemolynx.graph import FLOW_SOLVED, FLOW_STATE
+
+    graph = _one_edge_graph()
+    for node, z in ((5, 200.0), (6, 220.0)):
+        graph.add_node(node, pos=np.asarray([0.0, 0.0, z]))
+    graph.add_edge(5, 6, key=0, length=20.0, resistance=3.0, conductance=1.0 / 3.0,
+                   **{FLOW_SOLVED: state == "solved", FLOW_STATE: state})
+    return graph
+
+
+def _constrict_both_ways(graph):
+    apply_constriction_sites(
+        graph,
+        _FixedSites([]),
+        diameter_by_branch_order={"B01": 5.0},
+        constriction_factor_by_branch_order={"B01": 0.8},
+        prefer_edge_fwhm_baseline=False,
+        constriction_length=40.0,
+        num_integration_points=101,
+    )
+    return PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances_with_constrictions(
+        graph, {"B01": {"d1": 5.0, "d2": 4.0}}
+    )[1]
+
+
+def test_a_vessel_no_inlet_and_outlet_reach_is_skipped_by_both_constriction_paths():
+    """Under boundary_handling=leave_unsolved a piece no inlet and outlet
+    reach keeps no branch order (they are assigned from the inlets), and
+    E14.5's pericyte perturbation stopped at the first of 954 (2026-10-12).
+    It carries no flow whatever its resistance, so both paths pass it by, as
+    set_poiseuille_resistances does; a solved vessel without one is still
+    refused."""
+    graph = _graph_with_a_piece("no_boundary")
+    results = _constrict_both_ways(graph)
+    assert results["edges_set"] == 1
+    assert graph.edges[5, 6, 0]["resistance"] == 3.0
+
+    with pytest.raises(ValueError, match="missing required 'branch_order'"):
+        _constrict_both_ways(_graph_with_a_piece("solved"))
+
+
 # --- the strategies agree ---------------------------------------------------
 
 

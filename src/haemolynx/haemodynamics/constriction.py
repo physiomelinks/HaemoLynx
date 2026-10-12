@@ -389,6 +389,7 @@ def apply_constriction_sites(
     ``pericyte_count_assigned`` and ``pericyte_centers_um``, so a later
     visualization or diagnostic can show where the model put them.
     """
+    from haemolynx.graph.prune import flow_is_undefined
     from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 
     results: dict[str, Any] = {"edges_set": 0, "used_fwhm_baseline": 0}
@@ -399,6 +400,10 @@ def apply_constriction_sites(
             # resistance comes from apply_final_resistance_overrides.
             continue
         branch_order = edge_data.get("branch_order")
+        if branch_order is None and flow_is_undefined(edge_data):
+            # In a piece no inlet and outlet reach: no branch order was
+            # assigned, and no flow runs whatever its resistance.
+            continue
         if branch_order is None:
             raise ValueError(
                 f"Edge ({u}, {v}, {key}) missing required 'branch_order' attribute."

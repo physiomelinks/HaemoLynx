@@ -975,6 +975,7 @@ class PoiseuilleModel:
                     "prefer_edge_fwhm_baseline=True."
                 )
         constr_map = constriction_factor_by_branch_order
+        from haemolynx.graph.prune import flow_is_undefined
         from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 
         for u, v, key, data in G.edges(keys=True, data=True):
@@ -983,6 +984,11 @@ class PoiseuilleModel:
                 # apply_final_resistance_overrides gives it its resistance.
                 continue
             branch_order = data.get("branch_order")
+            if branch_order is None and flow_is_undefined(data):
+                # In a piece no inlet and outlet reach: branch orders are
+                # assigned from the inlets, and no flow runs whatever its
+                # resistance (set_poiseuille_resistances skips it too).
+                continue
             if branch_order is None:
                 raise ValueError(
                     f"Edge ({u}, {v}, {key}) missing required 'branch_order' attribute."
