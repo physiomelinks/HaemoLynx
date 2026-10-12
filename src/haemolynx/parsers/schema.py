@@ -193,7 +193,9 @@ class Setting:
         Retired settings this one took over, ``{old name: {old value: value
         here}}``. A config still naming one loads, and sets this setting from
         it unless the config gives this one a value other than its default;
-        an old value with no entry says nothing about this one.
+        an old value with no entry says nothing about this one. An empty
+        table retires the old setting outright: a config naming it still
+        loads, and its value is dropped with a log line.
     """
 
     name: str
@@ -581,11 +583,21 @@ class Schema:
             )
         for old_name, value in retired.items():
             setting = self._by_name[self._replaced[old_name]]
+            table = (setting.replaces or {})[old_name]
+            if not table:
+                logger.info(
+                    f"Setting '{old_name}' is retired; its value {value!r} is no longer read."
+                )
+                continue
             if setting.name in upgraded and not _is_default(setting, upgraded[setting.name]):
                 continue
             missing = object()
-            replacement = _lookup((setting.replaces or {})[old_name], value, missing)
+            replacement = _lookup(table, value, missing)
             if replacement is missing:
+                logger.info(
+                    f"Setting '{old_name}' is retired; its value {value!r} is not "
+                    f"read into {setting.name}."
+                )
                 continue
             upgraded[setting.name] = replacement
             logger.info(

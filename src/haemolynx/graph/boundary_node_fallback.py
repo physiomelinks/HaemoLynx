@@ -1,8 +1,12 @@
 """Utilities for boundary-node fallback selection logic."""
 from __future__ import annotations
 
+from typing import Any, Iterable
+
 import networkx as nx
 import numpy as np
+
+from ._helpers import points_inside_mask
 
 
 def select_nodes_at_hop_distance(
@@ -29,54 +33,89 @@ def select_nodes_at_hop_distance(
     return sorted(selected)
 
 
+def _edge_points(G: nx.Graph, u: Any, v: Any, edge_data: dict) -> np.ndarray:
+    """An edge's centreline samples, or its two node positions without them."""
+    voxels = edge_data.get("voxels")
+    if voxels:
+        arr = np.asarray([row for row in voxels if row is not None and len(row) >= 3], dtype=float)
+        if arr.ndim == 2 and arr.shape[1] >= 3 and len(arr):
+            return arr[:, :3]
+    points = [G.nodes[n].get("pos") for n in (u, v)]
+    points = [np.asarray(p, dtype=float) for p in points if p is not None]
+    return np.asarray(points, dtype=float).reshape(-1, 3)
+
+
+def seed_nodes_without_mask_coverage(
+    G: nx.MultiGraph,
+    seed_nodes: Iterable[Any],
+    mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+) -> list[Any]:
+    """The seed nodes none of whose edges touches *mask*, in the order given.
+
+    A seed's edge is covered when any of its centreline samples (``voxels``,
+    physical ``(z, y, x)`` microns, like node ``pos``) falls in a True voxel
+    of *mask*, read through *voxel_size_zyx* -- the mask is voxel-indexed.
+    Rounding microns straight to indices, as this used to, read the wrong
+    voxels on every stack whose voxels are not 1 um, and the coverage test
+    then failed for edges lying wholly inside the mask.
+    """
+    uncovered: list[Any] = []
+    for seed in seed_nodes:
+        if seed not in G:
+            continue
+        edges = (
+            G.edges(seed, keys=True, data=True)
+            if isinstance(G, nx.MultiGraph)
+            else ((u, v, 0, d) for u, v, d in G.edges(seed, data=True))
+        )
+        covered = False
+        for u, v, _key, edge_data in edges:
+            points = _edge_points(G, u, v, edge_data)
+            if len(points) and points_inside_mask(points, mask, voxel_size_zyx=voxel_size_zyx).any():
+                covered = True
+                break
+        if not covered:
+            uncovered.append(seed)
+    return uncovered
+
+
 def seed_edges_have_full_mask_coverage(
     G: nx.MultiGraph,
     seed_nodes: list[int],
     mask: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float],
 ) -> tuple[bool, int, int]:
-    """Return whether all seed-adjacent edges overlap the given mask.
+    """Whether every seed-adjacent edge overlaps *mask*.
 
-    Returns
-    -------
-    (all_covered, uncovered_edge_count, total_seed_edge_count)
-
-    Edge ``voxels`` are treated as physical (z, y, x) microns with unit voxels
-    mapped by rounding; callers with non-unit spacing should pass already-indexed
-    masks or unit-scaled graphs.
+    Returns ``(all_covered, uncovered_edge_count, total_seed_edge_count)``.
+    Edge ``voxels`` are physical ``(z, y, x)`` microns; *voxel_size_zyx*
+    maps them onto the mask's voxels. See
+    :func:`seed_nodes_without_mask_coverage` for the per-seed form the
+    pipeline's fallback uses.
     """
     total_edges = 0
     uncovered_edges = 0
-    z_max, y_max, x_max = mask.shape
-    seen_edges: set[tuple[int, int, int]] = set()
-
+    seen_edges: set[tuple[Any, Any, int]] = set()
     for seed in seed_nodes:
         if seed not in G:
             continue
-        for u, v, key, edge_data in G.edges(seed, keys=True, data=True):
-            edge_id = (int(min(u, v)), int(max(u, v)), int(key))
+        edges = (
+            G.edges(seed, keys=True, data=True)
+            if isinstance(G, nx.MultiGraph)
+            else ((u, v, 0, d) for u, v, d in G.edges(seed, data=True))
+        )
+        for u, v, key, edge_data in edges:
+            edge_id = (min(u, v), max(u, v), key)
             if edge_id in seen_edges:
                 continue
             seen_edges.add(edge_id)
             total_edges += 1
-
-            voxels = edge_data.get("voxels")
-            if not voxels:
+            points = _edge_points(G, u, v, edge_data)
+            if not len(points) or not points_inside_mask(
+                points, mask, voxel_size_zyx=voxel_size_zyx
+            ).any():
                 uncovered_edges += 1
-                continue
-
-            covered = False
-            for voxel in voxels:
-                if voxel is None or len(voxel) < 3:
-                    continue
-                z = int(round(float(voxel[0])))
-                y = int(round(float(voxel[1])))
-                x = int(round(float(voxel[2])))
-                if z < 0 or y < 0 or x < 0 or z >= z_max or y >= y_max or x >= x_max:
-                    continue
-                if bool(mask[z, y, x]):
-                    covered = True
-                    break
-            if not covered:
-                uncovered_edges += 1
-
     return (uncovered_edges == 0), int(uncovered_edges), int(total_edges)

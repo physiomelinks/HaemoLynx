@@ -1398,3 +1398,77 @@ def test_napari_build_haemodynamic_model_does_not_restore_pre_cut_vessels():
         HaemodynamicModel(graph=pre_cut),
     )
     assert results._graph is post_cut
+
+
+# --- a cut terminal counts as inside the mask it was cut off at ------------------
+
+
+def _chain_through_both_masks():
+    """One edge along x from inside an arteriole mask (x < 10) to inside a
+    venule mask (x >= 30)."""
+    from haemolynx.graph.cut_at_large_vessel_volumes import CUT_FROM_LARGE_VESSEL
+
+    art = np.zeros((5, 5, 40), dtype=bool)
+    ven = np.zeros_like(art)
+    art[:, :, 0:10] = True
+    ven[:, :, 30:40] = True
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(2.0, 2.0, 0.0))
+    G.add_node(1, pos=(2.0, 2.0, 39.0))
+    G.add_edge(0, 1, voxels=[(2.0, 2.0, float(x)) for x in range(0, 40)], length=39.0)
+    return G, art, ven, CUT_FROM_LARGE_VESSEL
+
+
+def test_cut_terminals_are_tagged_with_the_mask_they_were_cut_off_at():
+    G, art, ven, tag = _chain_through_both_masks()
+
+    result = cut_graph_at_large_vessel_volumes(G, art, ven, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    tags = {tuple(result.nodes[n]["pos"]): result.nodes[n].get(tag) for n in result.nodes}
+    assert tags == {(2.0, 2.0, 10.0): "arteriole", (2.0, 2.0, 29.0): "venule"}
+
+
+def test_the_terminal_selectors_find_cut_terminals_at_zero_dilation():
+    """Regression: a cut terminal sits one sample outside the mask, so with
+    the default 0 um dilation no selector found it -- the default run (cut
+    on, dilation 0) could never find an inlet."""
+    from haemolynx.graph import (
+        select_terminal_nodes_from_large_vessel_masks,
+        select_terminal_nodes_from_large_vessel_masks_progressive_dilation,
+    )
+    from haemolynx.graph.confidence_vessel_assignment import (
+        select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence,
+    )
+
+    G, art, ven, _tag = _chain_through_both_masks()
+    cut = cut_graph_at_large_vessel_volumes(G, art, ven, voxel_size_zyx=(1.0, 1.0, 1.0))
+    by_x = {round(cut.nodes[n]["pos"][2]): n for n in cut.nodes}
+    inlet, outlet = by_x[10], by_x[29]
+
+    assert select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
+        cut, art, ven, voxel_size_zyx=(1.0, 1.0, 1.0), max_dilation_microns=0.0,
+    ) == ([inlet], [outlet])
+    assert select_terminal_nodes_from_large_vessel_masks(
+        cut, art, ven, voxel_size_zyx=(1.0, 1.0, 1.0),
+    ) == ([inlet], [outlet])
+    robust = select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence(
+        cut, art, ven, voxel_size_zyx=(1.0, 1.0, 1.0), max_dilation_microns=0.0,
+    )
+    assert (robust["input_nodes"], robust["output_nodes"]) == ([inlet], [outlet])
+
+
+def test_the_default_cut_and_zero_dilation_assign_the_cut_terminals(tmp_path):
+    """The stage with the schema defaults (cut on, 0 um dilation), the real
+    selector: it used to raise 'found no terminal nodes in the arteriole
+    mask'."""
+    G, art, ven, _tag = _chain_through_both_masks()
+    network = _network_for_cut(G, art, ven, tmp_path)
+    settings = _assign_boundaries_settings(plot_dir=tmp_path, visualize_results=False)
+    assert settings["cut_network_at_large_vessel_volumes"] is True
+    assert settings["large_vessel_assignment_max_dilation_microns"] == 0.0
+
+    boundaries = assign_boundaries(settings, network)
+
+    cut = boundaries.graph
+    assert [round(cut.nodes[n]["pos"][2]) for n in settings["inlet_nodes"]] == [10]
+    assert [round(cut.nodes[n]["pos"][2]) for n in settings["outlet_nodes"]] == [29]

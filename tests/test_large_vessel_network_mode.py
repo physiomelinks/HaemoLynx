@@ -320,3 +320,90 @@ def test_large_vessel_inlet_and_outlet_overrides_cannot_collide_on_the_same_node
 
     with pytest.raises(ValueError, match="venule mask"):
         assign_boundaries(settings, network)
+
+
+# --- what is not a stump --------------------------------------------------------------
+
+
+def test_a_vessel_lying_along_a_face_gives_no_stump_there():
+    """On E14.5 the pial arteriole's flank against the top of the stack read
+    as a stump: its footprint spans many of its own cross-sections, where a
+    vessel cut by a face leaves about one."""
+    mask = np.zeros((10, 10, 30), dtype=bool)
+    mask[0:3, 2:5, 0:30] = True  # along x, lying on the z=0 face, cut by both x faces
+
+    points = find_large_vessel_mask_stump_points(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    assert sorted(float(p[2]) for p in points) == [0.0, 29.0], "the two x-face cuts only"
+    assert all(float(p[0]) == 1.0 for p in points)
+
+
+def test_an_oblique_cut_is_still_a_stump():
+    """A vessel meeting the face at an angle leaves a longer footprint than
+    its cross-section, but not many times longer."""
+    mask = np.zeros((12, 12, 12), dtype=bool)
+    for z in range(6):
+        mask[z, 3:7, 2 * z : 2 * z + 6] = True  # a tube running up at ~27 degrees to the face
+
+    points = find_large_vessel_mask_stump_points(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+
+    assert any(float(p[0]) == 0.0 for p in points)
+
+
+def test_specks_below_the_component_fraction_give_no_stump():
+    mask = np.zeros((10, 10, 10), dtype=bool)
+    mask[0:5, 4:6, 4:6] = True  # the vessel, 20 voxels
+    mask[0, 8, 8] = True  # a speck on the same face
+
+    unfiltered = find_large_vessel_mask_stump_points(mask, voxel_size_zyx=(1.0, 1.0, 1.0))
+    filtered = find_large_vessel_mask_stump_points(
+        mask, voxel_size_zyx=(1.0, 1.0, 1.0), min_component_fraction=0.1  # 2 of the vessel's 20 voxels
+    )
+
+    assert len(unfiltered) == 2
+    assert len(filtered) == 1
+    np.testing.assert_allclose(filtered[0], (0.0, 4.5, 4.5))
+
+
+def test_a_stump_snaps_to_a_terminal_inside_the_mask_not_a_nearer_capillary_tip():
+    """A wide vessel's face centroid can lie nearer a capillary tip beside it
+    than its own centreline's end; the snap used to take any terminal."""
+    G = nx.MultiGraph()
+    G.add_node(0, pos=(2.0, 4.5, 4.5))  # the vessel's own end, inside the mask
+    G.add_node(1, pos=(5.0, 4.5, 4.5))
+    G.add_node(2, pos=(0.0, 4.5, 6.0))  # a capillary tip, outside the mask and nearer the face centroid
+    G.add_node(3, pos=(5.0, 8.0, 8.0))
+    G.add_edge(0, 1, key=0)
+    G.add_edge(1, 3, key=0)
+    G.add_edge(2, 3, key=0)
+    mask = np.zeros((10, 10, 10), dtype=bool)
+    mask[0:6, 4:6, 4:6] = True
+
+    inlets = select_large_vessel_mask_stump_terminal_nodes_for_role(
+        G, mask, node_role="inlet", voxel_size_zyx=(1.0, 1.0, 1.0), image_shape=(10, 10, 10),
+        coordinates_setting_name="large_arteriole_mask stump",
+    )
+
+    assert inlets == [0]
+
+
+def test_the_stage_passes_the_component_fraction_setting(tmp_path, monkeypatch):
+    import haemolynx.graph.large_vessel_network as module
+
+    G, arteriole, venule = _chain_with_large_vessel_masks()
+    network = _network_for_large_vessel_mode(G, arteriole, venule, tmp_path)
+    seen = []
+    real = module.find_large_vessel_mask_stump_points
+
+    def spy(mask, **kwargs):
+        seen.append(kwargs.get("min_component_fraction"))
+        return real(mask, **kwargs)
+
+    monkeypatch.setattr(module, "find_large_vessel_mask_stump_points", spy)
+    settings = _assign_boundaries_settings(plot_dir=tmp_path, large_vessel_stump_min_component_fraction=0.2)
+
+    assign_boundaries(settings, network)
+
+    assert seen == [0.2, 0.2], "once per side"
+    assert settings["inlet_nodes"] == [0] and settings["outlet_nodes"] == [9]
+    assert default_schema()["large_vessel_stump_min_component_fraction"].default == 0.05

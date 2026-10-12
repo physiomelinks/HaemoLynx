@@ -1496,6 +1496,9 @@ def _large_vessel_role_terminal_nodes(
             image_shape=image_shape,
             coordinates_setting_name=f"{role} mask stump",
             exclude_nodes=exclude_nodes,
+            min_component_fraction=float(
+                settings["large_vessel_stump_min_component_fraction"]
+            ),
         )
     return graph.select_boundary_nodes_for_role(
         G, image_shape, settings, role, exclude_nodes=exclude_nodes
@@ -1785,9 +1788,6 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     allow_overlap=False,
                     exclude_smaller_overlapping_volumes=(
                         apply_overlap_cleanup_prepass and not effective_assignment_fast_mode
-                    ),
-                    overlap_parallel_workers=int(
-                        settings["automated_vessel_overlap_parallel_workers"]
                     ),
                 )
             )
@@ -2128,9 +2128,6 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 ),
                 allow_overlap=False,
                 exclude_smaller_overlapping_volumes=False,
-                overlap_parallel_workers=int(
-                    settings["small_vessel_overlap_parallel_workers"]
-                ),
             )
         )
         small_arteriole_mask = assignment_small_arteriole_mask
@@ -2159,55 +2156,51 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "small_vessel_boundary_fallback_to_hop_distance=True."
             )
         exclude_io_nodes = set(settings["inlet_nodes"]) | set(settings["outlet_nodes"])
-        (
-            arteriole_seed_edges_covered,
-            arteriole_uncovered_edge_count,
-            arteriole_seed_edge_count,
-        ) = graph.seed_edges_have_full_mask_coverage(
-            G,
-            list(settings["inlet_nodes"]),
-            assignment_small_arteriole_mask,
+        # An inlet's own vessel is covered by the small mask of its class or,
+        # with the large vessels kept in the network, by the large one: the
+        # inlet then sits on the large arteriole, which the small arteriole
+        # mask never covers, and every inlet read as uncovered.
+        large_kept = (
+            bool(settings["assign_large_vessel_branch_orders"])
+            and large_arteriole_mask is not None
+            and large_venule_mask is not None
         )
-        (
-            venule_seed_edges_covered,
-            venule_uncovered_edge_count,
-            venule_seed_edge_count,
-        ) = graph.seed_edges_have_full_mask_coverage(
-            G,
-            list(settings["outlet_nodes"]),
-            assignment_small_venule_mask,
-        )
-        if fallback_enabled and (
-            (not arteriole_seed_edges_covered) or (not venule_seed_edges_covered)
+        for role, seed_key, small_mask, large_mask, boundary_key in (
+            ("arteriole", "inlet_nodes", assignment_small_arteriole_mask,
+             large_arteriole_mask, "arteriole_boundary_nodes"),
+            ("venule", "outlet_nodes", assignment_small_venule_mask,
+             large_venule_mask, "venule_boundary_nodes"),
         ):
-            logger.info(
-                "Small-vessel mask boundary assignment missed immediate seed-edge "
-                f"mask coverage; applying hop-distance fallback ({fallback_hops} edges)."
+            coverage_mask = small_mask
+            if large_kept:
+                coverage_mask = small_mask | np.asarray(large_mask, dtype=bool)
+            seeds = list(settings[seed_key])
+            uncovered = graph.seed_nodes_without_mask_coverage(
+                G, seeds, coverage_mask, voxel_size_zyx=voxel_size_zyx
             )
-            if not arteriole_seed_edges_covered:
-                logger.info(
-                    "Arteriole immediate-edge mask coverage miss: "
-                    f"{arteriole_uncovered_edge_count}/{arteriole_seed_edge_count} "
-                    "seed edges without small-arteriole mask overlap."
+            if not uncovered:
+                continue
+            logger.warning(
+                f"{len(uncovered)} of {len(seeds)} {seed_key[:-6]} node(s) have no edge "
+                f"in the small-{role} mask: {uncovered}."
+            )
+            if not fallback_enabled:
+                continue
+            # Only those seeds, and added to what the masks found: the whole
+            # list used to be replaced by every inlet's hop neighbours.
+            added = [
+                node_id
+                for node_id in graph.select_nodes_at_hop_distance(
+                    G, uncovered, fallback_hops, exclude_nodes=exclude_io_nodes
                 )
-                settings["arteriole_boundary_nodes"][:] = graph.select_nodes_at_hop_distance(
-                    G,
-                    list(settings["inlet_nodes"]),
-                    fallback_hops,
-                    exclude_nodes=exclude_io_nodes,
-                )
-            if not venule_seed_edges_covered:
-                logger.info(
-                    "Venule immediate-edge mask coverage miss: "
-                    f"{venule_uncovered_edge_count}/{venule_seed_edge_count} "
-                    "seed edges without small-venule mask overlap."
-                )
-                settings["venule_boundary_nodes"][:] = graph.select_nodes_at_hop_distance(
-                    G,
-                    list(settings["outlet_nodes"]),
-                    fallback_hops,
-                    exclude_nodes=exclude_io_nodes,
-                )
+                if node_id not in settings[boundary_key]
+            ]
+            settings[boundary_key].extend(added)
+            logger.warning(
+                f"Hop-distance fallback: added {len(added)} {role} boundary node(s) "
+                f"{fallback_hops} edge(s) from those; the "
+                f"{len(settings[boundary_key]) - len(added)} the masks found are kept."
+            )
         if settings["write_small_vessel_boundary_labelling_3d_html"]:
             boundary_html = Path(settings["plot_dir"]) / "small_vessel_mask_boundary_labelling_3d.html"
             Path(settings["plot_dir"]).mkdir(parents=True, exist_ok=True)

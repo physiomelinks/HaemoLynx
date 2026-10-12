@@ -185,3 +185,32 @@ def test_vessel_mask_volume_settings_are_not_skeleton_min_settings():
     assert schema["skeleton_min_component_percent"].section != "Vessel masks"
     assert schema["large_vessel_min_component_volume_um3"].section == "Vessel masks"
     assert schema["small_vessel_min_component_volume_um3"].section == "Vessel masks"
+
+
+def test_opposite_attached_distances_match_a_whole_volume_transform():
+    """The cleanup now reads each component's distance to the other mask at
+    its surface voxels; that minimum is what a whole-volume distance
+    transform gives, on anisotropic voxels too."""
+    from scipy.ndimage import distance_transform_edt, label
+
+    from haemolynx.graph.large_vessels import _component_distances_to_mask
+
+    rng = np.random.default_rng(3)
+    shape = (12, 20, 20)
+    zz, yy, xx = np.indices(shape)
+    mask = np.zeros(shape, dtype=bool)
+    other = np.zeros(shape, dtype=bool)
+    for target, count in ((mask, 6), (other, 3)):
+        for _ in range(count):
+            c = [rng.integers(0, s) for s in shape]
+            target |= (zz - c[0]) ** 2 + (yy - c[1]) ** 2 + (xx - c[2]) ** 2 <= int(rng.integers(1, 4)) ** 2
+    mask &= ~other
+    labels, count = label(mask, structure=np.ones((3, 3, 3)))
+    sampling = (2.0, 0.5, 0.5)
+
+    got = _component_distances_to_mask(labels, count, other, sampling_zyx=sampling)
+
+    reference = distance_transform_edt(~other, sampling=sampling)
+    for component in range(1, count + 1):
+        assert got[component] == pytest.approx(reference[labels == component].min())
+    assert np.isinf(_component_distances_to_mask(labels, count, np.zeros(shape, bool), sampling_zyx=sampling)[1:]).all()
