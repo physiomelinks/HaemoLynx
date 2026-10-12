@@ -695,3 +695,99 @@ def test_a_z_range_reads_only_those_slices():
     assert uncovered_mask_regions(G, _support(mask), z_range=(0, 15)) == []
     (deep,) = uncovered_mask_regions(G, _support(mask), z_range=(20, 40))
     assert deep.centre_um[0] == pytest.approx(30.0, abs=0.5)
+
+
+# --- the cross-section outline ---------------------------------------------
+
+
+def _reference_reach(inside, points, t, e1, e2, radii, caps, step, rays):
+    """The outline as it was first computed: every distance up to the chunk's
+    widest cap evaluated for every ray, then the first one out read off."""
+    angles = np.linspace(0.0, 2.0 * np.pi, rays, endpoint=False)
+    distances = np.arange(1, int(np.ceil(float(caps.max()) / step)) + 1) * step
+    directions = np.cos(angles)[None, :, None] * e1[:, None, :] + np.sin(angles)[None, :, None] * e2[:, None, :]
+    pts = points[:, None, None, :] + distances[None, None, :, None] * directions[:, :, None, :]
+    shape = (len(points), rays, len(distances))
+    held = inside(pts.reshape(-1, 3)).reshape(shape)
+    along = (radii[:, None] * t)[:, None, None, :]
+    for sign in (1.0, -1.0):
+        held &= inside((pts + sign * along).reshape(-1, 3)).reshape(shape)
+    held &= distances[None, None, :] <= caps[:, None, None]
+    out = ~held
+    first_out = np.argmax(out, axis=2)
+    never_out = ~out.any(axis=2)
+    return np.where(never_out, caps[:, None], np.where(first_out > 0, distances[np.maximum(first_out - 1, 0)], 0.0))
+
+
+def _random_samples(rng, n):
+    points = rng.uniform(2.0, 28.0, size=(n, 3))
+    t = rng.normal(size=(n, 3))
+    t /= np.linalg.norm(t, axis=1, keepdims=True)
+    helper = np.eye(3)[np.argmin(np.abs(t), axis=1)]
+    e1 = np.cross(t, helper)
+    e1 /= np.linalg.norm(e1, axis=1, keepdims=True)
+    e2 = np.cross(t, e1)
+    radii = rng.uniform(0.3, 4.0, size=n)
+    return points, t, e1, e2, radii
+
+
+def test_following_each_ray_to_its_first_voxel_out_gives_the_outline_evaluating_every_distance_did():
+    from haemolynx.graph import mask_recovery as module
+
+    rng = np.random.default_rng(11)
+    mask = rng.random((30, 30, 30)) > 0.35
+    support = _support(mask)
+    points, t, e1, e2, radii = _random_samples(rng, 400)
+    caps = module.CROSS_SECTION_REACH_RADII * radii + 1.0
+    step = 0.5
+    asked = []
+
+    def counting(p):
+        asked.append(len(np.asarray(p).reshape(-1, 3)))
+        return support.inside(p)
+
+    reach = module._follow_rays(counting, points, t, e1, e2, radii, caps, step)
+    followed = sum(asked)
+    asked.clear()
+    expected = _reference_reach(counting, points, t, e1, e2, radii, caps, step, module._CROSS_SECTION_RAYS)
+    assert np.array_equal(reach, expected)
+    assert followed < 0.5 * sum(asked)
+
+
+def test_the_outline_does_not_depend_on_which_samples_are_followed_together(monkeypatch):
+    from haemolynx.graph import mask_recovery as module
+
+    # Chunks of 16 samples, sorted by reach inside _cross_sections, against
+    # every sample followed as one chunk in the order the index holds them.
+    monkeypatch.setattr(module, "_CROSS_SECTION_CHUNK", 16)
+    rng = np.random.default_rng(12)
+    mask = rng.random((30, 30, 30)) > 0.35
+    support = _support(mask)
+    index, radii = module._centreline_samples(_trunk_graph(), support)
+    radii = rng.uniform(0.3, 4.0, size=len(radii))  # mixed caps in every chunk
+    assert len(radii) > 2 * 16
+    chunked = module._cross_sections(
+        index, radii, support, reach_radii=module.CROSS_SECTION_REACH_RADII, margin_um=1.0, workers=1
+    )
+    whole = module._follow_rays(
+        support.inside, index.points, chunked.t, chunked.e1, chunked.e2, radii,
+        module.CROSS_SECTION_REACH_RADII * radii + 1.0, 0.5,
+    )
+    assert np.array_equal(chunked.reach, whole)
+    assert chunked.reach.any() and not chunked.reach.all()
+
+
+def test_worker_processes_follow_the_same_outline_as_this_one(monkeypatch):
+    from haemolynx.graph import mask_recovery as module
+
+    monkeypatch.setattr(module, "_CROSS_SECTION_CHUNK", 16)
+    rng = np.random.default_rng(13)
+    mask = rng.random((30, 30, 30)) > 0.35
+    support = _support(mask)
+    index, radii = module._centreline_samples(_trunk_graph(), support)
+    radii = rng.uniform(0.3, 4.0, size=len(radii))
+    kw = dict(reach_radii=module.CROSS_SECTION_REACH_RADII, margin_um=1.0)
+    alone = module._cross_sections(index, radii, support, workers=1, **kw)
+    pooled = module._cross_sections(index, radii, support, workers=2, **kw)
+    assert np.array_equal(alone.reach, pooled.reach)
+    assert len(radii) > 16 and alone.reach.any()

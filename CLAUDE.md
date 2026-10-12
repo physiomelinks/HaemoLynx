@@ -432,7 +432,14 @@ are only caught locally.
   (`lumen_loops.loop_inside_one_lumen`). Joining every free end made tangles of short loops (on
   E14.5, 3,232 under 30 µm against 101 before the step). Its duplicate check and node ids are
   kept indexed (`EdgeSampleIndex.added_near`, `_NodeIds`): scanned per path, they were 95% of
-  the step's time. Without a mask, or with both settings off, the two steps leave the graph as it is.
+  the step's time. The cross-section outline (`_follow_rays`) follows each ray only to its first
+  voxel out, with the samples sorted by reach so a chunk is not kept going by its widest vessel,
+  reads the mask as bits (`preprocessing.PackedMask`: 2 GB for a 16 G-voxel stack, in RAM, which
+  every `MaskSupport.inside` switches to after `PACK_AFTER_POINTS` lookups) and spreads its chunks
+  over worker processes (`preprocessing.shared_volume_tasks.run_volume_tasks`, the pool the
+  section diameter methods use) once there are `_WORKER_MIN_SAMPLES`; the outline is per sample
+  and identical with any of that (E14.5's uncovered scan went 108 -> 18 s, bit for bit). Without
+  a mask, or with both settings off, the two steps leave the graph as it is.
 - **`graph/facing_ends.py`** — `join_facing_dead_ends`, its own step after mask recovery
   (`join_facing_dead_ends`, run with a mask and `bridge_require_mask_support`;
   `facing_dead_end_max_gap_um`, 10 µm, 0 off): two dead ends pointing at each other -- the

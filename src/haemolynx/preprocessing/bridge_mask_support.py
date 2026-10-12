@@ -24,16 +24,24 @@ from typing import Callable, Sequence
 import numpy as np
 from scipy.spatial import cKDTree
 
+from .memmap_support import LOW_MEMORY_BLOCK_VOXELS
+
 __all__ = [
     "BridgeMaskSupport",
     "DEFAULT_MAX_BACKGROUND_GAP_UM",
     "DEFAULT_MIN_MASK_FRACTION",
     "MaskSupport",
+    "PackedMask",
     "bridge_is_supported",
     "bridge_mask_support",
     "path_shadows_existing_vessel",
     "shadowed_samples",
 ]
+
+#: Points a :class:`MaskSupport` reads straight from its mask before packing
+#: it to bits (:class:`PackedMask`): a handful of lookups is cheaper than one
+#: pass over the volume, a scan of every centreline is not.
+PACK_AFTER_POINTS = 100_000
 
 #: Longest run of background a bridge may cross: a one- or two-voxel dropout
 #: in the segmentation of a vessel that is really there.
@@ -102,16 +110,70 @@ def _pieces(points: np.ndarray, step_um: float) -> tuple[np.ndarray, np.ndarray]
     return _split(arr, step_um, 0.5)
 
 
-def _points_in_mask(points_um: np.ndarray, mask: np.ndarray, voxel_size_zyx) -> np.ndarray:
+class PackedMask:
+    """A boolean volume held as one bit per voxel, for point lookups.
+
+    A 16-billion-voxel mask is 16 GB as bytes -- a memmap, read a page at a
+    time at random by every point-in-mask lookup -- and 2 GB as bits, which
+    stays in RAM. The same answers: :meth:`contains` reads the voxel the
+    index names, exactly as indexing the mask would. *bits* is the flat
+    volume packed least-significant bit first (``np.packbits(...,
+    bitorder="little")``), which is what lets a worker process map the same
+    bits from a file and build the lookup again from them.
+    """
+
+    __slots__ = ("bits", "shape")
+
+    def __init__(self, bits: np.ndarray, shape: Sequence[int]):
+        self.bits = bits
+        self.shape = tuple(int(s) for s in shape)
+
+    @classmethod
+    def from_mask(cls, mask: np.ndarray, *, block_voxels: int = LOW_MEMORY_BLOCK_VOXELS) -> "PackedMask":
+        """Pack *mask* (any array, memmaps included), a slab of whole axis-0
+        slices at a time, so no more than a slab of it is ever held as bytes."""
+        mask = np.asanyarray(mask)
+        shape = tuple(int(s) for s in mask.shape)
+        count = int(np.prod(shape, dtype=np.int64)) if shape else 0
+        bits = np.empty((count + 7) // 8, dtype=np.uint8)
+        per_slice = int(np.prod(shape[1:], dtype=np.int64)) if len(shape) > 1 else 1
+        if mask.ndim < 2 or count <= block_voxels or per_slice == 0:
+            bits[:] = np.packbits(np.asarray(mask, dtype=bool).ravel(), bitorder="little")
+            return cls(bits, shape)
+        # Slices per slab chosen so every slab but the last packs to whole
+        # bytes, and lands at a byte boundary.
+        unit = 8 // np.gcd(per_slice, 8)
+        step = max(unit, (max(1, block_voxels // per_slice) // unit) * unit)
+        offset = 0
+        for start in range(0, shape[0], step):
+            slab = np.asarray(mask[start:start + step], dtype=bool).ravel()
+            packed = np.packbits(slab, bitorder="little")
+            bits[offset:offset + len(packed)] = packed
+            offset += len(slab) // 8
+        return cls(bits, shape)
+
+    def contains(self, index: np.ndarray) -> np.ndarray:
+        """Whether each in-bounds integer voxel index of *index* (``(n, ndim)``) is True."""
+        index = np.asarray(index, dtype=np.intp).reshape(-1, len(self.shape))
+        if not len(index):
+            return np.zeros(0, dtype=bool)
+        flat = np.ravel_multi_index(tuple(index.T), self.shape)
+        return ((self.bits[flat >> 3] >> (flat & 7).astype(np.uint8)) & 1).astype(bool)
+
+
+def _points_in_mask(points_um: np.ndarray, mask, voxel_size_zyx) -> np.ndarray:
     """True where the point's nearest voxel is in the mask; outside the volume
-    is background."""
+    is background. *mask* is the volume, or a :class:`PackedMask` of it."""
     points = np.asarray(points_um, dtype=float).reshape(-1, 3)
     idx = np.rint(points / np.asarray(voxel_size_zyx, dtype=float)).astype(np.intp)
     in_bounds = np.all((idx >= 0) & (idx < np.asarray(mask.shape)), axis=1)
     inside = np.zeros(len(points), dtype=bool)
     valid = idx[in_bounds]
     if len(valid):
-        inside[in_bounds] = np.asarray(mask[valid[:, 0], valid[:, 1], valid[:, 2]], dtype=bool)
+        if isinstance(mask, PackedMask):
+            inside[in_bounds] = mask.contains(valid)
+        else:
+            inside[in_bounds] = np.asarray(mask[valid[:, 0], valid[:, 1], valid[:, 2]], dtype=bool)
     return inside
 
 
@@ -343,7 +405,11 @@ class MaskSupport:
     paths are physical microns on *voxel_size_zyx*. The lumen radius --
     each point's distance to background -- comes from the mask's surface
     (``pointwise_distance.FeatureDistance``), built the first time a radius
-    is asked for; pass *feature_distance* to share one already built.
+    is asked for; pass *feature_distance* to share one already built. Point
+    lookups (:meth:`inside`) read the mask itself until
+    :data:`PACK_AFTER_POINTS` points have been asked about, then a bit-packed
+    copy of it (:class:`PackedMask`, :meth:`pack`) that stays in RAM however
+    the mask is backed; pass *packed* to share one already made.
     """
 
     def __init__(
@@ -354,15 +420,31 @@ class MaskSupport:
         max_background_gap_um: float = DEFAULT_MAX_BACKGROUND_GAP_UM,
         min_mask_fraction: float = DEFAULT_MIN_MASK_FRACTION,
         feature_distance=None,
+        packed: PackedMask | None = None,
     ):
         self.mask = mask
         self.voxel_size_zyx = tuple(float(v) for v in voxel_size_zyx)
         self.max_background_gap_um = float(max_background_gap_um)
         self.min_mask_fraction = float(min_mask_fraction)
         self._distance = feature_distance
+        self._packed = packed
+        self._points_asked = 0
+
+    def pack(self) -> PackedMask:
+        """The mask as bits (:class:`PackedMask`), made on the first call."""
+        if self._packed is None:
+            self._packed = PackedMask.from_mask(self.mask)
+        return self._packed
 
     def inside(self, points_um: np.ndarray) -> np.ndarray:
-        return _points_in_mask(points_um, self.mask, self.voxel_size_zyx)
+        points = np.asarray(points_um, dtype=float).reshape(-1, 3)
+        if self._packed is None:
+            self._points_asked += len(points)
+            if self._points_asked >= PACK_AFTER_POINTS:
+                self.pack()
+        return _points_in_mask(
+            points, self.mask if self._packed is None else self._packed, self.voxel_size_zyx
+        )
 
     def radius(self, points_um: np.ndarray) -> np.ndarray:
         """Distance to background at each point's nearest voxel, in microns

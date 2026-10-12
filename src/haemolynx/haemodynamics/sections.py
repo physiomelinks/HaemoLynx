@@ -18,6 +18,12 @@ from collections import defaultdict
 import numpy as np
 from scipy.ndimage import gaussian_filter, map_coordinates
 
+from haemolynx.preprocessing.shared_volume_tasks import (  # noqa: F401 -- re-exported
+    MAX_DEFAULT_WORKERS,
+    default_worker_count,
+    run_volume_tasks,
+)
+
 from .automated import _arc_length_parameterize, _interpolate_centerline
 from .edt_diameter import _centreline_tangents
 from .poiseuille import edge_selection
@@ -40,110 +46,23 @@ __all__ = [
 #: (each imports numpy and scipy afresh on Windows) costs more than it saves.
 MIN_EDGES_FOR_WORKERS = 64
 
-_WORKER_VOLUME: np.ndarray | None = None
-
-
-#: The most workers :func:`default_worker_count` gives: on a 20-thread
-#: machine 500 real vessels' endothelial rings took 170 s in one process,
-#: 41 s in 8 and 54 s in 19 -- past eight, starting workers and sharing the
-#: physical cores costs more than the extra ones save.
-MAX_DEFAULT_WORKERS = 8
-
-
-def default_worker_count() -> int:
-    """Up to :data:`MAX_DEFAULT_WORKERS`, leaving a core for the rest of the machine."""
-    import os
-
-    return max(1, min(MAX_DEFAULT_WORKERS, (os.cpu_count() or 2) - 1))
-
-
-def _load_worker_volume(specs: list[tuple[str, str, tuple[int, ...]]], as_tuple: bool) -> None:
-    global _WORKER_VOLUME
-    volumes = tuple(
-        np.memmap(path, dtype=np.dtype(dtype), mode="r", shape=shape) for path, dtype, shape in specs
-    )
-    _WORKER_VOLUME = volumes if as_tuple else volumes[0]
-
-
-_NATIVE_THREAD_VARIABLES = (
-    "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS",
-)
-
-
-def _run_on_worker_volume(task_and_payload):
-    task, payload = task_and_payload
-    return task(_WORKER_VOLUME, payload)
-
 
 def run_edge_tasks(
     task, payloads, *, volume: np.ndarray | tuple[np.ndarray, ...], workers: int = 1,
     memmap_directory=None,
 ):
     """``[task(volume, payload) for payload in payloads]``, spread over
-    *workers* processes when there are enough payloads to repay starting them.
-
-    Each edge's measurement depends only on its own payload and the volume,
-    so the results are the same, in the same order, however many processes
-    compute them. The workers read the volume from one temporary memory-mapped
-    file rather than each receiving a copy, so memory stays one volume's
-    worth. *volume* may be a tuple of volumes (an image and its mask, say),
-    each shared the same way and handed to *task* as that tuple; a boolean
-    one stays boolean, any other is read as float32. *task* must be a
-    module-level function (it is sent to the workers by name). Falls back to
-    this process, with a warning, if workers cannot be started.
+    *workers* processes when there are at least :data:`MIN_EDGES_FOR_WORKERS`
+    payloads to repay starting them -- see
+    :func:`haemolynx.preprocessing.shared_volume_tasks.run_volume_tasks`,
+    which this is, with that floor. Each edge's measurement depends only on
+    its own payload and the volume, so the results are the same, in the same
+    order, however many processes compute them.
     """
-    payloads = list(payloads)
-    if workers <= 1 or len(payloads) < MIN_EDGES_FOR_WORKERS:
-        return [task(volume, payload) for payload in payloads]
-    import logging
-    from concurrent.futures import ProcessPoolExecutor
-
-    from haemolynx.preprocessing.memmap_support import new_memmap_array, release_memmap_array
-
-    import os
-
-    volumes = volume if isinstance(volume, tuple) else (volume,)
-    shared = [
-        new_memmap_array(
-            each.shape, np.bool_ if each.dtype == np.bool_ else np.float32,
-            directory=memmap_directory,
-        )
-        for each in volumes
-    ]
-    # Workers read these as they load numpy: one native thread each, since
-    # the workers already fill the cores and a BLAS/OpenMP team in each would
-    # oversubscribe them.
-    single_threaded = {name: "1" for name in _NATIVE_THREAD_VARIABLES}
-    saved = {name: os.environ.get(name) for name in single_threaded}
-    try:
-        for copy, each in zip(shared, volumes):
-            copy[...] = each
-            copy.flush()
-        chunk = max(1, len(payloads) // (4 * workers))
-        os.environ.update(single_threaded)
-        try:
-            with ProcessPoolExecutor(
-                max_workers=workers,
-                initializer=_load_worker_volume,
-                initargs=(
-                    [(str(copy.filename), copy.dtype.str, tuple(copy.shape)) for copy in shared],
-                    isinstance(volume, tuple),
-                ),
-            ) as pool:
-                return list(pool.map(_run_on_worker_volume, [(task, p) for p in payloads], chunksize=chunk))
-        except (OSError, RuntimeError) as error:  # e.g. no process spawning here
-            logging.getLogger(__name__).warning(
-                "Could not start %d worker processes (%s); measuring in this one.", workers, error
-            )
-            return [task(volume, payload) for payload in payloads]
-    finally:
-        for name, value in saved.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
-        for copy in shared:
-            release_memmap_array(copy)
+    return run_volume_tasks(
+        task, payloads, volume=volume, workers=workers, min_payloads=MIN_EDGES_FOR_WORKERS,
+        memmap_directory=memmap_directory,
+    )
 
 
 def section_axes(tangent: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
