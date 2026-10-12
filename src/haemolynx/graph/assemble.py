@@ -45,6 +45,7 @@ from .lumen_loops import remove_loops_inside_one_lumen, remove_parallel_edges_in
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
 from .reconnect import reconnect_secondary_loop_edges
+from .thick_vessel_junctions import remove_dangling_bridges
 
 logger = logging.getLogger(__name__)
 
@@ -337,6 +338,10 @@ def consolidate_lumen(
         G = remove_edges_off_the_mask(G, cleanup.support)
         G = remove_parallel_edges_in_lumen(G, cleanup.support, memo=pairs_memo)
         G = remove_loops_inside_one_lumen(G, cleanup.support)
+        # After the thick-vessel split the clean-up runs again, and a strand
+        # it takes out can leave the bridge that joined it to the thick
+        # centreline with a free end: a bridge is never a dead end.
+        remove_dangling_bridges(G)
         G = cleanup.prune(G)
         if (G.number_of_nodes(), G.number_of_edges()) == before:
             break

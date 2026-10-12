@@ -536,7 +536,13 @@ are only caught locally.
   it runs in `pipeline/stages.py`'s `build_network`, after the topology steps and before the graph
   is pickled — so a caller assembling a graph by hand gets no smoothing unless it asks.
   `build_network` then runs `consolidate_lumen` again on the smoothed curves (smoothing alone
-  turned E14.5's 2 loops inside one lumen into 12). A smoothed
+  turned E14.5's 2 loops inside one lumen into 12), and once more after the thick-vessel split
+  (the split alone made 7, through its bridges): nothing is the last step. The clean-up knows a
+  bridge -- never merged with a vessel at a degree-2 node, a pair with one left to the loop
+  step, and one left dangling by a removal taken out
+  (`thick_vessel_junctions.remove_dangling_bridges`) -- and the split judges a flicker in
+  microns, not samples (a 1.5 um dip out of the region, sampled every 0.49 um, came back as a
+  vessel between two bridges). A smoothed
   path is only accepted if it stays within `max_deviation` of a skeleton voxel and is no longer than
   the path it came from; each edge records which of `smoothed` / `relaxed` / `kept_raw` /
   `too_short` happened to it. Where the path it came from is itself off the skeleton -- a straight

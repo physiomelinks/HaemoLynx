@@ -160,3 +160,85 @@ def test_cutting_off_is_judged_on_what_lies_beyond_the_edge():
     G.add_edge((7.0, 6.0, 57.0), (7.0, 9.0, 57.0))
     # A loop closed round the two: either can go.
     assert not cuts_off_vessels(G, _edge(G, (7, 7, 2), (7, 9, 57)))
+
+
+# --- after the thick-vessel split: bridges in the clean-up ---------------------
+
+
+def _mark_bridge(G, a, b):
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    G.edges[_edge(G, a, b)][IS_ZERO_RESISTANCE] = True
+
+
+def _bridges(G):
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    return [(u, v) for u, v, d in G.edges(data=True) if d.get(IS_ZERO_RESISTANCE)]
+
+
+def _centreline_um(G):
+    return sum(float(d["length"]) for *_e, d in G.edges(data=True))
+
+
+def test_a_degree_two_node_between_a_bridge_and_a_vessel_is_never_merged():
+    """A bridge is not vessel: merged into one, the vessel would lose its
+    resistance or the bridge gain one."""
+    G = polyline_graph([[(7, 7, 2), (7, 7, 20)], [(7, 7, 20), (7, 7, 30)], [(7, 7, 30), (7, 7, 57)]])
+    _mark_bridge(G, (7, 7, 20), (7, 7, 30))
+    G = smart_multigraph_degree2_removal(G, None)
+    assert G.number_of_edges() == 3
+    assert len(_bridges(G)) == 1
+
+
+def test_a_loop_inside_one_lumen_through_two_bridges_to_one_node_goes_whole():
+    """A vessel the split bridged at both ends to the same centreline node,
+    with 20 um of it left between the bridges inside the thick lumen: the
+    network meets the ring once, so strand and bridges all go, and the
+    thick centreline is left merged."""
+    mask = wide_vessel()
+    G = polyline_graph([[(7, 7, 2), (7, 7, 30)], [(7, 7, 30), (7, 7, 57)], [(7, 11, 20), (7, 11, 40)],
+                        [(7, 11, 20), (7, 7, 30)], [(7, 11, 40), (7, 7, 30)]])
+    _mark_bridge(G, (7, 11, 20), (7, 7, 30))
+    _mark_bridge(G, (7, 11, 40), (7, 7, 30))
+    G = consolidate_lumen(G, _no_length_prune(mask))
+    assert nx.cycle_basis(nx.Graph(G)) == []
+    assert not _bridges(G)
+    assert G.number_of_edges() == 1
+    assert 54.0 <= _centreline_um(G) <= 56.0
+
+
+def test_a_loop_through_two_bridges_to_two_nodes_loses_the_strand_with_its_bridges():
+    """Bridged to two places on the centreline, the ring has two sides: the
+    strand along the wall goes, bridges and all, and the centreline stays."""
+    mask = wide_vessel()
+    G = polyline_graph([[(7, 7, 2), (7, 7, 20)], [(7, 7, 20), (7, 7, 40)], [(7, 7, 40), (7, 7, 57)],
+                        [(7, 11, 20), (7, 11, 40)], [(7, 11, 20), (7, 7, 20)], [(7, 11, 40), (7, 7, 40)]])
+    _mark_bridge(G, (7, 11, 20), (7, 7, 20))
+    _mark_bridge(G, (7, 11, 40), (7, 7, 40))
+    G = consolidate_lumen(G, _no_length_prune(mask))
+    assert nx.cycle_basis(nx.Graph(G)) == []
+    assert not _bridges(G)
+    assert G.number_of_edges() == 1
+    assert 54.0 <= _centreline_um(G) <= 56.0
+
+
+def test_a_bridge_left_dangling_by_a_clean_up_goes_too():
+    """The pair step takes out a strand beside the centreline; the bridge
+    that joined the strand's end to the centreline is then a dead end, and
+    a bridge is never one."""
+    from haemolynx.graph.thick_vessel_junctions import remove_dangling_bridges
+
+    mask = wide_vessel()
+    G = polyline_graph([[(7, 7, 2), (7, 7, 30)], [(7, 7, 30), (7, 7, 57)], [(7, 11, 5), (7, 11, 50)],
+                        [(7, 11, 50), (7, 7, 30)]])
+    _mark_bridge(G, (7, 11, 50), (7, 7, 30))
+    strand = G.copy()
+    strand.remove_edge(*_edge(strand, (7, 11, 5), (7, 11, 50)))
+    assert remove_dangling_bridges(strand) == 1
+    assert not _bridges(strand) and not strand.has_node((7.0, 11.0, 50.0))
+
+    G = consolidate_lumen(G, _no_length_prune(mask))
+    assert not _bridges(G)
+    assert G.number_of_edges() == 1
+    assert 54.0 <= _centreline_um(G) <= 56.0

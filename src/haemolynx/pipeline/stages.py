@@ -1247,39 +1247,45 @@ def build_network(
                 max_deviation=settings["centreline_max_deviation"],
                 radius_at=radius_at,
             )
-            # Smoothing moves every centreline, so what graph building's last
-            # step judged is judged again on the curves that are saved: on
-            # E14.5 smoothing alone turned 2 loops inside one lumen into 12.
-            if binary_mask is not None:
-                G = graph.assemble.consolidate_lumen(
-                    G,
-                    graph.assemble.lumen_cleanup(
-                        binary_mask,
-                        voxel_size_zyx,
-                        image_shape=skeleton.shape,
-                        min_stub_length=settings["min_stub_length"],
-                        min_stub_length_radius_multiple=stub_radius_multiple,
-                        stub_radius_at=radius_at,
-                        bridge_require_mask_support=settings["bridge_require_mask_support"],
-                        bridge_max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
-                        bridge_min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
-                        debug=settings["verbose_logging"],
-                        stub_face_protection=settings.get("stub_face_protection") or "threshold",
-                    ),
-                )
-        # Last thing before the graph is saved, after every topology step and
-        # the centreline smoothing above: a vessel joined to a thick one runs
-        # on through its lumen with no marker of where the vessel ends and the
-        # thick vessel begins. Each gets one bridge, from where it enters the
-        # lumen (the segmentation's radius round the thick centreline) to that
-        # centreline -- see graph.insert_thick_vessel_junction_nodes. Done
-        # once, on the fully-built graph, so nothing has to protect it through
-        # the degree-2/collapse/prune passes.
+        # Smoothing moves every centreline, so what graph building's last
+        # step judged is judged again on the curves that are saved: on E14.5
+        # smoothing alone turned 2 loops inside one lumen into 12. The same
+        # clean-up runs once more after the thick-vessel split below: nothing
+        # is the last step, and on E14.5 the split alone made 7 loops inside
+        # one lumen through its bridges.
+        lumen_cleanup = None
+        if binary_mask is not None:
+            lumen_cleanup = graph.assemble.lumen_cleanup(
+                binary_mask,
+                voxel_size_zyx,
+                image_shape=skeleton.shape,
+                min_stub_length=settings["min_stub_length"],
+                min_stub_length_radius_multiple=stub_radius_multiple,
+                stub_radius_at=radius_at,
+                bridge_require_mask_support=settings["bridge_require_mask_support"],
+                bridge_max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
+                bridge_min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+                debug=settings["verbose_logging"],
+                stub_face_protection=settings.get("stub_face_protection") or "threshold",
+            )
+            if settings["smooth_centrelines"]:
+                G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
+        # After every topology step and the centreline smoothing above: a
+        # vessel joined to a thick one runs on through its lumen with no
+        # marker of where the vessel ends and the thick vessel begins. Each
+        # gets one bridge, from where it enters the lumen (the segmentation's
+        # radius round the thick centreline) to that centreline -- see
+        # graph.insert_thick_vessel_junction_nodes. Done on the fully-built
+        # graph, so nothing has to protect it through the degree-2/collapse/
+        # prune passes; the clean-up that follows knows a bridge (never merged
+        # with a vessel, never dropped as a second strand, never left dangling).
         if volume.thick_vessel_mask is not None:
             G = graph.insert_thick_vessel_junction_nodes(
                 G, volume.thick_vessel_mask, voxel_size_zyx=voxel_size_zyx,
                 segmentation=binary_mask,
             )
+            if lumen_cleanup is not None:
+                G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
 
         # What each dead end is (graph.dead_ends), judged on the graph that is
         # saved while the mask is still at hand: those leaving the image are

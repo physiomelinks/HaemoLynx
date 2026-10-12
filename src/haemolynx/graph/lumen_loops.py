@@ -25,6 +25,7 @@ from haemolynx.preprocessing.bridge_mask_support import (
 )
 
 from ._helpers import edge_sample_points
+from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 
 logger = logging.getLogger(__name__)
 
@@ -479,6 +480,12 @@ def remove_parallel_edges_in_lumen(
     for left, right in report["duplicate_pairs"]:
         present = [edge for edge in (left, right) if G.has_edge(*edge)]
         if len(present) < 2:
+            continue
+        # A pair with a thick-vessel bridge is left alone: a bridge runs
+        # inside the thick lumen by construction, so it is always beside
+        # the thick centreline, and it is the join to it, not a second
+        # strand. The loop step and the dangling-bridge rule settle those.
+        if any(G.edges[edge].get(IS_ZERO_RESISTANCE) for edge in present):
             continue
         candidates = sorted(present, key=lambda edge: _wall_hugging(G, [edge], support))
         drop = next((edge for edge in candidates if not cuts_off_vessels(G, edge)), None)

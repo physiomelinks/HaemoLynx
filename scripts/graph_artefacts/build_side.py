@@ -73,18 +73,21 @@ def main(job_path: str) -> None:
         segmentation_mask=mask, step_callback=snapshot, **build,
     )
     smoothing = job.get("smoothing")
+    # As build_network does, in the versions that have it: the clean-up
+    # again after smoothing and, where the version does so, after the split.
+    cleanup = None
+    if hasattr(assemble, "consolidate_lumen"):
+        cleanup = assemble.lumen_cleanup(
+            mask, voxel_size, image_shape=skeleton.shape, stub_radius_at=radius_at,
+            **{name: job["build"][name] for name in _CLEANUP_ARGUMENTS if name in job["build"]},
+        )
     if smoothing:
         graph.smooth_graph_centrelines(
             G, skeleton, voxel_size_zyx=voxel_size, method=smoothing["method"],
             iterations=smoothing["iterations"], max_deviation=smoothing["max_deviation"],
             radius_at=radius_at,
         )
-        # As build_network does, in the versions that have it.
-        if hasattr(assemble, "consolidate_lumen"):
-            cleanup = assemble.lumen_cleanup(
-                mask, voxel_size, image_shape=skeleton.shape, stub_radius_at=radius_at,
-                **{name: job["build"][name] for name in _CLEANUP_ARGUMENTS if name in job["build"]},
-            )
+        if cleanup is not None:
             G = assemble.consolidate_lumen(G, cleanup)
     thick_split = False
     if job.get("thick_vessel_mask"):
@@ -96,6 +99,9 @@ def main(job_path: str) -> None:
         extra = {"segmentation": mask} if "segmentation" in inspect.signature(split).parameters else {}
         G = split(G, np.load(job["thick_vessel_mask"]), voxel_size_zyx=voxel_size, **extra)
         thick_split = True
+        # A version whose clean-up knows bridges runs it again after the split.
+        if cleanup is not None and hasattr(graph.thick_vessel_junctions, "remove_dangling_bridges"):
+            G = assemble.consolidate_lumen(G, cleanup)
     with open(os.path.join(out, "final.pkl"), "wb") as f:
         pickle.dump(G, f)
     with open(os.path.join(out, "side.json"), "w", encoding="utf-8") as f:
