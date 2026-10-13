@@ -174,6 +174,21 @@ COLOUR_BY_TOOLTIP = (
     "the same choice as Colour by on the vessels layer's own controls, for "
     "the network chosen under Showing"
 )
+#: The view panel's Colour range row, one entry per control.
+COLOUR_RANGE_TOOLTIPS = {
+    "range": (
+        "The range the vessel colours span, for the network chosen under "
+        "Showing, drawn as tubes or as lines; each network keeps its own"
+    ),
+    "low": "The value drawn at the bottom of the colour map; type a number to change it",
+    "high": "The value drawn at the top of the colour map; type a number to change it",
+    "fit_all": "Span the smallest and largest value of the vessels on screen",
+    "fit_trim": "Ignore the extreme 1% at each end, so the bulk of the vessels spreads",
+    "canvas": (
+        "Draw the colour scale in the canvas, on the tubes or the lines "
+        "showing, for the network chosen under Showing"
+    ),
+}
 SCALE_BAR_TOOLTIP = (
     "Show napari's scale bar in the bottom-right of the canvas, in microns when voxel size is known"
 )

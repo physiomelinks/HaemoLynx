@@ -894,7 +894,12 @@ are only caught locally.
   records each grid point's sites on its `SweepFlowGrid` (`pericyte_sites`, since spacing and
   length sweeps move them), and the same sliders swap them in (`_apply_sweep_points`). The view panel's "Colour by" menu (`_VesselColourMenu` in
   `_widget.py`) colours the shown network's vessels Vectors layer — tubes take their colours from
-  it — through `_choose_colour_by`, the same path as the layer controls' own Colour by. Under it,
+  it — through `_choose_colour_by`, the same path as the layer controls' own Colour by. Below it,
+  "Colour range" (`_ShownVesselsColourScale`) is the layer controls' range, Fit buttons and canvas
+  colour bar for the same network: each network keeps its own range, a range typed or fitted on a
+  sweep survives its slider (`USER_CONTRAST_LIMITS`), and the canvas bar sits on whichever layer
+  draws the shown network -- in Tubes mode the tube Surface, given the vessels' colormap and range
+  (`_sync_canvas_colour_bar`), since napari draws no bar for a hidden layer. Under it,
   four "Show" checkboxes (`VIEW_TOGGLES`: flow-direction arrows, nodes, terminal nodes, skeleton)
   turn one layer each on and off without finding it in the layer list: `toggle_layer_name` says
   which -- arrows and nodes are the shown network's, terminal nodes is the run's boundary-nodes

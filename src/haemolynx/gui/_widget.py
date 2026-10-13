@@ -1346,10 +1346,111 @@ def _retint_vessel_tubes(viewer, vessels) -> None:
             viewer, tubes,
             colors_for_tube_vertices(np.asarray(segment_index), _vector_edge_rgba(vessels)),
         )
+        _mirror_colour_scale(vessels, tubes)
     except Exception:  # noqa: BLE001 - a missed retint must not break a run
         logger.debug(
             "could not retint vessel tubes for %s", vessels.name, exc_info=True
         )
+
+
+def _mirror_colour_scale(vessels, tubes) -> bool:
+    """Give the tube Surface the vessels' colormap and range.
+
+    The tubes are drawn from per-vertex colours, which a Surface draws as they
+    are, so this changes nothing on screen. It is for the canvas colour bar:
+    napari draws a layer's bar only while that layer is visible, and in Tubes
+    mode the vessels layer is hidden. The tubes' own bar reads their colormap
+    and range, so with these copied it shows the scale the tubes were coloured
+    by. Returns whether the vessels have a continuous scale to copy.
+    """
+    if getattr(vessels, "edge_color_mode", None) != "colormap":
+        return False
+    try:
+        colormap = vessels.edge_colormap
+        low, high = (float(v) for v in vessels.edge_contrast_limits)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if not (np.isfinite(low) and np.isfinite(high) and high > low):
+        return False
+    try:
+        if getattr(tubes.colormap, "name", None) != getattr(colormap, "name", None):
+            tubes.colormap = colormap
+        if tuple(float(v) for v in tubes.contrast_limits) != (low, high):
+            tubes.contrast_limits = (low, high)
+    except (AttributeError, TypeError, ValueError, KeyError):
+        logger.debug("could not copy the colour scale onto %s", tubes.name, exc_info=True)
+        return False
+    return True
+
+
+def _network_vessels_layers(viewer) -> list:
+    """Every network's vessels Vectors layer: the baseline's and each
+    perturbation's."""
+    from haemolynx.gui.layer_sets import layer_set
+
+    layers = getattr(viewer, "layers", None) if viewer is not None else None
+    if layers is None:
+        return []
+    found = []
+    for key in (None, *_perturbation_sets_in(viewer)):
+        name = layer_set(key)["vessels"]
+        for candidate in (name, f"{name} (HaemoLynx)"):
+            if (candidate in layers and _is_ours(layers[candidate])
+                    and layers[candidate].__class__.__name__ == "Vectors"):
+                found.append(layers[candidate])
+    return found
+
+
+def _set_canvas_colour_bar(viewer, wanted: bool) -> None:
+    """Ask for the shown network's colour bar in the canvas, or not."""
+    if viewer is None:
+        return
+    viewer._haemolynx_canvas_colour_bar = bool(wanted)
+    _sync_canvas_colour_bar(viewer)
+
+
+def _sync_canvas_colour_bar(viewer) -> None:
+    """Put the canvas colour bar on the layer that draws the shown network.
+
+    One bar, for the network "Showing" names: on its vessels layer in Lines
+    mode, on its tubes in Tubes mode (the vessels layer is hidden then, and
+    napari draws no bar for a hidden layer). Every other network's bar goes,
+    so swapping baseline and perturbation moves the bar rather than stacking
+    two. A colouring with no continuous scale -- branch order, the RGB
+    direction -- has none to show.
+    """
+    if viewer is None:
+        return
+    wanted = bool(getattr(viewer, "_haemolynx_canvas_colour_bar", False))
+    shown = _shown_vessels_layer(viewer)
+    layers = viewer.layers
+    tubes = None
+    if shown is not None:
+        name = vessel_tubes_layer_name(shown.name)
+        if name in layers and _is_vessel_tubes_layer(layers[name]):
+            tubes = layers[name]
+    tubes_on = _vessel_draw_mode == VESSEL_DRAW_TUBES
+    continuous = (
+        shown is not None
+        and getattr(shown, "edge_color_mode", None) == "colormap"
+        and _active_column(shown) not in {None, "", "none", FLOW_DIR_RGB_COLUMN}
+    )
+    try:
+        for vessels in _network_vessels_layers(viewer):
+            on = wanted and continuous and vessels is shown
+            overlay = _viewer_colorbar(vessels, create=on)
+            if overlay is not None and bool(overlay.visible) != on:
+                overlay.visible = on
+        for layer in list(layers):
+            if not _is_vessel_tubes_layer(layer):
+                continue
+            on = bool(wanted and continuous and tubes_on and layer is tubes
+                      and _mirror_colour_scale(shown, layer))
+            bar = getattr(layer, "_overlays", {}).get("colorbar")
+            if bar is not None and bool(bar.visible) != on:
+                bar.visible = on
+    except Exception:  # noqa: BLE001 - private napari ground; never break a run
+        logger.debug("could not sync the canvas colour bar", exc_info=True)
 
 
 def _set_tube_colours(viewer, tubes, colours) -> None:
@@ -1862,6 +1963,7 @@ def _sync_vessel_tubes(viewer) -> None:
             for layer in list(viewer.layers):
                 if _is_vessel_tubes_layer(layer) and layer.name not in seen_tube_names:
                     _hide_tube_surface(layer)
+        _sync_canvas_colour_bar(viewer)
         _request_canvas_redraw(viewer)
     except Exception:  # noqa: BLE001 - drawing must not stop a run
         logger.exception("could not sync vessel tubes")
@@ -4109,10 +4211,37 @@ def _apply_sweep_index(layer, indices: tuple[int, ...]) -> None:
         layer.metadata = metadata
 
     colour_by = tag.get("colour_by") or "flow_abs"
-    limits = tag.get("contrast_limits")
-    if limits is None and colour_by == "flow_abs":
+    _colour_layer(layer, colour_by, "continuous", (),
+                  _sweep_contrast_limits(sweep, tag, colour_by))
+
+
+def _sweep_contrast_limits(sweep, tag: Mapping[str, Any], column: str | None):
+    """The range a sweep layer's colouring keeps as its slider moves.
+
+    Flow spans the whole grid (the layer's own limits, else the grid's), so
+    sliding does not re-stretch the colours; log10 flow spans the log of that
+    same range. Any other column fits itself (None): the limits kept on the
+    layer are flow's, in m^3/s, and applied to log10 flow -- about -13 --
+    they put every vessel below the bottom of the colormap the moment the
+    slider moved, so a network coloured by log flow went dark.
+
+    A range the user set for *column* (typed, or a Fit button) wins over
+    all of that, so moving the slider never undoes it."""
+    chosen = (tag.get(USER_CONTRAST_LIMITS) or {}).get(column)
+    if chosen is not None:
+        return tuple(chosen)
+    if column == "flow_abs":
+        limits = tag.get("contrast_limits")
+        return limits if limits is not None else sweep.global_flow_abs_limits()
+    if column == "flow_abs_log10":
         limits = sweep.global_flow_abs_limits()
-    _colour_layer(layer, colour_by, "continuous", (), limits)
+        if limits is None:
+            return None
+        from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+        low, high = (flow_abs_log10_value(v) for v in limits)
+        return (low, high) if high > low else None
+    return None
 
 
 def _apply_sweep_points(viewer, layer_set: str | None, row: int) -> None:
@@ -4601,6 +4730,11 @@ def _blocked(widget):
         widget.blockSignals(previous)
 
 
+#: Tag key: the range a user set on a layer, per column (see
+#: :meth:`_ColourScale.remember`), which a sweep slider keeps.
+USER_CONTRAST_LIMITS = "user_contrast_limits"
+
+
 class _ColourScale:
     """A colour bar for one layer, with the range it spans, editable.
 
@@ -4663,12 +4797,12 @@ class _ColourScale:
         # including them flattens everything else to a single colour.
         self.full_button = QPushButton("Fit all")
         self.full_button.setToolTip("Span the smallest and largest value")
-        self.full_button.clicked.connect(lambda: self.autoscale(0.0, 100.0))
+        self.full_button.clicked.connect(lambda: self.fit(0.0, 100.0))
         self.trim_button = QPushButton("Fit 1-99%")
         self.trim_button.setToolTip(
             "Ignore the extreme 1% at each end, so the bulk of the data spreads"
         )
-        self.trim_button.clicked.connect(lambda: self.autoscale(1.0, 99.0))
+        self.trim_button.clicked.connect(lambda: self.fit(1.0, 99.0))
         buttons.addWidget(self.full_button)
         buttons.addWidget(self.trim_button)
         buttons.addStretch(1)
@@ -4780,10 +4914,33 @@ class _ColourScale:
         self.high.setText(_format_limit(found[1]))
         return True
 
+    def fit(self, low_percentile: float, high_percentile: float) -> bool:
+        """A Fit button: fit the range, and keep it as the user's choice."""
+        if not self.autoscale(low_percentile, high_percentile):
+            return False
+        layer = self._layer()
+        if layer is not None:
+            self.remember(layer, *getattr(layer, _contrast_limits_attribute(layer)))
+        return True
+
+    def remember(self, layer, low: float, high: float) -> None:
+        """Keep a range the user chose for this column on the layer, so a
+        sweep slider re-colouring it every step leaves the range alone."""
+        tag = getattr(layer, "metadata", {}).get(OURS)
+        if isinstance(tag, dict) and self._column is not None:
+            chosen = dict(tag.get(USER_CONTRAST_LIMITS) or {})
+            chosen[self._column] = (float(low), float(high))
+            tag[USER_CONTRAST_LIMITS] = chosen
+
     def _show_in_viewer(self, wanted: bool) -> None:
         """Put the colour bar in the canvas, or take it away again."""
         layer = self._layer()
         if layer is None:
+            return
+        if layer is _shown_vessels_layer(self._viewer):
+            # The shown network's bar is drawn on whichever layer draws it,
+            # tubes or lines (see _sync_canvas_colour_bar).
+            _set_canvas_colour_bar(self._viewer, wanted)
             return
         try:
             overlay = _viewer_colorbar(layer)
@@ -4804,6 +4961,89 @@ class _ColourScale:
             return
         if not _apply_contrast_limits(layer, low, high):
             self.refresh(self._column)
+            return
+        self.remember(layer, low, high)
+
+
+class _ShownVesselsColourScale(_ColourScale):
+    """Colour range for the vessels on screen, in the floating view panel.
+
+    The range boxes, Fit buttons and canvas colour bar of the vessels layer's
+    own controls, for the network "Showing" names, drawn as tubes or lines --
+    the tubes take their colours from that layer, so its range is theirs.
+    Swapping network shows the new network's own range: each keeps its own,
+    and nothing here refits on a swap (a sweep's range spans its whole grid).
+    """
+
+    def __init__(self, viewer, on_resize=None) -> None:
+        from qtpy.QtWidgets import QFormLayout, QLabel, QWidget
+
+        from haemolynx.gui.chrome_tooltips import COLOUR_RANGE_TOOLTIPS
+
+        super().__init__(viewer, "")
+        self._on_resize = on_resize
+        # "Colour by" just above names the column already.
+        self.heading.setVisible(False)
+        self.label = QLabel("Colour range")
+        self.label.setObjectName("haemolynx_colour_range_label")
+        self.native.setObjectName("haemolynx_colour_range")
+        for widget, key in (
+            (self.label, "range"), (self.native, "range"), (self.low, "low"),
+            (self.high, "high"), (self.full_button, "fit_all"),
+            (self.trim_button, "fit_trim"), (self.in_viewer, "canvas"),
+        ):
+            widget.setToolTip(COLOUR_RANGE_TOOLTIPS[key])
+        self.row = QWidget()
+        self.row.setObjectName("haemolynx_colour_range_row")
+        form = QFormLayout(self.row)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.addRow(self.label, self.native)
+        self.row.setVisible(False)
+
+    def _layer(self):
+        return _shown_vessels_layer(self._viewer)
+
+    def follow_the_layer(self) -> None:
+        """Show the shown network's range, and hear when it changes.
+
+        Never refits: a column picked anywhere arrives already fitted (see
+        _colour_layer), and refitting on a swap would replace a sweep's
+        grid-wide range with one grid point's."""
+        layer = self._layer()
+        if layer is not None and layer is not self._connected:
+            events = getattr(layer, "events", None)
+            signal = getattr(events, "edge_color", None) if events else None
+            if signal is not None:
+                # Bound, so napari connects it once per layer however often.
+                signal.connect(self._layer_recoloured)
+            self._connected = layer
+        self.update()
+
+    def _layer_recoloured(self, *_args) -> None:
+        if self._layer() is not None:
+            self.update()
+
+    def update(self) -> None:
+        """Refresh the boxes, the row and the canvas bar for what is shown."""
+        layer = self._layer()
+        was_shown = self.shown
+        try:
+            self.refresh(_active_column(layer) if layer is not None else None)
+            with _blocked(self.in_viewer):
+                self.in_viewer.setChecked(
+                    bool(getattr(self._viewer, "_haemolynx_canvas_colour_bar", False))
+                )
+            self.row.setVisible(self.shown)
+        except RuntimeError:
+            # The dock's Qt widgets outlive the panel on teardown.
+            logger.debug("colour range is gone", exc_info=True)
+            return
+        _sync_canvas_colour_bar(self._viewer)
+        if self.shown != was_shown and self._on_resize is not None:
+            self._on_resize()
+
+    def _show_in_viewer(self, wanted: bool) -> None:
+        _set_canvas_colour_bar(self._viewer, wanted)
 
 
 def _choose_colour_by(viewer, layer, column: str) -> None:
@@ -12700,6 +12940,7 @@ def settings_widget(napari_viewer=None):
             layer_set_row.setVisible(bool(perturbations) or shown is not None)
             refresh_sweep_controls()
             colour_by.refresh()
+            colour_range.follow_the_layer()
             refresh_view_toggles()
         except RuntimeError:
             # The dock's Qt widgets outlive the panel on teardown.
@@ -13971,8 +14212,16 @@ def settings_widget(napari_viewer=None):
     # ... -- whether drawn as tubes or lines, without selecting the layer.
     colour_by = _VesselColourMenu(viewer, on_resize=lambda: fit_view_dock())
     display_form.addRow(colour_by.row)
+    # The range those colours span, for the same network, tubes or lines.
+    colour_range = _ShownVesselsColourScale(viewer, on_resize=lambda: fit_view_dock())
+    display_form.addRow(colour_range.row)
+
+    def refresh_colouring(*_args) -> None:
+        colour_by.refresh()
+        colour_range.follow_the_layer()
+
     if viewer is not None:
-        viewer._haemolynx_refresh_colour_by = colour_by.refresh
+        viewer._haemolynx_refresh_colour_by = refresh_colouring
 
     # A sweep perturbation's grid sliders, one set per sweep, of which only
     # the one chosen under "Showing" is shown -- a slider for a network not on
@@ -14199,6 +14448,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_layer_set_menu = layer_set_menu
     panel._haemolynx_choose_layer_set = choose_layer_set
     panel._haemolynx_colour_by = colour_by
+    panel._haemolynx_colour_range = colour_range
     panel._haemolynx_view_panel = view_panel
     panel._haemolynx_illumination = illumination
     panel._haemolynx_illumination_group = illumination.group

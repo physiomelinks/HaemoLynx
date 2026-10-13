@@ -1167,6 +1167,207 @@ def test_a_sweep_layer_keeps_its_grid_point_through_a_z_depth_change(make_napari
     np.testing.assert_allclose(shown(), expected(0))
 
 
+def _baseline_and_sweep(make_napari_viewer, tmp_path):
+    """A panel showing a baseline run beside a pressure-sweep perturbation."""
+    from haemolynx.gui.results import ResultLayers, perturbation_layer_names
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import PRESSURE_SWEEP, _run
+
+    result = _run(tmp_path, [PRESSURE_SWEEP]).results[0]
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)))
+    panel._haemolynx_after_layers_applied()
+    return panel, viewer, result, perturbation_layer_names(result.name)[0]
+
+
+def _typed_range(colour_range, low, high):
+    """Type a range into the view panel's boxes, as a user does."""
+    colour_range.low.setText(repr(low))
+    colour_range.high.setText(repr(high))
+    colour_range.high.editingFinished.emit()
+
+
+def test_colour_range_sets_the_range_of_the_tubes_on_screen(make_napari_viewer):
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_range = panel._haemolynx_colour_range
+    _pick(panel._haemolynx_colour_by, "flow_abs_log10")
+    vessels, tubes = viewer.layers[VESSELS], viewer.layers[VESSEL_TUBES]
+    assert tubes.visible and not vessels.visible
+    assert colour_range.shown and not colour_range.row.isHidden()
+    assert colour_range.row.parentWidget() is panel._haemolynx_display_group
+    low, high = vessels.edge_contrast_limits
+    assert float(colour_range.low.text()) == pytest.approx(low, rel=1e-3)
+    assert float(colour_range.high.text()) == pytest.approx(high, rel=1e-3)
+    before = np.asarray(tubes.vertex_colors, dtype=float).copy()
+
+    _typed_range(colour_range, -12.0, -11.0)
+
+    assert tuple(vessels.edge_contrast_limits) == pytest.approx((-12.0, -11.0))
+    after = np.asarray(tubes.vertex_colors, dtype=float)
+    assert not np.allclose(after, before)
+    segment_index = tubes.metadata["haemolynx"]["segment_index"]
+    np.testing.assert_allclose(after, np.asarray(vessels.edge_color)[segment_index])
+
+    colour_range.trim_button.click()
+    log10 = np.asarray(vessels.features["flow_abs_log10"], dtype=float)
+    assert tuple(vessels.edge_contrast_limits) == pytest.approx(
+        tuple(np.nanpercentile(log10, [1.0, 99.0])))
+
+
+def test_colour_range_hides_for_a_colouring_without_a_scale(make_napari_viewer):
+    panel, _viewer = _flow_panel(make_napari_viewer)
+    colour_range = panel._haemolynx_colour_range
+    _pick(panel._haemolynx_colour_by, "flow_abs")
+    assert colour_range.shown
+    _pick(panel._haemolynx_colour_by, "branch_order")
+    assert not colour_range.shown
+    assert colour_range.row.isHidden()
+
+
+def test_the_canvas_colour_bar_follows_tubes_and_lines(make_napari_viewer):
+    """napari draws no colour bar for a hidden layer, and in Tubes mode the
+    vessels layer is hidden: the bar has to be the tubes' own."""
+    panel, viewer = _flow_panel(make_napari_viewer)
+    colour_range = panel._haemolynx_colour_range
+    _pick(panel._haemolynx_colour_by, "flow_abs_log10")
+    vessels, tubes = viewer.layers[VESSELS], viewer.layers[VESSEL_TUBES]
+
+    colour_range.in_viewer.setChecked(True)
+
+    assert tubes.visible and tubes.colorbar.visible
+    assert tuple(tubes.contrast_limits) == pytest.approx(tuple(vessels.edge_contrast_limits))
+    assert tubes.colormap.name == vessels.edge_colormap.name
+    _typed_range(colour_range, -12.5, -10.5)
+    assert tuple(tubes.contrast_limits) == pytest.approx((-12.5, -10.5))
+
+    panel._haemolynx_vessel_draw.setCurrentText("Lines")
+    assert vessels.visible and not tubes.visible
+    assert vessels._overlays["edge_colorbar"].visible
+    assert not tubes.colorbar.visible
+
+    panel._haemolynx_vessel_draw.setCurrentText("Tubes")
+    assert tubes.colorbar.visible
+
+    # A colouring with no continuous scale has no bar to draw.
+    _pick(panel._haemolynx_colour_by, "branch_order")
+    assert not tubes.colorbar.visible
+    _pick(panel._haemolynx_colour_by, "flow_abs")
+    assert tubes.colorbar.visible
+
+    colour_range.in_viewer.setChecked(False)
+    assert not tubes.colorbar.visible
+    assert not vessels._overlays["edge_colorbar"].visible
+
+
+def test_baseline_and_perturbation_each_keep_their_own_colour_range(make_napari_viewer, tmp_path):
+    from haemolynx.gui._widget import show_layer_set
+    from haemolynx.gui.vessel_tubes import vessel_tubes_layer_name
+
+    panel, viewer, result, name = _baseline_and_sweep(make_napari_viewer, tmp_path)
+    colour_range = panel._haemolynx_colour_range
+    colour_by = panel._haemolynx_colour_by
+    _pick(colour_by, "flow_abs")
+    baseline = viewer.layers[VESSELS]
+    _typed_range(colour_range, 1.0, 2.0)
+    assert tuple(baseline.edge_contrast_limits) == pytest.approx((1.0, 2.0))
+    colour_range.in_viewer.setChecked(True)
+
+    show_layer_set(viewer, result.name)
+    colour_range.follow_the_layer()
+    perturbation = viewer.layers[name]
+    grid = result.sweep_flows.global_flow_abs_limits()
+    # The perturbation's own grid-wide range, not the baseline's, and not refitted.
+    assert tuple(perturbation.edge_contrast_limits) == pytest.approx(grid)
+    assert float(colour_range.low.text()) == pytest.approx(grid[0], rel=1e-3)
+    assert float(colour_range.high.text()) == pytest.approx(grid[1], rel=1e-3)
+    # The bar moved with the network: on the perturbation's tubes only.
+    tubes = viewer.layers[vessel_tubes_layer_name(name)]
+    assert tubes.visible and tubes.colorbar.visible
+    assert tuple(tubes.contrast_limits) == pytest.approx(grid)
+    assert not viewer.layers[VESSEL_TUBES].colorbar.visible
+
+    _typed_range(colour_range, grid[0], 0.5 * (grid[0] + grid[1]))
+    assert tuple(baseline.edge_contrast_limits) == pytest.approx((1.0, 2.0))
+
+    show_layer_set(viewer, None)
+    colour_range.follow_the_layer()
+    assert float(colour_range.low.text()) == pytest.approx(1.0)
+    assert float(colour_range.high.text()) == pytest.approx(2.0)
+    assert viewer.layers[VESSEL_TUBES].colorbar.visible
+
+
+def test_a_range_typed_on_a_sweep_survives_its_slider(make_napari_viewer, tmp_path):
+    from qtpy.QtWidgets import QAbstractSlider
+
+    from haemolynx.gui._widget import show_layer_set
+
+    panel, viewer, result, name = _baseline_and_sweep(make_napari_viewer, tmp_path)
+    show_layer_set(viewer, result.name)
+    colour_range = panel._haemolynx_colour_range
+    _pick(panel._haemolynx_colour_by, "flow_abs_log10")
+    vessels = viewer.layers[name]
+    _key, sliders = panel._haemolynx_sweep_controls[name]
+    (grid_slider,) = sliders.native.findChildren(QAbstractSlider)
+
+    _typed_range(colour_range, -14.0, -11.0)
+    for point in (1, 0):
+        grid_slider.setValue(point)
+        assert tuple(vessels.edge_contrast_limits) == pytest.approx((-14.0, -11.0))
+        assert float(colour_range.low.text()) == pytest.approx(-14.0)
+
+    # A Fit button's range is kept the same way.
+    colour_range.full_button.click()
+    fitted = tuple(vessels.edge_contrast_limits)
+    grid_slider.setValue(1)
+    assert tuple(vessels.edge_contrast_limits) == pytest.approx(fitted)
+
+
+def test_a_sweep_coloured_by_log_flow_stays_in_range_as_its_slider_moves(make_napari_viewer, tmp_path):
+    """Regression: with the sweep shown and coloured by log10 flow from the
+    view panel, the first slider move re-applied the layer's flow limits
+    (~1e-13 m^3/s) to the log10 column (~-13), so every vessel dropped below
+    the colormap and the network went dark."""
+    from qtpy.QtWidgets import QAbstractSlider
+
+    from haemolynx.gui._widget import _active_column, show_layer_set
+    from haemolynx.gui.results import ResultLayers, perturbation_layer_names
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+    from haemolynx.pipeline import PerturbationRun
+    from test_perturbation_stage import PRESSURE_SWEEP, _run
+
+    result = _run(tmp_path, [PRESSURE_SWEEP]).results[0]
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    _apply_layers(viewer, ResultLayers().stage_finished(
+        "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)))
+    panel._haemolynx_after_layers_applied()
+    name = perturbation_layer_names(result.name)[0]
+    show_layer_set(viewer, result.name)
+    colour_by = panel._haemolynx_colour_by
+    colour_by.refresh()
+    _pick(colour_by, "flow_abs_log10")
+    vessels = viewer.layers[name]
+    assert _active_column(vessels) == "flow_abs_log10"
+    _key, sliders = panel._haemolynx_sweep_controls[name]
+    (grid_slider,) = sliders.native.findChildren(QAbstractSlider)
+
+    for point in (1, 0):
+        grid_slider.setValue(point)
+        assert _active_column(vessels) == "flow_abs_log10"
+        low, high = vessels.edge_contrast_limits
+        shown = np.asarray(vessels.features["flow_abs_log10"], dtype=float)
+        assert low <= np.nanmin(shown) and np.nanmax(shown) <= high
+    grid = result.sweep_flows.global_flow_abs_limits()
+    assert tuple(vessels.edge_contrast_limits) == pytest.approx(
+        tuple(flow_abs_log10_value(v) for v in grid))
+
+
 def test_a_sweeps_pericytes_follow_its_slider_inside_a_z_depth_window(make_napari_viewer, tmp_path):
     """A spacing sweep moves the pericytes themselves. Moved inside a depth
     window, only the moved points in the window show; widened again, the

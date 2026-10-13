@@ -417,6 +417,66 @@ def test_moving_a_sweep_slider_updates_log_flow_and_directions(tmp_path, monkeyp
     assert np.allclose(np.asarray(layer.features["flow_dir_z"]), expected_dir, equal_nan=True)
 
 
+@pytest.mark.parametrize("column, expected", [
+    ("flow_abs", "flow"),
+    ("flow_abs_log10", "log10 of flow"),
+    ("diameter_um", "its own range"),
+])
+def test_the_slider_keeps_each_colourings_own_range(tmp_path, monkeypatch, column, expected):
+    """Regression: the slider handed every colouring the layer's flow limits
+    (m^3/s, ~1e-13). A network coloured by log10 flow (~-13) went dark the
+    moment the slider moved: every vessel below the bottom of the map."""
+    import numpy as np
+
+    from haemolynx.gui import _widget
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    from test_perturbation_stage import PRESSURE_SWEEP
+
+    result = _run(tmp_path, [PRESSURE_SWEEP]).results[0]
+    spec = next(
+        s
+        for s in ResultLayers().stage_finished(
+            "run_perturbations", PerturbationRun(results=[result], output_dir=tmp_path)
+        ).layers
+        if s.name == perturbation_layer_names(result.name)[0]
+    )
+    layer = SimpleNamespace(features=dict(spec.features), metadata={_widget.OURS: {}})
+    _widget._store_sweep_metadata(layer, spec)
+    layer.metadata[_widget.OURS]["colour_by"] = column
+    coloured: list[tuple] = []
+    monkeypatch.setattr(_widget, "_colour_layer", lambda *a, **k: coloured.append(a))
+
+    _widget._apply_sweep_index(layer, (1,))
+
+    ((_layer, chosen, _kind, _cycle, limits),) = coloured
+    assert chosen == column
+    grid = result.sweep_flows.global_flow_abs_limits()
+    if expected == "flow":
+        assert limits == pytest.approx(grid)
+    elif expected == "log10 of flow":
+        assert limits == pytest.approx(tuple(flow_abs_log10_value(v) for v in grid))
+        shown = np.asarray(layer.features["flow_abs_log10"], dtype=float)
+        assert limits[0] <= np.nanmin(shown) and np.nanmax(shown) <= limits[1]
+    else:
+        assert limits is None
+
+
+def test_a_range_the_user_set_wins_over_the_sweeps_own(tmp_path):
+    """A range typed or fitted on a sweep layer is the one every grid point keeps."""
+    from haemolynx.gui import _widget
+
+    from test_perturbation_stage import PRESSURE_SWEEP
+
+    sweep = _run(tmp_path, [PRESSURE_SWEEP]).results[0].sweep_flows
+    tag = {_widget.USER_CONTRAST_LIMITS: {"flow_abs_log10": (-14.0, -11.0)}}
+    assert _widget._sweep_contrast_limits(sweep, tag, "flow_abs_log10") == (-14.0, -11.0)
+    # Only for the column it was set on.
+    assert _widget._sweep_contrast_limits(sweep, tag, "flow_abs") == pytest.approx(
+        sweep.global_flow_abs_limits())
+    assert _widget._sweep_contrast_limits(sweep, tag, "diameter_um") is None
+
+
 def _sweep_layer_features(axis_names):
     """The vessels layer a sweep over *axis_names* gets, as its features."""
     from test_gui_results import a_perturbation_run, solved_graph
