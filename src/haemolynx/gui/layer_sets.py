@@ -17,15 +17,25 @@ today (the tubes/lines drawing keeps them so).
 Pure: layer names and visibilities in, visibilities out. A set is named by
 its perturbation, and :data:`BASELINE` (``None``) is the baseline, so a
 perturbation called "Baseline" is still its own entry.
+
+The view panel's "Show" checkboxes (:data:`VIEW_TOGGLES`) turn single
+kinds of layer on and off without finding them in the layer list: the
+shown network's flow-direction arrows and nodes, the terminal nodes (the
+inlets, outlets and arteriole/venule boundary nodes the Boundaries stage
+assigned, one layer for the run) and the skeleton. :func:`toggle_layer_name`
+says which layer each box stands for under the network shown, and
+:func:`toggle_states` what each box should show.
 """
 from __future__ import annotations
 
 from typing import Iterable, Mapping, Sequence
 
 from haemolynx.gui.results import (
+    BOUNDARY_NODES,
     FLOW_DIRECTION,
     NODES,
     PERICYTES,
+    SKELETON,
     VESSELS,
     perturbation_flow_direction_layer_name,
     perturbation_layer_names,
@@ -37,11 +47,14 @@ __all__ = [
     "BASELINE",
     "BASELINE_LABEL",
     "ROLES",
+    "VIEW_TOGGLES",
     "carried_roles",
     "layer_set",
     "layer_set_choices",
     "role_visibility",
     "set_layer_names",
+    "toggle_layer_name",
+    "toggle_states",
     "visibility_for",
 ]
 
@@ -51,6 +64,42 @@ BASELINE_LABEL = "Baseline"
 
 #: The kinds of layer one network has, in the order they are listed.
 ROLES = ("vessels", "nodes", "flow direction", "pericytes")
+
+#: The view panel's "Show" checkboxes: ``(role, label)`` in the order drawn.
+#: The first two are kinds of layer a network has (:data:`ROLES`), so their
+#: boxes follow the network shown and a swap carries them; the last two are
+#: the run's own single layers.
+VIEW_TOGGLES = (
+    ("flow direction", "Flow direction arrows"),
+    ("nodes", "Nodes"),
+    ("terminal nodes", "Terminal nodes"),
+    ("skeleton", "Skeleton"),
+)
+
+#: The toggles that are one layer for the whole run, whatever is shown.
+_RUN_TOGGLE_LAYERS = {"terminal nodes": BOUNDARY_NODES, "skeleton": SKELETON}
+
+
+def toggle_layer_name(role: str, key: str | None) -> str:
+    """The layer a "Show" checkbox turns on and off while network *key* is shown."""
+    if role in _RUN_TOGGLE_LAYERS:
+        return _RUN_TOGGLE_LAYERS[role]
+    if role not in dict(VIEW_TOGGLES):
+        raise KeyError(f"not a view toggle: {role!r}")
+    return layer_set(key)[role]
+
+
+def toggle_states(key: str | None, visible: Mapping[str, bool]) -> dict[str, bool | None]:
+    """What each "Show" checkbox shows while network *key* is shown.
+
+    *visible* is every layer's visibility by name. A toggle whose layer is
+    not in the viewer is ``None``: the box is greyed out, unticked.
+    """
+    states: dict[str, bool | None] = {}
+    for role, _label in VIEW_TOGGLES:
+        name = toggle_layer_name(role, key)
+        states[role] = bool(visible[name]) if name in visible else None
+    return states
 
 
 def layer_set(key: str | None) -> dict[str, str]:

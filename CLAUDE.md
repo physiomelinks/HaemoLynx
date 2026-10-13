@@ -882,7 +882,13 @@ are only caught locally.
   records each grid point's sites on its `SweepFlowGrid` (`pericyte_sites`, since spacing and
   length sweeps move them), and the same sliders swap them in (`_apply_sweep_points`). The view panel's "Colour by" menu (`_VesselColourMenu` in
   `_widget.py`) colours the shown network's vessels Vectors layer — tubes take their colours from
-  it — through `_choose_colour_by`, the same path as the layer controls' own Colour by.
+  it — through `_choose_colour_by`, the same path as the layer controls' own Colour by. Under it,
+  four "Show" checkboxes (`VIEW_TOGGLES`: flow-direction arrows, nodes, terminal nodes, skeleton)
+  turn one layer each on and off without finding it in the layer list: `toggle_layer_name` says
+  which -- arrows and nodes are the shown network's, terminal nodes is the run's boundary-nodes
+  layer (inlets, outlets, arteriole/venule boundary nodes) and skeleton its skeleton -- and
+  `toggle_states` what each box shows. A box mirrors its layer (the layer's own `visible` event
+  ticks it back; no layer greys it out), so it never fights the eye icon.
 - **`gui/vessel_tubes.py`** — the vessel tube mesh, display only (the graph and its diameters are
   untouched): `vessel_tube_mesh(vectors, features)` is what `_sync_vessel_tubes` calls, reading
   `diameter_um`, `edge_index` and `is_zero_resistance` (`gui/results.py`'s `_mark_bridges`).

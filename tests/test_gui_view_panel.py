@@ -1500,3 +1500,114 @@ def test_the_layer_list_drags_up_past_the_layer_controls_own_height(make_napari_
     QTest.qWait(50)
 
     assert controls.height() < natural / 2
+
+
+# --- the Display box's "Show" checkboxes -------------------------------------
+
+
+def _show_boxes(panel):
+    return panel._haemolynx_view_toggles
+
+
+def test_the_show_boxes_sit_in_the_display_box_greyed_out_before_a_run(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+
+    boxes = _show_boxes(panel)
+    assert list(boxes) == ["flow direction", "nodes", "terminal nodes", "skeleton"]
+    assert [box.text() for box in boxes.values()] == [
+        "Flow direction arrows", "Nodes", "Terminal nodes", "Skeleton",
+    ]
+    assert boxes["nodes"].objectName() == "haemolynx_show_nodes"
+    assert boxes["terminal nodes"].objectName() == "haemolynx_show_terminal_nodes"
+    assert panel._haemolynx_view_toggle_row.parentWidget() is panel._haemolynx_display_group
+    for box in boxes.values():
+        assert not box.isEnabled()
+        assert not box.isChecked()
+        assert box.toolTip()
+
+
+def test_the_show_boxes_are_built_and_greyed_out_with_no_viewer():
+    panel = settings_widget(napari_viewer=None)
+    for box in _show_boxes(panel).values():
+        assert not box.isEnabled()
+    panel._haemolynx_refresh_view_toggles()
+    _show_boxes(panel)["skeleton"].setChecked(True)  # nothing to show: no error
+
+
+def test_each_show_box_is_ticked_as_its_layer_is_once_the_run_draws_it(make_napari_viewer):
+    from haemolynx.gui.results import SKELETON
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+
+    boxes = _show_boxes(panel)
+    assert boxes["nodes"].isEnabled()
+    assert boxes["nodes"].isChecked() is bool(viewer.layers[NODES].visible)
+    assert boxes["skeleton"].isEnabled()
+    assert boxes["skeleton"].isChecked() is bool(viewer.layers[SKELETON].visible)
+    # This run assigned no boundaries and solved no flow.
+    assert not boxes["flow direction"].isEnabled()
+    assert not boxes["terminal nodes"].isEnabled()
+
+
+def test_ticking_a_show_box_shows_and_hides_its_layer(make_napari_viewer):
+    from haemolynx.gui.results import SKELETON
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    boxes = _show_boxes(panel)
+
+    boxes["skeleton"].setChecked(True)
+    assert viewer.layers[SKELETON].visible is True
+    boxes["skeleton"].setChecked(False)
+    assert viewer.layers[SKELETON].visible is False
+
+    boxes["nodes"].setChecked(False)
+    assert viewer.layers[NODES].visible is False
+    boxes["nodes"].setChecked(True)
+    assert viewer.layers[NODES].visible is True
+    # The vessels are not the boxes' business.
+    assert viewer.layers[VESSEL_TUBES].visible is True
+
+
+def test_the_layer_list_s_eye_icon_ticks_the_show_box_back(make_napari_viewer):
+    from haemolynx.gui.results import SKELETON
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    boxes = _show_boxes(panel)
+
+    viewer.layers[SKELETON].visible = True
+    assert boxes["skeleton"].isChecked() is True
+    viewer.layers[NODES].visible = False
+    assert boxes["nodes"].isChecked() is False
+
+    viewer.layers.remove(viewer.layers[SKELETON])
+    assert not boxes["skeleton"].isEnabled()
+    assert not boxes["skeleton"].isChecked()
+
+
+def test_the_terminal_nodes_box_toggles_the_boundary_nodes_layer(make_napari_viewer):
+    from haemolynx.gui._widget import OURS
+    from haemolynx.gui.results import BOUNDARY_NODES
+
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    viewer.add_points(
+        np.zeros((2, 3)), name=BOUNDARY_NODES, visible=False, metadata={OURS: {"stage": "assign_boundaries"}}
+    )
+    boxes = _show_boxes(panel)
+
+    assert boxes["terminal nodes"].isEnabled()
+    assert boxes["terminal nodes"].isChecked() is False
+    boxes["terminal nodes"].setChecked(True)
+    assert viewer.layers[BOUNDARY_NODES].visible is True

@@ -177,6 +177,26 @@ COLOUR_BY_TOOLTIP = (
 SCALE_BAR_TOOLTIP = (
     "Show napari's scale bar in the bottom-right of the canvas, in microns when voxel size is known"
 )
+#: The view panel's "Show" checkboxes, by the role each one toggles
+#: (``gui.layer_sets.VIEW_TOGGLES``). Greyed out while the run has no such
+#: layer yet.
+VIEW_TOGGLE_TOOLTIPS: dict[str, str] = {
+    "flow direction": (
+        "Show the flow-direction arrows of the network chosen under Showing, "
+        "one arrow per vessel pointing the way its flow runs"
+    ),
+    "nodes": (
+        "Show the nodes of the network chosen under Showing: every junction "
+        "and dead end, coloured by how many vessels meet there"
+    ),
+    "terminal nodes": (
+        "Show the terminal nodes the Boundaries stage assigned: the inlets, "
+        "outlets and arteriole/venule boundary nodes, coloured by role"
+    ),
+    "skeleton": (
+        "Show the skeleton the graph was built from, over the segmented image"
+    ),
+}
 #: The view window's Illumination box: how the canvas lights every surface.
 ILLUMINATION_TOOLTIPS = {
     "shading": (

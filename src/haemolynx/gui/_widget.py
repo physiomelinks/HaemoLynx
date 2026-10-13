@@ -12507,6 +12507,7 @@ def settings_widget(napari_viewer=None):
         LAYER_SET_TOOLTIP,
         TUBE_DIAMETER_TOOLTIP,
         VESSEL_DRAW_TOOLTIP,
+        VIEW_TOGGLE_TOOLTIPS,
         Z_DEPTH_TOOLTIP,
     )
 
@@ -12700,6 +12701,7 @@ def settings_widget(napari_viewer=None):
             layer_set_row.setVisible(bool(perturbations) or shown is not None)
             refresh_sweep_controls()
             colour_by.refresh()
+            refresh_view_toggles()
         except RuntimeError:
             # The dock's Qt widgets outlive the panel on teardown.
             logger.debug("layer-set menu is gone", exc_info=True)
@@ -12708,6 +12710,77 @@ def settings_widget(napari_viewer=None):
     scale_bar_box.setObjectName("haemolynx_scale_bar")
     scale_bar_box.setChecked(False)
     scale_bar_box.setToolTip(SCALE_BAR_TOOLTIP)
+
+    # One checkbox per kind of layer that is turned on and off most: the
+    # shown network's flow-direction arrows and nodes, the terminal
+    # (boundary) nodes and the skeleton. Each box mirrors its layer -- ticked
+    # while the layer is visible, greyed out while the run has no such layer
+    # -- so a tick here and a tick in the layer list always agree.
+    from qtpy.QtWidgets import QGridLayout
+
+    from haemolynx.gui.layer_sets import VIEW_TOGGLES, toggle_layer_name, toggle_states
+
+    view_toggle_row = QWidget()
+    view_toggle_row.setObjectName("haemolynx_view_toggle_row")
+    view_toggle_layout = QGridLayout(view_toggle_row)
+    view_toggle_layout.setContentsMargins(0, 0, 0, 0)
+    view_toggles: dict[str, QCheckBox] = {}
+    for index, (role, label) in enumerate(VIEW_TOGGLES):
+        box = QCheckBox(label)
+        box.setObjectName(f"haemolynx_show_{role.replace(' ', '_')}")
+        box.setToolTip(VIEW_TOGGLE_TOOLTIPS[role])
+        box.setEnabled(False)
+        view_toggle_layout.addWidget(box, index // 2, index % 2)
+        view_toggles[role] = box
+
+    def refresh_view_toggles(*_args) -> None:
+        """Tick each box as its layer is; grey it out when there is no layer."""
+        try:
+            if viewer is None:
+                visible: dict[str, bool] = {}
+            else:
+                visible = {
+                    layer.name: bool(layer.visible)
+                    for layer in viewer.layers if _is_ours(layer)
+                }
+            shown = _layer_set_shown(viewer) if viewer is not None else None
+            for role, state in toggle_states(shown, visible).items():
+                box = view_toggles[role]
+                was_blocked = box.blockSignals(True)
+                try:
+                    box.setEnabled(state is not None)
+                    box.setChecked(bool(state))
+                finally:
+                    box.blockSignals(was_blocked)
+        except RuntimeError:
+            # The dock's Qt widgets outlive the panel on teardown.
+            logger.debug("view toggles are gone", exc_info=True)
+
+    def on_view_toggle(role: str, checked: bool) -> None:
+        if viewer is None:
+            return
+        name = toggle_layer_name(role, _layer_set_shown(viewer))
+        if name in viewer.layers:
+            viewer.layers[name].visible = bool(checked)
+        # The layer's own visible event ticks the box back; with no layer,
+        # this greys it out again.
+        refresh_view_toggles()
+
+    for role, box in view_toggles.items():
+        box.toggled.connect(lambda checked, role=role: on_view_toggle(role, checked))
+
+    def _watch_layer_visibility(layer) -> None:
+        """Follow a layer's eye icon, so the box agrees with the layer list."""
+        if _is_ours(layer):
+            layer.events.visible.connect(refresh_view_toggles)
+
+    if viewer is not None:
+        for layer in viewer.layers:
+            _watch_layer_visibility(layer)
+        viewer.layers.events.inserted.connect(
+            lambda event: _watch_layer_visibility(event.value)
+        )
+        viewer._haemolynx_refresh_view_toggles = refresh_view_toggles
 
     arrow_length_label = QLabel("Arrow size")
     arrow_length_slider = QDoubleSlider(Qt.Orientation.Horizontal)
@@ -13963,6 +14036,7 @@ def settings_widget(napari_viewer=None):
         )
 
     refresh_layer_sets()
+    display_form.addRow(view_toggle_row)
     display_form.addRow(scale_bar_box)
 
     def on_save_snapshot() -> None:
@@ -14133,6 +14207,9 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_view_button = view_button
     panel._haemolynx_reopen_view = on_reopen_view
     panel._haemolynx_scale_bar = scale_bar_box
+    panel._haemolynx_view_toggles = view_toggles
+    panel._haemolynx_view_toggle_row = view_toggle_row
+    panel._haemolynx_refresh_view_toggles = refresh_view_toggles
     panel._haemolynx_display_group = display_group
     panel._haemolynx_snapshot_group = snapshot_group
     panel._haemolynx_sweep_group = sweep_group

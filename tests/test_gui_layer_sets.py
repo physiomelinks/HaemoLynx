@@ -5,20 +5,27 @@ lists, and what each layer's visibility becomes on a swap.
 """
 from __future__ import annotations
 
+import pytest
+
 from haemolynx.gui.layer_sets import (
     BASELINE,
     BASELINE_LABEL,
+    VIEW_TOGGLES,
     carried_roles,
     layer_set,
     layer_set_choices,
     role_visibility,
     set_layer_names,
+    toggle_layer_name,
+    toggle_states,
     visibility_for,
 )
 from haemolynx.gui.results import (
+    BOUNDARY_NODES,
     FLOW_DIRECTION,
     NODES,
     PERICYTES,
+    SKELETON,
     VESSEL_TUBES,
     VESSELS,
     perturbation_flow_direction_layer_name,
@@ -144,3 +151,52 @@ def test_a_kind_the_network_left_has_none_of_is_remembered_from_before():
 
 def test_the_incoming_network_answers_only_for_a_kind_nothing_else_mentions():
     assert carried_roles({"pericytes": True}, {}, {}) == {"pericytes": True}
+
+
+# --- the view panel's "Show" checkboxes -------------------------------------
+
+
+def test_the_show_boxes_are_arrows_nodes_terminal_nodes_and_skeleton_in_that_order():
+    assert [role for role, _label in VIEW_TOGGLES] == [
+        "flow direction", "nodes", "terminal nodes", "skeleton",
+    ]
+    assert [label for _role, label in VIEW_TOGGLES] == [
+        "Flow direction arrows", "Nodes", "Terminal nodes", "Skeleton",
+    ]
+
+
+def test_arrows_and_nodes_boxes_follow_the_network_shown():
+    assert toggle_layer_name("flow direction", BASELINE) == FLOW_DIRECTION
+    assert toggle_layer_name("nodes", BASELINE) == NODES
+    assert toggle_layer_name("flow direction", "dilate") == A_FLOW
+    assert toggle_layer_name("nodes", "dilate") == A_NODES
+
+
+def test_terminal_nodes_and_skeleton_are_the_run_s_own_layers_whatever_is_shown():
+    for key in (BASELINE, "dilate"):
+        assert toggle_layer_name("terminal nodes", key) == BOUNDARY_NODES
+        assert toggle_layer_name("skeleton", key) == SKELETON
+
+
+def test_an_unknown_toggle_is_refused():
+    with pytest.raises(KeyError):
+        toggle_layer_name("vessels", BASELINE)
+
+
+def test_a_box_is_ticked_as_its_layer_is_and_none_without_the_layer():
+    visible = {NODES: False, SKELETON: True, VESSELS: True}
+    assert toggle_states(BASELINE, visible) == {
+        "flow direction": None,
+        "nodes": False,
+        "terminal nodes": None,
+        "skeleton": True,
+    }
+
+
+def test_the_boxes_read_the_shown_perturbation_s_layers_not_the_baseline_s():
+    visible = {NODES: True, FLOW_DIRECTION: True, A_NODES: False, BOUNDARY_NODES: True}
+    states = toggle_states("dilate", visible)
+    assert states["nodes"] is False
+    assert states["flow direction"] is None
+    assert states["terminal nodes"] is True
+    assert states["skeleton"] is None
