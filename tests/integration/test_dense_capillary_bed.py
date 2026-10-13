@@ -23,7 +23,7 @@ from haemolynx.graph import (
 )
 from haemolynx.graph._helpers import EdgeSampleIndex
 from haemolynx.graph.assemble import mask_radius_sampler
-from haemolynx.graph.mask_recovery import uncovered_mask_voxels
+from haemolynx.graph.mask_recovery import recover_uncovered_mask_vessels, uncovered_mask_voxels
 from haemolynx.preprocessing import MaskSupport, preprocess_skeleton_for_graph
 from haemolynx.preprocessing.skeleton_consistency import diagnose_skeleton_mask_consistency
 
@@ -49,12 +49,15 @@ def built():
         bridge_gap_size=3, voxel_size_zyx=voxel, segmentation_mask=bed.mask,
     )
     bridges = []
+    before_recovery = {}
 
-    def record_bridges(G, _label):
+    def record_bridges(G, label):
         bridges.extend(
             float(data["bridge_background_um"])
             for *_, data in G.edges(data=True) if "bridge_background_um" in data
         )
+        if label == "reconnect_orphan_and_dangling_nodes":
+            before_recovery["graph"] = G.copy()
 
     G = build_graph_from_skeleton(
         skeleton, voxel_size=voxel, graph_reconnect_threshold=10.0,
@@ -63,17 +66,30 @@ def built():
         stub_radius_at=mask_radius_sampler(bed.mask, voxel, 1.0),
         segmentation_mask=bed.mask, step_callback=record_bridges,
     )
-    return bed, G, bridges
+    return bed, G, bridges, before_recovery["graph"]
 
 
-def test_every_bridge_crosses_at_most_two_microns_of_background(built):
-    _bed, _G, bridges = built
+@pytest.fixture(scope="module")
+def recovered_from_the_mask(built):
+    """Recovery without the skeleton -- the mask Lee-thinned again -- on the
+    build's graph as it stood before recovery: the one way the capillary
+    whose skeleton was deleted can come back."""
+    bed, _G, _bridges, before = built
+    return recover_uncovered_mask_vessels(before.copy(), MaskSupport(bed.mask, bed.voxel_size_zyx))
+
+
+def test_every_bridge_crosses_at_most_two_microns_of_background(built, recovered_from_the_mask):
+    _bed, _G, bridges, _before = built
+    bridges = bridges + [
+        float(data["bridge_background_um"])
+        for *_, data in recovered_from_the_mask.edges(data=True) if "bridge_background_um" in data
+    ]
     assert bridges
     assert max(bridges) <= 2.0 + 1e-9
 
 
 def test_no_vessel_is_drawn_twice_in_one_lumen(built):
-    bed, G, _ = built
+    bed, G, _bridges, _before = built
     report = diagnose_parallel_duplicates_in_lumen(G, bed.mask, voxel_size_zyx=bed.voxel_size_zyx)
     assert report["duplicate_pairs"] == []
 
@@ -84,7 +100,7 @@ def test_nothing_segmented_is_left_out_of_the_graph(built):
     only within the inscribed radius at its nearest centreline point, which
     a vessel's rounded ends at the image faces never are: there the graph
     must explain as much as the mask's own Lee skeleton does, near enough."""
-    bed, G, _ = built
+    bed, G, _bridges, _before = built
     consistency, missing = diagnose_graph_against_mask(
         G, bed.mask, voxel_size_zyx=bed.voxel_size_zyx
     )
@@ -99,7 +115,7 @@ def test_nothing_segmented_is_left_out_of_the_graph(built):
 
 
 def test_the_only_free_ends_are_the_sprouts_and_the_image_faces(built):
-    bed, G, _ = built
+    bed, G, _bridges, _before = built
     ends = np.array([G.nodes[n]["pos"] for n in G.nodes if G.degree[n] == 1], dtype=float)
     to_a_face = np.minimum(ends, bed.extent_um - ends)[:, 1:].min(axis=1)
     to_a_sprout = cKDTree(bed.sprout_tips_um).query(ends)[0]
@@ -109,15 +125,30 @@ def test_the_only_free_ends_are_the_sprouts_and_the_image_faces(built):
     assert np.all(cKDTree(ends).query(bed.sprout_tips_um)[0] <= END_TOLERANCE_UM)
 
 
-@pytest.mark.parametrize("vessel", ["first of the pair", "second of the pair", "lost capillary"])
-def test_neighbours_across_background_and_the_lost_capillary_are_each_traced(built, vessel):
-    bed, G, _ = built
+@pytest.mark.parametrize("vessel", ["first of the pair", "second of the pair"])
+def test_neighbours_across_background_are_each_traced(built, vessel):
+    bed, G, _bridges, _before = built
     start, end = {
         "first of the pair": bed.parallel_pair_um[0],
         "second of the pair": bed.parallel_pair_um[1],
-        "lost capillary": bed.lost_capillary_um,
     }[vessel]
     samples = centreline_samples(start, end)
     distance, _ = EdgeSampleIndex(G, step_um=0.5).tree.query(samples)
 
     assert np.mean(distance <= 1.5) >= 0.9
+
+
+def _traced_fraction(G, start, end) -> float:
+    distance, _ = EdgeSampleIndex(G, step_um=0.5).tree.query(centreline_samples(start, end))
+    return float(np.mean(distance <= 1.5))
+
+
+def test_a_capillary_the_skeleton_lacks_is_left_to_the_mask_recovery_without_it(built, recovered_from_the_mask):
+    """The build recovers along its skeleton, so a capillary the skeleton
+    lacks stays out of the graph (the Segmented vessels without a
+    centreline review list shows it); recovery thinning the mask again traces
+    it end to end."""
+    bed, G, _bridges, _before = built
+
+    assert _traced_fraction(G, *bed.lost_capillary_um) < 0.1
+    assert _traced_fraction(recovered_from_the_mask, *bed.lost_capillary_um) >= 0.9

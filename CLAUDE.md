@@ -518,7 +518,11 @@ are only caught locally.
   ahead and behind -- so a flattened lumen's far side is covered, while a branch narrower than
   its vessel stops the outline at the wall; on E14.5 79% of the mask the radius rule alone left
   uncovered was that far side, and recovery traced it as second strands), in pieces of at least
-  `recovery_min_region_volume_um3` and wider than a voxel and a half, Lee-thinned and joined to
+  `recovery_min_region_volume_um3` and wider than a voxel and a half, traced along the run's own
+  skeleton (the build passes it: `skeleton=`; a piece the skeleton does not run through is left
+  alone, and only a caller passing none Lee-thins the mask again -- on E14.5, 2026-10-13, two
+  thirds of what re-thinning drew lay where the skeleton has nothing, combs across wide lumens
+  the clean-up then took out) and joined to
   the network through the mask where an end lies within `final_orphan_reconnect_threshold` of a
   covered lumen. Never an island, never across background, never beside an existing vessel,
   and never a loop inside one lumen: after a strand's first join (nearest end first), a further

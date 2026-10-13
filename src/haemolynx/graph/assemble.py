@@ -532,7 +532,8 @@ def build_graph_from_skeleton(
         happens and the last step only merges degree-2 nodes.
     recover_uncovered_mask_vessels, recovery_min_region_volume_um3, recovery_min_length_um
         With a *segmentation_mask*, trace the mask the graph does not cover
-        and join it to the network through the mask -- see
+        along *skeleton* -- the centreline the graph was built from, where an
+        earlier step dropped it -- and join it to the network through the mask -- see
         ``mask_recovery.recover_uncovered_mask_vessels``. Without a mask, or
         off, the step leaves the graph as it is.
     facing_dead_end_max_gap_um
@@ -736,6 +737,7 @@ def build_graph_from_skeleton(
             attach_reach_um=final_orphan_reconnect_threshold,
             min_region_volume_um3=recovery_min_region_volume_um3,
             min_length_um=recovery_min_length_um,
+            skeleton=skeleton,
         )
     _notify_step(G, "recover_uncovered_mask_vessels", step_callback)
 

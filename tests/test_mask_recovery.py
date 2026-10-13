@@ -172,7 +172,7 @@ def test_a_strand_with_no_join_is_not_left_as_an_island(monkeypatch):
     far = np.array([[7.0, 35.0, float(x)] for x in range(14, 38)])
     calls = {"n": 0}
 
-    def both_strands(region, support, pad):
+    def both_strands(region, support, pad, skeleton=None):
         calls["n"] += 1
         if calls["n"] > 1:
             return _Piece()
@@ -206,7 +206,7 @@ def test_a_ring_round_a_hole_in_the_mask_is_not_added_as_a_self_loop(monkeypatch
                      [7.0, 27.0, 29.0], [7.0, 26.0, 30.0]])
     calls = {"n": 0}
 
-    def branch_and_ring(region, support, pad):
+    def branch_and_ring(region, support, pad, skeleton=None):
         calls["n"] += 1
         if calls["n"] > 1:
             return _Piece()
@@ -336,7 +336,7 @@ def _recover_one_strand(monkeypatch, mask, path):
 
     calls = {"n": 0}
 
-    def the_strand(region, support, pad):
+    def the_strand(region, support, pad, skeleton=None):
         calls["n"] += 1
         piece = _Piece()
         if calls["n"] == 1:
@@ -418,7 +418,7 @@ def _trace(monkeypatch, paths, ends):
 
     calls = {"n": 0}
 
-    def the_piece(region, support, pad):
+    def the_piece(region, support, pad, skeleton=None):
         calls["n"] += 1
         piece = _Piece()
         if calls["n"] == 1:
@@ -965,3 +965,58 @@ def test_the_join_loop_reads_each_strands_edges_from_its_own_nodes_not_the_whole
     recovered = [d for _u, _v, d in G.edges(data=True) if d.get("recovered") and not d.get("reconnected")]
     assert len(recovered) >= 2 and nx.number_connected_components(G) == 1
     assert scans == 2
+
+
+def _branch_mask_and_skeleton(branch_x: int):
+    """The trunk with a branch along y at x = 30 the graph lost, and a
+    skeleton through the trunk and, at *branch_x*, along the branch."""
+    mask = _trunk_mask()
+    _tube(mask, 1, (7, 0, 30), 2, 7, 35)
+    skeleton = np.zeros_like(mask)
+    skeleton[7, 7, :] = True
+    skeleton[7, 8:35, branch_x] = True
+    return mask, skeleton
+
+
+def test_with_the_run_skeleton_the_recovered_vessel_follows_it():
+    """The skeleton runs one voxel off the branch's middle, where Lee
+    thinning of the mask would not: the recovered centreline is the
+    skeleton's, not a second thinning of the mask."""
+    mask, skeleton = _branch_mask_and_skeleton(branch_x=31)
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask), skeleton=skeleton)
+
+    strands = [d for *_, d in G.edges(data=True) if d.get("recovered") and not d.get("reconnected")]
+    assert sum(d["length"] for d in strands) > 15.0
+    points = np.concatenate([np.asarray(d["voxels"], dtype=float) for d in strands])
+    assert np.all(points[:, 2] == 31.0)
+    assert nx.number_connected_components(G) == 1
+
+
+def test_a_piece_the_run_skeleton_does_not_run_through_is_left_alone():
+    """Recovery from the skeleton puts back what the skeleton has: mask
+    the skeleton never traced is not thinned again. (Without a skeleton the
+    same branch is recovered: the test above this file's first ones.)"""
+    mask, skeleton = _branch_mask_and_skeleton(branch_x=30)
+    skeleton[7, 8:35, 30] = False
+
+    G = recover_uncovered_mask_vessels(_trunk_graph(), _support(mask), skeleton=skeleton)
+
+    assert G.number_of_edges() == 1
+    assert not any(d.get("recovered") for *_, d in G.edges(data=True))
+
+
+def test_recovery_leaves_the_run_skeleton_as_it_was():
+    mask, skeleton = _branch_mask_and_skeleton(branch_x=30)
+    before = skeleton.copy()
+
+    recover_uncovered_mask_vessels(_trunk_graph(), _support(mask), skeleton=skeleton)
+
+    assert np.array_equal(skeleton, before)
+
+
+def test_a_skeleton_of_another_shape_than_the_mask_is_refused():
+    mask, skeleton = _branch_mask_and_skeleton(branch_x=30)
+
+    with pytest.raises(ValueError, match="shape"):
+        recover_uncovered_mask_vessels(_trunk_graph(), _support(mask), skeleton=skeleton[:, :, :-1])

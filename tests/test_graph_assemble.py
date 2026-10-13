@@ -569,6 +569,8 @@ def test_the_mask_gate_settings_reach_every_reconnect_and_the_recovery(monkeypat
     assert all(handed[name] is support for name in _RECONNECTS)
     assert support.max_background_gap_um == 1.5 and support.min_mask_fraction == 0.6
     assert support.voxel_size_zyx == pytest.approx(VOXEL_SIZE_ZYX)
+    # Recovery traces along the skeleton the graph was built from.
+    assert np.array_equal(recovery.pop("skeleton"), skeleton)
     assert recovery == dict(
         support=support, attach_reach_um=2.5,
         min_region_volume_um3=12.0, min_length_um=7.0,
@@ -599,8 +601,11 @@ def test_without_the_mask_or_with_the_gates_off_nothing_reads_it(monkeypatch, se
 def test_with_the_gates_off_the_loop_through_two_vessels_builds_as_before():
     """The second tube of the two-vessel loop running the image's whole height,
     with the skeleton strand in only the middle of it: before recovery that
-    was four nodes and four edges, and with the gates off still is; on,
-    recovery traces the two ends of the tube the skeleton never reached."""
+    was four nodes and four edges, and with the gates off still is. On, it
+    is too: recovery traces along the run's skeleton, and the skeleton never
+    reached the two ends of the tube. (It used to Lee-thin the mask again
+    and trace them: on E14.5 two thirds of what that drew was where the
+    skeleton has nothing, combs across wide lumens the clean-up took out.)"""
     mask = _loop_masks()["two vessels"]
     mask[:, 29:36, 16:25] = True
     after_recovery = {}
@@ -618,9 +623,9 @@ def test_with_the_gates_off_the_loop_through_two_vessels_builds_as_before():
     assert (off.number_of_nodes(), off.number_of_edges()) == (4, 4)
     assert not any(data.get("recovered") for *_, data in off.edges(data=True))
     recovered = after_recovery["graph"]
-    assert any(data.get("recovered") for *_, data in recovered.edges(data=True))
-    assert on.number_of_edges() > off.number_of_edges()
-    assert sorted(dict(on.degree).values()).count(1) == 4
+    assert not any(data.get("recovered") for *_, data in recovered.edges(data=True))
+    assert (on.number_of_nodes(), on.number_of_edges()) == (4, 4)
+    assert sorted(dict(on.degree).values()) == sorted(dict(off.degree).values())
 
 
 @pytest.mark.parametrize("gated", [True, False])

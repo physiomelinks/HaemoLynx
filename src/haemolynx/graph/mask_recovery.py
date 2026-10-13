@@ -453,17 +453,24 @@ def uncovered_mask_regions(
     return regions
 
 
-def _trace_piece(region: np.ndarray, support: MaskSupport, pad: int) -> _Piece:
-    """The mask's own centreline (Lee thinning of the whole mask round the
-    region) where it runs through *region*, as skan paths."""
+def _trace_piece(
+    region: np.ndarray, support: MaskSupport, pad: int, *, skeleton: np.ndarray | None = None
+) -> _Piece:
+    """The centreline where it runs through *region*, as skan paths: the
+    run's *skeleton* when given, else the mask's own (Lee thinning of the
+    whole mask round the region)."""
     from skan import csr
-    from skimage.morphology import skeletonize
 
     shape = np.asarray(support.mask.shape)
     lo = np.maximum(region.min(axis=0) - pad, 0)
     hi = np.minimum(region.max(axis=0) + pad + 1, shape)
     window = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
-    skeleton = skeletonize(np.asarray(support.mask[window], dtype=bool), method="lee").astype(bool)
+    if skeleton is not None:
+        skeleton = np.array(skeleton[window], dtype=bool)
+    else:
+        from skimage.morphology import skeletonize
+
+        skeleton = skeletonize(np.asarray(support.mask[window], dtype=bool), method="lee").astype(bool)
     inside = np.zeros_like(skeleton)
     inside[tuple((region - lo).T)] = True
     skeleton &= inside
@@ -940,10 +947,21 @@ def recover_uncovered_mask_vessels(
     min_region_volume_um3: float = DEFAULT_MIN_REGION_VOLUME_UM3,
     min_length_um: float = DEFAULT_MIN_LENGTH_UM,
     margin_um: float = SAME_LUMEN_MARGIN_UM,
+    skeleton: np.ndarray | None = None,
 ) -> nx.MultiGraph:
     """Add, in place, a centreline through each piece of *support*'s mask
     the graph does not cover (:func:`uncovered_mask_voxels`), joined to the
     network.
+
+    With *skeleton* -- the run's own skeleton, voxel-indexed like the mask --
+    a piece's centreline is the skeleton where it runs through the piece,
+    and a piece the skeleton does not run through is left alone. Without
+    it the mask round the piece is Lee-thinned again. On E14.5 (2026-10-13)
+    re-thinning drew two thirds of its length where the skeleton has none,
+    as combs and mazes across wide lumens, which the clean-up then took out
+    again; from the skeleton, recovery took 38 s instead of 97, and the
+    final graph had no pair of edges in one lumen (7 before) and 549
+    interior dead ends (648), reaching as much of the skeleton.
 
     A piece is traced when it holds at least *min_region_volume_um3* of mask
     and is somewhere wider than :data:`MIN_INSCRIBED_RADIUS_VOXELS`; a path
@@ -973,6 +991,11 @@ def recover_uncovered_mask_vessels(
     spacing = np.asarray(support.voxel_size_zyx, dtype=float)
     voxel_volume = float(np.prod(spacing))
     finest = float(spacing.min())
+    if skeleton is not None and tuple(np.shape(skeleton)) != tuple(support.mask.shape):
+        raise ValueError(
+            f"the skeleton's shape {tuple(np.shape(skeleton))} is not the mask's "
+            f"{tuple(support.mask.shape)}: recovery reads one at the other's voxels"
+        )
     uncovered = uncovered_mask_voxels(G, support, margin_um=margin_um)
     if not len(uncovered):
         return G
@@ -1006,7 +1029,7 @@ def recover_uncovered_mask_vessels(
             thin += 1
             continue
         pad = int(np.ceil((region_radius + float(attach_reach_um)) / finest)) + 2
-        piece = _trace_piece(region, support, pad)
+        piece = _trace_piece(region, support, pad, skeleton=skeleton)
         degree: dict[tuple[int, ...], int] = {}
         for a, b in piece.ends:
             degree[a] = degree.get(a, 0) + 1
