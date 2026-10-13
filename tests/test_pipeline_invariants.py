@@ -464,7 +464,8 @@ def test_missing_vessel_warn_below_settings_choose_the_right_log_level(tmp_path,
 
 @pytest.mark.slow
 @pytest.mark.integration
-def test_the_built_network_draws_each_lumen_once(tmp_path):
+@pytest.mark.parametrize("short_loop_rule", ["default", "off"])
+def test_the_built_network_draws_each_lumen_once(tmp_path, short_loop_rule):
     """What graph building leaves in one segmented vessel that is not a
     vessel (``graph.diagnose_lumen_artefacts``, on the graph build_network
     hands over): no loop lying inside one lumen, no dead end whose tip is in
@@ -473,9 +474,16 @@ def test_the_built_network_draws_each_lumen_once(tmp_path):
     cut vessels off (``lumen_loops.cuts_off_vessels``, the only pairs the
     end-of-build clean-up keeps). The one-centreline-per-lumen work's
     regression guard: on E14.5 the build used to leave 124 such pairs and 12
-    loops inside one lumen."""
+    loops inside one lumen.
+
+    Built twice. At the defaults the short-loop rule
+    (``remove_short_loops_under_um``, 200 um) breaks every loop the report
+    counts, so that build is held to leaving none, and no loop is left to
+    judge against the mask. With the rule off (0) the Nerve bed keeps its
+    short loops, and the in-lumen loop rule must have broken every one that
+    lies inside one lumen."""
     from haemolynx.graph import diagnose_lumen_artefacts
-    from haemolynx.graph.lumen_loops import cuts_off_vessels
+    from haemolynx.graph.lumen_loops import LOOP_SEARCH_UM, cuts_off_vessels
 
     schema = default_schema()
     values = {setting.name: setting.default for setting in schema}
@@ -489,6 +497,12 @@ def test_the_built_network_draws_each_lumen_once(tmp_path):
             "interactive_plots": False,
         }
     )
+    if short_loop_rule == "off":
+        values["remove_short_loops_under_um"] = 0.0
+    else:
+        # The report counts loops up to LOOP_SEARCH_UM round; the rule has to
+        # reach that far for "none left" to be what it promises.
+        assert values["remove_short_loops_under_um"] >= LOOP_SEARCH_UM
     settings = resolve_settings(values, schema=schema, config_path=None)
     built = {}
 
@@ -506,8 +520,11 @@ def test_the_built_network_draws_each_lumen_once(tmp_path):
         _to_binary_volume_for_skeletonization(network.volume.image),
         voxel_size_zyx=network.volume.voxel_size_zyx,
     )
-    assert report["short_loop_count"] > 0, "no loops to judge; the loop check proves nothing"
-    assert report["loops_inside_one_lumen"] == 0
+    if short_loop_rule == "off":
+        assert report["short_loop_count"] > 0, "no loops to judge; the loop check proves nothing"
+        assert report["loops_inside_one_lumen"] == 0
+    else:
+        assert report["short_loop_count"] == 0, "the short-loop rule left loops it should have broken"
     for kind in ("inside_other_lumen", "beside_vessel", "off_mask"):
         assert report["dead_end_counts"][kind] == 0, kind
     for left, right in report["duplicate_pairs"]:
