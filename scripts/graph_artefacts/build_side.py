@@ -80,7 +80,10 @@ def main(job_path: str) -> None:
     if hasattr(assemble, "consolidate_lumen"):
         cleanup = assemble.lumen_cleanup(
             mask, voxel_size, image_shape=skeleton.shape, stub_radius_at=radius_at,
-            **{name: job["build"][name] for name in _CLEANUP_ARGUMENTS if name in job["build"]},
+            **accepted_arguments(
+                assemble.lumen_cleanup,
+                {name: job["build"][name] for name in _CLEANUP_ARGUMENTS if name in job["build"]},
+            )[0],
         )
     if smoothing:
         graph.smooth_graph_centrelines(
