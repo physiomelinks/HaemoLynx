@@ -842,7 +842,9 @@ are only caught locally.
   from Harvey's examples (2026-10-13, `PLAN_bridging.md` F1-F1c): a dead end stopping within
   `WALL_JOIN_REACH_UM` (10 um) of the thick lumen and heading for it (the gap bridges' 80-degree,
   3 um rule) is first drawn on through the mask to the thick centreline, under the bridge gate and
-  the same-lumen and loop guards, then bridged like any vessel (`join_dead_ends_at_walls`; the
+  the same-lumen and loop guards and never closing a loop shorter than the run's
+  `remove_short_loops_under_um` (on E14.5 all 10 short loops the build left ran through such
+  a join), then bridged like any vessel (`join_dead_ends_at_walls`; the
   edge records `joined_at_thick_wall_um`) -- skeletonisation often ends a thin arm at the wall;
   a bridge carrying a thick centreline's end on along its own line (`TAPER_MIN_COSINE`, 45
   degrees), the one most along it at each end, is the thick vessel narrowing and stays vessel
