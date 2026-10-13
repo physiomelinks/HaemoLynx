@@ -80,6 +80,16 @@ from .bridge_mask_support import (
     path_shadows_existing_vessel,
     shadowed_samples,
 )
+from .raw_evidence import (
+    RawCalibration,
+    RawEvidence,
+    RawEvidenceEndothelial,
+    RawEvidencePlasma,
+    calibrate_raw,
+    make_raw_evidence,
+    raw_evidence_from_settings,
+    raw_image_for_build,
+)
 from .memmap_support import (
     new_memmap_array,
     release_memmap_array,
@@ -154,6 +164,14 @@ __all__ = [
     "bridge_mask_support",
     "path_shadows_existing_vessel",
     "shadowed_samples",
+    "RawCalibration",
+    "RawEvidence",
+    "RawEvidenceEndothelial",
+    "RawEvidencePlasma",
+    "calibrate_raw",
+    "make_raw_evidence",
+    "raw_evidence_from_settings",
+    "raw_image_for_build",
     "new_memmap_array",
     "release_memmap_array",
     "release_superseded",
