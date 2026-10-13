@@ -391,6 +391,93 @@ def test_a_vessel_measured_wall_to_wall_takes_the_anatomical_form_of_the_law():
     assert mixed[0][1][0]["resistance"] > mixed[1][2][0]["resistance"]
 
 
+def test_a_raw_image_measurement_marks_the_basis_it_read():
+    """FWHM and the raw-section fit read across a plasma label, so their
+    edges carry plasma_column; the mask's own width and the table are what
+    the segmentation is, the run's basis, and carry no mark."""
+    from haemolynx.haemodynamics.poiseuille import (
+        DIAMETER_SOURCE_EDT,
+        DIAMETER_SOURCE_MEASURED,
+        DIAMETER_SOURCE_RAW_SECTION,
+        DIAMETER_SOURCE_TABLE,
+        EDGE_DIAMETER_BASIS,
+        stamp_edge_diameters,
+    )
+
+    graph = nx.MultiGraph()
+    graph.add_edge(0, 1, key=0, branch_order="B01", length=100.0, fwhm_diameter_um=5.0)
+    graph.add_edge(1, 2, key=0, branch_order="B01", length=100.0, raw_section_diameter_um=5.5)
+    graph.add_edge(2, 3, key=0, branch_order="B01", length=100.0, edt_diameter_um=5.0,
+                   **{EDGE_DIAMETER_BASIS: "plasma_column"})  # stale, from an earlier stamping
+    graph.add_edge(3, 4, key=0, branch_order="B01", length=100.0)
+
+    stamp_edge_diameters(
+        graph, {"B01": 4.0}, use_edt_fallback=True, use_raw_section_fallback=True
+    )
+
+    fwhm, section, mask, table = graph[0][1][0], graph[1][2][0], graph[2][3][0], graph[3][4][0]
+    assert (fwhm["diameter_source"], fwhm[EDGE_DIAMETER_BASIS]) == (DIAMETER_SOURCE_MEASURED, "plasma_column")
+    assert (section["diameter_source"], section[EDGE_DIAMETER_BASIS]) == (DIAMETER_SOURCE_RAW_SECTION, "plasma_column")
+    assert mask["diameter_source"] == DIAMETER_SOURCE_EDT and EDGE_DIAMETER_BASIS not in mask
+    assert table["diameter_source"] == DIAMETER_SOURCE_TABLE and EDGE_DIAMETER_BASIS not in table
+
+
+def test_a_class_median_carries_the_basis_of_its_widths():
+    from haemolynx.haemodynamics.poiseuille import (
+        DIAMETER_SOURCE_CLASS_MEDIAN,
+        EDGE_DIAMETER_BASIS,
+        class_median_diameters,
+        stamp_edge_diameters,
+    )
+
+    graph = nx.MultiGraph()
+    # B01: measured by FWHM (plasma column); B02: the mask's own widths.
+    graph.add_edge(0, 1, key=0, branch_order="B01", length=100.0, fwhm_diameter_um=5.0)
+    graph.add_edge(1, 2, key=0, branch_order="B01", length=100.0, fwhm_diameter_um=7.0)
+    graph.add_edge(2, 3, key=0, branch_order="B01", length=100.0)
+    graph.add_edge(3, 4, key=0, branch_order="B02", length=100.0, edt_diameter_um=8.0)
+    graph.add_edge(4, 5, key=0, branch_order="B02", length=100.0, edt_diameter_um=10.0)
+    graph.add_edge(5, 6, key=0, branch_order="B02", length=100.0)
+
+    stamp_edge_diameters(graph, {}, use_edt_fallback=True, class_median_min_edges=2)
+
+    assert class_median_diameters(graph, min_edges=2) == {
+        "B01": (6.0, "plasma_column"), "B02": (9.0, None),
+    }
+    from_fwhm, from_mask = graph[2][3][0], graph[5][6][0]
+    assert (from_fwhm["diameter_source"], from_fwhm["diameter_um"]) == (DIAMETER_SOURCE_CLASS_MEDIAN, 6.0)
+    assert from_fwhm[EDGE_DIAMETER_BASIS] == "plasma_column"
+    assert (from_mask["diameter_source"], from_mask["diameter_um"]) == (DIAMETER_SOURCE_CLASS_MEDIAN, 9.0)
+    assert EDGE_DIAMETER_BASIS not in from_mask
+
+
+def test_a_mask_segmented_from_an_endothelial_stain_is_modelled_wall_to_wall():
+    """segmentation_source=endothelial: the mask's widths take the in vivo
+    form of the law, and a width FWHM read across the plasma label beside
+    them keeps the in vitro one -- the segmentation's basis never reaches a
+    diameter the raw image measured."""
+    from haemolynx.haemodynamics.poiseuille import (
+        EDGE_DIAMETER_BASIS,
+        PoiseuilleModel,
+        stamp_edge_diameters,
+    )
+
+    graph = nx.MultiGraph()
+    graph.add_edge(0, 1, key=0, branch_order="B01", length=100.0, fwhm_diameter_um=6.0)
+    graph.add_edge(1, 2, key=0, branch_order="B01", length=100.0, edt_diameter_um=6.0)
+    stamp_edge_diameters(graph, {"B01": 6.0}, use_edt_fallback=True)
+    assert graph[0][1][0][EDGE_DIAMETER_BASIS] == "plasma_column"
+    assert EDGE_DIAMETER_BASIS not in graph[1][2][0]
+
+    run = PoiseuilleModel(40.0, 100.0, diameter_basis="endothelial")
+    mixed, _ = run.set_poiseuille_resistances(graph, {"B01": 6.0})
+    plasma = PoiseuilleModel(40.0, 100.0, diameter_basis="plasma_column")
+
+    assert mixed[0][1][0]["resistance"] == pytest.approx(plasma.resistance_of_uniform_segment(100.0, 6.0))
+    assert mixed[1][2][0]["resistance"] == pytest.approx(run.resistance_of_uniform_segment(100.0, 6.0))
+    assert mixed[1][2][0]["resistance"] > mixed[0][1][0]["resistance"]
+
+
 def test_a_constricted_vessel_keeps_its_own_basis():
     from haemolynx.haemodynamics.constriction import integrated_resistance
     from haemolynx.haemodynamics.constriction_strategy import set_resistances_for_constriction_strategy

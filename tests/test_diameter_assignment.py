@@ -1246,3 +1246,22 @@ def test_a_bridge_is_not_measured_and_takes_the_thick_vessels_diameter():
     assert summary["bridges"] == 1
     assert summary["diameters"]["table"] == stamped.number_of_edges() - 2
     assert summary["diameters"]["override"] == 1
+
+
+def test_the_apply_config_takes_the_runs_basis_from_the_segmentation_source(tmp_path):
+    """The Diameters stage's config carries what the segmented vessels are, so
+    the mask's widths, the class medians and the table are modelled on it."""
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.stages import _haemodynamics_apply_config
+
+    schema = default_schema()
+    plasma = _haemodynamics_apply_config(
+        _run_settings(input_path=tmp_path / "mask.tif"), schema, voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    assert plasma.diameter("diameter_basis") == "plasma_column"
+
+    endothelial = _haemodynamics_apply_config(
+        _run_settings(input_path=tmp_path / "mask.tif", segmentation_source="anatomical"),
+        schema, voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    assert endothelial.diameter("diameter_basis") == "endothelial"

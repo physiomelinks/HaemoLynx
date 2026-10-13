@@ -232,17 +232,53 @@ def test_the_two_bases_are_the_same_physics_read_two_ways():
 def test_the_default_basis_is_the_one_this_projects_images_produce():
     """HaemoLynx segments plasma-stained volumes: the diameter is the channel.
 
-    It is no longer a setting: a vessel measured inside an endothelial stain's
-    walls carries its own basis, and the raw image's stain decides that."""
+    The run's basis is what the segmented vessels are -- `segmentation_source`
+    on the Input tab, beside the segmented image, a plasma label unless said
+    otherwise -- and a vessel measured from the raw image carries the basis
+    that measurement read. `diameter_basis` is no longer a setting of its own:
+    a config still naming it reads into the segmentation source."""
     from haemolynx.pipeline import default_schema
 
     schema = default_schema()
     assert "diameter_basis" not in schema
-    assert schema.upgrade({"diameter_basis": "anatomical"})["raw_image_stain"] == "endothelial"
+    source = schema["segmentation_source"]
+    assert source.section == "Input and segmentation"
+    assert source.default == "plasma_column"
+    assert tuple(source.choices) == ("plasma_column", "endothelial")
+    assert schema.upgrade({"diameter_basis": "anatomical"}) == {"segmentation_source": "endothelial"}
+    assert schema.upgrade({"diameter_basis": "plasma_column"}) == {"segmentation_source": "plasma_column"}
+    assert schema.upgrade({"segmentation_source": "anatomical"}) == {"segmentation_source": "endothelial"}
     assert PoiseuilleModel(40.0, 100.0).diameter_basis == "plasma_column"
     assert viscosity_for(5.0, law="pries") == pytest.approx(
         pries_in_vitro_viscosity(5.0)
     )
+
+
+def test_the_runs_basis_is_what_the_segmented_vessels_are():
+    """Every reader of the run's basis -- the stage's apply config, a
+    perturbation's blood model, the sweeps' strategy arguments -- takes it
+    from the segmentation source, through one helper, so a mask segmented
+    from an endothelial stain is modelled wall to wall everywhere."""
+    from haemolynx.haemodynamics import run_diameter_basis
+    from haemolynx.haemodynamics.constriction_strategy import constriction_strategy_kwargs
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.stages import _poiseuille_model_for
+
+    assert run_diameter_basis({}) == "plasma_column"
+    assert run_diameter_basis({"segmentation_source": "endothelial"}) == "endothelial"
+    assert run_diameter_basis({"segmentation_source": "anatomical"}) == "endothelial"
+    # An apply config's diameters section, or a run written before the choice
+    # moved to the Input tab, still names it diameter_basis.
+    assert run_diameter_basis({"diameter_basis": "anatomical"}) == "endothelial"
+    assert run_diameter_basis({"segmentation_source": "plasma_column", "diameter_basis": "endothelial"}) == "plasma_column"
+
+    settings = {setting.name: setting.default for setting in default_schema()}
+    settings["segmentation_source"] = "endothelial"
+    assert _poiseuille_model_for(settings).diameter_basis == "endothelial"
+    kwargs = constriction_strategy_kwargs(settings, diameter_by_branch_order={"B01": 6.0})
+    assert kwargs["diameter_basis"] == "endothelial"
+    settings["segmentation_source"] = "plasma_column"
+    assert _poiseuille_model_for(settings).diameter_basis == "plasma_column"
 
 
 def test_an_unknown_basis_is_refused_by_name():

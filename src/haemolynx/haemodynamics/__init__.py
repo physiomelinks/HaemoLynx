@@ -7,6 +7,7 @@ from . import open_ends
 from .viscosity import (
     VISCOSITY_LAWS,
     describe_law,
+    run_diameter_basis,
     validity_range_um,
     viscosity_for,
 )
@@ -99,6 +100,7 @@ __all__ = [
     "open_ends",
     "VISCOSITY_LAWS",
     "describe_law",
+    "run_diameter_basis",
     "validity_range_um",
     "viscosity_for",
     "PlaceholderViscosityWarning",

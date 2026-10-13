@@ -46,6 +46,8 @@ both on the graph.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
+from typing import Any
 
 import numpy as np
 
@@ -64,6 +66,25 @@ def normalise_diameter_basis(basis: str) -> str:
     """*basis* as :data:`DIAMETER_BASES` names it (``anatomical`` was the
     wall-to-wall basis's former name); anything else is returned as given."""
     return DIAMETER_BASIS_ALIASES.get(basis, basis) if isinstance(basis, str) else basis
+
+
+#: The Input tab's setting that says what the segmented vessels are, and so
+#: what a diameter taken from the segmentation measures: the run's basis.
+SEGMENTATION_SOURCE_SETTING = "segmentation_source"
+
+
+def run_diameter_basis(settings: Mapping[str, Any]) -> str:
+    """The run's diameter basis from *settings*: what a diameter the
+    segmentation gave measures, which every diameter not read from the raw
+    image is on. ``segmentation_source`` (the Input tab's choice) when it is
+    there, else ``diameter_basis`` (an apply config's diameters section, or a
+    run written before the choice moved to the Input tab), else plasma_column
+    -- the mask of a plasma label. A former spelling reads as the current."""
+    for key in (SEGMENTATION_SOURCE_SETTING, "diameter_basis"):
+        value = settings.get(key)
+        if value is not None:
+            return normalise_diameter_basis(value)
+    return "plasma_column"
 
 # --- the capillary power law ------------------------------------------------
 #

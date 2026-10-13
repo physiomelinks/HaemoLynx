@@ -84,7 +84,9 @@ _NETWORK_HANDLING = "Network handling"
 #: ``raw_image_stain``) took over on 2026-10-13: the ilastik input, FWHM's raw
 #: image and the endothelial stain, each with its channel; the two diameter
 #: switches, now one (``measure_diameters_from_raw_image``) whose method
-#: follows the stain; and ``diameter_basis``, now the stain's.
+#: follows the stain. ``diameter_basis`` itself -- what the dataset's
+#: diameters measure -- is ``segmentation_source`` on the Input tab now (its
+#: ``replaces``).
 _RETIRED_RAW_IMAGE_SETTINGS = (
     "ilastik_unsegmented_image_path",
     "fwhm_raw_tiff_path",
@@ -93,7 +95,6 @@ _RETIRED_RAW_IMAGE_SETTINGS = (
     "endothelial_channel",
     "use_fwhm_edge_diameters",
     "use_endothelial_diameters",
-    "diameter_basis",
 )
 
 
@@ -105,8 +106,9 @@ def _migrate_raw_image(values: Mapping[str, Any]) -> dict[str, Any]:
     shared), else the endothelial stain -- each path with its own channel,
     never one's path and another's channel. A run that measured diameters
     keeps doing so by the same method: endothelial diameters make the stain
-    endothelial, FWHM ones plasma_column, so it reproduces; otherwise an
-    anatomical diameter_basis made the stain endothelial.
+    endothelial, FWHM ones plasma_column, so it reproduces. Its
+    ``diameter_basis`` said what the segmentation's diameters were, and is
+    read into ``segmentation_source`` by that setting's ``replaces``.
     """
     fwhm = bool(values.get("use_fwhm_edge_diameters"))
     endothelial = bool(values.get("use_endothelial_diameters"))
@@ -137,8 +139,6 @@ def _migrate_raw_image(values: Mapping[str, Any]) -> dict[str, Any]:
         out["raw_image_stain"] = "endothelial"
     elif fwhm:
         out["raw_image_stain"] = "plasma_column"
-    elif values.get("diameter_basis") == "anatomical":
-        out["raw_image_stain"] = "endothelial"
     if fwhm or endothelial:
         out["measure_diameters_from_raw_image"] = True
     return out
@@ -169,6 +169,36 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             must_exist=True,
             requires=("!use_ilastik_segmentation",)
+        ),
+        Setting(
+            name="segmentation_source",
+            kind="choice",
+            default="plasma_column",
+            choices=("plasma_column", "endothelial"),
+            help=(
+                "What the segmented vessels are, and so what a diameter taken from the "
+                "segmentation measures: plasma_column for a mask of the channel blood "
+                "flows in (a luminal label, as a plasma stain images it), or endothelial "
+                "(anatomical) for a mask of the vessel wall to wall, which includes the "
+                "~1.1 um endothelial surface layer. The pries viscosity law takes the "
+                "matching form for every diameter the segmentation gave -- the mask's "
+                "own widths, the class medians and the table; a diameter measured from "
+                "the raw image carries the raw image's own. Choosing endothelial for a "
+                "plasma label subtracts that layer twice and roughly quintuples "
+                "capillary resistance"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            value_aliases={"anatomical": "endothelial", "luminal": "plasma_column"},
+            replaces={
+                "diameter_basis": {
+                    "plasma_column": "plasma_column",
+                    "anatomical": "endothelial",
+                    "endothelial": "endothelial",
+                }
+            },
+            # Read by the Diameters stage (the per-vessel basis) and the
+            # haemodynamics, each behind its own switch.
+            always_effective=True,
         ),
         Setting(
             name="raw_image_path",

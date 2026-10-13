@@ -421,6 +421,23 @@ def test_the_raw_image_and_its_stain_are_on_the_input_tab():
     assert "haematocrit" not in on_diameters
 
 
+def test_the_segmentation_source_sits_with_the_segmented_image_on_input():
+    """What the segmented vessels are -- a plasma column or the wall, which
+    decides the form of the viscosity law every diameter the segmentation
+    gave is read through -- is a property of the dataset, set once on Input
+    right under the segmented image, not a Diameters or Haemodynamics knob."""
+    from haemolynx.gui.layout import TAB_BOXES
+
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    on_input = [field.name for field in tabs["1. Input"].fields]
+    assert "segmentation_source" in on_input
+    assert on_input.index("input_path") < on_input.index("segmentation_source") < on_input.index("raw_image_path")
+    for title in ("5. Diameters", "6. Haemodynamics"):
+        assert "segmentation_source" not in {field.name for field in tabs[title].fields}, title
+    (input_box, *_rest) = TAB_BOXES["segment"]
+    assert input_box.names.index("segmentation_source") == input_box.names.index("input_path") + 1
+
+
 def test_legacy_and_comparison_settings_are_not_on_the_diameters_tab():
     """Legacy flags and comparison CSV knobs leave Diameters without UI rows.
 

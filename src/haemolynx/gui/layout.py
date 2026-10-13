@@ -152,6 +152,7 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
             None,
             names=(
                 "input_path",
+                "segmentation_source",
                 "raw_image_path",
                 "raw_image_channel",
                 "raw_image_stain",

@@ -410,6 +410,7 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "measure_tissue_volume": "Measure tissue volume from the raw image (for vessel density)",
     "mid_run_postprocessing": "Mid-run postprocessing",
     "input_path": "Segmented image path",
+    "segmentation_source": "Segmentation source",
     "raw_image_path": "Raw image path",
     "raw_image_channel": "Raw data channel",
     "raw_image_stain": "Raw image stain",
@@ -422,6 +423,10 @@ SETTING_ROW_LABELS: dict[str, str] = {
 #: as a sentence for the ones a user picks a whole model from, rather than a
 #: mode word like "pries" or "plasma_column".
 CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
+    "segmentation_source": {
+        "plasma_column": "Plasma column (luminal stain)",
+        "endothelial": "Anatomical (endothelial wall stain)",
+    },
     "raw_image_stain": {
         "auto": "Auto (tell from the image)",
         "plasma_column": "Plasma column (luminal stain)",

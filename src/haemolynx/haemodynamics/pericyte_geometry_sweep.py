@@ -32,6 +32,7 @@ from .pericyte_sweep import (
     sweep_rows_at_pressures,
 )
 from .poiseuille import PoiseuilleModel
+from .viscosity import run_diameter_basis
 from .sweep_flows import PericyteSites, build_sweep_flow_grid, edge_pericyte_sites
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,7 @@ def _apply_focal_constrictions(
             constriction_spacing=float(constriction_spacing),
             viscosity_law=settings.get("viscosity_law", "pries"),
             haematocrit=float(settings.get("haematocrit", 0.45)),
-            diameter_basis=settings.get("diameter_basis", "plasma_column"),
+            diameter_basis=run_diameter_basis(settings),
         ),
         custom_edge_diameter_scale=dilation_factor,
     )

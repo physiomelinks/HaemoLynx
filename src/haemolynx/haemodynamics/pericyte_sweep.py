@@ -35,6 +35,7 @@ from .constriction_strategy import (
 )
 from .haematocrit_distribution import JUNCTION_RULE_NO_SEPARATION, iterate_flow_and_haematocrit
 from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
+from .viscosity import run_diameter_basis
 from .resistance import (
     FLOW_SOLVER_DENSE,
     boundary_flow,
@@ -509,7 +510,7 @@ def run_pericyte_dilation_pressure_sweep(
         constriction_spacing=float(settings.get("constriction_spacing_um", 100.0)),
         viscosity_law=settings.get("viscosity_law", "pries"),
         haematocrit=float(settings.get("haematocrit", 0.45)),
-        diameter_basis=settings.get("diameter_basis", "plasma_column"),
+        diameter_basis=run_diameter_basis(settings),
     )
     diameter_by_branch_order = settings["diameter_by_branch_order"]
     outlet_pressure_pa = float(settings["outlet_p_bc"])
@@ -669,7 +670,7 @@ def run_arteriole_dilation_pressure_sweep(
         constriction_spacing=float(settings.get("constriction_spacing_um", 100.0)),
         viscosity_law=settings.get("viscosity_law", "pries"),
         haematocrit=float(settings.get("haematocrit", 0.45)),
-        diameter_basis=settings.get("diameter_basis", "plasma_column"),
+        diameter_basis=run_diameter_basis(settings),
     )
     diameter_by_branch_order = settings["diameter_by_branch_order"]
     prefer_measured = bool(settings.get("measure_diameters_from_raw_image", True))

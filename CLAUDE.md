@@ -370,11 +370,19 @@ are only caught locally.
   `haemodynamics/viscosity.py`.
   - The question that decides the answer is **which diameter you measured**, not which law you
     prefer. A diameter basis is `plasma_column` — the channel the fluid occupies, what a plasma
-    stain images and what the segmentation is — or `endothelial` (formerly `anatomical`, which
-    still loads: `normalise_diameter_basis`), wall to wall, including the ~1.1 µm endothelial
-    surface layer. It is not a setting: the run's basis is always `plasma_column`, and a vessel
-    measured inside an endothelial stain's walls carries `endothelial` on its edge
-    (`poiseuille.EDGE_DIAMETER_BASIS`), which is what `raw_image_stain` decides.
+    stain images — or `endothelial` (formerly `anatomical`, which still loads:
+    `normalise_diameter_basis`), wall to wall, including the ~1.1 µm endothelial surface layer.
+    The run's basis is **what the segmented vessels are**: `segmentation_source` on the Input
+    tab, beside the segmented image (`plasma_column` by default; `endothelial` for a mask of the
+    wall, `anatomical` an alias), read everywhere through `viscosity.run_diameter_basis` — the
+    stage's apply config, a perturbation's model, the sweeps' strategy arguments — and recorded
+    as `G.graph["diameter_basis"]`. Every diameter the segmentation gave (the mask's width, the
+    class medians, the table) is on it. A diameter read from the raw image carries the basis
+    *that* measurement read on its edge (`poiseuille.EDGE_DIAMETER_BASIS`, by
+    `MEASUREMENT_DIAMETER_BASIS`): FWHM and the raw section `plasma_column`, the endothelial
+    fit `endothelial`, whatever the segmentation is; a class median carries the basis of its
+    widths. The retired `diameter_basis` setting reads into `segmentation_source`
+    (`replaces`), and a perturbation may not override either (`INCOMPARABLE_OVERRIDES`).
   - `viscosity_law="pries"` (**default**) is Pries et al., fitted 3.3–1978 µm, continuous across
     the whole tree, no placeholder and no warning. Reads the basis: `plasma_column` selects
     the *in vitro* (tube) form, `endothelial` the *in vivo* form. The in vivo form's

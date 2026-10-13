@@ -84,9 +84,9 @@ _HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB: tuple[str, ...] = (
 #: The viscosity law and the uniform haematocrit it can read. Stay in the
 #: Diameters schema section (apply.py's section_values still finds them
 #: there), but claimed here so their rows sit on Haemodynamics beside the
-#: model that actually consumes them (build_haemodynamic_model). Only
-#: diameter_basis -- which diameter a segmented vessel measures -- stays on
-#: Diameters: that is a property of the dataset, not the blood model.
+#: model that actually consumes them (build_haemodynamic_model). Which
+#: diameter a segmented vessel measures (segmentation_source) is a property
+#: of the dataset, not the blood model, and sits with the image on Input.
 _VISCOSITY_SETTINGS_ON_HAEMODYNAMICS_TAB: tuple[str, ...] = (
     "viscosity_law",
     "haematocrit",

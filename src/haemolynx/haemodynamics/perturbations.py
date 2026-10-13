@@ -273,6 +273,7 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
 INCOMPARABLE_OVERRIDES: tuple[str, ...] = (
     "viscosity_law",
     "raw_image_stain",
+    "segmentation_source",
     "haematocrit",
     "haematocrit_model",
     "haematocrit_junction_rule",

@@ -75,6 +75,7 @@ from haemolynx.haemodynamics.pericyte_sweep import (
     solve_pressure_and_boundary_flow,
 )
 from haemolynx.haemodynamics.perturbations import plain as plain_values
+from haemolynx.haemodynamics.viscosity import run_diameter_basis
 from haemolynx.haemodynamics.poiseuille import (
     EDGE_DIAMETER_BASIS,
     PoiseuilleModel,
@@ -2450,6 +2451,10 @@ def _haemodynamics_apply_config(
     if stain is None:
         stain = recorded_raw_image_stain(settings)
     diameters = dict(schema.section_values(settings, "Diameters and pericytes"))
+    # The run's basis is what the segmented vessels are (the Input tab's
+    # segmentation_source): every diameter the segmentation gave is on it,
+    # and one read from the raw image carries its own.
+    diameters["diameter_basis"] = run_diameter_basis(settings)
     diameters["do_pericyte_construction"] = False
     diameters["run_pericyte_resistance_comparison"] = False
     edt = dict(schema.section_values(settings, "EDT mask diameter estimate"))
@@ -3466,9 +3471,10 @@ def _poiseuille_model_for(settings: dict) -> PoiseuilleModel:
         constriction_spacing=float(settings["constriction_spacing_um"]),
         viscosity_law=settings["viscosity_law"],
         haematocrit=float(settings["haematocrit"]),
-        # What the segmentation's diameters measure; a diameter read from an
-        # endothelial raw image carries its own (poiseuille.EDGE_DIAMETER_BASIS).
-        diameter_basis="plasma_column",
+        # What the segmentation's diameters measure (segmentation_source); a
+        # diameter read from the raw image carries its own
+        # (poiseuille.EDGE_DIAMETER_BASIS).
+        diameter_basis=run_diameter_basis(settings),
     )
 
 

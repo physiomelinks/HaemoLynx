@@ -8,6 +8,8 @@
 input_and_segmentation:
   # The segmented image (a vessel mask) the pipeline reads; its raw image is raw_image_path  [needs use_ilastik_segmentation off; must exist]
   input_path: examples/images/brain_microvessels.tiff
+  # What the segmented vessels are, and so what a diameter taken from the segmentation measures: plasma_column for a mask of the channel blood flows in (a luminal label, as a plasma stain images it), or endothelial (anatomical) for a mask of the vessel wall to wall, which includes the ~1.1 um endothelial surface layer. The pries viscosity law takes the matching form for every diameter the segmentation gave -- the mask's own widths, the class medians and the table; a diameter measured from the raw image carries the raw image's own. Choosing endothelial for a plasma label subtracts that layer twice and roughly quintuples capillary resistance  [one of: plasma_column, endothelial]
+  segmentation_source: plasma_column
   # The raw (unsegmented) image of the same field, one channel of it (raw_image_channel): what ilastik segments when it runs, what diameters are measured from, what 'Check segmented image' and 'Optimise settings' compare the segmentation with, and where tissue volume is found unless tissue_raw_tiff_path names another. ilastik reads the whole file, as its project was trained on it  [must exist]
   raw_image_path: null
   # Which channel of a multi-channel raw image to read, counting from 0 (the panel lists them as Fiji names them: C1 is 0); leave unset for a single-channel file  [range 0..]
