@@ -364,3 +364,25 @@ def test_the_windowed_cost_field_matches_the_whole_one_on_anisotropic_voxels():
     window = (slice(4, 16), slice(30, 70), slice(10, 80))
     np.testing.assert_allclose(windowed[window], whole[window])
 
+
+
+@pytest.mark.parametrize("named", ["as stored", "the other way round"])
+def test_insert_node_on_edge_splits_a_path_stored_from_its_other_end(named):
+    """Regression (E14.5, 2026-10-13): an edge's points may run from either of
+    its nodes. Split as if they ran from the first node named, each piece got
+    the other piece's points, and the next degree-2 merge joined them with a
+    35 um straight jump across the gap."""
+    G = nx.MultiGraph()
+    G.add_node("A", pos=(0.0, 0.0, 0.0))
+    G.add_node("B", pos=(0.0, 0.0, 20.0))
+    # Points run B -> A.
+    G.add_edge("A", "B", voxels=[(0.0, 0.0, float(x)) for x in range(20, -1, -1)], length=20.0)
+    u, v = ("A", "B") if named == "as stored" else ("B", "A")
+
+    node = insert_node_on_edge(G, u, v, 0, (0.0, 0.0, 5.0))
+
+    assert G.nodes[node]["pos"] == pytest.approx((0.0, 0.0, 5.0))
+    for a, b, d in G.edges(data=True):
+        ends = {tuple(d["voxels"][0]), tuple(d["voxels"][-1])}
+        assert ends == {tuple(map(float, G.nodes[a]["pos"])), tuple(map(float, G.nodes[b]["pos"]))}
+    assert sorted(round(d["length"], 6) for *_e, d in G.edges(data=True)) == [5.0, 15.0]

@@ -21,7 +21,7 @@ import networkx as nx
 import numpy as np
 from scipy.ndimage import distance_transform_edt
 
-from ._helpers import calculate_path_length, next_node_id
+from ._helpers import calculate_path_length, next_node_id, orient_path_from_startpoint
 from .degree2 import create_trivial_merged_edge
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 
@@ -91,6 +91,12 @@ def insert_node_on_edge(
     voxels = list(data.get("voxels") or [])
     if len(voxels) < 2:
         voxels = [tuple(G.nodes[u]["pos"]), tuple(G.nodes[v]["pos"])]
+    elif "pos" in G.nodes[u]:
+        # An edge's points may run from either of its nodes; the pieces below
+        # are cut as running from u. Cut the other way, each piece got the
+        # other's points, and merging them later drew a straight jump across
+        # the gap (E14.5: 35 um).
+        voxels = list(orient_path_from_startpoint(voxels, G.nodes[u]["pos"]))
 
     index = _closest_vertex_index(voxels, point_um)
     if index == 0:
