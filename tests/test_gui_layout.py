@@ -176,6 +176,25 @@ def test_viscosity_law_and_do_fwhm_measurement_stay_ordinary_rows():
     assert "viscosity_law" in haemodynamics.box("blood_model").rows
 
 
+def test_the_pries_override_is_behind_a_button_under_the_viscosity_law():
+    """The override sits on the Haemodynamics tab, behind its own Advanced
+    button directly under the law it overrides, and its dropdown names each
+    form by its paper."""
+    from haemolynx.gui.form import CHOICE_VALUE_LABELS
+
+    _tab, haemodynamics = LAYOUTS["build_haemodynamic_model"]
+    override = haemodynamics.disclosure_of("pries_viscosity_form")
+    assert override is not None
+    assert override.anchor == "viscosity_law"
+    assert override.title == "Advanced viscosity settings"
+    assert "pries_viscosity_form" in haemodynamics.box("blood_model").names
+    labels = CHOICE_VALUE_LABELS["pries_viscosity_form"]
+    assert set(labels) == set(SCHEMA["pries_viscosity_form"].choices)
+    assert labels["in_vivo_1994"] == "In vivo (Pries et al., 1994)"
+    assert labels["in_vivo_2005"] == "In vivo (Pries and Secomb, 2005)"
+    assert labels["in_vitro_1992"] == "In vitro (Pries et al., 1992)"
+
+
 def test_the_decoy_check_is_behind_a_button_under_do_fwhm_measurement():
     _tab, layout = LAYOUTS["assign_diameters"]
     decoy = layout.disclosure_of("fwhm_decoy_check")

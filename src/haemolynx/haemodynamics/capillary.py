@@ -28,7 +28,7 @@ from .arteriole import percent_change_to_scale
 from .constriction import is_capillary_branch_order
 from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
 from .sweep_flows import build_sweep_flow_grid
-from .viscosity import run_diameter_basis
+from .viscosity import run_diameter_basis, run_viscosity_law
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ def run_capillary_dilation_pressure_sweep(
     poiseuille_model = PoiseuilleModel(
         constriction_length=float(settings.get("constriction_length_um", 40.0)),
         constriction_spacing=float(settings.get("constriction_spacing_um", 100.0)),
-        viscosity_law=settings.get("viscosity_law", "pries"),
+        viscosity_law=run_viscosity_law(settings),
         haematocrit=float(settings.get("haematocrit", 0.45)),
         diameter_basis=run_diameter_basis(settings),
     )

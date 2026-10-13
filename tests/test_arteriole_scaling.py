@@ -170,12 +170,17 @@ def test_dilating_the_arterioles_lowers_their_resistance_by_the_fourth_power():
 def test_the_default_viscosity_law_does_not_give_a_pure_fourth_power():
     """Worth pinning: the apparent viscosity moves with the diameter too.
 
-    Under `pries` a dilated arteriole carries thinner blood as well as being a
-    wider tube, so its resistance falls by rather more than d^-4 -- 7% more at
-    this diameter. Quoting 1.2^-4 for a run under the default law would be
-    wrong, so the real number is pinned here rather than a tolerance wide
-    enough to cover it.
+    Under `pries` (in vitro, Pries 1992, for this plasma-column network) a
+    7 um arteriole sits at the bottom of the Fahraeus-Lindqvist curve, so
+    widening it to 8.4 um thickens its blood a little as well as widening the
+    tube: its resistance falls by 2.5% less than d^-4, exactly the viscosity
+    ratio. Quoting 1.2^-4 for a run under the default law would be wrong, so
+    the real number is pinned here rather than a tolerance wide enough to
+    cover it. (Until 2026-10-13 the in vitro form carried the in vivo mu45,
+    under which the blood thinned and the fall was 7% more than d^-4.)
     """
+    from haemolynx.haemodynamics.viscosity import pries_in_vitro_viscosity
+
     baseline = _baseline("pries")
 
     scaled, _table, _summary = scale_arteriole_diameters(
@@ -183,9 +188,11 @@ def test_the_default_viscosity_law_does_not_give_a_pure_fourth_power():
     )
 
     ratio = _resistances(scaled)["Art1"] / baseline["Art1"]
-    assert ratio == pytest.approx(0.448202, rel=1e-5)
-    assert ratio < 1.2 ** -4
-    assert ratio / 1.2 ** -4 == pytest.approx(0.9293, rel=1e-3)
+    assert ratio == pytest.approx(0.494105, rel=1e-5)
+    assert ratio > 1.2 ** -4
+    assert ratio / 1.2 ** -4 == pytest.approx(
+        pries_in_vitro_viscosity(8.4) / pries_in_vitro_viscosity(7.0), rel=1e-9
+    )
 
 
 def test_nothing_but_the_arterioles_moves():

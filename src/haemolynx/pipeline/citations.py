@@ -81,8 +81,24 @@ def _used_vtk_export(settings: Mapping[str, Any]) -> bool:
     return bool(settings.get("run_haemodynamics") and settings.get("vtk_export"))
 
 
-def _used_pries_viscosity(settings: Mapping[str, Any]) -> bool:
-    return bool(settings.get("run_haemodynamics")) and settings.get("viscosity_law") == "pries"
+def _pries_form(settings: Mapping[str, Any]) -> str | None:
+    """The run's ``pries_viscosity_form``, or None when it uses no Pries law."""
+    if not settings.get("run_haemodynamics") or settings.get("viscosity_law") != "pries":
+        return None
+    return settings.get("pries_viscosity_form") or "auto"
+
+
+def _used_pries_in_vitro(settings: Mapping[str, Any]) -> bool:
+    # The 2005 model is the in vitro law at the diameter its layer leaves free.
+    return _pries_form(settings) in {"auto", "in_vitro_1992", "in_vivo_2005"}
+
+
+def _used_pries_in_vivo_1994(settings: Mapping[str, Any]) -> bool:
+    return _pries_form(settings) in {"auto", "in_vivo_1994"}
+
+
+def _used_pries_secomb_2005(settings: Mapping[str, Any]) -> bool:
+    return _pries_form(settings) == "in_vivo_2005"
 
 
 def _used_capillary_power_law(settings: Mapping[str, Any]) -> bool:
@@ -293,30 +309,50 @@ MODEL_CITATIONS: tuple[Citation, ...] = (
         applies=lambda settings: bool(settings.get("run_haemodynamics")),
     ),
     Citation(
-        name="Pries apparent-viscosity law (viscosity_law='pries')",
-        reason="diameter- and haematocrit-dependent apparent blood viscosity",
+        name="Pries in vitro viscosity law (Pries et al., 1992)",
+        reason=(
+            "apparent blood viscosity in a tube of the measured bore: plasma-column "
+            "diameters, and the free lumen of the 2005 in vivo model"
+        ),
         reference=(
             "Pries, A.R., Neuhaus, D., Gaehtgens, P. (1992). Blood "
             "viscosity in tube flow: dependence on diameter and "
             "hematocrit. American Journal of Physiology, 263(6 Pt 2), "
-            "H1770-H1778.\n"
-            "    Pries, A.R., Secomb, T.W., Gessner, T. et al. (1994). "
+            "H1770-H1778."
+        ),
+        applies=_used_pries_in_vitro,
+    ),
+    Citation(
+        name="Pries in vivo viscosity law (Pries et al., 1994)",
+        reason="apparent blood viscosity in vivo, at wall-to-wall diameters",
+        reference=(
+            "Pries, A.R., Secomb, T.W., Gessner, T. et al. (1994). "
             "Resistance to blood flow in microvessels in vivo. "
-            "Circulation Research, 75(5), 904-915.\n"
-            "    Pries, A.R., Secomb, T.W. (2005). Microvascular blood "
+            "Circulation Research, 75(5), 904-915."
+        ),
+        applies=_used_pries_in_vivo_1994,
+    ),
+    Citation(
+        name="Pries-Secomb in vivo viscosity law (Pries and Secomb, 2005)",
+        reason=(
+            "apparent blood viscosity in vivo from the in vitro law and an "
+            "endothelial surface layer whose thickness depends on diameter and haematocrit"
+        ),
+        reference=(
+            "Pries, A.R., Secomb, T.W. (2005). Microvascular blood "
             "viscosity in vivo and the endothelial surface layer. "
             "American Journal of Physiology - Heart and Circulatory "
             "Physiology, 289(6), H2657-H2664."
         ),
-        applies=_used_pries_viscosity,
+        applies=_used_pries_secomb_2005,
     ),
     Citation(
         name="Legacy capillary power-law viscosity (viscosity_law='capillary_power_law')",
         reason="the placeholder viscosity model kept for comparison with earlier results",
         reference=(
-            "This pipeline's own one-point calibration against the Pries "
-            "in vitro law at 5 um (see haemolynx.haemodynamics.viscosity); "
-            "no specific published source is recorded for it."
+            "This pipeline's own one-point calibration, 3.0 mPa.s at 5 um "
+            "(see haemolynx.haemodynamics.viscosity); no published source is "
+            "recorded for it, and it matches neither Pries form."
         ),
         applies=_used_capillary_power_law,
     ),

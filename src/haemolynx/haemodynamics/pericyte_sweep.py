@@ -35,7 +35,7 @@ from .constriction_strategy import (
 )
 from .haematocrit_distribution import JUNCTION_RULE_NO_SEPARATION, iterate_flow_and_haematocrit
 from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
-from .viscosity import run_diameter_basis
+from .viscosity import run_diameter_basis, run_viscosity_law
 from .resistance import (
     FLOW_SOLVER_DENSE,
     boundary_flow,
@@ -508,7 +508,7 @@ def run_pericyte_dilation_pressure_sweep(
     poiseuille_model = PoiseuilleModel(
         constriction_length=float(settings.get("constriction_length_um", 40.0)),
         constriction_spacing=float(settings.get("constriction_spacing_um", 100.0)),
-        viscosity_law=settings.get("viscosity_law", "pries"),
+        viscosity_law=run_viscosity_law(settings),
         haematocrit=float(settings.get("haematocrit", 0.45)),
         diameter_basis=run_diameter_basis(settings),
     )
@@ -668,7 +668,7 @@ def run_arteriole_dilation_pressure_sweep(
     poiseuille_model = PoiseuilleModel(
         constriction_length=float(settings.get("constriction_length_um", 40.0)),
         constriction_spacing=float(settings.get("constriction_spacing_um", 100.0)),
-        viscosity_law=settings.get("viscosity_law", "pries"),
+        viscosity_law=run_viscosity_law(settings),
         haematocrit=float(settings.get("haematocrit", 0.45)),
         diameter_basis=run_diameter_basis(settings),
     )

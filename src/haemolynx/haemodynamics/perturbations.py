@@ -265,13 +265,14 @@ SETTINGS_FOR_TYPE: Mapping[str, tuple[str, ...]] = {
 #: Settings a perturbation may not override, because changing one of them
 #: makes its resistances incomparable with the baseline it is differenced
 #: against. The viscosity law, the diameter basis and the haematocrit each
-#: change *every* resistance in the network -- roughly doubling a capillary's
-#: between the two laws -- so a perturbation that moved one of them would
+#: change *every* resistance in the network -- several-fold in a capillary
+#: between the Pries forms -- so a perturbation that moved one of them would
 #: report that change as its effect; the junction rule moves the haematocrit
 #: downstream of every junction it decides. A run picks one blood model for all
 #: of its arms; comparing two models means two runs.
 INCOMPARABLE_OVERRIDES: tuple[str, ...] = (
     "viscosity_law",
+    "pries_viscosity_form",
     "raw_image_stain",
     "segmentation_source",
     "haematocrit",

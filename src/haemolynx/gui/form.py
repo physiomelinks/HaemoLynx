@@ -415,6 +415,7 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "raw_image_channel": "Raw data channel",
     "raw_image_stain": "Raw image stain",
     "measure_diameters_from_raw_image": "Measure diameters from the raw image",
+    "pries_viscosity_form": "Pries law override",
 }
 
 #: Display text for a ``choice`` setting's values, keyed by setting name then
@@ -448,6 +449,12 @@ CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
     "equivalent_resistance_solver": {
         "eigendecomposition": "Eigendecomposition solver",
         "sparse": "Sparse solver",
+    },
+    "pries_viscosity_form": {
+        "auto": "Auto: in vitro (1992) or in vivo (1994) by diameter basis",
+        "in_vivo_1994": "In vivo (Pries et al., 1994)",
+        "in_vivo_2005": "In vivo (Pries and Secomb, 2005)",
+        "in_vitro_1992": "In vitro (Pries et al., 1992)",
     },
     "boundary_handling": {
         "leave_unsolved": "Leave unsolved",

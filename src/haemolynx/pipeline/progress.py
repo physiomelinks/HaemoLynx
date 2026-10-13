@@ -81,7 +81,7 @@ _HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB: tuple[str, ...] = (
     "haematocrit_distribution_tolerance",
 )
 
-#: The viscosity law and the uniform haematocrit it can read. Stay in the
+#: The viscosity law, its Pries override and the uniform haematocrit it can read. Stay in the
 #: Diameters schema section (apply.py's section_values still finds them
 #: there), but claimed here so their rows sit on Haemodynamics beside the
 #: model that actually consumes them (build_haemodynamic_model). Which
@@ -89,6 +89,7 @@ _HAEMATOCRIT_DISTRIBUTION_SETTINGS_ON_HAEMODYNAMICS_TAB: tuple[str, ...] = (
 #: of the dataset, not the blood model, and sits with the image on Input.
 _VISCOSITY_SETTINGS_ON_HAEMODYNAMICS_TAB: tuple[str, ...] = (
     "viscosity_law",
+    "pries_viscosity_form",
     "haematocrit",
 )
 

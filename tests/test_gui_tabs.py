@@ -385,6 +385,7 @@ def test_a_tab_carries_the_rows_for_its_settings():
     assert {field.name for field in haemodynamics.fields} == {
         "run_haemodynamics",
         "viscosity_law",
+        "pries_viscosity_form",
         "haematocrit",
         "inlet_p_bc",
         "outlet_p_bc",

@@ -228,6 +228,7 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
             section_box_title("build_haemodynamic_model", "Diameters and pericytes"),
             names=(
                 "viscosity_law",
+                "pries_viscosity_form",
                 "haematocrit",
                 "haematocrit_model",
                 "haematocrit_junction_rule",
@@ -273,6 +274,7 @@ ADVANCED_TITLES: Mapping[str, str] = {
     "use_thick_vessel_skeletonisation": "Advanced thick-vessel settings",
     "box:pipeline_stages": "Checks",
     "do_graph_building": "Advanced graph building",
+    "viscosity_law": "Advanced viscosity settings",
     "smooth_centrelines": "Advanced centreline smoothing",
     "use_large_vessel_masks": "Advanced large-vessel assignment",
     "cut_network_at_large_vessel_volumes": "Advanced cutting",

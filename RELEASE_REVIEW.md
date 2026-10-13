@@ -22,7 +22,7 @@ confirming.
 |---|---|---|---|
 | 1 | [Graph accuracy](#1-graph-accuracy--graph) | **4** | fitted rules' results not saved for most grids (6b); coverage measures disagree (6c); the prune's protrusion test cannot tell a hair from a vessel's end (6d) |
 | 2 | [Diameter accuracy](#2-diameter-accuracy--diameter) | **4** | no recorded benchmark table (6a); planted-vessel error not reported for real runs (6b) |
-| 3 | [Haemodynamic accuracy](#3-haemodynamic-accuracy--flow) | **3** | the default "in vitro" Pries law is not the law it cites (4b) |
+| 3 | [Haemodynamic accuracy](#3-haemodynamic-accuracy--flow) | **4** | laws checked against the papers' own descriptions, not against measured data (6a); the solved share not recorded on Nerve (6c) |
 | 4 | [Statistics](#4-statistics--stats) | **5** | no glossary of definitions and units (6a); 21 of 95 rows carry a unit (6b) |
 | 5 | [Inputs and segmentation](#5-inputs-and-segmentation--input) | **5** | ilastik output: vessel label guessed, reuse judged by file time (6c) |
 | 6 | [Speed](#6-speed--speed) | **3** | a run does not record its stage times (4a) |
@@ -37,8 +37,8 @@ confirming.
 | 15 | [Installation and packaging](#15-installation-and-packaging--package) | **4** | still 0.1.0 after 457 commits, no CHANGELOG (6a) |
 | 16 | [Code maintainability](#16-code-maintainability--code) | **3** | Cleanup plan Phase 2 unfinished (4c) |
 
-**Headline: the lowest score is 3** (haemodynamics, speed, exports, testing, maintainability).
-The mean is 3.8. The release gate needs every aspect at 7 or more, and the science aspects at 8.
+**Headline: the lowest score is 3** (speed, exports, testing, maintainability).
+The mean is 3.9. The release gate needs every aspect at 7 or more, and the science aspects at 8.
 
 Most of these scores are low because **nothing has been measured, not because the work is
 poor**. The test suite is large (6,064 tests) and checks the analytic cases well. What is
@@ -49,8 +49,8 @@ than the developer checking the result. Levels 6 and 8 ask for exactly those thr
 
 This order follows the gate, which is set by the lowest aspects, and favours the cheap fixes:
 
-1. **Decide the Pries "in vitro" law** (`flow.4b`): a decision for Harvey and Finbar, with the
-   options in `PLAN_dale_review_fixes.md`, item 1. It takes haemodynamics from 3 to 4.
+1. ~~**Decide the Pries "in vitro" law** (`flow.4b`)~~. Done 2026-10-13: Harvey chose the
+   literal fix, plus Pries & Secomb 2005 as a choice. Haemodynamics went from 3 to 4.
 2. **Record stage times and peak memory in every run** (`speed.4a`, `memory.6a`, step R2 of the
    plan). It takes speed from 3 to 4 and makes the level-6 speed and memory checks possible.
 3. **Fix the VTK export** (`export.4b`, `export.6d`, `export.6c`): blank flow for unsolved
@@ -220,8 +220,8 @@ haematocrit, constriction and perturbations.
 |---|---|---|---|---|
 | flow.2a | A | Pressures and flows are solved on a real network. | ✓ | E14.5 through solve in 1,834 s (`outputs/p6/o2_current/solve_summary.json`) |
 | flow.4a | A | Analytic cases are exact: one Poiseuille tube, series and parallel, Kirchhoff at every node, sparse equal to dense, phase separation and red-cell conservation. | ✓ | `test_simple_network_haemodynamics.py:100-133`, `test_flow_solvers.py:125, 207-217`, `test_haematocrit_distribution.py:135, 173, 231, 293` |
-| flow.4b | R | Every law matches the publication it cites, or the citation says what was changed. | ✗ | **The default `plasma_column` "in vitro" Pries law uses the in vivo base `6·exp(−0.085D)`.** Pries 1992's in vitro law is `220·exp(−1.3D)`. That is 3.4× at 5 µm, and the tests pin the hybrid. A decision for Harvey and Finbar (`PLAN_dale_review_fixes.md`, item 1) |
-| flow.6a | A | The viscosity and phase-separation laws are checked against published data points, not only re-derived formulas. | ✗ | The formulas are hand-evaluated (`test_viscosity_laws.py:367-373`). There is no comparison with tabulated data |
+| flow.4b | R | Every law matches the publication it cites, or the citation says what was changed. | ✓ | Fixed 2026-10-13, after `5ef7d53`. The in vitro form used the in vivo base `6·exp(−0.085D)`; it is now Pries 1992's `220·exp(−1.3D)`. Each Pries form (in vitro 1992, in vivo 1994, and Pries & Secomb 2005, now a choice) equals its equations as written out from the papers (2005 eqs 5–11, Secomb & Pries 2013 eqs 3–7), at 11 diameters × 4 haematocrits (`test_viscosity_laws.py:278`). A regression test pins the hybrid gone (`:285`). Each form has its own citation, and the power law's says it matches no published law (`citations.py:350`). Phase separation matches 2005 eqs 2–4 (`haematocrit_distribution.py:145-159`); its X0 ≤ 0.49 clamp, which only acts on parents under ~1 µm, is commented at `:143` |
+| flow.6a | A | The viscosity and phase-separation laws are checked against published data points, not only re-derived formulas. | ✗ | The Pries forms are checked against what the papers say of them: the in vitro minimum, ~1.25 at 6–7 µm, and ~3.2 above 1 mm (`test_viscosity_laws.py:295`); the 2005 layer, 0.8–1 µm at 10–40 µm (`:310`), peaking at 10.5 µm (`:328`); the 2005 viscosity's minimum at 30–50 µm (`:339`). Those are the papers' descriptions of their own fits, not their measurements. Phase separation has no such check. There is still no comparison with tabulated data |
 | flow.6b | A | Flow balance is checked on real data. | ✓ | Nerve (`test_nerve_pipeline.py:141`) |
 | flow.6c | A | On each reference dataset, the share of centreline with a solved flow is recorded and the unsolved part is explained. | ✗ | The solve now logs and records why each unsolved vessel carries no flow (`graph.FLOW_STATE`, `test_open_ends.py`; at `b6d9210`). E14.5: 1,539 of 2,839 vessels lie on no inlet-to-outlet path: 585 behind dead ends inside the tissue, 954 in pieces without an inlet and an outlet, 0 behind a closed face end (`outputs/e14_full/run.log`). Nerve not yet recorded |
 | flow.8a | A | An independent solver (NetFlow) on the same network agrees within 1% *(proposed)*, with distributed haematocrit included. | ✗ | NetFlow is cited for the relaxation schedule but never compared |
@@ -459,3 +459,4 @@ Add a row for every scoring, and for every change to a check or a target.
 | 2026-10-12 | `b6d9210` | Claude | Dead-end work (`PLAN_dead_ends.md`). `export.6d` passes. Evidence updated for `graph.6b` (dead-end fit saved), `graph.6d` and `robust.6b` (face erosion fixed; bridge crashes fixed), `flow.6c`, `flow.8b`, `export.4b` and `export.6c`; each still fails. No score changes: exports stay 3 on `export.4b`. |
 | 2026-10-12 | after `f9cf1d5` | Claude | `speed.4b` evidence: mask recovery profiled on a crop of the 16 G-voxel stack; its cross-section outline now stops each ray at its first voxel out and reads the mask as bits, in worker processes on large stacks. E14.5 build 280 -> 226 s under load, recovery 164 -> 113 s, graph identical. No score changes. |
 | 2026-10-12 | `0c6d13b` | Claude | `export.4b` evidence: vessels behind dead ends (`blind_end`, `closed_end`) now carry flows and pressure drops of exactly 0, not the solve's rounding, in the solve, perturbations and sweeps (`test_open_ends.py:244-299`). Still fails until Harvey decides. No score changes. |
+| 2026-10-13 | after `5ef7d53` | Claude | `flow.4b` passes: the Pries in vitro law is Pries 1992's, every Pries form is pinned to its published equations, and Pries & Secomb 2005 is a choice (`pries_viscosity_form`). This was Harvey's decision, option A of `PLAN_dale_review_fixes.md` item 1. Haemodynamics goes from 3 to 4, the mean from 3.8 to 3.9. `flow.6a` evidence updated; it still fails. Plasma-column resistances from earlier runs are 2.9–3.8× too high at 5–10 µm. |

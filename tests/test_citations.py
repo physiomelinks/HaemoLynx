@@ -185,27 +185,31 @@ def test_no_model_citations_without_haemodynamics(tmp_path):
     assert used_citations(off, MODEL_CITATIONS) == []
 
 
+PRIES_1992 = "Pries in vitro viscosity law (Pries et al., 1992)"
+PRIES_1994 = "Pries in vivo viscosity law (Pries et al., 1994)"
+PRIES_SECOMB_2005 = "Pries-Secomb in vivo viscosity law (Pries and Secomb, 2005)"
+POWER_LAW = "Legacy capillary power-law viscosity (viscosity_law='capillary_power_law')"
+VISCOSITY_CITATIONS = {PRIES_1992, PRIES_1994, PRIES_SECOMB_2005, POWER_LAW}
+
+
 @pytest.mark.parametrize(
-    "viscosity_law, expected_name",
+    "viscosity_law, form, expected",
     [
-        ("pries", "Pries apparent-viscosity law (viscosity_law='pries')"),
-        (
-            "capillary_power_law",
-            "Legacy capillary power-law viscosity (viscosity_law='capillary_power_law')",
-        ),
+        # auto reads each diameter through the form its basis calls for.
+        ("pries", "auto", {PRIES_1992, PRIES_1994}),
+        ("pries", "in_vitro_1992", {PRIES_1992}),
+        ("pries", "in_vivo_1994", {PRIES_1994}),
+        # The 2005 model is the in vitro law at the layer's free diameter.
+        ("pries", "in_vivo_2005", {PRIES_SECOMB_2005, PRIES_1992}),
+        ("capillary_power_law", "in_vivo_2005", {POWER_LAW}),
     ],
 )
-def test_viscosity_law_citation_matches_the_chosen_law(tmp_path, viscosity_law, expected_name):
-    settings = _settings(tmp_path, run_haemodynamics=True, viscosity_law=viscosity_law)
-    names = _names(used_citations(settings, MODEL_CITATIONS))
-    assert expected_name in names
-    other = "pries" if viscosity_law != "pries" else "capillary_power_law"
-    other_name = (
-        "Pries apparent-viscosity law (viscosity_law='pries')"
-        if other == "pries"
-        else "Legacy capillary power-law viscosity (viscosity_law='capillary_power_law')"
+def test_viscosity_law_citation_matches_the_chosen_law(tmp_path, viscosity_law, form, expected):
+    settings = _settings(
+        tmp_path, run_haemodynamics=True, viscosity_law=viscosity_law, pries_viscosity_form=form
     )
-    assert other_name not in names
+    names = set(_names(used_citations(settings, MODEL_CITATIONS)))
+    assert names & VISCOSITY_CITATIONS == expected
 
 
 def test_constant_viscosity_law_cites_neither_viscosity_model(tmp_path):

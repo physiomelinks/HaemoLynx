@@ -118,7 +118,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 449 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 450 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -392,20 +392,36 @@ are only caught locally.
     (`replaces`), and a perturbation may not override either (`INCOMPARABLE_OVERRIDES`).
   - `viscosity_law="pries"` (**default**) is Pries et al., fitted 3.3–1978 µm, continuous across
     the whole tree, no placeholder and no warning. Reads the basis: `plasma_column` selects
-    the *in vitro* (tube) form, `endothelial` the *in vivo* form. The in vivo form's
-    `(D/(D−1.1))²` factors appear squared, so the leading term carries `(D/(D−1.1))⁴` — that is
-    the Poiseuille correction for quoting a resistance against a diameter wider than the channel,
-    i.e. **a diameter correction, not a property of blood**. Applying it to a plasma-column
-    diameter subtracts the glycocalyx twice and costs ~2.5× in a capillary.
+    the *in vitro* (tube) form, Pries, Neuhaus & Gaehtgens 1992; `endothelial` the 1994 *in
+    vivo* form, fitted to rat mesenteric networks against wall-to-wall diameters. The in vivo
+    form's `(D/(D−1.1))²` factors stand for the ~1.1 µm endothelial surface layer, and it is far
+    above the in vitro form in the smallest vessels (8.6× at 5 µm, 4.4× at 10 µm), so applying it
+    to a plasma-column diameter counts the layer the measurement already left out.
+  - **The in vitro form was wrong until 2026-10-13**: it used the in vivo law's
+    `μ₀.₄₅ = 6·exp(−0.085D)+…` where Pries 1992 has `220·exp(−1.3D)+…` — 3.4× too viscous at
+    5 µm, 2.9× at 10 µm, converging above 60 µm. Plasma-column runs before then overstate
+    capillary resistance by that much. Every form is now pinned to its published equations
+    (Pries & Secomb 2005 eqs 5–11, Secomb & Pries 2013 eqs 3–7) in `tests/test_viscosity_laws.py`.
+  - `pries_viscosity_form` (Haemodynamics tab, behind the Advanced button under the law) holds
+    every vessel to one form whatever its basis: `in_vivo_1994`, `in_vitro_1992`, or
+    `in_vivo_2005`, Pries & Secomb's 2005 model — the in vitro law at the diameter an
+    endothelial surface layer leaves free (`D − 2W_ph`), times `(D/D_eff)⁴`, the layer's
+    thickness depending on diameter and haematocrit (`viscosity.pries_secomb_2005_layer_um`);
+    like 1994 it reads a diameter as wall to wall. `auto` (default) keeps the basis choice above.
+    It resolves to a law name (`pries_in_vivo_2005`, …) through `viscosity.run_viscosity_law`,
+    which every settings reader uses, so the graph's `viscosity_law` says which form ran; a
+    perturbation may not override it. Secomb's own NetFlow still uses the 1994 law, with `D`
+    scaled by `(92/MCV)^⅓` for red-cell size and rat plasma at 1.05 cP; HaemoLynx does neither
+    (plasma is 1.2 mPa·s).
   - `viscosity_law="capillary_power_law"` is the law used before: `µ(d) = 3.0 mPa·s · (5 µm/d)^1.647`
     up to 7 µm, then a constant 3.5 mPa·s, raising `haemodynamics.PlaceholderViscosityWarning`
-    between 7 and 100 µm. Kept for comparison with earlier results. It agrees with Pries in vitro
-    to 2% at 3 µm and diverges from there (2.0× at 5 µm, 3.2× at 7 µm): a one-point calibration
-    whose slope is too steep, crossing below plasma viscosity at 8.7 µm.
+    between 7 and 100 µm. Kept for comparison with earlier results. It matches neither Pries
+    form — 1.1–1.7× the in vitro law over 3–7 µm, a fifth of the in vivo one — and its slope
+    crosses below plasma viscosity at 8.7 µm.
   - `viscosity_law="constant"` is plasma everywhere, for separating geometry effects from
     viscosity ones.
-  - Switching the default from the power law to Pries **roughly doubles capillary resistance**
-    (2.03× at 5 µm). `tests/test_viscosity_laws.py` pins the ratios at each diameter.
+  - Switching from the power law to Pries in vitro **lowers capillary resistance** (0.59× at
+    5 µm). `tests/test_viscosity_laws.py` pins the ratios at each diameter.
 - **Skeletonization** — use `skimage.morphology.skeletonize(..., method="lee")` via
   `preprocessing.skeletonize_volume`, not deprecated `skeletonize_3d`. Both loaders skeletonize
   through the one `io.load._skeletonize_loaded_volume` helper, which binarizes, skeletonizes **and

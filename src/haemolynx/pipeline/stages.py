@@ -75,7 +75,7 @@ from haemolynx.haemodynamics.pericyte_sweep import (
     solve_pressure_and_boundary_flow,
 )
 from haemolynx.haemodynamics.perturbations import plain as plain_values
-from haemolynx.haemodynamics.viscosity import run_diameter_basis
+from haemolynx.haemodynamics.viscosity import run_diameter_basis, run_viscosity_law
 from haemolynx.haemodynamics.poiseuille import (
     EDGE_DIAMETER_BASIS,
     PoiseuilleModel,
@@ -3640,7 +3640,7 @@ def _poiseuille_model_for(settings: dict) -> PoiseuilleModel:
     return PoiseuilleModel(
         constriction_length=float(settings["constriction_length_um"]),
         constriction_spacing=float(settings["constriction_spacing_um"]),
-        viscosity_law=settings["viscosity_law"],
+        viscosity_law=run_viscosity_law(settings),
         haematocrit=float(settings["haematocrit"]),
         # What the segmentation's diameters measure (segmentation_source); a
         # diameter read from the raw image carries its own

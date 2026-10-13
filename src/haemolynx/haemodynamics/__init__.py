@@ -5,9 +5,13 @@ from . import fwhm_decoys
 from . import raw_section
 from . import open_ends
 from .viscosity import (
+    PRIES_FORMS,
     VISCOSITY_LAWS,
     describe_law,
+    pries_secomb_2005_layer_um,
+    pries_secomb_2005_viscosity,
     run_diameter_basis,
+    run_viscosity_law,
     validity_range_um,
     viscosity_for,
 )
@@ -98,9 +102,13 @@ from .perturbations import (
 __all__ = [
     "automated",
     "open_ends",
+    "PRIES_FORMS",
     "VISCOSITY_LAWS",
     "describe_law",
+    "pries_secomb_2005_layer_um",
+    "pries_secomb_2005_viscosity",
     "run_diameter_basis",
+    "run_viscosity_law",
     "validity_range_um",
     "viscosity_for",
     "PlaceholderViscosityWarning",

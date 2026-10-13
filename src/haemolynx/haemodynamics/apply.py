@@ -33,7 +33,11 @@ from haemolynx.haemodynamics.poiseuille import (
     positive_diameter_um,
     stamp_edge_diameters,
 )
-from haemolynx.haemodynamics.viscosity import describe_law
+from haemolynx.haemodynamics.viscosity import (
+    PRIES_FORM_SETTING,
+    describe_law,
+    run_viscosity_law,
+)
 from haemolynx.haemodynamics import pericyte_comparison as pericyte_comparison_haemodynamics
 from haemolynx.haemodynamics.constriction import resolve_generator
 from haemolynx.haemodynamics.constriction_strategy import (
@@ -91,6 +95,7 @@ DIAMETER_DEFAULTS: dict[str, Any] = {
     "constriction_by_branch_order": {},
     "custom_edges": [],
     "viscosity_law": "pries",
+    "pries_viscosity_form": "auto",
     "diameter_basis": "plasma_column",
     "haematocrit": 0.45,
     "haematocrit_model": "fixed",
@@ -167,6 +172,15 @@ class HaemodynamicsApplyConfig:
         if default is not None:
             return default
         return DIAMETER_DEFAULTS.get(name)
+
+    @property
+    def viscosity_law(self) -> str:
+        """The law resistances are computed by: ``viscosity_law``, held to one
+        form of Pries's law when ``pries_viscosity_form`` names one (see
+        :func:`haemolynx.haemodynamics.viscosity.run_viscosity_law`)."""
+        return run_viscosity_law(
+            {name: self.diameter(name) for name in ("viscosity_law", PRIES_FORM_SETTING)}
+        )
 
     @property
     def pericyte_constriction_seed(self) -> int | None:
@@ -945,7 +959,7 @@ def _run_pericyte_comparison(
         constriction_spacing=config.diameter("constriction_spacing_um"),
         use_probabilistic_pericyte_constriction=bool(config.diameter("use_probabilistic_pericyte_constriction")),
         pericyte_constriction_probability=float(config.diameter("pericyte_constriction_probability")),
-        viscosity_law=config.diameter("viscosity_law"),
+        viscosity_law=config.viscosity_law,
         haematocrit=float(config.diameter("haematocrit")),
         diameter_basis=config.diameter("diameter_basis"),
         axis_order=config.axis_order,
@@ -1062,7 +1076,7 @@ def _assign_poiseuille_resistances(
     poiseuille_model = PoiseuilleModel(
         constriction_length=config.diameter("constriction_length_um"),
         constriction_spacing=config.diameter("constriction_spacing_um"),
-        viscosity_law=config.diameter("viscosity_law"),
+        viscosity_law=config.viscosity_law,
         haematocrit=config.diameter("haematocrit"),
         diameter_basis=config.diameter("diameter_basis"),
     )
@@ -1085,7 +1099,7 @@ def _assign_poiseuille_resistances(
             prefer_edge_fwhm_baseline=bool(config.use_fwhm_edge_diameters),
             constriction_length=config.diameter("constriction_length_um"),
             constriction_spacing=config.diameter("constriction_spacing_um"),
-            viscosity_law=config.diameter("viscosity_law"),
+            viscosity_law=config.viscosity_law,
             haematocrit=config.diameter("haematocrit"),
             diameter_basis=config.diameter("diameter_basis"),
             constriction_probability=(

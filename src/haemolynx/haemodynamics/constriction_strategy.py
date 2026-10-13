@@ -27,7 +27,7 @@ from .constriction import resolve_generator
 from . import pericyte_mask as pericyte_mask_strategy
 from . import probability as probability_strategy
 from .poiseuille import PoiseuilleModel
-from .viscosity import run_diameter_basis
+from .viscosity import run_diameter_basis, run_viscosity_law
 
 #: Result keys, one per strategy, so a run summary says which model produced it.
 PERICYTE_MASK_STRATEGY = "pericyte_mask"
@@ -124,7 +124,7 @@ def constriction_strategy_kwargs(
             if constriction_spacing is None
             else constriction_spacing
         ),
-        viscosity_law=settings.get("viscosity_law", "pries"),
+        viscosity_law=run_viscosity_law(settings),
         haematocrit=float(settings.get("haematocrit", 0.45)),
         diameter_basis=run_diameter_basis(settings),
         constriction_probability=1.0 if probability is None else float(probability),

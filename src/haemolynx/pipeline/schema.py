@@ -4359,13 +4359,37 @@ SCHEMA = Schema(
             help=(
                 "Which apparent-viscosity law sets the resistances: pries "
                 "covers 3.3-1978 um in one expression and reads what each "
-                "diameter measures (raw_image_stain), capillary_power_law is the older law "
-                "calibrated at 5 um with a placeholder constant above 7 um, "
-                "constant is plasma everywhere. Resistances are not comparable "
-                "across laws"
+                "diameter measures (segmentation_source, or the raw-image "
+                "measurement's own) -- in vitro (Pries et al. 1992) for a plasma "
+                "column, in vivo (Pries et al. 1994) wall to wall -- unless "
+                "pries_viscosity_form holds every vessel to one form; "
+                "capillary_power_law is the older law calibrated at 5 um with a "
+                "placeholder constant above 7 um, constant is plasma everywhere. "
+                "Resistances are not comparable across laws"
             ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),
+        ),
+        Setting(
+            name="pries_viscosity_form",
+            kind="choice",
+            default="auto",
+            choices=["auto", "in_vivo_1994", "in_vivo_2005", "in_vitro_1992"],
+            help=(
+                "Which form of the pries law every vessel is computed by. auto "
+                "chooses per vessel from what its diameter measures: in vitro "
+                "(Pries et al. 1992) for a plasma column, in vivo (Pries et al. "
+                "1994) wall to wall. Any other value holds every vessel to that "
+                "form whatever its diameter measures: in_vivo_1994, in_vitro_1992, "
+                "or in_vivo_2005, Pries and Secomb's newer in vivo model -- the in "
+                "vitro law at the diameter an endothelial surface layer leaves "
+                "free, the layer depending on diameter and haematocrit -- which, "
+                "like 1994, reads a diameter as wall to wall. Resistances are not "
+                "comparable across forms"
+            ),
+            section=_DIAMETERS_AND_PERICYTES,
+            requires=("run_haemodynamics", "viscosity_law=pries"),
+            advanced=True,
         ),
         Setting(
             name="haematocrit",
