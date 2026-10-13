@@ -65,6 +65,13 @@ def fork_in_one_lumen():
                                           [(7, 7, 2), (7, 9, 12), (7, 9, 57)]])
 
 
+def hair_along_a_wall():
+    """A dead end leaving a junction and running 20 um along the wide
+    vessel's own lumen beside its centreline: a hair, not a branch."""
+    return wide_vessel(), polyline_graph([[(7, 7, 2), (7, 7, 30)], [(7, 7, 30), (7, 7, 57)],
+                                          [(7, 7, 30), (7, 11, 34), (7, 11, 54)]])
+
+
 def ring_in_one_lumen():
     """A loop of two edges round nothing: both arcs inside one wide lumen."""
     return wide_vessel(), polyline_graph([[(7, 7, 10), (7, 4, 20), (7, 4, 40), (7, 7, 50)],
@@ -119,3 +126,48 @@ def dead_end_cases():
     capsule(mask, (5, 52, 20), (5, 52, 40), 2)
     paths.append([(5, 52, 22), (5, 52, 38)])
     return mask, polyline_graph(paths), tips
+
+
+def dead_end_beside_vessel():
+    """A trunk through a wide lumen, and a dead end leaving it at a junction
+    that runs back along inside the same lumen. Returns
+    ``(mask, G, tip, junction)``."""
+    junction = (7, 7, 10)
+    G = polyline_graph([
+        [(7, 7, 0), junction], [junction, (7, 7, 59)],
+        [junction, (7, 10, 15), (7, 10, 45)],
+    ])
+    return wide_vessel(), G, _node((7, 10, 45)), _node(junction)
+
+
+def fork_that_parts():
+    """Two edges leave one node side by side through a wide lumen and part
+    where it ends, each into a branch of its own. Returns ``(mask, G, ends)``:
+    the trunk's open end and the two branch tips."""
+    mask = np.zeros((15, 40, 70), dtype=bool)
+    capsule(mask, (7, 20, -10), (7, 20, 40), 6)
+    capsule(mask, (7, 18, 38), (7, 4, 66), 2.5)
+    capsule(mask, (7, 22, 38), (7, 36, 66), 2.5)
+    G = polyline_graph([
+        [(7, 20, 0), (7, 20, 8)],
+        [(7, 20, 8), (7, 18, 14), (7, 18, 38), (7, 5, 64)],
+        [(7, 20, 8), (7, 22, 14), (7, 22, 38), (7, 35, 64)],
+    ])
+    return mask, G, [_node(p) for p in ((7, 20, 0), (7, 5, 64), (7, 35, 64))]
+
+
+def strand_through_a_trunk():
+    """A capillary that enters a wide trunk's lumen from one side branch, runs
+    along inside it beside the trunk's centreline, and leaves by another: the
+    stretch inside is the trunk drawn twice. Returns ``(mask, G, ends)``: the
+    capillary's two tips, then the trunk's two ends."""
+    mask = np.zeros((15, 40, 70), dtype=bool)
+    capsule(mask, (7, 20, -10), (7, 20, 80), 6)
+    capsule(mask, (7, 38, 10), (7, 23, 14), 2)
+    capsule(mask, (7, 23, 46), (7, 38, 50), 2)
+    G = polyline_graph([
+        [(7, 20, 0), (7, 20, 69)],
+        [(7, 37, 10), (7, 23, 14), (7, 23, 46), (7, 37, 50)],
+    ])
+    ends = [_node(p) for p in ((7, 37, 10), (7, 37, 50), (7, 20, 0), (7, 20, 69))]
+    return mask, G, ends

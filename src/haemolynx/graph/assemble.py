@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import networkx as nx
 import numpy as np
 from skan import csr
@@ -45,6 +45,8 @@ from .lumen_loops import remove_loops_inside_one_lumen, remove_parallel_edges_in
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
 from .reconnect import reconnect_secondary_loop_edges
+from .doubled_stretches import resolve_doubled_stretches
+from .thick_vessel_junctions import remove_dangling_bridges
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +222,17 @@ class LumenCleanup:
     prune: Callable[[nx.MultiGraph], nx.MultiGraph]
     max_degree: int = 4
     debug: bool = False
+    #: Evidence beyond the mask that two centrelines in one lumen are two
+    #: vessels: called with a ``DoubledStretch`` (``graph.doubled_stretches``)
+    #: or a pair of edge keys (``lumen_loops.remove_parallel_edges_in_lumen``),
+    #: and what it returns True for is left alone. None: the mask decides.
+    keep_apart: Callable[[Any], bool] | None = None
+    #: The pair rule's and the stretch finder's verdicts, kept from round to
+    #: round and from one consolidate_lumen call to the next on the same
+    #: object: build_network cleans up after smoothing and again after the
+    #: thick-vessel split, and the split changes only the edges near the
+    #: thick region, so the second clean-up judges only those again.
+    memos: dict = field(default_factory=dict)
 
 
 def lumen_cleanup(
@@ -238,6 +251,7 @@ def lumen_cleanup(
     max_degree: int = 4,
     debug: bool = False,
     stub_face_protection: str = "threshold",
+    keep_apart: Callable[[Any], bool] | None = None,
 ) -> LumenCleanup:
     """The clean-up the end of graph building runs, built from the same
     settings :func:`build_graph_from_skeleton` takes -- so a caller that
@@ -288,6 +302,10 @@ def lumen_cleanup(
 
         stub_mask_rules["image_face_test"] = image_face_test
 
+    # The prune's centreline index, kept between the clean-up's rounds: an
+    # edge unchanged since the last round reads no lumen radius again.
+    index_memo: dict = {}
+
     def prune(G: nx.MultiGraph) -> nx.MultiGraph:
         return prune_vascular_stubs(
             G,
@@ -296,10 +314,11 @@ def lumen_cleanup(
             radius_at=radius_at,
             radius_multiple=float(min_stub_length_radius_multiple),
             image_extent_um=image_extent_um,
+            index_memo=index_memo,
             **stub_mask_rules,
         )
 
-    return LumenCleanup(support, inside_lumen, prune, max_degree=max_degree, debug=debug)
+    return LumenCleanup(support, inside_lumen, prune, max_degree=max_degree, debug=debug, keep_apart=keep_apart)
 
 
 def consolidate_lumen(
@@ -325,9 +344,16 @@ def consolidate_lumen(
     rounds = 0
     # The pair check's verdicts, kept from round to round: a round changes a
     # few places, and only the edges near them are judged again.
-    pairs_memo: dict = {}
+    pairs_memo: dict = cleanup.memos.setdefault("pairs", {})
+    stretch_memo: dict = cleanup.memos.setdefault("stretches", {})
+    def state(G):
+        # A rewired stretch can leave the counts as they were and shorten
+        # the centreline: the length is part of what "changed" means.
+        return (G.number_of_nodes(), G.number_of_edges(),
+                round(sum(float(d.get("length") or 0.0) for *_e, d in G.edges(data=True)), 3))
+
     for rounds in range(1, max_rounds + 1):
-        before = (G.number_of_nodes(), G.number_of_edges())
+        before = state(G)
         G = smart_multigraph_degree2_removal(
             G, None, max_degree=cleanup.max_degree, debug=cleanup.debug,
             inside_lumen=cleanup.inside_lumen,
@@ -335,10 +361,17 @@ def consolidate_lumen(
         if cleanup.support is None:
             return G
         G = remove_edges_off_the_mask(G, cleanup.support)
-        G = remove_parallel_edges_in_lumen(G, cleanup.support, memo=pairs_memo)
+        G = remove_parallel_edges_in_lumen(G, cleanup.support, memo=pairs_memo, keep_apart=cleanup.keep_apart)
         G = remove_loops_inside_one_lumen(G, cleanup.support)
+        # What the whole-edge pair rule leaves: a stretch of an edge beside
+        # another, rewired rather than deleted (graph.doubled_stretches).
+        G = resolve_doubled_stretches(G, cleanup.support, keep_apart=cleanup.keep_apart, memo=stretch_memo)
+        # After the thick-vessel split the clean-up runs again, and a strand
+        # it takes out can leave the bridge that joined it to the thick
+        # centreline with a free end: a bridge is never a dead end.
+        remove_dangling_bridges(G)
         G = cleanup.prune(G)
-        if (G.number_of_nodes(), G.number_of_edges()) == before:
+        if state(G) == before:
             break
     else:
         G = smart_multigraph_degree2_removal(

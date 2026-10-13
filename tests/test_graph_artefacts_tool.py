@@ -48,9 +48,14 @@ def test_a_row_counts_what_the_report_finds():
     assert row["pairs"] == 1 and row["forks"] == 0
     assert row["edges"] == 2 and row["components"] == 2
     assert 0.0 < row["mask_covered"] <= 1.0
+    # Two full-length strands: two long runs, all of the doubling mid-edge.
+    assert row["doubled_long_runs"] == 2
+    assert row["doubled_mid_um"] == pytest.approx(row["doubled_um"], rel=0.05)
+    assert row["doubled_chain_um"] == row["doubled_fork_um"] == row["doubled_bridge_um"] == 0
     mask, G = loop_round_tissue()
     row = measure(G, MaskSupport(mask, VOXEL_SIZE))
     assert (row["loops"], row["loops_in_lumen"]) == (1, 0)
+    assert (row["loops_doubled_side"], row["loops_through_bridge"], row["loops_triangle"]) == (0, 0, 0)
     assert "mask_covered" not in row
 
 

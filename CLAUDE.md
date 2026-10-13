@@ -13,12 +13,15 @@ haemolynx/
 ├── src/haemolynx/          # Installable package (setuptools, pythonpath = src in pytest)
 │   ├── geometry.py         # Polyline arc length, shared by haemodynamics and visualization
 │   ├── io/                 # load.py (TIFF/H5 -> skeleton), load_2d.py (a 2D image as a
-│   │                       #   z=1 volume), ilastik.py, voxel_validation.py, axis_order.py,
+│   │                       #   z=1 volume), crop.py (crop on import: one box of voxels cut
+│   │                       #   from the image and every volume read alongside it, the box
+│   │                       #   kept on the graph), ilastik.py, voxel_validation.py, axis_order.py,
 │   │                       #   raw_volume_cache.py (reuse a memmapped raw volume across runs),
 │   │                       #   automated_vessel_assignment.py (mask loading/validation)
 │   ├── preprocessing/      # skeleton.py — skeletonize, bridge, clean, bundle refinement;
 │   │                       #   thick_vessels.py (thickness-gated skeletonisation of fat
-│   │                       #   vessels) + thick_vessel_braid_guard.py; segmentation_cleanup.py
+│   │                       #   vessels) + thick_vessel_braid_guard.py + thick_vessel_region_cache.py
+│   │                       #   (the region, kept beside the skeleton between runs); segmentation_cleanup.py
 │   │                       #   (pre-skeleton mask cleanup), segmentation_quality.py and
 │   │                       #   segmentation_raw_comparison.py ("Check segmented image");
 │   │                       #   raw_stain.py (whether the raw image stains the lumen or
@@ -115,7 +118,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 442 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 449 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -169,7 +172,7 @@ haemolynx/
 2. **Large arteriole/venule masks** — `use_ilastik_large_vessel_segmentation` (requires `use_large_vessel_masks=True`).
 3. **Small arteriole/venule masks** — `use_ilastik_small_vessel_segmentation` (requires `use_small_vessel_masks_for_boundary_assignment=True`).
 
-Shared settings: `ilastik_output_dir`, `ilastik_output_suffix`. Every one of them is declared in `pipeline/schema.py`, with its prerequisites; `pipeline/checks.py` (`haemolynx.pipeline.preflight`) is what tells a user which required paths are missing before any work starts.
+Shared settings: `ilastik_output_dir`, `ilastik_output_suffix`. Every one of them is declared in `pipeline/schema.py`, with its prerequisites; `pipeline/checks.py` (`haemolynx.pipeline.preflight`) is what tells a user which required paths are missing before any work starts. Outputs are named `{image stem}_segmented` for the main image and `{image stem}_{large|small}_{arteriole|venule}_segmented` for the masks: the arteriole and venule classifiers are usually run on the one raw stack, and with one name the venule run overwrote the arteriole's (or, reusing existing output, read it back as its own).
 
 Users may also supply **pre-segmented** masks only (no ilastik call) — typical for tutorial data and many tests.
 
@@ -256,7 +259,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 
 | Change area | Typical test location |
 |-------------|----------------------|
-| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py` |
+| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it) |
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
@@ -326,7 +329,11 @@ are only caught locally.
   indices takes per-array-axis spacing in **`(z, y, x)`** (`voxel_size_zyx`). Convert once at the
   loader boundary with `io.voxel_size_zyx_from_xyz`. Passing `xyz` where `zyx` is expected silently
   swaps the z and x spacings — invisible for isotropic voxels, wrong for every real stack
-  (see `tests/test_anisotropic_voxel_size.py`). Masks and main image must align in shape and
+  (see `tests/test_anisotropic_voxel_size.py`). A TIFF's size is read from its OME header's
+  `PhysicalSizeX/Y/Z` first (units converted), then, axis by axis, from the resolution tags and
+  ImageJ's `spacing` (`io/load.py`'s `_voxel_size_xyz_from_tiff`): tifffile writes one pixel per
+  unit into the tags of a file given no resolution, so an OME-TIFF's tags say 1 µm whatever its
+  voxels are. Masks and main image must align in shape and
   physical voxel units. **Drawing a run has the same split the other way round:** node `pos` and
   edge `voxels` are physical microns already, so a layer built from the graph takes `scale=(1,1,1)`,
   while `image`, `skeleton` and the masks are voxel-indexed and take `scale=voxel_size_zyx`
@@ -413,13 +420,24 @@ are only caught locally.
 - **`io/axis_order.py`** — canonical `(z, y, x)` convention: `normalize_axis_order`, `apply_axis_order`
   (transposes an input volume to canonical order), `voxel_size_zyx_from_xyz` / `voxel_size_xyz_from_zyx`.
 - **`io/ilastik.py`** — `run_ilastik_headless_segmentation` (subprocess call to user-installed ilastik + `.ilp` project).
-- **`io/automated_vessel_assignment.py`** — mask **loading & validation**: `load_large_vessel_masks`, `load_and_validate_vessel_masks` (includes ilastik path for large/small masks). *Despite the name, this is I/O, not graph assignment.*
-- **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks: `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`, overlap-resolution + 3D HTML diagnostics. *Same filename as the io module but a different concern — a known source of confusion (see Cleanup Plan).*
+- **`io/automated_vessel_assignment.py`** — mask **loading & validation**: `load_large_vessel_masks`, `load_and_validate_vessel_masks` (includes ilastik path for large/small masks). *Despite the name, this is I/O, not graph assignment.* A mask with no voxel spacing of its own (an ilastik export) takes the main image's under the `auto` policy rather than failing the alignment check on 1 µm. The masks loaded last are kept per role, packed one bit a voxel (`_LOADED_MASKS`, `clear_vessel_mask_cache`), keyed on the files' identity and every cleanup setting, so a run that reads them twice (skeletonise's `skeleton_thick_vessel_restrict_to_mask`, then `build_network`) loads and cleans them once and gets a fresh array each time. The opposite-attached cleanup (`graph/large_vessels.py`) reads each component's distance to the other mask at its surface voxels (`_component_distances_to_mask`), not from a whole-volume transform.
+- **`graph/automated_vessel_assignment.py`** — graph **terminal-node assignment** from masks: `select_terminal_nodes_from_large_vessel_masks`, `infer_boundary_nodes_from_small_vessel_masks`, overlap-resolution + 3D HTML diagnostics. *Same filename as the io module but a different concern — a known source of confusion (see Cleanup Plan).* Overlap fractions are read vectorised (`_in_bounds_voxel_indices`; the per-point loop took 7 s per half-million samples). The small-vessel progressive dilation (`small_vessel_mask_dilation_microns`) gives each edge the label of the first step that reaches it and judges the unlabelled ones again at every step, reading each sample's distance to each mask once from the mask's surface -- it used to lock *every* edge, unlabelled ones included, at the first step that labelled anything, so once 0 µm found one edge the dilation did nothing, and it built two whole-volume float64 transforms whatever the schedule; the boundary nodes come from the final labels. A terminal the large-vessel cut made carries `CUT_FROM_LARGE_VESSEL` (`graph/cut_at_large_vessel_volumes.py`), the mask it was cut off at, and every selector (plain, progressive, confidence) counts it as inside that mask: it sits one sample *outside*, so the default run (cut on, 0 µm dilation) found no inlet at all.
+- **`graph/large_vessel_network.py`** — the `mask_stump` method: an inlet/outlet where a large-vessel mask is cut off by the image's edge. Not every face contact is a stump. A component below `large_vessel_stump_min_component_fraction` (5%) of the mask's largest is a speck the classifier left at the face (E14.5's arteriole mask: 468 components, the vessel one of them, the next 0.5% of it); a contact whose footprint spans more than `STUMP_MAX_FOOTPRINT_CROSS_SECTIONS` (4) times the disc of its own inscribed radius is a vessel lying *along* the face -- the pial vessels against the top of the E14.5 stack read 5-27, the real stumps at the x faces 1.6-3.0 (one dataset, one reader, not a marked grid). Together those seeded 8 inlets and 11 outlets on E14.5, each snapped 11-36 µm to a capillary tip; the stump now snaps only to terminals inside the mask (`_snap_stumps_to_terminals`, with the `coordinates` method's own far-snap warning).
+- **`graph/boundary_node_fallback.py`** — `seed_nodes_without_mask_coverage`: whether an inlet's or outlet's own edges touch the small mask of its class, read through `voxel_size_zyx` (edge voxels are microns, the mask is voxel-indexed; rounding microns to indices read the wrong voxels on every non-unit stack). In `assign_boundaries` the large mask of the class counts as coverage when the large vessels stay in the network (the inlet then sits on the large arteriole, which the small arteriole mask never covers, so the fallback fired on every such run), and `small_vessel_boundary_fallback_to_hop_distance` *adds* the hop neighbours of the seeds that are uncovered to the boundary nodes the masks found -- it used to replace the whole list with every inlet's hop neighbours.
 - **`graph/assemble.py`** — `build_graph_from_skeleton`; optional `step_callback(G, label)` after each topology step, one per label in `STEP_LABELS` (thirteen of them).
   The last, `consolidate_lumen`, repeats until a round changes nothing: degree-2 merging, then
   with the mask edges mostly off it, the second of two edges through one lumen
   (`lumen_loops.remove_parallel_edges_in_lumen`, which never takes out an edge whose loss would
-  cut vessels off -- `cuts_off_vessels`), loops inside one lumen and the stub prune. Run once in
+  cut vessels off -- `cuts_off_vessels`), loops inside one lumen, the stretches of an edge
+  doubled beside another that the whole-edge pair rule leaves (`graph/doubled_stretches.py`:
+  a dead end cut back to where it leaves its vessel, a fork zipped to where its edges part, a
+  mid-edge stretch cut out and its remainders joined to the edge kept -- rewired, never
+  deleted whole, bridges never touched; every run the report counts, since grids H and H2
+  (2026-10-12) found no mask measure that tells one vessel drawn twice from two touching, and
+  the doubling only the wider vessel's side sees is left to the review list), dangling bridges,
+  and the stub prune; "nothing changed" counts the centreline length. `lumen_cleanup(keep_apart=)`
+  hands both the pair rule and the stretch step a caller's evidence beyond the mask (a raw-image
+  test, `PLAN_raw_confirmation.md`) for what to leave alone. Run once in
   a fixed order, each left work the others never saw (on E14.5 the last merge alone raised the
   pairs in one lumen from 94 to 126). `lumen_cleanup` builds what it reads from the build's own
   settings, so `build_network` runs it again after smoothing. E14.5 settles in 9 rounds
@@ -476,7 +494,20 @@ are only caught locally.
   (`lumen_loops.loop_inside_one_lumen`). Joining every free end made tangles of short loops (on
   E14.5, 3,232 under 30 µm against 101 before the step). Its duplicate check and node ids are
   kept indexed (`EdgeSampleIndex.added_near`, `_NodeIds`): scanned per path, they were 95% of
-  the step's time. Without a mask, or with both settings off, the two steps leave the graph as it is.
+  the step's time. The join loop reads each strand's edges from the strand's own nodes, keeps
+  the samples recovered so far in trees that double in size (`_RecoveredSamples`: loose until
+  `_LOOSE_SAMPLES`, then merged) rather than one tree rebuilt per strand, and groups the
+  uncovered mask by labelling a slab of slices at a time (`_components`) rather than a KD-tree
+  pair search: on a 43,000-edge skeletal-muscle crop the whole-graph scan and the rebuild were
+  three quarters of the step, and the pair search holds 13 pairs a voxel, gigabytes on a large
+  stack. The cross-section outline (`_follow_rays`) follows each ray only to its first
+  voxel out, with the samples sorted by reach so a chunk is not kept going by its widest vessel,
+  reads the mask as bits (`preprocessing.PackedMask`: 2 GB for a 16 G-voxel stack, in RAM, which
+  every `MaskSupport.inside` switches to after `PACK_AFTER_POINTS` lookups) and spreads its chunks
+  over worker processes (`preprocessing.shared_volume_tasks.run_volume_tasks`, the pool the
+  section diameter methods use) once there are `_WORKER_MIN_SAMPLES`; the outline is per sample
+  and identical with any of that (E14.5's uncovered scan went 108 -> 18 s, bit for bit). Without
+  a mask, or with both settings off, the two steps leave the graph as it is.
 - **`graph/facing_ends.py`** — `join_facing_dead_ends`, its own step after mask recovery
   (`join_facing_dead_ends`, run with a mask and `bridge_require_mask_support`;
   `facing_dead_end_max_gap_um`, 10 µm, 0 off): two dead ends pointing at each other -- the
@@ -507,7 +538,10 @@ are only caught locally.
   The solve writes `graph.FLOW_STATE` beside `FLOW_SOLVED`: `solved`, `blind_end` (behind dead
   ends inside the tissue: zero flow is the answer, drawn in colour, not grey), `closed_end`
   (behind a face end with no boundary condition) or `no_boundary` (no inlet and outlet: the
-  only flows exports blank, `graph.flow_is_undefined`). `graph/dead_end_extension.py` holds the
+  only flows exports blank, `graph.flow_is_undefined`). The solve, each perturbation re-solve
+  and each sweep point then set `blind_end` and `closed_end` flows and pressure drops to exactly
+  0, not the solve's rounding (`graph.zero_flows_behind_dead_ends`: call it after any new
+  `set_edge_flows` on a marked graph). `graph/dead_end_extension.py` holds the
   repairs the grids gate, each off until then: `extend_dead_ends_to_faces`,
   `trace_on_dead_ends`, `join_dead_ends_to_vessel_sides` (run in the facing-join step), with
   `stub_face_protection` and `boundary_open_end_test` choosing `leaves_image` over the old
@@ -540,7 +574,13 @@ are only caught locally.
   it runs in `pipeline/stages.py`'s `build_network`, after the topology steps and before the graph
   is pickled — so a caller assembling a graph by hand gets no smoothing unless it asks.
   `build_network` then runs `consolidate_lumen` again on the smoothed curves (smoothing alone
-  turned E14.5's 2 loops inside one lumen into 12). A smoothed
+  turned E14.5's 2 loops inside one lumen into 12), and once more after the thick-vessel split
+  (the split alone made 7, through its bridges): nothing is the last step. The clean-up knows a
+  bridge -- never merged with a vessel at a degree-2 node, a pair with one left to the loop
+  step, and one left dangling by a removal taken out
+  (`thick_vessel_junctions.remove_dangling_bridges`) -- and the split judges a flicker in
+  microns, not samples (a 1.5 um dip out of the region, sampled every 0.49 um, came back as a
+  vessel between two bridges). A smoothed
   path is only accepted if it stays within `max_deviation` of a skeleton voxel and is no longer than
   the path it came from; each edge records which of `smoothed` / `relaxed` / `kept_raw` /
   `too_short` happened to it. Where the path it came from is itself off the skeleton -- a straight
@@ -594,7 +634,10 @@ are only caught locally.
   `_post_processing_controls`), with no "Run from this stage". Its Review dropdown
   (`gui/post_processing.REVIEW_LISTS`) chooses the one list Scan network makes -- only that
   one, so a scan does no more work than it needs -- optionally only within a radius of the
-  view centre; None, the default, lists, marks and zooms to nothing. "4+ junctions" shows the
+  view centre; None, the default, lists, marks and zooms to nothing. Each item a list rings
+  (and each 4+ junction) is magenta, ring and vessels (the `listed` status), the chosen one
+  cyan (`marker_colours`); with no edit armed, a click on a ring chooses its item without
+  moving the camera (`marker_under_click`, `marker_pick_um`). "4+ junctions" shows the
   junction list, table and Delete/Leave/Split buttons. The other twelve are
   `graph/network_review.py`'s read-only finders, each returning `ReviewItem`s ranked as the list
   shows them: junctions close together (Merge into one junction, `graph.merge_junctions`),
@@ -712,7 +755,14 @@ are only caught locally.
   when the tree is past the bridge cap -- aimed at whatever was nearest, a second capillary joined
   the first one's bridge by the wall and the bridges ran side by side through the fat lumen, 21 of
   E14.5's 33 pairs in one lumen); `thick_vessel_braid_guard.py` flags braided segments that
-  remain. `graph/thick_vessel_junctions.py` (`build_network`'s last step, and `post_process` for
+  remain. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
+  wall; 39 s on E14.5) is kept beside the saved skeleton, one bit a voxel
+  (`preprocessing/thick_vessel_region_cache.py`, `stages.thick_vessel_region_cache`), keyed on a
+  digest of the mask's voxels and the settings that decide it, so nothing else can go stale: a
+  run with the same mask and settings reads it back (`skeletonize_thickness_gated(thick_region=)`),
+  a run loading its skeleton (`do_skeletonize` off) gets it too, where it used to get none and
+  make no bridges, and `post_process` finding it again for a resumed run keeps what it finds;
+  a mask with no thick region is remembered as well. `graph/thick_vessel_junctions.py` (`build_network`'s last step, and `post_process` for
   hand-edited vessels) then makes the bridges, by Harvey's rules: a thick vessel is its centreline
   alone, and every vessel opening into it is joined by one `IS_ZERO_RESISTANCE` bridge, straight
   from where it leaves the thick region (the segmentation within the margin of the large-vessel

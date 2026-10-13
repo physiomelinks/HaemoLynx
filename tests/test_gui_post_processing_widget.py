@@ -1385,3 +1385,137 @@ def test_the_scan_after_a_regenerate_says_what_it_changed(page):
     assert "Since Regenerate" in c.log_box.toPlainText()
     c.scan_button.click()
     assert "Since Regenerate" not in c.status.text(), "said once"
+
+
+# --- rings: what they ring is coloured, and a click on one chooses it ---------------
+
+from haemolynx.gui.post_processing import LISTED  # noqa: E402
+
+
+def _ring_colours(viewer, name) -> list:
+    return [tuple(np.round(row, 3)) for row in np.asarray(viewer.layers[name].border_color)]
+
+
+def _add_vessels(G, positions, pairs) -> nx.MultiGraph:
+    for node, pos in positions.items():
+        G.add_node(node, pos=np.asarray(pos, dtype=float))
+    for u, v in pairs:
+        voxels = [tuple(map(float, G.nodes[u]["pos"])), tuple(map(float, G.nodes[v]["pos"]))]
+        G.add_edge(u, v, voxels=voxels, length=calculate_path_length(voxels), branch_order="B01", diameter_um=5.0)
+    return G
+
+
+def test_ringed_junctions_vessels_are_magenta_and_a_click_on_a_ring_chooses_it(make_napari_viewer):
+    # Outlet 4 becomes a second 4+ junction; 6 -> 8 is at neither.
+    G = _add_vessels(
+        _four_way_network(), {6: (40, 0, 0), 7: (30, 20, 0), 8: (50, 0, 0)}, [(4, 6), (4, 7), (6, 8)]
+    )
+    page = _four_way_page(make_napari_viewer(), junction_correction=True, graph=G)
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    graph = c.state.graph
+    assert c.state.node == 1 and list(c.state.scan.junctions) == [1, 4]
+    assert _colour_of(viewer, graph, (1, 5)) == _rgba(AT_JUNCTION)
+    assert _colour_of(viewer, graph, (4, 7)) == _rgba(LISTED)
+    assert _colour_of(viewer, graph, (6, 8)) == _rgba(CONNECTED)
+    assert _ring_colours(viewer, HIGH_DEGREE_JUNCTIONS) == [_rgba(AT_JUNCTION), _rgba(LISTED)]
+
+    viewer.camera.zoom = 10.0
+    centre = np.asarray(viewer.camera.center, dtype=float).copy()
+    _click(page, (31.0, 1.0, 0.0))  # inside junction 4's ring, nothing armed
+
+    assert c.state.node == 4 and c.junction_list.currentRow() == 1
+    assert {c.table.item(r, 4).text() for r in range(c.table.rowCount())} == {"2", "3", "6", "7"}
+    assert _colour_of(viewer, graph, (4, 7)) == _rgba(AT_JUNCTION)
+    assert _colour_of(viewer, graph, (1, 5)) == _rgba(LISTED)
+    assert _ring_colours(viewer, HIGH_DEGREE_JUNCTIONS) == [_rgba(LISTED), _rgba(AT_JUNCTION)]
+    assert np.allclose(viewer.camera.center, centre), "the ring is on screen already: no zoom"
+    assert sorted(edge_keys(graph)) == sorted(edge_keys(G)), "choosing edits nothing"
+
+    _click(page, (20.0, 20.0, 0.0))  # in no ring
+    assert c.state.node == 4
+    # Picking from the list still zooms, and recolours the rings the same way.
+    c.junction_list.setCurrentRow(0)
+    assert _ring_colours(viewer, HIGH_DEGREE_JUNCTIONS) == [_rgba(AT_JUNCTION), _rgba(LISTED)]
+    shown = np.asarray(viewer.camera.center)[-len(viewer.dims.displayed):]
+    assert np.allclose(shown, [10, 0, 0][-len(viewer.dims.displayed):], atol=1e-6)
+
+
+def test_a_drag_over_a_ring_turns_the_view_and_chooses_nothing(make_napari_viewer):
+    G = _add_vessels(_four_way_network(), {6: (40, 0, 0), 7: (30, 20, 0)}, [(4, 6), (4, 7)])
+    page = _four_way_page(make_napari_viewer(), junction_correction=True, graph=G)
+    c, viewer = page.controls, page.viewer
+    c.scan_button.click()
+    layer = viewer.layers[VESSELS]
+    assert c.state.mode == "idle" and c.on_press in layer.mouse_drag_callbacks
+
+    def press_and_release(moved_to):
+        event = SimpleNamespace(
+            position=(30.0, 0.0, 0.0), dims_displayed=(0, 1, 2), view_direction=None,
+            pos=(100.0, 100.0), type="mouse_press", button=1,
+        )
+        gen = c.on_press(layer, event)
+        next(gen)
+        event.type, event.pos = "mouse_move", moved_to
+        next(gen)
+        event.type = "mouse_release"
+        with pytest.raises(StopIteration):
+            next(gen)
+
+    press_and_release((160.0, 100.0))
+    assert c.state.node == 1
+    press_and_release((101.0, 100.0))
+    assert c.state.node == 4
+
+
+def test_ringed_items_vessels_are_magenta_and_a_click_on_a_ring_chooses_the_item(make_napari_viewer):
+    # Two dead ends no inlet-to-outlet path runs along: 1 -> 5 and 3 -> 6.
+    G = _add_vessels(_four_way_network(), {6: (20, -30, 0)}, [(3, 6)])
+    page = _review_page(make_napari_viewer(), graph=G)
+    c, viewer = page.controls, page.viewer
+    c.review_choice.setCurrentText(UNSOLVED)
+    c.scan_button.click()
+    graph = c.state.graph
+    assert c.review_items.count() == 2
+    items = list(c.state.review_items)
+    chosen = c.state.review_item
+    assert chosen is items[0]
+    other = items[1]
+
+    def far_end(item):
+        return set(item.edges[0][:2])
+
+    assert _colour_of(viewer, graph, far_end(chosen)) == _rgba(AT_JUNCTION)
+    assert _colour_of(viewer, graph, far_end(other)) == _rgba(LISTED)
+    assert _colour_of(viewer, graph, (1, 2)) == _rgba(CONNECTED)
+    assert _ring_colours(viewer, REVIEW_MARKERS) == [_rgba(AT_JUNCTION), _rgba(LISTED)]
+
+    viewer.camera.zoom = 10.0
+    centre = np.asarray(viewer.camera.center, dtype=float).copy()
+    _click(page, tuple(np.asarray(other.centre_um) + (0.0, 1.0, 1.0)))
+
+    assert c.state.review_item is other and c.review_items.currentRow() == 1
+    assert c.review_table.rowCount() == 1
+    assert _colour_of(viewer, graph, far_end(other)) == _rgba(AT_JUNCTION)
+    assert _colour_of(viewer, graph, far_end(chosen)) == _rgba(LISTED)
+    assert _ring_colours(viewer, REVIEW_MARKERS) == [_rgba(LISTED), _rgba(AT_JUNCTION)]
+    assert np.allclose(viewer.camera.center, centre), "the ring is on screen already: no zoom"
+
+    # Kept, an item is no longer ringed, and its vessel no longer magenta.
+    c.review_buttons[ACTION_KEEP].click()
+    assert c.review_items.count() == 1 and c.state.review_item is chosen
+    assert _colour_of(viewer, graph, far_end(other)) == _rgba(CONNECTED)
+    assert _colour_of(viewer, graph, far_end(chosen)) == _rgba(AT_JUNCTION)
+    assert _ring_colours(viewer, REVIEW_MARKERS) == [_rgba(AT_JUNCTION)]
+
+
+def test_with_an_edit_armed_a_click_on_a_ring_edits_instead(make_napari_viewer):
+    G = _add_vessels(_four_way_network(), {6: (20, -30, 0)}, [(3, 6)])
+    page = _review_page(make_napari_viewer(), graph=G)
+    c = page.controls
+    c.review_choice.setCurrentText(UNSOLVED)
+    c.scan_button.click()
+    first, other = c.state.review_items
+    c.click_delete_button.click()
+    _click(page, tuple(other.centre_um))  # the middle of the other dead end
+    assert not c.state.graph.has_edge(*other.edges[0][:2]), "deleted, not chosen"

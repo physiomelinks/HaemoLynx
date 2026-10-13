@@ -18,6 +18,7 @@ import pytest
 import tifffile
 
 from haemolynx.io.raw_volume_cache import (
+    _CACHE_FORMAT,
     _CACHE_PREFIX,
     _cache_file_paths,
     _cache_key,
@@ -171,6 +172,37 @@ def test_voxel_metadata_round_trips_through_the_cache(tmp_path):
     assert Path(image2.filename) == memmap_path  # came from the cache, not a fresh read
     assert (vx2, vy2, vz2) == (vx, vy, vz)
     assert status2 == status
+
+
+def test_an_entry_from_an_older_version_is_a_miss_and_its_voxel_size_is_read_again(tmp_path):
+    """Regression: an entry written before OME-TIFF voxel sizes were read from
+    the OME header holds 1 micron on every axis, and reusing it would keep the
+    run on that after the fix. Its sidecar has no format, so it misses."""
+    source = tmp_path / "volume.ome.tif"
+    raw = np.random.default_rng(0).integers(0, 255, size=(6, 10, 12), dtype=np.uint8)
+    tifffile.imwrite(
+        source, raw, ome=True,
+        metadata={"axes": "ZYX", "PhysicalSizeX": 0.4, "PhysicalSizeY": 0.5, "PhysicalSizeZ": 2.0},
+    )
+    cache_dir = tmp_path / "cache"
+
+    load_raw_volume_reusing_cache(
+        str(source), input_format="tif", axis_order="zyx", memmap_directory=cache_dir
+    )
+    _memmap_path, sidecar_path = _cache_files_for(cache_dir, source)
+    old = json.loads(sidecar_path.read_text())
+    del old["format"]
+    old.update(voxel_size_x=1.0, voxel_size_y=1.0, voxel_size_z=1.0)
+    sidecar_path.write_text(json.dumps(old))
+
+    image, vx, vy, vz, status = load_raw_volume_reusing_cache(
+        str(source), input_format="tif", axis_order="zyx", memmap_directory=cache_dir
+    )
+
+    assert (vx, vy, vz) == pytest.approx((0.4, 0.5, 2.0))
+    assert status["status"] == "complete"
+    assert np.array_equal(image, raw)
+    assert json.loads(sidecar_path.read_text())["format"] == _CACHE_FORMAT
 
 
 def test_compressed_tiff_can_be_loaded_and_reused(tmp_path):

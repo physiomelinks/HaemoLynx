@@ -46,8 +46,8 @@ def edge_flow_direction_sign(
     1) numeric sign of ``signed_flow_attr`` (default ``flow_signed``)
     2) string labels on ``direction_attr`` (e.g. ``u_to_v`` / ``v_to_u``)
 
-    None for a vessel the solve left unsolved (``FLOW_SOLVED`` False): its
-    flow is rounding, not a direction.
+    None for a vessel the solve left unsolved (``FLOW_SOLVED`` False): it
+    carries no flow, so it has no direction.
     """
     if edge_data.get(FLOW_SOLVED) is False:
         return None

@@ -170,6 +170,7 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
         ),
         BoxSpec("memory", "Memory", subtree_of="use_memmap_loading"),
         BoxSpec("segmentation_cleanup", "Segmentation cleanup", subtree_of="segmentation_cleanup"),
+        BoxSpec("crop_on_import", "Crop on import", subtree_of="crop_on_import"),
         # What tunes "Check segmented image"'s score; the panel adds the check
         # and optimise buttons themselves to this box.
         BoxSpec(
@@ -432,7 +433,6 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "automated_vessel_assignment_enable_overlap_cleanup",
                 "automated_vessel_assignment_fast_mode",
                 "automated_vessel_assignment_apply_overlap_cleanup_in_normal_mode",
-                "automated_vessel_overlap_parallel_workers",
             ),
         ),
         (
@@ -473,7 +473,6 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "small_vessel_boundary_assignment_enable_overlap_cleanup",
                 "small_vessel_boundary_assignment_fast_mode",
                 "small_vessel_boundary_assignment_apply_overlap_cleanup_in_normal_mode",
-                "small_vessel_overlap_parallel_workers",
             ),
         ),
         (

@@ -24,6 +24,7 @@ from haemolynx.io import (
     voxel_size_zyx_from_xyz,
 )
 from haemolynx.haemodynamics.automated import build_graph_branch_label_volume
+from haemolynx.io.crop import crop_volume_like_graph
 from haemolynx.preprocessing.memmap_support import (
     argwhere_by_slab,
     map_blockwise,
@@ -710,6 +711,16 @@ def _run_3d_measurement_records(
             "Cell-mask voxel size does not match pipeline voxel size. "
             f"cell={cell_voxel_size}, pipeline={target_voxel_size_xyz}"
         )
+    # The graph is rasterised into these masks' shape from its positions,
+    # which are measured from the crop_on_import box's corner when the image
+    # was cut: the masks are cut to the same box.
+    whole_cell_shape = tuple(int(n) for n in cell_mask.shape)
+    cell_mask = crop_volume_like_graph(
+        cell_mask, graph, description="cell mask",
+        use_memmap=use_memmap, memmap_directory=memmap_directory,
+    )
+    if cell_mask is not disk_backed[-1]:
+        disk_backed.append(cell_mask)
 
     if vessel_mask_path is not None:
         vessel_mask, vessel_voxel_size = load_binary_mask_and_voxel_size(
@@ -720,11 +731,17 @@ def _run_3d_measurement_records(
             memmap_directory=memmap_directory,
         )
         disk_backed.append(vessel_mask)
-        if vessel_mask.shape != cell_mask.shape:
+        if vessel_mask.shape != whole_cell_shape:
             raise ValueError(
                 "cell and vessel masks must share shape for distance analysis. "
-                f"Got cell={cell_mask.shape}, vessel={vessel_mask.shape}"
+                f"Got cell={whole_cell_shape}, vessel={vessel_mask.shape}"
             )
+        vessel_mask = crop_volume_like_graph(
+            vessel_mask, graph, description="3D-distance vessel mask",
+            use_memmap=use_memmap, memmap_directory=memmap_directory,
+        )
+        if vessel_mask is not disk_backed[-1]:
+            disk_backed.append(vessel_mask)
         if not np.allclose(vessel_voxel_size, target_voxel_size_xyz, rtol=0.0, atol=0.0):
             raise ValueError(
                 "Vessel-mask voxel size does not match pipeline voxel size. "
@@ -746,18 +763,17 @@ def _run_3d_measurement_records(
                 use_memmap=use_memmap,
                 memmap_directory=memmap_directory,
             )
-            if volume_shape != cell_mask.shape:
+            if volume_shape != whole_cell_shape:
                 raise ValueError(
                     "Cell-mask shape and reference-image shape must match when "
                     "building vessel volume from graph labels. "
-                    f"Got cell={cell_mask.shape}, reference={volume_shape}"
+                    f"Got cell={whole_cell_shape}, reference={volume_shape}"
                 )
-        else:
-            volume_shape = (
-                int(cell_mask.shape[0]),
-                int(cell_mask.shape[1]),
-                int(cell_mask.shape[2]),
-            )
+        volume_shape = (
+            int(cell_mask.shape[0]),
+            int(cell_mask.shape[1]),
+            int(cell_mask.shape[2]),
+        )
         edge_label_volume, edge_to_bo = _build_edge_voxel_lookup(
             graph,
             volume_shape=volume_shape,

@@ -86,6 +86,7 @@ from .prune import (
     prune_vascular_stubs,
     remove_components_without_connected_io,
     remove_edges_for_self_connected_nodes,
+    zero_flows_behind_dead_ends,
 )
 from .diagnostics import (
     classify_dead_ends,
@@ -141,6 +142,7 @@ from .boundaries import (
 )
 from .boundary_node_fallback import (
     seed_edges_have_full_mask_coverage,
+    seed_nodes_without_mask_coverage,
     select_nodes_at_hop_distance,
 )
 from .automated_vessel_assignment import (
@@ -294,6 +296,7 @@ __all__ = [
     "flow_is_undefined",
     "edges_with_connected_io",
     "mark_flow_solved_edges",
+    "zero_flows_behind_dead_ends",
     "remove_components_without_connected_io",
     "diagnose_degree2_nodes",
     "diagnose_graph_against_mask",
@@ -360,6 +363,7 @@ __all__ = [
     "remove_small_vessel_components_by_volume",
     "remove_edges_for_self_connected_nodes",
     "seed_edges_have_full_mask_coverage",
+    "seed_nodes_without_mask_coverage",
     "select_nodes_at_hop_distance",
     "add_edge_safe",
     "has_edge_safe",

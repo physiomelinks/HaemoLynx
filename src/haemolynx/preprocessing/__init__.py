@@ -34,6 +34,7 @@ from .thick_vessels import (
     thick_vessel_region,
     lee_sheet_excess,
 )
+from .thick_vessel_region_cache import ThickVesselRegionCache, thick_vessel_region_key
 from .thick_vessel_braid_guard import (
     BraidedThickVesselComponent,
     component_long_axis,
@@ -74,10 +75,21 @@ from .segmentation_raw_comparison import (
 from .bridge_mask_support import (
     BridgeMaskSupport,
     MaskSupport,
+    PackedMask,
     bridge_is_supported,
     bridge_mask_support,
     path_shadows_existing_vessel,
     shadowed_samples,
+)
+from .raw_evidence import (
+    RawCalibration,
+    RawEvidence,
+    RawEvidenceEndothelial,
+    RawEvidencePlasma,
+    calibrate_raw,
+    make_raw_evidence,
+    raw_evidence_from_settings,
+    raw_image_for_build,
 )
 from .memmap_support import (
     new_memmap_array,
@@ -119,6 +131,8 @@ __all__ = [
     "skeletonize_3d",  # deprecated alias
     "thick_vessel_object_mask",
     "thick_vessel_region",
+    "ThickVesselRegionCache",
+    "thick_vessel_region_key",
     "BraidedThickVesselComponent",
     "component_long_axis",
     "detect_braided_thick_vessel_components",
@@ -149,10 +163,19 @@ __all__ = [
     "format_segmentation_raw_comparison_report",
     "BridgeMaskSupport",
     "MaskSupport",
+    "PackedMask",
     "bridge_is_supported",
     "bridge_mask_support",
     "path_shadows_existing_vessel",
     "shadowed_samples",
+    "RawCalibration",
+    "RawEvidence",
+    "RawEvidenceEndothelial",
+    "RawEvidencePlasma",
+    "calibrate_raw",
+    "make_raw_evidence",
+    "raw_evidence_from_settings",
+    "raw_image_for_build",
     "new_memmap_array",
     "release_memmap_array",
     "release_superseded",

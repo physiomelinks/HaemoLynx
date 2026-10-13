@@ -135,3 +135,47 @@ def test_move_node_with_its_edges_re_ends_and_re_measures_every_edge():
     assert data["voxels"][0] == [0.0, 0.0, -2.0]
     assert data["length"] == pytest.approx(calculate_path_length(data["voxels"]))
     _edges_meet_their_nodes(G)
+
+
+def _loop_between_close_junctions(arc_length_um: float) -> nx.MultiGraph:
+    """Two junctions 3 um apart joined twice, straight and by an arc of
+    *arc_length_um* (a half-ellipse in y), each leading on to an anchor."""
+    import math
+
+    G = nx.MultiGraph()
+    a, b = [0.0, 0.0, 0.0], [3.0, 0.0, 0.0]
+    G.add_node(0, pos=np.array(a))
+    G.add_node(1, pos=np.array(b))
+    G.add_node(2, pos=np.array([-30.0, 0.0, 0.0]))
+    G.add_node(3, pos=np.array([33.0, 0.0, 0.0]))
+    G.add_edge(0, 1, voxels=[a, b], length=3.0)
+    t = np.linspace(0.0, math.pi, 200)
+    lo, hi = 0.0, arc_length_um
+    for _ in range(60):
+        h = 0.5 * (lo + hi)
+        arc = np.stack([1.5 - 1.5 * np.cos(t), h * np.sin(t), np.zeros_like(t)], axis=1).tolist()
+        lo, hi = (h, hi) if calculate_path_length(arc) < arc_length_um else (lo, h)
+    G.add_edge(0, 1, voxels=arc, length=calculate_path_length(arc))
+    G.add_edge(2, 0, voxels=[[-30.0, 0.0, 0.0], a], length=30.0)
+    G.add_edge(1, 3, voxels=[b, [33.0, 0.0, 0.0]], length=30.0)
+    return G
+
+
+def test_the_plain_collapse_keeps_a_loop_longer_than_twice_the_threshold():
+    """A 20 um arc between junctions 3 um apart is a vessel, not the gap
+    between them: merging the two deleted it as a self-loop whatever its
+    length. The second junction is left out of the cluster instead."""
+    out = collapse_node_clusters(_loop_between_close_junctions(20.0), distance_threshold=5.0)
+
+    assert out.has_node(0) and out.has_node(1)
+    assert out.number_of_edges(0, 1) == 2
+    assert max(d["length"] for d in out.get_edge_data(0, 1).values()) == pytest.approx(20.0, abs=0.1)
+    assert not list(nx.selfloop_edges(out))
+
+
+def test_the_plain_collapse_still_absorbs_a_ring_no_longer_than_twice_the_threshold():
+    out = collapse_node_clusters(_loop_between_close_junctions(8.0), distance_threshold=5.0)
+
+    assert out.number_of_nodes() == 3
+    assert out.number_of_edges() == 2
+    assert not list(nx.selfloop_edges(out))

@@ -118,7 +118,8 @@ def _metric_value(
             return FLOW_STATE_TEXT[data["flow_state"]]
         return FLOW_SOLUTION_TEXT[bool(value)]
     if metric == "flow" and data.get(FLOW_SOLVED) is False:
-        # The flow of an unsolved vessel is rounding, not a result.
+        # An unsolved vessel's flow is no solved result: zero behind a dead
+        # end, or no answer at all.
         return None
     if metric in _TEXT_HOVER_METRICS:
         text = str(value).strip()

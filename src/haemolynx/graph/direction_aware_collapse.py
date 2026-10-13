@@ -18,7 +18,13 @@ reimplemented here) as a *gate* on the merge itself: growing a cluster is
 allowed only as long as what it would spoke out to stays directionally
 coherent. A candidate merge that would create a hub cartwheel_guard could
 flag is skipped -- the nodes involved are left as separate, nearby
-representatives instead of one. Merges that pass are additionally checked
+representatives instead of one. The gate alone did not stop the chaining
+along a vessel (a run of junctions has too few spokes to look like a wheel),
+so a cluster is also bounded (``_merge_stays_within``: no node, over every
+pass, further than the collapse distance from where its cluster ends up)
+and never absorbs a vessel longer than ``MAX_ABSORBED_EDGE_MULTIPLE`` times
+that distance between two of its members (``_merge_absorbs_a_vessel``: a
+loop's arc, which the merge would delete as a self-loop). Merges that pass are additionally checked
 for redundant parallel wiring to the same neighbour (several original nodes
 in a cluster reaching the same external node by slightly different
 skeleton-noise paths), keeping only the shorter of any resulting duplicates
@@ -49,7 +55,13 @@ from .cartwheel_guard import (
     _spoke_direction_and_length,
     hub_radial_dispersion,
 )
-from .collapse import _patch_voxel_endpoint, _remeasure_length, move_node_with_its_edges
+from .collapse import (
+    MAX_ABSORBED_EDGE_MULTIPLE,
+    _edge_path_length,
+    _patch_voxel_endpoint,
+    _remeasure_length,
+    move_node_with_its_edges,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +83,38 @@ DEFAULT_MAX_RADIAL_DISPERSION = 0.5
 #: E14.5 MCA mask, 7 in 8 such pairs with mask evidence had lumen between
 #: them, not background).
 DEFAULT_DUPLICATE_PATH_TOLERANCE_UM = 5.0
+
+def _merge_absorbs_a_vessel(
+    G: Union[nx.Graph, nx.MultiGraph],
+    group_a: set,
+    group_b: set,
+    max_absorbed_length: float,
+) -> bool:
+    """Whether an edge from *group_a* to *group_b* is longer than
+    *max_absorbed_length*: merging the two would turn it into a self-loop and
+    delete it, and a path that long between nodes that close is a vessel."""
+    small, large = (group_a, group_b) if len(group_a) <= len(group_b) else (group_b, group_a)
+    for node in small:
+        if not G.has_node(node):
+            continue
+        for u, v, data in G.edges(node, data=True):
+            other = v if u == node else u
+            if other in large and _edge_path_length(G, u, v, data) > max_absorbed_length:
+                return True
+    return False
+
+
+def _merge_stays_within(origins: np.ndarray, distance_threshold: float) -> bool:
+    """Whether every original node position in *origins* lies within
+    *distance_threshold* of their centroid -- the furthest any node is moved
+    by a merge, over every pass. Union-find closest-first chains otherwise:
+    a run of junctions 4 um apart along a vessel, pairwise within the
+    threshold, became one node (81 nodes spanning 26 um on E14.5), with every
+    vessel between them deleted."""
+    if len(origins) < 2:
+        return True
+    centroid = origins.mean(axis=0)
+    return float(np.max(np.linalg.norm(origins - centroid, axis=1))) <= float(distance_threshold)
 
 
 def _precompute_node_spokes(
@@ -292,6 +336,9 @@ def collapse_node_clusters_direction_aware(
     G = G.copy()
     is_multi = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
     total_merged = 0
+    # Every original position a node has absorbed, for the extent bound.
+    origins: dict[Any, np.ndarray] = {}
+    max_absorbed = MAX_ABSORBED_EDGE_MULTIPLE * float(distance_threshold)
 
     for iteration in range(max_iterations):
         nodes_with_pos = [
@@ -303,6 +350,7 @@ def collapse_node_clusters_direction_aware(
             break
 
         node_ids = [n for n, _ in nodes_with_pos]
+        index_of = {n: k for k, n in enumerate(node_ids)}
         coords = np.array([p for _, p in nodes_with_pos])
 
         tree = cKDTree(coords)
@@ -336,6 +384,12 @@ def collapse_node_clusters_direction_aware(
             if root_a == root_b:
                 continue
             candidate = members[root_a] | members[root_b]
+            if not _merge_stays_within(
+                np.vstack([origins.get(n, coords[index_of[n]][None, :]) for n in candidate]),
+                distance_threshold,
+            ) or _merge_absorbs_a_vessel(G, members[root_a], members[root_b], max_absorbed):
+                blocked_this_iter += 1
+                continue
             if not _merge_is_direction_safe(
                 node_spokes,
                 candidate,
@@ -368,6 +422,10 @@ def collapse_node_clusters_direction_aware(
                     len(group), group, rep,
                 )
 
+            origins[rep] = np.vstack([
+                origins.pop(n, np.asarray(G.nodes[n]["pos"], dtype=float)[None, :])
+                for n in group if "pos" in G.nodes[n]
+            ])
             cluster_positions = np.array(
                 [G.nodes[n]["pos"] for n in group if "pos" in G.nodes[n]]
             )
@@ -397,7 +455,7 @@ def collapse_node_clusters_direction_aware(
         total_merged += merged_this_iter
         if debug:
             logger.info(
-                "Iteration %d: merged %d nodes, blocked %d cartwheel-shaped "
+                "Iteration %d: merged %d nodes, blocked %d cartwheel-shaped, too wide or vessel-absorbing "
                 "merges (%d total merged)",
                 iteration + 1, merged_this_iter, blocked_this_iter, total_merged,
             )

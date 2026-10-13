@@ -16,6 +16,16 @@ from ._helpers import calculate_path_length
 
 logger = logging.getLogger(__name__)
 
+#: An edge joining two nodes a cluster would merge is absorbed by the merge
+#: -- it was the gap between them. One longer than this many times the
+#: collapse distance is not a gap but a vessel that leaves and comes back (a
+#: loop's arc), and merging its ends would delete it as a self-loop, however
+#: long, with nothing judging it: the node stays apart instead, and the loop
+#: is judged later, with the mask, by ``lumen_loops``. On the E14.5 MCA
+#: stack 1,649 edges of 5 um or more (12.6 mm) went this way under the
+#: direction-aware method, 260 of them over 10 um.
+MAX_ABSORBED_EDGE_MULTIPLE = 2.0
+
 
 def _pick_representative(G: Union[nx.Graph, nx.MultiGraph], cluster: list) -> int:
     """Pick the best representative for a cluster of nodes.
@@ -166,25 +176,57 @@ def _bounded_clusters(
 
     Representatives are taken in :func:`_pick_representative`'s order
     (highest degree, then lowest id); each takes every still-unclaimed node of
-    the group within *distance_threshold* of itself. Returns each cluster of
-    two or more with its representative first.
+    the group within *distance_threshold* of itself -- except one joined to
+    the cluster by a vessel longer than ``MAX_ABSORBED_EDGE_MULTIPLE`` times
+    the threshold: that path between two nodes so close is a loop's arc, which
+    the merge would delete as a self-loop whatever its length, so the node
+    stays apart and the loop is judged later, with the mask. Returns each
+    cluster of two or more with its representative first.
     """
     indices = [i for i in component if G.has_node(node_ids[i])]
     order = sorted(indices, key=lambda i: (-G.degree(node_ids[i]), node_ids[i]))
     unclaimed = set(indices)
     clusters: list[list] = []
+    max_absorbed = MAX_ABSORBED_EDGE_MULTIPLE * float(distance_threshold)
     for leader in order:
         if leader not in unclaimed:
             continue
-        members = sorted(
+        nearby = sorted(
             j
             for j in unclaimed
             if float(np.linalg.norm(coords[j] - coords[leader])) <= float(distance_threshold)
         )
+        members: list = [leader]
+        for j in nearby:
+            if j == leader:
+                continue
+            taken = {node_ids[m] for m in members}
+            if any(
+                (v if u == node_ids[j] else u) in taken
+                and _edge_path_length(G, u, v, data) > max_absorbed
+                for u, v, data in G.edges(node_ids[j], data=True)
+            ):
+                continue
+            members.append(j)
         unclaimed.difference_update(members)
         if len(members) >= 2:
             clusters.append([node_ids[leader]] + [node_ids[j] for j in members if j != leader])
     return clusters
+
+
+def _edge_path_length(G: Union[nx.Graph, nx.MultiGraph], u, v, data: dict) -> float:
+    """An edge's length along its path: ``length``, else measured from its
+    ``voxels``, else the straight distance between its nodes."""
+    length = data.get("length")
+    if length is not None and np.isfinite(length):
+        return float(length)
+    voxels = data.get("voxels")
+    if voxels is not None and len(voxels) >= 2:
+        return float(calculate_path_length(voxels))
+    return float(np.linalg.norm(
+        np.asarray(G.nodes[u].get("pos", (0.0, 0.0, 0.0)), dtype=float)
+        - np.asarray(G.nodes[v].get("pos", (0.0, 0.0, 0.0)), dtype=float)
+    ))
 
 
 def _remeasure_length(data: dict) -> dict:

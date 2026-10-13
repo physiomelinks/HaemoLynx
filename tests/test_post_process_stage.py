@@ -408,14 +408,15 @@ def test_without_a_region_to_hand_it_is_found_again_in_the_segmentation(tmp_path
     run_settings, network, boundaries, model, _edge = _thick_run(tmp_path, volume_mask=False)
     asked: list = []
 
-    def found_again(settings, image, voxel_size_xyz):
-        asked.append((image is network.volume.image, tuple(voxel_size_xyz)))
+    def found_again(settings, image, voxel_size_xyz, crop, *, cache):
+        asked.append((image is network.volume.image, tuple(voxel_size_xyz), crop))
         return _thick_mask()
 
     monkeypatch.setattr(stages, "thick_vessel_mask_from_image", found_again)
     out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
 
-    assert asked == [(True, (1.0, 1.0, 1.0))]
+    # The image was not cropped on import, so the vessel masks are not either.
+    assert asked == [(True, (1.0, 1.0, 1.0), None)]
     assert sum(bool(d.get(IS_ZERO_RESISTANCE)) for *_e, d in _pieces_between(out.graph, 1, 2)) == 1
 
 
@@ -707,3 +708,26 @@ def test_a_diameter_set_by_hand_survives_post_processing_and_moves_the_resistanc
     assert data["diameter_um"] == pytest.approx(width)
     out = build_haemodynamic_model(run_settings, out, SCHEMA)
     assert out.graph.edges[u, v, k]["resistance"] < before / 8.0
+
+
+def test_the_region_found_again_is_kept_for_the_next_post_process(tmp_path, monkeypatch):
+    """Finding the region in the segmentation is minutes on a real stack, so
+    the one found is kept beside the run's skeleton (thick_vessel_region_cache)
+    and a later post_process on the same segmentation reads it back."""
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path, volume_mask=False)
+    real = stages.preprocessing.thick_vessel_region
+    found = []
+
+    def spy(*args, **kwargs):
+        found.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(stages.preprocessing, "thick_vessel_region", spy)
+    post_process(run_settings, model, boundaries, SCHEMA, network=network)
+    assert found == [1]
+    cache = stages.thick_vessel_region_cache(run_settings, network.volume.output_dir)
+    assert cache.sidecar.exists()
+
+    again = _thick_run(tmp_path, volume_mask=False)
+    post_process(again[0], again[3], again[2], SCHEMA, network=again[1])
+    assert found == [1]

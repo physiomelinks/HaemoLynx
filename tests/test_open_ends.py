@@ -232,6 +232,73 @@ def test_a_sweep_point_scales_with_the_drop_and_keeps_the_open_ends():
     assert dict(zip(nodes, at_run["pressure"])) == pytest.approx(baseline, rel=1e-9, abs=1e-6)
 
 
+def _no_flow(data) -> tuple:
+    return data["flow_abs"], data["flow_signed"], data["pressure_drop"]
+
+
+@pytest.mark.parametrize("model, solver, behind", [
+    ("terminal_resistance", "dense", {(2, 5)}),
+    ("terminal_resistance", "sparse", {(2, 5)}),
+    ("closed", "dense", {(1, 4), (2, 5)}),
+])
+def test_vessels_behind_dead_ends_carry_exactly_no_flow_after_the_solve(model, solver, behind):
+    """Nothing drives a flow along the blind branch 2-5 (nor, closed, along
+    1-4), so its flows and pressure drop are exactly 0, not the 4.5e-28 m^3/s
+    of rounding the pressure solve left there; its pressures stay the
+    junction's."""
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    settings = _settings(model)
+    settings["haemodynamics_solver"] = solver
+    _solution, G, _b = _run_solve(settings)
+    edges = {(u, v): d for u, v, d in G.edges(data=True)}
+    assert {e for e, d in edges.items() if d[graph_module.FLOW_STATE] in ("blind_end", "closed_end")} == behind
+    for u, v in behind:
+        assert _no_flow(edges[u, v]) == (0.0, 0.0, 0.0)
+        assert edges[u, v]["flow_abs_log10"] == flow_abs_log10_value(0.0)
+        assert P_OUT < edges[u, v]["pressure_u"] == G.nodes[u]["pressure"] < P_IN
+        assert edges[u, v]["pressure_v"] == G.nodes[v]["pressure"]
+    assert all(edges[e]["flow_abs"] > 0 for e in ((0, 1), (1, 2), (2, 3)))
+
+
+@pytest.mark.parametrize("haematocrit_model", ["fixed", "distributed_iterative"])
+def test_a_perturbation_and_a_sweep_leave_the_blind_branch_exactly_no_flow(haematocrit_model):
+    """The re-solves keep the baseline's flow states, and its zeros (closed,
+    dense: both re-solves left -4.5e-28 m^3/s on 2-5)."""
+    from haemolynx.haemodynamics.pericyte_sweep import solve_sweep_point, sweep_rows_at_pressures
+
+    settings = _settings("closed")
+    _solution, G, boundaries = _run_solve(settings)
+    settings["haematocrit_model"] = haematocrit_model
+    perturbed = stages._perturbation_copy(G)
+    stages._solve_network(perturbed, settings, boundaries, recompute_resistances=lambda: None)
+    for u, v in ((1, 4), (2, 5)):
+        assert _no_flow(perturbed.edges[u, v, 0]) == (0.0, 0.0, 0.0)
+    assert perturbed.edges[1, 2, 0]["flow_abs"] > 0
+
+    swept = stages._perturbation_copy(G)
+    unit, nodes, _iterated = solve_sweep_point(
+        swept, settings, recompute_resistances=lambda: None, inlet_nodes=[0], outlet_nodes=[3],
+    )
+    _rows, flows = sweep_rows_at_pressures(unit, swept, nodes, [P_IN, 2.0 * P_IN], P_OUT, {})
+    behind = [i for i, (u, v) in enumerate(swept.edges()) if (u, v) in ((1, 4), (2, 5))]
+    for point in flows:
+        for name in ("flow_abs", "flow_signed", "pressure_drop"):
+            assert point[name][behind].tolist() == [0.0, 0.0]
+
+
+def test_the_vtk_writes_the_blind_branchs_flow_as_exactly_zero(tmp_path):
+    pv = pytest.importorskip("pyvista")
+    from haemolynx.visualization import graph_to_vtk
+
+    _solution, G, _b = _run_solve(_settings("terminal_resistance"))
+    vessels = pv.read(graph_to_vtk(G, tmp_path / "blind")["vessels_path"])
+    states = list(vessels.cell_data["flow_state"])
+    for name in ("flow_abs", "flow_signed", "pressure_drop"):
+        assert vessels.cell_data[name][states.index("blind_end")] == 0.0
+    assert vessels.cell_data["flow_abs"][states.index("solved")] > 0
+
+
 def test_the_haematocrit_loop_solves_with_the_open_ends():
     from haemolynx.haemodynamics.haematocrit_distribution import iterate_flow_and_haematocrit
 

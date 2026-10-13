@@ -374,3 +374,21 @@ def test_contracting_bridges_joins_each_vessel_to_the_thick_centreline():
     H.edges["J", "X", key]["written"] = 1
     assert G.edges["X", "W", 0]["written"] == 1
     assert H.nodes["J"] is G.nodes["J"]
+
+
+def test_a_flicker_is_judged_by_its_length_in_microns_not_in_samples():
+    """A stretch under 2 um between two others takes its neighbours' label.
+    Sampled every 0.49 um (a 0.98 um voxel path densified to half a voxel),
+    1.5 um is four samples: counted in samples it was a stretch of its own,
+    and a vessel dipping out of the region for 1.5 um came back as a
+    1.5 um vessel between two bridges, a loop inside the thick lumen."""
+    from haemolynx.graph.thick_vessel_junctions import _INSIDE, _OUTSIDE, _runs
+
+    labels = [_INSIDE] * 10 + [_OUTSIDE] * 4 + [_INSIDE] * 10
+    along = np.arange(len(labels)) * 0.49
+    assert _runs(labels, min_run_um=2.0, along=along) == [(0, 23, _INSIDE)]
+    along = np.arange(len(labels)) * 0.6
+    assert [value for _s, _e, value in _runs(labels, min_run_um=2.0, along=along)] == [_INSIDE, _OUTSIDE, _INSIDE]
+    # An end run is judged the same way.
+    labels = [_OUTSIDE] * 3 + [_INSIDE] * 10
+    assert _runs(labels, min_run_um=2.0, along=np.arange(13) * 0.49) == [(0, 12, _INSIDE)]

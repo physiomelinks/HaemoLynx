@@ -443,6 +443,18 @@ def test_a_subset_keeps_what_its_settings_replace():
     assert schema.validate({"drop_old": True})["handling"] == "drop"
 
 
+def test_a_setting_retired_outright_still_loads_and_is_dropped(caplog):
+    """`replaces` with an empty table: the old name is accepted, its value
+    read into nothing, and the log says so."""
+    schema = Schema([
+        Setting("cleanup", "bool", True, "Clean up", "S", replaces={"workers": {}}),
+    ])
+    with caplog.at_level("INFO", logger="haemolynx.parsers.schema"):
+        resolved = schema.validate({"workers": 8, "cleanup": False})
+    assert resolved == {"cleanup": False}
+    assert any("'workers' is retired" in r.message and "no longer read" in r.message for r in caplog.records)
+
+
 # --- retired settings that move together ------------------------------------------
 
 

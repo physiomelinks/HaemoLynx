@@ -8,6 +8,7 @@ from typing import Literal, Mapping
 import numpy as np
 
 from .axis_order import CANONICAL_AXIS_ORDER, voxel_size_zyx_from_xyz
+from .crop import CropBox, crop_volume
 from .ilastik import run_ilastik_headless_segmentation
 from .load import (
     _to_binary_volume_for_skeletonization,
@@ -64,8 +65,29 @@ def _resolve_mask_voxel_size_xyz(
     *,
     voxel_size_override_xyz,
     voxel_size_policy: str,
+    fallback_voxel_size_xyz: tuple[float, float, float] | None = None,
 ) -> tuple[float, float, float]:
-    """Apply the run's voxel-size override policy to one mask's metadata."""
+    """Apply the run's voxel-size override policy to one mask's metadata.
+
+    *fallback_voxel_size_xyz* is the main image's spacing: under ``auto``, a
+    mask with no spacing of its own and no override takes it (an ilastik
+    export carries none), rather than running on 1 um and failing the
+    alignment check against the image it was segmented from.
+    """
+    status = str((metadata_status or {}).get("status", "missing")).lower()
+    if (
+        fallback_voxel_size_xyz is not None
+        and str(voxel_size_policy).strip().lower() == "auto"
+        and status != "complete"
+        and voxel_size_override_xyz is None
+    ):
+        logger.info(
+            "Mask carries no voxel spacing (metadata %s); taking the main image's "
+            "(x, y, z) = %s.",
+            status,
+            tuple(float(v) for v in fallback_voxel_size_xyz),
+        )
+        return tuple(float(v) for v in fallback_voxel_size_xyz)
     resolved, _source = resolve_voxel_size_xyz(
         metadata_voxel_size_xyz=metadata_voxel_size_xyz,
         metadata_status=metadata_status,
@@ -83,6 +105,7 @@ def load_large_vessel_masks(
     axis_order: str = CANONICAL_AXIS_ORDER,
     voxel_size_override_xyz=None,
     voxel_size_policy: str = "auto",
+    fallback_voxel_size_xyz: tuple[float, float, float] | None = None,
 ) -> tuple[
     np.ndarray | None,
     np.ndarray | None,
@@ -96,7 +119,9 @@ def load_large_vessel_masks(
 
     Voxel sizes are resolved with the same ``voxel_size_override_xyz`` /
     ``voxel_size_policy`` rules as the main image, so a manual unit override
-    applies to the masks instead of leaving them on missing-metadata ``(1,1,1)``.
+    applies to the masks instead of leaving them on missing-metadata ``(1,1,1)``;
+    with neither metadata nor an override, a mask takes
+    *fallback_voxel_size_xyz* (the main image's spacing) when given.
     """
     has_arteriole = large_arteriole_mask_path is not None
     has_venule = large_venule_mask_path is not None
@@ -133,12 +158,14 @@ def load_large_vessel_masks(
         arteriole_status,
         voxel_size_override_xyz=voxel_size_override_xyz,
         voxel_size_policy=voxel_size_policy,
+        fallback_voxel_size_xyz=fallback_voxel_size_xyz,
     )
     large_venule_voxel_size = _resolve_mask_voxel_size_xyz(
         venule_metadata_xyz,
         venule_status,
         voxel_size_override_xyz=voxel_size_override_xyz,
         voxel_size_policy=voxel_size_policy,
+        fallback_voxel_size_xyz=fallback_voxel_size_xyz,
     )
     return (
         large_arteriole_mask,
@@ -148,36 +175,30 @@ def load_large_vessel_masks(
     )
 
 
+#: What the log says when a role's masks are off.
+_DISABLED_MESSAGES = {
+    "large": "Large-vessel masks disabled; skipping arteriole/venule mask loading.",
+    "small": (
+        "Small-vessel-mask boundary assignment disabled; "
+        "manual arteriole/venule boundary-node selection remains available."
+    ),
+}
+
+
 def _vessel_mask_config(mask_role: Literal["large", "small"]) -> dict[str, str]:
-    if mask_role == "large":
-        return {
-            "enabled_flag": "use_large_vessel_masks",
-            "ilastik_flag": "use_ilastik_large_vessel_segmentation",
-            "ilastik_arteriole_image_param": "ilastik_unsegmented_arteriole_image_path",
-            "ilastik_venule_image_param": "ilastik_unsegmented_venule_image_path",
-            "ilastik_arteriole_classifier_param": "ilastik_arteriole_classifier_path",
-            "ilastik_venule_classifier_param": "ilastik_venule_classifier_path",
-            "arteriole_mask_attr": "large_arteriole_mask",
-            "venule_mask_attr": "large_venule_mask",
-            "disabled_message": (
-                "Large-vessel masks disabled; skipping arteriole/venule mask loading."
-            ),
-            "boundary_disabled_message": None,
-        }
+    """The setting names a role's messages quote, read off
+    :data:`VESSEL_MASK_SETTINGS` so the two cannot drift apart."""
+    names = VESSEL_MASK_SETTINGS[mask_role]
     return {
-        "enabled_flag": "use_small_vessel_masks_for_boundary_assignment",
-        "ilastik_flag": "use_ilastik_small_vessel_segmentation",
-        "ilastik_arteriole_image_param": "ilastik_unsegmented_small_arteriole_image_path",
-        "ilastik_venule_image_param": "ilastik_unsegmented_small_venule_image_path",
-        "ilastik_arteriole_classifier_param": "ilastik_small_arteriole_classifier_path",
-        "ilastik_venule_classifier_param": "ilastik_small_venule_classifier_path",
-        "arteriole_mask_attr": "small_arteriole_mask",
-        "venule_mask_attr": "small_venule_mask",
-        "disabled_message": None,
-        "boundary_disabled_message": (
-            "Small-vessel-mask boundary assignment disabled; "
-            "manual arteriole/venule boundary-node selection remains available."
-        ),
+        "enabled_flag": names["enabled"],
+        "ilastik_flag": names["use_ilastik"],
+        "ilastik_arteriole_image_param": names["ilastik_unsegmented_arteriole_path"],
+        "ilastik_venule_image_param": names["ilastik_unsegmented_venule_path"],
+        "ilastik_arteriole_classifier_param": names["ilastik_arteriole_classifier_path"],
+        "ilastik_venule_classifier_param": names["ilastik_venule_classifier_path"],
+        "arteriole_mask_attr": f"{mask_role}_arteriole_mask",
+        "venule_mask_attr": f"{mask_role}_venule_mask",
+        "disabled_message": _DISABLED_MESSAGES[mask_role],
     }
 
 
@@ -353,13 +374,20 @@ def load_and_validate_vessel_masks(
     axis_order: str = CANONICAL_AXIS_ORDER,
     voxel_size_override_xyz=None,
     voxel_size_policy: str = "auto",
+    crop: CropBox | None = None,
 ) -> tuple[
     np.ndarray | None,
     np.ndarray | None,
     tuple[float, float, float] | None,
     tuple[float, float, float] | None,
 ]:
-    """Resolve, optionally segment with ilastik, load, and validate arteriole/venule masks."""
+    """Resolve, optionally segment with ilastik, load, and validate arteriole/venule masks.
+
+    *crop* is the ``crop_on_import`` box the main image was cut to (see
+    :mod:`haemolynx.io.crop`): each mask must have the whole image's shape, and
+    is cut to the same box before anything else is done to it, so *image_shape*
+    is the cropped image's.
+    """
     config = _vessel_mask_config(mask_role)
     scale_label = mask_role
 
@@ -393,11 +421,17 @@ def load_and_validate_vessel_masks(
         unsegmented_venule_image_path = resolve_image_path_with_optional_zip(
             Path(ilastik_unsegmented_venule_path)
         )
+        # Named by role as well as by image: the arteriole and venule
+        # classifiers are usually run on the one raw stack, and both outputs
+        # called `{stem}_segmented` meant the venule run overwrote the
+        # arteriole's (or, reusing existing output, read it back as its own).
         segmented_arteriole_path = output_dir / (
-            f"{unsegmented_arteriole_image_path.stem}_segmented{ilastik_output_suffix}"
+            f"{unsegmented_arteriole_image_path.stem}_{mask_role}_arteriole_segmented"
+            f"{ilastik_output_suffix}"
         )
         segmented_venule_path = output_dir / (
-            f"{unsegmented_venule_image_path.stem}_segmented{ilastik_output_suffix}"
+            f"{unsegmented_venule_image_path.stem}_{mask_role}_venule_segmented"
+            f"{ilastik_output_suffix}"
         )
 
         logger.info(
@@ -430,6 +464,36 @@ def load_and_validate_vessel_masks(
             f"venule={effective_venule_mask_path}"
         )
 
+    cache_key = None
+    if enabled and effective_arteriole_mask_path is not None and effective_venule_mask_path is not None:
+        cache_key = _mask_cache_key(
+            mask_role,
+            effective_arteriole_mask_path,
+            effective_venule_mask_path,
+            axis_order=axis_order,
+            voxel_size_override_xyz=voxel_size_override_xyz,
+            voxel_size_policy=voxel_size_policy,
+            image_shape=image_shape,
+            main_voxel_size_xyz=main_voxel_size_xyz,
+            dilation_microns=dilation_microns,
+            min_component_volume_um3=min_component_volume_um3,
+            swap_minority_components=swap_minority_components,
+            swap_max_size_ratio=swap_max_size_ratio,
+            swap_min_contact_fraction=swap_min_contact_fraction,
+            remove_small_opposite_attached_components=remove_small_opposite_attached_components,
+            opposite_attached_max_component_volume_um3=opposite_attached_max_component_volume_um3,
+            opposite_attached_max_distance_microns=opposite_attached_max_distance_microns,
+            exclude_smaller_overlapping_volumes=exclude_smaller_overlapping_volumes,
+            crop=crop,
+        )
+        cached = _LOADED_MASKS.get(mask_role)
+        if cached is not None and cached[0] == cache_key:
+            logger.info(
+                f"Reusing the {scale_label}-vessel masks loaded earlier in this "
+                "process: the same files, cleaned with the same settings."
+            )
+            return _unpack_masks(cached[1])
+
     (
         arteriole_mask,
         venule_mask,
@@ -442,12 +506,26 @@ def load_and_validate_vessel_masks(
         axis_order=axis_order,
         voxel_size_override_xyz=voxel_size_override_xyz,
         voxel_size_policy=voxel_size_policy,
+        fallback_voxel_size_xyz=tuple(float(v) for v in main_voxel_size_xyz),
     )
 
     if arteriole_mask is None or venule_mask is None:
-        disabled_message = config["boundary_disabled_message"] or config["disabled_message"]
-        logger.info(disabled_message)
+        logger.info(config["disabled_message"])
         return None, None, None, None
+
+    if crop is not None and not crop.is_whole_volume:
+        for name, mask in (
+            (config["arteriole_mask_attr"], arteriole_mask),
+            (config["venule_mask_attr"], venule_mask),
+        ):
+            if mask.shape != tuple(crop.source_shape_zyx):
+                raise ValueError(
+                    f"{name} shape does not match input image shape before "
+                    f"crop_on_import cut it: {mask.shape} != {tuple(crop.source_shape_zyx)}"
+                )
+        logger.info(f"Crop on import, {scale_label}-vessel masks: {crop.describe()}")
+        arteriole_mask = crop_volume(arteriole_mask, crop)
+        venule_mask = crop_volume(venule_mask, crop)
 
     if arteriole_mask.shape != image_shape:
         raise ValueError(
@@ -626,9 +704,75 @@ def load_and_validate_vessel_masks(
             f"{overlap_info}"
         )
 
-    return (
+    result = (
         arteriole_mask,
         venule_mask,
         arteriole_mask_voxel_size,
         venule_mask_voxel_size,
+    )
+    if cache_key is not None:
+        _LOADED_MASKS[mask_role] = (cache_key, _pack_masks(result))
+    return result
+
+
+#: The masks loaded last, one entry per role, so a run that reads them twice
+#: -- skeletonise's thick-vessel restriction, then build_network -- loads and
+#: cleans them once, and a run repeated from the panel skips it too. Keyed on
+#: the files' identity and every setting the cleanup reads; held packed, one
+#: bit a voxel, and handed out as fresh arrays, so nothing a caller does to
+#: its copy reaches the next.
+_LOADED_MASKS: dict[str, tuple[tuple, tuple]] = {}
+
+
+def clear_vessel_mask_cache() -> None:
+    """Forget the masks :func:`load_and_validate_vessel_masks` remembered."""
+    _LOADED_MASKS.clear()
+
+
+def _file_identity(path: str | Path) -> tuple[str, int, int] | None:
+    try:
+        resolved = Path(path).resolve()
+        status = resolved.stat()
+    except OSError:
+        return None
+    return (str(resolved), int(status.st_mtime_ns), int(status.st_size))
+
+
+def _mask_cache_key(mask_role: str, arteriole_path, venule_path, **settings) -> tuple | None:
+    arteriole = _file_identity(arteriole_path)
+    venule = _file_identity(venule_path)
+    if arteriole is None or venule is None:
+        return None
+    frozen = []
+    for name in sorted(settings):
+        value = settings[name]
+        if isinstance(value, (list, tuple, np.ndarray)):
+            value = tuple(float(v) for v in value)
+        elif isinstance(value, (bool, int, float, str)) or value is None:
+            value = value
+        else:
+            value = repr(value)
+        frozen.append((name, value))
+    return (mask_role, arteriole, venule, tuple(frozen))
+
+
+def _pack_masks(result: tuple) -> tuple:
+    arteriole, venule, arteriole_voxel_size, venule_voxel_size = result
+    return (
+        np.packbits(np.asarray(arteriole, dtype=bool).ravel()),
+        np.packbits(np.asarray(venule, dtype=bool).ravel()),
+        tuple(arteriole.shape),
+        arteriole_voxel_size,
+        venule_voxel_size,
+    )
+
+
+def _unpack_masks(packed: tuple) -> tuple:
+    arteriole_bits, venule_bits, shape, arteriole_voxel_size, venule_voxel_size = packed
+    count = int(np.prod(shape))
+    return (
+        np.unpackbits(arteriole_bits)[:count].astype(bool).reshape(shape),
+        np.unpackbits(venule_bits)[:count].astype(bool).reshape(shape),
+        arteriole_voxel_size,
+        venule_voxel_size,
     )

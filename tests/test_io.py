@@ -144,6 +144,214 @@ def test_read_voxel_size_xyz_is_none_for_what_it_cannot_read(tmp_path):
     assert read_voxel_size_xyz(not_a_tiff) is None
 
 
+# --- an OME-TIFF's voxel size, from its OME header ---------------------------
+#
+# tifffile writes one pixel per unit into the resolution tags of a file it is
+# given no resolution for, so an OME-TIFF's tags say 1 micron whatever its
+# voxels are. Its size is the OME-XML header's PhysicalSizeX/Y/Z.
+
+MUSCLE_XYZ = (0.91, 0.91, 4.94)
+
+
+def _ome_tiff(path, sizes, shape=(4, 6, 8), **kwargs):
+    import tifffile
+
+    tifffile.imwrite(
+        path,
+        np.zeros(shape, dtype=np.uint8),
+        ome=True,
+        metadata={"axes": "ZYX", **sizes},
+        **kwargs,
+    )
+    return path
+
+
+def _ome_sizes(xyz, unit=None):
+    sizes = {}
+    for axis, size in zip("XYZ", xyz):
+        sizes[f"PhysicalSize{axis}"] = size
+        if unit is not None:
+            sizes[f"PhysicalSize{axis}Unit"] = unit
+    return sizes
+
+
+def test_an_ome_tiffs_voxel_size_is_read_from_its_ome_header(tmp_path, caplog):
+    """Regression: the skeletal-muscle stack, 0.913 x 0.913 x 4.94 um in its OME
+    header, ran on 1 um on every axis -- read from tags saying one pixel per
+    unit -- with a warning about z alone."""
+    import logging
+
+    import tifffile
+
+    from haemolynx.io import load_3d_tif_with_voxel_size, resolve_voxel_size_xyz
+
+    path = _ome_tiff(tmp_path / "muscle.ome.tif", _ome_sizes(MUSCLE_XYZ))
+    with tifffile.TiffFile(path) as tif:
+        # The trap: the tags are there, and say 1.
+        assert tif.pages[0].tags["XResolution"].value == (1, 1)
+
+    with caplog.at_level(logging.WARNING, logger="haemolynx"):
+        _image, x, y, z, status = load_3d_tif_with_voxel_size(str(path))
+        resolved, source = resolve_voxel_size_xyz((x, y, z), status, None, "auto")
+
+    assert (x, y, z) == pytest.approx(MUSCLE_XYZ)
+    assert status["status"] == "complete"
+    assert status["source"] == "ome_metadata"
+    assert status["axis_sources"] == {"x": "ome_metadata", "y": "ome_metadata", "z": "ome_metadata"}
+    assert resolved == pytest.approx(MUSCLE_XYZ)
+    assert source == "metadata"
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+@pytest.mark.parametrize(
+    "unit, per_micron",
+    [("nm", 1000.0), ("mm", 1e-3), ("cm", 1e-4), ("µm", 1.0)],
+)
+def test_ome_sizes_are_converted_to_microns_from_their_unit(tmp_path, unit, per_micron):
+    from haemolynx.io import load_3d_tif_with_voxel_size
+
+    in_unit = tuple(size * per_micron for size in ANISOTROPIC_XYZ)
+    path = _ome_tiff(tmp_path / "units.ome.tif", _ome_sizes(in_unit, unit))
+
+    _image, x, y, z, status = load_3d_tif_with_voxel_size(str(path))
+
+    assert (x, y, z) == pytest.approx(ANISOTROPIC_XYZ)
+    assert status["status"] == "complete"
+
+
+def test_ome_sizes_follow_the_axis_order_the_pages_are_read_with(tmp_path):
+    """OME's X, Y and Z are the file's width, height and planes, as the tags
+    are: in a stack whose pages step along x, PhysicalSizeZ is the x spacing."""
+    from haemolynx.io import load_3d_tif_with_voxel_size, read_voxel_size_xyz
+
+    # Width 0.5, height 0.25, pages 2.0.
+    path = _ome_tiff(tmp_path / "pages_along_x.ome.tif", _ome_sizes((0.5, 0.25, 2.0)))
+
+    _image, x, y, z, status = load_3d_tif_with_voxel_size(str(path), axis_order="xyz")
+    assert (x, y, z) == pytest.approx((2.0, 0.25, 0.5))
+    assert status["status"] == "complete"
+    assert read_voxel_size_xyz(path, "xyz")[0] == pytest.approx((2.0, 0.25, 0.5))
+
+    _image, x, y, z, _status = load_3d_tif_with_voxel_size(str(path))
+    assert (x, y, z) == pytest.approx((0.5, 0.25, 2.0))
+
+
+def test_read_voxel_size_xyz_reads_an_ome_tiffs_header(tmp_path, monkeypatch):
+    """Regression: it returned None for the muscle stack, whose tags of 1 and
+    missing ImageJ spacing looked like a file saying nothing, so the panel drew
+    it at 1 um. Still a header read."""
+    import tifffile
+
+    from haemolynx.io import read_voxel_size_xyz
+
+    path = _ome_tiff(tmp_path / "muscle.ome.tif", _ome_sizes(MUSCLE_XYZ))
+
+    def _refuse(self, *args, **kwargs):
+        raise AssertionError("asarray was called; this should be a header read")
+
+    monkeypatch.setattr(tifffile.TiffFile, "asarray", _refuse)
+    found, status = read_voxel_size_xyz(path)
+
+    assert found == pytest.approx(MUSCLE_XYZ)
+    assert status["source"] == "ome_metadata"
+    assert status["status"] == "complete"
+
+
+def test_an_axis_the_ome_header_has_no_size_for_is_read_from_the_tags(tmp_path):
+    from haemolynx.io import load_3d_tif_with_voxel_size
+
+    path = _ome_tiff(
+        tmp_path / "z_only.ome.tif",
+        {"PhysicalSizeZ": ANISOTROPIC_XYZ[2]},
+        resolution=(1.0 / ANISOTROPIC_XYZ[0], 1.0 / ANISOTROPIC_XYZ[1]),
+    )
+
+    _image, x, y, z, status = load_3d_tif_with_voxel_size(str(path))
+
+    assert (x, y, z) == pytest.approx(ANISOTROPIC_XYZ)
+    assert status["status"] == "complete"
+    assert status["axis_sources"] == {"x": "tiff_metadata", "y": "tiff_metadata", "z": "ome_metadata"}
+
+
+def test_an_imagej_stack_with_only_a_spacing_reads_as_it_did_before(tmp_path):
+    """The ImageJ path is unchanged. ImageJ writes ResolutionUnit NONE beside
+    unit=micron, so a stricter reading of the tags' unit would break files
+    that load correctly."""
+    import tifffile
+
+    from haemolynx.io import load_3d_tif_with_voxel_size
+
+    path = tmp_path / "spacing_only.tif"
+    tifffile.imwrite(
+        path, np.zeros((4, 6, 8), dtype=np.uint8), imagej=True,
+        metadata={"spacing": 2.0, "unit": "um"},
+    )
+
+    _image, x, y, z, status = load_3d_tif_with_voxel_size(str(path))
+
+    assert (x, y, z) == pytest.approx((1.0, 1.0, 2.0))
+    assert status["status"] == "complete"
+    assert status["source"] == "tiff_metadata"
+    assert status["axis_sources"] == {"x": "tiff_metadata", "y": "tiff_metadata", "z": "tiff_metadata"}
+
+
+def _ome_xml(pixels_attributes):
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06">'
+        f'<Image ID="Image:0"><Pixels ID="Pixels:0" {pixels_attributes}/></Image>'
+        "</OME>"
+    )
+
+
+@pytest.mark.parametrize(
+    "attributes, expected",
+    [
+        ('PhysicalSizeX="0.4" PhysicalSizeY="0.5" PhysicalSizeZ="2"', {"x": 0.4, "y": 0.5, "z": 2.0}),
+        ('PhysicalSizeX="400" PhysicalSizeXUnit="nm"', {"x": 0.4}),
+        # Greek mu, which some writers use in place of the schema's micro sign.
+        ('PhysicalSizeX="0.4" PhysicalSizeXUnit="μm"', {"x": 0.4}),
+        ('PhysicalSizeX="4" PhysicalSizeXUnit="Å"', {"x": 4e-4}),
+        ('SizeX="8"', {}),
+    ],
+)
+def test_ome_physical_sizes_are_read_in_microns(attributes, expected):
+    from haemolynx.io.load import _ome_physical_sizes_um
+
+    assert _ome_physical_sizes_um(_ome_xml(attributes)) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        'PhysicalSizeX="3" PhysicalSizeXUnit="pixel"',
+        'PhysicalSizeX="0"',
+        'PhysicalSizeX="-0.4"',
+        'PhysicalSizeX="wide"',
+    ],
+)
+def test_an_ome_size_that_is_not_a_voxel_size_is_left_out_with_a_warning(attributes, caplog):
+    """Left out, so the tags are read for that axis instead; warned about,
+    since those tags may well say 1."""
+    import logging
+
+    from haemolynx.io.load import _ome_physical_sizes_um
+
+    with caplog.at_level(logging.WARNING, logger="haemolynx"):
+        sizes = _ome_physical_sizes_um(_ome_xml(attributes + ' PhysicalSizeY="0.5"'))
+
+    assert sizes == pytest.approx({"y": 0.5})
+    [warning] = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert "PhysicalSizeX" in warning
+
+
+@pytest.mark.parametrize("ome_xml", [None, "", "<OME", "<OME/>"])
+def test_an_ome_header_without_a_pixels_element_gives_no_sizes(ome_xml):
+    from haemolynx.io.load import _ome_physical_sizes_um
+
+    assert _ome_physical_sizes_um(ome_xml) == {}
+
+
 # --- run_ilastik_headless_segmentation ---------------------------------------
 #
 # These run a real process: a small Python stand-in for ilastik behind a

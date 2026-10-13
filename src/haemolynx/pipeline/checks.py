@@ -620,6 +620,23 @@ def check_tissue_volume_image(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
+def check_crop_on_import(settings: Mapping[str, Any]) -> CheckReport:
+    """The crop box must be one that some image could hold: three whole
+    numbers for its size or each corner, and its start not past its end.
+    Whether it fits *this* image is only known once it is loaded."""
+    report = CheckReport()
+    if not settings.get("crop_on_import"):
+        return report
+    from haemolynx.io.crop import crop_problems
+
+    problems = crop_problems(settings)
+    for problem in problems:
+        report.add_error(f"Crop on import: {problem}")
+    if not problems:
+        report.add_pass("crop on import", str(settings.get("crop_method")))
+    return report
+
+
 def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     """Every pre-run check, printed as a checklist.
 
@@ -641,5 +658,6 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_raw_image(settings))
     report.extend(check_image_channels(settings))
     report.extend(check_tissue_volume_image(settings))
+    report.extend(check_crop_on_import(settings))
     report.print("Preflight")
     return report

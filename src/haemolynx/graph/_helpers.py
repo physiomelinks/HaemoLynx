@@ -15,7 +15,13 @@ def edge_id(u: Any, v: Any, key: Any) -> Tuple[Any, Any, Any]:
     ``(u, v, key)`` and ``(v, u, key)`` name the same edge, so callers that key
     dicts or sets by edge must normalise first or they will count it twice.
     """
-    return (u, v, key) if u <= v else (v, u, key)
+    try:
+        first = u <= v
+    except TypeError:
+        # Node ids of two kinds (a hand-built graph's tuples beside the ints
+        # a rewiring adds): ordered by their text, the same way every call.
+        first = str(u) <= str(v)
+    return (u, v, key) if first else (v, u, key)
 
 
 def sort_nodes(nodes) -> List[Any]:

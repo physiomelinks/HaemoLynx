@@ -77,7 +77,8 @@ _SAMPLE_STEP_UM = 0.5
 #: A stretch shorter than this (2 um) between others is the region's edge or the
 #: tree's tolerance flickering along a centreline, not a vessel leaving or
 #: entering: it takes its neighbour's label.
-_MIN_RUN_SAMPLES = int(round(2.0 / _SAMPLE_STEP_UM))
+_MIN_RUN_UM = 2.0
+_MIN_RUN_SAMPLES = int(round(_MIN_RUN_UM / _SAMPLE_STEP_UM))
 
 #: A stretch of an edge near the centreline tree is the thick vessel's own
 #: centreline only if it is at least this long (µm): from an end of the edge
@@ -91,14 +92,19 @@ _OUTSIDE, _CENTRELINE, _INSIDE = 0, 1, 2
 
 
 def _runs(
-    inside_flags: list, *, min_run_length: int = 2
+    inside_flags: list, *, min_run_length: int = 2, min_run_um: float | None = None, along=None
 ) -> list[tuple[int, int, Any]]:
     """Contiguous ``(start, end inclusive, value)`` runs over the whole sequence.
 
-    A run shorter than *min_run_length* is a single-sample flicker right at
-    a boundary (voxel-grid discretisation, not a real crossing) and gets
-    absorbed into a neighbouring run rather than becoming its own
-    degenerate edge.
+    A run shorter than *min_run_length* samples -- or, with *along* (each
+    sample's arc length from the first) and *min_run_um*, shorter than that
+    in microns -- is a flicker right at a boundary (voxel-grid
+    discretisation, not a real crossing) and gets absorbed into a
+    neighbouring run rather than becoming its own degenerate edge. Judged
+    in microns, because a voxel path densified to half a voxel is sampled
+    more often than every 0.5 um: counted in samples, a vessel dipping out
+    of the region for 1.5 um came back as a 1.5 um vessel between two
+    bridges, a loop inside the thick lumen.
     """
     if not inside_flags:
         return []
@@ -112,11 +118,23 @@ def _runs(
             current = inside_flags[i]
     raw.append([start, len(inside_flags) - 1, current])
 
+    def long_enough(s: int, e: int) -> bool:
+        if min_run_um is not None and along is not None:
+            # The crossings lie between samples: the run reaches half a
+            # step past its first and last sample, where there is one.
+            reach = float(along[e] - along[s])
+            if s > 0:
+                reach += float(along[s] - along[s - 1]) / 2.0
+            if e + 1 < len(inside_flags):
+                reach += float(along[e + 1] - along[e]) / 2.0
+            return reach >= min_run_um
+        return e - s + 1 >= min_run_length
+
     changed = True
     while changed and len(raw) > 1:
         changed = False
         for i, (s, e, _inside) in enumerate(raw):
-            if e - s + 1 >= min_run_length:
+            if long_enough(s, e):
                 continue
             if i == 0:
                 raw[1][0] = s
@@ -383,9 +401,9 @@ def insert_thick_vessel_junction_nodes(
             continue
         labels = np.where(on_tree, _CENTRELINE, np.where(in_region, _INSIDE, _OUTSIDE))
         absorbed = np.empty_like(labels)
-        for s, e, value in _runs(labels.tolist(), min_run_length=_MIN_RUN_SAMPLES):
-            absorbed[s : e + 1] = value
         along = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))])
+        for s, e, value in _runs(labels.tolist(), min_run_um=_MIN_RUN_UM, along=along):
+            absorbed[s : e + 1] = value
         last = len(points) - 1
         for s, e, value in _runs(absorbed.tolist(), min_run_length=1):
             if value != _CENTRELINE or (s == 0 and e == last):
@@ -806,6 +824,28 @@ def _cut_off_edges(G, built, edges_at, new_node_at) -> set[int]:
                 edges.add(edge_of_new[n])
             edges.update(i for i, _end in edges_at.get(n, ()))
     return edges
+
+
+def remove_dangling_bridges(G: nx.MultiGraph) -> int:
+    """Take out, in place, every bridge with a dead end -- a bridge is never
+    one: it joins a vessel to the thick centreline, so one whose vessel a
+    clean-up took out joins nothing. Repeated until none is left, with the
+    nodes left bare. Returns how many went."""
+    removed = 0
+    while True:
+        dangling = [
+            (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
+            if data.get(IS_ZERO_RESISTANCE) and (G.degree[u] == 1 or G.degree[v] == 1)
+        ]
+        if not dangling:
+            return removed
+        for u, v, key in dangling:
+            if G.has_edge(u, v, key):
+                G.remove_edge(u, v, key)
+                removed += 1
+            for node in (u, v):
+                if G.has_node(node) and G.degree[node] == 0:
+                    G.remove_node(node)
 
 
 def contract_bridges(G: nx.MultiGraph) -> tuple[nx.MultiGraph, dict[Any, Any]]:

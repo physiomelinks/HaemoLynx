@@ -5,6 +5,7 @@ from typing import Any, Callable, List, Optional, Tuple, Union
 import numpy as np
 import networkx as nx
 
+from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 from ._helpers import (
     get_all_edge_data,
     create_merged_edge_attributes,
@@ -385,6 +386,11 @@ def smart_multigraph_degree2_removal(
 
             _, n1, k1, d1 = edges[0]
             _, n2, k2, d2 = edges[1]
+
+            # A thick-vessel bridge is not vessel: merged with one, the
+            # vessel would lose its resistance or the bridge gain one.
+            if d1.get(IS_ZERO_RESISTANCE) or d2.get(IS_ZERO_RESISTANCE):
+                continue
 
             # Degenerate case: both incident edges point to the same neighbor.
             # Removing the node here can collapse/erase valid parallel paths.

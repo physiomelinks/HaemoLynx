@@ -898,3 +898,104 @@ def test_graph_building_tells_duplicate_edges_apart_by_the_mask(tmp_path, monkey
 
     assert captured["stub_radius_at"] is None
     np.testing.assert_array_equal(captured["segmentation_mask"], mask)
+
+
+# --- the thick-vessel region kept between runs (preprocessing/thick_vessel_region_cache.py) ---
+
+
+def _never_found(*_args, **_kwargs):
+    pytest.fail("the thick-vessel region should have come from the cache")
+
+
+def test_a_second_run_reads_the_thick_vessel_region_the_first_found(tmp_path, monkeypatch):
+    """The region is found once and kept beside the skeleton; a run with the
+    same mask and settings reads it back and skeletonises the same."""
+    from haemolynx.preprocessing import thick_vessels as module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True
+    )
+    first = skeletonise(settings, segment(settings))
+    assert first.thick_vessel_mask is not None
+    assert (first.output_dir / "mask_thick_vessel_region.json").exists()
+    assert (first.output_dir / "mask_thick_vessel_region.npy").exists()
+
+    monkeypatch.setattr(module, "thick_vessel_object_mask", _never_found)
+    second = skeletonise(settings, segment(settings))
+    assert np.array_equal(second.skeleton, first.skeleton)
+    assert np.array_equal(second.thick_vessel_mask, first.thick_vessel_mask)
+
+
+def test_a_changed_setting_or_mask_finds_the_region_again(tmp_path, monkeypatch):
+    from haemolynx.preprocessing import thick_vessels as module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True
+    )
+    skeletonise(settings, segment(settings))
+    real = module.thick_vessel_object_mask
+    radii = []
+
+    def spy(*args, **kwargs):
+        radii.append(kwargs["min_radius_um"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(module, "thick_vessel_object_mask", spy)
+    settings["skeleton_thick_vessel_min_radius_um"] = 5.0
+    skeletonise(settings, segment(settings))
+    assert radii == [5.0]
+    skeletonise(settings, segment(settings))  # the new entry serves
+    assert radii == [5.0]
+    settings["skeleton_thick_vessel_min_radius_um"] = THICK_VESSEL_MIN_RADIUS_UM
+    skeletonise(settings, segment(settings))  # one entry per run output: the old one is gone
+    assert radii == [5.0, THICK_VESSEL_MIN_RADIUS_UM]
+
+    changed = mask.copy()
+    assert not changed[0, 0, 0]
+    changed[0, 0, 0] = True
+    _write_mask(tmp_path, changed)
+    skeletonise(settings, segment(settings))
+    assert len(radii) == 3
+
+
+def test_a_mask_with_no_thick_region_is_remembered_too(tmp_path, monkeypatch):
+    from haemolynx.preprocessing import thick_vessels as module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path,
+        _write_mask(tmp_path, mask),
+        use_thick_vessel_skeletonisation=True,
+        skeleton_thick_vessel_min_radius_um=50.0,
+    )
+    first = skeletonise(settings, segment(settings))
+    assert first.thick_vessel_mask is None
+
+    monkeypatch.setattr(module, "thick_vessel_object_mask", _never_found)
+    second = skeletonise(settings, segment(settings))
+    assert second.thick_vessel_mask is None
+    assert np.array_equal(second.skeleton, first.skeleton)
+
+
+def test_a_run_loading_its_skeleton_gets_the_region_back_from_the_cache(tmp_path, monkeypatch):
+    """With do_skeletonize off the region used to be None whatever the
+    settings said, and graph building made no thick-vessel bridges."""
+    from haemolynx.preprocessing import thick_vessels as module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True
+    )
+    first = skeletonise(settings, segment(settings))
+
+    monkeypatch.setattr(module, "thick_vessel_object_mask", _never_found)
+    settings["do_skeletonize"] = False
+    loaded = skeletonise(settings, segment(settings))
+    assert np.array_equal(loaded.skeleton, first.skeleton)
+    assert np.array_equal(loaded.thick_vessel_mask, first.thick_vessel_mask)
+
+    # No entry for these settings: None, as before there was a cache.
+    settings["skeleton_thick_vessel_min_radius_um"] = 5.0
+    assert skeletonise(settings, segment(settings)).thick_vessel_mask is None

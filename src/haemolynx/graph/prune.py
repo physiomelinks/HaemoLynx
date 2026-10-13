@@ -64,13 +64,24 @@ def _chain_path(G: nx.MultiGraph, edges: list) -> np.ndarray:
     return densify_polyline(np.vstack(pieces), max_step_um=0.5)
 
 
-def _centreline_index(G: nx.MultiGraph, lumen_radius_at):
+def _centreline_index(G: nx.MultiGraph, lumen_radius_at, memo: Optional[dict] = None):
     """Every edge's centreline points with their lumen radii, for judging a
     stub against the other vessels: ``(tree, radii, owner per point, owner
-    id per edge)``, or ``None`` for a graph without edges."""
+    id per edge, points)``, or ``None`` for a graph without edges.
+
+    *memo*, a dict a caller passes to every call on one graph and one mask,
+    keeps each edge's points and radii under the signature of its path
+    (``diagnostics._edge_signature``): an edge unchanged since the last
+    call reads no lumen radius again. The radii were the cost -- the
+    clean-up prunes every round, and a round changes a few edges.
+    """
     from scipy.spatial import cKDTree
 
-    points, owners, ids = [], [], {}
+    from .diagnostics import _edge_signature
+
+    remembered = memo if memo is not None else {}
+    kept: dict = {}
+    points, radii, owners, ids = [], [], [], {}
     every = (
         G.edges(keys=True, data=True) if G.is_multigraph()
         else ((u, v, None, data) for u, v, data in G.edges(data=True))
@@ -79,15 +90,43 @@ def _centreline_index(G: nx.MultiGraph, lumen_radius_at):
         if u == v:
             continue
         node_pos = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (u, v)}
-        piece = densify_polyline(edge_sample_points(u, v, data, node_pos), max_step_um=1.0)
+        signature = _edge_signature((u, v, key), data, node_pos[u], node_pos[v]) if memo is not None else None
+        if signature in remembered:
+            piece, piece_radii = remembered[signature]
+        else:
+            piece = densify_polyline(edge_sample_points(u, v, data, node_pos), max_step_um=1.0)
+            piece_radii = np.asarray(lumen_radius_at(piece), dtype=float).reshape(-1)
+        if signature is not None:
+            kept[signature] = (piece, piece_radii)
         owner = ids.setdefault((frozenset((u, v)), key), len(ids))
         points.append(piece)
+        radii.append(piece_radii)
         owners.extend([owner] * len(piece))
+    if memo is not None:
+        memo.clear()
+        memo.update(kept)
     if not points:
         return None
     points = np.vstack(points)
-    radii = np.asarray(lumen_radius_at(points), dtype=float).reshape(-1)
-    return cKDTree(points), radii, np.asarray(owners, dtype=np.intp), ids
+    return cKDTree(points), np.concatenate(radii), np.asarray(owners, dtype=np.intp), ids, points
+
+
+def _index_without(index, dead_owners: set):
+    """*index* with the points of the edges *dead_owners* own left out: the
+    tree is rebuilt from the points kept, no lumen radius read again -- the
+    radii were the cost (built afresh every pass, the index was most of the
+    prune's time, and within one call only stubs go)."""
+    from scipy.spatial import cKDTree
+
+    if index is None or not dead_owners:
+        return index
+    _tree, radii, owners, ids, points = index
+    keep = ~np.isin(owners, np.asarray(sorted(dead_owners), dtype=np.intp))
+    if keep.all():
+        return index
+    if not keep.any():
+        return None
+    return cKDTree(points[keep]), radii[keep], owners[keep], ids, points[keep]
 
 
 def _edge_data(G, edge) -> dict:
@@ -141,6 +180,7 @@ def prune_vascular_stubs(
     mask_continues_at: Optional[Callable[[np.ndarray, np.ndarray], bool]] = None,
     lumen_radius_at: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     image_face_test: Optional[Callable[[Any, np.ndarray], bool]] = None,
+    index_memo: Optional[dict] = None,
 ) -> Union[nx.Graph, nx.MultiGraph]:
     """Iteratively remove short terminal stubs until convergence.
 
@@ -184,7 +224,9 @@ def prune_vascular_stubs(
 
     Stubs at an image face are kept as before; the two whatever-its-length
     rules apply there too, since neither is a vessel the image cut through.
-    *image_face_test* ``(tip, path_from_junction) -> bool``, when given,
+    *index_memo*, a dict passed to every call on one graph and mask, keeps
+    the centreline index's points and radii per unchanged edge between
+    calls (``_centreline_index``). *image_face_test* ``(tip, path_from_junction) -> bool``, when given,
     decides which short stubs are at a face instead of *image_extent_um*'s
     "within its own threshold" -- the dead-end definition's
     ``leaves_image`` (``assemble.lumen_cleanup``'s ``stub_face_protection``).
@@ -225,7 +267,7 @@ def prune_vascular_stubs(
     def inside_other_lumens(path: np.ndarray, edges: list, index) -> bool:
         """Whether the stub never gets more than its own radius outside the
         lumen of a centreline that is not its own."""
-        tree, radii, owners, ids = index
+        tree, radii, owners, ids, _points = index
         own = [ids.get((frozenset((a, b)), key), -1) for a, b, key in edges]
         k = min(16, len(owners))
         distance, nearest = tree.query(path, k=k)
@@ -256,6 +298,7 @@ def prune_vascular_stubs(
     not_vessels = 0
     protected: set = set()
     iteration = 0
+    index = None
 
     while iteration < max_iterations:
         iteration += 1
@@ -268,9 +311,8 @@ def prune_vascular_stubs(
         ]
         nodes_to_remove.extend(n for n in G_pruned.nodes() if G_pruned.degree(n) == 0)
         chains = {node: _chain(G_pruned, node) for node in terminal_nodes}
-        index = None
-        if inside_lumen is not None and lumen_radius_at is not None:
-            index = _centreline_index(G_pruned, lumen_radius_at)
+        if inside_lumen is not None and lumen_radius_at is not None and iteration == 1:
+            index = _centreline_index(G_pruned, lumen_radius_at, memo=index_memo)
         for node in terminal_nodes:
             nodes, edges = chains[node]
             junction = nodes[-1]
@@ -317,6 +359,17 @@ def prune_vascular_stubs(
                     logger.debug(f"  Warning: Could not calculate edge length: {e}")
                 nodes_to_remove.extend(goes)
 
+        if index is not None and nodes_to_remove:
+            # The stubs about to go leave the index: their points would be
+            # read as other vessels' lumens by the stubs judged next pass.
+            dead = {
+                index[3].get((frozenset((a, b)), key)) for n in set(nodes_to_remove)
+                for a, b, key in (
+                    G_pruned.edges(n, keys=True) if G_pruned.is_multigraph()
+                    else ((a, b, None) for a, b in G_pruned.edges(n))
+                )
+            }
+            index = _index_without(index, {d for d in dead if d is not None})
         G_pruned.remove_nodes_from(nodes_to_remove)
         nodes_after = G_pruned.number_of_nodes()
         removed_this_iteration = nodes_before - nodes_after
@@ -394,6 +447,30 @@ def flow_is_undefined(data: dict) -> bool:
     if state is not None:
         return state == "no_boundary"
     return data.get(FLOW_SOLVED) is False
+
+
+def zero_flows_behind_dead_ends(G: Union[nx.Graph, nx.MultiGraph]) -> int:
+    """Set ``flow_abs``, ``flow_signed`` and ``pressure_drop`` to exactly 0.0
+    (``flow_abs_log10`` to match) on every vessel whose :data:`FLOW_STATE` is
+    ``blind_end`` or ``closed_end``; return how many. Nothing drives a flow
+    through them, so what the pressure solve left there is rounding (up to
+    5e-20 m^3/s on E14.5, either sign). Their ``pressure_u``/``pressure_v``
+    stay as solved: the junction's pressure, which is the answer. Only the
+    attributes a solve wrote are touched. Run after
+    ``haemodynamics.set_edge_flows`` on any graph whose flow states are marked
+    (:func:`mark_flow_solved_edges`, or copied from the baseline that was)."""
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    zero = {"pressure_drop": 0.0, "flow_signed": 0.0, "flow_abs": 0.0,
+            "flow_abs_log10": flow_abs_log10_value(0.0)}
+    zeroed = 0
+    for *_edge, data in G.edges(data=True):
+        if data.get(FLOW_STATE) in ("blind_end", "closed_end") and "flow_signed" in data:
+            for name, value in zero.items():
+                if name in data:
+                    data[name] = value
+            zeroed += 1
+    return zeroed
 
 
 def _components_by_io(

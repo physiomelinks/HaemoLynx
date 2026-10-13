@@ -1790,8 +1790,15 @@ def skeletonize_thickness_gated(
     tile_large_components: bool = False,
     tile_max_voxels: int = 200_000_000,
     tile_halo_voxels: int = 0,
+    thick_region: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray | None]:
     """Lee on the thin catchment; an EDT-ridge tree (every arm) inside the fat catchment.
+
+    *thick_region*, when given, is the fat catchment found before from this
+    mask and these arguments (:func:`thick_vessel_region`'s answer, all
+    False where it found none -- see
+    :mod:`~haemolynx.preprocessing.thick_vessel_region_cache`), and finding
+    it, the slow part, is skipped. Nothing else reads it.
 
     ``min_radius_um <= 0`` is the current pipeline behaviour: Lee on the whole
     mask. Capillaries fused into the same object never enter the ridge path
@@ -1890,22 +1897,36 @@ def skeletonize_thickness_gated(
         skeleton = (lee(mask) if low_ram else skeletonize_volume(mask)).astype(bool)
         return (skeleton, None) if return_thick_mask else skeleton
 
-    logger.info(
-        "skeletonize_thickness_gated: computing fat catchment (input shape %s, "
-        "%d foreground voxels)",
-        mask.shape,
-        int(mask.sum()),
-    )
     t0 = time.perf_counter()
-    thick = thick_vessel_object_mask(
-        mask,
-        min_radius_um=float(min_radius_um),
-        voxel_size_zyx=voxel_size_zyx,
-        wall_absorption_um=wall_absorption_um,
-        restrict_to_mask=restrict_thick_to_mask,
-        use_memmap=use_memmap,
-        memmap_directory=memmap_directory,
-    )
+    if thick_region is not None:
+        thick = np.asarray(thick_region, dtype=bool)
+        if thick.shape != mask.shape:
+            raise ValueError(
+                f"The thick-vessel region given is {thick.shape} voxels but the mask "
+                f"is {mask.shape}: it was found in a different image."
+            )
+        logger.info(
+            "skeletonize_thickness_gated: fat catchment found before (input shape %s, "
+            "%d foreground voxels)",
+            mask.shape,
+            int(mask.sum()),
+        )
+    else:
+        logger.info(
+            "skeletonize_thickness_gated: computing fat catchment (input shape %s, "
+            "%d foreground voxels)",
+            mask.shape,
+            int(mask.sum()),
+        )
+        thick = thick_vessel_object_mask(
+            mask,
+            min_radius_um=float(min_radius_um),
+            voxel_size_zyx=voxel_size_zyx,
+            wall_absorption_um=wall_absorption_um,
+            restrict_to_mask=restrict_thick_to_mask,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
+        )
     t_catchment = time.perf_counter() - t0
     if not thick.any():
         skeleton = (lee(mask) if low_ram else skeletonize_volume(mask)).astype(bool)

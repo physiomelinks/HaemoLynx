@@ -25,6 +25,7 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..io.crop import CROP_LOCATIONS, CROP_METHODS, CROP_Z_LOCATIONS
 from ..parsers import Schema, Setting, dump_config
 
 # Path defaults are relative, and so are resolved against the directory a run
@@ -305,7 +306,13 @@ SCHEMA = Schema(
             name="ilastik_output_dir",
             kind="path",
             default=f"{_OUTPUTS}/segmentations",
-            help="Write ilastik-generated segmentations into this directory",
+            help=(
+                "Write ilastik-generated segmentations into this directory, as "
+                "{image stem}_segmented for the main image and {image stem}_"
+                "{large|small}_{arteriole|venule}_segmented for the vessel masks, "
+                "so one raw stack segmented by several classifiers keeps every "
+                "output"
+            ),
             section=_INPUT_AND_SEGMENTATION,
             advanced=True,
         ),
@@ -666,6 +673,93 @@ SCHEMA = Schema(
             unit="um3",
             minimum=0.0,
             requires=("segmentation_cleanup", "segmentation_cleanup_remove_small_volumes"),
+        ),
+        # ------------------------------------------------------------------
+        # Crop on import (Input tab, under Segmentation cleanup): one box of
+        # voxels cut out of the main image and every volume read alongside it,
+        # as each is loaded (see io.crop). Off by default.
+        # ------------------------------------------------------------------
+        Setting(
+            name="crop_on_import",
+            kind="bool",
+            default=False,
+            help=(
+                "Analyse only one box of the image: crop the input image, and every "
+                "mask and raw image read alongside it, to the same box of voxels as "
+                "each is loaded. Every position after that -- node positions, the "
+                "exports, boundary node coordinates and volumes -- is measured from "
+                "the box's corner, not the whole image's"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+        ),
+        Setting(
+            name="crop_method",
+            kind="choice",
+            default="size",
+            help=(
+                "Give the box as a size in voxels placed at a location (size), or as "
+                "the voxel coordinates of two opposite corners (coordinates)"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            choices=CROP_METHODS,
+            requires=("crop_on_import",),
+        ),
+        Setting(
+            name="crop_size_xyz",
+            kind="int_list",
+            default=None,
+            help=(
+                "Keep this many voxels along x, y and z; an axis shorter than this "
+                "is kept whole"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            unit="voxels",
+            requires=("crop_on_import", "crop_method=size"),
+        ),
+        Setting(
+            name="crop_location",
+            kind="choice",
+            default="centre",
+            help=(
+                "Place the box here in the x-y plane, as napari draws a slice "
+                "(top is y = 0, left is x = 0)"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            choices=CROP_LOCATIONS,
+            requires=("crop_on_import", "crop_method=size"),
+        ),
+        Setting(
+            name="crop_z_location",
+            kind="choice",
+            default="centre",
+            help="Take the box's slices from the start of the stack (z = 0), its middle, or its end",
+            section=_INPUT_AND_SEGMENTATION,
+            choices=CROP_Z_LOCATIONS,
+            requires=("crop_on_import", "crop_method=size"),
+        ),
+        Setting(
+            name="crop_start_xyz",
+            kind="int_list",
+            default=None,
+            help=(
+                "Start the box at this voxel (x, y, z), the corner with the smallest "
+                "index on every axis, as napari shows it under the cursor"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            unit="voxels",
+            requires=("crop_on_import", "crop_method=coordinates"),
+        ),
+        Setting(
+            name="crop_end_xyz",
+            kind="int_list",
+            default=None,
+            help=(
+                "End the box at this voxel (x, y, z), which is kept: the opposite "
+                "corner to crop_start_xyz. A corner past the image's edge stops at it"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            unit="voxels",
+            requires=("crop_on_import", "crop_method=coordinates"),
         ),
         # ------------------------------------------------------------------
         # Segmented-image quality check (Input tab): dataset-specific
@@ -1030,6 +1124,9 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=("use_large_vessel_masks", "automated_vessel_assignment"),
             advanced=True,
+            # The worker count was accepted and never read: the overlap
+            # tie-break has always run sequentially.
+            replaces={"automated_vessel_overlap_parallel_workers": {}},
         ),
         Setting(
             name="automated_vessel_assignment_fast_mode",
@@ -1062,23 +1159,6 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "automated_vessel_assignment_enable_overlap_cleanup",
                 "!automated_vessel_assignment_fast_mode",
-            ),
-            advanced=True,
-        ),
-        Setting(
-            name="automated_vessel_overlap_parallel_workers",
-            kind="int",
-            default=8,
-            help=(
-                "Worker count for parallel overlap tie-break resolution during "
-                "large-vessel assignment (0 or 1 = sequential)"
-            ),
-            section=_VESSEL_MASKS,
-            minimum=0,
-            requires=(
-                "use_large_vessel_masks",
-                "automated_vessel_assignment",
-                "automated_vessel_assignment_enable_overlap_cleanup",
             ),
             advanced=True,
         ),
@@ -1331,6 +1411,31 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="large_vessel_stump_min_component_fraction",
+            kind="float",
+            default=0.05,
+            help=(
+                "A large-vessel mask component gives a stump (an inlet or outlet "
+                "where the field of view cut the vessel off, the mask_stump "
+                "method) only when it holds at least this fraction of the voxels "
+                "of the mask's largest component. The specks a classifier leaves "
+                "at the image faces each used to seed an inlet of their own: on "
+                "E14.5 MCA, 468 arteriole components, of which the vessel is one "
+                "and the next largest 0.5% of it. 0 keeps every component"
+            ),
+            section=_VESSEL_MASKS,
+            unit="fraction",
+            minimum=0.0,
+            maximum=1.0,
+            requires=(
+                "use_large_vessel_masks",
+                "automated_vessel_assignment",
+                "!cut_network_at_large_vessel_volumes",
+                "assign_large_vessel_branch_orders",
+            ),
+            advanced=True,
+        ),
+        Setting(
             name="skeleton_thick_vessel_restrict_to_mask",
             kind="choice",
             default="off",
@@ -1493,9 +1598,10 @@ SCHEMA = Schema(
             default=0.0,
             help=(
                 "Maximum dilation (microns) for progressive small-vessel boundary "
-                "assignment: label at 0 µm, then in 5 µm steps up to this value, "
-                "locking each edge at the first step it is classified. There is no "
-                "separate load-time small-vessel dilation setting"
+                "assignment: label at 0 µm, then at 1 µm and in 5 µm steps up to "
+                "this value, each edge keeping the label of the first step that "
+                "reaches it; the boundary nodes are read from the final labels. "
+                "There is no separate load-time small-vessel dilation setting"
             ),
             section=_VESSEL_MASKS,
             minimum=0.0,
@@ -1513,6 +1619,8 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),
             advanced=True,
+            # Accepted and never read; the edge classification is sequential.
+            replaces={"small_vessel_overlap_parallel_workers": {}},
         ),
         Setting(
             name="small_vessel_boundary_assignment_fast_mode",
@@ -1545,23 +1653,6 @@ SCHEMA = Schema(
                 "automated_vessel_assignment",
                 "small_vessel_boundary_assignment_enable_overlap_cleanup",
                 "!small_vessel_boundary_assignment_fast_mode",
-            ),
-            advanced=True,
-        ),
-        Setting(
-            name="small_vessel_overlap_parallel_workers",
-            kind="int",
-            default=8,
-            help=(
-                "Worker count for parallel edge classification during small-vessel "
-                "boundary assignment (0 or 1 = sequential)"
-            ),
-            section=_VESSEL_MASKS,
-            minimum=0,
-            requires=(
-                "use_small_vessel_masks_for_boundary_assignment",
-                "automated_vessel_assignment",
-                "small_vessel_boundary_assignment_enable_overlap_cleanup",
             ),
             advanced=True,
         ),
@@ -1944,8 +2035,11 @@ SCHEMA = Schema(
             kind="bool",
             default=True,
             help=(
-                "If small-vessel mask labelling misses seed-edge coverage from "
-                "inlets/outlets, fall back to nodes at a fixed hop distance"
+                "For each inlet or outlet whose own vessels the small-vessel mask "
+                "of its class never reaches (nor the large one, when the large "
+                "vessels stay in the network), add the nodes a fixed hop distance "
+                "from it to that class's boundary nodes. The nodes the masks did "
+                "find are kept"
             ),
             section=_VESSEL_MASKS,
             requires=("use_small_vessel_masks_for_boundary_assignment", "automated_vessel_assignment"),

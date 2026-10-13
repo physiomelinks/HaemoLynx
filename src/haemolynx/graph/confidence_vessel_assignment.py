@@ -10,6 +10,7 @@ from scipy.ndimage import label
 from ._helpers import sort_nodes as _sort_nodes
 from .automated_vessel_assignment import (
     _build_dilation_schedule_microns,
+    _cut_from,
     _dilated_mask_from_cached_distance,
     _distance_from_mask_microns,
     _position_to_mask_index,
@@ -290,12 +291,29 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidenc
             )
             if idx is None:
                 continue
-            in_art = bool(step_art[idx])
-            in_ven = bool(step_ven[idx])
+            cut = _cut_from(G, node_id)
+            in_art = bool(step_art[idx]) or cut == "arteriole"
+            in_ven = bool(step_ven[idx]) or cut == "venule"
             if not in_art and not in_ven:
                 continue
             if node_id not in first_hit_dilation:
                 first_hit_dilation[node_id] = float(dilation_microns)
+            if cut in ("arteriole", "venule"):
+                # The cut made this terminal where the vessel left that mask:
+                # its edge runs outside the mask, so an overlap score would
+                # never assign it. The cut's own answer is certain.
+                decision = "input" if cut == "arteriole" else "output"
+                node_confidence[node_id] = {
+                    "decision": decision,
+                    "reason": "cut_from_large_vessel",
+                    "confidence": 1.0,
+                    "score_gap": 1.0,
+                    "first_hit_dilation_microns": float(first_hit_dilation[node_id]),
+                    "evaluated_dilation_microns": float(dilation_microns),
+                }
+                (assigned_inputs if decision == "input" else assigned_outputs).add(node_id)
+                assigned_this_step.append(node_id)
+                continue
 
             metrics = compute_overlapping_terminal_assignment_metrics(
                 G,

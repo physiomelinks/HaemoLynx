@@ -86,7 +86,9 @@ def main(argv: list[str] | None = None) -> int:
     from haemolynx import io as hio
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
     from haemolynx.pipeline import default_schema, resolve_settings
-    from haemolynx.pipeline.stages import graph_build_arguments, thick_vessel_mask_from_image
+    from haemolynx.pipeline.stages import (
+        graph_build_arguments, thick_vessel_mask_from_image, thick_vessel_region_cache,
+    )
     from haemolynx.preprocessing import MaskSupport
 
     settings = resolve_settings(schema=default_schema(), config_path=args.config)
@@ -106,9 +108,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.thick_vessel_mask and not args.no_thick_split:
         thick_path = Path(args.thick_vessel_mask)
     elif not args.no_thick_split and settings.get("use_thick_vessel_skeletonisation"):
-        print("Finding the thick-vessel region ...", flush=True)
+        print("Finding the thick-vessel region (or reading the run's cached one) ...", flush=True)
         thick = thick_vessel_mask_from_image(
-            settings, np.asarray(mask, dtype=bool), hio.voxel_size_xyz_from_zyx(voxel_size)
+            settings, np.asarray(mask, dtype=bool), hio.voxel_size_xyz_from_zyx(voxel_size),
+            cache=thick_vessel_region_cache(settings),
         )
         if thick is not None:
             thick_path = out / "thick_vessel_mask.npy"

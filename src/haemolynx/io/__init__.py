@@ -18,6 +18,7 @@ from .load_2d import (
 from .raw_volume_cache import load_raw_volume_reusing_cache
 from .ilastik import run_ilastik_headless_segmentation
 from .automated_vessel_assignment import (
+    clear_vessel_mask_cache,
     load_and_validate_vessel_masks,
     vessel_mask_arguments,
     load_large_vessel_masks,
@@ -56,6 +57,7 @@ __all__ = [
     "load_raw_volume_reusing_cache",
     "bridge_gaps",
     "run_ilastik_headless_segmentation",
+    "clear_vessel_mask_cache",
     "load_large_vessel_masks",
     "load_and_validate_vessel_masks",
     "vessel_mask_arguments",

@@ -202,7 +202,17 @@ def _pages(G, ends, facing_pairs, protected_tips):
         ahead, 24, key=lambda e: (e.ahead_um, e.ahead_background_um or 0.0, e.ahead_junctions_away or 99))]
     for pair in facing_pairs[: 30 - len(g3)]:
         g3.append((ends[pair.a], {"partner": ends[pair.b], "pair": pair}))
-    return {"G1": g1, "G2": g2, "G3": g3}
+    # L (PLAN_clean_graph.md, 3e): the dead ends nothing in the mask names,
+    # with the raw channel beside the segmentation. Half with a centreline
+    # straight ahead within 10 um, half without, each half spread by the
+    # chain's length in radii of the vessel it leaves.
+    unknown = [e for e in interior if e.kind == "unknown"]
+    ahead_key = lambda e: e.chain_length_um / max(e.junction_radius_um or 1.0, 1e-6)
+    with_ahead = [e for e in unknown if e.ahead_um is not None and e.ahead_um <= 10.0]
+    without = [e for e in unknown if e not in with_ahead]
+    grid_l = _evenly(with_ahead, 15, key=ahead_key) + _evenly(without, 15, key=ahead_key)
+    grid_l = [(e, {"target": e.ahead_um is not None}) for e in grid_l[:30]]
+    return {"G1": g1, "G2": g2, "G3": g3, "L": grid_l}
 
 
 PAGES = {
@@ -226,6 +236,20 @@ PAGES = {
                "If it ends inside, say in the note whether it is a real end, a broken vessel or not a vessel."],
         verdicts=[("F", "Leaves the image", "good"), ("I", "Ends inside", "bad"), ("?", "Unsure", "unsure")],
     ),
+    "L": dict(
+        title="Dead End Review L: dead ends the mask cannot name",
+        question="What is this dead end?",
+        lede=("An interior dead end (red) the mask rules call neither an artefact, nor stopped short, nor "
+              "broken, in its own plane; its heading cyan, and where a rule would join it to a vessel "
+              "ahead, that join yellow. Toggle 'Raw image' for the dextran channel: the one channel this "
+              "run has, and the only evidence beyond the segmentation."),
+        steps=["Look at where the red chain ends in the segmentation, then in the raw image.",
+               "S if it is a real blind end (a lumenised sprout); X if it is not a vessel; B if the vessel "
+               "goes on (draw where). ? if unsure.",
+               "Add a note on what decided it: was it the raw image, and what in it?"],
+        verdicts=[("S", "Real blind end", "good"), ("X", "Not a vessel", "bad"), ("B", "Broken: goes on", "bad"),
+                  ("?", "Unsure", "unsure")],
+    ),
     "G3": dict(
         title="Dead End Review G3: joins across a gap",
         question="Should these be joined?",
@@ -246,6 +270,7 @@ def main(argv=None) -> int:
     parser.add_argument("--voxel-size-zyx", type=float, nargs=3, required=True)
     parser.add_argument("--protected-key", help="a CSV with tip_zyx_vox of the stubs the prune keeps at a face")
     parser.add_argument("--out", required=True)
+    parser.add_argument("--only", action="append", default=[], help="build only these grids (repeatable)")
     args = parser.parse_args(argv)
 
     import tifffile
@@ -276,6 +301,8 @@ def main(argv=None) -> int:
     template = (HERE / "template.html").read_text(encoding="utf-8")
     rng = random.Random(SEED)
     for grid, chosen in _pages(G, ends, pairs, protected).items():
+        if args.only and grid not in args.only:
+            continue
         rng.shuffle(chosen)
         examples, rows = [], []
         for number, (end, extra) in enumerate(chosen, start=1):

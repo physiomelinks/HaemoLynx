@@ -248,8 +248,9 @@ def test_cluster_members_reaching_one_neighbour_through_one_lumen_keep_one_edge(
 
 
 def test_a_members_noise_route_is_merged_even_when_its_rewired_end_jumps_past_the_tolerance():
-    """A chained cluster 0-1-2-3-4 (4.5 um steps) collapses onto node 2, its
-    centroid. Node 4 reaches neighbour 5 by skeleton noise -- an approach
+    """A cluster 0-1-2-3-4 (4.5 um steps, every member within the 9 um
+    collapse distance of the centroid) collapses onto node 2, its centroid.
+    Node 4 reaches neighbour 5 by skeleton noise -- an approach
     onto node 2's route, then a voxel staircase never more than 1 um off it
     -- so that is node 2's vessel twice, and only the shorter copy stays.
     Re-ending node 4's path at node 2 adds a straight 9 um jump running up
@@ -278,7 +279,7 @@ def test_a_members_noise_route_is_merged_even_when_its_rewired_end_jumps_past_th
     # Whole-path separation alone would call the rewired noise a second vessel.
     assert path_separation(route, [[9.0, 0.0, 0.0]] + noise[1:]) > DEFAULT_DUPLICATE_PATH_TOLERANCE_UM
 
-    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=9.0)
 
     assert sorted(out.nodes) == [2, 5, 6, 7]
     assert out.number_of_edges(2, 5) == 1
@@ -390,3 +391,94 @@ def test_a_graph_with_fewer_than_two_positioned_nodes_is_left_alone():
     G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
     out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
     assert list(out.nodes) == [0]
+
+
+def _chain_graph(step_um: float, count: int):
+    """Junctions *count* in a row along x, *step_um* apart, each joined to the
+    next by a straight vessel of that length and carrying a side branch, with
+    an anchor 30 um beyond each end."""
+    G = nx.MultiGraph()
+    xs = [k * step_um for k in range(count)]
+    for k, x in enumerate(xs):
+        G.add_node(k, pos=np.array([x, 0.0, 0.0]))
+        G.add_node(100 + k, pos=np.array([x, 20.0, 0.0]))
+        side = [[x, 0.0, 0.0], [x, 20.0, 0.0]]
+        G.add_edge(k, 100 + k, voxels=side, length=20.0)
+    for k in range(count - 1):
+        path = [[xs[k], 0.0, 0.0], [xs[k + 1], 0.0, 0.0]]
+        G.add_edge(k, k + 1, voxels=path, length=step_um)
+    G.add_node(200, pos=np.array([xs[0] - 30.0, 0.0, 0.0]))
+    G.add_node(201, pos=np.array([xs[-1] + 30.0, 0.0, 0.0]))
+    G.add_edge(200, 0, voxels=[[xs[0] - 30.0, 0.0, 0.0], [xs[0], 0.0, 0.0]], length=30.0)
+    G.add_edge(count - 1, 201, voxels=[[xs[-1], 0.0, 0.0], [xs[-1] + 30.0, 0.0, 0.0]], length=30.0)
+    return G
+
+
+def test_a_run_of_junctions_closer_than_the_threshold_does_not_chain_into_one_node():
+    """Seven junctions 4 um apart span 24 um. Single-linkage over the repair
+    passes merged them all into one node at the middle, moving the end ones
+    12 um and deleting the vessel between them; on E14.5 one such cluster
+    held 81 nodes over 26 um. A cluster is now bounded: no node is moved
+    further than the collapse distance, so the run survives in pieces."""
+    G = _chain_graph(4.0, 7)
+    before = {n: np.array(G.nodes[n]["pos"]) for n in range(7)}
+
+    out = collapse_node_clusters_direction_aware(G, distance_threshold=5.0)
+
+    survivors = np.array([out.nodes[n]["pos"] for n in out.nodes])
+    for pos in before.values():
+        nearest = np.min(np.linalg.norm(survivors - pos, axis=1))
+        assert nearest <= 5.0, f"a node at {pos} was moved {nearest:.1f} um"
+    kept_along_the_run = sum(
+        d["length"] for u, v, d in out.edges(data=True)
+        if u < 100 and v < 100
+    )
+    assert kept_along_the_run >= 12.0
+    assert out.number_of_nodes() >= 3 + 7 + 2 - 4  # at least three pieces of the run
+
+
+def _loop_graph(arc_length_um: float):
+    """Two junctions 3 um apart joined twice: straight, and by an arc of
+    *arc_length_um* bowing out in y. Each junction also leads to an anchor."""
+    G = nx.MultiGraph()
+    a, b = np.array([0.0, 0.0, 0.0]), np.array([3.0, 0.0, 0.0])
+    G.add_node(0, pos=a)
+    G.add_node(1, pos=b)
+    G.add_node(2, pos=np.array([-30.0, 0.0, 0.0]))
+    G.add_node(3, pos=np.array([33.0, 0.0, 0.0]))
+    G.add_edge(0, 1, voxels=[a.tolist(), b.tolist()], length=3.0)
+    # A half-ellipse from a to b: scale its height until it is arc_length_um long.
+    t = np.linspace(0.0, math.pi, 200)
+    lo, hi = 0.0, arc_length_um
+    for _ in range(60):
+        h = 0.5 * (lo + hi)
+        arc = np.stack([1.5 - 1.5 * np.cos(t), h * np.sin(t), np.zeros_like(t)], axis=1)
+        length = calculate_path_length(arc.tolist())
+        lo, hi = (h, hi) if length < arc_length_um else (lo, h)
+    G.add_edge(0, 1, voxels=arc.tolist(), length=calculate_path_length(arc.tolist()))
+    G.add_edge(2, 0, voxels=[[-30.0, 0.0, 0.0], a.tolist()], length=30.0)
+    G.add_edge(1, 3, voxels=[b.tolist(), [33.0, 0.0, 0.0]], length=30.0)
+    return G
+
+
+def test_a_loop_longer_than_twice_the_threshold_between_two_close_junctions_is_kept():
+    """A 20 um arc between junctions 3 um apart is a vessel that leaves and
+    comes back. Merging the two junctions made it a self-loop and deleted it,
+    whatever its length; the merge is refused, and the loop stays for the
+    lumen rules to judge with the mask."""
+    out = collapse_node_clusters_direction_aware(_loop_graph(20.0), distance_threshold=5.0)
+
+    assert out.has_node(0) and out.has_node(1)
+    assert out.number_of_edges(0, 1) == 2
+    assert max(d["length"] for d in out.get_edge_data(0, 1).values()) == pytest.approx(20.0, abs=0.1)
+    assert not list(nx.selfloop_edges(out))
+
+
+def test_a_ring_no_longer_than_twice_the_threshold_is_still_absorbed():
+    """An 8 um ring round a junction is Lee thinning's hole, not a loop round
+    tissue: the two junctions still merge and the ring goes with them."""
+    out = collapse_node_clusters_direction_aware(_loop_graph(8.0), distance_threshold=5.0)
+
+    assert out.number_of_nodes() == 3
+    assert not list(nx.selfloop_edges(out))
+    assert out.number_of_edges() == 2
