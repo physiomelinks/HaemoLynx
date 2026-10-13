@@ -78,6 +78,17 @@ def _unsupplied_pct(q_total):
     return float(100.0 * (q <= 0).mean()) if q.size else float("nan")
 
 
+def contrast_rates(mean_fraction, contrast):
+    """``(tissue_rate, stroma_rate)``: the glomus (TH-positive) rate is ``contrast`` times the stromal one.
+
+    The stromal rate is set so the volume-weighted mean, over a tissue whose glomus fraction is
+    ``mean_fraction``, stays at BASE_M_MAX. Runs at different contrasts are then comparable
+    rather than simply scaled.
+    """
+    stroma = BASE_M_MAX / (1.0 + mean_fraction * (contrast - 1.0))
+    return stroma * contrast, stroma
+
+
 def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False, vessel_mapping=VESSEL_MAPPING):
     run = open_batch_run(specimen)
     G = run.graph()
@@ -99,8 +110,8 @@ def analyse(specimen, contrast, grid_um=GRID_UM, pad_grid=False, vessel_mapping=
     # A contrast of c puts the glomus rate c times the stromal one, holding the volume-weighted
     # mean at BASE_M_MAX so the runs are comparable rather than simply scaled.
     mean_fraction = float(th_fraction.mean())
-    stroma = BASE_M_MAX / (1.0 + mean_fraction * (contrast - 1.0))
-    m_max = blend_per_cell_rate(th_fraction, tissue_rate=stroma * contrast, stroma_rate=stroma)
+    tissue_rate, stroma_rate = contrast_rates(mean_fraction, contrast)
+    m_max = blend_per_cell_rate(th_fraction, tissue_rate=tissue_rate, stroma_rate=stroma_rate)
 
     config = PerfConfig(m_max)
     cells = map_vessels_to_grid(G, grid, vessel_mapping=vessel_mapping)

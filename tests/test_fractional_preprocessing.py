@@ -184,6 +184,33 @@ def test_skeleton_boundary_continuity():
     labels, num_features = label(stitched > 0, return_num=True)
     assert num_features == 1, "Line must be fully connected after topological stitch!"
 
+def test_reconnect_chunk_seams_matches_the_old_inline_lines():
+    """The lifted seam reconnection gives what the orchestrator's inline lines gave."""
+    import skimage.morphology as morph
+    from skimage.measure import label
+    from skimage.morphology import skeletonize as skimage_skeletonize
+    from carotid_image_to_model import _reconnect_chunk_seams
+
+    # A stitched skeleton broken at two chunk seams: a line along z with a 1-voxel gap at the
+    # z = 10 seam, and a line along y with a 1-voxel gap at the y = 10 seam.
+    skeleton = np.zeros((20, 20, 20), dtype=np.uint8)
+    skeleton[:, 5, 5] = 1
+    skeleton[10, 5, 5] = 0
+    skeleton[14, :, 14] = 1
+    skeleton[14, 10, 14] = 0
+
+    # Reference: the two lines carotid_image_to_model.py ran inline before they were lifted,
+    # copied here at df0a957 so the test shows the move changed nothing.
+    expected = morph.closing(skeleton, morph.cube(3))
+    expected = skimage_skeletonize(expected) > 0
+
+    reconnected = _reconnect_chunk_seams(skeleton)
+
+    assert label(skeleton > 0, return_num=True)[1] == 4
+    assert label(reconnected, return_num=True)[1] == 2
+    assert reconnected.dtype == bool
+    np.testing.assert_array_equal(reconnected, expected)
+
 def test_cache_saving_on_full_run(tmp_path):
     """Verify that the holy trinity cache is created on a standard run."""
     from carotid_image_to_model import carotid_image_to_model

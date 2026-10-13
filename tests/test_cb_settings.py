@@ -100,6 +100,29 @@ def test_metabolic_mean_is_held_across_the_contrast_sweep():
         assert mean == pytest.approx(cb_settings.BASE_M_MAX, rel=1e-9)
 
 
+def test_contrast_rates_match_the_old_inline_lines():
+    """The lifted contrast split gives what the hypoxic-fraction driver's inline lines gave."""
+    import numpy as np
+    from cb_h2_hypoxic_fraction import contrast_rates
+    from ImageLynx.haemodynamics.tissue_regions import blend_per_cell_rate
+
+    th_fraction = np.array([0.0, 0.1, 0.4, 0.75, 1.0])
+    mean_fraction = float(th_fraction.mean())
+    for contrast in (*cb_settings.METABOLIC_CONTRASTS, 0.5, 3.7):
+        # Reference: the lines cb_h2_hypoxic_fraction.analyse ran inline before they were
+        # lifted, copied here at df0a957 so the test shows the move changed nothing.
+        stroma = cb_settings.BASE_M_MAX / (1.0 + mean_fraction * (contrast - 1.0))
+        expected = blend_per_cell_rate(th_fraction, tissue_rate=stroma * contrast,
+                                       stroma_rate=stroma)
+
+        tissue_rate, stroma_rate = contrast_rates(mean_fraction, contrast)
+        m_max = blend_per_cell_rate(th_fraction, tissue_rate=tissue_rate,
+                                    stroma_rate=stroma_rate)
+
+        assert (tissue_rate, stroma_rate) == (stroma * contrast, stroma)
+        np.testing.assert_array_equal(m_max, expected)
+
+
 def test_pipeline_and_h1_share_the_hysteresis_band():
     """Open item 1: the pipeline config said 0.65/0.75 while every H1 run used 0.90/0.95.
 

@@ -936,6 +936,19 @@ def _run_skeletonization_phase(binary, skel_config):
     )
     return skeleton
 
+def _reconnect_chunk_seams(skeleton):
+    """
+    Rejoins a map-reduce skeleton across its chunk seams.
+
+    Each chunk is skeletonized on its own, so a centreline can break by a voxel where two
+    chunks' cores meet. A closing with a 3x3x3 cube bridges those 1-voxel gaps, and a second
+    skeletonization thins the result back to a 1-voxel-wide network. Returns a boolean array.
+    """
+    import skimage.morphology as morph
+    from skimage.morphology import skeletonize as skimage_skeletonize
+    skeleton = morph.closing(skeleton, morph.cube(3))
+    return skimage_skeletonize(skeleton) > 0
+
 def _preview_overlay(binary, skeleton, G, image_path, input_format, vis_config, perf_config=None):
     """Helper function to launch the 4-panel Vedo verification viewer."""
     print(f"Visualizing 3D overlay PREVIEW with optimized graph (mask opacity=0.3). Close window to exit.")
@@ -2017,11 +2030,7 @@ def carotid_image_to_model(image_path: Path | str,
             )
             
             print("Performing topological reconnection on stitched skeleton boundaries...")
-            import skimage.morphology as morph
-            from skimage.morphology import skeletonize as skimage_skeletonize
-            # Close 1-voxel gaps at chunk boundaries, then re-skeletonize to ensure 1D network
-            skeleton = morph.closing(skeleton, morph.cube(3))
-            skeleton = skimage_skeletonize(skeleton) > 0
+            skeleton = _reconnect_chunk_seams(skeleton)
 
         else:
             # --- Global Optuna Hyperparameter Optimization ---
