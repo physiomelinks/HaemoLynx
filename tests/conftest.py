@@ -143,16 +143,27 @@ def make_batch_run(tmp_path, monkeypatch):
     from ImageLynx import batch_outputs, cb_settings
     from ImageLynx.roi_placement import roi_record, write_roi_record
 
-    def make(specimen_id="TEST-A", G=None, columns=None):
+    placements = {}
+
+    def stub_place_roi(specimen, size):
+        if tuple(size) != tuple(cb_settings.ROI_VOXELS):
+            pytest.fail(f"place_roi asked for {size}, not the frozen ROI")
+        return placements[specimen.specimen_id]
+
+    monkeypatch.setattr(batch_outputs, "place_roi", stub_place_roi)
+
+    def make(specimen_id="TEST-A", G=None, columns=None, run_dir=None):
         """The standard four-edge run, or one built from ``G`` and ``columns``.
 
         ``columns`` maps each edge-table column name to ``{(u, v, key): value}`` for every
         edge of ``G``; a missing value, or a key that is not an edge of ``G``, raises, as the
-        reader's strict join would.
+        reader's strict join would. ``run_dir`` defaults to ``tmp_path/<specimen_id>``; pass
+        one to write the same specimen under more than one root. Each specimen made is placed
+        at its own ROI, so runs of several specimens open side by side.
         """
         if (G is None) != (columns is None):
             raise ValueError("pass G and columns together, or neither")
-        run_dir = tmp_path / specimen_id
+        run_dir = tmp_path / specimen_id if run_dir is None else Path(run_dir)
         cache = run_dir / "TEST_vessels_ilastik_Probabilities_cache"
         cache.mkdir(parents=True)
 
@@ -178,10 +189,7 @@ def make_batch_run(tmp_path, monkeypatch):
 
         specimen = SimpleNamespace(specimen_id=specimen_id, shape_zyx=SHAPE,
                                    batch_run_dir=run_dir, th_probabilities_path=th_path)
-        placed = placement(specimen_id)
-        monkeypatch.setattr(batch_outputs, "place_roi",
-                            lambda s, size: placed if tuple(size) == tuple(cb_settings.ROI_VOXELS)
-                            else pytest.fail(f"place_roi asked for {size}, not the frozen ROI"))
+        placed = placements[specimen_id] = placement(specimen_id)
         write_roi_record(run_dir, roi_record(placed, SHAPE, centred=False))
         return StandInRun(specimen=specimen, run_dir=run_dir, cache=cache, graph=G,
                           skeleton=skeleton, placed=placed, glomus=glomus, th_path=th_path)

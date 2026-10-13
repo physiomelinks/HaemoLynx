@@ -57,15 +57,13 @@ def test_a_run_cut_anywhere_but_the_placed_roi_is_refused_before_anything_else(b
         open_batch_run(batch_run.specimen)
 
 
-def test_a_run_with_no_cache_folder_is_refused(batch_run):
-    batch_run.cache.rename(batch_run.run_dir / "moved_away")
-    with pytest.raises(ValueError, match="0 \\*_cache folders"):
-        open_batch_run(batch_run.specimen)
-
-
-def test_a_run_with_two_cache_folders_is_refused(batch_run):
-    (batch_run.run_dir / "stale_cache").mkdir()
-    with pytest.raises(ValueError, match="2 \\*_cache folders"):
+@pytest.mark.parametrize("caches", [0, 2])
+def test_a_run_without_exactly_one_cache_folder_is_refused(batch_run, caches):
+    if caches == 0:
+        batch_run.cache.rename(batch_run.run_dir / "moved_away")
+    else:
+        (batch_run.run_dir / "stale_cache").mkdir()
+    with pytest.raises(ValueError, match=f"{caches} \\*_cache folders"):
         open_batch_run(batch_run.specimen)
 
 

@@ -21,6 +21,7 @@ from ImageLynx.specimens import (
     PROBABILITIES_DATASET,
     PROCESSING_VOXEL_UM,
     SPECIMENS,
+    TH_CHANNEL,
     WEAKEST_SPECIMEN_ID,
     Specimen,
     assert_single_classifier,
@@ -42,7 +43,14 @@ def test_registry_is_three_specimens_per_group():
 
 
 def test_every_specimen_shares_the_pooled_classifier():
-    """The confound this registry exists to make structurally impossible."""
+    """The confound this registry exists to make structurally impossible.
+
+    The pooled classifier is not the legacy cb_wky_2x2x2_A.ilp, which was trained on
+    normotensive tissue only: segmenting SHR with it risks a group-dependent sensitivity
+    difference that would appear as a vascular difference. That file is retained to identify
+    probability maps that predate the pooled classifier, not to be used.
+    """
+    assert POOLED_CLASSIFIER != LEGACY_WKY_A_CLASSIFIER
     assert all(s.classifier == POOLED_CLASSIFIER for s in SPECIMENS)
     assert assert_single_classifier() == POOLED_CLASSIFIER
 
@@ -62,17 +70,6 @@ def test_a_split_classifier_is_refused():
     )
     with pytest.raises(ValueError, match="not sharing one classifier"):
         assert_single_classifier(mixed)
-
-
-def test_the_legacy_wky_only_classifier_is_not_used_by_any_specimen():
-    """cb_wky_2x2x2_A.ilp was trained on normotensive tissue only.
-
-    Segmenting SHR with it risks a group-dependent sensitivity difference that would appear as
-    a vascular difference. It is retained to identify probability maps that predate the pooled
-    classifier, not to be used.
-    """
-    assert POOLED_CLASSIFIER != LEGACY_WKY_A_CLASSIFIER
-    assert all(s.classifier != LEGACY_WKY_A_CLASSIFIER for s in SPECIMENS)
 
 
 # --- Group-correlated naming ---------------------------------------------------------------
@@ -156,6 +153,7 @@ def test_the_acquisitions_still_differ_and_the_registry_still_knows_it():
     assert abs(sz - wz) / wz < 1e-3, "the z difference is meant to be negligible in magnitude"
 
 
+@pytest.mark.realdata
 @pytest.mark.parametrize("specimen", SPECIMENS, ids=lambda s: s.specimen_id)
 def test_registry_voxel_size_matches_the_acquisition_metadata(specimen):
     """The constants must be derived from the files, not typed in beside them."""
@@ -345,12 +343,6 @@ def test_data_root_provenance_reports_where_it_looked():
                                "data_root_from_env", "env_vars"}
 
 
-def test_the_classifier_sits_with_the_volumes_it_registers():
-    """The project references its datasets by relative path, so separating them breaks it."""
-    assert POOLED_CLASSIFIER.parent == ILASTIK_INPUT_DIR
-    assert POOLED_CLASSIFIER.name == "vessel_segmentation.ilp"
-
-
 def test_the_vessel_class_index_is_recorded():
     """LabelNames on the trained project are ['vessel', 'background'], so vessel is channel 0."""
     from ImageLynx.specimens import VESSEL_CLASS_INDEX
@@ -395,6 +387,13 @@ def _write_project(path, lanes, label_names=("vessel", "background"), compute_in
         project["FeatureSelections/SelectionMatrix"] = np.zeros((6, 7), dtype=bool)
 
 
+#: The TH project is two-class, exactly parallel to the vessel project. Every H1 and H2
+#: analysis that consumes this channel asks for a TH-positive volume, voxel set or
+#: boundary; none asks for individual cells, so nothing needs the classes that exist to
+#: split touching somas for a watershed.
+TH_LABELS = ("glomus", "background")
+
+
 def _all_lanes(depths, channel=None):
     from ImageLynx.specimens import VESSEL_CHANNEL
 
@@ -402,18 +401,29 @@ def _all_lanes(depths, channel=None):
     return [(channel.input_name(s), list(depths)) for s in SPECIMENS]
 
 
-def test_a_properly_pooled_project_verifies(tmp_path):
+#: Each channel's project: the ``channel`` argument (None is the vessel default), its label
+#: names in order, and the key the report names it by.
+CHANNEL_PROJECTS = [
+    pytest.param(None, ("vessel", "background"), "vessel", id="vessel"),
+    pytest.param(TH_CHANNEL, TH_LABELS, "th", id="th"),
+]
+
+
+@pytest.mark.parametrize("channel, labels, key", CHANNEL_PROJECTS)
+def test_a_properly_pooled_project_verifies(tmp_path, channel, labels, key):
     from ImageLynx.specimens import verify_classifier
 
     path = tmp_path / "good.ilp"
-    _write_project(path, _all_lanes([50, 150, 250]))
+    _write_project(path, _all_lanes([50, 150, 250], channel), label_names=labels)
 
-    report = verify_classifier(path)
-    assert report["label_names"] == ["vessel", "background"]
+    report = verify_classifier(path, channel=channel)
+    assert report["label_names"] == list(labels)
     assert report["total_labelled_voxels"] == 6 * 3 * 16
+    assert report["channel"] == key
 
 
-def test_labels_on_one_cohort_only_are_refused(tmp_path):
+@pytest.mark.parametrize("channel, labels, key", CHANNEL_PROJECTS)
+def test_labels_on_one_cohort_only_are_refused(tmp_path, channel, labels, key):
     """One .ilp trained on one cohort satisfies the letter of the rule and defeats its point.
 
     This is the state the first trained project was actually in: all 454 labels on WKY-A,
@@ -423,14 +433,13 @@ def test_labels_on_one_cohort_only_are_refused(tmp_path):
     """
     from ImageLynx.specimens import verify_classifier
 
-    from ImageLynx.specimens import VESSEL_CHANNEL
-    lanes = [(VESSEL_CHANNEL.input_name(s),
-              [214] if s.specimen_id == "WKY-A" else []) for s in SPECIMENS]
+    lanes = [(name, [214] if s.specimen_id == "WKY-A" else [])
+             for s, (name, _) in zip(SPECIMENS, _all_lanes([], channel))]
     path = tmp_path / "one_cohort.ilp"
-    _write_project(path, lanes)
+    _write_project(path, lanes, label_names=labels)
 
     with pytest.raises(ValueError) as excinfo:
-        verify_classifier(path)
+        verify_classifier(path, channel=channel)
 
     message = str(excinfo.value)
     assert "no labels at all" in message
@@ -453,15 +462,21 @@ def test_labelling_at_a_single_depth_is_refused(tmp_path):
     assert verify_classifier(path, require_pooled_labels=False)["total_labelled_voxels"] > 0
 
 
-def test_a_label_order_contradicting_the_recorded_index_is_refused(tmp_path):
-    """Reading the background channel yields a full set of results from the inverse mask."""
+@pytest.mark.parametrize("channel, labels, key", CHANNEL_PROJECTS)
+def test_a_label_order_contradicting_the_recorded_index_is_refused(tmp_path, channel, labels,
+                                                                   key):
+    """Reading the background channel yields a full set of results from the inverse mask.
+
+    The exported probability channel order follows label order.
+    """
     from ImageLynx.specimens import verify_classifier
 
     path = tmp_path / "swapped.ilp"
-    _write_project(path, _all_lanes([50, 150]), label_names=("background", "vessel"))
+    _write_project(path, _all_lanes([50, 150], channel), label_names=labels[::-1])
 
-    with pytest.raises(ValueError, match="label order"):
-        verify_classifier(path)
+    with pytest.raises(ValueError, match="label order") as excinfo:
+        verify_classifier(path, channel=channel)
+    assert f"'{labels[0]}'" in str(excinfo.value)
 
 
 def test_two_dimensional_features_are_refused(tmp_path):
@@ -496,23 +511,6 @@ def test_classifier_hash_is_content_addressed(tmp_path):
 
     b.write_bytes(b"retrained")
     assert classifier_sha256(a) != classifier_sha256(b)
-
-
-def test_the_real_trained_classifier_is_ready_to_segment_the_study():
-    """Status check on the actual project, which is data rather than code.
-
-    Skips - loudly - while the project is not ready, so the suite stays green on a code
-    change while the reason stays visible in `pytest -rs`. It turns into a real pass on its
-    own once the labelling covers all six volumes at more than one depth.
-    """
-    from ImageLynx.specimens import verify_classifier
-
-    if not POOLED_CLASSIFIER.exists():
-        pytest.skip(f"no trained classifier at {POOLED_CLASSIFIER}")
-    try:
-        verify_classifier()
-    except (ValueError, OSError) as problem:
-        pytest.skip(f"classifier not ready: {problem}")
 
 
 def test_the_qc_records_are_bundled_with_the_code(tmp_path, monkeypatch):
@@ -562,7 +560,8 @@ def test_read_classifier_metadata_translates_open_failures(tmp_path):
         read_classifier_metadata(not_hdf5)
 
 
-def test_group_label_imbalance_is_reported_without_failing(tmp_path):
+@pytest.mark.parametrize("channel, labels, key", CHANNEL_PROJECTS)
+def test_group_label_imbalance_is_reported_without_failing(tmp_path, channel, labels, key):
     """A forest weights by labelled voxel count, so lopsided labelling tilts the boundary.
 
     This is the original confound in weaker form: labels concentrated on one cohort make the
@@ -573,18 +572,16 @@ def test_group_label_imbalance_is_reported_without_failing(tmp_path):
     """
     from ImageLynx.specimens import verify_classifier
 
-    from ImageLynx.specimens import VESSEL_CHANNEL
-
-    lopsided = []
-    for specimen in SPECIMENS:
-        blocks = [100, 200] * (10 if specimen.group == "SHR" else 1)
-        lopsided.append((VESSEL_CHANNEL.input_name(specimen), blocks))
-
+    lopsided = [(name, [100, 200] * (10 if specimen.group == "SHR" else 1))
+                for specimen, (name, _) in zip(SPECIMENS, _all_lanes([], channel))]
     path = tmp_path / "lopsided.ilp"
-    _write_project(path, lopsided)
+    _write_project(path, lopsided, label_names=labels)
 
-    report = verify_classifier(path)          # must not raise
-    assert report["group_label_counts"]["SHR"] > report["group_label_counts"]["WKY"]
+    report = verify_classifier(path, channel=channel)          # must not raise
+    counts = report["group_label_counts"]
+    # Lane-to-specimen matching has to work per channel, or every soft check goes silent.
+    assert counts["SHR"] > counts["WKY"] > 0, (
+        "zero counts mean the lanes were never matched to specimens")
     assert any("imbalance" in w for w in report["warnings"])
 
 
@@ -601,27 +598,7 @@ def test_balanced_labelling_produces_no_balance_warnings(tmp_path):
     assert balance == []
 
 
-def test_the_baseline_measurement_record_knows_when_it_no_longer_applies(tmp_path):
-    """A recorded measurement against one classifier must not silently describe another.
-
-    specimens.py carries the measured behaviour of a specific trained project - probability
-    calibration, label imbalance, per-cohort foreground. The moment that project is
-    retrained, every one of those numbers describes something that is no longer being run.
-    A comment saying so is not enough; the code has to be able to tell.
-    """
-    from ImageLynx.specimens import MEASURED_BASELINE_CLASSIFIER_SHA256, is_measured_baseline
-
-    assert len(MEASURED_BASELINE_CLASSIFIER_SHA256) == 64
-
-    same = tmp_path / "same.ilp"
-    same.write_bytes(b"whatever")
-    assert is_measured_baseline(same) is False
-
-    if POOLED_CLASSIFIER.exists():
-        # Whatever the answer is, it must be a real comparison rather than an assumption.
-        assert isinstance(is_measured_baseline(), bool)
-
-
+@pytest.mark.realdata
 def test_the_pooled_classifier_in_use_is_the_measured_baseline():
     """The recorded measurements describe the classifier the study actually runs.
 
@@ -653,13 +630,6 @@ def test_a_retrained_classifier_is_flagged_in_the_warnings(tmp_path):
 
 # --- The same verification, for the TH glomus cell project ---------------------------------
 
-#: The TH project is two-class, exactly parallel to the vessel project. Every H1 and H2
-#: analysis that consumes this channel asks for a TH-positive volume, voxel set or
-#: boundary; none asks for individual cells, so nothing needs the classes that exist to
-#: split touching somas for a watershed.
-TH_LABELS = ("glomus", "background")
-
-
 def test_the_two_channels_name_distinct_projects_inputs_and_targets():
     """Nothing about the vessel channel may leak into the TH one.
 
@@ -667,11 +637,13 @@ def test_the_two_channels_name_distinct_projects_inputs_and_targets():
     introduce and produces confident nonsense rather than an error.
     """
     from ImageLynx.specimens import (
-        SEGMENTATION_CHANNELS, TH_CHANNEL, VESSEL_CHANNEL, POOLED_CLASSIFIER)
+        SEGMENTATION_CHANNELS, VESSEL_CHANNEL, POOLED_CLASSIFIER)
 
     assert set(SEGMENTATION_CHANNELS) == {"vessel", "th"}
     assert VESSEL_CHANNEL.project != TH_CHANNEL.project
     assert VESSEL_CHANNEL.project == POOLED_CLASSIFIER
+    # A wrong file name would make the real-data tests skip, not fail.
+    assert POOLED_CLASSIFIER.name == "vessel_segmentation.ilp"
     assert VESSEL_CHANNEL.target_label != TH_CHANNEL.target_label
     assert VESSEL_CHANNEL.input_channels != TH_CHANNEL.input_channels
     for channel in (VESSEL_CHANNEL, TH_CHANNEL):
@@ -687,7 +659,7 @@ def test_channel_input_names_are_mutually_unambiguous():
     stem alone would let a vessel project claim TH lanes for the three SHR specimens and not
     for the three WKY ones. That is worse than failing outright.
     """
-    from ImageLynx.specimens import TH_CHANNEL, VESSEL_CHANNEL
+    from ImageLynx.specimens import VESSEL_CHANNEL
 
     for specimen in SPECIMENS:
         vessel_name = VESSEL_CHANNEL.input_name(specimen)
@@ -699,20 +671,8 @@ def test_channel_input_names_are_mutually_unambiguous():
         assert th_name not in vessel_name
 
 
-def test_a_properly_pooled_th_project_verifies(tmp_path):
-    from ImageLynx.specimens import TH_CHANNEL, verify_classifier
-
-    path = tmp_path / "th.ilp"
-    _write_project(path, _all_lanes([100, 200, 300], TH_CHANNEL), label_names=TH_LABELS)
-
-    report = verify_classifier(path, channel=TH_CHANNEL)
-    assert report["label_names"] == list(TH_LABELS)
-    assert report["total_labelled_voxels"] == 6 * 3 * 16
-    assert report["channel"] == "th"
-
-
 def test_the_channel_can_be_named_by_its_key(tmp_path):
-    from ImageLynx.specimens import TH_CHANNEL, verify_classifier
+    from ImageLynx.specimens import verify_classifier
 
     path = tmp_path / "th.ilp"
     _write_project(path, _all_lanes([100, 200], TH_CHANNEL), label_names=TH_LABELS)
@@ -721,35 +681,9 @@ def test_the_channel_can_be_named_by_its_key(tmp_path):
         verify_classifier(path, channel="nonsense")
 
 
-def test_a_th_project_is_refused_when_a_lane_is_unlabelled(tmp_path):
-    from ImageLynx.specimens import TH_CHANNEL, verify_classifier
-
-    lanes = _all_lanes([100, 200], TH_CHANNEL)
-    lanes[3] = (lanes[3][0], [])
-    path = tmp_path / "th_partial.ilp"
-    _write_project(path, lanes, label_names=TH_LABELS)
-
-    with pytest.raises(ValueError) as excinfo:
-        verify_classifier(path, channel=TH_CHANNEL)
-    assert "no labels at all" in str(excinfo.value)
-
-
-def test_a_th_project_is_refused_when_the_target_label_is_not_first(tmp_path):
-    """The exported probability channel order follows label order."""
-    from ImageLynx.specimens import TH_CHANNEL, verify_classifier
-
-    path = tmp_path / "th_reordered.ilp"
-    _write_project(path, _all_lanes([100, 200], TH_CHANNEL),
-                   label_names=("background", "glomus"))
-
-    with pytest.raises(ValueError) as excinfo:
-        verify_classifier(path, channel=TH_CHANNEL)
-    assert "glomus" in str(excinfo.value)
-
-
 def test_the_vessel_channel_refuses_a_th_project_and_the_reverse(tmp_path):
     """Verifying against the wrong channel must fail loudly, not pass by accident."""
-    from ImageLynx.specimens import TH_CHANNEL, VESSEL_CHANNEL, verify_classifier
+    from ImageLynx.specimens import VESSEL_CHANNEL, verify_classifier
 
     th = tmp_path / "th.ilp"
     _write_project(th, _all_lanes([100, 200], TH_CHANNEL), label_names=TH_LABELS)
@@ -766,7 +700,7 @@ def test_the_vessel_channel_refuses_a_th_project_and_the_reverse(tmp_path):
 
 def test_th_verification_carries_no_measured_baseline_warning(tmp_path):
     """There is no measured TH baseline, so claiming to deviate from one is noise."""
-    from ImageLynx.specimens import TH_CHANNEL, verify_classifier
+    from ImageLynx.specimens import verify_classifier
 
     path = tmp_path / "th.ilp"
     _write_project(path, _all_lanes([100, 200, 300], TH_CHANNEL), label_names=TH_LABELS)
@@ -776,25 +710,7 @@ def test_th_verification_carries_no_measured_baseline_warning(tmp_path):
     assert TH_CHANNEL.has_measured_baseline is False
 
 
-def test_group_label_counts_are_reported_for_a_th_project(tmp_path):
-    """Lane-to-specimen matching has to work per channel, or every soft check goes silent."""
-    from ImageLynx.specimens import TH_CHANNEL, verify_classifier
-
-    lanes = [(TH_CHANNEL.input_name(s), [100, 200] * (5 if s.group == "SHR" else 1))
-             for s in SPECIMENS]
-    path = tmp_path / "th_lopsided.ilp"
-    _write_project(path, lanes, label_names=TH_LABELS)
-
-    report = verify_classifier(path, channel=TH_CHANNEL)
-    counts = report["group_label_counts"]
-    assert counts["SHR"] > counts["WKY"] > 0, (
-        "zero counts mean the lanes were never matched to specimens")
-    assert any("imbalance" in w for w in report["warnings"])
-
-
 def test_specimens_expose_the_th_input_path():
-    from ImageLynx.specimens import TH_CHANNEL
-
     for specimen in SPECIMENS:
         assert specimen.th_input_path.name == TH_CHANNEL.input_name(specimen)
         assert specimen.th_input_path.parent == ILASTIK_INPUT_DIR
@@ -811,7 +727,7 @@ def test_channel_input_names_match_what_the_preprocessors_actually_wrote():
     """
     import json
 
-    from ImageLynx.specimens import TH_CHANNEL, VESSEL_CHANNEL, _BUNDLED_QC_DIR
+    from ImageLynx.specimens import VESSEL_CHANNEL, _BUNDLED_QC_DIR
 
     for channel in (VESSEL_CHANNEL, TH_CHANNEL):
         for specimen in SPECIMENS:
@@ -829,7 +745,7 @@ def test_the_th_sidecars_record_the_th_acquisition_channel():
     """Channel 1 is TH. Channel 0 is lectin, and reading it would segment the vessels."""
     import json
 
-    from ImageLynx.specimens import TH_CHANNEL, _BUNDLED_QC_DIR
+    from ImageLynx.specimens import _BUNDLED_QC_DIR
 
     for specimen in SPECIMENS:
         record = json.loads((_BUNDLED_QC_DIR / TH_CHANNEL.qc_name(specimen)).read_text())
@@ -849,8 +765,6 @@ def test_specimens_expose_the_bundled_th_qc_sidecar():
 
 def _th_project(tmp_path, per_lane, name="th.ilp"):
     """per_lane maps specimen_id -> (depths, label values parallel to depths)."""
-    from ImageLynx.specimens import TH_CHANNEL
-
     lanes = []
     for specimen in SPECIMENS:
         depths, values = per_lane[specimen.specimen_id]

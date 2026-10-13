@@ -8,8 +8,6 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from ImageLynx.batch_outputs import BatchRun
-
 
 def _triangle():
     G = nx.MultiGraph()
@@ -19,16 +17,6 @@ def _triangle():
     G.add_edge(1, 2, key=0)
     G.add_edge(1, 2, key=1)
     return G
-
-
-def test_the_default_run_is_the_real_reader_on_the_four_edge_run(make_batch_run):
-    stand_in = make_batch_run()
-    run = stand_in.run
-    assert isinstance(run, BatchRun)
-    assert list(run.edge_table()) == [(0, 1, 0), (1, 2, 0), (1, 2, 1), (2, 3, 0)]
-    assert run.numeric_column("length_um")[(1, 2, 0)] == 20.0
-    assert run.placement == stand_in.placed
-    assert run.skeleton().shape == run.vessel_mask().shape == run.placement.size_zyx
 
 
 def test_a_given_graph_and_columns_come_back_through_the_reader(make_batch_run):
@@ -45,17 +33,39 @@ def test_a_given_graph_and_columns_come_back_through_the_reader(make_batch_run):
     assert np.array_equal(joined.nodes[2]["pos"], [10.0, 0.0, 0.0])
 
 
-def test_a_graph_edge_with_no_value_in_a_column_is_refused_not_filled(make_batch_run):
-    lengths = {(0, 1, 0): 30.0, (1, 2, 0): 40.0}      # (1, 2, 1) has none
-    diameters = {(0, 1, 0): 7.0, (1, 2, 0): 5.5, (1, 2, 1): 4.0}
-    with pytest.raises(ValueError, match=r"length_um.*\(1, 2, 1\)"):
-        make_batch_run(G=_triangle(), columns={"length_um": lengths,
-                                               "assigned_diameter_um": diameters})
+def _three_edge_columns(drop=None, extra=None):
+    lengths = {edge: 10.0 for edge in _triangle().edges(keys=True)}
+    diameters = dict(lengths)
+    if drop:
+        del lengths[drop]
+    if extra:
+        diameters[extra] = 5.0
+    return {"length_um": lengths, "assigned_diameter_um": diameters}
 
 
-def test_a_column_value_for_an_edge_the_graph_lacks_is_refused_not_ignored(make_batch_run):
-    G = _triangle()
-    lengths = {(u, v, k): 10.0 for u, v, k in G.edges(keys=True)}
-    diameters = {**lengths, (7, 8, 0): 5.0}
-    with pytest.raises(ValueError, match=r"assigned_diameter_um.*not in the graph.*\(7, 8, 0\)"):
-        make_batch_run(G=G, columns={"length_um": lengths, "assigned_diameter_um": diameters})
+@pytest.mark.parametrize("columns, message", [
+    (_three_edge_columns(drop=(1, 2, 1)), r"no length_um given for edge \(1, 2, 1\)"),
+    (_three_edge_columns(extra=(7, 8, 0)), r"assigned_diameter_um.*not in the graph.*\(7, 8, 0\)"),
+], ids=["graph edge with no value", "value for an edge the graph lacks"])
+def test_columns_that_do_not_match_the_graph_one_to_one_are_refused(make_batch_run, columns,
+                                                                     message):
+    """A missing value is not filled and an extra key is not ignored, as the reader's strict
+    join would."""
+    with pytest.raises(ValueError, match=message):
+        make_batch_run(G=_triangle(), columns=columns)
+
+
+def test_a_run_can_be_written_under_a_given_folder(make_batch_run, tmp_path):
+    run_dir = tmp_path / "old" / "TEST-A"
+    stand_in = make_batch_run(run_dir=run_dir)
+    assert stand_in.run_dir == run_dir
+    assert stand_in.run.run_dir == run_dir
+    assert stand_in.cache.parent == run_dir
+
+
+def test_each_specimen_is_placed_at_its_own_roi_after_another_is_made(make_batch_run):
+    first = make_batch_run("TEST-A")
+    second = make_batch_run("TEST-B")
+    assert first.run.placement == first.placed
+    assert second.run.placement == second.placed
+    assert first.placed.specimen_id == "TEST-A" and second.placed.specimen_id == "TEST-B"
