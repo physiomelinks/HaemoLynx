@@ -66,12 +66,6 @@ def test_no_driver_redefines_an_owned_constant_as_a_literal(path):
     )
 
 
-def test_pressure_pair_is_the_one_the_published_numbers_used():
-    """60/20 mmHg, arteriolar to venular. The pipeline config reads it too (open item 10)."""
-    assert cb_settings.INLET_PRESSURE_MMHG == 60.0
-    assert cb_settings.OUTLET_PRESSURE_MMHG == 20.0
-
-
 def test_frozen_threshold_lies_on_the_sweep_grid():
     """The frozen value is a grid point, because it is a snapped median of six choices."""
     assert cb_settings.FROZEN_THRESHOLD in cb_settings.THRESHOLD_GRID
@@ -146,21 +140,6 @@ def test_pipeline_and_h2_share_the_perfusion_stop_settings():
     assert config.picard_max_iterations == settings.picard_max_iterations == 200
 
 
-@pytest.mark.parametrize("name", ["config_WKY_normotensive.yaml", "config_SHR_hypertensive.yaml"])
-def test_the_example_yamls_carry_the_picard_settings(name):
-    """Open item 32: a YAML still at 50 would override the config and stop Tier 3 short
-    (WKY-C needs 80 passes). Open item 34: both YAMLs kept 1e-4 after item 6 moved the
-    config to 1e-5, so a --config run stopped Tier 3 early."""
-    yaml = pytest.importorskip("yaml")
-    from carotid_image_to_model import PerfusionConfig
-
-    config = PerfusionConfig()
-    loaded = yaml.safe_load((REPO / "examples" / name).read_text(encoding="utf-8"))
-    perf = loaded["PerfusionConfig"]
-    assert perf["picard_max_iterations"] == config.picard_max_iterations
-    assert float(perf["picard_tolerance"]) == config.picard_tolerance
-
-
 #: 1 mmHg = 133.322387415 Pa = 1.33322387415e5 mPa, the unit the pipeline config uses.
 _MPA_PER_MMHG = 133.322387415e3
 
@@ -173,19 +152,6 @@ def test_pipeline_and_h2_share_the_pressure_boundaries():
     assert config.input_p_bc / _MPA_PER_MMHG == pytest.approx(cb_settings.INLET_PRESSURE_MMHG)
     assert config.output_p_bc / _MPA_PER_MMHG == pytest.approx(cb_settings.OUTLET_PRESSURE_MMHG)
     assert (cb_settings.INLET_PRESSURE_MMHG, cb_settings.OUTLET_PRESSURE_MMHG) == (60.0, 20.0)
-
-
-@pytest.mark.parametrize("name", ["config_WKY_normotensive.yaml", "config_SHR_hypertensive.yaml"])
-def test_the_example_yamls_carry_the_pressure_boundaries(name):
-    """Both YAMLs restate the pressures in mPa; a stale copy would override the config."""
-    yaml = pytest.importorskip("yaml")
-    from carotid_image_to_model import HaemodynamicsConfig
-
-    config = HaemodynamicsConfig()
-    loaded = yaml.safe_load((REPO / "examples" / name).read_text(encoding="utf-8"))
-    hemo = loaded["HaemodynamicsConfig"]
-    assert float(hemo["input_p_bc"]) == pytest.approx(config.input_p_bc, rel=1e-6)
-    assert float(hemo["output_p_bc"]) == pytest.approx(config.output_p_bc, rel=1e-6)
 
 
 def test_pipeline_and_h2_share_the_boundary_rule():
@@ -240,19 +206,6 @@ def test_pipeline_and_h2_share_the_rheology_settings():
     assert config.rheology_relaxation == kwargs["relaxation"]
     assert config.rheology_flow_rtol == kwargs["flow_rtol"]
     assert config.rheology_hematocrit_atol == kwargs["hematocrit_atol"]
-
-
-@pytest.mark.parametrize("name", ["config_WKY_normotensive.yaml", "config_SHR_hypertensive.yaml"])
-def test_the_example_yamls_carry_the_rheology_settings(name):
-    yaml = pytest.importorskip("yaml")
-    hemo = yaml.safe_load((REPO / "examples" / name).read_text(encoding="utf-8"))[
-        "HaemodynamicsConfig"]
-    kwargs = cb_settings.rheology_solver_kwargs()
-    assert int(hemo["rheology_max_iterations"]) == kwargs["max_iterations"]
-    assert float(hemo["rheology_relaxation"]) == kwargs["relaxation"]
-    assert float(hemo["rheology_flow_rtol"]) == kwargs["flow_rtol"]
-    assert float(hemo["rheology_hematocrit_atol"]) == kwargs["hematocrit_atol"]
-    assert "rheology_tolerance" not in hemo
 
 
 @pytest.mark.parametrize("name", [

@@ -74,6 +74,37 @@ def test_loading_ignores_no_key(name, caplog):
             assert got == value, f"{name}: {section}.{key} is {got!r}, YAML says {value!r}"
 
 
+#: Pressures the YAMLs restate in mPa, rounded to 7 significant figures.
+APPROXIMATE_KEYS = {("HaemodynamicsConfig", "input_p_bc"), ("HaemodynamicsConfig", "output_p_bc")}
+#: YAML 1.0 against the config's 0.15. No batch run reads it: the batch passes --roi-voxels,
+#: and an explicit size overrides the percentage in crop_roi. It matters only without one.
+DIFFERS_FROM_DEFAULT = {("SkeletonConfig", "sub_volume_percentage")}
+
+
+@pytest.mark.parametrize("name", YAMLS)
+def test_every_yaml_value_equals_its_config_default(name):
+    """A YAML value that drifts from the config default overrides it in a --config run.
+
+    Open item 32: a YAML still at 50 Picard passes would stop Tier 3 short (WKY-C needs 80).
+    Open item 34: both YAMLs kept a Picard tolerance of 1e-4 after item 6 moved the config to
+    1e-5, so a --config run stopped Tier 3 early.
+    """
+    drifted = []
+    for section, keys in _load(name).items():
+        defaults = SECTIONS[section]()
+        for key, value in (keys or {}).items():
+            if (section, key) in DIFFERS_FROM_DEFAULT:
+                continue
+            default = getattr(defaults, key)
+            if (section, key) in APPROXIMATE_KEYS:
+                same = float(value) == pytest.approx(default, rel=1e-6)
+            else:
+                same = value == (list(default) if isinstance(value, list) else default)
+            if not same:
+                drifted.append(f"{section}.{key}: YAML {value!r}, default {default!r}")
+    assert not drifted, f"{name}: {drifted}"
+
+
 def test_the_two_yamls_carry_the_same_settings():
     """A setting that differs by group would confound the WKY-vs-SHR comparison. Open item 34:
     the SHR YAML set arterial PCO2 35 mmHg against WKY's 40. Open item 35: SHR set both
@@ -83,8 +114,10 @@ def test_the_two_yamls_carry_the_same_settings():
 
 
 #: Keys the frozen method never reads: constriction is disabled (reference §10.6) and the
-#: constant radius only applies outside edt_radius (§10.5).
+#: constant radius only applies outside edt_radius (§10.5). rheology_tolerance gave way to the
+#: four cb_settings rheology stop settings (open item 37).
 RETIRED_HAEMODYNAMICS_KEYS = {
+    "rheology_tolerance",
     "constrict_at_pericytes",
     "constriction_mode",
     "sphincter_length_um",
@@ -100,7 +133,6 @@ def test_the_yamls_use_the_frozen_radius_estimator(name):
     """Open item 35: both YAMLs set constant_radius (every edge 10 um across) and turned
     constriction on, so a --config run replaced every measured calibre."""
     section = _load(name)["HaemodynamicsConfig"]
-    assert section["radius_assignment_mode"] == pipeline.HaemodynamicsConfig().radius_assignment_mode
     assert section["radius_assignment_mode"] == "edt_radius"
     retired = sorted(RETIRED_HAEMODYNAMICS_KEYS & set(section))
     assert not retired, f"{name}: keys the frozen method never reads: {retired}"

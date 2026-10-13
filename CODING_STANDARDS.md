@@ -22,8 +22,9 @@ Each one has a single home, and everything else imports it from there:
 `cb_settings.py` for frozen analysis values. A second copy, even an equal one, is a finding.
 
 `tests/test_drivers_read_through_batch_runs.py` fails on a string literal equal to a
-`batch_outputs` file-name constant (each module-level `*_NAME`) in a reader driver,
-`carotid_image_to_model.py` or a test. A reviewer still checks what it can't see:
+`batch_outputs` file-name constant (each module-level `*_NAME`) in `carotid_image_to_model.py`
+or a test, and on any string containing one in a reader driver. A reviewer still checks what
+it can't see:
 
 - a batch-run file name with no constant in `batch_outputs.py` yet;
 - a name built in pieces (`prefix + "_vessels.vtp"`, an f-string) or inside a longer string;

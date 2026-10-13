@@ -5,6 +5,7 @@ changing the config value changed nothing in some solvers. Each test below chang
 config value and checks the solver's answer moves with it, which a hard-coded copy would not.
 """
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import networkx as nx
 import numpy as np
@@ -139,22 +140,13 @@ def test_a_config_without_the_field_is_refused_not_defaulted(field):
         _multi(config)
 
 
-def test_the_pipeline_reads_the_tier_switch_without_a_default():
-    """Which perfusion tier runs was chosen through getattr(..., False) as well."""
-    from pathlib import Path
-
+@pytest.mark.parametrize("switch", ["use_multi_species_model", "use_endothelial_barrier_model"])
+def test_the_pipeline_reads_each_perfusion_switch_without_a_default(switch):
+    """Which perfusion tier runs (Tier 3, then the Tier 2 barrier just below it) was chosen
+    through getattr(..., False)."""
     source = (Path(__file__).parent.parent / "examples" / "carotid_image_to_model.py").read_text()
-    assert "getattr(perf_config, 'use_multi_species_model'" not in source
-    assert "perf_config.use_multi_species_model" in source
-
-
-def test_the_pipeline_reads_the_barrier_switch_without_a_default():
-    """The Tier 2 switch, just below the Tier 3 one, was read through getattr(..., False) too."""
-    from pathlib import Path
-
-    source = (Path(__file__).parent.parent / "examples" / "carotid_image_to_model.py").read_text()
-    assert "getattr(perf_config, 'use_endothelial_barrier_model'" not in source
-    assert "perf_config.use_endothelial_barrier_model" in source
+    assert f"getattr(perf_config, '{switch}'" not in source
+    assert f"perf_config.{switch}" in source
 
 
 def test_the_h2_settings_match_the_values_that_were_hard_coded():
@@ -208,30 +200,10 @@ def test_the_default_o2_wall_permeability_is_liu_1994_measured_value():
     np.testing.assert_allclose(config.permeability_o2_cm_s, expected, rtol=0.01)
 
 
-@pytest.mark.parametrize("name", ["config_WKY_normotensive.yaml", "config_SHR_hypertensive.yaml"])
-def test_the_example_yamls_carry_the_same_wall_permeabilities_and_metabolic_rate(name):
-    """Both YAMLs restate the wall permeabilities and M_max; keep them in step with PerfusionConfig."""
-    from pathlib import Path
-
-    yaml = pytest.importorskip("yaml")
-    config = _pipeline_perfusion_config()
-
-    loaded = yaml.safe_load((Path(__file__).parent.parent / "examples" / name).read_text())
-    perf = loaded["PerfusionConfig"]
-    for key in ("permeability_o2_cm_s", "permeability_co2_cm_s", "M_max"):
-        assert float(perf[key]) == getattr(config, key), key
-
-
-@pytest.mark.parametrize("name", ["config_WKY_normotensive.yaml", "config_SHR_hypertensive.yaml"])
-def test_the_example_yamls_share_the_arterial_pco2(name):
-    """Open item 34: the SHR YAML set 35 mmHg against 40 for WKY, a difference by group."""
-    from pathlib import Path
-
-    yaml = pytest.importorskip("yaml")
-    config = _pipeline_perfusion_config()
-
-    loaded = yaml.safe_load((Path(__file__).parent.parent / "examples" / name).read_text())
-    assert float(loaded["PerfusionConfig"]["pco2_arterial"]) == config.pco2_arterial == 40.0
+def test_the_default_arterial_pco2_is_40_mmhg():
+    """Open item 34: the SHR YAML set 35 mmHg against 40 for WKY. The example YAMLs must equal
+    this default (``test_example_yaml_sections.py``), so this pins them too."""
+    assert _pipeline_perfusion_config().pco2_arterial == 40.0
 
 
 def test_the_multi_species_solver_runs_at_the_corrected_co2_values():

@@ -280,10 +280,9 @@ def test_the_name_check_knows_every_batch_file_name():
         "VESSELS_VTP_NAME", "NODES_VTP_NAME", "VESSEL_MASK_VTI_NAME", "ROI_RECORD_NAME"}
 
 
-# The reader drivers, the pipeline that writes the files, and every test.
-NAME_CHECKED = ([EXAMPLES / name for name in ON_THE_READER]
-                + [EXAMPLES / "carotid_image_to_model.py"]
-                + sorted(TESTS.rglob("*.py")))
+# The pipeline that writes the files, and every test. The reader drivers are left out: on them
+# the "other means" check flags any string that contains a batch file name, which covers this.
+NAME_CHECKED = [EXAMPLES / "carotid_image_to_model.py"] + sorted(TESTS.rglob("*.py"))
 
 
 @pytest.mark.parametrize("path", NAME_CHECKED, ids=lambda p: str(p.relative_to(p.parents[1])))
