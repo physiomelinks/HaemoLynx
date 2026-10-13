@@ -618,3 +618,40 @@ def test_a_taper_is_marked_for_the_clean_up_that_follows():
 
     assert result.edges["J", "T1", 0].get(THICK_TAPER) is True
     assert not result.edges["T0", "J", 0].get(THICK_TAPER)
+
+
+def _hook():
+    """A thin vessel leaving the thick one at y = 20, out along x, round and
+    back towards it, stopping at its wall at y = 30: joined, it would close a
+    loop about 60 um round."""
+    lumen, body, tree = _thick()
+    for a, b in (((20, 20, 20), (20, 20, 40)), ((20, 20, 40), (20, 30, 40)), ((20, 30, 40), (20, 30, 20))):
+        _thin_vessel(lumen, a, b)
+    G = _graph(("T0", "A", T0, (20, 20, 20)), ("A", "T1", (20, 20, 20), T1),
+               ("A", "S", (20, 20, 20), (20, 20, 40), (20, 30, 40), (20, 30, 33)))
+    return G, lumen, body, tree
+
+
+def test_a_wall_join_closing_a_short_loop_is_refused():
+    """On E14.5 all 10 short loops the build left ran through a vessel drawn on
+    from a wall: the clean-up breaks every short loop but one through a
+    bridge, so a join may not make one it would have broken."""
+    from haemolynx.graph.thick_vessel_junctions import JOINED_AT_WALL_UM
+
+    G, lumen, body, tree = _hook()
+
+    result = _split(G, lumen, body, tree)
+
+    # Not joined; the hook then ends blind and goes with its bridge at A.
+    assert not any(d.get(JOINED_AT_WALL_UM) for *_e, d in result.edges(data=True))
+
+
+def test_with_the_short_loop_rule_off_a_wall_join_may_close_a_loop():
+    G, lumen, body, tree = _hook()
+
+    from haemolynx.graph.thick_vessel_junctions import JOINED_AT_WALL_UM
+
+    result = _split(G, lumen, body, tree, max_short_loop_um=0.0)
+
+    assert any(d.get(JOINED_AT_WALL_UM) for *_e, d in result.edges(data=True))
+    assert nx.cycle_basis(nx.Graph(result))
