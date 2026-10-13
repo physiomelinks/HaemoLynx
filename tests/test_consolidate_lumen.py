@@ -298,3 +298,39 @@ def test_the_clean_up_breaks_short_loops_round_tissue_only_when_asked():
     assert nx.cycle_basis(nx.Graph(broken)) == []
     assert nx.is_connected(broken)
     assert set(broken.nodes) >= {"A", "B"}
+
+
+# --- a thick vessel narrowing into a thin one: its taper in the clean-up --------
+
+
+def test_a_pair_with_a_thick_vessel_taper_is_left_alone():
+    """A taper lies in the thick lumen beside whatever else does: it is the
+    thick vessel narrowing, never the second strand of a pair."""
+    from haemolynx.graph.thick_vessel_junctions import THICK_TAPER
+
+    from lumen_artefact_fixtures import two_strands_in_one_lumen
+
+    mask, G = two_strands_in_one_lumen()
+    support = MaskSupport(mask, VOXEL_SIZE)
+    assert remove_parallel_edges_in_lumen(G.copy(), support).number_of_edges() == 1
+    for u, v, key in list(G.edges(keys=True))[:1]:
+        G.edges[u, v, key][THICK_TAPER] = True
+    assert remove_parallel_edges_in_lumen(G, support).number_of_edges() == 2
+
+
+def test_merging_at_a_degree_two_node_keeps_a_taper_mark():
+    """Whichever edge carries it, the merged edge does: dropped at the first
+    merge, the mark protected nothing in the clean-up's next round."""
+    from haemolynx.graph.degree2 import create_trivial_merged_edge
+    from haemolynx.graph.thick_vessel_junctions import THICK_TAPER
+
+    G = polyline_graph([[(7, 7, 2), (7, 7, 20)], [(7, 7, 20), (7, 7, 30)], [(7, 7, 30), (7, 7, 57)]])
+    G.edges[_edge(G, (7, 7, 20), (7, 7, 30))][THICK_TAPER] = True
+    G = smart_multigraph_degree2_removal(G, None)
+    ((_u, _v, data),) = G.edges(data=True)
+    assert data.get(THICK_TAPER) is True
+
+    merged = create_trivial_merged_edge(
+        {"voxels": [(0, 0, 0), (0, 0, 5)]}, {"voxels": [(0, 0, 5), (0, 0, 9)], THICK_TAPER: True}, (0, 0, 5)
+    )
+    assert merged.get(THICK_TAPER) is True

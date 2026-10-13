@@ -278,3 +278,19 @@ def test_with_a_memo_an_edge_near_a_change_is_judged_again_and_one_far_away_is_n
     assert again
     assert ("far_a", "far_b") not in judged and ("far_b", "far_a") not in judged
     assert len(judged) >= 1
+
+
+def test_a_thick_vessel_taper_is_never_a_stretch_nor_a_partner():
+    """The thin vessel a thick one narrows into runs inside the thick lumen
+    from the thick centreline's end (``THICK_TAPER``, set by the split): the
+    stretch step rewired it as a second strand, and the curved vessels round
+    it came back as straight lines (E14.5, S25, 2026-10-13)."""
+    from haemolynx.graph.thick_vessel_junctions import THICK_TAPER
+
+    mask, G = two_strands_in_one_lumen()
+    for u, v, key in list(G.edges(keys=True))[:1]:
+        G.edges[u, v, key][THICK_TAPER] = True
+    assert doubled_stretches(G, _support(mask)) == []
+    edges = sorted(map(str, G.edges(keys=True)))
+    resolve_doubled_stretches(G, _support(mask))
+    assert sorted(map(str, G.edges(keys=True))) == edges

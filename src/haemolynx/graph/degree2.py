@@ -5,7 +5,7 @@ from typing import Any, Callable, List, Optional, Tuple, Union
 import numpy as np
 import networkx as nx
 
-from .thick_vessel_junctions import IS_ZERO_RESISTANCE
+from .thick_vessel_junctions import IS_ZERO_RESISTANCE, THICK_TAPER
 from ._helpers import (
     get_all_edge_data,
     create_merged_edge_attributes,
@@ -244,6 +244,9 @@ def create_trivial_merged_edge(
     for key, value in edge1_data.items():
         if key not in merged_attributes:
             merged_attributes[key] = value
+    # Whichever edge carried it: the clean-up's protection of a taper.
+    if edge1_data.get(THICK_TAPER) or edge2_data.get(THICK_TAPER):
+        merged_attributes[THICK_TAPER] = True
     return merged_attributes
 
 
@@ -420,6 +423,8 @@ def smart_multigraph_degree2_removal(
                 "merged": True,
                 "original_edges": 2,
             }
+            if d1.get(THICK_TAPER) or d2.get(THICK_TAPER):
+                merged_attrs[THICK_TAPER] = True
 
             should_add, replace_key = should_add_merged_edge(
                 G, n1, n2, merged_voxels, merged_attrs, debug, inside_lumen=inside_lumen

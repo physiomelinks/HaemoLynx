@@ -49,7 +49,7 @@ from haemolynx.preprocessing.bridge_mask_support import (
 )
 
 from ._helpers import EdgeSampleIndex, calculate_path_length, edge_id, edge_sample_points, next_node_id
-from .thick_vessel_junctions import IS_ZERO_RESISTANCE
+from .thick_vessel_junctions import IS_ZERO_RESISTANCE, THICK_TAPER
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,12 @@ def doubled_stretches(
     ids: dict[Any, int] = {}
     owners = np.asarray([ids.setdefault(owner, len(ids)) for owner in index.owners], dtype=np.intp)
     edge_of = list(ids)
-    bridges = {edge_id(u, v, k) for u, v, k, d in G.edges(keys=True, data=True) if d.get(IS_ZERO_RESISTANCE)}
+    # Bridges and tapers run inside a thick lumen by construction: neither a
+    # stretch nor a partner.
+    bridges = {
+        edge_id(u, v, k) for u, v, k, d in G.edges(keys=True, data=True)
+        if d.get(IS_ZERO_RESISTANCE) or d.get(THICK_TAPER)
+    }
     bridge_ids = np.asarray(sorted(ids[b] for b in bridges if b in ids), dtype=np.intp)
     remembered: dict = memo.get("edges", {}) if memo is not None else {}
     entries = []

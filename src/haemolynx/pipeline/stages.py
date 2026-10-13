@@ -1226,6 +1226,18 @@ def _log_graph_consistency_diagnostics(
         logger.info(artefacts_report)
 
 
+def thick_junction_bridge_arguments(settings: dict) -> dict[str, Any]:
+    """What ``graph.insert_thick_vessel_junction_nodes`` takes from a run's
+    settings: drawing a vessel on from a thick vessel's wall is a
+    mask-supported bridge like any other, so it follows the same switch and
+    the same limits on the background it may cross."""
+    return dict(
+        join_dead_ends_at_walls=bool(settings["bridge_require_mask_support"]),
+        max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
+        min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+    )
+
+
 def graph_build_arguments(settings: dict) -> dict[str, Any]:
     """The keyword arguments ``graph.build_graph_from_skeleton`` takes from a
     run's settings: everything but the skeleton, the voxel size, the mask and
@@ -1461,7 +1473,7 @@ def build_network(
         if volume.thick_vessel_mask is not None:
             G = graph.insert_thick_vessel_junction_nodes(
                 G, volume.thick_vessel_mask, voxel_size_zyx=voxel_size_zyx,
-                segmentation=binary_mask,
+                segmentation=binary_mask, **thick_junction_bridge_arguments(settings),
             )
             if lumen_cleanup is not None:
                 G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
@@ -3000,7 +3012,8 @@ def _bridge_edited_vessels(
         segmentation = _to_binary_volume_for_skeletonization(network.volume.image)
     before = edited_bridges(G)
     bridged = graph.insert_thick_vessel_junction_nodes(
-        G, mask, voxel_size_zyx=voxel_size_zyx, edges=edited, segmentation=segmentation
+        G, mask, voxel_size_zyx=voxel_size_zyx, edges=edited, segmentation=segmentation,
+        **thick_junction_bridge_arguments(settings),
     )
     added = edited_bridges(bridged) - before
     if added:

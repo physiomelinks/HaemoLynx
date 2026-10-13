@@ -88,6 +88,46 @@ _MIN_RUN_SAMPLES = int(round(_MIN_RUN_UM / _SAMPLE_STEP_UM))
 _MIN_CENTRELINE_AT_END_UM = 2.0 * CENTRELINE_TOLERANCE_UM
 _MIN_CENTRELINE_WITHIN_UM = 4.0 * CENTRELINE_TOLERANCE_UM
 
+#: How far past a thick vessel's lumen (the segmentation's inscribed radius at
+#: the nearest point of its centreline tree) a vessel's centreline may stop
+#: and still be drawn on to the thick centreline through the mask (µm):
+#: skeletonisation often ends a thin vessel's arm short of the thick region,
+#: at its wall, and then nothing reaches the thick centreline.
+WALL_JOIN_REACH_UM = 10.0
+
+#: Edge attribute on a vessel drawn on from a thick vessel's wall to its
+#: centreline: how much was added, in µm (the part inside the lumen becomes
+#: the bridge).
+JOINED_AT_WALL_UM = "joined_at_thick_wall_um"
+
+#: A bridge continuing a thick centreline's end, its only other edge, within
+#: this cosine of the centreline's own direction there is the thick vessel
+#: narrowing into a thin one -- one vessel, a taper -- not a vessel opening
+#: into the thick one: no bridge (45 degrees).
+TAPER_MIN_COSINE = 0.7
+
+#: How far along a thick centreline's end its direction is read (µm).
+TAPER_DIRECTION_UM = 5.0
+
+#: Edge attribute on the vessel a thick vessel narrows into, where it runs on
+#: inside the thick lumen from the thick centreline's end (a taper, left as
+#: vessel): the lumen clean-up that follows the split leaves it alone as it
+#: does a bridge -- never one of a pair in one lumen, a doubled stretch or
+#: the side of a short loop it breaks. Without the mark it took the taper
+#: for a second strand and rewired the vessels round it (E14.5, 2026-10-13).
+THICK_TAPER = "thick_taper"
+
+#: At a fork of the thick centreline, an arm this much narrower than the
+#: trunk (its two widest arms) is a branch: the stretch of it inside the
+#: trunk's lumen is a bridge, as for any vessel opening into the thick one.
+#: Equal arms are a bifurcation of equals, and get none.
+FORK_BRANCH_MAX_RADIUS_FRACTION = 0.8
+
+#: Each arm's radius is read over this far (µm) past the fork's own radius,
+#: and an arm is a thick-centreline arm when this much of its start is on
+#: the tree.
+FORK_ARM_UM = 10.0
+
 _OUTSIDE, _CENTRELINE, _INSIDE = 0, 1, 2
 
 
@@ -154,6 +194,27 @@ def _runs(
         else:
             coalesced.append([s, e, inside])
     return [(s, e, inside) for s, e, inside in coalesced]
+
+
+def _labels(points: np.ndarray, on_tree: np.ndarray, in_region: np.ndarray) -> np.ndarray:
+    """Each sample of an edge's path labelled outside, on the thick
+    centreline, or inside the region off it: flickers under
+    :data:`_MIN_RUN_UM` take their neighbours' label, and a stretch near the
+    tree is the thick centreline only if long enough (see
+    :data:`_MIN_CENTRELINE_AT_END_UM`) -- a whole edge near it always is."""
+    labels = np.where(on_tree, _CENTRELINE, np.where(in_region, _INSIDE, _OUTSIDE))
+    absorbed = np.empty_like(labels)
+    along = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))])
+    for s, e, value in _runs(labels.tolist(), min_run_um=_MIN_RUN_UM, along=along):
+        absorbed[s : e + 1] = value
+    last = len(points) - 1
+    for s, e, value in _runs(absorbed.tolist(), min_run_length=1):
+        if value != _CENTRELINE or (s == 0 and e == last):
+            continue
+        needed = _MIN_CENTRELINE_AT_END_UM if (s == 0 or e == last) else _MIN_CENTRELINE_WITHIN_UM
+        if along[e] - along[s] < needed:
+            absorbed[s : e + 1] = _INSIDE
+    return absorbed
 
 
 def thick_vessel_centreline(
@@ -321,6 +382,10 @@ def insert_thick_vessel_junction_nodes(
     segmentation: np.ndarray | None = None,
     centreline: np.ndarray | None = None,
     centreline_tolerance_um: float = CENTRELINE_TOLERANCE_UM,
+    join_dead_ends_at_walls: bool = True,
+    bridge_forks: bool = True,
+    max_background_gap_um: float | None = None,
+    min_mask_fraction: float | None = None,
 ) -> nx.MultiGraph:
     """*G* with a one-radius bridge where each vessel opens into a thick vessel.
 
@@ -330,6 +395,23 @@ def insert_thick_vessel_junction_nodes(
     the thick vessel's lumen, whose inscribed radius at the centreline is
     where a joining vessel enters it; without one the region stands in,
     which puts that wall about the region's margin further out.
+
+    Three more cases, by Harvey's examples (2026-10-13, PLAN_bridging.md):
+
+    - *join_dead_ends_at_walls* (with a *segmentation*): a dead end stopping
+      within :data:`WALL_JOIN_REACH_UM` of a thick vessel's lumen, heading
+      for it (the gap bridges' turn and length rule), is first drawn on
+      through the mask to the nearest point of the thick centreline -- a
+      route crossing no more than *max_background_gap_um* of background, as
+      every mask-supported bridge (``preprocessing.MaskSupport``), not
+      beside a vessel in the same lumen and closing no loop inside one -- and
+      then bridged like any vessel reaching it.
+    - A connector whose bridge would continue a thick centreline's end along
+      its own direction (:data:`TAPER_MIN_COSINE`), that end having no other
+      edge, is the thick vessel narrowing into a thin one: left as vessel.
+    - *bridge_forks*: where the thick centreline forks and one arm is
+      narrower than the other two (:data:`FORK_BRANCH_MAX_RADIUS_FRACTION`),
+      the stretch of that branch inside the trunk's lumen becomes a bridge.
 
     With *edges* (``(u, v, key)``, either way round) only those are rebuilt,
     and one already a bridge is left as it is; every other edge stays as it
@@ -381,6 +463,11 @@ def insert_thick_vessel_junction_nodes(
     chosen = (
         None if edges is None else {(frozenset((u, v)), key) for u, v, key in edges}
     )
+    if join_dead_ends_at_walls and segmentation is not None:
+        _join_dead_ends_at_walls(
+            result, near_tree, tree, tree_radius, lumen, thick, vs, chosen,
+            max_background_gap_um=max_background_gap_um, min_mask_fraction=min_mask_fraction,
+        )
     node_pos = {
         n: np.asarray(d["pos"], dtype=float) for n, d in result.nodes(data=True) if "pos" in d
     }
@@ -399,18 +486,7 @@ def insert_thick_vessel_junction_nodes(
         in_region = points_inside_mask(points, thick, voxel_size_zyx=tuple(vs))
         if not (on_tree.any() or in_region.any()):
             continue
-        labels = np.where(on_tree, _CENTRELINE, np.where(in_region, _INSIDE, _OUTSIDE))
-        absorbed = np.empty_like(labels)
-        along = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(points, axis=0), axis=1))])
-        for s, e, value in _runs(labels.tolist(), min_run_um=_MIN_RUN_UM, along=along):
-            absorbed[s : e + 1] = value
-        last = len(points) - 1
-        for s, e, value in _runs(absorbed.tolist(), min_run_length=1):
-            if value != _CENTRELINE or (s == 0 and e == last):
-                continue
-            needed = _MIN_CENTRELINE_AT_END_UM if (s == 0 or e == last) else _MIN_CENTRELINE_WITHIN_UM
-            if along[e] - along[s] < needed:
-                absorbed[s : e + 1] = _INSIDE
+        absorbed = _labels(points, on_tree, in_region)
         is_bridge = bool(data.get(IS_ZERO_RESISTANCE))
         in_scope = not is_bridge and (
             chosen is None or (frozenset((u, v)), key) in chosen
@@ -547,24 +623,34 @@ def insert_thick_vessel_junction_nodes(
         cKDTree(np.asarray([sampled[i].points[k] for i, k in candidates])) if candidates else None
     )
     restored: set = set()
+    # Inside stretches the thick vessel narrows into: kept as vessel, though
+    # the connector they belong to may still bridge its other stretches.
+    tapers: set[int] = set()
     no_centreline_near = 0
-    for _attempt in range(len(touches_centreline) + 2):
-        bridges, failed = _choose_bridges(
+    for _attempt in range(len(touches_centreline) + len(inside_runs) + 2):
+        bridges, failed, runs = _choose_bridges(
             sampled, inside_runs, find, touches_centreline - restored, tree, tree_radius,
             edges_at, node_on_centreline, node_pos, result,
-            cand_tree, cand_index, contacts, through,
+            cand_tree, cand_index, contacts, through | tapers,
         )
         if failed - restored:
             no_centreline_near += len(failed - restored)
             restored |= failed
             continue
-        built, new_node_at, stats = _rebuild(G, result, sampled, bridges, node_pos)
+        built, new_node_at, stats, bridge_ends = _rebuild(
+            G, result, sampled, bridges, node_pos,
+            tapered=[inside_runs[r] for r in tapers],
+        )
         cut_off = _cut_off_edges(G, built, edges_at, new_node_at)
         blamed = set().union(*(connectors_of_edge.get(i, set()) for i in cut_off)) & (
             touches_centreline - restored
         )
-        if not blamed:
+        # A bridge carrying a thick centreline's end on along its own line is
+        # the thick vessel narrowing: the stretch it replaced stays vessel.
+        continuing = set().union(*(runs[b] for b in _taper_bridges(built, bridge_ends))) - tapers
+        if not blamed and not continuing:
             break
+        tapers |= continuing
         restored |= blamed
     blind, blind_um = _remove_blind_vessels_beyond_bridges(
         built, G, tree, extent_um=(np.asarray(thick.shape) - 1) * vs
@@ -576,13 +662,29 @@ def insert_thick_vessel_junction_nodes(
             "that goes on, never to a dead end.",
             blind, blind_um,
         )
-    if restored:
+    if tapers:
+        logger.info(
+            "Thick-vessel bridges: %d vessel(s) carrying on from a thick centreline's end along "
+            "its line left as vessel: the thick vessel narrowing, not a vessel opening into it.",
+            len(tapers),
+        )
+    cut_off_kept = len(restored) - no_centreline_near
+    if no_centreline_near or cut_off_kept:
         logger.warning(
             "Thick-vessel bridges: %d connector(s) left as they were: %d with no thick "
             "centreline in the graph near enough to bridge to, %d the only way to a piece "
             "of the network.",
-            len(restored), no_centreline_near, len(restored) - no_centreline_near,
+            no_centreline_near + cut_off_kept, no_centreline_near, cut_off_kept,
         )
+    if bridge_forks:
+        forks = _bridge_thick_forks(built, near_tree, lumen, vs, chosen)
+        if forks:
+            stats["bridges"] += forks
+            logger.info(
+                "Thick-vessel bridges: %d branch(es) of a thick centreline bridged from where "
+                "they leave the trunk's lumen to the fork.",
+                forks,
+            )
     removed_um = sum(
         float(np.sum(np.linalg.norm(np.diff(e.points, axis=0), axis=1)[~(e.keep[:-1] & e.keep[1:])]))
         for e in sampled
@@ -604,13 +706,15 @@ def _choose_bridges(
     node_pos, graph, cand_tree, cand_index, contacts, through,
 ):
     """Decide what stays (``keep``) and each bridge ``(origin, (edge, sample),
-    attributes)``; and the connectors that cannot have one.
+    attributes)``; the connectors that cannot have one; and, per bridge, the
+    inside runs (indices into *inside_runs*) it replaces beside its origin.
 
     A bridge goes to where its connector met the thick centreline, so the
     vessel joins the thick one where skeletonisation joined it; failing that
     (out of reach), to the nearest point of the centreline."""
     dropped_from = _decide_what_stays(sampled, inside_runs, find, bridged, through)
-    bridges, failed = [], set()
+    bridges, failed, runs = [], set(), []
+    run_of = {(i, k): r for r, (i, s, t) in enumerate(inside_runs) for k in range(s, t + 1)}
     for origin, beside in _bridge_origins(sampled, edges_at, node_on_centreline, graph):
         if origin[0] == "node":
             where = node_pos[origin[1]]
@@ -638,13 +742,23 @@ def _choose_bridges(
             failed |= {dropped_from[c] for c in beside if c in dropped_from}
             continue
         bridges.append((origin, target, dict(source.data) if source is not None else {}))
-    return bridges, failed
+        runs.append({run_of[c] for c in beside if c in run_of})
+    return bridges, failed, runs
 
 
-def _rebuild(G, base, sampled, bridges, node_pos):
+def _rebuild(G, base, sampled, bridges, node_pos, tapered=()):
     """A copy of *base* with each sampled edge rebuilt as the runs it keeps,
-    and the bridges added."""
+    and the bridges added; with, per bridge, its ``(vessel end, centreline
+    end)`` nodes (None for one not drawn). Every edge holding a stretch of
+    *tapered* (``(edge, start, end)`` inside runs kept as vessel) is marked
+    :data:`THICK_TAPER`."""
     result = base.copy()
+    tapered_of: dict[int, list[tuple[int, int]]] = {}
+    for i, s, t in tapered:
+        tapered_of.setdefault(i, []).append((s, t))
+
+    def holds_taper(i: int, a: int, b: int) -> bool:
+        return any(s <= b and a <= t for s, t in tapered_of.get(i, ()))
     node_pos = dict(node_pos)
     for e in sampled:
         e.anchors = set()
@@ -686,6 +800,8 @@ def _rebuild(G, base, sampled, bridges, node_pos):
     for i, e in enumerate(sampled):
         cuts = {snapped[(i, k)] for k in e.anchors} - {0, len(e.points) - 1}
         if e.keep.all() and not cuts:
+            if holds_taper(i, 0, len(e.points) - 1):
+                result.edges[e.u, e.v, e.key][THICK_TAPER] = True
             continue
         result.remove_edge(e.u, e.v, e.key)
         stats["removed"] += 1
@@ -703,14 +819,19 @@ def _rebuild(G, base, sampled, bridges, node_pos):
                 points = [tuple(float(c) for c in row) for row in e.points[a : b + 1]]
                 attrs["voxels"] = points
                 attrs["length"] = float(calculate_path_length(points))
+                if holds_taper(i, a, b):
+                    attrs[THICK_TAPER] = True
                 result.add_edge(node_for(i, a), node_for(i, b), **attrs)
                 stats["rebuilt"] += 1
 
+    bridge_ends: list[tuple[Any, Any] | None] = []
     for origin, (i, k), source_data in bridges:
         start = origin[1] if origin[0] == "node" else node_for(*origin[1])
         end = node_for(i, snapped[(i, k)])
         if start == end:
+            bridge_ends.append(None)
             continue
+        bridge_ends.append((start, end))
         a, b = node_pos[start], node_pos[end]
         attrs = {
             key: value
@@ -733,7 +854,7 @@ def _rebuild(G, base, sampled, bridges, node_pos):
         degree = result.degree(node)
         if degree == 0:
             result.remove_node(node)
-        elif degree == 2 and G.degree(node) != 2:
+        elif degree == 2 and base.degree(node) != 2:
             incident = list(result.edges(node, keys=True, data=True))
             (_n, n1, _k1, d1), (_m, n2, _k2, d2) = incident
             if n1 == n2 or n1 == node or n2 == node:
@@ -744,7 +865,278 @@ def _rebuild(G, base, sampled, bridges, node_pos):
             result.remove_node(node)
             result.add_edge(n1, n2, **merged_attrs)
             stats["merged"] += 1
-    return result, new_node_at, stats
+    return result, new_node_at, stats, bridge_ends
+
+
+def _polyline_from(G, node, other, data) -> np.ndarray:
+    """An edge's path, starting at *node*."""
+    pos = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (node, other)}
+    return np.asarray(edge_sample_points(node, other, data, pos), dtype=float)
+
+
+def _taper_bridges(G, bridge_ends) -> set[int]:
+    """The bridges (indices into *bridge_ends*, each ``(vessel end,
+    centreline end)`` or None) that carry a thick centreline's end on along
+    its own line: at a centreline end with one vessel edge, the bridge
+    leaving most nearly along that edge's direction there, if within
+    :data:`TAPER_MIN_COSINE` of it. At most one per end -- the thick vessel
+    narrows into one vessel; any other leaving the same end opens into it."""
+    from .cartwheel_guard import _point_along_polyline
+
+    at_end: dict[Any, list[tuple[int, Any]]] = {}
+    for b, ends in enumerate(bridge_ends):
+        if ends is not None and G.has_node(ends[0]) and G.has_node(ends[1]):
+            at_end.setdefault(ends[1], []).append((b, ends[0]))
+    tapers: set[int] = set()
+    for end, leaving in at_end.items():
+        vessels = [
+            (a, b, d) for a, b, d in G.edges(end, data=True) if not d.get(IS_ZERO_RESISTANCE)
+        ]
+        if len(vessels) != 1:
+            continue
+        a, b, data = vessels[0]
+        other = b if a == end else a
+        if other == end:
+            continue
+        end_pos = np.asarray(G.nodes[end]["pos"], dtype=float)
+        outward = end_pos - _point_along_polyline(_polyline_from(G, end, other, data), TAPER_DIRECTION_UM)
+        best, best_cos = None, TAPER_MIN_COSINE
+        for index, start in leaving:
+            onward = np.asarray(G.nodes[start]["pos"], dtype=float) - end_pos
+            norms = float(np.linalg.norm(outward) * np.linalg.norm(onward))
+            if norms > 0.0 and float(outward @ onward) / norms >= best_cos:
+                best, best_cos = index, float(outward @ onward) / norms
+        if best is not None:
+            tapers.add(best)
+    return tapers
+
+
+def _centreline_samples(G, near_tree, thick, vs):
+    """Every point of *G*'s vessels (not bridges) the split labels thick
+    centreline (:func:`_labels`, so not a flicker near the tree), sampled
+    every :data:`_SAMPLE_STEP_UM`, and the edge each is on: ``(points,
+    owners, KD-tree)``, the tree None when there are none."""
+    points, owners = [], []
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if data.get(IS_ZERO_RESISTANCE) or "pos" not in G.nodes[u] or "pos" not in G.nodes[v]:
+            continue
+        path = densify_polyline(_polyline_from(G, u, v, data), max_step_um=_SAMPLE_STEP_UM)
+        if len(path) < 2:
+            continue
+        on_tree = near_tree(path)[1]
+        if not on_tree.any():
+            continue
+        in_region = points_inside_mask(path, thick, voxel_size_zyx=tuple(vs))
+        on = _labels(path, on_tree, in_region) == _CENTRELINE
+        if on.any():
+            points.append(path[on])
+            owners.extend([(u, v, key)] * int(on.sum()))
+    if not points:
+        return np.empty((0, 3)), [], None
+    stacked = np.vstack(points)
+    return stacked, owners, cKDTree(stacked)
+
+
+def _join_dead_ends_at_walls(
+    G, near_tree, tree, tree_radius, lumen, thick, vs, chosen, *,
+    max_background_gap_um=None, min_mask_fraction=None,
+) -> int:
+    """Draw each dead end that stops at a thick vessel's wall on to the
+    nearest point of the thick centreline in *G*, in place, so the split
+    bridges it like any vessel reaching the centreline. Returns how many.
+
+    A dead end qualifies when its tip lies within :data:`WALL_JOIN_REACH_UM`
+    of the lumen (the inscribed radius at the nearest tree point) but not on
+    the centreline, and the way on to the centreline continues its vessel
+    (``build.gap_bridge_continues_terminal``: a vessel at least 3 um long,
+    turning at most 80 degrees). The way is the route through the mask
+    (``reconnect.route_through_mask``), else the straight line, whichever the
+    mask-support test accepts; its part outside the thick-vessel region must
+    not run beside a vessel in the same lumen, and the join must close no loop
+    inside one lumen. With *chosen* (the edges a post-processing split
+    rebuilds), only those edges' dead ends, and the joined edge joins them.
+    """
+    from haemolynx.preprocessing.bridge_mask_support import (
+        DEFAULT_MAX_BACKGROUND_GAP_UM, DEFAULT_MIN_MASK_FRACTION, MaskSupport,
+    )
+
+    from ._helpers import EdgeSampleIndex, duplicates_existing_vessel
+    from .build import gap_bridge_continues_terminal
+    from .dead_end_extension import _closes_loop_in_lumen
+    from .edit import insert_node_on_edge
+    from .reconnect import route_through_mask
+
+    support = MaskSupport(
+        lumen, tuple(vs),
+        max_background_gap_um=(
+            DEFAULT_MAX_BACKGROUND_GAP_UM if max_background_gap_um is None else float(max_background_gap_um)
+        ),
+        min_mask_fraction=DEFAULT_MIN_MASK_FRACTION if min_mask_fraction is None else float(min_mask_fraction),
+    )
+    tips = []
+    for n in G.nodes:
+        if G.degree(n) != 1 or "pos" not in G.nodes[n]:
+            continue
+        (a, b, key, data), = G.edges(n, keys=True, data=True)
+        w = b if a == n else a
+        if w == n or data.get(IS_ZERO_RESISTANCE):
+            continue
+        if chosen is not None and (frozenset((n, w)), key) not in chosen:
+            continue
+        p = np.asarray(G.nodes[n]["pos"], dtype=float)
+        distance, nearest = tree.query(p)
+        radius = float(tree_radius[nearest]) if np.isfinite(tree_radius[nearest]) else 0.0
+        if distance > radius + WALL_JOIN_REACH_UM or near_tree(p[None])[1][0]:
+            continue
+        tips.append((float(distance), n))
+    if not tips:
+        return 0
+    points, owners, samples = _centreline_samples(G, near_tree, thick, vs)
+    if samples is None:
+        return 0
+    index = EdgeSampleIndex(G)
+    joined = refused_turn = refused_background = refused_beside = 0
+    for _distance, n in sorted(tips, key=lambda t: (t[0], str(t[1]))):
+        if not G.has_node(n) or G.degree(n) != 1:
+            continue
+        (a, b, key, data), = G.edges(n, keys=True, data=True)
+        w = b if a == n else a
+        p = np.asarray(G.nodes[n]["pos"], dtype=float)
+        radius = tree_radius[tree.query(p)[1]]
+        reach = (float(radius) if np.isfinite(radius) else 0.0) + WALL_JOIN_REACH_UM + CENTRELINE_TOLERANCE_UM
+        nearby = samples.query_ball_point(p, reach)
+        if any(not G.has_edge(*owners[j]) for j in nearby):
+            # An earlier join split the edge a sample was on: sample again.
+            points, owners, samples = _centreline_samples(G, near_tree, thick, vs)
+            nearby = samples.query_ball_point(p, reach)
+        found = sorted(
+            (float(np.linalg.norm(points[j] - p)), j) for j in nearby if n not in owners[j][:2]
+        )
+        if not found:
+            continue
+        q, edge = points[found[0][1]], owners[found[0][1]]
+        if not gap_bridge_continues_terminal(G, n, q):
+            refused_turn += 1
+            continue
+        straight = np.vstack([p, q])
+        routed = route_through_mask(lumen, p, q, tuple(vs))
+        path = next((c for c in (routed, straight) if c is not None and support.accepts(c)), None)
+        if path is None:
+            refused_background += 1
+            continue
+        path = densify_polyline(np.asarray(path, dtype=float), max_step_um=_SAMPLE_STEP_UM)
+        # Inside the thick lumen the path is the bridge-to-be; outside it, a
+        # piece of vessel, which must not be a second strand beside another.
+        distance, nearest = tree.query(path)
+        in_lumen = np.flatnonzero(distance <= np.nan_to_num(tree_radius[nearest], posinf=0.0))
+        outside = path[: int(in_lumen[0]) if len(in_lumen) else len(path)]
+        if (
+            len(outside) >= 2
+            and calculate_path_length([tuple(r) for r in outside]) >= 2.0
+            and duplicates_existing_vessel(outside, G, support.inside, support.radius, index=index)
+        ):
+            refused_beside += 1
+            continue
+        if _closes_loop_in_lumen(G, n, edge, q, path, support):
+            refused_beside += 1
+            continue
+        node = insert_node_on_edge(G, *edge, q)
+        if node in (n, w):
+            continue
+        path[-1] = np.asarray(G.nodes[node]["pos"], dtype=float)
+        combined = np.vstack([_polyline_from(G, w, n, data), path[1:]])
+        attrs = {k: v for k, v in data.items() if k not in ("voxels", "length")}
+        attrs["voxels"] = [tuple(float(c) for c in row) for row in combined]
+        attrs["length"] = float(calculate_path_length(attrs["voxels"]))
+        attrs[JOINED_AT_WALL_UM] = float(calculate_path_length([tuple(r) for r in path]))
+        G.remove_node(n)
+        new_key = G.add_edge(w, node, **attrs)
+        if chosen is not None:
+            chosen.add((frozenset((w, node)), new_key))
+        index.add(path)
+        joined += 1
+    if joined or refused_background or refused_beside:
+        logger.info(
+            "Thick-vessel bridges: %d dead end(s) at a thick vessel's wall drawn on to its "
+            "centreline through the mask; refused %d turning away from it, %d across background "
+            "and %d beside a vessel in the same lumen or closing a loop inside one.",
+            joined, refused_turn, refused_background, refused_beside,
+        )
+    return joined
+
+
+def _bridge_thick_forks(G, near_tree, lumen, vs, chosen) -> int:
+    """At each fork of the thick centreline, make the stretch of a narrower
+    branch inside the trunk's lumen a bridge, in place. Returns how many.
+
+    A fork is a node on the tree with at least three vessel edges whose first
+    :data:`FORK_ARM_UM` lie on it. Each arm's radius is the median inscribed
+    radius of *lumen* over the :data:`FORK_ARM_UM` past the fork's own; the
+    two widest are the trunk, and an arm at most
+    :data:`FORK_BRANCH_MAX_RADIUS_FRACTION` of the narrower of them is a
+    branch. The branch is cut where it first lies further from the trunk's
+    centreline than the trunk's radius there -- where it leaves the trunk's
+    lumen -- and the piece from the fork to that point becomes a straight
+    bridge. A branch whose first edge ends before it leaves is left alone.
+    """
+    from .edit import insert_node_on_edge
+
+    vs = np.asarray(vs, dtype=float)
+    made = 0
+    for n in list(G.nodes):
+        if not G.has_node(n) or G.degree(n) < 3 or "pos" not in G.nodes[n]:
+            continue
+        here = np.asarray(G.nodes[n]["pos"], dtype=float)
+        if not near_tree(here[None])[1][0]:
+            continue
+        arms = []
+        for a, b, key, data in G.edges(n, keys=True, data=True):
+            other = b if a == n else a
+            if data.get(IS_ZERO_RESISTANCE) or other == n:
+                continue
+            path = densify_polyline(_polyline_from(G, n, other, data), max_step_um=_SAMPLE_STEP_UM)
+            arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))])
+            if near_tree(path[arc <= FORK_ARM_UM])[1].mean() < 0.8:
+                continue
+            arms.append(dict(edge=(n, other, key), path=path, arc=arc))
+        if len(arms) < 3:
+            continue
+        r0 = float(_inscribed_radius_um(here[None], lumen, vs)[0])
+        if not np.isfinite(r0) or r0 <= 0.0:
+            continue
+        for arm in arms:
+            window = (arm["arc"] >= r0) & (arm["arc"] <= r0 + FORK_ARM_UM)
+            radii = _inscribed_radius_um(arm["path"][window], lumen, vs) if window.any() else np.zeros(0)
+            radii = radii[np.isfinite(radii)]
+            arm["radius"] = float(np.median(radii)) if len(radii) else float("nan")
+        if any(not np.isfinite(arm["radius"]) for arm in arms):
+            continue
+        arms.sort(key=lambda arm: -arm["radius"])
+        trunk, branches = arms[:2], arms[2:]
+        trunk_points = np.vstack([arm["path"] for arm in trunk])
+        trunk_radii = _inscribed_radius_um(trunk_points, lumen, vs)
+        trunk_tree = cKDTree(trunk_points)
+        narrowest_trunk = min(arm["radius"] for arm in trunk)
+        for arm in branches:
+            if arm["radius"] > FORK_BRANCH_MAX_RADIUS_FRACTION * narrowest_trunk:
+                continue
+            u, v, key = arm["edge"]
+            if chosen is not None and (frozenset((u, v)), key) not in chosen:
+                continue
+            distance, nearest = trunk_tree.query(arm["path"])
+            left = np.flatnonzero((distance > trunk_radii[nearest]) & (arm["arc"] > 0.0))
+            if not len(left) or arm["arc"][left[0]] < 1.0 or left[0] >= len(arm["path"]) - 1:
+                continue
+            exit_node = insert_node_on_edge(G, u, v, key, arm["path"][left[0]])
+            if exit_node in (u, v):
+                continue
+            for data in G[n][exit_node].values():
+                end = np.asarray(G.nodes[exit_node]["pos"], dtype=float)
+                data["voxels"] = [tuple(float(c) for c in here), tuple(float(c) for c in end)]
+                data["length"] = float(np.linalg.norm(end - here))
+                data[IS_ZERO_RESISTANCE] = True
+            made += 1
+    return made
 
 
 def _remove_blind_vessels_beyond_bridges(built, G, tree, *, extent_um) -> tuple[int, float]:

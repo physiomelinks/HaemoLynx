@@ -293,10 +293,15 @@ THICK_FROM_UM = 30.0
 THICK_RADIUS_UM = 4.0
 
 
-def _thick_network():
-    """A thin vessel 0-1 (x 0..20) and a thick one's centreline 2-3 (x 40..55)."""
+def _thick_network(*, along_axis: bool = False):
+    """A thick vessel's centreline 2-3 (x 40..55), and a thin vessel 0-1 the
+    hand-drawn vessel 1-2 joins to it: from the side (along y, 1 at y = 15),
+    or *along_axis*, carrying on from the thick vessel's end (x 0..20)."""
     G = nx.MultiGraph()
-    positions = {0: (5.0, 5.0, 0.0), 1: (5.0, 5.0, 20.0), 2: (5.0, 5.0, 40.0), 3: (5.0, 5.0, 55.0)}
+    if along_axis:
+        positions = {0: (5.0, 5.0, 0.0), 1: (5.0, 5.0, 20.0), 2: (5.0, 5.0, 40.0), 3: (5.0, 5.0, 55.0)}
+    else:
+        positions = {0: (5.0, 25.0, 40.0), 1: (5.0, 15.0, 40.0), 2: (5.0, 5.0, 40.0), 3: (5.0, 5.0, 55.0)}
     for node, pos in positions.items():
         G.add_node(node, pos=np.asarray(pos))
     for a, b in ((0, 1), (2, 3), (1, 2)):
@@ -314,7 +319,7 @@ def _thick_mask():
     return mask
 
 
-def _thick_run(tmp_path, *, volume_mask=True, **settings):
+def _thick_run(tmp_path, *, volume_mask=True, along_axis=False, **settings):
     options = {
         "use_thick_vessel_skeletonisation": True,
         "inlet_nodes": [0],
@@ -324,7 +329,7 @@ def _thick_run(tmp_path, *, volume_mask=True, **settings):
         **settings,
     }
     run_settings = _settings(tmp_path, **options)
-    G = _thick_network()
+    G = _thick_network(along_axis=along_axis)
     network = _vessel_network(tmp_path, graph=G)
     network.volume.thick_vessel_mask = _thick_mask() if volume_mask else None
     boundaries = SimpleNamespace(
@@ -352,21 +357,19 @@ def test_a_vessel_drawn_into_a_thick_vessel_becomes_a_bridge_inside_it(tmp_path)
 
     out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
 
-    # The drawn vessel up to the thick vessel's boundary, one bridge from
-    # there to the thick vessel's centreline, and the drawn vessel's last
-    # stretch, along that centreline, as the thick vessel.
+    # The drawn vessel up to the thick vessel's boundary, and one bridge from
+    # there to the thick vessel's centreline.
     pieces = _pieces_between(out.graph, 1, 2)
-    assert len(pieces) == 3
-    (_a, joint, outside), (_j, _k, bridge), (_l, _b, along) = pieces
-    assert not outside.get(IS_ZERO_RESISTANCE) and not along.get(IS_ZERO_RESISTANCE)
+    assert len(pieces) == 2
+    (_a, joint, outside), (_j, _b, bridge) = pieces
+    assert not outside.get(IS_ZERO_RESISTANCE)
     assert bridge.get(IS_ZERO_RESISTANCE)
-    joint_x = float(out.graph.nodes[joint]["pos"][2])
-    assert abs(joint_x - THICK_FROM_UM) <= 1.0
+    joint_y = float(out.graph.nodes[joint]["pos"][1])
+    assert abs(joint_y - (5.0 + THICK_RADIUS_UM)) <= 1.0
     assert bridge["length"] <= THICK_RADIUS_UM + 1.0
-    assert outside["length"] + bridge["length"] + along["length"] == pytest.approx(20.0)
-    for piece in (outside, along):
-        assert piece["branch_order"] and piece["diameter_um"] > 0
-        assert EDITED not in piece
+    assert outside["length"] + bridge["length"] == pytest.approx(10.0)
+    assert outside["branch_order"] and outside["diameter_um"] > 0
+    assert EDITED not in outside
     # A bridge is no vessel of any order, and is not measured.
     assert "branch_order" not in bridge
     assert bridge["diameter_source"] == "bridge" and bridge["diameter_um"] > 0
@@ -375,6 +378,20 @@ def test_a_vessel_drawn_into_a_thick_vessel_becomes_a_bridge_inside_it(tmp_path)
     (key,) = out.graph[2][3]
     assert not out.graph.edges[2, 3, key].get(IS_ZERO_RESISTANCE)
     assert out.graph is model.graph is boundaries.graph is network.graph
+
+
+def test_a_vessel_drawn_on_along_a_thick_vessels_line_from_its_end_gets_no_bridge(tmp_path):
+    """The thick vessel narrowing into the drawn one (Harvey, 2026-10-13:
+    bridges along a vessel's own line should not be there): the drawn vessel
+    stays vessel all the way, where it used to get a bridge from the thick
+    region's end to the tree."""
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path, along_axis=True)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    pieces = _pieces_between(out.graph, 1, 2)
+    assert not any(d.get(IS_ZERO_RESISTANCE) for *_e, d in pieces)
+    assert sum(d["length"] for *_e, d in pieces) == pytest.approx(20.0)
 
 
 def test_the_bridge_gets_the_negligible_resistance_graph_building_bridges_get(tmp_path):

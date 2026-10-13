@@ -389,3 +389,19 @@ def test_a_short_loop_through_a_thick_vessel_bridge_is_left_to_the_review_list()
             d[IS_ZERO_RESISTANCE] = True
     remove_short_loops(G, _support(_tube_mask()))
     assert _rows(G) == [4, 9]
+
+
+def test_a_short_loop_through_a_thick_vessel_taper_is_left_to_the_review_list():
+    """A taper (the thin vessel a thick one narrows into, inside its lumen)
+    is the thick vessel's own continuation, as much as a bridge is its join."""
+    from haemolynx.graph.thick_vessel_junctions import THICK_TAPER
+
+    G = _vessel_with(4, 9)
+    unmarked = G.copy()
+    remove_short_loops(unmarked, _support(_tube_mask()))
+    assert _rows(unmarked) != [4, 9]
+    for a, b, key, d in G.edges(keys=True, data=True):
+        if d.get("row") == 9:
+            d[THICK_TAPER] = True
+    remove_short_loops(G, _support(_tube_mask()))
+    assert _rows(G) == [4, 9]

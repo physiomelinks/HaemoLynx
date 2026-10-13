@@ -25,7 +25,7 @@ from haemolynx.preprocessing.bridge_mask_support import (
 )
 
 from ._helpers import edge_sample_points
-from .thick_vessel_junctions import IS_ZERO_RESISTANCE
+from .thick_vessel_junctions import IS_ZERO_RESISTANCE, THICK_TAPER
 
 logger = logging.getLogger(__name__)
 
@@ -462,8 +462,12 @@ def remove_short_loops(
                 continue
             # A loop through a thick-vessel bridge is the join to the thick
             # centreline, not two strands: left to the review list. Taking a
-            # side of those cost E14.5 32 of its 110 bridges.
-            if any(G.edges[a, b, key].get(IS_ZERO_RESISTANCE) for a, b, key in cycle):
+            # side of those cost E14.5 32 of its 110 bridges. A taper, the
+            # thick vessel narrowing inside its own lumen, likewise.
+            if any(
+                G.edges[a, b, key].get(IS_ZERO_RESISTANCE) or G.edges[a, b, key].get(THICK_TAPER)
+                for a, b, key in cycle
+            ):
                 continue
             for a, b, key in _break(G, cycle, support):
                 removed.append(lengths[(a, b, key)])
@@ -549,7 +553,8 @@ def remove_parallel_edges_in_lumen(
         # inside the thick lumen by construction, so it is always beside
         # the thick centreline, and it is the join to it, not a second
         # strand. The loop step and the dangling-bridge rule settle those.
-        if any(G.edges[edge].get(IS_ZERO_RESISTANCE) for edge in present):
+        # A taper lies in the thick lumen for the same reason.
+        if any(G.edges[edge].get(IS_ZERO_RESISTANCE) or G.edges[edge].get(THICK_TAPER) for edge in present):
             continue
         if keep_apart is not None and keep_apart((left, right)):
             continue

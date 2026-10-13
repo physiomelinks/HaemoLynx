@@ -838,7 +838,20 @@ are only caught locally.
   ends, `diameter_source="bridge"`), get no branch order and are no step in one
   (`graph/branch_order.py`), and statistics contract them (`contract_bridges`: the vessel meets
   the thick centreline directly, sharing the graph's attribute dicts so per-vessel results land on
-  it) and report them on their own rows. See `PLAN_thick_vessel_bridges.md`.
+  it) and report them on their own rows. See `PLAN_thick_vessel_bridges.md`. Three cases since,
+  from Harvey's examples (2026-10-13, `PLAN_bridging.md` F1-F1c): a dead end stopping within
+  `WALL_JOIN_REACH_UM` (10 um) of the thick lumen and heading for it (the gap bridges' 80-degree,
+  3 um rule) is first drawn on through the mask to the thick centreline, under the bridge gate and
+  the same-lumen and loop guards, then bridged like any vessel (`join_dead_ends_at_walls`; the
+  edge records `joined_at_thick_wall_um`) -- skeletonisation often ends a thin arm at the wall;
+  a bridge carrying a thick centreline's end on along its own line (`TAPER_MIN_COSINE`, 45
+  degrees), the one most along it at each end, is the thick vessel narrowing and stays vessel
+  (an elbow at the end keeps its bridge, and so does a side vessel leaving the same end), marked
+  `THICK_TAPER` so the clean-up after the split leaves it alone as it does a bridge (never one of
+  a pair in one lumen, a doubled stretch or a short loop's side; degree-2 merging carries the
+  mark -- without it the clean-up rewired E14.5's tapers as second strands); and at a fork of the thick centreline an arm at most
+  `FORK_BRANCH_MAX_RADIUS_FRACTION` (0.8) of the trunk's radius gets a bridge over its stretch
+  inside the trunk's lumen (`bridge_forks`).
 - **`optimisation/`** — the panel's **Optimise settings**: a sequential, image-informed search
   over segmentation cleanup, Skeletonise and Graph settings (`search.py`) and, separately, the
   FWHM diameter settings (`fwhm_search.py`). Candidates come from the image itself
