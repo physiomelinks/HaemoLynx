@@ -20,7 +20,8 @@ haemolynx/
 │   │                       #   automated_vessel_assignment.py (mask loading/validation)
 │   ├── preprocessing/      # skeleton.py — skeletonize, bridge, clean, bundle refinement;
 │   │                       #   thick_vessels.py (thickness-gated skeletonisation of fat
-│   │                       #   vessels) + thick_vessel_braid_guard.py; segmentation_cleanup.py
+│   │                       #   vessels) + thick_vessel_braid_guard.py + thick_vessel_region_cache.py
+│   │                       #   (the region, kept beside the skeleton between runs); segmentation_cleanup.py
 │   │                       #   (pre-skeleton mask cleanup), segmentation_quality.py and
 │   │                       #   segmentation_raw_comparison.py ("Check segmented image");
 │   │                       #   skeleton_consistency.py (skeleton vs mask), memmap_support.py
@@ -728,7 +729,14 @@ are only caught locally.
   when the tree is past the bridge cap -- aimed at whatever was nearest, a second capillary joined
   the first one's bridge by the wall and the bridges ran side by side through the fat lumen, 21 of
   E14.5's 33 pairs in one lumen); `thick_vessel_braid_guard.py` flags braided segments that
-  remain. `graph/thick_vessel_junctions.py` (`build_network`'s last step, and `post_process` for
+  remain. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
+  wall; 39 s on E14.5) is kept beside the saved skeleton, one bit a voxel
+  (`preprocessing/thick_vessel_region_cache.py`, `stages.thick_vessel_region_cache`), keyed on a
+  digest of the mask's voxels and the settings that decide it, so nothing else can go stale: a
+  run with the same mask and settings reads it back (`skeletonize_thickness_gated(thick_region=)`),
+  a run loading its skeleton (`do_skeletonize` off) gets it too, where it used to get none and
+  make no bridges, and `post_process` finding it again for a resumed run keeps what it finds;
+  a mask with no thick region is remembered as well. `graph/thick_vessel_junctions.py` (`build_network`'s last step, and `post_process` for
   hand-edited vessels) then makes the bridges, by Harvey's rules: a thick vessel is its centreline
   alone, and every vessel opening into it is joined by one `IS_ZERO_RESISTANCE` bridge, straight
   from where it leaves the thick region (the segmentation within the margin of the large-vessel

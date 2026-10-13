@@ -154,7 +154,8 @@ class SkeletonisedVolume:
     voxel_size_zyx: tuple[float, float, float]
     output_dir: Path
     #: The fat/thick vessel region from thickness-gated skeletonisation, if
-    #: that ran; None otherwise (including a resume that skipped it).
+    #: that ran, or the one a previous run kept beside the skeleton this run
+    #: loaded (``thick_vessel_region_cache``); None otherwise.
     thick_vessel_mask: np.ndarray | None = None
     #: The pre-cleanup, canonically-binarised mask, if at least one
     #: segmentation_cleanup_* step ran; None otherwise (including when
@@ -632,39 +633,125 @@ def _thick_region_arguments(
     }
 
 
+def thick_vessel_region_cache(
+    settings: dict, output_dir: Path | None = None
+) -> preprocessing.ThickVesselRegionCache:
+    """Where a run keeps the thick-vessel region it found: beside its saved
+    skeleton in *output_dir* (``vtk_output_prefix``'s directory when not
+    given), one entry per run output. Finding the region is about four
+    minutes on E14.5, and a run with the same mask and settings as the last
+    reads it back instead (:mod:`~haemolynx.preprocessing.thick_vessel_region_cache`).
+    """
+    directory = (
+        Path(settings["vtk_output_prefix"]).parent if output_dir is None else Path(output_dir)
+    )
+    stem = Path(settings["input_path"]).stem
+    return preprocessing.ThickVesselRegionCache(directory / f"{stem}_thick_vessel_region")
+
+
+def _cached_thick_vessel_region(
+    cache: preprocessing.ThickVesselRegionCache | None, binary: np.ndarray, arguments: dict
+) -> tuple[str, bool, np.ndarray | None]:
+    """``(key, found, region)``: the entry *cache* holds for *binary* under
+    the region-deciding *arguments* (:func:`_thick_region_arguments`)."""
+    key = preprocessing.thick_vessel_region_key(
+        binary,
+        min_radius_um=arguments["min_radius_um"],
+        voxel_size_zyx=arguments["voxel_size_zyx"],
+        fill_mask_holes=arguments["fill_mask_holes"],
+        wall_absorption_um=arguments["wall_absorption_um"],
+        restrict_thick_to_mask=arguments["restrict_thick_to_mask"],
+    )
+    if cache is None:
+        return key, False, None
+    found, region = cache.lookup(key)
+    return key, found, region
+
+
 def thick_vessel_mask_from_image(
-    settings: dict, image: np.ndarray, voxel_size_xyz, crop: CropBox | None = None
+    settings: dict,
+    image: np.ndarray,
+    voxel_size_xyz,
+    crop: CropBox | None = None,
+    *,
+    cache: preprocessing.ThickVesselRegionCache | None = None,
 ) -> np.ndarray | None:
     """The thick-vessel region skeletonisation found in *image*, found again.
 
     For a run that needs the region but loaded its skeleton instead of making
     it (a resume with no stored stage outputs). None when thickness-gated
     skeletonisation is off, or finds no thick vessel. *crop* is the
-    ``crop_on_import`` box *image* was cut to.
+    ``crop_on_import`` box *image* was cut to. With *cache*
+    (:func:`thick_vessel_region_cache`), the region a previous run found from
+    the same mask and settings is read back, and one found here is kept.
     """
     if not settings.get("use_thick_vessel_skeletonisation"):
         return None
     binary = _to_binary_volume_for_skeletonization(image)
-    return preprocessing.thick_vessel_region(
-        binary, **_thick_region_arguments(settings, binary, voxel_size_xyz, crop)
+    arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop)
+    key, found, region = _cached_thick_vessel_region(cache, binary, arguments)
+    if found:
+        return region
+    region = preprocessing.thick_vessel_region(binary, **arguments)
+    if cache is not None:
+        cache.store(key, region, binary.shape)
+    return region
+
+
+def _thick_vessel_region_if_cached(
+    settings: dict,
+    image: np.ndarray,
+    voxel_size_xyz,
+    crop: CropBox | None,
+    cache: preprocessing.ThickVesselRegionCache,
+) -> np.ndarray | None:
+    """The thick-vessel region a previous run found in *image*, for a run
+    loading its skeleton rather than making it; None when none is cached
+    (graph building then makes no thick-vessel bridges, as before there
+    was a cache) or that run found none."""
+    binary = _to_binary_volume_for_skeletonization(
+        image,
+        use_memmap=settings["use_memmap_loading"],
+        memmap_directory=settings["memmap_directory"],
     )
+    _key, found, region = _cached_thick_vessel_region(
+        cache, binary, _thick_region_arguments(settings, binary, voxel_size_xyz, crop)
+    )
+    preprocessing.release_superseded(binary, image, keep=image)
+    if not found:
+        logger.info(
+            "No thick-vessel region is cached for the loaded skeleton (%s), so graph "
+            "building makes no thick-vessel bridges; turn do_skeletonize on to find it.",
+            cache.sidecar,
+        )
+    return region
 
 
 def _skeletonize_loaded_mask(
-    image, settings: dict, voxel_size_xyz, crop: CropBox | None = None
+    image,
+    settings: dict,
+    voxel_size_xyz,
+    crop: CropBox | None = None,
+    cache: preprocessing.ThickVesselRegionCache | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Lee on the whole mask, or a thickness-gated tree when the GUI toggle is on.
 
     Returns ``(skeleton, thick_vessel_mask)`` -- the mask is None on the
     plain-Lee path, where there is no fat/thin split at all. *crop* is the
-    ``crop_on_import`` box *image* was cut to.
+    ``crop_on_import`` box *image* was cut to. With *cache*, the thick-vessel
+    region is read back from the run that last found it in this mask with
+    these settings, or kept once found.
     """
     voxel_size_zyx = io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
     if settings["use_thick_vessel_skeletonisation"]:
         binary = _to_binary_volume_for_skeletonization(image)
-        return preprocessing.skeletonize_thickness_gated(
+        arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop)
+        key, found, region = _cached_thick_vessel_region(cache, binary, arguments)
+        if found and region is None:
+            region = np.zeros(binary.shape, dtype=bool)  # found before: there is none
+        skeleton, thick = preprocessing.skeletonize_thickness_gated(
             binary,
-            **_thick_region_arguments(settings, binary, voxel_size_xyz, crop),
+            **arguments,
             flake_filter_um=settings["skeleton_thick_vessel_flake_filter_um"],
             max_bridge_radius_multiple=settings[
                 "skeleton_thick_vessel_max_bridge_radius_multiple"
@@ -677,7 +764,11 @@ def _skeletonize_loaded_mask(
             tile_large_components=settings["skeletonize_tile_large_components"],
             tile_max_voxels=settings["skeletonize_tile_max_voxels"],
             tile_halo_voxels=_skeletonize_tile_halo_voxels(settings, voxel_size_zyx),
+            thick_region=region if found else None,
         )
+        if cache is not None and not found:
+            cache.store(key, thick, binary.shape)
+        return skeleton, thick
     return (
         _skeletonize_loaded_volume(
             image,
@@ -705,10 +796,12 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     if not settings["plot_dir"].exists():
         settings["plot_dir"].mkdir(parents=True, exist_ok=True)
 
-    # Only a fresh skeletonise run can produce these; a loaded (resumed)
-    # skeleton has no mask saved alongside it.
+    # Only a fresh skeletonise run can produce the cleanup's raw image; the
+    # thick-vessel region is kept beside the skeleton, so a loaded skeleton
+    # gets it back when the mask and settings are the run's that found it.
     thick_vessel_mask: np.ndarray | None = None
     raw_segmented_image: np.ndarray | None = None
+    region_cache = thick_vessel_region_cache(settings, output_dir)
 
     if settings["do_skeletonize"]:
         image, metadata_voxel_size, voxel_meta_status, crop = _load_and_crop_volume(
@@ -785,7 +878,9 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
         )
-        skeleton, thick_vessel_mask = _skeletonize_loaded_mask(binary, settings, voxel_size, crop)
+        skeleton, thick_vessel_mask = _skeletonize_loaded_mask(
+            binary, settings, voxel_size, crop, cache=region_cache
+        )
 
         # Purely diagnostic: off by default, and never changes `skeleton` even
         # when on -- see preprocessing.thick_vessel_braid_guard for what this
@@ -915,6 +1010,10 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             f"metadata_status={voxel_meta_status.get('status')}, "
             f"final={voxel_size}"
         )
+        if settings["use_thick_vessel_skeletonisation"]:
+            thick_vessel_mask = _thick_vessel_region_if_cached(
+                settings, image, voxel_size, crop, region_cache
+            )
 
     logger.info("Visualizing skeleton projection...")
     visualization.visualize_skeleton(skeleton, save_path=projection_path)
@@ -2710,6 +2809,7 @@ def _bridge_edited_vessels(
         mask = thick_vessel_mask_from_image(
             settings, network.volume.image, network.volume.voxel_size_xyz,
             getattr(network.volume, "crop", None),
+            cache=thick_vessel_region_cache(settings, network.volume.output_dir),
         )
         if mask is None:
             return G  # no thick vessel anywhere: graph building made no bridges either

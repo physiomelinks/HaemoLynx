@@ -1950,3 +1950,51 @@ def test_an_arm_whose_ridge_is_past_the_cap_still_joins_an_earlier_bridge_within
     )
     _, n_alone = label(lone, structure=generate_binary_structure(3, 3))
     assert n_alone == 2, "on its own the second arm is past the cap"
+
+
+# --- the fat catchment found before (preprocessing/thick_vessel_region_cache.py) ---
+
+
+def test_a_region_found_before_gives_the_same_skeleton_without_finding_it_again(monkeypatch):
+    """skeletonize_thickness_gated(thick_region=) skips thick_vessel_object_mask,
+    the slow part, and skeletonises as if it had found that region."""
+    from haemolynx.preprocessing import thick_vessels as module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    skeleton, thick = skeletonize_thickness_gated(
+        mask, voxel_size_zyx=SPACING_ZYX, return_thick_mask=True
+    )
+    assert thick is not None
+    monkeypatch.setattr(
+        module, "thick_vessel_object_mask", lambda *_a, **_k: pytest.fail("the region was given")
+    )
+    again, thick_again = skeletonize_thickness_gated(
+        mask, voxel_size_zyx=SPACING_ZYX, return_thick_mask=True, thick_region=thick
+    )
+    assert np.array_equal(again, skeleton) and np.array_equal(thick_again, thick)
+
+
+def test_a_region_found_before_to_be_empty_takes_the_plain_lee_path(monkeypatch):
+    from haemolynx.preprocessing import thick_vessels as module
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    monkeypatch.setattr(
+        module, "thick_vessel_object_mask", lambda *_a, **_k: pytest.fail("the region was given")
+    )
+    skeleton, thick = skeletonize_thickness_gated(
+        mask,
+        voxel_size_zyx=SPACING_ZYX,
+        return_thick_mask=True,
+        thick_region=np.zeros(mask.shape, dtype=bool),
+    )
+    assert thick is None
+    plain = skeletonize_thickness_gated(mask, min_radius_um=0.0, voxel_size_zyx=SPACING_ZYX)
+    assert np.array_equal(skeleton, plain)
+
+
+def test_a_region_from_another_image_is_refused():
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    with pytest.raises(ValueError, match="different image"):
+        skeletonize_thickness_gated(
+            mask, voxel_size_zyx=SPACING_ZYX, thick_region=np.zeros((2, 2, 2), dtype=bool)
+        )
