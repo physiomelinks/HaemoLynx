@@ -3,7 +3,7 @@
 Most runs change a handful of settings, and a tab that shows every one of its
 rows buries them. A setting the schema marks ``advanced`` therefore starts out
 hidden behind an "Advanced" button, and the button sits *under the setting it
-belongs to*: the FWHM gates appear under "Use FWHM edge diameters", not in one
+belongs to*: the FWHM gates appear under "Measure diameters from the raw image", not in one
 pile at the foot of the tab. The rules, all decided here and none in Qt:
 
 * **Anchor.** An advanced row hangs off its *anchor*: the innermost ordinary
@@ -152,8 +152,11 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
             None,
             names=(
                 "input_path",
+                "segmentation_source",
+                "raw_image_path",
+                "raw_image_channel",
+                "raw_image_stain",
                 "use_ilastik_segmentation",
-                "ilastik_unsegmented_image_path",
                 "ilastik_classifier_path",
                 "mid_run_postprocessing",
             ),
@@ -278,10 +281,9 @@ ADVANCED_TITLES: Mapping[str, str] = {
     "box:boundary_nodes": "Large-vessel boundary node IDs filled in by the run",
     "box:boundary_other": "Advanced boundary settings",
     "all_diams_const": "Advanced diameter table",
-    "use_fwhm_edge_diameters": "Advanced FWHM settings",
+    "measure_diameters_from_raw_image": "Advanced diameter measurement (FWHM and endothelial wall)",
     "do_fwhm_measurement": "Advanced FWHM measurement",
     "use_raw_section_fallback": "Advanced raw-section fit",
-    "use_endothelial_diameters": "Advanced endothelial settings",
     "use_edt_diameter_crosscheck": "Advanced mask-diameter settings",
     "box:diameters": "Advanced diameter settings",
     "run_haemodynamics": "Advanced haemodynamics",
@@ -520,9 +522,19 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
             ),
         ),
     ),
-    "use_fwhm_edge_diameters": (
+    "measure_diameters_from_raw_image": (
         (
-            "Profile sampling",
+            "Endothelial wall fit (an endothelial stain)",
+            (
+                "endothelial_min_ring_contrast",
+                "endothelial_wall_thickness_um",
+                "endothelial_psf_sigma_xy_um",
+                "endothelial_psf_sigma_z_um",
+                "endothelial_workers",
+            ),
+        ),
+        (
+            "FWHM profile sampling (a plasma stain)",
             (
                 "fwhm_transverse_profile_step_um",
                 "fwhm_transverse_half_extent_um",
@@ -535,7 +547,7 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
             ),
         ),
         (
-            "Profile fit",
+            "FWHM profile fit",
             (
                 "fwhm_profile_model",
                 "fwhm_profile_baseline_mode",
@@ -546,7 +558,7 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
             ),
         ),
         (
-            "Sample rejection",
+            "FWHM sample rejection",
             (
                 "fwhm_clip_profile_to_single_vessel",
                 "fwhm_clip_min_drop_fraction_of_center",
@@ -562,7 +574,7 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
             ),
         ),
         (
-            "Junctions and neighbouring vessels",
+            "FWHM junctions and neighbouring vessels",
             (
                 "fwhm_branch_endpoint_exclusion_um",
                 "fwhm_junction_proximity_exclusion_um",
@@ -577,7 +589,7 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "fwhm_nonlocal_same_edge_half_extent_factor",
             ),
         ),
-        ("Per-vessel width", ("fwhm_edge_diameter_aggregation",)),
+        ("FWHM per-vessel width", ("fwhm_edge_diameter_aggregation",)),
     ),
     "do_fwhm_measurement": (
         (

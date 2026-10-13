@@ -362,10 +362,10 @@ def visible_diameter_settings(
 ) -> set[str]:
     """Diameters-tab diameter + FWHM + EDT setting names that should appear.
 
-    Parent toggles (``all_diams_const``, ``use_fwhm_edge_diameters``,
+    Parent toggles (``all_diams_const``, ``measure_diameters_from_raw_image``,
     ``use_edt_diameter_crosscheck``, …) stay; gated children follow their
     ``requires`` chains. EDT mask diameter estimate nests two levels under
-    ``use_fwhm_edge_diameters`` then ``use_edt_diameter_crosscheck``.
+    ``measure_diameters_from_raw_image`` then ``use_edt_diameter_crosscheck``.
     """
     return (
         _visible_settings_in_section(schema, values, "Diameters and pericytes")
@@ -409,14 +409,29 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "measurement_3d_to_cell_mask": "Measure distance between vessels and 3D object mask",
     "measure_tissue_volume": "Measure tissue volume from the raw image (for vessel density)",
     "mid_run_postprocessing": "Mid-run postprocessing",
+    "input_path": "Segmented image path",
+    "segmentation_source": "Segmentation source",
+    "raw_image_path": "Raw image path",
+    "raw_image_channel": "Raw data channel",
+    "raw_image_stain": "Raw image stain",
+    "measure_diameters_from_raw_image": "Measure diameters from the raw image",
 }
 
 #: Display text for a ``choice`` setting's values, keyed by setting name then
 #: raw value. The stored/YAML value stays a plain snake_case identifier, like
 #: every other choice setting -- only the dropdown's own visible text reads
 #: as a sentence for the ones a user picks a whole model from, rather than a
-#: mode word like "pries" or "anatomical".
+#: mode word like "pries" or "plasma_column".
 CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
+    "segmentation_source": {
+        "plasma_column": "Plasma column (luminal stain)",
+        "endothelial": "Anatomical (endothelial wall stain)",
+    },
+    "raw_image_stain": {
+        "auto": "Auto (tell from the image)",
+        "plasma_column": "Plasma column (luminal stain)",
+        "endothelial": "Endothelial (wall stain)",
+    },
     "haematocrit_model": {
         "fixed": "Fixed haematocrit",
         "distributed_iterative": "Calculated haematocrit distribution - iterative",
@@ -509,8 +524,7 @@ def _options_for(setting: Setting, widget_type: str, value: Any = None) -> dict[
 #: panel shows them as a drop-down of that file's channels, Fiji-named (C1,
 #: C2, ...), where a number box would leave the user to count from 0.
 CHANNEL_SETTINGS = {
-    "endothelial_channel": "endothelial_image_path",
-    "fwhm_raw_channel": "fwhm_raw_tiff_path",
+    "raw_image_channel": "raw_image_path",
     "tissue_raw_channel": "tissue_raw_tiff_path",
 }
 

@@ -21,6 +21,7 @@ settings are plain data, so a GUI can render its whole form from
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -80,6 +81,70 @@ _PERTURBATION_RUNS = "Perturbation runs"
 _NETWORK_HANDLING = "Network handling"
 
 
+#: What one raw image (``raw_image_path``, ``raw_image_channel``,
+#: ``raw_image_stain``) took over on 2026-10-13: the ilastik input, FWHM's raw
+#: image and the endothelial stain, each with its channel; the two diameter
+#: switches, now one (``measure_diameters_from_raw_image``) whose method
+#: follows the stain. ``diameter_basis`` itself -- what the dataset's
+#: diameters measure -- is ``segmentation_source`` on the Input tab now (its
+#: ``replaces``).
+_RETIRED_RAW_IMAGE_SETTINGS = (
+    "ilastik_unsegmented_image_path",
+    "fwhm_raw_tiff_path",
+    "fwhm_raw_channel",
+    "endothelial_image_path",
+    "endothelial_channel",
+    "use_fwhm_edge_diameters",
+    "use_endothelial_diameters",
+)
+
+
+def _migrate_raw_image(values: Mapping[str, Any]) -> dict[str, Any]:
+    """A config written before one raw image, read as one.
+
+    The raw image is the one the run measured diameters from, else the one
+    ilastik segmented, else FWHM's (which the check and the tissue volume
+    shared), else the endothelial stain -- each path with its own channel,
+    never one's path and another's channel. A run that measured diameters
+    keeps doing so by the same method: endothelial diameters make the stain
+    endothelial, FWHM ones plasma_column, so it reproduces. Its
+    ``diameter_basis`` said what the segmentation's diameters were, and is
+    read into ``segmentation_source`` by that setting's ``replaces``.
+    """
+    fwhm = bool(values.get("use_fwhm_edge_diameters"))
+    endothelial = bool(values.get("use_endothelial_diameters"))
+    ilastik = bool(values.get("use_ilastik_segmentation"))
+    pairs = []
+    if endothelial:
+        pairs.append(("endothelial_image_path", "endothelial_channel"))
+    if fwhm:
+        pairs.append(("fwhm_raw_tiff_path", "fwhm_raw_channel"))
+    if ilastik:
+        pairs.append(("ilastik_unsegmented_image_path", None))
+    pairs += [("fwhm_raw_tiff_path", "fwhm_raw_channel"), ("endothelial_image_path", "endothelial_channel")]
+    out: dict[str, Any] = {}
+    for path, channel in pairs:
+        if values.get(path):
+            out["raw_image_path"] = values[path]
+            if channel is not None and values.get(channel) is not None:
+                out["raw_image_channel"] = values[channel]
+            break
+    segmented_from = values.get("ilastik_unsegmented_image_path")
+    if ilastik and segmented_from and out.get("raw_image_path") not in (None, segmented_from):
+        logging.getLogger(__name__).warning(
+            "This config's ilastik input (%s) and the image its diameters were measured from (%s) "
+            "differ; there is one raw image now, and ilastik will read %s.",
+            segmented_from, out["raw_image_path"], out["raw_image_path"],
+        )
+    if endothelial:
+        out["raw_image_stain"] = "endothelial"
+    elif fwhm:
+        out["raw_image_stain"] = "plasma_column"
+    if fwhm or endothelial:
+        out["measure_diameters_from_raw_image"] = True
+    return out
+
+
 SCHEMA = Schema(
     [
         # ------------------------------------------------------------------
@@ -98,10 +163,96 @@ SCHEMA = Schema(
             # panel fills it in from the layer you have open.
             kind="path",
             default=None,
-            help="Read this already-segmented image as the pipeline input",
+            help=(
+                "The segmented image (a vessel mask) the pipeline reads; its raw image is "
+                "raw_image_path"
+            ),
             section=_INPUT_AND_SEGMENTATION,
             must_exist=True,
             requires=("!use_ilastik_segmentation",)
+        ),
+        Setting(
+            name="segmentation_source",
+            kind="choice",
+            default="plasma_column",
+            choices=("plasma_column", "endothelial"),
+            help=(
+                "What the segmented vessels are, and so what a diameter taken from the "
+                "segmentation measures: plasma_column for a mask of the channel blood "
+                "flows in (a luminal label, as a plasma stain images it), or endothelial "
+                "(anatomical) for a mask of the vessel wall to wall, which includes the "
+                "~1.1 um endothelial surface layer. The pries viscosity law takes the "
+                "matching form for every diameter the segmentation gave -- the mask's "
+                "own widths, the class medians and the table; a diameter measured from "
+                "the raw image carries the raw image's own. Choosing endothelial for a "
+                "plasma label subtracts that layer twice and roughly quintuples "
+                "capillary resistance"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            value_aliases={"anatomical": "endothelial", "luminal": "plasma_column"},
+            replaces={
+                "diameter_basis": {
+                    "plasma_column": "plasma_column",
+                    "anatomical": "endothelial",
+                    "endothelial": "endothelial",
+                }
+            },
+            # Read by the Diameters stage (the per-vessel basis) and the
+            # haemodynamics, each behind its own switch.
+            always_effective=True,
+        ),
+        Setting(
+            name="raw_image_path",
+            kind="path",
+            default=None,
+            help=(
+                "The raw (unsegmented) image of the same field, one channel of it "
+                "(raw_image_channel): what ilastik segments when it runs, what diameters are "
+                "measured from, what 'Check segmented image' and 'Optimise settings' compare "
+                "the segmentation with, and where tissue volume is found unless "
+                "tissue_raw_tiff_path names another. ilastik reads the whole file, as its "
+                "project was trained on it"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            must_exist=True,
+            # Read by ilastik, the diameters, the check, the optimiser and the
+            # tissue volume, each gated by its own switch.
+            always_effective=True,
+            migrates=_RETIRED_RAW_IMAGE_SETTINGS,
+            migrate=_migrate_raw_image,
+        ),
+        Setting(
+            name="raw_image_channel",
+            kind="int",
+            default=None,
+            help=(
+                "Which channel of a multi-channel raw image to read, counting from 0 (the "
+                "panel lists them as Fiji names them: C1 is 0); leave unset for a "
+                "single-channel file"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0,
+            always_effective=True,
+            placeholder="single-channel file",
+        ),
+        Setting(
+            name="raw_image_stain",
+            kind="choice",
+            default="auto",
+            choices=("auto", "plasma_column", "endothelial"),
+            help=(
+                "What the raw image's channel stains: plasma_column for a luminal (plasma) "
+                "label filling the channel blood flows in, endothelial for the vessel wall "
+                "(claudin-5, CD31, isolectin...), or auto to tell from how it reads across the "
+                "segmented vessels, bright in the middle or at the wall. It picks how "
+                "diameters are measured from it (FWHM, or the lumen inside the wall ring) "
+                "and what those diameters mean: wall to wall for an endothelial stain, whose "
+                "viscosity then takes that form of the law. Diameters from the segmentation "
+                "itself are the plasma column's"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            value_aliases={"anatomical": "endothelial", "luminal": "plasma_column"},
+            always_effective=True,
         ),
         Setting(
             name="use_ilastik_segmentation",
@@ -109,15 +260,6 @@ SCHEMA = Schema(
             default=False,
             help="Segment the main input image with ilastik instead of reading a segmented file",
             section=_INPUT_AND_SEGMENTATION,
-        ),
-        Setting(
-            name="ilastik_unsegmented_image_path",
-            kind="path",
-            default=f"{_IMAGES}/Nerve_capillaries.tif",
-            help="Read this raw image as the ilastik input for main-image segmentation",
-            section=_INPUT_AND_SEGMENTATION,
-            requires=("use_ilastik_segmentation",),
-            must_exist=True,
         ),
         Setting(
             name="ilastik_classifier_path",
@@ -3740,12 +3882,12 @@ SCHEMA = Schema(
             default=None,
             help=(
                 "Find the tissue in this raw image, on the segmentation's own grid; "
-                "leave unset to use fwhm_raw_tiff_path"
+                "leave unset to use the raw image (raw_image_path)"
             ),
             section=_STATISTICS,
             requires=("measure_tissue_volume",),
             must_exist=True,
-            placeholder="the FWHM raw image",
+            placeholder="the raw image",
         ),
         Setting(
             name="tissue_raw_channel",
@@ -3755,7 +3897,7 @@ SCHEMA = Schema(
                 "Which channel of a multi-channel raw image the tissue is found in, "
                 "counting from 0 (the panel lists them as Fiji names them: C1 is 0) -- "
                 "one where the tissue's own background shows; leave unset for a "
-                "single-channel file, or for fwhm_raw_channel when the FWHM raw image is used"
+                "single-channel file, or for raw_image_channel when the raw image is used"
             ),
             section=_STATISTICS,
             minimum=0,
@@ -4216,28 +4358,11 @@ SCHEMA = Schema(
             choices=["pries", "capillary_power_law", "constant"],
             help=(
                 "Which apparent-viscosity law sets the resistances: pries "
-                "covers 3.3-1978 um in one expression and reads "
-                "diameter_basis, capillary_power_law is the older law "
+                "covers 3.3-1978 um in one expression and reads what each "
+                "diameter measures (raw_image_stain), capillary_power_law is the older law "
                 "calibrated at 5 um with a placeholder constant above 7 um, "
                 "constant is plasma everywhere. Resistances are not comparable "
                 "across laws"
-            ),
-            section=_DIAMETERS_AND_PERICYTES,
-            requires=("run_haemodynamics",),
-        ),
-        Setting(
-            name="diameter_basis",
-            kind="choice",
-            default="plasma_column",
-            choices=["plasma_column", "anatomical"],
-            help=(
-                "What a vessel diameter in this dataset measures, which the "
-                "pries law needs and no other reads: plasma_column for the "
-                "channel the fluid occupies, as a plasma stain images it, or "
-                "anatomical for a wall-to-wall diameter that includes the "
-                "~1.1 um endothelial surface layer. Choosing anatomical for a "
-                "plasma-stained image subtracts that layer twice and roughly "
-                "quintuples capillary resistance"
             ),
             section=_DIAMETERS_AND_PERICYTES,
             requires=("run_haemodynamics",),
@@ -4270,7 +4395,7 @@ SCHEMA = Schema(
                 "diameters and flow fraction, not bifurcation angle) -- "
                 "only changes a resistance when viscosity_law is pries, "
                 "the only law that reads haematocrit, but works with "
-                "either diameter_basis, and iterates the flow solve to "
+                "either diameter basis, and iterates the flow solve to "
                 "convergence since haematocrit, viscosity, resistance and "
                 "the flow split all depend on each other, so a large "
                 "network costs more than one solve"
@@ -4792,10 +4917,17 @@ SCHEMA = Schema(
         # FWHM diameter measurement
         # ------------------------------------------------------------------
         Setting(
-            name="use_fwhm_edge_diameters",
+            name="measure_diameters_from_raw_image",
             kind="bool",
             default=False,
-            help="Measure per-edge diameters from the raw image by full-width-half-maximum fitting",
+            help=(
+                "Measure each vessel's diameter from the raw image (raw_image_path), by the "
+                "method its stain calls for (raw_image_stain): FWHM across a plasma label's "
+                "lumen, or the lumen inside the wall ring of an endothelial stain. A vessel it "
+                "cannot read falls back to the segmentation mask, then the table. Diameters read "
+                "from an endothelial stain run wall to wall, and their viscosity takes that form "
+                "of the law"
+            ),
             section=_FWHM,
             requires=("run_haemodynamics",),
         ),
@@ -4808,39 +4940,7 @@ SCHEMA = Schema(
                 "diameters already on the graph"
             ),
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
-        ),
-        Setting(
-            name="fwhm_raw_tiff_path",
-            kind="path",
-            default=None,
-            help=(
-                "Measure FWHM diameters from this raw image (one channel of it: fwhm_raw_channel). "
-                "Also usable, independent of use_fwhm_edge_diameters, as the "
-                "'Raw data file' shown next to 'Check segmented image' on the "
-                "Input tab, so the segmentation can be cross-checked against "
-                "it without turning FWHM measurement on"
-            ),
-            section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
-            must_exist=True,
-            always_effective=True,
-        ),
-        Setting(
-            name="fwhm_raw_channel",
-            kind="int",
-            default=None,
-            help=(
-                "Which channel of a multi-channel raw image FWHM reads, counting from 0 (the panel "
-                "lists them as Fiji names them: C1 is 0); leave unset for a single-channel file"
-            ),
-            section=_FWHM,
-            minimum=0,
-            requires=("use_fwhm_edge_diameters",),
-            placeholder="single-channel file",
-            # Read with fwhm_raw_tiff_path wherever that is: the Input tab's
-            # 'Check segmented image' cross-check uses both with FWHM off.
-            always_effective=True,
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
         ),
         Setting(
             name="fwhm_sample_spacing_along_edge_um",
@@ -4850,7 +4950,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
         ),
         Setting(
             name="fwhm_transverse_profile_step_um",
@@ -4860,7 +4960,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -4871,7 +4971,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -4882,7 +4982,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -4891,7 +4991,7 @@ SCHEMA = Schema(
             default="edt_diameter_um",
             help="Seed each edge's own starting diameter guess from this graph attribute when present, instead of the one guess above for every edge",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -4901,7 +5001,7 @@ SCHEMA = Schema(
             help="Require the sampled profile to span at least this multiple of the fitted width, unless it runs into another vessel; shorter samples are dropped",
             section=_FWHM,
             minimum=0.0,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -4911,7 +5011,7 @@ SCHEMA = Schema(
             help="Widen the transverse sampling window at most this many times while the fit keeps asking for more room",
             section=_FWHM,
             minimum=0,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -4920,7 +5020,7 @@ SCHEMA = Schema(
             default=0,
             help="Mark background voxels with this label in the rasterized branch label volume",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -4929,7 +5029,7 @@ SCHEMA = Schema(
             default=-1,
             help="Mark junction voxels with this label in the rasterized branch label volume",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -4938,7 +5038,7 @@ SCHEMA = Schema(
             default=False,
             help="Let a transverse profile pass through junction voxels while sampling",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -4958,7 +5058,7 @@ SCHEMA = Schema(
                 "topology-only stop"
             ),
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -4968,7 +5068,7 @@ SCHEMA = Schema(
             help="Estimate the profile baseline from the profile wings or from a percentile",
             section=_FWHM,
             choices=("wings", "percentile"),
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -4980,7 +5080,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -4989,7 +5089,7 @@ SCHEMA = Schema(
             default=False,
             help="Hold the fitted baseline near the anchor estimate rather than letting it float",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5001,7 +5101,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("use_fwhm_edge_diameters", "fwhm_constrain_fitted_baseline"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_constrain_fitted_baseline"),
             advanced=True,
         ),
         Setting(
@@ -5010,7 +5110,7 @@ SCHEMA = Schema(
             default=True,
             help="Clip each profile to the central lobe so neighbouring branches do not bias the fit",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5022,7 +5122,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("use_fwhm_edge_diameters", "fwhm_clip_profile_to_single_vessel"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_clip_profile_to_single_vessel"),
             advanced=True,
         ),
         Setting(
@@ -5034,7 +5134,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("use_fwhm_edge_diameters", "fwhm_clip_profile_to_single_vessel"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_clip_profile_to_single_vessel"),
             advanced=True,
         ),
         Setting(
@@ -5045,7 +5145,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5056,7 +5156,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5065,7 +5165,7 @@ SCHEMA = Schema(
             default=True,
             help="Require profile samples to stay within a local arc window of the same edge",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5076,7 +5176,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters", "fwhm_enforce_same_edge_locality"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_enforce_same_edge_locality"),
             advanced=True,
         ),
         Setting(
@@ -5086,7 +5186,7 @@ SCHEMA = Schema(
             help="Scale the same-edge arc window by this factor",
             section=_FWHM,
             minimum=0.0,
-            requires=("use_fwhm_edge_diameters", "fwhm_enforce_same_edge_locality"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_enforce_same_edge_locality"),
             advanced=True,
         ),
         Setting(
@@ -5097,7 +5197,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             unit="um",
-            requires=("use_fwhm_edge_diameters", "fwhm_enforce_same_edge_locality"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_enforce_same_edge_locality"),
             advanced=True,
         ),
         Setting(
@@ -5106,7 +5206,7 @@ SCHEMA = Schema(
             default=True,
             help="Shorten the profile half-extent when a distant part of the same edge comes close",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5118,7 +5218,7 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um",
             requires=(
-                "use_fwhm_edge_diameters",
+                "measure_diameters_from_raw_image", "raw_image_stain!=endothelial",
                 "fwhm_cap_half_extent_by_nonlocal_same_edge_distance",
             ),
             advanced=True,
@@ -5132,7 +5232,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             requires=(
-                "use_fwhm_edge_diameters",
+                "measure_diameters_from_raw_image", "raw_image_stain!=endothelial",
                 "fwhm_cap_half_extent_by_nonlocal_same_edge_distance",
             ),
             advanced=True,
@@ -5143,7 +5243,7 @@ SCHEMA = Schema(
             default=True,
             help="Discard samples whose fitted centre drifts too far from the centerline position",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5155,7 +5255,7 @@ SCHEMA = Schema(
             minimum=0.0,
             unit="um",
             requires=(
-                "use_fwhm_edge_diameters",
+                "measure_diameters_from_raw_image", "raw_image_stain!=endothelial",
                 "fwhm_reject_samples_with_center_offset",
             ),
             advanced=True,
@@ -5169,7 +5269,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             requires=(
-                "use_fwhm_edge_diameters",
+                "measure_diameters_from_raw_image", "raw_image_stain!=endothelial",
                 "fwhm_reject_samples_with_center_offset",
             ),
             advanced=True,
@@ -5180,7 +5280,7 @@ SCHEMA = Schema(
             default=True,
             help="Discard samples whose transverse Gaussian fit quality is too low",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5191,7 +5291,7 @@ SCHEMA = Schema(
             section=_FWHM,
             minimum=0.0,
             maximum=1.0,
-            requires=("use_fwhm_edge_diameters", "fwhm_reject_samples_with_low_fit_r2"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_reject_samples_with_low_fit_r2"),
             advanced=True,
         ),
         Setting(
@@ -5205,7 +5305,7 @@ SCHEMA = Schema(
             ),
             section=_FWHM,
             choices=("blurred_lumen", "gaussian"),
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5220,7 +5320,7 @@ SCHEMA = Schema(
             section=_FWHM,
             unit="um",
             minimum=0.0,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
         ),
         Setting(
             name="fwhm_stop_at_other_vessels_in_mask",
@@ -5232,7 +5332,7 @@ SCHEMA = Schema(
                 "required multiple of the width"
             ),
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5246,7 +5346,7 @@ SCHEMA = Schema(
             section=_FWHM,
             unit="voxels",
             minimum=0.0,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5258,7 +5358,7 @@ SCHEMA = Schema(
             default=False,
             help="Discard samples whose transverse profile looks like a flat plateau rather than a peak (a saturated detector or a probability map); plasma-filled lumens are plateaus, so leave off for those",
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5270,7 +5370,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("use_fwhm_edge_diameters", "fwhm_reject_samples_with_plateau_shape"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "fwhm_reject_samples_with_plateau_shape"),
             advanced=True,
         ),
         Setting(
@@ -5280,7 +5380,7 @@ SCHEMA = Schema(
             help="Sample transverse profiles in the y-x slice plane, or perpendicular to the true 3D tangent",
             section=_FWHM,
             choices=("in_plane_yx", "true_3d_perpendicular"),
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5292,7 +5392,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5302,7 +5402,7 @@ SCHEMA = Schema(
             help="Collapse an edge's accepted per-sample diameters to one value by median or mean",
             section=_FWHM,
             choices=("median", "mean"),
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
             advanced=True,
         ),
         Setting(
@@ -5316,7 +5416,7 @@ SCHEMA = Schema(
             ),
             section=_FWHM,
             minimum=1,
-            requires=("use_fwhm_edge_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial",),
         ),
         Setting(
             name="fwhm_decoy_check",
@@ -5329,7 +5429,7 @@ SCHEMA = Schema(
                 "fwhm_demote_flagged_edges for what a flag then does)"
             ),
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters", "do_fwhm_measurement"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "do_fwhm_measurement"),
             advanced=True,
         ),
         Setting(
@@ -5344,7 +5444,7 @@ SCHEMA = Schema(
                 "FWHM width stays on the vessel for review"
             ),
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters", "do_fwhm_measurement"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "do_fwhm_measurement"),
             advanced=True,
         ),
         Setting(
@@ -5359,7 +5459,7 @@ SCHEMA = Schema(
                 "few wide vessels show their blur"
             ),
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters", "do_fwhm_measurement"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "do_fwhm_measurement"),
             advanced=True,
         ),
         Setting(
@@ -5388,7 +5488,7 @@ SCHEMA = Schema(
                 "round a vessel"
             ),
             section=_FWHM,
-            requires=("use_fwhm_edge_diameters", "do_fwhm_measurement"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "do_fwhm_measurement"),
         ),
         Setting(
             name="raw_section_min_lumen_contrast",
@@ -5440,42 +5540,6 @@ SCHEMA = Schema(
         # (haemodynamics.endothelial).
         # ------------------------------------------------------------------
         Setting(
-            name="use_endothelial_diameters",
-            kind="bool",
-            default=False,
-            help=(
-                "Measure each vessel's internal diameter from an endothelial stain -- the lumen "
-                "inside the bright wall ring -- instead of FWHM on the plasma label. A vessel "
-                "whose ring is not resolved falls back to the segmentation mask, then the table. "
-                "These widths run wall to wall, so their viscosity takes the anatomical form"
-            ),
-            section=_ENDOTHELIAL,
-            requires=("run_haemodynamics",),
-        ),
-        Setting(
-            name="endothelial_image_path",
-            kind="path",
-            default=None,
-            help="The endothelial stain (claudin-5, CD31, isolectin...): a single-channel stack, or a multi-channel one with its channel below",
-            section=_ENDOTHELIAL,
-            requires=("use_endothelial_diameters",),
-            must_exist=True,
-        ),
-        Setting(
-            name="endothelial_channel",
-            kind="int",
-            default=None,
-            help=(
-                "Which channel of a multi-channel stack is the endothelial stain, counting from 0 "
-                "(the panel lists them as Fiji names them: C1 is 0); leave unset for a "
-                "single-channel file"
-            ),
-            section=_ENDOTHELIAL,
-            minimum=0,
-            requires=("use_endothelial_diameters",),
-            placeholder="single-channel file",
-        ),
-        Setting(
             name="endothelial_min_ring_contrast",
             kind="float",
             default=4.0,
@@ -5485,7 +5549,7 @@ SCHEMA = Schema(
             ),
             section=_ENDOTHELIAL,
             minimum=0.0,
-            requires=("use_endothelial_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=plasma_column",),
             advanced=True,
         ),
         Setting(
@@ -5500,7 +5564,7 @@ SCHEMA = Schema(
             section=_ENDOTHELIAL,
             unit="um",
             minimum=0.0,
-            requires=("use_endothelial_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=plasma_column",),
             advanced=True,
             placeholder="estimate",
         ),
@@ -5514,7 +5578,7 @@ SCHEMA = Schema(
             ),
             section=_ENDOTHELIAL,
             minimum=0,
-            requires=("use_endothelial_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=plasma_column",),
             advanced=True,
         ),
         Setting(
@@ -5525,7 +5589,7 @@ SCHEMA = Schema(
             section=_ENDOTHELIAL,
             unit="um",
             minimum=0.0,
-            requires=("use_endothelial_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=plasma_column",),
             advanced=True,
             placeholder="estimate",
         ),
@@ -5537,7 +5601,7 @@ SCHEMA = Schema(
             section=_ENDOTHELIAL,
             unit="um",
             minimum=0.0,
-            requires=("use_endothelial_diameters",),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=plasma_column",),
             advanced=True,
             placeholder="estimate",
         ),
@@ -5636,7 +5700,7 @@ SCHEMA = Schema(
             minimum=1.0,
             # Unlike this section's other settings, comparing FWHM against
             # EDT genuinely needs both measurements to exist.
-            requires=("use_fwhm_edge_diameters", "use_edt_diameter_crosscheck"),
+            requires=("measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "use_edt_diameter_crosscheck"),
             advanced=True,
         ),
         Setting(

@@ -64,6 +64,7 @@ from .segmentation_quality import (
     format_segmentation_quality_report,
     score_segmented_mask,
 )
+from .raw_stain import StainReading, read_raw_stain, resolve_stain
 from .segmentation_raw_comparison import (
     RawImageForeground,
     SegmentationRawComparison,
@@ -152,6 +153,9 @@ __all__ = [
     "SegmentationQualityScore",
     "format_segmentation_quality_report",
     "score_segmented_mask",
+    "StainReading",
+    "read_raw_stain",
+    "resolve_stain",
     "RawImageForeground",
     "SegmentationRawComparison",
     "analyze_raw_image_foreground",

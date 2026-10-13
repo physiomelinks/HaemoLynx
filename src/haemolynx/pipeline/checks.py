@@ -37,7 +37,7 @@ def check_cached_artefacts(settings: Mapping[str, Any]) -> CheckReport:
 
     input_path = settings.get("input_path")
     if settings.get("use_ilastik_segmentation"):
-        unsegmented = settings.get("ilastik_unsegmented_image_path")
+        unsegmented = settings.get("raw_image_path")
         stem = f"{Path(unsegmented).stem}_segmented" if unsegmented else "input"
     else:
         stem = Path(input_path).stem if input_path else "input"
@@ -483,23 +483,72 @@ def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
 
 
 #: Each image a run reads one channel of: (its path setting, its channel
-#: setting, the setting that makes the run read it).
-_CHANNEL_IMAGES = (
-    ("fwhm_raw_tiff_path", "fwhm_raw_channel", "use_fwhm_edge_diameters"),
-    ("endothelial_image_path", "endothelial_channel", "use_endothelial_diameters"),
-)
+#: setting). The raw image is read by ilastik, the diameters, the check, the
+#: optimiser and the tissue volume, so it is checked whenever it is set.
+_CHANNEL_IMAGES = (("raw_image_path", "raw_image_channel"),)
 
 
 def check_image_channels(settings: Mapping[str, Any]) -> CheckReport:
     """A multi-channel image needs a channel chosen, and one it has; a
     single-channel one needs none. Caught here rather than as the load fails
-    partway through a run."""
+    partway through a run. ilastik reads the whole file, so a run that only
+    segments with it needs no channel."""
     report = CheckReport()
-    for path_name, channel_name, used_by in _CHANNEL_IMAGES:
+    for path_name, channel_name in _CHANNEL_IMAGES:
         path = settings.get(path_name)
-        if not settings.get(used_by) or not path or not Path(path).is_file():
+        if not path or not Path(path).is_file():
+            continue
+        if path_name == "raw_image_path" and not _reads_one_raw_channel(settings):
             continue
         _check_image_channel(report, path_name, path, channel_name, settings.get(channel_name))
+    return report
+
+
+def _reads_one_raw_channel(settings: Mapping[str, Any]) -> bool:
+    """Whether anything in this run reads one channel of the raw image
+    (everything but ilastik does)."""
+    return bool(
+        settings.get("measure_diameters_from_raw_image")
+        or (settings.get("measure_tissue_volume") and not settings.get("tissue_raw_tiff_path"))
+    )
+
+
+def check_raw_image(settings: Mapping[str, Any]) -> CheckReport:
+    """The raw image is optional, so it is not ``must_exist`` for every run:
+    ilastik segments it and the diameters are measured from it, so either
+    needs one, and one that is set must be there -- an error when this run
+    reads it, a warning when only the panel's check and optimiser would."""
+    report = CheckReport()
+    users = [
+        name for name, on in (
+            ("use_ilastik_segmentation", settings.get("use_ilastik_segmentation")),
+            ("measure_diameters_from_raw_image",
+             settings.get("run_haemodynamics", True) and settings.get("measure_diameters_from_raw_image")),
+        ) if on
+    ]
+    path = settings.get("raw_image_path")
+    if not path:
+        if users:
+            report.add_error(
+                f"{' and '.join(users)} read the raw image, but raw_image_path is not set. Fix: "
+                "set raw_image_path (and raw_image_channel for a multi-channel file) on the "
+                "Input tab."
+            )
+        return report
+    exists, detail = resolve_existing_path(path)
+    if exists:
+        report.add_pass("raw_image_path", detail)
+        return report
+    if users or _reads_one_raw_channel(settings):
+        report.add_error(
+            f"raw_image_path: {detail}. Fix: point 'raw_image_path' at the raw image, or "
+            "clear it."
+        )
+    else:
+        report.add_warning(
+            f"raw_image_path: {detail}. Nothing in this run reads it, but Check segmented "
+            "image and Optimise settings would."
+        )
     return report
 
 
@@ -529,9 +578,9 @@ def _check_image_channel(
 
 def tissue_raw_image(settings: Mapping[str, Any]) -> tuple[Any, Any, str, str]:
     """``(path, channel, path setting, channel setting)``: the raw image the
-    tissue volume is measured in. ``tissue_raw_tiff_path``, else the FWHM raw
-    image -- and the FWHM channel with it, unless ``tissue_raw_channel`` picks
-    another channel of that same file."""
+    tissue volume is measured in. ``tissue_raw_tiff_path``, else the raw image
+    -- and its channel with it, unless ``tissue_raw_channel`` picks another
+    channel of that same file (one where the tissue's own background shows)."""
     if settings.get("tissue_raw_tiff_path"):
         return (
             settings["tissue_raw_tiff_path"], settings.get("tissue_raw_channel"),
@@ -539,17 +588,17 @@ def tissue_raw_image(settings: Mapping[str, Any]) -> tuple[Any, Any, str, str]:
         )
     if settings.get("tissue_raw_channel") is not None:
         return (
-            settings.get("fwhm_raw_tiff_path"), settings["tissue_raw_channel"],
-            "fwhm_raw_tiff_path", "tissue_raw_channel",
+            settings.get("raw_image_path"), settings["tissue_raw_channel"],
+            "raw_image_path", "tissue_raw_channel",
         )
     return (
-        settings.get("fwhm_raw_tiff_path"), settings.get("fwhm_raw_channel"),
-        "fwhm_raw_tiff_path", "fwhm_raw_channel",
+        settings.get("raw_image_path"), settings.get("raw_image_channel"),
+        "raw_image_path", "raw_image_channel",
     )
 
 
 def check_tissue_volume_image(settings: Mapping[str, Any]) -> CheckReport:
-    """``measure_tissue_volume`` needs a raw image -- its own, or the FWHM one
+    """``measure_tissue_volume`` needs a raw image -- its own, or the run's
     -- that is there, with a channel chosen if it has several."""
     report = CheckReport()
     if not settings.get("measure_tissue_volume"):
@@ -558,37 +607,16 @@ def check_tissue_volume_image(settings: Mapping[str, Any]) -> CheckReport:
     if not path:
         report.add_error(
             "measure_tissue_volume needs the raw image to find the tissue in: set "
-            "tissue_raw_tiff_path, or fwhm_raw_tiff_path for it to share."
+            "raw_image_path, or tissue_raw_tiff_path for another image."
         )
         return report
     if not Path(path).is_file():
-        # tissue_raw_tiff_path's own must_exist reports it; the FWHM image's
-        # does not when FWHM itself is off.
-        if path_name == "fwhm_raw_tiff_path" and not settings.get("use_fwhm_edge_diameters"):
-            report.add_error(
-                f"measure_tissue_volume reads fwhm_raw_tiff_path, which does not exist: {path}"
-            )
+        # tissue_raw_tiff_path's own must_exist reports it, and check_raw_image
+        # the raw image.
         return report
-    shared_with_fwhm = (path_name, channel_name) == ("fwhm_raw_tiff_path", "fwhm_raw_channel")
-    if not (shared_with_fwhm and settings.get("use_fwhm_edge_diameters")):
-        # The FWHM measurement's own check already covers that pair.
+    if (path_name, channel_name) != ("raw_image_path", "raw_image_channel"):
+        # The raw image's own pair is checked by check_image_channels.
         _check_image_channel(report, path_name, path, channel_name, channel)
-    return report
-
-
-def check_one_primary_diameter_measurement(settings: Mapping[str, Any]) -> CheckReport:
-    """FWHM on the plasma label and the endothelial internal diameter are
-    alternatives: each is the first source in its own diameter chain, and
-    they measure different diameters (the plasma column, the lumen wall to
-    wall)."""
-    report = CheckReport()
-    if bool(settings.get("use_endothelial_diameters")) and bool(
-        settings.get("use_fwhm_edge_diameters")
-    ):
-        report.add_error(
-            "use_endothelial_diameters and use_fwhm_edge_diameters are both on; they are "
-            "alternatives, each the first source of its own diameter chain. Turn one off."
-        )
     return report
 
 
@@ -615,7 +643,8 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     Called for you by the examples before a run starts; call it yourself to
     check a configuration without running anything.
     """
-    report = check_settings(schema, settings)
+    # The raw image is optional: check_raw_image checks it when it is set.
+    report = check_settings(schema, settings, skip=("raw_image_path",))
     report.extend(check_cached_artefacts(settings))
     report.extend(check_ilastik_executable(settings))
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
@@ -626,7 +655,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_thick_vessel_restriction_prerequisites(settings))
     report.extend(check_perturbations(settings, schema))
     report.extend(check_segmentation_quality(settings))
-    report.extend(check_one_primary_diameter_measurement(settings))
+    report.extend(check_raw_image(settings))
     report.extend(check_image_channels(settings))
     report.extend(check_tissue_volume_image(settings))
     report.extend(check_crop_on_import(settings))

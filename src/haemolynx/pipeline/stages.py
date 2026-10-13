@@ -39,6 +39,7 @@ import numpy as np
 import tifffile
 
 from haemolynx import graph, haemodynamics, io, preprocessing, statistics, visualization
+from haemolynx.preprocessing import raw_stain
 from haemolynx.haemodynamics.apply import (
     HaemodynamicsApplyConfig,
     apply_poiseuille_resistances,
@@ -74,6 +75,7 @@ from haemolynx.haemodynamics.pericyte_sweep import (
     solve_pressure_and_boundary_flow,
 )
 from haemolynx.haemodynamics.perturbations import plain as plain_values
+from haemolynx.haemodynamics.viscosity import run_diameter_basis
 from haemolynx.haemodynamics.poiseuille import (
     EDGE_DIAMETER_BASIS,
     PoiseuilleModel,
@@ -358,8 +360,7 @@ class PipelineResume:
 def segmented_input_path(settings: dict) -> Path | None:
     """The segmented image the run analyses: the Input tab's ``input_path``,
     or -- when ilastik does the segmenting -- ilastik's output, which is not
-    the image in ``ilastik_unsegmented_image_path`` but what ilastik makes
-    from it.
+    the raw image (``raw_image_path``) but what ilastik makes from it.
 
     With ilastik on, the Input tab's ``input_path`` is not the answer until
     `segment` has replaced it with ilastik's output (it may still hold an
@@ -367,11 +368,11 @@ def segmented_input_path(settings: dict) -> Path | None:
     it lies in ``ilastik_output_dir``. Otherwise the output is derived where
     `segment` writes it -- that stage's own naming rule."""
     produced = settings.get("input_path")
-    if settings.get("use_ilastik_segmentation") and settings.get("ilastik_unsegmented_image_path"):
+    if settings.get("use_ilastik_segmentation") and settings.get("raw_image_path"):
         output_dir = Path(settings["ilastik_output_dir"])
         if produced is not None and Path(produced).parent == output_dir:
             return Path(produced)
-        unsegmented = Path(settings["ilastik_unsegmented_image_path"])
+        unsegmented = Path(settings["raw_image_path"])
         return output_dir / f"{unsegmented.stem}_segmented{settings['ilastik_output_suffix']}"
     return None if produced is None else Path(produced)
 
@@ -404,7 +405,11 @@ def segment(
     if segmented_path is not None:
         logger.info(f"Resuming with the segmented image already made: {settings['input_path']}")
     elif settings["use_ilastik_segmentation"]:
-        unsegmented_image_path = Path(settings["ilastik_unsegmented_image_path"])
+        if settings.get("raw_image_path") is None:
+            raise ValueError(
+                "use_ilastik_segmentation=True segments the raw image, but raw_image_path is not set."
+            )
+        unsegmented_image_path = Path(settings["raw_image_path"])
         unsegmented_image_path = io.resolve_image_path_with_optional_zip(unsegmented_image_path)
         if settings["ilastik_classifier_path"] is None:
             raise ValueError(
@@ -2542,15 +2547,81 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     )
 
 
+def recorded_raw_image_stain(settings: Mapping[str, Any], G: nx.MultiGraph | None = None) -> str:
+    """The raw image's stain as this run knows it without reading the image:
+    the setting, unless ``auto``; then what the Diameters stage resolved and
+    recorded on *G*; else plasma_column."""
+    stain = settings.get("raw_image_stain", "auto")
+    if stain in raw_stain.STAINS:
+        return stain
+    if G is not None and G.graph.get("raw_image_stain") in raw_stain.STAINS:
+        return G.graph["raw_image_stain"]
+    return raw_stain.PLASMA_COLUMN
+
+
+def resolve_raw_image_stain(
+    settings: Mapping[str, Any], network: "VesselNetwork | None"
+) -> tuple[str, raw_stain.StainReading | None]:
+    """``(stain, reading)``: the raw image's stain, read from the image and the
+    segmentation when ``raw_image_stain`` is ``auto`` (``reading`` says how
+    it read), else the setting's (``reading`` None). An image that reads as
+    neither, or none to read, is taken as a plasma label -- the segmentation's
+    own kind -- and said so."""
+    stain = settings.get("raw_image_stain", "auto")
+    if stain in raw_stain.STAINS:
+        return stain, None
+    path = settings.get("raw_image_path")
+    if not path or network is None or network.volume is None or network.volume.image is None:
+        return raw_stain.PLASMA_COLUMN, None
+    from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
+    from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+    use_memmap, memmap_directory = settings["use_memmap_loading"], settings["memmap_directory"]
+    raw = load_single_channel_tiff_volume(
+        io.resolve_image_path_with_optional_zip(Path(path)),
+        axis_order=settings["image_axis_order"],
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
+        channel=settings.get("raw_image_channel"),
+    )
+    mask = _to_binary_volume_for_skeletonization(
+        network.volume.image, use_memmap=use_memmap, memmap_directory=memmap_directory
+    )
+    reading = raw_stain.read_raw_stain(raw, mask, network.volume.voxel_size_zyx)
+    if reading.stain is None:
+        logger.warning(
+            f"raw_image_stain=auto: the raw image {reading.describe()}; measuring it as a plasma "
+            "label. Set raw_image_stain if it is an endothelial one."
+        )
+        return raw_stain.PLASMA_COLUMN, reading
+    logger.info(f"raw_image_stain=auto: the raw image {reading.describe()}.")
+    return reading.stain, reading
+
+
 def _haemodynamics_apply_config(
     settings: dict,
     schema: Schema,
     *,
     voxel_size_zyx: tuple[float, float, float],
     resistance_node_pair: tuple[int, int] | None = None,
+    stain: str | None = None,
 ) -> HaemodynamicsApplyConfig:
-    """Baseline haemodynamics config: no focal pericyte tone, no comparison CSV."""
+    """Baseline haemodynamics config: no focal pericyte tone, no comparison CSV.
+
+    The run's one raw image (``raw_image_path``, ``raw_image_channel``) is
+    what both measurements read, and ``measure_diameters_from_raw_image``
+    turns on the one its *stain* calls for -- FWHM across a plasma label, the
+    lumen inside an endothelial wall -- as the apply layer's own switches.
+    *stain* is the resolved one (:func:`resolve_raw_image_stain`); unset, it
+    is the setting's, and an ``auto`` not yet resolved reads as plasma_column,
+    which only a measurement would act on."""
+    if stain is None:
+        stain = recorded_raw_image_stain(settings)
     diameters = dict(schema.section_values(settings, "Diameters and pericytes"))
+    # The run's basis is what the segmented vessels are (the Input tab's
+    # segmentation_source): every diameter the segmentation gave is on it,
+    # and one read from the raw image carries its own.
+    diameters["diameter_basis"] = run_diameter_basis(settings)
     diameters["do_pericyte_construction"] = False
     diameters["run_pericyte_resistance_comparison"] = False
     edt = dict(schema.section_values(settings, "EDT mask diameter estimate"))
@@ -2558,11 +2629,24 @@ def _haemodynamics_apply_config(
         # Unset means the run's own segmented input -- what the skeleton was
         # made from.
         edt["edt_mask_path"] = segmented_input_path(settings)
+    measure = bool(settings.get("measure_diameters_from_raw_image"))
+    fwhm = dict(schema.section_values(settings, "FWHM diameter measurement"))
+    fwhm.update(
+        use_fwhm_edge_diameters=measure and stain != raw_stain.ENDOTHELIAL,
+        fwhm_raw_tiff_path=settings.get("raw_image_path"),
+        fwhm_raw_channel=settings.get("raw_image_channel"),
+    )
+    endothelial = dict(schema.section_values(settings, "Endothelial diameter"))
+    endothelial.update(
+        use_endothelial_diameters=measure and stain == raw_stain.ENDOTHELIAL,
+        endothelial_image_path=settings.get("raw_image_path"),
+        endothelial_channel=settings.get("raw_image_channel"),
+    )
     return HaemodynamicsApplyConfig(
         diameters=diameters,
-        fwhm=schema.section_values(settings, "FWHM diameter measurement"),
+        fwhm=fwhm,
         edt=edt,
-        endothelial=schema.section_values(settings, "Endothelial diameter"),
+        endothelial=endothelial,
         resistance_node_pair=resistance_node_pair,
         voxel_size_zyx=tuple(float(v) for v in voxel_size_zyx),
         axis_order=settings["image_axis_order"],
@@ -2663,10 +2747,16 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
             # a GUI pause can review FWHM fits first. Baseline never places
             # focal pericyte constrictions -- that belongs to typed
             # perturbation entries.
+            stain = recorded_raw_image_stain(settings)
+            if settings.get("measure_diameters_from_raw_image"):
+                stain, reading = resolve_raw_image_stain(settings, network)
+                G.graph["raw_image_stain"] = stain
+                G.graph["raw_image_stain_reading"] = None if reading is None else reading.as_dict()
             haemo_config = _haemodynamics_apply_config(
                 settings,
                 schema,
                 voxel_size_zyx=voxel_size_zyx,
+                stain=stain,
             )
             calibration_edges = edges_network_handling_keeps(settings, G, boundaries)
             if calibration_edges is not None and len(calibration_edges) < G.number_of_edges():
@@ -2683,7 +2773,7 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
             )
             if "fwhm" in haemo_results:
                 logger.info(f"FWHM diameter measurement summary: {haemo_results['fwhm']}")
-            elif settings["use_fwhm_edge_diameters"] is False:
+            elif not settings["measure_diameters_from_raw_image"]:
                 logger.info(
                     "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
                     "table diameters without per-edge FWHM)."
@@ -2959,7 +3049,8 @@ def post_process(
                 else tuple(G.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0)))
             )
             haemo_config = _haemodynamics_apply_config(
-                settings, schema, voxel_size_zyx=voxel_size_zyx
+                settings, schema, voxel_size_zyx=voxel_size_zyx,
+                stain=recorded_raw_image_stain(settings, G),
             )
             G, results, _raw = assign_edge_diameters(
                 G,
@@ -3551,7 +3642,10 @@ def _poiseuille_model_for(settings: dict) -> PoiseuilleModel:
         constriction_spacing=float(settings["constriction_spacing_um"]),
         viscosity_law=settings["viscosity_law"],
         haematocrit=float(settings["haematocrit"]),
-        diameter_basis=settings["diameter_basis"],
+        # What the segmentation's diameters measure (segmentation_source); a
+        # diameter read from the raw image carries its own
+        # (poiseuille.EDGE_DIAMETER_BASIS).
+        diameter_basis=run_diameter_basis(settings),
     )
 
 
@@ -4109,7 +4203,7 @@ def _perturb_one(
     # `G`, not `graph`, because `graph` is this module's imported subpackage.
     G = _perturbation_copy(model.graph)
     diameter_table = perturbed["diameter_by_branch_order"]
-    prefer_measured = bool(perturbed["use_fwhm_edge_diameters"])
+    prefer_measured = bool(perturbed["measure_diameters_from_raw_image"])
     summary: dict[str, Any] = {"overrides": overrides}
     #: Sweep helper payload when this type ran a grid; used for Alice plots.
     sweep_payload: dict[str, Any] | None = None
@@ -4646,7 +4740,7 @@ def tissue_measurement(
     if not path:
         raise ValueError(
             "measure_tissue_volume needs the raw image to find the tissue in: set "
-            "tissue_raw_tiff_path, or fwhm_raw_tiff_path for it to share."
+            "raw_image_path, or tissue_raw_tiff_path for another image."
         )
     resolved = io.resolve_image_path_with_optional_zip(Path(path))
     stat = resolved.stat()

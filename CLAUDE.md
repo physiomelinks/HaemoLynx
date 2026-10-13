@@ -24,6 +24,8 @@ haemolynx/
 │   │                       #   (the region, kept beside the skeleton between runs); segmentation_cleanup.py
 │   │                       #   (pre-skeleton mask cleanup), segmentation_quality.py and
 │   │                       #   segmentation_raw_comparison.py ("Check segmented image");
+│   │                       #   raw_stain.py (whether the raw image stains the lumen or
+│   │                       #   the wall round it: raw_image_stain's auto);
 │   │                       #   skeleton_consistency.py (skeleton vs mask), memmap_support.py
 │   │                       #   (disk-backed volumes, the low-RAM option), pointwise_distance.py,
 │   │                       #   bridge_mask_support.py (whether a bridge path stays in the mask
@@ -91,8 +93,7 @@ haemolynx/
 │   ├── gui/                # napari plugin: form.py (schema -> form rows, pure),
 │   │                       #   tabs.py (one tab per stage), layout.py (each tab's
 │   │                       #   boxes and nested Advanced buttons, pure),
-│   │                       #   diameter_source.py (FWHM / endothelial as one
-│   │                       #   choice, pure), progress.py (what the
+│   │                       #   progress.py (what the
 │   │                       #   progress bars read, pure), results.py (what each
 │   │                       #   stage puts in the viewer, pure), layers.py (an open
 │   │                       #   layer -> run settings, pure), boundary_picking.py
@@ -117,7 +118,7 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
-│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 452 settings),
+│   └── pipeline/           # A package, not a module: schema.py (the pipeline's 449 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
@@ -144,7 +145,8 @@ haemolynx/
 │   ├── graph_artefacts.py  # Rebuild a run's graph step by step and measure its lumen
 │   │                       #   artefacts and dead ends (graph_artefacts/: report,
 │   │                       #   dead_end_census: by kind, place, depth, step, flow coverage)
-│   ├── dead_end_review/    # The marked grids dead ends are calibrated on (G1-G3)
+│   ├── dead_end_review/    # The marked grids dead ends are calibrated on: G1-G3 (build_grids.py),
+│   │                       #   G4 (build_g4.py: segmentation, dextran and claudin-5 side by side)
 │   └── open_end_sensitivity.py # One solved network under every open_end_model
 ├── tests/                  # Unit + integration tests (see Testing below)
 │   ├── conftest.py         # Shared fixtures; matplotlib Agg backend
@@ -166,13 +168,26 @@ haemolynx/
 
 **Three ilastik hooks** in the main pipeline (all optional):
 
-1. **Main vessel mask** — `use_ilastik_segmentation=True` segments the primary input before skeletonization (`ilastik_unsegmented_image_path`, `ilastik_classifier_path`, `ilastik_executable`).
+1. **Main vessel mask** — `use_ilastik_segmentation=True` segments the run's raw image before skeletonization (`raw_image_path` and `raw_image_channel`, `ilastik_classifier_path`, `ilastik_executable`).
 2. **Large arteriole/venule masks** — `use_ilastik_large_vessel_segmentation` (requires `use_large_vessel_masks=True`).
 3. **Small arteriole/venule masks** — `use_ilastik_small_vessel_segmentation` (requires `use_small_vessel_masks_for_boundary_assignment=True`).
 
 Shared settings: `ilastik_output_dir`, `ilastik_output_suffix`. Every one of them is declared in `pipeline/schema.py`, with its prerequisites; `pipeline/checks.py` (`haemolynx.pipeline.preflight`) is what tells a user which required paths are missing before any work starts. Outputs are named `{image stem}_segmented` for the main image and `{image stem}_{large|small}_{arteriole|venule}_segmented` for the masks: the arteriole and venule classifiers are usually run on the one raw stack, and with one name the venule run overwrote the arteriole's (or, reusing existing output, read it back as its own).
 
 Users may also supply **pre-segmented** masks only (no ilastik call) — typical for tutorial data and many tests.
+
+**One raw image per run** (2026-10-13). The Input tab's `raw_image_path`, `raw_image_channel` and
+`raw_image_stain` are the only raw image a run reads: ilastik segments it, the Diameters stage
+measures from it (`measure_diameters_from_raw_image`), Check segmented image and the optimisers
+compare against it, and the tissue volume falls back to it. `raw_image_stain` is `auto`,
+`plasma_column` (a lumen label such as dextran) or `endothelial` (the wall round the lumen, such
+as claudin-5); auto reads it from the image (`preprocessing/raw_stain.py`'s `read_raw_stain`:
+brightness at the mask's edge against the middle of its widest vessels), the Diameters stage
+records what it resolved on the graph (`G.graph["raw_image_stain"]`, with the reading), and the
+stain picks the diameter method: FWHM for a plasma column, the endothelial ring fit for a wall.
+The settings it replaced (`ilastik_unsegmented_image_path`, `fwhm_raw_tiff_path`/`_channel`,
+`endothelial_image_path`/`_channel`, `use_fwhm_edge_diameters`, `use_endothelial_diameters`,
+`diameter_basis`) still load, moved together by `Setting.migrates`/`migrate` (`Schema.upgrade`).
 
 ---
 
@@ -361,12 +376,23 @@ are only caught locally.
   in `G.graph["viscosity_law"]` / `["diameter_basis"]`. All of it is in
   `haemodynamics/viscosity.py`.
   - The question that decides the answer is **which diameter you measured**, not which law you
-    prefer. `diameter_basis="plasma_column"` (**default**) means the segmented diameter is the
-    channel the fluid occupies — what a plasma stain images, which is what this project's data is.
-    `"anatomical"` means wall-to-wall, including the ~1.1 µm endothelial surface layer.
+    prefer. A diameter basis is `plasma_column` — the channel the fluid occupies, what a plasma
+    stain images — or `endothelial` (formerly `anatomical`, which still loads:
+    `normalise_diameter_basis`), wall to wall, including the ~1.1 µm endothelial surface layer.
+    The run's basis is **what the segmented vessels are**: `segmentation_source` on the Input
+    tab, beside the segmented image (`plasma_column` by default; `endothelial` for a mask of the
+    wall, `anatomical` an alias), read everywhere through `viscosity.run_diameter_basis` — the
+    stage's apply config, a perturbation's model, the sweeps' strategy arguments — and recorded
+    as `G.graph["diameter_basis"]`. Every diameter the segmentation gave (the mask's width, the
+    class medians, the table) is on it. A diameter read from the raw image carries the basis
+    *that* measurement read on its edge (`poiseuille.EDGE_DIAMETER_BASIS`, by
+    `MEASUREMENT_DIAMETER_BASIS`): FWHM and the raw section `plasma_column`, the endothelial
+    fit `endothelial`, whatever the segmentation is; a class median carries the basis of its
+    widths. The retired `diameter_basis` setting reads into `segmentation_source`
+    (`replaces`), and a perturbation may not override either (`INCOMPARABLE_OVERRIDES`).
   - `viscosity_law="pries"` (**default**) is Pries et al., fitted 3.3–1978 µm, continuous across
-    the whole tree, no placeholder and no warning. Reads `diameter_basis`: `plasma_column` selects
-    the *in vitro* (tube) form, `anatomical` the *in vivo* form. The in vivo form's
+    the whole tree, no placeholder and no warning. Reads the basis: `plasma_column` selects
+    the *in vitro* (tube) form, `endothelial` the *in vivo* form. The in vivo form's
     `(D/(D−1.1))²` factors appear squared, so the leading term carries `(D/(D−1.1))⁴` — that is
     the Poiseuille correction for quoting a resistance against a diameter wider than the channel,
     i.e. **a diameter correction, not a property of blood**. Applying it to a plasma-column
@@ -653,7 +679,7 @@ are only caught locally.
   checks (`parsers/checks.py`) plus what only this pipeline knows — the artefact a skipped stage
   must have left behind, and whether the ilastik executable can be found. The examples call it
   before doing any work and exit if it fails.
-- **`haemodynamics/automated.py`** — FWHM vessel-**diameter** measurement from raw TIFF (`measure_edge_diameters_fwhm_from_raw_tiff`, `build_graph_branch_label_volume`; neither is re-exported from `haemolynx.haemodynamics`, so import them from the module). *“automated” is a misnomer; this is diameter estimation.* `haemodynamics/edt_diameter.py` is the cross-check: each edge's diameter from the mask's own cross-section. Between them, `haemodynamics/raw_section.py` (`use_raw_section_fallback`, **off by default**) fits the raw image's whole cross-section as a PSF-blurred lumen on the edges FWHM failed on, so the diameter chain is FWHM → raw section → mask → class median → table (`stamp_edge_diameters`); the class median (`diameter_class_median_min_edges`, default 3) is the median measured diameter of the run's edges with the same `branch_order` label, so a large arteriole the table has no entry for is not modelled at `default_diameter`. Accurate on clean synthetic data, including z-running vessels FWHM cannot read; on a speckled real stack it reads the halo round a vessel, which is why it is opt-in. FWHM itself can fit one bright speck cleanly on such a stack, so an edge needs `fwhm_min_accepted_samples` (default 2) accepted samples, and `haemodynamics/fwhm_decoys.py` (`fwhm_decoy_check`, on by default) re-measures a sample of FWHM's vessels moved into vessel-free tissue: it reports FWHM's false-positive rate and speck-width range on the run's own image and flags widths in that range (`fwhm_in_speck_width_range`). Its counterpart, `haemodynamics/fwhm_planted.py`, asks whether FWHM reads the *right* width: it draws vessels of known width (the real neighbour's mask width ± a quarter, blurred by the image PSF, as bright and as noisy as the image) into a copy of the raw image beside sampled ones, and the "Optimise FWHM settings" search scores every trial on their mean relative error (`fwhm_metrics.PLANTED_ERROR_WEIGHT`), which is what lets it tune the profile model, sampling direction, averaging, spacing, accepted samples and aggregation (its `measurement_model` group, skipped without the run's segmentation). With `fwhm_demote_flagged_edges` (on by default) a flagged width, or one disagreeing with the mask's own past `edt_fwhm_disagreement_warn_ratio`, is set aside (`fwhm_demoted`) and its edge takes the next source; FWHM holds each profile's blur at one image PSF shared with the raw-section fit (`fwhm_fix_blur_to_image_psf`). `haemodynamics/endothelial.py` (`use_endothelial_diameters`, off by default, exclusive with FWHM -- preflight refuses both, and the panel offers the two as one "Diameter measurement" choice, `gui/diameter_source.py`, that writes both settings) is the alternative first source: the internal diameter inside an endothelial stain's wall ring (a channel of a composite: `endothelial_channel`), fitted with the blur and wall thickness estimated from the image's wide vessels; its chain is endothelium → mask → class median → table. Its widths run wall to wall, so the edge carries `diameter_basis="anatomical"` (`poiseuille.EDGE_DIAMETER_BASIS`) and its viscosity takes that form of the law while the rest of the network keeps the run's basis -- `edge_diameter_basis` is read wherever a vessel's viscosity is computed. `haemodynamics/sections.py` holds what the section methods share, including `run_edge_tasks`, which spreads independent per-edge work over worker processes reading one memory-mapped volume.
+- **`haemodynamics/automated.py`** — FWHM vessel-**diameter** measurement from raw TIFF (`measure_edge_diameters_fwhm_from_raw_tiff`, `build_graph_branch_label_volume`; neither is re-exported from `haemolynx.haemodynamics`, so import them from the module). *“automated” is a misnomer; this is diameter estimation.* `haemodynamics/edt_diameter.py` is the cross-check: each edge's diameter from the mask's own cross-section. Between them, `haemodynamics/raw_section.py` (`use_raw_section_fallback`, **off by default**) fits the raw image's whole cross-section as a PSF-blurred lumen on the edges FWHM failed on, so the diameter chain is FWHM → raw section → mask → class median → table (`stamp_edge_diameters`); the class median (`diameter_class_median_min_edges`, default 3) is the median measured diameter of the run's edges with the same `branch_order` label, so a large arteriole the table has no entry for is not modelled at `default_diameter`. Accurate on clean synthetic data, including z-running vessels FWHM cannot read; on a speckled real stack it reads the halo round a vessel, which is why it is opt-in. FWHM itself can fit one bright speck cleanly on such a stack, so an edge needs `fwhm_min_accepted_samples` (default 2) accepted samples, and `haemodynamics/fwhm_decoys.py` (`fwhm_decoy_check`, on by default) re-measures a sample of FWHM's vessels moved into vessel-free tissue: it reports FWHM's false-positive rate and speck-width range on the run's own image and flags widths in that range (`fwhm_in_speck_width_range`). Its counterpart, `haemodynamics/fwhm_planted.py`, asks whether FWHM reads the *right* width: it draws vessels of known width (the real neighbour's mask width ± a quarter, blurred by the image PSF, as bright and as noisy as the image) into a copy of the raw image beside sampled ones, and the "Optimise FWHM settings" search scores every trial on their mean relative error (`fwhm_metrics.PLANTED_ERROR_WEIGHT`), which is what lets it tune the profile model, sampling direction, averaging, spacing, accepted samples and aggregation (its `measurement_model` group, skipped without the run's segmentation). With `fwhm_demote_flagged_edges` (on by default) a flagged width, or one disagreeing with the mask's own past `edt_fwhm_disagreement_warn_ratio`, is set aside (`fwhm_demoted`) and its edge takes the next source; FWHM holds each profile's blur at one image PSF shared with the raw-section fit (`fwhm_fix_blur_to_image_psf`). `haemodynamics/endothelial.py` is the alternative first source, used when `measure_diameters_from_raw_image` is on and the raw image is an endothelial stain (`raw_image_stain`; FWHM takes a plasma column, so one setting chooses between them): the internal diameter inside the wall ring, fitted with the blur and wall thickness estimated from the image's wide vessels; its chain is endothelium → mask → class median → table. Its widths run wall to wall, so the edge carries `diameter_basis="endothelial"` (`poiseuille.EDGE_DIAMETER_BASIS`) and its viscosity takes that form of the law while the rest of the network keeps the run's basis -- `edge_diameter_basis` is read wherever a vessel's viscosity is computed. `haemodynamics/sections.py` holds what the section methods share, including `run_edge_tasks`, which spreads independent per-edge work over worker processes reading one memory-mapped volume.
 - **`haemodynamics/constriction.py`** — the constriction model: diameter profile around a site,
   the resistance integral, and `apply_constriction_sites`, the only place a constricted edge's
   resistance is computed. A strategy supplies *where* the sites are (`ConstrictionSites`);
@@ -704,7 +730,7 @@ are only caught locally.
   plus `none` (`PERTURBATION_TYPES`): arteriole / pericyte / combined diameter changes, capillary
   blocks, and sweeps over dilation, inlet pressure, pericyte spacing or length.
   `SETTINGS_FOR_TYPE` says which settings each type reads; an override outside it is reported as
-  unused and not applied. `INCOMPARABLE_OVERRIDES` (viscosity law, diameter basis, haematocrit,
+  unused and not applied. `INCOMPARABLE_OVERRIDES` (viscosity law, the raw image's stain, haematocrit,
   haematocrit model) are refused, because they would move every resistance and the difference
   against the baseline would not be the perturbation's effect. A single re-solve writes
   summary/edges/statistics CSVs and plots; a sweep writes its grid CSV and curves, and keeps
@@ -774,7 +800,7 @@ are only caught locally.
 - **`statistics/three_dim_distances.py`** — cell-to-vessel distances.
 - **`statistics/tissue_volume.py`** — `measure_tissue_volume` (`measure_tissue_volume` on the
   Additional measurements tab, off by default): the tissue in the raw image (`tissue_raw_tiff_path`,
-  else the FWHM raw image) as a closed surface mesh, so vessel density can divide by tissue rather
+  else the run's raw image, `raw_image_path`) as a closed surface mesh, so vessel density can divide by tissue rather
   than by the box the network spans, which counts the image's empty space. Block-averaged onto a
   ~4 µm working grid with the vessel voxels left out of the threshold (else Otsu splits vessels
   from everything else), split by Otsu/Li/triangle or a manual intensity, and the surface placed
@@ -801,7 +827,7 @@ are only caught locally.
   Input, Boundaries, Diameters, Haemodynamics and Export are grouped by hand (`TAB_BOXES`). Every
   `advanced` setting goes behind an Advanced button anchored on the innermost ordinary row it
   needs (so buttons nest as the settings do: the FWHM decoy check under "Do FWHM measurement",
-  under "Use FWHM edge diameters"), placed after that row's subtree; a child of an advanced toggle
+  under "Measure diameters from the raw image"), placed after that row's subtree; a child of an advanced toggle
   shares its button. Buttons start closed and show how many hidden settings differ from where the
   panel started (`changed_settings`). The panel follows each row's whole prerequisite chain
   (`form.prerequisite_chain`), not only its own `requires`, so a row never outlives the toggle

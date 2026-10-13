@@ -104,8 +104,8 @@ def build_diameter_by_branch_order(
 #: fit; ``raw_section`` is the raw image's own cross-section, fitted where
 #: FWHM failed when ``use_raw_section_fallback`` is on (see
 #: ``haemolynx.haemodynamics.raw_section``); ``endothelial`` is the internal
-#: diameter inside the endothelial wall, the run's alternative to FWHM when
-#: ``use_endothelial_diameters`` is on (see
+#: diameter inside the endothelial wall, what a run measures in place of FWHM
+#: when its raw image is an endothelial stain (see
 #: ``haemolynx.haemodynamics.endothelial``); ``edt_mask`` is the segmentation
 #: mask's own width estimate, used only when both of those failed for that
 #: edge and ``use_edt_fallback`` is on (see
@@ -192,18 +192,31 @@ def table_diameter_for_order(diameter_by_branch_order: dict, branch_order: objec
 
 #: A vessel's own ``diameter_basis`` edge attribute, when a measurement knows
 #: which diameter it read -- an endothelial internal diameter runs wall to
-#: wall (``anatomical``) whatever the run's ``diameter_basis`` says about the
-#: rest. Read wherever a vessel's viscosity is computed, so one network can
-#: hold both, each through its own form of the law.
+#: wall (``endothelial``; ``anatomical`` before), FWHM across a plasma label
+#: reads the plasma column -- whatever the run's ``diameter_basis`` (the
+#: segmentation's, ``segmentation_source``) says about the rest. Read wherever
+#: a vessel's viscosity is computed, so one network can hold both, each
+#: through its own form of the law.
 EDGE_DIAMETER_BASIS = "diameter_basis"
+
+#: The basis each raw-image measurement reads, by ``diameter_source``: FWHM
+#: and the raw-section fit run across a luminal (plasma) label, so they read
+#: the plasma column; the endothelial fit reads inside the wall ring, wall to
+#: wall. A source not listed here -- the mask's own width, the table, a hand
+#: value -- is on the run's basis, what the segmentation measures.
+MEASUREMENT_DIAMETER_BASIS: dict[str, str] = {
+    DIAMETER_SOURCE_MEASURED: "plasma_column",
+    DIAMETER_SOURCE_RAW_SECTION: "plasma_column",
+    DIAMETER_SOURCE_ENDOTHELIAL: "endothelial",
+}
 
 
 def edge_diameter_basis(data: dict, default: str) -> str:
     """The diameter basis *data*'s diameter was measured on: its own
     :data:`EDGE_DIAMETER_BASIS` when it names a known one, else *default*
     (the run's)."""
-    basis = data.get(EDGE_DIAMETER_BASIS)
-    return basis if basis in DIAMETER_BASES else default
+    basis = normalise_diameter_basis(data.get(EDGE_DIAMETER_BASIS))
+    return basis if basis in DIAMETER_BASES else normalise_diameter_basis(default)
 
 
 def positive_diameter_um(value: object) -> float | None:
@@ -377,11 +390,14 @@ def stamp_edge_diameters(
     vessel whose mask was too thin to give a width has no ``edt_diameter_um``
     and so takes the class median or the table's.
 
-    An endothelial diameter runs wall to wall, so its edge is marked
-    :data:`EDGE_DIAMETER_BASIS` ``"anatomical"`` and its viscosity takes that
-    form of the law (see :func:`edge_diameter_basis`); every other source
-    is the run's own basis, and clears the mark. A class median carries the
-    basis of the widths it was taken over.
+    A diameter read from the raw image is marked with the basis that
+    measurement reads (:data:`MEASUREMENT_DIAMETER_BASIS`): an endothelial
+    diameter runs wall to wall, so its edge carries :data:`EDGE_DIAMETER_BASIS`
+    ``"endothelial"``, and FWHM's or the raw section's the plasma column; its
+    viscosity takes that form of the law (see :func:`edge_diameter_basis`)
+    whatever the segmentation's vessels are. Every other source -- the mask's
+    width, the table -- is on the run's own basis, and clears the mark. A
+    class median carries the basis of the widths it was taken over.
     """
     table = diameter_by_branch_order or {}
     counts = {
@@ -389,13 +405,14 @@ def stamp_edge_diameters(
         "class_median": 0, "table": 0, "override": 0, "unset": 0,
     }
 
-    def stamp(data: dict, diameter: float, source: str, *, anatomical: bool = False) -> None:
+    def stamp(data: dict, diameter: float, source: str, *, basis: str | None = None) -> None:
         data["diameter_um"] = diameter
         data["diameter_source"] = source
-        if anatomical or source == DIAMETER_SOURCE_ENDOTHELIAL:
-            data[EDGE_DIAMETER_BASIS] = "anatomical"
-        else:
+        basis = MEASUREMENT_DIAMETER_BASIS.get(source, basis)
+        if basis is None:
             data.pop(EDGE_DIAMETER_BASIS, None)
+        else:
+            data[EDGE_DIAMETER_BASIS] = basis
         counts[source] += 1
 
     unmeasured: list[dict] = []
@@ -453,8 +470,8 @@ def stamp_edge_diameters(
         order = data.get("branch_order")
         median = medians.get(str(order)) if order is not None else None
         if median is not None:
-            diameter, anatomical = median
-            stamp(data, diameter, DIAMETER_SOURCE_CLASS_MEDIAN, anatomical=anatomical)
+            diameter, basis = median
+            stamp(data, diameter, DIAMETER_SOURCE_CLASS_MEDIAN, basis=basis)
             continue
         table_diameter = positive_diameter_um(
             table_diameter_for_order(table, data.get("branch_order"))
@@ -468,18 +485,18 @@ def stamp_edge_diameters(
 
 def class_median_diameters(
     G: nx.MultiGraph, *, min_edges: int
-) -> dict[str, tuple[float, bool]]:
-    """``{branch_order label: (median diameter, anatomical)}`` over the edges
+) -> dict[str, tuple[float, str | None]]:
+    """``{branch_order label: (median diameter, basis)}`` over the edges
     whose ``diameter_source`` is one of this run's measurements, for each label
     with at least *min_edges* of them (none when *min_edges* is 0).
 
-    Taken over the label's edges of the basis most of them have -- wall to wall
-    (``anatomical``, the endothelial measurement) or the run's own -- so one
-    median never mixes the two.
+    Taken over the label's edges of the basis most of them have -- the one
+    their :data:`EDGE_DIAMETER_BASIS` mark names, or None for the run's own
+    (unmarked) -- so one median never mixes two; on a tie the run's own.
     """
     if int(min_edges) <= 0:
         return {}
-    by_label: dict[str, dict[bool, list[float]]] = {}
+    by_label: dict[str, dict[str | None, list[float]]] = {}
     for _u, _v, _key, data in G.edges(keys=True, data=True):
         if data.get("diameter_source") not in _MEASURED_DIAMETER_SOURCES:
             continue
@@ -487,15 +504,17 @@ def class_median_diameters(
         diameter = positive_diameter_um(data.get("diameter_um"))
         if order is None or diameter is None:
             continue
-        anatomical = data.get(EDGE_DIAMETER_BASIS) == "anatomical"
-        by_label.setdefault(str(order), {}).setdefault(anatomical, []).append(diameter)
-    medians: dict[str, tuple[float, bool]] = {}
+        basis = normalise_diameter_basis(data.get(EDGE_DIAMETER_BASIS))
+        if basis not in DIAMETER_BASES:
+            basis = None
+        by_label.setdefault(str(order), {}).setdefault(basis, []).append(diameter)
+    medians: dict[str, tuple[float, str | None]] = {}
     for label, by_basis in by_label.items():
-        anatomical, diameters = max(
-            by_basis.items(), key=lambda item: (len(item[1]), not item[0])
+        basis, diameters = max(
+            by_basis.items(), key=lambda item: (len(item[1]), item[0] is None)
         )
         if len(diameters) >= int(min_edges):
-            medians[label] = (float(np.median(diameters)), anatomical)
+            medians[label] = (float(np.median(diameters)), basis)
     return medians
 
 
@@ -538,6 +557,7 @@ from .viscosity import (  # noqa: E402  (re-export, must follow the docstring)
     DEFAULT_HAEMATOCRIT,
     DIAMETER_BASES,
     LARGE_VESSEL_VISCOSITY_PA_S,
+    normalise_diameter_basis,
     PLACEHOLDER_REGIME_MAX_DIAMETER_UM,
     PLASMA_VISCOSITY_PA_S,
     PRIES_MAX_DIAMETER_UM,
@@ -595,6 +615,7 @@ class PoiseuilleModel:
                 f"Unknown viscosity_law {viscosity_law!r}. Fix: choose one of "
                 f"{', '.join(VISCOSITY_LAWS)}."
             )
+        diameter_basis = normalise_diameter_basis(diameter_basis)
         if diameter_basis not in DIAMETER_BASES:
             raise ValueError(
                 f"Unknown diameter_basis {diameter_basis!r}. Fix: choose one "

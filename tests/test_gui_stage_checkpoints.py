@@ -258,7 +258,7 @@ def test_plan_restore_hands_the_graph_over_and_leaves_graph_pkl_alone(tmp_path):
     graph = a_graph(resistance=1.0)
     results = built(graph)
     settings = _settings(tmp_path)
-    settings["use_fwhm_edge_diameters"] = True
+    settings["measure_diameters_from_raw_image"] = True
     (tmp_path / "out").mkdir()
     graph_pkl = tmp_path / "out" / "stack_graph.pkl"
     graph_pkl.write_bytes(b"what graph building made")
@@ -591,7 +591,7 @@ def test_clear_looks_for_checkpoints_under_the_input_stem_they_are_named_with(
         **settings,
         "input_path": None,
         "use_ilastik_segmentation": True,
-        "ilastik_unsegmented_image_path": tmp_path / "raw.tif",
+        "raw_image_path": tmp_path / "raw.tif",
         "ilastik_output_dir": tmp_path / "seg",
         "ilastik_output_suffix": ".h5",
     }

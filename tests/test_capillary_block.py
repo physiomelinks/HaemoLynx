@@ -270,7 +270,7 @@ def _settings(tmp_path: Path, entries, **extra):
             "run_perturbations": True,
             "perturbations": entries,
             "diameter_by_branch_order": {"Art1": 10.0, "BO2": 5.0, "Ven1": 10.0},
-            "use_fwhm_edge_diameters": False,
+            "measure_diameters_from_raw_image": False,
             "viscosity_law": "constant",
             "inlet_p_bc": 100.0,
             "outlet_p_bc": 0.0,

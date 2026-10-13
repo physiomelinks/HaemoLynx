@@ -187,7 +187,7 @@ def main(settings: dict) -> dict:
     # law the resistances were not computed with.
     law = settings.get("viscosity_law", "pries")
     haematocrit = settings.get("haematocrit", 0.45)
-    basis = settings.get("diameter_basis", "plasma_column")
+    basis = haemodynamics.run_diameter_basis(settings)
     print(f"\nViscosity by {haemodynamics.describe_law(law, haematocrit, basis)}:")
     for branch_order, diameter in sorted(settings["diameter_by_branch_order"].items()):
         viscosity = haemodynamics.viscosity_for(

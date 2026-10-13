@@ -28,6 +28,7 @@ from .arteriole import percent_change_to_scale
 from .constriction import is_capillary_branch_order
 from .poiseuille import PoiseuilleModel, scale_stored_edge_diameters
 from .sweep_flows import build_sweep_flow_grid
+from .viscosity import run_diameter_basis
 
 logger = logging.getLogger(__name__)
 
@@ -159,10 +160,10 @@ def run_capillary_dilation_pressure_sweep(
         constriction_spacing=float(settings.get("constriction_spacing_um", 100.0)),
         viscosity_law=settings.get("viscosity_law", "pries"),
         haematocrit=float(settings.get("haematocrit", 0.45)),
-        diameter_basis=settings.get("diameter_basis", "plasma_column"),
+        diameter_basis=run_diameter_basis(settings),
     )
     diameter_by_branch_order = settings["diameter_by_branch_order"]
-    prefer_measured = bool(settings.get("use_fwhm_edge_diameters", True))
+    prefer_measured = bool(settings.get("measure_diameters_from_raw_image", True))
     outlet_pressure_pa = float(settings["outlet_p_bc"])
 
     dilation_values = _capillary_dilation_percents(settings, sweep=sweep_dilation)

@@ -39,6 +39,17 @@ floor, big enough to exclude noise-scale flecks but well under any real
 capillary cross-section, is what keeps this count meaningful on real data
 instead of being dominated by noise.
 
+What the raw image stains decides what "supported" means (``stain``, the
+run's ``raw_image_stain``). A plasma (luminal) label images the lumen, so its
+Otsu foreground is compared with the mask directly. An endothelial label
+images the wall: its foreground is the wall, and the vessels it implies are
+the walls and the lumens they enclose -- filled slice by slice in each of the
+three orthogonal plane families, since a wall cut across is a closed ring in
+that slice. A lumen mask then has no support where it lies outside every such
+vessel; and the image's vessels are missed by it only beyond
+``wall_tolerance_um`` of the mask, so the wall itself, just outside a lumen
+mask, is not counted as missed.
+
 Deliberately not part of :mod:`segmentation_quality`'s 0-10 score: that
 score is what :mod:`haemolynx.optimisation`'s settings search directly
 maximises, and this module needs a raw reference image that is only
@@ -54,7 +65,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-from scipy.ndimage import label
+from scipy.ndimage import binary_dilation, binary_fill_holes, label
 from skimage.filters import threshold_otsu
 
 __all__ = [
@@ -89,6 +100,13 @@ DEFAULT_MISSED_STRUCTURE_MIN_VOLUME_UM3 = 20.0
 #: the module docstring. Reasoned, not empirically fitted.
 DEFAULT_LOW_AGREEMENT_IOU_WARNING_THRESHOLD = 0.5
 
+PLASMA_COLUMN = "plasma_column"
+ENDOTHELIAL = "endothelial"
+#: How far outside a lumen mask an endothelial image's vessel may reach and
+#: still count as the mask's own: the wall (about 1.2 um on E14.5's claudin-5
+#: channel) and its blur.
+DEFAULT_WALL_TOLERANCE_UM = 2.0
+
 
 @dataclass(frozen=True)
 class SegmentationRawComparison:
@@ -110,6 +128,8 @@ class SegmentationRawComparison:
     missed_structure_count: int
     missed_structure_total_voxels: int
     missed_structure_total_volume_um3: float
+    #: What the raw image was read as: ``plasma_column`` or ``endothelial``.
+    stain: str = PLASMA_COLUMN
 
 
 @dataclass(frozen=True)
@@ -136,6 +156,9 @@ class RawImageForeground:
     labeled: np.ndarray
     sizes: np.ndarray
     missed_structure_min_voxels: int
+    #: What the raw image was read as; for ``endothelial``, *raw_foreground*
+    #: is the walls and the lumens they enclose.
+    stain: str = PLASMA_COLUMN
 
 
 def analyze_raw_image_foreground(
@@ -143,6 +166,7 @@ def analyze_raw_image_foreground(
     *,
     voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
     missed_structure_min_volume_um3: float = DEFAULT_MISSED_STRUCTURE_MIN_VOLUME_UM3,
+    stain: str = PLASMA_COLUMN,
 ) -> Optional[RawImageForeground]:
     """Precompute :class:`RawImageForeground` for *raw_image*, to reuse
     across many :func:`compare_segmentation_to_raw_image` calls.
@@ -162,6 +186,8 @@ def analyze_raw_image_foreground(
 
     threshold = float(threshold_otsu(finite))
     raw_foreground = raw_image > threshold
+    if stain == ENDOTHELIAL:
+        raw_foreground = enclosed_by_walls(raw_foreground)
     raw_total = int(raw_foreground.sum())
     missed_structure_min_voxels = max(
         1, int(round(missed_structure_min_volume_um3 / max(1e-9, voxel_volume_um3)))
@@ -178,7 +204,34 @@ def analyze_raw_image_foreground(
         labeled=labeled,
         sizes=sizes,
         missed_structure_min_voxels=missed_structure_min_voxels,
+        stain=stain,
     )
+
+
+def enclosed_by_walls(walls: np.ndarray) -> np.ndarray:
+    """*walls* and every region they enclose in some slice: holes filled in
+    each slice of each of the three orthogonal plane families. A vessel cut
+    across is a closed ring in that slice whichever way it runs, so its lumen
+    fills in at least one family."""
+    walls = np.asarray(walls, dtype=bool)
+    out = walls.copy()
+    for axis in range(walls.ndim):
+        moved = np.moveaxis(walls, axis, 0)
+        filled = np.moveaxis(out, axis, 0)
+        for index in range(moved.shape[0]):
+            filled[index] |= binary_fill_holes(moved[index])
+    return out
+
+
+def _grown(mask: np.ndarray, voxel_size_zyx, reach_um: float) -> np.ndarray:
+    """*mask* grown by *reach_um* (an ellipsoid in voxels for anisotropic
+    ones)."""
+    radii = [max(int(round(reach_um / float(s))), 0) for s in voxel_size_zyx]
+    if not any(radii):
+        return mask
+    grid = np.ogrid[tuple(slice(-r, r + 1) for r in radii)]
+    ball = sum((g / max(r, 1e-9)) ** 2 for g, r in zip(grid, radii) if r) <= 1.0
+    return binary_dilation(mask, structure=ball)
 
 
 def compare_segmentation_to_raw_image(
@@ -189,6 +242,8 @@ def compare_segmentation_to_raw_image(
     missed_structure_max_overlap_fraction: float = DEFAULT_MISSED_STRUCTURE_MAX_OVERLAP_FRACTION,
     missed_structure_min_volume_um3: float = DEFAULT_MISSED_STRUCTURE_MIN_VOLUME_UM3,
     precomputed: Optional[RawImageForeground] = None,
+    stain: str = PLASMA_COLUMN,
+    wall_tolerance_um: float = DEFAULT_WALL_TOLERANCE_UM,
 ) -> SegmentationRawComparison:
     """Compare *mask* against the raw intensity volume it was derived from.
 
@@ -208,7 +263,11 @@ def compare_segmentation_to_raw_image(
     :func:`analyze_raw_image_foreground`, which is what a caller uses to
     build it. The caller is responsible for it actually matching
     *raw_image*/*voxel_size_zyx*/*missed_structure_min_volume_um3*; nothing
-    here re-validates that.
+    here re-validates that. Its own ``stain`` is the one compared by.
+
+    *stain* says what the raw image stains (see the module docstring): for
+    ``endothelial``, the image's vessels are its walls and what they enclose,
+    and they count as the mask's own within *wall_tolerance_um* of it.
     """
     mask = np.asarray(mask, dtype=bool)
     raw_image = np.asarray(raw_image)
@@ -226,7 +285,9 @@ def compare_segmentation_to_raw_image(
     foreground = precomputed if precomputed is not None else analyze_raw_image_foreground(
         raw_image, voxel_size_zyx=voxel_size_zyx,
         missed_structure_min_volume_um3=missed_structure_min_volume_um3,
+        stain=stain,
     )
+    stain = foreground.stain if foreground is not None else stain
     if foreground is None:
         return SegmentationRawComparison(
             raw_threshold=0.0,
@@ -239,25 +300,29 @@ def compare_segmentation_to_raw_image(
             missed_structure_count=0,
             missed_structure_total_voxels=0,
             missed_structure_total_volume_um3=0.0,
+            stain=stain,
         )
 
     raw_foreground = foreground.raw_foreground
     raw_total = foreground.raw_total
+    # A lumen mask reaches the wall an endothelial image shows only through
+    # its tolerance; a plasma image is the lumen itself.
+    covered = _grown(mask, voxel_size_zyx, wall_tolerance_um) if stain == ENDOTHELIAL else mask
 
     added = mask & ~raw_foreground
-    removed = raw_foreground & ~mask
+    removed = raw_foreground & ~covered
     added_count = int(added.sum())
     removed_count = int(removed.sum())
 
-    union = int((mask | raw_foreground).sum())
-    intersection = int((mask & raw_foreground).sum())
+    union = int((covered | raw_foreground).sum())
+    intersection = int((covered & raw_foreground).sum())
     agreement_iou = float(intersection) / union if union else 1.0
 
     missed_count = 0
     missed_voxels = 0
     if raw_total:
         sizes = foreground.sizes
-        overlap_counts = np.bincount(foreground.labeled[mask].ravel(), minlength=sizes.size)
+        overlap_counts = np.bincount(foreground.labeled[covered].ravel(), minlength=sizes.size)
         for component_id in range(1, sizes.size):
             size = int(sizes[component_id])
             if size < foreground.missed_structure_min_voxels:
@@ -278,6 +343,7 @@ def compare_segmentation_to_raw_image(
         missed_structure_count=missed_count,
         missed_structure_total_voxels=missed_voxels,
         missed_structure_total_volume_um3=missed_voxels * voxel_volume_um3,
+        stain=stain,
     )
 
 
@@ -290,8 +356,13 @@ def format_segmentation_raw_comparison_report(
     ``format_*_report`` functions -- meant to be appended after
     :func:`haemolynx.preprocessing.segmentation_quality.format_segmentation_quality_report`'s
     own output, not to replace it."""
+    read_as = (
+        "an endothelial (wall) stain: its vessels are the walls and what they enclose"
+        if comparison.stain == ENDOTHELIAL
+        else "a plasma (luminal) stain: its vessels are what it lights"
+    )
     lines = [
-        f"Raw-image cross-check (Otsu threshold {comparison.raw_threshold:.3g}):",
+        f"Raw-image cross-check (Otsu threshold {comparison.raw_threshold:.3g}; read as {read_as}):",
         f"  agreement (IoU):    {comparison.agreement_iou * 100:.0f}%",
         f"  added voxels:       {comparison.added_voxel_count} "
         f"({comparison.added_fraction * 100:.1f}% of the segmented volume has no raw support)",

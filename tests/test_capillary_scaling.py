@@ -186,7 +186,7 @@ def test_capillary_dilation_sweep_scales_only_capillaries(tmp_path: Path):
         "diameter_by_branch_order": dict(DIAMETERS),
         "outlet_p_bc": 1000.0,
         "inlet_p_bc": 4500.0,
-        "use_fwhm_edge_diameters": True,
+        "measure_diameters_from_raw_image": True,
         "viscosity_law": "constant",
         "haematocrit": 0.45,
         "diameter_basis": "plasma_column",
@@ -229,7 +229,7 @@ def test_pressure_and_capillary_sweep_varies_both_axes(tmp_path: Path):
     settings = {
         "diameter_by_branch_order": dict(DIAMETERS),
         "outlet_p_bc": 1000.0,
-        "use_fwhm_edge_diameters": True,
+        "measure_diameters_from_raw_image": True,
         "viscosity_law": "constant",
         "haematocrit": 0.45,
         "diameter_basis": "plasma_column",

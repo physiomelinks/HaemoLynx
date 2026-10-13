@@ -366,7 +366,7 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     ),
     "trace_source": (
         "What Add vessel traces each leg through: the segmented mask, or the "
-        "raw data (FWHM's image, or the Raw data file on the Input tab)"
+        "raw data (the raw image on the Input tab)"
     ),
     "branch_ids": (
         "The branchIDs to delete, as the vessel hover shows them, separated "
@@ -423,15 +423,6 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "here, after Haemodynamics, when Mid-run postprocessing (1. Input) is on"
     ),
 }
-
-#: Diameters tab — the one choice standing for use_fwhm_edge_diameters and
-#: use_endothelial_diameters, which cannot both be on.
-DIAMETER_SOURCE_TOOLTIP = (
-    "Where each vessel's diameter is measured first: FWHM across the plasma "
-    "label in the raw image, the lumen inside an endothelial stain's wall, or "
-    "neither; a vessel with no measurement falls back to the mask estimate if "
-    "it is on, then the diameter table"
-)
 
 #: Every tab — the button that shows or hides the less common settings
 #: belonging to the row above it.

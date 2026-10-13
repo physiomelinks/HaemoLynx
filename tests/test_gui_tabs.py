@@ -160,7 +160,6 @@ def test_the_haemodynamics_still_gets_its_whole_section():
         "do_pericyte_construction",
         "use_pericyte_mask_constriction",
         "viscosity_law",
-        "diameter_basis",
         "haematocrit",
         "diameter_by_branch_order",
         "pericyte_constriction_factor",
@@ -406,15 +405,37 @@ def test_a_tab_carries_the_rows_for_its_settings():
     }
 
 
-def test_diameter_basis_stays_on_the_diameters_tab():
-    """Which diameter a segmented vessel measures is a dataset property, not
-    a choice of blood model -- unlike viscosity_law/haematocrit, it stays
-    with the baseline diameter table."""
+def test_the_raw_image_and_its_stain_are_on_the_input_tab():
+    """What the raw image stains is a property of the dataset, set once with
+    the image on Input; the Diameters tab only says whether to measure from
+    it, and the stain chooses how."""
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
-    shown = {field.name for field in tabs["5. Diameters"].fields}
-    assert "diameter_basis" in shown
-    assert "viscosity_law" not in shown
-    assert "haematocrit" not in shown
+    on_input = {field.name for field in tabs["1. Input"].fields}
+    on_diameters = {field.name for field in tabs["5. Diameters"].fields}
+    for name in ("raw_image_path", "raw_image_channel", "raw_image_stain"):
+        assert name in on_input, name
+        assert name not in on_diameters, name
+    assert "measure_diameters_from_raw_image" in on_diameters
+    assert "diameter_basis" not in on_diameters
+    assert "viscosity_law" not in on_diameters
+    assert "haematocrit" not in on_diameters
+
+
+def test_the_segmentation_source_sits_with_the_segmented_image_on_input():
+    """What the segmented vessels are -- a plasma column or the wall, which
+    decides the form of the viscosity law every diameter the segmentation
+    gave is read through -- is a property of the dataset, set once on Input
+    right under the segmented image, not a Diameters or Haemodynamics knob."""
+    from haemolynx.gui.layout import TAB_BOXES
+
+    tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
+    on_input = [field.name for field in tabs["1. Input"].fields]
+    assert "segmentation_source" in on_input
+    assert on_input.index("input_path") < on_input.index("segmentation_source") < on_input.index("raw_image_path")
+    for title in ("5. Diameters", "6. Haemodynamics"):
+        assert "segmentation_source" not in {field.name for field in tabs[title].fields}, title
+    (input_box, *_rest) = TAB_BOXES["segment"]
+    assert input_box.names.index("segmentation_source") == input_box.names.index("input_path") + 1
 
 
 def test_legacy_and_comparison_settings_are_not_on_the_diameters_tab():
@@ -577,7 +598,7 @@ def test_input_ilastik_fields_declare_hide_when_unmet():
 
     assert not fields["use_ilastik_segmentation"].hide_when_unmet
     assert fields["input_path"].hide_when_unmet
-    assert fields["ilastik_unsegmented_image_path"].hide_when_unmet
+    assert not fields["raw_image_path"].hide_when_unmet
     assert fields["ilastik_classifier_path"].hide_when_unmet
     assert fields["ilastik_executable"].hide_when_unmet
     assert fields["ilastik_output_dir"].hide_when_unmet
@@ -586,7 +607,7 @@ def test_input_ilastik_fields_declare_hide_when_unmet():
 
     off = {"use_ilastik_segmentation": False}
     assert fields["input_path"].is_visible(off)
-    assert not fields["ilastik_unsegmented_image_path"].is_visible(off)
+    assert fields["raw_image_path"].is_visible(off)
     assert not fields["ilastik_classifier_path"].is_visible(off)
     assert not fields["ilastik_executable"].is_visible(off)
     assert not fields["ilastik_output_dir"].is_visible(off)
@@ -595,7 +616,7 @@ def test_input_ilastik_fields_declare_hide_when_unmet():
 
     on = {"use_ilastik_segmentation": True}
     assert not fields["input_path"].is_visible(on)
-    assert fields["ilastik_unsegmented_image_path"].is_visible(on)
+    assert fields["raw_image_path"].is_visible(on)
     assert fields["ilastik_classifier_path"].is_visible(on)
     assert fields["ilastik_executable"].is_visible(on)
     assert fields["ilastik_output_dir"].is_visible(on)
@@ -791,19 +812,19 @@ def test_diameter_fields_on_diameters_declare_hide_when_unmet():
             assert SCHEMA[field.name].requires == ("!all_diams_const",), field.name
             assert not field.is_visible({"all_diams_const": True}), field.name
             assert field.is_visible({"all_diams_const": False}), field.name
-        elif field.name == "use_fwhm_edge_diameters":
+        elif field.name == "measure_diameters_from_raw_image":
             assert not field.is_visible({"run_haemodynamics": False}), field.name
             assert field.is_visible({"run_haemodynamics": True}), field.name
         elif field.name == "do_fwhm_measurement":
             assert not field.is_visible(
-                {"run_haemodynamics": True, "use_fwhm_edge_diameters": False}
+                {"run_haemodynamics": True, "measure_diameters_from_raw_image": False}
             ), field.name
             assert field.is_visible(
-                {"run_haemodynamics": True, "use_fwhm_edge_diameters": True}
+                {"run_haemodynamics": True, "measure_diameters_from_raw_image": True}
             ), field.name
         elif field.name.startswith("fwhm_"):
             assert not field.is_visible(
-                {"run_haemodynamics": True, "use_fwhm_edge_diameters": False}
+                {"run_haemodynamics": True, "measure_diameters_from_raw_image": False}
             ), field.name
         elif "run_haemodynamics" in field.enabled_by:
             assert not field.is_visible({"run_haemodynamics": False}), field.name

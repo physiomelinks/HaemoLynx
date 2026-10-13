@@ -14,7 +14,7 @@ did you measure**, and getting it wrong is a silent factor of five.
     stain, a fluorescent-dextran column, anything that images the lumen the
     blood is in. This is what HaemoLynx's own imaging produces.
 
-``pries`` with ``diameter_basis="anatomical"``
+``pries`` with ``diameter_basis="endothelial"`` (once ``"anatomical"``)
     Pries et al.'s *in vivo* law, at the diameter as measured. Correct when the
     diameter runs wall to wall -- brightfield intravital microscopy, a cast, an
     endothelial stain -- and therefore includes the endothelial surface layer,
@@ -46,6 +46,8 @@ both on the graph.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
+from typing import Any
 
 import numpy as np
 
@@ -53,8 +55,36 @@ import numpy as np
 VISCOSITY_LAWS: tuple[str, ...] = ("pries", "capillary_power_law", "constant")
 
 #: What a measured diameter means. `plasma_column` is the channel the fluid
-#: occupies; `anatomical` runs wall to wall and so includes the surface layer.
-DIAMETER_BASES: tuple[str, ...] = ("plasma_column", "anatomical")
+#: occupies, as a luminal (plasma) stain images it; `endothelial` runs wall to
+#: wall, as an endothelial stain images it, and so includes the surface layer.
+DIAMETER_BASES: tuple[str, ...] = ("plasma_column", "endothelial")
+#: Former names of a basis: graphs and runs saved before still read.
+DIAMETER_BASIS_ALIASES: dict[str, str] = {"anatomical": "endothelial"}
+
+
+def normalise_diameter_basis(basis: str) -> str:
+    """*basis* as :data:`DIAMETER_BASES` names it (``anatomical`` was the
+    wall-to-wall basis's former name); anything else is returned as given."""
+    return DIAMETER_BASIS_ALIASES.get(basis, basis) if isinstance(basis, str) else basis
+
+
+#: The Input tab's setting that says what the segmented vessels are, and so
+#: what a diameter taken from the segmentation measures: the run's basis.
+SEGMENTATION_SOURCE_SETTING = "segmentation_source"
+
+
+def run_diameter_basis(settings: Mapping[str, Any]) -> str:
+    """The run's diameter basis from *settings*: what a diameter the
+    segmentation gave measures, which every diameter not read from the raw
+    image is on. ``segmentation_source`` (the Input tab's choice) when it is
+    there, else ``diameter_basis`` (an apply config's diameters section, or a
+    run written before the choice moved to the Input tab), else plasma_column
+    -- the mask of a plasma label. A former spelling reads as the current."""
+    for key in (SEGMENTATION_SOURCE_SETTING, "diameter_basis"):
+        value = settings.get(key)
+        if value is not None:
+            return normalise_diameter_basis(value)
+    return "plasma_column"
 
 # --- the capillary power law ------------------------------------------------
 #
@@ -193,9 +223,9 @@ def pries_in_vivo_viscosity(
             f"Diameter must exceed {PRIES_SINGULARITY_UM} um for the Pries in "
             f"vivo law -- the endothelial surface layer term is singular "
             f"there -- got {diameter} um. Fix: this vessel is narrower than "
-            "the surface layer itself, so an anatomical diameter cannot be "
-            "right; check the diameter, or use diameter_basis='plasma_column' "
-            "if it is already the channel."
+            "the surface layer itself, so a wall-to-wall (endothelial) diameter "
+            "cannot be right; check the diameter, or the raw image's stain "
+            "(raw_image_stain) if it is a plasma label."
         )
     d = float(diameter)
     mu45, haematocrit_factor = _pries_relative_terms(d, haematocrit)
@@ -227,16 +257,18 @@ def viscosity_for(
     """Apparent blood viscosity in Pa.s, by the named law.
 
     ``diameter_basis`` says what *diameter* is, and only ``pries`` reads it:
-    ``plasma_column`` for the channel the fluid occupies, ``anatomical`` for a
-    wall-to-wall measurement that includes the endothelial surface layer. The
-    two differ by about five times in a capillary, so this is not a detail.
+    ``plasma_column`` for the channel the fluid occupies, ``endothelial`` (once
+    ``anatomical``) for a wall-to-wall measurement that includes the
+    endothelial surface layer. The two differ by about five times in a
+    capillary, so this is not a detail.
     """
     if diameter <= 0:
         raise ValueError(f"Diameter must be positive, got {diameter} um.")
+    diameter_basis = normalise_diameter_basis(diameter_basis)
     if law == "pries":
         if diameter_basis == "plasma_column":
             return pries_in_vitro_viscosity(diameter, haematocrit)
-        if diameter_basis == "anatomical":
+        if diameter_basis == "endothelial":
             return pries_in_vivo_viscosity(diameter, haematocrit)
         raise ValueError(
             f"Unknown diameter_basis {diameter_basis!r}. Fix: choose one of "
@@ -276,6 +308,7 @@ def describe_law(
     """
     low, high = validity_range_um(law)
     span = f"{low:g}-{high:g} um" if np.isfinite(high) else "any diameter"
+    diameter_basis = normalise_diameter_basis(diameter_basis)
     if law == "pries":
         form = "in vitro" if diameter_basis == "plasma_column" else "in vivo"
         return (

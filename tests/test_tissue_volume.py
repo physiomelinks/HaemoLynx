@@ -506,14 +506,14 @@ def test_a_memory_mapped_load_is_measured_and_its_file_released(tmp_path):
 # --- which raw image, and preflight -------------------------------------------
 
 
-def test_the_tissue_shares_the_fwhm_raw_image_and_channel_when_it_names_none():
-    settings = {"fwhm_raw_tiff_path": "raw.tif", "fwhm_raw_channel": 1}
+def test_the_tissue_shares_the_runs_raw_image_and_channel_when_it_names_none():
+    settings = {"raw_image_path": "raw.tif", "raw_image_channel": 1}
     assert tissue_raw_image(settings) == (
-        "raw.tif", 1, "fwhm_raw_tiff_path", "fwhm_raw_channel"
+        "raw.tif", 1, "raw_image_path", "raw_image_channel"
     )
     # Another channel of the same file.
     assert tissue_raw_image({**settings, "tissue_raw_channel": 2}) == (
-        "raw.tif", 2, "fwhm_raw_tiff_path", "tissue_raw_channel"
+        "raw.tif", 2, "raw_image_path", "tissue_raw_channel"
     )
     # Its own image wins, with its own channel.
     assert tissue_raw_image({**settings, "tissue_raw_tiff_path": "tissue.tif"}) == (
@@ -528,12 +528,12 @@ def test_preflight_refuses_a_tissue_measurement_with_no_raw_image():
     assert not check_tissue_volume_image({"measure_tissue_volume": False}).errors
 
 
-def test_preflight_refuses_a_missing_fwhm_image_the_tissue_would_share(tmp_path):
-    report = check_tissue_volume_image(
-        {"measure_tissue_volume": True, "fwhm_raw_tiff_path": str(tmp_path / "gone.tif")}
-    )
-    assert len(report.errors) == 1
-    assert "gone.tif" in report.errors[0]
+def test_preflight_refuses_a_missing_raw_image_the_tissue_would_share(tmp_path):
+    """The raw image's own must_exist reports it, whatever reads it."""
+    settings = {setting.name: setting.default for setting in SCHEMA}
+    settings.update(measure_tissue_volume=True, raw_image_path=tmp_path / "gone.tif")
+    errors = preflight(settings, SCHEMA).errors
+    assert sum("gone.tif" in error for error in errors) == 1
 
 
 def test_preflight_asks_for_a_channel_of_a_multi_channel_tissue_image(tmp_path):

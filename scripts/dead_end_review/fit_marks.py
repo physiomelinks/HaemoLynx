@@ -20,11 +20,12 @@ from pathlib import Path
 import numpy as np
 
 #: Which marks each grid's rule separates, as (positive, negative).
-QUESTIONS = {"G1": ("X", "S"), "G2": ("F", "I"), "G3": ("J", "N")}
+QUESTIONS = {"G1": ("X", "S"), "G2": ("F", "I"), "G3": ("J", "N"), "G4": ("N", "V")}
 MEANING = {
     "G1": "X = not a vessel end (remove) against S = a real blind end",
     "G2": "F = leaves the image against I = ends inside it",
     "G3": "J = join (same vessel) against N = not the same vessel",
+    "G4": "N = not a vessel (remove) against V = a vessel (P, partly, reported apart)",
 }
 
 
@@ -114,16 +115,26 @@ def main(argv=None) -> int:
     parser.add_argument("--mask", required=True)
     parser.add_argument("--raw")
     parser.add_argument("--voxel-size-zyx", type=float, nargs=3, required=True)
+    parser.add_argument("--grids", nargs="*", help="only these grids (each grid's keys name nodes of the graph it was built from)")
     args = parser.parse_args(argv)
     import tifffile
 
     review = Path(args.review)
     G = pickle.load(open(args.graph, "rb"))
-    mask = np.load(args.mask).astype(bool)
+    if args.mask.endswith(".npy"):
+        mask = np.load(args.mask).astype(bool)
+    else:
+        from haemolynx.io.load import _to_binary_volume_for_skeletonization
+
+        mask = np.asarray(_to_binary_volume_for_skeletonization(tifffile.imread(args.mask)), dtype=bool)
     raw = tifffile.imread(args.raw).astype(np.float32) if args.raw else None
     vs = tuple(args.voxel_size_zyx)
     report = ["# Dead-end marks: the rules fitted", ""]
     for grid, (positive, negative) in QUESTIONS.items():
+        if args.grids and grid not in args.grids:
+            continue
+        if not (review / f"{grid}_key.csv").exists() or not (review / f"marks_{grid}").exists():
+            continue
         rows = list(csv.DictReader(open(review / f"{grid}_key.csv", encoding="utf-8")))
         marks = read_marks(review / f"marks_{grid}")
         extras = extra_measures(G, rows, mask, raw, vs)
@@ -131,7 +142,8 @@ def main(argv=None) -> int:
         for row in rows:
             mark = marks.get(row["id"], {})
             verdict = mark.get("verdict")
-            table.append({**row, **extras.get(row["id"], {}), "mark": verdict, "note": mark.get("note", "")})
+            table.append({**row, **extras.get(row["id"], {}), "mark": verdict, "note": mark.get("note", ""),
+                          "evidence": ";".join(mark.get("evidence") or [])})
         keys = list(dict.fromkeys(k for r in table for k in r))
         with open(review / f"{grid}_marked.csv", "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=keys)
@@ -166,7 +178,8 @@ def main(argv=None) -> int:
             report.append(f"| {key} | {loo}/{fitted['n']} | {rule} | {fitted['fit_hits']}/{fitted['n']} |")
         report.append("")
     text = "\n".join(report)
-    (review / "FIT.md").write_text(text + "\n", encoding="utf-8")
+    name = "FIT.md" if not args.grids else f"FIT_{'_'.join(args.grids)}.md"
+    (review / name).write_text(text + "\n", encoding="utf-8")
     print(text)
     return 0
 

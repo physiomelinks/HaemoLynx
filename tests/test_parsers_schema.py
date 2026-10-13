@@ -453,3 +453,55 @@ def test_a_setting_retired_outright_still_loads_and_is_dropped(caplog):
         resolved = schema.validate({"workers": 8, "cleanup": False})
     assert resolved == {"cleanup": False}
     assert any("'workers' is retired" in r.message and "no longer read" in r.message for r in caplog.records)
+
+
+# --- retired settings that move together ------------------------------------------
+
+
+def _image_settings() -> list[Setting]:
+    """One image path and channel that took over two retired pairs: the
+    pair in use moves across whole, never one half of each."""
+
+    def migrate(values):
+        for path, channel in (("used_path", "used_channel"), ("spare_path", "spare_channel")):
+            if values.get(path):
+                return {"image": values[path], "channel": values.get(channel)}
+        return {}
+
+    return [
+        Setting("image", "path", None, "The image", "S",
+                migrates=("used_path", "used_channel", "spare_path", "spare_channel"), migrate=migrate),
+        Setting("channel", "int", None, "Its channel", "S"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "values, image, channel",
+    [
+        ({"used_path": "a.tif", "used_channel": 1, "spare_path": "b.tif", "spare_channel": 0}, "a.tif", 1),
+        # The first pair unset: the second moves across with its own channel.
+        ({"used_path": None, "used_channel": 3, "spare_path": "b.tif", "spare_channel": 0}, "b.tif", 0),
+        # A value of the new setting's own is not overridden.
+        ({"used_path": "a.tif", "used_channel": 1, "image": "c.tif"}, "c.tif", 1),
+    ],
+)
+def test_retired_settings_that_move_together_are_read_by_one_function(values, image, channel):
+    resolved = Schema(_image_settings()).validate(values)
+    assert str(resolved["image"]).endswith(image)
+    assert resolved["channel"] == channel
+    assert not {"used_path", "used_channel", "spare_path", "spare_channel"} & set(resolved)
+
+
+def test_a_migration_needs_both_halves_and_its_names_retired_once():
+    with pytest.raises(ConfigError, match="both migrates"):
+        Setting("image", "path", None, "The image", "S", migrates=("old",))
+    with pytest.raises(ConfigError, match="still in the schema"):
+        Schema([*_image_settings(), Setting("used_path", "path", None, "Old", "S")])
+    with pytest.raises(ConfigError, match="replaced by both"):
+        Schema([*_image_settings(), Setting("x", "path", None, "X", "S", replaces={"used_path": {}})])
+
+
+def test_a_migration_survives_building_a_schema_from_another_schemas_settings():
+    """How the examples extend the pipeline's schema."""
+    schema = Schema(list(Schema(_image_settings())) + [Setting("n", "int", 1, "A number", "S")])
+    assert str(schema.validate({"spare_path": "b.tif"})["image"]).endswith("b.tif")

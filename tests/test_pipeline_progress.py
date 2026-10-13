@@ -771,7 +771,7 @@ def test_a_resume_reuses_ilastiks_existing_output_instead_of_segmenting_again(
     produced.write_bytes(b"")
     settings = {
         "use_ilastik_segmentation": True,
-        "ilastik_unsegmented_image_path": tmp_path / "raw.tif",
+        "raw_image_path": tmp_path / "raw.tif",
         "ilastik_output_dir": tmp_path,
         "ilastik_output_suffix": ".h5",
         "input_path": None,

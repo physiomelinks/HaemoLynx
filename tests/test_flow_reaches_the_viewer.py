@@ -172,7 +172,12 @@ def test_the_drawn_flow_is_the_graphs_flow(run_in_a_viewer):
 
     Each vessel is drawn as several segments, so its value is repeated across
     them; check the set of values on the layer against the set on the graph.
+    The layer blanks only flows that are no answer at all
+    (``graph.flow_is_undefined``: no inlet and outlet reach them); a vessel
+    behind a dead end keeps its zero flow (PLAN_dead_ends.md, D4).
     """
+    from haemolynx.graph import flow_is_undefined
+
     viewer, _results, graph, _stages, _failures = run_in_a_viewer
     drawn = np.asarray(viewer.layers[VESSELS].features["flow_abs"], dtype=float)
 
@@ -182,7 +187,7 @@ def test_the_drawn_flow_is_the_graphs_flow(run_in_a_viewer):
         [
             float(d["flow_abs"])
             for *_ids, d in edges
-            if d.get("flow_abs") is not None and d.get("flow_solved") is not False
+            if d.get("flow_abs") is not None and not flow_is_undefined(d)
         ]
     )
 

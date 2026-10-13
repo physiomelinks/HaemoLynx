@@ -54,7 +54,7 @@ def _base_settings(**extra) -> dict:
         "constriction_by_branch_order": {order: 0.5 for order in DIAMETERS},
         "outlet_p_bc": 1000.0,
         "inlet_p_bc": 4500.0,
-        "use_fwhm_edge_diameters": False,
+        "measure_diameters_from_raw_image": False,
         "viscosity_law": "constant",
         "haematocrit": 0.45,
         "diameter_basis": "plasma_column",

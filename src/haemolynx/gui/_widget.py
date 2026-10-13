@@ -36,15 +36,6 @@ from haemolynx.gui.form import (
     prerequisite_chain,
     shared_ilastik_host,
 )
-from haemolynx.gui.diameter_source import (
-    BOTH_ON_NOTE,
-    DIAMETER_SOURCES,
-    DIAMETER_SOURCE_LABEL,
-    DIAMETER_SOURCE_SETTINGS,
-    both_on,
-    settings_for,
-    source_from,
-)
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.gui.layers import input_for_layer, voxel_size_xyz_from_scale
 from haemolynx.gui.layout import (
@@ -6027,10 +6018,10 @@ def _names_with_prerequisite_closure(schema: Schema, names: Sequence[str]) -> tu
 def _load_raw_reference_image_or_none(
     local_settings: dict[str, Any], *, expected_shape: tuple[int, ...]
 ) -> tuple["np.ndarray | None", "str | None"]:
-    """Load the optional raw reference image from ``fwhm_raw_tiff_path``.
+    """Load the optional raw reference image from ``raw_image_path``.
 
-    Shared by "Check segmented image" and "Optimise settings" -- one setting
-    feeds both (see the "Raw data file" row's own docstring) -- so a fix to
+    Shared by "Check segmented image" and "Optimise settings" -- the Input
+    tab's raw image feeds both, as it feeds the rest of the run -- so a fix to
     how that load degrades only has to be made once, and both callers agree
     on what "the raw file didn't work out" means. Never raises: a missing
     setting, an unreadable file, or a raw image whose shape does not match
@@ -6044,12 +6035,12 @@ def _load_raw_reference_image_or_none(
     from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
     from haemolynx.io import resolve_image_path_with_optional_zip
 
-    raw_path = local_settings.get("fwhm_raw_tiff_path")
+    raw_path = local_settings.get("raw_image_path")
     if not raw_path:
         return None, None
     try:
         raw_path_resolved = resolve_image_path_with_optional_zip(Path(raw_path))
-        channel = local_settings.get("fwhm_raw_channel")
+        channel = local_settings.get("raw_image_channel")
         raw_image = load_single_channel_tiff_volume(
             raw_path_resolved,
             axis_order=local_settings["image_axis_order"],
@@ -6191,8 +6182,8 @@ def _run_optimisation_in_background(
         raw_mask = _to_binary_volume_for_skeletonization(image)
         starting_values = {name: local_settings[name] for name in OPTIMISE_SETTING_NAMES}
 
-        # Optional: same shared fwhm_raw_tiff_path the "Raw data file" row
-        # feeds "Check segmented image" with -- when present, guards the
+        # Optional: the Input tab's raw image, which "Check segmented image"
+        # reads too -- when present, guards the
         # segmentation_cleanup group against inventing foreground the raw
         # signal does not support. Never fatal (see
         # `_load_raw_reference_image_or_none`): a missing/unreadable/
@@ -6201,6 +6192,15 @@ def _run_optimisation_in_background(
         raw_image, raw_image_error = _load_raw_reference_image_or_none(
             local_settings, expected_shape=raw_mask.shape
         )
+        raw_image_stain = "plasma_column"
+        if raw_image is not None:
+            from haemolynx.io import voxel_size_zyx_from_xyz
+            from haemolynx.preprocessing import resolve_stain
+
+            raw_image_stain, _reading = resolve_stain(
+                local_settings.get("raw_image_stain", "auto"), raw_image, raw_mask,
+                voxel_size_zyx_from_xyz(voxel_size_xyz),
+            )
 
         result = optimise_skeleton_and_graph_settings(
             raw_mask,
@@ -6210,6 +6210,7 @@ def _run_optimisation_in_background(
             downsample_factor=downsample_factor,
             groups=groups,
             raw_image=raw_image,
+            raw_image_stain=raw_image_stain,
             max_passes=max_passes,
         )
         return result, local_settings["input_path"], raw_image_error
@@ -6348,7 +6349,7 @@ def _run_fwhm_optimisation_in_background(
             for name, value in local_settings.items()
             if name.startswith("fwhm_") or name in _FWHM_OPTIMISER_READS
         }
-        raw_path = local_settings["fwhm_raw_tiff_path"]
+        raw_path = local_settings["raw_image_path"]
         result = optimise_fwhm_settings(
             graph,
             raw_tiff_path=raw_path,
@@ -6357,7 +6358,7 @@ def _run_fwhm_optimisation_in_background(
             progress=watched,
             groups=groups,
             axis_order=local_settings["image_axis_order"],
-            raw_channel=local_settings.get("fwhm_raw_channel"),
+            raw_channel=local_settings.get("raw_image_channel"),
             vessel_mask=vessel_mask,
             sample_edge_count=sample_edge_count,
             max_passes=max_passes,
@@ -6383,8 +6384,8 @@ def _run_fwhm_optimisation_in_background(
         out_path = Path(raw_path).parent / config_filename(raw_path)
         # Same reasoning as `_run_optimisation_in_background`'s own
         # `documented_schema`: FWHM_SETTING_NAMES are quality knobs only, so
-        # the closure pulls in their own prerequisites (use_fwhm_edge_diameters,
-        # fwhm_raw_tiff_path, ...) for a config that is self-consistent on
+        # the closure pulls in their own prerequisites
+        # (measure_diameters_from_raw_image, ...) for a config that is self-consistent on
         # its own rather than one that silently depends on values not shown.
         documented_schema = Schema(
             list(schema.subset(_names_with_prerequisite_closure(schema, FWHM_SETTING_NAMES))),
@@ -6460,6 +6461,7 @@ def _run_segmentation_quality_check_in_background(
         compare_segmentation_to_raw_image,
         format_segmentation_quality_report,
         format_segmentation_raw_comparison_report,
+        resolve_stain,
         score_segmented_mask,
     )
 
@@ -6520,24 +6522,30 @@ def _run_segmentation_quality_check_in_background(
             )
 
         # Optional: cross-check against the raw (unsegmented) image, when
-        # one is configured -- shares fwhm_raw_tiff_path with FWHM diameter
-        # measurement (see the "Raw data file" row next to this button).
+        # one is configured -- the Input tab's raw image, the run's one.
         # Never fatal: a missing/unreadable/mismatched-shape raw file
         # degrades to a report note, not a failed check -- the mask-only
         # score above is still useful on its own.
         raw_comparison = None
+        stain_reading = None
         raw_image, raw_comparison_error = _load_raw_reference_image_or_none(
             local_settings, expected_shape=mask.shape
         )
         if raw_image is not None:
             try:
+                # Compared by what the raw image stains: the lumen itself, or
+                # the wall round it (raw_image_stain, read from the image when
+                # auto).
+                stain, stain_reading = resolve_stain(
+                    local_settings.get("raw_image_stain", "auto"), raw_image, mask, voxel_size_zyx
+                )
                 raw_comparison = compare_segmentation_to_raw_image(
-                    mask, raw_image, voxel_size_zyx=voxel_size_zyx
+                    mask, raw_image, voxel_size_zyx=voxel_size_zyx, stain=stain
                 )
             except Exception as error:  # noqa: BLE001 - degrade to a report note
                 raw_comparison_error = f"{type(error).__name__}: {error}"
 
-        return score, after_cleanup, raw_comparison, raw_comparison_error
+        return score, after_cleanup, raw_comparison, raw_comparison_error, stain_reading
 
     def finished(payload) -> None:
         if not still_ours():
@@ -6547,10 +6555,12 @@ def _run_segmentation_quality_check_in_background(
         if cancel_flag["cancelled"]:
             report.value = FINISHED_FIRST
             return
-        score, after_cleanup, raw_comparison, raw_comparison_error = payload
+        score, after_cleanup, raw_comparison, raw_comparison_error, stain_reading = payload
         text = format_segmentation_quality_report(score, after_cleanup=after_cleanup)
         if raw_comparison is not None:
             text += "\n\n" + format_segmentation_raw_comparison_report(raw_comparison)
+            if stain_reading is not None:
+                text += f"\n  raw image stain (auto): {stain_reading.describe()}"
         elif raw_comparison_error is not None:
             text += f"\n\nRaw-image cross-check skipped: {raw_comparison_error}"
         report.value = text
@@ -10977,17 +10987,17 @@ def _post_processing_controls(
         return state.routing
 
     def load_raw():
-        """The run's Raw data file: ``(volume, None)``, or ``(None, why not)``."""
+        """The run's raw image: ``(volume, None)``, or ``(None, why not)``."""
         from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
         from haemolynx.io import resolve_image_path_with_optional_zip
 
         local = read_settings() or {}
-        path = local.get("fwhm_raw_tiff_path")
+        path = local.get("raw_image_path")
         if not path:
-            return None, "no Raw data file is set on the Input tab"
+            return None, "no raw image is set on the Input tab"
         set_edit_status("Reading the raw data file to trace new vessels through...")
         _process_pending_qt_events()
-        channel = local.get("fwhm_raw_channel")
+        channel = local.get("raw_image_channel")
         try:
             raw = load_single_channel_tiff_volume(
                 resolve_image_path_with_optional_zip(Path(path)),
@@ -11014,7 +11024,7 @@ def _post_processing_controls(
 
     def raw_routing():
         """The raw data and its cost field -- FWHM's own copy when it is in the
-        viewer, else the Raw data file, read once -- and why not, if not."""
+        viewer, else the run's raw image, read once -- and why not, if not."""
         fwhm = layer(FWHM_RAW)
         if fwhm is not None:
             data = fwhm.data
@@ -11673,29 +11683,6 @@ def settings_widget(napari_viewer=None):
             rows[name].visible = False
             orphan_holder.append(rows[name])
 
-    # FWHM and the endothelial measurement are alternatives, so the Diameters
-    # tab shows one "Diameter measurement" choice where their two checkboxes
-    # were (see haemolynx.gui.diameter_source). The checkboxes still hold the
-    # two settings a config file saves -- parked, never shown -- and the
-    # choice writes them.
-    diameter_source = ComboBox(
-        label=DIAMETER_SOURCE_LABEL,
-        choices=list(DIAMETER_SOURCES),
-        value=source_from({name: rows[name].value for name in DIAMETER_SOURCE_SETTINGS}),
-    )
-    from haemolynx.gui.chrome_tooltips import DIAMETER_SOURCE_TOOLTIP
-
-    diameter_source.tooltip = DIAMETER_SOURCE_TOOLTIP
-    diameter_source.native.setObjectName("haemolynx_diameter_source")
-    for name in DIAMETER_SOURCE_SETTINGS:
-        rows[name].visible = False
-        orphan_holder.append(rows[name])
-    #: The first checkbox's place takes the choice; the second's takes nothing.
-    diameter_source_places = {
-        DIAMETER_SOURCE_SETTINGS[0]: diameter_source,
-        DIAMETER_SOURCE_SETTINGS[1]: None,
-    }
-
     #: Stages that lay their own page out, keyed by the stage function they
     #: belong to rather than by the tab's title, so renaming a tab cannot
     #: silently drop them. Any future stage-specific page has a home here.
@@ -11743,7 +11730,7 @@ def settings_widget(napari_viewer=None):
     input_shared_ilastik_holder: Any = None
     #: Diameters-tab container, so "Optimise FWHM settings" (built further
     #: down, once its own click handler exists) can be inserted right after
-    #: the fwhm_raw_tiff_path row.
+    #: the measure_diameters_from_raw_image row.
     diameters_settings: Any = None
     #: Which tab currently parents the shared ilastik rows.
     shared_ilastik_placement: dict[str, str | None] = {"host": None}
@@ -11788,7 +11775,6 @@ def settings_widget(napari_viewer=None):
                 disclosures=advanced_disclosures,
                 group_boxes=section_group_boxes,
                 lead=[summary],
-                replacements=diameter_source_places,
             )
             if tab.stage.call == "segment":
                 input_boxes = containers
@@ -11902,14 +11888,6 @@ def settings_widget(napari_viewer=None):
                 continue
             if unchanged:
                 values[name] = original
-        if not values.get("use_fwhm_edge_diameters"):
-            # The Diameter measurement menu turns this off for every choice
-            # but FWHM, and hides the checkbox. Nothing reads the flag while
-            # FWHM is off, and a value other than the schema default would
-            # warn on every save and every run. The widget stays off; a run
-            # and a saved config see the default. A resumed run that still
-            # has FWHM selected reports the widget, including off.
-            values["do_fwhm_measurement"] = schema["do_fwhm_measurement"].default
         return values
 
     def use_layer(layer) -> None:
@@ -12021,20 +11999,20 @@ def settings_widget(napari_viewer=None):
                 widget.enabled = True
                 widget.tooltip = fields[name].help
                 continue
-            if name in orphaned_perturbation_rows or name in DIAMETER_SOURCE_SETTINGS:
+            if name in orphaned_perturbation_rows:
                 # Never parented as flat tab rows; typed editors clone their
-                # own widgets, and the Diameter measurement choice stands for
-                # the two diameter checkboxes. Do not reveal — visible + no
-                # parent is a window.
+                # own widgets. Do not reveal — visible + no parent is a
+                # window.
                 widget.visible = False
                 widget.enabled = True
                 widget.tooltip = fields[name].help
                 continue
             if name == "do_fwhm_measurement":
-                # The Diameter measurement choice turns this on for FWHM and
-                # off for the other two. The row stays in the layout so the
-                # decoy-check button and the raw-section fallback keep their
-                # place, but the checkbox itself is not shown.
+                # Turning on "Measure diameters from the raw image" turns
+                # this on (below); a resumed run may turn it off on its own,
+                # to keep diameters already measured. The row stays in the
+                # layout so the decoy-check button and the raw-section
+                # fallback keep their place, but the checkbox is not shown.
                 widget.visible = False
                 widget.enabled = True
                 widget.tooltip = fields[name].help
@@ -12080,9 +12058,6 @@ def settings_widget(napari_viewer=None):
         if perturbations is not None:
             perturbations.refresh_entries()
 
-        # The Diameter measurement choice shows while its settings apply.
-        diameter_source.visible = chain_met(DIAMETER_SOURCE_SETTINGS[0], values)
-
         # Large-vessel-network mode relabels the thick-vessel checkbox: once
         # both are on, "thick vessel skeletonisation" is no longer the
         # user-facing action -- turning large vessels into network members
@@ -12096,17 +12071,20 @@ def settings_widget(napari_viewer=None):
         # raw-value level) avoids showing the relabeled text for an
         # inconsistent stored config where the checkbox itself reads
         # unchecked.
-        # "Optimise FWHM settings" (below the master checkbox and input file
-        # line for FWHM): visible only while FWHM measurement is turned on --
-        # a deliberate difference from "Optimise settings" on the Input tab,
-        # which stays visible and only ever toggles `.enabled`. There is
-        # nothing for this one to search once use_fwhm_edge_diameters is off,
-        # so hiding it entirely (rather than greying it out) matches every
-        # other `hide_when_unmet` FWHM row right next to it.
+        # "Optimise FWHM settings" (below the measurement checkbox): visible
+        # only while FWHM could run -- diameters measured from the raw image,
+        # and its stain not set to endothelial -- a deliberate difference
+        # from "Optimise settings" on the Input tab, which stays visible and
+        # only ever toggles `.enabled`. Hiding it entirely (rather than
+        # greying it out) matches every other `hide_when_unmet` FWHM row
+        # right next to it.
+        fwhm_could_run = bool(values.get("measure_diameters_from_raw_image")) and (
+            values.get("raw_image_stain") != "endothelial"
+        )
         if optimise_fwhm_button is not None:
-            optimise_fwhm_button.visible = bool(values.get("use_fwhm_edge_diameters"))
+            optimise_fwhm_button.visible = fwhm_could_run
         if fwhm_optimise_box is not None:
-            fwhm_optimise_box.visible = bool(values.get("use_fwhm_edge_diameters"))
+            fwhm_optimise_box.visible = fwhm_could_run
 
         thick_vessel_row = rows.get("use_thick_vessel_skeletonisation")
         if thick_vessel_row is not None:
@@ -12126,77 +12104,6 @@ def settings_widget(napari_viewer=None):
     for widget in rows.values():
         widget.changed.connect(apply_prerequisites)
 
-    #: True while one side of the Diameter measurement choice is writing the
-    #: other, so the write does not echo back.
-    diameter_source_syncing = {"active": False}
-
-    def on_diameter_source_chosen(*_args) -> None:
-        """The choice -> its two settings."""
-        if diameter_source_syncing["active"]:
-            return
-        wanted = settings_for(str(diameter_source.value))
-        diameter_source_syncing["active"] = True
-        try:
-            # Off before on, so the two are never both on, even for a moment.
-            for name in sorted(wanted, key=lambda n: wanted[n]):
-                if rows[name].value != wanted[name]:
-                    rows[name].value = wanted[name]
-            # The same choice owns "Do FWHM measurement": on for FWHM, off
-            # otherwise. A resumed run may still turn it off on its own, to
-            # keep diameters already measured, without moving this choice.
-            measure = bool(wanted["use_fwhm_edge_diameters"])
-            if rows["do_fwhm_measurement"].value != measure:
-                rows["do_fwhm_measurement"].value = measure
-        finally:
-            diameter_source_syncing["active"] = False
-
-    def diameter_settings_now() -> dict[str, Any]:
-        return {name: rows[name].value for name in DIAMETER_SOURCE_SETTINGS}
-
-    def show_diameter_source() -> None:
-        chosen = source_from(diameter_settings_now())
-        if diameter_source.value != chosen:
-            diameter_source_syncing["active"] = True
-            try:
-                diameter_source.value = chosen
-            finally:
-                diameter_source_syncing["active"] = False
-
-    def settle_both_on() -> None:
-        """Both still on once the load is done: keep FWHM, and say so.
-
-        The one combination the choice cannot show, and a run refuses.
-        Checked once the event loop is back, not as each row is set: a
-        config switching from the endothelium to FWHM is loaded one setting
-        at a time, and passes through both on without meaning it.
-        """
-        if not both_on(diameter_settings_now()):
-            return
-        diameter_source_syncing["active"] = True
-        try:
-            rows[DIAMETER_SOURCE_SETTINGS[1]].value = False
-        finally:
-            diameter_source_syncing["active"] = False
-        report.value = BOTH_ON_NOTE
-        logger.warning(BOTH_ON_NOTE)
-        show_diameter_source()
-
-    def on_diameter_setting_changed(*_args) -> None:
-        """Its two settings -> the choice: a loaded config, or a test, set them."""
-        if diameter_source_syncing["active"]:
-            return
-        if both_on(diameter_settings_now()):
-            from qtpy.QtCore import QTimer
-
-            QTimer.singleShot(0, settle_both_on)
-        show_diameter_source()
-
-    diameter_source.changed.connect(on_diameter_source_chosen)
-    for name in DIAMETER_SOURCE_SETTINGS:
-        rows[name].changed.connect(on_diameter_setting_changed)
-    # The menu already reads "None", so measurement starts off with it.
-    on_diameter_source_chosen()
-
     #: User-facing values of the resume skip toggles before Revert turns them
     #: off. Restored by "Clear layers and state".
     skip_toggle_snapshot: dict[str, bool] = {}
@@ -12214,6 +12121,16 @@ def settings_widget(napari_viewer=None):
     for name in SKIP_FOR_RESUME:
         if name in rows:
             rows[name].changed.connect(snapshot_skip_toggles)
+
+    def measuring_turns_fwhm_measurement_on(*_args) -> None:
+        """"Do FWHM measurement" has no checkbox of its own, so measuring
+        from the raw image turns it on: left off by an old config or a
+        resume, FWHM would keep the diameters already on the graph."""
+        if rows["measure_diameters_from_raw_image"].value and not rows["do_fwhm_measurement"].value:
+            rows["do_fwhm_measurement"].value = True
+
+    if "measure_diameters_from_raw_image" in rows and "do_fwhm_measurement" in rows:
+        rows["measure_diameters_from_raw_image"].changed.connect(measuring_turns_fwhm_measurement_on)
 
     bars = ProgressBars()
     run_state = RunState(bars=bars)
@@ -12420,90 +12337,11 @@ def settings_widget(napari_viewer=None):
     check_image_button.tooltip = CHECK_SEGMENTED_IMAGE_TOOLTIP
     into_check_box(check_image_button, 0)
 
-    #: A mirror of the FWHM raw-image path (`fwhm_raw_tiff_path`), shown here
-    #: too so "Check segmented image" can cross-check the segmentation
-    #: against its own raw data without needing use_fwhm_edge_diameters on.
-    #: The Diameters-tab row for the same setting stays gated behind that
-    #: toggle (its own `requires`) -- a real pipeline run only needs the
-    #: file to exist when FWHM measurement itself is on -- but this mirror
-    #: is a separate widget, so it stays enabled regardless. Two-way synced
-    #: with rows["fwhm_raw_tiff_path"]: one underlying setting, editable
-    #: from either place, so a path entered here also feeds FWHM
-    #: measurement and vice versa.
-    raw_data_row = FileEdit(
-        mode="r",
-        value=rows["fwhm_raw_tiff_path"].value,
-        label="Raw data file (optional)",
-    )
-    raw_data_row.tooltip = (
-        "Optional raw (unsegmented) image of the same dataset. When set, "
-        "'Check segmented image' also cross-checks the segmentation against "
-        "it for added voxels, removed voxels, and whole missed structures. "
-        "Shares its value with fwhm_raw_tiff_path on the Diameters tab "
-        "(also used there for FWHM diameter measurement)."
-    )
-    into_check_box(raw_data_row, 0)
-
-    _raw_data_row_syncing = {"active": False}
-
-    def _sync_raw_data_row_from_primary(*_args) -> None:
-        if _raw_data_row_syncing["active"]:
-            return
-        _raw_data_row_syncing["active"] = True
-        try:
-            raw_data_row.value = rows["fwhm_raw_tiff_path"].value
-        finally:
-            _raw_data_row_syncing["active"] = False
-
-    def _sync_primary_from_raw_data_row(*_args) -> None:
-        if _raw_data_row_syncing["active"]:
-            return
-        _raw_data_row_syncing["active"] = True
-        try:
-            rows["fwhm_raw_tiff_path"].value = raw_data_row.value
-        finally:
-            _raw_data_row_syncing["active"] = False
-
-    raw_data_row.changed.connect(_sync_primary_from_raw_data_row)
-    rows["fwhm_raw_tiff_path"].changed.connect(_sync_raw_data_row_from_primary)
-
-    #: The raw file's channel, mirrored the same way: "Check segmented image"
-    #: reads fwhm_raw_channel with the file, and the Diameters-tab row for it
-    #: is hidden while FWHM is off.
-    raw_channel_row = _channel_combo_box_class()(
-        choices=channel_choices([], rows["fwhm_raw_channel"].value),
-        value=rows["fwhm_raw_channel"].value,
-        label="Raw data channel",
-    )
-    raw_channel_row.tooltip = (
-        "Which channel of a multi-channel raw data file to read, as Fiji names them. "
-        "Shares its value with fwhm_raw_channel on the Diameters tab."
-    )
-    into_check_box(raw_channel_row, 1)
-    _follow_image_channels(raw_channel_row, raw_data_row)
-    _raw_channel_syncing = {"active": False}
-
-    def _mirror_channel(source, target) -> None:
-        if _raw_channel_syncing["active"]:
-            return
-        _raw_channel_syncing["active"] = True
-        try:
-            target.value = source.value
-        finally:
-            _raw_channel_syncing["active"] = False
-
-    raw_channel_row.changed.connect(
-        lambda *_a: _mirror_channel(raw_channel_row, rows["fwhm_raw_channel"])
-    )
-    rows["fwhm_raw_channel"].changed.connect(
-        lambda *_a: _mirror_channel(rows["fwhm_raw_channel"], raw_channel_row)
-    )
-
     #: "Optimise FWHM settings": empirically choose the FWHM diameter-
     #: measurement settings from the current in-memory graph and its raw
     #: image -- the Diameters tab's own analogue of "Optimise settings" on
-    #: the Input tab. Placed right after the fwhm_raw_tiff_path row and
-    #: before the rest of the FWHM settings, per its own visibility rule
+    #: the Input tab. Placed right after the measure_diameters_from_raw_image
+    #: row and before the FWHM settings, per its own visibility rule
     #: (`apply_prerequisites`, above) rather than always shown: there is
     #: nothing to search until FWHM measurement itself is turned on.
     optimise_fwhm_button = PushButton(text="Optimise FWHM settings")
@@ -12560,9 +12398,9 @@ def settings_widget(napari_viewer=None):
         lambda *_args: setattr(fwhm_group_container, "visible", bool(fwhm_choose_groups.value))
     )
     if diameters_settings is not None:
-        raw_tiff_row_index = list(diameters_settings).index(rows["fwhm_raw_tiff_path"])
-        diameters_settings.insert(raw_tiff_row_index + 1, optimise_fwhm_button)
-        diameters_settings.insert(raw_tiff_row_index + 2, fwhm_optimise_box)
+        measure_row_index = list(diameters_settings).index(rows["measure_diameters_from_raw_image"])
+        diameters_settings.insert(measure_row_index + 1, optimise_fwhm_button)
+        diameters_settings.insert(measure_row_index + 2, fwhm_optimise_box)
     # OptimiseProgressBars.native is a plain Qt widget, not a magicgui one --
     # like the Input tab's own `optimise_bars`, it joins the shared bottom
     # chrome (below the tabs, added further down) rather than the magicgui
@@ -12579,10 +12417,10 @@ def settings_widget(napari_viewer=None):
             )
             return
         values = current_values()
-        raw_path = values.get("fwhm_raw_tiff_path")
+        raw_path = values.get("raw_image_path")
         if not raw_path or not Path(raw_path).is_file():
             report.value = (
-                "Choose a raw FWHM image first, then press Optimise FWHM settings."
+                "Choose the raw image on the Input tab first, then press Optimise FWHM settings."
             )
             return
         results = view.results
@@ -14291,8 +14129,9 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_optimise_fwhm_sample = fwhm_sample_dropdown
     panel._haemolynx_optimise_fwhm_passes = fwhm_passes_spinbox
     panel._haemolynx_check_image_button = check_image_button
-    panel._haemolynx_raw_data_row = raw_data_row
-    panel._haemolynx_raw_channel_row = raw_channel_row
+    # The Input tab's raw image rows: the schema's own, which every reader shares.
+    panel._haemolynx_raw_data_row = rows["raw_image_path"]
+    panel._haemolynx_raw_channel_row = rows["raw_image_channel"]
 
     def expand_advanced(expanded: bool = True) -> None:
         """Open (or close) every Advanced button on the panel."""
@@ -14303,7 +14142,6 @@ def settings_widget(napari_viewer=None):
                 editor.advanced.toggle(expanded)
 
     panel._haemolynx_advanced = advanced_disclosures
-    panel._haemolynx_diameter_source = diameter_source
     panel._haemolynx_expand_advanced = expand_advanced
     panel._haemolynx_shared_ilastik_block = shared_ilastik_block
     panel._haemolynx_input_boxes = input_boxes

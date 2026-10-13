@@ -1,6 +1,6 @@
 """Choosing one channel of a multi-channel image.
 
-A setting such as ``fwhm_raw_channel`` counts from 0; Fiji calls the same
+A setting such as ``raw_image_channel`` counts from 0; Fiji calls the same
 channels C1, C2, ... These tests pin what the panel lists for a file
 (:func:`haemolynx.io.tiff_channels` and :func:`haemolynx.gui.form.channel_choices`),
 what preflight refuses before a run starts, and that FWHM's raw image is
@@ -180,9 +180,9 @@ def test_every_channel_setting_is_a_drop_down_paired_with_its_image_setting():
 
 def _fwhm_settings(path, channel=None, **extra):
     return {
-        "use_fwhm_edge_diameters": True,
-        "fwhm_raw_tiff_path": str(path),
-        "fwhm_raw_channel": channel,
+        "measure_diameters_from_raw_image": True,
+        "raw_image_path": str(path),
+        "raw_image_channel": channel,
         **extra,
     }
 
@@ -195,7 +195,7 @@ def test_a_composite_with_no_channel_chosen_is_refused_naming_its_channels(tmp_p
 
     assert len(report.errors) == 1
     assert "C1 (red), C2 (green)" in report.errors[0]
-    assert "fwhm_raw_channel" in report.errors[0]
+    assert "raw_image_channel" in report.errors[0]
 
 
 def test_a_channel_the_composite_lacks_is_refused(tmp_path):
@@ -225,26 +225,36 @@ def test_a_valid_channel_passes(tmp_path):
     assert not check_image_channels(_fwhm_settings(path, channel=1)).errors
 
 
-def test_the_endothelial_image_is_checked_the_same_way(tmp_path):
+@pytest.mark.parametrize("stain", ["auto", "plasma_column", "endothelial"])
+def test_the_raw_image_is_checked_whatever_it_stains(tmp_path, stain):
     path = tmp_path / "composite.tif"
     _composite(path)
-    settings = {
-        "use_endothelial_diameters": True,
-        "endothelial_image_path": str(path),
-        "endothelial_channel": None,
-    }
 
-    report = check_image_channels(settings)
+    report = check_image_channels(_fwhm_settings(path, raw_image_stain=stain))
 
     assert len(report.errors) == 1
-    assert "endothelial_channel" in report.errors[0]
+    assert "raw_image_channel" in report.errors[0]
 
 
-def test_an_image_its_measurement_does_not_use_is_not_checked(tmp_path):
+def test_the_tissue_volume_reading_the_raw_image_checks_its_channel(tmp_path):
     path = tmp_path / "composite.tif"
     _composite(path)
 
-    settings = _fwhm_settings(path, use_fwhm_edge_diameters=False)
+    settings = _fwhm_settings(
+        path, measure_diameters_from_raw_image=False, measure_tissue_volume=True
+    )
+
+    assert any("raw_image_channel" in error for error in check_image_channels(settings).errors)
+
+
+def test_a_raw_image_only_ilastik_reads_needs_no_channel(tmp_path):
+    """ilastik segments the whole file, so a composite is fine for it."""
+    path = tmp_path / "composite.tif"
+    _composite(path)
+
+    settings = _fwhm_settings(
+        path, measure_diameters_from_raw_image=False, use_ilastik_segmentation=True
+    )
 
     assert not check_image_channels(settings).errors
 
@@ -260,7 +270,7 @@ def test_preflight_runs_the_channel_check(tmp_path):
 
     report = preflight(settings, schema)
 
-    assert any("fwhm_raw_channel" in error for error in report.errors)
+    assert any("raw_image_channel" in error for error in report.errors)
 
 
 # --- FWHM reads the chosen channel -------------------------------------------
@@ -335,3 +345,36 @@ def test_the_fwhm_measurement_forwards_its_channel_to_the_loader(tmp_path, monke
 
     assert loaded["channel"] == 1
     np.testing.assert_array_equal(loaded["values"], [200.0])
+
+
+# --- the raw image is optional -------------------------------------------------
+
+
+def test_a_run_without_a_raw_image_needs_none():
+    from haemolynx.pipeline.checks import check_raw_image
+
+    report = check_raw_image({"measure_diameters_from_raw_image": False})
+
+    assert report.ok and not report.warnings
+
+
+@pytest.mark.parametrize("user", ["use_ilastik_segmentation", "measure_diameters_from_raw_image"])
+def test_what_reads_the_raw_image_needs_one_set(user):
+    from haemolynx.pipeline.checks import check_raw_image
+
+    report = check_raw_image({"run_haemodynamics": True, user: True})
+
+    assert len(report.errors) == 1
+    assert user in report.errors[0] and "raw_image_path" in report.errors[0]
+
+
+def test_a_missing_raw_image_is_an_error_only_when_the_run_reads_it(tmp_path):
+    from haemolynx.pipeline.checks import check_raw_image
+
+    gone = str(tmp_path / "gone.tif")
+
+    read = check_raw_image({"raw_image_path": gone, "measure_diameters_from_raw_image": True})
+    unread = check_raw_image({"raw_image_path": gone, "measure_diameters_from_raw_image": False})
+
+    assert len(read.errors) == 1 and "gone.tif" in read.errors[0]
+    assert unread.ok and any("gone.tif" in warning for warning in unread.warnings)

@@ -332,7 +332,7 @@ _DIAMETER_BASE_OVERRIDES = {
     "outlet_nodes": [_LAST_NODE],
     "arteriole_boundary_nodes": [0],
     "venule_boundary_nodes": [_LAST_NODE],
-    "use_fwhm_edge_diameters": False,
+    "measure_diameters_from_raw_image": False,
     "automated_vessel_assignment": False,
     "use_small_vessel_masks_for_boundary_assignment": False,
 }

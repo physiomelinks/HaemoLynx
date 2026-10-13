@@ -380,7 +380,7 @@ def test_optimise_settings_binarizes_a_normalized_float_probability_mask(
 
 
 def test_optimise_settings_loads_the_raw_data_row_as_the_raw_image(panel, monkeypatch, tmp_path):
-    """The shared "Raw data file" row (fwhm_raw_tiff_path) reaches the
+    """The run's raw image (raw_image_path, on the Input tab) reaches the
     optimiser's own `raw_image` parameter, the same way it reaches "Check
     segmented image"'s raw comparison."""
     import time

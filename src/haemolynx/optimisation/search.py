@@ -1297,6 +1297,7 @@ class _Search(_SweepBookkeeping):
         progress: Optional[ProgressCallback],
         enabled_groups: Optional[Iterable[str]] = None,
         raw_image: Optional[np.ndarray] = None,
+        raw_image_stain: str = "plasma_column",
     ) -> None:
         # Always a fresh copy, even when raw_mask is already a bool array
         # (np.asarray would then return the caller's own object unchanged):
@@ -1358,7 +1359,7 @@ class _Search(_SweepBookkeeping):
         #: image was supplied, exactly like `self.raw_image` itself.
         self._raw_image_foreground: Optional[preprocessing.RawImageForeground] = (
             preprocessing.analyze_raw_image_foreground(
-                self.raw_image, voxel_size_zyx=self.voxel_size_zyx
+                self.raw_image, voxel_size_zyx=self.voxel_size_zyx, stain=raw_image_stain
             )
             if self.raw_image is not None
             else None
@@ -2671,6 +2672,7 @@ def optimise_skeleton_and_graph_settings(
     downsample_factor: Optional[int] = None,
     groups: Optional[Iterable[str]] = None,
     raw_image: Optional[np.ndarray] = None,
+    raw_image_stain: str = "plasma_column",
     max_passes: int = 1,
     auto_downsample_target_seconds: float = DEFAULT_AUTO_DOWNSAMPLE_TARGET_SECONDS,
 ) -> OptimisationResult:
@@ -2714,6 +2716,8 @@ def optimise_skeleton_and_graph_settings(
     ``None`` (the default) is today's exact behaviour. Downsampled the same
     way *raw_mask* is (block-mean, not block-max -- an intensity value
     averages over its block rather than taking the brightest voxel in it).
+    *raw_image_stain* says what it stains, ``plasma_column`` or
+    ``endothelial`` (the wall round the lumen), and so what supports a voxel.
 
     *max_passes* repeats the whole group sequence (coordinate descent) up to
     this many times, each pass starting from where the previous one left
@@ -2764,7 +2768,7 @@ def optimise_skeleton_and_graph_settings(
     search_starting_values = _to_search_grid(starting_values, factor)
     search = _Search(
         search_mask, search_voxel_size_xyz, search_starting_values, progress,
-        enabled_groups=groups, raw_image=search_raw_image,
+        enabled_groups=groups, raw_image=search_raw_image, raw_image_stain=raw_image_stain,
     )
     # The scorecard's two ends, on the search's own grid: before any sweep
     # moves anything, and after the last.

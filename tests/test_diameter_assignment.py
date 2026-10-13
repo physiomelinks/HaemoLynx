@@ -575,7 +575,7 @@ def test_with_ilastik_the_segmented_input_is_ilastiks_output_not_its_input(tmp_p
     settings = _run_settings(
         use_ilastik_segmentation=True,
         input_path=tmp_path / "an_old_mask.tif",
-        ilastik_unsegmented_image_path=tmp_path / "raw" / "stack.tif",
+        raw_image_path=tmp_path / "raw" / "stack.tif",
         ilastik_output_dir=tmp_path / "ilastik",
         ilastik_output_suffix=".tiff",
     )
@@ -827,7 +827,7 @@ def test_the_raw_section_settings_are_off_by_default_and_follow_fwhm():
 
     assert schema["use_raw_section_fallback"].default is False
     assert set(schema["use_raw_section_fallback"].requires) == {
-        "use_fwhm_edge_diameters", "do_fwhm_measurement",
+        "measure_diameters_from_raw_image", "raw_image_stain!=endothelial", "do_fwhm_measurement",
     }
     for name in ("raw_section_psf_sigma_xy_um", "raw_section_psf_sigma_z_um"):
         assert schema[name].default is None
@@ -1087,7 +1087,7 @@ def test_a_median_of_endothelial_widths_keeps_their_wall_to_wall_basis():
 
     assert edges[3]["diameter_source"] == DIAMETER_SOURCE_CLASS_MEDIAN
     assert edges[3]["diameter_um"] == pytest.approx(32.0)
-    assert edges[3]["diameter_basis"] == "anatomical"
+    assert edges[3]["diameter_basis"] == "endothelial"
 
 
 def test_a_run_uses_the_class_median_by_default():
@@ -1246,3 +1246,22 @@ def test_a_bridge_is_not_measured_and_takes_the_thick_vessels_diameter():
     assert summary["bridges"] == 1
     assert summary["diameters"]["table"] == stamped.number_of_edges() - 2
     assert summary["diameters"]["override"] == 1
+
+
+def test_the_apply_config_takes_the_runs_basis_from_the_segmentation_source(tmp_path):
+    """The Diameters stage's config carries what the segmented vessels are, so
+    the mask's widths, the class medians and the table are modelled on it."""
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.stages import _haemodynamics_apply_config
+
+    schema = default_schema()
+    plasma = _haemodynamics_apply_config(
+        _run_settings(input_path=tmp_path / "mask.tif"), schema, voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    assert plasma.diameter("diameter_basis") == "plasma_column"
+
+    endothelial = _haemodynamics_apply_config(
+        _run_settings(input_path=tmp_path / "mask.tif", segmentation_source="anatomical"),
+        schema, voxel_size_zyx=(1.0, 1.0, 1.0),
+    )
+    assert endothelial.diameter("diameter_basis") == "endothelial"
