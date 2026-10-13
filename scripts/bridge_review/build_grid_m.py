@@ -39,7 +39,8 @@ sys.path.insert(0, str(HERE.parent / "doubled_run_review"))
 SEED = 20261013
 #: How far a pair of dead ends, or a vessel ahead, may be apart to be shown.
 SEARCH_GAP_UM = 15.0
-SHARES = {"facing": 14, "ahead": 12, "bridge": 4}
+#: Bridges first: there are few, and their shortfall is carried to the kinds after them.
+SHARES = {"bridge": 4, "facing": 14, "ahead": 12}
 
 
 def _chord_measures(evidence, support, path_um: np.ndarray) -> dict:
@@ -112,7 +113,14 @@ def main(argv=None) -> int:
     parser.add_argument("--voxel-size-zyx", type=float, nargs=3, required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--grid", default="M")
+    parser.add_argument("--exclude", action="append", default=[],
+                        help="a key CSV of an earlier grid whose candidates (kind, a, b) are not shown again")
+    parser.add_argument("--seed", type=int, default=SEED)
     args = parser.parse_args(argv)
+    shown = set()
+    for path in args.exclude:
+        for row in csv.DictReader(open(path, encoding="utf-8")):
+            shown.add((row["kind"], str(row["a"]), str(row["b"])))
 
     from build_grids import Drawer, _example
     from haemolynx.graph.dead_ends import classify_dead_ends, image_extent_um
@@ -167,7 +175,9 @@ def main(argv=None) -> int:
             **_chord_measures(evidence, support, voxels),
         ))
     for kind, items in candidates.items():
-        print(f"{kind}: {len(items)} candidates")
+        fresh = [c for c in items if (c["kind"], str(c["a"]), str(c["b"])) not in shown]
+        print(f"{kind}: {len(items)} candidates, {len(fresh)} not shown before")
+        candidates[kind] = fresh
 
     chosen: list[dict] = []
     shortfall = 0
@@ -175,7 +185,7 @@ def main(argv=None) -> int:
         picked = _by_value(candidates[kind], share + shortfall)
         shortfall = share + shortfall - len(picked)
         chosen += picked
-    rng = random.Random(SEED)
+    rng = random.Random(args.seed)
     rng.shuffle(chosen)
 
     drawer = Drawer(G, mask, raw.astype(np.float32), vs)
