@@ -674,10 +674,14 @@ class RawEvidenceEndothelial(RawEvidence):
         points = np.asarray(points_um, dtype=float).reshape(-1, 3)
         if tangents is None:
             return self._normalise(self._values(points, dilate_vox=self._reach_vox(radius_um)))
-        # The brightest point on rings across the vessel round each point, at
-        # its own radius and a wall's reach either side: the wall, if the
-        # vessel is there. Read across, never along, so a gap in the wall
-        # along the path is not filled by the wall either side of it.
+        # Rings across the vessel round each point, at its own radius and a
+        # wall's reach either side. A vessel running through the point has
+        # wall on *both* sides of it, so the reading is the best pair of
+        # opposite directions, each the brightest of its radii: the dimmer of
+        # the two. The brightest single point would read any wall within
+        # reach -- in a capillary bed, nearly always one. Read across, never
+        # along, so a gap in the wall along the path is not filled by the
+        # wall either side of it.
         p, q = _across(tangents)
         angles = np.linspace(0.0, 2.0 * np.pi, _RING_DIRECTIONS, endpoint=False)
         offsets = []
@@ -685,9 +689,12 @@ class RawEvidenceEndothelial(RawEvidence):
             r = max(float(radius_um) + extra, 0.5 * float(self._spacing.min()))
             for angle in angles:
                 offsets.append(r * (np.cos(angle) * p + np.sin(angle) * q))
-        ring = points[:, None, :] + np.stack(offsets, axis=1)  # (points, ring, 3)
-        values = self._values(ring.reshape(-1, 3)).reshape(len(points), -1)
-        return self._normalise(values.max(axis=1))
+        ring = points[:, None, :] + np.stack(offsets, axis=1)  # (points, radii x directions, 3)
+        values = self._values(ring.reshape(-1, 3)).reshape(len(points), len(_RING_RADII_UM), _RING_DIRECTIONS)
+        by_direction = values.max(axis=1)
+        half = _RING_DIRECTIONS // 2
+        paired = np.minimum(by_direction[:, :half], by_direction[:, half:])
+        return self._normalise(paired.max(axis=1))
 
     def wall_between(self, a_um, b_um) -> float:
         profile = self._chord(a_um, b_um)
