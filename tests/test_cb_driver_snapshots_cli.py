@@ -76,5 +76,5 @@ def test_the_default_snapshot_runs_the_fast_drivers_and_slow_adds_two(tmp_path, 
     monkeypatch.setattr(cli, "take_snapshot", _take)
     cli.main(["snapshot", str(tmp_path / "a")])
     cli.main(["snapshot", str(tmp_path / "b"), "--slow"])
-    assert len(ran[1]) - len(ran[0]) == 2
     assert ran[0] == [d.name for d in ds.DRIVERS if not d.slow]
+    assert ran[1] == [d.name for d in ds.DRIVERS]

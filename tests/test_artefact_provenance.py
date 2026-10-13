@@ -96,25 +96,57 @@ def test_reading_a_corrupt_sidecar_does_not_raise(fake_classifier):
     assert probability_status(specimen, artefact_path=artefact) == "unknown"
 
 
+def _record_for_classifier(tmp_path, monkeypatch, classifier):
+    import ImageLynx.specimens as specimens
+
+    monkeypatch.setattr(specimens, "POOLED_CLASSIFIER", classifier)
+    artefact = tmp_path / "probs.h5"
+    artefact.write_bytes(b"y")
+    return record_probability_provenance(get_specimen("SHR-A"), artefact_path=artefact)
+
+
+def _write_two_lane_project(path):
+    """A minimal two-lane .ilp: 16 vessel voxels on WKY-A's lane, 6 background on SHR-A's."""
+    import h5py
+    import numpy as np
+
+    lanes = [(get_specimen("WKY-A"), 1, (1, 4, 4, 1)), (get_specimen("SHR-A"), 2, (1, 2, 3, 1))]
+    with h5py.File(path, "w") as project:
+        project["PixelClassification/LabelNames"] = np.array([b"vessel", b"background"])
+        for position, (specimen, label, shape) in enumerate(lanes):
+            project[f"Input Data/infos/lane{position:04d}/Raw Data/filePath"] = \
+                f"/some/where/{specimen.preproc_stem}_ilastik.h5/data".encode()
+            block = project.create_dataset(
+                f"PixelClassification/LabelSets/labels{position:03d}/block0000",
+                data=np.full(shape, label, dtype=np.uint8))
+            block.attrs["blockSlice"] = f"[50:51,0:{shape[1]},0:{shape[2]},0:1]".encode()
+        project["FeatureSelections/ComputeIn2d"] = np.array([False] * 7)
+        project["FeatureSelections/SelectionMatrix"] = np.zeros((6, 7), dtype=bool)
+
+
+def test_an_unreadable_classifier_records_no_labelling(tmp_path, monkeypatch):
+    """Unreadable classifier must degrade to a recorded absence, not an exception."""
+    classifier = tmp_path / "vessel_segmentation.ilp"
+    classifier.write_bytes(b"x")
+
+    record = _record_for_classifier(tmp_path, monkeypatch, classifier)
+
+    assert record["labelling"] is None
+
+
 def test_the_record_carries_the_labelling_behind_the_classifier(tmp_path, monkeypatch):
     """A hash says two classifiers differ; it does not say how.
 
     The label counts and boundary placement travel with the artefact so a result can be
     attributed to a labelling state rather than to an opaque 64-character string.
     """
-    import ImageLynx.specimens as specimens
-
     classifier = tmp_path / "vessel_segmentation.ilp"
-    classifier.write_bytes(b"x")
-    monkeypatch.setattr(specimens, "POOLED_CLASSIFIER", classifier)
+    _write_two_lane_project(classifier)
 
-    artefact = tmp_path / "probs.h5"
-    artefact.write_bytes(b"y")
-    record = record_probability_provenance(get_specimen("SHR-A"), artefact_path=artefact)
+    record = _record_for_classifier(tmp_path, monkeypatch, classifier)
 
-    assert "labelling" in record
-    # Unreadable classifier must degrade to a recorded absence, not an exception.
-    assert record["labelling"] is None or isinstance(record["labelling"], dict)
+    assert record["labelling"]["total_labelled_voxels"] == 16 + 6
+    assert record["labelling"]["label_names"] == ["vessel", "background"]
 
 
 @pytest.mark.parametrize("specimen", SPECIMENS, ids=lambda s: s.specimen_id)

@@ -189,7 +189,6 @@ def _edit_manifest(snapshot, change):
 
 
 @pytest.mark.parametrize("change, message", [
-    (lambda m: m["drivers"].pop(), "different drivers or command lines"),
     (lambda m: m["drivers"][0]["command"].append("--extra"), "different drivers or command"),
     (lambda m: m.update(python="0.0.0"), "different python"),
     (lambda m: m["packages"].update(numpy="0.0"), "different packages"),

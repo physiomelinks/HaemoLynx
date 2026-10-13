@@ -173,6 +173,7 @@ def test_registry_voxel_size_matches_the_acquisition_metadata(specimen):
     assert specimen.shape_zyx == (shape[0], shape[2], shape[3])
 
 
+@pytest.mark.realdata
 def test_at_least_one_acquisition_is_findable():
     """The metadata test skips when a file is absent, so a wholesale path break would be silent.
 
@@ -180,10 +181,12 @@ def test_at_least_one_acquisition_is_findable():
     raw_cb_images subdirectory - and that turned six passing checks into six skips without
     failing anything.
     """
+    from ImageLynx.specimens import ACQUISITION_ROOT, data_root_provenance
+
+    if not data_root_provenance()["acquisition_root_exists"]:
+        pytest.skip(f"no acquisition root at {ACQUISITION_ROOT}; nothing to cross-check against")
     found = [s.specimen_id for s in SPECIMENS if s.acquisition_path.exists()]
-    if not found:
-        pytest.skip("no acquisitions reachable at all; nothing to cross-check against")
-    assert len(found) >= 1
+    assert found, f"{ACQUISITION_ROOT} exists but holds none of the six acquisitions"
 
 
 def test_shr_specimens_are_larger_so_raw_counts_are_not_comparable():
@@ -334,13 +337,23 @@ def test_an_environment_override_wins_outright(tmp_path, monkeypatch):
     assert resolved == tmp_path.resolve()
 
 
-def test_data_root_provenance_reports_where_it_looked():
+def test_data_root_provenance_reports_where_it_looked(tmp_path, monkeypatch):
     """A silently stale copy is the failure mode a search introduces; this makes it visible."""
-    from ImageLynx.specimens import data_root_provenance
+    import ImageLynx.specimens as specimens
 
-    provenance = data_root_provenance()
-    assert set(provenance) >= {"acquisition_root", "data_root", "data_root_exists",
-                               "data_root_from_env", "env_vars"}
+    monkeypatch.setenv(specimens._DATA_ENV, str(tmp_path))
+    monkeypatch.setattr(specimens, "CB_DATA_ROOT", tmp_path.resolve())
+
+    provenance = specimens.data_root_provenance()
+    assert provenance["data_root"] == str(tmp_path.resolve())
+    assert provenance["data_root_from_env"] is True
+    assert provenance["data_root_exists"] is True
+
+    monkeypatch.delenv(specimens._DATA_ENV)
+    monkeypatch.setattr(specimens, "CB_DATA_ROOT", tmp_path / "moved")
+    provenance = specimens.data_root_provenance()
+    assert provenance["data_root_from_env"] is False
+    assert provenance["data_root_exists"] is False
 
 
 def test_the_vessel_class_index_is_recorded():
