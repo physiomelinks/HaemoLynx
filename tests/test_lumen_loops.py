@@ -376,3 +376,16 @@ def test_the_default_limit_is_the_review_lists_and_the_setting_defaults_to_it():
     setting = default_schema()["remove_short_loops_under_um"]
     assert setting.default == 200.0
     assert setting.advanced and "bridge_require_mask_support" in setting.requires
+
+
+def test_a_short_loop_through_a_thick_vessel_bridge_is_left_to_the_review_list():
+    """A bridge is the join to the thick centreline, not a second strand:
+    on E14.5 breaking such loops cost 32 of 110 bridges."""
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    G = _vessel_with(4, 9)
+    for a, b, key, d in G.edges(keys=True, data=True):
+        if d.get("row") == 9:
+            d[IS_ZERO_RESISTANCE] = True
+    remove_short_loops(G, _support(_tube_mask()))
+    assert _rows(G) == [4, 9]

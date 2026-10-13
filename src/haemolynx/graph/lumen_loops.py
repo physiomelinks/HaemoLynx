@@ -460,6 +460,11 @@ def remove_short_loops(
             lengths = {(a, b, key): _length(G.edges[a, b, key]) for a, b, key in cycle}
             if sum(lengths.values()) > max_length_um:
                 continue
+            # A loop through a thick-vessel bridge is the join to the thick
+            # centreline, not two strands: left to the review list. Taking a
+            # side of those cost E14.5 32 of its 110 bridges.
+            if any(G.edges[a, b, key].get(IS_ZERO_RESISTANCE) for a, b, key in cycle):
+                continue
             for a, b, key in _break(G, cycle, support):
                 removed.append(lengths[(a, b, key)])
                 if G.has_node(a) and G.has_node(b):
