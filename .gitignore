@@ -60,3 +60,7 @@ examples/thesis_methods_computational_modelling.tex
 
 # Local issue tracker (agent skills)
 .scratch/
+
+# Coverage data from a pytest-cov run in the repo root
+.coverage
+.coverage.*

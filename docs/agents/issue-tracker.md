@@ -29,6 +29,7 @@ Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
 - **Map**: `.scratch/<effort>/map.md` (the Notes / Decisions-so-far / Fog body).
 - **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records `claimed`/`resolved`.
 - **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
-- **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
+- **Frontier**: `venv/bin/python scripts/wayfinder_progress.py .scratch/<effort> --frontier` lists the open, unblocked, unclaimed tickets; first by number wins.
 - **Claim**: set `Status: claimed` and save before any work.
 - **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+- **Session log**: at the end of each session, append a `## <mode>` entry to `.scratch/<effort>/sessions.md` (lines `Date:`, `Mode:`, `Call:`, `Ticket:`, plus `Model:`, `Effort:`, `Why:` recommending how to run the next one), then run `venv/bin/python scripts/wayfinder_progress.py .scratch/<effort>`, which rebuilds `.scratch/<effort>/progress.html`, the page the user opens to follow the map.

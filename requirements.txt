@@ -9,6 +9,7 @@ plotly
 h5py
 skan
 pytest
+pytest-cov  # scripts/coverage_by_module.py
 pyvista
 vedo
 pyyaml
