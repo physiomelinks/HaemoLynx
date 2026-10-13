@@ -32,6 +32,7 @@ markers = [
     "slow: marks tests as slow",
     "plotting: marks tests that create figures",
     "integration: marks integration tests",
+    "realdata: marks tests that read real data on disk; left out of the pre-commit hook",
 ]
 filterwarnings = [
     "ignore:.*stored as RGB with separate component planes.*:DeprecationWarning:tifffile",

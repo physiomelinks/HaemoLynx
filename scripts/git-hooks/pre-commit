@@ -2,7 +2,7 @@
 # Local guardrail (CI only runs on PRs to origin). Enable once per clone:
 #   git config core.hooksPath scripts/git-hooks
 # 1. Error-class lint (undefined names, redefinitions) on staged Python files.
-# 2. Fast tests, skipped when every staged file is a Markdown doc (no test reads
+# 2. Fast tests (not slow, integration or realdata), skipped when every staged file is a Markdown doc (no test reads
 #    a repo .md file). Any other staged file, deletions included, runs them.
 #    Also skipped when .git/hook-stamp/fast-tests-ok matches the staged tree,
 #    the interpreter and its installed packages (see _stamp.sh); a passing run
@@ -51,5 +51,5 @@ if stamp_matches; then
     exit 0
 fi
 
-MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true "$PY" -m pytest -q -m "not slow and not integration"
+MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true "$PY" -m pytest -q -m "not slow and not integration and not realdata"
 stamp_write
