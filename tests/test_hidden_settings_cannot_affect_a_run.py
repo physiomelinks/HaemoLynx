@@ -452,19 +452,15 @@ _STAGE_CASES, _STAGE_SKIPPED = _stage_level_cases()
 )
 def test_a_hidden_setting_cannot_change_a_real_stage_run(name, owner, probe, tmp_path):
     setting = SCHEMA[name]
-    unmet_name, unmet_value = _first_unmet_prerequisite(setting)
+    unmet = _first_unmet_prerequisite(setting)
     runner = STAGE_RUNNERS[owner]
 
-    default_output = runner(
-        {name: setting.coerce(setting.default), unmet_name: unmet_value}, tmp_path
-    )
-    probe_output = runner(
-        {name: setting.coerce(probe), unmet_name: unmet_value}, tmp_path
-    )
+    default_output = runner({name: setting.coerce(setting.default), **unmet}, tmp_path)
+    probe_output = runner({name: setting.coerce(probe), **unmet}, tmp_path)
 
     assert _stage_outputs_equal(default_output, probe_output), (
         f"{name!r} (owned by the {owner!r} stage) changed that stage's real "
-        f"output even though its prerequisite {unmet_name!r}={unmet_value!r} "
+        f"output even though its prerequisite is unmet ({unmet!r}) "
         "is unmet -- a hidden/greyed GUI setting must never reach a real "
         "pipeline run."
     )
@@ -569,18 +565,16 @@ def test_a_hidden_export_setting_cannot_change_written_output(name, probe, tmp_p
     handed, unchanged -- see this module's docstring -- so the only place a
     setting's effect (or lack of one) is observable is the files it writes."""
     setting = SCHEMA[name]
-    unmet_name, unmet_value = _first_unmet_prerequisite(setting)
+    unmet = _first_unmet_prerequisite(setting)
 
     default_files = _run_export_results(
-        {name: setting.coerce(setting.default), unmet_name: unmet_value}, tmp_path / "default"
+        {name: setting.coerce(setting.default), **unmet}, tmp_path / "default"
     )
-    probe_files = _run_export_results(
-        {name: setting.coerce(probe), unmet_name: unmet_value}, tmp_path / "probe"
-    )
+    probe_files = _run_export_results({name: setting.coerce(probe), **unmet}, tmp_path / "probe")
 
     assert default_files == probe_files, (
         f"{name!r} changed export_results' written output even though its "
-        f"prerequisite {unmet_name!r}={unmet_value!r} is unmet."
+        f"prerequisite is unmet ({unmet!r})."
     )
 
 

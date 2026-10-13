@@ -227,3 +227,47 @@ def test_a_stop_during_ilastik_arrives_through_the_stage_heartbeat(tmp_path, mon
             segment(settings, progress=segmenting)
 
     assert kinds.count(HEARTBEAT) == 2
+
+
+def test_ilastik_without_a_raw_image_reads_the_segmented_image_and_says_so(tmp_path, caplog):
+    """The raw image is optional: with none to segment, ilastik is skipped
+    (the panel greys the switch out) and the run reads the segmented image,
+    as it would with the switch off."""
+    import logging
+
+    from haemolynx.pipeline.stages import ilastik_segments, segmented_input_path
+
+    mask = a_segmented_tiff(tmp_path)
+    settings = settings_for(
+        tmp_path,
+        use_ilastik_segmentation=True,
+        input_path=mask,
+        raw_image_path=None,
+        ilastik_classifier_path=tmp_path / "classifier.ilp",
+        ilastik_output_dir=tmp_path / "segmentations",
+    )
+    assert not ilastik_segments(settings)
+    assert segmented_input_path(settings) == mask
+
+    with caplog.at_level(logging.WARNING, logger="haemolynx"):
+        segment(settings)
+
+    assert settings["input_path"] == mask
+    assert not (tmp_path / "segmentations").exists()
+    assert any(
+        "ilastik is skipped" in record.getMessage() and "raw_image_path" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_ilastik_without_a_raw_image_or_a_segmented_image_is_named(tmp_path):
+    settings = settings_for(
+        tmp_path,
+        use_ilastik_segmentation=True,
+        input_path=None,
+        raw_image_path=None,
+        ilastik_classifier_path=tmp_path / "classifier.ilp",
+    )
+
+    with pytest.raises(ValueError, match="raw_image_path is not set, and there is no segmented image"):
+        segment(settings)

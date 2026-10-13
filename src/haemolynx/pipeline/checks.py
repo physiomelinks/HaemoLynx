@@ -506,8 +506,12 @@ def check_image_channels(settings: Mapping[str, Any]) -> CheckReport:
 
 def check_raw_image(settings: Mapping[str, Any]) -> CheckReport:
     """The raw image is optional, so it is not ``must_exist`` for every run:
-    ilastik segments it and the diameters are measured from it, so either
-    needs one. One that is set must be there: the network build reads it
+    ilastik segments it and the diameters are measured from it, and without
+    one each is off whatever its switch says (``stages.ilastik_segments``,
+    ``stages.measures_diameters_from_raw_image``) -- a warning, so a config
+    that asks for them knows it is not getting them; an error only when
+    ilastik was to make the segmented image and there is none to read
+    instead. One that is set must be there: the network build reads it
     whenever it is (``preprocessing.raw_evidence``), so a missing one is an
     error for every run that names it."""
     report = CheckReport()
@@ -521,11 +525,25 @@ def check_raw_image(settings: Mapping[str, Any]) -> CheckReport:
     path = settings.get("raw_image_path")
     if not path:
         if users:
-            report.add_error(
-                f"{' and '.join(users)} read the raw image, but raw_image_path is not set. Fix: "
-                "set raw_image_path (and raw_image_channel for a multi-channel file) on the "
-                "Input tab."
+            skipped = "they are" if len(users) > 1 else "it is"
+            report.add_warning(
+                f"{' and '.join(users)} read the raw image, but raw_image_path is not set, so "
+                f"{skipped} skipped: the run goes on from the segmented image alone. To use "
+                "the raw image, set raw_image_path (and raw_image_channel for a multi-channel "
+                "file) on the Input tab."
             )
+        if settings.get("use_ilastik_segmentation"):
+            # input_path's own must_exist check stands down while ilastik is
+            # on (it is what ilastik would produce); here it is what is read.
+            exists, detail = resolve_existing_path(settings.get("input_path"))
+            if exists:
+                report.add_pass("input_path", detail)
+            else:
+                report.add_error(
+                    "use_ilastik_segmentation is on without a raw image to segment, and the "
+                    f"segmented image it would read instead is not there (input_path: {detail}). "
+                    "Fix: set raw_image_path for ilastik, or input_path for a segmented image."
+                )
         return report
     exists, detail = resolve_existing_path(path)
     if exists:

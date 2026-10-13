@@ -23,11 +23,14 @@ from haemolynx.gui.form import (
     SHARED_ILASTIK_SETTING_SET,
     WIDGET_TYPES,
     Field,
+    chain_met,
     field_for,
     fields_for,
     label_for,
+    prerequisite_chain,
     sections_for,
     shared_ilastik_host,
+    unmet_chain,
     values_from,
     visible_diameter_settings,
     visible_graph_centreline_settings,
@@ -346,7 +349,7 @@ def test_visible_input_segmentation_settings_swaps_on_ilastik_toggle():
     assert "ilastik_timeout_seconds" not in shown_off
     assert "voxel_size_override_xyz" in shown_off
 
-    on = {"use_ilastik_segmentation": True}
+    on = {"use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}
     shown_on = visible_input_segmentation_settings(SCHEMA, on)
     assert "input_path" not in shown_on
     assert "raw_image_path" in shown_on
@@ -656,6 +659,7 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
         "all_diams_const": True,
         "run_haemodynamics": True,
         "measure_diameters_from_raw_image": False,
+        "raw_image_path": "raw.tif",
     }
     shown = visible_diameter_settings(SCHEMA, const_on)
     assert "all_diams_const" in shown
@@ -726,6 +730,7 @@ def test_edt_diameter_crosscheck_works_standalone_or_nested_under_fwhm():
     base = {
         "run_haemodynamics": True,
         "measure_diameters_from_raw_image": False,
+        "raw_image_path": "raw.tif",
         "raw_image_stain": "plasma_column",
     }
 
@@ -1304,3 +1309,120 @@ def test_the_stain_note_says_what_an_auto_run_read_and_nothing_otherwise():
     assert raw_image_stain_note("auto", None, reading) == ""
     assert raw_image_stain_note("endothelial", "endothelial", reading) == ""
     assert raw_image_stain_note("plasma_column", "endothelial", reading) == ""
+
+
+# --- the raw image: an optional input that gates what reads it ---------------
+
+
+def _raw_gated_schema() -> Schema:
+    return Schema(
+        [
+            Setting("raw", "path", None, "The raw image", "Input and segmentation"),
+            Setting("use_ilastik", "bool", False, "Segment it with ilastik",
+                    "Input and segmentation", requires=("raw",)),
+            Setting("classifier", "path", None, "The trained classifier",
+                    "Input and segmentation", requires=("use_ilastik",)),
+            Setting("mask", "path", None, "A segmented image instead",
+                    "Input and segmentation", requires=("!use_ilastik",)),
+            Setting("stain", "choice", "auto", "What it stains", "Input and segmentation",
+                    choices=("auto", "wall"), requires=("raw",)),
+        ]
+    )
+
+
+def test_a_row_gated_on_a_path_is_greyed_not_hidden_while_the_path_is_unset():
+    """The raw image is an input, not a parent toggle: the switches that
+    read it stay in view, greyed, so what to set is in view -- even in a
+    section whose nested rows hide."""
+    fields = {field.name: field for field in fields_for(_raw_gated_schema())}
+    unset = {"raw": None, "use_ilastik": False}
+
+    toggle = fields["use_ilastik"]
+    assert toggle.path_gates == frozenset({"raw"})
+    assert not toggle.hide_when_unmet
+    assert toggle.is_visible(unset)
+    assert not toggle.is_enabled(unset)
+    assert toggle.why_disabled(unset) == "Not used while 'raw' is not set."
+    assert fields["stain"].is_visible(unset) and not fields["stain"].is_enabled(unset)
+
+    given = {"raw": "stack.tif", "use_ilastik": False}
+    assert toggle.is_enabled(given) and toggle.why_disabled(given) == ""
+
+
+def test_rows_nested_under_a_greyed_switch_hide_as_under_any_switch_not_in_effect():
+    schema = _raw_gated_schema()
+    fields = {field.name: field for field in fields_for(schema)}
+    ticked_without_raw = {"raw": None, "use_ilastik": True}
+
+    classifier = fields["classifier"]
+    assert classifier.path_gates == frozenset({"raw"})
+    assert classifier.hide_when_unmet
+    assert unmet_chain(schema, "classifier", ticked_without_raw) == ("raw",)
+    assert not classifier.is_visible(
+        ticked_without_raw, unmet_chain(schema, "classifier", ticked_without_raw)
+    )
+    assert classifier.is_visible(
+        {"raw": "stack.tif", "use_ilastik": True},
+        unmet_chain(schema, "classifier", {"raw": "stack.tif", "use_ilastik": True}),
+    )
+
+
+def test_a_switch_ticked_without_its_path_is_out_of_effect_for_the_rows_that_need_it_off():
+    """``!use_ilastik`` holds while ilastik is not segmenting -- off, or on
+    with no raw image to segment -- so the segmented-image row comes back
+    when the raw image is cleared, instead of both rows going."""
+    schema = _raw_gated_schema()
+    fields = {field.name: field for field in fields_for(schema)}
+
+    assert prerequisite_chain(schema, "mask") == ("!use_ilastik",)
+    assert prerequisite_chain(schema, "classifier") == ("use_ilastik", "raw")
+
+    ticked_without_raw = {"raw": None, "use_ilastik": True}
+    assert unmet_chain(schema, "mask", ticked_without_raw) == ()
+    assert chain_met(schema, "mask", ticked_without_raw)
+    assert fields["mask"].is_visible(
+        ticked_without_raw, unmet_chain(schema, "mask", ticked_without_raw)
+    )
+
+    ticked_with_raw = {"raw": "stack.tif", "use_ilastik": True}
+    assert unmet_chain(schema, "mask", ticked_with_raw) == ("!use_ilastik",)
+    assert unmet_chain(schema, "mask", {"raw": None, "use_ilastik": False}) == ()
+
+
+def test_the_input_tab_keeps_the_segmented_image_row_when_ilastik_is_ticked_without_a_raw_image():
+    ticked_without_raw = {"use_ilastik_segmentation": True, "raw_image_path": None}
+    shown = visible_input_segmentation_settings(SCHEMA, ticked_without_raw)
+    assert "input_path" in shown
+    assert "use_ilastik_segmentation" in shown
+    assert "raw_image_path" in shown
+    assert "ilastik_classifier_path" not in shown
+
+
+def test_every_setting_that_reads_the_raw_image_names_it_as_a_gate():
+    """What greys out on every tab while no raw image is entered."""
+    for name in (
+        "raw_image_channel",
+        "raw_image_stain",
+        "use_ilastik_segmentation",
+        "measure_diameters_from_raw_image",
+    ):
+        assert "raw_image_path" in SCHEMA[name].requires, name
+    assert "raw_image_path" not in SCHEMA["input_path"].requires
+    assert "raw_image_path" not in SCHEMA["measure_tissue_volume"].requires
+
+    fields = {field.name: field for field in fields_for(SCHEMA)}
+    unset = {"raw_image_path": None, "run_haemodynamics": True}
+    for name in ("raw_image_channel", "raw_image_stain", "use_ilastik_segmentation"):
+        assert fields[name].is_visible(unset, unmet_chain(SCHEMA, name, unset)), name
+        assert not fields[name].is_enabled(unset), name
+        assert fields[name].why_disabled(unset) == "Not used while 'raw_image_path' is not set."
+    measure = fields["measure_diameters_from_raw_image"]
+    assert measure.is_visible(unset, unmet_chain(SCHEMA, "measure_diameters_from_raw_image", unset))
+    assert not measure.is_enabled(unset)
+    # Its FWHM children hide, as they do while it is off.
+    assert "do_fwhm_measurement" not in visible_diameter_settings(
+        SCHEMA, {**unset, "measure_diameters_from_raw_image": True}
+    )
+    assert "do_fwhm_measurement" in visible_diameter_settings(
+        SCHEMA, {**unset, "measure_diameters_from_raw_image": True, "raw_image_path": "raw.tif"}
+    )

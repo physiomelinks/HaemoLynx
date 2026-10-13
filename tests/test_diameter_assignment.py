@@ -1265,3 +1265,31 @@ def test_the_apply_config_takes_the_runs_basis_from_the_segmentation_source(tmp_
         schema, voxel_size_zyx=(1.0, 1.0, 1.0),
     )
     assert endothelial.diameter("diameter_basis") == "endothelial"
+
+
+def test_measuring_from_the_raw_image_is_off_without_a_raw_image(tmp_path):
+    """The raw image is optional: with the switch on and no image, neither
+    raw measurement runs (the chain starts at the mask) rather than the
+    FWHM apply layer failing on a missing path."""
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.stages import (
+        _haemodynamics_apply_config,
+        measures_diameters_from_raw_image,
+        raw_image_is_set,
+    )
+
+    schema = default_schema()
+    without = _run_settings(
+        input_path=tmp_path / "mask.tif", measure_diameters_from_raw_image=True, raw_image_path=None,
+    )
+    assert not raw_image_is_set(without) and not measures_diameters_from_raw_image(without)
+    config = _haemodynamics_apply_config(without, schema, voxel_size_zyx=(1.0, 1.0, 1.0))
+    assert config.fwhm_setting("use_fwhm_edge_diameters") is False
+    assert config.endothelial_setting("use_endothelial_diameters") is False
+
+    for stain, fwhm, endothelial in (("plasma_column", True, False), ("endothelial", False, True)):
+        given = {**without, "raw_image_path": tmp_path / "raw.tif", "raw_image_stain": stain}
+        assert measures_diameters_from_raw_image(given)
+        config = _haemodynamics_apply_config(given, schema, voxel_size_zyx=(1.0, 1.0, 1.0))
+        assert config.fwhm_setting("use_fwhm_edge_diameters") is fwhm
+        assert config.endothelial_setting("use_endothelial_diameters") is endothelial

@@ -361,14 +361,41 @@ def test_a_run_without_a_raw_image_needs_none():
     assert report.ok and not report.warnings
 
 
-@pytest.mark.parametrize("user", ["use_ilastik_segmentation", "measure_diameters_from_raw_image"])
-def test_what_reads_the_raw_image_needs_one_set(user):
+def test_measuring_diameters_without_a_raw_image_is_a_warning_and_the_run_goes_on():
+    """The raw image is optional: a switch that reads it is skipped without
+    one (the panel greys it out), and the run goes on from the segmented
+    image alone -- said, so a config that asks for it knows."""
     from haemolynx.pipeline.checks import check_raw_image
 
-    report = check_raw_image({"run_haemodynamics": True, user: True})
+    report = check_raw_image({"run_haemodynamics": True, "measure_diameters_from_raw_image": True})
 
-    assert len(report.errors) == 1
-    assert user in report.errors[0] and "raw_image_path" in report.errors[0]
+    assert report.ok
+    assert len(report.warnings) == 1
+    assert "measure_diameters_from_raw_image" in report.warnings[0]
+    assert "raw_image_path is not set" in report.warnings[0]
+    assert "skipped" in report.warnings[0]
+
+
+def test_ilastik_without_a_raw_image_reads_the_segmented_image_instead(tmp_path):
+    from haemolynx.pipeline.checks import check_raw_image
+
+    mask = tmp_path / "mask.tif"
+    mask.write_bytes(b"")
+    report = check_raw_image({"use_ilastik_segmentation": True, "input_path": str(mask)})
+
+    assert report.ok
+    assert len(report.warnings) == 1 and "use_ilastik_segmentation" in report.warnings[0]
+    assert ("input_path", str(mask)) in report.passed
+
+
+def test_ilastik_without_a_raw_image_or_a_segmented_image_is_an_error(tmp_path):
+    from haemolynx.pipeline.checks import check_raw_image
+
+    for input_path in (None, str(tmp_path / "gone.tif")):
+        report = check_raw_image({"use_ilastik_segmentation": True, "input_path": input_path})
+        assert len(report.errors) == 1
+        assert "use_ilastik_segmentation" in report.errors[0]
+        assert "raw_image_path" in report.errors[0] and "input_path" in report.errors[0]
 
 
 def test_a_missing_raw_image_is_an_error_for_every_run_that_names_it(tmp_path):

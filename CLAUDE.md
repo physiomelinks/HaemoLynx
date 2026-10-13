@@ -190,6 +190,18 @@ cut to the run's crop box, and hands the volume on to the measurement so the fil
 once), and the stain picks the diameter method: FWHM for a plasma column, the endothelial ring
 fit for a wall. A raw image that is set is read by `build_network` whatever else is on, so
 preflight treats a missing one, or a composite without `raw_image_channel`, as an error.
+**The raw image is optional** (2026-10-13): with none entered, every setting that reads it is
+out of effect whatever its switch says -- `use_ilastik_segmentation` (the segmented image is
+read instead; an error only when there is none), `measure_diameters_from_raw_image` (the
+diameter chain starts at the mask), the raw evidence -- through `stages.raw_image_is_set`,
+`ilastik_segments` and `measures_diameters_from_raw_image`, and preflight warns rather than
+fails. Those settings, and `raw_image_channel` / `raw_image_stain`, declare
+`requires=("raw_image_path",)`: a `requires` entry may name a path setting (set / unset,
+`parsers.schema.PREREQUISITE_GATE_KINDS`), and the panel **greys** a row whose own path gate is
+unset rather than hiding it (`gui/form.py`'s `hidden_by`), while the rows nested under it hide
+as under any switch not in effect. A `!gate` rule holds while the gate is out of effect, so the
+segmented-image row stays when ilastik is ticked with no raw image (`form.unmet_chain`,
+`Schema._prerequisite_in_effect`).
 The settings it replaced (`ilastik_unsegmented_image_path`, `fwhm_raw_tiff_path`/`_channel`,
 `endothelial_image_path`/`_channel`, `use_fwhm_edge_diameters`, `use_endothelial_diameters`,
 `diameter_basis`) still load, moved together by `Setting.migrates`/`migrate` (`Schema.upgrade`).

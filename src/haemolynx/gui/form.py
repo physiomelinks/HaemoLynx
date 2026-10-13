@@ -181,6 +181,10 @@ class Field:
     #: so this is applied to the built widget separately, not through
     #: :attr:`options`.
     placeholder: str | None = None
+    #: The gates in this row's chain that are path settings (the raw image):
+    #: an unmet one greys the row where a toggle's would hide it, and is
+    #: worded "not set" rather than "off". Filled by :func:`fields_for`.
+    path_gates: frozenset[str] = frozenset()
 
     def to_setting_value(self, raw: Any) -> Any:
         """A widget's value as the setting's own value.
@@ -223,7 +227,9 @@ class Field:
         """
         if self.name in SHARED_ILASTIK_SETTING_SET:
             return True
-        if not self.enabled_by:
+        if not hidden_by(self, self.enabled_by):
+            # No gate, or only the path gates it names itself (the raw
+            # image), which grey it.
             return False
         if self.section in HIDE_WHEN_UNMET_SECTIONS:
             return True
@@ -232,13 +238,17 @@ class Field:
             for rule in self.enabled_by
         )
 
-    def is_visible(self, values: Mapping[str, Any]) -> bool:
+    def is_visible(
+        self, values: Mapping[str, Any], unmet: Sequence[str] | None = None
+    ) -> bool:
         """Whether this row should appear given the other values.
 
         Shared ilastik rows use Input-tab visibility here (hosted on Input).
         Boundaries hosting is layered on by :func:`visible_vessel_mask_settings`.
         An HDF5 dataset-name row (:data:`H5_DATASET_SETTINGS`) also needs the
-        file it names a dataset of to be HDF5.
+        file it names a dataset of to be HDF5. *unmet* is the row's gates not
+        holding -- its whole chain, from :func:`unmet_chain`, when the caller
+        has the schema; its own ``requires`` otherwise.
         """
         if self.name in SHARED_ILASTIK_SETTING_SET:
             return shared_ilastik_host(values) == "input"
@@ -246,7 +256,13 @@ class Field:
         if pair is not None and not is_h5_path(values.get(pair)):
             return False
         if self.hide_when_unmet:
-            return self.is_enabled(values)
+            if unmet is None:
+                unmet = [rule for rule in self.enabled_by if not is_prerequisite_met(rule, values)]
+            # A path gate the row names itself (the raw image) greys it
+            # rather than hiding it: a row that vanished when the Input
+            # tab's raw image was cleared would look removed, where greyed
+            # it says what to set.
+            return not hidden_by(self, unmet)
         return True
 
     def why_disabled(self, values: Mapping[str, Any]) -> str:
@@ -261,11 +277,28 @@ class Field:
                 parts.append(f"'{name}' is not '{expected}'")
             elif test == PREREQUISITE_NOT_EQUALS:
                 parts.append(f"'{name}' is '{expected}'")
+            elif name in self.path_gates:
+                parts.append(f"'{name}' is {'set' if test == PREREQUISITE_OFF else 'not set'}")
             elif test == PREREQUISITE_OFF:
                 parts.append(f"'{name}' is on")
             else:
                 parts.append(f"'{name}' is off")
         return f"Not used while {' and '.join(parts)}."
+
+
+def hidden_by(field: Field, unmet: Sequence[str]) -> tuple[str, ...]:
+    """The rules of *unmet* that hide *field* rather than grey it.
+
+    Every one but a path gate the row names in its own ``requires``: the
+    raw image is an input, not a parent toggle, so the switches that read
+    it stay in view, greyed, while it is unset -- and the rows nested under
+    those switches hide as they do under any switch that is not in effect.
+    """
+    return tuple(
+        rule
+        for rule in unmet
+        if not (rule in field.enabled_by and prerequisite_name(rule) in field.path_gates)
+    )
 
 
 def prerequisite_chain(schema: Schema, name: str) -> tuple[str, ...]:
@@ -276,6 +309,12 @@ def prerequisite_chain(schema: Schema, name: str) -> tuple[str, ...]:
     takes effect only while every gate above those is met too. The panel
     reads the whole chain, so a row never lingers after a toggle further up
     has hidden the row it hangs under.
+
+    A ``!gate`` rule's own gate is not followed: the rule asks for the gate
+    to be *out of* effect, and what the gate needs says nothing about that
+    (the segmented image, read while ilastik is off, does not need the raw
+    image ilastik would). :func:`unmet_chain` reads such a gate as off when
+    its own chain is unmet.
     """
     chain: list[str] = []
     seen: set[str] = set()
@@ -288,8 +327,36 @@ def prerequisite_chain(schema: Schema, name: str) -> tuple[str, ...]:
         for rule in schema[current].requires:
             if rule not in chain:
                 chain.append(rule)
-            pending.append(prerequisite_name(rule))
+            if parse_prerequisite(rule)[1] != PREREQUISITE_OFF:
+                pending.append(prerequisite_name(rule))
     return tuple(chain)
+
+
+def unmet_chain(
+    schema: Schema, name: str, values: Mapping[str, Any], _seen: frozenset[str] = frozenset()
+) -> tuple[str, ...]:
+    """The rules of *name*'s :func:`prerequisite_chain` not holding in
+    *values*, in chain order; empty when the row is in effect.
+
+    A ``!gate`` rule holds when the gate is off, or on but out of effect
+    because its own chain is unmet (an ilastik switch ticked with no raw
+    image to segment is not segmenting), so the rows that apply while a
+    feature is off come back as the feature's gates go.
+    """
+    unmet: list[str] = []
+    for rule in prerequisite_chain(schema, name):
+        gate, test, _expected = parse_prerequisite(rule)
+        if test == PREREQUISITE_OFF and gate not in _seen and is_prerequisite_met(gate, values):
+            if unmet_chain(schema, gate, values, _seen | {name, gate}):
+                continue
+        if not is_prerequisite_met(rule, values):
+            unmet.append(rule)
+    return tuple(unmet)
+
+
+def chain_met(schema: Schema, name: str, values: Mapping[str, Any]) -> bool:
+    """True when every gate above *name* holds (see :func:`unmet_chain`)."""
+    return not unmet_chain(schema, name, values)
 
 
 def _visible_settings_in_section(
@@ -300,8 +367,10 @@ def _visible_settings_in_section(
     for setting in schema:
         if setting.section != section:
             continue
-        field = field_for(setting, values.get(setting.name))
-        if field.is_visible(values):
+        field = field_for(
+            setting, values.get(setting.name), path_gates=path_gates_for(schema, setting.name)
+        )
+        if field.is_visible(values, unmet_chain(schema, setting.name, values)):
             shown.add(field.name)
     return shown
 
@@ -351,8 +420,8 @@ def visible_graph_centreline_settings(
     shown: set[str] = set()
     for name in names:
         setting = schema[name]
-        field = field_for(setting, values.get(name))
-        if field.is_visible(values):
+        field = field_for(setting, values.get(name), path_gates=path_gates_for(schema, name))
+        if field.is_visible(values, unmet_chain(schema, name, values)):
             shown.add(name)
     return shown
 
@@ -625,8 +694,14 @@ def display_value_for(setting: Setting, value: Any) -> Any:
     return _display_value(setting, value, widget_type_for(setting))
 
 
-def field_for(setting: Setting, value: Any = None) -> Field:
-    """The form row for one setting, showing *value* or the schema default."""
+def field_for(
+    setting: Setting, value: Any = None, *, path_gates: frozenset[str] = frozenset()
+) -> Field:
+    """The form row for one setting, showing *value* or the schema default.
+
+    *path_gates* names the path settings among its gates (see
+    :attr:`Field.path_gates`); :func:`fields_for` reads them off the schema.
+    """
     widget_type = widget_type_for(setting)
     return Field(
         name=setting.name,
@@ -645,13 +720,28 @@ def field_for(setting: Setting, value: Any = None) -> Field:
         kind=setting.kind,
         nullable=setting.default is None,
         placeholder=setting.placeholder,
+        path_gates=path_gates,
+    )
+
+
+def path_gates_for(schema: Schema, name: str) -> frozenset[str]:
+    """The path settings among every gate above *name*."""
+    return frozenset(
+        gate
+        for gate in (prerequisite_name(rule) for rule in prerequisite_chain(schema, name))
+        if gate in schema and schema[gate].kind == "path"
     )
 
 
 def fields_for(schema: Schema, values: Mapping[str, Any] | None = None) -> list[Field]:
     """Every setting as a form row, in schema order."""
     values = values or {}
-    return [field_for(setting, values.get(setting.name)) for setting in schema]
+    return [
+        field_for(
+            setting, values.get(setting.name), path_gates=path_gates_for(schema, setting.name)
+        )
+        for setting in schema
+    ]
 
 
 def sections_for(

@@ -143,3 +143,21 @@ def test_an_unset_path_needed_outside_one_mode_says_which_mode(tmp_path):
     ])
     report = check_settings(schema, {"mode": "file", "mask_path": None})
     assert any("'mode' is not 'none'" in message for message in report.errors)
+
+
+def test_a_must_exist_path_behind_a_path_gate_is_demanded_only_while_the_gate_is_set(tmp_path):
+    """The reason names the gate as set, not on."""
+    from haemolynx.parsers.checks import check_settings
+    from haemolynx.parsers.schema import Schema, Setting
+
+    schema = Schema([
+        Setting("raw", "path", None, "The raw image", "S"),
+        Setting("classifier", "path", None, "What segments it", "S",
+                requires=("raw",), must_exist=True),
+    ])
+
+    assert check_settings(schema, {"raw": None, "classifier": None}).ok
+
+    report = check_settings(schema, {"raw": str(tmp_path / "raw.tif"), "classifier": None})
+    assert len(report.errors) == 1
+    assert "required because 'raw' is set" in report.errors[0]

@@ -49,14 +49,20 @@ PREREQUISITE_EQUALS = "equals"
 PREREQUISITE_NOT_EQUALS = "not_equals"
 
 
+#: The kinds a plain ``name`` / ``!name`` prerequisite may name: a bool, on
+#: or off, or a path, set or not -- an input the run reads only when it is
+#: given one (the raw image), gating what reads it the way a toggle does.
+PREREQUISITE_GATE_KINDS = ("bool", "path")
+
+
 def parse_prerequisite(prerequisite: str) -> tuple[str, str, str | None]:
     """``(name, test, expected)`` for one ``requires`` entry.
 
-    ``name`` asks for a bool to be on and ``!name`` for it to be off;
-    ``name=value`` asks a ``choice`` setting to hold one value and
-    ``name!=value`` to hold any other. *expected* is None for the two bool
-    forms. Every reader of a ``requires`` entry goes through this, so a form
-    cannot be understood in one place and misread in another.
+    ``name`` asks for a bool to be on (or a path to be set) and ``!name``
+    for it to be off (unset); ``name=value`` asks a ``choice`` setting to
+    hold one value and ``name!=value`` to hold any other. *expected* is None
+    for the two bool forms. Every reader of a ``requires`` entry goes through
+    this, so a form cannot be understood in one place and misread in another.
     """
     if "!=" in prerequisite:
         name, _, expected = prerequisite.partition("!=")
@@ -79,7 +85,8 @@ def is_prerequisite_met(prerequisite: str, values: Mapping[str, Any]) -> bool:
 
     A leading ``!`` negates it, which is how a setting says it applies only
     while some feature is *off* — an input path that a run would otherwise
-    generate for itself, for instance. ``name=value`` instead asks whether a
+    generate for itself, for instance. A path named this way is "on" while
+    it is set (an empty string is unset). ``name=value`` instead asks whether a
     ``choice`` setting is holding one specific value, for a setting that
     only makes sense under one of several modes rather than one on/off
     feature, and ``name!=value`` whether it is holding any other -- for a
@@ -101,18 +108,21 @@ def is_active(setting: "Setting", values: Mapping[str, Any]) -> bool:
     return all(is_prerequisite_met(p, values) for p in setting.requires)
 
 
-def describe_unmet_prerequisite(prerequisite: str) -> str:
+def describe_unmet_prerequisite(prerequisite: str, *, kind: str = "bool") -> str:
     """A sentence fragment naming why *prerequisite* (currently unmet) fails.
 
     Shared by every message that reports an unmet ``requires`` entry, so a
     ``name=value`` or ``name!=value`` prerequisite reads naturally everywhere
-    ``!name``/``name`` already did.
+    ``!name``/``name`` already did. *kind* is the named setting's: a path
+    gate is "not set" rather than "false".
     """
     name, test, expected = parse_prerequisite(prerequisite)
     if test == PREREQUISITE_EQUALS:
         return f"'{name}' is not {expected!r}"
     if test == PREREQUISITE_NOT_EQUALS:
         return f"'{name}' is {expected!r}"
+    if kind == "path":
+        return f"'{name}' is {'set' if test == PREREQUISITE_OFF else 'not set'}"
     if test == PREREQUISITE_OFF:
         return f"'{name}' is true"
     return f"'{name}' is false"
@@ -477,10 +487,10 @@ class Schema:
                         f"Setting '{setting.name}' requires '{name}', "
                         "which is not in the schema."
                     )
-                if by_name[name].kind != "bool":
+                if by_name[name].kind not in PREREQUISITE_GATE_KINDS:
                     raise ConfigError(
                         f"Setting '{setting.name}' requires '{name}', "
-                        "which is not a bool."
+                        "which is not a bool or a path."
                     )
         for section in {setting.section for setting in settings}:
             slug = section_key(section)
@@ -697,16 +707,31 @@ class Schema:
             unmet = [
                 prerequisite
                 for prerequisite in setting.requires
-                if not is_prerequisite_met(prerequisite, resolved)
+                if not self._prerequisite_in_effect(prerequisite, resolved)
             ]
             if unmet:
                 messages.append(
                     f"Setting '{setting.name}' is set to {value!r} but nothing "
                     "will read it while "
-                    + " and ".join(describe_unmet_prerequisite(u) for u in unmet)
+                    + " and ".join(
+                        describe_unmet_prerequisite(
+                            u, kind=self._by_name[prerequisite_name(u)].kind
+                        )
+                        for u in unmet
+                    )
                     + "."
                 )
         return messages
+
+    def _prerequisite_in_effect(self, prerequisite: str, values: Mapping[str, Any]) -> bool:
+        """:func:`is_prerequisite_met`, with a ``!gate`` also holding while
+        the gate is on but out of effect -- its own prerequisites unmet, as
+        an ilastik switch ticked with no raw image to segment is -- since what
+        the gate would have replaced is then read after all."""
+        name, test, _expected = parse_prerequisite(prerequisite)
+        if test == PREREQUISITE_OFF and not is_active(self._by_name[name], values):
+            return True
+        return is_prerequisite_met(prerequisite, values)
 
     def ineffective_settings(self, values: Mapping[str, Any]) -> list[str]:
         """Settings carrying a value that nothing will read, as messages.

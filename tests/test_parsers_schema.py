@@ -1,6 +1,7 @@
 """The settings schema: coercion, validation, and the GUI contract."""
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import pytest
@@ -182,12 +183,78 @@ def test_requires_must_name_a_setting_in_the_schema():
         Schema([Setting("a", "int", 1, "Only", "S", requires=("missing",))])
 
 
-def test_requires_must_name_a_bool():
-    with pytest.raises(ConfigError, match="which is not a bool"):
+def test_requires_must_name_a_bool_or_a_path():
+    with pytest.raises(ConfigError, match="which is not a bool or a path"):
         Schema([
             Setting("gate", "int", 1, "Not a flag", "S"),
             Setting("a", "int", 1, "Dependent", "S", requires=("gate",)),
         ])
+
+
+def _path_gated_schema() -> Schema:
+    return Schema([
+        Setting("raw", "path", None, "The raw image", "S"),
+        Setting("channel", "int", None, "Its channel", "S", requires=("raw",)),
+        Setting("mask", "path", None, "A mask instead", "S", requires=("!raw",)),
+    ])
+
+
+def test_a_path_prerequisite_is_met_while_the_path_is_set():
+    """A ``requires`` entry may name a path: an input the run reads only when
+    given one (the raw image) gates what reads it the way a toggle does."""
+    from haemolynx.parsers.schema import is_active, is_prerequisite_met
+
+    schema = _path_gated_schema()
+    assert not is_prerequisite_met("raw", {"raw": None})
+    assert not is_prerequisite_met("raw", {"raw": ""})
+    assert not is_prerequisite_met("raw", {})
+    assert is_prerequisite_met("raw", {"raw": "stack.tif"})
+    assert is_prerequisite_met("!raw", {"raw": None})
+    assert not is_prerequisite_met("!raw", {"raw": "stack.tif"})
+    assert is_active(schema["channel"], {"raw": "stack.tif"})
+    assert not is_active(schema["channel"], {"raw": None})
+    assert is_active(schema["mask"], {"raw": None})
+
+
+def test_an_unmet_path_prerequisite_reads_as_not_set():
+    from haemolynx.parsers.schema import describe_unmet_prerequisite
+
+    assert describe_unmet_prerequisite("raw", kind="path") == "'raw' is not set"
+    assert describe_unmet_prerequisite("!raw", kind="path") == "'raw' is set"
+    assert describe_unmet_prerequisite("flag") == "'flag' is false"
+    assert describe_unmet_prerequisite("!flag", kind="bool") == "'flag' is true"
+
+
+def test_what_an_out_of_effect_switch_would_replace_is_read_after_all():
+    """``mask`` applies while the ilastik switch is not in effect. Ticked
+    with no raw image to segment, the switch does nothing and the mask is
+    what the run reads, so no warning about it."""
+    schema = Schema([
+        Setting("raw", "path", None, "The raw image", "S"),
+        Setting("use_ilastik", "bool", False, "Segment it", "S", requires=("raw",)),
+        Setting("mask", "path", None, "A segmented image instead", "S",
+                requires=("!use_ilastik",)),
+    ])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", IneffectiveSettingWarning)
+        schema.validate({"raw": None, "use_ilastik": False, "mask": "m.tif"})
+        with pytest.warns(IneffectiveSettingWarning, match="'use_ilastik' is set to True"):
+            schema.validate({"raw": None, "use_ilastik": True, "mask": "m.tif"})
+
+    with pytest.warns(IneffectiveSettingWarning, match="'mask'.*while 'use_ilastik' is true"):
+        schema.validate({"raw": "stack.tif", "use_ilastik": True, "mask": "m.tif"})
+
+
+def test_a_value_behind_an_unset_path_is_reported_as_unread():
+    schema = _path_gated_schema()
+
+    with pytest.warns(IneffectiveSettingWarning, match="while 'raw' is not set"):
+        schema.validate({"channel": 1})
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        schema.validate({"raw": "stack.tif", "channel": 1})
 
 
 def test_a_default_that_breaks_its_own_rules_fails_at_import():

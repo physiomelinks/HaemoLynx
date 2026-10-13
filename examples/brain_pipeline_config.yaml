@@ -10,13 +10,13 @@ input_and_segmentation:
   input_path: examples/images/brain_microvessels.tiff
   # What the segmented vessels are, and so what a diameter taken from the segmentation measures: plasma_column for a mask of the channel blood flows in (a luminal label, as a plasma stain images it), or endothelial (anatomical) for a mask of the vessel wall to wall, which includes the ~1.1 um endothelial surface layer. The pries viscosity law takes the matching form for every diameter the segmentation gave -- the mask's own widths, the class medians and the table; a diameter measured from the raw image carries the raw image's own. Choosing endothelial for a plasma label subtracts that layer twice and roughly quintuples capillary resistance  [one of: plasma_column, endothelial]
   segmentation_source: plasma_column
-  # The raw (unsegmented) image of the same field, one channel of it (raw_image_channel): what ilastik segments when it runs, what diameters are measured from, what 'Check segmented image' and 'Optimise settings' compare the segmentation with, and where tissue volume is found unless tissue_raw_tiff_path names another. ilastik reads the whole file, as its project was trained on it  [must exist]
+  # The raw (unsegmented) image of the same field, one channel of it (raw_image_channel): what ilastik segments when it runs, what diameters are measured from, what 'Check segmented image' and 'Optimise settings' compare the segmentation with, and where tissue volume is found unless tissue_raw_tiff_path names another. ilastik reads the whole file, as its project was trained on it. Optional: without one the run goes on from the segmented image alone, and everything that reads the raw image (ilastik, measuring diameters from it) is off  [must exist]
   raw_image_path: null
-  # Which channel of a multi-channel raw image to read, counting from 0 (the panel lists them as Fiji names them: C1 is 0); leave unset for a single-channel file  [range 0..]
+  # Which channel of a multi-channel raw image to read, counting from 0 (the panel lists them as Fiji names them: C1 is 0); leave unset for a single-channel file  [range 0..; needs raw_image_path]
   raw_image_channel: null
-  # What the raw image's channel stains: plasma_column for a luminal (plasma) label filling the channel blood flows in, endothelial for the vessel wall (claudin-5, CD31, isolectin...), or auto to tell from how it reads across the segmented vessels, bright in the middle or at the wall. It picks how diameters are measured from it (FWHM, or the lumen inside the wall ring) and what those diameters mean: wall to wall for an endothelial stain, whose viscosity then takes that form of the law. Diameters taken from the segmentation itself follow segmentation_source instead  [one of: auto, plasma_column, endothelial]
+  # What the raw image's channel stains: plasma_column for a luminal (plasma) label filling the channel blood flows in, endothelial for the vessel wall (claudin-5, CD31, isolectin...), or auto to tell from how it reads across the segmented vessels, bright in the middle or at the wall. It picks how diameters are measured from it (FWHM, or the lumen inside the wall ring) and what those diameters mean: wall to wall for an endothelial stain, whose viscosity then takes that form of the law. Diameters taken from the segmentation itself follow segmentation_source instead  [one of: auto, plasma_column, endothelial; needs raw_image_path]
   raw_image_stain: auto
-  # Segment the main input image with ilastik instead of reading a segmented file
+  # Segment the raw image (raw_image_path) with ilastik instead of reading a segmented file  [needs raw_image_path]
   use_ilastik_segmentation: false
   # Use this trained ilastik project to segment the main image  [needs use_ilastik_segmentation; must exist]
   ilastik_classifier_path: classifiers/nerve_classifier.ilp
@@ -791,7 +791,7 @@ network_handling:
 # FWHM diameter measurement
 # ------------------------------------------------------------------------
 fwhm_diameter_measurement:
-  # Measure each vessel's diameter from the raw image (raw_image_path), by the method its stain calls for (raw_image_stain): FWHM across a plasma label's lumen, or the lumen inside the wall ring of an endothelial stain. A vessel it cannot read falls back to the segmentation mask, then the table. Diameters read from an endothelial stain run wall to wall, and their viscosity takes that form of the law  [needs run_haemodynamics]
+  # Measure each vessel's diameter from the raw image (raw_image_path), by the method its stain calls for (raw_image_stain): FWHM across a plasma label's lumen, or the lumen inside the wall ring of an endothelial stain. A vessel it cannot read falls back to the segmentation mask, then the table. Diameters read from an endothelial stain run wall to wall, and their viscosity takes that form of the law  [needs run_haemodynamics and raw_image_path]
   measure_diameters_from_raw_image: false
   # Measure FWHM diameters from the raw image; turn off to keep diameters already on the graph  [needs measure_diameters_from_raw_image and raw_image_stain not endothelial]
   do_fwhm_measurement: true

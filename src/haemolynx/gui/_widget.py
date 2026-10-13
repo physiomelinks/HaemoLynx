@@ -33,8 +33,8 @@ from haemolynx.gui.form import (
     SHARED_ILASTIK_SETTING_SET,
     display_value_for,
     channel_choices,
-    prerequisite_chain,
     raw_image_stain_note,
+    unmet_chain,
     shared_ilastik_host,
 )
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
@@ -163,7 +163,6 @@ from haemolynx.parsers import (
     prefixed_arguments,
     prerequisite_name,
 )
-from haemolynx.parsers.schema import is_prerequisite_met
 from haemolynx.pipeline import (
     default_schema,
     load_volume_for_skeletonise,
@@ -8635,9 +8634,8 @@ def _perturbation_controls(viewer, rows, fields, schema, report):
 
     def entry_shows(name: str, values: Mapping[str, Any]) -> bool:
         """Whether an entry's option applies, given the whole chain of gates above it."""
-        return fields[name].is_visible(values) and all(
-            is_prerequisite_met(rule, values) for rule in prerequisite_chain(schema, name)
-        )
+        unmet = unmet_chain(schema, name, values)
+        return fields[name].is_visible(values, unmet) and not unmet
 
     def entry_values(editor) -> dict[str, Any]:
         """What this entry's run would read: the baseline, then its own options."""
@@ -11969,18 +11967,14 @@ def settings_widget(napari_viewer=None):
         # Moving rows into a container re-unifies its label widths.
         _wrap_row_labels(tab_widget)
 
-    #: Every gate above each row (see haemolynx.gui.form.prerequisite_chain).
-    chains = {name: prerequisite_chain(schema, name) for name in fields}
-
     def chain_met(name: str, values: Mapping[str, Any]) -> bool:
-        return all(is_prerequisite_met(rule, values) for rule in chains.get(name, ()))
+        """Whether every gate above *name* holds (haemolynx.gui.form.unmet_chain)."""
+        return not unmet_chain(schema, name, values)
 
     def row_shows(name: str, values: Mapping[str, Any]) -> bool:
-        """Whether *name*'s row would show: hidden rows need their whole chain met."""
-        field = fields[name]
-        if not field.is_visible(values):
-            return False
-        return chain_met(name, values) if field.hide_when_unmet else True
+        """Whether *name*'s row would show: a hidden row needs its whole chain
+        met, bar a path gate it names itself (the raw image), which greys it."""
+        return fields[name].is_visible(values, unmet_chain(schema, name, values))
 
     #: What the last run read the raw image's stain as when the setting is
     #: auto (the graph's raw_image_stain, with its reading): None until a run
@@ -12044,20 +12038,23 @@ def settings_widget(napari_viewer=None):
                 continue
             field = fields[name]
             # The whole chain of gates above the row, not only its own.
-            enabled = chain_met(name, gates)
+            unmet = unmet_chain(schema, name, gates)
+            enabled = not unmet
             if field.hide_when_unmet:
                 # Input / Diameters / FWHM / Boundaries vessel / Graph
-                # centreline options: only relevant nested knobs appear.
-                widget.visible = field.is_visible(values) and enabled
-                widget.enabled = True
-                widget.tooltip = field.help
-            else:
-                widget.enabled = enabled
-                widget.tooltip = (
-                    field.help
-                    if enabled
-                    else replace(field, enabled_by=chains[name]).why_disabled(values)
-                )
+                # centreline options: only relevant nested knobs appear. A
+                # row whose only unmet gate is the raw image it names stays,
+                # greyed, so what to set is in view; a hidden row is left
+                # enabled, as it always was.
+                # (Computed, not read back: a row on a tab that is not
+                # current reads as hidden whatever its gates say.)
+                visible = field.is_visible(values, unmet)
+                widget.visible = visible
+                enabled = enabled or not visible
+            widget.enabled = enabled
+            widget.tooltip = (
+                field.help if enabled else replace(field, enabled_by=unmet).why_disabled(gates)
+            )
 
         for group, section_names in section_group_boxes.values():
             # Not `rows[name].visible`: magicgui reads that back through the
@@ -12097,8 +12094,10 @@ def settings_widget(napari_viewer=None):
         # only ever toggles `.enabled`. Hiding it entirely (rather than
         # greying it out) matches every other `hide_when_unmet` FWHM row
         # right next to it.
-        fwhm_could_run = bool(values.get("measure_diameters_from_raw_image")) and (
-            resolved_raw_image_stain(values) != "endothelial"
+        fwhm_could_run = (
+            bool(values.get("measure_diameters_from_raw_image"))
+            and bool(values.get("raw_image_path"))
+            and resolved_raw_image_stain(values) != "endothelial"
         )
         if optimise_fwhm_button is not None:
             optimise_fwhm_button.visible = fwhm_could_run

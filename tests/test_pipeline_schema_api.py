@@ -216,21 +216,36 @@ def _non_default_probe_value(setting):
     return None
 
 
-def _first_unmet_prerequisite(setting) -> tuple[str, object]:
-    """One ``(setting_name, value)`` pair that makes *setting*'s first
-    prerequisite unmet -- ``all()`` over requires means unmeeting just one
-    is enough to make the whole setting ineffective."""
+def _value_meeting(prerequisite: str) -> tuple[str, object]:
+    """One ``(setting_name, value)`` pair under which *prerequisite* holds."""
+    schema = default_schema()
+    name, test, expected = parse_prerequisite(prerequisite)
+    if test in ("equals", "not_equals"):
+        choices = schema[name].choices or ()
+        return name, expected if test == "equals" else next(c for c in choices if c != expected)
+    if test == "off":
+        return name, None if schema[name].kind == "path" else False
+    return name, "_probe" if schema[name].kind == "path" else True
+
+
+def _first_unmet_prerequisite(setting) -> dict[str, object]:
+    """Values that make *setting*'s first prerequisite unmet -- ``all()``
+    over requires means unmeeting just one is enough to make the whole
+    setting ineffective. A ``!gate`` rule is unmet only while the gate is
+    *in effect*, so the gate's own prerequisites are met alongside it."""
     prerequisite = setting.requires[0]
     name, test, expected = parse_prerequisite(prerequisite)
     if test == "equals":
         choices = default_schema()[name].choices or ()
         other = next((c for c in choices if c != expected), expected)
-        return name, other
+        return {name: other}
     if test == "not_equals":
-        return name, expected
+        return {name: expected}
     if test == "off":
-        return name, True
-    return name, False
+        values = dict(_value_meeting(rule) for rule in default_schema()[name].requires)
+        values[name] = True
+        return values
+    return {name: None if default_schema()[name].kind == "path" else False}
 
 
 def test_every_requires_prerequisite_names_a_real_setting():
@@ -281,16 +296,12 @@ def test_every_gated_setting_is_ineffective_when_its_prerequisite_is_off():
         if probe is None:
             skipped.append(setting.name)
             continue
-        unmet_name, unmet_value = _first_unmet_prerequisite(setting)
-        resolved = {
-            **defaults,
-            setting.name: setting.coerce(probe),
-            unmet_name: unmet_value,
-        }
+        unmet = _first_unmet_prerequisite(setting)
+        resolved = {**defaults, **unmet, setting.name: setting.coerce(probe)}
         messages = schema.ineffective_settings(resolved)
         assert any(f"Setting '{setting.name}'" in message for message in messages), (
             f"{setting.name} requires {setting.requires!r}, but setting it to "
-            f"{probe!r} while {unmet_name}={unmet_value!r} did not get flagged "
+            f"{probe!r} while {unmet!r} did not get flagged "
             "as ineffective -- something may still read it while its own "
             "prerequisite is off."
         )

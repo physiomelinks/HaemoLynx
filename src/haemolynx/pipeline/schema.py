@@ -211,7 +211,9 @@ SCHEMA = Schema(
                 "measured from, what 'Check segmented image' and 'Optimise settings' compare "
                 "the segmentation with, and where tissue volume is found unless "
                 "tissue_raw_tiff_path names another. ilastik reads the whole file, as its "
-                "project was trained on it"
+                "project was trained on it. Optional: without one the run goes on from "
+                "the segmented image alone, and everything that reads the raw image "
+                "(ilastik, measuring diameters from it) is off"
             ),
             section=_INPUT_AND_SEGMENTATION,
             must_exist=True,
@@ -232,6 +234,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             minimum=0,
+            requires=("raw_image_path",),
             always_effective=True,
             placeholder="single-channel file",
         ),
@@ -252,14 +255,19 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             value_aliases={"anatomical": "endothelial", "luminal": "plasma_column"},
+            requires=("raw_image_path",),
             always_effective=True,
         ),
         Setting(
             name="use_ilastik_segmentation",
             kind="bool",
             default=False,
-            help="Segment the main input image with ilastik instead of reading a segmented file",
+            help=(
+                "Segment the raw image (raw_image_path) with ilastik instead of reading a "
+                "segmented file"
+            ),
             section=_INPUT_AND_SEGMENTATION,
+            requires=("raw_image_path",),
         ),
         Setting(
             name="ilastik_classifier_path",
@@ -4973,7 +4981,7 @@ SCHEMA = Schema(
                 "of the law"
             ),
             section=_FWHM,
-            requires=("run_haemodynamics",),
+            requires=("run_haemodynamics", "raw_image_path"),
         ),
         Setting(
             name="do_fwhm_measurement",

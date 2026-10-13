@@ -357,6 +357,26 @@ class PipelineResume:
     network: VesselNetwork | None = None
 
 
+def raw_image_is_set(settings: Mapping[str, Any]) -> bool:
+    """Whether the run names a raw image (``raw_image_path``). It is optional:
+    without one, everything that reads it -- ilastik segmentation, measuring
+    diameters from it, the raw evidence round the mask -- is off, whatever
+    its own switch says (the panel greys those switches out), and the run
+    goes on from the segmented image alone."""
+    return settings.get("raw_image_path") not in (None, "")
+
+
+def ilastik_segments(settings: Mapping[str, Any]) -> bool:
+    """``use_ilastik_segmentation`` in effect: on, and a raw image to segment."""
+    return bool(settings.get("use_ilastik_segmentation")) and raw_image_is_set(settings)
+
+
+def measures_diameters_from_raw_image(settings: Mapping[str, Any]) -> bool:
+    """``measure_diameters_from_raw_image`` in effect: on, and a raw image to
+    measure from. Without one the diameter chain starts at the mask."""
+    return bool(settings.get("measure_diameters_from_raw_image")) and raw_image_is_set(settings)
+
+
 def segmented_input_path(settings: dict) -> Path | None:
     """The segmented image the run analyses: the Input tab's ``input_path``,
     or -- when ilastik does the segmenting -- ilastik's output, which is not
@@ -368,7 +388,7 @@ def segmented_input_path(settings: dict) -> Path | None:
     it lies in ``ilastik_output_dir``. Otherwise the output is derived where
     `segment` writes it -- that stage's own naming rule."""
     produced = settings.get("input_path")
-    if settings.get("use_ilastik_segmentation") and settings.get("raw_image_path"):
+    if ilastik_segments(settings):
         output_dir = Path(settings["ilastik_output_dir"])
         if produced is not None and Path(produced).parent == output_dir:
             return Path(produced)
@@ -404,11 +424,20 @@ def segment(
         settings["input_path"] = Path(settings["input_path"])
     if segmented_path is not None:
         logger.info(f"Resuming with the segmented image already made: {settings['input_path']}")
-    elif settings["use_ilastik_segmentation"]:
-        if settings.get("raw_image_path") is None:
+    elif settings["use_ilastik_segmentation"] and not raw_image_is_set(settings):
+        # The raw image is optional, and ilastik has nothing without it: the
+        # run reads the segmented image instead, as it would with the switch
+        # off (the panel greys it out while no raw image is set).
+        if settings["input_path"] is None:
             raise ValueError(
-                "use_ilastik_segmentation=True segments the raw image, but raw_image_path is not set."
+                "use_ilastik_segmentation=True segments the raw image, but raw_image_path is "
+                "not set, and there is no segmented image (input_path) to read instead."
             )
+        logger.warning(
+            "use_ilastik_segmentation is on but raw_image_path is not set: ilastik is skipped "
+            f"and the segmented image is read instead: {settings['input_path']}"
+        )
+    elif settings["use_ilastik_segmentation"]:
         unsegmented_image_path = Path(settings["raw_image_path"])
         unsegmented_image_path = io.resolve_image_path_with_optional_zip(unsegmented_image_path)
         if settings["ilastik_classifier_path"] is None:
@@ -2657,7 +2686,7 @@ def _haemodynamics_apply_config(
         # Unset means the run's own segmented input -- what the skeleton was
         # made from.
         edt["edt_mask_path"] = segmented_input_path(settings)
-    measure = bool(settings.get("measure_diameters_from_raw_image"))
+    measure = measures_diameters_from_raw_image(settings)
     fwhm = dict(schema.section_values(settings, "FWHM diameter measurement"))
     fwhm.update(
         use_fwhm_edge_diameters=measure and stain != raw_stain.ENDOTHELIAL,
@@ -2777,7 +2806,13 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
             # perturbation entries.
             stain = recorded_raw_image_stain(settings)
             raw_volume = None
-            if settings.get("measure_diameters_from_raw_image"):
+            if settings.get("measure_diameters_from_raw_image") and not raw_image_is_set(settings):
+                logger.warning(
+                    "measure_diameters_from_raw_image is on but raw_image_path is not set: "
+                    "diameters are taken from the segmentation (the mask, class medians and "
+                    "the table) instead."
+                )
+            if measures_diameters_from_raw_image(settings):
                 stain, reading, raw_volume = resolve_raw_image_stain(settings, network)
                 G.graph["raw_image_stain"] = stain
                 # The build's own reading stands unless the image was read here.
@@ -2804,7 +2839,7 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
             )
             if "fwhm" in haemo_results:
                 logger.info(f"FWHM diameter measurement summary: {haemo_results['fwhm']}")
-            elif not settings["measure_diameters_from_raw_image"]:
+            elif not measures_diameters_from_raw_image(settings):
                 logger.info(
                     "Vessel diameters: manual mode (DIAMETER_BY_BRANCH_ORDER / "
                     "table diameters without per-edge FWHM)."

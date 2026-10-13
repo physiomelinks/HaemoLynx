@@ -1408,3 +1408,55 @@ def test_perturbation_rows_are_not_squashed(panel):
     assert laid_out
     for row in laid_out:
         assert row.height() >= row.layout().minimumSize().height(), row
+
+
+@pytest.mark.gui
+def test_the_raw_image_rows_grey_out_on_every_tab_while_no_raw_image_is_entered(panel, tmp_path):
+    """Input: channel, stain and the ilastik switch; Diameters: measuring
+    from the raw image. Greyed, in view, saying what to set -- and back as
+    soon as a raw image is entered. The segmented-image row stays whatever
+    the ilastik box says while there is nothing for ilastik to segment."""
+    import tifffile
+    from qtpy.QtWidgets import QApplication
+
+    widget, _viewer = panel
+    widget.show()
+    widget._haemolynx_expand_advanced()
+    rows = widget._haemolynx_rows()
+    raw_rows = (
+        "raw_image_channel",
+        "raw_image_stain",
+        "use_ilastik_segmentation",
+        "measure_diameters_from_raw_image",
+    )
+
+    # A row on a tab that is not current reads as not visible whatever its
+    # gates say, so each tab is shown before its rows are read.
+    def shown(name: str) -> bool:
+        _show_tab(widget, "Diameters" if name.startswith("measure") else "Input")
+        return bool(rows[name].visible)
+
+    rows["raw_image_path"].value = ""
+    rows["run_haemodynamics"].value = True
+    QApplication.processEvents()
+    for name in raw_rows:
+        assert shown(name) is True, name
+        assert rows[name].enabled is False, name
+        assert "'raw_image_path' is not set" in rows[name].tooltip, name
+    assert shown("input_path") is True
+    assert rows["input_path"].enabled is True
+
+    rows["use_ilastik_segmentation"].value = True
+    QApplication.processEvents()
+    assert shown("input_path") is True
+    assert shown("ilastik_classifier_path") is False
+
+    raw = tmp_path / "raw.tif"
+    tifffile.imwrite(raw, np.zeros((2, 4, 4), dtype=np.uint8))
+    rows["raw_image_path"].value = str(raw)
+    QApplication.processEvents()
+    for name in raw_rows:
+        assert rows[name].enabled is True, name
+        assert "'raw_image_path'" not in rows[name].tooltip, name
+    assert shown("input_path") is False
+    assert shown("ilastik_classifier_path") is True

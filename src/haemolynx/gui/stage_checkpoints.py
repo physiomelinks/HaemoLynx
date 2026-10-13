@@ -40,6 +40,7 @@ from haemolynx.pipeline.progress import STAGES
 from haemolynx.pipeline.stages import (
     TOPOLOGY_STEP,
     PipelineResume,
+    measures_diameters_from_raw_image,
     recorded_raw_image_stain,
     segmented_input_path,
 )
@@ -845,7 +846,7 @@ class StageCheckpoints:
             # not endothelial.
             use_fwhm_edge_diameters=bool(
                 settings
-                and settings.get("measure_diameters_from_raw_image")
+                and measures_diameters_from_raw_image(settings)
                 and recorded_raw_image_stain(settings, graph) != "endothelial"
             ),
         )

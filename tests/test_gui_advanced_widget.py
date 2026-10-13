@@ -74,9 +74,20 @@ def test_clicking_the_button_opens_it(panel):
     assert _shown(panel, "Skeletonise", panel._haemolynx_rows()["skeleton_bundle_scan_size"])
 
 
-def test_a_button_is_hidden_while_the_row_it_hangs_off_is_off(panel):
+def _a_raw_image(tmp_path):
+    """A raw image for the Input tab: what reads it is greyed out without one."""
+    import numpy as np
+    import tifffile
+
+    path = tmp_path / "raw.tif"
+    tifffile.imwrite(path, np.zeros((2, 4, 4), dtype=np.uint8))
+    return str(path)
+
+
+def test_a_button_is_hidden_while_the_row_it_hangs_off_is_off(panel, tmp_path):
     rows = panel._haemolynx_rows()
     fwhm = panel._haemolynx_advanced["assign_diameters:measure_diameters_from_raw_image"]
+    rows["raw_image_path"].value = _a_raw_image(tmp_path)
 
     rows["measure_diameters_from_raw_image"].value = False
     _process()
@@ -87,10 +98,11 @@ def test_a_button_is_hidden_while_the_row_it_hangs_off_is_off(panel):
     assert _shown(panel, "Diameters", fwhm.container)
 
 
-def test_the_decoy_check_is_behind_a_button_under_do_fwhm_measurement(panel):
+def test_the_decoy_check_is_behind_a_button_under_do_fwhm_measurement(panel, tmp_path):
     rows = panel._haemolynx_rows()
     decoy = panel._haemolynx_advanced["assign_diameters:do_fwhm_measurement"]
     fwhm = panel._haemolynx_advanced["assign_diameters:measure_diameters_from_raw_image"]
+    rows["raw_image_path"].value = _a_raw_image(tmp_path)
     rows["measure_diameters_from_raw_image"].value = True
     rows["do_fwhm_measurement"].value = True
     _process()

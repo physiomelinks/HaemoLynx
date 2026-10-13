@@ -100,7 +100,7 @@ def check_settings(
         if value is None:
             report.add_error(
                 f"{setting.help} — '{setting.name}' is not set but is required "
-                f"{_because(setting)}."
+                f"{_because(setting, schema)}."
             )
             continue
         exists, detail = resolve_existing_path(value)
@@ -114,18 +114,21 @@ def check_settings(
     return report
 
 
-def _because(setting: Setting) -> str:
+def _because(setting: Setting, schema: Schema | None = None) -> str:
+    """Why *setting* is read: its prerequisites as they hold. A path gate
+    (see ``parsers.schema.PREREQUISITE_GATE_KINDS``) is set, not on."""
     if not setting.requires:
         return "for every run"
     parts = []
     for prerequisite in setting.requires:
         name, test, expected = parse_prerequisite(prerequisite)
+        is_path = schema is not None and name in schema and schema[name].kind == "path"
         if test == PREREQUISITE_EQUALS:
             parts.append(f"'{name}' is '{expected}'")
         elif test == PREREQUISITE_NOT_EQUALS:
             parts.append(f"'{name}' is not '{expected}'")
         elif test == PREREQUISITE_OFF:
-            parts.append(f"'{name}' is off")
+            parts.append(f"'{name}' is {'not set' if is_path else 'off'}")
         else:
-            parts.append(f"'{name}' is on")
+            parts.append(f"'{name}' is {'set' if is_path else 'on'}")
     return "because " + " and ".join(parts)

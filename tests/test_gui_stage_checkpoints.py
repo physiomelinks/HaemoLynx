@@ -258,7 +258,7 @@ def test_plan_restore_hands_the_graph_over_and_leaves_graph_pkl_alone(tmp_path):
     graph = a_graph(resistance=1.0)
     results = built(graph)
     settings = _settings(tmp_path)
-    settings["measure_diameters_from_raw_image"] = True
+    settings.update(measure_diameters_from_raw_image=True, raw_image_path=tmp_path / "raw.tif")
     (tmp_path / "out").mkdir()
     graph_pkl = tmp_path / "out" / "stack_graph.pkl"
     graph_pkl.write_bytes(b"what graph building made")
@@ -881,7 +881,11 @@ def test_run_from_haemodynamics_reads_the_stain_the_run_resolved(tmp_path, read_
     checkpoints = StageCheckpoints()
     results = built()
     settings = _settings(tmp_path)
-    settings.update(measure_diameters_from_raw_image=True, raw_image_stain="auto")
+    settings.update(
+        measure_diameters_from_raw_image=True,
+        raw_image_path=tmp_path / "raw.tif",
+        raw_image_stain="auto",
+    )
     (tmp_path / "out").mkdir()
     G = a_graph()
     if read_as is not None:
