@@ -279,14 +279,44 @@ def test_the_weakest_specimen_is_named_in_advance():
     assert get_specimen(WEAKEST_SPECIMEN_ID).group == "WKY"
 
 
-def test_segmentation_status_reports_each_stage_separately():
+def test_segmentation_status_reports_each_stage_separately(tmp_path, monkeypatch):
+    """``ready`` means the mask and distance transform exist; the other stages are reported."""
+    import ImageLynx.specimens as specimens
+
+    monkeypatch.setattr(specimens, "ACQUISITION_ROOT", tmp_path / "acquisitions")
+    monkeypatch.setattr(specimens, "ILASTIK_INPUT_DIR", tmp_path / "ilastik_inputs")
+    monkeypatch.setattr(specimens, "PROBABILITIES_DIR", tmp_path / "ilastik_probabilities")
+    monkeypatch.setattr(specimens, "MASK_DIR", tmp_path / "masks")
+
+    absent = {"WKY-A": None, "SHR-A": "probabilities_path", "SHR-B": "mask_path"}
+    for specimen_id, missing in absent.items():
+        specimen = get_specimen(specimen_id)
+        for stage in ("acquisition_path", "ilastik_input_path", "probabilities_path",
+                      "mask_path", "edt_path"):
+            if stage != missing:
+                path = getattr(specimen, stage)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+
     status = segmentation_status()
     assert set(status) == {s.specimen_id for s in SPECIMENS}
-    for entry in status.values():
-        assert entry["group"] in GROUPS
-        assert set(entry["stages"]) == {"acquired", "preprocessed", "predicted", "masked"}
-        assert isinstance(entry["missing_inputs"], list)
-        assert isinstance(entry["ready"], bool)
+
+    complete = status["WKY-A"]
+    assert complete["group"] == "WKY"
+    assert complete["stages"] == {"acquired": True, "preprocessed": True,
+                                  "predicted": True, "masked": True}
+    assert complete["missing_inputs"] == []
+    assert complete["ready"] is True
+
+    no_map = status["SHR-A"]
+    assert no_map["stages"]["predicted"] is False
+    assert no_map["missing_inputs"] == [get_specimen("SHR-A").probabilities_path.name]
+    assert no_map["ready"] is True
+
+    no_mask = status["SHR-B"]
+    assert no_mask["stages"]["masked"] is False
+    assert no_mask["missing_inputs"] == [get_specimen("SHR-B").mask_path.name]
+    assert no_mask["ready"] is False
 
 
 # --- Pipeline wiring -----------------------------------------------------------------------
