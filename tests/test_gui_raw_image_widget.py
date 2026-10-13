@@ -131,3 +131,17 @@ def test_fwhms_internal_label_values_have_no_row_and_stay_at_their_defaults(pane
     assert rows[name] not in list(panel._haemolynx_diameters_settings)
     assert not _shown(panel, rows[name])
     assert all(name not in button.names for button in panel._haemolynx_advanced.values())
+
+
+def test_measuring_from_the_raw_image_turns_the_hidden_fwhm_measurement_on(panel):
+    """Left off by an old config, FWHM would keep the diameters already on the
+    graph, and "Do FWHM measurement" has no checkbox to notice it by."""
+    rows = panel._haemolynx_rows()
+    rows["measure_diameters_from_raw_image"].value = False
+    rows["do_fwhm_measurement"].value = False
+    _process()
+
+    rows["measure_diameters_from_raw_image"].value = True
+    _process()
+
+    assert rows["do_fwhm_measurement"].value is True

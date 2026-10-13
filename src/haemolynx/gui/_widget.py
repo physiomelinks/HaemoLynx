@@ -10976,7 +10976,7 @@ def _post_processing_controls(
 
     def raw_routing():
         """The raw data and its cost field -- FWHM's own copy when it is in the
-        viewer, else the Raw data file, read once -- and why not, if not."""
+        viewer, else the run's raw image, read once -- and why not, if not."""
         fwhm = layer(FWHM_RAW)
         if fwhm is not None:
             data = fwhm.data
@@ -11918,10 +11918,11 @@ def settings_widget(napari_viewer=None):
                 widget.tooltip = fields[name].help
                 continue
             if name == "do_fwhm_measurement":
-                # The Diameter measurement choice turns this on for FWHM and
-                # off for the other two. The row stays in the layout so the
-                # decoy-check button and the raw-section fallback keep their
-                # place, but the checkbox itself is not shown.
+                # Turning on "Measure diameters from the raw image" turns
+                # this on (below); a resumed run may turn it off on its own,
+                # to keep diameters already measured. The row stays in the
+                # layout so the decoy-check button and the raw-section
+                # fallback keep their place, but the checkbox is not shown.
                 widget.visible = False
                 widget.enabled = True
                 widget.tooltip = fields[name].help
@@ -12030,6 +12031,16 @@ def settings_widget(napari_viewer=None):
     for name in SKIP_FOR_RESUME:
         if name in rows:
             rows[name].changed.connect(snapshot_skip_toggles)
+
+    def measuring_turns_fwhm_measurement_on(*_args) -> None:
+        """"Do FWHM measurement" has no checkbox of its own, so measuring
+        from the raw image turns it on: left off by an old config or a
+        resume, FWHM would keep the diameters already on the graph."""
+        if rows["measure_diameters_from_raw_image"].value and not rows["do_fwhm_measurement"].value:
+            rows["do_fwhm_measurement"].value = True
+
+    if "measure_diameters_from_raw_image" in rows and "do_fwhm_measurement" in rows:
+        rows["measure_diameters_from_raw_image"].changed.connect(measuring_turns_fwhm_measurement_on)
 
     bars = ProgressBars()
     run_state = RunState(bars=bars)

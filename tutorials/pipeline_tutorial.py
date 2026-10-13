@@ -303,7 +303,7 @@ if RUN_STAGE_0_ILASTIK:
     TUTORIAL_OVERRIDES.update(
         {
             "use_ilastik_segmentation": True,
-            "ilastik_unsegmented_image_path": Path("/path/to/your/raw_microscopy.tif"),
+            "raw_image_path": Path("/path/to/your/raw_microscopy.tif"),
             "ilastik_classifier_path": Path("/path/to/your_pixel_classifier.ilp"),
             "ilastik_executable": os.environ.get("ILASTIK_EXECUTABLE", "ilastik"),
             "ilastik_output_dir": OUTPUT_DIR / "segmentation",
@@ -509,7 +509,7 @@ assert boundaries.inlet_nodes and boundaries.outlet_nodes, (
 # `assign_diameters()` walks out from the inlets to give every edge a
 # **branch order**, then uses that order as the key into the diameter table
 # (`diameter_by_branch_order`, derived from the settings). With
-# `use_fwhm_edge_diameters` on it measures each vessel from the raw image instead
+# `measure_diameters_from_raw_image` on it measures each vessel from the raw image instead
 # and the table is only a fallback.
 # 
 # `build_haemodynamic_model()` turns diameter and length into a **resistance** for

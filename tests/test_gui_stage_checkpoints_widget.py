@@ -383,9 +383,10 @@ def test_revert_hands_the_graph_over_and_never_writes_graph_pkl(panel):
 
     assert rows["do_skeletonize"].value is False
     assert rows["do_graph_building"].value is True
-    # The menu starts on None, so measurement is off, and reverting here
-    # puts that back. Nothing had selected FWHM.
-    assert rows["do_fwhm_measurement"].value is False
+    # A run from Diameters measures again, so "Do FWHM measurement" keeps
+    # the value it had: its default, on (measuring from the raw image is
+    # off, so FWHM does not run either way).
+    assert rows["do_fwhm_measurement"].value is True
     assert "do_skeletonize" in widget._haemolynx_report()
     assert not list(tmp_path.rglob("*_graph.pkl"))
 
@@ -395,7 +396,7 @@ def test_revert_from_haemodynamics_turns_off_fwhm_remeasurement(panel):
     widget, viewer, _tmp = panel
     _seed_run(widget, viewer, through="post_process")
     rows = widget._haemolynx_rows()
-    rows["use_fwhm_edge_diameters"].value = True
+    rows["measure_diameters_from_raw_image"].value = True
     rows["do_fwhm_measurement"].value = True
 
     widget._haemolynx_revert("6. Haemodynamics")
@@ -632,7 +633,7 @@ def test_each_run_from_starts_from_the_users_own_skip_toggles(panel):
     widget, viewer, _tmp = panel
     _seed_run(widget, viewer, through="solve")
     rows = widget._haemolynx_rows()
-    rows["use_fwhm_edge_diameters"].value = True
+    rows["measure_diameters_from_raw_image"].value = True
     rows["do_fwhm_measurement"].value = True
     rows["do_graph_building"].value = True
 

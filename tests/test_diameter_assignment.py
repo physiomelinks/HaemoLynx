@@ -1087,7 +1087,7 @@ def test_a_median_of_endothelial_widths_keeps_their_wall_to_wall_basis():
 
     assert edges[3]["diameter_source"] == DIAMETER_SOURCE_CLASS_MEDIAN
     assert edges[3]["diameter_um"] == pytest.approx(32.0)
-    assert edges[3]["diameter_basis"] == "anatomical"
+    assert edges[3]["diameter_basis"] == "endothelial"
 
 
 def test_a_run_uses_the_class_median_by_default():

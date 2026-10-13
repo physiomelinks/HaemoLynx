@@ -366,7 +366,7 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
     ),
     "trace_source": (
         "What Add vessel traces each leg through: the segmented mask, or the "
-        "raw data (FWHM's image, or the Raw data file on the Input tab)"
+        "raw data (the raw image on the Input tab)"
     ),
     "branch_ids": (
         "The branchIDs to delete, as the vessel hover shows them, separated "

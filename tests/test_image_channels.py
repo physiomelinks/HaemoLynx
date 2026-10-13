@@ -345,3 +345,36 @@ def test_the_fwhm_measurement_forwards_its_channel_to_the_loader(tmp_path, monke
 
     assert loaded["channel"] == 1
     np.testing.assert_array_equal(loaded["values"], [200.0])
+
+
+# --- the raw image is optional -------------------------------------------------
+
+
+def test_a_run_without_a_raw_image_needs_none():
+    from haemolynx.pipeline.checks import check_raw_image
+
+    report = check_raw_image({"measure_diameters_from_raw_image": False})
+
+    assert report.ok and not report.warnings
+
+
+@pytest.mark.parametrize("user", ["use_ilastik_segmentation", "measure_diameters_from_raw_image"])
+def test_what_reads_the_raw_image_needs_one_set(user):
+    from haemolynx.pipeline.checks import check_raw_image
+
+    report = check_raw_image({"run_haemodynamics": True, user: True})
+
+    assert len(report.errors) == 1
+    assert user in report.errors[0] and "raw_image_path" in report.errors[0]
+
+
+def test_a_missing_raw_image_is_an_error_only_when_the_run_reads_it(tmp_path):
+    from haemolynx.pipeline.checks import check_raw_image
+
+    gone = str(tmp_path / "gone.tif")
+
+    read = check_raw_image({"raw_image_path": gone, "measure_diameters_from_raw_image": True})
+    unread = check_raw_image({"raw_image_path": gone, "measure_diameters_from_raw_image": False})
+
+    assert len(read.errors) == 1 and "gone.tif" in read.errors[0]
+    assert unread.ok and any("gone.tif" in warning for warning in unread.warnings)

@@ -1362,7 +1362,7 @@ def _edge_diameter_guess(
 def measure_edge_diameters_fwhm_from_raw_tiff(
     G: nx.MultiGraph,
     *,
-    raw_tiff_path: str | Path,
+    raw_tiff_path: str | Path | None = None,
     voxel_size_zyx: tuple[float, float, float],
     sample_spacing_along_edge_um: float,
     transverse_profile_step_um: float,
@@ -1432,6 +1432,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         as the raw TIFF).
     raw_tiff_path :
         Single-channel 3D TIFF (intensity); shape defines the rasterized label grid.
+        Not read, and may be None, when *raw_volume* is given.
     voxel_size_zyx :
         Spacing per image axis (same tuple passed to graph building).
     sample_spacing_along_edge_um :
@@ -1704,6 +1705,8 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
         raw = float32_volume(
             raw_volume, use_memmap=use_memmap, memmap_directory=memmap_directory
         )
+    elif raw_tiff_path is None:
+        raise ValueError("FWHM needs the raw image: raw_tiff_path or raw_volume.")
     else:
         raw = load_single_channel_tiff_volume(
             raw_tiff_path,

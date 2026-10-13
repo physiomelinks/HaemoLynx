@@ -87,19 +87,40 @@ resolved once by the Diameters stage, or by `resolve_stain` when classification 
 
 ### Phase A — The wall primitives in `RawEvidence` (no behaviour change)
 
-- Add `ring_along(path_um)` (E1), `inside_walls(points_um)` (E2) and `walls_ahead(tip_um,
-  heading)` (E3) to `RawEvidence`. These are the endothelial counterparts of its plasma
-  primitives. The ring fit reuses `endothelial.fit_ring_section`, and `enclosed_by_walls` is
-  computed once per window.
-- Calibration: `RawCalibration` gains the wall's level, thickness and blur from
-  `calibrate_from_rings` (one call per run, ~90–120 s on E14.5 with 8 workers, about what the
-  endothelial diameters already spend), so the Diameters stage and dead ends share one.
-- Tests: synthetic rings (`tests/test_raw_stain.py`'s vessels) for each primitive. That covers a
-  ring round the chain, a ring round a neighbour, walls running on past the tip, and walls
-  stopping at it.
-- Coordination: agreed with the raw-confirmation session before writing, since `RawEvidence` is
-  theirs. This branch supplies the settings, `read_raw_stain`/`resolve_stain`,
-  `enclosed_by_walls` and (if they want it) a `keep_dtype` option on the raw loader.
+Agreed with the raw-confirmation session on 2026-10-13, on the five conditions below, so that
+`RawEvidence` stays one reader. Its branch `claude/raw-evidence` (48ccd51, non-slow suite green)
+already reads `raw_image_path`, `raw_image_channel` and `raw_image_stain`, falling back to the
+retired names.
+
+1. **Build on what is there.** `RawEvidenceEndothelial` already has `vesselness(points, radius,
+   tangents)` (the brightest point on rings across the vessel at r−1, r and r+1 µm, 8 directions
+   each), `wall_between(a, b)` (a bright line across the chord) and `hole_is_lumen` (no wall
+   lining the hole). Its `RawCalibration` holds the vessel, wall and background levels, their
+   spread, and the blur (`sigma_vox`) they were read under.
+   - `ring_along(path_um)` (E1) is `vesselness` over the path's samples, plus
+     `endothelial.fit_ring_section` only where the fitted centre is needed (whose chain the ring
+     belongs to).
+   - `inside_walls(points_um)` (E2) and `walls_ahead(tip_um, heading)` (E3) are new methods on
+     `RawEvidenceEndothelial`.
+2. **Keep the cost model.** Windows only (`RawEvidence._read`, chunked to `MAX_WINDOW_VOXELS`),
+   with stats counted and no whole-volume pass. `enclosed_by_walls` may run once per window, never
+   once per volume.
+3. **The ring calibration is optional.** The block calibration (about 1 s) stays the default.
+   `calibrate_from_rings` (90–120 s on E14.5 with 8 workers) adds the ring-fitted wall level,
+   thickness and blur to `RawCalibration` only when the run already pays for them (endothelial
+   diameters on) or a rule asks. These become optional fields defaulting to None, and
+   `from_record` must still read old graphs.
+4. **Tests** go in `tests/test_raw_evidence.py`, beside its endothelial tube and walled slab
+   fixtures, with one case per primitive: a ring round the chain, a ring round a neighbour,
+   walls running on past the tip, and walls stopping at it.
+5. **Sequence.** `claude/raw-evidence` lands first, then Phase A on a branch off it. The
+   raw-confirmation session leaves `raw_evidence.py` alone meanwhile. Landed on 2026-10-13:
+   `Devel_GUI_improvements_HD` at 96b0329 carries `preprocessing/raw_evidence.py`, its
+   `build_network` hook and `tests/test_raw_evidence.py`.
+
+This branch supplies the settings, `read_raw_stain`/`resolve_stain` and `enclosed_by_walls`. A
+`keep_dtype` option on the raw loader is not needed for now: the in-RAM path reads a channel in
+its own dtype, and float32 on the memmap path is acceptable until a large stack says otherwise.
 
 ### Phase B — Measure on E14.5 and record (no behaviour change)
 
@@ -150,6 +171,7 @@ resolved once by the Diameters stage, or by `resolve_stain` when classification 
 | R2 | G5's second question ("does it go on?") | Yes: it is what an endothelial stain can answer that the mask cannot |
 | R3 | Should an unfilled sprout (walls, no plasma) become a vessel in the graph, with no flow (`blind_end`), or stay a note in the review? | Review first, since it adds vessels the segmentation never had; decide after G5 |
 | R4 | A dataset with both a plasma and an endothelial channel: one raw channel (today), or a second for evidence? | One. The segmentation already carries the plasma; the raw channel should be the other stain |
+| R5 | Which channel is E14.5's raw image? D5 (2026-10-12) said one channel only, the one the segmentation came from (dextran). On 2026-10-13 Harvey said the endothelial channel (claudin-5) "would be better" for this dataset. | **Decided: claudin-5** (Harvey, 2026-10-13, D5 overturned; relayed by the raw-confirmation session, which records it in `PLAN_raw_confirmation.md`). Dextran read along the chain had done no better than chance on G4 (15/27), and on that session's grids H and H2 (17/30 each, `outputs/doubled_run_review/FIT_raw.md`) |
 
 ## 6. Risks
 

@@ -1217,7 +1217,7 @@ def test_optimise_settings_downsample_rescales_voxel_settings_but_not_micron_one
     # rescaling logic in `optimise_skeleton_and_graph_settings` itself is
     # under test here, not any group's own decision-making.
     class _FakeSearch:
-        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None):
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column"):
             self.mask = mask
             self.voxel_size_xyz_seen = voxel_size_xyz
             self.current = dict(starting_values)
@@ -1252,7 +1252,7 @@ def test_optimise_settings_downsample_scales_the_voxel_size_the_search_sees(monk
     seen = {}
 
     class _FakeSearch:
-        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None):
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column"):
             seen["mask_shape"] = mask.shape
             seen["voxel_size_xyz"] = voxel_size_xyz
             self.current = dict(starting_values)
@@ -1951,7 +1951,7 @@ def test_a_downsampled_search_that_changes_nothing_returns_the_starting_values(m
     import haemolynx.optimisation.search as search_module
 
     class _KeepingSearch:
-        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None):
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column"):
             self.current = dict(starting_values)
             self.trials = []
             self.groups_run = list(search_module.GROUP_NAMES)
@@ -1975,6 +1975,38 @@ def test_a_downsampled_search_that_changes_nothing_returns_the_starting_values(m
     assert set(result.finer_than_search_grid) == {
         "skeleton_closing_radius", "skeleton_bridge_gap_size", "skeleton_min_branch_length",
     }
+
+
+@pytest.mark.parametrize("stain", ["plasma_column", "endothelial"])
+def test_the_raw_images_stain_reaches_the_search(monkeypatch, stain):
+    """A wall stain supports a voxel differently from a lumen label, so the
+    search is told which the raw image is."""
+    import haemolynx.optimisation.search as search_module
+
+    seen = {}
+
+    class _RecordingSearch:
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column"):
+            seen["stain"] = raw_image_stain
+            self.current = dict(starting_values)
+            self.trials = []
+            self.groups_run = list(search_module.GROUP_NAMES)
+            self.passes_run = 1
+            self.group_seconds = {}
+
+        def run(self, *, max_passes=1):
+            pass
+
+    monkeypatch.setattr(search_module, "_Search", _RecordingSearch)
+    mask = np.zeros((16, 16, 16), dtype=bool)
+    mask[4:12, 4:12, 4:12] = True
+
+    optimise_skeleton_and_graph_settings(
+        mask, voxel_size_xyz=(1.0, 1.0, 1.0), starting_values=dict(_DEFAULT_STARTING_VALUES),
+        raw_image=mask.astype(np.float32), raw_image_stain=stain,
+    )
+
+    assert seen["stain"] == stain
 
 
 # ---------------------------------------------------------------------------
@@ -2200,7 +2232,7 @@ def test_a_search_ending_worse_than_it_started_says_so(monkeypatch):
     class _DestructiveSearch:
         """Ends with a whisker radius that erases every capillary."""
 
-        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None):
+        def __init__(self, mask, voxel_size_xyz, starting_values, progress, enabled_groups=None, raw_image=None, raw_image_stain="plasma_column"):
             self.current = dict(starting_values)
             self.trials = []
             self.groups_run = list(search_module.GROUP_NAMES)

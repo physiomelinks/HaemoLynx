@@ -1463,3 +1463,28 @@ def test_true_3d_sampling_measures_a_3_um_vessel_running_along_z(tmp_path: Path)
 
     assert summary["edges_measured"] == 1
     assert G[0][1][0]["fwhm_diameter_um"] == pytest.approx(3.0, abs=0.4)
+
+
+def test_a_raw_volume_needs_no_path_and_no_image_at_all_is_refused():
+    """The FWHM optimiser and the planted-vessel check hand FWHM the image
+    itself: no path setting names it now that one raw image is the run's own."""
+    raw = _cylinder_gaussian_volume(11, 11, 21, sigma=1.5)
+    G = nx.MultiGraph()
+    G.add_node(0, pos=np.array([5.0, 5.0, 2.0]))
+    G.add_node(1, pos=np.array([5.0, 5.0, 18.0]))
+    G.add_edge(
+        0, 1, key=0, length=16.0, branch_order="B01",
+        voxels=[(5.0, 5.0, float(x)) for x in range(2, 19)],
+    )
+    common = dict(
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        sample_spacing_along_edge_um=2.0,
+        transverse_profile_step_um=0.25,
+        transverse_half_extent_um=4.0,
+    )
+
+    summary = automated.measure_edge_diameters_fwhm_from_raw_tiff(G, raw_volume=raw, **common)
+
+    assert summary["edges_measured"] == 1
+    with pytest.raises(ValueError, match="raw_tiff_path or raw_volume"):
+        automated.measure_edge_diameters_fwhm_from_raw_tiff(G.copy(), **common)

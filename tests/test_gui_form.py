@@ -82,10 +82,18 @@ def test_supplied_values_win_over_the_defaults():
 
 
 def test_a_choice_setting_offers_exactly_its_choices():
-    setting = next(s for s in SCHEMA if s.kind == "choice")
+    from haemolynx.gui.form import CHOICE_VALUE_LABELS
+
+    setting = next(s for s in SCHEMA if s.kind == "choice" and s.name not in CHOICE_VALUE_LABELS)
     field = field_for(setting)
     assert field.widget_type == "ComboBox"
     assert field.options["choices"] == list(setting.choices)
+
+    # A labelled one still offers exactly its values, each under its label.
+    labelled = field_for(SCHEMA["raw_image_stain"])
+    assert [value for _label, value in labelled.options["choices"]] == list(
+        SCHEMA["raw_image_stain"].choices
+    )
 
 
 def test_a_declared_range_reaches_the_spin_box():

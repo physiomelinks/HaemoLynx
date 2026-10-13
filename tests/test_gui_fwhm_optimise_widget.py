@@ -46,15 +46,16 @@ def test_optimise_fwhm_button_exists_with_a_tooltip(panel):
     assert button.tooltip.strip()
 
 
-def test_optimise_fwhm_button_sits_right_after_the_raw_tiff_row(panel):
+def test_optimise_fwhm_button_sits_right_after_the_measure_row(panel):
     """Per the feature request: 'under the master checkbox and input file
-    line for FWHM, but before the other settings'."""
+    line for FWHM, but before the other settings'. The raw image is on the
+    Input tab now, so the master checkbox is the line above it."""
     container = panel._haemolynx_diameters_settings
     widgets = list(container)
     rows = panel._haemolynx_rows()
-    raw_tiff_index = widgets.index(rows["fwhm_raw_tiff_path"])
+    measure_index = widgets.index(rows["measure_diameters_from_raw_image"])
     button_index = widgets.index(panel._haemolynx_optimise_fwhm_button)
-    assert button_index == raw_tiff_index + 1
+    assert button_index == measure_index + 1
     # And before the next FWHM setting row.
     next_row_index = widgets.index(rows["fwhm_sample_spacing_along_edge_um"])
     assert button_index < next_row_index
@@ -74,13 +75,13 @@ def test_optimise_fwhm_button_hidden_until_fwhm_measurement_is_turned_on(panel):
     diameters_index = list(tab_titles()).index("5. Diameters")
     panel._haemolynx_tabs.setCurrentIndex(diameters_index)
     rows = panel._haemolynx_rows()
-    rows["use_fwhm_edge_diameters"].value = False
+    rows["measure_diameters_from_raw_image"].value = False
     assert panel._haemolynx_optimise_fwhm_button.visible is False
 
-    rows["use_fwhm_edge_diameters"].value = True
+    rows["measure_diameters_from_raw_image"].value = True
     assert panel._haemolynx_optimise_fwhm_button.visible is True
 
-    rows["use_fwhm_edge_diameters"].value = False
+    rows["measure_diameters_from_raw_image"].value = False
     assert panel._haemolynx_optimise_fwhm_button.visible is False
 
 
@@ -109,7 +110,7 @@ def test_optimise_fwhm_settings_refuses_without_a_raw_path(panel, monkeypatch):
     panel._haemolynx_view.results = _fake_results(_tiny_graph())
     panel._haemolynx_optimise_fwhm_settings()
     assert not started
-    assert "Choose a raw FWHM image" in panel._haemolynx_report()
+    assert "Choose the raw image on the Input tab" in panel._haemolynx_report()
 
 
 def test_optimise_fwhm_settings_refuses_while_a_run_is_already_going(panel, monkeypatch, tmp_path):
@@ -122,7 +123,7 @@ def test_optimise_fwhm_settings_refuses_while_a_run_is_already_going(panel, monk
     panel._haemolynx_view.results = _fake_results(_tiny_graph())
     raw_file = tmp_path / "raw.tif"
     raw_file.write_bytes(b"")
-    panel._haemolynx_rows()["fwhm_raw_tiff_path"].value = raw_file
+    panel._haemolynx_rows()["raw_image_path"].value = raw_file
 
     panel._haemolynx_run_state.start(worker=None, cancel_flag={"cancelled": False})
     try:
@@ -147,7 +148,7 @@ def test_optimise_fwhm_settings_starts_the_background_worker(panel, monkeypatch,
     panel._haemolynx_view.results = _fake_results(graph, voxel_size_zyx=(2.0, 1.0, 1.0))
     raw_file = tmp_path / "raw.tif"
     raw_file.write_bytes(b"")
-    panel._haemolynx_rows()["fwhm_raw_tiff_path"].value = raw_file
+    panel._haemolynx_rows()["raw_image_path"].value = raw_file
 
     panel._haemolynx_optimise_fwhm_settings()
 
@@ -194,7 +195,7 @@ def test_optimise_fwhm_settings_hands_the_worker_the_runs_segmented_image(
     panel._haemolynx_view.results = _fake_results(_tiny_graph())
     raw_file = tmp_path / "raw.tif"
     raw_file.write_bytes(b"")
-    panel._haemolynx_rows()["fwhm_raw_tiff_path"].value = raw_file
+    panel._haemolynx_rows()["raw_image_path"].value = raw_file
 
     panel._haemolynx_optimise_fwhm_settings()
 
@@ -217,8 +218,8 @@ def test_clicking_the_native_fwhm_button_triggers_optimisation(panel, monkeypatc
     panel._haemolynx_view.results = _fake_results(_tiny_graph())
     raw_file = tmp_path / "raw.tif"
     raw_file.write_bytes(b"")
-    panel._haemolynx_rows()["fwhm_raw_tiff_path"].value = raw_file
-    panel._haemolynx_rows()["use_fwhm_edge_diameters"].value = True
+    panel._haemolynx_rows()["raw_image_path"].value = raw_file
+    panel._haemolynx_rows()["measure_diameters_from_raw_image"].value = True
 
     panel._haemolynx_optimise_fwhm_button.native.click()
 
@@ -342,7 +343,7 @@ def test_the_fwhm_options_are_passed_through(panel, monkeypatch, tmp_path):
     panel._haemolynx_view.results = _fake_results(_tiny_graph())
     raw_file = tmp_path / "raw.tif"
     raw_file.write_bytes(b"")
-    panel._haemolynx_rows()["fwhm_raw_tiff_path"].value = raw_file
+    panel._haemolynx_rows()["raw_image_path"].value = raw_file
     panel._haemolynx_optimise_fwhm_choose_groups.value = True
     for name, box in panel._haemolynx_optimise_fwhm_group_checkboxes.items():
         box.value = name in ("exclusion_zones", "rejection_gates")
@@ -365,9 +366,9 @@ def test_the_fwhm_options_and_review_show_only_with_fwhm_measurement(panel):
     rows = panel._haemolynx_rows()
     box = panel._haemolynx_optimise_fwhm_box
 
-    rows["use_fwhm_edge_diameters"].value = False
+    rows["measure_diameters_from_raw_image"].value = False
     assert box.visible is False
-    rows["use_fwhm_edge_diameters"].value = True
+    rows["measure_diameters_from_raw_image"].value = True
     assert box.visible is True
     assert panel._haemolynx_optimise_fwhm_options_container.visible is False
 

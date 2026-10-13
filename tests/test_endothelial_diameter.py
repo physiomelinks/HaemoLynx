@@ -349,13 +349,13 @@ def test_the_endothelial_width_comes_first_and_carries_its_own_basis():
     graph.add_edge(0, 1, key=0, branch_order="B01", length=100.0,
                    endothelial_diameter_um=8.0, edt_diameter_um=5.0)
     graph.add_edge(1, 2, key=0, branch_order="B01", length=100.0, edt_diameter_um=5.0,
-                   **{EDGE_DIAMETER_BASIS: "anatomical"})  # stale, from an earlier stamping
+                   **{EDGE_DIAMETER_BASIS: "endothelial"})  # stale, from an earlier stamping
 
     counts = stamp_edge_diameters(graph, {"B01": 4.0}, use_edt_fallback=True, use_endothelial=True)
 
     first, second = graph[0][1][0], graph[1][2][0]
     assert (first["diameter_source"], first["diameter_um"]) == (DIAMETER_SOURCE_ENDOTHELIAL, 8.0)
-    assert first[EDGE_DIAMETER_BASIS] == "anatomical"
+    assert first[EDGE_DIAMETER_BASIS] == "endothelial"
     assert second["diameter_source"] == DIAMETER_SOURCE_EDT
     assert EDGE_DIAMETER_BASIS not in second
     assert counts["endothelial"] == 1
@@ -364,29 +364,29 @@ def test_the_endothelial_width_comes_first_and_carries_its_own_basis():
 def test_a_hand_set_diameter_is_on_the_runs_basis():
     from haemolynx.haemodynamics.poiseuille import EDGE_DIAMETER_BASIS, set_edge_diameter_override
 
-    data = {EDGE_DIAMETER_BASIS: "anatomical"}
+    data = {EDGE_DIAMETER_BASIS: "endothelial"}
     set_edge_diameter_override(data, 6.0)
 
     assert EDGE_DIAMETER_BASIS not in data
 
 
-def test_a_vessel_measured_wall_to_wall_takes_the_anatomical_form_of_the_law():
+def test_a_vessel_measured_wall_to_wall_takes_the_endothelial_form_of_the_law():
     """One network, two bases: an endothelial edge's resistance is what a run
-    on the anatomical basis would give it, beside a plasma-column edge's."""
+    on the endothelial basis would give it, beside a plasma-column edge's."""
     from haemolynx.haemodynamics.poiseuille import EDGE_DIAMETER_BASIS, PoiseuilleModel
 
     def network():
         graph = nx.MultiGraph()
         graph.add_edge(0, 1, key=0, branch_order="B01", length=100.0, diameter_um=6.0,
-                       **{EDGE_DIAMETER_BASIS: "anatomical"})
+                       **{EDGE_DIAMETER_BASIS: "endothelial"})
         graph.add_edge(1, 2, key=0, branch_order="B01", length=100.0, diameter_um=6.0)
         return graph
 
     mixed, _ = PoiseuilleModel(40.0, 100.0).set_poiseuille_resistances(network(), {"B01": 6.0})
     plasma = PoiseuilleModel(40.0, 100.0, diameter_basis="plasma_column")
-    anatomical = PoiseuilleModel(40.0, 100.0, diameter_basis="anatomical")
+    endothelial = PoiseuilleModel(40.0, 100.0, diameter_basis="endothelial")
 
-    assert mixed[0][1][0]["resistance"] == pytest.approx(anatomical.resistance_of_uniform_segment(100.0, 6.0))
+    assert mixed[0][1][0]["resistance"] == pytest.approx(endothelial.resistance_of_uniform_segment(100.0, 6.0))
     assert mixed[1][2][0]["resistance"] == pytest.approx(plasma.resistance_of_uniform_segment(100.0, 6.0))
     assert mixed[0][1][0]["resistance"] > mixed[1][2][0]["resistance"]
 
@@ -485,7 +485,7 @@ def test_a_constricted_vessel_keeps_its_own_basis():
 
     graph = nx.MultiGraph()
     graph.add_edge(0, 1, key=0, branch_order="B01", length=100.0, diameter_um=6.0,
-                   **{EDGE_DIAMETER_BASIS: "anatomical"})
+                   **{EDGE_DIAMETER_BASIS: "endothelial"})
 
     set_resistances_for_constriction_strategy(
         graph, diameter_by_branch_order={"B01": 6.0}, constriction_factor_by_branch_order={},
@@ -496,7 +496,7 @@ def test_a_constricted_vessel_keeps_its_own_basis():
 
     expected = integrated_resistance(
         length=100.0, d1=6.0, d2=6.0, constriction_centers=[], constriction_length=40.0,
-        num_points=1000, diameter_basis="anatomical",
+        num_points=1000, diameter_basis="endothelial",
     )
     assert graph[0][1][0]["resistance"] == pytest.approx(expected, rel=1e-3)
 
@@ -538,8 +538,9 @@ def test_the_raw_image_stain_picks_one_measurement(stain, fwhm_on, endothelial_o
     from haemolynx.pipeline.stages import _haemodynamics_apply_config
 
     schema = default_schema()
-    settings = schema.defaults()
+    settings = {setting.name: setting.default for setting in schema}
     settings.update(
+        diameter_by_branch_order={"B01": 5.0},
         measure_diameters_from_raw_image=True,
         raw_image_path=tmp_path / "composite.tif",
         raw_image_channel=1,

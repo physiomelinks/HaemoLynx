@@ -76,13 +76,13 @@ def test_clicking_the_button_opens_it(panel):
 
 def test_a_button_is_hidden_while_the_row_it_hangs_off_is_off(panel):
     rows = panel._haemolynx_rows()
-    fwhm = panel._haemolynx_advanced["assign_diameters:use_fwhm_edge_diameters"]
+    fwhm = panel._haemolynx_advanced["assign_diameters:measure_diameters_from_raw_image"]
 
-    rows["use_fwhm_edge_diameters"].value = False
+    rows["measure_diameters_from_raw_image"].value = False
     _process()
     assert not _shown(panel, "Diameters", fwhm.container)
 
-    rows["use_fwhm_edge_diameters"].value = True
+    rows["measure_diameters_from_raw_image"].value = True
     _process()
     assert _shown(panel, "Diameters", fwhm.container)
 
@@ -90,8 +90,8 @@ def test_a_button_is_hidden_while_the_row_it_hangs_off_is_off(panel):
 def test_the_decoy_check_is_behind_a_button_under_do_fwhm_measurement(panel):
     rows = panel._haemolynx_rows()
     decoy = panel._haemolynx_advanced["assign_diameters:do_fwhm_measurement"]
-    fwhm = panel._haemolynx_advanced["assign_diameters:use_fwhm_edge_diameters"]
-    rows["use_fwhm_edge_diameters"].value = True
+    fwhm = panel._haemolynx_advanced["assign_diameters:measure_diameters_from_raw_image"]
+    rows["measure_diameters_from_raw_image"].value = True
     rows["do_fwhm_measurement"].value = True
     _process()
 
@@ -115,8 +115,8 @@ def test_the_decoy_check_is_behind_a_button_under_do_fwhm_measurement(panel):
 def test_viscosity_law_is_an_ordinary_row(panel):
     rows = panel._haemolynx_rows()
     assert _shown(panel, "Haemodynamics", rows["viscosity_law"])
-    # The Diameter measurement menu owns this; the checkbox stays hidden.
-    rows["use_fwhm_edge_diameters"].value = True
+    # The measure switch turns this on; the checkbox itself stays hidden.
+    rows["measure_diameters_from_raw_image"].value = True
     _process()
     assert not _shown(panel, "Diameters", rows["do_fwhm_measurement"])
 
