@@ -247,8 +247,8 @@ SCHEMA = Schema(
                 "segmented vessels, bright in the middle or at the wall. It picks how "
                 "diameters are measured from it (FWHM, or the lumen inside the wall ring) "
                 "and what those diameters mean: wall to wall for an endothelial stain, whose "
-                "viscosity then takes that form of the law. Diameters from the segmentation "
-                "itself are the plasma column's"
+                "viscosity then takes that form of the law. Diameters taken from the "
+                "segmentation itself follow segmentation_source instead"
             ),
             section=_INPUT_AND_SEGMENTATION,
             value_aliases={"anatomical": "endothelial", "luminal": "plasma_column"},

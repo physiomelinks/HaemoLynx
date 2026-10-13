@@ -13,7 +13,7 @@ input_and_segmentation:
   raw_image_path: null
   # Which channel of a multi-channel raw image to read, counting from 0 (the panel lists them as Fiji names them: C1 is 0); leave unset for a single-channel file  [range 0..]
   raw_image_channel: null
-  # What the raw image's channel stains: plasma_column for a luminal (plasma) label filling the channel blood flows in, endothelial for the vessel wall (claudin-5, CD31, isolectin...), or auto to tell from how it reads across the segmented vessels, bright in the middle or at the wall. It picks how diameters are measured from it (FWHM, or the lumen inside the wall ring) and what those diameters mean: wall to wall for an endothelial stain, whose viscosity then takes that form of the law. Diameters from the segmentation itself are the plasma column's  [one of: auto, plasma_column, endothelial]
+  # What the raw image's channel stains: plasma_column for a luminal (plasma) label filling the channel blood flows in, endothelial for the vessel wall (claudin-5, CD31, isolectin...), or auto to tell from how it reads across the segmented vessels, bright in the middle or at the wall. It picks how diameters are measured from it (FWHM, or the lumen inside the wall ring) and what those diameters mean: wall to wall for an endothelial stain, whose viscosity then takes that form of the law. Diameters taken from the segmentation itself follow segmentation_source instead  [one of: auto, plasma_column, endothelial]
   raw_image_stain: auto
   # Segment the main input image with ilastik instead of reading a segmented file
   use_ilastik_segmentation: false
