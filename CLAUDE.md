@@ -182,9 +182,14 @@ measures from it (`measure_diameters_from_raw_image`), Check segmented image and
 compare against it, and the tissue volume falls back to it. `raw_image_stain` is `auto`,
 `plasma_column` (a lumen label such as dextran) or `endothelial` (the wall round the lumen, such
 as claudin-5); auto reads it from the image (`preprocessing/raw_stain.py`'s `read_raw_stain`:
-brightness at the mask's edge against the middle of its widest vessels), the Diameters stage
-records what it resolved on the graph (`G.graph["raw_image_stain"]`, with the reading), and the
-stain picks the diameter method: FWHM for a plasma column, the endothelial ring fit for a wall.
+brightness at the mask's edge against the middle of its widest vessels, the one rule: the
+raw-evidence calibration in `build_network` decides through it too, and records the answer on
+the graph (`G.graph["raw_image_stain"]`, with the reading), which the Diameters stage takes
+rather than reading the image again -- it reads the image only when the build could not tell,
+cut to the run's crop box, and hands the volume on to the measurement so the file is loaded
+once), and the stain picks the diameter method: FWHM for a plasma column, the endothelial ring
+fit for a wall. A raw image that is set is read by `build_network` whatever else is on, so
+preflight treats a missing one, or a composite without `raw_image_channel`, as an error.
 The settings it replaced (`ilastik_unsegmented_image_path`, `fwhm_raw_tiff_path`/`_channel`,
 `endothelial_image_path`/`_channel`, `use_fwhm_edge_diameters`, `use_endothelial_diameters`,
 `diameter_basis`) still load, moved together by `Setting.migrates`/`migrate` (`Schema.upgrade`).

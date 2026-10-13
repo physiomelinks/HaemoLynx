@@ -497,18 +497,22 @@ def _measure_endothelial_diameters(
     config: HaemodynamicsApplyConfig,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
     calibration_edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    raw_volume: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Read each edge's internal diameter off the endothelial stain.
 
-    Reads the configured channel of ``endothelial_image_path`` and hands the
+    Reads the configured channel of ``endothelial_image_path`` -- unless
+    *raw_volume*, that channel already loaded and cut to the graph's box, is
+    given, which is then the caller's to release -- and hands the
     measurement the PSF and wall thickness the settings give (each estimated
     from the image when unset, from *calibration_edges* when given). Samples
     where the mask estimate does, clear of the same junction zones."""
     path = config.endothelial_setting("endothelial_image_path")
-    if path is None:
+    if path is None and raw_volume is None:
         return {"skipped": True, "reason": "no endothelial_image_path to read the wall from"}
     channel = config.endothelial_setting("endothelial_channel")
-    volume = _cropped_like_graph(
+    owned = raw_volume is None
+    volume = raw_volume if raw_volume is not None else _cropped_like_graph(
         automated.load_single_channel_tiff_volume(
             io.resolve_image_path_with_optional_zip(Path(path)),
             axis_order=config.axis_order,
@@ -556,7 +560,7 @@ def _measure_endothelial_diameters(
             **_subset(edges),
         )
     finally:
-        if isinstance(volume, np.memmap):
+        if owned and isinstance(volume, np.memmap):
             release_memmap_array(volume)
 
 
@@ -633,11 +637,18 @@ def assign_edge_diameters(
     mask_volume: np.ndarray | None = None,
     edges: Iterable[tuple[Any, Any, Any]] | None = None,
     calibration_edges: Iterable[tuple[Any, Any, Any]] | None = None,
+    raw_volume: np.ndarray | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     """Stamp modelled diameters on *G* without writing resistance.
 
     Measures FWHM when that is enabled and ``do_fwhm_measurement`` is on.
     Otherwise keeps measured / override values already on the graph.
+
+    *raw_volume* is the run's raw channel already loaded and cut to the
+    graph's crop box (the pipeline loads it once, to read its stain, and
+    hands it on here): FWHM and the endothelial fit read it instead of
+    loading the file again. It is returned as the third value, as a volume
+    loaded here would be, and stays the caller's to release.
 
     With *calibration_edges* (``(u, v, key)``), what is learnt from the
     whole image -- the PSF the width fits share, the endothelial wall, the
@@ -730,7 +741,7 @@ def assign_edge_diameters(
         )
     try:
         return _assign_edge_diameters_binarised(
-            G, config, summary, mask_volume, edges, calibration_edges
+            G, config, summary, mask_volume, edges, calibration_edges, raw_volume=raw_volume
         )
     finally:
         if isinstance(loaded_mask, np.memmap):
@@ -761,6 +772,7 @@ def _assign_edge_diameters_binarised(
     mask_volume: np.ndarray | None,
     edges: list[tuple[Any, Any, Any]] | None = None,
     calibration_edges: list[tuple[Any, Any, Any]] | None = None,
+    raw_volume: np.ndarray | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
     if mask_volume is not None:
         # The segmentation exactly as the skeleton was made from it -- the
@@ -784,7 +796,7 @@ def _assign_edge_diameters_binarised(
         made_binary_on_disk = False
     try:
         return _assign_edge_diameters_with_mask(
-            G, config, summary, mask_volume, edges, calibration_edges
+            G, config, summary, mask_volume, edges, calibration_edges, raw_volume=raw_volume
         )
     finally:
         if made_binary_on_disk:
@@ -798,8 +810,8 @@ def _assign_edge_diameters_with_mask(
     mask_volume: np.ndarray | None,
     edges: list[tuple[Any, Any, Any]] | None = None,
     calibration_edges: list[tuple[Any, Any, Any]] | None = None,
+    raw_volume: np.ndarray | None = None,
 ) -> tuple[nx.MultiGraph, dict[str, Any], np.ndarray | None]:
-    raw_volume: np.ndarray | None = None
     subset = edges is not None
     # An empty subset (only deletions were made) measures nothing: it is here
     # for the re-stamp below, a table diameter following a new branch order.
@@ -839,11 +851,12 @@ def _assign_edge_diameters_with_mask(
     use_endothelial = bool(config.endothelial_setting("use_endothelial_diameters", False))
     if use_endothelial and measuring:
         summary["endothelial"] = _measure_endothelial_diameters(
-            G, config, calibration_edges=calibration_edges, **_subset(edges)
+            G, config, calibration_edges=calibration_edges, raw_volume=raw_volume, **_subset(edges)
         )
     demote_flagged = bool(config.fwhm_setting("fwhm_demote_flagged_edges", True))
     if config.use_fwhm_edge_diameters and measuring:
-        raw_volume = _cropped_like_graph(load_fwhm_raw_volume(config), G, config, "FWHM raw image")
+        if raw_volume is None:
+            raw_volume = _cropped_like_graph(load_fwhm_raw_volume(config), G, config, "FWHM raw image")
         if remeasure:
             recorded = G.graph.get("fwhm_psf_sigma_zyx") if subset else None
             if recorded is not None:

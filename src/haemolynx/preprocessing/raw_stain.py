@@ -95,6 +95,13 @@ def read_raw_stain(
     memory map."""
     from scipy import ndimage
 
+    if tuple(np.shape(raw)) != tuple(np.shape(mask)):
+        # Read with the mask's own blocks on another grid -- a raw image not
+        # cut to the run's crop box -- the levels come from the wrong place.
+        raise ValueError(
+            f"The raw image {tuple(np.shape(raw))} and the mask {tuple(np.shape(mask))} differ in "
+            "shape: the stain is read where the mask's vessels are, so the two must share one grid"
+        )
     vs = np.asarray(voxel_size_zyx, dtype=float)
     shape = np.asarray(mask.shape)
     half = np.maximum(np.ceil(block_um / 2.0 / vs).astype(int), 2)
@@ -154,19 +161,22 @@ def read_raw_stain(
 
 
 def _sample_mask_voxels(mask: np.ndarray, rng: np.random.Generator, *, count: int) -> list[np.ndarray]:
-    """Up to *count* mask voxels, spread over the slabs that hold any."""
+    """Up to *count* mask voxels, spread over the slabs that hold any, read a
+    slab at a time so a memory map is never pulled in whole. A stack with
+    few slabs -- one, for a 2D image -- gives each of them several, so the
+    reading still has blocks to choose from; a deep one gives each a few."""
     slabs = [z for z in range(mask.shape[0]) if np.any(mask[z])]
     if not slabs:
         return []
+    size = min(count, max(4 * len(slabs), count // 4))
+    chosen = rng.choice(slabs, size=size, replace=size > len(slabs))
     picks = []
-    size = min(count, 4 * len(slabs))
-    for z in rng.choice(slabs, size=size, replace=size > len(slabs)):
+    for z in np.unique(chosen):
         yx = np.argwhere(np.asarray(mask[z], dtype=bool))
-        y, x = yx[rng.integers(len(yx))]
-        picks.append(np.asarray([z, y, x]))
-        if len(picks) >= count:
-            break
-    return picks
+        for row in yx[rng.integers(len(yx), size=int(np.count_nonzero(chosen == z)))]:
+            picks.append(np.asarray([z, row[0], row[1]]))
+    rng.shuffle(picks)
+    return picks[:count]
 
 
 def resolve_stain(

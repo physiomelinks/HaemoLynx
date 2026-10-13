@@ -483,41 +483,33 @@ def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
 
 
 #: Each image a run reads one channel of: (its path setting, its channel
-#: setting). The raw image is read by ilastik, the diameters, the check, the
-#: optimiser and the tissue volume, so it is checked whenever it is set.
+#: setting). One channel of the raw image is read by the network build (the
+#: raw evidence round the mask, whenever the image is set), the diameters,
+#: the check, the optimiser and the tissue volume, so it is checked whenever
+#: it is set; ilastik alone reads the whole file, but the build follows it.
 _CHANNEL_IMAGES = (("raw_image_path", "raw_image_channel"),)
 
 
 def check_image_channels(settings: Mapping[str, Any]) -> CheckReport:
     """A multi-channel image needs a channel chosen, and one it has; a
     single-channel one needs none. Caught here rather than as the load fails
-    partway through a run. ilastik reads the whole file, so a run that only
-    segments with it needs no channel."""
+    partway through a run -- or, for the raw evidence, reads the first
+    channel of a composite without saying so."""
     report = CheckReport()
     for path_name, channel_name in _CHANNEL_IMAGES:
         path = settings.get(path_name)
         if not path or not Path(path).is_file():
             continue
-        if path_name == "raw_image_path" and not _reads_one_raw_channel(settings):
-            continue
         _check_image_channel(report, path_name, path, channel_name, settings.get(channel_name))
     return report
-
-
-def _reads_one_raw_channel(settings: Mapping[str, Any]) -> bool:
-    """Whether anything in this run reads one channel of the raw image
-    (everything but ilastik does)."""
-    return bool(
-        settings.get("measure_diameters_from_raw_image")
-        or (settings.get("measure_tissue_volume") and not settings.get("tissue_raw_tiff_path"))
-    )
 
 
 def check_raw_image(settings: Mapping[str, Any]) -> CheckReport:
     """The raw image is optional, so it is not ``must_exist`` for every run:
     ilastik segments it and the diameters are measured from it, so either
-    needs one, and one that is set must be there -- an error when this run
-    reads it, a warning when only the panel's check and optimiser would."""
+    needs one. One that is set must be there: the network build reads it
+    whenever it is (``preprocessing.raw_evidence``), so a missing one is an
+    error for every run that names it."""
     report = CheckReport()
     users = [
         name for name, on in (
@@ -539,16 +531,13 @@ def check_raw_image(settings: Mapping[str, Any]) -> CheckReport:
     if exists:
         report.add_pass("raw_image_path", detail)
         return report
-    if users or _reads_one_raw_channel(settings):
-        report.add_error(
-            f"raw_image_path: {detail}. Fix: point 'raw_image_path' at the raw image, or "
-            "clear it."
-        )
-    else:
-        report.add_warning(
-            f"raw_image_path: {detail}. Nothing in this run reads it, but Check segmented "
-            "image and Optimise settings would."
-        )
+    readers = "the network build reads it" + (
+        f", as {' and '.join(users)} would" if users else ""
+    )
+    report.add_error(
+        f"raw_image_path: {detail}; {readers}. Fix: point 'raw_image_path' at the raw "
+        "image, or clear it."
+    )
     return report
 
 

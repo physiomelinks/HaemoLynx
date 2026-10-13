@@ -34,6 +34,7 @@ from haemolynx.gui.form import (
     display_value_for,
     channel_choices,
     prerequisite_chain,
+    raw_image_stain_note,
     shared_ilastik_host,
 )
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
@@ -11981,6 +11982,17 @@ def settings_widget(napari_viewer=None):
             return False
         return chain_met(name, values) if field.hide_when_unmet else True
 
+    #: What the last run read the raw image's stain as when the setting is
+    #: auto (the graph's raw_image_stain, with its reading): None until a run
+    #: has read it. Filled by refresh_stain_reading, below the view.
+    stain_read: dict[str, Any] = {"stain": None, "reading": None}
+
+    def resolved_raw_image_stain(values: Mapping[str, Any]) -> str | None:
+        """The stain the run measures by: the setting, or what the last run
+        read an ``auto`` as; None for an ``auto`` no run has read yet."""
+        stain = values.get("raw_image_stain")
+        return stain if stain in ("plasma_column", "endothelial") else stain_read["stain"]
+
     def apply_prerequisites(*_args) -> None:
         """Apply schema prerequisites: hide nested rows, grey others."""
         # Pinned before the values snapshot below, not inside the rows loop:
@@ -11992,6 +12004,13 @@ def settings_widget(napari_viewer=None):
             if name in rows and rows[name].value != forced:
                 rows[name].value = forced
         values = current_values()
+        # The gates are judged with raw_image_stain as the run resolved it: a
+        # row needing a plasma label or a wall (the FWHM and endothelial
+        # method rows) follows what an "auto" read, not the word "auto".
+        gates = values
+        resolved = resolved_raw_image_stain(values)
+        if resolved is not None and resolved != values.get("raw_image_stain"):
+            gates = {**values, "raw_image_stain": resolved}
         place_shared_ilastik()
         for name, widget in rows.items():
             if name in SHARED_ILASTIK_SETTING_SET:
@@ -12025,7 +12044,7 @@ def settings_widget(napari_viewer=None):
                 continue
             field = fields[name]
             # The whole chain of gates above the row, not only its own.
-            enabled = chain_met(name, values)
+            enabled = chain_met(name, gates)
             if field.hide_when_unmet:
                 # Input / Diameters / FWHM / Boundaries vessel / Graph
                 # centreline options: only relevant nested knobs appear.
@@ -12079,7 +12098,7 @@ def settings_widget(napari_viewer=None):
         # greying it out) matches every other `hide_when_unmet` FWHM row
         # right next to it.
         fwhm_could_run = bool(values.get("measure_diameters_from_raw_image")) and (
-            values.get("raw_image_stain") != "endothelial"
+            resolved_raw_image_stain(values) != "endothelial"
         )
         if optimise_fwhm_button is not None:
             optimise_fwhm_button.visible = fwhm_could_run
@@ -12709,6 +12728,36 @@ def settings_widget(napari_viewer=None):
     view = SimpleNamespace(results=None)
     _view_z_apply = {"busy": False, "key": None}
 
+    #: Under the Input tab's stain row: what the last run read an "auto"
+    #: stain as, from the graph it left (raw_image_stain and its reading),
+    #: since the row itself cannot say and the Diameters tab's method rows
+    #: follow the answer.
+    stain_reading_label = Label(value="")
+    stain_reading_label.visible = False
+    _stain_box = input_boxes.get("input") if input_boxes else None
+    if _stain_box is not None and "raw_image_stain" in rows:
+        _stain_box.insert(list(_stain_box).index(rows["raw_image_stain"]) + 1, stain_reading_label)
+
+    def refresh_stain_reading() -> None:
+        """Say what the last run read the raw image's stain as, and let the
+        Diameters tab's method rows follow it when that answer changed."""
+        graph = getattr(view.results, "_graph", None) if view.results is not None else None
+        record = graph.graph if graph is not None else {}
+        read = record.get("raw_image_stain")
+        before = stain_read["stain"]
+        stain_read["stain"] = read if read in ("plasma_column", "endothelial") else None
+        stain_read["reading"] = record.get("raw_image_stain_reading")
+        stain_reading_label.value = raw_image_stain_note(
+            current_values().get("raw_image_stain"), stain_read["stain"], stain_read["reading"]
+        )
+        stain_reading_label.visible = bool(stain_reading_label.value)
+        if stain_read["stain"] != before:
+            apply_prerequisites()
+
+    if "raw_image_stain" in rows:
+        # A stain named by hand needs no note; back on auto, the run's stands.
+        rows["raw_image_stain"].changed.connect(lambda *_args: refresh_stain_reading())
+
     def reparent_arrow_length_slider() -> None:
         if viewer is None:
             return
@@ -12793,6 +12842,7 @@ def settings_widget(napari_viewer=None):
         apply_view_z(force=True)
         _reapply_layer_set(viewer)
         refresh_layer_sets()
+        refresh_stain_reading()
 
     if viewer is not None:
         viewer._haemolynx_after_layers_applied = _after_layers_applied
@@ -14132,6 +14182,8 @@ def settings_widget(napari_viewer=None):
     # The Input tab's raw image rows: the schema's own, which every reader shares.
     panel._haemolynx_raw_data_row = rows["raw_image_path"]
     panel._haemolynx_raw_channel_row = rows["raw_image_channel"]
+    panel._haemolynx_stain_reading_label = stain_reading_label
+    panel._haemolynx_refresh_stain_reading = refresh_stain_reading
 
     def expand_advanced(expanded: bool = True) -> None:
         """Open (or close) every Advanced button on the panel."""

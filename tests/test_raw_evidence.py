@@ -358,7 +358,8 @@ def test_a_misaligned_raw_image_is_refused():
 def test_anisotropic_voxels_place_points_in_microns():
     raw, mask = _plasma_tube()
     voxel = (2.0, 0.5, 0.5)
-    calibration = calibrate_raw(raw, mask, voxel)
+    # 1.5 um across in y: too thin for the stain reader to tell, so named.
+    calibration = calibrate_raw(raw, mask, voxel, stain=PLASMA_COLUMN)
     evidence = make_raw_evidence(raw, mask.shape, voxel, calibration)
     centre_um = np.array([[12 * 2.0, 20 * 0.5, 30 * 0.5]])
     assert evidence.brightness(centre_um)[0] == pytest.approx(1.0, abs=0.02)
@@ -371,23 +372,53 @@ def test_anisotropic_voxels_place_points_in_microns():
 # --------------------------------------------------------------------------
 
 
-def test_raw_image_for_build_reads_either_naming():
-    assert raw_image_for_build({"fwhm_raw_tiff_path": None}) is None
-    spec = raw_image_for_build({"fwhm_raw_tiff_path": "a.tif", "fwhm_raw_channel": 1})
-    assert (str(spec.path), spec.channel, spec.stain, spec.setting) == ("a.tif", 1, "auto", "fwhm_raw_tiff_path")
+def test_raw_image_for_build_reads_the_one_raw_image():
+    """The Input tab's raw image only: the names it replaced are read into it
+    when a config loads (Schema.upgrade), so a settings dict never holds them."""
+    assert raw_image_for_build({"raw_image_path": None}) is None
+    assert raw_image_for_build({"fwhm_raw_tiff_path": "a.tif", "endothelial_image_path": "c.tif"}) is None
+    spec = raw_image_for_build({"raw_image_path": "b.tif", "raw_image_channel": 1})
+    assert (str(spec.path), spec.channel, spec.stain, spec.setting) == ("b.tif", 1, "auto", "raw_image_path")
     spec = raw_image_for_build(
-        {"raw_image_path": "b.tif", "raw_image_channel": None, "raw_image_stain": ENDOTHELIAL,
-         "fwhm_raw_tiff_path": "a.tif"}
+        {"raw_image_path": "b.tif", "raw_image_channel": None, "raw_image_stain": ENDOTHELIAL}
     )
-    assert (str(spec.path), spec.channel, spec.stain, spec.setting) == ("b.tif", None, ENDOTHELIAL, "raw_image_path")
-    spec = raw_image_for_build({"endothelial_image_path": "c.tif", "endothelial_channel": 0})
-    assert (spec.stain, spec.channel) == (ENDOTHELIAL, 0)
+    assert (str(spec.path), spec.channel, spec.stain) == ("b.tif", None, ENDOTHELIAL)
+
+
+def test_an_auto_stain_is_told_by_the_one_reader_and_kept_on_the_calibration():
+    """``auto`` is answered by ``raw_stain.read_raw_stain`` -- the rule the
+    Diameters stage measures by -- and the reading travels with the record."""
+    from haemolynx.preprocessing.raw_stain import read_raw_stain
+
+    raw, mask = _endothelial_tube()
+    calibration = calibrate_raw(_noisy(raw), mask, VOXEL)
+    told = read_raw_stain(_noisy(raw), mask, VOXEL)
+    assert calibration.stain == told.stain == ENDOTHELIAL
+    assert calibration.reading == told.as_dict()
+    assert RawCalibration.from_record(calibration.as_dict()).reading == told.as_dict()
+    assert calibrate_raw(_noisy(raw), mask, VOXEL, stain=ENDOTHELIAL).reading is None
+
+
+def test_an_image_the_reader_cannot_tell_is_not_read():
+    """Capillaries too thin to have a middle: the reader says it cannot tell,
+    so there is no evidence rather than evidence under a guessed stain."""
+    raw, mask = _plasma_tube(radius=1.0)
+    assert calibrate_raw(_noisy(raw), mask, VOXEL) is None
+
+
+def test_a_raw_image_that_is_not_there_is_refused_by_name(tmp_path):
+    with pytest.raises(FileNotFoundError, match="raw_image_path"):
+        raw_evidence_from_settings(
+            {"raw_image_path": str(tmp_path / "gone.tif")}, np.zeros(SHAPE, dtype=bool), VOXEL
+        )
 
 
 def _run_settings(tmp_path, **overrides):
-    shape = (12, 30, 60)
+    """A 7 x 7 voxel rod: wide enough to have a middle for the stain reader
+    (3 um deep), and odd, since Lee thinning leaves nothing of a 6 x 6 one."""
+    shape = (16, 30, 60)
     mask = np.zeros(shape, dtype=bool)
-    mask[5:8, 13:17, 5:55] = True
+    mask[4:11, 11:18, 5:55] = True
     raw = np.where(mask, BRIGHT, BACKGROUND).astype(np.uint16)
     tifffile.imwrite(tmp_path / "mask.tif", mask.astype(np.uint8) * 255)
     tifffile.imwrite(tmp_path / "raw.tif", raw)
@@ -406,13 +437,41 @@ def _run_settings(tmp_path, **overrides):
 
 
 def test_build_network_keeps_the_calibration_on_the_graph(tmp_path):
-    settings, schema = _run_settings(tmp_path, fwhm_raw_tiff_path=str(tmp_path / "raw.tif"))
+    settings, schema = _run_settings(tmp_path, raw_image_path=str(tmp_path / "raw.tif"))
     network = stages.build_network(settings, stages.skeletonise(settings, stages.segment(settings)), schema)
     record = network.graph.graph[GRAPH_ATTRIBUTE]
     calibration = RawCalibration.from_record(record)
     assert calibration.stain == PLASMA_COLUMN
-    assert 0.7 * BRIGHT <= calibration.vessel <= BRIGHT  # a 3 x 4 voxel rod, read blurred
+    assert 0.7 * BRIGHT <= calibration.vessel <= BRIGHT  # a 7 x 7 voxel rod, read blurred
     assert calibration.background == pytest.approx(BACKGROUND, abs=20)
+
+
+def test_build_network_records_an_auto_stain_for_the_diameters_stage(tmp_path, monkeypatch):
+    """One answer per run: the build's reading is the graph's raw_image_stain,
+    and the Diameters stage takes it without opening the file again."""
+    import haemolynx.haemodynamics.automated as automated
+
+    settings, schema = _run_settings(tmp_path, raw_image_path=str(tmp_path / "raw.tif"))
+    network = stages.build_network(settings, stages.skeletonise(settings, stages.segment(settings)), schema)
+    record = network.graph.graph
+    assert record["raw_image_stain"] == record[GRAPH_ATTRIBUTE]["stain"] == PLASMA_COLUMN
+    assert record["raw_image_stain_reading"]["stain"] == PLASMA_COLUMN
+    assert record["raw_image_stain_reading"] == record[GRAPH_ATTRIBUTE]["reading"]
+
+    def no_load(*_args, **_kwargs):
+        raise AssertionError("the Diameters stage opened the raw image again")
+
+    monkeypatch.setattr(automated, "load_single_channel_tiff_volume", no_load)
+    assert stages.resolve_raw_image_stain(settings, network) == (PLASMA_COLUMN, None, None)
+
+
+def test_build_network_records_no_stain_for_one_the_run_names(tmp_path):
+    settings, schema = _run_settings(
+        tmp_path, raw_image_path=str(tmp_path / "raw.tif"), raw_image_stain=PLASMA_COLUMN
+    )
+    network = stages.build_network(settings, stages.skeletonise(settings, stages.segment(settings)), schema)
+    assert "raw_image_stain" not in network.graph.graph
+    assert network.graph.graph[GRAPH_ATTRIBUTE]["reading"] is None
 
 
 def test_build_network_without_a_raw_image_records_nothing(tmp_path):
@@ -423,8 +482,8 @@ def test_build_network_without_a_raw_image_records_nothing(tmp_path):
 
 def test_build_network_refuses_a_raw_image_of_another_shape(tmp_path):
     settings, schema = _run_settings(tmp_path)
-    tifffile.imwrite(tmp_path / "other.tif", np.full((12, 30, 61), BACKGROUND, dtype=np.uint16))
-    settings["fwhm_raw_tiff_path"] = str(tmp_path / "other.tif")
+    tifffile.imwrite(tmp_path / "other.tif", np.full((16, 30, 61), BACKGROUND, dtype=np.uint16))
+    settings["raw_image_path"] = str(tmp_path / "other.tif")
     with pytest.raises(ValueError, match="same stack the segmentation was made from"):
         stages.build_network(settings, stages.skeletonise(settings, stages.segment(settings)), schema)
 

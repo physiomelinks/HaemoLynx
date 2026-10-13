@@ -145,3 +145,39 @@ def test_measuring_from_the_raw_image_turns_the_hidden_fwhm_measurement_on(panel
     _process()
 
     assert rows["do_fwhm_measurement"].value is True
+
+
+def test_the_stain_row_says_what_a_run_read_an_auto_stain_as(panel):
+    """The row cannot know what auto resolved to; after a run the note under
+    it says, and the Diameters tab's method rows follow that answer rather
+    than showing both -- until the stain is named by hand."""
+    from types import SimpleNamespace
+
+    import networkx as nx
+
+    rows = panel._haemolynx_rows()
+    label = panel._haemolynx_stain_reading_label
+    rows["measure_diameters_from_raw_image"].value = True
+    rows["raw_image_stain"].value = "auto"
+    panel._haemolynx_expand_advanced(True)
+    _process()
+    assert not _shown(panel, label, "Input")
+    assert _shown(panel, rows["fwhm_sample_spacing_along_edge_um"])
+
+    G = nx.MultiGraph()
+    G.graph["raw_image_stain"] = "endothelial"
+    G.graph["raw_image_stain_reading"] = {"stain": "endothelial", "contrast": -0.36, "blocks": 64}
+    panel._haemolynx_view.results = SimpleNamespace(_graph=G)
+    panel._haemolynx_refresh_stain_reading()
+    _process()
+
+    assert _shown(panel, label, "Input")
+    assert label.value == "Read as: Endothelial (wall stain) (contrast -0.36 over 64 blocks)"
+    assert not _shown(panel, rows["fwhm_sample_spacing_along_edge_um"])
+    assert _shown(panel, rows["endothelial_min_ring_contrast"])
+    assert not _shown(panel, panel._haemolynx_optimise_fwhm_box)
+
+    rows["raw_image_stain"].value = "plasma_column"
+    _process()
+    assert not _shown(panel, label, "Input")
+    assert _shown(panel, rows["fwhm_sample_spacing_along_edge_um"])

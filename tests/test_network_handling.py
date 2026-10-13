@@ -478,9 +478,9 @@ def _diameters_stage(tmp_path, monkeypatch, handling):
                    voxels=[[0.0, 100.0, 0.0], [50.0, 100.0, 0.0]])
     calibrated = []
 
-    def fake_assign(G, _config, *, mask_volume=None, calibration_edges=None):
+    def fake_assign(G, _config, *, mask_volume=None, calibration_edges=None, raw_volume=None):
         calibrated.append(calibration_edges)
-        return G, {}, None
+        return G, {}, raw_volume
 
     monkeypatch.setattr(stages, "assign_edge_diameters", fake_assign)
     model = stages.assign_diameters(

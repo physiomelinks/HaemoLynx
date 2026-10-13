@@ -868,3 +868,32 @@ def test_regenerate_from_post_processing_keeps_haemodynamics_and_drops_what_came
         "skeletonise", "build_network", "assign_boundaries", "assign_diameters",
         "build_haemodynamic_model", "solve",
     )
+
+
+@pytest.mark.parametrize(
+    "read_as, skips_fwhm", [("endothelial", False), ("plasma_column", True), (None, True)]
+)
+def test_run_from_haemodynamics_reads_the_stain_the_run_resolved(tmp_path, read_as, skips_fwhm):
+    """With raw_image_stain auto, whether FWHM was in use -- and so whether
+    do_fwhm_measurement must be turned off to keep its approvals -- is what
+    the run read the stain as, kept on the checkpoint's graph; the setting
+    alone said FWHM for every auto run."""
+    checkpoints = StageCheckpoints()
+    results = built()
+    settings = _settings(tmp_path)
+    settings.update(measure_diameters_from_raw_image=True, raw_image_stain="auto")
+    (tmp_path / "out").mkdir()
+    G = a_graph()
+    if read_as is not None:
+        G.graph["raw_image_stain"] = read_as
+    results.stage_finished("build_network", network(G))
+    for stage, title in (
+        ("build_network", "3. Graph"),
+        ("assign_boundaries", "4. Boundaries"),
+        ("assign_diameters", "5. Diameters"),
+    ):
+        checkpoints.record(stage, _group(stage, title), results, settings=settings)
+
+    plan = checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+
+    assert ("do_fwhm_measurement" in plan.skip_settings) is skips_fwhm

@@ -37,7 +37,12 @@ import numpy as np
 from haemolynx.gui.results import BOUNDARY_NODES, MASK_LAYERS, SKELETON, copy_graph
 from haemolynx.gui.tabs import tab_title, tab_titles
 from haemolynx.pipeline.progress import STAGES
-from haemolynx.pipeline.stages import TOPOLOGY_STEP, PipelineResume, segmented_input_path
+from haemolynx.pipeline.stages import (
+    TOPOLOGY_STEP,
+    PipelineResume,
+    recorded_raw_image_stain,
+    segmented_input_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -744,7 +749,9 @@ class StageCheckpoints:
         ]
 
         stored = self._stored_outputs(start_from)
-        skip = self._write_resume_artefacts(groups, start_from, settings, stored=stored)
+        skip = self._write_resume_artefacts(
+            groups, start_from, settings, stored=stored, graph=checkpoint.graph
+        )
         if drop:
             self.drop_from(start_from)
 
@@ -807,12 +814,15 @@ class StageCheckpoints:
         settings: Mapping[str, Any] | None,
         *,
         stored: Mapping[str, Any],
+        graph: Any | None = None,
     ) -> tuple[str, ...]:
         """Name the toggles a run starting at *start_from* needs turned off.
 
         The graph is never written: the run is handed it. The skeleton is
         made sure of on disk only when no stored one is handed over (a run
-        loaded from a file), since then the run loads it.
+        loaded from a file), since then the run loads it. *graph* is the
+        checkpoint's, where a run with ``raw_image_stain`` ``auto`` recorded
+        what it read the stain as -- what decides whether FWHM was in use.
         """
         skeleton_path = None
         located = _stem_and_output_dir(settings)
@@ -831,11 +841,12 @@ class StageCheckpoints:
             skeleton_ready=skeleton_path is not None,
             start_from=start_from,
             # FWHM is in use while diameters are measured from a raw image
-            # whose stain is not set to endothelial.
+            # whose stain -- as set, or as the run read it when auto -- is
+            # not endothelial.
             use_fwhm_edge_diameters=bool(
                 settings
                 and settings.get("measure_diameters_from_raw_image")
-                and settings.get("raw_image_stain") != "endothelial"
+                and recorded_raw_image_stain(settings, graph) != "endothelial"
             ),
         )
 

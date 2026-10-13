@@ -1643,12 +1643,23 @@ def _record_raw_evidence(
 ) -> None:
     """Calibrate the run's raw image round the mask (``preprocessing.raw_evidence``)
     and keep the calibration on the graph, so a saved graph says what the raw-image
-    rules read. Nothing when the run names no raw image, or it has nothing to read."""
+    rules read. Nothing when the run names no raw image, or it has nothing to read.
+
+    With ``raw_image_stain`` ``auto``, the stain the evidence was read under --
+    told by ``raw_stain.read_raw_stain``, the Diameters stage's own rule -- is
+    kept on the graph too (``raw_image_stain``, ``raw_image_stain_reading``), so
+    that stage takes the build's answer rather than reading the image again, and
+    one graph never names its raw image two ways."""
+    for key in ("raw_image_stain", "raw_image_stain_reading"):
+        G.graph.pop(key, None)
     evidence = preprocessing.raw_evidence_from_settings(settings, binary_mask, voxel_size_zyx, box=crop)
     if evidence is None:
         G.graph.pop(preprocessing.raw_evidence.GRAPH_ATTRIBUTE, None)
         return
     G.graph[preprocessing.raw_evidence.GRAPH_ATTRIBUTE] = evidence.calibration.as_dict()
+    if settings.get("raw_image_stain", "auto") not in raw_stain.STAINS:
+        G.graph["raw_image_stain"] = evidence.calibration.stain
+        G.graph["raw_image_stain_reading"] = evidence.calibration.reading
 
 
 def _record_crop(G: nx.Graph, crop: CropBox | None, voxel_size_zyx) -> None:
@@ -2561,29 +2572,44 @@ def recorded_raw_image_stain(settings: Mapping[str, Any], G: nx.MultiGraph | Non
 
 def resolve_raw_image_stain(
     settings: Mapping[str, Any], network: "VesselNetwork | None"
-) -> tuple[str, raw_stain.StainReading | None]:
-    """``(stain, reading)``: the raw image's stain, read from the image and the
-    segmentation when ``raw_image_stain`` is ``auto`` (``reading`` says how
-    it read), else the setting's (``reading`` None). An image that reads as
-    neither, or none to read, is taken as a plasma label -- the segmentation's
-    own kind -- and said so."""
+) -> tuple[str, raw_stain.StainReading | None, np.ndarray | None]:
+    """``(stain, reading, raw)``: the raw image's stain when ``raw_image_stain``
+    is ``auto`` -- the answer the network build recorded on the graph
+    (``_record_raw_evidence``, read by the same rule), with nothing loaded;
+    else read here from the image and the segmentation (``reading`` says
+    how it read, and ``raw`` is the channel loaded for it, cut to the
+    network's crop box, for the measurement to use instead of loading it
+    again) -- or the setting's own (``reading`` and ``raw`` None). An image
+    that reads as neither, or none to read, is taken as a plasma label --
+    the segmentation's own kind -- and said so."""
     stain = settings.get("raw_image_stain", "auto")
     if stain in raw_stain.STAINS:
-        return stain, None
+        return stain, None, None
+    recorded = network.graph.graph.get("raw_image_stain") if network is not None else None
+    if recorded in raw_stain.STAINS:
+        logger.info(f"raw_image_stain=auto: {recorded}, as the network build read the raw image.")
+        return recorded, None, None
     path = settings.get("raw_image_path")
     if not path or network is None or network.volume is None or network.volume.image is None:
-        return raw_stain.PLASMA_COLUMN, None
+        return raw_stain.PLASMA_COLUMN, None, None
     from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
 
     use_memmap, memmap_directory = settings["use_memmap_loading"], settings["memmap_directory"]
-    raw = load_single_channel_tiff_volume(
+    whole = load_single_channel_tiff_volume(
         io.resolve_image_path_with_optional_zip(Path(path)),
         axis_order=settings["image_axis_order"],
         use_memmap=use_memmap,
         memmap_directory=memmap_directory,
         channel=settings.get("raw_image_channel"),
     )
+    # The mask is the image as cropped on import; the raw file is whole.
+    raw = crop_volume_like_graph(
+        whole, network.graph, description="raw image",
+        use_memmap=use_memmap, memmap_directory=memmap_directory,
+    )
+    if raw is not whole and isinstance(whole, np.memmap):
+        preprocessing.release_memmap_array(whole)
     mask = _to_binary_volume_for_skeletonization(
         network.volume.image, use_memmap=use_memmap, memmap_directory=memmap_directory
     )
@@ -2593,9 +2619,9 @@ def resolve_raw_image_stain(
             f"raw_image_stain=auto: the raw image {reading.describe()}; measuring it as a plasma "
             "label. Set raw_image_stain if it is an endothelial one."
         )
-        return raw_stain.PLASMA_COLUMN, reading
+        return raw_stain.PLASMA_COLUMN, reading, raw
     logger.info(f"raw_image_stain=auto: the raw image {reading.describe()}.")
-    return reading.stain, reading
+    return reading.stain, reading, raw
 
 
 def _haemodynamics_apply_config(
@@ -2748,10 +2774,13 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
             # focal pericyte constrictions -- that belongs to typed
             # perturbation entries.
             stain = recorded_raw_image_stain(settings)
+            raw_volume = None
             if settings.get("measure_diameters_from_raw_image"):
-                stain, reading = resolve_raw_image_stain(settings, network)
+                stain, reading, raw_volume = resolve_raw_image_stain(settings, network)
                 G.graph["raw_image_stain"] = stain
-                G.graph["raw_image_stain_reading"] = None if reading is None else reading.as_dict()
+                # The build's own reading stands unless the image was read here.
+                if reading is not None or "raw_image_stain_reading" not in G.graph:
+                    G.graph["raw_image_stain_reading"] = None if reading is None else reading.as_dict()
             haemo_config = _haemodynamics_apply_config(
                 settings,
                 schema,
@@ -2769,7 +2798,7 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
                 )
             G, haemo_results, fwhm_raw = assign_edge_diameters(
                 G, haemo_config, mask_volume=network.volume.image,
-                calibration_edges=calibration_edges,
+                calibration_edges=calibration_edges, raw_volume=raw_volume,
             )
             if "fwhm" in haemo_results:
                 logger.info(f"FWHM diameter measurement summary: {haemo_results['fwhm']}")

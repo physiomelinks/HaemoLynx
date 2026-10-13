@@ -247,8 +247,10 @@ def test_the_tissue_volume_reading_the_raw_image_checks_its_channel(tmp_path):
     assert any("raw_image_channel" in error for error in check_image_channels(settings).errors)
 
 
-def test_a_raw_image_only_ilastik_reads_needs_no_channel(tmp_path):
-    """ilastik segments the whole file, so a composite is fine for it."""
+def test_a_raw_image_ilastik_segments_still_needs_its_channel_for_the_build(tmp_path):
+    """ilastik segments the whole file, but the network build then reads one
+    channel of it (the raw evidence round the mask) whatever else is on, so
+    a composite needs raw_image_channel for every run that names it."""
     path = tmp_path / "composite.tif"
     _composite(path)
 
@@ -256,7 +258,8 @@ def test_a_raw_image_only_ilastik_reads_needs_no_channel(tmp_path):
         path, measure_diameters_from_raw_image=False, use_ilastik_segmentation=True
     )
 
-    assert not check_image_channels(settings).errors
+    assert any("raw_image_channel" in error for error in check_image_channels(settings).errors)
+    assert not check_image_channels({**settings, "raw_image_channel": 1}).errors
 
 
 def test_preflight_runs_the_channel_check(tmp_path):
@@ -368,7 +371,10 @@ def test_what_reads_the_raw_image_needs_one_set(user):
     assert user in report.errors[0] and "raw_image_path" in report.errors[0]
 
 
-def test_a_missing_raw_image_is_an_error_only_when_the_run_reads_it(tmp_path):
+def test_a_missing_raw_image_is_an_error_for_every_run_that_names_it(tmp_path):
+    """The network build reads a raw image whenever one is set (the raw
+    evidence round the mask), so a missing one is never only a warning: it
+    used to be, and the run then failed in build_network."""
     from haemolynx.pipeline.checks import check_raw_image
 
     gone = str(tmp_path / "gone.tif")
@@ -377,4 +383,6 @@ def test_a_missing_raw_image_is_an_error_only_when_the_run_reads_it(tmp_path):
     unread = check_raw_image({"raw_image_path": gone, "measure_diameters_from_raw_image": False})
 
     assert len(read.errors) == 1 and "gone.tif" in read.errors[0]
-    assert unread.ok and any("gone.tif" in warning for warning in unread.warnings)
+    assert "measure_diameters_from_raw_image" in read.errors[0]
+    assert len(unread.errors) == 1 and "gone.tif" in unread.errors[0]
+    assert "network build" in unread.errors[0]

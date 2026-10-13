@@ -71,3 +71,30 @@ def test_no_vessel_wide_enough_to_have_a_middle_says_it_cannot_tell():
 def test_an_empty_mask_reads_nothing():
     reading = read_raw_stain(_image(PLASMA_COLUMN), np.zeros(SHAPE, dtype=bool), VS)
     assert reading.stain is None and reading.blocks == 0
+
+
+def test_a_raw_image_on_another_grid_is_refused():
+    """A raw image not cut to the mask's crop box would be read in the wrong
+    place -- silently, since every block is clipped to the mask's own shape."""
+    with pytest.raises(ValueError, match="differ in shape"):
+        read_raw_stain(_image(ENDOTHELIAL), _lumen_mask()[:, :100], VS)
+
+
+def test_an_endothelial_stain_is_told_from_a_segmentation_of_the_wall():
+    """A mask of the vessel wall to wall (segmentation_source endothelial) has
+    the dark lumen at its core and the ring at its edge: still a wall label."""
+    distance, radius = _vessels()
+    wall_mask = distance <= radius + 1.2
+    reading = read_raw_stain(_image(ENDOTHELIAL), wall_mask, VS)
+    assert reading.stain == ENDOTHELIAL
+    assert read_raw_stain(_image(PLASMA_COLUMN), wall_mask, VS).stain == PLASMA_COLUMN
+
+
+def test_a_single_slab_image_still_gets_blocks_to_read():
+    """A 2D image is one slab: sampled four blocks a slab, it read nothing;
+    it gets as many candidate blocks as a deep stack does."""
+    image, mask = _image(PLASMA_COLUMN), _lumen_mask()
+    # A slab across the vessels (z = 24 um, through every axis), as one image.
+    reading = read_raw_stain(image[24:25], mask[24:25], VS)
+    assert reading.stain == PLASMA_COLUMN
+    assert reading.blocks >= 8

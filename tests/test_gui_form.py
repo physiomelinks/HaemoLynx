@@ -1288,3 +1288,19 @@ def test_an_h5_dataset_row_shows_only_for_an_hdf5_file(name, path_name):
         (None, False),
     ):
         assert field.is_visible({**gates, path_name: path}) is shown, path
+
+
+def test_the_stain_note_says_what_an_auto_run_read_and_nothing_otherwise():
+    """Under the Raw image stain row: what the last run read an auto stain as
+    (the graph's raw_image_stain and its reading); nothing for a stain the
+    user named, or an auto no run has read."""
+    from haemolynx.gui.form import raw_image_stain_note
+
+    reading = {"contrast": -0.364, "blocks": 64}
+    note = raw_image_stain_note("auto", "endothelial", reading)
+    assert note == "Read as: Endothelial (wall stain) (contrast -0.36 over 64 blocks)"
+    assert raw_image_stain_note("auto", "plasma_column", None) == "Read as: Plasma column (luminal stain)"
+    assert raw_image_stain_note("auto", "plasma_column", {"blocks": 0}) == "Read as: Plasma column (luminal stain)"
+    assert raw_image_stain_note("auto", None, reading) == ""
+    assert raw_image_stain_note("endothelial", "endothelial", reading) == ""
+    assert raw_image_stain_note("plasma_column", "endothelial", reading) == ""

@@ -74,14 +74,11 @@ CALIBRATION_BLOCKS = 16
 CALIBRATION_BLOCK_UM = 40.0
 #: Read round each block, so a vessel the block cuts keeps its true depth.
 CALIBRATION_MARGIN_UM = 6.0
-#: ``auto`` names the stain by the share of the signal above the background
-#: the lumen core carries, against the brighter of the two sides of the mask's
-#: surface: at least PLASMA_CORE_SHARE of it and the lumen is the label, at
-#: most ENDOTHELIAL_CORE_SHARE and the wall is; between, it cannot tell. A
-#: capillary bed thinner than the image's blur reads as lumen either way, so
-#: ``raw_image_stain`` can say instead.
-PLASMA_CORE_SHARE = 0.8
-ENDOTHELIAL_CORE_SHARE = 0.5
+#: ``auto`` names the stain the one way every reader does: ``raw_stain.read_raw_stain``
+#: (``raw_image_stain``'s own rule, calibrated on E14.5), so the stain the
+#: build reads its evidence under is the one the Diameters stage measures by.
+#: A capillary bed thinner than the image's blur reads as lumen either way,
+#: so ``raw_image_stain`` can say instead.
 #: The level a reading is normalised by must stand this many robust spreads
 #: of the background above it, or there is nothing to read.
 SIGNAL_OVER_SPREAD = 1.0
@@ -122,12 +119,16 @@ class RawCalibration:
     blocks: int
     #: The blur (voxels) the levels were read under; the questions use the same.
     sigma_vox: float = WINDOW_SMOOTHING_SIGMA_VOX
+    #: How the stain was told from the image when it was ``auto``
+    #: (``raw_stain.StainReading.as_dict``); None when the run named it.
+    reading: Optional[dict] = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_record(cls, record: Mapping[str, Any]) -> "RawCalibration":
+        reading = record.get("reading")
         return cls(
             stain=str(record["stain"]),
             vessel=float(record["vessel"]),
@@ -137,6 +138,7 @@ class RawCalibration:
             contrast=float(record.get("contrast", 0.0)),
             blocks=int(record.get("blocks", 0)),
             sigma_vox=float(record.get("sigma_vox", WINDOW_SMOOTHING_SIGMA_VOX)),
+            reading=dict(reading) if reading is not None else None,
         )
 
     @classmethod
@@ -230,9 +232,11 @@ def calibrate_raw(
     """The run's lumen, wall and background levels, read in *blocks* blocks of
     *block_um* round sampled mask voxels (each block its own distance
     transforms, as ``raw_stain.read_raw_stain`` does), and the stain: *stain*
-    as given, or with ``auto`` from which of the lumen and the wall stands
-    higher. None, with a log line saying why, when the image has nothing to
-    read: no block with lumen, wall and background in it, or the level the
+    as given, or with ``auto`` as ``raw_stain.read_raw_stain`` tells it -- the
+    one rule, so the build and the Diameters stage never name the same image
+    differently; the reading is kept on the calibration. None, with a log
+    line saying why, when the image has nothing to read: the stain cannot be
+    told, no block with lumen, wall and background in it, or the level the
     stain is read at not standing :data:`SIGNAL_OVER_SPREAD` spreads above the
     background. *raw* and *mask* share one grid; either may be a memory map."""
     from scipy import ndimage
@@ -245,6 +249,19 @@ def calibrate_raw(
         raise ValueError(
             f"The raw image {tuple(np.shape(raw))} and the mask {tuple(mask.shape)} differ in shape"
         )
+    reading: Optional[dict] = None
+    if stain == AUTO:
+        from .raw_stain import read_raw_stain
+
+        told = read_raw_stain(raw, mask, voxel_size_zyx, seed=seed)
+        if told.stain is None:
+            logger.info(
+                "Raw evidence: the raw image %s, so the stain cannot be told; set raw_image_stain. "
+                "Not read.",
+                told.describe(),
+            )
+            return None
+        stain, reading = told.stain, told.as_dict()
     half = np.maximum(np.ceil(block_um / 2.0 / vs).astype(int), 2)
     margin = np.ceil(CALIBRATION_MARGIN_UM / vs).astype(int)
     rng = np.random.default_rng(seed)
@@ -301,31 +318,10 @@ def calibrate_raw(
     lift_core, lift_wall = core_level - background_level, wall_level - background_level
     scale = abs(lift_core) + abs(lift_wall)
     contrast = float((lift_core - lift_wall) / scale) if scale > 0 else 0.0
-    if stain == AUTO:
-        top = max(lift_core, lift_wall)
-        share = lift_core / top if top > 0 else 0.0
-        if top <= SIGNAL_OVER_SPREAD * max(spread, 0.0):
-            logger.info(
-                "Raw evidence: neither the lumen (%.4g) nor the wall (%.4g) stands above the background "
-                "(%.4g, spread %.3g); not read.",
-                core_level, wall_level, background_level, spread,
-            )
-            return None
-        if share >= PLASMA_CORE_SHARE:
-            stain = PLASMA_COLUMN
-        elif share <= ENDOTHELIAL_CORE_SHARE:
-            stain = ENDOTHELIAL
-        else:
-            logger.info(
-                "Raw evidence: the lumen (%.4g) carries %.0f%% of the wall's (%.4g) signal above the "
-                "background (%.4g), between a lumen and a wall label, so the stain cannot be told; "
-                "set raw_image_stain. Not read.",
-                core_level, 100 * share, wall_level, background_level,
-            )
-            return None
     calibration = RawCalibration(
         stain=stain, vessel=core_level, wall=wall_level, background=background_level,
         background_spread=spread, contrast=contrast, blocks=used, sigma_vox=float(sigma_vox),
+        reading=reading,
     )
     if calibration.level - background_level <= SIGNAL_OVER_SPREAD * max(spread, 0.0):
         logger.info(
@@ -761,27 +757,18 @@ class RawImageSpec:
 
 
 def raw_image_for_build(settings: Mapping[str, Any]) -> Optional[RawImageSpec]:
-    """The raw image a run's settings name, by either naming: the one raw
-    image of the Input tab (``raw_image_path`` / ``raw_image_channel`` /
-    ``raw_image_stain``) first, else the FWHM raw image
-    (``fwhm_raw_tiff_path`` / ``fwhm_raw_channel``, read as ``auto``: usable
-    with FWHM measurement off, as Check segmented image reads it), else the
-    endothelial image (``endothelial_image_path`` / ``endothelial_channel``).
-    None when the run names no raw image."""
-    for path_name, channel_name, stain_name, stain in (
-        ("raw_image_path", "raw_image_channel", "raw_image_stain", AUTO),
-        ("fwhm_raw_tiff_path", "fwhm_raw_channel", None, AUTO),
-        ("endothelial_image_path", "endothelial_channel", None, ENDOTHELIAL),
-    ):
-        path = settings.get(path_name)
-        if path in (None, ""):
-            continue
-        channel = settings.get(channel_name)
-        named = settings.get(stain_name) if stain_name else None
-        if named in STAINS:
-            stain = str(named)
-        return RawImageSpec(Path(path), None if channel in (None, "") else int(channel), stain, path_name)
-    return None
+    """The raw image a run's settings name: the one raw image of the Input tab
+    (``raw_image_path`` / ``raw_image_channel`` / ``raw_image_stain``). The
+    names it replaced (``fwhm_raw_tiff_path``, ``endothelial_image_path``)
+    are read into it when a config loads (``Schema.upgrade``), so they are
+    not looked for here. None when the run names no raw image."""
+    path = settings.get("raw_image_path")
+    if path in (None, ""):
+        return None
+    channel = settings.get("raw_image_channel")
+    named = settings.get("raw_image_stain")
+    stain = str(named) if named in STAINS else AUTO
+    return RawImageSpec(Path(path), None if channel in (None, "") else int(channel), stain, "raw_image_path")
 
 
 def load_raw_channel(
@@ -819,9 +806,20 @@ def raw_evidence_from_settings(
     spec = raw_image_for_build(settings)
     if spec is None:
         return None
+    from haemolynx.io.load import resolve_image_path_with_optional_zip
+
+    try:
+        path = resolve_image_path_with_optional_zip(spec.path)
+    except FileNotFoundError:
+        path = spec.path
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"The raw image ({spec.setting}) is not there: {spec.path}. Fix: point raw_image_path "
+            "at the raw image on the Input tab, or clear it."
+        )
     started = time.perf_counter()
     raw = load_raw_channel(
-        spec.path,
+        path,
         spec.channel,
         axis_order=str(settings.get("image_axis_order") or "zyx"),
         use_memmap=bool(settings.get("use_memmap_loading")),

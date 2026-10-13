@@ -463,6 +463,23 @@ CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
 }
 
 
+def raw_image_stain_note(
+    setting: Any, read_as: str | None, reading: Mapping[str, Any] | None
+) -> str:
+    """What to say under the "Raw image stain" row: for ``auto``, what the last
+    run read the image as (the graph's ``raw_image_stain``, with its reading's
+    contrast and block count when it has them), since the row itself cannot
+    say and the Diameters tab's method rows follow the answer. Nothing for a
+    stain the user named, or an ``auto`` no run has read yet."""
+    labels = CHOICE_VALUE_LABELS["raw_image_stain"]
+    if setting != "auto" or read_as not in labels or read_as == "auto":
+        return ""
+    note = f"Read as: {labels[read_as]}"
+    if reading and reading.get("blocks"):
+        note += f" (contrast {float(reading.get('contrast', 0.0)):+.2f} over {int(reading['blocks'])} blocks)"
+    return note
+
+
 def label_for(name: str, unit: str | None = None) -> str:
     """`skeleton_closing_radius` -> `Skeleton closing radius (voxels)`.
 
