@@ -261,3 +261,40 @@ def test_a_second_clean_up_on_the_same_object_judges_only_what_changed(monkeypat
     again = consolidate_lumen(G.copy(), cleanup)
     assert judged == []
     assert sorted(map(str, again.edges(keys=True))) == sorted(map(str, G.edges(keys=True)))
+
+
+def test_the_clean_up_breaks_short_loops_round_tissue_only_when_asked():
+    """``remove_short_loops_under_um`` reaches the clean-up: on by default in
+    the schema (200 um), a loop the in-lumen rule keeps goes; at 0 it stays."""
+    import networkx as nx
+
+    from haemolynx.graph.lumen_loops import LOOP_SEARCH_UM
+
+    mask = np.zeros((15, 20, 60), dtype=bool)
+    idx = np.indices(mask.shape)
+    mask |= (idx[0] - 7) ** 2 + (idx[1] - 7) ** 2 <= 9
+    mask[:, 6:9, 22:39] = False  # tissue between the two strands
+
+    def loop_graph():
+        G = nx.MultiGraph()
+        for node, x in (("A", 0.0), ("u", 20.0), ("v", 40.0), ("B", 59.0)):
+            G.add_node(node, pos=np.array([7.0, 7.0, x]))
+        straight = lambda x0, x1: [[7.0, 7.0, float(x)] for x in range(x0, x1 + 1)]
+        length = lambda p: float(np.sum(np.linalg.norm(np.diff(np.asarray(p), axis=0), axis=1)))
+        G.add_edge("A", "u", voxels=straight(0, 20), length=length(straight(0, 20)))
+        G.add_edge("v", "B", voxels=straight(40, 59), length=length(straight(40, 59)))
+        for row in (4, 10):
+            path = [[7.0, 7.0, 20.0]] + [[7.0, float(row), float(x)] for x in range(22, 39)] + [[7.0, 7.0, 40.0]]
+            G.add_edge("u", "v", voxels=path, length=length(path), row=row)
+        return G
+
+    # Not asked: the clean-up carries no limit (the other steps may still judge
+    # the loop by the mask; test_lumen_loops pins that the in-lumen rule keeps it).
+    assert lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, min_stub_length=0.0).max_short_loop_um == 0.0
+    cleanup = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, min_stub_length=0.0,
+                            remove_short_loops_under_um=LOOP_SEARCH_UM)
+    assert cleanup.max_short_loop_um == LOOP_SEARCH_UM
+    broken = consolidate_lumen(loop_graph(), cleanup)
+    assert nx.cycle_basis(nx.Graph(broken)) == []
+    assert nx.is_connected(broken)
+    assert set(broken.nodes) >= {"A", "B"}

@@ -1010,6 +1010,9 @@ def _graph_kwargs(settings: Mapping[str, Any], voxel_size_zyx: Sequence[float]) 
         facing_dead_end_max_gap_um=float(
             settings.get("facing_dead_end_max_gap_um", graph_mod.facing_ends.DEFAULT_FACING_MAX_GAP_UM)
         ),
+        remove_short_loops_under_um=float(
+            settings.get("remove_short_loops_under_um", graph_mod.lumen_loops.DEFAULT_SHORT_LOOP_UM) or 0.0
+        ),
     )
 
 

@@ -327,3 +327,52 @@ def test_the_wall_side_is_the_side_the_loop_breaker_would_take_out():
     assert radii[rows.index(4)] < radii[rows.index(9)]
     remove_loops_inside_one_lumen(G, _support(_tube_mask()))
     assert _rows(G) == [9], "the breaker took out the same side"
+
+
+# --- every short loop, whatever the mask says (grids I and I2) ---------------
+
+from haemolynx.graph.lumen_loops import DEFAULT_SHORT_LOOP_UM, remove_short_loops  # noqa: E402
+
+
+def test_a_short_loop_round_tissue_is_broken_on_its_wall_side():
+    """Harvey's grids I and I2 (2026-10-13): 55 of 60 loops under 200 um
+    closed inside one vessel, and the in-lumen rule found none of them. So
+    a short loop goes whatever the mask says, the wall side first."""
+    mask = _tube_mask()
+    mask[:, 6:9, 22:39] = False  # 3 um of tissue between the strands: the in-lumen rule keeps it
+    G = _vessel_with(4, 9)
+    assert _rows(remove_loops_inside_one_lumen(G.copy(), _support(mask))) == [4, 9]
+    remove_short_loops(G, _support(mask), max_length_um=DEFAULT_SHORT_LOOP_UM)
+    assert _rows(G) == [9]  # row 4 runs on the wall
+    assert sorted(G.nodes) == ["A", "B", "u", "v"]
+    assert nx.is_connected(G) and nx.cycle_basis(nx.Graph(G)) == []
+
+
+def test_a_loop_longer_than_the_limit_stays():
+    G = _vessel_with(4, 9)
+    loop_um = sum(d["length"] for *_e, d in G.edges(data=True) if "row" in d)
+    remove_short_loops(G, _support(_tube_mask()), max_length_um=loop_um - 1.0)
+    assert _rows(G) == [4, 9]
+
+
+def test_a_limit_of_zero_leaves_every_loop():
+    G = _vessel_with(4, 9)
+    remove_short_loops(G, _support(_tube_mask()), max_length_um=0.0)
+    assert _rows(G) == [4, 9]
+
+
+def test_every_short_loop_of_a_tangle_goes_and_the_middle_strand_stays():
+    G = _vessel_with(4, 7, 9)
+    remove_short_loops(G, _support(_tube_mask()))
+    assert _rows(G) == [7]
+    assert nx.cycle_basis(nx.Graph(G)) == []
+
+
+def test_the_default_limit_is_the_review_lists_and_the_setting_defaults_to_it():
+    from haemolynx.graph.lumen_loops import LOOP_SEARCH_UM
+    from haemolynx.pipeline import default_schema
+
+    assert DEFAULT_SHORT_LOOP_UM == LOOP_SEARCH_UM == 200.0
+    setting = default_schema()["remove_short_loops_under_um"]
+    assert setting.default == 200.0
+    assert setting.advanced and "bridge_require_mask_support" in setting.requires

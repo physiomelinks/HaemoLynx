@@ -589,6 +589,20 @@ are only caught locally.
   middle is what stays and no spur is left; a ring the network meets once goes whole. A loop
   round tissue stays however short. Removing the longest arc instead kept rim strands and left
   80k more voxels of E14.5 uncovered.
+- **Short loops** (`lumen_loops.remove_short_loops`, `remove_short_loops_under_um`, **200 µm, on by
+  default** since 2026-10-13) — in every `consolidate_lumen` round, after the in-lumen loop step,
+  every loop up to that long round loses its arc nearest the wall whatever the mask says of it.
+  Harvey's grids I and I2 (`outputs/loop_review/FIT_I*.md`, judged on the claudin-5 channel):
+  55 of 60 short loops of E14.5 close inside one vessel, the in-lumen rule found none of them
+  (the background it reads between the two sides as tissue was not tissue there), and no
+  measure of the mask or the raw image found the five real ones (46-179 µm) -- so the rule is
+  the trivial one, right 92-93 % at the cost of one real loop in twelve. Which side goes is the
+  loop breaker's choice, not judged by the marks; the Short loops review list shows what is
+  left, and 0 leaves every short loop to it. `preprocessing/raw_evidence.py` (`RawEvidence`: the
+  raw channel read in windows where the mask is silent, calibrated once per build and kept on
+  `G.graph["raw_evidence"]`) shipped no rule: on grids H, H2 (one lumen or two), M, M2 (a
+  vessel across a gap) and I (loop holes) no raw measure beat marking everything one way
+  (`PLAN_raw_confirmation.md`).
 - **`graph/smoothing.py`** — `smooth_graph_centrelines`: takes the voxel staircase out of each
   centreline and **re-measures `length`**, which moves every resistance (a path stepping voxel to
   voxel comes back ~7% longer than the vessel it traces). It is *not* one of the `STEP_LABELS` —

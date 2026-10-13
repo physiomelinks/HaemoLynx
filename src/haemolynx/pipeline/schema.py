@@ -3049,6 +3049,26 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="remove_short_loops_under_um",
+            kind="float",
+            default=200.0,
+            help=(
+                "Break every loop of the network up to this long round, taking out "
+                "the side nearest the vessel wall, whatever the segmentation says of "
+                "it: on E14.5 nine in ten loops under 200 um closed inside one vessel "
+                "(Harvey's grids I and I2, 55 of 60), and the in-lumen rule found none "
+                "of them. Costs about one real loop in twelve; the Short loops review "
+                "list is where a wrong side is put back. 0 leaves short loops to that "
+                "list. No effect without the segmented mask or with "
+                "bridge_require_mask_support off"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
             name="extend_dead_ends_to_faces",
             kind="bool",
             default=False,

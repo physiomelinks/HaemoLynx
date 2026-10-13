@@ -191,6 +191,7 @@ STAGES: tuple[Stage, ...] = (
             "recovery_min_region_volume_um3",
             "recovery_min_length_um",
             "facing_dead_end_max_gap_um",
+            "remove_short_loops_under_um",
             "extend_dead_ends_to_faces",
             "trace_on_dead_ends",
             "join_dead_ends_to_vessel_sides",

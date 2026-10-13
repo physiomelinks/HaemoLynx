@@ -420,6 +420,62 @@ def remove_loops_inside_one_lumen(
     return G
 
 
+#: Loops up to this long round are removed by :func:`remove_short_loops`
+#: when a run asks for it (``remove_short_loops_under_um``): the review
+#: list's own limit, so what it removes is what the list would have shown.
+DEFAULT_SHORT_LOOP_UM = LOOP_SEARCH_UM
+
+
+def remove_short_loops(
+    G: nx.MultiGraph, support: MaskSupport, *, max_length_um: float = DEFAULT_SHORT_LOOP_UM
+) -> nx.MultiGraph:
+    """Break, in place, every loop of *G* up to *max_length_um* round, as
+    :func:`remove_loops_inside_one_lumen` breaks a loop inside one lumen --
+    the arc nearest the wall goes -- whether or not the mask says it runs
+    round tissue.
+
+    Harvey's grids I and I2 (2026-10-13, 60 short loops of E14.5 judged on
+    the claudin-5 channel): 55 closed inside one vessel, and the mask rule
+    had found none of them, since the background it reads between the two
+    sides as tissue was not tissue there. No measure, of the mask or the raw
+    image, found the five real ones (46-179 um round), and no length cut did
+    better than taking a side of every short loop, which is right 92-93% of
+    the time at the cost of one real loop in twelve. Which side goes is the
+    loop breaker's choice, not something the marks judged, so the Short
+    loops review list is where a wrong side is put back. 0 turns it off.
+    """
+    if G.number_of_edges() == 0 or not max_length_um > 0:
+        return G
+    removed: list[float] = []
+    changed = True
+    while changed:
+        changed = False
+        pairs = _Pairs(G)
+        for u, v in pairs.pairs:
+            if not G.has_edge(u, v):
+                continue
+            cycle = pairs.shortest_cycle(u, v, max_length_um)
+            if cycle is None:
+                continue
+            lengths = {(a, b, key): _length(G.edges[a, b, key]) for a, b, key in cycle}
+            if sum(lengths.values()) > max_length_um:
+                continue
+            for a, b, key in _break(G, cycle, support):
+                removed.append(lengths[(a, b, key)])
+                if G.has_node(a) and G.has_node(b):
+                    pairs.refresh(a, b)
+                else:
+                    pairs.set_weight(a, b, _UNUSABLE)
+            changed = True
+    if removed:
+        logger.info(
+            "Broke every loop under %.0f um round (grids I and I2: nine in ten are false): took out "
+            "%d edge(s), %.0f um",
+            max_length_um, len(removed), float(sum(removed)),
+        )
+    return G
+
+
 def _joined_without(G: nx.MultiGraph, u, v) -> bool:
     """Whether *u* and *v* stay connected with the one edge between them taken
     out: searched from both ends at once, without changing *G*."""

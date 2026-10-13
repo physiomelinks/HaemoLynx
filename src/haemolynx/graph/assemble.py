@@ -41,7 +41,7 @@ from .mask_recovery import (
     remove_edges_off_the_mask,
 )
 from .facing_ends import DEFAULT_FACING_MAX_GAP_UM, join_facing_dead_ends
-from .lumen_loops import remove_loops_inside_one_lumen, remove_parallel_edges_in_lumen
+from .lumen_loops import remove_loops_inside_one_lumen, remove_parallel_edges_in_lumen, remove_short_loops
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
 from .reconnect import reconnect_secondary_loop_edges
@@ -227,6 +227,9 @@ class LumenCleanup:
     #: or a pair of edge keys (``lumen_loops.remove_parallel_edges_in_lumen``),
     #: and what it returns True for is left alone. None: the mask decides.
     keep_apart: Callable[[Any], bool] | None = None
+    #: Loops up to this long round are broken whatever the mask says of them
+    #: (``lumen_loops.remove_short_loops``); 0 leaves them to the review list.
+    max_short_loop_um: float = 0.0
     #: The pair rule's and the stretch finder's verdicts, kept from round to
     #: round and from one consolidate_lumen call to the next on the same
     #: object: build_network cleans up after smoothing and again after the
@@ -252,6 +255,7 @@ def lumen_cleanup(
     debug: bool = False,
     stub_face_protection: str = "threshold",
     keep_apart: Callable[[Any], bool] | None = None,
+    remove_short_loops_under_um: float = 0.0,
 ) -> LumenCleanup:
     """The clean-up the end of graph building runs, built from the same
     settings :func:`build_graph_from_skeleton` takes -- so a caller that
@@ -318,7 +322,10 @@ def lumen_cleanup(
             **stub_mask_rules,
         )
 
-    return LumenCleanup(support, inside_lumen, prune, max_degree=max_degree, debug=debug, keep_apart=keep_apart)
+    return LumenCleanup(
+        support, inside_lumen, prune, max_degree=max_degree, debug=debug, keep_apart=keep_apart,
+        max_short_loop_um=float(remove_short_loops_under_um or 0.0),
+    )
 
 
 def consolidate_lumen(
@@ -363,6 +370,10 @@ def consolidate_lumen(
         G = remove_edges_off_the_mask(G, cleanup.support)
         G = remove_parallel_edges_in_lumen(G, cleanup.support, memo=pairs_memo, keep_apart=cleanup.keep_apart)
         G = remove_loops_inside_one_lumen(G, cleanup.support)
+        if cleanup.max_short_loop_um > 0:
+            # Grids I and I2: nine in ten short loops close inside one vessel,
+            # and the in-lumen rule above found none of them.
+            G = remove_short_loops(G, cleanup.support, max_length_um=cleanup.max_short_loop_um)
         # What the whole-edge pair rule leaves: a stretch of an edge beside
         # another, rewired rather than deleted (graph.doubled_stretches).
         G = resolve_doubled_stretches(G, cleanup.support, keep_apart=cleanup.keep_apart, memo=stretch_memo)
@@ -417,6 +428,7 @@ def build_graph_from_skeleton(
     trace_on_dead_ends: bool = False,
     join_dead_ends_to_vessel_sides: bool = False,
     stub_face_protection: str = "threshold",
+    remove_short_loops_under_um: float = 0.0,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -535,6 +547,11 @@ def build_graph_from_skeleton(
         face, draw the centreline on from a dead end the mask runs on past,
         and join a dead end to the side of the vessel straight ahead across a
         gap -- see ``dead_end_extension``. They run in the facing-join step.
+    remove_short_loops_under_um
+        With a *segmentation_mask* and *bridge_require_mask_support* on,
+        break every loop up to this long round in each clean-up round,
+        whatever the mask says of it -- see ``lumen_loops.remove_short_loops``
+        and grids I and I2. 0 leaves short loops to the review list.
     stub_face_protection
         Which short stubs the prune keeps at an image face: ``"threshold"``
         (a tip within its own threshold of a face, as before) or
@@ -580,6 +597,7 @@ def build_graph_from_skeleton(
         max_degree=degree2_pass1_max_degree,
         debug=debug,
         stub_face_protection=stub_face_protection,
+        remove_short_loops_under_um=remove_short_loops_under_um,
     )
     prune_stubs = cleanup.prune
 

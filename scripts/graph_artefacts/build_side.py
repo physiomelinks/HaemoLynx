@@ -38,6 +38,7 @@ _CLEANUP_ARGUMENTS = (
     "bridge_max_background_gap_um",
     "bridge_min_mask_fraction",
     "stub_face_protection",
+    "remove_short_loops_under_um",
 )
 
 
