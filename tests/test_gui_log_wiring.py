@@ -277,15 +277,22 @@ def test_the_panel_docks_the_log_in_the_viewer(make_napari_viewer) -> None:
     assert panel._haemolynx_log.native.parent() is not None
 
 
-def test_the_log_stays_docked_when_the_view_floats(make_napari_viewer) -> None:
+def test_the_log_keeps_the_bottom_with_the_view_tabbed_on_the_left(make_napari_viewer) -> None:
     """A left view strip used to take the bottom corners and hide the log."""
+    from qtpy.QtCore import Qt
+
     viewer = make_napari_viewer()
     panel = settings_widget(napari_viewer=viewer)
+    main_window = viewer.window._qt_window
 
-    assert panel._haemolynx_view_dock.isFloating()
+    view_dock = panel._haemolynx_view_dock
+    assert not view_dock.isFloating()
+    assert main_window.dockWidgetArea(view_dock) == Qt.DockWidgetArea.LeftDockWidgetArea
     log_dock = panel._haemolynx_log_dock
     assert log_dock is not None
     assert not log_dock.isFloating()
+    assert main_window.dockWidgetArea(log_dock) == Qt.DockWidgetArea.BottomDockWidgetArea
+    assert main_window.corner(Qt.Corner.BottomLeftCorner) == Qt.DockWidgetArea.BottomDockWidgetArea
 
 
 def test_the_panel_still_builds_with_no_viewer_to_dock_it_in() -> None:

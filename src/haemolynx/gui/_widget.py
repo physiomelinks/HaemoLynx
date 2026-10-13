@@ -217,8 +217,8 @@ def forced_hidden_value(name: str, values: Mapping[str, Any]) -> Any:
 #: What napari calls the log window's dock.
 LOG_DOCK_NAME = "HaemoLynx run log"
 
-#: View chrome (Z-depth, scale bar, snapshot). Floated over the
-#: canvas so a left strip cannot steal height from the bottom run log.
+#: View chrome (Z-depth, scale bar, snapshot). The first of the left
+#: panel's three tabs, before napari's layer list and layer controls.
 VIEW_DOCK_NAME = "HaemoLynx view"
 
 #: Cosmetic TIFF of the current view; never a pipeline setting or input.
@@ -259,168 +259,231 @@ def _give_bottom_docks_the_corners(viewer) -> None:
         logger.debug("could not prefer bottom dock corners", exc_info=True)
 
 
-def _float_dock_over_canvas(viewer, dock) -> None:
-    """Undock *dock* and sit it on the canvas instead of in a side strip."""
-    from qtpy.QtCore import QTimer
+def _in_a_scroll_area(widget, *, horizontal: bool = True):
+    """*widget* in a frameless QScrollArea that grows with it.
 
-    setter = getattr(dock, "setFloating", None)
-    if setter is None:
-        setter = getattr(getattr(dock, "native", None), "setFloating", None)
-    if setter is None:
-        return
-    try:
-        setter(True)
-    except Exception:  # noqa: BLE001
-        logger.debug("could not float dock", exc_info=True)
-        return
+    Qt holds a dock at least as tall as its contents, and tabbed docks share
+    one height, so the tallest tab's contents would set the floor of the
+    whole left strip. Scrolled, a tab shrinks as far as the strip does.
+    """
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QFrame, QScrollArea
 
-    inner = dock.widget() if callable(getattr(dock, "widget", None)) else None
-    hint = inner.sizeHint() if inner is not None else dock.sizeHint()
-    try:
-        # A fresh widget's sizeHint() tends to under-report before Qt has
-        # laid it out for real, which used to clip "Save snapshot" at the
-        # bottom of the panel -- pad past the hint rather than trust it exactly.
-        dock.resize(max(int(hint.width()), 280), max(int(hint.height()) + 24, 220))
-    except Exception:  # noqa: BLE001
-        logger.debug("could not size floating dock", exc_info=True)
-
-    def place() -> None:
-        try:
-            qt_viewer = getattr(viewer.window, "_qt_viewer", None)
-            canvas = getattr(qt_viewer, "canvas", None)
-            native = getattr(canvas, "native", canvas)
-            if native is None:
-                return
-            top_left = native.mapToGlobal(native.rect().topLeft())
-            dock.move(int(top_left.x()) + 16, int(top_left.y()) + 16)
-        except Exception:  # noqa: BLE001
-            logger.debug("could not place dock over the canvas", exc_info=True)
-
-    QTimer.singleShot(0, place)
-
-
-#: Tooltip on the layer list's title bar once dragging it resizes the dock.
-LAYER_LIST_GRIP_TOOLTIP = "drag up or down to resize. double-click toggles floating"
+    scroller = QScrollArea()
+    scroller.setWidgetResizable(True)
+    scroller.setFrameShape(QFrame.Shape.NoFrame)
+    if not horizontal:
+        scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroller.setWidget(widget)
+    return scroller
 
 
 def _let_layer_controls_scroll(controls) -> None:
     """Put the layer controls dock's contents in a scroll area.
 
     An image layer's controls are ~310 px tall at their smallest, and Qt
-    holds a dock at least as tall as its contents, so dragging the layer
-    list up stopped there. Scrolled, the controls shrink as far as the dock.
+    holds a dock at least as tall as its contents. Scrolled, the controls
+    shrink as far as the dock.
     """
-    from qtpy.QtCore import Qt
-    from qtpy.QtWidgets import QFrame, QScrollArea
+    from qtpy.QtWidgets import QScrollArea
 
     inner = controls.widget()
     if inner is None or isinstance(inner, QScrollArea):
         return
-    scroller = QScrollArea()
-    scroller.setWidgetResizable(True)
-    scroller.setFrameShape(QFrame.Shape.NoFrame)
-    scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    scroller.setWidget(inner)
-    controls.setWidget(scroller)
+    controls.setWidget(_in_a_scroll_area(inner, horizontal=False))
     # Qt has already raised the dock's own minimum to its old contents';
     # back to napari's 50 px, which the scroller no longer pushes up.
     controls.setMinimumHeight(50)
 
 
-def _resize_layer_list_by_its_title_bar(viewer):
-    """Dragging the layer list's dotted title bar resizes it, not moves it.
+#: napari's two layer docks, as their titles and tab labels read here.
+LAYER_LIST_TITLE = "Layer list"
+LAYER_CONTROLS_TITLE = "Layer controls"
 
-    napari's title bar drags the whole dock somewhere else, so the dots look
-    like a size handle but never change the panel's height. While the layer
-    list is docked, a vertical drag on it now moves the boundary between the
-    layer controls above and the layer list below. Double-click still floats
-    the dock, and a floating dock still drags as napari's does. The filter
-    sits on the dock, not the title bar, because napari rebuilds the title
-    bar every time the dock floats or moves. None without a Qt window.
-    """
-    from qtpy.QtCore import QEvent, QObject, Qt, QTimer
 
+def _layer_docks(viewer) -> tuple:
+    """napari's (layer list, layer controls) docks; None for a missing one."""
     window = getattr(viewer, "window", None)
     qt_viewer = getattr(window, "_qt_viewer", None) if window is not None else None
-    main_window = getattr(window, "_qt_window", None) if window is not None else None
-    if qt_viewer is None or main_window is None:
-        return None
-    layer_list = getattr(qt_viewer, "dockLayerList", None)
-    controls = getattr(qt_viewer, "dockLayerControls", None)
-    if layer_list is None or controls is None:
-        return None
-    existing = getattr(layer_list, "_haemolynx_resize_grip", None)
-    if existing is not None:
-        return existing
-    heights = [controls.height(), layer_list.height()]
-    _let_layer_controls_scroll(controls)
-    # Freed of their floor, the controls would otherwise open squeezed.
-    QTimer.singleShot(
-        0, lambda: main_window.resizeDocks([controls, layer_list], heights, Qt.Orientation.Vertical)
+    return (
+        getattr(qt_viewer, "dockLayerList", None),
+        getattr(qt_viewer, "dockLayerControls", None),
     )
 
-    def dress_title_bar() -> None:
-        title = layer_list.titleBarWidget()
-        if title is None or layer_list.isFloating():
-            return
-        title.setCursor(Qt.CursorShape.SizeVerCursor)
-        title.setToolTip(LAYER_LIST_GRIP_TOOLTIP)
 
-    def resizable() -> bool:
-        return (
-            not layer_list.isFloating()
-            and not controls.isFloating()
-            and controls.isVisible()
-            and main_window.dockWidgetArea(layer_list)
-            == main_window.dockWidgetArea(controls)
+def _retitle_dock(dock, title: str) -> None:
+    """Call *dock* *title* on its tab and on its title bar."""
+    if dock.windowTitle() != title:
+        dock.setWindowTitle(title)
+    # napari draws its own title bar from ``name``, and draws it again from
+    # ``name`` every time the dock floats or docks.
+    if getattr(dock, "name", title) != title:
+        dock.name = title
+    label = getattr(getattr(dock, "title", None), "title", None)
+    if label is not None and callable(getattr(label, "setText", None)):
+        label.setText(title)
+
+
+def _show_layer_docks(viewer) -> None:
+    """Show napari's layer list and layer controls again, where they were."""
+    for dock in _layer_docks(viewer):
+        if dock is not None and dock.isHidden():
+            dock.show()
+
+
+def _tab_with_the_layer_docks(viewer, dock) -> bool:
+    """Make *dock* one panel with napari's layer list and layer controls.
+
+    Three tabs, in this order: *dock*, the layer list, the layer controls,
+    with *dock*'s tab open, the three as wide as each other across the
+    panel. napari stacks its two layer docks one above the other in the
+    left strip; tabbed, each has the strip's whole height. False, and
+    nothing moved, without a Qt window or napari's layer docks.
+    """
+    from qtpy.QtCore import QTimer
+
+    window = getattr(viewer, "window", None)
+    main_window = getattr(window, "_qt_window", None) if window is not None else None
+    layer_list, controls = _layer_docks(viewer)
+    if main_window is None or layer_list is None or controls is None:
+        return False
+    _retitle_dock(layer_list, LAYER_LIST_TITLE)
+    _retitle_dock(controls, LAYER_CONTROLS_TITLE)
+    _let_layer_controls_scroll(controls)
+    # Each tabifyDockWidget appends its second dock to the first's tabs.
+    main_window.tabifyDockWidget(dock, layer_list)
+    main_window.tabifyDockWidget(dock, controls)
+    if getattr(viewer, "_haemolynx_even_tabs", None) is None:
+        viewer._haemolynx_even_tabs = _even_panel_tabs_class()(
+            main_window, (VIEW_DOCK_NAME, LAYER_LIST_TITLE, LAYER_CONTROLS_TITLE)
         )
+    _bring_dock_to_front(dock)
+    # Raised at once, a dock just tabbed loses its tab again to the last
+    # one tabbed when Qt lays the new tabs out.
+    QTimer.singleShot(0, lambda: _bring_dock_to_front(dock))
+    return True
 
-    class _Grip(QObject):
-        def __init__(self, parent):
-            super().__init__(parent)
-            self.start = None
 
-        def eventFilter(self, _watched, event):  # noqa: N802 - Qt's name
+def _bring_dock_to_front(dock) -> None:
+    """Open *dock*'s tab, or raise its window if it floats.
+
+    A docked QDockWidget opens its tab when raised, but ``raise_`` does
+    nothing to a widget already last among its siblings -- as a dock just
+    added is -- so it is lowered first.
+    """
+    try:
+        dock.lower()
+        dock.raise_()
+    except RuntimeError:
+        logger.debug("dock is gone", exc_info=True)
+
+
+#: The rule giving every tab of one of the panel's tab bars one width. Less
+#: side padding than napari's 6 px keeps "HaemoLynx view" whole in a
+#: third of napari's ~290 px strip.
+EVEN_TAB_RULE = (
+    "QTabBar::tab {{ width: {width}px; padding-left: 2px; padding-right: 2px; }}"
+)
+
+#: Where a tab bar keeps the tab width the rule above gave it.
+EVEN_TAB_WIDTH_PROPERTY = "haemolynx_tab_width"
+
+
+def _even_out_tabs(bar) -> None:
+    """Make *bar*'s tabs equal in width and, together, as wide as *bar*.
+
+    Qt's dock tab bars size each tab to its label and leave the rest of the
+    bar empty. The rule sets a tab's content width; napari's theme adds its
+    padding and border round it, read back from the tab's size at the
+    width the rule last gave.
+    """
+    count = bar.count()
+    if count == 0 or bar.width() <= 0:
+        return
+    current = bar.property(EVEN_TAB_WIDTH_PROPERTY)
+    if current is None:
+        current = 100
+        bar.setStyleSheet(EVEN_TAB_RULE.format(width=current))
+        bar.setProperty(EVEN_TAB_WIDTH_PROPERTY, current)
+    border = bar.tabSizeHint(0).width() - int(current)
+    wanted = max(bar.width() // count - border, 8)
+    if wanted != current:
+        bar.setStyleSheet(EVEN_TAB_RULE.format(width=wanted))
+        bar.setProperty(EVEN_TAB_WIDTH_PROPERTY, wanted)
+    # The pixels the division leaves over go to the tabs, not the bar's end.
+    bar.setExpanding(True)
+
+
+def _release_tabs(bar) -> None:
+    """Give a tab bar Qt reuses for other docks back its own tab widths."""
+    if bar.property(EVEN_TAB_WIDTH_PROPERTY) is None:
+        return
+    bar.setStyleSheet("")
+    bar.setProperty(EVEN_TAB_WIDTH_PROPERTY, None)
+    bar.setExpanding(False)
+
+
+_EVEN_PANEL_TABS = None
+
+
+def _even_panel_tabs_class():
+    """The watcher keeping the panel's tabs even (built on first use)."""
+    global _EVEN_PANEL_TABS
+    if _EVEN_PANEL_TABS is not None:
+        return _EVEN_PANEL_TABS
+    from qtpy.QtCore import QEvent, QObject, Qt
+    from qtpy.QtWidgets import QTabBar
+
+    class EvenPanelTabs(QObject):
+        """Keep the panel's tabs equal in width across its whole tab bar.
+
+        Qt makes the tab bar of a group of tabbed docks itself, swaps it for
+        another as tabs come and go, and resizes it with the strip, so this
+        watches the main window: a tab added or removed asks it for a new
+        layout, and each tab bar holding one of *titles* is evened out then
+        and whenever it is resized or shown. The main window is read as the
+        parent, never kept: Qt keeps this alive as long as the window, and a
+        reference from here would keep napari's viewer alive past its close.
+        """
+
+        def __init__(self, main_window, titles) -> None:
+            super().__init__(main_window)
+            self.titles = frozenset(titles)
+            main_window.installEventFilter(self)
+            self.even_out()
+
+        def bars(self) -> list:
+            return self.parent().findChildren(
+                QTabBar, options=Qt.FindChildOption.FindDirectChildrenOnly
+            )
+
+        def ours(self, bar) -> bool:
+            return any(bar.tabText(i) in self.titles for i in range(bar.count()))
+
+        def even_out(self) -> None:
+            for bar in self.bars():
+                if self.ours(bar):
+                    if bar.property(EVEN_TAB_WIDTH_PROPERTY) is None:
+                        bar.installEventFilter(self)
+                    _even_out_tabs(bar)
+                else:
+                    _release_tabs(bar)
+
+        def eventFilter(self, watched, event):  # noqa: N802 - Qt's name
             kind = event.type()
-            if kind == QEvent.MouseButtonPress:
-                title = layer_list.titleBarWidget()
-                if (
-                    event.button() == Qt.MouseButton.LeftButton
-                    and title is not None
-                    and title.geometry().contains(event.position().toPoint())
-                    and resizable()
-                ):
-                    self.start = (
-                        int(event.globalPosition().y()),
-                        controls.height(),
-                        layer_list.height(),
-                    )
-                    return True
-            elif kind == QEvent.MouseMove and self.start is not None:
-                y0, controls_h, list_h = self.start
-                dy = int(event.globalPosition().y()) - y0
-                # Neither dock collapses to nothing under the drag.
-                dy = max(-(controls_h - 40), min(dy, list_h - 40))
-                main_window.resizeDocks(
-                    [controls, layer_list],
-                    [controls_h + dy, list_h - dy],
-                    Qt.Orientation.Vertical,
-                )
-                return True
-            elif kind == QEvent.MouseButtonRelease and self.start is not None:
-                self.start = None
-                return True
+            try:
+                if watched is self.parent():
+                    if kind in (QEvent.Type.LayoutRequest, QEvent.Type.ChildAdded):
+                        self.even_out()
+                elif kind in (QEvent.Type.Resize, QEvent.Type.Show):
+                    if self.ours(watched):
+                        _even_out_tabs(watched)
+            except RuntimeError:
+                logger.debug("a tab bar is gone", exc_info=True)
             return False
 
-    grip = _Grip(layer_list)
-    layer_list.installEventFilter(grip)
-    # napari swaps in a new title bar after it floats or docks again.
-    later = lambda *_: QTimer.singleShot(0, dress_title_bar)  # noqa: E731
-    layer_list.topLevelChanged.connect(later)
-    layer_list.dockLocationChanged.connect(later)
-    dress_title_bar()
-    layer_list._haemolynx_resize_grip = grip
-    return grip
+    _EVEN_PANEL_TABS = EvenPanelTabs
+    return EvenPanelTabs
 
 
 #: Gap between the view-snap buttons and the canvas's bottom-left corner (px).
@@ -12718,7 +12781,7 @@ def settings_widget(napari_viewer=None):
     choose_groups_checkbox.changed.connect(_toggle_group_checkboxes)
 
     load_button = PushButton(text="Load config...")
-    view_button = PushButton(text="View")
+    view_button = PushButton(text="View controls")
     edit_button = PushButton(text="Edit")
     save_button = PushButton(text="Save config...")
     check_button = PushButton(text="Run checks")
@@ -14321,10 +14384,17 @@ def settings_widget(napari_viewer=None):
     view_layout.addWidget(illumination.group)
     view_layout.addWidget(sweep_group)
     view_layout.addWidget(snapshot_group)
+    # Docked, the panel is as tall as the strip; the boxes keep their height.
+    view_layout.addStretch(1)
 
     def _open_view_dock():
-        """Dock *view_panel* over the canvas and remember that dock."""
-        nonlocal view_dock
+        """Dock *view_panel* as the left panel's first tab; remember the dock."""
+        nonlocal view_dock, view_scroll
+        from qtpy.QtWidgets import QSizePolicy
+
+        if view_scroll is None:
+            view_scroll = _in_a_scroll_area(view_panel)
+            view_scroll.setObjectName("haemolynx_view_scroll")
         dock_kwargs = {
             "name": VIEW_DOCK_NAME,
             "area": "left",
@@ -14332,10 +14402,13 @@ def settings_widget(napari_viewer=None):
         }
         try:
             dock = viewer.window.add_dock_widget(
-                view_panel, add_vertical_stretch=False, **dock_kwargs
+                view_scroll, add_vertical_stretch=False, **dock_kwargs
             )
         except TypeError:
-            dock = viewer.window.add_dock_widget(view_panel, **dock_kwargs)
+            dock = viewer.window.add_dock_widget(view_scroll, **dock_kwargs)
+        # napari caps a dock's contents at their size hint, which a scroll
+        # area bounds at 24 lines: the panel would scroll in a tall strip.
+        view_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         try:
             dock.setObjectName("haemolynx_view_dock")
         except Exception:  # noqa: BLE001
@@ -14343,46 +14416,45 @@ def settings_widget(napari_viewer=None):
         view_dock = dock
         view_dock_holder["dock"] = dock
         _give_bottom_docks_the_corners(viewer)
-        _float_dock_over_canvas(viewer, dock)
+        try:
+            _tab_with_the_layer_docks(viewer, dock)
+        except Exception:  # noqa: BLE001 - untabbed must not stop the panel
+            logger.debug("could not tab the view with the layer docks", exc_info=True)
         return dock
 
     view_dock = None
+    view_scroll = None
     if viewer is not None:
         _open_view_dock()
         try:
             _install_view_snap_buttons(viewer)
         except Exception:  # noqa: BLE001 - a missing overlay must not stop the panel
             logger.debug("could not add the view-snap buttons", exc_info=True)
-        try:
-            _resize_layer_list_by_its_title_bar(viewer)
-        except Exception:  # noqa: BLE001 - a missing grip must not stop the panel
-            logger.debug("could not make the layer list resizable", exc_info=True)
     else:
         view_panel.setVisible(False)
 
     def on_reopen_view() -> None:
-        """Bring the view panel back after it was hidden or its dock closed.
+        """Bring the whole left panel back: the view, layer list and controls.
 
-        The dock's close button deletes that dock and detaches the panel.
-        Asking the deleted dock whether it is visible raises, so a closed
-        dock is built again around the same panel. A dock that was only
-        hidden is shown. Already open is a no-op, so the button never
-        re-floats a dock the user has deliberately moved or docked.
+        napari's layer docks only hide, and are shown again where they were.
+        The view dock's close button deletes that dock and detaches the
+        panel. Asking the deleted dock whether it is visible raises, so a
+        closed dock is built again around the same panel, as the first tab
+        again. A view dock that was only hidden, or sits behind another tab,
+        is shown and brought to the front where it is, so the button never
+        moves a dock the user has deliberately moved.
         """
         nonlocal view_dock
+        if viewer is None:
+            return
+        _show_layer_docks(viewer)
         try:
-            holding = view_dock is not None and view_dock.widget() is view_panel
-            visible = bool(holding and view_dock.isVisible())
+            holding = view_dock is not None and view_dock.widget() is view_scroll
         except RuntimeError:
             holding = False
-            visible = False
-        if visible:
-            return
         if holding:
             view_dock.show()
-            _float_dock_over_canvas(viewer, view_dock)
-            return
-        if viewer is None:
+            _bring_dock_to_front(view_dock)
             return
         panel._haemolynx_view_dock = _open_view_dock()
 

@@ -107,9 +107,9 @@ EDIT_GRAPH_TOOLTIP = (
     "to the edit"
 )
 REOPEN_VIEW_TOOLTIP = (
-    "Reopen the HaemoLynx view panel (Z-depth, vessel draw mode and colouring, "
-    "scale bar and snapshot) if it has been closed; does nothing while it is "
-    "already open"
+    "Reopen the left-hand panel: whichever of its HaemoLynx view (Z-depth, "
+    "vessel draw mode and colouring, scale bar and snapshot), Layer list and "
+    "Layer controls tabs have been closed, with the HaemoLynx view in front"
 )
 SAVE_CONFIG_TOOLTIP = (
     "Write the current form values to a YAML config file; relative "

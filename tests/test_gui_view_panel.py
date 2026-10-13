@@ -1,8 +1,10 @@
-"""Floating view dock: Z-depth, scale bar, and snapshot, display-only.
+"""The view dock: Z-depth, scale bar, and snapshot, display-only.
 
 The pipeline still reads the full volume / full graph. These controls only
 change what napari shows. The snapshot is a cosmetic canvas TIFF. The dock
-floats over the canvas so it does not steal height from the bottom run log.
+is the first of the left panel's three tabs, before napari's layer list and
+layer controls, and scrolls so it does not steal height from the bottom run
+log.
 """
 from __future__ import annotations
 
@@ -13,12 +15,14 @@ napari = pytest.importorskip("napari")
 pytest.importorskip("magicgui")
 
 from haemolynx.gui._widget import (  # noqa: E402
+    EVEN_TAB_WIDTH_PROPERTY,
+    LAYER_CONTROLS_TITLE,
+    LAYER_LIST_TITLE,
     SCALE_BAR_POSITION,
     SNAPSHOT_NO_OUTPUT_FOLDER,
     SNAPSHOT_STEM,
     VIEW_DOCK_NAME,
     _apply_layers,
-    _float_dock_over_canvas,
     _scale_bar_overlay,
     _store_z_window_cache,
     data_for_pipeline,
@@ -106,14 +110,59 @@ def test_selecting_the_image_layer_gives_it_a_clearer_3d_render(make_napari_view
         assert getattr(image_layer, key) == value
 
 
-def test_the_view_panel_floats_over_the_canvas(make_napari_viewer):
-    viewer = make_napari_viewer()
+#: The left panel's tabs, in order.
+LEFT_TABS = [VIEW_DOCK_NAME, LAYER_LIST_TITLE, LAYER_CONTROLS_TITLE]
+
+
+def _settle() -> None:
+    from qtpy.QtWidgets import QApplication
+
+    for _ in range(5):
+        QApplication.processEvents()
+
+
+def _left_tab_bar(viewer):
+    """The tab bar of the docks the view dock is tabbed with, or None."""
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QTabBar
+
+    bars = viewer.window._qt_window.findChildren(
+        QTabBar, options=Qt.FindChildOption.FindDirectChildrenOnly
+    )
+    for bar in bars:
+        # Qt keeps the tab bars it no longer uses, hidden, for reuse.
+        texts = [bar.tabText(i) for i in range(bar.count())]
+        if not bar.isHidden() and VIEW_DOCK_NAME in texts:
+            return bar
+    return None
+
+
+def _left_tabs(viewer):
+    """(the left panel's tab labels in order, the open one's label)."""
+    bar = _left_tab_bar(viewer)
+    if bar is None:
+        return [], None
+    texts = [bar.tabText(i) for i in range(bar.count())]
+    return texts, texts[bar.currentIndex()]
+
+
+def test_the_view_panel_is_the_first_of_three_tabs_on_the_left(make_napari_viewer):
+    """One left panel, its tabs the view, the layer list and the layer
+    controls, with the view's open. Regression: raised as soon as it was
+    tabbed, the view lost its tab again to the last dock tabbed."""
+    from qtpy.QtCore import Qt
+
+    viewer = make_napari_viewer(show=True)
     panel = settings_widget(napari_viewer=viewer)
+    _settle()
 
     dock = panel._haemolynx_view_dock
     assert dock is not None
     assert VIEW_DOCK_NAME in dock.windowTitle()
-    assert dock.isFloating()
+    assert not dock.isFloating()
+    main_window = viewer.window._qt_window
+    assert main_window.dockWidgetArea(dock) == Qt.DockWidgetArea.LeftDockWidgetArea
+    assert _left_tabs(viewer) == (LEFT_TABS, VIEW_DOCK_NAME)
     assert panel._haemolynx_view_panel.objectName() == "haemolynx_view_panel"
     assert panel._haemolynx_z_depth_slider.objectName() == "haemolynx_z_depth_slider"
     assert panel._haemolynx_z_depth_row.parentWidget() is panel._haemolynx_display_group
@@ -144,19 +193,27 @@ def test_the_view_panel_floats_over_the_canvas(make_napari_viewer):
     assert snapshot.layout().indexOf(button) >= 0
 
 
-def test_the_floating_view_panel_is_tall_enough_that_snapshot_is_not_clipped(
+def test_the_view_tab_scrolls_rather_than_holding_the_strip_as_tall_as_itself(
     make_napari_viewer,
 ):
-    """Regression: a fresh widget's sizeHint() used to under-report, so
-    "Save snapshot" sat partly below the floating dock's own bottom edge."""
-    from qtpy.QtWidgets import QApplication
+    """Tabbed, the three docks share one height, so the view panel's own
+    height would be the floor of the whole left strip, squeezing the run log
+    below it. With room, nothing is clipped and the boxes keep their size."""
+    from qtpy.QtWidgets import QScrollArea
 
-    viewer = make_napari_viewer()
+    viewer = make_napari_viewer(show=True)
     panel = settings_widget(napari_viewer=viewer)
-    dock = panel._haemolynx_view_dock
-    QApplication.processEvents()
+    viewer.window._qt_window.resize(1200, 900)
+    _settle()
 
-    assert dock.height() >= 220
+    dock = panel._haemolynx_view_dock
+    view_panel = panel._haemolynx_view_panel
+    scroll = dock.widget()
+    assert isinstance(scroll, QScrollArea)
+    assert scroll.widget() is view_panel
+    assert dock.minimumSizeHint().height() < view_panel.sizeHint().height() / 2
+    # Not held to a scroll area's own size hint (24 lines) in a taller strip.
+    assert scroll.height() >= dock.height() - 40
 
     button = panel._haemolynx_snapshot_button
     bottom_in_dock = button.mapTo(dock, button.rect().bottomLeft()).y()
@@ -164,48 +221,78 @@ def test_the_floating_view_panel_is_tall_enough_that_snapshot_is_not_clipped(
         "Save snapshot's own bottom edge falls outside the dock "
         f"(button bottom={bottom_in_dock}, dock height={dock.height()})"
     )
+    snapshot = panel._haemolynx_snapshot_group
+    assert snapshot.height() <= snapshot.sizeHint().height() + 2
 
 
-def test_float_dock_over_canvas_pads_past_the_size_hint():
-    """The resize math itself, isolated from a real dock's own layout pass."""
-    from types import SimpleNamespace
+def test_the_three_tabs_are_equal_and_fill_the_panel(make_napari_viewer):
+    """Qt sizes a dock tab to its label and leaves the rest of the bar empty."""
+    from qtpy.QtCore import Qt
 
-    class FakeSize:
-        def __init__(self, width, height):
-            self._width, self._height = width, height
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    main_window = viewer.window._qt_window
+    main_window.resize(1400, 900)
+    _settle()
 
-        def width(self):
-            return self._width
+    dock = panel._haemolynx_view_dock
+    for strip in (300, 420):
+        main_window.resizeDocks([dock], [strip], Qt.Orientation.Horizontal)
+        _settle()
+        bar = _left_tab_bar(viewer)
+        widths = [bar.tabRect(i).width() for i in range(bar.count())]
+        assert len(widths) == 3
+        assert max(widths) - min(widths) <= 1, widths
+        assert sum(widths) == bar.width(), (widths, bar.width())
+        assert abs(bar.width() - dock.width()) <= 2, (bar.width(), dock.width())
 
-        def height(self):
-            return self._height
 
-    class FakeInner:
-        def sizeHint(self):
-            return FakeSize(300, 150)
+def test_tabs_of_other_docks_keep_their_own_widths(make_napari_viewer):
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QDockWidget, QLabel, QTabBar
 
-    class FakeDock:
-        def __init__(self):
-            self.floated = False
-            self.resized = None
+    viewer = make_napari_viewer(show=True)
+    settings_widget(napari_viewer=viewer)
+    main_window = viewer.window._qt_window
+    docks = []
+    for title in ("First", "Second"):
+        dock = QDockWidget(title, main_window)
+        dock.setObjectName(title)
+        dock.setWidget(QLabel(title))
+        main_window.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        docks.append(dock)
+    main_window.tabifyDockWidget(*docks)
+    _settle()
 
-        def setFloating(self, value):
-            self.floated = value
+    bars = [
+        bar
+        for bar in main_window.findChildren(
+            QTabBar, options=Qt.FindChildOption.FindDirectChildrenOnly
+        )
+        if not bar.isHidden() and "First" in [bar.tabText(i) for i in range(bar.count())]
+    ]
+    assert len(bars) == 1
+    assert bars[0].property(EVEN_TAB_WIDTH_PROPERTY) is None
+    assert bars[0].styleSheet() == ""
 
-        def widget(self):
-            return FakeInner()
 
-        def resize(self, width, height):
-            self.resized = (width, height)
+def test_naparis_layer_docks_are_titled_with_a_capital(make_napari_viewer):
+    """On their tabs and their title bars, including the title bar napari
+    builds again from the dock's name when it floats."""
+    viewer = make_napari_viewer()
+    settings_widget(napari_viewer=viewer)
+    qt_viewer = viewer.window._qt_viewer
 
-    dock = FakeDock()
-    viewer = SimpleNamespace(window=SimpleNamespace())
-    _float_dock_over_canvas(viewer, dock)
-
-    assert dock.floated is True
-    width, height = dock.resized
-    assert width == 300
-    assert height >= 150 + 24, "should pad past the hint, not just floor it"
+    for dock, title in (
+        (qt_viewer.dockLayerList, LAYER_LIST_TITLE),
+        (qt_viewer.dockLayerControls, LAYER_CONTROLS_TITLE),
+    ):
+        assert title[0].isupper()
+        assert dock.windowTitle() == title
+        assert dock.title.title.text() == title
+        dock.setFloating(True)
+        _settle()
+        assert dock.title.title.text() == title
 
 
 def test_the_view_button_sits_left_of_edit_and_has_a_tooltip(make_napari_viewer):
@@ -214,7 +301,7 @@ def test_the_view_button_sits_left_of_edit_and_has_a_tooltip(make_napari_viewer)
     view_button = panel._haemolynx_view_button
     edit_button = panel._haemolynx_edit_button
 
-    assert view_button.text == "View"
+    assert view_button.text == "View controls"
     assert view_button.tooltip == REOPEN_VIEW_TOOLTIP
     assert view_button.enabled
 
@@ -229,49 +316,93 @@ def test_the_view_button_is_disabled_with_no_viewer():
     assert not panel._haemolynx_view_button.enabled
 
 
-def test_reopening_an_already_open_view_panel_is_a_no_op(make_napari_viewer):
-    viewer = make_napari_viewer()
+def test_view_controls_with_everything_open_moves_nothing(make_napari_viewer):
+    viewer = make_napari_viewer(show=True)
     panel = settings_widget(napari_viewer=viewer)
+    _settle()
     dock = panel._haemolynx_view_dock
-    assert dock.isVisible()
 
     panel._haemolynx_reopen_view()
+    _settle()
 
+    assert panel._haemolynx_view_dock is dock
     assert dock.isVisible()
+    assert not dock.isFloating()
+    assert _left_tabs(viewer) == (LEFT_TABS, VIEW_DOCK_NAME)
+
+
+def test_view_controls_brings_the_view_tab_to_the_front(make_napari_viewer):
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    _settle()
+    _left_tab_bar(viewer).setCurrentIndex(LEFT_TABS.index(LAYER_LIST_TITLE))
+    _settle()
+    assert _left_tabs(viewer)[1] == LAYER_LIST_TITLE
+
+    panel._haemolynx_view_button.native.click()
+    _settle()
+
+    assert _left_tabs(viewer) == (LEFT_TABS, VIEW_DOCK_NAME)
 
 
 def test_the_view_button_reopens_a_closed_view_panel(make_napari_viewer):
-    viewer = make_napari_viewer()
+    viewer = make_napari_viewer(show=True)
     panel = settings_widget(napari_viewer=viewer)
+    _settle()
     dock = panel._haemolynx_view_dock
     dock.hide()
-    assert not dock.isVisible()
+    _settle()
+    assert dock.isHidden()
 
     panel._haemolynx_view_button.native.click()
+    _settle()
 
-    assert dock.isVisible()
+    assert not dock.isHidden()
     assert panel._haemolynx_view_dock is dock
+    assert _left_tabs(viewer) == (LEFT_TABS, VIEW_DOCK_NAME)
+
+
+def test_view_controls_reopens_the_whole_left_panel(make_napari_viewer):
+    """The view, the layer list and the layer controls, each closed."""
+    viewer = make_napari_viewer(show=True)
+    panel = settings_widget(napari_viewer=viewer)
+    _settle()
+    qt_viewer = viewer.window._qt_viewer
+    docks = (panel._haemolynx_view_dock, qt_viewer.dockLayerList, qt_viewer.dockLayerControls)
+    for dock in docks:
+        dock.hide()
+    _settle()
+    assert _left_tabs(viewer) == ([], None)
+
+    panel._haemolynx_view_button.native.click()
+    _settle()
+
+    for dock in docks:
+        assert not dock.isHidden(), dock.windowTitle()
+    assert _left_tabs(viewer) == (LEFT_TABS, VIEW_DOCK_NAME)
 
 
 def test_the_view_button_rebuilds_a_dock_the_close_button_deleted(make_napari_viewer):
     """The dock's close button deletes the dock. View used to ask that
-    deleted object if it was visible, which raises."""
-    from qtpy.QtWidgets import QApplication
-
-    viewer = make_napari_viewer()
+    deleted object if it was visible, which raises. Rebuilt, it is the first
+    tab again, and a layer dock that was closed too comes back with it."""
+    viewer = make_napari_viewer(show=True)
     panel = settings_widget(napari_viewer=viewer)
+    _settle()
     dock = panel._haemolynx_view_dock
     dock.destroyOnClose()
-    QApplication.processEvents()
+    viewer.window._qt_viewer.dockLayerControls.hide()
+    _settle()
 
     panel._haemolynx_view_button.native.click()
-    QApplication.processEvents()
+    _settle()
 
     rebuilt = panel._haemolynx_view_dock
     assert rebuilt is not dock
     assert rebuilt.isVisible()
-    assert rebuilt.widget() is panel._haemolynx_view_panel
+    assert rebuilt.widget().widget() is panel._haemolynx_view_panel
     assert panel._haemolynx_illumination_group.parentWidget() is panel._haemolynx_view_panel
+    assert _left_tabs(viewer) == (LEFT_TABS, VIEW_DOCK_NAME)
 
     panel._haemolynx_view_button.native.click()
     assert panel._haemolynx_view_dock is rebuilt
@@ -1640,67 +1771,25 @@ def test_clear_hides_colour_by(make_napari_viewer):
     assert _offered(colour_by) == []
 
 
-def test_dragging_the_layer_list_title_bar_resizes_it(make_napari_viewer):
-    """The dots on the layer list's title bar looked like a size handle but
-    moved the whole dock; dragged, they now move its boundary with the
-    layer controls."""
-    from qtpy.QtCore import QPoint, Qt
-    from qtpy.QtTest import QTest
-
-    from haemolynx.gui._widget import LAYER_LIST_GRIP_TOOLTIP
-
-    viewer = make_napari_viewer(show=True)
-    settings_widget(napari_viewer=viewer)
-    qt_viewer = viewer.window._qt_viewer
-    layer_list, controls = qt_viewer.dockLayerList, qt_viewer.dockLayerControls
-    viewer.window._qt_window.resize(1200, 900)
-    QTest.qWait(50)
-    title = layer_list.titleBarWidget()
-    assert title.toolTip() == LAYER_LIST_GRIP_TOOLTIP
-    assert title.cursor().shape() == Qt.CursorShape.SizeVerCursor
-
-    def drag(dy: int) -> None:
-        start = title.rect().center()
-        QTest.mousePress(title, Qt.MouseButton.LeftButton, pos=start)
-        QTest.mouseMove(title, start + QPoint(0, dy))
-        QTest.mouseRelease(title, Qt.MouseButton.LeftButton, pos=start + QPoint(0, dy))
-        QTest.qWait(50)
-
-    list_before, controls_before = layer_list.height(), controls.height()
-    drag(-120)
-    assert layer_list.height() > list_before + 60
-    assert controls.height() < controls_before - 60
-    assert not layer_list.isFloating()
-
-    list_before = layer_list.height()
-    drag(80)
-    assert layer_list.height() < list_before - 40
-
-
-def test_the_layer_list_drags_up_past_the_layer_controls_own_height(make_napari_viewer):
-    """An image layer's controls are ~310 px at their smallest, and the drag
-    stopped there; they now scroll, so the layer list takes nearly all of it."""
+def test_the_layer_controls_tab_scrolls_rather_than_holding_the_strip_tall(
+    make_napari_viewer,
+):
+    """An image layer's controls are ~310 px at their smallest, and the three
+    tabs share one height; scrolled, they no longer set its floor."""
     import numpy as np
-    from qtpy.QtCore import Qt
-    from qtpy.QtTest import QTest
     from qtpy.QtWidgets import QScrollArea
 
     viewer = make_napari_viewer(show=True)
     viewer.add_image(np.zeros((10, 10)))
     settings_widget(napari_viewer=viewer)
+    _settle()
     qt_viewer = viewer.window._qt_viewer
-    layer_list, controls = qt_viewer.dockLayerList, qt_viewer.dockLayerControls
-    main_window = viewer.window._qt_window
-    main_window.resize(1200, 900)
-    QTest.qWait(50)
+    controls = qt_viewer.dockLayerControls
+
     assert isinstance(controls.widget(), QScrollArea)
     assert controls.widget().widget() is qt_viewer.controls
     natural = qt_viewer.controls.minimumSizeHint().height()
-
-    main_window.resizeDocks([controls, layer_list], [10, 5000], Qt.Orientation.Vertical)
-    QTest.qWait(50)
-
-    assert controls.height() < natural / 2
+    assert controls.minimumSizeHint().height() < natural / 2
 
 
 # --- the Display box's "Show" checkboxes -------------------------------------
