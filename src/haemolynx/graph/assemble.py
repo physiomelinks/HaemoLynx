@@ -12,6 +12,7 @@ from haemolynx.preprocessing.bridge_mask_support import (
     DEFAULT_MAX_BACKGROUND_GAP_UM,
     DEFAULT_MIN_MASK_FRACTION,
     MaskSupport,
+    check_mask_shape,
 )
 
 from ._helpers import points_inside_mask
@@ -565,6 +566,7 @@ def build_graph_from_skeleton(
         Cleaned vascular graph. Empty when no two skeleton voxels touch (an
         empty skeleton, or isolated points): there is no vessel to trace.
     """
+    check_mask_shape(segmentation_mask, skeleton)
     degree2_pass1_max_degree = 4
     degree2_pass2_max_degree = 8
     inside_lumen = mask_lumen_test(segmentation_mask, voxel_size)

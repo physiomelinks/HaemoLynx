@@ -39,8 +39,8 @@ def _chain(y, x_from, x_to, piece):
 
 def _strands_in_pieces():
     """A medial strand and a second strand 3 um from it in one wide lumen, both
-    in 8 um pieces: too short, once a lumen radius is left off each end, for
-    any one piece to be judged a duplicate."""
+    in 8 um pieces: too short to leave anything judged once a lumen radius is
+    left off each end, so each piece is judged at its middle alone."""
     return wide_vessel(), polyline_graph(_chain(7, 4, 52, 8) + _chain(10, 4, 52, 8))
 
 
@@ -55,7 +55,9 @@ def _pairs(G, mask):
 
 def test_a_second_strand_in_pieces_is_found_once_merged_and_taken_out():
     mask, G = _strands_in_pieces()
-    assert _pairs(G, mask) == 0  # in pieces, nothing is judged a duplicate
+    # In pieces, each shorter than its own end margins, none used to be judged
+    # at all; since each such path is judged at its middle (F4), they are.
+    assert _pairs(G, mask) > 0
 
     G = consolidate_lumen(G, _no_length_prune(mask))
 

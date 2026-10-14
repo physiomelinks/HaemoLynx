@@ -745,3 +745,18 @@ def test_skeleton_has_path_needs_two_touching_voxels(monkeypatch, voxels, has_pa
 
     assert skeleton_has_path(skeleton) is has_path
     assert (skan_skeleton(skeleton).n_paths > 0) is has_path
+
+
+def test_graph_building_refuses_a_mask_of_another_shape():
+    """Regression (PLAN_bridging.md F9): the mask was read at the skeleton's
+    voxel indices whatever its own shape."""
+    import numpy as np
+    import pytest
+
+    from haemolynx.graph.assemble import build_graph_from_skeleton
+
+    skeleton = np.zeros((5, 5, 30), dtype=bool)
+    skeleton[2, 2, 2:28] = True
+
+    with pytest.raises(ValueError, match="voxels but the skeleton is"):
+        build_graph_from_skeleton(skeleton, segmentation_mask=np.ones((5, 5, 20), dtype=bool))

@@ -635,3 +635,67 @@ def test_a_hub_link_is_accepted_only_through_the_mask():
     assert accept(np.array([4, 4, 2]), np.array([4, 4, 14]))
     assert not accept(np.array([4, 4, 5]), np.array([4, 10, 5]))
     assert skeleton_mod._hub_link_gate(None) is None
+
+
+def _a_gap_with_a_way_round_two_slices_up():
+    """Two pieces of one vessel at z = 2 with 9 voxels of background between,
+    and a way round through the mask two slices up."""
+    mask = np.zeros((10, 5, 20), dtype=bool)
+    mask[2, 2, 0:5] = mask[2, 2, 14:20] = True
+    mask[2:5, 2, 4] = mask[4, 2, 4:15] = mask[2:5, 2, 14] = True
+    return mask, np.array([2, 2, 3]), np.array([2, 2, 16])
+
+
+def test_the_skeleton_routers_window_is_physical_on_every_axis():
+    """Regression (PLAN_bridging.md F5): the window round a bridge's ends was
+    3 voxels of every axis, so on a z four times coarser a bridge could
+    wander 6 um in z against 1.5 um in-plane. On cube voxels the route takes
+    the way round 2 slices up; with z 4 times coarser, 2 slices is 8 um and
+    out of reach, and it stays within one slice of its ends."""
+    from haemolynx.preprocessing.skeleton import _bridge_path_through_mask
+
+    mask, start, end = _a_gap_with_a_way_round_two_slices_up()
+
+    cube = _bridge_path_through_mask(mask, start, end, np.array([1.0, 1.0, 1.0]))
+    coarse_z = _bridge_path_through_mask(mask, start, end, np.array([4.0, 1.0, 1.0]))
+
+    assert cube[:, 0].max() == 4
+    assert np.abs(coarse_z[:, 0] - 2).max() <= 1
+
+
+def test_refusals_are_counted_per_branch_end_not_per_target_tried(caplog):
+    """F7: a branch end tries up to eight targets, and the log counted every
+    refusal, saying several times more ends were refused than were."""
+    import logging
+
+    skeleton = np.zeros((9, 11, 30), dtype=bool)
+    skeleton[4, 5, 0:11] = True  # the vessel, its end at x = 10
+    mask = np.zeros_like(skeleton)
+    mask[3:6, 4:7, 0:11] = True
+    for x in (15, 21, 27):  # three vessels ahead, each across 3+ voxels of background
+        skeleton[4, 3:8, x] = True
+        mask[3:6, 2:9, x - 1:x + 2] = True
+
+    with caplog.at_level(logging.INFO, logger="haemolynx.preprocessing.skeleton"):
+        connect_skeleton_components(skeleton, max_bridge_distance=20, mask_support=_support(mask))
+
+    (line,) = [r.getMessage() for r in caplog.records if "left unbridged" in r.getMessage()]
+    assert line.startswith("Skeleton bridging: 1 branch end(s) left unbridged")
+    assert "1 whose every target lay across background" in line
+
+
+@pytest.mark.parametrize("entry", ["preprocess", "connect"])
+def test_a_mask_of_another_shape_is_an_error_not_a_quiet_ungated_run(entry):
+    """Regression (PLAN_bridging.md F9): a segmentation not the skeleton's
+    shape switched the bridge gate off without a word, so every bridge was
+    drawn as if the mask said nothing."""
+    from haemolynx.preprocessing.skeleton import preprocess_skeleton_for_graph
+
+    skeleton, mask = _broken_vessel_and_its_mask(1)
+    cropped = mask[:, :, :20]
+
+    with pytest.raises(ValueError, match=r"\(5, 5, 20\) voxels but the skeleton is \(5, 5, 30\)"):
+        if entry == "preprocess":
+            preprocess_skeleton_for_graph(skeleton, segmentation_mask=cropped)
+        else:
+            connect_skeleton_components(skeleton, max_bridge_distance=8, mask_support=_support(cropped))

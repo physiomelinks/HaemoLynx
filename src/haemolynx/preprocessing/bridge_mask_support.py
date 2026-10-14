@@ -34,6 +34,7 @@ __all__ = [
     "PackedMask",
     "bridge_is_supported",
     "bridge_mask_support",
+    "check_mask_shape",
     "path_shadows_existing_vessel",
     "shadowed_samples",
 ]
@@ -69,11 +70,31 @@ class BridgeMaskSupport:
     length_um: float
 
 
+def check_mask_shape(mask, skeleton, what: str = "The segmentation mask") -> None:
+    """Raise ``ValueError`` unless *mask* (when given) is *skeleton*'s shape.
+
+    A mask of another shape used to switch the bridge gate off without a word
+    (skeleton cleaning) or be read at the wrong voxels (graph building): a
+    cropped skeleton against the whole mask, or one volume in another axis
+    order, is a mistake to report, not a run to finish quietly.
+    """
+    if mask is not None and tuple(np.shape(mask)) != tuple(np.shape(skeleton)):
+        raise ValueError(
+            f"{what} is {tuple(np.shape(mask))} voxels but the skeleton is "
+            f"{tuple(np.shape(skeleton))}: they must be the same volume (the same crop "
+            "and the same axis order)."
+        )
+
+
 def _sample_step(voxel_size_zyx: Sequence[float]) -> float:
     """At most 0.5 um, and an even fraction of the finest voxel: pieces that
     long, read at their midpoints, then never straddle a voxel boundary on a
-    path stepping from voxel centre to voxel centre, so an n-voxel dropout
-    along an axis reads n voxels exactly."""
+    path stepping from voxel centre to voxel centre along the finest axis,
+    so an n-voxel dropout along it reads n voxels exactly. Along a coarser
+    axis that is exact only when its spacing is a whole multiple of the step
+    (0.5 x 0.5 x 2 um is; 0.98 x 0.98 x 1 um is not, and reads a dropout to
+    within a step): a step dividing every spacing would be the spacings'
+    common divisor, 0.01 um on that stack, fifty times the lookups."""
     finest = float(np.min(voxel_size_zyx))
     return finest / (2 * max(1, int(np.ceil(finest - 1e-9))))
 
@@ -280,7 +301,10 @@ def path_shadows_existing_vessel(
 def _judged_samples(path_um, radius_at, *, step_um: float, margin_um: float):
     """*path_um* sampled every *step_um*, each sample's tangent, and which
     samples are judged: those further than (the lumen radius at that end +
-    *margin_um*) from both ends, where a branch meets the vessel it joins."""
+    *margin_um*) from both ends, where a branch meets the vessel it joins.
+    A path too short to leave any such sample is judged at its middle: in a
+    wide lumen every bridge shorter than two radii had nothing judged, and
+    was never a second strand whatever it lay beside."""
     samples = _densify(np.asarray(path_um, dtype=float), step_um)
     if len(samples) < 2:
         return samples, np.zeros_like(samples), np.zeros(len(samples), dtype=bool)
@@ -290,6 +314,8 @@ def _judged_samples(path_um, radius_at, *, step_um: float, margin_um: float):
     keep = (np.linalg.norm(samples - ends[0], axis=1) > end_radii[0] + margin_um) & (
         np.linalg.norm(samples - ends[1], axis=1) > end_radii[1] + margin_um
     )
+    if not keep.any() and len(samples) >= 3:
+        keep[len(samples) // 2] = True
     return samples, tangents, keep
 
 

@@ -21,6 +21,7 @@ from scipy.ndimage import (
 from skimage.morphology import remove_small_objects, skeletonize
 
 from .bridge_mask_support import (
+    check_mask_shape,
     DEFAULT_MAX_BACKGROUND_GAP_UM,
     DEFAULT_MIN_MASK_FRACTION,
     MaskSupport,
@@ -1239,10 +1240,12 @@ def _bridge_path_through_mask(
 
         relative = np.ones(3) if relative_spacing is None else np.asarray(relative_spacing, float)
 
-        lo = np.maximum(np.minimum(start, end) - _BRIDGE_MASK_WINDOW_PAD, 0)
-        hi = np.minimum(
-            np.maximum(start, end) + _BRIDGE_MASK_WINDOW_PAD + 1, np.array(mask.shape)
-        )
+        # The pad is physical, as graph.reconnect.route_through_mask's is: 3
+        # voxels of every axis alike let a bridge on a 0.5 x 0.5 x 2 um stack
+        # wander 6 um in z and 1.5 um in-plane.
+        pad = np.ceil(_BRIDGE_MASK_WINDOW_PAD / relative - 1e-9).astype(int)
+        lo = np.maximum(np.minimum(start, end) - pad, 0)
+        hi = np.minimum(np.maximum(start, end) + pad + 1, np.array(mask.shape))
         if np.any(hi <= lo):
             return None
         window = mask[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]]
@@ -1365,8 +1368,19 @@ class _SkeletonBridgeGate:
         self._tree = None
         self.paths: dict[tuple[int, int], np.ndarray] = {}
         self.drawn: list[np.ndarray] = []
-        self.refused_background = 0
-        self.refused_duplicate = 0
+        #: What became of each branch end the gate was asked about: "accepted",
+        #: "drawn", or why it was refused ("background", "duplicate"). A tip
+        #: tries up to _MAX_MASK_TESTED_TARGETS_PER_TIP targets, so counting
+        #: refusals per target said several times more than were refused.
+        self.outcome: dict[int, str] = {}
+
+    def _refuse(self, tip: int, reason: str) -> None:
+        if self.outcome.get(tip) not in ("accepted", "drawn"):
+            self.outcome[tip] = reason
+
+    def refused(self, reason: str) -> int:
+        """How many branch ends got no bridge, for *reason*."""
+        return sum(1 for value in self.outcome.values() if value == reason)
 
     def accept(self, coords: np.ndarray, tip: int, end: int) -> bool:
         start, stop = coords[tip], coords[end]
@@ -1381,16 +1395,18 @@ class _SkeletonBridgeGate:
             if path is not None and self.support.accepts(path * self.spacing):
                 break
         else:
-            self.refused_background += 1
+            self._refuse(tip, "background")
             return False
         if self._tree is None:
             from scipy.spatial import cKDTree
 
             self._tree = cKDTree(self.points)
         if self.support.shadows(path * self.spacing, self._tree, self.points):
-            self.refused_duplicate += 1
+            self._refuse(tip, "duplicate")
             return False
         self.paths[(tip, end)] = path
+        if self.outcome.get(tip) != "drawn":
+            self.outcome[tip] = "accepted"
         return True
 
     def path_to_draw(self, tip: int, end: int) -> np.ndarray | None:
@@ -1406,9 +1422,11 @@ class _SkeletonBridgeGate:
                 if np.all(drawn.max(axis=0) >= lo) and np.all(drawn.min(axis=0) <= hi)
             ]
             if nearby and self.support.shadows(physical, None, np.vstack(nearby)):
-                self.refused_duplicate += 1
+                if self.outcome.get(tip) != "drawn":
+                    self.outcome[tip] = "duplicate"
                 return None
         self.drawn.append(physical)
+        self.outcome[tip] = "drawn"
         return path
 
 
@@ -1556,6 +1574,10 @@ def connect_skeleton_components(
         :func:`skeletonize_by_component` call, only reached when a bridge
         was actually drawn -- see its own docstring.
     """
+    check_mask_shape(None if mask_support is None else mask_support.mask, skeleton,
+                     "The mask the bridges are tested against")
+    if weight_by_segmentation:
+        check_mask_shape(segmentation_mask, skeleton)
     conn = _resolve_component_connectivity(skeleton.ndim, component_connectivity)
     structure = generate_binary_structure(skeleton.ndim, conn)
     weights, reach = _bridge_metric(
@@ -1572,7 +1594,7 @@ def connect_skeleton_components(
         tips = _TipGeometry.of(coords, weights)
         directions = tips.directions
         gate = None
-        if mask_support is not None and np.shape(mask_support.mask) == skeleton.shape:
+        if mask_support is not None:
             gate = _SkeletonBridgeGate(
                 mask_support, coords, routed_first=bool(weight_by_segmentation)
             )
@@ -1607,11 +1629,10 @@ def connect_skeleton_components(
                 if path is None:
                     continue
             elif weight_by_segmentation and segmentation_mask is not None:
-                if segmentation_mask.shape == skeleton.shape:
-                    path = _bridge_path_through_mask(
-                        segmentation_mask, start, end,
-                        _finest_axis_spacing(voxel_size_zyx, skeleton.ndim),
-                    )
+                path = _bridge_path_through_mask(
+                    segmentation_mask, start, end,
+                    _finest_axis_spacing(voxel_size_zyx, skeleton.ndim),
+                )
             if path is not None:
                 result[tuple(path.T)] = True
             else:
@@ -1629,10 +1650,12 @@ def connect_skeleton_components(
     )
     if gate is not None:
         logger.info(
-            "Skeleton bridging: refused %d bridge(s) crossing background and %d running "
-            "beside a vessel in the same lumen.",
-            gate.refused_background,
-            gate.refused_duplicate,
+            "Skeleton bridging: %d branch end(s) left unbridged by the mask test: %d whose "
+            "every target lay across background, %d whose bridge ran beside a vessel in the "
+            "same lumen.",
+            gate.refused("background") + gate.refused("duplicate"),
+            gate.refused("background"),
+            gate.refused("duplicate"),
         )
     # `labeled` is released above (or was never disk-backed) before the
     # re-skeletonize step's own, potentially large, working buffers exist.
@@ -2057,14 +2080,11 @@ def preprocess_skeleton_for_graph(
         (a :class:`~haemolynx.preprocessing.bridge_mask_support.MaskSupport`).
         Without a mask, or off, nothing changes.
     """
+    check_mask_shape(segmentation_mask, skeleton_image)
     conn = _resolve_component_connectivity(skeleton_image.ndim, component_connectivity)
     mask_support = None
     within = None
-    if (
-        bridge_require_mask_support
-        and segmentation_mask is not None
-        and np.shape(segmentation_mask) == np.shape(skeleton_image)
-    ):
+    if bridge_require_mask_support and segmentation_mask is not None:
         segmentation_bool = np.asanyarray(segmentation_mask, dtype=bool)
         mask_support = MaskSupport(
             segmentation_bool,
