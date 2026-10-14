@@ -141,7 +141,10 @@ def optimise_graph_topology_fixed(
                         phys_path = [src_pos.tolist(), tgt_pos.tolist()]
                     tags = {}
                     if bridges is not None:
-                        found = bridges.bridge(src_pos, tgt_pos, preferred=phys_path)
+                        found = bridges.bridge(
+                            src_pos, tgt_pos, preferred=phys_path,
+                            ends=(src, tgt), max_turn_deg=max_bridge_turn_deg,
+                        )
                         if found is None:
                             continue
                         phys_path, tags = found[0].tolist(), bridges.attributes(found[1])
@@ -170,7 +173,9 @@ def optimise_graph_topology_fixed(
                         continue
                     phys_path, tags = [src_pos.tolist(), tgt_pos.tolist()], {}
                     if bridges is not None:
-                        found = bridges.bridge(src_pos, tgt_pos)
+                        found = bridges.bridge(
+                            src_pos, tgt_pos, ends=(src, tgt), max_turn_deg=max_bridge_turn_deg
+                        )
                         if found is None:
                             continue
                         phys_path, tags = found[0].tolist(), bridges.attributes(found[1])
@@ -394,7 +399,8 @@ def reconnect_orphan_and_dangling_nodes(
         tags = {}
         if bridges is not None:
             found = bridges.bridge(
-                src_pos, tgt_pos, preferred=phys_path if voxel_path else None
+                src_pos, tgt_pos, preferred=phys_path if voxel_path else None,
+                ends=(src, tgt), max_turn_deg=max_bridge_turn_deg,
             )
             if found is None:
                 continue

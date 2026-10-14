@@ -1421,3 +1421,65 @@ def test_a_short_stub_at_an_image_face_is_still_kept():
     )
 
     assert "T" in judged
+
+
+# --- the bridge gate judges the path it draws (PLAN_bridging.md F2, F3) ---------
+
+
+def _two_ends_and_a_way_round():
+    """Two vessel ends facing each other along x at y = 2, 7 um of background
+    between them, and the mask's only way between -- inside the router's
+    window, 3 voxels round the ends -- running back along each vessel and
+    round over the top (y = 5): a route that leaves each end heading the
+    wrong way."""
+    mask = np.zeros((7, 10, 30), dtype=bool)
+    mask[2:5, 1:4, 2:11] = True      # vessel A, ending at x = 10
+    mask[2:5, 1:4, 18:28] = True     # vessel B, ending at x = 18
+    mask[2:5, 1:7, 6:9] = True       # up from A's side ...
+    mask[2:5, 5:7, 6:22] = True      # ... across the top ...
+    mask[2:5, 1:7, 19:22] = True     # ... and down to B's side
+    G = nx.MultiGraph()
+    for name, pos in {"A0": (3, 2, 2), "A": (3, 2, 10), "B": (3, 2, 18), "B0": (3, 2, 27)}.items():
+        G.add_node(name, pos=np.asarray(pos, dtype=float))
+    for a, b in (("A0", "A"), ("B", "B0")):
+        _straight_edge(G, a, b)
+    return G, mask
+
+
+def test_a_path_through_the_mask_that_folds_back_on_an_end_is_refused():
+    """Regression (F2): the turn rule was judged on the straight chord, and
+    the route through the mask -- what is drawn -- could leave the end going
+    back the way it came."""
+    from haemolynx.graph.reconnect import MaskBridges
+
+    G, mask = _two_ends_and_a_way_round()
+    start, end = G.nodes["A"]["pos"], G.nodes["B"]["pos"]
+    # The way round, in the mask all along: back along A, over, down to B.
+    folded = np.array([start, (3, 2, 7), (3, 6, 7), (3, 6, 20), (3, 2, 20), end], dtype=float)
+
+    unjudged = MaskBridges(G.copy(), _mask_support(mask), "gap").bridge(start, end, preferred=folded)
+    judged = MaskBridges(G, _mask_support(mask), "gap").bridge(
+        start, end, preferred=folded, ends=("A", "B"), max_turn_deg=80.0
+    )
+
+    assert unjudged is not None, "without the turn on the route, the fold-back is drawn"
+    assert judged is None
+
+
+def test_the_straight_line_is_measured_once_when_the_caller_hands_it_over():
+    """F3: the optimise and orphan reconnects' "skeleton path" is the straight
+    line (validate_skeleton_connection's line points), so trying the chord
+    again last measured it twice."""
+    from haemolynx.graph.reconnect import MaskBridges
+
+    G, mask = _two_ends_and_a_way_round()
+    mask[2:5, 5:7, 6:22] = False  # no way round: every candidate fails
+    support = _mask_support(mask)
+    measured = []
+    original = support.support
+    support.support = lambda path: (measured.append(len(path)), original(path))[1]
+    start, end = G.nodes["A"]["pos"], G.nodes["B"]["pos"]
+    line = np.linspace(start, end, 9)
+
+    assert MaskBridges(G, support, "optimise").bridge(start, end, preferred=line) is None
+    assert len(measured) == 2, "the line handed over, then the route; not the chord again"

@@ -147,12 +147,19 @@ def route_through_mask(
 class MaskBridges:
     """The test one graph reconnect pass runs on each bridge it would draw.
 
-    A bridge is routed through the mask (:func:`route_through_mask`) and kept
-    when that route, or failing it the straight line, passes the mask-support
-    test (``MaskSupport.accepts``) and does not run beside an existing edge
-    in the same lumen (``_helpers.duplicates_existing_vessel``). *kind* is
-    what the edges it accepts are tagged with (``bridge_kind``), alongside
-    their longest run through background (``bridge_background_um``).
+    A bridge is the path the caller hands over, else the route through the
+    mask (:func:`route_through_mask`), else the straight line -- the first
+    that passes the mask-support test (``MaskSupport.accepts``) and, given
+    the two nodes it joins and a turn limit, continues each end the way its
+    vessel was heading (``build.gap_bridge_continues_terminal``, read along
+    the path's first ``GAP_BRIDGE_TANGENT_LENGTH_UM``: the path drawn, not the
+    chord) -- and it is kept when that path does not run beside an existing
+    edge in the same lumen (``_helpers.duplicates_existing_vessel``). The
+    optimise and orphan reconnects hand over ``validate_skeleton_connection``'s
+    line, which is the straight line where the skeleton runs along it; the
+    chord is then not measured again. *kind* is what the edges it accepts are
+    tagged with (``bridge_kind``), alongside their longest run through
+    background (``bridge_background_um``).
     """
 
     def __init__(self, G: nx.MultiGraph, support: MaskSupport, kind: str):
@@ -162,28 +169,47 @@ class MaskBridges:
         self._index = None
         self.accepted = 0
         self.refused_background = 0
+        self.refused_turn = 0
         self.refused_duplicate = 0
 
-    def bridge(self, start_um, end_um, preferred=None):
+    def bridge(self, start_um, end_um, preferred=None, *, ends=None, max_turn_deg=None):
         """``(path, support)`` for an acceptable bridge, else ``None``.
-        *preferred*, a physical path the caller already has (a skeleton
-        path), is tried before the mask route."""
+        *preferred*, a physical path the caller already has, is tried before
+        the mask route. With *ends*, the ``(start node, end node)`` the bridge
+        joins, and *max_turn_deg*, a path leaving either end more than that
+        off its vessel's heading is passed over."""
+        start = np.asarray(start_um, float)
+        stop = np.asarray(end_um, float)
+        chord_measured: list = []
+
         def candidates():
             if preferred is not None and len(preferred) >= 2:
-                yield np.asarray(preferred, dtype=float).reshape(-1, 3)
+                handed = np.asarray(preferred, dtype=float).reshape(-1, 3)
+                if _along_chord(handed, start, stop):
+                    chord_measured.append(True)
+                yield handed
             routed = route_through_mask(
                 self.support.mask, start_um, end_um, self.support.voxel_size_zyx
             )
             if routed is not None:
                 yield routed
-            yield np.vstack([np.asarray(start_um, float), np.asarray(end_um, float)])
+            if not chord_measured:
+                yield np.vstack([start, stop])
 
+        turned = False
         for path in candidates():
             measured = self.support.support(path)
-            if self.support.accepts_support(measured):
-                break
+            if not self.support.accepts_support(measured):
+                continue
+            if not self._continues_ends(path, ends, max_turn_deg):
+                turned = True
+                continue
+            break
         else:
-            self.refused_background += 1
+            if turned:
+                self.refused_turn += 1
+            else:
+                self.refused_background += 1
             return None
         if self._index is None:
             self._index = EdgeSampleIndex(self.G)
@@ -196,6 +222,23 @@ class MaskBridges:
         self.accepted += 1
         return path, measured
 
+    def _continues_ends(self, path, ends, max_turn_deg) -> bool:
+        """Whether *path* leaves each of *ends* within *max_turn_deg* of the
+        way its vessel was heading (always, without both)."""
+        if ends is None or max_turn_deg is None:
+            return True
+        from .build import GAP_BRIDGE_TANGENT_LENGTH_UM, gap_bridge_continues_terminal
+        from .cartwheel_guard import _point_along_polyline
+
+        path = np.asarray(path, dtype=float)
+        for node, walk in ((ends[0], path), (ends[1], path[::-1])):
+            if node not in self.G:
+                continue
+            ahead = _point_along_polyline(walk, GAP_BRIDGE_TANGENT_LENGTH_UM)
+            if not gap_bridge_continues_terminal(self.G, node, ahead, max_turn_deg=max_turn_deg):
+                return False
+        return True
+
     def attributes(self, measured: BridgeMaskSupport) -> dict:
         return {
             "bridge_kind": self.kind,
@@ -203,15 +246,29 @@ class MaskBridges:
         }
 
     def log_summary(self) -> None:
-        if self.accepted or self.refused_background or self.refused_duplicate:
+        if self.accepted or self.refused_background or self.refused_turn or self.refused_duplicate:
             logger.info(
-                "%s bridges: %d drawn through the mask; refused %d crossing background "
-                "and %d running beside a vessel in the same lumen",
+                "%s bridges: %d drawn through the mask; refused %d crossing background, "
+                "%d whose only way through the mask turned back on an end, and %d running "
+                "beside a vessel in the same lumen",
                 self.kind.capitalize(),
                 self.accepted,
                 self.refused_background,
+                self.refused_turn,
                 self.refused_duplicate,
             )
+
+
+def _along_chord(path: np.ndarray, start: np.ndarray, stop: np.ndarray, tolerance_um: float = 1.0) -> bool:
+    """Whether every point of *path* lies within *tolerance_um* of the
+    straight segment from *start* to *stop*: the straight line, up to the
+    rounding of a line drawn through voxels."""
+    d = stop - start
+    length2 = float(d @ d)
+    if length2 <= 0.0:
+        return bool(np.all(np.linalg.norm(path - start, axis=1) <= tolerance_um))
+    t = np.clip((path - start) @ d / length2, 0.0, 1.0)
+    return bool(np.all(np.linalg.norm(path - (start + t[:, None] * d), axis=1) <= tolerance_um))
 
 
 #: Candidate pairs from which routing is handed to worker processes. skimage's

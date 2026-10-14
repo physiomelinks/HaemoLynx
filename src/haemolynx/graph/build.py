@@ -419,7 +419,9 @@ def build_graph_segment_skan_stitched_loops(
                         reconnected=True,
                     )
                 else:
-                    found = bridges.bridge(src_pos, tgt_pos)
+                    found = bridges.bridge(
+                        src_pos, tgt_pos, ends=(src, tgt), max_turn_deg=max_bridge_turn_deg
+                    )
                     if found is None:
                         continue
                     path, measured = found
