@@ -464,3 +464,47 @@ def test_a_bare_package_import_can_configure_a_run(tmp_path):
     assert result.returncode == 0, result.stderr
     assert int(result.stdout.strip().splitlines()[-1]) == len(default_schema())
     assert (tmp_path / "cfg.yaml").is_file()
+
+
+def test_a_setting_graph_building_reads_is_not_hidden_behind_skeletonising():
+    """Regression (PLAN_bridging.md F8): the mask-supported bridging settings
+    required do_skeletonize, so a run loading its saved skeleton hid them
+    -- and graph building, which reads them, still did. Every setting graph
+    building reads is checked, through its whole chain of prerequisites."""
+    from haemolynx.gui.form import prerequisite_chain
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.stages import graph_build_arguments
+
+    schema = default_schema()
+    read: set = set()
+
+    class Recording(dict):
+        def __getitem__(self, name):
+            read.add(name)
+            return super().__getitem__(name)
+
+        def get(self, name, default=None):
+            read.add(name)
+            return super().get(name, default)
+
+    graph_build_arguments(Recording(schema.defaults()))
+
+    assert {"bridge_require_mask_support", "bridge_max_background_gap_um"} <= read
+    hidden = {
+        name for name in read
+        if name in schema and any(rule.lstrip("!").split("=")[0].split("!")[0] == "do_skeletonize"
+                                  for rule in prerequisite_chain(schema, name))
+    }
+    assert not hidden
+
+
+def test_bridging_settings_are_in_effect_with_a_saved_skeleton():
+    from haemolynx.pipeline import default_schema
+
+    schema = default_schema()
+    values = schema.defaults()
+    values.update(do_skeletonize=False, bridge_max_background_gap_um=1.0, bridge_min_mask_fraction=0.5)
+
+    assert not [m for m in schema.ineffective_settings(values) if "bridge_" in m]
+    values["bridge_require_mask_support"] = False
+    assert any("bridge_max_background_gap_um" in m for m in schema.ineffective_settings(values))

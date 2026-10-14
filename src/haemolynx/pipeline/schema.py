@@ -2900,7 +2900,6 @@ SCHEMA = Schema(
                 "before. No effect without the segmented mask"
             ),
             section=_PIPELINE_STAGES,
-            requires=("do_skeletonize",),
             advanced=True,
         ),
         Setting(
@@ -2915,7 +2914,7 @@ SCHEMA = Schema(
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
-            requires=("do_skeletonize", "bridge_require_mask_support"),
+            requires=("bridge_require_mask_support",),
             advanced=True,
         ),
         Setting(
@@ -2931,7 +2930,7 @@ SCHEMA = Schema(
             unit="fraction",
             minimum=0.0,
             maximum=1.0,
-            requires=("do_skeletonize", "bridge_require_mask_support"),
+            requires=("bridge_require_mask_support",),
             advanced=True,
         ),
         Setting(

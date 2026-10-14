@@ -430,11 +430,11 @@ pipeline_stages:
   skeleton_bridge_z_distance_weight: 1.0
   # Only bridge from a fragment's branch end toward something roughly ahead of it: the cosine of the largest angle allowed between the end's direction and the bridge (0.5 is 60 degrees). Stops side-by-side vessels being cross-linked; -1 allows any direction  [range -1.0..1.0; needs do_skeletonize]
   skeleton_bridge_min_facing_cosine: 0.5
-  # Draw a bridge across a gap -- in skeleton cleaning, and in graph building's gap, topology and orphan reconnects -- only along a route through the segmented mask, and not beside a vessel already in the same lumen. Two vessels with background between them are then never joined across it, however close; a vessel broken by a short dropout in the segmentation still is. Off draws every bridge within its distance limit, as before. No effect without the segmented mask  [needs do_skeletonize]
+  # Draw a bridge across a gap -- in skeleton cleaning, and in graph building's gap, topology and orphan reconnects -- only along a route through the segmented mask, and not beside a vessel already in the same lumen. Two vessels with background between them are then never joined across it, however close; a vessel broken by a short dropout in the segmentation still is. Off draws every bridge within its distance limit, as before. No effect without the segmented mask
   bridge_require_mask_support: true
-  # The longest single run of background a mask-supported bridge may cross: a dropout in the segmentation of a vessel, not tissue between two vessels  [um; range 0.0..; needs do_skeletonize and bridge_require_mask_support]
+  # The longest single run of background a mask-supported bridge may cross: a dropout in the segmentation of a vessel, not tissue between two vessels  [um; range 0.0..; needs bridge_require_mask_support]
   bridge_max_background_gap_um: 2.0
-  # The least fraction of a mask-supported bridge's length that must lie in the mask, unless all the background it crosses adds up to no more than bridge_max_background_gap_um  [fraction; range 0.0..1.0; needs do_skeletonize and bridge_require_mask_support]
+  # The least fraction of a mask-supported bridge's length that must lie in the mask, unless all the background it crosses adds up to no more than bridge_max_background_gap_um  [fraction; range 0.0..1.0; needs bridge_require_mask_support]
   bridge_min_mask_fraction: 0.8
   # Use this voxel connectivity when analysing skeleton components  [range 1..3; needs do_skeletonize]
   skeleton_component_connectivity: 3

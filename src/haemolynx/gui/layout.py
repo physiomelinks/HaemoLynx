@@ -259,8 +259,14 @@ MOVE_BEFORE: Mapping[str, str] = {"do_fwhm_measurement": "use_raw_section_fallba
 
 #: An advanced row whose anchor is not what its ``requires`` would give.
 #: Tiling needs the Low RAM option on the Input tab, not anything on
-#: Skeletonise, but it is part of skeletonising.
-ANCHOR_OVERRIDES: Mapping[str, str] = {"skeletonize_tile_large_components": "do_skeletonize"}
+#: Skeletonise, but it is part of skeletonising. Mask-supported bridging is
+#: read by skeleton cleaning and by graph building alike, so it requires
+#: neither stage (a run loading its saved skeleton still bridges by it), and
+#: stays under Skeletonise's button with the other bridging rows.
+ANCHOR_OVERRIDES: Mapping[str, str] = {
+    "skeletonize_tile_large_components": "do_skeletonize",
+    "bridge_require_mask_support": "do_skeletonize",
+}
 
 #: What each button says, keyed by its anchor, or ``box:<key>`` for a box's
 #: own button. Anything unlisted says :data:`DEFAULT_ADVANCED_TITLE`.
