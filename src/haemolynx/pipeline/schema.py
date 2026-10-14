@@ -3511,6 +3511,22 @@ SCHEMA = Schema(
             requires=("use_thick_vessel_skeletonisation",),
             advanced=True,
         ),
+        Setting(
+            name="thick_vessel_fill_centreline_gaps",
+            kind="bool",
+            default=False,
+            help=(
+                "Where the graph's own centreline of a thick vessel strays off "
+                "the centreline drawn through the thick region, or misses it, "
+                "for 3 um or more between two places it follows it, draw the "
+                "thick vessel's centreline there from the thick region and take "
+                "out a stray strand beside it that nothing hangs off. Vessels "
+                "reaching the thick vessel there can then be bridged to it"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
+        ),
         # A purely additive, read-only QC check on the tree
         # skeletonize_thickness_gated just built: off by default, and even on,
         # it only logs a warning -- it never changes the skeleton. See

@@ -1236,6 +1236,7 @@ def thick_junction_bridge_arguments(settings: dict) -> dict[str, Any]:
         max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
         min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
         max_short_loop_um=float(settings.get("remove_short_loops_under_um") or 0.0),
+        fill_tree_gaps=bool(settings.get("thick_vessel_fill_centreline_gaps", False)),
     )
 
 

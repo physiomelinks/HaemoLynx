@@ -655,3 +655,97 @@ def test_with_the_short_loop_rule_off_a_wall_join_may_close_a_loop():
 
     assert any(d.get(JOINED_AT_WALL_UM) for *_e, d in result.edges(data=True))
     assert nx.cycle_basis(nx.Graph(result))
+
+
+# --- the thick centreline drawn from the tree where the graph strays or misses it (6a)
+
+
+def _gap(stray: bool = False, side_vessel_on_stray: bool = False):
+    """The thick vessel along y; its graph centreline follows the tree up to
+    A (y = 10) and from B (y = 50), and between them either nothing or a
+    stray strand 4 um off the tree. X, a thin vessel, enters the thick
+    vessel at y = 30, too far from A or B to be bridged to either."""
+    lumen, body, tree = _thick()
+    _thin_vessel(lumen, (20, 30, 20), (20, 30, 63))
+    edges = [("T0", "A", T0, (20, 10, 20)), ("B", "T1", (20, 50, 20), T1),
+             ("X", "S", (20, 30, 63), (20, 30, 23))]
+    if stray:
+        edges.append(("A", "B", (20, 10, 20), (20, 30, 24), (20, 50, 20)))
+    G = _graph(*edges)
+    if side_vessel_on_stray:
+        G.remove_edge("A", "B")
+        G.add_edge("A", "M", voxels=_line((20, 10, 20), (20, 30, 24)), length=20.4)
+        G.add_edge("M", "B", voxels=_line((20, 30, 24), (20, 50, 20)), length=20.4)
+        G.nodes["M"]["pos"] = (20.0, 30.0, 24.0)
+        G.add_node("Q", pos=(0.0, 30.0, 24.0))  # out through the image face
+        G.add_edge("M", "Q", voxels=_line((20, 30, 24), (0, 30, 24)), length=20.0)
+        lumen |= _tube((20, 30, 24), (0, 30, 24), 1.5)
+    return G, lumen, body, tree
+
+
+def _from_tree(G):
+    from haemolynx.graph.thick_vessel_junctions import FROM_TREE
+
+    return [(u, v, d) for u, v, d in G.edges(data=True) if d.get(FROM_TREE)]
+
+
+def test_a_gap_in_the_graphs_thick_centreline_is_drawn_from_the_tree():
+    """No graph centreline between A and B: X, reaching the thick vessel
+    there, had nothing to be bridged to. Drawn from the tree, the thick
+    vessel runs A to B and X gets its bridge."""
+    G, lumen, body, tree = _gap()
+
+    off = _split(G, lumen, body, tree)
+    on = _split(G, lumen, body, tree, fill_tree_gaps=True)
+
+    assert not _from_tree(off) and not any("S" in (u, v) or "X" in (u, v) for u, v, _d in _bridges(off))
+    # Drawn A to B, then cut where X's bridge lands on it.
+    pieces = _from_tree(on)
+    assert sum(d["length"] for *_e, d in pieces) == pytest.approx(40.0, abs=1.5)
+    assert nx.has_path(nx.Graph([(u, v) for u, v, _d in pieces]), "A", "B")
+    assert len(_bridges(on)) == 1
+    assert nx.has_path(on, "X", "T0") and nx.has_path(on, "X", "T1")
+
+
+def test_a_stray_strand_beside_the_tree_gives_way_to_it():
+    """The graph's thick centreline wandering 4 um off the tree: the tree's
+    path replaces it, and every centreline left in the thick vessel lies on
+    the tree."""
+    G, lumen, body, tree = _gap(stray=True)
+
+    on = _split(G, lumen, body, tree, fill_tree_gaps=True)
+
+    assert sum(d["length"] for *_e, d in _from_tree(on)) > 20.0  # the stray's two ends lie on the tree
+    tree_points = np.argwhere(tree).astype(float)
+    from scipy.spatial import cKDTree
+
+    kd = cKDTree(tree_points)
+    for u, v, d in on.edges(data=True):
+        if d.get(IS_ZERO_RESISTANCE) or "X" in (u, v) or "S" in (u, v):
+            continue
+        assert kd.query(np.asarray(d["voxels"], float))[0].max() <= 2.0, (u, v)
+    assert nx.number_connected_components(on) == 1
+
+
+def test_a_stray_strand_a_vessel_hangs_off_is_left_for_the_clean_up():
+    """The fill draws the tree's path but leaves a stray with a vessel
+    hanging off it (taken out, it would cut that vessel off): the vessel
+    keeps its way to the thick vessel, through the stray, and the two
+    strands side by side are the clean-up's to settle."""
+    G, lumen, body, tree = _gap(stray=True, side_vessel_on_stray=True)
+
+    on = _split(G, lumen, body, tree, fill_tree_gaps=True)
+
+    assert sum(d["length"] for *_e, d in _from_tree(on)) > 20.0  # the stray's two ends lie on the tree
+    assert "M" in on
+    assert nx.has_path(on, "Q", "T0") and nx.number_connected_components(on) == 1
+
+
+def test_the_run_turns_the_fill_on_with_its_setting():
+    from haemolynx.pipeline.stages import thick_junction_bridge_arguments
+
+    settings = {"bridge_require_mask_support": True, "bridge_max_background_gap_um": 2.0,
+                "bridge_min_mask_fraction": 0.8, "remove_short_loops_under_um": 200.0}
+    assert thick_junction_bridge_arguments(settings)["fill_tree_gaps"] is False
+    settings["thick_vessel_fill_centreline_gaps"] = True
+    assert thick_junction_bridge_arguments(settings)["fill_tree_gaps"] is True
