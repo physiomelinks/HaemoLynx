@@ -494,7 +494,16 @@ are only caught locally.
   segmentation, not tissue between two vessels — with `bridge_min_mask_fraction` of it in the
   mask unless all its background adds up to no more than that run. A path beside a vessel
   already in the same lumen is refused too (`MaskSupport.shadows`, the ends excluded so a branch
-  meeting its parent is not one), so no reconnect draws one segmented vessel twice;
+  meeting its parent is not one), so no reconnect draws one segmented vessel twice; a bridge
+  too short to leave anything judged once those ends are left out (in a lumen 6 um round, any
+  under 14 um) is judged at its middle -- only where a reconnect draws a bridge
+  (`judge_short_at_middle`: `MaskBridges`, the skeleton gate), not in mask recovery or the
+  doubled-stretch rule, where on E14.5 it cost 1.1 points of mask coverage. The gap, optimise
+  and orphan reconnects judge the 80-degree turn on the path drawn, not the chord
+  (`MaskBridges.bridge(ends=, max_turn_deg=)`): on E14.5 that and the middle sample refused 13
+  more gap bridges, all 13 marked right by Harvey (grid R, 2026-10-14). A segmentation not the
+  skeleton's shape raises (`check_mask_shape`), and the three bridging settings require no
+  stage, so a run loading its saved skeleton keeps them;
   `graph.diagnose_lumen_artefacts` reports any pair that does -- with loops inside one lumen and
   dead ends by kind, each judged as its whole chain to its junction as the stub prune judges it
   (short by the chain's length; its tip in another lumen only if not in one of its own chain's,
