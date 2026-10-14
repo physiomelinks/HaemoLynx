@@ -6,6 +6,18 @@ import numpy as np
 import networkx as nx
 
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE, THICK_TAPER
+
+#: What smoothing did to a vessel (``smoothing.smooth_graph_centrelines``),
+#: least smoothed first: a merged vessel says the least of its two halves.
+_SMOOTHING_ORDER = ("kept_raw", "relaxed", "smoothed", "too_short")
+
+
+def _merged_smoothing(d1: dict, d2: dict):
+    """The ``centreline_smoothing`` a vessel merged from *d1* and *d2*
+    carries, or None when neither says: dropped at a merge, a clean-up after
+    smoothing left vessels that said nothing of what happened to them."""
+    known = [d.get("centreline_smoothing") for d in (d1, d2) if d.get("centreline_smoothing") in _SMOOTHING_ORDER]
+    return min(known, key=_SMOOTHING_ORDER.index) if known else None
 from ._helpers import (
     get_all_edge_data,
     create_merged_edge_attributes,
@@ -247,6 +259,9 @@ def create_trivial_merged_edge(
     # Whichever edge carried it: the clean-up's protection of a taper.
     if edge1_data.get(THICK_TAPER) or edge2_data.get(THICK_TAPER):
         merged_attributes[THICK_TAPER] = True
+    smoothing = _merged_smoothing(edge1_data, edge2_data)
+    if smoothing is not None:
+        merged_attributes["centreline_smoothing"] = smoothing
     return merged_attributes
 
 
@@ -425,6 +440,9 @@ def smart_multigraph_degree2_removal(
             }
             if d1.get(THICK_TAPER) or d2.get(THICK_TAPER):
                 merged_attrs[THICK_TAPER] = True
+            smoothing = _merged_smoothing(d1, d2)
+            if smoothing is not None:
+                merged_attrs["centreline_smoothing"] = smoothing
 
             should_add, replace_key = should_add_merged_edge(
                 G, n1, n2, merged_voxels, merged_attrs, debug, inside_lumen=inside_lumen

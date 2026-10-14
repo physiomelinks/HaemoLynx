@@ -106,6 +106,14 @@ def main(job_path: str) -> None:
         # A version whose clean-up knows bridges runs it again after the split.
         if cleanup is not None and hasattr(graph.thick_vessel_junctions, "remove_dangling_bridges"):
             G = assemble.consolidate_lumen(G, cleanup)
+    # As build_network does, in the versions that have it: the chords the
+    # clean-ups drew after smoothing, smoothed.
+    if smoothing and hasattr(graph, "smooth_straight_steps"):
+        graph.smooth_straight_steps(
+            G, skeleton, voxel_size_zyx=voxel_size, method=smoothing["method"],
+            iterations=smoothing["iterations"], max_deviation=smoothing["max_deviation"],
+            radius_at=radius_at,
+        )
     with open(os.path.join(out, "final.pkl"), "wb") as f:
         pickle.dump(G, f)
     with open(os.path.join(out, "side.json"), "w", encoding="utf-8") as f:

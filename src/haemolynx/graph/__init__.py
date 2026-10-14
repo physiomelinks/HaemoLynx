@@ -4,6 +4,7 @@ from .smoothing import (
     SMOOTHING_METHODS,
     chaikin_smooth_polyline,
     smooth_graph_centrelines,
+    smooth_straight_steps,
     smooth_polyline,
     taubin_smooth_polyline,
 )
@@ -233,6 +234,7 @@ __all__ = [
     "build_graph_from_skeleton",
     "SMOOTHING_METHODS",
     "smooth_graph_centrelines",
+    "smooth_straight_steps",
     "smooth_polyline",
     "taubin_smooth_polyline",
     "chaikin_smooth_polyline",

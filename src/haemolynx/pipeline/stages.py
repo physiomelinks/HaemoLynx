@@ -1478,6 +1478,19 @@ def build_network(
             )
             if lumen_cleanup is not None:
                 G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
+        # The clean-ups after smoothing join a cut piece to the vessel it
+        # doubled with a straight chord across the lumen: those vessels only
+        # are smoothed again (PLAN_bridging.md 6b).
+        if settings["smooth_centrelines"]:
+            graph.smooth_straight_steps(
+                G,
+                skeleton,
+                voxel_size_zyx=voxel_size_zyx,
+                method=settings["centreline_smoothing_method"],
+                iterations=settings["centreline_smoothing_iterations"],
+                max_deviation=settings["centreline_max_deviation"],
+                radius_at=radius_at,
+            )
 
         # What each dead end is (graph.dead_ends), judged on the graph that is
         # saved while the mask is still at hand: those leaving the image are

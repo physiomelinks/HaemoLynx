@@ -334,3 +334,23 @@ def test_merging_at_a_degree_two_node_keeps_a_taper_mark():
         {"voxels": [(0, 0, 0), (0, 0, 5)]}, {"voxels": [(0, 0, 5), (0, 0, 9)], THICK_TAPER: True}, (0, 0, 5)
     )
     assert merged.get(THICK_TAPER) is True
+
+
+def test_merging_keeps_what_smoothing_did_saying_the_less_smoothed_half():
+    """Regression: both merges dropped ``centreline_smoothing``, so the
+    vessels a clean-up after smoothing merged said nothing of what happened
+    to them (test_centreline_smoothing's provenance test failed)."""
+    from haemolynx.graph.degree2 import create_trivial_merged_edge
+
+    G = polyline_graph([[(7, 7, 2), (7, 7, 20)], [(7, 7, 20), (7, 7, 57)]])
+    G.edges[_edge(G, (7, 7, 2), (7, 7, 20))]["centreline_smoothing"] = "smoothed"
+    G.edges[_edge(G, (7, 7, 20), (7, 7, 57))]["centreline_smoothing"] = "kept_raw"
+    G = smart_multigraph_degree2_removal(G, None)
+    ((_u, _v, data),) = G.edges(data=True)
+    assert data["centreline_smoothing"] == "kept_raw"
+
+    both = create_trivial_merged_edge(
+        {"voxels": [(0, 0, 0), (0, 0, 5)], "centreline_smoothing": "smoothed"},
+        {"voxels": [(0, 0, 5), (0, 0, 9)], "centreline_smoothing": "smoothed"}, (0, 0, 5),
+    )
+    assert both["centreline_smoothing"] == "smoothed"

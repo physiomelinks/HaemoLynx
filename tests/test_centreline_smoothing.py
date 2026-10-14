@@ -988,3 +988,66 @@ def test_a_staircase_on_its_own_skeleton_has_no_off_skeleton_stretch(spacing):
 
     for original in (path, resample_at_step(path, min(spacing))):
         assert len(_off_skeleton_stretches(original, cKDTree(path), tolerance)) == 0
+
+
+# --- chords the clean-ups draw after smoothing (PLAN_bridging.md 6b) -----------
+
+
+def _arc_with_a_chord():
+    """A quarter circle 15 um round on cube voxels, as a skeleton, and an edge
+    along it whose path cuts one 6 um stretch with a straight chord -- what
+    the doubled-stretch rewiring leaves after the smoothing pass."""
+    angles = np.linspace(0.0, np.pi / 2, 400)
+    arc = np.column_stack([np.full_like(angles, 5.0), 20 + 15 * np.sin(angles), 5 + 15 * np.cos(angles)])
+    voxels = np.unique(np.rint(arc).astype(int), axis=0)
+    skeleton = np.zeros((11, 40, 40), dtype=bool)
+    skeleton[tuple(voxels.T)] = True
+    order = np.argsort(np.arctan2(voxels[:, 1] - 20, voxels[:, 2] - 5))
+    path = voxels[order].astype(float)
+    arc_length = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))])
+    cut = (arc_length > 8.0) & (arc_length < 17.0)
+    chorded = path[~cut]
+    G = nx.MultiGraph()
+    G.add_node("A", pos=tuple(chorded[0]))
+    G.add_node("B", pos=tuple(chorded[-1]))
+    G.add_edge("A", "B", voxels=[tuple(p) for p in chorded], length=float(
+        np.sum(np.linalg.norm(np.diff(chorded, axis=0), axis=1))))
+    return G, skeleton
+
+
+def test_a_chord_drawn_after_smoothing_is_smoothed_and_nothing_else_moves():
+    from haemolynx.graph.smoothing import smooth_straight_steps
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    G, skeleton = _arc_with_a_chord()
+    straight = [(5.0, 2.0, float(x)) for x in range(2, 30)]
+    G.add_node("C", pos=straight[0]); G.add_node("D", pos=straight[-1])
+    G.add_edge("C", "D", voxels=list(straight), length=27.0)
+    bridge = [(5.0, 35.0, 2.0), (5.0, 35.0, 3.0), (5.0, 35.0, 12.0)]
+    G.add_node("E", pos=bridge[0]); G.add_node("F", pos=bridge[-1])
+    G.add_edge("E", "F", voxels=list(bridge), length=10.0, **{IS_ZERO_RESISTANCE: True})
+    before = float(G.edges["A", "B", 0]["length"])
+    steps_before = np.linalg.norm(np.diff(np.asarray(G.edges["A", "B", 0]["voxels"]), axis=0), axis=1).max()
+
+    assert steps_before > 5.0
+    assert smooth_straight_steps(G, skeleton) == 1
+
+    path = np.asarray(G.edges["A", "B", 0]["voxels"])
+    assert np.linalg.norm(np.diff(path, axis=0), axis=1).max() <= 3.0
+    assert G.edges["A", "B", 0]["length"] <= before + 1e-9
+    assert G.edges["C", "D", 0]["voxels"] == straight, "a vessel with no long step is left exactly as it was"
+    assert G.edges["E", "F", 0]["voxels"] == bridge, "a bridge is straight by design"
+
+
+def test_a_long_step_on_cube_voxels_is_resampled_before_it_is_smoothed():
+    """The filter moves vertices, and a chord is two vertices far apart: on
+    cube voxels (not resampled otherwise) it only pulls the chord's ends in.
+    Resampled first, the chord is smoothed as evenly as the rest."""
+    G, skeleton = _arc_with_a_chord()
+    plain = copy.deepcopy(G)
+    smooth_graph_centrelines(plain, skeleton)
+    smooth_graph_centrelines(G, skeleton, always_resample=True)
+
+    longest = lambda H: np.linalg.norm(np.diff(np.asarray(H.edges["A", "B", 0]["voxels"]), axis=0), axis=1).max()
+    assert longest(plain) > 2.0
+    assert longest(G) <= 1.5

@@ -53,8 +53,11 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "SMOOTHING_METHODS",
+    "STRAIGHT_STEP_UM",
+    "edges_with_straight_steps",
     "smooth_polyline",
     "smooth_graph_centrelines",
+    "smooth_straight_steps",
     "taubin_smooth_polyline",
     "chaikin_smooth_polyline",
 ]
@@ -333,8 +336,17 @@ def smooth_graph_centrelines(
     iterations: int = 10,
     max_deviation: float = DEFAULT_MAX_DEVIATION_UM,
     radius_at: Optional[Callable[[np.ndarray], float]] = None,
+    edges=None,
+    always_resample: bool = False,
 ) -> Mapping[str, int]:
     """Smooth every edge's centreline in place, and re-measure its length.
+
+    With *edges* (``(u, v, key)``, either way round), only those. With
+    *always_resample*, every path is first resampled at the finest voxel's
+    step, as one on anisotropic voxels always is: a long straight step is two
+    points far apart, and the filter, which moves points, only pulls its two
+    ends in (on cube voxels a 6.4 um chord kept a 2.75 um step; resampled,
+    1 um).
 
     ``length`` is rewritten from every edge's path -- smoothed or not -- so the
     number the haemodynamics uses describes the same curve the exports draw,
@@ -369,10 +381,13 @@ def smooth_graph_centrelines(
     finest_step = float(spacing.min())
     anisotropic = not np.allclose(spacing, spacing[0])
 
-    edges = G.edges(keys=True, data=True) if G.is_multigraph() else (
+    chosen = None if edges is None else {(frozenset((u, v)), key) for u, v, key in edges}
+    all_edges = G.edges(keys=True, data=True) if G.is_multigraph() else (
         (u, v, 0, data) for u, v, data in G.edges(data=True)
     )
-    for u, v, key, data in list(edges):
+    for u, v, key, data in list(all_edges):
+        if chosen is not None and (frozenset((u, v)), key) not in chosen:
+            continue
         voxels = data.get("voxels")
         if voxels is None or len(voxels) < 3:
             counts["too_short"] += 1
@@ -386,7 +401,7 @@ def smooth_graph_centrelines(
         # four times further along a 2 um z than in-plane -- and a pass of the
         # filter averages neighbouring vertices, so z runs were smoothed over
         # four times the distance. Evenly spaced points first.
-        even = resample_at_step(original, finest_step) if anisotropic else original
+        even = resample_at_step(original, finest_step) if (anisotropic or always_resample) else original
         smoothed = smooth_polyline(even, method=method, iterations=iterations)
         tolerance = edge_tolerance_um(
             original, max_deviation=max_deviation, voxel_size_zyx=voxel_size_zyx, radius_at=radius_at
@@ -408,3 +423,63 @@ def smooth_graph_centrelines(
         counts["kept_raw"], counts["too_short"],
     )
     return counts
+
+
+#: A straight step longer than this (um) in a centreline of three or more
+#: points is a join drawn after smoothing: the lumen clean-up's chords
+#: (``doubled_stretches``' zips and rejoins) and a junction end cluster
+#: collapse moved, which the smoothing pass before them never saw.
+STRAIGHT_STEP_UM = 3.0
+
+
+def edges_with_straight_steps(G: nx.Graph, max_step_um: float = STRAIGHT_STEP_UM) -> list:
+    """``(u, v, key)`` of every vessel (not a thick-vessel bridge, which is
+    straight by design) whose path of three or more points holds a straight
+    step longer than *max_step_um*."""
+    from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    found = []
+    all_edges = G.edges(keys=True, data=True) if G.is_multigraph() else (
+        (u, v, 0, data) for u, v, data in G.edges(data=True)
+    )
+    for u, v, key, data in all_edges:
+        voxels = data.get("voxels")
+        if data.get(IS_ZERO_RESISTANCE) or voxels is None or len(voxels) < 3:
+            continue
+        steps = np.linalg.norm(np.diff(np.asarray(voxels, dtype=float), axis=0), axis=1)
+        if float(steps.max()) > max_step_um:
+            found.append((u, v, key))
+    return found
+
+
+def smooth_straight_steps(
+    G: nx.Graph,
+    skeleton: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    method: str = "taubin",
+    iterations: int = 10,
+    max_deviation: float = DEFAULT_MAX_DEVIATION_UM,
+    radius_at: Optional[Callable[[np.ndarray], float]] = None,
+    max_step_um: float = STRAIGHT_STEP_UM,
+) -> int:
+    """Smooth again, in place, the vessels holding a straight step longer
+    than *max_step_um* (:func:`edges_with_straight_steps`), resampled first
+    so the step is smoothed with the rest, under the same acceptance as
+    :func:`smooth_graph_centrelines` (near the skeleton or the path it came
+    from, never longer). Every other edge is left exactly as it is. Returns
+    how many edges were smoothed.
+
+    The lumen clean-up runs after the build's smoothing pass and joins a cut
+    piece to the vessel it doubled with a straight chord across the lumen;
+    on E14.5 15 such chords of 5-8.5 um were left, drawn as kinks, and their
+    14 vessels were 21 um (4%) longer than smoothed.
+    """
+    edges = edges_with_straight_steps(G, max_step_um)
+    if not edges:
+        return 0
+    counts = smooth_graph_centrelines(
+        G, skeleton, voxel_size_zyx=voxel_size_zyx, method=method, iterations=iterations,
+        max_deviation=max_deviation, radius_at=radius_at, edges=edges, always_resample=True,
+    )
+    return int(counts["smoothed"] + counts["relaxed"])
