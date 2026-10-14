@@ -829,9 +829,11 @@ def duplicates_existing_vessel(
     *,
     index: "EdgeSampleIndex | None" = None,
     step_um: float = 0.5,
+    judge_short_at_middle: bool = False,
 ) -> bool:
     """Whether a path about to be added to *G* runs beside one of its edges
     in the same lumen: a second, parallel vessel inside one segmented branch.
+    *judge_short_at_middle*: see ``path_shadows_existing_vessel``.
 
     The test is ``preprocessing.bridge_mask_support.path_shadows_existing_vessel``
     against every edge's centreline (*index*, built from *G* when ``None``)
@@ -845,7 +847,8 @@ def duplicates_existing_vessel(
 
     index = EdgeSampleIndex(G) if index is None else index
     if index.tree is not None and path_shadows_existing_vessel(
-        new_path, index.tree, index.points, inside_lumen, radius_at, step_um=step_um
+        new_path, index.tree, index.points, inside_lumen, radius_at, step_um=step_um,
+        judge_short_at_middle=judge_short_at_middle,
     ):
         return True
     if not index.added:
@@ -855,7 +858,8 @@ def duplicates_existing_vessel(
     lo, hi = path.min(axis=0) - reach, path.max(axis=0) + reach
     nearby = index.added_near(lo, hi)
     return bool(nearby) and path_shadows_existing_vessel(
-        path, None, np.vstack(nearby), inside_lumen, radius_at, step_um=step_um
+        path, None, np.vstack(nearby), inside_lumen, radius_at, step_um=step_um,
+        judge_short_at_middle=judge_short_at_middle,
     )
 
 

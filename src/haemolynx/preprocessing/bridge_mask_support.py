@@ -272,6 +272,7 @@ def path_shadows_existing_vessel(
     step_um: float = 0.5,
     margin_um: float = SAME_LUMEN_MARGIN_UM,
     max_cosine: float = MAX_SHADOW_COSINE,
+    judge_short_at_middle: bool = False,
 ) -> bool:
     """Whether a new path runs beside an existing centreline in the same lumen.
 
@@ -284,7 +285,14 @@ def path_shadows_existing_vessel(
     less than *margin_um* of background (one lumen, not two), and the chord
     is no longer than two lumen radii at the sample plus *margin_um*. The
     path duplicates a vessel when at least half its remaining samples are
-    shadowed; with none remaining it does not.
+    shadowed; with none remaining it does not -- unless
+    *judge_short_at_middle*, when its middle sample is judged alone. The
+    reconnects that draw a bridge ask for that: in a lumen 6 um round every
+    bridge under 14 um had nothing judged, and could draw a second strand
+    unchallenged (PLAN_bridging.md F4). Mask recovery and the clean-up's
+    doubled-stretch rule do not: on E14.5 it took 1.1 points of mask
+    coverage and 1 mm of centreline with them, doubled centreline not falling,
+    and those rules are calibrated on marked grids.
 
     *existing_points_um* are the centreline points (``(M, 3)``) and
     *existing_tree* a KD-tree over them (built here when ``None``);
@@ -294,17 +302,17 @@ def path_shadows_existing_vessel(
     judged, shadowing = _shadowing_points(
         path_um, existing_tree, existing_points_um, inside, radius_at,
         step_um=step_um, margin_um=margin_um, max_cosine=max_cosine,
+        judge_short_at_middle=judge_short_at_middle,
     )
     return judged > 0 and 2 * len(shadowing) >= judged
 
 
-def _judged_samples(path_um, radius_at, *, step_um: float, margin_um: float):
+def _judged_samples(path_um, radius_at, *, step_um: float, margin_um: float, judge_short_at_middle: bool = False):
     """*path_um* sampled every *step_um*, each sample's tangent, and which
     samples are judged: those further than (the lumen radius at that end +
     *margin_um*) from both ends, where a branch meets the vessel it joins.
-    A path too short to leave any such sample is judged at its middle: in a
-    wide lumen every bridge shorter than two radii had nothing judged, and
-    was never a second strand whatever it lay beside."""
+    With *judge_short_at_middle*, a path too short to leave any such sample
+    is judged at its middle (see :func:`path_shadows_existing_vessel`)."""
     samples = _densify(np.asarray(path_um, dtype=float), step_um)
     if len(samples) < 2:
         return samples, np.zeros_like(samples), np.zeros(len(samples), dtype=bool)
@@ -314,7 +322,7 @@ def _judged_samples(path_um, radius_at, *, step_um: float, margin_um: float):
     keep = (np.linalg.norm(samples - ends[0], axis=1) > end_radii[0] + margin_um) & (
         np.linalg.norm(samples - ends[1], axis=1) > end_radii[1] + margin_um
     )
-    if not keep.any() and len(samples) >= 3:
+    if judge_short_at_middle and not keep.any() and len(samples) >= 3:
         keep[len(samples) // 2] = True
     return samples, tangents, keep
 
@@ -374,6 +382,7 @@ def _shadowing_points(
     step_um: float,
     margin_um: float = SAME_LUMEN_MARGIN_UM,
     max_cosine: float = MAX_SHADOW_COSINE,
+    judge_short_at_middle: bool = False,
 ) -> tuple[int, np.ndarray]:
     """``(samples judged, index into *existing_points_um* of each shadowed
     sample's nearest point)`` -- see :func:`path_shadows_existing_vessel`."""
@@ -381,7 +390,10 @@ def _shadowing_points(
     existing = np.asarray(existing_points_um, dtype=float).reshape(-1, 3)
     if len(existing) == 0:
         return nothing
-    samples, tangents, keep = _judged_samples(path_um, radius_at, step_um=step_um, margin_um=margin_um)
+    samples, tangents, keep = _judged_samples(
+        path_um, radius_at, step_um=step_um, margin_um=margin_um,
+        judge_short_at_middle=judge_short_at_middle,
+    )
     samples, tangents = samples[keep], tangents[keep]
     if len(samples) == 0:
         return nothing
@@ -506,7 +518,9 @@ class MaskSupport:
             min_mask_fraction=self.min_mask_fraction,
         )
 
-    def shadows(self, path_um, existing_tree: cKDTree | None, existing_points_um) -> bool:
+    def shadows(
+        self, path_um, existing_tree: cKDTree | None, existing_points_um, *, judge_short_at_middle: bool = False
+    ) -> bool:
         """:func:`path_shadows_existing_vessel` against this mask."""
         return path_shadows_existing_vessel(
             path_um,
@@ -515,4 +529,5 @@ class MaskSupport:
             self.inside,
             self.radius,
             step_um=_sample_step(self.voxel_size_zyx),
+            judge_short_at_middle=judge_short_at_middle,
         )

@@ -176,11 +176,11 @@ def test_the_lumen_radius_is_the_distance_to_background():
 # --- the same-lumen duplicate guard -----------------------------------------
 
 
-def _shadows(path, existing, mask, spacing=(1.0, 1.0, 1.0)):
+def _shadows(path, existing, mask, spacing=(1.0, 1.0, 1.0), **options):
     support = MaskSupport(mask, spacing)
     return path_shadows_existing_vessel(
         np.asarray(path, dtype=float), None, np.asarray(existing, dtype=float),
-        support.inside, support.radius,
+        support.inside, support.radius, **options,
     )
 
 
@@ -231,6 +231,8 @@ def test_nothing_to_shadow_is_no_duplicate():
     mask = _tube_along_x((9, 9, 60), (4, 4), 3)
 
     assert not _shadows(_line(4, 4, 0, 30), np.empty((0, 3)), mask)
+    # A path no longer than its own end margins has nothing left to judge.
+    assert not _shadows(_line(4, 4, 10, 12), _line(4, 4, 0, 59), mask)
 
 
 def test_a_bridge_shorter_than_its_end_margins_is_judged_at_its_middle():
@@ -238,13 +240,15 @@ def test_a_bridge_shorter_than_its_end_margins_is_judged_at_its_middle():
     and a micron of either end is left out, so in a lumen 6 um round a path
     under 14 um had nothing judged and was never a duplicate -- a gap or
     orphan bridge could draw a second strand there unchallenged. Its middle
-    is judged instead: beside a strand in the same lumen it is one; carrying
-    a vessel on across a gap it is not."""
+    is judged instead, when the caller asks (the reconnects drawing a
+    bridge): beside a strand in the same lumen it is one; carrying a vessel
+    on across a gap it is not."""
     mask = _tube_along_x((15, 15, 60), (7, 7), 6)
     strand = _line(7, 4, 5, 55)
 
-    assert _shadows(_line(7, 8, 28, 32), strand, mask)
-    assert not _shadows(_line(7, 4, 55, 59), _line(7, 4, 5, 55), mask)
+    assert _shadows(_line(7, 8, 28, 32), strand, mask, judge_short_at_middle=True)
+    assert not _shadows(_line(7, 8, 28, 32), strand, mask)
+    assert not _shadows(_line(7, 4, 55, 59), _line(7, 4, 5, 55), mask, judge_short_at_middle=True)
 
 
 # --- the mask as bits -------------------------------------------------------

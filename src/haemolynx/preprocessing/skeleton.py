@@ -1401,7 +1401,7 @@ class _SkeletonBridgeGate:
             from scipy.spatial import cKDTree
 
             self._tree = cKDTree(self.points)
-        if self.support.shadows(path * self.spacing, self._tree, self.points):
+        if self.support.shadows(path * self.spacing, self._tree, self.points, judge_short_at_middle=True):
             self._refuse(tip, "duplicate")
             return False
         self.paths[(tip, end)] = path
@@ -1421,7 +1421,9 @@ class _SkeletonBridgeGate:
                 drawn for drawn in self.drawn
                 if np.all(drawn.max(axis=0) >= lo) and np.all(drawn.min(axis=0) <= hi)
             ]
-            if nearby and self.support.shadows(physical, None, np.vstack(nearby)):
+            if nearby and self.support.shadows(
+                physical, None, np.vstack(nearby), judge_short_at_middle=True
+            ):
                 if self.outcome.get(tip) != "drawn":
                     self.outcome[tip] = "duplicate"
                 return None

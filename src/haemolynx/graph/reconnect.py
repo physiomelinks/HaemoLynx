@@ -214,7 +214,8 @@ class MaskBridges:
         if self._index is None:
             self._index = EdgeSampleIndex(self.G)
         if duplicates_existing_vessel(
-            path, self.G, self.support.inside, self.support.radius, index=self._index
+            path, self.G, self.support.inside, self.support.radius, index=self._index,
+            judge_short_at_middle=True,
         ):
             self.refused_duplicate += 1
             return None
