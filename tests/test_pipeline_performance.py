@@ -270,8 +270,10 @@ def test_connect_skeleton_components_weight_by_segmentation_off_by_default():
 
 
 def test_connect_skeleton_components_weight_by_segmentation_falls_back_without_a_mask():
-    """Defensive: the toggle with no mask (or a mismatched one) must still
-    bridge via the straight-line fallback rather than raising."""
+    """Defensive: the toggle with no mask must still bridge via the
+    straight-line fallback rather than raising. A mask of another shape is
+    an error since PLAN_bridging.md F9 (it used to fall back quietly too,
+    leaving every bridge ungated without a word)."""
     from scipy.ndimage import generate_binary_structure, label
 
     volume = np.zeros((5, 5, 12), dtype=bool)
@@ -285,13 +287,13 @@ def test_connect_skeleton_components_weight_by_segmentation_falls_back_without_a
     assert label(result, structure=structure)[1] == 1
 
     mismatched_mask = np.zeros((3, 3, 3), dtype=bool)
-    result2 = connect_skeleton_components(
-        volume,
-        max_bridge_distance=10,
-        segmentation_mask=mismatched_mask,
-        weight_by_segmentation=True,
-    )
-    assert label(result2, structure=structure)[1] == 1
+    with pytest.raises(ValueError, match="voxels but the skeleton is"):
+        connect_skeleton_components(
+            volume,
+            max_bridge_distance=10,
+            segmentation_mask=mismatched_mask,
+            weight_by_segmentation=True,
+        )
 
 
 # ---------------------------------------------------------------------------
