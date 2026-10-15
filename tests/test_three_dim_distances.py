@@ -1,8 +1,13 @@
-"""Tests for 3D object-to-vessel distance measurement."""
+"""Tests for 3D object-to-vessel distance measurement.
+
+Every distance is a gap between voxelised volumes (each voxel the box it
+fills), so a cell touching a vessel is 0 um from it; the cases below are laid
+out so each answer can be counted off by hand.
+"""
 from __future__ import annotations
 
 import csv
-import sys
+import logging
 from pathlib import Path
 
 import networkx as nx
@@ -10,14 +15,12 @@ import numpy as np
 import pytest
 import tifffile
 
+from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
+from haemolynx.pipeline import default_schema, stages
+from haemolynx.pipeline.checks import check_cell_mask_measurement, preflight
+from haemolynx.statistics import three_dim_distances as dist3d
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-from haemolynx.statistics import three_dim_distances as dist3d  # noqa: E402
-DEMO_OUTPUT_DIR = REPO_ROOT / "examples" / "outputs" / "synthetic_3d_distances"
+SCHEMA = default_schema()
 
 
 def _line_voxels(
@@ -29,6 +32,73 @@ def _line_voxels(
     pts = (1.0 - t).reshape(-1, 1) * a + t.reshape(-1, 1) * b
     uniq = np.unique(np.rint(pts).astype(int), axis=0)
     return [tuple(float(v) for v in row) for row in uniq]
+
+
+def _write_mask(path: Path, mask: np.ndarray, voxel_size_xyz=None) -> Path:
+    """A uint8 TIFF; with *voxel_size_xyz*, an ImageJ one saying so."""
+    data = np.asarray(mask, dtype=np.uint8)
+    if voxel_size_xyz is None:
+        tifffile.imwrite(path, data)
+    else:
+        x, y, z = voxel_size_xyz
+        tifffile.imwrite(
+            path, data, imagej=True, resolution=(1.0 / x, 1.0 / y),
+            metadata={"spacing": z, "unit": "um"},
+        )
+    return path
+
+
+def _tube(shape, centre_zy, radius, *, spacing_zy=(1.0, 1.0)) -> np.ndarray:
+    """A vessel along x: every voxel within *radius* um of (z, y) = *centre_zy*."""
+    zz, yy = np.mgrid[0:shape[0], 0:shape[1]].astype(float)
+    disc = ((zz - centre_zy[0]) * spacing_zy[0]) ** 2 + (
+        (yy - centre_zy[1]) * spacing_zy[1]
+    ) ** 2 <= radius**2
+    return np.repeat(disc[:, :, None], shape[2], axis=2)
+
+
+def _rod_graph(z, y, x0, x1, branch_order, *, spacing_zyx=(1.0, 1.0, 1.0), first_node=0, **data):
+    """One edge along x through voxels (z, y, x0..x1), positions in microns."""
+    spacing = np.asarray(spacing_zyx, dtype=float)
+    points = [np.array([z, y, x], dtype=float) * spacing for x in range(x0, x1 + 1)]
+    G = nx.MultiGraph()
+    G.add_node(first_node, pos=points[0])
+    G.add_node(first_node + 1, pos=points[-1])
+    G.add_edge(
+        first_node, first_node + 1,
+        voxels=[tuple(p) for p in points], branch_order=branch_order, **data,
+    )
+    return G
+
+
+def _measure(tmp_path, cells, G, *, vessels=None, vessel_array=None, voxel_size_xyz=(1.0, 1.0, 1.0),
+             cell_voxel_size_xyz=None, **kwargs):
+    """Records for *cells* against *vessels* (written to disk), *vessel_array*
+    (handed over as the pipeline does), or neither (the graph's tubes)."""
+    stem = f"case{len(list(tmp_path.glob('*.tif')))}"
+    cell_path = _write_mask(tmp_path / f"{stem}_cells.tif", cells, cell_voxel_size_xyz)
+    vessel_path = None
+    if vessels is not None:
+        vessel_path = _write_mask(tmp_path / f"{stem}_vessels.tif", vessels, cell_voxel_size_xyz)
+    return dist3d._run_3d_measurement_records(
+        graph=G,
+        cell_mask_path=cell_path,
+        voxel_size_xyz=voxel_size_xyz,
+        vessel_mask_path=vessel_path,
+        vessel_mask=vessel_array,
+        cell_mask_h5_dataset_name=None,
+        vessel_mask_h5_dataset_name=None,
+        connectivity=3,
+        axis_order="zyx",
+        voxel_size_override_xyz=kwargs.pop("voxel_size_override_xyz", None),
+        voxel_size_policy=kwargs.pop("voxel_size_policy", "auto"),
+        use_memmap=False,
+        memmap_directory=None,
+        disk_backed=[],
+    )
+
+
+# --- the two-cell case, against numbers counted by hand ------------------------
 
 
 def _build_synthetic_case(
@@ -62,7 +132,6 @@ def _build_synthetic_case(
         voxels=_line_voxels((2.0, 2.0, 5.0), (2.0, 2.0, 13.0)),
         branch_order="B01",
         length=8.0,
-        weight=8.0,
     )
     G.add_edge(
         2,
@@ -70,9 +139,78 @@ def _build_synthetic_case(
         voxels=_line_voxels((12.0, 12.0, 2.0), (12.0, 12.0, 10.0)),
         branch_order="Art1",
         length=8.0,
-        weight=8.0,
     )
     return cell_path, vessel_path, G, cell_mask, vessel_mask
+
+
+#: The two cells, counted by hand. Each lies one empty voxel from its trunk
+#: along x (gap 1 um); its centroid sits on the trunk's line in z and y, 2.5
+#: voxels from the nearest trunk voxel's centre along x (gap 2 um).
+_EXPECTED_DETAILS = [
+    {
+        "Object ID": "1", "Object Name": "Object_0001", "Voxel Count": "8",
+        "Centroid Z (voxel)": "2.5", "Centroid Y (voxel)": "2.5", "Centroid X (voxel)": "2.5",
+        "Centroid Z (microns)": "2.5", "Centroid Y (microns)": "2.5", "Centroid X (microns)": "2.5",
+        "Vessel Contact": "separate", "Vessel Overlap Voxel Count": "0",
+        "Edge-to-Vessel Distance (microns)": "1",
+        "Edge-to-Vessel Nearest Coordinate (z,y,x microns)": "(2, 2, 5)",
+        "Edge-to-Vessel Nearest Graph Edge Label ID": "1",
+        "Edge-to-Vessel Nearest Branch Order": "B01",
+        "Centroid-to-Vessel Distance (microns)": "2",
+        "Delta Distance (Centroid-Edge) (microns)": "1",
+        "Centroid-to-Vessel Nearest Coordinate (z,y,x microns)": "(2, 2, 5)",
+        "Centroid-to-Vessel Nearest Graph Edge Label ID": "1",
+        "Centroid-to-Vessel Nearest Branch Order": "B01",
+    },
+    {
+        "Object ID": "2", "Object Name": "Object_0002", "Voxel Count": "8",
+        "Centroid Z (voxel)": "11.5", "Centroid Y (voxel)": "11.5", "Centroid X (voxel)": "12.5",
+        "Centroid Z (microns)": "11.5", "Centroid Y (microns)": "11.5", "Centroid X (microns)": "12.5",
+        "Vessel Contact": "separate", "Vessel Overlap Voxel Count": "0",
+        "Edge-to-Vessel Distance (microns)": "1",
+        "Edge-to-Vessel Nearest Coordinate (z,y,x microns)": "(12, 12, 10)",
+        "Edge-to-Vessel Nearest Graph Edge Label ID": "2",
+        "Edge-to-Vessel Nearest Branch Order": "Art1",
+        "Centroid-to-Vessel Distance (microns)": "2",
+        "Delta Distance (Centroid-Edge) (microns)": "1",
+        "Centroid-to-Vessel Nearest Coordinate (z,y,x microns)": "(12, 12, 10)",
+        "Centroid-to-Vessel Nearest Graph Edge Label ID": "2",
+        "Centroid-to-Vessel Nearest Branch Order": "Art1",
+    },
+]
+
+_EXPECTED_SUMMARY = [
+    ["Overall", "edge_to_vessel", "2", "1", "1", "0", "1", "1", "1", "1", "0"],
+    ["Overall", "centroid_to_vessel", "2", "2", "2", "0", "2", "2", "1", "1", "0"],
+    ["Art1", "edge_to_vessel", "1", "1", "1", "0", "1", "1", "1", "1", "0"],
+    ["B01", "edge_to_vessel", "1", "1", "1", "0", "1", "1", "1", "1", "0"],
+    ["Art1", "centroid_to_vessel", "1", "2", "2", "0", "2", "2", "1", "1", "0"],
+    ["B01", "centroid_to_vessel", "1", "2", "2", "0", "2", "2", "1", "1", "0"],
+]
+
+
+def test_run_3d_measurement_to_cell_mask_writes_the_hand_counted_csvs(tmp_path: Path) -> None:
+    cell_path, vessel_path, G, _cell_mask, _vessel_mask = _build_synthetic_case(tmp_path)
+
+    result = dist3d.run_3d_measurement_to_cell_mask(
+        graph=G,
+        cell_mask_path=cell_path,
+        vessel_mask_path=vessel_path,
+        output_dir=tmp_path,
+        image_stem="synthetic_cells",
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+    )
+
+    assert result["object_count"] == 2
+    with Path(result["details_csv_path"]).open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert [{k: row[k] for k in expected} for row, expected in zip(rows, _EXPECTED_DETAILS)] == (
+        _EXPECTED_DETAILS
+    )
+    assert len(rows) == 2
+    with Path(result["summary_csv_path"]).open(newline="", encoding="utf-8") as f:
+        summary = list(csv.reader(f))
+    assert summary[1:] == _EXPECTED_SUMMARY
 
 
 def _build_microglia_like_synthetic_case(
@@ -113,7 +251,6 @@ def _build_microglia_like_synthetic_case(
         voxels=_line_voxels((6.0, 6.0, 16.0), (6.0, 6.0, 25.0)),
         branch_order="Ven1",
         length=9.0,
-        weight=9.0,
     )
     G.add_edge(
         2,
@@ -121,226 +258,440 @@ def _build_microglia_like_synthetic_case(
         voxels=_line_voxels((20.0, 20.0, 4.0), (20.0, 20.0, 13.0)),
         branch_order="B02",
         length=9.0,
-        weight=9.0,
     )
     return cell_path, vessel_path, G, cell_mask, vessel_mask
 
 
-def _copy_csv_as_ground_truth(
-    *,
-    source_csv: Path,
-    ground_truth_csv: Path,
-) -> Path:
-    """Copy a generated CSV into a deterministic ground-truth artifact."""
-    with source_csv.open("r", newline="", encoding="utf-8") as src_f:
-        reader = list(csv.reader(src_f))
-    ground_truth_csv.parent.mkdir(parents=True, exist_ok=True)
-    with ground_truth_csv.open("w", newline="", encoding="utf-8") as dst_f:
-        writer = csv.writer(dst_f)
-        writer.writerows(reader)
-    return ground_truth_csv
+def test_microglia_like_cells_measure_from_their_processes(tmp_path: Path) -> None:
+    """Cell 1's process ends one empty voxel short of its vessel; cell 2's
+    process runs two voxels into its vessel (x = 12, 13)."""
+    cell_path, vessel_path, G, _cell_mask, _vessel_mask = _build_microglia_like_synthetic_case(
+        tmp_path
+    )
+
+    result = dist3d.run_3d_measurement_to_cell_mask(
+        graph=G,
+        cell_mask_path=cell_path,
+        vessel_mask_path=vessel_path,
+        output_dir=tmp_path,
+        image_stem="synthetic_microglia_like_cells",
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+    )
+
+    with Path(result["details_csv_path"]).open(newline="", encoding="utf-8") as f:
+        rows = {row["Object ID"]: row for row in csv.DictReader(f)}
+    assert rows["1"]["Edge-to-Vessel Distance (microns)"] == "1"
+    assert rows["1"]["Vessel Contact"] == "separate"
+    assert rows["1"]["Edge-to-Vessel Nearest Coordinate (z,y,x microns)"] == "(6, 6, 16)"
+    assert rows["1"]["Edge-to-Vessel Nearest Branch Order"] == "Ven1"
+    assert rows["2"]["Edge-to-Vessel Distance (microns)"] == "0"
+    assert rows["2"]["Vessel Contact"] == "overlapping"
+    assert rows["2"]["Vessel Overlap Voxel Count"] == "2"
+    assert rows["2"]["Edge-to-Vessel Nearest Branch Order"] == "B02"
+    # The soma is far from either vessel; its centroid is no nearer than its process.
+    for row in rows.values():
+        assert float(row["Centroid-to-Vessel Distance (microns)"]) > float(
+            row["Edge-to-Vessel Distance (microns)"]
+        )
 
 
-def _write_precalculated_ground_truth_csvs(
-    *,
-    output_dir: Path,
-    image_stem: str = "synthetic_cells",
-) -> tuple[Path, Path]:
-    """Write deterministic ground-truth CSVs for this synthetic setup."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    details_gt = output_dir / f"{image_stem}_cell_to_vessel_3d_dual_distances_ground_truth.csv"
-    summary_gt = output_dir / f"{image_stem}_cell_to_vessel_3d_dual_distances_summary_ground_truth.csv"
+# --- the gap and the contact ---------------------------------------------------
 
-    d_cent = float(np.sqrt(6.75))
-    delta = d_cent - 2.0
 
-    with details_gt.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "Object ID",
-                "Object Name",
-                "Voxel Count",
-                "Centroid Z (voxel)",
-                "Centroid Y (voxel)",
-                "Centroid X (voxel)",
-                "Edge-to-Vessel Distance (microns)",
-                "Edge-to-Vessel Nearest Z (microns)",
-                "Edge-to-Vessel Nearest Y (microns)",
-                "Edge-to-Vessel Nearest X (microns)",
-                "Edge-to-Vessel Nearest Coordinate (z,y,x microns)",
-                "Edge-to-Vessel Nearest Graph Edge Label ID",
-                "Edge-to-Vessel Nearest Branch Order",
-                "Centroid-to-Vessel Distance (microns)",
-                "Delta Distance (Centroid-Edge) (microns)",
-                "Centroid-to-Vessel Nearest Z (microns)",
-                "Centroid-to-Vessel Nearest Y (microns)",
-                "Centroid-to-Vessel Nearest X (microns)",
-                "Centroid-to-Vessel Nearest Coordinate (z,y,x microns)",
-                "Centroid-to-Vessel Nearest Graph Edge Label ID",
-                "Centroid-to-Vessel Nearest Branch Order",
-            ]
-        )
-        writer.writerow(
-            [
-                1,
-                "Object_0001",
-                8,
-                "2.5",
-                "2.5",
-                "2.5",
-                "2",
-                "2",
-                "2",
-                "5",
-                "(2, 2, 5)",
-                1,
-                "B01",
-                f"{d_cent:.6g}",
-                f"{delta:.6g}",
-                "2",
-                "2",
-                "5",
-                "(2, 2, 5)",
-                1,
-                "B01",
-            ]
-        )
-        writer.writerow(
-            [
-                2,
-                "Object_0002",
-                8,
-                "11.5",
-                "11.5",
-                "12.5",
-                "2",
-                "12",
-                "12",
-                "10",
-                "(12, 12, 10)",
-                2,
-                "Art1",
-                f"{d_cent:.6g}",
-                f"{delta:.6g}",
-                "12",
-                "12",
-                "10",
-                "(12, 12, 10)",
-                2,
-                "Art1",
-            ]
-        )
+def test_a_cell_touching_a_vessel_is_0_um_from_it(tmp_path):
+    """Regression: voxel centre to voxel centre, a touching cell read one
+    voxel step, and along z the z step."""
+    shape = (41, 41, 40)
+    vessels = _tube(shape, (20, 20), 8.0)
+    G = _rod_graph(20, 20, 0, 39, "Art1")
+    cells = np.zeros(shape, dtype=bool)
+    cells[20, 29:32, 18:22] = True  # the wall is at y = 28
 
-    with summary_gt.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "Group",
-                "Measurement Type",
-                "Object Count",
-                "Mean Distance (microns)",
-                "Median Distance (microns)",
-                "Std Distance (microns)",
-                "Min Distance (microns)",
-                "Max Distance (microns)",
-                "Mean Delta (Centroid-Edge) (microns)",
-                "Median Delta (Centroid-Edge) (microns)",
-                "Std Delta (Centroid-Edge) (microns)",
-            ]
-        )
-        writer.writerow(
-            [
-                "Overall",
-                "edge_to_vessel",
-                2,
-                "2",
-                "2",
-                "0",
-                "2",
-                "2",
-                f"{delta:.6g}",
-                f"{delta:.6g}",
-                "0",
-            ]
-        )
-        writer.writerow(
-            [
-                "Overall",
-                "centroid_to_vessel",
-                2,
-                f"{d_cent:.6g}",
-                f"{d_cent:.6g}",
-                "0",
-                f"{d_cent:.6g}",
-                f"{d_cent:.6g}",
-                f"{delta:.6g}",
-                f"{delta:.6g}",
-                "0",
-            ]
-        )
-        writer.writerow(
-            [
-                "Art1",
-                "edge_to_vessel",
-                1,
-                "2",
-                "2",
-                "0",
-                "2",
-                "2",
-                f"{delta:.6g}",
-                f"{delta:.6g}",
-                "0",
-            ]
-        )
-        writer.writerow(
-            [
-                "B01",
-                "edge_to_vessel",
-                1,
-                "2",
-                "2",
-                "0",
-                "2",
-                "2",
-                f"{delta:.6g}",
-                f"{delta:.6g}",
-                "0",
-            ]
-        )
-        writer.writerow(
-            [
-                "Art1",
-                "centroid_to_vessel",
-                1,
-                f"{d_cent:.6g}",
-                f"{d_cent:.6g}",
-                "0",
-                f"{d_cent:.6g}",
-                f"{d_cent:.6g}",
-                f"{delta:.6g}",
-                f"{delta:.6g}",
-                "0",
-            ]
-        )
-        writer.writerow(
-            [
-                "B01",
-                "centroid_to_vessel",
-                1,
-                f"{d_cent:.6g}",
-                f"{d_cent:.6g}",
-                "0",
-                f"{d_cent:.6g}",
-                f"{d_cent:.6g}",
-                f"{delta:.6g}",
-                f"{delta:.6g}",
-                "0",
-            ]
+    (record,) = _measure(tmp_path, cells, G, vessels=vessels)
+
+    assert record.edge_to_vessel_distance_microns == 0.0
+    assert record.vessel_contact == "touching"
+    assert record.vessel_overlap_voxel_count == 0
+    assert (record.edge_to_vessel_nearest_z, record.edge_to_vessel_nearest_y) == (20.0, 28.0)
+    # The centroid (y = 30) is 1.5 um past the wall voxel's far face.
+    assert record.centroid_to_vessel_distance_microns == pytest.approx(1.5)
+
+
+def test_the_gap_counts_the_empty_voxels_between_with_anisotropic_spacing(tmp_path):
+    """z is 2 um, y and x 0.5 um: two empty slices between are 4 um, and a cell
+    on the next slice touches."""
+    shape = (20, 20, 20)
+    vessels = np.zeros(shape, dtype=bool)
+    vessels[5, 10, 2:18] = True
+    G = _rod_graph(5, 10, 2, 17, "B01", spacing_zyx=(2.0, 0.5, 0.5))
+    voxel_size_xyz = (0.5, 0.5, 2.0)
+
+    above = np.zeros(shape, dtype=bool)
+    above[8:10, 10, 9:11] = True
+    (record,) = _measure(tmp_path, above, G, vessels=vessels, voxel_size_xyz=voxel_size_xyz)
+    assert record.edge_to_vessel_distance_microns == pytest.approx(4.0)
+    # Centroid z = 8.5, 3 slices past the vessel voxel's face at z = 5.5.
+    assert record.centroid_to_vessel_distance_microns == pytest.approx(6.0)
+    assert record.centroid_z_microns == pytest.approx(17.0)
+
+    beside = np.zeros(shape, dtype=bool)
+    beside[5, 14:16, 9:11] = True  # y 11, 12, 13 empty
+    (record,) = _measure(tmp_path, beside, G, vessels=vessels, voxel_size_xyz=voxel_size_xyz)
+    assert record.edge_to_vessel_distance_microns == pytest.approx(1.5)
+
+    on_the_next_slice = np.zeros(shape, dtype=bool)
+    on_the_next_slice[6:8, 10, 9:11] = True
+    (record,) = _measure(tmp_path, on_the_next_slice, G, vessels=vessels, voxel_size_xyz=voxel_size_xyz)
+    assert record.edge_to_vessel_distance_microns == 0.0
+    assert record.vessel_contact == "touching"
+
+
+def test_a_cell_overlapping_or_inside_a_vessel_is_0_um_from_it_and_says_so(tmp_path):
+    shape = (41, 41, 40)
+    vessels = _tube(shape, (20, 20), 8.0)
+    G = _rod_graph(20, 20, 0, 39, "Art1")
+
+    inside = np.zeros(shape, dtype=bool)
+    inside[20, 22:26, 18:22] = True
+    (record,) = _measure(tmp_path, inside, G, vessels=vessels)
+    assert record.edge_to_vessel_distance_microns == 0.0
+    assert record.centroid_to_vessel_distance_microns == 0.0
+    assert record.vessel_contact == "inside"
+    assert record.vessel_overlap_voxel_count == record.voxel_count == 16
+    assert record.edge_to_vessel_nearest_branch_order == "Art1"
+
+    straddling = np.zeros(shape, dtype=bool)
+    straddling[20, 26:31, 18:22] = True  # y 26-28 in the vessel, 29-30 out
+    (record,) = _measure(tmp_path, straddling, G, vessels=vessels)
+    assert record.edge_to_vessel_distance_microns == 0.0
+    assert record.vessel_contact == "overlapping"
+    assert record.vessel_overlap_voxel_count == 12
+
+
+# --- which vessel --------------------------------------------------------------
+
+
+def _arteriole_with_a_capillary_against_its_wall():
+    """A radius-8 arteriole along x, and a one-voxel capillary running beside
+    it just outside its wall, diagonally above (z, y) = (26, 26)."""
+    shape = (41, 41, 40)
+    capillary = np.zeros(shape, dtype=bool)
+    capillary[26, 26, :] = True
+    vessels = _tube(shape, (20, 20), 8.0) | capillary
+    G = nx.compose(
+        _rod_graph(20, 20, 0, 39, "Art1"),
+        _rod_graph(26, 26, 0, 39, "B05", first_node=10),
+    )
+    return shape, vessels, G
+
+
+def test_a_cell_against_a_wide_vessels_wall_is_named_for_it_not_a_capillary_running_past(
+    tmp_path,
+):
+    """Regression: the wall voxel nearest the cell is 8 um from the arteriole's
+    centreline and 6.3 um from the capillary's, so the nearest centreline
+    named the capillary."""
+    shape, vessels, G = _arteriole_with_a_capillary_against_its_wall()
+    cells = np.zeros(shape, dtype=bool)
+    cells[20, 29:32, 18:22] = True
+
+    (record,) = _measure(tmp_path, cells, G, vessels=vessels)
+
+    assert (record.edge_to_vessel_nearest_z, record.edge_to_vessel_nearest_y) == (20.0, 28.0)
+    assert record.edge_to_vessel_nearest_branch_order == "Art1"
+    assert record.centroid_to_vessel_nearest_branch_order == "Art1"
+
+
+def test_a_cell_by_the_capillary_is_named_for_the_capillary(tmp_path):
+    shape, vessels, G = _arteriole_with_a_capillary_against_its_wall()
+    cells = np.zeros(shape, dtype=bool)
+    cells[28:31, 28:31, 18:22] = True
+
+    (record,) = _measure(tmp_path, cells, G, vessels=vessels)
+
+    assert record.edge_to_vessel_nearest_branch_order == "B05"
+    assert record.edge_to_vessel_distance_microns == pytest.approx(np.sqrt(2.0))
+
+
+def test_a_thick_vessel_bridge_is_never_the_vessel_named(tmp_path):
+    """A bridge runs from the wall to the centreline inside the lumen; its end
+    on the wall is nearer the wall than any centreline, and it has no branch
+    order."""
+    shape = (33, 33, 40)
+    vessels = _tube(shape, (16, 16), 6.0)
+    G = _rod_graph(16, 16, 0, 39, "Art1")
+    G.add_node(100, pos=np.array([16.0, 22.0, 20.0]))
+    G.add_edge(
+        100, 0, voxels=[(16.0, float(y), 20.0) for y in range(22, 15, -1)],
+        **{IS_ZERO_RESISTANCE: True},
+    )
+    cells = np.zeros(shape, dtype=bool)
+    cells[16, 23:26, 20] = True  # against the wall where the bridge ends
+
+    (record,) = _measure(tmp_path, cells, G, vessels=vessels)
+
+    assert record.edge_to_vessel_distance_microns == 0.0
+    assert (record.edge_to_vessel_nearest_y, record.edge_to_vessel_nearest_x) == (22.0, 20.0)
+    assert record.edge_to_vessel_nearest_branch_order == "Art1"
+
+
+# --- what the vessels are ------------------------------------------------------
+
+
+def test_without_a_vessel_mask_the_vessels_are_tubes_of_their_own_diameter(tmp_path):
+    """Regression: drawn from the graph, the vessels were their centrelines,
+    so a cell against a radius-8 vessel's wall read 9 um."""
+    shape = (41, 41, 40)
+    G = _rod_graph(20, 20, 0, 39, "Art1", diameter_um=16.0)
+    cells = np.zeros(shape, dtype=bool)
+    cells[20, 29:32, 18:22] = True
+
+    (record,) = _measure(tmp_path, cells, G)
+
+    assert record.edge_to_vessel_distance_microns == 0.0
+    assert record.vessel_contact == "touching"
+    assert record.edge_to_vessel_nearest_branch_order == "Art1"
+
+
+def test_a_vessel_without_a_diameter_is_its_centreline_and_the_log_says_so(tmp_path, caplog):
+    shape = (41, 41, 40)
+    G = _rod_graph(20, 20, 0, 39, "Art1")
+    cells = np.zeros(shape, dtype=bool)
+    cells[20, 29:32, 18:22] = True
+
+    with caplog.at_level(logging.WARNING, logger=dist3d.__name__):
+        (record,) = _measure(tmp_path, cells, G)
+
+    assert record.edge_to_vessel_distance_microns == pytest.approx(8.0)
+    assert "1 vessel(s) have no diameter_um" in caplog.text
+
+
+def test_a_vessel_mask_handed_over_as_an_array_is_measured_as_given(tmp_path):
+    """What the pipeline does with the run's segmentation: a 0/255 array, not
+    cut again."""
+    shape = (41, 41, 40)
+    vessels = _tube(shape, (20, 20), 8.0).astype(np.uint8) * 255
+    G = _rod_graph(20, 20, 0, 39, "Art1")
+    cells = np.zeros(shape, dtype=bool)
+    cells[20, 33:36, 18:22] = True  # y 29-32 empty
+
+    (record,) = _measure(tmp_path, cells, G, vessel_array=vessels)
+
+    assert record.edge_to_vessel_distance_microns == pytest.approx(4.0)
+    assert record.edge_to_vessel_nearest_branch_order == "Art1"
+
+
+def test_a_vessel_array_of_another_shape_is_refused(tmp_path):
+    cells = np.zeros((10, 10, 10), dtype=bool)
+    cells[2:4, 2:4, 2:4] = True
+    with pytest.raises(ValueError, match="input image's shape"):
+        _measure(
+            tmp_path, cells, _rod_graph(5, 5, 0, 9, "B01"),
+            vessel_array=np.ones((10, 10, 11), dtype=bool),
         )
 
-    return details_gt, summary_gt
+
+# --- voxel sizes ---------------------------------------------------------------
+
+
+def _anisotropic_case():
+    shape = (20, 20, 20)
+    vessels = np.zeros(shape, dtype=bool)
+    vessels[5, 10, 2:18] = True
+    cells = np.zeros(shape, dtype=bool)
+    cells[8:10, 10, 9:11] = True
+    G = _rod_graph(5, 10, 2, 17, "B01", spacing_zyx=(2.0, 0.5, 0.5))
+    return cells, vessels, G
+
+
+def test_a_cell_mask_without_a_voxel_size_of_its_own_takes_the_runs(tmp_path):
+    """Regression: an ilastik export carries no voxel size, read as 1 um, and
+    was refused on any other run."""
+    cells, vessels, G = _anisotropic_case()
+
+    (record,) = _measure(
+        tmp_path, cells, G, vessels=vessels, voxel_size_xyz=(0.5, 0.5, 2.0),
+        cell_voxel_size_xyz=None,
+    )
+
+    assert record.edge_to_vessel_distance_microns == pytest.approx(4.0)
+
+
+def test_a_cell_mask_saying_another_voxel_size_is_refused(tmp_path):
+    cells, vessels, G = _anisotropic_case()
+    with pytest.raises(ValueError, match="cell mask's voxel size"):
+        _measure(
+            tmp_path, cells, G, vessels=vessels, voxel_size_xyz=(0.5, 0.5, 2.0),
+            cell_voxel_size_xyz=(0.8, 0.8, 3.0),
+        )
+
+
+def test_the_runs_voxel_size_override_applies_to_the_masks(tmp_path):
+    cells, vessels, G = _anisotropic_case()
+
+    (record,) = _measure(
+        tmp_path, cells, G, vessels=vessels, voxel_size_xyz=(0.5, 0.5, 2.0),
+        cell_voxel_size_xyz=(0.8, 0.8, 3.0),
+        voxel_size_override_xyz=(0.5, 0.5, 2.0), voxel_size_policy="override",
+    )
+
+    assert record.edge_to_vessel_distance_microns == pytest.approx(4.0)
+
+
+# --- the export stage ----------------------------------------------------------
+
+
+def _stage(tmp_path, **overrides):
+    """An export stage over a radius-4 vessel, the run's segmentation, with a
+    cell against its wall; the graph has its centreline and no diameters."""
+    shape = (21, 21, 30)
+    segmentation = _tube(shape, (10, 10), 4.0)
+    cells = np.zeros(shape, dtype=bool)
+    cells[10, 15:18, 10:14] = True  # the wall is at y = 14
+    settings = SCHEMA.defaults()
+    settings.update(
+        input_path=tmp_path / "seg.tif",
+        statistics=False,
+        run_haemodynamics=False,
+        vtk_export=False,
+        visualize_vtk=False,
+        visualize_results=False,
+        export_citations=False,
+        measurement_3d_to_cell_mask=True,
+        cell_mask_path=_write_mask(tmp_path / "cells.tif", cells),
+    )
+    settings.update(overrides)
+    volume = stages.SkeletonisedVolume(
+        image=segmentation.astype(np.uint8),
+        skeleton=np.zeros(shape, dtype=bool),
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0),
+        output_dir=tmp_path,
+    )
+    G = _rod_graph(10, 10, 0, 29, "Art1")
+    stages.export_results(
+        settings, stages.VesselNetwork(graph=G, volume=volume),
+        stages.HaemodynamicModel(graph=G), stages.Solution(),
+    )
+    with (tmp_path / "seg_cell_to_vessel_3d_dual_distances.csv").open(encoding="utf-8") as f:
+        (row,) = list(csv.DictReader(f))
+    return row, shape
+
+
+def test_the_export_stage_measures_to_the_runs_segmentation(tmp_path):
+    """Regression: with no vessel mask of its own the stage measured to the
+    graph's centreline, 4 um further than the wall."""
+    row, _shape = _stage(tmp_path)
+    assert row["Edge-to-Vessel Distance (microns)"] == "0"
+    assert row["Vessel Contact"] == "touching"
+    assert row["Edge-to-Vessel Nearest Branch Order"] == "Art1"
+
+
+def test_a_vessel_mask_of_its_own_takes_the_place_of_the_segmentation(tmp_path):
+    thin = _tube((21, 21, 30), (10, 10), 1.0)  # its wall at y = 11
+    row, _shape = _stage(
+        tmp_path,
+        measurement_3d_vessel_mask_path=_write_mask(tmp_path / "thin_vessels.tif", thin),
+    )
+    assert row["Edge-to-Vessel Distance (microns)"] == "3"
+
+
+# --- preflight -----------------------------------------------------------------
+
+
+def _preflight_settings(tmp_path, cell_shape=(10, 12, 14), cell_voxel_size_xyz=None, **overrides):
+    image = _write_mask(tmp_path / "image.tif", np.zeros((10, 12, 14)), (0.5, 0.5, 2.0))
+    cells = _write_mask(tmp_path / "cells.tif", np.zeros(cell_shape), cell_voxel_size_xyz)
+    settings = {
+        "measurement_3d_to_cell_mask": True,
+        "cell_mask_path": cells,
+        "input_path": image,
+        "image_axis_order": "zyx",
+        "voxel_size_override_xyz": None,
+        "voxel_size_policy": "auto",
+    }
+    settings.update(overrides)
+    return settings
+
+
+def test_preflight_passes_a_cell_mask_that_fits_the_input_image(tmp_path):
+    for voxel_size in (None, (0.5, 0.5, 2.0)):
+        report = check_cell_mask_measurement(
+            _preflight_settings(tmp_path, cell_voxel_size_xyz=voxel_size)
+        )
+        assert report.ok, report.errors
+        assert [label for label, _ in report.passed] == ["cell_mask_path"]
+
+
+def test_preflight_catches_what_would_stop_the_measurement_at_the_end_of_the_run(tmp_path):
+    report = check_cell_mask_measurement(_preflight_settings(tmp_path, cell_shape=(10, 12, 15)))
+    assert any("(10, 12, 15) voxels" in e for e in report.errors)
+
+    report = check_cell_mask_measurement(
+        _preflight_settings(tmp_path, cell_voxel_size_xyz=(0.8, 0.8, 3.0))
+    )
+    assert any("voxel size" in e and "cell_mask_path" in e for e in report.errors)
+
+    vessels = _write_mask(tmp_path / "vessels.tif", np.zeros((10, 12, 13)))
+    report = check_cell_mask_measurement(
+        _preflight_settings(tmp_path, measurement_3d_vessel_mask_path=vessels)
+    )
+    assert any(e.startswith("measurement_3d_vessel_mask_path is (10, 12, 13)") for e in report.errors)
+
+    report = check_cell_mask_measurement(
+        _preflight_settings(tmp_path, measurement_3d_vessel_mask_path=tmp_path / "gone.tif")
+    )
+    assert any(e.startswith("measurement_3d_vessel_mask_path: ") for e in report.errors)
+
+
+def _preflight_errors(tmp_path, **overrides):
+    settings = {**SCHEMA.defaults(), **_preflight_settings(tmp_path), **overrides}
+    return [e for e in preflight(settings, SCHEMA).errors if "mask" in e]
+
+
+def test_preflight_requires_a_cell_mask_but_not_a_vessel_mask_of_its_own(tmp_path):
+    """Regression: must_exist on the optional vessel mask made preflight refuse
+    every run measuring to the run's own segmentation."""
+    assert _preflight_errors(tmp_path) == []
+
+    errors = _preflight_errors(tmp_path, cell_mask_path=None)
+    assert len(errors) == 1 and "'cell_mask_path' is not set" in errors[0]
+
+
+def test_preflight_says_nothing_with_the_measurement_off(tmp_path):
+    report = check_cell_mask_measurement(
+        _preflight_settings(tmp_path, measurement_3d_to_cell_mask=False, cell_mask_path=None)
+    )
+    assert report.ok and not report.passed
+
+
+def test_preflight_runs_the_cell_mask_check(tmp_path):
+    settings = {
+        **SCHEMA.defaults(),
+        **_preflight_settings(tmp_path, cell_voxel_size_xyz=(0.8, 0.8, 3.0)),
+    }
+    report = preflight(settings, SCHEMA)
+    assert any("cell_mask_path" in e and "voxel size" in e for e in report.errors)
+
+
+# --- settings ------------------------------------------------------------------
+
+
+def test_the_reference_image_settings_are_retired_and_old_configs_still_load():
+    """The reference image only had its shape checked against the cell mask's."""
+    assert "measurement_3d_reference_image_path" not in SCHEMA.names
+    assert "measurement_3d_reference_h5_dataset_name" not in SCHEMA.names
+    resolved = SCHEMA.validate(
+        {
+            "measurement_3d_reference_image_path": "reference.tif",
+            "measurement_3d_reference_h5_dataset_name": "data",
+        }
+    )
+    assert "measurement_3d_reference_image_path" not in resolved
+    assert resolved["measurement_3d_vessel_mask_path"] is None
+
+
+# --- plots ---------------------------------------------------------------------
 
 
 def _write_3d_distances_scene_html(
@@ -519,239 +870,19 @@ def _write_3d_distances_scene_html(
     return True
 
 
-def test_run_3d_measurement_to_cell_mask_generates_csvs(tmp_path: Path) -> None:
-    cell_path, vessel_path, G, _cell_mask, _vessel_mask = _build_synthetic_case(tmp_path)
-
-    result = dist3d.run_3d_measurement_to_cell_mask(
-        graph=G,
-        cell_mask_path=cell_path,
-        vessel_mask_path=vessel_path,
-        output_dir=tmp_path,
-        image_stem="synthetic_cells",
-        voxel_size_xyz=(1.0, 1.0, 1.0),
-    )
-
-    assert result["object_count"] == 2
-    details_csv = Path(result["details_csv_path"])
-    summary_csv = Path(result["summary_csv_path"])
-    assert details_csv.exists() and details_csv.stat().st_size > 0
-    assert summary_csv.exists() and summary_csv.stat().st_size > 0
-
-    with details_csv.open("r", newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-    assert len(rows) == 2
-    edge_branch_orders = {row["Edge-to-Vessel Nearest Branch Order"] for row in rows}
-    centroid_branch_orders = {
-        row["Centroid-to-Vessel Nearest Branch Order"] for row in rows
-    }
-    assert "B01" in edge_branch_orders
-    assert "Art1" in edge_branch_orders
-    assert "B01" in centroid_branch_orders
-    assert "Art1" in centroid_branch_orders
-    for row in rows:
-        edge_d = float(row["Edge-to-Vessel Distance (microns)"])
-        centroid_d = float(row["Centroid-to-Vessel Distance (microns)"])
-        delta_d = float(row["Delta Distance (Centroid-Edge) (microns)"])
-        assert row["Edge-to-Vessel Nearest Coordinate (z,y,x microns)"].startswith("(")
-        assert row["Centroid-to-Vessel Nearest Coordinate (z,y,x microns)"].startswith("(")
-        assert edge_d >= 0.0
-        assert centroid_d >= 0.0
-        # CSV exports use compact formatting (~6 significant digits), so compare
-        # with a tolerance that reflects text-rounding rather than raw float math.
-        assert delta_d == pytest.approx(centroid_d - edge_d, abs=1e-5)
-        # For compact objects, boundary-based minimum should not exceed centroid minimum.
-        assert edge_d <= centroid_d + 1e-12
-
-    with summary_csv.open("r", newline="", encoding="utf-8") as f:
-        summary_rows = list(csv.DictReader(f))
-    assert summary_rows
-    assert summary_rows[0]["Group"] == "Overall"
-    measurement_types = {row["Measurement Type"] for row in summary_rows}
-    assert "edge_to_vessel" in measurement_types
-    assert "centroid_to_vessel" in measurement_types
-    for row in summary_rows:
-        assert "Mean Delta (Centroid-Edge) (microns)" in row
-        assert "Median Delta (Centroid-Edge) (microns)" in row
-        assert "Std Delta (Centroid-Edge) (microns)" in row
-
-    # Keep this test self-contained and writable on all platforms.
-    demo_output_dir = tmp_path / "demo_outputs"
-    demo_output_dir.mkdir(parents=True, exist_ok=True)
-    demo_result = dist3d.run_3d_measurement_to_cell_mask(
-        graph=G,
-        cell_mask_path=cell_path,
-        vessel_mask_path=vessel_path,
-        output_dir=demo_output_dir,
-        image_stem="synthetic_cells",
-        voxel_size_xyz=(1.0, 1.0, 1.0),
-    )
-    demo_details = Path(demo_result["details_csv_path"])
-    demo_summary = Path(demo_result["summary_csv_path"])
-    assert demo_details.exists() and demo_details.stat().st_size > 0
-    assert demo_summary.exists() and demo_summary.stat().st_size > 0
-
-    gt_details, gt_summary = _write_precalculated_ground_truth_csvs(
-        output_dir=demo_output_dir,
-        image_stem="synthetic_cells",
-    )
-    assert gt_details.exists() and gt_details.stat().st_size > 0
-    assert gt_summary.exists() and gt_summary.stat().st_size > 0
-
-
 @pytest.mark.plotting
-def test_3d_distances_rotatable_html_scene(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "build", [_build_synthetic_case, _build_microglia_like_synthetic_case], ids=["cells", "microglia"]
+)
+def test_3d_distances_rotatable_html_scene(tmp_path: Path, build) -> None:
     pytest.importorskip("plotly.graph_objects")
-    cell_path, vessel_path, G, cell_mask, vessel_mask = _build_synthetic_case(tmp_path)
+    _cell_path, _vessel_path, G, cell_mask, vessel_mask = build(tmp_path)
 
-    # Run measurement first so labels and CSV outputs are generated in same flow.
-    result = dist3d.run_3d_measurement_to_cell_mask(
-        graph=G,
-        cell_mask_path=cell_path,
-        vessel_mask_path=vessel_path,
-        output_dir=tmp_path,
-        image_stem="synthetic_cells",
-        voxel_size_xyz=(1.0, 1.0, 1.0),
-    )
-    assert result["object_count"] == 2
-
-    html_tmp = tmp_path / "synthetic_cells_vessel_distances_3d.html"
+    html = tmp_path / "vessel_distances_3d.html"
     assert _write_3d_distances_scene_html(
         cell_mask=cell_mask.astype(bool),
         vessel_mask=vessel_mask.astype(bool),
         graph=G,
-        output_html_path=html_tmp,
+        output_html_path=html,
     )
-    assert html_tmp.is_file() and html_tmp.stat().st_size > 2000
-
-    DEMO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    demo_html = DEMO_OUTPUT_DIR / "synthetic_cells_vessel_distances_3d.html"
-    assert _write_3d_distances_scene_html(
-        cell_mask=cell_mask.astype(bool),
-        vessel_mask=vessel_mask.astype(bool),
-        graph=G,
-        output_html_path=demo_html,
-    )
-
-
-def test_run_3d_measurement_to_microglia_like_mask_generates_csvs(tmp_path: Path) -> None:
-    (
-        cell_path,
-        vessel_path,
-        G,
-        _cell_mask,
-        _vessel_mask,
-    ) = _build_microglia_like_synthetic_case(tmp_path)
-
-    result = dist3d.run_3d_measurement_to_cell_mask(
-        graph=G,
-        cell_mask_path=cell_path,
-        vessel_mask_path=vessel_path,
-        output_dir=tmp_path,
-        image_stem="synthetic_microglia_like_cells",
-        voxel_size_xyz=(1.0, 1.0, 1.0),
-    )
-
-    assert result["object_count"] == 2
-    details_csv = Path(result["details_csv_path"])
-    summary_csv = Path(result["summary_csv_path"])
-    assert details_csv.exists() and details_csv.stat().st_size > 0
-    assert summary_csv.exists() and summary_csv.stat().st_size > 0
-
-    with details_csv.open("r", newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
-    assert len(rows) == 2
-    edge_branch_orders = {row["Edge-to-Vessel Nearest Branch Order"] for row in rows}
-    centroid_branch_orders = {
-        row["Centroid-to-Vessel Nearest Branch Order"] for row in rows
-    }
-    assert "Ven1" in edge_branch_orders
-    assert "B02" in edge_branch_orders
-    assert "Ven1" in centroid_branch_orders
-    assert "B02" in centroid_branch_orders
-
-    for row in rows:
-        edge_d = float(row["Edge-to-Vessel Distance (microns)"])
-        centroid_d = float(row["Centroid-to-Vessel Distance (microns)"])
-        delta_d = float(row["Delta Distance (Centroid-Edge) (microns)"])
-        assert row["Edge-to-Vessel Nearest Coordinate (z,y,x microns)"].startswith("(")
-        assert row["Centroid-to-Vessel Nearest Coordinate (z,y,x microns)"].startswith("(")
-        assert edge_d >= 0.0
-        assert centroid_d >= 0.0
-        assert delta_d == pytest.approx(centroid_d - edge_d, abs=1e-5)
-        assert edge_d <= centroid_d + 1e-12
-
-    with summary_csv.open("r", newline="", encoding="utf-8") as f:
-        summary_rows = list(csv.DictReader(f))
-    assert summary_rows
-    measurement_types = {row["Measurement Type"] for row in summary_rows}
-    assert "edge_to_vessel" in measurement_types
-    assert "centroid_to_vessel" in measurement_types
-
-    DEMO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    demo_result = dist3d.run_3d_measurement_to_cell_mask(
-        graph=G,
-        cell_mask_path=cell_path,
-        vessel_mask_path=vessel_path,
-        output_dir=DEMO_OUTPUT_DIR,
-        image_stem="synthetic_microglia_like_cells",
-        voxel_size_xyz=(1.0, 1.0, 1.0),
-    )
-    demo_details = Path(demo_result["details_csv_path"])
-    demo_summary = Path(demo_result["summary_csv_path"])
-    assert demo_details.exists() and demo_details.stat().st_size > 0
-    assert demo_summary.exists() and demo_summary.stat().st_size > 0
-
-    gt_details = _copy_csv_as_ground_truth(
-        source_csv=demo_details,
-        ground_truth_csv=DEMO_OUTPUT_DIR
-        / "synthetic_microglia_like_cells_cell_to_vessel_3d_dual_distances_ground_truth.csv",
-    )
-    gt_summary = _copy_csv_as_ground_truth(
-        source_csv=demo_summary,
-        ground_truth_csv=DEMO_OUTPUT_DIR
-        / "synthetic_microglia_like_cells_cell_to_vessel_3d_dual_distances_summary_ground_truth.csv",
-    )
-    assert gt_details.exists() and gt_details.stat().st_size > 0
-    assert gt_summary.exists() and gt_summary.stat().st_size > 0
-
-
-@pytest.mark.plotting
-def test_microglia_like_3d_distances_rotatable_html_scene(tmp_path: Path) -> None:
-    pytest.importorskip("plotly.graph_objects")
-    cell_path, vessel_path, G, cell_mask, vessel_mask = _build_microglia_like_synthetic_case(
-        tmp_path
-    )
-
-    result = dist3d.run_3d_measurement_to_cell_mask(
-        graph=G,
-        cell_mask_path=cell_path,
-        vessel_mask_path=vessel_path,
-        output_dir=tmp_path,
-        image_stem="synthetic_microglia_like_cells",
-        voxel_size_xyz=(1.0, 1.0, 1.0),
-    )
-    assert result["object_count"] == 2
-
-    html_tmp = tmp_path / "synthetic_microglia_like_cells_vessel_distances_3d.html"
-    assert _write_3d_distances_scene_html(
-        cell_mask=cell_mask.astype(bool),
-        vessel_mask=vessel_mask.astype(bool),
-        graph=G,
-        output_html_path=html_tmp,
-        title="Synthetic microglia-like 3D distances: cells to vessels",
-    )
-    assert html_tmp.is_file() and html_tmp.stat().st_size > 2000
-
-    DEMO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    demo_html = DEMO_OUTPUT_DIR / "synthetic_microglia_like_cells_vessel_distances_3d.html"
-    assert _write_3d_distances_scene_html(
-        cell_mask=cell_mask.astype(bool),
-        vessel_mask=vessel_mask.astype(bool),
-        graph=G,
-        output_html_path=demo_html,
-        title="Synthetic microglia-like 3D distances: cells to vessels",
-    )
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q"]))
+    assert html.is_file() and html.stat().st_size > 2000

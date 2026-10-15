@@ -120,7 +120,6 @@ HIDE_WHEN_UNMET_PARENTS = frozenset(
 H5_DATASET_SETTINGS: dict[str, str] = {
     "cell_mask_h5_dataset_name": "cell_mask_path",
     "measurement_3d_vessel_mask_h5_dataset_name": "measurement_3d_vessel_mask_path",
-    "measurement_3d_reference_h5_dataset_name": "measurement_3d_reference_image_path",
     "pericyte_mask_h5_dataset_name": "pericyte_mask_path",
 }
 
@@ -453,10 +452,8 @@ def visible_statistics_settings(
     Parent toggles (``statistics``, ``measurement_3d_to_cell_mask``) stay;
     gated children follow their ``requires`` chains. Under
     ``measurement_3d_to_cell_mask`` that means ``cell_mask_path``,
-    ``cell_mask_h5_dataset_name``, ``measurement_3d_vessel_mask_path``,
-    ``measurement_3d_vessel_mask_h5_dataset_name``,
-    ``measurement_3d_reference_image_path``, and
-    ``measurement_3d_reference_h5_dataset_name``. Connectivity/Network
+    ``cell_mask_h5_dataset_name``, ``measurement_3d_vessel_mask_path`` and
+    ``measurement_3d_vessel_mask_h5_dataset_name``. Connectivity/Network
     Analysis (every graph-theoretic connectivity measure: bridges, loops,
     centrality, community structure) nests two levels under ``statistics``
     then its own ``statistics_network_analysis`` toggle, the same pattern

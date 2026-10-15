@@ -915,7 +915,24 @@ are only caught locally.
   default level 9 took 12.6 s on one E14.5-sized binary mask, against 0.44 s at level 1. A whole E14.5
   run (1 GB pickled, 2026-10-15) went from 297 s with the panel frozen to 8 s in the background, and
   its file from 80 to 104 MB. Level 6 would take 27 s and save 18 MB of that, and level 3 9 s to save 8 MB.
-- **`statistics/three_dim_distances.py`** — cell-to-vessel distances.
+- **`statistics/three_dim_distances.py`** — cell-to-vessel distances (`measurement_3d_to_cell_mask`,
+  run last in `export_results`). Each object in the cell mask gets its gap to the vessels, and its
+  centroid's: the distance between the two as voxelised volumes, each voxel the box it fills, so a
+  cell touching a vessel is 0 um from it (voxel centre to centre it read one voxel step, the z step
+  along z), with `vessel_contact` saying `separate` / `touching` / `overlapping` / `inside`. The
+  vessels are `measurement_3d_vessel_mask_path` if set, else the run's own segmentation
+  (`network.volume.image`), and only without either the graph's tubes of each edge's `diameter_um`
+  -- until 2026-10-15 the default was the graph's centrelines, a vessel radius too far. The vessel
+  named is the one whose lumen the nearest vessel point lies in (`_VesselIdentity`: least
+  `|p - c| - r(c)` over centreline voxels, `r` the lumen radius there), never a bridge -- the
+  nearest centreline named a capillary running past a wide vessel's wall. Each mask's voxel size is
+  resolved as the vessel masks' are (none of its own takes the run's), and preflight checks shape
+  and voxel size from the TIFF headers (`checks.check_cell_mask_measurement`), since a mismatch
+  used to stop the run at its end. The vessel mask of its own is optional, so it is not
+  `must_exist` (which made preflight demand it on every run measuring to the segmentation); the
+  same check reports one set but missing. `measurement_3d_reference_image_path` (it only checked a shape)
+  is retired. Objects are read from their bounding boxes in both paths (in RAM, a whole-volume
+  `labels == id` per object took 16.5 s for 397 cells on 4 M voxels; now 0.6 s).
 - **`statistics/tissue_volume.py`** — `measure_tissue_volume` (`measure_tissue_volume` on the
   Additional measurements tab, off by default): the tissue in the raw image (`tissue_raw_tiff_path`,
   else the run's raw image, `raw_image_path`) as a closed surface mesh, so vessel density can divide by tissue rather

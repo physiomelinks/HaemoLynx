@@ -629,4 +629,4 @@ def test_the_tissue_rows_sit_on_additional_measurements_under_their_own_toggle()
 def test_the_3d_distance_block_still_ends_right_before_statistics():
     names = SCHEMA.names
     assert names.index("measure_tissue_volume") > names.index("statistics")
-    assert names[names.index("statistics") - 1] == "measurement_3d_reference_h5_dataset_name"
+    assert names[names.index("statistics") - 1] == "measurement_3d_vessel_mask_h5_dataset_name"

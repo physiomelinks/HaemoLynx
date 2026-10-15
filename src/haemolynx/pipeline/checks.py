@@ -627,6 +627,102 @@ def check_tissue_volume_image(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
+def _tiff_header(path: Any, axis_order: str) -> tuple[tuple[int, ...], tuple, dict] | None:
+    """``(shape, voxel size (x, y, z), its metadata status)`` from a TIFF's
+    header, as the mask loaders read them; None for anything else."""
+    import tifffile
+
+    from haemolynx.io import read_voxel_size_xyz
+
+    if not path or Path(path).suffix.lower() not in {".tif", ".tiff"} or not Path(path).is_file():
+        return None
+    try:
+        with tifffile.TiffFile(path) as tif:
+            shape = tuple(int(n) for n in tif.series[0].shape)
+    except Exception:  # noqa: BLE001 - the loader reports an unreadable file itself
+        return None
+    if len(shape) == 4:
+        # As io.load.simplify_to_3d: the first channel of the last axis.
+        shape = shape[:3]
+    found = read_voxel_size_xyz(path, axis_order)
+    if found is None:
+        return shape, (1.0, 1.0, 1.0), {"status": "missing"}
+    return shape, found[0], found[1]
+
+
+def check_cell_mask_measurement(settings: Mapping[str, Any]) -> CheckReport:
+    """``measurement_3d_to_cell_mask`` runs last, in the export stage, so what
+    would stop it there is checked here: that a vessel mask of its own, when
+    one is set, is there, and, from the TIFF headers, that it and the cell
+    mask have the input image's shape and the run's voxel size -- a mask with
+    no voxel size of its own taking the run's, as the measurement reads it."""
+    import numpy as np
+
+    from haemolynx.io import CANONICAL_AXIS_ORDER
+    from haemolynx.io.automated_vessel_assignment import (
+        _VOXEL_SIZE_RELATIVE_TOLERANCE,
+        _resolve_mask_voxel_size_xyz,
+    )
+    from haemolynx.io.voxel_validation import resolve_voxel_size_xyz
+
+    report = CheckReport()
+    if not settings.get("measurement_3d_to_cell_mask") or not settings.get("cell_mask_path"):
+        # An unset cell mask is reported by check_settings: it must_exist.
+        return report
+    vessel_path = settings.get("measurement_3d_vessel_mask_path")
+    if vessel_path:
+        exists, detail = resolve_existing_path(vessel_path)
+        if not exists:
+            report.add_error(
+                f"measurement_3d_vessel_mask_path: {detail}. Fix: point it at the vessel "
+                "mask, or clear it to measure to the run's segmented image."
+            )
+    axis_order = settings.get("image_axis_order") or CANONICAL_AXIS_ORDER
+    image = _tiff_header(settings.get("input_path"), axis_order)
+    if image is None:
+        # Checked where it is read; ilastik may not have written it yet.
+        return report
+    shape, image_xyz, image_status = image
+    override = settings.get("voxel_size_override_xyz")
+    policy = settings.get("voxel_size_policy", "auto")
+    try:
+        run_xyz, _source = resolve_voxel_size_xyz(image_xyz, image_status, override, policy)
+    except ValueError:
+        # The run stops on this itself, before any measurement.
+        run_xyz = None
+    for name in ("cell_mask_path", "measurement_3d_vessel_mask_path"):
+        mask = _tiff_header(settings.get(name), axis_order)
+        if mask is None:
+            continue
+        mask_shape, mask_xyz, mask_status = mask
+        problems = []
+        if mask_shape != shape:
+            problems.append(f"is {mask_shape} voxels where the input image is {shape}")
+        if run_xyz is not None:
+            try:
+                resolved = _resolve_mask_voxel_size_xyz(
+                    mask_xyz, mask_status, voxel_size_override_xyz=override,
+                    voxel_size_policy=policy, fallback_voxel_size_xyz=run_xyz,
+                )
+            except ValueError as error:
+                problems.append(f"has no voxel size the run can use ({error})")
+            else:
+                if not np.allclose(resolved, run_xyz, rtol=_VOXEL_SIZE_RELATIVE_TOLERANCE, atol=0.0):
+                    problems.append(
+                        f"has a voxel size (x, y, z) of {tuple(resolved)} um where the run's is "
+                        f"{tuple(run_xyz)} um"
+                    )
+        if problems:
+            report.add_error(
+                f"{name} {' and '.join(problems)}, so the 3D distance measurement would stop "
+                "at the end of the run. Fix: save the mask from the input image, at its shape "
+                "and voxel size."
+            )
+        else:
+            report.add_pass(name, "the input image's shape and voxel size")
+    return report
+
+
 def check_crop_on_import(settings: Mapping[str, Any]) -> CheckReport:
     """The crop box must be one that some image could hold: three whole
     numbers for its size or each corner, and its start not past its end.
@@ -666,5 +762,6 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_image_channels(settings))
     report.extend(check_tissue_volume_image(settings))
     report.extend(check_crop_on_import(settings))
+    report.extend(check_cell_mask_measurement(settings))
     report.print("Preflight")
     return report

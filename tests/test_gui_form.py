@@ -767,8 +767,6 @@ _MEASUREMENT_3D_CHILDREN = (
     "cell_mask_h5_dataset_name",
     "measurement_3d_vessel_mask_path",
     "measurement_3d_vessel_mask_h5_dataset_name",
-    "measurement_3d_reference_image_path",
-    "measurement_3d_reference_h5_dataset_name",
 )
 
 #: One flat per-measure checkbox per haemolynx.statistics.STATISTIC_MEASURES
@@ -789,12 +787,11 @@ _NETWORK_ANALYSIS_MEASURE_CHILDREN = tuple(
 )
 
 
-#: The three measurement-3D files as HDF5, so their dataset-name rows show
+#: The two measurement-3D files as HDF5, so their dataset-name rows show
 #: too (a dataset name only means something for an HDF5 file).
 _MEASUREMENT_3D_H5_PATHS = {
     "cell_mask_path": "cells.h5",
     "measurement_3d_vessel_mask_path": "vessels.h5",
-    "measurement_3d_reference_image_path": "reference.h5",
 }
 
 

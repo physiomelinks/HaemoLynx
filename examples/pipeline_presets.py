@@ -124,8 +124,6 @@ PRESETS: dict[str, dict] = {
             'final_render_mode': '3d',
             'hold_ide_plots_open': False,
             'interactive_plots': False,
-            'measurement_3d_reference_h5_dataset_name': None,
-            'measurement_3d_reference_image_path': None,
             'measurement_3d_to_cell_mask': True,
             'measurement_3d_vessel_mask_h5_dataset_name': None,
             'measurement_3d_vessel_mask_path': None,

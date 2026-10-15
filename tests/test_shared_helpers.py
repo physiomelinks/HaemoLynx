@@ -125,11 +125,10 @@ def test_load_binary_mask_rejects_non_3d_volume(tmp_path):
 
 
 def test_load_binary_mask_is_the_one_used_by_both_consumers():
-    """The pericyte mask also needs its voxel-size metadata status (to apply
-    the run's override and policy, as the main image does), so it reads
-    through the status variant -- which is the one loader the plain one wraps,
-    not a second reading path."""
-    from haemolynx import io
+    """The pericyte mask and the 3D distance measurement's masks also need
+    their voxel-size metadata status (to apply the run's override and policy,
+    as the main image does), so they read through the status variant -- which
+    is the one loader the plain one wraps, not a second reading path."""
     from haemolynx.haemodynamics import pericyte_mask
     from haemolynx.io import load
     from haemolynx.statistics import three_dim_distances as distances
@@ -138,7 +137,10 @@ def test_load_binary_mask_is_the_one_used_by_both_consumers():
         pericyte_mask.load_binary_mask_voxel_size_and_status
         is load.load_binary_mask_voxel_size_and_status
     )
-    assert distances.load_binary_mask_and_voxel_size is io.load_binary_mask_and_voxel_size
+    assert (
+        distances.load_binary_mask_voxel_size_and_status
+        is load.load_binary_mask_voxel_size_and_status
+    )
 
 
 def test_the_plain_mask_loader_reads_through_the_status_one(monkeypatch, tmp_path):

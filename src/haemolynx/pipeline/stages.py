@@ -5282,14 +5282,11 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                 if settings["measurement_3d_vessel_mask_path"] is None
                 else Path(settings["measurement_3d_vessel_mask_path"])
             ),
-            vessel_reference_image_path=(
-                None
-                if settings["measurement_3d_reference_image_path"] is None
-                else Path(settings["measurement_3d_reference_image_path"])
-            ),
+            vessel_mask=image,
             cell_mask_h5_dataset_name=settings["cell_mask_h5_dataset_name"],
             vessel_mask_h5_dataset_name=settings["measurement_3d_vessel_mask_h5_dataset_name"],
-            vessel_reference_h5_dataset_name=settings["measurement_3d_reference_h5_dataset_name"],
+            voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
+            voxel_size_policy=settings.get("voxel_size_policy", "auto"),
             use_memmap=settings["use_memmap_loading"],
             memmap_directory=settings["memmap_directory"],
         )

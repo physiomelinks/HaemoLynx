@@ -114,7 +114,7 @@ def test_object_distances_are_identical_in_low_ram_mode(tmp_path):
 
 
 def test_object_distances_with_a_vessel_mask_too_thin_to_erode(tmp_path):
-    """Every vessel voxel is boundary, so the erosion fallback is reached."""
+    """Every vessel voxel is surface: the erosion leaves nothing inside."""
     shape, voxel_zyx, cells, _vessels, _G = _cell_case(tmp_path, seed=4)
     vessels = np.zeros(shape, dtype=bool)
     vessels[5, 5, :] = True
@@ -165,14 +165,15 @@ def test_cell_mask_measurement_writes_the_same_csvs_in_low_ram_mode(tmp_path):
     assert low_ram == plain
 
 
-def test_cell_mask_measurement_from_graph_labels_is_the_same_in_low_ram_mode(tmp_path):
-    """No vessel mask: the vessel volume is the graph's own label volume, with
-    its shape read from a reference image."""
+def test_cell_mask_measurement_from_the_graph_is_the_same_in_low_ram_mode(tmp_path):
+    """No vessel mask: the vessels are the graph's tubes, each its own
+    diameter_um across."""
     shape, voxel_zyx, cells, _vessels, G = _cell_case(tmp_path, seed=6, voxel_zyx=(1.0, 1.0, 1.0))
+    for k, (_u, _v, data) in enumerate(G.edges(data=True)):
+        data["diameter_um"] = 1.0 + k % 4
     common = dict(
         graph=G,
         cell_mask_path=_write(tmp_path / "cells.tif", cells),
-        vessel_reference_image_path=_write(tmp_path / "reference.tif", cells),
         # The written TIFFs carry no metadata, which the loader reads as 1 µm.
         voxel_size_xyz=(1.0, 1.0, 1.0),
     )
@@ -184,19 +185,24 @@ def test_cell_mask_measurement_from_graph_labels_is_the_same_in_low_ram_mode(tmp
     assert low_ram == plain
 
 
-def test_reference_shape_comes_from_the_tiff_header_in_low_ram_mode(tmp_path, monkeypatch):
-    path = tmp_path / "reference.tif"
-    tifffile.imwrite(path, np.zeros((5, 6, 7), dtype=np.uint8))
-    flat = tmp_path / "flat.tif"
-    tifffile.imwrite(flat, np.zeros((6, 7), dtype=np.uint8))
+def test_cell_mask_measurement_against_the_runs_segmentation_is_the_same_in_low_ram_mode(
+    tmp_path,
+):
+    """The pipeline hands the run's segmentation over as an array: a uint8 one
+    is binarised, on disk in low-RAM mode, and released afterwards."""
+    shape, voxel_zyx, cells, vessels, G = _cell_case(tmp_path, seed=7, voxel_zyx=(1.0, 1.0, 1.0))
+    common = dict(
+        graph=G,
+        cell_mask_path=_write(tmp_path / "cells.tif", cells),
+        vessel_mask=vessels.astype(np.uint8) * 255,
+        voxel_size_xyz=(1.0, 1.0, 1.0),
+    )
 
-    def no_read(*args, **kwargs):
-        raise AssertionError("the whole reference image was read")
+    plain = _run(tmp_path, "plain", use_memmap=False, **common)
+    low_ram = _run(tmp_path, "low", use_memmap=True, **common)
 
-    monkeypatch.setattr(dist3d.tifffile, "imread", no_read)
-
-    assert dist3d._load_volume_shape_only(path, use_memmap=True) == (5, 6, 7)
-    assert dist3d._load_volume_shape_only(flat, use_memmap=True) == (1, 6, 7)
+    assert plain[0] > 5
+    assert low_ram == plain
 
 
 # --- haemodynamics: FWHM diameters and the EDT cross-check -------------------

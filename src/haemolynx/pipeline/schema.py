@@ -3765,14 +3765,18 @@ SCHEMA = Schema(
             name="measurement_3d_to_cell_mask",
             kind="bool",
             default=False,
-            help="Measure the 3D distance between the vessels and a 3D object mask (e.g. a cell mask)",
+            help=(
+                "Measure how far each object in a 3D object mask (e.g. a cell mask) "
+                "lies from the vessels: the gap between them, 0 where they touch or "
+                "overlap, and the vessel it is nearest to"
+            ),
             section=_STATISTICS,
         ),
         Setting(
             name="cell_mask_path",
             kind="path",
             default=None,
-            help="Read this cell mask for the 3D distance measurement",
+            help="Read this cell mask, the input image's shape, for the 3D distance measurement",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
             must_exist=True,
@@ -3790,36 +3794,25 @@ SCHEMA = Schema(
             name="measurement_3d_vessel_mask_path",
             kind="path",
             default=None,
-            help="Use this explicit vessel mask for the 3D distance measurement instead of the pipeline input",
+            help="Use this vessel mask for the 3D distance measurement instead of the run's segmented image",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
-            must_exist=True,
+            # Optional: must_exist would demand it whenever the measurement is
+            # on. checks.check_cell_mask_measurement checks one that is set.
+            placeholder="the run's segmented image",
             advanced=True,
+            # The reference image only had its shape checked against the cell
+            # mask's, which must be the input image's anyway.
+            replaces={
+                "measurement_3d_reference_image_path": {},
+                "measurement_3d_reference_h5_dataset_name": {},
+            },
         ),
         Setting(
             name="measurement_3d_vessel_mask_h5_dataset_name",
             kind="str",
             default=None,
             help="Read this dataset from the 3D-distance vessel mask when it is an H5 file",
-            section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
-            advanced=True,
-        ),
-        Setting(
-            name="measurement_3d_reference_image_path",
-            kind="path",
-            default=None,
-            help="Take the vessel-volume raster shape from this reference image",
-            section=_STATISTICS,
-            requires=("measurement_3d_to_cell_mask",),
-            must_exist=True,
-            advanced=True,
-        ),
-        Setting(
-            name="measurement_3d_reference_h5_dataset_name",
-            kind="str",
-            default=None,
-            help="Read this dataset from the 3D-distance reference image when it is an H5 file",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
             advanced=True,

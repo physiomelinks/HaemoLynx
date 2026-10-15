@@ -572,20 +572,16 @@ cartwheel_hub_guard:
 # Statistics and measurements
 # ------------------------------------------------------------------------
 statistics_and_measurements:
-  # Measure the 3D distance between the vessels and a 3D object mask (e.g. a cell mask)
+  # Measure how far each object in a 3D object mask (e.g. a cell mask) lies from the vessels: the gap between them, 0 where they touch or overlap, and the vessel it is nearest to
   measurement_3d_to_cell_mask: false
-  # Read this cell mask for the 3D distance measurement  [needs measurement_3d_to_cell_mask; must exist]
+  # Read this cell mask, the input image's shape, for the 3D distance measurement  [needs measurement_3d_to_cell_mask; must exist]
   cell_mask_path: null
   # Read this dataset from the cell mask when it is an H5 file  [needs measurement_3d_to_cell_mask]
   cell_mask_h5_dataset_name: null
-  # Use this explicit vessel mask for the 3D distance measurement instead of the pipeline input  [needs measurement_3d_to_cell_mask; must exist]
+  # Use this vessel mask for the 3D distance measurement instead of the run's segmented image  [needs measurement_3d_to_cell_mask]
   measurement_3d_vessel_mask_path: null
   # Read this dataset from the 3D-distance vessel mask when it is an H5 file  [needs measurement_3d_to_cell_mask]
   measurement_3d_vessel_mask_h5_dataset_name: null
-  # Take the vessel-volume raster shape from this reference image  [needs measurement_3d_to_cell_mask; must exist]
-  measurement_3d_reference_image_path: null
-  # Read this dataset from the 3D-distance reference image when it is an H5 file  [needs measurement_3d_to_cell_mask]
-  measurement_3d_reference_h5_dataset_name: null
   # Compute and export the global vessel statistics
   statistics: false
   # Node/edge counts, total length, mean diameter and the other basic vessel statistics  [needs statistics]

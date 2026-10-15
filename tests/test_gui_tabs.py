@@ -837,8 +837,6 @@ _MEASUREMENT_3D_CHILDREN = (
     "cell_mask_h5_dataset_name",
     "measurement_3d_vessel_mask_path",
     "measurement_3d_vessel_mask_h5_dataset_name",
-    "measurement_3d_reference_image_path",
-    "measurement_3d_reference_h5_dataset_name",
 )
 
 
@@ -881,7 +879,6 @@ def test_measurement_3d_fields_on_export_declare_hide_when_unmet():
     h5_paths = {
         "cell_mask_path": "cells.h5",
         "measurement_3d_vessel_mask_path": "vessels.h5",
-        "measurement_3d_reference_image_path": "reference.h5",
     }
     off = {"measurement_3d_to_cell_mask": False, "statistics": False, **h5_paths}
     on = {"measurement_3d_to_cell_mask": True, "statistics": False, **h5_paths}
@@ -979,6 +976,6 @@ def test_the_3d_object_mask_measurement_comes_before_statistics():
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     measurements = [field.name for field in tabs["9. Additional measurements"].fields]
     assert measurements.index("measurement_3d_to_cell_mask") < measurements.index("statistics")
-    assert measurements.index("measurement_3d_reference_h5_dataset_name") < measurements.index(
+    assert measurements.index("measurement_3d_vessel_mask_h5_dataset_name") < measurements.index(
         "statistics"
     )
