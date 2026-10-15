@@ -3514,7 +3514,7 @@ SCHEMA = Schema(
         Setting(
             name="thick_vessel_fill_centreline_gaps",
             kind="bool",
-            default=False,
+            default=True,
             help=(
                 "Where the graph's own centreline of a thick vessel strays off "
                 "the centreline drawn through the thick region, or misses it, "

@@ -829,7 +829,7 @@ are only caught locally.
   body: the thick vessel's segmented boundary) to the centreline; a bridge is never a dead end nor
   attached to one. The centreline is the tree `skeletonize_edt_ridge` draws through the region,
   found again from the region (9 s on E14.5, so nothing new is carried through resume or a
-  `.haemorun`); a sample is on it within 1.5 um or 30% of the local lumen radius, and a stretch
+  `.haemorun`). Where the graph's own thick centreline leaves a gap in the tree (3 um or more) and has no way across it under 2.1 times as long, the tree's path is drawn in first (`thick_vessel_fill_centreline_gaps`, on by default since 2026-10-15; fitted on Harvey's grid V, 18/20 against 13 for drawing none, not yet checked on a fresh grid); a sample is on it within 1.5 um or 30% of the local lumen radius, and a stretch
   near it counts only if long enough (3 um at an edge's end, 6 um within). Every edge reaching the
   region is labelled outside / centreline / inside: inside stretches joined through their nodes
   that lead out of the region and meet the centreline, or come within one lumen radius of it, are

@@ -402,7 +402,7 @@ def insert_thick_vessel_junction_nodes(
     centreline_tolerance_um: float = CENTRELINE_TOLERANCE_UM,
     join_dead_ends_at_walls: bool = True,
     bridge_forks: bool = True,
-    fill_tree_gaps: bool = False,
+    fill_tree_gaps: bool = True,
     max_background_gap_um: float | None = None,
     min_mask_fraction: float | None = None,
     max_short_loop_um: float | None = None,
@@ -437,7 +437,7 @@ def insert_thick_vessel_junction_nodes(
       narrower than the other two (:data:`FORK_BRANCH_MAX_RADIUS_FRACTION`),
       the stretch of that branch inside the trunk's lumen becomes a bridge.
 
-    And with *fill_tree_gaps* (off by default, PLAN_bridging.md 6a), first:
+    And with *fill_tree_gaps* (on by default since 2026-10-15, PLAN_bridging.md 6a), first:
     where no graph centreline follows the tree for :data:`TREE_GAP_MIN_UM` or
     more between two places one does, and the graph's own way between them
     is more than :data:`TREE_FILL_MIN_DETOUR` times as long or missing, the

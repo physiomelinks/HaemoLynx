@@ -692,8 +692,8 @@ def test_a_gap_in_the_graphs_thick_centreline_is_drawn_from_the_tree():
     vessel runs A to B and X gets its bridge."""
     G, lumen, body, tree = _gap()
 
-    off = _split(G, lumen, body, tree)
-    on = _split(G, lumen, body, tree, fill_tree_gaps=True)
+    off = _split(G, lumen, body, tree, fill_tree_gaps=False)
+    on = _split(G, lumen, body, tree)
 
     assert not _from_tree(off) and not any("S" in (u, v) or "X" in (u, v) for u, v, _d in _bridges(off))
     # Drawn A to B, then cut where X's bridge lands on it.
@@ -726,8 +726,8 @@ def test_a_gap_the_graph_joins_only_the_long_way_round_is_drawn_from_the_tree():
     (grid V's right ones were 2.2-32 times), and X is bridged to it."""
     G, lumen, body, tree = _gap(detour=True)
 
-    off = _split(G, lumen, body, tree)
-    on = _split(G, lumen, body, tree, fill_tree_gaps=True)
+    off = _split(G, lumen, body, tree, fill_tree_gaps=False)
+    on = _split(G, lumen, body, tree)
 
     def x_bridged(H):
         """A bridge from X's side landing on the thick centreline at y = 30."""
@@ -763,6 +763,10 @@ def test_the_run_turns_the_fill_on_with_its_setting():
 
     settings = {"bridge_require_mask_support": True, "bridge_max_background_gap_um": 2.0,
                 "bridge_min_mask_fraction": 0.8, "remove_short_loops_under_um": 200.0}
-    assert thick_junction_bridge_arguments(settings)["fill_tree_gaps"] is False
-    settings["thick_vessel_fill_centreline_gaps"] = True
+    # On by default since grid V (2026-10-15).
     assert thick_junction_bridge_arguments(settings)["fill_tree_gaps"] is True
+    settings["thick_vessel_fill_centreline_gaps"] = False
+    assert thick_junction_bridge_arguments(settings)["fill_tree_gaps"] is False
+    from haemolynx.pipeline import default_schema
+
+    assert default_schema()["thick_vessel_fill_centreline_gaps"].default is True
