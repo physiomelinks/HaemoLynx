@@ -1438,14 +1438,19 @@ class ResultLayers:
         self._raw_segmented_image = None
 
     def export_state(self) -> dict[str, Any]:
-        """Pickle-safe copy of the memory a loaded run needs to look finished."""
+        """Pickle-safe copy of the memory a loaded run needs to look finished.
+
+        The graphs are copied, since edits write to the live one. The volumes
+        are not: nothing writes to them, and they are the very arrays the
+        stage checkpoints hold, so a saved run stores each once (a copy was
+        a second whole volume to compress, and read a disk-backed one into
+        memory).
+        """
         graph = copy_graph(self._graph)
         if self._canonical_graph is self._graph:
             canonical = graph
         else:
             canonical = copy_graph(self._canonical_graph)
-        thick_vessel_mask = self._thick_vessel_mask
-        raw_segmented_image = self._raw_segmented_image
         return {
             "graph": graph,
             "canonical_graph": canonical,
@@ -1455,13 +1460,8 @@ class ResultLayers:
             "emitted": tuple(self._emitted),
             "settings": dict(self.settings),
             "show_steps": bool(self.show_steps),
-            "thick_vessel_mask": (
-                None if thick_vessel_mask is None else np.array(thick_vessel_mask, copy=True)
-            ),
-            "raw_segmented_image": (
-                None if raw_segmented_image is None
-                else np.array(raw_segmented_image, copy=True)
-            ),
+            "thick_vessel_mask": self._thick_vessel_mask,
+            "raw_segmented_image": self._raw_segmented_image,
         }
 
     def load_state(self, state: Mapping[str, Any] | None) -> None:

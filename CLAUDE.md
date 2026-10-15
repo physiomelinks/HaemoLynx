@@ -890,6 +890,13 @@ are only caught locally.
 - **`gui/run_snapshot.py`** / **`gui/stage_checkpoints.py`** — save a finished run to a
   `.haemorun` file and load it back; keep per-stage snapshots so a tab can re-run from its stage
   (`run_pipeline_stages(start_from=..., resume=...)`) without rebuilding everything before it.
+  Save run captures the run on the GUI thread and writes it on a worker (`save_run_file(background=True)`;
+  Save and Load are greyed until it is done). The write is gzip level 1 (`COMPRESS_LEVEL`), into a `.part`
+  file moved over the name once complete. The volumes the checkpoints and the results share are
+  pickled once, and the checkpoints' graphs, private copies already, are not copied again. gzip's
+  default level 9 took 12.6 s on one E14.5-sized binary mask, against 0.44 s at level 1. A whole E14.5
+  run (1 GB pickled, 2026-10-15) went from 297 s with the panel frozen to 8 s in the background, and
+  its file from 80 to 104 MB. Level 6 would take 27 s and save 18 MB of that, and level 3 9 s to save 8 MB.
 - **`statistics/three_dim_distances.py`** — cell-to-vessel distances.
 - **`statistics/tissue_volume.py`** — `measure_tissue_volume` (`measure_tissue_volume` on the
   Additional measurements tab, off by default): the tissue in the raw image (`tissue_raw_tiff_path`,

@@ -621,6 +621,78 @@ def test_save_then_load_run_restores_layers_and_checkpoints(panel):
     assert "Loaded run" in widget._haemolynx_report()
 
 
+def _save_run_from_the_button(widget, monkeypatch, dest, write):
+    """Press Save run, choosing *dest* in its dialogue, with *write* in place
+    of the file writer."""
+    from qtpy.QtWidgets import QFileDialog
+
+    import haemolynx.gui._widget as widget_module
+
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", staticmethod(lambda *_a, **_k: (str(dest), ""))
+    )
+    monkeypatch.setattr(widget_module, "write_run_snapshot", write)
+    widget._haemolynx_save_run_button.native.click()
+
+
+def test_save_run_writes_in_the_background_and_says_when_it_is_done(panel, qtbot, monkeypatch):
+    """Save run wrote on the GUI thread, and the panel froze for as long as a
+    large run took to compress. The write is held here until the panel has
+    been looked at mid-save."""
+    import threading
+
+    from haemolynx.gui.run_snapshot import write_run_snapshot
+
+    widget, viewer, tmp_path = panel
+    _seed_run(widget, viewer, through="post_process")
+    dest = tmp_path / "background.haemorun"
+    release = threading.Event()
+
+    def held(path, snapshot):
+        assert release.wait(60)
+        return write_run_snapshot(path, snapshot)
+
+    _save_run_from_the_button(widget, monkeypatch, dest, held)
+
+    assert widget._haemolynx_saving_run()
+    assert f"Saving run to {dest}" in widget._haemolynx_report()
+    assert widget._haemolynx_save_run_button.enabled is False
+    assert widget._haemolynx_load_run_button.enabled is False
+    assert widget._haemolynx_save_run(tmp_path / "second.haemorun") is False
+    assert "still being saved" in widget._haemolynx_report()
+    assert not dest.exists()
+
+    release.set()
+    qtbot.waitUntil(lambda: not widget._haemolynx_saving_run(), timeout=60_000)
+
+    assert f"Wrote run {dest}" in widget._haemolynx_report()
+    assert widget._haemolynx_save_run_button.enabled is True
+    assert widget._haemolynx_load_run_button.enabled is True
+    assert not (tmp_path / "second.haemorun").exists()
+    widget._haemolynx_clear()
+    assert widget._haemolynx_load_run(dest) is True
+    assert VESSELS in viewer.layers
+    assert "assign_diameters" in widget._haemolynx_checkpoints.stages
+
+
+def test_a_background_save_that_fails_says_so_and_frees_the_buttons(panel, qtbot, monkeypatch):
+    widget, viewer, tmp_path = panel
+    _seed_run(widget, viewer, through="post_process")
+    dest = tmp_path / "full.haemorun"
+
+    def full(_path, _snapshot):
+        raise OSError("No space left on device")
+
+    _save_run_from_the_button(widget, monkeypatch, dest, full)
+    qtbot.waitUntil(lambda: not widget._haemolynx_saving_run(), timeout=60_000)
+
+    assert f"Could not save run {dest}" in widget._haemolynx_report()
+    assert "No space left on device" in widget._haemolynx_report()
+    assert widget._haemolynx_save_run_button.enabled is True
+    assert widget._haemolynx_load_run_button.enabled is True
+    assert not dest.exists()
+
+
 
 # --- consecutive run-froms, and a real run ------------------------------------
 

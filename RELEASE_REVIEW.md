@@ -303,7 +303,7 @@ haematocrit, constriction and perturbations.
 | usability.2a | A | The panel runs the whole pipeline. | ✓ | `test_gui_widget.py:468` |
 | usability.4a | A | Every setting has hover text with its unit, enforced by a test. | ✓ | `test_gui_tooltips.py`, all 435 settings |
 | usability.4b | A | A failed run says why in the panel, and preflight refuses a run that would fail on its inputs. | ✓ | Report box and log dock (`_widget.py:5885`); preflight at `_widget.py:13073` |
-| usability.4c | A | Runs save and load, and any tab can re-run from its stage. | ✓ | `.haemorun` (`test_gui_run_snapshot.py`, 30 tests); `stage_checkpoints.py` |
+| usability.4c | A | Runs save and load, and any tab can re-run from its stage. | ✓ | `.haemorun` (`test_gui_run_snapshot.py`, 34 tests); `stage_checkpoints.py` |
 | usability.6a | R | A written task list (install, open, run, inspect, edit, export, re-run) has been walked through by the developer, timed, without the console. | ✗ | No task list exists (plan step R5) |
 | usability.6b | A | A segmented TIFF runs end to end with every setting at its default. | ✗ | Not shown. The panel test sets boundary boxes (`test_gui_widget.py:480-486`) |
 | usability.6c | A | Hand edits can be undone. | ✗ | No undo. Only Revert or Run from this stage |
@@ -343,7 +343,7 @@ haematocrit, constriction and perturbations.
 | export.6d | A | The VTK carries each vessel's diameter and its solved flag. | ✓ | `diameter_um` and `flow_solved` on every vessel cell (`test_vtk_io.py:310-339`), at `b6d9210` |
 | export.8a | A | The graph is exported in an open format (GraphML or node-link JSON) besides the pickle. | ✗ | Pickle only |
 | export.8b | A | A script checks that each export opens in a third-party tool (ParaView or VTK, pandas, NetworkX). | ✗ | |
-| export.10a | A | The export format is versioned, and the previous release's outputs and `.haemorun` files still load (tested). | ✗ | `.haemorun` rejects any version but 1 (`run_snapshot.py:201`) |
+| export.10a | A | The export format is versioned, and the previous release's outputs and `.haemorun` files still load (tested). | ✗ | `.haemorun` rejects any version but 1 (`run_snapshot.py:221`) |
 
 ### 11. Documentation and help — `docs`
 

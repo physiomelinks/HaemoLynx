@@ -595,3 +595,112 @@ def test_a_run_saved_before_the_review_lists_loads_with_no_decisions(tmp_path):
     with gzip.open(path, "wb") as handle:
         pickle.dump(payload, handle)
     assert read_run_snapshot(path).review_decisions == _decisions()[1:]
+
+
+# --- how long a save takes ---------------------------------------------------
+
+
+def _skeletonised(results: ResultLayers, shape=(16, 16, 16)) -> tuple[np.ndarray, np.ndarray]:
+    """A skeletonise stage with a thick-vessel mask and a pre-cleanup
+    segmentation, the volumes a run keeps on both its checkpoints and its
+    results; returns those two."""
+    rng = np.random.default_rng(0)
+    image = np.zeros(shape, dtype=np.uint8)
+    image[4:12, 4:12, 4:12] = 1
+    thick = rng.random(shape) > 0.5
+    raw = rng.random(shape) > 0.5
+    results.stage_finished(
+        "skeletonise",
+        SimpleNamespace(
+            image=image,
+            skeleton=np.zeros(shape, dtype=bool),
+            voxel_size_xyz=(1.0, 1.0, 1.0),
+            voxel_size_zyx=(1.0, 1.0, 1.0),
+            thick_vessel_mask=thick,
+            raw_segmented_image=raw,
+        ),
+    )
+    return thick, raw
+
+
+def test_a_volume_the_checkpoints_and_results_share_is_saved_once(tmp_path):
+    """The results state used to copy the thick-vessel mask and the
+    pre-cleanup segmentation, so the file held, and compressed, each twice."""
+    checkpoints = StageCheckpoints()
+    results = ResultLayers()
+    thick, raw = _skeletonised(results)
+    checkpoints.record("skeletonise", _group("skeletonise"), results)
+
+    loaded = read_run_snapshot(
+        write_run_snapshot(
+            tmp_path / "shared",
+            capture_run(checkpoints=checkpoints, results=results, settings={}),
+        )
+    )
+
+    checkpoint = loaded.checkpoints[0]
+    assert loaded.results_state["thick_vessel_mask"] is checkpoint.thick_vessel_mask
+    assert loaded.results_state["raw_segmented_image"] is checkpoint.raw_segmented_image
+    np.testing.assert_array_equal(checkpoint.thick_vessel_mask, thick)
+    np.testing.assert_array_equal(checkpoint.raw_segmented_image, raw)
+    fresh = ResultLayers()
+    apply_snapshot_to_results(fresh, loaded)
+    np.testing.assert_array_equal(fresh._thick_vessel_mask, thick)
+    np.testing.assert_array_equal(fresh._raw_segmented_image, raw)
+
+
+def test_capturing_a_run_does_not_copy_the_checkpoints_graphs_again(tmp_path):
+    """Each checkpoint's graph is its own copy from the moment it is recorded,
+    and nothing writes to it, so a save reads it as it is -- copying every
+    stage's graph again was a pickle round trip per stage on the GUI thread.
+    The live graph, which edits do write to, is still copied."""
+    checkpoints, results, settings = _recorded(tmp_path)
+
+    snapshot = capture_run(checkpoints=checkpoints, results=results, settings=settings)
+
+    for saved, live in zip(snapshot.checkpoints, checkpoints.records()):
+        assert saved.graph is live.graph
+    assert snapshot.results_state["graph"] is not results._graph
+    results._graph.add_edge(0, 99)
+    assert not snapshot.results_state["graph"].has_node(99)
+
+
+def test_a_run_is_not_written_at_gzips_slowest_level(tmp_path):
+    """Level 9, gzip's default, took 12.6 s to write one E14.5-sized binary
+    mask against 0.44 s at level 1. A gzip header records which it was."""
+    checkpoints = StageCheckpoints()
+    results = ResultLayers()
+    _skeletonised(results, shape=(64, 64, 64))
+    checkpoints.record("skeletonise", _group("skeletonise"), results)
+
+    path = write_run_snapshot(
+        tmp_path / "fast", capture_run(checkpoints=checkpoints, results=results, settings={})
+    )
+
+    header = path.read_bytes()[:10]
+    assert header[:2] == b"\x1f\x8b"
+    fastest, slowest = 4, 2  # the XFL byte, RFC 1952
+    assert header[8] == fastest
+    assert header[8] != slowest
+    # Still compressed: the two random masks are 2 x 262 KB raw, a bit each.
+    assert path.stat().st_size < 0.25 * 2 * 64 ** 3
+
+
+def test_a_save_that_fails_leaves_the_run_already_saved_there(tmp_path):
+    """The file is written beside its name and moved over it when complete,
+    so a failed save (or a panel closed mid-save) does not leave half a run
+    where a whole one was."""
+    checkpoints, results, settings = _recorded(tmp_path)
+    good = capture_run(checkpoints=checkpoints, results=results, settings=settings,
+                       report="the good one")
+    path = write_run_snapshot(tmp_path / "run", good)
+
+    bad = capture_run(
+        checkpoints=checkpoints, results=results,
+        settings={**settings, "unpicklable": lambda: None},
+    )
+    with pytest.raises(Exception):
+        write_run_snapshot(path, bad)
+
+    assert read_run_snapshot(path).report == "the good one"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("run")] == ["run.haemorun"]

@@ -20,7 +20,7 @@ from pathlib import Path, PurePath
 from typing import Any, Mapping, Sequence
 
 from haemolynx.gui.post_processing import LoopReview, ReviewDecision
-from haemolynx.gui.results import ResultLayers, copy_graph
+from haemolynx.gui.results import ResultLayers
 from haemolynx.gui.stage_checkpoints import (
     StageCheckpoint,
     StageCheckpoints,
@@ -42,6 +42,13 @@ DEFAULT_FILENAME = f"haemolynx-run{SUFFIX}"
 NOTHING_TO_SAVE = (
     "Nothing to save: run the pipeline with 'Show each stage in the viewer' first."
 )
+SAVE_IN_PROGRESS = "A run is still being saved. Wait for it to finish."
+
+#: gzip's default, 9, spends most of a save on the run's volumes: 12.6 s for
+#: one binary mask the size of E14.5's (75 MB) against 0.44 s at 1, for a file
+#: 0.8 MB larger. A run holds several such volumes, and a larger stack scales
+#: with them.
+COMPRESS_LEVEL = 1
 
 
 class RunSnapshotError(ValueError):
@@ -128,9 +135,11 @@ def capture_run(
     if not can_capture(checkpoints):
         raise RunSnapshotError(NOTHING_TO_SAVE)
     # Stage outputs stay behind: they are this session's live volumes, and a
-    # loaded run loads its skeleton from disk instead.
+    # loaded run loads its skeleton from disk instead. A checkpoint's graph is
+    # already its own copy, taken when the stage was recorded and never written
+    # to after, so it is not copied again.
     records = tuple(
-        replace(item, pickle_path=None, graph=copy_graph(item.graph), output=None)
+        replace(item, pickle_path=None, output=None)
         for item in checkpoints.records()
     )
     results_state = results.export_state() if results is not None else None
@@ -149,7 +158,12 @@ def capture_run(
 
 
 def write_run_snapshot(path: Path | str, snapshot: RunSnapshot) -> Path:
-    """Write *snapshot* to *path* (gzip pickle). Returns the path used."""
+    """Write *snapshot* to *path* (gzip pickle). Returns the path used.
+
+    The file is written beside *path* and moved over it once complete, so a
+    save that fails, or a panel closed while one is going, leaves any run
+    already saved there as it was.
+    """
     dest = ensure_run_suffix(path)
     dest.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -168,8 +182,14 @@ def write_run_snapshot(path: Path | str, snapshot: RunSnapshot) -> Path:
         "loop_reviews": [review.as_dict() for review in snapshot.loop_reviews],
         "review_decisions": [decision.as_dict() for decision in snapshot.review_decisions],
     }
-    with gzip.open(dest, "wb") as handle:
-        pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    partial = dest.with_name(f"{dest.name}.part")
+    try:
+        with gzip.open(partial, "wb", compresslevel=COMPRESS_LEVEL) as handle:
+            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(partial, dest)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
     logger.info("Wrote HaemoLynx run snapshot to %s", dest)
     return dest
 
