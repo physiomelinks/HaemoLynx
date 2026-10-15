@@ -5,10 +5,12 @@ from typing import Any, Dict, Optional, Union
 
 import networkx as nx
 
+from haemolynx.graph.branch_order import capillary_start_nodes
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE, contract_bridges
 from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 
 from .bifurcation import compute_daughter_daughter_angles, compute_murray_law_compliance
+from .capillary_bed_joins import compute_capillary_bed_joins
 from .current_flow import compute_current_flow
 from .inlet_outlet_routes import (
     compute_inlet_outlet_bottlenecks,
@@ -67,6 +69,7 @@ STATISTIC_MEASURES: tuple[str, ...] = (
     "occlusion_curves",
     "current_flow",
     "perfusion_territories",
+    "capillary_bed_joins",
     "transit_time",
     "loop_hierarchy",
     "strahler",
@@ -99,6 +102,7 @@ NETWORK_ANALYSIS_MEASURES: frozenset[str] = frozenset(
         "occlusion_curves",
         "current_flow",
         "perfusion_territories",
+        "capillary_bed_joins",
         "transit_time",
         "loop_hierarchy",
         "strahler",
@@ -155,6 +159,9 @@ def compute_comprehensive_vessel_statistics(
     topology_communities: "tuple[list, str] | None" = None,
     tissue_volume_um3: Optional[float] = None,
     vessel_volume_um3: Optional[float] = None,
+    arteriole_boundary_nodes: Optional[Any] = None,
+    venule_boundary_nodes: Optional[Any] = None,
+    short_loop_removal_um: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Combine all vessel statistics.
 
@@ -172,9 +179,16 @@ def compute_comprehensive_vessel_statistics(
     critical (see :func:`~haemolynx.statistics.topology.compute_network_robustness`).
     Omitted (the default), that measure reports exactly what it always has.
 
+    *arteriole_boundary_nodes*/*venule_boundary_nodes* are the run's
+    hierarchical boundaries: "capillary_bed_joins" counts its beds from the
+    nodes the capillary B orders were counted from
+    (:func:`~haemolynx.graph.branch_order.capillary_start_nodes`), and reports
+    *short_loop_removal_um* -- the ``remove_short_loops_under_um`` the graph
+    was built with -- beside them when given.
+
     "bottlenecks", "shunts", "occlusion_impact", "current_flow",
-    "perfusion_territories", "transit_time", "loop_hierarchy", "strahler" and
-    "algebraic_connectivity" also write their per-vessel results onto *G*'s
+    "perfusion_territories", "capillary_bed_joins", "transit_time",
+    "loop_hierarchy", "strahler" and "algebraic_connectivity" also write their per-vessel results onto *G*'s
     edges so the vessels layer can be coloured by them; the route/flow ones
     measure distance and conductance by *route_weighting*. Without what they
     need (inlets and outlets, or a solved flow for transit time) they report
@@ -211,6 +225,9 @@ def compute_comprehensive_vessel_statistics(
         topology_communities=topology_communities,
         tissue_volume_um3=tissue_volume_um3,
         vessel_volume_um3=vessel_volume_um3,
+        arteriole_boundary_nodes=arteriole_boundary_nodes,
+        venule_boundary_nodes=venule_boundary_nodes,
+        short_loop_removal_um=short_loop_removal_um,
     )
     return flatten_statistics_sections(sections, statistics_mode)
 
@@ -231,6 +248,9 @@ def compute_vessel_statistics_by_measure(
     topology_communities: "tuple[list, str] | None" = None,
     tissue_volume_um3: Optional[float] = None,
     vessel_volume_um3: Optional[float] = None,
+    arteriole_boundary_nodes: Optional[Any] = None,
+    venule_boundary_nodes: Optional[Any] = None,
+    short_loop_removal_um: Optional[float] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Every vessel statistic, one section per measure that ran.
 
@@ -253,6 +273,8 @@ def compute_vessel_statistics_by_measure(
         G, became = contract_bridges(G)
         inlet_nodes = _as_contracted(inlet_nodes, became)
         outlet_nodes = _as_contracted(outlet_nodes, became)
+        arteriole_boundary_nodes = _as_contracted(arteriole_boundary_nodes, became)
+        venule_boundary_nodes = _as_contracted(venule_boundary_nodes, became)
         bridge_rows = {
             "Zero-resistance Bridges (not counted as vessels)": len(bridge_lengths),
             "Zero-resistance Bridge Length (microns)": sum(bridge_lengths),
@@ -370,6 +392,17 @@ def compute_vessel_statistics_by_measure(
     if "perfusion_territories" in enabled:
         sections["perfusion_territories"] = compute_perfusion_territories(
             G, inlet_nodes, outlet_nodes, weighting=route_weighting
+        )
+    if "capillary_bed_joins" in enabled:
+        feeds, drains = capillary_start_nodes(
+            inlet_nodes, outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes
+        )
+        sections["capillary_bed_joins"] = compute_capillary_bed_joins(
+            G,
+            feeds,
+            drains,
+            weighting=route_weighting,
+            short_loop_removal_um=short_loop_removal_um,
         )
     if "transit_time" in enabled:
         sections["transit_time"] = compute_transit_times(G, inlet_nodes, outlet_nodes)
