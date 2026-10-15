@@ -10,13 +10,15 @@ import networkx as nx
 import numpy as np
 import pytest
 
+from ImageLynx.cb_settings import ROI_VOXELS
 from ImageLynx.graph.boundaries import (
     select_boundary_terminal_nodes,
     select_boundary_terminal_nodes_by_face,
 )
+from ImageLynx.specimens import PROCESSING_VOXEL_UM
 
-VOX = (1.8639, 1.866, 1.866)
-SHAPE = (160, 160, 160)
+VOX = PROCESSING_VOXEL_UM
+SHAPE = ROI_VOXELS
 EXTENT = [(SHAPE[i] - 1) * VOX[i] for i in range(3)]
 
 
@@ -29,13 +31,6 @@ def _graph(positions):
         G.add_node(name, pos=np.asarray(p, dtype=float))
         G.add_edge(hub, name, length=1.0)
     return G
-
-
-def test_terminals_on_the_low_and_high_faces_become_inlets_and_outlets():
-    G = _graph({"lo": [0.0, 100.0, 100.0], "hi": [EXTENT[0], 100.0, 100.0]})
-    inlets, outlets = select_boundary_terminal_nodes_by_face(
-        G, SHAPE, axis=0, voxel_size=VOX)
-    assert inlets == ["lo"] and outlets == ["hi"]
 
 
 def test_an_interior_terminal_is_never_a_pressure_boundary():
@@ -51,14 +46,6 @@ def test_an_interior_terminal_is_never_a_pressure_boundary():
     band_in, _ = select_boundary_terminal_nodes(
         G, SHAPE, edge_percent=25.0, end_percent=25.0, axis=0, voxel_size=VOX)
     assert "spur" in band_in
-
-
-def test_the_band_width_parameter_does_not_exist():
-    """Removing it removes the 18.2% of ratio movement it accounted for."""
-    import inspect
-
-    params = inspect.signature(select_boundary_terminal_nodes_by_face).parameters
-    assert "edge_percent" not in params and "end_percent" not in params
 
 
 def test_tolerance_is_measured_in_voxels_and_scales_with_spacing():

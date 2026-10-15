@@ -1,26 +1,16 @@
 """Tests for automated terminal-node vessel assignment."""
 from __future__ import annotations
 
-import sys
-import webbrowser
 from pathlib import Path
 
 import networkx as nx
 import numpy as np
-
-# Allow running this test without an editable package install.
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
 
 from ImageLynx.graph import (
     compute_overlapping_terminal_assignment_metrics,
     dilate_large_vessel_masks_by_microns,
     select_terminal_nodes_from_large_vessel_masks,
 )
-
-TEST_PLOT_DIR = REPO_ROOT / "tests" / "plots" / "automated_vessel_detection"
 
 
 def _write_rotatable_assignment_graph(
@@ -176,12 +166,6 @@ def _write_rotatable_assignment_graph(
             font=dict(size=12),
         )
     fig.write_html(str(html_path), include_plotlyjs="cdn")
-    # Best-effort auto-open for local interactive debugging.
-    try:
-        webbrowser.open_new_tab(html_path.resolve().as_uri())
-    except Exception:
-        # Keep test robust in headless/CI environments.
-        pass
 
 
 def _parallel_cylinder_mask_along_x(
@@ -202,7 +186,6 @@ def _parallel_cylinder_mask_along_x(
 
 def test_automated_vessel_detection(tmp_path):
     """Assign degree-1 nodes via mask overlap, with and without dilation."""
-    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     # Build a richer graph with multiple degree>1 pass-through/junction nodes.
     # Terminals should still be the only selectable input/output nodes.
     G = nx.MultiGraph()
@@ -255,7 +238,7 @@ def test_automated_vessel_detection(tmp_path):
         output_nodes=out_nodes,
         arteriole_mask=arteriole_mask,
         venule_mask=venule_mask,
-        html_path=TEST_PLOT_DIR / "automated_vessel_detection_before_dilation_3d.html",
+        html_path=tmp_path / "automated_vessel_detection_before_dilation_3d.html",
         voxel_size_xyz=(1.0, 1.0, 1.0),
         title="Before Dilation",
     )
@@ -283,7 +266,7 @@ def test_automated_vessel_detection(tmp_path):
         output_nodes=out_nodes_dilated,
         arteriole_mask=dilated_arteriole_mask,
         venule_mask=dilated_venule_mask,
-        html_path=TEST_PLOT_DIR / "automated_vessel_detection_after_dilation_3d.html",
+        html_path=tmp_path / "automated_vessel_detection_after_dilation_3d.html",
         voxel_size_xyz=(1.0, 1.0, 1.0),
         title="After Dilation",
     )
@@ -291,7 +274,6 @@ def test_automated_vessel_detection(tmp_path):
 
 def test_overlap_resolution_prefers_cross_section_midline_distance(tmp_path):
     """Overlapping cylinders: cross-section midline distance is evaluated first."""
-    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     G = nx.MultiGraph()
     G.add_node(0, pos=np.array([6.0, 6.0, 2.0]))   # overlapping terminal
     G.add_node(1, pos=np.array([6.0, 6.0, 12.0]))  # junction
@@ -341,7 +323,7 @@ def test_overlap_resolution_prefers_cross_section_midline_distance(tmp_path):
         output_nodes=out_nodes,
         arteriole_mask=arteriole_mask,
         venule_mask=venule_mask,
-        html_path=TEST_PLOT_DIR / "overlap_resolution_cross_section_priority_3d.html",
+        html_path=tmp_path / "overlap_resolution_cross_section_priority_3d.html",
         voxel_size_xyz=(1.0, 1.0, 1.0),
         title="Overlap Resolution: Cross-section Priority",
         annotation_lines=[

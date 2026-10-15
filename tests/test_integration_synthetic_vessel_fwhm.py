@@ -1,7 +1,7 @@
 """Integration: synthetic 3D vessel TIFF + matching graph, real FWHM diameters, Plotly HTML.
 
-The pytest case writes ``synthetic_vessel_fwhm_viz.html`` under ``tests/plots/synthetic_vessel_fwhm`` (intensity
-as a marching-cubes mesh, vessel centerlines, and the transverse polylines used for FWHM sampling — same
+The pytest cases write their figures under ``tmp_path`` (intensity as a marching-cubes
+mesh, vessel centerlines, and the transverse polylines used for FWHM sampling — same
 logic as ``measure_edge_diameters_fwhm_from_raw_tiff``). Skip plotting I/O with ``-m "not plotting"``.
 
 Run as a script to write the same style figure under ``examples/plots/``::
@@ -33,7 +33,6 @@ from skimage.measure import marching_cubes
 
 from ImageLynx.haemodynamics import automated
 
-TEST_PLOT_DIR = _repo_root / "tests" / "plots" / "synthetic_vessel_fwhm"
 _GAUSSIAN_FWHM_FROM_SIGMA = 2.0 * np.sqrt(2.0 * np.log(2.0))
 _I0 = 100.0
 
@@ -806,9 +805,8 @@ def test_synthetic_three_vessels_fwhm_pipeline(tmp_path: Path) -> None:
         _DEFAULT_FWHM_MEASURE_KWARGS,
         title=title,
     )
-    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     fig.write_html(
-        str(TEST_PLOT_DIR / "synthetic_vessel_fwhm_viz.html"),
+        str(tmp_path / "synthetic_vessel_fwhm_viz.html"),
         include_plotlyjs="cdn",
     )
 
@@ -887,9 +885,8 @@ def test_synthetic_x_junction_offcenter_noisy_fwhm_pipeline(tmp_path: Path) -> N
         xj_measure_kwargs,
         title=title,
     )
-    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     fig.write_html(
-        str(TEST_PLOT_DIR / "synthetic_x_junction_offcenter_noisy_fwhm_viz.html"),
+        str(tmp_path / "synthetic_x_junction_offcenter_noisy_fwhm_viz.html"),
         include_plotlyjs="cdn",
     )
 
@@ -938,9 +935,8 @@ def test_synthetic_tight_zigzag_fwhm_pipeline(tmp_path: Path) -> None:
         _DEFAULT_FWHM_MEASURE_KWARGS,
         title=title,
     )
-    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
     fig.write_html(
-        str(TEST_PLOT_DIR / "synthetic_tight_zigzag_fwhm_viz.html"),
+        str(tmp_path / "synthetic_tight_zigzag_fwhm_viz.html"),
         include_plotlyjs="cdn",
     )
 

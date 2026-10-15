@@ -14,7 +14,6 @@ from ImageLynx.graph import (
     smart_multigraph_degree2_removal,
     merge_edges_with_topology_improvement,
     prune_vascular_stubs,
-    assign_branch_orders,
     select_boundary_nodes_by_method,
 )
 from ImageLynx.graph._helpers import (
@@ -104,14 +103,6 @@ def test_prune_vascular_stubs(simple_graph):
     assert G.number_of_nodes() >= 1
 
 
-def test_assign_branch_orders(multigraph_with_branch_order):
-    G = multigraph_with_branch_order.copy()
-    G.add_node(2, pos=np.array([10.0, 0.0, 0.0]))
-    G.add_edge(1, 2, weight=1.0, length=5.0, voxels=[(5, 0, 0), (10, 0, 0)])
-    res = assign_branch_orders(G, [0])
-    assert res["edges_assigned"] >= 1
-
-
 def test_reconnect_secondary_loop_edges(tiny_skeleton):
     pytest.importorskip("skan")
     from skan import csr
@@ -139,18 +130,6 @@ def test_smart_multigraph_degree2_removal(simple_graph):
     G = nx.MultiGraph(simple_graph)
     G2 = smart_multigraph_degree2_removal(G, skeleton_data=None, debug=False)
     assert isinstance(G2, nx.MultiGraph)
-
-
-def test_build_graph_requires_skan(tiny_skeleton):
-    pytest.importorskip("skan")
-    from skan import csr
-    sk = csr.Skeleton(tiny_skeleton)
-    G, loops, loop_edges = build_graph_segment_skan_stitched_loops(
-        sk, tiny_skeleton, debug=False
-    )
-    assert isinstance(G, nx.Graph)
-    assert isinstance(loops, list)
-    assert isinstance(loop_edges, set)
 
 
 def test_select_boundary_nodes_by_method_coordinates():

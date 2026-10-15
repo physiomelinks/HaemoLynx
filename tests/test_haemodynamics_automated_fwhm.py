@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import networkx as nx
+import pytest
 import tifffile
 
 from ImageLynx.haemodynamics import automated
@@ -20,12 +21,17 @@ def _cylinder_gaussian_volume(nz: int, ny: int, nx: int, sigma: float) -> np.nda
     return (100.0 * np.exp(-r2 / (2.0 * sigma**2))).astype(np.float32)
 
 
-def test_fwhm_from_profile_gaussian_fit():
-    """Ideal 1D Gaussian: fitted sigma -> FWHM matches analytic width."""
+@pytest.mark.parametrize(
+    "kwargs",
+    [{}, {"profile_baseline_mode": "wings"}, {"profile_baseline_mode": "percentile"}],
+    ids=["default", "wings", "percentile"],
+)
+def test_fwhm_from_profile_gaussian_fit(kwargs):
+    """Ideal 1D Gaussian: fitted sigma -> FWHM matches analytic width in every baseline mode."""
     sigma = 1.5
     x = np.linspace(-8.0, 8.0, 161, dtype=float)
     y = 100.0 * np.exp(-(x**2) / (2.0 * sigma**2))
-    w = automated.fwhm_from_profile(x, y)
+    w = automated.fwhm_from_profile(x, y, **kwargs)
     expected = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
     assert w is not None
     assert abs(w - expected) < 0.2
@@ -38,16 +44,6 @@ def test_robust_baseline_wings_one_sided_shoulder():
     y[x > 4.0] += 40.0
     b = automated.robust_baseline_from_profile_wings(x, y, wing_fraction=0.2)
     assert b < 12.0
-
-
-def test_fwhm_percentile_and_wings_modes_symmetric_gaussian():
-    sigma = 1.5
-    x = np.linspace(-8.0, 8.0, 161, dtype=float)
-    y = 100.0 * np.exp(-(x**2) / (2.0 * sigma**2))
-    w_w = automated.fwhm_from_profile(x, y, profile_baseline_mode="wings")
-    w_p = automated.fwhm_from_profile(x, y, profile_baseline_mode="percentile")
-    assert w_w is not None and w_p is not None
-    assert abs(w_w - w_p) < 0.3
 
 
 def test_transverse_unit_in_physical_yx_plane():

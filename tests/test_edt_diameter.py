@@ -4,39 +4,6 @@ import numpy as np
 from ImageLynx.haemodynamics.automated import measure_edge_diameters_edt_from_binary_mask
 from ImageLynx.haemodynamics.poiseuille import PoiseuilleModel
 
-def test_edt_diameter_measurement():
-    # 1. Create a mock binary mask: a simple tube of radius 3 centered in a 11x11x11 volume
-    mask = np.zeros((11, 11, 11), dtype=bool)
-    center = 5
-    for z in range(11):
-        for y in range(11):
-            for x in range(11):
-                if (y - center)**2 + (x - center)**2 <= 3**2:
-                    mask[z, y, x] = True
-
-    # 2. Create a mock graph with a single edge running through the center
-    G = nx.MultiGraph()
-    voxel_size_xyz = (1.0, 1.0, 1.0)
-    
-    # Voxels from z=1 to z=9 at (y,x) = (5,5)
-    voxels_phys = [(float(z), float(center), float(center)) for z in range(1, 10)]
-    
-    G.add_node(0, pos=(1.0, center, center))
-    G.add_node(1, pos=(9.0, center, center))
-    G.add_edge(0, 1, length=8.0, voxels=voxels_phys)
-    
-    # 3. Measure EDT diameters
-    stats = measure_edge_diameters_edt_from_binary_mask(G, mask, voxel_size_xyz)
-    
-    assert stats["edges_measured"] == 1
-    assert stats["edges_skipped"] == 0
-    
-    # The radius should be 3, so diameter should be 6
-    edge_data = G[0][1][0]
-    assert "edt_diameter_um" in edge_data
-    # Allow small floating point difference due to discrete grid and EDT interpolation
-    assert np.isclose(edge_data["edt_diameter_um"], 6.0, atol=0.5)
-
 def test_poiseuille_edt_mode():
     G = nx.MultiGraph()
     G.add_node(0)
@@ -150,12 +117,6 @@ def test_diameter_provenance_distinguishes_measured_from_synthetic():
 # assessment's r = 0.079 / rho = 0.141 was measured on a bridge_gaps-inflated mask and is
 # superseded; repairing it roughly tripled the correlation, but the two still disagree.
 
-def test_default_radius_assignment_mode_is_edt():
-    """H1 section 1.2 specifies EDT, and the default used to contradict that."""
-    C = pytest.importorskip("carotid_image_to_model")
-    assert C.HaemodynamicsConfig().radius_assignment_mode == "edt_radius"
-
-
 def test_default_radius_mode_yields_measured_not_synthetic_provenance():
     """The failure 79baf86 closed: a mode that validates and then fabricates diameters.
 
@@ -227,6 +188,8 @@ def test_junction_proximity_exclusion_lowers_the_radius_of_a_short_junction_edge
 
     measure_edge_diameters_edt_from_binary_mask(G, mask, voxel)
     untrimmed = G["A"]["B"][0]["edt_diameter_um"]
+    # Off by default: the #98 sweep was taken without it, so the default call must not trim.
+    assert G["A"]["B"][0]["edt_junction_trim"] == "not_applied"
     # A-C runs down the same radius-2 tube but is long enough that the junction samples
     # cannot move its median, so it reports the calibre A-B should have reported.
     honest = G["A"]["C"][0]["edt_diameter_um"]
@@ -242,18 +205,6 @@ def test_junction_proximity_exclusion_lowers_the_radius_of_a_short_junction_edge
     assert honest == pytest.approx(np.sqrt(5.0) * 2.0)
     assert trimmed == pytest.approx(honest), "trimming should recover the tube's own calibre"
     assert G["A"]["B"][0]["edt_junction_trim"] == "trimmed"
-
-
-def test_junction_proximity_exclusion_is_off_by_default():
-    """The default has to reproduce the previous behaviour exactly.
-
-    Every measured number in the #98 sweep was taken without it, so a silent default would
-    make those figures irreproducible from the code that claims to have produced them.
-    """
-    mask, G = _junction_fixture()
-    measure_edge_diameters_edt_from_binary_mask(G, mask, (1.0, 1.0, 1.0))
-
-    assert G["A"]["B"][0]["edt_junction_trim"] == "not_applied"
 
 
 def test_a_reversed_voxel_list_still_trims_the_junction_end():

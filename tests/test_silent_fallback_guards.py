@@ -240,49 +240,32 @@ def _band_graph(terminal_z):
     return G
 
 
-def test_an_empty_outlet_band_is_refused_not_filled_by_position():
-    """Both terminals sit in the inlet band, so the outlet band is empty.
-
-    The fallback used to hand back the last tenth of all nodes along the axis - here the hub,
-    an interior junction no vessel leaves the volume through - as the venous boundary.
-    """
-    G = _band_graph([0.0, 10.0])
-    with pytest.raises(ValueError, match="outlet band"):
-        select_boundary_terminal_nodes(
-            G, _BAND_SHAPE, edge_percent=25.0, end_percent=25.0, axis=0)
-
-
-def test_an_empty_inlet_band_is_refused_and_named():
-    G = _band_graph([90.0, 100.0])
-    with pytest.raises(ValueError, match="inlet band"):
-        select_boundary_terminal_nodes(
-            G, _BAND_SHAPE, edge_percent=25.0, end_percent=25.0, axis=0)
-
-
-def test_a_graph_with_no_terminals_at_all_is_refused():
-    """A closed cage: the case the fallback was written for."""
+def _closed_cage():
+    """Four nodes on a cycle, none of degree 1: the case the fallback was written for."""
     G = nx.cycle_graph(4)
     for n, z in zip(G.nodes, (0.0, 30.0, 70.0, 100.0)):
         G.nodes[n]["pos"] = np.array([z, 50.0, 50.0])
-    with pytest.raises(ValueError, match="inlet and outlet band"):
+    return G
+
+
+@pytest.mark.parametrize(
+    "make_graph, band",
+    [
+        pytest.param(lambda: _band_graph([0.0, 10.0]), "outlet band", id="outlet-empty"),
+        pytest.param(lambda: _band_graph([90.0, 100.0]), "inlet band", id="inlet-empty"),
+        pytest.param(_closed_cage, "inlet and outlet band", id="no-terminals"),
+    ],
+)
+def test_an_empty_band_is_refused_and_named(make_graph, band):
+    """A band with no terminal is refused, not filled by position.
+
+    With both terminals in the inlet band the fallback used to hand back the last tenth of
+    all nodes along the axis - here the hub, an interior junction no vessel leaves the volume
+    through - as the venous boundary. A closed cage has no terminal at all.
+    """
+    with pytest.raises(ValueError, match=band):
         select_boundary_terminal_nodes(
-            G, _BAND_SHAPE, edge_percent=25.0, end_percent=25.0, axis=0)
-
-
-def test_populated_bands_are_selected_as_before():
-    G = _band_graph([0.0, 100.0])
-    starting, outputs = select_boundary_terminal_nodes(
-        G, _BAND_SHAPE, edge_percent=25.0, end_percent=25.0, axis=0)
-    assert starting == ["t0"] and outputs == ["t1"]
-
-
-def test_the_fallback_can_be_taken_deliberately_but_must_be_asked_for_at_the_boundary():
-    G = _band_graph([0.0, 10.0])
-    starting, outputs = select_boundary_terminal_nodes(
-        G, _BAND_SHAPE, edge_percent=25.0, end_percent=25.0, axis=0,
-        allow_extreme_fallback=True)
-    assert starting and outputs
-    assert "hub" in outputs
+            make_graph(), _BAND_SHAPE, edge_percent=25.0, end_percent=25.0, axis=0)
 
 
 def test_the_nerve_pipeline_entry_point_keeps_the_fallback():

@@ -1,16 +1,9 @@
 """Integration-style test and demo visualization for hierarchical branch orders."""
 import re
-import sys
 from pathlib import Path
 
 import networkx as nx
 import numpy as np
-
-# Ensure package import works when running this file directly.
-repo_root = Path(__file__).resolve().parents[1]
-src_dir = repo_root / "src"
-if str(src_dir) not in sys.path:
-    sys.path.insert(0, str(src_dir))
 
 from ImageLynx.graph import assign_hierarchical_branch_orders
 
