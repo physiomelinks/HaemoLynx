@@ -349,6 +349,49 @@ def test_a_bridge_is_never_attached_to_a_vessel_ending_blind():
     assert result.degree("OUT") == 1
 
 
+def _blind_vessel_off_the_thick_one():
+    """A thin vessel leaving the thick one at y = 30 and ending blind inside
+    the image 30 um out: 21 um beyond the bridge, which reaches the wall."""
+    lumen, body, tree = _thick()
+    _thin_vessel(lumen, (20, 30, 20), (20, 30, 50))
+    G = _graph(("T0", "J", T0, (20, 30, 20)), ("J", "T1", (20, 30, 20), T1),
+               ("TIP", "J", (20, 30, 50), (20, 30, 20)))
+    return G, lumen, body, tree
+
+
+def test_a_blind_vessel_beyond_a_bridge_stays_when_longer_than_a_stub():
+    """Harvey's grid Y (2026-10-15): of the blind vessels the split took, the
+    ones marked keep were 34-154 um long -- the thick vessel itself, long
+    capillaries -- the ones marked remove 6 and 16 um. One goes only when the
+    stub prune would take it: shorter than the prune's length and its 3
+    lumen radii of the thick vessel (here 6 um: 18 um)."""
+    G, lumen, body, tree = _blind_vessel_off_the_thick_one()
+
+    kept = _split(G, lumen, body, tree)
+    (u, v, bridge), = _bridges(kept)
+    assert "TIP" in kept and kept.degree("TIP") == 1
+    assert 30.0 - bridge["length"] >= 3 * RADIUS
+
+    # At 4 radii (24 um) it is a stub, and goes with its bridge.
+    removed = _split(G, lumen, body, tree, min_stub_length_radius_multiple=4.0)
+    assert "TIP" not in removed and _bridges(removed) == []
+    assert [sorted(e[:2]) for e in removed.edges] == [["T0", "T1"]]
+
+
+def test_the_run_judges_blind_vessels_beyond_bridges_with_its_stub_settings():
+    from haemolynx.pipeline.stages import thick_junction_bridge_arguments
+
+    settings = {"bridge_require_mask_support": True, "bridge_max_background_gap_um": 2.0,
+                "bridge_min_mask_fraction": 0.8, "min_stub_length": 25.0, "min_stub_length_radius_multiple": 1.0}
+    arguments = thick_junction_bridge_arguments(settings)
+    assert arguments["min_stub_length"] == 25.0 and arguments["min_stub_length_radius_multiple"] == 1.0
+    G, lumen, body, tree = _blind_vessel_off_the_thick_one()
+
+    result = _split(G, lumen, body, tree, **arguments)
+
+    assert "TIP" not in result, "21 um beyond its bridge is under the run's 25 um"
+
+
 # --- the network with its bridges contracted (what statistics measure) --------------
 
 

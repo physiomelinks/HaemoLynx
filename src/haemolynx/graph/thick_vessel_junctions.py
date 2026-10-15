@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import networkx as nx
 import numpy as np
@@ -515,6 +515,8 @@ def insert_thick_vessel_junction_nodes(
     min_mask_fraction: float | None = None,
     max_short_loop_um: float | None = None,
     short_loop_keep_hole_um: float | None = None,
+    min_stub_length: float = 10.0,
+    min_stub_length_radius_multiple: float = 3.0,
 ) -> nx.MultiGraph:
     """*G* with a one-radius bridge where each vessel opens into a thick vessel.
 
@@ -568,6 +570,13 @@ def insert_thick_vessel_junction_nodes(
     grid W's 16, 20 and 23
     the thick region, and its tree, ended where the graph did, while the
     vessel ran on.
+
+    Last, a vessel beyond a bridge that ends blind inside the image goes
+    with its bridge -- a bridge joins a thick vessel to a vessel that goes on
+    -- when the stub prune would take it as a stub too: shorter than
+    *min_stub_length* and than *min_stub_length_radius_multiple* times the
+    thick vessel's lumen radius where the bridge meets its centreline
+    (:func:`_remove_blind_vessels_beyond_bridges`).
 
     With *edges* (``(u, v, key)``, either way round) only those are rebuilt,
     and one already a bridge is left as it is; every other edge stays as it
@@ -845,15 +854,20 @@ def insert_thick_vessel_junction_nodes(
             break
         tapers |= continuing
         restored |= blamed
-    blind, blind_um = _remove_blind_vessels_beyond_bridges(
-        built, G, tree, extent_um=(np.asarray(thick.shape) - 1) * vs
+    def stub_length_um(inner_pos) -> float:
+        # The prune's threshold, read with the thick vessel's lumen radius
+        # at the tree point nearest the bridge's inner end.
+        radius = float(finite[tree.query(np.asarray(inner_pos, dtype=float))[1]])
+        return max(float(min_stub_length), float(min_stub_length_radius_multiple) * radius)
+
+    blind, blind_um, blind_kept = _remove_blind_vessels_beyond_bridges(
+        built, G, tree, extent_um=(np.asarray(thick.shape) - 1) * vs, stub_length_um=stub_length_um,
     )
-    if blind:
+    if blind or blind_kept:
         logger.info(
             "Thick-vessel bridges: %d vessel(s) beyond a bridge ending blind inside the image "
-            "removed with their bridge (%.0f um): a bridge joins a thick vessel to a vessel "
-            "that goes on, never to a dead end.",
-            blind, blind_um,
+            "removed with their bridge (%.0f um), as short as a stub; %d longer kept.",
+            blind, blind_um, blind_kept,
         )
     if tapers:
         logger.info(
@@ -1774,11 +1788,21 @@ def _bridge_thick_forks(G, near_tree, lumen, vs, chosen) -> int:
     return made
 
 
-def _remove_blind_vessels_beyond_bridges(built, G, tree, *, extent_um) -> tuple[int, float]:
+def _remove_blind_vessels_beyond_bridges(
+    built, G, tree, *, extent_um, stub_length_um: Callable[[np.ndarray], float] | None = None,
+) -> tuple[int, float, int]:
     """Remove each bridge whose vessel ends blind inside the image, with
     that vessel: followed from the bridge through nodes only it passes, it
     reaches no junction and does not leave the image. A vessel running out
-    of the image is kept. Returns how many, and their length (um)."""
+    of the image is kept, and so is one at least *stub_length_um(inner end
+    of the bridge)* long, which the stub prune would keep as well.
+
+    Harvey's grid Y (2026-10-15, E14.5): of six vessels this took, the four
+    marked keep were 34-154 um long -- stretches of the thick vessel itself,
+    and long capillaries -- and the two marked remove 6 and 16 um, all on
+    the right side of the prune's 3 lumen radii; so was grid W's 142 um
+    capillary chain (13, 14, 24, marked plain-right). Returns how many went,
+    their length (um), and how many were kept as longer than a stub."""
     from .degree2 import create_trivial_merged_edge
 
     extent_um = np.asarray(extent_um, dtype=float)
@@ -1787,7 +1811,7 @@ def _remove_blind_vessels_beyond_bridges(built, G, tree, *, extent_um) -> tuple[
         p = np.asarray(built.nodes[node]["pos"], dtype=float)
         return bool(np.any(p <= 2.0) or np.any(p >= extent_um - 2.0))
 
-    removed, removed_um = 0, 0.0
+    removed, removed_um, kept = 0, 0.0, 0
     for u, v, key in [
         (u, v, key) for u, v, key, d in built.edges(keys=True, data=True)
         if d.get(IS_ZERO_RESISTANCE)
@@ -1812,10 +1836,12 @@ def _remove_blind_vessels_beyond_bridges(built, G, tree, *, extent_um) -> tuple[
             seen.add(node)
         if built.degree(node) != 1 or at_image_edge(node):
             continue
+        length = sum(float(built.edges[e].get("length", 0.0)) for e in chain[1:])
+        if stub_length_um is not None and length >= stub_length_um(built.nodes[inner]["pos"]):
+            kept += 1
+            continue
         removed += 1
-        removed_um += sum(
-            float(built.edges[e].get("length", 0.0)) for e in chain[1:]
-        )
+        removed_um += length
         for e in chain:
             built.remove_edge(*e)
         for n in seen - {inner}:
@@ -1830,7 +1856,7 @@ def _remove_blind_vessels_beyond_bridges(built, G, tree, *, extent_um) -> tuple[
                 merged = create_trivial_merged_edge(d1, d2, built.nodes[inner].get("pos"))
                 built.remove_node(inner)
                 built.add_edge(n1, n2, **merged)
-    return removed, removed_um
+    return removed, removed_um, kept
 
 
 def _cut_off_edges(G, built, edges_at, new_node_at) -> set[int]:

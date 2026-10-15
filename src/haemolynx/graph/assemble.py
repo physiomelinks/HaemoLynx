@@ -86,11 +86,6 @@ STEP_LABELS: tuple[str, ...] = (
 #: one pass of the pair search -- about 7 s there -- a round.
 CONSOLIDATION_MAX_ROUNDS = 12
 
-#: A dead end with at least this much (µm), and half its length, on a thick
-#: vessel's centreline tree is that vessel's centreline, which the stub
-#: prune keeps (``LumenCleanup.along_centreline``).
-THICK_CENTRELINE_DEAD_END_UM = 3.0
-
 
 #: Where each label comes in the run, for the line every step logs. A step
 #: names itself in that line, and `collapse_node_clusters` names itself in its
@@ -246,8 +241,11 @@ class LumenCleanup:
     short_loop_keep_hole_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM
     #: How much of a polyline (µm) lies on a thick vessel's centreline tree
     #: (``thick_vessel_junctions.ThickCentreline.along_um``): of two strands
-    #: in one lumen the pair, loop and stretch rules keep the one on it, and
-    #: the stub prune keeps a dead end mostly on it. None: the wall decides.
+    #: in one lumen the pair, in-lumen loop and stretch rules keep the one on
+    #: it, unless the other is a vessel of its own beside it
+    #: (``lumen_loops.VESSEL_BESIDE_THICK_RADIUS_UM``). None: the wall decides.
+    #: The short-loop rule and the stub prune are not given it: on Harvey's
+    #: grid W (2026-10-15) every place they decided by it was marked wrong.
     along_centreline: Callable[[np.ndarray], float] | None = None
     #: The pair rule's and the stretch finder's verdicts, kept from round to
     #: round and from one consolidate_lumen call to the next on the same
@@ -341,15 +339,8 @@ def lumen_cleanup(
             radius_multiple=float(min_stub_length_radius_multiple),
             image_extent_um=image_extent_um,
             index_memo=index_memo,
-            keep_test=None if along_thick_centreline is None else _follows_thick_centreline,
             **stub_mask_rules,
         )
-
-    def _follows_thick_centreline(path: np.ndarray) -> bool:
-        # A dead end mostly on the tree is the thick vessel itself.
-        on = along_thick_centreline(path)
-        length = float(np.linalg.norm(np.diff(np.asarray(path, dtype=float), axis=0), axis=1).sum())
-        return on >= THICK_CENTRELINE_DEAD_END_UM and on >= 0.5 * length
 
     return LumenCleanup(
         support, inside_lumen, prune, max_degree=max_degree, debug=debug, keep_apart=keep_apart,
@@ -407,9 +398,10 @@ def consolidate_lumen(
         if cleanup.max_short_loop_um > 0:
             # Grids I and I2: nine in ten short loops close inside one vessel,
             # and the in-lumen rule above found none of them.
+            # Not given the thick centreline: keeping its side, the rule
+            # took the capillary beside it instead (grid W, 2 and 22).
             G = remove_short_loops(G, cleanup.support, max_length_um=cleanup.max_short_loop_um,
-                                   keep_hole_over_um=cleanup.short_loop_keep_hole_um,
-                                   along_centreline=cleanup.along_centreline)
+                                   keep_hole_over_um=cleanup.short_loop_keep_hole_um)
         # What the whole-edge pair rule leaves: a stretch of an edge beside
         # another, rewired rather than deleted (graph.doubled_stretches).
         G = resolve_doubled_stretches(
@@ -603,8 +595,9 @@ def build_graph_from_skeleton(
         How much of a polyline (µm) follows the thick-vessel centreline tree
         (``thick_vessel_junctions.ThickCentreline.along_um``), when the run
         has a thick-vessel region: the clean-up then keeps the strand on the
-        tree, of two in one lumen, and a dead end mostly on it. None leaves
-        the choice to the wall alone.
+        tree, of two in one lumen, unless the other is a vessel of its own
+        beside it (``LumenCleanup.along_centreline``). None leaves the choice
+        to the wall alone.
     stub_face_protection
         Which short stubs the prune keeps at an image face: ``"threshold"``
         (a tip within its own threshold of a face, as before) or

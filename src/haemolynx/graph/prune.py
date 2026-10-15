@@ -180,7 +180,6 @@ def prune_vascular_stubs(
     mask_continues_at: Optional[Callable[[np.ndarray, np.ndarray], bool]] = None,
     lumen_radius_at: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     image_face_test: Optional[Callable[[Any, np.ndarray], bool]] = None,
-    keep_test: Optional[Callable[[np.ndarray], bool]] = None,
     index_memo: Optional[dict] = None,
 ) -> Union[nx.Graph, nx.MultiGraph]:
     """Iteratively remove short terminal stubs until convergence.
@@ -231,10 +230,6 @@ def prune_vascular_stubs(
     decides which short stubs are at a face instead of *image_extent_um*'s
     "within its own threshold" -- the dead-end definition's
     ``leaves_image`` (``assemble.lumen_cleanup``'s ``stub_face_protection``).
-    *keep_test* ``(path_from_junction) -> bool``, when given, names stubs
-    that stay whatever any rule says of them: a thick vessel's own
-    centreline running on as a dead end (``assemble.lumen_cleanup``), which
-    every rule here read as a hair inside the thick lumen.
     """
     if min_stub_length < 0:
         raise ValueError("min_stub_length must be non-negative")
@@ -334,8 +329,6 @@ def prune_vascular_stubs(
                     if inside_lumen is not None or mask_continues_at is not None
                     else None
                 )
-                if keep_test is not None and path is not None and len(path) > 1 and keep_test(path):
-                    continue
                 if path is not None and len(path) > 1:
                     if inside_lumen is not None and (
                         not_a_vessel(path, junction)

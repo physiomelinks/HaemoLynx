@@ -1245,7 +1245,8 @@ def thick_junction_bridge_arguments(settings: dict) -> dict[str, Any]:
     """What ``graph.insert_thick_vessel_junction_nodes`` takes from a run's
     settings: drawing a vessel on from a thick vessel's wall is a
     mask-supported bridge like any other, so it follows the same switch and
-    the same limits on the background it may cross."""
+    the same limits on the background it may cross; and a blind vessel
+    beyond a bridge goes only when the stub prune would take it."""
     return dict(
         join_dead_ends_at_walls=bool(settings["bridge_require_mask_support"]),
         max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
@@ -1254,6 +1255,8 @@ def thick_junction_bridge_arguments(settings: dict) -> dict[str, Any]:
         short_loop_keep_hole_um=_short_loop_keep_hole_um(settings),
         fill_tree_gaps=bool(settings.get("thick_vessel_fill_centreline_gaps", True)),
         extend_thick_ends=bool(settings.get("thick_vessel_extend_centreline_ends", False)),
+        min_stub_length=float(settings.get("min_stub_length", 10.0)),
+        min_stub_length_radius_multiple=float(settings.get("min_stub_length_radius_multiple", 3.0) or 0.0),
     )
 
 

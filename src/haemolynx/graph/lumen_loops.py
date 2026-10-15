@@ -17,6 +17,7 @@ import networkx as nx
 import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
+from scipy.spatial import cKDTree
 
 from haemolynx.preprocessing.bridge_mask_support import (
     DEFAULT_MAX_BACKGROUND_GAP_UM,
@@ -24,7 +25,7 @@ from haemolynx.preprocessing.bridge_mask_support import (
     _sample_step,
 )
 
-from ._helpers import edge_sample_points
+from ._helpers import densify_polyline, edge_sample_points
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE, THICK_TAPER
 
 logger = logging.getLogger(__name__)
@@ -356,6 +357,35 @@ def _wall_hugging(G: nx.MultiGraph, run, support: MaskSupport) -> tuple[float, f
 #: (µm) on a thick vessel's centreline tree is that vessel and stays.
 THICK_CENTRELINE_LEAD_UM = 3.0
 
+#: ...and the other goes, unless it is a vessel of its own beside the thick
+#: one: its lumen at least this wide (µm, the median mask radius along it)
+#: and lying outside the kept strand's lumen (:data:`BESIDE_THICK_LUMEN_RADII`).
+#: Keeping the strand on the tree made the clean-up take capillaries running
+#: beside the thick vessel, which had been its only route before (grids W
+#: and X). Harvey's grids Y and Z (2026-10-15, E14.5: 50 pair and loop
+#: removals beside a kept thick centreline, marked keep or remove): the
+#: kept ones mostly 3-8 um in radius, the removed 1-2 um; right 39/50 with
+#: this, against 28 for removing all.
+VESSEL_BESIDE_THICK_RADIUS_UM = 2.3
+
+#: Outside the kept strand's lumen: the side's median distance from that
+#: strand, in the larger of the two lumen radii there. A second strand in the
+#: same lumen lies nearer than the lumen's radius, however wide it is.
+BESIDE_THICK_LUMEN_RADII = 1.0
+
+
+def _vessel_beside(G: nx.MultiGraph, side, kept, support: MaskSupport) -> bool:
+    """Whether *side* (a run of edge keys) is a vessel of its own beside
+    *kept*, not a second strand in its lumen (:data:`VESSEL_BESIDE_THICK_RADIUS_UM`)."""
+    side_points = densify_polyline(_polyline(G, side), max_step_um=0.5)
+    side_radius = support.radius(side_points)
+    if float(np.median(side_radius)) < VESSEL_BESIDE_THICK_RADIUS_UM:
+        return False
+    kept_points = densify_polyline(_polyline(G, kept), max_step_um=0.5)
+    distance, nearest = cKDTree(kept_points).query(side_points)
+    lumen = np.maximum(np.maximum(support.radius(kept_points)[nearest], side_radius), 0.5)
+    return float(np.median(distance / lumen)) >= BESIDE_THICK_LUMEN_RADII
+
 
 def _removal_order(
     G: nx.MultiGraph,
@@ -370,7 +400,11 @@ def _removal_order(
     otherwise the one nearest the wall first (``_wall_hugging``). Judged by
     the wall alone, a strand on the tree whose edge ran on into narrower
     vessels averaged nearer the wall than a strand lying wholly in the wide
-    lumen, and went: the thick vessel was left broken (E14.5, 2026-10-15)."""
+    lumen, and went: the thick vessel was left broken (E14.5, 2026-10-15).
+
+    Empty when the run that would go first, off the tree, is a vessel of its
+    own beside the one on it (:func:`_vessel_beside`): the caller then leaves
+    the pair or the loop as it is."""
     wall = [_wall_hugging(G, run, support) for run in runs]
     if along_centreline is None:
         order = sorted(range(len(runs)), key=lambda i: wall[i])
@@ -378,6 +412,11 @@ def _removal_order(
         along = [along_centreline(_polyline(G, run)) for run in runs]
         best = max(along)
         order = sorted(range(len(runs)), key=lambda i: (along[i] >= best - THICK_CENTRELINE_LEAD_UM, wall[i]))
+        first = order[0]
+        if along[first] < best - THICK_CENTRELINE_LEAD_UM:
+            on_tree = max(range(len(runs)), key=lambda i: along[i])
+            if _vessel_beside(G, runs[first], runs[on_tree], support):
+                return []
     return [runs[i] for i in order]
 
 
@@ -394,8 +433,12 @@ def _break(
     The arc kept is the one nearest the lumen's middle: the arc along the
     rim covered less of the lumen, and the diameter read off the mask along
     it would come out too small. With *along_centreline*, an arc on a thick
-    vessel's centreline tree is kept first (:func:`_removal_order`)."""
-    arc = _removal_order(G, list(loop_sides(G, cycle)), support, along_centreline)[0]
+    vessel's centreline tree is kept first (:func:`_removal_order`), and
+    nothing is taken out when the arc that would go is a vessel beside it."""
+    order = _removal_order(G, list(loop_sides(G, cycle)), support, along_centreline)
+    if not order:
+        return []
+    arc = order[0]
     for a, b, key in arc:
         G.remove_edge(a, b, key)
     for a, b, _key in arc:
@@ -420,12 +463,16 @@ def remove_loops_inside_one_lumen(
     places the rest of the network meets it -- so the vessel goes on, drawn
     once, and no spur is left hanging. A loop only one place meets goes
     whole. Runs until no loop inside a lumen is left; a loop round tissue,
-    however short, stays. *along_centreline*: see :func:`_removal_order`.
+    however short, stays. *along_centreline*: see :func:`_removal_order`; a
+    loop whose side would be a vessel beside a thick one stays too.
     """
     if G.number_of_edges() == 0:
         return G
     removed: list[float] = []
+    # Loops left as they are: round tissue, or through a vessel beside a
+    # thick one. Every edge of one finds it again, pass after pass.
     round_tissue: set[frozenset] = set()
+    left_beside = 0
     changed = True
     while changed:
         changed = False
@@ -443,13 +490,23 @@ def remove_loops_inside_one_lumen(
                 round_tissue.add(signature)
                 continue
             lengths = {(a, b, key): _length(G.edges[a, b, key]) for a, b, key in cycle}
-            for a, b, key in _break(G, cycle, support, along_centreline):
+            taken = _break(G, cycle, support, along_centreline)
+            if not taken:
+                round_tissue.add(signature)
+                left_beside += 1
+                continue
+            for a, b, key in taken:
                 removed.append(lengths[(a, b, key)])
                 if G.has_node(a) and G.has_node(b):
                     pairs.refresh(a, b)
                 else:
                     pairs.set_weight(a, b, _UNUSABLE)
             changed = True
+    if left_beside:
+        logger.info(
+            "Left %d loop(s) inside one lumen whose side would have been a vessel beside a thick one",
+            left_beside,
+        )
     if removed:
         logger.info(
             "Broke loops lying inside one lumen (Lee-thinning rings): took out %d edge(s), %.0f um",
@@ -516,8 +573,9 @@ def remove_short_loops(
     if G.number_of_edges() == 0 or not max_length_um > 0:
         return G
     removed: list[float] = []
-    # The hole round each loop, by its edges: every edge of a loop left
-    # alone finds that loop again, pass after pass.
+    # Whether each loop, by its edges, is left alone -- round a wide hole, or
+    # its side a vessel beside a thick one: every edge of a loop left alone
+    # finds that loop again, pass after pass.
     wide_hole: dict[frozenset, bool] = {}
     kept_for_hole = 0
     changed = True
@@ -542,15 +600,22 @@ def remove_short_loops(
                 for a, b, key in cycle
             ):
                 continue
+            signature = frozenset((a, b, key) if str(a) <= str(b) else (b, a, key) for a, b, key in cycle)
             if keep_hole_over_um > 0:
-                signature = frozenset((a, b, key) if str(a) <= str(b) else (b, a, key) for a, b, key in cycle)
                 if signature not in wide_hole:
                     hole = loop_hole_um(_polyline(G, cycle), support)
                     wide_hole[signature] = hole is not None and hole > keep_hole_over_um
                     kept_for_hole += int(wide_hole[signature])
                 if wide_hole[signature]:
                     continue
-            for a, b, key in _break(G, cycle, support, along_centreline):
+            elif wide_hole.get(signature):
+                continue
+            taken = _break(G, cycle, support, along_centreline)
+            if not taken:
+                # Its side would be a vessel beside a thick one: left alone.
+                wide_hole[signature] = True
+                continue
+            for a, b, key in taken:
                 removed.append(lengths[(a, b, key)])
                 if G.has_node(a) and G.has_node(b):
                     pairs.refresh(a, b)
@@ -617,7 +682,8 @@ def remove_parallel_edges_in_lumen(
     the pair ``(left, right)`` of edge keys, is evidence beyond the mask
     that they are two vessels: a pair it returns True for is left alone.
     With *along_centreline*, an edge on a thick vessel's centreline tree is
-    kept over one that is not (:func:`_removal_order`).
+    kept over one that is not (:func:`_removal_order`), and both stay when
+    the other is a vessel of its own beside it.
     """
     from haemolynx.graph.diagnostics import diagnose_parallel_duplicates_in_lumen
 
@@ -628,7 +694,7 @@ def remove_parallel_edges_in_lumen(
         mask_support=support,
         memo=memo,
     )
-    removed = kept_connected = 0
+    removed = kept_connected = kept_beside = 0
     for left, right in report["duplicate_pairs"]:
         present = [edge for edge in (left, right) if G.has_edge(*edge)]
         if len(present) < 2:
@@ -643,6 +709,9 @@ def remove_parallel_edges_in_lumen(
         if keep_apart is not None and keep_apart((left, right)):
             continue
         candidates = [run[0] for run in _removal_order(G, [[edge] for edge in present], support, along_centreline)]
+        if not candidates:
+            kept_beside += 1
+            continue
         drop = next((edge for edge in candidates if not cuts_off_vessels(G, edge)), None)
         if drop is None:
             kept_connected += 1
@@ -654,12 +723,14 @@ def remove_parallel_edges_in_lumen(
             if G.has_node(node) and G.degree(node) == 0:
                 G.remove_node(node)
     G.graph["parallel_lumen_edges_removed"] = int(G.graph.get("parallel_lumen_edges_removed", 0)) + removed
-    if removed or kept_connected:
+    if removed or kept_connected or kept_beside:
         logger.info(
             "Removed %d parallel edge(s) lying beside another in one lumen; kept %d pair(s) "
-            "where either edge was the only link to vessels beyond it",
+            "where either edge was the only link to vessels beyond it, and %d where one was a "
+            "vessel beside a thick one",
             removed,
             kept_connected,
+            kept_beside,
         )
     return G
 
