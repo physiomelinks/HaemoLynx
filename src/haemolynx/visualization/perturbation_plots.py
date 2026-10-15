@@ -313,6 +313,11 @@ def export_non_sweep_perturbation_artifacts(
     stats_csv = output_dir / f"{stem}_statistics.csv"
     statistics.export_statistics_to_csv(stats, stats_csv)
     written.append(stats_csv)
+    beds_csv = statistics.export_capillary_bed_joins_csv(
+        G, output_dir / f"{stem}_capillary_bed_joins.csv"
+    )
+    if beds_csv is not None:
+        written.append(beds_csv)
 
     branch_stats = statistics.compute_branch_order_statistics(
         G, node_positions=node_positions

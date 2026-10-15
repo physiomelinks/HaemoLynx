@@ -27,6 +27,7 @@ from haemolynx.pipeline import (
     build_network,
     default_schema,
     export_results,
+    record_run,
     run_perturbations,
     segment,
     skeletonise,
@@ -80,18 +81,31 @@ def image_to_model_pipeline(settings: dict | None = None, **overrides):
     """
     settings = resolve_settings(settings, overrides=overrides or None)
 
-    inputs = segment(settings)
-    volume = skeletonise(settings, inputs)
-    network = build_network(settings, volume, SCHEMA)
-    boundaries = assign_boundaries(settings, network)
-    diameters = assign_diameters(settings, network, boundaries, SCHEMA)
-    diameters = apply_network_handling(settings, diameters, boundaries, network)
-    model = build_haemodynamic_model(settings, diameters)
-    solution = solve(settings, model, boundaries)
-    # Nothing to bind: each perturbation writes its own output, and the run
-    # goes on to export the baseline it started every one of them from.
-    run_perturbations(settings, model, boundaries, SCHEMA)
-    export_results(settings, network, model, solution)
+    # `record_run` times each stage and, as the run ends, writes its manifest
+    # (settings, version, commit, input checksums, stage times and memory)
+    # beside the outputs.
+    with record_run(settings, SCHEMA) as run:
+        with run.stage("segment"):
+            inputs = segment(settings)
+        with run.stage("skeletonise"):
+            volume = skeletonise(settings, inputs)
+        with run.stage("build_network"):
+            network = build_network(settings, volume, SCHEMA)
+        with run.stage("assign_boundaries"):
+            boundaries = assign_boundaries(settings, network)
+        with run.stage("assign_diameters"):
+            diameters = assign_diameters(settings, network, boundaries, SCHEMA)
+        with run.stage("build_haemodynamic_model"):
+            diameters = apply_network_handling(settings, diameters, boundaries, network)
+            model = build_haemodynamic_model(settings, diameters)
+        with run.stage("solve"):
+            solution = solve(settings, model, boundaries)
+        # Nothing to bind: each perturbation writes its own output, and the run
+        # goes on to export the baseline it started every one of them from.
+        with run.stage("run_perturbations"):
+            run_perturbations(settings, model, boundaries, SCHEMA)
+        with run.stage("export_results"):
+            export_results(settings, network, model, solution)
 
     return model.graph
 

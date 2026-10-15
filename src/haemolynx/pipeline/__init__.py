@@ -19,6 +19,10 @@ a run is visible and can be intervened in::
 Either way a run says where it has got to, if anything is listening::
 
     run_pipeline_stages(settings, schema, progress=log_progress)
+
+and leaves a manifest of what made its outputs beside them -- settings, version,
+commit, input checksums, stage times and peak memory. A script calling the
+stages itself gets one by running them inside :func:`record_run`.
 """
 from .checks import preflight
 from .citations import render_citations, write_citations
@@ -35,8 +39,10 @@ from .progress import (
     RunProgress,
     Stage,
     StageProgress,
+    format_seconds,
     log_progress,
 )
+from .provenance import record_run
 from .schema import SCHEMA, default_schema, write_default_config
 from .settings import fill_derived_settings, resolve_settings
 from .stages import (
@@ -99,7 +105,9 @@ __all__ = [
     "post_process",
     "log_progress",
     "preflight",
+    "record_run",
     "fill_derived_settings",
+    "format_seconds",
     "render_citations",
     "resolve_settings",
     "run_perturbations",
