@@ -127,7 +127,8 @@ haemolynx/
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
-│                           #   (what a run used, and how to cite it); public:
+│                           #   (what a run used, and how to cite it), provenance.py (the
+│                           #   run manifest beside every run's outputs); public:
 │                           #   default_schema, write_default_config, preflight
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
 │   ├── resistance_network_pipeline.py        # Main example: config + CLI over haemolynx.pipeline
@@ -290,7 +291,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py` |
 | `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text |
-| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_setting_units.py`, `test_example_configs.py` |
+| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_pipeline_provenance.py` (the run manifest), `test_setting_units.py`, `test_example_configs.py` |
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py` |
 | Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
 | Packaging / the installed wheel | `tests/test_installed_package.py`, `test_packaging_metadata.py`, `test_napari_manifest.py` |
@@ -751,6 +752,20 @@ are only caught locally.
   as each stage starts, finishes or fails, and one per topology step inside graph building.
   `log_progress` is the ready-made console consumer; the napari panel's bars are the other one.
   Nothing here imports a GUI or a progress-bar library — the callback is the whole mechanism.
+  A finished or failed stage's event carries its wall time (`ProgressEvent.seconds`), which
+  `log_progress` writes on its line, so the panel's run log shows every stage's time.
+- **`pipeline/provenance.py`** — every run writes `{stem}_run_manifest.json` into its output
+  folder (`vtk_output_prefix`'s), with `{stem}_run_settings.yaml` beside it (a config `--config`
+  loads): the settings after `Schema.upgrade` as the run *started*, the version, the git commit
+  and dirty paths (null for a wheel, or with no git; read once per process, since a long-lived
+  panel runs the code it imported), Python, platform and key dependency versions, each input
+  file's size, mtime and sha256 (whole up to 64 MiB, above that 32 evenly spaced 1 MiB blocks:
+  `checksum_method` says which), and each stage's start, end, wall time and peak RSS. Peak
+  memory uses the standard library (psutil is not a dependency): exact for a stage that raised
+  the process peak, else sampled every 0.2 s (`MEMORY_METHOD`); Windows has no worker-process
+  figure. `run_pipeline_stages` records through `record_run`, and the two hand-written examples
+  wrap their stages in it. A failed run writes one too (`status: "failed"`, the error, the
+  stages finished); a run that fails in its first stage writes none. Writing it never fails a run.
 - **`pipeline/checks.py`** — `preflight(settings, schema)`, the pre-run checklist: the schema's own
   checks (`parsers/checks.py`) plus what only this pipeline knows — the artefact a skipped stage
   must have left behind, and whether the ilastik executable can be found. The examples call it

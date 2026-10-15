@@ -97,6 +97,7 @@ from haemolynx.parsers import Schema, parameters_of, prefixed_arguments
 from haemolynx.pipeline.checks import tissue_raw_image
 from haemolynx.pipeline.citations import write_citations
 from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProgress
+from haemolynx.pipeline.provenance import record_run
 from haemolynx.preprocessing.memmap_support import bincount_by_slab
 
 #: Called with each stage's name and the object that stage returned, so
@@ -5600,6 +5601,10 @@ def run_pipeline_stages(
     are the live objects, not copies -- every stage after ``build_network``
     writes attributes onto the same graph -- so a consumer that wants a
     snapshot must take one there and then.
+
+    The run writes its manifest -- settings, version, commit, input checksums,
+    each stage's time and peak memory -- into its output folder as it ends,
+    failed or not (:mod:`haemolynx.pipeline.provenance`).
     """
     if resume is not None and start_from is None:
         start_from = resume.start_from
@@ -5612,7 +5617,22 @@ def run_pipeline_stages(
             raise ValueError(
                 f"stop_after={stop_after!r} comes before start_from={start_from!r}."
             )
-    run = RunProgress(progress)
+    with record_run(
+        settings, schema, progress=progress, start_from=start_from, stop_after=stop_after
+    ) as run:
+        return _run_stages(run, settings, schema, on_stage_output, start_from, resume, stop_after)
+
+
+def _run_stages(
+    run: RunProgress,
+    settings: dict,
+    schema: Schema,
+    on_stage_output: StageOutputCallback | None,
+    start_from: str | None,
+    resume: PipelineResume | None,
+    stop_after: str | None,
+) -> nx.MultiGraph | None:
+    """:func:`run_pipeline_stages`'s stages, each reported through *run*."""
     with run.stage("segment") as segmenting:
         inputs = segment(
             settings,

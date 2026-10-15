@@ -25,20 +25,20 @@ confirming.
 | 3 | [Haemodynamic accuracy](#3-haemodynamic-accuracy--flow) | **4** | laws checked against the papers' own descriptions, not against measured data (6a); the solved share not recorded on Nerve (6c) |
 | 4 | [Statistics](#4-statistics--stats) | **5** | no glossary of definitions and units (6a); 21 of 95 rows carry a unit (6b) |
 | 5 | [Inputs and segmentation](#5-inputs-and-segmentation--input) | **5** | ilastik output: vessel label guessed, reuse judged by file time (6c) |
-| 6 | [Speed](#6-speed--speed) | **3** | a run does not record its stage times (4a) |
-| 7 | [Memory and scale](#7-memory-and-scale--memory) | **4** | peak memory never measured (6a); no stated requirements (6b); the default solvers do not scale (6c) |
+| 6 | [Speed](#6-speed--speed) | **4** | no per-stage benchmark table for the reference datasets (6a); no written targets (6b); the 2026-09-29 freeze not closed (6c) |
+| 7 | [Memory and scale](#7-memory-and-scale--memory) | **4** | every run records peak memory per stage, but no reference dataset is measured yet (6a); no stated requirements (6b); the default solvers do not scale (6c) |
 | 8 | [Usability](#8-usability--usability) | **4** | no task list walked through (6a); defaults untested end to end (6b); no undo (6c) |
 | 9 | [Visualisation](#9-visualisation--visual) | **4** | figures without units (6a); tube frame rate not measured (6c); mixed dpi (6d) |
 | 10 | [Exports](#10-exports--export) | **3** | blind-end vessels keep a flow of exactly 0 in the VTK, flagged, not blank: a decision (4b) |
 | 11 | [Documentation and help](#11-documentation-and-help--docs) | **4** | help pages empty, 0 of 10, for Harvey to write (6a); guide skips Post processing and Perturbations (6b) |
 | 12 | [Robustness](#12-robustness--robust) | **4** | no edge-case suite through every stage (6a); open review bugs (6b) |
-| 13 | [Reproducibility](#13-reproducibility--repro) | **4** | no settings, version or commit beside the outputs (6a); no end-to-end identity test (6c) |
+| 13 | [Reproducibility](#13-reproducibility--repro) | **5** | no end-to-end identity test (6c) |
 | 14 | [Testing and CI](#14-testing-and-ci--tests) | **3** | no full-suite pass recorded since 2026-09-25 (4c) |
 | 15 | [Installation and packaging](#15-installation-and-packaging--package) | **4** | still 0.1.0 after 457 commits, no CHANGELOG (6a) |
 | 16 | [Code maintainability](#16-code-maintainability--code) | **3** | Cleanup plan Phase 2 unfinished (4c) |
 
-**Headline: the lowest score is 3** (speed, exports, testing, maintainability).
-The mean is 3.9. The release gate needs every aspect at 7 or more, and the science aspects at 8.
+**Headline: the lowest score is 3** (exports, testing, maintainability).
+The mean is 4.0. The release gate needs every aspect at 7 or more, and the science aspects at 8.
 
 Most of these scores are low because **nothing has been measured, not because the work is
 poor**. The test suite is large (6,064 tests) and checks the analytic cases well. What is
@@ -51,8 +51,11 @@ This order follows the gate, which is set by the lowest aspects, and favours the
 
 1. ~~**Decide the Pries "in vitro" law** (`flow.4b`)~~. Done 2026-10-13: Harvey chose the
    literal fix, plus Pries & Secomb 2005 as a choice. Haemodynamics went from 3 to 4.
-2. **Record stage times and peak memory in every run** (`speed.4a`, `memory.6a`, step R2 of the
-   plan). It takes speed from 3 to 4 and makes the level-6 speed and memory checks possible.
+2. ~~**Record stage times and peak memory in every run** (`speed.4a`, `memory.6a`, step R2 of the
+   plan)~~. Done 2026-10-15: every run writes a manifest beside its outputs, with each stage's
+   time and peak memory, the settings, version, commit and input checksums. Speed went from 3 to
+   4 and reproducibility from 4 to 5. `memory.6a` and `speed.6a` now need each reference dataset
+   run once and its manifest recorded.
 3. **Fix the VTK export** (`export.4b`, `export.6d`, `export.6c`): blank flow for unsolved
    vessels, add diameter and the solved flag, and stamp the version. This is item 5 of
    `PLAN_dale_review_fixes.md`. It takes exports from 3 to 4 or 5.
@@ -268,7 +271,7 @@ haematocrit, constriction and perturbations.
 | ID | By | Passes when | Now | Evidence or gap |
 |---|---|---|---|---|
 | speed.2a | A | A full run completes on E14.5. | ✓ | 1,834 s through solve (`outputs/p6/o2_current/solve_summary.json`) |
-| speed.4a | A | Every run records each stage's wall time, in the log and in a file. | ✗ | `ProgressEvent` has no duration. The run log has no timestamps (`gui/run_log.py:95`) |
+| speed.4a | A | Every run records each stage's wall time, in the log and in a file. | ✓ | Since 2026-10-15. In a file: every run's `{stem}_run_manifest.json` gives each stage's start, end and `wall_seconds` (`pipeline/provenance.py`; `test_pipeline_provenance.py:92-130`), on a real staged run of the seven-vessel fixture (`:316`) and on a failed run (`:394`). In the log: a finished or failed stage's `ProgressEvent.seconds` (`progress.py:392`) is on its `log_progress` line, which the panel's run log shows (`test_pipeline_progress.py:394`, `test_gui_run_log.py:593`), and a run's last line lists every stage's time, for a command line that shows no progress (`test_pipeline_provenance.py:133`) |
 | speed.4b | R | The hot spots have been profiled at least once. | ✓ | Per-step build times in `scripts/graph_artefacts/build_side.py`. On E14.5 the build takes 255 s, 134 s of it mask recovery. Profiled again 2026-10-12 on a 0.5 G-voxel crop of the 16 G-voxel skeletal-muscle stack (py-spy): all of recovery's first 40 min was the cross-section outline's point-in-mask lookups; after `_follow_rays` + `PackedMask` the E14.5 uncovered scan is 108 -> 18 s and recovery 164 -> 113 s, graph identical (`tests/test_mask_recovery.py` outline tests) |
 | speed.4c | R | Long work runs off the GUI thread. | ✓ | `thread_worker` for the run, both optimisers, segmentation scoring and the review scans (`gui/_widget.py`) |
 | speed.6a | A | A per-stage benchmark table exists for each reference dataset at a recorded commit. | ✗ | Only E14.5 graph build per step, and one full run |
@@ -287,7 +290,7 @@ haematocrit, constriction and perturbations.
 | memory.2a | A | E14.5 runs on the development workstation (31.7 GB). | ✓ | `outputs/p6/o2_current.log` |
 | memory.4a | A | Disk-backed volumes and the sparse solver exist and are tested. | ✓ | `use_memmap_loading`, `test_memmap_*.py`, `test_low_ram_*.py`; sparse solver equal to dense (`test_flow_solvers.py:125`) |
 | memory.4b | A | A worker that runs out of memory falls back instead of losing the run. | ✓ | `run_edge_tasks` falls back to one process (`haemodynamics/sections.py:78-146`). Seen working in `o2_current.log:259-281` |
-| memory.6a | A | Peak memory per stage is measured on each reference dataset. | ✗ | Nothing measures peak memory: no psutil, no tracemalloc |
+| memory.6a | A | Peak memory per stage is measured on each reference dataset. | ✗ | Since 2026-10-15 every run's manifest records each stage's peak resident memory, read with the standard library (psutil is not a dependency): GetProcessMemoryInfo on Windows, getrusage elsewhere; exact for a stage that raised the process peak, else sampled every 0.2 s; worker processes on POSIX only (`test_pipeline_provenance.py:185`, `:202`). Not yet measured on any reference dataset: run each one and record its manifest |
 | memory.6b | R | System requirements (RAM for a given volume) are documented for users. | ✗ | |
 | memory.6c | R | The default solvers stay within memory at 20,000 nodes. | ✗ | Dense is the default (8N², 3.2 GB at 20k), and so is the eigendecomposition two-point resistance ("hours at 20,000"; `resistance.py:14-25`) |
 | memory.8a | A | The largest target dataset (Mason SM or the brain) completes within the documented limits. | ✗ | Mason SM (130 M voxels) has no recorded run |
@@ -339,7 +342,7 @@ haematocrit, constriction and perturbations.
 | export.4b | R | No export can be misread: unsolved vessels' flows are blank, not numbers. | ✗ | Since `b6d9210` the VTK blanks flows and pressures where no inlet and outlet reach (`no_boundary`), and writes `flow_solved` and `flow_state` on every vessel (`test_vtk_io.py:310`). Vessels behind dead ends inside the tissue keep the model's answer, no flow: `flow_abs`, `flow_signed` and `pressure_drop` exactly 0, set after the solve, every perturbation re-solve and every sweep point (before, the solve's rounding, up to 5e-20 m^3/s on E14.5), flagged `flow_solved=0`, `flow_state=blind_end` or `closed_end` (`0c6d13b`, `test_open_ends.py:244`, `:265`, `:290`; the dead-end plan's D4). Harvey decides whether that counts as blank |
 | export.6a | R | A data dictionary documents every exported file, column or array, and unit. | ✗ | None. The README and the guide do not describe the outputs |
 | export.6b | A | Units are present and consistent everywhere, VTK arrays and perturbation CSVs included. | ✗ | VTK arrays have no units. Perturbation resistance and flow columns have none |
-| export.6c | A | Outputs carry the HaemoLynx version, the commit and the settings used, with a config beside them. | ✗ | The VTK vessels file now carries the version, viscosity law, diameter basis, haematocrit and open-end model in its field data (`test_vtk_io.py:310`, `b6d9210`). No commit and no settings: those travel only inside `.haemorun` |
+| export.6c | A | Outputs carry the HaemoLynx version, the commit and the settings used, with a config beside them. | ✓ | The VTK vessels file carries the version, viscosity law, diameter basis, haematocrit and open-end model in its field data (`test_vtk_io.py:310`, `b6d9210`). Since 2026-10-15 the run manifest beside every run's outputs carries the version, the commit and the settings, with `{stem}_run_settings.yaml` as the config (`test_pipeline_provenance.py:92`, `:169`, `:519`). Read as the output folder: the VTK and CSV files do not each carry the commit |
 | export.6d | A | The VTK carries each vessel's diameter and its solved flag. | ✓ | `diameter_um` and `flow_solved` on every vessel cell (`test_vtk_io.py:310-339`), at `b6d9210` |
 | export.8a | A | The graph is exported in an open format (GraphML or node-link JSON) besides the pickle. | ✗ | Pickle only |
 | export.8b | A | A script checks that each export opens in a third-party tool (ParaView or VTK, pandas, NetworkX). | ✗ | |
@@ -387,7 +390,7 @@ haematocrit, constriction and perturbations.
 | repro.2a | A | Settings save to a config file and load back. | ✓ | `parsers/config.py`, `--save-config` |
 | repro.4a | A | Old configs and saved runs upgrade, and unknown keys are refused with a suggestion. | ✓ | `Schema.upgrade` (`parsers/schema.py:562-594`) |
 | repro.4b | A | Every random choice has a fixed default seed, and an unseeded replicate's seed is recorded. | ✓ | Seeds 42 and 20240917; `_block_replicates.csv` |
-| repro.6a | A | Every output folder holds the settings, the HaemoLynx version, the commit and the input checksums. | ✗ | None of these is written (see export.6c) |
+| repro.6a | A | Every output folder holds the settings, the HaemoLynx version, the commit and the input checksums. | ✓ | Since 2026-10-15, `{stem}_run_manifest.json` beside every run's outputs: from `run_pipeline_stages` (the panel, the carotid example) and from the two examples that call the stages themselves, through `record_run` (`test_pipeline_provenance.py:343`). It holds the settings after `Schema.upgrade`, as the run started (`:150`), the version (`:92`), the commit and dirty paths (`:519`; null for a wheel or with no git, `:476-552`) and each input's sha256 (`:117`, `:328`; sampled above 64 MiB, `:239`), with `{stem}_run_settings.yaml`, which loads back to the same settings (`:169`, `:334`). A failed run writes one too (`:394`) |
 | repro.6b | A | The citations for the methods a run used are written beside its outputs. | ✓ | `{stem}_citations.txt`, on by default (`test_citations.py`) |
 | repro.6c | A | The same input and settings, run twice, give identical outputs, tested end to end. | ✗ | No such test. Reconnect adds edges in completion order (`graph/reconnect.py:755-761`) |
 | repro.8a | A | Windows and Linux give the same results within tolerance (checked). | ✗ | |
@@ -462,3 +465,4 @@ Add a row for every scoring, and for every change to a check or a target.
 | 2026-10-13 | after `5ef7d53` | Claude | `flow.4b` passes: the Pries in vitro law is Pries 1992's, every Pries form is pinned to its published equations, and Pries & Secomb 2005 is a choice (`pries_viscosity_form`). This was Harvey's decision, option A of `PLAN_dale_review_fixes.md` item 1. Haemodynamics goes from 3 to 4, the mean from 3.8 to 3.9. `flow.6a` evidence updated; it still fails. Plasma-column resistances from earlier runs are 2.9–3.8× too high at 5–10 µm. |
 | 2026-10-14 | `c62441a` | Claude | Bridging work (`PLAN_bridging.md`, `260d36a..c62441a` after `cf529d8..260d36a`). Evidence updated for `graph.6b` (grid R marked by Harvey, 13/13 at the all-one-way baseline), `graph.6d` and `robust.6b` (bugs found and fixed), `robust.4a` (shape errors in skeleton cleaning and graph building). No score changes: `graph.6b` and `graph.6d` still fail on the other grids' fits and the prune's protrusion test, `robust.6b` on the ilastik label guess. |
 | 2026-10-15 | after `10c6923` | Claude | Short-loop hole rule (`short_loop_keep_hole_over_um`, 10 um): evidence added to `graph.6b` (grids Q and Q2 marked and fitted) and `graph.8b` (Q's rule on fresh grid Q2: 23/30, equal to all one way). Both still fail. No score changes. |
+| 2026-10-15 | after `d7b7f09` | Claude | Run manifest (`pipeline/provenance.py`): every run writes `{stem}_run_manifest.json` and `{stem}_run_settings.yaml` beside its outputs, and each stage's wall time reaches the log. `speed.4a`, `repro.6a` and `export.6c` pass. `memory.6a` evidence updated; it fails until the reference datasets are measured. Speed 3 → 4, reproducibility 4 → 5, mean 3.9 → 4.0; the headline stays 3. `export.6c` is read as the output folder carrying the commit and settings, not each file; exports stay 3 on `export.4b`. |
