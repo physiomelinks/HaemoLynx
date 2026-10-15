@@ -245,6 +245,30 @@ def test_a_bridge_left_dangling_by_a_clean_up_goes_too():
 
 
 
+def test_a_piece_bridged_at_both_ends_to_one_node_goes_with_its_bridges():
+    """A short strand in the thick lumen, each end only a bridge, both to the
+    centreline's node at y = 30 (what the tree fill left at grid V's V13 on
+    E14.5): not a vessel opening into the thick one, and contracted for the
+    statistics a loop on one node. A vessel bridged at both ends to two
+    places on the centreline is a loop through tissue and stays."""
+    from haemolynx.graph.thick_vessel_junctions import remove_dangling_bridges
+
+    G = polyline_graph([[(7, 7, 2), (7, 7, 30)], [(7, 7, 30), (7, 7, 57)], [(7, 11, 27), (7, 11, 33)],
+                        [(7, 11, 27), (7, 7, 30)], [(7, 11, 33), (7, 7, 30)]])
+    _mark_bridge(G, (7, 11, 27), (7, 7, 30))
+    _mark_bridge(G, (7, 11, 33), (7, 7, 30))
+    assert remove_dangling_bridges(G) == 2
+    assert not _bridges(G) and G.number_of_edges() == 2
+    assert not G.has_node((7.0, 11.0, 27.0)) and not G.has_node((7.0, 11.0, 33.0))
+
+    G = polyline_graph([[(7, 7, 2), (7, 7, 20)], [(7, 7, 20), (7, 7, 40)], [(7, 7, 40), (7, 7, 57)],
+                        [(7, 11, 20), (7, 11, 40)], [(7, 11, 20), (7, 7, 20)], [(7, 11, 40), (7, 7, 40)]])
+    _mark_bridge(G, (7, 11, 20), (7, 7, 20))
+    _mark_bridge(G, (7, 11, 40), (7, 7, 40))
+    assert remove_dangling_bridges(G) == 0
+    assert len(_bridges(G)) == 2 and G.number_of_edges() == 6
+
+
 def test_a_second_clean_up_on_the_same_object_judges_only_what_changed(monkeypatch):
     """build_network cleans up after smoothing and again after the split:
     the verdicts live on the LumenCleanup, so the second call judges no

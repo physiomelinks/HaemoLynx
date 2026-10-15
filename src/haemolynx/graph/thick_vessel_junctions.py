@@ -1413,14 +1413,33 @@ def _cut_off_edges(G, built, edges_at, new_node_at) -> set[int]:
 def remove_dangling_bridges(G: nx.MultiGraph) -> int:
     """Take out, in place, every bridge with a dead end -- a bridge is never
     one: it joins a vessel to the thick centreline, so one whose vessel a
-    clean-up took out joins nothing. Repeated until none is left, with the
-    nodes left bare. Returns how many went."""
+    clean-up took out joins nothing. And every vessel whose two ends are
+    each nothing but a bridge, both to the same node, with its bridges: a
+    piece of strand left in the thick vessel's lumen (where the thick
+    centreline drawn from the tree replaced the graph's own, on E14.5), not
+    a vessel opening into it; contracted for the statistics, it would be a
+    loop on one node. Repeated until none is left, with the nodes left bare.
+    Returns how many bridges went."""
     removed = 0
     while True:
         dangling = [
             (u, v, key) for u, v, key, data in G.edges(keys=True, data=True)
             if data.get(IS_ZERO_RESISTANCE) and (G.degree[u] == 1 or G.degree[v] == 1)
         ]
+        for u, v, key, data in list(G.edges(keys=True, data=True)):
+            if data.get(IS_ZERO_RESISTANCE) or u == v or G.degree[u] != 2 or G.degree[v] != 2:
+                continue
+            ends = []
+            for node in (u, v):
+                other = [
+                    (a, b, k, d) for a, b, k, d in G.edges(node, keys=True, data=True)
+                    if not (k == key and {a, b} == {u, v})
+                ]
+                if len(other) == 1 and other[0][3].get(IS_ZERO_RESISTANCE):
+                    ends.append(other[0])
+            if len(ends) == 2 and ends[0][1] == ends[1][1]:
+                G.remove_edge(u, v, key)
+                dangling.extend((a, b, k) for a, b, k, _d in ends)
         if not dangling:
             return removed
         for u, v, key in dangling:
