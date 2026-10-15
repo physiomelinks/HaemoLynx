@@ -5632,8 +5632,9 @@ def run_pipeline_stages(
         network.graph = resume.graph
     # The statistics a resumed network carries are of the network before this
     # run changed it; the export measures it again.
-    if network.graph is not None:
-        network.graph.graph.pop(STATISTICS_REPORT, None)
+    network_graph = getattr(network, "graph", None)
+    if network_graph is not None:
+        network_graph.graph.pop(STATISTICS_REPORT, None)
     _produced(on_stage_output, "build_network", network)
     if stop_after == "build_network":
         return network.graph
