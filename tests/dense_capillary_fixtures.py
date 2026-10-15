@@ -31,6 +31,16 @@ LINES_UM = (11.0, 33.0, 55.0, 77.0, 103.0)
 CAPILLARY_RADIUS_UM = 2.5
 WIDE_ROW_UM = 55.0
 WIDE_HALF_WIDTH_UM = 6.0
+#: ``(start, end)`` of each vessel beyond the lattice, ``(y, x)`` um: the two
+#: parallel vessels, then the two sprouts (start on a row, end blind).
+PAIR_YX_UM = (((18.0, 55.0), (18.0, 77.0)), ((26.0, 55.0), (26.0, 77.0)))
+SPROUTS_YX_UM = (((77.0, 20.0), (87.0, 20.0)), ((103.0, 26.0), (93.0, 26.0)))
+#: Their radius, before the per-vessel jitter.
+PAIR_AND_SPROUT_RADIUS_UM = 2.0
+#: The two one-voxel dropouts: the row they cut and where along it, then
+#: the column and where along it.
+ROW_DROPOUT_UM = (11.0, 44.0)
+COLUMN_DROPOUT_UM = (33.0, 66.0)
 SEED = 20261004
 
 
@@ -80,20 +90,22 @@ def dense_capillary_bed(seed: int = SEED) -> DenseCapillaryBed:
         mask |= _capsule(points, _at(line, 0.0), _at(line, far), jitter(radius))
         mask |= _capsule(points, _at(0.0, line), _at(far, line), jitter(CAPILLARY_RADIUS_UM))
 
-    pair = ((_at(18.0, 55.0), _at(18.0, 77.0)), (_at(26.0, 55.0), _at(26.0, 77.0)))
+    pair = tuple((_at(*start), _at(*end)) for start, end in PAIR_YX_UM)
     for start, end in pair:
-        mask |= _capsule(points, start, end, jitter(2.0))
+        mask |= _capsule(points, start, end, jitter(PAIR_AND_SPROUT_RADIUS_UM))
 
-    sprouts = ((_at(77.0, 20.0), _at(87.0, 20.0)), (_at(103.0, 26.0), _at(93.0, 26.0)))
+    sprouts = tuple((_at(*start), _at(*end)) for start, end in SPROUTS_YX_UM)
     for start, end in sprouts:
-        mask |= _capsule(points, start, end, jitter(2.0))
+        mask |= _capsule(points, start, end, jitter(PAIR_AND_SPROUT_RADIUS_UM))
 
     spacing = np.asarray(VOXEL_SIZE_ZYX)
-    row_dropout = int(round(44.0 / spacing[2]))
-    near_row = np.abs(np.arange(SHAPE[1]) * spacing[1] - 11.0) <= 4.0
+    row, along_row = ROW_DROPOUT_UM
+    row_dropout = int(round(along_row / spacing[2]))
+    near_row = np.abs(np.arange(SHAPE[1]) * spacing[1] - row) <= 4.0
     mask[:, near_row, row_dropout] = False
-    column_dropout = int(round(66.0 / spacing[1]))
-    near_column = np.abs(np.arange(SHAPE[2]) * spacing[2] - 33.0) <= 4.0
+    column, along_column = COLUMN_DROPOUT_UM
+    column_dropout = int(round(along_column / spacing[1]))
+    near_column = np.abs(np.arange(SHAPE[2]) * spacing[2] - column) <= 4.0
     mask[:, column_dropout, near_column] = False
 
     skeleton = skeletonize(mask, method="lee").astype(bool)
@@ -123,3 +135,85 @@ def centreline_samples(start: np.ndarray, end: np.ndarray, step_um: float = 0.5)
     """Points along the segment start-end, *step_um* apart."""
     count = max(2, int(np.ceil(np.linalg.norm(end - start) / step_um)) + 1)
     return start + np.linspace(0.0, 1.0, count)[:, None] * (end - start)
+
+
+@dataclass(frozen=True)
+class DesignSegment:
+    """One vessel between two of the bed's junctions or ends, as designed."""
+
+    start_yx_um: tuple[float, float]
+    end_yx_um: tuple[float, float]
+    #: Nominal: twice the radius before the per-vessel jitter (+-0.4 um).
+    diameter_um: float
+
+    @property
+    def length_um(self) -> float:
+        return float(np.hypot(self.end_yx_um[0] - self.start_yx_um[0], self.end_yx_um[1] - self.start_yx_um[1]))
+
+
+def design_segments(*, as_segmented: bool = False) -> list[DesignSegment]:
+    """The bed's network as designed, every centreline straight in the plane
+    ``z = PLANE_Z_UM``: each vessel split at the junctions on it, the lattice
+    lines running face to face. *as_segmented* also cuts the two vessels the
+    dropouts break, leaving out the voxel of each that is gone -- what a tool
+    reading the mask literally should find."""
+    far = float((SHAPE[1] - 1) * VOXEL_SIZE_ZYX[1])
+    vessels = []
+    for line in LINES_UM:
+        row_diameter = 2 * (WIDE_HALF_WIDTH_UM if line == WIDE_ROW_UM else CAPILLARY_RADIUS_UM)
+        vessels.append(((line, 0.0), (line, far), row_diameter))
+        vessels.append(((0.0, line), (far, line), 2 * CAPILLARY_RADIUS_UM))
+    for start, end in PAIR_YX_UM + SPROUTS_YX_UM:
+        vessels.append((start, end, 2 * PAIR_AND_SPROUT_RADIUS_UM))
+
+    def runs_along_x(start, end) -> bool:
+        return start[0] == end[0]
+
+    def on(point, start, end) -> bool:
+        (y0, x0), (y1, x1) = start, end
+        return min(y0, y1) <= point[0] <= max(y0, y1) and min(x0, x1) <= point[1] <= max(x0, x1)
+
+    gaps = []
+    if as_segmented:
+        half = VOXEL_SIZE_ZYX[2] / 2
+        row, along = ROW_DROPOUT_UM
+        gaps.append(((row, along), half))
+        column, along = COLUMN_DROPOUT_UM
+        gaps.append(((along, column), half))
+
+    segments = []
+    for start, end, diameter in vessels:
+        axis = 1 if runs_along_x(start, end) else 0
+        cuts = {start[axis], end[axis]}
+        for other_start, other_end, _d in vessels:
+            if runs_along_x(other_start, other_end) == runs_along_x(start, end):
+                continue
+            crossing = (start[0], other_start[1]) if axis == 1 else (other_start[0], start[1])
+            if on(crossing, start, end) and on(crossing, other_start, other_end):
+                cuts.add(crossing[axis])
+        stops = sorted(cuts)
+        pieces = list(zip(stops[:-1], stops[1:]))
+        for centre, half in gaps:
+            if on(centre, start, end):
+                pieces = [
+                    piece
+                    for a, b in pieces
+                    for piece in (((a, centre[axis] - half), (centre[axis] + half, b))
+                                  if a < centre[axis] < b else ((a, b),))
+                ]
+        for a, b in pieces:
+            first, second = list(start), list(start)
+            first[axis], second[axis] = a, b
+            segments.append(DesignSegment(tuple(first), tuple(second), diameter))
+    return segments
+
+
+def design_topology(segments: list[DesignSegment]) -> dict[str, int]:
+    """Branch points (degree >= 3) and end points (degree 1) of *segments*."""
+    from collections import Counter
+
+    degree = Counter(point for s in segments for point in (s.start_yx_um, s.end_yx_um))
+    return {
+        "branch_points": sum(1 for d in degree.values() if d >= 3),
+        "end_points": sum(1 for d in degree.values() if d == 1),
+    }
