@@ -9,7 +9,10 @@ from .bifurcation import (
 from .comprehensive import (
     NETWORK_ANALYSIS_MEASURES,
     STATISTIC_MEASURES,
+    ZERO_RESISTANCE_BRIDGES,
     compute_comprehensive_vessel_statistics,
+    compute_vessel_statistics_by_measure,
+    flatten_statistics_sections,
 )
 from .csv_export import export_statistics_to_csv
 from .current_flow import compute_current_flow
@@ -54,7 +57,10 @@ from .tissue_volume import TISSUE_THRESHOLD_METHODS, TissueVolume, measure_tissu
 __all__ = [
     "STATISTIC_MEASURES",
     "NETWORK_ANALYSIS_MEASURES",
+    "ZERO_RESISTANCE_BRIDGES",
     "compute_comprehensive_vessel_statistics",
+    "compute_vessel_statistics_by_measure",
+    "flatten_statistics_sections",
     "compute_basic_statistics",
     "compute_tortuosity_measures",
     "compute_branching_statistics",

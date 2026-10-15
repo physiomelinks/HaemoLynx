@@ -7,6 +7,7 @@ import networkx as nx
 
 from haemolynx.statistics import (
     STATISTIC_MEASURES,
+    ZERO_RESISTANCE_BRIDGES,
     compute_basic_statistics,
     compute_tortuosity_measures,
     compute_branching_statistics,
@@ -15,7 +16,9 @@ from haemolynx.statistics import (
     compute_path_efficiency,
     compute_vessel_density,
     compute_comprehensive_vessel_statistics,
+    compute_vessel_statistics_by_measure,
     export_statistics_to_csv,
+    flatten_statistics_sections,
     compute_branch_order_statistics,
     compute_daughter_daughter_angles,
     compute_emergence_angles_by_branch_order,
@@ -416,6 +419,64 @@ def test_disabling_a_measure_removes_exactly_its_own_keys(simple_graph):
     assert "Mean Murray Ratio" in full
     assert "Mean Murray Ratio" not in without_murray
     assert {**without_murray, **compute_murray_law_compliance(simple_graph)} == full
+
+
+def test_each_measure_that_ran_is_a_section_of_its_own_rows(simple_graph):
+    """What the panel's Statistics tab draws a button for: one section per
+    measure asked for, in the order the measures run, each holding exactly
+    what that measure computes."""
+    pos = nx.get_node_attributes(simple_graph, "pos")
+    sections = compute_vessel_statistics_by_measure(
+        simple_graph, node_positions=pos, image_dimensions=(10, 10, 10),
+        enabled_measures=frozenset({"cyclomatic_number", "basic", "murray_law"}),
+    )
+
+    assert list(sections) == ["basic", "murray_law", "cyclomatic_number"]
+    assert sections["basic"] == compute_basic_statistics(simple_graph, False)
+    assert sections["murray_law"] == compute_murray_law_compliance(simple_graph)
+    assert sections["cyclomatic_number"] == compute_cyclomatic_number(simple_graph)
+
+
+@pytest.mark.parametrize("mode", ["fast", "full"])
+def test_the_flat_report_is_every_section_in_turn_and_no_row_is_in_two(simple_graph, mode):
+    pos = nx.get_node_attributes(simple_graph, "pos")
+    arguments = dict(node_positions=pos, image_dimensions=(10, 10, 10), statistics_mode=mode)
+    sections = compute_vessel_statistics_by_measure(simple_graph, **arguments)
+    flat = compute_comprehensive_vessel_statistics(simple_graph, **arguments)
+
+    assert list(sections) == list(STATISTIC_MEASURES)
+    rows = [name for section in sections.values() for name in section]
+    assert len(rows) == len(set(rows)), "a row reported by two measures"
+    assert list(flat) == rows + ["Statistics Mode"]
+    assert flat == flatten_statistics_sections(sections, mode)
+    assert flat["Statistics Mode"] == mode
+    if mode == "full":
+        assert list(sections["community"]) == ["communities"]
+
+
+def test_zero_resistance_bridges_are_a_section_where_the_csv_always_had_them():
+    """After the last measure that runs in both modes and before the three
+    that differ between them, so the statistics CSV keeps its row order."""
+    from haemolynx.graph import IS_ZERO_RESISTANCE
+
+    G = nx.MultiGraph()
+    for node, pos in {0: (0, 0, 0), 1: (0, 0, 40), 2: (0, 9, 40)}.items():
+        G.add_node(node, pos=np.asarray(pos, float))
+    G.add_edge(0, 1, length=40.0, voxels=[[0, 0, 0], [0, 0, 40]])
+    G.add_edge(1, 2, length=9.0, voxels=[[0, 0, 40], [0, 9, 40]], **{IS_ZERO_RESISTANCE: True})
+
+    sections = compute_vessel_statistics_by_measure(
+        G, enabled_measures=frozenset({"basic", "flow_hierarchy", "path_efficiency"})
+    )
+
+    assert list(sections) == ["basic", "flow_hierarchy", ZERO_RESISTANCE_BRIDGES, "path_efficiency"]
+    assert sections[ZERO_RESISTANCE_BRIDGES] == {
+        "Zero-resistance Bridges (not counted as vessels)": 1,
+        "Zero-resistance Bridge Length (microns)": 9.0,
+    }
+    assert ZERO_RESISTANCE_BRIDGES not in compute_vessel_statistics_by_measure(
+        nx.MultiGraph(nx.path_graph(2)), enabled_measures=frozenset({"basic"})
+    )
 
 
 def test_enabled_measures_with_nothing_enabled_still_reports_the_mode(simple_graph):

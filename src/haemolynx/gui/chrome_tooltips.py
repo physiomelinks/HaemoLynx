@@ -108,8 +108,13 @@ EDIT_GRAPH_TOOLTIP = (
 )
 REOPEN_VIEW_TOOLTIP = (
     "Reopen the left-hand panel: whichever of its HaemoLynx view (Z-depth, "
-    "vessel draw mode and colouring, scale bar and snapshot), Layer list and "
-    "Layer controls tabs have been closed, with the HaemoLynx view in front"
+    "vessel draw mode and colouring, scale bar and snapshot), Statistics, "
+    "Layer list and Layer controls tabs have been closed, with the HaemoLynx "
+    "view in front"
+)
+STATISTICS_SECTION_TOOLTIP = (
+    "Show or hide what this measure found in the last run's statistics; a "
+    "rerun of the statistics replaces it, keeping open what was open"
 )
 SAVE_CONFIG_TOOLTIP = (
     "Write the current form values to a YAML config file; relative "

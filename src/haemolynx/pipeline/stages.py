@@ -109,6 +109,20 @@ StageOutputCallback = Callable[[str, Any], None]
 #: one from a stage: `topology_step:prune_vascular_stubs`.
 TOPOLOGY_STEP = "topology_step:"
 
+#: Where `export_results` leaves what the run's statistics found, on the graph
+#: it measured, so it goes wherever the graph goes (checkpoints, saved runs):
+#: ``{"mode", "csv", "sections"}``, *sections* one per measure that ran
+#: (`statistics.compute_vessel_statistics_by_measure`), then those below, each
+#: ``{row: value}``. What the panel's Statistics tab shows. Absent when the
+#: export computed none, and dropped from a resumed network, which the run
+#: measures again.
+STATISTICS_REPORT = "statistics_report"
+#: The report's sections that are not a statistic measure.
+HAEMODYNAMICS_SECTION = "haemodynamics"
+BRANCH_ORDER_SECTION = "branch_orders"
+WEIGHTED_MEASURES_SECTION = "weighted_betweenness_communities"
+TISSUE_VOLUME_SECTION = "tissue_volume"
+
 #: Pipeline stage calls in run order, for ``start_from`` comparisons.
 STAGE_CALLS: tuple[str, ...] = (
     "segment",
@@ -5040,6 +5054,11 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         logger.info("Tissue volume measurement skipped.")
     solution.tissue = tissue
 
+    # What the panel's Statistics tab shows; only what this export measures.
+    G.graph.pop(STATISTICS_REPORT, None)
+    report_sections: dict[str, Any] = {}
+    stats_csv_path = None
+
     # 7) Compute and print vessel statistics.
     logger.info("Computing vessel statistics...")
     if settings["statistics"]:
@@ -5050,7 +5069,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                 f"Choose one of {sorted(valid_statistics_modes)}."
             )
         node_positions = nx.get_node_attributes(G, "pos")
-        stats = statistics.compute_comprehensive_vessel_statistics(
+        measures = statistics.compute_vessel_statistics_by_measure(
             G,
             node_positions=node_positions,
             image_dimensions=image.shape,
@@ -5065,8 +5084,13 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             **statistics_arguments(settings),
             **tissue_statistics_arguments(tissue),
         )
+        stats = statistics.flatten_statistics_sections(measures, settings["statistics_mode"])
+        report_sections.update(measures)
 
-        stats.update(resistance_statistics(solution))
+        resistances = resistance_statistics(solution)
+        stats.update(resistances)
+        if resistances:
+            report_sections[HAEMODYNAMICS_SECTION] = resistances["Haemodynamics"]
 
         logger.info("=== Statistics ===")
         for key, value in stats.items():
@@ -5086,6 +5110,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             branch_stats_csv_path,
         )
         logger.info(f"Saved branch-order statistics CSV to: {branch_stats_csv_path}")
+        report_sections[BRANCH_ORDER_SECTION] = branch_stats
 
         if settings["run_haemodynamics"]:
             precomputed_communities = (
@@ -5158,8 +5183,17 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         logger.info(f"Saved edge-resistance stats to: {resistance_path}")
         logger.info(f"Saved edge-length stats to: {length_path}")
         logger.info(f"Saved edge-flow stats to: {flow_path}")
+        report_sections[WEIGHTED_MEASURES_SECTION] = weighted_measurements
     else:
         logger.info("Vessel statistics skipped.")
+    if tissue is not None:
+        report_sections[TISSUE_VOLUME_SECTION] = tissue.rows()
+    if report_sections:
+        G.graph[STATISTICS_REPORT] = {
+            "mode": settings["statistics_mode"] if settings["statistics"] else None,
+            "csv": None if stats_csv_path is None else str(stats_csv_path),
+            "sections": report_sections,
+        }
 
     # 7b) Optional: partition the network into vascular communities/domains
     # for colouring in the vessels layer -- independent of the statistics
@@ -5593,6 +5627,10 @@ def run_pipeline_stages(
             )
     if resume is not None and resume.graph is not None:
         network.graph = resume.graph
+    # The statistics a resumed network carries are of the network before this
+    # run changed it; the export measures it again.
+    if network.graph is not None:
+        network.graph.graph.pop(STATISTICS_REPORT, None)
     _produced(on_stage_output, "build_network", network)
     if stop_after == "build_network":
         return network.graph

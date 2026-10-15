@@ -115,11 +115,28 @@ NETWORK_ANALYSIS_MEASURES: frozenset[str] = frozenset(
 )
 
 
+#: The section of :func:`compute_vessel_statistics_by_measure` holding the
+#: zero-resistance bridges, which no measure counts as vessels.
+ZERO_RESISTANCE_BRIDGES = "zero_resistance_bridges"
+
+
 def _as_contracted(nodes: Any, became: dict) -> Any:
     """Boundary nodes as the graph with its bridges contracted names them."""
     if nodes is None:
         return None
     return list(dict.fromkeys(became.get(n, n) for n in nodes))
+
+
+def flatten_statistics_sections(
+    sections: Dict[str, Dict[str, Any]], statistics_mode: str
+) -> Dict[str, Any]:
+    """*sections* as :func:`compute_comprehensive_vessel_statistics` returns
+    them: one dict, each section's rows in turn, then ``Statistics Mode``."""
+    flat: Dict[str, Any] = {}
+    for rows in sections.values():
+        flat.update(rows)
+    flat["Statistics Mode"] = statistics_mode
+    return flat
 
 
 def compute_comprehensive_vessel_statistics(
@@ -174,6 +191,55 @@ def compute_comprehensive_vessel_statistics(
     (:func:`~haemolynx.statistics.tissue_volume.measure_tissue_volume`):
     "vessel_density" then divides by the tissue rather than by the box the
     network spans, and adds the vascular volume fraction.
+
+    The same rows, measure by measure, are
+    :func:`compute_vessel_statistics_by_measure`.
+    """
+    sections = compute_vessel_statistics_by_measure(
+        G,
+        node_positions=node_positions,
+        voxel_size=voxel_size,
+        image_dimensions=image_dimensions,
+        statistics_mode=statistics_mode,
+        enabled_measures=enabled_measures,
+        inlet_nodes=inlet_nodes,
+        outlet_nodes=outlet_nodes,
+        route_weighting=route_weighting,
+        shunt_max_route_fraction=shunt_max_route_fraction,
+        occlusion_hypoperfusion_fraction=occlusion_hypoperfusion_fraction,
+        occlusion_curve_max_fraction=occlusion_curve_max_fraction,
+        topology_communities=topology_communities,
+        tissue_volume_um3=tissue_volume_um3,
+        vessel_volume_um3=vessel_volume_um3,
+    )
+    return flatten_statistics_sections(sections, statistics_mode)
+
+
+def compute_vessel_statistics_by_measure(
+    G: Union[nx.Graph, nx.MultiGraph],
+    node_positions: Optional[dict] = None,
+    voxel_size=(1.0, 1.0, 1.0),
+    image_dimensions=None,
+    statistics_mode: str = "fast",
+    enabled_measures: Optional[frozenset] = None,
+    inlet_nodes: Optional[Any] = None,
+    outlet_nodes: Optional[Any] = None,
+    route_weighting: str = "length",
+    shunt_max_route_fraction: float = 0.5,
+    occlusion_hypoperfusion_fraction: float = 0.5,
+    occlusion_curve_max_fraction: float = 0.5,
+    topology_communities: "tuple[list, str] | None" = None,
+    tissue_volume_um3: Optional[float] = None,
+    vessel_volume_um3: Optional[float] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Every vessel statistic, one section per measure that ran.
+
+    Keyed by the measure's name in :data:`STATISTIC_MEASURES`, in the order
+    they ran, each holding the rows that measure computed; the zero-resistance
+    bridges, when *G* has any, are the section :data:`ZERO_RESISTANCE_BRIDGES`.
+    What the panel's Statistics tab shows, a button per section. Arguments as
+    :func:`compute_comprehensive_vessel_statistics`, which is these sections
+    flattened (:func:`flatten_statistics_sections`).
     """
     assert_no_forbidden_edge_attributes(G, context="vessel statistics")
     # A zero-resistance bridge is not a vessel: every statistic sees a vessel
@@ -214,158 +280,150 @@ def compute_comprehensive_vessel_statistics(
         else G
     )
 
-    base: Dict[str, Any] = {}
+    sections: Dict[str, Dict[str, Any]] = {}
     if "basic" in enabled:
-        base.update(compute_basic_statistics(G, is_mg))
+        sections["basic"] = compute_basic_statistics(G, is_mg)
     if "tortuosity" in enabled:
-        base.update(compute_tortuosity_measures(G, node_positions, is_mg))
+        sections["tortuosity"] = compute_tortuosity_measures(G, node_positions, is_mg)
     if "branching" in enabled:
-        base.update(compute_branching_statistics(G_simple))
+        sections["branching"] = compute_branching_statistics(G_simple)
     if "tree_asymmetry" in enabled:
-        base.update(compute_tree_asymmetry(G_simple))
+        sections["tree_asymmetry"] = compute_tree_asymmetry(G_simple)
     if "fractal_dimension" in enabled:
         # The original G, not G_simple: collapsing parallel edges to build
         # G_simple keeps only one edge's data per node pair, which would
         # silently drop other parallel edges' centreline points here.
-        base.update(compute_fractal_dimension(G, node_positions))
+        sections["fractal_dimension"] = compute_fractal_dimension(G, node_positions)
     if "vessel_density" in enabled:
-        base.update(
-            compute_vessel_density(
-                G,
-                node_positions,
-                voxel_size,
-                image_dimensions,
-                is_mg,
-                tissue_volume_um3=tissue_volume_um3,
-                vessel_volume_um3=vessel_volume_um3,
-            )
+        sections["vessel_density"] = compute_vessel_density(
+            G,
+            node_positions,
+            voxel_size,
+            image_dimensions,
+            is_mg,
+            tissue_volume_um3=tissue_volume_um3,
+            vessel_volume_um3=vessel_volume_um3,
         )
     if "murray_law" in enabled:
         # The original G, not G_simple, for the same reason as fractal
         # dimension: a junction's parent/daughter diameters live on specific
         # parallel edges that G_simple would collapse away.
-        base.update(compute_murray_law_compliance(G))
+        sections["murray_law"] = compute_murray_law_compliance(G)
     if "daughter_angles" in enabled:
-        base.update(compute_daughter_daughter_angles(G))
+        sections["daughter_angles"] = compute_daughter_daughter_angles(G)
     if "intercapillary_distance" in enabled:
         # The original G, not G_simple: each parallel edge is its own
         # vessel with its own spacing to its neighbours.
-        base.update(compute_intercapillary_distance(G))
+        sections["intercapillary_distance"] = compute_intercapillary_distance(G)
     if "dead_ends" in enabled:
         from .dead_ends import compute_dead_end_statistics
 
-        base.update(compute_dead_end_statistics(G, tissue_volume_um3=tissue_volume_um3))
+        sections["dead_ends"] = compute_dead_end_statistics(G, tissue_volume_um3=tissue_volume_um3)
     if "network_robustness" in enabled:
         # The original G, not G_simple: a parallel edge between two
         # junctions is exactly the redundancy that keeps neither of that
         # pair a bridge, which G_simple's collapse would erase.
-        base.update(
-            compute_network_robustness(G, inlet_nodes=inlet_nodes, outlet_nodes=outlet_nodes)
+        sections["network_robustness"] = compute_network_robustness(
+            G, inlet_nodes=inlet_nodes, outlet_nodes=outlet_nodes
         )
     # The original G for both: parallel vessels are real extra capacity and
     # extra routes, and the per-vessel results are written onto G's own edges.
     if "bottlenecks" in enabled:
-        base.update(
-            compute_inlet_outlet_bottlenecks(
-                G,
-                inlet_nodes,
-                outlet_nodes,
-                weighting=route_weighting,
-                statistics_mode=statistics_mode,
-            )
+        sections["bottlenecks"] = compute_inlet_outlet_bottlenecks(
+            G,
+            inlet_nodes,
+            outlet_nodes,
+            weighting=route_weighting,
+            statistics_mode=statistics_mode,
         )
     if "shunts" in enabled:
-        base.update(
-            compute_inlet_outlet_shunts(
-                G,
-                inlet_nodes,
-                outlet_nodes,
-                weighting=route_weighting,
-                max_route_fraction=shunt_max_route_fraction,
-            )
+        sections["shunts"] = compute_inlet_outlet_shunts(
+            G,
+            inlet_nodes,
+            outlet_nodes,
+            weighting=route_weighting,
+            max_route_fraction=shunt_max_route_fraction,
         )
     if "occlusion_impact" in enabled:
-        base.update(
-            compute_single_vessel_occlusion_impact(
-                G,
-                inlet_nodes,
-                outlet_nodes,
-                weighting=route_weighting,
-                statistics_mode=statistics_mode,
-                hypoperfusion_fraction=occlusion_hypoperfusion_fraction,
-            )
+        sections["occlusion_impact"] = compute_single_vessel_occlusion_impact(
+            G,
+            inlet_nodes,
+            outlet_nodes,
+            weighting=route_weighting,
+            statistics_mode=statistics_mode,
+            hypoperfusion_fraction=occlusion_hypoperfusion_fraction,
         )
     if "occlusion_curves" in enabled:
-        base.update(
-            compute_occlusion_curves(
-                G,
-                inlet_nodes,
-                outlet_nodes,
-                weighting=route_weighting,
-                statistics_mode=statistics_mode,
-                max_fraction=occlusion_curve_max_fraction,
-            )
+        sections["occlusion_curves"] = compute_occlusion_curves(
+            G,
+            inlet_nodes,
+            outlet_nodes,
+            weighting=route_weighting,
+            statistics_mode=statistics_mode,
+            max_fraction=occlusion_curve_max_fraction,
         )
     if "current_flow" in enabled:
-        base.update(
-            compute_current_flow(
-                G, inlet_nodes, outlet_nodes,
-                weighting=route_weighting, statistics_mode=statistics_mode,
-            )
+        sections["current_flow"] = compute_current_flow(
+            G, inlet_nodes, outlet_nodes,
+            weighting=route_weighting, statistics_mode=statistics_mode,
         )
     if "perfusion_territories" in enabled:
-        base.update(
-            compute_perfusion_territories(G, inlet_nodes, outlet_nodes, weighting=route_weighting)
+        sections["perfusion_territories"] = compute_perfusion_territories(
+            G, inlet_nodes, outlet_nodes, weighting=route_weighting
         )
     if "transit_time" in enabled:
-        base.update(compute_transit_times(G, inlet_nodes, outlet_nodes))
+        sections["transit_time"] = compute_transit_times(G, inlet_nodes, outlet_nodes)
     if "loop_hierarchy" in enabled:
-        base.update(
-            compute_loop_hierarchy(
-                G,
-                statistics_mode=statistics_mode,
-                image_dimensions=image_dimensions,
-                voxel_size=voxel_size,
-            )
+        sections["loop_hierarchy"] = compute_loop_hierarchy(
+            G,
+            statistics_mode=statistics_mode,
+            image_dimensions=image_dimensions,
+            voxel_size=voxel_size,
         )
     if "strahler" in enabled:
-        base.update(compute_strahler_orders(G, inlet_nodes, outlet_nodes))
+        sections["strahler"] = compute_strahler_orders(G, inlet_nodes, outlet_nodes)
     if "algebraic_connectivity" in enabled:
-        base.update(compute_algebraic_connectivity(G, weighting=route_weighting))
+        sections["algebraic_connectivity"] = compute_algebraic_connectivity(
+            G, weighting=route_weighting
+        )
     if "cyclomatic_number" in enabled:
         # The original G: a parallel edge is itself an independent loop
         # that collapsing to G_simple would erase, same reasoning as
         # network_robustness above.
-        base.update(compute_cyclomatic_number(G))
+        sections["cyclomatic_number"] = compute_cyclomatic_number(G)
     if "degree_assortativity" in enabled:
-        base.update(compute_degree_assortativity(G))
+        sections["degree_assortativity"] = compute_degree_assortativity(G)
     if "rich_club" in enabled:
-        base.update(compute_rich_club_coefficient(G))
+        sections["rich_club"] = compute_rich_club_coefficient(G)
     if "k_core" in enabled:
-        base.update(compute_k_core_structure(G))
+        sections["k_core"] = compute_k_core_structure(G)
     if "flow_hierarchy" in enabled:
-        base.update(compute_flow_hierarchy(G))
+        sections["flow_hierarchy"] = compute_flow_hierarchy(G)
 
-    base.update(bridge_rows)
+    # Where their rows always were in the flattened report.
+    if bridge_rows:
+        sections[ZERO_RESISTANCE_BRIDGES] = bridge_rows
     if statistics_mode == "full":
         if "path_efficiency" in enabled:
-            base.update(compute_path_efficiency(G, is_mg, max_pairs=None))
+            sections["path_efficiency"] = compute_path_efficiency(G, is_mg, max_pairs=None)
         if "community" in enabled:
-            base["communities"] = (
-                list(topology_communities[0])
-                if topology_communities is not None
-                else compute_communities(G_simple)
-            )
+            sections["community"] = {
+                "communities": (
+                    list(topology_communities[0])
+                    if topology_communities is not None
+                    else compute_communities(G_simple)
+                )
+            }
         if "betweenness" in enabled:
-            base.update(compute_betweenness(G_simple))
-        base["Statistics Mode"] = "full"
-        return base
+            sections["betweenness"] = compute_betweenness(G_simple)
+        return sections
 
     if "path_efficiency" in enabled:
-        base.update(compute_path_efficiency(G, is_mg))
+        sections["path_efficiency"] = compute_path_efficiency(G, is_mg)
     if "community" in enabled:
-        base.update(compute_communities_summary(G_simple, precomputed=topology_communities))
+        sections["community"] = compute_communities_summary(
+            G_simple, precomputed=topology_communities
+        )
     if "betweenness" in enabled:
-        base.update(compute_betweenness_summary(G_simple))
-    base["Statistics Mode"] = "fast"
-    return base
+        sections["betweenness"] = compute_betweenness_summary(G_simple)
+    return sections

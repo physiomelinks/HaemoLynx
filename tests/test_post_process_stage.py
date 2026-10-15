@@ -536,6 +536,27 @@ def test_a_run_paused_after_haemodynamics_and_continued_solves_as_one_run(tmp_pa
         assert continued.edges[u, v, k]["flow_signed"] == pytest.approx(data["flow_signed"])
 
 
+def test_a_resumed_network_drops_the_statistics_it_carried(tmp_path, monkeypatch):
+    """Regenerate starts from the network on screen, which carries what the
+    last export measured -- of the network before the edit. The run drops it,
+    so one paused before its export returns no statistics rather than old ones."""
+    _stub_early_stages(monkeypatch, tmp_path)
+    paused = run_pipeline_stages(_settings(tmp_path), SCHEMA, stop_after="solve")
+    paused.graph[stages.STATISTICS_REPORT] = {
+        "mode": "fast", "csv": None, "sections": {"basic": {"Total Nodes": 99}}
+    }
+
+    resumed = run_pipeline_stages(
+        _settings(tmp_path),
+        SCHEMA,
+        start_from="post_process",
+        resume=_resume_from_post_processing(paused),
+        stop_after="post_process",
+    )
+
+    assert stages.STATISTICS_REPORT not in resumed.graph
+
+
 def test_an_unedited_network_is_not_solved_again(tmp_path, monkeypatch):
     """Continue without an edit keeps the solve, including what the CSV needs.
 

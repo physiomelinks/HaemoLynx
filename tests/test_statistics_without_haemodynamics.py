@@ -25,7 +25,8 @@ IMAGE_SHAPE = (8, 10, 12)
 #: What `export_results` calls through the `statistics` namespace. Kept as
 #: literal names so the contract is readable, not derived from the source.
 NAMES_THE_EXPORT_STAGE_CALLS = [
-    "compute_comprehensive_vessel_statistics",
+    "compute_vessel_statistics_by_measure",
+    "flatten_statistics_sections",
     "export_statistics_to_csv",
     "compute_branch_order_statistics",
     "export_branch_order_statistics_to_csv",
@@ -70,7 +71,7 @@ def _forked_vessel_graph() -> nx.MultiGraph:
     return G
 
 
-def _export_with_haemodynamics_off(tmp_path, **overrides):
+def _export_with_haemodynamics_off(tmp_path, graph=None, solution=None, **overrides):
     settings = default_schema().defaults()
     settings.update(
         {
@@ -92,12 +93,12 @@ def _export_with_haemodynamics_off(tmp_path, **overrides):
         voxel_size_zyx=(1.0, 1.0, 1.0),
         output_dir=tmp_path,
     )
-    G = _forked_vessel_graph()
+    G = _forked_vessel_graph() if graph is None else graph
     stages.export_results(
         settings,
         stages.VesselNetwork(graph=G, volume=volume),
         stages.HaemodynamicModel(graph=G),
-        stages.Solution(),
+        stages.Solution() if solution is None else solution,
     )
     return G
 
@@ -542,3 +543,82 @@ def test_export_results_passes_the_occlusion_settings_through(tmp_path, monkeypa
         statistics_occlusion_hypoperfusion_fraction=0.8,
     )
     assert seen == {"max_fraction": 0.3, "hypoperfusion_fraction": 0.8}
+
+
+# --- what the panel's Statistics tab reads --------------------------------------------
+
+
+def test_the_export_leaves_what_it_measured_on_the_graph_section_by_section(tmp_path):
+    from haemolynx.statistics import compute_murray_law_compliance
+
+    solution = stages.Solution(
+        equivalent_resistance=2.5e15, equivalent_resistance_nodes=(0, 2), network_resistance=1.5e15
+    )
+    G = _export_with_haemodynamics_off(
+        tmp_path, solution=solution, statistics_murray_law=False, statistics_cyclomatic_number=True
+    )
+
+    report = G.graph[stages.STATISTICS_REPORT]
+    assert report["mode"] == "fast"
+    assert report["csv"] == str(tmp_path / "no_haemodynamics_statistics.csv")
+    sections = report["sections"]
+    assert "murray_law" not in sections
+    assert sections["basic"]["Total Nodes"] == 4
+    assert sections["cyclomatic_number"]["Cyclomatic Number"] == 0
+    assert sections[stages.HAEMODYNAMICS_SECTION] == {
+        "Two-Point Equivalent Resistance (Pa.s/m^3)": 2.5e15,
+        "Two-Point Resistance Nodes": "0 -> 2",
+        "Network Resistance, Pressure Drop / Total Inflow (Pa.s/m^3)": 1.5e15,
+    }
+    (order,) = sections[stages.BRANCH_ORDER_SECTION].values()
+    assert order["Edge Count"] == 3
+    weighted = sections[stages.WEIGHTED_MEASURES_SECTION]
+    for model, name in (
+        ("edge_resistance", "resistance"),
+        ("edge_length", "edge_length"),
+        ("edge_flow_abs", "edge_flow"),
+    ):
+        written = (tmp_path / f"no_haemodynamics_betweenness_communities_{name}.json").read_text()
+        assert json.loads(json.dumps(weighted[model])) == json.loads(written)
+    assert stages.TISSUE_VOLUME_SECTION not in sections
+
+    # The statistics CSV is the measures' sections and the resistances, row for row.
+    from haemolynx import statistics
+
+    measures = {
+        key: rows
+        for key, rows in sections.items()
+        if key in statistics.STATISTIC_MEASURES or key == statistics.ZERO_RESISTANCE_BRIDGES
+    }
+    again = statistics.flatten_statistics_sections(measures, "fast")
+    again["Haemodynamics"] = sections[stages.HAEMODYNAMICS_SECTION]
+    statistics.export_statistics_to_csv(again, tmp_path / "again.csv")
+
+    def metric_rows(name):
+        lines = (tmp_path / name).read_text(encoding="utf-8").splitlines()
+        return [line for line in lines if not line.startswith("Metadata,")]
+
+    assert metric_rows("again.csv") == metric_rows("no_haemodynamics_statistics.csv")
+
+
+def test_statistics_off_leave_no_report_and_take_away_an_old_one(tmp_path):
+    G = _forked_vessel_graph()
+    G.graph[stages.STATISTICS_REPORT] = {"mode": "fast", "csv": None, "sections": {"basic": {}}}
+
+    _export_with_haemodynamics_off(tmp_path, graph=G, statistics=False)
+
+    assert stages.STATISTICS_REPORT not in G.graph
+
+
+def test_a_rerun_of_the_export_replaces_the_report(tmp_path):
+    G = _export_with_haemodynamics_off(tmp_path)
+    assert "murray_law" in G.graph[stages.STATISTICS_REPORT]["sections"]
+
+    _export_with_haemodynamics_off(
+        tmp_path, graph=G, statistics_mode="full", statistics_murray_law=False
+    )
+
+    report = G.graph[stages.STATISTICS_REPORT]
+    assert report["mode"] == "full"
+    assert "murray_law" not in report["sections"]
+

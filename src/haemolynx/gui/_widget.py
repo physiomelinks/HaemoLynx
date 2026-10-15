@@ -218,8 +218,12 @@ def forced_hidden_value(name: str, values: Mapping[str, Any]) -> Any:
 LOG_DOCK_NAME = "HaemoLynx run log"
 
 #: View chrome (Z-depth, scale bar, snapshot). The first of the left
-#: panel's three tabs, before napari's layer list and layer controls.
+#: panel's four tabs, before Statistics and napari's layer list and layer
+#: controls.
 VIEW_DOCK_NAME = "HaemoLynx view"
+
+#: The last run's statistics, a button per measure. The left panel's second tab.
+STATISTICS_DOCK_NAME = "Statistics"
 
 #: Cosmetic TIFF of the current view; never a pipeline setting or input.
 SNAPSHOT_STEM = "haemolynx_snapshot"
@@ -331,12 +335,28 @@ def _show_layer_docks(viewer) -> None:
             dock.show()
 
 
-def _tab_with_the_layer_docks(viewer, dock) -> bool:
-    """Make *dock* one panel with napari's layer list and layer controls.
+#: The left panel's tabs, in order.
+LEFT_PANEL_TABS = (VIEW_DOCK_NAME, STATISTICS_DOCK_NAME, LAYER_LIST_TITLE, LAYER_CONTROLS_TITLE)
 
-    Three tabs, in this order: *dock*, the layer list, the layer controls,
-    with *dock*'s tab open, the three as wide as each other across the
-    panel. napari stacks its two layer docks one above the other in the
+
+def _alive(dock):
+    """*dock*, or None for none or one whose close button deleted it."""
+    try:
+        if dock is not None:
+            dock.isHidden()
+            return dock
+    except RuntimeError:
+        logger.debug("dock is gone", exc_info=True)
+    return None
+
+
+def _tab_with_the_layer_docks(viewer, dock, statistics=None) -> bool:
+    """Make *dock* one panel with the *statistics* dock (when there is one)
+    and napari's layer list and layer controls.
+
+    Four tabs, in this order: *dock*, Statistics, the layer list, the layer
+    controls, with *dock*'s tab open, the four as wide as each other across
+    the panel. napari stacks its two layer docks one above the other in the
     left strip; tabbed, each has the strip's whole height. False, and
     nothing moved, without a Qt window or napari's layer docks.
     """
@@ -351,17 +371,35 @@ def _tab_with_the_layer_docks(viewer, dock) -> bool:
     _retitle_dock(controls, LAYER_CONTROLS_TITLE)
     _let_layer_controls_scroll(controls)
     # Each tabifyDockWidget appends its second dock to the first's tabs.
+    statistics = _alive(statistics)
+    if statistics is not None:
+        main_window.tabifyDockWidget(dock, statistics)
     main_window.tabifyDockWidget(dock, layer_list)
     main_window.tabifyDockWidget(dock, controls)
     if getattr(viewer, "_haemolynx_even_tabs", None) is None:
-        viewer._haemolynx_even_tabs = _even_panel_tabs_class()(
-            main_window, (VIEW_DOCK_NAME, LAYER_LIST_TITLE, LAYER_CONTROLS_TITLE)
-        )
+        viewer._haemolynx_even_tabs = _even_panel_tabs_class()(main_window, LEFT_PANEL_TABS)
     _bring_dock_to_front(dock)
     # Raised at once, a dock just tabbed loses its tab again to the last
     # one tabbed when Qt lays the new tabs out.
     QTimer.singleShot(0, lambda: _bring_dock_to_front(dock))
     return True
+
+
+def _tab_statistics_second(viewer, dock, statistics) -> None:
+    """Tab a rebuilt *statistics* dock second, after *dock* (the view).
+
+    The layer docks already tabbed with the view are tabbed again after it,
+    to keep their order; one the user moved elsewhere stays where it is.
+    """
+    window = getattr(viewer, "window", None)
+    main_window = getattr(window, "_qt_window", None) if window is not None else None
+    if main_window is None or _alive(statistics) is None:
+        return
+    tabbed = main_window.tabifiedDockWidgets(dock)
+    main_window.tabifyDockWidget(dock, statistics)
+    for layer_dock in _layer_docks(viewer):
+        if layer_dock is not None and layer_dock in tabbed:
+            main_window.tabifyDockWidget(dock, layer_dock)
 
 
 def _bring_dock_to_front(dock) -> None:
@@ -379,8 +417,9 @@ def _bring_dock_to_front(dock) -> None:
 
 
 #: The rule giving every tab of one of the panel's tab bars one width. Less
-#: side padding than napari's 6 px keeps "HaemoLynx view" whole in a
-#: third of napari's ~290 px strip.
+#: side padding than napari's 6 px leaves a label more of its quarter of
+#: napari's ~270 px strip; a label still too long is elided, its tab's
+#: tooltip the whole title.
 EVEN_TAB_RULE = (
     "QTabBar::tab {{ width: {width}px; padding-left: 2px; padding-right: 2px; }}"
 )
@@ -484,6 +523,142 @@ def _even_panel_tabs_class():
 
     _EVEN_PANEL_TABS = EvenPanelTabs
     return EvenPanelTabs
+
+
+class _StatisticsPanel:
+    """The left panel's Statistics tab: one button per section of the last
+    run's statistics (see :mod:`haemolynx.gui.statistics_view`), each showing
+    that section's results below it while pressed.
+
+    :meth:`show` puts a new report in; a section open before stays open when
+    the report it comes back in replaces the old one. A section's rows are
+    built the first time it opens: full mode can make thousands.
+    """
+
+    def __init__(self, statistics_tab: str) -> None:
+        from qtpy.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+        #: The tab the Statistics setting is on, for the empty panel's note.
+        self.statistics_tab = statistics_tab
+        self.widget = QWidget()
+        self.widget.setObjectName("haemolynx_statistics_panel")
+        layout = QVBoxLayout(self.widget)
+        self.summary = QLabel()
+        self.summary.setObjectName("haemolynx_statistics_summary")
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+        holder = QWidget()
+        self._sections_layout = QVBoxLayout(holder)
+        self._sections_layout.setContentsMargins(0, 0, 0, 0)
+        self._sections_layout.setSpacing(0)
+        layout.addWidget(holder)
+        # Docked, the panel is as tall as the strip; the buttons keep their height.
+        layout.addStretch(1)
+        self.report = None
+        self.sections: dict[str, Any] = {}
+        self.buttons: dict[str, Any] = {}
+        self.bodies: dict[str, Any] = {}
+        #: Sections the user has open, by key, kept across reports.
+        self.open: set[str] = set()
+        self._shown = False
+        self.show(None)
+
+    def show(self, report) -> None:
+        """Show *report*'s sections, each behind its own button."""
+        from qtpy.QtWidgets import QPushButton
+
+        from haemolynx.gui.chrome_tooltips import STATISTICS_SECTION_TOOLTIP
+        from haemolynx.gui.statistics_view import statistics_sections, statistics_summary
+
+        if self._shown and report is self.report:
+            return
+        self._shown = True
+        self.report = report
+        self.summary.setText(statistics_summary(report, self.statistics_tab))
+        for widget in (*self.buttons.values(), *self.bodies.values()):
+            self._sections_layout.removeWidget(widget)
+            widget.setParent(None)
+            widget.deleteLater()
+        self.sections, self.buttons, self.bodies = {}, {}, {}
+        for section in statistics_sections(report):
+            button = QPushButton()
+            button.setObjectName("haemolynx_statistics_button")
+            button.setAccessibleName(section.key)
+            button.setFlat(True)
+            button.setCheckable(True)
+            button.setStyleSheet("text-align: left; padding: 2px 4px;")
+            button.setToolTip(STATISTICS_SECTION_TOOLTIP)
+            self._sections_layout.addWidget(button)
+            self.sections[section.key] = section
+            self.buttons[section.key] = button
+            self._retitle(section.key)
+            button.toggled.connect(
+                lambda checked, key=section.key: self.toggle(key, checked)
+            )
+            if section.key in self.open:
+                self.toggle(section.key, True)
+
+    def toggle(self, key: str, expanded: bool | None = None) -> None:
+        """Show or hide section *key*'s results; with no *expanded*, the
+        other way from now."""
+        button = self.buttons[key]
+        expanded = (key not in self.open) if expanded is None else bool(expanded)
+        (self.open.add if expanded else self.open.discard)(key)
+        if expanded and key not in self.bodies:
+            body = self._body(self.sections[key].rows)
+            self._sections_layout.insertWidget(
+                self._sections_layout.indexOf(button) + 1, body
+            )
+            self.bodies[key] = body
+        if key in self.bodies:
+            self.bodies[key].setVisible(expanded)
+        if button.isChecked() != expanded:
+            button.setChecked(expanded)
+        self._retitle(key)
+
+    def _retitle(self, key: str) -> None:
+        self.buttons[key].setText(
+            advanced_button_text(self.sections[key].title, key in self.open)
+        )
+
+    def _body(self, rows):
+        from qtpy.QtCore import Qt
+        from qtpy.QtWidgets import QGridLayout, QLabel, QWidget
+
+        body = QWidget()
+        body.setObjectName("haemolynx_statistics_rows")
+        grid = QGridLayout(body)
+        grid.setContentsMargins(ADVANCED_INDENT_PX, 0, 0, 6)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(2)
+        grid.setColumnStretch(0, 3)
+        grid.setColumnStretch(1, 2)
+        for line, row in enumerate(rows):
+            name = QLabel(row.name)
+            name.setWordWrap(True)
+            name.setContentsMargins(ADVANCED_INDENT_PX * row.depth, 0, 0, 0)
+            if row.heading:
+                name.setStyleSheet("font-weight: bold;")
+                grid.addWidget(name, line, 0, 1, 2)
+                continue
+            value = QLabel(row.value)
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            grid.addWidget(name, line, 0, Qt.AlignmentFlag.AlignTop)
+            grid.addWidget(value, line, 1, Qt.AlignmentFlag.AlignTop)
+        return body
+
+    def rows_shown(self, key: str) -> list[tuple[str, str]]:
+        """Section *key*'s (name, value) lines as drawn, headings with no value."""
+        body = self.bodies.get(key)
+        if body is None:
+            return []
+        grid = body.layout()
+        lines: dict[int, list[str]] = {}
+        for index in range(grid.count()):
+            line, column, _rows, _columns = grid.getItemPosition(index)
+            lines.setdefault(line, ["", ""])[column] = grid.itemAt(index).widget().text()
+        return [tuple(lines[line]) for line in sorted(lines)]
 
 
 #: Gap between the view-snap buttons and the canvas's bottom-left corner (px).
@@ -13104,6 +13279,17 @@ def settings_widget(napari_viewer=None):
     view = SimpleNamespace(results=None)
     _view_z_apply = {"busy": False, "key": None}
 
+    from haemolynx.gui.statistics_view import statistics_report
+    from haemolynx.gui.tabs import assign_to_stages
+
+    #: The left panel's Statistics tab, docked beside the view panel below.
+    statistics_panel = _StatisticsPanel(assign_to_stages(schema).get("statistics", ""))
+
+    def refresh_statistics() -> None:
+        """Show the statistics of the network on screen, if it has any."""
+        results = view.results
+        statistics_panel.show(statistics_report(results.graph if results is not None else None))
+
     #: Under the Input tab's stain row: what the last run read an "auto"
     #: stain as, from the graph it left (raw_image_stain and its reading),
     #: since the row itself cannot say and the Diameters tab's method rows
@@ -13219,6 +13405,7 @@ def settings_widget(napari_viewer=None):
         _reapply_layer_set(viewer)
         refresh_layer_sets()
         refresh_stain_reading()
+        refresh_statistics()
 
     if viewer is not None:
         viewer._haemolynx_after_layers_applied = _after_layers_applied
@@ -13571,6 +13758,15 @@ def settings_widget(napari_viewer=None):
             for signal in (worker.returned, worker.errored, worker.finished):
                 signal.connect(lambda *_: refresh_revert_buttons())
                 signal.connect(lambda *_: post_processing.refresh())
+            run_flag = run_state.cancel_flag
+
+            def statistics_of_the_run(graph) -> None:
+                # The graph the run returns, shown in the viewer or not -- unless
+                # Clear, or a newer run, has taken this one's place.
+                if run_state.cancel_flag is run_flag and not run_flag["cancelled"]:
+                    statistics_panel.show(statistics_report(graph))
+
+            worker.returned.connect(statistics_of_the_run)
 
     def on_paused() -> None:
         """A run stopped before Post processing (or after a Regenerate graph
@@ -13621,6 +13817,7 @@ def settings_widget(napari_viewer=None):
             arrow_length_slider.setVisible(False)
             apply_view_z(force=True)
         view.results = None
+        refresh_statistics()
         if boundaries is not None:
             boundaries.state.results = None
         discarded_artefacts = False
@@ -14417,14 +14614,46 @@ def settings_widget(napari_viewer=None):
         view_dock_holder["dock"] = dock
         _give_bottom_docks_the_corners(viewer)
         try:
-            _tab_with_the_layer_docks(viewer, dock)
+            _tab_with_the_layer_docks(viewer, dock, statistics_dock)
         except Exception:  # noqa: BLE001 - untabbed must not stop the panel
             logger.debug("could not tab the view with the layer docks", exc_info=True)
         return dock
 
+    def _open_statistics_dock():
+        """Dock the Statistics panel on the left; the view dock tabs it."""
+        nonlocal statistics_dock, statistics_scroll
+        from qtpy.QtWidgets import QSizePolicy
+
+        if statistics_scroll is None:
+            statistics_scroll = _in_a_scroll_area(statistics_panel.widget, horizontal=False)
+            statistics_scroll.setObjectName("haemolynx_statistics_scroll")
+        dock_kwargs = {
+            "name": STATISTICS_DOCK_NAME,
+            "area": "left",
+            "allowed_areas": ["left", "right"],
+        }
+        try:
+            dock = viewer.window.add_dock_widget(
+                statistics_scroll, add_vertical_stretch=False, **dock_kwargs
+            )
+        except TypeError:
+            dock = viewer.window.add_dock_widget(statistics_scroll, **dock_kwargs)
+        statistics_scroll.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        )
+        try:
+            dock.setObjectName("haemolynx_statistics_dock")
+        except Exception:  # noqa: BLE001
+            pass
+        statistics_dock = dock
+        return dock
+
     view_dock = None
     view_scroll = None
+    statistics_dock = None
+    statistics_scroll = None
     if viewer is not None:
+        _open_statistics_dock()
         _open_view_dock()
         try:
             _install_view_snap_buttons(viewer)
@@ -14433,27 +14662,37 @@ def settings_widget(napari_viewer=None):
     else:
         view_panel.setVisible(False)
 
+    def _holds(dock, scroll) -> bool:
+        try:
+            return dock is not None and dock.widget() is scroll
+        except RuntimeError:
+            return False
+
     def on_reopen_view() -> None:
-        """Bring the whole left panel back: the view, layer list and controls.
+        """Bring the whole left panel back: the view, Statistics, the layer
+        list and the layer controls.
 
         napari's layer docks only hide, and are shown again where they were.
-        The view dock's close button deletes that dock and detaches the
-        panel. Asking the deleted dock whether it is visible raises, so a
-        closed dock is built again around the same panel, as the first tab
-        again. A view dock that was only hidden, or sits behind another tab,
-        is shown and brought to the front where it is, so the button never
-        moves a dock the user has deliberately moved.
+        The view and Statistics docks' close buttons delete the dock and
+        detach its panel. Asking a deleted dock whether it is visible raises,
+        so a closed dock is built again around the same panel, in its place
+        among the tabs again. A dock that was only hidden, or sits behind
+        another tab, is shown where it is, so the button never moves a dock
+        the user has deliberately moved.
         """
         nonlocal view_dock
         if viewer is None:
             return
         _show_layer_docks(viewer)
-        try:
-            holding = view_dock is not None and view_dock.widget() is view_scroll
-        except RuntimeError:
-            holding = False
-        if holding:
+        rebuilt_statistics = not _holds(statistics_dock, statistics_scroll)
+        if rebuilt_statistics:
+            panel._haemolynx_statistics_dock = _open_statistics_dock()
+        else:
+            statistics_dock.show()
+        if _holds(view_dock, view_scroll):
             view_dock.show()
+            if rebuilt_statistics:
+                _tab_statistics_second(viewer, view_dock, statistics_dock)
             _bring_dock_to_front(view_dock)
             return
         panel._haemolynx_view_dock = _open_view_dock()
@@ -14525,6 +14764,8 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_illumination = illumination
     panel._haemolynx_illumination_group = illumination.group
     panel._haemolynx_view_dock = view_dock
+    panel._haemolynx_statistics_panel = statistics_panel
+    panel._haemolynx_statistics_dock = statistics_dock
     panel._haemolynx_view_button = view_button
     panel._haemolynx_reopen_view = on_reopen_view
     panel._haemolynx_scale_bar = scale_bar_box

@@ -2,8 +2,8 @@
 
 The pipeline still reads the full volume / full graph. These controls only
 change what napari shows. The snapshot is a cosmetic canvas TIFF. The dock
-is the first of the left panel's three tabs, before napari's layer list and
-layer controls, and scrolls so it does not steal height from the bottom run
+is the first of the left panel's four tabs, before Statistics and napari's
+layer list and layer controls, and scrolls so it does not steal height from the bottom run
 log.
 """
 from __future__ import annotations
@@ -21,6 +21,7 @@ from haemolynx.gui._widget import (  # noqa: E402
     SCALE_BAR_POSITION,
     SNAPSHOT_NO_OUTPUT_FOLDER,
     SNAPSHOT_STEM,
+    STATISTICS_DOCK_NAME,
     VIEW_DOCK_NAME,
     _apply_layers,
     _scale_bar_overlay,
@@ -111,7 +112,7 @@ def test_selecting_the_image_layer_gives_it_a_clearer_3d_render(make_napari_view
 
 
 #: The left panel's tabs, in order.
-LEFT_TABS = [VIEW_DOCK_NAME, LAYER_LIST_TITLE, LAYER_CONTROLS_TITLE]
+LEFT_TABS = [VIEW_DOCK_NAME, STATISTICS_DOCK_NAME, LAYER_LIST_TITLE, LAYER_CONTROLS_TITLE]
 
 
 def _settle() -> None:
@@ -146,9 +147,9 @@ def _left_tabs(viewer):
     return texts, texts[bar.currentIndex()]
 
 
-def test_the_view_panel_is_the_first_of_three_tabs_on_the_left(make_napari_viewer):
-    """One left panel, its tabs the view, the layer list and the layer
-    controls, with the view's open. Regression: raised as soon as it was
+def test_the_view_panel_is_the_first_of_four_tabs_on_the_left(make_napari_viewer):
+    """One left panel, its tabs the view, Statistics, the layer list and the
+    layer controls, with the view's open. Regression: raised as soon as it was
     tabbed, the view lost its tab again to the last dock tabbed."""
     from qtpy.QtCore import Qt
 
@@ -196,7 +197,7 @@ def test_the_view_panel_is_the_first_of_three_tabs_on_the_left(make_napari_viewe
 def test_the_view_tab_scrolls_rather_than_holding_the_strip_as_tall_as_itself(
     make_napari_viewer,
 ):
-    """Tabbed, the three docks share one height, so the view panel's own
+    """Tabbed, the four docks share one height, so the view panel's own
     height would be the floor of the whole left strip, squeezing the run log
     below it. With room, nothing is clipped and the boxes keep their size."""
     from qtpy.QtWidgets import QScrollArea
@@ -225,7 +226,7 @@ def test_the_view_tab_scrolls_rather_than_holding_the_strip_as_tall_as_itself(
     assert snapshot.height() <= snapshot.sizeHint().height() + 2
 
 
-def test_the_three_tabs_are_equal_and_fill_the_panel(make_napari_viewer):
+def test_the_four_tabs_are_equal_and_fill_the_panel(make_napari_viewer):
     """Qt sizes a dock tab to its label and leaves the rest of the bar empty."""
     from qtpy.QtCore import Qt
 
@@ -241,7 +242,7 @@ def test_the_three_tabs_are_equal_and_fill_the_panel(make_napari_viewer):
         _settle()
         bar = _left_tab_bar(viewer)
         widths = [bar.tabRect(i).width() for i in range(bar.count())]
-        assert len(widths) == 3
+        assert len(widths) == 4
         assert max(widths) - min(widths) <= 1, widths
         assert sum(widths) == bar.width(), (widths, bar.width())
         assert abs(bar.width() - dock.width()) <= 2, (bar.width(), dock.width())
@@ -363,12 +364,17 @@ def test_the_view_button_reopens_a_closed_view_panel(make_napari_viewer):
 
 
 def test_view_controls_reopens_the_whole_left_panel(make_napari_viewer):
-    """The view, the layer list and the layer controls, each closed."""
+    """The view, Statistics, the layer list and the layer controls, each closed."""
     viewer = make_napari_viewer(show=True)
     panel = settings_widget(napari_viewer=viewer)
     _settle()
     qt_viewer = viewer.window._qt_viewer
-    docks = (panel._haemolynx_view_dock, qt_viewer.dockLayerList, qt_viewer.dockLayerControls)
+    docks = (
+        panel._haemolynx_view_dock,
+        panel._haemolynx_statistics_dock,
+        qt_viewer.dockLayerList,
+        qt_viewer.dockLayerControls,
+    )
     for dock in docks:
         dock.hide()
     _settle()
@@ -1774,7 +1780,7 @@ def test_clear_hides_colour_by(make_napari_viewer):
 def test_the_layer_controls_tab_scrolls_rather_than_holding_the_strip_tall(
     make_napari_viewer,
 ):
-    """An image layer's controls are ~310 px at their smallest, and the three
+    """An image layer's controls are ~310 px at their smallest, and the four
     tabs share one height; scrolled, they no longer set its floor."""
     import numpy as np
     from qtpy.QtWidgets import QScrollArea

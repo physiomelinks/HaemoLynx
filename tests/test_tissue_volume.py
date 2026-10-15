@@ -394,6 +394,21 @@ def test_the_tissue_surface_file_holds_the_measured_mesh(tmp_path):
     assert not (tmp_path / "seg_statistics.csv").exists()
 
 
+@pytest.mark.parametrize("statistics_on", [True, False])
+def test_the_tissue_is_a_section_of_the_statistics_report_with_or_without_statistics(
+    tmp_path, statistics_on
+):
+    """The panel's Statistics tab shows the tissue measured, as its CSV has it."""
+    settings, network, G, _vessel = _stage_inputs(tmp_path, statistics=statistics_on)
+    solution = stages.Solution()
+    stages.export_results(settings, network, stages.HaemodynamicModel(graph=G), solution)
+
+    report = G.graph[stages.STATISTICS_REPORT]
+    assert report["sections"][stages.TISSUE_VOLUME_SECTION] == solution.tissue.rows()
+    assert report["mode"] == (settings["statistics_mode"] if statistics_on else None)
+    assert ("basic" in report["sections"]) is statistics_on
+
+
 def test_the_export_stage_measures_nothing_with_the_setting_off(tmp_path):
     settings, network, G, _vessel = _stage_inputs(tmp_path, measure_tissue_volume=False)
     solution = stages.Solution()

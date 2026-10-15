@@ -73,7 +73,8 @@ haemolynx/
 │   │                       #   open_ends.py (the boundary condition on vessels leaving
 │   │                       #   the image, open_end_model)
 │   ├── statistics/         # comprehensive.py (compute_comprehensive_vessel_statistics,
-│   │                       #   the orchestrator), topology.py, shape.py, bifurcation.py
+│   │                       #   the orchestrator; compute_vessel_statistics_by_measure, the
+│   │                       #   same rows a section per measure), topology.py, shape.py, bifurcation.py
 │   │                       #   (junction morphometry + per-branch-order aggregation, which
 │   │                       #   share the parent/daughter edge classification),
 │   │                       #   network_measures.py (betweenness + communities),
@@ -102,6 +103,8 @@ haemolynx/
 │   │                       #   directions, pure), canvas_illumination.py (the view
 │   │                       #   window's surface lamp), layer_sets.py (baseline/perturbation
 │   │                       #   network swap for the view panel's "Showing" menu, pure),
+│   │                       #   statistics_view.py (the left panel's Statistics tab: a
+│   │                       #   button per measure the last run's statistics found, pure),
 │   │                       #   perturbation_editing.py, graph_editor.py
 │   │                       #   + graph_click.py (the Edit window), post_processing.py
 │   │                       #   (what the "7. Post processing" tab draws, pure), branch_hover.py,
@@ -284,7 +287,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight) |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py` |
-| `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text |
+| `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text |
 | `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_setting_units.py`, `test_example_configs.py` |
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py` |
 | Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
@@ -908,6 +911,18 @@ are only caught locally.
   (`form.prerequisite_chain`), not only its own `requires`, so a row never outlives the toggle
   above it. `_widget.py`'s `_AdvancedDisclosure` draws a button; tests open them all with
   `panel._haemolynx_expand_advanced()`.
+- **Statistics tab** (`gui/statistics_view.py`, `_widget.py`'s `_StatisticsPanel`) — the
+  left panel's second tab of four (HaemoLynx view, Statistics, Layer list, Layer controls, as
+  wide as each other: `LEFT_PANEL_TABS`). `export_results` leaves what it measured on the graph,
+  `G.graph[pipeline.stages.STATISTICS_REPORT]` = `{"mode", "csv", "sections"}`: one section per
+  statistic measure that ran (`statistics.compute_vessel_statistics_by_measure`, which
+  `compute_comprehensive_vessel_statistics` flattens, rows and order unchanged), then the
+  resistances, branch orders, weighted betweenness and communities, and the tissue volume. On
+  the graph it goes wherever the graph goes (checkpoints, `.haemorun`); `run_pipeline_stages`
+  drops it from a resumed network, and an export with nothing to report removes it. The tab draws
+  a button per section, its rows built and shown only while pressed, and refreshes after every
+  stage drawn, from a run's returned graph (shown in the viewer or not) and on Clear; a section
+  open before a rerun stays open. Full mode's per-node rows are cut at `MAX_ROWS`.
 - **`gui/layer_sets.py`** — what the view panel's "Showing" menu swaps: the baseline network or one
   perturbation's (vessels, nodes, flow direction, pericytes, vessel tubes), every other network
   hidden, and which kinds of layer were on carried across (`carried_roles`: a kind the network
