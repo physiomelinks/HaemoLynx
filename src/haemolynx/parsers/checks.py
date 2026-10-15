@@ -87,7 +87,9 @@ def check_settings(
     """Check every active setting that declares ``must_exist``.
 
     A setting is active when its ``requires`` prerequisites are met, so a path
-    the run would generate for itself is not demanded up front.
+    the run would generate for itself is not demanded up front. One that
+    declares a ``placeholder`` is optional: unset, the run falls back to what
+    the placeholder names, so only a path that is set has to be there.
     """
     report = CheckReport()
     skipped = set(skip)
@@ -97,6 +99,9 @@ def check_settings(
         if not is_active(setting, values):
             continue
         value = values.get(setting.name)
+        if value is None and setting.optional_path:
+            report.add_pass(setting.name, f"not set: uses {setting.placeholder}")
+            continue
         if value is None:
             report.add_error(
                 f"{setting.help} — '{setting.name}' is not set but is required "

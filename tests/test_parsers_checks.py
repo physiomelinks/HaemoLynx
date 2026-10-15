@@ -82,6 +82,72 @@ def test_paths_without_must_exist_are_not_checked(tmp_path):
     assert not any("output_dir" in message for message in report.errors)
 
 
+def _schema_with_an_optional_path() -> Schema:
+    return Schema([
+        Setting("measure", "bool", False, "Measure the tissue", "S"),
+        Setting(
+            "tissue_path", "path", None, "Find the tissue in this image", "S",
+            requires=("measure",), must_exist=True, placeholder="the raw image",
+        ),
+    ])
+
+
+def test_an_unset_path_with_a_placeholder_is_optional():
+    """Unset, the run reads what the placeholder names: not an error."""
+    report = check_settings(_schema_with_an_optional_path(), {"measure": True, "tissue_path": None})
+    assert report.ok, report.errors
+    assert report.passed == [("tissue_path", "not set: uses the raw image")]
+
+
+def test_an_optional_path_that_is_set_must_still_exist(tmp_path):
+    schema = _schema_with_an_optional_path()
+    report = check_settings(schema, {"measure": True, "tissue_path": tmp_path / "gone.tif"})
+    assert len(report.errors) == 1
+    assert report.errors[0].startswith("tissue_path: ") and "gone.tif" in report.errors[0]
+
+    existing = tmp_path / "tissue.tif"
+    existing.write_bytes(b"x")
+    report = check_settings(schema, {"measure": True, "tissue_path": existing})
+    assert report.ok
+    assert report.passed == [("tissue_path", str(existing))]
+
+
+def test_an_optional_path_is_not_checked_while_its_feature_is_off(tmp_path):
+    report = check_settings(
+        _schema_with_an_optional_path(), {"measure": False, "tissue_path": tmp_path / "gone.tif"}
+    )
+    assert report.ok and report.passed == []
+
+
+def test_a_placeholder_makes_only_a_path_optional():
+    path = Setting("p", "path", None, "A path", "S", must_exist=True, placeholder="the default")
+    assert path.optional_path
+    assert not Setting("p", "path", None, "A path", "S", must_exist=True).optional_path
+    assert not Setting("w", "float", None, "A width", "S", placeholder="auto").optional_path
+
+
+def test_a_config_file_says_an_optional_path_must_exist_only_if_set():
+    from haemolynx.parsers.config import _comment_lines
+
+    optional = _schema_with_an_optional_path()["tissue_path"]
+    required = _schema()["input_path"]
+    assert _comment_lines(optional)[0].endswith("must exist if set]")
+    assert _comment_lines(required)[0].endswith("must exist]")
+
+
+def test_every_optional_must_exist_path_in_the_pipeline_falls_back_when_unset():
+    """A placeholder on a must_exist path turns its unset check off, so each
+    one is listed here with what it falls back to, checked in the run:
+    edt_mask_path to the segmented input (stages._haemodynamics_apply_config,
+    tests/test_diameter_assignment.py), tissue_raw_tiff_path to the raw image
+    (pipeline.checks.tissue_raw_image, tests/test_tissue_volume.py). A new one
+    has to be added here, its fallback checked."""
+    from haemolynx.pipeline import default_schema
+
+    optional = {s.name for s in default_schema() if s.must_exist and s.optional_path}
+    assert optional == {"edt_mask_path", "tissue_raw_tiff_path"}
+
+
 def test_named_settings_can_be_skipped(tmp_path):
     report = check_settings(
         _schema(),

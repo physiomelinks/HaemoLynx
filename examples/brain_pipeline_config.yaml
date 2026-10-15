@@ -606,7 +606,7 @@ statistics_and_measurements:
   statistics_dead_ends: true
   # Measure the tissue's volume and surface mesh from the raw image -- the region whose background is brighter than the empty space around it -- and divide vessel density by that volume instead of by the box the network spans
   measure_tissue_volume: false
-  # Find the tissue in this raw image, on the segmentation's own grid; leave unset to use the raw image (raw_image_path)  [needs measure_tissue_volume; must exist]
+  # Find the tissue in this raw image, on the segmentation's own grid; leave unset to use the raw image (raw_image_path)  [needs measure_tissue_volume; must exist if set]
   tissue_raw_tiff_path: null
   # Which channel of a multi-channel raw image the tissue is found in, counting from 0 (the panel lists them as Fiji names them: C1 is 0) -- one where the tissue's own background shows; leave unset for a single-channel file, or for raw_image_channel when the raw image is used  [range 0..; needs measure_tissue_volume]
   tissue_raw_channel: null
@@ -919,7 +919,7 @@ endothelial_diameter:
 edt_mask_diameter_estimate:
   # Estimate per-edge diameters from the segmentation mask (its cross-section, see edt_diameter_method), for fallback and cross-checking against FWHM  [needs run_haemodynamics]
   use_edt_diameter_crosscheck: false
-  # The segmented vessel mask to read widths from when the run has none in memory (e.g. a resumed run); empty means the segmented input from the Input tab (ilastik's output when ilastik segments it)  [needs use_edt_diameter_crosscheck; must exist]
+  # The segmented vessel mask to read widths from when the run has none in memory (e.g. a resumed run); empty means the segmented input from the Input tab (ilastik's output when ilastik segments it)  [needs use_edt_diameter_crosscheck; must exist if set]
   edt_mask_path: null
   # Use the EDT mask estimate instead of the branch-order table when FWHM measurement fails for an edge, or was never attempted  [needs use_edt_diameter_crosscheck]
   edt_diameter_prefer_over_table_on_fwhm_failure: true

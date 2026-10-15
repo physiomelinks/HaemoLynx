@@ -183,7 +183,17 @@ class Setting:
         For a path: the file or directory it names must be there before a run
         starts, whenever this setting is active. Checked by
         :func:`haemolynx.parsers.check_settings`, not at load, so a GUI can
-        show the problem rather than refuse to open the file.
+        show the problem rather than refuse to open the file. Unset, it is an
+        error -- unless the path also declares a ``placeholder``, which makes
+        it optional (:attr:`optional_path`): unset, the run reads what the
+        placeholder names instead, and only a path that is set must be there.
+        The panel opens a ``must_exist`` path's file dialogue for reading.
+    placeholder:
+        Hint text a GUI shows in an empty (unset, ``None``-default) box, e.g.
+        ``"auto"`` for a setting whose blank value means "compute it from
+        something else". Cosmetic only -- never becomes the value -- except
+        that on a ``must_exist`` path it declares the path optional: name
+        there what the run falls back to, and make sure the run does.
     advanced:
         Hide behind an "advanced" disclosure by default.
     always_effective:
@@ -228,9 +238,8 @@ class Setting:
     must_exist: bool = False
     advanced: bool = False
     always_effective: bool = False
-    #: Hint text a GUI shows in an empty (unset/``None``-default) box, e.g.
-    #: ``"auto"`` for a setting whose blank value means "compute it from
-    #: something else". Cosmetic only -- never becomes the value.
+    #: Hint text for an empty box; on a ``must_exist`` path, also what makes
+    #: it optional (see the class docstring).
     placeholder: str | None = None
     value_aliases: Mapping[Any, Any] | None = None
     replaces: Mapping[str, Mapping[Any, Any]] | None = None
@@ -294,6 +303,13 @@ class Setting:
                 f"Setting '{self.name}' needs both migrates (the retired names) "
                 "and migrate (what they become), or neither."
             )
+
+    @property
+    def optional_path(self) -> bool:
+        """A path that may be left unset: its ``placeholder`` names what the
+        run reads in its place, so ``must_exist`` asks only that a path which
+        is set be there."""
+        return self.kind == "path" and self.placeholder is not None
 
     def coerce(self, value: Any) -> Any:
         """Return *value* converted to this setting's kind, or raise ConfigError."""

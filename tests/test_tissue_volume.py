@@ -569,6 +569,31 @@ def test_full_preflight_runs_the_tissue_check(tmp_path):
     assert any("measure_tissue_volume needs the raw image" in error for error in errors)
 
 
+def _preflight_settings_with_a_raw_image(tmp_path, **overrides):
+    settings, _network, _G, vessel = _stage_inputs(tmp_path, **overrides)
+    tifffile.imwrite(tmp_path / "seg.tif", vessel.astype(np.uint8))
+    settings["raw_image_path"] = str(tmp_path / "raw.tif")
+    return settings
+
+
+def test_preflight_passes_a_tissue_measurement_left_to_the_raw_image(tmp_path):
+    """Unset is tissue_raw_tiff_path's ordinary use (the run's raw image), so
+    it is not demanded as a required path."""
+    settings = _preflight_settings_with_a_raw_image(tmp_path, tissue_raw_tiff_path=None)
+    report = preflight(settings, SCHEMA)
+    assert report.ok, report.errors
+    assert ("tissue_raw_tiff_path", "not set: uses the raw image") in report.passed
+
+
+def test_preflight_refuses_a_tissue_image_that_is_set_but_missing(tmp_path):
+    settings = _preflight_settings_with_a_raw_image(
+        tmp_path, tissue_raw_tiff_path=str(tmp_path / "gone_tissue.tif")
+    )
+    errors = preflight(settings, SCHEMA).errors
+    assert len(errors) == 1
+    assert errors[0].startswith("tissue_raw_tiff_path: ") and "gone_tissue.tif" in errors[0]
+
+
 # --- citations -----------------------------------------------------------------
 
 
