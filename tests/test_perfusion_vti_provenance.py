@@ -3,12 +3,17 @@
 The pipeline defaults to Tier 3, but the published H2 hypoxia numbers come from Tier 1 run
 directly by the H2 drivers with cb_settings inputs. Without a tag the two fields look alike.
 """
+from dataclasses import replace
+
 import numpy as np
 import pytest
+
+from ImageLynx import cb_settings
 
 pv = pytest.importorskip("pyvista")
 
 from carotid_image_to_model import (
+    _MPA_PER_MMHG,
     HaemodynamicsConfig,
     PerfusionConfig,
     _perfusion_flow_to_um3_per_s,
@@ -26,8 +31,8 @@ SOLVERS = {
 _INFO = {"converged": True, "iterations": 11, "residual_o2": 2.4e-5, "residual_co2": 7.0e-6}
 
 
-def _provenance(tier, info=_INFO):
-    return _perfusion_provenance(tier, SOLVERS[tier], PerfusionConfig(), HaemodynamicsConfig(),
+def _provenance(tier, info=_INFO, perf=None):
+    return _perfusion_provenance(tier, SOLVERS[tier], perf or PerfusionConfig(), HaemodynamicsConfig(),
                                  info if tier == 3 else None,
                                  flow_to_um3_per_s=_perfusion_flow_to_um3_per_s())
 
@@ -40,20 +45,24 @@ def test_tier_3_records_its_solver_rate_pressures_and_tolerance():
     assert tags["perfusion_solver"] == "solve_multi_species_perfusion"
     assert tags["perfusion_M_max"] == perf.M_max
     assert tags["perfusion_picard_tolerance"] == perf.picard_tolerance
-    # Config pressures are in mPa; the tag is in mmHg. The defaults are 60/20 mmHg (open item 10).
-    assert tags["perfusion_inlet_pressure_mmHg"] == pytest.approx(60.0)
-    assert tags["perfusion_outlet_pressure_mmHg"] == pytest.approx(20.0)
-    assert tags["perfusion_inlet_pressure_mmHg"] * 133322.387415 == pytest.approx(hemo.input_p_bc)
-    assert tags["perfusion_outlet_pressure_mmHg"] * 133322.387415 == pytest.approx(hemo.output_p_bc)
+    # Config pressures are in mPa; the tag is in mmHg. The defaults are the frozen pair (open item 10).
+    assert tags["perfusion_inlet_pressure_mmHg"] == pytest.approx(cb_settings.INLET_PRESSURE_MMHG)
+    assert tags["perfusion_outlet_pressure_mmHg"] == pytest.approx(cb_settings.OUTLET_PRESSURE_MMHG)
+    assert tags["perfusion_inlet_pressure_mmHg"] * _MPA_PER_MMHG == pytest.approx(hemo.input_p_bc)
+    assert tags["perfusion_outlet_pressure_mmHg"] * _MPA_PER_MMHG == pytest.approx(hemo.output_p_bc)
 
 
 @pytest.mark.parametrize("tier", [1, 2, 3])
 def test_every_tier_records_the_config_tolerance_it_now_reads(tier):
-    """Tiers 1 and 2 hard-coded theirs and were left untagged until open item 6."""
-    tags = _provenance(tier)
+    """Tiers 1 and 2 hard-coded theirs and were left untagged until open item 6.
+
+    Run on a tolerance other than the default, so a tag typed in as the default value fails.
+    """
+    perf = replace(PerfusionConfig(), picard_tolerance=3e-7)
+    tags = _provenance(tier, perf=perf)
     assert tags["perfusion_tier"] == tier
     assert tags["perfusion_solver"] == SOLVERS[tier]
-    assert tags["perfusion_picard_tolerance"] == PerfusionConfig().picard_tolerance == 1e-5
+    assert tags["perfusion_picard_tolerance"] == perf.picard_tolerance
 
 
 @pytest.mark.parametrize("tier", [1, 2, 3])

@@ -5,8 +5,6 @@ outlet, while the H2 drivers took only the terminals on the two faces of
 ``cb_settings.BOUNDARY_AXIS``. Most degree-1 nodes are interior dead ends, so the two runs put
 pressure on different nodes of the same graph.
 """
-import inspect
-
 import networkx as nx
 import numpy as np
 import pytest
@@ -20,19 +18,23 @@ SHAPE = (50, 50, 50)
 
 
 def _y_network():
-    """Inlet on the low axis-1 face, outlet on the high face, and one interior dead end.
+    """Inlet on the low axis-1 face, outlet on the high face, and two interior dead ends.
 
-    The interior dead end ``"spur"`` sits at axis-0 coordinate 5, inside the old 25% band of
-    axis 0, so the band rule would have given it arterial pressure.
+    ``"spur"`` sits at axis-0 coordinate 5, inside the old 25% band of axis 0, so the band rule
+    on axis 0 would have given it arterial pressure. ``"near_spur"`` sits at axis-1 coordinate
+    5, near the low axis-1 face but four voxels off it: inside that axis's 25% band, outside the
+    face tolerance. So the band rule on axis 1 takes it as an inlet and the face rule does not.
     """
     G = nx.MultiGraph()
     G.add_node("inlet", pos=np.array([10.0, 0.0, 10.0]))
     G.add_node("junction", pos=np.array([10.0, 20.0, 10.0]))
     G.add_node("outlet", pos=np.array([10.0, 49.0, 10.0]))
     G.add_node("spur", pos=np.array([5.0, 25.0, 30.0]))
+    G.add_node("near_spur", pos=np.array([30.0, 5.0, 30.0]))
     G.add_edge("inlet", "junction", key=0, length=20.0, voxels=[[10, 0, 10], [10, 20, 10]])
     G.add_edge("junction", "outlet", key=0, length=29.0, voxels=[[10, 20, 10], [10, 49, 10]])
     G.add_edge("junction", "spur", key=0, length=21.0, voxels=[[10, 20, 10], [5, 25, 30]])
+    G.add_edge("junction", "near_spur", key=0, length=33.0, voxels=[[10, 20, 10], [30, 5, 30]])
     return G
 
 
@@ -45,10 +47,10 @@ def _hemo_config():
     )
 
 
-def test_graph_config_takes_the_face_rule_from_settings():
+def test_graph_config_has_no_band_rule_fields():
+    # The axis and tolerance are pinned to cb_settings by test_cb_settings.py's
+    # test_pipeline_and_h2_share_the_boundary_rule.
     config = C.GraphConfig()
-    assert config.boundary_axis == cb_settings.BOUNDARY_AXIS
-    assert config.face_tolerance_voxels == cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS
     for band_field in ("edge_percent", "end_percent", "node_edge_axis"):
         assert not hasattr(config, band_field), f"band-rule field {band_field} is back"
 
@@ -67,6 +69,7 @@ def test_pipeline_boundaries_are_the_h2_face_rule_boundaries(monkeypatch):
     assert (start, out) == (["inlet"], ["outlet"]) == (expected[0], expected[1])
     assert pair == ("inlet", "outlet")
     assert "spur" not in start + out
+    assert "near_spur" not in start + out, "the band rule's pick, not the face rule's"
 
 
 def test_a_placeholder_shape_is_refused(monkeypatch):
@@ -102,8 +105,3 @@ def test_frame_guard_scales_by_the_voxel_size():
     with pytest.raises(ValueError):
         C._check_graph_fits_frame(G, SHAPE, (1.0, 1.0, 1.0))
 
-
-def test_the_pipeline_calls_the_face_rule_not_the_band_rule():
-    source = inspect.getsource(C._setup_boundary_conditions_and_haemodynamics)
-    assert "select_boundary_terminal_nodes_by_face(" in source
-    assert "select_boundary_terminal_nodes(" not in source

@@ -71,27 +71,31 @@ def test_frozen_threshold_lies_on_the_sweep_grid():
     assert cb_settings.FROZEN_THRESHOLD in cb_settings.THRESHOLD_GRID
 
 
-def test_hysteresis_band_matches_what_the_pipeline_auto_raises_to():
-    """--stage run passes low only; the pipeline raises high to low + 0.05."""
-    assert cb_settings.HYSTERESIS_LOW == cb_settings.FROZEN_THRESHOLD
-    assert cb_settings.HYSTERESIS_HIGH == pytest.approx(min(
-        cb_settings.HYSTERESIS_SEED_CAP,
-        cb_settings.FROZEN_THRESHOLD + cb_settings.HYSTERESIS_HIGH_OFFSET))
-    assert cb_settings.HYSTERESIS_HIGH > cb_settings.HYSTERESIS_LOW
-
-
 def test_roi_volume_is_the_figure_the_document_quotes():
     """160^3 at the processing voxel is 0.0266 mm^3 - section 1.1 and section 2.1."""
     assert cb_settings.ROI_MM3 == pytest.approx(0.0266, abs=5e-5)
 
 
 def test_metabolic_mean_is_held_across_the_contrast_sweep():
-    """A contrast of c scales the split, not the total. Section 6.5."""
+    """A contrast of c scales the split, not the total. Section 6.5.
+
+    Runs the hypoxic-fraction driver's own split, then blends it per cell as the driver does.
+    """
+    import numpy as np
+    from cb_h2_hypoxic_fraction import contrast_rates
+    from ImageLynx.haemodynamics.tissue_regions import blend_per_cell_rate
+
+    # Mixed cells with a mean TH fraction of 0.235, a representative value (section 13.7).
+    th_fraction = np.array([0.0, 0.0, 0.05, 0.1, 0.3, 0.5, 0.0, 0.93])
+    assert th_fraction.mean() == pytest.approx(0.235)
     for contrast in cb_settings.METABOLIC_CONTRASTS:
-        f_bar = 0.235          # a representative TH volume fraction, section 13.7
-        stroma = cb_settings.BASE_M_MAX / (1.0 + f_bar * (contrast - 1.0))
-        mean = f_bar * stroma * contrast + (1.0 - f_bar) * stroma
-        assert mean == pytest.approx(cb_settings.BASE_M_MAX, rel=1e-9)
+        tissue_rate, stroma_rate = contrast_rates(float(th_fraction.mean()), contrast)
+        m_max = blend_per_cell_rate(th_fraction, tissue_rate=tissue_rate,
+                                    stroma_rate=stroma_rate)
+
+        assert tissue_rate / stroma_rate == pytest.approx(contrast, rel=1e-12)
+        # Every cell has the same volume, so the volume-weighted mean is the plain mean.
+        assert m_max.mean() == pytest.approx(cb_settings.BASE_M_MAX, rel=1e-9)
 
 
 def test_contrast_rates_match_the_old_inline_lines():

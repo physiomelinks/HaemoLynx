@@ -104,14 +104,24 @@ def test_no_fallback_no_warning(caplog):
     assert "raw centreline" not in caplog.text
 
 
-def test_tier3_first_iteration_diagnostics_are_debug_level():
-    """They were logger.info with a 'DEBUG' prefix, so they filled every pipeline.log (item 11)."""
-    import inspect
-    from ImageLynx.haemodynamics import perfusion
+def test_tier3_first_iteration_diagnostics_are_debug_level(caplog):
+    """They were logger.info with a 'DEBUG' prefix, so they filled every pipeline.log (item 11).
 
-    source = inspect.getsource(perfusion)
-    assert "DEBUG Iteration" not in source
-    assert 'logger.debug(f"Iteration 0:' in source
+    Runs a Tier 3 solve on the plasma-skimmed junction network.
+    """
+    from ImageLynx.haemodynamics.perfusion import solve_multi_species_perfusion
+    from test_perfusion_junction_state import _MEASURED, _network
+
+    grid, G, cells = _network([(0, 1, 1e3, 0.45), (1, 2, 5e2, 0.89), (1, 3, 5e2, 0.01)])
+    with caplog.at_level(logging.DEBUG, logger="ImageLynx.haemodynamics.perfusion"):
+        solve_multi_species_perfusion(grid, G, [0], cells, _MEASURED)
+
+    first_iteration = [r for r in caplog.records
+                       if r.name == "ImageLynx.haemodynamics.perfusion"
+                       and "Iteration 0" in r.getMessage()]
+    # Still logged, so the check below is not passing on an empty list.
+    assert first_iteration
+    assert all(r.levelno == logging.DEBUG for r in first_iteration)
 
 
 # --- cb_h1_vtk.py (items 19, 20) ---------------------------------------------------------

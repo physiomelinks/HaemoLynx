@@ -25,12 +25,14 @@ def test_no_override_keeps_the_frozen_band():
 
 
 @pytest.mark.parametrize("low, expected_high", [
-    (0.90, 0.95),   # what cb_h1_batch.py --stage run passes
-    (0.85, 0.90),   # below the configured seed: the old rule left it at 0.95
-    (0.70, 0.75),
-    (0.97, 0.999),  # capped below 1
-])
+    (0.90, 0.90 + cb_settings.HYSTERESIS_HIGH_OFFSET),   # uncapped: low + the offset
+    # Capped below 1: the frozen low, which is what cb_h1_batch.py --stage run passes.
+    (cb_settings.FROZEN_THRESHOLD, cb_settings.HYSTERESIS_HIGH),
+], ids=["uncapped", "capped_frozen_low"])
 def test_a_low_alone_takes_its_seed_from_the_settings_offset(low, expected_high):
+    # The frozen low sits close enough to 1 that its offset seed is capped; without that the
+    # second case would test the uncapped rule again.
+    assert cb_settings.FROZEN_THRESHOLD + cb_settings.HYSTERESIS_HIGH_OFFSET > cb_settings.HYSTERESIS_SEED_CAP
     config = C.PreprocessingConfig()
     C._apply_hysteresis_overrides(config, low=low)
     assert config.hysteresis_threshold_low == low

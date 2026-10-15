@@ -40,13 +40,13 @@ def test_binary_stitching_continuity(volume, chunk_fraction, margin):
     # Every voxel, so a gap in the line, an extra voxel or a shifted chunk all fail.
     np.testing.assert_array_equal(stitched, volume.astype(np.uint8))
 
-def test_localized_optuna_invocation():
-    """Verify that if we run the script via CLI args it invokes local preprocessing exactly N times."""
-    
+def test_empty_chunks_are_skipped_and_the_worker_runs_once_per_non_empty_chunk():
+    """map_reduce_pipeline hands the worker only chunks with a non-zero voxel."""
     volume = np.zeros((30, 10, 10), dtype=np.float32)
     worker_mock = MagicMock()
     worker_mock.return_value = np.zeros((10, 10, 10), dtype=np.uint8)
-    
+
+    # chunk_fraction 0.334 cuts z into three chunks of 10 and leaves y and x whole.
     map_reduce_pipeline(
         volume=volume,
         chunk_fraction=0.334,
@@ -54,18 +54,13 @@ def test_localized_optuna_invocation():
         worker_fn=worker_mock,
         n_jobs=1
     )
-    
-    # Z=30, chunk=10. Y=10, chunk=10. X=10, chunk=10.
-    # Total chunks = 3 * 1 * 1 = 3
-    # Actually wait! The volume is all zeros. Our map_reduce checks `if np.max(chunk) == 0: return None`.
-    # So the worker_fn is NEVER called.
     assert worker_mock.call_count == 0
-    
-    # Let's put some data in the chunks
+
+    # One voxel in each chunk's core.
     volume[5, 5, 5] = 1.0
     volume[15, 5, 5] = 1.0
     volume[25, 5, 5] = 1.0
-    
+
     map_reduce_pipeline(
         volume=volume,
         chunk_fraction=0.334,
@@ -73,14 +68,11 @@ def test_localized_optuna_invocation():
         worker_fn=worker_mock,
         n_jobs=1
     )
-    
+
     assert worker_mock.call_count == 3
 
 def test_skeleton_boundary_continuity():
     """Synthesize a straight 1-voxel line crossing a boundary and assert topological reconnection."""
-    import skimage.morphology as morph
-    from skimage.morphology import skeletonize as skimage_skeletonize
-    
     # 20x20x20. Chunk fraction 0.5 creates 2x2x2 chunks. Boundaries are at Z=10, Y=10, X=10.
     volume = np.zeros((20, 20, 20), dtype=np.uint8)
     volume[:, 10, 10] = 1 # Line passing through Z boundary
@@ -115,14 +107,14 @@ def test_skeleton_boundary_continuity():
     
     # Now it is disconnected. Verify:
     from skimage.measure import label
-    
+    from carotid_image_to_model import _reconnect_chunk_seams
+
     labels, num_features = label(stitched > 0, return_num=True)
     assert num_features > 1, f"Line should be broken prior to reconnection! Found {num_features} components."
-    
-    # Apply topological reconnection
-    stitched = morph.closing(stitched, morph.cube(3))
-    stitched = skimage_skeletonize(stitched) > 0
-    
+
+    # The pipeline's own seam reconnection
+    stitched = _reconnect_chunk_seams(stitched)
+
     labels, num_features = label(stitched > 0, return_num=True)
     assert num_features == 1, "Line must be fully connected after topological stitch!"
 

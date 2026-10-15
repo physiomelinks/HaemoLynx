@@ -1,11 +1,13 @@
-import pytest
-import numpy as np
+from pathlib import Path
 from unittest.mock import patch
+
+import numpy as np
+import pytest
 
 from carotid_image_to_model import PipelineConfig, carotid_image_to_model
 
-def test_mandatory_vtk_generation(tmp_path):
-    """Verify that when chunk_fraction < 1.0, 4 VTI files are generated."""
+def test_grid_preview_writes_the_five_preview_vtis(tmp_path):
+    """With chunk_fraction < 1.0 the grid preview writes five VTI files, then exits."""
     # We will mock pv.ImageData().save to verify how many times it was called and what paths
     
     # We can't easily mock the entire pipeline end-to-end without a real image,
@@ -46,40 +48,48 @@ def test_mandatory_vtk_generation(tmp_path):
          assert any("shannon_entropy.vti" in name for name in calls)
 
 def test_dual_anatomy_export_alignment_real(tmp_path):
-    """Verify global and sub-volume anatomy exports maintain correct array lengths using actual PyVista."""
+    """The global anatomy keeps the whole volume and the sub-volume is the ROI cut from it.
+
+    The ROI is given in voxels, as ``--roi-voxels`` gives it (centred here). The pipeline fills a
+    sub-volume of the wrong size with zeros, so the point count alone cannot show the crop is
+    right; the values are compared with the box cut from the global anatomy too.
+    """
+    import pyvista as pv
+    from carotid_image_to_model import SkeletonConfig
+
+    anatomy = np.arange(100 ** 3, dtype=np.float32).reshape(100, 100, 100)
+    saved = {}
+
+    def record(self, filename, *args, **kwargs):
+        saved[Path(filename).name] = self
+
     with patch('carotid_image_to_model._load_raw_probability_field') as mock_load_prob, \
          patch('ImageLynx.io.load_3d_tif') as mock_load_tif, \
-         patch('pyvista.ImageData.save') as mock_save, \
+         patch.object(pv.ImageData, 'save', autospec=True, side_effect=record), \
          patch('carotid_image_to_model.sys.exit') as mock_exit:
-         
-         mock_prob = np.zeros((50, 50, 50), dtype=np.float32)
-         mock_load_prob.return_value = (mock_prob, None)
-         
-         mock_load_tif.side_effect = [np.zeros((100, 100, 100), dtype=np.float32)]
-         
+
+         # The probability field arrives already cut to the ROI.
+         mock_load_prob.return_value = (np.zeros((50, 50, 50), dtype=np.float32), None)
+         mock_load_tif.side_effect = [anatomy]
          mock_exit.side_effect = Exception("sys.exit was called")
-         
-         from carotid_image_to_model import SkeletonConfig
+
          config = PipelineConfig(chunk_fraction=0.5, export_grid_preview=True,
                                  vtk_output_prefix=tmp_path / "resistance_network")
-         skel_config = SkeletonConfig(sub_volume_percentage=0.5)
-         
+         skel_config = SkeletonConfig(sub_volume_voxels=(50, 50, 50))
+
          with pytest.raises(Exception, match="sys.exit was called"):
              carotid_image_to_model(image_path="dummy.tif", pipeline_config=config, skel_config=skel_config)
-             
-         # The mock_save is called on the pv.ImageData object (self)
-         # We can get the object from the call context
-         saved_objects = [call.args[0].name for call in mock_save.call_args_list]
-         
-         # Note: in Python, methods bound to objects pass `self` implicitly, 
-         # but mock_save doesn't capture `self` in args unless we patch it differently.
-         # The simplest assertion is that it didn't crash PyVista with "Invalid array shape".
-         # Since we used the real pv.ImageData, if the lengths didn't match the dimensions,
-         # PyVista would have thrown a ValueError during `point_data` assignment and caught by our try-except.
-         # If the try-except caught it, the save wouldn't be called for the subvolume!
-         
-         assert "resistance_network_raw_anatomy_global.vti" in saved_objects
-         assert "resistance_network_raw_anatomy_subvolume.vti" in saved_objects
+
+    global_vti = saved["resistance_network_raw_anatomy_global.vti"]
+    sub_vti = saved["resistance_network_raw_anatomy_subvolume.vti"]
+    assert global_vti.n_points == 100 ** 3
+    assert sub_vti.n_points == 50 ** 3
+    # Point data is in x-fastest (Fortran) order; the centred 50^3 box of a 100^3 volume
+    # starts at voxel 25 on every axis.
+    np.testing.assert_array_equal(global_vti.point_data["RawAnatomy"],
+                                  anatomy.flatten(order="F"))
+    np.testing.assert_array_equal(sub_vti.point_data["RawAnatomy"],
+                                  anatomy[25:75, 25:75, 25:75].flatten(order="F"))
 
 def test_early_termination_toggle(tmp_path):
     """Verify sys.exit is called based on export_grid_preview toggle."""

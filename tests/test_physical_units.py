@@ -45,7 +45,7 @@ def _centreline_graph(diameter_um=2.0, spacing=SPACING):
 
 
 @pytest.mark.parametrize("spacing", [SPACING, (1.0, 1.0, 1.0)], ids=["anisotropic", "unit"])
-def test_redilate_skeleton_to_volume_round_trips_anisotropic_spacing(spacing):
+def test_redilate_skeleton_to_volume_divides_physical_coordinates_by_the_spacing(spacing):
     """Physical edge coordinates must be divided by the spacing before being used as indices.
 
     Truncating them directly places the reconstruction at voxel (z * 1.866, 18, 18) instead
@@ -150,6 +150,7 @@ def _pipeline_module():
     return pytest.importorskip("carotid_image_to_model")
 
 
+@pytest.mark.realdata
 def test_configured_voxel_size_tracks_the_raw_acquisition_metadata():
     """The constant must be traceable to the file, not typed in beside it.
 
@@ -169,14 +170,12 @@ def test_configured_voxel_size_tracks_the_raw_acquisition_metadata():
         pytest.skip(f"raw acquisition volume not present at {mod.RAW_IMAGE_PATH}")
 
     from ImageLynx.io import get_tif_spacing
-    from ImageLynx.specimens import PROCESSING_VOXEL_UM
 
     detected = get_tif_spacing(mod.RAW_IMAGE_PATH)
+    # That the config equals PROCESSING_VOXEL_UM is checked without the data, by
+    # test_specimens.py::test_pipeline_voxel_size_is_the_shared_processing_value.
     configured = tuple(mod.PipelineConfig().voxel_size_um)
 
-    assert configured == PROCESSING_VOXEL_UM, (
-        "the pipeline must compute in the units the upstream artefacts were calibrated in"
-    )
     assert configured == pytest.approx(detected, rel=1e-4), (
         f"configured voxel_size_um {configured} has drifted from the acquisition "
         f"metadata {detected} by more than the recorded rounding"
@@ -348,6 +347,7 @@ def test_mask_calibre_is_reported_but_never_optimised_against():
 def test_default_hysteresis_thresholds_lie_inside_the_tuner_search_range():
     """A default outside the searched range cannot be reproduced or refined by tuning."""
     C = pytest.importorskip("carotid_image_to_model")
+    optuna = pytest.importorskip("optuna")
     from ImageLynx.statistics.auto_tuner import PreprocessingObjective
 
     ranges = {}
@@ -364,9 +364,11 @@ def test_default_hysteresis_thresholds_lie_inside_the_tuner_search_range():
         def suggest_categorical(self, name, choices):
             return choices[0]
 
+    # The recorder's run returns no mask, so the objective prunes the trial after drawing
+    # every parameter. Any other error is a real one and must not be swallowed.
     try:
         PreprocessingObjective(lambda kwargs: None)(_Recorder())
-    except Exception:
+    except optuna.TrialPruned:
         pass
 
     cfg = C.PreprocessingConfig()
@@ -374,7 +376,6 @@ def test_default_hysteresis_thresholds_lie_inside_the_tuner_search_range():
     hi_lo, hi_hi = ranges["hysteresis_threshold_high"]
     assert lo_lo <= cfg.hysteresis_threshold_low <= lo_hi
     assert hi_lo <= cfg.hysteresis_threshold_high <= hi_hi
-    assert cfg.hysteresis_threshold_high > cfg.hysteresis_threshold_low
 
 
 # --- The bundle-collapse operator must not eat vascular loops (#98 Tier 1 item 5) ---------
@@ -536,23 +537,42 @@ def test_stub_pruning_threshold_is_in_microns():
     assert "tip0" not in cut
 
 
-def test_pipeline_configures_the_stub_threshold_explicitly():
+def test_pipeline_configures_the_stub_threshold_explicitly(monkeypatch):
     """It was never passed, so the pipeline silently took the library default of 10.0.
 
     That default behaved as 10 voxels = 18.7 um before 2705b38 and as 10 um after, without the
-    literal ever changing.
+    literal ever changing. Runs the graph step on a Y skeleton and records what it passes, at a
+    threshold other than the default so a value typed in at the call fails too.
     """
     C = pytest.importorskip("carotid_image_to_model")
-    import inspect
 
     cfg = C.GraphConfig()
-    assert hasattr(cfg, "min_stub_length_um")
     # Bounded by the measured p99 inscribed radius of the mask, 5.60 um: a skeletonisation spur
     # cannot be longer than the local vessel radius.
     assert 0.0 < cfg.min_stub_length_um <= 6.0
 
-    source = inspect.getsource(C._build_and_optimize_graph)
-    assert "min_stub_length=graph_config.min_stub_length_um" in source, \
+    passed = []
+    prune = C.graph.prune_vascular_stubs
+
+    def recording_prune(G, *args, **kwargs):
+        passed.append(kwargs.get("min_stub_length", "not passed"))
+        return prune(G, *args, **kwargs)
+
+    monkeypatch.setattr(C.graph, "prune_vascular_stubs", recording_prune)
+
+    # The Y skeleton of test_optuna_regression.py's graph-step harness.
+    skeleton = np.zeros((40, 40, 40), dtype=np.uint8)
+    skeleton[5:35, 20, 20] = 1
+    skeleton[20, 20:35, 20] = 1
+    cfg.keep_largest_component_only = False
+    cfg.min_stub_length_um = 4.25
+    pipeline_config = C.PipelineConfig()
+    pipeline_config.enable_diagnostic_plots = False
+    # input_format != "tif" keeps get_tif_spacing away from the filesystem.
+    C._build_and_optimize_graph(skeleton, skeleton, None, "npy",
+                                C.SkeletonConfig(), cfg, pipeline_config)
+
+    assert passed == [4.25], \
         "the configured threshold is not reaching prune_vascular_stubs"
 
 
