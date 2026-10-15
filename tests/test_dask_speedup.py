@@ -14,8 +14,8 @@ except ImportError:
 
 @pytest.fixture
 def sample_volume_3d():
-    """Create a random 3D volume for testing."""
-    return np.random.rand(32, 32, 32).astype(np.float32)
+    """Create a random 3D volume for testing, the same field every run."""
+    return np.random.default_rng(0).random((32, 32, 32)).astype(np.float32)
 
 @pytest.fixture
 def temp_tiff(tmp_path, sample_volume_3d):

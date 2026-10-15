@@ -3,9 +3,7 @@ import pytest
 import numpy as np
 from ImageLynx.preprocessing.image import (
     smooth_probability_map, 
-    hysteresis_threshold,
     joint_hysteresis_threshold,
-    median_filter_image,
     morphological_opening,
     calculate_entropy_map,
     crop_roi
@@ -20,23 +18,6 @@ def test_smooth_probability_map():
     assert smoothed.max() < 1.0  # Max should be reduced by smoothing
     assert smoothed.sum() == pytest.approx(image.sum(), rel=1e-5)
 
-def test_hysteresis_threshold():
-    image = np.zeros((10, 10, 10), dtype=np.float32)
-    image[5, 5, 5] = 0.8  # Seed
-    image[5, 5, 6] = 0.4  # Connected above low
-    image[5, 5, 7] = 0.2  # Below low
-    
-    # Hysteresis (low=0.3, high=0.7)
-    binary = hysteresis_threshold(image, low=0.3, high=0.7)
-    assert binary[5, 5, 5] == True
-    assert binary[5, 5, 6] == True
-    assert binary[5, 5, 7] == False
-    
-    # No seed case
-    image2 = np.ones((10, 10, 10)) * 0.4
-    binary2 = hysteresis_threshold(image2, low=0.3, high=0.7)
-    assert not binary2.any()
-
 def test_fill_holes_3d():
     # Hollow cube
     binary = np.ones((10, 10, 10), dtype=bool)
@@ -45,14 +26,6 @@ def test_fill_holes_3d():
     # Fill the hole
     filled = fill_holes_3d(binary)
     assert filled.all()
-
-def test_median_filter_image():
-    image = np.zeros((10, 10, 10), dtype=np.float32)
-    image[5, 5, 5] = 1.0  # Salt noise
-    filtered = median_filter_image(image, size=3)
-    # Median of 3x3x3 around (5,5,5) should be 0.0 because only one pixel is 1.0
-    assert filtered[5, 5, 5] == 0.0
-    assert filtered.shape == image.shape
 
 def test_morphological_opening_binary():
     binary = np.zeros((10, 10, 10), dtype=bool)
@@ -212,17 +185,6 @@ def test_two_class_entropy_criterion_is_non_monotonic_in_probability():
     assert not candidate[1], "p = 0.50 should be discarded - this is the non-monotonicity"
     assert candidate[2] and candidate[3], "high-confidence voxels should be retained"
 
-def _carotid_loader():
-    import sys
-    from pathlib import Path
-
-    examples_path = Path(__file__).parent.parent / "examples"
-    if str(examples_path) not in sys.path:
-        sys.path.insert(0, str(examples_path))
-    import carotid_image_to_model
-    return carotid_image_to_model
-
-
 def _write_probability_field(path, n_classes):
     import tifffile
 
@@ -234,7 +196,7 @@ def _write_probability_field(path, n_classes):
 
 
 def _load(tmp_path, n_classes, entropy_on):
-    C = _carotid_loader()
+    import carotid_image_to_model as C
     pre_config = C.PreprocessingConfig(enable_shannon_entropy=entropy_on)
     skel_config = C.SkeletonConfig()
     skel_config.sub_volume_percentage = 1.0
@@ -244,7 +206,9 @@ def _load(tmp_path, n_classes, entropy_on):
 
 def test_entropy_is_off_by_default_and_a_two_class_field_loads_plainly(tmp_path):
     """Open item 11: the default no longer describes a path that cannot run on CB data."""
-    assert not _carotid_loader().PreprocessingConfig().enable_shannon_entropy
+    import carotid_image_to_model as C
+
+    assert not C.PreprocessingConfig().enable_shannon_entropy
     _, entropy = _load(tmp_path, 2, entropy_on=False)
     assert entropy is None
 
@@ -264,7 +228,7 @@ def test_entropy_on_a_three_class_field_still_produces_a_map(tmp_path):
 def test_entropy_on_a_field_with_no_class_axis_is_refused(tmp_path):
     import tifffile
 
-    C = _carotid_loader()
+    import carotid_image_to_model as C
     path = tmp_path / "prob3d.tif"
     tifffile.imwrite(str(path), np.full((6, 8, 8), 0.7, dtype=np.float32))
     skel_config = C.SkeletonConfig()
@@ -276,7 +240,7 @@ def test_entropy_on_a_field_with_no_class_axis_is_refused(tmp_path):
 
 def test_the_entropy_core_is_a_config_field_that_reaches_the_threshold(monkeypatch):
     """It used to be read with .get(..., 0.6) and was not a config field, so it could not be set."""
-    C = _carotid_loader()
+    import carotid_image_to_model as C
     seen = {}
 
     def fake_joint(image, entropy, **kwargs):

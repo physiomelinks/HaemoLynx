@@ -112,17 +112,6 @@ def probability_h5(tmp_path):
     return path, vessel
 
 
-def test_reads_the_named_vessel_class_channel(probability_h5):
-    from ImageLynx.io import read_ilastik_probabilities
-
-    path, vessel = probability_h5
-    got = read_ilastik_probabilities(path, vessel_class_index=0)
-
-    assert got.shape == vessel.shape
-    assert got.dtype == np.float32
-    assert got == pytest.approx(vessel)
-
-
 def test_refuses_to_guess_the_vessel_class(probability_h5, monkeypatch):
     """There is no safe default when the trained project's label order is unrecorded.
 

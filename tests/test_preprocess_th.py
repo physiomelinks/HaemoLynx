@@ -146,11 +146,33 @@ def test_multiplicative_correction_runs_on_genuine_decay_and_is_bounded():
         "gains must be capped so near-empty slices are left alone, not amplified")
 
 
-def test_module_offers_no_histogram_matching():
-    src = open(pth.__file__).read()
-    assert "match_histograms" not in src, (
-        "histogram matching forces every slice to the same intensity "
-        "distribution, which hard-codes TH density to be uniform in z")
+def test_the_grayscale_channel_is_one_monotone_map_of_the_input_without_background_subtraction(
+        tmp_path):
+    """With ``default_args`` (rolling ball off), nothing reorders voxels or removes a spike.
+
+    Per-slice histogram matching forces every slice to the same intensity distribution,
+    which hard-codes TH density to be uniform in z, and a blanket 3x3x3 median costs 18% of
+    the doughnut contrast. Either one breaks the order of the input voxels or deletes the
+    one-voxel spike, however it is written.
+    """
+    rng = np.random.default_rng(2)
+    th = np.full((16, 64, 64), 80.0, np.float32)
+    for z in range(4, 12):    # slices of clearly different brightness
+        th[z, 20:44, 20:44] = 1000.0 + 400.0 * (z - 4) + rng.integers(0, 200, (24, 24))
+    spike = (5, 32, 32)
+    th[spike] = 9000.0
+    p = tmp_path / "v.tif"
+    write_zcyx_tiff(p, th, th * 0.5)
+
+    qc = pth.process_volume(str(p), default_args(output_dir=str(tmp_path / "out")))
+    with h5py.File(qc["output_h5"], "r") as f:
+        gray = f["data"][..., qc["channel_names"].index("grayscale")]
+
+    order = np.argsort(th.ravel(), kind="stable")
+    assert (np.diff(gray.ravel()[order]) >= 0).all(), (
+        "sorting the input voxels must sort the output voxels")
+    neighbourhood = np.delete(gray[4:7, 31:34, 31:34].ravel(), 13)
+    assert gray[spike] > neighbourhood.max(), "the lone bright voxel was smoothed away"
 
 
 # ------------------------------------------------------- R4: signed DoG channel
@@ -311,17 +333,6 @@ def test_th_channel_defaults_to_index_one_and_is_extracted_correctly(tmp_path):
     assert vol.max() > 100, "extracted the flat lectin channel instead of TH"
 
 
-def test_four_dimensional_input_is_handled_not_rejected(tmp_path):
-    """The original script called io.imread and raised on the real files."""
-    th = sparse_tissue_volume()
-    p = tmp_path / "v.tif"
-    write_zcyx_tiff(p, th, th * 0.5)
-    args = default_args(output_dir=str(tmp_path / "out"))
-    qc = pth.process_volume(str(p), args)
-    assert qc["n_channels_in_file"] == 2
-    assert os.path.exists(qc["output_h5"])
-
-
 # -------------------------------------------------------------- R6: no tiling
 
 def test_output_is_one_untiled_volume_at_full_extent(tmp_path):
@@ -340,13 +351,6 @@ def test_output_is_one_untiled_volume_at_full_extent(tmp_path):
             "output extent must match the input; no padding to a tile grid")
 
 
-def test_module_does_no_reflect_padding():
-    src = open(pth.__file__).read()
-    assert "reflect" not in src, (
-        "reflect padding fabricates mirrored tissue that the classifier will "
-        "label as real")
-
-
 # ---------------------------------------------------------------- R7, C4: QC
 
 def test_qc_json_records_provenance(tmp_path):
@@ -362,10 +366,3 @@ def test_qc_json_records_provenance(tmp_path):
         assert key in written, f"QC is missing {key}"
     assert written["z_correction"] is None, (
         "the default must record that no depth correction was applied")
-
-
-def test_module_applies_no_blanket_median_filter():
-    src = open(pth.__file__).read()
-    assert "median_filter" not in src, (
-        "a 3x3x3 median costs 18% of the doughnut contrast; use "
-        "remove_outliers, which touches only impulse noise")

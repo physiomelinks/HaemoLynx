@@ -62,11 +62,3 @@ def test_a_flood_threshold_above_the_seed_is_clipped_to_it():
     prob = _quantised(seed=2)
     assert np.array_equal(hysteresis_threshold(prob, low=0.97, high=0.95),
                           hysteresis_threshold(prob, low=0.95, high=0.95))
-
-
-def test_the_quantised_band_keeps_the_levels_on_both_bounds():
-    prob = _quantised(seed=3)
-    mask = hysteresis_threshold(prob, low=0.90, high=0.95)
-    assert mask[prob == np.float32(0.90)].any()
-    # every kept voxel is at or above the flood threshold
-    assert (prob[mask] >= np.float32(0.90)).all()

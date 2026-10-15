@@ -231,6 +231,36 @@ def make_batch_run(tmp_path, monkeypatch):
     return make
 
 
+def write_ilp_project(path, lanes, label_names=("vessel", "background"), compute_in_2d=None):
+    """Build a minimal Ilastik ``.ilp``: label names, one raw-data path per lane, label blocks.
+
+    ``lanes`` is a sequence of ``(raw_data_path, blocks)``. ``blocks`` is a sequence of
+    ``(z, labels_yx)`` pairs, each a 2D uint8 array written as one block at depth ``z``
+    (0 is unlabelled). An empty ``blocks`` registers the lane without labelling it. The raw
+    path is written as ``<raw_data_path>/data``. With ``compute_in_2d`` given, the feature
+    selection is written too, every one of its seven features at that value.
+    """
+    import h5py
+
+    with h5py.File(path, "w") as project:
+        project["PixelClassification/LabelNames"] = np.array(
+            [n.encode() for n in label_names], dtype="S32")
+        for position, (raw_data_path, blocks) in enumerate(lanes):
+            lane = f"lane{position:04d}"
+            project[f"Input Data/infos/{lane}/Raw Data/filePath"] = \
+                f"{raw_data_path}/data".encode()
+            group = project.create_group(f"PixelClassification/LabelSets/labels{position:03d}")
+            for index, (z, labels_yx) in enumerate(blocks):
+                ny, nx = labels_yx.shape
+                block = group.create_dataset(
+                    f"block{index:04d}",
+                    data=np.asarray(labels_yx, dtype=np.uint8).reshape(1, ny, nx, 1))
+                block.attrs["blockSlice"] = f"[{z}:{z + 1},0:{ny},0:{nx},0:1]".encode()
+        if compute_in_2d is not None:
+            project["FeatureSelections/ComputeIn2d"] = np.array([compute_in_2d] * 7)
+            project["FeatureSelections/SelectionMatrix"] = np.zeros((6, 7), dtype=bool)
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"

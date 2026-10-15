@@ -24,6 +24,7 @@ relabel-predict-measure round trip.
 import numpy as np
 import pytest
 
+from conftest import write_ilp_project
 from ImageLynx.specimens import SPECIMENS
 from ImageLynx.statistics.label_placement import (
     BOUNDARY_BAND_UM,
@@ -40,28 +41,20 @@ def _write_project(path, slices_by_lane):
     each a list of (y, x) positions, so a test can place background at a chosen distance from
     vessel rather than merely counting it.
     """
-    import h5py
-
-    with h5py.File(path, "w") as project:
-        project["PixelClassification/LabelNames"] = np.array([b"vessel", b"background"],
-                                                             dtype="S32")
-        for position, (stem, by_z) in enumerate(slices_by_lane.items()):
-            lane = f"lane{position:04d}"
-            project[f"Input Data/infos/{lane}/Raw Data/filePath"] = \
-                f"{stem}_ilastik.h5/data".encode()
-            group = project.create_group(
-                f"PixelClassification/LabelSets/labels{position:03d}")
-            for index, (z, (vessel, background)) in enumerate(sorted(by_z.items())):
-                extent = 1 + max(max((c for c, _ in vessel + background), default=0),
-                                 max((c for _, c in vessel + background), default=0))
-                block = np.zeros((1, extent, extent, 1), dtype=np.uint8)
-                for y, x in vessel:
-                    block[0, y, x, 0] = 1
-                for y, x in background:
-                    block[0, y, x, 0] = 2
-                dataset = group.create_dataset(f"block{index:04d}", data=block)
-                dataset.attrs["blockSlice"] = \
-                    f"[{z}:{z + 1},0:{extent},0:{extent},0:1]".encode()
+    lanes = []
+    for stem, by_z in slices_by_lane.items():
+        blocks = []
+        for z, (vessel, background) in sorted(by_z.items()):
+            extent = 1 + max(max((c for c, _ in vessel + background), default=0),
+                             max((c for _, c in vessel + background), default=0))
+            labels = np.zeros((extent, extent), dtype=np.uint8)
+            for y, x in vessel:
+                labels[y, x] = 1
+            for y, x in background:
+                labels[y, x] = 2
+            blocks.append((z, labels))
+        lanes.append((f"{stem}_ilastik.h5", blocks))
+    write_ilp_project(path, lanes)
 
 
 def _lane(vessel_x=20, background_x=23):
@@ -153,6 +146,7 @@ def test_placement_is_measured_without_any_prediction(tmp_path):
         assert forbidden not in source
 
 
+@pytest.mark.realdata
 def test_runs_against_the_real_project_if_present():
     from ImageLynx.specimens import POOLED_CLASSIFIER
 

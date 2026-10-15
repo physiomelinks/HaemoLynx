@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
+from conftest import write_ilp_project
 
 from ImageLynx.specimens import (
     GROUPS,
@@ -403,31 +404,17 @@ def _write_project(path, lanes, label_names=("vessel", "background"), compute_in
     the lane is registered but never labelled, which is the real failure this guards against.
     The name is the full HDF5 file name so that either channel's project can be built here.
     """
-    import h5py
     import numpy as np
 
-    with h5py.File(path, "w") as project:
-        project["PixelClassification/LabelNames"] = np.array(
-            [n.encode() for n in label_names], dtype="S32")
-
-        for position, entry in enumerate(lanes):
-            input_name, depths = entry[0], entry[1]
-            # Optional third element: the label value for each block, so a lane can carry a
-            # deliberate mix of classes. Defaults to the target class throughout.
-            values = entry[2] if len(entry) > 2 else [1] * len(depths)
-            lane = f"lane{position:04d}"
-            project[f"Input Data/infos/{lane}/Raw Data/filePath"] = \
-                f"/some/where/{input_name}/data".encode()
-
-            group = project.create_group(f"PixelClassification/LabelSets/labels{position:03d}")
-            for block_index, (z, value) in enumerate(zip(depths, values)):
-                block = group.create_dataset(
-                    f"block{block_index:04d}",
-                    data=np.full((1, 4, 4, 1), value, dtype=np.uint8))
-                block.attrs["blockSlice"] = f"[{z}:{z + 1},0:4,0:4,0:1]".encode()
-
-        project["FeatureSelections/ComputeIn2d"] = np.array([compute_in_2d] * 7)
-        project["FeatureSelections/SelectionMatrix"] = np.zeros((6, 7), dtype=bool)
+    built = []
+    for entry in lanes:
+        input_name, depths = entry[0], entry[1]
+        # Optional third element: the label value for each block, so a lane can carry a
+        # deliberate mix of classes. Defaults to the target class throughout.
+        values = entry[2] if len(entry) > 2 else [1] * len(depths)
+        blocks = [(z, np.full((4, 4), value, dtype=np.uint8)) for z, value in zip(depths, values)]
+        built.append((f"/some/where/{input_name}", blocks))
+    write_ilp_project(path, built, label_names=label_names, compute_in_2d=compute_in_2d)
 
 
 #: The TH project is two-class, exactly parallel to the vessel project. Every H1 and H2

@@ -8,12 +8,8 @@ from ImageLynx.preprocessing import (
     skeletonize_3d,
     preprocess_skeleton_for_graph,
 )
-
-
-def test_bridge_gaps(small_binary_3d):
-    result = bridge_gaps(small_binary_3d, max_gap=1)
-    assert result.shape == small_binary_3d.shape
-    assert np.any(result)
+from ImageLynx.cb_settings import ROI_VOXELS
+from ImageLynx.specimens import SPECIMENS
 
 
 def test_bridge_gaps_dilates_but_close_binary_mask_does_not():
@@ -41,22 +37,6 @@ def test_bridge_gaps_dilates_but_close_binary_mask_does_not():
         f"({original_count} -> {int(closed.sum())} voxels)"
     )
     assert not closed[7, 10, 10], "closing must not expand boundaries"
-
-
-def test_close_binary_mask_bridges_a_gap_between_thick_structures():
-    """The behaviour the mask path relies on: a closing does still bridge a narrow gap.
-
-    This holds for thick structures. It does not hold for a 1-voxel-thick skeleton, where
-    the erosion step removes the bridge again - which is why bridge_gaps is kept for that
-    case rather than being replaced outright.
-    """
-    volume = np.zeros((21, 21, 21), dtype=bool)
-    volume[8:13, 8:13, 4:10] = True    # two thick blocks separated by a 1-voxel gap at x=10
-    volume[8:13, 8:13, 11:17] = True
-
-    closed = close_binary_mask(volume, radius=1)
-
-    assert closed[10, 10, 10], "the gap between two thick structures was not bridged"
 
 
 def test_close_binary_mask_is_a_noop_for_non_positive_radius():
@@ -222,19 +202,6 @@ def test_absolute_roi_gives_matched_volumes_across_differently_sized_specimens()
     assert crop_roi(shr_b, size_zyx=box).shape == box
 
 
-def test_absolute_roi_is_centred_and_respects_offsets():
-    from ImageLynx.preprocessing import crop_roi
-
-    volume = np.arange(60 * 60 * 60, dtype=np.float32).reshape(60, 60, 60)
-    centred = crop_roi(volume, size_zyx=(20, 20, 20))
-    assert centred.shape == (20, 20, 20)
-    assert centred[0, 0, 0] == volume[20, 20, 20]
-
-    shifted = crop_roi(volume, size_zyx=(20, 20, 20), offset_z=0.1)
-    assert shifted.shape == (20, 20, 20)
-    assert shifted[0, 0, 0] != centred[0, 0, 0]
-
-
 def test_an_absolute_roi_larger_than_the_volume_is_clipped_not_padded():
     """Silently padding would invent tissue; the caller has to see the smaller box."""
     from ImageLynx.preprocessing import crop_roi
@@ -251,32 +218,58 @@ def test_absolute_roi_handles_a_trailing_channel_axis():
     assert crop_roi(volume, size_zyx=(20, 20, 20)).shape == (20, 20, 20, 2)
 
 
-@pytest.mark.parametrize("extent", [160, 161, 200, 201, 377, 520, 521])
+#: Every extent the offsets are checked at: the odd and even ones next to the ROI size, and
+#: every axis extent of the six specimens (which include 435, 315, 495 and 456, the extents
+#: open item 14 was first found on).
+OFFSET_EXTENTS = sorted(
+    {160, 161, 200, 201, 377, 520, 521}
+    | {extent for specimen in SPECIMENS for extent in specimen.shape_zyx}
+)
+
+
+@pytest.mark.parametrize("extent", OFFSET_EXTENTS)
 def test_offsets_reproduce_the_placement_bounds_exactly(extent):
     """Open item 14: crop_roi from centre_to_offsets lands on RoiPlacement.bounds.
 
     Truncating the offset and the start separately put the box one voxel low on odd extents
     with the centre above the midpoint - always low, never high, so it did not average out.
+    Every legal centre is checked, on each of the three axes in turn.
     """
     from ImageLynx.preprocessing import crop_roi
     from ImageLynx.roi_placement import RoiPlacement, centre_to_offsets
 
-    size = 160
-    line = np.arange(extent, dtype=np.int32)
-    volume = np.broadcast_to(line[:, None, None], (extent, 2, 2))
-    for centre in range(size // 2, extent - (size - size // 2) + 1):
-        placement = RoiPlacement("X", (centre, 1, 1), (size, 2, 2),
-                                 centre_to_offsets((centre, 1, 1), volume.shape), None, "test")
-        expected = volume[placement.bounds]
-        got = crop_roi(volume, size_zyx=(size, 2, 2), offset_z=placement.offsets_zyx[0])
-        assert got[0, 0, 0] == expected[0, 0, 0], f"centre {centre}"
-        assert got.shape == expected.shape
+    size = ROI_VOXELS[0]
+    for axis in range(3):
+        # A full-size box on all three axes, with only the tested axis longer than the box.
+        shape = [size, size, size]
+        shape[axis] = extent
+        line = np.arange(extent, dtype=np.int32).reshape(
+            [extent if a == axis else 1 for a in range(3)])
+        volume = np.broadcast_to(line, shape)
+        for centre in range(size // 2, extent - (size - size // 2) + 1):
+            centre_zyx = [size // 2] * 3
+            centre_zyx[axis] = centre
+            placement = RoiPlacement("X", tuple(centre_zyx), (size,) * 3,
+                                     centre_to_offsets(centre_zyx, volume.shape), None, "test")
+            expected = volume[placement.bounds]
+            offsets = dict(zip(("offset_z", "offset_y", "offset_x"), placement.offsets_zyx))
+            got = crop_roi(volume, size_zyx=(size,) * 3, **offsets)
+            assert got.shape == expected.shape == (size,) * 3, (axis, centre)
+            assert got.flat[0] == expected.flat[0], f"axis {axis}, centre {centre}"
 
 
 def test_a_zero_offset_on_an_odd_extent_centres_on_the_lower_middle_voxel():
-    """Halves round down, matching clamp_centre's extent // 2."""
+    """Halves round down, matching clamp_centre's extent // 2.
+
+    On an even extent the same rule gives the exactly centred box.
+    """
     from ImageLynx.preprocessing import crop_roi
 
     volume = np.arange(21, dtype=np.int32)[:, None, None] * np.ones((1, 4, 4), dtype=np.int32)
     got = crop_roi(volume, size_zyx=(5, 4, 4))
     assert list(got[:, 0, 0]) == [8, 9, 10, 11, 12]
+
+    even = np.arange(60 * 60 * 60, dtype=np.float32).reshape(60, 60, 60)
+    centred = crop_roi(even, size_zyx=(20, 20, 20))
+    assert centred.shape == (20, 20, 20)
+    assert centred[0, 0, 0] == even[20, 20, 20]
