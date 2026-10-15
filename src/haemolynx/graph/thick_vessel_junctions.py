@@ -419,6 +419,7 @@ def insert_thick_vessel_junction_nodes(
     max_background_gap_um: float | None = None,
     min_mask_fraction: float | None = None,
     max_short_loop_um: float | None = None,
+    short_loop_keep_hole_um: float | None = None,
 ) -> nx.MultiGraph:
     """*G* with a one-radius bridge where each vessel opens into a thick vessel.
 
@@ -440,9 +441,12 @@ def insert_thick_vessel_junction_nodes(
       beside a vessel in the same lumen, closing no loop inside one and no
       loop shorter than *max_short_loop_um* (the lumen clean-up's
       ``remove_short_loops_under_um``; ``lumen_loops.DEFAULT_SHORT_LOOP_UM``
-      when None, 0 for none) -- and then bridged like any vessel reaching it.
-      The clean-up breaks every short loop but one through a bridge, so a
-      join would make the loops it exists to break.
+      when None, 0 for none) unless it runs round a hole wider than
+      *short_loop_keep_hole_um* (the clean-up's
+      ``short_loop_keep_hole_over_um``; ``lumen_loops.DEFAULT_SHORT_LOOP_KEEP_HOLE_UM``
+      when None) -- and then bridged like any vessel reaching it. The
+      clean-up breaks every short loop but one through a bridge or round a
+      wide hole, so a join would make the loops it exists to break.
     - A connector whose bridge would continue a thick centreline's end along
       its own direction (:data:`TAPER_MIN_COSINE`), that end having no other
       edge, is the thick vessel narrowing into a thin one: left as vessel.
@@ -539,7 +543,7 @@ def insert_thick_vessel_junction_nodes(
         _join_dead_ends_at_walls(
             result, near_tree, tree, tree_radius, lumen, thick, vs, chosen,
             max_background_gap_um=max_background_gap_um, min_mask_fraction=min_mask_fraction,
-            max_short_loop_um=max_short_loop_um,
+            max_short_loop_um=max_short_loop_um, short_loop_keep_hole_um=short_loop_keep_hole_um,
         )
     node_pos = {
         n: np.asarray(d["pos"], dtype=float) for n, d in result.nodes(data=True) if "pos" in d
@@ -1179,7 +1183,7 @@ def _centreline_samples(G, near_tree, thick, vs):
 
 def _join_dead_ends_at_walls(
     G, near_tree, tree, tree_radius, lumen, thick, vs, chosen, *,
-    max_background_gap_um=None, min_mask_fraction=None, max_short_loop_um=None,
+    max_background_gap_um=None, min_mask_fraction=None, max_short_loop_um=None, short_loop_keep_hole_um=None,
 ) -> int:
     """Draw each dead end that stops at a thick vessel's wall on to the
     nearest point of the thick centreline in *G*, in place, so the split
@@ -1205,7 +1209,7 @@ def _join_dead_ends_at_walls(
     from ._helpers import EdgeSampleIndex, duplicates_existing_vessel
     from .build import MAX_GAP_BRIDGE_TURN_DEG, gap_bridge_continues_terminal
     from .dead_end_extension import _closes_loop_in_lumen, _loop_through
-    from .lumen_loops import DEFAULT_SHORT_LOOP_UM
+    from .lumen_loops import DEFAULT_SHORT_LOOP_KEEP_HOLE_UM, DEFAULT_SHORT_LOOP_UM, loop_hole_um
     from .edit import insert_node_on_edge
     from .reconnect import path_continues_ends, route_through_mask
 
@@ -1239,6 +1243,9 @@ def _join_dead_ends_at_walls(
         return 0
     index = EdgeSampleIndex(G)
     short_loop_um = DEFAULT_SHORT_LOOP_UM if max_short_loop_um is None else float(max_short_loop_um)
+    keep_hole_um = (
+        DEFAULT_SHORT_LOOP_KEEP_HOLE_UM if short_loop_keep_hole_um is None else float(short_loop_keep_hole_um)
+    )
     joined = refused_turn = refused_background = refused_beside = refused_loop = 0
     for _distance, n in sorted(tips, key=lambda t: (t[0], str(t[1]))):
         if not G.has_node(n) or G.degree(n) != 1:
@@ -1302,7 +1309,9 @@ def _join_dead_ends_at_walls(
         if _closes_loop_in_lumen(G, n, edge, q, path, support):
             refused_beside += 1
             continue
-        if short_loop_um > 0 and _loop_through(G, n, edge, q, path, short_loop_um) is not None:
+        loop = _loop_through(G, n, edge, q, path, short_loop_um) if short_loop_um > 0 else None
+        # A loop round a wide hole is one the clean-up leaves (grids Q and Q2).
+        if loop is not None and not (keep_hole_um > 0 and (loop_hole_um(loop, support) or 0.0) > keep_hole_um):
             refused_loop += 1
             continue
         node = insert_node_on_edge(G, *edge, q)
@@ -1325,8 +1334,8 @@ def _join_dead_ends_at_walls(
             "Thick-vessel bridges: %d dead end(s) at a thick vessel's wall drawn on to its "
             "centreline through the mask; refused %d turning away from it, %d across background, "
             "%d beside a vessel in the same lumen or closing a loop inside one, and %d closing "
-            "a loop shorter than %.0f um.",
-            joined, refused_turn, refused_background, refused_beside, refused_loop, short_loop_um,
+            "a loop shorter than %.0f um round a hole no wider than %.0f um.",
+            joined, refused_turn, refused_background, refused_beside, refused_loop, short_loop_um, keep_hole_um,
         )
     return joined
 

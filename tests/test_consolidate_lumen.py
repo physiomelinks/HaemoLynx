@@ -392,3 +392,27 @@ def test_merging_keeps_what_smoothing_did_saying_the_less_smoothed_half():
         {"voxels": [(0, 0, 5), (0, 0, 9)], "centreline_smoothing": "smoothed"}, (0, 0, 5),
     )
     assert both["centreline_smoothing"] == "smoothed"
+
+
+def test_the_clean_up_leaves_a_short_loop_round_a_wide_hole():
+    """``short_loop_keep_hole_over_um`` reaches the clean-up: a capillary ring
+    round a block of tissue (grids Q and Q2's real loops) survives every
+    round by default and is broken at 0."""
+    from test_lumen_loops import _capillary_ring
+
+    from haemolynx.graph.lumen_loops import DEFAULT_SHORT_LOOP_KEEP_HOLE_UM, LOOP_SEARCH_UM
+
+    G, mask = _capillary_ring()
+    cleanup = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, min_stub_length=0.0,
+                            remove_short_loops_under_um=LOOP_SEARCH_UM)
+    assert cleanup.short_loop_keep_hole_um == DEFAULT_SHORT_LOOP_KEEP_HOLE_UM
+    kept = consolidate_lumen(G.copy(), cleanup)
+    loops = lambda H: H.number_of_edges() - H.number_of_nodes() + nx.number_connected_components(H)
+    length = lambda H: sum(d["length"] for *_e, d in H.edges(data=True))
+    assert loops(kept) == 1 and length(kept) >= 180.0
+
+    every = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, min_stub_length=0.0,
+                          remove_short_loops_under_um=LOOP_SEARCH_UM, short_loop_keep_hole_over_um=0.0)
+    broken = consolidate_lumen(G.copy(), every)
+    assert loops(broken) == 0 and length(broken) < length(kept) - 80.0
+    assert nx.is_connected(broken)

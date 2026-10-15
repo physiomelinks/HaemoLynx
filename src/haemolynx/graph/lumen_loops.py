@@ -425,14 +425,37 @@ def remove_loops_inside_one_lumen(
 #: list's own limit, so what it removes is what the list would have shown.
 DEFAULT_SHORT_LOOP_UM = LOOP_SEARCH_UM
 
+#: A short loop round a tissue hole wider than this -- the median background
+#: its antipodal chords cross (:func:`loop_hole_um`, ``loop_measures``'
+#: ``chord_bg_median_um``) -- is left to the review list rather than broken
+#: (``short_loop_keep_hole_over_um``). Harvey's grids Q and Q2 (2026-10-15,
+#: 60 of the rule's breaks on E14.5, shown with the side it took): over 10 um
+#: 29 of 32 were real loops, under it 24 of 28 were not; 53/60 right
+#: leave-one-out against 33 for marking all one way. The six grid I/I2 loops
+#: shown again in Q2 all came back real, the four marked false included.
+DEFAULT_SHORT_LOOP_KEEP_HOLE_UM = 10.0
+
+
+def loop_hole_um(loop_um: np.ndarray, support: MaskSupport) -> float | None:
+    """How wide a hole a closed path runs round: the median background its
+    antipodal chords cross, in microns -- ``loop_measures``'
+    ``chord_bg_median_um``. None when the path is too short to have chords."""
+    background = _chord_background_um(loop_um, support)
+    return None if background is None else float(np.median(background))
+
 
 def remove_short_loops(
-    G: nx.MultiGraph, support: MaskSupport, *, max_length_um: float = DEFAULT_SHORT_LOOP_UM
+    G: nx.MultiGraph,
+    support: MaskSupport,
+    *,
+    max_length_um: float = DEFAULT_SHORT_LOOP_UM,
+    keep_hole_over_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
 ) -> nx.MultiGraph:
     """Break, in place, every loop of *G* up to *max_length_um* round, as
     :func:`remove_loops_inside_one_lumen` breaks a loop inside one lumen --
     the arc nearest the wall goes -- whether or not the mask says it runs
-    round tissue.
+    round tissue, unless the hole it runs round is wider than
+    *keep_hole_over_um* (:func:`loop_hole_um`).
 
     Harvey's grids I and I2 (2026-10-13, 60 short loops of E14.5 judged on
     the claudin-5 channel): 55 closed inside one vessel, and the mask rule
@@ -440,13 +463,22 @@ def remove_short_loops(
     sides as tissue was not tissue there. No measure, of the mask or the raw
     image, found the five real ones (46-179 um round), and no length cut did
     better than taking a side of every short loop, which is right 92-93% of
-    the time at the cost of one real loop in twelve. Which side goes is the
-    loop breaker's choice, not something the marks judged, so the Short
-    loops review list is where a wrong side is put back. 0 turns it off.
+    the time at the cost of one real loop in twelve. Grids Q and Q2
+    (2026-10-15) then showed 60 of the loops this broke on E14.5 with the
+    side it took: where a side should go it took the right one every time,
+    but most loops round a wide hole were real
+    (:data:`DEFAULT_SHORT_LOOP_KEEP_HOLE_UM`), and breaking one merged it
+    with its neighbour into a longer loop that was broken in turn. Those
+    loops are left to the Short loops review list. 0 for *max_length_um*
+    turns the rule off; 0 for *keep_hole_over_um* breaks every short loop.
     """
     if G.number_of_edges() == 0 or not max_length_um > 0:
         return G
     removed: list[float] = []
+    # The hole round each loop, by its edges: every edge of a loop left
+    # alone finds that loop again, pass after pass.
+    wide_hole: dict[frozenset, bool] = {}
+    kept_for_hole = 0
     changed = True
     while changed:
         changed = False
@@ -469,6 +501,14 @@ def remove_short_loops(
                 for a, b, key in cycle
             ):
                 continue
+            if keep_hole_over_um > 0:
+                signature = frozenset((a, b, key) if str(a) <= str(b) else (b, a, key) for a, b, key in cycle)
+                if signature not in wide_hole:
+                    hole = loop_hole_um(_polyline(G, cycle), support)
+                    wide_hole[signature] = hole is not None and hole > keep_hole_over_um
+                    kept_for_hole += int(wide_hole[signature])
+                if wide_hole[signature]:
+                    continue
             for a, b, key in _break(G, cycle, support):
                 removed.append(lengths[(a, b, key)])
                 if G.has_node(a) and G.has_node(b):
@@ -476,11 +516,11 @@ def remove_short_loops(
                 else:
                     pairs.set_weight(a, b, _UNUSABLE)
             changed = True
-    if removed:
+    if removed or kept_for_hole:
         logger.info(
-            "Broke every loop under %.0f um round (grids I and I2: nine in ten are false): took out "
-            "%d edge(s), %.0f um",
-            max_length_um, len(removed), float(sum(removed)),
+            "Broke every loop under %.0f um round but those round a hole over %.0f um (grids I, I2, Q, "
+            "Q2): took out %d edge(s), %.0f um; left %d loop(s) round a wide hole to the review list",
+            max_length_um, keep_hole_over_um, len(removed), float(sum(removed)), kept_for_hole,
         )
     return G
 
@@ -586,6 +626,7 @@ __all__ = [
     "cuts_off_vessels",
     "iter_short_loops",
     "loop_centre_um",
+    "loop_hole_um",
     "loop_inside_one_lumen",
     "loop_measures",
     "loop_sides",

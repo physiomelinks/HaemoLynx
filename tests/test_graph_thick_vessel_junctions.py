@@ -661,15 +661,15 @@ def test_a_taper_is_marked_for_the_clean_up_that_follows():
     assert not result.edges["T0", "J", 0].get(THICK_TAPER)
 
 
-def _hook():
+def _hook(far: int = 26):
     """A thin vessel leaving the thick one at y = 20, out along x, round and
-    back towards it, stopping at its wall at y = 30: joined, it would close a
-    loop about 60 um round."""
+    back towards it, stopping at its wall at y = *far*: joined, it would close
+    a loop about 50 um round, round a hole of 7 um (16 um at *far* = 40)."""
     lumen, body, tree = _thick()
-    for a, b in (((20, 20, 20), (20, 20, 40)), ((20, 20, 40), (20, 30, 40)), ((20, 30, 40), (20, 30, 20))):
+    for a, b in (((20, 20, 20), (20, 20, 40)), ((20, 20, 40), (20, far, 40)), ((20, far, 40), (20, far, 20))):
         _thin_vessel(lumen, a, b)
     G = _graph(("T0", "A", T0, (20, 20, 20)), ("A", "T1", (20, 20, 20), T1),
-               ("A", "S", (20, 20, 20), (20, 20, 40), (20, 30, 40), (20, 30, 33)))
+               ("A", "S", (20, 20, 20), (20, 20, 40), (20, far, 40), (20, far, 33)))
     return G, lumen, body, tree
 
 
@@ -685,6 +685,21 @@ def test_a_wall_join_closing_a_short_loop_is_refused():
 
     # Not joined; the hook then ends blind and goes with its bridge at A.
     assert not any(d.get(JOINED_AT_WALL_UM) for *_e, d in result.edges(data=True))
+
+
+def test_a_wall_join_closing_a_short_loop_round_a_wide_hole_is_made():
+    """The clean-up leaves a short loop round a hole over 10 um (grids Q and
+    Q2), so the join may close one; with that limit at 0 it may not."""
+    from haemolynx.graph.thick_vessel_junctions import JOINED_AT_WALL_UM
+
+    G, lumen, body, tree = _hook(far=40)
+
+    joined = _split(G, lumen, body, tree)
+    refused = _split(G, lumen, body, tree, short_loop_keep_hole_um=0.0)
+
+    assert any(d.get(JOINED_AT_WALL_UM) for *_e, d in joined.edges(data=True))
+    assert nx.cycle_basis(nx.Graph(joined))
+    assert not any(d.get(JOINED_AT_WALL_UM) for *_e, d in refused.edges(data=True))
 
 
 def test_with_the_short_loop_rule_off_a_wall_join_may_close_a_loop():

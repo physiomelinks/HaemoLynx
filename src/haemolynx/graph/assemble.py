@@ -42,7 +42,12 @@ from .mask_recovery import (
     remove_edges_off_the_mask,
 )
 from .facing_ends import DEFAULT_FACING_MAX_GAP_UM, join_facing_dead_ends
-from .lumen_loops import remove_loops_inside_one_lumen, remove_parallel_edges_in_lumen, remove_short_loops
+from .lumen_loops import (
+    DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
+    remove_loops_inside_one_lumen,
+    remove_parallel_edges_in_lumen,
+    remove_short_loops,
+)
 from .optimise import optimise_graph_topology_fixed, reconnect_orphan_and_dangling_nodes
 from .prune import prune_vascular_stubs, remove_edges_for_self_connected_nodes
 from .reconnect import reconnect_secondary_loop_edges
@@ -231,6 +236,9 @@ class LumenCleanup:
     #: Loops up to this long round are broken whatever the mask says of them
     #: (``lumen_loops.remove_short_loops``); 0 leaves them to the review list.
     max_short_loop_um: float = 0.0
+    #: ...except a loop round a tissue hole wider than this (grids Q and Q2),
+    #: left to the review list; 0 breaks every short loop.
+    short_loop_keep_hole_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM
     #: The pair rule's and the stretch finder's verdicts, kept from round to
     #: round and from one consolidate_lumen call to the next on the same
     #: object: build_network cleans up after smoothing and again after the
@@ -257,6 +265,7 @@ def lumen_cleanup(
     stub_face_protection: str = "threshold",
     keep_apart: Callable[[Any], bool] | None = None,
     remove_short_loops_under_um: float = 0.0,
+    short_loop_keep_hole_over_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
 ) -> LumenCleanup:
     """The clean-up the end of graph building runs, built from the same
     settings :func:`build_graph_from_skeleton` takes -- so a caller that
@@ -326,6 +335,7 @@ def lumen_cleanup(
     return LumenCleanup(
         support, inside_lumen, prune, max_degree=max_degree, debug=debug, keep_apart=keep_apart,
         max_short_loop_um=float(remove_short_loops_under_um or 0.0),
+        short_loop_keep_hole_um=float(short_loop_keep_hole_over_um or 0.0),
     )
 
 
@@ -374,7 +384,8 @@ def consolidate_lumen(
         if cleanup.max_short_loop_um > 0:
             # Grids I and I2: nine in ten short loops close inside one vessel,
             # and the in-lumen rule above found none of them.
-            G = remove_short_loops(G, cleanup.support, max_length_um=cleanup.max_short_loop_um)
+            G = remove_short_loops(G, cleanup.support, max_length_um=cleanup.max_short_loop_um,
+                                   keep_hole_over_um=cleanup.short_loop_keep_hole_um)
         # What the whole-edge pair rule leaves: a stretch of an edge beside
         # another, rewired rather than deleted (graph.doubled_stretches).
         G = resolve_doubled_stretches(G, cleanup.support, keep_apart=cleanup.keep_apart, memo=stretch_memo)
@@ -430,6 +441,7 @@ def build_graph_from_skeleton(
     join_dead_ends_to_vessel_sides: bool = False,
     stub_face_protection: str = "threshold",
     remove_short_loops_under_um: float = 0.0,
+    short_loop_keep_hole_over_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -554,6 +566,11 @@ def build_graph_from_skeleton(
         break every loop up to this long round in each clean-up round,
         whatever the mask says of it -- see ``lumen_loops.remove_short_loops``
         and grids I and I2. 0 leaves short loops to the review list.
+    short_loop_keep_hole_over_um
+        A short loop round a tissue hole wider than this
+        (``lumen_loops.loop_hole_um``) is left to the review list rather than
+        broken: grids Q and Q2 found most of those real. 0 breaks every short
+        loop.
     stub_face_protection
         Which short stubs the prune keeps at an image face: ``"threshold"``
         (a tip within its own threshold of a face, as before) or
@@ -601,6 +618,7 @@ def build_graph_from_skeleton(
         debug=debug,
         stub_face_protection=stub_face_protection,
         remove_short_loops_under_um=remove_short_loops_under_um,
+        short_loop_keep_hole_over_um=short_loop_keep_hole_over_um,
     )
     prune_stubs = cleanup.prune
 
