@@ -222,6 +222,14 @@ STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
         "(inlet) and venular (outlet) territories, and the watershed vessels "
         "on the borders between them"
     ),
+    "capillary_bed_joins": (
+        "Where the capillary beds of different arteriolar feeds first meet. "
+        "Each capillary belongs to the bed of the feed that reaches it first; "
+        "a bed's join order is the lowest capillary B order at which it "
+        "touches another bed. The Kaplan-Meier median join order and "
+        "distance, the beds joining within or between arteriolar trees, and "
+        "those that never join, by why"
+    ),
     "transit_time": (
         "How long blood takes to cross the network: each vessel's volume "
         "over its flow, added up along inlet-to-outlet routes, as a mean and "
