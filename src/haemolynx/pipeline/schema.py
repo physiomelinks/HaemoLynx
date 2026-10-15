@@ -3550,6 +3550,24 @@ SCHEMA = Schema(
             requires=("use_thick_vessel_skeletonisation",),
             advanced=True,
         ),
+        Setting(
+            name="thick_vessel_extend_centreline_ends",
+            kind="bool",
+            default=False,
+            help=(
+                "Where the graph's own centreline of a thick vessel stops at a "
+                "dead end while the segmented vessel runs on, draw it on: along "
+                "the centreline drawn through the thick region where that runs "
+                "on, then through the segmentation, heading on within 60 "
+                "degrees, to the first vessel or dead end it reaches within "
+                "40 um. Where it reaches the image's edge first, the vessel "
+                "leaves the image there and nothing is drawn. Off by default "
+                "until checked on a second set of marked examples"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
+        ),
         # A purely additive, read-only QC check on the tree
         # skeletonize_thickness_gated just built: off by default, and even on,
         # it only logs a warning -- it never changes the skeleton. See

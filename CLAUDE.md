@@ -905,7 +905,17 @@ are only caught locally.
   the whole vessel and on with every merge, and dropped, the clean-up rewired E14.5's tapers as
   second strands); and at a fork of the thick centreline an arm at most
   `FORK_BRANCH_MAX_RADIUS_FRACTION` (0.8) of the trunk's radius gets a bridge over its stretch
-  inside the trunk's lumen (`bridge_forks`).
+  inside the trunk's lumen (`bridge_forks`). `thick_vessel_extend_centreline_ends`
+  (`extend_thick_ends`, **off by default** until a fresh grid confirms it): where the graph's
+  thick centreline stops at a dead end while the segmented vessel runs on, it is drawn on, along
+  the tree where the tree runs on with no graph beside it, then through the segmentation (a
+  centre-seeking route leaving within 60 degrees of its heading) to the first vessel or dead end
+  within `EXTEND_REACH_UM` (40 um); an image face reached first means the vessel leaves the image
+  and nothing is drawn (`_extend_thick_centreline_ends`, edge mark `EXTENDED_UM`). At grid W's
+  16, 20 and 23 the tree ended where the graph did, so following the tree alone could not make
+  Harvey's joins. Grid Y (`outputs/thick_vessel_breaks/GRID_Y_extension.md`, all 18 such
+  places on E14.5's two segmentations): 17/18 against 14 for drawing every one, wrong at a 4 um
+  step out to a face; leave-one-out about 15-16, the reach resting on one example.
 - **`optimisation/`** — the panel's **Optimise settings**: a sequential, image-informed search
   over segmentation cleanup, Skeletonise and Graph settings (`search.py`) and, separately, the
   FWHM diameter settings (`fwhm_search.py`). Candidates come from the image itself
