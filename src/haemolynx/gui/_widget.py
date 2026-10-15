@@ -107,6 +107,7 @@ from haemolynx.gui.stage_checkpoints import (
 from haemolynx.gui.run_snapshot import (
     DEFAULT_FILENAME as RUN_SNAPSHOT_FILENAME,
     SAVE_FILTER as RUN_SNAPSHOT_FILTER,
+    SAVE_IN_PROGRESS as RUN_SAVE_IN_PROGRESS,
     RunSnapshotError,
     apply_snapshot_to_checkpoints,
     apply_snapshot_to_results,
@@ -12339,6 +12340,8 @@ def settings_widget(napari_viewer=None):
     last_config_path: list[str] = ["config.yaml"]
     #: Last path the Save run / Load run dialogues used.
     last_run_path: list[str] = [RUN_SNAPSHOT_FILENAME]
+    #: The worker writing a run in the background, while there is one.
+    saving_run: list[Any] = [None]
 
     #: What pointing the run at an open layer put into the form, and which
     #: layer it was. `settings` is None until a layer has been adopted.
@@ -14210,10 +14213,28 @@ def settings_widget(napari_viewer=None):
         _attach_graph_editor_click_callbacks()
         window.show()
 
-    def save_run_file(path: Path | str) -> bool:
-        """Write the current viewer run to *path*. Returns whether it wrote."""
+    def _run_saved(dest: Path) -> None:
+        last_run_path[0] = str(dest)
+        report.value = f"Wrote run {dest}"
+
+    def _run_save_finished() -> None:
+        saving_run[0] = None
+        save_run_button.enabled = True
+        load_run_button.enabled = True
+
+    def save_run_file(path: Path | str, *, background: bool = False) -> bool:
+        """Write the current viewer run to *path*. Returns whether it wrote.
+
+        With *background* the run is captured here and written off the GUI
+        thread -- a large run's volumes take a while to compress, and the
+        panel froze for all of it -- and the return says whether the write
+        started; the report says when it is done.
+        """
         if run_state.running:
             report.value = ALREADY_RUNNING
+            return False
+        if saving_run[0] is not None:
+            report.value = RUN_SAVE_IN_PROGRESS
             return False
         try:
             snapshot = capture_run(
@@ -14232,13 +14253,38 @@ def settings_widget(napari_viewer=None):
             report.value = str(error)
             return False
         dest = ensure_run_suffix(path)
-        try:
-            write_run_snapshot(dest, snapshot)
-        except Exception as error:  # noqa: BLE001 - report in the panel
+        if not background:
+            try:
+                write_run_snapshot(dest, snapshot)
+            except Exception as error:  # noqa: BLE001 - report in the panel
+                report.value = f"Could not save run {dest}:\n{error}"
+                return False
+            _run_saved(dest)
+            return True
+        from napari.qt.threading import thread_worker
+
+        @thread_worker
+        def write():
+            return write_run_snapshot(dest, snapshot)
+
+        def written(_path) -> None:
+            _run_save_finished()
+            _run_saved(dest)
+
+        def failed(error) -> None:
+            _run_save_finished()
+            logger.error("could not save run %s: %s", dest, error)
             report.value = f"Could not save run {dest}:\n{error}"
-            return False
-        last_run_path[0] = str(dest)
-        report.value = f"Wrote run {dest}"
+
+        # Claimed at creation, or superqt also re-raises the error unasked.
+        worker = write(
+            _connect={"returned": written, "errored": failed}, _start_thread=False
+        )
+        saving_run[0] = worker
+        save_run_button.enabled = False
+        load_run_button.enabled = False
+        report.value = f"Saving run to {dest}..."
+        worker.start()
         return True
 
     def _strip_session_for_load() -> None:
@@ -14375,7 +14421,7 @@ def settings_widget(napari_viewer=None):
         )
         if not path:
             return
-        save_run_file(path)
+        save_run_file(path, background=True)
 
     def on_load_run() -> None:
         from qtpy.QtWidgets import QFileDialog
@@ -14790,6 +14836,7 @@ def settings_widget(napari_viewer=None):
     panel._haemolynx_load_config = load_config_file
     panel._haemolynx_save_config = save_config_file
     panel._haemolynx_save_run = save_run_file
+    panel._haemolynx_saving_run = lambda: saving_run[0] is not None
     panel._haemolynx_load_run = load_run_file
     panel._haemolynx_save_run_button = save_run_button
     panel._haemolynx_load_run_button = load_run_button
