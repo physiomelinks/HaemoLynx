@@ -127,6 +127,35 @@ TREE_FILL_MIN_DETOUR = 2.1
 #: the graph's own strayed off it or missed it (``fill_tree_gaps``).
 FROM_TREE = "thick_centreline_from_tree"
 
+#: A dead end is the thick centreline's own when its edge follows the tree
+#: (the split's labels, :data:`_MIN_CENTRELINE_AT_END_UM` or more) to within
+#: this far (µm) of its tip: the thick vessel as the graph draws it stops
+#: there (``extend_thick_ends``).
+EXTEND_END_OFF_TREE_UM = 15.0
+
+#: How far (µm) a thick centreline is drawn on along its tree where the tree
+#: runs on with no graph beside it, and then on through the segmentation from
+#: where the tree ends, looking for the vessel or dead end it reaches. Fitted
+#: on Harvey's grid Y (E14.5, both segmentations, 2026-10-15): every way he
+#: wanted drawn was 32 um or shorter, the one too long 54 um.
+EXTEND_TREE_MAX_UM = 150.0
+EXTEND_REACH_UM = 40.0
+
+#: The way on through the segmentation leaves the thick centreline's end within
+#: this of its heading (degrees), over its lumen radius and this much more
+#: (µm): without it the cheapest way turned back to a vessel beside the thick
+#: one (grid W 20, 91 degrees) rather than running on to the one ahead.
+EXTEND_START_CONE_DEG = 60.0
+EXTEND_START_CONE_UM = 5.0
+
+#: Each micron of the way on through the segmentation costs 1 + this / (its
+#: distance to the wall + 0.5 um): the way keeps to the middle of the lumen.
+EXTEND_CENTRE_WEIGHT_UM = 4.0
+
+#: Edge attribute on a thick centreline drawn on from where it stopped
+#: (``extend_thick_ends``): how much was added, in µm.
+EXTENDED_UM = "thick_centreline_extended_um"
+
 #: Edge attribute on the vessel a thick vessel narrows into, where it runs on
 #: inside the thick lumen from the thick centreline's end (a taper, left as
 #: vessel): the lumen clean-up that follows the split leaves it alone as it
@@ -481,6 +510,7 @@ def insert_thick_vessel_junction_nodes(
     bridge_forks: bool = True,
     fill_tree_gaps: bool = True,
     fill_attributes: Mapping[str, Any] | None = None,
+    extend_thick_ends: bool = False,
     max_background_gap_um: float | None = None,
     min_mask_fraction: float | None = None,
     max_short_loop_um: float | None = None,
@@ -528,6 +558,16 @@ def insert_thick_vessel_junction_nodes(
     thick vessel there can then be bridged to it. Each stretch drawn also
     takes *fill_attributes* (post-processing marks it edited, so it is
     measured as a vessel drawn by hand is).
+
+    With *extend_thick_ends* (and a *segmentation*; off by default, being
+    calibrated on Harvey's grid Y), after the fill: where the graph's thick
+    centreline stops at a dead end, it is drawn on -- along the tree where the
+    tree runs on with no graph beside it, then through the segmentation past
+    where the tree ends -- to the first vessel or dead end it reaches, unless
+    the image's face comes first (:func:`_extend_thick_centreline_ends`). At
+    grid W's 16, 20 and 23
+    the thick region, and its tree, ended where the graph did, while the
+    vessel ran on.
 
     With *edges* (``(u, v, key)``, either way round) only those are rebuilt,
     and one already a bridge is left as it is; every other edge stays as it
@@ -603,6 +643,17 @@ def insert_thick_vessel_junction_nodes(
                 "Thick-vessel bridges: %d stretch(es) of the thick centreline tree the graph "
                 "did not join drawn from the tree.",
                 filled,
+            )
+    if extend_thick_ends and segmentation is not None:
+        extended = _extend_thick_centreline_ends(
+            result, tree_voxels, vs, tree_points, tree_tolerance, finite, lumen, thick, chosen,
+            attributes=fill_attributes,
+        )
+        if extended:
+            logger.info(
+                "Thick-vessel bridges: %d thick centreline(s) stopping at a dead end drawn on to "
+                "the vessel or dead end ahead.",
+                extended,
             )
     if join_dead_ends_at_walls and segmentation is not None:
         _join_dead_ends_at_walls(
@@ -1218,6 +1269,250 @@ def _graph_way_um(G, a, b, *, cutoff: float) -> float:
             if end_b in reach:
                 best = min(best, off_a + reach[end_b] + off_b)
     return float(best) if best <= cutoff else float("inf")
+
+
+def _extend_thick_centreline_ends(
+    G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius, lumen, thick, chosen, *,
+    attributes=None, reach_um: float = EXTEND_REACH_UM,
+) -> int:
+    """Draw each thick centreline stopping at a dead end on, in *G*, in place.
+    Returns how many.
+
+    A dead end is the thick centreline's when its edge follows the tree (the
+    split's labels) for :data:`_MIN_CENTRELINE_AT_END_UM` or more, to within
+    :data:`EXTEND_END_OFF_TREE_UM` of the tip. From it the thick vessel is
+    drawn on:
+
+    1. along the tree, where the tree runs on with no other graph centreline
+       following it and leaves ahead of the dead end (within 90 degrees of the
+       way its last :data:`TAPER_DIRECTION_UM` head). A tree leading on to
+       another graph centreline is a gap with graph on both sides, the fill's,
+       and the dead end is left;
+    2. then, from where that ends, the cheapest way through the segmentation
+       (:data:`EXTEND_CENTRE_WEIGHT_UM`) leaving within
+       :data:`EXTEND_START_CONE_DEG` of the way it was heading and never back
+       into the thick lumen the graph already draws, to the first other
+       vessel's centreline (its lumen counted in) or dead end within
+       *reach_um*. When an image face -- not one the start lies within 3 um
+       of -- comes first, the vessel leaves the image there and nothing is
+       drawn.
+
+    Grid Y (Harvey, 2026-10-15; 18 places, every one on E14.5's two
+    segmentations): drawn to a vessel or dead end, right at all 13 where
+    the way was 32 um or shorter, wrong at the one of 54 um; drawn to a face,
+    right at 1 of 3 (a 4 um step out to the face; wrong 10 um across a vessel
+    to a face, and 10 um through a 1 um neck). This rule: 17 of 18, against
+    14 for drawing every one.
+
+    The dead end's edge is carried on along that way, as a wall join is
+    (:data:`EXTENDED_UM` records how far), and takes *attributes*. With
+    *chosen* (a post-processing split's edges), only those edges' dead ends,
+    and the edge drawn on joins them.
+    """
+    from scipy.ndimage import distance_transform_edt
+    from skimage.graph import MCP_Geometric
+
+    from .edit import insert_node_on_edge
+
+    vs = np.asarray(vs, dtype=float)
+    tree_vox = np.argwhere(tree_voxels)
+    if len(tree_vox) < 2:
+        return 0
+    tree = cKDTree(tree_points)
+    shape = np.asarray(lumen.shape)
+    extent = (shape - 1) * vs
+    T = nx.Graph()
+    T.add_nodes_from(range(len(tree_vox)))
+    for i, j in cKDTree(tree_vox).query_pairs(1.75):
+        T.add_edge(int(i), int(j), weight=float(np.linalg.norm((tree_vox[i] - tree_vox[j]) * vs)))
+    cone_cos = float(np.cos(np.radians(EXTEND_START_CONE_DEG)))
+
+    def arc(path):
+        return np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))])
+
+    def point_along(path, um):
+        return path[min(int(np.searchsorted(arc(path), um)), len(path) - 1)]
+
+    def thick_end(n):
+        """``(tip, other end, key, edge data, heading)`` when *n* is a dead end
+        of the thick centreline, else None."""
+        if G.degree(n) != 1 or "pos" not in G.nodes[n]:
+            return None
+        (a, b, key, data), = G.edges(n, keys=True, data=True)
+        w = b if a == n else a
+        if w == n or data.get(IS_ZERO_RESISTANCE) or "pos" not in G.nodes[w]:
+            return None
+        if chosen is not None and (frozenset((n, w)), key) not in chosen:
+            return None
+        path = densify_polyline(_polyline_from(G, n, w, data), max_step_um=_SAMPLE_STEP_UM)
+        if len(path) < 2:
+            return None
+        distance, nearest = tree.query(path)
+        on = distance <= tree_tolerance[nearest]
+        if not on.any():
+            return None
+        labels = _labels(path, on, points_inside_mask(path, thick, voxel_size_zyx=tuple(vs)))
+        along = arc(path)
+        centreline = np.flatnonzero(labels == _CENTRELINE)
+        if not len(centreline) or along[centreline[0]] > EXTEND_END_OFF_TREE_UM:
+            return None
+        first = int(centreline[0])
+        off = np.flatnonzero(labels[first:] != _CENTRELINE)
+        run = (along[first + off[0] - 1] if len(off) else along[-1]) - along[first]
+        if run < _MIN_CENTRELINE_AT_END_UM:
+            return None
+        heading = path[0] - point_along(path, TAPER_DIRECTION_UM)
+        norm = float(np.linalg.norm(heading))
+        if norm == 0.0:
+            return None
+        return path[0], w, key, data, heading / norm
+
+    def vessels():
+        points, owners = [], []
+        for u, v, key, data in G.edges(keys=True, data=True):
+            if data.get(IS_ZERO_RESISTANCE) or "pos" not in G.nodes[u] or "pos" not in G.nodes[v]:
+                continue
+            path = densify_polyline(_polyline_from(G, u, v, data), max_step_um=_SAMPLE_STEP_UM)
+            points.append(path)
+            owners.extend([(u, v, key)] * len(path))
+        if not points:
+            return np.empty((0, 3)), [], None, [frozenset()] * len(tree_points)
+        stacked = np.vstack(points)
+        samples = cKDTree(stacked)
+        ids = [(frozenset(o[:2]), o[2]) for o in owners]
+        cover = [frozenset(ids[j] for j in near) for near in samples.query_ball_point(tree_points, tree_tolerance)]
+        return stacked, owners, samples, cover
+
+    points, owners, samples, cover = vessels()
+    if samples is None:
+        return 0
+    extended = 0
+    for n in sorted([n for n in G.nodes if G.degree(n) == 1], key=str):
+        if not G.has_node(n):
+            continue
+        end = thick_end(n)
+        if end is None:
+            continue
+        tip, w, key, data, heading = end
+        own = (frozenset((n, w)), key)
+
+        # 1. The tree on past the tip, where no other graph centreline follows it.
+        s = int(tree.query(tip)[1])
+        near_tip = set(int(i) for i in tree.query_ball_point(tip, float(tree_tolerance[s]) + 1.5))
+        passable = [
+            i for i in range(len(tree_vox))
+            if not cover[i] or (cover[i] <= {own} and i in near_tip) or i == s
+        ]
+        sub = T.subgraph(passable)
+        reached, routes = nx.single_source_dijkstra(sub, s, cutoff=EXTEND_TREE_MAX_UM, weight="weight")
+        beyond = [i for i in reached if not cover[i]]
+        if any(cover[j] - {own} for i in beyond for j in T.neighbors(i)):
+            continue
+        tree_path = np.empty((0, 3))
+        if beyond:
+            ends = [i for i in beyond if sub.degree(i) == 1]
+            route = routes[max(ends or beyond, key=reached.get)]
+            first_out = next(j for j, i in enumerate(route) if not cover[i])
+            candidate = tree_points[route[first_out:]]
+            if float((point_along(np.vstack([tip, candidate]), TAPER_DIRECTION_UM) - tip) @ heading) > 0.0:
+                tree_path = candidate
+        start, start_heading = tip, heading
+        if len(tree_path):
+            start = tree_path[-1]
+            back = point_along(np.vstack([tip, tree_path])[::-1], TAPER_DIRECTION_UM)
+            if np.linalg.norm(start - back) > 0.0:
+                start_heading = (start - back) / np.linalg.norm(start - back)
+
+        # 2. On through the segmentation from where that stops.
+        pad = np.ceil((reach_um + 3.0) / vs).astype(int)
+        at = np.clip(np.rint(start / vs).astype(int), 0, shape - 1)
+        lo = np.maximum(at - pad, 0)
+        hi = np.minimum(at + pad + 1, shape)
+        box = tuple(slice(int(l), int(h)) for l, h in zip(lo, hi))
+        crop = np.asarray(lumen[box], dtype=bool).copy()
+        crop[tuple(at - lo)] = True
+        wall = distance_transform_edt(crop, sampling=tuple(vs))
+        allowed = crop.copy()
+        s_start = int(tree.query(start)[1])
+        region = np.argwhere(np.asarray(thick[box], dtype=bool) & crop)
+        if len(region):
+            # Back into the thick lumen the graph already draws: segmentation in
+            # the region nearest a stretch of tree some graph centreline follows,
+            # further along the tree from where the way starts than its radius.
+            _d, nearest = tree.query((region + lo) * vs)
+            along_tree = nx.single_source_dijkstra_path_length(T, s_start, cutoff=EXTEND_TREE_MAX_UM, weight="weight")
+            far = np.array([along_tree.get(int(i), np.inf) for i in nearest])
+            drawn = np.array([bool(cover[int(i)]) for i in nearest])
+            allowed[tuple(region[drawn & (far > tree_radius[s_start] + 2.0)].T)] = False
+        offset = (np.indices(crop.shape).reshape(3, -1).T + lo) * vs - start
+        distance = np.linalg.norm(offset, axis=1)
+        behind = (distance <= tree_radius[s_start] + EXTEND_START_CONE_UM) & (
+            offset @ start_heading < cone_cos * distance
+        )
+        allowed &= ~behind.reshape(crop.shape)
+        allowed[tuple(at - lo)] = True
+        router = MCP_Geometric(
+            np.where(allowed, 1.0 + EXTEND_CENTRE_WEIGHT_UM / (wall + 0.5), np.inf),
+            fully_connected=True, sampling=tuple(vs),
+        )
+        cost, _ = router.find_costs([tuple(at - lo)])
+        length, _ = MCP_Geometric(
+            np.where(allowed, 1.0, np.inf), fully_connected=True, sampling=tuple(vs)
+        ).find_costs([tuple(at - lo)])
+        targets = []  # (cost, voxel in the box, sample index or None for a face)
+        inside_box = np.flatnonzero(
+            np.all((points >= lo * vs) & (points <= (hi - 1) * vs), axis=1)
+        )
+        inside_box = [j for j in inside_box if (frozenset(owners[j][:2]), owners[j][2]) != own]
+        if inside_box:
+            voxel = np.clip(np.rint(points[inside_box] / vs).astype(int) - lo, 0, np.asarray(crop.shape) - 1)
+            c = cost[tuple(voxel.T)]
+            ok = np.isfinite(c) & (length[tuple(voxel.T)] <= reach_um + wall[tuple(voxel.T)])
+            targets += [(float(cj), tuple(vj), int(j)) for cj, vj, j, keep in zip(c, voxel, inside_box, ok) if keep]
+        for axis in range(3):
+            for plane, gap in ((0, start[axis]), (shape[axis] - 1, extent[axis] - start[axis])):
+                if gap <= 3.0 or not lo[axis] <= plane < hi[axis]:
+                    continue
+                face = [slice(None)] * 3
+                face[axis] = slice(plane - lo[axis], plane - lo[axis] + 1)
+                c = np.where(np.isfinite(cost[tuple(face)]) & (length[tuple(face)] <= reach_um),
+                             cost[tuple(face)], np.inf)
+                if np.isfinite(c).any():
+                    best = np.unravel_index(int(np.argmin(c)), c.shape)
+                    voxel = list(best)
+                    voxel[axis] = plane - lo[axis]
+                    targets.append((float(c[best]), tuple(int(x) for x in voxel), None))
+        if not targets:
+            continue
+        _c, voxel, j = min(targets, key=lambda t: t[0])
+        if j is None:
+            continue  # the vessel leaves the image: an open end, not drawn on
+        way = (np.asarray(router.traceback(voxel), dtype=float) + lo) * vs
+        u, v, k = owners[j]
+        target = points[j]
+        node = None
+        for ending in (u, v):
+            if G.degree(ending) == 1 and np.linalg.norm(np.asarray(G.nodes[ending]["pos"]) - target) <= 2.0:
+                node = ending
+        if node is None:
+            node = insert_node_on_edge(G, u, v, k, target)
+        way = np.vstack([start, way[1:-1], np.asarray(G.nodes[node]["pos"], dtype=float)])
+        if node in (n, w):
+            continue
+        path = np.vstack([tip, tree_path, way[1:]]) if len(tree_path) else way
+        combined = np.vstack([_polyline_from(G, w, n, data), path[1:]])
+        attrs = {k: v for k, v in data.items() if k not in ("voxels", "length")}
+        attrs["voxels"] = [tuple(float(c) for c in row) for row in combined]
+        attrs["length"] = float(calculate_path_length(attrs["voxels"]))
+        attrs[EXTENDED_UM] = float(calculate_path_length([tuple(r) for r in path]))
+        attrs.update(attributes or {})
+        G.remove_node(n)
+        new_key = G.add_edge(w, node, **attrs)
+        if chosen is not None:
+            chosen.add((frozenset((w, node)), new_key))
+        extended += 1
+        points, owners, samples, cover = vessels()
+    return extended
 
 
 def _centreline_samples(G, near_tree, thick, vs):

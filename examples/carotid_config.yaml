@@ -516,6 +516,8 @@ pipeline_stages:
   skeleton_thick_vessel_bridge_radius_smoothing_um: 10.0
   # Where the graph's own centreline of a thick vessel strays off the centreline drawn through the thick region, or misses it, for 3 um or more between two places it follows it, and the graph has no way between those two places under 2.1 times as long, draw the thick vessel's centreline there from the thick region. Vessels reaching the thick vessel there can then be bridged to it. Nothing of the graph's own is taken out  [needs use_thick_vessel_skeletonisation]
   thick_vessel_fill_centreline_gaps: true
+  # Where the graph's own centreline of a thick vessel stops at a dead end while the segmented vessel runs on, draw it on: along the centreline drawn through the thick region where that runs on, then through the segmentation, heading on within 60 degrees, to the first vessel or dead end it reaches within 40 um. Where it reaches the image's edge first, the vessel leaves the image there and nothing is drawn. Off by default until checked on a second set of marked examples  [needs use_thick_vessel_skeletonisation]
+  thick_vessel_extend_centreline_ends: false
   # After thickness-gated skeletonisation, warn about any fat vessel component whose tree still braids into a multi-strand medial sheet instead of a single centreline. Diagnostic only: never changes the skeleton  [needs use_thick_vessel_skeletonisation]
   detect_thick_vessel_braiding: false
   # Only warn about a fat vessel component whose skeleton has more than this many voxels, on average, in each occupied slice along its own long axis (1 is a single centreline)  [range 0.0..; needs use_thick_vessel_skeletonisation and detect_thick_vessel_braiding]

@@ -870,3 +870,135 @@ def test_the_length_of_a_centreline_on_the_thick_vessels_tree():
     assert tree.along_um(leaving) < 3.0
     assert tree.along_um(middle[:1]) == 0.0
     assert ThickCentreline.from_region(np.zeros(SHAPE, dtype=bool), VS) is None
+
+
+# --- a thick centreline stopping at a dead end, drawn on (grid Y, 2026-10-15) ----
+
+
+def _stopping(tree_to: float = 26.0, body_to: float = 30.0, graph_to: float | None = None, ahead: str = "vessel"):
+    """A thick vessel along y up to *body_to* (its region and tree end there,
+    the tree at *tree_to*), its graph centreline T0-E stopping at *graph_to*
+    (the tree's end by default), and its segmented lumen running on along y
+    as a thin vessel: to a vessel crossing at y = 56 (X1-X2, *ahead*
+    "vessel"), or out of the image at y = 63 ("face")."""
+    body = _tube((20.0, 2.0, 20.0), (20.0, body_to, 20.0), RADIUS)
+    lumen = body | _tube((20.0, body_to, 20.0), (20.0, 63.0 if ahead == "face" else 56.0, 20.0), 2.0)
+    edges = [("T0", "E", T0, (20.0, tree_to if graph_to is None else graph_to, 20.0))]
+    if ahead == "vessel":
+        lumen |= _tube((20.0, 56.0, 2.0), (20.0, 56.0, 62.0), 2.0)
+        edges.append(("X1", "X2", (20.0, 56.0, 2.0), (20.0, 56.0, 62.0)))
+    tree = _tube((20.0, 2.0, 20.0), (20.0, tree_to, 20.0), 0.5)
+    return _graph(*edges), lumen, body, tree
+
+
+def _extended(G):
+    from haemolynx.graph.thick_vessel_junctions import EXTENDED_UM
+
+    return [d[EXTENDED_UM] for *_e, d in G.edges(data=True) if d.get(EXTENDED_UM)]
+
+
+def test_a_thick_centreline_stopping_where_its_tree_ends_is_drawn_on_to_the_vessel_ahead():
+    """Grid W 16, 20 and 23: the thick region, and the tree drawn through it,
+    end where the graph's thick centreline does, while the segmented vessel
+    runs on. Drawn on through the segmentation, the thick vessel reaches the
+    vessel ahead; left off (the default), it stays a dead end."""
+    G, lumen, body, tree = _stopping()
+
+    off = _split(G, lumen, body, tree)
+    on = _split(G, lumen, body, tree, extend_thick_ends=True)
+
+    assert off.degree("E") == 1 and not nx.has_path(off, "T0", "X1")
+    assert "E" not in on
+    assert nx.has_path(on, "T0", "X1") and nx.has_path(on, "T0", "X2")
+    assert max(_extended(on)) == pytest.approx(30.0, abs=2.0)
+    assert not [n for n in on if on.degree(n) == 1 and on.nodes[n]["pos"][1] < 56.0 and n != "T0"]
+
+
+def test_a_thick_centreline_is_drawn_on_along_its_tree_first_where_the_tree_runs_on():
+    """The tree runs on 20 um past where the graph's thick centreline stops,
+    with no graph beside it (one side only, so not the fill's gap): the
+    thick vessel is drawn along the tree, then on through the segmentation."""
+    from haemolynx.graph.thick_vessel_junctions import EXTENDED_UM
+
+    G, lumen, body, tree = _stopping(tree_to=40.0, body_to=44.0, graph_to=20.0)
+
+    on = _split(G, lumen, body, tree, extend_thick_ends=True)
+
+    assert "E" not in on and nx.has_path(on, "T0", "X1")
+    drawn = [np.asarray(d["voxels"], float) for *_e, d in on.edges(data=True) if d.get(EXTENDED_UM)]
+    along = np.vstack(drawn)
+    on_tree = along[(along[:, 1] > 22.0) & (along[:, 1] < 38.0)]
+    assert len(on_tree) and np.all(np.hypot(on_tree[:, 0] - 20.0, on_tree[:, 2] - 20.0) <= 1.0)
+    assert max(_extended(on)) == pytest.approx(36.0, abs=2.0)
+
+
+def test_a_thick_centreline_whose_vessel_leaves_the_image_first_is_not_drawn_on():
+    """The segmented vessel runs on out of the image with nothing on the way:
+    an open end, left as it is. Grid Y: drawn to a face, right at 1 of 3
+    places (wrong 10 um across a vessel to a face and 10 um through a 1 um
+    neck; right a 4 um step out to one)."""
+    G, lumen, body, tree = _stopping(ahead="face")
+
+    on = _split(G, lumen, body, tree, extend_thick_ends=True)
+
+    assert not _extended(on)
+    assert on.degree("E") == 1
+
+
+def test_a_vessel_further_ahead_than_the_reach_is_not_drawn_on_to():
+    """The vessel ahead 46 um on through the segmentation, past
+    EXTEND_REACH_UM: grid Y's ways Harvey wanted were 32 um or shorter, the
+    one too long 54 um."""
+    from haemolynx.graph.thick_vessel_junctions import EXTEND_REACH_UM
+
+    G, lumen, body, tree = _stopping(tree_to=10.0, body_to=14.0)
+
+    on = _split(G, lumen, body, tree, extend_thick_ends=True)
+
+    assert EXTEND_REACH_UM < 44.0
+    assert not _extended(on) and on.degree("E") == 1
+
+
+def test_a_thick_centreline_is_not_drawn_on_sideways_to_a_vessel_beside_its_end():
+    """Nothing ahead -- the segmented vessel ends in the thick vessel's rounded
+    end -- and a thin vessel leaving it at right angles beside the dead end:
+    the way on leaves within 60 degrees of the thick vessel's heading, so it
+    is not drawn there (grid W 20: the cheapest way turned 91 degrees to a
+    vessel beside the thick one, not on to the one ahead Harvey named)."""
+    G, lumen, body, tree = _stopping(ahead="none")
+    lumen |= _tube((20.0, 26.0, 20.0), (20.0, 26.0, 62.0), 1.5)
+    G.add_node("S1", pos=(20.0, 26.0, 62.0))
+    G.add_node("S2", pos=(20.0, 26.0, 40.0))
+    G.add_edge("S1", "S2", voxels=_line((20, 26, 62), (20, 26, 40)), length=22.0)
+
+    on = _split(G, lumen, body, tree, extend_thick_ends=True, join_dead_ends_at_walls=False)
+
+    assert not _extended(on)
+    assert on.degree("E") == 1 and not nx.has_path(on, "T0", "S1")
+
+
+def test_a_post_processing_split_draws_on_only_the_thick_ends_of_its_edges():
+    G, lumen, body, tree = _stopping()
+
+    other = _split(G, lumen, body, tree, extend_thick_ends=True, edges=[("X1", "X2", 0)])
+    named = _split(G, lumen, body, tree, extend_thick_ends=True, edges=[("T0", "E", 0)],
+                   fill_attributes={"edited": True})
+
+    assert not _extended(other) and other.degree("E") == 1
+    assert _extended(named) and nx.has_path(named, "T0", "X1")
+    from haemolynx.graph.thick_vessel_junctions import EXTENDED_UM
+
+    assert all(d.get("edited") for *_e, d in named.edges(data=True) if d.get(EXTENDED_UM))
+
+
+def test_the_run_draws_thick_centrelines_on_only_with_its_setting():
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.stages import thick_junction_bridge_arguments
+
+    settings = {"bridge_require_mask_support": True, "bridge_max_background_gap_um": 2.0,
+                "bridge_min_mask_fraction": 0.8, "remove_short_loops_under_um": 200.0}
+    # Off by default until a fresh grid confirms grid Y's rule.
+    assert thick_junction_bridge_arguments(settings)["extend_thick_ends"] is False
+    assert default_schema()["thick_vessel_extend_centreline_ends"].default is False
+    settings["thick_vessel_extend_centreline_ends"] = True
+    assert thick_junction_bridge_arguments(settings)["extend_thick_ends"] is True
