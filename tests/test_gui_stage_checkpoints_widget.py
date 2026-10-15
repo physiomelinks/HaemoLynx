@@ -393,9 +393,11 @@ def test_revert_hands_the_graph_over_and_never_writes_graph_pkl(panel):
 
 def test_revert_from_haemodynamics_turns_off_fwhm_remeasurement(panel):
     """Continuing from Haemodynamics must keep diameters already on the graph."""
-    widget, viewer, _tmp = panel
+    widget, viewer, tmp_path = panel
     _seed_run(widget, viewer, through="post_process")
     rows = widget._haemolynx_rows()
+    # FWHM is in use only with a raw image to measure from.
+    rows["raw_image_path"].value = tmp_path / "raw.tif"
     rows["measure_diameters_from_raw_image"].value = True
     rows["do_fwhm_measurement"].value = True
 
@@ -404,6 +406,26 @@ def test_revert_from_haemodynamics_turns_off_fwhm_remeasurement(panel):
     assert rows["do_fwhm_measurement"].value is False
     assert widget._haemolynx_values()["do_fwhm_measurement"] is False
     assert rows["do_graph_building"].value is True
+    tabs = widget._haemolynx_tabs
+    assert tabs.tabText(tabs.currentIndex()) == "6. Haemodynamics"
+
+
+def test_revert_from_haemodynamics_without_a_raw_image_leaves_fwhm_measurement_alone(panel):
+    """Without a raw image, measuring diameters from it is out of effect --
+    the diameter chain starts at the mask -- so FWHM is not in use and there
+    are no FWHM diameters to keep: the run from Haemodynamics does not turn
+    "Do FWHM measurement" off, nor say it did."""
+    widget, viewer, _tmp = panel
+    _seed_run(widget, viewer, through="post_process")
+    rows = widget._haemolynx_rows()
+    assert widget._haemolynx_values()["raw_image_path"] is None
+    rows["measure_diameters_from_raw_image"].value = True
+    rows["do_fwhm_measurement"].value = True
+
+    widget._haemolynx_revert("6. Haemodynamics")
+
+    assert rows["do_fwhm_measurement"].value is True
+    assert "do_fwhm_measurement" not in widget._haemolynx_report()
     tabs = widget._haemolynx_tabs
     assert tabs.tabText(tabs.currentIndex()) == "6. Haemodynamics"
 
@@ -630,9 +652,10 @@ def test_each_run_from_starts_from_the_users_own_skip_toggles(panel):
     Diameters straight after must measure again, and one from Graph must
     build the graph -- not inherit the earlier run-from's toggles and quietly
     keep the old diameters. Graph building itself is never turned off."""
-    widget, viewer, _tmp = panel
+    widget, viewer, tmp_path = panel
     _seed_run(widget, viewer, through="solve")
     rows = widget._haemolynx_rows()
+    rows["raw_image_path"].value = tmp_path / "raw.tif"
     rows["measure_diameters_from_raw_image"].value = True
     rows["do_fwhm_measurement"].value = True
     rows["do_graph_building"].value = True

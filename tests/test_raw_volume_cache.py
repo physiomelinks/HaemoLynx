@@ -7,10 +7,15 @@ simply be deleted afterwards to prove reuse happened. Instead, every "reuses
 the cache" test checks which file the returned array is actually backed by:
 a hit is backed by the deterministic cache file (``_CACHE_PREFIX``-named,
 under the cache directory), never by a freshly-read copy of the source.
+
+A source modified in the last few seconds is never cached (see the module
+docstring), so every test that expects an entry backdates its source first.
 """
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -20,16 +25,25 @@ import tifffile
 from haemolynx.io.raw_volume_cache import (
     _CACHE_FORMAT,
     _CACHE_PREFIX,
+    _RACY_WINDOW_NS,
     _cache_file_paths,
     _cache_key,
     load_raw_volume_reusing_cache,
 )
 
 
-def _write_tiff(path, shape=(6, 10, 12), seed=0, **kwargs):
+def _backdate(path, seconds=60):
+    """Stand in for a source written long before the run that loads it."""
+    mtime_ns = time.time_ns() - int(seconds * 1_000_000_000)
+    os.utime(path, ns=(mtime_ns, mtime_ns))
+
+
+def _write_tiff(path, shape=(6, 10, 12), seed=0, backdate=True, **kwargs):
     rng = np.random.default_rng(seed)
     raw = rng.integers(0, 255, size=shape, dtype=np.uint8)
     tifffile.imwrite(path, raw, **kwargs)
+    if backdate:
+        _backdate(path)
     return raw
 
 
@@ -84,13 +98,68 @@ def test_a_changed_source_file_misses_and_rewrites_the_cache(tmp_path):
     load_raw_volume_reusing_cache(
         str(source), input_format="tif", axis_order="zyx", memmap_directory=cache_dir
     )
-    new_raw = _write_tiff(source, seed=2)  # different content, same path
+    new_raw = _write_tiff(source, seed=2, backdate=False)  # different content, same path
 
     image, *_ = load_raw_volume_reusing_cache(
         str(source), input_format="tif", axis_order="zyx", memmap_directory=cache_dir
     )
 
     assert np.array_equal(image, new_raw)
+
+
+def test_a_rewrite_that_keeps_mtime_and_size_returns_the_new_volume(tmp_path):
+    """Regression (2026-10-15): a same-size rewrite that lands in the same
+    file-clock tick as the first write keeps its mtime and size, and the old
+    (path, mtime, size) key served the old volume -- the rare flaky failure of
+    the test above. Two TIFF writes with nothing between them shared both 92
+    times in 200 on NTFS, but a load in between usually crosses a tick, so
+    here both writes are given one identical, recent mtime to make the
+    collision certain. No waiting; the old key failed this every time."""
+    source = tmp_path / "volume.tif"
+    cache_dir = tmp_path / "cache"
+    mtime_ns = time.time_ns()
+
+    _write_tiff(source, seed=1, backdate=False)
+    os.utime(source, ns=(mtime_ns, mtime_ns))
+    load_raw_volume_reusing_cache(
+        str(source), input_format="tif", axis_order="zyx", memmap_directory=cache_dir
+    )
+    new_raw = _write_tiff(source, seed=2, backdate=False)
+    os.utime(source, ns=(mtime_ns, mtime_ns))
+
+    image, *_ = load_raw_volume_reusing_cache(
+        str(source), input_format="tif", axis_order="zyx", memmap_directory=cache_dir
+    )
+
+    assert np.array_equal(image, new_raw)
+
+
+def test_a_recently_modified_source_is_loaded_but_not_cached(tmp_path):
+    source = tmp_path / "volume.tif"
+    raw = _write_tiff(source, backdate=False)
+    cache_dir = tmp_path / "cache"
+
+    image, *_ = load_raw_volume_reusing_cache(
+        str(source), input_format="tif", axis_order="zyx", memmap_directory=cache_dir
+    )
+
+    assert isinstance(image, np.memmap)  # still kept off plain RAM
+    assert np.array_equal(image, raw)
+    assert not list(cache_dir.glob(f"{_CACHE_PREFIX}*"))
+
+
+def test_a_source_older_than_the_racy_window_is_cached(tmp_path):
+    source = tmp_path / "volume.tif"
+    _write_tiff(source, backdate=False)
+    _backdate(source, seconds=_RACY_WINDOW_NS / 1e9 + 1)
+    cache_dir = tmp_path / "cache"
+
+    image, *_ = load_raw_volume_reusing_cache(
+        str(source), input_format="tif", axis_order="zyx", memmap_directory=cache_dir
+    )
+
+    memmap_path, _sidecar_path = _cache_files_for(cache_dir, source)
+    assert Path(image.filename) == memmap_path
 
 
 def test_a_different_axis_order_does_not_reuse_the_zyx_cache_entry(tmp_path):
@@ -159,6 +228,7 @@ def test_voxel_metadata_round_trips_through_the_cache(tmp_path):
     tifffile.imwrite(
         source, raw, resolution=(4.0, 5.0), metadata={"spacing": 2.0, "unit": "um"}
     )
+    _backdate(source)
     cache_dir = tmp_path / "cache"
 
     _image, vx, vy, vz, status = load_raw_volume_reusing_cache(
@@ -184,6 +254,7 @@ def test_an_entry_from_an_older_version_is_a_miss_and_its_voxel_size_is_read_aga
         source, raw, ome=True,
         metadata={"axes": "ZYX", "PhysicalSizeX": 0.4, "PhysicalSizeY": 0.5, "PhysicalSizeZ": 2.0},
     )
+    _backdate(source)
     cache_dir = tmp_path / "cache"
 
     load_raw_volume_reusing_cache(
@@ -210,6 +281,7 @@ def test_compressed_tiff_can_be_loaded_and_reused(tmp_path):
     raw = np.zeros((5, 30, 30), dtype=np.uint8)
     raw[1:4, 5:20, 5:20] = 255
     tifffile.imwrite(source, raw, compression="zlib")
+    _backdate(source)
     cache_dir = tmp_path / "cache"
 
     image, *_ = load_raw_volume_reusing_cache(
@@ -231,6 +303,7 @@ def test_h5_source_can_be_loaded_and_reused(tmp_path):
     raw = np.random.default_rng(0).integers(0, 255, size=(6, 10, 12), dtype=np.uint8)
     with h5py.File(source, "w") as handle:
         handle.create_dataset("data", data=raw)
+    _backdate(source)
     cache_dir = tmp_path / "cache"
 
     first, *_ = load_raw_volume_reusing_cache(
@@ -250,6 +323,7 @@ def test_a_promoted_2d_tiff_round_trips_through_the_cache(tmp_path):
     source = tmp_path / "flat.tif"
     raw = np.random.default_rng(0).integers(0, 255, size=(10, 14), dtype=np.uint8)
     tifffile.imwrite(source, raw)
+    _backdate(source)
     cache_dir = tmp_path / "cache"
 
     image, *_ , status = load_raw_volume_reusing_cache(

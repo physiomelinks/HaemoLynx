@@ -119,6 +119,10 @@ def _annotation_for_metric(metric_name: str) -> str:
         return "Subnetwork partition summary."
     if "Density" in metric_name:
         return "Total vessel length normalized by available volume."
+    if "Kaplan-Meier" in metric_name:
+        return "Beds that never join count as at risk up to where they were followed."
+    if "Short Loops Removed" in metric_name:
+        return "Loops this short round were broken when the graph was built, so the earliest bed joins may be missing."
     return ""
 
 
