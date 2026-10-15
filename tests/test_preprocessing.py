@@ -5,7 +5,6 @@ import numpy as np
 from ImageLynx.preprocessing import (
     bridge_gaps,
     close_binary_mask,
-    skeletonize_3d,
     preprocess_skeleton_for_graph,
 )
 from ImageLynx.cb_settings import ROI_VOXELS
@@ -45,16 +44,26 @@ def test_close_binary_mask_is_a_noop_for_non_positive_radius():
     assert np.array_equal(close_binary_mask(volume, radius=0), volume)
 
 
-def test_skeletonize_3d(small_binary_3d):
-    out = skeletonize_3d(small_binary_3d)
-    assert out.shape == small_binary_3d.shape
-    assert out.dtype == bool
+def test_preprocess_skeleton_for_graph():
+    """A stray voxel is pruned, not bridged into the skeleton.
 
+    The input is a real skeleton (a 1-voxel line along x), the function's documented input,
+    plus one voxel four voxels off it. Pruning at min_branch_length=2 drops the stray voxel
+    before reconnection runs; without pruning it is bridged in (13 voxels, three outside the
+    input). A square rod of even thickness would not do: skimage skeletonises it to nothing.
+    """
+    from skimage.measure import label
 
-def test_preprocess_skeleton_for_graph(small_binary_3d):
-    out = preprocess_skeleton_for_graph(small_binary_3d, min_branch_length=2)
-    assert out.shape == small_binary_3d.shape
-    assert out.dtype == bool
+    line = np.zeros((10, 10, 10), dtype=bool)
+    line[5, 5, :] = True
+    volume = line.copy()
+    volume[1, 5, 5] = True
+
+    out = preprocess_skeleton_for_graph(volume, min_branch_length=2)
+
+    assert np.array_equal(out, line)
+    assert not (out & ~volume).any()
+    assert label(out, connectivity=3).max() == 1
 
 
 # --- Greyscale denoising at capillary scale (#98 Phase A) ---------------------------------

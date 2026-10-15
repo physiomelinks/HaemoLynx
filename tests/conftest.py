@@ -24,14 +24,6 @@ if str(_EXAMPLES) not in sys.path:
 
 
 @pytest.fixture
-def small_binary_3d():
-    """Small 3D binary volume for testing."""
-    arr = np.zeros((10, 10, 10), dtype=bool)
-    arr[4:6, 4:6, :] = True  # small rod
-    return arr
-
-
-@pytest.fixture
 def tiny_skeleton():
     """Tiny skeleton for graph tests (linear path)."""
     skel = np.zeros((8, 8, 8), dtype=bool)
