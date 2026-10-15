@@ -352,15 +352,50 @@ def _wall_hugging(G: nx.MultiGraph, run, support: MaskSupport) -> tuple[float, f
     return float(np.mean(support.radius(polyline))), -sum(_length(G.edges[e]) for e in run)
 
 
-def _break(G: nx.MultiGraph, cycle, support: MaskSupport) -> list[tuple[Any, Any, Any]]:
+#: Of two strands in one lumen, the one with this much more of its length
+#: (µm) on a thick vessel's centreline tree is that vessel and stays.
+THICK_CENTRELINE_LEAD_UM = 3.0
+
+
+def _removal_order(
+    G: nx.MultiGraph,
+    runs: list,
+    support: MaskSupport,
+    along_centreline: Callable[[np.ndarray], float] | None = None,
+) -> list:
+    """*runs* (each a list of edge keys) in the order they go: one
+    following a thick vessel's centreline tree last
+    (*along_centreline*, µm of a polyline on it: a
+    ``thick_vessel_junctions.ThickCentreline``'s ``along_um``), and
+    otherwise the one nearest the wall first (``_wall_hugging``). Judged by
+    the wall alone, a strand on the tree whose edge ran on into narrower
+    vessels averaged nearer the wall than a strand lying wholly in the wide
+    lumen, and went: the thick vessel was left broken (E14.5, 2026-10-15)."""
+    wall = [_wall_hugging(G, run, support) for run in runs]
+    if along_centreline is None:
+        order = sorted(range(len(runs)), key=lambda i: wall[i])
+    else:
+        along = [along_centreline(_polyline(G, run)) for run in runs]
+        best = max(along)
+        order = sorted(range(len(runs)), key=lambda i: (along[i] >= best - THICK_CENTRELINE_LEAD_UM, wall[i]))
+    return [runs[i] for i in order]
+
+
+def _break(
+    G: nx.MultiGraph,
+    cycle,
+    support: MaskSupport,
+    along_centreline: Callable[[np.ndarray], float] | None = None,
+) -> list[tuple[Any, Any, Any]]:
     """Take out the loop's arc running nearest the lumen's wall -- the whole
     loop when only one place meets the network, its wall-most edge when none
     does -- and the nodes left with nothing. Returns the edges taken out.
 
     The arc kept is the one nearest the lumen's middle: the arc along the
     rim covered less of the lumen, and the diameter read off the mask along
-    it would come out too small."""
-    arc = min(loop_sides(G, cycle), key=lambda run: _wall_hugging(G, run, support))
+    it would come out too small. With *along_centreline*, an arc on a thick
+    vessel's centreline tree is kept first (:func:`_removal_order`)."""
+    arc = _removal_order(G, list(loop_sides(G, cycle)), support, along_centreline)[0]
     for a, b, key in arc:
         G.remove_edge(a, b, key)
     for a, b, _key in arc:
@@ -371,7 +406,11 @@ def _break(G: nx.MultiGraph, cycle, support: MaskSupport) -> list[tuple[Any, Any
 
 
 def remove_loops_inside_one_lumen(
-    G: nx.MultiGraph, support: MaskSupport, *, search_um: float = LOOP_SEARCH_UM
+    G: nx.MultiGraph,
+    support: MaskSupport,
+    *,
+    search_um: float = LOOP_SEARCH_UM,
+    along_centreline: Callable[[np.ndarray], float] | None = None,
 ) -> nx.MultiGraph:
     """Break, in place, every loop of *G* lying inside one lumen of
     *support*'s mask (:func:`loop_inside_one_lumen`).
@@ -381,7 +420,7 @@ def remove_loops_inside_one_lumen(
     places the rest of the network meets it -- so the vessel goes on, drawn
     once, and no spur is left hanging. A loop only one place meets goes
     whole. Runs until no loop inside a lumen is left; a loop round tissue,
-    however short, stays.
+    however short, stays. *along_centreline*: see :func:`_removal_order`.
     """
     if G.number_of_edges() == 0:
         return G
@@ -404,7 +443,7 @@ def remove_loops_inside_one_lumen(
                 round_tissue.add(signature)
                 continue
             lengths = {(a, b, key): _length(G.edges[a, b, key]) for a, b, key in cycle}
-            for a, b, key in _break(G, cycle, support):
+            for a, b, key in _break(G, cycle, support, along_centreline):
                 removed.append(lengths[(a, b, key)])
                 if G.has_node(a) and G.has_node(b):
                     pairs.refresh(a, b)
@@ -450,6 +489,7 @@ def remove_short_loops(
     *,
     max_length_um: float = DEFAULT_SHORT_LOOP_UM,
     keep_hole_over_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
+    along_centreline: Callable[[np.ndarray], float] | None = None,
 ) -> nx.MultiGraph:
     """Break, in place, every loop of *G* up to *max_length_um* round, as
     :func:`remove_loops_inside_one_lumen` breaks a loop inside one lumen --
@@ -471,6 +511,7 @@ def remove_short_loops(
     with its neighbour into a longer loop that was broken in turn. Those
     loops are left to the Short loops review list. 0 for *max_length_um*
     turns the rule off; 0 for *keep_hole_over_um* breaks every short loop.
+    *along_centreline*: see :func:`_removal_order`.
     """
     if G.number_of_edges() == 0 or not max_length_um > 0:
         return G
@@ -509,7 +550,7 @@ def remove_short_loops(
                     kept_for_hole += int(wide_hole[signature])
                 if wide_hole[signature]:
                     continue
-            for a, b, key in _break(G, cycle, support):
+            for a, b, key in _break(G, cycle, support, along_centreline):
                 removed.append(lengths[(a, b, key)])
                 if G.has_node(a) and G.has_node(b):
                     pairs.refresh(a, b)
@@ -560,6 +601,7 @@ def cuts_off_vessels(G: nx.MultiGraph, edge) -> bool:
 def remove_parallel_edges_in_lumen(
     G: nx.MultiGraph, support: MaskSupport, *, memo: dict | None = None,
     keep_apart: Callable[[tuple], bool] | None = None,
+    along_centreline: Callable[[np.ndarray], float] | None = None,
 ) -> nx.MultiGraph:
     """Drop, in place, one edge of each pair
     :func:`graph.diagnostics.diagnose_parallel_duplicates_in_lumen` reports.
@@ -574,6 +616,8 @@ def remove_parallel_edges_in_lumen(
     of one graph (``assemble.consolidate_lumen``). *keep_apart*, called with
     the pair ``(left, right)`` of edge keys, is evidence beyond the mask
     that they are two vessels: a pair it returns True for is left alone.
+    With *along_centreline*, an edge on a thick vessel's centreline tree is
+    kept over one that is not (:func:`_removal_order`).
     """
     from haemolynx.graph.diagnostics import diagnose_parallel_duplicates_in_lumen
 
@@ -598,7 +642,7 @@ def remove_parallel_edges_in_lumen(
             continue
         if keep_apart is not None and keep_apart((left, right)):
             continue
-        candidates = sorted(present, key=lambda edge: _wall_hugging(G, [edge], support))
+        candidates = [run[0] for run in _removal_order(G, [[edge] for edge in present], support, along_centreline)]
         drop = next((edge for edge in candidates if not cuts_off_vessels(G, edge)), None)
         if drop is None:
             kept_connected += 1

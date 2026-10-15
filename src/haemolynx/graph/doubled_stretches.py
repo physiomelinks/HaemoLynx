@@ -31,7 +31,7 @@ as it was, and this runs after it on what it leaves.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 import networkx as nx
@@ -451,6 +451,27 @@ def _rejoin(editor: _Editor, run: DoubledStretch) -> bool:
     return True
 
 
+def _mostly_on(along_centreline: Callable[[np.ndarray], float], points: np.ndarray) -> bool:
+    """Whether at least half of *points* lies on a thick vessel's centreline
+    tree. A stretch with no length on it never does: counted as on, every
+    partner stretch narrowed to one point turned capillaries far from any
+    thick vessel into the wall side and rewired them."""
+    on = along_centreline(points) if len(points) > 1 else 0.0
+    return on > 0.0 and on >= 0.5 * _length(points)
+
+
+def _partner_stretch(G: nx.MultiGraph, run: DoubledStretch) -> np.ndarray:
+    """The partner's centreline between where *run* starts and stops beside it."""
+    a, b, key = run.partner
+    pos = {n: np.asarray(G.nodes[n]["pos"], dtype=float) for n in (a, b)}
+    path = np.asarray(edge_sample_points(a, b, G.edges[a, b, key], pos), dtype=float)
+    if len(path) < 2:
+        return path
+    ends = cKDTree(path).query(np.vstack([run.partner_start, run.partner_stop]))[1]
+    lo, hi = sorted(int(i) for i in ends)
+    return path[lo : hi + 1]
+
+
 def resolve_doubled_stretches(
     G: nx.MultiGraph,
     support: MaskSupport,
@@ -459,6 +480,7 @@ def resolve_doubled_stretches(
     min_run_radii: float = MIN_DOUBLED_RUN_RADII,
     keep_apart: Callable[[DoubledStretch], bool] | None = None,
     memo: dict | None = None,
+    along_centreline: Callable[[np.ndarray], float] | None = None,
 ) -> nx.MultiGraph:
     """Resolve, in place, every stretch of centreline :func:`doubled_stretches`
     finds running beside another in one lumen (see the module docstring).
@@ -472,6 +494,12 @@ def resolve_doubled_stretches(
     called with each stretch, is evidence beyond the mask that the two
     centrelines are two vessels (the raw image, say): a stretch it returns
     True for is left alone. The mask alone cannot tell (grids H and H2).
+
+    *along_centreline* (µm of a polyline on a thick vessel's centreline
+    tree: a ``thick_vessel_junctions.ThickCentreline``'s ``along_um``) says
+    which of the two is that vessel: a stretch mostly on the tree is never
+    cut back or rejoined beside one that is not, and the other is resolved
+    onto it, whichever lies nearer the wall.
     """
     runs = doubled_stretches(G, support, min_run_um=min_run_um, min_run_radii=min_run_radii, memo=memo)
     if not runs:
@@ -501,6 +529,14 @@ def resolve_doubled_stretches(
         a, b, _pkey = partner
         if {u, v} == {a, b}:
             continue
+        if along_centreline is not None:
+            on = _mostly_on(along_centreline, run.samples[run.start : run.stop + 1])
+            partner_on = _mostly_on(along_centreline, _partner_stretch(G, run))
+            if on and not partner_on:
+                continue
+            if partner_on and not on:
+                # The partner is the thick vessel: the lumen's middle.
+                run = replace(run, partner_radius_um=float("inf"))
         # A dead end beside a vessel is cut back; of two dead ends side by
         # side, the one nearer the wall is.
         trims = run.radius_um <= run.partner_radius_um or min(G.degree[a], G.degree[b]) > 1

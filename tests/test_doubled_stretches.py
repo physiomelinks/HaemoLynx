@@ -294,3 +294,68 @@ def test_a_thick_vessel_taper_is_never_a_stretch_nor_a_partner():
     edges = sorted(map(str, G.edges(keys=True)))
     resolve_doubled_stretches(G, _support(mask))
     assert sorted(map(str, G.edges(keys=True))) == edges
+
+
+# --- a thick vessel's centreline: the strand that stays -------------------------
+
+
+def _rows_between(G, x0, x1):
+    points = np.vstack([np.asarray(d["voxels"], dtype=float) for *_e, d in G.edges(data=True)])
+    inside = (points[:, 2] > x0) & (points[:, 2] < x1)
+    return sorted(set(np.round(points[inside, 1]).tolist()))
+
+
+def test_the_strand_on_a_thick_vessels_centreline_is_kept_and_the_other_rejoined_to_it():
+    """Rewiring by the wall alone, the clean-up took the stretch on the thick
+    centreline tree as often as not (E14.5, 2026-10-15). The strand through
+    the trunk is, here, the one on the tree: the trunk's own stretch beside
+    it is cut out instead, and its two ends joined to the strand."""
+    from test_lumen_loops import _on_row
+
+    mask, G, (_tip_a, _tip_b, end_a, end_b) = strand_through_a_trunk()
+    plain = resolve_doubled_stretches(G.copy(), _support(mask))
+    assert _rows_between(plain, 20, 40) == [20.0]
+
+    G = resolve_doubled_stretches(G, _support(mask), along_centreline=_on_row(23))
+    assert _rows_between(G, 20, 40) == [23.0]
+    assert nx.is_connected(G) and nx.has_path(G, end_a, end_b)
+    assert _doubled_um(G, mask) < 1.0
+
+
+def test_a_dead_end_on_a_thick_vessels_centreline_is_not_cut_back():
+    from test_lumen_loops import _on_row
+
+    mask, G, tip, _junction = dead_end_beside_vessel()
+    assert not resolve_doubled_stretches(G.copy(), _support(mask)).has_node(tip)
+
+    length = _length(G)
+    G = resolve_doubled_stretches(G, _support(mask), along_centreline=_on_row(10))
+    assert G.has_node(tip) and _length(G) == pytest.approx(length)
+
+
+@pytest.mark.parametrize("build", [dead_end_beside_vessel, fork_that_parts, strand_through_a_trunk])
+def test_with_no_thick_centreline_near_every_stretch_is_resolved_as_before(build):
+    """Far from any thick vessel the stretch step decides as it always did."""
+    mask, G, *_ends = build()
+    plain = resolve_doubled_stretches(G.copy(), _support(mask))
+    nowhere = resolve_doubled_stretches(G.copy(), _support(mask), along_centreline=lambda points: 0.0)
+    assert sorted(map(str, nowhere.edges())) == sorted(map(str, plain.edges()))
+    assert _length(nowhere) == pytest.approx(_length(plain))
+
+
+def test_a_stretch_with_no_length_on_the_tree_is_never_on_it():
+    """Regression: a partner stretch narrowed to one point has no length, and
+    "at least half of it on the tree" held for it (0 >= 0) -- every capillary
+    beside one, far from any thick vessel, was taken for the wall side and
+    rewired: on E14.5, 2.7 mm of vessel lost."""
+    from haemolynx.graph.doubled_stretches import _mostly_on
+
+    nowhere = lambda points: 0.0
+    everywhere = lambda points: float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+    point = np.array([[7.0, 7.0, 10.0]])
+    line = np.array([[7.0, 7.0, 10.0], [7.0, 7.0, 20.0]])
+    assert not _mostly_on(nowhere, point)
+    assert not _mostly_on(everywhere, point)
+    assert not _mostly_on(nowhere, line)
+    assert _mostly_on(everywhere, line)
+    assert not _mostly_on(lambda points: 4.0, line) and _mostly_on(lambda points: 5.0, line)

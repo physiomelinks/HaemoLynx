@@ -1494,12 +1494,27 @@ def build_network(
             )
         if binary_mask is not None and (stub_radius_multiple > 0 or settings["smooth_centrelines"]):
             radius_at = graph.assemble.mask_radius_sampler(binary_mask, voxel_size_zyx, 1.0)
+        # The thick vessels' centreline tree, found once: the split below
+        # bridges to it, and every clean-up keeps the strand on it of two in
+        # one lumen. Judged by the wall alone, the clean-up took the strand
+        # on the tree as often as not and left the thick vessel broken.
+        thick_tree = None
+        along_thick_centreline = None
+        if volume.thick_vessel_mask is not None:
+            thick_tree = graph.thick_vessel_junctions.thick_vessel_centreline(
+                volume.thick_vessel_mask, voxel_size_zyx
+            )
+            follower = graph.thick_vessel_junctions.ThickCentreline.from_region(
+                volume.thick_vessel_mask, voxel_size_zyx, segmentation=binary_mask, centreline=thick_tree,
+            )
+            along_thick_centreline = None if follower is None else follower.along_um
         G = graph.build_graph_from_skeleton(
             skeleton,
             voxel_size=voxel_size_zyx,
             stub_radius_at=radius_at,
             segmentation_mask=binary_mask,
             step_callback=_graph_build_step_callback,
+            along_thick_centreline=along_thick_centreline,
             **graph_build_arguments(settings),
         )
 
@@ -1539,6 +1554,7 @@ def build_network(
                 stub_face_protection=settings.get("stub_face_protection") or "threshold",
                 remove_short_loops_under_um=float(settings.get("remove_short_loops_under_um") or 0.0),
                 short_loop_keep_hole_over_um=_short_loop_keep_hole_um(settings),
+                along_thick_centreline=along_thick_centreline,
             )
             if settings["smooth_centrelines"]:
                 G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
@@ -1557,7 +1573,7 @@ def build_network(
         if volume.thick_vessel_mask is not None:
             G = graph.insert_thick_vessel_junction_nodes(
                 G, volume.thick_vessel_mask, voxel_size_zyx=voxel_size_zyx,
-                segmentation=binary_mask, **thick_junction_bridge_arguments(settings),
+                segmentation=binary_mask, centreline=thick_tree, **thick_junction_bridge_arguments(settings),
             )
             edges_after_step.append(("thick-vessel split", G.number_of_edges()))
             if lumen_cleanup is not None:

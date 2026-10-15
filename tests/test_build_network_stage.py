@@ -161,6 +161,59 @@ def test_the_built_network_warns_when_its_dense_solve_will_not_fit(
         assert memory == []
 
 
+def _spy_on_graph_building(monkeypatch) -> dict:
+    """The keyword arguments graph building, the lumen clean-up and the
+    thick-vessel split are called with, by name, in call order."""
+    from haemolynx import graph
+
+    seen: dict = {}
+
+    def spy(name, real):
+        def wrapper(*args, **kwargs):
+            seen.setdefault(name, []).append(kwargs)
+            return real(*args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(graph, "build_graph_from_skeleton", spy("build", graph.build_graph_from_skeleton))
+    monkeypatch.setattr(graph.assemble, "lumen_cleanup", spy("cleanup", graph.assemble.lumen_cleanup))
+    monkeypatch.setattr(
+        graph, "insert_thick_vessel_junction_nodes", spy("split", graph.insert_thick_vessel_junction_nodes)
+    )
+    return seen
+
+
+def test_a_thick_vessel_regions_centreline_reaches_every_clean_up_and_the_split(tmp_path, monkeypatch):
+    """Every clean-up keeps the strand on the thick vessels' centreline tree
+    of two in one lumen (judged by the wall alone it broke them, E14.5,
+    2026-10-15): graph building's own, the one after smoothing and the one
+    after the split are all handed it, and the split the same tree, found
+    once."""
+    seen = _spy_on_graph_building(monkeypatch)
+    settings = _settings(tmp_path)
+    volume = _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS))
+    volume.thick_vessel_mask = _mask_under(LONG_CROSS).astype(bool)
+
+    build_network(settings, volume, SCHEMA)
+
+    along = seen["build"][0]["along_thick_centreline"]
+    assert along is not None
+    assert len(seen["cleanup"]) == 2  # graph building's, then build_network's
+    assert all(call["along_thick_centreline"] is along for call in seen["cleanup"])
+    arm = np.array([[20.0, 20.0, float(x)] for x in range(8, 33)])
+    assert along(arm) > 20.0
+    (split,) = seen["split"]
+    assert split["centreline"].shape == LONG_CROSS.shape and split["centreline"].any()
+
+
+def test_a_run_without_a_thick_vessel_region_leaves_the_choice_to_the_wall(tmp_path, monkeypatch):
+    seen = _spy_on_graph_building(monkeypatch)
+    build_network(_settings(tmp_path), _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)
+    assert seen["build"][0]["along_thick_centreline"] is None
+    assert all(call["along_thick_centreline"] is None for call in seen["cleanup"])
+    assert "split" not in seen
+
+
 def test_an_empty_build_leaves_the_graph_a_run_saved_before(tmp_path):
     (tmp_path / "out").mkdir()
     saved = nx.MultiGraph()

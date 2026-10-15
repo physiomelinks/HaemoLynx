@@ -416,3 +416,92 @@ def test_the_clean_up_leaves_a_short_loop_round_a_wide_hole():
     broken = consolidate_lumen(G.copy(), every)
     assert loops(broken) == 0 and length(broken) < length(kept) - 80.0
     assert nx.is_connected(broken)
+
+
+# --- a thick vessel's centreline: the strand that stays -------------------------
+
+
+def _row(y):
+    """A stand-in for a thick vessel's centreline tree along row *y*: the µm
+    of a polyline on it."""
+    from test_lumen_loops import _on_row
+
+    return _on_row(y)
+
+
+def test_the_pair_rule_keeps_the_strand_on_a_thick_vessels_centreline():
+    """Of two strands in one lumen the one nearer the wall goes -- unless it
+    is the thick vessel's own centreline (E14.5, 2026-10-15: the pair rule
+    took the strand on the tree as often as not, breaking the vessel)."""
+    mask = wide_vessel()
+    support = MaskSupport(mask, VOXEL_SIZE)
+    strands = lambda: polyline_graph([[(7, 4, 2), (7, 4, 57)], [(7, 8, 2), (7, 8, 57)]])
+    assert _pairs(strands(), mask) == 1
+    rows = lambda G: sorted(float(np.asarray(d["voxels"])[0][1]) for *_e, d in G.edges(data=True))
+
+    assert rows(remove_parallel_edges_in_lumen(strands(), support)) == [8.0]
+    assert rows(remove_parallel_edges_in_lumen(strands(), support, along_centreline=_row(4))) == [4.0]
+
+
+def test_the_stub_prune_keeps_a_dead_end_on_a_thick_vessels_centreline():
+    """Every rule of the prune reads the thick vessel's own centreline,
+    running on as a dead end, as a hair inside the thick lumen."""
+    from lumen_artefact_fixtures import dead_end_cases
+
+    mask, G, tips = dead_end_cases()
+    tip = tips["inside_other_lumen"]  # a hair along the trunk, on row 32
+    plain = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape)
+    assert not plain.prune(G.copy()).has_node(tip)
+    on_tree = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, along_thick_centreline=_row(32))
+    kept = on_tree.prune(G.copy())
+    assert kept.has_node(tip)
+    # The other dead ends are judged as before.
+    assert not kept.has_node(tips["off_mask"]) and kept.has_node(tips["real_branch"])
+
+
+def _thick_vessel_running_on_into_a_narrow_one():
+    """Harvey's breaks (Forclaude.haemorun, E14.5, 2026-10-15) in miniature:
+    a 12 um vessel (the thick region) runs on into a 4 um one. Its
+    centreline is one edge from the thick vessel well into the narrow one; a
+    second strand 2 um off it lies wholly in the wide lumen. Averaged along
+    each, the centreline runs nearer the wall, and the clean-up kept the
+    second strand."""
+    mask = np.zeros((15, 40, 90), dtype=bool)
+    capsule(mask, (7, 20, -10), (7, 20, 40), 6)
+    capsule(mask, (7, 20, 40), (7, 20, 100), 2)
+    thick = capsule(np.zeros_like(mask), (7, 20, -10), (7, 20, 36), 6)
+    G = polyline_graph([
+        [(7, 20, 0), (7, 20, 2)],
+        [(7, 20, 2), (7, 20, 78)],
+        [(7, 20, 2), (7, 18, 6), (7, 18, 34), (7, 20, 38)],
+    ])
+    return mask, thick, G
+
+
+def _followed(G, centreline) -> float:
+    """The share of *centreline*'s points within 1.5 um of an edge of *G*."""
+    points = np.vstack([np.asarray(d["voxels"], dtype=float) for *_e, d in G.edges(data=True)])
+    distance = np.linalg.norm(centreline[:, None] - points[None], axis=2).min(axis=1)
+    return float(np.mean(distance <= 1.5))
+
+
+def test_the_clean_up_keeps_a_thick_vessels_centreline_running_on_into_a_narrow_vessel():
+    from haemolynx.graph.thick_vessel_junctions import ThickCentreline
+
+    mask, thick, G = _thick_vessel_running_on_into_a_narrow_one()
+    middle = np.array([[7.0, 20.0, float(x)] for x in range(4, 34)])
+    tree = ThickCentreline.from_region(thick, VOXEL_SIZE, segmentation=mask)
+    assert tree.along_um(middle) == pytest.approx(29.0, abs=1.0)
+
+    def clean(along):
+        cleanup = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, min_stub_length=0.0,
+                                min_stub_length_radius_multiple=0.0, along_thick_centreline=along)
+        return consolidate_lumen(G.copy(), cleanup)
+
+    assert _followed(clean(None), middle) < 0.2  # the wall alone kept the second strand
+    kept = clean(tree.along_um)
+    assert _followed(kept, middle) == 1.0
+    assert nx.is_connected(kept) and nx.cycle_basis(nx.Graph(kept)) == []
+    assert kept.has_node((7.0, 20.0, 78.0))
+    off_centre = [p for *_e, d in kept.edges(data=True) for p in d["voxels"] if abs(p[1] - 18.0) < 0.5]
+    assert off_centre == []

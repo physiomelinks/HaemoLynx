@@ -473,7 +473,18 @@ are only caught locally.
   the doubling only the wider vessel's side sees is left to the review list), dangling bridges,
   and the stub prune; "nothing changed" counts the centreline length. `lumen_cleanup(keep_apart=)`
   hands both the pair rule and the stretch step a caller's evidence beyond the mask (a raw-image
-  test, `PLAN_raw_confirmation.md`) for what to leave alone. Run once in
+  test, `PLAN_raw_confirmation.md`) for what to leave alone. `lumen_cleanup(along_thick_centreline=)`
+  (`build_network` passes it whenever the run has a thick-vessel region:
+  `thick_vessel_junctions.ThickCentreline.along_um`, the µm of a polyline on the region's
+  centreline tree within the split's own tolerance) makes the pair, loop, short-loop and stretch
+  rules keep, of two strands in one lumen, the one with 3 um more on the tree
+  (`lumen_loops._removal_order`, `THICK_CENTRELINE_LEAD_UM`), and the stub prune keep a dead end
+  mostly on it (`THICK_CENTRELINE_DEAD_END_UM`). Judged by the wall alone, the strand on the tree
+  went as often as not -- an edge running on past the thick vessel into narrower ones averages
+  nearer the wall -- and the thick vessels came out broken (Harvey's Forclaude.haemorun, E14.5,
+  2026-10-15: the graph followed 95% of the tree after skeletonisation and 84.7% built; 88.7%
+  with this, places where the tree runs on with no graph 14 -> 9, centreline length unchanged;
+  not a marked grid). Run once in
   a fixed order, each left work the others never saw (on E14.5 the last merge alone raised the
   pairs in one lumen from 94 to 126). `lumen_cleanup` builds what it reads from the build's own
   settings, so `build_network` runs it again after smoothing. E14.5 settles in 9 rounds

@@ -848,3 +848,25 @@ def test_the_run_turns_the_fill_on_with_its_setting():
     from haemolynx.pipeline import default_schema
 
     assert default_schema()["thick_vessel_fill_centreline_gaps"].default is True
+
+
+# --- how much of a centreline follows the thick vessel's tree -------------------
+
+
+def test_the_length_of_a_centreline_on_the_thick_vessels_tree():
+    """``ThickCentreline.along_um``: what the lumen clean-up asks to keep the
+    thick vessel's own strand. The tree of a 12 um tube runs down its middle;
+    a strand there lies on it for its length, one 4 um off it (past the
+    larger of 1.5 um and 0.3 radii) not at all, and one leaving the tube
+    only for the part inside."""
+    from haemolynx.graph.thick_vessel_junctions import ThickCentreline
+
+    region = _tube(T0, T1, RADIUS)
+    tree = ThickCentreline.from_region(region, VS, segmentation=region)
+    middle = _line((20.0, 15.0, 20.0), (20.0, 45.0, 20.0))
+    assert tree.along_um(middle) == pytest.approx(30.0, abs=1.0)
+    assert tree.along_um(middle + np.array([0.0, 0.0, 4.0])) == 0.0
+    leaving = _line((20.0, 30.0, 20.0), (20.0, 30.0, 50.0))
+    assert tree.along_um(leaving) < 3.0
+    assert tree.along_um(middle[:1]) == 0.0
+    assert ThickCentreline.from_region(np.zeros(SHAPE, dtype=bool), VS) is None

@@ -181,6 +181,43 @@ def test_a_graph_without_loops_is_left_alone():
     assert sorted(G.edges(keys=True)) == before
 
 
+def _on_row(row: int, scale: float = 1.0):
+    """A stand-in for a thick vessel's centreline tree lying along *row*: the
+    µm of a polyline on it, times *scale*."""
+
+    def along(points) -> float:
+        points = np.asarray(points, dtype=float)
+        on = np.abs(points[:, 1] - row) < 0.5
+        steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+        return scale * float(steps[on[:-1] & on[1:]].sum())
+
+    return along
+
+
+def test_a_ring_keeps_its_side_on_a_thick_vessels_centreline_though_nearer_the_wall():
+    """E14.5, 2026-10-15: judged by the wall alone, the clean-up took the
+    side on the thick centreline tree as often as not, and the thick vessel
+    was left broken. The side on the tree stays."""
+    G = _vessel_with(4, 9)
+
+    remove_loops_inside_one_lumen(G, _support(_tube_mask()), along_centreline=_on_row(4))
+
+    assert _rows(G) == [4]
+    assert nx.is_connected(G) and nx.cycle_basis(nx.Graph(G)) == []
+
+
+def test_a_lead_on_the_centreline_under_three_microns_leaves_the_side_to_the_wall():
+    from haemolynx.graph.lumen_loops import THICK_CENTRELINE_LEAD_UM
+
+    G = _vessel_with(4, 9)
+    on_row_4 = _on_row(4)(np.asarray(_detour(4, 20.0, 40.0)))
+    scale = 0.9 * THICK_CENTRELINE_LEAD_UM / on_row_4
+
+    remove_loops_inside_one_lumen(G, _support(_tube_mask()), along_centreline=_on_row(4, scale))
+
+    assert _rows(G) == [9]
+
+
 # --- what Manual loop review reads ---------------------------------------------
 
 
@@ -359,6 +396,12 @@ def test_a_limit_of_zero_leaves_every_loop():
     G = _vessel_with(4, 9)
     remove_short_loops(G, _support(_tube_mask()), max_length_um=0.0)
     assert _rows(G) == [4, 9]
+
+
+def test_a_short_loop_keeps_its_side_on_a_thick_vessels_centreline():
+    G = _vessel_with(4, 9)
+    remove_short_loops(G, _support(_tube_mask()), along_centreline=_on_row(4))
+    assert _rows(G) == [4]
 
 
 def test_every_short_loop_of_a_tangle_goes_and_the_middle_strand_stays():

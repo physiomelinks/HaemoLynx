@@ -285,6 +285,71 @@ def _inscribed_radius_um(
     return distance
 
 
+class ThickCentreline:
+    """The thick vessels' centreline tree, for asking how much of a
+    centreline follows it: within the split's own tolerance of the tree
+    (:data:`CENTRELINE_TOLERANCE_UM`, or :data:`CENTRELINE_TOLERANCE_PER_RADIUS`
+    of the lumen's radius there).
+
+    The lumen clean-up asks it which of two strands in one lumen is the
+    thick vessel's own centreline. It runs before the split, when nothing
+    marks one yet, and judged by the wall alone it took the strand on the
+    tree as often as not (Forclaude.haemorun, E14.5, 2026-10-15: the graph
+    followed 95% of the tree after skeletonisation and 83% when built).
+    """
+
+    def __init__(self, tree_points: np.ndarray, tolerance_um: np.ndarray):
+        self._points = np.asarray(tree_points, dtype=float).reshape(-1, 3)
+        self._tolerance = np.asarray(tolerance_um, dtype=float).reshape(-1)
+        self._tree = cKDTree(self._points)
+
+    @classmethod
+    def from_region(
+        cls,
+        thick_mask: np.ndarray,
+        voxel_size_zyx: tuple[float, float, float],
+        *,
+        segmentation: np.ndarray | None = None,
+        centreline: np.ndarray | None = None,
+        centreline_tolerance_um: float = CENTRELINE_TOLERANCE_UM,
+    ) -> "ThickCentreline | None":
+        """The tree of *thick_mask* (or *centreline*, the tree already
+        found), with the tolerance :func:`insert_thick_vessel_junction_nodes`
+        judges it by. None when there is no tree."""
+        vs = np.asarray(voxel_size_zyx, dtype=float)
+        thick = np.asarray(thick_mask, dtype=bool)
+        if not thick.any():
+            return None
+        tree_voxels = (
+            thick_vessel_centreline(thick, tuple(vs)) if centreline is None
+            else np.asarray(centreline, dtype=bool)
+        )
+        points = np.argwhere(tree_voxels) * vs
+        if len(points) == 0:
+            return None
+        if segmentation is not None and np.shape(segmentation) != thick.shape:
+            segmentation = None
+        lumen = thick if segmentation is None else np.asarray(segmentation, dtype=bool)
+        radius = _inscribed_radius_um(points, lumen, vs)
+        unknown = ~np.isfinite(radius)
+        if unknown.any() and lumen is not thick:
+            radius[unknown] = _inscribed_radius_um(points[unknown], thick, vs)
+        radius = np.where(np.isfinite(radius), radius, 0.0)
+        return cls(points, np.maximum(float(centreline_tolerance_um), CENTRELINE_TOLERANCE_PER_RADIUS * radius))
+
+    def along_um(self, polyline: np.ndarray) -> float:
+        """How long a stretch of *polyline* (µm) lies on the tree: its steps,
+        sampled every :data:`_SAMPLE_STEP_UM`, with both ends within the
+        tolerance of the tree."""
+        points = densify_polyline(np.asarray(polyline, dtype=float).reshape(-1, 3), max_step_um=_SAMPLE_STEP_UM)
+        if len(points) < 2:
+            return 0.0
+        distance, nearest = self._tree.query(points)
+        on = distance <= self._tolerance[nearest]
+        steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+        return float(steps[on[:-1] & on[1:]].sum())
+
+
 def _decide_what_stays(sampled, inside_runs, find, bridged, through=frozenset()):
     """Set each edge's ``keep``: everything but the stretches of the *bridged*
     connectors inside the thick-vessel region, apart from the runs *through*

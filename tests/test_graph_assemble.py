@@ -235,7 +235,7 @@ def test_loops_inside_one_lumen_are_broken_only_given_the_mask(monkeypatch, with
 
     calls = []
 
-    def record(G, support):
+    def record(G, support, **_):
         calls.append(support)
         return G
 
