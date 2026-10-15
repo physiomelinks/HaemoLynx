@@ -482,15 +482,24 @@ are only caught locally.
   test, `PLAN_raw_confirmation.md`) for what to leave alone. `lumen_cleanup(along_thick_centreline=)`
   (`build_network` passes it whenever the run has a thick-vessel region:
   `thick_vessel_junctions.ThickCentreline.along_um`, the µm of a polyline on the region's
-  centreline tree within the split's own tolerance) makes the pair, loop, short-loop and stretch
+  centreline tree within the split's own tolerance) makes the pair, in-lumen loop and stretch
   rules keep, of two strands in one lumen, the one with 3 um more on the tree
-  (`lumen_loops._removal_order`, `THICK_CENTRELINE_LEAD_UM`), and the stub prune keep a dead end
-  mostly on it (`THICK_CENTRELINE_DEAD_END_UM`). Judged by the wall alone, the strand on the tree
+  (`lumen_loops._removal_order`, `THICK_CENTRELINE_LEAD_UM`) -- unless the other is a vessel of
+  its own beside the thick one: its median lumen radius at least
+  `VESSEL_BESIDE_THICK_RADIUS_UM` (2.3 um) and lying outside the kept strand's lumen
+  (`_vessel_beside`), when both stay. Judged by the wall alone, the strand on the tree
   went as often as not -- an edge running on past the thick vessel into narrower ones averages
   nearer the wall -- and the thick vessels came out broken (Harvey's Forclaude.haemorun, E14.5,
-  2026-10-15: the graph followed 95% of the tree after skeletonisation and 84.7% built; 88.7%
-  with this, places where the tree runs on with no graph 14 -> 9, centreline length unchanged;
-  not a marked grid). Run once in
+  2026-10-15: the graph followed 95% of the tree after skeletonisation and 84.7% built).
+  Calibrated on Harvey's grids W-Z (2026-10-15, `outputs/thick_vessel_breaks/GRID_*.md`): the
+  first version (c13ea37, the short-loop rule and the stub prune given it too) was right at 11
+  of 21 marked places, no better than marking all one way; every place it restored 7 um or more
+  of the tree was right (12/12 over grids W and X), but keeping the tree strand let the pair and
+  loop rules take capillaries beside it, the short-loop preference and the stub prune's keep
+  were wrong wherever they decided (grid W), and grids Y and Z (50 removals beside a kept thick
+  centreline, marked keep or remove) fitted the beside-vessel test, 39/50 left out against 28
+  for removing all. As now: 73 of 98 marks across the four grids against 55 for the plain build;
+  the tree followed 88.5% on E14.5, 3 more loops (95 -> 98). Not yet checked on a fresh grid. Run once in
   a fixed order, each left work the others never saw (on E14.5 the last merge alone raised the
   pairs in one lumen from 94 to 126). `lumen_cleanup` builds what it reads from the build's own
   settings, so `build_network` runs it again after smoothing. E14.5 settles in 9 rounds
@@ -898,7 +907,12 @@ are only caught locally.
   shortest way between two places a stretch meets the centreline, or a stretch that never leads
   out) stays as it is. Stretches under 2 um are flicker. Nothing is ever cut off: a stretch whose
   removal would disconnect anything is left as it was. A vessel beyond a bridge that ends blind
-  inside the image goes with its bridge (one running out of the image stays). On E14.5: 150
+  inside the image goes with its bridge (one running out of the image stays) when the stub prune
+  would take it as a stub too: shorter than `min_stub_length` and than
+  `min_stub_length_radius_multiple` times the thick vessel's lumen radius at the tree point
+  nearest the bridge (`_remove_blind_vessels_beyond_bridges(stub_length_um=)`; Harvey's grid Y,
+  2026-10-15: the four marked keep were 34-154 um, stretches of the thick vessel itself and long
+  capillaries, the two marked remove 6 and 16 um). On E14.5: 150
   bridges, each from the region's boundary to the centreline (median length 1.24 lumen radii),
   every one leading to a junction or the image's edge, against the old rule's 360 inside pieces of
   which 44 were radius-shaped; 42 blind vessels (529 um) removed. Bridges are not measured

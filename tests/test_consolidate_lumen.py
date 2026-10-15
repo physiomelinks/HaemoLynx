@@ -28,6 +28,7 @@ from lumen_artefact_fixtures import (
     capsule,
     polyline_graph,
     ring_in_one_lumen,
+    two_strands_in_one_lumen,
     wide_vessel,
 )
 
@@ -443,20 +444,45 @@ def test_the_pair_rule_keeps_the_strand_on_a_thick_vessels_centreline():
     assert rows(remove_parallel_edges_in_lumen(strands(), support, along_centreline=_row(4))) == [4.0]
 
 
-def test_the_stub_prune_keeps_a_dead_end_on_a_thick_vessels_centreline():
-    """Every rule of the prune reads the thick vessel's own centreline,
-    running on as a dead end, as a hair inside the thick lumen."""
+def test_the_stub_prune_judges_a_dead_end_on_a_thick_vessels_centreline_as_any_other():
+    """Kept as the thick vessel running on, such a dead end was wrong at both
+    places it decided on Harvey's grid W (2026-10-15, 5 and 6)."""
     from lumen_artefact_fixtures import dead_end_cases
 
     mask, G, tips = dead_end_cases()
     tip = tips["inside_other_lumen"]  # a hair along the trunk, on row 32
-    plain = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape)
-    assert not plain.prune(G.copy()).has_node(tip)
     on_tree = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, along_thick_centreline=_row(32))
-    kept = on_tree.prune(G.copy())
-    assert kept.has_node(tip)
-    # The other dead ends are judged as before.
-    assert not kept.has_node(tips["off_mask"]) and kept.has_node(tips["real_branch"])
+    pruned = on_tree.prune(G.copy())
+    assert not pruned.has_node(tip)
+    assert not pruned.has_node(tips["off_mask"]) and pruned.has_node(tips["real_branch"])
+
+
+def test_the_short_loop_rule_is_not_given_the_thick_centreline(monkeypatch):
+    """Keeping the side on the tree, the short-loop rule took the capillary
+    beside it: both places it decided that way on grid W (2 and 22) were
+    marked wrong. The pair, in-lumen loop and stretch rules are given it."""
+    import haemolynx.graph.assemble as assemble
+
+    seen = {}
+    for name in ("remove_parallel_edges_in_lumen", "remove_loops_inside_one_lumen",
+                 "remove_short_loops", "resolve_doubled_stretches"):
+        original = getattr(assemble, name)
+
+        def spy(G, *args, _name=name, _original=original, **kwargs):
+            seen.setdefault(_name, []).append(kwargs.get("along_centreline"))
+            return _original(G, *args, **kwargs)
+
+        monkeypatch.setattr(assemble, name, spy)
+    mask, G = two_strands_in_one_lumen()
+    along = _row(5)
+    cleanup = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, remove_short_loops_under_um=200.0,
+                            along_thick_centreline=along)
+
+    consolidate_lumen(G, cleanup)
+
+    assert set(seen["remove_short_loops"]) == {None}
+    for name in ("remove_parallel_edges_in_lumen", "remove_loops_inside_one_lumen", "resolve_doubled_stretches"):
+        assert set(seen[name]) == {along}
 
 
 def _thick_vessel_running_on_into_a_narrow_one():

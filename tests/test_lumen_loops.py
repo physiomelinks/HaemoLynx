@@ -218,6 +218,78 @@ def test_a_lead_on_the_centreline_under_three_microns_leaves_the_side_to_the_wal
     assert _rows(G) == [9]
 
 
+def _capillary_beside_a_thick_vessel():
+    """A thick vessel 12 um across along x at (z, y) = (10, 12), its
+    centreline u -- v on row 12, and a capillary 6 um across touching it along
+    row 21 -- one piece of mask -- leaving it at u and joining it again at v:
+    a loop through the thick centreline that runs inside one lumen."""
+    mask = np.zeros((21, 30, 70), dtype=bool)
+    z, y, x = np.indices(mask.shape)
+    mask |= (z - 10) ** 2 + (y - 12) ** 2 <= 36
+    mask |= ((z - 10) ** 2 + (y - 21) ** 2 <= 9) & (x >= 15) & (x <= 50)
+    G = nx.MultiGraph()
+    for node, x0 in (("A", 0.0), ("u", 15.0), ("v", 50.0), ("B", 69.0)):
+        G.add_node(node, pos=np.array([10.0, 12.0, x0]))
+    for a, b, path in (
+        ("A", "u", [[10.0, 12.0, float(x)] for x in range(0, 16)]),
+        ("u", "v", [[10.0, 12.0, float(x)] for x in range(15, 51)]),
+        ("v", "B", [[10.0, 12.0, float(x)] for x in range(50, 70)]),
+        ("u", "v", [[10.0, 12.0 + i, 15.0 + i / 9 * 4] for i in range(10)]
+         + [[10.0, 21.0, float(x)] for x in range(20, 46)]
+         + [[10.0, 21.0 - i, 46.0 + i / 9 * 4] for i in range(10)]),
+    ):
+        rows = {"row": int(path[len(path) // 2][1])} if {a, b} == {"u", "v"} else {}
+        G.add_edge(a, b, voxels=path, length=_length(path), **rows)
+    return mask, G
+
+
+def test_a_capillary_beside_a_kept_thick_centreline_is_not_its_second_strand():
+    """With the thick vessel's centreline kept, the clean-up took capillaries
+    running beside it -- their only route before (grids W and X). Harvey's
+    grids Y and Z (2026-10-15): a side whose own lumen is a vessel's
+    (2.3 um or more in radius), lying outside the kept strand's lumen, is a
+    vessel of its own, and the loop or pair stays."""
+    from haemolynx.graph.lumen_loops import VESSEL_BESIDE_THICK_RADIUS_UM
+
+    mask, G = _capillary_beside_a_thick_vessel()
+    support = _support(mask)
+    assert np.median(support.radius(np.asarray(G.edges["u", "v", 1]["voxels"])[10:-10])) >= VESSEL_BESIDE_THICK_RADIUS_UM
+
+    plain = remove_loops_inside_one_lumen(G.copy(), support)
+    assert _rows(plain) == [12], "by the wall alone the capillary goes"
+
+    kept = remove_loops_inside_one_lumen(G.copy(), support, along_centreline=_on_row(12))
+    assert _rows(kept) == [12, 21]
+
+
+def test_a_second_strand_in_a_wide_lumen_still_goes_beside_a_kept_thick_centreline():
+    """Wide as its lumen reads, a strand in the thick vessel's own lumen lies
+    nearer the kept one than that lumen's radius: it is the thick vessel
+    drawn twice, and goes."""
+    from haemolynx.graph.lumen_loops import _removal_order
+
+    mask, G = _capillary_beside_a_thick_vessel()
+    G.remove_edge("u", "v", 1)
+    path = ([[10.0, 12.0 + i, 15.0 + i] for i in range(4)] + [[10.0, 15.0, float(x)] for x in range(19, 47)]
+            + [[10.0, 15.0 - i, 47.0 + i] for i in range(4)])
+    G.add_edge("u", "v", voxels=path, length=_length(path), row=15)
+    runs = [[("u", "v", 0)], [("u", "v", 1)]]
+
+    assert _removal_order(G, runs, _support(mask), along_centreline=_on_row(12)) == [[("u", "v", 1)], [("u", "v", 0)]]
+    remove_loops_inside_one_lumen(G, _support(mask), along_centreline=_on_row(12))
+    assert _rows(G) == [12]
+
+
+def test_the_pair_rule_keeps_both_when_the_other_is_a_vessel_beside_the_thick_one():
+    from haemolynx.graph.lumen_loops import _removal_order
+
+    mask, G = _capillary_beside_a_thick_vessel()
+    runs = [[("u", "v", 0)], [("u", "v", 1)]]
+
+    assert _removal_order(G, runs, _support(mask), along_centreline=_on_row(12)) == []
+    assert _removal_order(G, runs, _support(mask))[0] == [("u", "v", 1)]
+
+
 # --- what Manual loop review reads ---------------------------------------------
 
 
