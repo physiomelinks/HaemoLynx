@@ -17,6 +17,7 @@ import pytest
 from ImageLynx.roi_placement import (
     clamp_centre,
     place_roi,
+    placement_fell_back,
     tissue_centroid_yx,
 )
 from ImageLynx.specimens import SPECIMENS
@@ -63,15 +64,41 @@ def test_the_box_is_pulled_inside_the_volume():
     assert clamp_centre((10, 10, 10), (200, 200, 200), (100, 100, 100)) == (50, 50, 50)
 
 
-@pytest.mark.parametrize("specimen", SPECIMENS, ids=lambda s: s.specimen_id)
-def test_every_specimen_gets_a_placement_that_fits(specimen):
-    placement = place_roi(specimen, (160, 160, 160))
+@pytest.mark.parametrize("shape, peak, tissue_yx, size", [
+    ((120, 40, 40), 3, (2, 37), (60, 16, 16)),        # peak at the top, tissue in a corner
+    ((121, 41, 45), 118, (38, 1), (61, 17, 17)),      # peak at the bottom, odd extents
+    ((99, 37, 50), 49, (18, 25), (60, 17, 16)),       # peak and tissue in the middle
+], ids=["top", "bottom", "middle"])
+def test_every_specimen_gets_a_placement_that_fits(tmp_path, shape, peak, tissue_yx, size):
+    """The box is the size asked for, wholly inside the volume, and centred on its centre.
 
-    assert placement.size_zyx == (160, 160, 160)
-    for axis, (start_stop, extent) in enumerate(zip(placement.bounds, specimen.shape_zyx)):
-        assert start_stop.start >= 0
-        assert start_stop.stop <= extent
-        assert start_stop.stop - start_stop.start == 160
+    The QC peak and the bright tissue sit at the edges in two cases, so the box only fits if
+    place_roi pulls it in on every axis.
+    """
+    from types import SimpleNamespace
+
+    import h5py
+
+    data = np.zeros(shape + (1,), dtype=np.float32)
+    y, x = tissue_yx
+    data[:, max(y - 2, 0):y + 3, max(x - 2, 0):x + 3, 0] = 1.0
+    path = tmp_path / "input.h5"
+    with h5py.File(path, "w") as handle:
+        handle["data"] = data
+    specimen = SimpleNamespace(
+        specimen_id="TEST", shape_zyx=shape, ilastik_input_path=path,
+        qc_record=lambda: {"z_profile": {"peak_slice": peak}},
+    )
+
+    placement = place_roi(specimen, size)
+
+    # A fall back to the volume centre would fit on y and x without any pulling in.
+    assert not placement_fell_back(placement), placement.source
+    assert placement.size_zyx == size
+    for axis, (start_stop, extent) in enumerate(zip(placement.bounds, shape)):
+        assert start_stop.start >= 0, axis
+        assert start_stop.stop <= extent, axis
+        assert start_stop.stop - start_stop.start == size[axis], axis
         # Every CB driver slices with .bounds, so the box is exactly centred as well as sized.
         assert (start_stop.start + start_stop.stop) // 2 == placement.centre_zyx[axis], axis
 

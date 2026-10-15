@@ -205,8 +205,8 @@ def test_soma_dog_separates_core_from_background():
     core = (vol < np.percentile(vol, 60)) & _dilate(bright)
     background = vol < np.percentile(vol, 30)
     background &= ~_dilate(bright)
-    if core.sum() < 20 or background.sum() < 20:
-        pytest.skip("synthetic volume did not yield enough core/background voxels")
+    assert core.sum() >= 20 and background.sum() >= 20, (
+        "synthetic volume did not yield enough core/background voxels to compare")
 
     assert dog[core].mean() < dog[background].mean() - 0.02, (
         f"core mean {dog[core].mean():.3f} is not separated from background "

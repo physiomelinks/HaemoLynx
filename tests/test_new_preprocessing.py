@@ -19,13 +19,16 @@ def test_smooth_probability_map():
     assert smoothed.sum() == pytest.approx(image.sum(), rel=1e-5)
 
 def test_fill_holes_3d():
-    # Hollow cube
-    binary = np.ones((10, 10, 10), dtype=bool)
-    binary[1:9, 1:9, 1:9] = False
-    
-    # Fill the hole
+    """A sealed cavity fills; the empty space outside the shell stays empty."""
+    binary = np.zeros((14, 14, 14), dtype=bool)
+    binary[2:12, 2:12, 2:12] = True
+    binary[3:11, 3:11, 3:11] = False   # hollow cube, its cavity closed on every side
+
     filled = fill_holes_3d(binary)
-    assert filled.all()
+
+    solid = np.zeros_like(binary)
+    solid[2:12, 2:12, 2:12] = True
+    assert np.array_equal(filled, solid)
 
 def test_morphological_opening_binary():
     binary = np.zeros((10, 10, 10), dtype=bool)
@@ -162,11 +165,11 @@ def test_two_class_entropy_criterion_is_non_monotonic_in_probability():
     normalisation ever changes such that H is no longer folded about p = 0.5, this fails and
     the gate should be revisited.
 
-    Built from a genuine 2-class softmax volume and the real entropy map, the candidate
-    criterion of the joint threshold keeps a low-probability voxel while discarding one of
-    markedly *higher* vessel probability. A mask that is non-monotonic in its own evidence
-    cannot support morphometry, because every vessel becomes a high-confidence core plus a
-    detached shell with the wall voxels evacuated.
+    Built from a genuine 2-class softmax volume and the real entropy map, the joint threshold
+    (called without ``n_classes``, so the gate is not consulted) keeps a low-probability voxel
+    while discarding one of markedly *higher* vessel probability. A mask that is
+    non-monotonic in its own evidence cannot support morphometry, because every vessel
+    becomes a high-confidence core plus a detached shell with the wall voxels evacuated.
     """
     p_values = np.array([0.30, 0.50, 0.75, 0.95], dtype=np.float32)
     volume = np.empty((2, 4, 4, 4), dtype=np.float32)   # (C, Z, Y, X), varying along X
@@ -175,15 +178,18 @@ def test_two_class_entropy_criterion_is_non_monotonic_in_probability():
 
     entropy = calculate_entropy_map(volume)
     assert entropy.shape == (4, 4, 4)
-    ent_line = entropy[0, 0, :]
 
     # H is folded about p = 0.5, which is where it peaks.
-    assert ent_line[1] == pytest.approx(1.0, abs=1e-6)
+    assert entropy[0, 0, 1] == pytest.approx(1.0, abs=1e-6)
 
-    candidate = (p_values >= 0.25) & (ent_line <= 0.95)
-    assert candidate[0], "p = 0.30 should be retained by the candidate criterion"
-    assert not candidate[1], "p = 0.50 should be discarded - this is the non-monotonicity"
-    assert candidate[2] and candidate[3], "high-confidence voxels should be retained"
+    # low == high and core == max make every candidate its own seed, so the p = 0.30 plane
+    # is not dropped merely for lying apart from the high-probability planes.
+    mask = joint_hysteresis_threshold(
+        volume[0], entropy, low=0.25, high=0.25, shannon_core=0.95, shannon_max=0.95)
+    line = mask[0, 0, :]
+    assert line[0], "p = 0.30 should be retained by the joint threshold"
+    assert not line[1], "p = 0.50 should be discarded - this is the non-monotonicity"
+    assert line[2] and line[3], "high-confidence voxels should be retained"
 
 def _write_probability_field(path, n_classes):
     import tifffile

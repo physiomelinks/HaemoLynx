@@ -86,19 +86,35 @@ def test_dask_gaussian_smoothing_overlap(sample_volume_3d):
     np.testing.assert_array_almost_equal(res_dask.compute(), res_numpy)
 
 @pytest.mark.skipif(not HAS_DASK, reason="Dask not installed")
-def test_dask_hysteresis_thresholding(sample_volume_3d):
-    """Verify hysteresis on dask returns a valid mask."""
-    lazy_vol = da.from_array(sample_volume_3d, chunks=(16, 16, 16))
-    
-    res_numpy = preprocessing.hysteresis_threshold(sample_volume_3d, low=0.2, high=0.4)
-    res_dask = preprocessing.hysteresis_threshold(lazy_vol, low=0.2, high=0.4)
-    
+def test_dask_hysteresis_thresholding():
+    """Hysteresis on dask equals the NumPy result where every tube's seed is in overlap reach.
+
+    On a random field a plain cut at ``low`` agrees with hysteresis almost everywhere, so the
+    field here is tubes in the band between low and high, some carrying a seed and some not.
+    Two seeded tubes cross a chunk face with the seed on the far side, no more than the
+    overlap depth (5) away, so a chunk only keeps its half by seeing its neighbour's seed.
+    """
+    low, high, band, seed = 0.2, 0.4, 0.3, 0.6
+    field = np.random.default_rng(0).random((32, 32, 32)).astype(np.float32) * 0.15
+    field[4, 4, 2:14] = band
+    field[4, 4, 8] = seed                  # seeded, inside one chunk
+    field[4, 10, 2:14] = band              # unseeded, inside one chunk
+    field[20, 20, 12:21] = band
+    field[20, 20, 15] = seed               # seeded, crosses the x = 16 face
+    field[26, 26, 12:21] = band            # unseeded, crosses the x = 16 face
+    field[12:21, 8, 24] = band
+    field[17, 8, 24] = seed                # seeded, crosses the z = 16 face
+
+    res_numpy = preprocessing.hysteresis_threshold(field, low=low, high=high)
+    res_dask = preprocessing.hysteresis_threshold(
+        da.from_array(field, chunks=(16, 16, 16)), low=low, high=high)
+
     assert isinstance(res_dask, da.Array)
-    # Hysteresis can vary slightly at boundaries in Dask, so we check general similarity
-    # or identicality if the depth is sufficient.
-    computed = res_dask.compute()
-    overlap_fraction = np.sum(computed == res_numpy) / res_numpy.size
-    assert overlap_fraction > 0.95
+    assert res_numpy[4, 4, 2:14].all() and res_numpy[20, 20, 12:21].all()
+    assert res_numpy[12:21, 8, 24].all()
+    assert not res_numpy[4, 10].any() and not res_numpy[26, 26].any(), (
+        "the unseeded tubes must drop, or a plain cut at low would pass")
+    np.testing.assert_array_equal(res_dask.compute(), res_numpy)
 
 @pytest.mark.skipif(not HAS_DASK, reason="Dask not installed")
 def test_dask_roi_crop_virtual(sample_volume_3d):

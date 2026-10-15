@@ -130,20 +130,45 @@ def test_the_table_names_the_specimens_and_the_target(tmp_path):
     assert f"{MIN_BOUNDARY_FRACTION:.0%}" in text
 
 
-def test_placement_is_measured_without_any_prediction(tmp_path):
+def test_placement_is_measured_without_any_prediction(tmp_path, monkeypatch):
     """The point of the check: it runs in the GUI loop, on the .ilp alone.
 
     A prediction-based version would be more accurate - distance to the nearest labelled
     vessel overstates distance to the nearest real one, because most vessels are unlabelled -
     but it would cost a headless run per iteration and could not be used while labelling.
     """
-    import inspect
+    from pathlib import Path
 
-    from ImageLynx.statistics import label_placement
+    import h5py
 
-    source = inspect.getsource(label_placement)
-    for forbidden in ("read_ilastik_probabilities", "Probabilities", "probabilities_path"):
-        assert forbidden not in source
+    import ImageLynx.io
+    import ImageLynx.io.load
+
+    path = tmp_path / "labels_only.ilp"
+    _write_project(path, {s.preproc_stem: _lane(20, 23) for s in SPECIMENS})
+
+    # Recorded as well as raised, so a read swallowed by a broad except still fails the test.
+    reads = []
+    open_h5 = h5py.File
+
+    def only_the_project(name, *args, **kwargs):
+        if Path(name).resolve() != path.resolve():
+            reads.append(str(name))
+            raise AssertionError(f"opened {name}, which is not the .ilp")
+        return open_h5(name, *args, **kwargs)
+
+    def no_prediction(*args, **kwargs):
+        reads.append("read_ilastik_probabilities")
+        raise AssertionError("read a prediction")
+
+    monkeypatch.setattr(h5py, "File", only_the_project)
+    monkeypatch.setattr(ImageLynx.io, "read_ilastik_probabilities", no_prediction)
+    monkeypatch.setattr(ImageLynx.io.load, "read_ilastik_probabilities", no_prediction)
+
+    rows = analyse_label_placement(path)
+
+    assert reads == []
+    assert len(rows) == len(SPECIMENS)
 
 
 @pytest.mark.realdata
