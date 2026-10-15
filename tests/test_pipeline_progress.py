@@ -29,6 +29,7 @@ from haemolynx.pipeline.progress import (
     STEP,
     ProgressEvent,
     RunProgress,
+    format_seconds,
     log_progress,
 )
 from haemolynx.pipeline.stages import HaemodynamicModel, run_pipeline_stages
@@ -44,6 +45,7 @@ STDLIB_IMPORTS_ALLOWED_IN_PROGRESS = {
     "contextlib",
     "dataclasses",
     "logging",
+    "time",
     "typing",
 }
 
@@ -365,10 +367,52 @@ def test_log_progress_writes_one_line_per_stage_boundary(caplog):
             log_progress(event)
 
     total = len(STAGE_NAMES)
+    started, done = [record.message for record in caplog.records]
+    assert started == f"Stage 1/{total}: 1. Input"
+    assert done.startswith(f"Stage 1/{total} done: 1. Input (")
+    assert done.endswith(" s)")
+
+
+def test_a_finished_or_failed_stage_carries_its_wall_time():
+    import time
+
+    events: list[ProgressEvent] = []
+    run = RunProgress(events.append)
+    with run.stage("segment"):
+        time.sleep(0.05)
+    with pytest.raises(ValueError):
+        with run.stage("solve"):
+            time.sleep(0.02)
+            raise ValueError("singular matrix")
+
+    by_kind = {(event.stage, event.kind): event.seconds for event in events}
+    assert by_kind[("segment", STAGE_STARTED)] is None
+    assert 0.04 <= by_kind[("segment", STAGE_FINISHED)] < 5
+    assert 0.01 <= by_kind[("solve", STAGE_FAILED)] < 5
+
+
+def test_log_progress_gives_each_stage_its_wall_time(caplog):
+    import logging
+
+    finished = ProgressEvent(STAGE_FINISHED, "build_network", "3. Graph", 2, 10, seconds=125.4)
+    failed = ProgressEvent(
+        STAGE_FAILED, "solve", "Solve", 6, 10, error=ValueError("singular"), seconds=0.42
+    )
+    with caplog.at_level(logging.INFO, logger="haemolynx.pipeline.progress"):
+        log_progress(finished)
+        log_progress(failed)
+
     assert [record.message for record in caplog.records] == [
-        f"Stage 1/{total}: 1. Input",
-        f"Stage 1/{total} done: 1. Input",
+        "Stage 3/10 done: 3. Graph (2 min 05 s)",
+        "Stage 7/10 failed after 0.4 s: Solve: singular",
     ]
+
+
+def test_format_seconds_reads_as_a_person_would_say_it():
+    assert format_seconds(0.04) == "0.0 s"
+    assert format_seconds(12.34) == "12.3 s"
+    assert format_seconds(61) == "1 min 01 s"
+    assert format_seconds(3725) == "1 h 02 min"
 
 
 def test_log_progress_reports_a_failure_as_an_error(caplog):

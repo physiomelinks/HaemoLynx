@@ -677,6 +677,11 @@ class Schema:
         run of the checker tells the user everything that is wrong. A retired
         setting is not unknown: it is read into the setting whose ``replaces``
         names it (see :meth:`upgrade`).
+
+        Its lists and dicts are new too, as :meth:`defaults`' are. A stage
+        fills some in place (``inlet_nodes``), and values built from
+        ``setting.default`` are the schema's own objects: passed through, one
+        run's nodes became every later caller's default.
         """
         errors: list[str] = []
         resolved: dict[str, Any] = self.defaults() if fill_defaults else {}
@@ -686,7 +691,7 @@ class Schema:
                 errors.append(self._unknown_key_message(key))
                 continue
             try:
-                resolved[key] = self._by_name[key].coerce(value)
+                resolved[key] = _copy_container(self._by_name[key].coerce(value))
             except ConfigError as exc:
                 errors.append(str(exc))
 

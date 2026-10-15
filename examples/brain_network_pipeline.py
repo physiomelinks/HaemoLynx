@@ -37,6 +37,7 @@ from haemolynx.pipeline import (
     build_haemodynamic_model,
     build_network,
     export_results,
+    record_run,
     resolve_settings,
     segment,
     skeletonise,
@@ -52,15 +53,26 @@ CONFIG_PATH = examples_dir / "brain_pipeline_config.yaml"
 
 def main(settings: dict) -> dict:
     """Run the pipeline, then the dilation sweep over the network it built."""
-    inputs = segment(settings)
-    volume = skeletonise(settings, inputs)
-    network = build_network(settings, volume, SCHEMA)
-    boundaries = assign_boundaries(settings, network)
-    diameters = assign_diameters(settings, network, boundaries, SCHEMA)
-    diameters = apply_network_handling(settings, diameters, boundaries, network)
-    model = build_haemodynamic_model(settings, diameters)
-    solution = solve(settings, model, boundaries)
-    export_results(settings, network, model, solution)
+    # The pipeline's manifest goes beside its outputs as `record_run` ends,
+    # before the sweep, which writes to a folder of its own.
+    with record_run(settings, SCHEMA) as run:
+        with run.stage("segment"):
+            inputs = segment(settings)
+        with run.stage("skeletonise"):
+            volume = skeletonise(settings, inputs)
+        with run.stage("build_network"):
+            network = build_network(settings, volume, SCHEMA)
+        with run.stage("assign_boundaries"):
+            boundaries = assign_boundaries(settings, network)
+        with run.stage("assign_diameters"):
+            diameters = assign_diameters(settings, network, boundaries, SCHEMA)
+        with run.stage("build_haemodynamic_model"):
+            diameters = apply_network_handling(settings, diameters, boundaries, network)
+            model = build_haemodynamic_model(settings, diameters)
+        with run.stage("solve"):
+            solution = solve(settings, model, boundaries)
+        with run.stage("export_results"):
+            export_results(settings, network, model, solution)
 
     G = model.graph
     if not settings["run_pericyte_dilation_sweep"]:

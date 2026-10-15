@@ -79,7 +79,9 @@ haemolynx/
 │   │                       #   share the parent/daughter edge classification),
 │   │                       #   network_measures.py (betweenness + communities),
 │   │                       #   network analyses: inlet_outlet_routes (bottlenecks, shunts),
-│   │                       #   transit_time, territories, current_flow, occlusion, loops,
+│   │                       #   transit_time, territories, capillary_bed_joins (the B order
+│   │                       #   each feed's capillary bed joins another's, Kaplan-Meier),
+│   │                       #   current_flow, occlusion, loops,
 │   │                       #   strahler, spectral, over _route_graph.py / _flow_system.py;
 │   │                       #   csv_export.py, _sampling.py (one shared seed constant),
 │   │                       #   three_dim_distances.py (cell-to-vessel distances),
@@ -127,7 +129,8 @@ haemolynx/
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
-│                           #   (what a run used, and how to cite it); public:
+│                           #   (what a run used, and how to cite it), provenance.py (the
+│                           #   run manifest beside every run's outputs); public:
 │                           #   default_schema, write_default_config, preflight
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
 │   ├── resistance_network_pipeline.py        # Main example: config + CLI over haemolynx.pipeline
@@ -291,11 +294,11 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_sweep_flow_layers.py` |
-| `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned) |
+| `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned) |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py`, `test_secomb_io.py` |
 | `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text |
-| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_setting_units.py`, `test_example_configs.py` |
+| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_pipeline_provenance.py` (the run manifest), `test_setting_units.py`, `test_example_configs.py` |
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py` |
 | Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
 | Packaging / the installed wheel | `tests/test_installed_package.py`, `test_packaging_metadata.py`, `test_napari_manifest.py` |
@@ -776,6 +779,20 @@ are only caught locally.
   as each stage starts, finishes or fails, and one per topology step inside graph building.
   `log_progress` is the ready-made console consumer; the napari panel's bars are the other one.
   Nothing here imports a GUI or a progress-bar library — the callback is the whole mechanism.
+  A finished or failed stage's event carries its wall time (`ProgressEvent.seconds`), which
+  `log_progress` writes on its line, so the panel's run log shows every stage's time.
+- **`pipeline/provenance.py`** — every run writes `{stem}_run_manifest.json` into its output
+  folder (`vtk_output_prefix`'s), with `{stem}_run_settings.yaml` beside it (a config `--config`
+  loads): the settings after `Schema.upgrade` as the run *started*, the version, the git commit
+  and dirty paths (null for a wheel, or with no git; read once per process, since a long-lived
+  panel runs the code it imported), Python, platform and key dependency versions, each input
+  file's size, mtime and sha256 (whole up to 64 MiB, above that 32 evenly spaced 1 MiB blocks:
+  `checksum_method` says which), and each stage's start, end, wall time and peak RSS. Peak
+  memory uses the standard library (psutil is not a dependency): exact for a stage that raised
+  the process peak, else sampled every 0.2 s (`MEMORY_METHOD`); Windows has no worker-process
+  figure. `run_pipeline_stages` records through `record_run`, and the two hand-written examples
+  wrap their stages in it. A failed run writes one too (`status: "failed"`, the error, the
+  stages finished); a run that fails in its first stage writes none. Writing it never fails a run.
 - **`pipeline/checks.py`** — `preflight(settings, schema)`, the pre-run checklist: the schema's own
   checks (`parsers/checks.py`) plus what only this pipeline knows — the artefact a skipped stage
   must have left behind, and whether the ilastik executable can be found. The examples call it
@@ -844,14 +861,21 @@ are only caught locally.
   summary/edges/statistics CSVs and plots; a sweep writes its grid CSV and curves, and keeps
   per-point flows (`sweep_flows.py`) so the viewer's slider can swap them without N graph copies.
 - **Network analyses** (`statistics/inlet_outlet_routes.py`, `transit_time.py`, `territories.py`,
-  `current_flow.py`, `occlusion.py`, `loops.py`, `strahler.py`, `spectral.py`) — each a
+  `capillary_bed_joins.py`, `current_flow.py`, `occlusion.py`, `loops.py`, `strahler.py`,
+  `spectral.py`) — each a
   `statistics_*` toggle in the schema's *Connectivity/Network Analysis* section, run inside
   `compute_comprehensive_vessel_statistics`. They add rows to the statistics CSV, and most also
   write per-vessel edge attributes that the vessels layer offers as colour options (declared in
   `gui/results.py`'s `OPTIONAL_EDGE_COLUMNS`). An analysis that cannot run (no inlets/outlets, no
   solved flow) writes nothing, so its colour option stays absent. `statistics_route_weighting`
   picks the conductance model (topology / length / resistance) the Laplacian-based ones share
-  through `_flow_system.py`.
+  through `_flow_system.py`. `capillary_bed_joins` splits the capillaries into one bed per feed
+  (the nodes the B orders count from, `graph.branch_order.capillary_start_nodes`), takes each
+  bed's join order as the lowest B order on a watershed vessel with another bed, censors a bed
+  that never joins (leaves the image / drains to a venule / ends blind), and reports a
+  Kaplan-Meier median plus the `remove_short_loops_under_um` the graph was built with (that rule
+  removes the earliest joins); its per-bed table goes to `<stem>_capillary_bed_joins.csv` beside
+  the statistics CSV, for between-dataset tests (log-rank, a reseeded-feed null) outside the package.
 - **Vascular communities** (`graph/communities.py`) — the `compute_vascular_communities` toggle,
   independent of Statistics; when Statistics also runs, the two share one partition
   (`pipeline/stages.py`'s `shared_vascular_community_partition`) instead of computing it twice.

@@ -4142,8 +4142,8 @@ SCHEMA = Schema(
             kind="choice",
             default="length",
             help=(
-                "Distance the bottleneck, shunt and territory routes are "
-                "measured in: vessel count (topology), centreline length, or "
+                "Distance the bottleneck, shunt, territory and capillary-bed "
+                "routes are measured in: vessel count (topology), centreline length, or "
                 "hydraulic resistance (and conductance for the bottleneck "
                 "cut). Also sets the conductance model of current flow, the "
                 "occlusion analyses and algebraic connectivity: one per "
@@ -4259,6 +4259,24 @@ SCHEMA = Schema(
                 "borders between territories; adds arteriolar_territory, "
                 "venular_territory, watershed and arteriolar_watershed_margin "
                 "as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_capillary_bed_joins",
+            kind="bool",
+            default=True,
+            help=(
+                "Split the capillaries into one bed per arteriolar feed (the "
+                "nodes the capillary B orders count from, nearest by the route "
+                "weighting) and find the lowest B order at which each bed meets "
+                "another; a bed that never does is censored (leaves the image, "
+                "drains to a venule, or ends blind). Reports the Kaplan-Meier "
+                "median join order, writes a per-bed CSV beside the statistics "
+                "CSV, and adds capillary_bed and bed_join_order as vessels-layer "
+                "colour options. Needs capillary B orders"
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),
