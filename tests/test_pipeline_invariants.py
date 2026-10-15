@@ -464,7 +464,7 @@ def test_missing_vessel_warn_below_settings_choose_the_right_log_level(tmp_path,
 
 @pytest.mark.slow
 @pytest.mark.integration
-@pytest.mark.parametrize("short_loop_rule", ["default", "off"])
+@pytest.mark.parametrize("short_loop_rule", ["default", "every", "off"])
 def test_the_built_network_draws_each_lumen_once(tmp_path, short_loop_rule):
     """What graph building leaves in one segmented vessel that is not a
     vessel (``graph.diagnose_lumen_artefacts``, on the graph build_network
@@ -476,14 +476,20 @@ def test_the_built_network_draws_each_lumen_once(tmp_path, short_loop_rule):
     regression guard: on E14.5 the build used to leave 124 such pairs and 12
     loops inside one lumen.
 
-    Built twice. At the defaults the short-loop rule
+    Built three times. At the defaults the short-loop rule
     (``remove_short_loops_under_um``, 200 um) breaks every loop the report
-    counts, so that build is held to leaving none, and no loop is left to
-    judge against the mask. With the rule off (0) the Nerve bed keeps its
-    short loops, and the in-lumen loop rule must have broken every one that
-    lies inside one lumen."""
+    counts but those round a hole wider than ``short_loop_keep_hole_over_um``
+    (10 um, grids Q and Q2), so every loop that build leaves runs round such
+    a hole and none lies inside one lumen. With that limit at 0 ("every") it
+    breaks them all, and the build is held to leaving none. With the rule off
+    (0) the Nerve bed keeps its short loops, and the in-lumen loop rule must
+    have broken every one that lies inside one lumen."""
+    import numpy as np
+
     from haemolynx.graph import diagnose_lumen_artefacts
-    from haemolynx.graph.lumen_loops import LOOP_SEARCH_UM, cuts_off_vessels
+    from haemolynx.graph.lumen_loops import LOOP_SEARCH_UM, cuts_off_vessels, loop_hole_um
+    from haemolynx.graph.post_processing import short_loops
+    from haemolynx.preprocessing import MaskSupport
 
     schema = default_schema()
     values = {setting.name: setting.default for setting in schema}
@@ -503,6 +509,8 @@ def test_the_built_network_draws_each_lumen_once(tmp_path, short_loop_rule):
         # The report counts loops up to LOOP_SEARCH_UM round; the rule has to
         # reach that far for "none left" to be what it promises.
         assert values["remove_short_loops_under_um"] >= LOOP_SEARCH_UM
+    if short_loop_rule == "every":
+        values["short_loop_keep_hole_over_um"] = 0.0
     settings = resolve_settings(values, schema=schema, config_path=None)
     built = {}
 
@@ -515,16 +523,21 @@ def test_the_built_network_draws_each_lumen_once(tmp_path, short_loop_rule):
     network = built["network"]
     G = network.graph
     assert G.number_of_edges() > 100, "the fixture's capillary bed did not build; the test proves nothing"
-    report = diagnose_lumen_artefacts(
-        G,
-        _to_binary_volume_for_skeletonization(network.volume.image),
-        voxel_size_zyx=network.volume.voxel_size_zyx,
-    )
+    mask = _to_binary_volume_for_skeletonization(network.volume.image)
+    report = diagnose_lumen_artefacts(G, mask, voxel_size_zyx=network.volume.voxel_size_zyx)
     if short_loop_rule == "off":
         assert report["short_loop_count"] > 0, "no loops to judge; the loop check proves nothing"
         assert report["loops_inside_one_lumen"] == 0
-    else:
+    elif short_loop_rule == "every":
         assert report["short_loop_count"] == 0, "the short-loop rule left loops it should have broken"
+    else:
+        support = MaskSupport(np.asarray(mask, dtype=bool), tuple(network.volume.voxel_size_zyx))
+        limit = values["short_loop_keep_hole_over_um"]
+        holes = [loop_hole_um(np.asarray(loop.points_um, dtype=float), support)
+                 for loop in short_loops(G, search_um=LOOP_SEARCH_UM)]
+        assert all(hole is not None and hole > limit for hole in holes), (
+            "the short-loop rule left loops it should have broken", holes)
+        assert report["loops_inside_one_lumen"] == 0
     for kind in ("inside_other_lumen", "beside_vessel", "off_mask"):
         assert report["dead_end_counts"][kind] == 0, kind
     for left, right in report["duplicate_pairs"]:
