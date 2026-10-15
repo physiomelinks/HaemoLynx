@@ -638,11 +638,6 @@ def test_preflight_catches_what_would_stop_the_measurement_at_the_end_of_the_run
     )
     assert any(e.startswith("measurement_3d_vessel_mask_path is (10, 12, 13)") for e in report.errors)
 
-    report = check_cell_mask_measurement(
-        _preflight_settings(tmp_path, measurement_3d_vessel_mask_path=tmp_path / "gone.tif")
-    )
-    assert any(e.startswith("measurement_3d_vessel_mask_path: ") for e in report.errors)
-
 
 def _preflight_errors(tmp_path, **overrides):
     settings = {**SCHEMA.defaults(), **_preflight_settings(tmp_path), **overrides}
@@ -650,12 +645,29 @@ def _preflight_errors(tmp_path, **overrides):
 
 
 def test_preflight_requires_a_cell_mask_but_not_a_vessel_mask_of_its_own(tmp_path):
-    """Regression: must_exist on the optional vessel mask made preflight refuse
-    every run measuring to the run's own segmentation."""
+    """Regression: must_exist with no placeholder on the optional vessel mask
+    made preflight refuse every run measuring to the run's own segmentation."""
     assert _preflight_errors(tmp_path) == []
 
     errors = _preflight_errors(tmp_path, cell_mask_path=None)
     assert len(errors) == 1 and "'cell_mask_path' is not set" in errors[0]
+
+
+def test_preflight_reports_a_vessel_mask_that_is_set_but_missing_once(tmp_path):
+    errors = _preflight_errors(tmp_path, measurement_3d_vessel_mask_path=tmp_path / "gone.tif")
+    assert len(errors) == 1
+    assert errors[0].startswith("measurement_3d_vessel_mask_path: ") and "gone.tif" in errors[0]
+    assert "clear it to use the run's segmented image" in errors[0]
+
+
+def test_the_vessel_mask_opens_for_reading_in_the_panel():
+    """An input file: the panel's dialogue picks an existing one, not a name to
+    save to, which it would without must_exist."""
+    from haemolynx.gui.form import field_for
+
+    setting = SCHEMA["measurement_3d_vessel_mask_path"]
+    assert setting.must_exist and setting.optional_path
+    assert field_for(setting).options["mode"] == "r"
 
 
 def test_preflight_says_nothing_with_the_measurement_off(tmp_path):

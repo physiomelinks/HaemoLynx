@@ -652,10 +652,11 @@ def _tiff_header(path: Any, axis_order: str) -> tuple[tuple[int, ...], tuple, di
 
 def check_cell_mask_measurement(settings: Mapping[str, Any]) -> CheckReport:
     """``measurement_3d_to_cell_mask`` runs last, in the export stage, so what
-    would stop it there is checked here: that a vessel mask of its own, when
-    one is set, is there, and, from the TIFF headers, that it and the cell
-    mask have the input image's shape and the run's voxel size -- a mask with
-    no voxel size of its own taking the run's, as the measurement reads it."""
+    would stop it there is checked here: from the TIFF headers, that the cell
+    mask and a vessel mask of its own have the input image's shape and the
+    run's voxel size -- a mask with no voxel size of its own taking the run's,
+    as the measurement reads it. Whether each is there is check_settings'
+    (both must_exist; the vessel mask may be unset)."""
     import numpy as np
 
     from haemolynx.io import CANONICAL_AXIS_ORDER
@@ -669,14 +670,6 @@ def check_cell_mask_measurement(settings: Mapping[str, Any]) -> CheckReport:
     if not settings.get("measurement_3d_to_cell_mask") or not settings.get("cell_mask_path"):
         # An unset cell mask is reported by check_settings: it must_exist.
         return report
-    vessel_path = settings.get("measurement_3d_vessel_mask_path")
-    if vessel_path:
-        exists, detail = resolve_existing_path(vessel_path)
-        if not exists:
-            report.add_error(
-                f"measurement_3d_vessel_mask_path: {detail}. Fix: point it at the vessel "
-                "mask, or clear it to measure to the run's segmented image."
-            )
     axis_order = settings.get("image_axis_order") or CANONICAL_AXIS_ORDER
     image = _tiff_header(settings.get("input_path"), axis_order)
     if image is None:

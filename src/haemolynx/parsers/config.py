@@ -168,7 +168,7 @@ def _comment_lines(setting: Setting) -> list[str]:
             "needs " + " and ".join(_prerequisite_note(p) for p in setting.requires)
         )
     if setting.must_exist:
-        notes.append("must exist")
+        notes.append("must exist if set" if setting.optional_path else "must exist")
     suffix = f"  [{'; '.join(notes)}]" if notes else ""
     return [f"  # {setting.help}{suffix}"]
 

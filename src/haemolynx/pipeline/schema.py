@@ -3797,8 +3797,9 @@ SCHEMA = Schema(
             help="Use this vessel mask for the 3D distance measurement instead of the run's segmented image",
             section=_STATISTICS,
             requires=("measurement_3d_to_cell_mask",),
-            # Optional: must_exist would demand it whenever the measurement is
-            # on. checks.check_cell_mask_measurement checks one that is set.
+            # Optional: the placeholder lets it be unset (the run's own
+            # segmentation is measured to); one that is set must be there.
+            must_exist=True,
             placeholder="the run's segmented image",
             advanced=True,
             # The reference image only had its shape checked against the cell

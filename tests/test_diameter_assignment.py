@@ -605,6 +605,24 @@ def test_an_unset_edt_mask_path_points_at_the_segmented_input(tmp_path):
     assert chosen.edt_setting("edt_mask_path") == tmp_path / "other.tif"
 
 
+def test_preflight_does_not_demand_an_edt_mask_path_the_segmented_input_stands_in_for(tmp_path):
+    """Unset is the setting's ordinary use, so preflight passes it; one that
+    is set must be there."""
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.checks import preflight
+
+    schema = default_schema()
+    settings = schema.defaults()
+    settings.update(use_edt_diameter_crosscheck=True, edt_mask_path=None)
+    report = preflight(settings, schema)
+    assert not [error for error in report.errors if "edt_mask_path" in error]
+    assert ("edt_mask_path", "not set: uses " + schema["edt_mask_path"].placeholder) in report.passed
+
+    settings["edt_mask_path"] = tmp_path / "gone.tif"
+    errors = [error for error in preflight(settings, schema).errors if "edt_mask_path" in error]
+    assert len(errors) == 1 and "gone.tif" in errors[0]
+
+
 def test_without_a_mask_in_memory_both_measurements_read_the_one_from_the_path(monkeypatch):
     """A resumed run has no segmentation in memory: it is read once from
     edt_mask_path (the segmented input unless set) and binarised, for the EDT

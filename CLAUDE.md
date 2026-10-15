@@ -935,9 +935,11 @@ are only caught locally.
   nearest centreline named a capillary running past a wide vessel's wall. Each mask's voxel size is
   resolved as the vessel masks' are (none of its own takes the run's), and preflight checks shape
   and voxel size from the TIFF headers (`checks.check_cell_mask_measurement`), since a mismatch
-  used to stop the run at its end. The vessel mask of its own is optional, so it is not
-  `must_exist` (which made preflight demand it on every run measuring to the segmentation); the
-  same check reports one set but missing. `measurement_3d_reference_image_path` (it only checked a shape)
+  used to stop the run at its end. The vessel mask of its own is optional: `must_exist` with a
+  `placeholder`, which `parsers.check_settings` reads as unset falls back, set must be there
+  (`Setting.optional_path`; `must_exist` alone made preflight demand it on every run measuring
+  to the segmentation, and without it the panel opened a save dialogue for it). The same
+  rule covers `tissue_raw_tiff_path` and `edt_mask_path`. `measurement_3d_reference_image_path` (it only checked a shape)
   is retired. Objects are read from their bounding boxes in both paths (in RAM, a whole-volume
   `labels == id` per object took 16.5 s for 397 cells on 4 M voxels; now 0.6 s).
 - **`statistics/tissue_volume.py`** — `measure_tissue_volume` (`measure_tissue_volume` on the
