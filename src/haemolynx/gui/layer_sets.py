@@ -22,7 +22,8 @@ The view panel's "Show" checkboxes (:data:`VIEW_TOGGLES`) turn single
 kinds of layer on and off without finding them in the layer list: the
 shown network's flow-direction arrows and nodes, the terminal nodes (the
 inlets, outlets and arteriole/venule boundary nodes the Boundaries stage
-assigned, one layer for the run) and the skeleton. :func:`toggle_layer_name`
+assigned, one layer for the run), the skeleton and the segmented image.
+:func:`toggle_layer_name`
 says which layer each box stands for under the network shown, and
 :func:`toggle_states` what each box should show.
 """
@@ -33,6 +34,7 @@ from typing import Iterable, Mapping, Sequence
 from haemolynx.gui.results import (
     BOUNDARY_NODES,
     FLOW_DIRECTION,
+    IMAGE,
     NODES,
     PERICYTES,
     SKELETON,
@@ -67,17 +69,22 @@ ROLES = ("vessels", "nodes", "flow direction", "pericytes")
 
 #: The view panel's "Show" checkboxes: ``(role, label)`` in the order drawn.
 #: The first two are kinds of layer a network has (:data:`ROLES`), so their
-#: boxes follow the network shown and a swap carries them; the last two are
+#: boxes follow the network shown and a swap carries them; the rest are
 #: the run's own single layers.
 VIEW_TOGGLES = (
     ("flow direction", "Flow direction arrows"),
     ("nodes", "Nodes"),
     ("terminal nodes", "Terminal nodes"),
     ("skeleton", "Skeleton"),
+    ("segmented image", "Segmented image"),
 )
 
 #: The toggles that are one layer for the whole run, whatever is shown.
-_RUN_TOGGLE_LAYERS = {"terminal nodes": BOUNDARY_NODES, "skeleton": SKELETON}
+_RUN_TOGGLE_LAYERS = {
+    "terminal nodes": BOUNDARY_NODES,
+    "skeleton": SKELETON,
+    "segmented image": IMAGE,
+}
 
 
 def toggle_layer_name(role: str, key: str | None) -> str:

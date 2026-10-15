@@ -13197,9 +13197,10 @@ def settings_widget(napari_viewer=None):
 
     # One checkbox per kind of layer that is turned on and off most: the
     # shown network's flow-direction arrows and nodes, the terminal
-    # (boundary) nodes and the skeleton. Each box mirrors its layer -- ticked
-    # while the layer is visible, greyed out while the run has no such layer
-    # -- so a tick here and a tick in the layer list always agree.
+    # (boundary) nodes, the skeleton and the segmented image. Each box
+    # mirrors its layer -- ticked while the layer is visible, greyed out
+    # while the run has no such layer -- so a tick here and a tick in the
+    # layer list always agree.
     from qtpy.QtWidgets import QGridLayout
 
     from haemolynx.gui.layer_sets import VIEW_TOGGLES, toggle_layer_name, toggle_states

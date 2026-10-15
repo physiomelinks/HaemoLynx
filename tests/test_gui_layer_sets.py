@@ -23,6 +23,7 @@ from haemolynx.gui.layer_sets import (
 from haemolynx.gui.results import (
     BOUNDARY_NODES,
     FLOW_DIRECTION,
+    IMAGE,
     NODES,
     PERICYTES,
     SKELETON,
@@ -156,12 +157,12 @@ def test_the_incoming_network_answers_only_for_a_kind_nothing_else_mentions():
 # --- the view panel's "Show" checkboxes -------------------------------------
 
 
-def test_the_show_boxes_are_arrows_nodes_terminal_nodes_and_skeleton_in_that_order():
+def test_the_show_boxes_are_arrows_nodes_terminal_nodes_skeleton_and_image_in_that_order():
     assert [role for role, _label in VIEW_TOGGLES] == [
-        "flow direction", "nodes", "terminal nodes", "skeleton",
+        "flow direction", "nodes", "terminal nodes", "skeleton", "segmented image",
     ]
     assert [label for _role, label in VIEW_TOGGLES] == [
-        "Flow direction arrows", "Nodes", "Terminal nodes", "Skeleton",
+        "Flow direction arrows", "Nodes", "Terminal nodes", "Skeleton", "Segmented image",
     ]
 
 
@@ -172,10 +173,11 @@ def test_arrows_and_nodes_boxes_follow_the_network_shown():
     assert toggle_layer_name("nodes", "dilate") == A_NODES
 
 
-def test_terminal_nodes_and_skeleton_are_the_run_s_own_layers_whatever_is_shown():
+def test_terminal_nodes_skeleton_and_image_are_the_run_s_own_layers_whatever_is_shown():
     for key in (BASELINE, "dilate"):
         assert toggle_layer_name("terminal nodes", key) == BOUNDARY_NODES
         assert toggle_layer_name("skeleton", key) == SKELETON
+        assert toggle_layer_name("segmented image", key) == IMAGE
 
 
 def test_an_unknown_toggle_is_refused():
@@ -184,19 +186,24 @@ def test_an_unknown_toggle_is_refused():
 
 
 def test_a_box_is_ticked_as_its_layer_is_and_none_without_the_layer():
-    visible = {NODES: False, SKELETON: True, VESSELS: True}
+    visible = {NODES: False, SKELETON: True, VESSELS: True, IMAGE: False}
     assert toggle_states(BASELINE, visible) == {
         "flow direction": None,
         "nodes": False,
         "terminal nodes": None,
         "skeleton": True,
+        "segmented image": False,
     }
 
 
 def test_the_boxes_read_the_shown_perturbation_s_layers_not_the_baseline_s():
-    visible = {NODES: True, FLOW_DIRECTION: True, A_NODES: False, BOUNDARY_NODES: True}
+    visible = {
+        NODES: True, FLOW_DIRECTION: True, A_NODES: False, BOUNDARY_NODES: True,
+        IMAGE: True,
+    }
     states = toggle_states("dilate", visible)
     assert states["nodes"] is False
     assert states["flow direction"] is None
     assert states["terminal nodes"] is True
     assert states["skeleton"] is None
+    assert states["segmented image"] is True
