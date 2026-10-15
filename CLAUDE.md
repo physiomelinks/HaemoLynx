@@ -118,6 +118,8 @@ haemolynx/
 │   │                       #   _widget.py (the panel), napari.yaml (npe2 manifest)
 │   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py,
 │   │                       #   geometry.py (an edge -> a drawable polyline),
+│   │                       #   secomb_io.py (a solved network as Secomb's Network.dat,
+│   │                       #   for NetFlow and FlowEstimate, and their output read back),
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
@@ -151,9 +153,11 @@ haemolynx/
 │   ├── dead_end_review/    # The marked grids dead ends are calibrated on: G1-G3 (build_grids.py),
 │   │                       #   G4 (build_g4.py: segmentation, dextran and claudin-5 side by side)
 │   ├── open_end_sensitivity.py # One solved network under every open_end_model
-│   └── stats_cross_check.py # The statistics against skan, maskel and VesselVio on one mask
-│                           #   (stats.8a), and a ledger of which HaemoLynx step makes each
-│                           #   difference (stats_cross_check/; VesselVio, GPL, run as a program)
+│   ├── stats_cross_check.py # The statistics against skan, maskel and VesselVio on one mask
+│   │                       #   (stats.8a), and a ledger of which HaemoLynx step makes each
+│   │                       #   difference (stats_cross_check/; VesselVio, GPL, run as a program)
+│   └── secomb_comparison.py # The flow solve against Secomb's NetFlow and FlowEstimate
+│                           #   (flow.8a): builds them from clones kept outside the repo
 ├── tests/                  # Unit + integration tests (see Testing below)
 │   ├── conftest.py         # Shared fixtures; matplotlib Agg backend
 │   └── integration/        # Full-pipeline and tutorial tests (@pytest.mark.integration)
@@ -289,7 +293,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_sweep_flow_layers.py` |
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned) |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
-| `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py` |
+| `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py`, `test_secomb_io.py` |
 | `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text |
 | `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_setting_units.py`, `test_example_configs.py` |
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py` |

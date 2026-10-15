@@ -28,6 +28,7 @@ from .pipeline_artifacts import (
     selected_vessel_masks_for_html,
     write_final_graph_3d_html,
 )
+from .secomb_io import SecombExport, SecombNetwork, read_secomb_network, write_secomb_network
 from .dilation_curves import plot_dilation_curves
 from .connectivity_map import (
     connectivity_map_html,
@@ -66,6 +67,10 @@ __all__ = [
     "surface_mesh_to_vtk",
     "visualize_vtk_network",
     "save_graph_snapshot",
+    "SecombExport",
+    "SecombNetwork",
+    "read_secomb_network",
+    "write_secomb_network",
     "plot_dilation_curves",
     "plot_sweep_curves",
     "export_sweep_perturbation_plots",
