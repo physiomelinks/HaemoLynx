@@ -247,12 +247,15 @@ def _example_module():
     return module
 
 
-def _split_at_midpoint(G, u, v, new) -> None:
+def _split_a_third_along(G, u, v, new) -> None:
     """Vessel u-v as two vessels of its own diameter meeting at a degree-2
-    node *new*: the same resistance and the same haematocrit, one node more."""
+    node *new* a third of the way along: the same resistance and the same
+    haematocrit, one node more. (At the midpoint, with the vessels written in
+    10 um segments, its two halves are 10 segments each, as many as its mirror
+    image 2-4 is in one: still symmetric to ``flowtest``.)"""
     data = G[u][v][0]
     a, b = np.asarray(G.nodes[u]["pos"], dtype=float), np.asarray(G.nodes[v]["pos"], dtype=float)
-    middle = (a + b) / 2.0
+    middle = a + (b - a) / 3.0
     G.remove_edge(u, v, 0)
     G.add_node(new, pos=middle)
     for start, end in ((a, middle), (middle, b)):
@@ -266,7 +269,7 @@ def synthetic_networks() -> list[Network]:
     something. The example is mirror-symmetric: NetFlow's ``flowtest`` judges a
     vessel flowless from a solve with every conductance 1 and so removes 4-5,
     which carries flow once the diameters differ; the unequal variant splits
-    3-5 at its midpoint, which changes no resistance and no haematocrit but
+    3-5 a third of the way along, which changes no resistance and no haematocrit but
     breaks that symmetry."""
     from haemolynx import haemodynamics
     from haemolynx.parsers import load_config
@@ -277,7 +280,7 @@ def synthetic_networks() -> list[Network]:
     for name, diameters in (("synthetic", {}), ("synthetic_unequal", UNEQUAL_CAPILLARIES)):
         G = example.build_example_network()
         if diameters:
-            _split_at_midpoint(G, 3, 5, 8)
+            _split_a_third_along(G, 3, 5, 8)
         haemodynamics.apply_poiseuille_haemodynamics(G, diameter_by_branch_order=settings["diameter_by_branch_order"])
         for (u, v), d in diameters.items():
             for a, b in ((u, v), (u, 8), (8, v)) if (u, v) == (3, 5) else ((u, v),):
@@ -286,7 +289,7 @@ def synthetic_networks() -> list[Network]:
         networks.append(Network(
             name, G, [0], [7], float(settings["inlet_pressure_pa"]), float(settings["outlet_pressure_pa"]), [],
             source="examples/simple_network_haemodynamics.py"
-            + (" with unequal capillaries, 3-5 split at its midpoint" if diameters else ""),
+            + (" with unequal capillaries, 3-5 split a third of the way along" if diameters else ""),
         ))
     return networks
 
