@@ -5,6 +5,8 @@ routes fat plasma-labelled regions through the EDT-ridge tree instead.
 """
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -124,6 +126,10 @@ def test_a_second_run_reuses_the_raw_volume_instead_of_reloading_it(tmp_path):
 
     mask, _fat_roi = plasma_labelled_object(8.0)
     mask_path = _write_mask(tmp_path, mask)
+    # A source written in the last few seconds is never cached (see
+    # haemolynx.io.raw_volume_cache), so stand in for one written long ago.
+    old_ns = time.time_ns() - 60_000_000_000
+    os.utime(mask_path, ns=(old_ns, old_ns))
     cache_dir = tmp_path / "cache"
 
     settings = settings_for(

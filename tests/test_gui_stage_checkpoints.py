@@ -901,3 +901,25 @@ def test_run_from_haemodynamics_reads_the_stain_the_run_resolved(tmp_path, read_
     plan = checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
 
     assert ("do_fwhm_measurement" in plan.skip_settings) is skips_fwhm
+
+
+def test_run_from_haemodynamics_without_a_raw_image_keeps_fwhm_measurement(tmp_path):
+    """measure_diameters_from_raw_image is out of effect without a raw image
+    (the diameter chain starts at the mask), so FWHM was not in use and
+    there are no FWHM diameters for do_fwhm_measurement to keep."""
+    checkpoints = StageCheckpoints()
+    results = built()
+    settings = _settings(tmp_path)
+    settings.update(measure_diameters_from_raw_image=True, raw_image_path=None)
+    (tmp_path / "out").mkdir()
+    results.stage_finished("build_network", network(a_graph()))
+    for stage, title in (
+        ("build_network", "3. Graph"),
+        ("assign_boundaries", "4. Boundaries"),
+        ("assign_diameters", "5. Diameters"),
+    ):
+        checkpoints.record(stage, _group(stage, title), results, settings=settings)
+
+    plan = checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
+
+    assert "do_fwhm_measurement" not in plan.skip_settings
