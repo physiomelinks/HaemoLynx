@@ -619,7 +619,7 @@ connectivity/network_analysis:
   statistics_bottlenecks: true
   # Find inlet-to-outlet shunts: vessels on a route much shorter than the network's median inlet-to-outlet route, bypassing the bulk of the bed. Needs inlet and outlet nodes; adds shunt and shunt_route_ratio as vessels-layer colour options  [needs statistics and statistics_network_analysis]
   statistics_shunts: true
-  # Distance the bottleneck, shunt and territory routes are measured in: vessel count (topology), centreline length, or hydraulic resistance (and conductance for the bottleneck cut). Also sets the conductance model of current flow, the occlusion analyses and algebraic connectivity: one per vessel, 1/length, or the solved conductance. Resistance needs haemodynamics and falls back to length without it  [one of: topology, length, resistance; needs statistics and statistics_network_analysis]
+  # Distance the bottleneck, shunt, territory and capillary-bed routes are measured in: vessel count (topology), centreline length, or hydraulic resistance (and conductance for the bottleneck cut). Also sets the conductance model of current flow, the occlusion analyses and algebraic connectivity: one per vessel, 1/length, or the solved conductance. Resistance needs haemodynamics and falls back to length without it  [one of: topology, length, resistance; needs statistics and statistics_network_analysis]
   statistics_route_weighting: length
   # Flag a vessel as a shunt when its shortest inlet-to-outlet route is at most this fraction of the median route  [fraction; range 0.0..1.0; needs statistics and statistics_network_analysis and statistics_shunts]
   statistics_shunt_max_route_fraction: 0.5
@@ -635,6 +635,8 @@ connectivity/network_analysis:
   statistics_current_flow: true
   # Assign each vessel to its nearest inlet (arteriolar) and outlet (venular) territory and flag watershed vessels on the borders between territories; adds arteriolar_territory, venular_territory, watershed and arteriolar_watershed_margin as vessels-layer colour options  [needs statistics and statistics_network_analysis]
   statistics_perfusion_territories: true
+  # Split the capillaries into one bed per arteriolar feed (the nodes the capillary B orders count from, nearest by the route weighting) and find the lowest B order at which each bed meets another; a bed that never does is censored (leaves the image, drains to a venule, or ends blind). Reports the Kaplan-Meier median join order, writes a per-bed CSV beside the statistics CSV, and adds capillary_bed and bed_join_order as vessels-layer colour options. Needs capillary B orders  [needs statistics and statistics_network_analysis]
+  statistics_capillary_bed_joins: true
   # Blood transit time per vessel and the inlet-to-outlet transit-time distribution, including capillary transit-time heterogeneity (CTH). Needs haemodynamics and diameters; adds transit_time_s and arrival_time_s as vessels-layer colour options  [needs statistics and statistics_network_analysis]
   statistics_transit_time: true
   # Shortest loop through each vessel and the loop-length distribution overall and by vessel type -- the scale at which the network's redundancy sits; adds loop_length_um as a vessels-layer colour option  [needs statistics and statistics_network_analysis]

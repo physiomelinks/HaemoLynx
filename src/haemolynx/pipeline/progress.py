@@ -25,6 +25,7 @@ missed by everything that reports it.
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable, Iterator, Optional, Sequence
@@ -386,6 +387,9 @@ class ProgressEvent:
     next_step: Optional[str] = None
     #: For ``STAGE_FAILED``: what was raised.
     error: Optional[BaseException] = None
+    #: For ``STAGE_FINISHED`` and ``STAGE_FAILED``: how long the stage ran,
+    #: wall-clock seconds.
+    seconds: Optional[float] = None
 
     @property
     def completed(self) -> int:
@@ -526,12 +530,23 @@ class RunProgress:
             )
 
         self.emit(event(STAGE_STARTED))
+        started = time.perf_counter()
         try:
             yield reporter
         except BaseException as error:
-            self.emit(event(STAGE_FAILED, error=error))
+            self.emit(event(STAGE_FAILED, error=error, seconds=time.perf_counter() - started))
             raise
-        self.emit(event(STAGE_FINISHED))
+        self.emit(event(STAGE_FINISHED, seconds=time.perf_counter() - started))
+
+
+def format_seconds(seconds: float) -> str:
+    """A stage's wall time as a person reads it: ``0.4 s``, ``2 min 05 s``, ``1 h 02 min``."""
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    whole = int(round(seconds))
+    if whole < 3600:
+        return f"{whole // 60} min {whole % 60:02d} s"
+    return f"{whole // 3600} h {whole % 3600 // 60:02d} min"
 
 
 def log_progress(event: ProgressEvent) -> None:
@@ -546,9 +561,11 @@ def log_progress(event: ProgressEvent) -> None:
     if event.kind == STAGE_STARTED:
         logger.info(f"Stage {position}: {event.title}")
     elif event.kind == STAGE_FINISHED:
-        logger.info(f"Stage {position} done: {event.title}")
+        took = "" if event.seconds is None else f" ({format_seconds(event.seconds)})"
+        logger.info(f"Stage {position} done: {event.title}{took}")
     elif event.kind == STAGE_FAILED:
-        logger.error(f"Stage {position} failed: {event.title}: {event.error}")
+        after = "" if event.seconds is None else f" after {format_seconds(event.seconds)}"
+        logger.error(f"Stage {position} failed{after}: {event.title}: {event.error}")
     elif event.kind == STEP:
         of_total = f"/{event.step_total}" if event.step_total else ""
         running = f"; now {event.next_step}" if event.next_step else ""

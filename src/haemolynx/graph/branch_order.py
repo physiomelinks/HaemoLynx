@@ -392,6 +392,36 @@ def assign_hierarchical_branch_orders(
     }
 
 
+def uses_hierarchical_branch_orders(
+    outlet_nodes: Iterable[Any] | None,
+    arteriole_boundary_nodes: Iterable[Any] | None,
+    venule_boundary_nodes: Iterable[Any] | None,
+) -> bool:
+    """Whether :func:`assign_vessel_branch_orders` assigns Art*/Ven*/B*
+    tiers (all three node sets non-empty) rather than B* orders from the
+    inlets alone."""
+    return bool(
+        list(arteriole_boundary_nodes or [])
+        and list(venule_boundary_nodes or [])
+        and list(outlet_nodes or [])
+    )
+
+
+def capillary_start_nodes(
+    inlet_nodes: Iterable[Any] | None,
+    outlet_nodes: Iterable[Any] | None,
+    arteriole_boundary_nodes: Iterable[Any] | None,
+    venule_boundary_nodes: Iterable[Any] | None,
+) -> tuple[list[Any], list[Any]]:
+    """The nodes :func:`assign_vessel_branch_orders` counts capillary B
+    orders from, and the venous nodes on the bed's far side: the arteriole
+    and venule boundary nodes in hierarchical mode, else the inlets and
+    outlets."""
+    if uses_hierarchical_branch_orders(outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes):
+        return list(arteriole_boundary_nodes), list(venule_boundary_nodes)
+    return list(inlet_nodes or []), list(outlet_nodes or [])
+
+
 def assign_vessel_branch_orders(
     G: nx.MultiGraph,
     inlet_nodes: list[int],
@@ -448,8 +478,8 @@ def assign_vessel_branch_orders(
     large_arteriole_boundary_nodes = list(large_arteriole_boundary_nodes or [])
     large_venule_boundary_nodes = list(large_venule_boundary_nodes or [])
 
-    use_hierarchical = bool(
-        arteriole_boundary_nodes and venule_boundary_nodes and outlet_nodes
+    use_hierarchical = uses_hierarchical_branch_orders(
+        outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes
     )
     if strict_hierarchical and not use_hierarchical:
         if expects_hierarchical:
