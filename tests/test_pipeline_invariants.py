@@ -13,6 +13,7 @@ is stated here.
 """
 from __future__ import annotations
 
+import copy
 import logging
 from pathlib import Path
 
@@ -82,6 +83,36 @@ def test_no_stage_after_the_graph_is_built_changes_its_topology(tmp_path):
             "stage that edits topology needs that design revisited."
         )
         assert edges == built_edges, f"{stage} changed the graph's edges, likewise"
+
+
+@pytest.mark.slow
+@pytest.mark.integration
+def test_a_run_leaves_every_setting_default_as_it_was(tmp_path):
+    """assign_boundaries writes the nodes it chose into the run's settings in
+    place. Regression test: settings built from ``setting.default`` handed it
+    the schema's own lists, so this file's runs left inlet nodes [2, 4, 5] as
+    the default for every later caller, and test_pipeline_provenance read
+    them back as the settings a run started with."""
+    schema = default_schema()
+    before = copy.deepcopy({setting.name: setting.default for setting in schema})
+    values = {setting.name: setting.default for setting in schema}
+    values.update(
+        {
+            "input_path": FIXTURE,
+            "vtk_output_prefix": tmp_path / "run",
+            "plot_dir": tmp_path / "plots",
+            "statistics": False,
+            "show_plots_in_ide": False,
+            "interactive_plots": False,
+        }
+    )
+    settings = resolve_settings(values, schema=schema, config_path=None)
+
+    run_pipeline_stages(settings, schema)
+
+    assert settings["inlet_nodes"], "the run chose no inlets; the test proves nothing"
+    changed = [setting.name for setting in schema if setting.default != before[setting.name]]
+    assert changed == []
 
 
 @pytest.mark.slow
