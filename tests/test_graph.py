@@ -21,16 +21,36 @@ from ImageLynx.graph._helpers import (
     calculate_path_length,
     calculate_voxel_path_length,
     calculate_edge_length,
-    add_edge_safe,
-    get_all_edge_data,
 )
+
+_STRAIGHT_3_VOXELS = [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
+
+
+def _only_edge(G):
+    """The single edge of G as (sorted end nodes, its data)."""
+    (u, v, data), = G.edges(data=True)
+    return tuple(sorted((u, v))), data
+
+
+def _assert_merged_into_one_edge_0_2(G):
+    """simple_graph's path 0-1-2 became one edge 0-2 along the three voxels, length 2."""
+    ends, data = _only_edge(G)
+    assert ends == (0, 2)
+    assert data["voxels"] == _STRAIGHT_3_VOXELS
+    assert data["length"] == 2.0
+    return data
 
 
 def test_get_line_points_3d():
     pts = get_line_points_3d(np.array([0, 0, 0]), np.array([3, 0, 0]))
-    assert len(pts) >= 2
-    assert pts[0] == (0, 0, 0)
-    assert pts[-1] == (3, 0, 0)
+    assert pts == [(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0)]
+
+    # A diagonal steps through 26-connected voxels: no step jumps a voxel on any axis.
+    diag = get_line_points_3d(np.array([0, 0, 0]), np.array([3, 3, 3]))
+    assert diag[0] == (0, 0, 0) and diag[-1] == (3, 3, 3)
+    assert set(diag) == {(i, i, i) for i in range(4)}
+    steps = np.abs(np.diff(np.array(diag), axis=0))
+    assert steps.max() <= 1
 
 
 def test_calculate_path_length():
@@ -65,8 +85,12 @@ def test_validate_skeleton_connection(tiny_skeleton):
     ok, path = validate_skeleton_connection(
         tiny_skeleton, np.array([2, 4, 4]), np.array([5, 4, 4])
     )
-    assert isinstance(ok, bool)
-    assert path is None or isinstance(path, list)
+    assert (ok, path) == (True, [(2, 4, 4), (3, 4, 4), (4, 4, 4), (5, 4, 4)])
+
+    # Two points well off the line: no skeleton near the straight path between them.
+    assert validate_skeleton_connection(
+        tiny_skeleton, np.array([2, 0, 0]), np.array([5, 0, 0])
+    ) == (False, None)
 
 
 def test_create_trivial_merged_edge():
@@ -74,7 +98,8 @@ def test_create_trivial_merged_edge():
     e2 = {"voxels": [(1, 0, 0), (2, 0, 0)], "weight": 1, "length": 1}
     merged = create_trivial_merged_edge(e1, e2, np.array([1, 0, 0]))
     assert merged["weight"] == 2
-    assert len(merged["voxels"]) >= 3
+    assert merged["voxels"] == _STRAIGHT_3_VOXELS   # the shared voxel is kept once
+    assert merged["length"] == 2
 
 
 def test_merge_edges_with_topology_improvement():
@@ -85,51 +110,125 @@ def test_merge_edges_with_topology_improvement():
     out = merge_edges_with_topology_improvement(
         v1, v2, np.array([0, 0, 0]), np.array([1, 0, 0]), np.array([2, 0, 0]), skel
     )
-    assert len(out) >= 2
+    assert out == _STRAIGHT_3_VOXELS
+
+    # Two curved edges are joined as they are (merge_curved_edges), not re-traced.
+    c1 = [(0, 0, 0), (0, 1, 0), (1, 1, 0)]
+    c2 = [(1, 1, 0), (2, 1, 0), (2, 0, 0)]
+    curved = merge_edges_with_topology_improvement(
+        c1, c2, np.array([0, 0, 0]), np.array([1, 1, 0]), np.array([2, 0, 0]), skel
+    )
+    assert curved == [(0, 0, 0), (0, 1, 0), (1, 1, 0), (2, 1, 0), (2, 0, 0)]
 
 
 def test_safer_simple_remove_all_degree2_nodes(simple_graph):
     G = safer_simple_remove_all_degree2_nodes(simple_graph.copy(), max_degree=5)
-    assert G.number_of_nodes() <= 3
+    _assert_merged_into_one_edge_0_2(G)
 
 
 def test_trivial_remove_all_degree2_nodes(simple_graph):
     G = trivial_remove_all_degree2_nodes(simple_graph.copy(), max_degree=5)
-    assert G.number_of_nodes() <= 3
+    _assert_merged_into_one_edge_0_2(G)
 
 
 def test_prune_vascular_stubs(simple_graph):
-    G = prune_vascular_stubs(simple_graph.copy(), min_stub_length=0.5)
-    assert G.number_of_nodes() >= 1
+    # simple_graph is a plain nx.Graph: the branch the MultiGraph tests never reach.
+    kept = prune_vascular_stubs(simple_graph.copy(), min_stub_length=0.5)
+    assert sorted(kept.nodes()) == [0, 1, 2]
+    assert sorted(kept.edges()) == [(0, 1), (1, 2)]
+
+    # Both 1.0-long stubs are shorter than 1.5, so both go, leaving the middle node bare.
+    pruned = prune_vascular_stubs(simple_graph.copy(), min_stub_length=1.5)
+    assert sorted(pruned.nodes()) == [1]
+    assert pruned.number_of_edges() == 0
 
 
-def test_reconnect_secondary_loop_edges(tiny_skeleton):
-    pytest.importorskip("skan")
-    from skan import csr
-    import networkx as nx
-    sk = csr.Skeleton(tiny_skeleton)
-    G, _, _ = build_graph_segment_skan_stitched_loops(sk, tiny_skeleton)
-    G = nx.MultiGraph(G)
-    G2 = reconnect_secondary_loop_edges(G, tiny_skeleton, debug=False)
-    assert G2.number_of_nodes() == G.number_of_nodes()
+def test_reconnect_secondary_loop_edges():
+    # A skeleton ring between junctions u and v: a straight route A (21 voxels) and a
+    # detour B (51 voxels, longer than min_length_voxels=30), plus a tail off each junction.
+    # The graph holds only route A, so u and v are degree 2 there.
+    # Arrays are (z, y, x); the ring lies in the plane z = 10.
+    skeleton = np.zeros((21, 40, 41), dtype=bool)
+    route_a = [(10, 10, x) for x in range(10, 31)]
+    route_b = ([(10, y, 10) for y in range(10, 26)]
+               + [(10, 25, x) for x in range(11, 30)]
+               + [(10, y, 30) for y in range(25, 9, -1)])
+    tail_u = [(10, 10, x) for x in range(2, 11)]
+    tail_v = [(10, 10, x) for x in range(30, 39)]
+    for voxel in route_a + route_b + tail_u + tail_v:
+        skeleton[voxel] = True
+
+    def physical(path):
+        return [[float(c) for c in voxel] for voxel in path]
+
+    G = nx.MultiGraph()
+    for name, voxel in (("tail_u_end", tail_u[0]), ("u", route_a[0]),
+                        ("v", route_a[-1]), ("tail_v_end", tail_v[-1])):
+        G.add_node(name, pos=np.array(voxel, dtype=float))
+    G.add_edge("tail_u_end", "u", voxels=physical(tail_u))
+    G.add_edge("u", "v", voxels=physical(route_a))
+    G.add_edge("v", "tail_v_end", voxels=physical(tail_v))
+
+    G2 = reconnect_secondary_loop_edges(G, skeleton, debug=False)
+
+    secondary = [(tuple(sorted((u, v))), d) for u, v, d in G2.edges(data=True)
+                 if d.get("secondary")]
+    assert len(secondary) == 1
+    ends, data = secondary[0]
+    assert ends == ("u", "v")
+    voxels = [tuple(int(round(c)) for c in p) for p in data["voxels"]]
+    assert {voxels[0], voxels[-1]} == {route_a[0], route_a[-1]}
+    assert all(skeleton[v] for v in voxels)
+    # It runs along the other route, out to its far side, not back along route A.
+    assert set(voxels) <= set(route_b)
+    assert (10, 25, 20) in voxels
 
 
-def test_optimise_graph_topology_fixed(tiny_skeleton):
-    pytest.importorskip("skan")
-    from skan import csr
-    import networkx as nx
-    sk = csr.Skeleton(tiny_skeleton)
-    G, loops, loop_edges = build_graph_segment_skan_stitched_loops(sk, tiny_skeleton)
-    G2, _ = optimise_graph_topology_fixed(
-        G, loops, loop_edges, skeleton_data=tiny_skeleton, debug=False
-    )
-    assert isinstance(G2, nx.Graph)
+def test_optimise_graph_topology_fixed():
+    # Two segments a-b and c-d on one line, with terminals b and c 2 voxels apart.
+    def two_segments():
+        G = nx.MultiGraph()
+        for name, p in {"a": (1, 5, 5), "b": (4, 5, 5), "c": (6, 5, 5), "d": (9, 5, 5)}.items():
+            G.add_node(name, pos=np.array(p, dtype=float))
+        G.add_edge("a", "b")
+        G.add_edge("c", "d")
+        return G
+
+    through_gap = np.zeros((12, 12, 12), dtype=bool)
+    through_gap[1:10, 5, 5] = True
+    G, _ = optimise_graph_topology_fixed(two_segments(), [], set(),
+                                         skeleton_data=through_gap, debug=False)
+    assert sorted(tuple(sorted(e)) for e in G.edges()) == [("a", "b"), ("b", "c"), ("c", "d")]
+    (join,) = G.get_edge_data("b", "c").values()
+    assert join["validated"] is True
+    assert join["voxels"] == [[4.0, 5.0, 5.0], [5.0, 5.0, 5.0], [6.0, 5.0, 5.0]]
+
+    # The same pair, but the skeleton stops well short of the gap: not joined.
+    short_of_gap = np.zeros((12, 12, 12), dtype=bool)
+    short_of_gap[1:3, 5, 5] = True
+    short_of_gap[8:10, 5, 5] = True
+    G, _ = optimise_graph_topology_fixed(two_segments(), [], set(),
+                                         skeleton_data=short_of_gap, debug=False)
+    assert sorted(tuple(sorted(e)) for e in G.edges()) == [("a", "b"), ("c", "d")]
 
 
 def test_smart_multigraph_degree2_removal(simple_graph):
     G = nx.MultiGraph(simple_graph)
     G2 = smart_multigraph_degree2_removal(G, skeleton_data=None, debug=False)
-    assert isinstance(G2, nx.MultiGraph)
+    data = _assert_merged_into_one_edge_0_2(G2)
+    assert data["original_edges"] == 2
+
+    # A degree-2 node whose two edges both go to the same neighbour is left alone:
+    # merging them would collapse two parallel vessels into a self-loop.
+    parallel = nx.MultiGraph()
+    parallel.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
+    parallel.add_node(1, pos=np.array([2.0, 0.0, 0.0]))
+    parallel.add_edge(0, 1, voxels=[(0, 0, 0), (1, 0, 0), (2, 0, 0)])
+    parallel.add_edge(0, 1, voxels=[(0, 0, 0), (1, 1, 0), (2, 0, 0)])
+    after = smart_multigraph_degree2_removal(parallel, skeleton_data=None, debug=False)
+    assert sorted(after.nodes()) == [0, 1]
+    assert after.number_of_edges(0, 1) == 2
+    assert nx.number_of_selfloops(after) == 0
 
 
 def test_select_boundary_nodes_by_method_coordinates():
@@ -311,7 +410,6 @@ def test_chaikin_and_resample():
 def test_direct_skan_loop_extraction():
     pytest.importorskip("skan")
     from skan import csr
-    import networkx as nx
     
     # Create a 3D block with a known loop
     data = np.zeros((10, 10, 10), dtype=bool)
@@ -329,7 +427,6 @@ def test_direct_skan_loop_extraction():
     assert len(loops) >= 1
     assert len(loops[0]) == 8 # The loop has 8 voxels
     # Test fallback by patching igraph to raise ImportError
-    import sys
     import builtins
     
     real_import = builtins.__import__

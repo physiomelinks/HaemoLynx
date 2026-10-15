@@ -98,12 +98,14 @@ def test_an_empty_face_raises_rather_than_falling_back():
 
 
 def test_a_node_on_two_faces_is_assigned_once_and_not_to_both():
-    corner = [0.0, 0.0, 100.0]
-    G = _graph({"corner": corner, "hi": [EXTENT[0], 100.0, 100.0]})
+    # A region 3 voxels thick on axis 0: a terminal one voxel deep is within the 1-voxel
+    # tolerance of the low face and of the high face, so the low face has to win.
+    shape = (3, SHAPE[1], SHAPE[2])
+    G = _graph({"both": [VOX[0], 100.0, 100.0], "hi": [2 * VOX[0], 100.0, 100.0]})
     inlets, outlets = select_boundary_terminal_nodes_by_face(
-        G, SHAPE, axis=0, voxel_size=VOX)
-    assert inlets.count("corner") == 1
-    assert "corner" not in outlets
+        G, shape, axis=0, voxel_size=VOX)
+    assert inlets == ["both"]
+    assert outlets == ["hi"]
 
 
 def test_interior_terminals_can_be_tagged_for_a_robin_condition():
