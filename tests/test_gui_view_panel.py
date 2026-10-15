@@ -1810,12 +1810,15 @@ def test_the_show_boxes_sit_in_the_display_box_greyed_out_before_a_run(make_napa
     panel = settings_widget(napari_viewer=viewer)
 
     boxes = _show_boxes(panel)
-    assert list(boxes) == ["flow direction", "nodes", "terminal nodes", "skeleton"]
+    assert list(boxes) == [
+        "flow direction", "nodes", "terminal nodes", "skeleton", "segmented image",
+    ]
     assert [box.text() for box in boxes.values()] == [
-        "Flow direction arrows", "Nodes", "Terminal nodes", "Skeleton",
+        "Flow direction arrows", "Nodes", "Terminal nodes", "Skeleton", "Segmented image",
     ]
     assert boxes["nodes"].objectName() == "haemolynx_show_nodes"
     assert boxes["terminal nodes"].objectName() == "haemolynx_show_terminal_nodes"
+    assert boxes["segmented image"].objectName() == "haemolynx_show_segmented_image"
     assert panel._haemolynx_view_toggle_row.parentWidget() is panel._haemolynx_display_group
     for box in boxes.values():
         assert not box.isEnabled()
@@ -1844,6 +1847,8 @@ def test_each_show_box_is_ticked_as_its_layer_is_once_the_run_draws_it(make_napa
     assert boxes["nodes"].isChecked() is bool(viewer.layers[NODES].visible)
     assert boxes["skeleton"].isEnabled()
     assert boxes["skeleton"].isChecked() is bool(viewer.layers[SKELETON].visible)
+    assert boxes["segmented image"].isEnabled()
+    assert boxes["segmented image"].isChecked() is bool(viewer.layers[IMAGE].visible)
     # This run assigned no boundaries and solved no flow.
     assert not boxes["flow direction"].isEnabled()
     assert not boxes["terminal nodes"].isEnabled()
@@ -1888,6 +1893,26 @@ def test_the_layer_list_s_eye_icon_ticks_the_show_box_back(make_napari_viewer):
     viewer.layers.remove(viewer.layers[SKELETON])
     assert not boxes["skeleton"].isEnabled()
     assert not boxes["skeleton"].isChecked()
+
+
+def test_the_segmented_image_box_shows_and_hides_the_image_layer(make_napari_viewer):
+    viewer = make_napari_viewer()
+    panel = settings_widget(napari_viewer=viewer)
+    for group in a_run():
+        _apply_layers(viewer, group)
+    box = _show_boxes(panel)["segmented image"]
+
+    box.setChecked(False)
+    assert viewer.layers[IMAGE].visible is False
+    box.setChecked(True)
+    assert viewer.layers[IMAGE].visible is True
+
+    viewer.layers[IMAGE].visible = False
+    assert box.isChecked() is False
+
+    viewer.layers.remove(viewer.layers[IMAGE])
+    assert not box.isEnabled()
+    assert not box.isChecked()
 
 
 def test_the_terminal_nodes_box_toggles_the_boundary_nodes_layer(make_napari_viewer):

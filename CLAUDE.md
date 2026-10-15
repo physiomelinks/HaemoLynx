@@ -1037,10 +1037,11 @@ are only caught locally.
   sweep survives its slider (`USER_CONTRAST_LIMITS`), and the canvas bar sits on whichever layer
   draws the shown network -- in Tubes mode the tube Surface, given the vessels' colormap and range
   (`_sync_canvas_colour_bar`), since napari draws no bar for a hidden layer. Under it,
-  four "Show" checkboxes (`VIEW_TOGGLES`: flow-direction arrows, nodes, terminal nodes, skeleton)
-  turn one layer each on and off without finding it in the layer list: `toggle_layer_name` says
-  which -- arrows and nodes are the shown network's, terminal nodes is the run's boundary-nodes
-  layer (inlets, outlets, arteriole/venule boundary nodes) and skeleton its skeleton -- and
+  five "Show" checkboxes (`VIEW_TOGGLES`: flow-direction arrows, nodes, terminal nodes, skeleton,
+  segmented image) turn one layer each on and off without finding it in the layer list:
+  `toggle_layer_name` says which -- arrows and nodes are the shown network's, terminal nodes is
+  the run's boundary-nodes layer (inlets, outlets, arteriole/venule boundary nodes), skeleton its
+  skeleton and segmented image its `IMAGE` layer -- and
   `toggle_states` what each box shows. A box mirrors its layer (the layer's own `visible` event
   ticks it back; no layer greys it out), so it never fights the eye icon.
 - **`gui/vessel_tubes.py`** — the vessel tube mesh, display only (the graph and its diameters are

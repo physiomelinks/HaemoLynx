@@ -428,6 +428,9 @@ VIEW_TOGGLE_TOOLTIPS: dict[str, str] = {
     "skeleton": (
         "Show the skeleton the graph was built from, over the segmented image"
     ),
+    "segmented image": (
+        "Show the segmented image the skeleton was made from"
+    ),
 }
 #: The view window's Illumination box: how the canvas lights every surface.
 ILLUMINATION_TOOLTIPS = {
