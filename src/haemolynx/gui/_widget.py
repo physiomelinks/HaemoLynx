@@ -14469,8 +14469,9 @@ def settings_widget(napari_viewer=None):
     edit_button.visible = False
     run_file_layout.addWidget(save_run_button.native)
     run_file_layout.addWidget(load_run_button.native)
-    # The two checkboxes stay stacked. The ? sits immediately to their right,
-    # under the tab scrollbar, and opens help on whichever tab is showing.
+    # The two checkboxes stay stacked. The ? sits at the panel's right edge on
+    # their row, under the tab scrollbar, and opens help on whichever tab is
+    # showing.
     show_toggles = Container(
         widgets=[show_results, show_steps],
         labels=True,
@@ -14484,8 +14485,8 @@ def settings_widget(napari_viewer=None):
     view_controls_layout = QHBoxLayout(view_controls_row)
     view_controls_layout.setContentsMargins(0, 0, 0, 0)
     view_controls_layout.addWidget(show_toggles.native)
-    view_controls_layout.addWidget(help_button, 0, Qt.AlignVCenter)
     view_controls_layout.addStretch(1)
+    view_controls_layout.addWidget(help_button, 0, Qt.AlignVCenter)
     view_controls = SimpleNamespace(native=view_controls_row)
 
     view_panel = QWidget()

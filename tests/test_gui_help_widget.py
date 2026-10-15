@@ -1,4 +1,5 @@
-"""The ? under the tab scrollbar opens a two-pane help window on the open tab."""
+"""The ? at the panel's right edge, under the tab scrollbar, opens a two-pane
+help window on the open tab."""
 from __future__ import annotations
 
 import pytest
@@ -31,7 +32,7 @@ def _help_windows():
     ]
 
 
-def test_the_help_button_sits_to_the_right_of_the_show_checkboxes(panel):
+def test_the_help_button_sits_at_the_panels_right_edge_beside_the_show_checkboxes(panel):
     view_controls = panel._haemolynx_view_controls.native
     button = panel._haemolynx_help_button
     show_results = panel._haemolynx_show_results.native
@@ -53,6 +54,13 @@ def test_the_help_button_sits_to_the_right_of_the_show_checkboxes(panel):
     steps_right = show_steps.mapTo(panel, show_steps.rect().topRight()).x()
     help_left = button.mapTo(panel, button.rect().topLeft()).x()
     assert help_left >= max(results_right, steps_right) - 2
+
+    # At the right edge, level with the tabs' right edge, not straight after
+    # the checkboxes in the middle of the panel.
+    help_right = button.mapTo(panel, button.rect().topRight()).x()
+    tabs_right = tabs.mapTo(panel, tabs.rect().topRight()).x()
+    assert abs(help_right - tabs_right) <= 2
+    assert help_left - max(results_right, steps_right) > button.width()
 
     column_top = min(
         show_results.mapTo(panel, show_results.rect().topLeft()).y(),
