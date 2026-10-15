@@ -4918,6 +4918,15 @@ def statistics_arguments(settings: dict) -> dict[str, Any]:
         ),
         "inlet_nodes": settings["inlet_nodes"],
         "outlet_nodes": settings["outlet_nodes"],
+        "arteriole_boundary_nodes": settings["arteriole_boundary_nodes"],
+        "venule_boundary_nodes": settings["venule_boundary_nodes"],
+        # The short-loop rule only runs with mask-supported bridging (see
+        # graph_build_arguments), so without it the graph kept every loop.
+        "short_loop_removal_um": (
+            float(settings.get("remove_short_loops_under_um") or 0.0)
+            if settings["bridge_require_mask_support"]
+            else 0.0
+        ),
         "route_weighting": settings["statistics_route_weighting"],
         "shunt_max_route_fraction": float(settings["statistics_shunt_max_route_fraction"]),
         "occlusion_hypoperfusion_fraction": float(
@@ -5135,6 +5144,11 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         stats_csv_path = output_dir / f"{settings['input_path'].stem}_statistics.csv"
         statistics.export_statistics_to_csv(stats, stats_csv_path)
         logger.info(f"Saved statistics CSV to: {stats_csv_path}")
+        beds_csv_path = statistics.export_capillary_bed_joins_csv(
+            G, output_dir / f"{settings['input_path'].stem}_capillary_bed_joins.csv"
+        )
+        if beds_csv_path is not None:
+            logger.info(f"Saved capillary bed joins CSV to: {beds_csv_path}")
 
         branch_stats = statistics.compute_branch_order_statistics(
             G,
