@@ -6,7 +6,9 @@ then vanishes edge-on. A tube stays visible from every camera angle.
 
 Each vessel is drawn at its own diameter (or, by the Tube diameter choice,
 every vessel at one width), and vessels joined end to end at a node no
-other vessel meets are drawn as one smooth tube through it. The
+other vessel meets are drawn as one smooth tube through it, as is a vessel
+running on through a junction past narrower branches: drawn as two, their
+rounded ends overlapped in a seam across a thick vessel. The
 centreline it follows is the skeleton's voxel path: steps under a micron
 that kink at every voxel, round a capillary six microns across. A tube built
 ring by ring on that path pinches, bulges and folds where the vessel does
@@ -25,7 +27,8 @@ theirs, while the graph keeps the values it has.
 A zero-resistance bridge, where a vessel opens into a thick one's lumen, is
 not vessel, and is not drawn as one: it is left out of the tubes, so the
 vessel ends, cut square, where it meets the lumen and the thick vessel runs
-on through the junction the bridge made, and its dashes (the vessels layer
+on through the junction the bridge made (or, where the bridge reaches the
+end of its centreline, ends there rounded), and its dashes (the vessels layer
 draws it dashed) are thin flat-ended pieces of their own, half as wide as
 the narrowest vessel it meets.
 
@@ -382,6 +385,25 @@ def _through_neighbours(
     return asked[best], other[best]
 
 
+def _carried_straight_on(
+    ends: np.ndarray, inward: np.ndarray, radius: np.ndarray, node: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Of each junction's *ends*, its two widest where they carry each other
+    straight on and every other vessel there is narrower than both: the
+    vessel running on through the junction, with branches leaving it. Where
+    a third is as wide, it divides, and there is no one way on. Returns
+    ``(one end, the other)`` per such junction."""
+    if not ends.size:
+        return ends, ends
+    by_width = ends[np.lexsort((-radius[ends], node[ends]))]
+    lead = np.flatnonzero(np.r_[True, node[by_width][1:] != node[by_width][:-1]])
+    # Every junction has three ends or more.
+    one, other, third = by_width[lead], by_width[lead + 1], by_width[lead + 2]
+    straight = np.einsum("ij,ij->i", inward[one], inward[other]) < _THROUGH_COSINE
+    keep = straight & (radius[third] < radius[other])
+    return one[keep], other[keep]
+
+
 def tubes_from_vectors(
     vectors: np.ndarray,
     *,
@@ -396,8 +418,10 @@ def tubes_from_vectors(
     one vessel when one ends where the next starts with the same radius and,
     given *groups* (one label per row, e.g. each step's ``edge_index``), the
     same label. Vessel ends in the same place are one node, and vessels that
-    are the only two at a node are drawn as one tube through it. Zero-length
-    and non-finite rows are skipped.
+    are the only two at a node are drawn as one tube through it; so are a
+    junction's two widest, where they carry each other straight on and every
+    other vessel there is narrower. Zero-length and non-finite rows are
+    skipped.
 
     *radius* is one value for every row, or one per row -- e.g. each
     vessel's own measured/set diameter halved (see :func:`tube_radii_um`). A
@@ -412,7 +436,8 @@ def tubes_from_vectors(
     of joined rows (a dash, as the vessels layer cuts them) as its own
     flat-ended piece, :data:`BRIDGE_RADIUS_FRACTION` of the radius of the
     narrowest vessel the bridge meets. A vessel's open end where a bridge
-    starts is cut square too, else its rounding hides the first dash.
+    starts, opening into a wider vessel, is cut square too, else its
+    rounding hides the first dash; the wider vessel's end stays rounded.
 
     Returns ``(vertices, faces, segment_index)``: ``segment_index[i]`` is
     the Vectors row ``vertices[i]`` was drawn for, so per-row colours can be
@@ -444,7 +469,7 @@ def tubes_from_vectors(
         (vessel_rows, _tubes(
             data[vessel_rows], radii[vessel_rows], sides,
             None if labels is None else labels[vessel_rows],
-            flat_at=np.concatenate([data[bridge_rows, 0], data[bridge_rows].sum(axis=1)]),
+            flat_at=_bridge_starts(data, radii, vessel_rows, bridge_rows, bridge_labels),
         )),
         (bridge_rows, _tubes(
             data[bridge_rows], bridge_radii, sides, bridge_labels, flat_ends=True
@@ -492,6 +517,38 @@ def _bridged_radius(
     return np.where(np.isfinite(met), met, radii[bridge_rows])
 
 
+def _bridge_starts(
+    data: np.ndarray,
+    radii: np.ndarray,
+    vessel_rows: np.ndarray,
+    bridge_rows: np.ndarray,
+    bridge_labels: np.ndarray,
+) -> np.ndarray:
+    """The ends of *bridge_rows* where a vessel opens into a wider one: those
+    a vessel narrower than the widest its bridge meets ends on, or, where
+    every vessel the bridge meets is one width, every end one does. The
+    wide vessel's own end, where the bridge reaches its centreline, is
+    not one: cut square there, a thick vessel looked like an open pipe."""
+
+    def row_ends(rows):
+        return np.concatenate([data[rows, 0, :], data[rows, 0, :] + data[rows, 1, :]])
+
+    vessel_tips, bridge_tips = row_ends(vessel_rows), row_ends(bridge_rows)
+    node = _node_ids(np.concatenate([vessel_tips, bridge_tips]))
+    at_vessel, at_bridge = node[: len(vessel_tips)], node[len(vessel_tips) :]
+    widest_at_node = np.full(int(node.max()) + 1, -np.inf)
+    np.maximum.at(widest_at_node, at_vessel, np.tile(radii[vessel_rows], 2))
+    met = widest_at_node[at_bridge]
+    meets = np.isfinite(met)
+    bridge = np.tile(np.unique(bridge_labels, return_inverse=True)[1].reshape(-1), 2)
+    widest = np.full(int(bridge.max()) + 1, -np.inf)
+    narrowest = np.full(int(bridge.max()) + 1, np.inf)
+    np.maximum.at(widest, bridge[meets], met[meets])
+    np.minimum.at(narrowest, bridge[meets], met[meets])
+    starts = meets & ((met < widest[bridge]) | (narrowest[bridge] >= widest[bridge]))
+    return bridge_tips[starts]
+
+
 def _tubes(
     data: np.ndarray,
     radii: np.ndarray,
@@ -505,7 +562,8 @@ def _tubes(
 
     Every end is rounded, or with *flat_ends* cut square; so is an open end
     on one of the points *flat_at*, where a vessel stops and a bridge
-    starts, which the rounding would hide the bridge's first dash in.
+    starts (:func:`_bridge_starts`), which the rounding would hide the
+    bridge's first dash in.
     """
     empty = _empty_mesh()
     if data.size == 0:
@@ -564,8 +622,24 @@ def _tubes(
     rank = np.empty_like(order)
     rank[order] = np.arange(len(order)) - first_at_node[node[order]]
     partner = np.full(2 * n_vessels, -1, dtype=np.intp)
-    paired = np.flatnonzero(at_node == 2)
-    partner[paired] = order[first_at_node[node[paired]] + 1 - rank[paired]]
+    two = np.flatnonzero(at_node == 2)
+    partner[two] = order[first_at_node[node[two]] + 1 - rank[two]]
+
+    # Each junction end's way into its vessel, read about a radius along it.
+    junction_ends = np.flatnonzero(at_node >= 3)
+    junction_vessel = junction_ends % n_vessels
+    reach = np.minimum(vessel_length[junction_vessel] / 2.0, own_radius[junction_vessel])
+    inward = np.zeros((2 * n_vessels, 3))
+    inward[junction_ends] = on_centreline(
+        vessel_start[junction_vessel]
+        + np.where(junction_ends < n_vessels, reach, vessel_length[junction_vessel] - reach)
+    ) - tips[junction_ends]
+    inward /= np.maximum(np.linalg.norm(inward, axis=1, keepdims=True), 1e-12)
+    # A wide vessel running on through a junction is one tube: drawn as two,
+    # each rounded off at the node, their ends overlapped in a seam across it.
+    one, other = _carried_straight_on(junction_ends, inward, np.tile(own_radius, 2), node)
+    partner[one], partner[other] = other, one
+    paired = np.flatnonzero(partner >= 0)
 
     chain_vessels, flipped, chain_first = _walk_chains(partner, n_vessels)
     n_tubes = len(chain_first)
@@ -580,15 +654,6 @@ def _tubes(
     head = chain_vessels[chain_first] + np.where(flipped[chain_first], n_vessels, 0)
     tail = chain_vessels[chain_last] + np.where(flipped[chain_last], 0, n_vessels)
     tube_ends = np.concatenate([head, tail])
-    junction_ends = np.flatnonzero(at_node >= 3)
-    junction_vessel = junction_ends % n_vessels
-    reach = np.minimum(vessel_length[junction_vessel] / 2.0, own_radius[junction_vessel])
-    inward = np.zeros((2 * n_vessels, 3))
-    inward[junction_ends] = on_centreline(
-        vessel_start[junction_vessel]
-        + np.where(junction_ends < n_vessels, reach, vessel_length[junction_vessel] - reach)
-    ) - tips[junction_ends]
-    inward /= np.maximum(np.linalg.norm(inward, axis=1, keepdims=True), 1e-12)
     asked, through = _through_neighbours(tube_ends, inward, node, at_node, order, first_at_node)
     through_vessel = through % n_vessels
     through_chain = np.tile(np.arange(n_tubes), 2)[asked]
@@ -628,7 +693,8 @@ def _tubes(
             runner_up[node[junction_ends]],
             widest[node[junction_ends]],
         )
-        target[junction_ends] = np.minimum(end_radius[junction_ends], others)
+        rounded = partner[junction_ends] < 0
+        target[junction_ends[rounded]] = np.minimum(end_radius[junction_ends], others)[rounded]
     start_target, end_target = target[:n_vessels], target[n_vessels:]
     ramp = np.minimum(vessel_length / 2.0, 2.0 * drawn)
 

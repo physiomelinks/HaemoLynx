@@ -982,7 +982,10 @@ are only caught locally.
   untouched): `vessel_tube_mesh(vectors, features)` is what `_sync_vessel_tubes` calls, reading
   `diameter_um`, `edge_index` and `is_zero_resistance` (`gui/results.py`'s `_mark_bridges`).
   `tubes_from_vectors` draws one closed, smooth-shaded tube per chain of vessels through degree-2
-  nodes, each ring still carrying its own vessel's step so colours and hover split per edge; rounded
+  nodes, and through a junction whose two widest vessels carry each other straight on with every
+  other vessel there narrower (`_carried_straight_on`; drawn as two, their rounded ends overlapped
+  in a seam across a thick vessel, Harvey 2026-10-15), each ring still carrying its own vessel's
+  step so colours and hover split per edge; rounded
   ends close it only at terminals and junctions. Mid-vessel a vessel is its own diameter; within
   min(L/2, 2r) of each end it eases (smoothstep) to the node's radius: the length-weighted mean of
   the two vessels at a degree-2 node, min(own, widest other) at a junction, so a wide vessel's end
@@ -991,7 +994,8 @@ are only caught locally.
   zero-resistance bridge is not vessel, and is drawn so: `gui/results.py` cuts its rows on the
   vessels layer into dashes (`dash_polyline`, `BRIDGE_DASH_UM` / `BRIDGE_GAP_UM`, at least two), so
   lines show it dashed, and the tubes leave it out of the chains -- the vessel ends cut square where
-  it meets the lumen, the thick vessel runs on through the junction the bridge made -- drawing each
+  it meets the lumen (only the narrower: a thick centreline's end the bridge reaches stays rounded,
+  `_bridge_starts`), the thick vessel runs on through the junction the bridge made -- drawing each
   dash as its own flat-ended piece at `BRIDGE_RADIUS_FRACTION` (½) of the narrowest vessel the
   bridge meets; its hover says what it is (`branch_hover.BRIDGE_LINE`). Rings are spaced a third of the local
   radius (at least three per vessel) along the centreline smoothed with the ends pinned; bends

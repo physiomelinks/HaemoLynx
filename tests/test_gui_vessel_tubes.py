@@ -422,6 +422,47 @@ def test_a_junctions_widest_vessel_narrows_into_its_widest_neighbour():
     assert np.all(np.diff(profile) <= 1e-9)
 
 
+def _a_wide_vessel_bending_where_a_branch_leaves(branch_radius):
+    """A 12 µm vessel turning 20 degrees at a node, and a branch leaving it
+    there up z."""
+    node = np.zeros(3)
+    turn = np.radians(20.0)
+    paths = [
+        _resampled([-40.0 * np.cos(turn), -40.0 * np.sin(turn), 0.0], node),
+        _resampled(node, [40.0, 0.0, 0.0]),
+        _resampled(node, [0.0, 0.0, 30.0]),
+    ]
+    return _network(paths, [6.0, 6.0, branch_radius])
+
+
+def test_a_wide_vessel_runs_on_through_a_junction_as_one_tube():
+    """Drawn as two tubes, each rounded off at the node, the two ends
+    overlapped in a seam across the vessel (Harvey, 2026-10-15: "breaks"
+    in the thick vessels). The narrower branch is the one that ends there."""
+    vectors, radii, owner = _a_wide_vessel_bending_where_a_branch_leaves(1.5)
+    sides = 12
+    vertices, faces, index = tubes_from_vectors(vectors, radius=radii, sides=sides, groups=owner)
+    assert _edge_use(faces) == {2}
+    assert _pieces(faces) == 2
+    poles = _poles(faces, sides)
+    assert len(poles) == 4
+    wide_poles = vertices[poles[owner[index[poles]] < 2]]
+    assert len(wide_poles) == 2
+    assert np.linalg.norm(wide_poles, axis=1).min() > 40.0
+    branch_poles = vertices[poles[owner[index[poles]] == 2]]
+    assert sorted(np.round(branch_poles[:, 2], 6).tolist()) == [-1.5, 31.5]
+
+
+def test_a_junction_with_a_branch_as_wide_as_the_vessel_keeps_its_rounded_ends():
+    """With a third as wide, there is no one way on: each vessel ends at
+    the junction, as before."""
+    vectors, radii, owner = _a_wide_vessel_bending_where_a_branch_leaves(6.0)
+    sides = 12
+    vertices, faces, index = tubes_from_vectors(vectors, radius=radii, sides=sides, groups=owner)
+    assert _pieces(faces) == 3
+    assert len(_poles(faces, sides)) == 6
+
+
 def test_a_vessel_narrowing_at_a_node_tapers_without_overshoot():
     """6 µm into 3 µm through a node only the two meet: one tube whose width
     falls steadily from one to the other, not a step."""
@@ -529,6 +570,39 @@ def test_vessels_meeting_at_a_junction_a_bridge_ends_on_keep_rounded_ends():
     branch = vertices[owner[index] == 4]
     assert branch[:, 0].min() < -1.0
     assert vertices[owner[index] == 0][:, 2].max() == pytest.approx(15.0)
+
+
+def test_a_wide_vessels_end_a_bridge_reaches_stays_rounded():
+    """A thin vessel's bridge reaching the end of a thick vessel's
+    centreline: only the thin vessel, opening into the thick one, is cut
+    square. Cut square too, the thick vessel looked like an open pipe."""
+    fat = _resampled([0.0, -30.0, 21.0], [0.0, 0.0, 21.0])
+    thin = _resampled([0.0, 0.0, 0.0], [0.0, 0.0, 15.0])
+    bridge = _resampled([0.0, 0.0, 15.0], [0.0, 0.0, 21.0])
+    vectors, radii, owner = _network([fat, thin, bridge], [6.0, 1.5, 6.0])
+    sides = 12
+    vertices, faces, index = tubes_from_vectors(
+        vectors, radius=radii, sides=sides, groups=owner, bridges=owner == 2
+    )
+    assert _edge_use(faces) == {2}
+    fat_poles = [pole for pole in _poles(faces, sides) if owner[index[pole]] == 0]
+    assert sorted(np.round(vertices[fat_poles, 1], 6).tolist()) == [-36.0, 6.0]
+    assert vertices[owner[index] == 1][:, 2].max() == pytest.approx(15.0)
+
+
+def test_a_bridge_between_vessels_of_one_width_cuts_both_open_ends_square():
+    """Drawn at one width, as the Uniform tube diameter draws them, neither
+    vessel is the wider: both ends stay square, as they were."""
+    fat = _resampled([0.0, -30.0, 21.0], [0.0, 0.0, 21.0])
+    thin = _resampled([0.0, 0.0, 0.0], [0.0, 0.0, 15.0])
+    bridge = _resampled([0.0, 0.0, 15.0], [0.0, 0.0, 21.0])
+    vectors, _radii, owner = _network([fat, thin, bridge], [2.0, 2.0, 2.0])
+    vertices, faces, index = tubes_from_vectors(
+        vectors, radius=2.0, sides=12, groups=owner, bridges=owner == 2
+    )
+    assert _edge_use(faces) == {2}
+    assert vertices[owner[index] == 0][:, 1].max() == pytest.approx(0.0)
+    assert vertices[owner[index] == 1][:, 2].max() == pytest.approx(15.0)
 
 
 def test_a_dashed_bridge_is_one_flat_ended_piece_per_dash():
