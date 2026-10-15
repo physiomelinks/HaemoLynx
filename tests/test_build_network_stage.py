@@ -4,9 +4,13 @@ Every later stage needs a vessel, and each failed on something else when there
 was none: the 3D drawing on missing node positions, boundary assignment on
 missing terminals, while the 2D drawing went through and saved the empty
 graph. So the stage stops there and says which step took the last vessel.
+
+Once it has the network it also warns when the run's dense solvers would not
+fit in the free memory.
 """
 from __future__ import annotations
 
+import logging
 import pickle
 from pathlib import Path
 
@@ -134,6 +138,27 @@ def test_the_same_cross_with_longer_arms_builds_its_four_vessels(tmp_path):
     assert network.graph.number_of_edges() == 4
     assert _graph_path(tmp_path).exists()
     assert (tmp_path / "plots" / "final_graph_3d.html").exists()
+
+
+@pytest.mark.parametrize("run_haemodynamics", [True, False])
+def test_the_built_network_warns_when_its_dense_solve_will_not_fit(
+    tmp_path, monkeypatch, caplog, run_haemodynamics
+):
+    """As soon as the node count is known, so a run can be stopped before its
+    diameters are measured -- and only when the run will solve."""
+    from haemolynx.haemodynamics import resistance
+
+    monkeypatch.setattr(resistance, "available_memory_bytes", lambda: 1000)
+    settings = _settings(tmp_path, run_haemodynamics=run_haemodynamics, visualize_results=False)
+    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.resistance"):
+        network = build_network(settings, _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)
+
+    nodes = f"{network.graph.number_of_nodes():,} nodes"
+    memory = [r.getMessage() for r in caplog.records if "of memory free now" in r.getMessage()]
+    if run_haemodynamics:
+        assert len(memory) == 2 and all(nodes in message for message in memory)
+    else:
+        assert memory == []
 
 
 def test_an_empty_build_leaves_the_graph_a_run_saved_before(tmp_path):

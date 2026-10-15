@@ -791,10 +791,17 @@ are only caught locally.
   setting on the Haemodynamics tab's Advanced button. `haemodynamics_solver` (`dense` default, as
   before, or `sparse`) is how *every* flow solve holds the network — baseline, haematocrit passes,
   perturbations, sweeps (`build_conductance_matrix_from_graph(solver=)`; the solves take either
-  matrix): dense is N × N (3.2 GB at 20,000 nodes), sparse stores the vessels and factorises by
+  matrix): dense is N × N, peaking at 42 N² bytes (16.8 GB at 20,000 nodes, measured
+  2026-10-15; the help text used to say 3.2 GB), sparse stores the vessels and factorises by
   sparse LU, same pressures to rounding. `equivalent_resistance_solver` (`eigendecomposition`
-  default, as before, or `sparse`: `calc_two_point_resistance_sparse`, one solve, `inf` between
-  unconnected nodes) finds the two-point resistance between the first inlet and the first outlet.
+  default, as before, peaking at 49 N² bytes, or `sparse`: `calc_two_point_resistance_sparse`,
+  one solve, `inf` between unconnected nodes) finds the two-point resistance between the first
+  inlet and the first outlet. Either dense solver the run will use is warned about when its
+  estimate passes half the free memory (`warn_about_dense_solver_memory`, `dense_solver_memory_bytes`,
+  `available_memory_bytes`: psutil, else `/proc/meminfo` or `GlobalMemoryStatusEx`), from
+  `build_network` as soon as the node count is known and again from `solve` before the matrices
+  are made; preflight has no node count. Those per-N² figures are pinned against traced
+  allocations in `tests/test_flow_solvers.py`, so a solve that gains an N × N copy fails there.
   The solve also reports `Solution.network_resistance`, pressure drop over total inflow through
   every inlet (`network_resistance`); both go in the statistics CSV's Haemodynamics section.
   Perturbation summaries' `equivalent_resistance` is that network resistance, not the two-point one.

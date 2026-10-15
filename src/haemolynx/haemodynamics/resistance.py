@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
+import sys
 import numpy as np
 import networkx as nx
 import scipy.sparse as sp
@@ -12,9 +13,10 @@ from scipy.sparse.linalg import splu
 logger = logging.getLogger(__name__)
 
 #: ``haemodynamics_solver``: how a flow solve holds and solves the network.
-#: ``dense`` is an N x N array and a dense solve -- 8 N^2 bytes, 3.2 GB at
-#: 20,000 nodes, with several copies alive at once. ``sparse`` stores only the
-#: vessels and factorises the same equations; the same pressures to rounding.
+#: ``dense`` is an N x N array and a dense solve -- about 42 N^2 bytes at its
+#: peak, 17 GB at 20,000 nodes (:data:`DENSE_FLOW_SOLVE_BYTES_PER_NODE_SQUARED`).
+#: ``sparse`` stores only the vessels and factorises the same equations; the
+#: same pressures to rounding.
 FLOW_SOLVER_DENSE = "dense"
 FLOW_SOLVER_SPARSE = "sparse"
 FLOW_SOLVERS = (FLOW_SOLVER_DENSE, FLOW_SOLVER_SPARSE)
@@ -29,6 +31,134 @@ EQUIVALENT_RESISTANCE_SOLVERS = (
     EQUIVALENT_RESISTANCE_EIGENDECOMPOSITION,
     EQUIVALENT_RESISTANCE_SPARSE,
 )
+
+#: Peak memory a dense solve adds, in bytes per node squared, measured as the
+#: solve stage runs it (peak working set at 2,000, 4,000 and 6,000 nodes,
+#: numpy on Windows, 2026-10-15: 43, 42 and 41; 50, 49 and 48). The flow solve
+#: holds the conductance matrix, the open ends' augmented copy, the Laplacian
+#: and the solve's own copies of it; the eigendecomposition the matrix, the
+#: Laplacian and LAPACK's eigenvectors and workspace.
+DENSE_FLOW_SOLVE_BYTES_PER_NODE_SQUARED = 42
+EIGENDECOMPOSITION_BYTES_PER_NODE_SQUARED = 49
+
+#: A dense solver is warned about once its estimate passes this share of the
+#: memory free when it is checked: the rest of the run (the graph, the
+#: volumes) is in memory too, and the estimate is one machine's.
+SOLVER_MEMORY_WARN_FRACTION = 0.5
+
+
+def dense_solver_memory_bytes(n_nodes: int, solver: str) -> int:
+    """Estimated peak memory, in bytes, of *solver* on *n_nodes* nodes.
+
+    *solver* is a ``haemodynamics_solver`` or ``equivalent_resistance_solver``
+    value. The dense flow solve and the eigendecomposition grow with the
+    square of the node count; a sparse solver holds only the vessels, so its
+    estimate is 0.
+    """
+    known = FLOW_SOLVERS + EQUIVALENT_RESISTANCE_SOLVERS
+    if solver not in known:
+        raise ValueError(f"Unknown solver {solver!r}; expected one of {sorted(set(known))}.")
+    per_node_squared = {
+        FLOW_SOLVER_DENSE: DENSE_FLOW_SOLVE_BYTES_PER_NODE_SQUARED,
+        EQUIVALENT_RESISTANCE_EIGENDECOMPOSITION: EIGENDECOMPOSITION_BYTES_PER_NODE_SQUARED,
+    }.get(solver, 0)
+    return per_node_squared * int(n_nodes) ** 2
+
+
+def available_memory_bytes() -> int | None:
+    """Physical memory free for new allocations now, in bytes, or ``None``
+    when the platform does not say: psutil when it is installed (napari
+    brings it), else Linux's ``MemAvailable`` or Windows'
+    ``GlobalMemoryStatusEx``."""
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+    if psutil is not None:
+        return int(psutil.virtual_memory().available)
+    try:
+        with open("/proc/meminfo", encoding="ascii") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    if sys.platform == "win32":
+        import ctypes
+
+        class _MemoryStatus(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemoryStatus()
+        status.dwLength = ctypes.sizeof(status)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.ullAvailPhys)
+    return None
+
+
+def warn_about_dense_solver_memory(
+    n_nodes: int,
+    *,
+    flow_solver: str | None = None,
+    equivalent_resistance_solver: str | None = None,
+    available_bytes: int | None = None,
+) -> list[str]:
+    """Warn about each dense solver that would take more than
+    :data:`SOLVER_MEMORY_WARN_FRACTION` of the free memory on *n_nodes* nodes,
+    and return the warnings.
+
+    *flow_solver* is the run's ``haemodynamics_solver`` and
+    *equivalent_resistance_solver* its ``equivalent_resistance_solver``;
+    ``None`` leaves out one the run will not use. *available_bytes* defaults
+    to :func:`available_memory_bytes`; when that cannot be read, nothing is
+    compared and nothing is warned.
+    """
+    if available_bytes is None:
+        available_bytes = available_memory_bytes()
+    if available_bytes is None:
+        logger.debug("Free memory unknown; the dense solvers' memory was not checked.")
+        return []
+    limit = SOLVER_MEMORY_WARN_FRACTION * available_bytes
+    free = f"{available_bytes / 1e9:.1f} GB"
+    warnings: list[str] = []
+    if flow_solver is not None:
+        need = dense_solver_memory_bytes(n_nodes, flow_solver)
+        if need > limit:
+            warnings.append(
+                f"The dense flow solver (haemodynamics_solver=dense) will need about "
+                f"{need / 1e9:.1f} GB for this network's {n_nodes:,} nodes, more than "
+                f"half of the {free} of memory free now: the solve may run out of "
+                "memory, or slow to a crawl as the computer swaps. The sparse solver "
+                "gives the same pressures and flows to rounding in a small fraction "
+                "of the memory: set haemodynamics_solver to sparse (Haemodynamics "
+                "tab, Advanced)."
+            )
+    if equivalent_resistance_solver is not None:
+        need = dense_solver_memory_bytes(n_nodes, equivalent_resistance_solver)
+        if need > limit:
+            warnings.append(
+                "The two-point resistance's eigendecomposition "
+                "(equivalent_resistance_solver=eigendecomposition) will need about "
+                f"{need / 1e9:.1f} GB for this network's {n_nodes:,} nodes, more than "
+                f"half of the {free} of memory free now, and its time grows with the "
+                "cube of the node count. The sparse solver finds the same resistance "
+                "from one sparse solve: set equivalent_resistance_solver to sparse "
+                "(Haemodynamics tab, Advanced), or turn "
+                "do_equiv_resistance_calculation off."
+            )
+    for message in warnings:
+        logger.warning(message)
+    return warnings
 
 _NOT_CONNECTED_MESSAGE = (
     "Inlet and outlet boundary nodes are not connected by "

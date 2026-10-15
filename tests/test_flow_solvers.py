@@ -8,12 +8,16 @@ default, as it always was) or one sparse solve. Either way the numbers must be
 the same to rounding, the same errors must be raised and the same warnings
 logged -- what changes is memory and time. The solve also reports the whole
 network's resistance, pressure drop over total inflow, beside the two-point
-one between the first inlet and the first outlet.
+one between the first inlet and the first outlet. The two dense solvers grow
+with the square of the node count, so a run warns before either would take
+more than half the free memory.
 """
 from __future__ import annotations
 
 import logging
 import math
+import sys
+import tracemalloc
 
 import networkx as nx
 import numpy as np
@@ -23,15 +27,20 @@ import scipy.sparse as sp
 from haemolynx.haemodynamics import (
     EQUIVALENT_RESISTANCE_SOLVERS,
     FLOW_SOLVERS,
+    available_memory_bytes,
     build_conductance_matrix_from_graph,
     calc_laplacian_from_conductance_matrix,
     calc_two_point_from_laplacian_matrix_nodeID,
     calc_two_point_resistance_sparse,
+    dense_solver_memory_bytes,
     flow_conservation_residuals,
     network_resistance,
     set_edge_flows,
     solve_flow_from_conductance_matrix,
+    warn_about_dense_solver_memory,
 )
+from haemolynx.haemodynamics import resistance
+from haemolynx.haemodynamics.open_ends import OpenEndConditions, augment
 from haemolynx.pipeline import default_schema
 
 SI = 1e-16  # m^3/(Pa.s), a capillary's conductance
@@ -422,3 +431,154 @@ def test_both_resistances_go_into_the_statistics_csv(tmp_path):
     assert "Network Resistance, Pressure Drop / Total Inflow" in text
     assert "0 -> 2" in text
     assert resistance_statistics(Solution()) == {}
+
+
+# --- warning before a dense solve runs out of memory -------------------------------
+
+
+def test_a_dense_solvers_memory_grows_with_the_square_of_the_nodes():
+    assert dense_solver_memory_bytes(20_000, "dense") == 42 * 20_000**2  # 16.8 GB
+    assert dense_solver_memory_bytes(20_000, "eigendecomposition") == 49 * 20_000**2
+    assert dense_solver_memory_bytes(40_000, "dense") == 4 * dense_solver_memory_bytes(20_000, "dense")
+    # The sparse solvers hold only the vessels.
+    assert dense_solver_memory_bytes(10**6, "sparse") == 0
+    with pytest.raises(ValueError, match="Unknown solver 'lu'"):
+        dense_solver_memory_bytes(100, "lu")
+
+
+def _sparse_network(n: int) -> nx.MultiGraph:
+    """A chain of *n* nodes with n/2 random chords: a capillary bed's ~3 vessels a node."""
+    rng = np.random.default_rng(0)
+    G = nx.MultiGraph()
+    for i in range(n - 1):
+        G.add_edge(i, i + 1, conductance=SI * float(rng.uniform(0.5, 2.0)))
+    for a, b in rng.integers(0, n, (n // 2, 2)):
+        if a != b:
+            G.add_edge(int(a), int(b), conductance=SI)
+    return G
+
+
+def _traced_peak_bytes(run) -> int:
+    tracemalloc.start()
+    try:
+        run()
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+def test_the_estimate_covers_what_a_dense_flow_solve_allocates():
+    """The solve stage's dense path: the matrix, the open ends' augmented copy,
+    then the solve. If it gains an N x N copy the estimate must follow."""
+    n = 1000
+    G = _sparse_network(n)
+    conditions = OpenEndConditions(model="estimated", to_inlet={300: SI}, to_outlet={700: SI})
+
+    def run():
+        conductance, node_list = build_conductance_matrix_from_graph(G, solver="dense")
+        matrix, names, index, extra_in, extra_out = augment(conductance, node_list, conditions)
+        solve_flow_from_conductance_matrix(
+            matrix, names, inlet_p_bc=1000.0, outlet_p_bc=0.0,
+            inlet_nodes=[0, *extra_in], outlet_nodes=[n - 1, *extra_out], node_to_idx=index,
+        )
+
+    estimate = dense_solver_memory_bytes(n, "dense")
+    assert 0.6 * estimate <= _traced_peak_bytes(run) <= 1.1 * estimate
+
+
+def test_the_estimate_covers_what_the_eigendecomposition_allocates():
+    n = 1000
+    G = _sparse_network(n)
+
+    def run():
+        conductance, _ = build_conductance_matrix_from_graph(G, solver="dense")
+        laplacian = calc_laplacian_from_conductance_matrix(conductance)
+        calc_two_point_from_laplacian_matrix_nodeID(laplacian, G, 0, n - 1)
+
+    estimate = dense_solver_memory_bytes(n, "eigendecomposition")
+    assert 0.6 * estimate <= _traced_peak_bytes(run) <= 1.1 * estimate
+
+
+def test_both_dense_solvers_are_warned_about_with_what_they_need_and_the_fix(caplog):
+    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.resistance"):
+        warnings = warn_about_dense_solver_memory(
+            20_000,
+            flow_solver="dense",
+            equivalent_resistance_solver="eigendecomposition",
+            available_bytes=16e9,
+        )
+    assert [r.getMessage() for r in caplog.records] == warnings
+    flow, eigen = warnings
+    assert "haemodynamics_solver=dense" in flow and "16.8 GB" in flow
+    assert "20,000 nodes" in flow and "16.0 GB of memory free" in flow
+    assert "set haemodynamics_solver to sparse" in flow
+    assert "equivalent_resistance_solver=eigendecomposition" in eigen and "19.6 GB" in eigen
+    assert "set equivalent_resistance_solver to sparse" in eigen
+    assert "do_equiv_resistance_calculation off" in eigen
+
+
+def test_a_dense_solver_is_warned_about_only_past_half_the_free_memory(caplog):
+    need = dense_solver_memory_bytes(5_000, "dense")
+    assert warn_about_dense_solver_memory(5_000, flow_solver="dense", available_bytes=2 * need) == []
+    assert len(warn_about_dense_solver_memory(5_000, flow_solver="dense", available_bytes=2 * need - 2)) == 1
+    # Sparse solvers, and solvers the run will not use, never.
+    assert warn_about_dense_solver_memory(
+        10**6, flow_solver="sparse", equivalent_resistance_solver="sparse", available_bytes=1
+    ) == []
+    assert warn_about_dense_solver_memory(10**6, available_bytes=1) == []
+
+
+def test_nothing_is_warned_when_the_free_memory_cannot_be_read(monkeypatch, caplog):
+    monkeypatch.setattr(resistance, "available_memory_bytes", lambda: None)
+    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.resistance"):
+        assert warn_about_dense_solver_memory(10**6, flow_solver="dense") == []
+    assert not caplog.records
+
+
+@pytest.mark.skipif(
+    sys.platform not in ("linux", "win32"), reason="read without psutil on Linux and Windows only"
+)
+def test_the_free_memory_is_read_with_or_without_psutil(monkeypatch):
+    with_psutil = available_memory_bytes()
+    monkeypatch.setitem(sys.modules, "psutil", None)  # import psutil raises ImportError
+    without = available_memory_bytes()
+    for free in (with_psutil, without):
+        # Some memory is free, and less than any machine this runs on has.
+        assert free is not None and 0 < free < 2**50
+
+
+def test_the_solve_stage_warns_before_it_builds_a_matrix_that_will_not_fit(monkeypatch, caplog):
+    """The bifurcation's 4 nodes need 672 and 784 bytes; with 1,000 free,
+    both pass half. The warnings come before the conductance matrix is built."""
+    monkeypatch.setattr(resistance, "available_memory_bytes", lambda: 1000)
+    with caplog.at_level(logging.INFO, logger="haemolynx"):
+        _solve_stage()
+    messages = [r.getMessage() for r in caplog.records]
+    flow = next(i for i, m in enumerate(messages) if "haemodynamics_solver=dense" in m)
+    eigen = next(i for i, m in enumerate(messages) if "equivalent_resistance_solver=eigendecomposition" in m)
+    built = next(i for i, m in enumerate(messages) if m.startswith("Conductance matrix built"))
+    assert flow < built and eigen < built
+
+
+@pytest.mark.parametrize(
+    "overrides, expected",
+    [
+        ({"haemodynamics_solver": "sparse", "equivalent_resistance_solver": "sparse"}, []),
+        ({"do_equiv_resistance_calculation": False}, ["haemodynamics_solver=dense"]),
+        (
+            {"haemodynamics_solver": "sparse"},
+            ["equivalent_resistance_solver=eigendecomposition"],
+        ),
+    ],
+    ids=["both sparse", "no two-point resistance", "sparse flow, eigendecomposition"],
+)
+def test_the_solve_stage_warns_only_about_the_dense_solvers_it_will_run(
+    monkeypatch, caplog, overrides, expected
+):
+    monkeypatch.setattr(resistance, "available_memory_bytes", lambda: 1000)
+    with caplog.at_level(logging.WARNING, logger="haemolynx.haemodynamics.resistance"):
+        _solve_stage(**overrides)
+    memory = [r.getMessage() for r in caplog.records if "of memory free now" in r.getMessage()]
+    assert len(memory) == len(expected)
+    for message, solver in zip(memory, expected):
+        assert solver in message

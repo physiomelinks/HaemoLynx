@@ -1671,6 +1671,8 @@ def build_network(
                 show_coordinates_degree_1=True,
             )
 
+    if settings.get("run_haemodynamics"):
+        _warn_about_dense_solver_memory(settings, G)
 
     return VesselNetwork(
         graph=G,
@@ -3512,6 +3514,23 @@ def _equivalent_resistance_solver(settings: Mapping[str, Any]) -> str:
     )
 
 
+def _warn_about_dense_solver_memory(settings: Mapping[str, Any], G: nx.Graph) -> list[str]:
+    """Warn when the run's dense solvers would not fit in the free memory on
+    *G* (:func:`haemodynamics.warn_about_dense_solver_memory`): from
+    ``build_network`` as soon as the node count is known, so a run can be
+    stopped before its diameters are measured, and from ``solve`` just before
+    the matrices are made."""
+    return haemodynamics.warn_about_dense_solver_memory(
+        G.number_of_nodes(),
+        flow_solver=_flow_solver(settings),
+        equivalent_resistance_solver=(
+            _equivalent_resistance_solver(settings)
+            if settings.get("do_equiv_resistance_calculation")
+            else None
+        ),
+    )
+
+
 def resistance_statistics(solution: Solution) -> dict[str, Any]:
     """The solve's two resistances, as the statistics CSV's Haemodynamics
     section: the two-point one between the first inlet and the first outlet,
@@ -3558,6 +3577,8 @@ def solve(
     )
     hct_result: dict[str, Any] | None = None
     flow_solver = _flow_solver(settings)
+    if settings["run_haemodynamics"]:
+        _warn_about_dense_solver_memory(settings, G)
     open_ends = (
         _open_end_conditions(settings, G, flow_solver)
         if settings["run_haemodynamics"] else haemodynamics.open_ends.OpenEndConditions()
@@ -3665,6 +3686,8 @@ def solve(
                         source_node,
                         target_node,
                     )
+                    # Kept, the N x N Laplacian would sit beside the flow solve's own.
+                    del dense, laplacian
                 solution.equivalent_resistance_nodes = (source_node, target_node)
                 logger.info(
                     f"Two-point resistance between nodes {source_node} and "
