@@ -9,8 +9,10 @@ import pytest
 from haemolynx.gui.statistics_view import (
     MAX_LIST_ITEMS,
     MAX_ROWS,
+    OTHER_SECTIONS,
     StatisticRow,
     section_title,
+    section_tooltip,
     statistics_report,
     statistics_sections,
     statistics_summary,
@@ -79,6 +81,32 @@ def test_a_measures_title_is_its_checkbox_name_without_statistics():
 
     for measure in STATISTIC_MEASURES:
         assert label_for(f"statistics_{measure}") == f"Statistics {section_title(measure).lower()}"
+
+
+def test_every_section_has_its_own_tooltip_explaining_its_statistic():
+    """Every measure and every other section has an entry of its own, none
+    shared and none for a section that does not exist, in the tooltips'
+    voice (a phrase of a few words, no closing full stop)."""
+    from haemolynx.gui.chrome_tooltips import (
+        STATISTICS_SECTION_TOOLTIP,
+        STATISTICS_SECTION_TOOLTIPS,
+    )
+    from haemolynx.statistics import STATISTIC_MEASURES
+
+    keys = (*STATISTIC_MEASURES, *OTHER_SECTIONS)
+    assert set(STATISTICS_SECTION_TOOLTIPS) == set(keys)
+    tooltips = [section_tooltip(key) for key in keys]
+    assert len(set(tooltips)) == len(keys)
+    assert STATISTICS_SECTION_TOOLTIP not in tooltips
+    for key, text in zip(keys, tooltips):
+        assert len(text.split()) >= 8, key
+        assert not text.rstrip().endswith("."), key
+
+
+def test_a_section_without_a_tooltip_says_what_its_button_does():
+    from haemolynx.gui.chrome_tooltips import STATISTICS_SECTION_TOOLTIP
+
+    assert section_tooltip("a_measure_added_later") == STATISTICS_SECTION_TOOLTIP
 
 
 def test_no_report_no_buttons_and_a_note_saying_where_statistics_are_turned_on():

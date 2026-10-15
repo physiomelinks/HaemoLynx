@@ -112,10 +112,214 @@ REOPEN_VIEW_TOOLTIP = (
     "Layer list and Layer controls tabs have been closed, with the HaemoLynx "
     "view in front"
 )
+#: A Statistics tab button with no entry in STATISTICS_SECTION_TOOLTIPS.
 STATISTICS_SECTION_TOOLTIP = (
     "Show or hide what this measure found in the last run's statistics; a "
     "rerun of the statistics replaces it, keeping open what was open"
 )
+#: The Statistics tab's buttons, one per section of the report
+#: (``gui.statistics_view``): what the statistic behind each one measures
+#: and how to read it. Keyed by section: the statistic measures
+#: (``statistics.STATISTIC_MEASURES``), then ``statistics_view.OTHER_SECTIONS``.
+STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
+    "basic": (
+        "The size of the network: how many nodes (junctions and ends) and "
+        "vessels it has, their total and average length in microns, and the "
+        "average number of vessels meeting at a node"
+    ),
+    "tortuosity": (
+        "How winding the vessels are. The tortuosity index is a vessel's "
+        "centreline length over the straight line between its ends (1 is "
+        "straight); curvature is the share of its length beyond that straight "
+        "line. Both are averaged over every vessel"
+    ),
+    "branching": (
+        "How many branch points the network has: nodes where three or more "
+        "vessels meet"
+    ),
+    "tree_asymmetry": (
+        "How unevenly the network divides: at each branch point, the "
+        "difference in size between its largest and smallest sub-tree, summed "
+        "and divided by the number of nodes. 0 is a perfectly balanced tree; "
+        "a network with loops is read along its shortest spanning tree"
+    ),
+    "fractal_dimension": (
+        "How completely the vessels fill space, by box counting: about 1 for "
+        "a single line, rising towards 3 for vessels filling the volume. "
+        "Measured on the node positions and on the centrelines; R^2 says how "
+        "well the box counts fit a straight line"
+    ),
+    "vessel_density": (
+        "Vessel length per unit volume (microns of vessel per cubic micron): "
+        "divided by the tissue measured from the raw image when the tissue "
+        "volume was measured, else by the box the network spans, and also by "
+        "the whole image; with measured tissue, also the share of it that is "
+        "vessel"
+    ),
+    "murray_law": (
+        "Whether diameters at junctions follow Murray's law, parent^3 = the "
+        "sum of daughters^3. The Murray ratio is the daughters' sum over the "
+        "parent's (1 is a perfect fit); the fitted exponent is the power that "
+        "would make each junction fit exactly, 3 being Murray's"
+    ),
+    "daughter_angles": (
+        "The angle between sibling daughter vessels leaving a junction, read "
+        "along their centrelines and averaged over every junction, in degrees"
+    ),
+    "intercapillary_distance": (
+        "How far apart neighbouring vessels lie: for each vessel, the median "
+        "distance along it to the nearest vessel not joined to it, then the "
+        "mean and median over vessels, in microns. How far oxygen must "
+        "diffuse into the tissue between them"
+    ),
+    "dead_ends": (
+        "Vessels that end without joining another, by kind: leaving the "
+        "image, stopped short of the segmented vessel, broken by the "
+        "segmentation, artefacts, blind (marked by hand), unknown, or ends of "
+        "pieces with no junction. Also the interior ones per mm of vessel, "
+        "their length, and how much of the network the image faces cut"
+    ),
+    "network_robustness": (
+        "How much of the network hangs on single connections: bridge "
+        "vessels, whose loss alone splits the network, and articulation "
+        "points, junctions whose loss splits it. With inlets and outlets, the "
+        "critical ones are those whose loss cuts an outlet off from an inlet"
+    ),
+    "bottlenecks": (
+        "Where inlet-to-outlet flow is most constrained: the minimum cut (the "
+        "fewest vessels, or least conductance, whose blocking separates every "
+        "inlet from every outlet) and each vessel's share of the shortest "
+        "inlet-to-outlet routes; a share of 1 means every route runs through it"
+    ),
+    "shunts": (
+        "Vessels on inlet-to-outlet routes much shorter than the network's "
+        "median route, which carry blood past most of the bed: how many, on "
+        "how many pathways, and the share of the outflow they carry"
+    ),
+    "occlusion_impact": (
+        "What blocking one vessel does, vessel by vessel: the fraction of "
+        "inlet-to-outlet flow lost, and the length of other vessels left "
+        "below the hypoperfusion threshold of their flow, summarised for the "
+        "network, by vessel type and by branch order. Conductances stay fixed "
+        "after the block"
+    ),
+    "occlusion_curves": (
+        "How flow falls as vessels are blocked one after another, in three "
+        "orders: at random, busiest first and narrowest first. Each curve's "
+        "robustness index is the area under its remaining-flow curve (1 if "
+        "flow never drops), with the fraction blocked when flow halves"
+    ),
+    "current_flow": (
+        "How the inlet-to-outlet flow divides between parallel routes, as "
+        "current does in a resistor network: each vessel's share of it, the "
+        "equivalent inlet-to-outlet resistance, and in full mode on small "
+        "networks the Kirchhoff index, the summed resistance between every "
+        "pair of nodes"
+    ),
+    "perfusion_territories": (
+        "Which inlet supplies and which outlet drains each part of the "
+        "network, by the nearest route: the number and size of the arteriolar "
+        "(inlet) and venular (outlet) territories, and the watershed vessels "
+        "on the borders between them"
+    ),
+    "transit_time": (
+        "How long blood takes to cross the network: each vessel's volume "
+        "over its flow, added up along inlet-to-outlet routes, as a mean and "
+        "spread (SD, CV), and the capillaries' transit-time heterogeneity "
+        "(CTH). Plug flow at the solved mean flow, not red-cell speed"
+    ),
+    "loop_hierarchy": (
+        "The scale of the network's redundancy: the shortest loop through "
+        "each vessel, as a distribution of loop lengths in microns overall and "
+        "by vessel type, the vessels on no loop at all, and the independent "
+        "loops per mm^3"
+    ),
+    "strahler": (
+        "Horton-Strahler orders of the arterial and venous trees: tips are "
+        "order 1, and two vessels of one order meeting make the next. Horton's "
+        "bifurcation, length and diameter ratios say how count, length and "
+        "diameter change from one order to the next; capillaries are unordered"
+    ),
+    "algebraic_connectivity": (
+        "How easily the network splits in two: the second-smallest eigenvalue "
+        "of its Laplacian (the Fiedler value), near 0 when a few vessels hold "
+        "two halves together. Also the two halves the Fiedler vector divides "
+        "it into and the vessels between them"
+    ),
+    "cyclomatic_number": (
+        "The number of independent loops (anastomoses): vessels minus nodes "
+        "plus separate pieces. 0 is a pure tree, where every vessel is the "
+        "only supply to everything beyond it"
+    ),
+    "degree_assortativity": (
+        "Whether nodes where many vessels meet connect to others like them "
+        "(positive, up to 1) or to nodes with few vessels (negative, down to "
+        "-1). Branching vascular trees usually read negative"
+    ),
+    "rich_club": (
+        "Whether the best-connected nodes link to each other: of the vessels "
+        "that could join the nodes with more than the threshold number of "
+        "vessels, the fraction that do. Near 1, they form a backbone of their "
+        "own"
+    ),
+    "k_core": (
+        "How layered the network is. A node's core number is the largest k "
+        "for which it sits in a sub-network where every node has at least k "
+        "vessels; a tree's is 1, and a high core holding many nodes is a "
+        "redundant, looped core inside a shell"
+    ),
+    "flow_hierarchy": (
+        "The fraction of vessels whose solved flow does not run round a "
+        "directed loop. Flow cannot circulate in a resistive network at steady "
+        "state, so a value below 1 points to a modelling problem, such as "
+        "boundary conditions fighting each other"
+    ),
+    "path_efficiency": (
+        "The inverse of the mean shortest path length through the network "
+        "between pairs of nodes (1/microns), with that mean length itself; "
+        "higher means nodes are fewer microns apart. Sampled pairs in fast "
+        "mode, every pair in full"
+    ),
+    "community": (
+        "Groups of nodes more densely connected among themselves than to the "
+        "rest of the network (modularity communities, from its topology): "
+        "their number and sizes in fast mode, every group's nodes in full"
+    ),
+    "betweenness": (
+        "How often each node lies on the shortest paths between other nodes, "
+        "counting vessels rather than microns, from 0 to 1: the mean, highest "
+        "and top nodes in fast mode, every node in full"
+    ),
+    "haemodynamics": (
+        "The network's resistance to flow, in Pa.s/m^3: between the first "
+        "inlet and the first outlet (two-point), and for the whole network, "
+        "the pressure drop over the total inflow through every inlet"
+    ),
+    "branch_orders": (
+        "The vessels of each branch order (arterioles, capillary orders, "
+        "venules): how many, their mean length, diameter and its variation, "
+        "tortuosity, the angle at which they leave their parent, and the "
+        "pressure drop across them"
+    ),
+    "weighted_betweenness_communities": (
+        "Betweenness and communities with the vessels weighted three ways: "
+        "by resistance (the easiest paths for flow), length (the shortest in "
+        "microns) and 1/|flow| (the busiest). The mean and highest "
+        "betweenness, the most central nodes, and the communities' number and "
+        "sizes"
+    ),
+    "zero_resistance_bridges": (
+        "The joins drawn inside a thick vessel's lumen, from where a vessel "
+        "opens into it to its centreline: how many and how long. They carry "
+        "no resistance, and no other statistic counts them as vessels"
+    ),
+    "tissue_volume": (
+        "The tissue's volume and surface area from the raw image, which "
+        "vessel density divides by: the share of the image it fills, how much "
+        "of its surface the image faces cut, the vessels inside it, and the "
+        "intensities its threshold split"
+    ),
+}
 SAVE_CONFIG_TOOLTIP = (
     "Write the current form values to a YAML config file; relative "
     "paths stay relative when saving beside the file they came from"
