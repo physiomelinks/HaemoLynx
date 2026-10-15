@@ -228,17 +228,7 @@ class MaskBridges:
         way its vessel was heading (always, without both)."""
         if ends is None or max_turn_deg is None:
             return True
-        from .build import GAP_BRIDGE_TANGENT_LENGTH_UM, gap_bridge_continues_terminal
-        from .cartwheel_guard import _point_along_polyline
-
-        path = np.asarray(path, dtype=float)
-        for node, walk in ((ends[0], path), (ends[1], path[::-1])):
-            if node not in self.G:
-                continue
-            ahead = _point_along_polyline(walk, GAP_BRIDGE_TANGENT_LENGTH_UM)
-            if not gap_bridge_continues_terminal(self.G, node, ahead, max_turn_deg=max_turn_deg):
-                return False
-        return True
+        return path_continues_ends(self.G, path, ends, max_turn_deg)
 
     def attributes(self, measured: BridgeMaskSupport) -> dict:
         return {
@@ -258,6 +248,27 @@ class MaskBridges:
                 self.refused_turn,
                 self.refused_duplicate,
             )
+
+
+def path_continues_ends(G: nx.MultiGraph, path, ends, max_turn_deg: float) -> bool:
+    """Whether *path* leaves each of *ends* -- the ``(node at its start, node
+    at its end)``, either None or not in *G* for none -- within
+    *max_turn_deg* of the way that node's vessel was heading
+    (``build.gap_bridge_continues_terminal``, read along the path's first
+    ``GAP_BRIDGE_TANGENT_LENGTH_UM``): the path drawn, not the chord. A route
+    round background can leave an end sideways or back where the straight
+    line does not."""
+    from .build import GAP_BRIDGE_TANGENT_LENGTH_UM, gap_bridge_continues_terminal
+    from .cartwheel_guard import _point_along_polyline
+
+    path = np.asarray(path, dtype=float)
+    for node, walk in ((ends[0], path), (ends[1], path[::-1])):
+        if node is None or node not in G:
+            continue
+        ahead = _point_along_polyline(walk, GAP_BRIDGE_TANGENT_LENGTH_UM)
+        if not gap_bridge_continues_terminal(G, node, ahead, max_turn_deg=max_turn_deg):
+            return False
+    return True
 
 
 def _along_chord(path: np.ndarray, start: np.ndarray, stop: np.ndarray, tolerance_um: float = 1.0) -> bool:

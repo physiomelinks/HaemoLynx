@@ -3118,8 +3118,11 @@ def _bridge_edited_vessels(
     if network is not None and network.volume.image is not None:
         segmentation = _to_binary_volume_for_skeletonization(network.volume.image)
     before = edited_bridges(G)
+    # What the tree fill draws beside an edit is new vessel, measured as
+    # one drawn by hand is.
     bridged = graph.insert_thick_vessel_junction_nodes(
         G, mask, voxel_size_zyx=voxel_size_zyx, edges=edited, segmentation=segmentation,
+        fill_attributes={graph.post_processing.EDITED: True},
         **thick_junction_bridge_arguments(settings),
     )
     added = edited_bridges(bridged) - before

@@ -5,7 +5,7 @@ from typing import Any, Callable, List, Optional, Tuple, Union
 import numpy as np
 import networkx as nx
 
-from .thick_vessel_junctions import IS_ZERO_RESISTANCE, THICK_TAPER
+from .thick_vessel_junctions import IS_ZERO_RESISTANCE, THICK_TAPER, taper_meets_vessel
 
 #: What smoothing did to a vessel (``smoothing.smooth_graph_centrelines``),
 #: least smoothed first: a merged vessel says the least of its two halves.
@@ -256,9 +256,12 @@ def create_trivial_merged_edge(
     for key, value in edge1_data.items():
         if key not in merged_attributes:
             merged_attributes[key] = value
-    # Whichever edge carried it: the clean-up's protection of a taper.
-    if edge1_data.get(THICK_TAPER) or edge2_data.get(THICK_TAPER):
+    # A taper only with a taper (taper_meets_vessel): its protection in the
+    # clean-up is not the whole vessel's.
+    if edge1_data.get(THICK_TAPER) and edge2_data.get(THICK_TAPER):
         merged_attributes[THICK_TAPER] = True
+    else:
+        merged_attributes.pop(THICK_TAPER, None)
     smoothing = _merged_smoothing(edge1_data, edge2_data)
     if smoothing is not None:
         merged_attributes["centreline_smoothing"] = smoothing
@@ -409,6 +412,10 @@ def smart_multigraph_degree2_removal(
             # vessel would lose its resistance or the bridge gain one.
             if d1.get(IS_ZERO_RESISTANCE) or d2.get(IS_ZERO_RESISTANCE):
                 continue
+            # Nor is a taper merged with a vessel: the clean-up's protection of
+            # the taper would cover the whole vessel, and spread with each merge.
+            if taper_meets_vessel(d1, d2):
+                continue
 
             # Degenerate case: both incident edges point to the same neighbor.
             # Removing the node here can collapse/erase valid parallel paths.
@@ -438,7 +445,7 @@ def smart_multigraph_degree2_removal(
                 "merged": True,
                 "original_edges": 2,
             }
-            if d1.get(THICK_TAPER) or d2.get(THICK_TAPER):
+            if d1.get(THICK_TAPER) and d2.get(THICK_TAPER):
                 merged_attrs[THICK_TAPER] = True
             smoothing = _merged_smoothing(d1, d2)
             if smoothing is not None:

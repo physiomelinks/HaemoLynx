@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 import networkx as nx
 import numpy as np
@@ -133,6 +133,8 @@ FROM_TREE = "thick_centreline_from_tree"
 #: does a bridge -- never one of a pair in one lumen, a doubled stretch or
 #: the side of a short loop it breaks. Without the mark it took the taper
 #: for a second strand and rewired the vessels round it (E14.5, 2026-10-13).
+#: A taper is never merged with a vessel at a degree-2 node
+#: (:func:`taper_meets_vessel`), so the mark stays on the taper.
 THICK_TAPER = "thick_taper"
 
 #: At a fork of the thick centreline, an arm this much narrower than the
@@ -233,6 +235,16 @@ def _labels(points: np.ndarray, on_tree: np.ndarray, in_region: np.ndarray) -> n
         if along[e] - along[s] < needed:
             absorbed[s : e + 1] = _INSIDE
     return absorbed
+
+
+def taper_meets_vessel(d1: Mapping[str, Any], d2: Mapping[str, Any]) -> bool:
+    """Whether, of two edges meeting at a node, one is a taper
+    (:data:`THICK_TAPER`) and the other is not: kept two at a degree-2 node,
+    as a bridge is kept from its vessel. Merged, the taper lent the whole
+    vessel the lumen clean-up's protection, and each merge after spread it
+    further; dropped at the merge, the clean-up took the taper for a second
+    strand."""
+    return bool(d1.get(THICK_TAPER)) != bool(d2.get(THICK_TAPER))
 
 
 def thick_vessel_centreline(
@@ -403,6 +415,7 @@ def insert_thick_vessel_junction_nodes(
     join_dead_ends_at_walls: bool = True,
     bridge_forks: bool = True,
     fill_tree_gaps: bool = True,
+    fill_attributes: Mapping[str, Any] | None = None,
     max_background_gap_um: float | None = None,
     min_mask_fraction: float | None = None,
     max_short_loop_um: float | None = None,
@@ -443,13 +456,17 @@ def insert_thick_vessel_junction_nodes(
     is more than :data:`TREE_FILL_MIN_DETOUR` times as long or missing, the
     tree's own path is added as the thick vessel's centreline
     (:data:`FROM_TREE`, :func:`_fill_tree_gaps`). Every vessel reaching the
-    thick vessel there can then be bridged to it.
+    thick vessel there can then be bridged to it. Each stretch drawn also
+    takes *fill_attributes* (post-processing marks it edited, so it is
+    measured as a vessel drawn by hand is).
 
     With *edges* (``(u, v, key)``, either way round) only those are rebuilt,
     and one already a bridge is left as it is; every other edge stays as it
-    was, except that a bridge may join it where it is the thick centreline.
-    That is how a hand-edited vessel gets its bridge without the network's
-    existing ones being made again.
+    was, except that a bridge may join it where it is the thick centreline,
+    and the fill draws only the gaps one of *edges* reaches, as far as a
+    bridge from it looks for the thick centreline. That is how a hand-edited
+    vessel gets its bridge without the network's existing ones, or its thick
+    centreline elsewhere, being made again.
 
     Returns a new graph; *G* is left as it is.
     """
@@ -496,7 +513,22 @@ def insert_thick_vessel_junction_nodes(
         None if edges is None else {(frozenset((u, v)), key) for u, v, key in edges}
     )
     if fill_tree_gaps:
-        filled = _fill_tree_gaps(result, tree_voxels, vs, tree_points, tree_tolerance, finite)
+        # A post-processing split fills only beside the edges it rebuilds:
+        # filling everywhere redrew the network's thick centreline far from
+        # any edit, a stretch a hand edit had taken out included.
+        named = None
+        if chosen is not None:
+            named = [
+                densify_polyline(_polyline_from(result, u, v, d), max_step_um=_SAMPLE_STEP_UM)
+                for u, v, k, d in result.edges(keys=True, data=True)
+                if (frozenset((u, v)), k) in chosen and not d.get(IS_ZERO_RESISTANCE)
+                and "pos" in result.nodes[u] and "pos" in result.nodes[v]
+            ]
+            named = np.vstack(named) if named else np.empty((0, 3))
+        filled = _fill_tree_gaps(
+            result, tree_voxels, vs, tree_points, tree_tolerance, finite,
+            near=named, attributes=fill_attributes,
+        )
         if filled:
             logger.info(
                 "Thick-vessel bridges: %d stretch(es) of the thick centreline tree the graph "
@@ -742,6 +774,13 @@ def insert_thick_vessel_junction_nodes(
     return built
 
 
+def _bridge_reach_um(radius):
+    """How far a bridge looks for the thick centreline from where its vessel
+    meets the thick-vessel region, given the lumen radius there: the radius,
+    the margin, and an oblique way in."""
+    return 2.0 * radius + 5.0
+
+
 def _choose_bridges(
     sampled, inside_runs, find, bridged, tree, tree_radius, edges_at, node_on_centreline,
     node_pos, graph, cand_tree, cand_index, contacts, through,
@@ -767,8 +806,7 @@ def _choose_bridges(
             i, k = origin[1]
             where = sampled[i].points[k]
             source = sampled[i]
-        # From the region's boundary: the radius, the margin, and an oblique way in.
-        reach = 2.0 * float(tree_radius[tree.query(where)[1]]) + 5.0
+        reach = _bridge_reach_um(float(tree_radius[tree.query(where)[1]]))
         met = [
             (float(np.linalg.norm(sampled[i].points[k] - where)), (i, k))
             for root in {dropped_from[c] for c in beside if c in dropped_from}
@@ -900,7 +938,7 @@ def _rebuild(G, base, sampled, bridges, node_pos, tapered=()):
             (_n, n1, _k1, d1), (_m, n2, _k2, d2) = incident
             if n1 == n2 or n1 == node or n2 == node:
                 continue
-            if d1.get(IS_ZERO_RESISTANCE) or d2.get(IS_ZERO_RESISTANCE):
+            if d1.get(IS_ZERO_RESISTANCE) or d2.get(IS_ZERO_RESISTANCE) or taper_meets_vessel(d1, d2):
                 continue
             merged_attrs = create_trivial_merged_edge(d1, d2, result.nodes[node].get("pos"))
             result.remove_node(node)
@@ -952,9 +990,12 @@ def _taper_bridges(G, bridge_ends) -> set[int]:
     return tapers
 
 
-def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius):
+def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius, *, near=None, attributes=None):
     """Draw the thick centreline tree into *G*, in place, wherever no graph
-    centreline follows it. Returns how many stretches were added.
+    centreline follows it. Returns how many stretches were added. With
+    *near* (points, um), only a gap one of them reaches as a bridge would
+    (:func:`_bridge_reach_um` of the lumen radius at a gap voxel); each
+    stretch drawn also takes *attributes*.
 
     A gap is a run of tree voxels no non-bridge graph centreline comes within
     the tree's tolerance of, :data:`TREE_GAP_MIN_UM` or longer, with tree
@@ -982,6 +1023,12 @@ def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius
     tree_vox = np.argwhere(tree_voxels)
     if len(tree_vox) < 2:
         return 0
+    reaching = None
+    if near is not None:
+        near = np.asarray(near, dtype=float).reshape(-1, 3)
+        if len(near) == 0:
+            return 0
+        reaching = cKDTree(near)
 
     def graph_samples():
         points, owners, arcs = [], [], []
@@ -1019,6 +1066,12 @@ def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius
         gap_length = sum(d["weight"] for _a, _b, d in T.subgraph(gap).edges(data=True)) + 2 * float(vs.min())
         if gap_length < TREE_GAP_MIN_UM:
             continue
+        if reaching is not None:
+            voxels_in_gap = sorted(gap)
+            if not np.any(
+                reaching.query(tree_points[voxels_in_gap])[0] <= _bridge_reach_um(tree_radius[voxels_in_gap])
+            ):
+                continue
         joined = False
         for x, side in enumerate(sides):
             for other in sides[x + 1:]:
@@ -1071,8 +1124,9 @@ def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius
             path += [tree_points[i] for i in route[1:-1]]
             path.append(np.asarray(G.nodes[far]["pos"], dtype=float))
             voxels = [tuple(float(c) for c in p) for p in path]
-            G.add_edge(node, far, voxels=voxels, length=float(calculate_path_length(voxels)),
-                       centreline_smoothing="kept_raw", **{FROM_TREE: True})
+            G.add_edge(node, far, **{**(attributes or {}), "voxels": voxels,
+                                     "length": float(calculate_path_length(voxels)),
+                                     "centreline_smoothing": "kept_raw", FROM_TREE: True})
             added += 1
         points, owners, samples, arcs = graph_samples()
     return added
@@ -1137,21 +1191,23 @@ def _join_dead_ends_at_walls(
     (``build.gap_bridge_continues_terminal``: a vessel at least 3 um long,
     turning at most 80 degrees). The way is the route through the mask
     (``reconnect.route_through_mask``), else the straight line, whichever the
-    mask-support test accepts; its part outside the thick-vessel region must
-    not run beside a vessel in the same lumen, and the join must close no loop
-    inside one lumen. With *chosen* (the edges a post-processing split
-    rebuilds), only those edges' dead ends, and the joined edge joins them.
+    mask-support test accepts and leaves the tip within that turn itself
+    (``reconnect.path_continues_ends``); its part outside the thick-vessel
+    region must not run beside a vessel in the same lumen (judged at its
+    middle when short), and the join must close no loop inside one lumen.
+    With *chosen* (the edges a post-processing split rebuilds), only those
+    edges' dead ends, and the joined edge joins them.
     """
     from haemolynx.preprocessing.bridge_mask_support import (
         DEFAULT_MAX_BACKGROUND_GAP_UM, DEFAULT_MIN_MASK_FRACTION, MaskSupport,
     )
 
     from ._helpers import EdgeSampleIndex, duplicates_existing_vessel
-    from .build import gap_bridge_continues_terminal
+    from .build import MAX_GAP_BRIDGE_TURN_DEG, gap_bridge_continues_terminal
     from .dead_end_extension import _closes_loop_in_lumen, _loop_through
     from .lumen_loops import DEFAULT_SHORT_LOOP_UM
     from .edit import insert_node_on_edge
-    from .reconnect import route_through_mask
+    from .reconnect import path_continues_ends, route_through_mask
 
     support = MaskSupport(
         lumen, tuple(vs),
@@ -1208,20 +1264,38 @@ def _join_dead_ends_at_walls(
             continue
         straight = np.vstack([p, q])
         routed = route_through_mask(lumen, p, q, tuple(vs))
-        path = next((c for c in (routed, straight) if c is not None and support.accepts(c)), None)
+        path, turned = None, False
+        for candidate in (routed, straight):
+            if candidate is None or not support.accepts(candidate):
+                continue
+            # The turn on the path drawn, as for every mask-supported bridge:
+            # a route round background can leave the tip sideways or back
+            # where the straight line to the centreline does not.
+            if not path_continues_ends(G, candidate, (n, None), MAX_GAP_BRIDGE_TURN_DEG):
+                turned = True
+                continue
+            path = candidate
+            break
         if path is None:
-            refused_background += 1
+            if turned:
+                refused_turn += 1
+            else:
+                refused_background += 1
             continue
         path = densify_polyline(np.asarray(path, dtype=float), max_step_um=_SAMPLE_STEP_UM)
         # Inside the thick lumen the path is the bridge-to-be; outside it, a
         # piece of vessel, which must not be a second strand beside another.
+        # Judged at its middle when too short for anything to be judged away
+        # from its ends, as a reconnect's bridge is: most joins are.
         distance, nearest = tree.query(path)
         in_lumen = np.flatnonzero(distance <= np.nan_to_num(tree_radius[nearest], posinf=0.0))
         outside = path[: int(in_lumen[0]) if len(in_lumen) else len(path)]
         if (
             len(outside) >= 2
             and calculate_path_length([tuple(r) for r in outside]) >= 2.0
-            and duplicates_existing_vessel(outside, G, support.inside, support.radius, index=index)
+            and duplicates_existing_vessel(
+                outside, G, support.inside, support.radius, index=index, judge_short_at_middle=True,
+            )
         ):
             refused_beside += 1
             continue
@@ -1246,7 +1320,7 @@ def _join_dead_ends_at_walls(
             chosen.add((frozenset((w, node)), new_key))
         index.add(path)
         joined += 1
-    if joined or refused_background or refused_beside or refused_loop:
+    if joined or refused_turn or refused_background or refused_beside or refused_loop:
         logger.info(
             "Thick-vessel bridges: %d dead end(s) at a thick vessel's wall drawn on to its "
             "centreline through the mask; refused %d turning away from it, %d across background, "
@@ -1380,7 +1454,10 @@ def _remove_blind_vessels_beyond_bridges(built, G, tree, *, extent_um) -> tuple[
                 built.remove_node(n)
         if built.degree(inner) == 2 and (inner not in G or G.degree(inner) != 2):
             (_n, n1, _k1, d1), (_m, n2, _k2, d2) = list(built.edges(inner, keys=True, data=True))
-            if n1 != n2 and not d1.get(IS_ZERO_RESISTANCE) and not d2.get(IS_ZERO_RESISTANCE):
+            if (
+                n1 != n2 and not d1.get(IS_ZERO_RESISTANCE) and not d2.get(IS_ZERO_RESISTANCE)
+                and not taper_meets_vessel(d1, d2)
+            ):
                 merged = create_trivial_merged_edge(d1, d2, built.nodes[inner].get("pos"))
                 built.remove_node(inner)
                 built.add_edge(n1, n2, **merged)

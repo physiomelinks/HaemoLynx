@@ -380,6 +380,30 @@ def test_a_vessel_drawn_into_a_thick_vessel_becomes_a_bridge_inside_it(tmp_path)
     assert out.graph is model.graph is boundaries.graph is network.graph
 
 
+def test_a_gap_in_the_thick_centreline_beside_an_edit_is_drawn_and_measured(tmp_path):
+    """The tree fill in post-processing marks what it draws edited, so the
+    stage measures it with the run's own methods as it does a vessel drawn
+    by hand: it used to be left to the branch-order table's diameter."""
+    from haemolynx.graph.thick_vessel_junctions import FROM_TREE
+
+    run_settings, network, boundaries, model, _edge = _thick_run(tmp_path)
+    G = model.graph
+    # The graph's thick centreline broken from x = 44 to 50.
+    G.remove_edge(2, 3)
+    G.add_node(4, pos=np.asarray((5.0, 5.0, 44.0)))
+    G.add_node(5, pos=np.asarray((5.0, 5.0, 50.0)))
+    for a, b in ((2, 4), (5, 3)):
+        voxels = [tuple(G.nodes[a]["pos"]), tuple(G.nodes[b]["pos"])]
+        G.add_edge(a, b, voxels=voxels, length=calculate_path_length(voxels), branch_order="B01")
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    drawn = [d for *_e, d in out.graph.edges(data=True) if d.get(FROM_TREE)]
+    assert drawn and sum(d["length"] for d in drawn) == pytest.approx(6.0, abs=1.5)
+    # Measured with the drawn vessel's own two pieces: up to the wall, and its bridge.
+    assert out.results["post_process"]["edited_vessels"] == 2 + len(drawn)
+
+
 def test_a_vessel_drawn_on_along_a_thick_vessels_line_from_its_end_gets_no_bridge(tmp_path):
     """The thick vessel narrowing into the drawn one (Harvey, 2026-10-13:
     bridges along a vessel's own line should not be there): the drawn vessel

@@ -500,7 +500,7 @@ are only caught locally.
   meeting its parent is not one), so no reconnect draws one segmented vessel twice; a bridge
   too short to leave anything judged once those ends are left out (in a lumen 6 um round, any
   under 14 um) is judged at its middle -- only where a reconnect draws a bridge
-  (`judge_short_at_middle`: `MaskBridges`, the skeleton gate), not in mask recovery or the
+  (`judge_short_at_middle`: `MaskBridges`, the skeleton gate, the thick-vessel wall join), not in mask recovery or the
   doubled-stretch rule, where on E14.5 it cost 1.1 points of mask coverage. The gap, optimise
   and orphan reconnects judge the 80-degree turn on the path drawn, not the chord
   (`MaskBridges.bridge(ends=, max_turn_deg=)`): on E14.5 that and the middle sample refused 13
@@ -832,7 +832,7 @@ are only caught locally.
   body: the thick vessel's segmented boundary) to the centreline; a bridge is never a dead end nor
   attached to one. The centreline is the tree `skeletonize_edt_ridge` draws through the region,
   found again from the region (9 s on E14.5, so nothing new is carried through resume or a
-  `.haemorun`). Where the graph's own thick centreline leaves a gap in the tree (3 um or more) and has no way across it under 2.1 times as long, the tree's path is drawn in first (`thick_vessel_fill_centreline_gaps`, on by default since 2026-10-15; fitted on Harvey's grid V, 18/20 against 13 for drawing none, not yet checked on a fresh grid); a sample is on it within 1.5 um or 30% of the local lumen radius, and a stretch
+  `.haemorun`). Where the graph's own thick centreline leaves a gap in the tree (3 um or more) and has no way across it under 2.1 times as long, the tree's path is drawn in first (`thick_vessel_fill_centreline_gaps`, on by default since 2026-10-15; fitted on Harvey's grid V, 18/20 against 13 for drawing none, not yet checked on a fresh grid; in post-processing only a gap an edited vessel reaches, as far as its bridge would look, and what is drawn is marked edited so the stage measures it); a sample is on it within 1.5 um or 30% of the local lumen radius, and a stretch
   near it counts only if long enough (3 um at an edge's end, 6 um within). Every edge reaching the
   region is labelled outside / centreline / inside: inside stretches joined through their nodes
   that lead out of the region and meet the centreline, or come within one lumen radius of it, are
@@ -853,8 +853,9 @@ are only caught locally.
   it) and report them on their own rows. See `PLAN_thick_vessel_bridges.md`. Three cases since,
   from Harvey's examples (2026-10-13, `PLAN_bridging.md` F1-F1c): a dead end stopping within
   `WALL_JOIN_REACH_UM` (10 um) of the thick lumen and heading for it (the gap bridges' 80-degree,
-  3 um rule) is first drawn on through the mask to the thick centreline, under the bridge gate and
-  the same-lumen and loop guards and never closing a loop shorter than the run's
+  3 um rule, judged on the path drawn as for the reconnects, `reconnect.path_continues_ends`)
+  is first drawn on through the mask to the thick centreline, under the bridge gate and
+  the same-lumen guard (a short join judged at its middle) and the loop guards, never closing a loop shorter than the run's
   `remove_short_loops_under_um` (on E14.5 all 10 short loops the build left ran through such
   a join), then bridged like any vessel (`join_dead_ends_at_walls`; the
   edge records `joined_at_thick_wall_um`) -- skeletonisation often ends a thin arm at the wall;
@@ -862,8 +863,10 @@ are only caught locally.
   degrees), the one most along it at each end, is the thick vessel narrowing and stays vessel
   (an elbow at the end keeps its bridge, and so does a side vessel leaving the same end), marked
   `THICK_TAPER` so the clean-up after the split leaves it alone as it does a bridge (never one of
-  a pair in one lumen, a doubled stretch or a short loop's side; degree-2 merging carries the
-  mark -- without it the clean-up rewired E14.5's tapers as second strands); and at a fork of the thick centreline an arm at most
+  a pair in one lumen, a doubled stretch or a short loop's side; degree-2 merging keeps a taper
+  apart from a vessel as it does a bridge, `taper_meets_vessel`: merged, the mark spread along
+  the whole vessel and on with every merge, and dropped, the clean-up rewired E14.5's tapers as
+  second strands); and at a fork of the thick centreline an arm at most
   `FORK_BRANCH_MAX_RADIUS_FRACTION` (0.8) of the trunk's radius gets a bridge over its stretch
   inside the trunk's lumen (`bridge_forks`).
 - **`optimisation/`** — the panel's **Optimise settings**: a sequential, image-informed search

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import networkx as nx
 import numpy as np
+import pytest
 
 from haemolynx.graph import diagnose_parallel_duplicates_in_lumen
 from haemolynx.graph.assemble import consolidate_lumen, lumen_cleanup
@@ -342,22 +343,35 @@ def test_a_pair_with_a_thick_vessel_taper_is_left_alone():
     assert remove_parallel_edges_in_lumen(G, support).number_of_edges() == 2
 
 
-def test_merging_at_a_degree_two_node_keeps_a_taper_mark():
-    """Whichever edge carries it, the merged edge does: dropped at the first
-    merge, the mark protected nothing in the clean-up's next round."""
+def test_a_taper_is_never_merged_with_a_vessel_so_its_mark_stays_on_it():
+    """Regression (review of 100293f..e1cf508): merged at a degree-2 node,
+    the taper lent the whole vessel beyond it the clean-up's protection, and
+    each merge after spread it further, to the thick vessel's own centreline
+    and to vessels nowhere near a thick lumen. Dropped at the merge instead,
+    the mark would protect nothing in the next round. So a taper is kept
+    apart from a vessel as a bridge is; two halves of one taper merge."""
     from haemolynx.graph.degree2 import create_trivial_merged_edge
     from haemolynx.graph.thick_vessel_junctions import THICK_TAPER
 
     G = polyline_graph([[(7, 7, 2), (7, 7, 20)], [(7, 7, 20), (7, 7, 30)], [(7, 7, 30), (7, 7, 57)]])
     G.edges[_edge(G, (7, 7, 20), (7, 7, 30))][THICK_TAPER] = True
     G = smart_multigraph_degree2_removal(G, None)
-    ((_u, _v, data),) = G.edges(data=True)
-    assert data.get(THICK_TAPER) is True
+    assert G.number_of_edges() == 3
+    (taper,) = [d for *_e, d in G.edges(data=True) if d.get(THICK_TAPER)]
+    assert taper["length"] == pytest.approx(10.0)
 
-    merged = create_trivial_merged_edge(
-        {"voxels": [(0, 0, 0), (0, 0, 5)]}, {"voxels": [(0, 0, 5), (0, 0, 9)], THICK_TAPER: True}, (0, 0, 5)
-    )
-    assert merged.get(THICK_TAPER) is True
+    G = polyline_graph([[(7, 7, 2), (7, 7, 20)], [(7, 7, 20), (7, 7, 30)], [(7, 7, 30), (7, 7, 57)]])
+    for a, b in (((7, 7, 20), (7, 7, 30)), ((7, 7, 30), (7, 7, 57))):
+        G.edges[_edge(G, a, b)][THICK_TAPER] = True
+    G = smart_multigraph_degree2_removal(G, None)
+    assert G.number_of_edges() == 2
+    (taper,) = [d for *_e, d in G.edges(data=True) if d.get(THICK_TAPER)]
+    assert taper["length"] == pytest.approx(37.0)
+
+    vessel, end = {"voxels": [(0, 0, 0), (0, 0, 5)]}, {"voxels": [(0, 0, 5), (0, 0, 9)], THICK_TAPER: True}
+    assert not create_trivial_merged_edge(vessel, end, (0, 0, 5)).get(THICK_TAPER)
+    assert not create_trivial_merged_edge(end, vessel, (0, 0, 5)).get(THICK_TAPER)
+    assert create_trivial_merged_edge(end, dict(end), (0, 0, 5)).get(THICK_TAPER) is True
 
 
 def test_merging_keeps_what_smoothing_did_saying_the_less_smoothed_half():

@@ -464,6 +464,47 @@ def test_a_vessel_running_alongside_the_thick_one_is_not_drawn_on_to_it():
     assert result.has_node("S") and result.degree("S") == 1
 
 
+def test_a_wall_join_whose_route_turns_back_on_the_tip_is_refused():
+    """Regression (review of 100293f..e1cf508): the join judged its turn on
+    the straight line to the centreline, but draws the route through the
+    mask. Here the straight line, dead ahead, crosses 5 um of background; the
+    mask's only way round leaves the tip backwards, up a vessel 3 um behind
+    it, and the join drew that, as no gap, optimise or orphan bridge may
+    (grid R: all 13 such bridges wrong)."""
+    from haemolynx.graph.thick_vessel_junctions import JOINED_AT_WALL_UM
+
+    lumen, body, tree = _thick()
+    _thin_vessel(lumen, (20, 30, 33), (20, 30, 63))
+    _thin_vessel(lumen, (20, 30, 37), (20, 38, 37))
+    _thin_vessel(lumen, (20, 38, 37), (20, 38, 20))
+    G = _graph(("T", "T1", (20, 38, 20), T1), ("X", "S", (20, 30, 63), (20, 30, 34)))
+
+    result = _split(G, lumen, body, tree)
+
+    assert not any(d.get(JOINED_AT_WALL_UM) for *_e, d in result.edges(data=True))
+    assert result.has_node("S") and result.degree("S") == 1
+
+
+def test_a_short_wall_join_beside_a_vessel_in_the_same_lumen_is_refused():
+    """Regression (review of 100293f..e1cf508): the same-lumen test left out
+    the samples within a lumen radius of either end, so a join under about
+    8 um, as most are, had none judged and was never refused. B stops 12 um
+    from the thick centreline, 2 um beside A, which runs on into the thick
+    vessel through the same segmented vessel: drawn on, B would be a second
+    strand beside A. It is judged at its middle, as every reconnect is."""
+    from haemolynx.graph.thick_vessel_junctions import JOINED_AT_WALL_UM
+
+    lumen, body, tree = _thick()
+    lumen[18:23, 26:35, 20:40] = True
+    G = _graph(("T0", "J", T0, (20, 29, 20)), ("J", "T1", (20, 29, 20), T1),
+               ("A", "J", (20, 29, 39), (20, 29, 20)), ("B", "S", (20, 31, 39), (20, 31, 32)))
+
+    result = _split(G, lumen, body, tree)
+
+    assert not any(d.get(JOINED_AT_WALL_UM) for *_e, d in result.edges(data=True))
+    assert result.has_node("S") and result.degree("S") == 1
+
+
 def test_a_post_processing_split_draws_on_only_the_edges_it_names():
     G, lumen, body, tree = _wall_case(33.0)
 
@@ -740,6 +781,28 @@ def test_a_gap_the_graph_joins_only_the_long_way_round_is_drawn_from_the_tree():
     assert sum(d["length"] for *_e, d in _from_tree(on)) == pytest.approx(40.0, abs=1.5)
     assert x_bridged(on)
     assert nx.number_connected_components(on) == 1
+
+
+def test_a_post_processing_split_fills_only_the_gaps_its_edges_reach():
+    """Regression (review of e1cf508): the fill ran over the whole network
+    whatever *edges* named, so every post-processing regenerate drew thick
+    centreline far from any edit -- where a hand edit had taken a stretch
+    out, too -- and left it unmeasured. Now only a gap a named edge reaches,
+    as far as a bridge from it looks for the thick centreline, is filled, and
+    what is drawn takes *fill_attributes* (the stage marks it edited)."""
+    G, lumen, body, tree = _gap()
+    G.add_node("F1", pos=(20.0, 2.0, 50.0))
+    G.add_node("F2", pos=(20.0, 20.0, 50.0))
+    G.add_edge("F1", "F2", voxels=_line((20, 2, 50), (20, 20, 50)), length=18.0)
+
+    far = _split(G, lumen, body, tree, edges=[("F1", "F2", 0)], fill_attributes={"edited": True})
+    near = _split(G, lumen, body, tree, edges=[("X", "S", 0)], fill_attributes={"edited": True})
+
+    assert not _from_tree(far)
+    assert sorted(far.edges(keys=True)) == sorted(G.edges(keys=True))
+    assert sum(d["length"] for *_e, d in _from_tree(near)) == pytest.approx(40.0, abs=1.5)
+    assert all(d.get("edited") for *_e, d in _from_tree(near))
+    assert len(_bridges(near)) == 1
 
 
 def test_the_graphs_own_way_is_measured_along_its_vessels():
