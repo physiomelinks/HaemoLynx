@@ -39,6 +39,7 @@ _CLEANUP_ARGUMENTS = (
     "bridge_min_mask_fraction",
     "stub_face_protection",
     "remove_short_loops_under_um",
+    "short_loop_keep_hole_over_um",
 )
 
 

@@ -405,3 +405,110 @@ def test_a_short_loop_through_a_thick_vessel_taper_is_left_to_the_review_list():
             d[THICK_TAPER] = True
     remove_short_loops(G, _support(_tube_mask()))
     assert _rows(G) == [4, 9]
+
+
+# --- except round a wide hole (grids Q and Q2) -------------------------------
+
+from haemolynx.graph.lumen_loops import DEFAULT_SHORT_LOOP_KEEP_HOLE_UM, loop_hole_um  # noqa: E402
+
+
+def _capillary_ring(hole_y: int = 30):
+    """Grid Q2's real loop: capillaries 2 um in radius round a block of
+    tissue, a ring 60 um along x and *hole_y* um across y, met by a vessel
+    half way up each short side (a and c): two sides of 60 + *hole_y* um."""
+    y0, y1, x0, x1 = 10, 10 + hole_y, 10, 70
+    ym = (y0 + y1) // 2
+    shape = (15, y1 + 11, 80)
+    corners = {"I": (ym, 0), "a": (ym, x0), "p": (y0, x0), "q": (y0, x1), "c": (ym, x1),
+               "r": (y1, x0), "s": (y1, x1), "O": (ym, 79)}
+    edges = (("a", "p"), ("p", "q"), ("q", "c"), ("c", "s"), ("s", "r"), ("r", "a"), ("I", "a"), ("c", "O"))
+    mask = np.zeros(shape, dtype=bool)
+    z, y, x = np.indices(shape)
+    G = nx.MultiGraph()
+    for name, (cy, cx) in corners.items():
+        G.add_node(name, pos=np.array([7.0, float(cy), float(cx)]))
+    for a, b in edges:
+        (ya, xa), (yb, xb) = corners[a], corners[b]
+        steps = int(max(abs(yb - ya), abs(xb - xa)))
+        path = [[7.0, ya + (yb - ya) * t / steps, xa + (xb - xa) * t / steps] for t in range(steps + 1)]
+        G.add_edge(a, b, voxels=path, length=_length(path))
+        if ya == yb:
+            mask |= ((z - 7) ** 2 + (y - ya) ** 2 <= 4) & (x >= min(xa, xb) - 2) & (x <= max(xa, xb) + 2)
+        else:
+            mask |= ((z - 7) ** 2 + (x - xa) ** 2 <= 4) & (y >= min(ya, yb) - 2) & (y <= max(ya, yb) + 2)
+    return G, mask
+
+
+_RING = ("a", "p", "q", "c", "s", "r")
+
+
+def _ring_loop(G):
+    return [e for e in G.edges(keys=True) if set(e[:2]) <= set(_RING)]
+
+
+def _ring_polyline(G):
+    """The ring's centreline, round it in order."""
+    hops = list(zip(_RING, _RING[1:] + _RING[:1]))
+    return np.vstack([np.asarray(G.edges[a, b, 0]["voxels"], float) for a, b in hops])
+
+
+def test_a_short_loop_round_a_wide_hole_is_left_to_the_review_list():
+    """Harvey's grids Q and Q2 (2026-10-15): of 60 loops the rule broke on
+    E14.5, shown with the side it took, those round a hole over 10 um were
+    real 29 times in 32. Such a loop stays; with the limit at 0 it is broken
+    as before."""
+    G, mask = _capillary_ring()
+    loop_um = sum(G.edges[e]["length"] for e in _ring_loop(G))
+    assert loop_um == pytest.approx(180.0) and loop_um < DEFAULT_SHORT_LOOP_UM
+
+    kept = remove_short_loops(G.copy(), _support(mask))
+    broken = remove_short_loops(G.copy(), _support(mask), keep_hole_over_um=0.0)
+
+    assert len(_ring_loop(kept)) == 6 and nx.cycle_basis(nx.Graph(kept))
+    assert len(_ring_loop(broken)) == 3 and nx.cycle_basis(nx.Graph(broken)) == []
+    assert nx.is_connected(broken)
+
+
+def test_two_strands_round_a_narrow_strip_are_still_broken():
+    """Grid Q's breaks (R): where a side should go, the hole is narrow --
+    two strands of one vessel either side of a pinhole or a thin strip."""
+    mask = _tube_mask()
+    mask[:, 6:9, 22:39] = False  # 3 um of tissue between the strands
+    G = _vessel_with(4, 9)
+    loop = np.vstack([_detour(4, 20.0, 40.0), _detour(9, 20.0, 40.0)[::-1]])
+    assert loop_hole_um(loop, _support(mask)) < DEFAULT_SHORT_LOOP_KEEP_HOLE_UM
+
+    remove_short_loops(G, _support(mask))
+
+    assert _rows(G) == [9]
+
+
+def test_the_hole_is_the_measure_the_grids_were_fitted_on():
+    """``loop_hole_um`` in the build is ``loop_measures``' chord_bg_median_um,
+    the measure grids Q and Q2's marks were fitted against."""
+    G, mask = _capillary_ring(hole_y=24)
+    loop = _ring_polyline(G)
+
+    hole = loop_hole_um(loop, _support(mask))
+
+    assert hole == pytest.approx(loop_measures(loop, mask=mask)["chord_bg_median_um"])
+    assert hole > DEFAULT_SHORT_LOOP_KEEP_HOLE_UM  # chords run corner to corner, across the tissue block
+    assert loop_hole_um(loop[:2], _support(mask)) is None
+
+
+def test_the_hole_limit_defaults_to_the_grids_and_is_a_setting():
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.stages import graph_build_arguments, thick_junction_bridge_arguments
+
+    assert DEFAULT_SHORT_LOOP_KEEP_HOLE_UM == 10.0
+    setting = default_schema()["short_loop_keep_hole_over_um"]
+    assert setting.default == DEFAULT_SHORT_LOOP_KEEP_HOLE_UM and setting.unit == "um"
+    assert setting.advanced and "bridge_require_mask_support" in setting.requires
+    settings = default_schema().defaults()
+    settings["short_loop_keep_hole_over_um"] = 0.0
+    assert graph_build_arguments(settings)["short_loop_keep_hole_over_um"] == 0.0
+    assert thick_junction_bridge_arguments(settings)["short_loop_keep_hole_um"] == 0.0
+    # Settings that predate it get the grids' limit.
+    old = {"bridge_require_mask_support": True, "bridge_max_background_gap_um": 2.0,
+           "bridge_min_mask_fraction": 0.8, "remove_short_loops_under_um": 200.0}
+    assert thick_junction_bridge_arguments(old)["short_loop_keep_hole_um"] == DEFAULT_SHORT_LOOP_KEEP_HOLE_UM

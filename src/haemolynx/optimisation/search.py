@@ -1013,6 +1013,9 @@ def _graph_kwargs(settings: Mapping[str, Any], voxel_size_zyx: Sequence[float]) 
         remove_short_loops_under_um=float(
             settings.get("remove_short_loops_under_um", graph_mod.lumen_loops.DEFAULT_SHORT_LOOP_UM) or 0.0
         ),
+        short_loop_keep_hole_over_um=float(
+            settings.get("short_loop_keep_hole_over_um", graph_mod.lumen_loops.DEFAULT_SHORT_LOOP_KEEP_HOLE_UM) or 0.0
+        ),
     )
 
 

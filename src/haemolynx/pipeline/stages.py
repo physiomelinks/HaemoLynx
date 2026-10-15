@@ -1251,8 +1251,16 @@ def thick_junction_bridge_arguments(settings: dict) -> dict[str, Any]:
         max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
         min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
         max_short_loop_um=float(settings.get("remove_short_loops_under_um") or 0.0),
+        short_loop_keep_hole_um=_short_loop_keep_hole_um(settings),
         fill_tree_gaps=bool(settings.get("thick_vessel_fill_centreline_gaps", True)),
     )
+
+
+def _short_loop_keep_hole_um(settings: dict) -> float:
+    """``short_loop_keep_hole_over_um``, its default when a caller's settings
+    predate it."""
+    value = settings.get("short_loop_keep_hole_over_um", graph.lumen_loops.DEFAULT_SHORT_LOOP_KEEP_HOLE_UM)
+    return float(value or 0.0)
 
 
 def graph_build_arguments(settings: dict) -> dict[str, Any]:
@@ -1283,6 +1291,7 @@ def graph_build_arguments(settings: dict) -> dict[str, Any]:
         recovery_min_length_um=float(settings["recovery_min_length_um"]),
         facing_dead_end_max_gap_um=float(settings["facing_dead_end_max_gap_um"]),
         remove_short_loops_under_um=float(settings.get("remove_short_loops_under_um") or 0.0),
+        short_loop_keep_hole_over_um=_short_loop_keep_hole_um(settings),
         extend_dead_ends_to_faces=bool(settings.get("extend_dead_ends_to_faces", False)),
         trace_on_dead_ends=bool(settings.get("trace_on_dead_ends", False)),
         join_dead_ends_to_vessel_sides=bool(settings.get("join_dead_ends_to_vessel_sides", False)),
@@ -1529,6 +1538,7 @@ def build_network(
                 debug=settings["verbose_logging"],
                 stub_face_protection=settings.get("stub_face_protection") or "threshold",
                 remove_short_loops_under_um=float(settings.get("remove_short_loops_under_um") or 0.0),
+                short_loop_keep_hole_over_um=_short_loop_keep_hole_um(settings),
             )
             if settings["smooth_centrelines"]:
                 G = graph.assemble.consolidate_lumen(G, lumen_cleanup)

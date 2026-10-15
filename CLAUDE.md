@@ -626,9 +626,20 @@ are only caught locally.
   55 of 60 short loops of E14.5 close inside one vessel, the in-lumen rule found none of them
   (the background it reads between the two sides as tissue was not tissue there), and no
   measure of the mask or the raw image found the five real ones (46-179 µm) -- so the rule is
-  the trivial one, right 92-93 % at the cost of one real loop in twelve. Which side goes is the
-  loop breaker's choice, not judged by the marks; the Short loops review list shows what is
-  left, and 0 leaves every short loop to it. `preprocessing/raw_evidence.py` (`RawEvidence`: the
+  the trivial one, right 92-93 % at the cost of one real loop in twelve. Except round a wide
+  hole (`short_loop_keep_hole_over_um`, **10 µm** by default since 2026-10-15): a loop whose
+  hole -- `lumen_loops.loop_hole_um`, the median background its antipodal chords cross,
+  `loop_measures`' `chord_bg_median_um` -- is wider is left alone. Grids Q and Q2
+  (`outputs/loop_break_review/FIT_Q*.md`, 60 of the rule's breaks on E14.5, each drawn with
+  the side it took): where a side should go it took the right one every time, but most
+  loops round a wide hole were real, and breaking one merged it with its neighbour into a
+  longer loop that was broken in turn (44% of the first pass's breaks). Over 10 µm 29 of 32
+  were real, under it 24 of 28 false: 53/60 leave-one-out against 33 all one way. Fitted on
+  Q (9.2 µm), held on Q2's big holes (21 of 26 real); grid I/I2's "real or false?" marks had
+  called 6 of 9 big-hole loops false, and the six shown again blind in Q2 all came back
+  real. E14.5 skeleton reach 68.5 -> 70.5%, 40 short loops left for the review list.
+  0 breaks every short loop. The Short loops review list shows what is left, and 0 for the
+  length leaves every short loop to it. `preprocessing/raw_evidence.py` (`RawEvidence`: the
   raw channel read in windows where the mask is silent, calibrated once per build and kept on
   `G.graph["raw_evidence"]`) shipped no rule: on grids H, H2 (one lumen or two), M, M2 (a
   vessel across a gap) and I (loop holes) no raw measure beat marking everything one way
@@ -865,7 +876,8 @@ are only caught locally.
   3 um rule, judged on the path drawn as for the reconnects, `reconnect.path_continues_ends`)
   is first drawn on through the mask to the thick centreline, under the bridge gate and
   the same-lumen guard (a short join judged at its middle) and the loop guards, never closing a loop shorter than the run's
-  `remove_short_loops_under_um` (on E14.5 all 10 short loops the build left ran through such
+  `remove_short_loops_under_um` round a hole no wider than `short_loop_keep_hole_over_um`
+  -- one the clean-up would break (on E14.5 all 10 short loops the build left ran through such
   a join), then bridged like any vessel (`join_dead_ends_at_walls`; the
   edge records `joined_at_thick_wall_um`) -- skeletonisation often ends a thin arm at the wall;
   a bridge carrying a thick centreline's end on along its own line (`TAPER_MIN_COSINE`, 45

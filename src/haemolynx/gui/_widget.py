@@ -567,8 +567,11 @@ class _StatisticsPanel:
         """Show *report*'s sections, each behind its own button."""
         from qtpy.QtWidgets import QPushButton
 
-        from haemolynx.gui.chrome_tooltips import STATISTICS_SECTION_TOOLTIP
-        from haemolynx.gui.statistics_view import statistics_sections, statistics_summary
+        from haemolynx.gui.statistics_view import (
+            section_tooltip,
+            statistics_sections,
+            statistics_summary,
+        )
 
         if self._shown and report is self.report:
             return
@@ -587,7 +590,7 @@ class _StatisticsPanel:
             button.setFlat(True)
             button.setCheckable(True)
             button.setStyleSheet("text-align: left; padding: 2px 4px;")
-            button.setToolTip(STATISTICS_SECTION_TOOLTIP)
+            button.setToolTip(section_tooltip(section.key))
             self._sections_layout.addWidget(button)
             self.sections[section.key] = section
             self.buttons[section.key] = button

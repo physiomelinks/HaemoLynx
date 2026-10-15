@@ -3076,6 +3076,25 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="short_loop_keep_hole_over_um",
+            kind="float",
+            default=10.0,
+            help=(
+                "Leave a short loop to the Short loops review list instead of breaking it "
+                "when the tissue hole it runs round is wider than this: the median "
+                "background crossed by lines drawn across the loop, side to opposite side. "
+                "On E14.5 loops round a hole over 10 um were real 29 times in 32, and loops "
+                "round a smaller one false 24 times in 28 (Harvey's grids Q and Q2, 60 of "
+                "the rule's breaks). 0 breaks every short loop. No effect while "
+                "remove_short_loops_under_um is 0"
+            ),
+            section=_PIPELINE_STAGES,
+            unit="um",
+            minimum=0.0,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
             name="extend_dead_ends_to_faces",
             kind="bool",
             default=False,

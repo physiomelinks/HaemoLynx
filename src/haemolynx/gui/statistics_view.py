@@ -93,6 +93,17 @@ def section_title(key: str) -> str:
     return SECTION_TITLES.get(key) or key.replace("_", " ").capitalize()
 
 
+def section_tooltip(key: str) -> str:
+    """The button's hover text for section *key*: what its statistic
+    measures, or what the button does for a section with no entry."""
+    from haemolynx.gui.chrome_tooltips import (
+        STATISTICS_SECTION_TOOLTIP,
+        STATISTICS_SECTION_TOOLTIPS,
+    )
+
+    return STATISTICS_SECTION_TOOLTIPS.get(key, STATISTICS_SECTION_TOOLTIP)
+
+
 def _order(key: str, position: int) -> tuple[int, int]:
     if key in STATISTIC_MEASURES:
         return (0, STATISTIC_MEASURES.index(key))

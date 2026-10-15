@@ -19,7 +19,7 @@ from haemolynx.gui._widget import (  # noqa: E402
     settings_widget,
 )
 from haemolynx.gui.results import ResultLayers  # noqa: E402
-from haemolynx.gui.statistics_view import statistics_sections  # noqa: E402
+from haemolynx.gui.statistics_view import section_tooltip, statistics_sections  # noqa: E402
 from haemolynx.pipeline.stages import HAEMODYNAMICS_SECTION, STATISTICS_REPORT  # noqa: E402
 from test_gui_view_panel import _left_tabs, _settle  # noqa: E402
 
@@ -89,8 +89,11 @@ def test_a_button_per_section_each_hiding_its_results_until_pressed(make_napari_
     assert stats.summary.text().startswith("4 results from the last run in fast mode.")
     # Nothing behind a button is built, let alone shown, until it is pressed.
     assert stats.bodies == {}
-    for key, button in stats.buttons.items():
-        assert button.toolTip(), key
+    # Each button's hover text explains its own statistic.
+    tooltips = {key: button.toolTip() for key, button in stats.buttons.items()}
+    assert tooltips == {key: section_tooltip(key) for key in stats.buttons}
+    assert len(set(tooltips.values())) == len(tooltips)
+    assert "Murray's law" in tooltips["murray_law"]
 
     stats.buttons["dead_ends"].click()
     _settle()
