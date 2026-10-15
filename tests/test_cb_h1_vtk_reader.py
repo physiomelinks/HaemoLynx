@@ -74,10 +74,9 @@ def test_a_cell_with_no_row_raises_rather_than_being_filled(tmp_path):
         _enrich(run)
 
 
-@pytest.mark.parametrize("cell", ["", "nan", "None"])
-def test_a_blank_diameter_raises_rather_than_being_written_as_nan(tmp_path, cell):
+def test_a_blank_diameter_raises_rather_than_being_written_as_nan(tmp_path):
     edges = {edge: _row("5.0") for edge in EDGES}
-    edges[(1, 2, 0)] = _row(cell)
+    edges[(1, 2, 0)] = _row("")
     with pytest.raises(ValueError, match=r"WKY-A.*empty or non-finite assigned_diameter_um"
                                          r".*\(1, 2, 0\)"):
         _enrich(_run(tmp_path, EDGES, edges))

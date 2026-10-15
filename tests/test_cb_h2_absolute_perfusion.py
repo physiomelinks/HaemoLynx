@@ -12,13 +12,13 @@ import pytest
 from cb_h2_absolute_perfusion import (
     TARGET_VELOCITY_UM_S, perfusion_summary, select_boundaries,
 )
+from ImageLynx.cb_settings import INLET_PRESSURE_MMHG as P_IN
+from ImageLynx.cb_settings import OUTLET_PRESSURE_MMHG as P_OUT
 from ImageLynx.haemodynamics.resistance import POISEUILLE_FLOW_TO_UM3_PER_S
 from ImageLynx.haemodynamics.rheology import (
     calculate_pries_secomb_viscosity,
     solve_coupled_flow_and_hematocrit,
 )
-
-P_IN, P_OUT = 60.0, 20.0
 
 
 def _y_network():

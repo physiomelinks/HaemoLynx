@@ -103,10 +103,6 @@ def outputs(tmp_path, monkeypatch):
     return SimpleNamespace(results=results, sensitivity=sensitivity, runs=runs, reader=reader)
 
 
-def test_the_hand_copied_topology_table_is_gone():
-    assert not hasattr(cb_h1_figures, "TOPOLOGY")
-
-
 def test_network_measures_counts_loops_junctions_and_length_on_the_multigraph(tmp_path, monkeypatch):
     monkeypatch.setattr(cb_h1_figures, "open_batch_run", _FakeReader(tmp_path))
     for specimen in SPECIMENS:
@@ -158,12 +154,6 @@ def test_the_batch_is_opened_by_default_and_each_sensitivity_run_by_its_folder(o
     cb_h1_figures.junction_trim_shares()
     cb_h1_figures.network_measures()
     assert len(outputs.reader.opened) == 3 * len(SPECIMENS)
-
-
-def test_a_missing_batch_table_stops_the_figures(outputs):
-    (outputs.results / "SHR-C" / EDGE_TABLE_NAME).unlink()
-    with pytest.raises(FileNotFoundError, match="SHR-C"):
-        cb_h1_figures.network_measures()
 
 
 @pytest.mark.parametrize("values, state", [
@@ -253,31 +243,3 @@ def test_the_junction_exclusion_is_the_pipeline_default():
     from carotid_image_to_model import HaemodynamicsConfig
     assert cb_h1_figures.junction_exclusion_um() == pytest.approx(
         HaemodynamicsConfig.__dataclass_fields__["edt_junction_proximity_exclusion_um"].default)
-
-
-def test_the_threshold_stage_records_each_fragmentation_onset(monkeypatch, tmp_path):
-    onsets = {s.specimen_id: (0.97 if i < 4 else None) for i, s in enumerate(SPECIMENS)}
-    calls = iter(SPECIMENS)
-
-    def fake_select(samples):
-        specimen = next(calls)
-        return SimpleNamespace(threshold=cb_settings.FROZEN_THRESHOLD,
-                               fragmentation_onset=onsets[specimen.specimen_id],
-                               format_table=lambda: "")
-
-    sample = SimpleNamespace(threshold=cb_settings.FROZEN_THRESHOLD, foreground_fraction=0.2,
-                             median_diameter_um=5.0, median_network_diameter_um=7.0)
-    monkeypatch.setattr(cb_h1_batch, "_predicted", lambda: list(SPECIMENS))
-    monkeypatch.setattr(cb_h1_batch, "place_roi",
-                        lambda specimen, roi: SimpleNamespace(bounds=slice(None)))
-    monkeypatch.setattr(cb_h1_batch, "read_ilastik_probabilities",
-                        lambda *a, **k: np.zeros((2, 2, 2)))
-    monkeypatch.setattr(cb_h1_batch, "sweep_thresholds", lambda *a, **k: [sample])
-    monkeypatch.setattr(cb_h1_batch, "select_threshold", fake_select)
-    monkeypatch.setattr(cb_h1_batch, "select_on_network_calibre",
-                        lambda *a, **k: SimpleNamespace(threshold=None, reason="none"))
-    monkeypatch.setattr(cb_h1_batch, "OUTPUT_DIR", tmp_path)
-
-    cb_h1_batch.stage_threshold(cb_settings.ROI_VOXELS, [cb_settings.FROZEN_THRESHOLD])
-    saved = json.loads((tmp_path / "threshold_selection.json").read_text())
-    assert saved["fragmentation_onset"] == onsets

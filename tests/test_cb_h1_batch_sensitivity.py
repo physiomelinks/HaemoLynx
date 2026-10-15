@@ -3,12 +3,16 @@
 Given ``--hysteresis-low`` alone the pipeline seeds at low + 0.05, so the 0.93 run used to seed at
 0.98 while the frozen run seeds at 0.999. The stage now passes the frozen seed explicitly.
 """
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 import cb_h1_batch
 from ImageLynx import cb_settings
+from ImageLynx.statistics.threshold_selection import ThresholdSample
 
 
 def test_the_neighbours_are_the_frozen_value_s_grid_neighbours():
@@ -80,15 +84,30 @@ def test_the_frozen_run_command_is_unchanged(monkeypatch, tmp_path):
         cb_settings.FROZEN_THRESHOLD)
 
 
-def test_the_network_calibre_check_is_recorded_but_never_frozen(monkeypatch, tmp_path):
+@pytest.fixture
+def threshold_stage(monkeypatch, tmp_path):
+    """Run ``--stage threshold`` over every specimen on a stubbed sweep, without the data.
+
+    Call it with the sweep each specimen returns and the grid; it returns the frozen value and
+    the ``threshold_selection.json`` record the stage wrote.
+    """
+    monkeypatch.setattr(cb_h1_batch, "_predicted", lambda: list(cb_h1_batch.SPECIMENS))
+    monkeypatch.setattr(cb_h1_batch, "place_roi",
+                        lambda specimen, roi: SimpleNamespace(bounds=(slice(None),) * 3))
+    monkeypatch.setattr(cb_h1_batch, "read_ilastik_probabilities",
+                        lambda *a, **k: np.zeros((2, 2, 2)))
+    monkeypatch.setattr(cb_h1_batch, "OUTPUT_DIR", tmp_path)
+
+    def run(sweep, grid):
+        monkeypatch.setattr(cb_h1_batch, "sweep_thresholds", lambda *a, **k: sweep)
+        frozen = cb_h1_batch.stage_threshold(cb_settings.ROI_VOXELS, grid)
+        return frozen, json.loads((tmp_path / "threshold_selection.json").read_text())
+
+    return run
+
+
+def test_the_network_calibre_check_is_recorded_but_never_frozen(threshold_stage):
     """--stage threshold freezes on the plain cut; the d_net check sits beside it (open item 41)."""
-    import json
-    from dataclasses import replace
-
-    import numpy as np
-
-    from ImageLynx.statistics.threshold_selection import ThresholdSample
-
     def sample(threshold, d_med, d_net):
         return ThresholdSample(
             threshold=threshold, foreground_fraction=0.3, median_diameter_um=d_med,
@@ -101,22 +120,31 @@ def test_the_network_calibre_check_is_recorded_but_never_frozen(monkeypatch, tmp
     # Plain cut picks 0.95; d_net less one voxel picks 0.97 (d_net 6.46 -> 4.59 um).
     sweep = [sample(0.93, 5.27, 7.46), sample(0.95, 5.27, 7.46), sample(0.97, 3.73, 6.46)]
 
-    class _Placement:
-        bounds = (slice(None),) * 3
+    frozen, record = threshold_stage(sweep, [0.93, 0.95, 0.97])
 
-    monkeypatch.setattr(cb_h1_batch, "_predicted", lambda: cb_h1_batch.SPECIMENS)
-    monkeypatch.setattr(cb_h1_batch, "place_roi", lambda specimen, roi: _Placement())
-    monkeypatch.setattr(cb_h1_batch, "read_ilastik_probabilities",
-                        lambda *a, **k: np.zeros((1, 1, 1)))
-    monkeypatch.setattr(cb_h1_batch, "sweep_thresholds", lambda *a, **k: sweep)
-    monkeypatch.setattr(cb_h1_batch, "OUTPUT_DIR", tmp_path)
-
-    frozen = cb_h1_batch.stage_threshold(cb_settings.ROI_VOXELS, [0.93, 0.95, 0.97])
-
-    record = json.loads((tmp_path / "threshold_selection.json").read_text())
     assert frozen == record["frozen"] == 0.95
     assert set(record["per_specimen"].values()) == {0.95}
     check = record["robustness_network_calibre_less_voxel"]
     assert check["frozen"] == 0.97
     assert set(check["per_specimen"].values()) == {0.97}
 
+
+def test_the_threshold_stage_records_each_fragmentation_onset(threshold_stage, monkeypatch):
+    onsets = {s.specimen_id: (0.97 if i < 4 else None)
+              for i, s in enumerate(cb_h1_batch.SPECIMENS)}
+    calls = iter(cb_h1_batch.SPECIMENS)
+
+    def fake_select(samples):
+        specimen = next(calls)
+        return SimpleNamespace(threshold=cb_settings.FROZEN_THRESHOLD,
+                               fragmentation_onset=onsets[specimen.specimen_id],
+                               format_table=lambda: "")
+
+    sample = SimpleNamespace(threshold=cb_settings.FROZEN_THRESHOLD, foreground_fraction=0.2,
+                             median_diameter_um=5.0, median_network_diameter_um=7.0)
+    monkeypatch.setattr(cb_h1_batch, "select_threshold", fake_select)
+    monkeypatch.setattr(cb_h1_batch, "select_on_network_calibre",
+                        lambda *a, **k: SimpleNamespace(threshold=None, reason="none"))
+
+    _, saved = threshold_stage([sample], [cb_settings.FROZEN_THRESHOLD])
+    assert saved["fragmentation_onset"] == onsets

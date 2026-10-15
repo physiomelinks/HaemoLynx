@@ -6,19 +6,14 @@ micrometres. A transposed volume overlays the vessels perfectly well and puts ev
 in the wrong nest. So the frame is tested against a placed voxel rather than against the
 argument in the module docstring, and ``verify`` is tested by giving it a frame that is wrong.
 """
-import sys
-from pathlib import Path
-
 import networkx as nx
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
-
 pv = pytest.importorskip("pyvista")
 
 from cb_h2_vtk import (                                                   # noqa: E402
-    PENETRATION, _image, verify, write_glomus_clusters, write_glomus_surface,
+    PENETRATION, verify, write_glomus_clusters, write_glomus_surface,
     write_glomus_volume, write_perfusion, write_vessels,
 )
 from ImageLynx.haemodynamics.perfusion import PerfusionGrid               # noqa: E402
@@ -45,21 +40,12 @@ def _line_graph():
 
 # --- the frame ------------------------------------------------------------------------------
 
-def test_the_written_volume_puts_the_arrays_z_axis_on_vtks_x_axis():
-    """The convention the whole overlay rests on, checked on a deliberately asymmetric shape.
+def test_a_marked_voxel_lands_at_the_physical_point_its_index_names(tmp_path):
+    """Where one particular voxel ends up, which fixes both the axis order and the spacing.
 
     If the axes were written in the natural (x, y, z) reading of the array, a cube would hide
-    it and only the spacing would betray it. 4x6x8 cannot hide it.
+    it. A voxel asymmetric in all three axes cannot hide it.
     """
-    img = _image((4, 6, 8), PROCESSING_VOXEL_UM)
-    sz, sy, sx = PROCESSING_VOXEL_UM
-    assert img.bounds[1] == pytest.approx(4 * sz)     # VTK x spans the array's z
-    assert img.bounds[3] == pytest.approx(6 * sy)
-    assert img.bounds[5] == pytest.approx(8 * sx)
-
-
-def test_a_marked_voxel_lands_at_the_physical_point_its_index_names(tmp_path):
-    """The stronger form: not just the extent, but where one particular voxel ends up."""
     mask = np.zeros((4, 6, 8), dtype=bool)
     mask[3, 1, 5] = True                              # asymmetric in all three axes
     path = write_glomus_volume(_mask_state(mask), "T", tmp_path)
@@ -263,6 +249,7 @@ def test_verify_passes_when_the_penetrating_edges_really_sit_in_the_mask():
     assert result["penetrating_midpoint_inside_pct"] == 100.0
     assert result["non_penetrating_midpoint_inside_pct"] == 0.0
     assert result["perfusion_grid_contains_glomus_volume"] is True
+    assert result["glomus_outside_grid_pct"] == 0.0
     assert result["ok"] is True
 
 
@@ -287,26 +274,10 @@ def test_glomus_outside_the_grid_is_measured_and_does_not_block_the_export():
     """
     tall = np.zeros((100, 20, 20), dtype=bool)
     tall[0:43, 4:8, 4:8] = True                      # inside the grid, which reaches ~112 um
-    tall[80:100, 4:8, 4:8] = True                    # genuinely beyond it
+    tall[80:100, 4:8, 4:8] = True                    # beyond it: 20 of 63 slabs
     result = verify(_Spec(), _verifiable_state(tall))
 
     assert result["perfusion_grid_contains_glomus_volume"] is False
-    assert result["glomus_outside_grid_pct"] > 0.0
-    assert result["ok"] is True                      # registration is sound, so it is written
-
-
-def test_a_grid_that_spans_the_mask_reports_nothing_outside_it():
-    result = verify(_Spec(), _verifiable_state(_tube_mask()))
-
-    assert result["perfusion_grid_contains_glomus_volume"] is True
-    assert result["glomus_outside_grid_pct"] == 0.0
-
-
-def test_the_shortfall_is_the_true_fraction_of_tissue_the_grid_misses():
-    """A percentage that is merely non-zero would pass the test above while being wrong."""
-    mask = np.zeros((100, 20, 20), dtype=bool)
-    mask[0:43, 4:8, 4:8] = True                      # inside the grid, which reaches ~112 um
-    mask[80:100, 4:8, 4:8] = True                    # beyond it: 20 of 63 slabs
-
-    result = verify(_Spec(), _verifiable_state(mask))
+    # The true fraction of tissue the grid misses, not merely a non-zero one.
     assert result["glomus_outside_grid_pct"] == pytest.approx(100.0 * 20 / 63, abs=0.5)
+    assert result["ok"] is True                      # registration is sound, so it is written

@@ -62,6 +62,40 @@ def multigraph_with_branch_order():
     return G
 
 
+def cross_network(diameter=None, length=None, drop=None):
+    """Centre node joined to one terminal on each of the six ROI faces, in micrometres.
+
+    Node 7 hangs off the centre through a parallel pair, so the MultiGraph path is exercised,
+    and node 8 is an interior dead end off node 7, on no face. ``drop`` removes one node
+    before calibre and length are set. ``diameter`` and ``length`` are each
+    ``f(n, (u, v, key))`` over the edges in order: ``diameter`` sets ``assigned_diameter_um`` on the edge, and ``length`` fills the returned
+    ``length_um`` column, as ``BatchRun.numeric_column`` gives it (empty when not given).
+    Returns ``(G, lengths)``.
+    """
+    G = nx.MultiGraph()
+    mid, top = 148.0, 296.0
+    G.add_node(0, pos=np.array([mid, mid, mid]))
+    faces = [(0.0, mid, mid), (top, mid, mid), (mid, 0.0, mid),
+             (mid, top, mid), (mid, mid, 0.0), (mid, mid, top)]
+    for i, pos in enumerate(faces, start=1):
+        G.add_node(i, pos=np.array(pos))
+        G.add_edge(0, i)
+    G.add_node(7, pos=np.array([mid, 60.0, 100.0]))
+    G.add_node(8, pos=np.array([mid, 30.0, 100.0]))
+    G.add_edge(0, 7)
+    G.add_edge(0, 7)
+    G.add_edge(7, 8)
+    if drop is not None:
+        G.remove_node(drop)
+    lengths = {}
+    for n, edge in enumerate(G.edges(keys=True)):
+        if diameter is not None:
+            G.edges[edge]["assigned_diameter_um"] = diameter(n, edge)
+        if length is not None:
+            lengths[edge] = length(n, edge)
+    return G, lengths
+
+
 # --- A stand-in batch run ---------------------------------------------------------------------
 # One factory for every test that needs a batch run. It writes a tiny but complete run to
 # ``tmp_path`` and hands it back through the real ``open_batch_run``, so a change to the reader

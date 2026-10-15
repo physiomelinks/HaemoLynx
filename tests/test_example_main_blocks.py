@@ -3,14 +3,21 @@
 ``cb_h2_error_propagation.py`` called ``boundary_sensitivity()`` from a main block placed above
 the function's ``def``, so every run printed S10-S13 and then stopped with a NameError. The
 AST check covers every driver in ``examples/``; the other two tests pin the S20 line that now
-prints the within-specimen ratio ``main`` measured instead of a hard-coded 6.3%.
+prints the within-specimen ratio ``main`` measured instead of a hard-coded 6.3%, and check that
+every solve ``main`` makes uses the face rule's inlets and outlets (the 25% band rule it replaced,
+package C, under any name, fails it).
 """
 import ast
 from pathlib import Path
 
-import networkx as nx
 import numpy as np
 import pytest
+from cb_h1_batch import SENSITIVITY_DIR
+from conftest import cross_network
+
+from ImageLynx import cb_settings
+from ImageLynx.graph.boundaries import select_boundary_terminal_nodes_by_face
+from ImageLynx.specimens import BATCH_RUN_ROOT, PROCESSING_VOXEL_UM
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
@@ -52,29 +59,12 @@ def test_the_check_catches_a_call_above_its_definition(tmp_path):
 
 
 def _cross_network():
-    """Centre node joined to one terminal on each of the six ROI faces, in micrometres.
-
-    One extra branch reaches the low axis-1 face through a parallel pair, so the MultiGraph path
-    is exercised. Calibre and length come from an edge table, as they do from the batch-run reader.
-    """
-    G = nx.MultiGraph()
-    mid, top = 148.0, 296.0
-    G.add_node(0, pos=np.array([mid, mid, mid]))
-    faces = [(0.0, mid, mid), (top, mid, mid), (mid, 0.0, mid),
-             (mid, top, mid), (mid, mid, 0.0), (mid, mid, top)]
-    for i, pos in enumerate(faces, start=1):
-        G.add_node(i, pos=np.array(pos))
-        G.add_edge(0, i)
-    G.add_node(7, pos=np.array([mid, 60.0, 100.0]))
-    G.add_node(8, pos=np.array([mid, 0.5, 100.0]))
-    G.add_edge(0, 7)
-    G.add_edge(0, 7)
-    G.add_edge(7, 8)
-    lengths = {}
-    for n, (a, b, k) in enumerate(G.edges(keys=True)):
-        G.edges[a, b, k]["assigned_diameter_um"] = 4.0 + n
-        lengths[(a, b, k)] = 50.0 + 5 * n
-    return G, lengths
+    """The shared six-face cross, with calibre and length from an edge table as the batch-run
+    reader gives them. The widest edge is the axis-1 inlet's, so the shunt ratio is defined,
+    and the interior dead end (node 8) lies in the old 25% band but on no face, so a band
+    rule picks different inlets from the face rule."""
+    return cross_network(diameter=lambda n, edge: (10.0 if edge[:2] == (0, 3) else 4.0) + 0.1 * n,
+                         length=lambda n, edge: 50.0 + 5 * n)
 
 
 @pytest.fixture
@@ -96,18 +86,33 @@ def test_s20_prints_the_ratio_it_is_given_not_a_fixed_figure(propagation, capsys
     assert "6.3%" not in out
 
 
-def test_main_returns_the_within_specimen_ratio_it_prints(propagation, capsys):
+def test_main_returns_the_within_specimen_ratio_it_prints(propagation, monkeypatch, capsys):
+    solve = propagation.solve_edge_flows
+    boundaries = []
+
+    def spy(u, v, length, diameter, inlets, outlets, n_nodes):
+        boundaries.append((sorted(inlets.tolist()), sorted(outlets.tolist())))
+        return solve(u, v, length, diameter, inlets, outlets, n_nodes)
+
+    monkeypatch.setattr(propagation, "solve_edge_flows", spy)
     ratio = propagation.main(0.69)
     out = capsys.readouterr().out
     assert np.isfinite(ratio)
     assert f"-> {ratio:.1f}%)" in out
 
+    # Every solve main makes places pressure by the pipeline's face rule on the frozen axis.
+    G, *_, index = propagation.load_network("WKY-A")
+    inlet_nodes, outlet_nodes = select_boundary_terminal_nodes_by_face(
+        G, cb_settings.ROI_VOXELS, axis=cb_settings.BOUNDARY_AXIS,
+        face_tolerance_voxels=cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS,
+        voxel_size=PROCESSING_VOXEL_UM)
+    face_rule = (sorted(index[n] for n in inlet_nodes), sorted(index[n] for n in outlet_nodes))
+    assert boundaries and boundaries == [face_rule] * len(boundaries)
 
-_CALIBRE_INPUTS = Path(__file__).resolve().parents[1] / "examples" / "outputs"
 
-
-@pytest.mark.skipif(not (_CALIBRE_INPUTS / "cb_h1_sensitivity").is_dir()
-                    or not (_CALIBRE_INPUTS / "cb_h1_batch").is_dir(),
+@pytest.mark.realdata
+@pytest.mark.slow
+@pytest.mark.skipif(not SENSITIVITY_DIR.is_dir() or not BATCH_RUN_ROOT.is_dir(),
                     reason="needs the batch and sensitivity outputs (gitignored)")
 def test_the_propagation_default_is_the_measured_threshold_shift(capsys):
     """THRESHOLD_SHIFT_UM is copied from cb_h2_threshold_calibre.py; fail when it drifts."""

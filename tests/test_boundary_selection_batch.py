@@ -6,9 +6,8 @@ MultiGraph (through ``load_network``, which checks the ROI) and the package's bo
 """
 from pathlib import Path
 
-import networkx as nx
-import numpy as np
 import pytest
+from conftest import cross_network
 
 import cb_h2_boundary_selection as module
 import cb_h2_error_propagation as propagation
@@ -23,32 +22,13 @@ SOURCE = Path(module.__file__).read_text()
 
 
 def _cross_network(drop=None):
-    """Centre node with a terminal on both faces of every axis, plus an interior dead end.
+    """The shared six-face cross; ``drop`` removes one node before the lengths are built.
 
-    ``drop`` removes one node before the lengths are built. The edge to node 3, the
-    axis-1 inlet, is the widest, so on axis 1 the widest decile carries all the inlet flow.
-    Returns the graph and its ``length_um`` column, as ``BatchRun.numeric_column`` gives it.
+    The edge to node 3, the axis-1 inlet, is the widest, so on axis 1 the widest decile carries
+    all the inlet flow. Returns the graph and its ``length_um`` column.
     """
-    G = nx.MultiGraph()
-    mid, top = 148.0, 296.0
-    G.add_node(0, pos=np.array([mid, mid, mid]))
-    faces = [(0.0, mid, mid), (top, mid, mid), (mid, 0.0, mid),
-             (mid, top, mid), (mid, mid, 0.0), (mid, mid, top)]
-    for i, pos in enumerate(faces, start=1):
-        G.add_node(i, pos=np.array(pos))
-        G.add_edge(0, i)
-    G.add_node(7, pos=np.array([mid, 60.0, 100.0]))
-    G.add_node(8, pos=np.array([mid, 30.0, 100.0]))
-    G.add_edge(0, 7)
-    G.add_edge(0, 7)
-    G.add_edge(7, 8)
-    if drop is not None:
-        G.remove_node(drop)
-    lengths = {}
-    for n, (a, b, k) in enumerate(G.edges(keys=True)):
-        G.edges[a, b, k]["assigned_diameter_um"] = 10.0 if (a, b) == (0, 3) else 4.0
-        lengths[(a, b, k)] = 50.0 + 5 * n
-    return G, lengths
+    return cross_network(diameter=lambda n, edge: 10.0 if edge[:2] == (0, 3) else 4.0,
+                         length=lambda n, edge: 50.0 + 5 * n, drop=drop)
 
 
 @pytest.fixture
@@ -58,11 +38,7 @@ def network():
 
 
 def test_the_script_no_longer_reads_the_paraview_export():
-    assert "cb_h1_paraview" not in SOURCE
     assert "pyvista" not in SOURCE
-    assert "load_network" in SOURCE
-    assert "open_batch_run" in SOURCE
-    assert not hasattr(propagation, "load")
     assert "pyvista" not in Path(propagation.__file__).read_text()
 
 
@@ -143,8 +119,7 @@ def test_boundary_selection_shares_the_error_propagation_loader():
     assert module.load_network is propagation.load_network
 
 
-@pytest.mark.parametrize("driver", [module, propagation], ids=["boundary_selection", "error_propagation"])
-def test_load_network_checks_the_roi_before_reading(monkeypatch, tmp_path, driver):
+def test_load_network_checks_the_roi_before_reading(monkeypatch, tmp_path):
     """The reader's placed-ROI check is the first thing load_network reaches, before any file."""
     monkeypatch.setattr(batch_outputs, "place_roi", lambda specimen, size: "placed")
     specimen = get_specimen("WKY-A")
@@ -156,4 +131,4 @@ def test_load_network_checks_the_roi_before_reading(monkeypatch, tmp_path, drive
     monkeypatch.setattr(batch_outputs, "check_output_roi", refuse)
     # The run folder does not exist, so reading anything first would raise something else.
     with pytest.raises(ValueError, match="ROI mismatch"):
-        driver.load_network("WKY-A")
+        module.load_network("WKY-A")

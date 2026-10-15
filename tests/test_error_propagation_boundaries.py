@@ -2,40 +2,22 @@
 
 It used to pick inlets and outlets with its own 25% band on another axis, so the calibre error
 floors it reports were measured on pressure nodes no H2 flow uses. It also counted edges on a
-simple Graph, which merges parallel edges. These pin the face rule and the MultiGraph count.
+simple Graph, which merges parallel edges. These pin the face rule and the MultiGraph count;
+``test_example_main_blocks.py`` checks that every solve ``main`` makes uses the face rule.
 """
-import ast
-from pathlib import Path
-
 import networkx as nx
-import numpy as np
 import pytest
+from conftest import cross_network
 
 import cb_h2_error_propagation as module
 from ImageLynx import cb_settings
 from ImageLynx.graph.boundaries import select_boundary_terminal_nodes_by_face
 from ImageLynx.specimens import PROCESSING_VOXEL_UM
 
-SOURCE = Path(module.__file__)
-
-
 def _graph():
-    """Centre node with terminals on both faces of every axis, and a parallel pair to node 7."""
-    G = nx.MultiGraph()
-    mid, top = 148.0, 296.0
-    G.add_node(0, pos=np.array([mid, mid, mid]))
-    faces = [(0.0, mid, mid), (top, mid, mid), (mid, 0.0, mid),
-             (mid, top, mid), (mid, mid, 0.0), (mid, mid, top)]
-    for i, pos in enumerate(faces, start=1):
-        G.add_node(i, pos=np.array(pos))
-        G.add_edge(0, i)
-    # An interior dead end: a terminal on no face, which neither rule should make a boundary.
-    G.add_node(7, pos=np.array([mid, 60.0, 100.0]))
-    G.add_node(8, pos=np.array([mid, 30.0, 100.0]))
-    G.add_edge(0, 7)
-    G.add_edge(0, 7)
-    G.add_edge(7, 8)
-    return G
+    """The shared six-face cross: terminals on both faces of every axis, a parallel pair to
+    node 7, and an interior dead end (node 8) that neither rule should make a boundary."""
+    return cross_network()[0]
 
 
 def _inputs(G, skip=None):
@@ -67,15 +49,6 @@ def test_face_boundaries_default_to_the_frozen_axis_and_tolerance():
     assert module.BOUNDARY_AXIS == cb_settings.BOUNDARY_AXIS
     assert module.FACE_TOLERANCE == cb_settings.BOUNDARY_FACE_TOLERANCE_VOXELS
     assert module.ROI == cb_settings.ROI_VOXELS
-
-
-def test_the_band_rule_is_gone():
-    tree = ast.parse(SOURCE.read_text())
-    assigned = {t.id for node in ast.walk(tree) if isinstance(node, ast.Assign)
-                for t in node.targets if isinstance(t, ast.Name)}
-    functions = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
-    assert not assigned & {"AXIS", "EDGE_PERCENT", "END_PERCENT"}
-    assert "boundary_nodes" not in functions
 
 
 def test_edge_count_keeps_parallel_edges():

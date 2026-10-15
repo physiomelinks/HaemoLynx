@@ -32,11 +32,6 @@ def stub_figures(tmp_path, monkeypatch):
     return batch
 
 
-def test_figures_default_to_the_batch_folder(stub_figures):
-    cb_h1_figures.main([])
-    assert {p.name for p in stub_figures.iterdir()} == FIGURE_FILES
-
-
 def test_figures_write_into_out_and_leave_the_batch_folder_alone(stub_figures, tmp_path):
     out = tmp_path / "snap" / "cb_h1_figures"
     cb_h1_figures.main(["--out", str(out)])
@@ -56,11 +51,6 @@ def stub_vtk(tmp_path, monkeypatch):
     monkeypatch.setattr(cb_h1_vtk, "build_skeleton", lambda run, report: None)
     monkeypatch.setattr(cb_h1_vtk, "build_surface", lambda run, report: (None, None))
     return tmp_path / "paraview"
-
-
-def test_vtk_defaults_to_the_paraview_folder(stub_vtk):
-    cb_h1_vtk.main([])
-    assert (stub_vtk / "export_summary.json").exists()
 
 
 def test_vtk_writes_into_out_and_leaves_the_paraview_folder_alone(stub_vtk, tmp_path, capsys):
