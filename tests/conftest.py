@@ -223,6 +223,39 @@ def make_batch_run(tmp_path, monkeypatch):
     return make
 
 
+@pytest.fixture
+def stub_h1_vtk_builders(monkeypatch):
+    """Stub ``cb_h1_vtk``'s specimen list, ``stamp`` and its four builders, for ``main()`` tests.
+
+    Returns ``stub(vessels=None, nodes=None, skeleton=None, surface=None, grid=None,
+    events=None)``. Each builder returns what it is given (``build_surface`` returns
+    ``(surface, grid)``). With ``events`` a list, each builder also appends its name
+    (``"vessels"``, ``"nodes"``, ``"skeleton"``, ``"surface"``) when it is called. The one
+    specimen is ``WKY-A``; ``stamp`` returns the mesh it is given. The test still sets
+    ``OUTPUT``, ``open_batch_run`` and ``sys.argv`` itself.
+    """
+    import cb_h1_vtk
+
+    def stub(*, vessels=None, nodes=None, skeleton=None, surface=None, grid=None, events=None):
+        def builder(name, value):
+            def build(*args):
+                if events is not None:
+                    events.append(name)
+                return value
+            return build
+
+        monkeypatch.setattr(cb_h1_vtk, "SPECIMENS",
+                            [SimpleNamespace(specimen_id="WKY-A", group="WKY")])
+        monkeypatch.setattr(cb_h1_vtk, "enrich_vessels", builder("vessels", vessels))
+        monkeypatch.setattr(cb_h1_vtk, "build_nodes", builder("nodes", nodes))
+        monkeypatch.setattr(cb_h1_vtk, "build_skeleton", builder("skeleton", skeleton))
+        monkeypatch.setattr(cb_h1_vtk, "build_surface", builder("surface", (surface, grid)))
+        monkeypatch.setattr(cb_h1_vtk, "stamp", lambda mesh, specimen: mesh)
+        return cb_h1_vtk
+
+    return stub
+
+
 def write_ilp_project(path, lanes, label_names=("vessel", "background"), compute_in_2d=None):
     """Build a minimal Ilastik ``.ilp``: label names, one raw-data path per lane, label blocks.
 

@@ -40,16 +40,11 @@ def test_figures_write_into_out_and_leave_the_batch_folder_alone(stub_figures, t
 
 
 @pytest.fixture
-def stub_vtk(tmp_path, monkeypatch):
+def stub_vtk(tmp_path, monkeypatch, stub_h1_vtk_builders):
+    stub_h1_vtk_builders()
     monkeypatch.setattr(cb_h1_vtk, "OUTPUT", tmp_path / "paraview")
-    monkeypatch.setattr(cb_h1_vtk, "SPECIMENS", [SimpleNamespace(specimen_id="WKY-A",
-                                                                 group="WKY")])
     run = SimpleNamespace(edge_table=lambda: {})
     monkeypatch.setattr(cb_h1_vtk, "open_batch_run", lambda specimen: run)
-    monkeypatch.setattr(cb_h1_vtk, "enrich_vessels", lambda run, edges, report: None)
-    monkeypatch.setattr(cb_h1_vtk, "build_nodes", lambda run, edges, report: None)
-    monkeypatch.setattr(cb_h1_vtk, "build_skeleton", lambda run, report: None)
-    monkeypatch.setattr(cb_h1_vtk, "build_surface", lambda run, report: (None, None))
     return tmp_path / "paraview"
 
 

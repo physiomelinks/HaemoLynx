@@ -106,20 +106,7 @@ def test_a_fractional_centreline_point_count_raises_rather_than_being_truncated(
         _enrich(_run(tmp_path, EDGES, edges))
 
 
-def _stub_builders(monkeypatch, events):
-    monkeypatch.setattr(cb_h1_vtk, "SPECIMENS", [SimpleNamespace(specimen_id="WKY-A",
-                                                                 group="WKY")])
-    monkeypatch.setattr(cb_h1_vtk, "enrich_vessels",
-                        lambda run, edges, report: events.append("vessels"))
-    monkeypatch.setattr(cb_h1_vtk, "build_nodes",
-                        lambda run, edges, report: events.append("nodes"))
-    monkeypatch.setattr(cb_h1_vtk, "build_skeleton", lambda run, report: events.append("skeleton"))
-    monkeypatch.setattr(cb_h1_vtk, "build_surface",
-                        lambda run, report: events.append("surface") or (None, None))
-    monkeypatch.setattr("sys.argv", ["cb_h1_vtk.py", "--verify"])
-
-
-def test_the_run_is_opened_before_the_edge_table_is_read(monkeypatch):
+def test_the_run_is_opened_before_the_edge_table_is_read(monkeypatch, stub_h1_vtk_builders):
     events = []
 
     class _Run:
@@ -131,19 +118,21 @@ def test_the_run_is_opened_before_the_edge_table_is_read(monkeypatch):
         events.append("open")
         return _Run()
 
-    _stub_builders(monkeypatch, events)
+    stub_h1_vtk_builders(events=events)
+    monkeypatch.setattr("sys.argv", ["cb_h1_vtk.py", "--verify"])
     monkeypatch.setattr(cb_h1_vtk, "open_batch_run", _open)
     cb_h1_vtk.main()
     assert events[:2] == ["open", "edge_table"]
 
 
-def test_a_refused_run_raises_before_anything_is_read(monkeypatch):
+def test_a_refused_run_raises_before_anything_is_read(monkeypatch, stub_h1_vtk_builders):
     events = []
 
     def _open(specimen):
         raise ValueError("cropped at another box")
 
-    _stub_builders(monkeypatch, events)
+    stub_h1_vtk_builders(events=events)
+    monkeypatch.setattr("sys.argv", ["cb_h1_vtk.py", "--verify"])
     monkeypatch.setattr(cb_h1_vtk, "open_batch_run", _open)
     with pytest.raises(ValueError, match="another box"):
         cb_h1_vtk.main()

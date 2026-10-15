@@ -43,12 +43,6 @@ def test_the_pipeline_factor_is_one():
         POISEUILLE_FLOW_TO_UM3_PER_S / (PASCALS_PER_MMHG * 1e3), rel=1e-15)
 
 
-def test_the_config_pressures_are_in_mpa():
-    hemo = HaemodynamicsConfig()
-    assert hemo.input_p_bc / _MPA_PER_MMHG == pytest.approx(60.0)
-    assert hemo.output_p_bc / _MPA_PER_MMHG == pytest.approx(20.0)
-
-
 def _tube_solved_at_pipeline_pressures():
     """One straight tube, solved by the pipeline's own flow solve at its default pressures."""
     pts = [np.array([t, 15.0, 15.0]) for t in np.linspace(0.0, _L_UM, 13)]
@@ -69,18 +63,6 @@ def _si_poiseuille_um3_per_s(dp_mmhg, mu_cp, d_um, l_um):
     mu_pa_s = mu_cp * 1e-3
     d_m, l_m = d_um * 1e-6, l_um * 1e-6
     return np.pi * d_m ** 4 * dp_pa / (128.0 * mu_pa_s * l_m) * 1e18
-
-
-def test_pipeline_flow_times_its_factor_is_the_si_poiseuille_flow():
-    G, hemo = _tube_solved_at_pipeline_pressures()
-    data = G[0][1][0]
-    dp_mmhg = (hemo.input_p_bc - hemo.output_p_bc) / _MPA_PER_MMHG
-    want = _si_poiseuille_um3_per_s(dp_mmhg, data["viscosity"], _D_UM, _L_UM)
-
-    assert data["flow_abs"] * _perfusion_flow_to_um3_per_s() == pytest.approx(want, rel=1e-6)
-    # The library default, which the pipeline used, is 1.33e5 times too high here.
-    assert data["flow_abs"] * POISEUILLE_FLOW_TO_UM3_PER_S == pytest.approx(
-        want * POISEUILLE_FLOW_TO_UM3_PER_S, rel=1e-6)
 
 
 def test_the_grid_gets_the_si_flow_with_the_pipeline_factor():

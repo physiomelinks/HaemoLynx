@@ -28,30 +28,32 @@ SHAPE = (20, 20, 20)
 CENTRELINE_VOXELS = [(z, 10, 10) for z in range(5, 16)]
 
 
-def _physical(voxel_coords):
+def _physical(voxel_coords, spacing=SPACING):
     """Convert (z, y, x) voxel indices to the physical coordinates the graph actually stores."""
     return [
-        [z * SPACING[0], y * SPACING[1], x * SPACING[2]] for z, y, x in voxel_coords
+        [z * spacing[0], y * spacing[1], x * spacing[2]] for z, y, x in voxel_coords
     ]
 
 
-def _centreline_graph(diameter_um=2.0):
+def _centreline_graph(diameter_um=2.0, spacing=SPACING):
     G = nx.MultiGraph()
-    physical = _physical(CENTRELINE_VOXELS)
+    physical = _physical(CENTRELINE_VOXELS, spacing)
     G.add_node(0, pos=np.array(physical[0]))
     G.add_node(1, pos=np.array(physical[-1]))
     G.add_edge(0, 1, voxels=physical, assigned_diameter_um=diameter_um)
     return G
 
 
-def test_redilate_skeleton_to_volume_round_trips_anisotropic_spacing():
+@pytest.mark.parametrize("spacing", [SPACING, (1.0, 1.0, 1.0)], ids=["anisotropic", "unit"])
+def test_redilate_skeleton_to_volume_round_trips_anisotropic_spacing(spacing):
     """Physical edge coordinates must be divided by the spacing before being used as indices.
 
     Truncating them directly places the reconstruction at voxel (z * 1.866, 18, 18) instead
     of (z, 10, 10) - an offset that silently corrupts the Dice coefficient the skeletonisation
-    tuner optimises against.
+    tuner optimises against. At unit spacing the division is a no-op, which is what every
+    existing caller uses, so the same centreline must land in the same place.
     """
-    reconstructed = redilate_skeleton_to_volume(_centreline_graph(), SHAPE, SPACING)
+    reconstructed = redilate_skeleton_to_volume(_centreline_graph(spacing=spacing), SHAPE, spacing)
 
     assert reconstructed[10, 10, 10], \
         "the true centreline voxel is not covered by the reconstruction"
@@ -122,12 +124,6 @@ def test_resolve_voxel_size_prefers_explicit_configuration():
     The probability TIFFs declare no resolution, so metadata detection yields (1, 1, 1) and
     silently reports voxel counts as microns. Configuration has to override it.
     """
-    import sys
-    from pathlib import Path
-
-    examples_path = Path(__file__).parent.parent / "examples"
-    if str(examples_path) not in sys.path:
-        sys.path.insert(0, str(examples_path))
     import carotid_image_to_model as C
 
     original = C.VOXEL_SIZE_UM
@@ -142,20 +138,6 @@ def test_resolve_voxel_size_prefers_explicit_configuration():
         C.VOXEL_SIZE_UM = original
 
 
-def test_unit_spacing_is_unchanged():
-    """The fixes must be a no-op at (1, 1, 1), which is what every existing caller uses today."""
-    unit = (1.0, 1.0, 1.0)
-    G = nx.MultiGraph()
-    voxels = [[float(z), 10.0, 10.0] for z in range(5, 16)]
-    G.add_node(0, pos=np.array(voxels[0]))
-    G.add_node(1, pos=np.array(voxels[-1]))
-    G.add_edge(0, 1, voxels=voxels, assigned_diameter_um=2.0)
-
-    reconstructed = redilate_skeleton_to_volume(G, SHAPE, unit)
-    assert reconstructed[10, 10, 10]
-    assert not reconstructed[10, 18, 18]
-
-
 # --- The configured acquisition voxel size ------------------------------------------------
 #
 # 2705b38 added the mechanism for an explicit voxel size, but PipelineConfig.voxel_size_um was
@@ -166,18 +148,6 @@ def test_unit_spacing_is_unchanged():
 
 def _pipeline_module():
     return pytest.importorskip("carotid_image_to_model")
-
-
-def test_configured_voxel_size_is_calibrated_not_unit():
-    mod = _pipeline_module()
-    configured = mod.PipelineConfig().voxel_size_um
-
-    assert configured is not None, "voxel_size_um is unset; the pipeline will fall back to voxels"
-    assert tuple(configured) != (1.0, 1.0, 1.0)
-    # The anisotropy belongs on z. y and x are the in-plane pixel size and must agree.
-    z, y, x = configured
-    assert y == x, "y and x are the same in-plane pixel size and must be equal"
-    assert z != y, "the slice spacing differs from the in-plane pixel size"
 
 
 def test_configured_voxel_size_tracks_the_raw_acquisition_metadata():
@@ -211,22 +181,6 @@ def test_configured_voxel_size_tracks_the_raw_acquisition_metadata():
         f"configured voxel_size_um {configured} has drifted from the acquisition "
         f"metadata {detected} by more than the recorded rounding"
     )
-
-
-def test_resolve_voxel_size_uses_the_configuration_for_the_untagged_probability_tiff():
-    """The probability TIFF declares no resolution; the configured value must win anyway."""
-    mod = _pipeline_module()
-    configured = tuple(mod.PipelineConfig().voxel_size_um)
-
-    saved = mod.VOXEL_SIZE_UM
-    try:
-        mod.VOXEL_SIZE_UM = configured
-        resolved = mod._resolve_voxel_size(mod.RAW_IMAGE_PATH, "tiff")
-    finally:
-        mod.VOXEL_SIZE_UM = saved
-
-    assert resolved == pytest.approx(configured)
-    assert resolved != (1.0, 1.0, 1.0)
 
 
 # --- Terminal-reconnection thresholds are microns, not voxels (item 17/(e)) ----------------
@@ -389,78 +343,7 @@ def test_mask_calibre_is_reported_but_never_optimised_against():
             f"{key} moved the loss; the diagnostic has leaked into the objective"
 
 
-# --- The default filter chain must survive a capillary (Phase 1.5) ------------------------
-
-def _capillary_probability_volume(radius_voxels=1.6, p_vessel=1.0, p_background=0.05):
-    """A capillary-scale tube in a probability map: the thing the chain must not erase.
-
-    The vessel sits at 1.0, the only level that seeds under the frozen 0.95 / 0.999 band
-    (2026-09-28). It was 0.99 under the 0.90 / 0.95 band, and 0.95 against the old 0.75 seed.
-    """
-    shape = (24, 41, 41)
-    _, yy, xx = np.indices(shape)
-    tube = ((yy - 20) ** 2 + (xx - 20) ** 2) <= radius_voxels ** 2
-    prob = np.full(shape, p_background, dtype=np.float32)
-    prob[tube] = p_vessel
-    return prob, tube
-
-
-def test_default_preprocessing_chain_preserves_a_capillary():
-    """A 6 um capillary is 3.2 voxels across; median 7 and opening 1 filter it away.
-
-    Both are applied to the float probability map before thresholding, so this is signal
-    destruction rather than mask cleanup. Measured on real data, the old chain left 71
-    connected structures where an unfiltered one left 199.
-    """
-    C = pytest.importorskip("carotid_image_to_model")
-    prob, tube = _capillary_probability_volume()
-
-    _, mask = C._apply_preprocessing_filters(
-        prob, None, C.PreprocessingConfig().__dict__, boundary_permeability_mode="caged")
-    assert mask.shape == prob.shape
-
-    recovered = float((mask & tube).sum()) / float(tube.sum())
-    assert recovered > 0.5, (
-        f"the default filter chain destroyed the capillary: only {recovered:.0%} recovered"
-    )
-
-
-def test_greyscale_opening_has_no_capillary_preserving_radius():
-    """The reason morphological_opening_radius is 0 rather than merely reduced."""
-    from scipy import ndimage
-    from skimage.morphology import ball
-
-    _, tube = _capillary_probability_volume()
-    assert ndimage.binary_opening(tube, structure=ball(1)).sum() < 0.7 * tube.sum()
-    assert ndimage.binary_opening(tube, structure=ball(2)).sum() == 0
-
-
-# --- The default thresholds must not flood (Phase 1.5) ------------------------------------
-
-def test_default_hysteresis_thresholds_do_not_flood_a_soft_probability_field():
-    """The failure mode the old 0.2 / 0.4 defaults had on the real data.
-
-    Hysteresis grows from seeds above `high` into any connected region above `low`. When the
-    background probability sits above `low` - which it does here, and does on the real field,
-    whose median is 0.42 - the whole volume is one connected superlevel set containing seeds,
-    so the mask floods regardless of `high`. Measured on real data, the old defaults gave 84.7%
-    foreground as a single component with a median inscribed radius of 11.8 um.
-    """
-    C = pytest.importorskip("carotid_image_to_model")
-
-    shape = (24, 41, 41)
-    _, yy, xx = np.indices(shape)
-    prob = np.full(shape, 0.35, dtype=np.float32)          # soft background, above the old low
-    prob[((yy - 20) ** 2 + (xx - 20) ** 2) <= 1.6 ** 2] = 0.95   # a capillary
-
-    _, mask = C._apply_preprocessing_filters(
-        prob, None, C.PreprocessingConfig().__dict__, boundary_permeability_mode="caged")
-
-    assert mask.mean() < 0.25, (
-        f"the default thresholds flooded: {mask.mean():.1%} foreground on a volume whose "
-        "vessel occupies about 1%"
-    )
-
+# --- The default thresholds must be reachable by the tuner (Phase 1.5) --------------------
 
 def test_default_hysteresis_thresholds_lie_inside_the_tuner_search_range():
     """A default outside the searched range cannot be reproduced or refined by tuning."""

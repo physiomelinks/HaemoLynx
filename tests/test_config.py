@@ -1,39 +1,9 @@
-"""Tests for default diameter config values used by examples/pipeline."""
+"""Constructor and loader guards on the pipeline's config dataclasses."""
 
-DIAMETER_BY_BRANCH_ORDER = {
-    "BO1": 6.2,
-    "BO2": 4.0,
-    "BO3": 5.0,
-}
-
-DIAMETER_BY_BRANCH_ORDER_ENHANCED = {
-    "BO1": {"d1": 6.2, "d2": 6.2},
-    "BO2": {"d1": 4.0, "d2": 3.2},
-    "BO3": {"d1": 5.0, "d2": 4.0},
-}
-
-
-def test_diameter_config_keys():
-    assert "BO1" in DIAMETER_BY_BRANCH_ORDER
-    assert DIAMETER_BY_BRANCH_ORDER["BO1"] == 6.2
-
-
-def test_enhanced_config_structure():
-    assert "BO1" in DIAMETER_BY_BRANCH_ORDER_ENHANCED
-    d = DIAMETER_BY_BRANCH_ORDER_ENHANCED["BO1"]
-    assert "d1" in d
-    assert "d2" in d
 
 def test_haemodynamics_config_bounds_safety():
     """Verify that extreme dataclass inputs are safely clamped or rejected."""
     import pytest
-    import sys
-    from pathlib import Path
-    
-    # We need to import HaemodynamicsConfig from the examples script.
-    # We add examples to path dynamically for the test if needed.
-    examples_path = Path(__file__).parent.parent / "examples"
-    sys.path.insert(0, str(examples_path))
     from carotid_image_to_model import HaemodynamicsConfig
     
     # 1. Reverse Pressures should crash
@@ -63,11 +33,6 @@ def test_haemodynamics_config_bounds_safety():
 
 
 def _load_carotid_config():
-    import sys
-    from pathlib import Path
-
-    examples_path = Path(__file__).parent.parent / "examples"
-    sys.path.insert(0, str(examples_path))
     from carotid_image_to_model import HaemodynamicsConfig
 
     return HaemodynamicsConfig
@@ -125,14 +90,9 @@ def test_branch_order_fallback_carries_no_constriction():
     must agree, so that a config written now cannot resurrect a fabricated ratio if the
     capability is ever re-enabled.
     """
-    import sys
-    from pathlib import Path
-
     import networkx as nx
     import numpy as np
 
-    examples_path = Path(__file__).parent.parent / "examples"
-    sys.path.insert(0, str(examples_path))
     from carotid_image_to_model import (
         GraphConfig,
         HaemodynamicsConfig,

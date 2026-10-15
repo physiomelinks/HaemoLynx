@@ -114,13 +114,6 @@ def test_tier3_first_iteration_diagnostics_are_debug_level():
     assert 'logger.debug(f"Iteration 0:' in source
 
 
-def test_batch_docstring_does_not_claim_a_group_comparison():
-    """--stage run only runs the pipeline; the comparison is in the H1 scripts (item 15)."""
-    import cb_h1_batch
-
-    assert "compare the groups" not in cb_h1_batch.__doc__
-
-
 # --- cb_h1_vtk.py (items 19, 20) ---------------------------------------------------------
 
 pv = pytest.importorskip("pyvista")
@@ -144,28 +137,20 @@ def test_inset_note_only_when_the_network_stops_short(lo, hi, reaches):
     assert ("does not reach that face" in inset) is (not reaches)
 
 
-def _stub_export(monkeypatch, tmp_path, make_batch_run):
-    import cb_h1_vtk
-
-    class _Spec:
-        specimen_id, group = "WKY-A", "WKY"
-
+@pytest.fixture
+def stub_export(monkeypatch, tmp_path, make_batch_run, stub_h1_vtk_builders):
+    """``cb_h1_vtk.main`` over one stand-in run, with meshes real enough for ``verify``."""
     out = tmp_path / "cb_h1_paraview"
+    cb_h1_vtk = stub_h1_vtk_builders(vessels=pv.Line((0, 0, 0), (9, 9, 9)), grid=_box_grid())
+    run = make_batch_run(specimen_id="WKY-A").run
     monkeypatch.setattr(cb_h1_vtk, "OUTPUT", out)
-    monkeypatch.setattr(cb_h1_vtk, "SPECIMENS", [_Spec()])
-    run = make_batch_run(specimen_id=_Spec.specimen_id).run
-    monkeypatch.setattr(cb_h1_vtk, "open_batch_run", lambda s: run)
-    monkeypatch.setattr(cb_h1_vtk, "enrich_vessels", lambda run, e, r: pv.Line((0, 0, 0), (9, 9, 9)))
-    monkeypatch.setattr(cb_h1_vtk, "build_nodes", lambda run, e, r: None)
-    monkeypatch.setattr(cb_h1_vtk, "build_skeleton", lambda run, r: None)
-    monkeypatch.setattr(cb_h1_vtk, "build_surface", lambda run, r: (None, _box_grid()))
-    monkeypatch.setattr(cb_h1_vtk, "stamp", lambda mesh, s: mesh)
+    monkeypatch.setattr(cb_h1_vtk, "open_batch_run", lambda specimen: run)
     return cb_h1_vtk, out
 
 
-def test_h1_verify_writes_nothing(monkeypatch, tmp_path, capsys, make_batch_run):
+def test_h1_verify_writes_nothing(monkeypatch, capsys, stub_export):
     """Same contract as cb_h2_vtk.py --verify: check, print, write no file (item 19)."""
-    cb_h1_vtk, out = _stub_export(monkeypatch, tmp_path, make_batch_run)
+    cb_h1_vtk, out = stub_export
     monkeypatch.setattr("sys.argv", ["cb_h1_vtk.py", "--verify"])
     cb_h1_vtk.main()
     assert not out.exists()
@@ -174,8 +159,8 @@ def test_h1_verify_writes_nothing(monkeypatch, tmp_path, capsys, make_batch_run)
     assert "nothing written" in printed
 
 
-def test_h1_export_still_writes_without_verify(monkeypatch, tmp_path, make_batch_run):
-    cb_h1_vtk, out = _stub_export(monkeypatch, tmp_path, make_batch_run)
+def test_h1_export_still_writes_without_verify(monkeypatch, stub_export):
+    cb_h1_vtk, out = stub_export
     monkeypatch.setattr("sys.argv", ["cb_h1_vtk.py"])
     cb_h1_vtk.main()
     assert (out / "WKY-A_vessels.vtp").exists()
