@@ -24,12 +24,24 @@ matches the bytes as written to disk in the file's own native axis order.
 Caching that would silently reopen a later run's file with the wrong axis
 mapping. A non-canonical order simply always misses and falls through to an
 ordinary (still memmap-backed) load.
+
+A source modified less than ``_RACY_WINDOW_NS`` before this call is not
+cached either. Its mtime cannot yet tell a later rewrite apart: the file
+clock only advances once per tick (up to a millisecond on NTFS, 2 s on FAT32,
+1 s on HFS+), so a same-size rewrite in the same tick keeps the same mtime and
+size, and an entry keyed on them would serve the old volume. Measured
+2026-10-15: of 200 pairs of same-size TIFF writes with nothing between them,
+92 kept both on NTFS. Once the
+window has passed, any later write lands in a later tick and changes the key.
+This is git's "racily clean" index rule; it needs no read of the file's
+contents, which for a raw stack costs as much as loading it.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import time
 from pathlib import Path
 
 import numpy as np
@@ -48,7 +60,19 @@ _CACHE_PREFIX = "haemolynx_raw_cache_"
 #: whenever a load would read the same file differently, or an entry keeps
 #: serving what the old code read. 2: an OME-TIFF's voxel size is read from its
 #: OME header -- before, from its tags, which said 1 micron on every axis.
-_CACHE_FORMAT = 2
+#: 3: entries are no longer written for a source modified within
+#: ``_RACY_WINDOW_NS``, so an older entry may hold a volume that a same-tick
+#: rewrite has since replaced.
+_CACHE_FORMAT = 3
+
+#: How long after its last modification a source's mtime is trusted to change
+#: on any further write. Longer than the coarsest file clock in use (FAT32's
+#: 2 s), with margin for a network share's clock running behind this one.
+_RACY_WINDOW_NS = 5_000_000_000
+
+
+def _modified_too_recently(stat_result) -> bool:
+    return time.time_ns() - stat_result.st_mtime_ns < _RACY_WINDOW_NS
 
 
 def _cache_key(resolved_path: Path, stat_result, axis_order: str) -> str:
@@ -126,15 +150,10 @@ def load_raw_volume_reusing_cache(
     contains: the resolved source path, its mtime and size (a changed file --
     including ilastik simply re-running and overwriting its own output --
     always misses and is rebuilt), and *axis_order*. See the module
-    docstring for why a non-canonical *axis_order* always misses too.
+    docstring for why a non-canonical *axis_order*, or a source modified
+    within the last few seconds, always misses too.
     """
-    if axis_order != CANONICAL_AXIS_ORDER:
-        logger.debug(
-            "Not reusing a cached raw volume: image_axis_order=%r is not "
-            "canonical, so it is transposed into a fresh memmap each run "
-            "instead of cached.",
-            axis_order,
-        )
+    def load_uncached():
         return load_image_with_voxel_size_2d_aware(
             filepath,
             input_format=input_format,
@@ -144,8 +163,26 @@ def load_raw_volume_reusing_cache(
             memmap_directory=memmap_directory,
         )
 
+    if axis_order != CANONICAL_AXIS_ORDER:
+        logger.debug(
+            "Not reusing a cached raw volume: image_axis_order=%r is not "
+            "canonical, so it is transposed into a fresh memmap each run "
+            "instead of cached.",
+            axis_order,
+        )
+        return load_uncached()
+
     resolved = Path(filepath).resolve()
     stat_result = resolved.stat()
+    if _modified_too_recently(stat_result):
+        logger.debug(
+            "Not caching the raw volume: %s was modified in the last %.0f s, "
+            "too recently for its mtime to show a further rewrite.",
+            filepath,
+            _RACY_WINDOW_NS / 1e9,
+        )
+        return load_uncached()
+
     key = _cache_key(resolved, stat_result, axis_order)
     directory = Path(memmap_directory)
     directory.mkdir(parents=True, exist_ok=True)

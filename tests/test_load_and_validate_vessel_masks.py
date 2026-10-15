@@ -11,7 +11,9 @@ here — metadata is physical ``(x, y, z)``, dilation needs per-array-axis
 from __future__ import annotations
 
 import inspect
+import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -810,6 +812,13 @@ def test_metadata_only_policy_still_refuses_a_mask_without_spacing(tmp_path: Pat
 # --- the masks loaded last are reused ---------------------------------------------
 
 
+def _backdate(path: Path, seconds: float = 60) -> None:
+    """Stand in for a mask written long before the run that loads it: one
+    modified in the last few seconds is never remembered."""
+    mtime_ns = time.time_ns() - int(seconds * 1_000_000_000)
+    os.utime(path, ns=(mtime_ns, mtime_ns))
+
+
 def _loader_call(tmp_path: Path, **options):
     return dict(
         mask_role="large", enabled=True, use_ilastik=False,
@@ -830,6 +839,8 @@ def test_the_same_files_and_settings_are_loaded_once_per_process(tmp_path: Path,
     volume[1:3, 1:3, 1:3] = 1
     _write_mask_with_voxel_size(tmp_path / "arteriole.tif", volume)
     _write_mask_with_voxel_size(tmp_path / "venule.tif", np.zeros_like(volume))
+    _backdate(tmp_path / "arteriole.tif")
+    _backdate(tmp_path / "venule.tif")
     loads = []
     real = module._load_mask_image
 
@@ -851,5 +862,41 @@ def test_the_same_files_and_settings_are_loaded_once_per_process(tmp_path: Path,
     load_and_validate_vessel_masks(**_loader_call(tmp_path, dilation_microns=1.0))
     assert len(loads) == 4, "a cleanup setting changed: loaded again"
     _write_mask_with_voxel_size(tmp_path / "arteriole.tif", np.zeros_like(volume))
+    _backdate(tmp_path / "arteriole.tif", seconds=30)  # a new mtime, past the window
     load_and_validate_vessel_masks(**_loader_call(tmp_path, dilation_microns=1.0))
     assert len(loads) == 6, "a file changed: loaded again"
+
+
+def test_a_mask_rewrite_that_keeps_mtime_and_size_returns_the_new_mask(tmp_path: Path) -> None:
+    """Regression (2026-10-15): ilastik re-run over its own output rewrites a
+    mask at the same size, and a rewrite in the same file-clock tick keeps the
+    mtime too (92 in 200 back-to-back TIFF writes on NTFS; FAT32 ticks every
+    2 s), so the (path, mtime, size) key handed back the old mask. Both writes
+    are pinned to one identical, recent mtime to make the collision certain."""
+    from haemolynx.io import clear_vessel_mask_cache
+
+    clear_vessel_mask_cache()
+    mtime_ns = time.time_ns()
+    old = np.zeros((4, 5, 6), dtype=np.uint8)
+    old[1:3, 1:3, 1:3] = 1
+    new = np.zeros_like(old)
+    new[0:2, 2:4, 3:5] = 1
+    venule = tmp_path / "venule.tif"
+    arteriole = tmp_path / "arteriole.tif"
+    _write_mask_with_voxel_size(venule, np.zeros_like(old))
+    _backdate(venule)
+
+    try:
+        _write_mask_with_voxel_size(arteriole, old)
+        os.utime(arteriole, ns=(mtime_ns, mtime_ns))
+        first = load_and_validate_vessel_masks(**_loader_call(tmp_path))[0]
+        size = arteriole.stat().st_size
+        _write_mask_with_voxel_size(arteriole, new)
+        os.utime(arteriole, ns=(mtime_ns, mtime_ns))
+        assert arteriole.stat().st_size == size, "the rewrite must keep the size to collide"
+        second = load_and_validate_vessel_masks(**_loader_call(tmp_path))[0]
+    finally:
+        clear_vessel_mask_cache()
+
+    assert np.array_equal(first, old.astype(bool))
+    assert np.array_equal(second, new.astype(bool))
