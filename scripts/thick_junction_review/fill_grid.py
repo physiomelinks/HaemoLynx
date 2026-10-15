@@ -59,6 +59,8 @@ def main(argv=None) -> int:
     import matplotlib.pyplot as plt
     from scipy.spatial import cKDTree
 
+    import networkx as nx
+
     import haemolynx.graph.thick_vessel_junctions as t
     from haemolynx.graph._helpers import densify_polyline, edge_sample_points
 
@@ -81,33 +83,66 @@ def main(argv=None) -> int:
 
     snapshot = {}
     removed_strands = []
+    removed_edges_of_strays = []
     original_fill = t._fill_tree_gaps
-    original_remove = t._remove_stray_beside
+    # Taking out a stray strand went with the detour rule (2026-10-15); the
+    # grid as marked was drawn at 51b34f2, which still had it.
+    original_remove = getattr(t, "_remove_stray_beside", None)
 
     def recording_fill(G, *rest):
         snapshot["paths"] = _paths(G, t.IS_ZERO_RESISTANCE)
+        before_pos = {n: np.asarray(G.nodes[n]["pos"], float) for n in G.nodes if "pos" in G.nodes[n]}
         snapshot["edges"] = {(u, v, k) for u, v, k in G.edges(keys=True)}
         result = original_fill(G, *rest)
+        snapshot["pos"] = dict(before_pos)
+        snapshot["pos"].update({n: np.asarray(G.nodes[n]["pos"], float) for n in G.nodes if "pos" in G.nodes[n]})
         snapshot["added"] = [
             (u, v, k, polyline(G, u, v, d)) for u, v, k, d in G.edges(keys=True, data=True) if d.get(t.FROM_TREE)
         ]
+        # The graph's own way between each drawn stretch's two ends, before the
+        # strays went: is the gap a stretch the graph already joins?
+        H = nx.Graph()
+        for a, b, d in G.edges(data=True):
+            if d.get(t.FROM_TREE) or d.get(t.IS_ZERO_RESISTANCE):
+                continue
+            w = float(d.get("length") or 0.0)
+            if not H.has_edge(a, b) or H[a][b]["length"] > w:
+                H.add_edge(a, b, length=w)
+        for a, b, d in removed_edges_of_strays:
+            H.add_edge(a, b, length=float(d.get("length") or 0.0))
+        snapshot["own_way"] = {}
+        for u, v, _k, _p in snapshot["added"]:
+            try:
+                path = nx.shortest_path(H, u, v, weight="length")
+                snapshot["own_way"][(u, v)] = (nx.path_weight(H, path, "length"), len(path) - 1, path)
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                snapshot["own_way"][(u, v)] = (None, None, None)
         return result
 
     def recording_remove(G, a, b, *rest):
         lines = {(u, v, k): polyline(G, u, v, d) for u, v, k, d in G.edges(keys=True, data=True)}
+        data = {(u, v, k): dict(d) for u, v, k, d in G.edges(keys=True, data=True)}
         count = original_remove(G, a, b, *rest)
         if count:
+            removed_edges_of_strays.extend((e[0], e[1], data[e]) for e in data if not G.has_edge(*e))
             gone = [lines[e] for e in lines if not G.has_edge(*e)]
             removed_strands.append(np.vstack(gone))
         return count
 
-    t._fill_tree_gaps, t._remove_stray_beside = recording_fill, recording_remove
+    t._fill_tree_gaps = recording_fill
+    if original_remove is not None:
+        t._remove_stray_beside = recording_remove
     try:
         t.insert_thick_vessel_junction_nodes(
             before, region, voxel_size_zyx=tuple(vs), segmentation=mask, centreline=tree_vox, fill_tree_gaps=True,
         )
     finally:
-        t._fill_tree_gaps, t._remove_stray_beside = original_fill, original_remove
+        t._fill_tree_gaps = original_fill
+        if original_remove is not None:
+            t._remove_stray_beside = original_remove
+
+    def before_fill_pos(n):
+        return snapshot["pos"][n]
 
     # One case per gap: the added edges meeting at shared nodes are one gap
     # (a hub joins three or more sides).
@@ -126,7 +161,16 @@ def main(argv=None) -> int:
         _d, near = tree.query(points)
         stray_off = (float(np.mean(tree.query(np.vstack(strands))[0])) if strands else None)
         other = cKDTree(np.vstack([p for p, is_bridge in snapshot["paths"] if not is_bridge]))
+        u0, v0 = added[g[0]][0], added[g[0]][1]
+        own_um, own_hops, own_path = snapshot["own_way"].get((u0, v0), (None, None, None))
+        own_off = None
+        if own_path is not None and len(g) == 1:
+            own_points = np.vstack([np.asarray(before_fill_pos(n)) for n in own_path])
+            own_off = round(float(np.max(tree.query(own_points)[0]) / max(float(np.median(tree_r[near])), 0.5)), 2)
         cases.append(dict(
+            own_way_um=None if own_um is None else round(own_um, 2),
+            own_way_ratio=None if own_um is None else round(own_um / max(length, 1e-6), 2),
+            own_way_edges=own_hops, own_way_nodes_max_off_tree_radii=own_off,
             centre=points[len(points) // 2], judged=drawn, removed=strands, paths=snapshot["paths"],
             drawn_um=round(length, 2), sides=len(g) if len(g) > 1 else 2,
             tree_radius_um=round(float(np.median(tree_r[near])), 2),
@@ -159,7 +203,7 @@ def main(argv=None) -> int:
     fig.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=1 - 1.6 / (4.05 * rows + 1.6), wspace=0.04, hspace=0.14)
     fig.savefig(out / "grid_V_tree_fill.png", dpi=100)
     plt.close(fig)
-    keys = ["id", "vox", "drawn_um", "sides", "tree_radius_um", "strand_removed_um", "strand_mean_off_tree_um",
+    keys = ["id", "vox", "own_way_um", "own_way_ratio", "own_way_edges", "own_way_nodes_max_off_tree_radii", "drawn_um", "sides", "tree_radius_um", "strand_removed_um", "strand_mean_off_tree_um",
             "graph_within_2r_um", "to_tree_end_um"]
     with open(out / "grid_V_key.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=keys)

@@ -660,27 +660,24 @@ def test_with_the_short_loop_rule_off_a_wall_join_may_close_a_loop():
 # --- the thick centreline drawn from the tree where the graph strays or misses it (6a)
 
 
-def _gap(stray: bool = False, side_vessel_on_stray: bool = False):
+def _gap(stray: bool = False, detour: bool = False):
     """The thick vessel along y; its graph centreline follows the tree up to
-    A (y = 10) and from B (y = 50), and between them either nothing or a
-    stray strand 4 um off the tree. X, a thin vessel, enters the thick
-    vessel at y = 30, too far from A or B to be bridged to either."""
+    A (y = 10) and from B (y = 50), and between them nothing, a stray strand
+    4 um off the tree (*stray*), or only a way round, from the thick
+    vessel's two ends out through a vessel beside it (*detour*, ~150 um
+    against the tree's 40). X, a thin vessel, enters the thick vessel at
+    y = 30, too far from A or B to be bridged to either."""
     lumen, body, tree = _thick()
     _thin_vessel(lumen, (20, 30, 20), (20, 30, 63))
     edges = [("T0", "A", T0, (20, 10, 20)), ("B", "T1", (20, 50, 20), T1),
              ("X", "S", (20, 30, 63), (20, 30, 23))]
     if stray:
         edges.append(("A", "B", (20, 10, 20), (20, 30, 24), (20, 50, 20)))
-    G = _graph(*edges)
-    if side_vessel_on_stray:
-        G.remove_edge("A", "B")
-        G.add_edge("A", "M", voxels=_line((20, 10, 20), (20, 30, 24)), length=20.4)
-        G.add_edge("M", "B", voxels=_line((20, 30, 24), (20, 50, 20)), length=20.4)
-        G.nodes["M"]["pos"] = (20.0, 30.0, 24.0)
-        G.add_node("Q", pos=(0.0, 30.0, 24.0))  # out through the image face
-        G.add_edge("M", "Q", voxels=_line((20, 30, 24), (0, 30, 24)), length=20.0)
-        lumen |= _tube((20, 30, 24), (0, 30, 24), 1.5)
-    return G, lumen, body, tree
+    if detour:
+        edges.append(("T0", "T1", T0, (20, 2, 55), (20, 61, 55), T1))
+        for a, b in (((20, 2, 20), (20, 2, 55)), ((20, 2, 55), (20, 61, 55)), ((20, 61, 55), (20, 61, 20))):
+            _thin_vessel(lumen, a, b)
+    return _graph(*edges), lumen, body, tree
 
 
 def _from_tree(G):
@@ -707,38 +704,58 @@ def test_a_gap_in_the_graphs_thick_centreline_is_drawn_from_the_tree():
     assert nx.has_path(on, "X", "T0") and nx.has_path(on, "X", "T1")
 
 
-def test_a_stray_strand_beside_the_tree_gives_way_to_it():
-    """The graph's thick centreline wandering 4 um off the tree: the tree's
-    path replaces it, and every centreline left in the thick vessel lies on
-    the tree."""
+def test_a_strand_joining_the_gaps_sides_as_directly_is_left_as_the_vessel():
+    """The graph's thick centreline wandering 4 um off the tree between A and
+    B: it joins them about as directly as the tree (TREE_FILL_MIN_DETOUR),
+    so it is the vessel there, nothing is drawn from the tree and it stays
+    (grid V, 2026-10-15: of the strays and short ways across a junction the
+    fill drew, Harvey kept the graph's own)."""
     G, lumen, body, tree = _gap(stray=True)
 
     on = _split(G, lumen, body, tree, fill_tree_gaps=True)
 
-    assert sum(d["length"] for *_e, d in _from_tree(on)) > 20.0  # the stray's two ends lie on the tree
-    tree_points = np.argwhere(tree).astype(float)
-    from scipy.spatial import cKDTree
+    assert not _from_tree(on)
+    strand = [d for u, v, d in on.edges(data=True) if not d.get(IS_ZERO_RESISTANCE)
+              and np.max(np.asarray(d["voxels"], float)[:, 2]) >= 23.5 and min(np.asarray(d["voxels"])[:, 1]) < 30]
+    assert strand, "the graph's own strand A-B is still there"
 
-    kd = cKDTree(tree_points)
-    for u, v, d in on.edges(data=True):
-        if d.get(IS_ZERO_RESISTANCE) or "X" in (u, v) or "S" in (u, v):
-            continue
-        assert kd.query(np.asarray(d["voxels"], float))[0].max() <= 2.0, (u, v)
+
+def test_a_gap_the_graph_joins_only_the_long_way_round_is_drawn_from_the_tree():
+    """A and B joined only through the thick vessel's ends and a vessel
+    beside it, nearly four times the tree's path: the tree's path is drawn
+    (grid V's right ones were 2.2-32 times), and X is bridged to it."""
+    G, lumen, body, tree = _gap(detour=True)
+
+    off = _split(G, lumen, body, tree)
+    on = _split(G, lumen, body, tree, fill_tree_gaps=True)
+
+    def x_bridged(H):
+        """A bridge from X's side landing on the thick centreline at y = 30."""
+        return any(
+            any(np.allclose(H.nodes[n]["pos"], (20.0, 30.0, 20.0), atol=1.0) for n in (u, v))
+            for u, v, _d in _bridges(H)
+        )
+
+    assert not _from_tree(off) and not x_bridged(off)
+    assert sum(d["length"] for *_e, d in _from_tree(on)) == pytest.approx(40.0, abs=1.5)
+    assert x_bridged(on)
     assert nx.number_connected_components(on) == 1
 
 
-def test_a_stray_strand_a_vessel_hangs_off_is_left_for_the_clean_up():
-    """The fill draws the tree's path but leaves a stray with a vessel
-    hanging off it (taken out, it would cut that vessel off): the vessel
-    keeps its way to the thick vessel, through the stray, and the two
-    strands side by side are the clean-up's to settle."""
-    G, lumen, body, tree = _gap(stray=True, side_vessel_on_stray=True)
+def test_the_graphs_own_way_is_measured_along_its_vessels():
+    """Between two points on one edge, along it; across edges, through the
+    nodes; with no way within the cutoff, none."""
+    from haemolynx.graph.thick_vessel_junctions import _graph_way_um
 
-    on = _split(G, lumen, body, tree, fill_tree_gaps=True)
-
-    assert sum(d["length"] for *_e, d in _from_tree(on)) > 20.0  # the stray's two ends lie on the tree
-    assert "M" in on
-    assert nx.has_path(on, "Q", "T0") and nx.number_connected_components(on) == 1
+    G = _graph(("a", "b", (0, 0, 0), (0, 0, 10)), ("b", "c", (0, 0, 10), (0, 0, 30)))
+    G.add_node("z", pos=(0.0, 5.0, 0.0))
+    G.add_edge("y", "z", voxels=_line((0, 9, 0), (0, 5, 0)), length=4.0)
+    G.nodes["y"]["pos"] = (0.0, 9.0, 0.0)
+    ab, bc = ("a", "b", 0), ("b", "c", 0)
+    assert _graph_way_um(G, (ab, 2.0, 10.0), (ab, 7.0, 10.0), cutoff=100.0) == pytest.approx(5.0)
+    assert _graph_way_um(G, (ab, 2.0, 10.0), (bc, 5.0, 20.0), cutoff=100.0) == pytest.approx(13.0)
+    assert _graph_way_um(G, (ab, 2.0, 10.0), (bc, 15.0, 20.0), cutoff=10.0) == np.inf
+    assert _graph_way_um(G, (ab, 2.0, 10.0), (("y", "z", 0), 1.0, 4.0), cutoff=100.0) == np.inf
 
 
 def test_the_run_turns_the_fill_on_with_its_setting():

@@ -114,6 +114,15 @@ TAPER_DIRECTION_UM = 5.0
 #: gaps were 2 um or less).
 TREE_GAP_MIN_UM = 3.0
 
+#: A gap is filled only where the graph's own way between its two sides is
+#: more than this many times as long as the tree's path, or there is none: a
+#: graph that already joins them about as directly draws the vessel there,
+#: however far off the tree. Fitted on Harvey's grid V (E14.5, 2026-10-15):
+#: right on 18 of 20, against 13 for filling none; the drawn path was right
+#: at 2.2-32 times (and on one stray at 1.0), wrong at 0.5-2.0 (and once at
+#: 4.2).
+TREE_FILL_MIN_DETOUR = 2.1
+
 #: Edge attribute on a thick vessel's centreline drawn from the tree where
 #: the graph's own strayed off it or missed it (``fill_tree_gaps``).
 FROM_TREE = "thick_centreline_from_tree"
@@ -430,11 +439,11 @@ def insert_thick_vessel_junction_nodes(
 
     And with *fill_tree_gaps* (off by default, PLAN_bridging.md 6a), first:
     where no graph centreline follows the tree for :data:`TREE_GAP_MIN_UM` or
-    more between two places one does, the tree's own path is added as the
-    thick vessel's centreline (:data:`FROM_TREE`), and a stray strand the
-    graph drew beside it there, joining the same two places with nothing
-    hanging off it, is taken out (:func:`_fill_tree_gaps`). Every vessel
-    reaching the thick vessel there can then be bridged to it.
+    more between two places one does, and the graph's own way between them
+    is more than :data:`TREE_FILL_MIN_DETOUR` times as long or missing, the
+    tree's own path is added as the thick vessel's centreline
+    (:data:`FROM_TREE`, :func:`_fill_tree_gaps`). Every vessel reaching the
+    thick vessel there can then be bridged to it.
 
     With *edges* (``(u, v, key)``, either way round) only those are rebuilt,
     and one already a bridge is left as it is; every other edge stays as it
@@ -487,13 +496,12 @@ def insert_thick_vessel_junction_nodes(
         None if edges is None else {(frozenset((u, v)), key) for u, v, key in edges}
     )
     if fill_tree_gaps:
-        filled = _fill_tree_gaps(result, tree_voxels, vs, tree_points, tree_tolerance, finite, thick)
+        filled = _fill_tree_gaps(result, tree_voxels, vs, tree_points, tree_tolerance, finite)
         if filled:
             logger.info(
-                "Thick-vessel bridges: %d stretch(es) of the thick centreline tree no graph "
-                "centreline followed drawn from the tree (%d stray strand(s) beside them "
-                "taken out).",
-                filled[0], filled[1],
+                "Thick-vessel bridges: %d stretch(es) of the thick centreline tree the graph "
+                "did not join drawn from the tree.",
+                filled,
             )
     if join_dead_ends_at_walls and segmentation is not None:
         _join_dead_ends_at_walls(
@@ -944,25 +952,27 @@ def _taper_bridges(G, bridge_ends) -> set[int]:
     return tapers
 
 
-def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius, thick):
+def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius):
     """Draw the thick centreline tree into *G*, in place, wherever no graph
-    centreline follows it. Returns ``(stretches added, strays removed)``.
+    centreline follows it. Returns how many stretches were added.
 
     A gap is a run of tree voxels no non-bridge graph centreline comes within
     the tree's tolerance of, :data:`TREE_GAP_MIN_UM` or longer, with tree
     followed by the graph on at least two sides: the graph's thick
-    centreline strays off the tree or stops there and starts again. Each
+    centreline strays off the tree or stops there and starts again. Only
+    where the graph's own way between two sides is more than
+    :data:`TREE_FILL_MIN_DETOUR` times the tree's path, or there is none:
+    where the graph already joins them, its strand is the vessel. Each
     side becomes a node on the graph edge that follows the tree there
     (``edit.insert_node_on_edge``); two sides are joined by the tree's path
     between them, more by the tree's paths to the gap's widest voxel. A gap
     at a tree end, followed on one side only, is left: the graph's thick
     vessel ends there, and the taper and wall rules decide what carries on.
 
-    The graph's own strand across a two-sided gap -- the chain of edges
-    joining the same two places, through nodes with no other edge, all in the
-    thick region within two lumen radii of the tree -- is taken out: the
-    tree's path is the thick vessel there. One with anything hanging off it
-    is left for the clean-up that follows the split.
+    Nothing of the graph's own is taken out: where a strand of it crosses
+    the gap about as directly as the tree, the gap is not filled (on grid V,
+    one such strand was to be replaced and one kept, and no measure told
+    them apart), and a long way round stays the vessels it is.
     """
     from scipy.spatial import cKDTree
 
@@ -971,24 +981,26 @@ def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius
     vs = np.asarray(vs, dtype=float)
     tree_vox = np.argwhere(tree_voxels)
     if len(tree_vox) < 2:
-        return (0, 0)
+        return 0
 
     def graph_samples():
-        points, owners = [], []
+        points, owners, arcs = [], [], []
         for u, v, key, data in G.edges(keys=True, data=True):
             if data.get(IS_ZERO_RESISTANCE) or "pos" not in G.nodes[u] or "pos" not in G.nodes[v]:
                 continue
             path = densify_polyline(_polyline_from(G, u, v, data), max_step_um=_SAMPLE_STEP_UM)
+            along = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))])
             points.append(path)
             owners.extend([(u, v, key)] * len(path))
+            arcs.extend((float(a), float(along[-1])) for a in along)
         if not points:
-            return None, [], None
+            return None, [], None, []
         stacked = np.vstack(points)
-        return stacked, owners, cKDTree(stacked)
+        return stacked, owners, cKDTree(stacked), arcs
 
-    points, owners, samples = graph_samples()
+    points, owners, samples, arcs = graph_samples()
     if samples is None:
-        return (0, 0)
+        return 0
     distance, _nearest = samples.query(tree_points)
     covered = distance <= tree_tolerance
 
@@ -998,7 +1010,7 @@ def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius
         T.add_edge(int(i), int(j), weight=float(np.linalg.norm((tree_vox[i] - tree_vox[j]) * vs)))
     uncovered = [i for i in range(len(tree_vox)) if not covered[i]]
 
-    added = removed = 0
+    added = 0
     for gap in nx.connected_components(T.subgraph(uncovered)):
         sides = sorted({j for i in gap for j in T.neighbors(i) if covered[j]})
         if len(sides) < 2:
@@ -1006,6 +1018,22 @@ def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius
         local = T.subgraph(set(gap) | set(sides))
         gap_length = sum(d["weight"] for _a, _b, d in T.subgraph(gap).edges(data=True)) + 2 * float(vs.min())
         if gap_length < TREE_GAP_MIN_UM:
+            continue
+        joined = False
+        for x, side in enumerate(sides):
+            for other in sides[x + 1:]:
+                # The tree's path as it would be drawn: from the graph's point
+                # at one side to the graph's point at the other.
+                at = [int(samples.query(tree_points[n])[1]) for n in (side, other)]
+                route = nx.shortest_path(local, side, other, weight="weight")
+                tree_way = float(calculate_path_length(
+                    [points[at[0]], *(tree_points[n] for n in route[1:-1]), points[at[1]]]
+                ))
+                own = _graph_way_um(
+                    G, *[(owners[k], *arcs[k]) for k in at], cutoff=TREE_FILL_MIN_DETOUR * tree_way,
+                )
+                joined = joined or own <= TREE_FILL_MIN_DETOUR * tree_way
+        if joined:
             continue
         if len(sides) == 2:
             routes = [nx.shortest_path(local, sides[0], sides[1], weight="weight")]
@@ -1016,13 +1044,13 @@ def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius
         nodes_at: dict[int, Any] = {}
 
         def node_for_side(side):
-            nonlocal points, owners, samples
+            nonlocal points, owners, samples, arcs
             if side in nodes_at:
                 return nodes_at[side]
             where = tree_points[side]
             index = int(samples.query(where)[1])
             if not G.has_edge(*owners[index]):
-                points, owners, samples = graph_samples()
+                points, owners, samples, arcs = graph_samples()
                 index = int(samples.query(where)[1])
             node = insert_node_on_edge(G, *owners[index], points[index])
             nodes_at[side] = node
@@ -1046,57 +1074,27 @@ def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius
             G.add_edge(node, far, voxels=voxels, length=float(calculate_path_length(voxels)),
                        centreline_smoothing="kept_raw", **{FROM_TREE: True})
             added += 1
-            if hub_node is not None:
-                continue
-            removed += _remove_stray_beside(G, node, far, route, tree_points, tree_radius, thick, vs)
-        points, owners, samples = graph_samples()
-    return (added, removed)
+        points, owners, samples, arcs = graph_samples()
+    return added
 
 
-def _remove_stray_beside(G, a, b, route, tree_points, tree_radius, thick, vs) -> int:
-    """Take out the graph's own strand from *a* to *b* (other than the tree
-    path just added) when it is a chain through nodes with no other edge,
-    lying in the thick region within two lumen radii of *route*'s tree
-    voxels. Returns how many edges went."""
-    from scipy.spatial import cKDTree
+def _graph_way_um(G, a, b, *, cutoff: float) -> float:
+    """The shortest way (um) along *G*'s vessels between two points on its
+    edges, each ``((u, v, key), arc from u, the edge's arc length)``; ``inf``
+    beyond *cutoff* or with none. Bridges are not vessel."""
 
-    along = cKDTree(tree_points[route])
-    reach = 2.0 * float(np.max(tree_radius[route])) + 1.0
-    for neighbour in list(G.neighbors(a)):
-        for key, data in list(G[a][neighbour].items()):
-            if data.get(FROM_TREE) or data.get(IS_ZERO_RESISTANCE):
-                continue
-            chain = [(a, neighbour, key)]
-            previous, node, came_by = a, neighbour, key
-            while node != b and G.degree(node) == 2:
-                onward = [
-                    (x, y, k) for x, y, k in G.edges(node, keys=True)
-                    if not (y == previous and k == came_by)
-                ]
-                if len(onward) != 1:
-                    break
-                _x, nxt, k = onward[0]
-                chain.append((node, nxt, k))
-                previous, node, came_by = node, nxt, k
-            if node != b:
-                continue
-            stray = np.vstack([
-                densify_polyline(_polyline_from(G, u, v, G.edges[u, v, k]), max_step_um=_SAMPLE_STEP_UM)
-                for u, v, k in chain
-            ])
-            in_region = points_inside_mask(stray, thick, voxel_size_zyx=tuple(vs))
-            near = along.query(stray)[0] <= reach
-            if not (in_region.mean() >= 0.8 and near.all()):
-                continue
-            for u, v, k in chain:
-                if G.has_edge(u, v, k):
-                    G.remove_edge(u, v, k)
-            for u, v, _k in chain:
-                for n in (u, v):
-                    if n not in (a, b) and G.has_node(n) and G.degree(n) == 0:
-                        G.remove_node(n)
-            return len(chain)
-    return 0
+    def weight(_u, _v, d):
+        lengths = [float(x.get("length") or 0.0) for x in d.values() if not x.get(IS_ZERO_RESISTANCE)]
+        return min(lengths) if lengths else None
+
+    (edge_a, s_a, total_a), (edge_b, s_b, total_b) = a, b
+    best = abs(s_a - s_b) if edge_a == edge_b else np.inf
+    for end_a, off_a in ((edge_a[0], s_a), (edge_a[1], total_a - s_a)):
+        reach = nx.single_source_dijkstra_path_length(G, end_a, cutoff=cutoff, weight=weight)
+        for end_b, off_b in ((edge_b[0], s_b), (edge_b[1], total_b - s_b)):
+            if end_b in reach:
+                best = min(best, off_a + reach[end_b] + off_b)
+    return float(best) if best <= cutoff else float("inf")
 
 
 def _centreline_samples(G, near_tree, thick, vs):

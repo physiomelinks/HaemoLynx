@@ -3518,10 +3518,11 @@ SCHEMA = Schema(
             help=(
                 "Where the graph's own centreline of a thick vessel strays off "
                 "the centreline drawn through the thick region, or misses it, "
-                "for 3 um or more between two places it follows it, draw the "
-                "thick vessel's centreline there from the thick region and take "
-                "out a stray strand beside it that nothing hangs off. Vessels "
-                "reaching the thick vessel there can then be bridged to it"
+                "for 3 um or more between two places it follows it, and the "
+                "graph has no way between those two places under 2.1 times as "
+                "long, draw the thick vessel's centreline there from the thick "
+                "region. Vessels reaching the thick vessel there can then be "
+                "bridged to it. Nothing of the graph's own is taken out"
             ),
             section=_PIPELINE_STAGES,
             requires=("use_thick_vessel_skeletonisation",),
