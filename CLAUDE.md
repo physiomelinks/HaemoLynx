@@ -585,7 +585,7 @@ are only caught locally.
   (`node_leaves_image`, `open_end_nodes`). Diagnostics, the review lists and the boundary review
   all classify through it; a fixed `image_face_margin_um` is only a caller's explicit choice.
   The solve writes `graph.FLOW_STATE` beside `FLOW_SOLVED`: `solved`, `blind_end` (behind dead
-  ends inside the tissue: zero flow is the answer, drawn in colour, not grey), `closed_end`
+  ends inside the tissue: drawn unsolved, grey, while exports keep its 0 -- Harvey, 2026-10-15), `closed_end`
   (behind a face end with no boundary condition) or `no_boundary` (no inlet and outlet: the
   only flows exports blank, `graph.flow_is_undefined`). The solve, each perturbation re-solve
   and each sweep point then set `blind_end` and `closed_end` flows and pressure drops to exactly

@@ -68,28 +68,44 @@ def test_the_vessels_layer_names_each_vessel_solved_or_unsolved():
     assert list(vessels.features[FLOW_SOLUTION]) == ["Solved", "Solved", "Unsolved"]
 
 
-def test_a_vessel_behind_a_dead_end_keeps_its_zero_flow_and_says_why():
-    """PLAN_dead_ends.md decision D4: behind a dead end inside the tissue a
-    vessel's zero flow is the answer, so it is not blanked to the unsolved
-    grey; its flow state is a column of its own, and the hover says why."""
+@pytest.mark.parametrize("state", ["blind_end", "closed_end", "no_boundary"])
+def test_a_vessel_behind_a_dead_end_is_drawn_unsolved_and_says_why(state):
+    """PLAN_dead_ends.md decision D4 (Harvey, 2026-10-15): behind a dead end
+    inside the tissue a vessel is unsolved, like every other vessel no
+    inlet-to-outlet path runs along -- its flows blank, so the panel draws it
+    grey and leaves the solve's zero out of the colour range. Its flow state
+    stays a column of its own, and the hover says why."""
     from haemolynx.graph import FLOW_STATE
     from haemolynx.gui.branch_hover import FLOW_STATE_TEXT, _metric_value
 
     graph = _graph()
-    states = ("solved", "solved", "blind_end")
-    for (_u, _v, _k, data), state in zip(graph.edges(keys=True, data=True), states):
-        data[FLOW_STATE] = state
+    states = ("solved", "solved", state)
+    for (_u, _v, _k, data), each in zip(graph.edges(keys=True, data=True), states):
+        data[FLOW_STATE] = each
     last = list(graph.edges(keys=True, data=True))[2]
-    last[3]["flow_abs"] = last[3]["flow_signed"] = 0.0
+    last[3]["flow_abs"] = last[3]["flow_signed"] = last[3]["pressure_drop"] = 0.0
 
-    vessels = spec_named(_solve_layers(graph), VESSELS)
+    group = _solve_layers(graph)
+    vessels = spec_named(group, VESSELS)
 
     assert list(vessels.features["flow_state"]) == list(states)
-    assert np.asarray(vessels.features["flow_abs"], dtype=float)[2] == 0.0
-    assert _metric_value(graph, last[0], last[1], last[3], "flow_solution") == FLOW_STATE_TEXT["blind_end"]
-    last[3][FLOW_STATE] = "no_boundary"
-    vessels = spec_named(_solve_layers(graph), VESSELS)
-    assert np.isnan(np.asarray(vessels.features["flow_abs"], dtype=float)[2])
+    assert list(spec_named(group, VESSEL_LABELS).features[FLOW_SOLUTION]) == [
+        "Solved", "Solved", "Unsolved",
+    ]
+    for name in ("flow_abs", "flow_abs_log10", "flow_signed", "pressure_drop"):
+        values = np.asarray(vessels.features[name], dtype=float)
+        assert np.isnan(values[2]) and np.isfinite(values[:2]).all(), name
+    assert vessels.contrast_limits == pytest.approx(FLOWS[:2])
+    hover = _metric_value(graph, last[0], last[1], last[3], "flow_solution")
+    assert hover == FLOW_STATE_TEXT[state] and hover.startswith("Unsolved")
+    assert _metric_value(graph, last[0], last[1], last[3], "flow") is None
+    # The vessels layer's own column is the hover's wording, and a sweep's
+    # slider re-masks the flows it swaps in by that column.
+    assert list(vessels.features[FLOW_SOLUTION]) == ["Solved", "Solved", hover]
+    swapped = {**vessels.features, "flow_abs": np.array([2e-12, 3e-11, 0.0])}
+    mask_unsolved_flow_columns(swapped)
+    np.testing.assert_allclose(swapped["flow_abs"][:2], [2e-12, 3e-11])
+    assert np.isnan(swapped["flow_abs"][2])
 
 
 def test_a_flow_colouring_leaves_the_unsolved_vessel_out_of_its_range():

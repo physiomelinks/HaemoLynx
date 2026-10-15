@@ -61,7 +61,7 @@ _TEXT_HOVER_METRICS = frozenset({"flow_solution", "order", "diameter_source", "f
 FLOW_SOLUTION_TEXT = {True: "Solved", False: "Unsolved"}
 #: What it reads instead, for an unsolved vessel whose FLOW_STATE says why.
 FLOW_STATE_TEXT = {
-    "blind_end": "No flow: behind a dead end",
+    "blind_end": "Unsolved: behind a dead end",
     "closed_end": "Unsolved: behind a closed image-face end",
     "no_boundary": "Unsolved: no inlet and outlet",
 }

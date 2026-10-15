@@ -607,18 +607,18 @@ def flow_solution_values(graph: Any, edge_index: np.ndarray) -> np.ndarray:
 def mask_unsolved_flow_columns(columns: dict[str, Any]) -> None:
     """NaN in every :data:`SOLVED_FLOW_COLUMNS` column on the rows of an
     unsolved vessel, as the rows' own :data:`FLOW_SOLUTION` column says."""
-    from haemolynx.gui.branch_hover import FLOW_SOLUTION_TEXT
+    from haemolynx.gui.branch_hover import FLOW_SOLUTION_TEXT, FLOW_STATE_TEXT
 
     status = columns.get(FLOW_SOLUTION)
     if status is None:
         return
-    unsolved = np.asarray(status, dtype=object) == FLOW_SOLUTION_TEXT[False]
-    states = columns.get("flow_state")
-    if states is not None:
-        # Behind a dead end inside the tissue, a vessel's zero flow is the
-        # answer, not an unknown (PLAN_dead_ends.md, decision D4): it keeps
-        # its colour, drawn apart from the unsolved grey.
-        unsolved &= np.asarray(states, dtype=object) != "blind_end"
+    # A vessels layer's column holds the hover's wording, which says why
+    # (what a sweep's slider re-masks). A vessel behind a dead end inside the
+    # tissue (flow_state "blind_end") is unsolved too, grey like the rest
+    # (PLAN_dead_ends.md, decision D4, Harvey 2026-10-15).
+    unsolved = np.isin(
+        np.asarray(status, dtype=object), [FLOW_SOLUTION_TEXT[False], *FLOW_STATE_TEXT.values()]
+    )
     if not unsolved.any():
         return
     for name in SOLVED_FLOW_COLUMNS.intersection(columns):
