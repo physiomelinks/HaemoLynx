@@ -1,6 +1,7 @@
 """Tests for VTK export and PyVista visualization helpers."""
 from pathlib import Path
 
+import networkx as nx
 import numpy as np
 import pytest
 
@@ -89,8 +90,6 @@ def test_visualize_vtk_network_smoke(simple_graph, tmp_path):
 
 
 def test_graph_to_vtk_orients_reversed_voxel_paths(tmp_path):
-    import networkx as nx
-
     G = nx.MultiGraph()
     G.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
     G.add_node(1, pos=np.array([10.0, 0.0, 0.0]))
@@ -117,9 +116,6 @@ def test_graph_to_vtk_orients_reversed_voxel_paths(tmp_path):
 
 def _morphometry_graph():
     """Two edges carrying the quantities H1 reports, plus their provenance tags."""
-    import networkx as nx
-    import numpy as np
-
     G = nx.MultiGraph()
     for n, pos in {0: (0, 0, 0), 1: (0, 0, 10), 2: (0, 10, 10)}.items():
         G.add_node(n, pos=np.array(pos, dtype=float))
@@ -143,10 +139,6 @@ def test_vessel_export_carries_the_quantities_h1_reports(tmp_path):
     coloured by tortuosity, by the EDT diameter section 1.2 actually reports, or by which
     edges retained a known-biased radius. All of it is already on the graph at export time.
     """
-    import pyvista as pv
-
-    from ImageLynx.visualization.vtk_io import graph_to_vtk
-
     result = graph_to_vtk(_morphometry_graph(), tmp_path / "net")
     mesh = pv.read(result["vessels_path"])
 
@@ -161,10 +153,6 @@ def test_vessel_export_carries_the_quantities_h1_reports(tmp_path):
 
 def test_provenance_tags_are_exported_with_numeric_codes(tmp_path):
     """ParaView cannot colour by a string array, so each tag needs a code beside it."""
-    import pyvista as pv
-
-    from ImageLynx.visualization.vtk_io import graph_to_vtk
-
     result = graph_to_vtk(_morphometry_graph(), tmp_path / "net")
     mesh = pv.read(result["vessels_path"])
 
@@ -181,10 +169,6 @@ def test_provenance_tags_are_exported_with_numeric_codes(tmp_path):
 
 def test_nodes_carry_degree_which_is_the_section_1_1_readout(tmp_path):
     """Section 1.1 counts branch points; nodes.vtp carried only an id."""
-    import pyvista as pv
-
-    from ImageLynx.visualization.vtk_io import graph_to_vtk
-
     result = graph_to_vtk(_morphometry_graph(), tmp_path / "net")
     nodes = pv.read(result["nodes_path"])
 

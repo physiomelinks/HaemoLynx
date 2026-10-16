@@ -1,7 +1,6 @@
 """Tests for small arteriole/venule mask overlap boundary labelling on graphs."""
 from __future__ import annotations
 
-import sys
 import webbrowser
 from pathlib import Path
 
@@ -9,11 +8,7 @@ import networkx as nx
 import pytest
 import numpy as np
 
-# Allow running this test without an editable package install.
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
 
 from ImageLynx.graph import (
     infer_boundary_nodes_from_small_vessel_masks,

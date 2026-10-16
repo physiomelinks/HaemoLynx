@@ -8,12 +8,13 @@ import networkx as nx
 import numpy as np
 import pytest
 
+from ImageLynx.specimens import PROCESSING_VOXEL_UM
 from ImageLynx.statistics.th_morphometry import (
     summarise,
     tissue_to_vessel_distance_um,
 )
 
-VOX = (1.8639, 1.866, 1.866)
+VOX = PROCESSING_VOXEL_UM
 
 
 def _graph(polylines):
@@ -46,7 +47,7 @@ def test_the_length_is_the_sum_of_the_edge_polylines():
     G = _graph({"a": _centres((2, 2, 2), (2, 2, 12)),
                 "b": _centres((5, 5, 5), (5, 15, 5))})
     r = _summary(G, np.zeros((20, 20, 20), bool))
-    assert r.centreline_length_um == pytest.approx(10 * 1.866 + 10 * 1.866)
+    assert r.centreline_length_um == pytest.approx(10 * VOX[1] + 10 * VOX[1])
     assert r.centreline_length_within_th_um == 0.0
 
 
@@ -58,7 +59,7 @@ def test_an_l_shaped_corner_is_counted_once():
     """
     G = _graph({"L": _centres((4, 4, 4), (4, 4, 10), (4, 10, 10))})
     r = _summary(G, np.zeros((20, 20, 20), bool))
-    assert r.centreline_length_um == pytest.approx(12 * 1.866)
+    assert r.centreline_length_um == pytest.approx(12 * VOX[1])
 
 
 def test_the_length_within_th_is_the_part_inside_a_slab():
@@ -66,10 +67,10 @@ def test_the_length_within_th_is_the_part_inside_a_slab():
     th[:, :, 6:11] = True                      # x voxels 6 to 10, i.e. 5.5 to 10.5 voxels
     G = _graph({"a": _centres((5, 5, 1), (5, 5, 16))})
     r = _summary(G, th)
-    assert r.centreline_length_um == pytest.approx(15 * 1.866)
+    assert r.centreline_length_um == pytest.approx(15 * VOX[1])
     # Sampled every half of the finest voxel, so each of the two crossings is placed to within
     # one sample step (0.93 µm).
-    assert r.centreline_length_within_th_um == pytest.approx(5 * 1.866, abs=0.5 * 1.8639 * 2)
+    assert r.centreline_length_within_th_um == pytest.approx(5 * VOX[1], abs=0.5 * VOX[0] * 2)
     assert r.length_density_mm_per_mm3 == pytest.approx(
         r.centreline_length_within_th_um / r.th_volume_um3 * 1e6)
 
@@ -93,9 +94,9 @@ def test_distance_to_the_centreline_is_measured_in_micrometres():
 
     d = np.sort(tissue_to_vessel_distance_um(tissue, sk, VOX))
     assert d.size == 3
-    assert d[0] == pytest.approx(3 * 1.8639, rel=1e-6)
-    assert d[1] == pytest.approx(3 * 1.866, rel=1e-6)
-    assert d[2] == pytest.approx(3 * 1.866, rel=1e-6)
+    assert d[0] == pytest.approx(3 * VOX[0], rel=1e-6)
+    assert d[1] == pytest.approx(3 * VOX[1], rel=1e-6)
+    assert d[2] == pytest.approx(3 * VOX[1], rel=1e-6)
 
 
 def test_a_tissue_voxel_on_the_centreline_is_at_zero_distance():
@@ -111,7 +112,7 @@ def test_distance_is_to_the_nearest_centreline_not_the_first():
     sk[2, 2, 20] = True
     tissue = np.zeros((5, 5, 21), bool)
     tissue[2, 2, 18] = True                     # 18 from the left, 2 from the right
-    assert tissue_to_vessel_distance_um(tissue, sk, VOX)[0] == pytest.approx(2 * 1.866)
+    assert tissue_to_vessel_distance_um(tissue, sk, VOX)[0] == pytest.approx(2 * VOX[1])
 
 
 def test_no_tissue_and_no_vessel_are_reported_rather_than_crashing():

@@ -31,9 +31,12 @@ So calibre is the objective and fragmentation is the constraint, which is the re
 handover's ordering. On these six specimens the constraint never actually binds: the
 fragmentation onset always sits above the top of the calibre window.
 """
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
+from ImageLynx.specimens import PROCESSING_VOXEL_UM
 from ImageLynx.statistics.threshold_selection import (
     CAPILLARY_DIAMETER_RANGE_UM,
     ThresholdSample,
@@ -43,7 +46,7 @@ from ImageLynx.statistics.threshold_selection import (
     sweep_thresholds,
 )
 
-VOXEL = (1.8639, 1.866, 1.866)
+VOXEL = PROCESSING_VOXEL_UM
 
 
 def _tube(shape=(64, 48, 48), radius_vox=4.0, beading=False, seed=0):
@@ -170,6 +173,9 @@ def test_selection_can_be_rendered_as_a_table():
     samples = sweep_thresholds(_tube(), np.arange(0.2, 1.0, 0.2), VOXEL)
     text = select_threshold(samples).format_table()
     assert "d_med" in text and "ep/mm" in text
+    # Recorded and printed, never read by the selection: the voxel-level median and the
+    # network-mask median sit beside the plain-cut one so a person can compare them.
+    assert "d_vox" in text and "d_net" in text
     assert str(samples[0].threshold) in text or f"{samples[0].threshold:.2f}" in text
 
 
@@ -189,6 +195,18 @@ def _sample(threshold, d_med, ep_per_mm):
         endpoint_density_per_mm=ep_per_mm,
         skeleton_components=10,
     )
+
+
+# The real shape: calibre window tops out at 0.90, endpoint density does not spike until 0.95.
+_REAL_SHAPE_SWEEP = [
+    _sample(0.70, 6.46, 5.13),
+    _sample(0.80, 5.28, 4.73),
+    _sample(0.85, 5.27, 5.01),
+    _sample(0.90, 5.27, 5.17),
+    _sample(0.93, 3.73, 6.09),
+    _sample(0.95, 3.73, 7.83),
+    _sample(0.97, 3.73, 10.89),
+]
 
 
 def test_only_the_lower_calibre_bound_can_select():
@@ -238,23 +256,13 @@ def test_the_fragmentation_veto_is_a_guard_that_the_real_data_never_trips():
     currently buying a guard rather than a decision. If a future classifier makes this bind,
     this test should fail and the section's claim be revisited.
     """
-    # the real shape: calibre window tops out at 0.90, endpoint density does not spike until 0.95
-    samples = [
-        _sample(0.70, 6.46, 5.13),
-        _sample(0.80, 5.28, 4.73),
-        _sample(0.85, 5.27, 5.01),
-        _sample(0.90, 5.27, 5.17),
-        _sample(0.93, 3.73, 6.09),
-        _sample(0.95, 3.73, 7.83),
-        _sample(0.97, 3.73, 10.89),
-    ]
-    selection = select_threshold(samples)
+    selection = select_threshold(_REAL_SHAPE_SWEEP)
     assert selection.threshold == 0.90
     assert selection.fragmentation_onset == 0.95
     # the onset is above the top of the calibre window, so it removed no candidate
     assert max(selection.calibre_window) < selection.fragmentation_onset
     # and disabling the constraint gives the identical answer
-    unconstrained = select_threshold(samples, fragmentation_tolerance=1e9)
+    unconstrained = select_threshold(_REAL_SHAPE_SWEEP, fragmentation_tolerance=1e9)
     assert unconstrained.fragmentation_onset is None
     assert unconstrained.threshold == selection.threshold
 
@@ -306,26 +314,6 @@ def test_the_cut_keeps_the_level_on_the_threshold():
             float((prob > np.float32(t)).mean() + on_level.mean()))
 
 
-def test_the_cut_is_nested_so_the_sweep_is_a_ranking():
-    """p >= t_high is a subset of p >= t_low, which is what licenses ranking the thresholds.
-
-    The sweep measures a plain cut while the pipeline builds a hysteresis mask, so the
-    absolute calibre and fragmentation figures are not the delivered mask's. Treating the
-    sweep as an ordering rather than a measurement is what survives that, and this nesting
-    is the property the ordering rests on.
-    """
-    from ImageLynx.preprocessing.image import at_or_above
-
-    prob = _quantised()
-    grid = [0.30, 0.50, 0.70, 0.80, 0.85, 0.90, 0.93, 0.95, 0.97, 0.99]
-    previous = None
-    for t in grid:
-        mask = at_or_above(prob, t)
-        if previous is not None:
-            assert np.all(mask <= previous), t
-        previous = mask
-
-
 def test_calibre_is_read_on_the_centreline_not_over_every_voxel():
     """Open item 15: the window is a capillary diameter, which is a centreline quantity.
 
@@ -343,36 +331,30 @@ def test_calibre_is_read_on_the_centreline_not_over_every_voxel():
     assert sample.median_voxel_diameter_um < 0.75 * sample.median_diameter_um
 
 
-def test_the_voxel_median_is_printed_but_never_selects():
-    import inspect
+@pytest.mark.parametrize("field", [
+    "median_voxel_diameter_um",
+    "median_network_diameter_um",
+])
+def test_a_recorded_only_field_never_moves_the_selection(field):
+    """The field is printed beside the plain-cut calibre but never read by the selection.
 
-    from ImageLynx.statistics import threshold_selection
+    ``median_network_diameter_um`` (d_net) shows the calibre the network would read at each
+    threshold (open item 41). It is a diagnostic: the window is still tested on the plain-cut
+    centreline median, because every candidate replacement moves calibre by about the window's
+    width and so would choose the threshold by itself.
 
-    source = inspect.getsource(threshold_selection.select_threshold)
-    assert "median_voxel_diameter_um" not in source
-    samples = sweep_thresholds(_tube(), [0.3, 0.6], VOXEL)
-    assert "d_vox" in select_threshold(samples).format_table()
-
-
-
-def test_the_network_mask_calibre_is_printed_but_never_selects():
-    """d_net shows the calibre the network would read at each threshold (open item 41).
-
-    It is a diagnostic: the window is still tested on the plain-cut centreline median, because
-    every candidate replacement moves calibre by about the window's width and so would choose
-    the threshold by itself.
+    Each case moves the field on every sample to a value far outside the calibre window, on
+    either side. A selection that read it would empty the window and refuse.
     """
-    import inspect
+    baseline = select_threshold(_REAL_SHAPE_SWEEP)
+    assert baseline.threshold == 0.90
 
-    from ImageLynx.statistics import threshold_selection
-
-    source = inspect.getsource(threshold_selection.select_threshold)
-    assert "median_network_diameter_um" not in source
-
-    # The radius-4 tube's core saturates past the 0.999 seed; a thinner one never seeds.
-    samples = sweep_thresholds(_tube(), [0.3, 0.5, 0.7], VOXEL)
-    assert all(np.isfinite(s.median_network_diameter_um) for s in samples)
-    assert "d_net" in select_threshold(samples).format_table()
+    for hostile in (0.0, 1e6):
+        moved = [replace(s, **{field: hostile}) for s in _REAL_SHAPE_SWEEP]
+        selection = select_threshold(moved)
+        assert selection.threshold == baseline.threshold, (field, hostile)
+        assert selection.calibre_window == baseline.calibre_window, (field, hostile)
+        assert selection.fragmentation_onset == baseline.fragmentation_onset, (field, hostile)
 
 
 def test_the_network_mask_uses_the_given_seed():
@@ -392,7 +374,6 @@ def test_a_seed_at_or_below_the_threshold_raises():
 
 
 def _with_network(sample, d_net):
-    from dataclasses import replace
     return replace(sample, median_network_diameter_um=d_net)
 
 

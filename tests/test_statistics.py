@@ -1,9 +1,14 @@
 """Tests for statistics module."""
+import ast
+import csv
+from pathlib import Path
+
 import pytest
 import numpy as np
 import networkx as nx
 
 from ImageLynx.statistics import (
+    PER_EDGE_MORPHOMETRY_COLUMNS,
     compute_basic_statistics,
     compute_tortuosity_measures,
     compute_branching_statistics,
@@ -12,6 +17,8 @@ from ImageLynx.statistics import (
     compute_path_efficiency,
     compute_vessel_density,
     compute_comprehensive_vessel_statistics,
+    export_per_edge_morphometry,
+    write_per_edge_morphometry_csv,
 )
 
 
@@ -19,12 +26,6 @@ def test_compute_basic_statistics(simple_graph):
     s = compute_basic_statistics(simple_graph, False)
     assert s["Total Nodes"] == 3
     assert s["Total Edges"] == 2
-
-
-def test_compute_tortuosity_measures(simple_graph):
-    pos = nx.get_node_attributes(simple_graph, "pos")
-    s = compute_tortuosity_measures(simple_graph, pos, False)
-    assert "Average Tortuosity Index" in s
 
 
 def test_compute_branching_statistics(simple_graph):
@@ -72,14 +73,6 @@ def test_compute_path_efficiency(simple_graph):
     assert "Path Efficiency" in s
 
 
-def test_compute_vessel_density(simple_graph):
-    pos = nx.get_node_attributes(simple_graph, "pos")
-    s = compute_vessel_density(
-        simple_graph, pos, (1, 1, 1), (10, 10, 10), False
-    )
-    assert "Total Vessel Length (microns)" in s
-
-
 def test_compute_comprehensive_vessel_statistics(simple_graph):
     pos = nx.get_node_attributes(simple_graph, "pos")
     s = compute_comprehensive_vessel_statistics(
@@ -88,18 +81,6 @@ def test_compute_comprehensive_vessel_statistics(simple_graph):
     )
     assert "Total Nodes" in s
     assert "Fractal Dimension" in s
-import csv
-
-import networkx as nx
-import numpy as np
-import pytest
-
-from ImageLynx.statistics import (
-    PER_EDGE_MORPHOMETRY_COLUMNS,
-    compute_tortuosity_measures,
-    export_per_edge_morphometry,
-    write_per_edge_morphometry_csv,
-)
 
 
 def _morphometry_graph():
@@ -263,9 +244,6 @@ def test_bounding_box_volume_is_named_for_what_it_is():
     "resistance_network_pipeline_for_Alice.py",
 ])
 def test_pipelines_pass_the_voxel_size_to_the_statistics(script):
-    import ast
-    from pathlib import Path
-
     source = (Path(__file__).parent.parent / "examples" / script).read_text()
     calls = [
         node for node in ast.walk(ast.parse(source))

@@ -5,10 +5,6 @@ matplotlib.use("Agg")
 import pytest
 import numpy as np
 
-# Forcibly skip the entire visualization suite in CI/Automated environments 
-# as 3D rendering (PyVista/Vedo/VTK) causes segmentation faults on headless servers.
-pytestmark = pytest.mark.skip(reason="Visualization tests require an interactive display/GPU context.")
-
 from ImageLynx.visualization import (
     plot_node_degree_distribution,
     visualize_edges_and_nodes,

@@ -19,6 +19,13 @@ def _quantised(shape=(24, 24, 24), seed=0):
 
 @pytest.mark.parametrize("t", [0.30, 0.50, 0.85, 0.90, 0.93, 0.95, 0.99, 1.0])
 def test_a_float32_level_equal_to_the_threshold_is_kept(t):
+    """The cut is inclusive: ``at_or_above(p, t)`` is exactly ``p >= t``.
+
+    That equality is what makes a higher threshold's mask a subset of a lower one's, which
+    lets the selector's sweep be read as a ranking rather than a measurement: it measures a
+    plain cut while the pipeline builds a hysteresis mask, so absolute calibre and
+    fragmentation figures are not the delivered mask's, but their order is.
+    """
     prob = _quantised()
     on_level = prob == np.float32(t)
     assert on_level.any()

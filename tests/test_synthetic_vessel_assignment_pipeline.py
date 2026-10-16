@@ -11,7 +11,6 @@ Run: ``python tests/test_synthetic_vessel_assignment_pipeline.py`` or ``pytest``
 """
 from __future__ import annotations
 
-import sys
 import webbrowser
 from pathlib import Path
 
@@ -20,9 +19,6 @@ import numpy as np
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
 
 from ImageLynx.graph import (
     assign_hierarchical_branch_orders,
