@@ -22,6 +22,8 @@ Create a new file under `.scratch/<feature-slug>/` (creating the directory if ne
 
 Read the file at the referenced path. The user will normally pass the path or the issue number directly.
 
+A bare number (`/implement 13`) means the ticket whose `Status:` is not `done (<hash>)` or `resolved`; ask only if more than one match is still open.
+
 ## Wayfinding operations
 
 Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
