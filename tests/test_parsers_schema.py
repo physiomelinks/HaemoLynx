@@ -372,6 +372,31 @@ def test_container_defaults_are_not_shared_between_calls():
     assert second["table"] == {"B01": 5.0}
 
 
+def test_validated_containers_are_new_not_the_defaults_or_the_callers():
+    """Values built from ``setting.default`` are the schema's own lists, and a
+    stage fills some in place (``inlet_nodes``). Regression test: validate
+    passed them through, so one pipeline run's inlet nodes became the default
+    every later caller read."""
+    schema = Schema([
+        Setting("inlet_nodes", "any", [], "Inlets", "S"),
+        Setting("edges", "any", [[0, 1]], "Custom edges", "S"),
+        Setting("table", "mapping", {"B01": [5.0]}, "Diameters", "S"),
+    ])
+    resolved = schema.validate({setting.name: setting.default for setting in schema})
+    resolved["inlet_nodes"][:] = [2, 4, 5]
+    resolved["edges"][0].append(9)
+    resolved["table"]["B01"].append(6.0)
+    assert schema["inlet_nodes"].default == []
+    assert schema["edges"].default == [[0, 1]]
+    assert schema["table"].default == {"B01": [5.0]}
+
+    mine = [[7, 8]]
+    resolved = schema.validate({"edges": mine})
+    resolved["edges"][0].append(9)
+    assert mine == [[7, 8]]
+    assert resolved["edges"] == [[7, 8, 9]]
+
+
 # --- the four forms of a prerequisite ----------------------------------------
 
 

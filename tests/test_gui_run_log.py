@@ -52,6 +52,8 @@ from haemolynx.gui.run_log import (
     installed_handlers,
 )
 from haemolynx.pipeline.progress import (
+    STAGE_FAILED,
+    STAGE_FINISHED,
     STAGE_STARTED,
     STEP,
     ProgressEvent,
@@ -586,6 +588,19 @@ def test_a_stage_banner_reaches_the_buffer(library_logger) -> None:
     (line,) = log.drain().lines
     assert "3. Graph" in line
     assert "3/8" in line
+
+
+def test_each_stage_ends_in_the_window_with_its_wall_time(library_logger) -> None:
+    """The panel hands every event to `log_progress`, so a stage's time is in
+    the window as it ends -- and a failed stage's, beside the error."""
+    log = RunLog(level=logging.INFO)
+    with attach(log):
+        log_progress(a_stage_event(STAGE_FINISHED, seconds=754.0))
+        log_progress(a_stage_event(STAGE_FAILED, error=MemoryError("out"), seconds=3.3))
+
+    finished, failed = log.drain().lines
+    assert finished.endswith("Stage 3/8 done: 3. Graph (12 min 34 s)")
+    assert "Stage 3/8 failed after 3.3 s: 3. Graph: out" in failed
 
 
 def test_a_topology_step_is_not_shown_at_info(library_logger) -> None:

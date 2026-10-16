@@ -16,6 +16,7 @@ from .load import (
     load_3d_tif_with_voxel_size,
     resolve_image_path_with_optional_zip,
 )
+from .raw_volume_cache import _modified_too_recently
 from .voxel_validation import resolve_voxel_size_xyz
 
 logger = logging.getLogger(__name__)
@@ -720,7 +721,10 @@ def load_and_validate_vessel_masks(
 #: cleans them once, and a run repeated from the panel skips it too. Keyed on
 #: the files' identity and every setting the cleanup reads; held packed, one
 #: bit a voxel, and handed out as fresh arrays, so nothing a caller does to
-#: its copy reaches the next.
+#: its copy reaches the next. Nothing is remembered or reused while either
+#: file was modified within the raw-volume cache's racy window: until then a
+#: same-size rewrite in the same file-clock tick (ilastik overwriting its own
+#: output) keeps the mtime and size the key holds.
 _LOADED_MASKS: dict[str, tuple[tuple, tuple]] = {}
 
 
@@ -730,10 +734,14 @@ def clear_vessel_mask_cache() -> None:
 
 
 def _file_identity(path: str | Path) -> tuple[str, int, int] | None:
+    """The file's (path, mtime, size); None -- do not cache -- when it is
+    missing, or so recently modified that a rewrite might keep both."""
     try:
         resolved = Path(path).resolve()
         status = resolved.stat()
     except OSError:
+        return None
+    if _modified_too_recently(status):
         return None
     return (str(resolved), int(status.st_mtime_ns), int(status.st_size))
 

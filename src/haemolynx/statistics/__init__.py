@@ -6,6 +6,12 @@ from .bifurcation import (
     compute_murray_law_compliance,
     export_branch_order_statistics_to_csv,
 )
+from .capillary_bed_joins import (
+    compute_capillary_bed_joins,
+    export_capillary_bed_joins_csv,
+    kaplan_meier,
+    kaplan_meier_median,
+)
 from .comprehensive import (
     NETWORK_ANALYSIS_MEASURES,
     STATISTIC_MEASURES,
@@ -90,6 +96,10 @@ __all__ = [
     "compute_occlusion_curves",
     "compute_current_flow",
     "compute_perfusion_territories",
+    "compute_capillary_bed_joins",
+    "export_capillary_bed_joins_csv",
+    "kaplan_meier",
+    "kaplan_meier_median",
     "compute_transit_times",
     "compute_loop_hierarchy",
     "compute_strahler_orders",
