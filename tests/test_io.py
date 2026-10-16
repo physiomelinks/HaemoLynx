@@ -1,13 +1,10 @@
 """Tests for io module."""
 import pytest
 import numpy as np
-import tempfile
-from pathlib import Path
 
 from ImageLynx.io import (
     crop_tiff_volume_from_corners,
     load_and_skeletonize_3d_tif,
-    load_and_skeletonize_3d_h5,
     bridge_gaps,
     simplify_to_3d,
     get_tif_spacing

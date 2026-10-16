@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 import networkx as nx
 import scipy.sparse as sp
@@ -9,11 +8,6 @@ from ImageLynx.haemodynamics.resistance import (
     calc_laplacian_from_conductance_matrix,
     _solve_system_smart,
     POISEUILLE_FLOW_TO_UM3_PER_S,
-)
-from ImageLynx.haemodynamics.perfusion import (
-    PerfusionGrid,
-    build_adr_matrix,
-    solve_perfusion_steady_state
 )
 from ImageLynx.haemodynamics.rheology import (
     calculate_pries_secomb_viscosity,
@@ -524,8 +518,6 @@ def test_multi_species_0d_fick_mass_balance():
     Isolates a single voxel. Mathematically proves the Picard Matrix loop correctly 
     navigates the coupled Bohr/Haldane equations to hit the exact Fick Mass Balance root.
     """
-    from scipy.optimize import fsolve
-    import scipy.sparse as sp
     from dataclasses import dataclass
     from ImageLynx.haemodynamics.perfusion import (
         solve_multi_species_perfusion,

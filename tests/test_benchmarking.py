@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 import networkx as nx
 import ImageLynx.statistics.benchmarking as bench

@@ -4,7 +4,6 @@ matplotlib.use("Agg")
 
 import pytest
 import numpy as np
-import networkx as nx
 
 # Forcibly skip the entire visualization suite in CI/Automated environments 
 # as 3D rendering (PyVista/Vedo/VTK) causes segmentation faults on headless servers.

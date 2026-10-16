@@ -1,9 +1,7 @@
-import os
 import numpy as np
 import pytest
 import tifffile
 import h5py
-from pathlib import Path
 from ImageLynx import io, preprocessing
 
 try:

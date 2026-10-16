@@ -1,4 +1,3 @@
-import pytest
 import numpy as np
 from ImageLynx.graph.tiling import generate_evenly_distributed_bounding_boxes, calculate_evenly_distributed_grid
 

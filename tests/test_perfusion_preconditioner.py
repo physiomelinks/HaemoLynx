@@ -7,7 +7,6 @@ preconditioner that is neither, CG does not converge slowly, it diverges.
 import logging
 
 import numpy as np
-import pytest
 import scipy.sparse as sp
 import scipy.sparse.linalg as splinalg
 

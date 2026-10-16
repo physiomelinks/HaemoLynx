@@ -2,7 +2,6 @@
 
 It hard-coded 0.85 / 0.90 / 0.95 until the 2026-09-28 re-selection moved the freeze to 0.95.
 """
-from types import SimpleNamespace
 
 import pytest
 

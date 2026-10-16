@@ -1,6 +1,4 @@
-import pytest
 import numpy as np
-from pathlib import Path
 import matplotlib
 from ImageLynx.visualization.reporting import generate_model_results_dashboard
 

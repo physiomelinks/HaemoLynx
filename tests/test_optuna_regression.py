@@ -3,7 +3,6 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 import numpy as np
 
-import pytest
 
 # Add source paths
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -17,7 +16,6 @@ if str(EXAMPLES_DIR) not in sys.path:
 def test_cli_optimization_args_mapping():
     """Ensure CLI optimization arguments correctly map to PipelineConfig and don't default to 0."""
     import importlib.util
-    import sys
     
     test_args = ['carotid_image_to_model.py', '--optimize-preprocessing', '50', '--optimize-skeleton', '20', '--exit-after-mask']
     

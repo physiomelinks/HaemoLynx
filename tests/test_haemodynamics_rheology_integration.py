@@ -152,8 +152,6 @@ def test_coupled_solver_matrix_singularity_safety(caplog):
     G.add_edge(0, 1, key=0, length=10.0, fwhm_diameter_um=10.0)
     
     # Missing starting nodes entirely
-    import pytest
-    from scipy.sparse.linalg import MatrixRankWarning
     
     try:
         G_solved, final_pressure = solve_coupled_flow_and_hematocrit(
@@ -182,7 +180,7 @@ def test_carotid_pipeline_end_to_end_resistance_and_skimming():
     examples_path = Path(__file__).parent.parent / "examples"
     sys.path.insert(0, str(examples_path))
     from carotid_image_to_model import (
-        GraphConfig, HaemodynamicsConfig, VisualizationConfig, PipelineConfig, PerfusionConfig,
+        GraphConfig, HaemodynamicsConfig,
         _setup_boundary_conditions_and_haemodynamics
     )
     

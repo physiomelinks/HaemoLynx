@@ -1,5 +1,4 @@
 """Tests for haemodynamics module."""
-import pytest
 import numpy as np
 import networkx as nx
 
