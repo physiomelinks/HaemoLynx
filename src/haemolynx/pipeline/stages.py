@@ -5067,6 +5067,46 @@ def tissue_statistics_arguments(tissue: statistics.TissueVolume | None) -> dict[
     }
 
 
+def connected_network_statistics(
+    settings: dict,
+    G: nx.MultiGraph,
+    image_shape: tuple,
+    voxel_size_zyx: tuple,
+    tissue: statistics.TissueVolume | None,
+) -> dict[str, Any] | None:
+    """The geometry and topology statistics again, on the inlet/outlet-
+    connected network only, as the same flat rows the main report has.
+
+    Only the measures in `statistics.CONNECTED_NETWORK_MEASURES` the run has
+    on: the route, flow and boundary-based ones already see only what is
+    connected. ``None`` when the run removed disconnected vessels already
+    (the main report is that version), when it has no inlet or outlet to
+    connect to, or when no measure applies.
+    """
+    if settings.get("boundary_handling") == BOUNDARY_HANDLING_REMOVE_DISCONNECTED:
+        return None
+    arguments = statistics_arguments(settings)
+    measures = arguments["enabled_measures"] & statistics.CONNECTED_NETWORK_MEASURES
+    inlets, outlets = settings["inlet_nodes"], settings["outlet_nodes"]
+    if not measures or not inlets or not outlets:
+        return None
+    connected, _counts = graph.remove_vessels_off_inlet_outlet_paths(G, inlets, outlets)
+    if connected.number_of_edges() == 0:
+        return None
+    arguments["enabled_measures"] = measures
+    # The copy's edge dicts are its own, so a per-vessel result a measure
+    # writes (loop hierarchy) never lands on the run's graph.
+    sections = statistics.compute_vessel_statistics_by_measure(
+        connected,
+        node_positions=nx.get_node_attributes(connected, "pos"),
+        image_dimensions=image_shape,
+        voxel_size=voxel_size_zyx,
+        **arguments,
+        **tissue_statistics_arguments(tissue),
+    )
+    return statistics.flatten_statistics_sections(sections, settings["statistics_mode"])
+
+
 def export_tissue_measurement(
     settings: dict, tissue: statistics.TissueVolume, output_dir: Path
 ) -> list[Path]:
@@ -5165,6 +5205,18 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         stats_csv_path = output_dir / f"{settings['input_path'].stem}_statistics.csv"
         statistics.export_statistics_to_csv(stats, stats_csv_path)
         logger.info(f"Saved statistics CSV to: {stats_csv_path}")
+        connected_stats = connected_network_statistics(
+            settings, G, image.shape, voxel_size_zyx, tissue
+        )
+        if connected_stats is not None:
+            connected_csv_path = (
+                output_dir / f"{settings['input_path'].stem}_statistics_connected.csv"
+            )
+            statistics.export_statistics_to_csv(connected_stats, connected_csv_path)
+            logger.info(
+                "Saved the statistics of the inlet/outlet-connected network "
+                f"(disconnected vessels left out) to: {connected_csv_path}"
+            )
         beds_csv_path = statistics.export_capillary_bed_joins_csv(
             G, output_dir / f"{settings['input_path'].stem}_capillary_bed_joins.csv"
         )

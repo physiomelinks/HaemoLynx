@@ -13,6 +13,7 @@ from .capillary_bed_joins import (
     kaplan_meier_median,
 )
 from .comprehensive import (
+    CONNECTED_NETWORK_MEASURES,
     NETWORK_ANALYSIS_MEASURES,
     STATISTIC_MEASURES,
     ZERO_RESISTANCE_BRIDGES,
@@ -63,6 +64,7 @@ from .tissue_volume import TISSUE_THRESHOLD_METHODS, TissueVolume, measure_tissu
 __all__ = [
     "STATISTIC_MEASURES",
     "NETWORK_ANALYSIS_MEASURES",
+    "CONNECTED_NETWORK_MEASURES",
     "ZERO_RESISTANCE_BRIDGES",
     "compute_comprehensive_vessel_statistics",
     "compute_vessel_statistics_by_measure",

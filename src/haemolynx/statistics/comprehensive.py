@@ -119,6 +119,35 @@ NETWORK_ANALYSIS_MEASURES: frozenset[str] = frozenset(
 )
 
 
+#: The measures that read only the vessels' own geometry and topology -- no
+#: inlet, outlet or flow -- so whether disconnected vessels are in the graph is
+#: all that moves them. A run that keeps disconnected vessels reports these a
+#: second time on the inlet/outlet-connected network. The route, flow and
+#: boundary-based measures already see only what is connected to a boundary,
+#: and algebraic connectivity is 0 on any graph in pieces.
+CONNECTED_NETWORK_MEASURES: frozenset[str] = frozenset(
+    {
+        "basic",
+        "tortuosity",
+        "branching",
+        "tree_asymmetry",
+        "fractal_dimension",
+        "vessel_density",
+        "murray_law",
+        "daughter_angles",
+        "intercapillary_distance",
+        "dead_ends",
+        "loop_hierarchy",
+        "cyclomatic_number",
+        "degree_assortativity",
+        "rich_club",
+        "k_core",
+        "path_efficiency",
+        "community",
+        "betweenness",
+    }
+)
+
 #: The section of :func:`compute_vessel_statistics_by_measure` holding the
 #: zero-resistance bridges, which no measure counts as vessels.
 ZERO_RESISTANCE_BRIDGES = "zero_resistance_bridges"
