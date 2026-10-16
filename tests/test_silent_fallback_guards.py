@@ -58,7 +58,11 @@ def test_the_fallback_can_be_taken_deliberately_but_must_be_asked_for():
     G = _grid_graph([8.0, None])
     grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
     mapping = map_vessels_to_grid(G, grid, default_diameter_um=5.0)
-    assert mapping
+    unmeasured = [item for vessels in mapping.values() for item in vessels
+                  if item["edge"] == ("hub", "n1", 0)]
+    area = sum(item["surface_area"] for item in unmeasured)
+    length = sum(item["length"] for item in unmeasured)
+    assert area / length == pytest.approx(np.pi * 5.0)
 
 
 # --- The 0.45 haematocrit default in map_vessels_to_grid ------------------------------------

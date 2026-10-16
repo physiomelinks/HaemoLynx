@@ -66,15 +66,13 @@ def test_skimming_follows_the_flow_fraction_not_the_velocity():
         assert r["h_wide"] > 0.45 > r["h_narrow"], f"{law}: the narrow branch was not skimmed ({r})"
 
 
-def test_coupled_solver_matrix_singularity_safety(caplog):
-    """Verify solver safely catches missing boundary conditions without cryptic math crashes."""
+def test_coupled_solver_matrix_singularity_safety():
+    """A network with no pressure boundary is refused as singular, not solved."""
     G = nx.MultiGraph()
     G.add_edge(0, 1, key=0, length=10.0, fwhm_diameter_um=10.0)
-    
-    # Missing starting nodes entirely
-    
-    try:
-        G_solved, final_pressure = solve_coupled_flow_and_hematocrit(
+
+    with pytest.raises(ValueError, match="singular"):
+        solve_coupled_flow_and_hematocrit(
             G,
             starting_nodes=[],
             output_nodes=[],
@@ -83,22 +81,13 @@ def test_coupled_solver_matrix_singularity_safety(caplog):
             systemic_hematocrit=0.45,
             max_iterations=1
         )
-        assert False, "Should not be able to solve a network with no boundary conditions."
-    except Exception as e:
-        # Just verifying it raises some form of Error and doesn't get stuck in an infinite loop
-        assert isinstance(e, Exception)
 
-def test_carotid_pipeline_end_to_end_resistance_and_skimming():
-    """Smoke test to ensure the main carotid pipeline classes and execution logic don't break.
+def test_phase_4_attaches_a_positive_diameter_and_no_resistance_on_the_cb_path():
+    """Phase 4 (``_setup_boundary_conditions_and_haemodynamics``) sets the diameter only.
 
-    Previously exercised the sphincter path with ``constrict_at_pericytes=True``. That
-    capability is disabled for the carotid config, so the wiring this covers is now the
-    unconstricted resistance path, which is the only one reachable.
+    It finds an inlet and an outlet, gives every edge a positive ``assigned_diameter_um``,
+    and leaves ``resistance`` for the rheology solve to write.
     """
-    import sys
-    from pathlib import Path
-    examples_path = Path(__file__).parent.parent / "examples"
-    sys.path.insert(0, str(examples_path))
     from carotid_image_to_model import (
         GraphConfig, HaemodynamicsConfig,
         _setup_boundary_conditions_and_haemodynamics
@@ -114,47 +103,42 @@ def test_carotid_pipeline_end_to_end_resistance_and_skimming():
     G.add_edge(1, 2, key=0, length=20.0, voxels=[[0,0,0], [20,20,20]])
     G.add_edge(2, 3, key=0, length=20.0, voxels=[[20,20,20], [40,49,40]])
     
-    # Set up the configs matching an SHR Sphincter run
+    # Set up the configs.
     # Node 1 sits on the low face and node 3 on the high face of the boundary axis (1), so
     # the face rule finds one inlet and one outlet in the 50^3 mock volume.
     graph_config = GraphConfig()
     hemo_config = HaemodynamicsConfig(
         diameter_by_branch_order={"DEFAULT": {"d1": 10.0, "d2": 10.0}},
         # Stated explicitly rather than inherited: the default moved to "edt_radius" (#98
-        # Phase 3), and this is a graph-only smoke test with a mock image and no binary mask,
-        # so EDT correctly refuses to run. What is being exercised here is the haemodynamics
-        # wiring, not diameter estimation.
+        # Phase 3), and this test has a mock image and no binary mask, so EDT correctly
+        # refuses to run. What is checked here is what Phase 4 writes on each edge, not how
+        # the diameter is estimated.
         radius_assignment_mode="fwhm_radius",
     )
     
     # Create a mock 3D numpy array representing the image (to pass the FWHM step)
     mock_image = np.ones((50, 50, 50))
     
-    try:
-        # 2. Run Phase 4 (Setup boundary conditions, branch orders, and FWHM)
-        start, end, pair = _setup_boundary_conditions_and_haemodynamics(
-            G, mock_image, hemo_config, graph_config, "mock_path", "numpy"
+    # 2. Run Phase 4 (Setup boundary conditions, branch orders, and FWHM)
+    start, end, _ = _setup_boundary_conditions_and_haemodynamics(
+        G, mock_image, hemo_config, graph_config, "mock_path", "numpy"
+    )
+
+    # Ensure Phase 4 succeeded
+    assert len(start) > 0
+    assert len(end) > 0
+
+    # Phase 4 attaches the measured diameter, not a resistance. It used to write the
+    # power-law resistance mu = 1/d^1.647 as well, which the rheology solver overwrote
+    # before anything read it; the CB driver now passes assign_resistance=False so that
+    # provisional value is never created. assigned_diameter_um is what the solver reads.
+    for u, v, k, d in G.edges(keys=True, data=True):
+        assert "assigned_diameter_um" in d
+        assert d["assigned_diameter_um"] > 0
+        assert "resistance" not in d, (
+            "Phase 4 should no longer write a provisional power-law resistance on the "
+            "CB path; the rheology solver assigns it from Pries-Secomb"
         )
-        
-        # Ensure Phase 4 succeeded
-        assert len(start) > 0
-        assert len(end) > 0
-        
-        # Phase 4 attaches the measured diameter, not a resistance. It used to write the
-        # power-law resistance mu = 1/d^1.647 as well, which the rheology solver overwrote
-        # before anything read it; the CB driver now passes assign_resistance=False so that
-        # provisional value is never created. assigned_diameter_um is what the solver reads.
-        for u, v, k, d in G.edges(keys=True, data=True):
-            assert "assigned_diameter_um" in d
-            assert d["assigned_diameter_um"] > 0
-            assert "resistance" not in d, (
-                "Phase 4 should no longer write a provisional power-law resistance on the "
-                "CB path; the rheology solver assigns it from Pries-Secomb"
-            )
-
-
-    except Exception as e:
-        pytest.fail(f"End-to-End Pipeline Phase 4 failed: {e}")
 
 
 def _bifurcation_graph():

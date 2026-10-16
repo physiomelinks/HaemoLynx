@@ -15,28 +15,34 @@ from ImageLynx.haemodynamics import (
 MODEL = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
 
 
-def test_calculate_integrated_resistance():
-    R = MODEL.calculate_integrated_resistance(50.0, 5.0, 4.0, num_points=50)
-    assert R > 0
-    assert R < float("inf")
+def test_the_integrated_resistance_of_a_zero_length_vessel_is_infinite():
     assert MODEL.calculate_integrated_resistance(0, 5, 4) == float("inf")
 
 
 def test_set_poiseuille_resistances_with_constrictions(multigraph_with_branch_order):
+    """With d1 = d2 and no measured diameter, the 5 um edge is a straight 6.2 um tube."""
     G = multigraph_with_branch_order.copy()
     config = {"BO1": {"d1": 6.2, "d2": 6.2}}
     out_graph, res = MODEL.set_poiseuille_resistances_with_constrictions(G, config)
-    assert isinstance(out_graph, nx.MultiGraph)
-    assert res["resistances_set"] >= 0
+    edge = out_graph.edges[0, 1, 0]
+    assert res["resistances_set"] == 1
+    assert edge["assigned_diameter_um"] == 6.2
+    assert edge["diameter_provenance"] == "synthetic_branch_order"
+    assert edge["resistance"] == pytest.approx(128 * 5 / (np.pi * 6.2 ** 5.647), rel=1e-12)
 
 
 def test_set_poiseuille_edge_resistances(multigraph_with_branch_order):
     G = multigraph_with_branch_order.copy()
+    absent = (0, 7)
     out_graph, res = MODEL.set_poiseuille_edge_resistances(
-        G, [(0, 1)], 6.0
+        G, [(0, 1), absent], 6.0
     )
-    assert isinstance(out_graph, nx.MultiGraph)
-    assert "updated" in res
+    edge = out_graph.edges[0, 1, 0]
+    assert edge["resistance"] == pytest.approx(
+        128 * 6 ** -1.647 * 5 / (np.pi * 6 ** 4), rel=1e-12)
+    assert edge["assigned_diameter_um"] == 6.0
+    assert [item["edge"] for item in res["updated"]] == [(0, 1, 0)]
+    assert res["not_found"] == [absent]
 
 
 def test_build_conductance_matrix_from_graph():
@@ -71,7 +77,7 @@ def test_calc_two_point_from_laplacian_matrix_nodeID():
     C = sp.csr_matrix([[0., 1., 0.], [1., 0., 1.], [0., 1., 0.]])
     L = calc_laplacian_from_conductance_matrix(C)
     R = calc_two_point_from_laplacian_matrix_nodeID(L, G, 0, 2)
-    assert R > 0
+    assert R == pytest.approx(2.0)
 
 def test_solve_system_smart_routing(monkeypatch):
     from ImageLynx.haemodynamics.resistance import _solve_system_smart
@@ -164,8 +170,13 @@ def test_robin_matrix_ghost_node_generation():
     # Edge to node 2 has R=2.0. Multiplier is 10. Ghost R = 20.0. Conductance = 1/20 = 0.05
     assert np.isclose(cond[ghost_idx, node2_idx], 0.05)
 
-def test_robin_vs_sink_flow_conservation(monkeypatch):
-    from ImageLynx.haemodynamics.resistance import build_conductance_matrix_from_graph, solve_flow_from_conductance_matrix
+def test_a_robin_ghost_node_takes_its_share_of_the_outflow(monkeypatch):
+    """Inlet 0 at 100, outlet 2 and the ghost at 0, every resistance 1, the ghost's included.
+
+    Node 1 settles at 40 and the Robin node 3 at 20, so 60 flows in, 40 leaves through node 2
+    and 20 through the ghost. Balance at node 1 alone would hold with no flow to the ghost.
+    """
+    from ImageLynx.haemodynamics.resistance import solve_flow_from_conductance_matrix
     import pyvista as pv
     
     # Mock pv.read to return a dummy mesh
@@ -207,18 +218,15 @@ def test_robin_vs_sink_flow_conservation(monkeypatch):
         cond, nodes, 100.0, 0.0, [0], outputs, vtk_export_in
     )
     
-    # Prove mass conservation using the output pressures directly
     p_dict = dict(zip(p_nodes["node_list"], p_nodes["pressure"]))
-    
-    flow_0_1 = (p_dict[0] - p_dict[1]) / 1.0
-    flow_1_2 = (p_dict[1] - p_dict[2]) / 1.0
-    flow_1_3 = (p_dict[1] - p_dict[3]) / 1.0
-    
-    # In robin mode, the flow OUT of node 3 goes to the Ghost Node
-    flow_3_ghost = (p_dict[3] - p_dict["ROBIN_GHOST_NODE"]) / 1.0 # robin_multiplier=1.0 * resistance=1.0
-    
-    flow_in = flow_0_1
-    flow_out = flow_1_2 + flow_3_ghost
-                
-    assert np.isclose(flow_in, flow_out, atol=1e-8)
+
+    # Every resistance is 1, so each flow is the pressure drop across its edge. The ghost
+    # edge's resistance is robin_multiplier 1.0 times node 3's resistance 1.0.
+    flow_in = p_dict[0] - p_dict[1]
+    to_node_2 = p_dict[1] - p_dict[2]
+    to_ghost = p_dict[3] - p_dict["ROBIN_GHOST_NODE"]
+
+    assert flow_in == pytest.approx(60.0)
+    assert to_node_2 == pytest.approx(40.0)
+    assert to_ghost == pytest.approx(20.0)
 

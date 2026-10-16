@@ -52,17 +52,13 @@ def test_convergence_is_not_warned(caplog):
     assert not any("did not converge" in r.getMessage() for r in caplog.records)
 
 
-def test_damped_in_vivo_y_junction_records_convergence():
-    """Undamped, this case flips between two states and stops on max_iterations."""
-    import ImageLynx.haemodynamics.rheology as rh
+def test_damping_lets_the_flipping_y_junction_converge():
+    """Undamped, this case flips between two states and stops on max_iterations.
 
-    original = rh.calculate_pries_secomb_viscosity
-    try:
-        rh.calculate_pries_secomb_viscosity = (
-            lambda d, h, mu_p=1.2: original(d, h, mu_p, law="in_vivo"))
-        undamped, _ = _solve(_y_junction(), max_iterations=50, flow_rtol=1e-3, relaxation=1.0)
-        damped, _ = _solve(_y_junction(), max_iterations=50, flow_rtol=1e-3)
-    finally:
-        rh.calculate_pries_secomb_viscosity = original
+    Both solves use the default viscosity law, which is in vivo
+    (``test_rheology_laws.py::test_the_in_vivo_law_is_the_default``).
+    """
+    undamped, _ = _solve(_y_junction(), max_iterations=50, flow_rtol=1e-3, relaxation=1.0)
+    damped, _ = _solve(_y_junction(), max_iterations=50, flow_rtol=1e-3)
     assert undamped.graph["rheology_stop_reason"] == "max_iterations"
     assert damped.graph["rheology_stop_reason"] == "converged"

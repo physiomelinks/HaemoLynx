@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from ImageLynx.haemodynamics.perfusion import PerfusionGrid, map_vessels_to_grid
+from ImageLynx.haemodynamics.resistance import POISEUILLE_FLOW_TO_UM3_PER_S
 
 
 def _one_long_edge(n_points=40, span=280.0):
@@ -48,7 +49,7 @@ def test_the_full_edge_flow_is_still_recorded_for_callers_that_want_it():
     G = _one_long_edge()
     mapping = map_vessels_to_grid(G, PerfusionGrid(G, (30.0, 30.0, 30.0)))
     flows = {v["flow"] for cell in mapping.values() for v in cell}
-    assert len(flows) == 1
+    assert flows == {4.0 * POISEUILLE_FLOW_TO_UM3_PER_S}
 
 
 def test_an_edge_wholly_inside_one_cell_keeps_its_whole_share():
@@ -58,8 +59,10 @@ def test_an_edge_wholly_inside_one_cell_keeps_its_whole_share():
     G.add_edge(1, 2, key=0, length=2.0, flow_abs=3.0, assigned_diameter_um=8.0, hematocrit=0.45,
                voxels=pts)
     mapping = map_vessels_to_grid(G, PerfusionGrid(G, (50.0, 50.0, 50.0)))
-    shares = [v["length_fraction"] for cell in mapping.values() for v in cell]
-    assert sum(shares) == pytest.approx(1.0)
+    assert len(mapping) == 1
+    [entries] = mapping.values()
+    assert len(entries) == 1
+    assert entries[0]["length_fraction"] == 1.0
 
 
 def test_the_oxygen_source_is_grid_independent_end_to_end():
