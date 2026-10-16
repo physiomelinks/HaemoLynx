@@ -8,6 +8,7 @@
 #    Also skipped when .git/hook-stamp/fast-tests-ok matches the staged tree,
 #    the interpreter and its installed packages (see _stamp.sh); a passing run
 #    here, or scripts/stamp-tests.sh, writes it.
+#    The test run is quiet: output goes to .git/hook-stamp/fast-tests.log.
 #    Bypass in an emergency with `git commit --no-verify`.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -53,5 +54,18 @@ if stamp_matches; then
     exit 0
 fi
 
-MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true "$PY" -m pytest -q -m "not slow and not integration and not realdata"
-stamp_write
+# Quiet run: the full output goes to a log, the terminal gets the summary line,
+# or on failure the log's last 40 lines and the log path.
+log_dir=$(git rev-parse --git-path hook-stamp)
+mkdir -p "$log_dir"
+log="$log_dir/fast-tests.log"
+rc=0
+MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true "$PY" -m pytest -q -m "not slow and not integration and not realdata" >"$log" 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+    tail -n 1 "$log" >&2
+    stamp_write
+else
+    tail -n 40 "$log" >&2
+    echo "pre-commit: fast tests failed, full output in $log" >&2
+    exit "$rc"
+fi
