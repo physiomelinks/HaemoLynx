@@ -11,8 +11,9 @@ cbm = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cbm)
 
 
-def _result(modules, tests=None, args=("tests/x.py",), exit_code=0):
-    return {"commit": "0" * 40, "dirty": False, "pytest_args": list(args), "pytest_exit": exit_code,
+def _result(modules, tests=None, args=("tests/x.py",), exit_code=0, outcomes=None):
+    extra = {} if outcomes is None else {"outcomes": outcomes}
+    return {**extra, "commit": "0" * 40, "dirty": False, "pytest_args": list(args), "pytest_exit": exit_code,
             "modules": {rel: {"statements": 10, "covered": lines} for rel, lines in modules.items()},
             "tests": tests or {}}
 
@@ -71,6 +72,7 @@ def test_run_writes_per_module_and_per_test_lines_and_leaves_no_data_file(tmp_pa
     assert result["pytest_args"] == ["-q", "-p", "no:cacheprovider", test_id]
     # Every in-scope file is listed, imported or not.
     assert set(result["modules"]) == {str(p.relative_to(REPO)) for p in cbm.in_scope_files()}
+    assert result["outcomes"] == {test_id: "passed"}
     assert result["modules"]["examples/carotid_image_to_model.py"]["covered"]
     assert result["tests"][test_id]["examples/carotid_image_to_model.py"]
     assert not (REPO / ".coverage").exists()
@@ -92,7 +94,7 @@ def test_table_lists_only_the_modules_whose_covered_count_changed(tmp_path, caps
         {"src/a.py": [1, 2], "src/b.py": [1], "src/c.py": [1, 2, 3, 4]},
     )
     assert cbm.main(["table", before, after]) == 0
-    assert capsys.readouterr().out.splitlines() == [
+    assert capsys.readouterr().out.splitlines()[3:] == [
         "| Module | Statements | Covered before | Covered after | Change |",
         "| --- | ---: | ---: | ---: | ---: |",
         "| src/a.py | 10 | 3 | 2 | -1 |",
@@ -107,7 +109,7 @@ def test_table_with_modules_lists_exactly_those_rows_even_when_unchanged(tmp_pat
         {"src/a.py": [1, 2], "src/b.py": [1], "src/c.py": [1, 2, 3, 4]},
     )
     assert cbm.main(["table", before, after, "--modules", "src/b.py", "src/a.py"]) == 0
-    assert capsys.readouterr().out.splitlines()[2:] == [
+    assert capsys.readouterr().out.splitlines()[5:] == [
         "| src/b.py | 10 | 1 | 1 | 0 |",
         "| src/a.py | 10 | 3 | 2 | -1 |",
     ]
@@ -128,3 +130,42 @@ def test_table_fails_rather_than_invent_zeros_for_a_module_in_only_one_run(tmp_p
         captured = capsys.readouterr()
         assert captured.out == ""
         assert "src/new.py" in captured.err
+
+
+_BEFORE_OUTCOMES = {"t::a": "passed", "t::b": "passed", "t::gone": "passed", "t::s": "skipped"}
+_AFTER_OUTCOMES = {"t::a": "passed", "t::b": "skipped", "t::new": "passed"}
+
+
+def test_compare_prints_counts_and_the_test_ids_only_in_one_run():
+    before = _result({"src/a.py": [1]}, outcomes=_BEFORE_OUTCOMES)
+    after = _result({"src/a.py": [1]}, outcomes=_AFTER_OUTCOMES)
+    code, report = cbm.compare(before, after)
+    assert code == 0
+    assert "before: 3 passed, 1 skipped" in report
+    assert "after: 2 passed, 1 skipped" in report
+    assert report[report.index("only in BEFORE (2):") + 1:][:2] == ["  t::gone", "  t::s"]
+    assert report[report.index("only in AFTER (1):") + 1] == "  t::new"
+
+
+def test_compare_exit_codes_are_unchanged_by_the_test_counts():
+    before = _result({"src/a.py": [1, 2]}, outcomes=_BEFORE_OUTCOMES)
+    after = _result({"src/a.py": [1]}, outcomes=_AFTER_OUTCOMES)
+    assert cbm.compare(before, after)[0] == 1
+    assert cbm.compare(before, _result({}, exit_code=1, outcomes={}))[0] == 3
+
+
+def test_compare_says_so_when_a_run_recorded_no_outcomes():
+    code, report = cbm.compare(_result({"src/a.py": [1]}), _result({"src/a.py": [1]}, outcomes=_AFTER_OUTCOMES))
+    assert code == 0
+    assert any(l.startswith("before: test counts not recorded") for l in report)
+    assert not any(l.startswith("only in") for l in report)
+
+
+def test_table_leads_with_the_count_lines(tmp_path, capsys):
+    paths = []
+    for name, outcomes in (("b.json", _BEFORE_OUTCOMES), ("a.json", _AFTER_OUTCOMES)):
+        (tmp_path / name).write_text(json.dumps(_result({"src/a.py": [1]}, outcomes=outcomes)))
+        paths.append(str(tmp_path / name))
+    assert cbm.main(["table", *paths]) == 0
+    assert capsys.readouterr().out.splitlines()[:3] == [
+        "before: 3 passed, 1 skipped  ", "after: 2 passed, 1 skipped", ""]

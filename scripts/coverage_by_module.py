@@ -14,12 +14,13 @@ module, its statement count and covered lines, and per test the in-scope lines i
 coverage data file goes to a temporary folder, never the repo. With no PYTEST_ARGS it runs
 pytest's default (the whole suite). Exit code: pytest's.
 
-``compare`` prints every module whose covered count changed. Exit 0 when no module's covered
+``compare`` prints the passed and skipped counts of both runs, the test ids only in BEFORE and
+only in AFTER, then every module whose covered count changed. Exit 0 when no module's covered
 count dropped, 1 when one did, 2 on a usage error, 3 when the two runs cannot be compared
 (different pytest arguments, or a run whose tests failed).
 
 ``table`` prints a Markdown table (module, statements, covered before, covered after, change)
-to paste under a ticket's ``## Answer``. With ``--modules`` it prints those modules, changed or
+to paste under a ticket's ``## Answer``, led by a passed/skipped count line for each run. With ``--modules`` it prints those modules, changed or
 not; without, only modules whose covered count changed. A ``--modules`` path in neither run is
 a usage error (exit 2, nothing printed), as is a module listed in only one run.
 
@@ -106,20 +107,27 @@ def run(out: Path, pytest_args: list[str]) -> int:
         data_file = Path(tmp) / ".coverage"
         rc = Path(tmp) / "coveragerc"
         rc.write_text(f"[run]\ndata_file = {data_file}\n")
-        cmd = [sys.executable, "-m", "pytest", "-p", "pytest_cov",
+        outcomes_file = Path(tmp) / "outcomes.json"
+        cmd = [sys.executable, "-m", "pytest", "-p", "pytest_cov", "-p", "_cbm_outcomes",
                "--cov=src/ImageLynx", "--cov=examples", "--cov-context=test",
                f"--cov-config={rc}", "--cov-report=", *pytest_args]
-        env = {**os.environ, "COVERAGE_FILE": str(data_file)}
+        env = {**os.environ, "COVERAGE_FILE": str(data_file), "CBM_OUTCOMES_FILE": str(outcomes_file),
+               "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).parent), os.environ.get("PYTHONPATH")]))}
         code = subprocess.run(cmd, cwd=REPO, env=env).returncode
         if not data_file.exists():
             print(f"pytest wrote no coverage data (exit {code})", file=sys.stderr)
             return code or 1
         result = read_data(data_file)
+        if not outcomes_file.exists():
+            print(f"pytest wrote no test outcomes (exit {code})", file=sys.stderr)
+            return code or 1
+        outcomes = json.loads(outcomes_file.read_text())
     result = {
         "commit": git("rev-parse", "HEAD"),
         "dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
         "pytest_args": pytest_args,
         "pytest_exit": code,
+        "outcomes": outcomes,
         **result,
     }
     out.write_text(json.dumps(result, indent=1))
@@ -127,6 +135,28 @@ def run(out: Path, pytest_args: list[str]) -> int:
     total_c = sum(len(m["covered"]) for m in result["modules"].values())
     print(f"{out}: {len(result['tests'])} tests, {total_c}/{total_s} in-scope lines covered")
     return code
+
+
+def _ids(result: dict, outcome: str) -> set[str]:
+    return {t for t, o in result["outcomes"].items() if o == outcome}
+
+
+def count_line(name: str, result: dict) -> str:
+    """'before: 1471 passed, 12 skipped', or says the run saved no outcomes (an older run)."""
+    if "outcomes" not in result:
+        return f"{name}: test counts not recorded (run saved before outcomes were recorded)"
+    return f"{name}: {len(_ids(result, 'passed'))} passed, {len(_ids(result, 'skipped'))} skipped"
+
+
+def outcome_lines(before: dict, after: dict) -> list[str]:
+    """Count lines for both runs, then the test ids only in BEFORE and only in AFTER."""
+    lines = [count_line("before", before), count_line("after", after)]
+    if "outcomes" in before and "outcomes" in after:
+        for label, only in (("only in BEFORE", set(before["outcomes"]) - set(after["outcomes"])),
+                            ("only in AFTER", set(after["outcomes"]) - set(before["outcomes"]))):
+            lines.append(f"{label} ({len(only)}):")
+            lines.extend(f"  {t}" for t in sorted(only))
+    return lines
 
 
 def compare(before: dict, after: dict) -> tuple[int, list[str]]:
@@ -138,6 +168,7 @@ def compare(before: dict, after: dict) -> tuple[int, list[str]]:
     for name, r in (("before", before), ("after", after)):
         if r["pytest_exit"] != 0:
             return 3, lines + [f"cannot compare: the {name} run's pytest exited {r['pytest_exit']}"]
+    lines += outcome_lines(before, after)
     dropped = False
     for rel in sorted(set(before["modules"]) | set(after["modules"])):
         b = before["modules"].get(rel, {"covered": []})["covered"]
@@ -167,7 +198,8 @@ def table(before: dict, after: dict, modules: list[str] | None = None) -> list[s
     lopsided = sorted(set(before["modules"]) ^ set(after["modules"]))
     if lopsided:
         raise KeyError(f"in only one run: {', '.join(lopsided)}")
-    lines = ["| Module | Statements | Covered before | Covered after | Change |",
+    lines = [count_line("before", before) + "  ", count_line("after", after), "",
+             "| Module | Statements | Covered before | Covered after | Change |",
              "| --- | ---: | ---: | ---: | ---: |"]
     for rel in modules or sorted(set(before["modules"]) | set(after["modules"])):
         b, a = before["modules"][rel], after["modules"][rel]
