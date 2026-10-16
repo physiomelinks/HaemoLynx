@@ -9,3 +9,5 @@ Domain terms for the carotid body (CB) study code. Use these names in code, docs
 **Placed ROI**: the box `roi_placement.place_roi` picks for a specimen, recorded in a batch run's `roi_placement.json`. Every reader of a batch run checks the record against `place_roi` before using it.
 
 **Driver snapshot**: the files and stdout that one run of chosen `examples/cb_*.py` drivers wrote, kept in one folder so a later run can be compared with it by content. Not a batch run: it holds what the drivers make from batch runs.
+
+**Mutation check**: one deliberate break of a source line, applied in a throwaway worktree, with the test meant to guard it. Caught when that test fails, survived when it passes (some breaks are expected to survive).
