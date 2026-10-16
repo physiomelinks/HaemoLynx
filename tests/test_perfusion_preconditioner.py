@@ -37,15 +37,6 @@ def test_it_is_symmetric_positive_definite_which_is_what_cg_requires():
     assert np.all(np.linalg.eigvalsh(dense) > 0)
 
 
-def test_cg_converges_under_it_on_a_representative_system():
-    A = _diffusion_matrix(500)
-    rng = np.random.default_rng(0)
-    b = rng.normal(size=500)
-    x, info = splinalg.cg(A, b, M=_jacobi_preconditioner(A), rtol=1e-8, maxiter=5000)
-    assert info == 0
-    assert np.linalg.norm(A @ x - b) / np.linalg.norm(b) < 1e-7
-
-
 def test_cg_converges_on_a_production_like_ill_conditioned_system():
     """The condition the fix had to survive.
 

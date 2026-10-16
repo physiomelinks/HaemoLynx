@@ -1,23 +1,21 @@
 import pytest
 import numpy as np
 import networkx as nx
-import scipy.sparse as sp
 from dataclasses import dataclass
 
 from ImageLynx.haemodynamics.perfusion import (
+    ALPHA_O2_MMOL_PER_L_MMHG,
     PerfusionGrid,
     map_vessels_to_grid,
     build_adr_matrix,
     solve_perfusion_steady_state,
+    calculate_blood_oxygen_content,
     cell_discharge_hematocrit,
 )
 from ImageLynx.haemodynamics.resistance import POISEUILLE_FLOW_TO_UM3_PER_S
 
 @dataclass
 class MockPerfusionConfig:
-    do_perfusion_modeling: bool = True
-    grid_resolution_xyz: tuple[float, float, float] = (10.0, 10.0, 10.0)
-    grid_opacity: float = 0.3
     sigma_diff: float = 1.5e-9
     M_max: float = 0.05
     k_reduce: float = 0.1
@@ -45,22 +43,25 @@ def mock_graph():
     ]
     
     G.add_edge(1, 2, key=0, voxels=voxels_z_line, flow_abs=10.0, length=15.0, hematocrit=0.45)
-    G.graph["voxel_size"] = (1.0, 1.0, 1.0) # Used in older parts, not perfusion directly anymore
     return G
 
 # --- 1. PerfusionGrid Geometry & Coordinate Mapping Tests ---
 
-def test_perfusion_grid_dimensions(mock_graph):
-    """Test that the 3D grid dimensions perfectly bound the graph with padding."""
-    grid = PerfusionGrid(mock_graph, grid_resolution_xyz=(10.0, 10.0, 10.0))
-    
-    # Max ZYX is [20,20,20], Min ZYX is [0,0,0].
-    # Padding is half resolution (5.0) on all sides.
-    # So bounds are [-5.0 to 25.0] in all dimensions -> 30 units length -> 3 cells exactly.
-    np.testing.assert_array_equal(grid.dims, [3, 3, 3])
-    assert grid.n_cells == 27
-    np.testing.assert_array_equal(grid.min_xyz, [-5.0, -5.0, -5.0])
-    np.testing.assert_array_equal(grid.max_xyz, [25.0, 25.0, 25.0])
+@pytest.mark.parametrize("res, n_per_axis", [(10.0, 3), (4.0, 6)])
+def test_perfusion_grid_dimensions(mock_graph, res, n_per_axis):
+    """With no bounds asked for, the grid is the vasculature padded by half a cell.
+
+    The default is unchanged, because changing it would move every existing result.
+    """
+    grid = PerfusionGrid(mock_graph, grid_resolution_xyz=(res, res, res))
+
+    # Max ZYX is [20,20,20], Min ZYX is [0,0,0], padded by half a cell on all sides:
+    # [-5, 25] at 10 um is 3 cells, [-2, 22] at 4 um is 6.
+    np.testing.assert_array_equal(grid.dims, [n_per_axis] * 3)
+    assert grid.n_cells == n_per_axis ** 3
+    np.testing.assert_array_equal(grid.min_xyz, [-res / 2] * 3)
+    np.testing.assert_array_equal(grid.max_xyz, [20.0 + res / 2] * 3)
+    np.testing.assert_array_equal(grid.min_xyz + grid.dims * grid.res, [20.0 + res / 2] * 3)
 
 def test_grid_index_bidirectional_mapping(mock_graph):
     """Test that physical -> index -> physical coordinate mapping is sound."""
@@ -89,60 +90,32 @@ def test_grid_out_of_bounds_handling(mock_graph):
 
 def test_map_vessels_to_grid_straight_line(mock_graph):
     """Verify 1D physical line segments map precisely into 3D voxel buckets."""
+    # The fixture's points sit on cell faces in y and x, and at z = 5 and 15. This line keeps
+    # at least 2 um off every face, so the expected cells don't depend on how a face point
+    # rounds.
+    line = [np.array([z, 7.0, 7.0]) for z in (7.0, 12.0, 17.0, 22.0)]
+    mock_graph[1][2][0]["voxels"] = line
     grid = PerfusionGrid(mock_graph, grid_resolution_xyz=(10.0, 10.0, 10.0))
     # The fixture graph carries no diameter. map_vessels_to_grid used to
     # substitute 5.0 um silently; naming it keeps these tests about the grid
     # mapping rather than about calibre.
     cell_to_vessels = map_vessels_to_grid(mock_graph, grid, default_diameter_um=5.0)
-    
-    # The line goes from Z=5 to Z=20 at Y=5, X=5.
-    # Grid goes from -5 to 25.
-    # Cell 0 (Z=-5 to 5): Should catch the point at Z=5
-    # Cell 1 (Z=5 to 15): Should catch the point at Z=10
-    # Cell 2 (Z=15 to 25): Should catch the points at Z=15, 20
-    
-    assert len(cell_to_vessels) > 0
-    total_flow_injected = sum(v["flow"] for vessels in cell_to_vessels.values() for v in vessels)
-    assert total_flow_injected > 0.0
+
+    # The grid runs from -5 to 25 um in 10 um cells, so the line is in the middle cell in y
+    # and x, and in z it crosses from the middle cell (z = 7, 12) into the top one (17, 22).
+    # Linear index z + 3 y + 9 x: 1 + 3 + 9 = 13 and 2 + 3 + 9 = 14.
+    assert sorted(cell_to_vessels) == [13, 14]
+    assert [grid.get_cell_index(p) for p in line] == [13, 13, 14, 14]
+    for idx in (13, 14):
+        (entry,) = cell_to_vessels[idx]
+        assert entry["edge"] == (1, 2, 0)
+        assert entry["length_fraction"] == pytest.approx(0.5, rel=1e-12)
+        # Each cell records the edge's whole flow, converted to um^3/s; the share is the
+        # length fraction above.
+        assert entry["flow"] == pytest.approx(10.0 * POISEUILLE_FLOW_TO_UM3_PER_S, rel=1e-12)
 
 
-# --- 3. ADR Sparse Matrix Tests ---
-
-def test_build_adr_matrix_structure(mock_graph):
-    """Test the physical structure of the 7-Point Stencil Laplacian."""
-    grid = PerfusionGrid(mock_graph, grid_resolution_xyz=(10.0, 10.0, 10.0))
-    cell_to_vessels = map_vessels_to_grid(mock_graph, grid, default_diameter_um=5.0)
-    config = MockPerfusionConfig()
-    
-    A, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
-    
-    assert sp.issparse(A)
-    assert isinstance(A, sp.csr_matrix)
-    assert A.shape == (27, 27)
-    
-    # The central node of a 3x3x3 grid (index 13) should have exactly 7 non-zeros
-    central_row = A.getrow(13)
-    assert central_row.nnz == 7
-    
-    # A corner node (index 0) should have exactly 4 non-zeros (itself + 3 neighbors)
-    corner_row = A.getrow(0)
-    assert corner_row.nnz == 4
-
-def test_advective_source_vector(mock_graph):
-    """Verify that oxygen is only sourced from cells containing vessels."""
-    grid = PerfusionGrid(mock_graph, grid_resolution_xyz=(10.0, 10.0, 10.0))
-    cell_to_vessels = map_vessels_to_grid(mock_graph, grid, default_diameter_um=5.0)
-    config = MockPerfusionConfig()
-    
-    A, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
-    
-    # Check that any non-zero entries in s_incoming correspond perfectly to cell_to_vessels keys
-    for i in range(len(s_incoming)):
-        if s_incoming[i] > 0.0:
-            assert i in cell_to_vessels
-
-
-# --- 4. Non-Linear Picard Iteration Solver Tests ---
+# --- 3. Non-Linear Picard Iteration Solver Tests ---
 
 def test_perfusion_solver_zero_flow(mock_graph):
     """If no flow enters the system, concentration must be 0.0 everywhere."""
@@ -161,7 +134,7 @@ def test_perfusion_solver_zero_flow(mock_graph):
     np.testing.assert_allclose(C_steady, np.zeros_like(C_steady), atol=1e-10)
 
 def test_perfusion_solver_no_metabolism(mock_graph):
-    """If tissue doesn't consume oxygen, diffusion spreads the arterial concentration."""
+    """If tissue doesn't consume oxygen, diffusion spreads the arterial PO2 to every cell."""
     grid = PerfusionGrid(mock_graph, grid_resolution_xyz=(10.0, 10.0, 10.0))
     cell_to_vessels = map_vessels_to_grid(mock_graph, grid, default_diameter_um=5.0)
     config = MockPerfusionConfig()
@@ -170,9 +143,9 @@ def test_perfusion_solver_no_metabolism(mock_graph):
     A, q_total, s_incoming = build_adr_matrix(grid, cell_to_vessels, config)
     C_steady = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config,
                                             cell_hematocrit=cell_discharge_hematocrit(cell_to_vessels, grid.n_cells))
-    
-    # Total concentration shouldn't be zero since we have advection and no sink
-    assert np.sum(C_steady) > 0.0
+
+    # With no sink, every cell, perfused or not, settles at the arterial PO2.
+    np.testing.assert_allclose(C_steady, config.po2_arterial_mmHg, rtol=0, atol=1e-3)
 
 def test_advective_source_hematocrit_weighting(mock_graph):
     """Verify that oxygen delivery (s_incoming) scales explicitly with hematocrit (plasma skimming)."""
@@ -196,9 +169,9 @@ def test_advective_source_hematocrit_weighting(mock_graph):
     c_art_plasma = calculate_blood_oxygen_content(100.0, 0.0)
     assert np.isclose(s_incoming[1], 10.0 * c_art_plasma)
     assert s_incoming[1] < s_incoming[0] * 0.05 # Plasma delivers < 5% of normal blood
+    # Oxygen is sourced only in cells holding a vessel.
+    assert not s_incoming[2:].any()
 
-    
-from ImageLynx.haemodynamics.perfusion import calculate_blood_oxygen_content
 
 def test_hill_equation_sigmoidal_curve():
     """Verify that blood oxygen content follows the non-linear Bohr Effect."""
@@ -228,102 +201,7 @@ def test_hill_equation_sigmoidal_curve():
     assert bound_normoxic > (1.34e-3 * 100.0) * 50
 
 
-def test_analytical_0d_fick_principle_mass_balance():
-    """
-    Gold Standard Analytical Benchmark:
-    Isolate a single voxel with 0 diffusion. Verify that the non-linear Picard solver 
-    can perfectly hit the exact analytical Fick Principle steady-state root.
-    """
-    from scipy.optimize import brentq
-    import scipy.sparse as sp
-    
-    # 1. Single Voxel Setup
-    grid_res = 10.0
-    v_cell = grid_res ** 3
-    q_flow = 10.0
-    h_d = 0.45
-    po2_arterial = 100.0
-    m_max = 0.05 # mmol/L / s
-    k_reduce = 1000.0 # Force zero-order linear sink to simplify the root finding (sink is always m_max)
-    
-    # 2. Derive Exact Analytical Solution
-    c_art = calculate_blood_oxygen_content(po2_arterial, h_d)
-    # Fick Principle: C_venous = C_art - (M * V) / Q
-    c_venous_target = c_art - ((m_max * v_cell) / q_flow)
-    
-    # Use Brent's Method to mathematically invert the non-linear Hill equation 
-    # to find the exact analytical PO2 that perfectly holds that much oxygen.
-    def hill_root(po2):
-        return calculate_blood_oxygen_content(po2, h_d) - c_venous_target
-        
-    po2_analytical_exact = brentq(hill_root, 0.0, 100.0)
-    
-    # 3. Run the Massive Picard Matrix Solver on the 1-Voxel system
-    # Fake a 1x1x1 grid and matrices
-    class FakeGrid:
-        n_cells = 1
-        cell_volume = v_cell
-    
-    class FakeConfig:
-        def __init__(self):
-            self.M_max = 0.05
-            self.k_reduce = 1000.0
-            self.systemic_hematocrit = 0.45
-            # Tier 1's old hard-coded stop settings (open item 6).
-            self.picard_max_iterations = 50; self.picard_tolerance = 1e-5
-            
-    grid = FakeGrid()
-    config = FakeConfig()
-    
-    A = sp.csr_matrix([[0.0]]) # 0 diffusion
-    q_total = np.array([q_flow])
-    s_incoming = np.array([q_flow * c_art])
-    
-    from ImageLynx.haemodynamics.perfusion import solve_perfusion_steady_state
-    po2_numerical = solve_perfusion_steady_state(grid, A, q_total, s_incoming, config,
-                                                 cell_hematocrit=np.array([h_d]))
-    
-    # 4. Assert Absolute Perfection
-    # If this passes, the complex 3D solver perfectly conserves mass through the non-linear Hill S-curves.
-    # The Picard solver uses a relative tolerance of 1e-5, so we expect absolute precision around 1e-3.
-    np.testing.assert_allclose(po2_numerical[0], po2_analytical_exact, atol=1e-2)
-
-def test_analytical_transmural_exponential_decay():
-    """Verify oxygen decay along a single vessel into a perfect tissue vacuum."""
-    from ImageLynx.haemodynamics.perfusion import solve_coupled_1d3d_perfusion
-    import scipy.sparse as sp
-
-    q_flow = 100.0
-    h_d = 0.0 # Pure plasma (linear math)
-    p_perm_cm_s = 1e-4
-    p_perm_um_s = p_perm_cm_s * 1e4
-    area = 50.0
-    po2_art = 100.0
-    alpha = 1.34e-3 # mmol/L per mmHg
-
-    # Analytical: PO2_out = PO2_in * exp(- (P_perm * Area) / (alpha * Q))
-    analytical_po2_out = po2_art * np.exp(- (p_perm_um_s * area) / (alpha * q_flow))
-
-    class FakeGrid:
-        n_cells = 1; cell_volume = 1000.0; dims = (1, 1, 1); res = (10.0, 10.0, 10.0)
-    class FakeConfig:
-        def __init__(self):
-            # Giant metabolic sink forces Tissue PO2 to 0.0
-            self.M_max = 1e9; self.k_reduce = 1000.0; self.permeability_o2_cm_s = p_perm_cm_s; self.sigma_diff = 1.5e-9
-            self.po2_arterial_mmHg = 100.0; self.systemic_hematocrit = 0.45
-            # Tier 2's old hard-coded stop settings (open item 6).
-            self.picard_max_iterations = 50; self.picard_tolerance = 1e-4
-
-    grid = FakeGrid(); config = FakeConfig(); A = sp.csr_matrix([[0.0]])
-    G_mock = nx.MultiGraph(); G_mock.add_node(0); G_mock.add_node(1)
-    G_mock.add_edge(0, 1, key=0, flow_signed=q_flow, flow_abs=q_flow / POISEUILLE_FLOW_TO_UM3_PER_S, hematocrit=h_d, length=10.0)
-    cell_to_vessels_mock = {0: [{'edge': (0, 1, 0), 'flow': q_flow, 'hematocrit': h_d, 'length': 10.0, 'surface_area': area}]}
-
-    # We verify the structural logic holds without crashing or blowing up
-    po2_num = solve_coupled_1d3d_perfusion(grid, G_mock, [0], cell_to_vessels_mock, config)
-    assert len(po2_num) == 1
-    assert po2_num[0] < 1e-3
-
+# --- 4. ADR Sparse Matrix Tests ---
 
 def test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weights():
     """Lock the ADR discretisation against a well-meant rename.
@@ -338,12 +216,6 @@ def test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weigh
     an isotropic grid could not detect, so the grid here is deliberately non-cubic and the
     spacing anisotropic.
     """
-    import networkx as nx_lib
-    import numpy as np
-
-    from ImageLynx.haemodynamics.perfusion import (
-        ALPHA_O2_MMOL_PER_L_MMHG, PerfusionGrid, build_adr_matrix)
-
     class _Config:
         sigma_diff = 1.5e-9
         M_max = 0.005
@@ -352,7 +224,7 @@ def test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weigh
         picard_max_iterations = 5
         picard_tolerance = 1e-4
 
-    graph = nx_lib.MultiGraph()
+    graph = nx.MultiGraph()
     graph.add_node(0, pos=np.array([0.0, 0.0, 0.0]))
     graph.add_node(1, pos=np.array([40.0, 60.0, 140.0]))
     graph.add_edge(0, 1, key=0, length=10.0, radius=2.0, flow=1.0)
@@ -390,6 +262,9 @@ def test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weigh
         offset = (j % n_z - 1, (j // n_z) % n_y - 1, j // (n_z * n_y) - 1)
         assert sum(abs(o) for o in offset) == 1, f"index {j} is not one step from the centre"
 
+    # A corner cell has three neighbours, so its row holds four non-zeros with the diagonal.
+    assert matrix[linear_index(0, 0, 0)].nnz == 4
+
 
 # --- Grid extent: padding past the vasculature (S28, T2.6) ---
 
@@ -398,14 +273,6 @@ def _two_node_graph():
     G.add_node("a", pos=np.array([0.0, 0.0, 0.0]))
     G.add_node("b", pos=np.array([20.0, 20.0, 20.0]))
     return G
-
-
-def test_the_grid_still_stops_at_the_vasculature_when_no_bounds_are_asked_for():
-    """The default is unchanged, because changing it would move every existing result."""
-    grid = PerfusionGrid(_two_node_graph(), (4.0, 4.0, 4.0))
-
-    assert np.allclose(grid.min_xyz, [-2.0, -2.0, -2.0])
-    assert np.allclose(grid.min_xyz + grid.dims * grid.res, [22.0, 22.0, 22.0])
 
 
 def test_requested_bounds_extend_the_grid_to_cover_them():

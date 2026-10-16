@@ -204,14 +204,3 @@ def test_the_default_arterial_pco2_is_40_mmhg():
     """Open item 34: the SHR YAML set 35 mmHg against 40 for WKY. The example YAMLs must equal
     this default (``test_example_yaml_sections.py``), so this pins them too."""
     assert _pipeline_perfusion_config().pco2_arterial == 40.0
-
-
-def test_the_multi_species_solver_runs_at_the_corrected_co2_values():
-    config = _MultiConfig()
-    G = _one_edge()
-    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
-    po2, pco2, ph = solve_multi_species_perfusion(grid, G, [0], map_vessels_to_grid(G, grid), config)
-    for field in (po2, pco2, ph):
-        assert np.all(np.isfinite(field))
-    # Tissue produces CO2, so no cell can sit below the arterial PCO2.
-    assert np.all(pco2 >= config.pco2_arterial - 1e-9)

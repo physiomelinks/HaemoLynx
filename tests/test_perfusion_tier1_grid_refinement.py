@@ -29,6 +29,10 @@ from ImageLynx.haemodynamics.perfusion import (
 )
 from ImageLynx.haemodynamics.resistance import POISEUILLE_FLOW_TO_UM3_PER_S
 
+# 10.7 s, 10.1 s of it the 1/3 um level. A coarser last level changes the drift bound the
+# line test asserts, and the file is open item 30's evidence, so it stays whole and slow.
+pytestmark = pytest.mark.slow
+
 _WIDTH = 81.0            # um, square cross-section
 _CENTRE = 40.5           # on a cell centre at every h below
 _H = (9.0, 3.0, 1.0, 1.0 / 3.0)

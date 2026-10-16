@@ -117,14 +117,6 @@ def test_a_mixture_holds_exactly_the_streams_gas_and_sits_between_them():
     assert state["o2_ph"] == pytest.approx(0.4 * 7.38 + 0.6 * 7.25)
 
 
-def test_a_plasma_skimmed_daughter_no_longer_breaks_the_march():
-    """The old march raised 'Implicit CO2 step found no root' here, as on WKY-A."""
-    grid, G, cells = _network([(0, 1, 1e3, 0.45), (1, 2, 5e2, 0.89), (1, 3, 5e2, 0.01)])
-    po2, pco2, _ = solve_multi_species_perfusion(grid, G, [0], cells, _MEASURED)
-    assert np.all(np.isfinite(po2)) and np.all(np.isfinite(pco2))
-    assert np.all(po2 <= _MEASURED.po2_arterial_mmHg)
-
-
 def test_two_inlets_merge_into_one_stream():
     grid, G, cells = _network([(0, 2, 4e2, 0.30), (1, 2, 6e2, 0.60), (2, 3, 1e3, 0.48)])
     po2, pco2, _ = solve_multi_species_perfusion(grid, G, [0, 1], cells, _MEASURED)
@@ -155,17 +147,6 @@ def test_rounding_level_flow_is_stagnant_not_an_unfed_source():
     np.testing.assert_allclose(po2[2:], 0.0, atol=1e-12)
 
 
-def test_rounding_flow_into_a_dead_end_branch_is_stagnant():
-    """SHR-A, 2026-09-28: node 748 heads a dead-end side branch. Its two branch edges carry
-    exactly zero flow and its entry edge 1.7e-12 of the largest flow, outward - above the old
-    1e-12 cutoff, so the march saw a node sending blood it never received (open item 36)."""
-    grid, G, cells = _network([(0, 1, 1e3, 0.45), (1, 2, 1e3, 0.45),
-                               (4, 3, 1e3 * 1.7e-12, 0.45), (4, 5, 0.0, 0.45),
-                               (4, 6, 0.0, 0.45)])
-    po2, pco2, _ = solve_multi_species_perfusion(grid, G, [0], cells, _MEASURED)
-    assert np.all(np.isfinite(po2)) and np.all(np.isfinite(pco2))
-
-
 def test_flow_above_the_rounding_level_at_an_unfed_node_still_raises():
     grid, G, cells = _network([(0, 1, 1e3, 0.45), (4, 3, 1e3 * 1e-9, 0.45)])
     with pytest.raises(ValueError, match="Node 4 sends blood out but receives none"):
@@ -175,6 +156,7 @@ def test_flow_above_the_rounding_level_at_an_unfed_node_still_raises():
 def test_a_plasma_skimmed_daughter_keeps_tissue_co2_above_arterial():
     """With a full Haldane effect in plasma, the H 0.01 daughter's tissue sat at 39.948 mmHg.
 
+    The older march raised 'Implicit CO2 step found no root' on this network, as on WKY-A.
     Solved tightly so the check is on the fixed point, not on where the loop stopped.
     """
     config = replace(_MEASURED, picard_max_iterations=200, picard_tolerance=1e-12)
@@ -186,12 +168,19 @@ def test_a_plasma_skimmed_daughter_keeps_tissue_co2_above_arterial():
 
 def test_the_stagnant_log_counts_exact_zeros(caplog):
     """Package K: the log left out exact zeros, so Tier 3 reported 136 stagnant edges on WKY-A
-    where the rheology loop reported 867. They were the same edges."""
+    where the rheology loop reported 867. They were the same edges.
+
+    The network is SHR-A's, 2026-09-28: node 748 heads a dead-end side branch. Its two branch
+    edges carry exactly zero flow and its entry edge 1.7e-12 of the largest flow, outward -
+    above the old 1e-12 cutoff, so the march saw a node sending blood it never received (open
+    item 36). It is stagnant now, and the march runs through.
+    """
     grid, G, cells = _network([(0, 1, 1e3, 0.45), (1, 2, 1e3, 0.45),
                                (4, 3, 1e3 * 1.7e-12, 0.45), (4, 5, 0.0, 0.45),
                                (4, 6, 0.0, 0.45)])
     with caplog.at_level(logging.INFO, logger="ImageLynx.haemodynamics.perfusion"):
-        solve_multi_species_perfusion(grid, G, [0], cells, _MEASURED)
+        po2, pco2, _ = solve_multi_species_perfusion(grid, G, [0], cells, _MEASURED)
+    assert np.all(np.isfinite(po2)) and np.all(np.isfinite(pco2))
     assert "3 of 5 edges have flow at or below 1e-10 of the largest (2 of them exactly zero)" \
         in caplog.text
 

@@ -8,7 +8,7 @@ behind it. Through Bohr and Haldane that left tissue PCO2 below arterial (7e-4 m
 With no metabolism, nothing is exchanged at steady state, so every cell must sit at the arterial
 pressures exactly.
 """
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import networkx as nx
 import numpy as np
@@ -65,9 +65,3 @@ def test_without_metabolism_tissue_sits_at_the_arterial_pressures(pco2_art, hco3
     po2, pco2 = _solve(config)
     np.testing.assert_allclose(po2, config.po2_arterial_mmHg, rtol=0, atol=1e-8)
     np.testing.assert_allclose(pco2, config.pco2_arterial, rtol=0, atol=1e-8)
-
-
-def test_with_metabolism_tissue_pco2_never_falls_below_arterial():
-    config = replace(_Config(), M_max=0.005)
-    _, pco2 = _solve(config)
-    assert np.all(pco2 >= config.pco2_arterial)

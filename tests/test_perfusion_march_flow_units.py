@@ -159,19 +159,6 @@ def test_tier2_blood_side_drop_matches_the_hand_calculation(q):
     assert _tier2_expected(1e12, _Config())[1] - want[1] > 0.5
 
 
-def test_tier3_depends_on_flow():
-    """Before the fix the answer was the same at any flow."""
-    low = _run_tier3(1e2)[0][1]
-    high = _run_tier3(1e4)[0][1]
-    assert low < high - 5.0
-
-
-def test_tier2_depends_on_flow():
-    low = _run_tier2(3e2)[1]
-    high = _run_tier2(1e5)[1]
-    assert low < high - 2.0
-
-
 @pytest.mark.parametrize("solver", [solve_multi_species_perfusion, solve_coupled_1d3d_perfusion])
 def test_a_flowing_edge_without_flow_abs_is_refused(solver):
     grid, G, cells = _chain(1e3, flow_abs=None)

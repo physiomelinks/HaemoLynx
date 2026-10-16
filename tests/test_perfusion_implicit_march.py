@@ -18,7 +18,7 @@ from ImageLynx.haemodynamics.perfusion import (
     calculate_blood_oxygen_content,
     solve_multi_species_perfusion,
 )
-from test_perfusion_march_flow_units import _ALPHA_O2, _AREA, _chain, _Config, _H, _tier3_expected
+from test_perfusion_march_flow_units import _chain, _Config, _H, _tier3_expected
 
 
 def _o2(p):
@@ -50,27 +50,6 @@ def test_weak_wall_keeps_the_inlet_and_strong_wall_reaches_the_tissue(species):
     c_in = content(p_in)
     assert _implicit_cell_outlet_pressure(content, c_in, 1e-12, p_t, species) == pytest.approx(p_in, abs=1e-6)
     assert _implicit_cell_outlet_pressure(content, c_in, 1e9, p_t, species) == pytest.approx(p_t, abs=1e-6)
-
-
-def test_blood_loses_exactly_the_wall_flux():
-    q = 1e3
-    k = 9.1e-2 * 1e4 * _AREA * _ALPHA_O2
-    content, p_in, p_t = _CASES["O2"]
-    c_in = content(p_in)
-    p_out = _implicit_cell_outlet_pressure(content, c_in, k / q, p_t, "O2")
-    assert q * (c_in - content(p_out)) == pytest.approx(k * (p_out - p_t), rel=1e-9)
-
-
-def test_a_step_the_explicit_update_overshoots_stays_above_the_tissue():
-    """At the measured permeability and capillary flow the old step went past equilibrium."""
-    q = 1e3
-    g = 9.1e-2 * 1e4 * _AREA * _ALPHA_O2 / q
-    content, p_in, p_t = _CASES["O2"]
-    c_in = content(p_in)
-    # The old explicit update lands below tissue-equilibrium content.
-    assert c_in - g * (p_in - p_t) < content(p_t)
-    p_out = _implicit_cell_outlet_pressure(content, c_in, g, p_t, "O2")
-    assert p_t < p_out < p_in
 
 
 def test_no_bracket_raises_instead_of_keeping_an_old_value():

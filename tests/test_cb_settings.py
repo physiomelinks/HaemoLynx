@@ -136,7 +136,9 @@ def test_pipeline_and_h1_share_the_hysteresis_band():
 
 def test_pipeline_and_h2_share_the_perfusion_stop_settings():
     """Open item 6: the pipeline config said 1e-4 while Tier 1 hard-coded 1e-5 for H2.
-    Open item 32: the cap went 50 -> 200 in both; the pipeline's Tier 3 needs up to 80 passes."""
+    Tier 1 used 50 and 1e-5 for every published H2 number; moving them must not move one.
+    Open item 32: the cap went 50 -> 200 in both; the pipeline's Tier 3 needs up to 80 passes.
+    Tier 1 stops after 9-11 steps on every H2 run, so the cap change moved no H2 field."""
     from carotid_image_to_model import PerfusionConfig
 
     config, settings = PerfusionConfig(), cb_settings.PerfusionSettings()

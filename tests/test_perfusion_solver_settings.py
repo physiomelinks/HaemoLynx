@@ -11,7 +11,6 @@ from dataclasses import dataclass, fields, replace
 import numpy as np
 import pytest
 
-from ImageLynx import cb_settings
 from ImageLynx.haemodynamics.perfusion import solve_perfusion_steady_state
 from test_perfusion_config_values import _Config as _BarrierConfig, _coupled
 from test_perfusion_tier1_solubility import _NetworkConfig, _capillary_network
@@ -82,12 +81,3 @@ def test_tier2_tolerance_changes_where_it_stops():
     loose = _coupled(replace(config, picard_tolerance=1.5))
     tight = _coupled(replace(config, picard_tolerance=1e-10))
     assert not np.array_equal(loose, tight)
-
-
-def test_the_h2_settings_carry_tier1s_old_hard_coded_values():
-    """Tier 1 used 50 and 1e-5 for every published H2 number; moving them must not move one.
-    The cap is 200 since open item 32. Tier 1 stops after 9-11 steps on every H2 run, so the
-    fields it returns are the same."""
-    settings = cb_settings.PerfusionSettings()
-    assert settings.picard_max_iterations == 200
-    assert settings.picard_tolerance == 1e-5

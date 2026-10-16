@@ -15,6 +15,7 @@ import networkx as nx
 import numpy as np
 import pytest
 import scipy.sparse as sp
+import scipy.sparse.linalg
 
 from carotid_image_to_model import PerfusionConfig
 from ImageLynx.haemodynamics import perfusion as pf
@@ -73,7 +74,6 @@ def test_the_default_settings_converge_and_land_on_the_fixed_point(name, grid, G
     iterations at 1e3 / 1e4 / 1e5 (were 14 / 14 / 10). At 1e3 the tissue is nearly anoxic
     (mean PO2 5 mmHg), the hardest case for the linearised blood response."""
     default = PerfusionConfig()
-    assert default.picard_max_iterations == 200 and default.picard_tolerance == 1e-5
     config = replace(config, picard_max_iterations=default.picard_max_iterations,
                      picard_tolerance=default.picard_tolerance)
     po2, pco2, _, info = _solve(grid, G, starts, cells, config)
@@ -88,8 +88,6 @@ def test_the_default_settings_converge_and_land_on_the_fixed_point(name, grid, G
 
 
 def test_the_tissue_solve_is_exact_and_does_not_use_cg(monkeypatch):
-    import scipy.sparse.linalg
-
     def refuse(*args, **kwargs):
         raise AssertionError("Tier 3 called CG")
 

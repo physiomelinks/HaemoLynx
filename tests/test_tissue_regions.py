@@ -7,17 +7,21 @@ voxels to a 10 µm cell, so a cell is rarely all tissue or all stroma and sampli
 the cell centre would discard almost all of it.
 """
 import warnings
+from dataclasses import replace
 
 import networkx as nx
 import numpy as np
 import pytest
 
-from ImageLynx.haemodynamics.perfusion import PerfusionGrid
+from ImageLynx.haemodynamics.perfusion import PerfusionGrid, solve_perfusion_steady_state
 from ImageLynx.haemodynamics.tissue_regions import (
     mask_bounds_um,
     blend_per_cell_rate,
+    edge_length_inside_um,
+    edge_tissue_fraction,
     mask_fraction_per_cell,
 )
+from test_perfusion_tier1_solubility import _NetworkConfig, _capillary_network
 
 VOX = (1.8639, 1.866, 1.866)
 
@@ -31,41 +35,10 @@ def _grid(extent_um=40.0, res_um=10.0):
     return PerfusionGrid(G, (res_um, res_um, res_um))
 
 
-def test_a_fully_masked_volume_gives_a_fraction_of_one_everywhere_inside():
-    grid = _grid()
-    shape = tuple(int(np.ceil(40.0 / v)) + 4 for v in VOX)
-    mask = np.ones(shape, bool)
-    frac = mask_fraction_per_cell(mask, grid, VOX)
-
-    assert frac.shape == (grid.n_cells,)
-    interior = frac[frac > 0]
-    assert interior.size > 0
-    assert np.allclose(interior.max(), 1.0, atol=0.05)
-
-
 def test_an_empty_mask_gives_zero_everywhere():
     grid = _grid()
     mask = np.zeros((30, 30, 30), bool)
     assert not mask_fraction_per_cell(mask, grid, VOX).any()
-
-
-def test_the_fraction_is_the_occupied_volume_not_a_centre_sample():
-    """Half a cell masked must read about 0.5, not 0 or 1."""
-    grid = _grid(extent_um=20.0, res_um=20.0)      # a single cell, near enough
-    n = 24
-    mask = np.zeros((n, n, n), bool)
-    mask[: n // 2] = True                           # lower half in z
-    frac = mask_fraction_per_cell(mask, grid, VOX)
-    occupied = frac[frac > 0]
-    assert occupied.size >= 1
-    assert 0.3 < occupied.max() < 0.7, f"got {occupied.max()}"
-
-
-def test_fractions_never_exceed_one():
-    grid = _grid(res_um=3.0)                        # finer than the voxel size
-    mask = np.ones((30, 30, 30), bool)
-    frac = mask_fraction_per_cell(mask, grid, VOX)
-    assert frac.max() <= 1.0 + 1e-9
 
 
 def test_mask_voxels_outside_the_grid_are_dropped_not_wrapped():
@@ -75,22 +48,6 @@ def test_mask_voxels_outside_the_grid_are_dropped_not_wrapped():
     mask = np.zeros((n, n, n), bool)
     mask[-5:, -5:, -5:] = True                       # entirely beyond the grid
     assert not mask_fraction_per_cell(mask, grid, VOX).any()
-
-
-def test_the_join_respects_the_grid_origin():
-    """Grid bounds come from graph positions and need not start at zero."""
-    G = nx.MultiGraph()
-    G.add_node(0, pos=np.array([100.0, 100.0, 100.0]))
-    G.add_node(1, pos=np.array([140.0, 140.0, 140.0]))
-    G.add_edge(0, 1, length=40.0)
-    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
-
-    n = 100
-    mask = np.zeros((n, n, n), bool)
-    mask[50:60, 50:60, 50:60] = True                 # about 93 to 112 um
-    frac = mask_fraction_per_cell(mask, grid, VOX)
-    assert frac.any(), "mask overlapping the grid produced nothing"
-    assert frac[frac > 0].size < grid.n_cells, "a local mask filled the whole grid"
 
 
 def test_rate_blending_is_linear_between_the_two_rates():
@@ -115,14 +72,31 @@ def test_a_uniform_rate_reproduces_the_scalar_case():
 
 
 def test_the_solver_accepts_a_per_cell_rate_array():
-    """M_max is used elementwise against PO2, so an array must broadcast unchanged."""
-    n = 12
-    m_scalar = 0.05
-    m_array = np.full(n, 0.05)
-    po2 = np.linspace(1.0, 90.0, n)
-    k = 0.5
-    assert np.allclose(m_scalar * (1.0 - np.exp(-k * po2)),
-                       m_array * (1.0 - np.exp(-k * po2)))
+    """Both H2 drivers hand Tier 1 a per-cell M_max from blend_per_cell_rate, in the config.
+
+    A uniform array must give the scalar's field, and each entry must be that cell's own rate.
+    """
+    grid, A, q, s, h = _capillary_network()
+    config = _NetworkConfig()
+
+    def tier1(m_max):
+        po2, info = solve_perfusion_steady_state(grid, A, q, s, replace(config, M_max=m_max),
+                                                 cell_hematocrit=h, return_info=True)
+        assert info["converged"]
+        return po2
+
+    po2 = tier1(config.M_max)
+    rate = np.full(grid.n_cells, config.M_max)
+    np.testing.assert_array_equal(tier1(rate), po2)
+
+    # Ten times the rate in the lowest-PO2 cell (a corner of the cross-section, the first of
+    # four tied): it falls 2.0 mmHg, about twice any other cell, which feels it only by
+    # diffusion.
+    cell = int(np.argmin(po2))
+    rate[cell] *= 10.0
+    drop = po2 - tier1(rate)
+    assert drop[cell] > 1.0
+    assert int(np.argmax(drop)) == cell
 
 
 def test_the_linear_index_matches_the_grids_own_convention():
@@ -217,6 +191,8 @@ def test_every_cell_inside_a_fully_masked_volume_reads_exactly_one():
     # from the second one on each axis is wholly inside the mask.
     cube = frac.reshape(tuple(grid.dims), order="F")
     assert np.allclose(cube[1:, 1:, 1:], 1.0, atol=1e-12)
+    # Nor does any cell, the overhanging edge ones included, read more than one.
+    assert frac.max() <= 1.0
 
 
 def test_volume_is_conserved_with_an_offset_origin_and_unaligned_pitches():
@@ -245,7 +221,14 @@ def test_a_grid_finer_than_the_voxel_conserves_volume_and_stays_in_the_unit_inte
 
 
 def test_the_outside_the_grid_warning_counts_volume_not_voxel_centres():
-    """A mask overhanging the grid by under half a voxel moves no centre out, but loses volume."""
+    """A mask overhanging the grid by under half a voxel moves no centre out, but loses volume.
+
+    Dropping is correct; dropping quietly is not. The grid comes from the graph's node bounding
+    box, so a specimen whose vessels stop short of the region edge gets a grid smaller than the
+    mask. Every returned fraction is then valid and describes less tissue than was handed in,
+    which nothing downstream can detect. Two of the six carotid body specimens lose 4.35% and
+    7.54% of their glomus volume this way.
+    """
     grid = _grid_from_bounds((0.0, 0.0, 0.0), (10.0, 10.0, 10.0), 2.0)   # spans -1 to 11 um
     mask = np.ones((5, 5, 5), bool)                                      # 0 to 12.5 um at 2.5
     with pytest.warns(RuntimeWarning, match="fall outside the grid"):
@@ -255,9 +238,6 @@ def test_the_outside_the_grid_warning_counts_volume_not_voxel_centres():
 
 
 # --- The graph-side join: which edges lie inside the tissue -------------------------------
-
-from ImageLynx.haemodynamics.tissue_regions import edge_tissue_fraction   # noqa: E402
-
 
 def _edge_graph(polylines):
     G = nx.MultiGraph()
@@ -269,13 +249,6 @@ def _edge_graph(polylines):
         seg = np.linalg.norm(np.diff(pts, axis=0), axis=1).sum()
         G.add_edge(a, b, key=0, voxels=[tuple(p) for p in pts], length=float(seg))
     return G
-
-
-def test_an_edge_inside_the_mask_is_wholly_inside():
-    mask = np.ones((40, 40, 40), bool)
-    G = _edge_graph({"e": [(10.0, 10.0, 10.0), (10.0, 30.0, 10.0)]})
-    frac = edge_tissue_fraction(G, mask, VOX)
-    assert list(frac.values())[0] == pytest.approx(1.0)
 
 
 def test_an_edge_outside_the_mask_is_wholly_outside():
@@ -351,29 +324,6 @@ def test_every_edge_is_reported_exactly_once_keyed_by_u_v_key():
     assert all(len(k) == 3 for k in frac)
 
 
-def test_tissue_falling_outside_the_grid_is_reported_not_just_dropped():
-    """Dropping is correct; dropping quietly is not.
-
-    The grid comes from the graph's node bounding box, so a specimen whose vessels stop short
-    of the region edge gets a grid smaller than the mask. Every returned fraction is then
-    valid and describes less tissue than was handed in, which nothing downstream can detect.
-    Two of the six carotid body specimens lose 4.35% and 7.54% of their glomus volume this way.
-    """
-    G = nx.MultiGraph()
-    G.add_node("a", pos=np.array([0.0, 0.0, 0.0]))
-    G.add_node("b", pos=np.array([20.0, 20.0, 20.0]))
-    grid = PerfusionGrid(G, (4.0, 4.0, 4.0))          # spans about -2 to 22 um
-
-    mask = np.zeros((30, 8, 8), dtype=bool)
-    mask[:, 2:5, 2:5] = True                          # runs well past the grid in z
-
-    with pytest.warns(RuntimeWarning, match="fall outside the grid"):
-        fraction = mask_fraction_per_cell(mask, grid, (1.0, 1.0, 1.0))
-
-    assert fraction.shape == (grid.n_cells,)
-    assert np.all((fraction >= 0.0) & (fraction <= 1.0))
-
-
 def test_a_mask_that_fits_the_grid_warns_about_nothing():
     G = nx.MultiGraph()
     G.add_node("a", pos=np.array([0.0, 0.0, 0.0]))
@@ -440,9 +390,6 @@ def test_malformed_mask_bounds_raise(shape, voxel):
 
 
 # --- Voxel k is centred on k x voxel, as the graph puts it (open item 40) ----------------
-
-from ImageLynx.haemodynamics.tissue_regions import edge_length_inside_um   # noqa: E402
-
 
 def _one_voxel_mask(index, shape=(20, 20, 20)):
     mask = np.zeros(shape, bool)

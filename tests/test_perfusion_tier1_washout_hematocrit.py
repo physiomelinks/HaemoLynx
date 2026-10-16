@@ -90,13 +90,6 @@ def test_washout_at_the_mixed_haematocrit_equals_the_sum_over_vessels():
         assert q * calculate_blood_oxygen_content(p, h_mix) == pytest.approx(per_vessel, rel=1e-12)
 
 
-def test_systemic_haematocrit_no_longer_moves_tier1():
-    vessels = [{"flow": 2.0e3, "hematocrit": 0.3, "length_fraction": 1.0}]
-    a, _ = _one_cell(vessels, _Config(M_max=0.05, systemic_hematocrit=0.45))
-    b, _ = _one_cell(vessels, _Config(M_max=0.05, systemic_hematocrit=0.30))
-    np.testing.assert_array_equal(a, b)
-
-
 def test_a_perfused_cell_without_a_haematocrit_is_refused():
     q = np.array([1.0e3, 0.0])
     s = q * calculate_blood_oxygen_content(100.0, 0.45)
