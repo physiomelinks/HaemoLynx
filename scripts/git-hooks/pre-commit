@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Local guardrail (CI only runs on PRs to origin). Enable once per clone:
 #   git config core.hooksPath scripts/git-hooks
-# 1. Error-class lint (undefined names, redefinitions) on staged Python files.
+# 1. Pyflakes lint on staged Python files: undefined names and redefinitions,
+#    plus unused imports in staged files under tests/ only.
 # 2. Fast tests (not slow, integration or realdata), skipped when every staged file is a Markdown doc (no test reads
 #    a repo .md file). Any other staged file, deletions included, runs them.
 #    Also skipped when .git/hook-stamp/fast-tests-ok matches the staged tree,
@@ -19,11 +20,12 @@ mapfile -t files < <(git diff --cached --name-only --diff-filter=ACM -- '*.py' '
 
 if [ "${#files[@]}" -gt 0 ]; then
     # pyflakes also reports style classes (unused imports, star imports, ...).
-    # Keep only the error classes, so old warnings don't block commits.
+    # Keep an allowlist, so old warnings in src/ and examples/ don't block
+    # commits: undefined names, redefinitions, and unused imports under tests/.
     out=$("$PY" -m pyflakes "${files[@]}" 2>&1 \
-        | grep -E "undefined name '|redefinition of unused" || true)
+        | grep -E "undefined name '|redefinition of unused|^tests/.*imported but unused" || true)
     if [ -n "$out" ]; then
-        echo "pre-commit: pyflakes error-class findings in staged files:" >&2
+        echo "pre-commit: pyflakes findings in staged files:" >&2
         echo "$out" >&2
         exit 1
     fi
