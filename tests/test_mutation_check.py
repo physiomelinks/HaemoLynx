@@ -1,10 +1,13 @@
 """scripts/mutation_check.py: the "each rewritten test fails once against broken code" proof."""
+import contextlib
 import importlib.util
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -244,6 +247,62 @@ def test_a_mutation_that_hangs_is_timed_out_and_exits_1(toy):
     ''', "--timeout", "3")
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert _row(proc.stdout, "add never returns")[3] == "timed out"
+
+
+def test_ctrl_c_kills_the_running_test_and_leaves_no_worktree_or_temp_files(toy):
+    # pytest runs in its own session, so Ctrl-C reaches only the script: the script itself must
+    # kill the hung test, then still remove the worktree.
+    started = toy.parent / "pytest.pid"
+    (toy / "tests" / "test_calc.py").write_text(textwrap.dedent(f'''\
+        import os
+        import time
+
+
+        def test_add():
+            with open({str(started)!r} + ".part", "w") as f:
+                f.write(str(os.getpid()))
+            os.replace({str(started)!r} + ".part", {str(started)!r})
+            time.sleep(60)
+    '''))
+    spec = toy.parent / "spec.toml"
+    spec.write_text(textwrap.dedent('''
+        [[mutation]]
+        name = "operands swapped"
+        file = "src/toy/calc.py"
+        old = "return a + b"
+        new = "return b + a"
+        test = "tests/test_calc.py::test_add"
+    '''))
+    tmp = toy.parent / "tmp"
+    tmp.mkdir()
+    # SIGINT back to its default, in case this run was started with it ignored (a background job).
+    proc = subprocess.Popen([sys.executable, str(toy / "scripts" / "mutation_check.py"), str(spec)],
+                            cwd=toy, env={**CLEAN_ENV, "TMPDIR": str(tmp)}, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True,
+                            preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+    pid = None
+    try:
+        deadline = time.monotonic() + 60
+        while not started.exists():
+            if proc.poll() is not None or time.monotonic() > deadline:
+                proc.kill()
+                pytest.fail("the hung test never started:\n" + proc.communicate()[0])
+            time.sleep(0.1)
+        pid = int(started.read_text())
+        proc.send_signal(signal.SIGINT)
+        out = proc.communicate(timeout=30)[0]
+        assert proc.returncode == -signal.SIGINT, out
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)  # the hung pytest is gone
+    finally:
+        proc.kill()
+        if pid is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+    worktrees = subprocess.run(["git", "worktree", "list"], cwd=toy, env=CLEAN_ENV,
+                               capture_output=True, text=True).stdout
+    assert len(worktrees.splitlines()) == 1, worktrees
+    assert list(tmp.iterdir()) == [], "the script left temp files behind"
 
 
 def test_a_test_that_imports_the_main_checkout_instead_of_the_worktree_exits_3(toy):

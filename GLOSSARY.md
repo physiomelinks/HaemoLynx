@@ -1,6 +1,6 @@
 # Glossary
 
-Domain terms for the carotid body (CB) study code. Use these names in code, docstrings and docs.
+Domain terms for the carotid body (CB) study code and its test tooling. Use these names in code, docstrings and docs.
 
 **Batch run**: one specimen's output folder written by `examples/cb_h1_batch.py`, either `--stage run` (`examples/outputs/cb_h1_batch/<id>/`) or `--stage sensitivity` (`examples/outputs/cb_h1_sensitivity/t<threshold>/<id>/`). It holds the edge table, `roi_placement.json` and exactly one `*_cache/` folder (`network_graph.pkl`, `skeleton.npy`, `vessel_mask.npy`).
 
