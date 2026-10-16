@@ -94,6 +94,19 @@ PERICYTE_POINT_SIZE = 4.0
 #: Picking rings on the Boundaries tab (distinct from snapped boundary nodes).
 BOUNDARY_COORDINATE_POINT_SIZE = 8.0
 
+#: Layers drawn over every other. The terminal nodes sit where vessels leave
+#: the image, often inside a thick vessel, whose tube or mask hid them whole
+#: while they were depth-tested like the other points. So they are drawn with
+#: no depth test and kept last in the layer list, since a layer drawn after
+#: one still paints over it; the white rim keeps a red outlet readable on a
+#: red vessel.
+DRAWN_ON_TOP = (BOUNDARY_NODES,)
+ON_TOP_POINTS_OPTIONS: dict[str, Any] = {
+    "blending": "translucent_no_depth",
+    "border_color": "white",
+    "border_width": 0.2,
+}
+
 #: Mask field on VesselNetwork -> the layer it becomes.
 MASK_LAYERS = {
     "large_arteriole_mask": f"{PREFIX}large arteriole mask",
@@ -2009,6 +2022,7 @@ class ResultLayers:
                         options={
                             "size": BOUNDARY_NODE_POINT_SIZE,
                             "out_of_slice_display": True,
+                            **ON_TOP_POINTS_OPTIONS,
                         },
                         # Start hidden -- this is the only stage that ever
                         # builds this layer, so there is no later spec whose

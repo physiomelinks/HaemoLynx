@@ -25,6 +25,7 @@ from haemolynx.gui.results import (
     BOUNDARY_NODES,
     BRANCH_HOVER,
     DEFAULT_VESSEL_COLOUR,
+    DRAWN_ON_TOP,
     EDGE_COLUMNS,
     FLOW_DIRECTION,
     FWHM_PROFILES,
@@ -518,6 +519,23 @@ def test_boundary_roles_are_disjoint_and_carry_their_names():
     assert boundaries.features["role"].tolist() == ["inlet", "outlet"]
     assert boundaries.colour_kind == "categorical"
     assert len(boundaries.data) == 2
+
+
+def test_terminal_nodes_are_drawn_over_the_vessels_they_sit_in():
+    """A terminal node where a large vessel leaves the image sits inside that
+    vessel's tube and mask; depth-tested, either hides it whole. Red on a
+    red vessel it needs its rim too."""
+    assert BOUNDARY_NODES in DRAWN_ON_TOP
+    group = built().stage_finished(
+        "assign_boundaries",
+        SimpleNamespace(inlet_nodes=[0], outlet_nodes=[3],
+                        arteriole_boundary_nodes=[], venule_boundary_nodes=[],
+                        resistance_node_pair=None),
+    )
+    options = spec_named(group, BOUNDARY_NODES).options
+    assert options["blending"] == "translucent_no_depth"
+    assert options["border_color"] == "white"
+    assert options["border_width"] > 0
 
 
 def test_a_run_with_no_boundary_nodes_says_so_rather_than_drawing_nothing():

@@ -11,6 +11,7 @@ unnoticed.
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from types import SimpleNamespace
 
 import networkx as nx
@@ -25,6 +26,7 @@ from pytestqt.exceptions import capture_exceptions  # noqa: E402
 from haemolynx.gui._widget import (  # noqa: E402
     _add_or_update,
     _apply_layers,
+    _apply_z_filter,
     _clear_our_layers,
     _colormap_name,
     _process_pending_qt_events,
@@ -197,6 +199,53 @@ def test_vessel_mask_volumes_land_as_coloured_image_layers(viewer):
     ven_high = tuple(float(c) for c in ven_layer.colormap.colors[-1])
     assert art_high == pytest.approx(MASK_COLOURS["large_arteriole_mask"], abs=1e-5)
     assert ven_high == pytest.approx(MASK_COLOURS["small_venule_mask"], abs=1e-5)
+
+
+def boundaries_of(results):
+    return results.stage_finished("assign_boundaries", SimpleNamespace(
+        inlet_nodes=[0], outlet_nodes=[3], arteriole_boundary_nodes=[],
+        venule_boundary_nodes=[], resistance_node_pair=None))
+
+
+def drawn_on_top(viewer, name=BOUNDARY_NODES) -> bool:
+    layer = viewer.layers[name]
+    return (
+        viewer.layers[-1] is layer
+        and str(layer.blending) == "translucent_no_depth"
+        and np.allclose(np.asarray(layer.border_color), (1.0, 1.0, 1.0, 1.0))
+    )
+
+
+def test_the_terminal_nodes_are_drawn_over_tubes_added_after_them(viewer):
+    """With config.yaml every terminal node is a large-vessel stump, inside a
+    thick vessel: depth-tested and drawn before the tubes, the tubes hid all
+    three of E14.5's. A run saved before holds them drawn that way, so the
+    panel puts it right itself rather than trusting the spec."""
+    results = ResultLayers()
+    built = results.stage_finished("build_network", network(a_graph()))
+    saved = replace(spec_named(boundaries_of(results), BOUNDARY_NODES),
+                    options={"size": 6.0, "out_of_slice_display": True})
+    _add_or_update(viewer, saved)
+    assert str(viewer.layers[BOUNDARY_NODES].blending) == "translucent"
+
+    _apply_layers(viewer, built)
+
+    assert VESSEL_TUBES in viewer.layers
+    assert drawn_on_top(viewer)
+
+
+def test_the_terminal_nodes_stay_on_top_through_the_z_depth_filter(viewer):
+    """A window that drops a terminal node rebuilds the layer, which carries
+    over its size and colours but not how it is drawn."""
+    results = ResultLayers()
+    _apply_layers(viewer, results.stage_finished("build_network", network(a_graph())))
+    _apply_layers(viewer, boundaries_of(results))
+    assert drawn_on_top(viewer)
+
+    _apply_z_filter(viewer, 0.0, 15.0, z_extent=30.0)
+
+    assert len(viewer.layers[BOUNDARY_NODES].data) == 1
+    assert drawn_on_top(viewer)
 
 
 # --- a second run ------------------------------------------------------------

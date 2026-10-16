@@ -53,6 +53,7 @@ from haemolynx.gui.run_log import DEFAULT_LEVEL, attach
 from haemolynx.gui.results import (
     BRANCH_HOVER,
     BRANCH_ORDER_SIGNED,
+    DRAWN_ON_TOP,
     EDIT_DRAFT,
     FLOW_DIR_COLUMNS,
     FLOW_DIR_RGB_COLUMN,
@@ -60,6 +61,7 @@ from haemolynx.gui.results import (
     FLOW_SOLUTION,
     IMAGE,
     NODES,
+    ON_TOP_POINTS_OPTIONS,
     SKELETON,
     VESSEL_TUBES,
     VESSELS,
@@ -2178,6 +2180,44 @@ def _attach_tube_diameter_choice(viewer, layer) -> bool:
     return True
 
 
+def _option_holds(current: Any, value: Any) -> bool:
+    """Whether a layer property already reads *value*: a name (a blending or
+    a colour, which napari hands back as RGBA rows) or numbers."""
+    if isinstance(value, str) and str(current) == value:
+        return True
+    try:
+        held = np.asarray(current, dtype=float)
+        if isinstance(value, str):
+            from napari.utils.colormaps.standardize_color import transform_color
+
+            value = transform_color(value)[0]
+        return held.size == 0 or bool(np.allclose(held, np.asarray(value, dtype=float)))
+    except (TypeError, ValueError):
+        return False
+
+
+def _draw_on_top(viewer) -> None:
+    """Draw the ``DRAWN_ON_TOP`` layers over everything else.
+
+    Without a depth test, rimmed and last in the layer list. Their specs ask
+    for the first two, but a layer from a run saved before they did, or one
+    the Z-depth filter rebuilt, comes back without them, and a layer added
+    after one -- the tubes, always -- paints over it.
+    """
+    layers = viewer.layers
+    on_top = [
+        layers[name] for name in DRAWN_ON_TOP
+        if name in layers and _is_ours(layers[name])
+    ]
+    if list(layers)[len(layers) - len(on_top):] != on_top:
+        for layer in on_top:
+            layers.move(layers.index(layer), len(layers))
+    for layer in on_top:
+        for key, value in ON_TOP_POINTS_OPTIONS.items():
+            if hasattr(layer, key) and not _option_holds(getattr(layer, key), value):
+                setattr(layer, key, value)
+
+
 def _sync_vessel_tubes(viewer) -> None:
     """Rebuild or hide tube Surfaces to match the session drawing mode.
 
@@ -2205,6 +2245,8 @@ def _sync_vessel_tubes(viewer) -> None:
             for layer in list(viewer.layers):
                 if _is_vessel_tubes_layer(layer) and layer.name not in seen_tube_names:
                     _hide_tube_surface(layer)
+        # After the tubes: a new tubes layer lands last, over everything.
+        _draw_on_top(viewer)
         _sync_canvas_colour_bar(viewer)
         _request_canvas_redraw(viewer)
     except Exception:  # noqa: BLE001 - drawing must not stop a run
