@@ -37,13 +37,15 @@ def test_group_branch_orders_for_legend():
     orders = ["BO1", "BO2", "BO10"]
     counts = {"BO1": 1, "BO2": 2, "BO10": 3}
     lo, lc = group_branch_orders_for_legend(orders, 5, counts)
-    assert "BO5+" in lc or len(lo) <= 3
+    # BO10 is above the cut at 5, so it is shown as BO5+ with its count carried over.
+    assert (lo, lc) == (["BO1", "BO2", "BO5+"], {"BO1": 1, "BO2": 2, "BO5+": 3})
 
 
 @pytest.mark.plotting
 def test_plot_node_degree_distribution(simple_graph):
     counts = plot_node_degree_distribution(simple_graph)
-    assert isinstance(counts, dict)
+    # The three-node line: two ends of degree 1, one middle node of degree 2.
+    assert counts == {1: 2, 2: 1}
 
 
 @pytest.mark.plotting

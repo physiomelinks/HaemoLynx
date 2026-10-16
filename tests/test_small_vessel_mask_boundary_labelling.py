@@ -1,23 +1,14 @@
 """Tests for small arteriole/venule mask overlap boundary labelling on graphs."""
 from __future__ import annotations
 
-import webbrowser
-from pathlib import Path
-
 import networkx as nx
 import pytest
 import numpy as np
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
 
 from ImageLynx.graph import (
     infer_boundary_nodes_from_small_vessel_masks,
     write_small_vessel_mask_boundary_labelling_3d_html,
 )
-
-# Checked-in interactive demo (regenerated when this test runs).
-DEMO_HTML_PATH = REPO_ROOT / "examples" / "plots" / "small_vessel_mask_boundary_labelling_demo_3d.html"
-TEST_PLOT_DIR = REPO_ROOT / "tests" / "plots" / "small_vessel_mask_boundary_labelling"
 
 
 def _voxel_polyline_samples(
@@ -84,8 +75,6 @@ def build_synthetic_small_vessel_boundary_model() -> tuple[
 @pytest.mark.plotting
 def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
     """Synthetic 3D graph + masks; boundaries at art/cap and cap/ven transitions."""
-    pytest.importorskip("plotly.graph_objects")
-
     G, art_mask, ven_mask, expected = build_synthetic_small_vessel_boundary_model()
 
     result = infer_boundary_nodes_from_small_vessel_masks(
@@ -98,13 +87,18 @@ def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
 
     assert result["arteriole_boundary_nodes"] == expected["arteriole_boundary_nodes"]
     assert result["venule_boundary_nodes"] == expected["venule_boundary_nodes"]
-    assert result["arteriole_edge_count"] >= 2
-    assert result["venule_edge_count"] >= 1
+    # At least half inside the arteriole slab: trunk edges 0-1 and 1-2, and the side branch
+    # 1-6 (it ends at z = 12, outside the slab, so 4 of its 5 samples). Edges 2-3 and 3-4
+    # overlap a slab by only a third.
+    assert result["arteriole_edge_count"] == 3
+    # At least half inside the venule slab: trunk edge 4-5.
+    assert result["venule_edge_count"] == 1
     assert G.nodes[2]["mask_vessel_type"] == "arteriole"
     assert G.nodes[4]["mask_vessel_type"] == "venule"
 
-    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
-    html_tmp = TEST_PLOT_DIR / "small_vessel_mask_boundary_labelling_3d.html"
+    # Only the HTML needs plotly; the labelling above has already been checked.
+    pytest.importorskip("plotly.graph_objects")
+    html_tmp = tmp_path / "small_vessel_mask_boundary_labelling_3d.html"
     ok = write_small_vessel_mask_boundary_labelling_3d_html(
         G,
         small_arteriole_mask=art_mask,
@@ -118,25 +112,6 @@ def test_infer_boundary_nodes_from_small_vessel_masks(tmp_path):
     assert ok is True
     assert html_tmp.is_file()
     assert html_tmp.stat().st_size > 1000
-
-    DEMO_HTML_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ok_demo = write_small_vessel_mask_boundary_labelling_3d_html(
-        G,
-        small_arteriole_mask=art_mask,
-        small_venule_mask=ven_mask,
-        arteriole_boundary_nodes=result["arteriole_boundary_nodes"],
-        venule_boundary_nodes=result["venule_boundary_nodes"],
-        voxel_size_xyz=(1.0, 1.0, 1.0),
-        output_html_path=DEMO_HTML_PATH,
-        title="Synthetic small-vessel boundary model (3D)",
-    )
-    assert ok_demo is True
-    assert DEMO_HTML_PATH.is_file()
-
-    try:
-        webbrowser.open_new_tab(html_tmp.resolve().as_uri())
-    except OSError:
-        pass
 
 
 if __name__ == "__main__":

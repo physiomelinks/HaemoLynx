@@ -15,16 +15,15 @@ from ImageLynx.visualization import (
 
 
 def test_derive_pericyte_points_from_graph(simple_graph):
+    """One constriction per 1 um edge, centred half a 0.4 um constriction in from its start."""
     out = derive_pericyte_points_from_graph(
         simple_graph,
         constriction_spacing=1.0,
         constriction_length=0.4,
     )
-    assert "points" in out
-    assert out["points"].ndim == 2
-    assert out["points"].shape[1] == 3
-    assert len(out["points"]) > 0
-    assert len(out["edge_u"]) == len(out["points"])
+    np.testing.assert_allclose(out["points"], [[0.2, 0.0, 0.0], [1.2, 0.0, 0.0]])
+    assert list(out["edge_u"]) == [0, 1]
+    assert list(out["edge_v"]) == [1, 2]
 
 
 def test_graph_to_vtk_exports_files(simple_graph, tmp_path):
@@ -43,9 +42,9 @@ def test_graph_to_vtk_exports_files(simple_graph, tmp_path):
     assert vessels_path.exists()
     assert pericytes_path.exists()
     assert nodes_path.exists()
-    assert out["vessel_line_count"] > 0
+    assert out["vessel_line_count"] == 2
     assert out["node_count"] == 3
-    assert out["pericyte_count"] >= 0
+    assert out["pericyte_count"] == 2
 
     vessels = pv.read(vessels_path)
     pericytes = pv.read(pericytes_path)
@@ -86,7 +85,8 @@ def test_visualize_vtk_network_smoke(simple_graph, tmp_path):
         show_nodes=True,
         show=False,
     )
-    assert plotter is not None
+    # One actor each for the vessels, the pericytes and the nodes.
+    assert len(plotter.actors) == 3
 
 
 def test_graph_to_vtk_orients_reversed_voxel_paths(tmp_path):

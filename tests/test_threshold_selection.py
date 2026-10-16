@@ -68,18 +68,20 @@ def _tube(shape=(64, 48, 48), radius_vox=4.0, beading=False, seed=0):
 
 
 def test_a_single_evaluation_reports_calibre_and_both_topologies():
+    """One straight tube: one mask component, one centreline with its two ends."""
     sample = evaluate_threshold(_tube(), 0.5, VOXEL)
 
     assert isinstance(sample, ThresholdSample)
     assert sample.threshold == 0.5
     assert 0.0 < sample.foreground_fraction < 1.0
-    assert sample.median_diameter_um > 0
+    # Radius ~4 voxels at the 0.5 cut: the centreline median reads ~15.4 um across.
+    assert sample.median_diameter_um == pytest.approx(15.39, abs=0.01)
     # Mask-component statistics are still recorded - they are just not decisive.
-    assert sample.mask_components >= 1
-    assert 0.0 < sample.largest_mask_component_share <= 1.0
+    assert sample.mask_components == 1
+    assert sample.largest_mask_component_share == 1.0
     # The skeleton measures are what the constraint uses.
-    assert sample.skeleton_components >= 1
-    assert sample.endpoint_density_per_mm >= 0.0
+    assert sample.skeleton_components == 1
+    assert sample.endpoints == 2
 
 
 def test_calibre_is_the_objective_and_picks_the_capillary_scale_threshold():
@@ -137,22 +139,6 @@ def test_no_threshold_satisfying_both_is_reported_not_papered_over():
         selection.require()
 
 
-def test_the_mask_component_share_criterion_is_recorded_but_never_decides():
-    """Regression guard on the reason this module exists.
-
-    largest_mask_component_share is kept because it is what the handover specifies and it
-    belongs in the record, but a selection must never turn on it - it is empirically flat.
-    """
-    import inspect
-
-    from ImageLynx.statistics import threshold_selection
-
-    source = inspect.getsource(threshold_selection.select_threshold)
-    assert "largest_mask_component_share" not in source
-    assert "median_diameter_um" in source
-    assert "endpoint_density_per_mm" in source
-
-
 def test_sweep_is_ordered_and_covers_every_requested_threshold():
     thresholds = [0.9, 0.3, 0.6]
     samples = sweep_thresholds(_tube(), thresholds, VOXEL)
@@ -164,19 +150,22 @@ def test_an_empty_mask_is_skipped_rather_than_crashing():
     # The seed must sit above every threshold (the pipeline's rule), so it goes to 1.0 here;
     # nothing reaches it, and the network-mask calibre is then NaN rather than an error.
     samples = sweep_thresholds(_tube(), [0.5, 0.99999], VOXEL, seed=1.0)
-    assert all(s.foreground_fraction > 0 for s in samples)
-    assert len(samples) < 2 or samples[-1].skeleton_length_mm >= 0
+    # The empty 0.99999 cut is dropped, not returned as a zero sample.
+    assert [s.threshold for s in samples] == [0.5]
 
 
 def test_selection_can_be_rendered_as_a_table():
     """The sweep is something a person reads before freezing a parameter."""
     samples = sweep_thresholds(_tube(), np.arange(0.2, 1.0, 0.2), VOXEL)
-    text = select_threshold(samples).format_table()
-    assert "d_med" in text and "ep/mm" in text
+    lines = select_threshold(samples).format_table().splitlines()
+    header = lines[1].split()
+    assert "d_med" in header and "ep/mm" in header
     # Recorded and printed, never read by the selection: the voxel-level median and the
     # network-mask median sit beside the plain-cut one so a person can compare them.
-    assert "d_vox" in text and "d_net" in text
-    assert str(samples[0].threshold) in text or f"{samples[0].threshold:.2f}" in text
+    assert "d_vox" in header and "d_net" in header
+    # One row per threshold, each led by the threshold to two places.
+    rows = lines[2:-1]
+    assert [row.split()[0] for row in rows] == ["0.20", "0.40", "0.60", "0.80"]
 
 
 def _sample(threshold, d_med, ep_per_mm):
@@ -274,13 +263,11 @@ def test_the_above_floor_component_count_is_computed_but_never_shown():
     rather than rediscovered: if the column is ever switched to the filtered count, the
     section 2.2 note about it saying so must change too.
     """
-    sample = evaluate_threshold(_tube(), 0.5, VOXEL)
-    assert sample.mask_components_above_floor <= sample.mask_components
+    sample = _sample(0.90, 5.27, 5.17)  # 100 components, 10 of them above the floor
 
-    table = select_threshold([sample]).format_table()
-    assert str(sample.mask_components) in table
-    if sample.mask_components_above_floor != sample.mask_components:
-        assert f"{sample.mask_components_above_floor:>9d}" not in table
+    lines = select_threshold([sample]).format_table().splitlines()
+    column = lines[1].split().index("maskcmp")
+    assert lines[2].split()[column] == "100"
 
 
 def _quantised(**kw):
@@ -331,30 +318,47 @@ def test_calibre_is_read_on_the_centreline_not_over_every_voxel():
     assert sample.median_voxel_diameter_um < 0.75 * sample.median_diameter_um
 
 
-@pytest.mark.parametrize("field", [
-    "median_voxel_diameter_um",
-    "median_network_diameter_um",
-])
-def test_a_recorded_only_field_never_moves_the_selection(field):
-    """The field is printed beside the plain-cut calibre but never read by the selection.
+def _everywhere(value):
+    return lambda s: value
 
+
+def _at_or_above_090(value, below):
+    return lambda s: value if s.threshold >= 0.90 else below
+
+
+@pytest.mark.parametrize("field, moves", [
+    pytest.param(field, moves, id=field) for field, moves in (
+        ("median_voxel_diameter_um", (_everywhere(0.0), _everywhere(1e6))),
+        ("median_network_diameter_um", (_everywhere(0.0), _everywhere(1e6))),
+        ("largest_mask_component_share", (_at_or_above_090(0.5, 0.99), _everywhere(0.0))),
+        ("mask_components_above_floor", (_everywhere(0), _everywhere(10**6))),
+    )
+])
+def test_a_recorded_only_field_never_moves_the_selection(field, moves):
+    """The field is in the record but never read by the selection.
+
+    ``largest_mask_component_share`` is kept because it is what the handover specifies, but a
+    selection must never turn on it: it is empirically flat until the network has already
+    shattered (module docstring). ``mask_components_above_floor`` is computed and never shown.
     ``median_network_diameter_um`` (d_net) shows the calibre the network would read at each
     threshold (open item 41). It is a diagnostic: the window is still tested on the plain-cut
     centreline median, because every candidate replacement moves calibre by about the window's
     width and so would choose the threshold by itself.
 
-    Each case moves the field on every sample to a value far outside the calibre window, on
-    either side. A selection that read it would empty the window and refuse.
+    Each case moves the field on the samples, one way per move: a calibre far outside the
+    window on either side, the share falling to 0.5 from the chosen 0.90 up (the knee the
+    handover reads) or to 0 everywhere, the above-floor count to 0 or a million. A selection
+    that read the field would refuse, or pick another threshold.
     """
     baseline = select_threshold(_REAL_SHAPE_SWEEP)
     assert baseline.threshold == 0.90
 
-    for hostile in (0.0, 1e6):
-        moved = [replace(s, **{field: hostile}) for s in _REAL_SHAPE_SWEEP]
+    for i, move in enumerate(moves):
+        moved = [replace(s, **{field: move(s)}) for s in _REAL_SHAPE_SWEEP]
         selection = select_threshold(moved)
-        assert selection.threshold == baseline.threshold, (field, hostile)
-        assert selection.calibre_window == baseline.calibre_window, (field, hostile)
-        assert selection.fragmentation_onset == baseline.fragmentation_onset, (field, hostile)
+        assert selection.threshold == baseline.threshold, (field, i)
+        assert selection.calibre_window == baseline.calibre_window, (field, i)
+        assert selection.fragmentation_onset == baseline.fragmentation_onset, (field, i)
 
 
 def test_the_network_mask_uses_the_given_seed():

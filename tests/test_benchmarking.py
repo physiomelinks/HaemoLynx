@@ -33,10 +33,17 @@ def test_centerline_centricity_perfect_alignment():
     
     perfect_mask = bench.redilate_skeleton_to_volume(G, shape, voxel_size)
     results = bench.evaluate_centerline_centricity(G, perfect_mask, voxel_size)
-    
-    # Because of discrete voxel bounding boxes vs perfect spheres, 
-    # EDT might have a tiny sub-voxel error, but it should be extremely close to 0.0
-    assert results["mean_centricity_error_um"] < 1.0, f"Centricity error too high: {results['mean_centricity_error_um']}"
+
+    # On the axis the voxelised tube's EDT reads sqrt(17) = 4.12 um, 0.12 um above the radius.
+    centred = results["mean_centricity_error_um"]
+    assert centred < 0.5, f"Centricity error too high: {centred}"
+
+    # The same centreline moved one voxel off the axis reads the larger error (0.84 um).
+    shifted = nx.MultiGraph()
+    shifted.add_edge(0, 1, key=0, pts=[(z, 11, 10) for z in range(20)],
+                     assigned_diameter_um=8.0, fwhm_diameter_um=8.0)
+    off_axis = bench.evaluate_centerline_centricity(shifted, perfect_mask, voxel_size)
+    assert off_axis["mean_centricity_error_um"] > centred + 0.5
 
 def test_topological_preservation_components_and_loops():
     """Phase 2: Core Metric - Euler/Betti Topologies"""
@@ -133,9 +140,8 @@ def test_advanced_preprocessing_metrics():
     
     # A solid cube has 1 component, 0 tunnels, 0 cavities -> Euler = 1
     assert euler_solid == 1
-    # A hollow cube has 1 component, 0 tunnels, 1 cavity -> Euler = 1 - 0 + 1 = 2 (For surfaces. Actually in 3D voxels, cavities add 1, so euler=2).
-    # Wait, euler_number in skimage returns 2 for a hollow sphere/cube.
-    assert euler_hollow > euler_solid # Higher euler or different euler means topology changed
+    # A hollow cube has 1 component, 0 tunnels, 1 cavity -> Euler = 1 - 0 + 1 = 2
+    assert euler_hollow == 2
     
     compact_solid = bench.evaluate_preprocessing_compactness(solid_mask)
     compact_hollow = bench.evaluate_preprocessing_compactness(hollow_mask)

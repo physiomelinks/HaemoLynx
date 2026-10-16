@@ -11,25 +11,17 @@ Run: ``python tests/test_synthetic_vessel_assignment_pipeline.py`` or ``pytest``
 """
 from __future__ import annotations
 
-import webbrowser
 from pathlib import Path
 
 import networkx as nx
 import numpy as np
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
 from ImageLynx.graph import (
     assign_hierarchical_branch_orders,
     infer_boundary_nodes_from_small_vessel_masks,
     select_terminal_nodes_from_large_vessel_masks,
 )
-
-DEMO_HTML_PATH = (
-    REPO_ROOT / "examples" / "plots" / "synthetic_vessel_assignment_pipeline_3d.html"
-)
-TEST_PLOT_DIR = REPO_ROOT / "tests" / "plots" / "synthetic_vessel_assignment_pipeline"
 
 
 def _voxel_polyline_samples(
@@ -401,8 +393,6 @@ def write_integrated_vessel_pipeline_3d_html(
 
 @pytest.mark.plotting
 def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> None:
-    pytest.importorskip("plotly.graph_objects")
-
     voxel_size_xyz = (1.0, 1.0, 1.0)
     min_overlap = 0.5
 
@@ -462,8 +452,9 @@ def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> 
         u, v, key = eid
         assert G[u][v][key]["branch_order"].startswith("B")
 
-    TEST_PLOT_DIR.mkdir(parents=True, exist_ok=True)
-    html_tmp = TEST_PLOT_DIR / "synthetic_vessel_assignment_pipeline_3d.html"
+    # Only the HTML needs plotly; the assignment above has already been checked.
+    pytest.importorskip("plotly.graph_objects")
+    html_tmp = tmp_path / "synthetic_vessel_assignment_pipeline_3d.html"
     assert write_integrated_vessel_pipeline_3d_html(
         G,
         large_arteriole_mask=large_art,
@@ -478,26 +469,6 @@ def test_synthetic_large_small_masks_and_hierarchical_orders(tmp_path: Path) -> 
         output_html_path=html_tmp,
     )
     assert html_tmp.is_file() and html_tmp.stat().st_size > 2000
-
-    DEMO_HTML_PATH.parent.mkdir(parents=True, exist_ok=True)
-    assert write_integrated_vessel_pipeline_3d_html(
-        G,
-        large_arteriole_mask=large_art,
-        large_venule_mask=large_ven,
-        small_arteriole_mask=small_art,
-        small_venule_mask=small_ven,
-        input_nodes=starting_nodes,
-        output_nodes=output_nodes,
-        arteriole_boundary_nodes=art_b,
-        venule_boundary_nodes=ven_b,
-        voxel_size_xyz=voxel_size_xyz,
-        output_html_path=DEMO_HTML_PATH,
-    )
-
-    try:
-        webbrowser.open_new_tab(html_tmp.resolve().as_uri())
-    except OSError:
-        pass
 
 
 if __name__ == "__main__":

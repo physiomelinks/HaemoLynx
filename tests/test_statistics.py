@@ -23,15 +23,26 @@ from ImageLynx.statistics import (
 
 
 def test_compute_basic_statistics(simple_graph):
+    """The simple-graph branch: two 1 um edges on a three-node line."""
     s = compute_basic_statistics(simple_graph, False)
     assert s["Total Nodes"] == 3
     assert s["Total Edges"] == 2
+    assert s["Total Edge Length (microns)"] == pytest.approx(2.0)
+    assert s["Average Edge Length (microns)"] == pytest.approx(1.0)
+    assert s["Average Degree"] == pytest.approx(4 / 3)
 
 
-def test_compute_branching_statistics(simple_graph):
-    pos = nx.get_node_attributes(simple_graph, "pos")
-    s = compute_branching_statistics(simple_graph, pos)
-    assert "Average Branching Angle (degrees)" in s
+def test_compute_branching_statistics():
+    """Three arms along x, y and z meet at the origin, each pair at a right angle."""
+    G = nx.Graph()
+    for n, p in {0: (0, 0, 0), 1: (5, 0, 0), 2: (0, 5, 0), 3: (0, 0, 5)}.items():
+        G.add_node(n, pos=np.array(p, dtype=float))
+    for arm in (1, 2, 3):
+        G.add_edge(0, arm, length=5.0)
+
+    s = compute_branching_statistics(G, nx.get_node_attributes(G, "pos"))
+    assert s["Average Branching Angle (degrees)"] == pytest.approx(90.0)
+    assert s["Number of Branching Points"] == 1
 
 
 def test_branching_points_are_counted_on_the_multigraph_not_its_simple_copy():
@@ -57,30 +68,45 @@ def test_branching_points_are_counted_on_the_multigraph_not_its_simple_copy():
     assert full["Number of Branching Points"] == 1
 
 
-def test_compute_tree_asymmetry(simple_graph):
-    s = compute_tree_asymmetry(simple_graph)
-    assert "Tree Asymmetry Index" in s
+def test_compute_tree_asymmetry():
+    """Rooted at node 1 (the highest degree), its three subtrees hold 2, 2 and 1 nodes.
+
+    Node 1 adds max - min = 1; nodes 0 and 3 have one child each and add nothing. Over the
+    six nodes the index is 1/6.
+    """
+    G = nx.Graph([(0, 1), (0, 2), (1, 3), (1, 4), (3, 5)])
+    assert compute_tree_asymmetry(G)["Tree Asymmetry Index"] == pytest.approx(1 / 6)
 
 
-def test_compute_fractal_dimension(simple_graph):
-    pos = nx.get_node_attributes(simple_graph, "pos")
-    s = compute_fractal_dimension(simple_graph, pos)
-    assert "Fractal Dimension" in s
+def _grid_positions(points):
+    return {i: np.array(p, dtype=float) for i, p in enumerate(points)}
+
+
+def test_compute_fractal_dimension():
+    """The estimator box-counts node positions, so it reads below the textbook values.
+
+    Its smallest boxes (a hundredth of the extent) are finer than the node spacing, where the
+    count stops rising, and a finite line loses boxes at its ends. 200 collinear nodes read
+    0.92, and a filled 40 x 40 node plane 1.61, not 2. Pinned as the estimator's behaviour
+    (the statistic is printed only; no H1 number uses it).
+    """
+    line = _grid_positions((0, 0, z) for z in range(200))
+    plane = _grid_positions((0, y, x) for y in range(40) for x in range(40))
+
+    d_line = compute_fractal_dimension(nx.empty_graph(line), line)["Fractal Dimension"]
+    d_plane = compute_fractal_dimension(nx.empty_graph(plane), plane)["Fractal Dimension"]
+    assert 0.85 <= d_line <= 1.0
+    assert d_plane == pytest.approx(1.61, abs=0.01)
+    assert d_plane > d_line
 
 
 def test_compute_path_efficiency(simple_graph):
+    """Pairs (0,1), (1,2), (0,2) are 1, 1 and 2 um apart: mean 4/3, efficiency its inverse."""
     s = compute_path_efficiency(simple_graph, False)
-    assert "Path Efficiency" in s
-
-
-def test_compute_comprehensive_vessel_statistics(simple_graph):
-    pos = nx.get_node_attributes(simple_graph, "pos")
-    s = compute_comprehensive_vessel_statistics(
-        simple_graph, node_positions=pos, voxel_size=(1, 1, 1),
-        image_dimensions=(10, 10, 10),
-    )
-    assert "Total Nodes" in s
-    assert "Fractal Dimension" in s
+    assert s["Path Efficiency"] == pytest.approx(0.75)
+    assert s["Average Shortest Path Length (microns)"] == pytest.approx(4 / 3)
+    assert s["Path Efficiency Pair Sample Size"] == 3
+    assert s["Path Efficiency Pair Coverage"] == pytest.approx(1.0)
 
 
 def _morphometry_graph():

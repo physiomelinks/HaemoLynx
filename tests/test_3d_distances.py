@@ -1,8 +1,9 @@
 """Tests for 3D object-to-vessel distance measurement."""
 from __future__ import annotations
 
-import importlib
 import csv
+import importlib
+import statistics
 from pathlib import Path
 
 import networkx as nx
@@ -119,220 +120,87 @@ def _build_microglia_like_synthetic_case(
     return cell_path, vessel_path, G, cell_mask, vessel_mask
 
 
-def _write_precalculated_ground_truth_csvs(
-    *,
-    output_dir: Path,
-    image_stem: str = "synthetic_cells",
-) -> tuple[Path, Path]:
-    """Write deterministic ground-truth CSVs for this synthetic setup."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    details_gt = output_dir / f"{image_stem}_cell_to_vessel_3d_dual_distances_ground_truth.csv"
-    summary_gt = output_dir / f"{image_stem}_cell_to_vessel_3d_dual_distances_summary_ground_truth.csv"
+# Hand answers, one per object in label order. voxel_size is 1 um, so voxels are microns.
+# Each vessel mask is one voxel thick, so erosion empties it and the whole mask is the wall.
+_CELLS_ANSWER = [
+    # A 2x2x2 cube centred at (2.5, 2.5, 2.5); its corner (2, 2, 3) is 2 um from the B01
+    # trunk's first voxel (2, 2, 5), and the centre is sqrt(0.25 + 0.25 + 6.25) from it.
+    dict(voxels=8, centroid=(2.5, 2.5, 2.5),
+         edge_d=2.0, edge_at=(2, 2, 5), edge_label=1, edge_order="B01",
+         centroid_d=float(np.sqrt(6.75)), centroid_at=(2, 2, 5), centroid_label=1,
+         centroid_order="B01"),
+    # The second cube is 2 um from the Art1 trunk's last voxel (12, 12, 10), the same way.
+    dict(voxels=8, centroid=(11.5, 11.5, 12.5),
+         edge_d=2.0, edge_at=(12, 12, 10), edge_label=2, edge_order="Art1",
+         centroid_d=float(np.sqrt(6.75)), centroid_at=(12, 12, 10), centroid_label=2,
+         centroid_order="Art1"),
+]
+_MICROGLIA_ANSWER = [
+    # Soma 4^3 = 64 voxels at 5.5, processes along x (x 8-14, 7 voxels) and y (y 8-13,
+    # 6 voxels). The x process's tip (6, 6, 14) is 2 um from the Ven1 trunk at (6, 6, 16).
+    # Centroid (430, 457, 465) / 77, which is (32, 5, 767) / 77 from (6, 6, 16).
+    dict(voxels=77, centroid=(430 / 77, 457 / 77, 465 / 77),
+         edge_d=2.0, edge_at=(6, 6, 16), edge_label=1, edge_order="Ven1",
+         centroid_d=float(np.sqrt(32**2 + 5**2 + 767**2) / 77), centroid_at=(6, 6, 16),
+         centroid_label=1, centroid_order="Ven1"),
+    # Soma at 19.5; the y process's y 18-19 lie in the soma, so it adds 4 voxels (y 14-17)
+    # and the x process 6 (x 12-17): 74. That x process runs over the B02 trunk at
+    # (20, 20, 12) and (20, 20, 13), so the edge distance is 0, first hit in raster order
+    # (20, 20, 12). Centroid (1448, 1430, 1415) / 74, which is (32, 50, 453) / 74 from the
+    # trunk's end (20, 20, 13).
+    dict(voxels=74, centroid=(1448 / 74, 1430 / 74, 1415 / 74),
+         edge_d=0.0, edge_at=(20, 20, 12), edge_label=2, edge_order="B02",
+         centroid_d=float(np.sqrt(32**2 + 50**2 + 453**2) / 74), centroid_at=(20, 20, 13),
+         centroid_label=2, centroid_order="B02"),
+]
 
-    d_cent = float(np.sqrt(6.75))
-    delta = d_cent - 2.0
 
-    with details_gt.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "Object ID",
-                "Object Name",
-                "Voxel Count",
-                "Centroid Z (voxel)",
-                "Centroid Y (voxel)",
-                "Centroid X (voxel)",
-                "Edge-to-Vessel Distance (microns)",
-                "Edge-to-Vessel Nearest Z (microns)",
-                "Edge-to-Vessel Nearest Y (microns)",
-                "Edge-to-Vessel Nearest X (microns)",
-                "Edge-to-Vessel Nearest Coordinate (z,y,x microns)",
-                "Edge-to-Vessel Nearest Graph Edge Label ID",
-                "Edge-to-Vessel Nearest Branch Order",
-                "Centroid-to-Vessel Distance (microns)",
-                "Delta Distance (Centroid-Edge) (microns)",
-                "Centroid-to-Vessel Nearest Z (microns)",
-                "Centroid-to-Vessel Nearest Y (microns)",
-                "Centroid-to-Vessel Nearest X (microns)",
-                "Centroid-to-Vessel Nearest Coordinate (z,y,x microns)",
-                "Centroid-to-Vessel Nearest Graph Edge Label ID",
-                "Centroid-to-Vessel Nearest Branch Order",
-            ]
-        )
-        writer.writerow(
-            [
-                1,
-                "Object_0001",
-                8,
-                "2.5",
-                "2.5",
-                "2.5",
-                "2",
-                "2",
-                "2",
-                "5",
-                "(2, 2, 5)",
-                1,
-                "B01",
-                f"{d_cent:.6g}",
-                f"{delta:.6g}",
-                "2",
-                "2",
-                "5",
-                "(2, 2, 5)",
-                1,
-                "B01",
-            ]
-        )
-        writer.writerow(
-            [
-                2,
-                "Object_0002",
-                8,
-                "11.5",
-                "11.5",
-                "12.5",
-                "2",
-                "12",
-                "12",
-                "10",
-                "(12, 12, 10)",
-                2,
-                "Art1",
-                f"{d_cent:.6g}",
-                f"{delta:.6g}",
-                "12",
-                "12",
-                "10",
-                "(12, 12, 10)",
-                2,
-                "Art1",
-            ]
-        )
+def _close(value):
+    """The CSVs print six significant figures."""
+    return pytest.approx(value, rel=1e-5, abs=1e-6)
 
-    with summary_gt.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "Group",
-                "Measurement Type",
-                "Object Count",
-                "Mean Distance (microns)",
-                "Median Distance (microns)",
-                "Std Distance (microns)",
-                "Min Distance (microns)",
-                "Max Distance (microns)",
-                "Mean Delta (Centroid-Edge) (microns)",
-                "Median Delta (Centroid-Edge) (microns)",
-                "Std Delta (Centroid-Edge) (microns)",
-            ]
-        )
-        writer.writerow(
-            [
-                "Overall",
-                "edge_to_vessel",
-                2,
-                "2",
-                "2",
-                "0",
-                "2",
-                "2",
-                f"{delta:.6g}",
-                f"{delta:.6g}",
-                "0",
-            ]
-        )
-        writer.writerow(
-            [
-                "Overall",
-                "centroid_to_vessel",
-                2,
-                f"{d_cent:.6g}",
-                f"{d_cent:.6g}",
-                "0",
-                f"{d_cent:.6g}",
-                f"{d_cent:.6g}",
-                f"{delta:.6g}",
-                f"{delta:.6g}",
-                "0",
-            ]
-        )
-        writer.writerow(
-            [
-                "Art1",
-                "edge_to_vessel",
-                1,
-                "2",
-                "2",
-                "0",
-                "2",
-                "2",
-                f"{delta:.6g}",
-                f"{delta:.6g}",
-                "0",
-            ]
-        )
-        writer.writerow(
-            [
-                "B01",
-                "edge_to_vessel",
-                1,
-                "2",
-                "2",
-                "0",
-                "2",
-                "2",
-                f"{delta:.6g}",
-                f"{delta:.6g}",
-                "0",
-            ]
-        )
-        writer.writerow(
-            [
-                "Art1",
-                "centroid_to_vessel",
-                1,
-                f"{d_cent:.6g}",
-                f"{d_cent:.6g}",
-                "0",
-                f"{d_cent:.6g}",
-                f"{d_cent:.6g}",
-                f"{delta:.6g}",
-                f"{delta:.6g}",
-                "0",
-            ]
-        )
-        writer.writerow(
-            [
-                "B01",
-                "centroid_to_vessel",
-                1,
-                f"{d_cent:.6g}",
-                f"{d_cent:.6g}",
-                "0",
-                f"{d_cent:.6g}",
-                f"{d_cent:.6g}",
-                f"{delta:.6g}",
-                f"{delta:.6g}",
-                "0",
-            ]
-        )
 
-    return details_gt, summary_gt
+def _coordinate(zyx):
+    return "({}, {}, {})".format(*(f"{v:.6g}" for v in zyx))
+
+
+def _summary_row(distances, deltas):
+    """Count, mean, median, population std, min, max; then mean, median, std of the deltas."""
+    return [
+        len(distances),
+        statistics.mean(distances), statistics.median(distances),
+        statistics.pstdev(distances), min(distances), max(distances),
+        statistics.mean(deltas), statistics.median(deltas), statistics.pstdev(deltas),
+    ]
+
+
+def _expected_summary(answer):
+    """Overall rows, then one row per branch order (sorted), edge before centroid."""
+    kinds = (("edge_to_vessel", "edge_d", "edge_order"),
+             ("centroid_to_vessel", "centroid_d", "centroid_order"))
+    rows = {}
+    for kind, d_key, _ in kinds:
+        rows[("Overall", kind)] = _summary_row(
+            [a[d_key] for a in answer], [a["centroid_d"] - a["edge_d"] for a in answer])
+    for kind, d_key, order_key in kinds:
+        for group in sorted({a[order_key] for a in answer}):
+            members = [a for a in answer if a[order_key] == group]
+            rows[(group, kind)] = _summary_row(
+                [a[d_key] for a in members], [a["centroid_d"] - a["edge_d"] for a in members])
+    return rows
 
 
 @pytest.mark.parametrize(
-    "build_case, image_stem, branch_orders",
+    "build_case, image_stem, answer",
     [
-        pytest.param(
-            _build_synthetic_case, "synthetic_cells", {"B01", "Art1"}, id="cells"),
+        pytest.param(_build_synthetic_case, "synthetic_cells", _CELLS_ANSWER, id="cells"),
         pytest.param(
             _build_microglia_like_synthetic_case, "synthetic_microglia_like_cells",
-            {"Ven1", "B02"}, id="microglia_like"),
+            _MICROGLIA_ANSWER, id="microglia_like"),
     ],
 )
-def test_run_3d_measurement_to_cell_mask_generates_csvs(
-    tmp_path: Path, build_case, image_stem: str, branch_orders: set[str]
+def test_3d_measurement_matches_the_hand_calculated_distances(
+    tmp_path: Path, build_case, image_stem: str, answer: list[dict]
 ) -> None:
     cell_path, vessel_path, G, _cell_mask, _vessel_mask = build_case(tmp_path)
 
@@ -344,73 +212,36 @@ def test_run_3d_measurement_to_cell_mask_generates_csvs(
         image_stem=image_stem,
         voxel_size_xyz=(1.0, 1.0, 1.0),
     )
+    assert result["object_count"] == len(answer)
 
-    assert result["object_count"] == 2
-    details_csv = Path(result["details_csv_path"])
-    summary_csv = Path(result["summary_csv_path"])
-    assert details_csv.exists() and details_csv.stat().st_size > 0
-    assert summary_csv.exists() and summary_csv.stat().st_size > 0
-
-    with details_csv.open("r", newline="", encoding="utf-8") as f:
+    with Path(result["details_csv_path"]).open("r", newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
-    assert len(rows) == 2
-    edge_branch_orders = {row["Edge-to-Vessel Nearest Branch Order"] for row in rows}
-    centroid_branch_orders = {
-        row["Centroid-to-Vessel Nearest Branch Order"] for row in rows
-    }
-    assert branch_orders <= edge_branch_orders
-    assert branch_orders <= centroid_branch_orders
-    for row in rows:
-        edge_d = float(row["Edge-to-Vessel Distance (microns)"])
-        centroid_d = float(row["Centroid-to-Vessel Distance (microns)"])
-        delta_d = float(row["Delta Distance (Centroid-Edge) (microns)"])
-        assert row["Edge-to-Vessel Nearest Coordinate (z,y,x microns)"].startswith("(")
-        assert row["Centroid-to-Vessel Nearest Coordinate (z,y,x microns)"].startswith("(")
-        assert edge_d >= 0.0
-        assert centroid_d >= 0.0
-        # CSV exports use compact formatting (~6 significant digits), so compare
-        # with a tolerance that reflects text-rounding rather than raw float math.
-        assert delta_d == pytest.approx(centroid_d - edge_d, abs=1e-5)
-        # For compact objects, boundary-based minimum should not exceed centroid minimum.
-        assert edge_d <= centroid_d + 1e-12
+    assert [row["Object ID"] for row in rows] == [str(i + 1) for i in range(len(answer))]
+    for row, a in zip(rows, answer):
+        assert int(row["Voxel Count"]) == a["voxels"]
+        for axis, value in zip("ZYX", a["centroid"]):
+            assert float(row[f"Centroid {axis} (voxel)"]) == _close(value)
+        for prefix, d_key, at, label, order in (
+            ("Edge-to-Vessel", "edge_d", "edge_at", "edge_label", "edge_order"),
+            ("Centroid-to-Vessel", "centroid_d", "centroid_at", "centroid_label",
+             "centroid_order"),
+        ):
+            assert float(row[f"{prefix} Distance (microns)"]) == _close(a[d_key])
+            for axis, value in zip("ZYX", a[at]):
+                assert float(row[f"{prefix} Nearest {axis} (microns)"]) == _close(value)
+            assert row[f"{prefix} Nearest Coordinate (z,y,x microns)"] == _coordinate(a[at])
+            assert int(row[f"{prefix} Nearest Graph Edge Label ID"]) == a[label]
+            assert row[f"{prefix} Nearest Branch Order"] == a[order]
+        assert float(row["Delta Distance (Centroid-Edge) (microns)"]) == _close(
+            a["centroid_d"] - a["edge_d"])
 
-    with summary_csv.open("r", newline="", encoding="utf-8") as f:
-        summary_rows = list(csv.DictReader(f))
-    assert summary_rows
-    assert summary_rows[0]["Group"] == "Overall"
-    measurement_types = {row["Measurement Type"] for row in summary_rows}
-    assert "edge_to_vessel" in measurement_types
-    assert "centroid_to_vessel" in measurement_types
+    with Path(result["summary_csv_path"]).open("r", newline="", encoding="utf-8") as f:
+        summary_rows = list(csv.reader(f))[1:]
+    expected = _expected_summary(answer)
+    assert [(row[0], row[1]) for row in summary_rows] == list(expected)
     for row in summary_rows:
-        assert "Mean Delta (Centroid-Edge) (microns)" in row
-        assert "Median Delta (Centroid-Edge) (microns)" in row
-        assert "Std Delta (Centroid-Edge) (microns)" in row
-
-    if image_stem != "synthetic_cells":
-        return  # only the cell case has a hand-calculated answer file so far
-
-    # Keep this test self-contained and writable on all platforms.
-    demo_output_dir = tmp_path / "demo_outputs"
-    demo_output_dir.mkdir(parents=True, exist_ok=True)
-    demo_result = dist3d.run_3d_measurement_to_cell_mask(
-        graph=G,
-        cell_mask_path=cell_path,
-        vessel_mask_path=vessel_path,
-        output_dir=demo_output_dir,
-        image_stem="synthetic_cells",
-        voxel_size_xyz=(1.0, 1.0, 1.0),
-    )
-    demo_details = Path(demo_result["details_csv_path"])
-    demo_summary = Path(demo_result["summary_csv_path"])
-    assert demo_details.exists() and demo_details.stat().st_size > 0
-    assert demo_summary.exists() and demo_summary.stat().st_size > 0
-
-    gt_details, gt_summary = _write_precalculated_ground_truth_csvs(
-        output_dir=demo_output_dir,
-        image_stem="synthetic_cells",
-    )
-    assert gt_details.exists() and gt_details.stat().st_size > 0
-    assert gt_summary.exists() and gt_summary.stat().st_size > 0
+        assert int(row[2]) == expected[(row[0], row[1])][0]
+        assert [float(v) for v in row[3:]] == [_close(v) for v in expected[(row[0], row[1])][1:]]
 
 
 if __name__ == "__main__":
