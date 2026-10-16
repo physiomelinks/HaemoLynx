@@ -6,6 +6,7 @@ pytest arguments, then compare.
     venv/bin/python scripts/coverage_by_module.py run BEFORE.json [PYTEST_ARGS...]
     venv/bin/python scripts/coverage_by_module.py run AFTER.json [PYTEST_ARGS...]
     venv/bin/python scripts/coverage_by_module.py compare BEFORE.json AFTER.json
+    venv/bin/python scripts/coverage_by_module.py table BEFORE.json AFTER.json [--modules PATH ...]
     venv/bin/python scripts/coverage_by_module.py sole RUN.json TEST_ID
 
 ``run`` runs pytest under pytest-cov with ``--cov-context=test`` and writes, per in-scope
@@ -16,6 +17,11 @@ pytest's default (the whole suite). Exit code: pytest's.
 ``compare`` prints every module whose covered count changed. Exit 0 when no module's covered
 count dropped, 1 when one did, 2 on a usage error, 3 when the two runs cannot be compared
 (different pytest arguments, or a run whose tests failed).
+
+``table`` prints a Markdown table (module, statements, covered before, covered after, change)
+to paste under a ticket's ``## Answer``. With ``--modules`` it prints those modules, changed or
+not; without, only modules whose covered count changed. A ``--modules`` path in neither run is
+a usage error (exit 2, nothing printed), as is a module listed in only one run.
 
 ``sole`` lists the lines TEST_ID ran that no other test in the run ran (its sole-guard lines).
 
@@ -149,6 +155,30 @@ def compare(before: dict, after: dict) -> tuple[int, list[str]]:
     return int(dropped), lines
 
 
+def table(before: dict, after: dict, modules: list[str] | None = None) -> list[str]:
+    """Markdown table lines: the named modules, or those whose covered count changed.
+
+    Raises KeyError for a named module that is in neither run, and for any module in only one
+    run (its other count would be invented).
+    """
+    unknown = [m for m in modules or [] if m not in before["modules"] and m not in after["modules"]]
+    if unknown:
+        raise KeyError(f"not in either run: {', '.join(unknown)}")
+    lopsided = sorted(set(before["modules"]) ^ set(after["modules"]))
+    if lopsided:
+        raise KeyError(f"in only one run: {', '.join(lopsided)}")
+    lines = ["| Module | Statements | Covered before | Covered after | Change |",
+             "| --- | ---: | ---: | ---: | ---: |"]
+    for rel in modules or sorted(set(before["modules"]) | set(after["modules"])):
+        b, a = before["modules"][rel], after["modules"][rel]
+        change = len(a["covered"]) - len(b["covered"])
+        if change or modules:
+            shown = f"{change:+d}" if change else "0"
+            lines.append(f"| {rel} | {a['statements']} | {len(b['covered'])} "
+                         f"| {len(a['covered'])} | {shown} |")
+    return lines
+
+
 def sole(result: dict, test: str) -> dict[str, list[int]]:
     """Per module, the lines `test` ran that no other test in the run ran."""
     if test not in result["tests"]:
@@ -190,6 +220,10 @@ def main(argv=None) -> int:
     p = sub.add_parser("compare", help="exit 1 if any module's covered count dropped")
     p.add_argument("before", type=Path)
     p.add_argument("after", type=Path)
+    p = sub.add_parser("table", help="Markdown per-module covered counts, before and after")
+    p.add_argument("before", type=Path)
+    p.add_argument("after", type=Path)
+    p.add_argument("--modules", nargs="+", metavar="PATH", help="only these modules, changed or not")
     p = sub.add_parser("sole", help="lines only TEST_ID ran in this run")
     p.add_argument("result", type=Path)
     p.add_argument("test")
@@ -201,6 +235,14 @@ def main(argv=None) -> int:
         code, report = compare(json.loads(args.before.read_text()), json.loads(args.after.read_text()))
         print("\n".join(report))
         return code
+    if args.cmd == "table":
+        try:
+            report = table(json.loads(args.before.read_text()), json.loads(args.after.read_text()), args.modules)
+        except KeyError as e:
+            print(e.args[0], file=sys.stderr)
+            return 2
+        print("\n".join(report))
+        return 0
     try:
         found = sole(json.loads(args.result.read_text()), args.test)
     except KeyError as e:

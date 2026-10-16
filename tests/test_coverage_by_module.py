@@ -74,3 +74,57 @@ def test_run_writes_per_module_and_per_test_lines_and_leaves_no_data_file(tmp_pa
     assert result["modules"]["examples/carotid_image_to_model.py"]["covered"]
     assert result["tests"][test_id]["examples/carotid_image_to_model.py"]
     assert not (REPO / ".coverage").exists()
+
+
+def _write_runs(tmp_path, before_modules, after_modules):
+    paths = []
+    for name, modules in (("before.json", before_modules), ("after.json", after_modules)):
+        path = tmp_path / name
+        path.write_text(json.dumps(_result(modules)))
+        paths.append(str(path))
+    return paths
+
+
+def test_table_lists_only_the_modules_whose_covered_count_changed(tmp_path, capsys):
+    before, after = _write_runs(
+        tmp_path,
+        {"src/a.py": [1, 2, 3], "src/b.py": [1], "src/c.py": [1, 2]},
+        {"src/a.py": [1, 2], "src/b.py": [1], "src/c.py": [1, 2, 3, 4]},
+    )
+    assert cbm.main(["table", before, after]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "| Module | Statements | Covered before | Covered after | Change |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        "| src/a.py | 10 | 3 | 2 | -1 |",
+        "| src/c.py | 10 | 2 | 4 | +2 |",
+    ]
+
+
+def test_table_with_modules_lists_exactly_those_rows_even_when_unchanged(tmp_path, capsys):
+    before, after = _write_runs(
+        tmp_path,
+        {"src/a.py": [1, 2, 3], "src/b.py": [1], "src/c.py": [1, 2]},
+        {"src/a.py": [1, 2], "src/b.py": [1], "src/c.py": [1, 2, 3, 4]},
+    )
+    assert cbm.main(["table", before, after, "--modules", "src/b.py", "src/a.py"]) == 0
+    assert capsys.readouterr().out.splitlines()[2:] == [
+        "| src/b.py | 10 | 1 | 1 | 0 |",
+        "| src/a.py | 10 | 3 | 2 | -1 |",
+    ]
+
+
+def test_table_with_an_unknown_module_fails_and_prints_no_table(tmp_path, capsys):
+    before, after = _write_runs(tmp_path, {"src/a.py": [1]}, {"src/a.py": [1, 2]})
+    assert cbm.main(["table", before, after, "--modules", "src/a.py", "src/typo.py"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "src/typo.py" in captured.err
+
+
+def test_table_fails_rather_than_invent_zeros_for_a_module_in_only_one_run(tmp_path, capsys):
+    before, after = _write_runs(tmp_path, {"src/a.py": [1]}, {"src/a.py": [1], "src/new.py": [1, 2]})
+    for extra in ([], ["--modules", "src/new.py"]):
+        assert cbm.main(["table", before, after, *extra]) == 2
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "src/new.py" in captured.err
