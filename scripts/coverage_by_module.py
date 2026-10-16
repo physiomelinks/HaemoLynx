@@ -5,6 +5,7 @@ pytest arguments, then compare.
 
     venv/bin/python scripts/coverage_by_module.py run BEFORE.json [PYTEST_ARGS...]
     venv/bin/python scripts/coverage_by_module.py run AFTER.json [PYTEST_ARGS...]
+    venv/bin/python scripts/coverage_by_module.py run --files-from FILE OUT.json [PYTEST_ARGS...]
     venv/bin/python scripts/coverage_by_module.py compare BEFORE.json AFTER.json
     venv/bin/python scripts/coverage_by_module.py table BEFORE.json AFTER.json [--modules PATH ...]
     venv/bin/python scripts/coverage_by_module.py sole RUN.json TEST_ID
@@ -12,7 +13,13 @@ pytest arguments, then compare.
 ``run`` runs pytest under pytest-cov with ``--cov-context=test`` and writes, per in-scope
 module, its statement count and covered lines, and per test the in-scope lines it ran. The
 coverage data file goes to a temporary folder, never the repo. With no PYTEST_ARGS it runs
-pytest's default (the whole suite). Exit code: pytest's.
+pytest's default (the whole suite). With ``--files-from FILE`` it runs only the test files
+listed in FILE (one path per line, relative to the repo; blank lines and ``#`` comments are
+ignored), appended to PYTEST_ARGS and saved with them, so ``compare`` refuses runs over different
+lists. PYTEST_ARGS then carries options only: a test path given there runs too. One such list is
+``scripts/coverage_in_scope_tests.txt``; its header says where it comes from. A missing list,
+a missing listed file or a list with no files is a usage error (exit 2, nothing run).
+Exit code: pytest's.
 
 ``compare`` prints the passed and skipped counts of both runs, the test ids only in BEFORE and
 only in AFTER, then every module whose covered count changed. Exit 0 when no module's covered
@@ -102,7 +109,18 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True).stdout.strip()
 
 
-def run(out: Path, pytest_args: list[str]) -> int:
+def read_files_from(path: Path) -> list[str]:
+    """The test files listed in `path`. Raises ValueError on a missing file or an empty list."""
+    files = [s for line in path.read_text().splitlines() if (s := line.split("#", 1)[0].strip())]
+    if not files:
+        raise ValueError(f"{path} lists no test files")
+    missing = [f for f in files if not (REPO / f).exists()]
+    if missing:
+        raise ValueError(f"{path} lists files that do not exist: {', '.join(missing)}")
+    return files
+
+
+def run(out: Path, pytest_args: list[str], files_from: Path | None = None) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         data_file = Path(tmp) / ".coverage"
         rc = Path(tmp) / "coveragerc"
@@ -126,6 +144,7 @@ def run(out: Path, pytest_args: list[str]) -> int:
         "commit": git("rev-parse", "HEAD"),
         "dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
         "pytest_args": pytest_args,
+        **({"files_from": str(files_from)} if files_from else {}),
         "pytest_exit": code,
         "outcomes": outcomes,
         **result,
@@ -247,6 +266,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("run", help="run pytest under coverage and save per-module lines")
+    p.add_argument("--files-from", type=Path, metavar="FILE",
+                   help="run only the test files listed in FILE (one per line, # comments)")
     p.add_argument("out", type=Path)
     p.add_argument("pytest_args", nargs=argparse.REMAINDER)
     p = sub.add_parser("compare", help="exit 1 if any module's covered count dropped")
@@ -262,7 +283,14 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     if args.cmd == "run":
-        return run(args.out, args.pytest_args)
+        if args.files_from is None:
+            return run(args.out, args.pytest_args)
+        try:
+            files = read_files_from(args.files_from)
+        except (OSError, ValueError) as e:
+            print(e, file=sys.stderr)
+            return 2
+        return run(args.out, [*args.pytest_args, *files], args.files_from)
     if args.cmd == "compare":
         code, report = compare(json.loads(args.before.read_text()), json.loads(args.after.read_text()))
         print("\n".join(report))

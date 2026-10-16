@@ -169,3 +169,36 @@ def test_table_leads_with_the_count_lines(tmp_path, capsys):
     assert cbm.main(["table", *paths]) == 0
     assert capsys.readouterr().out.splitlines()[:3] == [
         "before: 3 passed, 1 skipped  ", "after: 2 passed, 1 skipped", ""]
+
+
+def _write_test_file(path, names):
+    path.write_text("".join(f"def {n}():\n    pass\n\n\n" for n in names))
+    return path
+
+
+def test_run_files_from_runs_only_the_listed_test_files(tmp_path):
+    pytest.importorskip("pytest_cov")
+    listed = _write_test_file(tmp_path / "test_listed.py", ["test_one", "test_two"])
+    _write_test_file(tmp_path / "test_unlisted.py", ["test_three"])
+    files = tmp_path / "files.txt"
+    files.write_text(f"# header comment\n\n{listed}\n")
+    out = tmp_path / "run.json"
+    assert cbm.main(["run", "--files-from", str(files), str(out), "-q", "-p", "no:cacheprovider"]) == 0
+    result = json.loads(out.read_text())
+    # pytest names a file outside the repo relative to its own rootdir, so compare by file name.
+    assert sorted(t.rsplit("/", 1)[-1] for t in result["outcomes"]) == [
+        "test_listed.py::test_one", "test_listed.py::test_two"]
+    assert result["pytest_args"] == ["-q", "-p", "no:cacheprovider", str(listed)]
+    assert result["files_from"] == str(files)
+
+
+@pytest.mark.parametrize("listing", ["tests/test_no_such_file.py\n", "# only a comment\n\n", None],
+                         ids=["missing file", "empty list", "no list"])
+def test_run_files_from_refuses_a_bad_list_and_runs_nothing(tmp_path, capsys, listing):
+    files = tmp_path / "files.txt"
+    if listing is not None:
+        files.write_text(listing)
+    out = tmp_path / "run.json"
+    assert cbm.main(["run", "--files-from", str(files), str(out)]) == 2
+    assert not out.exists()
+    assert str(files) in capsys.readouterr().err
