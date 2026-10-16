@@ -1,0 +1,421 @@
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 193 in _from_kwarg_name_to_kwarg_name_
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\src\haemolynx\gui\_widget.py", line 8072 in on_load
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\magicgui\widgets\bases\_value_widget.py", line 69 in _on_value_change
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>
+Timeout (0:00:15)!
+Thread 0x000081e4 (most recent call first):
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 355 in wait
+  File "C:\Users\hd01\anaconda3\envs\czi\Lib\threading.py", line 655 in wait
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\threads\status_checker.py", line 112 in run
+
+Thread 0x00006898 (most recent call first):
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\_utils.py", line 53 in possibly_static_exec
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\qtpy\QtWidgets.py", line 89 in <lambda>
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\.venv\Lib\site-packages\napari\_qt\qt_event_loop.py", line 445 in run
+  File "C:\Users\hd01\Documents\GitHub\ImageLynx\hang_debug.py", line 16 in <module>

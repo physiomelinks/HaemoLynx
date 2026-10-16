@@ -5283,7 +5283,8 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             f"edge(s)) via {community_summary.method}."
         )
 
-    # 8) Optional: nearest 3D distance from objects in a cell mask to vessel edge.
+    # 8) Optional: the gap from each object in a cell mask to the vessels --
+    # the run's own segmentation unless a vessel mask of its own is given.
     if settings["measurement_3d_to_cell_mask"]:
         if settings["cell_mask_path"] is None:
             raise ValueError(
