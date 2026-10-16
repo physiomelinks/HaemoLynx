@@ -80,9 +80,24 @@ def test_only_the_in_vitro_law_shows_the_classic_fahraeus_lindqvist_minimum():
     d_min_vitro = d[int(np.argmin(vitro))]
     assert 4.0 < d_min_vitro < 12.0, f"in vitro minimum at {d_min_vitro:.1f} um"
 
+    # The curve either side of the minimum: viscosity falls as the tube narrows from 100 to
+    # 10 um, then rises again towards red cell size. Probed at 4 um rather than 6: the pure
+    # in vitro minimum sits near 7 um, so 6 and 10 straddle it too closely to order.
+    visc_100, visc_30, visc_10, visc_4, visc_3 = (
+        calculate_pries_secomb_viscosity(x, 0.45, law="in_vitro")
+        for x in (100.0, 30.0, 10.0, 4.0, 3.0))
+    assert visc_100 > visc_30 > visc_10
+    assert visc_10 < visc_4 < visc_3
+
     capillary = d <= 20.0
     assert np.all(np.diff(vivo[capillary]) < 0), (
         "in vivo viscosity should fall monotonically with rising diameter up to 20 um")
+
+    # The same, over the wider 3 to 30 um window, and spanning a wide range of values.
+    window = [calculate_pries_secomb_viscosity(x, 0.45, law="in_vivo")
+              for x in (3.0, 5.0, 8.0, 10.0, 20.0, 30.0)]
+    assert all(a > b for a, b in zip(window, window[1:])), window
+    assert window[0] > 3.0 * window[-1], "the in vivo law should span a wide range over this window"
 
 
 def test_the_in_vivo_wall_factor_is_applied_twice():

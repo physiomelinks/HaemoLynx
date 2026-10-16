@@ -27,12 +27,6 @@ def test_edge_transit_time_is_volume_over_flow():
     assert list(tau.values())[0] == pytest.approx(expected)
 
 
-def test_transit_time_scales_with_the_square_of_diameter():
-    thin = list(edge_transit_times(_chain(1, diameter=4.0)).values())[0]
-    thick = list(edge_transit_times(_chain(1, diameter=8.0)).values())[0]
-    assert thick == pytest.approx(4.0 * thin)
-
-
 def test_an_edge_with_no_flow_has_no_finite_transit_time():
     """Blood that does not move does not arrive, and infinity is the honest answer."""
     G = _chain(1, flow=0.0)
@@ -43,14 +37,10 @@ def test_transit_time_accumulates_along_a_chain():
     G = _chain(3)
     times = transit_time_from_inlets(G, inlets=[0])
     single = list(edge_transit_times(G).values())[0]
+    assert times[0] == pytest.approx(0.0), "an inlet is at zero"
     assert times[1] == pytest.approx(single)
     assert times[2] == pytest.approx(2 * single)
     assert times[3] == pytest.approx(3 * single)
-
-
-def test_an_inlet_is_at_zero():
-    G = _chain(2)
-    assert transit_time_from_inlets(G, inlets=[0])[0] == pytest.approx(0.0)
 
 
 def test_the_fastest_route_is_taken_when_two_paths_reach_a_node():

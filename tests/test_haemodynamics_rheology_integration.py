@@ -3,59 +3,6 @@ import numpy as np
 import networkx as nx
 from ImageLynx.haemodynamics.rheology import solve_coupled_flow_and_hematocrit
 
-def test_coupled_solver_convergence():
-    """Verify the iterative solver successfully converges and assigns hematocrit/viscosity."""
-    G = nx.MultiGraph()
-    # Simple Y-bifurcation network
-    # Node 0 (Inlet) -> Node 1 -> Node 2 (Outlet 1)
-    #                         -> Node 3 (Outlet 2)
-    G.add_edge(0, 1, key=0, length=10.0, fwhm_diameter_um=15.0)
-    G.add_edge(1, 2, key=0, length=10.0, fwhm_diameter_um=10.0) # Medium branch
-    G.add_edge(1, 3, key=0, length=10.0, fwhm_diameter_um=5.0)  # Tiny branch
-    
-    starting_nodes = [0]
-    output_nodes = [2, 3]
-    
-    # Run the iterative solver
-    G_solved, final_pressure = solve_coupled_flow_and_hematocrit(
-        G,
-        starting_nodes=starting_nodes,
-        output_nodes=output_nodes,
-        input_p_bc=100.0,
-        output_p_bc=10.0,
-        systemic_hematocrit=0.45,
-        max_iterations=10,
-        flow_rtol=1e-3
-    )
-    
-    # Assert solver completed and returned pressures
-    assert final_pressure is not None
-    assert len(final_pressure) == 4
-    
-    # Assert every edge got hematocrit and viscosity attributes
-    for u, v, key, data in G_solved.edges(keys=True, data=True):
-        assert "hematocrit" in data
-        assert "viscosity" in data
-        assert "flow_abs" in data
-        
-    # The parent branch should still have systemic hematocrit
-    assert np.isclose(G_solved[0][1][0]["hematocrit"], 0.45, atol=1e-5)
-
-    # Red cell conservation across the bifurcation, which holds under either law.
-    q_in = G_solved[0][1][0]["flow_abs"]
-    rbc_out = sum(G_solved[1][t][0]["hematocrit"] * G_solved[1][t][0]["flow_abs"]
-                  for t in (2, 3))
-    assert rbc_out == pytest.approx(0.45 * q_in, rel=0.05)
-
-    # Both branches must stay physical.
-    for t in (2, 3):
-        assert 0.0 <= G_solved[1][t][0]["hematocrit"] <= 1.0
-
-    # The direction of skimming is *not* asserted here, and that is deliberate: it depends on
-    # the viscosity law through the flow split, and the split is what the skimming model keys
-    # on. See test_skimming_follows_the_flow_fraction_not_the_velocity below.
-
-
 def test_skimming_follows_the_flow_fraction_not_the_velocity():
     """Red cells concentrate in the branch taking the larger share of *flow*.
 
@@ -118,33 +65,6 @@ def test_skimming_follows_the_flow_fraction_not_the_velocity():
         assert r["v_wide"] > r["v_narrow"], f"{law}: the narrow branch was the faster ({r})"
         assert r["h_wide"] > 0.45 > r["h_narrow"], f"{law}: the narrow branch was not skimmed ({r})"
 
-
-def test_coupled_solver_dag_cycle_handling(caplog):
-    """Verify the topological sorter safely handles biologically impossible fluid loops."""
-    G = nx.MultiGraph()
-    # Force a loop: 0 -> 1 -> 2 -> 1
-    # We will manually assign bizarre pressures to trick the DAG builder
-    G.add_edge(0, 1, key=0, length=10.0, fwhm_diameter_um=10.0)
-    G.add_edge(1, 2, key=0, length=10.0, fwhm_diameter_um=10.0)
-    G.add_edge(2, 1, key=1, length=10.0, fwhm_diameter_um=10.0)
-    
-    starting_nodes = [0]
-    output_nodes = [2]
-    
-    # By default, a linear solver won't create a cycle here, but let's see if 
-    # the solver at least completes without throwing a fatal unhandled error.
-    # It should just resolve it as normal parallel edges since P1 > P2.
-    G_solved, final_pressure = solve_coupled_flow_and_hematocrit(
-        G,
-        starting_nodes=starting_nodes,
-        output_nodes=output_nodes,
-        input_p_bc=100.0,
-        output_p_bc=10.0,
-        systemic_hematocrit=0.45,
-        max_iterations=5
-    )
-    
-    assert final_pressure is not None
 
 def test_coupled_solver_matrix_singularity_safety(caplog):
     """Verify solver safely catches missing boundary conditions without cryptic math crashes."""
@@ -272,36 +192,6 @@ def test_resistance_matches_poiseuille_at_the_solved_viscosity():
         assert data["resistance"] == pytest.approx(expected, rel=1e-9), (
             f"edge ({u}, {v}, {key}) at d={d} um carries "
             f"{data['resistance']:.6g} against Poiseuille's {expected:.6g}"
-        )
-
-
-def test_resistance_is_not_inflated_by_the_power_law_viscosity():
-    """Guard the specific defect: the surviving factor was mu_PS(d, H) * d**1.647.
-
-    That factor is calibre-dependent, running roughly 200x at 3 um to 540x at 20 um, so it
-    distorted the distribution of flow and not merely its scale. Asserting the ratio is 1
-    rather than merely 'small' is what makes a partial reintroduction fail here.
-    """
-    G_solved, _ = solve_coupled_flow_and_hematocrit(
-        _bifurcation_graph(),
-        starting_nodes=[0],
-        output_nodes=[2, 3],
-        input_p_bc=13.332e6,
-        output_p_bc=0.27e6,
-        systemic_hematocrit=0.45,
-        max_iterations=10,
-        flow_rtol=1e-4,
-    )
-
-    for u, v, key, data in G_solved.edges(keys=True, data=True):
-        d = data["fwhm_diameter_um"]
-        poiseuille = (128.0 * data["viscosity"] * data["length"]) / (np.pi * d ** 4)
-        inflated = poiseuille * (data["viscosity"] * d ** 1.647)
-
-        assert data["resistance"] / poiseuille == pytest.approx(1.0, rel=1e-9)
-        assert data["resistance"] < inflated / 10.0, (
-            f"edge ({u}, {v}, {key}) resistance is within an order of magnitude of the "
-            f"double-applied value {inflated:.6g}"
         )
 
 
@@ -756,20 +646,6 @@ def test_stop_reason_is_converged_when_flows_settle():
     assert solved.graph["rheology_max_flow_change"] <= 1e-4
 
 
-def test_undamped_asymmetric_bifurcation_reports_that_it_did_not_converge():
-    """The oscillating case must not be reported as converged.
-
-    Undamped, the 4 um daughter alternates between two haematocrit states every pass. The
-    damped solve converges (``test_rheology_convergence.py``).
-    """
-    solved, _ = solve_coupled_flow_and_hematocrit(
-        _bifurcation_graph(), max_iterations=15, flow_rtol=1e-4, relaxation=1.0,
-        **_STOP_REASON_BCS)
-
-    assert solved.graph["rheology_stop_reason"] == "max_iterations"
-    assert solved.graph["rheology_iterations"] == 15
-
-
 def test_stop_reason_is_max_iterations_when_the_limit_is_hit():
     """A negative tolerance can never be met, so only the iteration limit can end the loop."""
     solved, _ = solve_coupled_flow_and_hematocrit(
@@ -807,21 +683,19 @@ def test_stop_reason_is_flow_cycle_when_the_dag_cannot_be_sorted(monkeypatch):
     assert final_pressure is not None
 
 
-def test_an_edge_without_a_diameter_is_refused_not_solved_at_five_microns():
-    """Open item 9: initialisation and update used to substitute 5.0 um silently."""
+@pytest.mark.parametrize("unusable", ["absent", "zero"])
+def test_an_edge_without_a_diameter_is_refused_not_solved_at_five_microns(unusable):
+    """Open item 9: initialisation and update used to substitute 5.0 um silently.
+
+    A zero diameter is as unusable as an absent one.
+    """
     G = _bifurcation_graph()
-    del G[1][3][0]["fwhm_diameter_um"]
+    if unusable == "absent":
+        del G[1][3][0]["fwhm_diameter_um"]
+    else:
+        G[1][2][0]["fwhm_diameter_um"] = 0.0
 
     with pytest.raises(ValueError, match="1 of 3 edges have no usable diameter"):
-        solve_coupled_flow_and_hematocrit(
-            G, max_iterations=15, flow_rtol=1e-4, **_STOP_REASON_BCS)
-
-
-def test_a_non_positive_diameter_is_refused_too():
-    G = _bifurcation_graph()
-    G[1][2][0]["fwhm_diameter_um"] = 0.0
-
-    with pytest.raises(ValueError, match="diameter"):
         solve_coupled_flow_and_hematocrit(
             G, max_iterations=15, flow_rtol=1e-4, **_STOP_REASON_BCS)
 

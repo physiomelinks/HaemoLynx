@@ -41,7 +41,8 @@ def _y(d_parent=12.0, d1=8.0, d2=4.0, l2=60.0):
 def _solve(G, scale=1.0, outlets=(2, 3), **overrides):
     kwargs = {**cb_settings.rheology_solver_kwargs(), **overrides}
     return solve_coupled_flow_and_hematocrit(
-        G, [0], list(outlets), 60.0 * scale, 20.0 * scale, systemic_hematocrit=0.45, **kwargs)
+        G, [0], list(outlets), cb_settings.INLET_PRESSURE_MMHG * scale,
+        cb_settings.OUTLET_PRESSURE_MMHG * scale, systemic_hematocrit=0.45, **kwargs)
 
 
 @pytest.mark.parametrize("diameters", [(12.0, 8.0, 4.0), (15.0, 10.0, 5.0)])

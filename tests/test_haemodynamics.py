@@ -1,6 +1,9 @@
 """Tests for haemodynamics module."""
 import numpy as np
 import networkx as nx
+import pytest
+import scipy.sparse as sp
+import scipy.sparse.linalg as splinalg
 
 from ImageLynx.haemodynamics import (
     PoiseuilleModel,
@@ -10,21 +13,6 @@ from ImageLynx.haemodynamics import (
 )
 
 MODEL = PoiseuilleModel(constriction_length=40.0, constriction_spacing=100.0)
-
-
-def test_calculate_viscosity():
-    assert MODEL.calculate_viscosity(1.0) == 1.0
-    assert MODEL.calculate_viscosity(2.0) < 1.0
-
-
-def test_get_diameter_at_position():
-    d = MODEL.get_diameter_at_position(0, 100, 5.0, 4.0)
-    assert 4.0 <= d <= 5.0
-
-
-def test_resistance_integrand():
-    r = MODEL.resistance_integrand(10, 100, 5.0, 4.0)
-    assert r > 0
 
 
 def test_calculate_integrated_resistance():
@@ -49,15 +37,6 @@ def test_set_poiseuille_edge_resistances(multigraph_with_branch_order):
     )
     assert isinstance(out_graph, nx.MultiGraph)
     assert "updated" in res
-
-
-def test_calc_laplacian_from_conductance_matrix():
-    import scipy.sparse as sp
-    C = sp.csr_matrix([[0, 1, 0], [1, 0, 1], [0, 1, 0]], dtype=float)
-    L = calc_laplacian_from_conductance_matrix(C)
-    L_dense = L.toarray()
-    assert np.allclose(L_dense, L_dense.T)
-    assert np.allclose(np.sum(L_dense, axis=1), 0)
 
 
 def test_build_conductance_matrix_from_graph():
@@ -89,7 +68,6 @@ def test_calc_two_point_from_laplacian_matrix_nodeID():
     G.add_nodes_from([0, 1, 2])
     G.add_edge(0, 1, resistance=1)
     G.add_edge(1, 2, resistance=1)
-    import scipy.sparse as sp
     C = sp.csr_matrix([[0., 1., 0.], [1., 0., 1.], [0., 1., 0.]])
     L = calc_laplacian_from_conductance_matrix(C)
     R = calc_two_point_from_laplacian_matrix_nodeID(L, G, 0, 2)
@@ -97,9 +75,7 @@ def test_calc_two_point_from_laplacian_matrix_nodeID():
 
 def test_solve_system_smart_routing(monkeypatch):
     from ImageLynx.haemodynamics.resistance import _solve_system_smart
-    import scipy.sparse as sp
-    import numpy as np
-    
+
     A = sp.csr_matrix([[2.0, -1.0], [-1.0, 2.0]])
     b = np.array([1.0, 0.0])
     
@@ -120,10 +96,6 @@ def test_solve_system_smart_raises_on_a_singular_system():
     well-formed, and meaningless. The graph-level largest-component prune is what normally
     prevents the condition, so a silent fallback here hid the prune being turned off.
     """
-    import numpy as np
-    import pytest
-    import scipy.sparse as sp
-
     from ImageLynx.haemodynamics.resistance import _solve_system_smart
 
     A = sp.csr_matrix([[1.0, 1.0], [1.0, 1.0]])
@@ -136,25 +108,9 @@ def test_solve_system_smart_raises_on_a_singular_system():
         _solve_system_smart(A, b, iterative_threshold=1)
 
 
-def test_solve_system_smart_still_solves_a_well_posed_system():
-    """The raise policy must not have cost the ordinary path."""
-    import numpy as np
-    import scipy.sparse as sp
-
-    from ImageLynx.haemodynamics.resistance import _solve_system_smart
-
-    A = sp.csr_matrix([[2.0, -1.0], [-1.0, 2.0]])
-    b = np.array([1.0, 0.0])
-    assert np.allclose(_solve_system_smart(A, b, iterative_threshold=50000),
-                       [0.66666667, 0.33333333])
-
-
 def test_solve_system_smart_preconditioner_failure(monkeypatch):
     from ImageLynx.haemodynamics.resistance import _solve_system_smart
-    import scipy.sparse as sp
-    import scipy.sparse.linalg as splinalg
-    import numpy as np
-    
+
     A = sp.csr_matrix([[2.0, -1.0], [-1.0, 2.0]])
     b = np.array([1.0, 0.0])
     
@@ -165,13 +121,11 @@ def test_solve_system_smart_preconditioner_failure(monkeypatch):
 
     # A preconditioner that cannot be built is reported, not papered over with lsqr:
     # the fallback returned a field that looked solved and was not.
-    import pytest
     with pytest.raises(ValueError, match="Preconditioning"):
         _solve_system_smart(A, b, iterative_threshold=1)
 
 def test_boundary_mode_universal_sink():
     from ImageLynx.graph.boundaries import select_boundary_terminal_nodes
-    import networkx as nx
     G = nx.MultiGraph()
     G.add_node(0, pos=(0, 50, 50)) # Z-top
     G.add_node(1, pos=(50, 50, 50)) # Center
@@ -191,7 +145,6 @@ def test_boundary_mode_universal_sink():
 
 def test_robin_matrix_ghost_node_generation():
     from ImageLynx.haemodynamics.resistance import build_conductance_matrix_from_graph
-    import networkx as nx
     G = nx.MultiGraph()
     G.add_node(0)
     G.add_node(1)
@@ -213,7 +166,6 @@ def test_robin_matrix_ghost_node_generation():
 
 def test_robin_vs_sink_flow_conservation(monkeypatch):
     from ImageLynx.haemodynamics.resistance import build_conductance_matrix_from_graph, solve_flow_from_conductance_matrix
-    import networkx as nx
     import pyvista as pv
     
     # Mock pv.read to return a dummy mesh

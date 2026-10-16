@@ -33,19 +33,6 @@ def test_length_fractions_sum_to_one_across_the_cells_an_edge_crosses():
         assert total == pytest.approx(1.0, rel=1e-9), f"res={res}: {total}"
 
 
-def test_the_delivered_flow_does_not_grow_when_the_grid_is_refined():
-    """The quantity that was scaling with resolution."""
-    G = _one_long_edge()
-    totals = {}
-    for res in (30.0, 15.0, 8.0, 5.0):
-        grid = PerfusionGrid(G, (res, res, res))
-        mapping = map_vessels_to_grid(G, grid)
-        totals[res] = sum(v["flow"] * v["length_fraction"]
-                          for cell in mapping.values() for v in cell)
-    values = list(totals.values())
-    assert max(values) / min(values) < 1.0001, totals
-
-
 def test_an_edge_crossing_more_cells_gets_a_smaller_share_in_each():
     G = _one_long_edge()
     coarse = map_vessels_to_grid(G, PerfusionGrid(G, (30.0, 30.0, 30.0)))

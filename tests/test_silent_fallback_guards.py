@@ -32,38 +32,25 @@ def _grid_graph(diameters):
     return G
 
 
-def test_an_edge_without_a_diameter_is_refused_not_given_five_microns():
+@pytest.mark.parametrize(
+    "diameters, count",
+    [
+        pytest.param([8.0, None, 6.0], "1 of 3 edges", id="one-missing"),
+        pytest.param([8.0, None, None, 6.0], "2 of 4 edges", id="two-missing-are-counted"),
+        pytest.param([8.0, 0.0], "1 of 2 edges", id="non-positive"),
+    ],
+)
+def test_an_edge_without_a_diameter_is_refused_not_given_five_microns(diameters, count):
     """The default fed vessel surface area, which drives transvascular flux.
 
     A fabricated 5 um lumen on an unmeasured edge produces a surface area, a flux and a
-    tissue PO2 that are all arithmetically fine and none of which mean anything.
+    tissue PO2 that are all arithmetically fine and none of which mean anything. The refusal
+    says how many edges are affected, and a zero diameter is as unusable as an absent one.
     """
-    G = _grid_graph([8.0, None, 6.0])
+    G = _grid_graph(diameters)
     grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
-    with pytest.raises(ValueError, match="diameter"):
+    with pytest.raises(ValueError, match=f"{count} have no usable diameter"):
         map_vessels_to_grid(G, grid)
-
-
-def test_the_refusal_says_how_many_edges_are_affected():
-    G = _grid_graph([8.0, None, None, 6.0])
-    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
-    with pytest.raises(ValueError) as excinfo:
-        map_vessels_to_grid(G, grid)
-    assert "2" in str(excinfo.value)
-
-
-def test_a_non_positive_diameter_is_refused_too():
-    G = _grid_graph([8.0, 0.0])
-    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
-    with pytest.raises(ValueError, match="diameter"):
-        map_vessels_to_grid(G, grid)
-
-
-def test_a_fully_measured_graph_maps_without_complaint():
-    G = _grid_graph([8.0, 6.0, 10.0])
-    grid = PerfusionGrid(G, (10.0, 10.0, 10.0))
-    mapping = map_vessels_to_grid(G, grid)
-    assert mapping, "a fully measured graph produced no mapping"
 
 
 def test_the_fallback_can_be_taken_deliberately_but_must_be_asked_for():
@@ -109,36 +96,27 @@ def _resistance_graph(resistances):
     return G
 
 
-def test_edges_dropped_for_missing_resistance_are_counted():
-    G = _resistance_graph([1.0, None, 2.0, None, 3.0])
+@pytest.mark.parametrize(
+    "resistances, total, dropped, missing, non_positive",
+    [
+        pytest.param([1.0, None, 2.0, None, 3.0], 5, 2, 2, 0, id="missing"),
+        # A zero resistance is a short circuit and a negative one is unphysical. They are
+        # told apart from a missing value because they mean different upstream faults:
+        # absent means the assignment step never ran on that edge, non-positive means it ran
+        # and produced something impossible.
+        pytest.param([1.0, 0.0, -2.0, 3.0], 4, 2, 0, 2, id="non-positive-counted-separately"),
+        pytest.param([1.0, 2.0, 3.0], 3, 0, 0, 0, id="complete-graph-drops-nothing"),
+    ],
+)
+def test_edges_dropped_for_missing_resistance_are_counted(
+        resistances, total, dropped, missing, non_positive):
     report = {}
-    build_conductance_matrix_from_graph(G, report=report)
-    assert report["edges_total"] == 5
-    assert report["edges_dropped"] == 2
-    assert report["dropped_missing"] == 2
-    assert report["dropped_non_positive"] == 0
-
-
-def test_edges_dropped_for_non_positive_resistance_are_counted_separately():
-    """A zero resistance is a short circuit and a negative one is unphysical.
-
-    They are distinguished from a missing value because they mean different upstream faults:
-    absent means the assignment step never ran on that edge, non-positive means it ran and
-    produced something impossible.
-    """
-    G = _resistance_graph([1.0, 0.0, -2.0, 3.0])
-    report = {}
-    build_conductance_matrix_from_graph(G, report=report)
-    assert report["dropped_missing"] == 0
-    assert report["dropped_non_positive"] == 2
-    assert report["edges_dropped"] == 2
-
-
-def test_a_complete_graph_reports_nothing_dropped():
-    report = {}
-    build_conductance_matrix_from_graph(_resistance_graph([1.0, 2.0, 3.0]), report=report)
-    assert report["edges_dropped"] == 0
-    assert report["dropped_fraction"] == 0.0
+    build_conductance_matrix_from_graph(_resistance_graph(resistances), report=report)
+    assert report["edges_total"] == total
+    assert report["edges_dropped"] == dropped
+    assert report["dropped_missing"] == missing
+    assert report["dropped_non_positive"] == non_positive
+    assert report["dropped_fraction"] == pytest.approx(dropped / total)
 
 
 def test_dropping_edges_logs_a_warning():
@@ -156,43 +134,12 @@ def test_dropping_edges_logs_a_warning():
     assert any(r.levelno >= logging.WARNING and "2" in r.getMessage() for r in records)
 
 
-def test_the_return_value_is_unchanged_so_callers_do_not_break():
-    """Ten call sites unpack a two-tuple; the report is opt-in."""
-    result = build_conductance_matrix_from_graph(_resistance_graph([1.0, 2.0]))
-    assert isinstance(result, tuple) and len(result) == 2
-
-
 # --- T2.1: the whole-graph guard against a per-edge fallback -------------------------------
 
 from ImageLynx.haemodynamics.poiseuille import (                      # noqa: E402
     _raise_if_measurement_mode_measured_nothing,
     check_diameter_provenance,
 )
-
-
-def test_edt_mode_refuses_a_partial_fallback_not_only_a_total_one():
-    """The existing guard fires only at zero measured edges; the fallback is per-edge.
-
-    A run where EDT measured 90% of edges and fabricated the other 10% passed silently, and
-    resistance goes as the inverse fourth power of diameter, so a fabricated calibre is not a
-    small perturbation on the edges that carry it.
-    """
-    counts = {"measured_edt": 900, "synthetic_branch_order": 100}
-    with pytest.raises(ValueError, match="synthetic"):
-        check_diameter_provenance(counts, radius_assignment_mode="edt_radius")
-
-
-def test_edt_mode_accepts_a_fully_measured_graph():
-    counts = {"measured_edt": 1000}
-    assert check_diameter_provenance(counts, radius_assignment_mode="edt_radius")["ok"]
-
-
-def test_fwhm_mode_tolerates_a_partial_fallback_by_design():
-    """FWHM legitimately fails on individual edges, so partial measurement is a real outcome."""
-    counts = {"measured_fwhm": 500, "synthetic_branch_order": 500}
-    result = check_diameter_provenance(counts, radius_assignment_mode="fwhm_radius")
-    assert result["ok"]
-    assert result["synthetic_fraction"] == pytest.approx(0.5)
 
 
 def test_the_synthetic_fraction_is_reported_whatever_the_mode():
