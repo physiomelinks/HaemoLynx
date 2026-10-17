@@ -8,6 +8,7 @@ pytest arguments, then compare.
     venv/bin/python scripts/coverage_by_module.py run --files-from FILE OUT.json [PYTEST_ARGS...]
     venv/bin/python scripts/coverage_by_module.py run --at REV BEFORE.json [PYTEST_ARGS...]
     venv/bin/python scripts/coverage_by_module.py compare BEFORE.json AFTER.json
+    venv/bin/python scripts/coverage_by_module.py check RUN.json REV
     venv/bin/python scripts/coverage_by_module.py table BEFORE.json AFTER.json [--modules PATH ...]
     venv/bin/python scripts/coverage_by_module.py sole RUN.json TEST_ID
 
@@ -26,6 +27,11 @@ from HEAD, since the result would then belong to no commit; ``--allow-dirty`` ru
 records ``"dirty": true``. Untracked files do not count. The tracked files are checked again
 after the run: a change while it ran (an edit, or a test writing to the tree) fails it.
 
+``run`` saves the commit it measured, the ``tree`` id of the tracked files it measured (what
+``git write-tree`` gives for them as they stood on disk) and a ``dirty`` flag, so a file
+labelled "after = the commit" can be checked: a clean run's tree is its commit's tree. The tree
+id is computed in a throwaway index and object folder, so nothing is written to the repo.
+
 ``run --at REV`` measures commit REV instead, for a "before" baseline without stashing or
 copying anything. It makes a detached worktree of REV in a temporary folder outside the repo,
 symlinks the gitignored data folders (``examples/images``, ``examples/outputs``) in from this
@@ -40,8 +46,12 @@ the tracked files changed during the run, the run changed the linked data, a tes
 this checkout's source instead of the worktree's, or git could not make the worktree; else 0.
 The JSON is still written, with those findings in it, and ``compare`` refuses it.
 
-``compare`` prints the passed and skipped counts of both runs, the test ids only in BEFORE and
-only in AFTER, then every module whose covered count changed. Exit 0 when no module's covered
+``compare`` prints each run's commit and tree id, then a ``WARNING`` line (the exit code is
+unchanged) for a run whose tree is not the tree of its commit, or whose commit this repository
+does not have. It then prints the passed and skipped counts of both runs, the test ids only in
+BEFORE and only in AFTER, then every module whose covered count changed. ``check RUN.json REV``
+says whether the run's tree is the tree of commit REV: exit 0 yes, 1 no, 2 REV is no commit
+here, 3 the run recorded no tree. For ``compare``, exit 0 when no module's covered
 count dropped, 1 when one did, 2 on a usage error, 3 when the two runs cannot be compared
 (different pytest arguments, a run whose tests failed, or a run ``run`` failed as above).
 
@@ -61,6 +71,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -161,6 +172,39 @@ def tracked_state(root: Path) -> tuple[bool, str]:
     return bool(diff), hashlib.sha256(f"{head}\0{diff}".encode()).hexdigest()
 
 
+def working_tree(root: Path) -> str:
+    """The tree id of `root`'s tracked files as they stand on disk (`git write-tree` of them).
+
+    Taken in a copy of the index, with a throwaway object folder behind the repo's own, so the
+    index, the object database and the working tree of `root` are all left as they were.
+    Untracked files are not in it; a file staged as new is.
+    """
+    def git_path(name):
+        return Path(_worktree.git(root, "rev-parse", "--path-format=absolute", "--git-path", name).strip())
+
+    index, objects = git_path("index"), git_path("objects")
+    with tempfile.TemporaryDirectory() as tmp:
+        if index.exists():
+            shutil.copy2(index, Path(tmp) / "index")
+        (Path(tmp) / "objects").mkdir()
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index"),
+               "GIT_OBJECT_DIRECTORY": str(Path(tmp) / "objects"),
+               "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(objects)}
+        for args in (["add", "--update"], ["write-tree"]):
+            proc = subprocess.run(["git", *args], cwd=root, env=env, capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise _worktree.WorktreeError(f"git {args[0]} failed: {proc.stderr.strip()}")
+    return proc.stdout.strip()
+
+
+def commit_tree(repo: Path, commit: str) -> str | None:
+    """The tree id of `commit` in `repo`, or None when `repo` has no such commit."""
+    try:
+        return _worktree.git(repo, "rev-parse", "--verify", "--quiet", f"{commit}^{{tree}}").strip()
+    except _worktree.WorktreeError:
+        return None
+
+
 DIRTY_REFUSAL = ("refusing to run: tracked files differ from HEAD, so the run would measure no "
                  "commit. Commit them, measure a commit with --at REV, or pass --allow-dirty.")
 
@@ -216,9 +260,11 @@ def _run_in(root: Path, out: Path, pytest_args: list[str], files_from: Path | No
             return code or 1
         recorded = json.loads(outcomes_file.read_text())
     dirty_after, after = tracked_state(root)
+    tree = working_tree(root)
     outcomes = recorded["outcomes"]
     result = {
         "commit": _worktree.git(root, "rev-parse", "HEAD").strip(),
+        "tree": tree,
         "at": at,
         "dirty": dirty or dirty_after,
         "changed_during_run": before != after,
@@ -275,10 +321,30 @@ def outcome_lines(before: dict, after: dict) -> list[str]:
     return lines
 
 
-def compare(before: dict, after: dict) -> tuple[int, list[str]]:
-    """(exit code, report lines) for two run results."""
-    lines = [f"before: {before['commit'][:7]}{' (dirty)' if before['dirty'] else ''}",
-             f"after:  {after['commit'][:7]}{' (dirty)' if after['dirty'] else ''}"]
+def tree_warning(name: str, result: dict, repo: Path) -> str | None:
+    """A WARNING line when `result`'s tree is not the tree of its commit in `repo`, else None.
+
+    A run saved before trees were recorded has nothing to check.
+    """
+    if "tree" not in result:
+        return None
+    commit = result["commit"][:7]
+    expected = commit_tree(repo, result["commit"])
+    if expected is None:
+        return (f"WARNING: the {name} run's commit {commit} is not in this repository, "
+                "so its tree cannot be checked")
+    if expected != result["tree"]:
+        return (f"WARNING: the {name} run's tree {result['tree'][:7]} is not the tree of its commit "
+                f"{commit} ({expected[:7]}): it measured edits to that commit, or another tree")
+    return None
+
+
+def compare(before: dict, after: dict, repo: Path = REPO) -> tuple[int, list[str]]:
+    """(exit code, report lines) for two run results. `repo` is where the commits are looked up."""
+    lines = [f"{label} {r['commit'][:7]}, tree "
+             f"{r['tree'][:7] if 'tree' in r else 'not recorded'}{' (dirty)' if r['dirty'] else ''}"
+             for label, r in (("before:", before), ("after: ", after))]
+    lines += [w for name, r in (("before", before), ("after", after)) if (w := tree_warning(name, r, repo))]
     if before["pytest_args"] != after["pytest_args"]:
         return 3, lines + [f"cannot compare: pytest args differ: {before['pytest_args']} vs {after['pytest_args']}"]
     for name, r in (("before", before), ("after", after)):
@@ -306,6 +372,20 @@ def compare(before: dict, after: dict) -> tuple[int, list[str]]:
             lines.append(f"gain {rel}: {len(b)} -> {len(a)}")
     lines.append("covered count dropped" if dropped else "no module lost covered lines")
     return int(dropped), lines
+
+
+def check(result: dict, rev: str, repo: Path = REPO) -> tuple[int, str]:
+    """(exit code, message): is `result`'s tree the tree of commit `rev`? 0 yes, 1 no, 2 `rev`
+    is no commit in `repo`, 3 the run recorded no tree."""
+    if "tree" not in result:
+        return 3, "no tree recorded in this run (saved before trees were recorded)"
+    expected = commit_tree(repo, rev)
+    if expected is None:
+        return 2, f"{rev} is not a commit in this repository"
+    short = rev[:7]
+    if expected == result["tree"]:
+        return 0, f"tree {result['tree'][:7]} is the tree of {short}"
+    return 1, f"tree {result['tree'][:7]} is not the tree of {short} ({expected[:7]})"
 
 
 def table(before: dict, after: dict, modules: list[str] | None = None) -> list[str]:
@@ -385,6 +465,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("compare", help="exit 1 if any module's covered count dropped")
     p.add_argument("before", type=Path)
     p.add_argument("after", type=Path)
+    p = sub.add_parser("check", help="exit 0 if a run's tree is the tree of commit REV")
+    p.add_argument("run", type=Path)
+    p.add_argument("rev")
     p = sub.add_parser("table", help="Markdown per-module covered counts, before and after")
     p.add_argument("before", type=Path)
     p.add_argument("after", type=Path)
@@ -399,6 +482,10 @@ def main(argv=None) -> int:
     if args.cmd == "compare":
         code, report = compare(json.loads(args.before.read_text()), json.loads(args.after.read_text()))
         print("\n".join(report))
+        return code
+    if args.cmd == "check":
+        code, message = check(json.loads(args.run.read_text()), args.rev)
+        print(message, file=sys.stdout if code in (0, 1) else sys.stderr)
         return code
     if args.cmd == "table":
         try:
