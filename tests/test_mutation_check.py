@@ -14,7 +14,7 @@ import pytest
 from conftest import TOY_ENV, realdata_test, toy_git
 
 pytest.importorskip("tomllib")  # Python 3.11+; CI's 3.10 skips this file
-pytest.importorskip("coverage")  # the script's clean runs; not in the [dev] extra
+pytest.importorskip("coverage")  # the script's clean runs; [dev]'s pytest-cov installs it
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "mutation_check.py"
