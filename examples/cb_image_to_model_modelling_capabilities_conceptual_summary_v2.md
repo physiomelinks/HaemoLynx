@@ -124,7 +124,7 @@ pressure[unknown_idx] = _solve_system_smart(l_uu, rhs)
 
 > **Assumption**: Conservation of mass at every node — no leakage through vessel walls is modelled at this stage (perfusion leakage is handled separately in the tissue diffusion model, §5).
 
-> **Verification:** The Laplacian network solve is benchmarked against exact series and parallel resistor-network formulas in `test_analytical_poiseuille_series()` ($R_{eq}=R_1+R_2$, `atol=1e-10`) and `test_analytical_poiseuille_parallel()` ($1/R_{eq}=1/R_1+1/R_2$, `atol=1e-10`), both in `tests/test_haemodynamics_analytical.py`. The conductance-matrix assembly itself — symmetry, parallel-edge conductance summing, and exclusion of non-positive resistances — is unit-tested directly in `test_build_conductance_matrix_from_graph()`, and the Laplacian's symmetry and zero row-sum property in `test_calc_laplacian_from_conductance_matrix()` (both `tests/test_haemodynamics.py`).
+> **Verification:** The Laplacian network solve is benchmarked against exact series and parallel resistor-network formulas in `test_analytical_poiseuille_series()` ($R_{eq}=R_1+R_2$, `atol=1e-10`) and `test_analytical_poiseuille_parallel()` ($1/R_{eq}=1/R_1+1/R_2$, `atol=1e-10`), both in `tests/test_haemodynamics_analytical.py`. The conductance-matrix assembly itself — symmetry, parallel-edge conductance summing, and exclusion of non-positive resistances — is unit-tested directly in `test_build_conductance_matrix_from_graph()` (`tests/test_haemodynamics.py`). The Laplacian's symmetry and zero row-sum property are no longer tested on their own: the two analytical tests above solve on the Laplacian it builds and check exact pressures and flows.
 
 ### 2.3 Effective Two-Point Resistance
 
@@ -227,7 +227,7 @@ $$\mu = \mu_{\text{app}} \times \mu_{\text{plasma}}$$
 > - The empirical correlations were derived from *in vivo* measurements in rat mesentery. Their direct applicability to the carotid body microvasculature (a glomus organ with unique perfusion characteristics) is assumed but not validated.
 > - Minimum diameter cap: vessels smaller than 3.0 $\mu m$ are clamped to 3.0 $\mu m$ to avoid mathematical singularities (the cell-free-layer correction diverges at $D = 1.1 \, \mu m$).
 
-> **Verification:** `test_rheology_fahraeus_lindqvist_curve()` (`tests/test_haemodynamics_analytical.py`) checks the qualitative U-shaped curve shape — monotonic viscosity decrease from 100 µm down to the ~7–10 µm minimum, then a monotonic rise from 10 µm down to 3 µm — via direct inequality assertions ($\mu_{100}>\mu_{30}>\mu_{10}$ and $\mu_{10}<\mu_6<\mu_3$). This confirms the curve's shape but does not assert against a specific published numerical value.
+> **Verification:** `test_only_the_in_vitro_law_shows_the_classic_fahraeus_lindqvist_minimum()` (`tests/test_rheology_laws.py`) checks the qualitative U-shaped curve shape of the in vitro law (and contrasts it with the in vivo law, which has no minimum) — monotonic viscosity decrease from 100 µm down to the ~7–10 µm minimum, then a monotonic rise from 10 µm down to 3 µm — via direct inequality assertions ($\mu_{100}>\mu_{30}>\mu_{10}$ and $\mu_{10}<\mu_4<\mu_3$; the minimum itself sits between 4 and 12 µm). This confirms the curve's shape but does not assert against a specific published numerical value.
 
 ### 3.2 Initial (Pre-Rheology) Viscosity Approximation
 
@@ -245,7 +245,7 @@ def calculate_viscosity(diameter: float) -> float:
     return 1.0 / (diameter ** 1.647)
 ```
 
-> **Verification:** `test_calculate_viscosity()` (`tests/test_haemodynamics.py`) checks the two defining properties of the power law directly: $\mu(1.0) = 1.0$ exactly, and $\mu(2.0) < 1.0$ (viscosity decreases as diameter increases). It is also exercised as the reference curve inside `test_analytical_sphincter_resistance_calculus()` (§4.4.4), where the same $1/d^{1.647}$ law is used to derive the exact-calculus resistance target.
+> **Verification:** No test checks the power law on its own (the direct test, which asserted only $\mu(1.0) = 1.0$ and $\mu(2.0) < 1.0$, was removed in the 2026-10 test-suite cleanup). It is exercised as the reference curve inside `test_analytical_sphincter_resistance_calculus()` (§4.4.4), where the same $1/d^{1.647}$ law is used to derive the exact-calculus resistance target.
 
 ### 3.3 Plasma Skimming (Phase Separation at Bifurcations)
 
@@ -347,7 +347,7 @@ $$H_1 = \min(\max(H_1, 0.0), 0.95), \quad H_2 = \min(\max(H_2, 0.0), 0.95)$$
 > - The phase separation model is only applied at **binary bifurcations** (degree-2 splits). For trifurcations and higher, RBCs are distributed proportionally to flow (simple mixing: each daughter receives $H_{\text{mix}}$).
 > - The empirical constants (−13.29, 6.98, $x_0 = 0.05$) were derived from glass tube experiments and *in vivo* rat cremaster observations.
 
-> **Verification:** RBC mass conservation across a bifurcation is checked exactly in `test_rheology_hematocrit_mass_conservation()` (`tests/test_haemodynamics_analytical.py`): for a symmetric 50/50 split, flux in equals flux out to `atol=1e-8` and both daughters receive identical hematocrit. The skimming direction (the higher-flow, larger-diameter branch concentrates RBCs while the low-flow branch is depleted) is checked in `test_rheology_plasma_skimming_effect()`, which also re-verifies mass conservation (`atol=1e-8`) under an asymmetric 9:1 flow split. Neither test asserts the exact logit-sigmoid output value against a hand-derived number — both are conservation/directional oracles rather than closed-form benchmarks.
+> **Verification:** RBC mass conservation across a bifurcation is checked exactly in `test_red_cell_flux_is_conserved()` (`tests/test_phase_separation_pries.py`): over 450 splits (two systemic hematocrits, three feed diameters, three daughter pairs and 25 flow fractions), flux out equals flux in to `atol=1e-10`. `test_matches_the_pries_form_across_a_grid()` (same file) compares the daughter hematocrits with an independent recomputation of the published Pries form to `atol=1e-12`, wide and narrow daughters included. The skimming direction (the higher-flow, larger-diameter branch concentrates RBCs while the low-flow branch is depleted) is checked inside the solver in `test_skimming_follows_the_flow_fraction_not_the_velocity()` (`tests/test_haemodynamics_rheology_integration.py`). Together these are conservation, directional and recomputation oracles rather than a benchmark against a hand-derived number.
 
 ### 3.4 Coupled Flow–Hematocrit–Viscosity Iteration
 
@@ -477,7 +477,7 @@ $$\mu_{\text{power-law}}(d) = \frac{1}{d^{1.647}}$$
 
 The `original_resistance` is saved on the first rheology iteration and never modified thereafter, ensuring the geometric constriction profile is embedded as a permanent scaling factor.
 
-> **Verification:** No test targets this scaling rule directly by name. It is exercised only indirectly, as a step inside `test_coupled_solver_convergence()` (`tests/test_haemodynamics_rheology_integration.py`), which checks the downstream viscosity/hematocrit outputs but does not isolate or assert on the resistance-scaling ratio $\mu_{\text{Pries-Secomb}}/\mu_{\text{power-law}}$ itself. This is a coverage gap (see §11.3).
+> **Verification:** No test targets this scaling rule directly by name. It is exercised only indirectly, as a step inside `test_resistance_matches_poiseuille_at_the_solved_viscosity()` (`tests/test_haemodynamics_rheology_integration.py`), which checks that every edge's resistance is the straight-tube value at its own solved viscosity, but does not isolate or assert on the resistance-scaling ratio $\mu_{\text{Pries-Secomb}}/\mu_{\text{power-law}}$ itself. This is a coverage gap (see §11.3).
 
 ### 3.6 Wall Shear Stress
 
@@ -542,7 +542,7 @@ For each edge, the algorithm:
 > - Minimum fit $R^2$: 0.85
 > - Maximum centre offset: 1.5 $\mu m$
 
-> **Verification:** The core $FWHM=2\sqrt{2\ln 2}\,\sigma$ relationship is checked against an ideal 1D Gaussian profile in `test_fwhm_from_profile_gaussian_fit()` (`tests/test_haemodynamics_automated_fwhm.py`, error `<0.2` µm), and end-to-end on a synthetic 3D Gaussian-intensity cylinder written to a real TIFF in `test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder()` (error `<0.35` µm). The two baseline estimators (`wings` vs `percentile`) are cross-checked for agreement in `test_fwhm_percentile_and_wings_modes_symmetric_gaussian()`. Full pipeline robustness is further tested on three adversarial synthetic phantoms — clean multi-diameter tubes, a noisy X-junction with 30% off-centre graph misregistration, and a tight zig-zag — in `tests/test_integration_synthetic_vessel_fwhm.py`, with tolerances scaled to the target diameter (e.g. `abs(got-exp) < max(0.9, 0.18*exp)`).
+> **Verification:** The core $FWHM=2\sqrt{2\ln 2}\,\sigma$ relationship is checked against an ideal 1D Gaussian profile in `test_fwhm_from_profile_gaussian_fit()` (`tests/test_haemodynamics_automated_fwhm.py`, error `<0.2` µm), and end-to-end on a synthetic 3D Gaussian-intensity cylinder written to a real TIFF in `test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder()` (error `<0.35` µm). That test runs in the default, `wings` and `percentile` baseline modes, so each baseline estimator is checked against the analytic width. Full pipeline robustness is further tested on three adversarial synthetic phantoms — clean multi-diameter tubes, a noisy X-junction with 30% off-centre graph misregistration, and a tight zig-zag — in `tests/test_integration_synthetic_vessel_fwhm.py`, with tolerances scaled to the target diameter (e.g. `abs(got-exp) < max(0.9, 0.18*exp)`).
 
 ### 4.3 Exponential Diameter Scaling by Branch Order
 
@@ -607,7 +607,7 @@ d_1 & \text{if } x > L_s \quad \text{(unconstricted)}
 
 > **Physical Intuition:** The trapezoidal ramp profile prevents discontinuous jumps in diameter, which would create unphysical infinite-gradient pressure drops. The ramp-hold-ramp shape approximates the smooth constriction observed in electron microscopy images of pericyte-wrapped capillaries.
 
-> **Verification:** `test_get_diameter_at_position()` (`tests/test_haemodynamics.py`) checks that the profile stays bounded between $d_1$ and $d_2$ at an interior position, and the full ramp-hold-ramp shape (all four segments) is exercised as the geometry under test in `test_analytical_sphincter_resistance_calculus()` (§4.4.4), which integrates it and compares to exact calculus.
+> **Verification:** No test checks `get_diameter_at_position` on its own (its bounds check was removed in the 2026-10 test-suite cleanup); the full ramp-hold-ramp shape (all four segments) is exercised as the geometry under test in `test_analytical_sphincter_resistance_calculus()` (§4.4.4), which integrates it and compares to exact calculus.
 
 #### 4.4.2 Periodic Mode (`"periodic"`)
 
@@ -674,7 +674,7 @@ def resistance_integrand(position, length, d1, d2):
     return (128.0 * viscosity) / (np.pi * diameter ** 4)
 ```
 
-> **Verification:** `test_analytical_sphincter_resistance_calculus()` (`tests/test_haemodynamics_analytical.py`) is the flagship benchmark for this section: it analytically integrates $\int (128/\pi) \cdot d(x)^{-5.647}\,dx$ term-by-term over all four segments of the periodic ramp-hold-ramp-hold profile using the closed-form power-rule antiderivative, and confirms the trapezoidal `calculate_integrated_resistance()` output matches to `rtol=1e-3` (0.1%). `test_calculate_integrated_resistance()` and `test_resistance_integrand()` (`tests/test_haemodynamics.py`) additionally check the guard rail (`length<=0` → `float("inf")`) and basic positivity/finiteness.
+> **Verification:** `test_analytical_sphincter_resistance_calculus()` (`tests/test_haemodynamics_analytical.py`) is the flagship benchmark for this section: it analytically integrates $\int (128/\pi) \cdot d(x)^{-5.647}\,dx$ term-by-term over all four segments of the periodic ramp-hold-ramp-hold profile using the closed-form power-rule antiderivative, and confirms the trapezoidal `calculate_integrated_resistance()` output matches to `rtol=1e-3` (0.1%). `test_the_integrated_resistance_of_a_zero_length_vessel_is_infinite()` (`tests/test_haemodynamics.py`) additionally checks the guard rail (zero length → `float("inf")`); positivity and finiteness are implied by the exact calculus match.
 
 ---
 
@@ -739,7 +739,7 @@ where:
 - $S_{\text{advection}}$ represents oxygen delivered and removed by blood flow,
 - $M(C)$ is the metabolic consumption rate.
 
-> **Verification:** The pure-diffusion limit ($S_{\text{advection}}=M=0$) is benchmarked against a straight-line analytical gradient in `test_analytical_1d_pure_diffusion()` (`tests/test_haemodynamics_analytical.py`, `atol=1e-10`). The pure reaction-diffusion limit (constant metabolic sink, no advection) is benchmarked against the exact parabola $C(x)=C_0-(M/2D)x(L-x)$ in `test_analytical_zero_order_metabolism()` (`atol=1e-10`). The pure advection-diffusion limit (point source, no metabolism) is checked against the qualitative $1/r$ radial falloff in `test_analytical_radial_point_source()` — strict monotonic decay is asserted exactly, while the $1/r$ ratio itself is checked only loosely ($1.5 < C(1)/C(2) < 2.5$) because of discretisation error near the source. No single test benchmarks all three terms acting together against a closed-form solution.
+> **Verification:** No test now benchmarks the assembled 3D ADR equation against a closed-form profile. Three tests once covered the pure-diffusion limit (a straight-line gradient), the zero-order reaction-diffusion limit (the exact parabola $C(x)=C_0-(M/2D)x(L-x)$) and the point-source $1/r$ falloff, but they built their own finite-difference matrices and never ran `build_adr_matrix` or a perfusion solver. They were removed in the 2026-10 test-suite cleanup; what they did exercise, the linear solver's direct path, is checked exactly by `test_solve_system_smart_routing()` (`tests/test_haemodynamics.py`, §7.3). The stencil itself is checked in `test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weights()` (§7.1), and the 0-D Fick balance in §6.1 is the nearest closed-form check. No single test benchmarks all three terms acting together against a closed-form solution.
 
 ### 5.3 Oxygen–Haemoglobin Dissociation (Hill Equation)
 
@@ -883,7 +883,7 @@ where:
 
 > **Assumption**: This is a phenomenological model, not a Michaelis–Menten kinetic model. The exponential form ensures consumption approaches zero as $PO_2$ → 0 and saturates at $M_{\text{max}}$ for high $PO_2$. A Michaelis–Menten form ($M = M_{\text{max}} \cdot PO_2 / (K_m + PO_2)$) is more commonly used in the literature for mitochondrial oxygen consumption.
 
-> **Verification:** Verified indirectly as the reaction term inside `test_analytical_zero_order_metabolism()` (§5.2), which forces $k$ large enough to make $M(PO_2)$ behave as a constant zero-order sink and confirms the resulting parabolic profile to `atol=1e-10`. The saturating (non-zero-order) regime of the exponential itself — i.e. metabolism actually varying continuously with $PO_2$ rather than being pinned to $M_{\text{max}}$ — is not directly benchmarked against a closed-form solution.
+> **Verification:** Verified indirectly as the reaction term in the one-cell Fick balance of `test_fick_balance_at_the_edge_haematocrit()` (§6.1), where the sink $M_{\text{max}}V$ fixes the venous content exactly. The parabolic-profile benchmark that once pinned $M(PO_2)$ to a constant zero-order sink was removed in the 2026-10 test-suite cleanup (§5.2). The saturating (non-zero-order) regime of the exponential itself — i.e. metabolism actually varying continuously with $PO_2$ rather than being pinned to $M_{\text{max}}$ — is not directly benchmarked against a closed-form solution.
 
 ### 5.8 Respiratory Quotient
 
@@ -918,7 +918,7 @@ Oxygen delivery is modelled as a bulk advective source and sink (assembled into 
 
 The washout term is non-linear (depends on $PO_2$ through the Hill equation), solved via Picard iteration.
 
-> **Verification:** Physical bounds are checked in `test_perfusion_solver_zero_flow()` (`tests/test_haemodynamics_perfusion.py`): with zero flow through every vessel, steady-state tissue concentration is confirmed to be exactly 0.0 everywhere (`atol=1e-10`). `test_perfusion_solver_no_metabolism()` confirms the complementary case — with metabolism switched off, tissue concentration is strictly positive. The full non-linear washout is benchmarked against an exact Fick-principle root in `test_analytical_0d_fick_principle_mass_balance()`: a single isolated voxel's steady-state concentration is inverted via `scipy.optimize.brentq` to an analytical $PO_2$ target, and the Picard solver's output matches to `atol=1e-2`.
+> **Verification:** Physical bounds are checked in `test_perfusion_solver_zero_flow()` (`tests/test_haemodynamics_perfusion.py`): with zero flow through every vessel, steady-state tissue concentration is confirmed to be exactly 0.0 everywhere (`atol=1e-10`). `test_perfusion_solver_no_metabolism()` confirms the complementary case — with metabolism switched off, tissue concentration is strictly positive. The full non-linear washout is benchmarked against an exact Fick-principle root in `test_fick_balance_at_the_edge_haematocrit()` (`tests/test_perfusion_tier1_washout_hematocrit.py`): for a single isolated voxel at edge hematocrit 0.2 and 0.6, the venous content $C_{art}-MV/q$ is inverted via `scipy.optimize.brentq` to an analytical $PO_2$ target, and the Picard solver's output matches to `atol=1e-3`.
 
 ### 6.2 Tier 2: Coupled 1D–3D with Endothelial Barrier (`solve_coupled_1d3d_perfusion`)
 
@@ -938,7 +938,7 @@ where:
 
 > **Physical Intuition:** This is Fick's first law applied to the endothelial membrane: flux = permeability × area × concentration gradient. The key insight is that oxygen delivery is now *limited by the rate at which it can cross the vessel wall*, not just by how much is available in the blood. This is more realistic because it accounts for the finite permeability of the endothelium.
 
-> **Verification — caveat:** `test_analytical_transmural_exponential_decay()` (`tests/test_haemodynamics_perfusion.py`) computes an analytical target $PO_{2,\text{out}} = PO_{2,\text{in}} \cdot e^{-P_{perm}A/\alpha Q}$, but the test's own assertions do not compare the solver's output to that target — the metabolic sink is deliberately set to $10^9$ to force *tissue* $PO_2$ to ~0, and the only assertions are `len(po2_num) == 1` and `po2_num[0] < 1e-3` on the tissue array. The analytical value is computed but never checked against a solver output. This is a structural-completion test, not an exponential-decay benchmark, despite the docstring's framing — the same pattern as the Krogh cylinder test (§11.3).
+> **Verification:** `test_tier2_blood_side_drop_matches_the_hand_calculation()` (`tests/test_perfusion_march_flow_units.py`, `atol=1e-3`) checks Tier 2's tissue and blood-side $PO_2$ against a hand calculation (the wall flux $P A \alpha\, \Delta PO_2$ taken at the inlet, the blood side inverted on the content curve with `brentq`), and that the drop is more than 0.5 mmHg larger at this flow than at a very high one. It is a hand calculation, not an exponential-decay closed form. An earlier test billed as an exponential-decay benchmark computed its analytical outlet $PO_2$ but never compared it with a solver output; it was removed in the 2026-10 test-suite cleanup (§11.3).
 
 ### 6.3 Tier 3: Multi-Species 1D–3D Solver (`solve_multi_species_perfusion`)
 
@@ -1094,7 +1094,7 @@ A[i, i] += 1e-12  for all i
 
 > **Boundary condition**: Neumann (zero-flux) at the tissue grid boundaries — no oxygen escapes through the tissue surface. This is implicit in the stencil: boundary cells simply have fewer neighbours, resulting in fewer off-diagonal entries.
 
-> **Verification:** `test_build_adr_matrix_structure()` (`tests/test_haemodynamics_perfusion.py`) checks the stencil's structural integrity exactly on a 3×3×3 grid: the central interior cell (index 13) has exactly 7 non-zero entries (itself + 6 neighbours), and a corner cell (index 0) has exactly 4 (itself + 3 neighbours, confirming Neumann boundary truncation). `test_advective_source_vector()` additionally confirms that non-zero source entries correspond exactly to grid cells containing vessels.
+> **Verification:** `test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weights()` (`tests/test_haemodynamics_perfusion.py`) checks the stencil exactly on a deliberately non-cubic grid with anisotropic spacing: the central interior cell has exactly six off-diagonal neighbours, each one physical step away, with the per-axis diffusion weights to `rel=1e-12`, and a corner cell has exactly 4 non-zeros (itself + 3 neighbours, confirming Neumann boundary truncation). `test_advective_source_hematocrit_weighting()` additionally confirms that the advective source is zero in every cell the vessel map does not name.
 
 ### 7.2 Picard Iteration for Non-Linear Perfusion
 
@@ -1221,7 +1221,7 @@ For iteration = 0, 1, ..., max_iter-1:
 > - ILU drop tolerance: $10^{-4}$, fill factor: 10
 > - CG tolerance: $10^{-6}$ (simple) or $10^{-5}$ (multi-species), max 1000 or 500 iterations
 
-> **Verification:** The simple-ADR Picard loop is bounds-tested in `test_perfusion_solver_zero_flow()` and `test_perfusion_solver_no_metabolism()`, and benchmarked against the exact Fick-principle root in `test_analytical_0d_fick_principle_mass_balance()` (all `tests/test_haemodynamics_perfusion.py`). The multi-species Picard loop is benchmarked in `test_multi_species_0d_fick_mass_balance()` (§6.4). No test isolates the ILU-preconditioning step or the pseudo-washout stabilisation trick on its own — both are only verified transitively through the convergence of the tests above.
+> **Verification:** The simple-ADR Picard loop is bounds-tested in `test_perfusion_solver_zero_flow()` and `test_perfusion_solver_no_metabolism()`, (both `tests/test_haemodynamics_perfusion.py`), and benchmarked against the exact Fick-principle root in `test_fick_balance_at_the_edge_haematocrit()` (`tests/test_perfusion_tier1_washout_hematocrit.py`). The multi-species Picard loop is benchmarked in `test_multi_species_0d_fick_mass_balance()` (§6.4). No test isolates the ILU-preconditioning step or the pseudo-washout stabilisation trick on its own — both are only verified transitively through the convergence of the tests above.
 
 ### 7.3 Linear Solver Strategy
 
@@ -1246,7 +1246,7 @@ For iterative solving:
 
 > **Numerical Rationale:** The LSQR fallback is a least-squares solver that can handle rank-deficient or poorly conditioned systems. It won't give the exact pressure solution but will find the best approximation in the least-squares sense — a graceful degradation rather than a crash.
 
-> **Verification:** `test_solve_system_smart_routing()` (`tests/test_haemodynamics.py`) confirms both the direct (`spsolve`) and iterative (CG) branches return the identical correct solution for the same well-conditioned system, by forcing `iterative_threshold` above and below the problem size. `test_solve_system_smart_singular_fallback()` confirms a singular matrix does not crash either branch. `test_solve_system_smart_preconditioner_failure()` mocks `spilu` to raise, and confirms the solver falls all the way through to the LSQR fallback and still returns the correct answer.
+> **Verification:** `test_solve_system_smart_routing()` (`tests/test_haemodynamics.py`) confirms both the direct (`spsolve`) and iterative (CG) branches return the identical correct solution for the same well-conditioned system, by forcing `iterative_threshold` above and below the problem size. `test_solve_system_smart_raises_on_a_singular_system()` confirms a singular matrix raises a `ValueError` in both branches rather than returning a least-squares field. `test_solve_system_smart_preconditioner_failure()` mocks `spilu` to raise and confirms the failure is reported (a `ValueError` naming the preconditioner) rather than papered over. The LSQR fallbacks described above are the earlier behaviour: the solver now refuses where they used to approximate.
 
 ---
 
@@ -1299,7 +1299,7 @@ For each node tagged with `is_robin_boundary=True`:
 4. Add symmetric off-diagonal entries connecting the boundary node to the ghost node.
 5. The ghost node is added to the `output_nodes` list and receives $P_{\text{out}}$ as its Dirichlet BC.
 
-> **Verification:** `universal_sink` mode is checked in `test_boundary_mode_universal_sink()` above. `robin_resistance` mode is checked exactly in `test_robin_matrix_ghost_node_generation()` (`tests/test_haemodynamics.py`): a 3-node graph with one Robin-tagged boundary node produces a 4×4 matrix (including the ghost node), and the ghost conductance is confirmed to be exactly $1/(2.0\times10.0)=0.05$. Kirchhoff current conservation between `robin_resistance` and `universal_sink` behaviour is checked in `test_robin_vs_sink_flow_conservation()`: flow into a hub node is confirmed to equal flow out (direct edge flow plus ghost-node flow) to `atol=1e-8`. The default `caged` mode has no dedicated test — a coverage gap (§11.3).
+> **Verification:** `universal_sink` mode is checked in `test_boundary_mode_universal_sink()` above. `robin_resistance` mode is checked exactly in `test_robin_matrix_ghost_node_generation()` (`tests/test_haemodynamics.py`): a 3-node graph with one Robin-tagged boundary node produces a 4×4 matrix (including the ghost node), and the ghost conductance is confirmed to be exactly $1/(2.0\times10.0)=0.05$. The ghost node's share of the outflow is checked in `test_a_robin_ghost_node_takes_its_share_of_the_outflow()`: with every resistance 1, the hub settles at 40 and the Robin node at 20, so 60 flows in, 40 leaves through the outlet and 20 through the ghost (balance at the hub alone would hold with no flow to the ghost). The default `caged` mode has no dedicated test — a coverage gap (§11.3).
 
 ### 8.4 Blood Gas Boundary Conditions
 
@@ -1452,46 +1452,46 @@ Six distinct verification strategies recur across the suite:
 | § | Capability | Verifying test(s) | Oracle type | Tolerance |
 |---|---|---|---|---|
 | 2.1 | Hagen–Poiseuille resistance formula | `test_set_poiseuille_resistances_prefers_fwhm_optional`, `test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder` | Formula recomputation | `atol=1e-6`; <5% |
-| 2.2 | Graph Laplacian network solve | `test_analytical_poiseuille_series`, `test_analytical_poiseuille_parallel`, `test_build_conductance_matrix_from_graph`, `test_calc_laplacian_from_conductance_matrix` | Closed-form + structural | `atol=1e-10` |
+| 2.2 | Graph Laplacian network solve | `test_analytical_poiseuille_series`, `test_analytical_poiseuille_parallel`, `test_build_conductance_matrix_from_graph` | Closed-form + structural | `atol=1e-10` |
 | 2.3 | Two-point effective resistance | `test_calc_two_point_from_laplacian_matrix_nodeID` | Structural only ($R>0$) | — |
-| 3.1 | Pries–Secomb viscosity | `test_rheology_fahraeus_lindqvist_curve` | Curve-shape (inequalities) | — |
-| 3.2 | Power-law initial viscosity | `test_calculate_viscosity` | Exact value + inequality | — |
-| 3.3 | Plasma skimming | `test_rheology_hematocrit_mass_conservation`, `test_rheology_plasma_skimming_effect` | Mass conservation + direction | `atol=1e-8` |
-| 3.4 | Coupled flow–Hct–viscosity Picard | `test_coupled_solver_convergence`, `_dag_cycle_handling`, `_matrix_singularity_safety` | Convergence + directional + graceful degradation | `atol=1e-5` (Hct) |
+| 3.1 | Pries–Secomb viscosity | `test_only_the_in_vitro_law_shows_the_classic_fahraeus_lindqvist_minimum` | Curve-shape (inequalities) | — |
+| 3.2 | Power-law initial viscosity | *(indirect only, via `test_analytical_sphincter_resistance_calculus`)* | — | — |
+| 3.3 | Plasma skimming | `test_red_cell_flux_is_conserved`, `test_matches_the_pries_form_across_a_grid`, `test_skimming_follows_the_flow_fraction_not_the_velocity` | Mass conservation + recomputed Pries form + direction | `atol=1e-10`; `atol=1e-12` |
+| 3.4 | Coupled flow–Hct–viscosity Picard | `test_resistance_matches_poiseuille_at_the_solved_viscosity`, `test_asymmetric_y_converges_at_the_settings`, `test_stop_reason_is_flow_cycle_when_the_dag_cannot_be_sorted`, `test_coupled_solver_matrix_singularity_safety` | Consistency + convergence + graceful refusal | frozen rheology tolerances |
 | 3.5 | Resistance rescaling | *(indirect only)* | — | — |
 | 3.6 | Wall shear stress | `test_analytical_wall_shear_stress` | Closed form | `atol=1e-10` |
 | 4.1 | Diameter assignment modes | `test_poiseuille_edt_mode`, `test_set_poiseuille_resistances_prefers_fwhm_optional` | Mode precedence | exact |
 | 4.2 | FWHM diameter measurement | `test_fwhm_from_profile_gaussian_fit`, `test_measure_edge_diameters_fwhm_from_raw_tiff_cylinder`, 3 phantom tests in `test_integration_synthetic_vessel_fwhm.py` | Analytical Gaussian target | <0.2–0.35 µm; scaled tolerance |
 | 4.3 | Branch-order diameter scaling | *(no direct test)* | — | — |
-| 4.4.1 | Sphincter constriction profile | `test_get_diameter_at_position` | Bounds check | — |
+| 4.4.1 | Sphincter constriction profile | *(indirect only, via `test_analytical_sphincter_resistance_calculus`)* | — | — |
 | 4.4.2 | Periodic constriction profile | `test_analytical_sphincter_resistance_calculus` | Closed-form integral | `rtol=1e-3` |
 | 4.4.3 | Constriction ratios | 2 tests in `test_pericyte_mask_integration.py` | Directional (before/after) | — |
-| 4.4.4 | Integrated variable-diameter resistance | `test_analytical_sphincter_resistance_calculus`, `test_calculate_integrated_resistance` | Closed-form integral | `rtol=1e-3` |
+| 4.4.4 | Integrated variable-diameter resistance | `test_analytical_sphincter_resistance_calculus`, `test_the_integrated_resistance_of_a_zero_length_vessel_is_infinite` | Closed-form integral | `rtol=1e-3` |
 | 5.1 | Perfusion grid + vessel mapping | `test_perfusion_grid_dimensions`, `_grid_index_bidirectional_mapping`, `_grid_out_of_bounds_handling`, `_map_vessels_to_grid_straight_line`, `_advective_source_hematocrit_weighting` | Exact geometry + bijective mapping | exact |
-| 5.2 | ADR equation | `test_analytical_1d_pure_diffusion`, `test_analytical_zero_order_metabolism`, `test_analytical_radial_point_source` | Closed form (linear/parabolic); qualitative ($1/r$) | `atol=1e-10`; loose bracket |
+| 5.2 | ADR equation | `test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weights` (stencil only; no closed-form profile test) | Structural | `rel=1e-12` |
 | 5.3 | Hill equation O₂ content | `test_hill_equation_sigmoidal_curve` | $P_{50}$ exact + shape | `atol=1e-5` |
 | 5.4 | Bohr effect | `test_bohr_haldane_atomic_curves` | Direction only | — |
 | 5.5 | Haldane effect | `test_bohr_haldane_atomic_curves` | Direction only | — |
 | 5.6 | Henderson–Hasselbalch pH | `test_henderson_hasselbalch_equilibrium` | Closed form (2 anchor points) | `atol=1e-2` |
-| 5.7 | Metabolic consumption | `test_analytical_zero_order_metabolism` (zero-order limit only) | Closed form | `atol=1e-10` |
+| 5.7 | Metabolic consumption | `test_fick_balance_at_the_edge_haematocrit` (one-cell sink only) | Closed form | `atol=1e-3` |
 | 5.8 | Respiratory quotient | `test_multi_species_0d_fick_mass_balance` (indirect) | Closed form (coupled) | `atol=1e-2` |
-| 6.1 | Tier 1 ADR solver | `test_perfusion_solver_zero_flow`, `_no_metabolism`, `test_analytical_0d_fick_principle_mass_balance` | Physical bounds + closed form | `atol=1e-10`; `atol=1e-2` |
-| 6.2 | Tier 2 coupled 1D–3D | `test_analytical_transmural_exponential_decay` | **Structural only — see caveat** | — |
+| 6.1 | Tier 1 ADR solver | `test_perfusion_solver_zero_flow`, `_no_metabolism`, `test_fick_balance_at_the_edge_haematocrit` | Physical bounds + closed form | `atol=1e-10`; `atol=1e-3` |
+| 6.2 | Tier 2 coupled 1D–3D | `test_tier2_blood_side_drop_matches_the_hand_calculation` | Hand calculation | `atol=1e-3` |
 | 6.3 | Tier 3 multi-species | `test_multi_species_0d_fick_mass_balance` | Closed form (coupled root) | `atol=1e-2`, `atol=1e-3` (pH) |
 | 6.4 | 1D blood gas tracking / Brent inversion | *(no direct unit test)* | — | — |
-| 7.1 | 7-point stencil diffusion matrix | `test_build_adr_matrix_structure`, `test_advective_source_vector` | Structural (exact nnz count) | exact |
+| 7.1 | 7-point stencil diffusion matrix | `test_adr_stencil_connects_physical_neighbours_with_correct_anisotropic_weights`, `test_advective_source_hematocrit_weighting` | Structural (exact neighbours, weights and nnz count) | `rel=1e-12` |
 | 7.2 | Picard iteration | `test_perfusion_solver_zero_flow`, `test_multi_species_0d_fick_mass_balance` | Physical bounds + closed form | as above |
-| 7.3 | `_solve_system_smart` fallback ladder | `test_solve_system_smart_routing`, `_singular_fallback`, `_preconditioner_failure` | Dispatch + graceful degradation | exact |
+| 7.3 | `_solve_system_smart` fallback ladder | `test_solve_system_smart_routing`, `test_solve_system_smart_raises_on_a_singular_system`, `test_solve_system_smart_preconditioner_failure` | Dispatch + refusal | exact |
 | 8.1 | Pressure Dirichlet BCs | `test_analytical_poiseuille_series`/`_parallel` (mechanism only) | Closed form | `atol=1e-10` |
 | 8.2 | Inlet/outlet node selection | `test_boundary_mode_universal_sink`, 3× `test_select_boundary_nodes_by_method_*` | Selection correctness | exact |
-| 8.3 | Boundary permeability modes | `test_boundary_mode_universal_sink`, `test_robin_matrix_ghost_node_generation`, `test_robin_vs_sink_flow_conservation` | Structural + Kirchhoff conservation | `atol=1e-8` |
+| 8.3 | Boundary permeability modes | `test_boundary_mode_universal_sink`, `test_robin_matrix_ghost_node_generation`, `test_a_robin_ghost_node_takes_its_share_of_the_outflow` | Structural + exact flow split | exact |
 | 8.4 | Blood gas BCs | *(indirect only, via §6.3)* | — | — |
 
 ### 11.3 Known Verification Gaps
 
 Stated plainly, so the verification claims above are not read as broader than they are:
 
-1. **Two tests compute an analytical target but never assert against it.** `test_krogh_cylinder_radial_diffusion()` (`tests/test_haemodynamics_analytical.py:393`) is docstring-billed as proving the solver "perfectly traces... Krogh's... analytical cylinder equation," but its only assertion is `len(po2_num) == grid.n_cells` — a length check, not a value check. `test_analytical_transmural_exponential_decay()` (`tests/test_haemodynamics_perfusion.py:276`, §6.2) computes `analytical_po2_out` but never compares the solver's output to it — the test instead forces a giant metabolic sink and checks only that tissue $PO_2$ stays near zero. Both tests verify that the solver runs without crashing on the given geometry ("structural completion"), not that it reproduces the named closed-form solution. `modelling_and_hypothesis_testing_documentation.md` §4.2 previously repeated the Krogh overstatement; it has been corrected to match.
+1. **Tier 2 has no closed-form benchmark.** Two tests used to compute an analytical target and never assert against it: a Krogh-cylinder test, docstring-billed as proving the solver "perfectly traces... Krogh's... analytical cylinder equation" but asserting only a length, and a transmural exponential-decay test (§6.2) that forced a giant metabolic sink and checked only that tissue $PO_2$ stayed near zero. Both verified that the solver ran without crashing ("structural completion"), not that it reproduced the named closed-form solution. They were removed in the 2026-10 test-suite cleanup. Tier 2 is now checked against a hand calculation of its blood-side drop (`test_tier2_blood_side_drop_matches_the_hand_calculation`); the Krogh comparison the old name promised was never made. `modelling_and_hypothesis_testing_documentation.md` §4.2 previously repeated the Krogh overstatement; it has been corrected to match.
 2. **No mesh-refinement or order-of-accuracy study exists for any PDE solver.** Every ADR/diffusion test in §5.2, §6, and §7 runs at a single fixed grid resolution. Spatial discretisation error as a function of grid spacing is never measured.
 3. **`brentq` Hill-equation inversion (§6.4) has no isolated unit test.** It is only reached transitively inside the Tier 2/3 solver tests.
 4. **Three capabilities are covered only transitively, through integration-style tests, not directly:** resistance rescaling during rheology updates (§3.5), the branch-order exponential diameter scaling formula (§4.3), and the `caged` boundary permeability mode (§8.3 — the pipeline's *default* mode).
