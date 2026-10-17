@@ -8,6 +8,8 @@ every solve ``main`` makes uses the face rule's inlets and outlets (the 25% band
 package C, under any name, fails it).
 """
 import ast
+import os
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +22,15 @@ from ImageLynx.graph.boundaries import select_boundary_terminal_nodes_by_face
 from ImageLynx.specimens import BATCH_RUN_ROOT, PROCESSING_VOXEL_UM
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+
+
+def _tracked_scripts(repo_root, subdir):
+    """The ``.py`` files git tracks under ``subdir``, sorted. Gitignored and untracked scripts
+    differ between a worktree and the checkout, so ``rglob`` would give different test ids.
+    Raises (``FileNotFoundError``) when git is missing; there is no ``rglob`` fallback."""
+    listed = subprocess.run(["git", "ls-files", "-z", "--", subdir], cwd=repo_root,
+                            check=True, capture_output=True, text=True).stdout
+    return sorted(Path(repo_root) / name for name in listed.split("\0") if name.endswith(".py"))
 
 
 def _is_main_guard(node):
@@ -47,9 +58,34 @@ def _calls_defined_after_main(path):
     return late
 
 
-@pytest.mark.parametrize("path", sorted(EXAMPLES.rglob("*.py")), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _tracked_scripts(EXAMPLES.parent, "examples"), ids=lambda p: p.name)
 def test_main_block_calls_only_functions_defined_above_it(path):
     assert _calls_defined_after_main(path) == []
+
+
+def test_only_tracked_scripts_are_collected(tmp_path, monkeypatch):
+    # A pre-commit hook runs with GIT_DIR / GIT_INDEX_FILE set; without clearing them the
+    # `git init` and `git add` below would act on the real repository's index.
+    for name in [n for n in os.environ if n.startswith("GIT_")]:
+        monkeypatch.delenv(name)
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "examples" / "sub").mkdir(parents=True)
+    for name in ("tracked.py", "sub/nested.py", "untracked.py"):
+        (tmp_path / "examples" / name).write_text("pass\n")
+    git("add", "examples/tracked.py", "examples/sub/nested.py")
+    found = _tracked_scripts(tmp_path, "examples")
+    assert [p.relative_to(tmp_path).as_posix() for p in found] == [
+        "examples/sub/nested.py", "examples/tracked.py"]
+
+
+def test_collection_raises_when_git_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(FileNotFoundError):
+        _tracked_scripts(tmp_path, "examples")
 
 
 def test_the_check_catches_a_call_above_its_definition(tmp_path):
