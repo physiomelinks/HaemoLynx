@@ -18,7 +18,25 @@ After the commit that implements a ticket, set its `Status:` line to `done (<has
 - A box that waits on another ticket stays `[ ]`, with "(checked in NN)" after it.
 - Every numbered finding from `/code-review` gets one line under `## Answer`, as one of: `fixed`; `declined: <reason>`; or `not a finding: <what was checked>`. None is left without an outcome.
 - A follow-up found while working a ticket (something out of its scope) goes into an open ticket's acceptance criteria, or into a new ticket. A note in `## Comments` alone is not enough: it strands the follow-up in a ticket that is about to close.
+- Before setting a spec to `Status: done`, check that every ticket is done; `build_progress.py` warns when `spec.md` says `done` and any ticket is not.
+- `ls` a path before giving it to the user, or before writing it into a ticket after a compaction. Use the full path from the repo root (`.scratch/<feature>/assets/gaps.md`), never one relative to another file.
 - Write ticket text with the Edit tool or a quoted heredoc (`<<'EOF'`), never an unquoted one, which eats the backtick spans.
+
+## Checking a run for repo writes
+
+`git status` cannot see writes into gitignored folders (`tests/outputs/`, `tests/plots/`, `examples/outputs/`). To check that a run writes nothing into the repo, `touch` a marker file outside the repo, run, then list what is newer:
+
+```bash
+touch "$SCRATCH/marker"
+# ... the run ...
+find . -newer "$SCRATCH/marker" -not -path './.git/*' -not -path './venv/*' -type f
+```
+
+It must print nothing. This is the method `test-suite-pruning/assets/inventory.md` used.
+
+## Hook stamp after a full coverage pass
+
+After `scripts/coverage_by_module.py run` passes over the whole suite on a clean tree, run `scripts/stamp-tests.sh` before committing, so the pre-commit hook does not re-run the fast tests (about 54 s). `coverage_by_module.py` does not write the stamp itself.
 
 ## Mutation evidence
 
