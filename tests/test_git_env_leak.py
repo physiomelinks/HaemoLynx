@@ -6,6 +6,7 @@ instead: on 2026-10-17 a leak like this set `core.bare = true` in this repo's sh
 Here the leaked variables name a throwaway toy repo's worktree, never this checkout, and the
 toy's config and index must come out byte-identical.
 """
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -19,7 +20,16 @@ REPO = Path(__file__).resolve().parent.parent
 # The tests that drive git on toy repos through scripts/_worktree.py or conftest's TOY_ENV.
 GIT_DRIVING_TESTS = ("tests/test_worktree.py", "tests/test_mutation_check.py",
                      "tests/test_coverage_by_module.py", "tests/test_check_stale_test_names.py",
-                     "tests/test_pre_commit_hook.py")
+                     "tests/test_pre_commit_hook.py",
+                     "tests/test_example_main_blocks.py::test_only_tracked_scripts_are_collected")
+
+
+def test_every_git_driving_test_file_is_listed():
+    listed = {t.split("::")[0] for t in GIT_DRIVING_TESTS}
+    driving = {p.relative_to(REPO).as_posix() for p in (REPO / "tests").rglob("test_*.py")
+               if p.name != Path(__file__).name
+               and re.search(r"\b(toy_git|TOY_ENV|_worktree)\b", p.read_text())}
+    assert sorted(driving - listed) == []
 
 
 @pytest.mark.slow

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Local guardrail (CI only runs on PRs to origin). Enable once per clone:
 #   git config core.hooksPath scripts/git-hooks
+# 0. If core.hooksPath names another checkout's scripts/git-hooks (Claude Code's worktree
+#    setup makes it absolute), re-exec the committing checkout's own pre-commit first.
 # 1. Pyflakes lint on staged Python files: undefined names and redefinitions,
 #    plus unused imports in staged files under tests/ only.
 # 2. Fast tests (not slow, integration or realdata), skipped when every staged file is a Markdown doc (no test reads

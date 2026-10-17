@@ -6,7 +6,7 @@ it fail at collection (retro-14-19-followups/01).
 """
 from pathlib import Path
 
-from packaging.requirements import Requirement
+from packaging.requirements import Requirement  # pytest requires packaging, so [dev] installs it
 from packaging.utils import canonicalize_name
 
 try:
@@ -26,12 +26,12 @@ def _requirement_lines(text):
 
 
 def _key(req):
-    return canonicalize_name(req.name), frozenset(req.extras), str(req.specifier)
+    return canonicalize_name(req.name), frozenset(req.extras), str(req.specifier), str(req.marker)
 
 
 def missing_from_pyproject(requirements_text, pyproject_text):
     """requirements.txt entries that neither `dependencies` nor the `[dev]` extra lists,
-    with the same extras and version bounds."""
+    with the same extras, version bounds and environment markers."""
     project = tomllib.loads(pyproject_text)["project"]
     declared = [*project["dependencies"], *project["optional-dependencies"]["dev"]]
     have = {_key(Requirement(d)) for d in declared}
@@ -47,8 +47,9 @@ def test_pyproject_installs_every_package_in_requirements_txt():
 
 
 def test_a_package_dropped_from_pyproject_is_reported():
-    requirements = "numpy\ndask[array]  # chunked masks\npytest-cov\n"
+    requirements = "numpy\ndask[array]  # chunked masks\npytest-cov\nnumba\n"
     pyproject = (
-        '[project]\ndependencies = ["numpy", "dask"]\n'
+        '[project]\ndependencies = ["numpy", "dask", "numba; python_version < \'3.11\'"]\n'
         '[project.optional-dependencies]\ndev = ["pytest"]\n')
-    assert missing_from_pyproject(requirements, pyproject) == ["dask[array]", "pytest-cov"]
+    assert missing_from_pyproject(requirements, pyproject) == [
+        "dask[array]", "pytest-cov", "numba"]
