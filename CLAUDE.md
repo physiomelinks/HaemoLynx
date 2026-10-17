@@ -8,7 +8,7 @@ ImageLynx turns 3D microscopy of microvasculature into haemodynamic network mode
 
 ## Commands
 
-Use the repo venv (`venv/bin/python`, Python 3.12). CI (`.github/workflows/pytest-pr.yml`) runs `pytest` on pull requests under Python 3.10, after `pip install -e .[dev]`, with `MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true`.
+Use the repo venv (`venv/bin/python`, Python 3.12). CI (`.github/workflows/pytest-pr.yml`) runs `pytest` on pull requests under Python 3.10, after `pip install -e .[dev]`, with `MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true`. `scripts/ci_like_run.sh [pytest args]` reproduces that run in a throwaway Python 3.10 venv in a temp folder; it installs nothing globally and says how to get 3.10 if it is missing.
 
 ```bash
 venv/bin/python -m pytest                                   # full suite

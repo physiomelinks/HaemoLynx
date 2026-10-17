@@ -86,13 +86,15 @@ Using `pyvista`, the script will initialize multiple separate `pv.ImageData()` o
 ### 4. Phase 1.5: Unit Testing Suite
 To ensure the robustness of the visualization generation and the correct handling of file I/O, the following tests will be implemented in a dedicated test file (e.g., `tests/test_vtk_export.py` or within existing preview tests):
 
-*   **`test_mandatory_vtk_generation`:**
+> **Status (2026-10):** this is the plan as first written. Tests labelled "planned test, since removed" were written and later dropped, merged or reshaped (the live fractional-chunking tests are in `tests/test_fractional_grid.py` and `tests/test_fractional_preprocessing.py`); they are no longer named here so the plan does not cite tests that do not exist.
+
+*   **Mandatory VTK generation (planned test, since removed):**
     *   **Logic:** Mock a 3D probability array, a 3D entropy array, and a 3D raw anatomical array. Execute the Phase 1.5 export block with `chunk_fraction = 0.5`.
     *   **Assertion:** Intercept the `pv.ImageData().save()` calls. Verify that exactly five distinct `.vti` files are saved: `_raw_anatomy_global.vti`, `_raw_anatomy_subvolume.vti`, `_raw_probability.vti`, `_grid_preview.vti`, and `_shannon_entropy.vti`.
-*   **`test_dual_anatomy_export_alignment`:**
+*   **Dual anatomy export alignment (planned test, since removed):**
     *   **Logic:** Provide a mock global TIFF volume of $100 \times 100 \times 100$, and configure `--sub-volume 0.5` to target the central $50 \times 50 \times 50$ core.
     *   **Assertion:** Assert that the generated `_raw_anatomy_global.vti` object retains the full $1000000$ points, while the `_raw_anatomy_subvolume.vti` object correctly scales down to exactly $125000$ points matching the sub-volume geometry.
-*   **`test_grid_wireframe_painting`:**
+*   **Grid wireframe painting (planned test, since removed):**
     *   **Logic:** Pass a synthesized $100 \times 100 \times 100$ bounding box dictionary into the grid masking algorithm.
     *   **Assertion:** Mathematically verify that the `grid_mask` array contains `255` ONLY on the explicit 2D planar boundaries (e.g., $Z=0, Z=99$, etc.) and that the interior volume remains strictly `0`. This guarantees the wireframe is hollow and accurately demarcates the chunk.
 *   **`test_early_termination_toggle`:**
@@ -126,13 +128,13 @@ Once all chunks are processed and stitched back together:
 ### 4. Phase 2: Unit Testing Suite
 To guarantee the mathematical accuracy of the isolated image processing and the flawless realignment of the stitched chunks, we will implement the following tests in `tests/test_fractional_preprocessing.py`:
 
-*   **`test_local_worker_margin_stripping`:**
+*   **Local worker margin stripping (planned test, since removed):**
     *   **Logic:** Pass a mocked $50 \times 50 \times 50$ padded probability chunk (where the core is $30 \times 30 \times 30$ and the margin is $10$) into the `preprocess_local_chunk` worker function.
     *   **Assertion:** Verify that the returned `local_core_binary` mask has the exact shape of $(30, 30, 30)$. This proves the worker accurately strips the overlap margin to prevent spatial duplication during stitching.
 *   **`test_binary_stitching_continuity`:**
     *   **Logic:** Create a synthetic global probability field containing a solid 3D cylinder that deliberately spans across the boundary of 4 adjacent chunks. Run the orchestrator with `chunk_fraction` enabled.
     *   **Assertion:** Inspect the final `stitched_binary_mask`. Verify that the cylinder remains perfectly continuous and intact. If margin trimming or coordinate slotting failed, there would be a 0-value "gap" or a misaligned shift at the chunk seams.
-*   **`test_localized_optuna_invocation`:**
+*   **Localized Optuna invocation (planned test, since removed):**
     *   **Logic:** Use Python's `unittest.mock` to spy on the `run_optuna_preprocessing_optimization` function. Execute the Map-Reduce pipeline with `--optimize-preprocessing 5`.
     *   **Assertion:** Verify that the Optuna auto-tuner was explicitly invoked exactly $N$ times (where $N$ is the number of generated chunks), proving that the Bayesian optimization is successfully localized and independently executed for every sub-volume.
 
@@ -158,10 +160,10 @@ Because skeletons are exactly 1-voxel wide, simple coordinate-based array stitch
 
 ### 4. Phase 3: Unit Testing Suite
 To ensure the robustness of the fractional skeletonization, the following tests will be added:
-*   **`test_localized_skeleton_optuna_invocation`:**
+*   **Localized skeleton Optuna invocation (planned test, since removed):**
     *   **Logic:** Execute the Phase 3 Map-Reduce orchestrator with a mock vessel mask and `--optimize-skeleton 5`.
     *   **Assertion:** Spy on `run_optuna_skeleton_optimization` and mathematically verify it is explicitly called exactly $N$ times (once for each sub-volume chunk).
-*   **`test_skeleton_chunk_stitching_dimensions`:**
+*   **Skeleton chunk stitching dimensions (planned test, since removed):**
     *   **Logic:** Pass a mocked global binary vessel mask into the Phase 3 orchestrator.
     *   **Assertion:** Verify that the output `stitched_skeleton_mask` perfectly matches the original global dimensions with no out-of-bounds exceptions or off-by-one shifts.
 *   **`test_skeleton_boundary_continuity`:**
