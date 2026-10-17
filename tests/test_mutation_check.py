@@ -17,6 +17,7 @@ pytest.importorskip("coverage")  # the script's clean runs; not in the [dev] ext
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "mutation_check.py"
+HELPER = REPO / "scripts" / "_worktree.py"
 _spec = importlib.util.spec_from_file_location("mutation_check", SCRIPT)
 mc = importlib.util.module_from_spec(_spec)
 sys.modules["mutation_check"] = mc  # dataclasses look their module up here
@@ -51,6 +52,7 @@ def toy(tmp_path):
     (repo / "tests").mkdir()
     (repo / "scripts").mkdir()
     shutil.copy(SCRIPT, repo / "scripts" / "mutation_check.py")
+    shutil.copy(HELPER, repo / "scripts" / "_worktree.py")
     (repo / "pyproject.toml").write_text('[tool.pytest.ini_options]\npythonpath = ["src"]\n')
     (repo / ".gitignore").write_text("__pycache__/\n")
     (repo / "src" / "toy" / "__init__.py").write_text("")
@@ -101,7 +103,7 @@ def test_a_mutation_its_uncommitted_test_catches_exits_0(toy):
     head = subprocess.run(["git", "rev-parse", "--short=7", "HEAD"], cwd=toy, env=CLEAN_ENV,
                           capture_output=True, text=True).stdout.strip()
     lines = proc.stdout.splitlines()
-    assert lines[0] == f"Worktree: {head} + 1 uncommitted file(s) copied in."
+    assert lines[0] == f"Worktree: {head} + 1 uncommitted file(s) copied in, 0 data path(s) linked in."
     assert lines[-1] == "1 mutation(s): 1 as expected, 0 not; 0 never ran the mutated line; 0 error(s)."
 
 
@@ -435,6 +437,77 @@ def test_uncommitted_edits_and_deletions_reach_the_worktree_and_the_checkout_is_
     assert len(worktrees.splitlines()) == 1, worktrees
 
 
+def test_a_realdata_test_reads_the_gitignored_data_linked_in_and_its_break_is_caught(toy):
+    # Ticket 10's realdata break, in miniature: the test reads a gitignored file under
+    # examples/images and skips where it is missing, as it did in the script's worktree.
+    (toy / ".gitignore").write_text("__pycache__/\nexamples/images/sum.txt\nexamples/outputs/\n")
+    (toy / "examples" / "images").mkdir(parents=True)
+    (toy / "examples" / "images" / "README").write_text("tracked\n")
+    (toy / "tests" / "test_data.py").write_text(textwrap.dedent('''\
+        from pathlib import Path
+
+        import pytest
+
+        from toy.calc import add
+
+        DATA = Path(__file__).resolve().parents[1] / "examples" / "images" / "sum.txt"
+
+
+        @pytest.mark.skipif(not DATA.exists(), reason="needs the gitignored data")
+        def test_add_matches_the_data():
+            assert DATA.parent.is_dir() and not DATA.parent.is_symlink()  # tracked README kept it real
+            assert DATA.is_symlink(), "the data was copied, not linked"
+            assert add(2, 3) == int(DATA.read_text())
+    '''))
+    _git(toy, "add", ".")
+    _git(toy, "commit", "-q", "-m", "data test")
+    data = toy / "examples" / "images" / "sum.txt"
+    data.write_text("5\n")
+    stamp = data.stat().st_mtime_ns
+    proc = _run(toy, '''
+        [[mutation]]
+        name = "add subtracts"
+        file = "src/toy/calc.py"
+        old = "return a + b"
+        new = "return a - b"
+        test = "tests/test_data.py::test_add_matches_the_data"
+    ''')
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _row(proc.stdout, "add subtracts")[3:5] == ["caught", "yes"]
+    assert (data.read_text(), data.stat().st_mtime_ns) == ("5\n", stamp)
+
+
+def test_data_written_through_a_link_stops_the_run(toy):
+    # A symlink cannot be read-only, so a write through it must at least be caught and named.
+    (toy / ".gitignore").write_text("__pycache__/\nexamples/outputs/\n")
+    (toy / "examples" / "outputs").mkdir(parents=True)
+    (toy / "examples" / "outputs" / "old.txt").write_text("old\n")
+    (toy / "tests" / "test_calc.py").write_text(textwrap.dedent('''\
+        from pathlib import Path
+
+        from toy.calc import add
+
+
+        def test_add():
+            Path("examples/outputs/new.txt").write_text("written by a test\\n")
+            assert add(2, 3) == 5
+    '''))
+    _git(toy, "add", ".")
+    _git(toy, "commit", "-q", "-m", "a test that writes data")
+    proc = _run(toy, '''
+        [[mutation]]
+        name = "operands swapped"
+        file = "src/toy/calc.py"
+        old = "return a + b"
+        new = "return a - b"
+        test = "tests/test_calc.py::test_add"
+    ''')
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "changed the linked data in the main checkout:" in proc.stderr
+    assert "examples/outputs/new.txt" in proc.stderr
+    assert (toy / "examples" / "outputs" / "new.txt").exists()  # caught, not prevented
+
+
 GOOD = {"name": "n", "file": "src/m.py", "old": "x = 1", "new": "x = 2", "test": "tests/test_m.py::test_x"}
 
 
@@ -572,6 +645,7 @@ def test_a_repo_with_no_commit_to_build_a_worktree_from_exits_3(tmp_path):
     (repo / "scripts").mkdir(parents=True)
     (repo / "src").mkdir()
     shutil.copy(SCRIPT, repo / "scripts" / "mutation_check.py")
+    shutil.copy(HELPER, repo / "scripts" / "_worktree.py")
     (repo / "src" / "m.py").write_text("x = 1\n")
     _git(repo, "init", "-q")
     proc = _run(repo, '''

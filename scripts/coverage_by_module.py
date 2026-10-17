@@ -6,6 +6,7 @@ pytest arguments, then compare.
     venv/bin/python scripts/coverage_by_module.py run BEFORE.json [PYTEST_ARGS...]
     venv/bin/python scripts/coverage_by_module.py run AFTER.json [PYTEST_ARGS...]
     venv/bin/python scripts/coverage_by_module.py run --files-from FILE OUT.json [PYTEST_ARGS...]
+    venv/bin/python scripts/coverage_by_module.py run --at REV BEFORE.json [PYTEST_ARGS...]
     venv/bin/python scripts/coverage_by_module.py compare BEFORE.json AFTER.json
     venv/bin/python scripts/coverage_by_module.py table BEFORE.json AFTER.json [--modules PATH ...]
     venv/bin/python scripts/coverage_by_module.py sole RUN.json TEST_ID
@@ -19,12 +20,30 @@ ignored), appended to PYTEST_ARGS and saved with them, so ``compare`` refuses ru
 lists. PYTEST_ARGS then carries options only: a test path given there runs too. One such list is
 ``scripts/coverage_in_scope_tests.txt``; its header says where it comes from. A missing list,
 a missing listed file or a list with no files is a usage error (exit 2, nothing run).
-Exit code: pytest's.
+
+``run`` measures this checkout, and refuses to start (exit 2) when its tracked files differ
+from HEAD, since the result would then belong to no commit; ``--allow-dirty`` runs anyway and
+records ``"dirty": true``. Untracked files do not count. The tracked files are checked again
+after the run: a change while it ran (an edit, or a test writing to the tree) fails it.
+
+``run --at REV`` measures commit REV instead, for a "before" baseline without stashing or
+copying anything. It makes a detached worktree of REV in a temporary folder outside the repo,
+symlinks the gitignored data folders (``examples/images``, ``examples/outputs``) in from this
+checkout, runs there, and removes the worktree, also after an error or Ctrl-C. This checkout
+is never edited, so it may be dirty. A symlink cannot be made read-only, so a run that adds,
+changes or removes anything through the links fails and names the paths.
+``scripts/_worktree.py`` builds the worktree, shared with ``mutation_check.py``.
+
+Every ``run`` fails when a ``realdata`` test skips: a baseline without the real data is not
+like for like. Exit code: pytest's when it is not 0; else 3 when a ``realdata`` test skipped,
+the tracked files changed during the run, the run changed the linked data, a test imported
+this checkout's source instead of the worktree's, or git could not make the worktree; else 0.
+The JSON is still written, with those findings in it, and ``compare`` refuses it.
 
 ``compare`` prints the passed and skipped counts of both runs, the test ids only in BEFORE and
 only in AFTER, then every module whose covered count changed. Exit 0 when no module's covered
 count dropped, 1 when one did, 2 on a usage error, 3 when the two runs cannot be compared
-(different pytest arguments, or a run whose tests failed).
+(different pytest arguments, a run whose tests failed, or a run ``run`` failed as above).
 
 ``table`` prints a Markdown table (module, statements, covered before, covered after, change)
 to paste under a ticket's ``## Answer``, led by a passed/skipped count line for each run. With ``--modules`` it prints those modules, changed or
@@ -39,6 +58,7 @@ Subprocesses are not traced, so a driver run as a subprocess shows no coverage.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -46,6 +66,12 @@ import sys
 import tempfile
 from collections import defaultdict
 from pathlib import Path
+
+# scripts/ is not a package. No .pyc is written for the helper: the checkout stays as it was.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+import _worktree  # noqa: E402
+sys.dont_write_bytecode = _bytecode
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -73,22 +99,32 @@ def in_scope(rel: str) -> bool:
     return False
 
 
-def in_scope_files() -> list[Path]:
-    paths = sorted((REPO / "src/ImageLynx").rglob("*.py")) + sorted((REPO / "examples").rglob("*.py"))
-    return [p for p in paths if in_scope(str(p.relative_to(REPO)))]
+def in_scope_files(root: Path = REPO) -> list[Path]:
+    paths = sorted((root / "src/ImageLynx").rglob("*.py")) + sorted((root / "examples").rglob("*.py"))
+    return [p for p in paths if in_scope(str(p.relative_to(root)))]
 
 
-def read_data(data_file: Path) -> dict:
-    """Modules and per-test lines from a coverage data file written with --cov-context=test."""
+def read_data(data_file: Path, root: Path = REPO) -> dict:
+    """Modules and per-test lines from a coverage data file written with --cov-context=test.
+
+    `root` is the tree the run measured. Raises ValueError when it is a worktree and the run
+    measured an in-scope file of this checkout instead (a test imported the wrong tree).
+    """
     import coverage
 
     cov = coverage.Coverage(data_file=str(data_file))
     cov.load()  # get_data() on an unloaded Coverage returns an empty data set
     data = cov.get_data()
     measured = {str(Path(f).resolve()): f for f in data.measured_files()}
+    if root.resolve() != REPO.resolve():
+        here = [Path(f).relative_to(REPO.resolve()).as_posix() for f in measured
+                if Path(f).is_relative_to(REPO.resolve())]
+        foreign = sorted(rel for rel in here if in_scope(rel))
+        if foreign:
+            raise ValueError(f"the run imported this checkout's {', '.join(foreign)}, not the worktree's")
     modules, tests = {}, defaultdict(lambda: defaultdict(list))
-    for path in in_scope_files():
-        rel = str(path.relative_to(REPO))
+    for path in in_scope_files(root):
+        rel = str(path.relative_to(root))
         _, statements, _, missing, _ = cov.analysis2(str(path))
         statements, missing = set(statements), set(missing)
         modules[rel] = {"statements": len(statements), "covered": sorted(statements - missing)}
@@ -105,22 +141,55 @@ def read_data(data_file: Path) -> dict:
     return {"modules": modules, "tests": tests}
 
 
-def git(*args: str) -> str:
-    return subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True).stdout.strip()
-
-
-def read_files_from(path: Path) -> list[str]:
-    """The test files listed in `path`. Raises ValueError on a missing file or an empty list."""
+def read_files_from(path: Path, root: Path = REPO) -> list[str]:
+    """The test files listed in `path`. Raises ValueError on a file missing from `root`, or an
+    empty list."""
     files = [s for line in path.read_text().splitlines() if (s := line.split("#", 1)[0].strip())]
     if not files:
         raise ValueError(f"{path} lists no test files")
-    missing = [f for f in files if not (REPO / f).exists()]
+    missing = [f for f in files if not (root / f).exists()]
     if missing:
         raise ValueError(f"{path} lists files that do not exist: {', '.join(missing)}")
     return files
 
 
-def run(out: Path, pytest_args: list[str], files_from: Path | None = None) -> int:
+def tracked_state(root: Path) -> tuple[bool, str]:
+    """(dirty, fingerprint) of `root`: whether its tracked files differ from HEAD, and a hash of
+    HEAD and that difference, which changes when a tracked file does."""
+    head = _worktree.git(root, "rev-parse", "HEAD").strip()
+    diff = _worktree.git(root, "diff", "--binary", "HEAD")
+    return bool(diff), hashlib.sha256(f"{head}\0{diff}".encode()).hexdigest()
+
+
+DIRTY_REFUSAL = ("refusing to run: tracked files differ from HEAD, so the run would measure no "
+                 "commit. Commit them, measure a commit with --at REV, or pass --allow-dirty.")
+
+
+def run(out: Path, pytest_args: list[str], files_from: Path | None = None, at: str | None = None,
+        allow_dirty: bool = False) -> int:
+    """Run pytest under coverage in this checkout, or with `at` in a worktree of that commit."""
+    try:
+        if at is None:
+            return _run_in(REPO, out, pytest_args, files_from, allow_dirty)
+        with _worktree.worktree(REPO, at) as wt:
+            return _run_in(wt.path, out, pytest_args, files_from, allow_dirty, wt, at)
+    except _worktree.WorktreeError as error:
+        print(f"cannot run: {error}", file=sys.stderr)
+        return 3
+
+
+def _run_in(root: Path, out: Path, pytest_args: list[str], files_from: Path | None, allow_dirty: bool,
+            wt: _worktree.Worktree | None = None, at: str | None = None) -> int:
+    if files_from is not None:
+        try:
+            pytest_args = [*pytest_args, *read_files_from(files_from, root)]
+        except (OSError, ValueError) as e:
+            print(e, file=sys.stderr)
+            return 2
+    dirty, before = tracked_state(root)
+    if dirty and not allow_dirty:
+        print(DIRTY_REFUSAL, file=sys.stderr)
+        return 2
     with tempfile.TemporaryDirectory() as tmp:
         data_file = Path(tmp) / ".coverage"
         rc = Path(tmp) / "coveragerc"
@@ -131,29 +200,57 @@ def run(out: Path, pytest_args: list[str], files_from: Path | None = None) -> in
                f"--cov-config={rc}", "--cov-report=", *pytest_args]
         env = {**os.environ, "COVERAGE_FILE": str(data_file), "CBM_OUTCOMES_FILE": str(outcomes_file),
                "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).parent), os.environ.get("PYTHONPATH")]))}
-        code = subprocess.run(cmd, cwd=REPO, env=env).returncode
+        if wt is not None:
+            env["PYTHONDONTWRITEBYTECODE"] = "1"  # nor a .pyc for _cbm_outcomes in this checkout
+        code = subprocess.run(cmd, cwd=root, env=env).returncode
         if not data_file.exists():
             print(f"pytest wrote no coverage data (exit {code})", file=sys.stderr)
             return code or 1
-        result = read_data(data_file)
+        try:
+            result = read_data(data_file, root)
+        except ValueError as error:
+            print(f"cannot run: {error}", file=sys.stderr)
+            return 3
         if not outcomes_file.exists():
             print(f"pytest wrote no test outcomes (exit {code})", file=sys.stderr)
             return code or 1
-        outcomes = json.loads(outcomes_file.read_text())
+        recorded = json.loads(outcomes_file.read_text())
+    dirty_after, after = tracked_state(root)
+    outcomes = recorded["outcomes"]
     result = {
-        "commit": git("rev-parse", "HEAD"),
-        "dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
+        "commit": _worktree.git(root, "rev-parse", "HEAD").strip(),
+        "at": at,
+        "dirty": dirty or dirty_after,
+        "changed_during_run": before != after,
         "pytest_args": pytest_args,
         **({"files_from": str(files_from)} if files_from else {}),
         "pytest_exit": code,
         "outcomes": outcomes,
+        "realdata_skipped": sorted(t for t in recorded["realdata"] if outcomes.get(t) == "skipped"),
+        "data_changed": wt.data_changes() if wt is not None else [],
         **result,
     }
     out.write_text(json.dumps(result, indent=1))
     total_s = sum(m["statements"] for m in result["modules"].values())
     total_c = sum(len(m["covered"]) for m in result["modules"].values())
     print(f"{out}: {len(result['tests'])} tests, {total_c}/{total_s} in-scope lines covered")
-    return code
+    problems = run_problems(result)
+    for problem in problems:
+        print(problem, file=sys.stderr)
+    return code or (3 if problems else 0)
+
+
+def run_problems(result: dict) -> list[str]:
+    """Why `result` is no baseline: realdata skips, a tree changed mid-run, data written."""
+    problems = []
+    if skipped := result.get("realdata_skipped"):
+        problems.append(f"{len(skipped)} realdata test(s) skipped, so this run is no baseline:\n"
+                        + "\n".join(f"  {t}" for t in skipped))
+    if result.get("changed_during_run"):
+        problems.append("the tracked files changed during the run (edited while it ran, or by a test)")
+    if changed := result.get("data_changed"):
+        problems.append("the run changed the linked data in the main checkout: " + ", ".join(changed))
+    return problems
 
 
 def _ids(result: dict, outcome: str) -> set[str]:
@@ -187,6 +284,12 @@ def compare(before: dict, after: dict) -> tuple[int, list[str]]:
     for name, r in (("before", before), ("after", after)):
         if r["pytest_exit"] != 0:
             return 3, lines + [f"cannot compare: the {name} run's pytest exited {r['pytest_exit']}"]
+        if skipped := r.get("realdata_skipped"):
+            return 3, lines + [f"cannot compare: the {name} run skipped {len(skipped)} realdata test(s)"]
+        if r.get("changed_during_run"):
+            return 3, lines + [f"cannot compare: the {name} run's tracked files changed during the run"]
+        if r.get("data_changed"):
+            return 3, lines + [f"cannot compare: the {name} run changed the linked data"]
     lines += outcome_lines(before, after)
     dropped = False
     for rel in sorted(set(before["modules"]) | set(after["modules"])):
@@ -265,9 +368,18 @@ def _ranges(nums: list[int]) -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("run", help="run pytest under coverage and save per-module lines")
+    p = sub.add_parser("run", help="run pytest under coverage and save per-module lines",
+                       description="Run pytest under coverage and save per-module lines. Refuses to "
+                       "start (exit 2) when this checkout's tracked files differ from HEAD; pass "
+                       "--allow-dirty to run anyway, or --at REV to measure a commit instead. Fails "
+                       "(exit 3) when a realdata test skips.")
     p.add_argument("--files-from", type=Path, metavar="FILE",
                    help="run only the test files listed in FILE (one per line, # comments)")
+    p.add_argument("--at", metavar="REV",
+                   help="measure commit REV in a temporary worktree, with the gitignored data folders "
+                   "symlinked in from this checkout; this checkout is never edited, and may be dirty")
+    p.add_argument("--allow-dirty", action="store_true",
+                   help="run even when tracked files differ from HEAD (recorded as dirty in the JSON)")
     p.add_argument("out", type=Path)
     p.add_argument("pytest_args", nargs=argparse.REMAINDER)
     p = sub.add_parser("compare", help="exit 1 if any module's covered count dropped")
@@ -283,14 +395,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     if args.cmd == "run":
-        if args.files_from is None:
-            return run(args.out, args.pytest_args)
-        try:
-            files = read_files_from(args.files_from)
-        except (OSError, ValueError) as e:
-            print(e, file=sys.stderr)
-            return 2
-        return run(args.out, [*args.pytest_args, *files], args.files_from)
+        return run(args.out, args.pytest_args, args.files_from, args.at, args.allow_dirty)
     if args.cmd == "compare":
         code, report = compare(json.loads(args.before.read_text()), json.loads(args.after.read_text()))
         print("\n".join(report))

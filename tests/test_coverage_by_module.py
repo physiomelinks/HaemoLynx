@@ -1,6 +1,11 @@
 """scripts/coverage_by_module.py: the before/after coverage check the test cleanup relies on."""
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -67,7 +72,8 @@ def test_run_writes_per_module_and_per_test_lines_and_leaves_no_data_file(tmp_pa
     pytest.importorskip("pytest_cov")
     test_id = "tests/test_cb_settings.py::test_pipeline_and_h2_share_the_pressure_boundaries"
     out = tmp_path / "run.json"
-    assert cbm.main(["run", str(out), "-q", "-p", "no:cacheprovider", test_id]) == 0
+    # --allow-dirty: the hook runs this with the commit's changes staged.
+    assert cbm.main(["run", "--allow-dirty", str(out), "-q", "-p", "no:cacheprovider", test_id]) == 0
     result = json.loads(out.read_text())
     assert result["pytest_args"] == ["-q", "-p", "no:cacheprovider", test_id]
     # Every in-scope file is listed, imported or not.
@@ -183,7 +189,8 @@ def test_run_files_from_runs_only_the_listed_test_files(tmp_path):
     files = tmp_path / "files.txt"
     files.write_text(f"# header comment\n\n{listed}\n")
     out = tmp_path / "run.json"
-    assert cbm.main(["run", "--files-from", str(files), str(out), "-q", "-p", "no:cacheprovider"]) == 0
+    assert cbm.main(["run", "--allow-dirty", "--files-from", str(files), str(out), "-q", "-p",
+                     "no:cacheprovider"]) == 0
     result = json.loads(out.read_text())
     # pytest names a file outside the repo relative to its own rootdir, so compare by file name.
     assert sorted(t.rsplit("/", 1)[-1] for t in result["outcomes"]) == [
@@ -199,6 +206,170 @@ def test_run_files_from_refuses_a_bad_list_and_runs_nothing(tmp_path, capsys, li
     if listing is not None:
         files.write_text(listing)
     out = tmp_path / "run.json"
-    assert cbm.main(["run", "--files-from", str(files), str(out)]) == 2
+    assert cbm.main(["run", "--allow-dirty", "--files-from", str(files), str(out)]) == 2
     assert not out.exists()
     assert str(files) in capsys.readouterr().err
+
+
+# --- run --at REV: a detached worktree, the data linked in, the checkout left alone ------------
+
+SCRIPTS = ("coverage_by_module.py", "_cbm_outcomes.py", "_worktree.py")
+# A hook run sets GIT_INDEX_FILE and the like, and a coverage run sets COV_CORE_*/COVERAGE_*;
+# none of them may reach the toy repo's git or the script's own coverage run.
+CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "COV_CORE_", "COVERAGE_"))}
+CALC = "def add(a, b):\n    return a + b\n"
+DATA_TEST = '''\
+from pathlib import Path
+
+import pytest
+
+from ImageLynx.calc import add
+
+DATA = Path(__file__).resolve().parents[1] / "examples" / "images" / "sum.txt"
+
+
+@pytest.mark.realdata
+@pytest.mark.skipif(not DATA.exists(), reason="needs the gitignored data")
+def test_add_matches_the_data():
+    assert DATA.is_symlink(), "the data was copied, not linked"
+    assert add(2, 3) == int(DATA.read_text())
+'''
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=repo,
+                          env=CLEAN_ENV, check=True, capture_output=True, text=True).stdout
+
+
+@pytest.fixture
+def toy(tmp_path):
+    """A small repo with the scripts, one in-scope module, a realdata test and gitignored data."""
+    pytest.importorskip("pytest_cov")
+    repo = tmp_path / "toy"
+    for d in ("scripts", "src/ImageLynx", "tests", "examples/images", "examples/outputs"):
+        (repo / d).mkdir(parents=True)
+    for name in SCRIPTS:
+        shutil.copy(REPO / "scripts" / name, repo / "scripts" / name)
+    (repo / "pyproject.toml").write_text('[tool.pytest.ini_options]\npythonpath = ["src"]\n'
+                                         'markers = ["realdata: reads gitignored data"]\n')
+    (repo / ".gitignore").write_text("__pycache__/\nexamples/images/sum.txt\nexamples/outputs/\n")
+    (repo / "src" / "ImageLynx" / "__init__.py").write_text("")
+    (repo / "src" / "ImageLynx" / "calc.py").write_text(CALC)
+    (repo / "examples" / "images" / "README").write_text("tracked, so the folder is in every worktree\n")
+    (repo / "tests" / "test_calc.py").write_text(
+        "from ImageLynx.calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n")
+    (repo / "tests" / "test_data.py").write_text(DATA_TEST)
+    _git(repo, "init", "-q")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "toy")
+    (repo / "examples" / "images" / "sum.txt").write_text("5\n")
+    (repo / "examples" / "outputs" / "old.txt").write_text("an earlier run's output\n")
+    return repo
+
+
+def _cbm(repo, *args):
+    """Run the toy's copy of the script; its temp folders go in a fresh TMPDIR that must end empty."""
+    tmp = repo.parent / "tmp"
+    tmp.mkdir(exist_ok=True)
+    proc = subprocess.run([sys.executable, str(repo / "scripts" / "coverage_by_module.py"), *args],
+                          cwd=repo, env={**CLEAN_ENV, "TMPDIR": str(tmp)}, capture_output=True, text=True,
+                          timeout=120)
+    assert list(tmp.iterdir()) == [], "the script left temp files behind"
+    return proc
+
+
+def _checkout_state(repo):
+    """Every file outside .git (bytes and mtime), git's status with ignored files, the worktrees."""
+    files = {p.relative_to(repo).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
+             for p in repo.rglob("*") if p.is_file() and ".git" not in p.parts}
+    return (files, _git(repo, "status", "--porcelain", "--ignored"), _git(repo, "worktree", "list"),
+            _git(repo, "rev-parse", "HEAD"))
+
+
+def _commit(repo, rel, text, message):
+    (repo / rel).write_text(text)
+    _git(repo, "add", rel)
+    _git(repo, "commit", "-q", "-m", message)
+
+
+def test_run_at_measures_that_commit_with_the_data_linked_and_never_touches_the_checkout(toy):
+    first = _git(toy, "rev-parse", "HEAD").strip()
+    _commit(toy, "src/ImageLynx/calc.py", CALC + "\n\ndef sub(a, b):\n    return a - b\n", "sub")
+    # A dirty checkout, which run --at neither refuses nor measures.
+    (toy / "src" / "ImageLynx" / "calc.py").write_text("X = 1\n" + CALC)
+    (toy / "tests" / "test_extra.py").write_text("def test_extra():\n    pass\n")
+    before = _checkout_state(toy)
+    out = toy.parent / "run.json"
+    proc = _cbm(toy, "run", "--at", first, str(out), "-q", "-p", "no:cacheprovider")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _checkout_state(toy) == before
+    result = json.loads(out.read_text())
+    assert (result["commit"], result["at"], result["dirty"]) == (first, first, False)
+    assert result["outcomes"] == {"tests/test_calc.py::test_add": "passed",
+                                  "tests/test_data.py::test_add_matches_the_data": "passed"}
+    assert result["modules"]["src/ImageLynx/calc.py"] == {"statements": 2, "covered": [1, 2]}
+    assert (result["realdata_skipped"], result["data_changed"], result["changed_during_run"]) == ([], [], False)
+
+
+def test_run_at_fails_when_a_realdata_test_skips_and_compare_refuses_the_run(toy):
+    (toy / "examples" / "images" / "sum.txt").unlink()
+    out = toy.parent / "run.json"
+    proc = _cbm(toy, "run", "--at", "HEAD", str(out), "-q", "-p", "no:cacheprovider")
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "realdata test(s) skipped" in proc.stderr
+    assert "tests/test_data.py::test_add_matches_the_data" in proc.stderr
+    result = json.loads(out.read_text())
+    assert result["realdata_skipped"] == ["tests/test_data.py::test_add_matches_the_data"]
+    code, lines = cbm.compare(result, result)
+    assert (code, lines[-1]) == (3, "cannot compare: the before run skipped 1 realdata test(s)")
+
+
+def test_run_at_names_data_a_test_wrote_through_the_links(toy):
+    _commit(toy, "tests/test_calc.py", textwrap.dedent('''\
+        from pathlib import Path
+
+
+        def test_writes():
+            Path("examples/outputs/new.txt").write_text("written by a test")
+    '''), "a test that writes data")
+    out = toy.parent / "run.json"
+    proc = _cbm(toy, "run", "--at", "HEAD", str(out), "-q", "-p", "no:cacheprovider")
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "changed the linked data in the main checkout: " in proc.stderr
+    assert "examples/outputs/new.txt" in json.loads(out.read_text())["data_changed"]
+    assert (toy / "examples" / "outputs" / "new.txt").exists()  # caught, not prevented
+
+
+def test_run_refuses_a_dirty_tree_unless_allowed_and_help_says_how(toy, capsys):
+    (toy / "src" / "ImageLynx" / "calc.py").write_text(CALC + "\nX = 1\n")
+    out = toy.parent / "run.json"
+    proc = _cbm(toy, "run", str(out), "-q", "-p", "no:cacheprovider", "tests/test_calc.py")
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "--allow-dirty" in proc.stderr
+    assert not out.exists()
+    proc = _cbm(toy, "run", "--allow-dirty", str(out), "-q", "-p", "no:cacheprovider",
+                "tests/test_calc.py")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads(out.read_text())["dirty"] is True
+    with pytest.raises(SystemExit):
+        cbm.main(["run", "--help"])
+    assert "--allow-dirty" in capsys.readouterr().out
+
+
+def test_run_fails_when_the_tree_changes_during_the_run(toy):
+    _commit(toy, "tests/test_calc.py", textwrap.dedent('''\
+        from pathlib import Path
+
+
+        def test_edits_a_tracked_file():
+            with open(Path(__file__).resolve().parents[1] / "src" / "ImageLynx" / "calc.py", "a") as f:
+                f.write("# edited mid-run\\n")
+    '''), "a test that edits the tree")
+    out = toy.parent / "run.json"
+    proc = _cbm(toy, "run", str(out), "-q", "-p", "no:cacheprovider", "tests/test_calc.py")
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "the tracked files changed during the run" in proc.stderr
+    result = json.loads(out.read_text())
+    assert (result["changed_during_run"], result["dirty"]) == (True, True)
+    code, lines = cbm.compare(result, result)
+    assert (code, lines[-1]) == (3, "cannot compare: the before run's tracked files changed during the run")

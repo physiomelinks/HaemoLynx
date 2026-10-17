@@ -19,8 +19,11 @@ exactly is refused: an unknown key, a duplicate name, empty ``old``, ``new`` equ
 
 The checks run in a temporary git worktree outside the repo, made from HEAD plus every
 uncommitted change in this checkout (tracked edits, deletions, and untracked files that are
-not ignored), so the main checkout is never edited. The worktree is removed afterwards, also
-after an error or Ctrl-C.
+not ignored), so the main checkout is never edited. The gitignored data folders
+(``examples/images``, ``examples/outputs``) are symlinked in, not copied, so ``realdata`` tests
+run on the real data; a run that changes anything through those links stops with exit 3. The
+worktree is removed afterwards, also after an error or Ctrl-C. ``scripts/_worktree.py`` builds
+it, shared with ``coverage_by_module.py run --at``.
 
 Each distinct test first runs alone under coverage on the unmutated worktree, with Python
 subprocesses it starts traced too. It must pass. The main checkout's copies of the mutated
@@ -32,7 +35,7 @@ pytest also reports as exit 0; the first failure cell then holds pytest's ``SKIP
 the reason), ``timed out``, ``error`` (any other pytest exit, such as a collection error; not a
 catch). ``timed out`` matches neither ``expect``: a hang is a finding to look at, whatever the
 spec expected. A skip is no verdict, so ``skipped`` counts as an error, as does a skip in the
-clean run (a ``realdata`` test skips where the gitignored data is missing).
+clean run (a ``realdata`` test skips where the data is missing from this checkout too).
 
 ``Ran line`` says whether the clean run ran a statement on a line the mutation changes
 (unchanged context lines in ``old`` don't count); the clean run includes import time, so a
@@ -46,17 +49,16 @@ a summary line.
 Exit code: 0 when every result matches its ``expect`` and every test ran its mutated line;
 1 when one does not; 2 on a usage error (the spec, or --only/--timeout); 3 when the checks
 could not run (git failed, a test failed, skipped or timed out before any mutation, a test
-imported the main checkout, or pytest errored on or skipped a mutated run).
+imported the main checkout, pytest errored on or skipped a mutated run, or a run changed the
+linked data).
 """
 from __future__ import annotations
 
 import argparse
 import ast
-import contextlib
 import difflib
 import math
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -64,6 +66,12 @@ import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+# scripts/ is not a package. No .pyc is written for the helper: the checkout stays as it was.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+_bytecode, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+import _worktree  # noqa: E402
+sys.dont_write_bytecode = _bytecode
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -201,44 +209,6 @@ def ran_line(source: str, old: str, new: str, executed: set[int]) -> bool:
     return False
 
 
-def _git(repo: Path, *args: str) -> str:
-    proc = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise CannotRun(f"git {' '.join(args[:2])} failed: {proc.stderr.strip()}")
-    return proc.stdout
-
-
-@contextlib.contextmanager
-def worktree(repo: Path):
-    """(worktree, HEAD's short hash, number of uncommitted files copied in or deleted): a detached
-    worktree of HEAD with this checkout's uncommitted changes applied, removed on exit."""
-    tmp = Path(tempfile.mkdtemp(prefix="mutation_check_"))
-    wt = tmp / "wt"
-    try:
-        _git(repo, "worktree", "add", "-q", "--detach", str(wt), "HEAD")
-    except CannotRun:
-        shutil.rmtree(tmp, ignore_errors=True)
-        raise
-    try:
-        changed = [line.split("\t", 1) for line in
-                   _git(repo, "diff", "--name-status", "--no-renames", "HEAD").splitlines()]
-        untracked = [["?", rel] for rel in _git(repo, "ls-files", "--others", "--exclude-standard").splitlines()]
-        for status, rel in changed + untracked:
-            if status == "D":
-                (wt / rel).unlink()
-            else:
-                (wt / rel).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(repo / rel, wt / rel, follow_symlinks=False)
-        yield wt, _git(repo, "rev-parse", "--short=7", "HEAD").strip(), len(changed) + len(untracked)
-    finally:
-        # Forced twice, remove also takes a locked worktree. Its failure is not raised: raising
-        # here would hide an error already on its way out, and rmtree and prune finish the job.
-        subprocess.run(["git", "worktree", "remove", "--force", "--force", str(wt)], cwd=repo,
-                       capture_output=True)
-        shutil.rmtree(tmp, ignore_errors=True)
-        _git(repo, "worktree", "prune")
-
-
 def _pytest(wt: Path, test: str, timeout: float, prefix: tuple[str, ...] = ()) -> tuple[int | None, str]:
     """(pytest's exit code, or None on a timeout; its output) for `test` run alone in `wt`."""
     # -rfEs: pytest's default short summary (fE) plus one SKIPPED line, with its reason, per skip.
@@ -365,15 +335,18 @@ def main(argv=None) -> int:
         print(error, file=sys.stderr)
         return 2
     try:
-        with worktree(REPO) as (wt, head, copied):
+        with _worktree.worktree(REPO, "HEAD", copy_uncommitted=True) as wt:
             files = sorted({m.file for m in mutations})
-            executed = {test: clean_run(wt, test, files, args.timeout, REPO)
+            executed = {test: clean_run(wt.path, test, files, args.timeout, REPO)
                         for test in dict.fromkeys(m.test for m in mutations)}
-            results = [mutate(wt, m, executed[m.test], args.timeout) for m in mutations]
-    except CannotRun as error:
+            results = [mutate(wt.path, m, executed[m.test], args.timeout) for m in mutations]
+            if changed := wt.data_changes():
+                raise CannotRun("the runs changed the linked data in the main checkout: " + ", ".join(changed))
+    except (CannotRun, _worktree.WorktreeError) as error:
         print(f"cannot run: {error}", file=sys.stderr)
         return 3
-    print(f"Worktree: {head} + {copied} uncommitted file(s) copied in.\n")
+    print(f"Worktree: {wt.short} + {len(wt.copied)} uncommitted file(s) copied in, "
+          f"{len(wt.linked)} data path(s) linked in.\n")
     print("\n".join(report(results)))
     return exit_code(results)
 
