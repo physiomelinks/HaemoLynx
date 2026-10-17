@@ -5,8 +5,11 @@
 #
 # Everything (venv, pip cache, a copy of the tracked files) lives in one temp
 # folder that is removed on exit. Nothing is written elsewhere and no
-# interpreter or package is installed globally. Set CI_LIKE_TMPDIR to choose
-# the parent folder of the temp folder (default: $TMPDIR, else /tmp).
+# interpreter or package is installed globally: HOME, the XDG folders and
+# matplotlib's config folder point inside it too, so no cache lands in ~.
+# As in CI, that home folder is empty, so the specimen data root is not found
+# and the realdata tests skip. Set CI_LIKE_TMPDIR to choose the parent folder
+# of the temp folder (default: $TMPDIR, else /tmp).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -37,7 +40,17 @@ done | tar --null -T - -cf - | tar -xf - -C "$work/src_copy"
 export TMPDIR="$work"  # pip and pytest scratch files stay inside too
 export PIP_CACHE_DIR="$work/pip-cache" PIP_DISABLE_PIP_VERSION_CHECK=1
 export MPLBACKEND=Agg PYVISTA_OFF_SCREEN=true PYTHONUNBUFFERED=1
+export HOME="$work/home" MPLCONFIGDIR="$work/mpl" XDG_CACHE_HOME="$work/cache" \
+    XDG_CONFIG_HOME="$work/config" XDG_DATA_HOME="$work/data" XDG_STATE_HOME="$work/state"
+mkdir "$HOME" "$MPLCONFIGDIR" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
 cd "$work/src_copy"
+# CI runs in a git checkout, and some tests ask git which files are tracked
+# (tests/test_example_main_blocks.py collects with `git ls-files`), so the copy
+# is made a repository of the same files. -f: a tracked file may match .gitignore.
+git init -q
+git add -A -f
+git -c user.name=ci_like_run -c user.email=ci_like_run@localhost -c commit.gpgsign=false \
+    commit -q -m "tracked files, copied"
 "$work/venv/bin/python" -m pip install --upgrade pip
 "$work/venv/bin/python" -m pip install -e '.[dev]'
 "$work/venv/bin/python" -m pytest "$@"
