@@ -128,8 +128,10 @@ def read_data(data_file: Path, root: Path = REPO) -> dict:
     data = cov.get_data()
     measured = {str(Path(f).resolve()): f for f in data.measured_files()}
     if root.resolve() != REPO.resolve():
-        here = [Path(f).relative_to(REPO.resolve()).as_posix() for f in measured
-                if Path(f).is_relative_to(REPO.resolve())]
+        # Only files that ran a line: coverage also lists the files of a source folder that
+        # nothing imported.
+        here = [Path(f).relative_to(REPO.resolve()).as_posix() for f, original in measured.items()
+                if Path(f).is_relative_to(REPO.resolve()) and data.lines(original)]
         foreign = sorted(rel for rel in here if in_scope(rel))
         if foreign:
             raise ValueError(f"the run imported this checkout's {', '.join(foreign)}, not the worktree's")
@@ -238,8 +240,14 @@ def _run_in(out: Path, pytest_args: list[str], files_from: Path | None, allow_di
         rc = Path(tmp) / "coveragerc"
         rc.write_text(f"[run]\ndata_file = {data_file}\n")
         outcomes_file = Path(tmp) / "outcomes.json"
+        # In a worktree, this checkout's source is measured too: coverage measures only the
+        # folders it is given, so a test importing this checkout would otherwise go unseen.
+        # read_data then refuses the run.
+        sources = ["src/ImageLynx", "examples"]
+        if wt is not None:
+            sources += [str(REPO / "src/ImageLynx"), str(REPO / "examples")]
         cmd = [sys.executable, "-m", "pytest", "-p", "pytest_cov", "-p", "_cbm_outcomes",
-               "--cov=src/ImageLynx", "--cov=examples", "--cov-context=test",
+               *(f"--cov={s}" for s in sources), "--cov-context=test",
                f"--cov-config={rc}", "--cov-report=", *pytest_args]
         env = {**os.environ, "COVERAGE_FILE": str(data_file), "CBM_OUTCOMES_FILE": str(outcomes_file),
                "PYTHONPATH": os.pathsep.join(filter(None, [str(Path(__file__).parent), os.environ.get("PYTHONPATH")]))}

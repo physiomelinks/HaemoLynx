@@ -301,6 +301,26 @@ def test_run_at_fails_when_a_realdata_test_skips_and_compare_refuses_the_run(toy
     assert lines[-1].startswith("1 realdata test(s) skipped")
 
 
+def test_run_at_fails_when_a_test_imports_this_checkouts_source_not_the_worktrees(toy):
+    _commit(toy, "tests/test_calc.py", textwrap.dedent(f'''\
+        import sys
+
+        sys.path.insert(0, {str(toy / "src")!r})  # the checkout's src, ahead of the worktree's
+        sys.modules.pop("ImageLynx", None)
+        sys.modules.pop("ImageLynx.calc", None)
+        from ImageLynx.calc import add
+
+
+        def test_add():
+            assert add(2, 3) == 5
+    '''), "a test that imports the checkout")
+    out = toy.parent / "run.json"
+    proc = _cbm(toy, "run", "--at", "HEAD", str(out), "-q", "-p", "no:cacheprovider")
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "imported this checkout's " in proc.stderr
+    assert "src/ImageLynx/calc.py, not the worktree's" in proc.stderr
+
+
 def test_run_at_names_data_a_test_wrote_through_the_links(toy):
     _commit(toy, "tests/test_calc.py", textwrap.dedent('''\
         from pathlib import Path
