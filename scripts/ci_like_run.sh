@@ -11,6 +11,10 @@
 # and the realdata tests skip. Set CI_LIKE_TMPDIR to choose the parent folder
 # of the temp folder (default: $TMPDIR, else /tmp).
 set -euo pipefail
+# Drop every GIT_* variable first. A hook (or any git-run parent) leaves GIT_DIR, GIT_INDEX_FILE
+# and the like set; left in, they aim every git call below at that repository, and the
+# `git init` in the copy then writes `core.bare = true` into its shared config.
+while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^GIT_' || true)
 cd "$(git rev-parse --show-toplevel)"
 
 PY310=$(command -v python3.10 || true)
