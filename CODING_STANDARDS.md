@@ -35,6 +35,8 @@ it can't see:
 A finding is not "acceptable" or "for later" without a reason. Either fix it in the change
 under review, or decline it with a written reason in the review.
 
+Each numbered finding's outcome (fixed, declined, or not a finding) is written as in `docs/agents/issue-tracker.md` § "Closing a ticket".
+
 A small mechanical fix inside a file the change already touches (a rename, a stale comment,
 a literal that should be imported) is fixed in the same change.
 

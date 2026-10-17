@@ -16,6 +16,7 @@ After the commit that implements a ticket, set its `Status:` line to `done (<has
 
 - Tick each box on its own, and only when a line in the ticket's `## Answer` meets it. Never tick them all with one bulk replace of `- [ ]` by `- [x]`.
 - A box that waits on another ticket stays `[ ]`, with "(checked in NN)" after it.
+- Every numbered finding from `/code-review` gets one line under `## Answer`, as one of: `fixed`; `declined: <reason>`; or `not a finding: <what was checked>`. None is left without an outcome.
 - Write ticket text with the Edit tool or a quoted heredoc (`<<'EOF'`), never an unquoted one, which eats the backtick spans.
 
 ## When a skill says "publish to the issue tracker"
