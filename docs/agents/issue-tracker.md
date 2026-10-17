@@ -20,6 +20,21 @@ After the commit that implements a ticket, set its `Status:` line to `done (<has
 - A follow-up found while working a ticket (something out of its scope) goes into an open ticket's acceptance criteria, or into a new ticket. A note in `## Comments` alone is not enough: it strands the follow-up in a ticket that is about to close.
 - Write ticket text with the Edit tool or a quoted heredoc (`<<'EOF'`), never an unquoted one, which eats the backtick spans.
 
+## Mutation evidence
+
+A ticket that shows its tests fail against a broken version of the behaviour keeps that evidence in the repo, run with `scripts/mutation_check.py`.
+
+- **Always save the spec.** It lives at `.scratch/<feature>/issues/NN-mutations.toml` (`NN` is the ticket number), is written before the runs, and is never a scratchpad file that is thrown away. The ticket's `## Answer` names it in the `Run:` line.
+- **Keep a break that survived.** If a break passes within the test's tolerance, it stays in the spec with `expect = "survived"` and a comment saying why it is too small to be seen. The bigger break that is caught goes next to it as its own `[[mutation]]`. Never replace the surviving break with the bigger one.
+
+## Writing a ticket from verdict rows
+
+Applies when an area ticket is made from the rows of a verdict file (for example `test-suite-pruning/assets/verdicts/<area>.md`).
+
+- **Name the module-level cleanups and the rows command.** Every area ticket lists the module-level cleanups for its files (the `sys.path` lines, unused imports, shared constants), and the command that prints its rows: `venv/bin/python .scratch/test-suite-pruning/assets/verdicts/rows.py AREA`. The implementer then reads only those rows, not the whole verdict file.
+- **Settle every open choice in the ticket.** A row that says "rename to say that", "either ... or" or "consider" gets a decision written into the ticket before `/implement` starts, so the implementer has nothing to ask.
+- **Correct a row error where you find it.** If applying a row shows it is wrong (for example it says an import is unused when the test calls it), fix the row in the verdict file in the same session, so the next area does not check it again.
+
 ## When a skill says "publish to the issue tracker"
 
 Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
