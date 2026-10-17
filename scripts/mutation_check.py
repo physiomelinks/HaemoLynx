@@ -72,9 +72,13 @@ import signal
 import subprocess
 import sys
 import tempfile
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11, as in CI; pytest itself requires tomli there
+    import tomli as tomllib
 
 # scripts/ is not a package. No .pyc is written for the helper: the checkout stays as it was.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
