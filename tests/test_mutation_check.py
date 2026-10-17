@@ -99,11 +99,12 @@ def test_a_mutation_its_uncommitted_test_catches_exits_0(toy):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     name, test, expected, result, ran, failure = _row(proc.stdout, "negative read as positive")
     assert (test, expected, result, ran) == ("tests/test_sign.py::test_negative", "caught", "caught", "yes")
-    assert "assert 1 == -1" in failure
+    assert failure == "tests/test_sign.py:5: assert 1 == -1"  # the test's file:line, then the E line
     head = subprocess.run(["git", "rev-parse", "--short=7", "HEAD"], cwd=toy, env=CLEAN_ENV,
                           capture_output=True, text=True).stdout.strip()
     lines = proc.stdout.splitlines()
     assert lines[0] == f"Worktree: {head} + 1 uncommitted file(s) copied in, 0 data path(s) linked in."
+    assert lines[1] == "Copied in: tests/test_sign.py"  # named, so a stray note is not taken for a test input
     assert lines[-1] == "1 mutation(s): 1 as expected, 0 not; 0 never ran the mutated line; 0 error(s)."
 
 
@@ -566,7 +567,13 @@ def test_load_spec_keeps_only_the_named_mutations_in_spec_order(tmp_path, plain)
     ([{**GOOD, "file": "tests/test_m.py"}], "", "mutation 1 (n): tests/test_m.py is under tests/"),
     ([{**GOOD, "file": "src/notes.txt"}], "", "mutation 1 (n): src/notes.txt is not a .py file"),
     ([{**GOOD, "old": "z = 9"}], "", "mutation 1 (n): old appears 0 times in src/m.py, not once"),
-    ([{**GOOD, "old": "y = 1"}], "", "mutation 1 (n): old appears 2 times in src/m.py, not once"),
+    ([{**GOOD, "old": "y = 1"}], "", "mutation 1 (n): old appears 2 times in src/m.py (lines 2, 3), not once"),
+    ([{**GOOD, "old": "x = 1 "}], "",
+     "mutation 1 (n): old appears 0 times in src/m.py, not once; it ends with whitespace ' ', "
+     "and without that whitespace it appears 1 time(s)"),
+    ([{**GOOD, "old": "\t x = 1"}], "",
+     "mutation 1 (n): old appears 0 times in src/m.py, not once; it starts with whitespace "
+     "'\\t ', and without that whitespace it appears 1 time(s)"),
 ])
 def test_load_spec_refuses_a_spec_it_cannot_use_as_written(tmp_path, plain, entries, extra, message):
     with pytest.raises(mc.SpecError) as error:
@@ -658,3 +665,109 @@ def test_a_repo_with_no_commit_to_build_a_worktree_from_exits_3(tmp_path):
     ''')
     assert proc.returncode == 3, proc.stdout + proc.stderr
     assert "cannot run: git worktree add" in proc.stderr
+
+
+def test_load_spec_reports_every_error_in_the_spec_at_once(tmp_path, plain):
+    spec = _spec_file(tmp_path, {**GOOD, "old": "z = 9", "expect": "fail"},
+                      {k: v for k, v in GOOD.items() if k != "test"} | {"name": "m"},
+                      {**GOOD, "name": "k", "file": "tests/test_m.py"}, extra="title = 'x'\n")
+    with pytest.raises(mc.SpecError) as error:
+        mc.load_spec(spec, plain, only=["nope"])
+    assert str(error.value).splitlines() == [
+        "unknown top-level key(s): title",
+        "mutation 1 (n): expect must be 'caught' or 'survived', not 'fail'",
+        "mutation 1 (n): old appears 0 times in src/m.py, not once",
+        "mutation 2 (m): missing test",
+        "mutation 3 (k): tests/test_m.py is under tests/",
+        "--only name(s) not in the spec: nope",
+    ]
+
+
+def test_every_spec_error_reaches_stderr_in_one_run(toy):
+    proc = _run(toy, '''
+        [[mutation]]
+        name = "a"
+        file = "src/toy/calc.py"
+        old = "return a - b"
+        new = "return b + a"
+        test = "tests/test_calc.py::test_add"
+
+        [[mutation]]
+        name = "a"
+        file = "src/toy/gone.py"
+        old = "x"
+        new = "y"
+        test = "tests/test_calc.py::test_add"
+    ''')
+    assert proc.returncode == 2
+    assert proc.stderr.splitlines() == [
+        "3 spec error(s):",
+        "mutation 1 (a): old appears 0 times in src/toy/calc.py, not once",
+        "mutation 2 (a): name already used",
+        "mutation 2 (a): src/toy/gone.py is not a file in the repo",
+    ]
+
+
+def test_a_bare_assertion_error_shows_its_detail_and_the_test_line_it_failed_on(toy):
+    # numpy's assert_allclose raises like this: the message starts with blank lines.
+    (toy / "tests" / "test_close.py").write_text(textwrap.dedent('''\
+        from toy.calc import add
+
+
+        def check(got):
+            if got != 5:
+                raise AssertionError("\\n\\nNot equal to tolerance rtol=1e-07\\nmore")
+
+
+        def test_add_close():
+            check(add(2, 3))
+    '''))
+    proc = _run(toy, '''
+        [[mutation]]
+        name = "minus"
+        file = "src/toy/calc.py"
+        old = "return a + b"
+        new = "return a - b"
+        test = "tests/test_close.py::test_add_close"
+    ''')
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    name, test, expected, result, ran, failure = _row(proc.stdout, "minus")
+    assert result == "caught"
+    # The last frame in the test's own file: the helper's raise, not the call in the test.
+    assert failure == "tests/test_close.py:6: AssertionError: Not equal to tolerance rtol=1e-07"
+
+
+def test_a_catch_by_an_error_other_than_an_assert_is_marked(toy):
+    proc = _run(toy, '''
+        [[mutation]]
+        name = "add returns None"
+        file = "src/toy/calc.py"
+        old = "return a + b"
+        new = "return None + b"
+        test = "tests/test_calc.py::test_add"
+    ''')
+    assert proc.returncode == 0, proc.stdout + proc.stderr  # still a catch, as the spec expected
+    name, test, expected, result, ran, failure = _row(proc.stdout, "add returns None")
+    assert result == "caught (TypeError, not an assert)"
+    assert failure.startswith("tests/test_calc.py:5: TypeError: unsupported operand")
+    assert proc.stdout.splitlines()[-1] == (
+        "1 mutation(s): 1 as expected, 0 not; 0 never ran the mutated line; 0 error(s); "
+        "1 caught by an error other than an assert.")
+
+
+@pytest.mark.parametrize("out, kind", [
+    ("E   assert 1 == -1", "AssertionError"),
+    ("E   AssertionError: x", "AssertionError"),
+    ("E   Failed: DID NOT RAISE <class 'ValueError'>", "Failed"),
+    ("E   TypeError: x", "TypeError"),
+    ("E   numpy.linalg.LinAlgError", "numpy.linalg.LinAlgError"),
+    ("1 failed in 0.1s", None),
+])
+def test_the_error_that_failed_a_test_is_read_from_its_first_E_line(out, kind):
+    assert mc.failure(out, "tests/test_m.py::test_x")[1] == kind
+
+
+def test_help_says_the_main_checkout_is_never_edited():
+    proc = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True, env=CLEAN_ENV)
+    assert proc.returncode == 0
+    assert "never edits the main checkout" in " ".join(proc.stdout.split())

@@ -1,4 +1,5 @@
 """Mutation checks: break a source line on purpose and show the test meant to guard it fails.
+It never edits the main checkout: every mutation is made in a throwaway git worktree.
 
     venv/bin/python scripts/mutation_check.py SPEC.toml [--only NAME ...] [--timeout SECONDS]
 
@@ -16,10 +17,13 @@ SPEC.toml holds one ``[[mutation]]`` table per check (a ticket keeps its spec ne
 Use ``'''...'''`` for text over several lines (TOML drops a newline straight after the opening
 quotes). The spec is checked in full before anything runs, and anything it does not pin down
 exactly is refused: an unknown key, a duplicate name, empty ``old``, ``new`` equal to ``old``.
+Every error in the spec is listed in one run. An ``old`` that is not in its file exactly once
+gets the count, the lines it starts on, and any whitespace at its ends (the usual cause).
 
-The checks run in a temporary git worktree outside the repo, made from HEAD plus every
-uncommitted change in this checkout (tracked edits, deletions, and untracked files that are
-not ignored), so the main checkout is never edited. The gitignored data folders
+The main checkout is never edited, not even for a moment. The checks run in a temporary git
+worktree outside the repo, made from HEAD plus every uncommitted change in this checkout
+(tracked edits, deletions, and untracked files that are not ignored, all named in the output's
+header, so a stray note copied in is plain to see). The gitignored data folders
 (``examples/images``, ``examples/outputs``) are symlinked in, not copied, so ``realdata`` tests
 run on the real data; a run that changes anything through those links stops with exit 3. The
 worktree is removed afterwards, also after an error or Ctrl-C. ``scripts/_worktree.py`` builds
@@ -41,10 +45,14 @@ clean run (a ``realdata`` test skips where the data is missing from this checkou
 (unchanged context lines in ``old`` don't count); the clean run includes import time, so a
 module constant counts.
 
-Output: a header naming the worktree's commit, a Markdown table to paste under a ticket's
-``## Answer`` (mutation, test, expected, result, ran line, and the first ``E`` line of the
-failure, or pytest's last line when there is none, such as ``1 passed`` for a survivor), and
-a summary line.
+Output: a header naming the worktree's commit and the files copied in, a Markdown table to
+paste under a ticket's ``## Answer``, and a summary line. The table gives the mutation, test,
+expected, result, ran line, and the first failure: the test file's ``file:line`` (its last
+traceback frame in that file) and the first ``E`` line, where a bare ``AssertionError:`` gets
+the first non-empty ``E`` line after it; or pytest's last line when there is no ``E`` line, such
+as ``1 passed`` for a survivor. A catch made by an error other than an assert (a ``TypeError``
+from the broken code, say, rather than the test's own check) shows as ``caught (TypeError, not
+an assert)`` and is counted in the summary; it still counts as ``caught``.
 
 Exit code: 0 when every result matches its ``expect`` and every test ran its mutated line;
 1 when one does not; 2 on a usage error (the spec, or --only/--timeout); 3 when the checks
@@ -59,6 +67,7 @@ import ast
 import difflib
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -100,15 +109,30 @@ class Result:
     outcome: str  # caught, survived, skipped, timed out, error
     ran: bool
     failure: str
+    error: str | None = None  # the exception type that failed the test, when pytest showed one
 
     @property
     def as_expected(self) -> bool:
         return self.outcome == self.mutation.expect
 
+    @property
+    def caught_by_non_assert(self) -> bool:
+        """A catch the test's own checks did not make: say, a TypeError from the broken code."""
+        return self.outcome == "caught" and self.error not in ASSERTS
+
+    @property
+    def result_cell(self) -> str:
+        if self.caught_by_non_assert:
+            return f"caught ({self.error or 'no E line'}, not an assert)"
+        return self.outcome
+
 
 REQUIRED = ("name", "file", "old", "new", "test")
 EXPECTS = ("caught", "survived")
 ERRORS = ("error", "skipped")  # outcomes that are no verdict: the run exits 3
+# Errors a test's own checks raise: assert (numpy.testing's too), and pytest.fail or
+# pytest.raises' DID NOT RAISE (pytest's Failed). A catch by any other error is marked.
+ASSERTS = ("AssertionError", "Failed")
 
 
 def load_spec(path: Path, repo: Path, only: list[str] | None = None) -> list[Mutation]:
@@ -116,60 +140,94 @@ def load_spec(path: Path, repo: Path, only: list[str] | None = None) -> list[Mut
 
     Raises SpecError for anything the spec does not pin down exactly: a missing or unknown key,
     a file outside the repo, under tests/ or not .py, or old text that is not in the file once.
+    Every error is found before it raises, one per line, so one run shows them all. (A check that
+    needs an earlier one to pass, such as counting old in a file that is not there, is skipped.)
     """
     try:
         data = tomllib.loads(path.read_text())
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise SpecError(f"cannot read {path}: {error}") from None
+    errors = []
     unknown = sorted(set(data) - {"mutation"})
     if unknown:
-        raise SpecError(f"unknown top-level key(s): {', '.join(unknown)}")
+        errors.append(f"unknown top-level key(s): {', '.join(unknown)}")
     entries = data.get("mutation")
     if not isinstance(entries, list) or not entries:
-        raise SpecError("no [[mutation]] tables")
+        raise SpecError("\n".join(errors + ["no [[mutation]] tables"]))
     mutations, names = [], set()
     for i, entry in enumerate(entries, 1):
         if not isinstance(entry, dict):
-            raise SpecError(f"mutation {i} is not a table")
-        label = f"mutation {i} ({entry.get('name', '?')})"
-        missing = [k for k in REQUIRED if k not in entry]
-        if missing:
-            raise SpecError(f"{label}: missing {', '.join(missing)}")
-        extra = sorted(set(entry) - set(REQUIRED) - {"expect"})
-        if extra:
-            raise SpecError(f"{label}: unknown key(s): {', '.join(extra)}")
-        for key, value in entry.items():
-            if not isinstance(value, str):
-                raise SpecError(f"{label}: {key} must be a string")
-        rel = Path(entry["file"])  # Path drops ./ and doubled slashes, as coverage's paths do
-        m = Mutation(**{**entry, "file": rel.as_posix()})
-        if m.expect not in EXPECTS:
-            raise SpecError(f"{label}: expect must be 'caught' or 'survived', not {m.expect!r}")
-        if m.name in names:
-            raise SpecError(f"{label}: name already used")
-        names.add(m.name)
-        if not m.old:
-            raise SpecError(f"{label}: old is empty")
-        if m.new == m.old:
-            raise SpecError(f"{label}: new is the same as old")
-        if not rel.parts or rel.is_absolute() or ".." in rel.parts:
-            raise SpecError(f"{label}: file must be a path inside the repo")
-        if rel.parts[0] == "tests":
-            raise SpecError(f"{label}: {m.file} is under tests/")
-        if not (repo / rel).is_file():
-            raise SpecError(f"{label}: {m.file} is not a file in the repo")
-        if rel.suffix != ".py":
-            raise SpecError(f"{label}: {m.file} is not a .py file")
-        count = (repo / rel).read_text().count(m.old)
-        if count != 1:
-            raise SpecError(f"{label}: old appears {count} times in {m.file}, not once")
-        mutations.append(m)
+            errors.append(f"mutation {i} is not a table")
+            continue
+        problems = _entry_problems(entry, repo, names)
+        errors += [f"mutation {i} ({entry.get('name', '?')}): {p}" for p in problems]
+        if isinstance(entry.get("name"), str):
+            names.add(entry["name"])
+        if not problems:
+            mutations.append(Mutation(**{**entry, "file": Path(entry["file"]).as_posix()}))
     if only is not None:
         unknown = [n for n in only if n not in names]
         if unknown:
-            raise SpecError(f"--only name(s) not in the spec: {', '.join(unknown)}")
+            errors.append(f"--only name(s) not in the spec: {', '.join(unknown)}")
         mutations = [m for m in mutations if m.name in only]
+    if errors:
+        raise SpecError("\n".join(errors))
     return mutations
+
+
+def _entry_problems(entry: dict, repo: Path, names: set[str]) -> list[str]:
+    """What is wrong with one [[mutation]] table; `names` are the names used before it."""
+    missing = [k for k in REQUIRED if k not in entry]
+    extra = sorted(set(entry) - set(REQUIRED) - {"expect"})
+    problems = [f"missing {', '.join(missing)}"] if missing else []
+    if extra:
+        problems.append(f"unknown key(s): {', '.join(extra)}")
+    problems += [f"{key} must be a string" for key, value in entry.items() if not isinstance(value, str)]
+    if problems:
+        return problems  # the checks below need every key, as a string
+    old, new, expect = entry["old"], entry["new"], entry.get("expect", "caught")
+    if expect not in EXPECTS:
+        problems.append(f"expect must be 'caught' or 'survived', not {expect!r}")
+    if entry["name"] in names:
+        problems.append("name already used")
+    if not old:
+        problems.append("old is empty")
+    if new == old:
+        problems.append("new is the same as old")
+    rel = Path(entry["file"])  # Path drops ./ and doubled slashes, as coverage's paths do
+    file = rel.as_posix()
+    if not rel.parts or rel.is_absolute() or ".." in rel.parts:
+        return problems + ["file must be a path inside the repo"]
+    before = len(problems)
+    if rel.parts[0] == "tests":
+        problems.append(f"{file} is under tests/")
+    if not (repo / rel).is_file():
+        problems.append(f"{file} is not a file in the repo")
+    if rel.suffix != ".py":
+        problems.append(f"{file} is not a .py file")
+    if old and len(problems) == before:
+        problems += _old_not_once(old, (repo / rel).read_text(), file)
+    return problems
+
+
+def _old_not_once(old: str, source: str, file: str) -> list[str]:
+    """[] when `old` is in `source` once; else how often and where, and any whitespace at its ends.
+
+    Overlapping matches count, since either could be the one meant.
+    """
+    starts = [i for i in range(len(source)) if source.startswith(old, i)]
+    if len(starts) == 1:
+        return []
+    lines = ", ".join(str(source.count("\n", 0, i) + 1) for i in starts)
+    message = f"old appears {len(starts)} times in {file}{f' (lines {lines})' if starts else ''}, not once"
+    stripped = old.strip()
+    # Trailing whitespace (often a newline a TOML string kept or dropped) was the usual cause.
+    ends = [f"{end} with whitespace {text!r}" for end, text in
+            (("starts", old[:len(old) - len(old.lstrip())]), ("ends", old[len(old.rstrip()):])) if text]
+    if ends and stripped:
+        message += (f"; it {' and '.join(ends)}, and without that whitespace it appears "
+                    f"{source.count(stripped)} time(s)")
+    return [message]
 
 
 def changed_lines(source: str, old: str, new: str) -> set[int]:
@@ -286,10 +344,36 @@ def mutate(wt: Path, m: Mutation, executed: dict[str, set[int]], timeout: float)
         path.write_text(original)
     skips = _skips(out)
     outcome = "skipped" if skips else {None: "timed out", 0: "survived", 1: "caught"}.get(code, "error")
+    cell, error = (skips[0], None) if skips else failure(out, m.test)
+    return Result(m, outcome, ran_line(original, m.old, m.new, executed.get(m.file, set())), cell, error)
+
+
+def failure(out: str, test: str) -> tuple[str, str | None]:
+    """(the failure cell, the exception type that failed the test or None), from pytest's output.
+
+    The cell is the first ``E`` line, with its ``E`` dropped, after the test file's ``file:line``
+    from the last traceback frame in that file before it. A bare ``Type:`` line (numpy's
+    assert_allclose starts its message with blank lines) gets the first non-empty ``E`` line after
+    it. With no ``E`` line, the cell is pytest's last line, such as ``1 passed``.
+    """
     lines = out.splitlines()
-    failure = skips[0] if skips else next((line.strip() for line in lines if line.startswith("E ")),
-                                          lines[-1] if lines else "")
-    return Result(m, outcome, ran_line(original, m.old, m.new, executed.get(m.file, set())), failure)
+    first = next((i for i, line in enumerate(lines) if line.startswith("E ")), None)
+    if first is None:
+        return (lines[-1].strip() if lines else ""), None
+    detail = lines[first][1:].strip()
+    if detail == "assert" or detail.startswith("assert "):
+        error = "AssertionError"  # pytest rewrote the assert and shows the expression only
+    else:
+        match = re.match(r"([A-Za-z_][\w.]*)(:|$)", detail)
+        error = match.group(1) if match else None
+        if match and not detail[match.end():].strip():
+            after = (line[1:].strip() for line in lines[first + 1:] if line.startswith("E"))
+            if more := next((text for text in after if text), None):
+                detail = f"{match.group(1)}: {more}"
+    test_file = test.split("::")[0]
+    frame = re.compile(rf"(?:^|/){re.escape(test_file)}:(\d+): ")
+    hits = [match.group(1) for line in lines[:first] if (match := frame.search(line))]
+    return (f"{test_file}:{hits[-1]}: {detail}" if hits else detail), error
 
 
 def exit_code(results: list[Result]) -> int:
@@ -301,16 +385,19 @@ def exit_code(results: list[Result]) -> int:
 
 
 def report(results: list[Result]) -> list[str]:
-    lines = ["| Mutation | Test | Expected | Result | Ran line | First failure line |",
+    lines = ["| Mutation | Test | Expected | Result | Ran line | First failure (test file:line) |",
              "| --- | --- | --- | --- | --- | --- |"]
     for r in results:
-        cells = [r.mutation.name, r.mutation.test, r.mutation.expect, r.outcome,
+        cells = [r.mutation.name, r.mutation.test, r.mutation.expect, r.result_cell,
                  "yes" if r.ran else "no", r.failure]
         lines.append("| " + " | ".join(c.replace("|", "\\|") for c in cells) + " |")
     expected = sum(r.as_expected for r in results)
     errors = sum(r.outcome in ERRORS for r in results)
-    lines.append(f"\n{len(results)} mutation(s): {expected} as expected, {len(results) - expected} not; "
-                 f"{sum(not r.ran for r in results)} never ran the mutated line; {errors} error(s).")
+    summary = (f"\n{len(results)} mutation(s): {expected} as expected, {len(results) - expected} not; "
+               f"{sum(not r.ran for r in results)} never ran the mutated line; {errors} error(s)")
+    if non_assert := sum(r.caught_by_non_assert for r in results):
+        summary += f"; {non_assert} caught by an error other than an assert"
+    lines.append(summary + ".")
     return lines
 
 
@@ -332,7 +419,8 @@ def main(argv=None) -> int:
     try:
         mutations = load_spec(args.spec, REPO, args.only)
     except SpecError as error:
-        print(error, file=sys.stderr)
+        problems = str(error).splitlines()
+        print(f"{len(problems)} spec error(s):", *problems, sep="\n", file=sys.stderr)
         return 2
     try:
         with _worktree.worktree(REPO, "HEAD", copy_uncommitted=True) as wt:
@@ -346,7 +434,10 @@ def main(argv=None) -> int:
         print(f"cannot run: {error}", file=sys.stderr)
         return 3
     print(f"Worktree: {wt.short} + {len(wt.copied)} uncommitted file(s) copied in, "
-          f"{len(wt.linked)} data path(s) linked in.\n")
+          f"{len(wt.linked)} data path(s) linked in.")
+    if wt.copied:  # named, so an untracked note copied in is not taken for a test input
+        print("Copied in: " + ", ".join(wt.copied))
+    print()
     print("\n".join(report(results)))
     return exit_code(results)
 
