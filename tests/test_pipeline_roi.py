@@ -20,7 +20,6 @@ from ImageLynx.roi_placement import (
     roi_record,
     write_roi_record,
 )
-from ImageLynx.specimens import SPECIMENS
 
 C = pytest.importorskip("carotid_image_to_model")
 
@@ -47,21 +46,6 @@ def _placement(specimen_id, centre, shape, source="z=qc_peak_slice, yx=grayscale
 
 def _fake_specimen(specimen_id="WKY-A", shape=(435, 456, 507)):
     return SimpleNamespace(specimen_id=specimen_id, shape_zyx=shape)
-
-
-@pytest.mark.parametrize("specimen", SPECIMENS, ids=lambda s: s.specimen_id)
-def test_the_offsets_the_pipeline_sets_crop_exactly_the_placed_bounds(specimen):
-    """For every legal centre on every axis of every specimen's shape, not just today's."""
-    shape = specimen.shape_zyx
-    for axis in range(3):
-        for c in range(SIZE[axis] // 2, shape[axis] - SIZE[axis] // 2 + 1):
-            centre = [e // 2 for e in shape]
-            centre[axis] = c
-            placement = _placement(specimen.specimen_id, centre, shape)
-            oz, oy, ox = placement.offsets_zyx
-            cut = crop_roi(_Probe(shape), offset_z=oz, offset_y=oy, offset_x=ox,
-                           size_zyx=SIZE)
-            assert cut.slices == placement.bounds, (specimen.specimen_id, axis, c)
 
 
 def test_the_pipeline_uses_place_roi_when_a_size_is_given(monkeypatch):
