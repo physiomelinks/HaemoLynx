@@ -1,5 +1,7 @@
 # Physiological Modelling Documentation: ImageLynx `carotid_image_to_model.py` — Conceptual Edition
 
+> **Archive (2026-10-17).** This summary is an archive and is no longer maintained. Parts of it are out of date. §7.3 still describes LSQR fallbacks, but `_solve_system_smart` (`src/ImageLynx/haemodynamics/resistance.py`) now raises on a singular system instead of returning a least-squares answer. The test names, test counts and the §11 coverage table are out of date too. For the current methods, see `cb_modelling_reference.md`.
+
 > **Purpose**: This document is the conceptually enriched companion to the Detailed Edition. It preserves every equation, algorithm, and parameter from the detailed summary, and wraps each section with physiological intuition, physical reasoning, and step-by-step commentary explaining *why* each modelling decision was made. A researcher reading this document should be able to understand both the mathematical machinery and the biological story behind it.
 
 ---
