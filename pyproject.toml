@@ -20,10 +20,18 @@ dependencies = [
     "h5py",
     "skan",
     "pyvista",
+    "vedo",
+    "pyyaml",
+    "dask[array]",
+    "joblib",
+    "python-igraph",
+    "numba",
+    "optuna",
+    "seaborn",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pyflakes"]
+dev = ["pytest", "pytest-cov", "pyflakes"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
