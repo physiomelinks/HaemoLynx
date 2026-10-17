@@ -34,7 +34,7 @@ id is computed in a throwaway index and object folder, so nothing is written to 
 
 ``run --at REV`` measures commit REV instead, for a "before" baseline without stashing or
 copying anything. It makes a detached worktree of REV in a temporary folder outside the repo,
-symlinks the gitignored data folders (``examples/images``, ``examples/outputs``) in from this
+symlinks the gitignored data folders (``_worktree.DATA_FOLDERS``) in from this
 checkout, runs there, and removes the worktree, also after an error or Ctrl-C. This checkout
 is never edited, so it may be dirty. A symlink cannot be made read-only, so a run that adds,
 changes or removes anything through the links fails and names the paths.
@@ -187,14 +187,11 @@ def working_tree(root: Path) -> str:
         if index.exists():
             shutil.copy2(index, Path(tmp) / "index")
         (Path(tmp) / "objects").mkdir()
-        env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index"),
+        env = {"GIT_INDEX_FILE": str(Path(tmp) / "index"),
                "GIT_OBJECT_DIRECTORY": str(Path(tmp) / "objects"),
                "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(objects)}
-        for args in (["add", "--update"], ["write-tree"]):
-            proc = subprocess.run(["git", *args], cwd=root, env=env, capture_output=True, text=True)
-            if proc.returncode != 0:
-                raise _worktree.WorktreeError(f"git {args[0]} failed: {proc.stderr.strip()}")
-    return proc.stdout.strip()
+        _worktree.git(root, "add", "--update", env=env)
+        return _worktree.git(root, "write-tree", env=env).strip()
 
 
 def commit_tree(repo: Path, commit: str) -> str | None:
@@ -214,23 +211,25 @@ def run(out: Path, pytest_args: list[str], files_from: Path | None = None, at: s
     """Run pytest under coverage in this checkout, or with `at` in a worktree of that commit."""
     try:
         if at is None:
-            return _run_in(REPO, out, pytest_args, files_from, allow_dirty)
+            return _run_in(out, pytest_args, files_from, allow_dirty)
         with _worktree.worktree(REPO, at) as wt:
-            return _run_in(wt.path, out, pytest_args, files_from, allow_dirty, wt, at)
+            return _run_in(out, pytest_args, files_from, allow_dirty, wt)
     except _worktree.WorktreeError as error:
         print(f"cannot run: {error}", file=sys.stderr)
         return 3
 
 
-def _run_in(root: Path, out: Path, pytest_args: list[str], files_from: Path | None, allow_dirty: bool,
-            wt: _worktree.Worktree | None = None, at: str | None = None) -> int:
+def _run_in(out: Path, pytest_args: list[str], files_from: Path | None, allow_dirty: bool,
+            wt: _worktree.Worktree | None = None) -> int:
+    """The run, in worktree `wt` when given, else in this checkout."""
+    root = wt.path if wt is not None else REPO
     if files_from is not None:
         try:
             pytest_args = [*pytest_args, *read_files_from(files_from, root)]
         except (OSError, ValueError) as e:
             print(e, file=sys.stderr)
             return 2
-    dirty, before = tracked_state(root)
+    dirty, state_before = tracked_state(root)
     if dirty and not allow_dirty:
         print(DIRTY_REFUSAL, file=sys.stderr)
         return 2
@@ -259,15 +258,15 @@ def _run_in(root: Path, out: Path, pytest_args: list[str], files_from: Path | No
             print(f"pytest wrote no test outcomes (exit {code})", file=sys.stderr)
             return code or 1
         recorded = json.loads(outcomes_file.read_text())
-    dirty_after, after = tracked_state(root)
+    dirty_after, state_after = tracked_state(root)
     tree = working_tree(root)
     outcomes = recorded["outcomes"]
     result = {
         "commit": _worktree.git(root, "rev-parse", "HEAD").strip(),
         "tree": tree,
-        "at": at,
+        "at": wt.rev if wt is not None else None,
         "dirty": dirty or dirty_after,
-        "changed_during_run": before != after,
+        "changed_during_run": state_before != state_after,
         "pytest_args": pytest_args,
         **({"files_from": str(files_from)} if files_from else {}),
         "pytest_exit": code,
@@ -350,12 +349,8 @@ def compare(before: dict, after: dict, repo: Path = REPO) -> tuple[int, list[str
     for name, r in (("before", before), ("after", after)):
         if r["pytest_exit"] != 0:
             return 3, lines + [f"cannot compare: the {name} run's pytest exited {r['pytest_exit']}"]
-        if skipped := r.get("realdata_skipped"):
-            return 3, lines + [f"cannot compare: the {name} run skipped {len(skipped)} realdata test(s)"]
-        if r.get("changed_during_run"):
-            return 3, lines + [f"cannot compare: the {name} run's tracked files changed during the run"]
-        if r.get("data_changed"):
-            return 3, lines + [f"cannot compare: the {name} run changed the linked data"]
+        if problems := run_problems(r):
+            return 3, lines + [f"cannot compare: the {name} run is no baseline", *problems]
     lines += outcome_lines(before, after)
     dropped = False
     for rel in sorted(set(before["modules"]) | set(after["modules"])):

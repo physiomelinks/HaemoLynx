@@ -1,7 +1,6 @@
 """scripts/coverage_by_module.py: the before/after coverage check the test cleanup relies on."""
 import importlib.util
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -9,6 +8,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from conftest import TOY_ENV, realdata_test, toy_git
 
 REPO = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("coverage_by_module", REPO / "scripts" / "coverage_by_module.py")
@@ -214,31 +214,7 @@ def test_run_files_from_refuses_a_bad_list_and_runs_nothing(tmp_path, capsys, li
 # --- run --at REV: a detached worktree, the data linked in, the checkout left alone ------------
 
 SCRIPTS = ("coverage_by_module.py", "_cbm_outcomes.py", "_worktree.py")
-# A hook run sets GIT_INDEX_FILE and the like, and a coverage run sets COV_CORE_*/COVERAGE_*;
-# none of them may reach the toy repo's git or the script's own coverage run.
-CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "COV_CORE_", "COVERAGE_"))}
 CALC = "def add(a, b):\n    return a + b\n"
-DATA_TEST = '''\
-from pathlib import Path
-
-import pytest
-
-from ImageLynx.calc import add
-
-DATA = Path(__file__).resolve().parents[1] / "examples" / "images" / "sum.txt"
-
-
-@pytest.mark.realdata
-@pytest.mark.skipif(not DATA.exists(), reason="needs the gitignored data")
-def test_add_matches_the_data():
-    assert DATA.is_symlink(), "the data was copied, not linked"
-    assert add(2, 3) == int(DATA.read_text())
-'''
-
-
-def _git(repo, *args):
-    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=repo,
-                          env=CLEAN_ENV, check=True, capture_output=True, text=True).stdout
 
 
 @pytest.fixture
@@ -258,10 +234,10 @@ def toy(tmp_path):
     (repo / "examples" / "images" / "README").write_text("tracked, so the folder is in every worktree\n")
     (repo / "tests" / "test_calc.py").write_text(
         "from ImageLynx.calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n")
-    (repo / "tests" / "test_data.py").write_text(DATA_TEST)
-    _git(repo, "init", "-q")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-q", "-m", "toy")
+    (repo / "tests" / "test_data.py").write_text(realdata_test("ImageLynx"))
+    toy_git(repo, "init", "-q")
+    toy_git(repo, "add", ".")
+    toy_git(repo, "commit", "-q", "-m", "toy")
     (repo / "examples" / "images" / "sum.txt").write_text("5\n")
     (repo / "examples" / "outputs" / "old.txt").write_text("an earlier run's output\n")
     return repo
@@ -272,7 +248,7 @@ def _cbm(repo, *args):
     tmp = repo.parent / "tmp"
     tmp.mkdir(exist_ok=True)
     proc = subprocess.run([sys.executable, str(repo / "scripts" / "coverage_by_module.py"), *args],
-                          cwd=repo, env={**CLEAN_ENV, "TMPDIR": str(tmp)}, capture_output=True, text=True,
+                          cwd=repo, env={**TOY_ENV, "TMPDIR": str(tmp)}, capture_output=True, text=True,
                           timeout=120)
     assert list(tmp.iterdir()) == [], "the script left temp files behind"
     return proc
@@ -282,18 +258,18 @@ def _checkout_state(repo):
     """Every file outside .git (bytes and mtime), git's status with ignored files, the worktrees."""
     files = {p.relative_to(repo).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
              for p in repo.rglob("*") if p.is_file() and ".git" not in p.parts}
-    return (files, _git(repo, "status", "--porcelain", "--ignored"), _git(repo, "worktree", "list"),
-            _git(repo, "rev-parse", "HEAD"))
+    return (files, toy_git(repo, "status", "--porcelain", "--ignored"), toy_git(repo, "worktree", "list"),
+            toy_git(repo, "rev-parse", "HEAD"))
 
 
 def _commit(repo, rel, text, message):
     (repo / rel).write_text(text)
-    _git(repo, "add", rel)
-    _git(repo, "commit", "-q", "-m", message)
+    toy_git(repo, "add", rel)
+    toy_git(repo, "commit", "-q", "-m", message)
 
 
 def test_run_at_measures_that_commit_with_the_data_linked_and_never_touches_the_checkout(toy):
-    first = _git(toy, "rev-parse", "HEAD").strip()
+    first = toy_git(toy, "rev-parse", "HEAD").strip()
     _commit(toy, "src/ImageLynx/calc.py", CALC + "\n\ndef sub(a, b):\n    return a - b\n", "sub")
     # A dirty checkout, which run --at neither refuses nor measures.
     (toy / "src" / "ImageLynx" / "calc.py").write_text("X = 1\n" + CALC)
@@ -321,7 +297,8 @@ def test_run_at_fails_when_a_realdata_test_skips_and_compare_refuses_the_run(toy
     result = json.loads(out.read_text())
     assert result["realdata_skipped"] == ["tests/test_data.py::test_add_matches_the_data"]
     code, lines = cbm.compare(result, result)
-    assert (code, lines[-1]) == (3, "cannot compare: the before run skipped 1 realdata test(s)")
+    assert (code, lines[-2]) == (3, "cannot compare: the before run is no baseline")
+    assert lines[-1].startswith("1 realdata test(s) skipped")
 
 
 def test_run_at_names_data_a_test_wrote_through_the_links(toy):
@@ -372,7 +349,9 @@ def test_run_fails_when_the_tree_changes_during_the_run(toy):
     result = json.loads(out.read_text())
     assert (result["changed_during_run"], result["dirty"]) == (True, True)
     code, lines = cbm.compare(result, result)
-    assert (code, lines[-1]) == (3, "cannot compare: the before run's tracked files changed during the run")
+    assert lines[-2:] == ["cannot compare: the before run is no baseline",
+                          "the tracked files changed during the run (edited while it ran, or by a test)"]
+    assert code == 3
 
 
 # --- the tree a run measured: a commit, a tree id, a dirty flag -------------------------------
@@ -384,8 +363,8 @@ def test_a_clean_run_records_the_commit_and_the_tree_of_that_commit(toy):
     proc = _cbm(toy, "run", str(out), "-q", "-p", "no:cacheprovider", "tests/test_calc.py")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     result = json.loads(out.read_text())
-    assert result["commit"] == _git(toy, "rev-parse", "HEAD").strip()
-    assert result["tree"] == _git(toy, "rev-parse", "HEAD^{tree}").strip()
+    assert result["commit"] == toy_git(toy, "rev-parse", "HEAD").strip()
+    assert result["tree"] == toy_git(toy, "rev-parse", "HEAD^{tree}").strip()
     assert result["dirty"] is False
 
 
@@ -395,38 +374,31 @@ def test_a_dirty_run_records_the_tree_it_measured_not_the_commits(toy):
     proc = _cbm(toy, "run", "--allow-dirty", str(out), "-q", "-p", "no:cacheprovider", "tests/test_calc.py")
     assert proc.returncode == 0, proc.stdout + proc.stderr
     result = json.loads(out.read_text())
-    head_tree = _git(toy, "rev-parse", "HEAD^{tree}").strip()
-    assert (result["commit"], result["dirty"]) == (_git(toy, "rev-parse", "HEAD").strip(), True)
+    head_tree = toy_git(toy, "rev-parse", "HEAD^{tree}").strip()
+    assert (result["commit"], result["dirty"]) == (toy_git(toy, "rev-parse", "HEAD").strip(), True)
     assert result["tree"] != head_tree
     # Committing the same edit gives a commit whose tree is the one the run recorded.
-    _git(toy, "commit", "-q", "-am", "the edit")
-    assert result["tree"] == _git(toy, "rev-parse", "HEAD^{tree}").strip()
+    toy_git(toy, "commit", "-q", "-am", "the edit")
+    assert result["tree"] == toy_git(toy, "rev-parse", "HEAD^{tree}").strip()
 
 
 def test_run_at_records_the_tree_of_that_commit_whatever_the_checkout_holds(toy):
-    first = _git(toy, "rev-parse", "HEAD").strip()
+    first = toy_git(toy, "rev-parse", "HEAD").strip()
     _commit(toy, "src/ImageLynx/calc.py", CALC + "\nX = 1\n", "later")
     (toy / "src" / "ImageLynx" / "calc.py").write_text("dirty\n")
     out = toy.parent / "run.json"
     proc = _cbm(toy, "run", "--at", first, str(out), "-q", "-p", "no:cacheprovider", "tests/test_calc.py")
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert json.loads(out.read_text())["tree"] == _git(toy, "rev-parse", f"{first}^{{tree}}").strip()
-
-
-@pytest.fixture
-def no_git_env(monkeypatch):
-    """compare runs git in this process: a hook's GIT_INDEX_FILE/GIT_DIR must not aim it at the real repo."""
-    for key in [k for k in os.environ if k.startswith("GIT_")]:
-        monkeypatch.delenv(key)
+    assert json.loads(out.read_text())["tree"] == toy_git(toy, "rev-parse", f"{first}^{{tree}}").strip()
 
 
 def _commit_with_tree(toy, text, message):
     """(commit, tree) of a new commit in `toy`."""
     _commit(toy, "src/ImageLynx/calc.py", text, message)
-    return _git(toy, "rev-parse", "HEAD").strip(), _git(toy, "rev-parse", "HEAD^{tree}").strip()
+    return toy_git(toy, "rev-parse", "HEAD").strip(), toy_git(toy, "rev-parse", "HEAD^{tree}").strip()
 
 
-def test_compare_prints_both_runs_commits_and_trees_and_warns_when_a_tree_is_not_its_commits(toy, no_git_env):
+def test_compare_prints_both_runs_commits_and_trees_and_warns_when_a_tree_is_not_its_commits(toy):
     commit_a, tree_a = _commit_with_tree(toy, CALC + "\nA = 1\n", "a")
     commit_b, tree_b = _commit_with_tree(toy, CALC + "\nB = 1\n", "b")
     before = {**_result({"src/a.py": [1]}), "commit": commit_a, "tree": tree_a}
@@ -445,7 +417,7 @@ def test_compare_prints_both_runs_commits_and_trees_and_warns_when_a_tree_is_not
     assert len(warning) == 1 and "after" in warning[0] and commit_b[:7] in warning[0]
 
 
-def test_compare_says_so_when_a_run_recorded_no_tree_or_its_commit_is_unknown(toy, no_git_env):
+def test_compare_says_so_when_a_run_recorded_no_tree_or_its_commit_is_unknown(toy):
     commit, tree = _commit_with_tree(toy, CALC + "\nA = 1\n", "a")
     old = _result({"src/a.py": [1]})  # saved before trees were recorded
     unknown = {**_result({"src/a.py": [1]}), "tree": tree}  # commit 000...0 is not in the repo

@@ -19,12 +19,12 @@ as "not present", never skipped silently. Point `--root` at the checkout that ha
 Exit 0 when the report ran (a report, not a gate); 2 when CLAUDE.md has no Key references list.
 """
 import argparse
-import os
 import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+import _worktree  # scripts/ is on sys.path: it is the script's own folder (tests: conftest)
 
 REPO = Path(__file__).resolve().parent.parent
 NAME_RE = re.compile(r"\btest_\w+(?:\.py)?")
@@ -100,10 +100,8 @@ def find_stale(text, defined, files):
 
 
 def tracked_markdown(root):
-    # A pre-commit hook sets GIT_INDEX_FILE and the like; they would point git at the wrong repo.
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    out = subprocess.run(["git", "ls-files", "*.md"], cwd=root, env=env, capture_output=True, text=True, check=True)
-    return out.stdout.split()
+    # _worktree.git drops the GIT_* variables a pre-commit hook sets, which would aim git elsewhere.
+    return _worktree.git(Path(root), "ls-files", "*.md").split()
 
 
 def _scan(docs, root, defined, files):

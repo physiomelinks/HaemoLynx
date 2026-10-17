@@ -1,11 +1,10 @@
 """scripts/check_stale_test_names.py: report test names a document cites that no longer exist in tests/."""
 import importlib.util
-import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from conftest import toy_git
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "check_stale_test_names.py"
@@ -100,20 +99,13 @@ def test_defined_names_and_files_come_from_the_tests_tree(tmp_path):
     assert files == {"test_a.py", "test_b.py"}
 
 
-def _git(root, *args):
-    # A pre-commit hook sets GIT_INDEX_FILE and the like; the toy repos must not see them,
-    # or `git add` here would write into the repo being committed.
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    subprocess.run(["git", *args], cwd=root, env=env, check=True, capture_output=True)
-
-
 def test_the_tracked_list_ignores_git_variables_a_hook_leaves_in_the_environment(tmp_path, monkeypatch):
     (tmp_path / "tests").mkdir()
     (tmp_path / "CLAUDE.md").write_text("## Key references\n\n- `ref.md` — a doc.\n")
     (tmp_path / "ref.md").write_text("x\n")
     (tmp_path / "other.md").write_text("bad `test_dead`\n")
-    _git(tmp_path, "init", "-q")
-    _git(tmp_path, "add", "CLAUDE.md", "ref.md", "other.md")
+    toy_git(tmp_path, "init", "-q")
+    toy_git(tmp_path, "add", "CLAUDE.md", "ref.md", "other.md")
     monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "somewhere-else-index"))
     monkeypatch.setenv("GIT_DIR", str(tmp_path / "not-a-repo"))
     assert "other.md:1:" in cs.report(tmp_path)
@@ -126,8 +118,8 @@ def test_the_report_keeps_the_key_references_apart_from_other_tracked_docs(tmp_p
     (tmp_path / "ref.md").write_text("ok `test_alive`\nbad `test_dead_in_ref`\n")
     (tmp_path / "other.md").write_text("bad `test_dead_in_other`\n")
     (tmp_path / "untracked.md").write_text("bad `test_dead_untracked`\n")
-    _git(tmp_path, "init", "-q")
-    _git(tmp_path, "add", "CLAUDE.md", "ref.md", "other.md", "tests")
+    toy_git(tmp_path, "init", "-q")
+    toy_git(tmp_path, "add", "CLAUDE.md", "ref.md", "other.md", "tests")
     out = cs.report(tmp_path)
     key_part, other_part = out.split("Other tracked documents")
     assert "ref.md:2:" in key_part and "bad `test_dead_in_ref`" in key_part
@@ -140,5 +132,5 @@ def test_the_report_keeps_the_key_references_apart_from_other_tracked_docs(tmp_p
 def test_a_key_reference_document_that_is_not_on_disk_is_listed_as_missing_not_skipped_silently(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "CLAUDE.md").write_text("## Key references\n\n- `gitignored.md` — a doc.\n")
-    _git(tmp_path, "init", "-q")
+    toy_git(tmp_path, "init", "-q")
     assert "not present: gitignored.md" in cs.report(tmp_path)

@@ -4,6 +4,7 @@ matplotlib.use("Agg")  # Non-interactive backend for tests
 
 import csv
 import pickle
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,48 @@ import networkx as nx
 _EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 if str(_EXAMPLES) not in sys.path:
     sys.path.insert(0, str(_EXAMPLES))
+
+# scripts/ is not a package either; tests import its shared git helper, _worktree, from here.
+_SCRIPTS = _EXAMPLES.parent / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.append(str(_SCRIPTS))
+
+import _worktree  # noqa: E402
+
+# For the toy git repos the script tests build: no GIT_* variable a hook sets, and no
+# COV_CORE_*/COVERAGE_* variable a coverage run sets, may reach a toy's git or pytest.
+TOY_ENV = _worktree.clean_env("COV_CORE_", "COVERAGE_")
+
+
+def toy_git(repo, *args):
+    """git's stdout in toy repo `repo`, with a fixed author; raises on a non-zero exit."""
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=repo,
+                          env=TOY_ENV, check=True, capture_output=True, text=True).stdout
+
+
+def realdata_test(package):
+    """A toy repo's test file that reads gitignored ``examples/images/sum.txt`` through a link.
+
+    It imports ``add`` from ``<package>.calc``, is marked ``realdata``, and skips where the data
+    is missing. Its folder must stay a real one (a tracked file keeps it in every worktree).
+    """
+    return f'''\
+from pathlib import Path
+
+import pytest
+
+from {package}.calc import add
+
+DATA = Path(__file__).resolve().parents[1] / "examples" / "images" / "sum.txt"
+
+
+@pytest.mark.realdata
+@pytest.mark.skipif(not DATA.exists(), reason="needs the gitignored data")
+def test_add_matches_the_data():
+    assert DATA.parent.is_dir() and not DATA.parent.is_symlink()  # a tracked file kept it real
+    assert DATA.is_symlink(), "the data was copied, not linked"
+    assert add(2, 3) == int(DATA.read_text())
+'''
 
 
 @pytest.fixture

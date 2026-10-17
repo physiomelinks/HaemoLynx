@@ -27,7 +27,10 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# The gitignored in-repo data the realdata tests read (repo-relative).
+# The gitignored in-repo data the realdata tests read (repo-relative). specimens.py owns the
+# absolute paths under them (BATCH_RUN_ROOT, ...), but this helper cannot import it: it runs on
+# toy repos that have no ImageLynx, and must not import the package it measures. So this is the
+# one home of the folder list, and tests/test_worktree.py checks specimens' paths lie under it.
 DATA_FOLDERS = ("examples/images", "examples/outputs")
 
 
@@ -35,9 +38,20 @@ class WorktreeError(Exception):
     """git failed, so there is no worktree to run in."""
 
 
-def git(repo: Path, *args: str) -> str:
-    """git's stdout, run in `repo`. Raises WorktreeError when git exits non-zero."""
-    proc = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+def clean_env(*drop: str) -> dict[str, str]:
+    """This process's environment without the GIT_* variables, nor any starting with `drop`.
+
+    A pre-commit hook runs with GIT_DIR, GIT_INDEX_FILE and the like set; left in, they aim
+    git at the hook's repository and index whatever folder it is run in.
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", *drop))}
+
+
+def git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    """git's stdout, run in `repo` with `clean_env()` plus `env`. Raises WorktreeError when git
+    exits non-zero."""
+    proc = subprocess.run(["git", *args], cwd=repo, env={**clean_env(), **(env or {})},
+                          capture_output=True, text=True)
     if proc.returncode != 0:
         raise WorktreeError(f"git {' '.join(args[:2])} failed: {proc.stderr.strip()}")
     return proc.stdout
@@ -86,6 +100,7 @@ def snapshot(wt: Path, linked: list[str]) -> dict[str, tuple]:
 @dataclass
 class Worktree:
     path: Path
+    rev: str  # the revision as given, such as HEAD or a short hash
     commit: str  # full hash of the commit checked out
     copied: list[str] = field(default_factory=list)  # uncommitted files copied in (or deleted)
     linked: list[str] = field(default_factory=list)  # data paths symlinked in
@@ -127,7 +142,7 @@ def worktree(repo: Path, rev: str = "HEAD", *, copy_uncommitted: bool = False, f
     except WorktreeError:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
-    wt = Worktree(path, "")
+    wt = Worktree(path, rev, "")
     try:
         wt.commit = git(path, "rev-parse", "HEAD").strip()
         if copy_uncommitted:
@@ -136,13 +151,16 @@ def worktree(repo: Path, rev: str = "HEAD", *, copy_uncommitted: bool = False, f
         wt._before = snapshot(path, wt.linked)
         yield wt
     finally:
-        # Links go first, so nothing below can reach the data through them.
+        # Links go first, so nothing below can reach the data through them. An unlink fails when
+        # a run removed or replaced a link (data_changes names it). That is not raised: raising
+        # here would skip the clean-up below. rmtree removes a link it meets without following
+        # it, so the data is not reached either way.
         for rel in wt.linked:
             with contextlib.suppress(OSError):
                 (path / rel).unlink()
         # Forced twice, remove also takes a locked worktree. Its failure is not raised: raising
         # here would hide an error already on its way out, and rmtree and prune finish the job.
         subprocess.run(["git", "worktree", "remove", "--force", "--force", str(path)], cwd=repo,
-                       capture_output=True)
+                       env=clean_env(), capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
         git(repo, "worktree", "prune")

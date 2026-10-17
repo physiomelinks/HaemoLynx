@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import TOY_ENV, realdata_test, toy_git
 
 pytest.importorskip("tomllib")  # Python 3.11+; CI's 3.10 skips this file
 pytest.importorskip("coverage")  # the script's clean runs; not in the [dev] extra
@@ -23,10 +24,6 @@ mc = importlib.util.module_from_spec(_spec)
 sys.modules["mutation_check"] = mc  # dataclasses look their module up here
 _spec.loader.exec_module(mc)
 
-# A hook run sets GIT_INDEX_FILE and the like, and a coverage run sets COV_CORE_*/COVERAGE_*;
-# none of them may reach the toy repo's git or the script's own coverage runs.
-CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "COV_CORE_", "COVERAGE_"))}
-
 CALC = '''\
 def add(a, b):
     return a + b
@@ -37,11 +34,6 @@ def sign(x):
         return -1
     return 1
 '''
-
-
-def _git(repo, *args):
-    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
-                   cwd=repo, env=CLEAN_ENV, check=True, capture_output=True)
 
 
 @pytest.fixture
@@ -59,9 +51,9 @@ def toy(tmp_path):
     (repo / "src" / "toy" / "calc.py").write_text(CALC)
     (repo / "tests" / "test_calc.py").write_text(
         "from toy.calc import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n")
-    _git(repo, "init", "-q")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-q", "-m", "toy")
+    toy_git(repo, "init", "-q")
+    toy_git(repo, "add", ".")
+    toy_git(repo, "commit", "-q", "-m", "toy")
     return repo
 
 
@@ -72,7 +64,7 @@ def _run(repo, spec_text, *args):
     tmp = repo.parent / "tmp"
     tmp.mkdir()
     proc = subprocess.run([sys.executable, str(repo / "scripts" / "mutation_check.py"), str(spec), *args],
-                          cwd=repo, env={**CLEAN_ENV, "TMPDIR": str(tmp)}, capture_output=True, text=True,
+                          cwd=repo, env={**TOY_ENV, "TMPDIR": str(tmp)}, capture_output=True, text=True,
                           timeout=120)
     assert list(tmp.iterdir()) == [], "the script left temp files behind"
     return proc
@@ -100,7 +92,7 @@ def test_a_mutation_its_uncommitted_test_catches_exits_0(toy):
     name, test, expected, result, ran, failure = _row(proc.stdout, "negative read as positive")
     assert (test, expected, result, ran) == ("tests/test_sign.py::test_negative", "caught", "caught", "yes")
     assert failure == "tests/test_sign.py:5: assert 1 == -1"  # the test's file:line, then the E line
-    head = subprocess.run(["git", "rev-parse", "--short=7", "HEAD"], cwd=toy, env=CLEAN_ENV,
+    head = subprocess.run(["git", "rev-parse", "--short=7", "HEAD"], cwd=toy, env=TOY_ENV,
                           capture_output=True, text=True).stdout.strip()
     lines = proc.stdout.splitlines()
     assert lines[0] == f"Worktree: {head} + 1 uncommitted file(s) copied in, 0 data path(s) linked in."
@@ -288,7 +280,7 @@ def test_a_worktree_git_will_not_remove_still_reports_the_first_error_and_leaves
     ''')
     assert proc.returncode == 3, proc.stdout + proc.stderr
     assert "tests/test_calc.py::test_add fails before any mutation" in proc.stderr
-    worktrees = subprocess.run(["git", "worktree", "list"], cwd=toy, env=CLEAN_ENV,
+    worktrees = subprocess.run(["git", "worktree", "list"], cwd=toy, env=TOY_ENV,
                                capture_output=True, text=True).stdout
     assert len(worktrees.splitlines()) == 1, worktrees
 
@@ -334,7 +326,7 @@ def test_ctrl_c_kills_the_running_test_and_leaves_no_worktree_or_temp_files(toy)
     tmp.mkdir()
     # SIGINT back to its default, in case this run was started with it ignored (a background job).
     proc = subprocess.Popen([sys.executable, str(toy / "scripts" / "mutation_check.py"), str(spec)],
-                            cwd=toy, env={**CLEAN_ENV, "TMPDIR": str(tmp)}, stdout=subprocess.PIPE,
+                            cwd=toy, env={**TOY_ENV, "TMPDIR": str(tmp)}, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True,
                             preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
     pid = None
@@ -356,7 +348,7 @@ def test_ctrl_c_kills_the_running_test_and_leaves_no_worktree_or_temp_files(toy)
         if pid is not None:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
-    worktrees = subprocess.run(["git", "worktree", "list"], cwd=toy, env=CLEAN_ENV,
+    worktrees = subprocess.run(["git", "worktree", "list"], cwd=toy, env=TOY_ENV,
                                capture_output=True, text=True).stdout
     assert len(worktrees.splitlines()) == 1, worktrees
     assert list(tmp.iterdir()) == [], "the script left temp files behind"
@@ -366,8 +358,8 @@ def test_a_test_that_imports_the_main_checkout_instead_of_the_worktree_exits_3(t
     # A committed conftest that puts the main checkout's src/ first: the worktree's copy of
     # calc.py is never imported, so any mutation of it would "survive" for the wrong reason.
     (toy / "tests" / "conftest.py").write_text(f"import sys\nsys.path.insert(0, {str(toy / 'src')!r})\n")
-    _git(toy, "add", ".")
-    _git(toy, "commit", "-q", "-m", "conftest")
+    toy_git(toy, "add", ".")
+    toy_git(toy, "commit", "-q", "-m", "conftest")
     proc = _run(toy, '''
         [[mutation]]
         name = "operands swapped"
@@ -416,7 +408,7 @@ def test_uncommitted_edits_and_deletions_reach_the_worktree_and_the_checkout_is_
             assert not Path("tests/test_calc.py").exists()
             assert neg(3) == -3
     '''))
-    status = subprocess.run(["git", "status", "--porcelain"], cwd=toy, env=CLEAN_ENV,
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=toy, env=TOY_ENV,
                             capture_output=True, text=True).stdout
     before = {p: p.read_bytes() for p in toy.rglob("*") if p.is_file() and ".git" not in p.parts}
     proc = _run(toy, '''
@@ -431,9 +423,9 @@ def test_uncommitted_edits_and_deletions_reach_the_worktree_and_the_checkout_is_
     assert _row(proc.stdout, "neg returns x")[3:5] == ["caught", "yes"]
     after = {p: p.read_bytes() for p in toy.rglob("*") if p.is_file() and ".git" not in p.parts}
     assert after == before
-    assert subprocess.run(["git", "status", "--porcelain"], cwd=toy, env=CLEAN_ENV,
+    assert subprocess.run(["git", "status", "--porcelain"], cwd=toy, env=TOY_ENV,
                           capture_output=True, text=True).stdout == status
-    worktrees = subprocess.run(["git", "worktree", "list"], cwd=toy, env=CLEAN_ENV,
+    worktrees = subprocess.run(["git", "worktree", "list"], cwd=toy, env=TOY_ENV,
                                capture_output=True, text=True).stdout
     assert len(worktrees.splitlines()) == 1, worktrees
 
@@ -444,24 +436,11 @@ def test_a_realdata_test_reads_the_gitignored_data_linked_in_and_its_break_is_ca
     (toy / ".gitignore").write_text("__pycache__/\nexamples/images/sum.txt\nexamples/outputs/\n")
     (toy / "examples" / "images").mkdir(parents=True)
     (toy / "examples" / "images" / "README").write_text("tracked\n")
-    (toy / "tests" / "test_data.py").write_text(textwrap.dedent('''\
-        from pathlib import Path
-
-        import pytest
-
-        from toy.calc import add
-
-        DATA = Path(__file__).resolve().parents[1] / "examples" / "images" / "sum.txt"
-
-
-        @pytest.mark.skipif(not DATA.exists(), reason="needs the gitignored data")
-        def test_add_matches_the_data():
-            assert DATA.parent.is_dir() and not DATA.parent.is_symlink()  # tracked README kept it real
-            assert DATA.is_symlink(), "the data was copied, not linked"
-            assert add(2, 3) == int(DATA.read_text())
-    '''))
-    _git(toy, "add", ".")
-    _git(toy, "commit", "-q", "-m", "data test")
+    (toy / "pyproject.toml").write_text('[tool.pytest.ini_options]\npythonpath = ["src"]\n'
+                                        'markers = ["realdata: reads gitignored data"]\n')
+    (toy / "tests" / "test_data.py").write_text(realdata_test("toy"))
+    toy_git(toy, "add", ".")
+    toy_git(toy, "commit", "-q", "-m", "data test")
     data = toy / "examples" / "images" / "sum.txt"
     data.write_text("5\n")
     stamp = data.stat().st_mtime_ns
@@ -493,8 +472,8 @@ def test_data_written_through_a_link_stops_the_run(toy):
             Path("examples/outputs/new.txt").write_text("written by a test\\n")
             assert add(2, 3) == 5
     '''))
-    _git(toy, "add", ".")
-    _git(toy, "commit", "-q", "-m", "a test that writes data")
+    toy_git(toy, "add", ".")
+    toy_git(toy, "commit", "-q", "-m", "a test that writes data")
     proc = _run(toy, '''
         [[mutation]]
         name = "operands swapped"
@@ -654,7 +633,7 @@ def test_a_repo_with_no_commit_to_build_a_worktree_from_exits_3(tmp_path):
     shutil.copy(SCRIPT, repo / "scripts" / "mutation_check.py")
     shutil.copy(HELPER, repo / "scripts" / "_worktree.py")
     (repo / "src" / "m.py").write_text("x = 1\n")
-    _git(repo, "init", "-q")
+    toy_git(repo, "init", "-q")
     proc = _run(repo, '''
         [[mutation]]
         name = "n"
@@ -768,6 +747,6 @@ def test_the_error_that_failed_a_test_is_read_from_its_first_E_line(out, kind):
 
 
 def test_help_says_the_main_checkout_is_never_edited():
-    proc = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True, env=CLEAN_ENV)
+    proc = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True, env=TOY_ENV)
     assert proc.returncode == 0
     assert "never edits the main checkout" in " ".join(proc.stdout.split())

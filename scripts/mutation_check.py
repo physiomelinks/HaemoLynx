@@ -24,7 +24,7 @@ The main checkout is never edited, not even for a moment. The checks run in a te
 worktree outside the repo, made from HEAD plus every uncommitted change in this checkout
 (tracked edits, deletions, and untracked files that are not ignored, all named in the output's
 header, so a stray note copied in is plain to see). The gitignored data folders
-(``examples/images``, ``examples/outputs``) are symlinked in, not copied, so ``realdata`` tests
+(``_worktree.DATA_FOLDERS``) are symlinked in, not copied, so ``realdata`` tests
 run on the real data; a run that changes anything through those links stops with exit 3. The
 worktree is removed afterwards, also after an error or Ctrl-C. ``scripts/_worktree.py`` builds
 it, shared with ``coverage_by_module.py run --at``.
@@ -93,6 +93,12 @@ class CannotRun(Exception):
     """The checks could not be run, so there is no verdict (exit 3)."""
 
 
+# A mutated run's outcome. A spec may expect one of EXPECTS; one of NO_VERDICT makes the run exit 3.
+CAUGHT, SURVIVED, SKIPPED, TIMED_OUT, ERROR = "caught", "survived", "skipped", "timed out", "error"
+EXPECTS = (CAUGHT, SURVIVED)
+NO_VERDICT = (ERROR, SKIPPED)
+
+
 @dataclass(frozen=True)
 class Mutation:
     name: str
@@ -100,13 +106,13 @@ class Mutation:
     old: str
     new: str
     test: str
-    expect: str = "caught"
+    expect: str = CAUGHT
 
 
 @dataclass(frozen=True)
 class Result:
     mutation: Mutation
-    outcome: str  # caught, survived, skipped, timed out, error
+    outcome: str  # CAUGHT, SURVIVED, SKIPPED, TIMED_OUT or ERROR
     ran: bool
     failure: str
     error: str | None = None  # the exception type that failed the test, when pytest showed one
@@ -118,7 +124,7 @@ class Result:
     @property
     def caught_by_non_assert(self) -> bool:
         """A catch the test's own checks did not make: say, a TypeError from the broken code."""
-        return self.outcome == "caught" and self.error not in ASSERTS
+        return self.outcome == CAUGHT and self.error not in ASSERTS
 
     @property
     def result_cell(self) -> str:
@@ -128,8 +134,6 @@ class Result:
 
 
 REQUIRED = ("name", "file", "old", "new", "test")
-EXPECTS = ("caught", "survived")
-ERRORS = ("error", "skipped")  # outcomes that are no verdict: the run exits 3
 # Errors a test's own checks raise: assert (numpy.testing's too), and pytest.fail or
 # pytest.raises' DID NOT RAISE (pytest's Failed). A catch by any other error is marked.
 ASSERTS = ("AssertionError", "Failed")
@@ -185,9 +189,9 @@ def _entry_problems(entry: dict, repo: Path, names: set[str]) -> list[str]:
     problems += [f"{key} must be a string" for key, value in entry.items() if not isinstance(value, str)]
     if problems:
         return problems  # the checks below need every key, as a string
-    old, new, expect = entry["old"], entry["new"], entry.get("expect", "caught")
+    old, new, expect = entry["old"], entry["new"], entry.get("expect", CAUGHT)
     if expect not in EXPECTS:
-        problems.append(f"expect must be 'caught' or 'survived', not {expect!r}")
+        problems.append(f"expect must be {' or '.join(map(repr, EXPECTS))}, not {expect!r}")
     if entry["name"] in names:
         problems.append("name already used")
     if not old:
@@ -343,7 +347,7 @@ def mutate(wt: Path, m: Mutation, executed: dict[str, set[int]], timeout: float)
     finally:
         path.write_text(original)
     skips = _skips(out)
-    outcome = "skipped" if skips else {None: "timed out", 0: "survived", 1: "caught"}.get(code, "error")
+    outcome = SKIPPED if skips else {None: TIMED_OUT, 0: SURVIVED, 1: CAUGHT}.get(code, ERROR)
     cell, error = (skips[0], None) if skips else failure(out, m.test)
     return Result(m, outcome, ran_line(original, m.old, m.new, executed.get(m.file, set())), cell, error)
 
@@ -379,7 +383,7 @@ def failure(out: str, test: str) -> tuple[str, str | None]:
 def exit_code(results: list[Result]) -> int:
     """3 when pytest errored on a mutation or its test skipped; 1 when a result went against its
     expect or its test never ran the mutated line; else 0."""
-    if any(r.outcome in ERRORS for r in results):
+    if any(r.outcome in NO_VERDICT for r in results):
         return 3
     return int(any(not r.as_expected or not r.ran for r in results))
 
@@ -392,7 +396,7 @@ def report(results: list[Result]) -> list[str]:
                  "yes" if r.ran else "no", r.failure]
         lines.append("| " + " | ".join(c.replace("|", "\\|") for c in cells) + " |")
     expected = sum(r.as_expected for r in results)
-    errors = sum(r.outcome in ERRORS for r in results)
+    errors = sum(r.outcome in NO_VERDICT for r in results)
     summary = (f"\n{len(results)} mutation(s): {expected} as expected, {len(results) - expected} not; "
                f"{sum(not r.ran for r in results)} never ran the mutated line; {errors} error(s)")
     if non_assert := sum(r.caught_by_non_assert for r in results):
