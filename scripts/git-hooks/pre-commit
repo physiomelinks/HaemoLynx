@@ -11,7 +11,19 @@
 #    The test run is quiet: output goes to .git/hook-stamp/fast-tests.log.
 #    Bypass in an emergency with `git commit --no-verify`.
 set -euo pipefail
+self=$(realpath "$0")
 cd "$(git rev-parse --show-toplevel)"
+# Claude Code's worktree setup can make core.hooksPath absolute, so git runs the main
+# checkout's copy from every worktree. Run the committing checkout's own copy instead, so a
+# branch's pre-commit and _stamp.sh are always checked together.
+own="$PWD/scripts/git-hooks/pre-commit"
+if [ ! -f "$own" ]; then
+    echo "pre-commit: $PWD has no scripts/git-hooks/pre-commit, so no hook ran." >&2
+    exit 0
+fi
+if [ "$(realpath "$own")" != "$self" ]; then
+    exec "$own" "$@"
+fi
 PY=venv/bin/python
 [ -x "$PY" ] || PY=python3
 . scripts/git-hooks/_stamp.sh
