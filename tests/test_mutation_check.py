@@ -211,6 +211,60 @@ def test_a_test_that_fails_before_any_mutation_exits_3_with_no_table(toy):
     assert "tests/test_calc.py::test_add fails before any mutation (pytest exit 1)" in proc.stderr
 
 
+def test_a_test_that_skips_before_any_mutation_exits_3_naming_the_skip_reason(toy):
+    # A skip also exits 0: read as a pass, the mutated run's skip would then read as "survived".
+    (toy / "tests" / "test_calc.py").write_text(textwrap.dedent('''\
+        import pytest
+
+
+        @pytest.mark.skip(reason="the real data is not on disk")
+        def test_add():
+            pass
+    '''))
+    proc = _run(toy, '''
+        [[mutation]]
+        name = "operands swapped"
+        file = "src/toy/calc.py"
+        old = "return a + b"
+        new = "return b + a"
+        test = "tests/test_calc.py::test_add"
+        expect = "survived"
+    ''')
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "| operands swapped |" not in proc.stdout
+    assert "tests/test_calc.py::test_add skips before any mutation" in proc.stderr
+    assert "the real data is not on disk" in proc.stderr
+
+
+def test_a_mutation_its_test_skips_on_is_skipped_not_survived_and_exits_3(toy):
+    (toy / "tests" / "test_calc.py").write_text(textwrap.dedent('''\
+        import pytest
+
+        from toy.calc import add
+
+
+        def test_add():
+            if add(0, 0) != 0:
+                pytest.skip("add looks broken, so the data is missing")
+            assert add(2, 3) == 5
+    '''))
+    proc = _run(toy, '''
+        [[mutation]]
+        name = "off by one"
+        file = "src/toy/calc.py"
+        old = "return a + b"
+        new = "return a + b + 1"
+        test = "tests/test_calc.py::test_add"
+        expect = "survived"
+    ''')
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    name, test, expected, result, ran, failure = _row(proc.stdout, "off by one")
+    assert (expected, result, ran) == ("survived", "skipped", "yes")
+    assert "add looks broken, so the data is missing" in failure
+    assert proc.stdout.splitlines()[-1] == (
+        "1 mutation(s): 0 as expected, 1 not; 0 never ran the mutated line; 1 error(s).")
+
+
 def test_a_worktree_git_will_not_remove_still_reports_the_first_error_and_leaves_nothing_behind(toy):
     # A single --force cannot remove a locked worktree; that must not hide why the run stopped.
     (toy / "tests" / "test_calc.py").write_text(textwrap.dedent('''\
