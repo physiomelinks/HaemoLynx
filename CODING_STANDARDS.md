@@ -42,3 +42,10 @@ a literal that should be imported) is fixed in the same change.
 
 A finding goes to a row in the current `pipeline_rerun_*_notes.md` package table only when
 fixing it changes behaviour or output, or needs a re-run. Say so in the review.
+
+## 4. A claim in a new test comment is backed by a printed value
+
+A test comment that states a position, count or value ("the cell farthest below the capillary",
+"sits on cell faces", "three branches") is written only after the value is printed in the session.
+Ticket 15 had a comment naming the farthest cell, but it was a tied corner; another said a line
+sat on cell faces, which was only partly true. Review caught both.
