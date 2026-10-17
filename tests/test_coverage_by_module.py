@@ -373,3 +373,100 @@ def test_run_fails_when_the_tree_changes_during_the_run(toy):
     assert (result["changed_during_run"], result["dirty"]) == (True, True)
     code, lines = cbm.compare(result, result)
     assert (code, lines[-1]) == (3, "cannot compare: the before run's tracked files changed during the run")
+
+
+# --- the tree a run measured: a commit, a tree id, a dirty flag -------------------------------
+
+
+def test_a_clean_run_records_the_commit_and_the_tree_of_that_commit(toy):
+    (toy / "scratch.txt").write_text("untracked, so not part of the measured tree\n")
+    out = toy.parent / "run.json"
+    proc = _cbm(toy, "run", str(out), "-q", "-p", "no:cacheprovider", "tests/test_calc.py")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    result = json.loads(out.read_text())
+    assert result["commit"] == _git(toy, "rev-parse", "HEAD").strip()
+    assert result["tree"] == _git(toy, "rev-parse", "HEAD^{tree}").strip()
+    assert result["dirty"] is False
+
+
+def test_a_dirty_run_records_the_tree_it_measured_not_the_commits(toy):
+    (toy / "src" / "ImageLynx" / "calc.py").write_text(CALC + "\nX = 1\n")
+    out = toy.parent / "run.json"
+    proc = _cbm(toy, "run", "--allow-dirty", str(out), "-q", "-p", "no:cacheprovider", "tests/test_calc.py")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    result = json.loads(out.read_text())
+    head_tree = _git(toy, "rev-parse", "HEAD^{tree}").strip()
+    assert (result["commit"], result["dirty"]) == (_git(toy, "rev-parse", "HEAD").strip(), True)
+    assert result["tree"] != head_tree
+    # Committing the same edit gives a commit whose tree is the one the run recorded.
+    _git(toy, "commit", "-q", "-am", "the edit")
+    assert result["tree"] == _git(toy, "rev-parse", "HEAD^{tree}").strip()
+
+
+def test_run_at_records_the_tree_of_that_commit_whatever_the_checkout_holds(toy):
+    first = _git(toy, "rev-parse", "HEAD").strip()
+    _commit(toy, "src/ImageLynx/calc.py", CALC + "\nX = 1\n", "later")
+    (toy / "src" / "ImageLynx" / "calc.py").write_text("dirty\n")
+    out = toy.parent / "run.json"
+    proc = _cbm(toy, "run", "--at", first, str(out), "-q", "-p", "no:cacheprovider", "tests/test_calc.py")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads(out.read_text())["tree"] == _git(toy, "rev-parse", f"{first}^{{tree}}").strip()
+
+
+@pytest.fixture
+def no_git_env(monkeypatch):
+    """compare runs git in this process: a hook's GIT_INDEX_FILE/GIT_DIR must not aim it at the real repo."""
+    for key in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(key)
+
+
+def _commit_with_tree(toy, text, message):
+    """(commit, tree) of a new commit in `toy`."""
+    _commit(toy, "src/ImageLynx/calc.py", text, message)
+    return _git(toy, "rev-parse", "HEAD").strip(), _git(toy, "rev-parse", "HEAD^{tree}").strip()
+
+
+def test_compare_prints_both_runs_commits_and_trees_and_warns_when_a_tree_is_not_its_commits(toy, no_git_env):
+    commit_a, tree_a = _commit_with_tree(toy, CALC + "\nA = 1\n", "a")
+    commit_b, tree_b = _commit_with_tree(toy, CALC + "\nB = 1\n", "b")
+    before = {**_result({"src/a.py": [1]}), "commit": commit_a, "tree": tree_a}
+    clean = {**_result({"src/a.py": [1]}), "commit": commit_b, "tree": tree_b}
+    code, report = cbm.compare(before, clean, repo=toy)
+    assert code == 0
+    assert f"before: {commit_a[:7]}, tree {tree_a[:7]}" in report
+    assert f"after:  {commit_b[:7]}, tree {tree_b[:7]}" in report
+    assert not any("WARNING" in line for line in report)
+
+    # The after run says it measured commit b but holds commit a's tree.
+    dirty = {**clean, "tree": tree_a, "dirty": True}
+    code, report = cbm.compare(before, dirty, repo=toy)
+    assert code == 0
+    warning = [line for line in report if line.startswith("WARNING")]
+    assert len(warning) == 1 and "after" in warning[0] and commit_b[:7] in warning[0]
+
+
+def test_compare_says_so_when_a_run_recorded_no_tree_or_its_commit_is_unknown(toy, no_git_env):
+    commit, tree = _commit_with_tree(toy, CALC + "\nA = 1\n", "a")
+    old = _result({"src/a.py": [1]})  # saved before trees were recorded
+    unknown = {**_result({"src/a.py": [1]}), "tree": tree}  # commit 000...0 is not in the repo
+    known = {**_result({"src/a.py": [1]}), "commit": commit, "tree": tree}
+    _, report = cbm.compare(old, known, repo=toy)
+    assert "before: 0000000, tree not recorded" in report
+    _, report = cbm.compare(known, unknown, repo=toy)
+    assert any(line.startswith("WARNING") and "0000000" in line and "not in this repository" in line
+               for line in report)
+
+
+def test_check_says_whether_a_runs_tree_matches_a_commit(toy):
+    commit_a, tree_a = _commit_with_tree(toy, CALC + "\nA = 1\n", "a")
+    commit_b, _ = _commit_with_tree(toy, CALC + "\nB = 1\n", "b")
+    run = toy.parent / "run.json"
+    run.write_text(json.dumps({**_result({}), "commit": commit_a, "tree": tree_a}))
+    proc = _cbm(toy, "check", str(run), commit_a)
+    assert (proc.returncode, proc.stdout.strip()) == (0, f"tree {tree_a[:7]} is the tree of {commit_a[:7]}")
+    proc = _cbm(toy, "check", str(run), commit_b)
+    assert proc.returncode == 1 and f"is not the tree of {commit_b[:7]}" in proc.stdout
+    assert _cbm(toy, "check", str(run), "no-such-rev").returncode == 2
+    run.write_text(json.dumps(_result({})))
+    proc = _cbm(toy, "check", str(run), commit_a)
+    assert proc.returncode == 3 and "no tree recorded" in proc.stderr
