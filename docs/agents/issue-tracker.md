@@ -20,6 +20,13 @@ After the commit that implements a ticket, set its `Status:` line to `done (<has
 - A follow-up found while working a ticket (something out of its scope) goes into an open ticket's acceptance criteria, or into a new ticket. A note in `## Comments` alone is not enough: it strands the follow-up in a ticket that is about to close.
 - Write ticket text with the Edit tool or a quoted heredoc (`<<'EOF'`), never an unquoted one, which eats the backtick spans.
 
+## Mutation evidence
+
+A ticket that shows its tests fail against a broken version of the behaviour keeps that evidence in the repo, run with `scripts/mutation_check.py`.
+
+- **Always save the spec.** It lives at `.scratch/<feature>/issues/NN-mutations.toml` (`NN` is the ticket number), is written before the runs, and is never a scratchpad file that is thrown away. The ticket's `## Answer` names it in the `Run:` line.
+- **Keep a break that survived.** If a break passes within the test's tolerance, it stays in the spec with `expect = "survived"` and a comment saying why it is too small to be seen. The bigger break that is caught goes next to it as its own `[[mutation]]`. Never replace the surviving break with the bigger one.
+
 ## When a skill says "publish to the issue tracker"
 
 Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
