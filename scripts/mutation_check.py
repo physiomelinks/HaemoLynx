@@ -27,9 +27,12 @@ subprocesses it starts traced too. It must pass. The main checkout's copies of t
 files are measured as well: a test that ran one of them imported the wrong tree, and the run
 stops. Then each mutation is applied, its test run alone without coverage, and the file put
 back. No run writes bytecode, so a same-size edit is never masked by a cached ``.pyc``.
-Results: ``caught`` (pytest exit 1), ``survived`` (exit 0), ``timed out``, ``error`` (any other
-pytest exit, such as a collection error; not a catch). ``timed out`` matches neither
-``expect``: a hang is a finding to look at, whatever the spec expected.
+Results: ``caught`` (pytest exit 1), ``survived`` (exit 0), ``skipped`` (the test skipped, which
+pytest also reports as exit 0; the first failure cell then holds pytest's ``SKIPPED`` line with
+the reason), ``timed out``, ``error`` (any other pytest exit, such as a collection error; not a
+catch). ``timed out`` matches neither ``expect``: a hang is a finding to look at, whatever the
+spec expected. A skip is no verdict, so ``skipped`` counts as an error, as does a skip in the
+clean run (a ``realdata`` test skips where the gitignored data is missing).
 
 ``Ran line`` says whether the clean run ran a statement on a line the mutation changes
 (unchanged context lines in ``old`` don't count); the clean run includes import time, so a
@@ -42,8 +45,8 @@ a summary line.
 
 Exit code: 0 when every result matches its ``expect`` and every test ran its mutated line;
 1 when one does not; 2 on a usage error (the spec, or --only/--timeout); 3 when the checks
-could not run (git failed, a test failed or timed out before any mutation, a test imported
-the main checkout, or pytest errored on a mutation).
+could not run (git failed, a test failed, skipped or timed out before any mutation, a test
+imported the main checkout, or pytest errored on or skipped a mutated run).
 """
 from __future__ import annotations
 
@@ -86,7 +89,7 @@ class Mutation:
 @dataclass(frozen=True)
 class Result:
     mutation: Mutation
-    outcome: str  # caught, survived, timed out, error
+    outcome: str  # caught, survived, skipped, timed out, error
     ran: bool
     failure: str
 
@@ -97,6 +100,7 @@ class Result:
 
 REQUIRED = ("name", "file", "old", "new", "test")
 EXPECTS = ("caught", "survived")
+ERRORS = ("error", "skipped")  # outcomes that are no verdict: the run exits 3
 
 
 def load_spec(path: Path, repo: Path, only: list[str] | None = None) -> list[Mutation]:
@@ -237,7 +241,9 @@ def worktree(repo: Path):
 
 def _pytest(wt: Path, test: str, timeout: float, prefix: tuple[str, ...] = ()) -> tuple[int | None, str]:
     """(pytest's exit code, or None on a timeout; its output) for `test` run alone in `wt`."""
-    cmd = [sys.executable, *prefix, "-m", "pytest", test, "-q", "-p", "no:cacheprovider", "--tb=short"]
+    # -rfEs: pytest's default short summary (fE) plus one SKIPPED line, with its reason, per skip.
+    cmd = [sys.executable, *prefix, "-m", "pytest", test, "-q", "-p", "no:cacheprovider", "--tb=short",
+           "-rfEs"]
     # No bytecode: Python trusts a cached .pyc when the source's mtime (to the second) and size
     # match, so a same-size mutation would otherwise run the code it replaced.
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
@@ -258,6 +264,11 @@ def _pytest(wt: Path, test: str, timeout: float, prefix: tuple[str, ...] = ()) -
     return proc.returncode, out
 
 
+def _skips(out: str) -> list[str]:
+    """pytest's SKIPPED summary lines in `out` (one per skip, with its reason; needs -rs)."""
+    return [line.strip() for line in out.splitlines() if line.startswith("SKIPPED ")]
+
+
 def clean_run(wt: Path, test: str, files: list[str], timeout: float, repo: Path) -> dict[str, set[int]]:
     """Run `test` alone under coverage on the unmutated worktree; per file, the lines it ran.
 
@@ -276,6 +287,9 @@ def clean_run(wt: Path, test: str, files: list[str], timeout: float, repo: Path)
         if code != 0:
             why = f"times out ({timeout:g} s)" if code is None else f"fails before any mutation (pytest exit {code})"
             raise CannotRun(f"{test} {why}:\n{out}")
+        if skips := _skips(out):
+            raise CannotRun(f"{test} skips before any mutation, so no mutation of it can be judged:\n"
+                            + "\n".join(skips))
         cov = coverage.Coverage(config_file=str(rc))
         cov.combine(data_paths=[tmp])
         data = cov.get_data()
@@ -300,16 +314,18 @@ def mutate(wt: Path, m: Mutation, executed: dict[str, set[int]], timeout: float)
         code, out = _pytest(wt, m.test, timeout)
     finally:
         path.write_text(original)
-    outcome = {None: "timed out", 0: "survived", 1: "caught"}.get(code, "error")
+    skips = _skips(out)
+    outcome = "skipped" if skips else {None: "timed out", 0: "survived", 1: "caught"}.get(code, "error")
     lines = out.splitlines()
-    failure = next((line.strip() for line in lines if line.startswith("E ")), lines[-1] if lines else "")
+    failure = skips[0] if skips else next((line.strip() for line in lines if line.startswith("E ")),
+                                          lines[-1] if lines else "")
     return Result(m, outcome, ran_line(original, m.old, m.new, executed.get(m.file, set())), failure)
 
 
 def exit_code(results: list[Result]) -> int:
-    """3 when pytest errored on a mutation; 1 when a result went against its expect or its test
-    never ran the mutated line; else 0."""
-    if any(r.outcome == "error" for r in results):
+    """3 when pytest errored on a mutation or its test skipped; 1 when a result went against its
+    expect or its test never ran the mutated line; else 0."""
+    if any(r.outcome in ERRORS for r in results):
         return 3
     return int(any(not r.as_expected or not r.ran for r in results))
 
@@ -322,7 +338,7 @@ def report(results: list[Result]) -> list[str]:
                  "yes" if r.ran else "no", r.failure]
         lines.append("| " + " | ".join(c.replace("|", "\\|") for c in cells) + " |")
     expected = sum(r.as_expected for r in results)
-    errors = sum(r.outcome == "error" for r in results)
+    errors = sum(r.outcome in ERRORS for r in results)
     lines.append(f"\n{len(results)} mutation(s): {expected} as expected, {len(results) - expected} not; "
                  f"{sum(not r.ran for r in results)} never ran the mutated line; {errors} error(s).")
     return lines
