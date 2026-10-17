@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from ImageLynx.graph.boundaries import select_boundary_terminal_nodes
+from ImageLynx.specimens import PROCESSING_VOXEL_UM
 from ImageLynx.statistics.benchmarking import (
     evaluate_completeness_and_overpruning,
     redilate_skeleton_to_volume,
@@ -21,7 +22,7 @@ from ImageLynx.statistics.benchmarking import (
 # The anisotropy is on z, not x: the raw TIFF's ImageJ metadata gives a slice spacing of
 # 1.86386 um and an in-plane pixel size of 1.86600 um in both y and x. This was previously
 # written (1.8660, 1.8660, 1.8639), which put the odd axis on x under a (z, y, x) reading.
-SPACING = (1.8639, 1.8660, 1.8660)
+SPACING = PROCESSING_VOXEL_UM
 SHAPE = (20, 20, 20)
 
 # A straight centreline along z at voxel (y, x) = (10, 10), spanning voxels z = 5..15.
@@ -197,8 +198,8 @@ def test_reconnect_thresholds_are_declared_in_microns():
     )
 
     # 3 voxels and 1.5 voxels at the measured 1.866 um in-plane pixel size.
-    assert RECONNECT_THRESHOLD_UM == pytest.approx(3 * 1.866, abs=0.05)
-    assert CONSERVATIVE_RECONNECT_CAP_UM == pytest.approx(1.5 * 1.866, abs=0.05)
+    assert RECONNECT_THRESHOLD_UM == pytest.approx(3 * PROCESSING_VOXEL_UM[1], abs=0.05)
+    assert CONSERVATIVE_RECONNECT_CAP_UM == pytest.approx(1.5 * PROCESSING_VOXEL_UM[1], abs=0.05)
 
 
 def test_both_reconnection_entry_points_default_to_the_same_physical_distance():
