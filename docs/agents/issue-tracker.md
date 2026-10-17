@@ -12,7 +12,11 @@ Issues and specs for this repo live as markdown files in `.scratch/`. `.scratch/
 
 ## Closing a ticket
 
-After the commit that implements a ticket, set its `Status:` line to `done (<hash>)`, using every hash if it took more than one commit. When the last ticket of a feature closes, set `Status: done` in that feature's `spec.md` too. These are the closing states for implementation tickets; the roles in `triage-labels.md` cover only the states before work starts. Also tick the ticket's acceptance boxes, then run `venv/bin/python .scratch/test-suite-cleanup/build_progress.py` (for that feature; it warns on any `done` ticket with unticked boxes).
+After the commit that implements a ticket, set its `Status:` line to `done (<hash>)`, using every hash if it took more than one commit. When the last ticket of a feature closes, set `Status: done` in that feature's `spec.md` too. These are the closing states for implementation tickets; the roles in `triage-labels.md` cover only the states before work starts. Also tick the ticket's acceptance boxes, following these rules, then run `venv/bin/python .scratch/test-suite-cleanup/build_progress.py` (for that feature; it warns on any `done` ticket with unticked boxes).
+
+- Tick each box on its own, and only when a line in the ticket's `## Answer` meets it. Never tick them all with one bulk replace of `- [ ]` by `- [x]`.
+- A box that waits on another ticket stays `[ ]`, with "(checked in NN)" after it.
+- Write ticket text with the Edit tool or a quoted heredoc (`<<'EOF'`), never an unquoted one, which eats the backtick spans.
 
 ## When a skill says "publish to the issue tracker"
 
