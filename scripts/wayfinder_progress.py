@@ -172,10 +172,11 @@ def write_page(here):
         return f'<a href="#t{num}">{html.escape(t["title"])}</a>' if t else num
 
     rows = []
+    no_rec = '<span class="muted">see session</span>'  # outside the f-string: Python < 3.12 forbids a backslash in one
     for t in tickets:
         blk = ", ".join(name(b) for b in t["blockers"]) or "none"
         rows.append(f'<tr><td><a href="#t{t["num"]}">{html.escape(t["title"])}</a></td><td>{html.escape(t["type"])}</td>'
-                    f'<td>{badge(t)}</td><td>{blk}</td><td>{t["rec"] or "<span class=\"muted\">see session</span>"}</td></tr>')
+                    f'<td>{badge(t)}</td><td>{blk}</td><td>{t["rec"] or no_rec}</td></tr>')
 
     cards = []
     for t in tickets:
