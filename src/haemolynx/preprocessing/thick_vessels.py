@@ -24,7 +24,8 @@ from __future__ import annotations
 import gc
 import logging
 import time
-from typing import Any, Iterable, Mapping
+from contextlib import contextmanager
+from typing import Any, Iterable, Iterator, Mapping
 
 import numpy as np
 from scipy.ndimage import (
@@ -40,6 +41,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import cKDTree
 
+from . import blockwise_edt, memmap_support, slab_labels
 from .skeleton import fill_binary_holes, skeletonize_by_component, skeletonize_volume
 
 logger = logging.getLogger(__name__)
@@ -131,6 +133,100 @@ class _ForegroundIndex:
             return int(out[0])
         return out
 
+    @property
+    def keys(self) -> np.ndarray:
+        """The foreground's packed C-order keys, sorted."""
+        return self._keys
+
+
+def _box_members(
+    keys: np.ndarray, shape: tuple[int, int, int], box: tuple[slice, slice, slice]
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(positions, ids)``: where the voxels of the sorted C-order *keys*
+    (packed as :class:`_ForegroundIndex` packs them) fall inside *box* -- each
+    one's flat C-order position in the box, and its index into *keys*."""
+    (z0, z1), (y0, y1), (x0, x1) = (
+        s.indices(int(n))[:2] for s, n in zip(box, shape)
+    )
+    width = max(0, x1 - x0)
+    empty = np.empty(0, dtype=np.int64)
+    if z1 <= z0 or y1 <= y0 or width == 0 or not len(keys):
+        return empty, empty
+    zz, yy = np.meshgrid(
+        np.arange(z0, z1, dtype=np.int64), np.arange(y0, y1, dtype=np.int64), indexing="ij"
+    )
+    starts = (zz.reshape(-1) * int(shape[1]) + yy.reshape(-1)) * int(shape[2]) + x0
+    first = np.searchsorted(keys, starts)
+    counts = np.searchsorted(keys, starts + width) - first
+    total = int(counts.sum())
+    if total == 0:
+        return empty, empty
+    row = np.repeat(np.arange(len(starts), dtype=np.int64), counts)
+    ids = np.arange(total, dtype=np.int64) - np.repeat(np.cumsum(counts) - counts, counts)
+    ids += np.repeat(first, counts)
+    return row * width + (keys[ids] - starts[row]), ids
+
+
+class _VoxelBoxes:
+    """A set of voxels, read a box at a time as a dense boolean array -- what
+    code that slices a whole-volume mask (``mask[z0:z1, y0:y1, x0:x1]``,
+    ``mask.shape``) needs, without the volume.
+
+    *keys* are the voxels' packed C-order keys, sorted; *members*, when
+    given, is a boolean per key, and only keys marked True are in the set
+    (it may change between reads).
+    """
+
+    def __init__(self, keys: np.ndarray, shape, members: np.ndarray | None = None):
+        self._keys = keys
+        self.shape = tuple(int(s) for s in shape)
+        self._members = members
+
+    def __getitem__(self, box) -> np.ndarray:
+        box = tuple(slice(*s.indices(n)[:2]) for s, n in zip(box, self.shape))
+        out = np.zeros(tuple(max(0, s.stop - s.start) for s in box), dtype=bool)
+        positions, ids = _box_members(self._keys, self.shape, box)
+        if self._members is not None:
+            positions = positions[self._members[ids]]
+        out.reshape(-1)[positions] = True
+        return out
+
+
+class _Both:
+    """``a & b`` of two whole-volume masks, read a box at a time."""
+
+    def __init__(self, a: np.ndarray, b: np.ndarray):
+        self._a = a
+        self._b = b
+        self.shape = tuple(a.shape)
+
+    def __getitem__(self, box) -> np.ndarray:
+        return np.asarray(self._a[box], dtype=bool) & np.asarray(self._b[box], dtype=bool)
+
+
+def _keys_of(coords: np.ndarray, shape) -> np.ndarray:
+    coords = np.asarray(coords, dtype=np.int64)
+    return (coords[:, 0] * int(shape[1]) + coords[:, 1]) * int(shape[2]) + coords[:, 2]
+
+
+def _coords_of(keys: np.ndarray, shape) -> np.ndarray:
+    return np.column_stack(np.unravel_index(np.asarray(keys, dtype=np.int64), tuple(shape))).astype(
+        np.intp, copy=False
+    )
+
+
+def _keys_where(planes, shape, *, block_voxels: int | None = None) -> np.ndarray:
+    """Packed C-order keys of the voxels where ``planes(z0, z1)`` is True,
+    read a slab of z-planes at a time."""
+    plane = int(shape[1]) * int(shape[2])
+    step = memmap_support.slab_step(shape, block_voxels)
+    parts = [
+        np.flatnonzero(np.asarray(planes(z0, min(z0 + step, shape[0])), dtype=bool)).astype(np.int64)
+        + z0 * plane
+        for z0 in range(0, int(shape[0]), step)
+    ]
+    return np.concatenate(parts) if parts else np.empty(0, dtype=np.int64)
+
 
 def _aabb_slices(
     p0: tuple[int, int, int],
@@ -193,47 +289,6 @@ def inscribed_radius_map(
     if not mask.any():
         return np.zeros(mask.shape, dtype=np.float64)
     return distance_transform_edt(mask, sampling=tuple(float(v) for v in voxel_size_zyx))
-
-
-def _distance_um(
-    features: np.ndarray,
-    voxel_size_zyx: tuple[float, float, float],
-    *,
-    use_memmap: bool,
-    memmap_directory,
-    owned: list,
-) -> np.ndarray:
-    """``distance_transform_edt(features, sampling=voxel_size_zyx)``: each
-    voxel's distance in microns to the nearest zero of *features*.
-
-    Under *use_memmap* (the low-RAM option) it is written one padded block at
-    a time into a disk-backed array appended to *owned*, for the caller to
-    release: scipy's own whole-array call holds ~70 bytes of RAM per voxel
-    whatever it writes into, which on a whole-brain crop is the largest
-    allocation this module makes.
-    """
-    sampling = tuple(float(v) for v in voxel_size_zyx)
-    if not use_memmap:
-        return distance_transform_edt(features, sampling=sampling)
-    from .memmap_support import new_memmap_array
-    from .pointwise_distance import distance_transform_edt_blockwise
-
-    out = new_memmap_array(features.shape, np.float64, directory=memmap_directory)
-    owned.append(out)
-    try:
-        distance_transform_edt_blockwise(features, out, sampling=sampling)
-    except ValueError:
-        # Every voxel on one side: scipy's own result is not a distance to
-        # anything, and only its whole-array call reproduces it.
-        distance_transform_edt(features, sampling=sampling, distances=out)
-    return out
-
-
-def _release_all(owned: list) -> None:
-    from .memmap_support import release_memmap_array
-
-    while owned:
-        release_memmap_array(owned.pop())
 
 
 def max_inscribed_radius_um(
@@ -345,34 +400,35 @@ def thick_vessel_object_mask(
     roughness just past the mask's own edge is still absorbed the same way
     -- the result is not strictly confined to the mask's own footprint.
 
-    *use_memmap* (the low-RAM option) computes both distance transforms one
-    block at a time into disk-backed arrays (see :func:`_distance_um`); the
-    boolean masks and the result stay in RAM at one byte per voxel. Same
-    result either way.
+    *use_memmap* (the low-RAM option) never makes a distance map: every
+    distance here is only compared with a radius of a few microns, and a
+    block's own distance transform with that much context answers each
+    comparison exactly as the whole one does (:mod:`.blockwise_edt`). The
+    two radius gates go to one byte a voxel on disk, the geodesic body is
+    found by labelling that a slab at a time (:mod:`.slab_labels`), and the
+    wall is measured only in blocks with body within reach. Only the result
+    is a volume in RAM. Same result either way.
     """
     mask = np.asarray(binary, dtype=bool)
     out = np.zeros(mask.shape, dtype=bool)
     if min_radius_um <= 0.0 or not mask.any():
         return out
-    owned: list = []
-    try:
+    arguments = dict(
+        min_radius_um=float(min_radius_um),
+        voxel_size_zyx=voxel_size_zyx,
+        wall_absorption_um=wall_absorption_um,
+        restrict_to_mask=restrict_to_mask,
+    )
+    if use_memmap:
+        _thick_vessel_object_mask_by_block(out, mask, **arguments, memmap_directory=memmap_directory)
+    else:
+        sampling = tuple(float(v) for v in voxel_size_zyx)
         _thick_vessel_object_mask_into(
             out,
             mask,
-            min_radius_um=float(min_radius_um),
-            voxel_size_zyx=voxel_size_zyx,
-            wall_absorption_um=wall_absorption_um,
-            restrict_to_mask=restrict_to_mask,
-            distance=lambda features: _distance_um(
-                features,
-                voxel_size_zyx,
-                use_memmap=use_memmap,
-                memmap_directory=memmap_directory,
-                owned=owned,
-            ),
+            **arguments,
+            distance=lambda features: distance_transform_edt(features, sampling=sampling),
         )
-    finally:
-        _release_all(owned)
     return out
 
 
@@ -455,6 +511,185 @@ def _thick_vessel_object_mask_into(
         time.perf_counter() - t2,
         int(out.sum()),
     )
+
+
+def _thick_vessel_object_mask_by_block(
+    out: np.ndarray,
+    mask: np.ndarray,
+    *,
+    min_radius_um: float,
+    voxel_size_zyx: tuple[float, float, float],
+    wall_absorption_um: float | None,
+    restrict_to_mask: np.ndarray | None,
+    memmap_directory,
+) -> None:
+    """:func:`_thick_vessel_object_mask_into` for the low-RAM option: the same
+    three steps on the same crop, a block or a slab at a time.
+
+    1. Each block's radius map with ``ceil(min_radius_um / spacing) + 1``
+       voxels of context decides both gates (radius at least *min_radius_um*,
+       and at least half that) as the whole crop's does, written as one byte a
+       voxel to disk: 2 for the core, 1 for the rest of the corridor.
+    2. ``binary_propagation`` of the core through the corridor is the
+       corridor's face-connected components that hold a core voxel: labelled
+       a slab at a time, then written over the codes as the body.
+    3. The wall, with context for *wall_absorption_um*, only where body lies
+       within reach of the block.
+    """
+    bbox = _foreground_bbox(mask, pad=1)
+    if bbox is None:
+        return
+    crop = mask[bbox]
+    n_foreground = int(np.count_nonzero(crop))
+    logger.info(
+        "thick_vessel_object_mask: cropped to %s (%d voxels, %d foreground) "
+        "from input shape %s",
+        crop.shape,
+        int(crop.size),
+        n_foreground,
+        mask.shape,
+    )
+    sampling = tuple(float(v) for v in voxel_size_zyx)
+    if n_foreground == crop.size:
+        # No background anywhere: scipy's radius map is not a distance to
+        # anything, and only its whole-array call reproduces it.
+        _thick_vessel_object_mask_into(
+            out,
+            mask,
+            min_radius_um=min_radius_um,
+            voxel_size_zyx=voxel_size_zyx,
+            wall_absorption_um=wall_absorption_um,
+            restrict_to_mask=restrict_to_mask,
+            distance=lambda features: distance_transform_edt(features, sampling=sampling),
+        )
+        return
+    wall_radius = (
+        0.5 * float(min_radius_um)
+        if wall_absorption_um is None
+        else max(0.0, float(wall_absorption_um))
+    )
+    out_crop = out[bbox]
+
+    if restrict_to_mask is not None:
+        restrict = np.asarray(restrict_to_mask, dtype=bool)[bbox]
+        t0 = time.perf_counter()
+        _absorb_wall_by_block(
+            out_crop,
+            crop,
+            lambda box: np.asarray(crop[box], dtype=bool) & np.asarray(restrict[box], dtype=bool),
+            sampling=sampling,
+            wall_radius=wall_radius,
+        )
+        logger.info(
+            "thick_vessel_object_mask: restricted to mask directly (no "
+            "radius test), wall distance transform took %.2fs (%d fat "
+            "voxels total)",
+            time.perf_counter() - t0,
+            int(np.count_nonzero(out_crop)),
+        )
+        return
+
+    codes = memmap_support.new_memmap_array(crop.shape, np.uint8, directory=memmap_directory)
+    try:
+        t0 = time.perf_counter()
+        n_core = 0
+        gate = 0.5 * float(min_radius_um)
+        for core, where, distance in blockwise_edt.near_distances_by_block(
+            lambda box: crop[box],
+            lambda box: crop[box],
+            crop.shape,
+            sampling=sampling,
+            reach=float(min_radius_um),
+        ):
+            code = np.zeros(where.shape, dtype=np.uint8)
+            in_core = distance >= float(min_radius_um)
+            code[where] = np.where(in_core, 2, np.where(distance >= gate, 1, 0))
+            codes[core] = code
+            n_core += int(np.count_nonzero(in_core))
+        logger.info(
+            "thick_vessel_object_mask: inscribed radius map took %.2fs (%d core voxels)",
+            time.perf_counter() - t0,
+            n_core,
+        )
+        if n_core == 0:
+            return
+        t1 = time.perf_counter()
+        n_body = _propagate_core_by_slab(codes)
+        logger.info(
+            "thick_vessel_object_mask: geodesic body propagation took %.2fs (%d body voxels)",
+            time.perf_counter() - t1,
+            n_body,
+        )
+        t2 = time.perf_counter()
+        _absorb_wall_by_block(
+            out_crop,
+            crop,
+            lambda box: np.asarray(codes[box]) == 1,
+            sampling=sampling,
+            wall_radius=wall_radius,
+        )
+        logger.info(
+            "thick_vessel_object_mask: wall distance transform took %.2fs (%d fat voxels total)",
+            time.perf_counter() - t2,
+            int(np.count_nonzero(out_crop)),
+        )
+    finally:
+        memmap_support.release_memmap_array(codes)
+
+
+def _propagate_core_by_slab(codes: np.ndarray) -> int:
+    """``binary_propagation(codes == 2, mask=codes >= 1)``, written over
+    *codes* as 1 on the result and 0 elsewhere; returns its voxel count.
+
+    Propagation through scipy's default structure reaches exactly the
+    face-connected components of the mask that hold a seed, so those are
+    found by labelling a slab at a time and labelling it again to write.
+    """
+    structure = generate_binary_structure(3, 1)
+
+    def corridor(z0, z1):
+        return np.asarray(codes[z0:z1]) >= 1
+
+    seeded = []
+
+    def visit(z0, z1, labels, offset):
+        found = labels[np.asarray(codes[z0:z1]) == 2]
+        if found.size:
+            seeded.append(np.unique(found).astype(np.int64) + offset)
+
+    components = slab_labels.label_by_slab(corridor, codes.shape, structure=structure, visit=visit)
+    keep = np.zeros(components.count + 1, dtype=bool)
+    if seeded:
+        keep[components.number[np.concatenate(seeded)]] = True
+    n_body = 0
+    for z0, z1, labels, offset in components.replay(corridor):
+        body = keep[components.numbers(labels, offset)]
+        codes[z0:z1] = body
+        n_body += int(np.count_nonzero(body))
+    return n_body
+
+
+def _absorb_wall_by_block(
+    out_crop: np.ndarray,
+    crop: np.ndarray,
+    body,
+    *,
+    sampling: tuple[float, float, float],
+    wall_radius: float,
+) -> None:
+    """``out_crop[...] = crop & (distance_transform_edt(~body) <= wall_radius)``,
+    a block at a time; *body(box)* gives the body over a box. A block with no
+    body within *wall_radius* is left False without a transform."""
+    for core, where, distance in blockwise_edt.near_distances_by_block(
+        lambda box: ~body(box),
+        lambda box: crop[box],
+        crop.shape,
+        sampling=sampling,
+        reach=float(wall_radius),
+    ):
+        block = np.zeros(where.shape, dtype=bool)
+        block[where] = distance <= float(wall_radius)
+        out_crop[core] = block
 
 
 def diagnose_mask_restriction_alignment(
@@ -575,8 +810,27 @@ def _foreground_bbox(mask: np.ndarray, *, pad: int = 1) -> tuple[slice, slice, s
     z_any = mask_b.any(axis=(1, 2))
     if not z_any.any():
         return None
-    y_any = mask_b.any(axis=(0, 2))
-    x_any = mask_b.any(axis=(0, 1))
+    return _bbox_of_any(z_any, mask_b.any(axis=(0, 2)), mask_b.any(axis=(0, 1)), mask_b.shape, pad)
+
+
+def _foreground_bbox_by_slab(planes, shape, *, pad: int = 1) -> tuple[slice, slice, slice] | None:
+    """:func:`_foreground_bbox` of the volume ``planes(z0, z1)`` reads, a slab
+    of z-planes at a time."""
+    z_any = np.zeros(int(shape[0]), dtype=bool)
+    y_any = np.zeros(int(shape[1]), dtype=bool)
+    x_any = np.zeros(int(shape[2]), dtype=bool)
+    step = memmap_support.slab_step(shape)
+    for z0 in range(0, int(shape[0]), step):
+        slab = np.asarray(planes(z0, min(z0 + step, int(shape[0]))), dtype=bool)
+        z_any[z0:z0 + len(slab)] = slab.any(axis=(1, 2))
+        y_any |= slab.any(axis=(0, 2))
+        x_any |= slab.any(axis=(0, 1))
+    if not z_any.any():
+        return None
+    return _bbox_of_any(z_any, y_any, x_any, shape, pad)
+
+
+def _bbox_of_any(z_any, y_any, x_any, shape, pad) -> tuple[slice, slice, slice]:
     z0 = int(np.argmax(z_any))
     z1 = int(z_any.size - np.argmax(z_any[::-1]))
     y0 = int(np.argmax(y_any))
@@ -585,9 +839,9 @@ def _foreground_bbox(mask: np.ndarray, *, pad: int = 1) -> tuple[slice, slice, s
     x1 = int(x_any.size - np.argmax(x_any[::-1]))
     p = int(pad)
     return (
-        slice(max(0, z0 - p), min(mask_b.shape[0], z1 + p)),
-        slice(max(0, y0 - p), min(mask_b.shape[1], y1 + p)),
-        slice(max(0, x0 - p), min(mask_b.shape[2], x1 + p)),
+        slice(max(0, z0 - p), min(int(shape[0]), z1 + p)),
+        slice(max(0, y0 - p), min(int(shape[1]), y1 + p)),
+        slice(max(0, x0 - p), min(int(shape[2]), x1 + p)),
     )
 
 
@@ -645,12 +899,27 @@ def _build_dijkstra_graph(
     """
     binary_f = np.asarray(binary, dtype=bool)
     fg_coords = np.argwhere(binary_f)
+    cost_a = np.asarray(cost, dtype=np.float64)
+    return _build_dijkstra_graph_from_coords(
+        fg_coords, binary_f.shape, cost_a[tuple(fg_coords.T)], relative_spacing
+    )
+
+
+def _build_dijkstra_graph_from_coords(
+    fg_coords: np.ndarray,
+    shape: tuple[int, int, int],
+    cost_at: np.ndarray,
+    relative_spacing: np.ndarray | None = None,
+):
+    """:func:`_build_dijkstra_graph` from the foreground's own voxels
+    (``(n, 3)``, C order, in a box of *shape*) and the cost of stepping into
+    each, with nothing the size of the box."""
     n_fg = int(fg_coords.shape[0])
-    index_of = _ForegroundIndex(fg_coords, binary_f.shape)
+    index_of = _ForegroundIndex(fg_coords, shape)
 
     zyx = fg_coords.astype(np.intp, copy=False)
-    z_max, y_max, x_max = binary_f.shape
-    cost_a = np.asarray(cost, dtype=np.float64)
+    z_max, y_max, x_max = (int(s) for s in shape)
+    cost_a = np.asarray(cost_at, dtype=np.float64)
     relative = np.ones(3) if relative_spacing is None else np.asarray(relative_spacing, float)
     row_chunks: list[np.ndarray] = []
     col_chunks: list[np.ndarray] = []
@@ -674,10 +943,7 @@ def _build_dijkstra_graph(
         connected = nidx >= 0
         if not np.any(connected):
             continue
-        nbr_z = nz[in_bounds][connected]
-        nbr_y = ny[in_bounds][connected]
-        nbr_x = nx_[in_bounds][connected]
-        weights = cost_a[nbr_z, nbr_y, nbr_x] * _step_factor((dz, dy, dx), relative)
+        weights = cost_a[nidx[connected]] * _step_factor((dz, dy, dx), relative)
         finite = np.isfinite(weights) & (weights > 0.0)
         if not np.any(finite):
             continue
@@ -904,6 +1170,63 @@ def _cover_around_path(
     return mask
 
 
+def _covered_around_path(
+    path: list[tuple[int, int, int]],
+    radius_voxels: int,
+    shape: tuple[int, int, int],
+    relative_spacing: np.ndarray | None,
+    index_of: _ForegroundIndex,
+    fg_coords: np.ndarray,
+) -> np.ndarray:
+    """Which foreground voxels :func:`_cover_around_path` marks, as ids into
+    *fg_coords* -- from the voxels themselves and a KD-tree of *path*, not a
+    distance transform of the path's box (for a trunk running the length of
+    a stack, the box is the stack).
+
+    A voxel is covered when its distance to the nearest path voxel, by
+    ``distance_transform_edt``'s own arithmetic, is within the radius, as
+    there; the KD-tree only finds the candidates.
+    """
+    if not path:
+        return np.empty(0, dtype=np.int64)
+    radius = max(1, int(radius_voxels))
+    relative = np.ones(3) if relative_spacing is None else np.asarray(relative_spacing, float)
+    reach = np.ceil(radius / relative).astype(int)
+    pts = np.asarray(path, dtype=int)
+    lo = np.maximum(pts.min(axis=0) - reach, 0)
+    hi = np.minimum(pts.max(axis=0) + reach + 1, shape)
+    _positions, ids = _box_members(
+        index_of.keys, shape, tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+    )
+    if not ids.size:
+        return ids
+    query = fg_coords[ids].astype(np.int64)
+    tree = cKDTree(pts.astype(np.float64) * relative)
+    # The tree's own distances differ from scipy's in the last bits, so the
+    # bound has slack and the verdict is scipy's arithmetic.
+    slack = radius * 1e-9 + 1e-9
+    distance, nearest = tree.query(
+        query.astype(np.float64) * relative, k=1, distance_upper_bound=radius + slack
+    )
+    found = np.flatnonzero(np.isfinite(distance))
+    within = np.zeros(len(ids), dtype=bool)
+    if found.size:
+        exact = blockwise_edt.displacement_distances(pts[nearest[found]] - query[found], relative)
+        within[found] = exact <= radius
+        # A tie the tree broke the other way: another path voxel as near,
+        # whose distance by scipy's arithmetic is within the radius.
+        for row in found[~within[found]]:
+            near = tree.query_ball_point(query[row].astype(np.float64) * relative, radius + slack)
+            if near:
+                within[row] = bool(
+                    np.any(
+                        blockwise_edt.displacement_distances(pts[near] - query[row], relative)
+                        <= radius
+                    )
+                )
+    return ids[within]
+
+
 def _local_principal_axis(
     component: np.ndarray,
     point: tuple[int, int, int],
@@ -1009,39 +1332,73 @@ def _component_edt_ridge_on_crop(
     """Centreline tree on an already-cropped fat component. *edt* and every
     distance here are in voxels of the finest axis (see
     :func:`_relative_spacing`)."""
-    relative = np.ones(3) if relative_spacing is None else np.asarray(relative_spacing, float)
+    component = np.asarray(component, dtype=bool)
     result = np.zeros(component.shape, dtype=bool)
     coords = np.argwhere(component)
     if coords.size == 0:
         return result
+    tree = _component_tree(coords, np.asarray(edt)[tuple(coords.T)], component.shape, relative_spacing)
+    result[tuple(tree.T)] = True
+    return result
 
-    local_edt = np.where(component, edt, 0.0)
-    max_edt = float(local_edt.max())
-    cost = np.where(component, 1.0 / (np.square(local_edt) + 1e-6), np.inf)
+
+def _component_tree(
+    coords: np.ndarray,
+    edt_at: np.ndarray,
+    shape: tuple[int, int, int],
+    relative_spacing: np.ndarray | None = None,
+) -> np.ndarray:
+    """:func:`_component_edt_ridge_on_crop` from the component's own voxels:
+    *coords* (``(n, 3)``, C order, in its box of *shape*) and *edt_at*, the
+    EDT at each. Returns the tree's voxels, in that box.
+
+    Nothing here is the size of the box: a fat network that crosses a stack
+    has a box the size of the stack, and the cost, radius and coverage maps
+    over it -- with a distance transform of the trunk's own box -- were tens
+    of bytes a voxel of it.
+    """
+    relative = np.ones(3) if relative_spacing is None else np.asarray(relative_spacing, float)
+    coords = np.asarray(coords, dtype=np.intp)
+    edt_at = np.asarray(edt_at)
+    if len(coords) == 0:
+        return np.empty((0, 3), dtype=np.intp)
+
+    max_edt = float(edt_at.max())
+    if len(coords) < int(np.prod(shape)):
+        # The box's other voxels read 0 in the component's radius map.
+        max_edt = max(max_edt, 0.0)
+    cost = 1.0 / (np.square(edt_at) + 1e-6)
     root, far = _principal_endpoints(coords, relative)
-    walked = _dijkstra_parents(component, cost, root, relative_spacing=relative)
+    graph = _build_dijkstra_graph_from_coords(coords, shape, cost, relative)
+    walked = _dijkstra_parents(None, None, root, precomputed_graph=graph)
     if walked is None:
-        centre = tuple(int(v) for v in coords[int(np.argmax(local_edt[tuple(coords.T)]))])
-        result[centre] = True
-        return result
+        return coords[[int(np.argmax(edt_at))]]
     parent, fg_coords, index_of = walked
     main = _traceback(parent, fg_coords, index_of, root, far)
     if len(main) < 2:
-        centre = tuple(int(v) for v in coords[int(np.argmax(local_edt[tuple(coords.T)]))])
-        result[centre] = True
-        return result
-    _draw_path(result, main)
+        return coords[[int(np.argmax(edt_at))]]
+    in_tree = np.zeros(len(coords), dtype=bool)
+    result = _VoxelBoxes(index_of.keys, shape, members=in_tree)
+    component = _VoxelBoxes(index_of.keys, shape)
 
+    def draw(path):
+        in_tree[index_of[tuple(np.asarray(path, dtype=np.intp).T)]] = True
+
+    def cover(path, radius):
+        covered[_covered_around_path(path, radius, shape, relative, index_of, coords)] = True
+
+    draw(main)
     cover_r = max(1, int(round(max_edt)))
-    covered = _cover_around_path(main, cover_r, component.shape, relative)
+    covered = np.zeros(len(coords), dtype=bool)
+    cover(main, cover_r)
     min_arm_voxels = max(4, int(2.0 * max_edt))
-    high = component & (local_edt >= 0.4 * max_edt)
-    # Every voxel this loop ever adds to `result` is exactly one of `main`
+    high = edt_at >= 0.4 * max_edt
+    # Every voxel this loop ever adds to the tree is exactly one of `main`
     # or an accepted `branch` -- both already known as coordinate lists, so
     # the tree can grow by appending them instead of re-deriving the whole
-    # (up to component-sized) set via np.argwhere(result) on every accepted
-    # arm. On a real multi-million-voxel fat component with many arms, that
-    # full-array rescan per acceptance was most of this function's cost.
+    # (up to component-sized) set on every accepted arm. On a real
+    # multi-million-voxel fat component with many arms, that full rescan per
+    # acceptance was most of this function's cost.
     tree_coords = np.asarray(main, dtype=np.intp)
     tree_kdt = cKDTree(tree_coords.astype(np.float64, copy=False) * relative)
 
@@ -1054,10 +1411,10 @@ def _component_edt_ridge_on_crop(
     # additional *accepted* arm, not per candidate voxel.
     max_arms = 500
     for _ in range(max_arms):
-        candidates = high & ~covered
-        if not candidates.any():
+        candidates = np.flatnonzero(high & ~covered)
+        if not candidates.size:
             break
-        cand_coords = np.argwhere(candidates)
+        cand_coords = coords[candidates]
         dists, _ = tree_kdt.query(cand_coords.astype(np.float64, copy=False) * relative, k=1)
         far_dist = float(np.max(dists))
         # Remaining high-EDT voxels sitting beside the trunk are the sheet, not arms.
@@ -1078,17 +1435,17 @@ def _component_edt_ridge_on_crop(
             # neighbourhood pre-emptively removed the real arm's
             # candidate voxels before they were ever tried, silently
             # dropping it from the centreline tree.
-            covered |= _cover_around_path(branch, min(2, cover_r), component.shape, relative)
+            cover(branch, min(2, cover_r))
             continue
         if _touches_tree(result, branch[-1]):
             # Tip already on the tree: this geodesic would close a loop.
-            covered[target] = True
+            covered[index_of[target]] = True
             continue
         if _path_cuts_across_lumen(branch, component, max_edt, relative):
-            covered |= _cover_around_path(branch, cover_r, component.shape, relative)
+            cover(branch, cover_r)
             continue
-        _draw_path(result, branch)
-        covered |= _cover_around_path(branch, cover_r, component.shape, relative)
+        draw(branch)
+        cover(branch, cover_r)
         tree_coords = np.concatenate(
             [tree_coords, np.asarray(branch, dtype=np.intp)], axis=0
         )
@@ -1097,69 +1454,142 @@ def _component_edt_ridge_on_crop(
         # Loop ran out of iterations without a break, i.e. without ever
         # deciding "no arms left" or "what's left is the sheet, not an arm" --
         # real candidate arms may still remain, silently dropped from the tree.
-        remaining = high & ~covered
-        if remaining.any():
+        remaining = int(np.count_nonzero(high & ~covered))
+        if remaining:
             logger.warning(
                 "Fat-vessel centreline hit the %d-arm cap with %d high-EDT "
                 "voxels still uncovered; some arms may be missing from the "
                 "reconstructed centreline.",
                 max_arms,
-                int(remaining.sum()),
+                remaining,
             )
-    return result
+    return coords[in_tree]
+
+
+#: 26-connected, matching every other label() call in this module. The
+#: default (6-connected, face-only) can split a solid fat blob that is only
+#: diagonally connected at a jagged mask boundary into two "components",
+#: each building its own independent centreline tree with no
+#: cross-component tree-adjacency check -- the two trees can then end up
+#: 26-adjacent at more than one voxel near the split, producing a genuine
+#: cycle in the unioned result once graph-building reads it back.
+_STRUCTURE_FULL = generate_binary_structure(3, 3)
 
 
 def skeletonize_edt_ridge(
-    binary: np.ndarray, voxel_size_zyx: tuple[float, float, float] | None = None
+    binary: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
+    *,
+    use_memmap: bool = False,
 ) -> np.ndarray:
     """Centreline tree per connected component: every fat arm, not a medial sheet.
 
     Distances, costs and the tree's thresholds are physical (see
     :func:`_relative_spacing`); without *voxel_size_zyx* every voxel is a cube.
+
+    *use_memmap* (the low-RAM option) finds the components a slab at a time
+    and each one's distance map from its own box padded by a voxel -- the
+    nearest background to any of its voxels lies in it (see
+    :func:`_join_thin_arms_to_fat_ridge`'s local radius) -- a block at a
+    time when that box is large, instead of a distance transform and int32
+    labels over the whole region's box. Same tree.
     """
     relative = _relative_spacing(voxel_size_zyx)
     mask = np.asarray(binary, dtype=bool)
     result = np.zeros(mask.shape, dtype=bool)
-    if not mask.any():
-        return result
+    if mask.any():
+        _edt_ridge_into(result, mask, relative, low_ram=use_memmap)
+    return result
+
+
+def _edt_ridge_into(
+    out: np.ndarray, mask: np.ndarray, relative: np.ndarray, *, low_ram: bool
+) -> None:
+    """Draw :func:`skeletonize_edt_ridge`'s tree of *mask* into *out*."""
+    if low_ram:
+        _edt_ridge_by_component(out, mask, relative)
+        return
     bbox = _foreground_bbox(mask, pad=1)
     if bbox is None:
-        return result
+        return
     crop = mask[bbox]
     edt = distance_transform_edt(crop, sampling=tuple(relative))
-    # 26-connected, matching every other label() call in this module. The
-    # default (6-connected, face-only) can split a solid fat blob that is
-    # only diagonally connected at a jagged mask boundary into two
-    # "components", each building its own independent centreline tree with
-    # no cross-component tree-adjacency check -- the two trees can then end
-    # up 26-adjacent at more than one voxel near the split, producing a
-    # genuine cycle in the unioned result once graph-building reads it back.
-    labeled, n_labels = label(crop, structure=generate_binary_structure(3, 3))
+    labeled, n_labels = label(crop, structure=_STRUCTURE_FULL)
     if n_labels == 0:
-        return result
+        return
     logger.info(
         "skeletonize_edt_ridge: %d fat component(s) in a %s crop (%d voxels)",
         int(n_labels),
         crop.shape,
         int(crop.sum()),
     )
-    crop_result = np.zeros(crop.shape, dtype=bool)
+    out_crop = out[bbox]
     for component_id, slc in enumerate(find_objects(labeled), start=1):
         if slc is None:
             continue
-        component_mask = labeled[slc] == component_id
-        t_component = time.perf_counter()
-        crop_result[slc] |= _component_edt_ridge_on_crop(component_mask, edt[slc], relative)
-        if n_labels > 1 or int(component_mask.sum()) > 10_000:
-            logger.info(
-                "skeletonize_edt_ridge: component %d/%d (%d voxels) took %.2fs",
-                component_id,
-                int(n_labels),
-                int(component_mask.sum()),
-                time.perf_counter() - t_component,
-            )
-    result[bbox] = crop_result
-    return result.astype(bool)
+        coords = np.argwhere(labeled[slc] == component_id)
+        _draw_component_tree(
+            out_crop, coords, edt[slc][tuple(coords.T)], slc, relative, component_id, int(n_labels)
+        )
+
+
+def _edt_ridge_by_component(out: np.ndarray, mask: np.ndarray, relative: np.ndarray) -> None:
+    """:func:`_edt_ridge_into` for the low-RAM option: each component's
+    voxels from a slab-at-a-time labelling, and its radius map from its own
+    padded box."""
+    components, keys, numbers = slab_labels.voxels_by_component(
+        lambda z0, z1: mask[z0:z1], mask.shape, structure=_STRUCTURE_FULL
+    )
+    if components.count == 0:
+        return
+    logger.info(
+        "skeletonize_edt_ridge: %d fat component(s) in a %s volume (%d voxels)",
+        components.count,
+        mask.shape,
+        len(keys),
+    )
+    order = np.argsort(numbers, kind="stable")
+    bounds = np.searchsorted(numbers[order], np.arange(1, components.count + 2))
+    del numbers
+    for component_id in range(1, components.count + 1):
+        coords = _coords_of(keys[order[bounds[component_id - 1]:bounds[component_id]]], mask.shape)
+        box = components.box(component_id)
+        edt_at = blockwise_edt.distances_at_points(
+            lambda region: mask[region],
+            _expand_slices(box, mask.shape, pad=1),
+            coords,
+            sampling=relative,
+        )
+        origin = np.array([s.start for s in box], dtype=np.intp)
+        _draw_component_tree(
+            out, coords - origin, edt_at, box, relative, component_id, components.count
+        )
+
+
+def _draw_component_tree(
+    out: np.ndarray,
+    coords: np.ndarray,
+    edt_at: np.ndarray,
+    box: tuple[slice, slice, slice],
+    relative: np.ndarray,
+    component_id: int,
+    n_components: int,
+) -> None:
+    """Draw the tree of the component at *coords* (in its tight *box* of
+    *out*) into *out*, logging the slow ones."""
+    t_component = time.perf_counter()
+    shape = tuple(int(s.stop) - int(s.start) for s in box)
+    tree = _component_tree(coords, edt_at, shape, relative)
+    origin = np.array([int(s.start) for s in box], dtype=np.intp)
+    out[tuple((tree + origin).T)] = True
+    if n_components > 1 or len(coords) > 10_000:
+        logger.info(
+            "skeletonize_edt_ridge: component %d/%d (%d voxels) took %.2fs",
+            component_id,
+            int(n_components),
+            len(coords),
+            time.perf_counter() - t_component,
+        )
 
 
 def _shift_path(
@@ -1341,6 +1771,9 @@ def _join_thin_arms_to_fat_ridge(
     max_bridge_distance_um: float | None = None,
     max_bridge_radius_multiple: float | None = None,
     radius_smoothing_um: float = 10.0,
+    arms_reach_extent: bool = False,
+    in_place: bool = False,
+    use_memmap: bool = False,
 ) -> np.ndarray:
     """Connect each thin-vessel skeleton that leaves the fat wall to the fat ridge.
 
@@ -1351,6 +1784,14 @@ def _join_thin_arms_to_fat_ridge(
     the fat region, measured physically: in voxels, an arm leaving along a
     coarse z axis had to reach several times further than one leaving
     in-plane before it counted as a vessel.
+
+    *arms_reach_extent* says every thin skeleton component already reaches
+    that far, so the filter would keep them all and is not measured:
+    :func:`skeletonize_thickness_gated` Lee-thins only voxels at least
+    *min_arm_extent_um* from the fat region, Lee keeps a subset of what it
+    thins, and a component's own box sees no fat voxel the whole region does
+    not -- so every voxel of every component measures at least as far here.
+    *in_place* draws into *skeleton* itself instead of a copy.
 
     Nearest-neighbour search and the caps below are evaluated in physical
     microns (via *voxel_size_zyx*), not raw voxel-index distance -- the same
@@ -1397,87 +1838,131 @@ def _join_thin_arms_to_fat_ridge(
     beside each other and the ridge inside the fat lumen: on E14.5 MCA, 21
     of the 33 pairs of edges in one lumen once the thick-vessel split
     (``graph.insert_thick_vessel_junction_nodes``) cut them out.
+
+    No volume-sized array is made beyond the copy *in_place* skips: the
+    thin components, the region's, and the mask's are labelled a slab of
+    z-planes at a time (:mod:`.slab_labels`) and kept only at the voxels
+    asked about; the fat skeleton is read box by box from its voxel list.
+    In RAM a slab is the whole volume -- ``label``'s own call. *use_memmap*
+    (the low-RAM option) labels slabs of
+    ``memmap_support.LOW_MEMORY_BLOCK_VOXELS`` instead, and measures each
+    distance from blocks around the voxels asked about
+    (:mod:`.blockwise_edt`) rather than a transform of a whole component's
+    box. Same result either way.
     """
-    result = np.asarray(skeleton, dtype=bool).copy()
+    result = skeleton if in_place else np.array(skeleton, dtype=bool)
     thick_b = np.asarray(thick, dtype=bool)
     allowed_b = np.asarray(allowed, dtype=bool)
+    shape = tuple(result.shape)
     scale = np.array(voxel_size_zyx, dtype=np.float64)
     relative_scale = _relative_spacing(scale)
-    thin_skel = result & ~thick_b
-    fat_skel = result & thick_b
-    if not fat_skel.any():
+    block = None if use_memmap else max(1, int(np.prod(shape)))
+    structure = _STRUCTURE_FULL
+
+    fat_keys = _keys_where(
+        lambda z0, z1: result[z0:z1] & thick_b[z0:z1], shape, block_voxels=block
+    )
+    if fat_keys.size == 0:
         return result
-    if not thin_skel.any():
-        return fat_skel
-    structure = generate_binary_structure(3, 3)
-    labeled, n_labels = label(thin_skel, structure=structure)
-    if n_labels == 0:
-        return fat_skel
+    thin_components, thin_keys, thin_numbers = slab_labels.voxels_by_component(
+        lambda z0, z1: result[z0:z1] & ~thick_b[z0:z1], shape, structure=structure,
+        block_voxels=block,
+    )
+    if thin_keys.size == 0 or thin_components.count == 0:
+        return result
+    n_labels = thin_components.count
+    thin_coords = _coords_of(thin_keys, shape)
+    del thin_keys
 
-    thin_coords = np.argwhere(thin_skel)
-    labels_at = labeled[tuple(thin_coords.T)]
-    # Per physically connected structure (thin + thick together), not one
-    # EDT over their shared bounding box: real fat/thin material can span
-    # most of a large stack, so that box is close to the whole image, and a
-    # dense EDT that size is what actually ran the process out of memory (a
-    # 287x512x512 stack: "Unable to allocate 1.35 GiB for an array with
-    # shape (180948686,)"). Each connected roi component is a sliver of
-    # that by comparison -- same reasoning as the per-arm join scoping
-    # below, applied to this earlier length-filter measurement too.
-    roi = thin_skel | thick_b
-    roi_labeled, _n_roi = label(roi, structure=structure)
-    roi_objects = find_objects(roi_labeled)
-    roi_ids_at_thin = roi_labeled[tuple(thin_coords.T)]
-    dists = np.full(len(thin_coords), np.inf, dtype=np.float64)
-    for roi_id in np.unique(roi_ids_at_thin):
-        if roi_id == 0:
-            continue
-        slc = roi_objects[int(roi_id) - 1]
-        if slc is None:
-            continue
-        here = roi_ids_at_thin == roi_id
-        if not thick_b[slc].any():
-            # No fat material anywhere in this thin arm's own connected
-            # structure: it cannot be measured against a wall it has none
-            # of. Leave it at +inf, so it clears the length filter and is
-            # kept as-is -- the per-arm join loop below reaches the same
-            # "nothing to join to" conclusion for exactly this case.
-            continue
-        origin = np.array([int(s.start) for s in slc], dtype=int)
-        dist_crop = distance_transform_edt(~thick_b[slc], sampling=tuple(scale))
-        local = thin_coords[here] - origin
-        dists[here] = dist_crop[tuple(local.T)]
+    # The physically connected structures of thin skeleton and fat region
+    # together, at every voxel of either: the length filter scopes each
+    # arm's distance to its own one, and the bridge cap reads the fat
+    # vessel's radius over the one its candidate point is in.
+    roi_components = roi_at = None
+    if not arms_reach_extent or max_bridge_radius_multiple is not None:
+        roi_components, roi_keys, roi_numbers = slab_labels.voxels_by_component(
+            lambda z0, z1: result[z0:z1] | thick_b[z0:z1], shape, structure=structure,
+            block_voxels=block,
+        )
+        roi_at = slab_labels.ComponentLookup(roi_keys, roi_numbers, shape)
+        del roi_keys, roi_numbers
 
-    max_dist = np.zeros(int(n_labels) + 1, dtype=np.float64)
-    np.maximum.at(max_dist, labels_at, dists)
-    arm_ids = np.flatnonzero(max_dist >= float(min_arm_extent_um))
-    arm_ids = arm_ids[arm_ids > 0]
-    objects = find_objects(labeled)
+    if arms_reach_extent:
+        arm_ids = np.arange(1, n_labels + 1)
+    else:
+        # Per physically connected structure (thin + thick together), not one
+        # EDT over their shared bounding box: real fat/thin material can span
+        # most of a large stack, so that box is close to the whole image, and a
+        # dense EDT that size is what actually ran the process out of memory (a
+        # 287x512x512 stack: "Unable to allocate 1.35 GiB for an array with
+        # shape (180948686,)"). Each connected roi component is a sliver of
+        # that by comparison -- same reasoning as the per-arm join scoping
+        # below, applied to this earlier length-filter measurement too.
+        roi_ids_at_thin = roi_at[tuple(thin_coords.T)]
+        dists = np.full(len(thin_coords), np.inf, dtype=np.float64)
+        for roi_id in np.unique(roi_ids_at_thin):
+            if roi_id == 0:
+                continue
+            slc = roi_components.box(int(roi_id))
+            here = roi_ids_at_thin == roi_id
+            if not thick_b[slc].any():
+                # No fat material anywhere in this thin arm's own connected
+                # structure: it cannot be measured against a wall it has none
+                # of. Leave it at +inf, so it clears the length filter and is
+                # kept as-is -- the per-arm join loop below reaches the same
+                # "nothing to join to" conclusion for exactly this case.
+                continue
+            if use_memmap:
+                dists[here] = blockwise_edt.distances_at_points(
+                    lambda region: ~np.asarray(thick_b[region], dtype=bool),
+                    slc,
+                    thin_coords[here],
+                    sampling=scale,
+                )
+                continue
+            origin = np.array([int(s.start) for s in slc], dtype=int)
+            dist_crop = distance_transform_edt(~thick_b[slc], sampling=tuple(scale))
+            local = thin_coords[here] - origin
+            dists[here] = dist_crop[tuple(local.T)]
 
-    keep = fat_skel.copy()
-    for component_id in arm_ids:
-        slc = objects[int(component_id) - 1]
-        if slc is None:
-            continue
-        keep[slc] |= labeled[slc] == int(component_id)
-    result = keep
+        max_dist = np.zeros(int(n_labels) + 1, dtype=np.float64)
+        np.maximum.at(max_dist, thin_numbers, dists)
+        arm_ids = np.flatnonzero(max_dist >= float(min_arm_extent_um))
+        arm_ids = arm_ids[arm_ids > 0]
+        is_arm = np.zeros(int(n_labels) + 1, dtype=bool)
+        is_arm[arm_ids] = True
+        dropped = ~is_arm[thin_numbers]
+        if dropped.any():
+            result[tuple(thin_coords[dropped].T)] = False
     if arm_ids.size == 0:
         return result
+    # Each arm's voxels, in C order, as its own labelled box would list them.
+    by_arm = np.argsort(thin_numbers, kind="stable")
+    arm_bounds = np.searchsorted(thin_numbers[by_arm], np.arange(1, n_labels + 2))
 
-    fat_coords = np.argwhere(result & thick_b)
-    if fat_coords.size == 0:
-        return result
+    fat_coords = _coords_of(fat_keys, shape)
     # Which physically connected structure (of the real mask, not just the
     # fat/thin split) each voxel belongs to. A thin arm's Euclidean-nearest
     # fat voxel can sit in a different, merely-nearby vessel network that it
     # is not actually connected to at all -- no path can ever exist between
     # them, full-mask search or not. Scoping the nearest-neighbour search to
     # fat voxels sharing the arm's own component rules that out up front.
-    allowed_components, _n_allowed = label(allowed_b, structure=structure)
-    component_objects = find_objects(allowed_components)
-    fat_component_labels = allowed_components[tuple(fat_coords.T)]
+    # Looked up at every arm and fat-region voxel: an arm's own, the ridge's,
+    # and any a bridge adds.
+    allowed_components, allowed_at = slab_labels.numbers_at(
+        lambda z0, z1: allowed_b[z0:z1],
+        lambda z0, z1: result[z0:z1] | thick_b[z0:z1],
+        shape,
+        structure=structure,
+        block_voxels=block,
+    )
+    fat_component_labels = allowed_at[tuple(fat_coords.T)]
     fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
-    fat_now = result & thick_b
+    # The ridge and every bridge voxel inside the fat region so far: exactly
+    # the skeleton's fat voxels, as long as each bridge is drawn only once
+    # its walk (which must see the region as it was before) is over.
+    fat_now = _Both(result, thick_b)
+    fat_skel = _VoxelBoxes(fat_keys, shape)
 
     # What each arm aims at first: the ridge before any arm was joined (no
     # arm voxel is fat, so that is fat_skel), per physically connected
@@ -1541,31 +2026,32 @@ def _join_thin_arms_to_fat_ridge(
     # so this stays a local correction, not a way to see a wide vessel from
     # far away.
     radius_crop_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    radius_at_cache: dict[tuple[int, int, int], float] = {}
+    footprint = tuple(
+        max(1, 2 * int(np.ceil(radius_smoothing_um / max(s, 1e-6))) + 1) for s in scale
+    )
 
     def _local_fat_radius_um_at(voxel: tuple[int, int, int]) -> float:
-        roi_id = int(roi_labeled[voxel])
+        roi_id = int(roi_at[voxel])
         if roi_id == 0:
             return 0.0
+        # Padded by 1 beyond the component's own tight bounding box: a
+        # solid component's real surface can coincide exactly with that
+        # box's edge (nothing of this label exists past it, by
+        # definition of "tight"), so the unpadded crop can be entirely
+        # foreground there with no background left to measure distance
+        # to. One voxel of padding always reveals that surface -- the
+        # true nearest background to any interior point is either
+        # already inside the tight box (an internal cavity) or exactly
+        # one step beyond its edge; nothing needs more.
+        padded_slc = _expand_slices(roi_components.box(roi_id), shape, pad=1)
+        if use_memmap:
+            return _windowed_fat_radius_um(voxel, padded_slc)
         cached = radius_crop_cache.get(roi_id)
         if cached is None:
-            # Padded by 1 beyond the component's own tight bounding box: a
-            # solid component's real surface can coincide exactly with that
-            # box's edge (nothing of this label exists past it, by
-            # definition of "tight"), so the unpadded crop can be entirely
-            # foreground there with no background left to measure distance
-            # to. One voxel of padding always reveals that surface -- the
-            # true nearest background to any interior point is either
-            # already inside the tight box (an internal cavity) or exactly
-            # one step beyond its edge; nothing needs more.
-            slc = roi_objects[roi_id - 1]
-            padded_slc = _expand_slices(slc, thick_b.shape, pad=1)
             padded_origin = np.array([int(s.start) for s in padded_slc], dtype=int)
             crop = distance_transform_edt(
                 thick_b[padded_slc], sampling=tuple(scale)
-            )
-            footprint = tuple(
-                max(1, 2 * int(np.ceil(radius_smoothing_um / max(s, 1e-6))) + 1)
-                for s in scale
             )
             smoothed = maximum_filter(crop, size=footprint).astype(
                 np.float32, copy=False
@@ -1575,6 +2061,26 @@ def _join_thin_arms_to_fat_ridge(
         origin, crop = cached
         local = tuple(int(v) for v in (np.array(voxel) - origin))
         return float(crop[local])
+
+    def _windowed_fat_radius_um(voxel, padded_slc) -> float:
+        """The same reading from the window alone: the maximum filter's
+        value at *voxel* is the largest radius in the window around it --
+        clipped to the padded box, which is where scipy's reflection at the
+        box's faces takes it -- and only fat voxels have a radius above 0."""
+        cached = radius_at_cache.get(voxel)
+        if cached is None:
+            window = tuple(
+                slice(max(int(p.start), int(v) - f // 2), min(int(p.stop), int(v) + f // 2 + 1))
+                for p, v, f in zip(padded_slc, voxel, footprint)
+            )
+            points = np.argwhere(np.asarray(thick_b[window], dtype=bool))
+            points += np.array([int(w.start) for w in window])
+            radii = blockwise_edt.distances_at_points(
+                lambda region: thick_b[region], padded_slc, points, sampling=scale
+            )
+            cached = float(np.float32(radii.max())) if len(radii) else 0.0
+            radius_at_cache[voxel] = cached
+        return cached
 
     def _bridge_cap_um(end: tuple[int, int, int]) -> float | None:
         """How long a bridge ending at *end* may be: the tighter of the fixed
@@ -1593,19 +2099,16 @@ def _join_thin_arms_to_fat_ridge(
     join_step_start = time.perf_counter()
     last_log_time = join_step_start
     for arm_index, component_id in enumerate(arm_ids, start=1):
-        slc = objects[int(component_id) - 1]
-        if slc is None:
+        pts = thin_coords[by_arm[arm_bounds[component_id - 1]:arm_bounds[component_id]]]
+        if pts.size == 0:
             continue
-        padded = _expand_slices(slc, labeled.shape, pad=1)
-        component = labeled[padded] == int(component_id)
+        padded = _expand_slices(thin_components.box(int(component_id)), shape, pad=1)
+        origin_p = np.array([int(s.start) for s in padded], dtype=int)
+        component = np.zeros(tuple(int(s.stop) - int(s.start) for s in padded), dtype=bool)
+        component[tuple((pts - origin_p).T)] = True
         if (binary_dilation(component, structure=structure) & fat_now[padded]).any():
             continue
-        pts_local = np.argwhere(component)
-        if pts_local.size == 0:
-            continue
-        origin_p = np.array([int(s.start) for s in padded], dtype=int)
-        pts = pts_local + origin_p
-        arm_component_label = int(allowed_components[tuple(pts[0])])
+        arm_component_label = int(allowed_at[tuple(pts[0])])
         same_component = fat_component_labels == arm_component_label
         if not np.any(same_component):
             # No fat ridge material anywhere in this arm's own physically
@@ -1655,7 +2158,7 @@ def _join_thin_arms_to_fat_ridge(
         # a real multi-vessel stack. Without this, that fallback firing even
         # a handful of times on a real image is what actually froze the run,
         # not the join logic itself.
-        component_slc = component_objects[arm_component_label - 1]
+        component_slc = allowed_components.box(arm_component_label)
         component_origin = np.array([int(s.start) for s in component_slc], dtype=int)
         local_allowed = allowed_b[component_slc]
         local_start = tuple(int(v) for v in (np.array(start) - component_origin))
@@ -1673,19 +2176,19 @@ def _join_thin_arms_to_fat_ridge(
             tuple(int(v) for v in (np.array(voxel) + component_origin))
             for voxel in local_path
         ]
-        # fat_now must stay exactly what it was before this arm while the
-        # walk below tests against it (the walk stops on first touching the
-        # *pre-existing* ridge, not on becoming its own touch); voxels this
-        # arm adds are folded in afterwards instead. An arm aimed at the
-        # ridge stops on the ridge alone, not on an earlier bridge it passes.
+        # The walk stops on first touching what the arm aimed at as it was
+        # before this arm -- the ridge alone, for an arm aimed at the ridge,
+        # not an earlier bridge it passes -- so this arm's voxels are drawn
+        # only once it is over (fat_now reads them from the skeleton).
         drawn: list[tuple[int, int, int]] = []
         for voxel in path:
             if not allowed_b[voxel]:
                 continue
-            result[voxel] = True
             drawn.append(voxel)
             if _touches_tree(stop_on, voxel):
                 break
+        for voxel in drawn:
+            result[voxel] = True
         # This join's own bridge becomes something a later arm can fall back
         # on, when its ridge is past the cap (see above): an arm that can
         # reach the network only through another arm's opening. Every voxel
@@ -1695,10 +2198,9 @@ def _join_thin_arms_to_fat_ridge(
         newly_fat = [voxel for voxel in drawn if thick_b[voxel]]
         if newly_fat:
             new_coords = np.asarray(newly_fat, dtype=np.intp)
-            fat_now[tuple(new_coords.T)] = True
             fat_coords = np.concatenate([fat_coords, new_coords], axis=0)
             fat_component_labels = np.concatenate(
-                [fat_component_labels, allowed_components[tuple(new_coords.T)]]
+                [fat_component_labels, allowed_at[tuple(new_coords.T)]]
             )
             fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
         if arm_index % 200 == 0 or time.perf_counter() - last_log_time > 30.0:
@@ -1715,24 +2217,44 @@ def _join_thin_arms_to_fat_ridge(
     return result
 
 
+@contextmanager
 def _hole_filled_mask(
     binary: np.ndarray, fill_mask_holes: bool, *, use_memmap: bool, memmap_directory
-) -> np.ndarray:
-    """*binary* as bool, its enclosed holes filled when *fill_mask_holes*."""
+) -> Iterator[np.ndarray]:
+    """*binary* as bool, its enclosed holes filled when *fill_mask_holes*,
+    for the ``with`` block.
+
+    Under *use_memmap* the filled copy is a disk-backed array, released when
+    the block ends -- in RAM it was one more byte a voxel of the whole volume.
+    """
     mask = np.asarray(binary, dtype=bool)
-    if fill_mask_holes:
-        bbox = _foreground_bbox(mask, pad=0)
-        if bbox is not None:
-            filled = fill_binary_holes(
-                mask[bbox], use_memmap=use_memmap, memmap_directory=memmap_directory
-            )
+    bbox = _foreground_bbox(mask, pad=0) if fill_mask_holes else None
+    if bbox is None:
+        yield mask
+        return
+    filled = fill_binary_holes(mask[bbox], use_memmap=use_memmap, memmap_directory=memmap_directory)
+    owned = None
+    try:
+        if use_memmap:
+            owned = memmap_support.new_memmap_array(mask.shape, bool, directory=memmap_directory)
+            memmap_support.map_by_slab(mask, lambda slab: slab, owned)
+            memmap_support.map_by_slab(filled, lambda slab: slab, owned[bbox])
+            mask = owned
+        else:
             mask = mask.copy()
             mask[bbox] = filled
-            if isinstance(filled, np.memmap):
-                from .memmap_support import release_memmap_array
-
-                release_memmap_array(filled)
-    return mask
+    except BaseException:
+        if owned is not None:
+            memmap_support.release_memmap_array(owned)
+        raise
+    finally:
+        if isinstance(filled, np.memmap):
+            memmap_support.release_memmap_array(filled)
+    try:
+        yield mask
+    finally:
+        if owned is not None:
+            memmap_support.release_memmap_array(owned)
 
 
 def thick_vessel_region(
@@ -1757,19 +2279,77 @@ def thick_vessel_region(
     """
     if float(min_radius_um) <= 0.0:
         return None
-    mask = _hole_filled_mask(
+    with _hole_filled_mask(
         binary, fill_mask_holes, use_memmap=use_memmap, memmap_directory=memmap_directory
-    )
-    thick = thick_vessel_object_mask(
-        mask,
-        min_radius_um=float(min_radius_um),
-        voxel_size_zyx=voxel_size_zyx,
-        wall_absorption_um=wall_absorption_um,
-        restrict_to_mask=restrict_thick_to_mask,
-        use_memmap=use_memmap,
-        memmap_directory=memmap_directory,
-    )
+    ) as mask:
+        thick = thick_vessel_object_mask(
+            mask,
+            min_radius_um=float(min_radius_um),
+            voxel_size_zyx=voxel_size_zyx,
+            wall_absorption_um=wall_absorption_um,
+            restrict_to_mask=restrict_thick_to_mask,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
+        )
     return thick if thick.any() else None
+
+
+def _lee_thin_catchment_by_block(
+    result: np.ndarray,
+    mask: np.ndarray,
+    thick: np.ndarray,
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+    min_arm_extent_um: float,
+    lee_kwargs: dict,
+) -> int:
+    """For the low-RAM option, :func:`skeletonize_thickness_gated`'s Lee step:
+    the thin catchment's voxels at least *min_arm_extent_um* from the fat
+    region -- each decided from its block's own distance transform with that
+    much context -- written to disk, Lee-thinned, and drawn into *result*.
+    Returns how many voxels the thin catchment has."""
+    shape = mask.shape
+    bbox = _foreground_bbox_by_slab(
+        lambda z0, z1: np.asarray(mask[z0:z1], dtype=bool) | np.asarray(thick[z0:z1], dtype=bool),
+        shape,
+        pad=1,
+    )
+    if bbox is None:
+        return 0
+    mask_c = mask[bbox]
+    thick_c = thick[bbox]
+    reach = float(min_arm_extent_um)
+    lee_input = memmap_support.new_memmap_array(
+        mask_c.shape, bool, directory=lee_kwargs["memmap_directory"]
+    )
+    n_thin = 0
+    try:
+        n_lee = 0
+        for core, where, distance in blockwise_edt.near_distances_by_block(
+            lambda box: ~np.asarray(thick_c[box], dtype=bool),
+            lambda box: np.asarray(mask_c[box], dtype=bool) & ~np.asarray(thick_c[box], dtype=bool),
+            mask_c.shape,
+            sampling=tuple(float(v) for v in voxel_size_zyx),
+            reach=reach,
+        ):
+            block = np.zeros(where.shape, dtype=bool)
+            block[where] = distance >= reach
+            lee_input[core] = block
+            n_thin += int(np.count_nonzero(where))
+            n_lee += int(np.count_nonzero(block))
+        if n_lee:
+            skeleton = skeletonize_by_component(lee_input, **lee_kwargs)
+            try:
+                target = result[bbox]
+                step = memmap_support.slab_step(target.shape)
+                for z0 in range(0, target.shape[0], step):
+                    target[z0:z0 + step] |= np.asarray(skeleton[z0:z0 + step], dtype=bool)
+            finally:
+                if isinstance(skeleton, np.memmap):
+                    memmap_support.release_memmap_array(skeleton)
+    finally:
+        memmap_support.release_memmap_array(lee_input)
+    return n_thin
 
 
 def skeletonize_thickness_gated(
@@ -1885,141 +2465,152 @@ def skeletonize_thickness_gated(
         skeleton = skeletonize_by_component(volume, **lee_kwargs)
         in_ram = np.array(skeleton, dtype=bool)
         if isinstance(skeleton, np.memmap):
-            from .memmap_support import release_memmap_array
-
-            release_memmap_array(skeleton)
+            memmap_support.release_memmap_array(skeleton)
         return in_ram
 
-    mask = _hole_filled_mask(
+    with _hole_filled_mask(
         binary, fill_mask_holes, use_memmap=use_memmap, memmap_directory=memmap_directory
-    )
-    if float(min_radius_um) <= 0.0:
-        skeleton = (lee(mask) if low_ram else skeletonize_volume(mask)).astype(bool)
-        return (skeleton, None) if return_thick_mask else skeleton
+    ) as mask:
+        if float(min_radius_um) <= 0.0:
+            skeleton = (lee(mask) if low_ram else skeletonize_volume(mask)).astype(bool)
+            return (skeleton, None) if return_thick_mask else skeleton
 
-    t0 = time.perf_counter()
-    if thick_region is not None:
-        thick = np.asarray(thick_region, dtype=bool)
-        if thick.shape != mask.shape:
-            raise ValueError(
-                f"The thick-vessel region given is {thick.shape} voxels but the mask "
-                f"is {mask.shape}: it was found in a different image."
+        t0 = time.perf_counter()
+        if thick_region is not None:
+            thick = np.asarray(thick_region, dtype=bool)
+            if thick.shape != mask.shape:
+                raise ValueError(
+                    f"The thick-vessel region given is {thick.shape} voxels but the mask "
+                    f"is {mask.shape}: it was found in a different image."
+                )
+            logger.info(
+                "skeletonize_thickness_gated: fat catchment found before (input shape %s, "
+                "%d foreground voxels)",
+                mask.shape,
+                int(np.count_nonzero(mask)),
             )
-        logger.info(
-            "skeletonize_thickness_gated: fat catchment found before (input shape %s, "
-            "%d foreground voxels)",
-            mask.shape,
-            int(mask.sum()),
-        )
-    else:
-        logger.info(
-            "skeletonize_thickness_gated: computing fat catchment (input shape %s, "
-            "%d foreground voxels)",
-            mask.shape,
-            int(mask.sum()),
-        )
-        thick = thick_vessel_object_mask(
-            mask,
-            min_radius_um=float(min_radius_um),
-            voxel_size_zyx=voxel_size_zyx,
-            wall_absorption_um=wall_absorption_um,
-            restrict_to_mask=restrict_thick_to_mask,
-            use_memmap=use_memmap,
-            memmap_directory=memmap_directory,
-        )
-    t_catchment = time.perf_counter() - t0
-    if not thick.any():
-        skeleton = (lee(mask) if low_ram else skeletonize_volume(mask)).astype(bool)
-        return (skeleton, None) if return_thick_mask else skeleton
-    # thick_vessel_object_mask's own large locals (the radius map, the
-    # geodesic body, the wall distance transform -- each up to the size of
-    # the input volume) are unreachable now that it has returned, but a big
-    # freed block does not always get handed back to the OS the moment its
-    # refcount drops; collecting explicitly before the next big allocation
-    # (Lee-thinning, then the ridge tree, then joining) gives it the best
-    # chance to.
-    gc.collect()
+        else:
+            logger.info(
+                "skeletonize_thickness_gated: computing fat catchment (input shape %s, "
+                "%d foreground voxels)",
+                mask.shape,
+                int(np.count_nonzero(mask)),
+            )
+            thick = thick_vessel_object_mask(
+                mask,
+                min_radius_um=float(min_radius_um),
+                voxel_size_zyx=voxel_size_zyx,
+                wall_absorption_um=wall_absorption_um,
+                restrict_to_mask=restrict_thick_to_mask,
+                use_memmap=use_memmap,
+                memmap_directory=memmap_directory,
+            )
+        t_catchment = time.perf_counter() - t0
+        if not thick.any():
+            skeleton = (lee(mask) if low_ram else skeletonize_volume(mask)).astype(bool)
+            return (skeleton, None) if return_thick_mask else skeleton
+        # thick_vessel_object_mask's own large locals are unreachable now
+        # that it has returned, but a big freed block does not always get
+        # handed back to the OS the moment its refcount drops; collecting
+        # explicitly before the next big allocation (Lee-thinning, then the
+        # ridge tree, then joining) gives it the best chance to.
+        gc.collect()
 
-    thin = mask & ~thick
-    # In microns, compared against a distance measured in microns: this was a
-    # voxel count against a voxel-index distance, so on an anisotropic stack
-    # an arm leaving the trunk along the coarse z axis had to reach several
-    # times further than one leaving in-plane before it was kept.
-    spacing = min(float(v) for v in voxel_size_zyx)
-    if flake_filter_um is None:
-        min_arm_extent_um = max(4.0 * spacing, 0.75 * float(min_radius_um))
-    else:
-        min_arm_extent_um = max(0.0, float(flake_filter_um))
-    result = np.zeros(mask.shape, dtype=bool)
-    logger.info(
-        "skeletonize_thickness_gated: fat catchment done in %.2fs (%d fat, %d thin "
-        "voxels); Lee-thinning the thin catchment",
-        t_catchment,
-        int(thick.sum()),
-        int(thin.sum()),
-    )
-    t1 = time.perf_counter()
-    if thin.any():
+        # In microns, compared against a distance measured in microns: this was a
+        # voxel count against a voxel-index distance, so on an anisotropic stack
+        # an arm leaving the trunk along the coarse z axis had to reach several
+        # times further than one leaving in-plane before it was kept.
+        spacing = min(float(v) for v in voxel_size_zyx)
+        if flake_filter_um is None:
+            min_arm_extent_um = max(4.0 * spacing, 0.75 * float(min_radius_um))
+        else:
+            min_arm_extent_um = max(0.0, float(flake_filter_um))
+        n_thick = int(np.count_nonzero(thick))
+        result = np.zeros(mask.shape, dtype=bool)
+        logger.info(
+            "skeletonize_thickness_gated: fat catchment done in %.2fs (%d fat voxels); "
+            "Lee-thinning the thin catchment",
+            t_catchment,
+            n_thick,
+        )
+        t1 = time.perf_counter()
         # Do not Lee the leftover fat-wall shell: those CCs never extend away
         # from thick, and Lee of that wrap is the looped mesh beside the ridge.
-        bbox = _foreground_bbox(thin | thick, pad=1)
-        if bbox is None:
-            result |= lee(thin)
+        if low_ram:
+            n_thin = _lee_thin_catchment_by_block(
+                result,
+                mask,
+                thick,
+                voxel_size_zyx=voxel_size_zyx,
+                min_arm_extent_um=min_arm_extent_um,
+                lee_kwargs=lee_kwargs,
+            )
         else:
-            owned: list = []
-            try:
-                dist_crop = _distance_um(
-                    ~thick[bbox],
-                    voxel_size_zyx,
-                    use_memmap=use_memmap,
-                    memmap_directory=memmap_directory,
-                    owned=owned,
-                )
-                lee_crop = thin[bbox] & (dist_crop >= float(min_arm_extent_um))
-            finally:
-                _release_all(owned)
-            if lee_crop.any():
-                result[bbox] |= lee(lee_crop)
-    t_lee = time.perf_counter() - t1
-    gc.collect()
-    logger.info(
-        "skeletonize_thickness_gated: Lee-thinning done in %.2fs; building the "
-        "fat-catchment centreline tree",
-        t_lee,
-    )
-    t2 = time.perf_counter()
-    result |= skeletonize_edt_ridge(thick, voxel_size_zyx)
-    t_ridge = time.perf_counter() - t2
-    gc.collect()
-    logger.info(
-        "skeletonize_thickness_gated: centreline tree done in %.2fs; joining thin "
-        "arms to the fat ridge",
-        t_ridge,
-    )
-    t3 = time.perf_counter()
-    result = _join_thin_arms_to_fat_ridge(
-        result,
-        thick,
-        mask,
-        voxel_size_zyx=voxel_size_zyx,
-        min_arm_extent_um=min_arm_extent_um,
-        max_bridge_radius_multiple=max_bridge_radius_multiple,
-        max_bridge_distance_um=max_bridge_distance_um,
-        radius_smoothing_um=bridge_radius_smoothing_um,
-    ).astype(bool)
-    t_join = time.perf_counter() - t3
-    logger.info(
-        "Thickness-gated skeletonisation: shape=%s fat=%d voxels thin=%d voxels "
-        "catchment=%.3fs lee=%.3fs ridge=%.3fs join=%.3fs",
-        mask.shape,
-        int(thick.sum()),
-        int(thin.sum()),
-        t_catchment,
-        t_lee,
-        t_ridge,
-        t_join,
-    )
-    return (result, thick) if return_thick_mask else result
+            thin = mask & ~thick
+            n_thin = int(thin.sum())
+            if n_thin:
+                bbox = _foreground_bbox(thin | thick, pad=1)
+                if bbox is None:
+                    result |= lee(thin)
+                else:
+                    dist_crop = distance_transform_edt(
+                        ~thick[bbox], sampling=tuple(float(v) for v in voxel_size_zyx)
+                    )
+                    lee_crop = thin[bbox] & (dist_crop >= float(min_arm_extent_um))
+                    del dist_crop
+                    if lee_crop.any():
+                        result[bbox] |= lee(lee_crop)
+            del thin
+        t_lee = time.perf_counter() - t1
+        gc.collect()
+        logger.info(
+            "skeletonize_thickness_gated: Lee-thinning done in %.2fs (%d thin voxels); "
+            "building the fat-catchment centreline tree",
+            t_lee,
+            n_thin,
+        )
+        t2 = time.perf_counter()
+        _edt_ridge_into(result, thick, _relative_spacing(voxel_size_zyx), low_ram=low_ram)
+        t_ridge = time.perf_counter() - t2
+        gc.collect()
+        logger.info(
+            "skeletonize_thickness_gated: centreline tree done in %.2fs; joining thin "
+            "arms to the fat ridge",
+            t_ridge,
+        )
+        t3 = time.perf_counter()
+        # Every thin skeleton voxel is Lee output of the catchment cut to
+        # min_arm_extent_um from the fat region, so the join's length filter
+        # would keep every arm (see its arms_reach_extent).
+        result = np.asarray(
+            _join_thin_arms_to_fat_ridge(
+                result,
+                thick,
+                mask,
+                voxel_size_zyx=voxel_size_zyx,
+                min_arm_extent_um=min_arm_extent_um,
+                max_bridge_radius_multiple=max_bridge_radius_multiple,
+                max_bridge_distance_um=max_bridge_distance_um,
+                radius_smoothing_um=bridge_radius_smoothing_um,
+                arms_reach_extent=True,
+                in_place=True,
+                use_memmap=low_ram,
+            ),
+            dtype=bool,
+        )
+        t_join = time.perf_counter() - t3
+        logger.info(
+            "Thickness-gated skeletonisation: shape=%s fat=%d voxels thin=%d voxels "
+            "catchment=%.3fs lee=%.3fs ridge=%.3fs join=%.3fs",
+            mask.shape,
+            n_thick,
+            n_thin,
+            t_catchment,
+            t_lee,
+            t_ridge,
+            t_join,
+        )
+        return (result, thick) if return_thick_mask else result
 
 
 def needs_thick_vessel_treatment(
