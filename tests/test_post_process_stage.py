@@ -741,6 +741,118 @@ def test_a_resume_hands_the_large_vessel_hand_off_nodes_on(tmp_path):
     assert boundaries.large_venule_boundary_nodes == [3]
 
 
+# --- a vessel drawn in a large vessel mask is tagged as lying in it ----------------
+
+
+def _large_tier_run(tmp_path, *, gap_at_z=25.0):
+    """test_branch_order_hierarchy's branching large-vessel network through the
+    real Boundaries and Diameters stages, its large arteriole broken at
+    *gap_at_z*: the trunk a0-a1-a2 reaches the inlet, the piece beyond it
+    (m-a3) is a fragment lying in the arteriole mask, joined to nothing --
+    the E14.5 large-mask vessels the Large tier missed. Returns settings,
+    network, boundaries, model and the node ids."""
+    from test_branch_order_hierarchy import _branching_large_vessel_network, _large_tier_settings
+
+    network, ids = _branching_large_vessel_network()
+    G = network.graph
+    a2, a3 = ids["a2"], ids["a3"]
+    G.remove_edge(a2, a3)
+    ids["m"] = max(G.nodes) + 1
+    m_pos = (gap_at_z, 4.0, 5.0)
+    G.add_node(ids["m"], pos=m_pos)
+    G.add_edge(ids["m"], a3, voxels=[m_pos, G.nodes[a3]["pos"]],
+               length=float(G.nodes[a3]["pos"][0] - gap_at_z))
+    run_settings = _large_tier_settings(tmp_path)
+    run_settings["run_haemodynamics"] = False
+    boundaries = stages.assign_boundaries(run_settings, network)
+    model = assign_diameters(run_settings, network, boundaries, SCHEMA)
+    return run_settings, network, boundaries, model, ids
+
+
+def _large_tags(G) -> dict[tuple, str | None]:
+    return {
+        (u, v, k): data.get(graph_module.LARGE_MASK_VESSEL_TYPE)
+        for u, v, k, data in G.edges(keys=True, data=True)
+    }
+
+
+def test_a_vessel_drawn_along_the_large_arteriole_stays_large_art(tmp_path):
+    """Regression: a vessel drawn by hand carried no large-mask tag, and the
+    Large tier is the tagged vessels joined to the inlet through tagged
+    vessels -- so a vessel drawn to close a gap in the large arteriole was
+    not Large_Art, nor was the trunk it joined back on."""
+    run_settings, network, boundaries, model, ids = _large_tier_run(tmp_path)
+    G = model.graph
+    assert run_settings["inlet_nodes"] == [ids["a0"]]
+    assert G.edges[ids["m"], ids["a3"], 0].get("branch_order") is None  # the fragment
+    drawn = add_vessel_between(G, ids["a2"], ids["m"])
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    G = out.graph
+    assert G.edges[ids["a1"], ids["a2"], 0]["branch_order"] == "Large_Art2"
+    assert G.edges[drawn].get("branch_order") == "Large_Art3"
+    assert G.edges[ids["m"], ids["a3"], 0].get("branch_order") == "Large_Art4"
+    assert G.edges[drawn][graph_module.LARGE_MASK_VESSEL_TYPE] == "arteriole"
+
+
+def test_a_vessel_drawn_under_covered_between_two_large_vessels_takes_their_tag(tmp_path):
+    """The Boundaries stage's own rule, gap-filling included: a vessel only a
+    third in the arteriole mask, between two vessels lying in it, takes the
+    tag (GAP_FILL_FRACTION_OF_THRESHOLD of the 0.5 overlap threshold)."""
+    run_settings, network, boundaries, model, ids = _large_tier_run(tmp_path)
+    G = model.graph
+    a2, m = ids["a2"], ids["m"]
+    start, end = np.asarray(G.nodes[a2]["pos"]), np.asarray(G.nodes[m]["pos"])
+    drawn = add_vessel_between(G, a2, m, [start, (start + end) / 2 + [0.0, 0.0, 8.0], end])
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert out.graph.edges[drawn][graph_module.LARGE_MASK_VESSEL_TYPE] == "arteriole"
+    assert out.graph.edges[drawn]["branch_order"] == "Large_Art3"
+
+
+def test_an_edited_vessel_outside_the_large_masks_loses_the_tag_and_no_other_vessel_changes(
+    tmp_path,
+):
+    """A split copies its parent's attributes and a merge takes its first
+    vessel's, so an edited vessel can carry a large-mask tag it does not lie
+    in: it is judged again, and every vessel not edited keeps the tag the
+    Boundaries stage gave it."""
+    run_settings, network, boundaries, model, ids = _large_tier_run(tmp_path)
+    G = model.graph
+    start = np.asarray(G.nodes[ids["a2"]]["pos"], dtype=float)
+    new = max(G.nodes) + 1
+    G.add_node(new, pos=start + [6.0, 0.0, 11.0])
+    drawn = add_vessel_between(G, ids["a2"], new)
+    G.edges[drawn][graph_module.LARGE_MASK_VESSEL_TYPE] = "arteriole"  # as a split copies it
+    before = {edge: tag for edge, tag in _large_tags(G).items() if edge != drawn}
+    assert set(before.values()) == {"arteriole", "venule", None}
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert graph_module.LARGE_MASK_VESSEL_TYPE not in out.graph.edges[drawn]
+    assert not out.graph.edges[drawn]["branch_order"].startswith("Large_")
+    after = _large_tags(out.graph)
+    assert {edge: after[edge] for edge in before} == before
+
+
+def test_without_the_large_masks_the_edited_vessels_keep_their_tags_and_it_says_so(
+    tmp_path, caplog
+):
+    run_settings, network, boundaries, model, ids = _large_tier_run(tmp_path)
+    split_piece = (ids["a1"], ids["a2"], 0)
+    mark_edited(model.graph, [split_piece])
+    boundaries.large_arteriole_mask = boundaries.large_venule_mask = None
+
+    with caplog.at_level("WARNING", logger="haemolynx.pipeline.stages"):
+        out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert out.graph.edges[split_piece][graph_module.LARGE_MASK_VESSEL_TYPE] == "arteriole"
+    assert out.graph.edges[split_piece]["branch_order"] == "Large_Art2"
+    assert "no large vessel masks to read" in caplog.text
+
+
 def test_a_diameter_set_by_hand_survives_post_processing_and_moves_the_resistance(tmp_path, monkeypatch):
     """Set diameter on the review lists: the vessel is not measured again --
     a measurement would replace the hand value -- and its resistance follows

@@ -847,6 +847,85 @@ def tag_vessels_in_global_masks(
     }
 
 
+def tag_edges_in_large_vessel_masks(
+    G: nx.Graph,
+    large_arteriole_mask: np.ndarray,
+    large_venule_mask: np.ndarray,
+    edges: list[tuple[Any, Any, Any]],
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+    minimum_overlap_fraction: float = 0.5,
+) -> dict[str, int]:
+    """Tag *edges* (``(u, v, key)``, the ones a hand edit made) with the large
+    mask each lies in, ``graph.LARGE_MASK_VESSEL_TYPE``, by the rule
+    :func:`infer_boundary_nodes_from_small_vessel_masks` labels every vessel
+    with for the Boundaries stage: at least *minimum_overlap_fraction* of its
+    length in the mask, the mask covering more of it (the arteriole on a tie)
+    when both do, and an under-covered edge between two edges of one type
+    gap-filled -- judged beside the tags the other edges carry, which stay as
+    they are. An edge in neither mask loses any tag it had (a split copies its
+    parent's, a merge its first vessel's)."""
+    from .branch_order import LARGE_MASK_VESSEL_TYPE
+
+    if large_arteriole_mask.shape != large_venule_mask.shape:
+        raise ValueError(
+            "large_arteriole_mask and large_venule_mask must share a shape. "
+            f"Got {large_arteriole_mask.shape} and {large_venule_mask.shape}."
+        )
+    threshold = float(minimum_overlap_fraction)
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError(f"minimum_overlap_fraction must be in [0.0, 1.0]. Got {threshold}.")
+    all_edges = _label_edge_ids(G)
+    wanted = {_edge_id(u, v, key) for u, v, key in edges}
+    chosen = [entry for entry in all_edges if entry[2] in wanted]
+    for *_, data in chosen:
+        data.pop(LARGE_MASK_VESSEL_TYPE, None)
+    voxels = _edge_sample_voxels(
+        G, chosen, voxel_size_zyx=voxel_size_zyx, mask_shape=large_arteriole_mask.shape
+    )
+    fractions = {
+        edge_id: (_fraction_in(large_arteriole_mask, index), _fraction_in(large_venule_mask, index))
+        for edge_id, index in voxels.items()
+    }
+    labelled: dict[str, set[tuple[Any, Any, int]]] = {"arteriole": set(), "venule": set()}
+    for _u, _v, edge_id, data in all_edges:
+        if data.get(LARGE_MASK_VESSEL_TYPE) in labelled:
+            labelled[data[LARGE_MASK_VESSEL_TYPE]].add(edge_id)
+    for _u, _v, edge_id, data in chosen:
+        if edge_id not in fractions:
+            continue
+        arteriole_fraction, venule_fraction = fractions[edge_id]
+        in_arteriole = arteriole_fraction >= threshold
+        if in_arteriole and (venule_fraction < threshold or arteriole_fraction >= venule_fraction):
+            name = "arteriole"
+        elif venule_fraction >= threshold:
+            name = "venule"
+        else:
+            continue
+        labelled[name].add(edge_id)
+        data[LARGE_MASK_VESSEL_TYPE] = name
+    gap_filled = _fill_label_gaps(
+        all_edges,
+        {
+            edge_id: pair
+            for edge_id, pair in fractions.items()
+            if edge_id not in labelled["arteriole"] and edge_id not in labelled["venule"]
+        },
+        labelled,
+        low_fraction=GAP_FILL_FRACTION_OF_THRESHOLD * threshold,
+        attribute=LARGE_MASK_VESSEL_TYPE,
+    )
+    tagged = {
+        name: sum(1 for *_, data in chosen if data.get(LARGE_MASK_VESSEL_TYPE) == name)
+        for name in labelled
+    }
+    return {
+        "arteriole_edge_count": tagged["arteriole"],
+        "venule_edge_count": tagged["venule"],
+        "gap_filled_edge_count": gap_filled,
+    }
+
+
 def filter_io_nodes_to_terminal_degree1(
     G: nx.Graph,
     input_nodes: list[Any],

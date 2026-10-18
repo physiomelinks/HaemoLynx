@@ -2955,6 +2955,47 @@ def _tag_vessels_in_global_masks(
     )
 
 
+def _tag_edited_vessels_in_large_masks(
+    settings: Mapping[str, Any],
+    G: nx.MultiGraph,
+    boundaries: BoundaryNodes,
+    edited: list,
+    voxel_size_zyx,
+) -> None:
+    """Tag each *edited* vessel with the large mask it lies in, as the
+    Boundaries stage tagged every vessel (``graph.LARGE_MASK_VESSEL_TYPE``):
+    the Large_Art/Large_Ven tier is the tagged vessels joined to an inlet or
+    outlet through tagged vessels, so a vessel drawn untagged in the large
+    arteriole would end the tier there. The other vessels keep their tags.
+    Without the masks the edited vessels keep the tags they had."""
+    if boundaries.large_arteriole_mask is None or boundaries.large_venule_mask is None:
+        logger.warning(
+            "Post processing: no large vessel masks to read, so %d edited vessel(s) "
+            "keep the large-mask tags they had; a vessel drawn by hand in a large "
+            "vessel is left out of its Large_Art/Large_Ven tier.",
+            len(edited),
+        )
+        return
+    from haemolynx.graph.cut_at_large_vessel_volumes import _as_large_vessel_foreground
+
+    counts = graph.tag_edges_in_large_vessel_masks(
+        G,
+        _as_large_vessel_foreground(boundaries.large_arteriole_mask, role="arteriole"),
+        _as_large_vessel_foreground(boundaries.large_venule_mask, role="venule"),
+        edited,
+        voxel_size_zyx=voxel_size_zyx,
+        minimum_overlap_fraction=float(settings["large_vessel_mask_min_overlap_fraction"]),
+    )
+    logger.info(
+        "Post processing: %d of %d edited vessel(s) lie in the large arteriole mask and "
+        "%d in the large venule mask (%d under-covered between two of one type took it).",
+        counts["arteriole_edge_count"],
+        len(edited),
+        counts["venule_edge_count"],
+        counts["gap_filled_edge_count"],
+    )
+
+
 def _assign_branch_orders(
     settings: dict, G: nx.MultiGraph, *, post_assign_callback=None
 ) -> dict[str, Any]:
@@ -3320,8 +3361,11 @@ def post_process(
        enters, the part inside a zero-resistance bridge
        (:func:`_bridge_edited_vessels`);
     3. each edited vessel's ``length`` is measured along its path;
-    4. branch orders are assigned again over the whole network, as Diameters
-       does (an edit changes the orders downstream of it);
+    4. each edited vessel is tagged with the vessel mask it lies in, as
+       Boundaries tagged every vessel -- a global mask's size class, or the
+       large mask the Large_Art/Large_Ven tier reads -- and branch orders are
+       assigned again over the whole network, as Diameters does (an edit
+       changes the orders downstream of it);
     5. with haemodynamics on, each edited vessel is measured afresh with the
        run's own diameter methods (FWHM, the raw section, EDT, the
        endothelium -- whichever it uses), keeping the diameter the edit gave
@@ -3361,6 +3405,11 @@ def post_process(
             data["length"] = float(graph.calculate_path_length(points))
     diameters = None
     summary: dict[str, Any] = {"edited_vessels": len(edited)}
+    voxel_size_zyx = (
+        network.volume.voxel_size_zyx
+        if network is not None
+        else tuple(G.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0)))
+    )
     if edited and io.vessel_masks_are_global(settings):
         # An edited vessel's class comes from the masks, as every other's did.
         in_use = {role: graph.vessel_masks_in_use(settings, role) for role in ("large", "small")}
@@ -3373,13 +3422,11 @@ def post_process(
             small_mask=io.as_global_vessel_mask(
                 boundaries.small_arteriole_mask, boundaries.small_venule_mask
             ) if in_use["small"] else None,
-            voxel_size_zyx=(
-                network.volume.voxel_size_zyx
-                if network is not None
-                else tuple(G.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0)))
-            ),
+            voxel_size_zyx=voxel_size_zyx,
             edges=edited,
         )
+    if edited and graph.assigns_large_vessel_branch_orders(settings):
+        _tag_edited_vessels_in_large_masks(settings, G, boundaries, edited, voxel_size_zyx)
     if settings["inlet_nodes"]:
         _assign_branch_orders(settings, G)
         # Even with no vessel to measure (only deletions): a table or class
@@ -3387,11 +3434,6 @@ def post_process(
         if settings["run_haemodynamics"]:
             for u, v, key in edited:
                 _start_measurement_afresh(G.edges[u, v, key])
-            voxel_size_zyx = (
-                network.volume.voxel_size_zyx
-                if network is not None
-                else tuple(G.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0)))
-            )
             haemo_config = _haemodynamics_apply_config(
                 settings, schema, voxel_size_zyx=voxel_size_zyx,
                 stain=recorded_raw_image_stain(settings, G),
