@@ -1708,7 +1708,7 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
     elif raw_tiff_path is None:
         raise ValueError("FWHM needs the raw image: raw_tiff_path or raw_volume.")
     else:
-        from haemolynx.io.crop import crop_volume_like_graph
+        from haemolynx.io.downsample import raw_volume_like_graph
 
         whole = load_single_channel_tiff_volume(
             raw_tiff_path,
@@ -1718,8 +1718,9 @@ def measure_edge_diameters_fwhm_from_raw_tiff(
             channel=raw_channel,
         )
         # The graph's positions are measured from the crop_on_import box's
-        # corner when the image was cut on import; so are the raw voxels then.
-        raw = crop_volume_like_graph(
+        # corner when the image was cut on import, on the grid it was
+        # downsampled to; so are the raw voxels then.
+        raw = raw_volume_like_graph(
             whole, G, description="FWHM raw image",
             use_memmap=use_memmap, memmap_directory=memmap_directory,
         )

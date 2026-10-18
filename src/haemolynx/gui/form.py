@@ -569,6 +569,8 @@ CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
         "plasma_column": "Plasma column (luminal stain)",
         "endothelial": "Endothelial (wall stain)",
     },
+    "segmented_image_downsample": {"none": "None"},
+    "raw_image_downsample": {"none": "None"},
     "haematocrit_model": {
         "fixed": "Fixed haematocrit",
         "distributed_iterative": "Calculated haematocrit distribution - iterative",

@@ -13,7 +13,7 @@ import numpy as np
 from haemolynx import io
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.io.axis_order import CANONICAL_AXIS_ORDER
-from haemolynx.io.crop import crop_volume_like_graph
+from haemolynx.io.downsample import raw_volume_like_graph
 from haemolynx.parsers import prefixed_arguments
 from haemolynx.preprocessing.memmap_support import release_memmap_array
 from haemolynx.haemodynamics import automated
@@ -269,11 +269,12 @@ def _cropped_like_graph(
     volume: np.ndarray | None, G: nx.MultiGraph, config: HaemodynamicsApplyConfig, description: str
 ) -> np.ndarray | None:
     """*volume*, read from disk, cut to the ``crop_on_import`` box *G* was
-    built in (io.crop), so its voxels lie under the graph's positions. A
-    disk-backed whole volume it replaces is released."""
+    built in (io.crop) and reduced onto its grid (io.downsample), so its
+    voxels lie under the graph's positions. A disk-backed whole volume it
+    replaces is released."""
     if volume is None:
         return None
-    cropped = crop_volume_like_graph(
+    cropped = raw_volume_like_graph(
         volume, G, description=description,
         use_memmap=config.use_memmap, memmap_directory=config.memmap_directory,
     )

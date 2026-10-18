@@ -455,7 +455,7 @@ def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
     if threshold is None:
         return report
 
-    from haemolynx.io import resolve_voxel_size_xyz, voxel_size_zyx_from_xyz
+    from haemolynx.io import voxel_size_zyx_from_xyz
     from haemolynx.io.load import _to_binary_volume_for_skeletonization
     from haemolynx.pipeline.stages import load_volume_for_skeletonise, segment
     from haemolynx.preprocessing import score_segmented_mask
@@ -476,11 +476,10 @@ def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
         )
         return report
 
-    voxel_size_xyz, _source = resolve_voxel_size_xyz(
-        metadata_voxel_size_xyz=metadata_voxel_size,
-        metadata_status=voxel_meta_status,
-        voxel_size_override_xyz=local_settings.get("voxel_size_override_xyz"),
-        voxel_size_policy=local_settings.get("voxel_size_policy", "auto"),
+    from haemolynx.pipeline.stages import run_voxel_size_xyz
+
+    voxel_size_xyz, _source = run_voxel_size_xyz(
+        local_settings, metadata_voxel_size, voxel_meta_status
     )
     mask = _to_binary_volume_for_skeletonization(image)
     voxel_size_zyx = voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
@@ -771,6 +770,52 @@ def check_crop_on_import(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
+def check_downsample_on_import(settings: Mapping[str, Any]) -> CheckReport:
+    """The two downsample choices, said plainly before any image is read:
+    the raw image is read onto the segmented image's grid wherever the run
+    reads it, so a ``raw_image_downsample`` other than
+    ``segmented_image_downsample`` is a warning saying what it will do; and
+    ilastik reads the whole raw file whatever the raw choice says."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
+    from haemolynx.io.downsample import RAW_SETTING, SEGMENTED_SETTING, downsample_factor
+
+    report = CheckReport()
+    try:
+        segmented = downsample_factor(settings.get(SEGMENTED_SETTING))
+        raw = downsample_factor(settings.get(RAW_SETTING)) if settings.get("raw_image_path") else 1
+    except ValueError as error:
+        report.add_error(f"Downsample on import: {error}")
+        return report
+    if segmented == 1 and raw == 1:
+        return report
+    if raw > segmented:
+        report.add_warning(
+            f"raw_image_downsample is {raw}x but segmented_image_downsample is {segmented}x: "
+            "everything that reads the raw image needs it on the segmented image's grid, so "
+            f"it is reduced {raw}x and each coarse voxel spread over the {segmented}x grid -- a "
+            "blockier image, no smaller in memory. Choose the same factor for both unless "
+            "that is what you want."
+        )
+    elif 1 < raw < segmented:
+        report.add_warning(
+            f"raw_image_downsample is {raw}x but segmented_image_downsample is {segmented}x: "
+            "everything that reads the raw image needs it on the segmented image's grid, so "
+            f"the raw image is read at {segmented}x."
+        )
+    if raw > 1 and settings.get("use_ilastik_segmentation"):
+        report.add_warning(
+            f"raw_image_downsample is {raw}x, but ilastik segments the whole raw file as its "
+            "project was trained on it; the choice applies to the raw image read afterwards."
+        )
+    detail = f"segmented image {segmented}x"
+    if settings.get("raw_image_path"):
+        # A raw image left at none is read on the segmented image's grid too.
+        detail += f", raw image read at {max(raw, segmented)}x"
+    report.add_pass("downsample on import", detail)
+    return report
+
+
 def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
     """A synthetic run's template (``synthetic_template_path``): a
     ``.haemorun`` of a microscopy-image run with its statistics saved, read
@@ -860,6 +905,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_image_channels(settings))
     report.extend(check_tissue_volume_image(settings))
     report.extend(check_crop_on_import(settings))
+    report.extend(check_downsample_on_import(settings))
     report.extend(check_cell_mask_measurement(settings))
     report.print("Preflight")
     return report

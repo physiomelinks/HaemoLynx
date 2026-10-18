@@ -28,6 +28,15 @@ from .automated_vessel_assignment import (
     vessel_masks_are_global,
 )
 from .vessel_mask_discovery import FoundVesselMasks, find_vessel_masks
+from .downsample import (
+    DOWNSAMPLE_CHOICES,
+    Downsample,
+    downsample_factor,
+    downsample_from_settings,
+    downsample_volume,
+    mask_volume_like_graph,
+    raw_volume_like_graph,
+)
 from .voxel_validation import resolve_voxel_size_xyz, validate_voxel_size_xyz
 from .channels import TiffChannel, tiff_channel_axis, tiff_channels
 from .axis_order import (

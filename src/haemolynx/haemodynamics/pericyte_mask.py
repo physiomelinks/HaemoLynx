@@ -21,7 +21,7 @@ from haemolynx.io import (
     CANONICAL_AXIS_ORDER,
     voxel_size_zyx_from_xyz,
 )
-from haemolynx.io.crop import crop_volume_like_graph
+from haemolynx.io.downsample import graph_downsample, mask_volume_like_graph
 from haemolynx.io.load import load_binary_mask_voxel_size_and_status
 from haemolynx.io.voxel_validation import resolve_voxel_size_xyz
 from .constriction import (
@@ -287,14 +287,20 @@ def set_poiseuille_resistances_with_pericyte_mask(
         description=PERICYTE_MASK_DESCRIPTION,
     )
     # Its centroids are placed against the graph's positions, which are
-    # measured from the crop_on_import box's corner when the image was cut.
-    mask_bool = crop_volume_like_graph(mask_bool, graph, description=PERICYTE_MASK_DESCRIPTION)
+    # measured from the crop_on_import box's corner when the image was cut,
+    # on the grid it was downsampled to.
+    mask_bool = mask_volume_like_graph(mask_bool, graph, description=PERICYTE_MASK_DESCRIPTION)
     mask_voxel_size, _source = resolve_voxel_size_xyz(
         metadata_voxel_size_xyz=metadata_voxel_size,
         metadata_status=metadata_status,
         voxel_size_override_xyz=voxel_size_override_xyz,
         voxel_size_policy=voxel_size_policy,
     )
+    # The mask's own voxel size is the image's as read; reduced with the
+    # image, it is the run's.
+    downsample = graph_downsample(graph)
+    if downsample is not None:
+        mask_voxel_size = downsample.scale_voxel_size_xyz(mask_voxel_size)
     mask_voxel_size_zyx = voxel_size_zyx_from_xyz(mask_voxel_size)
     image_voxel_size_zyx = graph.graph.get("image_voxel_size_zyx")
     if image_voxel_size_zyx is not None and not np.allclose(

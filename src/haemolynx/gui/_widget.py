@@ -149,8 +149,15 @@ from haemolynx.gui.vessel_tubes import (
     vessel_tube_mesh,
     vessel_tubes_layer_name,
 )
-from haemolynx.io import resolve_voxel_size_xyz
-from haemolynx.io.crop import crop_volume_from_settings, crop_volume_like_graph
+from haemolynx.io.crop import crop_volume_from_settings
+from haemolynx.io.downsample import (
+    RAW_SETTING as RAW_DOWNSAMPLE_SETTING,
+    Downsample,
+    downsample_factor,
+    downsample_for,
+    downsample_raw_volume,
+    raw_volume_like_graph,
+)
 from haemolynx.io.load import _to_binary_volume_for_skeletonization
 from haemolynx.optimisation.scorecard import worse_rows
 from haemolynx.optimisation import (
@@ -178,6 +185,7 @@ from haemolynx.pipeline import (
     preflight,
     resolve_settings,
     run_pipeline_stages,
+    run_voxel_size_xyz,
     segment,
 )
 from haemolynx.pipeline.progress import STAGE_STARTED, ProgressEvent, log_progress
@@ -6546,7 +6554,11 @@ def _names_with_prerequisite_closure(schema: Schema, names: Sequence[str]) -> tu
 
 
 def _load_raw_reference_image_or_none(
-    local_settings: dict[str, Any], *, expected_shape: tuple[int, ...]
+    local_settings: dict[str, Any],
+    *,
+    expected_shape: tuple[int, ...],
+    downsample: "Mapping[str, Any] | Downsample | None" = None,
+    voxel_size_xyz: "tuple[float, float, float] | None" = None,
 ) -> tuple["np.ndarray | None", "str | None"]:
     """Load the optional raw reference image from ``raw_image_path``.
 
@@ -6561,9 +6573,15 @@ def _load_raw_reference_image_or_none(
     returned image (`compare_segmentation_to_raw_image`, `_Search.__init__`)
     would otherwise raise on directly, one of them outside any try/except
     the caller has around this load.
+
+    The raw image goes through the segmented image's ``crop_on_import`` box
+    and then onto its grid: *downsample* is how the mask was reduced (the
+    record ``load_volume_for_skeletonise`` returns in its status, or a
+    ``Downsample``), and with none, *voxel_size_xyz* -- the run's -- is what
+    a ``raw_image_downsample`` of its own is read against.
     """
     from haemolynx.haemodynamics.automated import load_single_channel_tiff_volume
-    from haemolynx.io import resolve_image_path_with_optional_zip
+    from haemolynx.io import resolve_image_path_with_optional_zip, voxel_size_zyx_from_xyz
 
     raw_path = local_settings.get("raw_image_path")
     if not raw_path:
@@ -6578,6 +6596,18 @@ def _load_raw_reference_image_or_none(
         )
         # The mask came through crop_on_import's box; the raw image goes too.
         raw_image = crop_volume_from_settings(raw_image, local_settings, description="raw image")
+        # And onto the mask's grid, as the run reads it.
+        reduction = (
+            Downsample.from_record(downsample)
+            if isinstance(downsample, Mapping) else downsample
+        )
+        raw_factor = downsample_factor(local_settings.get(RAW_DOWNSAMPLE_SETTING))
+        if reduction is None and raw_factor > 1 and voxel_size_xyz is not None:
+            reduction = downsample_for(
+                1, raw_image.shape, voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
+            )
+        if reduction is not None:
+            raw_image = downsample_raw_volume(raw_image, reduction, raw_factor, description="raw image")
         if raw_image.shape != expected_shape:
             raise ValueError(
                 "raw_image shape does not match the segmented mask shape: "
@@ -6703,11 +6733,8 @@ def _run_optimisation_in_background(
         image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
             local_settings, inputs.input_format
         )
-        voxel_size_xyz, _source = resolve_voxel_size_xyz(
-            metadata_voxel_size_xyz=metadata_voxel_size,
-            metadata_status=voxel_meta_status,
-            voxel_size_override_xyz=local_settings["voxel_size_override_xyz"],
-            voxel_size_policy=local_settings["voxel_size_policy"],
+        voxel_size_xyz, _source = run_voxel_size_xyz(
+            local_settings, metadata_voxel_size, voxel_meta_status
         )
         raw_mask = _to_binary_volume_for_skeletonization(image)
         starting_values = {name: local_settings[name] for name in OPTIMISE_SETTING_NAMES}
@@ -6720,7 +6747,10 @@ def _run_optimisation_in_background(
         # mismatched-shape raw file just means the search runs without this
         # extra guard, exactly like leaving the field empty.
         raw_image, raw_image_error = _load_raw_reference_image_or_none(
-            local_settings, expected_shape=raw_mask.shape
+            local_settings,
+            expected_shape=raw_mask.shape,
+            downsample=(voxel_meta_status or {}).get("downsample"),
+            voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
         )
         raw_image_stain = "plasma_column"
         if raw_image is not None:
@@ -7007,11 +7037,8 @@ def _run_segmentation_quality_check_in_background(
         image, metadata_voxel_size, voxel_meta_status = load_volume_for_skeletonise(
             local_settings, inputs.input_format
         )
-        voxel_size_xyz, _source = resolve_voxel_size_xyz(
-            metadata_voxel_size_xyz=metadata_voxel_size,
-            metadata_status=voxel_meta_status,
-            voxel_size_override_xyz=local_settings["voxel_size_override_xyz"],
-            voxel_size_policy=local_settings["voxel_size_policy"],
+        voxel_size_xyz, _source = run_voxel_size_xyz(
+            local_settings, metadata_voxel_size, voxel_meta_status
         )
         mask = _to_binary_volume_for_skeletonization(image)
         voxel_size_zyx = voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
@@ -7059,7 +7086,10 @@ def _run_segmentation_quality_check_in_background(
         raw_comparison = None
         stain_reading = None
         raw_image, raw_comparison_error = _load_raw_reference_image_or_none(
-            local_settings, expected_shape=mask.shape
+            local_settings,
+            expected_shape=mask.shape,
+            downsample=(voxel_meta_status or {}).get("downsample"),
+            voxel_size_xyz=tuple(float(v) for v in voxel_size_xyz),
         )
         if raw_image is not None:
             try:
@@ -11551,8 +11581,9 @@ def _post_processing_controls(
                 memmap_directory=local.get("memmap_directory"),
                 channel=None if channel is None else int(channel),
             )
-            # Cut to the crop_on_import box the network was built in, if any.
-            raw = crop_volume_like_graph(
+            # Cut to the crop_on_import box the network was built in, and
+            # reduced onto its grid, if either.
+            raw = raw_volume_like_graph(
                 raw, state.graph, description="raw data file",
                 use_memmap=bool(local.get("use_memmap_loading")),
                 memmap_directory=local.get("memmap_directory"),

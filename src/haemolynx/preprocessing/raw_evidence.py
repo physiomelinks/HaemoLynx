@@ -792,17 +792,27 @@ def load_raw_channel(
     return apply_axis_order(_read_tiff_channel(Path(path), 0 if channel is None else int(channel)), axis_order)
 
 
+def _raw_downsample_factor(settings: Mapping[str, Any]) -> int:
+    """``raw_image_downsample``'s factor, 1 when the settings do not say."""
+    from haemolynx.io.downsample import RAW_SETTING, downsample_factor
+
+    return downsample_factor(settings.get(RAW_SETTING))
+
+
 def raw_evidence_from_settings(
     settings: Mapping[str, Any],
     mask: np.ndarray,
     voxel_size_zyx: Sequence[float],
     *,
     box: Any = None,
+    downsample: Any = None,
 ) -> Optional[RawEvidence]:
     """The :class:`RawEvidence` a run's settings give: its raw image loaded
-    (:func:`load_raw_channel`), cut to the run's crop *box*, calibrated round
-    *mask* (:func:`calibrate_raw`). None when the run names no raw image or
-    the image has nothing to read; a misaligned image is refused."""
+    (:func:`load_raw_channel`), cut to the run's crop *box*, reduced onto the
+    run's grid by *downsample* (an ``io.downsample.Downsample``, the segmented
+    image's, with ``raw_image_downsample`` read from *settings*), calibrated
+    round *mask* (:func:`calibrate_raw`). None when the run names no raw image
+    or the image has nothing to read; a misaligned image is refused."""
     spec = raw_image_for_build(settings)
     if spec is None:
         return None
@@ -826,13 +836,35 @@ def raw_evidence_from_settings(
         memmap_directory=settings.get("memmap_directory"),
     )
     shape = tuple(int(n) for n in np.shape(raw))
-    expected = tuple(int(n) for n in (box.source_shape_zyx if box is not None else mask.shape))
+    reduced = downsample is not None and not downsample.is_identity
+    if box is not None:
+        expected = tuple(int(n) for n in box.source_shape_zyx)
+    elif reduced:
+        expected = tuple(int(n) for n in downsample.source_shape_zyx)
+    else:
+        expected = tuple(int(n) for n in mask.shape)
     if shape != expected:
         raise ValueError(
             f"The raw image {spec.path.name} ({spec.setting}) has shape {shape}, not the image's "
             f"{expected}: it must be the same stack the segmentation was made from"
         )
     framed = raw[box.slices] if box is not None and not box.is_whole_volume else raw
+    raw_factor = _raw_downsample_factor(settings)
+    if reduced or raw_factor > 1:
+        from haemolynx.io.downsample import downsample_for, downsample_raw_volume
+
+        if downsample is None:
+            # The segmented image was not reduced: the run's grid is the
+            # mask's own, which a raw factor alone is read against.
+            downsample = downsample_for(1, mask.shape, voxel_size_zyx)
+        # Onto the run's grid, a copy the box's size or smaller: the window
+        # reads below then come from it, not from the whole image.
+        framed = downsample_raw_volume(
+            framed, downsample, raw_factor, description="raw image",
+            use_memmap=bool(settings.get("use_memmap_loading")),
+            memmap_directory=settings.get("memmap_directory"),
+        )
+        raw, box = framed, None
     calibration = calibrate_raw(framed, mask, voxel_size_zyx, stain=spec.stain)
     if calibration is None:
         return None

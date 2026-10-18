@@ -71,6 +71,7 @@ import numpy as np
 from haemolynx import graph as graph_mod
 from haemolynx import preprocessing
 from haemolynx.graph import cartwheel_guard
+from haemolynx.io import downsample as _downsample
 from haemolynx.preprocessing.bridge_mask_support import (
     DEFAULT_MAX_BACKGROUND_GAP_UM,
     DEFAULT_MIN_MASK_FRACTION,
@@ -231,34 +232,20 @@ _VOXEL_SCALED_SETTING_NAMES: tuple[str, ...] = (
     "skeleton_bundle_hub_min_spacing",
 )
 
-#: Downsampling factors "Optimisation downsampling" offers, "off" (1) first.
-DOWNSAMPLE_FACTORS: tuple[int, ...] = (1, 2, 4, 8, 16)
+#: Downsampling factors "Optimisation downsampling" offers, "off" (1) first --
+#: the Input tab's downsample-on-import choices offer the same
+#: (``haemolynx.io.downsample``, which also holds the reduction itself).
+DOWNSAMPLE_FACTORS: tuple[int, ...] = _downsample.DOWNSAMPLE_FACTORS
 
 #: Above this many voxels, "Auto" downsampling starts choosing a factor > 1 --
 #: chosen so a typical sweep's real preprocessing/graph-building calls stay in
 #: the tens-of-seconds range rather than minutes on a whole-brain-scale stack.
 AUTO_DOWNSAMPLE_TARGET_VOXELS = 20_000_000
 
-
-def axis_downsample_factors(
-    factor: int, voxel_size_zyx: Optional[Sequence[float]] = None
-) -> tuple[int, ...]:
-    """How much each axis is reduced by for an offered *factor*.
-
-    *factor* applies to the finest axes; a coarser one is reduced by only as
-    much as brings its voxels nearest the same size (at least 1), so the
-    search grid is as close to isotropic as the factors allow. On a
-    0.5 x 0.5 x 2 um stack, factor 4 gives 2 um voxels on every axis, where
-    reducing each axis by 4 gave 2 x 2 x 8 um -- a vessel's z extent four
-    times coarser than the resolution the search judged it at in-plane.
-    Without *voxel_size_zyx*, every axis by *factor*.
-    """
-    factor = max(1, int(factor))
-    if voxel_size_zyx is None:
-        return (factor, factor, factor)
-    spacing = np.asarray(voxel_size_zyx, dtype=float)
-    finest = float(spacing.min())
-    return tuple(max(1, int(round(factor * finest / float(s)))) for s in spacing)
+#: How much each axis is reduced by for an offered factor: the finest axes by
+#: it, a coarser one by less, so the search grid stays near isotropic. The
+#: one rule, shared with downsampling on import.
+axis_downsample_factors = _downsample.axis_downsample_factors
 
 
 def _voxel_reduction(factor: int, voxel_size_zyx: Optional[Sequence[float]]) -> int:
@@ -286,12 +273,7 @@ def _downsample_mask(
     its block was. Plain striding could skip clean over a thin vessel that
     happens to fall between the sampled points; this cannot lose one. Blocks
     are :func:`axis_downsample_factors` of *factor*."""
-    blocks = axis_downsample_factors(factor, voxel_size_zyx)
-    if max(blocks) <= 1:
-        return mask
-    from skimage.measure import block_reduce
-
-    return block_reduce(mask, block_size=blocks, func=np.max)
+    return _downsample.block_reduce_volume(mask, axis_downsample_factors(factor, voxel_size_zyx), "max")
 
 
 def _downsample_intensity(
@@ -306,9 +288,9 @@ def _downsample_intensity(
     blocks = axis_downsample_factors(factor, voxel_size_zyx)
     if max(blocks) <= 1:
         return image
-    from skimage.measure import block_reduce
-
-    return block_reduce(image, block_size=blocks, func=np.mean)
+    # In float, as the comparison reads it: the import reduction's own
+    # rounding back into the image's dtype is for a run, not a search.
+    return _downsample.block_reduce_volume(np.asarray(image, dtype=np.float64), blocks, "mean")
 
 
 #: "Auto" downsampling's own time budget, in seconds, when a caller asks it

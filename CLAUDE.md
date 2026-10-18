@@ -15,7 +15,10 @@ haemolynx/
 │   ├── io/                 # load.py (TIFF/H5 -> skeleton), load_2d.py (a 2D image as a
 │   │                       #   z=1 volume), crop.py (crop on import: one box of voxels cut
 │   │                       #   from the image and every volume read alongside it, the box
-│   │                       #   kept on the graph), ilastik.py, voxel_validation.py, axis_order.py,
+│   │                       #   kept on the graph), downsample.py (downsample on import: the
+│   │                       #   segmented image read onto a coarser grid after the crop, every
+│   │                       #   mask reduced by the same blocks and the raw image brought onto
+│   │                       #   that grid; the record kept on the graph), ilastik.py, voxel_validation.py, axis_order.py,
 │   │                       #   raw_volume_cache.py (reuse a memmapped raw volume across runs),
 │   │                       #   automated_vessel_assignment.py (mask loading/validation),
 │   │                       #   vessel_mask_discovery.py (the masks beside the input image,
@@ -323,7 +326,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 
 | Change area | Typical test location |
 |-------------|----------------------|
-| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name) |
+| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_downsample_on_import.py` (the two choices, the block reduction, a run on the reduced grid, every volume read beside the image placed on it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name) |
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
@@ -558,6 +561,33 @@ are only caught locally.
   memory). On E14.5 the build went 339 -> 255 s with the graph unchanged node for node. Mask
   recovery is now the slow step (~134 s): routing its joins through the mask and finding the
   uncovered mask, not tracing its pieces (Lee thinning there is ~5 s).
+- **Downsample on import** (`io/downsample.py`, 2026-10-18) — two Input tab choices, each
+  `none`/`2x`/`4x`/`8x`/`16x`: `segmented_image_downsample` (under `segmentation_source`) and
+  `raw_image_downsample` (under `raw_image_stain`). The segmented image is reduced as it is
+  loaded, after `crop_on_import`'s box is cut, by block max (a coarse voxel is vessel if any voxel
+  in it was; two vessels closer than a coarse voxel merge), the blocks chosen per axis from the
+  run's voxel size so a coarse z axis is reduced by less (`axis_downsample_factors`, the rule the
+  optimiser's own "Optimisation downsampling" uses: one definition, `optimisation/search.py`
+  imports it), and the run's voxel size is the reduced grid's -- `SkeletonisedVolume.downsample`,
+  `G.graph["downsample_on_import"]` (`record_on_graph`: the image's `Downsample` and the raw
+  factor, refreshed from the settings at `build_network`, `assign_diameters`, `post_process` and
+  `export_results`). Every volume read beside the image is placed on the grid by that record:
+  the large/small vessel masks (`load_and_validate_vessel_masks(downsample=)`, the mask's own
+  voxel size scaled with it, the cache keyed on it), the pericyte and cell masks
+  (`mask_volume_like_graph`: crop, then block max), and the raw image (`raw_volume_like_graph`:
+  crop, then block mean -- FWHM/endothelial/raw section, the stain reading, the raw evidence, the
+  tissue volume, the panel's checks and Add-vessel tracing). **The raw image has to lie on the
+  segmentation's grid** (every reader compares the two voxel for voxel), so the raw choice only
+  changes anything when it is *coarser*: a finer one is read at the segmented image's factor, a
+  coarser one is reduced by its own blocks and each coarse voxel spread over the grid
+  (`spread_onto_grid`: blockier, no smaller); preflight warns either way
+  (`checks.check_downsample_on_import`), and ilastik reads the whole raw file regardless. The
+  `voxel_size_override_xyz` is the image's as read and is scaled too; `load_volume_for_skeletonise`
+  then returns the reduced grid's voxel size already resolved (status `RUN_GRID_SOURCE`), which
+  `run_voxel_size_xyz` takes as it is -- the panel's check/optimise and preflight read through it.
+  A saved skeleton at another factor is refused as one from another crop box is. Positions: a
+  coarse voxel's index times its voxel size is where the first voxel of its block was, so the
+  crop record's offset is measured in the source grid's voxel size. Not yet tried on a real stack.
 - **Mask-supported bridging** (`preprocessing/bridge_mask_support.py`, `bridge_require_mask_support`,
   on by default) — with the segmented mask, nothing that joins two pieces of skeleton or graph
   (closing and `bridge_gaps`, a bundle hub's links, `connect_skeleton_components`, and graph

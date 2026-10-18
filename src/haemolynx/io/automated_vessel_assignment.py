@@ -9,6 +9,7 @@ import numpy as np
 
 from .axis_order import CANONICAL_AXIS_ORDER, voxel_size_zyx_from_xyz
 from .crop import CropBox, crop_volume
+from .downsample import Downsample, downsample_volume
 from .ilastik import run_ilastik_headless_segmentation
 from .load import (
     _to_binary_volume_for_skeletonization,
@@ -96,6 +97,16 @@ def _resolve_mask_voxel_size_xyz(
         voxel_size_policy=voxel_size_policy,
     )
     return resolved
+
+
+def _source_voxel_size_xyz(
+    main_voxel_size_xyz, downsample: Downsample | None
+) -> tuple[float, float, float]:
+    """The main image's voxel size as read from disk -- what a mask with no
+    spacing of its own takes: the run's, or before *downsample* scaled it."""
+    if downsample is None or downsample.is_identity:
+        return tuple(float(v) for v in main_voxel_size_xyz)  # type: ignore[return-value]
+    return downsample.source_voxel_size_xyz
 
 
 def load_large_vessel_masks(
@@ -375,6 +386,7 @@ def load_and_validate_vessel_masks(
     voxel_size_override_xyz=None,
     voxel_size_policy: str = "auto",
     crop: CropBox | None = None,
+    downsample: Downsample | None = None,
 ) -> tuple[
     np.ndarray | None,
     np.ndarray | None,
@@ -389,8 +401,11 @@ def load_and_validate_vessel_masks(
 
     *crop* is the ``crop_on_import`` box the main image was cut to (see
     :mod:`haemolynx.io.crop`): each mask must have the whole image's shape, and
-    is cut to the same box before anything else is done to it, so *image_shape*
-    is the cropped image's.
+    is cut to the same box before anything else is done to it. *downsample* is
+    how the main image was then reduced (``segmented_image_downsample``,
+    :mod:`haemolynx.io.downsample`): each mask is reduced by the same blocks,
+    and its voxel size read against the image's as read, then scaled -- so
+    *image_shape* and *main_voxel_size_xyz* are the reduced image's.
     """
     config = _vessel_mask_config(mask_role)
     scale_label = mask_role
@@ -494,6 +509,7 @@ def load_and_validate_vessel_masks(
             voxel_size_override_xyz=voxel_size_override_xyz,
             voxel_size_policy=voxel_size_policy,
             crop=crop,
+            downsample=downsample,
         )
 
     cache_key = None
@@ -517,6 +533,7 @@ def load_and_validate_vessel_masks(
             opposite_attached_max_distance_microns=opposite_attached_max_distance_microns,
             exclude_smaller_overlapping_volumes=exclude_smaller_overlapping_volumes,
             crop=crop,
+            downsample=downsample,
         )
         cached = _LOADED_MASKS.get(mask_role)
         if cached is not None and cached[0] == cache_key:
@@ -538,7 +555,7 @@ def load_and_validate_vessel_masks(
         axis_order=axis_order,
         voxel_size_override_xyz=voxel_size_override_xyz,
         voxel_size_policy=voxel_size_policy,
-        fallback_voxel_size_xyz=tuple(float(v) for v in main_voxel_size_xyz),
+        fallback_voxel_size_xyz=_source_voxel_size_xyz(main_voxel_size_xyz, downsample),
     )
 
     if arteriole_mask is None or venule_mask is None:
@@ -558,6 +575,26 @@ def load_and_validate_vessel_masks(
         logger.info(f"Crop on import, {scale_label}-vessel masks: {crop.describe()}")
         arteriole_mask = crop_volume(arteriole_mask, crop)
         venule_mask = crop_volume(venule_mask, crop)
+
+    if downsample is not None and not downsample.is_identity:
+        for name, mask in (
+            (config["arteriole_mask_attr"], arteriole_mask),
+            (config["venule_mask_attr"], venule_mask),
+        ):
+            if mask.shape != tuple(downsample.source_shape_zyx):
+                raise ValueError(
+                    f"{name} shape does not match input image shape before "
+                    f"segmented_image_downsample reduced it: {mask.shape} != "
+                    f"{tuple(downsample.source_shape_zyx)}"
+                )
+        arteriole_mask = downsample_volume(
+            arteriole_mask, downsample, reduce="max", description=f"{scale_label}-vessel arteriole mask"
+        )
+        venule_mask = downsample_volume(
+            venule_mask, downsample, reduce="max", description=f"{scale_label}-vessel venule mask"
+        )
+        arteriole_mask_voxel_size = downsample.scale_voxel_size_xyz(arteriole_mask_voxel_size)
+        venule_mask_voxel_size = downsample.scale_voxel_size_xyz(venule_mask_voxel_size)
 
     if arteriole_mask.shape != image_shape:
         raise ValueError(
@@ -759,11 +796,12 @@ def _load_global_vessel_mask(
     voxel_size_override_xyz,
     voxel_size_policy: str,
     crop: CropBox | None,
+    downsample: Downsample | None = None,
 ) -> tuple[np.ndarray, None, tuple[float, float, float], None]:
     """One role's global vessel mask: the arteriole/global row's file with no
     venule mask beside it, every vessel of the role's size, arteriole or
-    venule. Cut, checked and cleaned as a pair is, bar the steps that need
-    two classes (the minority swap, the opposite-attached and the overlap
+    venule. Cut, reduced, checked and cleaned as a pair is, bar the steps that
+    need two classes (the minority swap, the opposite-attached and the overlap
     cleanups); ``(mask, None, voxel size, None)``."""
     cache_key = _mask_cache_key(
         mask_role,
@@ -777,6 +815,7 @@ def _load_global_vessel_mask(
         dilation_microns=dilation_microns,
         min_component_volume_um3=min_component_volume_um3,
         crop=crop,
+        downsample=downsample,
     )
     cached = _LOADED_MASKS.get(mask_role)
     if cache_key is not None and cached is not None and cached[0] == cache_key:
@@ -793,7 +832,7 @@ def _load_global_vessel_mask(
         axis_order=axis_order,
         voxel_size_override_xyz=voxel_size_override_xyz,
         voxel_size_policy=voxel_size_policy,
-        fallback_voxel_size_xyz=tuple(float(v) for v in main_voxel_size_xyz),
+        fallback_voxel_size_xyz=_source_voxel_size_xyz(main_voxel_size_xyz, downsample),
     )
     name = f"{mask_role}_global_mask"
     if crop is not None and not crop.is_whole_volume:
@@ -804,6 +843,15 @@ def _load_global_vessel_mask(
             )
         logger.info(f"Crop on import, {mask_role}-vessel global mask: {crop.describe()}")
         mask = crop_volume(mask, crop)
+    if downsample is not None and not downsample.is_identity:
+        if mask.shape != tuple(downsample.source_shape_zyx):
+            raise ValueError(
+                f"{name} shape does not match input image shape before "
+                f"segmented_image_downsample reduced it: {mask.shape} != "
+                f"{tuple(downsample.source_shape_zyx)}"
+            )
+        mask = downsample_volume(mask, downsample, reduce="max", description=f"{mask_role}-vessel global mask")
+        voxel_size = downsample.scale_voxel_size_xyz(voxel_size)
     if mask.shape != image_shape:
         raise ValueError(
             f"{name} shape does not match input image shape: {mask.shape} != {image_shape}"

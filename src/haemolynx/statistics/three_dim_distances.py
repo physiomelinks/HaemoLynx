@@ -33,7 +33,7 @@ from haemolynx.io.load import (
 )
 from haemolynx.haemodynamics.automated import build_graph_branch_label_volume
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
-from haemolynx.io.crop import crop_volume_like_graph
+from haemolynx.io.downsample import graph_downsample, mask_volume_like_graph
 from haemolynx.preprocessing.memmap_support import (
     argwhere_by_slab,
     map_blockwise,
@@ -925,13 +925,22 @@ def _load_mask_in_network_frame(
         memmap_directory=memmap_directory,
     )
     disk_backed.append(mask)
+    # The mask is on the image's grid as read; the run's voxel size is the
+    # downsampled grid's, so a mask with no spacing of its own takes the
+    # source's, and one with its own is scaled as the image was.
+    downsample = graph_downsample(graph)
+    source_voxel_size_xyz = (
+        voxel_size_xyz if downsample is None else downsample.source_voxel_size_xyz
+    )
     resolved_xyz = _resolve_mask_voxel_size_xyz(
         metadata_xyz,
         status,
         voxel_size_override_xyz=voxel_size_override_xyz,
         voxel_size_policy=voxel_size_policy,
-        fallback_voxel_size_xyz=voxel_size_xyz,
+        fallback_voxel_size_xyz=source_voxel_size_xyz,
     )
+    if downsample is not None:
+        resolved_xyz = downsample.scale_voxel_size_xyz(resolved_xyz)
     if not np.allclose(
         resolved_xyz, voxel_size_xyz, rtol=_VOXEL_SIZE_RELATIVE_TOLERANCE, atol=0.0
     ):
@@ -944,8 +953,9 @@ def _load_mask_in_network_frame(
     whole_shape = tuple(int(n) for n in mask.shape)
     # The graph is rasterised into these masks' shape from its positions,
     # which are measured from the crop_on_import box's corner when the image
-    # was cut: the masks are cut to the same box.
-    cropped = crop_volume_like_graph(
+    # was cut, on the grid it was downsampled to: the masks are cut to the
+    # same box and reduced by the same blocks.
+    cropped = mask_volume_like_graph(
         mask, graph, description=description,
         use_memmap=use_memmap, memmap_directory=memmap_directory,
     )

@@ -84,6 +84,16 @@ from haemolynx.haemodynamics.poiseuille import (
 )
 from haemolynx.io.crop import GRAPH_ATTRIBUTE as CROP_GRAPH_ATTRIBUTE
 from haemolynx.io.crop import CropBox, crop_volume_and_box, crop_volume_like_graph
+from haemolynx.io.downsample import GRAPH_ATTRIBUTE as DOWNSAMPLE_GRAPH_ATTRIBUTE
+from haemolynx.io.downsample import (
+    RAW_SETTING as RAW_DOWNSAMPLE_SETTING,
+    Downsample,
+    downsample_factor,
+    downsample_from_settings,
+    downsample_volume,
+    raw_volume_like_graph,
+    record_on_graph as record_downsample_on_graph,
+)
 from haemolynx.io.load import (
     _skeletonize_loaded_volume,
     _to_binary_volume_for_skeletonization,
@@ -195,6 +205,10 @@ class SkeletonisedVolume:
     #: None when it was not cropped. Every position after this is measured
     #: from its corner.
     crop: CropBox | None = None
+    #: How ``image`` was reduced from the image as read, after the crop
+    #: (``segmented_image_downsample``, io.downsample); None when it was not.
+    #: ``voxel_size_xyz`` / ``voxel_size_zyx`` are the reduced grid's.
+    downsample: Downsample | None = None
     #: A synthetic run's volume: no image, no skeleton (see the class).
     synthetic: bool = False
 
@@ -727,16 +741,67 @@ def load_volume_for_skeletonise(settings: dict, input_format: str):
 
     With ``crop_on_import`` the image comes back cut to its box (io.crop):
     the cache keeps the whole volume, so changing the box reloads nothing.
+    With ``segmented_image_downsample`` it comes back reduced (io.downsample),
+    and the voxel size with it is then the reduced grid's, already resolved
+    against the settings' override -- its status says so
+    (:data:`RUN_GRID_SOURCE`). Read the run's voxel size from the two with
+    :func:`run_voxel_size_xyz`, which handles both cases.
     """
-    image, metadata_voxel_size, voxel_meta_status, _crop = _load_and_crop_volume(
+    image, metadata_voxel_size, voxel_meta_status, _crop, downsample = _load_and_crop_volume(
         settings, input_format
     )
-    return image, metadata_voxel_size, voxel_meta_status
+    if downsample is None:
+        return image, metadata_voxel_size, voxel_meta_status
+    voxel_size, source = resolve_voxel_size_xyz(
+        metadata_voxel_size_xyz=metadata_voxel_size,
+        metadata_status=voxel_meta_status,
+        voxel_size_override_xyz=settings["voxel_size_override_xyz"],
+        voxel_size_policy=settings["voxel_size_policy"],
+    )
+    status = {
+        "source": RUN_GRID_SOURCE,
+        "status": "complete",
+        "resolved_from": source,
+        "downsample": downsample.to_record(),
+    }
+    return image, downsample.scale_voxel_size_xyz(voxel_size), status
+
+
+#: The ``voxel_meta_status["source"]`` :func:`load_volume_for_skeletonise`
+#: gives with a voxel size it has already resolved and scaled to the reduced
+#: grid, which :func:`run_voxel_size_xyz` then takes as it is.
+RUN_GRID_SOURCE = "run_grid"
+
+
+def run_voxel_size_xyz(
+    settings: Mapping[str, Any], metadata_voxel_size, voxel_meta_status
+) -> tuple[tuple[float, float, float], str]:
+    """The run's voxel size ``(x, y, z)`` and where it came from, from what
+    :func:`load_volume_for_skeletonise` returned: ``resolve_voxel_size_xyz``
+    of the metadata and the settings' override and policy -- unless the
+    loader resolved it already (a downsampled image, :data:`RUN_GRID_SOURCE`),
+    when the voxel size is the reduced grid's and the override, which is the
+    image's as read, must not replace it."""
+    status = dict(voxel_meta_status or {})
+    if status.get("source") == RUN_GRID_SOURCE:
+        return tuple(float(v) for v in metadata_voxel_size), str(status.get("resolved_from", RUN_GRID_SOURCE))  # type: ignore[return-value]
+    return resolve_voxel_size_xyz(
+        metadata_voxel_size_xyz=metadata_voxel_size,
+        metadata_status=voxel_meta_status,
+        voxel_size_override_xyz=settings.get("voxel_size_override_xyz"),
+        voxel_size_policy=settings.get("voxel_size_policy", "auto"),
+    )
 
 
 def _load_and_crop_volume(settings: dict, input_format: str):
-    """:func:`load_volume_for_skeletonise`, and the box ``crop_on_import`` cut
-    (None while it is off)."""
+    """:func:`load_volume_for_skeletonise`, with the box ``crop_on_import``
+    cut (None while it is off) and the reduction ``segmented_image_downsample``
+    made (None while it is ``none``), in that order: the box is voxel indices
+    of the image as read, and the reduction's blocks are chosen from the run's
+    voxel size (the metadata and the override resolved as the run resolves
+    them), so a coarse z axis is reduced by less. The voxel size returned is
+    the image's metadata as read, unscaled: what is resolved from it is the
+    reduced grid's once scaled (:meth:`Downsample.scale_voxel_size_xyz`)."""
     if input_format not in {"tif", "tiff", "h5"}:
         raise ValueError("INPUT_FORMAT must be 'tif', 'tiff', or 'h5'.")
     if settings["use_memmap_loading"] and settings["memmap_directory"]:
@@ -772,7 +837,31 @@ def _load_and_crop_volume(settings: dict, input_format: str):
         float(voxel_size_z),
     )
     image, crop = crop_volume_and_box(image, settings, description="input image")
-    return image, metadata_voxel_size, voxel_meta_status, crop
+    downsample = None
+    if downsample_factor(settings.get("segmented_image_downsample")) > 1:
+        resolved, _source = resolve_voxel_size_xyz(
+            metadata_voxel_size_xyz=metadata_voxel_size,
+            metadata_status=voxel_meta_status,
+            voxel_size_override_xyz=settings["voxel_size_override_xyz"],
+            voxel_size_policy=settings["voxel_size_policy"],
+        )
+        downsample = downsample_from_settings(
+            settings, image.shape, io.voxel_size_zyx_from_xyz(tuple(float(v) for v in resolved))
+        )
+        if downsample is not None:
+            image = downsample_volume(
+                image, downsample, reduce="max", description="segmented image",
+                use_memmap=settings["use_memmap_loading"],
+                memmap_directory=settings["memmap_directory"],
+            )
+    return image, metadata_voxel_size, voxel_meta_status, crop, downsample
+
+
+def _run_voxel_size_on_grid(voxel_size_xyz, downsample: Downsample | None):
+    """A resolved ``(x, y, z)`` voxel size of the image as read, on the grid
+    the run is on: scaled by *downsample* when there is one."""
+    voxel_size = tuple(float(v) for v in voxel_size_xyz)
+    return voxel_size if downsample is None else downsample.scale_voxel_size_xyz(voxel_size)
 
 
 def _vessel_mask_arguments(settings: Mapping[str, Any], mask_role: str) -> dict[str, Any]:
@@ -786,7 +875,11 @@ def _vessel_mask_arguments(settings: Mapping[str, Any], mask_role: str) -> dict[
 
 
 def _thick_vessel_restriction_mask(
-    binary_image: np.ndarray, settings: dict, voxel_size_xyz, crop: CropBox | None = None
+    binary_image: np.ndarray,
+    settings: dict,
+    voxel_size_xyz,
+    crop: CropBox | None = None,
+    downsample: Downsample | None = None,
 ) -> np.ndarray | None:
     """Union of the configured large/small vessel masks, per
     ``skeleton_thick_vessel_restrict_to_mask`` -- or ``None`` for no
@@ -807,7 +900,8 @@ def _thick_vessel_restriction_mask(
     measures and why a low fraction matters here specifically.
 
     *crop* is the ``crop_on_import`` box *binary_image* was cut to, which the
-    masks are cut to as well.
+    masks are cut to as well, and *downsample* how it was reduced after that
+    (``segmented_image_downsample``), which they are too.
     """
     choice = str(settings["skeleton_thick_vessel_restrict_to_mask"]).strip().lower()
     if choice == "off":
@@ -821,6 +915,7 @@ def _thick_vessel_restriction_mask(
             image_shape=image_shape,
             main_voxel_size_xyz=voxel_size_xyz,
             crop=crop,
+            downsample=downsample,
         )
         if large_arteriole_mask is not None:
             restriction |= large_arteriole_mask
@@ -834,6 +929,7 @@ def _thick_vessel_restriction_mask(
             image_shape=image_shape,
             main_voxel_size_xyz=voxel_size_xyz,
             crop=crop,
+            downsample=downsample,
         )
         if small_arteriole_mask is not None:
             restriction |= small_arteriole_mask
@@ -869,7 +965,11 @@ def _skeletonize_tile_halo_voxels(settings: dict, voxel_size_zyx) -> int:
 
 
 def _thick_region_arguments(
-    settings: dict, binary: np.ndarray, voxel_size_xyz, crop: CropBox | None = None
+    settings: dict,
+    binary: np.ndarray,
+    voxel_size_xyz,
+    crop: CropBox | None = None,
+    downsample: Downsample | None = None,
 ) -> dict:
     """What decides the thick-vessel region: shared by skeletonisation and by
     :func:`thick_vessel_mask_from_image`, so the two find the same voxels."""
@@ -879,7 +979,7 @@ def _thick_region_arguments(
         "fill_mask_holes": bool(settings["skeleton_fill_mask_holes_before_thickness"]),
         "wall_absorption_um": settings["skeleton_thick_vessel_wall_absorption_um"],
         "restrict_thick_to_mask": _thick_vessel_restriction_mask(
-            binary, settings, voxel_size_xyz, crop
+            binary, settings, voxel_size_xyz, crop, downsample
         ),
         "use_memmap": settings["use_memmap_loading"],
         "memmap_directory": settings["memmap_directory"],
@@ -928,20 +1028,22 @@ def thick_vessel_mask_from_image(
     crop: CropBox | None = None,
     *,
     cache: preprocessing.ThickVesselRegionCache | None = None,
+    downsample: Downsample | None = None,
 ) -> np.ndarray | None:
     """The thick-vessel region skeletonisation found in *image*, found again.
 
     For a run that needs the region but loaded its skeleton instead of making
     it (a resume with no stored stage outputs). None when thickness-gated
     skeletonisation is off, or finds no thick vessel. *crop* is the
-    ``crop_on_import`` box *image* was cut to. With *cache*
+    ``crop_on_import`` box *image* was cut to, *downsample* how it was reduced
+    after that. With *cache*
     (:func:`thick_vessel_region_cache`), the region a previous run found from
     the same mask and settings is read back, and one found here is kept.
     """
     if not settings.get("use_thick_vessel_skeletonisation"):
         return None
     binary = _to_binary_volume_for_skeletonization(image)
-    arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop)
+    arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
     key, found, region = _cached_thick_vessel_region(cache, binary, arguments)
     if found:
         return region
@@ -957,6 +1059,7 @@ def _thick_vessel_region_if_cached(
     voxel_size_xyz,
     crop: CropBox | None,
     cache: preprocessing.ThickVesselRegionCache,
+    downsample: Downsample | None = None,
 ) -> np.ndarray | None:
     """The thick-vessel region a previous run found in *image*, for a run
     loading its skeleton rather than making it; None when none is cached
@@ -968,7 +1071,7 @@ def _thick_vessel_region_if_cached(
         memmap_directory=settings["memmap_directory"],
     )
     _key, found, region = _cached_thick_vessel_region(
-        cache, binary, _thick_region_arguments(settings, binary, voxel_size_xyz, crop)
+        cache, binary, _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
     )
     preprocessing.release_superseded(binary, image, keep=image)
     if not found:
@@ -986,19 +1089,21 @@ def _skeletonize_loaded_mask(
     voxel_size_xyz,
     crop: CropBox | None = None,
     cache: preprocessing.ThickVesselRegionCache | None = None,
+    downsample: Downsample | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Lee on the whole mask, or a thickness-gated tree when the GUI toggle is on.
 
     Returns ``(skeleton, thick_vessel_mask)`` -- the mask is None on the
     plain-Lee path, where there is no fat/thin split at all. *crop* is the
-    ``crop_on_import`` box *image* was cut to. With *cache*, the thick-vessel
+    ``crop_on_import`` box *image* was cut to, *downsample* how it was reduced
+    after that. With *cache*, the thick-vessel
     region is read back from the run that last found it in this mask with
     these settings, or kept once found.
     """
     voxel_size_zyx = io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
     if settings["use_thick_vessel_skeletonisation"]:
         binary = _to_binary_volume_for_skeletonization(image)
-        arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop)
+        arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
         key, found, region = _cached_thick_vessel_region(cache, binary, arguments)
         if found and region is None:
             region = np.zeros(binary.shape, dtype=bool)  # found before: there is none
@@ -1059,7 +1164,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     region_cache = thick_vessel_region_cache(settings, output_dir)
 
     if settings["do_skeletonize"]:
-        image, metadata_voxel_size, voxel_meta_status, crop = _load_and_crop_volume(
+        image, metadata_voxel_size, voxel_meta_status, crop, downsample = _load_and_crop_volume(
             settings, input_format
         )
         voxel_size, voxel_size_source = resolve_voxel_size_xyz(
@@ -1068,6 +1173,11 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             voxel_size_override_xyz=settings["voxel_size_override_xyz"],
             voxel_size_policy=settings["voxel_size_policy"],
         )
+        # The image as read was resolved; the run is on the reduced grid. The
+        # voxel size kept beside the skeleton is the source's, resolved again
+        # (and scaled again) when the skeleton is loaded.
+        source_voxel_size = voxel_size
+        voxel_size = _run_voxel_size_on_grid(voxel_size, downsample)
         logger.info(
             "Voxel-size resolution: "
             f"source={voxel_size_source}, "
@@ -1134,7 +1244,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             memmap_directory=settings["memmap_directory"],
         )
         skeleton, thick_vessel_mask = _skeletonize_loaded_mask(
-            binary, settings, voxel_size, crop, cache=region_cache
+            binary, settings, voxel_size, crop, cache=region_cache, downsample=downsample
         )
 
         # Purely diagnostic: off by default, and never changes `skeleton` even
@@ -1211,11 +1321,14 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         voxel_meta_path.write_text(
             json.dumps(
                 {
-                    "voxel_size": voxel_size,
+                    "voxel_size": source_voxel_size,
+                    "run_voxel_size": voxel_size,
                     "voxel_size_source": voxel_size_source,
                     "voxel_metadata_status": voxel_meta_status,
                     "voxel_size_policy": settings["voxel_size_policy"],
                     "voxel_size_override_xyz": settings["voxel_size_override_xyz"],
+                    # For the record: the saved skeleton is on the reduced grid.
+                    "downsample": None if downsample is None else downsample.to_record(),
                 }
             )
         )
@@ -1226,21 +1339,17 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             # Copy-on-write: read straight from the saved file, and any later
             # in-place edit stays in RAM for just the pages it touches.
             skeleton = np.load(skeleton_path, mmap_mode="c")
-            image, _metadata, _status, crop = _load_and_crop_volume(settings, input_format)
         else:
             skeleton = np.load(skeleton_path)
-            image, crop = crop_volume_and_box(
-                io.apply_axis_order(
-                    tifffile.imread(settings["input_path"]), settings["image_axis_order"]
-                ),
-                settings,
-                description="input image",
-            )
+        # The image as the run reads it: cut to the crop box and reduced by the
+        # downsample, as the skeleton was when it was made.
+        image, _metadata, _status, crop, downsample = _load_and_crop_volume(settings, input_format)
         if skeleton.shape != image.shape:
             raise ValueError(
                 f"The saved skeleton {skeleton_path} is {skeleton.shape} voxels but the "
                 f"image is {image.shape}: it was made with a different crop_on_import "
-                "box, or none. Turn do_skeletonize back on to make it again."
+                "box or segmented_image_downsample, or none. Turn do_skeletonize back on "
+                "to make it again."
             )
         if voxel_meta_path.exists():
             cached_voxel_meta = json.loads(voxel_meta_path.read_text())
@@ -1258,6 +1367,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             voxel_size_override_xyz=settings["voxel_size_override_xyz"],
             voxel_size_policy=settings["voxel_size_policy"],
         )
+        voxel_size = _run_voxel_size_on_grid(voxel_size, downsample)
         logger.info(f"Loaded skeleton from: {skeleton_path}")
         logger.info(
             "Voxel-size resolution (from cache/default): "
@@ -1267,7 +1377,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         )
         if settings["use_thick_vessel_skeletonisation"]:
             thick_vessel_mask = _thick_vessel_region_if_cached(
-                settings, image, voxel_size, crop, region_cache
+                settings, image, voxel_size, crop, region_cache, downsample
             )
 
     logger.info("Visualizing skeleton projection...")
@@ -1323,6 +1433,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         thick_vessel_mask=thick_vessel_mask,
         raw_segmented_image=raw_segmented_image,
         crop=crop,
+        downsample=downsample,
     )
 
 
@@ -1604,6 +1715,7 @@ def build_network(
         image_shape=image.shape,
         main_voxel_size_xyz=main_voxel_size_xyz,
         crop=getattr(volume, "crop", None),
+        downsample=getattr(volume, "downsample", None),
     )
     (
         small_arteriole_mask,
@@ -1615,6 +1727,7 @@ def build_network(
         image_shape=image.shape,
         main_voxel_size_xyz=main_voxel_size_xyz,
         crop=getattr(volume, "crop", None),
+        downsample=getattr(volume, "downsample", None),
         loaded_message_suffix=(
             f"min_overlap_fraction={float(settings['small_vessel_mask_min_overlap_fraction']):.3f}"
         ),
@@ -1645,7 +1758,8 @@ def build_network(
             large_arteriole_mask, large_venule_mask,
             large_arteriole_mask_voxel_size, large_venule_mask_voxel_size,
         )
-        _record_crop(resumed_graph, getattr(volume, "crop", None), voxel_size_zyx)
+        _record_crop(resumed_graph, getattr(volume, "crop", None), voxel_size_zyx, getattr(volume, "downsample", None))
+        _record_downsample(resumed_graph, settings, volume)
         return VesselNetwork(
             graph=resumed_graph,
             volume=volume,
@@ -1886,7 +2000,10 @@ def build_network(
         graph.dead_ends.record_image_extent(G, skeleton.shape, voxel_size_zyx)
         if binary_mask is not None and no_vessels is None:
             _mark_dead_end_kinds(settings, G, binary_mask, voxel_size_zyx, radius_at, support=mask_support)
-            _record_raw_evidence(settings, G, binary_mask, voxel_size_zyx, getattr(volume, "crop", None))
+            _record_raw_evidence(
+                settings, G, binary_mask, voxel_size_zyx,
+                getattr(volume, "crop", None), getattr(volume, "downsample", None),
+            )
 
         if binary_mask is not None:
             # The support holds the mask's bits and surface tree: let them go
@@ -1920,7 +2037,8 @@ def build_network(
         large_arteriole_mask, large_venule_mask,
         large_arteriole_mask_voxel_size, large_venule_mask_voxel_size,
     )
-    _record_crop(G, getattr(volume, "crop", None), voxel_size_zyx)
+    _record_crop(G, getattr(volume, "crop", None), voxel_size_zyx, getattr(volume, "downsample", None))
+    _record_downsample(G, settings, volume)
     if "image_extent_um" not in G.graph:
         # A graph saved before dead ends were judged: the extent at least.
         shape = image.shape if image is not None else skeleton.shape
@@ -2099,7 +2217,12 @@ def _mark_dead_end_kinds(
 
 
 def _record_raw_evidence(
-    settings: dict, G: nx.MultiGraph, binary_mask: np.ndarray, voxel_size_zyx, crop: CropBox | None
+    settings: dict,
+    G: nx.MultiGraph,
+    binary_mask: np.ndarray,
+    voxel_size_zyx,
+    crop: CropBox | None,
+    downsample: Downsample | None = None,
 ) -> None:
     """Calibrate the run's raw image round the mask (``preprocessing.raw_evidence``)
     and keep the calibration on the graph, so a saved graph says what the raw-image
@@ -2112,7 +2235,9 @@ def _record_raw_evidence(
     one graph never names its raw image two ways."""
     for key in ("raw_image_stain", "raw_image_stain_reading"):
         G.graph.pop(key, None)
-    evidence = preprocessing.raw_evidence_from_settings(settings, binary_mask, voxel_size_zyx, box=crop)
+    evidence = preprocessing.raw_evidence_from_settings(
+        settings, binary_mask, voxel_size_zyx, box=crop, downsample=downsample
+    )
     if evidence is None:
         G.graph.pop(preprocessing.raw_evidence.GRAPH_ATTRIBUTE, None)
         return
@@ -2122,14 +2247,51 @@ def _record_raw_evidence(
         G.graph["raw_image_stain_reading"] = evidence.calibration.reading
 
 
-def _record_crop(G: nx.Graph, crop: CropBox | None, voxel_size_zyx) -> None:
+def _record_crop(
+    G: nx.Graph, crop: CropBox | None, voxel_size_zyx, downsample: Downsample | None = None
+) -> None:
     """Keep the ``crop_on_import`` box on the graph (io.crop.GRAPH_ATTRIBUTE):
     what every later volume read alongside the image is cut by, and what to add
-    to a node ``pos`` to place it on the whole image."""
+    to a node ``pos`` to place it on the whole image. The box is voxels of the
+    image as read, so its offset is measured in that grid's voxel size: with a
+    *downsample*, the source's, not the run's."""
     if crop is None or crop.is_whole_volume:
         G.graph.pop(CROP_GRAPH_ATTRIBUTE, None)
         return
-    G.graph[CROP_GRAPH_ATTRIBUTE] = crop.to_record(voxel_size_zyx)
+    source_voxel_size_zyx = (
+        voxel_size_zyx if downsample is None else downsample.source_voxel_size_zyx
+    )
+    G.graph[CROP_GRAPH_ATTRIBUTE] = crop.to_record(source_voxel_size_zyx)
+
+
+def _record_downsample(
+    G: nx.Graph, settings: Mapping[str, Any], volume: "SkeletonisedVolume | None"
+) -> None:
+    """Keep on the graph what the network was built on
+    (io.downsample.GRAPH_ATTRIBUTE): the segmented image's reduction and
+    ``raw_image_downsample``'s factor, which every later volume read beside the
+    image is placed by. The raw factor is the settings' as the stage runs, so a
+    run resumed at Diameters reads the raw image as its settings now say; the
+    image's reduction is the volume's, or the record's when a resumed network
+    has no image at hand. A synthetic network has no image to reduce."""
+    if graph.network_is_synthetic(settings):
+        G.graph.pop(DOWNSAMPLE_GRAPH_ATTRIBUTE, None)
+        return
+    downsample = getattr(volume, "downsample", None) if volume is not None else None
+    image = getattr(volume, "image", None) if volume is not None else None
+    existing = G.graph.get(DOWNSAMPLE_GRAPH_ATTRIBUTE)
+    if downsample is None and image is None and existing:
+        downsample = Downsample.from_record(existing)
+    voxel_size_zyx = (
+        getattr(volume, "voxel_size_zyx", None) if volume is not None else None
+    ) or G.graph.get("image_voxel_size_zyx")
+    record_downsample_on_graph(
+        G,
+        downsample,
+        raw_factor=downsample_factor(settings.get(RAW_DOWNSAMPLE_SETTING)),
+        image_shape_zyx=None if image is None else tuple(int(n) for n in image.shape),
+        voxel_size_zyx=voxel_size_zyx,
+    )
 
 
 def _record_graph_voxel_metadata(
@@ -3090,8 +3252,9 @@ def resolve_raw_image_stain(
         memmap_directory=memmap_directory,
         channel=settings.get("raw_image_channel"),
     )
-    # The mask is the image as cropped on import; the raw file is whole.
-    raw = crop_volume_like_graph(
+    # The mask is the image as cropped and downsampled on import; the raw
+    # file is whole.
+    raw = raw_volume_like_graph(
         whole, network.graph, description="raw image",
         use_memmap=use_memmap, memmap_directory=memmap_directory,
     )
@@ -3482,6 +3645,8 @@ def assign_diameters(settings: dict, network: VesselNetwork, boundaries: Boundar
         network.graph = boundaries.graph
     G = network.graph
     voxel_size_zyx = network.volume.voxel_size_zyx
+    # The raw image is read here as raw_image_downsample now says.
+    _record_downsample(G, settings, network.volume)
     # 4) Add branch orders and hemodynamic edge weights.
     if settings["inlet_nodes"]:
 
@@ -3700,6 +3865,7 @@ def _bridge_edited_vessels(
             settings, network.volume.image, network.volume.voxel_size_xyz,
             getattr(network.volume, "crop", None),
             cache=thick_vessel_region_cache(settings, network.volume.output_dir),
+            downsample=getattr(network.volume, "downsample", None),
         )
         if mask is None:
             return G  # no thick vessel anywhere: graph building made no bridges either
@@ -3812,6 +3978,10 @@ def post_process(
     if not graph.has_pending_edits(G):
         logger.info("Post processing: no edits to bring in line.")
         return model
+    if network is not None:
+        # The edited vessels are measured from the raw image read as
+        # raw_image_downsample now says.
+        _record_downsample(G, settings, network.volume)
     had_inlets, had_outlets = bool(boundaries.inlet_nodes), bool(boundaries.outlet_nodes)
     _trim_boundary_lists(settings, boundaries, G)
     if (had_inlets and not boundaries.inlet_nodes) or (had_outlets and not boundaries.outlet_nodes):
@@ -5625,8 +5795,9 @@ def tissue_measurement(
         memmap_directory=memmap_directory,
         channel=channel,
     )
-    # Cut to the crop_on_import box the segmentation was, when it was.
-    raw = crop_volume_like_graph(
+    # Cut to the crop_on_import box the segmentation was, and reduced onto
+    # its grid, when it was.
+    raw = raw_volume_like_graph(
         whole_raw, network.graph, description="tissue raw image",
         use_memmap=use_memmap, memmap_directory=memmap_directory,
     )
@@ -5731,6 +5902,9 @@ def export_tissue_measurement(
 def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicModel, solution: Solution):
     """Write VTK, statistics and distance measurements, and draw the plots."""
     G = model.graph
+    if not graph.network_is_synthetic(settings):
+        # The tissue's raw image is read here as raw_image_downsample now says.
+        _record_downsample(G, settings, network.volume)
     image = network.volume.image
     # A synthetic network has no image: its box's shape comes from the graph.
     image_shape = tuple(int(v) for v in image.shape) if image is not None else synthetic_box_shape(G)

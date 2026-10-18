@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..io.crop import CROP_LOCATIONS, CROP_METHODS, CROP_Z_LOCATIONS
+from ..io.downsample import DOWNSAMPLE_CHOICES
 from ..parsers import Schema, Setting, dump_config
 
 # Path defaults are relative, and so are resolved against the directory a run
@@ -289,6 +290,26 @@ SCHEMA = Schema(
             always_effective=True,
         ),
         Setting(
+            name="segmented_image_downsample",
+            kind="choice",
+            default="none",
+            choices=DOWNSAMPLE_CHOICES,
+            help=(
+                "Read the segmented image onto a coarser grid, every 2 (4, 8, 16) voxels "
+                "along each axis becoming one -- fewer along an axis whose voxels are "
+                "already coarser, so the grid stays near isotropic -- and run every stage "
+                "on it: the skeleton, the graph, the diameters and the exports are all at "
+                "that resolution, in the same microns. A coarse voxel is vessel if any voxel "
+                "in it was, so a thin vessel survives but two closer together than a coarse "
+                "voxel merge. The large and small vessel masks, the pericyte mask and the "
+                "cell mask are reduced the same way, so they still land on the vessels they "
+                "belong to. Applied after crop_on_import's box is cut"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            value_aliases={"1": "none", "2": "2x", "4": "4x", "8": "8x", "16": "16x"},
+            requires=("network_source=segmented_image",),
+        ),
+        Setting(
             name="raw_image_path",
             kind="path",
             default=None,
@@ -343,6 +364,26 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             value_aliases={"anatomical": "endothelial", "luminal": "plasma_column"},
+            requires=("raw_image_path",),
+            always_effective=True,
+        ),
+        Setting(
+            name="raw_image_downsample",
+            kind="choice",
+            default="none",
+            choices=DOWNSAMPLE_CHOICES,
+            help=(
+                "Read the raw image onto a coarser grid, each coarse voxel the mean of the "
+                "voxels in it. Everything that reads the raw image does so beside the "
+                "segmentation and needs it on the segmented image's grid (the diameters, "
+                "the stain reading, the tissue volume, the checks), so a finer choice than "
+                "segmented_image_downsample is read at that one, and a coarser choice is "
+                "reduced by its own factor and each coarse voxel spread over the grid: a "
+                "blockier image. ilastik reads the whole file whatever this says, as its "
+                "project was trained on it"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            value_aliases={"1": "none", "2": "2x", "4": "4x", "8": "8x", "16": "16x"},
             requires=("raw_image_path",),
             always_effective=True,
         ),
