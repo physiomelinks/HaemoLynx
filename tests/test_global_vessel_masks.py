@@ -18,6 +18,7 @@ import pytest
 import tifffile
 
 from haemolynx import graph
+from haemolynx.graph import add_vessel_between, delete_vessels
 from haemolynx.graph.boundaries import (
     assigns_large_vessel_branch_orders,
     inlets_outlets_from_vessel_masks,
@@ -47,6 +48,8 @@ from haemolynx.pipeline.stages import (
     VesselNetwork,
     _assign_branch_orders,
     assign_boundaries,
+    assign_diameters,
+    post_process,
 )
 from haemolynx.statistics.bifurcation import branch_order_category
 
@@ -609,3 +612,92 @@ def test_a_pair_beside_a_global_mask_is_read_as_one_mask(tmp_path):
     boundaries = assign_boundaries(settings, network)
 
     assert _classes(boundaries.graph) == ["large", "large", None]
+
+
+# --- post processing under a global mask ---------------------------------------
+
+
+def _global_mask_run(tmp_path, *, side_vessel=False):
+    """The chain through the real Boundaries and Diameters stages under one
+    large and one small global mask (no venule mask beside either): the
+    large over x 0..7, the small over x 12..19. With *side_vessel* a
+    capillary hangs off node 3 (x = 18), for a deletion to take away."""
+    G = _chain([0, 6, 12, 18, 29])
+    if side_vessel:
+        G.add_node(5, pos=(5.0, 10.0, 18.0))
+        G.add_edge(3, 5, voxels=[(5.0, float(y), 18.0) for y in range(5, 11)], length=5.0)
+    large = np.zeros(SHAPE, dtype=bool)
+    large[4:7, 4:7, 0:8] = True
+    small = np.zeros(SHAPE, dtype=bool)
+    small[4:7, 4:7, 12:20] = True
+    network = _network(G, large, small, tmp_path)
+    settings = _stage_settings(
+        tmp_path,
+        use_small_vessel_masks_for_boundary_assignment=True,
+        small_venule_mask_path=None,
+        cut_network_at_large_vessel_volumes=True,
+        inlets_outlets_from_vessel_masks=True,
+        run_haemodynamics=False,
+    )
+    boundaries = assign_boundaries(settings, network)
+    model = assign_diameters(settings, network, boundaries, default_schema())
+    assert boundaries.inlet_nodes == [0] and boundaries.outlet_nodes == [4]
+    return settings, network, boundaries, model
+
+
+def test_post_processing_classes_a_drawn_vessel_by_the_global_mask_it_lies_in(tmp_path):
+    """Pinned: a vessel drawn by hand is tagged by the global mask it lies
+    in, as every vessel was, and classed with the rest -- Unknown_Small in
+    the small mask, Unknown_Large in the large, Unknown_Cap off both -- with
+    no boundary node to re-judge and no branch order to count."""
+    settings, network, boundaries, model = _global_mask_run(tmp_path)
+    G = model.graph
+    drawn = {}
+    for name, node, points in (
+        ("small", 2, [(5.0, 5.0, 12.0), (5.0, 6.0, 14.0), (5.0, 6.0, 17.0)]),
+        ("large", 0, [(5.0, 5.0, 0.0), (5.0, 6.0, 3.0), (5.0, 6.0, 6.0)]),
+        ("off", 4, [(5.0, 5.0, 29.0), (7.0, 5.0, 29.0), (9.0, 5.0, 29.0)]),
+    ):
+        new = max(G.nodes) + 1
+        G.add_node(new, pos=points[-1])
+        drawn[name] = add_vessel_between(G, node, new, points)
+
+    out = post_process(settings, model, boundaries, default_schema(), network=network)
+
+    G = out.graph
+    assert {name: G.edges[edge]["branch_order"] for name, edge in drawn.items()} == {
+        "small": "Unknown_Small", "large": "Unknown_Large", "off": "Unknown_Cap",
+    }
+    assert {name: G.edges[edge].get(graph.GLOBAL_MASK_CLASS) for name, edge in drawn.items()} == {
+        "small": "small", "large": "large", "off": None,
+    }
+    assert [G.edges[node, node + 1, 0]["branch_order"] for node in range(4)] == [
+        "Unknown_Large", "Unknown_Cap", "Unknown_Small", "Unknown_Cap",
+    ]
+    recorded = out.results["post_process"]["boundary_nodes"]
+    assert recorded["inlet_nodes"] == [0] and recorded["outlet_nodes"] == [4]
+    assert recorded["arteriole_boundary_nodes"] == [] and recorded["large_arteriole_boundary_nodes"] == []
+
+
+def test_post_processing_classes_a_vessel_a_deletion_merged_by_its_overlap(tmp_path):
+    """Pinned: deleting the capillary at node 3 merges the small-mask vessel
+    2-3 (x 12..18) with the capillary 3-4 (x 18..29) into one vessel, of
+    which the part in the small mask is under half: judged by its overlap as
+    the Boundaries stage judges every vessel, it is Unknown_Cap, not left
+    with either part's class."""
+    settings, network, boundaries, model = _global_mask_run(tmp_path, side_vessel=True)
+    G = model.graph
+    assert G.edges[2, 3, 0]["branch_order"] == "Unknown_Small"
+    assert G.edges[3, 4, 0]["branch_order"] == "Unknown_Cap"
+    delete_vessels(G, [(3, 5, 0)], protected=[*settings["inlet_nodes"], *settings["outlet_nodes"]])
+    assert 3 not in G and G.has_edge(2, 4)
+
+    out = post_process(settings, model, boundaries, default_schema(), network=network)
+
+    merged = out.graph.edges[2, 4, 0]
+    assert merged["branch_order"] == "Unknown_Cap"
+    assert merged.get(graph.GLOBAL_MASK_CLASS) is None
+    assert [out.graph.edges[0, 1, 0]["branch_order"], out.graph.edges[1, 2, 0]["branch_order"]] == [
+        "Unknown_Large", "Unknown_Cap",
+    ]
+

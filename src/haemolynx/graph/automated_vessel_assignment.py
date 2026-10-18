@@ -1022,28 +1022,40 @@ def _tag_chosen_edges(
     }
 
 
-def boundary_nodes_from_small_mask_tags(
-    G: nx.Graph, nodes: Iterable[Any] | None = None
+def boundary_nodes_from_mask_tags(
+    G: nx.Graph, nodes: Iterable[Any] | None = None, *, attribute: str
 ) -> dict[str, list[Any]]:
     """Which of *nodes* (default: every node) are arteriole and which venule
-    boundary nodes, read from the edges' ``graph.SMALL_MASK_VESSEL_TYPE``
-    tags by the rule the Boundaries stage reads the masks' labelling with: a
-    node one of whose edges lies in the arteriole mask is an arteriole node
-    (else, with one in the venule mask, a venule node), and a boundary node
-    when another of its edges is not of its type -- where the mask's vessels
-    meet the rest. ``{"arteriole": [...], "venule": [...]}``, in the order
+    boundary nodes, read from the edges' *attribute* tags -- the mask each
+    vessel lies in, ``"arteriole"`` or ``"venule"`` -- by the rule the
+    Boundaries stage reads the masks' labelling with
+    (:func:`infer_boundary_nodes_from_small_vessel_masks`): a node one of
+    whose edges lies in the arteriole mask is an arteriole node (else, with
+    one in the venule mask, a venule node), and a boundary node when another
+    of its edges is not of its type -- where the mask's vessels meet the
+    rest. On ``graph.SMALL_MASK_VESSEL_TYPE`` those are the arteriole/venule
+    boundary nodes; on ``graph.LARGE_MASK_VESSEL_TYPE`` the Large_Art/Large_Ven
+    hand-off nodes. ``{"arteriole": [...], "venule": [...]}``, in the order
     of *nodes*."""
-    from .branch_order import SMALL_MASK_VESSEL_TYPE
-
     found: dict[str, list[Any]] = {"arteriole": [], "venule": []}
     for node in G.nodes if nodes is None else nodes:
         if node not in G:
             continue
-        types = [data.get(SMALL_MASK_VESSEL_TYPE) for _u, _v, data in G.edges(node, data=True)]
+        types = [data.get(attribute) for _u, _v, data in G.edges(node, data=True)]
         role = "arteriole" if "arteriole" in types else "venule" if "venule" in types else None
         if role is not None and any(kind != role for kind in types):
             found[role].append(node)
     return found
+
+
+def boundary_nodes_from_small_mask_tags(
+    G: nx.Graph, nodes: Iterable[Any] | None = None
+) -> dict[str, list[Any]]:
+    """:func:`boundary_nodes_from_mask_tags` on ``graph.SMALL_MASK_VESSEL_TYPE``:
+    the arteriole and venule boundary nodes among *nodes*."""
+    from .branch_order import SMALL_MASK_VESSEL_TYPE
+
+    return boundary_nodes_from_mask_tags(G, nodes, attribute=SMALL_MASK_VESSEL_TYPE)
 
 
 def filter_io_nodes_to_terminal_degree1(
