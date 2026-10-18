@@ -630,3 +630,159 @@ def test_ilastik_output_is_up_to_date_needs_every_source_older(tmp_path):
     _age(output, 200)
     assert not ilastik_output_is_up_to_date(output, image, project)
     assert not ilastik_output_is_up_to_date(output, tmp_path / "missing.tif")
+
+
+# --- H5 exports with a channel axis (ilastik) -------------------------------
+
+
+def _ilastik_axistags(keys: str) -> str:
+    import json
+
+    return json.dumps({
+        "axes": [
+            {"key": key, "typeFlags": 1 if key == "c" else 2, "resolution": 0, "description": ""}
+            for key in keys
+        ]
+    })
+
+
+def _ilastik_segmentation(shape_zyx=(9, 11, 15)) -> np.ndarray:
+    """A Simple Segmentation's labels: 1 the vessel (the minority, a rod 5
+    voxels across along x), 2 the rest."""
+    labels = np.full(shape_zyx, 2, dtype=np.uint8)
+    z, y, _x = (n // 2 for n in shape_zyx)
+    labels[max(z - 2, 0):z + 3, max(y - 2, 0):y + 3, 2:-2] = 1
+    return labels
+
+
+def _write_h5(path, data, *, axistags=None, dimension_labels=None, chunks=None, **attrs):
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(path, "w") as handle:
+        dataset = handle.create_dataset("exported_data", data=data, chunks=chunks)
+        if axistags is not None:
+            dataset.attrs["axistags"] = axistags
+        for axis, label in enumerate(dimension_labels or ()):
+            dataset.dims[axis].label = label
+        for key, value in attrs.items():
+            dataset.attrs[key] = value
+    return path
+
+
+@pytest.mark.parametrize("use_memmap", [False, True])
+def test_h5_loader_drops_an_ilastik_exports_single_channel_axis(tmp_path, use_memmap):
+    """Regression: an ilastik Simple Segmentation exported as H5 is ``zyxc``
+    with one channel, and the loader stopped the run with "Expected 3D image
+    after simplification, got shape: (z, y, x, 1)"."""
+    from haemolynx.io import load_3d_h5_with_voxel_size
+
+    labels = _ilastik_segmentation()
+    path = _write_h5(
+        tmp_path / "vessels_Simple Segmentation.h5",
+        labels[..., np.newaxis],
+        axistags=_ilastik_axistags("zyxc"),
+        dimension_labels="zyxc",
+        chunks=(2, 9, 11, 1),
+    )
+
+    image, *_ = load_3d_h5_with_voxel_size(
+        str(path), use_memmap=use_memmap, memmap_directory=tmp_path / "memmap"
+    )
+
+    assert image.shape == labels.shape
+    assert np.array_equal(image, labels)
+    assert isinstance(image, np.memmap) == use_memmap
+
+
+def test_h5_ilastik_export_reaches_the_pipeline_as_its_vessel_mask(tmp_path):
+    """The run's own read (the 2D-aware loader) and the skeletoniser's both
+    get the (z, y, x) labels, and the vessel label is what is foreground."""
+    from haemolynx.io import load_and_skeletonize_3d_h5, load_image_with_voxel_size_2d_aware
+
+    labels = _ilastik_segmentation()
+    path = _write_h5(
+        tmp_path / "vessels.h5", labels[..., np.newaxis], axistags=_ilastik_axistags("zyxc")
+    )
+
+    image, *_rest, status = load_image_with_voxel_size_2d_aware(str(path), input_format="h5")
+    assert image.shape == labels.shape
+    assert "promoted_from_2d" not in status
+
+    loaded, skeleton, *_ = load_and_skeletonize_3d_h5(str(path))
+    assert loaded.shape == skeleton.shape == labels.shape
+    assert skeleton.any()
+    assert not skeleton[labels == 2].any()
+
+
+def test_h5_loader_drops_a_trailing_singleton_axis_without_axis_names(tmp_path):
+    from haemolynx.io import load_3d_h5_with_voxel_size
+
+    labels = _ilastik_segmentation()
+    path = _write_h5(tmp_path / "untagged.h5", labels[..., np.newaxis])
+
+    image, *_ = load_3d_h5_with_voxel_size(str(path))
+
+    assert np.array_equal(image, labels)
+
+
+@pytest.mark.parametrize("use_memmap", [False, True])
+def test_h5_loader_drops_a_leading_channel_axis_and_its_element_size(tmp_path, use_memmap):
+    """A ``czyx`` export loses axis 0, and ``element_size_um``'s entry for it."""
+    from haemolynx.io import load_3d_h5_with_voxel_size
+
+    labels = _ilastik_segmentation()
+    path = _write_h5(
+        tmp_path / "czyx.h5",
+        labels[np.newaxis],
+        axistags=_ilastik_axistags("czyx"),
+        chunks=(1, 2, 9, 11),
+        element_size_um=np.array([1.0, 2.0, 0.5, 0.25]),
+    )
+
+    image, x, y, z, status = load_3d_h5_with_voxel_size(
+        str(path), use_memmap=use_memmap, memmap_directory=tmp_path / "memmap"
+    )
+
+    assert np.array_equal(image, labels)
+    assert (x, y, z) == (0.25, 0.5, 2.0)
+    assert status["status"] == "complete"
+
+
+def test_h5_loader_keeps_a_named_z_axis_of_one_slice(tmp_path):
+    """Only channel and time axes are dropped: a one-slice ``zyx`` stack stays 3D."""
+    from haemolynx.io import load_3d_h5_with_voxel_size
+
+    data = _ilastik_segmentation((1, 9, 11))
+    path = _write_h5(tmp_path / "one_slice.h5", data, axistags=_ilastik_axistags("zyx"))
+
+    image, *_ = load_3d_h5_with_voxel_size(str(path))
+
+    assert image.shape == (1, 9, 11)
+
+
+def test_h5_loader_promotes_a_2d_ilastik_export_through_the_2d_aware_loader(tmp_path):
+    from haemolynx.io import load_image_with_voxel_size_2d_aware
+
+    plane = _ilastik_segmentation((1, 9, 11))[0]
+    path = _write_h5(
+        tmp_path / "plane.h5", plane[..., np.newaxis], axistags=_ilastik_axistags("yxc")
+    )
+
+    image, *_rest, status = load_image_with_voxel_size_2d_aware(str(path), input_format="h5")
+
+    assert image.shape == (1, 9, 11)
+    assert np.array_equal(image[0], plane)
+    assert status["promoted_from_2d"] is True
+
+
+def test_h5_loader_still_rejects_several_channels(tmp_path):
+    """A Probabilities export has one channel per label: which is the vessel
+    is not the loader's to guess."""
+    from haemolynx.io import load_3d_h5_with_voxel_size
+
+    probabilities = np.zeros((6, 9, 11, 2), dtype=np.float32)
+    path = _write_h5(
+        tmp_path / "probabilities.h5", probabilities, axistags=_ilastik_axistags("zyxc")
+    )
+
+    with pytest.raises(ValueError, match="Simple Segmentation"):
+        load_3d_h5_with_voxel_size(str(path))

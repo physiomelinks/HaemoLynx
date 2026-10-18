@@ -1,6 +1,7 @@
 """Load 3D images from TIFF or HDF5 and produce skeleton."""
 from __future__ import annotations
 
+import json
 import logging
 import zipfile
 from pathlib import Path
@@ -56,14 +57,19 @@ def _coerce_triplet(value) -> tuple[float, float, float] | None:
 
 
 def _extract_h5_voxel_size(
-    dataset, h5_file, axis_order: str = CANONICAL_AXIS_ORDER
+    dataset,
+    h5_file,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+    dropped_axes: tuple[int, ...] = (),
 ) -> tuple[tuple[float, float, float], dict[str, object]]:
     """Extract (x, y, z) voxel size and metadata status from HDF5 attrs.
 
     ``element_size_um`` gives the spacing along each of the dataset's own
     axes, which *axis_order* says the meaning of (see
     :func:`haemolynx.io.axis_order.voxel_size_xyz_from_file_axes`); the named
-    keys below are physical by name."""
+    keys below are physical by name. *dropped_axes* are the dataset's axes the
+    loader left out (:func:`_h5_axes_to_drop`), whose entries an
+    ``element_size_um`` with one per dataset axis leaves out too."""
     attrs = {}
     for source in (h5_file.attrs, dataset.attrs):
         for key in source.keys():
@@ -71,7 +77,10 @@ def _extract_h5_voxel_size(
 
     # Most common in microscopy exports: element_size_um, one per dataset axis.
     if "element_size_um" in attrs:
-        per_axis = _coerce_triplet(attrs["element_size_um"])
+        element_size = attrs["element_size_um"]
+        if dropped_axes and np.asarray(element_size).size == len(dataset.shape):
+            element_size = np.delete(np.asarray(element_size).ravel(), dropped_axes)
+        per_axis = _coerce_triplet(element_size)
         if per_axis is not None:
             voxel_size_xyz = voxel_size_xyz_from_file_axes(per_axis, axis_order)
             if _is_valid_voxel_size_triplet(voxel_size_xyz):
@@ -662,6 +671,53 @@ def load_3d_tif_with_voxel_size(
     return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
 
+_NON_SPATIAL_H5_AXES = frozenset({"c", "t"})
+
+
+def _h5_axis_keys(dataset) -> list[str] | None:
+    """What each of *dataset*'s axes is (``"z"``, ``"y"``, ``"x"``, ``"c"``,
+    ``"t"``), from the ``axistags`` ilastik and vigra write, else h5py's
+    dimension labels; None when the file does not say."""
+    keys = None
+    tags = dataset.attrs.get("axistags")
+    if tags is not None:
+        try:
+            if isinstance(tags, bytes):
+                tags = tags.decode("utf-8")
+            keys = [str(axis["key"]) for axis in json.loads(str(tags))["axes"]]
+        except (ValueError, KeyError, TypeError):
+            keys = None
+    if keys is None:
+        labels = [str(dim.label) for dim in dataset.dims]
+        if labels and all(labels):
+            keys = labels
+    if keys is None or len(keys) != len(dataset.shape):
+        return None
+    return [key.lower() for key in keys]
+
+
+def _h5_axes_to_drop(dataset) -> tuple[int, ...]:
+    """The size-1 channel and time axes of *dataset*, which the loader reads
+    past: an ilastik export keeps a channel axis even for a Simple
+    Segmentation (``zyxc``, one channel). Read from the file's own axis names
+    when it has them; without them, only a dataset of more than three axes
+    loses size-1 axes, trailing ones first, until three are left."""
+    shape = dataset.shape
+    keys = _h5_axis_keys(dataset)
+    if keys is not None:
+        return tuple(
+            axis for axis, key in enumerate(keys)
+            if key in _NON_SPATIAL_H5_AXES and shape[axis] == 1
+        )
+    drop: list[int] = []
+    for axis in reversed(range(len(shape))):
+        if len(shape) - len(drop) <= 3:
+            break
+        if shape[axis] == 1:
+            drop.append(axis)
+    return tuple(sorted(drop))
+
+
 def load_3d_h5_with_voxel_size(
     filepath: str,
     dataset_name: str | None = None,
@@ -733,35 +789,52 @@ def load_3d_h5_with_voxel_size(
                 f"Available datasets: {available}"
             )
         dataset = f[selected_name]
+        dropped = _h5_axes_to_drop(dataset)
+        if dropped:
+            logger.info(
+                "Reading %s's dataset %r of shape %s without its size-1 axes %s.",
+                path.name, selected_name, dataset.shape, list(dropped),
+            )
+        kept = [axis for axis in range(len(dataset.shape)) if axis not in dropped]
+        selection = [0 if axis in dropped else slice(None) for axis in range(len(dataset.shape))]
+        shape = tuple(dataset.shape[axis] for axis in kept)
         if use_memmap:
             if memmap_path:
                 Path(memmap_path).parent.mkdir(parents=True, exist_ok=True)
                 image = np.memmap(
-                    memmap_path, dtype=dataset.dtype, mode="w+", shape=dataset.shape
+                    memmap_path, dtype=dataset.dtype, mode="w+", shape=shape
                 )
             else:
                 image = new_memmap_array(
-                    dataset.shape, dataset.dtype, directory=memmap_directory
+                    shape, dataset.dtype, directory=memmap_directory
                 )
-            # Slabs of whole HDF5 chunks along axis 0: read a slice at a
-            # time, a chunk spanning 16 slices is decompressed 16 times.
-            chunk_depth = int(dataset.chunks[0]) if dataset.chunks else 1
-            step = slab_step(dataset.shape)
+            # Slabs of whole HDF5 chunks along the first axis kept: read a
+            # slice at a time, a chunk spanning 16 slices is decompressed 16 times.
+            lead = kept[0]
+            chunk_depth = int(dataset.chunks[lead]) if dataset.chunks else 1
+            step = slab_step(shape)
             step = max(chunk_depth, step - step % chunk_depth)
-            for start in range(0, dataset.shape[0], step):
-                image[start:start + step] = dataset[start:start + step]
+            for start in range(0, shape[0], step):
+                selection[lead] = slice(start, start + step)
+                image[start:start + step] = dataset[tuple(selection)]
+        elif dropped:
+            image = dataset[tuple(selection)]
         else:
             image = np.array(dataset)
         (
             (voxel_size_x, voxel_size_y, voxel_size_z),
             voxel_meta_status,
-        ) = _extract_h5_voxel_size(dataset, f, axis_order)
+        ) = _extract_h5_voxel_size(dataset, f, axis_order, dropped)
 
     if image.ndim == 2 and allow_2d:
         return image, voxel_size_x, voxel_size_y, voxel_size_z, voxel_meta_status
 
     if image.ndim != 3:
-        raise ValueError(f"Expected 3D image after simplification, got shape: {image.shape}")
+        raise ValueError(
+            f"Expected 3D image after simplification, got shape: {image.shape}. "
+            "Only size-1 channel and time axes are dropped; export one channel "
+            "(e.g. ilastik's Simple Segmentation, not Probabilities)."
+        )
 
     reordered = apply_axis_order(
         image, axis_order, use_memmap=use_memmap, memmap_directory=memmap_directory
