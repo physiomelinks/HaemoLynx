@@ -156,6 +156,15 @@ STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
         "the whole image; with measured tissue, also the share of it that is "
         "vessel"
     ),
+    "vessel_classes": (
+        "The same measures for each class of vessel, side by side: large and "
+        "small arterioles, capillaries, small and large venules -- or, with "
+        "global vessel masks, large vessels, small vessels and capillaries. "
+        "For each: how many vessels, their length and share of the network's, "
+        "length, volume and surface per unit volume, diameter and tortuosity, "
+        "and once the flow is solved, the flow, velocity, wall shear stress "
+        "and pressure in its vessels carrying flow"
+    ),
     "murray_law": (
         "Whether diameters at junctions follow Murray's law, parent^3 = the "
         "sum of daughters^3. The Murray ratio is the daughters' sum over the "

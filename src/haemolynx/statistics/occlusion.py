@@ -36,12 +36,11 @@ from ._route_graph import (
 )
 from ._sampling import REPRODUCIBILITY_SEED
 from .bifurcation import (
-    UNASSIGNED_CATEGORY,
+    VESSEL_CATEGORY_SEQUENCE,
     _branch_order_sort_key,
     branch_order_category,
     branch_order_label,
 )
-from haemolynx.graph.branch_order import BRANCH_ORDER_CATEGORY_SEQUENCE
 
 __all__ = [
     "OCCLUSION_IMPACT_EDGE_ATTRIBUTES",
@@ -227,7 +226,7 @@ def compute_single_vessel_occlusion_impact(
 
     by_type: Dict[str, Any] = {}
     by_order: Dict[str, Any] = {}
-    type_rank = {c: i for i, c in enumerate(BRANCH_ORDER_CATEGORY_SEQUENCE + (UNASSIGNED_CATEGORY,))}
+    type_rank = {c: i for i, c in enumerate(VESSEL_CATEGORY_SEQUENCE)}
     members_by_type: dict = defaultdict(list)
     for i, category in enumerate(categories):
         members_by_type[category].append(i)

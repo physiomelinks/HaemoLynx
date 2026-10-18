@@ -117,8 +117,18 @@ def _annotation_for_metric(metric_name: str) -> str:
         return "Centrality based on shortest-path traffic."
     if "Community" in metric_name:
         return "Subnetwork partition summary."
+    if metric_name.startswith("Vessel Class Density Volume"):
+        return "What every vessel class's densities divide by."
+    if "Volume Density" in metric_name:
+        return "Vessel volume (a cylinder per vessel) normalized by available volume."
+    if "Surface Density" in metric_name:
+        return "Vessel wall area (a cylinder per vessel) normalized by available volume."
     if "Density" in metric_name:
         return "Total vessel length normalized by available volume."
+    if "Wall Shear Stress" in metric_name:
+        return "Pressure drop x diameter / (4 x length), a uniform tube's, over vessels carrying flow."
+    if "Velocity" in metric_name:
+        return "Flow over the lumen's cross-section, over vessels carrying flow."
     if "Kaplan-Meier" in metric_name:
         return "Beds that never join count as at risk up to where they were followed."
     if "Short Loops Removed" in metric_name:

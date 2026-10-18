@@ -22,6 +22,7 @@ from .spectral import compute_algebraic_connectivity
 from .strahler import compute_strahler_orders
 from .territories import compute_perfusion_territories
 from .transit_time import compute_transit_times
+from .vessel_classes import compute_vessel_class_statistics
 from .network_measures import (
     compute_betweenness,
     compute_betweenness_summary,
@@ -58,6 +59,7 @@ STATISTIC_MEASURES: tuple[str, ...] = (
     "tree_asymmetry",
     "fractal_dimension",
     "vessel_density",
+    "vessel_classes",
     "murray_law",
     "daughter_angles",
     "intercapillary_distance",
@@ -90,8 +92,9 @@ STATISTIC_MEASURES: tuple[str, ...] = (
 #: shortest-path/centrality measures), nested under the schema's own
 #: ``statistics_network_analysis`` toggle. Everything in STATISTIC_MEASURES
 #: but not here (basic, tortuosity, branching, tree_asymmetry,
-#: fractal_dimension, vessel_density, murray_law, daughter_angles,
-#: intercapillary_distance) is geometric/morphometric rather than
+#: fractal_dimension, vessel_density, vessel_classes, murray_law,
+#: daughter_angles, intercapillary_distance, dead_ends) is
+#: geometric/morphometric rather than
 #: connectivity, and stays directly under "statistics".
 NETWORK_ANALYSIS_MEASURES: frozenset[str] = frozenset(
     {
@@ -133,6 +136,7 @@ CONNECTED_NETWORK_MEASURES: frozenset[str] = frozenset(
         "tree_asymmetry",
         "fractal_dimension",
         "vessel_density",
+        "vessel_classes",
         "murray_law",
         "daughter_angles",
         "intercapillary_distance",
@@ -233,7 +237,8 @@ def compute_comprehensive_vessel_statistics(
     measured from the raw image and the segmented vessel volume inside it
     (:func:`~haemolynx.statistics.tissue_volume.measure_tissue_volume`):
     "vessel_density" then divides by the tissue rather than by the box the
-    network spans, and adds the vascular volume fraction.
+    network spans, and adds the vascular volume fraction; "vessel_classes"
+    divides each vessel class's length, volume and surface by it too.
 
     The same rows, measure by measure, are
     :func:`compute_vessel_statistics_by_measure`.
@@ -354,6 +359,15 @@ def compute_vessel_statistics_by_measure(
             is_mg,
             tissue_volume_um3=tissue_volume_um3,
             vessel_volume_um3=vessel_volume_um3,
+        )
+    if "vessel_classes" in enabled:
+        # The original G: each parallel edge is a vessel of its own class.
+        sections["vessel_classes"] = compute_vessel_class_statistics(
+            G,
+            node_positions,
+            voxel_size,
+            image_dimensions,
+            tissue_volume_um3=tissue_volume_um3,
         )
     if "murray_law" in enabled:
         # The original G, not G_simple, for the same reason as fractal

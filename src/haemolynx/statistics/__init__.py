@@ -60,6 +60,10 @@ from .topology import (
 
 from .three_dim_distances import run_3d_measurement_to_cell_mask
 from .tissue_volume import TISSUE_THRESHOLD_METHODS, TissueVolume, measure_tissue_volume
+from .vessel_classes import (
+    VESSEL_CLASS_TITLES,
+    compute_vessel_class_statistics,
+)
 
 __all__ = [
     "STATISTIC_MEASURES",
@@ -111,4 +115,6 @@ __all__ = [
     "TISSUE_THRESHOLD_METHODS",
     "TissueVolume",
     "measure_tissue_volume",
+    "VESSEL_CLASS_TITLES",
+    "compute_vessel_class_statistics",
 ]

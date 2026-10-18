@@ -3937,6 +3937,21 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="statistics_vessel_classes",
+            kind="bool",
+            default=True,
+            help=(
+                "The same measures for each vessel class -- large and small "
+                "arterioles, capillaries, small and large venules, or with global "
+                "vessel masks large vessels, small vessels and capillaries: count, "
+                "length, length/volume/surface density, diameter, tortuosity and, "
+                "once solved, flow, velocity, wall shear stress and pressure"
+            ),
+            section=_STATISTICS,
+            requires=("statistics",),
+            advanced=True,
+        ),
+        Setting(
             name="statistics_murray_law",
             kind="bool",
             default=True,

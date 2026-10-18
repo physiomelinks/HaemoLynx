@@ -48,7 +48,7 @@ from haemolynx.pipeline.stages import (
     _assign_branch_orders,
     assign_boundaries,
 )
-from haemolynx.statistics.bifurcation import UNASSIGNED_CATEGORY, branch_order_category
+from haemolynx.statistics.bifurcation import branch_order_category
 
 VOXEL_SIZE_ZYX = (1.0, 1.0, 1.0)
 SHAPE = (12, 12, 30)
@@ -403,12 +403,14 @@ def test_the_diameter_table_has_an_entry_for_each_unknown_class(all_diams_const)
     assert table["Unknown_Cap"] == 4.0
 
 
-def test_an_unknown_capillary_is_a_capillary_and_the_others_are_unassigned():
+def test_an_unknown_capillary_is_a_capillary_and_the_others_are_classed_by_size():
+    """Large and small vessels are on neither side of the bed, and are
+    compared apart by every breakdown by vessel type."""
     assert is_capillary_branch_order("Unknown_Cap")
     assert not is_capillary_branch_order("Unknown_Large")
     assert branch_order_category("Unknown_Cap") == "capillary"
-    assert branch_order_category("Unknown_Large") == UNASSIGNED_CATEGORY
-    assert branch_order_category("Unknown_Small") == UNASSIGNED_CATEGORY
+    assert branch_order_category("Unknown_Large") == "large_vessel"
+    assert branch_order_category("Unknown_Small") == "small_vessel"
 
 
 # --- preflight -----------------------------------------------------------------

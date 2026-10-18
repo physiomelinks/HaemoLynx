@@ -600,6 +600,8 @@ statistics_and_measurements:
   statistics_fractal_dimension: true
   # Vessel length and volume per unit of imaged tissue volume  [needs statistics]
   statistics_vessel_density: true
+  # The same measures for each vessel class -- large and small arterioles, capillaries, small and large venules, or with global vessel masks large vessels, small vessels and capillaries: count, length, length/volume/surface density, diameter, tortuosity and, once solved, flow, velocity, wall shear stress and pressure  [needs statistics]
+  statistics_vessel_classes: true
   # How closely parent/daughter diameters at each junction follow Murray's cube law  [needs statistics]
   statistics_murray_law: true
   # Branching angle between sibling daughter vessels at each junction  [needs statistics]
