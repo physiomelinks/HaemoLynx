@@ -3653,6 +3653,54 @@ def _start_measurement_afresh(data: dict) -> None:
         set_edge_diameter_override(data, provisional)
 
 
+def _judge_drawn_vessels(
+    settings: dict,
+    G: nx.MultiGraph,
+    network: VesselNetwork | None,
+    edited: Sequence[tuple],
+    voxel_size_zyx,
+) -> list[dict[str, Any]] | None:
+    """How each vessel the edits drew sits in the segmentation, written on
+    it and listed for the summary; None with nothing drawn or no
+    segmentation to read (a synthetic run, or a resume without one).
+
+    The vessels :func:`haemolynx.graph.add_vessel_between` added
+    (``post_processing_added``; a split half, a merge or a bridge is not one
+    a person drew) are read with the run's own bridge reader
+    (:class:`haemolynx.preprocessing.MaskSupport`, at the run's
+    ``bridge_max_background_gap_um`` and ``bridge_min_mask_fraction``) by
+    :func:`haemolynx.graph.record_drawn_vessel_support`: ``drawn_mask_fraction``,
+    ``drawn_background_run_um`` and ``drawn_beside_vessel`` go on each. A
+    diagnostic only -- a vessel traced through tissue the segmentation never
+    showed is visible as such, and kept as drawn.
+    """
+    drawn = [
+        edge for edge in edited
+        if G.edges[edge].get("post_processing_added") and not G.edges[edge].get(graph.IS_ZERO_RESISTANCE)
+    ]
+    if not drawn or network is None or network.volume.image is None:
+        return None
+    support = preprocessing.MaskSupport(
+        _to_binary_volume_for_skeletonization(network.volume.image),
+        voxel_size_zyx,
+        max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
+        min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+    )
+    records = graph.record_drawn_vessel_support(G, drawn, support)
+    off_segmentation = sum(not record.within_bridge_gate for record in records)
+    beside = sum(record.beside_vessel for record in records)
+    logger.info(
+        "Post processing: %d drawn vessel(s) read against the segmentation: %d partly "
+        "off it (graph building's bridge gate would have drawn no bridge there), %d "
+        "beside a vessel in the same lumen -- all kept as drawn.",
+        len(records), off_segmentation, beside,
+    )
+    for record in records:
+        u, v, _key = record.edge
+        logger.info("  vessel %s-%s (%.3g um): %s", u, v, record.length_um, record.describe())
+    return [record.as_record() for record in records]
+
+
 def _bridge_edited_vessels(
     settings: dict,
     G: nx.MultiGraph,
@@ -3797,11 +3845,18 @@ def post_process(
        run's own diameter methods (FWHM, the raw section, EDT, the
        endothelium -- whichever it uses), keeping the diameter the edit gave
        it as a provisional override: a measurement replaces that, the
-       branch-order table does not.
+       branch-order table does not;
+    6. each vessel the edits drew is read against the segmentation as graph
+       building reads every bridge it draws (:func:`_judge_drawn_vessels`:
+       the fraction of it in the mask, the longest run of background it
+       crosses, whether it runs beside a vessel in the same lumen), written
+       on the vessel and listed -- never refused: the person drew it where
+       the segmentation is missing as often as not.
 
     Then the marks are cleared, and ``model.results["post_process"]`` says
     what was done (``edited_vessels``, the ``boundary_nodes`` lists as they
-    now are, and the ``diameters`` sources when measured). A network nobody
+    now are, the ``diameters`` sources when measured, and ``drawn_vessels``
+    when there was a segmentation to read them against). A network nobody
     edited passes through untouched -- no ``"post_process"`` entry -- so a
     run without the panel does what it did before this stage.
 
@@ -3837,6 +3892,9 @@ def post_process(
         if network is not None
         else tuple(G.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0)))
     )
+    drawn = _judge_drawn_vessels(settings, G, network, edited, voxel_size_zyx)
+    if drawn is not None:
+        summary["drawn_vessels"] = drawn
     if edited and io.vessel_masks_are_global(settings):
         # An edited vessel's class comes from the masks, as every other's did.
         in_use = {role: graph.vessel_masks_in_use(settings, role) for role in ("large", "small")}
