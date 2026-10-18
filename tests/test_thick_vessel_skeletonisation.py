@@ -672,6 +672,66 @@ def test_join_falls_back_to_a_full_mask_geodesic_when_the_tight_box_has_no_path(
     assert path[0] == start and path[-1] == end
 
 
+def test_the_low_ram_last_resort_join_walks_the_structure_not_its_box(tmp_path, monkeypatch):
+    """An arm on a horseshoe whose nearest ridge point is across the gap: only
+    the whole structure's Dijkstra finds the way round. Under the low-RAM
+    option that graph is the structure's own voxels, costed a block at a
+    time, with no distance map of its box and nothing of the speck inside the
+    ring -- and the bridge it draws is the in-RAM one, voxel for voxel."""
+    import math
+
+    import haemolynx.preprocessing.thick_vessels as thick_vessels_module
+    from haemolynx.preprocessing import memmap_support
+
+    shape = (3, 200, 200)
+    yy, xx = np.indices(shape[1:])
+    dist2 = (yy - 100) ** 2 + (xx - 100) ** 2
+    angle = np.degrees(np.arctan2(yy - 100, xx - 100))
+    allowed = np.zeros(shape, dtype=bool)
+    allowed[1] = (dist2 <= 80**2) & (dist2 >= 70**2) & ~((angle > -6) & (angle < 6))
+    allowed[1, 98:103, 98:103] = True  # another structure, inside the ring's box
+    thick = np.zeros(shape, dtype=bool)
+    thick[1] = allowed[1] & (angle < -8) & (angle > -60) & (dist2 >= 70**2)
+    skeleton = np.zeros(shape, dtype=bool)
+    for degrees in np.arange(-58.0, -9.0, 0.25):  # the ridge, along the sector
+        rad = math.radians(degrees)
+        skeleton[1, int(round(100 + 75 * math.sin(rad))), int(round(100 + 75 * math.cos(rad)))] = True
+    for degrees in np.arange(9.0, 40.0, 0.25):  # the arm, across the gap from it
+        rad = math.radians(degrees)
+        skeleton[1, int(round(100 + 75 * math.sin(rad))), int(round(100 + 75 * math.cos(rad)))] = True
+    assert not (skeleton & ~allowed).any()
+
+    built = []
+    real_build = thick_vessels_module._build_dijkstra_graph
+    monkeypatch.setattr(
+        thick_vessels_module,
+        "_build_dijkstra_graph",
+        lambda *args, **kwargs: built.append(1) or real_build(*args, **kwargs),
+    )
+    plain = _join_thin_arms_to_fat_ridge(
+        skeleton, thick, allowed, voxel_size_zyx=(1.0, 1.0, 1.0), min_arm_extent_um=4.0
+    )
+    assert built, "the fixture no longer needs the last resort"
+    assert (plain & ~skeleton).sum() > 100, "the bridge goes the long way round"
+
+    transforms = []
+    real_edt = thick_vessels_module.distance_transform_edt
+    monkeypatch.setattr(
+        thick_vessels_module,
+        "distance_transform_edt",
+        lambda *args, **kwargs: transforms.append(np.shape(args[0])) or real_edt(*args, **kwargs),
+    )
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 5_000)
+    low_ram = _join_thin_arms_to_fat_ridge(
+        skeleton, thick, allowed, voxel_size_zyx=(1.0, 1.0, 1.0), min_arm_extent_um=4.0,
+        use_memmap=True,
+    )
+
+    # The corridors' small crops only: never the structure's 161 x 161 box.
+    assert all(int(np.prod(s)) < 161 * 161 for s in transforms), transforms
+    assert np.array_equal(low_ram, plain)
+
+
 def _fat_trunk_with_short_fused_branch(
     *, branch_len: int, r_fat: float = 8.0, branch_radius: float = 1.5
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -1503,6 +1563,47 @@ def test_joining_many_arms_does_not_rescan_the_whole_image_per_arm():
     )
     _, n_cc_joined = label(joined, structure=generate_binary_structure(3, 3))
     assert n_cc_joined == 1, "every arm must actually be bridged into one tree"
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_the_dijkstra_graph_is_its_edges_converted_to_csr(seed):
+    """Written straight into CSR arrays a plane at a time: the same arrays,
+    entry for entry, as the 26-neighbour edges gathered and converted --
+    which held the edges three times over, 1.1 KB a voxel of a fat
+    component."""
+    from scipy.sparse import csr_matrix
+
+    from haemolynx.preprocessing.thick_vessels import _OFFSETS_26, _step_factor
+
+    rng = np.random.default_rng(seed)
+    shape = tuple(int(v) for v in rng.integers(4, 12, 3))
+    binary = rng.random(shape) > rng.uniform(0.2, 0.8)
+    cost = rng.random(shape) + 0.01
+    cost[rng.random(shape) > 0.9] = np.inf  # never stepped into
+    relative = np.array([rng.choice([1.0, 2.5]), 1.0, 1.0])
+
+    graph, fg_coords, _index_of = _build_dijkstra_graph(binary, cost, relative)
+
+    ids = -np.ones(shape, dtype=np.int64)
+    ids[binary] = np.arange(int(binary.sum()))
+    rows, cols, weights = [], [], []
+    for offset in _OFFSETS_26:
+        for i, voxel in enumerate(fg_coords):
+            neighbour = voxel + np.array(offset)
+            if np.any(neighbour < 0) or np.any(neighbour >= shape) or ids[tuple(neighbour)] < 0:
+                continue
+            weight = cost[tuple(neighbour)] * _step_factor(offset, relative)
+            if np.isfinite(weight) and weight > 0:
+                rows.append(i)
+                cols.append(ids[tuple(neighbour)])
+                weights.append(weight)
+    n = len(fg_coords)
+    expected = csr_matrix((weights, (rows, cols)), shape=(n, n))
+    expected.sum_duplicates()
+
+    assert np.array_equal(graph.indptr, expected.indptr)
+    assert np.array_equal(graph.indices, expected.indices)
+    assert np.array_equal(graph.data, expected.data)
 
 
 def test_geodesic_on_crop_precomputed_cost_matches_computing_it_fresh():

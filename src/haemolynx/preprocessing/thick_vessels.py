@@ -913,51 +913,79 @@ def _build_dijkstra_graph_from_coords(
 ):
     """:func:`_build_dijkstra_graph` from the foreground's own voxels
     (``(n, 3)``, C order, in a box of *shape*) and the cost of stepping into
-    each, with nothing the size of the box."""
+    each, with nothing the size of the box.
+
+    Written straight into the CSR arrays a z-plane of voxels at a time --
+    counted in one pass, filled in a second -- each voxel's 26 neighbours
+    read from an index of the three planes round it. Gathered as row, column
+    and weight chunks and converted, the edges were held about three times
+    over (~1.1 KB a voxel of a solid fat component, the low-RAM run's peak)
+    where the graph itself is 12 bytes an edge. The offsets run in C order,
+    so each row's neighbours come out sorted, as the conversion sorted them.
+    """
     n_fg = int(fg_coords.shape[0])
     index_of = _ForegroundIndex(fg_coords, shape)
-
-    zyx = fg_coords.astype(np.intp, copy=False)
     z_max, y_max, x_max = (int(s) for s in shape)
     cost_a = np.asarray(cost_at, dtype=np.float64)
     relative = np.ones(3) if relative_spacing is None else np.asarray(relative_spacing, float)
-    row_chunks: list[np.ndarray] = []
-    col_chunks: list[np.ndarray] = []
-    data_chunks: list[np.ndarray] = []
-    for dz, dy, dx in _OFFSETS_26:
-        nz = zyx[:, 0] + int(dz)
-        ny = zyx[:, 1] + int(dy)
-        nx_ = zyx[:, 2] + int(dx)
-        in_bounds = (
-            (nz >= 0)
-            & (nz < z_max)
-            & (ny >= 0)
-            & (ny < y_max)
-            & (nx_ >= 0)
-            & (nx_ < x_max)
-        )
-        if not np.any(in_bounds):
-            continue
-        src = np.flatnonzero(in_bounds)
-        nidx = index_of[nz[in_bounds], ny[in_bounds], nx_[in_bounds]]
-        connected = nidx >= 0
-        if not np.any(connected):
-            continue
-        weights = cost_a[nidx[connected]] * _step_factor((dz, dy, dx), relative)
-        finite = np.isfinite(weights) & (weights > 0.0)
-        if not np.any(finite):
-            continue
-        row_chunks.append(src[connected][finite].astype(np.int32, copy=False))
-        col_chunks.append(nidx[connected][finite].astype(np.int32, copy=False))
-        data_chunks.append(weights[finite])
+    factors = np.array([_step_factor(offset, relative) for offset in _OFFSETS_26])
+    offsets = np.array(_OFFSETS_26, dtype=np.intp)
+    # Each plane's voxels are a run of the C-ordered list; indexed with a
+    # border of -1, so a neighbour off the box's edge reads as none.
+    bounds = np.searchsorted(fg_coords[:, 0], np.arange(z_max + 1))
+    ys = fg_coords[:, 1].astype(np.intp) + 1
+    xs = fg_coords[:, 2].astype(np.intp) + 1
+    planes: dict[int, np.ndarray | None] = {}
 
-    if row_chunks:
-        rows = np.concatenate(row_chunks)
-        cols = np.concatenate(col_chunks)
-        weights_all = np.concatenate(data_chunks)
-        graph = csr_matrix((weights_all, (rows, cols)), shape=(n_fg, n_fg))
-    else:
-        graph = csr_matrix((n_fg, n_fg))
+    def plane(z: int) -> np.ndarray | None:
+        if z not in planes:
+            lo, hi = int(bounds[z]), int(bounds[z + 1])
+            if hi > lo:
+                index = np.full((y_max + 2, x_max + 2), -1, dtype=np.int32)
+                index[ys[lo:hi], xs[lo:hi]] = np.arange(lo, hi, dtype=np.int32)
+            else:
+                index = None
+            planes[z] = index
+            for old in [k for k in planes if k < z - 1]:
+                del planes[old]
+        return planes[z]
+
+    def steps(z: int):
+        """``(neighbours, weights, kept)`` of plane *z*'s voxels, a row of
+        26 per voxel; *kept* marks the steps that are edges."""
+        lo, hi = int(bounds[z]), int(bounds[z + 1])
+        y, x = ys[lo:hi], xs[lo:hi]
+        neighbours = np.full((hi - lo, len(offsets)), -1, dtype=np.int32)
+        for k, (dz, dy, dx) in enumerate(offsets):
+            index = plane(z + int(dz)) if 0 <= z + int(dz) < z_max else None
+            if index is not None:
+                neighbours[:, k] = index[y + dy, x + dx]
+        kept = neighbours >= 0
+        weights = np.zeros(neighbours.shape, dtype=np.float64)
+        weights[kept] = cost_a[neighbours[kept]] * np.broadcast_to(factors, neighbours.shape)[kept]
+        kept &= np.isfinite(weights) & (weights > 0.0)
+        return neighbours, weights, kept
+
+    occupied = [z for z in range(z_max) if bounds[z + 1] > bounds[z]]
+    counts = np.zeros(n_fg, dtype=np.int64)
+    for z in occupied:
+        _neighbours, _weights, kept = steps(z)
+        counts[bounds[z]:bounds[z + 1]] = kept.sum(axis=1)
+    planes.clear()
+    nnz = int(counts.sum())
+    index_type = np.int32 if nnz < np.iinfo(np.int32).max else np.int64
+    indptr = np.zeros(n_fg + 1, dtype=index_type)
+    np.cumsum(counts, out=indptr[1:])
+    del counts
+    indices = np.empty(nnz, dtype=index_type)
+    data = np.empty(nnz, dtype=np.float64)
+    for z in occupied:
+        neighbours, weights, kept = steps(z)
+        start, stop = int(indptr[bounds[z]]), int(indptr[bounds[z + 1]])
+        indices[start:stop] = neighbours[kept]
+        data[start:stop] = weights[kept]
+    planes.clear()
+    graph = csr_matrix((data, indices, indptr), shape=(n_fg, n_fg))
     return graph, fg_coords, index_of
 
 
@@ -2003,11 +2031,37 @@ def _join_thin_arms_to_fat_ridge(
         cached = graph_cache.get(label_key)
         if cached is not None:
             return cached
-        local_edt = distance_transform_edt(local_mask, sampling=tuple(relative_scale))
-        cost = np.where(local_mask, 1.0 / (np.square(local_edt) + 1e-6), np.inf)
-        built = _build_dijkstra_graph(local_mask, cost, relative_scale)
+        if use_memmap:
+            built = _structure_graph(label_key)
+        else:
+            local_edt = distance_transform_edt(local_mask, sampling=tuple(relative_scale))
+            cost = np.where(local_mask, 1.0 / (np.square(local_edt) + 1e-6), np.inf)
+            built = _build_dijkstra_graph(local_mask, cost, relative_scale)
         graph_cache[label_key] = built
         return built
+
+    def _structure_graph(label_key: int) -> tuple:
+        """The fallback's graph for the low-RAM option: the structure's own
+        voxels, not every voxel of its box, each costed from its exact
+        distance in the box (a block at a time) -- no distance map of the
+        box, and nothing for the box's other structures. Those are never
+        reached from the arm, so the walk is the same step for step."""
+        box = allowed_components.box(label_key)
+        origin = np.array([int(s.start) for s in box], dtype=np.int64)
+        plane = int(shape[1]) * int(shape[2])
+        keys = []
+        for z0, z1, labels, offset in allowed_components.replay(lambda a, b: allowed_b[a:b]):
+            if z1 <= box[0].start or z0 >= box[0].stop:
+                continue
+            mine = np.flatnonzero(allowed_components.numbers(labels, offset).reshape(-1) == label_key)
+            keys.append(mine.astype(np.int64) + int(z0) * plane)
+        coords = _coords_of(np.concatenate(keys), shape)
+        distance = blockwise_edt.distances_at_points(
+            lambda region: allowed_b[region], box, coords, sampling=relative_scale
+        )
+        cost = 1.0 / (np.square(distance) + 1e-6)
+        box_shape = tuple(int(s.stop) - int(s.start) for s in box)
+        return _build_dijkstra_graph_from_coords(coords - origin, box_shape, cost, relative_scale)
 
     # Memoized per roi component (see the flake-length filter above, which
     # scopes its own EDT the same way): the fat vessel's own local radius at
