@@ -46,7 +46,8 @@ SWITCH = {
     "small": "use_small_vessel_masks_for_boundary_assignment",
 }
 #: An arteriole and a venule mask for each role, never read: the networks
-#: here carry their masks.
+#: here carry their masks. Without a venule mask a role's mask is one global
+#: mask of every vessel, which assigns no inlets or branch orders.
 MASK_PATHS = {
     "large_arteriole_mask_path": "large_a.tif",
     "large_venule_mask_path": "large_v.tif",

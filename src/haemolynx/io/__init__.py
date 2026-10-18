@@ -18,10 +18,14 @@ from .load_2d import (
 from .raw_volume_cache import load_raw_volume_reusing_cache
 from .ilastik import run_ilastik_headless_segmentation
 from .automated_vessel_assignment import (
+    as_global_vessel_mask,
     clear_vessel_mask_cache,
+    global_vessel_mask_roles,
     load_and_validate_vessel_masks,
     vessel_mask_arguments,
     load_large_vessel_masks,
+    vessel_mask_role_is_global,
+    vessel_masks_are_global,
 )
 from .voxel_validation import resolve_voxel_size_xyz, validate_voxel_size_xyz
 from .channels import TiffChannel, tiff_channel_axis, tiff_channels
@@ -61,6 +65,10 @@ __all__ = [
     "load_large_vessel_masks",
     "load_and_validate_vessel_masks",
     "vessel_mask_arguments",
+    "as_global_vessel_mask",
+    "global_vessel_mask_roles",
+    "vessel_mask_role_is_global",
+    "vessel_masks_are_global",
     "validate_voxel_size_xyz",
     "resolve_voxel_size_xyz",
     "CANONICAL_AXIS_ORDER",

@@ -397,6 +397,8 @@ def _assign_boundaries_settings(**overrides):
         {
             "automated_vessel_assignment": True,
             "use_large_vessel_masks": True,
+            # An arteriole/venule pair: with no venule mask the masks are global.
+            "large_venule_mask_path": "large_venule_mask.tif",
             "cut_network_at_large_vessel_volumes": True,
             "remove_orphaned_branches_outside_large_vessel_volumes": False,
             "orphaned_branch_max_edge_count": 3,
@@ -829,6 +831,8 @@ def test_default_schema_cuts_interior_edges_with_large_mask_assignment(
             "plot_dir": tmp_path,
             "automated_vessel_assignment": True,
             "use_large_vessel_masks": True,
+            # An arteriole/venule pair: with no venule mask the masks are global.
+            "large_venule_mask_path": "large_venule_mask.tif",
             "automated_vessel_assignment_fast_mode": False,
             "automated_vessel_assignment_enable_overlap_cleanup": False,
             "automated_vessel_assignment_use_legacy_mode": True,

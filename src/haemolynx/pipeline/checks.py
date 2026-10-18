@@ -21,6 +21,10 @@ from haemolynx.haemodynamics.perturbations import (
     perturbation_problems,
     perturbations_from_settings,
 )
+from haemolynx.io.automated_vessel_assignment import (
+    global_vessel_mask_roles,
+    vessel_masks_are_global,
+)
 from haemolynx.parsers import Schema
 from haemolynx.parsers.checks import CheckReport, check_settings, resolve_existing_path
 
@@ -211,12 +215,61 @@ def check_manual_inlets_outlets_while_masks_choose(
     return report
 
 
+def check_global_vessel_masks(settings: Mapping[str, Any]) -> CheckReport:
+    """Say what a run with global vessel masks does instead, and warn of the
+    settings it then leaves unread.
+
+    A role given its arteriole/global mask with no venule mask
+    (``io.vessel_masks_are_global``) has one mask of every vessel of its
+    size: the vessels are classed Unknown_Large, Unknown_Small and
+    Unknown_Cap rather than given branch orders, the masks cut nothing and
+    choose no inlets or outlets (the Inlet and Outlet tabs do), and a role
+    still given a pair is read as the one mask the two make.
+    """
+    report = CheckReport()
+    roles = global_vessel_mask_roles(settings)
+    if not roles:
+        return report
+    report.add_pass(
+        "global vessel masks",
+        f"the {' and '.join(roles)}-vessel mask{'s are' if len(roles) > 1 else ' is'} "
+        "global (no venule mask entered): vessels are classed Unknown_Large, "
+        "Unknown_Small and Unknown_Cap instead of branch orders, nothing is cut "
+        "at the masks, and the inlets and outlets come from the Inlet and Outlet tabs",
+    )
+    for role in VESSEL_MASK_SWITCHES:
+        if role not in roles and vessel_masks_in_use(settings, role):
+            report.add_warning(
+                f"The {role}-vessel arteriole and venule masks will be read as one "
+                f"global {role}-vessel mask, because the "
+                f"{' and '.join(roles)}-vessel mask is global: no vessel can be "
+                "classed arteriole or venule. Fix: enter the venule mask in both "
+                "roles to class them, or clear it in both."
+            )
+    unread = [
+        name
+        for name in ("assign_large_vessel_branch_orders", "strict_branch_order_assignment")
+        if settings.get(name)
+    ] + [
+        f"{vessel}_boundary_selection_method"
+        for vessel in ("arteriole", "venule")
+        if boundary_role_configured(settings, f"{vessel}_boundary")
+    ]
+    if unread:
+        report.add_warning(
+            f"{', '.join(unread)} set, but with global vessel masks no branch "
+            "orders are assigned, so nothing reads them."
+        )
+    return report
+
+
 def check_large_vessel_cut_when_masks_enabled(
     settings: Mapping[str, Any],
 ) -> CheckReport:
     """Warn when large-mask assignment is on but the volume cut is off."""
     report = CheckReport()
-    if not vessel_masks_in_use(settings, "large"):
+    if not vessel_masks_in_use(settings, "large") or vessel_masks_are_global(settings):
+        # Global masks cut nothing (check_global_vessel_masks says so).
         return report
     if bool(settings.get("cut_network_at_large_vessel_volumes")):
         return report
@@ -710,6 +763,7 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_ilastik_executable(settings))
     report.extend(check_input_is_not_a_large_vessel_mask(settings))
     report.extend(check_manual_inlets_outlets_while_masks_choose(settings))
+    report.extend(check_global_vessel_masks(settings))
     report.extend(check_large_vessel_cut_when_masks_enabled(settings))
     report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
     report.extend(check_thick_vessel_restriction_prerequisites(settings))

@@ -514,11 +514,17 @@ def inlets_outlets_from_vessel_masks(settings: Mapping[str, Any]) -> bool:
     True only with the large masks in use (:func:`vessel_masks_in_use`) *and*
     ``inlets_outlets_from_vessel_masks`` on. Off, the inlets and outlets come
     from the manual Inlet/Outlet methods even while the masks drive the
-    large-vessel treatment. The one place this is decided: the Boundaries
+    large-vessel treatment. Never with global vessel masks
+    (``io.vessel_masks_are_global``): a mask of every vessel cannot tell an
+    inlet from an outlet. The one place this is decided: the Boundaries
     stage, the panel's greying and preflight all ask here.
     """
-    return vessel_masks_in_use(settings, "large") and bool(
-        settings.get("inlets_outlets_from_vessel_masks", True)
+    from haemolynx.io.automated_vessel_assignment import vessel_masks_are_global
+
+    return (
+        vessel_masks_in_use(settings, "large")
+        and bool(settings.get("inlets_outlets_from_vessel_masks", True))
+        and not vessel_masks_are_global(settings)
     )
 
 
@@ -527,11 +533,15 @@ def assigns_large_vessel_branch_orders(settings: Mapping[str, Any]) -> bool:
     use, and the network not cut at them (the cut takes away the vessels the
     Large_Art/Large_Ven tier would label). The panel hides the switch
     whenever one of those does not hold, so it is off then, whatever it holds.
+    Off too with global vessel masks, which give no branch orders at all.
     """
+    from haemolynx.io.automated_vessel_assignment import vessel_masks_are_global
+
     return (
         bool(settings.get("assign_large_vessel_branch_orders"))
         and vessel_masks_in_use(settings, "large")
         and not bool(settings.get("cut_network_at_large_vessel_volumes", True))
+        and not vessel_masks_are_global(settings)
     )
 
 

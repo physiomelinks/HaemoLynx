@@ -851,7 +851,13 @@ SCHEMA = Schema(
             name="large_arteriole_mask_path",
             kind="path",
             default=f"{_IMAGES}/large_arteriole_mask.tif",
-            help="Read this pre-segmented large arteriole mask",
+            help=(
+                "Read this pre-segmented large arteriole mask -- or, with no large "
+                "venule mask entered, a global mask of every large vessel, "
+                "arteriole or venule: the vessels in it are then unknown large "
+                "vessels, and the run gives every vessel an unknown class "
+                "(large, small, capillary) instead of a branch order"
+            ),
             section=_VESSEL_MASKS,
             requires=(
                 "use_large_vessel_masks",
@@ -863,8 +869,15 @@ SCHEMA = Schema(
         Setting(
             name="large_venule_mask_path",
             kind="path",
-            default=f"{_IMAGES}/large_venule_mask.tif",
-            help="Read this pre-segmented large venule mask",
+            # Unset (the default) makes the arteriole/global row a global
+            # mask: io.vessel_masks_are_global.
+            default=None,
+            placeholder="none: the arteriole/global mask is a global mask",
+            help=(
+                "Read this pre-segmented large venule mask. Leave it empty to "
+                "read the arteriole/global mask as a global mask of every large "
+                "vessel"
+            ),
             section=_VESSEL_MASKS,
             requires=(
                 "use_large_vessel_masks",
@@ -909,7 +922,11 @@ SCHEMA = Schema(
             name="ilastik_arteriole_classifier_path",
             kind="path",
             default=f"{_CLASSIFIERS}/arteriole_classifier.ilp",
-            help="Use this trained ilastik project to segment arterioles",
+            help=(
+                "Use this trained ilastik project to segment arterioles -- or, "
+                "with no venule classifier entered, every large vessel, as a "
+                "global mask"
+            ),
             section=_VESSEL_MASKS,
             requires=(
                 "use_large_vessel_masks",
@@ -921,8 +938,13 @@ SCHEMA = Schema(
         Setting(
             name="ilastik_venule_classifier_path",
             kind="path",
-            default=f"{_CLASSIFIERS}/venule_classifier.ilp",
-            help="Use this trained ilastik project to segment venules",
+            default=None,
+            placeholder="none: the arteriole/global classifier makes a global mask",
+            help=(
+                "Use this trained ilastik project to segment venules. Leave it "
+                "empty to read what the arteriole/global classifier segments as "
+                "a global mask of every large vessel"
+            ),
             section=_VESSEL_MASKS,
             requires=(
                 "use_large_vessel_masks",
@@ -1505,7 +1527,13 @@ SCHEMA = Schema(
             name="small_arteriole_mask_path",
             kind="path",
             default=f"{_IMAGES}/small_arteriole_mask.tif",
-            help="Read this pre-segmented small arteriole mask",
+            help=(
+                "Read this pre-segmented small arteriole mask -- or, with no small "
+                "venule mask entered, a global mask of every small vessel, "
+                "arteriole or venule: the vessels in it are then unknown small "
+                "vessels, and the run gives every vessel an unknown class "
+                "(large, small, capillary) instead of a branch order"
+            ),
             section=_VESSEL_MASKS,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
@@ -1517,8 +1545,13 @@ SCHEMA = Schema(
         Setting(
             name="small_venule_mask_path",
             kind="path",
-            default=f"{_IMAGES}/small_venule_mask.tif",
-            help="Read this pre-segmented small venule mask",
+            default=None,
+            placeholder="none: the arteriole/global mask is a global mask",
+            help=(
+                "Read this pre-segmented small venule mask. Leave it empty to "
+                "read the arteriole/global mask as a global mask of every small "
+                "vessel"
+            ),
             section=_VESSEL_MASKS,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
@@ -1563,7 +1596,11 @@ SCHEMA = Schema(
             name="ilastik_small_arteriole_classifier_path",
             kind="path",
             default=f"{_CLASSIFIERS}/arteriole_classifier.ilp",
-            help="Use this trained ilastik project to segment small arterioles",
+            help=(
+                "Use this trained ilastik project to segment small arterioles -- "
+                "or, with no small venule classifier entered, every small vessel, "
+                "as a global mask"
+            ),
             section=_VESSEL_MASKS,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",
@@ -1575,8 +1612,13 @@ SCHEMA = Schema(
         Setting(
             name="ilastik_small_venule_classifier_path",
             kind="path",
-            default=f"{_CLASSIFIERS}/venule_classifier.ilp",
-            help="Use this trained ilastik project to segment small venules",
+            default=None,
+            placeholder="none: the arteriole/global classifier makes a global mask",
+            help=(
+                "Use this trained ilastik project to segment small venules. Leave "
+                "it empty to read what the arteriole/global classifier segments as "
+                "a global mask of every small vessel"
+            ),
             section=_VESSEL_MASKS,
             requires=(
                 "use_small_vessel_masks_for_boundary_assignment",

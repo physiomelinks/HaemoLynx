@@ -111,6 +111,9 @@ def _large_vessel_mode_settings(tmp_path, **overrides):
         "automated_vessel_assignment_fast_mode": False,
         "automated_vessel_assignment_enable_overlap_cleanup": False,
         "use_small_vessel_masks_for_boundary_assignment": True,
+        # Arteriole/venule pairs: with no venule mask the masks are global.
+        "large_venule_mask_path": "large_venule_mask.tif",
+        "small_venule_mask_path": "small_venule_mask.tif",
         "write_small_vessel_boundary_labelling_3d_html": False,
         "visualize_results": False,
         "plot_dir": tmp_path,

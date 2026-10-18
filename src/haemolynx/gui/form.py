@@ -490,6 +490,16 @@ SETTING_ROW_LABELS: dict[str, str] = {
     "raw_image_stain": "Raw image stain",
     "measure_diameters_from_raw_image": "Measure diameters from the raw image",
     "pries_viscosity_form": "Pries law override",
+    # With no venule mask (classifier) entered, the arteriole row's mask is a
+    # global one: io.vessel_masks_are_global.
+    "large_arteriole_mask_path": "Large arteriole/global mask path",
+    "small_arteriole_mask_path": "Small arteriole/global mask path",
+    "ilastik_arteriole_classifier_path": "Ilastik arteriole/global classifier path",
+    "ilastik_small_arteriole_classifier_path": "Ilastik small arteriole/global classifier path",
+    "ilastik_unsegmented_arteriole_image_path": "Ilastik unsegmented arteriole/global image path",
+    "ilastik_unsegmented_small_arteriole_image_path": (
+        "Ilastik unsegmented small arteriole/global image path"
+    ),
 }
 
 #: Display text for a ``choice`` setting's values, keyed by setting name then

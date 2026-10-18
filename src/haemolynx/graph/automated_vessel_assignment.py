@@ -480,11 +480,16 @@ def _fill_label_gaps(
     fractions: dict[tuple[Any, Any, int], tuple[float, float]],
     labelled: dict[str, set[tuple[Any, Any, int]]],
     *,
-    low_fraction: float,
+    low_fraction: float | dict[str, float],
+    names: tuple[str, str] = ("arteriole", "venule"),
+    attribute: str = "mask_vessel_type",
 ) -> int:
     """Label every unlabelled edge whose two ends each meet another edge of
-    one type and which lies at least *low_fraction* in that type's mask;
-    repeat until nothing changes. Returns how many edges were filled."""
+    one type and which lies at least *low_fraction* (one, or one per name) in
+    that type's mask; repeat until nothing changes. *fractions* holds each
+    edge's two fractions in the order of *names*, and the label is written
+    as *attribute*. Returns how many edges were filled."""
+    lows = low_fraction if isinstance(low_fraction, dict) else dict.fromkeys(names, low_fraction)
     filled = 0
     ends = {edge_id: (u, v) for u, v, edge_id, _data in edges}
     data_of = {edge_id: data for _u, _v, edge_id, data in edges}
@@ -496,13 +501,13 @@ def _fill_label_gaps(
                     touching[name].setdefault(node, set()).add(edge_id)
         taken = set().union(*labelled.values())
         added: list[tuple[str, tuple[Any, Any, int]]] = []
-        for edge_id, (art_fraction, ven_fraction) in fractions.items():
+        for edge_id, edge_fractions in fractions.items():
             if edge_id in taken:
                 continue
             u, v = ends[edge_id]
             options = []
-            for name, fraction in (("arteriole", art_fraction), ("venule", ven_fraction)):
-                if fraction < low_fraction:
+            for name, fraction in zip(names, edge_fractions):
+                if fraction < lows[name]:
                     continue
                 if touching[name].get(u, set()) - {edge_id} and touching[name].get(v, set()) - {edge_id}:
                     options.append((fraction, name))
@@ -512,7 +517,7 @@ def _fill_label_gaps(
             return filled
         for name, edge_id in added:
             labelled[name].add(edge_id)
-            data_of[edge_id]["mask_vessel_type"] = name
+            data_of[edge_id][attribute] = name
             filled += 1
 
 
@@ -724,6 +729,116 @@ def infer_boundary_nodes_from_small_vessel_masks(
         "overlap_edge_count": overlap_edges,
         "gap_filled_edge_count": gap_filled,
         "minimum_overlap_fraction": threshold,
+    }
+
+
+def tag_vessels_in_global_masks(
+    G: nx.Graph,
+    *,
+    large_mask: np.ndarray | None = None,
+    small_mask: np.ndarray | None = None,
+    voxel_size_zyx: tuple[float, float, float],
+    large_min_overlap_fraction: float = 0.5,
+    small_min_overlap_fraction: float = 0.5,
+    edges: list[tuple[Any, Any, Any]] | None = None,
+) -> dict[str, Any]:
+    """Tag each vessel with the global mask it lies in, for its unknown class.
+
+    A global mask holds every vessel of its size, arteriole or venule, so it
+    says only how large a vessel is: ``graph.GLOBAL_MASK_CLASS`` becomes
+    ``"large"`` on an edge at least *large_min_overlap_fraction* of whose
+    length lies in *large_mask*, ``"small"`` on one *small_min_overlap_fraction*
+    in *small_mask*, and is removed from the rest (capillaries). An edge
+    reaching both goes to the mask covering more of it. As the small-vessel
+    labelling does, an under-covered edge between two edges of one class
+    takes that class when at least ``GAP_FILL_FRACTION_OF_THRESHOLD`` of the
+    threshold of it lies in the mask. A zero-resistance bridge is not tagged.
+
+    *edges* (``(u, v, key)``) limits the tagging to those edges -- the ones a
+    hand edit made -- judged beside the tags the others already carry.
+    """
+    from .branch_order import GLOBAL_MASK_CLASS
+    from .thick_vessel_junctions import IS_ZERO_RESISTANCE
+
+    masks = [mask for mask in (large_mask, small_mask) if mask is not None]
+    if not masks:
+        raise ValueError("tag_vessels_in_global_masks needs a large or a small mask.")
+    shape = masks[0].shape
+    if any(mask.shape != shape for mask in masks):
+        raise ValueError(
+            f"The large and small global masks must share a shape; got "
+            f"{large_mask.shape} and {small_mask.shape}."
+        )
+    thresholds = {
+        "large": float(large_min_overlap_fraction),
+        "small": float(small_min_overlap_fraction),
+    }
+    for name, threshold in thresholds.items():
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError(
+                f"{name}_min_overlap_fraction must be in [0.0, 1.0]. Got {threshold}."
+            )
+
+    all_edges = _label_edge_ids(G)
+    wanted = None if edges is None else {_edge_id(u, v, key) for u, v, key in edges}
+    vessels = [
+        entry
+        for entry in all_edges
+        if not entry[3].get(IS_ZERO_RESISTANCE) and (wanted is None or entry[2] in wanted)
+    ]
+    for _u, _v, _edge, data in vessels:
+        data.pop(GLOBAL_MASK_CLASS, None)
+    for _u, _v, _edge, data in all_edges:
+        if data.get(IS_ZERO_RESISTANCE):
+            data.pop(GLOBAL_MASK_CLASS, None)
+    voxels = _edge_sample_voxels(G, vessels, voxel_size_zyx=voxel_size_zyx, mask_shape=shape)
+    fractions = {
+        edge_id: (
+            0.0 if large_mask is None else _fraction_in(large_mask, index),
+            0.0 if small_mask is None else _fraction_in(small_mask, index),
+        )
+        for edge_id, index in voxels.items()
+    }
+    labelled: dict[str, set[tuple[Any, Any, int]]] = {"large": set(), "small": set()}
+    for _u, _v, edge_id, data in all_edges:
+        if edge_id not in fractions and data.get(GLOBAL_MASK_CLASS) in labelled:
+            labelled[data[GLOBAL_MASK_CLASS]].add(edge_id)
+    for _u, _v, edge_id, data in vessels:
+        if edge_id not in fractions:
+            continue
+        large_fraction, small_fraction = fractions[edge_id]
+        in_large = large_mask is not None and large_fraction >= thresholds["large"]
+        in_small = small_mask is not None and small_fraction >= thresholds["small"]
+        if in_large and (not in_small or large_fraction >= small_fraction):
+            name = "large"
+        elif in_small:
+            name = "small"
+        else:
+            continue
+        labelled[name].add(edge_id)
+        data[GLOBAL_MASK_CLASS] = name
+    gap_filled = _fill_label_gaps(
+        all_edges,
+        {
+            edge_id: pair
+            for edge_id, pair in fractions.items()
+            if edge_id not in labelled["large"] and edge_id not in labelled["small"]
+        },
+        labelled,
+        low_fraction={
+            name: GAP_FILL_FRACTION_OF_THRESHOLD * threshold
+            for name, threshold in thresholds.items()
+        },
+        names=("large", "small"),
+        attribute=GLOBAL_MASK_CLASS,
+    )
+    tagged = {name: sum(1 for *_, data in vessels if data.get(GLOBAL_MASK_CLASS) == name)
+              for name in labelled}
+    return {
+        "large_edge_count": tagged["large"],
+        "small_edge_count": tagged["small"],
+        "capillary_edge_count": len(vessels) - tagged["large"] - tagged["small"],
+        "gap_filled_edge_count": gap_filled,
     }
 
 

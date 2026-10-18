@@ -1420,6 +1420,23 @@ def build_network(
             f"min_overlap_fraction={float(settings['small_vessel_mask_min_overlap_fraction']):.3f}"
         ),
     )
+    if io.vessel_masks_are_global(settings):
+        # One role given a global mask makes every vessel's class unknown, so
+        # a role still given an arteriole/venule pair is one mask too.
+        for role, pair in (
+            ("large", (large_arteriole_mask, large_venule_mask)),
+            ("small", (small_arteriole_mask, small_venule_mask)),
+        ):
+            if pair[1] is not None:
+                logger.warning(
+                    f"The {role}-vessel arteriole and venule masks are read as one "
+                    f"global {role}-vessel mask: the other role's mask is global, so "
+                    "no vessel is classed arteriole or venule."
+                )
+        large_arteriole_mask = io.as_global_vessel_mask(large_arteriole_mask, large_venule_mask)
+        small_arteriole_mask = io.as_global_vessel_mask(small_arteriole_mask, small_venule_mask)
+        large_venule_mask = small_venule_mask = None
+        large_venule_mask_voxel_size = None
 
     if resumed_graph is not None:
         # Its consistency checks and plots were made when it was built.
@@ -1968,6 +1985,14 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     large_venule_mask = network.large_venule_mask if large_in_use else None
     small_arteriole_mask = network.small_arteriole_mask if small_in_use else None
     small_venule_mask = network.small_venule_mask if small_in_use else None
+    # Global vessel masks (no venule mask entered) do not tell an arteriole
+    # from a venule, which every mask step gated below reads them for: the
+    # cut, the inlets and outlets, the Large tier and the small-vessel
+    # boundaries. They only tag each vessel's size class, further down, and
+    # the inlets and outlets come from the Inlet and Outlet tabs.
+    global_masks = io.vessel_masks_are_global(settings)
+    if global_masks:
+        large_in_use = small_in_use = large_vessel_tier = False
     auto_inlet_nodes: list[int] = []
     auto_outlet_nodes: list[int] = []
     if large_in_use:
@@ -2642,6 +2667,14 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 logger.warning(
                     "Small-vessel boundary 3D HTML not written (install plotly to enable)."
                 )
+    if global_masks:
+        _tag_vessels_in_global_masks(
+            settings,
+            G,
+            large_mask=io.as_global_vessel_mask(large_arteriole_mask, large_venule_mask),
+            small_mask=io.as_global_vessel_mask(small_arteriole_mask, small_venule_mask),
+            voxel_size_zyx=voxel_size_zyx,
+        )
     if io_from_masks:
         logger.info(
             f"Selected {len(settings['inlet_nodes'])} STARTING_NODES and {len(settings['outlet_nodes'])} "
@@ -2876,6 +2909,42 @@ def _haemodynamics_apply_config(
     )
 
 
+def _tag_vessels_in_global_masks(
+    settings: Mapping[str, Any],
+    G: nx.MultiGraph,
+    *,
+    large_mask: np.ndarray | None,
+    small_mask: np.ndarray | None,
+    voxel_size_zyx,
+    edges: list | None = None,
+) -> None:
+    """Tag each vessel (or only *edges*) with the global mask it lies in, at
+    the overlap fractions the large and small masks' own labelling uses, for
+    :func:`_assign_branch_orders` to class it. Without either mask (a
+    post-processing run with no network to read them from) nothing is
+    tagged, and the tags already on the graph stand."""
+    if large_mask is None and small_mask is None:
+        return
+    counts = graph.tag_vessels_in_global_masks(
+        G,
+        large_mask=large_mask,
+        small_mask=small_mask,
+        voxel_size_zyx=voxel_size_zyx,
+        large_min_overlap_fraction=float(settings["large_vessel_mask_min_overlap_fraction"]),
+        small_min_overlap_fraction=float(settings["small_vessel_mask_min_overlap_fraction"]),
+        edges=edges,
+    )
+    logger.info(
+        "Global vessel masks (no venule mask entered): "
+        f"{counts['large_edge_count']} vessel(s) in the large mask, "
+        f"{counts['small_edge_count']} in the small mask, "
+        f"{counts['capillary_edge_count']} capillar{'y' if counts['capillary_edge_count'] == 1 else 'ies'} "
+        f"({counts['gap_filled_edge_count']} under-covered between two of one class took it); "
+        "they are classed Unknown_Large, Unknown_Small and Unknown_Cap rather than "
+        "given branch orders, and the masks chose no inlets or outlets."
+    )
+
+
 def _assign_branch_orders(
     settings: dict, G: nx.MultiGraph, *, post_assign_callback=None
 ) -> dict[str, Any]:
@@ -2885,7 +2954,21 @@ def _assign_branch_orders(
     assigns them again over a hand-edited network: the two must read the same
     boundary lists and the same hierarchical rules, or an edit would change
     orders the rest of the network was never given.
+
+    With global vessel masks (``io.vessel_masks_are_global``) every vessel is
+    given its unknown class instead -- Unknown_Large, Unknown_Small or
+    Unknown_Cap, from the tags :func:`_tag_vessels_in_global_masks` left --
+    since nothing says which side of the capillary bed a vessel is on.
     """
+    if io.vessel_masks_are_global(settings):
+        branch_summary = graph.assign_unknown_vessel_classes(
+            G, post_assign_callback=post_assign_callback
+        )
+        logger.info(
+            "Global vessel masks: vessels classed by size alone, not given branch "
+            f"orders: {branch_summary['counts']}."
+        )
+        return branch_summary
     branch_summary = graph.assign_vessel_branch_orders(
         G,
         settings["inlet_nodes"],
@@ -3268,6 +3351,25 @@ def post_process(
             data["length"] = float(graph.calculate_path_length(points))
     diameters = None
     summary: dict[str, Any] = {"edited_vessels": len(edited)}
+    if edited and io.vessel_masks_are_global(settings):
+        # An edited vessel's class comes from the masks, as every other's did.
+        in_use = {role: graph.vessel_masks_in_use(settings, role) for role in ("large", "small")}
+        _tag_vessels_in_global_masks(
+            settings,
+            G,
+            large_mask=io.as_global_vessel_mask(
+                boundaries.large_arteriole_mask, boundaries.large_venule_mask
+            ) if in_use["large"] else None,
+            small_mask=io.as_global_vessel_mask(
+                boundaries.small_arteriole_mask, boundaries.small_venule_mask
+            ) if in_use["small"] else None,
+            voxel_size_zyx=(
+                network.volume.voxel_size_zyx
+                if network is not None
+                else tuple(G.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0)))
+            ),
+            edges=edited,
+        )
     if settings["inlet_nodes"]:
         _assign_branch_orders(settings, G)
         # Even with no vessel to measure (only deletions): a table or class

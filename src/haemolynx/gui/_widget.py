@@ -8840,6 +8840,14 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         "use_small_vessel_masks_for_boundary_assignment",
         "assign_large_vessel_branch_orders",
         "cut_network_at_large_vessel_volumes",
+        # Whether a role's masks are global (io.vessel_masks_are_global): a
+        # venule mask, or classifier, entered or cleared.
+        "large_venule_mask_path",
+        "small_venule_mask_path",
+        "use_ilastik_large_vessel_segmentation",
+        "use_ilastik_small_vessel_segmentation",
+        "ilastik_venule_classifier_path",
+        "ilastik_small_venule_classifier_path",
     ):
         if _name in rows:
             rows[_name].changed.connect(on_settings_changed)

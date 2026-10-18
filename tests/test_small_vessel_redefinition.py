@@ -405,6 +405,9 @@ def test_assign_boundaries_passes_the_settings_and_shows_the_relabelled_masks(
             "write_fast_mode_preassignment_large_vessel_debug_3d_html": False,
             "boundary_handling": "leave_unsolved",
             "use_small_vessel_masks_for_boundary_assignment": True,
+            # Arteriole/venule pairs: with no venule mask the masks are global.
+            "large_venule_mask_path": "large_venule_mask.tif",
+            "small_venule_mask_path": "small_venule_mask.tif",
             "small_vessel_tangential_redefinition_enable": True,
             "small_vessel_tangential_redefinition_min_contact_fraction": 0.4,
             "small_vessel_sandwiched_reassignment_enable": False,

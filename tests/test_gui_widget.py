@@ -1291,6 +1291,9 @@ def test_thick_vessel_row_relabels_when_large_vessel_network_mode_is_on(panel):
     rows["use_thick_vessel_skeletonisation"].value = True
     rows["use_large_vessel_masks"].value = True
     rows["automated_vessel_assignment"].value = True
+    # A venule mask too: an arteriole mask alone is one global mask, which
+    # gives no Large_Art/Large_Ven tier.
+    rows["large_venule_mask_path"].value = "large_venule_mask.tif"
     rows["cut_network_at_large_vessel_volumes"].value = False
     QApplication.processEvents()
     assert rows["use_thick_vessel_skeletonisation"].label == original_label

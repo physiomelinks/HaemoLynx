@@ -132,17 +132,33 @@ def test_a_mask_path_supplied_while_masks_are_disabled_is_an_error() -> None:
         load_large_vessel_masks(False, "arteriole.tif", None)
 
 
-def test_supplying_only_one_of_the_two_masks_is_an_error(tmp_path: Path) -> None:
-    """Arteriole-only would leave every terminal node an inflow with nowhere to drain."""
+def test_the_arteriole_mask_alone_comes_back_as_a_global_mask(tmp_path: Path) -> None:
+    """With no venule mask the arteriole/global row is one mask of every
+    vessel, so there is no venule mask or voxel size to return."""
     arteriole_path = tmp_path / "arteriole.tif"
-    _write_mask_tif(arteriole_path, (4, 5, 6))
+    volume = np.zeros((4, 5, 6), dtype=np.uint8)
+    volume[1, 2, 3] = 1
+    _write_mask_with_voxel_size(arteriole_path, volume)
 
-    with pytest.raises(ValueError, match="or provide neither"):
-        load_large_vessel_masks(True, arteriole_path, None)
+    mask, venule, mask_voxel, venule_voxel = load_large_vessel_masks(True, arteriole_path, None)
+
+    assert bool(mask[1, 2, 3]) and int(mask.sum()) == 1
+    assert venule is None and venule_voxel is None
+    assert mask_voxel == VOXEL_SIZE_XYZ
+
+
+def test_a_venule_mask_without_the_arteriole_global_one_is_an_error(tmp_path: Path) -> None:
+    """The global mask goes in the arteriole/global row; a venule mask alone
+    is most likely the arteriole one in the wrong row."""
+    venule_path = tmp_path / "venule.tif"
+    _write_mask_tif(venule_path, (4, 5, 6))
+
+    with pytest.raises(ValueError, match="arteriole/global mask path is missing"):
+        load_large_vessel_masks(True, None, venule_path)
 
 
 def test_enabling_masks_without_any_paths_is_an_error() -> None:
-    with pytest.raises(ValueError, match="mask paths are missing"):
+    with pytest.raises(ValueError, match="mask path is missing"):
         load_large_vessel_masks(True, None, None)
 
 

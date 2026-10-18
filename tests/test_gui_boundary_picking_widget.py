@@ -620,6 +620,9 @@ def test_large_auto_greys_inlet_and_outlet_role_tabs(panel):
     rows = rows_of(widget)
     tabs = bc.state.tabs
 
+    # A venule mask too: an arteriole mask alone is one global mask, which
+    # chooses no inlets or outlets.
+    rows["large_venule_mask_path"].value = "large_venule_mask.tif"
     rows["automated_vessel_assignment"].value = True
     rows["use_large_vessel_masks"].value = True
     rows["use_small_vessel_masks_for_boundary_assignment"].value = False
@@ -687,6 +690,7 @@ def test_large_vessel_network_mode_toggles_the_new_role_tabs(panel):
 
     rows["automated_vessel_assignment"].value = True
     rows["use_large_vessel_masks"].value = True
+    rows["large_venule_mask_path"].value = "large_venule_mask.tif"
     rows["cut_network_at_large_vessel_volumes"].value = False
     rows["assign_large_vessel_branch_orders"].value = True
 
@@ -704,6 +708,7 @@ def test_unticking_the_large_masks_hands_the_inlets_back_to_their_tabs(panel):
     rows = rows_of(widget)
     rows["automated_vessel_assignment"].value = True
     rows["use_large_vessel_masks"].value = True
+    rows["large_venule_mask_path"].value = "large_venule_mask.tif"
     rows["inlets_outlets_from_vessel_masks"].value = True
     rows["cut_network_at_large_vessel_volumes"].value = False
     rows["assign_large_vessel_branch_orders"].value = True
@@ -1980,6 +1985,7 @@ def test_show_draws_no_inlet_outlet_band_while_the_masks_choose(panel):
     rows["outlet_node_selection_method"].value = "edge_percent"
     rows["automated_vessel_assignment"].value = True
     rows["use_large_vessel_masks"].value = True
+    rows["large_venule_mask_path"].value = "large_venule_mask.tif"
     rows["inlets_outlets_from_vessel_masks"].value = True
     _apply_layers(viewer, StageLayers(
         stage="assign_boundaries", title="Boundaries", note="",

@@ -39,6 +39,7 @@ import numpy as np
 
 from .poiseuille import (
     DIAMETER_SOURCE_MEASURED,
+    UNKNOWN_VESSEL_CLASS_LABELS,
     baseline_edge_diameter,
     edge_diameter_basis,
     positive_diameter_um,
@@ -46,6 +47,8 @@ from .poiseuille import (
     table_diameter_for_order,
 )
 from .viscosity import DEFAULT_HAEMATOCRIT, viscosity_for
+
+UNKNOWN_CAPILLARY_LABEL = UNKNOWN_VESSEL_CLASS_LABELS[2]
 
 #: Micrometres per metre. Diameters and lengths arrive in um and the resistance
 #: is wanted in SI, so the integral converts once, here.
@@ -56,11 +59,12 @@ UM_PER_M = 1.0e6
 
 
 def is_capillary_branch_order(branch_order: str | None) -> bool:
-    """Return True for capillary labels (B01, B02, ...)."""
+    """Return True for capillary labels (B01, B02, ...), and for the unknown
+    capillary of a run with global vessel masks (``Unknown_Cap``)."""
     if branch_order is None:
         return False
     label = str(branch_order).strip()
-    return label.startswith("B")
+    return label.startswith("B") or label == UNKNOWN_CAPILLARY_LABEL
 
 
 def resolve_generator(

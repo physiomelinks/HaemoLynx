@@ -142,12 +142,22 @@ def test_every_optional_must_exist_path_in_the_pipeline_falls_back_when_unset():
     one is listed here with what it falls back to, checked in the run:
     tissue_raw_tiff_path to the raw image (pipeline.checks.tissue_raw_image,
     tests/test_tissue_volume.py), measurement_3d_vessel_mask_path to the run's
-    segmentation (stages.export_results, tests/test_three_dim_distances.py).
-    A new one has to be added here, its fallback checked."""
+    segmentation (stages.export_results, tests/test_three_dim_distances.py),
+    and the four venule masks and classifiers to the arteriole/global one
+    read as a global mask (io.vessel_masks_are_global,
+    tests/test_global_vessel_masks.py). A new one has to be added here, its
+    fallback checked."""
     from haemolynx.pipeline import default_schema
 
     optional = {s.name for s in default_schema() if s.must_exist and s.optional_path}
-    assert optional == {"tissue_raw_tiff_path", "measurement_3d_vessel_mask_path"}
+    assert optional == {
+        "tissue_raw_tiff_path",
+        "measurement_3d_vessel_mask_path",
+        "large_venule_mask_path",
+        "small_venule_mask_path",
+        "ilastik_venule_classifier_path",
+        "ilastik_small_venule_classifier_path",
+    }
 
 
 def test_named_settings_can_be_skipped(tmp_path):

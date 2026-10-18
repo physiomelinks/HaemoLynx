@@ -20,7 +20,7 @@ import networkx as nx
 from scipy.spatial.distance import euclidean
 
 from haemolynx.geometry import cumulative_lengths
-from haemolynx.graph.branch_order import BRANCH_ORDER_CATEGORY_SEQUENCE
+from haemolynx.graph.branch_order import BRANCH_ORDER_CATEGORY_SEQUENCE, UNKNOWN_CAPILLARY
 from haemolynx.visualization.geometry import edge_polyline
 
 from .csv_export import _numeric_csv_text
@@ -77,10 +77,15 @@ UNASSIGNED_CATEGORY = "unassigned"
 def branch_order_category(tag: Any) -> str:
     """The vessel type a branch-order label belongs to -- one of
     ``BRANCH_ORDER_CATEGORY_SEQUENCE`` (large_arteriole, arteriole,
-    capillary, venule, large_venule), or :data:`UNASSIGNED_CATEGORY`."""
+    capillary, venule, large_venule), or :data:`UNASSIGNED_CATEGORY`. A run
+    with global vessel masks knows its capillaries (``Unknown_Cap``) but not
+    which side of the bed its larger vessels are on, so ``Unknown_Large`` and
+    ``Unknown_Small`` are unassigned."""
     normalized = _normalize_branch_order_tag(tag)
     if normalized is None:
         return UNASSIGNED_CATEGORY
+    if normalized == UNKNOWN_CAPILLARY:
+        return "capillary"
     m = re.match(r"^(large_art|large_ven|art|ven|bo)\s*\d+$", normalized, flags=re.IGNORECASE)
     return _CATEGORY_BY_PREFIX[m.group(1).lower()] if m else UNASSIGNED_CATEGORY
 

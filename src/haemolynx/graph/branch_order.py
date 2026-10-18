@@ -37,6 +37,28 @@ BRANCH_ORDER_CATEGORY_SEQUENCE: tuple[str, ...] = (
     "large_venule",
 )
 
+#: The branch-order labels of a run whose vessel masks are global
+#: (``io.vessel_masks_are_global``): one mask of every large vessel and/or one
+#: of every small vessel, with no arteriole/venule split. A vessel's size class
+#: is then known but not which side of the capillary bed it lies on, so no
+#: order is counted (:func:`assign_unknown_vessel_classes`). None of them
+#: starts with B, Art or Ven, which the label-prefix tests read as tiers.
+UNKNOWN_LARGE_VESSEL = "Unknown_Large"
+UNKNOWN_SMALL_VESSEL = "Unknown_Small"
+UNKNOWN_CAPILLARY = "Unknown_Cap"
+UNKNOWN_VESSEL_CLASSES: tuple[str, ...] = (
+    UNKNOWN_LARGE_VESSEL,
+    UNKNOWN_SMALL_VESSEL,
+    UNKNOWN_CAPILLARY,
+)
+
+#: Edge attribute naming the global mask a vessel lies in, ``"large"`` or
+#: ``"small"`` (absent: neither, a capillary). Written by
+#: ``graph.tag_vessels_in_global_masks``; read by
+#: :func:`assign_unknown_vessel_classes`.
+GLOBAL_MASK_CLASS = "global_mask_class"
+_UNKNOWN_CLASS_BY_MASK = {"large": UNKNOWN_LARGE_VESSEL, "small": UNKNOWN_SMALL_VESSEL}
+
 _TIER_LABEL = re.compile(r"^(.*?)(\d+)\s*$")
 
 #: Label prefix -> (tier along the flow path, side of the capillary bed).
@@ -390,6 +412,33 @@ def assign_hierarchical_branch_orders(
         "large_venule_edge_count": len(large_venule_edges),
         "excluded_capillary_edge_count": len(capillary_excluded_edges),
     }
+
+
+def assign_unknown_vessel_classes(
+    G: nx.MultiGraph, *, post_assign_callback: PostAssignCallback | None = None
+) -> dict[str, Any]:
+    """Label every vessel with its unknown class instead of a branch order.
+
+    For a run with global vessel masks: a vessel tagged
+    :data:`GLOBAL_MASK_CLASS` ``"large"`` is :data:`UNKNOWN_LARGE_VESSEL`,
+    ``"small"`` :data:`UNKNOWN_SMALL_VESSEL`, and every other one
+    :data:`UNKNOWN_CAPILLARY`, whether or not an inlet reaches it. A
+    zero-resistance bridge gets none, as in :func:`assign_branch_orders`.
+    Returns ``{"mode": "unknown", "counts": {label: edges}, "bridges": n}``.
+    """
+    counts: dict[str, int] = defaultdict(int)
+    bridges = 0
+    for _u, _v, data in G.edges(data=True):
+        if data.get(IS_ZERO_RESISTANCE):
+            data.pop("branch_order", None)
+            bridges += 1
+            continue
+        label = _UNKNOWN_CLASS_BY_MASK.get(data.get(GLOBAL_MASK_CLASS), UNKNOWN_CAPILLARY)
+        data["branch_order"] = label
+        counts[label] += 1
+    if post_assign_callback is not None:
+        post_assign_callback(G)
+    return {"mode": "unknown", "counts": dict(counts), "bridges": bridges}
 
 
 def uses_hierarchical_branch_orders(

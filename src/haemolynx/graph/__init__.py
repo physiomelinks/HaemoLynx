@@ -118,9 +118,15 @@ from .direction_aware_collapse import collapse_node_clusters_direction_aware
 from .persistence_collapse import collapse_node_clusters_persistence
 from .branch_order import (
     BRANCH_ORDER_CATEGORY_SEQUENCE,
+    GLOBAL_MASK_CLASS,
+    UNKNOWN_CAPILLARY,
+    UNKNOWN_LARGE_VESSEL,
+    UNKNOWN_SMALL_VESSEL,
+    UNKNOWN_VESSEL_CLASSES,
     MissingSmallVesselAssignmentWarning,
     assign_branch_orders,
     assign_hierarchical_branch_orders,
+    assign_unknown_vessel_classes,
     assign_vessel_branch_orders,
 )
 from .communities import (
@@ -156,6 +162,7 @@ from .automated_vessel_assignment import (
     resolve_overlapping_terminal_node_assignment,
     select_terminal_nodes_from_large_vessel_masks,
     select_terminal_nodes_from_large_vessel_masks_progressive_dilation,
+    tag_vessels_in_global_masks,
     write_automated_vessel_assignment_3d_html,
     write_small_vessel_mask_boundary_labelling_3d_html,
 )
@@ -322,7 +329,13 @@ __all__ = [
     "assign_branch_orders",
     "assign_hierarchical_branch_orders",
     "assign_vessel_branch_orders",
+    "assign_unknown_vessel_classes",
     "BRANCH_ORDER_CATEGORY_SEQUENCE",
+    "GLOBAL_MASK_CLASS",
+    "UNKNOWN_CAPILLARY",
+    "UNKNOWN_LARGE_VESSEL",
+    "UNKNOWN_SMALL_VESSEL",
+    "UNKNOWN_VESSEL_CLASSES",
     "BOUNDARY_LABEL",
     "COMMUNITY_WEIGHTINGS",
     "VascularCommunitySummary",
@@ -343,6 +356,7 @@ __all__ = [
     "compute_overlapping_terminal_assignment_metrics",
     "filter_io_nodes_to_terminal_degree1",
     "infer_boundary_nodes_from_small_vessel_masks",
+    "tag_vessels_in_global_masks",
     "infer_boundary_nodes_from_small_vessel_masks_progressive_dilation",
     "resolve_overlapping_terminal_node_assignment",
     "select_terminal_nodes_from_large_vessel_masks",

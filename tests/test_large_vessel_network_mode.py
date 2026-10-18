@@ -127,6 +127,8 @@ def _assign_boundaries_settings(**overrides):
         {
             "automated_vessel_assignment": True,
             "use_large_vessel_masks": True,
+            # An arteriole/venule pair: with no venule mask the masks are global.
+            "large_venule_mask_path": "large_venule_mask.tif",
             "use_thick_vessel_skeletonisation": True,
             "cut_network_at_large_vessel_volumes": False,
             "assign_large_vessel_branch_orders": True,

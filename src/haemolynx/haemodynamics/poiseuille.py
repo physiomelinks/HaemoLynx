@@ -10,6 +10,10 @@ import networkx as nx
 
 logger = logging.getLogger(__name__)
 
+#: ``graph.UNKNOWN_VESSEL_CLASSES`` (large, small, capillary), spelled here so
+#: the diameter table does not import the graph package; a test pins the two.
+UNKNOWN_VESSEL_CLASS_LABELS = ("Unknown_Large", "Unknown_Small", "Unknown_Cap")
+
 
 def edge_selection(edges) -> set[tuple[frozenset, object]] | None:
     """*edges* (``(u, v, key)``, either way round) as a set to test edges
@@ -31,7 +35,10 @@ def build_diameter_by_branch_order(
     manual_large_arteriole_diameter_by_branch_order: dict[str, float] | None = None,
     manual_large_venule_diameter_by_branch_order: dict[str, float] | None = None,
 ) -> dict[str, float]:
-    """Build diameter mapping for Bxx, Artx, Venx, Large_Artx, Large_Venx labels."""
+    """Build diameter mapping for Bxx, Artx, Venx, Large_Artx, Large_Venx labels,
+    and the unknown classes a run with global vessel masks gives instead
+    (``graph.UNKNOWN_VESSEL_CLASSES``): a capillary at *default_diameter*, a
+    small vessel at the small vessels' default, a large one as Large_Art's."""
     if max_branch_order < 1:
         raise ValueError(
             f"max_branch_order must be >= 1, got {max_branch_order}."
@@ -55,6 +62,8 @@ def build_diameter_by_branch_order(
             diameter_by_branch_order[f"Ven{i}"] = default_diameter
             diameter_by_branch_order[f"Large_Art{i}"] = default_diameter
             diameter_by_branch_order[f"Large_Ven{i}"] = default_diameter
+        for label in UNKNOWN_VESSEL_CLASS_LABELS:
+            diameter_by_branch_order[label] = default_diameter
         return diameter_by_branch_order
 
     for i in range(1, max_branch_order + 1):
@@ -97,6 +106,10 @@ def build_diameter_by_branch_order(
             large_ven_key,
             default_diameter,
         )
+    unknown_large, unknown_small, unknown_capillary = UNKNOWN_VESSEL_CLASS_LABELS
+    diameter_by_branch_order[unknown_large] = default_diameter
+    diameter_by_branch_order[unknown_small] = default_small_vessel_diameter
+    diameter_by_branch_order[unknown_capillary] = default_diameter
     return diameter_by_branch_order
 
 
