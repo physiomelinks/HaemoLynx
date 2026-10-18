@@ -1,7 +1,8 @@
 """At which capillary branch order the beds of different arteriolar feeds join.
 
 Capillary B orders are counted from every *feed* at once -- the arteriole
-boundary nodes, or the inlets without them (``graph.branch_order``'s
+boundary nodes and, with a Large tier, the nodes where capillaries leave the
+large arteriole, or the inlets without boundary nodes (``graph.branch_order``'s
 :func:`~haemolynx.graph.branch_order.capillary_start_nodes`) -- so each
 capillary belongs to the *bed* of the feed that reaches it first. Two beds
 meet on a watershed vessel, one whose two ends were reached first from
