@@ -1748,7 +1748,7 @@ def build_network(
         along_thick_centreline = None
         if volume.thick_vessel_mask is not None:
             thick_tree = graph.thick_vessel_junctions.thick_vessel_centreline(
-                volume.thick_vessel_mask, voxel_size_zyx
+                volume.thick_vessel_mask, voxel_size_zyx, use_memmap=settings["use_memmap_loading"]
             )
             follower = graph.thick_vessel_junctions.ThickCentreline.from_region(
                 volume.thick_vessel_mask, voxel_size_zyx, segmentation=binary_mask, centreline=thick_tree,
@@ -3723,6 +3723,9 @@ def _bridge_edited_vessels(
     # one drawn by hand is.
     bridged = graph.insert_thick_vessel_junction_nodes(
         G, mask, voxel_size_zyx=voxel_size_zyx, edges=edited, segmentation=segmentation,
+        centreline=graph.thick_vessel_junctions.thick_vessel_centreline(
+            mask, voxel_size_zyx, use_memmap=bool(settings.get("use_memmap_loading"))
+        ),
         fill_attributes={graph.post_processing.EDITED: True},
         **thick_junction_bridge_arguments(settings),
     )

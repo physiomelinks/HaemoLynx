@@ -30,6 +30,9 @@ haemolynx/
 │   │                       #   the wall round it: raw_image_stain's auto);
 │   │                       #   skeleton_consistency.py (skeleton vs mask), memmap_support.py
 │   │                       #   (disk-backed volumes, the low-RAM option), pointwise_distance.py,
+│   │                       #   blockwise_edt.py (a distance transform's exact answers, a padded
+│   │                       #   block at a time) and slab_labels.py (components labelled a slab
+│   │                       #   of planes at a time), the low-RAM option's thick-vessel steps,
 │   │                       #   bridge_mask_support.py (whether a bridge path stays in the mask
 │   │                       #   and off a vessel already in the same lumen)
 │   ├── graph/              # assemble.py (orchestrator) + build, reconnect, optimise, degree2,
@@ -994,7 +997,12 @@ are only caught locally.
   when the tree is past the bridge cap -- aimed at whatever was nearest, a second capillary joined
   the first one's bridge by the wall and the bridges ran side by side through the fat lumen, 21 of
   E14.5's 33 pairs in one lumen); `thick_vessel_braid_guard.py` flags braided segments that
-  remain. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
+  remain. Under the low-RAM option (2026-10-18) no step makes a distance map or label volume of
+  the stack (`blockwise_edt.py`, `slab_labels.py`) and the skeleton and region are bit for bit
+  the in-RAM ones (synthetic networks, trunks wider than 16 voxels, anisotropic, cut by the faces,
+  30k-voxel blocks); on a 300 M-voxel synthetic stack it took 223 s at 7.3 GB peak against the old
+  low-RAM path's >83 min (stopped). The peak is the centreline tree's Dijkstra graph, ~1.1 KB a
+  voxel of the largest fat component, still built whole. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
   wall; 39 s on E14.5) is kept beside the saved skeleton, one bit a voxel
   (`preprocessing/thick_vessel_region_cache.py`, `stages.thick_vessel_region_cache`), keyed on a
   digest of the mask's voxels and the settings that decide it, so nothing else can go stale: a

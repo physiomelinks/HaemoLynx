@@ -1760,32 +1760,220 @@ def test_the_flake_filter_setting_reaches_the_join_in_microns(monkeypatch):
 
 
 @pytest.mark.parametrize("spacing", [(1.0, 1.0, 1.0), (1.5, 0.6, 0.6)])
-def test_the_low_ram_thickness_gated_skeleton_is_the_in_ram_one(tmp_path, monkeypatch, spacing):
-    """The low-RAM option takes the three volume-sized distance transforms a
-    block at a time on disk -- and changes nothing about the result."""
+@pytest.mark.parametrize("block_voxels", [None, 20_000])
+def test_the_low_ram_thickness_gated_skeleton_is_the_in_ram_one(
+    tmp_path, monkeypatch, spacing, block_voxels
+):
+    """The low-RAM option takes no distance map of the volume -- each
+    distance it needs comes from a block's own transform -- and changes
+    nothing about the result, however small the blocks."""
     import haemolynx.preprocessing.pointwise_distance as pointwise
+    import haemolynx.preprocessing.thick_vessels as thick_vessels_module
+    from haemolynx.preprocessing import memmap_support
 
-    calls = []
-    real = pointwise.distance_transform_edt_blockwise
-
-    def counting(*args, **kwargs):
-        calls.append(np.shape(args[0]))
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(pointwise, "distance_transform_edt_blockwise", counting)
     mask, _fat_roi = plasma_labelled_object(8.0)
     kwargs = dict(
         min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=spacing, return_thick_mask=True
     )
-
     plain, plain_thick = skeletonize_thickness_gated(mask, **kwargs)
-    assert calls == []
+
+    calls = []
+
+    def counting(real):
+        def spy(*args, **kwargs):
+            calls.append(np.shape(args[0]))
+            return real(*args, **kwargs)
+
+        return spy
+
+    monkeypatch.setattr(
+        thick_vessels_module,
+        "distance_transform_edt",
+        counting(thick_vessels_module.distance_transform_edt),
+    )
+    monkeypatch.setattr(
+        pointwise,
+        "distance_transform_edt_blockwise",
+        counting(pointwise.distance_transform_edt_blockwise),
+    )
+    if block_voxels is not None:
+        monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", block_voxels)
     low_ram, low_ram_thick = skeletonize_thickness_gated(
         mask, use_memmap=True, memmap_directory=tmp_path, **kwargs
     )
 
-    assert len(calls) == 3  # radius map, wall distance, flake filter
+    assert calls == []
     assert np.array_equal(low_ram_thick, plain_thick)
+    assert np.array_equal(low_ram, plain)
+    assert not any(path.suffix == ".dat" for path in tmp_path.rglob("*")), "temporary files left behind"
+
+
+def _capsule_into(mask, spacing, a_um, b_um, radius_um):
+    """Set the voxels of *mask* within *radius_um* of the segment a-b (zyx microns)."""
+    spacing = np.asarray(spacing, float)
+    a, b = np.asarray(a_um, float), np.asarray(b_um, float)
+    lo = np.maximum(np.floor((np.minimum(a, b) - radius_um) / spacing).astype(int) - 1, 0)
+    hi = np.minimum(np.ceil((np.maximum(a, b) + radius_um) / spacing).astype(int) + 2, mask.shape)
+    if np.any(hi <= lo):
+        return
+    grids = np.meshgrid(*[np.arange(l, h) * s for l, h, s in zip(lo, hi, spacing)], indexing="ij")
+    p = np.stack(grids, axis=-1)
+    ab = b - a
+    t = np.clip(((p - a) @ ab) / float(ab @ ab or 1.0), 0.0, 1.0)
+    d = np.linalg.norm(p - (a + t[..., None] * ab), axis=-1)
+    mask[tuple(slice(l, h) for l, h in zip(lo, hi))] |= d <= radius_um
+
+
+def _fat_and_thin_network(seed, shape, spacing, fat_radius_um):
+    """A fat trunk running out of two faces with a fat branch off it, thin
+    capillaries fused onto both (every third running out of a face), and two
+    loose capillaries. Returns ``(mask, fat)``, *fat* the two fat tubes."""
+    rng = np.random.default_rng(seed)
+    spacing = np.asarray(spacing, float)
+    extent = np.asarray(shape) * spacing
+    fat = np.zeros(shape, dtype=bool)
+    axis = int(rng.integers(0, 3))
+    a = rng.uniform(0.3, 0.7, 3) * extent
+    b = a.copy()
+    a[axis], b[axis] = -5.0, extent[axis] + 5.0
+    segments = [(a, b, fat_radius_um)]
+    branch_start = a + 0.5 * (b - a)
+    branch_end = rng.uniform(0.1, 0.9, 3) * extent
+    segments.append((branch_start, branch_end, 0.8 * fat_radius_um))
+    for start, end, radius in segments:
+        _capsule_into(fat, spacing, start, end, radius)
+    mask = fat.copy()
+    for i in range(9):
+        start, end, radius = segments[i % 2]
+        on = start + rng.uniform(0.15, 0.85) * (end - start)
+        direction = rng.normal(size=3)
+        direction /= np.linalg.norm(direction)
+        reach = 2.0 * extent.max() if i % 3 == 0 else rng.uniform(8.0, 30.0)
+        _capsule_into(mask, spacing, on, on + direction * (radius + reach), rng.uniform(1.2, 2.6))
+    for _ in range(2):
+        start = rng.uniform(0, 1, 3) * extent
+        _capsule_into(mask, spacing, start, start + rng.normal(size=3) * 12.0, 1.5)
+    return mask, fat
+
+
+#: (spacing, shape, fat radius in microns, extra skeletonize_thickness_gated
+#: arguments): trunks more than 16 voxels across (the exact distances'
+#: starting reach), on cube and anisotropic voxels, cut by the faces.
+_NETWORK_CASES = {
+    "cube": ((1.0, 1.0, 1.0), (40, 70, 70), 9.5, {}),
+    "anisotropic": ((2.0, 0.6, 0.6), (24, 100, 100), 8.0, {}),
+    "bridge_cap": ((1.5, 0.6, 0.6), (30, 90, 90), 7.5, dict(max_bridge_radius_multiple=2.0)),
+    "short_arms": ((1.5, 0.6, 0.6), (30, 90, 90), 7.5, dict(wall_absorption_um=1.0, flake_filter_um=2.0)),
+    "restricted": ((2.0, 0.6, 0.6), (24, 100, 100), 8.0, dict(restrict=True)),
+}
+
+
+def _network_case(name):
+    spacing, shape, fat_radius, extra = _NETWORK_CASES[name]
+    extra = dict(extra)
+    mask, fat = _fat_and_thin_network(sorted(_NETWORK_CASES).index(name), shape, spacing, fat_radius)
+    if extra.pop("restrict", False):
+        extra["restrict_thick_to_mask"] = fat
+    return mask, dict(voxel_size_zyx=spacing, return_thick_mask=True, **extra)
+
+
+@pytest.mark.parametrize("case", sorted(_NETWORK_CASES))
+def test_the_low_ram_skeleton_of_a_fat_and_thin_network_is_the_in_ram_one(tmp_path, monkeypatch, case):
+    """Blocks far smaller than a trunk's width, so every distance comes from
+    a block's own transform and every label from slabs of a few planes."""
+    from haemolynx.preprocessing import memmap_support
+
+    mask, kwargs = _network_case(case)
+    plain, plain_thick = skeletonize_thickness_gated(mask, **kwargs)
+    assert plain_thick is not None and (plain & ~plain_thick).any(), "the fixture has no thin arm"
+
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 30_000)
+    low_ram, low_ram_thick = skeletonize_thickness_gated(
+        mask, use_memmap=True, memmap_directory=tmp_path, **kwargs
+    )
+
+    assert np.array_equal(low_ram_thick, plain_thick)
+    assert np.array_equal(low_ram, plain)
+
+
+@pytest.mark.parametrize("use_memmap", [False, True])
+@pytest.mark.parametrize("case", ["anisotropic", "short_arms"])
+def test_the_gated_join_skips_an_arm_length_filter_that_would_keep_every_arm(
+    tmp_path, monkeypatch, case, use_memmap
+):
+    """Every thin skeleton voxel the join is handed is Lee output of the
+    catchment cut to min_arm_extent_um from the fat region, and the filter's
+    distance (from the region in the arm's box) is never below that one --
+    so the filter keeps every arm, and skipping it changes nothing."""
+    import haemolynx.preprocessing.thick_vessels as thick_vessels_module
+
+    real = thick_vessels_module._join_thin_arms_to_fat_ridge
+    seen = []
+
+    def both_ways(skeleton, thick, allowed, **kwargs):
+        assert kwargs["arms_reach_extent"] is True
+        filtered = real(
+            np.array(skeleton, dtype=bool), thick, allowed,
+            **dict(kwargs, arms_reach_extent=False, in_place=False),
+        )
+        joined = real(skeleton, thick, allowed, **kwargs)
+        seen.append(np.array_equal(np.asarray(filtered, bool), np.asarray(joined, bool)))
+        return joined
+
+    monkeypatch.setattr(thick_vessels_module, "_join_thin_arms_to_fat_ridge", both_ways)
+    mask, kwargs = _network_case(case)
+    skeletonize_thickness_gated(mask, use_memmap=use_memmap, memmap_directory=tmp_path, **kwargs)
+
+    assert seen == [True]
+
+
+@pytest.mark.parametrize("spacing", [(1.0, 1.0, 1.0), (2.0, 0.6, 0.6)])
+def test_the_low_ram_ridge_of_a_trunk_wider_than_the_first_reach_is_the_in_ram_one(monkeypatch, spacing):
+    from haemolynx.preprocessing import memmap_support
+
+    trunk = np.zeros((26, 80, 90), dtype=bool)
+    _capsule_into(trunk, spacing, (-4.0, 30.0, 10.0), (60.0, 18.0, 45.0), 13.0)
+    _capsule_into(trunk, spacing, (20.0, 20.0, 30.0), (10.0, 45.0, 52.0), 9.0)
+    trunk[:, :, 3] = False  # a second component: the trunk's far end
+    plain = skeletonize_edt_ridge(trunk, voxel_size_zyx=spacing)
+
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 20_000)
+    low_ram = skeletonize_edt_ridge(trunk, voxel_size_zyx=spacing, use_memmap=True)
+
+    assert plain.any() and np.array_equal(low_ram, plain)
+
+
+def _fat_catchment_cases():
+    spacing = (1.5, 0.6, 0.6)
+    network, fat = _fat_and_thin_network(3, (24, 80, 80), spacing, 7.5)
+    solid = np.ones((12, 30, 30), dtype=bool)  # no background anywhere
+    every_face = np.zeros((20, 40, 40), dtype=bool)
+    _capsule_into(every_face, (1.0, 1.0, 1.0), (-3.0, 20.0, 20.0), (23.0, 20.0, 20.0), 9.0)
+    _capsule_into(every_face, (1.0, 1.0, 1.0), (10.0, -3.0, -3.0), (10.0, 43.0, 43.0), 8.0)
+    return {
+        "network": (network, spacing, {}),
+        "no_wall": (network, spacing, dict(wall_absorption_um=0.0)),
+        "wide_wall": (network, spacing, dict(wall_absorption_um=6.0)),
+        "restricted": (network, spacing, dict(restrict_to_mask=fat)),
+        "no_background": (solid, (1.0, 1.0, 1.0), {}),
+        "every_face": (every_face, (1.0, 1.0, 1.0), {}),
+    }
+
+
+@pytest.mark.parametrize("case", sorted(_fat_catchment_cases()))
+@pytest.mark.parametrize("block_voxels", [None, 5_000])
+def test_the_low_ram_fat_catchment_is_the_in_ram_one(tmp_path, monkeypatch, case, block_voxels):
+    from haemolynx.preprocessing import memmap_support
+
+    mask, spacing, extra = _fat_catchment_cases()[case]
+    kwargs = dict(min_radius_um=THICK_VESSEL_MIN_RADIUS_UM, voxel_size_zyx=spacing, **extra)
+    plain = thick_vessel_object_mask(mask, **kwargs)
+
+    if block_voxels is not None:
+        monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", block_voxels)
+    low_ram = thick_vessel_object_mask(mask, use_memmap=True, memmap_directory=tmp_path, **kwargs)
+
+    assert plain.any()
     assert np.array_equal(low_ram, plain)
     assert not any(path.suffix == ".dat" for path in tmp_path.rglob("*")), "temporary files left behind"
 

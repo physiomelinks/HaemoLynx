@@ -2027,6 +2027,9 @@ def _join_thin_arms_to_fat_ridge(
     # far away.
     radius_crop_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     radius_at_cache: dict[tuple[int, int, int], float] = {}
+    # Each roi box's fat surface, once a window deep inside a wide vessel
+    # needed it (see blockwise_edt.distances_at_points).
+    radius_surface_cache: dict = {}
     footprint = tuple(
         max(1, 2 * int(np.ceil(radius_smoothing_um / max(s, 1e-6))) + 1) for s in scale
     )
@@ -2076,7 +2079,11 @@ def _join_thin_arms_to_fat_ridge(
             points = np.argwhere(np.asarray(thick_b[window], dtype=bool))
             points += np.array([int(w.start) for w in window])
             radii = blockwise_edt.distances_at_points(
-                lambda region: thick_b[region], padded_slc, points, sampling=scale
+                lambda region: thick_b[region],
+                padded_slc,
+                points,
+                sampling=scale,
+                surface_cache=radius_surface_cache,
             )
             cached = float(np.float32(radii.max())) if len(radii) else 0.0
             radius_at_cache[voxel] = cached
@@ -2441,13 +2448,16 @@ def skeletonize_thickness_gated(
     instead of a bare array -- *thick* is ``None`` on every path that never
     computed one (``min_radius_um <= 0``, or no fat region found).
 
-    *use_memmap* (the low-RAM option) takes every volume-sized distance
-    transform one block at a time into disk-backed arrays -- the fat
-    catchment's radius map and wall distance, and the flake filter's
-    distance from the fat region -- and, with the ``tile_*`` settings,
-    Lee-thins through :func:`~haemolynx.preprocessing.skeleton.skeletonize_by_component`
-    like the plain path does. Boolean masks stay in RAM at one byte a voxel.
-    Same skeleton either way.
+    *use_memmap* (the low-RAM option) makes no distance map and no label
+    volume. Every distance here is either compared with a few microns or
+    needed at some voxels only, and a block's own transform with enough
+    context answers both exactly (:mod:`.blockwise_edt`); components are
+    labelled a slab of planes at a time (:mod:`.slab_labels`). The
+    hole-filled mask and the Lee input are on disk, and Lee thinning runs
+    through :func:`~haemolynx.preprocessing.skeleton.skeletonize_by_component`
+    (with the ``tile_*`` settings). What stays in RAM is the thick region and
+    the skeleton, a byte a voxel each, and lists of the fat region's voxels.
+    Same skeleton and region either way.
     """
     lee_kwargs = {
         "use_memmap": use_memmap,

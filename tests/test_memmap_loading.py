@@ -579,6 +579,23 @@ def test_skeletonize_by_component_matches_monolithic_with_overlapping_bounding_b
     release_memmap_array(memmap_result)
 
 
+def test_skeletonize_by_component_thins_a_one_plane_component_as_the_volume_does():
+    """Regression: each component was cut to its tight box, and skimage
+    thins an array with a length-1 axis in 2D -- a plate one plane thick came
+    out as a line where Lee in the volume leaves two voxels of it."""
+    mask = np.zeros((5, 20, 20), dtype=bool)
+    mask[2, 2:7, 2:8] = True  # the plate
+    mask[1:4, 12:18, 12:15] = True  # a component of some depth
+
+    memmap_result = skeletonize_by_component(mask, use_memmap=True)
+    tight = skeletonize(mask[2:3, 2:7, 2:8], method="lee")
+
+    monolithic = skeletonize(mask, method="lee")
+    assert not np.array_equal(tight[0], monolithic[2, 2:7, 2:8]), "the fixture no longer shows the 2D case"
+    assert np.array_equal(memmap_result, monolithic)
+    release_memmap_array(memmap_result)
+
+
 def test_skeletonize_by_component_with_memmap_on_handles_an_empty_mask():
     mask = np.zeros((5, 5, 5), dtype=bool)
 

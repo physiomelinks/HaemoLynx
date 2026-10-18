@@ -279,17 +279,25 @@ def taper_meets_vessel(d1: Mapping[str, Any], d2: Mapping[str, Any]) -> bool:
 
 
 def thick_vessel_centreline(
-    thick_mask: np.ndarray, voxel_size_zyx: tuple[float, float, float]
+    thick_mask: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float],
+    *,
+    use_memmap: bool = False,
 ) -> np.ndarray:
     """The thick vessel's centreline tree, as skeletonisation drew it.
 
     A function of the thick-vessel region alone, so a run that loaded its
-    region rather than making it finds the same tree again.
+    region rather than making it finds the same tree again. *use_memmap*
+    (the low-RAM option) finds it without a distance map or labels of the
+    region's whole box (see :func:`~haemolynx.preprocessing.thick_vessels.skeletonize_edt_ridge`):
+    the same tree.
     """
     from haemolynx.preprocessing.thick_vessels import skeletonize_edt_ridge
 
     return np.asarray(
-        skeletonize_edt_ridge(np.asarray(thick_mask, dtype=bool), tuple(voxel_size_zyx)),
+        skeletonize_edt_ridge(
+            np.asarray(thick_mask, dtype=bool), tuple(voxel_size_zyx), use_memmap=use_memmap
+        ),
         dtype=bool,
     )
 

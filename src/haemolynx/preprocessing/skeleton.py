@@ -745,6 +745,13 @@ def skeletonize_by_component(
         for component_id, bbox in enumerate(find_objects(labeled, max_label=n_labels), start=1):
             if bbox is None:
                 continue
+            # Padded by a voxel: skimage thins an array with a length-1 axis
+            # in 2D, so a component one plane thick, cut to its tight box,
+            # came out unlike the same voxels thinned in the volume.
+            bbox = tuple(
+                slice(max(0, s.start - 1), min(int(n), s.stop + 1))
+                for s, n in zip(bbox, mask.shape)
+            )
             labeled_component = labeled[bbox]
             if labeled_component.size <= LOW_MEMORY_BLOCK_VOXELS:
                 # Small enough to compare in RAM: a temp file per component

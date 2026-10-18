@@ -17,7 +17,9 @@ reads the true one wherever the nearest feature lies inside the padded block:
   block with no feature in reach needs no transform at all;
 * for exact values, a voxel's distance is kept once it is below its distance
   to the padded block's edge, and the halo doubles for the voxels left
-  (:func:`distances_at_points`).
+  (:func:`distances_at_points`); voxels deeper than a halo the budget can
+  hold are measured to the features on the object's surface instead, the
+  only ones that can be nearest.
 
 Volume faces are where the whole volume's transform stops too, so blocks
 there need nothing special. Distances are worked out from scipy's feature
@@ -33,6 +35,7 @@ from typing import Callable, Iterator, Sequence
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt
+from scipy.spatial import cKDTree
 
 from . import memmap_support
 
@@ -174,16 +177,22 @@ def distances_at_points(
     sampling: Sequence[float],
     block_voxels: int | None = None,
     reach: float | None = None,
+    surface_cache: dict | None = None,
 ) -> np.ndarray:
     """``distance_transform_edt(edt_input(domain), sampling)`` at *points*
     (``(n, ndim)`` voxels inside the box *domain*, in the volume's own
     coordinates), without transforming more than about *block_voxels* voxels
     at once.
 
-    A domain that fits is transformed whole. Otherwise each point is first
-    read from a block padded by *reach* (``START_REACH_VOXELS`` voxels of the
-    finest axis when not given), kept where it is nearer than anything past
-    that block could be, and read again with twice the reach where it is not.
+    A domain that fits is transformed whole. Otherwise the points are read
+    in groups, each from the box round its points padded by *reach*
+    (``START_REACH_VOXELS`` voxels of the finest axis when not given); a
+    point is kept where it is nearer than anything past that box could be,
+    and read again with twice the reach where it is not. Points still left
+    once a reach no longer fits the budget -- deep inside a vessel hundreds
+    of voxels wide -- are measured to the features on the domain's surface
+    (:func:`_surface_distances`), kept in *surface_cache* when given so a
+    caller asking about one domain again does not find them again.
     """
     sampling = np.asarray(sampling, dtype=np.float64)
     if block_voxels is None:
@@ -203,6 +212,8 @@ def distances_at_points(
     while todo.size:
         halo = np.minimum(reach_voxels(reach_um, sampling), shape)
         core = np.array(_core_extent(shape, halo, int(block_voxels)), dtype=np.int64)
+        if not _workable(shape, halo, core, int(block_voxels)):
+            break
         cell = local[todo] // core
         order = np.lexsort(cell.T[::-1])
         todo, cell = todo[order], cell[order]
@@ -210,10 +221,11 @@ def distances_at_points(
         unsure = []
         for start, stop in zip(starts, np.r_[starts[1:], len(todo)]):
             idx = todo[start:stop]
-            c_lo = cell[start] * core
-            c_hi = np.minimum(c_lo + core, shape)
-            p_lo = np.maximum(c_lo - halo, 0)
-            p_hi = np.minimum(c_hi + halo, shape)
+            here = local[idx]
+            # The box round this cell's points, not the whole cell: a few
+            # points (a bridge's window) need no more than their own context.
+            p_lo = np.maximum(here.min(axis=0) - halo, 0)
+            p_hi = np.minimum(here.max(axis=0) + 1 + halo, shape)
             whole = bool(np.all(p_lo == 0) and np.all(p_hi == shape))
             block = np.asarray(
                 edt_input(tuple(slice(int(a + o), int(b + o)) for a, b, o in zip(p_lo, p_hi, lo))),
@@ -222,7 +234,6 @@ def distances_at_points(
             if block.all() and not whole:
                 unsure.append(idx)
                 continue
-            here = local[idx]
             distance = distances_at(feature_transform(block, sampling), here - p_lo, sampling)
             # Nothing past the padded block is nearer than its edge: a
             # feature there is a step beyond an inner face of the block.
@@ -239,4 +250,76 @@ def distances_at_points(
             unsure.append(idx[~sure])
         todo = np.concatenate(unsure) if unsure else np.empty(0, dtype=np.int64)
         reach_um *= 2.0
+    if todo.size:
+        out[todo] = _surface_distances(
+            edt_input, domain, local[todo], sampling, int(block_voxels), surface_cache
+        )
     return out
+
+
+def _workable(shape, halo, core, block_voxels: int) -> bool:
+    """Whether cores of *core* padded by *halo* fit the budget with each core
+    at least half its halo across (or the whole axis): past that, a block is
+    mostly context and each holds too few points to be worth its transform."""
+    padded = int(np.prod([min(int(s), int(c) + 2 * int(h)) for s, c, h in zip(shape, core, halo)]))
+    return padded <= block_voxels and all(
+        int(c) >= min(int(s), max(1, (int(h) + 1) // 2)) for s, c, h in zip(shape, core, halo)
+    )
+
+
+def _surface_distances(
+    edt_input: Box,
+    domain: tuple[slice, ...],
+    local: np.ndarray,
+    sampling: np.ndarray,
+    block_voxels: int,
+    cache: dict | None,
+) -> np.ndarray:
+    """The transform's distances at *local* (points in *domain*'s own
+    coordinates) from the features that touch a non-feature along an axis.
+
+    The nearest feature to a voxel is always one of those: one step from it
+    along any axis it is displaced on, towards the voxel, is nearer the voxel
+    and inside the domain, so must be a non-feature. Found a block at a time
+    and kept in a k-d tree -- a vessel's surface, not its volume.
+    """
+    key = tuple((int(s.start), int(s.stop)) for s in domain)
+    found = None if cache is None else cache.get(key)
+    if found is None:
+        surface = _surface_features(edt_input, domain, block_voxels)
+        found = (surface, cKDTree(surface * sampling) if len(surface) else None)
+        if cache is not None:
+            cache[key] = found
+    surface, tree = found
+    if tree is None:
+        # No feature anywhere in the domain: only scipy's own whole transform
+        # says what it reads there.
+        block = np.asarray(edt_input(tuple(domain)), dtype=bool)
+        return distances_at(feature_transform(block, sampling), local, sampling)
+    _distance, nearest = tree.query(local * sampling, k=1)
+    return displacement_distances(surface[np.asarray(nearest)] - local, sampling)
+
+
+def _surface_features(edt_input: Box, domain: tuple[slice, ...], block_voxels: int) -> np.ndarray:
+    """``(n, ndim)`` features of *domain* (in its own coordinates) with a
+    non-feature beside them along an axis, a block at a time."""
+    shape = [int(s.stop) - int(s.start) for s in domain]
+    lo = [int(s.start) for s in domain]
+    one = [1] * len(shape)
+    found = []
+    for core in _tiles(shape, _core_extent(shape, one, block_voxels)):
+        padded = _pad(core, one, shape)
+        block = np.asarray(
+            edt_input(tuple(slice(p.start + o, p.stop + o) for p, o in zip(padded, lo))), dtype=bool
+        )
+        beside = np.zeros(block.shape, dtype=bool)
+        for axis in range(block.ndim):
+            ahead = [slice(None)] * block.ndim
+            behind = [slice(None)] * block.ndim
+            ahead[axis], behind[axis] = slice(1, None), slice(None, -1)
+            beside[tuple(behind)] |= block[tuple(ahead)]
+            beside[tuple(ahead)] |= block[tuple(behind)]
+        inner = tuple(slice(c.start - p.start, c.stop - p.start) for c, p in zip(core, padded))
+        touching = ~block[inner] & beside[inner]
+        found.append(np.argwhere(touching) + np.array([c.start for c in core]))
+    return np.concatenate(found).astype(np.int64) if found else np.empty((0, len(shape)), np.int64)
