@@ -9,6 +9,7 @@ the moment it is added there.
 from __future__ import annotations
 
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,11 @@ for _path in (REPO_ROOT / "src", REPO_ROOT / "examples"):
 
 yaml = pytest.importorskip("yaml")
 
-from haemolynx.parsers import dump_config, load_config  # noqa: E402
+from haemolynx.parsers import (  # noqa: E402
+    IneffectiveSettingWarning,
+    dump_config,
+    load_config,
+)
 from regenerate_configs import CONFIGS, regenerate, schema_for as _schema  # noqa: E402
 
 CASES = sorted(CONFIGS.items())
@@ -64,6 +69,26 @@ def test_every_schema_entry_appears_in_the_config(config_relpath, module_name):
 def test_the_committed_config_loads_and_validates(config_relpath, module_name):
     settings = load_config(REPO_ROOT / config_relpath, _schema(module_name))
     assert set(settings) == set(_schema(module_name).names)
+
+
+@pytest.mark.parametrize("config_relpath,module_name", CASES, ids=IDS)
+def test_the_committed_config_sets_nothing_it_leaves_unread(
+    config_relpath, module_name
+):
+    """Every run of an example would warn about a value the example never reads.
+
+    Regenerating keeps whatever a file holds, so a schema default that changes
+    stays behind at its old value, which then reads as one somebody set: the
+    venule masks became optional (unset makes the arteriole row a global mask)
+    and the old placeholder paths were reported set-but-unread on every run.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        load_config(REPO_ROOT / config_relpath, _schema(module_name))
+    unread = [
+        str(w.message) for w in caught if issubclass(w.category, IneffectiveSettingWarning)
+    ]
+    assert not unread, f"{config_relpath} sets values nothing reads: {unread}"
 
 
 @pytest.mark.parametrize("config_relpath,module_name", CASES, ids=IDS)
