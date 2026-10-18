@@ -27,6 +27,7 @@ from .automated_vessel_assignment import (
     vessel_mask_role_is_global,
     vessel_masks_are_global,
 )
+from .vessel_mask_discovery import FoundVesselMasks, find_vessel_masks
 from .voxel_validation import resolve_voxel_size_xyz, validate_voxel_size_xyz
 from .channels import TiffChannel, tiff_channel_axis, tiff_channels
 from .axis_order import (
@@ -69,6 +70,8 @@ __all__ = [
     "global_vessel_mask_roles",
     "vessel_mask_role_is_global",
     "vessel_masks_are_global",
+    "FoundVesselMasks",
+    "find_vessel_masks",
     "validate_voxel_size_xyz",
     "resolve_voxel_size_xyz",
     "CANONICAL_AXIS_ORDER",

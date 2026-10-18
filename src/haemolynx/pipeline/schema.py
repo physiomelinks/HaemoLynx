@@ -843,7 +843,13 @@ SCHEMA = Schema(
             name="use_large_vessel_masks",
             kind="bool",
             default=False,
-            help="Load large arteriole and venule masks for automated inlet/outlet node assignment",
+            help=(
+                "Load large arteriole and venule masks for automated inlet/outlet node "
+                "assignment. Ticked in the panel, it fills the mask rows from files beside "
+                "the input image named like it with 'large' and 'arteriole' or 'venule' "
+                "(artery, vein and plurals too) added; 'large' alone is a global mask, "
+                "and while no file says 'large', 'arteriole' or 'venule' alone counts"
+            ),
             section=_VESSEL_MASKS,
             requires=("automated_vessel_assignment",),
         ),
@@ -1519,7 +1525,12 @@ SCHEMA = Schema(
             name="use_small_vessel_masks_for_boundary_assignment",
             kind="bool",
             default=False,
-            help="Assign arteriole and venule boundary nodes from small-vessel masks",
+            help=(
+                "Assign arteriole and venule boundary nodes from small-vessel masks. "
+                "Ticked in the panel, it fills the mask rows from files beside the input "
+                "image named like it with 'small' and 'arteriole' or 'venule' (artery, "
+                "vein and plurals too) added; 'small' alone is a global mask"
+            ),
             requires=("automated_vessel_assignment",),
             section=_VESSEL_MASKS,
         ),
@@ -3127,12 +3138,33 @@ SCHEMA = Schema(
                 "background crossed by lines drawn across the loop, side to opposite side. "
                 "On E14.5 loops round a hole over 10 um were real 29 times in 32, and loops "
                 "round a smaller one false 24 times in 28 (Harvey's grids Q and Q2, 60 of "
-                "the rule's breaks). 0 breaks every short loop. No effect while "
-                "remove_short_loops_under_um is 0"
+                "the rule's breaks). 0 breaks every short loop. retrace_lost_skeleton "
+                "reads the same limit. No effect while remove_short_loops_under_um is 0 "
+                "and retrace_lost_skeleton is off"
             ),
             section=_PIPELINE_STAGES,
             unit="um",
             minimum=0.0,
+            requires=("do_graph_building", "bridge_require_mask_support"),
+            advanced=True,
+        ),
+        Setting(
+            name="retrace_lost_skeleton",
+            kind="bool",
+            default=True,
+            help=(
+                "After the last clean-up, draw back along the skeleton a stretch the graph "
+                "lost, where the loop it closes with the graph runs round a tissue hole "
+                "wider than short_loop_keep_hole_over_um. A stretch is at least 20 um of "
+                "skeleton, at least half in the mask, mostly a separate tube from every vessel "
+                "kept, meeting the graph in two places; it is drawn between those two "
+                "places, and joined wherever else it meets the graph round a hole as wide, "
+                "never beside a vessel in the same lumen. On E14.5 such stretches were "
+                "vessels 9 times in 9, and stretches closing a loop round a smaller hole were "
+                "not 17 times in 21 (Harvey's grid N, 30 of them); of the 21 it then drew, "
+                "Harvey kept 19 (grid N2). No effect while short_loop_keep_hole_over_um is 0"
+            ),
+            section=_PIPELINE_STAGES,
             requires=("do_graph_building", "bridge_require_mask_support"),
             advanced=True,
         ),

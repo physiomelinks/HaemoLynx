@@ -1614,6 +1614,32 @@ def build_network(
                 edges_after_step.append(
                     ("consolidate_lumen after the thick-vessel split", G.number_of_edges())
                 )
+        # Skeleton the clean-up took round a wide hole, drawn back after the last
+        # clean-up so no rule takes it again (Harvey's grid N): the pair and
+        # in-lumen loop rules never read the hole a loop runs round. A hole limit
+        # of 0 keeps no loop for its hole, so nothing is drawn back for one.
+        if (
+            settings.get("retrace_lost_skeleton")
+            and _short_loop_keep_hole_um(settings) > 0
+            and lumen_cleanup is not None
+            and lumen_cleanup.support is not None
+        ):
+            graph.skeleton_retrace.retrace_lost_skeleton(
+                G, skeleton, lumen_cleanup.support, keep_hole_over_um=_short_loop_keep_hole_um(settings),
+            )
+            retraced = graph.skeleton_retrace.retraced_edges(G)
+            if retraced and settings["smooth_centrelines"]:
+                graph.smooth_graph_centrelines(
+                    G,
+                    skeleton,
+                    voxel_size_zyx=voxel_size_zyx,
+                    method=settings["centreline_smoothing_method"],
+                    iterations=settings["centreline_smoothing_iterations"],
+                    max_deviation=settings["centreline_max_deviation"],
+                    radius_at=radius_at,
+                    edges=retraced,
+                )
+            edges_after_step.append(("skeleton re-trace", G.number_of_edges()))
         # The clean-ups after smoothing join a cut piece to the vessel it
         # doubled with a straight chord across the lumen: those vessels only
         # are smoothed again (PLAN_bridging.md 6b).

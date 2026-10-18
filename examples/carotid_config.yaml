@@ -113,12 +113,12 @@ input_and_segmentation:
 vessel_masks:
   # Use the large arteriole and venule masks for the large-vessel treatment. While inlets_outlets_from_vessel_masks is also on, they also choose the inlet and outlet nodes, which overrides the manual inlet/outlet selection methods
   automated_vessel_assignment: false
-  # Load large arteriole and venule masks for automated inlet/outlet node assignment  [needs automated_vessel_assignment]
+  # Load large arteriole and venule masks for automated inlet/outlet node assignment. Ticked in the panel, it fills the mask rows from files beside the input image named like it with 'large' and 'arteriole' or 'venule' (artery, vein and plurals too) added; 'large' alone is a global mask, and while no file says 'large', 'arteriole' or 'venule' alone counts  [needs automated_vessel_assignment]
   use_large_vessel_masks: false
   # Read this pre-segmented large arteriole mask -- or, with no large venule mask entered, a global mask of every large vessel, arteriole or venule: the vessels in it are then unknown large vessels, and the run gives every vessel an unknown class (large, small, capillary) instead of a branch order  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
   large_arteriole_mask_path: images/large_arteriole_mask.tif
   # Read this pre-segmented large venule mask. Leave it empty to read the arteriole/global mask as a global mask of every large vessel  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist if set]
-  large_venule_mask_path: images/large_venule_mask.tif
+  large_venule_mask_path: null
   # Produce the large-vessel masks with ilastik instead of reading pre-segmented files  [needs use_large_vessel_masks and automated_vessel_assignment]
   use_ilastik_large_vessel_segmentation: false
   # Read this raw image as the ilastik input for the large arteriole mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation]
@@ -128,7 +128,7 @@ vessel_masks:
   # Use this trained ilastik project to segment arterioles -- or, with no venule classifier entered, every large vessel, as a global mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation; must exist]
   ilastik_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
   # Use this trained ilastik project to segment venules. Leave it empty to read what the arteriole/global classifier segments as a global mask of every large vessel  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation; must exist if set]
-  ilastik_venule_classifier_path: classifiers/venule_classifier.ilp
+  ilastik_venule_classifier_path: null
   # Choose the inlet and outlet nodes where the large arteriole and venule masks meet the network's open ends. Off: set them on the Inlet and Outlet tabs, while the masks still drive the large-vessel treatment  [needs use_large_vessel_masks and automated_vessel_assignment]
   inlets_outlets_from_vessel_masks: true
   # One-shot load-time dilation of large-vessel masks (microns) applied when the masks are loaded. Distinct from large_vessel_assignment_max_dilation_microns, which runs a progressive 0, +5, … µm schedule only during terminal-node assignment  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]
@@ -193,12 +193,12 @@ vessel_masks:
   skeleton_thick_vessel_restrict_to_mask: 'off'
   # Log a warning instead of an info line when fewer than this fraction of a large/small vessel mask's own voxels fall on the segmented image, while skeleton_thick_vessel_restrict_to_mask is using it -- see preprocessing.thick_vessels.diagnose_mask_restriction_alignment. A low fraction usually means that mask is misaligned with, or a different shape than, the vessel as it actually appears in the segmented image, so much of it contributes nothing to the fat catchment regardless of wall absorption. Reported per mask (large arteriole and venule counted separately), not blended  [range 0.0..1.0; needs use_thick_vessel_skeletonisation and skeleton_thick_vessel_restrict_to_mask not off]
   skeleton_thick_vessel_restrict_to_mask_warn_below: 0.5
-  # Assign arteriole and venule boundary nodes from small-vessel masks  [needs automated_vessel_assignment]
+  # Assign arteriole and venule boundary nodes from small-vessel masks. Ticked in the panel, it fills the mask rows from files beside the input image named like it with 'small' and 'arteriole' or 'venule' (artery, vein and plurals too) added; 'small' alone is a global mask  [needs automated_vessel_assignment]
   use_small_vessel_masks_for_boundary_assignment: false
   # Read this pre-segmented small arteriole mask -- or, with no small venule mask entered, a global mask of every small vessel, arteriole or venule: the vessels in it are then unknown small vessels, and the run gives every vessel an unknown class (large, small, capillary) instead of a branch order  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off; must exist]
   small_arteriole_mask_path: images/small_arteriole_mask.tif
   # Read this pre-segmented small venule mask. Leave it empty to read the arteriole/global mask as a global mask of every small vessel  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off; must exist if set]
-  small_venule_mask_path: images/small_venule_mask.tif
+  small_venule_mask_path: null
   # Produce the small-vessel masks with ilastik instead of reading pre-segmented files  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   use_ilastik_small_vessel_segmentation: false
   # Read this raw image as the ilastik input for the small arteriole mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation]
@@ -208,7 +208,7 @@ vessel_masks:
   # Use this trained ilastik project to segment small arterioles -- or, with no small venule classifier entered, every small vessel, as a global mask  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation; must exist]
   ilastik_small_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
   # Use this trained ilastik project to segment small venules. Leave it empty to read what the arteriole/global classifier segments as a global mask of every small vessel  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation; must exist if set]
-  ilastik_small_venule_classifier_path: classifiers/venule_classifier.ilp
+  ilastik_small_venule_classifier_path: null
   # Require at least this fraction of an edge to lie inside a small-vessel mask before labelling it  [fraction; range 0.0..1.0; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
   small_vessel_mask_min_overlap_fraction: 0.5
   # Maximum dilation (microns) for progressive small-vessel boundary assignment: label at 0 µm, then at 1 µm and in 5 µm steps up to this value, each edge keeping the label of the first step that reaches it; the boundary nodes are read from the final labels. There is no separate load-time small-vessel dilation setting  [um; range 0.0..; needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment]
@@ -456,8 +456,10 @@ pipeline_stages:
   facing_dead_end_max_gap_um: 10.0
   # Break every loop of the network up to this long round, taking out the side nearest the vessel wall, whatever the segmentation says of it: on E14.5 nine in ten loops under 200 um closed inside one vessel (Harvey's grids I and I2, 55 of 60), and the in-lumen rule found none of them. Costs about one real loop in twelve; the Short loops review list is where a wrong side is put back. 0 leaves short loops to that list. No effect without the segmented mask or with bridge_require_mask_support off  [um; range 0.0..; needs do_graph_building and bridge_require_mask_support]
   remove_short_loops_under_um: 200.0
-  # Leave a short loop to the Short loops review list instead of breaking it when the tissue hole it runs round is wider than this: the median background crossed by lines drawn across the loop, side to opposite side. On E14.5 loops round a hole over 10 um were real 29 times in 32, and loops round a smaller one false 24 times in 28 (Harvey's grids Q and Q2, 60 of the rule's breaks). 0 breaks every short loop. No effect while remove_short_loops_under_um is 0  [um; range 0.0..; needs do_graph_building and bridge_require_mask_support]
+  # Leave a short loop to the Short loops review list instead of breaking it when the tissue hole it runs round is wider than this: the median background crossed by lines drawn across the loop, side to opposite side. On E14.5 loops round a hole over 10 um were real 29 times in 32, and loops round a smaller one false 24 times in 28 (Harvey's grids Q and Q2, 60 of the rule's breaks). 0 breaks every short loop. retrace_lost_skeleton reads the same limit. No effect while remove_short_loops_under_um is 0 and retrace_lost_skeleton is off  [um; range 0.0..; needs do_graph_building and bridge_require_mask_support]
   short_loop_keep_hole_over_um: 10.0
+  # After the last clean-up, draw back along the skeleton a stretch the graph lost, where the loop it closes with the graph runs round a tissue hole wider than short_loop_keep_hole_over_um. A stretch is at least 20 um of skeleton, at least half in the mask, mostly a separate tube from every vessel kept, meeting the graph in two places; it is drawn between those two places, and joined wherever else it meets the graph round a hole as wide, never beside a vessel in the same lumen. On E14.5 such stretches were vessels 9 times in 9, and stretches closing a loop round a smaller hole were not 17 times in 21 (Harvey's grid N, 30 of them); of the 21 it then drew, Harvey kept 19 (grid N2). No effect while short_loop_keep_hole_over_um is 0  [needs do_graph_building and bridge_require_mask_support]
+  retrace_lost_skeleton: true
   # Draw a dead end that leaves the image but stops short of the face (the segmented vessel runs on to it within four radii) on to the face, so its open end sits where the vessel leaves the image. Off until a marked grid calibrates it (PLAN_dead_ends.md, G2)  [needs do_graph_building and bridge_require_mask_support]
   extend_dead_ends_to_faces: false
   # From a dead end the segmented vessel runs on past, draw the centreline on through the mask along its heading, up to 30 um: joined to another vessel where it enters that vessel's lumen, ended at an image face or where the mask ends. Never beside a vessel in the same lumen, never closing a loop inside one. Off until a marked grid calibrates it (PLAN_dead_ends.md, G1)  [needs do_graph_building and bridge_require_mask_support]

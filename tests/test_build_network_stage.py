@@ -244,3 +244,70 @@ def test_a_saved_graph_with_no_vessels_is_refused_when_loaded(tmp_path):
 
     assert str(_graph_path(tmp_path)) in str(raised.value)
     assert "do_graph_building" in str(raised.value)
+
+
+def _spy_on_retrace(monkeypatch) -> dict:
+    """The skeleton re-trace's calls, and the edges smoothing is asked to
+    smooth afterwards; the re-trace marks the first vessel as drawn back."""
+    from haemolynx import graph
+
+    seen: dict = {"retrace": [], "smoothed": []}
+
+    def retrace(G, skeleton, support, **kwargs):
+        seen["retrace"].append(dict(support=support, **kwargs))
+        u, v, key = next(iter(G.edges(keys=True)))
+        G.edges[u, v, key][graph.skeleton_retrace.RETRACED] = True
+        return G
+
+    real_smooth = graph.smooth_graph_centrelines
+
+    def smooth(G, skeleton, **kwargs):
+        if kwargs.get("edges") is not None:
+            seen["smoothed"].append(list(kwargs["edges"]))
+        return real_smooth(G, skeleton, **kwargs)
+
+    monkeypatch.setattr(graph.skeleton_retrace, "retrace_lost_skeleton", retrace)
+    monkeypatch.setattr(graph, "smooth_graph_centrelines", smooth)
+    return seen
+
+
+def test_the_skeleton_re_trace_runs_by_default_and_not_when_turned_off(tmp_path, monkeypatch):
+    """On by default since Harvey's grid N2 (2026-10-18: 19 of the 21 vessels it
+    drew on E14.5 kept)."""
+    seen = _spy_on_retrace(monkeypatch)
+    assert SCHEMA.defaults()["retrace_lost_skeleton"] is True
+    build_network(_settings(tmp_path), _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)
+    assert len(seen["retrace"]) == 1
+
+    seen["retrace"].clear()
+    off = tmp_path / "off"
+    off.mkdir()
+    build_network(_settings(off, retrace_lost_skeleton=False), _volume(off, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)
+    assert seen["retrace"] == []
+
+
+def test_the_skeleton_re_trace_reads_the_clean_ups_mask_and_the_short_loop_rules_hole(tmp_path, monkeypatch):
+    """After the last clean-up, so no rule takes what it draws again; judged
+    by the clean-up's own mask, at the short-loop rule's hole; and what it
+    draws is smoothed like every other vessel."""
+    from haemolynx.preprocessing.bridge_mask_support import MaskSupport
+
+    seen = _spy_on_retrace(monkeypatch)
+    settings = _settings(tmp_path, retrace_lost_skeleton=True, short_loop_keep_hole_over_um=12.5)
+    network = build_network(settings, _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)
+
+    (call,) = seen["retrace"]
+    assert isinstance(call["support"], MaskSupport)
+    assert call["support"].max_background_gap_um == settings["bridge_max_background_gap_um"]
+    assert call["keep_hole_over_um"] == 12.5
+    (smoothed,) = seen["smoothed"]
+    assert len(smoothed) == 1
+    u, v, key = smoothed[0]
+    assert network.graph.edges[u, v, key]["centreline_smoothing"] in {"smoothed", "relaxed", "kept_raw", "too_short"}
+
+
+def test_the_skeleton_re_trace_needs_mask_supported_bridging(tmp_path, monkeypatch):
+    seen = _spy_on_retrace(monkeypatch)
+    settings = _settings(tmp_path, retrace_lost_skeleton=True, bridge_require_mask_support=False)
+    build_network(settings, _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)
+    assert seen["retrace"] == []
