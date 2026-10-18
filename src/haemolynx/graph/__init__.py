@@ -120,6 +120,7 @@ from .branch_order import (
     BRANCH_ORDER_CATEGORY_SEQUENCE,
     GLOBAL_MASK_CLASS,
     LARGE_MASK_VESSEL_TYPE,
+    SMALL_MASK_VESSEL_TYPE,
     UNKNOWN_CAPILLARY,
     UNKNOWN_LARGE_VESSEL,
     UNKNOWN_SMALL_VESSEL,
@@ -131,6 +132,7 @@ from .branch_order import (
     assign_unknown_vessel_classes,
     assign_vessel_branch_orders,
     tag_large_mask_vessel_types,
+    tag_small_mask_vessel_types,
 )
 from .communities import (
     BOUNDARY_LABEL,
@@ -336,10 +338,12 @@ __all__ = [
     "assign_vessel_branch_orders",
     "assign_unknown_vessel_classes",
     "tag_large_mask_vessel_types",
+    "tag_small_mask_vessel_types",
     "MissingLargeVesselTierWarning",
     "BRANCH_ORDER_CATEGORY_SEQUENCE",
     "GLOBAL_MASK_CLASS",
     "LARGE_MASK_VESSEL_TYPE",
+    "SMALL_MASK_VESSEL_TYPE",
     "UNKNOWN_CAPILLARY",
     "UNKNOWN_LARGE_VESSEL",
     "UNKNOWN_SMALL_VESSEL",

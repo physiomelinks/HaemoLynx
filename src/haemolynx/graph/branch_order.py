@@ -65,6 +65,32 @@ _UNKNOWN_CLASS_BY_MASK = {"large": UNKNOWN_LARGE_VESSEL, "small": UNKNOWN_SMALL_
 #: tier; read by :func:`assign_hierarchical_branch_orders`.
 LARGE_MASK_VESSEL_TYPE = "large_mask_vessel_type"
 
+#: Edge attribute naming the small-vessel mask a vessel lies in,
+#: ``"arteriole"`` or ``"venule"`` (absent: neither, or the run's boundary
+#: nodes did not come from the small masks). Written by
+#: :func:`tag_small_mask_vessel_types`; read by
+#: :func:`assign_hierarchical_branch_orders`, which runs the Art/Ven tier on
+#: along it.
+SMALL_MASK_VESSEL_TYPE = "small_mask_vessel_type"
+
+
+def _tag_mask_vessel_types(
+    G: nx.MultiGraph,
+    attribute: str,
+    arteriole_edges: Iterable[tuple[Any, Any, Any]],
+    venule_edges: Iterable[tuple[Any, Any, Any]],
+) -> None:
+    arteriole = {edge_id(*edge) for edge in arteriole_edges}
+    venule = {edge_id(*edge) for edge in venule_edges}
+    for u, v, key, data in G.edges(keys=True, data=True):
+        identifier = edge_id(u, v, key)
+        if identifier in arteriole:
+            data[attribute] = "arteriole"
+        elif identifier in venule:
+            data[attribute] = "venule"
+        else:
+            data.pop(attribute, None)
+
 
 def tag_large_mask_vessel_types(
     G: nx.MultiGraph,
@@ -75,16 +101,19 @@ def tag_large_mask_vessel_types(
     :data:`LARGE_MASK_VESSEL_TYPE`, and clear the tag from every other edge.
     An edge in both lists is the arteriole's, as the masks' labelling decides
     a tie."""
-    arteriole = {edge_id(*edge) for edge in arteriole_edges}
-    venule = {edge_id(*edge) for edge in venule_edges}
-    for u, v, key, data in G.edges(keys=True, data=True):
-        identifier = edge_id(u, v, key)
-        if identifier in arteriole:
-            data[LARGE_MASK_VESSEL_TYPE] = "arteriole"
-        elif identifier in venule:
-            data[LARGE_MASK_VESSEL_TYPE] = "venule"
-        else:
-            data.pop(LARGE_MASK_VESSEL_TYPE, None)
+    _tag_mask_vessel_types(G, LARGE_MASK_VESSEL_TYPE, arteriole_edges, venule_edges)
+
+
+def tag_small_mask_vessel_types(
+    G: nx.MultiGraph,
+    arteriole_edges: Iterable[tuple[Any, Any, Any]] = (),
+    venule_edges: Iterable[tuple[Any, Any, Any]] = (),
+) -> None:
+    """Tag each ``(u, v, key)`` edge with the small mask it lies in, as
+    :data:`SMALL_MASK_VESSEL_TYPE`, and clear the tag from every other edge
+    (from all of them, given no edges: a run whose boundary nodes did not
+    come from the small masks). An edge in both lists is the arteriole's."""
+    _tag_mask_vessel_types(G, SMALL_MASK_VESSEL_TYPE, arteriole_edges, venule_edges)
 
 
 _TIER_LABEL = re.compile(r"^(.*?)(\d+)\s*$")
@@ -395,30 +424,93 @@ def _closed_side_branches(
     return kept
 
 
+def _run_on_along_small_mask(
+    G: nx.MultiGraph,
+    edges: set[tuple[Any, Any, Any]],
+    from_nodes: set[Any],
+    *,
+    vessel: str,
+    excluded_edges: set[tuple[Any, Any, Any]],
+) -> set[tuple[Any, Any, Any]]:
+    """The vessels tagged *vessel* in the small mask
+    (:data:`SMALL_MASK_VESSEL_TYPE`) outside *edges*, an Art or Ven tier, and
+    *excluded_edges* that a walk from *from_nodes* along such vessels alone
+    reaches.
+
+    The small masks' labelling makes every junction where a capillary leaves
+    a small vessel one of its boundary nodes, so the search that found
+    *edges* stopped at the first of them; the tier runs on along the vessel's
+    mask past them, but never across a capillary. With no tags (boundary
+    nodes picked by hand) there is nothing to add.
+    """
+    tagged: dict[Any, list[tuple[Any, tuple[Any, Any, Any]]]] = defaultdict(list)
+    for u, v, key, data in G.edges(keys=True, data=True):
+        identifier = edge_id(u, v, key)
+        if (
+            data.get(SMALL_MASK_VESSEL_TYPE) == vessel
+            and identifier not in edges
+            and identifier not in excluded_edges
+        ):
+            tagged[u].append((v, identifier))
+            tagged[v].append((u, identifier))
+    seen = {node for node in from_nodes if node in tagged}
+    queue = deque(seen)
+    added: set[tuple[Any, Any, Any]] = set()
+    while queue:
+        node = queue.popleft()
+        for other, identifier in tagged[node]:
+            added.add(identifier)
+            if other not in seen:
+                seen.add(other)
+                queue.append(other)
+    return added
+
+
 def _tier_from_seeds(
     G: nx.MultiGraph,
     seeds: list[Any],
     *,
     prefix: str,
+    vessel: str,
     stop_nodes: set[Any],
     excluded_edges: set[tuple[Any, Any, Any]],
 ) -> tuple[dict, set[tuple[Any, Any, Any]]]:
     """The Art or Ven tier with no Large tier on its side: every edge both
-    of whose ends a search from *seeds* reaches before *stop_nodes*."""
+    of whose ends a search from *seeds* reaches before *stop_nodes*, run on
+    along the small mask (:func:`_run_on_along_small_mask`)."""
     reached = set(_compute_node_distances(G, seeds, stop_nodes=stop_nodes))
     edges = {
         edge_id(u, v, key)
         for u, v, key in G.edges(keys=True)
         if u in reached and v in reached
     }
-    results = assign_branch_orders(
+    added = _run_on_along_small_mask(
         G,
-        seeds,
-        prefix=prefix,
-        stop_nodes=stop_nodes,
+        edges,
+        set(seeds) | _edge_ends(edges - excluded_edges),
+        vessel=vessel,
         excluded_edges=excluded_edges,
-        included_edges=edges,
     )
+    if added:
+        # Counted along the tier's own vessels, through the boundary nodes
+        # it now runs past.
+        edges |= added
+        view = G.edge_subgraph(edges)
+        results = assign_branch_orders(
+            view,
+            [node for node in seeds if node in view],
+            prefix=prefix,
+            excluded_edges=excluded_edges,
+        )
+    else:
+        results = assign_branch_orders(
+            G,
+            seeds,
+            prefix=prefix,
+            stop_nodes=stop_nodes,
+            excluded_edges=excluded_edges,
+            included_edges=edges,
+        )
     return results, edges
 
 
@@ -428,22 +520,30 @@ def _tier_from_large_vessel(
     tier: set[tuple[Any, Any, Any]],
     *,
     prefix: str,
+    vessel: str,
     stop_nodes: set[Any],
     far_side_nodes: set[Any],
     excluded_edges: set[tuple[Any, Any, Any]],
 ) -> tuple[dict, set[tuple[Any, Any, Any]]]:
     """The Art or Ven tier beside a Large tier: the side branches that close
-    off at *stop_nodes* (:func:`_closed_side_branches`), counted from the
-    hand-off nodes they leave the large vessel at."""
+    off at *stop_nodes* (:func:`_closed_side_branches`), run on along the
+    small mask (:func:`_run_on_along_small_mask`), counted from the hand-off
+    nodes they leave the large vessel at."""
     edges = _closed_side_branches(
         G, _edge_ends(tier), stop_nodes, far_side_nodes, excluded_edges
     )
+    added = _run_on_along_small_mask(
+        G, edges, set(hand_offs) | _edge_ends(edges), vessel=vessel, excluded_edges=excluded_edges
+    )
+    edges |= added
     view = G.edge_subgraph(edges)
     # A hand-off is the start of its side branches even when the small
     # vessel's own labelling also made it a boundary node.
     starts = [node for node in hand_offs if node in view]
+    # Run on along the small mask, the tier is counted through the boundary
+    # nodes it now runs past.
     results = assign_branch_orders(
-        view, starts, prefix=prefix, stop_nodes=stop_nodes - set(starts)
+        view, starts, prefix=prefix, stop_nodes=set() if added else stop_nodes - set(starts)
     )
     return results, edges
 
@@ -498,6 +598,17 @@ def assign_hierarchical_branch_orders(
     leaving a large vessel directly is a capillary: the ``B`` orders count
     from the hand-off nodes as well as from the arteriole boundary nodes.
 
+    With boundary nodes from the small masks, every junction where a
+    capillary leaves a small vessel is one of them, not only where its mask
+    ends. The vessels lying in those masks are tagged
+    (:data:`SMALL_MASK_VESSEL_TYPE`, see :func:`tag_small_mask_vessel_types`),
+    and the ``Art``/``Ven`` tier, with or without a Large tier, runs on from
+    where its search stopped along the vessels tagged in its small mask: past
+    the capillaries leaving it, which the ``B`` orders count from those
+    junctions, but never across one -- a piece of the small mask joined to
+    the tier only through capillaries is not in it. Boundary nodes picked by
+    hand come with no tags: the tiers end at them.
+
     A tagged mask fragment that does not connect to an inlet/outlet is not
     in the tier. A tier asked for that comes out empty warns
     (:class:`MissingLargeVesselTierWarning`) and leaves Art or Ven as without
@@ -537,6 +648,7 @@ def assign_hierarchical_branch_orders(
             arteriole_hand_offs,
             large_arteriole_edges,
             prefix="Art",
+            vessel="arteriole",
             stop_nodes=arteriole_boundary_set,
             far_side_nodes=(
                 set(outlet_nodes) | venule_boundary_set | _edge_ends(large_venule_edges)
@@ -548,6 +660,7 @@ def assign_hierarchical_branch_orders(
             G,
             inlet_nodes,
             prefix="Art",
+            vessel="arteriole",
             stop_nodes=arteriole_boundary_set,
             excluded_edges=large_edges,
         )
@@ -558,6 +671,7 @@ def assign_hierarchical_branch_orders(
             venule_hand_offs,
             large_venule_edges,
             prefix="Ven",
+            vessel="venule",
             stop_nodes=venule_boundary_set,
             far_side_nodes=(
                 set(inlet_nodes) | arteriole_boundary_set | _edge_ends(large_arteriole_edges)
@@ -569,6 +683,7 @@ def assign_hierarchical_branch_orders(
             G,
             outlet_nodes,
             prefix="Ven",
+            vessel="venule",
             stop_nodes=venule_boundary_set,
             excluded_edges=arteriole_edges | large_edges,
         )
