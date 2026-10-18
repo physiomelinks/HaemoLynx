@@ -124,6 +124,11 @@ from haemolynx.gui.run_snapshot import (
     write_run_snapshot,
 )
 from haemolynx.gui.tabs import tabs_for
+from haemolynx.gui.vessel_mask_search import (
+    TRIGGER_SETTINGS as MASK_SEARCH_TRIGGERS,
+    fill_vessel_mask_rows,
+    roles_to_search,
+)
 from haemolynx.gui.vessel_tubes import (
     DEFAULT_TUBE_DIAMETER,
     DEFAULT_TUBE_QUALITY,
@@ -12689,6 +12694,35 @@ def settings_widget(napari_viewer=None):
     if "measure_diameters_from_raw_image" in rows and "do_fwhm_measurement" in rows:
         rows["measure_diameters_from_raw_image"].changed.connect(measuring_turns_fwhm_measurement_on)
 
+    #: True while a config or a saved run fills the rows: the vessel-mask
+    #: paths it names are what the user asked for, not the search's to replace.
+    restoring_settings = [False]
+    #: The trigger settings as the vessel-mask search last saw them, and what
+    #: it filled each mask row with (`gui/vessel_mask_search.py`).
+    mask_search_seen = {name: current_values().get(name) for name in MASK_SEARCH_TRIGGERS}
+    mask_rows_filled: dict[str, Any] = {}
+
+    def search_for_vessel_masks(*_args) -> None:
+        """Fill a vessel-mask role's rows from the masks beside the input image
+        when the role comes into use, or the input image changes while it is."""
+        values = current_values()
+        before = dict(mask_search_seen)
+        mask_search_seen.update({name: values.get(name) for name in MASK_SEARCH_TRIGGERS})
+        if restoring_settings[0]:
+            return
+        fill = fill_vessel_mask_rows(values, roles_to_search(before, values), mask_rows_filled)
+        for name, value in fill.values.items():
+            if name in rows:
+                rows[name].value = display_value_for(schema[name], value)
+                loaded_paths.pop(name, None)
+                mask_rows_filled[name] = value
+        if fill.lines:
+            report.value = "\n".join(fill.lines)
+
+    for name in MASK_SEARCH_TRIGGERS:
+        if name in rows:
+            rows[name].changed.connect(search_for_vessel_masks)
+
     bars = ProgressBars()
     run_state = RunState(bars=bars)
 
@@ -13555,23 +13589,28 @@ def settings_widget(napari_viewer=None):
         loaded_paths.clear()
         loaded_config_dir[0] = Path(path).parent
         last_config_path[0] = str(path)
-        for name, value in loaded.items():
-            if name in rows:
-                if schema[name].kind == "path" and value is not None:
-                    loaded_paths[name] = value
-                rows[name].value = display_value_for(schema[name], value)
-
-        # A config names the image it was written for, which is rarely the one
-        # on screen -- the shipped one names an image that is not even in the
-        # repository. With a layer open, that layer is the input and the file's
-        # `input_path` is not read; everything else in the file still applies.
-        kept = ""
-        if adopted.settings:
-            for name, value in adopted.settings.items():
+        restoring_settings[0] = True
+        try:
+            for name, value in loaded.items():
                 if name in rows:
-                    rows[name].value = value
-                    loaded_paths.pop(name, None)
-            kept = f", keeping {adopted.name or 'the open layer'} as the input"
+                    if schema[name].kind == "path" and value is not None:
+                        loaded_paths[name] = value
+                    rows[name].value = display_value_for(schema[name], value)
+
+            # A config names the image it was written for, which is rarely the one
+            # on screen -- the shipped one names an image that is not even in the
+            # repository. With a layer open, that layer is the input and the file's
+            # `input_path` is not read; everything else in the file still applies.
+            kept = ""
+            if adopted.settings:
+                for name, value in adopted.settings.items():
+                    if name in rows:
+                        rows[name].value = value
+                        loaded_paths.pop(name, None)
+                kept = f", keeping {adopted.name or 'the open layer'} as the input"
+        finally:
+            restoring_settings[0] = False
+        mask_rows_filled.clear()
 
         apply_prerequisites()
         snapshot_skip_toggles()
@@ -14404,12 +14443,17 @@ def settings_widget(napari_viewer=None):
         last_run_path[0] = str(path)
         # A run saved by an older version may name a retired setting or spell
         # a value the way it used to; the rows only take today's.
-        for name, value in schema.upgrade(snapshot.settings).items():
-            if name not in rows:
-                continue
-            if schema[name].kind == "path" and value is not None:
-                loaded_paths[name] = value
-            rows[name].value = display_value_for(schema[name], value)
+        restoring_settings[0] = True
+        try:
+            for name, value in schema.upgrade(snapshot.settings).items():
+                if name not in rows:
+                    continue
+                if schema[name].kind == "path" and value is not None:
+                    loaded_paths[name] = value
+                rows[name].value = display_value_for(schema[name], value)
+        finally:
+            restoring_settings[0] = False
+        mask_rows_filled.clear()
         show_results.value = snapshot.show_results
         show_steps.value = snapshot.show_steps
         skip_toggle_snapshot.clear()

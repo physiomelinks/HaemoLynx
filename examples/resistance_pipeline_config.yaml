@@ -112,7 +112,7 @@ input_and_segmentation:
 vessel_masks:
   # Use the large arteriole and venule masks for the large-vessel treatment. While inlets_outlets_from_vessel_masks is also on, they also choose the inlet and outlet nodes, which overrides the manual inlet/outlet selection methods
   automated_vessel_assignment: false
-  # Load large arteriole and venule masks for automated inlet/outlet node assignment  [needs automated_vessel_assignment]
+  # Load large arteriole and venule masks for automated inlet/outlet node assignment. Ticked in the panel, it fills the mask rows from files beside the input image named like it with 'large' and 'arteriole' or 'venule' (artery, vein and plurals too) added; 'large' alone is a global mask, and while no file says 'large', 'arteriole' or 'venule' alone counts  [needs automated_vessel_assignment]
   use_large_vessel_masks: false
   # Read this pre-segmented large arteriole mask -- or, with no large venule mask entered, a global mask of every large vessel, arteriole or venule: the vessels in it are then unknown large vessels, and the run gives every vessel an unknown class (large, small, capillary) instead of a branch order  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
   large_arteriole_mask_path: images/large_arteriole_mask.tif
@@ -192,7 +192,7 @@ vessel_masks:
   skeleton_thick_vessel_restrict_to_mask: 'off'
   # Log a warning instead of an info line when fewer than this fraction of a large/small vessel mask's own voxels fall on the segmented image, while skeleton_thick_vessel_restrict_to_mask is using it -- see preprocessing.thick_vessels.diagnose_mask_restriction_alignment. A low fraction usually means that mask is misaligned with, or a different shape than, the vessel as it actually appears in the segmented image, so much of it contributes nothing to the fat catchment regardless of wall absorption. Reported per mask (large arteriole and venule counted separately), not blended  [range 0.0..1.0; needs use_thick_vessel_skeletonisation and skeleton_thick_vessel_restrict_to_mask not off]
   skeleton_thick_vessel_restrict_to_mask_warn_below: 0.5
-  # Assign arteriole and venule boundary nodes from small-vessel masks  [needs automated_vessel_assignment]
+  # Assign arteriole and venule boundary nodes from small-vessel masks. Ticked in the panel, it fills the mask rows from files beside the input image named like it with 'small' and 'arteriole' or 'venule' (artery, vein and plurals too) added; 'small' alone is a global mask  [needs automated_vessel_assignment]
   use_small_vessel_masks_for_boundary_assignment: false
   # Read this pre-segmented small arteriole mask -- or, with no small venule mask entered, a global mask of every small vessel, arteriole or venule: the vessels in it are then unknown small vessels, and the run gives every vessel an unknown class (large, small, capillary) instead of a branch order  [needs use_small_vessel_masks_for_boundary_assignment and automated_vessel_assignment and use_ilastik_small_vessel_segmentation off; must exist]
   small_arteriole_mask_path: images/small_arteriole_mask.tif

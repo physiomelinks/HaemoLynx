@@ -843,7 +843,13 @@ SCHEMA = Schema(
             name="use_large_vessel_masks",
             kind="bool",
             default=False,
-            help="Load large arteriole and venule masks for automated inlet/outlet node assignment",
+            help=(
+                "Load large arteriole and venule masks for automated inlet/outlet node "
+                "assignment. Ticked in the panel, it fills the mask rows from files beside "
+                "the input image named like it with 'large' and 'arteriole' or 'venule' "
+                "(artery, vein and plurals too) added; 'large' alone is a global mask, "
+                "and while no file says 'large', 'arteriole' or 'venule' alone counts"
+            ),
             section=_VESSEL_MASKS,
             requires=("automated_vessel_assignment",),
         ),
@@ -1519,7 +1525,12 @@ SCHEMA = Schema(
             name="use_small_vessel_masks_for_boundary_assignment",
             kind="bool",
             default=False,
-            help="Assign arteriole and venule boundary nodes from small-vessel masks",
+            help=(
+                "Assign arteriole and venule boundary nodes from small-vessel masks. "
+                "Ticked in the panel, it fills the mask rows from files beside the input "
+                "image named like it with 'small' and 'arteriole' or 'venule' (artery, "
+                "vein and plurals too) added; 'small' alone is a global mask"
+            ),
             requires=("automated_vessel_assignment",),
             section=_VESSEL_MASKS,
         ),
