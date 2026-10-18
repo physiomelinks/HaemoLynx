@@ -2427,6 +2427,11 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             "Large_Ven boundary node(s) (min_overlap_fraction="
             f"{float(settings['large_vessel_mask_min_overlap_fraction']):.3f})."
         )
+    if not small_in_use:
+        # Boundary nodes chosen by hand, or none: the tiers end at them, and
+        # small-mask tags a resumed graph keeps from an earlier run must not
+        # carry them on.
+        graph.tag_small_mask_vessel_types(G)
     if small_in_use:
         if small_arteriole_mask is None or small_venule_mask is None:
             raise ValueError(
@@ -2594,6 +2599,14 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             inferred_boundary_results["arteriole_boundary_nodes"]
         )
         settings["venule_boundary_nodes"][:] = list(inferred_boundary_results["venule_boundary_nodes"])
+        # Every junction where a capillary leaves a small vessel is one of
+        # its boundary nodes, not only where its mask ends: the Art/Ven tier
+        # reads this tag to run on along the vessel past them.
+        graph.tag_small_mask_vessel_types(
+            G,
+            inferred_boundary_results["arteriole_edges"],
+            inferred_boundary_results["venule_edges"],
+        )
         logger.info(
             "Small-vessel mask boundary assignment selected "
             f"{len(settings['arteriole_boundary_nodes'])} arteriole boundary nodes and "

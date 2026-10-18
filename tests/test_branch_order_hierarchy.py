@@ -17,6 +17,7 @@ if str(src_dir) not in sys.path:
 from haemolynx.graph import (
     BRANCH_ORDER_CATEGORY_SEQUENCE,
     LARGE_MASK_VESSEL_TYPE,
+    SMALL_MASK_VESSEL_TYPE,
     MissingSmallVesselAssignmentWarning,
     assign_hierarchical_branch_orders,
     assign_vessel_branch_orders,
@@ -842,3 +843,267 @@ def test_the_large_tier_follows_the_large_masks_through_a_run(tmp_path):
     assert label("w1", "v1") == "Ven1"
     assert label("s1", "w1") == "B01"
     assert [label("a2", "c"), label("c", "v2")] == ["B01", "B02"]
+
+
+# --- The Art/Ven tier along a small vessel's own mask ------------------------
+#
+# The small masks' labelling makes every small-arteriole node with an edge
+# outside the mask a boundary node: every junction where a capillary leaves the
+# vessel, not only where its mask ends. The Art search stopped at the first of
+# them, and the rest of the small arteriole was counted as capillaries; Ven
+# likewise. The fix for the Large tier (above) did not cover it.
+
+
+def _mask_tagged_graph(
+    small_arteriole, small_venule, other, large_arteriole=(), large_venule=()
+) -> nx.MultiGraph:
+    """Edges given as node pairs, each group tagged as lying in that mask."""
+    G = nx.MultiGraph()
+    for edges, tags in (
+        (large_arteriole, {LARGE_MASK_VESSEL_TYPE: "arteriole"}),
+        (large_venule, {LARGE_MASK_VESSEL_TYPE: "venule"}),
+        (small_arteriole, {SMALL_MASK_VESSEL_TYPE: "arteriole"}),
+        (small_venule, {SMALL_MASK_VESSEL_TYPE: "venule"}),
+        (other, {}),
+    ):
+        for u, v in edges:
+            G.add_edge(u, v, length=1.0, **tags)
+    return G
+
+
+def _small_vessels_with_side_capillaries():
+    """A small arteriole 0-1-2-3-4 (inlet 0) and a small venule 13-14-15-16
+    (outlet 16), each wholly in its small mask. A capillary leaves the
+    arteriole at 2, mid-way, and its mask ends at 4; the bed drains into the
+    venule at 13, where its mask starts, and at 15, mid-way.
+
+    The boundary nodes are what the small masks' labelling reports: every
+    labelled node with an edge outside its mask -- the side-capillary
+    junctions (2, 15) as well as the masks' ends (4, 13).
+    """
+    G = _mask_tagged_graph(
+        small_arteriole=[(0, 1), (1, 2), (2, 3), (3, 4)],
+        small_venule=[(13, 14), (14, 15), (15, 16)],
+        other=[(2, 10), (4, 11), (10, 12), (11, 12), (12, 13), (12, 22), (22, 15)],
+    )
+    return G, dict(
+        inlet_nodes=[0],
+        outlet_nodes=[16],
+        arteriole_boundary_nodes=[2, 4],
+        venule_boundary_nodes=[13, 15],
+    )
+
+
+def test_the_art_and_ven_tiers_run_along_the_small_masks_past_side_capillaries():
+    """Regression: Art ended at 2, the first junction where a capillary leaves
+    the small arteriole, and 2-3-4 were counted as capillaries (B01); Ven ended
+    at 15 and 13-14-15 were B04-B05. Each tier now runs on along its small
+    mask; only the vessels leaving it are capillaries, counted from it."""
+    G, nodes = _small_vessels_with_side_capillaries()
+
+    summary = assign_vessel_branch_orders(G, **nodes)
+
+    assert summary["mode"] == "hierarchical"
+    assert summary["arteriole_edge_count"] == 4
+    assert summary["venule_edge_count"] == 3
+    assert _labels(G) == {
+        (0, 1, 0): "Art1", (1, 2, 0): "Art2", (2, 3, 0): "Art3", (3, 4, 0): "Art4",
+        (15, 16, 0): "Ven1", (14, 15, 0): "Ven2", (13, 14, 0): "Ven3",
+        (2, 10, 0): "B01", (4, 11, 0): "B01", (10, 12, 0): "B02", (11, 12, 0): "B02",
+        (12, 13, 0): "B03", (12, 22, 0): "B03", (15, 22, 0): "B04",
+    }
+
+
+def test_boundary_nodes_chosen_by_hand_still_end_the_tiers():
+    """With no small-mask tags -- boundary nodes picked by hand (coordinates,
+    volumes, node IDs) -- Art and Ven end at the boundary nodes, as before:
+    the user chose them as the tiers' ends."""
+    G, nodes = _small_vessels_with_side_capillaries()
+    for data in G.edges.values():
+        data.pop(SMALL_MASK_VESSEL_TYPE, None)
+
+    assign_vessel_branch_orders(G, **nodes)
+
+    assert _labels(G) == {
+        (0, 1, 0): "Art1", (1, 2, 0): "Art2", (15, 16, 0): "Ven1",
+        (2, 3, 0): "B01", (3, 4, 0): "B01", (2, 10, 0): "B01", (4, 11, 0): "B01",
+        (10, 12, 0): "B02", (11, 12, 0): "B02", (12, 13, 0): "B03", (12, 22, 0): "B03",
+        (13, 14, 0): "B04", (15, 22, 0): "B04", (14, 15, 0): "B05",
+    }
+
+
+def test_a_small_mask_piece_reached_only_through_capillaries_is_not_taken():
+    """The tier runs on along its small mask, never across a capillary: a
+    piece of the arteriole mask in the bed (12-30-31), joined to the small
+    arteriole only through capillaries, stays capillary."""
+    G, nodes = _small_vessels_with_side_capillaries()
+    G.add_edge(12, 30, length=1.0, **{SMALL_MASK_VESSEL_TYPE: "arteriole"})
+    G.add_edge(30, 31, length=1.0, **{SMALL_MASK_VESSEL_TYPE: "arteriole"})
+    nodes["arteriole_boundary_nodes"] = [2, 4, 12]
+
+    assign_vessel_branch_orders(G, **nodes)
+
+    labels = _labels(G)
+    assert labels[(12, 30, 0)] == "B01"
+    assert labels[(30, 31, 0)] == "B02"
+    assert sorted(e for e, label in labels.items() if label.startswith("Art")) == [
+        (0, 1, 0), (1, 2, 0), (2, 3, 0), (3, 4, 0),
+    ]
+
+
+def _small_vessels_beside_large_vessels():
+    """A large arteriole 0-1-2 (inlet 0) and a large vein 13-14-15 (outlet
+    15). A small arteriole leaves the large one at 1 through a vessel too
+    little in its mask to be tagged (1-3, as where it opens out of the large
+    mask), runs on in its mask 3-4-5, and has a capillary leave it at 4. A
+    small venule 9-10-11 takes a capillary at 10 and reaches the vein at 13
+    through 11-13, also untagged."""
+    G = _mask_tagged_graph(
+        large_arteriole=[(0, 1), (1, 2)],
+        large_venule=[(13, 14), (14, 15)],
+        small_arteriole=[(3, 4), (4, 5)],
+        small_venule=[(9, 10), (10, 11)],
+        other=[(1, 3), (4, 6), (5, 7), (6, 8), (7, 8), (8, 9), (8, 12), (12, 10), (11, 13)],
+    )
+    return G, dict(
+        inlet_nodes=[0],
+        outlet_nodes=[15],
+        arteriole_boundary_nodes=[3, 4, 5],
+        venule_boundary_nodes=[9, 10, 11],
+        large_arteriole_boundary_nodes=[1],
+        large_venule_boundary_nodes=[13],
+    )
+
+
+def test_beside_a_large_tier_the_small_tiers_run_on_along_their_masks():
+    """Regression: from the hand-off at 1, Art took the side branch only up
+    to the first boundary node (1-3) and 3-4-5 were capillaries (B01); Ven
+    likewise took 11-13 and left 10-11, 9-10 as B05, B04. The side branch up
+    to the small mask stays Art1/Ven1, and the tier runs on along it."""
+    G, nodes = _small_vessels_beside_large_vessels()
+
+    summary = assign_vessel_branch_orders(G, **nodes)
+
+    assert summary["arteriole_edge_count"] == 3
+    assert summary["venule_edge_count"] == 3
+    assert _labels(G) == {
+        (0, 1, 0): "Large_Art1", (1, 2, 0): "Large_Art2",
+        (14, 15, 0): "Large_Ven1", (13, 14, 0): "Large_Ven2",
+        (1, 3, 0): "Art1", (3, 4, 0): "Art2", (4, 5, 0): "Art3",
+        (11, 13, 0): "Ven1", (10, 11, 0): "Ven2", (9, 10, 0): "Ven3",
+        (4, 6, 0): "B01", (5, 7, 0): "B01", (6, 8, 0): "B02", (7, 8, 0): "B02",
+        (8, 9, 0): "B03", (8, 12, 0): "B03", (10, 12, 0): "B04",
+    }
+
+
+def _small_vessel_network():
+    """1 um voxels, every vessel in the plane y = 4, no large masks. A small
+    arteriole runs along x at z = 10 from the inlet i (x = 0) through p to q
+    (x = 20), where its 5 x 5 um mask ends; a small venule runs in its own
+    mask from r (x = 30) through t to the outlet o (x = 49). A capillary
+    leaves the arteriole at p and joins the venule at t, round through c1 and
+    c3 at z = 20; another runs straight from q to r."""
+    from haemolynx.pipeline.stages import SkeletonisedVolume, VesselNetwork
+
+    shape = (30, 9, 50)
+    pos = {
+        "i": (10, 4, 0), "p": (10, 4, 10), "q": (10, 4, 20), "r": (10, 4, 30),
+        "t": (10, 4, 40), "o": (10, 4, 49), "c1": (20, 4, 10), "c3": (20, 4, 40),
+    }
+    ids = {name: index for index, name in enumerate(pos)}
+    G = nx.MultiGraph()
+    for name, p in pos.items():
+        G.add_node(ids[name], pos=tuple(float(c) for c in p))
+    for a, b in [
+        ("i", "p"), ("p", "q"), ("q", "r"), ("r", "t"), ("t", "o"),
+        ("p", "c1"), ("c1", "c3"), ("c3", "t"),
+    ]:
+        G.add_edge(ids[a], ids[b], voxels=_segment(pos[a], pos[b]), length=float(
+            np.linalg.norm(np.subtract(pos[b], pos[a]))))
+    small_art = np.zeros(shape, dtype=bool); small_art[8:13, 2:7, 0:22] = True
+    small_ven = np.zeros(shape, dtype=bool); small_ven[8:13, 2:7, 29:50] = True
+    image = np.zeros(shape, dtype=np.uint8)
+    volume = SkeletonisedVolume(
+        image=image, skeleton=image.copy(), voxel_size_xyz=(1.0, 1.0, 1.0),
+        voxel_size_zyx=(1.0, 1.0, 1.0), output_dir=Path("."),
+    )
+    network = VesselNetwork(
+        graph=G, volume=volume, small_arteriole_mask=small_art, small_venule_mask=small_ven,
+    )
+    return network, ids
+
+
+def _small_mask_settings(tmp_path, ids):
+    from haemolynx.pipeline import default_schema
+
+    settings = default_schema().defaults()
+    settings.update({
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": False,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        "small_venule_mask_path": "small_venule_mask.tif",
+        "inlet_node_selection_method": "node_ids",
+        "inlet_node_ids": [ids["i"]],
+        "outlet_node_selection_method": "node_ids",
+        "outlet_node_ids": [ids["o"]],
+        "write_small_vessel_boundary_labelling_3d_html": False,
+        "visualize_results": False,
+        "plot_dir": tmp_path,
+    })
+    for name in (
+        "inlet_nodes", "outlet_nodes", "arteriole_boundary_nodes", "venule_boundary_nodes",
+        "large_arteriole_boundary_nodes", "large_venule_boundary_nodes",
+        "inlet_node_coordinates", "outlet_node_coordinates",
+        "arteriole_boundary_node_coordinates", "venule_boundary_node_coordinates",
+        "arteriole_boundary_node_volumes", "venule_boundary_node_volumes",
+    ):
+        settings[name] = []
+    return settings
+
+
+def test_the_small_tiers_follow_the_small_masks_through_a_run(tmp_path):
+    """From the masks to the orders, as a run assigns them: the Boundaries
+    stage tags the vessels lying in the small masks, and Art and Ven run on
+    along them past the capillaries leaving at p and t. A later run whose
+    boundary nodes are picked by hand clears the tags, and its tiers end at
+    the nodes picked."""
+    from haemolynx.pipeline.stages import _assign_branch_orders, assign_boundaries
+
+    network, ids = _small_vessel_network()
+    settings = _small_mask_settings(tmp_path, ids)
+    G = network.graph
+
+    def label(a, b):
+        return G.edges[ids[a], ids[b], 0]["branch_order"]
+
+    def tag(a, b):
+        return G.edges[ids[a], ids[b], 0].get(SMALL_MASK_VESSEL_TYPE)
+
+    assign_boundaries(settings, network)
+    _assign_branch_orders(settings, G)
+
+    assert sorted(settings["arteriole_boundary_nodes"]) == sorted([ids["p"], ids["q"]])
+    assert sorted(settings["venule_boundary_nodes"]) == sorted([ids["r"], ids["t"]])
+    assert [tag("i", "p"), tag("p", "q"), tag("r", "t"), tag("t", "o")] == [
+        "arteriole", "arteriole", "venule", "venule",
+    ]
+    assert tag("q", "r") is tag("p", "c1") is tag("c3", "t") is None
+    assert [label("i", "p"), label("p", "q")] == ["Art1", "Art2"]
+    assert [label("t", "o"), label("r", "t")] == ["Ven1", "Ven2"]
+    assert [label("p", "c1"), label("q", "r"), label("c1", "c3"), label("c3", "t")] == [
+        "B01", "B01", "B02", "B03",
+    ]
+
+    settings["use_small_vessel_masks_for_boundary_assignment"] = False
+    settings.update({
+        "arteriole_boundary_selection_method": "node_ids",
+        "arteriole_boundary_node_ids": [ids["p"], ids["q"]],
+        "venule_boundary_selection_method": "node_ids",
+        "venule_boundary_node_ids": [ids["r"], ids["t"]],
+    })
+    assign_boundaries(settings, network)
+    _assign_branch_orders(settings, G)
+
+    assert not [d for d in G.edges.values() if SMALL_MASK_VESSEL_TYPE in d]
+    assert [label("i", "p"), label("p", "q")] == ["Art1", "B01"]
+    assert [label("t", "o"), label("r", "t")] == ["Ven1", "B02"]
