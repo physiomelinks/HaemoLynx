@@ -23,32 +23,46 @@ from test_large_vessel_network_mode import (
 
 
 @pytest.mark.parametrize(
-    "automated, switch, expected",
-    [(True, True, True), (True, False, False), (False, True, False), (False, False, False)],
+    "automated, large, switch, expected",
+    [
+        (True, True, True, True),
+        (True, True, False, False),
+        (True, False, True, False),
+        (False, True, True, False),
+        (False, False, False, False),
+    ],
 )
-def test_the_masks_choose_only_with_both_switches_on(automated, switch, expected):
+def test_the_masks_choose_only_with_every_switch_on(automated, large, switch, expected):
+    """The large masks choose the inlets only while they are in use: with
+    "Use large vessel masks" unticked there are no masks to choose from."""
     settings = {"automated_vessel_assignment": automated,
+                "use_large_vessel_masks": large,
                 "inlets_outlets_from_vessel_masks": switch}
     assert inlets_outlets_from_vessel_masks(settings) is expected
 
 
 def test_a_config_without_the_new_switch_keeps_its_old_behaviour():
-    assert inlets_outlets_from_vessel_masks({"automated_vessel_assignment": True}) is True
+    assert inlets_outlets_from_vessel_masks(
+        {"automated_vessel_assignment": True, "use_large_vessel_masks": True}
+    ) is True
 
 
 @pytest.mark.parametrize("role", ["inlet", "outlet"])
 def test_the_inlet_and_outlet_tabs_open_when_the_masks_do_not_choose(role):
     masks_choose = {"automated_vessel_assignment": True,
+                    "use_large_vessel_masks": True,
                     "inlets_outlets_from_vessel_masks": True}
-    by_hand = {"automated_vessel_assignment": True,
-               "inlets_outlets_from_vessel_masks": False}
+    by_hand = {**masks_choose, "inlets_outlets_from_vessel_masks": False}
     assert not role_manual_controls_enabled(role, masks_choose)
     assert role_manual_controls_enabled(role, by_hand)
     assert role_manual_controls_enabled(role, {"automated_vessel_assignment": False})
+    # Regression: unticking "Use large vessel masks" left these tabs greyed.
+    assert role_manual_controls_enabled(role, {**masks_choose, "use_large_vessel_masks": False})
 
 
 def test_preflight_warns_when_hand_picked_inlets_would_be_ignored():
     picked = {"automated_vessel_assignment": True,
+              "use_large_vessel_masks": True,
               "inlets_outlets_from_vessel_masks": True,
               "inlet_node_ids": [3], "outlet_node_volumes": [[[0, 0, 0], [1, 1, 1]]]}
     warnings = check_manual_inlets_outlets_while_masks_choose(picked).warnings

@@ -66,7 +66,9 @@ import numpy as np
 
 from haemolynx.graph.boundaries import (
     BOUNDARY_ROLE_SETTINGS,
+    assigns_large_vessel_branch_orders,
     inlets_outlets_from_vessel_masks,
+    vessel_masks_in_use,
 )
 from haemolynx.gui.results import (
     BOUNDARY_COORDINATE_POINT_SIZE,
@@ -148,8 +150,9 @@ __all__ = [
 #: manual role controls. Kept here so tests can assert the exact wording
 #: without importing Qt.
 AUTOMATED_OVERRIDES_MANUAL_NOTE = (
-    "While automated vessel assignment and 'Inlets outlets from vessel masks' "
-    "are both on, the masks choose the inlets and outlets and override the "
+    "While automated vessel assignment, 'Use large vessel masks' and 'Inlets "
+    "outlets from vessel masks' are all on, the masks choose the inlets and "
+    "outlets and override the "
     "manual Inlet and Outlet tabs below. Turn 'Inlets outlets from vessel "
     "masks' off to set them by hand; the masks still drive the large-vessel "
     "treatment."
@@ -161,10 +164,10 @@ AUTOMATED_OVERRIDES_MANUAL_NOTE = (
 ROLES: tuple[str, ...] = tuple(BOUNDARY_ROLE_SETTINGS)
 
 #: Inlet/outlet: greyed while the large-vessel masks choose them
-#: (``automated_vessel_assignment`` and ``inlets_outlets_from_vessel_masks``).
+#: (:func:`~haemolynx.graph.boundaries.inlets_outlets_from_vessel_masks`).
 LARGE_AUTO_ROLES: frozenset[str] = frozenset({"inlet", "outlet"})
 
-#: Arteriole/venule: greyed when small-vessel mask boundary assignment is on.
+#: Arteriole/venule: greyed while the small-vessel masks are in use.
 SMALL_AUTO_ROLES: frozenset[str] = frozenset(
     {"arteriole_boundary", "venule_boundary"}
 )
@@ -182,22 +185,18 @@ def role_manual_controls_enabled(role: str, values: Mapping[str, Any]) -> bool:
     """Whether *role*'s manual sub-tab should stay interactive.
 
     The large-vessel masks replace manual inlet/outlet picking only while
-    they choose the inlets and outlets (:func:`inlets_outlets_from_vessel_masks`:
-    ``automated_vessel_assignment`` and ``inlets_outlets_from_vessel_masks``);
-    small-vessel mask assignment
-    (``use_small_vessel_masks_for_boundary_assignment``) replaces manual
-    arteriole/venule boundary picking. The sub-tab stays visible but is
+    they choose the inlets and outlets (:func:`inlets_outlets_from_vessel_masks`);
+    the small-vessel masks, while in use (:func:`vessel_masks_in_use`), replace
+    manual arteriole/venule boundary picking. Each asks whether its switch is
+    in effect, not what it holds: a switch left ticked under one the user
+    unticked is hidden and greys nothing. The sub-tab stays visible but is
     greyed out -- unlike vessel-mask option rows, which hide.
     """
     if role in LARGE_AUTO_ROLES and inlets_outlets_from_vessel_masks(values):
         return False
-    if role in SMALL_AUTO_ROLES and values.get(
-        "use_small_vessel_masks_for_boundary_assignment"
-    ):
+    if role in SMALL_AUTO_ROLES and vessel_masks_in_use(values, "small"):
         return False
-    if role in LARGE_VESSEL_NETWORK_ROLES and not values.get(
-        "assign_large_vessel_branch_orders"
-    ):
+    if role in LARGE_VESSEL_NETWORK_ROLES and not assigns_large_vessel_branch_orders(values):
         return False
     return True
 
@@ -209,7 +208,8 @@ SMALL_VESSEL_OVERRIDES_MANUAL_NOTE = (
     "boundary selection."
 )
 LARGE_VESSEL_NETWORK_MODE_OFF_NOTE = (
-    "Only used when assign_large_vessel_branch_orders is on."
+    "Only used when assign_large_vessel_branch_orders is on, with the "
+    "large-vessel masks in use and the network not cut at them."
 )
 
 #: Why a role's sub-tab/actions are greyed, keyed by role. One lookup instead

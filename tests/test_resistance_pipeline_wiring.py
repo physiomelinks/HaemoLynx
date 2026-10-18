@@ -291,17 +291,21 @@ def test_preflight_rejects_a_missing_input_image(pipeline, tmp_path):
 
 
 def test_preflight_demands_the_masks_a_toggle_turns_on(pipeline, tmp_path):
-    """Turning on large-vessel masks makes their paths required."""
+    """Turning on large-vessel masks makes their paths required -- under
+    automated vessel assignment, which the masks sit under. Left ticked
+    under it unticked, the switch is hidden and asks for nothing."""
     from haemolynx.pipeline import preflight
 
     image = tmp_path / "mask.tif"
     image.write_bytes(b"x")
-    settings = pipeline.resolve_settings(
-        overrides={"input_path": image, "use_large_vessel_masks": True}
-    )
-    report = preflight(settings, pipeline.SCHEMA)
+    on = {"input_path": image, "automated_vessel_assignment": True, "use_large_vessel_masks": True}
+    report = preflight(pipeline.resolve_settings(overrides=on), pipeline.SCHEMA)
     assert not report.ok
     assert any("large_arteriole_mask_path" in message for message in report.errors)
+
+    hidden = {**on, "automated_vessel_assignment": False}
+    report = preflight(pipeline.resolve_settings(overrides=hidden), pipeline.SCHEMA)
+    assert not any("large_arteriole_mask_path" in message for message in report.errors)
 
 
 def test_preflight_requires_a_cached_graph_when_graph_building_is_off(pipeline, tmp_path):

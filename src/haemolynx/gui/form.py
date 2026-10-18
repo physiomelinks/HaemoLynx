@@ -140,12 +140,20 @@ def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
 
     Prefer Input when main-image ilastik is on. When only vessel-mask ilastik
     is on, host them on Boundaries so they are not stranded while Input hides
-    them. One schema value each — the panel reparents the same rows.
+    them -- only while that role's masks are in use, since a switch left on
+    under an unticked mask switch is hidden and runs nothing. One schema value
+    each — the panel reparents the same rows.
     """
+    from haemolynx.graph.boundaries import vessel_masks_in_use
+
     if values.get("use_ilastik_segmentation"):
         return "input"
-    if values.get("use_ilastik_large_vessel_segmentation") or values.get(
-        "use_ilastik_small_vessel_segmentation"
+    if (
+        values.get("use_ilastik_large_vessel_segmentation")
+        and vessel_masks_in_use(values, "large")
+    ) or (
+        values.get("use_ilastik_small_vessel_segmentation")
+        and vessel_masks_in_use(values, "small")
     ):
         return "boundaries"
     return None

@@ -37,6 +37,7 @@ from haemolynx.gui.form import (
     unmet_chain,
     shared_ilastik_host,
 )
+from haemolynx.graph.boundaries import assigns_large_vessel_branch_orders
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.gui.layers import input_for_layer, voxel_size_xyz_from_scale
 from haemolynx.gui.layout import (
@@ -8831,10 +8832,14 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         # The band settings draw a box too, so they move the picture as much
         # as a coordinate does.
         *shared_settings(),
+        # Every switch the role sub-tabs' greying reads, gates included
+        # (graph.vessel_masks_in_use, assigns_large_vessel_branch_orders).
         "automated_vessel_assignment",
+        "use_large_vessel_masks",
         "inlets_outlets_from_vessel_masks",
         "use_small_vessel_masks_for_boundary_assignment",
         "assign_large_vessel_branch_orders",
+        "cut_network_at_large_vessel_volumes",
     ):
         if _name in rows:
             rows[_name].changed.connect(on_settings_changed)
@@ -12634,7 +12639,7 @@ def settings_widget(napari_viewer=None):
         if thick_vessel_row is not None:
             large_vessel_network_mode = bool(
                 values.get("use_thick_vessel_skeletonisation")
-            ) and bool(values.get("assign_large_vessel_branch_orders"))
+            ) and assigns_large_vessel_branch_orders(values)
             thick_vessel_row.label = (
                 "Also segment large vessels"
                 if large_vessel_network_mode

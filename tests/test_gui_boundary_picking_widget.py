@@ -646,9 +646,9 @@ def test_small_auto_greys_arteriole_and_venule_role_tabs(panel):
     enabled = _role_tab_enabled(bc)
     assert enabled["arteriole_boundary"] is False
     assert enabled["venule_boundary"] is False
-    # Automated (large) also greys inlet/outlet when the root toggle is on.
-    assert enabled["inlet"] is False
-    assert enabled["outlet"] is False
+    # Only the large masks choose inlets and outlets, and they are off.
+    assert enabled["inlet"] is True
+    assert enabled["outlet"] is True
     assert tabs.isTabVisible(2) is True
     assert tabs.isTabVisible(3) is True
     assert tabs.count() == len(ROLES)
@@ -685,11 +685,40 @@ def test_large_vessel_network_mode_toggles_the_new_role_tabs(panel):
     assert enabled["large_vessel_inlet"] is False
     assert enabled["large_vessel_outlet"] is False
 
+    rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["cut_network_at_large_vessel_volumes"].value = False
     rows["assign_large_vessel_branch_orders"].value = True
 
     enabled = _role_tab_enabled(bc)
     assert enabled["large_vessel_inlet"] is True
     assert enabled["large_vessel_outlet"] is True
+
+
+def test_unticking_the_large_masks_hands_the_inlets_back_to_their_tabs(panel):
+    """Regression: unticking "Use large vessel masks" hid every large-vessel
+    row but kept their values, so the Inlet and Outlet tabs stayed greyed
+    (the masks no longer loaded "chose" them) and the large-vessel tabs
+    stayed open."""
+    widget, viewer, bc = panel
+    rows = rows_of(widget)
+    rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
+    rows["inlets_outlets_from_vessel_masks"].value = True
+    rows["cut_network_at_large_vessel_volumes"].value = False
+    rows["assign_large_vessel_branch_orders"].value = True
+    enabled = _role_tab_enabled(bc)
+    assert not enabled["inlet"] and not enabled["outlet"]
+    assert enabled["large_vessel_inlet"] and enabled["large_vessel_outlet"]
+    assert not rows["inlets_outlets_from_vessel_masks"].native.isHidden()
+
+    rows["use_large_vessel_masks"].value = False
+
+    enabled = _role_tab_enabled(bc)
+    assert enabled["inlet"] and enabled["outlet"]
+    assert not enabled["large_vessel_inlet"] and not enabled["large_vessel_outlet"]
+    # The switch reads the large masks, so it goes with them.
+    assert rows["inlets_outlets_from_vessel_masks"].native.isHidden()
 
 
 def test_choosing_a_sub_tab_chooses_the_role(panel):
@@ -1950,6 +1979,7 @@ def test_show_draws_no_inlet_outlet_band_while_the_masks_choose(panel):
     rows["inlet_node_selection_method"].value = "edge_percent"
     rows["outlet_node_selection_method"].value = "edge_percent"
     rows["automated_vessel_assignment"].value = True
+    rows["use_large_vessel_masks"].value = True
     rows["inlets_outlets_from_vessel_masks"].value = True
     _apply_layers(viewer, StageLayers(
         stage="assign_boundaries", title="Boundaries", note="",

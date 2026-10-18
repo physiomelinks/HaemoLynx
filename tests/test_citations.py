@@ -149,17 +149,15 @@ def test_ilastik_vessel_mask_flags_need_their_own_prerequisite_too(
     assert "ilastik" in _names(used_citations(active, PACKAGE_CITATIONS))
 
 
-def test_used_ilastik_reads_the_same_prerequisite_table_as_preflight():
+def test_used_ilastik_asks_the_same_question_as_preflight():
     """Regression: _used_ilastik used to hardcode its own copy of the
-    large/small-vessel-mask prerequisite chains that
-    check_ilastik_vessel_mask_prerequisites already tabulates -- two sources
-    of truth that could silently drift apart. It must now be the same
-    object, so a new ilastik prerequisite added to one is picked up by the
-    other for free."""
-    from haemolynx.pipeline.checks import _ILASTIK_VESSEL_MASK_PREREQUISITES
-    from haemolynx.pipeline.citations import _ILASTIK_VESSEL_MASK_PREREQUISITES as via_citations
+    large/small-vessel-mask prerequisite chains -- two sources of truth that
+    could silently drift apart. It asks the one function preflight's ilastik
+    check asks, so a change to when a mask is segmented reaches both."""
+    from haemolynx.pipeline.checks import ilastik_segments_vessel_masks
+    from haemolynx.pipeline.citations import ilastik_segments_vessel_masks as via_citations
 
-    assert via_citations is _ILASTIK_VESSEL_MASK_PREREQUISITES
+    assert via_citations is ilastik_segments_vessel_masks
 
 
 def test_napari_is_cited_only_when_napari_is_already_imported(tmp_path, monkeypatch):

@@ -203,15 +203,29 @@ def test_assign_boundaries_large_vessel_network_mode_populates_large_boundary_no
     assert settings["large_venule_boundary_nodes"]
 
 
-def test_assign_boundaries_raises_when_large_vessel_mode_and_cut_both_on(tmp_path):
+def test_assign_boundaries_cuts_and_skips_the_large_tier_when_the_cut_is_on(tmp_path):
+    """Ticking the cut back on hides assign_large_vessel_branch_orders in the
+    panel (it requires the cut off), so the run cuts and gives no
+    Large_Art/Large_Ven tier -- it used to stop on the hidden switch."""
     G, arteriole, venule = _chain_with_large_vessel_masks()
+    edges = G.number_of_edges()
     network = _network_for_large_vessel_mode(G, arteriole, venule, tmp_path)
     settings = _assign_boundaries_settings(
-        plot_dir=tmp_path, cut_network_at_large_vessel_volumes=True
+        plot_dir=tmp_path,
+        cut_network_at_large_vessel_volumes=True,
+        # This chain leaves no terminal in a mask once cut: pick by hand.
+        inlets_outlets_from_vessel_masks=False,
+        inlet_node_selection_method="node_ids",
+        inlet_node_ids=[3],
+        outlet_node_selection_method="node_ids",
+        outlet_node_ids=[6],
     )
 
-    with pytest.raises(ValueError, match="cut_network_at_large_vessel_volumes"):
-        assign_boundaries(settings, network)
+    boundaries = assign_boundaries(settings, network)
+
+    assert boundaries.graph.number_of_edges() < edges
+    assert settings["large_vessel_inlet_nodes"] == []
+    assert settings["large_arteriole_boundary_nodes"] == []
 
 
 def test_assign_boundaries_logs_large_vessel_network_behaviour_change(tmp_path, caplog):

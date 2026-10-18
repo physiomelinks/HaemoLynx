@@ -11,7 +11,12 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
-from haemolynx.graph.boundaries import boundary_role_configured
+from haemolynx.graph.boundaries import (
+    VESSEL_MASK_SWITCHES,
+    assigns_large_vessel_branch_orders,
+    boundary_role_configured,
+    vessel_masks_in_use,
+)
 from haemolynx.haemodynamics.perturbations import (
     perturbation_problems,
     perturbations_from_settings,
@@ -59,13 +64,8 @@ def check_cached_artefacts(settings: Mapping[str, Any]) -> CheckReport:
 def check_ilastik_executable(settings: Mapping[str, Any]) -> CheckReport:
     """ilastik is a separate program; if a run needs it, it must be findable."""
     report = CheckReport()
-    needed = any(
-        settings.get(name)
-        for name in (
-            "use_ilastik_segmentation",
-            "use_ilastik_large_vessel_segmentation",
-            "use_ilastik_small_vessel_segmentation",
-        )
+    needed = bool(settings.get("use_ilastik_segmentation")) or ilastik_segments_vessel_masks(
+        settings
     )
     if not needed:
         return report
@@ -139,7 +139,7 @@ def check_input_is_not_a_large_vessel_mask(
     )
 
     matched_roles: list[str] = []
-    if settings.get("use_large_vessel_masks"):
+    if vessel_masks_in_use(settings, "large"):
         for role, key in (
             ("arteriole", "large_arteriole_mask_path"),
             ("venule", "large_venule_mask_path"),
@@ -216,13 +216,11 @@ def check_large_vessel_cut_when_masks_enabled(
 ) -> CheckReport:
     """Warn when large-mask assignment is on but the volume cut is off."""
     report = CheckReport()
-    if not bool(settings.get("use_large_vessel_masks")):
-        return report
-    if not bool(settings.get("automated_vessel_assignment")):
+    if not vessel_masks_in_use(settings, "large"):
         return report
     if bool(settings.get("cut_network_at_large_vessel_volumes")):
         return report
-    if bool(settings.get("assign_large_vessel_branch_orders")):
+    if assigns_large_vessel_branch_orders(settings):
         # Cut is deliberately off: large-vessel material stays in the
         # network as Large_Art/Large_Ven branch orders instead of being
         # cut away -- not the oversight this warning otherwise flags.
@@ -239,47 +237,24 @@ def check_large_vessel_cut_when_masks_enabled(
 def check_large_vessel_branch_order_mode_prerequisites(
     settings: Mapping[str, Any],
 ) -> CheckReport:
-    """assign_large_vessel_branch_orders needs its whole prerequisite chain.
+    """assign_large_vessel_branch_orders needs arteriole/venule boundaries.
 
-    The schema's own ``requires`` tuple only drives GUI nesting and an
-    ``IneffectiveSettingWarning`` — it does not block a raw settings dict
-    (e.g. loaded from a hand-edited YAML) from having the flag on without
-    its prerequisites. This is the run-time check that catches that.
+    Only while it is in effect (``graph.assigns_large_vessel_branch_orders``:
+    the large masks in use, the cut off). Left on under a gate that is off,
+    the panel hides it and the run reads it as off, so it is no error: the
+    schema's ``IneffectiveSettingWarning`` says it is set and unread.
     """
     report = CheckReport()
-    if not bool(settings.get("assign_large_vessel_branch_orders")):
+    if not assigns_large_vessel_branch_orders(settings):
         return report
 
-    missing = [
-        name
-        for name in (
-            "use_large_vessel_masks",
-            "automated_vessel_assignment",
-        )
-        if not bool(settings.get(name))
-    ]
-    if missing:
-        report.add_error(
-            "assign_large_vessel_branch_orders requires "
-            f"{', '.join(missing)} to also be on."
-        )
-    if bool(settings.get("cut_network_at_large_vessel_volumes")):
-        report.add_error(
-            "assign_large_vessel_branch_orders requires "
-            "cut_network_at_large_vessel_volumes=False -- large-vessel "
-            "material must stay in the network to be tagged Large_Art/"
-            "Large_Ven, not be cut away."
-        )
     # The same rule as assign_boundaries: a list the current method does not
     # read (node IDs left behind after switching back to coordinates) is not
     # a source, and edge_percent does not name arteriole or venule boundaries.
     vessel_boundaries = boundary_role_configured(
         settings, "arteriole_boundary"
     ) or boundary_role_configured(settings, "venule_boundary")
-    if not (
-        bool(settings.get("use_small_vessel_masks_for_boundary_assignment"))
-        or vessel_boundaries
-    ):
+    if not (vessel_masks_in_use(settings, "small") or vessel_boundaries):
         report.add_warning(
             "assign_large_vessel_branch_orders is on, but no small-vessel "
             "masks are in use and neither the arteriole nor the venule "
@@ -290,37 +265,22 @@ def check_large_vessel_branch_order_mode_prerequisites(
     return report
 
 
-#: Ilastik-driven vessel-mask segmentation toggle -> the flags its own
-#: schema ``requires`` names (see pipeline/schema.py). Structurally the same
-#: gap as assign_large_vessel_branch_orders above: the schema's ``requires``
-#: only drives GUI nesting and an ``IneffectiveSettingWarning``, so a raw
-#: settings dict can have the ilastik flag on with its prerequisites off and
-#: reach the segmentation stage before anything says so -- there it is
-#: silently a no-op (nothing reads the ilastik output), not a crash, which
-#: is exactly the kind of "ran to completion but did nothing" outcome a
-#: preflight check exists to catch before it looks like a real run.
-_ILASTIK_VESSEL_MASK_PREREQUISITES = {
-    "use_ilastik_large_vessel_segmentation": (
-        "use_large_vessel_masks",
-        "automated_vessel_assignment",
-    ),
-    "use_ilastik_small_vessel_segmentation": (
-        "use_small_vessel_masks_for_boundary_assignment",
-        "automated_vessel_assignment",
-    ),
+#: Each vessel-mask role's ilastik switch, which sits under that role's masks.
+_ILASTIK_VESSEL_MASK_FLAGS = {
+    "large": "use_ilastik_large_vessel_segmentation",
+    "small": "use_ilastik_small_vessel_segmentation",
 }
 
 
-def check_ilastik_vessel_mask_prerequisites(settings: Mapping[str, Any]) -> CheckReport:
-    """An ilastik large/small-vessel segmentation toggle needs its mask on too."""
-    report = CheckReport()
-    for flag, requires in _ILASTIK_VESSEL_MASK_PREREQUISITES.items():
-        if not bool(settings.get(flag)):
-            continue
-        missing = [name for name in requires if not bool(settings.get(name))]
-        if missing:
-            report.add_error(f"{flag} requires {', '.join(missing)} to also be on.")
-    return report
+def ilastik_segments_vessel_masks(settings: Mapping[str, Any]) -> bool:
+    """Whether ilastik segments a vessel mask this run: a role's ilastik switch
+    on with that role's masks in use (``graph.vessel_masks_in_use``). A switch
+    left on under an unticked mask switch is hidden in the panel and runs
+    nothing, so neither preflight nor the citations count it."""
+    return any(
+        bool(settings.get(flag)) and vessel_masks_in_use(settings, role)
+        for role, flag in _ILASTIK_VESSEL_MASK_FLAGS.items()
+    )
 
 
 def check_thick_vessel_restriction_prerequisites(
@@ -341,13 +301,18 @@ def check_thick_vessel_restriction_prerequisites(
     if choice == "off":
         return report
 
-    missing = []
-    if choice in ("large", "both") and not bool(settings.get("use_large_vessel_masks")):
-        missing.append("use_large_vessel_masks")
-    if choice in ("small", "both") and not bool(
-        settings.get("use_small_vessel_masks_for_boundary_assignment")
-    ):
-        missing.append("use_small_vessel_masks_for_boundary_assignment")
+    # The masks load only while in use (graph.vessel_masks_in_use), which
+    # automated_vessel_assignment gates as well as the role's own switch.
+    roles = {"large": ("large",), "small": ("small",), "both": ("large", "small")}.get(
+        choice, ()
+    )
+    missing = [
+        name
+        for role in roles
+        for name in ("automated_vessel_assignment", VESSEL_MASK_SWITCHES[role])
+        if not bool(settings.get(name))
+    ]
+    missing = list(dict.fromkeys(missing))
     if missing:
         report.add_error(
             f"skeleton_thick_vessel_restrict_to_mask={choice!r} requires "
@@ -747,7 +712,6 @@ def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     report.extend(check_manual_inlets_outlets_while_masks_choose(settings))
     report.extend(check_large_vessel_cut_when_masks_enabled(settings))
     report.extend(check_large_vessel_branch_order_mode_prerequisites(settings))
-    report.extend(check_ilastik_vessel_mask_prerequisites(settings))
     report.extend(check_thick_vessel_restriction_prerequisites(settings))
     report.extend(check_perturbations(settings, schema))
     report.extend(check_segmentation_quality(settings))

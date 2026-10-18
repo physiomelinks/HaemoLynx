@@ -734,11 +734,19 @@ def test_large_vessel_network_mode_gates_the_new_roles():
         role_manual_controls_enabled,
     )
 
-    off = {"assign_large_vessel_branch_orders": False}
-    on = {"assign_large_vessel_branch_orders": True}
+    on = {
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "cut_network_at_large_vessel_volumes": False,
+        "assign_large_vessel_branch_orders": True,
+    }
+    off = {**on, "assign_large_vessel_branch_orders": False}
+    # Left on under an unticked gate: hidden, so off.
+    hidden = {**on, "use_large_vessel_masks": False}
     for role in LARGE_VESSEL_NETWORK_ROLES:
         assert role_manual_controls_enabled(role, {}) is False, role
         assert role_manual_controls_enabled(role, off) is False, role
+        assert role_manual_controls_enabled(role, hidden) is False, role
         assert role_manual_controls_enabled(role, on) is True, role
 
 
@@ -758,7 +766,8 @@ def test_large_auto_disables_inlet_and_outlet_only():
 
 
 def test_small_auto_disables_arteriole_and_venule():
-    """Small-vessel masks grey A/V; the root automated toggle also greys I/O."""
+    """Small-vessel masks grey A/V; without the large masks nothing chooses
+    the inlets and outlets, so I/O stay open."""
     from haemolynx.gui.boundary_picking import role_manual_controls_enabled
 
     values = {
@@ -766,24 +775,23 @@ def test_small_auto_disables_arteriole_and_venule():
         "use_large_vessel_masks": False,
         "use_small_vessel_masks_for_boundary_assignment": True,
     }
-    assert role_manual_controls_enabled("inlet", values) is False
-    assert role_manual_controls_enabled("outlet", values) is False
+    assert role_manual_controls_enabled("inlet", values) is True
+    assert role_manual_controls_enabled("outlet", values) is True
     assert role_manual_controls_enabled("arteriole_boundary", values) is False
     assert role_manual_controls_enabled("venule_boundary", values) is False
 
 
-def test_small_auto_flag_alone_greys_only_arteriole_and_venule():
-    """The small-mask setting is what greys A/V, independent of the large gate."""
+def test_small_flag_left_on_under_unticked_automated_assignment_greys_nothing():
+    """Regression: the small-mask switch, hidden under an unticked automated
+    assignment, still greyed the Arteriole and Venule tabs."""
     from haemolynx.gui.boundary_picking import role_manual_controls_enabled
 
     values = {
         "automated_vessel_assignment": False,
         "use_small_vessel_masks_for_boundary_assignment": True,
     }
-    assert role_manual_controls_enabled("inlet", values) is True
-    assert role_manual_controls_enabled("outlet", values) is True
-    assert role_manual_controls_enabled("arteriole_boundary", values) is False
-    assert role_manual_controls_enabled("venule_boundary", values) is False
+    for role in ("inlet", "outlet", "arteriole_boundary", "venule_boundary"):
+        assert role_manual_controls_enabled(role, values) is True, role
 
 
 # --- coordinates that fall outside the image ---------------------------------

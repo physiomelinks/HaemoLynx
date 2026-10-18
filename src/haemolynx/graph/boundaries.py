@@ -484,22 +484,58 @@ def select_boundary_nodes_by_method(
     return [node for node in sort_nodes(selected) if node not in excluded]
 
 
+#: Each mask role's own switch, under ``automated_vessel_assignment``.
+VESSEL_MASK_SWITCHES: dict[str, str] = {
+    "large": "use_large_vessel_masks",
+    "small": "use_small_vessel_masks_for_boundary_assignment",
+}
 
-#: Config settings naming each boundary role's selection method, coordinates,
+
+def vessel_masks_in_use(settings: Mapping[str, Any], mask_role: str) -> bool:
+    """Whether the run uses the ``"large"`` or ``"small"`` arteriole/venule masks.
+
+    True only with ``automated_vessel_assignment`` *and* the role's own switch
+    on. The panel hides a role's switch, and every row under it, while a gate
+    above it is off, so a switch left ticked underneath is out of effect, not
+    on: its masks are not loaded, nothing assigns from them, and preflight
+    asks nothing of them. The one place this is decided: loading the masks,
+    the Boundaries stage, the panel's greying and preflight all ask here.
+    """
+    if mask_role not in VESSEL_MASK_SWITCHES:
+        raise ValueError(f"mask_role must be 'large' or 'small', got {mask_role!r}.")
+    return bool(settings.get("automated_vessel_assignment")) and bool(
+        settings.get(VESSEL_MASK_SWITCHES[mask_role])
+    )
+
+
 def inlets_outlets_from_vessel_masks(settings: Mapping[str, Any]) -> bool:
     """Whether the large-vessel masks choose the inlet and outlet nodes.
 
-    True only with ``automated_vessel_assignment`` *and*
+    True only with the large masks in use (:func:`vessel_masks_in_use`) *and*
     ``inlets_outlets_from_vessel_masks`` on. Off, the inlets and outlets come
     from the manual Inlet/Outlet methods even while the masks drive the
     large-vessel treatment. The one place this is decided: the Boundaries
     stage, the panel's greying and preflight all ask here.
     """
-    return bool(settings.get("automated_vessel_assignment")) and bool(
+    return vessel_masks_in_use(settings, "large") and bool(
         settings.get("inlets_outlets_from_vessel_masks", True)
     )
 
 
+def assigns_large_vessel_branch_orders(settings: Mapping[str, Any]) -> bool:
+    """``assign_large_vessel_branch_orders`` in effect: on, the large masks in
+    use, and the network not cut at them (the cut takes away the vessels the
+    Large_Art/Large_Ven tier would label). The panel hides the switch
+    whenever one of those does not hold, so it is off then, whatever it holds.
+    """
+    return (
+        bool(settings.get("assign_large_vessel_branch_orders"))
+        and vessel_masks_in_use(settings, "large")
+        and not bool(settings.get("cut_network_at_large_vessel_volumes", True))
+    )
+
+
+#: Config settings naming each boundary role's selection method, coordinates,
 #: volume boxes and node IDs, plus the ``node_role`` the selector expects.
 BOUNDARY_ROLE_SETTINGS: dict[str, dict[str, str]] = {
     "inlet": {

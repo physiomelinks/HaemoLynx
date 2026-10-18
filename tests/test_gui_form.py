@@ -369,6 +369,8 @@ def test_shared_ilastik_host_prefers_input_then_boundaries():
         shared_ilastik_host(
             {
                 "use_ilastik_segmentation": False,
+                "automated_vessel_assignment": True,
+                "use_large_vessel_masks": True,
                 "use_ilastik_large_vessel_segmentation": True,
             }
         )
@@ -378,10 +380,25 @@ def test_shared_ilastik_host_prefers_input_then_boundaries():
         shared_ilastik_host(
             {
                 "use_ilastik_segmentation": False,
+                "automated_vessel_assignment": True,
+                "use_small_vessel_masks_for_boundary_assignment": True,
                 "use_ilastik_small_vessel_segmentation": True,
             }
         )
         == "boundaries"
+    )
+    # A vessel ilastik switch left on under its unticked masks is hidden and
+    # runs nothing: the shared rows do not stay on Boundaries for it.
+    assert (
+        shared_ilastik_host(
+            {
+                "use_ilastik_segmentation": False,
+                "automated_vessel_assignment": True,
+                "use_large_vessel_masks": False,
+                "use_ilastik_large_vessel_segmentation": True,
+            }
+        )
+        is None
     )
     # Main wins: still Input even when vessel ilastik is also on.
     assert (
@@ -923,9 +940,10 @@ def test_visible_vessel_mask_settings_nests_under_automated_and_parents():
         "use_small_vessel_masks_for_boundary_assignment": False,
     }
     shown = visible_vessel_mask_settings(SCHEMA, auto_only)
+    # Whether the masks choose the inlets is a large-mask setting: it hides
+    # with "Use large vessel masks".
     assert shown == {
         "automated_vessel_assignment",
-        "inlets_outlets_from_vessel_masks",
         "use_large_vessel_masks",
         "use_small_vessel_masks_for_boundary_assignment",
     }

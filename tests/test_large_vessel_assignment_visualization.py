@@ -409,6 +409,7 @@ def test_run_html_helper_passes_loaded_masks_and_flags(monkeypatch, tmp_path):
     )
     settings = {
         "plot_dir": tmp_path,
+        "automated_vessel_assignment": True,
         "use_large_vessel_masks": True,
         "use_small_vessel_masks_for_boundary_assignment": True,
         "show_plots_in_ide": False,
@@ -497,6 +498,7 @@ def test_export_results_rewrites_final_graph_html_with_network_masks(
         "final_render_mode": "3d",
         "plot_dir": tmp_path,
         "input_path": Path("stack.tif"),
+        "automated_vessel_assignment": True,
         "use_large_vessel_masks": True,
         "use_small_vessel_masks_for_boundary_assignment": False,
         "large_vessel_3d_volume_downsample_stride": 1,

@@ -134,12 +134,14 @@ from .communities import (
 )
 from .boundaries import (
     BoundaryCoordinateWarning,
+    assigns_large_vessel_branch_orders,
     boundary_role_configured,
     inlets_outlets_from_vessel_masks,
     select_boundary_nodes_by_method,
     select_boundary_nodes_for_role,
     select_boundary_terminal_nodes,
     select_nodes_by_id,
+    vessel_masks_in_use,
 )
 from .boundary_node_fallback import (
     seed_edges_have_full_mask_coverage,
@@ -335,6 +337,8 @@ __all__ = [
     "select_boundary_nodes_by_method",
     "select_boundary_nodes_for_role",
     "inlets_outlets_from_vessel_masks",
+    "vessel_masks_in_use",
+    "assigns_large_vessel_branch_orders",
     "select_nodes_by_id",
     "compute_overlapping_terminal_assignment_metrics",
     "filter_io_nodes_to_terminal_degree1",

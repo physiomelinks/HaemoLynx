@@ -840,23 +840,6 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
         ),
         Setting(
-            # Split from automated_vessel_assignment: the masks drive the
-            # large-vessel treatment either way, and this alone decides
-            # whether they also pick the inlets and outlets -- so a run can
-            # keep its masks and still set its inlets and outlets by hand.
-            name="inlets_outlets_from_vessel_masks",
-            kind="bool",
-            default=True,
-            help=(
-                "Choose the inlet and outlet nodes where the large arteriole and "
-                "venule masks meet the network's open ends. Off: set them on the "
-                "Inlet and Outlet tabs, while the masks still drive the "
-                "large-vessel treatment"
-            ),
-            section=_VESSEL_MASKS,
-            requires=("automated_vessel_assignment",),
-        ),
-        Setting(
             name="use_large_vessel_masks",
             kind="bool",
             default=False,
@@ -870,13 +853,9 @@ SCHEMA = Schema(
             default=f"{_IMAGES}/large_arteriole_mask.tif",
             help="Read this pre-segmented large arteriole mask",
             section=_VESSEL_MASKS,
-            # Gate on use_large_vessel_masks only (not automated_vessel_assignment):
-            # turning the mask toggle on must demand the files at preflight even
-            # when the parent assignment gate is still off. GUI nesting still
-            # hides these rows while automated_vessel_assignment is off because
-            # use_large_vessel_masks itself requires that parent.
             requires=(
                 "use_large_vessel_masks",
+                "automated_vessel_assignment",
                 "!use_ilastik_large_vessel_segmentation",
             ),
             must_exist=True,
@@ -889,6 +868,7 @@ SCHEMA = Schema(
             section=_VESSEL_MASKS,
             requires=(
                 "use_large_vessel_masks",
+                "automated_vessel_assignment",
                 "!use_ilastik_large_vessel_segmentation",
             ),
             must_exist=True,
@@ -950,6 +930,23 @@ SCHEMA = Schema(
                 "use_ilastik_large_vessel_segmentation",
             ),
             must_exist=True,
+        ),
+        Setting(
+            # Split from automated_vessel_assignment: the masks drive the
+            # large-vessel treatment either way, and this alone decides
+            # whether they also pick the inlets and outlets -- so a run can
+            # keep its masks and still set its inlets and outlets by hand.
+            name="inlets_outlets_from_vessel_masks",
+            kind="bool",
+            default=True,
+            help=(
+                "Choose the inlet and outlet nodes where the large arteriole and "
+                "venule masks meet the network's open ends. Off: set them on the "
+                "Inlet and Outlet tabs, while the masks still drive the "
+                "large-vessel treatment"
+            ),
+            section=_VESSEL_MASKS,
+            requires=("use_large_vessel_masks", "automated_vessel_assignment"),
         ),
         Setting(
             name="large_vessel_mask_dilation_microns",

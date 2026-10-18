@@ -388,14 +388,14 @@ NEEDS_EXTERNAL_INFRASTRUCTURE = frozenset(
         # requires=("!use_ilastik_segmentation",): unmet means running WITH
         # ilastik on, which needs a real executable + trained classifier.
         "input_path",
-        # requires include "automated_vessel_assignment": unmet (for the two
-        # "!automated_vessel_assignment" ones) or met (for the other) means
-        # running WITH automated_vessel_assignment=True, which raises unless
-        # given real, non-None large arteriole/venule masks with plausible
-        # terminal-node overlap -- see assign_boundaries's own ValueError.
+        # requires=("!automated_vessel_assignment",) once: unmet means
+        # running WITH automated_vessel_assignment=True and its large masks,
+        # which need real masks with plausible terminal-node overlap. (A mask
+        # switch left on under an unticked automated_vessel_assignment, such
+        # as use_small_vessel_masks_for_boundary_assignment, is probed: the
+        # run reads it as off, graph.vessel_masks_in_use.)
         "inlet_node_selection_method",
         "outlet_node_selection_method",
-        "use_small_vessel_masks_for_boundary_assignment",
     }
 )
 

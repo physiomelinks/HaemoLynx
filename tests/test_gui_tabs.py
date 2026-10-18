@@ -918,7 +918,8 @@ def test_the_masks_choose_inlets_outlets_only_while_that_switch_is_on():
     assert "inlets outlets from vessel masks" in note
     switch = SCHEMA["inlets_outlets_from_vessel_masks"]
     assert switch.kind == "bool" and switch.default is True
-    assert switch.requires == ("automated_vessel_assignment",)
+    # It reads the large masks, so it hides with them.
+    assert switch.requires == ("use_large_vessel_masks", "automated_vessel_assignment")
     assert "inlets_outlets_from_vessel_masks" in SCHEMA["automated_vessel_assignment"].help
     # The manual methods apply unless the masks choose: no `requires` can say
     # that, so they carry none and preflight warns instead.

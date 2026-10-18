@@ -8,15 +8,16 @@ from types import SimpleNamespace
 
 import networkx as nx
 import numpy as np
+import pytest
 
 from haemolynx.graph import cut_graph_at_large_vessel_volumes
 from haemolynx.gui.results import NODES, VESSELS, ResultLayers, edge_polylines
 from haemolynx.pipeline import default_schema
 from haemolynx.pipeline.checks import (
-    check_ilastik_vessel_mask_prerequisites,
     check_large_vessel_branch_order_mode_prerequisites,
     check_large_vessel_cut_when_masks_enabled,
     check_thick_vessel_restriction_prerequisites,
+    ilastik_segments_vessel_masks,
 )
 from haemolynx.pipeline.stages import (
     BoundaryNodes,
@@ -949,18 +950,27 @@ _LARGE_VESSEL_MODE_SETTINGS = {
 }
 
 
-def test_preflight_errors_when_large_vessel_mode_and_cut_are_both_on():
+def test_preflight_reads_large_vessel_mode_as_off_under_the_cut():
+    """Ticking the cut back on hides assign_large_vessel_branch_orders in the
+    panel (it requires the cut off), so the run reads it as off: no error on
+    a switch the user cannot see -- the cut simply runs."""
     settings = {**_LARGE_VESSEL_MODE_SETTINGS, "cut_network_at_large_vessel_volumes": True}
     report = check_large_vessel_branch_order_mode_prerequisites(settings)
-    assert report.errors
-    assert any("cut_network_at_large_vessel_volumes" in message for message in report.errors)
+    assert not report.errors
+    assert not report.warnings
 
 
-def test_preflight_errors_when_large_vessel_mode_missing_a_prerequisite():
-    settings = {**_LARGE_VESSEL_MODE_SETTINGS, "use_large_vessel_masks": False}
+@pytest.mark.parametrize(
+    "unticked", ["use_large_vessel_masks", "automated_vessel_assignment"]
+)
+def test_preflight_ignores_large_vessel_mode_left_on_under_an_unticked_gate(unticked):
+    """Regression: unticking "Use large vessel masks" (or the automated
+    assignment above it) hid this switch but kept it on, and preflight then
+    failed the run on it."""
+    settings = {**_LARGE_VESSEL_MODE_SETTINGS, unticked: False}
     report = check_large_vessel_branch_order_mode_prerequisites(settings)
-    assert report.errors
-    assert any("use_large_vessel_masks" in message for message in report.errors)
+    assert not report.errors
+    assert not report.warnings
 
 
 def test_preflight_large_vessel_mode_works_without_thick_vessel_skeletonisation():
@@ -997,60 +1007,30 @@ def test_preflight_large_vessel_mode_prerequisites_no_op_when_mode_is_off():
     assert not report.warnings
 
 
-def test_preflight_ilastik_vessel_mask_prerequisites_no_op_when_both_flags_off():
-    report = check_ilastik_vessel_mask_prerequisites({})
-    assert not report.errors
+def test_no_vessel_mask_is_segmented_with_both_ilastik_flags_off():
+    assert not ilastik_segments_vessel_masks({})
 
 
-def test_preflight_errors_when_ilastik_large_vessel_segmentation_missing_a_prerequisite():
-    """Regression: the schema's own `requires` only warns (IneffectiveSettingWarning)
-
-    for a raw settings dict, so this flag could reach the segmentation stage
-    as a silent no-op with no prerequisite check anywhere -- unlike the
-    structurally identical assign_large_vessel_branch_orders chain above.
-    """
-    settings = {
-        "use_ilastik_large_vessel_segmentation": True,
-        "use_large_vessel_masks": False,
-        "automated_vessel_assignment": True,
-    }
-    report = check_ilastik_vessel_mask_prerequisites(settings)
-    assert report.errors
-    assert any("use_large_vessel_masks" in message for message in report.errors)
-
-
-def test_preflight_ilastik_large_vessel_segmentation_clean_when_fully_configured():
-    settings = {
-        "use_ilastik_large_vessel_segmentation": True,
-        "use_large_vessel_masks": True,
-        "automated_vessel_assignment": True,
-    }
-    report = check_ilastik_vessel_mask_prerequisites(settings)
-    assert not report.errors
-
-
-def test_preflight_errors_when_ilastik_small_vessel_segmentation_missing_a_prerequisite():
-    settings = {
-        "use_ilastik_small_vessel_segmentation": True,
-        "use_small_vessel_masks_for_boundary_assignment": False,
-        "automated_vessel_assignment": True,
-    }
-    report = check_ilastik_vessel_mask_prerequisites(settings)
-    assert report.errors
-    assert any(
-        "use_small_vessel_masks_for_boundary_assignment" in message
-        for message in report.errors
+@pytest.mark.parametrize(
+    "flag, switch",
+    [
+        ("use_ilastik_large_vessel_segmentation", "use_large_vessel_masks"),
+        (
+            "use_ilastik_small_vessel_segmentation",
+            "use_small_vessel_masks_for_boundary_assignment",
+        ),
+    ],
+)
+def test_an_ilastik_mask_flag_counts_only_while_its_masks_are_in_use(flag, switch):
+    """A vessel-mask ilastik switch left on under an unticked mask switch (or
+    an unticked automated assignment) is hidden in the panel and runs
+    nothing; it used to fail preflight instead."""
+    in_use = {flag: True, switch: True, "automated_vessel_assignment": True}
+    assert ilastik_segments_vessel_masks(in_use)
+    assert not ilastik_segments_vessel_masks({**in_use, switch: False})
+    assert not ilastik_segments_vessel_masks(
+        {**in_use, "automated_vessel_assignment": False}
     )
-
-
-def test_preflight_ilastik_small_vessel_segmentation_clean_when_fully_configured():
-    settings = {
-        "use_ilastik_small_vessel_segmentation": True,
-        "use_small_vessel_masks_for_boundary_assignment": True,
-        "automated_vessel_assignment": True,
-    }
-    report = check_ilastik_vessel_mask_prerequisites(settings)
-    assert not report.errors
 
 
 def test_preflight_thick_vessel_restriction_no_op_when_off():
@@ -1092,6 +1072,7 @@ def test_preflight_thick_vessel_restriction_errors_for_small_without_its_mask():
 def test_preflight_thick_vessel_restriction_errors_for_both_missing_either():
     settings = {
         "skeleton_thick_vessel_restrict_to_mask": "both",
+        "automated_vessel_assignment": True,
         "use_large_vessel_masks": True,
         "use_small_vessel_masks_for_boundary_assignment": False,
     }
@@ -1104,9 +1085,24 @@ def test_preflight_thick_vessel_restriction_errors_for_both_missing_either():
     assert not any("use_large_vessel_masks" in message for message in report.errors)
 
 
+def test_preflight_thick_vessel_restriction_names_an_unticked_automated_assignment():
+    """The masks load only under automated_vessel_assignment, so a mask switch
+    left on under it unticked does not count."""
+    report = check_thick_vessel_restriction_prerequisites(
+        {
+            "skeleton_thick_vessel_restrict_to_mask": "large",
+            "automated_vessel_assignment": False,
+            "use_large_vessel_masks": True,
+        }
+    )
+    assert any("automated_vessel_assignment" in message for message in report.errors)
+    assert not any("use_large_vessel_masks" in message for message in report.errors)
+
+
 def test_preflight_thick_vessel_restriction_clean_when_fully_configured():
     settings = {
         "skeleton_thick_vessel_restrict_to_mask": "both",
+        "automated_vessel_assignment": True,
         "use_large_vessel_masks": True,
         "use_small_vessel_masks_for_boundary_assignment": True,
     }

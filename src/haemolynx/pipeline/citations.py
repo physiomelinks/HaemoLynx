@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .checks import _ILASTIK_VESSEL_MASK_PREREQUISITES
+from .checks import ilastik_segments_vessel_masks
 
 #: HaemoLynx's own citation, always first: the pipeline that ran everything
 #: else below, not one more optional dependency.
@@ -42,19 +42,14 @@ class Citation:
 def _used_ilastik(settings: Mapping[str, Any]) -> bool:
     """Whether ilastik actually ran for this settings dict.
 
-    The large/small-vessel-mask flags each need their own further settings on
-    too -- see :data:`~haemolynx.pipeline.checks._ILASTIK_VESSEL_MASK_PREREQUISITES`,
-    the one table both this function and ``check_ilastik_vessel_mask_prerequisites``
-    read, so a flag left on with an unmet prerequisite (the "set but
-    ineffective" case the schema itself already warns about) cannot credit
-    ilastik here without also failing preflight.
+    A large/small-vessel-mask flag counts only with its masks in use --
+    :func:`~haemolynx.pipeline.checks.ilastik_segments_vessel_masks`, which
+    preflight's ilastik check asks too -- so a flag left on under an unticked
+    mask switch (hidden in the panel, and run as off) credits nothing.
     """
     if settings.get("use_ilastik_segmentation"):
         return True
-    return any(
-        settings.get(flag) and all(settings.get(name) for name in requires)
-        for flag, requires in _ILASTIK_VESSEL_MASK_PREREQUISITES.items()
-    )
+    return ilastik_segments_vessel_masks(settings)
 
 
 def _input_suffix(settings: Mapping[str, Any]) -> str:

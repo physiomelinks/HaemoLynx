@@ -112,13 +112,11 @@ input_and_segmentation:
 vessel_masks:
   # Use the large arteriole and venule masks for the large-vessel treatment. While inlets_outlets_from_vessel_masks is also on, they also choose the inlet and outlet nodes, which overrides the manual inlet/outlet selection methods
   automated_vessel_assignment: false
-  # Choose the inlet and outlet nodes where the large arteriole and venule masks meet the network's open ends. Off: set them on the Inlet and Outlet tabs, while the masks still drive the large-vessel treatment  [needs automated_vessel_assignment]
-  inlets_outlets_from_vessel_masks: true
   # Load large arteriole and venule masks for automated inlet/outlet node assignment  [needs automated_vessel_assignment]
   use_large_vessel_masks: false
-  # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation off; must exist]
+  # Read this pre-segmented large arteriole mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
   large_arteriole_mask_path: images/large_arteriole_mask.tif
-  # Read this pre-segmented large venule mask  [needs use_large_vessel_masks and use_ilastik_large_vessel_segmentation off; must exist]
+  # Read this pre-segmented large venule mask  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation off; must exist]
   large_venule_mask_path: images/large_venule_mask.tif
   # Produce the large-vessel masks with ilastik instead of reading pre-segmented files  [needs use_large_vessel_masks and automated_vessel_assignment]
   use_ilastik_large_vessel_segmentation: false
@@ -130,6 +128,8 @@ vessel_masks:
   ilastik_arteriole_classifier_path: classifiers/arteriole_classifier.ilp
   # Use this trained ilastik project to segment venules  [needs use_large_vessel_masks and automated_vessel_assignment and use_ilastik_large_vessel_segmentation; must exist]
   ilastik_venule_classifier_path: classifiers/venule_classifier.ilp
+  # Choose the inlet and outlet nodes where the large arteriole and venule masks meet the network's open ends. Off: set them on the Inlet and Outlet tabs, while the masks still drive the large-vessel treatment  [needs use_large_vessel_masks and automated_vessel_assignment]
+  inlets_outlets_from_vessel_masks: true
   # One-shot load-time dilation of large-vessel masks (microns) applied when the masks are loaded. Distinct from large_vessel_assignment_max_dilation_microns, which runs a progressive 0, +5, … µm schedule only during terminal-node assignment  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]
   large_vessel_mask_dilation_microns: 0.0
   # Maximum dilation (microns) for progressive large-vessel terminal assignment: assign at 0 µm, then in 5 µm steps up to this value, locking each node at the first step it is claimed. Does not replace large_vessel_mask_dilation_microns (load-time one-shot dilation)  [um; range 0.0..; needs use_large_vessel_masks and automated_vessel_assignment]

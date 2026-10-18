@@ -582,6 +582,16 @@ def _load_and_crop_volume(settings: dict, input_format: str):
     return image, metadata_voxel_size, voxel_meta_status, crop
 
 
+def _vessel_mask_arguments(settings: Mapping[str, Any], mask_role: str) -> dict[str, Any]:
+    """``io.vessel_mask_arguments``, loading the role's masks only while they
+    are in use (``graph.vessel_masks_in_use``): a mask switch left ticked
+    under an unticked ``automated_vessel_assignment`` loads nothing."""
+    return {
+        **io.vessel_mask_arguments(settings, mask_role),
+        "enabled": graph.vessel_masks_in_use(settings, mask_role),
+    }
+
+
 def _thick_vessel_restriction_mask(
     binary_image: np.ndarray, settings: dict, voxel_size_xyz, crop: CropBox | None = None
 ) -> np.ndarray | None:
@@ -614,7 +624,7 @@ def _thick_vessel_restriction_mask(
     role_masks: dict[str, np.ndarray] = {}
     if choice in ("large", "both"):
         large_arteriole_mask, large_venule_mask, *_ = io.load_and_validate_vessel_masks(
-            **io.vessel_mask_arguments(settings, "large"),
+            **_vessel_mask_arguments(settings, "large"),
             image_shape=image_shape,
             main_voxel_size_xyz=voxel_size_xyz,
             crop=crop,
@@ -627,7 +637,7 @@ def _thick_vessel_restriction_mask(
             role_masks["large_venule_mask"] = large_venule_mask
     if choice in ("small", "both"):
         small_arteriole_mask, small_venule_mask, *_ = io.load_and_validate_vessel_masks(
-            **io.vessel_mask_arguments(settings, "small"),
+            **_vessel_mask_arguments(settings, "small"),
             image_shape=image_shape,
             main_voxel_size_xyz=voxel_size_xyz,
             crop=crop,
@@ -1147,6 +1157,9 @@ def _write_run_final_graph_3d_html(
 
     Uses the full mask arrays on the network, not a Z-projected viewer copy.
     """
+    # Imported by name: the `graph` parameter hides the module here.
+    from haemolynx.graph.boundaries import vessel_masks_in_use
+
     plot_dir = Path(settings["plot_dir"])
     plot_dir.mkdir(parents=True, exist_ok=True)
     show_plots = (
@@ -1158,10 +1171,8 @@ def _write_run_final_graph_3d_html(
         graph,
         save_html_path=plot_dir / "final_graph_3d.html",
         title=title,
-        use_large_vessel_masks=bool(settings.get("use_large_vessel_masks")),
-        use_small_vessel_masks=bool(
-            settings.get("use_small_vessel_masks_for_boundary_assignment")
-        ),
+        use_large_vessel_masks=vessel_masks_in_use(settings, "large"),
+        use_small_vessel_masks=vessel_masks_in_use(settings, "small"),
         large_arteriole_mask=large_arteriole_mask,
         large_venule_mask=large_venule_mask,
         small_arteriole_mask=small_arteriole_mask,
@@ -1390,7 +1401,7 @@ def build_network(
         large_arteriole_mask_voxel_size,
         large_venule_mask_voxel_size,
     ) = io.load_and_validate_vessel_masks(
-        **io.vessel_mask_arguments(mask_settings, "large"),
+        **_vessel_mask_arguments(mask_settings, "large"),
         image_shape=image.shape,
         main_voxel_size_xyz=main_voxel_size_xyz,
         crop=getattr(volume, "crop", None),
@@ -1401,7 +1412,7 @@ def build_network(
         small_arteriole_mask_voxel_size,
         small_venule_mask_voxel_size,
     ) = io.load_and_validate_vessel_masks(
-        **io.vessel_mask_arguments(mask_settings, "small"),
+        **_vessel_mask_arguments(mask_settings, "small"),
         image_shape=image.shape,
         main_voxel_size_xyz=main_voxel_size_xyz,
         crop=getattr(volume, "crop", None),
@@ -1948,17 +1959,23 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     G = network.graph
     image = network.volume.image
     voxel_size_zyx = network.volume.voxel_size_zyx
-    large_arteriole_mask = network.large_arteriole_mask
-    large_venule_mask = network.large_venule_mask
-    small_arteriole_mask = network.small_arteriole_mask
-    small_venule_mask = network.small_venule_mask
+    # A role whose switch is out of effect is not used, whatever masks the
+    # network carries (a resumed one may hold those of an earlier run).
+    large_in_use = graph.vessel_masks_in_use(settings, "large")
+    small_in_use = graph.vessel_masks_in_use(settings, "small")
+    large_vessel_tier = graph.assigns_large_vessel_branch_orders(settings)
+    large_arteriole_mask = network.large_arteriole_mask if large_in_use else None
+    large_venule_mask = network.large_venule_mask if large_in_use else None
+    small_arteriole_mask = network.small_arteriole_mask if small_in_use else None
+    small_venule_mask = network.small_venule_mask if small_in_use else None
     auto_inlet_nodes: list[int] = []
     auto_outlet_nodes: list[int] = []
-    if settings["automated_vessel_assignment"]:
+    if large_in_use:
         if large_arteriole_mask is None or large_venule_mask is None:
             raise ValueError(
-                "automated_vessel_assignment=True requires arteriole and venule masks. "
-                "Set use_large_vessel_masks=True and provide mask paths."
+                "use_large_vessel_masks is on, but no large arteriole and venule "
+                "masks were loaded. Set large_arteriole_mask_path and "
+                "large_venule_mask_path."
             )
         # Start from load-time filtered masks (dilation, min-component volume,
         # opposite-attached cleanup, load-time overlap exclusion in
@@ -2141,14 +2158,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     "automated terminal assignment "
                     f"({G.number_of_nodes()} nodes, {G.number_of_edges()} edges remain)."
                 )
-        if settings["assign_large_vessel_branch_orders"]:
-            if bool(settings["cut_network_at_large_vessel_volumes"]):
-                raise ValueError(
-                    "assign_large_vessel_branch_orders requires "
-                    "cut_network_at_large_vessel_volumes=False -- large-"
-                    "vessel material must stay in the network to be tagged "
-                    "Large_Art/Large_Ven, not be cut away."
-                )
+        if large_vessel_tier:
             # A manual override (e.g. degree_1_from_inlet) reads settings
             # like inlet_nodes through the normal graph.select_boundary_nodes_for_role
             # path -- reset them first so an override cannot see inlet_nodes
@@ -2251,7 +2261,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     # Whether the masks also choose the inlets and outlets; off, they only
     # drive the large-vessel treatment and the Inlet/Outlet methods choose.
     io_from_masks = graph.inlets_outlets_from_vessel_masks(settings)
-    if settings["automated_vessel_assignment"] and not io_from_masks:
+    if large_in_use and not io_from_masks:
         logger.info(
             "inlets_outlets_from_vessel_masks is off: the large-vessel masks found "
             f"{len(auto_inlet_nodes)} arteriole and {len(auto_outlet_nodes)} venule "
@@ -2261,7 +2271,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         )
     if io_from_masks:
         if not auto_inlet_nodes:
-            if settings["assign_large_vessel_branch_orders"]:
+            if large_vessel_tier:
                 method = settings["large_vessel_inlet_node_selection_method"]
                 raise ValueError(
                     f"large_vessel_inlet_node_selection_method={method!r} found no "
@@ -2279,7 +2289,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 "choose the inlets on the Inlet tab."
             )
         if not auto_outlet_nodes:
-            if settings["assign_large_vessel_branch_orders"]:
+            if large_vessel_tier:
                 method = settings["large_vessel_outlet_node_selection_method"]
                 raise ValueError(
                     f"large_vessel_outlet_node_selection_method={method!r} found no "
@@ -2330,7 +2340,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         )
     settings["inlet_nodes"].extend(inlet_nodes)
     settings["outlet_nodes"].extend(outlet_nodes)
-    if settings["assign_large_vessel_branch_orders"] and settings["automated_vessel_assignment"]:
+    if large_vessel_tier:
         settings["large_vessel_inlet_nodes"][:] = list(auto_inlet_nodes)
         settings["large_vessel_outlet_nodes"][:] = list(auto_outlet_nodes)
     used_nodes = set(settings["inlet_nodes"]) | set(settings["outlet_nodes"])
@@ -2349,7 +2359,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
 
     _reset_run_node_list(settings, "large_arteriole_boundary_nodes")
     _reset_run_node_list(settings, "large_venule_boundary_nodes")
-    if settings["assign_large_vessel_branch_orders"] and settings["automated_vessel_assignment"]:
+    if large_vessel_tier:
         # Which edges fall inside the large-vessel masks, and where that
         # coverage ends -- the Large_Art/Large_Ven <-> Art/Ven hand-off
         # point (graph/branch_order.py's hierarchical tier extension).
@@ -2382,7 +2392,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             "Large_Ven boundary node(s) (min_overlap_fraction="
             f"{float(settings['large_vessel_mask_min_overlap_fraction']):.3f})."
         )
-    if settings["use_small_vessel_masks_for_boundary_assignment"]:
+    if small_in_use:
         if small_arteriole_mask is None or small_venule_mask is None:
             raise ValueError(
                 "use_small_vessel_masks_for_boundary_assignment=True requires "
@@ -2574,7 +2584,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         # inlet then sits on the large arteriole, which the small arteriole
         # mask never covers, and every inlet read as uncovered.
         large_kept = (
-            bool(settings["assign_large_vessel_branch_orders"])
+            large_vessel_tier
             and large_arteriole_mask is not None
             and large_venule_mask is not None
         )
@@ -2649,10 +2659,10 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
     logger.info(f"Arteriole boundary nodes are: {settings['arteriole_boundary_nodes']}")
     logger.info(f"Venule boundary nodes are: {settings['venule_boundary_nodes']}")
 
-    if settings["automated_vessel_assignment"] and settings["visualize_results"]:
+    if large_in_use and settings["visualize_results"]:
         if large_arteriole_mask is None or large_venule_mask is None:
             raise ValueError(
-                "automated_vessel_assignment=True requires large arteriole/venule masks "
+                "use_large_vessel_masks=True requires large arteriole/venule masks "
                 "for visualization."
             )
         has_small_viz_masks = (
@@ -2734,8 +2744,9 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         large_venule_boundary_nodes=settings["large_venule_boundary_nodes"],
         resistance_node_pair=resistance_node_pair,
         graph=G,
-        large_arteriole_mask=network.large_arteriole_mask,
-        large_venule_mask=network.large_venule_mask,
+        # None for a role not in use: never a resumed run's masks, drawn.
+        large_arteriole_mask=large_arteriole_mask,
+        large_venule_mask=large_venule_mask,
         small_arteriole_mask=small_arteriole_mask,
         small_venule_mask=small_venule_mask,
     )
@@ -2892,10 +2903,10 @@ def _assign_branch_orders(
         # boundaries configured would otherwise silently never tag
         # anything.
         expects_hierarchical=bool(
-            settings["use_small_vessel_masks_for_boundary_assignment"]
+            graph.vessel_masks_in_use(settings, "small")
             or _vessel_boundary_configured(settings, "arteriole")
             or _vessel_boundary_configured(settings, "venule")
-            or settings["assign_large_vessel_branch_orders"]
+            or graph.assigns_large_vessel_branch_orders(settings)
         ),
         post_assign_callback=post_assign_callback,
     )
@@ -5599,6 +5610,48 @@ def _boundaries_from_resume(
     )
 
 
+def _vessel_masks_now_in_use(settings: dict, network: VesselNetwork) -> VesselNetwork:
+    """A resumed *network* with the vessel masks *settings* now ask for.
+
+    The masks load in ``build_network`` but their switches sit on the
+    Boundaries tab, so a run resumed there carries the masks of the run it
+    resumes: a role switched off since is dropped, and one switched on since
+    is loaded, so the boundaries are assigned -- and the viewer draws -- what
+    the Boundaries tab now says.
+    """
+    volume = network.volume
+    changes: dict[str, Any] = {}
+    for role in graph.boundaries.VESSEL_MASK_SWITCHES:
+        arteriole, venule = f"{role}_arteriole_mask", f"{role}_venule_mask"
+        held = getattr(network, arteriole) is not None or getattr(network, venule) is not None
+        if not graph.vessel_masks_in_use(settings, role):
+            if held:
+                logger.info(f"The {role}-vessel masks are off now: not using the resumed run's.")
+                changes[arteriole] = changes[venule] = None
+                if role == "large":
+                    network.graph.graph.pop("large_arteriole_mask_voxel_size_xyz", None)
+                    network.graph.graph.pop("large_venule_mask_voxel_size_xyz", None)
+            continue
+        if held:
+            continue
+        logger.info(f"The {role}-vessel masks are on now: loading them.")
+        loaded_arteriole, loaded_venule, arteriole_size, venule_size = (
+            io.load_and_validate_vessel_masks(
+                **_vessel_mask_arguments(settings, role),
+                image_shape=volume.image.shape,
+                main_voxel_size_xyz=volume.voxel_size_xyz,
+                crop=getattr(volume, "crop", None),
+            )
+        )
+        changes[arteriole], changes[venule] = loaded_arteriole, loaded_venule
+        if role == "large":
+            _record_graph_voxel_metadata(
+                network.graph, volume.voxel_size_xyz, volume.voxel_size_zyx,
+                loaded_arteriole, loaded_venule, arteriole_size, venule_size,
+            )
+    return replace(network, **changes) if changes else network
+
+
 #: Where ``solve`` leaves the results that live only on the Solution, so a
 #: later stage that skips the solve (Continue, or Regenerate with nothing
 #: edited) can rebuild them. Pressures already sit on the nodes.
@@ -5749,6 +5802,8 @@ def _run_stages(
         if earlier is not None and resumed_graph is not None:
             logger.info("Resuming with the network and vessel masks already built.")
             network = replace(earlier, graph=resumed_graph, volume=volume)
+            if _run_stage_body("assign_boundaries", start_from):
+                network = _vessel_masks_now_in_use(settings, network)
         else:
             network = build_network(
                 settings,

@@ -339,6 +339,7 @@ def test_the_vessel_masks_are_cut_to_the_same_box_as_the_image(tmp_path):
     venule[1:3, 30:33, 50:55] = True
     settings = _run_settings(
         tmp_path,
+        automated_vessel_assignment=True,
         use_large_vessel_masks=True,
         large_arteriole_mask_path=_write(tmp_path / "arteriole.tif", arteriole),
         large_venule_mask_path=_write(tmp_path / "venule.tif", venule),
