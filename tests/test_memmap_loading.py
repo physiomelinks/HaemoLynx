@@ -338,6 +338,28 @@ def test_fill_binary_holes_with_memmap_on_returns_a_memmap_the_caller_must_relea
     assert not set(glob.glob(str(tempfile.gettempdir()) + "/haemolynx_*.memmap")) - before
 
 
+def test_fill_binary_holes_with_memmap_on_labels_into_int32_on_disk_even_on_windows():
+    """scipy labels into an int16 output through a temporary of its own,
+    about 5 bytes a voxel of RAM; into an int32 memmap it holds nothing. The
+    low-RAM option takes int32 on disk on every platform -- same holes."""
+    from haemolynx.preprocessing.skeleton import _label_inverted_background
+
+    rng = np.random.default_rng(3)
+    mask = rng.random((12, 30, 30)) > 0.4
+    mask[3:9, 8:20, 8:20] = True
+    mask[5:7, 12:16, 12:16] = False  # a hole
+
+    labeled, n_labels = _label_inverted_background(~mask, platform="win32", use_memmap=True)
+    assert isinstance(labeled, np.memmap) and labeled.dtype == np.int32
+    from scipy.ndimage import label
+
+    expected, n_expected = label(~mask)
+    assert n_labels == n_expected and np.array_equal(labeled, expected)
+    release_memmap_array(labeled)
+
+    filled = fill_binary_holes(mask, use_memmap=True)
+    assert np.array_equal(filled, fill_binary_holes(mask)) and filled[6, 13, 13]
+    release_memmap_array(filled)
 def test_fill_binary_holes_honours_memmap_directory(tmp_path):
     mask = np.zeros((10, 10, 10), dtype=bool)
     mask[2:8, 2:8, 2:8] = True
