@@ -80,6 +80,7 @@ from typing import Any, Literal
 import numpy as np
 from scipy.ndimage import map_coordinates
 
+from haemolynx.preprocessing.bridge_mask_support import PackedMask
 from haemolynx.preprocessing.pointwise_distance import FeatureDistance
 from haemolynx.preprocessing.thick_vessels import inscribed_radius_map
 
@@ -226,7 +227,10 @@ def measure_edge_diameters_from_binary_mask(
         touches (see :mod:`haemolynx.preprocessing.pointwise_distance`), and
         never converts *binary_mask* to a whole-volume boolean copy. Same
         diameters, bar a last-bit difference where two background voxels are
-        exactly equidistant under a non-representable voxel spacing.
+        exactly equidistant under a non-representable voxel spacing. It, or
+        a memmapped *binary_mask*, also has the mask read voxel by voxel from
+        a packed copy in RAM (``preprocessing.PackedMask``, an eighth of its
+        bytes): the same answers.
     min_resolvable_diameter_um :
         Readings narrower than this (see :data:`MIN_RESOLVABLE_DIAMETER_UM`)
         are left out of the edge's median; an edge with none left is skipped
@@ -254,7 +258,13 @@ def measure_edge_diameters_from_binary_mask(
     # The inscribed radius only at the voxels the samples read: the same
     # values as transforming the whole mask, and on a real 287 x 512 x 512
     # stack 89 s -> 32 s for 300 edges, 298 s -> 263 s for all 3,191.
-    sample_radius = _pointwise_radius_sampler(binary_mask, voxel_size_zyx)
+    # A disk-backed mask is read as bits from RAM (an eighth of its bytes):
+    # every sample's section plane and radius read it voxel by voxel, which
+    # on a memmap is a page of the disk at random once it is out of cache.
+    packed = (
+        PackedMask.from_mask(binary_mask) if use_memmap or isinstance(binary_mask, np.memmap) else None
+    )
+    sample_radius = _pointwise_radius_sampler(binary_mask, voxel_size_zyx, packed=packed)
     if sample_radius is None:
         mask = np.asarray(binary_mask, dtype=bool)
         radius_map = inscribed_radius_map(mask, voxel_size_zyx)
@@ -318,7 +328,7 @@ def measure_edge_diameters_from_binary_mask(
         if method == "cross_section":
             sections = [
                 _cross_section_diameter(
-                    binary_mask, point, tangent, voxel_size_zyx,
+                    binary_mask if packed is None else packed, point, tangent, voxel_size_zyx,
                     guide_radius_um=float(radius) if np.isfinite(radius) else 0.0,
                 )
                 for point, tangent, radius in zip(sample_points, tangents, values)
@@ -366,16 +376,20 @@ def _centreline_tangents(poly: np.ndarray, s: np.ndarray, total: float, at: np.n
     return tangents / np.where(norms > 0, norms, 1.0)
 
 
-def _nearest_mask_values(mask: np.ndarray, idx: np.ndarray) -> np.ndarray:
+def _nearest_mask_values(mask: np.ndarray | PackedMask, idx: np.ndarray) -> np.ndarray:
     """Whether the voxel nearest each continuous index is foreground; False
-    outside the volume. Reads only those voxels, so a memmap stays on disk."""
+    outside the volume. Reads only those voxels, so a memmap stays on disk;
+    *mask* may be a ``PackedMask`` of it."""
     nearest = np.rint(np.asarray(idx, dtype=float)).astype(np.intp)
     shape = np.asarray(mask.shape)
     inside = np.all((nearest >= 0) & (nearest < shape), axis=1)
     values = np.zeros(len(nearest), dtype=bool)
     if np.any(inside):
         within = nearest[inside]
-        values[inside] = np.asarray(mask[within[:, 0], within[:, 1], within[:, 2]]) != 0
+        if isinstance(mask, PackedMask):
+            values[inside] = mask.contains(within)
+        else:
+            values[inside] = np.asarray(mask[within[:, 0], within[:, 1], within[:, 2]]) != 0
     return values
 
 
@@ -590,7 +604,7 @@ def _nearby_radius(
     return radius
 
 
-def _pointwise_radius_sampler(binary_mask: np.ndarray, voxel_size_zyx):
+def _pointwise_radius_sampler(binary_mask: np.ndarray, voxel_size_zyx, *, packed: PackedMask | None = None):
     """``map_coordinates(inscribed_radius_map(mask), idx.T, order=1,
     mode="constant")`` without the map, or ``None`` when the mask is all
     foreground (where scipy's transform is not a distance, so only the
@@ -598,13 +612,15 @@ def _pointwise_radius_sampler(binary_mask: np.ndarray, voxel_size_zyx):
 
     Each point is interpolated over the 2x2x2 box of voxels it reads, clipped
     to the volume the same way the whole map is, so scipy's own interpolation
-    runs on the same values with the same edge handling.
+    runs on the same values with the same edge handling. *packed*, the mask
+    as bits, is read in place of it voxel by voxel.
     """
     shape = np.asarray(binary_mask.shape)
     if not np.any(binary_mask):
         return lambda idx: np.zeros(len(idx), dtype=np.float64)
     distances = FeatureDistance(
-        binary_mask, feature_value=False, sampling=tuple(float(v) for v in voxel_size_zyx)
+        binary_mask, feature_value=False, sampling=tuple(float(v) for v in voxel_size_zyx),
+        packed=packed,
     )
     if not distances.has_surface:
         return None

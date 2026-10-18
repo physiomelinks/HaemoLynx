@@ -6,6 +6,8 @@ import numpy as np
 import networkx as nx
 from scipy.spatial import cKDTree
 
+from haemolynx.preprocessing.bridge_mask_support import PackedMask
+
 logger = logging.getLogger(__name__)
 
 
@@ -701,7 +703,8 @@ def points_inside_mask(
     Vectorized over all of an edge's (densified) sample points at once --
     the densified polyline can have hundreds of points per edge, and this
     runs for every edge in the graph on every pipeline run that reaches
-    this stage.
+    this stage. *mask* is the volume or a ``preprocessing.PackedMask`` of
+    it: the same answers, read from bits in RAM rather than a memmap.
     """
     points = np.asarray(points_zyx, dtype=float)
     if points.ndim != 2 or points.shape[1] != 3:
@@ -720,7 +723,10 @@ def points_inside_mask(
     inside = np.zeros(n, dtype=bool)
     valid = idx[in_bounds]
     if valid.size:
-        inside[in_bounds] = mask[valid[:, 0], valid[:, 1], valid[:, 2]]
+        if isinstance(mask, PackedMask):
+            inside[in_bounds] = mask.contains(valid)
+        else:
+            inside[in_bounds] = mask[valid[:, 0], valid[:, 1], valid[:, 2]]
     return inside
 
 

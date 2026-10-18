@@ -312,3 +312,93 @@ def test_a_mask_support_packs_its_mask_once_enough_points_have_been_asked_about(
     shared = MaskSupport(mask, (1.0, 1.0, 1.0), packed=support.pack())
     assert shared.pack() is support.pack()
     assert np.array_equal(shared.inside(points), before)
+
+
+# --- one support for every reader of a mask (2026-10-18) ---------------------
+
+
+def test_a_support_under_its_own_limits_is_itself_and_under_others_shares_its_bits_and_radii():
+    rng = np.random.default_rng(4)
+    mask = rng.random((8, 12, 12)) > 0.4
+    support = MaskSupport(mask, VOXEL, max_background_gap_um=2.0, min_mask_fraction=0.8)
+    support.pack()
+    support.radius(np.array([[3.0, 3.0, 3.0]]))
+
+    assert support.limited_to(2.0, 0.8) is support
+    other = support.limited_to(1.0, 0.9)
+    assert (other.max_background_gap_um, other.min_mask_fraction) == (1.0, 0.9)
+    assert other.pack() is support.pack()
+    assert other._distance is support._distance
+    assert other.mask is support.mask
+
+
+def test_the_lumen_radius_reads_the_supports_bits_once_it_has_packed_the_mask(monkeypatch):
+    """The same radii either way; once packed, the mask itself is not read
+    to ask whether a voxel is background."""
+    monkeypatch.setattr(module, "PACK_AFTER_POINTS", 10)
+    rng = np.random.default_rng(6)
+    mask = np.zeros((10, 20, 20), dtype=bool)
+    mask[2:8, 3:17, 3:17] = rng.random((6, 14, 14)) > 0.2
+    points = rng.uniform(0.0, 9.0, size=(300, 3)) * np.array([1.0, 2.0, 2.0])
+    plain = MaskSupport(mask.copy(), VOXEL).radius(points)
+
+    support = MaskSupport(mask, VOXEL)
+    before = support.radius(points[:5])
+    support.inside(points[:20])  # past the line: packed
+    assert support._distance.packed is support.pack()
+
+    class Unread(np.ndarray):
+        def __getitem__(self, key):
+            raise AssertionError("the mask was read voxel by voxel")
+
+    support._distance.features = support.mask = mask.view(Unread)
+    assert np.array_equal(before, plain[:5])
+    assert np.array_equal(support.radius(points), plain)
+
+
+def test_a_radius_lookup_shared_from_elsewhere_is_given_the_bits_only_for_the_same_mask():
+    from haemolynx.preprocessing.pointwise_distance import FeatureDistance
+
+    mask = np.zeros((6, 8, 8), dtype=bool)
+    mask[1:5, 2:6, 2:6] = True
+    same = FeatureDistance(mask, feature_value=False, sampling=VOXEL)
+    copy = FeatureDistance(mask.copy(), feature_value=False, sampling=VOXEL)
+
+    MaskSupport(mask, VOXEL, feature_distance=same).pack()
+    MaskSupport(mask, VOXEL, feature_distance=copy).pack()
+
+    assert isinstance(same.packed, PackedMask)
+    assert copy.packed is None, "bits of another array are not known to be its bits"
+
+
+@pytest.mark.parametrize("pack_after", [1, 10**9])
+def test_the_lumen_test_read_through_a_support_gives_the_same_answers(monkeypatch, pack_after):
+    """``graph.assemble.mask_lumen_test`` with the run's support: the same
+    answers, the points counted towards packing the support's mask."""
+    from haemolynx.graph.assemble import mask_lumen_test
+
+    monkeypatch.setattr(module, "PACK_AFTER_POINTS", pack_after)
+    rng = np.random.default_rng(9)
+    mask = rng.random((9, 11, 13)) > 0.5
+    points = rng.uniform(-2.0, 14.0, size=(500, 3))
+    support = MaskSupport(mask, VOXEL)
+
+    through = mask_lumen_test(mask, VOXEL, support=support)(points)
+
+    assert np.array_equal(through, mask_lumen_test(mask, VOXEL)(points))
+    assert (support._packed is not None) is (pack_after == 1)
+    with pytest.raises(ValueError):
+        mask_lumen_test(mask, VOXEL, support=support)(points[:, :2])
+
+
+def test_points_in_a_packed_mask_are_the_points_in_the_mask():
+    from haemolynx.graph._helpers import points_inside_mask
+
+    rng = np.random.default_rng(10)
+    mask = rng.random((7, 9, 11)) > 0.5
+    points = rng.uniform(-3.0, 13.0, size=(400, 3))
+
+    assert np.array_equal(
+        points_inside_mask(points, PackedMask.from_mask(mask), voxel_size_zyx=VOXEL),
+        points_inside_mask(points, mask, voxel_size_zyx=VOXEL),
+    )

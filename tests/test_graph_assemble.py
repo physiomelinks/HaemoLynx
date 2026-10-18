@@ -760,3 +760,70 @@ def test_graph_building_refuses_a_mask_of_another_shape():
 
     with pytest.raises(ValueError, match="voxels but the skeleton is"):
         build_graph_from_skeleton(skeleton, segmentation_mask=np.ones((5, 5, 20), dtype=bool))
+
+
+# --- a mask support handed in by the caller (2026-10-18) ---------------------
+
+
+@pytest.mark.parametrize("pack_after", [1, 10**9])
+def test_a_build_handed_a_mask_support_is_the_build_that_makes_its_own(monkeypatch, pack_after):
+    """The same graph, node for node, whether the lookups pack the mask at
+    once or never; the support handed in is the one every step reads, so its
+    mask is packed once however many steps ask."""
+    import importlib
+
+    from haemolynx.preprocessing import MaskSupport
+
+    bridge_mask_support = importlib.import_module("haemolynx.preprocessing.bridge_mask_support")
+    monkeypatch.setattr(bridge_mask_support, "PACK_AFTER_POINTS", pack_after)
+    skeleton = _loop_skeleton()
+    mask = _loop_masks()["one lumen"] | _t_mask(skeleton)
+    own = _build(skeleton, segmentation_mask=mask, final_orphan_reconnect_threshold=2.5)
+    packs = []
+    real_pack = bridge_mask_support.PackedMask.from_mask.__func__
+    monkeypatch.setattr(
+        bridge_mask_support.PackedMask, "from_mask",
+        classmethod(lambda cls, m, **kw: packs.append(1) or real_pack(cls, m, **kw)),
+    )
+    support = MaskSupport(mask, VOXEL_SIZE_ZYX)
+
+    handed = _build(skeleton, segmentation_mask=mask, final_orphan_reconnect_threshold=2.5, mask_support=support)
+
+    assert _nodes_and_edges(handed) == _nodes_and_edges(own)
+    # Packed by the lookups or, at the latest, by mask recovery: once.
+    assert len(packs) == 1
+    assert support._packed is not None
+
+
+def _nodes_and_edges(G):
+    nodes = sorted((n, tuple(np.asarray(p, dtype=float).tolist())) for n, p in G.nodes(data="pos"))
+    edges = sorted(
+        (u, v, k, d["length"], tuple(map(tuple, np.asarray(d["voxels"], dtype=float).tolist())))
+        for u, v, k, d in G.edges(keys=True, data=True)
+    )
+    return nodes, edges
+
+
+def test_a_build_handed_a_support_with_other_limits_uses_its_own_limits(monkeypatch):
+    from haemolynx.preprocessing import MaskSupport
+
+    handed, _recovery = _spy_on_the_mask_gates(monkeypatch)
+    skeleton = _t_skeleton()
+    mask = _t_mask(skeleton)
+    support = MaskSupport(mask, VOXEL_SIZE_ZYX, max_background_gap_um=5.0, min_mask_fraction=0.1)
+
+    _build(skeleton, segmentation_mask=mask, mask_support=support,
+           bridge_max_background_gap_um=1.0, bridge_min_mask_fraction=0.9)
+
+    for name in _RECONNECTS:
+        assert (handed[name].max_background_gap_um, handed[name].min_mask_fraction) == (1.0, 0.9)
+        assert handed[name].mask is support.mask
+
+
+def test_a_build_refuses_a_mask_support_over_another_shape():
+    from haemolynx.preprocessing import MaskSupport
+
+    skeleton = _t_skeleton()
+    with pytest.raises(ValueError, match="mask support"):
+        _build(skeleton, segmentation_mask=_t_mask(skeleton),
+               mask_support=MaskSupport(np.zeros((5, 5, 5), dtype=bool), VOXEL_SIZE_ZYX))

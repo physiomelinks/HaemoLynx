@@ -27,10 +27,12 @@ the mmap released the OS lock immediately even with another reference to the
 """
 from __future__ import annotations
 
+import atexit
 import itertools
 import logging
 import os
 import tempfile
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator
@@ -136,28 +138,73 @@ def at_faces_as_beyond(op: Callable[[np.ndarray], np.ndarray], reach: int) -> Ca
     return padded
 
 
+#: Backing files of :func:`new_memmap_array` arrays dropped without
+#: :func:`release_memmap_array` whose deletion Windows refused while the map
+#: was still open: tried again at the next :func:`new_memmap_array`, and as
+#: the process exits.
+_DROPPED_FILES: set[str] = set()
+#: Each live array's finaliser, by backing file, so a release cancels it.
+_FINALISERS: dict[str, weakref.finalize] = {}
+
+
+def _delete_dropped(path: str) -> None:
+    """The finaliser of an array whose last reference has gone: delete its
+    file. It runs while the array's map is still open, so on Windows the file
+    waits for :func:`_delete_dropped_files`."""
+    _FINALISERS.pop(path, None)
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        _DROPPED_FILES.add(path)
+
+
+@atexit.register
+def _delete_dropped_files() -> None:
+    for path in list(_DROPPED_FILES):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            continue
+        _DROPPED_FILES.discard(path)
+
+
 def new_memmap_array(
     shape: tuple[int, ...], dtype, *, directory: str | Path | None = None
 ) -> np.memmap:
     """A fresh disk-backed array of *shape*/*dtype*, in a new temp file.
 
     The backing file outlives this call -- pass the result to
-    :func:`release_memmap_array` once it is no longer needed, or leave it
-    for the OS to reclaim from the temp directory eventually (no worse than
-    what killing the process outright would already leave behind).
+    :func:`release_memmap_array` once it is no longer needed. One nobody
+    releases is deleted once the array, and every view of it, is gone (on
+    Windows, which will not delete a file while it is mapped, at the next
+    call here or as the process exits): stage outputs such as the skeleton
+    ``skeletonise`` hands on, the float32 raw image the raw evidence and the
+    Diameters stage read (two 301 MB files a low-RAM E14.5 run), and the
+    volumes tests compare were left in the temp directory by every run --
+    2,800 of them on one machine (2026-10-18). Killing the process outright
+    still leaves them.
     *directory* overrides where the temp file is created (the pipeline's
     ``memmap_directory`` setting, when the OS temp drive is the wrong place
     for a volume-sized file -- too small, or too slow); the default is
     wherever ``tempfile`` already puts them (``$TMPDIR``/``%TEMP%``). Created
     if it does not already exist.
     """
+    if _DROPPED_FILES:
+        _delete_dropped_files()
     if directory:
         Path(directory).mkdir(parents=True, exist_ok=True)
     fd, path = tempfile.mkstemp(
         prefix="haemolynx_", suffix=".memmap", dir=str(directory) if directory else None
     )
     os.close(fd)
-    return np.memmap(path, dtype=dtype, mode="w+", shape=tuple(int(s) for s in shape))
+    array = np.memmap(path, dtype=dtype, mode="w+", shape=tuple(int(s) for s in shape))
+    key = os.path.abspath(path)
+    _FINALISERS[key] = weakref.finalize(array, _delete_dropped, key)
+    return array
 
 
 def release_memmap_array(array: np.memmap) -> Path:
@@ -171,6 +218,9 @@ def release_memmap_array(array: np.memmap) -> Path:
     already produced its result.
     """
     path = Path(array.filename)
+    finaliser = _FINALISERS.pop(os.path.abspath(path), None)
+    if finaliser is not None:
+        finaliser.detach()
     mmap_obj = getattr(array, "_mmap", None)
     if mmap_obj is not None:
         mmap_obj.close()

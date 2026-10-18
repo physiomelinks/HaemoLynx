@@ -1527,11 +1527,25 @@ def build_network(
             )
         if binary_mask is not None and (stub_radius_multiple > 0 or settings["smooth_centrelines"]):
             radius_at = graph.assemble.mask_radius_sampler(binary_mask, voxel_size_zyx, 1.0)
+        # One reader of the mask for every step below that asks about it --
+        # graph building, the clean-ups after it, the thick-vessel split and
+        # the dead-end marks -- so it is packed to bits and its surface tree
+        # built once a run, not once a step.
+        mask_support = None
+        if binary_mask is not None:
+            mask_support = preprocessing.MaskSupport(
+                binary_mask,
+                voxel_size_zyx,
+                max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
+                min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+                feature_distance=getattr(radius_at, "feature_distance", None),
+            )
         # The thick vessels' centreline tree, found once: the split below
         # bridges to it, and every clean-up keeps the strand on it of two in
         # one lumen. Judged by the wall alone, the clean-up took the strand
         # on the tree as often as not and left the thick vessel broken.
         thick_tree = None
+        thick_tree_radius = None
         along_thick_centreline = None
         if volume.thick_vessel_mask is not None:
             thick_tree = graph.thick_vessel_junctions.thick_vessel_centreline(
@@ -1541,6 +1555,7 @@ def build_network(
                 volume.thick_vessel_mask, voxel_size_zyx, segmentation=binary_mask, centreline=thick_tree,
             )
             along_thick_centreline = None if follower is None else follower.along_um
+            thick_tree_radius = None if follower is None else follower.radius_um
         G = graph.build_graph_from_skeleton(
             skeleton,
             voxel_size=voxel_size_zyx,
@@ -1548,6 +1563,7 @@ def build_network(
             segmentation_mask=binary_mask,
             step_callback=_graph_build_step_callback,
             along_thick_centreline=along_thick_centreline,
+            mask_support=mask_support,
             **graph_build_arguments(settings),
         )
 
@@ -1588,6 +1604,7 @@ def build_network(
                 remove_short_loops_under_um=float(settings.get("remove_short_loops_under_um") or 0.0),
                 short_loop_keep_hole_over_um=_short_loop_keep_hole_um(settings),
                 along_thick_centreline=along_thick_centreline,
+                mask_support=mask_support,
             )
             if settings["smooth_centrelines"]:
                 G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
@@ -1607,6 +1624,7 @@ def build_network(
             G = graph.insert_thick_vessel_junction_nodes(
                 G, volume.thick_vessel_mask, voxel_size_zyx=voxel_size_zyx,
                 segmentation=binary_mask, centreline=thick_tree, **thick_junction_bridge_arguments(settings),
+                mask_support=mask_support, tree_radius_um=thick_tree_radius,
             )
             edges_after_step.append(("thick-vessel split", G.number_of_edges()))
             if lumen_cleanup is not None:
@@ -1668,10 +1686,13 @@ def build_network(
         # what the flow's open ends are put on, the rest what the review lists.
         graph.dead_ends.record_image_extent(G, skeleton.shape, voxel_size_zyx)
         if binary_mask is not None and no_vessels is None:
-            _mark_dead_end_kinds(settings, G, binary_mask, voxel_size_zyx, radius_at)
+            _mark_dead_end_kinds(settings, G, binary_mask, voxel_size_zyx, radius_at, support=mask_support)
             _record_raw_evidence(settings, G, binary_mask, voxel_size_zyx, getattr(volume, "crop", None))
 
         if binary_mask is not None:
+            # The support holds the mask's bits and surface tree: let them go
+            # with the mask.
+            lumen_cleanup = mask_support = None
             preprocessing.release_superseded(binary_mask, G, keep=image)
             binary_mask = radius_at = None
         if no_vessels is not None:
@@ -1852,15 +1873,18 @@ def _skeleton_without_vessels_error(
 
 
 def _mark_dead_end_kinds(
-    settings: dict, G: nx.MultiGraph, binary_mask: np.ndarray, voxel_size_zyx, radius_at=None
+    settings: dict, G: nx.MultiGraph, binary_mask: np.ndarray, voxel_size_zyx, radius_at=None, *, support=None
 ) -> None:
     """Judge every dead end of *G* against the mask and write its kind on its
-    node (``graph.dead_ends``), saying how many of each there are."""
-    support = preprocessing.MaskSupport(
+    node (``graph.dead_ends``), saying how many of each there are. *support*
+    is the run's ``MaskSupport`` over *binary_mask*, made here when not given."""
+    gap_um = float(settings["bridge_max_background_gap_um"])
+    fraction = float(settings["bridge_min_mask_fraction"])
+    support = support.limited_to(gap_um, fraction) if support is not None else preprocessing.MaskSupport(
         binary_mask,
         voxel_size_zyx,
-        max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
-        min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+        max_background_gap_um=gap_um,
+        min_mask_fraction=fraction,
         feature_distance=getattr(radius_at, "feature_distance", None),
     )
     ends = graph.dead_ends.classify_and_mark(

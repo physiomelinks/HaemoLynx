@@ -334,7 +334,8 @@ def test_fill_binary_holes_with_memmap_on_returns_a_memmap_the_caller_must_relea
     assert isinstance(result, np.memmap)
     assert len(after - before) == 1
     release_memmap_array(result)
-    assert set(glob.glob(str(tempfile.gettempdir()) + "/haemolynx_*.memmap")) == before
+    # Only new files: one an earlier test dropped may be deleted meanwhile.
+    assert not set(glob.glob(str(tempfile.gettempdir()) + "/haemolynx_*.memmap")) - before
 
 
 def test_fill_binary_holes_honours_memmap_directory(tmp_path):
@@ -380,7 +381,7 @@ def test_fill_binary_holes_releases_the_inverted_memmap_even_if_the_inversion_lo
         fill_binary_holes(mask, use_memmap=True)
     after = set(glob.glob(str(tempfile.gettempdir()) + "/haemolynx_*.memmap"))
 
-    assert after == before
+    assert not after - before
 
 
 def test_bridge_gaps_distance_transform_path_gives_the_same_result_with_memmap_on():

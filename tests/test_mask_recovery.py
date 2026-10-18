@@ -1020,3 +1020,120 @@ def test_a_skeleton_of_another_shape_than_the_mask_is_refused():
 
     with pytest.raises(ValueError, match="shape"):
         recover_uncovered_mask_vessels(_trunk_graph(), _support(mask), skeleton=skeleton[:, :, :-1])
+
+
+# --- tracing a piece along the run's skeleton, without a window (2026-10-18) ---
+
+
+def _trace_in_a_window(region, skeleton, voxel_size, pad):
+    """``_trace_piece`` along a skeleton as it was: the skeleton read in the
+    region's box padded by *pad*, cut to the region, rings dropped, then
+    skan's own Skeleton of that window."""
+    from scipy.ndimage import convolve, label
+    from skan import csr
+
+    shape = np.asarray(skeleton.shape)
+    lo = np.maximum(region.min(axis=0) - pad, 0)
+    hi = np.minimum(region.max(axis=0) + pad + 1, shape)
+    window = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
+    window_skeleton = np.array(skeleton[window], dtype=bool)
+    inside = np.zeros_like(window_skeleton)
+    inside[tuple((region - lo).T)] = True
+    window_skeleton &= inside
+    neighbours = convolve(window_skeleton.astype(np.uint8), np.ones((3, 3, 3), np.uint8), mode="constant")
+    labels, n_components = label(window_skeleton, structure=np.ones((3, 3, 3), bool))
+    if n_components:
+        not_ring = np.zeros(n_components + 1, dtype=bool)
+        not_ring[labels[window_skeleton & (neighbours != 3)]] = True
+        window_skeleton &= not_ring[labels]
+    if not np.any(window_skeleton & (neighbours > 1)):
+        return [], []
+    sk = csr.Skeleton(window_skeleton)
+    paths, ends = [], []
+    for i in range(sk.n_paths):
+        coords = np.rint(sk.path_coordinates(i)).astype(int) + lo
+        if len(coords) < 2:
+            continue
+        paths.append(coords * np.asarray(voxel_size, dtype=float))
+        ends.append((tuple(coords[0].tolist()), tuple(coords[-1].tolist())))
+    return paths, ends
+
+
+def _speckled_skeleton(seed, shape=(12, 30, 30)):
+    """Lines that cross, branch and end, a ring, and isolated voxels."""
+    rng = np.random.default_rng(seed)
+    skeleton = np.zeros(shape, dtype=bool)
+    for _ in range(6):
+        a = rng.integers(0, shape)
+        b = rng.integers(0, shape)
+        count = int(np.abs(b - a).max()) + 1
+        line = np.rint(np.linspace(a, b, count)).astype(int)
+        skeleton[tuple(line.T)] = True
+    ring = [(6, 3, 3), (6, 3, 4), (6, 4, 5), (6, 5, 5), (6, 6, 4), (6, 6, 3), (6, 5, 2), (6, 4, 2)]
+    skeleton[tuple(np.array(ring).T)] = True
+    skeleton |= rng.random(shape) > 0.995
+    return skeleton
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_a_piece_traced_from_its_own_voxels_is_the_piece_traced_in_a_window(seed):
+    """The same paths, in the same order, with the same ends: rings dropped,
+    isolated voxels and voxels outside the region left out, whatever order
+    the region's voxels come in."""
+    from haemolynx.graph.mask_recovery import _trace_piece
+
+    rng = np.random.default_rng(100 + seed)
+    skeleton = _speckled_skeleton(seed)
+    region_mask = np.zeros_like(skeleton)
+    region_mask[1:11, 2 + seed % 3:28, 1:27] = True
+    region_mask &= rng.random(skeleton.shape) > 0.05
+    region = np.argwhere(region_mask)
+    rng.shuffle(region)
+    voxel_size = (1.0, 0.98, 0.98)
+    support = MaskSupport(region_mask, voxel_size)
+
+    piece = _trace_piece(region, support, 4, skeleton=skeleton)
+    paths, ends = _trace_in_a_window(region, skeleton, voxel_size, 4)
+
+    assert piece.ends == ends
+    assert len(piece.paths) == len(paths) and all(
+        np.array_equal(a, b) for a, b in zip(piece.paths, paths)
+    )
+
+
+def test_a_ring_alone_and_isolated_voxels_alone_trace_to_nothing():
+    from haemolynx.graph.mask_recovery import _trace_piece
+
+    skeleton = np.zeros((10, 10, 10), dtype=bool)
+    ring = [(5, 3, 3), (5, 3, 4), (5, 4, 5), (5, 5, 5), (5, 6, 4), (5, 6, 3), (5, 5, 2), (5, 4, 2)]
+    skeleton[tuple(np.array(ring).T)] = True
+    skeleton[1, 1, 1] = skeleton[8, 8, 8] = True
+    region = np.argwhere(np.ones_like(skeleton))
+    support = MaskSupport(np.ones_like(skeleton), (1.0, 1.0, 1.0))
+
+    piece = _trace_piece(region, support, 2, skeleton=skeleton)
+
+    assert piece.paths == [] and piece.ends == []
+    assert _trace_in_a_window(region, skeleton, (1.0, 1.0, 1.0), 2) == ([], [])
+
+
+def test_tracing_along_the_skeleton_reads_only_the_regions_voxels(monkeypatch):
+    """A long thin region on a large skeleton: nothing the size of its box."""
+    from haemolynx.graph.mask_recovery import _trace_piece
+
+    skeleton = np.zeros((40, 200, 200), dtype=bool)
+    diagonal = np.arange(5, 195)
+    skeleton[20, diagonal, diagonal] = True
+    region = np.argwhere(skeleton)
+    reads = []
+
+    class Counting(np.ndarray):
+        def __getitem__(self, key):
+            reads.append(key)
+            return super().__getitem__(key)
+
+    piece = _trace_piece(region, MaskSupport(skeleton, (1.0, 1.0, 1.0)), 4, skeleton=skeleton.view(Counting))
+
+    assert len(piece.paths) == 1 and piece.ends == [((20, 5, 5), (20, 194, 194))]
+    (key,) = reads
+    assert all(np.shape(k) == (len(region),) for k in key), "one value a voxel of the region, no box"

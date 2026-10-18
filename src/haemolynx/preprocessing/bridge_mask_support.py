@@ -447,7 +447,14 @@ class MaskSupport:
     lookups (:meth:`inside`) read the mask itself until
     :data:`PACK_AFTER_POINTS` points have been asked about, then a bit-packed
     copy of it (:class:`PackedMask`, :meth:`pack`) that stays in RAM however
-    the mask is backed; pass *packed* to share one already made.
+    the mask is backed; pass *packed* to share one already made. The radius
+    lookup reads the same bits once there are any, when its
+    ``FeatureDistance`` measures this very mask array.
+
+    One support serves every reader of one mask in a run (``build_network``
+    hands the same one to graph building, the clean-ups after it, the
+    thick-vessel split and the dead-end marks): each used to pack the mask
+    again, and the split built its own surface tree.
     """
 
     def __init__(
@@ -467,22 +474,52 @@ class MaskSupport:
         self._distance = feature_distance
         self._packed = packed
         self._points_asked = 0
+        self._share_packed()
 
     def pack(self) -> PackedMask:
         """The mask as bits (:class:`PackedMask`), made on the first call."""
         if self._packed is None:
             self._packed = PackedMask.from_mask(self.mask)
+        self._share_packed()
         return self._packed
+
+    def _share_packed(self) -> None:
+        # The lumen radius reads the mask too (is a voxel background?): from
+        # the bits once there are any, when it measures this very array.
+        distance = self._distance
+        if self._packed is None or distance is None:
+            return
+        if getattr(distance, "packed", False) is None and getattr(distance, "features", None) is self.mask:
+            distance.packed = self._packed
+
+    def lookup_volume(self, points: int) -> np.ndarray | PackedMask:
+        """What a lookup of *points* more points reads: the mask itself until
+        :data:`PACK_AFTER_POINTS` points have been asked about, then its bits
+        (:meth:`pack`). For a caller asking its own question of the mask
+        (``graph.assemble.mask_lumen_test``), so one mask is packed once."""
+        if self._packed is None:
+            self._points_asked += int(points)
+            if self._points_asked >= PACK_AFTER_POINTS:
+                self.pack()
+        return self.mask if self._packed is None else self._packed
+
+    def limited_to(self, max_background_gap_um: float, min_mask_fraction: float) -> "MaskSupport":
+        """This mask's support with these limits on a bridge's background:
+        *self* when they are its own, else one sharing its bits and lumen
+        radii, so a caller with other limits makes neither again."""
+        if (float(max_background_gap_um), float(min_mask_fraction)) == (
+            self.max_background_gap_um, self.min_mask_fraction,
+        ):
+            return self
+        return MaskSupport(
+            self.mask, self.voxel_size_zyx,
+            max_background_gap_um=max_background_gap_um, min_mask_fraction=min_mask_fraction,
+            feature_distance=self._distance, packed=self._packed,
+        )
 
     def inside(self, points_um: np.ndarray) -> np.ndarray:
         points = np.asarray(points_um, dtype=float).reshape(-1, 3)
-        if self._packed is None:
-            self._points_asked += len(points)
-            if self._points_asked >= PACK_AFTER_POINTS:
-                self.pack()
-        return _points_in_mask(
-            points, self.mask if self._packed is None else self._packed, self.voxel_size_zyx
-        )
+        return _points_in_mask(points, self.lookup_volume(len(points)), self.voxel_size_zyx)
 
     def radius(self, points_um: np.ndarray) -> np.ndarray:
         """Distance to background at each point's nearest voxel, in microns
@@ -498,6 +535,7 @@ class MaskSupport:
                 sampling=self.voxel_size_zyx,
                 remember=LUMEN_RADII_REMEMBERED,
             )
+            self._share_packed()
         points = np.asarray(points_um, dtype=float).reshape(-1, 3)
         if not self._distance.has_surface:
             return np.zeros(len(points))

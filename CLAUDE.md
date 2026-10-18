@@ -600,6 +600,37 @@ are only caught locally.
   section diameter methods use) once there are `_WORKER_MIN_SAMPLES`; the outline is per sample
   and identical with any of that (E14.5's uncovered scan went 108 -> 18 s, bit for bit). Without
   a mask, or with both settings off, the two steps leave the graph as it is.
+- **One reader of the mask a run** (2026-10-18, for `use_memmap_loading` on large stacks) —
+  `build_network` makes one `preprocessing.MaskSupport` over the binary mask and hands it to graph
+  building (`build_graph_from_skeleton(mask_support=)`), both clean-ups after it, the thick-vessel
+  split (`insert_thick_vessel_junction_nodes(mask_support=)`, under its own limits through
+  `MaskSupport.limited_to`) and the dead-end marks: the mask is packed to bits once and one
+  surface KD-tree is built a run, where each step packed it again and the split's wall join built
+  a second tree. Once packed, every point-in-mask read uses the bits: the lumen test of degree-2
+  merging and collapse (`mask_lumen_test(support=)`, `MaskSupport.lookup_volume`), the lumen
+  radius's "is this voxel background" (`FeatureDistance(packed=)`, set by the support when it
+  measures the very same array), and the EDT diameters' section planes and radii on a memmapped
+  mask. The same answers, from RAM rather than a disk page read at random -- which only pays once
+  the mask is out of the page cache: on E14.5 (75 M voxels, cached) a lookup cost ~30 ns either
+  way. The thick tree's inscribed radius is measured once (`ThickCentreline.radius_um` ->
+  `tree_radius_um=`) and a block of its box at a time, reading only blocks within 60 um of a point
+  (`_inscribed_radius_um`); mask recovery traces a piece along the skeleton from the piece's own
+  voxels (`_trace_skeleton_in_region`, skan's paths from the coordinate graph `graph.build` builds)
+  rather than a padded window round it. Both bit for bit; on a 210 M-voxel stack (traced numpy
+  peak) the radius went 425 -> 72 MB and a 24,000-voxel diagonal piece 1,419 -> 1 MB
+  (`outputs/lrb/peaks.py`, git-ignored). E14.5 low-RAM, three runs each from a `git archive`
+  (`outputs/lrb/bench.py`): every graph identical to the old code's, node for node, edge for edge,
+  every attribute, before and after diameters; `build_network` 225 -> 233 s median, within the
+  machine's noise (the in-build clean-up ranged 49-140 s on both, 74.3 s each under the profiler
+  back to back), the thick-vessel split 14.4 -> 9.9 s (every run), diameters unchanged (EDT
+  86 -> 88 s); built again on `6f05617` with the skeleton re-trace, identical, 218 -> 209 s. The skeleton A* helpers in `graph/_helpers.py` and degree-2's overlap count read
+  the skeleton a voxel at a time but no pipeline step calls them.
+  Temp files: a `new_memmap_array` array nobody releases has its file deleted once it and its
+  views are gone (`weakref.finalize`; on Windows, which keeps a mapped file, at the next
+  `new_memmap_array` or at exit). Unreleased were the skeleton `skeletonise` hands on, the float32
+  raw image the raw evidence and the Diameters stage load (two 301 MB files a low-RAM E14.5 run,
+  a volume's worth of float32 each on any stack) and the volumes tests compare -- 2,806 files in
+  one machine's `%TEMP%`. Killing a run still leaves its files.
 - **`graph/facing_ends.py`** — `join_facing_dead_ends`, its own step after mask recovery
   (`join_facing_dead_ends`, run with a mask and `bridge_require_mask_support`;
   `facing_dead_end_max_gap_um`, 10 µm, 0 off): two dead ends pointing at each other -- the

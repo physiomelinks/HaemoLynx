@@ -459,6 +459,8 @@ def _trace_piece(
     """The centreline where it runs through *region*, as skan paths: the
     run's *skeleton* when given, else the mask's own (Lee thinning of the
     whole mask round the region)."""
+    if skeleton is not None:
+        return _trace_skeleton_in_region(region, skeleton, support.voxel_size_zyx)
     from skan import csr
 
     shape = np.asarray(support.mask.shape)
@@ -496,6 +498,53 @@ def _trace_piece(
             continue
         piece.paths.append(coords * spacing)
         piece.ends.append((tuple(coords[0].tolist()), tuple(coords[-1].tolist())))
+    return piece
+
+
+def _trace_skeleton_in_region(region: np.ndarray, skeleton: np.ndarray, voxel_size_zyx) -> _Piece:
+    """:func:`_trace_piece` along the run's *skeleton*: its voxels inside
+    *region*, as skan paths, from those voxels alone.
+
+    What the window round the region gave -- rings dropped, skan's paths in
+    the same order -- without the window: its bounding box, padded, at some
+    12 bytes a voxel, was a volume-sized allocation for a long region on a
+    large stack (``graph.build.skan_skeleton``'s coordinate graph, which
+    gives skan's own paths)."""
+    from skan import csr
+
+    from .build import _SkeletonPaths, _skeleton_adjacency_from_coordinates
+
+    piece = _Piece()
+    region = np.asarray(region, dtype=np.intp).reshape(-1, skeleton.ndim)
+    coords = region[np.asarray(skeleton[tuple(region.T)], dtype=bool)]
+    if not len(coords):
+        return piece
+    # Each voxel once, in C order, as the window's voxels were numbered.
+    coords = np.unique(coords, axis=0)
+    adjacency = _skeleton_adjacency_from_coordinates(coords, skeleton.shape)
+    degree = np.diff(adjacency.indptr)
+    # A component every voxel of which has two neighbours is a closed ring:
+    # its one path ends where it starts, a self-loop the caller drops, and
+    # skan sizes its path buffer too small for a ring of a few voxels.
+    n_components, labels = connected_components(adjacency, directed=False)
+    not_ring = np.zeros(n_components, dtype=bool)
+    not_ring[labels[degree != 2]] = True
+    keep = not_ring[labels]
+    # skan raises on a skeleton whose every voxel is isolated.
+    if not np.any(keep & (degree > 0)):
+        return piece
+    if not keep.all():
+        coords = coords[keep]
+        adjacency = _skeleton_adjacency_from_coordinates(coords, skeleton.shape)
+    paths = csr._build_skeleton_path_graph(csr.csr_to_nbgraph(csr._mst_junctions(adjacency)))
+    sk = _SkeletonPaths(paths, coords)
+    spacing = np.asarray(voxel_size_zyx, dtype=float)
+    for i in range(sk.n_paths):
+        path = np.asarray(sk.path_coordinates(i), dtype=int)
+        if len(path) < 2:
+            continue
+        piece.paths.append(path * spacing)
+        piece.ends.append((tuple(path[0].tolist()), tuple(path[-1].tolist())))
     return piece
 
 
