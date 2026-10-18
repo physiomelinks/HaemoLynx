@@ -155,6 +155,93 @@ SCHEMA = Schema(
         # executable / output knobs are declared once here; the form hosts them
         # on Input when main ilastik is on, or on Boundaries when only
         # large/small vessel ilastik is on (schema ``requires`` cannot OR).
+        # Which input the run has: a segmented image, or a synthetic network
+        # drawn to a previous run's .haemorun (haemolynx.synthetic). Under
+        # synthetic the image rows below hide (they require the image choice)
+        # and the run starts at the Boundaries stage. The choice literals are
+        # graph.boundaries.NETWORK_SOURCES (this module stays importable
+        # without numpy, so they are repeated); tests/test_parsers_schema.py
+        # pins them equal.
+        Setting(
+            name="network_source",
+            kind="choice",
+            default="segmented_image",
+            help=(
+                "Analyse a segmented image, or generate a synthetic vascular network "
+                "matched to a previous run's .haemorun file and start at the Boundaries "
+                "stage; the Skeletonise and Graph tabs' settings are then not read"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            choices=("segmented_image", "synthetic"),
+        ),
+        Setting(
+            name="synthetic_template_path",
+            kind="path",
+            default=None,
+            help=(
+                "The .haemorun file of a finished microscopy-image run the synthetic "
+                "network is matched to: not itself synthetic, saved with Statistics on, "
+                "with inlets and outlets and arteriole/venule branch orders assigned"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            must_exist=True,
+            requires=("network_source=synthetic",),
+        ),
+        Setting(
+            name="synthetic_template_source",
+            kind="choice",
+            default="statistics",
+            help=(
+                "Where the template's characteristics come from: statistics reads the "
+                "run's saved statistics report (each section it needs must have been "
+                "switched on), graph reads per-vessel distributions off the template "
+                "graph in the file"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            choices=("statistics", "graph"),
+            requires=("network_source=synthetic",),
+        ),
+        Setting(
+            name="synthetic_seed",
+            kind="int",
+            # Kept equal to haemolynx.synthetic.generate's DEFAULT_SEED.
+            default=20240917,
+            help=(
+                "Draw the synthetic network from this seed, so a run repeats; another "
+                "seed draws another network, and null draws a fresh one every run"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source=synthetic",),
+            advanced=True,
+        ),
+        Setting(
+            name="synthetic_scale",
+            kind="float",
+            default=1.0,
+            help=(
+                "Size of the synthetic box relative to the template's image, 1 for the "
+                "same extent; vessel counts scale with the volume, inlets and outlets "
+                "with the faces"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            minimum=0.1,
+            maximum=10.0,
+            requires=("network_source=synthetic",),
+            advanced=True,
+        ),
+        Setting(
+            name="synthetic_interior_dead_ends",
+            kind="bool",
+            default=True,
+            help=(
+                "Give the synthetic network the template's number of dead ends inside "
+                "the tissue as well as the vessels cut by the box; off, every dead end "
+                "lies on a face"
+            ),
+            section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source=synthetic",),
+            advanced=True,
+        ),
         Setting(
             name="input_path",
             # No default: there is no image every run should read, and a
@@ -169,7 +256,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             must_exist=True,
-            requires=("!use_ilastik_segmentation",)
+            requires=("!use_ilastik_segmentation", "network_source=segmented_image"),
         ),
         Setting(
             name="segmentation_source",
@@ -217,6 +304,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             must_exist=True,
+            requires=("network_source=segmented_image",),
             # Read by ilastik, the diameters, the check, the optimiser and the
             # tissue volume, each gated by its own switch.
             always_effective=True,
@@ -339,7 +427,7 @@ SCHEMA = Schema(
             help="Override the voxel size with these (x, y, z) values instead of reading image metadata",
             section=_INPUT_AND_SEGMENTATION,
             unit="um",
-            requires=("voxel_size_policy!=metadata_only",),
+            requires=("voxel_size_policy!=metadata_only", "network_source=segmented_image"),
         ),
         Setting(
             name="voxel_size_policy",
@@ -348,6 +436,7 @@ SCHEMA = Schema(
             help="Choose how the voxel size is resolved from metadata and the manual override",
             section=_INPUT_AND_SEGMENTATION,
             choices=("auto", "override", "metadata_only"),
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="image_axis_order",
@@ -356,6 +445,7 @@ SCHEMA = Schema(
             help="Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load",
             section=_INPUT_AND_SEGMENTATION,
             choices=AXIS_ORDERS,
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="mid_run_postprocessing",
@@ -388,6 +478,7 @@ SCHEMA = Schema(
                 "regardless of this setting"
             ),
             section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="memmap_directory",
@@ -424,6 +515,7 @@ SCHEMA = Schema(
             default=False,
             help="Clean up the raw segmented mask before skeletonisation -- reveals the individual cleanup steps below",
             section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="segmentation_cleanup_fill_cavities",
@@ -699,6 +791,7 @@ SCHEMA = Schema(
                 "the box's corner, not the whole image's"
             ),
             section=_INPUT_AND_SEGMENTATION,
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="crop_method",
@@ -788,6 +881,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             minimum=0,
+            requires=("network_source=segmented_image",),
             advanced=True,
         ),
         Setting(
@@ -803,6 +897,7 @@ SCHEMA = Schema(
             ),
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
+            requires=("network_source=segmented_image",),
             advanced=True,
         ),
         Setting(
@@ -819,6 +914,7 @@ SCHEMA = Schema(
             section=_INPUT_AND_SEGMENTATION,
             minimum=0.0,
             maximum=10.0,
+            requires=("network_source=segmented_image",),
             advanced=True,
         ),
         # ------------------------------------------------------------------
@@ -838,6 +934,9 @@ SCHEMA = Schema(
                 "manual inlet/outlet selection methods"
             ),
             section=_VESSEL_MASKS,
+            # A synthetic network has no image for a mask to lie on: the
+            # generator chooses its boundaries (graph.vessel_masks_in_use).
+            requires=("network_source=segmented_image",),
         ),
         Setting(
             name="use_large_vessel_masks",

@@ -148,6 +148,11 @@ from .boundaries import (
     select_boundary_terminal_nodes,
     select_nodes_by_id,
     vessel_masks_in_use,
+    NETWORK_SOURCES,
+    NETWORK_SOURCE_SETTING,
+    NETWORK_SOURCE_SEGMENTED_IMAGE,
+    NETWORK_SOURCE_SYNTHETIC,
+    network_is_synthetic,
 )
 from .boundary_node_fallback import (
     seed_edges_have_full_mask_coverage,
@@ -353,6 +358,11 @@ __all__ = [
     "select_boundary_nodes_for_role",
     "inlets_outlets_from_vessel_masks",
     "vessel_masks_in_use",
+    "NETWORK_SOURCES",
+    "NETWORK_SOURCE_SETTING",
+    "NETWORK_SOURCE_SEGMENTED_IMAGE",
+    "NETWORK_SOURCE_SYNTHETIC",
+    "network_is_synthetic",
     "assigns_large_vessel_branch_orders",
     "select_nodes_by_id",
     "compute_overlapping_terminal_assignment_metrics",

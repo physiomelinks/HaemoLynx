@@ -84,7 +84,8 @@ def test_use_memmap_loading_defaults_off_and_lives_under_input_and_segmentation(
     assert setting.default is False
     assert setting.kind == "bool"
     assert setting.section == "Input and segmentation"
-    assert setting.requires == ()
+    # An image run's setting: a synthetic network has no image to memory-map.
+    assert setting.requires == ("network_source=segmented_image",)
 
 
 def test_memmap_directory_defaults_unset_and_requires_use_memmap_loading():

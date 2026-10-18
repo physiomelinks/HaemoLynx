@@ -257,8 +257,9 @@ def test_vessel_mask_rows_hide_when_requires_unmet_rather_than_only_greying():
     fields = {f.name: f for f in fields_for(SCHEMA)}
 
     automated = fields["automated_vessel_assignment"]
-    assert not automated.hide_when_unmet
+    assert automated.hide_when_unmet  # only under a synthetic network
     assert automated.is_visible({})
+    assert not automated.is_visible({"network_source": "synthetic"})
 
     large = fields["use_large_vessel_masks"]
     assert large.hide_when_unmet
@@ -320,7 +321,7 @@ def test_memmap_directory_row_hides_when_use_memmap_loading_is_off():
     fields = {f.name: f for f in fields_for(SCHEMA)}
 
     toggle = fields["use_memmap_loading"]
-    assert not toggle.hide_when_unmet
+    assert toggle.hide_when_unmet  # only under a synthetic network
     assert toggle.is_visible({})
 
     directory = fields["memmap_directory"]
@@ -1255,8 +1256,8 @@ def test_the_cell_mask_measurement_row_names_a_3d_object_mask():
 
 
 def test_a_row_read_by_every_choice_but_one_says_which_choice_turns_it_off():
-    field = field_for(SCHEMA["voxel_size_override_xyz"])
-    assert field.enabled_by == ("voxel_size_policy!=metadata_only",)
+    field = {f.name: f for f in fields_for(SCHEMA)}["voxel_size_override_xyz"]
+    assert field.enabled_by == ("voxel_size_policy!=metadata_only", "network_source=segmented_image")
     assert field.is_visible({"voxel_size_policy": "auto"})
     assert field.is_visible({"voxel_size_policy": "override"})
     assert not field.is_visible({"voxel_size_policy": "metadata_only"})
@@ -1440,3 +1441,54 @@ def test_every_setting_that_reads_the_raw_image_names_it_as_a_gate():
     assert "do_fwhm_measurement" in visible_diameter_settings(
         SCHEMA, {**unset, "measure_diameters_from_raw_image": True, "raw_image_path": "raw.tif"}
     )
+
+
+def test_the_input_tab_swaps_its_rows_on_the_network_source():
+    """Under a synthetic network the image rows hide and the template rows
+    show; under an image the other way round -- and a values mapping that
+    does not name the choice reads it as its default, the image."""
+    image = visible_input_segmentation_settings(SCHEMA, {"network_source": "segmented_image"})
+    synthetic = visible_input_segmentation_settings(SCHEMA, {"network_source": "synthetic"})
+    unsaid = visible_input_segmentation_settings(SCHEMA, {})
+    assert "network_source" in image and "network_source" in synthetic
+    for name in (
+        "input_path", "raw_image_path", "image_axis_order", "voxel_size_policy", "use_memmap_loading",
+        "segmentation_cleanup", "crop_on_import", "expected_boundary_vessel_count",
+    ):
+        assert name in image, name
+        assert name not in synthetic, name
+    for name in (
+        "synthetic_template_path", "synthetic_template_source", "synthetic_seed", "synthetic_scale",
+        "synthetic_interior_dead_ends",
+    ):
+        assert name in synthetic, name
+        assert name not in image, name
+    assert "segmentation_source" in image and "segmentation_source" in synthetic
+    assert "mid_run_postprocessing" in image and "mid_run_postprocessing" in synthetic
+    assert unsaid == image
+
+
+def test_the_diameter_rows_reading_the_raw_image_hide_under_a_synthetic_network():
+    fields = {f.name: f for f in fields_for(SCHEMA)}
+    values = {"network_source": "synthetic", "raw_image_path": "raw.tif", "measure_diameters_from_raw_image": True}
+    for name in ("measure_diameters_from_raw_image", "do_fwhm_measurement", "automated_vessel_assignment"):
+        assert not fields[name].is_visible(values, unmet_chain(SCHEMA, name, values)), name
+
+
+def test_the_template_row_opens_a_haemorun_file_dialogue():
+    from haemolynx.gui.form import CHOICE_VALUE_LABELS, PATH_FILTERS
+    from haemolynx.gui.run_snapshot import SAVE_FILTER
+
+    assert PATH_FILTERS["synthetic_template_path"] == SAVE_FILTER
+    field = {f.name: f for f in fields_for(SCHEMA)}["synthetic_template_path"]
+    assert field.options["mode"] == "r"
+    assert field.options["filter"] == SAVE_FILTER
+    assert field.hide_when_unmet
+    assert CHOICE_VALUE_LABELS["network_source"]["synthetic"] == "Synthetic network from a template run"
+    assert label_for("network_source", None) == "Input"
+
+
+def test_shared_ilastik_rows_host_nowhere_under_a_synthetic_network():
+    values = {"network_source": "synthetic", "use_ilastik_segmentation": True, "raw_image_path": "raw.tif"}
+    assert shared_ilastik_host(values) is None
+    assert shared_ilastik_host({**values, "network_source": "segmented_image"}) == "input"

@@ -585,8 +585,10 @@ def test_vessel_mask_fields_on_boundaries_declare_hide_when_unmet():
         if field.section != "Vessel masks":
             continue
         if field.name == "automated_vessel_assignment":
-            assert not field.hide_when_unmet
+            # Hides only under a synthetic network, which has no image for a mask.
+            assert field.hide_when_unmet
             assert field.is_visible({})
+            assert not field.is_visible({"network_source": "synthetic"})
         else:
             assert field.hide_when_unmet, field.name
             assert not field.is_visible({"automated_vessel_assignment": False}), field.name
@@ -599,7 +601,10 @@ def test_input_ilastik_fields_declare_hide_when_unmet():
 
     assert not fields["use_ilastik_segmentation"].hide_when_unmet
     assert fields["input_path"].hide_when_unmet
-    assert not fields["raw_image_path"].hide_when_unmet
+    # The raw image hides only under a synthetic network (no image at all).
+    assert fields["raw_image_path"].hide_when_unmet
+    assert fields["raw_image_path"].is_visible({})
+    assert not fields["raw_image_path"].is_visible({"network_source": "synthetic"})
     assert fields["ilastik_classifier_path"].hide_when_unmet
     assert fields["ilastik_executable"].hide_when_unmet
     assert fields["ilastik_output_dir"].hide_when_unmet
@@ -643,7 +648,10 @@ def test_segmentation_cleanup_fields_are_on_input_and_declare_hide_when_unmet():
     tabs = {tab.stage.title: tab for tab in tabs_for(SCHEMA)}
     fields = {field.name: field for field in tabs["1. Input"].fields}
 
-    assert not fields["segmentation_cleanup"].hide_when_unmet
+    # The cleanup switch hides only under a synthetic network (no image to clean).
+    assert fields["segmentation_cleanup"].hide_when_unmet
+    assert fields["segmentation_cleanup"].is_visible({})
+    assert not fields["segmentation_cleanup"].is_visible({"network_source": "synthetic"})
 
     toggles_and_children = {
         "segmentation_cleanup_fill_cavities": (),

@@ -6,11 +6,23 @@
 # Input and segmentation
 # ------------------------------------------------------------------------
 input_and_segmentation:
-  # The segmented image (a vessel mask) the pipeline reads; its raw image is raw_image_path  [needs use_ilastik_segmentation off; must exist]
+  # Analyse a segmented image, or generate a synthetic vascular network matched to a previous run's .haemorun file and start at the Boundaries stage; the Skeletonise and Graph tabs' settings are then not read  [one of: segmented_image, synthetic]
+  network_source: segmented_image
+  # The .haemorun file of a finished microscopy-image run the synthetic network is matched to: not itself synthetic, saved with Statistics on, with inlets and outlets and arteriole/venule branch orders assigned  [needs network_source = synthetic; must exist]
+  synthetic_template_path: null
+  # Where the template's characteristics come from: statistics reads the run's saved statistics report (each section it needs must have been switched on), graph reads per-vessel distributions off the template graph in the file  [one of: statistics, graph; needs network_source = synthetic]
+  synthetic_template_source: statistics
+  # Draw the synthetic network from this seed, so a run repeats; another seed draws another network, and null draws a fresh one every run  [needs network_source = synthetic]
+  synthetic_seed: 20240917
+  # Size of the synthetic box relative to the template's image, 1 for the same extent; vessel counts scale with the volume, inlets and outlets with the faces  [range 0.1..10.0; needs network_source = synthetic]
+  synthetic_scale: 1.0
+  # Give the synthetic network the template's number of dead ends inside the tissue as well as the vessels cut by the box; off, every dead end lies on a face  [needs network_source = synthetic]
+  synthetic_interior_dead_ends: true
+  # The segmented image (a vessel mask) the pipeline reads; its raw image is raw_image_path  [needs use_ilastik_segmentation off and network_source = segmented_image; must exist]
   input_path: examples/images/carotid_mask.tif
   # What the segmented vessels are, and so what a diameter taken from the segmentation measures: plasma_column for a mask of the channel blood flows in (a luminal label, as a plasma stain images it), or endothelial (anatomical) for a mask of the vessel wall to wall, which includes the ~1.1 um endothelial surface layer. The pries viscosity law takes the matching form for every diameter the segmentation gave -- the mask's own widths, the class medians and the table; a diameter measured from the raw image carries the raw image's own. Choosing endothelial for a plasma label subtracts that layer twice and roughly quintuples capillary resistance  [one of: plasma_column, endothelial]
   segmentation_source: plasma_column
-  # The raw (unsegmented) image of the same field, one channel of it (raw_image_channel): what ilastik segments when it runs, what diameters are measured from, what 'Check segmented image' and 'Optimise settings' compare the segmentation with, and where tissue volume is found unless tissue_raw_tiff_path names another. ilastik reads the whole file, as its project was trained on it. Optional: without one the run goes on from the segmented image alone, and everything that reads the raw image (ilastik, measuring diameters from it) is off  [must exist]
+  # The raw (unsegmented) image of the same field, one channel of it (raw_image_channel): what ilastik segments when it runs, what diameters are measured from, what 'Check segmented image' and 'Optimise settings' compare the segmentation with, and where tissue volume is found unless tissue_raw_tiff_path names another. ilastik reads the whole file, as its project was trained on it. Optional: without one the run goes on from the segmented image alone, and everything that reads the raw image (ilastik, measuring diameters from it) is off  [needs network_source = segmented_image; must exist]
   raw_image_path: examples/images/carotid.tif
   # Which channel of a multi-channel raw image to read, counting from 0 (the panel lists them as Fiji names them: C1 is 0); leave unset for a single-channel file  [range 0..; needs raw_image_path]
   raw_image_channel: null
@@ -30,19 +42,19 @@ input_and_segmentation:
   ilastik_output_dir: outputs/segmentations
   # Give ilastik segmentation outputs this file suffix
   ilastik_output_suffix: .tif
-  # Override the voxel size with these (x, y, z) values instead of reading image metadata  [um; needs voxel_size_policy not metadata_only]
+  # Override the voxel size with these (x, y, z) values instead of reading image metadata  [um; needs voxel_size_policy not metadata_only and network_source = segmented_image]
   voxel_size_override_xyz: null
-  # Choose how the voxel size is resolved from metadata and the manual override  [one of: auto, override, metadata_only]
+  # Choose how the voxel size is resolved from metadata and the manual override  [one of: auto, override, metadata_only; needs network_source = segmented_image]
   voxel_size_policy: auto
-  # Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load  [one of: zyx, zxy, yzx, yxz, xzy, xyz]
+  # Declare which array axis is which in the input files, so volumes can be transposed to canonical (z, y, x) on load  [one of: zyx, zxy, yzx, yxz, xzy, xyz; needs network_source = segmented_image]
   image_axis_order: zyx
   # Pause a napari panel run after Haemodynamics, on the Post processing tab, to fix the solved network by hand; the tab's Continue button brings the edits in line, solves the haemodynamics again and runs the rest. A command-line run does not pause
   mid_run_postprocessing: false
-  # Load the input image, and any vessel/pericyte/cell masks, into a disk-backed array instead of RAM, and write the largest full-volume working buffers (connected-component labels, distance transforms) to disk too, instead of a fresh in-RAM array each time. Same result, much less peak RAM, at the cost of disk space (as large as the volume itself) and slower reads -- turn on for a volume too large to hold in memory outright. Does not cover use_thick_vessel_skeletonisation's own centreline-tree computation, which still allocates full-volume buffers regardless of this setting
+  # Load the input image, and any vessel/pericyte/cell masks, into a disk-backed array instead of RAM, and write the largest full-volume working buffers (connected-component labels, distance transforms) to disk too, instead of a fresh in-RAM array each time. Same result, much less peak RAM, at the cost of disk space (as large as the volume itself) and slower reads -- turn on for a volume too large to hold in memory outright. Does not cover use_thick_vessel_skeletonisation's own centreline-tree computation, which still allocates full-volume buffers regardless of this setting  [needs network_source = segmented_image]
   use_memmap_loading: false
   # Write use_memmap_loading's disk-backed arrays here instead of the OS temp directory -- point this at a drive with enough free space for a volume-sized file (or a faster disk than the default temp drive) when the default location cannot take it. Setting this also lets a later run reuse the raw input image already decompressed here instead of reloading it, as long as the input file and image_axis_order have not changed (skeletonisation and everything after it are always rebuilt fresh either way). Created if it does not already exist; leave unset to use the OS default with no reuse between runs  [needs use_memmap_loading]
   memmap_directory: null
-  # Clean up the raw segmented mask before skeletonisation -- reveals the individual cleanup steps below
+  # Clean up the raw segmented mask before skeletonisation -- reveals the individual cleanup steps below  [needs network_source = segmented_image]
   segmentation_cleanup: false
   # Fill small internal air-gaps/voids -- imaging noise inside an otherwise solid vessel lumen -- before skeletonisation, the same fill done for use_thick_vessel_skeletonisation's own thickness-gated path but here for the plain-Lee path too. Run first, so a hollow lumen does not throw off later steps' own radius measurements. No parameter: a cavity is either enclosed or it is not, with nothing to size  [needs segmentation_cleanup]
   segmentation_cleanup_fill_cavities: false
@@ -86,7 +98,7 @@ input_and_segmentation:
   segmentation_cleanup_remove_small_volumes: false
   # Remove connected components smaller than this physical volume  [um3; range 0.0..; needs segmentation_cleanup and segmentation_cleanup_remove_small_volumes]
   segmentation_cleanup_remove_small_min_volume_um3: 5.0
-  # Analyse only one box of the image: crop the input image, and every mask and raw image read alongside it, to the same box of voxels as each is loaded. Every position after that -- node positions, the exports, boundary node coordinates and volumes -- is measured from the box's corner, not the whole image's
+  # Analyse only one box of the image: crop the input image, and every mask and raw image read alongside it, to the same box of voxels as each is loaded. Every position after that -- node positions, the exports, boundary node coordinates and volumes -- is measured from the box's corner, not the whole image's  [needs network_source = segmented_image]
   crop_on_import: false
   # Give the box as a size in voxels placed at a location (size), or as the voxel coordinates of two opposite corners (coordinates)  [one of: size, coordinates; needs crop_on_import]
   crop_method: size
@@ -100,18 +112,18 @@ input_and_segmentation:
   crop_start_xyz: null
   # End the box at this voxel (x, y, z), which is kept: the opposite corner to crop_start_xyz. A corner past the image's edge stops at it  [voxels; needs crop_on_import and crop_method = coordinates]
   crop_end_xyz: null
-  # How many places this dataset's own vessel network is expected to cross the image boundary (a whole-organ scan or multi-inlet preparation legitimately has more than a single-vessel crop). Leave unset to use a generic default of 2  [range 0..]
+  # How many places this dataset's own vessel network is expected to cross the image boundary (a whole-organ scan or multi-inlet preparation legitimately has more than a single-vessel crop). Leave unset to use a generic default of 2  [range 0..; needs network_source = segmented_image]
   expected_boundary_vessel_count: null
-  # How many voxels across a vessel's own radius the 'Check segmented image' resolution score expects for full marks -- below this, FWHM and EDT diameter measurements are known to carry a growing, uncorrectable discretisation bias. Leave unset to use a generic default of 3.0  [range 0.0..]
+  # How many voxels across a vessel's own radius the 'Check segmented image' resolution score expects for full marks -- below this, FWHM and EDT diameter measurements are known to carry a growing, uncorrectable discretisation bias. Leave unset to use a generic default of 3.0  [range 0.0..; needs network_source = segmented_image]
   min_voxels_across_vessel_radius: null
-  # If set, preflight logs a warning (never blocks the run) when the segmented input's own 0-10 quality score -- the same score 'Check segmented image' reports -- falls below this, naming which tier (source data vs pipeline-fixable) is responsible. Leave unset to opt out entirely, which is the default  [range 0.0..10.0]
+  # If set, preflight logs a warning (never blocks the run) when the segmented input's own 0-10 quality score -- the same score 'Check segmented image' reports -- falls below this, naming which tier (source data vs pipeline-fixable) is responsible. Leave unset to opt out entirely, which is the default  [range 0.0..10.0; needs network_source = segmented_image]
   min_acceptable_segmentation_quality: null
 
 # ------------------------------------------------------------------------
 # Vessel masks
 # ------------------------------------------------------------------------
 vessel_masks:
-  # Use the large arteriole and venule masks for the large-vessel treatment. While inlets_outlets_from_vessel_masks is also on, they also choose the inlet and outlet nodes, which overrides the manual inlet/outlet selection methods
+  # Use the large arteriole and venule masks for the large-vessel treatment. While inlets_outlets_from_vessel_masks is also on, they also choose the inlet and outlet nodes, which overrides the manual inlet/outlet selection methods  [needs network_source = segmented_image]
   automated_vessel_assignment: false
   # Load large arteriole and venule masks for automated inlet/outlet node assignment. Ticked in the panel, it fills the mask rows from files beside the input image named like it with 'large' and 'arteriole' or 'venule' (artery, vein and plurals too) added; 'large' alone is a global mask, and while no file says 'large', 'arteriole' or 'venule' alone counts  [needs automated_vessel_assignment]
   use_large_vessel_masks: false

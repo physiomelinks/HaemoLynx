@@ -96,6 +96,8 @@ from haemolynx.visualization.perturbation_plots import (
 from haemolynx.parsers import Schema, parameters_of, prefixed_arguments
 from haemolynx.pipeline.checks import tissue_raw_image
 from haemolynx.pipeline.citations import write_citations
+from haemolynx.pipeline.naming import run_stem
+from haemolynx.synthetic.template import GRAPH_TEMPLATE_RECORD, ROLES as SYNTHETIC_ROLES
 from haemolynx.pipeline.progress import ProgressCallback, RunProgress, StageProgress
 from haemolynx.pipeline.provenance import record_run
 from haemolynx.preprocessing.memmap_support import bincount_by_slab
@@ -158,16 +160,25 @@ class SegmentedInputs:
 
     image_path: Path
     output_dir: Path
-    #: "tif"/"tiff"/"h5" — which loader skeletonise should use.
+    #: "tif"/"tiff"/"h5" — which loader skeletonise should use; "haemorun"
+    #: for a synthetic run, whose ``image_path`` is its template.
     input_format: str = "tif"
+    #: A synthetic run (``network_source=synthetic``): nothing is loaded or
+    #: skeletonised; the Graph stage draws the network to ``template_path``.
+    synthetic: bool = False
+    template_path: Path | None = None
 
 
 @dataclass
 class SkeletonisedVolume:
-    """The loaded volume, its skeleton, and the voxel size they are measured in."""
+    """The loaded volume, its skeleton, and the voxel size they are measured in.
 
-    image: np.ndarray
-    skeleton: np.ndarray
+    A synthetic run has neither (``synthetic``): its stages read the box
+    from the graph (``image_extent_um``) and the voxel size from here.
+    """
+
+    image: np.ndarray | None
+    skeleton: np.ndarray | None
     voxel_size_xyz: tuple[float, float, float]
     voxel_size_zyx: tuple[float, float, float]
     output_dir: Path
@@ -184,6 +195,8 @@ class SkeletonisedVolume:
     #: None when it was not cropped. Every position after this is measured
     #: from its corner.
     crop: CropBox | None = None
+    #: A synthetic run's volume: no image, no skeleton (see the class).
+    synthetic: bool = False
 
 
 @dataclass
@@ -378,7 +391,10 @@ def raw_image_is_set(settings: Mapping[str, Any]) -> bool:
     without one, everything that reads it -- ilastik segmentation, measuring
     diameters from it, the raw evidence round the mask -- is off, whatever
     its own switch says (the panel greys those switches out), and the run
-    goes on from the segmented image alone."""
+    goes on from the segmented image alone. Never for a synthetic network,
+    which reads no image at all."""
+    if graph.network_is_synthetic(settings):
+        return False
     return settings.get("raw_image_path") not in (None, "")
 
 
@@ -402,7 +418,10 @@ def segmented_input_path(settings: dict) -> Path | None:
     `segment` has replaced it with ilastik's output (it may still hold an
     unrelated file from before ilastik was switched on): it counts only once
     it lies in ``ilastik_output_dir``. Otherwise the output is derived where
-    `segment` writes it -- that stage's own naming rule."""
+    `segment` writes it -- that stage's own naming rule. None for a
+    synthetic network, which has no segmented image."""
+    if graph.network_is_synthetic(settings):
+        return None
     produced = settings.get("input_path")
     if ilastik_segments(settings):
         output_dir = Path(settings["ilastik_output_dir"])
@@ -429,6 +448,8 @@ def segment(
     ilastik runs, which is where a watcher can stop the run: whatever its
     callback raises kills ilastik and propagates.
     """
+    if graph.network_is_synthetic(settings):
+        return _segment_synthetic(settings)
     if segmented_path is not None:
         settings["input_path"] = Path(segmented_path)
     # Not yet a path when ilastik is doing the segmenting: `input_path` is what
@@ -508,6 +529,173 @@ def segment(
         image_path=settings["input_path"],
         output_dir=output_dir,
         input_format=input_format,
+    )
+
+
+def _segment_synthetic(settings: dict) -> SegmentedInputs:
+    """The Input stage of a synthetic run (``network_source=synthetic``):
+    the template read and checked, the output names settled. Nothing is
+    segmented; the Graph stage draws the network."""
+    from haemolynx.synthetic import load_template
+
+    template_path = settings.get("synthetic_template_path")
+    if template_path in (None, ""):
+        raise ValueError(
+            "network_source='synthetic' needs synthetic_template_path: the .haemorun "
+            "file of the microscopy-image run the synthetic network is matched to."
+        )
+    template_path = Path(template_path)
+    settings["synthetic_template_path"] = template_path
+    template = load_template(template_path, settings.get("synthetic_template_source", "statistics"))
+    settings["vtk_output_prefix"] = Path(settings["vtk_output_prefix"])
+    output_dir = settings["vtk_output_prefix"].parent
+    valid_final_render_modes = {"2d", "3d"}
+    if settings["final_render_mode"] not in valid_final_render_modes:
+        raise ValueError(
+            f"Invalid final_render_mode='{settings['final_render_mode']}'. "
+            f"Choose one of {sorted(valid_final_render_modes)}."
+        )
+    logger.info(
+        "Synthetic network: matched to %s (%s): %d vessels, %d inlet(s), %d outlet(s), "
+        "box %s um, voxels %s um.",
+        template_path,
+        template.provenance.source,
+        template.vessel_count,
+        template.inlet_count,
+        template.outlet_count,
+        tuple(round(v, 1) for v in template.extent_um),
+        tuple(round(v, 3) for v in template.voxel_size_zyx),
+    )
+    for note in template.provenance.notes:
+        logger.warning("Synthetic template: %s", note)
+    return SegmentedInputs(
+        image_path=template_path,
+        output_dir=output_dir,
+        input_format="haemorun",
+        synthetic=True,
+        template_path=template_path,
+    )
+
+
+def _synthetic_volume(settings: dict, inputs: SegmentedInputs) -> SkeletonisedVolume:
+    """The Skeletonise stage of a synthetic run: nothing to load or thin;
+    the template's voxel size, and the output folders made."""
+    from haemolynx.synthetic import load_template
+
+    template = load_template(inputs.template_path, settings.get("synthetic_template_source", "statistics"))
+    inputs.output_dir.mkdir(parents=True, exist_ok=True)
+    plot_dir = settings.get("plot_dir")
+    if plot_dir:
+        Path(plot_dir).mkdir(parents=True, exist_ok=True)
+    logger.info("Synthetic network: nothing to skeletonise; the network is drawn in the Graph stage.")
+    voxel_size_zyx = tuple(float(v) for v in template.voxel_size_zyx)
+    return SkeletonisedVolume(
+        image=None,
+        skeleton=None,
+        voxel_size_xyz=tuple(reversed(voxel_size_zyx)),
+        voxel_size_zyx=voxel_size_zyx,
+        output_dir=inputs.output_dir,
+        synthetic=True,
+    )
+
+
+def synthetic_box_shape(G: nx.Graph) -> tuple[int, int, int]:
+    """The voxel shape of a synthetic network's box: the inverse of
+    ``graph.dead_ends.image_extent_um``, ``round(extent / voxel) + 1``."""
+    extent = graph.dead_ends.graph_image_extent_um(G)
+    if extent is None:
+        raise ValueError("the synthetic network records no image_extent_um")
+    voxel = np.asarray(G.graph.get("image_voxel_size_zyx") or G.graph.get("voxel_size") or (1.0, 1.0, 1.0), dtype=float)
+    return tuple(int(round(float(e) / float(v))) + 1 for e, v in zip(extent, voxel))
+
+
+def _build_synthetic_network(
+    settings: dict,
+    volume: SkeletonisedVolume,
+    *,
+    progress: StageProgress | None = None,
+    resumed_graph: nx.MultiGraph | None = None,
+) -> VesselNetwork:
+    """The Graph stage of a synthetic run: the network drawn to the template
+    (``haemolynx.synthetic.generate_network``), or a resumed run's handed back."""
+    from haemolynx import synthetic
+
+    if resumed_graph is not None:
+        logger.info("Resuming with the synthetic network already drawn.")
+        G = resumed_graph
+    else:
+        template = synthetic.load_template(
+            settings["synthetic_template_path"], settings.get("synthetic_template_source", "statistics")
+        )
+        seed = settings.get("synthetic_seed")
+        options = synthetic.GenerationOptions(
+            scale=float(settings.get("synthetic_scale") or 1.0),
+            interior_dead_ends=bool(settings.get("synthetic_interior_dead_ends", True)),
+        )
+        logger.info(
+            "Drawing a synthetic network to the template (seed %s, scale %g, dead ends inside the tissue %s)...",
+            "fresh" if seed is None else seed,
+            options.scale,
+            "kept" if options.interior_dead_ends else "none",
+        )
+        G = synthetic.generate_network(template, seed=None if seed is None else int(seed), options=options)
+        if progress is not None:
+            progress.step("generate_network", total=1)
+        if G.number_of_edges() == 0:
+            raise ValueError("The synthetic network has no vessels.")
+        record = G.graph[GRAPH_TEMPLATE_RECORD]["generated"]
+        logger.info(
+            "Synthetic network: %d nodes, %d vessels (%d capillaries, %d tree vessels), "
+            "%d independent loops, bed spacing %.1f um.",
+            record["nodes"], record["edges"], record["capillaries"], record["tree_edges"],
+            record["loops"], record["spacing_um"],
+        )
+        for note in record.get("notes", ()):
+            logger.warning("Synthetic network: %s", note)
+        stem = run_stem(settings)
+        if stem is not None:
+            graph_path = volume.output_dir / f"{stem}_graph.pkl"
+            with graph_path.open("wb") as handle:
+                pickle.dump(G, handle)
+            logger.info(f"Saved the synthetic network to: {graph_path}")
+    _record_graph_voxel_metadata(G, volume.voxel_size_xyz, volume.voxel_size_zyx, None, None, None, None)
+    return VesselNetwork(graph=G, volume=volume)
+
+
+def _assign_synthetic_boundaries(settings: dict, network: VesselNetwork) -> BoundaryNodes:
+    """The Boundaries stage of a synthetic run: the roles the generator
+    marked on the nodes (``haemolynx.synthetic.boundary_nodes``) fill the
+    run's lists, in place as the manual methods do."""
+    from haemolynx.synthetic import boundary_nodes
+
+    G = network.graph
+    roles = boundary_nodes(G)
+    for role in SYNTHETIC_ROLES:
+        name = f"{role}_nodes"
+        _reset_run_node_list(settings, name)
+        settings[name].extend(roles[role])
+    if not settings["inlet_nodes"] or not settings["outlet_nodes"]:
+        raise ValueError(
+            "The synthetic network has no inlet or no outlet to solve between: "
+            "the template run has none to match."
+        )
+    resistance_node_pair = (settings["inlet_nodes"][0], settings["outlet_nodes"][0])
+    logger.info(
+        "Synthetic network: the generator chose %d inlet(s), %d outlet(s), %d arteriole and "
+        "%d venule boundary node(s), %d large-arteriole and %d large-venule hand-over node(s).",
+        len(settings["inlet_nodes"]), len(settings["outlet_nodes"]),
+        len(settings["arteriole_boundary_nodes"]), len(settings["venule_boundary_nodes"]),
+        len(settings["large_arteriole_boundary_nodes"]), len(settings["large_venule_boundary_nodes"]),
+    )
+    return BoundaryNodes(
+        inlet_nodes=settings["inlet_nodes"],
+        outlet_nodes=settings["outlet_nodes"],
+        arteriole_boundary_nodes=settings["arteriole_boundary_nodes"],
+        venule_boundary_nodes=settings["venule_boundary_nodes"],
+        large_arteriole_boundary_nodes=settings["large_arteriole_boundary_nodes"],
+        large_venule_boundary_nodes=settings["large_venule_boundary_nodes"],
+        resistance_node_pair=resistance_node_pair,
+        graph=G,
     )
 
 
@@ -705,7 +893,7 @@ def thick_vessel_region_cache(
     directory = (
         Path(settings["vtk_output_prefix"]).parent if output_dir is None else Path(output_dir)
     )
-    stem = Path(settings["input_path"]).stem
+    stem = run_stem(settings)
     return preprocessing.ThickVesselRegionCache(directory / f"{stem}_thick_vessel_region")
 
 
@@ -844,14 +1032,16 @@ def _skeletonize_loaded_mask(
 
 def skeletonise(settings: dict, inputs: SegmentedInputs):
     """Load the mask, resolve its voxel size, and skeletonise it."""
+    if inputs.synthetic:
+        return _synthetic_volume(settings, inputs)
     output_dir = inputs.output_dir
     input_format = inputs.input_format
     # 1) Load image and skeletonize.
     if not output_dir.exists():
         output_dir.mkdir(parents=True, exist_ok=True)
-    skeleton_path = output_dir / f"{settings['input_path'].stem}_skeleton.npy"
-    voxel_meta_path = output_dir / f"{settings['input_path'].stem}_voxel_size.json"
-    graph_path = output_dir / f"{settings['input_path'].stem}_graph.pkl"
+    skeleton_path = output_dir / f"{run_stem(settings)}_skeleton.npy"
+    voxel_meta_path = output_dir / f"{run_stem(settings)}_voxel_size.json"
+    graph_path = output_dir / f"{run_stem(settings)}_graph.pkl"
     projection_path = settings["plot_dir"] / "skeleton_projection.png"
     if not settings["plot_dir"].exists():
         settings["plot_dir"].mkdir(parents=True, exist_ok=True)
@@ -1382,12 +1572,16 @@ def build_network(
     *resumed_graph* is a resumed run's network, built (and checked and drawn) by the
     run that made it: it is used as it is, so ``{stem}_graph.pkl`` is neither
     loaded nor written -- that file stays the one graph building produced.
+
+    A synthetic run draws its network here instead (``network_source``).
     """
+    if volume.synthetic:
+        return _build_synthetic_network(settings, volume, progress=progress, resumed_graph=resumed_graph)
     image, skeleton = volume.image, volume.skeleton
     output_dir = volume.output_dir
     main_voxel_size_xyz = volume.voxel_size_xyz
     voxel_size_zyx = volume.voxel_size_zyx
-    graph_path = output_dir / f"{settings['input_path'].stem}_graph.pkl"
+    graph_path = output_dir / f"{run_stem(settings)}_graph.pkl"
 
     # The vessel-mask and segmentation settings go in as a group; each role
     # picks the ones it uses. `io.VESSEL_MASK_SETTINGS` lists which those are.
@@ -1462,7 +1656,7 @@ def build_network(
         # here rather than build an empty graph.
         if not graph.build.skeleton_has_path(skeleton):
             raise _skeleton_without_vessels_error(
-                settings, volume, output_dir / f"{settings['input_path'].stem}_skeleton.npy"
+                settings, volume, output_dir / f"{run_stem(settings)}_skeleton.npy"
             )
         # 3) Convert skeleton to graph.
         # Every snapshot draws the same volume, and projecting it reads the whole
@@ -1505,7 +1699,7 @@ def build_network(
                 image,
                 output_dir,
                 settings["plot_dir"],
-                settings["input_path"].stem,
+                run_stem(settings),
                 label,
                 projection=step_projection,
                 extra_plot_names=(plot_png,),
@@ -1999,6 +2193,8 @@ def _vessel_boundary_configured(settings: dict, vessel: str) -> bool:
 
 def assign_boundaries(settings: dict, network: VesselNetwork):
     """Choose the inlet, outlet and vessel-boundary nodes for this network."""
+    if network.volume.synthetic:
+        return _assign_synthetic_boundaries(settings, network)
     G = network.graph
     image = network.volume.image
     voxel_size_zyx = network.volume.voxel_size_zyx
@@ -2189,12 +2385,9 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 ),
             )
             network.graph = G
-            input_path = settings.get("input_path")
-            if input_path is not None:
-                graph_path = (
-                    network.volume.output_dir
-                    / f"{Path(input_path).stem}_graph.pkl"
-                )
+            stem = run_stem(settings)
+            if stem is not None:
+                graph_path = network.volume.output_dir / f"{stem}_graph.pkl"
                 with graph_path.open("wb") as handle:
                     pickle.dump(G, handle)
                 logger.info(
@@ -3241,6 +3434,12 @@ def _bridge_edited_vessels(
                 "it in; %d edited vessel(s) get no zero-resistance bridge where they "
                 "open into a thick vessel.",
                 len(edited),
+            )
+            return G
+        if network.volume.image is None:
+            logger.info(
+                "Post processing: a synthetic network has no segmentation, so no "
+                "thick-vessel bridges are made for its edited vessels."
             )
             return G
         logger.info(
@@ -5123,7 +5322,7 @@ def tissue_measurement(
     """
     if network is None or not settings.get("measure_tissue_volume"):
         return None
-    if network.volume is None:
+    if network.volume is None or network.volume.image is None:
         logger.warning("measure_tissue_volume: no loaded segmentation to measure against; skipped.")
         return None
     path, channel, path_name, _channel_name = tissue_raw_image(settings)
@@ -5251,7 +5450,7 @@ def export_tissue_measurement(
     """Write *tissue*'s measurements (CSV) and surface (``.vtp``, points in
     the ``(z, y, x)`` order the vessels' own ``.vtp`` uses) beside the run's
     other outputs."""
-    stem = settings["input_path"].stem
+    stem = run_stem(settings)
     csv_path = statistics.export_statistics_to_csv(
         tissue.rows(), output_dir / f"{stem}_tissue_volume.csv"
     )
@@ -5267,6 +5466,8 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     """Write VTK, statistics and distance measurements, and draw the plots."""
     G = model.graph
     image = network.volume.image
+    # A synthetic network has no image: its box's shape comes from the graph.
+    image_shape = tuple(int(v) for v in image.shape) if image is not None else synthetic_box_shape(G)
     output_dir = network.volume.output_dir
     voxel_size_zyx = network.volume.voxel_size_zyx
     main_voxel_size_xyz = network.volume.voxel_size_xyz
@@ -5316,7 +5517,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         measures = statistics.compute_vessel_statistics_by_measure(
             G,
             node_positions=node_positions,
-            image_dimensions=image.shape,
+            image_dimensions=image_shape,
             # Zipped element-wise with image.shape, which is (z, y, x), so this
             # is the per-array-axis spacing. Left at its (1, 1, 1) default the
             # whole-image volume and density were counted in voxels for any
@@ -5340,15 +5541,15 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         for key, value in stats.items():
             logger.info(f"  {key}: {value}")
 
-        stats_csv_path = output_dir / f"{settings['input_path'].stem}_statistics.csv"
+        stats_csv_path = output_dir / f"{run_stem(settings)}_statistics.csv"
         statistics.export_statistics_to_csv(stats, stats_csv_path)
         logger.info(f"Saved statistics CSV to: {stats_csv_path}")
         connected_stats = connected_network_statistics(
-            settings, G, image.shape, voxel_size_zyx, tissue
+            settings, G, image_shape, voxel_size_zyx, tissue
         )
         if connected_stats is not None:
             connected_csv_path = (
-                output_dir / f"{settings['input_path'].stem}_statistics_connected.csv"
+                output_dir / f"{run_stem(settings)}_statistics_connected.csv"
             )
             statistics.export_statistics_to_csv(connected_stats, connected_csv_path)
             logger.info(
@@ -5356,7 +5557,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
                 f"(disconnected vessels left out) to: {connected_csv_path}"
             )
         beds_csv_path = statistics.export_capillary_bed_joins_csv(
-            G, output_dir / f"{settings['input_path'].stem}_capillary_bed_joins.csv"
+            G, output_dir / f"{run_stem(settings)}_capillary_bed_joins.csv"
         )
         if beds_csv_path is not None:
             logger.info(f"Saved capillary bed joins CSV to: {beds_csv_path}")
@@ -5365,7 +5566,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             G,
             node_positions=node_positions,
         )
-        branch_stats_csv_path = output_dir / f"{settings['input_path'].stem}_branch_statistics.csv"
+        branch_stats_csv_path = output_dir / f"{run_stem(settings)}_branch_statistics.csv"
         statistics.export_branch_order_statistics_to_csv(
             branch_stats,
             branch_stats_csv_path,
@@ -5429,15 +5630,15 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             for metric_name, metric_values in model_results.items():
                 logger.info(f"    {metric_name}: {metric_values}")
 
-        resistance_path = output_dir / f"{settings['input_path'].stem}_betweenness_communities_resistance.json"
+        resistance_path = output_dir / f"{run_stem(settings)}_betweenness_communities_resistance.json"
         resistance_path.write_text(
             json.dumps(weighted_measurements["edge_resistance"], indent=2)
         )
-        length_path = output_dir / f"{settings['input_path'].stem}_betweenness_communities_edge_length.json"
+        length_path = output_dir / f"{run_stem(settings)}_betweenness_communities_edge_length.json"
         length_path.write_text(
             json.dumps(weighted_measurements["edge_length"], indent=2)
         )
-        flow_path = output_dir / f"{settings['input_path'].stem}_betweenness_communities_edge_flow.json"
+        flow_path = output_dir / f"{run_stem(settings)}_betweenness_communities_edge_flow.json"
         flow_path.write_text(
             json.dumps(weighted_measurements["edge_flow_abs"], indent=2)
         )
@@ -5445,6 +5646,31 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
         logger.info(f"Saved edge-length stats to: {length_path}")
         logger.info(f"Saved edge-flow stats to: {flow_path}")
         report_sections[WEIGHTED_MEASURES_SECTION] = weighted_measurements
+        if graph.network_is_synthetic(settings):
+            # How close the synthetic network came to its template, on the
+            # statistics just measured: a CSV beside them and a section of
+            # the report.
+            from haemolynx import synthetic
+
+            template = synthetic.load_template(
+                settings["synthetic_template_path"], settings.get("synthetic_template_source", "statistics")
+            )
+            rows = synthetic.compare_run(
+                template, G, roles=synthetic.boundary_nodes(G), sections=report_sections,
+                image_shape=image_shape, voxel_size_zyx=voxel_size_zyx,
+            )
+            comparison_path = synthetic.write_template_comparison_csv(
+                rows, output_dir / f"{run_stem(settings)}_template_comparison.csv"
+            )
+            report_sections[synthetic.COMPARISON_SECTION] = synthetic.comparison_section(rows)
+            summary = synthetic.comparison_summary(rows)
+            logger.info(
+                "Synthetic network against its template: %d of %d banded characteristics within "
+                "tolerance (%s); saved to %s",
+                summary["within"], summary["fitted"],
+                ", ".join(summary["outside"]) if summary["outside"] else "none outside",
+                comparison_path,
+            )
     else:
         logger.info("Vessel statistics skipped.")
     if tissue is not None:
@@ -5480,11 +5706,16 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
             raise ValueError(
                 "measurement_3d_to_cell_mask=True requires cell_mask_path."
             )
+        if image is None:
+            raise ValueError(
+                "measurement_3d_to_cell_mask needs the run's segmented image to measure "
+                "to, and a synthetic network has none: switch it off (preflight says so)."
+            )
         distance_summary = statistics.run_3d_measurement_to_cell_mask(
             graph=G,
             cell_mask_path=Path(settings["cell_mask_path"]),
             output_dir=output_dir,
-            image_stem=settings["input_path"].stem,
+            image_stem=run_stem(settings),
             voxel_size_xyz=main_voxel_size_xyz,
             axis_order=settings["image_axis_order"],
             vessel_mask_path=(
@@ -5533,7 +5764,9 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
     if settings["run_haemodynamics"] and not settings["visualize_vtk"]:
         logger.info("VTK visualization skipped.") 
     # 11) Optional matplotlib visualization.
-    if settings["visualize_results"]:
+    if settings["visualize_results"] and image is None:
+        logger.info("Plots skipped: a synthetic network has no image to overlay on.")
+    elif settings["visualize_results"]:
         logger.info("Generating visualizations...")
         valid_plot_modes = {"all", "final_only", "none"}
         if settings["ide_plot_mode"] not in valid_plot_modes:
@@ -5606,7 +5839,7 @@ def export_results(settings: dict, network: VesselNetwork, model: HaemodynamicMo
 
     # 12) Optional: a plain-text reading list of what this run actually used.
     if settings["export_citations"]:
-        citations_path = output_dir / f"{settings['input_path'].stem}_citations.txt"
+        citations_path = output_dir / f"{run_stem(settings)}_citations.txt"
         write_citations(settings, citations_path)
         logger.info(f"Saved citations to: {citations_path}")
     else:

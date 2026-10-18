@@ -863,8 +863,10 @@ def vessel_mask_role_is_global(
     The venule setting must be there and empty: a run's settings name every
     setting, while a mapping a caller wrote by hand without it describes the
     masks as they were before a global one could be entered, a pair."""
+    from haemolynx.graph.boundaries import vessel_masks_in_use
+
     names = VESSEL_MASK_SETTINGS[mask_role]
-    if not (settings.get("automated_vessel_assignment") and settings.get(names["enabled"])):
+    if not vessel_masks_in_use(settings, mask_role):
         return False
     venule = (
         names["ilastik_venule_classifier_path"]

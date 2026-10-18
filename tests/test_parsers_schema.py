@@ -597,3 +597,24 @@ def test_a_migration_survives_building_a_schema_from_another_schemas_settings():
     """How the examples extend the pipeline's schema."""
     schema = Schema(list(Schema(_image_settings())) + [Setting("n", "int", 1, "A number", "S")])
     assert str(schema.validate({"spare_path": "b.tif"})["image"]).endswith("b.tif")
+
+
+def test_the_network_source_choices_are_the_graph_packages():
+    """The schema repeats the literals (it stays importable without numpy)."""
+    from haemolynx.graph.boundaries import NETWORK_SOURCES, NETWORK_SOURCE_SEGMENTED_IMAGE
+    from haemolynx.pipeline import default_schema
+
+    setting = default_schema()["network_source"]
+    assert setting.kind == "choice"
+    assert setting.choices == NETWORK_SOURCES
+    assert setting.default == NETWORK_SOURCE_SEGMENTED_IMAGE
+    assert default_schema()["synthetic_template_source"].choices == ("statistics", "graph")
+
+
+def test_a_missing_gate_reads_as_the_default_a_caller_gives():
+    assert is_prerequisite_met("mode=full", {}) is False
+    assert is_prerequisite_met("mode=full", {}, default="full") is True
+    assert is_prerequisite_met("mode!=full", {}, default="full") is False
+    assert is_prerequisite_met("mode=full", {"mode": "fast"}, default="full") is False
+    assert is_prerequisite_met("switch", {}, default=True) is True
+    assert is_prerequisite_met("!switch", {}, default=True) is False

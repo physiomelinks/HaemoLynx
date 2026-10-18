@@ -134,12 +134,17 @@ haemolynx/
 │   │                       #   dilation_curves.py, perturbation_plots.py, flow_direction.py,
 │   │                       #   large_vessel_assignment.py, _helpers.py
 │   ├── parsers/            # schema.py, config.py, cli.py, checks.py — the settings machinery
+│   ├── synthetic/          # network_source=synthetic: template.py (what a run's .haemorun
+│   │                       #   says its network is like, by its statistics or its graph),
+│   │                       #   generate.py + trees.py + bed.py + polylines.py (a new network
+│   │                       #   drawn to it), compare.py (how close it came, per characteristic)
 │   └── pipeline/           # A package, not a module: schema.py (the pipeline's 450 settings),
 │                           #   settings.py, checks.py (preflight), stages.py (one
 │                           #   function per stage + run_pipeline_stages), progress.py
 │                           #   (the ordered STAGES + the progress callback), citations.py
 │                           #   (what a run used, and how to cite it), provenance.py (the
-│                           #   run manifest beside every run's outputs); public:
+│                           #   run manifest beside every run's outputs), naming.py (the
+│                           #   one stem a run's outputs carry: run_stem); public:
 │                           #   default_schema, write_default_config, preflight
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
 │   ├── resistance_network_pipeline.py        # Main example: config + CLI over haemolynx.pipeline
@@ -247,6 +252,26 @@ The settings it replaced (`ilastik_unsegmented_image_path`, `fwhm_raw_tiff_path`
 `run_perturbations`, `export_results`. The vessel masks (step 2) are loaded at the start of `build_network`, and the
 statistics, network analyses and communities (step 8) all run inside `export_results`.
 
+**A synthetic network instead of an image** (`network_source=synthetic`, 2026-10-18,
+`PLAN_synthetic_network.md`): the Input tab's `Input` choice draws a network matched to a previous
+image run's `.haemorun` (`synthetic_template_path`; `synthetic_template_source` reads its saved
+statistics report, or per-vessel distributions off its graph; `synthetic_seed`, `synthetic_scale`,
+`synthetic_interior_dead_ends` behind the Advanced button). `segment` reads and checks the template
+(`synthetic.load_template`, remembered per file so preflight's `check_synthetic_template` and the
+stage read it once; a template saved with a needed statistic off is refused naming the
+`statistics_*` toggle), `skeletonise` returns an empty `SkeletonisedVolume(synthetic=True)`,
+`build_network` draws the graph (`synthetic.generate_network`: trees grown to the branch-order
+table under Murray's law, a capillary bed built to the capillary count, loop count and dead-end
+count exactly; `{template}_synthetic_graph.pkl`), `assign_boundaries` takes the roles the generator
+marked (`synthetic.boundary_nodes`; the Boundaries role tabs are greyed), the drawn widths are kept
+(`diameter_source="synthetic"`, which stamping never replaces) and everything from Diameters on
+runs as for an image. Every image-only Input row requires `network_source=segmented_image`, every
+mask switch reads as off (`graph.vessel_masks_in_use`), `raw_image_is_set` is False, and every
+output is named `{template stem}_synthetic` (`pipeline/naming.py`'s `run_stem`, the one answer).
+Export writes `{stem}_template_comparison.csv` and a `synthetic_comparison` report section: each
+characteristic, template against synthetic, with the band the generator is held to (`compare.py`).
+A synthetic run's `.haemorun` is refused as a template.
+
 The production-style entry point is `examples/resistance_network_pipeline.py` (`image_to_model_pipeline`). The tutorial (`tutorials/pipeline_tutorial.ipynb`) documents segmentation as a prerequisite stage and runs on pre-segmented fixture data by default.
 
 ---
@@ -309,6 +334,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text |
 | `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_pipeline_provenance.py` (the run manifest), `test_setting_units.py`, `test_example_configs.py` |
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py` |
+| `src/haemolynx/synthetic/` | `tests/test_synthetic_template.py` (both sources, every refusal, JSON, scaling), `test_synthetic_generate.py` (the graph contract, determinism, the exact counts, the acceptance test against `tests/synthetic_fixtures.py`'s hand-set template, the polyline bender, the bed's arithmetic), `test_synthetic_compare.py`, `test_synthetic_stage.py` (each stage under `network_source=synthetic`, a whole run, preflight), `test_pipeline_naming.py` |
 | Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
 | Packaging / the installed wheel | `tests/test_installed_package.py`, `test_packaging_metadata.py`, `test_napari_manifest.py` |
 | Full pipeline / examples | `tests/integration/test_image_to_model_pipeline.py`, `test_nerve_pipeline.py`, `test_axis_order_pipeline.py`, `test_simple_network_haemodynamics.py`, `test_progress_reporting.py`, `test_step_artifacts_setting.py`, `test_dense_capillary_bed.py` (skeleton cleaning and graph building on `tests/dense_capillary_fixtures.py`'s synthetic capillary bed) |
@@ -1144,6 +1170,32 @@ are only caught locally.
   the session's): `per_vessel` (default) as above, or `uniform`, every vessel `uniform_diameter_um`
   across whatever its `diameter_um`, which stays as it was. That width is the µm box shown beside
   the choice while it is Uniform (`set_tube_uniform_diameter`; 4 µm to start, 0.5-1000 µm).
+- **`synthetic/`** (2026-10-18) — a network drawn to a previous run. `template.py`'s
+  `NetworkTemplate` is the characteristics a generator draws to and a comparison scores against:
+  the box and voxel size, the inlets and outlets by face, the boundary-node counts, per-class and
+  per-order counts, lengths, diameters and tortuosity, the daughter angle, the Murray exponent, the
+  intercapillary distance, loops, dead ends by kind. `template_from_statistics` reads a
+  `.haemorun`'s saved report through the one reader `template_from_report` (a missing section
+  raises `TemplateError` naming its `statistics_*` toggles, `SECTION_TOGGLES`); `template_from_graph`
+  measures the same sections off the graph with the statistics modules and adds per-vessel
+  `Samples`; `load_template(path, source)` is memoised on the file. `generate.py` draws it: roots on
+  the template's faces, `trees.py` grows each side one generation at a time with the order table's
+  counts exact (bifurcations, a trifurcation only when an odd count forces one), Murray exact at
+  every junction with the asymmetry fitted to the table's fall in diameter, daughter angles round
+  the template's; `bed.py` works the capillary bed's degree sequence out from the handshake lemma
+  (`degree_sequence_targets`: capillary count, loops and dead ends exact together; when they cannot
+  be, loops give, never dead ends), lays a jittered lattice, takes Delaunay candidates near the
+  template's mean chord, fills greedily, reroutes (`augment`), repairs connectivity along Delaunay
+  edges, merges degree-2 vertices, sets the dead ends nearest the faces on them; `polylines.py`
+  bends each vessel to its length with a `sin^2` envelope so it leaves its nodes along the chord
+  (the angles the statistics read); blind ends sit at their chain lengths. `validate_synthetic_graph`
+  pins the contract (int ids, `pos`/`voxels` in um, `length` the polyline's, `diameter_source=
+  "synthetic"`, no `branch_order`, no degree-2 node, `dead_end_kind` on every dead end, connected).
+  `compare.py`: exact rows (box, endpoints, tree-order counts), banded rows (counts, lengths,
+  diameters, tortuosity, loops, dead ends) and compare-only rows (capillary orders, the
+  network-wide Murray median, emergence angles, loop-length percentiles); the CSV and the report
+  section. On `tests/synthetic_fixtures.py`'s template: 54-55 of 55 banded rows within band across
+  seeds; a 10,000-vessel template draws in ~5 s. Not yet checked against a real run's template.
 - **`examples/pipeline_presets.py`** — `PRESETS`, named partial configs; every setting name is
   checked against the schema at import, so a preset cannot quietly set something that no longer
   exists. The override engine itself is library code, in `parsers/cli.py` and `parsers/config.py`.

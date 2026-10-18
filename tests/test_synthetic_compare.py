@@ -1,0 +1,133 @@
+"""The template-versus-synthetic comparison (``synthetic/compare.py``)."""
+from __future__ import annotations
+
+import csv
+from dataclasses import replace
+
+import pytest
+
+from haemolynx.synthetic.compare import (
+    CSV_COLUMNS,
+    ComparisonRow,
+    compare_run,
+    compare_templates,
+    comparison_section,
+    comparison_summary,
+    row,
+    write_template_comparison_csv,
+)
+from haemolynx.synthetic.generate import boundary_nodes, generate_network
+from haemolynx.synthetic.template import measure_template
+from synthetic_fixtures import fixture_template, tiny_hierarchical_graph, tiny_sections, TINY_ROLES
+
+
+def test_a_row_carries_ratio_tolerance_and_verdict():
+    r = row("loops", "independent loops", 50, 51, ("abs", 2.0))
+    assert (r.ratio, r.tolerance, r.within) == (pytest.approx(1.02), "abs 2", True)
+    assert row("x", "y", 100.0, 104.0, ("rel", 0.05)).within is True
+    assert row("x", "y", 100.0, 106.0, ("rel", 0.05)).within is False
+    assert row("x", "y", 3, 3, ("exact", 0.0)).within is True
+    assert row("x", "y", 3, 4, ("exact", 0.0)).within is False
+    assert row("x", "y", 3, 3).tolerance == "" and row("x", "y", 3, 3).within is None
+
+
+def test_a_missing_or_not_available_value_has_no_ratio_or_verdict():
+    r = row("x", "y", None, 4.0, ("rel", 0.1))
+    assert r.ratio is None and r.within is None and "N/A" in r.template
+    r = row("x", "y", "N/A (no junction)", 4.0, ("rel", 0.1))
+    assert r.ratio is None and r.within is None
+    assert row("x", "y", 0.0, 0.0, ("rel", 0.1)).within is True
+    assert row("x", "y", 0.0, 1.0, ("rel", 0.1)).within is False
+
+
+def test_comparing_a_template_with_itself_is_within_everywhere():
+    T = fixture_template()
+    rows = compare_templates(T, T)
+    assert all(r.within in (True, None) for r in rows)
+    assert all(r.ratio in (None, pytest.approx(1.0)) for r in rows)
+    sections = {r.section for r in rows}
+    assert {"box", "endpoints", "network", "class Capillaries", "order Art1", "loops", "dead ends"} <= sections
+    summary = comparison_summary(rows)
+    assert summary["within"] == summary["fitted"] > 30 and summary["outside"] == []
+
+
+def test_the_exact_rows_are_the_constructed_ones():
+    rows = compare_templates(fixture_template(), fixture_template())
+    exact = {(r.section, r.characteristic) for r in rows if r.tolerance == "exact"}
+    assert ("endpoints", "inlets") in exact
+    assert ("order Art1", "vessels") in exact
+    assert ("class Small Arterioles", "vessels") in exact
+    assert ("class Capillaries", "vessels") not in exact
+    banded = {r.characteristic for r in rows if r.tolerance.startswith(("rel", "abs"))}
+    assert {"independent loops", "daughter angle (degrees)", "mean tortuosity", "total length (um)"} <= banded
+    unbanded = {r.characteristic for r in rows if r.tolerance == ""}
+    assert "Murray exponent, median fitted" in unbanded
+    assert "mean emergence angle (degrees)" in unbanded
+
+
+def test_a_changed_template_shows_as_outside():
+    T = fixture_template()
+    S = replace(T, daughter_angle_deg=95.0, loops=replace(T.loops, independent_loops=60))
+    rows = compare_templates(T, S)
+    outside = {r.characteristic for r in rows if r.within is False}
+    assert outside == {"daughter angle (degrees)", "independent loops", "independent loops per mm^3"} or outside == {"daughter angle (degrees)", "independent loops"}
+    assert comparison_summary(rows)["outside"]
+
+
+def test_the_csv_has_the_columns_and_one_row_each(tmp_path):
+    rows = compare_templates(fixture_template(), fixture_template())
+    path = write_template_comparison_csv(rows, tmp_path / "out" / "stack_synthetic_template_comparison.csv")
+    with path.open(encoding="utf-8", newline="") as handle:
+        read = list(csv.reader(handle))
+    assert tuple(read[0]) == CSV_COLUMNS
+    assert len(read) == len(rows) + 1
+    by_name = {(r[0], r[1]): r for r in read[1:]}
+    inlets = by_name[("endpoints", "inlets")]
+    assert inlets[2] == "2" and inlets[3] == "2" and inlets[4] == "1" and inlets[5] == "exact" and inlets[6] == "yes"
+    murray = by_name[("network", "Murray exponent, median fitted")]
+    assert murray[5] == "" and murray[6] == ""
+
+
+def test_the_report_section_reads_as_text():
+    rows = compare_templates(fixture_template(), fixture_template())
+    section = comparison_section(rows)
+    assert section["endpoints: inlets"].startswith("2 -> 2")
+    assert "within exact" in section["endpoints: inlets"]
+    assert section["fitted characteristics within tolerance"].endswith(f"of {comparison_summary(rows)['fitted']}")
+
+
+def test_compare_run_reads_the_runs_own_report_or_measures_the_graph():
+    G = tiny_hierarchical_graph()
+    from haemolynx.graph.branch_order import assign_vessel_branch_orders  # noqa: F401  (the tiny graph is labelled already)
+
+    T = measure_template(
+        G,
+        inlet_nodes=TINY_ROLES["inlet"],
+        outlet_nodes=TINY_ROLES["outlet"],
+        arteriole_boundary_nodes=TINY_ROLES["arteriole_boundary"],
+        venule_boundary_nodes=TINY_ROLES["venule_boundary"],
+        large_arteriole_boundary_nodes=TINY_ROLES["large_arteriole_boundary"],
+        large_venule_boundary_nodes=TINY_ROLES["large_venule_boundary"],
+        source="statistics",
+    )
+    roles = {role: list(nodes) for role, nodes in TINY_ROLES.items()}
+    from_report = compare_run(T, G, roles=roles, sections=tiny_sections(G))
+    measured = compare_run(T, G, roles=roles)
+    assert [r.characteristic for r in from_report] == [r.characteristic for r in measured]
+    assert all(r.within in (True, None) for r in from_report)
+    assert all(r.within in (True, None) for r in measured)
+    graph_source = replace(T, provenance=replace(T.provenance, source="graph"))
+    assert all(r.within in (True, None) for r in compare_run(graph_source, G, roles=roles, sections=tiny_sections(G)))
+
+
+def test_compare_run_on_a_generated_network_scores_its_rows():
+    T = fixture_template()
+    G = generate_network(T, seed=5)
+    roles = boundary_nodes(G)
+    from haemolynx.graph.branch_order import assign_vessel_branch_orders
+
+    assign_vessel_branch_orders(G, roles["inlet"], outlet_nodes=roles["outlet"], arteriole_boundary_nodes=roles["arteriole_boundary"], venule_boundary_nodes=roles["venule_boundary"])
+    rows = compare_run(T, G, roles=roles)
+    assert all(isinstance(r, ComparisonRow) for r in rows)
+    exact = [r for r in rows if r.tolerance == "exact"]
+    assert exact and all(r.within is not False for r in exact)

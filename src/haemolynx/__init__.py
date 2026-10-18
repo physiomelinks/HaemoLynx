@@ -9,6 +9,7 @@ from . import graph
 from . import haemodynamics
 from . import statistics
 from . import visualization
+from . import synthetic
 
 __all__ = [
     "io",
@@ -17,4 +18,5 @@ __all__ = [
     "haemodynamics",
     "statistics",
     "visualization",
+    "synthetic",
 ]

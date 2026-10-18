@@ -1399,3 +1399,21 @@ def test_the_chosen_box_node_is_cyan_and_largest():
     assert tuple(faces[0]) != CHOSEN_BOX_NODE_COLOUR
     plain, *_ = box_node_styles(found)
     assert plain[2] < sizes[2]
+
+
+def test_a_synthetic_network_greys_every_role_with_its_own_note():
+    from haemolynx.gui.boundary_picking import (
+        DISABLED_ROLE_TOOLTIP,
+        ROLES,
+        SYNTHETIC_CHOOSES_NOTE,
+        role_disabled_note,
+        role_manual_controls_enabled,
+    )
+
+    synthetic = {"network_source": "synthetic", "automated_vessel_assignment": False}
+    for role in ROLES:
+        assert role_manual_controls_enabled(role, synthetic) is False, role
+        assert role_disabled_note(role, synthetic) == SYNTHETIC_CHOOSES_NOTE
+    image = {"network_source": "segmented_image", "automated_vessel_assignment": False}
+    assert role_manual_controls_enabled("inlet", image) is True
+    assert role_disabled_note("inlet", image) == DISABLED_ROLE_TOOLTIP["inlet"]

@@ -7301,6 +7301,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         ROLES,
         orderable_settings,
         outside_extent,
+        role_disabled_note,
         role_manual_controls_enabled,
         role_settings,
         role_title,
@@ -7945,7 +7946,7 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
             enabled = role_manual_controls_enabled(name, values)
             tabs.setTabEnabled(index, enabled)
             if not enabled:
-                tabs.setTabToolTip(index, DISABLED_ROLE_TOOLTIP[name])
+                tabs.setTabToolTip(index, role_disabled_note(name, values))
             else:
                 tabs.setTabToolTip(index, fields[method_setting(name)].help)
         if not tabs.isTabEnabled(tabs.currentIndex()):
@@ -8838,7 +8839,10 @@ def _boundary_controls(viewer, rows, fields, schema, report, boundaries_input=No
         # as a coordinate does.
         *shared_settings(),
         # Every switch the role sub-tabs' greying reads, gates included
-        # (graph.vessel_masks_in_use, assigns_large_vessel_branch_orders).
+        # (graph.vessel_masks_in_use, assigns_large_vessel_branch_orders),
+        # and the Input tab's choice of a synthetic network, whose generator
+        # chooses every role.
+        "network_source",
         "automated_vessel_assignment",
         "use_large_vessel_masks",
         "inlets_outlets_from_vessel_masks",
@@ -12435,6 +12439,14 @@ def settings_widget(napari_viewer=None):
 
     def use_layer(layer) -> None:
         """Point the run at *layer*: its own file, or its array written out."""
+        from haemolynx.graph.boundaries import network_is_synthetic
+
+        if network_is_synthetic(current_values()):
+            report.value = (
+                "The run draws a synthetic network, so the open image is not its input: "
+                "set the Input tab's Input to Segmented image to analyse the layer."
+            )
+            return
         axis_order = str(current_values().get("image_axis_order") or "zyx")
         try:
             chosen = input_for_layer(layer, _export_dir(current_values()), axis_order)
@@ -12550,6 +12562,16 @@ def settings_widget(napari_viewer=None):
         if resolved is not None and resolved != values.get("raw_image_stain"):
             gates = {**values, "raw_image_stain": resolved}
         place_shared_ilastik()
+        # The "Use open layer" row is an image run's: a synthetic network
+        # reads no layer.
+        try:
+            open_layer_row = layer_row
+        except NameError:
+            open_layer_row = None
+        if open_layer_row is not None:
+            from haemolynx.graph.boundaries import network_is_synthetic
+
+            open_layer_row.visible = not network_is_synthetic(values)
         for name, widget in rows.items():
             if name in SHARED_ILASTIK_SETTING_SET:
                 # Visibility and parent belong to place_shared_ilastik.

@@ -80,8 +80,13 @@ def prerequisite_name(prerequisite: str) -> str:
     return parse_prerequisite(prerequisite)[0]
 
 
-def is_prerequisite_met(prerequisite: str, values: Mapping[str, Any]) -> bool:
+def is_prerequisite_met(prerequisite: str, values: Mapping[str, Any], *, default: Any = None) -> bool:
     """True when *prerequisite* holds in *values*.
+
+    *default* stands in for the gate when *values* lacks it: a caller with
+    the schema passes the gate's declared default, so a partial mapping reads
+    a ``choice`` gate as holding its default rather than nothing (a bool
+    missing reads as off either way).
 
     A leading ``!`` negates it, which is how a setting says it applies only
     while some feature is *off* — an input path that a run would otherwise
@@ -94,13 +99,14 @@ def is_prerequisite_met(prerequisite: str, values: Mapping[str, Any]) -> bool:
     validation of both forms.
     """
     name, test, expected = parse_prerequisite(prerequisite)
+    value = values.get(name, default)
     if test == PREREQUISITE_EQUALS:
-        return values.get(name) == expected
+        return value == expected
     if test == PREREQUISITE_NOT_EQUALS:
-        return values.get(name) != expected
+        return value != expected
     if test == PREREQUISITE_OFF:
-        return not bool(values.get(name, False))
-    return bool(values.get(name, False))
+        return not bool(value)
+    return bool(value)
 
 
 def is_active(setting: "Setting", values: Mapping[str, Any]) -> bool:

@@ -22,6 +22,12 @@ Then: **drag an image in, open the panel, press Run pipeline.** The selected
 layer is picked up automatically, so on a segmented TIFF there is nothing else
 to set. Each stage's results appear in the viewer as it finishes.
 
+To draw a **synthetic network** matched to a previous run instead of analysing
+an image, set the Input tab's *Input* to *Synthetic network from a template run*
+and point it at that run's `.haemorun` file (saved with Statistics on). The run
+starts at the Boundaries stage and writes `{template}_synthetic_template_comparison.csv`
+saying how close each characteristic came.
+
 **[tutorials/README.md](tutorials/README.md)** covers the rest — configuring a
 run, what the panel shows, colouring results, running from the command line,
 and changing settings.

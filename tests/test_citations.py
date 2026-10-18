@@ -368,3 +368,26 @@ def test_export_results_writes_the_citations_file_when_the_setting_is_on(tmp_pat
 def test_export_results_skips_the_citations_file_when_the_setting_is_off(tmp_path):
     citations_path = _export_results_with(tmp_path, export_citations=False)
     assert not citations_path.exists()
+
+
+def test_a_synthetic_run_cites_the_generator_and_not_the_image_tools(tmp_path):
+    from haemolynx.pipeline.citations import NETWORK_GENERATION_CITATIONS, render_citations
+
+    settings = {
+        **SCHEMA.defaults(),
+        "network_source": "synthetic",
+        "synthetic_template_path": tmp_path / "run.haemorun",
+        "input_path": tmp_path / "stale.tif",
+        "do_skeletonize": True,
+        "do_graph_building": True,
+    }
+    text = render_citations(settings)
+    assert "Network generation methods" in text
+    assert "Smith, A.F." in text and "fphys.2019.00233" in text
+    assert "- skan" not in text and "- tifffile" not in text and "- scikit-image" not in text
+    assert all(c.applies(settings) for c in NETWORK_GENERATION_CITATIONS)
+    image_run = {**settings, "network_source": "segmented_image"}
+    assert "Network generation methods" not in render_citations(image_run)
+    assert "- skan" in render_citations(image_run)
+    # Tissue measurement still credits scikit-image (it is read even without a skeleton).
+    assert "- scikit-image" in render_citations({**settings, "measure_tissue_volume": True})

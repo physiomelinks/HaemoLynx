@@ -56,6 +56,7 @@ from pathlib import Path, PurePath
 from typing import Any, Iterator, Mapping, Optional
 
 from haemolynx.parsers.schema import Schema, is_active, section_key
+from haemolynx.pipeline.naming import run_input_path, run_stem
 from haemolynx.pipeline.progress import (
     STAGE_FAILED,
     STAGE_FINISHED,
@@ -484,7 +485,7 @@ def input_files(settings: Mapping[str, Any], schema: Optional[Schema]) -> list[d
     existing file: output folders and prefixes name no file, so they are left
     out. A file two settings name is fingerprinted once, under the first.
     """
-    named: list[tuple[str, Any]] = [("input_path", settings.get("input_path"))]
+    named: list[tuple[str, Any]] = [("input_path", run_input_path(settings))]
     if schema is not None:
         for setting in schema:
             if setting.kind != "path" or setting.name == "input_path":
@@ -636,10 +637,10 @@ def manifest_location(settings: Mapping[str, Any]) -> Optional[tuple[Path, str]]
     every other output of the run is named by.
     """
     prefix = settings.get("vtk_output_prefix")
-    image = settings.get("input_path")
-    if not prefix or not image:
+    stem = run_stem(settings)
+    if not prefix or not stem:
         return None
-    return Path(prefix).parent, Path(image).stem
+    return Path(prefix).parent, stem
 
 
 class RunRecorder:
@@ -799,8 +800,21 @@ class RunRecorder:
             inputs = input_files(self._settings, self._schema)
         except Exception as failure:  # noqa: BLE001
             inputs = [{"error": f"{type(failure).__name__}: {failure}"}]
+        recorded = self.recorded_settings if isinstance(self.recorded_settings, Mapping) else {}
+        synthetic = None
+        if run_stem(recorded) is not None and recorded.get("network_source") == "synthetic":
+            template = recorded.get("synthetic_template_path")
+            synthetic = {
+                "template": None if template is None else PurePath(str(template)).as_posix(),
+                "source": recorded.get("synthetic_template_source"),
+                "seed": recorded.get("synthetic_seed"),
+                "scale": recorded.get("synthetic_scale"),
+                "interior_dead_ends": recorded.get("synthetic_interior_dead_ends"),
+            }
         return {
             "manifest_version": MANIFEST_VERSION,
+            "network_source": recorded.get("network_source", "segmented_image") if recorded else None,
+            "synthetic": synthetic,
             "haemolynx_version": getattr(haemolynx, "__version__", None),
             "status": "failed" if self.error is not None else "finished",
             "error": error,

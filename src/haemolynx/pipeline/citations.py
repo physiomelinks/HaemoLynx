@@ -57,12 +57,20 @@ def _input_suffix(settings: Mapping[str, Any]) -> str:
     return "" if path is None else Path(path).suffix.lower()
 
 
+def _synthetic(settings: Mapping[str, Any]) -> bool:
+    """A synthetic run (``network_source=synthetic``) reads no image, thins
+    nothing and builds its graph from no skeleton."""
+    from haemolynx.graph.boundaries import network_is_synthetic
+
+    return network_is_synthetic(settings)
+
+
 def _used_hdf5_input(settings: Mapping[str, Any]) -> bool:
-    return _input_suffix(settings) in {".h5", ".hdf5"}
+    return not _synthetic(settings) and _input_suffix(settings) in {".h5", ".hdf5"}
 
 
 def _used_tiff_input(settings: Mapping[str, Any]) -> bool:
-    return _input_suffix(settings) not in {".h5", ".hdf5"}
+    return not _synthetic(settings) and _input_suffix(settings) not in {".h5", ".hdf5"}
 
 
 def _used_plotly_3d(settings: Mapping[str, Any]) -> bool:
@@ -196,7 +204,8 @@ PACKAGE_CITATIONS: tuple[Citation, ...] = (
             "e453. https://doi.org/10.7717/peerj.453"
         ),
         applies=lambda settings: bool(
-            settings.get("do_skeletonize", True) or settings.get("measure_tissue_volume")
+            (settings.get("do_skeletonize", True) and not _synthetic(settings))
+            or settings.get("measure_tissue_volume")
         ),
     ),
     Citation(
@@ -208,7 +217,7 @@ PACKAGE_CITATIONS: tuple[Citation, ...] = (
             "malaria parasite remodelling of the red blood cell membrane "
             "skeleton. PeerJ, 6, e4312. https://doi.org/10.7717/peerj.4312"
         ),
-        applies=lambda settings: bool(settings.get("do_graph_building", True)),
+        applies=lambda settings: bool(settings.get("do_graph_building", True)) and not _synthetic(settings),
     ),
     Citation(
         name="pandas",
@@ -483,6 +492,29 @@ def used_citations(
     return [citation for citation in citations if citation.applies(settings)]
 
 
+#: What a synthetic network (``network_source=synthetic``) was drawn by.
+NETWORK_GENERATION_CITATIONS: tuple[Citation, ...] = (
+    Citation(
+        name="Synthetic vascular network (network_source='synthetic')",
+        reason=(
+            "arterial and venous trees grown to the template run's branch-order "
+            "table under Murray's law, and a capillary bed drawn as a "
+            "degree-constrained random spatial network on jittered lattice "
+            "points joined along Delaunay edges, matched to the template's "
+            "capillary count, loops and dead ends; the organisational "
+            "requirements a synthetic capillary bed is matched on follow"
+        ),
+        reference=(
+            "Smith, A.F., Doyeux, V., Berg, M. et al. (2019). Brain capillary "
+            "networks across species: a few simple organizational requirements "
+            "are sufficient to reproduce both structure and function. Frontiers "
+            "in Physiology, 10, 233. https://doi.org/10.3389/fphys.2019.00233"
+        ),
+        applies=_synthetic,
+    ),
+)
+
+
 def _render_section(title: str, citations: list[Citation], empty_note: str) -> list[str]:
     lines = [title, "-" * len(title)]
     if not citations:
@@ -532,6 +564,9 @@ def render_citations(settings: Mapping[str, Any]) -> str:
     image_analysis = used_citations(settings, IMAGE_ANALYSIS_CITATIONS)
     if image_analysis:
         lines.extend(_render_section("Image analysis methods", image_analysis, ""))
+    generation = used_citations(settings, NETWORK_GENERATION_CITATIONS)
+    if generation:
+        lines.extend(_render_section("Network generation methods", generation, ""))
     return "\n".join(lines).rstrip() + "\n"
 
 

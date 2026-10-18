@@ -1,0 +1,407 @@
+# Synthetic network from a template run (`network_source=synthetic`)
+
+## Context
+
+HaemoLynx only analyses networks that come from an image. Harvey wants an Input-tab option that
+instead **generates a synthetic vascular network with the general characteristics of a previous
+run**, read from that run's `.haemorun` file (the *template run*). The template must be a
+microscopy-image run (never itself synthetic) saved with enough statistics to describe the
+network. Uses: a null model with the same gross properties as a real dataset, a shareable stand-in
+for raw data, and a pipeline test-bed with known ground truth.
+
+Decisions already taken with Harvey:
+- **Source of the characteristics is a dropdown**: `statistics` reads the template's saved
+  statistics report (a missing section fails preflight naming the `statistics_*` toggle to switch
+  on and rerun); `graph` reads per-vessel distributions off the template graph in the same file.
+- **Route**: the generated graph goes straight to the Boundaries stage. Skeletonise/Graph are
+  skipped, the generator chooses the inlets, outlets and arteriole/venule boundary nodes, its
+  diameters are kept, and Diameters → Haemodynamics → Post processing → Perturbations → Export and
+  Statistics run unchanged. (Rasterising a synthetic mask and running the whole pipeline was
+  rejected: slower, and the clean-up rules move the network off its targets.)
+
+## What a `.haemorun` gives us (verified)
+
+- `gui/run_snapshot.read_run_snapshot` is pure Python (no Qt). `RunSnapshot.checkpoints` carry a
+  graph copy per stage plus the six boundary-node lists; `results_state["settings"]` is what the run
+  started with (`input_path`, `raw_image_path`, `segmentation_source`).
+- Only the `export_results` checkpoint's graph (or `results_state["graph"]`) has
+  `G.graph["statistics_report"] = {"mode", "csv", "sections"}`; a section is `{label: value}`
+  (values may be `"N/A (...)"` strings or nested dicts). Report = summary numbers only (means,
+  medians, a few percentiles, per-class and per-order tables); no histograms, no degree
+  distribution, no inlet/outlet count. The graph has everything per vessel.
+- Node/edge contract downstream: int node ids, node `pos` (z,y,x) µm, edge `voxels`/`length`/
+  `diameter_um`/`branch_order`, `G.graph["image_voxel_size_zyx"]`/`["voxel_size"]`/
+  `["image_extent_um"]` (`graph.dead_ends.record_image_extent`), `dead_end_kind` on degree-1 nodes
+  (open-end model), never `weight`.
+- `haemodynamics/poiseuille.stamp_edge_diameters` overwrites `diameter_um` from the table unless
+  the source is kept (`_KEPT_DIAMETER_SOURCES`) or `override`; Murray's law
+  (`statistics/bifurcation._measured_diameter_or_none`) ignores table/class_median/override only.
+
+## Architecture
+
+```
+src/haemolynx/synthetic/        # new subpackage (add to haemolynx/__init__, tests/test_public_api SUBPACKAGES)
+├── __init__.py                  # __all__: NetworkTemplate, TemplateError, load_template, generate_network,
+│                                #   boundary_nodes, compare_run, write_template_comparison_csv, ...
+├── template.py                  # NetworkTemplate (+ JSON), template_from_statistics / template_from_graph,
+│                                #   the one report reader both use, refusals, lognormal helpers, load_template (memoised)
+├── trees.py                     # arterial/venous bifurcating trees, generation by generation from the order table
+├── bed.py                       # capillary bed: degree-sequence arithmetic, jittered lattice, Delaunay fill, repair
+├── polylines.py                 # vectorised bend-to-length + densify (batch form of secomb_io._fit_length)
+├── generate.py                  # generate_network orchestrator, roles, dead-end marks, metadata, validate_synthetic_graph
+└── compare.py                   # template vs synthetic rows, tolerances, CSV
+src/haemolynx/pipeline/naming.py # run_stem(settings): the output stem for both routes (leaf module)
+```
+
+### The template (`synthetic/template.py`)
+
+Frozen, JSON-serialisable dataclasses: `NetworkTemplate` (extent_um, voxel_size_zyx, image_shape,
+inlets/outlets as `Endpoint(face, position_rel)`, boundary counts per role, `scheme`
+hierarchical/capillary, per-class `ClassTarget` (count, total/mean/median length, mean/median
+diameter, tortuosity), per-order `OrderTarget` (label normalised through
+`statistics.bifurcation._normalize_branch_order_tag`, edge count, mean length, tortuosity,
+emergence angle, mean diameter, CV, optional `Samples`), total length, daughter angle, Murray
+exponent (+IQR), intercapillary distance, `LoopTarget` (independent loops, per mm³, length
+percentiles), `DeadEndTarget` (leaves_image, interior, per mm, chain-length median/P10/P90),
+`Provenance` (path, source, version, run manifest commit when found, notes)); `scaled(f)`,
+`to_json`/`from_json`. Helpers `lognormal_from_mean_median` (σ² = 2 ln(mean/median)),
+`lognormal_from_mean_cv`, `lognormal_from_median_p10_p90`.
+
+- `template_graph(snapshot)`: the `export_results` checkpoint graph (else the last checkpoint with
+  branch orders, else `results_state["graph"]`) and its checkpoint's boundary lists.
+- `check_template_run(snapshot, G)` → `TemplateError(reason=...)` in order: not a run / no branch
+  orders ("run it through Boundaries"), synthetic (`G.graph["network_source"]=="synthetic"` or the
+  settings say so), global-mask classes (`Unknown_*`: "needs arteriole and venule sides"), no
+  inlets, no positive `diameter_um` ("run its Diameters stage").
+- **One reader for both sources**: `template_from_report(sections, G, checkpoint, ...)`.
+  `template_from_statistics` feeds it the saved sections and raises one `TemplateError` listing
+  *every* missing required section with its toggles (`missing_statistics` attribute):
+  `basic`/`branch_orders` → `statistics`; `vessel_density`, `vessel_classes`, `tortuosity`,
+  `murray_law`, `daughter_angles`, `intercapillary_distance`, `dead_ends` → their own toggle;
+  `loop_hierarchy` → `statistics_network_analysis` + `statistics_loop_hierarchy`. An `"N/A"` value
+  is a fallback with a note, never an error. `template_from_graph` recomputes those same sections
+  from the graph (`statistics.compute_vessel_statistics_by_measure` + `compute_branch_order_statistics`,
+  so bridges are contracted as the pipeline does), feeds the same reader, then adds per-vessel
+  `Samples` (lengths, diameters, tortuosities per order/class, loop lengths, chain lengths).
+  Endpoints come from the checkpoint lists for both sources (face by
+  `graph.dead_ends.face_distance`).
+- Fallbacks (each a provenance note): Murray exponent 3.0; daughter angle 75°; loops unknown → mean
+  bed degree 3; no large tier → trees start at Art1/Ven1; no venous orders → outlets attach to the
+  bed directly; `capillary` scheme (inlets only) → no trees.
+- `load_template(path, source)` memoised on (resolved path, size, mtime, source) so preflight and
+  the stage load the file once per process; imports `gui.run_snapshot` lazily (it imports
+  `pipeline.stages`).
+
+### The generator (`synthetic/generate.py`, `trees.py`, `bed.py`, `polylines.py`)
+
+`generate_network(template, *, seed=20240917, rng=None, options=GenerationOptions(scale, interior_dead_ends, ...)) -> nx.MultiGraph`,
+every draw through one `np.random.default_rng` (house pattern `constriction.resolve_generator`).
+
+1. **Box and roots.** `T = template.scaled(scale)`; one root per template inlet/outlet at its
+   relative face position (counts and faces exact).
+2. **Trees** (per side, large tier then Art/Ven): generation counts from the order table are hit
+   *exactly* — generation 1 one edge per root, then at each generation choose how many tips
+   bifurcate (trifurcate only when an odd count forces it; clamp at 3× with a note). Tips chosen
+   by space-filling weights (distance to faces and to existing nodes, `cKDTree`). Lengths and
+   tortuosity per order from samples or lognormal fits; **Murray's law enforced exactly at every
+   junction** with the template's exponent, the asymmetry fitted in closed form to the per-order
+   mean diameters; daughter angle drawn round the template mean and split in the Murray-optimal
+   proportion; directions pick the azimuth that stays in the box and fills space. A child that
+   would leave the box is cut at the face (`leaves_image`).
+3. **Leaf roles.** Tips at a tier boundary → `large_*_boundary`; interior leaves → the
+   template's number of `arteriole_boundary`/`venule_boundary` nodes (they become bed vertices),
+   the rest blind dead ends (or all boundary nodes with `interior_dead_ends=False`).
+4. **Capillary bed** (chosen over Voronoi — see Design notes): the degree sequence is computed up
+   front from the handshake lemma so that **capillary count, independent loops (cyclomatic number)
+   and dead-end count come out exact together** (`degree_sequence_targets`: bed vertices
+   `P = E_cap − Λ − R + 1`, degree-1 count = the dead-end target, degree-4 vertices only when the
+   loop target needs them). Vertices on a jittered cubic lattice of spacing `(V/P)^{1/3}` (no
+   vertex near a tree node or a face); candidate edges from `scipy.spatial.Delaunay` (never
+   cross); a degree-constrained greedy fill scored by jittered length and closeness of the junction
+   angle to the template's daughter angle; connectivity repair along Delaunay edges (keeps Λ);
+   degree-2 merge; the degree-1 vertices nearest the faces projected onto them (`leaves_image`),
+   the rest `blind`.
+5. **Lengths, diameters.** Capillary lengths by rank-matching chords to the template distribution
+   (`L ≥ chord`), one global factor making the class total length exact; interior dead-end chains
+   from the chain-length distribution; diameters from samples or lognormal(mean, median);
+   `diameter_source="synthetic"`, per-edge `diameter_basis` = the template's.
+6. **Polylines**: `bend_to_lengths` (vectorised bisection; a `sin²` envelope so every edge leaves
+   its node along the chord — the emergence/daughter angles are read off the first 10 µm),
+   `graph._helpers.densify_polyline(max_step_um=0.5)`, `voxels=path.tolist()`,
+   `length=calculate_path_length(voxels)`.
+7. **Finish**: node attribute `synthetic_roles` (tuple of roles) + `boundary_nodes(G)`; every
+   degree-1 node gets `dead_end_kind` (`leaves_image` on a face, else `blind`) with
+   `dead_end_kind_source="synthetic"` (new constant in `graph/dead_ends.py`);
+   `record_image_extent`, voxel metadata, `G.graph["network_source"]="synthetic"`,
+   `G.graph["synthetic_template"]` (provenance + seed/scale/options); `validate_synthetic_graph`
+   raises on any contract breach (also used by tests).
+
+Exact by construction: extent, voxel size, shape, inlets/outlets per face, Art/Ven/Large order
+counts, Murray exponent, capillary count (± repairs, <1 %), cyclomatic number, dead ends by kind,
+every `length`, class total length. Approximate and reported: per-order B counts, mean/median
+lengths (chord floors), tortuosity, intercapillary distance, loop-length percentiles, emergence
+angles, tree-order mean diameters. Expected time for an E14.5-sized template (~10 k edges):
+3–4 s; `template_from_graph` on the template ~10 s once (loop hierarchy).
+
+### Comparison (`synthetic/compare.py`)
+
+`compare_run(template, G, sections=G.graph["statistics_report"]["sections"], ...)` → rows
+(section, characteristic, template, synthetic, ratio, tolerance, within) over every target above;
+`write_template_comparison_csv` → `{stem}_template_comparison.csv` beside the statistics CSV; the
+rows also go into the statistics report (`synthetic_comparison` section) so the Statistics tab
+shows them. One `TOLERANCES` table is what the tests assert (exact / rel 3–25 % / abs 0.15
+tortuosity, 10° angles, 0.3 Murray).
+
+## Pipeline integration
+
+### Settings (`pipeline/schema.py`, section "Input and segmentation", declared before `input_path`)
+
+| name | kind / default | requires | advanced |
+|---|---|---|---|
+| `network_source` | choice `segmented_image` \| `synthetic`, default `segmented_image` | – | no |
+| `synthetic_template_path` | path, None, `must_exist=True` | `network_source=synthetic` | no |
+| `synthetic_template_source` | choice `statistics` \| `graph`, default `statistics` | `network_source=synthetic` | no |
+| `synthetic_seed` | int 20240917 (null = fresh) | `network_source=synthetic` | yes |
+| `synthetic_scale` | float 1.0, min 0.1, max 10 | `network_source=synthetic` | yes |
+| `synthetic_interior_dead_ends` | bool True | `network_source=synthetic` | yes |
+
+Help text ≥ 3 words, no trailing stop; `network_source`'s help says the Skeletonise and Graph tabs'
+settings are not read under synthetic. Choice literals repeated in the schema (it stays
+numpy-free); constants + `network_is_synthetic(settings)` live in `graph/boundaries.py` beside
+`vessel_masks_in_use`, exported from `graph/__init__`; a test pins the choices equal.
+
+Existing rows that gain `"network_source=segmented_image"` in `requires` so they hide under
+synthetic (the section is in `form.HIDE_WHEN_UNMET_SECTIONS`; children follow through
+`form.prerequisite_chain`): `input_path`, `raw_image_path` (keeps `always_effective`, `migrates`),
+`image_axis_order`, `voxel_size_policy`, `voxel_size_override_xyz`, `use_memmap_loading`,
+`segmentation_cleanup`, `crop_on_import`, the three check/optimise rows, and
+`automated_vessel_assignment` (Boundaries tab). Left ungated: `segmentation_source`,
+`mid_run_postprocessing`, every Skeletonise/Graph/Diameters setting. `input_path` is **not** made
+`always_effective`: a path the user set and the run ignores deserves the one-line "nothing will read
+it" warning; the panel's layer auto-adoption into `input_path` just skips under synthetic.
+
+### Output stem (`pipeline/naming.py`, new leaf module)
+
+`run_stem(settings)` = `input_path.stem` for an image run, `f"{template stem}_synthetic"` under
+synthetic, None with neither; `run_input_path(settings)` (None under synthetic). Replace every
+`settings['input_path'].stem` read: `stages.py` (18 sites: skeleton/graph paths, boundaries' graph
+rewrite, tissue export, every export filename), `checks.check_cached_artefacts`,
+`provenance.manifest_location` + `input_files`, `gui/stage_checkpoints._stem_and_output_dir` and
+`stems_for_cached_artefacts` (currently via `segmented_input_path`, which returns None under
+synthetic). `optimisation/report.py` and `perturbation_plots.py` are image-only / already given a
+stem: leave.
+
+### Stage flow (`pipeline/stages.py`)
+
+- `raw_image_is_set` → False under synthetic (switches off ilastik, raw diameters, raw evidence in
+  one place); `segmented_input_path` → None (EDT skipped, no mask).
+- `SegmentedInputs` gains `synthetic: bool`, `template_path`; `SkeletonisedVolume.image`/`skeleton`
+  become `| None` with `synthetic: bool` (readers after the skipped stages already tolerate None;
+  `gui/results._from_skeletonise` draws no IMAGE layer).
+- `segment`: **first statement** `if network_is_synthetic(settings): return _segment_synthetic(...)`
+  (before the `segmented_path` → `input_path` write): coerce the template path, `load_template`
+  (cached; `TemplateError` propagates), normalise `vtk_output_prefix`/`final_render_mode`, log the
+  template summary.
+- `skeletonise`: `if inputs.synthetic: return SkeletonisedVolume(image=None, skeleton=None,
+  voxel sizes from the template, synthetic=True)`; writes nothing.
+- `build_network`: **before** the mask loading (which reads `image.shape`): with `resumed_graph`
+  hand it back after voxel metadata; else `generate_network(...)`, one progress step, raise on an
+  empty graph, pickle to `{stem}_graph.pkl`, dense-solver memory warning, return
+  `VesselNetwork(graph, volume)`.
+- `assign_boundaries`: first statement under synthetic → `_assign_synthetic_boundaries`: fill the six
+  run lists in place from `synthetic.boundary_nodes(G)`, raise if no inlet or outlet,
+  `resistance_node_pair=(inlets[0], outlets[0])`, return `BoundaryNodes` with no masks. Resume from
+  Diameters on already carries the lists. `_assign_branch_orders` unchanged: with outlets and both
+  boundary lists present `graph.assign_vessel_branch_orders` runs hierarchical
+  (Large_Art/Art/B/Ven/Large_Ven) by itself.
+- `graph/boundaries.vessel_masks_in_use` gains `and not network_is_synthetic(settings)` so mask
+  loading, the stage, preflight, citations and the panel's greying all read "no masks"
+  (`tests/test_vessel_mask_switches.py` pins the one answer).
+- `assign_diameters`: unchanged apart from `poiseuille.py`: `DIAMETER_SOURCE_SYNTHETIC="synthetic"`
+  added to `DIAMETER_SOURCES`, `_MEASURED_DIAMETER_SOURCES`, `_KEPT_DIAMETER_SOURCES`, and
+  `stamp_edge_diameters` keeps it like `override` (counts `"synthetic"`). Murray already reads it.
+- `post_process`: guard the thick-vessel bridging when `volume.image is None` and no region.
+- `tissue_measurement` → None with no image (preflight refuses first).
+- `export_results`: `image_shape = image.shape if image is not None else synthetic_box_shape(G)`
+  (inverse of `image_extent_um`) for the statistics' `image_dimensions`; `measurement_3d_to_cell_mask`
+  raises under synthetic; 2-D overlays skipped; after statistics, `compare_run` +
+  `write_template_comparison_csv` and the `synthetic_comparison` section.
+
+### Preflight (`pipeline/checks.py`)
+
+`check_synthetic_template(settings)` added to `preflight`: empty unless synthetic; suffix must be
+`.haemorun`; `load_template` (cached) with `RunSnapshotError` → unreadable, `TemplateError` by
+reason → "is itself synthetic", "saved with statistics off / missing sections: switch on <toggles>
+on the Additional measurements tab and run its Export again", "no inlets or outlets", "classed by
+size alone". Pass line with vessel/inlet/outlet counts and the box. Errors: `measurement_3d_to_cell_mask`,
+`measure_tissue_volume`. Warnings for switches on but out of effect: ilastik, raw diameters,
+vessel masks ("the generator chooses the boundaries"), thick-vessel restriction/skeletonisation,
+`do_skeletonize`/`do_graph_building` off ("generated every run"), `segmentation_source` differing
+from the template's basis. The image-only checks (`check_cached_artefacts`, `check_raw_image`,
+`check_segmentation_quality`, `check_image_channels`, `check_tissue_volume_image`,
+`check_cell_mask_measurement`, `check_thick_vessel_restriction_prerequisites`,
+`check_input_is_not_a_large_vessel_mask`) return early. `check_settings`'s `skip` extended under
+synthetic with the hidden `must_exist` paths (ilastik classifier, mask paths, cell/tissue masks),
+since it reads a path's own `requires` only.
+
+### Panel (minimal)
+
+- `gui/form.py`: `PATH_FILTERS = {"synthetic_template_path": "HaemoLynx run (*.haemorun);;All files (*)"}`
+  read in `_options_for` (FileEdit already accepts `filter`); `CHOICE_VALUE_LABELS` and
+  `SETTING_ROW_LABELS` for the two choices and the path; `shared_ilastik_host` None under synthetic.
+- `gui/layout.py`: the "input" box names start `network_source, synthetic_template_path,
+  synthetic_template_source, input_path, ...`; `ADVANCED_TITLES["network_source"]`.
+- `gui/boundary_picking.py`: `role_manual_controls_enabled` False for every role under synthetic;
+  `role_disabled_note(role, values)` with a synthetic note; `_widget.refresh_role_tabs` uses it and
+  `network_source` joins its trigger list.
+- `_widget.py`: the "Use open layer" row hidden and layer adoption skipped under synthetic.
+- `gui/results.py`: a note layer line for the skipped skeletonise; `_image_shape_z` from the graph's
+  extent in `_from_build_network` when None.
+- Run from "3. Graph" regenerates with the seed; from Boundaries on the stored graph is handed back.
+  Save/Load: the template path relocates by name; a synthetic `.haemorun` records
+  `network_source=synthetic` so it is refused as a template.
+
+### Provenance, citations, docs
+
+- `provenance.manifest`: `network_source` and a `synthetic` block (template, source, seed, scale,
+  interior_dead_ends); the template file is fingerprinted as an active `must_exist` path.
+- `citations.py`: tifffile/scikit-image/skan credits off under synthetic; new
+  `NETWORK_GENERATION_CITATIONS` section with one entry whose reason describes our construction
+  (degree-constrained random spatial network on jittered lattice points, Delaunay candidate edges,
+  matched to the template's statistics) and references Smith et al. 2019, Front. Physiol. 10:233,
+  doi 10.3389/fphys.2019.00233 for the organisational requirements a synthetic capillary bed is
+  matched on.
+- CLAUDE.md: repository-layout line for `synthetic/`, a Key-modules entry, one sentence in the
+  end-to-end pipeline; README one line; `python examples/regenerate_configs.py`;
+  `PLAN_synthetic_network.md` at the repo root (copy of this plan, the repo's convention). The
+  help menu (`gui/stage_help.py`) is not touched.
+
+## Design notes (why)
+
+- **Delaunay fill, not Voronoi**, for the bed: Voronoi vertices are all degree 4, edge lengths span
+  two orders of magnitude, infinite ridges need clipping, and `E = 2N` fixes the loop density so it
+  can only be tuned by removal — all that clean-up is the work. The degree-sequence fill hits
+  count, loops and dead ends exactly and needs no crossing test. A `bed_model="voronoi"` can be
+  added later behind an option if a literature-identical bed is ever wanted.
+- **Murray exact, order means approximate**: a table whose child/parent ratio exceeds `2^{-1/n}` is
+  unattainable under Murray; Murray wins and the comparison CSV shows the gap.
+- **Interior dead ends reproduced by default** (`synthetic_interior_dead_ends=True`): they move
+  the flow solution, so an "equivalent" network keeps their rate; off puts every dead end at a face.
+- **Image box, not the vessel-occupied box**, in v1: the comparison's density rows show any
+  mismatch; a `vessel_box` option is a possible follow-up.
+
+## Implementation order (each step leaves the suite green)
+
+1. `synthetic/template.py` data model, JSON, lognormal helpers, `template_from_report`, refusals,
+   `template_from_statistics`, `template_from_graph`, `load_template` (+ `tests/test_synthetic_template.py`,
+   `tests/synthetic_fixtures.py`: a tiny hand-built hierarchical graph with hand-computed targets, a
+   hand-set `fixture_template`, `write_fixture_run(tmp_path, ...)` via `write_run_snapshot`).
+2. `polylines.py`, `trees.py`, `bed.py`, `generate.py`, `compare.py` (+ `tests/test_synthetic_generate.py`,
+   `tests/test_synthetic_compare.py`; `haemolynx/__init__`, `test_public_api.SUBPACKAGES`).
+3. `graph/boundaries.py` constants + `network_is_synthetic` + the `vessel_masks_in_use` guard;
+   `graph/dead_ends.SOURCE_SYNTHETIC`; `pipeline/naming.py` and the `.stem` replacements.
+4. Schema settings and `requires`; `form.py`/`layout.py`; regenerate configs; `poiseuille.py` stamping.
+5. `checks.py` preflight; stage branches in `stages.py`; `tests/test_synthetic_stage.py`.
+6. Citations, provenance, panel edits + gui test, docs, `PLAN_synthetic_network.md`.
+
+## Tests (new and touched)
+
+- `tests/test_synthetic_template.py`: both sources agree field by field on the tiny run; each
+  section's rows read into the right targets; every missing required section names its toggles
+  (parametrised); no report names `statistics`; synthetic / global-mask / no-orders / no-inlets /
+  no-diameters refused; N/A Murray → None + note; endpoint faces; JSON round trip; `scaled`
+  (counts ×f³, endpoints ×f²); lognormal helpers; export checkpoint preferred; provenance commit.
+- `tests/test_synthetic_generate.py`: contract via `validate_synthetic_graph`; same seed identical,
+  other seed differs; inlets/outlets on the right faces; `assign_vessel_branch_orders` yields exactly
+  the template's label set with exact Art/Ven counts; Murray exponent at every tree junction;
+  daughter angle ±10°; capillary count ±3 %, class length ±5 %, cyclomatic exact; dead ends by kind
+  exact and `interior_dead_ends=False`; `degree_sequence_targets` identities; no bed edge between
+  attached nodes; `scale=1.5`; venous depth 0; capillary-only; large tier on one side;
+  `bend_to_lengths`; the acceptance test (every fitted comparison row within tolerance);
+  `@pytest.mark.slow` ~10 k edges under 30 s.
+- `tests/test_synthetic_compare.py`: rows, ratios, N/A handling, CSV naming, summary.
+- `tests/test_synthetic_stage.py`: each stage under synthetic on a template written with
+  `write_run_snapshot` from a `tests/data` run with statistics on; `{template}_synthetic_*` outputs
+  (graph pickle, statistics CSV, comparison CSV, manifest with the `synthetic` block and the template
+  in `inputs`, citations without tifffile/skimage/skan); refusals; `resumed_graph` handed back;
+  `assign_boundaries` lists; diameters kept (`stamp_edge_diameters` counts); `raw_image_is_set`,
+  `segmented_input_path`, `run_stem` for both routes; `post_process` with thick-vessel on and no image.
+- Preflight messages (new `tests/test_pipeline_checks.py` or `test_parsers_checks.py`); `tests/test_vessel_mask_switches.py`
+  (False under synthetic whatever the switches hold); `test_gui_form.py` (visible Input rows per
+  source, Diameters raw subtree hidden, `PATH_FILTERS == run_snapshot.SAVE_FILTER`, labels);
+  `test_gui_layout.py` (rows once, advanced trio behind the `network_source` button, the 50–70 %
+  advanced share: +3/+3 keeps it); `test_gui_boundary_picking.py`; one `@pytest.mark.gui` test
+  (combo hides image rows, greys the four role tabs with the note, FileEdit carries the filter);
+  `test_gui_stage_checkpoints.py` / `test_gui_run_snapshot.py` (stem, Clear, relocation);
+  `test_citations.py`, `test_pipeline_provenance.py`, `test_hemodynamics.py` (stamping),
+  `test_statistics.py` (Murray reads synthetic widths), `test_parsers_schema.py` (choices pinned).
+- Must keep passing: `test_example_configs` (regenerated), `test_setting_units` (`scale` is not a
+  measurement word), `test_gui_tooltips`, `test_segment_stage`, `test_skeletonise_stage`,
+  `test_pipeline_invariants`, `test_public_api`.
+
+## Verification
+
+1. Unit suites above, then `pytest -m "not slow and not gui"` (13–28 min here), the `slow`
+   generator test, and the gui tests for the panel in the background.
+2. End to end on real data: run E14.5 (an existing `.haemorun` with statistics on) as the template
+   via the panel — Input tab → Synthetic → pick the file → Run; check the viewer shows the network
+   after stage 3, the Boundaries role tabs are greyed, the Statistics tab has the comparison
+   section, and read `{stem}_template_comparison.csv`: every "exact" row equal, the rest within
+   tolerance; time the generation (target < 10 s); save the run and confirm its `.haemorun` is
+   refused as a template with the right message; run again with `synthetic_template_source=graph`
+   and compare.
+3. Preflight messages checked by hand: a `.tif` path, a template saved with `statistics` off, a
+   run with `statistics_loop_hierarchy` off.
+
+## Working practice
+
+Other sessions edit this checkout concurrently (uncommitted files from them are present now):
+targeted edits only, run the named test files rather than the whole suite between steps, commit
+through a private index, and do not edit `src/` while a long test run is in flight.
+
+## Risks
+
+- A `None` `input_path` reaching `.stem` anywhere not moved to `run_stem` (checks, checkpoints,
+  provenance are the ones outside `stages.py`).
+- `build_network`'s mask loading reads `image.shape` before the resume check: the synthetic early
+  return must come first, or a run from the Boundaries tab crashes.
+- `segment` writes `segmented_path` into `input_path` first thing: the synthetic branch precedes it.
+- Hidden `must_exist` paths (ilastik classifier, masks) still demanded by `check_settings` without
+  the extended `skip`.
+- `mid_run_postprocessing` works, but mask-reading review lists report `NEEDS_MASK` and Add
+  vessel's mask/raw tracers are unavailable; pericyte-mask perturbation strategies fail at their own
+  file check (a warning if `check_perturbations` can see the strategy).
+- Loading a 100 MB template in preflight stalls the GUI thread for a few seconds the first time; the
+  memoised loader keeps it to once per template.
+
+## Status (2026-10-18, implemented)
+
+Built as planned, with these departures and findings:
+
+- **Capillary bed**: a degree-constrained Delaunay fill on a jittered lattice (`bed.py`), not
+  Voronoi -- the bed's degree sequence is worked out first from the handshake lemma, so the
+  capillary count, the loop count and the dead-end count are the template's exactly. When a
+  template's loops and dead ends cannot both be met with its capillaries, the loops give (more
+  are drawn), never the dead ends; the generated record and the run log say so. Candidates are
+  taken near the template's mean capillary chord (not the shortest), which is what keeps the
+  tortuosity right; a rerouting pass (`augment`) and a bounded pairing pass fill what the greedy
+  fill leaves. Blind ends are set at their chain lengths.
+- **Trees**: lengths and root diameters are normalised to each order's mean at draw time (an order
+  of two vessels would otherwise miss its mean by the draw); tree class lengths are then rescaled
+  to the class totals.
+- **Compare-only rows** (no band): the network-wide Murray median (the capillary junctions'
+  random widths dominate it; the tree junctions obey Murray exactly), per-order emergence angles
+  and tortuosity (read off bent polylines and orders of two vessels).
+- **Gates**: a `choice` gate missing from a partial values mapping now reads as its default
+  (`parsers.is_prerequisite_met(default=)`, `form.Field.gate_defaults`, `unmet_chain`), so the
+  many tests and callers that pass partial dicts keep working after `network_source=segmented_image`
+  was added to the Input rows' `requires`. `input_path` was not made `always_effective`.
+- **Panel**: the "Use open layer" row hides and layer adoption is refused under synthetic; the role
+  tabs grey with `SYNTHETIC_CHOOSES_NOTE`.
+- **Results on the fixture template** (`tests/synthetic_fixtures.py`, 178 vessels): 54-55 of 55
+  banded rows within band at every seed, generation 0.2 s; the fixture scaled to ~10,000 vessels
+  draws in ~5 s (its counts are inconsistent by construction and exercise the fallbacks). A whole
+  synthetic run from a generated-and-saved template: 6 s, every output named
+  `{template}_synthetic_*`, 62 of 62 banded rows within band.
+- **Not yet done**: verification step 2 (E14.5 as the template, through the panel) and the
+  `vessel_box` option.

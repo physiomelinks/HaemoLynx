@@ -36,6 +36,8 @@ import numpy as np
 
 from haemolynx.gui.results import BOUNDARY_NODES, MASK_LAYERS, SKELETON, copy_graph
 from haemolynx.gui.tabs import tab_title, tab_titles
+from haemolynx.graph.boundaries import network_is_synthetic
+from haemolynx.pipeline.naming import run_stem
 from haemolynx.pipeline.progress import STAGES
 from haemolynx.pipeline.stages import (
     TOPOLOGY_STEP,
@@ -334,6 +336,9 @@ def stems_for_cached_artefacts(settings: Mapping[str, Any] | None) -> tuple[str,
     """
     if not settings:
         return ()
+    if network_is_synthetic(settings):
+        stem = run_stem(settings)
+        return () if stem is None else (stem,)
     segmented = segmented_input_path(dict(settings))
     return () if segmented is None else (segmented.stem,)
 
@@ -378,10 +383,10 @@ def _stem_and_output_dir(settings: Mapping[str, Any] | None) -> tuple[str, Path]
     if not settings:
         return None
     output_dir = output_dir_from_prefix(settings.get("vtk_output_prefix"))
-    input_path = settings.get("input_path")
-    if output_dir is None or input_path is None:
+    stem = run_stem(settings)
+    if output_dir is None or stem is None:
         return None
-    return Path(input_path).stem, output_dir
+    return stem, output_dir
 
 
 def _boundary_ids_from_group(group: Any) -> dict[str, tuple[Any, ...]]:

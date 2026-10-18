@@ -61,6 +61,8 @@ DEAD_END_KIND_SOURCE = "dead_end_kind_source"
 #: A kind a person chose in the review, which reclassifying keeps.
 SOURCE_REVIEW = "review"
 SOURCE_CLASSIFIER = "classifier"
+#: Known by construction: the generator of a synthetic network (``haemolynx.synthetic``).
+SOURCE_SYNTHETIC = "synthetic"
 
 #: A tip within this many of the finest voxels of a face touches it -- or
 #: within its own lumen radius, whichever is larger.

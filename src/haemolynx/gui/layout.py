@@ -151,6 +151,9 @@ TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
             "input",
             None,
             names=(
+                "network_source",
+                "synthetic_template_path",
+                "synthetic_template_source",
                 "input_path",
                 "segmentation_source",
                 "raw_image_path",
@@ -272,6 +275,7 @@ ANCHOR_OVERRIDES: Mapping[str, str] = {
 #: own button. Anything unlisted says :data:`DEFAULT_ADVANCED_TITLE`.
 DEFAULT_ADVANCED_TITLE = "Advanced settings"
 ADVANCED_TITLES: Mapping[str, str] = {
+    "network_source": "Advanced synthetic network settings",
     "use_memmap_loading": "Advanced memory settings",
     "segmentation_cleanup_split_narrow_necks": "Advanced neck splitting",
     "segmentation_cleanup_reconnect_gaps": "Advanced gap reconnection",

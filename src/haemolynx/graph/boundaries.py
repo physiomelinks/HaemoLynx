@@ -484,6 +484,24 @@ def select_boundary_nodes_by_method(
     return [node for node in sort_nodes(selected) if node not in excluded]
 
 
+#: The Input tab's ``network_source`` choice: analyse a segmented image, or
+#: generate a synthetic network matched to a previous run's ``.haemorun``
+#: (``haemolynx.synthetic``). The literals are repeated in
+#: ``pipeline/schema.py`` (which stays importable without numpy);
+#: ``tests/test_parsers_schema.py`` pins them equal.
+NETWORK_SOURCE_SETTING = "network_source"
+NETWORK_SOURCE_SEGMENTED_IMAGE = "segmented_image"
+NETWORK_SOURCE_SYNTHETIC = "synthetic"
+NETWORK_SOURCES: tuple[str, ...] = (NETWORK_SOURCE_SEGMENTED_IMAGE, NETWORK_SOURCE_SYNTHETIC)
+
+
+def network_is_synthetic(settings: Mapping[str, Any]) -> bool:
+    """Whether the run generates its network instead of reading an image
+    (``network_source`` holding ``"synthetic"``). The one place this is
+    decided: the stages, preflight, the citations and the panel all ask here."""
+    return settings.get(NETWORK_SOURCE_SETTING, NETWORK_SOURCE_SEGMENTED_IMAGE) == NETWORK_SOURCE_SYNTHETIC
+
+
 #: Each mask role's own switch, under ``automated_vessel_assignment``.
 VESSEL_MASK_SWITCHES: dict[str, str] = {
     "large": "use_large_vessel_masks",
@@ -498,11 +516,16 @@ def vessel_masks_in_use(settings: Mapping[str, Any], mask_role: str) -> bool:
     on. The panel hides a role's switch, and every row under it, while a gate
     above it is off, so a switch left ticked underneath is out of effect, not
     on: its masks are not loaded, nothing assigns from them, and preflight
-    asks nothing of them. The one place this is decided: loading the masks,
-    the Boundaries stage, the panel's greying and preflight all ask here.
+    asks nothing of them. Never for a synthetic network
+    (:func:`network_is_synthetic`): the generator chooses its boundaries, and
+    there is no image for a mask to lie on. The one place this is decided:
+    loading the masks, the Boundaries stage, the panel's greying and
+    preflight all ask here.
     """
     if mask_role not in VESSEL_MASK_SWITCHES:
         raise ValueError(f"mask_role must be 'large' or 'small', got {mask_role!r}.")
+    if network_is_synthetic(settings):
+        return False
     return bool(settings.get("automated_vessel_assignment")) and bool(
         settings.get(VESSEL_MASK_SWITCHES[mask_role])
     )

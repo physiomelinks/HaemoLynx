@@ -12,7 +12,7 @@ display, which is most of what there is to get wrong.
 from __future__ import annotations
 
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any, Mapping, Sequence
 
 from haemolynx.parsers.schema import (
@@ -144,8 +144,10 @@ def shared_ilastik_host(values: Mapping[str, Any]) -> str | None:
     under an unticked mask switch is hidden and runs nothing. One schema value
     each — the panel reparents the same rows.
     """
-    from haemolynx.graph.boundaries import vessel_masks_in_use
+    from haemolynx.graph.boundaries import network_is_synthetic, vessel_masks_in_use
 
+    if network_is_synthetic(values):
+        return None  # nothing is segmented: no image to run ilastik on
     if values.get("use_ilastik_segmentation"):
         return "input"
     if (
@@ -192,6 +194,15 @@ class Field:
     #: an unmet one greys the row where a toggle's would hide it, and is
     #: worded "not set" rather than "off". Filled by :func:`fields_for`.
     path_gates: frozenset[str] = frozenset()
+    #: The declared default of each ``choice`` gate in this row's ``requires``
+    #: (``{"network_source": "segmented_image"}``), so a values mapping that
+    #: lacks the gate reads it as holding its default rather than nothing.
+    #: Filled by :func:`fields_for`; a bool or path gate missing reads as off.
+    gate_defaults: Mapping[str, Any] = dataclass_field(default_factory=dict)
+
+    def rule_holds(self, rule: str, values: Mapping[str, Any]) -> bool:
+        """:func:`is_prerequisite_met`, a missing choice gate at its default."""
+        return is_prerequisite_met(rule, values, default=self.gate_defaults.get(prerequisite_name(rule)))
 
     def to_setting_value(self, raw: Any) -> Any:
         """A widget's value as the setting's own value.
@@ -220,7 +231,7 @@ class Field:
 
     def is_enabled(self, values: Mapping[str, Any]) -> bool:
         """Whether this setting can take effect, given the other values."""
-        return all(is_prerequisite_met(rule, values) for rule in self.enabled_by)
+        return all(self.rule_holds(rule, values) for rule in self.enabled_by)
 
     @property
     def hide_when_unmet(self) -> bool:
@@ -264,7 +275,7 @@ class Field:
             return False
         if self.hide_when_unmet:
             if unmet is None:
-                unmet = [rule for rule in self.enabled_by if not is_prerequisite_met(rule, values)]
+                unmet = [rule for rule in self.enabled_by if not self.rule_holds(rule, values)]
             # A path gate the row names itself (the raw image) greys it
             # rather than hiding it: a row that vanished when the Input
             # tab's raw image was cleared would look removed, where greyed
@@ -274,7 +285,7 @@ class Field:
 
     def why_disabled(self, values: Mapping[str, Any]) -> str:
         """A sentence saying which prerequisite is unmet, for the tooltip."""
-        unmet = [rule for rule in self.enabled_by if not is_prerequisite_met(rule, values)]
+        unmet = [rule for rule in self.enabled_by if not self.rule_holds(rule, values)]
         if not unmet:
             return ""
         parts = []
@@ -353,12 +364,31 @@ def unmet_chain(
     unmet: list[str] = []
     for rule in prerequisite_chain(schema, name):
         gate, test, _expected = parse_prerequisite(rule)
-        if test == PREREQUISITE_OFF and gate not in _seen and is_prerequisite_met(gate, values):
+        default = _gate_default(schema, gate)
+        if test == PREREQUISITE_OFF and gate not in _seen and is_prerequisite_met(gate, values, default=default):
             if unmet_chain(schema, gate, values, _seen | {name, gate}):
                 continue
-        if not is_prerequisite_met(rule, values):
+        if not is_prerequisite_met(rule, values, default=default):
             unmet.append(rule)
     return tuple(unmet)
+
+
+def _gate_default(schema: Schema, gate: str) -> Any:
+    """What a ``choice`` gate missing from a values mapping reads as: its
+    declared default. A bool or path gate missing reads as off, as before."""
+    if gate in schema and schema[gate].kind == "choice":
+        return schema[gate].default
+    return None
+
+
+def gate_defaults_for(schema: Schema, name: str) -> dict[str, Any]:
+    """The :attr:`Field.gate_defaults` of *name*: its choice gates' defaults."""
+    out: dict[str, Any] = {}
+    for rule in schema[name].requires if name in schema else ():
+        gate = prerequisite_name(rule)
+        if gate in schema and schema[gate].kind == "choice":
+            out[gate] = schema[gate].default
+    return out
 
 
 def chain_met(schema: Schema, name: str, values: Mapping[str, Any]) -> bool:
@@ -375,7 +405,10 @@ def _visible_settings_in_section(
         if setting.section != section:
             continue
         field = field_for(
-            setting, values.get(setting.name), path_gates=path_gates_for(schema, setting.name)
+            setting,
+            values.get(setting.name),
+            path_gates=path_gates_for(schema, setting.name),
+            gate_defaults=gate_defaults_for(schema, setting.name),
         )
         if field.is_visible(values, unmet_chain(schema, setting.name, values)):
             shown.add(field.name)
@@ -427,7 +460,12 @@ def visible_graph_centreline_settings(
     shown: set[str] = set()
     for name in names:
         setting = schema[name]
-        field = field_for(setting, values.get(name), path_gates=path_gates_for(schema, name))
+        field = field_for(
+            setting,
+            values.get(name),
+            path_gates=path_gates_for(schema, name),
+            gate_defaults=gate_defaults_for(schema, name),
+        )
         if field.is_visible(values, unmet_chain(schema, name, values)):
             shown.add(name)
     return shown
@@ -474,6 +512,12 @@ def visible_statistics_settings(
 
 #: Export-tab IDE plot rows: schema keys stay snake_case for YAML.
 SETTING_ROW_LABELS: dict[str, str] = {
+    "network_source": "Input",
+    "synthetic_template_path": "Template run (.haemorun)",
+    "synthetic_template_source": "Match the template by",
+    "synthetic_seed": "Synthetic network seed",
+    "synthetic_scale": "Synthetic box scale",
+    "synthetic_interior_dead_ends": "Reproduce dead ends inside the tissue",
     "visualize_results": "Produce IDE plots",
     "show_plots_in_ide": "Show plots in IDE",
     "ide_plot_mode": "IDE plot mode",
@@ -508,6 +552,14 @@ SETTING_ROW_LABELS: dict[str, str] = {
 #: as a sentence for the ones a user picks a whole model from, rather than a
 #: mode word like "pries" or "plasma_column".
 CHOICE_VALUE_LABELS: dict[str, dict[str, str]] = {
+    "network_source": {
+        "segmented_image": "Segmented image",
+        "synthetic": "Synthetic network from a template run",
+    },
+    "synthetic_template_source": {
+        "statistics": "The template run's statistics report",
+        "graph": "Per-vessel distributions of the template graph",
+    },
     "segmentation_source": {
         "plasma_column": "Plasma column (luminal stain)",
         "endothelial": "Anatomical (endothelial wall stain)",
@@ -625,12 +677,21 @@ def _options_for(setting: Setting, widget_type: str, value: Any = None) -> dict[
             options["mode"] = "r"
         else:
             options["mode"] = "w"
+        if setting.name in PATH_FILTERS:
+            options["filter"] = PATH_FILTERS[setting.name]
     return options
 
 
 #: Settings that pick one channel of the image another setting names: the
 #: panel shows them as a drop-down of that file's channels, Fiji-named (C1,
 #: C2, ...), where a number box would leave the user to count from 0.
+#: The file dialogue's filter for a path setting that names one kind of
+#: file; kept equal to ``gui.run_snapshot.SAVE_FILTER`` (not imported: that
+#: module imports the stages).
+PATH_FILTERS: dict[str, str] = {
+    "synthetic_template_path": "HaemoLynx run (*.haemorun);;All files (*)",
+}
+
 CHANNEL_SETTINGS = {
     "raw_image_channel": "raw_image_path",
     "tissue_raw_channel": "tissue_raw_tiff_path",
@@ -710,12 +771,17 @@ def display_value_for(setting: Setting, value: Any) -> Any:
 
 
 def field_for(
-    setting: Setting, value: Any = None, *, path_gates: frozenset[str] = frozenset()
+    setting: Setting,
+    value: Any = None,
+    *,
+    path_gates: frozenset[str] = frozenset(),
+    gate_defaults: Mapping[str, Any] | None = None,
 ) -> Field:
     """The form row for one setting, showing *value* or the schema default.
 
     *path_gates* names the path settings among its gates (see
-    :attr:`Field.path_gates`); :func:`fields_for` reads them off the schema.
+    :attr:`Field.path_gates`) and *gate_defaults* its choice gates' defaults
+    (:attr:`Field.gate_defaults`); :func:`fields_for` reads both off the schema.
     """
     widget_type = widget_type_for(setting)
     return Field(
@@ -736,6 +802,7 @@ def field_for(
         nullable=setting.default is None,
         placeholder=setting.placeholder,
         path_gates=path_gates,
+        gate_defaults=dict(gate_defaults or {}),
     )
 
 
@@ -753,7 +820,10 @@ def fields_for(schema: Schema, values: Mapping[str, Any] | None = None) -> list[
     values = values or {}
     return [
         field_for(
-            setting, values.get(setting.name), path_gates=path_gates_for(schema, setting.name)
+            setting,
+            values.get(setting.name),
+            path_gates=path_gates_for(schema, setting.name),
+            gate_defaults=gate_defaults_for(schema, setting.name),
         )
         for setting in schema
     ]

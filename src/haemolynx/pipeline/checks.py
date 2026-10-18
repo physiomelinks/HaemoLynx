@@ -17,6 +17,7 @@ from haemolynx.graph.boundaries import (
     boundary_role_configured,
     vessel_masks_in_use,
 )
+from haemolynx.graph.boundaries import network_is_synthetic
 from haemolynx.haemodynamics.perturbations import (
     perturbation_problems,
     perturbations_from_settings,
@@ -40,7 +41,8 @@ def check_cached_artefacts(settings: Mapping[str, Any]) -> CheckReport:
     """When a stage is switched off, the file it would have written must exist."""
     report = CheckReport()
     vtk_output_prefix = settings.get("vtk_output_prefix")
-    if vtk_output_prefix is None:
+    # A synthetic network is generated every run: nothing is read back.
+    if vtk_output_prefix is None or network_is_synthetic(settings):
         return report
     output_dir = Path(vtk_output_prefix).parent
 
@@ -67,6 +69,8 @@ def check_cached_artefacts(settings: Mapping[str, Any]) -> CheckReport:
 
 def check_ilastik_executable(settings: Mapping[str, Any]) -> CheckReport:
     """ilastik is a separate program; if a run needs it, it must be findable."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
     report = CheckReport()
     needed = bool(settings.get("use_ilastik_segmentation")) or ilastik_segments_vessel_masks(
         settings
@@ -129,6 +133,8 @@ def check_input_is_not_a_large_vessel_mask(
     viewer looks like "network only within the venule" even when cut polarity
     is correct and both masks are loaded.
     """
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
     report = CheckReport()
     if settings.get("use_ilastik_segmentation"):
         return report
@@ -347,6 +353,8 @@ def check_thick_vessel_restriction_prerequisites(
     that depends on *which value* the choice holds, not just whether it is
     non-default. This is the run-time check that catches that.
     """
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
     report = CheckReport()
     choice = str(
         settings.get("skeleton_thick_vessel_restrict_to_mask", "off")
@@ -440,6 +448,8 @@ def check_segmentation_quality(settings: Mapping[str, Any]) -> CheckReport:
     does, so it only runs for someone who has deliberately asked for the
     nudge in their normal automated workflow.
     """
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
     report = CheckReport()
     threshold = settings.get("min_acceptable_segmentation_quality")
     if threshold is None:
@@ -513,6 +523,8 @@ def check_image_channels(settings: Mapping[str, Any]) -> CheckReport:
     single-channel one needs none. Caught here rather than as the load fails
     partway through a run -- or, for the raw evidence, reads the first
     channel of a composite without saying so."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
     report = CheckReport()
     for path_name, channel_name in _CHANNEL_IMAGES:
         path = settings.get(path_name)
@@ -532,6 +544,8 @@ def check_raw_image(settings: Mapping[str, Any]) -> CheckReport:
     instead. One that is set must be there: the network build reads it
     whenever it is (``preprocessing.raw_evidence``), so a missing one is an
     error for every run that names it."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
     report = CheckReport()
     users = [
         name for name, on in (
@@ -625,6 +639,8 @@ def tissue_raw_image(settings: Mapping[str, Any]) -> tuple[Any, Any, str, str]:
 def check_tissue_volume_image(settings: Mapping[str, Any]) -> CheckReport:
     """``measure_tissue_volume`` needs a raw image -- its own, or the run's
     -- that is there, with a channel chosen if it has several."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
     report = CheckReport()
     if not settings.get("measure_tissue_volume"):
         return report
@@ -675,6 +691,8 @@ def check_cell_mask_measurement(settings: Mapping[str, Any]) -> CheckReport:
     run's voxel size -- a mask with no voxel size of its own taking the run's,
     as the measurement reads it. Whether each is there is check_settings'
     (both must_exist; the vessel mask may be unset)."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
     import numpy as np
 
     from haemolynx.io import CANONICAL_AXIS_ORDER
@@ -738,6 +756,8 @@ def check_crop_on_import(settings: Mapping[str, Any]) -> CheckReport:
     """The crop box must be one that some image could hold: three whole
     numbers for its size or each corner, and its start not past its end.
     Whether it fits *this* image is only known once it is loaded."""
+    if network_is_synthetic(settings):
+        return CheckReport()  # no image: nothing here applies
     report = CheckReport()
     if not settings.get("crop_on_import"):
         return report
@@ -751,14 +771,81 @@ def check_crop_on_import(settings: Mapping[str, Any]) -> CheckReport:
     return report
 
 
+def check_synthetic_template(settings: Mapping[str, Any]) -> CheckReport:
+    """A synthetic run's template (``synthetic_template_path``): a
+    ``.haemorun`` of a microscopy-image run with its statistics saved, read
+    once (``haemolynx.synthetic.load_template`` remembers it) so the error
+    names what the template lacks before any work starts; and what cannot
+    run without an image."""
+    report = CheckReport()
+    if not network_is_synthetic(settings):
+        return report
+    path = settings.get("synthetic_template_path")
+    if path in (None, ""):
+        return report  # check_settings says it is required
+    file = Path(path)
+    if file.suffix.lower() != ".haemorun":
+        report.add_error(
+            f"synthetic_template_path: {file} is not a .haemorun file. Fix: save the "
+            "template run from the panel (Save run) and point synthetic_template_path at it."
+        )
+        return report
+    if not file.exists():
+        return report  # check_settings reports a missing file
+    from haemolynx.gui.run_snapshot import RunSnapshotError
+    from haemolynx.synthetic import TemplateError, load_template
+
+    try:
+        template = load_template(file, settings.get("synthetic_template_source", "statistics"))
+    except (RunSnapshotError, TemplateError) as error:
+        report.add_error(f"synthetic_template_path: {error}")
+        return report
+    report.add_pass(
+        "synthetic template",
+        f"{file}: {template.vessel_count} vessels, {template.inlet_count} inlet(s), "
+        f"{template.outlet_count} outlet(s), box {tuple(round(v, 1) for v in template.extent_um)} um",
+    )
+    for note in template.provenance.notes:
+        report.add_warning(f"synthetic template: {note}")
+    for name in ("measurement_3d_to_cell_mask", "measure_tissue_volume"):
+        if settings.get(name):
+            report.add_error(
+                f"{name} needs the run's image, and a synthetic network has none. Fix: switch it off."
+            )
+    unread = [
+        ("use_ilastik_segmentation", "nothing is segmented"),
+        ("measure_diameters_from_raw_image", "the vessels keep the widths they were drawn with"),
+        ("automated_vessel_assignment", "the generator chooses the inlets, outlets and boundary nodes"),
+        ("use_thick_vessel_skeletonisation", "nothing is skeletonised"),
+    ]
+    for name, why in unread:
+        if settings.get(name):
+            report.add_warning(f"{name} is on but not read for a synthetic network: {why}.")
+    if settings.get("skeleton_thick_vessel_restrict_to_mask", "off") not in ("off", None):
+        report.add_warning("skeleton_thick_vessel_restrict_to_mask is not read for a synthetic network: nothing is skeletonised.")
+    for name in ("do_skeletonize", "do_graph_building"):
+        if settings.get(name, True) is False:
+            report.add_warning(f"{name} is off but a synthetic network is drawn every run; nothing is read back.")
+    return report
+
+
 def preflight(settings: Mapping[str, Any], schema: Schema) -> CheckReport:
     """Every pre-run check, printed as a checklist.
 
     Called for you by the examples before a run starts; call it yourself to
     check a configuration without running anything.
     """
-    # The raw image is optional: check_raw_image checks it when it is set.
-    report = check_settings(schema, settings, skip=("raw_image_path",))
+    # The raw image is optional: check_raw_image checks it when it is set. A
+    # synthetic network reads no file but its template: a path left set under
+    # a switch the Input tab hides (an ilastik classifier, a vessel mask) is
+    # not demanded, since check_settings reads a path's own gate only.
+    skip: tuple[str, ...] = ("raw_image_path",)
+    if network_is_synthetic(settings):
+        skip += tuple(
+            setting.name for setting in schema if setting.must_exist and setting.name != "synthetic_template_path"
+        )
+    report = check_settings(schema, settings, skip=skip)
+    report.extend(check_synthetic_template(settings))
     report.extend(check_cached_artefacts(settings))
     report.extend(check_ilastik_executable(settings))
     report.extend(check_input_is_not_a_large_vessel_mask(settings))

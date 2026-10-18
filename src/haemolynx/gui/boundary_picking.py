@@ -64,6 +64,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from haemolynx.graph.boundaries import network_is_synthetic
 from haemolynx.graph.boundaries import (
     BOUNDARY_ROLE_SETTINGS,
     assigns_large_vessel_branch_orders,
@@ -111,6 +112,8 @@ __all__ = [
     "SMALL_VESSEL_OVERRIDES_MANUAL_NOTE",
     "LARGE_VESSEL_NETWORK_MODE_OFF_NOTE",
     "DISABLED_ROLE_TOOLTIP",
+    "SYNTHETIC_CHOOSES_NOTE",
+    "role_disabled_note",
     "BoundaryPicks",
     "box_colours",
     "box_from_rectangle",
@@ -192,6 +195,8 @@ def role_manual_controls_enabled(role: str, values: Mapping[str, Any]) -> bool:
     unticked is hidden and greys nothing. The sub-tab stays visible but is
     greyed out -- unlike vessel-mask option rows, which hide.
     """
+    if network_is_synthetic(values):
+        return False  # the generator chose every role's nodes
     if role in LARGE_AUTO_ROLES and inlets_outlets_from_vessel_masks(values):
         return False
     if role in SMALL_AUTO_ROLES and vessel_masks_in_use(values, "small"):
@@ -222,6 +227,19 @@ DISABLED_ROLE_TOOLTIP: dict[str, str] = {
     "large_vessel_inlet": LARGE_VESSEL_NETWORK_MODE_OFF_NOTE,
     "large_vessel_outlet": LARGE_VESSEL_NETWORK_MODE_OFF_NOTE,
 }
+
+SYNTHETIC_CHOOSES_NOTE = (
+    "A synthetic network's inlets, outlets and boundary nodes are the "
+    "generator's (the Input tab's Input is a synthetic network)."
+)
+
+
+def role_disabled_note(role: str, values: Mapping[str, Any]) -> str:
+    """Why *role*'s sub-tab is greyed for *values*: the synthetic note when
+    the network is generated, else :data:`DISABLED_ROLE_TOOLTIP`'s."""
+    if network_is_synthetic(values):
+        return SYNTHETIC_CHOOSES_NOTE
+    return DISABLED_ROLE_TOOLTIP[role]
 
 
 BC_COORDINATES = f"{PREFIX}BC coordinates"

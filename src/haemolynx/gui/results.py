@@ -1870,6 +1870,11 @@ class ResultLayers:
         graph = getattr(output, "graph", None)
         self._graph = graph
         layers: list[LayerSpec] = []
+        if self._image_shape_z is None and graph is not None and graph.graph.get("image_extent_um") is not None:
+            # A synthetic network has no image: its box is on the graph.
+            z_extent = float(graph.graph["image_extent_um"][0])
+            z_voxel = float(self._voxel_size_zyx[0]) if self._voxel_size_zyx[0] else 1.0
+            self._image_shape_z = int(round(z_extent / z_voxel)) + 1
 
         if graph is not None:
             layers.extend(self._vessel_layers("build_network"))

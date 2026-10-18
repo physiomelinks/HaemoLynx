@@ -133,6 +133,9 @@ DIAMETER_SOURCE_EDT = "edt_mask"
 DIAMETER_SOURCE_CLASS_MEDIAN = "class_median"
 DIAMETER_SOURCE_TABLE = "table"
 DIAMETER_SOURCE_OVERRIDE = "override"
+#: A width a synthetic network was drawn with (``haemolynx.synthetic``): the
+#: vessel's own, kept like a measurement.
+DIAMETER_SOURCE_SYNTHETIC = "synthetic"
 DIAMETER_SOURCES = frozenset(
     {
         DIAMETER_SOURCE_MEASURED,
@@ -142,6 +145,7 @@ DIAMETER_SOURCES = frozenset(
         DIAMETER_SOURCE_CLASS_MEDIAN,
         DIAMETER_SOURCE_TABLE,
         DIAMETER_SOURCE_OVERRIDE,
+        DIAMETER_SOURCE_SYNTHETIC,
     }
 )
 
@@ -153,6 +157,7 @@ _MEASURED_DIAMETER_SOURCES = frozenset(
         DIAMETER_SOURCE_RAW_SECTION,
         DIAMETER_SOURCE_ENDOTHELIAL,
         DIAMETER_SOURCE_EDT,
+        DIAMETER_SOURCE_SYNTHETIC,
     }
 )
 
@@ -167,6 +172,7 @@ _KEPT_DIAMETER_SOURCES = frozenset(
         DIAMETER_SOURCE_ENDOTHELIAL,
         DIAMETER_SOURCE_EDT,
         DIAMETER_SOURCE_OVERRIDE,
+        DIAMETER_SOURCE_SYNTHETIC,
     }
 )
 
@@ -415,7 +421,7 @@ def stamp_edge_diameters(
     table = diameter_by_branch_order or {}
     counts = {
         "measured": 0, "raw_section": 0, "endothelial": 0, "edt_mask": 0,
-        "class_median": 0, "table": 0, "override": 0, "unset": 0,
+        "class_median": 0, "table": 0, "override": 0, "synthetic": 0, "unset": 0,
     }
 
     def stamp(data: dict, diameter: float, source: str, *, basis: str | None = None) -> None:
@@ -467,6 +473,13 @@ def stamp_edge_diameters(
             edt = positive_diameter_um(data.get("edt_diameter_um"))
             if edt is not None:
                 stamp(data, edt, DIAMETER_SOURCE_EDT)
+                continue
+        # A synthetic network's vessels were drawn at their widths: those are
+        # the measurement, never replaced by a class median or the table.
+        if source == DIAMETER_SOURCE_SYNTHETIC:
+            drawn = positive_diameter_um(data.get("diameter_um"))
+            if drawn is not None:
+                counts["synthetic"] += 1
                 continue
         # A human diameter beats the generic table (a vessel drawn by hand in
         # the post-processing tab carries one); a measurement above still

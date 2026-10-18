@@ -325,3 +325,26 @@ def test_a_resumed_network_loads_the_masks_of_a_role_switched_on(tmp_path):
     np.testing.assert_array_equal(np.asarray(now.small_arteriole_mask) != 0, arteriole != 0)
     np.testing.assert_array_equal(np.asarray(now.small_venule_mask) != 0, venule != 0)
     assert now.large_arteriole_mask is None
+
+
+def test_a_synthetic_network_uses_no_vessel_masks_whatever_the_switches_hold():
+    """The generator chooses a synthetic network's boundaries, and there is no
+    image for a mask to lie on: every mask switch reads as off."""
+    from haemolynx.graph import inlets_outlets_from_vessel_masks
+
+    settings = {
+        **SCHEMA.defaults(),
+        "network_source": "synthetic",
+        "automated_vessel_assignment": True,
+        "use_large_vessel_masks": True,
+        "use_small_vessel_masks_for_boundary_assignment": True,
+        "inlets_outlets_from_vessel_masks": True,
+        "assign_large_vessel_branch_orders": True,
+        "cut_network_at_large_vessel_volumes": False,
+    }
+    assert vessel_masks_in_use(settings, "large") is False
+    assert vessel_masks_in_use(settings, "small") is False
+    assert inlets_outlets_from_vessel_masks(settings) is False
+    assert assigns_large_vessel_branch_orders(settings) is False
+    image_run = {**settings, "network_source": "segmented_image"}
+    assert vessel_masks_in_use(image_run, "large") is True

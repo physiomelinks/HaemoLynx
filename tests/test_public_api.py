@@ -28,6 +28,7 @@ SUBPACKAGES = [
     "haemolynx.pipeline",
     "haemolynx.preprocessing",
     "haemolynx.statistics",
+    "haemolynx.synthetic",
     "haemolynx.visualization",
 ]
 
