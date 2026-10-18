@@ -187,6 +187,8 @@ from .large_vessel_network import (
     select_large_vessel_stump_terminal_nodes,
 )
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE, insert_thick_vessel_junction_nodes
+from . import skeleton_retrace
+from .skeleton_retrace import judge_lost_skeleton, retrace_lost_skeleton
 from . import dead_ends
 from .dead_ends import (
     DEAD_END_KIND,
@@ -379,6 +381,9 @@ __all__ = [
     "select_large_vessel_stump_terminal_nodes",
     "IS_ZERO_RESISTANCE",
     "insert_thick_vessel_junction_nodes",
+    "skeleton_retrace",
+    "judge_lost_skeleton",
+    "retrace_lost_skeleton",
     "remove_small_mask_components_by_volume",
     "remove_small_vessel_components_by_volume",
     "remove_edges_for_self_connected_nodes",

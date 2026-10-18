@@ -54,7 +54,9 @@ haemolynx/
 │   │                       #   Post processing tab's review lists find, one finder per list),
 │   │                       #   dead_ends.py (what each dead end is: the one definition),
 │   │                       #   dead_end_extension.py (dead ends drawn on to the face, traced
-│   │                       #   on through the mask, joined to the vessel ahead; opt-in)
+│   │                       #   on through the mask, joined to the vessel ahead; opt-in),
+│   │                       #   skeleton_retrace.py (skeleton the clean-up took round a wide
+│   │                       #   hole, drawn back after it)
 │   ├── haemodynamics/      # poiseuille, viscosity (the laws), resistance, apply,
 │   │                       #   automated.py (FWHM diameters), raw_section.py (the raw
 │   │                       #   cross-section fitted where FWHM fails, opt-in), edt_diameter.py
@@ -298,7 +300,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 |-------------|----------------------|
 | `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name) |
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
-| `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, boundary/assignment tests |
+| `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_sweep_flow_layers.py` |
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned), `test_vessel_class_statistics.py` (each class's rows against hand-computed values, both labelling schemes, the export) |
@@ -682,6 +684,42 @@ are only caught locally.
   `G.graph["raw_evidence"]`) shipped no rule: on grids H, H2 (one lumen or two), M, M2 (a
   vessel across a gap) and I (loop holes) no raw measure beat marking everything one way
   (`PLAN_raw_confirmation.md`).
+- **`graph/skeleton_retrace.py`** — `retrace_lost_skeleton` (`retrace_lost_skeleton`, **on by
+  default** since 2026-10-18, after grid N2; no effect while `short_loop_keep_hole_over_um` is 0,
+  which keeps no loop for its hole; `PLAN_surface_coverage.md`): after `build_network`'s
+  last clean-up (so no rule takes it again) and before `smooth_straight_steps`, a stretch of the
+  run's skeleton the graph lost is drawn back along its own skeleton when the loop it closes with
+  the graph runs round a hole wider than `short_loop_keep_hole_over_um` (the same setting and the
+  same measure, `lumen_loops.loop_hole_um`). A stretch is a 26-connected run of skeleton no
+  centreline comes within 3 um of, with at least 20 um of skeleton (`piece_length_um`, so a
+  coarse z axis counts length, not voxels), half of it in the mask (80% refused 4 of the vessels
+  Harvey drew as missing, at 69-78%), half of it further than two
+  lumen radii + 3 um from every centreline, meeting reached skeleton in two places; it is drawn
+  between the two contacts farthest apart through it (not the whole tangle), joined by splitting
+  the nearest vessel (never a bridge). Only the two short joins face the bridge gate: the route
+  between is the run's own skeleton, which crosses 3-10 um dropouts of E14.5's raw mask along
+  vessels grid N marked V. Never beside a vessel in the same lumen (`duplicates_existing_vessel`).
+  Each further place the piece meets the graph is then joined along its skeleton under the same
+  tests, the hole read on the loop that join closes (`_join_place`, edge mark `retraced_join`):
+  every join Harvey added on grid N2 ran that way, but the hole test draws only 1 of his 4 -- a
+  join closing a loop round the large vessel's own lumen reads a hole of ~0. Edges carry
+  `retraced` and `retraced_hole_um`, and `build_network` smooths them.
+  `judge_lost_skeleton` says, read-only, what it would do with each piece and why (`Retrace`,
+  the `REFUSED_*` reasons). Harvey's grid N (2026-10-18, 30 of the pool): every piece round a
+  hole over 10.3 um was a vessel (9/9), 17 of 21 round a smaller one were not; at the 10 um
+  limit (fitted on Q/Q2, not N) 25/30 against 17 for all X; the pair and in-lumen loop rules,
+  which never read hole size, had taken 12 of the 13 V. Grid N2 (the 21 vessels it drew on
+  E14.5): 19 V, 1 X, 1 unsure; 10 of the 11 at no grid N place V; 6 of the 7 a pair in one lumen
+  by the mask V. A* routes (Add vessel's mask and raw tracers) matched Harvey's drawn routes no
+  better than the skeleton (48% vs 41-42% of his lines), so the skeleton route stays. Harvey then
+  drew every vessel the surface still lacked (68 strokes, 1.7 mm): 62% of it has skeleton under
+  it, which the hole and separation tests leave out (the drawn pieces mostly close loops round
+  holes under 10 um), and 38% has none, beside the large vessels (the thick-vessel gate); of 504
+  lost surface pieces only the mask share separated cleanly, so it is half, not 80%
+  (`outputs/surface_review/missing_*.py`). On E14.5 (the 2026-10-16 run): 35 re-traced edges,
+  1.35 mm, 49 s; skeleton reach 71.3 -> 73.6% (67.0 -> 70.0% on the surface beside the large
+  vessels), mask covered 74.5 -> 75.4%, 30.8% of Harvey's missing length covered (26.1% at 80%);
+  pairs in one lumen by the mask 4 -> 14, short loops 42 -> 63, dead ends unchanged.
 - **`graph/smoothing.py`** — `smooth_graph_centrelines`: takes the voxel staircase out of each
   centreline and **re-measures `length`**, which moves every resistance (a path stepping voxel to
   voxel comes back ~7% longer than the vessel it traces). It is *not* one of the `STEP_LABELS` —

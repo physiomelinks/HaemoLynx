@@ -409,6 +409,7 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                 "facing_dead_end_max_gap_um",
                 "remove_short_loops_under_um",
                 "short_loop_keep_hole_over_um",
+                "retrace_lost_skeleton",
             ),
         ),
         (
