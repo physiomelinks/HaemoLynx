@@ -68,9 +68,11 @@ LARGE_MASK_VESSEL_TYPE = "large_mask_vessel_type"
 #: Edge attribute naming the small-vessel mask a vessel lies in,
 #: ``"arteriole"`` or ``"venule"`` (absent: neither, or the run's boundary
 #: nodes did not come from the small masks). Written by
-#: :func:`tag_small_mask_vessel_types`; read by
+#: :func:`tag_small_mask_vessel_types` from the labelling the Boundaries
+#: stage reads its arteriole/venule boundary nodes from; read by
 #: :func:`assign_hierarchical_branch_orders`, which runs the Art/Ven tier on
-#: along it.
+#: along it, and by the Post processing stage, which judges a hand-edited
+#: vessel beside the others.
 SMALL_MASK_VESSEL_TYPE = "small_mask_vessel_type"
 
 

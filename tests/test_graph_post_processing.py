@@ -16,6 +16,7 @@ from haemolynx.graph import (
     VesselEnd,
     add_traced_vessel,
     add_vessel_between,
+    clear_edit_marks,
     delete_vessels,
     edge_keys,
     high_degree_junctions,
@@ -30,6 +31,7 @@ from haemolynx.graph import (
     split_high_degree_junctions,
     split_junction,
     split_vessel_at,
+    touched_nodes,
     trace_path,
     vessel_path,
     vessel_path_between,
@@ -146,6 +148,32 @@ def test_delete_refuses_to_strand_a_boundary_node_and_changes_nothing():
     with pytest.raises(ValueError, match="boundary node"):
         delete_vessels(G, [edge], protected=[5])
     assert sorted(edge_keys(G)) == before
+
+
+def test_a_deletion_records_the_nodes_it_took_a_vessel_from():
+    """A deletion leaves no vessel to mark edited where it was, so the nodes
+    it took one from are kept: the Post processing stage judges again what
+    each of them is (where a small arteriole ends, say). A node the deletion
+    left with nothing is gone, and a regenerate forgets them all."""
+    G = _four_way_through()
+    edge = next(e for e in edge_keys(G) if set(e[:2]) == {0, 2})
+    delete_vessels(G, [edge])
+    assert touched_nodes(G) == [0]  # 2 was left with no vessel
+    clear_edit_marks(G)
+    assert touched_nodes(G) == []
+
+
+def test_touched_nodes_are_the_ends_of_edited_vessels_and_the_nodes_deletions_left():
+    G = _four_way_through()
+    doomed = [e for e in edge_keys(G) if set(e[:2]) in ({0, 2}, {0, 4})]
+    delete_vessels(G, doomed, protected=[0])  # 0 kept, not merged
+    assert set(touched_nodes(G)) == {0}
+    add_vessel_between(G, 5, 6)
+    assert set(touched_nodes(G)) == {0, 5, 6}
+
+    G = _four_way_through()
+    delete_vessels(G, doomed)  # 0 merged away into one vessel from 1 to 3
+    assert set(touched_nodes(G)) == {1, 3}
 
 
 def test_delete_rejects_a_vessel_that_is_not_there():
@@ -431,6 +459,18 @@ def test_prune_with_nothing_to_drop_changes_nothing():
     pruned, stats = prune_disconnected_branches(G, [0], [2])
     assert stats["removed_components"] == 0 and stats["removed_vessels"] == 0
     assert pruned.number_of_edges() == 2
+
+
+def test_prune_records_the_nodes_a_dropped_dead_end_hung_from():
+    """Inlet 0 -> 1 -> outlet 2 with a dead end 1 -> 7: the prune takes the
+    dead end, and 1, which lost it, is touched."""
+    positions = {n: (0.0, float(n), 0.0) for n in range(3)}
+    positions[7] = (5.0, 1.0, 0.0)
+    G = _network(positions, [(0, 1), (1, 2), (1, 7)])
+    pruned, stats = prune_disconnected_branches(G, [0], [2])
+    assert stats["removed_vessels"] == 1
+    assert touched_nodes(pruned) == [1]
+    assert touched_nodes(G) == []  # the input graph is left as it was
 
 
 def test_prune_refuses_to_remove_every_vessel():

@@ -161,6 +161,10 @@ class StageCheckpoint:
     large_venule_boundary_nodes: tuple[Any, ...] = ()
     large_arteriole_mask: Any | None = None
     large_venule_mask: Any | None = None
+    #: The small masks as the Boundaries stage's labelling read them, carried
+    #: forward like the large ones for Post processing to judge edits by.
+    small_arteriole_mask: Any | None = None
+    small_venule_mask: Any | None = None
     #: The fat catchment `skeletonise` produced, if thickness-gated
     #: skeletonisation was on -- carried forward so a stage resumed from a
     #: later tab does not silently disable the thick/thin debug toggle for a
@@ -407,8 +411,9 @@ def _boundary_ids_from_group(group: Any) -> dict[str, tuple[Any, ...]]:
     return {key: tuple(values) for key, values in roles.items()}
 
 
-def _boundary_masks_from_group(group: Any) -> tuple[Any | None, Any | None]:
-    """The cleaned (overlap-resolved) large-vessel masks, read from a checkpoint's layer specs.
+def _boundary_masks_from_group(group: Any, size: str = "large") -> tuple[Any | None, Any | None]:
+    """The cleaned (overlap-resolved) *size* (``"large"``/``"small"``)
+    arteriole and venule masks, read from a checkpoint's layer specs.
 
     ``assign_boundaries`` is the only stage that resolves overlap between the
     arteriole and venule masks before cutting the graph and assigning
@@ -418,15 +423,16 @@ def _boundary_masks_from_group(group: Any) -> tuple[Any | None, Any | None]:
     them back from here -- instead of from a freshly rebuilt
     ``VesselNetwork``, which only has the raw, never-cleaned masks -- is what
     lets a resumed run's exported overlay match what the resumed graph
-    actually used.
+    actually used. The small masks are drawn as boundary labelling read
+    them, after its own cleanup, for the same reason.
     """
     arteriole = None
     venule = None
     for spec in getattr(group, "layers", ()) or ():
         name = getattr(spec, "name", None)
-        if name == MASK_LAYERS["large_arteriole_mask"]:
+        if name == MASK_LAYERS[f"{size}_arteriole_mask"]:
             arteriole = getattr(spec, "data", None)
-        elif name == MASK_LAYERS["large_venule_mask"]:
+        elif name == MASK_LAYERS[f"{size}_venule_mask"]:
             venule = getattr(spec, "data", None)
     return arteriole, venule
 
@@ -490,6 +496,8 @@ def _resume_payload(checkpoint: StageCheckpoint, *, graph: Any, start_from: str)
         resistance_node_pair=pair,
         large_arteriole_mask=checkpoint.large_arteriole_mask,
         large_venule_mask=checkpoint.large_venule_mask,
+        small_arteriole_mask=checkpoint.small_arteriole_mask,
+        small_venule_mask=checkpoint.small_venule_mask,
         thick_vessel_mask=checkpoint.thick_vessel_mask,
     )
 
@@ -595,16 +603,18 @@ class StageCheckpoints:
                 }
         return None
 
-    def _carried_boundary_masks(self) -> tuple[Any | None, Any | None] | None:
-        """The cleaned large-vessel masks from the most recent checkpoint that recorded them.
+    def _carried_boundary_masks(self, size: str = "large") -> tuple[Any | None, Any | None] | None:
+        """The cleaned *size*-vessel masks from the most recent checkpoint that recorded them.
 
         Only ``assign_boundaries`` emits the mask image layers, so every
         later stage's own group has none -- same reasoning as
         :meth:`_carried_boundary_roles`.
         """
         for checkpoint in reversed(list(self._by_stage.values())):
-            if checkpoint.large_arteriole_mask is not None or checkpoint.large_venule_mask is not None:
-                return checkpoint.large_arteriole_mask, checkpoint.large_venule_mask
+            arteriole = getattr(checkpoint, f"{size}_arteriole_mask")
+            venule = getattr(checkpoint, f"{size}_venule_mask")
+            if arteriole is not None or venule is not None:
+                return arteriole, venule
         return None
 
     def record(
@@ -656,11 +666,21 @@ class StageCheckpoints:
             carried = self._carried_boundary_roles()
             if carried is not None:
                 roles = carried
-        large_arteriole_mask, large_venule_mask = _boundary_masks_from_group(group)
-        if large_arteriole_mask is None and large_venule_mask is None:
-            carried_masks = self._carried_boundary_masks()
-            if carried_masks is not None:
-                large_arteriole_mask, large_venule_mask = carried_masks
+        # Post processing adds and drops boundary nodes where the edits
+        # changed the network: what it left is what a later regenerate
+        # resumes with, not the Boundaries stage's lists.
+        post_processed = getattr(output, "post_processed", None)
+        if stage == "post_process" and isinstance(post_processed, Mapping):
+            for name, nodes in (post_processed.get("boundary_nodes") or {}).items():
+                roles[name.removesuffix("_nodes")] = tuple(nodes)
+        masks: dict[str, Any | None] = {}
+        for size in ("large", "small"):
+            arteriole, venule = _boundary_masks_from_group(group, size)
+            if arteriole is None and venule is None:
+                carried_masks = self._carried_boundary_masks(size)
+                if carried_masks is not None:
+                    arteriole, venule = carried_masks
+            masks[f"{size}_arteriole_mask"], masks[f"{size}_venule_mask"] = arteriole, venule
         checkpoint = StageCheckpoint(
             stage=stage,
             title=getattr(group, "title", stage),
@@ -678,8 +698,7 @@ class StageCheckpoints:
             venule_boundary_nodes=roles.get("venule_boundary", ()),
             large_arteriole_boundary_nodes=roles.get("large_arteriole_boundary", ()),
             large_venule_boundary_nodes=roles.get("large_venule_boundary", ()),
-            large_arteriole_mask=large_arteriole_mask,
-            large_venule_mask=large_venule_mask,
+            **masks,
             thick_vessel_mask=getattr(results, "_thick_vessel_mask", None),
             raw_segmented_image=getattr(results, "_raw_segmented_image", None),
             output=_stored_output(stage, output),
