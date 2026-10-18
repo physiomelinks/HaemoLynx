@@ -643,19 +643,60 @@ def uses_hierarchical_branch_orders(
     )
 
 
+def large_tier_capillary_hand_offs(G: nx.MultiGraph) -> tuple[list[Any], list[Any]]:
+    """The nodes where a capillary leaves the Large_Art tier, and where one
+    joins the Large_Ven tier, read from the edges' branch orders: a node with
+    both a ``Large_Art`` (``Large_Ven``) and a ``B`` vessel.
+
+    The first are those hand-off nodes :func:`assign_hierarchical_branch_orders`
+    counts B orders from that a capillary leaves; both are empty without a
+    Large tier. Read on a graph with its bridges contracted (as statistics
+    see it), a capillary opening into the large vessel through a bridge meets
+    it at the bridge's centreline end.
+    """
+    tiers_at: dict[Any, set[str]] = defaultdict(set)
+    for u, v, data in G.edges(data=True):
+        parsed = _tier_and_number(data.get("branch_order"))
+        if parsed is not None:
+            tiers_at[u].add(parsed[0])
+            tiers_at[v].add(parsed[0])
+
+    def meeting_capillaries(tier: str) -> list[Any]:
+        return sort_nodes(
+            node for node, tiers in tiers_at.items() if tier in tiers and tiers & {"b", "bo"}
+        )
+
+    return meeting_capillaries("large_art"), meeting_capillaries("large_ven")
+
+
 def capillary_start_nodes(
     inlet_nodes: Iterable[Any] | None,
     outlet_nodes: Iterable[Any] | None,
     arteriole_boundary_nodes: Iterable[Any] | None,
     venule_boundary_nodes: Iterable[Any] | None,
+    *,
+    graph: nx.MultiGraph | None = None,
 ) -> tuple[list[Any], list[Any]]:
     """The nodes :func:`assign_vessel_branch_orders` counts capillary B
     orders from, and the venous nodes on the bed's far side: the arteriole
     and venule boundary nodes in hierarchical mode, else the inlets and
-    outlets."""
-    if uses_hierarchical_branch_orders(outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes):
-        return list(arteriole_boundary_nodes), list(venule_boundary_nodes)
-    return list(inlet_nodes or []), list(outlet_nodes or [])
+    outlets.
+
+    Given the labelled *graph*, hierarchical mode adds where capillaries
+    leave the Large_Art tier and join the Large_Ven tier
+    (:func:`large_tier_capillary_hand_offs`): a capillary leaving a large
+    arteriole is counted from it, and one joining the large vein drains
+    there. Without a Large tier that adds nothing.
+    """
+    if not uses_hierarchical_branch_orders(outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes):
+        return list(inlet_nodes or []), list(outlet_nodes or [])
+    feeds, drains = list(arteriole_boundary_nodes), list(venule_boundary_nodes)
+    if graph is not None:
+        arterial, venous = large_tier_capillary_hand_offs(graph)
+        known_feeds, known_drains = set(feeds), set(drains)
+        feeds += [node for node in arterial if node not in known_feeds]
+        drains += [node for node in venous if node not in known_drains]
+    return feeds, drains
 
 
 def assign_vessel_branch_orders(

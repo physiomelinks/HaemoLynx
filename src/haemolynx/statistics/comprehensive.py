@@ -214,8 +214,9 @@ def compute_comprehensive_vessel_statistics(
 
     *arteriole_boundary_nodes*/*venule_boundary_nodes* are the run's
     hierarchical boundaries: "capillary_bed_joins" counts its beds from the
-    nodes the capillary B orders were counted from
-    (:func:`~haemolynx.graph.branch_order.capillary_start_nodes`), and reports
+    nodes the capillary B orders were counted from -- with a Large tier, also
+    where capillaries leave the large arteriole, read from *G*'s orders
+    (:func:`~haemolynx.graph.branch_order.capillary_start_nodes`) -- and reports
     *short_loop_removal_um* -- the ``remove_short_loops_under_um`` the graph
     was built with -- beside them when given.
 
@@ -437,8 +438,15 @@ def compute_vessel_statistics_by_measure(
             G, inlet_nodes, outlet_nodes, weighting=route_weighting
         )
     if "capillary_bed_joins" in enabled:
+        # G with its bridges contracted: a capillary opening into a large
+        # vessel through one meets it at a node with a Large_Art/Large_Ven
+        # vessel, read as a hand-off there.
         feeds, drains = capillary_start_nodes(
-            inlet_nodes, outlet_nodes, arteriole_boundary_nodes, venule_boundary_nodes
+            inlet_nodes,
+            outlet_nodes,
+            arteriole_boundary_nodes,
+            venule_boundary_nodes,
+            graph=G,
         )
         sections["capillary_bed_joins"] = compute_capillary_bed_joins(
             G,

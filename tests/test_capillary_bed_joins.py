@@ -9,7 +9,12 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from haemolynx.graph.branch_order import assign_branch_orders, capillary_start_nodes
+from haemolynx.graph.branch_order import (
+    LARGE_MASK_VESSEL_TYPE,
+    assign_branch_orders,
+    assign_vessel_branch_orders,
+    capillary_start_nodes,
+)
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 from haemolynx.statistics import (
     STATISTIC_MEASURES,
@@ -302,6 +307,148 @@ def test_capillary_start_nodes_follow_the_branch_order_mode():
     assert capillary_start_nodes([1], [2], [3], [4]) == ([3], [4])
     assert capillary_start_nodes([1], [2], [3], []) == ([1], [2])
     assert capillary_start_nodes([1], [], [3], [4]) == ([1], [])
+
+
+# --- a Large_Art/Large_Ven tier ---------------------------------------------------
+
+
+def _large_tier_bed(rung=True, bridge=False):
+    """A large arteriole 0-1-2 (inlet 0) and a large vein 8-9-10 (outlet 10),
+    tagged in their masks and run with a Large tier. A capillary leaves the
+    large arteriole at 1 and drains straight into the large vein at 8, through
+    5; a small arteriole leaves at 2 and meets the bed at its boundary node 3,
+    whose capillaries 3-4-7 drain through a small venule (boundary 7) into the
+    vein at 8. *rung* adds the capillary 5-4 between the two; *bridge* has the
+    first capillary open into the large arteriole through a zero-resistance
+    bridge 1-11, as a vessel opening into a thick one does.
+
+    Ordered by ``graph.branch_order``: B counts from 3 and from the hand-off
+    node 1, so 1-5 and 3-4 are B01, and 5-8, 4-7 and the rung B02.
+    """
+    G = nx.MultiGraph()
+    for u, v in ((0, 1), (1, 2)):
+        _vessel(G, u, v, **{LARGE_MASK_VESSEL_TYPE: "arteriole"})
+    for u, v in ((8, 9), (9, 10)):
+        _vessel(G, u, v, **{LARGE_MASK_VESSEL_TYPE: "venule"})
+    first = 1
+    if bridge:
+        G.add_edge(1, 11, length=5.0, **{IS_ZERO_RESISTANCE: True})
+        first = 11
+    for u, v in ((first, 5), (5, 8), (2, 3), (3, 4), (4, 7), (7, 8)):
+        _vessel(G, u, v)
+    if rung:
+        _vessel(G, 5, 4)
+    nodes = dict(
+        inlet_nodes=[0],
+        outlet_nodes=[10],
+        arteriole_boundary_nodes=[3],
+        venule_boundary_nodes=[7],
+    )
+    assign_vessel_branch_orders(
+        G, **nodes, large_arteriole_boundary_nodes=[1, 2], large_venule_boundary_nodes=[8]
+    )
+    return G, nodes
+
+
+def _statistics_rows(G, nodes):
+    """The bed joins as the statistics compute them from the run's terminals
+    and boundary nodes."""
+    sections = compute_vessel_statistics_by_measure(
+        G,
+        enabled_measures=frozenset({"capillary_bed_joins"}),
+        route_weighting="topology",
+        **nodes,
+    )
+    return sections["capillary_bed_joins"][SECTION]
+
+
+def test_capillary_start_nodes_add_where_capillaries_leave_and_join_the_large_tier():
+    """Given the labelled graph, the feeds are also where a capillary leaves
+    the Large_Art tier (1) and the drains where one joins the Large_Ven tier
+    (8). Node 2, where only the small arteriole leaves, feeds no capillary."""
+    G, nodes = _large_tier_bed()
+    terminals = [
+        nodes[name]
+        for name in ("inlet_nodes", "outlet_nodes", "arteriole_boundary_nodes", "venule_boundary_nodes")
+    ]
+    assert [G[1][2][0]["branch_order"], G[1][5][0]["branch_order"], G[8][9][0]["branch_order"]] == [
+        "Large_Art2", "B01", "Large_Ven2",
+    ]
+
+    assert capillary_start_nodes(*terminals, graph=G) == ([3, 1], [7, 8])
+    assert capillary_start_nodes(*terminals) == ([3], [7])
+    # B orders from the inlets alone count from the inlets, Large tier or not.
+    assert capillary_start_nodes([0], [10], [3], [], graph=G) == ([0], [10])
+
+
+def test_a_capillary_leaving_the_large_arteriole_feeds_a_bed_of_its_own():
+    """Regression: the statistics fed the beds from the arteriole boundary
+    nodes alone, so the capillary leaving the large arteriole at 1 -- B01 from
+    it -- had no feed; bed 3 took it from its far end, and no bed joined
+    another. Fed from 1 as well, the two beds meet on the rung, a B02."""
+    G, nodes = _large_tier_bed()
+
+    rows = _statistics_rows(G, nodes)
+
+    assert rows["Capillary Beds"] == 2
+    assert rows["Capillary Beds Joined"] == 2
+    assert rows["Capillary Bed Join Order, Kaplan-Meier Median"] == 2
+    table = _table(G)
+    assert [table[bed]["feed_node"] for bed in ("F01", "F02")] == [1, 3]
+    assert [table[bed]["joins_bed"] for bed in ("F01", "F02")] == ["F02", "F01"]
+    # Both hang from the one arterial tree, the large arteriole and its branch.
+    assert [table[bed]["join_class"] for bed in ("F01", "F02")] == ["within_tree"] * 2
+    assert G[1][5][0]["capillary_bed"] == G[5][8][0]["capillary_bed"] == "F01"
+    assert G[3][4][0]["capillary_bed"] == G[4][7][0]["capillary_bed"] == "F02"
+    assert "Capillaries No Feed Reaches" not in rows
+
+
+def test_a_capillary_draining_straight_into_the_large_vein_drains_its_bed():
+    """With no rung, bed 1 runs straight into the large vein at 8. With only
+    the venule boundary nodes as drains it would end blind there; it drains
+    to a venule, as bed 3 does through the small venule."""
+    G, nodes = _large_tier_bed(rung=False)
+
+    rows = _statistics_rows(G, nodes)
+
+    assert rows["Capillary Beds"] == 2
+    assert rows["Capillary Beds Joined"] == 0
+    assert rows["Capillary Beds Censored, Draining to a Venule"] == 2
+    assert rows["Capillary Beds Censored, Ending Blind"] == 0
+    assert _table(G)["F01"]["feed_node"] == 1
+
+
+def test_the_hand_off_is_read_with_the_bridge_into_the_large_arteriole_contracted():
+    """The capillary opens into the large arteriole through the bridge 1-11.
+    The statistics see the bridge's two ends as one node, 1 (the centreline
+    end), where a Large_Art and a B vessel meet: it feeds the bed."""
+    G, nodes = _large_tier_bed(bridge=True)
+    assert G[11][5][0]["branch_order"] == "B01"
+
+    rows = _statistics_rows(G, nodes)
+
+    assert rows["Capillary Beds"] == 2
+    assert rows["Capillary Beds Joined"] == 2
+    assert _table(G)["F01"]["feed_node"] == 1
+    assert G[11][5][0]["capillary_bed"] == "F01"
+    assert "capillary_bed" not in G[1][11][0]
+
+
+def test_without_a_large_tier_the_beds_are_the_boundary_nodes_alone():
+    """The same orders with the large vessels labelled plain Art and Ven, as
+    a run without a Large tier has them: no hand-off is read, and the beds are
+    those of the arteriole and venule boundary nodes alone, as before."""
+    G, nodes = _large_tier_bed()
+    for *_e, data in G.edges(data=True):
+        data["branch_order"] = data["branch_order"].replace("Large_", "")
+    expected = G.copy()
+    compute_capillary_bed_joins(expected, [3], drain_nodes=[7])
+
+    _statistics_rows(G, nodes)
+
+    assert G.graph[BED_TABLE] == expected.graph[BED_TABLE]
+    assert [row["feed_node"] for row in G.graph[BED_TABLE]] == [3]
+    assert {d["capillary_bed"] for *_e, d in G.edges(data=True) if "capillary_bed" in d} == {"F01"}
 
 
 def test_it_runs_as_a_statistics_measure_from_the_arteriole_boundaries():
