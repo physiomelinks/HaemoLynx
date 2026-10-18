@@ -2834,10 +2834,9 @@ def _haemodynamics_apply_config(
     diameters["do_pericyte_construction"] = False
     diameters["run_pericyte_resistance_comparison"] = False
     edt = dict(schema.section_values(settings, "EDT mask diameter estimate"))
-    if edt.get("edt_mask_path") is None:
-        # Unset means the run's own segmented input -- what the skeleton was
-        # made from.
-        edt["edt_mask_path"] = segmented_input_path(settings)
+    # The mask is the run's own segmented input -- what the skeleton was made
+    # from -- read only when the stage has none in memory (a resumed run).
+    edt["edt_mask_path"] = segmented_input_path(settings)
     measure = measures_diameters_from_raw_image(settings)
     fwhm = dict(schema.section_values(settings, "FWHM diameter measurement"))
     fwhm.update(

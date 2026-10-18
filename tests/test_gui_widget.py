@@ -1145,14 +1145,13 @@ def test_shared_ilastik_reparent_does_not_spawn_floating_windows(panel):
     assert_no_new_windows()
 
 
-def test_an_empty_edt_mask_path_says_it_means_the_segmented_input(panel):
-    """A path field is a FileEdit, whose native is a container: the hint has
-    to reach the line edit inside it, or it silently never shows."""
+def test_the_edt_diameters_have_no_mask_box_of_their_own(panel):
+    """The EDT widths read the segmented image on the Input tab; a second
+    path box for them carried other datasets' masks into runs."""
     widget, _viewer = panel
-    field = widget._haemolynx_rows()["edt_mask_path"]
-    line_edit = getattr(field, "line_edit", field)
-    assert "segmented input" in line_edit.native.placeholderText()
-    assert "ilastik" in line_edit.native.placeholderText()
+    rows = widget._haemolynx_rows()
+    assert "use_edt_diameter_crosscheck" in rows
+    assert "edt_mask_path" not in rows
 
 
 def test_thick_vessel_threshold_overrides_show_auto_placeholder_and_nest(panel):

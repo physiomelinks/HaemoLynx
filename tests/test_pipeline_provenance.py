@@ -268,14 +268,14 @@ def test_a_large_file_is_fingerprinted_from_a_fixed_number_of_blocks(tmp_path):
 def test_every_input_file_in_effect_is_fingerprinted_once(tmp_path):
     mask = tmp_path / "pericytes.tif"
     mask.write_bytes(b"pericyte mask")
-    unread = tmp_path / "edt.tif"
-    unread.write_bytes(b"read only with the EDT cross-check on")
+    unread = tmp_path / "cells.tif"
+    unread.write_bytes(b"read only with the cell-mask distances on")
     settings = _settings(
         tmp_path,
         use_pericyte_mask_constriction=True,
         pericyte_mask_path=mask,
-        edt_mask_path=unread,
-        use_edt_diameter_crosscheck=False,
+        cell_mask_path=unread,
+        measurement_3d_to_cell_mask=False,
         tissue_raw_tiff_path=tmp_path / "image.tif",  # the same file as input_path
         measure_tissue_volume=True,
     )

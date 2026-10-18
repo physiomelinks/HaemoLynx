@@ -5744,21 +5744,11 @@ SCHEMA = Schema(
             # failed on, which is a fully working diameter pipeline on its
             # own, not a degenerate one. Only run_haemodynamics is required.
             requires=("run_haemodynamics",),
-        ),
-        Setting(
-            name="edt_mask_path",
-            kind="path",
-            default=None,
-            help=(
-                "The segmented vessel mask to read widths from when the run has none in "
-                "memory (e.g. a resumed run); empty means the segmented input from the "
-                "Input tab (ilastik's output when ilastik segments it)"
-            ),
-            section=_EDT_DIAMETER,
-            requires=("use_edt_diameter_crosscheck",),
-            must_exist=True,
-            advanced=True,
-            placeholder="the segmented input: Input path, or ilastik's output",
+            # The widths are read from the run's own segmented image (the
+            # Input tab's, or ilastik's output). A mask path of its own,
+            # carried over in a config from another dataset, named a file
+            # matching nothing the graph was built on.
+            replaces={"edt_mask_path": {}},
         ),
         Setting(
             name="edt_diameter_prefer_over_table_on_fwhm_failure",

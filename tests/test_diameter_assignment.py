@@ -587,46 +587,63 @@ def test_with_ilastik_the_segmented_input_is_ilastiks_output_not_its_input(tmp_p
     assert segmented_input_path(settings) == expected
 
 
-def test_an_unset_edt_mask_path_points_at_the_segmented_input(tmp_path):
+def test_the_edt_mask_is_the_segmented_input(tmp_path):
+    """The EDT widths read the run's own segmented image -- the Input tab's,
+    or ilastik's output -- with no box of their own to point elsewhere."""
     from haemolynx.pipeline import default_schema
     from haemolynx.pipeline.stages import _haemodynamics_apply_config
 
     schema = default_schema()
-    unset = _haemodynamics_apply_config(
-        _run_settings(input_path=tmp_path / "mask.tif", edt_mask_path=None),
+    assert "edt_mask_path" not in schema.names
+    plain = _haemodynamics_apply_config(
+        _run_settings(input_path=tmp_path / "mask.tif"),
         schema, voxel_size_zyx=(1.0, 1.0, 1.0),
     )
-    assert unset.edt_setting("edt_mask_path") == tmp_path / "mask.tif"
+    assert plain.edt_setting("edt_mask_path") == tmp_path / "mask.tif"
 
-    chosen = _haemodynamics_apply_config(
-        _run_settings(input_path=tmp_path / "mask.tif", edt_mask_path=tmp_path / "other.tif"),
+    ilastik = _haemodynamics_apply_config(
+        _run_settings(
+            use_ilastik_segmentation=True,
+            input_path=tmp_path / "an_old_mask.tif",
+            raw_image_path=tmp_path / "raw" / "stack.tif",
+            ilastik_output_dir=tmp_path / "ilastik",
+            ilastik_output_suffix=".tiff",
+        ),
         schema, voxel_size_zyx=(1.0, 1.0, 1.0),
     )
-    assert chosen.edt_setting("edt_mask_path") == tmp_path / "other.tif"
+    assert ilastik.edt_setting("edt_mask_path") == tmp_path / "ilastik" / "stack_segmented.tiff"
 
 
-def test_preflight_does_not_demand_an_edt_mask_path_the_segmented_input_stands_in_for(tmp_path):
-    """Unset is the setting's ordinary use, so preflight passes it; one that
-    is set must be there."""
+def test_an_old_configs_edt_mask_path_is_dropped_for_the_segmented_input(tmp_path):
+    """A config or saved run naming another dataset's mask (the E14.5 one
+    carried into a patella run) still loads; the path is not read, not
+    checked by preflight, and the widths come from the run's own image."""
     from haemolynx.pipeline import default_schema
     from haemolynx.pipeline.checks import preflight
+    from haemolynx.pipeline.stages import _haemodynamics_apply_config
 
     schema = default_schema()
-    settings = schema.defaults()
-    settings.update(use_edt_diameter_crosscheck=True, edt_mask_path=None)
-    report = preflight(settings, schema)
-    assert not [error for error in report.errors if "edt_mask_path" in error]
-    assert ("edt_mask_path", "not set: uses " + schema["edt_mask_path"].placeholder) in report.passed
-
-    settings["edt_mask_path"] = tmp_path / "gone.tif"
-    errors = [error for error in preflight(settings, schema).errors if "edt_mask_path" in error]
-    assert len(errors) == 1 and "gone.tif" in errors[0]
+    image = tmp_path / "patella_mask.tif"
+    image.write_bytes(b"")
+    settings = schema.validate(
+        {
+            "input_path": image,
+            "diameter_by_branch_order": dict(DIAMETERS),
+            "run_haemodynamics": True,
+            "use_edt_diameter_crosscheck": True,
+            "edt_mask_path": tmp_path / "e14p5_mask.tif",  # not there
+        }
+    )
+    assert "edt_mask_path" not in settings
+    assert not [error for error in preflight(settings, schema).errors if "e14p5" in error]
+    config = _haemodynamics_apply_config(settings, schema, voxel_size_zyx=(1.0, 1.0, 1.0))
+    assert config.edt_setting("edt_mask_path") == image
 
 
 def test_without_a_mask_in_memory_both_measurements_read_the_one_from_the_path(monkeypatch):
     """A resumed run has no segmentation in memory: it is read once from
-    edt_mask_path (the segmented input unless set) and binarised, for the EDT
-    widths and for FWHM's neighbouring-vessel stops alike."""
+    edt_mask_path (the segmented input) and binarised, for the EDT widths
+    and for FWHM's neighbouring-vessel stops alike."""
     seen: dict[str, np.ndarray] = {}
     labels = np.full((4, 4, 4), 2, dtype=np.uint8)
     labels[1:3, 1:3, :] = 1

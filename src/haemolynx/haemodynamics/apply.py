@@ -566,7 +566,8 @@ def _measure_endothelial_diameters(
 
 def load_edt_mask_volume(config: HaemodynamicsApplyConfig) -> np.ndarray | None:
     """The binary mask EDT diameter measurement samples from
-    ``edt_mask_path``, or ``None`` when no path is configured.
+    ``edt_mask_path`` -- the pipeline sets it to the run's segmented input --
+    or ``None`` when there is none.
 
     Only consulted when the caller has no in-memory segmentation volume to
     pass directly (the common case does -- ``assign_diameters`` already
@@ -734,8 +735,8 @@ def assign_edge_diameters(
     )
     if mask_volume is None and wants_mask:
         # No segmentation in memory (e.g. a resumed run): read it from
-        # edt_mask_path -- the run's own segmented input unless set -- once,
-        # for both the EDT widths and FWHM's neighbouring-vessel stops.
+        # edt_mask_path -- the run's own segmented input -- once, for both
+        # the EDT widths and FWHM's neighbouring-vessel stops.
         mask_volume = loaded_mask = _cropped_like_graph(
             load_edt_mask_volume(config), G, config, "EDT mask"
         )
@@ -842,7 +843,7 @@ def _assign_edge_diameters_with_mask(
         else:
             summary["edt"] = {
                 "skipped": True,
-                "reason": "no in-memory segmentation volume and no edt_mask_path configured",
+                "reason": "no in-memory segmentation volume and no segmented image path",
             }
 
     use_raw_section_fallback = bool(

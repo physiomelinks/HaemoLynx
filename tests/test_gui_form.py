@@ -706,12 +706,11 @@ def test_visible_diameter_settings_nests_under_all_diams_const_and_fwhm():
     assert "fwhm_baseline_constraint_half_width_ptp" in shown
 
 
-# These three work as a real, standalone diameter source with FWHM off
+# These work as a real, standalone diameter source with FWHM off
 # entirely (stamp_edge_diameters falls back to the EDT estimate for every
 # edge, not just ones FWHM measured and failed on) -- only
 # use_edt_diameter_crosscheck itself gates them.
 _EDT_CHILDREN = (
-    "edt_mask_path",
     "edt_diameter_prefer_over_table_on_fwhm_failure",
     "edt_junction_proximity_exclusion_um",
 )

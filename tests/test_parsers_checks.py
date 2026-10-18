@@ -140,16 +140,14 @@ def test_a_config_file_says_an_optional_path_must_exist_only_if_set():
 def test_every_optional_must_exist_path_in_the_pipeline_falls_back_when_unset():
     """A placeholder on a must_exist path turns its unset check off, so each
     one is listed here with what it falls back to, checked in the run:
-    edt_mask_path to the segmented input (stages._haemodynamics_apply_config,
-    tests/test_diameter_assignment.py), tissue_raw_tiff_path to the raw image
-    (pipeline.checks.tissue_raw_image, tests/test_tissue_volume.py),
-    measurement_3d_vessel_mask_path to the run's segmentation
-    (stages.export_results, tests/test_three_dim_distances.py). A new one has
-    to be added here, its fallback checked."""
+    tissue_raw_tiff_path to the raw image (pipeline.checks.tissue_raw_image,
+    tests/test_tissue_volume.py), measurement_3d_vessel_mask_path to the run's
+    segmentation (stages.export_results, tests/test_three_dim_distances.py).
+    A new one has to be added here, its fallback checked."""
     from haemolynx.pipeline import default_schema
 
     optional = {s.name for s in default_schema() if s.must_exist and s.optional_path}
-    assert optional == {"edt_mask_path", "tissue_raw_tiff_path", "measurement_3d_vessel_mask_path"}
+    assert optional == {"tissue_raw_tiff_path", "measurement_3d_vessel_mask_path"}
 
 
 def test_named_settings_can_be_skipped(tmp_path):

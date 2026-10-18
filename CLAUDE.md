@@ -987,8 +987,10 @@ are only caught locally.
   `placeholder`, which `parsers.check_settings` reads as unset falls back, set must be there
   (`Setting.optional_path`; `must_exist` alone made preflight demand it on every run measuring
   to the segmentation, and without it the panel opened a save dialogue for it). The same
-  rule covers `tissue_raw_tiff_path` and `edt_mask_path`. `measurement_3d_reference_image_path` (it only checked a shape)
-  is retired. Objects are read from their bounding boxes in both paths (in RAM, a whole-volume
+  rule covers `tissue_raw_tiff_path`. `measurement_3d_reference_image_path` (it only checked a shape)
+  is retired, and so is `edt_mask_path` (2026-10-18): the EDT widths read the run's segmented
+  input (`stages.segmented_input_path`), since a box of their own carried another dataset's mask
+  into runs. Objects are read from their bounding boxes in both paths (in RAM, a whole-volume
   `labels == id` per object took 16.5 s for 397 cells on 4 M voxels; now 0.6 s).
 - **`statistics/tissue_volume.py`** — `measure_tissue_volume` (`measure_tissue_volume` on the
   Additional measurements tab, off by default): the tissue in the raw image (`tissue_raw_tiff_path`,
