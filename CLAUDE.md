@@ -1000,9 +1000,11 @@ are only caught locally.
   remain. Under the low-RAM option (2026-10-18) no step makes a distance map or label volume of
   the stack (`blockwise_edt.py`, `slab_labels.py`) and the skeleton and region are bit for bit
   the in-RAM ones (synthetic networks, trunks wider than 16 voxels, anisotropic, cut by the faces,
-  30k-voxel blocks); on a 300 M-voxel synthetic stack it took 223 s at 7.3 GB peak against the old
-  low-RAM path's >83 min (stopped). The peak is the centreline tree's Dijkstra graph, ~1.1 KB a
-  voxel of the largest fat component, still built whole. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
+  30k-voxel blocks); on a 300 M-voxel synthetic stack (2.7% foreground) it took 211 s at 3.9 GB
+  private, 2.6 GB above the process's start, against the old low-RAM path's >83 min (stopped). The
+  thick region and the skeleton are still a byte a voxel each in RAM, and the centreline tree's
+  Dijkstra graph (built straight into CSR) is ~360 B a voxel of the largest fat component, built
+  whole; the join's last resort, ~400 B a voxel of the connected structure it walks. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
   wall; 39 s on E14.5) is kept beside the saved skeleton, one bit a voxel
   (`preprocessing/thick_vessel_region_cache.py`, `stages.thick_vessel_region_cache`), keyed on a
   digest of the mask's voxels and the settings that decide it, so nothing else can go stale: a
