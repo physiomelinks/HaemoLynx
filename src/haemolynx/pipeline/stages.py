@@ -359,6 +359,11 @@ class PipelineResume:
     #: this run's own build_network loaded -- see _boundaries_from_resume.
     large_arteriole_mask: Any | None = None
     large_venule_mask: Any | None = None
+    #: The small masks the Boundaries stage's arteriole/venule labelling read
+    #: (after its overlap cleanup, redefinition and bridging), when resuming
+    #: past it: Post processing judges an edited vessel against them.
+    small_arteriole_mask: Any | None = None
+    small_venule_mask: Any | None = None
     #: Thickness-gated skeletonisation's thick-vessel region, for a run whose
     #: *volume* does not carry it (loaded rather than skeletonised): where the
     #: post_process stage splits an edited vessel into a bridge.
@@ -2427,6 +2432,10 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             "Large_Ven boundary node(s) (min_overlap_fraction="
             f"{float(settings['large_vessel_mask_min_overlap_fraction']):.3f})."
         )
+    if not small_in_use:
+        # Boundary nodes chosen by hand, or none: small-mask tags a resumed
+        # graph keeps from an earlier run must not be read as this run's.
+        graph.tag_small_mask_vessel_types(G)
     if small_in_use:
         if small_arteriole_mask is None or small_venule_mask is None:
             raise ValueError(
@@ -2594,6 +2603,13 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             inferred_boundary_results["arteriole_boundary_nodes"]
         )
         settings["venule_boundary_nodes"][:] = list(inferred_boundary_results["venule_boundary_nodes"])
+        # The labelling the boundary nodes were read from, kept on the
+        # vessels: Post processing judges a hand-edited vessel beside it.
+        graph.tag_small_mask_vessel_types(
+            G,
+            inferred_boundary_results["arteriole_edges"],
+            inferred_boundary_results["venule_edges"],
+        )
         logger.info(
             "Small-vessel mask boundary assignment selected "
             f"{len(settings['arteriole_boundary_nodes'])} arteriole boundary nodes and "
@@ -2606,53 +2622,40 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
             f"venule_edges={inferred_boundary_results['venule_edge_count']}, "
             f"overlap_edges={inferred_boundary_results['overlap_edge_count']}."
         )
-        fallback_enabled = bool(settings["small_vessel_boundary_fallback_to_hop_distance"])
-        fallback_hops = int(settings["small_vessel_boundary_fallback_hop_distance"])
-        if fallback_enabled and fallback_hops < 1:
-            raise ValueError(
-                "small_vessel_boundary_fallback_hop_distance must be >= 1 when "
-                "small_vessel_boundary_fallback_to_hop_distance=True."
-            )
-        exclude_io_nodes = set(settings["inlet_nodes"]) | set(settings["outlet_nodes"])
-        # An inlet's own vessel is covered by the small mask of its class or,
-        # with the large vessels kept in the network, by the large one: the
-        # inlet then sits on the large arteriole, which the small arteriole
-        # mask never covers, and every inlet read as uncovered.
-        large_kept = (
-            large_vessel_tier
-            and large_arteriole_mask is not None
-            and large_venule_mask is not None
+        fallback = _small_vessel_boundary_fallback(
+            settings,
+            G,
+            small_masks=(assignment_small_arteriole_mask, assignment_small_venule_mask),
+            # An inlet's own vessel is covered by the small mask of its class
+            # or, with the large vessels kept in the network, by the large
+            # one: the inlet then sits on the large arteriole, which the small
+            # arteriole mask never covers, and every inlet read as uncovered.
+            large_masks=(
+                (large_arteriole_mask, large_venule_mask)
+                if large_vessel_tier
+                and large_arteriole_mask is not None
+                and large_venule_mask is not None
+                else None
+            ),
+            voxel_size_zyx=voxel_size_zyx,
         )
-        for role, seed_key, small_mask, large_mask, boundary_key in (
-            ("arteriole", "inlet_nodes", assignment_small_arteriole_mask,
-             large_arteriole_mask, "arteriole_boundary_nodes"),
-            ("venule", "outlet_nodes", assignment_small_venule_mask,
-             large_venule_mask, "venule_boundary_nodes"),
+        fallback_hops = int(settings["small_vessel_boundary_fallback_hop_distance"])
+        for role, seed_key, boundary_key in (
+            ("arteriole", "inlet_nodes", "arteriole_boundary_nodes"),
+            ("venule", "outlet_nodes", "venule_boundary_nodes"),
         ):
-            coverage_mask = small_mask
-            if large_kept:
-                coverage_mask = small_mask | np.asarray(large_mask, dtype=bool)
-            seeds = list(settings[seed_key])
-            uncovered = graph.seed_nodes_without_mask_coverage(
-                G, seeds, coverage_mask, voxel_size_zyx=voxel_size_zyx
-            )
+            uncovered, hop_nodes = fallback[boundary_key]
             if not uncovered:
                 continue
             logger.warning(
-                f"{len(uncovered)} of {len(seeds)} {seed_key[:-6]} node(s) have no edge "
-                f"in the small-{role} mask: {uncovered}."
+                f"{len(uncovered)} of {len(settings[seed_key])} {seed_key[:-6]} node(s) "
+                f"have no edge in the small-{role} mask: {uncovered}."
             )
-            if not fallback_enabled:
+            if not settings["small_vessel_boundary_fallback_to_hop_distance"]:
                 continue
             # Only those seeds, and added to what the masks found: the whole
             # list used to be replaced by every inlet's hop neighbours.
-            added = [
-                node_id
-                for node_id in graph.select_nodes_at_hop_distance(
-                    G, uncovered, fallback_hops, exclude_nodes=exclude_io_nodes
-                )
-                if node_id not in settings[boundary_key]
-            ]
+            added = [node_id for node_id in hop_nodes if node_id not in settings[boundary_key]]
             settings[boundary_key].extend(added)
             logger.warning(
                 f"Hop-distance fallback: added {len(added)} {role} boundary node(s) "
@@ -2994,6 +2997,174 @@ def _tag_edited_vessels_in_large_masks(
         counts["venule_edge_count"],
         counts["gap_filled_edge_count"],
     )
+
+
+def _small_vessel_boundary_fallback(
+    settings: Mapping[str, Any],
+    G: nx.MultiGraph,
+    *,
+    small_masks: tuple[np.ndarray, np.ndarray],
+    large_masks: tuple[np.ndarray, np.ndarray] | None,
+    voxel_size_zyx,
+) -> dict[str, tuple[list, list]]:
+    """``small_vessel_boundary_fallback_to_hop_distance``, for the arteriole
+    and the venule boundary list: ``(uncovered, hop_nodes)`` -- the inlets
+    (outlets) none of whose vessels lies in the small mask of their class or,
+    given *large_masks* (the large vessels kept in the network), in the large
+    one, and the nodes ``small_vessel_boundary_fallback_hop_distance``
+    vessels from those that the fallback makes boundary nodes (none with it
+    off), inlets and outlets left out. The Boundaries stage adds them to the
+    masks' boundary nodes; Post processing judges an edited place by it."""
+    enabled = bool(settings["small_vessel_boundary_fallback_to_hop_distance"])
+    hops = int(settings["small_vessel_boundary_fallback_hop_distance"])
+    if enabled and hops < 1:
+        raise ValueError(
+            "small_vessel_boundary_fallback_hop_distance must be >= 1 when "
+            "small_vessel_boundary_fallback_to_hop_distance=True."
+        )
+    exclude_io_nodes = set(settings["inlet_nodes"]) | set(settings["outlet_nodes"])
+    fallback: dict[str, tuple[list, list]] = {}
+    for index, (seed_key, boundary_key) in enumerate(
+        (("inlet_nodes", "arteriole_boundary_nodes"), ("outlet_nodes", "venule_boundary_nodes"))
+    ):
+        coverage_mask = small_masks[index]
+        if large_masks is not None:
+            coverage_mask = coverage_mask | np.asarray(large_masks[index], dtype=bool)
+        uncovered = graph.seed_nodes_without_mask_coverage(
+            G, list(settings[seed_key]), coverage_mask, voxel_size_zyx=voxel_size_zyx
+        )
+        hop_nodes = (
+            graph.select_nodes_at_hop_distance(G, uncovered, hops, exclude_nodes=exclude_io_nodes)
+            if enabled and uncovered
+            else []
+        )
+        fallback[boundary_key] = (uncovered, hop_nodes)
+    return fallback
+
+
+def _set_boundary_list(
+    settings: dict, boundaries: BoundaryNodes, name: str, nodes: list
+) -> None:
+    """Make the boundary list *name* hold *nodes*, on *boundaries* and in
+    *settings* both -- in place, as :func:`_trim_boundary_lists` keeps them,
+    since a fresh run hands the settings' own lists over and a resumed one
+    copies -- so the branch orders assigned next read it."""
+    listed = getattr(boundaries, name)
+    listed[:] = nodes
+    in_settings = settings.get(name)
+    if not isinstance(in_settings, list):
+        settings[name] = list(nodes)
+    elif in_settings is not listed:
+        in_settings[:] = nodes
+
+
+def _reassign_small_vessel_boundaries(
+    settings: dict,
+    G: nx.MultiGraph,
+    boundaries: BoundaryNodes,
+    edited: list,
+    touched: list,
+    voxel_size_zyx,
+) -> None:
+    """Add or drop arteriole/venule boundary nodes at the *touched* nodes --
+    the ends of the *edited* vessels and the nodes a deletion took a vessel
+    from -- as the Boundaries stage chose them from the small masks: each
+    edited vessel is tagged with the small mask it lies in
+    (``graph.SMALL_MASK_VESSEL_TYPE``: ``small_vessel_mask_min_overlap_fraction``,
+    the dilation steps, the gap fill), judged beside the other vessels'
+    tags, which stay; a touched node is then a boundary node by the tags'
+    rule (:func:`graph.boundary_nodes_from_small_mask_tags`) or, with
+    ``small_vessel_boundary_fallback_to_hop_distance``, when it is the
+    fallback's hop distance from an inlet (outlet) the masks miss -- the
+    fallback is placed on the network, so a vessel drawn from such an inlet
+    gets its boundary node as the Boundaries stage would give it one. Every
+    other boundary node stays as it is, and a list is never emptied: that
+    would end the hierarchical branch orders. Without the masks the labelling
+    read, or tags from the Boundaries stage, the lists stay as they are."""
+    if boundaries.small_arteriole_mask is None or boundaries.small_venule_mask is None:
+        logger.warning(
+            "Post processing: no small vessel masks to read, so the arteriole and "
+            "venule boundary nodes stay as the Boundaries stage left them; run again "
+            "from Boundaries to place them on the edited network."
+        )
+        return
+    edited_set = set(edited)
+    if not any(
+        data.get(graph.SMALL_MASK_VESSEL_TYPE)
+        for u, v, key, data in G.edges(keys=True, data=True)
+        if (u, v, key) not in edited_set
+    ):
+        logger.warning(
+            "Post processing: no vessel carries the small-mask tag the Boundaries stage "
+            "writes (a run from before it did), so the arteriole and venule boundary "
+            "nodes stay as they were; run again from Boundaries to place them on the "
+            "edited network."
+        )
+        return
+    small_masks = (
+        np.asarray(boundaries.small_arteriole_mask, dtype=bool),
+        np.asarray(boundaries.small_venule_mask, dtype=bool),
+    )
+    counts = graph.tag_edges_in_small_vessel_masks(
+        G,
+        *small_masks,
+        edited,
+        voxel_size_zyx=voxel_size_zyx,
+        minimum_overlap_fraction=float(settings["small_vessel_mask_min_overlap_fraction"]),
+        max_dilation_microns=float(settings["small_vessel_mask_dilation_microns"]),
+    )
+    logger.info(
+        "Post processing: %d of %d edited vessel(s) lie in the small arteriole mask and "
+        "%d in the small venule mask (%d under-covered between two of one type took it).",
+        counts["arteriole_edge_count"],
+        len(edited),
+        counts["venule_edge_count"],
+        counts["gap_filled_edge_count"],
+    )
+    fallback_nodes: dict[str, list] = {"arteriole_boundary_nodes": [], "venule_boundary_nodes": []}
+    if settings["small_vessel_boundary_fallback_to_hop_distance"]:
+        large_masks = None
+        if (
+            graph.assigns_large_vessel_branch_orders(settings)
+            and boundaries.large_arteriole_mask is not None
+            and boundaries.large_venule_mask is not None
+        ):
+            from haemolynx.graph.cut_at_large_vessel_volumes import _as_large_vessel_foreground
+
+            large_masks = (
+                _as_large_vessel_foreground(boundaries.large_arteriole_mask, role="arteriole"),
+                _as_large_vessel_foreground(boundaries.large_venule_mask, role="venule"),
+            )
+        fallback = _small_vessel_boundary_fallback(
+            settings, G, small_masks=small_masks, large_masks=large_masks,
+            voxel_size_zyx=voxel_size_zyx,
+        )
+        fallback_nodes = {name: hop_nodes for name, (_seeds, hop_nodes) in fallback.items()}
+    found = graph.boundary_nodes_from_small_mask_tags(G, touched)
+    touched_set = set(touched)
+    for role, name in (("arteriole", "arteriole_boundary_nodes"), ("venule", "venule_boundary_nodes")):
+        current = list(getattr(boundaries, name))
+        wanted = set(found[role]) | (set(fallback_nodes[name]) & touched_set)
+        kept = [node for node in current if node not in touched_set or node in wanted]
+        added = [node for node in touched if node in wanted and node not in current]
+        if current and not kept and not added:
+            logger.warning(
+                "Post processing: the edits leave no %s boundary node, so the %d the "
+                "network had are kept; without one the branch orders would no longer "
+                "be hierarchical.",
+                role,
+                len(current),
+            )
+            continue
+        if len(kept) == len(current) and not added:
+            continue
+        _set_boundary_list(settings, boundaries, name, kept + added)
+        logger.info(
+            "Post processing: %s boundary node(s) added at %s, dropped at %s.",
+            role,
+            added,
+            [node for node in current if node not in kept],
+        )
 
 
 def _assign_branch_orders(
@@ -3362,8 +3533,11 @@ def post_process(
        (:func:`_bridge_edited_vessels`);
     3. each edited vessel's ``length`` is measured along its path;
     4. each edited vessel is tagged with the vessel mask it lies in, as
-       Boundaries tagged every vessel -- a global mask's size class, or the
-       large mask the Large_Art/Large_Ven tier reads -- and branch orders are
+       Boundaries tagged every vessel -- a global mask's size class, the
+       large mask the Large_Art/Large_Ven tier reads, or the small mask the
+       arteriole/venule boundary nodes come from, which are then added or
+       dropped where the edits changed the network
+       (:func:`_reassign_small_vessel_boundaries`) -- and branch orders are
        assigned again over the whole network, as Diameters does (an edit
        changes the orders downstream of it);
     5. with haemodynamics on, each edited vessel is measured afresh with the
@@ -3373,10 +3547,10 @@ def post_process(
        branch-order table does not.
 
     Then the marks are cleared, and ``model.results["post_process"]`` says
-    what was done (``edited_vessels``, and the ``diameters`` sources when
-    measured). A network nobody edited passes through untouched -- no
-    ``"post_process"`` entry -- so a run without the panel does what it did
-    before this stage.
+    what was done (``edited_vessels``, the ``boundary_nodes`` lists as they
+    now are, and the ``diameters`` sources when measured). A network nobody
+    edited passes through untouched -- no ``"post_process"`` entry -- so a
+    run without the panel does what it did before this stage.
 
     *thick_vessel_mask* is the thick-vessel region, for a run whose
     *network* volume does not carry one (see :class:`PipelineResume`).
@@ -3427,6 +3601,18 @@ def post_process(
         )
     if edited and graph.assigns_large_vessel_branch_orders(settings):
         _tag_edited_vessels_in_large_masks(settings, G, boundaries, edited, voxel_size_zyx)
+    touched = graph.touched_nodes(G)
+    if (
+        touched
+        and graph.vessel_masks_in_use(settings, "small")
+        and not io.vessel_masks_are_global(settings)
+    ):
+        _reassign_small_vessel_boundaries(settings, G, boundaries, edited, touched, voxel_size_zyx)
+    # What the lists now hold, for the panel's checkpoints to hand a later
+    # regenerate: they keep the Boundaries stage's own otherwise.
+    summary["boundary_nodes"] = {
+        name: list(getattr(boundaries, name)) for name in _BOUNDARY_NODE_LISTS
+    }
     if settings["inlet_nodes"]:
         _assign_branch_orders(settings, G)
         # Even with no vessel to measure (only deletions): a table or class
@@ -5761,6 +5947,10 @@ def _boundaries_from_resume(
         graph=graph,
         large_arteriole_mask=large_arteriole_mask,
         large_venule_mask=large_venule_mask,
+        # Only the resumed run's: the network's own are the masks as loaded,
+        # not what the labelling read.
+        small_arteriole_mask=resume.small_arteriole_mask,
+        small_venule_mask=resume.small_venule_mask,
     )
 
 

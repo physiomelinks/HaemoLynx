@@ -11,7 +11,9 @@ bring in line with the rest of the network (its length, branch order,
 diameter and thick-vessel bridge): each vessel it created or rewrote carries
 :data:`EDITED`, and the graph carries :data:`PENDING` -- set by a deletion
 too, which changes branch orders downstream of it without leaving a vessel
-to mark. :func:`has_pending_edits` asks; the stage clears both.
+to mark; the nodes a deletion took a vessel from are kept as
+:data:`TOUCHED`. :func:`has_pending_edits` asks, :func:`touched_nodes` says
+where the network changed; the stage clears all three.
 
 Three things a user can do at a junction of degree four or more:
 
@@ -70,6 +72,7 @@ __all__ = [
     "PENDING",
     "SPLIT_SNAP_UM",
     "ShortLoop",
+    "TOUCHED",
     "TracedVessel",
     "VesselEnd",
     "add_traced_vessel",
@@ -92,6 +95,7 @@ __all__ = [
     "split_high_degree_junctions",
     "split_junction",
     "split_vessel_at",
+    "touched_nodes",
     "trace_path",
     "vessel_path",
     "vessel_path_between",
@@ -105,6 +109,11 @@ EdgeKey = tuple[Any, Any, Any]
 EDITED = "post_processing_edited"
 #: Graph attribute: the network was edited here since it was last regenerated.
 PENDING = "post_processing_pending"
+#: Graph attribute: the nodes an edit took a vessel from since the last
+#: regenerate -- a deletion leaves no vessel to mark :data:`EDITED` there --
+#: so the ``post_process`` stage can judge again what each of them is (an
+#: arteriole's end, say, once the capillary leaving it is deleted).
+TOUCHED = "post_processing_touched_nodes"
 #: Graph attribute: edits made here were brought into this network (set by the
 #: ``post_process`` stage, and kept) -- work a rerun from an earlier stage drops.
 APPLIED = "post_processing_applied"
@@ -159,16 +168,32 @@ def edge_keys(G: nx.MultiGraph) -> list[EdgeKey]:
     return [(u, v, k) for u, v, k in G.edges(keys=True)]
 
 
-def mark_edited(G: nx.MultiGraph, edges: Iterable[EdgeKey] = ()) -> None:
-    """Mark *edges* :data:`EDITED` and *G* :data:`PENDING` (with no edges: *G* only)."""
+def mark_edited(
+    G: nx.MultiGraph, edges: Iterable[EdgeKey] = (), *, nodes: Iterable[Any] = ()
+) -> None:
+    """Mark *edges* :data:`EDITED` and *G* :data:`PENDING` (with no edges: *G*
+    only), and add *nodes* -- ones an edit took a vessel from -- to *G*'s
+    :data:`TOUCHED`."""
     for u, v, k in edges:
         G.edges[u, v, k][EDITED] = True
     G.graph[PENDING] = True
+    nodes = list(nodes)
+    if nodes:
+        # A new list, never the old one changed: a copy of G shares it.
+        G.graph[TOUCHED] = list(dict.fromkeys([*G.graph.get(TOUCHED, ()), *nodes]))
 
 
 def edited_edges(G: nx.MultiGraph) -> list[EdgeKey]:
     """The vessels an edit created or rewrote since the last regenerate."""
     return [(u, v, k) for u, v, k, data in G.edges(keys=True, data=True) if data.get(EDITED)]
+
+
+def touched_nodes(G: nx.MultiGraph) -> list[Any]:
+    """The nodes the edits since the last regenerate changed: both ends of
+    every vessel an edit created or rewrote, and every node an edit took a
+    vessel from (:data:`TOUCHED`) that is still in *G*."""
+    ends = [node for u, v, _k in edited_edges(G) for node in (u, v)]
+    return [node for node in dict.fromkeys([*ends, *G.graph.get(TOUCHED, ())]) if node in G]
 
 
 def has_pending_edits(G: nx.MultiGraph | None) -> bool:
@@ -183,6 +208,7 @@ def clear_edit_marks(G: nx.MultiGraph) -> None:
     for _u, _v, _k, data in G.edges(keys=True, data=True):
         data.pop(EDITED, None)
     G.graph.pop(PENDING, None)
+    G.graph.pop(TOUCHED, None)
 
 
 def _is_bridge(data: Mapping[str, Any]) -> bool:
@@ -312,7 +338,7 @@ def delete_vessels(
         key = G.add_edge(n1, n2, **merged)
         mark_edited(G, [(n1, n2, key)])
         changed.update({node, n1, n2})
-    mark_edited(G)
+    mark_edited(G, nodes=[node for node in dict.fromkeys([*loss, *changed]) if G.has_node(node)])
     return changed
 
 
@@ -617,7 +643,7 @@ def merge_junctions(
                 moved.append((keep, target, G.add_edge(keep, target, **attrs)))
     G.nodes[keep]["pos"] = np.asarray(position, dtype=float)
     G.remove_node(gone)
-    mark_edited(G, [e for e in moved if G.has_edge(*e)])
+    mark_edited(G, [e for e in moved if G.has_edge(*e)], nodes=[keep])
     return keep
 
 
@@ -1174,5 +1200,5 @@ def prune_disconnected_branches(
     stats["removed_vessels"] = G.number_of_edges() - pruned.number_of_edges()
     stats["removed_boundary_nodes"] = [n for n in boundary if n in G and n not in pruned]
     if stats["removed_vessels"] or G.graph.get(PENDING):
-        mark_edited(pruned)
+        mark_edited(pruned, nodes=[node for node in pruned if pruned.degree(node) < G.degree(node)])
     return pruned, stats

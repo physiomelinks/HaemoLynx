@@ -65,6 +65,32 @@ _UNKNOWN_CLASS_BY_MASK = {"large": UNKNOWN_LARGE_VESSEL, "small": UNKNOWN_SMALL_
 #: tier; read by :func:`assign_hierarchical_branch_orders`.
 LARGE_MASK_VESSEL_TYPE = "large_mask_vessel_type"
 
+#: Edge attribute naming the small-vessel mask a vessel lies in,
+#: ``"arteriole"`` or ``"venule"`` (absent: neither, or the run's boundary
+#: nodes did not come from the small masks). Written by
+#: :func:`tag_small_mask_vessel_types` from the labelling the Boundaries
+#: stage reads its arteriole/venule boundary nodes from, so the Post
+#: processing stage can judge a hand-edited vessel beside the others.
+SMALL_MASK_VESSEL_TYPE = "small_mask_vessel_type"
+
+
+def _tag_mask_vessel_types(
+    G: nx.MultiGraph,
+    attribute: str,
+    arteriole_edges: Iterable[tuple[Any, Any, Any]],
+    venule_edges: Iterable[tuple[Any, Any, Any]],
+) -> None:
+    arteriole = {edge_id(*edge) for edge in arteriole_edges}
+    venule = {edge_id(*edge) for edge in venule_edges}
+    for u, v, key, data in G.edges(keys=True, data=True):
+        identifier = edge_id(u, v, key)
+        if identifier in arteriole:
+            data[attribute] = "arteriole"
+        elif identifier in venule:
+            data[attribute] = "venule"
+        else:
+            data.pop(attribute, None)
+
 
 def tag_large_mask_vessel_types(
     G: nx.MultiGraph,
@@ -75,16 +101,19 @@ def tag_large_mask_vessel_types(
     :data:`LARGE_MASK_VESSEL_TYPE`, and clear the tag from every other edge.
     An edge in both lists is the arteriole's, as the masks' labelling decides
     a tie."""
-    arteriole = {edge_id(*edge) for edge in arteriole_edges}
-    venule = {edge_id(*edge) for edge in venule_edges}
-    for u, v, key, data in G.edges(keys=True, data=True):
-        identifier = edge_id(u, v, key)
-        if identifier in arteriole:
-            data[LARGE_MASK_VESSEL_TYPE] = "arteriole"
-        elif identifier in venule:
-            data[LARGE_MASK_VESSEL_TYPE] = "venule"
-        else:
-            data.pop(LARGE_MASK_VESSEL_TYPE, None)
+    _tag_mask_vessel_types(G, LARGE_MASK_VESSEL_TYPE, arteriole_edges, venule_edges)
+
+
+def tag_small_mask_vessel_types(
+    G: nx.MultiGraph,
+    arteriole_edges: Iterable[tuple[Any, Any, Any]] = (),
+    venule_edges: Iterable[tuple[Any, Any, Any]] = (),
+) -> None:
+    """Tag each ``(u, v, key)`` edge with the small mask it lies in, as
+    :data:`SMALL_MASK_VESSEL_TYPE`, and clear the tag from every other edge
+    (from all of them, given no edges: a run whose boundary nodes did not
+    come from the small masks). An edge in both lists is the arteriole's."""
+    _tag_mask_vessel_types(G, SMALL_MASK_VESSEL_TYPE, arteriole_edges, venule_edges)
 
 
 _TIER_LABEL = re.compile(r"^(.*?)(\d+)\s*$")
