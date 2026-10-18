@@ -1997,6 +1997,37 @@ def test_the_low_ram_skeleton_of_a_fat_and_thin_network_is_the_in_ram_one(tmp_pa
     assert np.array_equal(low_ram, plain)
 
 
+@pytest.mark.parametrize("case", ["anisotropic", "restricted"])
+def test_the_low_ram_catchment_in_worker_processes_is_the_one_in_this_process(
+    tmp_path, monkeypatch, case
+):
+    """The radius gates, the wall and the flake filter, their blocks
+    transformed in two worker processes reading the stack from disk: the same
+    region and skeleton as in RAM, with every pass planned for workers."""
+    import os
+
+    from haemolynx.preprocessing import blockwise_edt, memmap_support
+
+    mask, kwargs = _network_case(case)
+    plain, plain_thick = skeletonize_thickness_gated(mask, **kwargs)
+
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 30_000)
+    monkeypatch.setattr(blockwise_edt, "PARALLEL_MIN_VOXELS", 0)
+    monkeypatch.setattr(os, "cpu_count", lambda: 3)
+    plans = []
+    real_plan = blockwise_edt.parallel_plan
+    monkeypatch.setattr(
+        blockwise_edt, "parallel_plan", lambda *a, **k: plans.append(real_plan(*a, **k)) or plans[-1]
+    )
+    low_ram, low_ram_thick = skeletonize_thickness_gated(
+        mask, use_memmap=True, memmap_directory=tmp_path, **kwargs
+    )
+
+    assert plans and all(workers == 2 for _block, workers in plans), plans
+    assert np.array_equal(low_ram_thick, plain_thick)
+    assert np.array_equal(low_ram, plain)
+
+
 @pytest.mark.parametrize("use_memmap", [False, True])
 @pytest.mark.parametrize("case", ["anisotropic", "short_arms"])
 def test_the_gated_join_skips_an_arm_length_filter_that_would_keep_every_arm(

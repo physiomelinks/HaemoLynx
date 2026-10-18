@@ -287,16 +287,16 @@ def fill_binary_holes(
     Windows tries int16 first (half the commit); Linux keeps the int32 path
     that was timed there. Both return the same mask.
 
-    *use_memmap*, when True, writes the labelled background, the inverted
-    mask fed to it, and this function's own returned mask to disk-backed
-    buffers instead of fresh in-RAM ones -- this runs unconditionally on
-    every load (see :func:`haemolynx.io.load._skeletonize_loaded_volume`), so
-    it is the one full-volume, wider-than-boolean allocation a low-memory
-    run cannot just disable. The inversion and the final combine are done
-    one slice (axis 0) at a time via :func:`_combine_per_slice` rather than
-    as a single ``~mask`` / ``mask | ...`` expression over the whole volume
-    -- either one would otherwise allocate a fresh full-size plain array no
-    matter how *mask* itself is backed. *memmap_directory* is forwarded to
+    *use_memmap*, when True, returns a disk-backed mask, and a volume's
+    background is labelled a slab of planes at a time
+    (:func:`_fill_binary_holes_by_slab`) rather than into a label volume --
+    this runs unconditionally on every load (see
+    :func:`haemolynx.io.load._skeletonize_loaded_volume`). Any other shape
+    labels the inverted mask on disk, inverted and combined one slice (axis
+    0) at a time via :func:`_combine_per_slice` rather than as a single
+    ``~mask`` / ``mask | ...`` expression over the whole volume -- either
+    one would otherwise allocate a fresh full-size plain array no matter how
+    *mask* itself is backed. *memmap_directory* is forwarded to
     :func:`haemolynx.preprocessing.new_memmap_array`; both are ignored when
     *use_memmap* is False.
 
@@ -307,6 +307,8 @@ def fill_binary_holes(
     slice) still releases its backing file rather than leaking it.
     """
     mask = np.asanyarray(mask, dtype=bool)
+    if use_memmap and mask.ndim == 3:
+        return _fill_binary_holes_by_slab(mask, memmap_directory=memmap_directory)
     if use_memmap:
         with temporary_memmap_array(mask.shape, bool, directory=memmap_directory) as inverted:
             _combine_per_slice(inverted, lambda m: ~m, mask)
@@ -337,6 +339,57 @@ def fill_binary_holes(
         result = mask | ~reaches_edge[background_labels]
     if use_memmap and isinstance(background_labels, np.memmap):
         release_memmap_array(background_labels)
+    return result
+
+
+def _fill_binary_holes_by_slab(
+    mask: np.ndarray, *, memmap_directory: str | Path | None = None
+) -> np.ndarray:
+    """:func:`fill_binary_holes` of a volume for the low-RAM option, with no
+    label volume: the background labelled a slab of planes at a time
+    (:mod:`.slab_labels`, face connectivity as before), each component that
+    reaches one of the volume's six faces marked as the slabs go by, and the
+    slabs labelled again to write the mask with every other background
+    component filled. The whole volume's int32 labels were 20.6 GB on disk
+    for a 5.5 G-voxel stack, and writing them took the memory the rest of
+    the machine was using. Same holes: which background reaches a face does
+    not depend on how it is numbered."""
+    from .slab_labels import label_by_slab
+
+    shape = tuple(int(s) for s in mask.shape)
+
+    def background(z0: int, z1: int) -> np.ndarray:
+        return ~np.asarray(mask[z0:z1], dtype=bool)
+
+    at_faces: list[np.ndarray] = []
+
+    def visit(z0: int, z1: int, labels: np.ndarray, offset: int) -> None:
+        faces = [labels[:, 0, :], labels[:, -1, :], labels[:, :, 0], labels[:, :, -1]]
+        if z0 == 0:
+            faces.append(labels[0])
+        if z1 == shape[0]:
+            faces.append(labels[-1])
+        found = np.unique(np.concatenate([face.ravel() for face in faces]))
+        found = found[found > 0]
+        if found.size:
+            at_faces.append(found.astype(np.int64) + int(offset))
+
+    components = label_by_slab(
+        background, shape, structure=generate_binary_structure(3, 1), visit=visit
+    )
+    if components.count == 0:
+        return mask
+    hole = np.ones(components.count + 1, dtype=bool)
+    hole[0] = False  # the foreground
+    if at_faces:
+        hole[components.number[np.concatenate(at_faces)]] = False
+    result = new_memmap_array(shape, bool, directory=memmap_directory)
+    try:
+        for z0, z1, labels, offset in components.replay(background):
+            result[z0:z1] = np.asarray(mask[z0:z1], dtype=bool) | hole[components.numbers(labels, offset)]
+    except BaseException:
+        release_memmap_array(result)
+        raise
     return result
 
 

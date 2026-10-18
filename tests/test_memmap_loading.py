@@ -340,8 +340,9 @@ def test_fill_binary_holes_with_memmap_on_returns_a_memmap_the_caller_must_relea
 
 def test_fill_binary_holes_with_memmap_on_labels_into_int32_on_disk_even_on_windows():
     """scipy labels into an int16 output through a temporary of its own,
-    about 5 bytes a voxel of RAM; into an int32 memmap it holds nothing. The
-    low-RAM option takes int32 on disk on every platform -- same holes."""
+    about 5 bytes a voxel of RAM; into an int32 memmap it holds nothing. What
+    the low-RAM option labels whole (any mask but a volume, which goes a slab
+    at a time) takes int32 on disk on every platform -- same holes."""
     from haemolynx.preprocessing.skeleton import _label_inverted_background
 
     rng = np.random.default_rng(3)
@@ -360,6 +361,49 @@ def test_fill_binary_holes_with_memmap_on_labels_into_int32_on_disk_even_on_wind
     filled = fill_binary_holes(mask, use_memmap=True)
     assert np.array_equal(filled, fill_binary_holes(mask)) and filled[6, 13, 13]
     release_memmap_array(filled)
+@pytest.mark.parametrize("planes_per_slab", [1, 2, 5])
+@pytest.mark.parametrize("seed", range(4))
+def test_fill_binary_holes_with_memmap_on_labels_a_slab_at_a_time(monkeypatch, planes_per_slab, seed):
+    """No label volume: the background is labelled a slab of planes at a
+    time and the slabs joined at their faces, so a cavity spanning several
+    slabs, or leaking out through any face of the volume, is judged as one
+    labelling of the whole volume judges it."""
+    import haemolynx.preprocessing.memmap_support as memmap_support
+    from scipy.ndimage import binary_fill_holes
+
+    rng = np.random.default_rng(seed)
+    shape = (14, 22, 19)
+    mask = rng.random(shape) > rng.uniform(0.3, 0.7)
+    mask[2:12, 4:18, 4:15] = True
+    mask[3:11, 7:12, 7:11] = False  # a cavity through many slabs
+    mask[5:9, 14:17, 0:12] = False  # one reaching the x = 0 face
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", planes_per_slab * shape[1] * shape[2])
+    labelled = []
+    import haemolynx.preprocessing.skeleton as skeleton_module
+
+    real = skeleton_module._label_inverted_background
+    monkeypatch.setattr(
+        skeleton_module,
+        "_label_inverted_background",
+        lambda *args, **kwargs: labelled.append(1) or real(*args, **kwargs),
+    )
+
+    result = fill_binary_holes(mask, use_memmap=True)
+
+    assert labelled == [], "no label volume"
+    assert isinstance(result, np.memmap)
+    assert np.array_equal(result, binary_fill_holes(mask))
+    assert np.array_equal(result, fill_binary_holes(mask))
+    release_memmap_array(result)
+
+
+def test_fill_binary_holes_with_memmap_on_leaves_a_volume_without_background_alone():
+    mask = np.ones((4, 5, 6), dtype=bool)
+    assert np.array_equal(fill_binary_holes(mask, use_memmap=True), mask)
+    empty = np.zeros((4, 5, 6), dtype=bool)
+    result = fill_binary_holes(empty, use_memmap=True)
+    assert not np.asarray(result).any()
+    release_memmap_array(result)
 def test_fill_binary_holes_honours_memmap_directory(tmp_path):
     mask = np.zeros((10, 10, 10), dtype=bool)
     mask[2:8, 2:8, 2:8] = True

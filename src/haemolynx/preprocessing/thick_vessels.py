@@ -571,14 +571,17 @@ def _thick_vessel_object_mask_by_block(
     out_crop = out[bbox]
 
     if restrict_to_mask is not None:
-        restrict = np.asarray(restrict_to_mask, dtype=bool)[bbox]
         t0 = time.perf_counter()
+        block_voxels, workers = blockwise_edt.parallel_plan(crop.shape)
         _absorb_wall_by_block(
             out_crop,
-            crop,
-            lambda box: np.asarray(crop[box], dtype=bool) & np.asarray(restrict[box], dtype=bool),
+            (mask, np.asarray(restrict_to_mask, dtype=bool)),
+            _outside_restricted_body,
+            dict(origin=tuple(int(s.start) for s in bbox), wall=wall_radius),
             sampling=sampling,
-            wall_radius=wall_radius,
+            block_voxels=block_voxels,
+            workers=workers,
+            memmap_directory=memmap_directory,
         )
         logger.info(
             "thick_vessel_object_mask: restricted to mask directly (no "
@@ -589,23 +592,30 @@ def _thick_vessel_object_mask_by_block(
         )
         return
 
+    block_voxels, workers = blockwise_edt.parallel_plan(crop.shape)
+    if workers > 1:
+        logger.info(
+            "thick_vessel_object_mask: %d worker processes, blocks of %d voxels",
+            workers,
+            block_voxels,
+        )
+    origin = tuple(int(s.start) for s in bbox)
     codes = memmap_support.new_memmap_array(crop.shape, np.uint8, directory=memmap_directory)
     try:
         t0 = time.perf_counter()
         n_core = 0
-        gate = 0.5 * float(min_radius_um)
-        for core, where, distance in blockwise_edt.near_distances_by_block(
-            lambda box: crop[box],
-            lambda box: crop[box],
-            crop.shape,
-            sampling=sampling,
-            reach=float(min_radius_um),
+        params = dict(origin=origin, min_radius=float(min_radius_um), gate=0.5 * float(min_radius_um))
+        for core, (in_core, corridor, n) in blockwise_edt.near_blocks(
+            _crop_of, _crop_of, _radius_codes, (mask,), crop.shape,
+            sampling=sampling, reach=float(min_radius_um), params=params,
+            block_voxels=block_voxels, workers=workers, memmap_directory=memmap_directory,
         ):
-            code = np.zeros(where.shape, dtype=np.uint8)
-            in_core = distance >= float(min_radius_um)
-            code[where] = np.where(in_core, 2, np.where(distance >= gate, 1, 0))
-            codes[core] = code
-            n_core += int(np.count_nonzero(in_core))
+            shape = tuple(c.stop - c.start for c in core)
+            codes[core] = (
+                2 * blockwise_edt.unpack(in_core, shape).astype(np.uint8)
+                + blockwise_edt.unpack(corridor, shape).astype(np.uint8)
+            )
+            n_core += n
         logger.info(
             "thick_vessel_object_mask: inscribed radius map took %.2fs (%d core voxels)",
             time.perf_counter() - t0,
@@ -623,10 +633,13 @@ def _thick_vessel_object_mask_by_block(
         t2 = time.perf_counter()
         _absorb_wall_by_block(
             out_crop,
-            crop,
-            lambda box: np.asarray(codes[box]) == 1,
+            (mask, codes),
+            _outside_coded_body,
+            dict(origin=origin, wall=wall_radius),
             sampling=sampling,
-            wall_radius=wall_radius,
+            block_voxels=block_voxels,
+            workers=workers,
+            memmap_directory=memmap_directory,
         )
         logger.info(
             "thick_vessel_object_mask: wall distance transform took %.2fs (%d fat voxels total)",
@@ -671,25 +684,84 @@ def _propagate_core_by_slab(codes: np.ndarray) -> int:
 
 def _absorb_wall_by_block(
     out_crop: np.ndarray,
-    crop: np.ndarray,
-    body,
+    volumes: tuple[np.ndarray, ...],
+    outside_body,
+    params: dict,
     *,
     sampling: tuple[float, float, float],
-    wall_radius: float,
+    block_voxels: int,
+    workers: int,
+    memmap_directory,
 ) -> None:
-    """``out_crop[...] = crop & (distance_transform_edt(~body) <= wall_radius)``,
-    a block at a time; *body(box)* gives the body over a box. A block with no
-    body within *wall_radius* is left False without a transform."""
-    for core, where, distance in blockwise_edt.near_distances_by_block(
-        lambda box: ~body(box),
-        lambda box: crop[box],
-        crop.shape,
-        sampling=sampling,
-        reach=float(wall_radius),
+    """``out_crop[...] = crop & (distance_transform_edt(~body) <= wall)``, a
+    block at a time over *workers* processes: the crop is ``volumes[0]`` at
+    ``params["origin"]``, and ``outside_body(volumes, box, params)`` gives
+    ``~body`` over a box. A block with no body within the wall is left False
+    without a transform."""
+    for core, bits in blockwise_edt.near_blocks(
+        outside_body, _crop_of, _within_wall, volumes, out_crop.shape,
+        sampling=sampling, reach=float(params["wall"]), params=params,
+        block_voxels=block_voxels, workers=workers, memmap_directory=memmap_directory,
     ):
-        block = np.zeros(where.shape, dtype=bool)
-        block[where] = distance <= float(wall_radius)
-        out_crop[core] = block
+        out_crop[core] = blockwise_edt.unpack(bits, tuple(c.stop - c.start for c in core))
+
+
+# The low-RAM fat catchment's blocks, as blockwise_edt.near_blocks reads and
+# decides them -- module-level, so worker processes can be sent them. Each
+# volume is the whole stack; params["origin"] is where the crop starts in it.
+
+
+def _in_stack(box: tuple[slice, ...], params: dict) -> tuple[slice, ...]:
+    return tuple(slice(s.start + o, s.stop + o) for s, o in zip(box, params["origin"]))
+
+
+def _crop_of(volumes, box, params) -> np.ndarray:
+    return np.asarray(volumes[0][_in_stack(box, params)], dtype=bool)
+
+
+def _outside_coded_body(volumes, box, params) -> np.ndarray:
+    """``~body``: *volumes[1]* holds the body as 1, over the crop's box."""
+    return np.asarray(volumes[1][box]) != 1
+
+
+def _outside_restricted_body(volumes, box, params) -> np.ndarray:
+    """``~(crop & restriction)``, *volumes[1]* the restriction mask."""
+    at = _in_stack(box, params)
+    return ~(np.asarray(volumes[0][at], dtype=bool) & np.asarray(volumes[1][at], dtype=bool))
+
+
+def _outside_thick(volumes, box, params) -> np.ndarray:
+    return ~np.asarray(volumes[1][_in_stack(box, params)], dtype=bool)
+
+
+def _thin_catchment(volumes, box, params) -> np.ndarray:
+    at = _in_stack(box, params)
+    return np.asarray(volumes[0][at], dtype=bool) & ~np.asarray(volumes[1][at], dtype=bool)
+
+
+def _radius_codes(where, distance, params):
+    """The core (radius at least ``min_radius``) and the rest of the corridor
+    (at least ``gate``), as bits, and how many core voxels."""
+    in_core = distance >= params["min_radius"]
+    core = np.zeros(where.shape, dtype=bool)
+    corridor = np.zeros(where.shape, dtype=bool)
+    core[where] = in_core
+    corridor[where] = ~in_core & (distance >= params["gate"])
+    return blockwise_edt.pack(core), blockwise_edt.pack(corridor), int(np.count_nonzero(in_core))
+
+
+def _within_wall(where, distance, params):
+    block = np.zeros(where.shape, dtype=bool)
+    block[where] = distance <= params["wall"]
+    return blockwise_edt.pack(block)
+
+
+def _reaching(where, distance, params):
+    """The thin catchment at least ``reach`` from the fat region, as bits,
+    with how many thin voxels and how many of them reach."""
+    block = np.zeros(where.shape, dtype=bool)
+    block[where] = distance >= params["reach"]
+    return blockwise_edt.pack(block), int(np.count_nonzero(where)), int(np.count_nonzero(block))
 
 
 def diagnose_mask_restriction_alignment(
@@ -2377,27 +2449,25 @@ def _lee_thin_catchment_by_block(
     )
     if bbox is None:
         return 0
-    mask_c = mask[bbox]
-    thick_c = thick[bbox]
+    crop_shape = tuple(int(s.stop) - int(s.start) for s in bbox)
     reach = float(min_arm_extent_um)
+    block_voxels, workers = blockwise_edt.parallel_plan(crop_shape)
     lee_input = memmap_support.new_memmap_array(
-        mask_c.shape, bool, directory=lee_kwargs["memmap_directory"]
+        crop_shape, bool, directory=lee_kwargs["memmap_directory"]
     )
     n_thin = 0
     try:
         n_lee = 0
-        for core, where, distance in blockwise_edt.near_distances_by_block(
-            lambda box: ~np.asarray(thick_c[box], dtype=bool),
-            lambda box: np.asarray(mask_c[box], dtype=bool) & ~np.asarray(thick_c[box], dtype=bool),
-            mask_c.shape,
-            sampling=tuple(float(v) for v in voxel_size_zyx),
-            reach=reach,
+        for core, (bits, n_where, n_reaching) in blockwise_edt.near_blocks(
+            _outside_thick, _thin_catchment, _reaching, (mask, thick), crop_shape,
+            sampling=tuple(float(v) for v in voxel_size_zyx), reach=reach,
+            params=dict(origin=tuple(int(s.start) for s in bbox), reach=reach),
+            block_voxels=block_voxels, workers=workers,
+            memmap_directory=lee_kwargs["memmap_directory"],
         ):
-            block = np.zeros(where.shape, dtype=bool)
-            block[where] = distance >= reach
-            lee_input[core] = block
-            n_thin += int(np.count_nonzero(where))
-            n_lee += int(np.count_nonzero(block))
+            lee_input[core] = blockwise_edt.unpack(bits, tuple(c.stop - c.start for c in core))
+            n_thin += n_where
+            n_lee += n_reaching
         if n_lee:
             skeleton = skeletonize_by_component(lee_input, **lee_kwargs)
             try:

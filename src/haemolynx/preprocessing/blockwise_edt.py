@@ -31,6 +31,7 @@ Where two features are exactly equidistant, the caveat in
 from __future__ import annotations
 
 import itertools
+import os
 from typing import Callable, Iterator, Sequence
 
 import numpy as np
@@ -167,6 +168,123 @@ def near_distances_by_block(
             continue
         coords = np.argwhere(where) + np.array([c.start - p.start for c, p in zip(core, padded)])
         yield core, where, distances_at(feature_transform(block, sampling), coords, sampling)
+
+
+#: Bytes of RAM a worker holds per voxel of its padded block, allowing for a
+#: dense one: scipy's feature transform is 13 (measured), the block and its
+#: wanted voxels a few more, and each wanted voxel's coordinates and distance
+#: ~56 -- a quarter of a block wanted.
+BLOCK_BYTES_PER_VOXEL = 32
+#: A worker's own interpreter and imports, single-threaded (~150 MB measured).
+WORKER_BASE_BYTES = 200 << 20
+#: Smaller blocks than this are mostly halo: the budget then buys fewer workers.
+MIN_PARALLEL_BLOCK_VOXELS = 2_000_000
+#: Volumes smaller than this are transformed in this process: starting the
+#: workers (each imports the package, ~7 s) costs more than they save.
+PARALLEL_MIN_VOXELS = 64_000_000
+#: The share of the memory free now that the workers may take between them.
+PARALLEL_MEMORY_FRACTION = 0.5
+
+
+def parallel_plan(shape, block_voxels: int | None = None) -> tuple[int, int]:
+    """``(block_voxels, workers)`` for :func:`near_blocks` on a volume of
+    *shape*: as many workers as there are cores but one and as half the
+    memory free now holds with blocks of :data:`MIN_PARALLEL_BLOCK_VOXELS`
+    (at :data:`BLOCK_BYTES_PER_VOXEL`), then blocks as large as that share
+    allows, up to *block_voxels*. One worker -- this process -- below
+    :data:`PARALLEL_MIN_VOXELS`. The block size changes which blocks there
+    are, never the answer."""
+    if block_voxels is None:
+        block_voxels = memmap_support.LOW_MEMORY_BLOCK_VOXELS
+    block_voxels = int(block_voxels)
+    total = int(np.prod([int(s) for s in shape], dtype=np.int64))
+    cores = max(1, (os.cpu_count() or 1) - 1)
+    if total < PARALLEL_MIN_VOXELS or cores == 1:
+        return block_voxels, 1
+    from haemolynx.haemodynamics.resistance import available_memory_bytes
+
+    available = available_memory_bytes()
+    if available is None:
+        return block_voxels, 1
+    budget = PARALLEL_MEMORY_FRACTION * float(available)
+    smallest = MIN_PARALLEL_BLOCK_VOXELS * BLOCK_BYTES_PER_VOXEL + WORKER_BASE_BYTES
+    workers = int(min(cores, budget // smallest, -(-total // MIN_PARALLEL_BLOCK_VOXELS)))
+    if workers <= 1:
+        return block_voxels, 1
+    block = int(min(block_voxels, (budget / workers - WORKER_BASE_BYTES) // BLOCK_BYTES_PER_VOXEL))
+    return block, workers
+
+
+def near_blocks(
+    edt_input,
+    wanted,
+    decide,
+    volumes: tuple[np.ndarray, ...],
+    shape: tuple[int, ...],
+    *,
+    sampling: Sequence[float],
+    reach: float,
+    params=None,
+    block_voxels: int | None = None,
+    workers: int = 1,
+    memmap_directory=None,
+) -> Iterator[tuple[tuple[slice, ...], object]]:
+    """``(core, decide(where, distance, params))`` for each block of
+    :func:`near_distances_by_block` that holds a wanted voxel, in its order,
+    with *where* and *distance* as it gives them -- the blocks transformed in
+    *workers* processes when more than one.
+
+    The volume is read through ``edt_input(volumes, box, params)`` and
+    ``wanted(volumes, box, params)``, *volumes* a tuple the workers map from
+    disk (:func:`~.shared_volume_tasks.iter_volume_tasks`: a whole memmap as
+    it is, anything else copied once). *edt_input*, *wanted* and *decide*
+    must be module-level functions, and *decide*'s result small enough to
+    send back: the blocks are independent, so each is transformed and
+    decided wherever it runs, identically.
+    """
+    from .shared_volume_tasks import iter_volume_tasks
+
+    sampling_t = tuple(float(v) for v in sampling)
+    if block_voxels is None:
+        block_voxels = memmap_support.LOW_MEMORY_BLOCK_VOXELS
+    halo = reach_voxels(reach, sampling_t)
+    cores = list(_tiles(shape, _core_extent(shape, halo, int(block_voxels))))
+    payloads = [
+        (edt_input, wanted, decide, core, _pad(core, halo, shape), sampling_t, params)
+        for core in cores
+    ]
+    results = iter_volume_tasks(
+        _near_block, payloads, volume=tuple(volumes), workers=int(workers),
+        memmap_directory=memmap_directory,
+    )
+    for core, result in zip(cores, results):
+        if result is not None:
+            yield core, result
+
+
+def _near_block(volumes, payload):
+    """One block of :func:`near_blocks`: None when it holds no wanted voxel."""
+    edt_input, wanted, decide, core, padded, sampling, params = payload
+    where = np.asarray(wanted(volumes, core, params), dtype=bool)
+    if not where.any():
+        return None
+    block = np.asarray(edt_input(volumes, padded, params), dtype=bool)
+    if block.all():
+        distance = np.full(int(np.count_nonzero(where)), np.inf)
+    else:
+        coords = np.argwhere(where) + np.array([c.start - p.start for c, p in zip(core, padded)])
+        distance = distances_at(feature_transform(block, sampling), coords, sampling)
+    return decide(where, distance, params)
+
+
+def pack(block: np.ndarray) -> np.ndarray:
+    """A boolean block as bits, for sending back from a worker."""
+    return np.packbits(np.asarray(block, dtype=bool), axis=None)
+
+
+def unpack(bits: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
+    """:func:`pack`'s block again."""
+    return np.unpackbits(bits, count=int(np.prod(shape))).reshape(shape).astype(bool)
 
 
 def distances_at_points(
