@@ -1862,7 +1862,7 @@ def build_network(
         along_thick_centreline = None
         if volume.thick_vessel_mask is not None:
             thick_tree = graph.thick_vessel_junctions.thick_vessel_centreline(
-                volume.thick_vessel_mask, voxel_size_zyx
+                volume.thick_vessel_mask, voxel_size_zyx, use_memmap=settings["use_memmap_loading"]
             )
             follower = graph.thick_vessel_junctions.ThickCentreline.from_region(
                 volume.thick_vessel_mask, voxel_size_zyx, segmentation=binary_mask, centreline=thick_tree,
@@ -3577,6 +3577,69 @@ def _reassign_small_vessel_boundaries(
         )
 
 
+def _reassign_large_vessel_boundaries(
+    settings: dict,
+    G: nx.MultiGraph,
+    boundaries: BoundaryNodes,
+    touched: list,
+) -> None:
+    """Add or drop Large_Art/Large_Ven hand-off nodes
+    (``large_arteriole_boundary_nodes``, ``large_venule_boundary_nodes``) at
+    the *touched* nodes -- the ends of the edited vessels and the nodes a
+    deletion took a vessel from -- as the Boundaries stage chose them from
+    the large masks' labelling: a node of a vessel tagged as lying in a large
+    mask (``graph.LARGE_MASK_VESSEL_TYPE``, the edited vessels tagged by
+    :func:`_tag_edited_vessels_in_large_masks`) with a vessel not of that
+    type leaving it (:func:`graph.boundary_nodes_from_mask_tags`). The tier
+    itself is read from the tags, so the orders were already right; the lists
+    say whether a tier is tried at all, and the checkpoint and the synthetic
+    template's boundary counts read them. Every other node stays as it is,
+    and a list is never emptied: that would end its Large tier while the
+    vessel still lies in the mask. Without the tags (a run from before the
+    Boundaries stage wrote them) the lists stay as they are."""
+    if not any(data.get(graph.LARGE_MASK_VESSEL_TYPE) for *_, data in G.edges(data=True)):
+        if boundaries.large_arteriole_boundary_nodes or boundaries.large_venule_boundary_nodes:
+            logger.warning(
+                "Post processing: no vessel carries the large-mask tag the Boundaries stage "
+                "writes (a run from before it did), so the Large_Art/Large_Ven hand-off "
+                "nodes stay as they were; run again from Boundaries to place them on the "
+                "edited network."
+            )
+        return  # no large vessel in the masks: nothing to hand off from
+    found = graph.boundary_nodes_from_mask_tags(
+        G, touched, attribute=graph.LARGE_MASK_VESSEL_TYPE
+    )
+    touched_set = set(touched)
+    for role, tier, name in (
+        ("arteriole", "Large_Art", "large_arteriole_boundary_nodes"),
+        ("venule", "Large_Ven", "large_venule_boundary_nodes"),
+    ):
+        current = list(getattr(boundaries, name))
+        wanted = set(found[role])
+        kept = [node for node in current if node not in touched_set or node in wanted]
+        added = [node for node in touched if node in wanted and node not in current]
+        if current and not kept and not added:
+            logger.warning(
+                "Post processing: the edits leave no %s hand-off node, so the %d the "
+                "network had are kept; without one the %s tier would not be tried "
+                "though its vessels still lie in the large %s mask.",
+                tier,
+                len(current),
+                tier,
+                role,
+            )
+            continue
+        if len(kept) == len(current) and not added:
+            continue
+        _set_boundary_list(settings, boundaries, name, kept + added)
+        logger.info(
+            "Post processing: %s hand-off node(s) added at %s, dropped at %s.",
+            tier,
+            added,
+            [node for node in current if node not in kept],
+        )
+
+
 def _assign_branch_orders(
     settings: dict, G: nx.MultiGraph, *, post_assign_callback=None
 ) -> dict[str, Any]:
@@ -3818,6 +3881,54 @@ def _start_measurement_afresh(data: dict) -> None:
         set_edge_diameter_override(data, provisional)
 
 
+def _judge_drawn_vessels(
+    settings: dict,
+    G: nx.MultiGraph,
+    network: VesselNetwork | None,
+    edited: Sequence[tuple],
+    voxel_size_zyx,
+) -> list[dict[str, Any]] | None:
+    """How each vessel the edits drew sits in the segmentation, written on
+    it and listed for the summary; None with nothing drawn or no
+    segmentation to read (a synthetic run, or a resume without one).
+
+    The vessels :func:`haemolynx.graph.add_vessel_between` added
+    (``post_processing_added``; a split half, a merge or a bridge is not one
+    a person drew) are read with the run's own bridge reader
+    (:class:`haemolynx.preprocessing.MaskSupport`, at the run's
+    ``bridge_max_background_gap_um`` and ``bridge_min_mask_fraction``) by
+    :func:`haemolynx.graph.record_drawn_vessel_support`: ``drawn_mask_fraction``,
+    ``drawn_background_run_um`` and ``drawn_beside_vessel`` go on each. A
+    diagnostic only -- a vessel traced through tissue the segmentation never
+    showed is visible as such, and kept as drawn.
+    """
+    drawn = [
+        edge for edge in edited
+        if G.edges[edge].get("post_processing_added") and not G.edges[edge].get(graph.IS_ZERO_RESISTANCE)
+    ]
+    if not drawn or network is None or network.volume.image is None:
+        return None
+    support = preprocessing.MaskSupport(
+        _to_binary_volume_for_skeletonization(network.volume.image),
+        voxel_size_zyx,
+        max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
+        min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+    )
+    records = graph.record_drawn_vessel_support(G, drawn, support)
+    off_segmentation = sum(not record.within_bridge_gate for record in records)
+    beside = sum(record.beside_vessel for record in records)
+    logger.info(
+        "Post processing: %d drawn vessel(s) read against the segmentation: %d partly "
+        "off it (graph building's bridge gate would have drawn no bridge there), %d "
+        "beside a vessel in the same lumen -- all kept as drawn.",
+        len(records), off_segmentation, beside,
+    )
+    for record in records:
+        u, v, _key = record.edge
+        logger.info("  vessel %s-%s (%.3g um): %s", u, v, record.length_um, record.describe())
+    return [record.as_record() for record in records]
+
+
 def _bridge_edited_vessels(
     settings: dict,
     G: nx.MultiGraph,
@@ -3889,6 +4000,9 @@ def _bridge_edited_vessels(
     # one drawn by hand is.
     bridged = graph.insert_thick_vessel_junction_nodes(
         G, mask, voxel_size_zyx=voxel_size_zyx, edges=edited, segmentation=segmentation,
+        centreline=graph.thick_vessel_junctions.thick_vessel_centreline(
+            mask, voxel_size_zyx, use_memmap=bool(settings.get("use_memmap_loading"))
+        ),
         fill_attributes={graph.post_processing.EDITED: True},
         **thick_junction_bridge_arguments(settings),
     )
@@ -3900,6 +4014,62 @@ def _bridge_edited_vessels(
             added,
         )
     return bridged
+
+
+def _mark_touched_dead_end_kinds(
+    settings: dict, G: nx.MultiGraph, network: VesselNetwork | None, touched: list
+) -> dict[str, int] | None:
+    """Judge the dead ends among the *touched* nodes -- the edited vessels'
+    ends and the nodes a deletion took a vessel from -- against the run's
+    segmentation, as :func:`_mark_dead_end_kinds` judged every dead end when
+    the network was built, and write their kinds (``graph.dead_ends``,
+    :func:`graph.dead_ends.reclassify_dead_ends`): one leaving the image is
+    what the solve's open-end boundary condition goes on, the rest what the
+    review lists show. A touched node that is a dead end no longer loses the
+    classifier's kind; a person's stays. Every other node keeps its mark.
+    Without a segmentation to read -- no *network*, a synthetic one, or an
+    image with nothing in it -- nothing is judged, and a dead end an edit
+    made is read by the distance rule alone
+    (``graph.dead_ends.node_leaves_image``). Returns the census of the dead
+    ends judged, or None."""
+    image = network.volume.image if network is not None else None
+    if image is None:
+        logger.info(
+            "Post processing: no segmentation to judge the dead ends at the edits by, "
+            "so an end an edit left is read by its distance to the image faces alone."
+        )
+        return None
+    binary_mask = _to_binary_volume_for_skeletonization(image)
+    if not np.any(binary_mask):
+        logger.info(
+            "Post processing: the segmentation has no vessel in it, so the dead ends "
+            "at the edits are not judged against it."
+        )
+        return None
+    voxel_size_zyx = tuple(float(v) for v in network.volume.voxel_size_zyx)
+    support = preprocessing.MaskSupport(
+        binary_mask,
+        voxel_size_zyx,
+        max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
+        min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
+    )
+    extent = graph.dead_ends.graph_image_extent_um(G)
+    if extent is None:
+        extent = graph.dead_ends.image_extent_um(binary_mask.shape, voxel_size_zyx)
+    ends = graph.dead_ends.reclassify_dead_ends(
+        G,
+        touched,
+        extent_um=extent,
+        support=support,
+        stub_radius_multiple=float(settings.get("min_stub_length_radius_multiple") or 3.0),
+    )
+    census = graph.dead_ends.dead_end_census(ends)
+    logger.info(
+        "Post processing: %d dead end(s) at the edits -- %s.",
+        len(ends),
+        ", ".join(f"{count} {kind.replace('_', ' ')}" for kind, count in census.items() if count) or "none",
+    )
+    return census
 
 
 def _trim_boundary_lists(
@@ -3954,20 +4124,37 @@ def post_process(
     4. each edited vessel is tagged with the vessel mask it lies in, as
        Boundaries tagged every vessel -- a global mask's size class, the
        large mask the Large_Art/Large_Ven tier reads, or the small mask the
-       arteriole/venule boundary nodes come from, which are then added or
-       dropped where the edits changed the network
-       (:func:`_reassign_small_vessel_boundaries`) -- and branch orders are
+       arteriole/venule boundary nodes come from -- and the boundary nodes
+       those tags give are added or dropped where the edits changed the
+       network, by the Boundaries stage's own rule: the Large_Art/Large_Ven
+       hand-off nodes (:func:`_reassign_large_vessel_boundaries`) and the
+       arteriole/venule boundary nodes
+       (:func:`_reassign_small_vessel_boundaries`); then branch orders are
        assigned again over the whole network, as Diameters does (an edit
-       changes the orders downstream of it);
-    5. with haemodynamics on, each edited vessel is measured afresh with the
+       changes the orders downstream of it, and a piece an edit cuts off
+       from the inlets loses its orders, as a piece built cut off has none);
+    5. the dead ends the edits left are judged against the segmentation as
+       graph building judged every dead end
+       (:func:`_mark_touched_dead_end_kinds`): one leaving the image is
+       what the solve's open-end boundary condition goes on, and a node an
+       edit joined a vessel to is a dead end no longer;
+    6. with haemodynamics on, each edited vessel is measured afresh with the
        run's own diameter methods (FWHM, the raw section, EDT, the
        endothelium -- whichever it uses), keeping the diameter the edit gave
        it as a provisional override: a measurement replaces that, the
-       branch-order table does not.
+       branch-order table does not;
+    6. each vessel the edits drew is read against the segmentation as graph
+       building reads every bridge it draws (:func:`_judge_drawn_vessels`:
+       the fraction of it in the mask, the longest run of background it
+       crosses, whether it runs beside a vessel in the same lumen), written
+       on the vessel and listed -- never refused: the person drew it where
+       the segmentation is missing as often as not.
 
     Then the marks are cleared, and ``model.results["post_process"]`` says
     what was done (``edited_vessels``, the ``boundary_nodes`` lists as they
-    now are, and the ``diameters`` sources when measured). A network nobody
+    now are, the ``dead_ends`` census at the edits when judged, the
+    ``diameters`` sources when measured, and ``drawn_vessels`` when there
+    was a segmentation to read them against). A network nobody
     edited passes through untouched -- no ``"post_process"`` entry -- so a
     run without the panel does what it did before this stage.
 
@@ -4007,6 +4194,9 @@ def post_process(
         if network is not None
         else tuple(G.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0)))
     )
+    drawn = _judge_drawn_vessels(settings, G, network, edited, voxel_size_zyx)
+    if drawn is not None:
+        summary["drawn_vessels"] = drawn
     if edited and io.vessel_masks_are_global(settings):
         # An edited vessel's class comes from the masks, as every other's did.
         in_use = {role: graph.vessel_masks_in_use(settings, role) for role in ("large", "small")}
@@ -4025,6 +4215,8 @@ def post_process(
     if edited and graph.assigns_large_vessel_branch_orders(settings):
         _tag_edited_vessels_in_large_masks(settings, G, boundaries, edited, voxel_size_zyx)
     touched = graph.touched_nodes(G)
+    if touched and graph.assigns_large_vessel_branch_orders(settings):
+        _reassign_large_vessel_boundaries(settings, G, boundaries, touched)
     if (
         touched
         and graph.vessel_masks_in_use(settings, "small")
@@ -4036,6 +4228,10 @@ def post_process(
     summary["boundary_nodes"] = {
         name: list(getattr(boundaries, name)) for name in _BOUNDARY_NODE_LISTS
     }
+    if touched:
+        census = _mark_touched_dead_end_kinds(settings, G, network, touched)
+        if census is not None:
+            summary["dead_ends"] = census
     if settings["inlet_nodes"]:
         _assign_branch_orders(settings, G)
         # Even with no vessel to measure (only deletions): a table or class

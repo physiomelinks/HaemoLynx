@@ -712,6 +712,72 @@ def test_vessel_path_runs_from_the_u_end():
         vessel_path(G, (0, 1, 7))
 
 
+# --- how a drawn vessel sits in the segmentation -------------------------------
+
+
+def _two_strands_in_one_lumen():
+    """A vessel 0-1 along x in a 7-voxel-wide tube, and a second strand 2-3
+    drawn 2 um beside it from one end to the other; a third vessel 4-5
+    across background beside nothing."""
+    from haemolynx.preprocessing import MaskSupport
+
+    G = nx.MultiGraph()
+    positions = {
+        0: (5, 5, 0), 1: (5, 5, 30), 2: (5, 5, 1), 3: (5, 5, 29), 4: (5, 15, 0), 5: (5, 15, 30),
+    }
+    for node, pos in positions.items():
+        G.add_node(node, pos=np.asarray(pos, dtype=float))
+    G.add_edge(0, 1, voxels=_straight(positions[0], positions[1]), length=30.0)
+    mask = np.zeros((11, 21, 31), dtype=bool)
+    mask[2:9, 2:9, :] = True
+    beside = add_vessel_between(G, 2, 3, [(5, 5, 1), (5, 7, 3), (5, 7, 27), (5, 5, 29)])
+    across = add_vessel_between(G, 4, 5)
+    return G, MaskSupport(mask, (1.0, 1.0, 1.0)), beside, across
+
+
+def test_record_drawn_vessel_support_writes_the_three_attributes_and_says_what_they_mean():
+    from haemolynx.graph import (
+        DRAWN_BACKGROUND_RUN_UM,
+        DRAWN_BESIDE_VESSEL,
+        DRAWN_MASK_FRACTION,
+        record_drawn_vessel_support,
+    )
+
+    G, support, beside, across = _two_strands_in_one_lumen()
+
+    records = record_drawn_vessel_support(G, [beside, across, (0, 1, 7)], support)
+
+    assert [r.edge for r in records] == [beside, across]  # no vessel (0, 1, 7)
+    strand, background = records
+    assert strand.mask_fraction == pytest.approx(1.0) and strand.background_run_um == 0.0
+    assert strand.beside_vessel is True and strand.within_bridge_gate is True
+    assert strand.describe() == "all of it in the segmentation, beside a vessel in the same lumen"
+    assert background.mask_fraction == 0.0
+    assert background.background_run_um == pytest.approx(30.0)
+    assert background.beside_vessel is False and background.within_bridge_gate is False
+    assert background.describe() == "none of it in the segmentation (30 µm of background)"
+    for record in records:
+        data = G.edges[record.edge]
+        assert data[DRAWN_MASK_FRACTION] == record.mask_fraction
+        assert data[DRAWN_BACKGROUND_RUN_UM] == record.background_run_um
+        assert data[DRAWN_BESIDE_VESSEL] is record.beside_vessel
+    assert DRAWN_MASK_FRACTION not in G.edges[0, 1, 0]
+    assert background.as_record() == {
+        "edge": (4, 5, 0), "length_um": 30.0, "mask_fraction": 0.0, "background_run_um": 30.0,
+        "beside_vessel": False, "within_bridge_gate": False,
+    }
+
+
+def test_describe_drawn_support_gives_the_fraction_and_the_longest_run():
+    from haemolynx.graph import describe_drawn_support
+
+    assert describe_drawn_support(0.62, 4.1) == (
+        "62% of it in the segmentation, 4.1 µm of background in one run at most"
+    )
+    assert describe_drawn_support(0.62, 4.1, True).endswith(", beside a vessel in the same lumen")
+    assert describe_drawn_support(0.0, 12.0) == "none of it in the segmentation"
+
+
 # --- what each edit marks for the post_process stage ---------------------------
 
 from haemolynx.graph import (  # noqa: E402

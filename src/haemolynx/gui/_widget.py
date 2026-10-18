@@ -9812,6 +9812,7 @@ def _post_processing_controls(
         mask_cost_field,
         merge_junctions,
         prune_disconnected_branches,
+        record_drawn_vessel_support,
         set_vessel_diameter,
         short_loops,
         split_junction,
@@ -11369,7 +11370,7 @@ def _post_processing_controls(
         state.added_nodes.extend(added.new_nodes)
         log_edit(
             f"Joined dead ends {a} and {b}: added {describe_vessels(state.graph, [added.edge])}, "
-            f"traced {route.how}{route.note}"
+            f"traced {route.how}{route.note}" + segmentation_note(added.edge)
         )
         after_review_edit(f"joined dead ends {a} and {b}", written)
 
@@ -11429,6 +11430,7 @@ def _post_processing_controls(
         log_edit(
             f"Joined dead end {tip} to the vessel ahead: added "
             f"{describe_vessels(state.graph, [added.edge])}, traced {route.how}{route.note}"
+            + segmentation_note(added.edge)
         )
         after_review_edit(f"joined dead end {tip} to the vessel ahead", written)
 
@@ -11560,6 +11562,35 @@ def _post_processing_controls(
                 mask_cost_field(np.asanyarray(data), use_memmap=True, voxel_size_zyx=voxel_size()),
             )
         return state.routing
+
+    def mask_support():
+        """The segmented image read as graph building reads it for every
+        bridge it draws (review_mask_support: a MaskSupport at the run's
+        bridge limits) -- the review lists' own, kept in state.support, made
+        here when no list has made it yet; None without a segmented image."""
+        image = segmented_image()
+        if image is None:
+            return None
+        if state.support is None or state.support[0] is not image:
+            state.support = (image, review_mask_support(image, voxel_size(), read_settings() or {}))
+        return state.support[1]
+
+    def segmentation_note(edge) -> str:
+        """How the vessel just drawn sits in the segmentation, for its log
+        line -- what the post_process stage writes on it
+        (graph.record_drawn_vessel_support), read now so a vessel traced
+        through tissue the segmentation never showed is seen as such at
+        once. "" without a segmented image; a diagnostic, it never stops an
+        edit."""
+        support = mask_support()
+        if support is None:
+            return ""
+        try:
+            (record,) = record_drawn_vessel_support(state.graph, [edge], support)
+        except Exception:  # noqa: BLE001 - the vessel stays, unjudged
+            logger.exception("Post processing: could not read the drawn vessel against the segmentation")
+            return ""
+        return f"; {record.describe()}"
 
     def load_raw():
         """The run's raw image: ``(volume, None)``, or ``(None, why not)``."""
@@ -11763,6 +11794,7 @@ def _post_processing_controls(
         log_edit(
             f"Added {describe_vessels(graph, [added.edge])}, traced {routes} in {clicks} clicks"
             + (f"; new node(s) {new_nodes} cut {described_cut} in two" if added.new_nodes else "")
+            + segmentation_note(added.edge)
         )
         rescan(prefer=state.node)
         u, v, _key = added.edge

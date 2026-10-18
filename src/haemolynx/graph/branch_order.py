@@ -279,7 +279,11 @@ def assign_branch_orders(
     """Assign branch-order labels to edges from BFS distance to inlet nodes.
 
     A zero-resistance bridge gets none (and loses any it had): it is not a
-    vessel of any order.
+    vessel of any order. Nor has an edge the search from the inlets does not
+    reach -- a piece of the network cut off from them -- which loses any it
+    had too: a hand edit that cuts a piece off used to leave its vessels with
+    the orders of the network they were cut from (an edge left out by
+    *included_edges* or *excluded_edges* is another pass's, and keeps its).
     """
     node_distances = _compute_node_distances(
         G,
@@ -314,6 +318,7 @@ def assign_branch_orders(
         u_dist = node_distances.get(u, float("inf"))
         v_dist = node_distances.get(v, float("inf"))
         if u_dist == float("inf") and v_dist == float("inf"):
+            data.pop("branch_order", None)
             results["unreachable_edges"].append((u, v, key))
             results["edges_skipped"] += 1
             continue

@@ -13,6 +13,12 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from haemolynx.graph.post_processing import (
+    DRAWN_BACKGROUND_RUN_UM,
+    DRAWN_BESIDE_VESSEL,
+    DRAWN_MASK_FRACTION,
+    describe_drawn_support,
+)
 from haemolynx.graph.prune import FLOW_SOLVED
 from haemolynx.graph.thick_vessel_junctions import IS_ZERO_RESISTANCE
 
@@ -27,6 +33,7 @@ BRANCH_HOVER_METRICS: tuple[str, ...] = (
     "resistance",
     "tortuosity",
     "length",
+    "drawn_support",
 )
 
 #: Checkbox / tooltip label for each optional metric key.
@@ -40,6 +47,7 @@ BRANCH_HOVER_LABELS: dict[str, str] = {
     "resistance": "branch resistance",
     "tortuosity": "branch tortuosity",
     "length": "branch length",
+    "drawn_support": "drawn vessel",
 }
 
 #: Graph edge attribute that supplies each metric (``None`` = computed).
@@ -53,9 +61,12 @@ _METRIC_ATTR: dict[str, str | None] = {
     "resistance": "resistance",
     "tortuosity": None,
     "length": "length",
+    "drawn_support": None,
 }
 
-_TEXT_HOVER_METRICS = frozenset({"flow_solution", "order", "diameter_source", "fwhm_status"})
+_TEXT_HOVER_METRICS = frozenset(
+    {"flow_solution", "order", "diameter_source", "fwhm_status", "drawn_support"}
+)
 
 #: What ``flow_solution`` reads for each value of the edge's FLOW_SOLVED.
 FLOW_SOLUTION_TEXT = {True: "Solved", False: "Unsolved"}
@@ -102,12 +113,35 @@ def edge_tortuosity(
     return path_length / straight
 
 
+def drawn_support_text(data: Mapping[str, Any]) -> str | None:
+    """How a vessel drawn by hand sits in the segmentation, as the
+    ``post_process`` stage wrote it on the edge (``drawn_mask_fraction``,
+    ``drawn_background_run_um``, ``drawn_beside_vessel``); ``None`` on a
+    vessel nobody drew."""
+    try:
+        fraction = float(data[DRAWN_MASK_FRACTION])
+        run = float(data[DRAWN_BACKGROUND_RUN_UM])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (np.isfinite(fraction) and np.isfinite(run)):
+        return None
+    try:
+        length = float(data.get("length"))
+    except (TypeError, ValueError):
+        length = None
+    return describe_drawn_support(
+        fraction, run, bool(data.get(DRAWN_BESIDE_VESSEL, False)), length
+    )
+
+
 def _metric_value(
     graph: Any, u: Any, v: Any, data: Mapping[str, Any], metric: str
 ) -> Any | None:
     """Raw value for *metric* on one edge, or ``None`` when missing."""
     if metric == "tortuosity":
         return edge_tortuosity(graph, u, v, data)
+    if metric == "drawn_support":
+        return drawn_support_text(data)
     attr = _METRIC_ATTR[metric]
     assert attr is not None
     value = data.get(attr)

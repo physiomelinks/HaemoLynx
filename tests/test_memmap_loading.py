@@ -338,6 +338,28 @@ def test_fill_binary_holes_with_memmap_on_returns_a_memmap_the_caller_must_relea
     assert not set(glob.glob(str(tempfile.gettempdir()) + "/haemolynx_*.memmap")) - before
 
 
+def test_fill_binary_holes_with_memmap_on_labels_into_int32_on_disk_even_on_windows():
+    """scipy labels into an int16 output through a temporary of its own,
+    about 5 bytes a voxel of RAM; into an int32 memmap it holds nothing. The
+    low-RAM option takes int32 on disk on every platform -- same holes."""
+    from haemolynx.preprocessing.skeleton import _label_inverted_background
+
+    rng = np.random.default_rng(3)
+    mask = rng.random((12, 30, 30)) > 0.4
+    mask[3:9, 8:20, 8:20] = True
+    mask[5:7, 12:16, 12:16] = False  # a hole
+
+    labeled, n_labels = _label_inverted_background(~mask, platform="win32", use_memmap=True)
+    assert isinstance(labeled, np.memmap) and labeled.dtype == np.int32
+    from scipy.ndimage import label
+
+    expected, n_expected = label(~mask)
+    assert n_labels == n_expected and np.array_equal(labeled, expected)
+    release_memmap_array(labeled)
+
+    filled = fill_binary_holes(mask, use_memmap=True)
+    assert np.array_equal(filled, fill_binary_holes(mask)) and filled[6, 13, 13]
+    release_memmap_array(filled)
 def test_fill_binary_holes_honours_memmap_directory(tmp_path):
     mask = np.zeros((10, 10, 10), dtype=bool)
     mask[2:8, 2:8, 2:8] = True
@@ -576,6 +598,23 @@ def test_skeletonize_by_component_matches_monolithic_with_overlapping_bounding_b
     memmap_result = skeletonize_by_component(mask, use_memmap=True)
 
     assert np.array_equal(memmap_result, skeletonize(mask, method="lee"))
+    release_memmap_array(memmap_result)
+
+
+def test_skeletonize_by_component_thins_a_one_plane_component_as_the_volume_does():
+    """Regression: each component was cut to its tight box, and skimage
+    thins an array with a length-1 axis in 2D -- a plate one plane thick came
+    out as a line where Lee in the volume leaves two voxels of it."""
+    mask = np.zeros((5, 20, 20), dtype=bool)
+    mask[2, 2:7, 2:8] = True  # the plate
+    mask[1:4, 12:18, 12:15] = True  # a component of some depth
+
+    memmap_result = skeletonize_by_component(mask, use_memmap=True)
+    tight = skeletonize(mask[2:3, 2:7, 2:8], method="lee")
+
+    monolithic = skeletonize(mask, method="lee")
+    assert not np.array_equal(tight[0], monolithic[2, 2:7, 2:8]), "the fixture no longer shows the 2D case"
+    assert np.array_equal(memmap_result, monolithic)
     release_memmap_array(memmap_result)
 
 

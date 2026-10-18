@@ -349,25 +349,23 @@ def _label_inverted_background(
 ) -> tuple[np.ndarray, int]:
     """Label background components; compact dtype on Windows only.
 
-    *use_memmap*, when True, allocates the labelled array (and, on Windows,
-    its int32 fallback) as a disk-backed buffer -- the caller
-    (:func:`fill_binary_holes`) releases it once it has read what it needs.
+    *use_memmap*, when True, allocates the labelled array as a disk-backed
+    int32 buffer -- the caller (:func:`fill_binary_holes`) releases it once
+    it has read what it needs. Not int16 there: scipy labels into an int16
+    output through a temporary of its own, about 5 bytes a voxel of RAM
+    (1.4 GB for 300 M voxels, scipy 1.18), where into int32 it writes the
+    disk-backed array directly and holds nothing.
     *memmap_directory* is forwarded to :func:`new_memmap_array`.
     """
     if platform is None:
         platform = sys.platform
-    if platform == "win32":
-        compact = (
-            new_memmap_array(inverted.shape, np.int16, directory=memmap_directory)
-            if use_memmap
-            else np.empty(inverted.shape, dtype=np.int16)
-        )
+    if platform == "win32" and not use_memmap:
+        compact = np.empty(inverted.shape, dtype=np.int16)
         try:
             n_labels = int(label(inverted, output=compact))
             return compact, n_labels
         except (RuntimeError, TypeError, ValueError):
-            if use_memmap:
-                release_memmap_array(compact)
+            pass
     if use_memmap:
         labeled = new_memmap_array(inverted.shape, np.int32, directory=memmap_directory)
         n_labels = int(label(inverted, output=labeled))
@@ -745,6 +743,15 @@ def skeletonize_by_component(
         for component_id, bbox in enumerate(find_objects(labeled, max_label=n_labels), start=1):
             if bbox is None:
                 continue
+            # skimage thins an array with a length-1 axis in 2D, so a
+            # component one plane thick, cut to its tight box, came out unlike
+            # the same voxels thinned in the volume: such an axis gets its
+            # neighbouring planes back (every other box stays as it was, and
+            # with it the tiling below).
+            bbox = tuple(
+                slice(max(0, s.start - 1), min(int(n), s.stop + 1)) if s.stop - s.start == 1 else s
+                for s, n in zip(bbox, mask.shape)
+            )
             labeled_component = labeled[bbox]
             if labeled_component.size <= LOW_MEMORY_BLOCK_VOXELS:
                 # Small enough to compare in RAM: a temp file per component

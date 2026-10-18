@@ -123,8 +123,29 @@ def test_available_metrics_full_solved_graph():
         diameter_um=5.0,
         diameter_source="measured",
         fwhm_status="measured",
+        drawn_mask_fraction=1.0,
+        drawn_background_run_um=0.0,
     )
     assert available_branch_hover_metrics(graph) == BRANCH_HOVER_METRICS
+
+
+def test_a_drawn_vessels_segmentation_reading_is_one_hover_line():
+    """What the post_process stage wrote on a vessel drawn by hand, in
+    the words of its log line; a vessel nobody drew offers no such line."""
+    graph = a_graph()
+    assert "drawn_support" not in available_branch_hover_metrics(graph)
+    graph.edges[1, 2, 0].update(
+        drawn_mask_fraction=0.62, drawn_background_run_um=4.1, drawn_beside_vessel=True
+    )
+    assert "drawn_support" in available_branch_hover_metrics(graph)
+    _ids, features = branch_hover_rows(graph, selected=("drawn_support",))
+    assert list(features["tooltip"]) == [
+        "branchID: 0",
+        "branchID: 1\ndrawn vessel: 62% of it in the segmentation, 4.1 µm of background "
+        "in one run at most, beside a vessel in the same lumen",
+        "branchID: 2",
+    ]
+    assert list(features["drawn_support"]) == ["", features["tooltip"][1].split(": ", 2)[2], ""]
 
 
 def test_flow_solution_is_available_once_the_solve_has_marked_the_vessels():
@@ -469,6 +490,8 @@ def test_branch_hover_hides_flow_until_attrs_exist_on_graph():
         data["diameter_um"] = 5.0
         data["diameter_source"] = "measured"
         data["fwhm_status"] = "measured"
+    # One vessel drawn by hand, read against the segmentation by post_process.
+    graph.edges[1, 2, 0].update(drawn_mask_fraction=1.0, drawn_background_run_um=0.0)
 
     group = results.stage_finished(
         "solve",

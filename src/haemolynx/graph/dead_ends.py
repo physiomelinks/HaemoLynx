@@ -594,6 +594,38 @@ def classify_and_mark(
     return ends
 
 
+def reclassify_dead_ends(
+    G: nx.MultiGraph,
+    nodes: Iterable[Any],
+    *,
+    extent_um: Optional[Sequence[float]] = None,
+    support=None,
+    stub_radius_multiple: float = 3.0,
+) -> dict[Any, DeadEnd]:
+    """:func:`classify_dead_ends` over *nodes* alone -- the nodes a hand edit
+    touched -- and their marks brought in line, every other node's left as
+    it is: a dead end among them gets its kind (:data:`DEAD_END_KIND`,
+    :data:`DEAD_END_KIND_SOURCE`); one that is a dead end no longer loses the
+    classifier's. A person's kind (:data:`SOURCE_REVIEW`) stays whatever the
+    node's degree -- an edit that joins a vessel to the node can be undone,
+    and nothing reads the mark while the node is no dead end (see
+    :func:`classify_dead_ends`, :func:`node_leaves_image`). Returns the dead
+    ends judged, as :func:`classify_dead_ends` does."""
+    wanted = [node for node in dict.fromkeys(nodes) if node in G]
+    ends = classify_dead_ends(
+        G, extent_um=extent_um, support=support, stub_radius_multiple=stub_radius_multiple, nodes=wanted
+    )
+    for node in wanted:
+        data = G.nodes[node]
+        if node in ends:
+            data[DEAD_END_KIND] = ends[node].kind
+            data[DEAD_END_KIND_SOURCE] = ends[node].source
+        elif G.degree(node) != 1 and data.get(DEAD_END_KIND_SOURCE) != SOURCE_REVIEW:
+            data.pop(DEAD_END_KIND, None)
+            data.pop(DEAD_END_KIND_SOURCE, None)
+    return ends
+
+
 def set_dead_end_kind(G: nx.MultiGraph, node: Any, kind: str) -> None:
     """A person's verdict on a dead end (the Post processing review), kept
     through later reclassifying while the node stays a dead end."""
@@ -673,6 +705,7 @@ __all__ = [
     "mask_run_um",
     "node_leaves_image",
     "open_end_nodes",
+    "reclassify_dead_ends",
     "record_image_extent",
     "set_dead_end_kind",
     "tip_heading",
