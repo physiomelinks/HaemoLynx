@@ -94,3 +94,52 @@ def test_temporary_memmap_array_still_cleans_up_when_the_block_raises():
 
     assert captured_path is not None
     assert not captured_path.exists()
+
+
+# --- a memmap nobody releases (2026-10-18) -------------------------------------
+
+
+def test_a_memmap_nobody_releases_has_its_file_deleted_once_it_and_its_views_are_gone(tmp_path):
+    """The skeleton ``skeletonise`` hands on, the raw image the Diameters
+    stage reads, and many a volume a test compares, were never released:
+    every run left them in the temp folder. Windows will not delete a file
+    while it is mapped, so there the file goes at the next memmap made (or
+    as the process exits, ``_delete_dropped_files``)."""
+    import gc
+
+    from haemolynx.preprocessing import memmap_support
+
+    array = new_memmap_array((4, 5), np.uint8, directory=tmp_path)
+    view = array[1:]
+    path = Path(array.filename)
+    del array
+    gc.collect()
+    assert path.exists(), "a view of it still maps the file"
+
+    del view
+    gc.collect()
+    fresh = new_memmap_array((2,), np.uint8, directory=tmp_path)
+
+    assert not path.exists()
+    assert str(path) not in memmap_support._DROPPED_FILES
+    assert [p.name for p in tmp_path.iterdir()] == [Path(fresh.filename).name]
+    release_memmap_array(fresh)
+
+
+def test_a_released_memmap_leaves_nothing_for_the_clean_up_at_exit(tmp_path):
+    import gc
+    import os
+
+    from haemolynx.preprocessing import memmap_support
+
+    array = new_memmap_array((3, 3), np.uint8, directory=tmp_path)
+    path = os.path.abspath(array.filename)
+    assert path in memmap_support._FINALISERS
+
+    release_memmap_array(array)
+    del array
+    gc.collect()
+
+    assert path not in memmap_support._FINALISERS
+    assert path not in memmap_support._DROPPED_FILES
+    assert not os.path.exists(path)

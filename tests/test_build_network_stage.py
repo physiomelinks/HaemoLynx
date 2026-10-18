@@ -311,3 +311,55 @@ def test_the_skeleton_re_trace_needs_mask_supported_bridging(tmp_path, monkeypat
     settings = _settings(tmp_path, retrace_lost_skeleton=True, bridge_require_mask_support=False)
     build_network(settings, _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS)), SCHEMA)
     assert seen["retrace"] == []
+
+
+def test_one_mask_support_serves_every_step_that_reads_the_mask(tmp_path, monkeypatch):
+    """Graph building, both clean-ups, the thick-vessel split and the dead-end
+    marks are handed one ``MaskSupport``: the mask is packed to bits once and
+    one surface tree is built a run. Each used to make its own -- up to four
+    packings, and a second tree for the split's join at the walls -- which on
+    a large disk-backed stack is a pass over the volume each (2026-10-18). The
+    split is handed the tree's radius ``ThickCentreline`` measured, too. In
+    low-RAM mode, where the mask is a memmap and the in-RAM graph checks
+    (which read the image again) are skipped."""
+    import importlib
+
+    from haemolynx.pipeline import stages
+
+    bridge_mask_support = importlib.import_module("haemolynx.preprocessing.bridge_mask_support")
+    pointwise_distance = importlib.import_module("haemolynx.preprocessing.pointwise_distance")
+
+    seen = _spy_on_graph_building(monkeypatch)
+    marked = []
+    real_marks = stages._mark_dead_end_kinds
+    monkeypatch.setattr(
+        stages, "_mark_dead_end_kinds", lambda *a, **k: marked.append(k.get("support")) or real_marks(*a, **k)
+    )
+    packs, trees = [], []
+    real_pack = bridge_mask_support.PackedMask.from_mask.__func__
+    monkeypatch.setattr(
+        bridge_mask_support.PackedMask, "from_mask",
+        classmethod(lambda cls, mask, **kw: packs.append(1) or real_pack(cls, mask, **kw)),
+    )
+    monkeypatch.setattr(bridge_mask_support, "PACK_AFTER_POINTS", 1)
+    real_init = pointwise_distance.FeatureDistance.__init__
+
+    def counting_init(self, *args, **kwargs):
+        trees.append(1)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(pointwise_distance.FeatureDistance, "__init__", counting_init)
+    volume = _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS))
+    volume.thick_vessel_mask = _mask_under(LONG_CROSS).astype(bool)
+
+    build_network(_settings(tmp_path, use_memmap_loading=True, memmap_directory=tmp_path / "mm"), volume, SCHEMA)
+
+    support = seen["build"][0]["mask_support"]
+    assert support is not None
+    assert all(call["mask_support"] is support for call in seen["cleanup"])
+    (split,) = seen["split"]
+    assert split["mask_support"] is support
+    assert split["tree_radius_um"] is not None and len(split["tree_radius_um"]) == split["centreline"].sum()
+    assert marked == [support]
+    assert len(packs) == 1
+    assert len(trees) == 1

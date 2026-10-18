@@ -187,6 +187,8 @@ def _scalar_radius(support: MaskSupport) -> Callable[[np.ndarray], float]:
 def mask_lumen_test(
     mask: np.ndarray | None,
     voxel_size: tuple[float, float, float],
+    *,
+    support: MaskSupport | None = None,
 ) -> Callable[[np.ndarray], np.ndarray] | None:
     """``inside(points_um)``: whether each physical ``(z, y, x)`` point falls in
     the mask's lumen (a True voxel; outside the volume is background) -- or
@@ -194,10 +196,21 @@ def mask_lumen_test(
 
     What degree-2 merging and direction-aware collapse ask when two edges
     join the same two nodes: one vessel, or two with background between
-    (``_helpers.paths_separated_by_background``).
+    (``_helpers.paths_separated_by_background``). With *support*, a
+    ``MaskSupport`` over the same mask, the points are read through it
+    (``MaskSupport.lookup_volume``): the same answers, from its bits once it
+    has packed the mask, rather than a memmap a voxel at a time.
     """
     if mask is None:
         return None
+    if support is not None:
+        def inside(points_um: np.ndarray) -> np.ndarray:
+            points = np.asarray(points_um, dtype=float)
+            return points_inside_mask(
+                points, support.lookup_volume(len(points)), voxel_size_zyx=voxel_size
+            )
+
+        return inside
     binary = np.asanyarray(mask, dtype=bool)
 
     def inside(points_um: np.ndarray) -> np.ndarray:
@@ -286,7 +299,6 @@ def lumen_cleanup(
     place of building one. *along_thick_centreline*: see
     ``LumenCleanup.along_centreline``.
     """
-    inside_lumen = mask_lumen_test(segmentation_mask, voxel_size)
     support = None
     if segmentation_mask is not None and bridge_require_mask_support:
         support = mask_support if mask_support is not None else MaskSupport(
@@ -296,6 +308,9 @@ def lumen_cleanup(
             min_mask_fraction=bridge_min_mask_fraction,
             feature_distance=getattr(stub_radius_at, "feature_distance", None),
         )
+    inside_lumen = mask_lumen_test(
+        segmentation_mask, voxel_size, support=support if support is not None else mask_support
+    )
     stub_mask_rules = {}
     if support is not None:
         stub_mask_rules = dict(
@@ -462,6 +477,7 @@ def build_graph_from_skeleton(
     remove_short_loops_under_um: float = 0.0,
     short_loop_keep_hole_over_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
     along_thick_centreline: Callable[[np.ndarray], float] | None = None,
+    mask_support: MaskSupport | None = None,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -603,6 +619,12 @@ def build_graph_from_skeleton(
         (a tip within its own threshold of a face, as before) or
         ``"leaves_image"`` (only a dead end that leaves the image, by
         ``dead_ends.leaves_image``; a near-face spur is judged like any other).
+    mask_support
+        A ``preprocessing.MaskSupport`` over *segmentation_mask*, used in
+        place of building one (with this build's bridge limits:
+        ``MaskSupport.limited_to``) -- for a caller that reads the same mask
+        after the build, so it is packed and its surface tree built once
+        (``pipeline.build_network``). The graph is the same either way.
 
     Returns
     -------
@@ -613,23 +635,30 @@ def build_graph_from_skeleton(
     check_mask_shape(segmentation_mask, skeleton)
     degree2_pass1_max_degree = 4
     degree2_pass2_max_degree = 8
-    inside_lumen = mask_lumen_test(segmentation_mask, voxel_size)
     stub_radius_at = (
         stub_radius_at
         if stub_radius_at is not None
         else mask_radius_sampler(segmentation_mask, voxel_size, min_stub_length_radius_multiple)
     )
-    mask_support = None
+    given_support, mask_support = mask_support, None
     if segmentation_mask is not None and (
         bridge_require_mask_support or recover_uncovered_mask_vessels
     ):
-        mask_support = MaskSupport(
-            np.asanyarray(segmentation_mask, dtype=bool),
-            voxel_size,
-            max_background_gap_um=bridge_max_background_gap_um,
-            min_mask_fraction=bridge_min_mask_fraction,
-            feature_distance=getattr(stub_radius_at, "feature_distance", None),
-        )
+        if given_support is not None:
+            check_mask_shape(given_support.mask, skeleton, "The mask support's mask")
+            mask_support = given_support.limited_to(bridge_max_background_gap_um, bridge_min_mask_fraction)
+        else:
+            mask_support = MaskSupport(
+                np.asanyarray(segmentation_mask, dtype=bool),
+                voxel_size,
+                max_background_gap_um=bridge_max_background_gap_um,
+                min_mask_fraction=bridge_min_mask_fraction,
+                feature_distance=getattr(stub_radius_at, "feature_distance", None),
+            )
+    inside_lumen = mask_lumen_test(
+        segmentation_mask, voxel_size,
+        support=mask_support if mask_support is not None else given_support,
+    )
     bridge_support = mask_support if bridge_require_mask_support else None
     cleanup = lumen_cleanup(
         segmentation_mask,

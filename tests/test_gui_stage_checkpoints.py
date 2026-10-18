@@ -923,3 +923,63 @@ def test_run_from_haemodynamics_without_a_raw_image_keeps_fwhm_measurement(tmp_p
     plan = checkpoints.plan_run_from("6. Haemodynamics", settings=settings)
 
     assert "do_fwhm_measurement" not in plan.skip_settings
+
+
+# --- what Post processing leaves reaches the next regenerate -----------------
+
+
+def test_a_regenerate_resumes_with_the_boundary_lists_post_processing_left_and_the_small_masks():
+    """Post processing adds and drops arteriole/venule boundary nodes where
+    the edits changed the network, judged against the small masks the
+    Boundaries stage's labelling read. The panel's next Regenerate on that
+    tab resumes the run from these checkpoints, so they hand on the lists
+    post processing left -- not Boundaries' own, which would undo the first
+    round's -- and those small masks, drawn only by Boundaries."""
+    from haemolynx.gui.results import BOUNDARY_NODES, MASK_LAYERS
+
+    checkpoints = StageCheckpoints()
+    results = built()
+    small_arteriole = np.zeros((4, 4, 4), dtype=np.uint8)
+    small_venule = np.ones((4, 4, 4), dtype=np.uint8)
+    boundaries_group = StageLayers(
+        stage="assign_boundaries",
+        title="4. Boundaries",
+        layers=(
+            LayerSpec(
+                kind="points", name=BOUNDARY_NODES, data=np.zeros((4, 3)),
+                features={
+                    "role": np.array(
+                        ["inlet", "outlet", "arteriole_boundary", "venule_boundary"], dtype=object
+                    ),
+                    "node_id": np.array([0, 3, 1, 2], dtype=object),
+                },
+            ),
+            LayerSpec(kind="image", name=MASK_LAYERS["small_arteriole_mask"], data=small_arteriole),
+            LayerSpec(kind="image", name=MASK_LAYERS["small_venule_mask"], data=small_venule),
+        ),
+    )
+    checkpoints.record(
+        "assign_boundaries", boundaries_group, results,
+        output=SimpleNamespace(large_arteriole_boundary_nodes=[5], large_venule_boundary_nodes=[6]),
+    )
+    checkpoints.record("solve", _group("solve"), results)
+    left = {
+        "inlet_nodes": [0], "outlet_nodes": [3],
+        "arteriole_boundary_nodes": [1, 9], "venule_boundary_nodes": [],
+        "large_arteriole_boundary_nodes": [5], "large_venule_boundary_nodes": [6],
+    }
+    checkpoints.record(
+        "post_process", _group("post_process"), results,
+        output=SimpleNamespace(post_processed={"edited_vessels": 1, "boundary_nodes": left}),
+    )
+    checkpoints.record("export_results", _group("export_results"), results)
+
+    plan = checkpoints.plan_regenerate("edited-graph", start_from="post_process", drop=False)
+
+    assert plan.resume.arteriole_boundary_nodes == (1, 9)
+    assert plan.resume.venule_boundary_nodes == ()
+    assert plan.resume.large_arteriole_boundary_nodes == (5,)
+    assert plan.resume.small_arteriole_mask is small_arteriole
+    assert plan.resume.small_venule_mask is small_venule
+    # Before post processing ran, the solve's checkpoint held Boundaries' own.
+    assert checkpoints.get("solve").arteriole_boundary_nodes == (1,)

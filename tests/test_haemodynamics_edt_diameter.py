@@ -585,3 +585,43 @@ def test_measuring_a_subset_leaves_every_other_edge_alone():
     assert summary["edges_measured"] == 1
     assert abs(graph[0][1][0]["edt_diameter_um"] - 8.0) < 0.5
     assert graph[1][2][0]["edt_diameter_um"] == 99.0, "not asked about: kept"
+
+
+@pytest.mark.parametrize("method", ["cross_section", "inscribed_radius"])
+def test_a_memmapped_mask_is_read_as_bits_with_the_same_widths(tmp_path, method):
+    """Low-RAM runs hand over a memmap: every section plane and radius is read
+    from a packed copy in RAM rather than the disk a voxel at a time, and the
+    widths are the ones the mask in RAM gives, to the last bit."""
+    first, line = _tube(6.0, (1, 1, 1))
+    second, _ = _tube(3.0, (1, 0, 0), shift=(0.0, 9.0, 0.0))
+    mask = first | second
+    on_disk = np.memmap(tmp_path / "mask.bin", dtype=bool, mode="w+", shape=mask.shape)
+    on_disk[...] = mask
+    edges = []
+    for volume in (mask, on_disk):
+        graph = nx.MultiGraph()
+        graph.add_edge(0, 1, key=0, voxels=[tuple(point) for point in line])
+        graph.add_edge(1, 2, key=0, voxels=[(28.0, 37.0, float(x)) for x in np.arange(10.0, 45.0)])
+        measure_edge_diameters_from_binary_mask(
+            graph, binary_mask=volume, voxel_size_zyx=_VOXEL, sample_spacing_along_edge_um=2.0,
+            method=method,
+        )
+        edges.append({k: graph.edges[k] for k in graph.edges(keys=True)})
+
+    class Unread(np.memmap):
+        def __getitem__(self, key):
+            if isinstance(key, tuple) and any(isinstance(k, np.ndarray) for k in key):
+                raise AssertionError("the memmap was read voxel by voxel")
+            return super().__getitem__(key)
+
+    graph = nx.MultiGraph()
+    graph.add_edge(0, 1, key=0, voxels=[tuple(point) for point in line])
+    measure_edge_diameters_from_binary_mask(
+        graph, binary_mask=on_disk.view(Unread), voxel_size_zyx=_VOXEL,
+        sample_spacing_along_edge_um=2.0, method=method,
+    )
+
+    assert edges[1] == edges[0]
+    assert edges[0][(0, 1, 0)]["edt_diameter_um"] > 4.5, "the vessel was measured"
+    assert graph.edges[0, 1, 0]["edt_diameter_um"] == edges[0][(0, 1, 0)]["edt_diameter_um"]
+    on_disk._mmap.close()

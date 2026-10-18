@@ -40,6 +40,8 @@ import numpy as np
 from scipy.ndimage import binary_dilation, generate_binary_structure
 from scipy.spatial import cKDTree
 
+from haemolynx.preprocessing.memmap_support import iter_blocks
+
 from ._helpers import (
     calculate_path_length,
     densify_polyline,
@@ -292,26 +294,84 @@ def thick_vessel_centreline(
     )
 
 
+#: How far round its points :func:`_inscribed_radius_um` looks for the wall (µm).
+_INSCRIBED_REACH_UM = 60.0
+
+
 def _inscribed_radius_um(
     points_um: np.ndarray, lumen: np.ndarray, voxel_size_zyx: np.ndarray
 ) -> np.ndarray:
     """Distance (µm) from each point to the nearest voxel outside *lumen*:
     the radius of the largest ball round it inside the lumen. Inf where the
-    lumen has no outside near enough to find (it fills the box searched)."""
+    lumen has no outside near enough to find (it fills the box searched).
+
+    The wall searched is the outside 6-adjacent to the lumen within the
+    points' box, padded by :data:`_INSCRIBED_REACH_UM`. It is found a block of
+    the box at a time (``preprocessing.memmap_support.iter_blocks``), each
+    block read only for the points within that reach of it, so neither the
+    box nor its wall is ever held whole: for a thick-vessel tree spanning a
+    stack the box is the stack, and reading it at once took several bytes a
+    voxel of it (2026-10-18). A point whose wall is further than the reach is
+    then measured against every block. The distances are the same as the box
+    read at once: the same wall voxels, each measured the same way.
+    """
     if len(points_um) == 0:
         return np.zeros(0)
-    lo_vox = np.floor(points_um.min(axis=0) / voxel_size_zyx).astype(int)
-    hi_vox = np.ceil(points_um.max(axis=0) / voxel_size_zyx).astype(int)
-    pad = np.ceil(60.0 / voxel_size_zyx).astype(int)
+    vs = np.asarray(voxel_size_zyx, dtype=float)
+    points_um = np.asarray(points_um, dtype=float)
+    lo_vox = np.floor(points_um.min(axis=0) / vs).astype(int)
+    hi_vox = np.ceil(points_um.max(axis=0) / vs).astype(int)
+    pad = np.ceil(_INSCRIBED_REACH_UM / vs).astype(int)
     lo = np.maximum(lo_vox - pad, 0)
     hi = np.minimum(hi_vox + pad + 1, np.asarray(lumen.shape))
-    crop = np.asarray(lumen[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]], dtype=bool)
-    wall = binary_dilation(crop, structure=generate_binary_structure(3, 1)) & ~crop
-    if not wall.any():
-        return np.full(len(points_um), np.inf)
-    tree = cKDTree((np.argwhere(wall) + lo) * voxel_size_zyx)
-    distance, _ = tree.query(points_um)
+    distance = np.full(len(points_um), np.inf)
+    _lower_to_nearest_wall(points_um, lumen, vs, lo, hi, distance, reach_um=_INSCRIBED_REACH_UM)
+    # Exact wherever the wall found is within the reach: a nearer one would
+    # lie in a block within the reach, and every such block was read.
+    far = np.flatnonzero(distance > _INSCRIBED_REACH_UM)
+    if len(far):
+        rest = distance[far]
+        _lower_to_nearest_wall(points_um[far], lumen, vs, lo, hi, rest, reach_um=np.inf)
+        distance[far] = rest
     return distance
+
+
+def _lower_to_nearest_wall(points_um, lumen, vs, lo, hi, best, *, reach_um) -> None:
+    """Lower *best* (each point's distance so far, in place) to its nearest
+    wall voxel in the box ``[lo, hi)`` of *lumen*, block by block: a block is
+    read only for the points it could bring nearer, within *reach_um* of it.
+    Outside the box is outside the lumen, and nothing of it is wall, as for
+    the box read whole."""
+    six = generate_binary_structure(3, 1)
+    for padded, inner, core in iter_blocks(tuple(int(s) for s in hi - lo), halo=1):
+        start = np.array([s.start for s in core]) + lo
+        last = np.array([s.stop for s in core]) + lo - 1
+        # Each point's distance to the block's nearest voxel centre: no wall
+        # voxel in it is nearer. The slack keeps rounding from dropping one.
+        outside = np.maximum(np.maximum(start * vs - points_um, points_um - last * vs), 0.0)
+        to_block = np.sqrt((outside**2).sum(axis=1))
+        asking = np.flatnonzero((to_block <= reach_um + 1e-6) & (to_block <= best + 1e-6))
+        if not len(asking):
+            continue
+        window = tuple(slice(int(s.start + o), int(s.stop + o)) for s, o in zip(padded, lo))
+        block = np.asarray(lumen[window], dtype=bool)
+        wall = (binary_dilation(block, structure=six) & ~block)[inner]
+        if not wall.any():
+            continue
+        tree = cKDTree((np.argwhere(wall) + start) * vs)
+        found, _ = tree.query(points_um[asking])
+        best[asking] = np.minimum(best[asking], found)
+
+
+def _tree_radius_um(points_um, lumen, thick, vs) -> np.ndarray:
+    """The inscribed radius at each point of the thick centreline tree: in
+    *lumen*, else (where the lumen fills the box searched) in the region
+    *thick* itself; inf where neither has an outside near enough."""
+    radius = _inscribed_radius_um(points_um, lumen, vs)
+    unknown = ~np.isfinite(radius)
+    if unknown.any() and lumen is not thick:
+        radius[unknown] = _inscribed_radius_um(points_um[unknown], thick, vs)
+    return radius
 
 
 class ThickCentreline:
@@ -327,10 +387,14 @@ class ThickCentreline:
     followed 95% of the tree after skeletonisation and 83% when built).
     """
 
-    def __init__(self, tree_points: np.ndarray, tolerance_um: np.ndarray):
+    def __init__(self, tree_points: np.ndarray, tolerance_um: np.ndarray, radius_um: np.ndarray | None = None):
         self._points = np.asarray(tree_points, dtype=float).reshape(-1, 3)
         self._tolerance = np.asarray(tolerance_um, dtype=float).reshape(-1)
         self._tree = cKDTree(self._points)
+        #: The lumen's inscribed radius at each tree point (inf where none was
+        #: found), as :func:`insert_thick_vessel_junction_nodes` measures it:
+        #: hand it over (``tree_radius_um``) rather than measure it twice.
+        self.radius_um = None if radius_um is None else np.asarray(radius_um, dtype=float).reshape(-1)
 
     @classmethod
     def from_region(
@@ -359,12 +423,12 @@ class ThickCentreline:
         if segmentation is not None and np.shape(segmentation) != thick.shape:
             segmentation = None
         lumen = thick if segmentation is None else np.asarray(segmentation, dtype=bool)
-        radius = _inscribed_radius_um(points, lumen, vs)
-        unknown = ~np.isfinite(radius)
-        if unknown.any() and lumen is not thick:
-            radius[unknown] = _inscribed_radius_um(points[unknown], thick, vs)
-        radius = np.where(np.isfinite(radius), radius, 0.0)
-        return cls(points, np.maximum(float(centreline_tolerance_um), CENTRELINE_TOLERANCE_PER_RADIUS * radius))
+        measured = _tree_radius_um(points, lumen, thick, vs)
+        radius = np.where(np.isfinite(measured), measured, 0.0)
+        return cls(
+            points, np.maximum(float(centreline_tolerance_um), CENTRELINE_TOLERANCE_PER_RADIUS * radius),
+            radius_um=measured,
+        )
 
     def along_um(self, polyline: np.ndarray) -> float:
         """How long a stretch of *polyline* (µm) lies on the tree: its steps,
@@ -517,6 +581,8 @@ def insert_thick_vessel_junction_nodes(
     short_loop_keep_hole_um: float | None = None,
     min_stub_length: float = 10.0,
     min_stub_length_radius_multiple: float = 3.0,
+    mask_support=None,
+    tree_radius_um: np.ndarray | None = None,
 ) -> nx.MultiGraph:
     """*G* with a one-radius bridge where each vessel opens into a thick vessel.
 
@@ -586,6 +652,12 @@ def insert_thick_vessel_junction_nodes(
     vessel gets its bridge without the network's existing ones, or its thick
     centreline elsewhere, being made again.
 
+    Two things a caller may have already, so they are not made again (the
+    result is the same): *mask_support*, a ``preprocessing.MaskSupport`` over
+    *segmentation*, which the join at the walls uses (with its own limits:
+    ``MaskSupport.limited_to``); and *tree_radius_um*, the inscribed radius
+    at each point of *centreline* in *segmentation* (``ThickCentreline.radius_um``).
+
     Returns a new graph; *G* is left as it is.
     """
     vs = np.asarray(voxel_size_zyx, dtype=float)
@@ -609,10 +681,10 @@ def insert_thick_vessel_junction_nodes(
         )
         segmentation = None
     lumen = thick if segmentation is None else np.asarray(segmentation, dtype=bool)
-    tree_radius = _inscribed_radius_um(tree_points, lumen, vs)
-    unknown = ~np.isfinite(tree_radius)
-    if unknown.any() and lumen is not thick:
-        tree_radius[unknown] = _inscribed_radius_um(tree_points[unknown], thick, vs)
+    if segmentation is not None and tree_radius_um is not None and np.shape(tree_radius_um) == (len(tree_points),):
+        tree_radius = np.array(tree_radius_um, dtype=float)
+    else:
+        tree_radius = _tree_radius_um(tree_points, lumen, thick, vs)
     finite = np.where(np.isfinite(tree_radius), tree_radius, 0.0)
     tree_tolerance = np.maximum(
         float(centreline_tolerance_um), CENTRELINE_TOLERANCE_PER_RADIUS * finite
@@ -669,6 +741,7 @@ def insert_thick_vessel_junction_nodes(
             result, near_tree, tree, tree_radius, lumen, thick, vs, chosen,
             max_background_gap_um=max_background_gap_um, min_mask_fraction=min_mask_fraction,
             max_short_loop_um=max_short_loop_um, short_loop_keep_hole_um=short_loop_keep_hole_um,
+            support=mask_support,
         )
     node_pos = {
         n: np.asarray(d["pos"], dtype=float) for n, d in result.nodes(data=True) if "pos" in d
@@ -1558,6 +1631,7 @@ def _centreline_samples(G, near_tree, thick, vs):
 def _join_dead_ends_at_walls(
     G, near_tree, tree, tree_radius, lumen, thick, vs, chosen, *,
     max_background_gap_um=None, min_mask_fraction=None, max_short_loop_um=None, short_loop_keep_hole_um=None,
+    support=None,
 ) -> int:
     """Draw each dead end that stops at a thick vessel's wall on to the
     nearest point of the thick centreline in *G*, in place, so the split
@@ -1574,7 +1648,8 @@ def _join_dead_ends_at_walls(
     region must not run beside a vessel in the same lumen (judged at its
     middle when short), and the join must close no loop inside one lumen.
     With *chosen* (the edges a post-processing split rebuilds), only those
-    edges' dead ends, and the joined edge joins them.
+    edges' dead ends, and the joined edge joins them. *support*, a
+    ``MaskSupport`` over *lumen*, is used rather than one made here.
     """
     from haemolynx.preprocessing.bridge_mask_support import (
         DEFAULT_MAX_BACKGROUND_GAP_UM, DEFAULT_MIN_MASK_FRACTION, MaskSupport,
@@ -1587,13 +1662,12 @@ def _join_dead_ends_at_walls(
     from .edit import insert_node_on_edge
     from .reconnect import path_continues_ends, route_through_mask
 
-    support = MaskSupport(
-        lumen, tuple(vs),
-        max_background_gap_um=(
-            DEFAULT_MAX_BACKGROUND_GAP_UM if max_background_gap_um is None else float(max_background_gap_um)
-        ),
-        min_mask_fraction=DEFAULT_MIN_MASK_FRACTION if min_mask_fraction is None else float(min_mask_fraction),
-    )
+    gap_um = DEFAULT_MAX_BACKGROUND_GAP_UM if max_background_gap_um is None else float(max_background_gap_um)
+    fraction = DEFAULT_MIN_MASK_FRACTION if min_mask_fraction is None else float(min_mask_fraction)
+    if support is not None and np.shape(support.mask) == np.shape(lumen):
+        support = support.limited_to(gap_um, fraction)
+    else:
+        support = MaskSupport(lumen, tuple(vs), max_background_gap_um=gap_um, min_mask_fraction=fraction)
     tips = []
     for n in G.nodes:
         if G.degree(n) != 1 or "pos" not in G.nodes[n]:

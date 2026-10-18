@@ -100,6 +100,11 @@ class FeatureDistance:
     its time. Off (0) by default -- a caller visiting every voxel once, as
     :func:`distance_transform_edt_blockwise` does, would only pay its memory
     (about 100 bytes a voxel).
+
+    *packed* (``bridge_mask_support.PackedMask``) is *features* as bits, read
+    in place of *features* to tell whether a queried voxel is itself a
+    feature: the same answer, from RAM rather than a page of a memmap read
+    at random (``MaskSupport`` hands its own over once it has packed).
     """
 
     def __init__(
@@ -110,8 +115,10 @@ class FeatureDistance:
         sampling: Sequence[float] | None = None,
         block_voxels: int = LOW_MEMORY_BLOCK_VOXELS,
         remember: int = 0,
+        packed=None,
     ):
         self.features = features
+        self.packed = packed
         self.feature_value = bool(feature_value)
         self.sampling = (
             np.ones(features.ndim) if sampling is None else np.asarray(sampling, dtype=float)
@@ -171,9 +178,15 @@ class FeatureDistance:
             return out
         if not self.has_surface:
             raise ValueError("no feature surface: every voxel is on the same side")
-        is_feature = (
-            np.asarray(self.features[tuple(voxels.T)], dtype=bool) == self.feature_value
-        )
+        if (
+            self.packed is not None
+            and (voxels >= 0).all()
+            and (voxels < np.asarray(self.features.shape)).all()
+        ):
+            values = self.packed.contains(voxels)
+        else:
+            values = np.asarray(self.features[tuple(voxels.T)], dtype=bool)
+        is_feature = values == self.feature_value
         query = voxels[~is_feature]
         if not len(query):
             return out

@@ -1045,3 +1045,146 @@ def test_the_run_draws_thick_centrelines_on_only_with_its_setting():
     assert default_schema()["thick_vessel_extend_centreline_ends"].default is False
     settings["thick_vessel_extend_centreline_ends"] = True
     assert thick_junction_bridge_arguments(settings)["extend_thick_ends"] is True
+
+
+# --- the inscribed radius read a block at a time; one measurement a run (2026-10-18) ---
+
+
+def _inscribed_radius_read_whole(points_um, lumen, vs):
+    """The inscribed radius as it was measured before it went block by block:
+    the points' box, padded by 60 um, read and dilated at once."""
+    from scipy.ndimage import binary_dilation, generate_binary_structure
+    from scipy.spatial import cKDTree
+
+    vs = np.asarray(vs, dtype=float)
+    pad = np.ceil(60.0 / vs).astype(int)
+    lo = np.maximum(np.floor(points_um.min(axis=0) / vs).astype(int) - pad, 0)
+    hi = np.minimum(np.ceil(points_um.max(axis=0) / vs).astype(int) + pad + 1, np.asarray(lumen.shape))
+    crop = np.asarray(lumen[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]], dtype=bool)
+    wall = binary_dilation(crop, structure=generate_binary_structure(3, 1)) & ~crop
+    if not wall.any():
+        return np.full(len(points_um), np.inf)
+    return cKDTree((np.argwhere(wall) + lo) * vs).query(points_um)[0]
+
+
+def _small_blocks(monkeypatch, block_voxels):
+    import functools
+
+    from haemolynx.graph import thick_vessel_junctions as tvj
+    from haemolynx.preprocessing.memmap_support import iter_blocks
+
+    monkeypatch.setattr(tvj, "iter_blocks", functools.partial(iter_blocks, block_voxels=block_voxels))
+
+
+@pytest.mark.parametrize("vs", [(1.0, 1.0, 1.0), (2.0, 0.7, 0.9)])
+@pytest.mark.parametrize("seed", range(3))
+def test_the_inscribed_radius_read_a_block_at_a_time_is_the_box_read_whole(monkeypatch, vs, seed):
+    """Bit for bit, on points inside, outside and on the wall of a thick
+    vessel in speckled tissue, with blocks far smaller than the box."""
+    from haemolynx.graph.thick_vessel_junctions import _inscribed_radius_um
+
+    rng = np.random.default_rng(seed)
+    shape = (30, 90, 50)
+    lumen = _tube((15, 0, 25), (15, 89, 25), 8.0, shape=shape) | (rng.random(shape) > 0.995)
+    on_tree = np.argwhere(_tube((15, 0, 25), (15, 89, 25), 0.5, shape=shape)) * np.asarray(vs)
+    anywhere = rng.uniform(0.0, 1.0, size=(200, 3)) * (np.asarray(shape) - 1) * np.asarray(vs)
+    points = np.vstack([on_tree, anywhere])
+    _small_blocks(monkeypatch, 4_000)
+
+    for subset in (points, on_tree[:1], anywhere[:7]):
+        expected = _inscribed_radius_read_whole(subset, lumen, vs)
+        assert np.array_equal(_inscribed_radius_um(subset, lumen, np.asarray(vs)), expected)
+
+
+def test_a_point_further_than_the_reach_from_any_wall_is_measured_against_every_block(monkeypatch):
+    """A lumen 140 um across with one speck of background in it: the centre's
+    wall is 100 um off, beyond the 60 um the first reading looks, and a lumen
+    with no outside at all is inf, as read whole."""
+    from haemolynx.graph.thick_vessel_junctions import _inscribed_radius_um
+
+    vs = (2.0, 2.0, 2.0)
+    lumen = np.ones((70, 70, 70), dtype=bool)
+    lumen[6, 6, 6] = False
+    centre = np.array([[70.0, 70.0, 70.0], [68.0, 72.0, 70.0]])
+    _small_blocks(monkeypatch, 3_000)
+
+    measured = _inscribed_radius_um(centre, lumen, np.asarray(vs))
+
+    assert np.array_equal(measured, _inscribed_radius_read_whole(centre, lumen, vs))
+    assert measured[0] == pytest.approx(np.sqrt(3) * 58.0)
+    full = np.ones_like(lumen)
+    assert np.array_equal(_inscribed_radius_um(centre, full, np.asarray(vs)), [np.inf, np.inf])
+
+
+def test_a_block_no_point_is_within_reach_of_is_never_read(monkeypatch):
+    """Two points 260 um apart along a thick vessel: their box runs the
+    vessel's length, and the blocks of it more than 60 um from both are left
+    unread."""
+    from haemolynx.graph.thick_vessel_junctions import _inscribed_radius_um
+    from haemolynx.preprocessing.memmap_support import iter_blocks
+
+    lumen = _tube((15, 0, 25), (15, 300, 25), 6.0, shape=(30, 301, 50))
+    _small_blocks(monkeypatch, 20_000)
+    reads = []
+
+    class Counting(np.ndarray):
+        def __getitem__(self, key):
+            reads.append(key)
+            return super().__getitem__(key)
+
+    points = np.array([[15.0, 20.0, 25.0], [15.0, 280.0, 25.0]])
+    radius = _inscribed_radius_um(points, lumen.view(Counting), np.ones(3))
+
+    assert np.array_equal(radius, _inscribed_radius_read_whole(points, lumen, (1.0, 1.0, 1.0)))
+    blocks = list(iter_blocks((30, 301, 50), halo=1, block_voxels=20_000))
+    assert 0 < len(reads) < len(blocks)
+    assert all(key[1].start <= 81 or key[1].stop >= 220 for key in reads)
+
+
+def test_a_split_handed_the_runs_support_and_tree_radius_is_the_split_without(monkeypatch):
+    """build_network measures the tree's radius once (ThickCentreline) and
+    shares one MaskSupport: the split it makes is the same, node for node."""
+    from haemolynx.graph import thick_vessel_junctions as tvj
+    from haemolynx.preprocessing import MaskSupport
+
+    G, lumen, body, tree = _wall_case(33.0)
+    region = _region(lumen, body)
+    plain = insert_thick_vessel_junction_nodes(G, region, voxel_size_zyx=VS, segmentation=lumen, centreline=tree)
+    follower = tvj.ThickCentreline.from_region(region, VS, segmentation=lumen, centreline=tree)
+    support = MaskSupport(lumen, VS)
+    measured = []
+    real = tvj._tree_radius_um
+    monkeypatch.setattr(tvj, "_tree_radius_um", lambda *a: measured.append(1) or real(*a))
+
+    shared = insert_thick_vessel_junction_nodes(
+        G, region, voxel_size_zyx=VS, segmentation=lumen, centreline=tree,
+        mask_support=support, tree_radius_um=follower.radius_um,
+    )
+
+    assert _exact(shared) == _exact(plain)
+    assert "S" not in shared, "the wall join ran"
+    assert measured == [], "the tree's radius was not measured again"
+    assert support._distance is not None, "the join read the run's support"
+    assert np.array_equal(
+        follower.radius_um,
+        tvj._tree_radius_um(np.argwhere(tree) * np.asarray(VS), lumen, region, np.asarray(VS)),
+    )
+
+
+def _exact(G):
+    """Every node, edge, key and attribute, floats to the last bit."""
+
+    def plain(value):
+        if isinstance(value, np.ndarray):
+            return ("array", value.dtype.str, value.shape, value.tobytes())
+        if isinstance(value, (float, np.floating)):
+            return ("float", repr(float(value)))
+        if isinstance(value, (list, tuple)):
+            return tuple(plain(v) for v in value)
+        if isinstance(value, dict):
+            return tuple(sorted((str(k), plain(v)) for k, v in value.items()))
+        return value
+
+    nodes = sorted((repr(n), plain(d)) for n, d in G.nodes(data=True))
+    edges = sorted((repr(u), repr(v), repr(k), plain(d)) for u, v, k, d in G.edges(keys=True, data=True))
+    return nodes, edges

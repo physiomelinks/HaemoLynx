@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import networkx as nx
 import numpy as np
@@ -596,8 +596,9 @@ def _boundary_state(
     allow_overlap: bool,
 ) -> dict[str, Any]:
     """The nodes and boundary nodes the edge labels imply, written as node
-    ``mask_vessel_type`` too. A boundary node is a labelled node with an
-    incident edge not of its type: where the mask's vessels meet the rest."""
+    ``mask_vessel_type`` too, and the labelled edges themselves. A boundary
+    node is a labelled node with an incident edge not of its type: where the
+    mask's vessels meet the rest."""
     arteriole_nodes: set[Any] = set()
     venule_nodes: set[Any] = set()
     for u, v, _key in arteriole_edges:
@@ -633,6 +634,8 @@ def _boundary_state(
         "venule_boundary_nodes": _boundary_nodes_for(venule_edges, venule_nodes),
         "arteriole_nodes": _sort_nodes(arteriole_nodes),
         "venule_nodes": _sort_nodes(venule_nodes),
+        "arteriole_edges": set(arteriole_edges),
+        "venule_edges": set(venule_edges),
         "arteriole_edge_count": len(arteriole_edges),
         "venule_edge_count": len(venule_edges),
     }
@@ -668,6 +671,8 @@ def infer_boundary_nodes_from_small_vessel_masks(
     nodes are given the same mask vessel type. Boundary nodes are the
     labeled-mask nodes that connect to at least one unlabeled edge, i.e.
     where the small-vessel mask region transitions into the capillary bed.
+    ``arteriole_edges``/``venule_edges`` hold the labelled edges'
+    ``(u, v, key)`` ids.
     """
     if small_arteriole_mask.shape != small_venule_mask.shape:
         raise ValueError(
@@ -840,6 +845,205 @@ def tag_vessels_in_global_masks(
         "capillary_edge_count": len(vessels) - tagged["large"] - tagged["small"],
         "gap_filled_edge_count": gap_filled,
     }
+
+
+def tag_edges_in_large_vessel_masks(
+    G: nx.Graph,
+    large_arteriole_mask: np.ndarray,
+    large_venule_mask: np.ndarray,
+    edges: list[tuple[Any, Any, Any]],
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+    minimum_overlap_fraction: float = 0.5,
+) -> dict[str, int]:
+    """Tag *edges* (``(u, v, key)``, the ones a hand edit made) with the large
+    mask each lies in, ``graph.LARGE_MASK_VESSEL_TYPE``, by the rule
+    :func:`infer_boundary_nodes_from_small_vessel_masks` labels every vessel
+    with for the Boundaries stage: at least *minimum_overlap_fraction* of its
+    length in the mask, the mask covering more of it (the arteriole on a tie)
+    when both do, and an under-covered edge between two edges of one type
+    gap-filled -- judged beside the tags the other edges carry, which stay as
+    they are. An edge in neither mask loses any tag it had (a split copies its
+    parent's, a merge its first vessel's)."""
+    from .branch_order import LARGE_MASK_VESSEL_TYPE
+
+    return _tag_chosen_edges(
+        G,
+        large_arteriole_mask,
+        large_venule_mask,
+        edges,
+        attribute=LARGE_MASK_VESSEL_TYPE,
+        voxel_size_zyx=voxel_size_zyx,
+        minimum_overlap_fraction=minimum_overlap_fraction,
+        schedule=[0.0],
+    )
+
+
+def tag_edges_in_small_vessel_masks(
+    G: nx.Graph,
+    small_arteriole_mask: np.ndarray,
+    small_venule_mask: np.ndarray,
+    edges: list[tuple[Any, Any, Any]],
+    *,
+    voxel_size_zyx: tuple[float, float, float],
+    minimum_overlap_fraction: float = 0.5,
+    max_dilation_microns: float = 0.0,
+    dilation_step_microns: float = 5.0,
+) -> dict[str, int]:
+    """Tag *edges* (``(u, v, key)``, the ones a hand edit made) with the small
+    mask each lies in, ``graph.SMALL_MASK_VESSEL_TYPE``, by the rule
+    :func:`infer_boundary_nodes_from_small_vessel_masks_progressive_dilation`
+    labels every vessel with for the Boundaries stage: at each dilation step
+    in turn, at least *minimum_overlap_fraction* of the edge within that
+    distance of a mask (the mask covering more of it, the arteriole on a
+    tie), or an under-covered edge between two edges of one type
+    gap-filled -- judged beside the tags the other edges carry, which stay
+    as they are. An edge in neither mask loses any tag it had (a split
+    copies its parent's, a merge its first vessel's)."""
+    from .branch_order import SMALL_MASK_VESSEL_TYPE
+
+    return _tag_chosen_edges(
+        G,
+        small_arteriole_mask,
+        small_venule_mask,
+        edges,
+        attribute=SMALL_MASK_VESSEL_TYPE,
+        voxel_size_zyx=voxel_size_zyx,
+        minimum_overlap_fraction=minimum_overlap_fraction,
+        schedule=_progressive_dilation_schedule(max_dilation_microns, dilation_step_microns),
+    )
+
+
+def _tag_chosen_edges(
+    G: nx.Graph,
+    arteriole_mask: np.ndarray,
+    venule_mask: np.ndarray,
+    edges: list[tuple[Any, Any, Any]],
+    *,
+    attribute: str,
+    voxel_size_zyx: tuple[float, float, float],
+    minimum_overlap_fraction: float,
+    schedule: list[float],
+) -> dict[str, int]:
+    """Write *attribute* (``"arteriole"``/``"venule"``) on *edges* alone, by
+    the masks' labelling rule over the dilation *schedule* (``[0.0]``: the
+    masks as they are), beside the other edges' *attribute*, left as it is."""
+    if arteriole_mask.shape != venule_mask.shape:
+        raise ValueError(
+            "The arteriole and venule masks must share a shape. "
+            f"Got {arteriole_mask.shape} and {venule_mask.shape}."
+        )
+    threshold = float(minimum_overlap_fraction)
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError(f"minimum_overlap_fraction must be in [0.0, 1.0]. Got {threshold}.")
+    arteriole_mask = np.asarray(arteriole_mask).astype(bool, copy=False)
+    venule_mask = np.asarray(venule_mask).astype(bool, copy=False)
+    all_edges = _label_edge_ids(G)
+    wanted = {_edge_id(u, v, key) for u, v, key in edges}
+    chosen = [entry for entry in all_edges if entry[2] in wanted]
+    for *_, data in chosen:
+        data.pop(attribute, None)
+    voxels = _edge_sample_voxels(
+        G, chosen, voxel_size_zyx=voxel_size_zyx, mask_shape=arteriole_mask.shape
+    )
+    distances: dict[tuple[Any, Any, int], tuple[np.ndarray, np.ndarray]] = {}
+    if len(schedule) > 1 and voxels:
+        edge_ids = list(voxels)
+        stacked = np.concatenate([voxels[edge_id] for edge_id in edge_ids]).reshape(-1, 3)
+        splits = np.cumsum([len(voxels[edge_id]) for edge_id in edge_ids])[:-1]
+        to_arteriole = np.split(
+            _distances_to_mask_microns(arteriole_mask, stacked, voxel_size_zyx=voxel_size_zyx),
+            splits,
+        )
+        to_venule = np.split(
+            _distances_to_mask_microns(venule_mask, stacked, voxel_size_zyx=voxel_size_zyx),
+            splits,
+        )
+        distances = dict(zip(edge_ids, zip(to_arteriole, to_venule)))
+
+    def fractions_at(dilation: float, edge_ids: list) -> dict:
+        if not distances:
+            return {
+                edge_id: (
+                    _fraction_in(arteriole_mask, voxels[edge_id]),
+                    _fraction_in(venule_mask, voxels[edge_id]),
+                )
+                for edge_id in edge_ids
+            }
+        reach = float(dilation) + 1e-9
+        out = {}
+        for edge_id in edge_ids:
+            art, ven = distances[edge_id]
+            out[edge_id] = (
+                float(np.count_nonzero(art <= reach)) / float(len(art)) if len(art) else 0.0,
+                float(np.count_nonzero(ven <= reach)) / float(len(ven)) if len(ven) else 0.0,
+            )
+        return out
+
+    labelled: dict[str, set[tuple[Any, Any, int]]] = {"arteriole": set(), "venule": set()}
+    for _u, _v, edge_id, data in all_edges:
+        if data.get(attribute) in labelled:
+            labelled[data[attribute]].add(edge_id)
+    data_of = {edge_id: data for _u, _v, edge_id, data in chosen}
+    gap_filled = 0
+    for dilation in schedule:
+        unlabelled = [
+            edge_id for edge_id in voxels
+            if edge_id not in labelled["arteriole"] and edge_id not in labelled["venule"]
+        ]
+        if not unlabelled:
+            break
+        fractions = fractions_at(dilation, unlabelled)
+        for edge_id, (arteriole_fraction, venule_fraction) in fractions.items():
+            in_arteriole = arteriole_fraction >= threshold
+            if in_arteriole and (venule_fraction < threshold or arteriole_fraction >= venule_fraction):
+                name = "arteriole"
+            elif venule_fraction >= threshold:
+                name = "venule"
+            else:
+                continue
+            labelled[name].add(edge_id)
+            data_of[edge_id][attribute] = name
+        gap_filled += _fill_label_gaps(
+            all_edges,
+            fractions,
+            labelled,
+            low_fraction=GAP_FILL_FRACTION_OF_THRESHOLD * threshold,
+            attribute=attribute,
+        )
+    tagged = {
+        name: sum(1 for *_, data in chosen if data.get(attribute) == name)
+        for name in labelled
+    }
+    return {
+        "arteriole_edge_count": tagged["arteriole"],
+        "venule_edge_count": tagged["venule"],
+        "gap_filled_edge_count": gap_filled,
+    }
+
+
+def boundary_nodes_from_small_mask_tags(
+    G: nx.Graph, nodes: Iterable[Any] | None = None
+) -> dict[str, list[Any]]:
+    """Which of *nodes* (default: every node) are arteriole and which venule
+    boundary nodes, read from the edges' ``graph.SMALL_MASK_VESSEL_TYPE``
+    tags by the rule the Boundaries stage reads the masks' labelling with: a
+    node one of whose edges lies in the arteriole mask is an arteriole node
+    (else, with one in the venule mask, a venule node), and a boundary node
+    when another of its edges is not of its type -- where the mask's vessels
+    meet the rest. ``{"arteriole": [...], "venule": [...]}``, in the order
+    of *nodes*."""
+    from .branch_order import SMALL_MASK_VESSEL_TYPE
+
+    found: dict[str, list[Any]] = {"arteriole": [], "venule": []}
+    for node in G.nodes if nodes is None else nodes:
+        if node not in G:
+            continue
+        types = [data.get(SMALL_MASK_VESSEL_TYPE) for _u, _v, data in G.edges(node, data=True)]
+        role = "arteriole" if "arteriole" in types else "venule" if "venule" in types else None
+        if role is not None and any(kind != role for kind in types):
+            found[role].append(node)
+    return found
 
 
 def filter_io_nodes_to_terminal_degree1(
@@ -1073,6 +1277,25 @@ def _dilated_mask_from_cached_distance(
     return base_mask.astype(bool, copy=False) | (distance_from_mask <= dilation)
 
 
+def _progressive_dilation_schedule(
+    max_dilation_microns: float, dilation_step_microns: float
+) -> list[float]:
+    """The small-vessel labelling's dilation steps: 0 um, then every step up
+    to the maximum, with a 1 um step put in when the first one is further."""
+    schedule = _build_dilation_schedule_microns(
+        max_dilation_microns=max_dilation_microns,
+        dilation_step_microns=dilation_step_microns,
+    )
+    if (
+        len(schedule) >= 2
+        and float(schedule[0]) == 0.0
+        and float(schedule[1]) > 1.0
+        and float(max_dilation_microns) >= 1.0
+    ):
+        schedule = sorted({float(s) for s in schedule} | {1.0})
+    return schedule
+
+
 def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
     G: nx.Graph,
     small_arteriole_mask: np.ndarray,
@@ -1118,17 +1341,7 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
             "minimum_overlap_fraction must be in [0.0, 1.0]. "
             f"Got {minimum_overlap_fraction}."
         )
-    schedule = _build_dilation_schedule_microns(
-        max_dilation_microns=max_dilation_microns,
-        dilation_step_microns=dilation_step_microns,
-    )
-    if (
-        len(schedule) >= 2
-        and float(schedule[0]) == 0.0
-        and float(schedule[1]) > 1.0
-        and float(max_dilation_microns) >= 1.0
-    ):
-        schedule = sorted({float(s) for s in schedule} | {1.0})
+    schedule = _progressive_dilation_schedule(max_dilation_microns, dilation_step_microns)
 
     arteriole_mask = small_arteriole_mask.astype(bool, copy=False)
     venule_mask = small_venule_mask.astype(bool, copy=False)

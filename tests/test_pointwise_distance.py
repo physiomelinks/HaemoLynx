@@ -80,3 +80,31 @@ def test_out_of_range_voxels_behave_as_without_memory():
     with pytest.raises(IndexError):
         remembering.at(np.array([[mask.shape[0], 0, 0]]))
     assert len(remembering._known) == 0
+
+
+def test_the_mask_as_bits_gives_the_same_distances_without_reading_the_mask():
+    """``packed`` (a ``PackedMask`` of the features) answers whether a queried
+    voxel is itself a feature: the same distances, and in range the volume
+    itself is not read. Out of range keeps plain indexing's behaviour."""
+    from haemolynx.preprocessing.bridge_mask_support import PackedMask
+
+    mask = _mask()
+    voxels = _voxels(mask)
+    plain = FeatureDistance(mask, feature_value=False, sampling=SPACING)
+    packed = FeatureDistance(
+        mask, feature_value=False, sampling=SPACING, packed=PackedMask.from_mask(mask)
+    )
+    expected = plain.at(voxels)
+
+    class Unread(np.ndarray):
+        def __getitem__(self, key):
+            raise AssertionError("the volume was read")
+
+    packed.features = mask.view(Unread)
+    assert np.array_equal(packed.at(voxels), expected)
+
+    packed.features = mask
+    wrapped = np.array([[-1, -1, -1]])
+    assert np.array_equal(packed.at(wrapped), plain.at(wrapped))
+    with pytest.raises(IndexError):
+        packed.at(np.array([[mask.shape[0], 0, 0]]))
