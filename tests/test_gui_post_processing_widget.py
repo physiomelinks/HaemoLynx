@@ -538,6 +538,32 @@ def test_add_vessel_traces_each_leg_through_the_segmented_mask(make_napari_viewe
     assert data["centreline_smoothing"] in ("smoothed", "relaxed", "kept_raw")
 
 
+def test_add_vessel_logs_how_the_vessel_sits_in_the_segmentation(make_napari_viewer):
+    """The log line says what the post_process stage will write on the
+    vessel: traced along the L, all of it is in the segmentation; drawn
+    straight across the gap, most of it is not -- and it is added all the same."""
+    from haemolynx.graph import DRAWN_BACKGROUND_RUN_UM, DRAWN_MASK_FRACTION
+
+    page = _l_page(make_napari_viewer(), image=_l_mask())
+    c = page.controls
+    _click(page, (0.0, 0.0, 10.0))   # node 1
+    _click(page, (0.0, 20.0, 10.0))  # node 3, round the L
+    log = c.log_box.toPlainText()
+    assert "all of it in the segmentation" in log
+    (_u, _v, along), = _added(c.state.graph)
+    assert along[DRAWN_MASK_FRACTION] == pytest.approx(1.0)
+
+    c.add_button.click()
+    _click(page, (0.0, 0.0, 10.0))
+    _click(page, (0.0, 10.0, 0.0))   # a waypoint in the background, left of the L
+    _click(page, (0.0, 20.0, 10.0))
+    off = [d for _u, _v, d in _added(c.state.graph) if d is not along]
+    assert len(off) == 1
+    assert off[0][DRAWN_MASK_FRACTION] < 0.9
+    assert off[0][DRAWN_BACKGROUND_RUN_UM] > 5.0
+    assert "% of it in the segmentation" in c.log_box.toPlainText().splitlines()[-1]
+
+
 def _bright_l():
     raw = np.random.default_rng(0).uniform(0.0, 20.0, size=(1, 25, 35)).astype(np.float32)
     raw[_l_mask().astype(bool)] = 200.0

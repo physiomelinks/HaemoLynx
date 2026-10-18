@@ -37,6 +37,13 @@ with the mean diameter of the vessels already at its ends
 :func:`add_vessel_between` are the two-node version. After deleting,
 :func:`prune_disconnected_branches` removes whatever the deletions cut off
 from every inlet-to-outlet piece, and every dead end that reaches no outlet.
+How a drawn vessel sits in the run's segmentation is recorded, never
+enforced: :func:`record_drawn_vessel_support` writes on it the fraction of it
+in the mask, the longest run of background it crosses and whether it runs
+beside a vessel the network already has in the same lumen (the questions
+graph building asks of every bridge it draws), for the stage's summary, the
+tab's log and the hover -- a person draws vessels where the segmentation is
+missing as often as not, and their judgement stands.
 
 For Manual loop review: :func:`short_loops` lists the network's short loops,
 shortest first, each split into the sides a person chooses between, and
@@ -56,7 +63,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import networkx as nx
 import numpy as np
 
-from ._helpers import calculate_path_length, next_node_id
+from ._helpers import calculate_path_length, edge_sample_points, next_node_id
 from .degree2 import create_trivial_merged_edge
 from .edit import astar_path, voxel_path_to_microns
 from .connectivity import remove_vessels_off_inlet_outlet_paths
@@ -65,6 +72,10 @@ from .thick_vessel_junctions import IS_ZERO_RESISTANCE
 __all__ = [
     "APPLIED",
     "DEFAULT_SPLIT_CONNECTOR_LENGTH_UM",
+    "DRAWN_BACKGROUND_RUN_UM",
+    "DRAWN_BESIDE_VESSEL",
+    "DRAWN_MASK_FRACTION",
+    "DrawnVesselSupport",
     "EDITED",
     "IntensityCostField",
     "JunctionVessel",
@@ -80,6 +91,7 @@ __all__ = [
     "clear_edit_marks",
     "delete_loop_side",
     "delete_vessels",
+    "describe_drawn_support",
     "edge_keys",
     "edited_edges",
     "has_pending_edits",
@@ -89,6 +101,7 @@ __all__ = [
     "mean_incident_diameter",
     "merge_junctions",
     "prune_disconnected_branches",
+    "record_drawn_vessel_support",
     "set_vessel_diameter",
     "short_loops",
     "smooth_traced_path",
@@ -125,6 +138,20 @@ DEFAULT_SPLIT_CONNECTOR_LENGTH_UM = 15.0
 #: the segmented mask; less, and the route has left the vessel -- draw it
 #: straight instead.
 MIN_ROUTED_INSIDE_FRACTION = 0.5
+
+#: Edge attributes: how a vessel drawn by hand sits in the run's
+#: segmentation (:func:`record_drawn_vessel_support`) -- the fraction of its
+#: length in the mask, the longest run of background it crosses in microns,
+#: and whether it runs beside a vessel the network already has in the same
+#: lumen. Recorded, never enforced.
+DRAWN_MASK_FRACTION = "drawn_mask_fraction"
+DRAWN_BACKGROUND_RUN_UM = "drawn_background_run_um"
+DRAWN_BESIDE_VESSEL = "drawn_beside_vessel"
+
+#: Margin round a drawn vessel within which its lumen radius is read from
+#: the mask (:func:`_local_lumen_radius`); doubled while a radius along the
+#: vessel reaches it.
+_LUMEN_RADIUS_PAD_UM = 8.0
 
 #: How far along a vessel its direction out of a junction is measured.
 _DIRECTION_SAMPLE_UM = 10.0
@@ -1169,6 +1196,210 @@ def add_traced_vessel(
         diameter_um=diameter,
         smoothing=outcome,
     )
+
+
+@dataclass(frozen=True)
+class DrawnVesselSupport:
+    """How a vessel drawn by hand sits in the segmentation
+    (:func:`record_drawn_vessel_support`)."""
+
+    edge: EdgeKey
+    length_um: float
+    #: Fraction of its length in the mask.
+    mask_fraction: float
+    #: The longest run of background it crosses, in microns.
+    background_run_um: float
+    #: Whether it runs beside a vessel the network already has, in one lumen.
+    beside_vessel: bool
+    #: Whether graph building's bridge gate (``bridge_max_background_gap_um``,
+    #: ``bridge_min_mask_fraction``) would have drawn a bridge along it.
+    within_bridge_gate: bool
+
+    def describe(self) -> str:
+        """One clause for a log line (:func:`describe_drawn_support`)."""
+        return describe_drawn_support(
+            self.mask_fraction, self.background_run_um, self.beside_vessel, self.length_um
+        )
+
+    def as_record(self) -> dict[str, Any]:
+        """A plain dict of it, for the stage's summary."""
+        return {
+            "edge": tuple(_plain(n) for n in self.edge),
+            "length_um": self.length_um,
+            "mask_fraction": self.mask_fraction,
+            "background_run_um": self.background_run_um,
+            "beside_vessel": self.beside_vessel,
+            "within_bridge_gate": self.within_bridge_gate,
+        }
+
+
+def _plain(value: Any) -> Any:
+    return value.item() if isinstance(value, np.generic) else value
+
+
+def describe_drawn_support(
+    mask_fraction: float,
+    background_run_um: float,
+    beside_vessel: bool = False,
+    length_um: float | None = None,
+) -> str:
+    """What a drawn vessel's segmentation attributes say, in one clause:
+    ``all of it in the segmentation``; ``none of it in the segmentation (12
+    µm of background)``; or ``62% of it in the segmentation, 4.1 µm of
+    background in one run at most`` -- then ``, beside a vessel in the same
+    lumen`` when it is."""
+    fraction = float(mask_fraction)
+    if fraction >= 1.0 - 1e-9:
+        text = "all of it in the segmentation"
+    elif fraction <= 1e-9:
+        text = "none of it in the segmentation"
+        if length_um is not None:
+            text += f" ({float(length_um):.3g} µm of background)"
+    else:
+        text = (
+            f"{100.0 * fraction:.0f}% of it in the segmentation, "
+            f"{float(background_run_um):.3g} µm of background in one run at most"
+        )
+    if beside_vessel:
+        text += ", beside a vessel in the same lumen"
+    return text
+
+
+def _local_lumen_radius(support: Any, path: np.ndarray, pad_um: float = _LUMEN_RADIUS_PAD_UM):
+    """``radius_at(points_um) -> um``: the mask's distance to background at
+    each point's nearest voxel, read from a distance transform of the mask
+    cut round *path* with *pad_um* of margin -- exact for a radius up to the
+    margin, so the margin doubles while a radius along *path* reaches it --
+    rather than from the whole volume's surface, which graph building
+    builds once a run and a vessel drawn by hand has no need of. Points
+    outside the cut read 0."""
+    from scipy.ndimage import distance_transform_edt
+
+    from haemolynx.preprocessing.bridge_mask_support import _densify, _sample_step
+
+    scale = np.asarray(support.voxel_size_zyx, dtype=float)
+    shape = np.asarray(support.mask.shape)
+    samples = _densify(path, _sample_step(support.voxel_size_zyx))
+    pad = float(pad_um)
+    while True:
+        lo = np.maximum(np.floor((path.min(axis=0) - pad) / scale).astype(int), 0)
+        hi = np.minimum(np.ceil((path.max(axis=0) + pad) / scale).astype(int) + 1, shape)
+        crop = np.asarray(
+            support.mask[tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))], dtype=bool
+        )
+        if crop.any():
+            # Where the cut has no background at all, scipy measures to its
+            # edge: a radius of at least the margin, as it should read.
+            distance = distance_transform_edt(crop, sampling=scale)
+        else:
+            distance = np.zeros(crop.shape)
+
+        def radius_at(points_um, _lo=lo, _hi=hi, _distance=distance) -> np.ndarray:
+            index = np.rint(np.asarray(points_um, dtype=float).reshape(-1, 3) / scale).astype(int) - _lo
+            inside = np.all((index >= 0) & (index < _hi - _lo), axis=1)
+            out = np.zeros(len(index))
+            if inside.any():
+                out[inside] = _distance[tuple(index[inside].T)]
+            return out
+
+        whole = bool(np.all(lo == 0) and np.all(hi == shape))
+        if whole or float(radius_at(samples).max(initial=0.0)) < pad:
+            return radius_at
+        pad *= 2.0
+
+
+def _centreline_points_near(
+    G: nx.MultiGraph, path: np.ndarray, exclude: EdgeKey, reach_um: float
+) -> np.ndarray:
+    """Every other vessel's centreline, sampled at least every micron, that
+    comes within *reach_um* of *path*'s box: what a drawn vessel may run
+    beside. An edge is skipped on its ends alone when neither is within its
+    own length of the box."""
+    from haemolynx.preprocessing.bridge_mask_support import _densify
+
+    lo, hi = path.min(axis=0) - reach_um, path.max(axis=0) + reach_um
+    node_pos = {
+        n: np.asarray(d["pos"], dtype=float)[:3] for n, d in G.nodes(data=True) if "pos" in d
+    }
+    u0, v0, k0 = exclude
+    pieces = []
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if key == k0 and {u, v} == {u0, v0}:
+            continue
+        if u not in node_pos or v not in node_pos:
+            continue
+        length = _optional_float(data.get("length"))
+        if length is not None:
+            ends = np.vstack([node_pos[u], node_pos[v]])
+            outside = np.maximum(lo - ends, 0.0) + np.maximum(ends - hi, 0.0)
+            if np.linalg.norm(outside, axis=1).min() > length:
+                continue
+        points = edge_sample_points(u, v, data, node_pos)
+        if np.any(points.max(axis=0) < lo) or np.any(points.min(axis=0) > hi):
+            continue
+        pieces.append(_densify(points, 1.0))
+    return np.vstack(pieces) if pieces else np.empty((0, 3))
+
+
+def record_drawn_vessel_support(
+    G: nx.MultiGraph, edges: Iterable[EdgeKey], support: Any
+) -> list[DrawnVesselSupport]:
+    """Write on each vessel of *edges* how it sits in the segmentation, and say.
+
+    *support* reads the run's segmentation mask
+    (``haemolynx.preprocessing.MaskSupport``, as graph building reads it for
+    every bridge it draws). Each vessel gets :data:`DRAWN_MASK_FRACTION` and
+    :data:`DRAWN_BACKGROUND_RUN_UM` from ``bridge_mask_support`` of its path,
+    and :data:`DRAWN_BESIDE_VESSEL` from ``path_shadows_existing_vessel``
+    against the other vessels' centrelines within reach, with the lumen
+    radius read from the mask round the vessel alone
+    (:func:`_local_lumen_radius`); each record says besides whether graph
+    building's bridge gate would have drawn it. A diagnostic: nothing is
+    refused or removed, whatever it says. A vessel no longer in *G* is
+    skipped.
+    """
+    from haemolynx.preprocessing.bridge_mask_support import (
+        SAME_LUMEN_MARGIN_UM,
+        _densify,
+        _sample_step,
+        path_shadows_existing_vessel,
+    )
+
+    step = _sample_step(support.voxel_size_zyx)
+    records: list[DrawnVesselSupport] = []
+    for edge in edges:
+        u, v, k = edge
+        if not G.has_edge(u, v, key=k):
+            continue
+        path = vessel_path(G, (u, v, k))
+        in_mask = support.support(path)
+        radius_at = _local_lumen_radius(support, path)
+        reach = (
+            2.0 * float(radius_at(_densify(path, step)).max(initial=0.0))
+            + SAME_LUMEN_MARGIN_UM + 1.0
+        )
+        existing = _centreline_points_near(G, path, (u, v, k), reach)
+        beside = bool(len(existing)) and bool(
+            path_shadows_existing_vessel(
+                path, None, existing, support.inside, radius_at,
+                step_um=step, judge_short_at_middle=True,
+            )
+        )
+        data = G.edges[u, v, k]
+        data[DRAWN_MASK_FRACTION] = float(in_mask.inside_fraction)
+        data[DRAWN_BACKGROUND_RUN_UM] = float(in_mask.longest_background_um)
+        data[DRAWN_BESIDE_VESSEL] = beside
+        records.append(
+            DrawnVesselSupport(
+                edge=(u, v, k),
+                length_um=float(in_mask.length_um),
+                mask_fraction=float(in_mask.inside_fraction),
+                background_run_um=float(in_mask.longest_background_um),
+                beside_vessel=beside,
+                within_bridge_gate=bool(support.accepts_support(in_mask)),
+            )
+        )
+    return records
 
 
 def prune_disconnected_branches(

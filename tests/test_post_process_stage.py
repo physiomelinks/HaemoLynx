@@ -1287,6 +1287,120 @@ def test_tagging_every_vessel_gives_the_boundaries_stage_labelling(tmp_path, dil
     assert counts["arteriole_edge_count"] == sum(tag == "arteriole" for tag in expected.values())
 
 
+# --- a drawn vessel read against the segmentation ---------------------------
+
+
+def _segmentation_along(G, shape, radius_vox=1, *, wide=(), wide_radius_vox=3):
+    """A mask of *shape* with a tube of *radius_vox* (Chebyshev) round every
+    vessel's path (walked every half micron: a straight vessel is stored as
+    its two ends) -- *wide_radius_vox* round the vessels in *wide* -- on
+    the fixture's 1 um grid."""
+    from haemolynx.preprocessing.bridge_mask_support import _densify
+
+    mask = np.zeros(shape, dtype=bool)
+    for u, v, data in G.edges(data=True):
+        r = wide_radius_vox if (u, v) in wide or (v, u) in wide else radius_vox
+        for point in _densify(np.asarray(data["voxels"], dtype=float), 0.5):
+            z, y, x = (int(round(c)) for c in point)
+            mask[
+                max(z - r, 0): z + r + 1, max(y - r, 0): y + r + 1, max(x - r, 0): x + r + 1
+            ] = True
+    return mask
+
+
+def _drawn_records(out):
+    return out.results["post_process"]["drawn_vessels"]
+
+
+def test_a_vessel_drawn_through_the_segmentation_is_recorded_as_all_in_it(tmp_path):
+    """The reader graph building judges its bridges with, applied to each
+    vessel a hand edit drew: p-f lies along the small arteriole's mask, so
+    all of it is in the segmentation, no background is crossed, and no
+    other centreline runs beside it in its lumen."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    drawn = add_vessel_between(model.graph, ids["p"], ids["f"])
+    network.volume.image = _segmentation_along(model.graph, network.volume.image.shape)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    data = out.graph.edges[drawn]
+    assert data[graph_module.DRAWN_MASK_FRACTION] == pytest.approx(1.0)
+    assert data[graph_module.DRAWN_BACKGROUND_RUN_UM] == pytest.approx(0.0)
+    assert data[graph_module.DRAWN_BESIDE_VESSEL] is False
+    (record,) = _drawn_records(out)
+    assert record == {
+        "edge": drawn, "length_um": pytest.approx(9.0), "mask_fraction": pytest.approx(1.0),
+        "background_run_um": pytest.approx(0.0), "beside_vessel": False,
+        "within_bridge_gate": True,
+    }
+    assert "drawn_vessels" in out.results["post_process"]
+    # The halves and tags the edit also touched are not vessels anybody drew.
+    for edge, other in out.graph.edges.items():
+        if edge != drawn:
+            assert graph_module.DRAWN_MASK_FRACTION not in other
+
+
+def test_a_vessel_drawn_across_background_records_the_run_and_is_kept(tmp_path, caplog):
+    """p-f drawn where the segmentation shows no vessel between the large
+    arteriole's tube and the capillary's: 6 um of background in one run,
+    a third of it in the mask, which graph building's bridge gate would
+    have refused -- recorded and said, and the vessel kept as drawn."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    network.volume.image = _segmentation_along(model.graph, network.volume.image.shape)
+    drawn = add_vessel_between(model.graph, ids["p"], ids["f"])
+
+    with caplog.at_level("INFO", logger="haemolynx.pipeline.stages"):
+        out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    data = out.graph.edges[drawn]
+    assert out.graph.has_edge(*drawn) and data["branch_order"]
+    assert 0.25 < data[graph_module.DRAWN_MASK_FRACTION] < 0.45
+    assert data[graph_module.DRAWN_BACKGROUND_RUN_UM] == pytest.approx(6.0, abs=1.0)
+    assert data[graph_module.DRAWN_BESIDE_VESSEL] is False
+    (record,) = _drawn_records(out)
+    assert record["edge"] == drawn and record["within_bridge_gate"] is False
+    assert "1 partly off it" in caplog.text
+    assert "of background in one run at most" in caplog.text
+
+
+def test_a_vessel_drawn_beside_a_vessel_in_its_lumen_says_so(tmp_path):
+    """A second strand drawn 2 um off the large arteriole's centreline,
+    inside its 7-voxel-wide tube from a1 to a3: all in the segmentation,
+    and beside a vessel the network already has."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    G = model.graph
+    a1, a3 = G.nodes[ids["a1"]]["pos"], G.nodes[ids["a3"]]["pos"]
+    network.volume.image = _segmentation_along(
+        G, network.volume.image.shape,
+        wide=((ids["a1"], ids["a2"]), (ids["a2"], ids["p"]), (ids["p"], ids["a3"])),
+    )
+    path = [a1, (a1[0] + 1.0, 4.0, 7.0), (a3[0] - 1.0, 4.0, 7.0), a3]
+    drawn = add_vessel_between(G, ids["a1"], ids["a3"], path)
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    data = out.graph.edges[drawn]
+    assert data[graph_module.DRAWN_MASK_FRACTION] == pytest.approx(1.0)
+    assert data[graph_module.DRAWN_BESIDE_VESSEL] is True
+    (record,) = _drawn_records(out)
+    assert record["beside_vessel"] is True and record["within_bridge_gate"] is True
+    # The strand it runs beside is not marked: it is the vessel the run built.
+    assert graph_module.DRAWN_BESIDE_VESSEL not in out.graph.edges[ids["a2"], ids["p"], 0]
+
+
+def test_without_a_segmentation_no_drawn_vessel_is_read(tmp_path):
+    """A synthetic run has no mask: the attributes are not written and the
+    summary has no list, rather than a vessel read against nothing."""
+    run_settings, network, boundaries, model, ids = _small_boundary_run(tmp_path)
+    drawn = add_vessel_between(model.graph, ids["p"], ids["f"])
+    network.volume.image = None
+
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert graph_module.DRAWN_MASK_FRACTION not in out.graph.edges[drawn]
+    assert "drawn_vessels" not in out.results["post_process"]
+
+
 def test_a_resume_hands_the_small_masks_the_labelling_read_on(tmp_path):
     """The panel's Regenerate on the Post processing tab resumes the run:
     its boundaries come from the resume, which carries the small masks as
