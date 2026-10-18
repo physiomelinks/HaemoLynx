@@ -596,8 +596,9 @@ def _boundary_state(
     allow_overlap: bool,
 ) -> dict[str, Any]:
     """The nodes and boundary nodes the edge labels imply, written as node
-    ``mask_vessel_type`` too. A boundary node is a labelled node with an
-    incident edge not of its type: where the mask's vessels meet the rest."""
+    ``mask_vessel_type`` too, and the labelled edges themselves. A boundary
+    node is a labelled node with an incident edge not of its type: where the
+    mask's vessels meet the rest."""
     arteriole_nodes: set[Any] = set()
     venule_nodes: set[Any] = set()
     for u, v, _key in arteriole_edges:
@@ -633,6 +634,8 @@ def _boundary_state(
         "venule_boundary_nodes": _boundary_nodes_for(venule_edges, venule_nodes),
         "arteriole_nodes": _sort_nodes(arteriole_nodes),
         "venule_nodes": _sort_nodes(venule_nodes),
+        "arteriole_edges": set(arteriole_edges),
+        "venule_edges": set(venule_edges),
         "arteriole_edge_count": len(arteriole_edges),
         "venule_edge_count": len(venule_edges),
     }
@@ -668,6 +671,8 @@ def infer_boundary_nodes_from_small_vessel_masks(
     nodes are given the same mask vessel type. Boundary nodes are the
     labeled-mask nodes that connect to at least one unlabeled edge, i.e.
     where the small-vessel mask region transitions into the capillary bed.
+    ``arteriole_edges``/``venule_edges`` hold the labelled edges'
+    ``(u, v, key)`` ids.
     """
     if small_arteriole_mask.shape != small_venule_mask.shape:
         raise ValueError(

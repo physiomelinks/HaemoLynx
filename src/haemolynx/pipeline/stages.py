@@ -2394,7 +2394,10 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         # here -- if use_small_vessel_masks_for_boundary_assignment is also
         # on, whichever of the two calls runs last "wins" that diagnostic
         # attribute, which is harmless since neither branch-order
-        # assignment nor resistance reads it back.
+        # assignment nor resistance reads it back. The tier is read from
+        # the large-mask tag written below instead: the boundary nodes
+        # alone cannot say which way the vessel runs on at a junction
+        # where a side branch leaves it.
         large_boundary_results = graph.infer_boundary_nodes_from_small_vessel_masks(
             G,
             assignment_large_arteriole_mask,
@@ -2404,6 +2407,11 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 settings["large_vessel_mask_min_overlap_fraction"]
             ),
         )
+        graph.tag_large_mask_vessel_types(
+            G,
+            large_boundary_results["arteriole_edges"],
+            large_boundary_results["venule_edges"],
+        )
         settings["large_arteriole_boundary_nodes"][:] = list(
             large_boundary_results["arteriole_boundary_nodes"]
         )
@@ -2412,7 +2420,9 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         )
         logger.info(
             "Large-vessel-network branch-order tagging: "
-            f"{len(settings['large_arteriole_boundary_nodes'])} Large_Art "
+            f"{len(large_boundary_results['arteriole_edges'])} edge(s) in the large "
+            f"arteriole mask, {len(large_boundary_results['venule_edges'])} in the large "
+            f"venule mask; {len(settings['large_arteriole_boundary_nodes'])} Large_Art "
             f"boundary node(s), {len(settings['large_venule_boundary_nodes'])} "
             "Large_Ven boundary node(s) (min_overlap_fraction="
             f"{float(settings['large_vessel_mask_min_overlap_fraction']):.3f})."
