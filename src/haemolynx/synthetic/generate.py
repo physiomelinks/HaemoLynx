@@ -62,6 +62,12 @@ GENERATOR_VERSION = 1
 SYNTHETIC_ROLES = "synthetic_roles"
 #: Edge attribute: the vessel class the generator drew a vessel as.
 SYNTHETIC_CLASS = "synthetic_class"
+#: Edge attribute the branch-order hierarchy reads a Large_Art/Large_Ven tier
+#: from -- ``graph.branch_order.LARGE_MASK_VESSEL_TYPE``, the large mask a
+#: vessel lies in -- repeated here so a generated graph carries it whatever
+#: that module knows. A large-tier vessel is tagged with its side.
+LARGE_MASK_VESSEL_TYPE = "large_mask_vessel_type"
+_LARGE_MASK_SIDE = {"large_arteriole": "arteriole", "large_venule": "venule"}
 #: What ``G.graph[GRAPH_NETWORK_SOURCE]`` holds on a generated graph.
 SYNTHETIC = "synthetic"
 
@@ -549,6 +555,9 @@ def _assemble(draft: NetworkDraft, template: NetworkTemplate, extent: np.ndarray
 
 
 def _add_edge(G: nx.MultiGraph, new_id: Mapping[int, int], edge: Any, voxels: list, length: float) -> None:
+    attributes = {SYNTHETIC_CLASS: edge.category}
+    if edge.category in _LARGE_MASK_SIDE:
+        attributes[LARGE_MASK_VESSEL_TYPE] = _LARGE_MASK_SIDE[edge.category]
     G.add_edge(
         new_id[edge.u],
         new_id[edge.v],
@@ -556,7 +565,7 @@ def _add_edge(G: nx.MultiGraph, new_id: Mapping[int, int], edge: Any, voxels: li
         length=length,
         diameter_um=float(edge.diameter_um),
         diameter_source=DIAMETER_SOURCE_SYNTHETIC,
-        **{SYNTHETIC_CLASS: edge.category},
+        **attributes,
     )
 
 
@@ -650,6 +659,7 @@ __all__ = [
     "DEFAULT_SEED",
     "GENERATOR_VERSION",
     "GenerationOptions",
+    "LARGE_MASK_VESSEL_TYPE",
     "SYNTHETIC",
     "SYNTHETIC_CLASS",
     "SYNTHETIC_ROLES",

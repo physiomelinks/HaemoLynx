@@ -344,6 +344,16 @@ def test_a_large_tier_on_one_side_hands_over_at_its_boundary():
     roles = boundary_nodes(G)
     assert len(roles["large_arteriole_boundary"]) == 2
     assert len(roles["arteriole_boundary"]) == 12
+    # The hierarchy reads the Large tier from the vessels tagged as lying in
+    # a large mask (graph.branch_order.LARGE_MASK_VESSEL_TYPE): the generator
+    # tags its large-tier vessels with their side, and nothing else.
+    from haemolynx.graph import branch_order as branch_order_module
+    from haemolynx.synthetic.generate import LARGE_MASK_VESSEL_TYPE
+
+    assert getattr(branch_order_module, "LARGE_MASK_VESSEL_TYPE", LARGE_MASK_VESSEL_TYPE) == LARGE_MASK_VESSEL_TYPE
+    tagged = {d.get(LARGE_MASK_VESSEL_TYPE) for *_e, d in G.edges(data=True) if d[SYNTHETIC_CLASS] == "large_arteriole"}
+    assert tagged == {"arteriole"}
+    assert all(LARGE_MASK_VESSEL_TYPE not in d for *_e, d in G.edges(data=True) if d[SYNTHETIC_CLASS] != "large_arteriole")
     _labelled(G)
     labels = Counter(d["branch_order"] for *_e, d in G.edges(data=True))
     assert labels["Large_Art1"] == 2 and labels["Art1"] == 4 and labels["Art3"] == 12
