@@ -111,3 +111,55 @@ def test_a_cache_that_cannot_be_written_only_warns(tmp_path, caplog):
         cache.store("k", _mask(), None)
     assert "Could not keep the thick-vessel region" in caplog.text
     assert cache.lookup("k") == (False, None)
+
+
+@pytest.mark.parametrize("shape, block", [((6, 9, 12), 50), ((13, 7, 5), 37), ((5, 3, 3), 9), ((4, 8, 8), 10**6)])
+def test_low_ram_read_back_is_the_region_on_disk_a_slab_at_a_time(tmp_path, monkeypatch, shape, block):
+    """Planes whose bits do not start on a byte, slabs of one plane or many:
+    the same region, on disk."""
+    from haemolynx.preprocessing import memmap_support
+
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", block)
+    region = np.random.default_rng(sum(shape)).random(shape) > 0.6
+    cache = ThickVesselRegionCache(tmp_path / "run_thick_vessel_region")
+    cache.store("k", region, region.shape)
+
+    found, in_ram = cache.lookup("k")
+    found_low, on_disk = cache.lookup("k", use_memmap=True, memmap_directory=tmp_path)
+
+    assert found and found_low
+    assert isinstance(on_disk, np.memmap) and on_disk.dtype == bool
+    assert np.array_equal(on_disk, in_ram) and np.array_equal(on_disk, region)
+    memmap_support.release_memmap_array(on_disk)
+    # The bits were read in place: storing again over the file still works.
+    cache.store("k", ~region, region.shape)
+    assert np.array_equal(cache.lookup("k")[1], ~region)
+
+
+def test_low_ram_read_back_holds_no_volume_in_ram(tmp_path, monkeypatch):
+    import tracemalloc
+
+    from haemolynx.preprocessing import memmap_support
+
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 200_000)
+    shape = (120, 160, 170)  # 3.3 M voxels
+    region = np.zeros(shape, dtype=bool)
+    region[10:100, 20:140, 30:150] = True
+    cache = ThickVesselRegionCache(tmp_path / "run_thick_vessel_region")
+    cache.store("k", region, shape)
+    volume = region.size
+
+    def peak(**kwargs):
+        tracemalloc.start()
+        try:
+            found, back = cache.lookup("k", **kwargs)
+            traced = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert found and np.array_equal(back, region)
+        if isinstance(back, np.memmap):
+            memmap_support.release_memmap_array(back)
+        return traced
+
+    assert peak() > 1.5 * volume, "in RAM: the bytes and the booleans"
+    assert peak(use_memmap=True, memmap_directory=tmp_path) < 0.4 * volume

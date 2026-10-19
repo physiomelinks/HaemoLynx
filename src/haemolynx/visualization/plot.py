@@ -127,24 +127,32 @@ def overlay_z_projection(image: np.ndarray) -> np.ndarray:
     foreground occupancy projection instead of raw max-intensity projection.
     This avoids flat backgrounds for 1/2 segmentations where max projection is
     often constant (all 2s).
+
+    Read a slab of planes at a time -- the label values counted slab by slab
+    (``io.load._unique_with_counts``) and each slab's maximum taken -- so a
+    disk-backed stack is never copied whole: ``np.unique`` sorted a copy of
+    every voxel and ``arr == value`` was a boolean volume, ~11 GB between
+    them on a 5.5 G-voxel stack. The same projection.
     """
-    arr = np.asarray(image)
+    arr = np.asanyarray(image)
     if arr.ndim < 3:
         return np.asarray(arr)
 
     if arr.dtype == bool:
-        return np.max(arr, axis=0).astype(float)
+        return _max_over_z(arr).astype(float)
 
     if np.issubdtype(arr.dtype, np.integer):
-        values, counts = np.unique(arr, return_counts=True)
+        from haemolynx.io.load import _unique_with_counts
+
+        values, counts = _unique_with_counts(arr, use_memmap=True)
         if values.size == 1:
-            return np.max(arr, axis=0)
+            return _max_over_z(arr)
         if values.size == 2:
             if 0 in values:
                 fg_value = values[values != 0][0]
             else:
                 fg_value = values[int(np.argmin(counts))]
-            return np.max(arr == fg_value, axis=0).astype(float)
+            return _max_over_z(arr, lambda slab: slab == fg_value).astype(float)
         if values.size <= 4:
             nonzero_values = values[values != 0]
             if nonzero_values.size > 0:
@@ -152,9 +160,23 @@ def overlay_z_projection(image: np.ndarray) -> np.ndarray:
                     [counts[np.where(values == v)[0][0]] for v in nonzero_values]
                 )
                 fg_value = nonzero_values[int(np.argmin(nonzero_counts))]
-                return np.max(arr == fg_value, axis=0).astype(float)
+                return _max_over_z(arr, lambda slab: slab == fg_value).astype(float)
 
-    return np.max(arr, axis=0)
+    return _max_over_z(arr)
+
+
+def _max_over_z(arr: np.ndarray, op=None) -> np.ndarray:
+    """``np.max(op(arr), axis=0)`` (*op* elementwise, or none), a slab of
+    planes at a time."""
+    from haemolynx.preprocessing.memmap_support import slab_step
+
+    step = slab_step(arr.shape)
+    out = None
+    for start in range(0, arr.shape[0], step):
+        slab = np.asarray(arr[start:start + step])
+        part = np.max(slab if op is None else op(slab), axis=0)
+        out = part if out is None else np.maximum(out, part)
+    return out
 
 
 def backend_can_display() -> bool:

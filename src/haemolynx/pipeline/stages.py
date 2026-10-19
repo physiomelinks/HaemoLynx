@@ -211,6 +211,12 @@ class SkeletonisedVolume:
     downsample: Downsample | None = None
     #: A synthetic run's volume: no image, no skeleton (see the class).
     synthetic: bool = False
+    #: The thick region's centreline tree as skeletonisation drew it: its
+    #: voxels in C order, ``graph.thick_vessel_junctions.thick_vessel_centreline_voxels``
+    #: of ``thick_vessel_mask``, which graph building reads instead of
+    #: drawing the tree again (a volume of zeros and a Dijkstra over every
+    #: fat voxel). None when this run did not draw it: graph building does.
+    thick_vessel_centreline: np.ndarray | None = None
 
 
 @dataclass
@@ -871,6 +877,9 @@ def _vessel_mask_arguments(settings: Mapping[str, Any], mask_role: str) -> dict[
     return {
         **io.vessel_mask_arguments(settings, mask_role),
         "enabled": graph.vessel_masks_in_use(settings, mask_role),
+        # Read onto disk and cleaned a slab at a time under the low-RAM option.
+        "use_memmap": bool(settings.get("use_memmap_loading", False)),
+        "memmap_directory": settings.get("memmap_directory"),
     }
 
 
@@ -907,7 +916,26 @@ def _thick_vessel_restriction_mask(
     if choice == "off":
         return None
     image_shape = binary_image.shape
-    restriction = np.zeros(image_shape, dtype=bool)
+    # Under low-RAM the union is made on disk, a slab of planes at a time.
+    restriction = (
+        preprocessing.new_memmap_array(image_shape, bool, directory=settings["memmap_directory"])
+        if settings["use_memmap_loading"]
+        else np.zeros(image_shape, dtype=bool)
+    )
+
+    def add(mask: np.ndarray) -> None:
+        nonlocal restriction
+        if not settings["use_memmap_loading"]:
+            restriction |= mask
+            return
+        from haemolynx.preprocessing.memmap_support import slab_step
+
+        step = slab_step(image_shape)
+        for z0 in range(0, image_shape[0], step):
+            restriction[z0:z0 + step] = np.asarray(restriction[z0:z0 + step]) | np.asarray(
+                mask[z0:z0 + step], dtype=bool
+            )
+
     role_masks: dict[str, np.ndarray] = {}
     if choice in ("large", "both"):
         large_arteriole_mask, large_venule_mask, *_ = io.load_and_validate_vessel_masks(
@@ -918,10 +946,10 @@ def _thick_vessel_restriction_mask(
             downsample=downsample,
         )
         if large_arteriole_mask is not None:
-            restriction |= large_arteriole_mask
+            add(large_arteriole_mask)
             role_masks["large_arteriole_mask"] = large_arteriole_mask
         if large_venule_mask is not None:
-            restriction |= large_venule_mask
+            add(large_venule_mask)
             role_masks["large_venule_mask"] = large_venule_mask
     if choice in ("small", "both"):
         small_arteriole_mask, small_venule_mask, *_ = io.load_and_validate_vessel_masks(
@@ -932,10 +960,10 @@ def _thick_vessel_restriction_mask(
             downsample=downsample,
         )
         if small_arteriole_mask is not None:
-            restriction |= small_arteriole_mask
+            add(small_arteriole_mask)
             role_masks["small_arteriole_mask"] = small_arteriole_mask
         if small_venule_mask is not None:
-            restriction |= small_venule_mask
+            add(small_venule_mask)
             role_masks["small_venule_mask"] = small_venule_mask
 
     warn_below = float(settings["skeleton_thick_vessel_restrict_to_mask_warn_below"])
@@ -1017,7 +1045,9 @@ def _cached_thick_vessel_region(
     )
     if cache is None:
         return key, False, None
-    found, region = cache.lookup(key)
+    found, region = cache.lookup(
+        key, use_memmap=bool(arguments.get("use_memmap")), memmap_directory=arguments.get("memmap_directory")
+    )
     return key, found, region
 
 
@@ -1042,7 +1072,11 @@ def thick_vessel_mask_from_image(
     """
     if not settings.get("use_thick_vessel_skeletonisation"):
         return None
-    binary = _to_binary_volume_for_skeletonization(image)
+    binary = _to_binary_volume_for_skeletonization(
+        image,
+        use_memmap=settings["use_memmap_loading"],
+        memmap_directory=settings["memmap_directory"],
+    )
     arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
     key, found, region = _cached_thick_vessel_region(cache, binary, arguments)
     if found:
@@ -1090,6 +1124,7 @@ def _skeletonize_loaded_mask(
     crop: CropBox | None = None,
     cache: preprocessing.ThickVesselRegionCache | None = None,
     downsample: Downsample | None = None,
+    centreline: list | None = None,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Lee on the whole mask, or a thickness-gated tree when the GUI toggle is on.
 
@@ -1098,15 +1133,21 @@ def _skeletonize_loaded_mask(
     ``crop_on_import`` box *image* was cut to, *downsample* how it was reduced
     after that. With *cache*, the thick-vessel
     region is read back from the run that last found it in this mask with
-    these settings, or kept once found.
+    these settings, or kept once found. *centreline*, a list, is given the
+    thick region's centreline tree as drawn (its voxels), when one is.
     """
     voxel_size_zyx = io.voxel_size_zyx_from_xyz(tuple(float(v) for v in voxel_size_xyz))
     if settings["use_thick_vessel_skeletonisation"]:
-        binary = _to_binary_volume_for_skeletonization(image)
+        binary = _to_binary_volume_for_skeletonization(
+            image,
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
+        )
         arguments = _thick_region_arguments(settings, binary, voxel_size_xyz, crop, downsample)
         key, found, region = _cached_thick_vessel_region(cache, binary, arguments)
         if found and region is None:
-            region = np.zeros(binary.shape, dtype=bool)  # found before: there is none
+            # Found before: there is none. No volume of False for it.
+            region = np.broadcast_to(np.False_, binary.shape)
         skeleton, thick = preprocessing.skeletonize_thickness_gated(
             binary,
             **arguments,
@@ -1123,6 +1164,7 @@ def _skeletonize_loaded_mask(
             tile_max_voxels=settings["skeletonize_tile_max_voxels"],
             tile_halo_voxels=_skeletonize_tile_halo_voxels(settings, voxel_size_zyx),
             thick_region=region if found else None,
+            centreline_voxels=centreline,
         )
         if cache is not None and not found:
             cache.store(key, thick, binary.shape)
@@ -1162,6 +1204,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
     thick_vessel_mask: np.ndarray | None = None
     raw_segmented_image: np.ndarray | None = None
     region_cache = thick_vessel_region_cache(settings, output_dir)
+    thick_centreline: list[np.ndarray] = []
 
     if settings["do_skeletonize"]:
         image, metadata_voxel_size, voxel_meta_status, crop, downsample = _load_and_crop_volume(
@@ -1244,7 +1287,8 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
             memmap_directory=settings["memmap_directory"],
         )
         skeleton, thick_vessel_mask = _skeletonize_loaded_mask(
-            binary, settings, voxel_size, crop, cache=region_cache, downsample=downsample
+            binary, settings, voxel_size, crop, cache=region_cache, downsample=downsample,
+            centreline=thick_centreline,
         )
 
         # Purely diagnostic: off by default, and never changes `skeleton` even
@@ -1434,6 +1478,9 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         raw_segmented_image=raw_segmented_image,
         crop=crop,
         downsample=downsample,
+        thick_vessel_centreline=(
+            thick_centreline[0] if thick_centreline and thick_vessel_mask is not None else None
+        ),
     )
 
 
@@ -1704,6 +1751,8 @@ def build_network(
     mask_settings = {
         **schema.section_values(settings, "Vessel masks"),
         **schema.section_values(settings, "Input and segmentation"),
+        "use_memmap_loading": settings["use_memmap_loading"],
+        "memmap_directory": settings["memmap_directory"],
     }
     (
         large_arteriole_mask,
@@ -1745,8 +1794,9 @@ def build_network(
                     f"global {role}-vessel mask: the other role's mask is global, so "
                     "no vessel is classed arteriole or venule."
                 )
-        large_arteriole_mask = io.as_global_vessel_mask(large_arteriole_mask, large_venule_mask)
-        small_arteriole_mask = io.as_global_vessel_mask(small_arteriole_mask, small_venule_mask)
+        on_disk = dict(use_memmap=settings["use_memmap_loading"], memmap_directory=settings["memmap_directory"])
+        large_arteriole_mask = io.as_global_vessel_mask(large_arteriole_mask, large_venule_mask, **on_disk)
+        small_arteriole_mask = io.as_global_vessel_mask(small_arteriole_mask, small_venule_mask, **on_disk)
         large_venule_mask = small_venule_mask = None
         large_venule_mask_voxel_size = None
 
@@ -1839,7 +1889,9 @@ def build_network(
                 memmap_directory=settings["memmap_directory"],
             )
         if binary_mask is not None and (stub_radius_multiple > 0 or settings["smooth_centrelines"]):
-            radius_at = graph.assemble.mask_radius_sampler(binary_mask, voxel_size_zyx, 1.0)
+            radius_at = graph.assemble.mask_radius_sampler(
+                binary_mask, voxel_size_zyx, 1.0, low_memory=settings["use_memmap_loading"]
+            )
         # One reader of the mask for every step below that asks about it --
         # graph building, the clean-ups after it, the thick-vessel split and
         # the dead-end marks -- so it is packed to bits and its surface tree
@@ -1852,6 +1904,8 @@ def build_network(
                 max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
                 min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
                 feature_distance=getattr(radius_at, "feature_distance", None),
+                low_memory=settings["use_memmap_loading"],
+                memmap_directory=settings["memmap_directory"],
             )
         # The thick vessels' centreline tree, found once: the split below
         # bridges to it, and every clean-up keeps the strand on it of two in
@@ -1861,9 +1915,12 @@ def build_network(
         thick_tree_radius = None
         along_thick_centreline = None
         if volume.thick_vessel_mask is not None:
-            thick_tree = graph.thick_vessel_junctions.thick_vessel_centreline(
-                volume.thick_vessel_mask, voxel_size_zyx, use_memmap=settings["use_memmap_loading"]
-            )
+            # As skeletonisation drew it, when it did; else drawn here.
+            thick_tree = getattr(volume, "thick_vessel_centreline", None)
+            if thick_tree is None:
+                thick_tree = graph.thick_vessel_junctions.thick_vessel_centreline_voxels(
+                    volume.thick_vessel_mask, voxel_size_zyx, use_memmap=settings["use_memmap_loading"]
+                )
             follower = graph.thick_vessel_junctions.ThickCentreline.from_region(
                 volume.thick_vessel_mask, voxel_size_zyx, segmentation=binary_mask, centreline=thick_tree,
             )
@@ -2203,6 +2260,8 @@ def _mark_dead_end_kinds(
         max_background_gap_um=gap_um,
         min_mask_fraction=fraction,
         feature_distance=getattr(radius_at, "feature_distance", None),
+        low_memory=bool(settings.get("use_memmap_loading")),
+        memmap_directory=settings.get("memmap_directory"),
     )
     ends = graph.dead_ends.classify_and_mark(
         G, support=support,
@@ -2644,6 +2703,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     ),
                     dilation_step_microns=5.0,
                     allow_overlap=False,
+                    low_memory=bool(settings["use_memmap_loading"]),
                     exclude_smaller_overlapping_volumes=(
                         apply_overlap_cleanup_prepass and not effective_assignment_fast_mode
                     ),
@@ -2679,6 +2739,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     conservative_max_dilation_microns=float(
                         settings["automated_vessel_conservative_max_dilation_microns"]
                     ),
+                    low_memory=bool(settings["use_memmap_loading"]),
+                    memmap_directory=settings["memmap_directory"],
                 )
             )
             auto_inlet_nodes = list(robust_assignment["input_nodes"])
@@ -2971,11 +3033,13 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 use_gpu_acceleration=bool(
                     settings["use_gpu_mask_continuity_acceleration"]
                 ),
+                low_memory=bool(settings["use_memmap_loading"]),
+                memmap_directory=settings["memmap_directory"],
             )
-            assignment_small_arteriole_mask = np.asarray(
+            assignment_small_arteriole_mask = np.asanyarray(
                 continuity_result["small_arteriole_mask"], dtype=bool
             )
-            assignment_small_venule_mask = np.asarray(
+            assignment_small_venule_mask = np.asanyarray(
                 continuity_result["small_venule_mask"], dtype=bool
             )
             continuity_stats = continuity_result["stats"]
@@ -3001,6 +3065,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 ),
                 allow_overlap=False,
                 exclude_smaller_overlapping_volumes=False,
+                low_memory=bool(settings["use_memmap_loading"]),
             )
         )
         small_arteriole_mask = assignment_small_arteriole_mask
@@ -3093,8 +3158,14 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         _tag_vessels_in_global_masks(
             settings,
             G,
-            large_mask=io.as_global_vessel_mask(large_arteriole_mask, large_venule_mask),
-            small_mask=io.as_global_vessel_mask(small_arteriole_mask, small_venule_mask),
+            large_mask=io.as_global_vessel_mask(
+                large_arteriole_mask, large_venule_mask,
+                use_memmap=settings["use_memmap_loading"], memmap_directory=settings["memmap_directory"],
+            ),
+            small_mask=io.as_global_vessel_mask(
+                small_arteriole_mask, small_venule_mask,
+                use_memmap=settings["use_memmap_loading"], memmap_directory=settings["memmap_directory"],
+            ),
             voxel_size_zyx=voxel_size_zyx,
         )
     if io_from_masks:
@@ -3398,6 +3469,7 @@ def _tag_edited_vessels_in_large_masks(
         edited,
         voxel_size_zyx=voxel_size_zyx,
         minimum_overlap_fraction=float(settings["large_vessel_mask_min_overlap_fraction"]),
+        low_memory=bool(settings.get("use_memmap_loading")),
     )
     logger.info(
         "Post processing: %d of %d edited vessel(s) lie in the large arteriole mask and "
@@ -3522,6 +3594,7 @@ def _reassign_small_vessel_boundaries(
         voxel_size_zyx=voxel_size_zyx,
         minimum_overlap_fraction=float(settings["small_vessel_mask_min_overlap_fraction"]),
         max_dilation_microns=float(settings["small_vessel_mask_dilation_microns"]),
+        low_memory=bool(settings.get("use_memmap_loading")),
     )
     logger.info(
         "Post processing: %d of %d edited vessel(s) lie in the small arteriole mask and "
@@ -3881,12 +3954,55 @@ def _start_measurement_afresh(data: dict) -> None:
         set_edge_diameter_override(data, provisional)
 
 
+class _PostProcessSegmentation:
+    """The run's segmentation as post-processing reads it: binarised once --
+    a slab at a time and on disk under the low-RAM option -- and read
+    through one ``MaskSupport`` at the run's bridge limits. Its three
+    readers (the drawn vessels, the edited vessels' thick-vessel bridges and
+    the dead ends at the edits) each binarised the whole image in RAM and
+    made a support of their own. Made when first asked for."""
+
+    def __init__(self, settings: dict, network: "VesselNetwork | None"):
+        self.settings = settings
+        self.image = None if network is None else network.volume.image
+        self.voxel_size_zyx = (
+            None if network is None else tuple(float(v) for v in network.volume.voxel_size_zyx)
+        )
+        self._binary = None
+        self._support = None
+
+    @property
+    def binary(self) -> np.ndarray | None:
+        if self._binary is None and self.image is not None:
+            self._binary = _to_binary_volume_for_skeletonization(
+                self.image,
+                use_memmap=bool(self.settings.get("use_memmap_loading")),
+                memmap_directory=self.settings.get("memmap_directory"),
+            )
+        return self._binary
+
+    def support(self, voxel_size_zyx=None) -> "preprocessing.MaskSupport | None":
+        if self.binary is None:
+            return None
+        if self._support is None:
+            self._support = preprocessing.MaskSupport(
+                self.binary,
+                self.voxel_size_zyx if voxel_size_zyx is None else tuple(float(v) for v in voxel_size_zyx),
+                max_background_gap_um=float(self.settings["bridge_max_background_gap_um"]),
+                min_mask_fraction=float(self.settings["bridge_min_mask_fraction"]),
+                low_memory=bool(self.settings.get("use_memmap_loading")),
+                memmap_directory=self.settings.get("memmap_directory"),
+            )
+        return self._support
+
+
 def _judge_drawn_vessels(
     settings: dict,
     G: nx.MultiGraph,
     network: VesselNetwork | None,
     edited: Sequence[tuple],
     voxel_size_zyx,
+    segmentation: _PostProcessSegmentation | None = None,
 ) -> list[dict[str, Any]] | None:
     """How each vessel the edits drew sits in the segmentation, written on
     it and listed for the summary; None with nothing drawn or no
@@ -3908,12 +4024,9 @@ def _judge_drawn_vessels(
     ]
     if not drawn or network is None or network.volume.image is None:
         return None
-    support = preprocessing.MaskSupport(
-        _to_binary_volume_for_skeletonization(network.volume.image),
-        voxel_size_zyx,
-        max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
-        min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
-    )
+    if segmentation is None:
+        segmentation = _PostProcessSegmentation(settings, network)
+    support = segmentation.support(voxel_size_zyx)
     records = graph.record_drawn_vessel_support(G, drawn, support)
     off_segmentation = sum(not record.within_bridge_gate for record in records)
     beside = sum(record.beside_vessel for record in records)
@@ -3934,6 +4047,7 @@ def _bridge_edited_vessels(
     G: nx.MultiGraph,
     network: VesselNetwork | None,
     thick_vessel_mask: np.ndarray | None,
+    segmentation: _PostProcessSegmentation | None = None,
 ) -> nx.MultiGraph:
     """*G* with every edited vessel that opens into a thick vessel split there.
 
@@ -3992,17 +4106,23 @@ def _bridge_edited_vessels(
             if data.get(graph.IS_ZERO_RESISTANCE) and data.get(graph.post_processing.EDITED)
         )
 
-    segmentation = None
-    if network is not None and network.volume.image is not None:
-        segmentation = _to_binary_volume_for_skeletonization(network.volume.image)
+    if segmentation is None:
+        segmentation = _PostProcessSegmentation(settings, network)
     before = edited_bridges(G)
+    # The tree skeletonisation drew, when this is the region it drew it in.
+    tree = None
+    if network is not None and mask is network.volume.thick_vessel_mask:
+        tree = getattr(network.volume, "thick_vessel_centreline", None)
+    if tree is None:
+        tree = graph.thick_vessel_junctions.thick_vessel_centreline_voxels(
+            mask, voxel_size_zyx, use_memmap=bool(settings.get("use_memmap_loading"))
+        )
     # What the tree fill draws beside an edit is new vessel, measured as
     # one drawn by hand is.
     bridged = graph.insert_thick_vessel_junction_nodes(
-        G, mask, voxel_size_zyx=voxel_size_zyx, edges=edited, segmentation=segmentation,
-        centreline=graph.thick_vessel_junctions.thick_vessel_centreline(
-            mask, voxel_size_zyx, use_memmap=bool(settings.get("use_memmap_loading"))
-        ),
+        G, mask, voxel_size_zyx=voxel_size_zyx, edges=edited, segmentation=segmentation.binary,
+        centreline=tree,
+        mask_support=segmentation.support(voxel_size_zyx),
         fill_attributes={graph.post_processing.EDITED: True},
         **thick_junction_bridge_arguments(settings),
     )
@@ -4017,7 +4137,11 @@ def _bridge_edited_vessels(
 
 
 def _mark_touched_dead_end_kinds(
-    settings: dict, G: nx.MultiGraph, network: VesselNetwork | None, touched: list
+    settings: dict,
+    G: nx.MultiGraph,
+    network: VesselNetwork | None,
+    touched: list,
+    segmentation: _PostProcessSegmentation | None = None,
 ) -> dict[str, int] | None:
     """Judge the dead ends among the *touched* nodes -- the edited vessels'
     ends and the nodes a deletion took a vessel from -- against the run's
@@ -4039,7 +4163,9 @@ def _mark_touched_dead_end_kinds(
             "so an end an edit left is read by its distance to the image faces alone."
         )
         return None
-    binary_mask = _to_binary_volume_for_skeletonization(image)
+    if segmentation is None:
+        segmentation = _PostProcessSegmentation(settings, network)
+    binary_mask = segmentation.binary
     if not np.any(binary_mask):
         logger.info(
             "Post processing: the segmentation has no vessel in it, so the dead ends "
@@ -4047,12 +4173,7 @@ def _mark_touched_dead_end_kinds(
         )
         return None
     voxel_size_zyx = tuple(float(v) for v in network.volume.voxel_size_zyx)
-    support = preprocessing.MaskSupport(
-        binary_mask,
-        voxel_size_zyx,
-        max_background_gap_um=float(settings["bridge_max_background_gap_um"]),
-        min_mask_fraction=float(settings["bridge_min_mask_fraction"]),
-    )
+    support = segmentation.support(voxel_size_zyx)
     extent = graph.dead_ends.graph_image_extent_um(G)
     if extent is None:
         extent = graph.dead_ends.image_extent_um(binary_mask.shape, voxel_size_zyx)
@@ -4176,7 +4297,9 @@ def post_process(
             "The post-processing edits removed every inlet or every outlet; the "
             "network has nothing left to solve between."
         )
-    G = _bridge_edited_vessels(settings, G, network, thick_vessel_mask)
+    # One binarised segmentation and one support for the three readers below.
+    segmentation = _PostProcessSegmentation(settings, network)
+    G = _bridge_edited_vessels(settings, G, network, thick_vessel_mask, segmentation)
     model.graph = G
     boundaries.graph = G
     if network is not None:
@@ -4194,7 +4317,7 @@ def post_process(
         if network is not None
         else tuple(G.graph.get("image_voxel_size_zyx", (1.0, 1.0, 1.0)))
     )
-    drawn = _judge_drawn_vessels(settings, G, network, edited, voxel_size_zyx)
+    drawn = _judge_drawn_vessels(settings, G, network, edited, voxel_size_zyx, segmentation)
     if drawn is not None:
         summary["drawn_vessels"] = drawn
     if edited and io.vessel_masks_are_global(settings):
@@ -4204,10 +4327,14 @@ def post_process(
             settings,
             G,
             large_mask=io.as_global_vessel_mask(
-                boundaries.large_arteriole_mask, boundaries.large_venule_mask
+                boundaries.large_arteriole_mask, boundaries.large_venule_mask,
+                use_memmap=bool(settings.get("use_memmap_loading")),
+                memmap_directory=settings.get("memmap_directory"),
             ) if in_use["large"] else None,
             small_mask=io.as_global_vessel_mask(
-                boundaries.small_arteriole_mask, boundaries.small_venule_mask
+                boundaries.small_arteriole_mask, boundaries.small_venule_mask,
+                use_memmap=bool(settings.get("use_memmap_loading")),
+                memmap_directory=settings.get("memmap_directory"),
             ) if in_use["small"] else None,
             voxel_size_zyx=voxel_size_zyx,
             edges=edited,
@@ -4229,7 +4356,7 @@ def post_process(
         name: list(getattr(boundaries, name)) for name in _BOUNDARY_NODE_LISTS
     }
     if touched:
-        census = _mark_touched_dead_end_kinds(settings, G, network, touched)
+        census = _mark_touched_dead_end_kinds(settings, G, network, touched, segmentation)
         if census is not None:
             summary["dead_ends"] = census
     if settings["inlet_nodes"]:

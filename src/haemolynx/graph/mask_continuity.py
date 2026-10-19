@@ -5,7 +5,7 @@ from typing import Any
 import time
 
 import numpy as np
-from scipy.ndimage import binary_dilation, distance_transform_edt, find_objects, label
+from scipy.ndimage import binary_dilation, distance_transform_edt
 from scipy.spatial import cKDTree
 
 _GPU_EDT_AVAILABLE: bool | None = None
@@ -51,6 +51,83 @@ def _edt(
         return distance_transform_edt(mask, sampling=sampling_zyx)
 
 
+def _Union(a: np.ndarray, b: np.ndarray | None):
+    """``a | b``, read where asked rather than made (``MaskUnion``)."""
+    from haemolynx.preprocessing.memmap_support import MaskUnion
+
+    return MaskUnion(a, b)
+
+
+class _DistanceAt:
+    """``distance_transform_edt(input, sampling)`` read at chosen voxels
+    (``reader[z, y, x]``, index arrays, as the array is read), without the
+    volume: the low-RAM option's stand-in for continuity's four transforms.
+
+    The features (the zeros of *input*) are where *volume* (an array, or a
+    :class:`_Union` read in place) equals *feature_value*. Measured to the
+    features' surface a tile at a time
+    (``preprocessing.pointwise_distance.FeatureDistance(by_block=True)``);
+    with no feature at all, scipy reads every voxel as that far from one at
+    index (-1, 0, 0), and so does this; with nothing but features, 0.
+    """
+
+    def __init__(self, volume, *, feature_value: bool, sampling, memmap_directory=None):
+        from haemolynx.preprocessing.memmap_support import slab_step
+        from haemolynx.preprocessing.pointwise_distance import FeatureDistance
+
+        self.sampling = tuple(float(v) for v in sampling)
+        self.distance = FeatureDistance(
+            volume, feature_value=feature_value, sampling=self.sampling, by_block=True
+        )
+        self.no_features = False
+        if not self.distance.has_surface:
+            step = slab_step(volume.shape)
+            first = np.asarray(volume[0:step], dtype=bool)
+            self.no_features = bool(first.reshape(-1)[0]) != bool(feature_value) if first.size else True
+
+    def __getitem__(self, index) -> np.ndarray:
+        from haemolynx.preprocessing.blockwise_edt import displacement_distances
+
+        voxels = np.column_stack([np.asarray(i, dtype=np.intp).reshape(-1) for i in index])
+        if self.distance.has_surface:
+            return self.distance.at(voxels)
+        if not self.no_features:
+            return np.zeros(len(voxels))
+        displacement = np.column_stack([-1 - voxels[:, 0], -voxels[:, 1], -voxels[:, 2]])
+        return displacement_distances(displacement, self.sampling)
+
+
+def _mask_bounds(mask) -> tuple[np.ndarray, np.ndarray] | None:
+    """``(mins, maxs + 1)`` of *mask*'s True voxels, as ``np.argwhere`` of it
+    gives them, read a slab of planes at a time with no list of its voxels;
+    None for an empty mask."""
+    from haemolynx.preprocessing.memmap_support import slab_step
+
+    step = slab_step(mask.shape)
+    lo = hi = None
+    for z0 in range(0, mask.shape[0], step):
+        slab = np.asarray(mask[z0:z0 + step], dtype=bool)
+        if not slab.any():
+            continue
+        planes = np.flatnonzero(slab.any(axis=(1, 2)))
+        rows = np.flatnonzero(slab.any(axis=(0, 2)))
+        columns = np.flatnonzero(slab.any(axis=(0, 1)))
+        here_lo = np.array([z0 + planes[0], rows[0], columns[0]])
+        here_hi = np.array([z0 + planes[-1] + 1, rows[-1] + 1, columns[-1] + 1])
+        lo = here_lo if lo is None else np.minimum(lo, here_lo)
+        hi = here_hi if hi is None else np.maximum(hi, here_hi)
+    return None if lo is None else (lo, hi)
+
+
+def _copy_mask(mask, *, low_memory: bool, memmap_directory=None) -> np.ndarray:
+    """A copy of *mask* to draw bridges into: on disk under *low_memory*."""
+    if not low_memory:
+        return np.array(mask, dtype=bool)
+    from haemolynx.preprocessing.memmap_support import combine_by_slab
+
+    return combine_by_slab(lambda m: m.astype(bool), mask, directory=memmap_directory)
+
+
 def _voxel_size_zyx_to_sampling_zyx(
     voxel_size_zyx: tuple[float, float, float],
 ) -> tuple[float, float, float]:
@@ -82,10 +159,14 @@ def _clip_indices_to_shape(indices_zyx: np.ndarray, shape: tuple[int, int, int])
     return indices_zyx[valid]
 
 
-def _connected_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
-    structure = np.ones((3, 3, 3), dtype=bool)
-    labeled, count = label(mask.astype(bool, copy=False), structure=structure)
-    return labeled, int(count)
+def _connected_components(mask: np.ndarray):
+    """``(labels, count)``: *mask*'s components labelled a slab of planes at a time and held at their voxels
+    (``preprocessing.slab_labels.ForegroundLabels``), not in a label volume
+    (8 bytes a voxel once a stack has 2**31 voxels)."""
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+    labels = ForegroundLabels(mask.astype(bool, copy=False), np.ones((3, 3, 3), dtype=bool))
+    return labels, int(labels.count)
 
 
 def _component_descriptors(
@@ -93,7 +174,7 @@ def _component_descriptors(
     edt_inside: np.ndarray | None = None,
     *,
     sampling_zyx: tuple[float, float, float],
-    labeled: np.ndarray | None = None,
+    labeled=None,
     count: int | None = None,
 ) -> dict[int, dict[str, Any]]:
     """Describe each component of *mask* for the cylinder-bridge gates.
@@ -110,24 +191,14 @@ def _component_descriptors(
     if int(count) <= 0:
         return descriptors
     spacing = np.asarray(sampling_zyx, dtype=float).reshape(1, 3)
-    component_slices = find_objects(labeled, max_label=int(count))
+    if isinstance(labeled, np.ndarray):
+        from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+        labeled = ForegroundLabels(labeled > 0, np.ones((3, 3, 3), dtype=bool))
     for component_id in range(1, int(count) + 1):
-        component_slice = component_slices[component_id - 1] if component_slices else None
-        if component_slice is None:
-            continue
-        labeled_roi = labeled[component_slice]
-        local_coords = np.argwhere(labeled_roi == int(component_id))
-        if local_coords.size == 0:
-            continue
-        offset = np.asarray(
-            [
-                int(component_slice[0].start),
-                int(component_slice[1].start),
-                int(component_slice[2].start),
-            ],
-            dtype=int,
-        )
-        coords = local_coords + offset.reshape(1, 3)
+        # Its voxels in C order, as np.argwhere of its box lists them, and
+        # laid out as that does: the covariance below rounds by the layout.
+        coords = labeled.component_coords(component_id)
         if coords.size == 0:
             continue
         centroid = np.mean(coords.astype(float), axis=0)
@@ -181,12 +252,12 @@ def _bbox_from_masks_and_points(
     maxs = np.asarray([0, 0, 0], dtype=int)
     found = False
     for mask in masks:
-        coords = np.argwhere(mask.astype(bool, copy=False))
-        if coords.size == 0:
+        bounds = _mask_bounds(mask)
+        if bounds is None:
             continue
         found = True
-        mins = np.minimum(mins, coords.min(axis=0).astype(int))
-        maxs = np.maximum(maxs, coords.max(axis=0).astype(int) + 1)
+        mins = np.minimum(mins, bounds[0].astype(int))
+        maxs = np.maximum(maxs, bounds[1].astype(int))
     if points_zyx is not None and points_zyx.size > 0:
         pts = np.asarray(points_zyx, dtype=int)
         found = True
@@ -243,21 +314,43 @@ def _bridge_mask_from_line(
     26-neighbour cube gives on cube voxels): iterated in voxels, a bridge was
     four times fatter along a 2 um z than in-plane."""
     bridge = np.zeros(shape, dtype=bool)
+    boxed = _bridge_box_from_line(line_zyx, shape, radius_voxels=radius_voxels, sampling_zyx=sampling_zyx)
+    if boxed is not None:
+        box, local = boxed
+        bridge[box] = local
+    return bridge
+
+
+def _bridge_box_from_line(
+    line_zyx: np.ndarray,
+    shape: tuple[int, int, int],
+    *,
+    radius_voxels: int,
+    sampling_zyx: tuple[float, float, float] | None = None,
+) -> tuple[tuple[slice, slice, slice], np.ndarray] | None:
+    """:func:`_bridge_mask_from_line` as ``(box, local)``, its voxels within
+    their own box: the line's box grown by the dilation's reach holds every
+    voxel the dilation sets, and the dilation reads nothing past it. None
+    for a line wholly outside the volume."""
     if line_zyx.size == 0:
-        return bridge
+        return None
     line_zyx = _clip_indices_to_shape(line_zyx, shape)
     if line_zyx.size == 0:
-        return bridge
-    bridge[line_zyx[:, 0], line_zyx[:, 1], line_zyx[:, 2]] = True
+        return None
+    spacing = np.ones(3) if sampling_zyx is None else np.asarray(sampling_zyx, dtype=float)
+    reach = (
+        [int(np.rint(int(radius_voxels) * float(spacing.min()) / float(s))) for s in spacing]
+        if int(radius_voxels) > 0
+        else [0, 0, 0]
+    )
+    lo = np.maximum(line_zyx.min(axis=0) - reach, 0)
+    hi = np.minimum(line_zyx.max(axis=0) + 1 + np.asarray(reach), np.asarray(shape))
+    local = np.zeros(tuple(int(b - a) for a, b in zip(lo, hi)), dtype=bool)
+    inside = line_zyx - lo
+    local[inside[:, 0], inside[:, 1], inside[:, 2]] = True
     if int(radius_voxels) > 0:
-        spacing = np.ones(3) if sampling_zyx is None else np.asarray(sampling_zyx, dtype=float)
-        reach = [
-            int(np.rint(int(radius_voxels) * float(spacing.min()) / float(s))) for s in spacing
-        ]
-        bridge = binary_dilation(
-            bridge, structure=np.ones([2 * r + 1 for r in reach], dtype=bool)
-        )
-    return bridge
+        local = binary_dilation(local, structure=np.ones([2 * r + 1 for r in reach], dtype=bool))
+    return tuple(slice(int(a), int(b)) for a, b in zip(lo, hi)), local
 
 
 def _min_endpoint_distance_microns(
@@ -297,7 +390,10 @@ def _attempt_cylinder_bridge(
     max_radius_ratio: float,
     enforce_cylinder_only: bool,
     roi_bbox_zyx: tuple[slice, slice, slice] | None = None,
-) -> tuple[bool, np.ndarray, str]:
+) -> tuple[bool, tuple[tuple[slice, slice, slice], np.ndarray] | None, str]:
+    """Whether to bridge *source* to *target*, the bridge as ``(box,
+    local)`` (:func:`_bridge_box_from_line`) or None, and why. A rejection
+    used to come with a volume of zeros."""
     if enforce_cylinder_only:
         if float(source["linearity"]) < float(min_cylindricality):
             return False, np.zeros(shape, dtype=bool), "source_not_cylindrical"
@@ -385,7 +481,7 @@ def _attempt_cylinder_bridge(
     )
     bridge_radius_voxels = int(max(0, np.rint(avg_radius_microns / max(1e-9, voxel_scale))))
     bridge_radius_voxels = int(min(bridge_radius_voxels, 3))
-    bridge = _bridge_mask_from_line(
+    bridge = _bridge_box_from_line(
         line_zyx,
         shape,
         radius_voxels=bridge_radius_voxels,
@@ -411,43 +507,56 @@ def _enforce_type_locked_continuity_for_small_mask(
     corridor_max_distance_microns: float,
     opposite_exclusion_distance_microns: float,
     use_gpu_acceleration: bool = False,
+    low_memory: bool = False,
+    memmap_directory=None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
+    """*low_memory* (the low-RAM option): no distance transform of a volume
+    (each is read at the voxels the gates ask about, :class:`_DistanceAt`),
+    no volume per bridge tried, *opposite_mask* may be a :class:`_Union`,
+    and the mask returned is on disk in *memmap_directory*."""
     total_start_s = time.perf_counter()
     small_binary = small_mask.astype(bool, copy=False)
-    large_binary = (
-        np.zeros_like(small_binary, dtype=bool)
-        if large_mask is None
-        else large_mask.astype(bool, copy=False)
-    )
-    opposite_binary = opposite_mask.astype(bool, copy=False)
     sampling_zyx = _voxel_size_zyx_to_sampling_zyx(voxel_size_zyx)
-    edt_inside_small = _edt(
-        small_binary,
-        sampling_zyx=sampling_zyx,
-        use_gpu_acceleration=bool(use_gpu_acceleration),
-    )
+    if low_memory:
+        has_large = large_mask is not None and _mask_bounds(large_mask) is not None
+        large_binary = (
+            np.broadcast_to(np.False_, small_binary.shape)
+            if large_mask is None
+            else large_mask.astype(bool, copy=False)
+        )
+        opposite_binary = opposite_mask
+
+        def inside_distance(mask):
+            return _DistanceAt(mask, feature_value=False, sampling=sampling_zyx)
+    else:
+        large_binary = (
+            np.zeros_like(small_binary, dtype=bool)
+            if large_mask is None
+            else large_mask.astype(bool, copy=False)
+        )
+        has_large = bool(np.any(large_binary))
+        opposite_binary = opposite_mask.astype(bool, copy=False)
+
+        def inside_distance(mask):
+            return _edt(mask, sampling_zyx=sampling_zyx, use_gpu_acceleration=bool(use_gpu_acceleration))
+    edt_inside_small = inside_distance(small_binary)
     small_desc = _component_descriptors(
         small_binary, edt_inside_small, sampling_zyx=sampling_zyx
     )
     if not small_desc:
-        return small_binary.copy(), {
+        return _copy_mask(small_binary, low_memory=low_memory, memmap_directory=memmap_directory), {
             "attempted_bridges": 0,
             "accepted_bridges": 0,
             "rejected_reasons": {},
         }
-    labeled_large, _ = _connected_components(large_binary)
     large_desc: dict[int, dict[str, Any]] = {}
-    if allow_small_to_large and np.any(large_binary):
-        edt_inside_large = _edt(
-            large_binary,
-            sampling_zyx=sampling_zyx,
-            use_gpu_acceleration=bool(use_gpu_acceleration),
-        )
+    if allow_small_to_large and has_large:
+        edt_inside_large = inside_distance(large_binary)
         large_desc = _component_descriptors(
             large_binary, edt_inside_large, sampling_zyx=sampling_zyx
         )
 
-    updated_small = small_binary.copy()
+    updated_small = _copy_mask(small_binary, low_memory=low_memory, memmap_directory=memmap_directory)
     source_candidates: dict[int, list[dict[str, Any]]] = {}
     centroid_prefilter_radius = float(max_bridge_distance_microns) + float(
         corridor_max_distance_microns
@@ -527,10 +636,11 @@ def _enforce_type_locked_continuity_for_small_mask(
         )
 
         # Skip if source small component already touches any large component.
-        if allow_small_to_large and np.any(large_binary):
+        if allow_small_to_large and has_large:
             src_vox = source["coords_zyx"]
+            # In a large component: in the large mask -- no labels needed.
             if np.any(
-                labeled_large[src_vox[:, 0], src_vox[:, 1], src_vox[:, 2]] > 0
+                large_binary[src_vox[:, 0], src_vox[:, 1], src_vox[:, 2]]
             ):
                 continue
         source_candidates[int(source_id)] = candidate_targets
@@ -590,16 +700,30 @@ def _enforce_type_locked_continuity_for_small_mask(
         int(y_slice.stop) - int(y_slice.start),
         int(x_slice.stop) - int(x_slice.start),
     )
-    dist_to_same_type = _edt(
-        ~(small_binary | large_binary)[z_slice, y_slice, x_slice],
-        sampling_zyx=sampling_zyx,
-        use_gpu_acceleration=bool(use_gpu_acceleration),
-    )
-    dist_to_opposite_type = _edt(
-        ~opposite_binary[z_slice, y_slice, x_slice],
-        sampling_zyx=sampling_zyx,
-        use_gpu_acceleration=bool(use_gpu_acceleration),
-    )
+    if low_memory:
+        # Read at each bridge line's voxels; the features, as the transforms
+        # of the box below see them, are the mask voxels inside the box.
+        same_type = _Union(small_binary[roi_bbox_zyx], None if large_mask is None else large_binary[roi_bbox_zyx])
+        dist_to_same_type = _DistanceAt(same_type, feature_value=True, sampling=sampling_zyx)
+        from haemolynx.preprocessing.memmap_support import MaskUnion
+
+        opposite_in_box = (
+            MaskUnion(*(mask[roi_bbox_zyx] for mask in opposite_binary.masks))
+            if isinstance(opposite_binary, MaskUnion)
+            else opposite_binary[roi_bbox_zyx]
+        )
+        dist_to_opposite_type = _DistanceAt(opposite_in_box, feature_value=True, sampling=sampling_zyx)
+    else:
+        dist_to_same_type = _edt(
+            ~(small_binary | large_binary)[z_slice, y_slice, x_slice],
+            sampling_zyx=sampling_zyx,
+            use_gpu_acceleration=bool(use_gpu_acceleration),
+        )
+        dist_to_opposite_type = _edt(
+            ~opposite_binary[z_slice, y_slice, x_slice],
+            sampling_zyx=sampling_zyx,
+            use_gpu_acceleration=bool(use_gpu_acceleration),
+        )
     distance_setup_elapsed_s = time.perf_counter() - distance_setup_start_s
     attempted = 0
     accepted = 0
@@ -626,7 +750,7 @@ def _enforce_type_locked_continuity_for_small_mask(
                 continue
 
             attempted += 1
-            ok, bridge_mask, reason = _attempt_cylinder_bridge(
+            ok, bridge, reason = _attempt_cylinder_bridge(
                 source,
                 target,
                 shape=small_binary.shape,
@@ -646,7 +770,9 @@ def _enforce_type_locked_continuity_for_small_mask(
             if not ok:
                 rejected_reasons[reason] = int(rejected_reasons.get(reason, 0) + 1)
                 continue
-            updated_small |= bridge_mask
+            if bridge is not None:
+                box, local = bridge
+                updated_small[box] |= local
             accepted += 1
             break
     bridge_loop_elapsed_s = time.perf_counter() - bridge_loop_start_s
@@ -683,6 +809,8 @@ def enforce_small_vessel_mask_continuity(
     corridor_max_distance_microns: float = 12.0,
     opposite_exclusion_distance_microns: float = 3.0,
     use_gpu_acceleration: bool = False,
+    low_memory: bool = False,
+    memmap_directory=None,
 ) -> dict[str, Any]:
     """Bridge same-type small-vessel mask gaps with type-locked cylinder links.
 
@@ -691,6 +819,12 @@ def enforce_small_vessel_mask_continuity(
     - small venule -> small venule
     - small arteriole -> large arteriole
     - small arteriole -> small arteriole
+
+    *low_memory* (the low-RAM option) makes no distance transform of a
+    volume, no volume per bridge tried and no union of masks: the
+    distances are read at the voxels the gates ask about, a bridge is drawn
+    in its own box, the other type's masks are read together where asked,
+    and the masks returned are on disk in *memmap_directory*. The same masks.
     """
     art_small = small_arteriole_mask.astype(bool, copy=False)
     ven_small = small_venule_mask.astype(bool, copy=False)
@@ -711,8 +845,8 @@ def enforce_small_vessel_mask_continuity(
         )
     if not enable_continuity:
         return {
-            "small_arteriole_mask": art_small.copy(),
-            "small_venule_mask": ven_small.copy(),
+            "small_arteriole_mask": _copy_mask(art_small, low_memory=low_memory, memmap_directory=memmap_directory),
+            "small_venule_mask": _copy_mask(ven_small, low_memory=low_memory, memmap_directory=memmap_directory),
             "stats": {
                 "continuity_enabled": False,
                 "arteriole": {"attempted_bridges": 0, "accepted_bridges": 0, "rejected_reasons": {}},
@@ -720,14 +854,18 @@ def enforce_small_vessel_mask_continuity(
             },
         }
 
+    def other_type(small, large):
+        if low_memory:
+            return _Union(small, None if large is None else large)
+        return small | (
+            np.zeros_like(small, dtype=bool) if large is None else large.astype(bool, copy=False)
+        )
+
+    low_ram = dict(low_memory=low_memory, memmap_directory=memmap_directory)
     updated_ven, ven_stats = _enforce_type_locked_continuity_for_small_mask(
         small_mask=ven_small,
         large_mask=large_venule_mask,
-        opposite_mask=art_small | (
-            np.zeros_like(art_small, dtype=bool)
-            if large_arteriole_mask is None
-            else large_arteriole_mask.astype(bool, copy=False)
-        ),
+        opposite_mask=other_type(art_small, large_arteriole_mask),
         voxel_size_zyx=voxel_size_zyx,
         allow_small_to_large=allow_small_to_large,
         allow_small_to_small=allow_small_to_small,
@@ -740,15 +878,12 @@ def enforce_small_vessel_mask_continuity(
         corridor_max_distance_microns=corridor_max_distance_microns,
         opposite_exclusion_distance_microns=opposite_exclusion_distance_microns,
         use_gpu_acceleration=bool(use_gpu_acceleration),
+        **low_ram,
     )
     updated_art, art_stats = _enforce_type_locked_continuity_for_small_mask(
         small_mask=art_small,
         large_mask=large_arteriole_mask,
-        opposite_mask=updated_ven | (
-            np.zeros_like(ven_small, dtype=bool)
-            if large_venule_mask is None
-            else large_venule_mask.astype(bool, copy=False)
-        ),
+        opposite_mask=other_type(updated_ven, large_venule_mask),
         voxel_size_zyx=voxel_size_zyx,
         allow_small_to_large=allow_small_to_large,
         allow_small_to_small=allow_small_to_small,
@@ -761,11 +896,23 @@ def enforce_small_vessel_mask_continuity(
         corridor_max_distance_microns=corridor_max_distance_microns,
         opposite_exclusion_distance_microns=opposite_exclusion_distance_microns,
         use_gpu_acceleration=bool(use_gpu_acceleration),
+        **low_ram,
     )
     # Keep strict type separation after bridging.
-    overlap = updated_art & updated_ven
-    if np.any(overlap):
-        updated_ven = updated_ven & (~overlap)
+    if low_memory:
+        # venule & ~(arteriole & venule) is venule & ~arteriole, written into
+        # the venule mask (its own copy) a slab at a time.
+        from haemolynx.preprocessing.memmap_support import slab_step
+
+        step = slab_step(updated_ven.shape)
+        for z0 in range(0, updated_ven.shape[0], step):
+            updated_ven[z0:z0 + step] = np.asarray(updated_ven[z0:z0 + step]) & ~np.asarray(
+                updated_art[z0:z0 + step]
+            )
+    else:
+        overlap = updated_art & updated_ven
+        if np.any(overlap):
+            updated_ven = updated_ven & (~overlap)
 
     return {
         "small_arteriole_mask": updated_art.astype(bool, copy=False),

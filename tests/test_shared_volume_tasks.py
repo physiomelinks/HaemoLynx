@@ -79,3 +79,46 @@ def test_only_the_whole_of_a_memmap_is_shared_by_its_file(tmp_path):
     assert _whole_file(np.zeros((4, 5, 6), dtype=bool)) is None
     release_memmap_array(whole)
     del npy
+
+
+def _timed_nap(volume, payload):
+    import time
+
+    start = time.monotonic()
+    time.sleep(0.4)
+    return payload, start, time.monotonic()
+
+
+def test_free_memory_running_short_holds_back_further_tasks(tmp_path, monkeypatch):
+    """With *task_bytes* given, free memory is read again before each task
+    goes out: short of the reserve, the run waits for the one out (flushing
+    first) instead of starting more -- one at a time, the same results."""
+    import haemolynx.haemodynamics.resistance as resistance
+    from haemolynx.preprocessing import shared_volume_tasks
+    from haemolynx.preprocessing.shared_volume_tasks import iter_volume_tasks
+
+    volume = np.zeros((4, 4), dtype=bool)
+    flushes = []
+    monkeypatch.setattr(resistance, "available_memory_bytes", lambda: shared_volume_tasks.MEMORY_RESERVE_BYTES)
+
+    short = list(
+        iter_volume_tasks(
+            _timed_nap, list(range(4)), volume=volume, workers=2, memmap_directory=tmp_path,
+            task_bytes=1 << 20, on_low_memory=lambda: flushes.append(1),
+        )
+    )
+
+    assert [p for p, _s, _e in short] == list(range(4))
+    spans = sorted((start, end) for _p, start, end in short)
+    assert all(later[0] >= earlier[1] for earlier, later in zip(spans, spans[1:])), "one at a time"
+    assert flushes, "the caller's memmaps were flushed first"
+
+    monkeypatch.setattr(resistance, "available_memory_bytes", lambda: 64 << 30)
+    plenty = list(
+        iter_volume_tasks(
+            _timed_nap, list(range(4)), volume=volume, workers=2, memmap_directory=tmp_path,
+            task_bytes=1 << 20,
+        )
+    )
+    spans = sorted((start, end) for _p, start, end in plenty)
+    assert any(later[0] < earlier[1] for earlier, later in zip(spans, spans[1:])), "two at once"

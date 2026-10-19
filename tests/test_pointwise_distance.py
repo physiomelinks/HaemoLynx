@@ -108,3 +108,120 @@ def test_the_mask_as_bits_gives_the_same_distances_without_reading_the_mask():
     assert np.array_equal(packed.at(wrapped), plain.at(wrapped))
     with pytest.raises(IndexError):
         packed.at(np.array([[mask.shape[0], 0, 0]]))
+
+
+# --- by_block: the low-RAM option's tiles of the surface -----------------------
+
+
+def _all_voxels(shape) -> np.ndarray:
+    return np.indices(shape).reshape(len(shape), -1).T
+
+
+@pytest.mark.parametrize("tile_edge", [3, 5, 8, 96])
+@pytest.mark.parametrize("spacing", [SPACING, (1.0, 1.0, 1.0), (2.1, 0.33, 0.47)])
+def test_tiles_of_the_surface_give_the_whole_trees_distances_bit_for_bit(tile_edge, spacing):
+    mask = _mask()
+    voxels = _all_voxels(mask.shape)
+    whole = FeatureDistance(mask, feature_value=False, sampling=spacing)
+    tiled = FeatureDistance(mask, feature_value=False, sampling=spacing, by_block=True, tile_edge=tile_edge)
+
+    assert tiled.has_surface and tiled.surface is None
+    assert np.array_equal(tiled.at(voxels), whole.at(voxels))
+
+
+def test_tiles_find_a_surface_many_tiles_away():
+    """Deep inside a block wider than several tiles: the tile a voxel is in,
+    and the next ring out, hold no surface at all."""
+    mask = np.zeros((40, 44, 46), dtype=bool)
+    mask[2:38, 3:41, 4:43] = True
+    mask[20, 22, 23] = False  # one hole in the middle, a nearer surface for some
+    voxels = _all_voxels(mask.shape)[::7]
+    whole = FeatureDistance(mask, feature_value=False, sampling=(1.3, 0.7, 0.9))
+    tiled = FeatureDistance(mask, feature_value=False, sampling=(1.3, 0.7, 0.9), by_block=True, tile_edge=4)
+
+    assert np.array_equal(tiled.at(voxels), whole.at(voxels))
+
+
+def test_tiles_measure_features_too_and_the_background_side():
+    mask = _mask()
+    voxels = _all_voxels(mask.shape)
+    whole = FeatureDistance(mask, feature_value=True, sampling=SPACING)
+    tiled = FeatureDistance(mask, feature_value=True, sampling=SPACING, by_block=True, tile_edge=6)
+    assert np.array_equal(tiled.at(voxels), whole.at(voxels))
+
+
+def test_tiles_kept_to_their_budget_still_give_the_same_distances():
+    mask = _mask()
+    voxels = _voxels(mask, count=2000, seed=5)
+    whole = FeatureDistance(mask, feature_value=False, sampling=SPACING)
+    tiled = FeatureDistance(
+        mask, feature_value=False, sampling=SPACING, by_block=True, tile_edge=4, tile_cache_bytes=4000
+    )
+
+    assert np.array_equal(tiled.at(voxels), whole.at(voxels))
+    cache = tiled._tiles._cache
+    biggest = max(len(surface) for surface, _tree in cache.values()) * 72
+    assert tiled._tiles._held <= 4000 + biggest
+
+
+def test_tiles_with_no_surface_anywhere():
+    for value in (False, True):
+        volume = np.full((5, 6, 7), value)
+        assert not FeatureDistance(volume, feature_value=False, by_block=True).has_surface
+        assert not FeatureDistance(volume, feature_value=False).has_surface
+
+
+def test_tiles_out_of_range_voxels_behave_as_the_whole_tree():
+    mask = _mask()
+    whole = FeatureDistance(mask, feature_value=False, sampling=SPACING)
+    tiled = FeatureDistance(mask, feature_value=False, sampling=SPACING, by_block=True, tile_edge=5)
+    wrapped = np.array([[-1, -1, -1], [-3, 2, -7]])
+
+    assert np.array_equal(tiled.at(wrapped), whole.at(wrapped))
+    with pytest.raises(IndexError):
+        tiled.at(np.array([[mask.shape[0], 0, 0]]))
+
+
+def test_tiles_read_the_bits_when_packed_and_remember_as_before():
+    from haemolynx.preprocessing.bridge_mask_support import PackedMask
+
+    mask = _mask()
+    voxels = _voxels(mask, count=600)
+    expected = FeatureDistance(mask, feature_value=False, sampling=SPACING).at(voxels)
+    tiled = FeatureDistance(
+        mask, feature_value=False, sampling=SPACING, by_block=True, tile_edge=6,
+        packed=PackedMask.from_mask(mask), remember=10_000,
+    )
+
+    class Unread(np.ndarray):
+        def __getitem__(self, key):
+            raise AssertionError("the volume was read")
+
+    tiled.features = mask.view(Unread)
+    assert np.array_equal(tiled.at(voxels), expected)
+    assert np.array_equal(tiled.at(voxels[::-1]), expected[::-1])
+
+
+def test_mask_support_low_memory_radius_is_the_same():
+    from haemolynx.preprocessing.bridge_mask_support import MaskSupport
+
+    mask = _mask()
+    points = _voxels(mask, count=500, seed=8) * np.asarray(SPACING)
+    plain = MaskSupport(mask, SPACING)
+    low = MaskSupport(mask, SPACING, low_memory=True)
+
+    assert np.array_equal(low.radius(points), plain.radius(points))
+    assert low._distance._tiles is not None and plain._distance._tiles is None
+    assert low.limited_to(5.0, 0.1).low_memory
+    assert low.limited_to(5.0, 0.1)._distance is low._distance
+
+
+def test_radius_sampler_low_memory_is_the_same():
+    from haemolynx.graph.assemble import mask_radius_sampler
+
+    mask = _mask()
+    plain = mask_radius_sampler(mask, SPACING, 1.0)
+    low = mask_radius_sampler(mask, SPACING, 1.0, low_memory=True)
+    for point in _voxels(mask, count=200, seed=9) * np.asarray(SPACING):
+        assert low(point) == plain(point)
+    assert low.feature_distance._tiles is not None

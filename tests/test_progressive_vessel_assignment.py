@@ -401,3 +401,34 @@ def test_small_vessel_progressive_labelling_builds_no_whole_volume_transform(mon
     )
 
     assert result["arteriole_edge_count"] >= 1
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_low_ram_progressive_assignments_read_the_same_distances(seed):
+    """Under the low-RAM option each mask's distances come from tiles of its
+    surface (``FeatureDistance(by_block=True)``) instead of one tree over all
+    of it: the same terminals, labels and boundary nodes."""
+    import copy
+
+    voxel_size = (2.0, 0.5, 0.5)
+    G, art, ven = _star_with_masks(seed)
+    for node in G.nodes:
+        G.nodes[node]["pos"] = G.nodes[node]["pos"] * np.asarray(voxel_size)
+    kwargs = dict(voxel_size_zyx=voxel_size, max_dilation_microns=5.0, dilation_step_microns=1.5)
+    assert select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
+        G, art, ven, low_memory=True, **kwargs
+    ) == select_terminal_nodes_from_large_vessel_masks_progressive_dilation(G, art, ven, **kwargs)
+
+    G, art, ven = _chains_with_masks(seed)
+    for node in G.nodes:
+        G.nodes[node]["pos"] = np.asarray(G.nodes[node]["pos"], dtype=float) * np.asarray(voxel_size)
+    for _u, _v, data in G.edges(data=True):
+        data["voxels"] = [tuple(np.asarray(p) * np.asarray(voxel_size)) for p in data["voxels"]]
+    H = copy.deepcopy(G)
+    kwargs.update(minimum_overlap_fraction=0.5)
+    plain = infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(G, art, ven, **kwargs)
+    low = infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(H, art, ven, low_memory=True, **kwargs)
+    assert repr(low) == repr(plain)
+    assert [d.get("mask_vessel_type") for *_e, d in H.edges(keys=True, data=True)] == [
+        d.get("mask_vessel_type") for *_e, d in G.edges(keys=True, data=True)
+    ]

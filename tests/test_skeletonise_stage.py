@@ -1005,3 +1005,27 @@ def test_a_run_loading_its_skeleton_gets_the_region_back_from_the_cache(tmp_path
     # No entry for these settings: None, as before there was a cache.
     settings["skeleton_thick_vessel_min_radius_um"] = 5.0
     assert skeletonise(settings, segment(settings)).thick_vessel_mask is None
+
+
+@pytest.mark.parametrize("low_ram", [False, True])
+def test_skeletonise_hands_on_the_thick_centreline_tree_it_drew(tmp_path, low_ram):
+    """Graph building reads the tree skeletonisation drew rather than
+    drawing it again (a volume of zeros and a Dijkstra over every fat
+    voxel): the volume carries its voxels, the ones the region gives. A
+    skeleton loaded instead of made carries none, so it is drawn there."""
+    from haemolynx.graph.thick_vessel_junctions import thick_vessel_centreline_voxels
+
+    mask, _fat_roi = plasma_labelled_object(8.0)
+    settings = settings_for(
+        tmp_path, _write_mask(tmp_path, mask), use_thick_vessel_skeletonisation=True,
+        use_memmap_loading=low_ram, memmap_directory=tmp_path if low_ram else None,
+    )
+    volume = skeletonise(settings, segment(settings))
+
+    assert volume.thick_vessel_mask is not None and volume.thick_vessel_mask.any()
+    tree = volume.thick_vessel_centreline
+    assert tree is not None and len(tree)
+    assert np.array_equal(tree, thick_vessel_centreline_voxels(volume.thick_vessel_mask, volume.voxel_size_zyx))
+
+    loaded = skeletonise(dict(settings, do_skeletonize=False), segment(settings))
+    assert loaded.thick_vessel_centreline is None

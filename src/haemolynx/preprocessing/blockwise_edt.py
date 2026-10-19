@@ -237,6 +237,7 @@ def near_blocks(
     block_voxels: int | None = None,
     workers: int = 1,
     memmap_directory=None,
+    on_low_memory=None,
 ) -> Iterator[tuple[tuple[slice, ...], object]]:
     """``(core, decide(where, distance, params))`` for each block of
     :func:`near_distances_by_block` that holds a wanted voxel, in its order,
@@ -249,7 +250,9 @@ def near_blocks(
     it is, anything else copied once). *edt_input*, *wanted* and *decide*
     must be module-level functions, and *decide*'s result small enough to
     send back: the blocks are independent, so each is transformed and
-    decided wherever it runs, identically.
+    decided wherever it runs, identically. Free memory is read again as
+    blocks go out, *on_low_memory* called when it runs short (see
+    :func:`~.shared_volume_tasks.iter_volume_tasks`).
     """
     from .shared_volume_tasks import iter_volume_tasks
 
@@ -262,9 +265,13 @@ def near_blocks(
         (edt_input, wanted, decide, core, _pad(core, halo, shape), sampling_t, params)
         for core in cores
     ]
+    padded_voxels = int(np.prod([min(int(s), int(c) + 2 * int(h)) for s, c, h in zip(
+        shape, _core_extent(shape, halo, int(block_voxels)), halo
+    )]))
     results = iter_volume_tasks(
         _near_block, payloads, volume=tuple(volumes), workers=int(workers),
-        memmap_directory=memmap_directory,
+        memmap_directory=memmap_directory, task_bytes=padded_voxels * BLOCK_BYTES_PER_VOXEL,
+        on_low_memory=on_low_memory,
     )
     for core, result in zip(cores, results):
         if result is not None:

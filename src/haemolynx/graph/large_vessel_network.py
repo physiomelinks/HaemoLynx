@@ -19,7 +19,6 @@ from typing import Any, Iterable
 
 import numpy as np
 import networkx as nx
-from scipy.ndimage import label
 
 from ._helpers import points_inside_mask, sort_nodes
 from .boundaries import _terminal_nodes_and_position_map, warn_about_coordinate_snaps
@@ -89,13 +88,18 @@ def find_large_vessel_mask_stump_points(
     cross-section is a vessel lying along the face, not cut by it (see
     :data:`STUMP_MAX_FOOTPRINT_CROSS_SECTIONS`).
     """
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
     mask_bool = np.asarray(mask, dtype=bool)
     if not mask_bool.any():
         return []
 
-    labeled, n_labels = label(mask_bool, structure=_STRUCTURE)
+    # Components labelled a slab of planes at a time and held at their voxels
+    # (``preprocessing.slab_labels.ForegroundLabels``), not in a label volume
+    # (8 bytes a voxel once a stack has 2**31 voxels).
+    labeled = ForegroundLabels(mask_bool, _STRUCTURE)
     scale = np.asarray(voxel_size_zyx, dtype=float)
-    sizes = np.bincount(labeled.ravel(), minlength=int(n_labels) + 1)
+    sizes = labeled.sizes
     min_size = float(min_component_fraction) * float(sizes[1:].max())
 
     points: list[np.ndarray] = []
@@ -106,8 +110,10 @@ def find_large_vessel_mask_stump_points(
         for face in (0, -1):
             face_index = [slice(None)] * mask_bool.ndim
             face_index[axis] = face
-            face_labels = labeled[tuple(face_index)]
             face_axis_value = face_index[axis] % labeled.shape[axis]
+            face_box = [slice(0, n) for n in labeled.shape]
+            face_box[axis] = slice(face_axis_value, face_axis_value + 1)
+            face_labels = np.squeeze(labeled.read(tuple(face_box)), axis=axis)
             for component_id in np.unique(face_labels):
                 if component_id == 0:
                     continue

@@ -68,7 +68,7 @@ def _as_large_vessel_foreground(mask: np.ndarray, *, role: str) -> np.ndarray:
 def _combined_large_vessel_mask(
     large_arteriole_mask: np.ndarray,
     large_venule_mask: np.ndarray,
-) -> np.ndarray:
+):
     arteriole = _as_large_vessel_foreground(
         large_arteriole_mask, role="arteriole"
     )
@@ -78,8 +78,11 @@ def _combined_large_vessel_mask(
             "large_arteriole_mask and large_venule_mask must share a shape. "
             f"Got {arteriole.shape} and {venule.shape}."
         )
-    # Union of interiors to remove — both masks participate.
-    return arteriole | venule
+    # Union of interiors to remove — both masks participate. Read at the
+    # cut's samples, never made as a volume.
+    from haemolynx.preprocessing.memmap_support import MaskUnion
+
+    return MaskUnion(arteriole, venule)
 
 
 def _exterior_runs(inside_flags: list[bool]) -> list[tuple[int, int]]:

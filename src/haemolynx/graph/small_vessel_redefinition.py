@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from scipy.ndimage import binary_erosion, find_objects, label
+from scipy.ndimage import binary_erosion, label
 from scipy.spatial import cKDTree
 
 logger = logging.getLogger(__name__)
@@ -238,7 +238,16 @@ def _tangential_pass(
     *,
     workers: int,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    labels, count = label(art | ven, structure=_FULL_STRUCTURE)
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+    # The pieces labelled a slab of planes at a time and held at their voxels
+    # (``preprocessing.slab_labels.ForegroundLabels``), not in a label volume
+    # (8 bytes a voxel once a stack has 2**31 voxels).
+    from haemolynx.preprocessing.memmap_support import MaskUnion
+
+    # art | ven read where the labelling asks, not made as a volume.
+    labels = ForegroundLabels(MaskUnion(art, ven), _FULL_STRUCTURE)
+    count = labels.count
     stats = _empty_tangential_stats(int(count))
     if count == 0:
         return art.copy(), ven.copy(), stats
@@ -250,12 +259,10 @@ def _tangential_pass(
         for name, mask in large.items()
         if mask is not None and np.any(mask)
     }
-    slices = find_objects(labels)
-
     def judge(component_id: int) -> tuple[int, np.ndarray, _Verdict]:
-        box = slices[component_id - 1]
-        offset = np.asarray([axis.start for axis in box])
-        voxels = np.argwhere(labels[box] == component_id) + offset
+        # Its voxels in C order, as np.argwhere of its box lists them, and
+        # laid out as that does (the piece's axis is a BLAS product of them).
+        voxels = labels.component_coords(component_id)
         return component_id, voxels, _judge_piece(voxels, surfaces, spacing, limits)
 
     ids = range(1, int(count) + 1)
@@ -522,16 +529,22 @@ def _sandwich_pass(
 
 
 def _index_pieces(art: np.ndarray, ven: np.ndarray, spacing: np.ndarray) -> _Pieces | None:
-    art_labels, art_count = label(art, structure=_FULL_STRUCTURE)
-    ven_labels, ven_count = label(ven, structure=_FULL_STRUCTURE)
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+    # Each mask's pieces labelled a slab of planes at a time and held at their voxels
+    # (``preprocessing.slab_labels.ForegroundLabels``), not in a label volume
+    # (8 bytes a voxel once a stack has 2**31 voxels).
+    art_labels = ForegroundLabels(art, _FULL_STRUCTURE)
+    ven_labels = ForegroundLabels(ven, _FULL_STRUCTURE)
+    art_count, ven_count = art_labels.count, ven_labels.count
     if art_count == 0 or ven_count == 0:
         return None
-    art_voxels = np.argwhere(art_labels)
-    ven_voxels = np.argwhere(ven_labels)
+    art_voxels = art_labels.coords()
+    ven_voxels = ven_labels.coords()
     owner = np.concatenate(
         [
-            art_labels[tuple(art_voxels.T)] - 1,
-            ven_labels[tuple(ven_voxels.T)] - 1 + art_count,
+            art_labels.numbers - 1,
+            ven_labels.numbers - 1 + art_count,
         ]
     )
     voxels = np.concatenate([art_voxels, ven_voxels])

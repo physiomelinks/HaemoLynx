@@ -116,3 +116,68 @@ def test_numbers_at_looks_up_the_query_voxels_and_refuses_any_other():
     outside = np.argwhere(~query)[0]
     with pytest.raises(KeyError):
         lookup[tuple(int(v) for v in outside)]
+
+
+def _planes_of(volumes, z0, z1, params):
+    return np.asarray(volumes[0][z0:z1], dtype=bool)
+
+
+def _labels_seen(volumes, z0, z1, labels, params):
+    return np.unique(labels[labels > 0]).astype(np.int64)
+
+
+def _write_numbers(volumes, z0, z1, labels, offset, n, params):
+    from haemolynx.preprocessing.shared_volume_tasks import open_whole_file
+
+    out = open_whole_file(params["out"])
+    if labels is None:
+        # Every component here answers alike: the first one's number.
+        out[z0:z1] = np.where(np.asarray(volumes[0][z0:z1], dtype=bool), volumes[1][offset + 1], 0)
+    else:
+        out[z0:z1] = slab_labels.offset_lookup(labels, offset, volumes[1])
+    del out
+    return labels is not None
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_slabs_labelled_in_workers_are_scipys_labels_numbered_alike(tmp_path, workers):
+    """Each slab labelled in a worker and the faces joined here, in z order:
+    scipy's components with scipy's numbers and boxes, every slab's own
+    labels handed back with its offset, and a replay that labels again only
+    the slabs whose components do not answer alike."""
+    from haemolynx.preprocessing.memmap_support import new_memmap_array, release_memmap_array
+    from haemolynx.preprocessing.shared_volume_tasks import whole_file_spec
+
+    rng = np.random.default_rng(11)
+    volume = rng.random((13, 17, 11)) > 0.7
+    volume[:, 2, 3] = True  # a column through every slab
+    plane = volume.shape[1] * volume.shape[2]
+    structure = STRUCTURES["26"]
+
+    components, seen = slab_labels.label_by_slab_in_workers(
+        _planes_of, (volume,), volume.shape, structure=structure, collect=_labels_seen,
+        block_voxels=2 * plane, workers=workers, memmap_directory=tmp_path,
+    )
+    expected, n = label(volume, structure=structure)
+    serial = slab_labels.label_by_slab(_planes(volume), volume.shape, structure=structure, block_voxels=2 * plane)
+
+    assert components.count == n
+    assert np.array_equal(components.number, serial.number)
+    assert np.array_equal(components.slab_counts, serial.slab_counts)
+    for number, box in enumerate(find_objects(expected), start=1):
+        assert components.box(number) == box
+    for (offset, labels), (z0, z1, slab_offset, count) in zip(seen, components.slabs()):
+        assert offset == slab_offset and np.array_equal(labels, np.arange(1, count + 1))
+
+    table = components.number.copy()  # each offset label's own component number
+    out = new_memmap_array(volume.shape, np.int64, directory=tmp_path)
+    again = slab_labels.replay_in_workers(
+        components, _planes_of, _write_numbers, (volume, table),
+        relabel=lambda offset, count: len(set(table[offset + 1:offset + count + 1])) > 1,
+        params=dict(out=whole_file_spec(out)), workers=workers, memmap_directory=tmp_path,
+    )
+    out.flush()
+    assert np.array_equal(np.asarray(out), expected)
+    single = [len(set(table[o + 1:o + c + 1])) <= 1 for _z0, _z1, o, c in components.slabs()]
+    assert again == [not s for s in single], "only a slab with two components labelled again"
+    release_memmap_array(out)

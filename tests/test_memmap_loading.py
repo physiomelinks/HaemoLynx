@@ -404,6 +404,24 @@ def test_fill_binary_holes_with_memmap_on_leaves_a_volume_without_background_alo
     result = fill_binary_holes(empty, use_memmap=True)
     assert not np.asarray(result).any()
     release_memmap_array(result)
+def test_fill_binary_holes_with_memmap_on_labels_its_slabs_in_worker_processes(tmp_path, monkeypatch):
+    """The slabs labelled in two worker processes, then joined here: the same
+    holes, filled whichever process labelled them."""
+    import haemolynx.preprocessing.blockwise_edt as blockwise_edt
+    from scipy.ndimage import binary_fill_holes
+
+    rng = np.random.default_rng(5)
+    shape = (16, 24, 20)
+    mask = rng.random(shape) > 0.5
+    mask[2:14, 4:20, 4:16] = True
+    mask[3:13, 7:12, 7:11] = False  # a cavity through many slabs
+    mask[5:9, 14:17, 0:12] = False  # one reaching the x = 0 face
+    monkeypatch.setattr(blockwise_edt, "parallel_plan", lambda shape, block_voxels=None: (2 * 24 * 20, 2))
+
+    result = fill_binary_holes(mask, use_memmap=True, memmap_directory=tmp_path)
+
+    assert np.array_equal(result, binary_fill_holes(mask))
+    release_memmap_array(result)
 def test_fill_binary_holes_honours_memmap_directory(tmp_path):
     mask = np.zeros((10, 10, 10), dtype=bool)
     mask[2:8, 2:8, 2:8] = True
@@ -595,7 +613,9 @@ def test_skeletonize_by_component_with_memmap_on_gives_each_component_a_memmap_m
 def test_skeletonize_by_component_keeps_small_components_off_disk(monkeypatch):
     """A temp file per component made a noisy mask with thousands of specks
     crawl; a component whose box fits one block is compared in RAM, with the
-    same skeleton as ever."""
+    same skeleton as ever. And no label volume: the components come from
+    slabs (an int32 a voxel, 22 GB on a 5.5 G-voxel stack, it was the only
+    file but the result)."""
     import haemolynx.preprocessing.skeleton as skeleton_module
 
     rng = np.random.default_rng(0)
@@ -604,15 +624,21 @@ def test_skeletonize_by_component_keeps_small_components_off_disk(monkeypatch):
 
     made = []
     original = skeleton_module.temporary_memmap_array
+    original_new = skeleton_module.new_memmap_array
 
     def counting(*args, **kwargs):
         made.append(args[0])
         return original(*args, **kwargs)
 
+    def counting_new(shape, dtype, **kwargs):
+        made.append((tuple(shape), np.dtype(dtype)))
+        return original_new(shape, dtype, **kwargs)
+
     monkeypatch.setattr(skeleton_module, "temporary_memmap_array", counting)
+    monkeypatch.setattr(skeleton_module, "new_memmap_array", counting_new)
     result = skeletonize_by_component(mask, use_memmap=True)
 
-    assert made == [mask.shape], "only the label volume should be on disk"
+    assert made == [(mask.shape, np.dtype(bool))], "only the result should be on disk"
     assert np.array_equal(result, skeletonize(mask, method="lee"))
     release_memmap_array(result)
 
