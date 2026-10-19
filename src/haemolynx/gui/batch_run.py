@@ -26,7 +26,7 @@ import logging
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -135,16 +135,40 @@ class BatchSummary:
                 parts.append(f"{self.count(status)} {status}")
         return f"Batch: {', '.join(parts)}. Summary: {self.csv_path}"
 
-    def write(self) -> Path:
-        self.output_root.mkdir(parents=True, exist_ok=True)
-        partial = self.csv_path.with_name(f"{self.csv_path.name}.part")
-        with partial.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=SUMMARY_COLUMNS)
-            writer.writeheader()
-            for result in self.results:
-                writer.writerow(result.row())
-        partial.replace(self.csv_path)
+    def write(self) -> Path | None:
+        """Write the summary; never raises, so a summary file held open by
+        another program (a spreadsheet, a sync client, a virus scanner) never
+        stops the batch -- it is written again after the next image."""
+        try:
+            self.output_root.mkdir(parents=True, exist_ok=True)
+            partial = self.csv_path.with_name(f"{self.csv_path.name}.part")
+            with partial.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=SUMMARY_COLUMNS)
+                writer.writeheader()
+                for result in self.results:
+                    writer.writerow(result.row())
+            _replace(partial, self.csv_path)
+        except OSError as error:
+            logger.warning("Could not write %s: %s", self.csv_path, error)
+            return None
         return self.csv_path
+
+
+#: Windows refuses to replace a file another program has open for a moment
+#: (a scanner or sync client looking at the one just written).
+_REPLACE_ATTEMPTS = 20
+_REPLACE_WAIT_S = 0.1
+
+
+def _replace(source: Path, target: Path) -> None:
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            source.replace(target)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_WAIT_S)
 
 
 def _peak_rss(settings: Mapping[str, Any], stem: str) -> int | None:
@@ -330,6 +354,138 @@ def run_batch(
     return summary
 
 
+#: The rows a batch fills for each image, shown as :data:`BATCH_ROW_TEXT`
+#: while one is set: setting -> the batch folder it comes from.
+BATCH_ROW_FOLDERS = {
+    "input_path": "segmented",
+    "raw_image_path": "raw",
+    "large_arteriole_mask_path": "large",
+    "large_venule_mask_path": "large",
+    "small_arteriole_mask_path": "small",
+    "small_venule_mask_path": "small",
+}
+BATCH_ROW_TEXT = "Batch run"
+BATCH_BUTTON_TEXT = "Batch run"
+
+#: The table's columns.
+TABLE_COLUMNS = ("Run", "Segmented image", "Raw image", "Large masks", "Small masks", "Status")
+READY = "ready"
+
+
+@dataclass(frozen=True)
+class BatchSetup:
+    """A batch set up in the panel: its folders and what was matched in them.
+    Panel state, not settings: each image's run records the files it used."""
+
+    folders: BatchFolders
+    output_root: Path
+    matches: tuple[BatchMatch, ...] = ()
+    #: Stems the user unticked.
+    unticked: frozenset[str] = frozenset()
+    skip_done: bool = True
+    #: Each image's checks (Check, or Run pipeline), by stem: its first error,
+    #: or "" when it passed.
+    checked: Mapping[str, str] = field(default_factory=dict)
+
+    def selected(self) -> list[BatchMatch]:
+        return [match for match in self.matches if match.stem not in self.unticked]
+
+    def button_text(self) -> str:
+        count = len(self.selected())
+        return f"{BATCH_BUTTON_TEXT}: {count} image{'' if count == 1 else 's'}"
+
+    def row_tooltip(self, setting: str) -> str:
+        folder = self.folders.folder(BATCH_ROW_FOLDERS[setting])
+        return f"Set for each image by the batch, from {folder}; open Batch run to change it"
+
+    def choose(self, role: str, path: Path, match: BatchMatch) -> "BatchSetup":
+        """Every image's tie in *role* chosen as *path* was for *match*."""
+        from haemolynx.io.batch_matching import choose_alike
+
+        matches = choose_alike(self.matches, role, path, match.ties(role))
+        return replace(self, matches=matches, checked={})
+
+
+def _mask_cell(found) -> str:
+    if found is None:
+        return "not used"
+    if found.ambiguous:
+        tied = sum(len(paths) for paths in found.ambiguous.values())
+        return f"{tied} files tie: choose"
+    if found.is_pair:
+        return f"{found.arteriole.name} + {found.venule.name}"
+    if found.global_mask is not None:
+        return f"{found.global_mask.name} (global)"
+    if found.arteriole is not None:
+        return f"{found.arteriole.name} (global)"
+    if found.venule is not None:
+        return f"{found.venule.name} (no arteriole)"
+    return "none found"
+
+
+def match_status(match: BatchMatch, checked: Mapping[str, str] | None = None) -> str:
+    """What the table says of *match*: its first problem, its checks' first
+    error, or ready."""
+    if match.problems:
+        return match.problems[0]
+    if checked and match.stem in checked:
+        return checked[match.stem] or f"{READY} (checked)"
+    return READY
+
+
+def table_rows(setup: BatchSetup) -> list[tuple[str, ...]]:
+    """The table's text, one tuple per image in :data:`TABLE_COLUMNS` order
+    (the first column is the tick, "yes"/"no")."""
+    rows = []
+    for match in setup.matches:
+        if match.raw_ties:
+            raw = f"{len(match.raw_ties)} files tie: choose"
+        else:
+            raw = match.raw.name if match.raw is not None else "none"
+        rows.append(
+            (
+                "no" if match.stem in setup.unticked else "yes",
+                match.segmented.name,
+                raw,
+                _mask_cell(match.masks.get("large")),
+                _mask_cell(match.masks.get("small")),
+                match_status(match, setup.checked),
+            )
+        )
+    return rows
+
+
+def tied_cells(match: BatchMatch) -> dict[int, tuple[str, tuple[Path, ...]]]:
+    """The table columns holding a tie for *match*: column -> (role, files).
+    One role per column, the first; the next shows once it is chosen."""
+    columns = {"raw": 2, "large": 3, "small": 4}
+    cells: dict[int, tuple[str, tuple[Path, ...]]] = {}
+    for role in match.tied_roles:
+        column = columns[role.partition("_")[0]]
+        cells.setdefault(column, (role, match.ties(role)))
+    return cells
+
+
+def check_setup(
+    values: Mapping[str, Any], schema: Schema, setup: BatchSetup
+) -> tuple[BatchSetup, list[str]]:
+    """Every selected image's checks (:func:`~haemolynx.pipeline.batch.batch_preflight`)
+    on the resolved *values*: the setup with each image's result, and a line
+    per image for the report."""
+    from haemolynx.pipeline.settings import resolve_settings
+
+    base = resolve_settings(dict(values), schema=schema, config_path=None)
+    checked: dict[str, str] = {}
+    lines: list[str] = []
+    for match in setup.selected():
+        report = batch_preflight(base, match, setup.output_root, schema)
+        checked[match.stem] = report.errors[0] if report.errors else ""
+        lines.append(f"{'ok' if report.ok else 'FAILED'}: {match.stem}")
+        lines.extend(f"    FAILED: {message}" for message in report.errors)
+        lines.extend(f"    warning: {message}" for message in report.warnings)
+    return replace(setup, checked=checked), lines
+
+
 def selected_matches(
     matches: Sequence[BatchMatch], only: Sequence[str] | None = None
 ) -> list[BatchMatch]:
@@ -413,7 +569,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
+    "BATCH_ROW_FOLDERS",
+    "BATCH_ROW_TEXT",
     "BatchResult",
+    "BatchSetup",
     "BatchSummary",
     "CANCELLED",
     "DONE",
@@ -421,11 +580,16 @@ __all__ = [
     "NOT_RUN",
     "SKIPPED",
     "SUMMARY_FILENAME",
+    "TABLE_COLUMNS",
+    "check_setup",
     "haemorun_path",
+    "match_status",
     "main",
     "run_batch",
     "run_image",
     "selected_matches",
+    "table_rows",
+    "tied_cells",
 ]
 
 

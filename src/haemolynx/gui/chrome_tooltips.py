@@ -375,6 +375,40 @@ CHECK_SEGMENTED_IMAGE_TOOLTIP = (
     "connectivity, vessels leaving the image, surface noise and resolution "
     "-- and print the breakdown to the log below"
 )
+#: The Batch run button and its window.
+BATCH_RUN_TOOLTIPS = {
+    "button": (
+        "Run every segmented image in a folder with these settings, each "
+        "matched to its raw image and vessel masks by file name, saving a "
+        ".haemorun and the run's outputs in a folder named after the image"
+    ),
+    "segmented": "The folder of segmented images: each image file in it is one run",
+    "raw": "The folder of raw images; left blank, they are looked for in the segmented folder",
+    "large": (
+        "The folder of large vessel masks; given on its own, every file in it is "
+        "a large mask of the image sharing its name. Left blank, the segmented "
+        "folder, read by name"
+    ),
+    "small": (
+        "The folder of small vessel masks; given on its own, every file in it is "
+        "a small mask of the image sharing its name. Left blank, the segmented "
+        "folder, read by name"
+    ),
+    "output": "Each image's outputs and .haemorun go in a folder of its own in here",
+    "browse": "Choose the folder",
+    "skip_done": (
+        "Leave out images whose folder already has a .haemorun, so a batch "
+        "stopped part way picks up where it ended"
+    ),
+    "table": (
+        "Each segmented image and what was matched to it; untick an image to "
+        "leave it out, and choose a file where several tie"
+    ),
+    "match": "Read the folders again and match every image",
+    "check": "Run every ticked image's pre-run checks and show what they say",
+    "use": "Close this window and let Run pipeline run the batch",
+    "leave": "Go back to running the one image the Input tab names",
+}
 REVERT_STAGE_TOOLTIP = (
     "Clear this tab and later layers and checkpoints, then rerun the "
     "pipeline from this stage using the previous tab's saved work"

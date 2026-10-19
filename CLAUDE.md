@@ -341,7 +341,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned), `test_vessel_class_statistics.py` (each class's rows against hand-computed values, both labelling schemes, the export) |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py`, `test_secomb_io.py` |
-| `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text; `test_batch_run.py` (the batch runner and its command line, one real two-image batch) |
+| `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text; `test_batch_run.py` (the batch runner and its command line, one real two-image batch), `test_gui_batch_run_widget.py` (the button, the "Batch run" rows, the window, Run pipeline's hand-off) |
 | `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_pipeline_provenance.py` (the run manifest), `test_setting_units.py`, `test_example_configs.py`, `test_batch_settings.py` (one image's batch settings, the batch refusals) |
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py` |
 | `src/haemolynx/synthetic/` | `tests/test_synthetic_template.py` (both sources, every refusal, JSON, scaling), `test_synthetic_generate.py` (the graph contract, determinism, the exact counts, the acceptance test against `tests/synthetic_fixtures.py`'s hand-set template, the polyline bender, the bed's arithmetic), `test_synthetic_compare.py`, `test_synthetic_stage.py` (each stage under `network_source=synthetic`, a whole run, preflight), `test_pipeline_naming.py` |
@@ -1272,6 +1272,13 @@ are only caught locally.
   `skip_done` skips an image whose `.haemorun` is there. Headless: `python -m
   haemolynx.gui.batch_run --config C --segmented D [--raw/--large/--small D] --output D
   [--dry-run] [--only STEM ...] [--rerun]`; every image passes its checks or nothing runs.
+  In the panel: the Input tab's Batch run button (under the segmented image row) opens
+  `_widget.py`'s `_BatchRunWindow` (folders, the matched table with ticks and tie choices,
+  Check, Use this batch, Leave batch run; double-click a finished row to load its
+  `.haemorun`). While a batch is set (`batch_mode.setup`, a `gui/batch_run.BatchSetup`, panel
+  state, not settings) the six path rows it fills show "Batch run" inside the row
+  (`_show_batch_row`, from `apply_prerequisites`; the rows' values are untouched) and Run
+  pipeline runs `on_run_batch` -> `_run_batch_in_background`: nothing is drawn.
 - **`synthetic/`** (2026-10-18) — a network drawn to a previous run. `template.py`'s
   `NetworkTemplate` is the characteristics a generator draws to and a comparison scores against:
   the box and voxel size, the inlets and outlets by face, the boundary-node counts, per-class and

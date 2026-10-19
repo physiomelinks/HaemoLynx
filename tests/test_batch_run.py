@@ -209,3 +209,34 @@ def test_a_real_batch_writes_a_haemorun_and_outputs_per_image(tmp_path, schema):
         assert list((out / stem).glob("*.vt*")), "no VTK output"
         assert result.nodes and result.vessels
     assert not (tmp_path / "default_out").exists()
+
+
+def test_a_summary_file_held_open_never_stops_the_batch(tmp_path, schema, monkeypatch):
+    """Windows refuses to replace a file another program holds: the summary
+    write retries, and a write that still fails is logged, not raised."""
+    calls = []
+    monkeypatch.setattr(batch_run, "run_image", _fake_run(calls))
+    monkeypatch.setattr(batch_run, "_REPLACE_WAIT_S", 0.0)
+    real_replace = Path.replace
+    refusals = {"left": 3}
+
+    def flaky_replace(self, target):
+        if refusals["left"]:
+            refusals["left"] -= 1
+            raise PermissionError("held open")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    _folders, matches = _batch(tmp_path, "A_seg")
+    summary = run_batch(_values(schema, tmp_path), schema, matches, tmp_path / "out")
+    assert [result.status for result in summary.results] == [DONE]
+    assert _summary_rows(summary.csv_path)[0]["status"] == DONE
+
+    def refused(self, target):
+        raise PermissionError("held open")
+
+    monkeypatch.setattr(Path, "replace", refused)
+    summary = run_batch(
+        _values(schema, tmp_path), schema, matches, tmp_path / "out2", skip_done=False
+    )
+    assert [result.status for result in summary.results] == [DONE]

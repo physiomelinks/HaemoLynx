@@ -1,5 +1,14 @@
 # Batch run (plan, 2026-10-18)
 
+> **Status (2026-10-19): implemented**, phases 1-5, with one change from the plan below: a mask
+> folder given on its own says the mask size, so a file there need not name it
+> (`io/batch_matching.mask_owners`). Harvey's first batch names its small masks
+> `..._Simple Segmentation_intermediate.h5`, which the name rule reads as no mask. Headless:
+> `python -m haemolynx.gui.batch_run` (see `CLAUDE.md`, "Batch run"). Not yet done: the
+> panel's Check segmented image, optimisers and Save run are not greyed in batch mode (they
+> act on the Input tab's one image as before); the ilastik batch and the extra per-image
+> masks under "Later".
+
 A **Batch run** button on the Input tab opens a window where the user gives up to four folders:
 segmented images, raw images, large vessel masks, small vessel masks. The panel matches each
 segmented image to its raw image and masks by file name, using the rule the panel already uses
