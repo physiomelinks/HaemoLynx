@@ -1064,6 +1064,16 @@ def _thick_region_arguments(
     }
 
 
+def large_stack_thick_tree(settings: dict) -> bool:
+    """Whether the thick vessels' centreline tree is drawn for a large stack
+    (``skeleton_thick_vessel_large_stack_tree``, which applies under the
+    low-RAM option only): skeletonisation, graph building and post
+    processing all ask this, so they draw the same tree."""
+    return bool(settings.get("use_memmap_loading")) and bool(
+        settings.get("skeleton_thick_vessel_large_stack_tree")
+    )
+
+
 def thick_vessel_region_cache(
     settings: dict, output_dir: Path | None = None
 ) -> preprocessing.ThickVesselRegionCache:
@@ -1215,6 +1225,7 @@ def _skeletonize_loaded_mask(
             tile_halo_voxels=_skeletonize_tile_halo_voxels(settings, voxel_size_zyx),
             thick_region=region if found else None,
             centreline_voxels=centreline,
+            large_stack_tree=large_stack_thick_tree(settings),
         )
         if cache is not None and not found:
             cache.store(key, thick, binary.shape)
@@ -1969,7 +1980,10 @@ def build_network(
             thick_tree = getattr(volume, "thick_vessel_centreline", None)
             if thick_tree is None:
                 thick_tree = graph.thick_vessel_junctions.thick_vessel_centreline_voxels(
-                    volume.thick_vessel_mask, voxel_size_zyx, use_memmap=settings["use_memmap_loading"]
+                    volume.thick_vessel_mask,
+                    voxel_size_zyx,
+                    use_memmap=settings["use_memmap_loading"],
+                    large_stack_tree=large_stack_thick_tree(settings),
                 )
             follower = graph.thick_vessel_junctions.ThickCentreline.from_region(
                 volume.thick_vessel_mask, voxel_size_zyx, segmentation=binary_mask, centreline=thick_tree,
@@ -4165,7 +4179,10 @@ def _bridge_edited_vessels(
         tree = getattr(network.volume, "thick_vessel_centreline", None)
     if tree is None:
         tree = graph.thick_vessel_junctions.thick_vessel_centreline_voxels(
-            mask, voxel_size_zyx, use_memmap=bool(settings.get("use_memmap_loading"))
+            mask,
+            voxel_size_zyx,
+            use_memmap=bool(settings.get("use_memmap_loading")),
+            large_stack_tree=large_stack_thick_tree(settings),
         )
     # What the tree fill draws beside an edit is new vessel, measured as
     # one drawn by hand is.

@@ -3748,6 +3748,27 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="skeleton_thick_vessel_large_stack_tree",
+            kind="bool",
+            default=False,
+            help=(
+                "Under the low-RAM option, draw the thick vessels' centreline "
+                "tree for a large stack: shortest paths found over the thick "
+                "region's voxels themselves (about 20 bytes a voxel) instead "
+                "of a graph of every voxel (about 360), no cap on how many "
+                "arms one thick region gets (500 without it), and the "
+                "thin-arm join's last-resort search bounded to a box round "
+                "each arm, an arm with no path in it left unjoined and "
+                "logged. Use it when one thick region is a network crossing "
+                "the stack. A region of up to 4 million voxels gets the same "
+                "tree as without it, bar that cap; a larger one can take "
+                "another route of exactly the same cost, a voxel or more aside"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_thick_vessel_skeletonisation", "use_memmap_loading"),
+            advanced=True,
+        ),
+        Setting(
             name="thick_vessel_fill_centreline_gaps",
             kind="bool",
             default=True,
