@@ -1138,7 +1138,34 @@ are only caught locally.
   labels the background a slab of planes at a time (`skeleton._fill_binary_holes_by_slab`, no label
   volume), and the catchment's blocks run in worker processes (`blockwise_edt.near_blocks`, sized by
   `parallel_plan` from cores and free memory): catchment 90 -> 51 s and Lee step 72 -> 35 s on that
-  stack with 14 workers, 7.5 GB with theirs counted. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
+  stack with 14 workers, 7.5 GB with theirs counted. **The large-stack tree**
+  (`skeleton_thick_vessel_large_stack_tree`, off by default, under the low-RAM option only;
+  `preprocessing/thick_vessel_tree.py`, 2026-10-19) is for a fat region that is one network
+  crossing the stack -- Harvey's patella at a 3 um gate, 111 M of its 144 M fat voxels in one
+  component, ~40 GB of that CSR. Each component's tree is built as `_component_tree` builds it
+  (root and far end, arms farthest first, the same tests), from shortest paths found over the
+  voxels themselves (`shortest_path_parents`: bucketed label-correcting, neighbours three to a
+  row by searchsorted on the sorted keys, a distance and a parent a voxel kept -- scipy's
+  distances bit for bit, ties to the lower voxel number, so a route of exactly equal cost can
+  step a voxel aside), the farthest candidate from cells re-measured only near what the tree
+  gained (`_FarthestCandidates`), and no arm cap. A component of at most
+  `EXACT_TREE_MAX_VOXELS` (4 M) keeps scipy's walk, so its tree is the in-RAM one bar the cap
+  (`tests/test_thick_vessel_tree.py`, with digests of the in-RAM skeleton from 4c96e9c5); the
+  voxels are grouped by component in one array filled as the slabs are labelled, the radius
+  read along `distances_at_points`' own block rows on up to 4 threads, small components on
+  threads, and the join's last resort bounded (`_bounded_structure_path`: a box round the
+  arm's ends, 41 voxels padding doubling, at most 64 M box voxels and 2 M searched; an arm
+  with no path is left unjoined and logged). E14.5 (Harvey's settings) with it: thick region,
+  tree and skeleton bit for bit the in-RAM ones. Patella tree step (1312 s at `1d9bf1ab`, its
+  region read back): labelling 120 s, 5,644 small components 330 s, the big one's radius
+  119 s, its shortest paths 740 s (~6.6 us a voxel; threads gave nothing there), arms 8 s;
+  peak 22.2 GB commit, 9.7 GB above the region and skeleton buffer (6 GB unthreaded), during the radius
+  (four block transforms and the domain's surface tree at once). **It draws the same arms,
+  so it does not keep a network's narrower vessels**: arms aim only at voxels of at least 0.4
+  of the component's widest radius, so the patella's 111 M-voxel component got its main path
+  and 2 arms (263,706 tree voxels in all; 68% of fat voxels over 20 um from the tree, against
+  3.5% on E14.5), and the fat voxels no arm reaches are not handed to Lee. What to do there
+  (hand them back, or aim arms by local radius) waits on Harvey and a marked grid. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
   wall; 39 s on E14.5) is kept beside the saved skeleton, one bit a voxel
   (`preprocessing/thick_vessel_region_cache.py`, `stages.thick_vessel_region_cache`), keyed on a
   digest of the mask's voxels and the settings that decide it, so nothing else can go stale: a

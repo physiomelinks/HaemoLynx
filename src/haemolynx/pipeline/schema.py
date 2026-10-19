@@ -3754,7 +3754,7 @@ SCHEMA = Schema(
             help=(
                 "Under the low-RAM option, draw the thick vessels' centreline "
                 "tree for a large stack: shortest paths found over the thick "
-                "region's voxels themselves (about 20 bytes a voxel) instead "
+                "region's voxels themselves (tens of bytes a voxel) instead "
                 "of a graph of every voxel (about 360), no cap on how many "
                 "arms one thick region gets (500 without it), and the "
                 "thin-arm join's last-resort search bounded to a box round "
@@ -3762,7 +3762,9 @@ SCHEMA = Schema(
                 "logged. Use it when one thick region is a network crossing "
                 "the stack. A region of up to 4 million voxels gets the same "
                 "tree as without it, bar that cap; a larger one can take "
-                "another route of exactly the same cost, a voxel or more aside"
+                "another route of exactly the same cost, a voxel or more "
+                "aside. It aims arms as without it: a thick vessel under 0.4 "
+                "of its region's widest radius gets no arm either way"
             ),
             section=_PIPELINE_STAGES,
             requires=("use_thick_vessel_skeletonisation", "use_memmap_loading"),
