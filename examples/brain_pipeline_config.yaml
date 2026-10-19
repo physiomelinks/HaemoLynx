@@ -622,7 +622,7 @@ statistics_and_measurements:
   statistics_murray_law: true
   # Branching angle between sibling daughter vessels at each junction  [needs statistics]
   statistics_daughter_angles: true
-  # Typical spacing between neighbouring capillaries  [needs statistics]
+  # Typical spacing between neighbouring vessels, over every vessel and, with haemodynamics, over the vessels carrying flow alone  [needs statistics]
   statistics_intercapillary_distance: true
   # Dead ends by kind (leaving the image, stopped short, broken, artefact, blind, unknown, island), the interior ones per mm of vessel and per mm^3 of tissue, their length, the share of the network the image faces cut, and why vessels carry no flow  [needs statistics]
   statistics_dead_ends: true
@@ -679,6 +679,8 @@ connectivity/network_analysis:
   statistics_capillary_bed_joins: true
   # Blood transit time per vessel and the inlet-to-outlet transit-time distribution, including capillary transit-time heterogeneity (CTH). Needs haemodynamics and diameters; adds transit_time_s and arrival_time_s as vessels-layer colour options  [needs statistics and statistics_network_analysis]
   statistics_transit_time: true
+  # Flux heterogeneity: the coefficient of variation of flow and of mean velocity over the vessels carrying flow, for the capillaries and for every vessel, and how much of the network carries flow (vessels, length and volume, with their share of the whole). Needs haemodynamics; adds vessel_velocity_um_s as a vessels-layer colour option  [needs statistics and statistics_network_analysis]
+  statistics_flux_heterogeneity: true
   # Shortest loop through each vessel and the loop-length distribution overall and by vessel type -- the scale at which the network's redundancy sits; adds loop_length_um as a vessels-layer colour option  [needs statistics and statistics_network_analysis]
   statistics_loop_hierarchy: true
   # Horton-Strahler orders of the arterial and venous trees and Horton's bifurcation, length and diameter ratios; adds strahler_order as a vessels-layer colour option  [needs statistics and statistics_network_analysis]

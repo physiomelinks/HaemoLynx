@@ -1431,3 +1431,90 @@ def test_the_dead_ends_section_counts_kinds_density_cut_length_and_why_there_is_
     assert rows["Vessel Length Behind Interior Dead Ends, No Flow (microns)"] == pytest.approx(3.0)
     assert rows["Vessel Length Behind Closed Image-Face Ends, No Flow (microns)"] == pytest.approx(5.0)
     assert rows["Vessel Length Carrying Flow (microns)"] == pytest.approx(99.0)
+
+
+# --- intercapillary distance between the vessels carrying flow ---------------------------
+
+
+def _three_parallel_vessels(flows):
+    """A, B and C, 10 um long, side by side 50 um apart (A at y=0, B at 50,
+    C at 100), each given one of *flows* as a solved flow (None: no flow)."""
+    G = nx.MultiGraph()
+    for i, y in enumerate((0.0, 50.0, 100.0)):
+        G.add_node(2 * i, pos=(0.0, y, 0.0))
+        G.add_node(2 * i + 1, pos=(0.0, y, 10.0))
+        _straight_edge(G, 2 * i, 2 * i + 1, f"BO{i + 1}")
+        flow = flows[i]
+        if flow is not None:
+            G[2 * i][2 * i + 1][0].update(
+                flow_abs=float(flow),
+                flow_state="solved" if flow > 0 else "blind_end",
+                flow_solved=flow > 0,
+            )
+    return G
+
+
+def test_intercapillary_distance_between_flowing_vessels_leaves_out_the_vessel_carrying_none():
+    """B, in the middle, carries no flow: every vessel's nearest neighbour is
+    50 um away, but the nearest *flowing* neighbour of A and C is each other,
+    100 um away -- the spacing the perfused vessels leave for oxygen to cross."""
+    G = _three_parallel_vessels([1e-12, 0.0, 1e-12])
+
+    result = compute_intercapillary_distance(G)
+
+    assert result["Intercapillary Distance Sample Count"] == 3
+    assert result["Median Intercapillary Distance (microns)"] == pytest.approx(50.0)
+    assert result["Intercapillary Distance Between Flowing Vessels Sample Count"] == 2
+    assert result["Mean Intercapillary Distance Between Flowing Vessels (microns)"] == pytest.approx(100.0)
+    assert result["Median Intercapillary Distance Between Flowing Vessels (microns)"] == pytest.approx(100.0)
+    assert result["Flowing Over All Median Intercapillary Distance"] == pytest.approx(2.0)
+
+
+def test_intercapillary_distance_between_flowing_vessels_is_the_whole_when_every_vessel_flows():
+    G = _three_parallel_vessels([1e-12, 2e-12, 3e-12])
+
+    result = compute_intercapillary_distance(G)
+
+    assert result["Intercapillary Distance Between Flowing Vessels Sample Count"] == 3
+    assert result["Median Intercapillary Distance Between Flowing Vessels (microns)"] == pytest.approx(
+        result["Median Intercapillary Distance (microns)"]
+    )
+    assert result["Flowing Over All Median Intercapillary Distance"] == pytest.approx(1.0)
+
+
+def test_intercapillary_distance_between_flowing_vessels_needs_a_solved_flow():
+    G = _three_parallel_vessels([None, None, None])
+
+    result = compute_intercapillary_distance(G)
+
+    # The rows over every vessel are as they always were.
+    assert result["Intercapillary Distance Sample Count"] == 3
+    assert result["Median Intercapillary Distance (microns)"] == pytest.approx(50.0)
+    reason = "N/A (needs a solved flow (run haemodynamics))"
+    assert result["Mean Intercapillary Distance Between Flowing Vessels (microns)"] == reason
+    assert result["Median Intercapillary Distance Between Flowing Vessels (microns)"] == reason
+    assert result["Intercapillary Distance Between Flowing Vessels Sample Count"] == 0
+    assert result["Flowing Over All Median Intercapillary Distance"] == reason
+
+
+def test_intercapillary_distance_between_flowing_vessels_needs_two_of_them():
+    G = _three_parallel_vessels([1e-12, 0.0, 0.0])
+
+    result = compute_intercapillary_distance(G)
+
+    reason = "N/A (fewer than two vessels carry flow)"
+    assert result["Intercapillary Distance Between Flowing Vessels Sample Count"] == 0
+    assert result["Median Intercapillary Distance Between Flowing Vessels (microns)"] == reason
+    assert result["Flowing Over All Median Intercapillary Distance"] == reason
+    assert result["Median Intercapillary Distance (microns)"] == pytest.approx(50.0)
+
+
+def test_intercapillary_distance_between_flowing_vessels_uses_the_carrying_floor():
+    """A flow the solve balanced to rounding is no flow: B's 1e-24 against
+    A's and C's 1e-12 is below a billionth of the largest."""
+    G = _three_parallel_vessels([1e-12, 1e-24, 1e-12])
+
+    result = compute_intercapillary_distance(G)
+
+    assert result["Intercapillary Distance Between Flowing Vessels Sample Count"] == 2
+    assert result["Median Intercapillary Distance Between Flowing Vessels (microns)"] == pytest.approx(100.0)

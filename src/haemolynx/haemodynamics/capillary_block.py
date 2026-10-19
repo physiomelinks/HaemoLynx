@@ -283,6 +283,44 @@ def _net_flow_into(G: nx.MultiGraph, node: Any) -> float:
     return total
 
 
+#: The flux heterogeneity rows the block comparison reports on the baseline
+#: and the blocked network (``<name>_baseline`` / ``<name>_blocked``): the
+#: statistic's row, and the summary's name for it.
+FLUX_HETEROGENEITY_SUMMARY_ROWS: tuple[tuple[str, str], ...] = (
+    ("Capillary Flow CV", "capillary_flow_cv"),
+    ("Capillary Velocity CV", "capillary_velocity_cv"),
+    ("Vessel Flow CV", "vessel_flow_cv"),
+    ("Vessel Velocity CV", "vessel_velocity_cv"),
+    ("Vessels Carrying Flow", "vessels_carrying_flow"),
+    ("Capillaries Carrying Flow", "capillaries_carrying_flow"),
+    ("Flowing Vessel Length (microns)", "flowing_vessel_length_um"),
+    ("Flowing Vessel Volume (micron³)", "flowing_vessel_volume_um3"),
+    ("Flowing Capillary Length (microns)", "flowing_capillary_length_um"),
+    ("Flowing Capillary Volume (micron³)", "flowing_capillary_volume_um3"),
+)
+
+
+def _stopped_vessels(
+    G: nx.MultiGraph, inlets: Sequence[Any], outlets: Sequence[Any]
+) -> list[tuple[Any, Any, Any, dict]]:
+    """The vessels of a blocked network that carry no perfusion: the blocked
+    ones and, given inlets and outlets, every vessel no inlet-to-outlet path
+    runs along once those are taken out -- fed only through a block, it
+    carries the block's leak and nothing else."""
+    from haemolynx.graph.connectivity import inlet_to_outlet_vessels
+
+    edges = list(G.edges(keys=True, data=True))
+    blocked = {(u, v, k) for u, v, k, d in edges if d.get(BLOCK_EDGE_ATTRIBUTE) == "blocked"}
+    perfused = None
+    if inlets and outlets:
+        perfused = inlet_to_outlet_vessels(nx.restricted_view(G, [], blocked), inlets, outlets)
+    return [
+        (u, v, k, d)
+        for u, v, k, d in edges
+        if (u, v, k) in blocked or (perfused is not None and (u, v, k) not in perfused)
+    ]
+
+
 def _outlet_flows(G: nx.MultiGraph, outlets: Iterable[Any]) -> dict:
     """Flow draining out of the network at each outlet node."""
     return {outlet: _net_flow_into(G, outlet) for outlet in outlets if outlet in G}
@@ -309,6 +347,10 @@ def compare_block_to_baseline(
         _branch_order_sort_key,
         branch_order_label,
     )
+    from haemolynx.statistics.flux_heterogeneity import (
+        CARRYING_FLOOR_FRACTION,
+        compute_flux_heterogeneity,
+    )
     from haemolynx.statistics.transit_time import compute_transit_times
 
     inlets = list(inlet_nodes)
@@ -318,7 +360,7 @@ def compare_block_to_baseline(
         base_flows.append(abs(_signed_flow(data)))
     base_flows = np.asarray(base_flows, dtype=float)
     finite = base_flows[np.isfinite(base_flows)]
-    carrying_floor = 1e-9 * float(finite.max()) if finite.size else 0.0
+    carrying_floor = CARRYING_FLOOR_FRACTION * float(finite.max()) if finite.size else 0.0
 
     rows: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
@@ -412,16 +454,17 @@ def compare_block_to_baseline(
         "outlets_losing_half_their_flow": outlet_losing_half,
     }
 
-    # Transit times on copies: compute_transit_times writes per-vessel
+    # Transit times and flux heterogeneity on copies: both write per-vessel
     # attributes, and neither graph here should gain them from a comparison.
     for label, G in (("baseline", baseline), ("blocked", blocked)):
         G = G.copy()
         if label == "blocked":
-            # A blocked vessel's residual leak flow is not perfusion: left in,
-            # its near-infinite transit time swamps the mean and SD.
-            for _u, _v, _k, d in G.edges(keys=True, data=True):
-                if d.get(BLOCK_EDGE_ATTRIBUTE) == "blocked":
-                    d["flow_abs"] = 0.0
+            # A blocked vessel's residual leak flow is not perfusion, nor is
+            # the leak through the vessels only a blocked one feeds: left in,
+            # their near-infinite transit times swamp the mean and SD, and
+            # they would count as carrying flow.
+            for _u, _v, _k, d in _stopped_vessels(G, inlets, outlets):
+                d["flow_abs"] = 0.0
         times = compute_transit_times(G, inlets, outlets)
         for key, name in (
             ("Mean Transit Time (s)", "mean_transit_time_s"),
@@ -433,6 +476,12 @@ def compare_block_to_baseline(
                 summary[f"{name}_{label}"] = times[key]
         if "Transit Time Status" in times:
             summary[f"transit_time_status_{label}"] = times["Transit Time Status"]
+        flux = compute_flux_heterogeneity(G)
+        for key, name in FLUX_HETEROGENEITY_SUMMARY_ROWS:
+            if key in flux:
+                summary[f"{name}_{label}"] = flux[key]
+        if "Flux Heterogeneity Status" in flux:
+            summary[f"flux_heterogeneity_status_{label}"] = flux["Flux Heterogeneity Status"]
 
     by_order = []
     for label in sorted(rows, key=_branch_order_sort_key):

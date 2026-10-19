@@ -247,6 +247,68 @@ def test_transit_times_are_compared_when_the_network_has_diameters():
     assert all("transit_time_s" not in d for *_e, d in blocked.edges(keys=True, data=True))
 
 
+def test_flux_heterogeneity_and_the_flowing_volume_are_compared_before_and_after():
+    baseline = _two_routes()
+    _solve(baseline, [0], [5])
+    blocked = baseline.copy()
+    block_vessels(blocked, [(1, 2, 0)], 1e6)
+    _solve(blocked, [0], [5])
+
+    summary, _ = compare_block_to_baseline(baseline, blocked, inlet_nodes=[0], outlet_nodes=[5])
+
+    # Baseline: four capillaries of one width each carry half the inflow, so
+    # there is no heterogeneity among them; the arteriole and venule carry
+    # twice as much, so there is some over every vessel.
+    assert summary["capillaries_carrying_flow_baseline"] == 4
+    assert summary["vessels_carrying_flow_baseline"] == 6
+    assert summary["capillary_flow_cv_baseline"] == pytest.approx(0.0, abs=1e-9)
+    assert summary["capillary_velocity_cv_baseline"] == pytest.approx(0.0, abs=1e-9)
+    flows = [25.0, 12.5, 12.5, 12.5, 12.5, 25.0]
+    assert summary["vessel_flow_cv_baseline"] == pytest.approx(
+        np.std(flows, ddof=1) / np.mean(flows), rel=1e-6
+    )
+    # Blocked: 1-2 is blocked, and 2-3 is fed only through it, so it carries
+    # the block's leak and nothing else -- neither is flowing. The two open
+    # capillaries carry the whole inflow, as the arteriole and venule do.
+    assert summary["capillaries_carrying_flow_blocked"] == 2
+    assert summary["vessels_carrying_flow_blocked"] == 4
+    assert summary["capillary_flow_cv_blocked"] == pytest.approx(0.0, abs=1e-9)
+    # The arteriole and venule carry the block's leak on top: a CV of ~1e-6.
+    assert summary["vessel_flow_cv_blocked"] == pytest.approx(0.0, abs=1e-5)
+    volume = math.pi * 2.5**2 * 10.0  # one 5 um wide, 10 um long vessel
+    assert summary["flowing_capillary_volume_um3_baseline"] == pytest.approx(4 * volume)
+    assert summary["flowing_capillary_volume_um3_blocked"] == pytest.approx(2 * volume)
+    assert summary["flowing_vessel_volume_um3_baseline"] == pytest.approx(6 * volume)
+    assert summary["flowing_vessel_volume_um3_blocked"] == pytest.approx(4 * volume)
+    assert summary["flowing_capillary_length_um_blocked"] == pytest.approx(20.0)
+    assert summary["flowing_vessel_length_um_blocked"] == pytest.approx(40.0)
+    # A comparison writes nothing onto either network but the flow change.
+    for G in (baseline, blocked):
+        assert all("vessel_velocity_um_s" not in d for *_e, d in G.edges(keys=True, data=True))
+        assert all(d["flow_abs"] > 0 for *_e, d in G.edges(keys=True, data=True))
+
+
+def test_a_vessel_fed_only_through_a_block_counts_as_stopped_in_the_comparison():
+    """Its leak flow is above the carrying floor (a millionth of its baseline
+    flow, against a billionth of the largest), so only the rule that it lies
+    on no inlet-to-outlet path once the block is taken out stops it."""
+    from haemolynx.haemodynamics.capillary_block import _stopped_vessels
+
+    baseline = _two_routes()
+    _solve(baseline, [0], [5])
+    blocked = baseline.copy()
+    block_vessels(blocked, [(1, 2, 0)], 1e6)
+    _solve(blocked, [0], [5])
+    leak = blocked[2][3][0]["flow_abs"]
+    assert 0 < leak < 1e-3 * baseline[2][3][0]["flow_abs"]
+    assert leak > 1e-9 * blocked[0][1][0]["flow_abs"]
+
+    stopped = {(u, v, k) for u, v, k, _d in _stopped_vessels(blocked, [0], [5])}
+    assert stopped == {(1, 2, 0), (2, 3, 0)}
+    # Without inlets and outlets only the blocked vessel itself is stopped.
+    assert {(u, v, k) for u, v, k, _d in _stopped_vessels(blocked, [], [])} == {(1, 2, 0)}
+
+
 # --- the perturbation, end to end ---------------------------------------------------------
 
 

@@ -4148,7 +4148,10 @@ SCHEMA = Schema(
             name="statistics_intercapillary_distance",
             kind="bool",
             default=True,
-            help="Typical spacing between neighbouring capillaries",
+            help=(
+                "Typical spacing between neighbouring vessels, over every vessel "
+                "and, with haemodynamics, over the vessels carrying flow alone"
+            ),
             section=_STATISTICS,
             requires=("statistics",),
             advanced=True,
@@ -4520,6 +4523,22 @@ SCHEMA = Schema(
                 "transit-time distribution, including capillary transit-time "
                 "heterogeneity (CTH). Needs haemodynamics and diameters; adds "
                 "transit_time_s and arrival_time_s as vessels-layer colour options"
+            ),
+            section=_NETWORK_ANALYSIS,
+            requires=("statistics", "statistics_network_analysis"),
+            advanced=True,
+        ),
+        Setting(
+            name="statistics_flux_heterogeneity",
+            kind="bool",
+            default=True,
+            help=(
+                "Flux heterogeneity: the coefficient of variation of flow and "
+                "of mean velocity over the vessels carrying flow, for the "
+                "capillaries and for every vessel, and how much of the network "
+                "carries flow (vessels, length and volume, with their share of "
+                "the whole). Needs haemodynamics; adds vessel_velocity_um_s as a "
+                "vessels-layer colour option"
             ),
             section=_NETWORK_ANALYSIS,
             requires=("statistics", "statistics_network_analysis"),

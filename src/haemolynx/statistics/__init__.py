@@ -23,6 +23,7 @@ from .comprehensive import (
 )
 from .csv_export import export_statistics_to_csv
 from .current_flow import compute_current_flow
+from .flux_heterogeneity import compute_flux_heterogeneity
 from .inlet_outlet_routes import (
     ROUTE_WEIGHTINGS,
     compute_inlet_outlet_bottlenecks,
@@ -107,6 +108,7 @@ __all__ = [
     "kaplan_meier",
     "kaplan_meier_median",
     "compute_transit_times",
+    "compute_flux_heterogeneity",
     "compute_loop_hierarchy",
     "compute_strahler_orders",
     "compute_algebraic_connectivity",

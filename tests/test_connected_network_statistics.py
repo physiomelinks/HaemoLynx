@@ -52,8 +52,9 @@ def _length_row(stats: dict) -> float:
 def test_measures_are_only_geometry_and_topology():
     assert statistics.CONNECTED_NETWORK_MEASURES <= set(statistics.STATISTIC_MEASURES)
     # Anything reading inlets, outlets or flow already sees only what is connected.
-    for measure in ("bottlenecks", "shunts", "transit_time", "current_flow",
-                    "strahler", "algebraic_connectivity", "network_robustness"):
+    for measure in ("bottlenecks", "shunts", "transit_time", "flux_heterogeneity",
+                    "current_flow", "strahler", "algebraic_connectivity",
+                    "network_robustness"):
         assert measure not in statistics.CONNECTED_NETWORK_MEASURES
 
 

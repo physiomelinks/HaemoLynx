@@ -12,6 +12,7 @@ from haemolynx.graph.validate import assert_no_forbidden_edge_attributes
 from .bifurcation import compute_daughter_daughter_angles, compute_murray_law_compliance
 from .capillary_bed_joins import compute_capillary_bed_joins
 from .current_flow import compute_current_flow
+from .flux_heterogeneity import compute_flux_heterogeneity
 from .inlet_outlet_routes import (
     compute_inlet_outlet_bottlenecks,
     compute_inlet_outlet_shunts,
@@ -73,6 +74,7 @@ STATISTIC_MEASURES: tuple[str, ...] = (
     "perfusion_territories",
     "capillary_bed_joins",
     "transit_time",
+    "flux_heterogeneity",
     "loop_hierarchy",
     "strahler",
     "algebraic_connectivity",
@@ -107,6 +109,7 @@ NETWORK_ANALYSIS_MEASURES: frozenset[str] = frozenset(
         "perfusion_territories",
         "capillary_bed_joins",
         "transit_time",
+        "flux_heterogeneity",
         "loop_hierarchy",
         "strahler",
         "algebraic_connectivity",
@@ -222,10 +225,11 @@ def compute_comprehensive_vessel_statistics(
 
     "bottlenecks", "shunts", "occlusion_impact", "current_flow",
     "perfusion_territories", "capillary_bed_joins", "transit_time",
-    "loop_hierarchy", "strahler" and "algebraic_connectivity" also write their per-vessel results onto *G*'s
+    "flux_heterogeneity", "loop_hierarchy", "strahler" and "algebraic_connectivity" also write their per-vessel results onto *G*'s
     edges so the vessels layer can be coloured by them; the route/flow ones
     measure distance and conductance by *route_weighting*. Without what they
-    need (inlets and outlets, or a solved flow for transit time) they report
+    need (inlets and outlets, or a solved flow for transit time and flux
+    heterogeneity) they report
     N/A and write nothing.
 
     *topology_communities*, when given, is the ``(communities, method)``
@@ -457,6 +461,8 @@ def compute_vessel_statistics_by_measure(
         )
     if "transit_time" in enabled:
         sections["transit_time"] = compute_transit_times(G, inlet_nodes, outlet_nodes)
+    if "flux_heterogeneity" in enabled:
+        sections["flux_heterogeneity"] = compute_flux_heterogeneity(G)
     if "loop_hierarchy" in enabled:
         sections["loop_hierarchy"] = compute_loop_hierarchy(
             G,

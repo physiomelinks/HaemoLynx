@@ -493,6 +493,14 @@ def compute_intercapillary_distance(
     input to Krogh-cylinder oxygen-diffusion modelling: how far the tissue
     between two vessels reaches.
 
+    With a solved flow, the same spacing over the vessels carrying flow alone
+    (:func:`~haemolynx.statistics.flux_heterogeneity.is_carrying`: the solve
+    reached the vessel and its flow is above the carrying floor), each flowing
+    vessel's nearest unrelated *flowing* vessel -- how far the tissue between
+    perfused vessels reaches once stalled and unperfused ones drop out --
+    beside the rows over every vessel, with the ratio of the two medians
+    (``Flowing Over All Median Intercapillary Distance``).
+
     The median along the vessel, not its closest approach: a vessel's nearest
     unrelated neighbour is usually a vessel two junctions away, met right at
     the junction, so the closest approach ran low for almost every vessel.
@@ -501,15 +509,18 @@ def compute_intercapillary_distance(
     """
     from haemolynx.geometry import resample_at_step
 
+    from .flux_heterogeneity import carrying_floor, is_carrying
+
     is_mg = isinstance(G, (nx.MultiGraph, nx.MultiDiGraph))
     raw_edges = (
         list(G.edges(keys=True, data=True))
         if is_mg
         else [(u, v, 0, d) for u, v, d in G.edges(data=True)]
     )
+    has_flow = any(_is_finite_number(d.get("flow_abs")) for _u, _v, _k, d in raw_edges)
+    floor = carrying_floor(G) if has_flow else 0.0
 
     edge_points: list = []
-    incident: Dict[Any, set] = {}
     for u, v, _key, data in raw_edges:
         try:
             points = np.asarray(edge_polyline(G, u, v, data), dtype=float)
@@ -517,31 +528,77 @@ def compute_intercapillary_distance(
             continue
         if points.ndim != 2 or points.shape[0] == 0:
             continue
-        idx = len(edge_points)
-        edge_points.append((resample_at_step(points, sample_step_um), u, v))
+        carrying = has_flow and is_carrying(data, floor)
+        edge_points.append((resample_at_step(points, sample_step_um), u, v, carrying))
+
+    result = _intercapillary_rows(edge_points, "", "fewer than two edges")
+    flowing_names = _INTERCAPILLARY_FLOWING_NAMES
+    if not has_flow:
+        reason = "N/A (needs a solved flow (run haemodynamics))"
+        result[flowing_names[0]] = reason
+        result[flowing_names[1]] = reason
+        result[flowing_names[2]] = 0
+        result[_INTERCAPILLARY_FLOWING_RATIO] = reason
+        return result
+    flowing = [entry for entry in edge_points if entry[3]]
+    result.update(
+        _intercapillary_rows(flowing, "Between Flowing Vessels", "fewer than two vessels carry flow")
+    )
+    median_all = result["Median Intercapillary Distance (microns)"]
+    median_flowing = result[flowing_names[1]]
+    if isinstance(median_all, float) and isinstance(median_flowing, float):
+        result[_INTERCAPILLARY_FLOWING_RATIO] = (
+            median_flowing / median_all if median_all > 0 else np.nan
+        )
+    else:
+        result[_INTERCAPILLARY_FLOWING_RATIO] = (
+            median_flowing if isinstance(median_flowing, str) else median_all
+        )
+    return result
+
+
+def _is_finite_number(value: Any) -> bool:
+    try:
+        return bool(np.isfinite(float(value)))
+    except (TypeError, ValueError):
+        return False
+
+
+def _intercapillary_names(qualifier: str) -> tuple[str, str, str]:
+    """(mean, median, sample count) row names; *qualifier* follows
+    "Intercapillary Distance" ("Between Flowing Vessels"), or is empty."""
+    what = f"Intercapillary Distance {qualifier}".strip()
+    return (f"Mean {what} (microns)", f"Median {what} (microns)", f"{what} Sample Count")
+
+
+_INTERCAPILLARY_FLOWING_NAMES = _intercapillary_names("Between Flowing Vessels")
+#: The flowing vessels' median spacing over every vessel's.
+_INTERCAPILLARY_FLOWING_RATIO = "Flowing Over All Median Intercapillary Distance"
+
+
+def _intercapillary_rows(edge_points: list, qualifier: str, too_few: str) -> Dict[str, Any]:
+    """The spacing rows over *edge_points* (``(points, u, v, ...)`` per
+    edge): each edge's median distance along it to the nearest point of
+    another edge in the list sharing no node with it, as the mean and median
+    over edges and how many edges found one."""
+    mean_name, median_name, count_name = _intercapillary_names(qualifier)
+    if len(edge_points) < 2:
+        return {mean_name: f"N/A ({too_few})", median_name: f"N/A ({too_few})", count_name: 0}
+
+    incident: Dict[Any, set] = {}
+    for idx, (_pts, u, v, *_rest) in enumerate(edge_points):
         incident.setdefault(u, set()).add(idx)
         incident.setdefault(v, set()).add(idx)
-
-    if len(edge_points) < 2:
-        return {
-            "Mean Intercapillary Distance (microns)": "N/A (fewer than two edges)",
-            "Median Intercapillary Distance (microns)": "N/A (fewer than two edges)",
-            "Intercapillary Distance Sample Count": 0,
-        }
-
-    all_points = np.concatenate([pts for pts, _u, _v in edge_points], axis=0)
+    all_points = np.concatenate([entry[0] for entry in edge_points], axis=0)
     point_edge_idx = np.concatenate(
-        [
-            np.full(pts.shape[0], i, dtype=np.intp)
-            for i, (pts, _u, _v) in enumerate(edge_points)
-        ]
+        [np.full(entry[0].shape[0], i, dtype=np.intp) for i, entry in enumerate(edge_points)]
     )
     tree = cKDTree(all_points)
     neighbour_counts = [k for k in _INTERCAPILLARY_NEIGHBOUR_COUNTS if k < all_points.shape[0]]
     neighbour_counts.append(all_points.shape[0])
 
     distances: list[float] = []
-    for i, (points, u, v) in enumerate(edge_points):
+    for i, (points, u, v, *_rest) in enumerate(edge_points):
         forbidden = np.fromiter(
             {i} | incident.get(u, set()) | incident.get(v, set()), dtype=np.intp
         )
@@ -563,17 +620,10 @@ def compute_intercapillary_distance(
             distances.append(float(np.nanmedian(nearest)))
 
     if not distances:
-        return {
-            "Mean Intercapillary Distance (microns)": (
-                "N/A (no edge found an unrelated neighbour)"
-            ),
-            "Median Intercapillary Distance (microns)": (
-                "N/A (no edge found an unrelated neighbour)"
-            ),
-            "Intercapillary Distance Sample Count": 0,
-        }
+        reason = "N/A (no edge found an unrelated neighbour)"
+        return {mean_name: reason, median_name: reason, count_name: 0}
     return {
-        "Mean Intercapillary Distance (microns)": float(np.mean(distances)),
-        "Median Intercapillary Distance (microns)": float(np.median(distances)),
-        "Intercapillary Distance Sample Count": len(distances),
+        mean_name: float(np.mean(distances)),
+        median_name: float(np.median(distances)),
+        count_name: len(distances),
     }

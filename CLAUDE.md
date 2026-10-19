@@ -90,7 +90,9 @@ haemolynx/
 │   │                       #   share the parent/daughter edge classification),
 │   │                       #   network_measures.py (betweenness + communities),
 │   │                       #   network analyses: inlet_outlet_routes (bottlenecks, shunts),
-│   │                       #   transit_time, territories, capillary_bed_joins (the B order
+│   │                       #   transit_time, flux_heterogeneity (the CV of flow and velocity
+│   │                       #   over the vessels carrying flow, the flowing volume; before and
+│   │                       #   after in the block comparison), territories, capillary_bed_joins (the B order
 │   │                       #   each feed's capillary bed joins another's, Kaplan-Meier),
 │   │                       #   current_flow, occlusion, loops,
 │   │                       #   strahler, spectral, over _route_graph.py / _flow_system.py;
@@ -1097,7 +1099,8 @@ are only caught locally.
   against the baseline would not be the perturbation's effect. A single re-solve writes
   summary/edges/statistics CSVs and plots; a sweep writes its grid CSV and curves, and keeps
   per-point flows (`sweep_flows.py`) so the viewer's slider can swap them without N graph copies.
-- **Network analyses** (`statistics/inlet_outlet_routes.py`, `transit_time.py`, `territories.py`,
+- **Network analyses** (`statistics/inlet_outlet_routes.py`, `transit_time.py`,
+  `flux_heterogeneity.py`, `territories.py`,
   `capillary_bed_joins.py`, `current_flow.py`, `occlusion.py`, `loops.py`, `strahler.py`,
   `spectral.py`) — each a
   `statistics_*` toggle in the schema's *Connectivity/Network Analysis* section, run inside
@@ -1113,6 +1116,19 @@ are only caught locally.
   Kaplan-Meier median plus the `remove_short_loops_under_um` the graph was built with (that rule
   removes the earliest joins); its per-bed table goes to `<stem>_capillary_bed_joins.csv` beside
   the statistics CSV, for between-dataset tests (log-rank, a reseeded-feed null) outside the package.
+  `flux_heterogeneity` (2026-10-19, for the stall work of `PLAN_stall_artifacts.md`): over the
+  vessels *carrying* flow -- the solve reached them (`vessel_classes.carries_flow`) and their
+  flow is above `CARRYING_FLOOR_FRACTION` (1e-9) of the network's largest, the block
+  comparison's own floor, imported from there -- the CV (sample SD / mean) of flow and of mean
+  velocity, for the capillaries and for every vessel, and the flowing share of the network by
+  count, length and volume (a cylinder per vessel), with rows by vessel type; it writes
+  `vessel_velocity_um_s` on each carrying vessel. `compare_block_to_baseline` reports the same
+  rows `_baseline` / `_blocked` on copies, the blocked network's *stopped* vessels (the blocked
+  ones and, through `inlet_to_outlet_vessels`, every vessel fed only through one, whose leak is
+  above the floor) set to flow 0 first, as it already did for the transit times. The
+  perturbation's own graph keeps the solve's leak flows, so its statistics CSV still counts
+  blocked vessels as carrying. `compute_intercapillary_distance` adds the same spacing over
+  the carrying vessels alone (`... Between Flowing Vessels`) and the ratio of the two medians.
 - **Vascular communities** (`graph/communities.py`) — the `compute_vascular_communities` toggle,
   independent of Statistics; when Statistics also runs, the two share one partition
   (`pipeline/stages.py`'s `shared_vascular_community_partition`) instead of computing it twice.

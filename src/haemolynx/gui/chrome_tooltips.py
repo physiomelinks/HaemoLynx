@@ -179,7 +179,9 @@ STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
         "How far apart neighbouring vessels lie: for each vessel, the median "
         "distance along it to the nearest vessel not joined to it, then the "
         "mean and median over vessels, in microns. How far oxygen must "
-        "diffuse into the tissue between them"
+        "diffuse into the tissue between them. With a solved flow, the same "
+        "over the vessels carrying flow alone, and the ratio of the two "
+        "medians: how the spacing opens up where vessels carry no flow"
     ),
     "dead_ends": (
         "Vessels that end without joining another, by kind: leaving the "
@@ -244,6 +246,14 @@ STATISTICS_SECTION_TOOLTIPS: dict[str, str] = {
         "over its flow, added up along inlet-to-outlet routes, as a mean and "
         "spread (SD, CV), and the capillaries' transit-time heterogeneity "
         "(CTH). Plug flow at the solved mean flow, not red-cell speed"
+    ),
+    "flux_heterogeneity": (
+        "How unevenly the network is perfused: the coefficient of variation "
+        "(SD over mean) of flow and of mean velocity across the vessels "
+        "carrying flow, for the capillaries and for every vessel, and the "
+        "share of the network carrying flow by vessel count, length and "
+        "volume. A vessel carries flow when the solve reached it and its flow "
+        "is above a floor far below the network's largest"
     ),
     "loop_hierarchy": (
         "The scale of the network's redundancy: the shortest loop through "

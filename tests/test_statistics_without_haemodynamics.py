@@ -441,7 +441,7 @@ def test_a_disabled_statistics_measure_setting_is_missing_from_the_exported_csv(
     assert "Tortuosity" in without_csv
 
 
-#: The eight annotating analyses beyond bottlenecks/shunts, with the per-vessel
+#: The nine annotating analyses beyond bottlenecks/shunts, with the per-vessel
 #: attributes each writes and one report row each always adds when it runs.
 NETWORK_ANALYSES = {
     "statistics_occlusion_impact": (("occlusion_flow_loss", "occlusion_hypoperfused_length_um"), "Occlusion Impact Method"),
@@ -452,17 +452,20 @@ NETWORK_ANALYSES = {
         "Arteriolar Territory Count",
     ),
     "statistics_transit_time": (("transit_time_s", "arrival_time_s"), "Transit Time Status"),
+    "statistics_flux_heterogeneity": (("vessel_velocity_um_s",), "Flux Heterogeneity Status"),
     "statistics_loop_hierarchy": (("loop_length_um",), "Vessels On No Loop"),
     "statistics_strahler": (("strahler_order",), "Strahler Method"),
     "statistics_algebraic_connectivity": (("fiedler_value", "fiedler_side"), "Algebraic Connectivity lambda_2"),
 }
+#: The analyses that read the solved flow, and so write nothing without one.
+FLOW_ANALYSES = frozenset({"statistics_transit_time", "statistics_flux_heterogeneity"})
 
 
 def test_export_results_runs_every_network_analysis_and_annotates_the_vessels(tmp_path):
-    """All eight on, with inlet 0 and outlet 2 on the forked 0-1-2 (+ spur 1-3)
+    """All nine on, with inlet 0 and outlet 2 on the forked 0-1-2 (+ spur 1-3)
     graph and haemodynamics off: each adds its report rows, and every one that
-    can run writes its per-vessel attributes. Transit time needs a solved
-    flow, so it reports why not and writes nothing."""
+    can run writes its per-vessel attributes. Transit time and flux
+    heterogeneity need a solved flow, so they report why not and write nothing."""
     G = _export_with_haemodynamics_off(
         tmp_path,
         inlet_nodes=[0],
@@ -474,7 +477,7 @@ def test_export_results_runs_every_network_analysis_and_annotates_the_vessels(tm
         assert row in csv_text, name
         for attribute in attributes:
             present = all(attribute in data for _u, _v, data in G.edges(data=True))
-            assert present == (name != "statistics_transit_time"), (name, attribute)
+            assert present == (name not in FLOW_ANALYSES), (name, attribute)
     assert "needs a solved flow" in csv_text
 
     # 0-1-2 carries everything and blocking either vessel stops it; the spur nothing.
