@@ -22,6 +22,14 @@ After the commit that implements a ticket, set its `Status:` line to `done (<has
 - `ls` a path before giving it to the user, or before writing it into a ticket after a compaction. Use the full path from the repo root (`.scratch/<feature>/assets/gaps.md`), never one relative to another file.
 - Write ticket text with the Edit tool or a quoted heredoc (`<<'EOF'`), never an unquoted one, which eats the backtick spans.
 
+## Handing a ticket to an agent in a worktree
+
+- Before dispatching, check out the integration branch in the main checkout, so new worktrees start from it (`worktree.baseRef` is `head`). The implementer still checks its base. A merger runs `git merge --ff-only <branch>` in the main checkout.
+- When a ticket is handed to an agent, set its `Status: in progress (<branch>)`.
+- A brief asks only for git commands that run inside the worktree, one plain command per call (no `git -C <main checkout>`). A worktree shares `.git/config`, so `git config core.bare` run there checks the main checkout's config too.
+- The implementer writes its notes and new-ticket drafts into its own worktree's `.scratch/<feature>/` (gitignored, so they survive a `/clear` of the orchestrator's session), never into a session scratchpad.
+- Whoever lands the branch copies those files into the main checkout's `.scratch/<feature>/` before `git worktree remove`, which deletes ignored files without a word. `git status --short --ignored .scratch` run in the worktree lists them.
+
 ## Checking a run for repo writes
 
 `git status` cannot see writes into gitignored folders (`tests/outputs/`, `tests/plots/`, `examples/outputs/`). To check that a run writes nothing into the repo, `touch` a marker file outside the repo, run, then list what is newer:
