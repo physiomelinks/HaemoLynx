@@ -51,11 +51,14 @@ def _on_input_tab(panel, widget) -> bool:
     return False
 
 
-def test_the_button_is_on_the_input_tab_under_the_segmented_image(panel):
+def test_the_button_is_on_the_input_tab_above_the_input_row(panel):
     batch = panel._haemolynx_batch
     assert batch.button.text == "Batch run"
     assert batch.button.tooltip.strip()
     assert _on_input_tab(panel, batch.button)
+    box = list(panel._haemolynx_input_boxes["input"])
+    rows = panel._haemolynx_rows()
+    assert box.index(batch.button) + 1 == box.index(rows["network_source"])
 
 
 def test_every_path_row_a_batch_fills_can_say_batch_run(panel):

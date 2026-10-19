@@ -13939,7 +13939,7 @@ def settings_widget(napari_viewer=None):
     if _stain_box is not None and "raw_image_stain" in rows:
         _stain_box.insert(list(_stain_box).index(rows["raw_image_stain"]) + 1, stain_reading_label)
 
-    #: "Batch run": under the segmented image row, opens the Batch run window;
+    #: "Batch run": above the Input row, opens the Batch run window;
     #: while a batch is set, Run pipeline runs it and the rows it fills say so.
     from qtpy.QtWidgets import QLabel as _QLabel
 
@@ -13957,11 +13957,11 @@ def settings_widget(napari_viewer=None):
         batch_row_labels[_name] = _label
     batch_button = PushButton(text=BATCH_BUTTON_TEXT)
     batch_button.tooltip = BATCH_RUN_TOOLTIPS["button"]
-    if _stain_box is not None and "input_path" in rows:
+    if _stain_box is not None and "network_source" in rows:
         try:
-            _stain_box.insert(list(_stain_box).index(rows["input_path"]) + 1, batch_button)
+            _stain_box.insert(list(_stain_box).index(rows["network_source"]), batch_button)
         except ValueError:
-            _stain_box.append(batch_button)
+            _stain_box.insert(0, batch_button)
     #: The window, made the first time it is asked for.
     batch_window: list[Any] = [None]
 

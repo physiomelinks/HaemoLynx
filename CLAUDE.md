@@ -1276,7 +1276,7 @@ are only caught locally.
   `skip_done` skips an image whose `.haemorun` is there. Headless: `python -m
   haemolynx.gui.batch_run --config C --segmented D [--raw/--large/--small D] --output D
   [--dry-run] [--only STEM ...] [--rerun]`; every image passes its checks or nothing runs.
-  In the panel: the Input tab's Batch run button (under the segmented image row) opens
+  In the panel: the Input tab's Batch run button (above the Input row) opens
   `_widget.py`'s `_BatchRunWindow` (folders, the matched table with ticks and tie choices,
   Check, Use this batch, Leave batch run; double-click a finished row to load its
   `.haemorun`). While a batch is set (`batch_mode.setup`, a `gui/batch_run.BatchSetup`, panel
