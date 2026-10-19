@@ -629,3 +629,48 @@ def test_each_subjects_images_are_combined_metric_by_metric(tmp_path, aggregate,
     assert degree["N pairs"] == "3"
     assert float(degree["Max ipsi"]) == pytest.approx(2.25)
     assert f"({aggregate} of each subject's images in a condition): 3 pair(s)" in files.message
+
+
+# -- fields wider than csv's default limit -------------------------------------------
+
+
+def test_a_statistics_csv_with_a_field_past_csvs_default_limit_is_read(tmp_path):
+    """A full-mode run writes whole lists into one field (Harvey's AIA batch,
+    2026-10-19: 29_1_f_contra's statistics CSV, 956 KB); read with csv's
+    default 131,072-character limit the image was dropped from the comparison."""
+    wide = "[" + ", ".join(str(node) for node in range(40_000)) + "]"
+    assert len(wide) > csv.field_size_limit() == 131_072
+    path = export_statistics_to_csv(
+        {"Total Nodes": 12, "communities": wide, "Average Degree": 2.5},
+        tmp_path / "a_statistics.csv",
+    )
+    values = read_statistics_csv(path)
+    assert values[("Core Statistics", "Total Nodes", "")] == 12.0
+    assert values[("Core Statistics", "Average Degree", "")] == 2.5
+    assert csv.field_size_limit() == 131_072  # put back for everyone else
+
+
+def test_a_branch_statistics_csv_with_a_wide_field_is_read(tmp_path):
+    path = tmp_path / "a_branch_statistics.csv"
+    path.write_text(
+        "Branch Order,Edge Count,Mean Length (microns),Notes\n"
+        f"BO1,9,11.5,\"{'x' * 200_000}\"\n",
+        encoding="utf-8",
+    )
+    assert read_branch_statistics_csv(path) == {
+        ("Branch Order BO1", "Edge Count", ""): 9.0,
+        ("Branch Order BO1", "Mean Length", "microns"): 11.5,
+    }
+    assert csv.field_size_limit() == 131_072
+
+
+def test_an_image_with_a_wide_field_stays_in_the_comparison(tmp_path):
+    for stem, length in (("WT_1", 1.0), ("WT_2", 2.0), ("KO_1", 5.0), ("KO_2", 6.0)):
+        export_statistics_to_csv(
+            {"Total Edge Length (microns)": length, "communities": "[" + "1, " * 60_000 + "1]"},
+            tmp_path / stem / f"{stem}_statistics.csv",
+        )
+    files = write_batch_statistics(
+        tmp_path, ["WT_1", "WT_2", "KO_1", "KO_2"], BatchConditions.from_text("WT", "KO")
+    )
+    assert files.images == 4 and files.missing == ()

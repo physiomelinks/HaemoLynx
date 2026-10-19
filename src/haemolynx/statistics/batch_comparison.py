@@ -45,6 +45,7 @@ import csv
 import logging
 import math
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
@@ -459,10 +460,28 @@ def _keep(values: dict[MetricKey, float], key: MetricKey, value: float) -> None:
     values[key] = value
 
 
+#: The largest field the statistics CSVs are read with: a full-mode run writes
+#: whole lists (its communities, a node set each) into one Value field, far
+#: past csv's default 131,072 characters. Held to a C long, which is 32 bits
+#: on Windows, where csv.field_size_limit(sys.maxsize) overflows.
+WIDE_FIELD_LIMIT = 2**31 - 1
+
+
+@contextmanager
+def _wide_csv_fields():
+    """csv's field limit raised to :data:`WIDE_FIELD_LIMIT` for one read and
+    put back after it (the limit is the interpreter's, not the reader's)."""
+    previous = csv.field_size_limit(WIDE_FIELD_LIMIT)
+    try:
+        yield
+    finally:
+        csv.field_size_limit(previous)
+
+
 def read_statistics_csv(path: Path | str) -> dict[MetricKey, float]:
     """The numbers in one ``{stem}_statistics.csv``, by (section, metric, unit)."""
     values: dict[MetricKey, float] = {}
-    with Path(path).open(newline="", encoding="utf-8") as handle:
+    with _wide_csv_fields(), Path(path).open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             section = (row.get("Section") or "").strip()
             metric = (row.get("Metric") or "").strip()
@@ -478,7 +497,7 @@ def read_branch_statistics_csv(path: Path | str) -> dict[MetricKey, float]:
     """The numbers in one ``{stem}_branch_statistics.csv``: each branch
     order's columns, as section ``Branch Order {order}``."""
     values: dict[MetricKey, float] = {}
-    with Path(path).open(newline="", encoding="utf-8") as handle:
+    with _wide_csv_fields(), Path(path).open(newline="", encoding="utf-8") as handle:
         reader = csv.reader(handle)
         header = next(reader, None)
         if not header:
@@ -1096,6 +1115,7 @@ __all__ = [
     "SUMMARY_FIELDS",
     "SUMMARY_FILENAME",
     "TwoGroupTest",
+    "WIDE_FIELD_LIMIT",
     "benjamini_hochberg",
     "collect_batch_statistics",
     "compare_paired",
