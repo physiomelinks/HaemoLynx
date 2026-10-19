@@ -530,9 +530,9 @@ def test_the_setting_applies_under_the_low_ram_option_only(tmp_path, monkeypatch
 
     def centreline(thick, voxel_size_zyx, *, use_memmap=False, large_stack_tree=False):
         seen["centreline"] = large_stack_tree
-        return np.zeros(np.shape(thick), dtype=bool)
+        return np.empty((0, 3), dtype=np.intp)
 
-    monkeypatch.setattr(graph.thick_vessel_junctions, "thick_vessel_centreline", centreline)
+    monkeypatch.setattr(graph.thick_vessel_junctions, "thick_vessel_centreline_voxels", centreline)
     monkeypatch.setattr(graph, "insert_thick_vessel_junction_nodes", lambda G, *a, **k: G)
     G = nx.MultiGraph()
     G.add_edge(0, 1, **{graph.post_processing.EDITED: True})

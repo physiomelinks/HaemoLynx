@@ -32,12 +32,14 @@ from __future__ import annotations
 
 import heapq
 import logging
+import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import numpy as np
 from scipy.spatial import cKDTree
 
-from . import blockwise_edt, memmap_support, slab_labels
+from . import blockwise_edt, memmap_support, shared_volume_tasks, slab_labels
 from .thick_vessels import (
     _OFFSETS_26,
     _STRUCTURE_FULL,
@@ -73,6 +75,16 @@ _SEARCH_BATCH = 1 << 16
 _BUCKET_WIDTH = 0.02
 #: Buckets are taken together until the frontier holds this many voxels.
 _MIN_FRONTIER = 4096
+#: Components under this many voxels are drawn several at once, on threads
+#: (numpy's and scipy's work lets go of the interpreter): each holds at most
+#: the exact walk's graph of one, about 360 bytes a voxel.
+_THREADED_COMPONENT_VOXELS = 500_000
+#: Threads for those, at most.
+_COMPONENT_THREADS = 4
+#: The radius step's block rows run on at most this many threads, each
+#: holding one block's transform (``blockwise_edt.BLOCK_BYTES_PER_VOXEL`` a
+#: voxel of it), and only as many as half the free memory holds.
+_RADIUS_MAX_THREADS = 4
 #: Edge of the cells (voxels) the farthest-candidate search groups by.
 _CELL = 16
 #: Path voxels covered at once.
@@ -180,6 +192,18 @@ def _cost(edt_at: np.ndarray) -> np.ndarray:
     return 1.0 / (np.square(edt_at) + 1e-6)
 
 
+def _relax(voxels, f, dist, edt_at, factors):
+    """``(to, value, came)``: every step out of the voxels *f* that would
+    bring a neighbour nearer than it is now."""
+    nb = voxels.neighbours(f)
+    rows, cols = np.nonzero(nb >= 0)
+    to = nb[rows, cols]
+    del nb
+    value = dist[f][rows] + _cost(edt_at[to]) * factors[cols]
+    better = value < dist[to]
+    return to[better], value[better], f[rows[better]]
+
+
 def shortest_path_parents(
     voxels: ComponentVoxels,
     edt_at: np.ndarray,
@@ -214,6 +238,13 @@ def shortest_path_parents(
     parent[root] = root
     buckets: dict[int, list[np.ndarray]] = {0: [np.array([root], dtype=np.int64)]}
     width = float(bucket_width)
+    _search(voxels, edt_at, dist, parent, buckets, width, factors, batch)
+    return (parent, dist) if return_distances else parent
+
+
+def _search(voxels, edt_at, dist, parent, buckets, width, factors, batch):
+    """:func:`shortest_path_parents`'s loop over the buckets."""
+    n = len(dist)
     started = last_log = time.perf_counter()
     relaxed = 0
     while buckets:
@@ -248,13 +279,7 @@ def shortest_path_parents(
             for start in range(0, frontier.size, batch):
                 f = frontier[start:start + batch]
                 relaxed += len(f)
-                nb = voxels.neighbours(f)
-                rows, cols = np.nonzero(nb >= 0)
-                to = nb[rows, cols]
-                del nb
-                value = dist[f][rows] + _cost(edt_at[to]) * factors[cols]
-                better = value < dist[to]
-                to, value, came = to[better], value[better], f[rows[better]]
+                to, value, came = _relax(voxels, f, dist, edt_at, factors)
                 if not to.size:
                     continue
                 order = np.lexsort((came, value, to))
@@ -277,7 +302,6 @@ def shortest_path_parents(
                 for s0, s1 in zip(starts, np.r_[starts[1:], later.size]):
                     buckets.setdefault(int(at[s0]), []).append(later[s0:s1])
             frontier = improved[here]
-    return (parent, dist) if return_distances else parent
 
 
 def _principal_endpoints_by_chunk(voxels: ComponentVoxels, relative: np.ndarray):
@@ -647,28 +671,109 @@ def _radius_at(mask, box, keys, shape, relative) -> np.ndarray:
     )
     core = blockwise_edt._core_extent(domain, halo, memmap_support.LOW_MEMORY_BLOCK_VOXELS)
     out = np.empty(len(keys))
-    surfaces: dict = {}
+    surfaces = _SurfaceOnce()
     plane = int(shape[1]) * int(shape[2])
     # Block rows in z, as key ranges (the keys are in C order, so by z).
     z_cuts = np.arange(0, int(domain[0]) + int(core[0]), int(core[0])) + p_origin[0] - origin[0]
     at = np.searchsorted(keys, np.clip(z_cuts, 0, int(shape[0])) * plane)
     y_cuts = np.arange(0, int(domain[1]) + int(core[1]), int(core[1])) + p_origin[1] - origin[1]
-    for i0, i1 in zip(at[:-1], at[1:]):
-        if i1 <= i0:
-            continue
-        coords = _coords_of(keys[i0:i1], shape)
-        row = np.searchsorted(y_cuts, coords[:, 1], side="right")
-        order = np.argsort(row, kind="stable")
-        bounds = np.searchsorted(row[order], np.arange(row.min(), row.max() + 2))
-        for j0, j1 in zip(bounds[:-1], bounds[1:]):
-            if j1 <= j0:
+
+    def rows():
+        for i0, i1 in zip(at[:-1], at[1:]):
+            if i1 <= i0:
                 continue
-            these = order[j0:j1]
-            out[i0 + these] = blockwise_edt.distances_at_points(
-                lambda region: mask[region], padded, coords[these] + origin, sampling=relative,
-                surface_cache=surfaces,
-            )
+            coords = _coords_of(keys[i0:i1], shape)
+            row = np.searchsorted(y_cuts, coords[:, 1], side="right")
+            order = np.argsort(row, kind="stable")
+            bounds = np.searchsorted(row[order], np.arange(row.min(), row.max() + 2))
+            for j0, j1 in zip(bounds[:-1], bounds[1:]):
+                if j1 > j0:
+                    these = order[j0:j1]
+                    yield i0 + these, coords[these] + origin
+
+    def measure(row):
+        where, points = row
+        out[where] = blockwise_edt.distances_at_points(
+            lambda region: mask[region], padded, points, sampling=relative, surface_cache=surfaces
+        )
+
+    threads = _radius_threads(int(np.prod(domain, dtype=np.int64)))
+    if threads == 1:
+        for row in rows():
+            measure(row)
+        return out
+    with ThreadPoolExecutor(threads) as pool:
+        pending = set()
+        try:
+            for row in rows():
+                pending.add(pool.submit(measure, row))
+                # A few rows queued a thread, so their points are not all held at once.
+                if len(pending) >= 2 * threads:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        future.result()
+            for future in pending:
+                future.result()
+        except BaseException:
+            surfaces.release()
+            raise
     return out
+
+
+def _radius_threads(domain_voxels: int) -> int:
+    """How many threads :func:`_radius_at` measures on: one for a domain
+    one block holds, else as many as half the free memory holds blocks of
+    the low-RAM option's size, up to :data:`_RADIUS_MAX_THREADS` and the
+    cores but one."""
+    block = int(memmap_support.LOW_MEMORY_BLOCK_VOXELS)
+    if domain_voxels <= block:
+        return 1
+    from haemolynx.haemodynamics.resistance import available_memory_bytes
+
+    available = available_memory_bytes()
+    if available is None:
+        return 1
+    fit = int(0.5 * float(available) // (block * blockwise_edt.BLOCK_BYTES_PER_VOXEL))
+    return max(1, min(_RADIUS_MAX_THREADS, shared_volume_tasks.default_worker_count(), fit))
+
+
+class _SurfaceOnce(dict):
+    """The surface cache ``blockwise_edt.distances_at_points`` keeps, shared
+    by threads: the first to ask for a domain's surface finds it, and any
+    other asking meanwhile waits for it rather than finding it again (on a
+    stack-wide component, gigabytes each)."""
+
+    def __init__(self):
+        super().__init__()
+        self._lock = threading.Lock()
+        self._busy: dict = {}
+
+    def get(self, key, default=None):
+        while True:
+            with self._lock:
+                if dict.__contains__(self, key):
+                    return dict.__getitem__(self, key)
+                event = self._busy.get(key)
+                if event is None:
+                    self._busy[key] = threading.Event()
+                    return default
+            event.wait()
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            dict.__setitem__(self, key, value)
+            event = self._busy.pop(key, None)
+        if event is not None:
+            event.set()
+
+    def release(self) -> None:
+        """Wake every thread waiting (after a failure, when the surface
+        being found may never come)."""
+        with self._lock:
+            events = list(self._busy.values())
+            self._busy.clear()
+        for event in events:
+            event.set()
 
 
 def edt_ridge_by_component(
@@ -735,42 +840,62 @@ def edt_ridge_by_component(
     sizes = np.diff(bounds)
     # The largest last, so every voxel list but its own is freed first.
     largest = int(np.argmax(sizes)) + 1
-    order = [c for c in range(1, components.count + 1) if c != largest] + [largest]
-    for component_id in order:
-        part = combined[bounds[component_id - 1]:bounds[component_id]]
-        part &= low
-        box = components.box(component_id)
-        box_shape = tuple(int(s.stop) - int(s.start) for s in box)
-        origin = np.array([s.start for s in box], dtype=np.int64)
-        local = np.empty(len(part), dtype=np.int64)
-        for s in range(0, len(part), _CHUNK):
-            c = _coords_of(part[s:s + _CHUNK], shape) - origin
-            local[s:s + _CHUNK] = (c[:, 0] * box_shape[1] + c[:, 1]) * box_shape[2] + c[:, 2]
-        count = len(part)
-        del part
-        if component_id == largest:
-            del combined
-        t = time.perf_counter()
-        edt_at = _radius_at(mask, box, local, box_shape, relative)
-        if count > 1_000_000:
-            logger.info(
-                "skeletonize_edt_ridge: the radius at component %d's %d voxels in %.1fs",
-                component_id,
-                count,
-                time.perf_counter() - t,
-            )
-        tree = component_tree(local, edt_at, box_shape, relative, exact_max_voxels=exact_max_voxels)
-        del edt_at, local
-        voxels = _coords_of(tree, box_shape) + origin
-        if out is not None:
-            out[tuple(voxels.T)] = True
-        if drawn is not None:
-            drawn.append(voxels)
-        if components.count > 1 or count > 10_000:
-            logger.info(
-                "skeletonize_edt_ridge: component %d/%d (%d voxels) took %.2fs",
-                component_id,
-                components.count,
-                count,
-                time.perf_counter() - t,
-            )
+    small = [c for c in range(1, components.count + 1) if c != largest and sizes[c - 1] < _THREADED_COMPONENT_VOXELS]
+    large = [c for c in range(1, components.count + 1) if c != largest and sizes[c - 1] >= _THREADED_COMPONENT_VOXELS]
+
+    def draw(component_id: int) -> None:
+        part = combined[bounds[component_id - 1]:bounds[component_id]] & low
+        _draw_component(out, drawn, mask, relative, components, component_id, part, shape, exact_max_voxels)
+
+    threads = min(_COMPONENT_THREADS, shared_volume_tasks.default_worker_count())
+    if threads > 1 and len(small) > 1:
+        with ThreadPoolExecutor(threads) as pool:
+            for future in [pool.submit(draw, c) for c in small]:
+                future.result()
+    else:
+        for c in small:
+            draw(c)
+    for c in large:
+        draw(c)
+    part = combined[bounds[largest - 1]:bounds[largest]] & low
+    del combined
+    _draw_component(out, drawn, mask, relative, components, largest, part, shape, exact_max_voxels)
+
+
+def _draw_component(out, drawn, mask, relative, components, component_id, keys, shape, exact_max_voxels):
+    """Draw component *component_id*'s tree (its voxels' *keys* in the
+    volume of *shape*) into *out* and *drawn*."""
+    box = components.box(component_id)
+    box_shape = tuple(int(s.stop) - int(s.start) for s in box)
+    origin = np.array([s.start for s in box], dtype=np.int64)
+    local = np.empty(len(keys), dtype=np.int64)
+    for s in range(0, len(keys), _CHUNK):
+        c = _coords_of(keys[s:s + _CHUNK], shape) - origin
+        local[s:s + _CHUNK] = (c[:, 0] * box_shape[1] + c[:, 1]) * box_shape[2] + c[:, 2]
+    count = len(keys)
+    del keys
+    t = time.perf_counter()
+    edt_at = _radius_at(mask, box, local, box_shape, relative)
+    if count > 1_000_000:
+        logger.info(
+            "skeletonize_edt_ridge: the radius at component %d's %d voxels in %.1fs",
+            component_id,
+            count,
+            time.perf_counter() - t,
+        )
+    tree = component_tree(local, edt_at, box_shape, relative, exact_max_voxels=exact_max_voxels)
+    del edt_at, local
+    voxels = _coords_of(tree, box_shape) + origin
+    # Components are apart, so threads drawing two never touch one voxel.
+    if out is not None:
+        out[tuple(voxels.T)] = True
+    if drawn is not None:
+        drawn.append(voxels)
+    if components.count > 1 or count > 10_000:
+        logger.info(
+            "skeletonize_edt_ridge: component %d/%d (%d voxels) took %.2fs",
+            component_id,
+            components.count,
+            count,
+            time.perf_counter() - t,
+        )
