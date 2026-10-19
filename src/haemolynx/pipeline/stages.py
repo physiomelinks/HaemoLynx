@@ -1726,7 +1726,15 @@ def graph_build_arguments(settings: dict) -> dict[str, Any]:
         trace_on_dead_ends=bool(settings.get("trace_on_dead_ends", False)),
         join_dead_ends_to_vessel_sides=bool(settings.get("join_dead_ends_to_vessel_sides", False)),
         stub_face_protection=settings.get("stub_face_protection") or "threshold",
+        lumen_cleanup_max_rounds=_lumen_cleanup_max_rounds(settings),
     )
+
+
+def _lumen_cleanup_max_rounds(settings: dict) -> int:
+    """``lumen_cleanup_max_rounds``, its default when a caller's settings
+    predate it."""
+    value = settings.get("lumen_cleanup_max_rounds", graph.assemble.CONSOLIDATION_MAX_ROUNDS)
+    return max(1, int(value or graph.assemble.CONSOLIDATION_MAX_ROUNDS))
 
 
 def _no_vessels_left_error(
@@ -2039,6 +2047,7 @@ def build_network(
                 short_loop_keep_hole_over_um=_short_loop_keep_hole_um(settings),
                 along_thick_centreline=along_thick_centreline,
                 mask_support=mask_support,
+                max_rounds=_lumen_cleanup_max_rounds(settings),
             )
             if settings["smooth_centrelines"]:
                 G = graph.assemble.consolidate_lumen(G, lumen_cleanup)

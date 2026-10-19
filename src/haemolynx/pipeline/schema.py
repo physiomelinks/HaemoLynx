@@ -3272,6 +3272,24 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="lumen_cleanup_max_rounds",
+            kind="int",
+            default=12,
+            help=(
+                "The most rounds graph building's last clean-up runs (degree-2 merging, "
+                "edges off the mask, two edges in one lumen, loops inside one lumen, "
+                "short loops, doubled stretches and the stub prune, repeated until a "
+                "round changes nothing), each time it runs: at the end of graph building, "
+                "after centreline smoothing and after the thick-vessel split. E14.5 settles "
+                "in 9 rounds; a lower limit is faster on a large stack but can leave pairs "
+                "and loops a later round would have taken out"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=1,
+            requires=("do_graph_building",),
+            advanced=True,
+        ),
+        Setting(
             name="short_loop_keep_hole_over_um",
             kind="float",
             default=10.0,

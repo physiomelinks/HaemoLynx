@@ -563,7 +563,7 @@ are only caught locally.
   a fixed order, each left work the others never saw (on E14.5 the last merge alone raised the
   pairs in one lumen from 94 to 126). `lumen_cleanup` builds what it reads from the build's own
   settings, so `build_network` runs it again after smoothing. E14.5 settles in 9 rounds
-  (`CONSOLIDATION_MAX_ROUNDS` is 12): pairs in one lumen 124 -> 9 (all kept by the guard), loops
+  (`lumen_cleanup_max_rounds`, 12 by default, `CONSOLIDATION_MAX_ROUNDS`): pairs in one lumen 124 -> 9 (all kept by the guard), loops
   inside one lumen 12 -> 0, at a cost of 1.9 points of mask coverage and ~35 s. A round after
   the first re-judges only what changed: the pair check keeps each edge's verdict between rounds
   (`diagnose_parallel_duplicates_in_lumen(memo=)`; an edge is judged again only when it, or a
