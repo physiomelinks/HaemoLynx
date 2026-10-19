@@ -3272,6 +3272,24 @@ SCHEMA = Schema(
             advanced=True,
         ),
         Setting(
+            name="lumen_cleanup_max_rounds",
+            kind="int",
+            default=12,
+            help=(
+                "The most rounds graph building's last clean-up runs (degree-2 merging, "
+                "edges off the mask, two edges in one lumen, loops inside one lumen, "
+                "short loops, doubled stretches and the stub prune, repeated until a "
+                "round changes nothing), each time it runs: at the end of graph building, "
+                "after centreline smoothing and after the thick-vessel split. E14.5 settles "
+                "in 9 rounds; a lower limit is faster on a large stack but can leave pairs "
+                "and loops a later round would have taken out"
+            ),
+            section=_PIPELINE_STAGES,
+            minimum=1,
+            requires=("do_graph_building",),
+            advanced=True,
+        ),
+        Setting(
             name="short_loop_keep_hole_over_um",
             kind="float",
             default=10.0,
@@ -3745,6 +3763,29 @@ SCHEMA = Schema(
             unit="um",
             minimum=0.0,
             requires=("use_thick_vessel_skeletonisation",),
+            advanced=True,
+        ),
+        Setting(
+            name="skeleton_thick_vessel_large_stack_tree",
+            kind="bool",
+            default=False,
+            help=(
+                "Under the low-RAM option, draw the thick vessels' centreline "
+                "tree for a large stack: shortest paths found over the thick "
+                "region's voxels themselves (tens of bytes a voxel) instead "
+                "of a graph of every voxel (about 360), no cap on how many "
+                "arms one thick region gets (500 without it), and the "
+                "thin-arm join's last-resort search bounded to a box round "
+                "each arm, an arm with no path in it left unjoined and "
+                "logged. Use it when one thick region is a network crossing "
+                "the stack. A region of up to 4 million voxels gets the same "
+                "tree as without it, bar that cap; a larger one can take "
+                "another route of exactly the same cost, a voxel or more "
+                "aside. It aims arms as without it: a thick vessel under 0.4 "
+                "of its region's widest radius gets no arm either way"
+            ),
+            section=_PIPELINE_STAGES,
+            requires=("use_thick_vessel_skeletonisation", "use_memmap_loading"),
             advanced=True,
         ),
         Setting(

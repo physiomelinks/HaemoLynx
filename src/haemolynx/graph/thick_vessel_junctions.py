@@ -283,6 +283,7 @@ def thick_vessel_centreline(
     voxel_size_zyx: tuple[float, float, float],
     *,
     use_memmap: bool = False,
+    large_stack_tree: bool = False,
 ) -> np.ndarray:
     """The thick vessel's centreline tree, as skeletonisation drew it.
 
@@ -290,13 +291,17 @@ def thick_vessel_centreline(
     region rather than making it finds the same tree again. *use_memmap*
     (the low-RAM option) finds it without a distance map or labels of the
     region's whole box (see :func:`~haemolynx.preprocessing.thick_vessels.skeletonize_edt_ridge`):
-    the same tree.
+    the same tree. *large_stack_tree* draws it as skeletonisation did under
+    ``skeleton_thick_vessel_large_stack_tree`` (``pipeline.stages.large_stack_thick_tree``).
     """
     from haemolynx.preprocessing.thick_vessels import skeletonize_edt_ridge
 
     return np.asarray(
         skeletonize_edt_ridge(
-            np.asarray(thick_mask, dtype=bool), tuple(voxel_size_zyx), use_memmap=use_memmap
+            np.asarray(thick_mask, dtype=bool),
+            tuple(voxel_size_zyx),
+            use_memmap=use_memmap,
+            large_stack_tree=large_stack_tree,
         ),
         dtype=bool,
     )
@@ -307,15 +312,22 @@ def thick_vessel_centreline_voxels(
     voxel_size_zyx: tuple[float, float, float],
     *,
     use_memmap: bool = False,
+    large_stack_tree: bool = False,
 ) -> np.ndarray:
     """:func:`thick_vessel_centreline` as its voxels, ``(n, 3)`` in C order
     (``np.argwhere`` of it): all the split and :class:`ThickCentreline`
     read, without a volume to draw the tree in. Skeletonisation hands over
     the tree it drew in this form (``SkeletonisedVolume.thick_vessel_centreline``),
-    so a fresh run never draws it twice."""
+    so a fresh run never draws it twice. *large_stack_tree* as for
+    :func:`thick_vessel_centreline`."""
     from haemolynx.preprocessing.thick_vessels import edt_ridge_voxels
 
-    return edt_ridge_voxels(np.asarray(thick_mask, dtype=bool), tuple(voxel_size_zyx), use_memmap=use_memmap)
+    return edt_ridge_voxels(
+        np.asarray(thick_mask, dtype=bool),
+        tuple(voxel_size_zyx),
+        use_memmap=use_memmap,
+        large_stack_tree=large_stack_tree,
+    )
 
 
 def _centreline_voxels(centreline: np.ndarray, ndim: int) -> np.ndarray:

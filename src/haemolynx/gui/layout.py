@@ -385,6 +385,10 @@ ADVANCED_GROUPS: Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
             ),
         ),
         (
+            "Large volumes (needs the Low RAM option on the Input tab)",
+            ("skeleton_thick_vessel_large_stack_tree",),
+        ),
+        (
             "Braiding check",
             (
                 "detect_thick_vessel_braiding",

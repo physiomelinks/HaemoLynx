@@ -266,6 +266,9 @@ class LumenCleanup:
     #: The short-loop rule and the stub prune are not given it: on Harvey's
     #: grid W (2026-10-15) every place they decided by it was marked wrong.
     along_centreline: Callable[[np.ndarray], float] | None = None
+    #: The most rounds :func:`consolidate_lumen` runs before it stops,
+    #: settled or not (``lumen_cleanup_max_rounds``).
+    max_rounds: int = CONSOLIDATION_MAX_ROUNDS
     #: The pair rule's and the stretch finder's verdicts, kept from round to
     #: round and from one consolidate_lumen call to the next on the same
     #: object: build_network cleans up after smoothing and again after the
@@ -294,6 +297,7 @@ def lumen_cleanup(
     remove_short_loops_under_um: float = 0.0,
     short_loop_keep_hole_over_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
     along_thick_centreline: Callable[[np.ndarray], float] | None = None,
+    max_rounds: int = CONSOLIDATION_MAX_ROUNDS,
 ) -> LumenCleanup:
     """The clean-up the end of graph building runs, built from the same
     settings :func:`build_graph_from_skeleton` takes -- so a caller that
@@ -368,6 +372,7 @@ def lumen_cleanup(
         max_short_loop_um=float(remove_short_loops_under_um or 0.0),
         short_loop_keep_hole_um=float(short_loop_keep_hole_over_um or 0.0),
         along_centreline=along_thick_centreline,
+        max_rounds=max(1, int(max_rounds)),
     )
 
 
@@ -375,7 +380,7 @@ def consolidate_lumen(
     G: nx.MultiGraph,
     cleanup: LumenCleanup,
     *,
-    max_rounds: int = CONSOLIDATION_MAX_ROUNDS,
+    max_rounds: int | None = None,
 ) -> nx.MultiGraph:
     """The clean-up that ends graph building, repeated until a round changes
     nothing: degree-2 merging and then, with the mask, edges lying mostly off
@@ -391,6 +396,8 @@ def consolidate_lumen(
     round also means each is judged on whole vessels, not on the pieces mask
     recovery split them into. The graph that comes back is merged.
     """
+    if max_rounds is None:
+        max_rounds = cleanup.max_rounds
     rounds = 0
     # The pair check's verdicts, kept from round to round: a round changes a
     # few places, and only the edges near them are judged again.
@@ -484,6 +491,7 @@ def build_graph_from_skeleton(
     short_loop_keep_hole_over_um: float = DEFAULT_SHORT_LOOP_KEEP_HOLE_UM,
     along_thick_centreline: Callable[[np.ndarray], float] | None = None,
     mask_support: MaskSupport | None = None,
+    lumen_cleanup_max_rounds: int = CONSOLIDATION_MAX_ROUNDS,
 ) -> nx.MultiGraph:
     """
     Build and clean a vascular NetworkX graph from a binary 3D skeleton.
@@ -685,6 +693,7 @@ def build_graph_from_skeleton(
         remove_short_loops_under_um=remove_short_loops_under_um,
         short_loop_keep_hole_over_um=short_loop_keep_hole_over_um,
         along_thick_centreline=along_thick_centreline,
+        max_rounds=lumen_cleanup_max_rounds,
     )
     prune_stubs = cleanup.prune
 

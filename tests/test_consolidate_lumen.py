@@ -531,3 +531,50 @@ def test_the_clean_up_keeps_a_thick_vessels_centreline_running_on_into_a_narrow_
     assert kept.has_node((7.0, 20.0, 78.0))
     off_centre = [p for *_e, d in kept.edges(data=True) for p in d["voxels"] if abs(p[1] - 18.0) < 0.5]
     assert off_centre == []
+
+
+# --- the round limit (lumen_cleanup_max_rounds) ----------------------------
+
+
+def test_the_clean_up_stops_at_its_round_limit(caplog):
+    """The two strands need a second round to see that the first changed
+    nothing; held to one round, the clean-up stops there and says so."""
+    mask, G = _strands_in_pieces()
+    with caplog.at_level("INFO", logger="haemolynx.graph.assemble"):
+        settled = consolidate_lumen(G.copy(), _no_length_prune(mask))
+    assert "settled after 2 round(s)" in caplog.text
+    caplog.clear()
+    cleanup = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, min_stub_length=0.0,
+                            min_stub_length_radius_multiple=0.0, max_rounds=1)
+    assert cleanup.max_rounds == 1
+    with caplog.at_level("INFO", logger="haemolynx.graph.assemble"):
+        limited = consolidate_lumen(G.copy(), cleanup)
+    assert "stopped after its limit of 1 rounds" in caplog.text
+    assert "settled after 1 round(s)" in caplog.text
+    # The pair goes in the first round: one round is enough here.
+    assert limited.number_of_edges() == settled.number_of_edges() == 1
+
+
+def test_an_explicit_round_limit_overrides_the_clean_ups_own(caplog):
+    mask, G = _strands_in_pieces()
+    cleanup = lumen_cleanup(mask, VOXEL_SIZE, image_shape=mask.shape, min_stub_length=0.0,
+                            min_stub_length_radius_multiple=0.0, max_rounds=1)
+    with caplog.at_level("INFO", logger="haemolynx.graph.assemble"):
+        consolidate_lumen(G, cleanup, max_rounds=5)
+    assert "settled after 2 round(s)" in caplog.text
+
+
+def test_the_round_limit_setting_reaches_graph_building():
+    from haemolynx.graph.assemble import CONSOLIDATION_MAX_ROUNDS
+    from haemolynx.pipeline import default_schema
+    from haemolynx.pipeline.stages import graph_build_arguments
+
+    schema = default_schema()
+    settings = schema.defaults()
+    assert settings["lumen_cleanup_max_rounds"] == CONSOLIDATION_MAX_ROUNDS
+    assert graph_build_arguments(settings)["lumen_cleanup_max_rounds"] == CONSOLIDATION_MAX_ROUNDS
+    settings["lumen_cleanup_max_rounds"] = 3
+    assert graph_build_arguments(settings)["lumen_cleanup_max_rounds"] == 3
+    # Settings that predate it read the old fixed limit.
+    del settings["lumen_cleanup_max_rounds"]
+    assert graph_build_arguments(settings)["lumen_cleanup_max_rounds"] == CONSOLIDATION_MAX_ROUNDS
