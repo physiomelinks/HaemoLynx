@@ -285,6 +285,10 @@ def write_batch_settings(
     for name in ("a", "b"):
         condition = getattr(conditions, name) if conditions is not None else None
         lines.append(f"# batch_condition_{name}: {'' if condition is None else condition.label}")
+    if conditions is not None:
+        lines.append(f"# batch_comparison: {conditions.design}")
+        if conditions.subject_pattern:
+            lines.append(f"# batch_subject_pattern: {conditions.subject_pattern}")
     with path.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
     return path
@@ -494,10 +498,21 @@ def match_status(match: BatchMatch, checked: Mapping[str, str] | None = None) ->
 
 def condition_cell(setup: BatchSetup, match: BatchMatch) -> str:
     """The table's Condition cell: the condition's label, "both conditions",
-    or "neither" while a condition is set ("" while none is)."""
-    if not setup.conditions.conditions:
+    or "neither" while a condition is set ("" while none is). Paired, it also
+    names the image's subject, or why it has no partner."""
+    conditions = setup.conditions
+    if not conditions.conditions:
         return ""
-    return setup.conditions.condition_of(match.stem) or "neither"
+    label = conditions.condition_of(match.stem) or "neither"
+    if not (conditions.paired and conditions.compares) or conditions.problem():
+        return label
+    pairing = conditions.pairing(selected.stem for selected in setup.selected())
+    if pairing.partner_of(match.stem) is not None:
+        return f"{label}, subject {pairing.subject_of(match.stem)}"
+    reason = pairing.reason_left_out(match.stem)
+    if not reason:  # unticked: not in the batch's pairing
+        return label
+    return label if reason.startswith("in ") else f"{label}: unpaired, {reason}"
 
 
 def table_rows(setup: BatchSetup) -> list[tuple[str, ...]]:

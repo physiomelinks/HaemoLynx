@@ -341,7 +341,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
 | Perturbations and sweeps | `tests/test_perturbations.py` (entries, settings, preflight), `test_perturbation_stage.py` (running them), `test_perturbation_outputs.py` (files and layers), `test_pericyte_sweep.py`, `test_pericyte_geometry_sweep.py`, `test_capillary_scaling.py`, `test_arteriole_scaling.py`, `test_capillary_block.py`, `test_sweep_flow_layers.py` |
-| `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned), `test_vessel_class_statistics.py` (each class's rows against hand-computed values, both labelling schemes, the export), `test_batch_comparison.py` (conditions from file names, the CSVs read back, summaries, Mann-Whitney/Welch/Benjamini-Hochberg against hand-computed values, the three batch CSVs) |
+| `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned), `test_vessel_class_statistics.py` (each class's rows against hand-computed values, both labelling schemes, the export), `test_batch_comparison.py` (conditions from file names, the CSVs read back, summaries, Mann-Whitney/Welch/Benjamini-Hochberg against hand-computed values, the three batch CSVs; paired: subject IDs, every reason an image is left out, Wilcoxon/paired t by hand, Harvey's AIA names) |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py`, `test_secomb_io.py` |
 | `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text; `test_batch_run.py` (the batch runner and its command line, one real two-image batch), `test_gui_batch_run_widget.py` (the button, the "Batch run" rows, the window, Run pipeline's hand-off) |
@@ -1353,7 +1353,7 @@ are only caught locally.
   recorded and the batch goes on, `batch_summary.csv` is rewritten after every image,
   `skip_done` skips an image whose `.haemorun` is there. Headless: `python -m
   haemolynx.gui.batch_run --config C --segmented D [--raw/--large/--small D] --output D
-  [--dry-run] [--only STEM ...] [--rerun] [--condition-a P --condition-b P] [--compare-only]`;
+  [--dry-run] [--only STEM ...] [--rerun] [--condition-a P --condition-b P [--paired [--subject-pattern RE]]] [--compare-only]`;
   every image passes its checks or nothing runs.
   **Conditions and the batch's statistics** (2026-10-19, `statistics/batch_comparison.py`): up
   to two conditions, each one or more phrases (comma-separated) a file name holds, ignoring case
@@ -1374,7 +1374,18 @@ are only caught locally.
   fails the batch (`batch_run.write_statistics`). The window's Condition A/B boxes fill a
   Condition column as typed, and its Compare statistics button (and `--compare-only`) writes
   them from the images already in the output folder, running nothing. Images of one animal are
-  not independent samples: the test does not know.
+  not independent samples, so the comparison is a choice (the window's Comparison menu,
+  `--paired`): independent images (above) or **paired by subject**. A subject ID is the part of
+  the file name before its condition phrase, separators trimmed, case ignored
+  (`28_3_d_contra_FITC` is subject `28_3_d`), or a `--subject-pattern` regular expression's first
+  group; `BatchConditions.pairing` pairs each subject's one image in each condition and leaves
+  out, with its reason, every image in neither or both conditions, with no subject ID, with no
+  partner, or sharing its subject with another image of its condition. The pairs and every image
+  left out go in `batch_condition_pairs.csv` (the table's Condition cell says the same as you
+  type); the comparison is then over the pairs: the Wilcoxon signed-rank test (zero
+  differences dropped) with Benjamini-Hochberg q, W+, the smallest p it can reach (2 / 2^n: 0.5
+  at 2 pairs, so nothing reaches 0.05 below 6), the matched-pairs rank-biserial r, and the paired
+  t with Cohen's dz. The summary still covers every image of each condition.
   In the panel: the Input tab's Batch run button (above the Input row) opens
   `_widget.py`'s `_BatchRunWindow` (folders, the matched table with ticks and tie choices,
   Check, Use this batch, Leave batch run; double-click a finished row to load its

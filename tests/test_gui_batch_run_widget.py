@@ -220,3 +220,33 @@ def test_two_conditions_alike_are_not_used(panel, tmp_path):
     window.use()
     assert batch.mode.setup is None
     assert "Both conditions" in window.status.text()
+
+
+def test_the_window_compares_conditions_paired_by_subject(panel, tmp_path):
+    from haemolynx.gui.batch_run import TABLE_COLUMNS
+
+    batch = panel._haemolynx_batch
+    _images(tmp_path / "seg", "s1_contra", "s1_ipsi", "s2_contra")
+    batch.open()
+    window = batch.window[0]
+    assert not window.subject_pattern.isEnabled()
+    window.fields["segmented"].setText(str(tmp_path / "seg"))
+    window.fields["output"].setText(str(tmp_path / "out"))
+    assert window.match()
+    window.condition_fields["condition_a"].setText("contra")
+    window.condition_fields["condition_b"].setText("ipsi")
+    window.design.setCurrentIndex(window.design.findData("paired"))
+    assert window.subject_pattern.isEnabled()
+    column = TABLE_COLUMNS.index("Condition")
+    assert [window.table.item(row, column).text() for row in range(3)] == [
+        "contra, subject s1",
+        "ipsi, subject s1",
+        "contra: unpaired, no ipsi image of subject s2",
+    ]
+    assert "1 pair(s) by subject (s1)" in window.status.text()
+    window.use()
+    assert batch.mode.setup.conditions.paired
+    # Reopened, the window shows the batch's design.
+    window.design.setCurrentIndex(window.design.findData("independent"))
+    batch.open()
+    assert window.design.currentData() == "paired"

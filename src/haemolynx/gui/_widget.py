@@ -9734,11 +9734,16 @@ class _BatchRunWindow:
         ("condition_a", "Condition A"),
         ("condition_b", "Condition B"),
     )
+    DESIGN_CHOICES = (
+        ("Independent images", "independent"),
+        ("Paired by subject", "paired"),
+    )
 
     def __init__(self, *, schema, values, on_use, on_leave, on_open=None) -> None:
         from qtpy.QtWidgets import (
             QAbstractItemView,
             QCheckBox,
+            QComboBox,
             QGridLayout,
             QHBoxLayout,
             QLabel,
@@ -9793,7 +9798,23 @@ class _BatchRunWindow:
             conditions.addWidget(QLabel(text), 0, 2 * column)
             conditions.addWidget(edit, 0, 2 * column + 1)
             self.condition_fields[key] = edit
+        self.design = QComboBox()
+        for text, design in self.DESIGN_CHOICES:
+            self.design.addItem(text, design)
+        self.design.setToolTip(tips["design"])
+        self.design.currentIndexChanged.connect(lambda *_: self._conditions_changed())
+        self.subject_pattern = QLineEdit()
+        self.subject_pattern.setPlaceholderText(
+            "blank: the text before the condition phrase (28_3_d in 28_3_d_contra_FITC)"
+        )
+        self.subject_pattern.setToolTip(tips["subject_pattern"])
+        self.subject_pattern.textChanged.connect(lambda *_: self._conditions_changed())
+        conditions.addWidget(QLabel("Comparison"), 1, 0)
+        conditions.addWidget(self.design, 1, 1)
+        conditions.addWidget(QLabel("Subject ID pattern"), 1, 2)
+        conditions.addWidget(self.subject_pattern, 1, 3)
         layout.addLayout(conditions)
+        self._refresh_design_rows()
 
         self.skip_done = QCheckBox("Skip images whose folder already has a .haemorun")
         self.skip_done.setChecked(True)
@@ -9884,8 +9905,11 @@ class _BatchRunWindow:
                     ("condition_a", "condition_b"), (setup.conditions.a, setup.conditions.b)
                 ):
                     self.condition_fields[key].setText("" if condition is None else condition.label)
+                self.design.setCurrentIndex(self.design.findData(setup.conditions.design))
+                self.subject_pattern.setText(setup.conditions.subject_pattern)
             finally:
                 self._filling = False
+            self._refresh_design_rows()
         elif not self.fields["output"].text():
             default = default_output_root(self._values())
             if default is not None:
@@ -9900,15 +9924,26 @@ class _BatchRunWindow:
     def _conditions(self):
         from haemolynx.statistics.batch_comparison import BatchConditions
 
+        from haemolynx.statistics.batch_comparison import PAIRED
+
+        paired = self.design.currentData() == PAIRED
         return BatchConditions.from_text(
             self.condition_fields["condition_a"].text(),
             self.condition_fields["condition_b"].text(),
+            paired=paired,
+            subject_pattern=self.subject_pattern.text() if paired else None,
         )
+
+    def _refresh_design_rows(self) -> None:
+        from haemolynx.statistics.batch_comparison import PAIRED
+
+        self.subject_pattern.setEnabled(self.design.currentData() == PAIRED)
 
     def _conditions_changed(self) -> None:
         """Each image's condition, again, as the phrases are typed."""
         from dataclasses import replace
 
+        self._refresh_design_rows()
         if self._filling or self.setup is None:
             return
         self.setup = replace(self.setup, conditions=self._conditions())

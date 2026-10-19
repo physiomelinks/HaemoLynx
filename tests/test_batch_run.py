@@ -381,3 +381,75 @@ def test_the_command_line_compares_conditions_without_running(tmp_path, schema, 
 
     assert main(argv + ["--condition-a", "WT", "--condition-b", "KO", "--dry-run"]) == 0
     assert "[ok] KO_1 (KO)" in capsys.readouterr().out
+
+
+def test_the_command_line_pairs_conditions_by_subject(tmp_path, schema, monkeypatch, capsys):
+    from haemolynx.pipeline.provenance import write_settings_yaml
+    from haemolynx.statistics import export_statistics_to_csv
+
+    monkeypatch.setattr(batch_run, "run_image", _fake_run([]))
+    folder = tmp_path / "seg"
+    folder.mkdir()
+    out = tmp_path / "out"
+    for stem, length in (
+        ("28_3_d_contra_FITC", 1.0), ("28_3_d_ipsi_FITC", 2.0),
+        ("29_1_f_contra_FITC", 3.0), ("29_1_f_ipsi_FITC", 5.0),
+        ("29_1_b_contra_FITC", 4.0),
+    ):
+        shutil.copy(FIXTURE, folder / f"{stem}.tif")
+        export_statistics_to_csv(
+            {"Total Edge Length (microns)": length}, out / stem / f"{stem}_statistics.csv"
+        )
+    config = write_settings_yaml(tmp_path / "config.yaml", _values(schema, tmp_path), schema)
+    argv = [
+        "--config", str(config), "--segmented", str(folder), "--output", str(out),
+        "--condition-a", "contra", "--condition-b", "ipsi", "--paired", "--compare-only",
+    ]
+    assert main(argv) == 0
+    printed = capsys.readouterr().out
+    assert "2 pair(s) by subject (28_3_d, 29_1_f), 1 image(s) with no partner" in printed
+    assert "left out with no partner: 29_1_b_contra_FITC" in printed
+    assert "smallest possible p 0.5" in printed
+    pairs = _summary_rows(out / "batch_condition_pairs.csv")
+    assert [row["Subject"] for row in pairs] == ["28_3_d", "29_1_f", "29_1_b"]
+    comparison = _summary_rows(out / "batch_condition_comparison.csv")
+    assert comparison[0]["N pairs"] == "2"
+
+    assert main(argv[:-4] + ["--paired", "--compare-only"]) == 1  # one condition
+    assert "needs both conditions" in capsys.readouterr().out
+
+
+def test_the_table_names_each_images_subject_or_why_it_has_no_partner(tmp_path):
+    from dataclasses import replace
+
+    from haemolynx.gui.batch_run import BatchSetup, table_rows, write_batch_settings
+    from haemolynx.statistics.batch_comparison import BatchConditions
+
+    folder = tmp_path / "seg"
+    folder.mkdir()
+    for stem in ("s1_contra", "s1_ipsi", "s2_contra", "s3_other"):
+        shutil.copy(FIXTURE, folder / f"{stem}.tif")
+    folders = BatchFolders(folder)
+    setup = BatchSetup(
+        folders=folders,
+        output_root=tmp_path / "out",
+        matches=match_batch(folders),
+        conditions=BatchConditions.from_text("contra", "ipsi", paired=True),
+    )
+    assert {row[1]: row[5] for row in table_rows(setup)} == {
+        "s1_contra.tif": "contra, subject s1",
+        "s1_ipsi.tif": "ipsi, subject s1",
+        "s2_contra.tif": "contra: unpaired, no ipsi image of subject s2",
+        "s3_other.tif": "neither",
+    }
+    # Unticking an image unpairs its partner.
+    unticked = replace(setup, unticked=frozenset({"s1_ipsi"}))
+    cells = {row[1]: row[5] for row in table_rows(unticked)}
+    assert cells["s1_contra.tif"] == "contra: unpaired, no ipsi image of subject s1"
+    assert cells["s1_ipsi.tif"] == "ipsi"
+    out = tmp_path / "out"
+    out.mkdir()
+    schema = default_schema()
+    path = write_batch_settings(schema.defaults(), schema, folders, out, setup.conditions)
+    text = path.read_text(encoding="utf-8")
+    assert "# batch_comparison: paired" in text

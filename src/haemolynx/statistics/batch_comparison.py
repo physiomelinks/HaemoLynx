@@ -23,6 +23,18 @@ A condition is one or more phrases typed by the user; an image is in it when
 its file name holds one of them, ignoring case (:class:`BatchConditions`). An
 image in both conditions or in neither is left out of the test, and says so.
 
+The comparison is ``independent`` (above) or ``paired``: images of one
+subject in the two conditions (say one animal's contra and ipsi sides) are not
+independent, so each subject's two images are paired and the differences
+tested -- the Wilcoxon signed-rank test with Benjamini-Hochberg q-values, the
+smallest p it could reach at that many pairs (0.5 at 2 pairs: no difference
+can reach 0.05 below 6), the matched-pairs rank-biserial r, and the paired t
+test with Cohen's dz beside it. A subject ID is read from each name
+(:meth:`BatchConditions.subject_of`); ``batch_condition_pairs.csv`` lists every
+pair and every image left out with its reason (no partner, more than one image
+of its subject in its condition, no subject ID, in neither condition). The
+summary still covers every image of each condition, paired or not.
+
 Only numbers are read: a metric named only by digits (the per-node rows of a
 full-mode run), the Metadata section, and every text, list or N/A value are
 left out. Pure: CSVs in, CSVs out.
@@ -44,6 +56,7 @@ logger = logging.getLogger(__name__)
 BY_IMAGE_FILENAME = "batch_statistics_by_image.csv"
 SUMMARY_FILENAME = "batch_statistics_summary.csv"
 COMPARISON_FILENAME = "batch_condition_comparison.csv"
+PAIRS_FILENAME = "batch_condition_pairs.csv"
 
 #: Each image's statistics files, beside its ``.haemorun``.
 STATISTICS_SUFFIX = "_statistics.csv"
@@ -92,16 +105,166 @@ def parse_condition(text: str | None) -> Condition | None:
     return Condition(", ".join(part.strip() for part in str(text).split(",") if part.strip()), phrases)
 
 
+#: The comparison's two designs: images independent of each other, or paired
+#: across the conditions by a subject ID read from their names.
+INDEPENDENT = "independent"
+PAIRED = "paired"
+DESIGNS = (INDEPENDENT, PAIRED)
+
+#: The separators trimmed off a subject ID read from a name.
+_SUBJECT_SEPARATORS = " _-."
+
+
+@dataclass(frozen=True)
+class Pair:
+    """One subject's image in each condition."""
+
+    subject: str
+    a: str
+    b: str
+
+
+@dataclass(frozen=True)
+class Pairing:
+    """The images paired across the two conditions, and every image left out
+    with its reason: (name, subject or "", reason)."""
+
+    pairs: tuple[Pair, ...] = ()
+    unpaired: tuple[tuple[str, str, str], ...] = ()
+
+    def partner_of(self, name: str) -> str | None:
+        for pair in self.pairs:
+            if name == pair.a:
+                return pair.b
+            if name == pair.b:
+                return pair.a
+        return None
+
+    def subject_of(self, name: str) -> str:
+        for pair in self.pairs:
+            if name in (pair.a, pair.b):
+                return pair.subject
+        for unpaired, subject, _reason in self.unpaired:
+            if unpaired == name:
+                return subject
+        return ""
+
+    def reason_left_out(self, name: str) -> str:
+        for unpaired, _subject, reason in self.unpaired:
+            if unpaired == name:
+                return reason
+        return ""
+
+
 @dataclass(frozen=True)
 class BatchConditions:
-    """Up to two conditions, each read from the images' file names."""
+    """Up to two conditions, each read from the images' file names, and
+    whether the two are compared as independent images or paired by subject.
+
+    Paired, an image's subject ID is the part of its file name *before* the
+    condition phrase it holds, with separators (space, ``_``, ``-``, ``.``)
+    trimmed and case ignored: ``28_3_d_contra_FITC`` is subject ``28_3_d`` of
+    condition ``contra``. A *subject_pattern* (a regular expression, searched
+    ignoring case; its first group if it has one, else the whole match)
+    replaces that rule, for names whose subject is not what comes first."""
 
     a: Condition | None = None
     b: Condition | None = None
+    paired: bool = False
+    subject_pattern: str = ""
 
     @classmethod
-    def from_text(cls, a: str | None = None, b: str | None = None) -> "BatchConditions":
-        return cls(parse_condition(a), parse_condition(b))
+    def from_text(
+        cls,
+        a: str | None = None,
+        b: str | None = None,
+        *,
+        paired: bool = False,
+        subject_pattern: str | None = None,
+    ) -> "BatchConditions":
+        return cls(
+            parse_condition(a),
+            parse_condition(b),
+            paired=bool(paired),
+            subject_pattern=(subject_pattern or "").strip(),
+        )
+
+    @property
+    def design(self) -> str:
+        return PAIRED if self.paired else INDEPENDENT
+
+    def subject_of(self, name: str) -> str:
+        """*name*'s subject ID (lower case), or "" when none can be read."""
+        if self.subject_pattern:
+            found = re.search(self.subject_pattern, name, re.IGNORECASE)
+            if found is None:
+                return ""
+            subject = found.group(1) if found.re.groups else found.group(0)
+            return (subject or "").strip(_SUBJECT_SEPARATORS).lower()
+        label = self.condition_of(name)
+        condition = next((c for c in self.conditions if c.label == label), None)
+        if condition is None:
+            return ""
+        lowered = name.lower()
+        start = min(lowered.find(phrase) for phrase in condition.phrases if phrase in lowered)
+        return lowered[:start].strip(_SUBJECT_SEPARATORS)
+
+    def pairing(self, names: Iterable[str]) -> Pairing:
+        """*names* paired across the two conditions by subject ID. An image is
+        left out, with its reason, when it is in neither condition or both,
+        has no subject ID, has no image of the other condition with its
+        subject, or shares its subject with another image of its condition
+        (which of them pairs would be a guess)."""
+        if not self.compares:
+            return Pairing()
+        unpaired: list[tuple[str, str, str]] = []
+        by_subject: dict[str, dict[str, list[str]]] = {}
+        names = list(names)
+        for name in names:
+            label = self.condition_of(name)
+            if label == BOTH_CONDITIONS:
+                unpaired.append((name, "", "in both conditions"))
+                continue
+            if label == NO_CONDITION:
+                unpaired.append((name, "", "in neither condition"))
+                continue
+            subject = self.subject_of(name)
+            if not subject:
+                unpaired.append(
+                    (name, "", "no subject ID: "
+                     + ("the subject pattern finds none in the name" if self.subject_pattern
+                        else "the condition phrase begins the name"))
+                )
+                continue
+            by_subject.setdefault(subject, {self.a.label: [], self.b.label: []})[label].append(name)
+        pairs: list[Pair] = []
+        for subject, sides in by_subject.items():
+            a_names, b_names = sides[self.a.label], sides[self.b.label]
+            if len(a_names) == 1 and len(b_names) == 1:
+                pairs.append(Pair(subject, a_names[0], b_names[0]))
+                continue
+            for label, own, other_label, other in (
+                (self.a.label, a_names, self.b.label, b_names),
+                (self.b.label, b_names, self.a.label, a_names),
+            ):
+                for name in own:
+                    if len(own) > 1:
+                        reason = (
+                            f"subject {subject} has {len(own)} {label} images: "
+                            "which one pairs is unclear"
+                        )
+                    elif not other:
+                        reason = f"no {other_label} image of subject {subject}"
+                    else:
+                        reason = (
+                            f"subject {subject} has {len(other)} {other_label} images: "
+                            "which one pairs is unclear"
+                        )
+                    unpaired.append((name, subject, reason))
+        order = {name: index for index, name in enumerate(names)}
+        pairs.sort(key=lambda pair: order[pair.a])
+        unpaired.sort(key=lambda item: order[item[0]])
+        return Pairing(tuple(pairs), tuple(unpaired))
 
     @property
     def conditions(self) -> tuple[Condition, ...]:
@@ -119,6 +282,13 @@ class BatchConditions:
             return f"Both conditions are '{self.a.label}': give each its own phrase."
         if ALL_IMAGES.lower() in labels:
             return f"'{ALL_IMAGES}' is the group every image is in: name the condition otherwise."
+        if self.paired and not self.compares:
+            return "A paired comparison needs both conditions."
+        if self.subject_pattern:
+            try:
+                re.compile(self.subject_pattern)
+            except re.error as error:
+                return f"The subject ID pattern is not a regular expression: {error}."
         return ""
 
     def condition_of(self, name: str) -> str:
@@ -142,12 +312,21 @@ class BatchConditions:
         """``"3 in WT, 3 in KO, 1 in neither"`` (empty with no condition set)."""
         if not self.conditions:
             return ""
+        names = list(names)
         counts = self.counts(names)
         parts = [f"{counts[condition.label]} in {condition.label}" for condition in self.conditions]
         if counts[BOTH_CONDITIONS]:
             parts.append(f"{counts[BOTH_CONDITIONS]} in both")
         if counts[NO_CONDITION]:
             parts.append(f"{counts[NO_CONDITION]} in neither")
+        if self.paired and self.compares and not self.problem():
+            pairing = self.pairing(names)
+            subjects = ", ".join(pair.subject for pair in pairing.pairs)
+            parts.append(
+                f"{len(pairing.pairs)} pair(s) by subject"
+                + (f" ({subjects})" if subjects else "")
+                + (f", {len(pairing.unpaired)} image(s) with no partner" if pairing.unpaired else "")
+            )
         return ", ".join(parts)
 
 
@@ -384,6 +563,94 @@ def compare_two(a: Sequence[float], b: Sequence[float]) -> TwoGroupTest:
     )
 
 
+def smallest_wilcoxon_p(n_pairs: int) -> float:
+    """The smallest two-sided p an exact Wilcoxon signed-rank test can give
+    with *n_pairs* non-zero differences and no ties: 2 / 2**n (0.5 at 2
+    pairs, 0.25 at 3, 0.0625 at 5, 0.031 at 6)."""
+    if n_pairs < 1:
+        return float("nan")
+    return min(1.0, 2.0 / 2.0**n_pairs)
+
+
+@dataclass(frozen=True)
+class PairedTest:
+    """Condition B against condition A on one metric, over subjects with an
+    image in each; differences are B - A."""
+
+    n_pairs: int = 0
+    w_plus: float = float("nan")
+    p: float = float("nan")
+    smallest_p: float = float("nan")
+    rank_biserial: float = float("nan")
+    t: float = float("nan")
+    t_p: float = float("nan")
+    cohen_dz: float = float("nan")
+    note: str = ""
+
+    @property
+    def tested(self) -> bool:
+        return not math.isnan(self.p)
+
+
+def compare_paired(a: Sequence[float], b: Sequence[float]) -> PairedTest:
+    """The Wilcoxon signed-rank test (two-sided, zero differences dropped;
+    exact for small samples as scipy chooses) and the paired t test of *b*
+    against *a*, ``a[i]`` and ``b[i]`` one subject's two images. W+ is the
+    rank sum of the pairs where *b* is larger; the matched-pairs rank-biserial
+    r, (W+ - W-) / (W+ + W-), and Cohen's dz, mean / SD of the differences,
+    are positive when *b* tends to be larger."""
+    import warnings
+
+    from scipy import stats as sp
+
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    n = int(min(a.size, b.size))
+    if n < MIN_IMAGES_PER_CONDITION:
+        return PairedTest(
+            n_pairs=n,
+            note=f"not tested: fewer than {MIN_IMAGES_PER_CONDITION} pairs",
+        )
+    differences = b - a
+    nonzero = differences[differences != 0]
+    if nonzero.size == 0:
+        return PairedTest(
+            n_pairs=n, note="not tested: the same value in both images of every pair"
+        )
+    ranks = sp.rankdata(np.abs(nonzero))
+    w_plus = float(ranks[nonzero > 0].sum())
+    w_minus = float(ranks[nonzero < 0].sum())
+    smallest = smallest_wilcoxon_p(int(nonzero.size))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        p = float(sp.wilcoxon(nonzero, alternative="two-sided").pvalue)
+    notes = []
+    if nonzero.size < n:
+        notes.append(f"{n - nonzero.size} pair(s) with no difference left out of the signed-rank test")
+    if smallest > 0.05:
+        notes.append(
+            f"with {nonzero.size} pair(s) no difference can reach p < 0.05 "
+            f"(smallest possible p {smallest:.3g})"
+        )
+    t = t_p = dz = float("nan")
+    sd = float(differences.std(ddof=1))
+    if sd > 0:
+        paired_t = sp.ttest_rel(b, a)
+        t, t_p = float(paired_t.statistic), float(paired_t.pvalue)
+        dz = float(differences.mean() / sd)
+    return PairedTest(
+        n_pairs=n,
+        w_plus=w_plus,
+        p=p,
+        smallest_p=smallest,
+        rank_biserial=(w_plus - w_minus) / (w_plus + w_minus),
+        t=t,
+        t_p=t_p,
+        cohen_dz=dz,
+        note="; ".join(notes),
+    )
+
+
 def benjamini_hochberg(pvalues: Sequence[float]) -> list[float]:
     """Benjamini-Hochberg q-values for *pvalues*, NaN left as NaN and out of
     the count."""
@@ -410,6 +677,9 @@ class BatchStatisticsFiles:
     by_image: Path | None = None
     summary: Path | None = None
     comparison: Path | None = None
+    #: Paired designs only: every pair, and every image left out and why.
+    pairs: Path | None = None
+    pairing: Pairing | None = None
     images: int = 0
     missing: tuple[str, ...] = ()
     metrics: int = 0
@@ -419,7 +689,9 @@ class BatchStatisticsFiles:
 
     @property
     def written(self) -> tuple[Path, ...]:
-        return tuple(path for path in (self.by_image, self.summary, self.comparison) if path)
+        return tuple(
+            path for path in (self.by_image, self.summary, self.comparison, self.pairs) if path
+        )
 
 
 def _cell(value) -> str:
@@ -459,6 +731,87 @@ def _values(group: Sequence[ImageStatistics], key: MetricKey) -> list[float]:
     return [image.values[key] for image in group if key in image.values]
 
 
+def _write_paired(
+    files: BatchStatisticsFiles,
+    output_root: Path,
+    images: Sequence[ImageStatistics],
+    keys: Sequence[MetricKey],
+    conditions: BatchConditions,
+    pairing: Pairing,
+    alpha: float,
+) -> None:
+    """The paired comparison: ``batch_condition_pairs.csv`` (every pair, and
+    every image left out with its reason) and the comparison CSV over the
+    subjects with an image in each condition."""
+    label_a, label_b = conditions.a.label, conditions.b.label
+    by_stem = {image.stem: image for image in images}
+    files.pairs = _write(
+        output_root / PAIRS_FILENAME,
+        ["Subject", f"{label_a} image", f"{label_b} image", "Left out because"],
+        [
+            *([pair.subject, pair.a, pair.b, ""] for pair in pairing.pairs),
+            *(
+                [
+                    subject,
+                    name if by_stem[name].condition == label_a else "",
+                    name if by_stem[name].condition == label_b else "",
+                    reason,
+                ]
+                if by_stem[name].condition in (label_a, label_b)
+                else [subject, "", "", f"{name}: {reason}"]
+                for name, subject, reason in pairing.unpaired
+            ),
+        ],
+    )
+    files.pairing = pairing
+    tests: list[PairedTest] = []
+    rows = []
+    for key in keys:
+        matched = [
+            (by_stem[pair.a].values[key], by_stem[pair.b].values[key])
+            for pair in pairing.pairs
+            if key in by_stem[pair.a].values and key in by_stem[pair.b].values
+        ]
+        a_values = [a for a, _b in matched]
+        b_values = [b for _a, b in matched]
+        test = compare_paired(a_values, b_values)
+        tests.append(test)
+        a, b = summarise(a_values), summarise(b_values)
+        differences = summarise([b - a for a, b in matched])
+        rows.append(
+            [
+                *key,
+                len(matched), a["Median"], b["Median"], a["Mean"], b["Mean"],
+                a["Min"], a["Max"], b["Min"], b["Max"],
+                differences["Median"], differences["Mean"],
+                test.w_plus, test.p, None, test.smallest_p, test.rank_biserial,
+                test.t, test.t_p, test.cohen_dz, test.note,
+            ]
+        )
+    header = [
+        "Section", "Metric", "Unit",
+        "N pairs",
+        f"Median {label_a}", f"Median {label_b}",
+        f"Mean {label_a}", f"Mean {label_b}",
+        f"Min {label_a}", f"Max {label_a}", f"Min {label_b}", f"Max {label_b}",
+        f"Median of paired differences ({label_b} - {label_a})",
+        f"Mean of paired differences ({label_b} - {label_a})",
+        f"Wilcoxon W+ (pairs with {label_b} larger)",
+        "P (Wilcoxon signed-rank, two-sided)",
+        "Q (Benjamini-Hochberg)", "Smallest possible P",
+        f"Matched-pairs rank-biserial r (+: {label_b} larger)",
+        "Paired t", "P (paired t)", f"Cohen dz (+: {label_b} larger)",
+        "Note",
+    ]
+    qvalues = benjamini_hochberg([test.p for test in tests])
+    q_column = header.index("Q (Benjamini-Hochberg)")
+    for row, q in zip(rows, qvalues):
+        row[q_column] = q
+    files.comparison = _write(output_root / COMPARISON_FILENAME, header, rows)
+    files.tested = sum(test.tested for test in tests)
+    files.significant = sum(not math.isnan(q) and q < alpha for q in qvalues)
+
+
 def write_batch_statistics(
     output_root: Path | str,
     stems: Sequence[str],
@@ -485,12 +838,23 @@ def write_batch_statistics(
     )  # stable: each condition's images together, in batch order
     keys = metric_keys(images)
     files.metrics = len(keys)
+    pairing = (
+        conditions.pairing([image.stem for image in images])
+        if conditions.paired and conditions.compares
+        else Pairing()
+    )
+    subject_rows = (
+        [["", "Subject", "", *(pairing.subject_of(image.stem) for image in images)]]
+        if conditions.paired and conditions.compares
+        else []
+    )
 
     files.by_image = _write(
         output_root / BY_IMAGE_FILENAME,
         ["Section", "Metric", "Unit", *(image.stem for image in images)],
         [
             ["", "Condition", "", *(image.condition for image in images)],
+            *subject_rows,
             *(
                 [*key, *(image.values.get(key) for image in images)]
                 for key in keys
@@ -510,7 +874,7 @@ def write_batch_statistics(
         ),
     )
 
-    if conditions.compares:
+    if conditions.compares and not conditions.paired:
         (label_a, group_a), (label_b, group_b) = groups[0], groups[1]
         tests = [compare_two(_values(group_a, key), _values(group_b, key)) for key in keys]
         qvalues = benjamini_hochberg([test.p for test in tests])
@@ -547,9 +911,22 @@ def write_batch_statistics(
         files.comparison = _write(output_root / COMPARISON_FILENAME, header, rows)
         files.tested = sum(test.tested for test in tests)
         files.significant = sum(not math.isnan(q) and q < alpha for q in qvalues)
+    elif conditions.compares and conditions.paired:
+        _write_paired(files, output_root, images, keys, conditions, pairing, alpha)
 
     parts = [f"Batch statistics of {len(images)} image(s), {len(keys)} metrics: {files.summary}"]
-    if files.comparison is not None:
+    if files.comparison is not None and conditions.paired:
+        left_out = ", ".join(name for name, _subject, _reason in pairing.unpaired)
+        parts.append(
+            f"{conditions.b.label} against {conditions.a.label}, paired by subject: "
+            f"{len(pairing.pairs)} pair(s)"
+            + (f" ({', '.join(pair.subject for pair in pairing.pairs)})" if pairing.pairs else "")
+            + f", smallest possible p {smallest_wilcoxon_p(len(pairing.pairs)):.3g}"
+            + (f"; left out with no partner: {left_out}" if left_out else "")
+            + f"; {files.tested} metrics tested, {files.significant} with q < {alpha:g}: "
+            f"{files.comparison} (pairs: {files.pairs})"
+        )
+    elif files.comparison is not None:
         parts.append(
             f"{conditions.b.label} against {conditions.a.label}: {files.tested} metrics tested, "
             f"{files.significant} with q < {alpha:g}: {files.comparison}"
@@ -570,13 +947,21 @@ __all__ = [
     "BatchStatisticsFiles",
     "COMPARISON_FILENAME",
     "Condition",
+    "DESIGNS",
+    "INDEPENDENT",
     "ImageStatistics",
     "NO_CONDITION",
+    "PAIRED",
+    "PAIRS_FILENAME",
+    "Pair",
+    "PairedTest",
+    "Pairing",
     "SUMMARY_FIELDS",
     "SUMMARY_FILENAME",
     "TwoGroupTest",
     "benjamini_hochberg",
     "collect_batch_statistics",
+    "compare_paired",
     "compare_two",
     "image_statistics_files",
     "metric_keys",
@@ -584,6 +969,7 @@ __all__ = [
     "read_branch_statistics_csv",
     "read_statistics_csv",
     "smallest_mann_whitney_p",
+    "smallest_wilcoxon_p",
     "summarise",
     "write_batch_statistics",
 ]

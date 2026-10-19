@@ -16,15 +16,19 @@ from haemolynx.statistics.batch_comparison import (
     BOTH_CONDITIONS,
     BY_IMAGE_FILENAME,
     COMPARISON_FILENAME,
+    PAIRS_FILENAME,
     SUMMARY_FILENAME,
     BatchConditions,
+    Pair,
     benjamini_hochberg,
     collect_batch_statistics,
+    compare_paired,
     compare_two,
     parse_condition,
     read_branch_statistics_csv,
     read_statistics_csv,
     smallest_mann_whitney_p,
+    smallest_wilcoxon_p,
     summarise,
     write_batch_statistics,
 )
@@ -340,3 +344,167 @@ def test_a_batch_with_no_statistics_writes_nothing(tmp_path):
     assert files.written == ()
     assert "Statistics on" in files.message
     assert not (tmp_path / SUMMARY_FILENAME).exists()
+
+
+# -- paired by subject ------------------------------------------------------------
+
+#: Harvey's AIA batch, 2026-10-19: two subjects with both sides imaged.
+AIA = [
+    "28_3_d_contra_patella_cropped_hdf5_Simple Segmentation_all_vessel",
+    "28_3_d_ipsi_FITC_Simple Segmentation_all_vessel",
+    "29_1_b_contra_FITC_Simple Segmentation_all_vessel",
+    "29_1_f_contra_FITC_Simple Segmentation_all_vessel",
+    "29_1_f_ipsi_FITC_Simple Segmentation_all_vessel",
+    "29_2_c_ipsi_FITC_Simple Segmentation_all_vessel",
+    "29_2_d_ipsi_FITC_Simple Segmentation_all_vessel",
+    "29_2_f_contra_FITC_Simple Segmentation_all_vessel",
+]
+
+
+def test_a_subject_is_the_name_before_its_condition_phrase():
+    conditions = BatchConditions.from_text("contra", "ipsi", paired=True)
+    assert conditions.design == "paired"
+    assert conditions.subject_of(AIA[0]) == "28_3_d"
+    assert conditions.subject_of("29_1_F-IPSI.FITC") == "29_1_f"
+    assert conditions.subject_of("contra_29_1_f") == ""  # the phrase begins the name
+    assert conditions.subject_of("29_1_f_FITC") == ""  # in neither condition
+    pattern = BatchConditions.from_text(
+        "contra", "ipsi", paired=True, subject_pattern=r"(\d+_\d+_[a-z])_"
+    )
+    assert pattern.subject_of("side_contra_29_1_f_FITC") == "29_1_f"
+    assert pattern.subject_of("side_contra_FITC") == ""
+    whole = BatchConditions.from_text("WT", "KO", paired=True, subject_pattern=r"m\d+")
+    assert whole.subject_of("E14_WT_M07") == "m07"
+
+
+def test_the_aia_batch_pairs_two_subjects_and_lists_the_rest():
+    conditions = BatchConditions.from_text("contra", "ipsi", paired=True)
+    pairing = conditions.pairing(AIA)
+    assert pairing.pairs == (
+        Pair("28_3_d", AIA[0], AIA[1]),
+        Pair("29_1_f", AIA[3], AIA[4]),
+    )
+    assert [(name[:6], subject, reason) for name, subject, reason in pairing.unpaired] == [
+        ("29_1_b", "29_1_b", "no ipsi image of subject 29_1_b"),
+        ("29_2_c", "29_2_c", "no contra image of subject 29_2_c"),
+        ("29_2_d", "29_2_d", "no contra image of subject 29_2_d"),
+        ("29_2_f", "29_2_f", "no ipsi image of subject 29_2_f"),
+    ]
+    assert pairing.partner_of(AIA[4]) == AIA[3]
+    assert pairing.reason_left_out(AIA[2]) == "no ipsi image of subject 29_1_b"
+    assert conditions.describe(AIA).endswith(
+        "2 pair(s) by subject (28_3_d, 29_1_f), 4 image(s) with no partner"
+    )
+
+
+def test_every_image_that_cannot_pair_says_why():
+    conditions = BatchConditions.from_text("WT", "KO", paired=True)
+    pairing = conditions.pairing(
+        ["m1_WT_a", "m1_WT_b", "m1_KO", "m2_WT", "WT_m3", "m4_HET", "m5_WT_KO", "m6_KO"]
+    )
+    assert pairing.pairs == ()
+    reasons = {name: reason for name, _subject, reason in pairing.unpaired}
+    assert reasons == {
+        "m1_WT_a": "subject m1 has 2 WT images: which one pairs is unclear",
+        "m1_WT_b": "subject m1 has 2 WT images: which one pairs is unclear",
+        "m1_KO": "subject m1 has 2 WT images: which one pairs is unclear",
+        "m2_WT": "no KO image of subject m2",
+        "WT_m3": "no subject ID: the condition phrase begins the name",
+        "m4_HET": "in neither condition",
+        "m5_WT_KO": "in both conditions",
+        "m6_KO": "no WT image of subject m6",
+    }
+
+
+def test_a_paired_design_needs_two_conditions_and_a_working_pattern():
+    assert "needs both conditions" in BatchConditions.from_text("WT", None, paired=True).problem()
+    assert "not a regular expression" in BatchConditions.from_text(
+        "WT", "KO", paired=True, subject_pattern="(unclosed"
+    ).problem()
+    assert BatchConditions.from_text("WT", "KO", paired=True).problem() == ""
+
+
+def test_the_smallest_p_a_signed_rank_test_can_reach():
+    assert smallest_wilcoxon_p(2) == pytest.approx(0.5)
+    assert smallest_wilcoxon_p(5) == pytest.approx(0.0625)
+    assert smallest_wilcoxon_p(6) == pytest.approx(0.03125)
+    assert math.isnan(smallest_wilcoxon_p(0))
+
+
+def test_paired_tests_against_hand_computed_values():
+    a = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    b = [2.0, 3.0, 4.5, 6.0, 7.0, 9.0]  # differences 1 1 1.5 2 2 3, all positive
+    test = compare_paired(a, b)
+    assert test.n_pairs == 6
+    assert test.w_plus == pytest.approx(21.0)  # 1 + 2 + ... + 6
+    assert test.p == pytest.approx(2 / 2**6)  # exact: every sign the same
+    assert test.smallest_p == pytest.approx(2 / 2**6)
+    assert test.rank_biserial == pytest.approx(1.0)
+    d = np.array(b) - np.array(a)
+    assert test.cohen_dz == pytest.approx(d.mean() / d.std(ddof=1))
+    assert test.t == pytest.approx(d.mean() / (d.std(ddof=1) / math.sqrt(6)))
+    assert test.note == ""
+    flipped = compare_paired(b, a)
+    assert flipped.rank_biserial == pytest.approx(-1.0) and flipped.cohen_dz < 0
+    two = compare_paired([1.0, 2.0], [2.0, 4.0])
+    assert two.p == pytest.approx(0.5)
+    assert "no difference can reach p < 0.05 (smallest possible p 0.5)" in two.note
+
+
+def test_paired_differences_that_cannot_be_tested_say_why():
+    assert "fewer than 2 pairs" in compare_paired([1.0], [2.0]).note
+    same = compare_paired([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+    assert not same.tested and "same value in both images" in same.note
+    one_tie = compare_paired([1.0, 2.0, 3.0], [1.0, 3.0, 4.0])
+    assert one_tie.tested and "1 pair(s) with no difference left out" in one_tie.note
+
+
+def test_a_paired_batch_writes_its_pairs_and_tests_over_them(tmp_path):
+    lengths = {
+        "s1_contra": 100.0, "s1_ipsi": 130.0,
+        "s2_contra": 110.0, "s2_ipsi": 150.0,
+        "s3_contra": 120.0, "s3_ipsi": 140.0,
+        "s4_contra": 90.0,  # no ipsi image
+    }
+    for stem, length in lengths.items():
+        _write_image(tmp_path, stem, length, 2.0)
+    conditions = BatchConditions.from_text("contra", "ipsi", paired=True)
+    files = write_batch_statistics(tmp_path, list(lengths), conditions)
+    assert files.pairs == tmp_path / PAIRS_FILENAME
+    pairs = _dict_rows(tmp_path / PAIRS_FILENAME)
+    assert [
+        (row["Subject"], row["contra image"], row["ipsi image"], row["Left out because"])
+        for row in pairs
+    ] == [
+        ("s1", "s1_contra", "s1_ipsi", ""),
+        ("s2", "s2_contra", "s2_ipsi", ""),
+        ("s3", "s3_contra", "s3_ipsi", ""),
+        ("s4", "s4_contra", "", "no ipsi image of subject s4"),
+    ]
+    by_image = _rows(tmp_path / BY_IMAGE_FILENAME)
+    assert by_image[2][:4] == ["", "Subject", "", "s1"]
+    comparison = _dict_rows(tmp_path / COMPARISON_FILENAME)
+    row = next(r for r in comparison if r["Metric"] == "Total Edge Length")
+    assert row["N pairs"] == "3"
+    assert row["Median contra"] == "110"  # over the paired images: s4 is left out
+    assert float(row["Median of paired differences (ipsi - contra)"]) == pytest.approx(30.0)
+    assert float(row["Wilcoxon W+ (pairs with ipsi larger)"]) == pytest.approx(6.0)
+    assert float(row["P (Wilcoxon signed-rank, two-sided)"]) == pytest.approx(0.25)
+    assert float(row["Smallest possible P"]) == pytest.approx(0.25)
+    assert "no difference can reach p < 0.05" in row["Note"]
+    assert float(row["Q (Benjamini-Hochberg)"]) >= float(row["P (Wilcoxon signed-rank, two-sided)"])
+    # The summary still covers every image of each condition, paired or not.
+    summary = _dict_rows(tmp_path / SUMMARY_FILENAME)
+    contra = next(
+        r for r in summary if r["Metric"] == "Total Edge Length" and r["Group"] == "contra"
+    )
+    assert contra["N"] == "4"
+    assert "paired by subject: 3 pair(s) (s1, s2, s3)" in files.message
+    assert "left out with no partner: s4_contra" in files.message
+
+
+def test_an_independent_batch_writes_no_pairs(tmp_path):
+    stems = _batch(tmp_path)
+    files = write_batch_statistics(tmp_path, stems, BatchConditions.from_text("WT", "KO"))
+    assert files.pairs is None and not (tmp_path / PAIRS_FILENAME).exists()
+    assert "Mann-Whitney U" in _rows(tmp_path / COMPARISON_FILENAME)[0]

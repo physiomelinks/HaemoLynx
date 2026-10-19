@@ -49,6 +49,23 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run nothing: write the batch statistics from the images already run in --output.",
     )
+    parser.add_argument(
+        "--paired",
+        action="store_true",
+        help=(
+            "Compare the conditions paired by subject (Wilcoxon signed-rank, paired t) "
+            "rather than as independent images (Mann-Whitney U, Welch t). A subject ID "
+            "is the part of a file name before its condition phrase (28_3_d in "
+            "28_3_d_contra_FITC); images with no partner are left out and listed."
+        ),
+    )
+    parser.add_argument(
+        "--subject-pattern",
+        help=(
+            "With --paired: a regular expression whose first group (or whole match) "
+            "is the subject ID, in place of the text before the condition phrase."
+        ),
+    )
     return parser
 
 
@@ -71,7 +88,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not matches:
         print(f"No segmented images found in {folders.segmented}.")
         return 1
-    conditions = BatchConditions.from_text(args.condition_a, args.condition_b)
+    conditions = BatchConditions.from_text(
+        args.condition_a,
+        args.condition_b,
+        paired=args.paired,
+        subject_pattern=args.subject_pattern,
+    )
     if conditions.problem():
         print(conditions.problem())
         return 1
