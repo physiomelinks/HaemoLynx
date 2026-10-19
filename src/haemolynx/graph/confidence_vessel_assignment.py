@@ -5,7 +5,6 @@ from typing import Any
 
 import networkx as nx
 import numpy as np
-from scipy.ndimage import label
 
 from ._helpers import sort_nodes as _sort_nodes
 from .automated_vessel_assignment import (
@@ -26,8 +25,14 @@ def _mask_component_metrics(mask: np.ndarray) -> dict[str, float]:
             "component_count": 0.0,
             "largest_component_fraction": 0.0,
         }
-    labeled, n_components = label(binary)
-    counts = np.bincount(labeled.ravel())
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+    # ``label(binary)``'s components, labelled a slab of planes at a time and held at their voxels
+    # (``preprocessing.slab_labels.ForegroundLabels``), not in a label volume
+    # (8 bytes a voxel once a stack has 2**31 voxels).
+    labeled = ForegroundLabels(binary)
+    n_components = labeled.count
+    counts = labeled.sizes
     if counts.size <= 1:
         return {"component_count": 1.0, "largest_component_fraction": 1.0}
     component_sizes = counts[1:]

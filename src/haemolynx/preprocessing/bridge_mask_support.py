@@ -181,6 +181,19 @@ class PackedMask:
         flat = np.ravel_multi_index(tuple(index.T), self.shape)
         return ((self.bits[flat >> 3] >> (flat & 7).astype(np.uint8)) & 1).astype(bool)
 
+    def box(self, box: Sequence[slice]) -> np.ndarray:
+        """The volume over *box* (in-range slices with explicit starts and
+        stops, step 1) as booleans: ``mask[box]``, read from the bits."""
+        starts = [int(s.start) for s in box]
+        extents = [int(s.stop) - int(s.start) for s in box]
+        if not all(extents):
+            return np.zeros(extents, dtype=bool)
+        # Each row along the last axis is a run of consecutive bits.
+        lead = np.indices(extents[:-1]).reshape(len(extents) - 1, -1) + np.array(starts[:-1])[:, None]
+        row = np.ravel_multi_index(tuple(lead) + (np.full(lead.shape[1], starts[-1]),), self.shape)
+        flat = row[:, None] + np.arange(extents[-1], dtype=np.intp)
+        return ((self.bits[flat >> 3] >> (flat & 7).astype(np.uint8)) & 1).astype(bool).reshape(extents)
+
 
 def _points_in_mask(points_um: np.ndarray, mask, voxel_size_zyx) -> np.ndarray:
     """True where the point's nearest voxel is in the mask; outside the volume
@@ -449,7 +462,12 @@ class MaskSupport:
     copy of it (:class:`PackedMask`, :meth:`pack`) that stays in RAM however
     the mask is backed; pass *packed* to share one already made. The radius
     lookup reads the same bits once there are any, when its
-    ``FeatureDistance`` measures this very mask array.
+    ``FeatureDistance`` measures this very mask array. *low_memory* (the
+    low-RAM option) has the radius answered from tiles of the surface rather
+    than one tree over all of it (``FeatureDistance(by_block=True)``): the
+    same radii. *memmap_directory* is where the volumes its readers share
+    with worker processes are written (mask recovery's bits): the run's
+    ``memmap_directory``, not the system temp folder.
 
     One support serves every reader of one mask in a run (``build_network``
     hands the same one to graph building, the clean-ups after it, the
@@ -466,8 +484,12 @@ class MaskSupport:
         min_mask_fraction: float = DEFAULT_MIN_MASK_FRACTION,
         feature_distance=None,
         packed: PackedMask | None = None,
+        low_memory: bool = False,
+        memmap_directory=None,
     ):
         self.mask = mask
+        self.low_memory = bool(low_memory)
+        self.memmap_directory = memmap_directory
         self.voxel_size_zyx = tuple(float(v) for v in voxel_size_zyx)
         self.max_background_gap_um = float(max_background_gap_um)
         self.min_mask_fraction = float(min_mask_fraction)
@@ -514,7 +536,8 @@ class MaskSupport:
         return MaskSupport(
             self.mask, self.voxel_size_zyx,
             max_background_gap_um=max_background_gap_um, min_mask_fraction=min_mask_fraction,
-            feature_distance=self._distance, packed=self._packed,
+            feature_distance=self._distance, packed=self._packed, low_memory=self.low_memory,
+            memmap_directory=self.memmap_directory,
         )
 
     def inside(self, points_um: np.ndarray) -> np.ndarray:
@@ -534,6 +557,7 @@ class MaskSupport:
                 feature_value=False,
                 sampling=self.voxel_size_zyx,
                 remember=LUMEN_RADII_REMEMBERED,
+                by_block=self.low_memory,
             )
             self._share_packed()
         points = np.asarray(points_um, dtype=float).reshape(-1, 3)

@@ -1632,3 +1632,48 @@ def test_without_a_network_the_dead_ends_are_left_as_they_are(tmp_path):
 
     assert de.DEAD_END_KIND not in out.graph.nodes[tip]
     assert "dead_ends" not in out.results["post_process"]
+
+
+@pytest.mark.parametrize("low_ram", [False, True])
+def test_the_edits_readers_share_one_binarised_segmentation_and_one_support(tmp_path, monkeypatch, low_ram):
+    """The drawn vessels, the edited vessels' thick-vessel bridges and the
+    dead ends at the edits each binarised the whole segmentation in RAM and
+    made a support of their own: one of each now, on disk under low-RAM,
+    and the same network either way."""
+    import importlib
+
+    bridge_mask_support = importlib.import_module("haemolynx.preprocessing.bridge_mask_support")
+
+    plain_settings, plain_network, plain_boundaries, plain_model, _ = _thick_run(tmp_path / "plain")
+    plain_network.volume.image = _thick_mask().astype(np.uint8) * 255
+    expected = post_process(plain_settings, plain_model, plain_boundaries, SCHEMA, network=plain_network)
+
+    run_settings, network, boundaries, model, _edge = _thick_run(
+        tmp_path / "low", use_memmap_loading=low_ram, memmap_directory=tmp_path if low_ram else None,
+    )
+    network.volume.image = _thick_mask().astype(np.uint8) * 255
+    binarised, supports = [], []
+    real_binary = stages._to_binary_volume_for_skeletonization
+    real_support = bridge_mask_support.MaskSupport.__init__
+
+    def counting_binary(image, **kwargs):
+        binarised.append(kwargs.get("use_memmap", False))
+        return real_binary(image, **kwargs)
+
+    def counting_support(self, mask, *args, **kwargs):
+        supports.append((id(mask), kwargs.get("low_memory", False)))
+        real_support(self, mask, *args, **kwargs)
+
+    monkeypatch.setattr(stages, "_to_binary_volume_for_skeletonization", counting_binary)
+    monkeypatch.setattr(bridge_mask_support.MaskSupport, "__init__", counting_support)
+    out = post_process(run_settings, model, boundaries, SCHEMA, network=network)
+
+    assert binarised == [low_ram]
+    # Every support (the readers' one, and the split's with its own limits)
+    # reads the one binarised segmentation.
+    assert supports and len({mask for mask, _low in supports}) == 1
+    assert {low for _mask, low in supports} == {low_ram}
+    assert sorted(out.graph.nodes) == sorted(expected.graph.nodes)
+    assert sorted((min(u, v), max(u, v)) for u, v in out.graph.edges()) == sorted(
+        (min(u, v), max(u, v)) for u, v in expected.graph.edges()
+    )

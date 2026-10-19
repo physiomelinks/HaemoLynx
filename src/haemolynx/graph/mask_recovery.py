@@ -193,8 +193,10 @@ def _cross_sections(index: EdgeSampleIndex, radii: np.ndarray, support: MaskSupp
                          caps[chunk], step, spacing, packed.shape))
     if workers is None:
         workers = default_worker_count() if len(radii) >= _WORKER_MIN_SAMPLES else 1
+    # The bits the workers map go where the run keeps its volumes, not %TEMP%.
     results = run_volume_tasks(
         _cross_section_task, payloads, volume=packed.bits, workers=int(workers), min_payloads=2,
+        memmap_directory=getattr(support, "memmap_directory", None),
     )
     for lo, result in zip(range(0, len(order), _CROSS_SECTION_CHUNK), results):
         reach[order[lo:lo + _CROSS_SECTION_CHUNK]] = result

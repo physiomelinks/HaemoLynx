@@ -19,6 +19,7 @@ that writes something per voxel.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Callable, Iterator
 
@@ -52,6 +53,8 @@ class SlabLabels:
     structure: np.ndarray
     planes_per_slab: int
     shape: tuple[int, int, int]
+    #: Each slab's offset, in z order: what :meth:`label_slab` adds.
+    offsets: tuple[int, ...] = ()
 
     def box(self, n: int) -> tuple[slice, slice, slice]:
         """Component *n*'s tight box, as ``find_objects`` gives it."""
@@ -64,6 +67,19 @@ class SlabLabels:
         inside = labels > 0
         out[inside] = self.number[labels[inside].astype(np.int64) + int(offset)]
         return out
+
+    def number_dtype(self) -> np.dtype:
+        """int32 while every component number fits one, else int64."""
+        return np.dtype(np.int32) if self.count < np.iinfo(np.int32).max else np.dtype(np.int64)
+
+    def label_slab(self, index: int, foreground: Planes) -> tuple[int, int, np.ndarray, int]:
+        """``(z0, z1, labels, offset)`` of slab *index* alone, labelled again
+        as :meth:`replay` gives it -- *foreground* must give the planes it
+        gave when they were labelled."""
+        z0 = int(index) * self.planes_per_slab
+        z1 = min(z0 + self.planes_per_slab, self.shape[0])
+        labels, _n = label(np.asarray(foreground(z0, z1), dtype=bool), structure=self.structure)
+        return z0, z1, labels, int(self.offsets[index])
 
     def replay(self, foreground: Planes) -> Iterator[tuple[int, int, np.ndarray, int]]:
         """``(z0, z1, labels, offset)`` per slab, labelled again exactly as
@@ -128,9 +144,11 @@ def label_by_slab(
     lo_parts = []
     hi_parts = []
     offset = 0
+    offsets = []
     previous = None  # the slab before's last plane and its offset; None when it had no labels
     for z0 in range(0, shape[0], step):
         z1 = min(z0 + step, shape[0])
+        offsets.append(offset)
         labels, n = label(np.asarray(foreground(z0, z1), dtype=bool), structure=structure)
         n = int(n)
         if n:
@@ -151,7 +169,9 @@ def label_by_slab(
 
     if offset == 0:
         empty = np.empty((0, 3), dtype=np.int64)
-        return SlabLabels(0, np.zeros(1, dtype=np.int64), empty, empty, structure, step, shape)
+        return SlabLabels(
+            0, np.zeros(1, dtype=np.int64), empty, empty, structure, step, shape, tuple(offsets)
+        )
     pairs = np.concatenate(links) if links else np.empty((0, 2), dtype=np.int64)
     if len(pairs):
         graph = coo_matrix(
@@ -174,7 +194,7 @@ def label_by_slab(
     hi = np.zeros((count, 3), dtype=np.int64)
     np.minimum.at(lo, number[1:] - 1, np.concatenate(lo_parts))
     np.maximum.at(hi, number[1:] - 1, np.concatenate(hi_parts))
-    return SlabLabels(count, number, lo, hi, structure, step, shape)
+    return SlabLabels(count, number, lo, hi, structure, step, shape, tuple(offsets))
 
 
 def voxels_by_component(
@@ -229,7 +249,8 @@ def numbers_at(
     )
     keys_all = np.concatenate(keys) if keys else np.empty(0, np.int64)
     ids_all = np.concatenate(ids) if ids else np.empty(0, np.int64)
-    return components, ComponentLookup(keys_all, components.number[ids_all], shape)
+    numbers = components.number[ids_all].astype(components.number_dtype(), copy=False)
+    return components, ComponentLookup(keys_all, numbers, shape)
 
 
 class ComponentLookup:
@@ -241,22 +262,190 @@ class ComponentLookup:
         self._plane = int(shape[1]) * int(shape[2])
         self._row = int(shape[2])
 
-    def __getitem__(self, voxels) -> np.ndarray | int:
-        """The component number at ``(z, y, x)`` -- three ints, or three
-        index arrays as for fancy indexing -- which must be among the voxels
-        looked up."""
+    def keys_of(self, voxels) -> np.ndarray:
         z, y, x = voxels
-        keys = (
+        return (
             np.asarray(z, dtype=np.int64) * self._plane
             + np.asarray(y, dtype=np.int64) * self._row
             + np.asarray(x, dtype=np.int64)
         )
-        at = np.searchsorted(self._keys, keys)
-        if (
-            len(self._keys) == 0
-            or np.any(at >= len(self._keys))
-            or np.any(self._keys[np.minimum(at, len(self._keys) - 1)] != keys)
-        ):
+
+    def found(self, keys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """``(numbers, found)`` at *keys* (flat C-order indices): each
+        number where *found*, anything elsewhere."""
+        keys = np.asarray(keys, dtype=np.int64)
+        if len(self._keys) == 0:
+            return np.zeros(keys.shape, dtype=self._numbers.dtype), np.zeros(keys.shape, dtype=bool)
+        at = np.minimum(np.searchsorted(self._keys, keys), len(self._keys) - 1)
+        return self._numbers[at], self._keys[at] == keys
+
+    def __getitem__(self, voxels) -> np.ndarray | int:
+        """The component number at ``(z, y, x)`` -- three ints, or three
+        index arrays as for fancy indexing -- which must be among the voxels
+        looked up."""
+        numbers, found = self.found(self.keys_of(voxels))
+        if not np.all(found):
             raise KeyError("a voxel that was not looked up")
-        found = self._numbers[at]
-        return int(found) if np.ndim(found) == 0 else found
+        return int(numbers) if np.ndim(numbers) == 0 else numbers
+
+
+class NumbersAnywhere:
+    """Component numbers at any voxel: from *known* (a
+    :class:`ComponentLookup` at the voxels asked about most) where it has
+    them, else from the voxel's slab labelled again -- through *foreground*,
+    which must give the planes as they were labelled -- the last
+    *slabs_kept* of them kept as component numbers for the next lookups.
+
+    For the low-RAM option's thin-arm join: the skeleton's voxels are
+    looked up from the start, and a bridge drawn later is read where it
+    lands. Looked up at every voxel of the fat region instead, the numbers
+    were 16 bytes a fat voxel (2.3 GB for 144 M), twice over."""
+
+    def __init__(self, components: SlabLabels, known: ComponentLookup, foreground: Planes, *, slabs_kept: int = 2):
+        self.components = components
+        self.known = known
+        self.foreground = foreground
+        self.slabs_kept = max(1, int(slabs_kept))
+        self._slabs: OrderedDict[int, tuple[int, np.ndarray]] = OrderedDict()
+
+    def _slab_numbers(self, index: int) -> tuple[int, np.ndarray]:
+        cached = self._slabs.get(index)
+        if cached is not None:
+            self._slabs.move_to_end(index)
+            return cached
+        z0, _z1, labels, offset = self.components.label_slab(index, self.foreground)
+        number = self.components.number[offset:offset + int(labels.max()) + 1].astype(
+            self.components.number_dtype()
+        )
+        number[0] = 0
+        entry = (z0, number[labels])
+        del labels
+        self._slabs[index] = entry
+        while len(self._slabs) > self.slabs_kept:
+            self._slabs.popitem(last=False)
+        return entry
+
+    def __getitem__(self, voxels) -> np.ndarray | int:
+        z, y, x = (np.asarray(v, dtype=np.int64) for v in voxels)
+        scalar = z.ndim == 0
+        z, y, x = np.atleast_1d(z), np.atleast_1d(y), np.atleast_1d(x)
+        numbers, found = self.known.found(self.known.keys_of((z, y, x)))
+        numbers = np.array(numbers, dtype=self.components.number_dtype())
+        missing = np.flatnonzero(~found)
+        if missing.size:
+            slab = z[missing] // self.components.planes_per_slab
+            for index in np.unique(slab):
+                z0, slab_numbers = self._slab_numbers(int(index))
+                these = missing[slab == index]
+                numbers[these] = slab_numbers[z[these] - z0, y[these], x[these]]
+        return int(numbers[0]) if scalar else numbers
+
+
+class ForegroundLabels:
+    """A label volume held at its foreground voxels only: each one's flat
+    C-order key and component number, in C order -- 12 bytes a foreground
+    voxel (the numbers int32 while they fit), where ``scipy.ndimage.label``'s
+    own volume is 4 bytes a voxel of the whole stack, and 8 once the stack
+    has 2**31 voxels: 44 GB for a 5.5 G-voxel mask. A volume is labelled a
+    slab of planes at a time (:func:`voxels_by_component`); numbered as
+    ``label(mask, structure)`` numbers it, so each method answers what the
+    same read of that label volume would.
+
+    *structure* is ``label``'s (its default, face connectivity, when None).
+    """
+
+    def __init__(self, mask: np.ndarray, structure: np.ndarray | None = None, *, block_voxels: int | None = None):
+        from scipy.ndimage import generate_binary_structure
+
+        mask = np.asanyarray(mask)
+        self.shape = tuple(int(s) for s in mask.shape)
+        structure = (
+            generate_binary_structure(mask.ndim, 1) if structure is None else np.asarray(structure, dtype=bool)
+        )
+        if mask.ndim == 3 and structure.shape == (3, 3, 3):
+            components, keys, numbers = voxels_by_component(
+                lambda z0, z1: np.asarray(mask[z0:z1], dtype=bool), self.shape,
+                structure=structure, block_voxels=block_voxels,
+            )
+            self.count = int(components.count)
+            self._boxes = [components.box(n) for n in range(1, self.count + 1)]
+        else:
+            labels, count = label(np.asarray(mask, dtype=bool), structure=structure)
+            flat = labels.reshape(-1)
+            keys = np.flatnonzero(flat).astype(np.int64)
+            numbers = flat[keys]
+            self.count = int(count)
+            self._boxes = list(find_objects(labels))
+            del labels, flat
+        dtype = np.int32 if self.count < np.iinfo(np.int32).max else np.int64
+        self.keys = keys
+        self.numbers = np.asarray(numbers).astype(dtype, copy=False)
+        #: Voxels per component, as ``np.bincount(labels.ravel())``: index 0
+        #: the background's.
+        self.sizes = np.bincount(self.numbers, minlength=self.count + 1).astype(np.int64)
+        self.sizes[0] = int(np.prod(self.shape, dtype=np.int64)) - len(self.keys)
+        self._order = None
+
+    def find_objects(self) -> list[tuple[slice, ...]]:
+        """``find_objects(labels)``: each component's tight box."""
+        return list(self._boxes)
+
+    def box(self, number: int) -> tuple[slice, ...]:
+        return self._boxes[int(number) - 1]
+
+    def coords(self) -> np.ndarray:
+        """``np.argwhere(labels)``: the foreground voxels in C order."""
+        if not len(self.keys):
+            return np.empty((0, len(self.shape)), dtype=np.intp)
+        return np.column_stack(np.unravel_index(self.keys, self.shape)).astype(np.intp)
+
+    def at(self, voxels) -> np.ndarray:
+        """``labels[voxels]`` for a tuple of index arrays (in range)."""
+        keys = np.ravel_multi_index(tuple(np.asarray(v, dtype=np.intp) for v in voxels), self.shape)
+        out = np.zeros(np.shape(keys), dtype=self.numbers.dtype)
+        if len(self.keys):
+            at = np.minimum(np.searchsorted(self.keys, keys), len(self.keys) - 1)
+            found = self.keys[at] == keys
+            out[found] = self.numbers[at[found]]
+        return out
+
+    def read(self, box: tuple[slice, ...]) -> np.ndarray:
+        """``labels[box]`` (in-range slices, step 1), from the voxels in it."""
+        starts = [int(s.start) for s in box]
+        extents = [int(s.stop) - int(s.start) for s in box]
+        out = np.zeros(extents, dtype=self.numbers.dtype)
+        if not len(self.keys) or not all(extents):
+            return out
+        # Each row along the last axis is one run of keys.
+        lead = np.indices(extents[:-1]).reshape(len(extents) - 1, -1) + np.array(starts[:-1])[:, None]
+        row = np.ravel_multi_index(tuple(lead) + (np.full(lead.shape[1], starts[-1]),), self.shape)
+        lo = np.searchsorted(self.keys, row)
+        hi = np.searchsorted(self.keys, row + extents[-1])
+        counts = hi - lo
+        if not counts.sum():
+            return out
+        which = np.repeat(np.arange(len(row)), counts)
+        index = np.arange(int(counts.sum())) - np.repeat(np.cumsum(counts) - counts, counts) + np.repeat(lo, counts)
+        flat_out = out.reshape(len(row), extents[-1])
+        flat_out[which, self.keys[index] - row[which]] = self.numbers[index]
+        return out
+
+    def members(self, number: int) -> np.ndarray:
+        """Indices into :attr:`keys` of component *number*'s voxels, C order."""
+        if self._order is None:
+            self._order = np.argsort(self.numbers, kind="stable")
+            self._bounds = np.searchsorted(self.numbers[self._order], np.arange(self.count + 2))
+        return self._order[self._bounds[int(number)]:self._bounds[int(number) + 1]]
+
+    def write(self, out: np.ndarray, lut: np.ndarray, *, block_voxels: int | None = None) -> np.ndarray:
+        """``out[...] = lut[labels]``, a slab of planes at a time."""
+        lut = np.asarray(lut)
+        plane = int(np.prod(self.shape[1:], dtype=np.int64)) if len(self.shape) > 1 else 1
+        step = memmap_support.slab_step(self.shape, block_voxels)
+        for z0 in range(0, self.shape[0], step):
+            z1 = min(z0 + step, self.shape[0])
+            slab = np.full((z1 - z0,) + self.shape[1:], lut[0], dtype=out.dtype)
+            lo, hi = np.searchsorted(self.keys, [z0 * plane, z1 * plane])
+            slab.reshape(-1)[self.keys[lo:hi] - z0 * plane] = lut[self.numbers[lo:hi]]
+            out[z0:z1] = slab
+        return out

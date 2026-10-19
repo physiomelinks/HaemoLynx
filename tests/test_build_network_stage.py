@@ -203,7 +203,37 @@ def test_a_thick_vessel_regions_centreline_reaches_every_clean_up_and_the_split(
     arm = np.array([[20.0, 20.0, float(x)] for x in range(8, 33)])
     assert along(arm) > 20.0
     (split,) = seen["split"]
-    assert split["centreline"].shape == LONG_CROSS.shape and split["centreline"].any()
+    # The tree as its voxels (skeletonisation's, or drawn here): a volume
+    # of zeros the region's shape is not made to hold it.
+    tree = split["centreline"]
+    assert tree.ndim == 2 and tree.shape[1] == 3 and len(tree)
+    from haemolynx.graph import thick_vessel_junctions
+
+    assert np.array_equal(
+        tree, np.argwhere(thick_vessel_junctions.thick_vessel_centreline(volume.thick_vessel_mask, (1.0, 1.0, 1.0)))
+    )
+
+
+def test_the_tree_skeletonisation_drew_is_used_not_drawn_again(tmp_path, monkeypatch):
+    """``SkeletonisedVolume.thick_vessel_centreline``: the split and the
+    clean-ups get skeletonisation's tree as it is, and nothing draws it."""
+    from haemolynx.graph import thick_vessel_junctions
+
+    seen = _spy_on_graph_building(monkeypatch)
+    volume = _volume(tmp_path, LONG_CROSS, _mask_under(LONG_CROSS))
+    volume.thick_vessel_mask = _mask_under(LONG_CROSS).astype(bool)
+    drawn = thick_vessel_junctions.thick_vessel_centreline_voxels(volume.thick_vessel_mask, (1.0, 1.0, 1.0))
+    volume.thick_vessel_centreline = drawn
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("the tree was drawn again")
+
+    monkeypatch.setattr(thick_vessel_junctions, "thick_vessel_centreline_voxels", refuse)
+    monkeypatch.setattr(thick_vessel_junctions, "thick_vessel_centreline", refuse)
+    build_network(_settings(tmp_path), volume, SCHEMA)
+
+    (split,) = seen["split"]
+    assert split["centreline"] is drawn
 
 
 def test_a_run_without_a_thick_vessel_region_leaves_the_choice_to_the_wall(tmp_path, monkeypatch):
@@ -359,7 +389,7 @@ def test_one_mask_support_serves_every_step_that_reads_the_mask(tmp_path, monkey
     assert all(call["mask_support"] is support for call in seen["cleanup"])
     (split,) = seen["split"]
     assert split["mask_support"] is support
-    assert split["tree_radius_um"] is not None and len(split["tree_radius_um"]) == split["centreline"].sum()
+    assert split["tree_radius_um"] is not None and len(split["tree_radius_um"]) == len(split["centreline"])
     assert marked == [support]
     assert len(packs) == 1
     assert len(trees) == 1

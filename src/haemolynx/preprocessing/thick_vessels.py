@@ -1602,12 +1602,51 @@ def skeletonize_edt_ridge(
     return result
 
 
+def edt_ridge_voxels(
+    binary: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float] | None = None,
+    *,
+    use_memmap: bool = False,
+) -> np.ndarray:
+    """:func:`skeletonize_edt_ridge`'s tree as its voxels, ``(n, ndim)`` in
+    C order -- ``np.argwhere`` of the tree -- without a volume to draw it in."""
+    mask = np.asarray(binary, dtype=bool)
+    drawn: list[np.ndarray] = []
+    if mask.any():
+        _edt_ridge_into(None, mask, _relative_spacing(voxel_size_zyx), low_ram=use_memmap, drawn=drawn)
+    return drawn_voxels(drawn, mask.shape)
+
+
+def drawn_voxels(drawn: list[np.ndarray], shape) -> np.ndarray:
+    """The voxels of the *drawn* pieces (each ``(n, ndim)``) once each, in C
+    order: ``np.argwhere`` of a volume they were drawn into."""
+    if not drawn:
+        return np.empty((0, len(shape)), dtype=np.intp)
+    keys = np.unique(np.concatenate([np.ravel_multi_index(tuple(v.T), shape) for v in drawn]))
+    return np.column_stack(np.unravel_index(keys, shape)).astype(np.intp)
+
+
+def _any(volume: np.ndarray) -> bool:
+    """``volume.any()``, read once for a broadcast scalar (a region found
+    before to be empty is one: no volume of False to read through)."""
+    volume = np.asarray(volume)
+    if volume.size and not any(volume.strides):
+        return bool(volume.flat[0])
+    return bool(volume.any())
+
+
 def _edt_ridge_into(
-    out: np.ndarray, mask: np.ndarray, relative: np.ndarray, *, low_ram: bool
+    out: np.ndarray | None,
+    mask: np.ndarray,
+    relative: np.ndarray,
+    *,
+    low_ram: bool,
+    drawn: list[np.ndarray] | None = None,
 ) -> None:
-    """Draw :func:`skeletonize_edt_ridge`'s tree of *mask* into *out*."""
+    """Draw :func:`skeletonize_edt_ridge`'s tree of *mask* into *out* (None:
+    nowhere), and add each component's tree voxels to *drawn* when given."""
     if low_ram:
-        _edt_ridge_by_component(out, mask, relative)
+        _edt_ridge_by_component(out, mask, relative, drawn=drawn)
         return
     bbox = _foreground_bbox(mask, pad=1)
     if bbox is None:
@@ -1623,17 +1662,24 @@ def _edt_ridge_into(
         crop.shape,
         int(crop.sum()),
     )
-    out_crop = out[bbox]
+    out_crop = None if out is None else out[bbox]
+    first = 0 if drawn is None else len(drawn)
     for component_id, slc in enumerate(find_objects(labeled), start=1):
         if slc is None:
             continue
         coords = np.argwhere(labeled[slc] == component_id)
         _draw_component_tree(
-            out_crop, coords, edt[slc][tuple(coords.T)], slc, relative, component_id, int(n_labels)
+            out_crop, coords, edt[slc][tuple(coords.T)], slc, relative, component_id, int(n_labels),
+            drawn=drawn,
         )
+    if drawn is not None:
+        origin = np.array([s.start for s in bbox], dtype=np.intp)
+        drawn[first:] = [voxels + origin for voxels in drawn[first:]]
 
 
-def _edt_ridge_by_component(out: np.ndarray, mask: np.ndarray, relative: np.ndarray) -> None:
+def _edt_ridge_by_component(
+    out: np.ndarray | None, mask: np.ndarray, relative: np.ndarray, *, drawn: list | None = None
+) -> None:
     """:func:`_edt_ridge_into` for the low-RAM option: each component's
     voxels from a slab-at-a-time labelling, and its radius map from its own
     padded box."""
@@ -1662,26 +1708,34 @@ def _edt_ridge_by_component(out: np.ndarray, mask: np.ndarray, relative: np.ndar
         )
         origin = np.array([s.start for s in box], dtype=np.intp)
         _draw_component_tree(
-            out, coords - origin, edt_at, box, relative, component_id, components.count
+            out, coords - origin, edt_at, box, relative, component_id, components.count,
+            drawn=drawn,
         )
 
 
 def _draw_component_tree(
-    out: np.ndarray,
+    out: np.ndarray | None,
     coords: np.ndarray,
     edt_at: np.ndarray,
     box: tuple[slice, slice, slice],
     relative: np.ndarray,
     component_id: int,
     n_components: int,
+    *,
+    drawn: list | None = None,
 ) -> None:
     """Draw the tree of the component at *coords* (in its tight *box* of
-    *out*) into *out*, logging the slow ones."""
+    *out*) into *out* (None: nowhere), and add its voxels (*out*'s
+    coordinates) to *drawn* when given, logging the slow ones."""
     t_component = time.perf_counter()
     shape = tuple(int(s.stop) - int(s.start) for s in box)
     tree = _component_tree(coords, edt_at, shape, relative)
     origin = np.array([int(s.start) for s in box], dtype=np.intp)
-    out[tuple((tree + origin).T)] = True
+    voxels = tree + origin
+    if out is not None:
+        out[tuple(voxels.T)] = True
+    if drawn is not None:
+        drawn.append(voxels)
     if n_components > 1 or len(coords) > 10_000:
         logger.info(
             "skeletonize_edt_ridge: component %d/%d (%d voxels) took %.2fs",
@@ -1978,14 +2032,53 @@ def _join_thin_arms_to_fat_ridge(
     # together, at every voxel of either: the length filter scopes each
     # arm's distance to its own one, and the bridge cap reads the fat
     # vessel's radius over the one its candidate point is in.
+    #
+    # Under the low-RAM option the numbers are looked up from the start at
+    # the skeleton's voxels only, and at a voxel a bridge adds later from
+    # its slab labelled again (slab_labels.NumbersAnywhere): looked up at
+    # every fat voxel, each lookup was 16 bytes a fat voxel, two at once.
+    # The structures were labelled before the flake filter and the bridges
+    # changed the skeleton outside the fat region, so a slab is labelled
+    # again as it was then: *roi_changed* holds the voxels whose skeleton
+    # value has changed since (each one outside the fat region, where the
+    # skeleton alone decides).
     roi_components = roi_at = None
+    roi_changed: set[int] = set()
+    plane = int(shape[1]) * int(shape[2])
+
+    def _skeleton_changed(voxels: np.ndarray) -> None:
+        if roi_at is not None and use_memmap:
+            roi_changed.symmetric_difference_update(
+                np.unique(np.ravel_multi_index(tuple(np.asarray(voxels).reshape(-1, 3).T), shape)).tolist()
+            )
+
+    def _roi_planes_then(z0: int, z1: int) -> np.ndarray:
+        planes = np.asarray(result[z0:z1], dtype=bool) | np.asarray(thick_b[z0:z1], dtype=bool)
+        here = [key - z0 * plane for key in roi_changed if z0 * plane <= key < z1 * plane]
+        if here:
+            flat = planes.reshape(-1)
+            flat[here] = ~flat[here]
+        return planes
+
     if not arms_reach_extent or max_bridge_radius_multiple is not None:
-        roi_components, roi_keys, roi_numbers = slab_labels.voxels_by_component(
-            lambda z0, z1: result[z0:z1] | thick_b[z0:z1], shape, structure=structure,
-            block_voxels=block,
-        )
-        roi_at = slab_labels.ComponentLookup(roi_keys, roi_numbers, shape)
-        del roi_keys, roi_numbers
+        if use_memmap:
+            roi_components, roi_known = slab_labels.numbers_at(
+                lambda z0, z1: result[z0:z1] | thick_b[z0:z1],
+                lambda z0, z1: result[z0:z1],
+                shape,
+                structure=structure,
+                block_voxels=block,
+            )
+            roi_at = slab_labels.NumbersAnywhere(roi_components, roi_known, _roi_planes_then)
+        else:
+            roi_components, roi_keys, roi_numbers = slab_labels.voxels_by_component(
+                lambda z0, z1: result[z0:z1] | thick_b[z0:z1], shape, structure=structure,
+                block_voxels=block,
+            )
+            roi_at = slab_labels.ComponentLookup(
+                roi_keys, roi_numbers.astype(roi_components.number_dtype(), copy=False), shape
+            )
+            del roi_keys, roi_numbers
 
     if arms_reach_extent:
         arm_ids = np.arange(1, n_labels + 1)
@@ -2034,6 +2127,7 @@ def _join_thin_arms_to_fat_ridge(
         dropped = ~is_arm[thin_numbers]
         if dropped.any():
             result[tuple(thin_coords[dropped].T)] = False
+            _skeleton_changed(thin_coords[dropped])
     if arm_ids.size == 0:
         return result
     # Each arm's voxels, in C order, as its own labelled box would list them.
@@ -2051,11 +2145,16 @@ def _join_thin_arms_to_fat_ridge(
     # and any a bridge adds.
     allowed_components, allowed_at = slab_labels.numbers_at(
         lambda z0, z1: allowed_b[z0:z1],
-        lambda z0, z1: result[z0:z1] | thick_b[z0:z1],
+        (lambda z0, z1: result[z0:z1]) if use_memmap else (lambda z0, z1: result[z0:z1] | thick_b[z0:z1]),
         shape,
         structure=structure,
         block_voxels=block,
     )
+    if use_memmap:
+        # A bridge's voxels in the fat region are read where they land.
+        allowed_at = slab_labels.NumbersAnywhere(
+            allowed_components, allowed_at, lambda z0, z1: allowed_b[z0:z1]
+        )
     fat_component_labels = allowed_at[tuple(fat_coords.T)]
     fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
     # The ridge and every bridge voxel inside the fat region so far: exactly
@@ -2320,6 +2419,10 @@ def _join_thin_arms_to_fat_ridge(
             drawn.append(voxel)
             if _touches_tree(stop_on, voxel):
                 break
+        if use_memmap and roi_at is not None:
+            _skeleton_changed(np.array(
+                [voxel for voxel in drawn if not result[voxel] and not thick_b[voxel]], dtype=np.intp
+            ))
         for voxel in drawn:
             result[voxel] = True
         # This join's own bridge becomes something a later arm can fall back
@@ -2502,6 +2605,7 @@ def skeletonize_thickness_gated(
     tile_max_voxels: int = 200_000_000,
     tile_halo_voxels: int = 0,
     thick_region: np.ndarray | None = None,
+    centreline_voxels: list | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray | None]:
     """Lee on the thin catchment; an EDT-ridge tree (every arm) inside the fat catchment.
 
@@ -2572,6 +2676,10 @@ def skeletonize_thickness_gated(
     instead of a bare array -- *thick* is ``None`` on every path that never
     computed one (``min_radius_um <= 0``, or no fat region found).
 
+    *centreline_voxels*, a list, is given the fat region's centreline tree
+    as it is drawn: its voxels in C order (:func:`edt_ridge_voxels` of
+    *thick*, which graph building reads), so nothing draws it again.
+
     *use_memmap* (the low-RAM option) makes no distance map and no label
     volume. Every distance here is either compared with a few microns or
     needed at some voxels only, and a block's own transform with enough
@@ -2579,9 +2687,10 @@ def skeletonize_thickness_gated(
     labelled a slab of planes at a time (:mod:`.slab_labels`). The
     hole-filled mask and the Lee input are on disk, and Lee thinning runs
     through :func:`~haemolynx.preprocessing.skeleton.skeletonize_by_component`
-    (with the ``tile_*`` settings). What stays in RAM is the thick region and
-    the skeleton, a byte a voxel each, and lists of the fat region's voxels.
-    Same skeleton and region either way.
+    (with the ``tile_*`` settings). What stays in RAM is the thick region, a
+    byte a voxel, and lists of the fat region's voxels;
+    the skeleton returned is on disk (a ``new_memmap_array``). Same skeleton
+    and region either way.
     """
     lee_kwargs = {
         "use_memmap": use_memmap,
@@ -2596,17 +2705,18 @@ def skeletonize_thickness_gated(
     def lee(volume: np.ndarray) -> np.ndarray:
         if not low_ram:
             return _skeletonize_foreground(volume)
-        skeleton = skeletonize_by_component(volume, **lee_kwargs)
-        in_ram = np.array(skeleton, dtype=bool)
-        if isinstance(skeleton, np.memmap):
-            memmap_support.release_memmap_array(skeleton)
-        return in_ram
+        return skeletonize_by_component(volume, **lee_kwargs)
+
+    def whole_lee(volume: np.ndarray) -> np.ndarray:
+        """Lee of the whole mask; under low-RAM the one
+        ``skeletonize_by_component`` wrote on disk, not a copy in RAM."""
+        return lee(volume) if low_ram else skeletonize_volume(volume).astype(bool)
 
     with _hole_filled_mask(
         binary, fill_mask_holes, use_memmap=use_memmap, memmap_directory=memmap_directory
     ) as mask:
         if float(min_radius_um) <= 0.0:
-            skeleton = (lee(mask) if low_ram else skeletonize_volume(mask)).astype(bool)
+            skeleton = whole_lee(mask)
             return (skeleton, None) if return_thick_mask else skeleton
 
         t0 = time.perf_counter()
@@ -2640,8 +2750,8 @@ def skeletonize_thickness_gated(
                 memmap_directory=memmap_directory,
             )
         t_catchment = time.perf_counter() - t0
-        if not thick.any():
-            skeleton = (lee(mask) if low_ram else skeletonize_volume(mask)).astype(bool)
+        if not _any(thick):
+            skeleton = whole_lee(mask)
             return (skeleton, None) if return_thick_mask else skeleton
         # thick_vessel_object_mask's own large locals are unreachable now
         # that it has returned, but a big freed block does not always get
@@ -2660,7 +2770,13 @@ def skeletonize_thickness_gated(
         else:
             min_arm_extent_um = max(0.0, float(flake_filter_um))
         n_thick = int(np.count_nonzero(thick))
-        result = np.zeros(mask.shape, dtype=bool)
+        # Under low-RAM the skeleton is drawn on disk: held through the rest
+        # of skeletonisation, it was a byte a voxel of RAM.
+        result = (
+            memmap_support.new_memmap_array(mask.shape, bool, directory=memmap_directory)
+            if low_ram
+            else np.zeros(mask.shape, dtype=bool)
+        )
         logger.info(
             "skeletonize_thickness_gated: fat catchment done in %.2fs (%d fat voxels); "
             "Lee-thinning the thin catchment",
@@ -2704,7 +2820,11 @@ def skeletonize_thickness_gated(
             n_thin,
         )
         t2 = time.perf_counter()
-        _edt_ridge_into(result, thick, _relative_spacing(voxel_size_zyx), low_ram=low_ram)
+        drawn = [] if centreline_voxels is not None else None
+        _edt_ridge_into(result, thick, _relative_spacing(voxel_size_zyx), low_ram=low_ram, drawn=drawn)
+        if centreline_voxels is not None:
+            centreline_voxels.append(drawn_voxels(drawn, thick.shape))
+        del drawn
         t_ridge = time.perf_counter() - t2
         gc.collect()
         logger.info(
@@ -2716,7 +2836,7 @@ def skeletonize_thickness_gated(
         # Every thin skeleton voxel is Lee output of the catchment cut to
         # min_arm_extent_um from the fat region, so the join's length filter
         # would keep every arm (see its arms_reach_extent).
-        result = np.asarray(
+        result = np.asanyarray(
             _join_thin_arms_to_fat_ridge(
                 result,
                 thick,

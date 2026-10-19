@@ -5,7 +5,7 @@ from typing import Any
 import time
 
 import numpy as np
-from scipy.ndimage import binary_dilation, distance_transform_edt, find_objects, label
+from scipy.ndimage import binary_dilation, distance_transform_edt
 from scipy.spatial import cKDTree
 
 _GPU_EDT_AVAILABLE: bool | None = None
@@ -82,10 +82,14 @@ def _clip_indices_to_shape(indices_zyx: np.ndarray, shape: tuple[int, int, int])
     return indices_zyx[valid]
 
 
-def _connected_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
-    structure = np.ones((3, 3, 3), dtype=bool)
-    labeled, count = label(mask.astype(bool, copy=False), structure=structure)
-    return labeled, int(count)
+def _connected_components(mask: np.ndarray):
+    """``(labels, count)``: *mask*'s components labelled a slab of planes at a time and held at their voxels
+    (``preprocessing.slab_labels.ForegroundLabels``), not in a label volume
+    (8 bytes a voxel once a stack has 2**31 voxels)."""
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+    labels = ForegroundLabels(mask.astype(bool, copy=False), np.ones((3, 3, 3), dtype=bool))
+    return labels, int(labels.count)
 
 
 def _component_descriptors(
@@ -93,7 +97,7 @@ def _component_descriptors(
     edt_inside: np.ndarray | None = None,
     *,
     sampling_zyx: tuple[float, float, float],
-    labeled: np.ndarray | None = None,
+    labeled=None,
     count: int | None = None,
 ) -> dict[int, dict[str, Any]]:
     """Describe each component of *mask* for the cylinder-bridge gates.
@@ -110,24 +114,14 @@ def _component_descriptors(
     if int(count) <= 0:
         return descriptors
     spacing = np.asarray(sampling_zyx, dtype=float).reshape(1, 3)
-    component_slices = find_objects(labeled, max_label=int(count))
+    if isinstance(labeled, np.ndarray):
+        from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+        labeled = ForegroundLabels(labeled > 0, np.ones((3, 3, 3), dtype=bool))
+    all_coords = labeled.coords()
     for component_id in range(1, int(count) + 1):
-        component_slice = component_slices[component_id - 1] if component_slices else None
-        if component_slice is None:
-            continue
-        labeled_roi = labeled[component_slice]
-        local_coords = np.argwhere(labeled_roi == int(component_id))
-        if local_coords.size == 0:
-            continue
-        offset = np.asarray(
-            [
-                int(component_slice[0].start),
-                int(component_slice[1].start),
-                int(component_slice[2].start),
-            ],
-            dtype=int,
-        )
-        coords = local_coords + offset.reshape(1, 3)
+        # Its voxels in C order, as np.argwhere of its box lists them.
+        coords = all_coords[labeled.members(component_id)].astype(int)
         if coords.size == 0:
             continue
         centroid = np.mean(coords.astype(float), axis=0)
@@ -435,7 +429,6 @@ def _enforce_type_locked_continuity_for_small_mask(
             "accepted_bridges": 0,
             "rejected_reasons": {},
         }
-    labeled_large, _ = _connected_components(large_binary)
     large_desc: dict[int, dict[str, Any]] = {}
     if allow_small_to_large and np.any(large_binary):
         edt_inside_large = _edt(
@@ -529,8 +522,9 @@ def _enforce_type_locked_continuity_for_small_mask(
         # Skip if source small component already touches any large component.
         if allow_small_to_large and np.any(large_binary):
             src_vox = source["coords_zyx"]
+            # In a large component: in the large mask -- no labels needed.
             if np.any(
-                labeled_large[src_vox[:, 0], src_vox[:, 1], src_vox[:, 2]] > 0
+                large_binary[src_vox[:, 0], src_vox[:, 1], src_vox[:, 2]]
             ):
                 continue
         source_candidates[int(source_id)] = candidate_targets

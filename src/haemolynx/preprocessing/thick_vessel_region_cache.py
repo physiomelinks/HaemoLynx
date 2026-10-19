@@ -86,10 +86,18 @@ class ThickVesselRegionCache:
         self.sidecar = Path(f"{self.base}.json")
         self.packed = Path(f"{self.base}.npy")
 
-    def lookup(self, key: str) -> tuple[bool, np.ndarray | None]:
+    def lookup(
+        self, key: str, *, use_memmap: bool = False, memmap_directory=None
+    ) -> tuple[bool, np.ndarray | None]:
         """``(True, region)`` for the entry written under *key* -- the region
         ``None`` when the run that wrote it found no thick region --
-        else ``(False, None)``."""
+        else ``(False, None)``.
+
+        *use_memmap* (the low-RAM option) reads the bits from the file in
+        place and unpacks them a slab of planes at a time into a disk-backed
+        region (``memmap_support.new_memmap_array`` in *memmap_directory*):
+        unpacked whole, the bits became a byte a voxel and then a copy of
+        that as booleans, two volumes in RAM. The same region."""
         try:
             meta = json.loads(self.sidecar.read_text())
             if meta.get("format") != _CACHE_FORMAT or meta.get("key") != key:
@@ -97,11 +105,16 @@ class ThickVesselRegionCache:
             shape = tuple(int(n) for n in meta["shape"])
             if not meta["region"]:
                 return True, None
-            packed = np.load(self.packed)
+            packed = np.load(self.packed, mmap_mode="r" if use_memmap else None)
             count = int(np.prod(shape, dtype=np.int64))
             if packed.ndim != 1 or packed.dtype != np.uint8 or packed.size != (count + 7) // 8:
                 return False, None
-            region = np.unpackbits(packed, count=count).reshape(shape).astype(bool)
+            if use_memmap:
+                from .memmap_support import unpack_bits_by_slab
+
+                region = unpack_bits_by_slab(packed, shape, directory=memmap_directory)
+            else:
+                region = np.unpackbits(packed, count=count).reshape(shape).astype(bool)
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             return False, None
         logger.info("Reusing the thick-vessel region a previous run found: %s", self.packed)

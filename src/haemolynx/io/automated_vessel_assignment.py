@@ -27,6 +27,8 @@ def _load_mask_image(
     mask_path: Path,
     *,
     axis_order: str = CANONICAL_AXIS_ORDER,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float], dict[str, object]]:
     """Load a vessel mask as a boolean volume in canonical ``(z, y, x)`` order.
 
@@ -37,19 +39,23 @@ def _load_mask_image(
 
     Returns the mask, metadata voxel size ``(x, y, z)``, and the metadata
     status dict so callers can apply the same override policy as the main
-    image.
+    image. *use_memmap* (the low-RAM option) reads it, and binarises it, onto
+    disk as the main image is read (``memmap_directory``), not into RAM.
     """
     path = Path(mask_path)
     suffix = path.suffix.lower()
+    low_ram = dict(use_memmap=True, memmap_directory=memmap_directory) if use_memmap else {}
     if suffix in {".tif", ".tiff"}:
         image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_3d_tif_with_voxel_size(
             str(path),
             axis_order=axis_order,
+            **low_ram,
         )
     elif suffix == ".h5":
         image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_3d_h5_with_voxel_size(
             str(path),
             axis_order=axis_order,
+            **low_ram,
         )
     else:
         raise ValueError(
@@ -57,7 +63,7 @@ def _load_mask_image(
         )
     if image.ndim != 3:
         raise ValueError(f"Expected a 3D mask, got shape {image.shape}.")
-    mask = _to_binary_volume_for_skeletonization(image)
+    mask = _to_binary_volume_for_skeletonization(image, **low_ram)
     return mask, (float(voxel_x), float(voxel_y), float(voxel_z)), voxel_meta_status
 
 
@@ -118,6 +124,8 @@ def load_large_vessel_masks(
     voxel_size_override_xyz=None,
     voxel_size_policy: str = "auto",
     fallback_voxel_size_xyz: tuple[float, float, float] | None = None,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[
     np.ndarray | None,
     np.ndarray | None,
@@ -159,7 +167,8 @@ def load_large_vessel_masks(
 
     def _load(path) -> tuple[np.ndarray, tuple[float, float, float]]:
         mask, metadata_xyz, status = _load_mask_image(
-            resolve_image_path_with_optional_zip(Path(path)), axis_order=axis_order
+            resolve_image_path_with_optional_zip(Path(path)), axis_order=axis_order,
+            use_memmap=use_memmap, memmap_directory=memmap_directory,
         )
         voxel_size = _resolve_mask_voxel_size_xyz(
             metadata_xyz,
@@ -387,6 +396,8 @@ def load_and_validate_vessel_masks(
     voxel_size_policy: str = "auto",
     crop: CropBox | None = None,
     downsample: Downsample | None = None,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[
     np.ndarray | None,
     np.ndarray | None,
@@ -406,8 +417,14 @@ def load_and_validate_vessel_masks(
     :mod:`haemolynx.io.downsample`): each mask is reduced by the same blocks,
     and its voxel size read against the image's as read, then scaled -- so
     *image_shape* and *main_voxel_size_xyz* are the reduced image's.
+
+    *use_memmap* (the low-RAM option) reads the masks onto disk
+    (*memmap_directory*), cleans them with their components labelled a slab
+    of planes at a time, and hands them, and the ones remembered from an
+    earlier load, out on disk. The same masks either way.
     """
     config = _vessel_mask_config(mask_role)
+    low_ram = dict(low_memory=bool(use_memmap), memmap_directory=memmap_directory)
     scale_label = mask_role
 
     if use_ilastik and not enabled:
@@ -510,6 +527,8 @@ def load_and_validate_vessel_masks(
             voxel_size_policy=voxel_size_policy,
             crop=crop,
             downsample=downsample,
+            use_memmap=use_memmap,
+            memmap_directory=memmap_directory,
         )
 
     cache_key = None
@@ -541,7 +560,7 @@ def load_and_validate_vessel_masks(
                 f"Reusing the {scale_label}-vessel masks loaded earlier in this "
                 "process: the same files, cleaned with the same settings."
             )
-            return _unpack_masks(cached[1])
+            return _unpack_masks(cached[1], use_memmap=use_memmap, memmap_directory=memmap_directory)
 
     (
         arteriole_mask,
@@ -556,6 +575,8 @@ def load_and_validate_vessel_masks(
         voxel_size_override_xyz=voxel_size_override_xyz,
         voxel_size_policy=voxel_size_policy,
         fallback_voxel_size_xyz=_source_voxel_size_xyz(main_voxel_size_xyz, downsample),
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
     )
 
     if arteriole_mask is None or venule_mask is None:
@@ -648,6 +669,7 @@ def load_and_validate_vessel_masks(
                 venule_mask,
                 voxel_size_xyz=tuple(float(v) for v in main_voxel_size_xyz),
                 min_component_volume_um3=float(min_component_volume_um3),
+                **low_ram,
             )
         )
         arteriole_stats = volume_stats.get("arteriole") or {}
@@ -677,6 +699,7 @@ def load_and_validate_vessel_masks(
                 max_size_ratio=float(swap_max_size_ratio),
                 min_contact_fraction=float(swap_min_contact_fraction),
                 voxel_size_zyx=voxel_size_zyx_from_xyz(main_voxel_size_xyz),
+                **low_ram,
             )
         )
         # Largest first, so a mask with thousands of mislabelled specks still
@@ -728,6 +751,7 @@ def load_and_validate_vessel_masks(
             max_attach_distance_microns=float(
                 opposite_attached_max_distance_microns
             ),
+            **low_ram,
         )
         oa_art = opposite_attached_cleanup_stats.get("arteriole") or {}
         oa_ven = opposite_attached_cleanup_stats.get("venule") or {}
@@ -753,6 +777,7 @@ def load_and_validate_vessel_masks(
                 exclude_smaller_overlapping_large_vessel_components(
                     arteriole_mask,
                     venule_mask,
+                    **low_ram,
                 )
             )
         else:
@@ -760,6 +785,7 @@ def load_and_validate_vessel_masks(
                 exclude_smaller_overlapping_small_vessel_components(
                     arteriole_mask,
                     venule_mask,
+                    **low_ram,
                 )
             )
 
@@ -797,6 +823,8 @@ def _load_global_vessel_mask(
     voxel_size_policy: str,
     crop: CropBox | None,
     downsample: Downsample | None = None,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> tuple[np.ndarray, None, tuple[float, float, float], None]:
     """One role's global vessel mask: the arteriole/global row's file with no
     venule mask beside it, every vessel of the role's size, arteriole or
@@ -823,7 +851,7 @@ def _load_global_vessel_mask(
             f"Reusing the {mask_role}-vessel global mask loaded earlier in this "
             "process: the same file, cleaned with the same settings."
         )
-        return _unpack_masks(cached[1])
+        return _unpack_masks(cached[1], use_memmap=use_memmap, memmap_directory=memmap_directory)
 
     mask, _venule, voxel_size, _venule_voxel_size = load_large_vessel_masks(
         enabled=True,
@@ -833,6 +861,8 @@ def _load_global_vessel_mask(
         voxel_size_override_xyz=voxel_size_override_xyz,
         voxel_size_policy=voxel_size_policy,
         fallback_voxel_size_xyz=_source_voxel_size_xyz(main_voxel_size_xyz, downsample),
+        use_memmap=use_memmap,
+        memmap_directory=memmap_directory,
     )
     name = f"{mask_role}_global_mask"
     if crop is not None and not crop.is_whole_volume:
@@ -886,6 +916,8 @@ def _load_global_vessel_mask(
             mask,
             voxel_size_xyz=tuple(float(v) for v in main_voxel_size_xyz),
             min_component_volume_um3=float(min_component_volume_um3),
+            low_memory=bool(use_memmap),
+            memmap_directory=memmap_directory,
         )
         logger.info(
             f"{mask_role.capitalize()}-vessel global mask component-volume filtering: "
@@ -893,7 +925,7 @@ def _load_global_vessel_mask(
             f"{int(stats['removed_component_count'])} component(s), "
             f"{float(stats['removed_volume_um3']):.3f} um^3."
         )
-    result = (np.asarray(mask, dtype=bool), None, voxel_size, None)
+    result = (np.asanyarray(mask, dtype=bool), None, voxel_size, None)
     if cache_key is not None:
         _LOADED_MASKS[mask_role] = (cache_key, _pack_masks(result))
     return result
@@ -1017,14 +1049,19 @@ def _pack_masks(result: tuple) -> tuple:
     )
 
 
-def _unpack_masks(packed: tuple) -> tuple:
+def _unpack_masks(packed: tuple, *, use_memmap: bool = False, memmap_directory=None) -> tuple:
+    """The masks :func:`_pack_masks` packed, fresh arrays: on disk, unpacked
+    a slab of planes at a time, under the low-RAM option (*use_memmap*)."""
     arteriole_bits, venule_bits, shape, arteriole_voxel_size, venule_voxel_size = packed
     count = int(np.prod(shape))
-    return (
-        np.unpackbits(arteriole_bits)[:count].astype(bool).reshape(shape),
-        None
-        if venule_bits is None
-        else np.unpackbits(venule_bits)[:count].astype(bool).reshape(shape),
-        arteriole_voxel_size,
-        venule_voxel_size,
-    )
+
+    def unpack(bits):
+        if bits is None:
+            return None
+        if use_memmap:
+            from haemolynx.preprocessing.memmap_support import unpack_bits_by_slab
+
+            return unpack_bits_by_slab(bits, shape, directory=memmap_directory)
+        return np.unpackbits(bits)[:count].astype(bool).reshape(shape)
+
+    return (unpack(arteriole_bits), unpack(venule_bits), arteriole_voxel_size, venule_voxel_size)

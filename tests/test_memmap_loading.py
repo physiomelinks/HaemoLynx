@@ -595,7 +595,9 @@ def test_skeletonize_by_component_with_memmap_on_gives_each_component_a_memmap_m
 def test_skeletonize_by_component_keeps_small_components_off_disk(monkeypatch):
     """A temp file per component made a noisy mask with thousands of specks
     crawl; a component whose box fits one block is compared in RAM, with the
-    same skeleton as ever."""
+    same skeleton as ever. And no label volume: the components come from
+    slabs (an int32 a voxel, 22 GB on a 5.5 G-voxel stack, it was the only
+    file but the result)."""
     import haemolynx.preprocessing.skeleton as skeleton_module
 
     rng = np.random.default_rng(0)
@@ -604,15 +606,21 @@ def test_skeletonize_by_component_keeps_small_components_off_disk(monkeypatch):
 
     made = []
     original = skeleton_module.temporary_memmap_array
+    original_new = skeleton_module.new_memmap_array
 
     def counting(*args, **kwargs):
         made.append(args[0])
         return original(*args, **kwargs)
 
+    def counting_new(shape, dtype, **kwargs):
+        made.append((tuple(shape), np.dtype(dtype)))
+        return original_new(shape, dtype, **kwargs)
+
     monkeypatch.setattr(skeleton_module, "temporary_memmap_array", counting)
+    monkeypatch.setattr(skeleton_module, "new_memmap_array", counting_new)
     result = skeletonize_by_component(mask, use_memmap=True)
 
-    assert made == [mask.shape], "only the label volume should be on disk"
+    assert made == [(mask.shape, np.dtype(bool))], "only the result should be on disk"
     assert np.array_equal(result, skeletonize(mask, method="lee"))
     release_memmap_array(result)
 

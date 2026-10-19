@@ -696,6 +696,60 @@ are only caught locally.
   raw image the raw evidence and the Diameters stage load (two 301 MB files a low-RAM E14.5 run,
   a volume's worth of float32 each on any stack) and the volumes tests compare -- 2,806 files in
   one machine's `%TEMP%`. Killing a run still leaves its files.
+  **No whole-volume copies under the low-RAM option** (2026-10-19, for a 5.5 G-voxel stack on
+  33 GB; the centreline tree's CSR, the join's last resort, Lee tiling and the dense solvers are
+  separate): every step below gives the run bit for bit, and its tests are in
+  `tests/test_low_ram_volume_copies.py` beside the modules' own. Reconnect's routing workers
+  start with one OpenMP/BLAS thread (`reconnect._routing_environment`: threadpoolctl holds only
+  in the parent, and each worker's OpenBLAS committed ~659 MB, which ran an E14.5 build out of
+  paging file) and are at most `shared_volume_tasks.default_worker_count()`. The lumen radius
+  reads tiles of the surface (`FeatureDistance(by_block=True)`, through
+  `MaskSupport(low_memory=)` and `mask_radius_sampler(low_memory=)`: a k-d tree per 96-voxel
+  tile, made when a query first needs it, least recently used dropped past 256 MB, searched ring
+  by ring until the best is no further than the nearest voxel unsearched) instead of one tree
+  over the whole surface (~69 B a surface voxel, 7-9 GB). Skeletonisation hands on the thick
+  tree it drew as its voxels (`SkeletonisedVolume.thick_vessel_centreline`,
+  `thick_vessel_centreline_voxels`, `edt_ridge_voxels`), which the split, `ThickCentreline` and
+  post-processing take in place of a volume of it, so `build_network` neither redraws it (a
+  volume of zeros and a Dijkstra over every fat voxel) nor holds a volume for it. The gated
+  skeleton is drawn on disk; the region cache and the vessel-mask cache unpack a slab at a time
+  onto disk (`memmap_support.unpack_bits_by_slab`), and a cached "no region" is a broadcast
+  False. Components whose sizes, membership or voxels are wanted come from slabs, not an int32
+  label memmap (22 GB of dirty pages each, which emptied the page cache on a patella run):
+  `skeleton._SlabComponents` for the fraction filter, the connectivity stats, both
+  small-component drops, the bridging and `skeletonize_by_component` (each component's mask
+  written as the slabs pass its box and thinned once its last plane is read). The thin-arm join
+  looks component numbers up at the skeleton's voxels only, int32, and a bridge's voxel from its
+  slab labelled again as it was (`slab_labels.NumbersAnywhere`); it held 16 B a fat voxel, twice.
+  Every `label` of a whole vessel or pericyte mask is `slab_labels.ForegroundLabels` (each
+  foreground voxel's key and int32 number, 12 B a foreground voxel, numbered as `label` numbers;
+  scipy's own volume is 8 B a voxel from 2**31 voxels): the volume filter, the minority swap,
+  the opposite-attached and overlap clean-ups (the last ~130 GB on 5.5 G voxels), the stump
+  points, the small-mask redefinition, the continuity descriptors, the quality metric and the
+  pericyte centroids (scipy's `center_of_mass` is a C-order bincount, done on the foreground);
+  the masks are read and cleaned onto disk (`load_and_validate_vessel_masks(use_memmap=)`).
+  Post-processing binarises the segmentation once, on disk, for its three readers and one
+  support (`stages._PostProcessSegmentation`); the overlay projection counts and maxes a slab at
+  a time; mask recovery's worker bits go to the run's `memmap_directory`
+  (`MaskSupport.memmap_directory`), not `%TEMP%`. Checked against `4c96e9c5`
+  (`outputs/lvc/old_vs_new.py`, git-ignored: 60 results of the changed functions, dtypes too,
+  identical) and on E14.5 (low-RAM, skeletonise through diameters, `outputs/lvc/e14/bench.py`,
+  a `git archive` of `a82c7e9` against this commit: the skeleton, the built graph and the graph
+  after diameters identical, node for node, edge for edge, every attribute; private peaks
+  skeletonise 2.74 -> 2.30 GB, build_network 3.32 -> 2.98 GB, boundaries 2.61 -> 2.01 GB; the
+  radius sampler 3.8 s -> 0 and the tree build_network drew 5.9 s -> 0; skeletonise 643 -> 792 s
+  and build_network 207 -> 187 s, one run each with other jobs holding most of the RAM, so not
+  a timing). Peaks, old -> new, on a 120 M-voxel synthetic
+  stack, each in a fresh process (`outputs/lvc/peaks.py`, private bytes; the new ones are a
+  32 M-voxel slab's work and do not grow with the stack, the old ones do): a routing worker
+  627 -> 16 MB (20 cores); lumen radius, 20,000 lookups, 154 -> 44 MB; the tree build_network
+  drew, 363 MB and 8.8 s -> nothing; region cache read 244 -> 62 MB; connectivity stats 458 MB
+  of label file -> 372 MB in RAM and no file; Lee by component 572 MB of temp files -> 368 MB
+  and the result's file; the vessel-mask volume filter 1,376 -> 252 MB; the overlap clean-up
+  2,064 MB and 41 s -> 409 MB and 4.4 s; post-processing's binarisations 574 MB and 5.2 s ->
+  367 MB and 1.3 s; the projection 344 -> 367 MB (no smaller at this size, constant past it).
+  The gated skeleton (1 B a voxel) and the join's lookups (16 B a fat voxel, twice: 4.6 GB on
+  the patella's 144 M) are gone from RAM by construction.
 - **`graph/facing_ends.py`** — `join_facing_dead_ends`, its own step after mask recovery
   (`join_facing_dead_ends`, run with a mask and `bridge_require_mask_support`;
   `facing_dead_end_max_gap_um`, 10 µm, 0 off): two dead ends pointing at each other -- the
@@ -1042,7 +1096,8 @@ are only caught locally.
   the in-RAM ones (synthetic networks, trunks wider than 16 voxels, anisotropic, cut by the faces,
   30k-voxel blocks); on a 300 M-voxel synthetic stack (2.7% foreground) it took 211 s at 3.9 GB
   private, 2.6 GB above the process's start, against the old low-RAM path's >83 min (stopped). The
-  thick region and the skeleton are still a byte a voxel each in RAM, and the centreline tree's
+  thick region is still a byte a voxel in RAM (the skeleton is drawn on disk since 2026-10-19,
+  and handed on with the tree's voxels: see **One reader of the mask a run**), and the centreline tree's
   Dijkstra graph (built straight into CSR) is ~360 B a voxel of the largest fat component, built
   whole; the join's last resort, ~400 B a voxel of the connected structure it walks. Its hole fill
   labels the background a slab of planes at a time (`skeleton._fill_binary_holes_by_slab`, no label

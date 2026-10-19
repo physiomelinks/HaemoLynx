@@ -13,7 +13,6 @@ from typing import Any
 
 import networkx as nx
 import numpy as np
-from scipy.ndimage import center_of_mass, label
 from scipy.spatial import cKDTree
 
 from haemolynx.geometry import cumulative_lengths
@@ -39,18 +38,40 @@ from .viscosity import DEFAULT_HAEMATOCRIT
 PERICYTE_MASK_DESCRIPTION = "pericyte mask"
 
 
+def _components_and_centroids(mask_bool: np.ndarray):
+    """``label(mask_bool)``'s components and ``center_of_mass(mask_bool,
+    labels, range(1, n + 1))``, voxel indices -- the same sums in the same
+    order (scipy's are ``np.bincount`` over the volume in C order), from the
+    components labelled a slab of planes at a time and held at their voxels
+    (``preprocessing.slab_labels.ForegroundLabels``). The label volume was 8
+    bytes a voxel once a stack has 2**31 voxels, and each centroid axis a
+    float64 volume besides."""
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
+    labels = ForegroundLabels(np.asarray(mask_bool, dtype=bool))
+    if labels.count <= 0:
+        return labels, np.empty((0, 3), dtype=float)
+    numbers = labels.numbers
+    normalizer = np.bincount(numbers, weights=np.ones(len(numbers)), minlength=labels.count + 1)
+    coords = labels.coords()
+    centroids = np.column_stack(
+        [
+            np.bincount(numbers, weights=coords[:, axis].astype(float), minlength=labels.count + 1)[1:]
+            / normalizer[1:]
+            for axis in range(coords.shape[1])
+        ]
+    )
+    return labels, centroids
+
+
 def _extract_pericyte_centroids_physical(
     mask_bool: np.ndarray,
     voxel_size_zyx: tuple[float, float, float],
 ) -> np.ndarray:
     """Return connected-component centroids in physical coordinates."""
-    labels, n_labels = label(mask_bool)
-    if n_labels <= 0:
+    labels, centroids_idx = _components_and_centroids(mask_bool)
+    if labels.count <= 0:
         return np.empty((0, 3), dtype=float)
-    indices = list(range(1, n_labels + 1))
-    centroids_idx = np.asarray(center_of_mass(mask_bool, labels, indices), dtype=float)
-    if centroids_idx.ndim == 1:
-        centroids_idx = centroids_idx.reshape(1, 3)
     spacing = np.asarray(voxel_size_zyx, dtype=float).reshape(1, 3)
     return centroids_idx * spacing
 
@@ -60,19 +81,13 @@ def _extract_pericyte_component_properties(
     voxel_size_zyx: tuple[float, float, float],
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (centroids_phys, equivalent_diameters_um) per connected component."""
-    labels, n_labels = label(mask_bool)
-    if n_labels <= 0:
+    labels, centroids_idx = _components_and_centroids(mask_bool)
+    if labels.count <= 0:
         return np.empty((0, 3), dtype=float), np.empty((0,), dtype=float)
-    indices = list(range(1, n_labels + 1))
-    centroids_idx = np.asarray(center_of_mass(mask_bool, labels, indices), dtype=float)
-    if centroids_idx.ndim == 1:
-        centroids_idx = centroids_idx.reshape(1, 3)
     spacing = np.asarray(voxel_size_zyx, dtype=float)
     voxel_volume = float(np.prod(spacing))
-    counts = np.asarray(
-        [(labels == idx).sum() for idx in indices],
-        dtype=float,
-    )
+    # Each component's voxel count (it was a whole-volume comparison each).
+    counts = labels.sizes[1:].astype(float)
     component_volumes_um3 = counts * voxel_volume
     # Equivalent sphere diameter from volume.
     equivalent_diameters_um = ((6.0 * component_volumes_um3) / np.pi) ** (1.0 / 3.0)

@@ -9,11 +9,30 @@ from scipy.ndimage import (
     binary_dilation,
     binary_erosion,
     distance_transform_edt,
-    find_objects,
-    label,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _copy_of(mask: np.ndarray, *, low_memory: bool, memmap_directory=None) -> np.ndarray:
+    """A boolean copy of *mask* to edit: on disk under the low-RAM option,
+    copied a slab of planes at a time."""
+    from haemolynx.preprocessing.memmap_support import new_memmap_array, slab_step
+
+    if not low_memory:
+        return np.array(mask, dtype=bool)
+    out = new_memmap_array(mask.shape, bool, directory=memmap_directory)
+    step = slab_step(mask.shape)
+    for start in range(0, mask.shape[0], step):
+        out[start:start + step] = np.asarray(mask[start:start + step], dtype=bool)
+    return out
+
+
+def _set_at(volume: np.ndarray, labels, keys: np.ndarray, value: bool) -> None:
+    """``volume`` set to *value* at the flat C-order *keys*."""
+    if len(keys):
+        volume[np.unravel_index(keys, labels.shape)] = value
+
 
 #: Face neighbours only: a voxel is on a component's surface when one of its six
 #: face neighbours is outside it.
@@ -75,6 +94,9 @@ def dilate_large_vessel_masks_by_microns(
 def exclude_smaller_overlapping_large_vessel_components(
     large_arteriole_mask: np.ndarray | None,
     large_venule_mask: np.ndarray | None,
+    *,
+    low_memory: bool = False,
+    memmap_directory=None,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Remove overlap voxels from the smaller component in each overlap pair.
 
@@ -94,12 +116,17 @@ def exclude_smaller_overlapping_large_vessel_components(
     return _exclude_smaller_overlapping_mask_components(
         large_arteriole_mask,
         large_venule_mask,
+        low_memory=low_memory,
+        memmap_directory=memmap_directory,
     )
 
 
 def exclude_smaller_overlapping_small_vessel_components(
     small_arteriole_mask: np.ndarray | None,
     small_venule_mask: np.ndarray | None,
+    *,
+    low_memory: bool = False,
+    memmap_directory=None,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Small-vessel equivalent of overlap cleanup used for large-vessel masks."""
     if small_arteriole_mask is None or small_venule_mask is None:
@@ -113,6 +140,8 @@ def exclude_smaller_overlapping_small_vessel_components(
     return _exclude_smaller_overlapping_mask_components(
         small_arteriole_mask,
         small_venule_mask,
+        low_memory=low_memory,
+        memmap_directory=memmap_directory,
     )
 
 
@@ -123,6 +152,8 @@ def swap_minority_touching_vessel_components(
     max_size_ratio: float = 1.0,
     min_contact_fraction: float = 0.3,
     voxel_size_zyx: tuple[float, float, float] | None = None,
+    low_memory: bool = False,
+    memmap_directory=None,
 ) -> tuple[np.ndarray | None, np.ndarray | None, dict[str, Any]]:
     """Move each minority arteriole/venule component into the class it touches.
 
@@ -154,7 +185,15 @@ def swap_minority_touching_vessel_components(
     0.54 (swapped) or 0.21 (kept) depending only on which way the split ran --
     a face normal to z covers a quarter of one normal to y, and 26-adjacency
     reaches 2 um in z but 0.5 um in-plane. As facing area both read 0.36.
+
+    The components are labelled a slab of planes at a time and held at their
+    voxels only (``preprocessing.slab_labels.ForegroundLabels``): two whole
+    label volumes were 8 bytes a voxel each on a stack of 2**31 voxels or
+    more. *low_memory* (the low-RAM option) writes the masks returned on disk
+    in *memmap_directory*. The same masks either way.
     """
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
     stats: dict[str, Any] = {
         "swapped_to_venule_component_count": 0,
         "swapped_to_arteriole_component_count": 0,
@@ -186,11 +225,11 @@ def swap_minority_touching_vessel_components(
         return arteriole, venule, stats
 
     labels = {
-        "arteriole": label(arteriole, structure=_FULL_STRUCTURE)[0],
-        "venule": label(venule, structure=_FULL_STRUCTURE)[0],
+        "arteriole": ForegroundLabels(arteriole, _FULL_STRUCTURE),
+        "venule": ForegroundLabels(venule, _FULL_STRUCTURE),
     }
-    sizes = {kind: np.bincount(labels[kind].ravel()) for kind in labels}
-    slices = {kind: find_objects(labels[kind]) for kind in labels}
+    sizes = {kind: labels[kind].sizes for kind in labels}
+    slices = {kind: labels[kind].find_objects() for kind in labels}
     swapped = {kind: np.zeros(sizes[kind].size, dtype=bool) for kind in labels}
     opposite = {"arteriole": "venule", "venule": "arteriole"}
     largest = {kind: int(sizes[kind][1:].max()) for kind in labels}
@@ -210,8 +249,8 @@ def swap_minority_touching_vessel_components(
         if largest[other] <= size or largest[other] < min_partner_size:
             continue
         box = _padded_box(slices[kind][component_id - 1], labels[kind].shape)
-        component = labels[kind][box] == component_id
-        other_labels = labels[other][box]
+        component = labels[kind].read(box) == component_id
+        other_labels = labels[other].read(box)
         partner_sizes = sizes[other]
         eligible = (
             (partner_sizes > size)
@@ -253,13 +292,17 @@ def swap_minority_touching_vessel_components(
 
     if not (np.any(swapped["arteriole"]) or np.any(swapped["venule"])):
         return arteriole, venule, stats
-    to_venule = swapped["arteriole"][labels["arteriole"]]
-    to_arteriole = swapped["venule"][labels["venule"]]
-    return (
-        (arteriole & ~to_venule) | to_arteriole,
-        (venule & ~to_arteriole) | to_venule,
-        stats,
-    )
+    # (arteriole & ~to_venule) | to_arteriole and its mirror: each swapped
+    # component's voxels cleared from its own mask and set in the other.
+    to_venule = labels["arteriole"].keys[swapped["arteriole"][labels["arteriole"].numbers]]
+    to_arteriole = labels["venule"].keys[swapped["venule"][labels["venule"].numbers]]
+    out_arteriole = _copy_of(arteriole, low_memory=low_memory, memmap_directory=memmap_directory)
+    out_venule = _copy_of(venule, low_memory=low_memory, memmap_directory=memmap_directory)
+    _set_at(out_arteriole, labels["arteriole"], to_venule, False)
+    _set_at(out_arteriole, labels["arteriole"], to_arteriole, True)
+    _set_at(out_venule, labels["venule"], to_arteriole, False)
+    _set_at(out_venule, labels["venule"], to_venule, True)
+    return out_arteriole, out_venule, stats
 
 
 def _facing_area_fraction(
@@ -304,6 +347,8 @@ def remove_small_opposite_attached_large_vessel_components(
     voxel_size_xyz: tuple[float, float, float],
     max_component_volume_um3: float,
     max_attach_distance_microns: float,
+    low_memory: bool = False,
+    memmap_directory=None,
 ) -> tuple[np.ndarray | None, np.ndarray | None, dict[str, dict[str, float]]]:
     """Remove tiny opposite-type large-vessel components attached near mask surfaces.
 
@@ -313,8 +358,14 @@ def remove_small_opposite_attached_large_vessel_components(
 
     Distances are read at each component's surface voxels
     (:func:`_component_distances_to_mask`), not from a distance transform of
-    the whole volume.
+    the whole volume. Components are labelled a slab of planes at a time and
+    held at their voxels (``preprocessing.slab_labels.ForegroundLabels``);
+    *low_memory* (the low-RAM option) measures the distances from tiles of
+    the other mask's surface and writes the masks returned on disk in
+    *memmap_directory*. The same masks either way.
     """
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
     stats = {
         "arteriole": {
             "removed_component_count": 0.0,
@@ -376,12 +427,13 @@ def remove_small_opposite_attached_large_vessel_components(
     ) -> np.ndarray:
         mask = mask_raw.astype(bool, copy=False)
         opposite_mask = opposite_mask_raw.astype(bool, copy=False)
-        labels, component_count = label(mask, structure=structure)
+        labels = ForegroundLabels(mask, structure)
+        component_count = labels.count
         stats[side_key]["total_component_count"] = float(component_count)
         if component_count <= 0:
             stats[side_key]["min_component_distance_microns"] = 0.0
             return mask
-        component_sizes = np.bincount(labels.ravel())
+        component_sizes = labels.sizes
         candidate_ids: list[int] = []
         too_large_ids: list[int] = []
         for component_id in range(1, int(component_count) + 1):
@@ -395,9 +447,9 @@ def remove_small_opposite_attached_large_vessel_components(
         stats[side_key]["too_large_component_count"] = float(len(too_large_ids))
 
         component_distance = _component_distances_to_mask(
-            labels, int(component_count), opposite_mask, sampling_zyx=sampling_zyx
+            labels, int(component_count), opposite_mask, sampling_zyx=sampling_zyx,
+            mask=mask, low_memory=low_memory,
         )
-        component_slices = find_objects(labels, max_label=int(component_count))
         near_opposite_all = 0
         near_opposite_too_large = 0
         min_component_distance = float("inf")
@@ -424,25 +476,18 @@ def remove_small_opposite_attached_large_vessel_components(
         if not candidate_ids:
             return mask
 
-        cleaned = mask.copy()
+        cleaned = _copy_of(mask, low_memory=low_memory, memmap_directory=memmap_directory)
         removed_components = 0
         removed_voxels = 0
         for component_id in candidate_ids:
-            comp_slice = component_slices[int(component_id) - 1]
-            if comp_slice is None:
-                continue
-            local_labels = labels[comp_slice]
-            local_component = local_labels == int(component_id)
-            if not np.any(local_component):
+            members = labels.members(int(component_id))
+            if not len(members):
                 continue
             min_distance = float(component_distance[component_id])
             if min_distance <= max_dist:
                 removed_components += 1
-                comp_voxels = int(np.count_nonzero(local_component))
-                removed_voxels += comp_voxels
-                local_clean = cleaned[comp_slice]
-                local_clean[local_component] = False
-                cleaned[comp_slice] = local_clean
+                removed_voxels += int(len(members))
+                _set_at(cleaned, labels, labels.keys[members], False)
 
         stats[side_key]["removed_component_count"] = float(removed_components)
         stats[side_key]["removed_voxel_count"] = float(removed_voxels)
@@ -465,11 +510,13 @@ def remove_small_opposite_attached_large_vessel_components(
 
 
 def _component_distances_to_mask(
-    labels: np.ndarray,
+    labels,
     component_count: int,
     other_mask: np.ndarray,
     *,
     sampling_zyx: tuple[float, float, float],
+    mask: np.ndarray | None = None,
+    low_memory: bool = False,
 ) -> np.ndarray:
     """Each labelled component's distance to the nearest voxel of *other_mask*,
     in microns, indexed by component id (``inf`` for an empty *other_mask*).
@@ -480,6 +527,10 @@ def _component_distances_to_mask(
     it is on its surface, so this is the minimum a whole-volume distance
     transform would give, without the float64 volume (eight bytes a voxel,
     twice over) that transform costs.
+
+    *labels* is a label volume, or a ``slab_labels.ForegroundLabels`` of
+    *mask* (the components' own mask); *low_memory* reads the distances from
+    tiles of the other mask's surface (``FeatureDistance(by_block=True)``).
     """
     from haemolynx.preprocessing.pointwise_distance import (
         FeatureDistance,
@@ -493,36 +544,60 @@ def _component_distances_to_mask(
     if other.all():
         distances[1:] = 0.0
         return distances
-    surface = surface_feature_voxels(labels > 0)
+    surface = surface_feature_voxels(labels > 0 if mask is None else np.asarray(mask, dtype=bool))
     if not len(surface):  # the mask fills the volume: every component touches
         distances[1:] = 0.0
         return distances
-    measured = FeatureDistance(other, feature_value=True, sampling=sampling_zyx).at(surface)
-    np.minimum.at(distances, labels[tuple(surface.T)], measured)
+    measured = FeatureDistance(
+        other, feature_value=True, sampling=sampling_zyx, by_block=low_memory
+    ).at(surface)
+    at = labels[tuple(surface.T)] if isinstance(labels, np.ndarray) else labels.at(tuple(surface.T))
+    np.minimum.at(distances, at, measured)
     return distances
 
 
 def _exclude_smaller_overlapping_mask_components(
     arteriole_mask_raw: np.ndarray,
     venule_mask_raw: np.ndarray,
+    *,
+    low_memory: bool = False,
+    memmap_directory=None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Remove overlap voxels from the smaller component in each overlap pair."""
+    """Remove overlap voxels from the smaller component in each overlap pair.
+
+    The components are labelled a slab of planes at a time and read at the
+    overlap's voxels only (``preprocessing.slab_labels.ForegroundLabels``);
+    two whole label volumes and a mask of each pair's overlap were about
+    130 GB on a 5.5 G-voxel stack. *low_memory* writes the masks returned
+    on disk in *memmap_directory*. The same masks either way."""
+    from haemolynx.preprocessing.memmap_support import slab_step
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+
     arteriole_mask = arteriole_mask_raw.astype(bool, copy=False)
     venule_mask = venule_mask_raw.astype(bool, copy=False)
-    overlap = arteriole_mask & venule_mask
-    if not np.any(overlap):
+    # The overlap's voxels, in C order, a slab at a time.
+    shape = arteriole_mask.shape
+    plane = int(np.prod(shape[1:], dtype=np.int64))
+    step = slab_step(shape)
+    parts = []
+    for start in range(0, shape[0], step):
+        both = np.asarray(arteriole_mask[start:start + step]) & np.asarray(venule_mask[start:start + step])
+        parts.append(np.flatnonzero(both).astype(np.int64) + start * plane)
+    overlap_keys = np.concatenate(parts) if parts else np.empty(0, np.int64)
+    if not len(overlap_keys):
         return arteriole_mask, venule_mask
-    initial_overlap_voxels = int(np.count_nonzero(overlap))
+    initial_overlap_voxels = int(len(overlap_keys))
+    overlap = np.unravel_index(overlap_keys, shape)
 
     structure = np.ones((3, 3, 3), dtype=np.uint8)
-    arteriole_labels, _ = label(arteriole_mask, structure=structure)
-    venule_labels, _ = label(venule_mask, structure=structure)
+    arteriole_labels = ForegroundLabels(arteriole_mask, structure)
+    venule_labels = ForegroundLabels(venule_mask, structure)
 
-    arteriole_sizes = np.bincount(arteriole_labels.ravel())
-    venule_sizes = np.bincount(venule_labels.ravel())
+    arteriole_sizes = arteriole_labels.sizes
+    venule_sizes = venule_labels.sizes
 
-    overlap_arteriole_labels = arteriole_labels[overlap]
-    overlap_venule_labels = venule_labels[overlap]
+    overlap_arteriole_labels = arteriole_labels.at(overlap)
+    overlap_venule_labels = venule_labels.at(overlap)
     overlapping_pairs = np.unique(
         np.column_stack([overlap_arteriole_labels, overlap_venule_labels]),
         axis=0,
@@ -548,26 +623,25 @@ def _exclude_smaller_overlapping_mask_components(
                 (int(arteriole_label), int(venule_label))
             )
 
-    cleaned_arteriole_mask = arteriole_mask.copy()
-    cleaned_venule_mask = venule_mask.copy()
-    for arteriole_label, venule_label in overlap_pairs_to_remove_from_arteriole:
-        pair_overlap = (
-            overlap
-            & (arteriole_labels == int(arteriole_label))
-            & (venule_labels == int(venule_label))
-        )
-        cleaned_arteriole_mask[pair_overlap] = False
-    for arteriole_label, venule_label in overlap_pairs_to_remove_from_venule:
-        pair_overlap = (
-            overlap
-            & (arteriole_labels == int(arteriole_label))
-            & (venule_labels == int(venule_label))
-        )
-        cleaned_venule_mask[pair_overlap] = False
+    # Each overlap voxel belongs to one pair: removed from a side where its
+    # pair is one that side loses.
+    pair_keys = overlap_arteriole_labels.astype(np.int64) * (int(venule_labels.count) + 1) + overlap_venule_labels
 
-    remaining_overlap_voxels = int(
-        np.count_nonzero(cleaned_arteriole_mask & cleaned_venule_mask)
-    )
+    def _in_pairs(pairs: list[tuple[int, int]]) -> np.ndarray:
+        if not pairs:
+            return np.zeros(len(pair_keys), dtype=bool)
+        wanted = np.array([a * (int(venule_labels.count) + 1) + v for a, v in pairs], dtype=np.int64)
+        return np.isin(pair_keys, wanted)
+
+    from_arteriole = _in_pairs(overlap_pairs_to_remove_from_arteriole)
+    from_venule = _in_pairs(overlap_pairs_to_remove_from_venule)
+    cleaned_arteriole_mask = _copy_of(arteriole_mask, low_memory=low_memory, memmap_directory=memmap_directory)
+    cleaned_venule_mask = _copy_of(venule_mask, low_memory=low_memory, memmap_directory=memmap_directory)
+    _set_at(cleaned_arteriole_mask, arteriole_labels, overlap_keys[from_arteriole], False)
+    _set_at(cleaned_venule_mask, venule_labels, overlap_keys[from_venule], False)
+
+    # Outside the overlap the masks were left as they were.
+    remaining_overlap_voxels = int(np.count_nonzero(~from_arteriole & ~from_venule))
     removed_overlap_voxels = int(initial_overlap_voxels - remaining_overlap_voxels)
     logger.info(
         "Mask overlap cleanup summary: "

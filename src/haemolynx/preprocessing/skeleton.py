@@ -78,6 +78,76 @@ def _labeled_components(
         yield labeled, n_components
 
 
+class _SlabComponents:
+    """The components of a 3-D *mask* as the low-RAM option reads them,
+    without a label volume: labelled a slab of planes at a time
+    (:func:`.slab_labels.label_by_slab`), numbered as ``label`` numbers
+    them, and only what a caller needs kept -- each component's voxel count
+    (:attr:`sizes`), or every foreground voxel in C order with its
+    component (*voxels*: :attr:`coords`, :attr:`labels`, as
+    ``np.argwhere(labeled)`` and ``labeled`` there). An int32 label volume
+    of the mask was 22 GB on disk for a 5.5 G-voxel stack, and writing it
+    took the page cache from the rest of the machine (free RAM fell to
+    0.2 GB on a patella run)."""
+
+    def __init__(self, mask: np.ndarray, structure: np.ndarray, *, voxels: bool = False):
+        from . import slab_labels
+
+        self.mask = mask
+        shape = tuple(int(s) for s in mask.shape)
+        self.shape = shape
+        if voxels:
+            components, keys, self.labels = slab_labels.voxels_by_component(
+                self._planes, shape, structure=structure
+            )
+            self.coords = (
+                np.column_stack(np.unravel_index(keys, shape)).astype(np.intp)
+                if len(keys)
+                else np.empty((0, len(shape)), dtype=np.intp)
+            )
+            self.components = components
+            self.sizes = np.bincount(self.labels, minlength=components.count + 1)
+        else:
+            counts: list[np.ndarray] = []
+
+            def visit(_z0, _z1, labels, _offset):
+                counts.append(np.bincount(labels.ravel())[1:])
+
+            components = slab_labels.label_by_slab(self._planes, shape, structure=structure, visit=visit)
+            self.components = components
+            sizes = np.zeros(components.count + 1, dtype=np.int64)
+            if components.count:
+                np.add.at(sizes, components.number[1:], np.concatenate(counts).astype(np.int64))
+            self.sizes = sizes
+        self.count = int(components.count)
+
+    def _planes(self, z0: int, z1: int) -> np.ndarray:
+        return np.asarray(self.mask[z0:z1], dtype=bool)
+
+    def numbers(self, labels: np.ndarray, offset: int) -> np.ndarray:
+        """Each of a slab's *labels* as its component number (0 stays 0), int32
+        while the numbers fit."""
+        number = self.components.number[offset:offset + int(labels.max()) + 1].copy()
+        number[0] = 0
+        if self.count < np.iinfo(np.int32).max:
+            number = number.astype(np.int32)
+        return number[labels]
+
+    def write(self, out: np.ndarray, keep: np.ndarray) -> np.ndarray:
+        """``out[...] = mask & keep[label]``, a slab at a time (*keep* a
+        boolean per component number, index 0 the background)."""
+        for z0, z1, labels, offset in self.components.replay(self._planes):
+            local = keep[self.components.number[offset:offset + int(labels.max()) + 1]]
+            out[z0:z1] = self._planes(z0, z1) & local[labels]
+        return out
+
+
+def _slab_components(mask: np.ndarray, use_memmap: bool) -> bool:
+    """Whether *mask*'s components are read by :class:`_SlabComponents`:
+    under the low-RAM option, for a volume."""
+    return bool(use_memmap) and np.ndim(mask) == 3
+
+
 def _filter_components_by_total_fraction(
     skeleton: np.ndarray,
     min_component_fraction: float,
@@ -100,6 +170,24 @@ def _filter_components_by_total_fraction(
 
     conn = _resolve_component_connectivity(skeleton_bool.ndim, component_connectivity)
     structure = generate_binary_structure(skeleton_bool.ndim, conn)
+    if _slab_components(skeleton_bool, use_memmap):
+        components = _SlabComponents(skeleton_bool, structure)
+        if components.count == 0:
+            return skeleton_bool
+        min_component_size = int(np.ceil(min_component_fraction * total_voxels))
+        keep = components.sizes >= min_component_size
+        keep[0] = False  # the background
+        if not keep.any():
+            logger.warning(
+                "Component fraction %.4f removed all components (min size=%d). "
+                "Returning original skeleton.",
+                min_component_fraction,
+                min_component_size,
+            )
+            return skeleton_bool
+        return components.write(
+            new_memmap_array(skeleton_bool.shape, bool, directory=memmap_directory), keep
+        )
     with _labeled_components(
         skeleton_bool, structure, use_memmap=use_memmap, memmap_directory=memmap_directory
     ) as (labeled, n_components):
@@ -176,17 +264,13 @@ def compute_skeleton_connectivity_stats(
 
     conn = _resolve_component_connectivity(skeleton_bool.ndim, component_connectivity)
     structure = generate_binary_structure(skeleton_bool.ndim, conn)
-    with _labeled_components(
-        skeleton_bool, structure, use_memmap=use_memmap, memmap_directory=memmap_directory
-    ) as (labeled, n_components):
-        # Only foreground voxels carry a component label, so counting those is
-        # the same tally as counting the whole volume -- minus the background
-        # at index 0, which is zeroed here anyway. On a sparse skeleton that is
-        # thousands of voxels rather than hundreds of millions.
-        component_sizes = (
-            bincount_by_slab(labeled, where=skeleton_bool, minlength=n_components + 1)
-            if use_memmap
-            else np.bincount(labeled[skeleton_bool], minlength=n_components + 1)
+    if _slab_components(skeleton_bool, use_memmap):
+        components = _SlabComponents(skeleton_bool, structure)
+        n_components = components.count
+        component_sizes = components.sizes
+    else:
+        n_components, component_sizes = _component_sizes_by_label(
+            skeleton_bool, structure, use_memmap=use_memmap, memmap_directory=memmap_directory
         )
     component_sizes[0] = 0
     sorted_sizes = np.sort(component_sizes[1:])[::-1]
@@ -200,6 +284,29 @@ def compute_skeleton_connectivity_stats(
         largest_fraction=largest_fraction,
         component_sizes=tuple(int(s) for s in sorted_sizes),
     )
+
+
+def _component_sizes_by_label(
+    skeleton_bool: np.ndarray,
+    structure: np.ndarray,
+    *,
+    use_memmap: bool,
+    memmap_directory: str | Path | None,
+) -> tuple[int, np.ndarray]:
+    """``(n_components, sizes)`` from a label array of *skeleton_bool*."""
+    with _labeled_components(
+        skeleton_bool, structure, use_memmap=use_memmap, memmap_directory=memmap_directory
+    ) as (labeled, n_components):
+        # Only foreground voxels carry a component label, so counting those is
+        # the same tally as counting the whole volume -- minus the background
+        # at index 0, which is zeroed here anyway. On a sparse skeleton that is
+        # thousands of voxels rather than hundreds of millions.
+        component_sizes = (
+            bincount_by_slab(labeled, where=skeleton_bool, minlength=n_components + 1)
+            if use_memmap
+            else np.bincount(labeled[skeleton_bool], minlength=n_components + 1)
+        )
+    return int(n_components), component_sizes
 
 
 def log_skeleton_connectivity_stats(
@@ -789,6 +896,17 @@ def skeletonize_by_component(
     mask = np.asanyarray(mask, dtype=bool)
     footprint = generate_binary_structure(mask.ndim, mask.ndim)
     result = new_memmap_array(mask.shape, bool, directory=memmap_directory)
+    if mask.ndim == 3:
+        _skeletonize_slab_components_into(
+            result,
+            mask,
+            footprint,
+            memmap_directory=memmap_directory,
+            tile_large_components=tile_large_components,
+            tile_max_voxels=tile_max_voxels,
+            tile_halo_voxels=tile_halo_voxels,
+        )
+        return result
     with temporary_memmap_array(mask.shape, np.int32, directory=memmap_directory) as labeled:
         n_labels = label(mask, footprint, output=labeled)
         if n_labels == 0:
@@ -837,6 +955,77 @@ def skeletonize_by_component(
                     tile_halo_voxels=tile_halo_voxels,
                 )
     return result
+
+
+def _skeletonize_slab_components_into(
+    result: np.ndarray,
+    mask: np.ndarray,
+    footprint: np.ndarray,
+    *,
+    memmap_directory: str | Path | None,
+    tile_large_components: bool,
+    tile_max_voxels: int,
+    tile_halo_voxels: int,
+) -> None:
+    """:func:`skeletonize_by_component`'s components of a volume, with no
+    label volume: the components are labelled a slab of planes at a time
+    (:class:`_SlabComponents`), and the slabs labelled again in order; each
+    component's mask in its box is written as the slabs pass through the box
+    and thinned into *result* once its last plane is read. The same boxes and
+    component masks as from one label volume, each thinned on its own and
+    OR-ed in, so the same skeleton."""
+    components = _SlabComponents(mask, footprint)
+    if components.count == 0:
+        return
+    shape = mask.shape
+    boxes = []
+    for number in range(1, components.count + 1):
+        # The length-1 axis rule of skeletonize_by_component.
+        boxes.append(tuple(
+            slice(max(0, s.start - 1), min(int(n), s.stop + 1)) if s.stop - s.start == 1 else s
+            for s, n in zip(components.components.box(number), shape)
+        ))
+    starts = np.array([box[0].start for box in boxes], dtype=np.int64)
+    order = np.argsort(starts, kind="stable")
+    following = 0
+    open_masks: dict[int, tuple[tuple[slice, ...], np.ndarray]] = {}
+    try:
+        for z0, z1, labels, offset in components.components.replay(components._planes):
+            while following < len(order) and starts[order[following]] < z1:
+                number = int(order[following]) + 1
+                box = boxes[number - 1]
+                extent = tuple(s.stop - s.start for s in box)
+                if int(np.prod(extent, dtype=np.int64)) <= LOW_MEMORY_BLOCK_VOXELS:
+                    # Small enough for RAM: a temp file per component made a
+                    # noisy mask with thousands of specks crawl.
+                    component_mask = np.zeros(extent, dtype=bool)
+                else:
+                    component_mask = new_memmap_array(extent, bool, directory=memmap_directory)
+                open_masks[number] = (box, component_mask)
+                following += 1
+            numbers = components.numbers(labels, offset)
+            for number, (box, component_mask) in open_masks.items():
+                a, b = max(z0, box[0].start), min(z1, box[0].stop)
+                if a < b:
+                    component_mask[a - box[0].start:b - box[0].start] = (
+                        numbers[(slice(a - z0, b - z0),) + box[1:]] == number
+                    )
+            del numbers
+            for number in [n for n, (box, _m) in open_masks.items() if box[0].stop <= z1]:
+                box, component_mask = open_masks.pop(number)
+                _skeletonize_component_into(
+                    component_mask,
+                    result[box],
+                    tile_large_components=tile_large_components,
+                    tile_max_voxels=tile_max_voxels,
+                    tile_halo_voxels=tile_halo_voxels,
+                )
+                if isinstance(component_mask, np.memmap):
+                    release_memmap_array(component_mask)
+    finally:
+        for _box, component_mask in open_masks.values():
+            if isinstance(component_mask, np.memmap):
+                release_memmap_array(component_mask)
 
 
 def _draw_line_3d(array: np.ndarray, start: np.ndarray, end: np.ndarray) -> None:
@@ -1645,14 +1834,12 @@ def connect_skeleton_components(
     weights, reach = _bridge_metric(
         skeleton.ndim, voxel_size_zyx, z_distance_weight, max_bridge_distance
     )
-    with _labeled_components(
+    with _skeleton_voxels_by_component(
         skeleton, structure, use_memmap=use_memmap, memmap_directory=memmap_directory
-    ) as (labeled, n_components):
+    ) as (coords, labels, n_components):
         if n_components <= 1:
             return skeleton
 
-        coords = np.argwhere(labeled)
-        labels = np.asarray(labeled[tuple(coords.T)])
         tips = _TipGeometry.of(coords, weights)
         directions = tips.directions
         gate = None
@@ -1719,8 +1906,8 @@ def connect_skeleton_components(
             gate.refused("background"),
             gate.refused("duplicate"),
         )
-    # `labeled` is released above (or was never disk-backed) before the
-    # re-skeletonize step's own, potentially large, working buffers exist.
+    # The components' labels are gone (never a volume under the low-RAM
+    # option) before the re-skeletonize step's own working buffers exist.
     if bridged:
         bridged_copy = result
         result = skeletonize_by_component(
@@ -1868,6 +2055,29 @@ def _skeleton_component_lengths(
     return np.bincount(labels, weights=weights, minlength=n_components + 1)
 
 
+@contextmanager
+def _skeleton_voxels_by_component(
+    mask: np.ndarray,
+    structure: np.ndarray,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
+):
+    """Yield ``(coords, labels, n_components)``: ``np.argwhere`` of the
+    labelled *mask* and each of those voxels' component -- under the
+    low-RAM option from slabs (:class:`_SlabComponents`), with no label
+    volume."""
+    if _slab_components(mask, use_memmap):
+        components = _SlabComponents(np.asanyarray(mask, dtype=bool), structure, voxels=True)
+        yield components.coords, components.labels, components.count
+        return
+    with _labeled_components(
+        mask, structure, use_memmap=use_memmap, memmap_directory=memmap_directory
+    ) as (labeled, n_components):
+        coords = np.argwhere(labeled)
+        yield coords, np.asarray(labeled[tuple(coords.T)]), n_components
+
+
 def _surviving_components(
     labeled: np.ndarray,
     n_components: int,
@@ -1937,6 +2147,18 @@ def drop_small_components(
     above actually does on whichever skimage version is installed.
     """
     relative = _finest_axis_spacing(voxel_size_zyx, np.ndim(mask))
+    if not np.allclose(relative, 1.0) and _slab_components(mask, use_memmap):
+        mask = np.asanyarray(mask, dtype=bool)
+        components = _SlabComponents(mask, generate_binary_structure(mask.ndim, connectivity), voxels=True)
+        if components.count == 0:
+            return mask
+        survives = _surviving_components(
+            None, components.count, min_size, relative,
+            coords=components.coords, labels=components.labels,
+        )
+        if survives[1:].all():
+            return mask
+        return components.write(new_memmap_array(mask.shape, bool, directory=memmap_directory), survives)
     if not np.allclose(relative, 1.0):
         mask = np.asanyarray(mask, dtype=bool)
         structure = generate_binary_structure(mask.ndim, connectivity)
@@ -1961,6 +2183,11 @@ def drop_small_components(
     mask = np.asanyarray(mask, dtype=bool)
     footprint = generate_binary_structure(mask.ndim, connectivity)
     result = new_memmap_array(mask.shape, bool, directory=memmap_directory)
+    if mask.ndim == 3:
+        components = _SlabComponents(mask, footprint)
+        survives = np.zeros(components.count + 1, dtype=bool)
+        survives[1:] = _small_object_survival_by_size(components.sizes[1:], min_size)
+        return components.write(result, survives)
     with temporary_memmap_array(mask.shape, np.int32, directory=memmap_directory) as labeled:
         label(mask, footprint, output=labeled)
         component_sizes = bincount_by_slab(labeled)
@@ -1993,6 +2220,16 @@ def _drop_small_components_bridging_cannot_join(
     """
     skeleton = np.asanyarray(skeleton, dtype=bool)
     structure = generate_binary_structure(skeleton.ndim, connectivity)
+    if _slab_components(skeleton, use_memmap):
+        components = _SlabComponents(skeleton, structure, voxels=True)
+        drop = _components_bridging_cannot_join(
+            components.coords, components.labels, components.count,
+            min_size=min_size, weights=weights, reach=reach, min_facing_cosine=min_facing_cosine,
+            voxel_size_zyx=voxel_size_zyx,
+        )
+        if drop is None:
+            return skeleton
+        return components.write(new_memmap_array(skeleton.shape, bool, directory=memmap_directory), ~drop)
     with _labeled_components(
         skeleton, structure, use_memmap=use_memmap, memmap_directory=memmap_directory
     ) as (labeled, n_components):
@@ -2000,35 +2237,61 @@ def _drop_small_components_bridging_cannot_join(
             return skeleton
         coords = np.argwhere(labeled)
         labels = np.asarray(labeled[tuple(coords.T)])
-        drop = ~_surviving_components(
-            labeled, n_components, min_size, _finest_axis_spacing(voxel_size_zyx, skeleton.ndim),
-            coords=coords, labels=labels,
+        drop = _components_bridging_cannot_join(
+            coords, labels, n_components,
+            min_size=min_size, weights=weights, reach=reach, min_facing_cosine=min_facing_cosine,
+            voxel_size_zyx=voxel_size_zyx,
         )
-        drop[0] = False
-        if not drop.any():
+        if drop is None:
             return skeleton
-        small = drop[labels]
-        if reach > 0.0 and not small.all():
-            tips = _TipGeometry.of(coords, weights)
-            joined = [
-                labels[tip]
-                for _, tip, _end in _bridge_candidates(
-                    tips, labels, reach, min_facing_cosine, source=small, target=~small
-                )[0]
-            ] + [
-                labels[end]
-                for _, _tip, end in _bridge_candidates(
-                    tips, labels, reach, min_facing_cosine, source=~small, target=small
-                )[0]
-            ]
-            drop[np.asarray(joined, dtype=np.intp)] = False
-            if not drop.any():
-                return skeleton
         if use_memmap:
             result = new_memmap_array(skeleton.shape, bool, directory=memmap_directory)
             _combine_per_slice(result, lambda m, lb: m & ~drop[lb], skeleton, labeled)
             return result
         return skeleton & ~drop[labeled]
+
+
+def _components_bridging_cannot_join(
+    coords: np.ndarray,
+    labels: np.ndarray,
+    n_components: int,
+    *,
+    min_size: int,
+    weights: np.ndarray,
+    reach: float,
+    min_facing_cosine: float,
+    voxel_size_zyx,
+) -> np.ndarray | None:
+    """``drop[component]`` for :func:`_drop_small_components_bridging_cannot_join`
+    from the skeleton's voxels (*coords*, C order) and their components; None
+    when nothing goes."""
+    if n_components == 0:
+        return None
+    drop = ~_surviving_components(
+        None, n_components, min_size, _finest_axis_spacing(voxel_size_zyx, coords.shape[1]),
+        coords=coords, labels=labels,
+    )
+    drop[0] = False
+    if not drop.any():
+        return None
+    small = drop[labels]
+    if reach > 0.0 and not small.all():
+        tips = _TipGeometry.of(coords, weights)
+        joined = [
+            labels[tip]
+            for _, tip, _end in _bridge_candidates(
+                tips, labels, reach, min_facing_cosine, source=small, target=~small
+            )[0]
+        ] + [
+            labels[end]
+            for _, _tip, end in _bridge_candidates(
+                tips, labels, reach, min_facing_cosine, source=~small, target=small
+            )[0]
+        ]
+        drop[np.asarray(joined, dtype=np.intp)] = False
+        if not drop.any():
+            return None
+    return drop
 
 
 def preprocess_skeleton_for_graph(
@@ -2153,6 +2416,7 @@ def preprocess_skeleton_for_graph(
             voxel_size_zyx if voxel_size_zyx is not None else (1.0,) * skeleton_image.ndim,
             max_background_gap_um=bridge_max_background_gap_um,
             min_mask_fraction=bridge_min_mask_fraction,
+            low_memory=use_memmap,
         )
         if closing_radius > 0 or bridge_gap_size > 0:
             within = bridge_gaps(

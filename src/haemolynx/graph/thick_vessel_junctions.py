@@ -302,6 +302,32 @@ def thick_vessel_centreline(
     )
 
 
+def thick_vessel_centreline_voxels(
+    thick_mask: np.ndarray,
+    voxel_size_zyx: tuple[float, float, float],
+    *,
+    use_memmap: bool = False,
+) -> np.ndarray:
+    """:func:`thick_vessel_centreline` as its voxels, ``(n, 3)`` in C order
+    (``np.argwhere`` of it): all the split and :class:`ThickCentreline`
+    read, without a volume to draw the tree in. Skeletonisation hands over
+    the tree it drew in this form (``SkeletonisedVolume.thick_vessel_centreline``),
+    so a fresh run never draws it twice."""
+    from haemolynx.preprocessing.thick_vessels import edt_ridge_voxels
+
+    return edt_ridge_voxels(np.asarray(thick_mask, dtype=bool), tuple(voxel_size_zyx), use_memmap=use_memmap)
+
+
+def _centreline_voxels(centreline: np.ndarray, ndim: int) -> np.ndarray:
+    """The tree's voxels in C order, from either form a caller may hold: a
+    boolean volume of it, or its voxels already (an ``(n, ndim)`` integer
+    array, :func:`thick_vessel_centreline_voxels`)."""
+    centreline = np.asarray(centreline)
+    if centreline.ndim == 2 and centreline.shape[1] == ndim and np.issubdtype(centreline.dtype, np.integer):
+        return centreline
+    return np.argwhere(np.asarray(centreline, dtype=bool))
+
+
 #: How far round its points :func:`_inscribed_radius_um` looks for the wall (µm).
 _INSCRIBED_REACH_UM = 60.0
 
@@ -415,17 +441,18 @@ class ThickCentreline:
         centreline_tolerance_um: float = CENTRELINE_TOLERANCE_UM,
     ) -> "ThickCentreline | None":
         """The tree of *thick_mask* (or *centreline*, the tree already
-        found), with the tolerance :func:`insert_thick_vessel_junction_nodes`
-        judges it by. None when there is no tree."""
+        found: a volume of it or its voxels), with the tolerance
+        :func:`insert_thick_vessel_junction_nodes` judges it by. None when
+        there is no tree."""
         vs = np.asarray(voxel_size_zyx, dtype=float)
         thick = np.asarray(thick_mask, dtype=bool)
         if not thick.any():
             return None
         tree_voxels = (
-            thick_vessel_centreline(thick, tuple(vs)) if centreline is None
-            else np.asarray(centreline, dtype=bool)
+            thick_vessel_centreline_voxels(thick, tuple(vs)) if centreline is None
+            else _centreline_voxels(centreline, thick.ndim)
         )
-        points = np.argwhere(tree_voxels) * vs
+        points = tree_voxels * vs
         if len(points) == 0:
             return None
         if segmentation is not None and np.shape(segmentation) != thick.shape:
@@ -595,8 +622,9 @@ def insert_thick_vessel_junction_nodes(
     """*G* with a one-radius bridge where each vessel opens into a thick vessel.
 
     *thick_mask* is the thick-vessel region skeletonisation found;
-    *centreline* the tree it drew through it, found again from the region
-    when not given (:func:`thick_vessel_centreline`). *segmentation* gives
+    *centreline* the tree it drew through it (a volume of it, or its voxels:
+    :func:`thick_vessel_centreline_voxels`), found again from the region
+    when not given. *segmentation* gives
     the thick vessel's lumen, whose inscribed radius at the centreline is
     where a joining vessel enters it; without one the region stands in,
     which puts that wall about the region's margin further out.
@@ -673,8 +701,11 @@ def insert_thick_vessel_junction_nodes(
     result = G.copy()
     if not thick.any():
         return result
-    tree_voxels = thick_vessel_centreline(thick, voxel_size_zyx) if centreline is None else np.asarray(centreline, dtype=bool)
-    tree_points = np.argwhere(tree_voxels) * vs
+    tree_voxels = (
+        thick_vessel_centreline_voxels(thick, voxel_size_zyx) if centreline is None
+        else _centreline_voxels(centreline, thick.ndim)
+    )
+    tree_points = tree_voxels * vs
     if len(tree_points) == 0:
         logger.warning(
             "Thick-vessel bridges: the thick-vessel region has no centreline; no bridges made."
@@ -1235,7 +1266,7 @@ def _fill_tree_gaps(G, tree_voxels, vs, tree_points, tree_tolerance, tree_radius
     from .edit import insert_node_on_edge
 
     vs = np.asarray(vs, dtype=float)
-    tree_vox = np.argwhere(tree_voxels)
+    tree_vox = np.asarray(tree_voxels)  # the tree's voxels, C order
     if len(tree_vox) < 2:
         return 0
     reaching = None
@@ -1410,7 +1441,7 @@ def _extend_thick_centreline_ends(
     from .edit import insert_node_on_edge
 
     vs = np.asarray(vs, dtype=float)
-    tree_vox = np.argwhere(tree_voxels)
+    tree_vox = np.asarray(tree_voxels)  # the tree's voxels, C order
     if len(tree_vox) < 2:
         return 0
     tree = cKDTree(tree_points)

@@ -132,13 +132,18 @@ def mask_radius_sampler(
     mask: np.ndarray | None,
     voxel_size: tuple[float, float, float],
     radius_multiple: float,
+    *,
+    low_memory: bool = False,
 ) -> Callable[[np.ndarray], float] | None:
     """``radius(position_um)``: the mask's distance to background, in microns,
     at the voxel nearest a physical ``(z, y, x)`` position -- or ``None`` when
     there is no mask to read, or nothing will read it.
 
     Built on the mask's surface voxels rather than a whole-volume distance
-    transform, so it costs a KD-tree over the surface, not ~70 bytes a voxel.
+    transform, so it costs a KD-tree over the surface, not ~70 bytes a voxel;
+    *low_memory* (the low-RAM option) holds a few tiles' trees instead of
+    one over the whole surface, with the same radii
+    (``FeatureDistance(by_block=True)``).
     """
     if mask is None or radius_multiple <= 0:
         return None
@@ -150,7 +155,8 @@ def mask_radius_sampler(
     binary = np.asanyarray(mask, dtype=bool)
     # Remembering: the end-of-build clean-up reads the same voxels each round.
     distance = FeatureDistance(
-        binary, feature_value=False, sampling=voxel_size, remember=LUMEN_RADII_REMEMBERED
+        binary, feature_value=False, sampling=voxel_size, remember=LUMEN_RADII_REMEMBERED,
+        by_block=low_memory,
     )
     if not distance.has_surface:
         return None
@@ -638,7 +644,9 @@ def build_graph_from_skeleton(
     stub_radius_at = (
         stub_radius_at
         if stub_radius_at is not None
-        else mask_radius_sampler(segmentation_mask, voxel_size, min_stub_length_radius_multiple)
+        else mask_radius_sampler(
+            segmentation_mask, voxel_size, min_stub_length_radius_multiple, low_memory=use_memmap
+        )
     )
     given_support, mask_support = mask_support, None
     if segmentation_mask is not None and (
@@ -654,6 +662,7 @@ def build_graph_from_skeleton(
                 max_background_gap_um=bridge_max_background_gap_um,
                 min_mask_fraction=bridge_min_mask_fraction,
                 feature_distance=getattr(stub_radius_at, "feature_distance", None),
+                low_memory=use_memmap,
             )
     inside_lumen = mask_lumen_test(
         segmentation_mask, voxel_size,

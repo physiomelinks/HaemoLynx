@@ -265,6 +265,31 @@ def release_superseded(previous: np.ndarray, new: np.ndarray, *, keep: np.ndarra
         release_memmap_array(previous)
 
 
+def unpack_bits_by_slab(packed: np.ndarray, shape, *, directory=None) -> np.memmap:
+    """``np.unpackbits(packed)[:n].reshape(shape).astype(bool)`` (*packed*
+    from ``np.packbits`` of a volume of *shape*, big bit order) written into
+    a new disk-backed volume a slab of planes at a time: each slab's bits
+    unpacked from the bytes that hold them, cut where the slab starts and
+    stops within its first and last byte. Unpacked whole, the bits were a
+    byte a voxel and then a copy of that as booleans: two volumes in RAM."""
+    shape = tuple(int(s) for s in shape)
+    out = new_memmap_array(shape, bool, directory=directory)
+    plane = int(np.prod(shape[1:], dtype=np.int64)) if len(shape) > 1 else 1
+    step = slab_step(shape)
+    try:
+        for z0 in range(0, shape[0], step):
+            z1 = min(z0 + step, shape[0])
+            first, last = z0 * plane, z1 * plane
+            byte0 = first // 8
+            bits = np.unpackbits(np.asarray(packed[byte0:(last + 7) // 8]))
+            offset = first - 8 * byte0
+            out[z0:z1] = bits[offset:offset + last - first].reshape((z1 - z0,) + shape[1:]).astype(bool)
+    except BaseException:
+        release_memmap_array(out)
+        raise
+    return out
+
+
 def argwhere_by_slab(
     volume: np.ndarray,
     predicate: Callable[[np.ndarray], np.ndarray] | None = None,
