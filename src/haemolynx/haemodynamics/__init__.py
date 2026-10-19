@@ -81,7 +81,9 @@ from .capillary_block import (
     compare_block_to_baseline,
     replicate_seeds,
     resolve_blocked_vessels,
+    stopped_vessels,
     summarise_block_replicates,
+    zero_stopped_vessel_flows,
 )
 from .perturbations import (
     INCOMPARABLE_OVERRIDES,
@@ -166,7 +168,9 @@ __all__ = [
     "compare_block_to_baseline",
     "replicate_seeds",
     "resolve_blocked_vessels",
+    "stopped_vessels",
     "summarise_block_replicates",
+    "zero_stopped_vessel_flows",
     "SweepFlowGrid",
     "build_sweep_flow_grid",
     "record_flows_after_solve",

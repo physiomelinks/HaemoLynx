@@ -189,6 +189,43 @@ def test_haemodynamics_per_class_read_only_the_vessels_carrying_flow():
     assert capillaries["Mean Pressure (Pa)"] == pytest.approx(100.0 - 2.5)
 
 
+def test_a_vessel_whose_flow_is_exactly_zero_is_not_carrying_flow():
+    """A capillary block's stopped vessels -- the blocked ones and those fed
+    only through one -- have their leak set to exactly 0 on the perturbation's
+    network while their state stays solved, and the drop across a block is
+    real: counted as vessels, left out of the carrying count, the velocities
+    and the shear, as vessels behind dead ends are."""
+    from haemolynx.statistics.vessel_classes import carries_flow
+
+    assert carries_flow({"flow_abs": 0.0, "flow_state": "solved"}) is False
+    assert carries_flow({"flow_abs": 0.0}) is False
+    assert carries_flow({"flow_abs": 1e-30, "flow_state": "solved"}) is True
+
+    stopped = (2, 3, "B03", 10.0, 4.0, 50.0, 0.0)
+    G = _graph(VESSELS + (stopped,))
+    capillaries = _classes(G)["Capillaries"]
+
+    assert capillaries["Vessel Count"] == 3
+    assert capillaries["Vessels Carrying Flow"] == 2
+    velocities = [1e-15 / (math.pi * 2e-6**2) * 1e3, 3e-15 / (math.pi * 3e-6**2) * 1e3]
+    assert capillaries["Mean Velocity (mm/s)"] == pytest.approx(np.mean(velocities))
+    shear = [5.0 * 4.0 / 40.0, 5.0 * 6.0 / 56.0]  # not the block's 50 Pa
+    assert capillaries["Mean Wall Shear Stress (Pa)"] == pytest.approx(np.mean(shear))
+    assert capillaries["Mean Pressure (Pa)"] == pytest.approx(100.0 - 2.5)
+
+    # Every vessel stopped: the flow was solved, nothing carries any, and the
+    # section says so class by class rather than calling the flow unsolved.
+    G = _graph()
+    for _u, _v, data in G.edges(data=True):
+        data["flow_abs"] = 0.0
+    rows = _classes(G)
+
+    assert "Vessel Class Haemodynamics" not in rows
+    for title in HIERARCHICAL_TITLES:
+        assert rows[title]["Vessels Carrying Flow"] == 0
+        assert rows[title]["Mean Velocity (mm/s)"].startswith("N/A")
+
+
 def test_pressure_falls_from_the_arterial_to_the_venous_classes():
     G = _graph()
     # Each vessel's own pressures, falling along the path.

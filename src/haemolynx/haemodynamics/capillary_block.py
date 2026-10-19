@@ -18,11 +18,17 @@ Which vessels are blocked is chosen one of two ways:
   hover tooltip shows (the vessel's position in the graph's edge order), or
   as ``[u, v, key]``.
 
-After the perturbed network is re-solved, :func:`compare_block_to_baseline`
-sets its flows against the baseline's: total flow and equivalent resistance,
-how many vessels (and how much length) lost most of their flow, how many
-reversed, how much each outlet still drains, the transit-time distribution,
-and all of it per branch order.
+After the perturbed network is re-solved, its *stopped* vessels -- the
+blocked ones and, once those are taken out, every vessel no inlet-to-outlet
+path runs along, which is fed only through a block (:func:`stopped_vessels`)
+-- have their flow set to exactly 0 (:func:`zero_stopped_vessel_flows`). What
+the solve left there is the block's leak, a millionth of the vessel's flow at
+the default factor, far above the floor the statistics count a vessel as
+carrying flow by; the pressures stay, since the drop across a block is real.
+Then :func:`compare_block_to_baseline` sets its flows against the baseline's:
+total flow and equivalent resistance, how many vessels (and how much length)
+lost most of their flow, how many reversed, how much each outlet still drains,
+the transit-time distribution, and all of it per branch order.
 
 One random draw is one outcome: which vessels a 10% block happens to hit can
 matter as much as the 10%. ``capillary_block_replicates`` draws the block that
@@ -48,7 +54,9 @@ __all__ = [
     "compare_block_to_baseline",
     "replicate_seeds",
     "resolve_blocked_vessels",
+    "stopped_vessels",
     "summarise_block_replicates",
+    "zero_stopped_vessel_flows",
 ]
 
 #: The two ways of choosing what to block.
@@ -300,13 +308,15 @@ FLUX_HETEROGENEITY_SUMMARY_ROWS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _stopped_vessels(
+def stopped_vessels(
     G: nx.MultiGraph, inlets: Sequence[Any], outlets: Sequence[Any]
 ) -> list[tuple[Any, Any, Any, dict]]:
-    """The vessels of a blocked network that carry no perfusion: the blocked
-    ones and, given inlets and outlets, every vessel no inlet-to-outlet path
-    runs along once those are taken out -- fed only through a block, it
-    carries the block's leak and nothing else."""
+    """The vessels of a blocked network that carry no perfusion, as
+    ``(u, v, key, data)`` in graph edge order: the blocked ones and, given
+    inlets and outlets, every vessel no inlet-to-outlet path runs along once
+    those are taken out -- fed only through a block, it carries the block's
+    leak and nothing else. Read from :data:`BLOCK_EDGE_ATTRIBUTE` and the
+    network's shape, never from the flows."""
     from haemolynx.graph.connectivity import inlet_to_outlet_vessels
 
     edges = list(G.edges(keys=True, data=True))
@@ -319,6 +329,38 @@ def _stopped_vessels(
         for u, v, k, d in edges
         if (u, v, k) in blocked or (perfused is not None and (u, v, k) not in perfused)
     ]
+
+
+def zero_stopped_vessel_flows(
+    G: nx.MultiGraph, inlets: Sequence[Any], outlets: Sequence[Any]
+) -> list[tuple[Any, Any, Any]]:
+    """Set ``flow_abs`` and ``flow_signed`` to exactly 0.0 (``flow_abs_log10``
+    to match) on every stopped vessel of the solved, blocked network *G*
+    (:func:`stopped_vessels`), and return those vessels as ``(u, v, key)``.
+
+    What the solve left on them is the block's leak: at the default factor a
+    millionth of the vessel's flow, far above the floor the statistics count
+    a vessel as carrying flow by (a billionth of the network's largest), so
+    left in, a blocked vessel and every vessel fed only through it would
+    count as carrying flow, with a transit time near infinity. The pressures
+    stay as solved: ``pressure_drop`` across a block is real (nearly the whole
+    drop between the two routes it joins), and ``pressure_u`` /
+    ``pressure_v`` are the solve's. Only the attributes a solve wrote are
+    touched, so a vessel never solved is left alone; every write rebinds a
+    whole attribute, as a perturbation's shallow graph copy requires.
+    """
+    from haemolynx.haemodynamics.resistance import flow_abs_log10_value
+
+    zero = {"flow_signed": 0.0, "flow_abs": 0.0, "flow_abs_log10": flow_abs_log10_value(0.0)}
+    stopped = []
+    for u, v, key, data in stopped_vessels(G, inlets, outlets):
+        stopped.append((u, v, key))
+        if "flow_signed" not in data:
+            continue
+        for name, value in zero.items():
+            if name in data:
+                data[name] = value
+    return stopped
 
 
 def _outlet_flows(G: nx.MultiGraph, outlets: Iterable[Any]) -> dict:
@@ -425,6 +467,7 @@ def compare_block_to_baseline(
 
     q_before_total = total_inflow(baseline)
     q_after_total = total_inflow(blocked)
+    stopped = stopped_vessels(blocked, inlets, outlets)
     summary: dict[str, Any] = {
         "total_inflow_baseline": q_before_total,
         "total_inflow_blocked": q_after_total,
@@ -439,6 +482,11 @@ def compare_block_to_baseline(
                 for _u, _v, _k, d in blocked.edges(keys=True, data=True)
                 if d.get(BLOCK_EDGE_ATTRIBUTE) == "blocked"
             )
+        ),
+        # The blocked vessels and every vessel fed only through one.
+        "stopped_vessels": len(stopped),
+        "stopped_vessel_length_um": float(
+            sum(float(d.get("length", 0.0) or 0.0) for _u, _v, _k, d in stopped)
         ),
         "hypoperfusion_threshold_fraction": float(hypoperfusion_fraction),
         "hypoperfused_vessels": hypoperfused,
@@ -462,9 +510,10 @@ def compare_block_to_baseline(
             # A blocked vessel's residual leak flow is not perfusion, nor is
             # the leak through the vessels only a blocked one feeds: left in,
             # their near-infinite transit times swamp the mean and SD, and
-            # they would count as carrying flow.
-            for _u, _v, _k, d in _stopped_vessels(G, inlets, outlets):
-                d["flow_abs"] = 0.0
+            # they would count as carrying flow. A blocked network the
+            # pipeline solved carries these zeros already; one solved by
+            # hand does not, and this keeps the comparison right for it.
+            zero_stopped_vessel_flows(G, inlets, outlets)
         times = compute_transit_times(G, inlets, outlets)
         for key, name in (
             ("Mean Transit Time (s)", "mean_transit_time_s"),

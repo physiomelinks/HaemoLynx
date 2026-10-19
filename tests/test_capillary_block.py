@@ -18,12 +18,15 @@ from haemolynx.haemodynamics import (
     compare_block_to_baseline,
     resolve_blocked_vessels,
     settings_for_perturbation_type,
+    stopped_vessels,
+    zero_stopped_vessel_flows,
 )
 from haemolynx.haemodynamics.capillary_block import (
     BLOCK_EDGE_ATTRIBUTE,
     FLOW_CHANGE_EDGE_ATTRIBUTE,
 )
 from haemolynx.haemodynamics.poiseuille import set_edge_resistance
+from haemolynx.haemodynamics.resistance import flow_abs_log10_value
 from haemolynx.pipeline import BoundaryNodes, HaemodynamicModel, default_schema, run_perturbations
 from haemolynx.pipeline.stages import _solve_network
 
@@ -292,8 +295,6 @@ def test_a_vessel_fed_only_through_a_block_counts_as_stopped_in_the_comparison()
     """Its leak flow is above the carrying floor (a millionth of its baseline
     flow, against a billionth of the largest), so only the rule that it lies
     on no inlet-to-outlet path once the block is taken out stops it."""
-    from haemolynx.haemodynamics.capillary_block import _stopped_vessels
-
     baseline = _two_routes()
     _solve(baseline, [0], [5])
     blocked = baseline.copy()
@@ -303,10 +304,60 @@ def test_a_vessel_fed_only_through_a_block_counts_as_stopped_in_the_comparison()
     assert 0 < leak < 1e-3 * baseline[2][3][0]["flow_abs"]
     assert leak > 1e-9 * blocked[0][1][0]["flow_abs"]
 
-    stopped = {(u, v, k) for u, v, k, _d in _stopped_vessels(blocked, [0], [5])}
+    stopped = {(u, v, k) for u, v, k, _d in stopped_vessels(blocked, [0], [5])}
     assert stopped == {(1, 2, 0), (2, 3, 0)}
     # Without inlets and outlets only the blocked vessel itself is stopped.
-    assert {(u, v, k) for u, v, k, _d in _stopped_vessels(blocked, [], [])} == {(1, 2, 0)}
+    assert {(u, v, k) for u, v, k, _d in stopped_vessels(blocked, [], [])} == {(1, 2, 0)}
+
+    summary, _ = compare_block_to_baseline(baseline, blocked, inlet_nodes=[0], outlet_nodes=[5])
+
+    # The comparison counts them: one blocked vessel, two stopped.
+    assert summary["blocked_vessel_length_um"] == pytest.approx(10.0)
+    assert summary["stopped_vessels"] == 2
+    assert summary["stopped_vessel_length_um"] == pytest.approx(20.0)
+
+
+def test_zeroing_the_stopped_vessels_keeps_every_pressure():
+    baseline = _two_routes()
+    _solve(baseline, [0], [5])
+    blocked = baseline.copy()
+    block_vessels(blocked, [(1, 2, 0)], 1e6)
+    _solve(blocked, [0], [5])
+    before = {(u, v, k): dict(d) for u, v, k, d in blocked.edges(keys=True, data=True)}
+    assert all(d["flow_abs"] > 0 for d in before.values())
+
+    stopped = zero_stopped_vessel_flows(blocked, [0], [5])
+
+    assert stopped == [(1, 2, 0), (2, 3, 0)]
+    for edge in stopped:
+        data = blocked.edges[edge]
+        assert data["flow_abs"] == 0.0 and data["flow_signed"] == 0.0
+        assert data["flow_abs_log10"] == flow_abs_log10_value(0.0)
+        # The pressures are the solve's, untouched.
+        for name in ("pressure_drop", "pressure_u", "pressure_v"):
+            assert data[name] == before[edge][name]
+    # The block takes (nearly) the whole 50 Pa between the two routes' ends;
+    # the vessel beyond it has the leak's drop, tiny but real.
+    assert blocked[1][2][0]["pressure_drop"] == pytest.approx(50.0, abs=1e-3)
+    assert 0 < blocked[2][3][0]["pressure_drop"] < 1e-3
+    # Every other vessel is exactly as the solve left it.
+    for edge, was in before.items():
+        if edge not in stopped:
+            assert blocked.edges[edge] == was
+    # Without inlets and outlets only the blocked vessel itself is zeroed.
+    again = baseline.copy()
+    block_vessels(again, [(1, 2, 0)], 1e6)
+    _solve(again, [0], [5])
+    assert zero_stopped_vessel_flows(again, [], []) == [(1, 2, 0)]
+    assert again[2][3][0]["flow_abs"] > 0
+
+
+def test_a_vessel_never_solved_is_left_alone_by_the_zeroing():
+    G = _two_routes()
+    block_vessels(G, [(1, 2, 0)], 1e6)
+
+    assert zero_stopped_vessel_flows(G, [0], [5]) == [(1, 2, 0), (2, 3, 0)]
+    assert all("flow_abs" not in d for *_e, d in G.edges(keys=True, data=True))
 
 
 # --- the perturbation, end to end ---------------------------------------------------------
@@ -349,6 +400,11 @@ def _boundaries():
 def _read(path: Path) -> list[dict]:
     with path.open(encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def _statistics(path: Path) -> dict[tuple[str, str], str]:
+    """A statistics CSV as ``{(section, metric): value}``."""
+    return {(row["Section"], row["Metric"]): row["Value"] for row in _read(path)}
 
 
 def test_capillary_block_is_a_perturbation_type_with_its_own_options():
@@ -395,6 +451,76 @@ def test_the_perturbation_blocks_listed_vessels_and_writes_the_comparison(tmp_pa
     assert math.isfinite(result.graph[1][4][0][FLOW_CHANGE_EDGE_ATTRIBUTE])
     assert {(u, v, k): d["resistance"] for u, v, k, d in model.graph.edges(keys=True, data=True)} == before
     assert all(BLOCK_EDGE_ATTRIBUTE not in d for *_e, d in model.graph.edges(keys=True, data=True))
+
+
+def test_the_perturbations_own_network_carries_no_flow_on_its_stopped_vessels(tmp_path):
+    """Regression: the perturbation's network kept the solve's leak flows (a
+    millionth of the vessel's at the default factor, above the carrying
+    floor), so its own statistics CSV counted the blocked vessel and the one
+    fed only through it as carrying flow, while the comparison -- zeroing
+    them on its copies -- did not. Now the network itself carries the zeros,
+    and everything read from it agrees with the comparison."""
+    entry = {
+        "name": "stall",
+        "type": "capillary_block",
+        "overrides": {"capillary_block_selection": "vessel_ids", "capillary_block_vessel_ids": [1]},
+    }
+
+    run = run_perturbations(
+        _settings(tmp_path, [entry], statistics=True, inlet_nodes=[0], outlet_nodes=[5]),
+        _model(),
+        _boundaries(),
+        SCHEMA,
+    )
+
+    result = run.results[0]
+    assert result.error is None, result.error
+    G = result.graph
+    blocked, starved, open_twin = G[1][2][0], G[2][3][0], G[1][4][0]
+    for data in (blocked, starved):
+        assert data["flow_abs"] == 0.0 and data["flow_signed"] == 0.0
+        assert data["flow_abs_log10"] == flow_abs_log10_value(0.0)
+        assert data[FLOW_CHANGE_EDGE_ATTRIBUTE] == 0.0
+    # The pressures stay: the block takes (nearly) the whole 50 Pa between
+    # the two routes' ends, and the starved vessel has the leak's drop.
+    assert blocked["pressure_drop"] == pytest.approx(50.0, abs=1e-3)
+    assert 0 < starved["pressure_drop"] < 1e-3
+    assert open_twin["flow_abs"] == pytest.approx(25.0, abs=1e-3)
+    assert open_twin[FLOW_CHANGE_EDGE_ATTRIBUTE] == pytest.approx(1.5, abs=1e-5)
+
+    # The edges CSV and the blocked-vessels CSV write the zeros, with the drops.
+    edges = {(row["u"], row["v"]): row for row in _read(result.output_dir / "stall_edges.csv")}
+    assert float(edges[("1", "2")]["flow_signed"]) == 0.0
+    assert float(edges[("2", "3")]["flow_signed"]) == 0.0
+    assert float(edges[("1", "2")]["pressure_drop"]) == pytest.approx(50.0, abs=1e-3)
+    (vessel,) = _read(result.output_dir / "stall_blocked_vessels.csv")
+    assert float(vessel["blocked_flow_abs"]) == 0.0
+    assert float(vessel["baseline_flow_abs"]) > 0
+
+    # The perturbation's own statistics count four vessels (two capillaries)
+    # carrying flow, as the comparison does; so do the vessel classes and
+    # the spacing between flowing vessels; its transit time is the
+    # comparison's blocked one.
+    stats = _statistics(result.output_dir / "stall_statistics.csv")
+    comparison = result.summary["comparison"]
+    assert comparison["stopped_vessels"] == 2
+    assert comparison["stopped_vessel_length_um"] == pytest.approx(20.0)
+    assert comparison["vessels_carrying_flow_blocked"] == 4
+    assert comparison["capillaries_carrying_flow_blocked"] == 2
+    assert stats[("Core Statistics", "Vessels Carrying Flow")] == "4"
+    assert stats[("Core Statistics", "Capillaries Carrying Flow")] == "2"
+    assert stats[("Core Statistics", "Flowing Capillary Length")] == "20"
+    assert stats[("Vessel Classes > Capillaries", "Vessels Carrying Flow")] == "2"
+    assert stats[("Vessel Classes > Capillaries", "Vessel Count")] == "4"
+    assert stats[("Core Statistics", "Intercapillary Distance Between Flowing Vessels Sample Count")] == "4"
+    assert float(stats[("Core Statistics", "Mean Transit Time")]) == pytest.approx(
+        comparison["mean_transit_time_s_blocked"], rel=1e-5
+    )
+    assert float(stats[("Core Statistics", "Capillary Flow CV")]) == pytest.approx(
+        comparison["capillary_flow_cv_blocked"], abs=1e-9
+    )
+    # The baseline the run goes on to export still has every flow it had.
+    assert all("flow_abs" not in d for *_e, d in _model().graph.edges(keys=True, data=True))
 
 
 def test_the_perturbation_blocks_a_fraction_of_a_branch_order(tmp_path):
@@ -497,6 +623,43 @@ def test_replicates_report_the_spread_over_several_draws_of_a_block(tmp_path):
         np.percentile(changes, 2.5)
     )
     assert result.summary["comparison"]["draws"] == 4
+
+
+def test_every_draw_reaches_the_comparison_with_its_stopped_vessels_at_zero(tmp_path, monkeypatch):
+    """The first draw's network and each replicate's are zeroed the same way
+    before they are compared with the baseline."""
+    import haemolynx.haemodynamics as haemodynamics_package
+
+    original = haemodynamics_package.compare_block_to_baseline
+    seen: list[tuple[int, int]] = []
+
+    def recording(baseline, blocked, **kwargs):
+        stopped = stopped_vessels(blocked, kwargs["inlet_nodes"], kwargs["outlet_nodes"])
+        at_zero = sum(1 for *_e, d in stopped if d["flow_abs"] == 0.0 and d["flow_signed"] == 0.0)
+        seen.append((len(stopped), at_zero))
+        assert all(d["pressure_drop"] != 0.0 for *_e, d in stopped)
+        return original(baseline, blocked, **kwargs)
+
+    monkeypatch.setattr(haemodynamics_package, "compare_block_to_baseline", recording)
+    entry = {
+        "name": "tenth",
+        "type": "capillary_block",
+        "overrides": {
+            "capillary_block_branch_orders": "BO2",
+            "capillary_block_probability": 0.5,
+            "capillary_block_replicates": 3,
+        },
+    }
+
+    run = run_perturbations(
+        _settings(tmp_path, [entry], capillary_block_seed=11), _model(), _boundaries(), SCHEMA
+    )
+
+    assert run.results[0].error is None, run.results[0].error
+    # The first draw, then two replicates; two of the four capillaries are
+    # blocked each time, so at least the two of them are stopped.
+    assert len(seen) == 3
+    assert all(stopped >= 2 and at_zero == stopped for stopped, at_zero in seen)
 
 
 def test_one_draw_writes_no_replicates(tmp_path):

@@ -1123,12 +1123,20 @@ are only caught locally.
   velocity, for the capillaries and for every vessel, and the flowing share of the network by
   count, length and volume (a cylinder per vessel), with rows by vessel type; it writes
   `vessel_velocity_um_s` on each carrying vessel. `compare_block_to_baseline` reports the same
-  rows `_baseline` / `_blocked` on copies, the blocked network's *stopped* vessels (the blocked
-  ones and, through `inlet_to_outlet_vessels`, every vessel fed only through one, whose leak is
-  above the floor) set to flow 0 first, as it already did for the transit times. The
-  perturbation's own graph keeps the solve's leak flows, so its statistics CSV still counts
-  blocked vessels as carrying. `compute_intercapillary_distance` adds the same spacing over
-  the carrying vessels alone (`... Between Flowing Vessels`) and the ratio of the two medians.
+  rows `_baseline` / `_blocked`, and counts the blocked network's *stopped* vessels
+  (`stopped_vessels`, `stopped_vessel_length_um`): the blocked ones and, through
+  `inlet_to_outlet_vessels`, every vessel fed only through one
+  (`capillary_block.stopped_vessels`), whose leak -- a millionth of its flow at the default
+  factor -- is above the floor. After a capillary block's re-solve, the first draw's and every
+  replicate's, the stage sets `flow_abs`, `flow_signed` and `flow_abs_log10` to exactly 0 on
+  the perturbation graph's stopped vessels (`capillary_block.zero_stopped_vessel_flows`,
+  2026-10-19; the pressures stay, since the drop across a block is real), so the perturbation's
+  own statistics CSV, its edges CSV, its vessels layer and `flow_change_vs_baseline` (0 on a
+  stopped vessel) agree with the comparison -- which zeroes the same on its copies, for a blocked
+  network solved by hand. `vessel_classes.carries_flow` reads a flow of exactly 0 as none, so the
+  Vessel Classes section's "Vessels Carrying Flow" agrees too. `compute_intercapillary_distance`
+  adds the same spacing over the carrying vessels alone (`... Between Flowing Vessels`) and the
+  ratio of the two medians.
 - **Vascular communities** (`graph/communities.py`) — the `compute_vascular_communities` toggle,
   independent of Statistics; when Statistics also runs, the two share one partition
   (`pipeline/stages.py`'s `shared_vascular_community_partition`) instead of computing it twice.

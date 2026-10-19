@@ -110,10 +110,14 @@ def _per_volume(amount: float, volume: Optional[float]) -> Union[float, str]:
 def carries_flow(data: dict) -> bool:
     """Whether a vessel's solved flow is a flow through it: on a path between
     an inlet and an outlet (``flow_state`` "solved"; a graph solved before
-    flow states, ``flow_solved`` not False) with a flow written. Vessels
-    behind dead ends carry exactly none, and would only pull a class's
-    velocities towards 0."""
-    if _number(data.get("flow_abs")) is None:
+    flow states, ``flow_solved`` not False) with a flow written that is not
+    exactly 0. Vessels behind dead ends carry exactly none, and so do a
+    capillary block's stopped vessels -- the blocked ones and those fed only
+    through one, whose leak the perturbation sets to exactly 0 while their
+    state stays solved; either would only pull a class's velocities towards
+    0."""
+    flow = _number(data.get("flow_abs"))
+    if flow is None or flow == 0.0:
         return False
     state = data.get(FLOW_STATE)
     if state is not None:
@@ -265,6 +269,8 @@ def _read_vessel(u: Any, v: Any, data: dict, node_positions: Optional[dict]) -> 
         "length": length,
         "tortuosity": tortuosity,
         "diameter": diameter if diameter is not None and diameter > 0 else None,
+        # A flow was solved for it, whether or not it carries one.
+        "solved": _number(data.get("flow_abs")) is not None,
         "flow_abs": _number(data.get("flow_abs")) if flowing else None,
         "pressure_drop": _number(data.get("pressure_drop")) if flowing else None,
         "pressure": (
@@ -319,7 +325,10 @@ def compute_vessel_class_statistics(
         if image_dimensions is not None and voxel_size is not None
         else None
     )
-    flow_solved = any(vessel["flow_abs"] is not None for vessel in vessels)
+    # Solved, not carrying: a network where nothing carries flow (every
+    # vessel stopped by a capillary block) still has its haemodynamic rows,
+    # each class counting 0 vessels carrying flow.
+    flow_solved = any(vessel["solved"] for vessel in vessels)
     network_length = float(sum(vessel["length"] for vessel in vessels))
 
     rows: Dict[str, Any] = {

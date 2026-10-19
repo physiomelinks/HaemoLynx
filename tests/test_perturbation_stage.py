@@ -1682,3 +1682,64 @@ def test_a_sweep_solves_and_reports_the_inlet_pressure_it_was_given(tmp_path, en
     rows = _sweep_rows(result)
     assert rows
     assert {float(row["inlet_pressure_pa"]) for row in rows} == {4500.5}
+
+
+# --- a capillary block's stopped vessels ----------------------------------------------
+
+
+def _statistics(path: Path) -> dict[tuple[str, str], str]:
+    """A statistics CSV as ``{(section, metric): value}``."""
+    with path.open(encoding="utf-8") as handle:
+        return {(row["Section"], row["Metric"]): row["Value"] for row in csv.DictReader(handle)}
+
+
+def test_a_capillary_block_leaves_exactly_no_flow_on_its_stopped_vessels(tmp_path):
+    """The chain has one route, so blocking one of its capillaries stops every
+    vessel: each carries the block's leak and nothing else, which the
+    perturbation's own network holds as exactly 0 -- its statistics then say
+    no vessel carries flow -- while the pressures are the solve's."""
+    run = _run(tmp_path, [CAPILLARY_BLOCK], inlet_nodes=[0], outlet_nodes=[len(BRANCH_ORDERS)])
+
+    result = run.results[0]
+    assert result.error is None, result.error
+    G = result.graph
+    blocked = [
+        (u, v, k) for u, v, k, d in G.edges(keys=True, data=True) if d["capillary_block"] == "blocked"
+    ]
+    assert len(blocked) == 1
+    for *_edge, data in G.edges(keys=True, data=True):
+        assert data["flow_abs"] == 0.0 and data["flow_signed"] == 0.0
+        assert data["flow_change_vs_baseline"] == 0.0
+        assert data["pressure_drop"] != 0.0
+    # The block takes (nearly) the whole drop from inlet to outlet.
+    settings = _settings(tmp_path, [CAPILLARY_BLOCK])
+    whole_drop = float(settings["inlet_p_bc"]) - float(settings["outlet_p_bc"])
+    assert abs(G.edges[blocked[0]]["pressure_drop"]) == pytest.approx(whole_drop, rel=1e-4)
+    assert result.summary["comparison"]["stopped_vessels"] == len(BRANCH_ORDERS)
+    stats = _statistics(result.output_dir / f"{CAPILLARY_BLOCK['name']}_statistics.csv")
+    assert stats[("Core Statistics", "Flux Heterogeneity Status")] == "N/A (no vessel carries flow)"
+    assert stats[("Vessel Classes > Capillaries", "Vessels Carrying Flow")] == "0"
+    assert stats[("Vessel Classes > Capillaries", "Vessel Count")] == "2"
+    # The baseline is untouched: no block, no zero.
+    assert all("capillary_block" not in d for *_e, d in _model().graph.edges(keys=True, data=True))
+
+
+def test_a_capillary_block_that_blocks_nothing_stops_nothing(tmp_path):
+    entry = {
+        **CAPILLARY_BLOCK,
+        "name": "nothing_blocked",
+        "overrides": {**CAPILLARY_BLOCK["overrides"], "capillary_block_probability": 0.0},
+    }
+
+    run = _run(tmp_path, [entry], inlet_nodes=[0], outlet_nodes=[len(BRANCH_ORDERS)])
+
+    result = run.results[0]
+    assert result.error is None, result.error
+    assert result.summary["blocked_vessels"] == 0
+    assert result.summary["comparison"]["stopped_vessels"] == 0
+    for *_edge, data in result.graph.edges(keys=True, data=True):
+        assert data["capillary_block"] == "open"
+        assert data["flow_abs"] > 0
+        assert data["flow_change_vs_baseline"] == pytest.approx(1.0)
+    stats = _statistics(result.output_dir / f"{entry['name']}_statistics.csv")
+    assert stats[("Core Statistics", "Vessels Carrying Flow")] == str(len(BRANCH_ORDERS))

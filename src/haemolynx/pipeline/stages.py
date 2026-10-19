@@ -5052,7 +5052,9 @@ def _perturbation_copy(G: nx.MultiGraph) -> nx.MultiGraph:
     * `poiseuille.set_edge_resistance` -- `resistance`, `conductance`
     * `resistance.set_edge_flows` -- `pressure` on nodes; `pressure_u`,
       `pressure_v`, `pressure_drop`, `flow_signed`, `flow_abs` on edges (and
-      `graph.zero_flows_behind_dead_ends` rebinds the last three to 0.0)
+      `graph.zero_flows_behind_dead_ends` rebinds the last three to 0.0, as
+      `capillary_block.zero_stopped_vessel_flows` does the flows of a
+      capillary block's stopped vessels)
     * `arteriole.scale_arteriole_diameters`,
       `capillary.scale_capillary_diameters` and
       `pericyte_sweep.dilate_graph_diameters` -- `fwhm_diameter_um`
@@ -5406,6 +5408,9 @@ def _capillary_block_replicates(
         G = _perturbation_copy(model_graph)
         blocked_edges, _summary, recompute = _block_capillaries(G, settings, schema, seed=seed)
         _solve_network(G, settings, boundaries, recompute_resistances=recompute)
+        haemodynamics.zero_stopped_vessel_flows(
+            G, list(boundaries.inlet_nodes), list(boundaries.outlet_nodes)
+        )
         comparison, _by_order = haemodynamics.compare_block_to_baseline(
             baseline_graph,
             G,
@@ -5809,6 +5814,20 @@ def _perturb_one(
         solved = _solve_network(
             G, perturbed, boundaries, recompute_resistances=recompute_resistances
         )
+        if spec.type == "capillary_block":
+            # The blocked vessels, and every vessel fed only through one,
+            # carry the block's leak and nothing else: exactly 0 on this
+            # network, so its statistics, its vessels layer and its
+            # comparison with the baseline all read the same flows. The
+            # pressures stay: the drop across a block is real.
+            stopped = haemodynamics.zero_stopped_vessel_flows(
+                G, list(boundaries.inlet_nodes), list(boundaries.outlet_nodes)
+            )
+            logger.info(
+                f"Perturbation '{spec.name}': {len(stopped)} vessel(s) carry no flow -- the "
+                f"{summary.get('blocked_vessels', 0)} blocked, and those fed only through a "
+                "block; the leak the solve left on them is set to 0."
+            )
         summary.update(
             {
                 "equivalent_resistance": float(solved["equivalent_resistance"]),
