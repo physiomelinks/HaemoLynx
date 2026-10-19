@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Local guardrail (CI only runs on PRs to origin). Enable once per clone:
-#   git config core.hooksPath scripts/git-hooks
+#   git config core.hooksPath "$PWD/scripts/git-hooks"   (run from the repo root)
 # 0. If core.hooksPath names another checkout's scripts/git-hooks (Claude Code's worktree
 #    setup makes it absolute), re-exec the committing checkout's own pre-commit first.
 # 1. Pyflakes lint on staged Python files: undefined names and redefinitions,
@@ -16,7 +16,7 @@
 set -euo pipefail
 self=$(realpath "$0")
 cd "$(git rev-parse --show-toplevel)"
-# Claude Code's worktree setup can make core.hooksPath absolute, so git runs the main
+# core.hooksPath is absolute (Claude Code's worktree setup leaves an absolute path alone), so git runs the main
 # checkout's copy from every worktree. Run the committing checkout's own copy instead, so a
 # branch's pre-commit and _stamp.sh are always checked together.
 own="$PWD/scripts/git-hooks/pre-commit"
