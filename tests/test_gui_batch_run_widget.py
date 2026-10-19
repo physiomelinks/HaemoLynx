@@ -110,6 +110,21 @@ def test_the_window_matches_the_folders_and_hands_the_batch_over(panel, tmp_path
     assert window.native.isHidden()
 
 
+def test_the_window_takes_the_stylesheet_napari_gives_the_panel(panel):
+    # napari sets its theme's stylesheet on its main window, the panel's
+    # ancestor; a parentless window never got it and came up light.
+    panel.setStyleSheet("QWidget { background-color: rgb(38, 41, 48); color: rgb(240, 241, 242); }")
+    batch = panel._haemolynx_batch
+    batch.open()
+    window = batch.window[0]
+    assert window.native.isWindow()
+    for widget in (window.native, window.fields["segmented"]):
+        widget.ensurePolished()
+        palette = widget.palette()
+        assert palette.color(widget.backgroundRole()).getRgb()[:3] == (38, 41, 48)
+        assert palette.color(widget.foregroundRole()).getRgb()[:3] == (240, 241, 242)
+
+
 def test_a_tie_is_chosen_in_the_table_for_every_image(panel, tmp_path):
     batch = panel._haemolynx_batch
     _images(tmp_path / "seg", "E14_seg", "E15_seg")

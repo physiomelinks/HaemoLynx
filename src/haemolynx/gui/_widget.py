@@ -9720,7 +9720,10 @@ class _BatchRunWindow:
     *values* returns the panel's form values; *on_use* gets the
     :class:`~haemolynx.gui.batch_run.BatchSetup` Run pipeline is to run,
     *on_leave* is called to go back to one image, and *on_open* with an
-    image's ``.haemorun`` when its row is double-clicked.
+    image's ``.haemorun`` when its row is double-clicked. *parent* is the
+    panel: the window stays a window of its own, but as the panel's child it
+    takes napari's stylesheet (and its theme changes), which napari sets on
+    its main window and so never reaches a parentless one.
     """
 
     FOLDER_ROWS = (
@@ -9739,7 +9742,8 @@ class _BatchRunWindow:
         ("Paired by subject", "paired"),
     )
 
-    def __init__(self, *, schema, values, on_use, on_leave, on_open=None) -> None:
+    def __init__(self, *, schema, values, on_use, on_leave, on_open=None, parent=None) -> None:
+        from qtpy.QtCore import Qt
         from qtpy.QtWidgets import (
             QAbstractItemView,
             QCheckBox,
@@ -9766,7 +9770,7 @@ class _BatchRunWindow:
         self._filling = False
         self.setup = None
 
-        self.native = QWidget()
+        self.native = QWidget(parent, Qt.WindowType.Window)
         self.native.setWindowTitle("HaemoLynx: Batch run")
         self.native.setObjectName("haemolynx_batch_run")
         self.native.resize(900, 520)
@@ -14109,6 +14113,7 @@ def settings_widget(napari_viewer=None):
                 on_use=use_batch,
                 on_leave=leave_batch,
                 on_open=lambda path: load_run_file(path),
+                parent=panel,
             )
         batch_window[0].open(batch_mode.setup)
 
