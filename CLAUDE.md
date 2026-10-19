@@ -720,9 +720,16 @@ are only caught locally.
   paging file) and are at most `shared_volume_tasks.default_worker_count()`. The lumen radius
   reads tiles of the surface (`FeatureDistance(by_block=True)`, through
   `MaskSupport(low_memory=)` and `mask_radius_sampler(low_memory=)`: a k-d tree per 96-voxel
-  tile, made when a query first needs it, least recently used dropped past 256 MB, searched ring
+  tile, made when a query first needs it, least recently used dropped past 256 MB or, when
+  memory is free, past a quarter of it shared by every such lookup alive
+  (`SURFACE_TILE_MEMORY_FRACTION`, read again each 64 MB: 256 MB alone held a tenth of the
+  uncropped patella's 2.4 GB of tiles and mask recovery remade tiles all step), searched ring
   by ring until the best is no further than the nearest voxel unsearched) instead of one tree
-  over the whole surface (~69 B a surface voxel, 7-9 GB). Skeletonisation hands on the thick
+  over the whole surface (~69 B a surface voxel, 7-9 GB). A tile is made from the packed bits
+  a byte at a time (`PackedMask.box`), its surface by a separable 3x3x3 dilation
+  (`pointwise_distance._dilate_box`, scipy's own answer) and its tree unbalanced and
+  uncompacted (twice as fast to build and query; the tree only narrows candidates, so the same
+  distances). Skeletonisation hands on the thick
   tree it drew as its voxels (`SkeletonisedVolume.thick_vessel_centreline`,
   `thick_vessel_centreline_voxels`, `edt_ridge_voxels`), which the split, `ThickCentreline` and
   post-processing take in place of a volume of it, so `build_network` neither redraws it (a
@@ -1393,7 +1400,8 @@ are only caught locally.
   `skip_done` skips an image whose `.haemorun` is there. Headless: `python -m
   haemolynx.gui.batch_run --config C --segmented D [--raw/--large/--small D] --output D
   [--dry-run] [--only STEM ...] [--rerun] [--condition-a P --condition-b P [--paired [--subject-pattern RE]]] [--compare-only]`;
-  every image passes its checks or nothing runs.
+  every image passes its checks or nothing runs. Its log lines carry the time
+  (`configure_console_logging(timestamps=True)`), so each step's time reads off a batch log.
   **Conditions and the batch's statistics** (2026-10-19, `statistics/batch_comparison.py`): up
   to two conditions, each one or more phrases (comma-separated) a file name holds, ignoring case
   (`BatchConditions`: an image in both or neither is left out of the test; two conditions alike

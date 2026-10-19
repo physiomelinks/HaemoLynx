@@ -76,7 +76,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     from haemolynx.pipeline import default_schema
 
     args = _parser().parse_args(argv)
-    configure_console_logging()
+    # Timed lines: a batch runs unattended for hours, and how long each
+    # image's steps took is read off its log afterwards.
+    configure_console_logging(timestamps=True)
     schema = default_schema()
     values = load_config(args.config, schema)
     folders = BatchFolders(args.segmented, raw=args.raw, large=args.large, small=args.small)

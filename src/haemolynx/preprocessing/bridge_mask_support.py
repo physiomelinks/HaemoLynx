@@ -188,11 +188,23 @@ class PackedMask:
         extents = [int(s.stop) - int(s.start) for s in box]
         if not all(extents):
             return np.zeros(extents, dtype=bool)
-        # Each row along the last axis is a run of consecutive bits.
+        # Each row along the last axis is a run of consecutive bits: the
+        # bytes holding it are unpacked whole, and the row cut out of them
+        # at its first bit's place in its first byte -- one slice for all
+        # the rows starting at the same place, of the eight there are.
         lead = np.indices(extents[:-1]).reshape(len(extents) - 1, -1) + np.array(starts[:-1])[:, None]
         row = np.ravel_multi_index(tuple(lead) + (np.full(lead.shape[1], starts[-1]),), self.shape)
-        flat = row[:, None] + np.arange(extents[-1], dtype=np.intp)
-        return ((self.bits[flat >> 3] >> (flat & 7).astype(np.uint8)) & 1).astype(bool).reshape(extents)
+        width = extents[-1]
+        spans = np.minimum(
+            (row >> 3)[:, None] + np.arange((width + 14) // 8, dtype=np.intp), len(self.bits) - 1
+        )
+        bits = np.unpackbits(self.bits[spans], axis=1, bitorder="little").view(bool)
+        shift = row & 7
+        out = np.empty((len(row), width), dtype=bool)
+        for place in np.unique(shift):
+            rows = shift == place
+            out[rows] = bits[rows, place:place + width]
+        return out.reshape(extents)
 
 
 def _points_in_mask(points_um: np.ndarray, mask, voxel_size_zyx) -> np.ndarray:
