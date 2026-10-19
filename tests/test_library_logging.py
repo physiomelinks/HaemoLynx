@@ -17,7 +17,7 @@ import pytest
 
 from haemolynx.haemodynamics.poiseuille import PoiseuilleModel
 from haemolynx.parsers import Schema, Setting, configure_console_logging, print_settings
-from haemolynx.parsers.cli import CONSOLE_LOG_FORMAT
+from haemolynx.parsers.cli import CONSOLE_LOG_FORMAT, TIMESTAMPED_CONSOLE_LOG_FORMAT
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "haemolynx"
 
@@ -157,6 +157,12 @@ def test_configure_console_logging_sends_records_to_stdout() -> None:
         root.handlers.clear()
         configure_console_logging(verbose=True)
         assert root.level == logging.DEBUG
+
+        root.handlers.clear()
+        configure_console_logging(timestamps=True)
+        assert root.handlers[-1].formatter._fmt == TIMESTAMPED_CONSOLE_LOG_FORMAT
+        assert TIMESTAMPED_CONSOLE_LOG_FORMAT.startswith("%(asctime)s ")
+        assert TIMESTAMPED_CONSOLE_LOG_FORMAT.endswith(CONSOLE_LOG_FORMAT)
     finally:
         root.handlers[:] = original_handlers
         root.setLevel(original_level)

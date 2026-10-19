@@ -160,7 +160,7 @@ def test_tiles_kept_to_their_budget_still_give_the_same_distances():
 
     assert np.array_equal(tiled.at(voxels), whole.at(voxels))
     cache = tiled._tiles._cache
-    biggest = max(len(surface) for surface, _tree in cache.values()) * 72
+    biggest = max(len(surface) for surface, _tree in cache.values()) * 62
     assert tiled._tiles._held <= 4000 + biggest
 
 
@@ -225,3 +225,83 @@ def test_radius_sampler_low_memory_is_the_same():
     for point in _voxels(mask, count=200, seed=9) * np.asarray(SPACING):
         assert low(point) == plain(point)
     assert low.feature_distance._tiles is not None
+
+
+# --- making tiles: cheaper, the same surface; a budget that follows free memory -
+
+
+@pytest.mark.parametrize("shape", [(9, 11, 13), (1, 6, 7), (2, 1, 5), (17,), (6, 8), (3, 4, 5, 6)])
+def test_the_box_dilation_is_scipys_with_a_full_structure(shape):
+    from scipy.ndimage import binary_dilation
+
+    from haemolynx.preprocessing.pointwise_distance import _dilate_box
+
+    rng = np.random.default_rng(len(shape) * 100 + sum(shape))
+    for density in (0.02, 0.3, 0.9):
+        volume = rng.random(shape) < density
+        expected = binary_dilation(volume, structure=np.ones((3,) * len(shape), dtype=bool))
+        got = _dilate_box(volume)
+        assert np.array_equal(got, expected)
+        assert not np.shares_memory(got, volume)
+
+
+def test_a_tile_is_made_once_while_memory_is_free_and_again_when_it_is_not(monkeypatch):
+    from haemolynx.haemodynamics import resistance
+    from haemolynx.preprocessing import pointwise_distance
+
+    mask = _mask()
+    voxels = _voxels(mask, count=3000, seed=11)
+    expected = FeatureDistance(mask, feature_value=False, sampling=SPACING).at(voxels)
+    # A floor far below one tile, so only the memory free keeps tiles; the
+    # memory free read at every tile made.
+    monkeypatch.setattr(pointwise_distance, "SURFACE_TILE_CACHE_BYTES", 1)
+    monkeypatch.setattr(pointwise_distance, "_SURFACE_TILE_RECHECK_BYTES", 0)
+
+    monkeypatch.setattr(resistance, "available_memory_bytes", lambda: 64 << 30)
+    roomy = FeatureDistance(mask, feature_value=False, sampling=SPACING, by_block=True, tile_edge=4)
+    for part in np.array_split(voxels, 30):
+        roomy.at(part)
+    assert np.array_equal(roomy.at(voxels), expected)
+    tiles = roomy._tiles
+    assert tiles.made == len(tiles._cache) > 10  # never one made twice
+
+    monkeypatch.setattr(resistance, "available_memory_bytes", lambda: 0)
+    tight = FeatureDistance(mask, feature_value=False, sampling=SPACING, by_block=True, tile_edge=4)
+    for part in np.array_split(voxels, 30):
+        tight.at(part)
+    assert np.array_equal(tight.at(voxels), expected)
+    assert tight._tiles.made > tiles.made and len(tight._tiles._cache) == 1
+
+    # Memory gone later: the next tile the roomy lookup makes drops all but
+    # a quarter of what it holds (what it holds would be free once dropped).
+    _key, (dropped, _tree) = tiles._cache.popitem()
+    tiles._held -= len(dropped) * 62
+    held, made = tiles._held, tiles.made
+    biggest = max(len(surface) for surface, _tree in tiles._cache.values()) * 62
+    roomy.at(voxels[::-1])
+    assert tiles.made > made and tiles._held <= 0.25 * (held + biggest) + biggest
+
+
+def test_lookups_alive_together_share_one_allowance(monkeypatch):
+    from haemolynx.haemodynamics import resistance
+    from haemolynx.preprocessing import pointwise_distance
+
+    import gc
+
+    gc.collect()  # no lookup left alive by another test
+    mask = _mask()
+    monkeypatch.setattr(pointwise_distance, "SURFACE_TILE_CACHE_BYTES", 1)
+    monkeypatch.setattr(resistance, "available_memory_bytes", lambda: 4_000_000)
+    first = FeatureDistance(mask, feature_value=False, sampling=SPACING, by_block=True, tile_edge=4)
+    second = FeatureDistance(mask, feature_value=False, sampling=SPACING, by_block=True, tile_edge=4)
+    first._tiles._held = 600_000
+    # A quarter of (4 MB free + 0.6 MB held), less the other's 0.6 MB.
+    assert second._tiles._allowance() == int(0.25 * 4_600_000) - 600_000
+    assert first._tiles._allowance() == int(0.25 * 4_600_000)
+    fixed = FeatureDistance(
+        mask, feature_value=False, sampling=SPACING, by_block=True, tile_edge=4, tile_cache_bytes=5000
+    )
+    assert fixed._tiles._allowance() == 5000
+    del first
+    gc.collect()
+    assert second._tiles._allowance() == int(0.25 * 4_000_000)

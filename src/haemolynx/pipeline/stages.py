@@ -1064,6 +1064,16 @@ def _thick_region_arguments(
     }
 
 
+def large_stack_thick_tree(settings: dict) -> bool:
+    """Whether the thick vessels' centreline tree is drawn for a large stack
+    (``skeleton_thick_vessel_large_stack_tree``, which applies under the
+    low-RAM option only): skeletonisation, graph building and post
+    processing all ask this, so they draw the same tree."""
+    return bool(settings.get("use_memmap_loading")) and bool(
+        settings.get("skeleton_thick_vessel_large_stack_tree")
+    )
+
+
 def thick_vessel_region_cache(
     settings: dict, output_dir: Path | None = None
 ) -> preprocessing.ThickVesselRegionCache:
@@ -1215,6 +1225,7 @@ def _skeletonize_loaded_mask(
             tile_halo_voxels=_skeletonize_tile_halo_voxels(settings, voxel_size_zyx),
             thick_region=region if found else None,
             centreline_voxels=centreline,
+            large_stack_tree=large_stack_thick_tree(settings),
         )
         if cache is not None and not found:
             cache.store(key, thick, binary.shape)
@@ -1715,7 +1726,15 @@ def graph_build_arguments(settings: dict) -> dict[str, Any]:
         trace_on_dead_ends=bool(settings.get("trace_on_dead_ends", False)),
         join_dead_ends_to_vessel_sides=bool(settings.get("join_dead_ends_to_vessel_sides", False)),
         stub_face_protection=settings.get("stub_face_protection") or "threshold",
+        lumen_cleanup_max_rounds=_lumen_cleanup_max_rounds(settings),
     )
+
+
+def _lumen_cleanup_max_rounds(settings: dict) -> int:
+    """``lumen_cleanup_max_rounds``, its default when a caller's settings
+    predate it."""
+    value = settings.get("lumen_cleanup_max_rounds", graph.assemble.CONSOLIDATION_MAX_ROUNDS)
+    return max(1, int(value or graph.assemble.CONSOLIDATION_MAX_ROUNDS))
 
 
 def _no_vessels_left_error(
@@ -1969,7 +1988,10 @@ def build_network(
             thick_tree = getattr(volume, "thick_vessel_centreline", None)
             if thick_tree is None:
                 thick_tree = graph.thick_vessel_junctions.thick_vessel_centreline_voxels(
-                    volume.thick_vessel_mask, voxel_size_zyx, use_memmap=settings["use_memmap_loading"]
+                    volume.thick_vessel_mask,
+                    voxel_size_zyx,
+                    use_memmap=settings["use_memmap_loading"],
+                    large_stack_tree=large_stack_thick_tree(settings),
                 )
             follower = graph.thick_vessel_junctions.ThickCentreline.from_region(
                 volume.thick_vessel_mask, voxel_size_zyx, segmentation=binary_mask, centreline=thick_tree,
@@ -2025,6 +2047,7 @@ def build_network(
                 short_loop_keep_hole_over_um=_short_loop_keep_hole_um(settings),
                 along_thick_centreline=along_thick_centreline,
                 mask_support=mask_support,
+                max_rounds=_lumen_cleanup_max_rounds(settings),
             )
             if settings["smooth_centrelines"]:
                 G = graph.assemble.consolidate_lumen(G, lumen_cleanup)
@@ -4165,7 +4188,10 @@ def _bridge_edited_vessels(
         tree = getattr(network.volume, "thick_vessel_centreline", None)
     if tree is None:
         tree = graph.thick_vessel_junctions.thick_vessel_centreline_voxels(
-            mask, voxel_size_zyx, use_memmap=bool(settings.get("use_memmap_loading"))
+            mask,
+            voxel_size_zyx,
+            use_memmap=bool(settings.get("use_memmap_loading")),
+            large_stack_tree=large_stack_thick_tree(settings),
         )
     # What the tree fill draws beside an edit is new vessel, measured as
     # one drawn by hand is.

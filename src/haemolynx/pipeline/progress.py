@@ -136,6 +136,7 @@ STAGES: tuple[Stage, ...] = (
             "skeleton_thick_vessel_max_bridge_radius_multiple",
             "skeleton_thick_vessel_max_bridge_distance_um",
             "skeleton_thick_vessel_bridge_radius_smoothing_um",
+            "skeleton_thick_vessel_large_stack_tree",
             # Declared under Vessel masks (they name which masks), but it is
             # this stage's thickness gate that reads them -- see
             # stages._thick_vessel_restriction_mask -- so their rows sit

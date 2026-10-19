@@ -32,6 +32,11 @@ from .schema import ConfigError, Schema
 #: Every log record carries its level, so a warning is visible as one.
 CONSOLE_LOG_FORMAT = "[%(levelname)s] %(message)s"
 
+#: :data:`CONSOLE_LOG_FORMAT` with the time each record was made in front, for
+#: a long unattended run (a batch) whose log is read afterwards for how long
+#: each step took.
+TIMESTAMPED_CONSOLE_LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
+
 
 class _ConsoleHandler(logging.StreamHandler):
     """Write to the console even when its encoding cannot represent a character.
@@ -61,7 +66,7 @@ class _ConsoleHandler(logging.StreamHandler):
             self.handleError(record)
 
 
-def configure_console_logging(*, verbose: bool = False) -> None:
+def configure_console_logging(*, verbose: bool = False, timestamps: bool = False) -> None:
     """Send HaemoLynx's log records to the console.
 
     Call this from a script's entry point, never from library code: choosing
@@ -70,10 +75,13 @@ def configure_console_logging(*, verbose: bool = False) -> None:
     it — including test runners and notebooks.
 
     Records go to stdout so that they interleave in order with anything the
-    script prints itself.
+    script prints itself. *timestamps* starts each with the local time it was
+    made (:data:`TIMESTAMPED_CONSOLE_LOG_FORMAT`).
     """
     handler = _ConsoleHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter(CONSOLE_LOG_FORMAT))
+    handler.setFormatter(
+        logging.Formatter(TIMESTAMPED_CONSOLE_LOG_FORMAT if timestamps else CONSOLE_LOG_FORMAT)
+    )
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         handlers=[handler],

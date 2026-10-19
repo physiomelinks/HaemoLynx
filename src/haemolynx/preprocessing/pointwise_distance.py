@@ -26,16 +26,14 @@ power-of-two spacings every term is exact and it never differs.
 """
 from __future__ import annotations
 
+import weakref
 from collections import OrderedDict
 from typing import Sequence
 
 import numpy as np
-from scipy.ndimage import binary_dilation
 from scipy.spatial import cKDTree
 
 from .memmap_support import LOW_MEMORY_BLOCK_VOXELS, iter_blocks
-
-_STRUCTURE_26 = np.ones((3, 3, 3), dtype=bool)
 
 #: Nearest candidates checked per query before falling back to a radius
 #: search. Any feature tied with the nearest one must be among them.
@@ -51,13 +49,24 @@ LUMEN_RADII_REMEMBERED = 2_000_000
 #: are answered inside the tile a voxel is in.
 SURFACE_TILE_EDGE = 96
 
-#: Bytes of tile surfaces and their k-d trees the low-RAM lookup keeps,
-#: least recently used dropped first.
+#: Bytes of tile surfaces and their k-d trees the low-RAM lookup always
+#: may keep, least recently used dropped first.
 SURFACE_TILE_CACHE_BYTES = 256 << 20
 
-#: Bytes a surface voxel costs in a tile: its coordinates and its share of
-#: the tile's k-d tree.
-_SURFACE_VOXEL_BYTES = 72
+#: The share of the memory free that the low-RAM lookups' tiles may grow
+#: to, between them, past :data:`SURFACE_TILE_CACHE_BYTES` (unless the
+#: caller fixes a budget). 256 MB held about a tenth of the uncropped
+#: patella's tiles (1090 x 1750 x 724 voxels, 35.6 M surface voxels, 2.4 GB
+#: of tiles): mask recovery visits its pieces all over the stack, so tiles
+#: were dropped and made again, and making them was ~95% of the step.
+SURFACE_TILE_MEMORY_FRACTION = 0.25
+
+#: How much more the tiles may hold before the memory free is read again.
+_SURFACE_TILE_RECHECK_BYTES = 64 << 20
+
+#: Bytes a surface voxel costs in a tile: its int32 coordinates (12) and
+#: its share of the tile's k-d tree (~50, measured).
+_SURFACE_VOXEL_BYTES = 62
 
 
 def surface_feature_voxels(
@@ -91,9 +100,30 @@ def _block_surface(block: np.ndarray, feature_value: bool, inner, core) -> np.nd
     other = ~feature
     if not other.any() or not feature.any():
         return np.empty((0, block.ndim), dtype=np.intp)
-    found = np.argwhere((feature & binary_dilation(other, structure=_STRUCTURE_26))[inner])
+    found = np.argwhere((feature & _dilate_box(other))[inner])
     found += np.array([s.start for s in core])
     return found
+
+
+def _dilate_box(volume: np.ndarray) -> np.ndarray:
+    """``binary_dilation(volume, structure=np.ones((3,) * ndim))``, outside
+    the volume background as scipy has it: the box is one three-voxel step
+    along each axis in turn, each an OR of shifted views. Several times
+    faster than scipy's general structure, which the low-RAM lookup paid
+    on every tile it made."""
+    out = np.array(volume, dtype=bool, copy=True)
+    for axis in range(out.ndim):
+        if out.shape[axis] < 2:
+            continue
+        step = out.copy()
+        lower = [slice(None)] * out.ndim
+        upper = [slice(None)] * out.ndim
+        lower[axis] = slice(None, -1)
+        upper[axis] = slice(1, None)
+        step[tuple(upper)] |= out[tuple(lower)]
+        step[tuple(lower)] |= out[tuple(upper)]
+        out = step
+    return out
 
 
 def _scipy_distance(displacement: np.ndarray, sampling: np.ndarray) -> np.ndarray:
@@ -132,6 +162,10 @@ class FeatureDistance:
     needs it and kept, least recently used dropped first, to
     *tile_cache_bytes* (:class:`_SurfaceTiles`). The same distances: either
     way a query gets the least of scipy's arithmetic over every feature.
+    Left at None, the tiles keep :data:`SURFACE_TILE_CACHE_BYTES` and grow
+    past it while memory is free (:data:`SURFACE_TILE_MEMORY_FRACTION`);
+    a number fixes the budget. Either way only which tiles are made again
+    changes, never a distance.
     """
 
     def __init__(
@@ -145,7 +179,7 @@ class FeatureDistance:
         packed=None,
         by_block: bool = False,
         tile_edge: int = SURFACE_TILE_EDGE,
-        tile_cache_bytes: int = SURFACE_TILE_CACHE_BYTES,
+        tile_cache_bytes: int | None = None,
     ):
         self.features = features
         self.packed = packed
@@ -276,6 +310,11 @@ def _has_both_values(features: np.ndarray, block_voxels: int) -> bool:
     return False
 
 
+#: Every low-RAM lookup alive, so each grows only into its share of the
+#: memory free (:meth:`_SurfaceTiles._allowance`).
+_LIVE_TILES: "weakref.WeakSet[_SurfaceTiles]" = weakref.WeakSet()
+
+
 class _SurfaceTiles:
     """:class:`FeatureDistance`'s low-RAM lookup: the volume cut into tiles,
     each tile's surface features (found with a voxel of context, so exactly
@@ -290,17 +329,45 @@ class _SurfaceTiles:
     searched: a feature there is at least that far along one axis, and
     scipy's distance is never less than one axis's term. So the answer is
     the least over every feature, as the whole surface's tree gives.
+
+    *cache_bytes* None keeps :data:`SURFACE_TILE_CACHE_BYTES` and lets the
+    tiles grow past it to :data:`SURFACE_TILE_MEMORY_FRACTION` of the memory
+    free plus what every such lookup holds, less what the others hold (read
+    again each :data:`_SURFACE_TILE_RECHECK_BYTES` it grows); a number is a
+    fixed budget. Each tile's tree is built unbalanced and uncompacted:
+    about twice as fast to build and to query on vessel surfaces, and a
+    tree only ever narrows the candidates (:func:`_nearest_distances`
+    measures them), so the distances are the same.
     """
 
-    def __init__(self, owner: FeatureDistance, tile_edge: int, cache_bytes: int):
+    def __init__(self, owner: FeatureDistance, tile_edge: int, cache_bytes: int | None):
         self.owner = owner
         self.shape = np.asarray(owner.features.shape, dtype=np.int64)
         self.tile = np.minimum(np.full(len(self.shape), max(1, int(tile_edge)), np.int64), self.shape)
         self.grid = -(-self.shape // self.tile)
-        self.cache_bytes = int(cache_bytes)
+        self._grows = cache_bytes is None
+        self.cache_bytes = SURFACE_TILE_CACHE_BYTES if cache_bytes is None else int(cache_bytes)
+        self._limit = self.cache_bytes
+        self._checked_at = 0
         self._cache: OrderedDict[int, tuple[np.ndarray, cKDTree | None]] = OrderedDict()
         self._held = 0
+        #: Tiles made so far, again after being dropped included.
+        self.made = 0
         self._rings: dict[int, np.ndarray] = {}
+        _LIVE_TILES.add(self)
+
+    def _allowance(self) -> int:
+        """The bytes this lookup may hold now (see the class docstring)."""
+        if not self._grows:
+            return self.cache_bytes
+        from haemolynx.haemodynamics.resistance import available_memory_bytes
+
+        available = available_memory_bytes()
+        if available is None:
+            return self.cache_bytes
+        everyone = sum(tiles._held for tiles in list(_LIVE_TILES))
+        share = SURFACE_TILE_MEMORY_FRACTION * float(available + everyone) - (everyone - self._held)
+        return max(self.cache_bytes, int(share))
 
     def _ring(self, r: int) -> np.ndarray:
         """Tile offsets at Chebyshev distance *r*."""
@@ -331,11 +398,21 @@ class _SurfaceTiles:
             block = np.asarray(owner.features[padded], dtype=bool)
         inner = tuple(slice(int(a - p), int(b - p)) for a, b, p in zip(lo, hi, p_lo))
         core = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi))
-        surface = _block_surface(block, owner.feature_value, inner, core)
-        entry = (surface, cKDTree(surface * owner.sampling) if len(surface) else None)
+        # Coordinates as int32 (12 bytes a voxel less to keep): their
+        # differences from a query are the same integers.
+        surface = _block_surface(block, owner.feature_value, inner, core).astype(np.int32)
+        tree = (
+            cKDTree(surface * owner.sampling, balanced_tree=False, compact_nodes=False)
+            if len(surface) else None
+        )
+        entry = (surface, tree)
         self._cache[key] = entry
+        self.made += 1
         self._held += len(surface) * _SURFACE_VOXEL_BYTES
-        while self._held > self.cache_bytes and len(self._cache) > 1:
+        if self._held > self._limit or self._held >= self._checked_at + _SURFACE_TILE_RECHECK_BYTES:
+            self._limit = self._allowance()
+            self._checked_at = self._held
+        while self._held > self._limit and len(self._cache) > 1:
             _key, (old, _tree) = self._cache.popitem(last=False)
             self._held -= len(old) * _SURFACE_VOXEL_BYTES
         return entry
@@ -375,10 +452,33 @@ class _SurfaceTiles:
         return bound
 
     def nearest(self, query: np.ndarray) -> np.ndarray:
-        """The least of scipy's distances from each voxel of *query* to any feature."""
+        """The least of scipy's distances from each voxel of *query* to any feature.
+
+        Queries are answered a home tile at a time, in the grid's C order,
+        each with every ring it needs, so a tile's neighbours are often
+        still kept when the next home tile wants them; all at once, ring by
+        ring, a batch spanning the stack (stub pruning reads every
+        centreline voxel) wanted each tile again only after every other
+        tile of that ring. Over a tight budget that makes a few tiles fewer
+        (a patella crop's pruning at 40 MB: 2,676 tiles made, not 2,821).
+        Each query's answer is its own, so the order changes no distance."""
         query = np.asarray(query, dtype=np.intp)
-        best = np.full(len(query), np.inf)
         home = np.clip(query // self.tile, 0, self.grid - 1)
+        keys = np.ravel_multi_index(tuple(home.T), tuple(self.grid))
+        order = np.argsort(keys, kind="stable")
+        keys = keys[order]
+        starts = np.flatnonzero(np.r_[True, keys[1:] != keys[:-1]])
+        if len(starts) <= 1:
+            return self._nearest_from(query, home)
+        best = np.empty(len(query))
+        for start, stop in zip(starts, np.r_[starts[1:], len(keys)]):
+            rows = order[start:stop]
+            best[rows] = self._nearest_from(query[rows], home[rows])
+        return best
+
+    def _nearest_from(self, query: np.ndarray, home: np.ndarray) -> np.ndarray:
+        """:meth:`nearest` for queries whose home tiles are *home*."""
+        best = np.full(len(query), np.inf)
         everyone = np.arange(len(query))
         self._search(query, best, everyone, home)
         todo = everyone
