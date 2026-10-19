@@ -1044,7 +1044,11 @@ are only caught locally.
   private, 2.6 GB above the process's start, against the old low-RAM path's >83 min (stopped). The
   thick region and the skeleton are still a byte a voxel each in RAM, and the centreline tree's
   Dijkstra graph (built straight into CSR) is ~360 B a voxel of the largest fat component, built
-  whole; the join's last resort, ~400 B a voxel of the connected structure it walks. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
+  whole; the join's last resort, ~400 B a voxel of the connected structure it walks. Its hole fill
+  labels the background a slab of planes at a time (`skeleton._fill_binary_holes_by_slab`, no label
+  volume), and the catchment's blocks run in worker processes (`blockwise_edt.near_blocks`, sized by
+  `parallel_plan` from cores and free memory): catchment 90 -> 51 s and Lee step 72 -> 35 s on that
+  stack with 14 workers, 7.5 GB with theirs counted. The region itself (`thick_vessel_region`: the hole fill, the radius map, the body and its
   wall; 39 s on E14.5) is kept beside the saved skeleton, one bit a voxel
   (`preprocessing/thick_vessel_region_cache.py`, `stages.thick_vessel_region_cache`), keyed on a
   digest of the mask's voxels and the settings that decide it, so nothing else can go stale: a
