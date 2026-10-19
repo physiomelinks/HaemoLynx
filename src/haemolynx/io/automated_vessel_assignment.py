@@ -609,10 +609,10 @@ def load_and_validate_vessel_masks(
                     f"{tuple(downsample.source_shape_zyx)}"
                 )
         arteriole_mask = downsample_volume(
-            arteriole_mask, downsample, reduce="max", description=f"{scale_label}-vessel arteriole mask"
+            arteriole_mask, downsample, reduce="majority", description=f"{scale_label}-vessel arteriole mask"
         )
         venule_mask = downsample_volume(
-            venule_mask, downsample, reduce="max", description=f"{scale_label}-vessel venule mask"
+            venule_mask, downsample, reduce="majority", description=f"{scale_label}-vessel venule mask"
         )
         arteriole_mask_voxel_size = downsample.scale_voxel_size_xyz(arteriole_mask_voxel_size)
         venule_mask_voxel_size = downsample.scale_voxel_size_xyz(venule_mask_voxel_size)
@@ -881,7 +881,9 @@ def _load_global_vessel_mask(
                 f"segmented_image_downsample reduced it: {mask.shape} != "
                 f"{tuple(downsample.source_shape_zyx)}"
             )
-        mask = downsample_volume(mask, downsample, reduce="max", description=f"{mask_role}-vessel global mask")
+        mask = downsample_volume(
+            mask, downsample, reduce="majority", description=f"{mask_role}-vessel global mask"
+        )
         voxel_size = downsample.scale_voxel_size_xyz(voxel_size)
     if mask.shape != image_shape:
         raise ValueError(

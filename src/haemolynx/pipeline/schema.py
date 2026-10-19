@@ -299,11 +299,14 @@ SCHEMA = Schema(
                 "along each axis becoming one -- fewer along an axis whose voxels are "
                 "already coarser, so the grid stays near isotropic -- and run every stage "
                 "on it: the skeleton, the graph, the diameters and the exports are all at "
-                "that resolution, in the same microns. A coarse voxel is vessel if any voxel "
-                "in it was, so a thin vessel survives but two closer together than a coarse "
-                "voxel merge. The large and small vessel masks, the pericyte mask and the "
-                "cell mask are reduced the same way, so they still land on the vessels they "
-                "belong to. Applied after crop_on_import's box is cut"
+                "that resolution, in the same microns. A coarse voxel is vessel when at least "
+                "half the voxels in it were, so vessels keep their width, but one thinner "
+                "than about a coarse voxel, and a short dead end, can be lost. The large and "
+                "small vessel masks are reduced the same way, and the pericyte and cell masks "
+                "so that no object is lost (a coarse voxel is in them if any voxel was), so "
+                "each still lands on the vessels it belongs to. The skeleton settings counted "
+                "in voxels keep their size in the image's own voxels. Applied after "
+                "crop_on_import's box is cut"
             ),
             section=_INPUT_AND_SEGMENTATION,
             value_aliases={"1": "none", "2": "2x", "4": "4x", "8": "8x", "16": "16x"},

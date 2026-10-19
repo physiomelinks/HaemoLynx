@@ -24,11 +24,22 @@ Two choices on the Input tab, each ``none``, ``2x``, ``4x``, ``8x`` or
 A factor applies to the finest axes; an axis whose voxels are already
 coarser is reduced by less, so the grid stays as near isotropic as the
 factors allow (:func:`axis_downsample_factors`, the rule the settings
-optimiser's own downsampling uses). A mask is reduced by block *max* -- a
-coarse voxel is vessel if any voxel in it was, so a thin vessel survives,
-though two vessels closer together than a coarse voxel merge -- and an
-intensity image by block *mean*, in its own dtype. A block that runs past the
-image's edge is reduced over the voxels it has.
+optimiser's own downsampling uses). The segmented image and the vessel masks
+are binarised first and reduced by block *majority* -- a coarse voxel is
+vessel when at least half the voxels in it were -- and an intensity image by
+block *mean*, in its own dtype. Majority keeps a vessel's width and its gaps
+from its neighbours as they were; block max, which these used before
+(2026-10-19), widened every vessel by about a coarse voxel and merged
+neighbours closer than one, and reduced as read, a ``1``/``2``-labelled
+segmentation (ilastik's) came out *eroded*, background winning every block.
+On E14.5 at 2x the built network reproduced 64% of the full-resolution one's
+length by the old rule and 69% by majority (a one-voxel shift of the image
+gives 94%), and at 4x 30% and 51%: the vessels a coarse grid loses are the
+thin ones and short dead ends, which no reduction rule keeps (max keeps more
+thin vessels at 4x, but adds false connections between neighbours). The
+pericyte and cell masks, small objects that must not vanish, keep block max
+(:func:`mask_volume_like_graph`). A block that runs past the image's edge is
+reduced over the voxels it has.
 
 Positions: a coarse voxel's index times the coarse voxel size is where the
 first voxel of its block was. The network records what it was built on
@@ -182,24 +193,28 @@ def block_reduce_volume(
     memmap_directory: str | Path | None = None,
 ) -> np.ndarray:
     """*volume* with every block of *blocks* voxels (one per axis) become one:
-    its max (``reduce="max"``, for a mask: foreground if any voxel was) or its
-    mean (``"mean"``, for an intensity image, rounded back into its dtype).
+    its max (``reduce="max"``: foreground if any voxel was), its majority
+    (``"majority"``, for a binary mask: foreground when at least half the
+    block's voxels are nonzero; the result is boolean) or its mean
+    (``"mean"``, for an intensity image, rounded back into its dtype).
 
     The result has ``ceil(n / block)`` voxels along each axis -- a block running
     past the edge is reduced over the voxels it has, never padded. *volume*
-    itself comes back when every block is 1. Reduced a slab of blocks at a
-    time along axis 0, so a disk-backed volume is read once in order; with
-    *use_memmap* the result is a new disk-backed array.
+    itself comes back when every block is 1 (as booleans for ``"majority"``).
+    Reduced a slab of blocks at a time along axis 0, so a disk-backed volume
+    is read once in order; with *use_memmap* the result is a new disk-backed
+    array.
     """
-    if reduce not in ("max", "mean"):
-        raise ValueError(f"reduce must be 'max' or 'mean'; got {reduce!r}.")
+    if reduce not in ("max", "majority", "mean"):
+        raise ValueError(f"reduce must be 'max', 'majority' or 'mean'; got {reduce!r}.")
     blocks = tuple(max(1, int(b)) for b in blocks)
     if len(blocks) != volume.ndim:
         raise ValueError(f"{len(blocks)} block sizes for a {volume.ndim}-D volume.")
+    majority = reduce == "majority"
     if max(blocks) <= 1:
-        return volume
+        return volume if not majority or volume.dtype == bool else np.asarray(volume) != 0
     out_shape = tuple(-(-int(n) // b) for n, b in zip(volume.shape, blocks))
-    dtype = volume.dtype
+    dtype = np.dtype(bool) if majority else volume.dtype
     if use_memmap:
         from haemolynx.preprocessing.memmap_support import new_memmap_array
 
@@ -209,6 +224,15 @@ def block_reduce_volume(
     first = blocks[0]
     for k in range(out_shape[0]):
         slab = np.asarray(volume[k * first:(k + 1) * first])
+        if majority:
+            # The block's foreground fraction, axis by axis: every partial mean
+            # is over a box of equal-sized pieces, so the last is the block's
+            # own (to rounding: a half made of thirds can come out a hair under).
+            plane = _reduce_axis(slab != 0, first, 0, "mean")
+            for axis in range(1, volume.ndim):
+                plane = _reduce_axis(plane, blocks[axis], axis, "mean")
+            out[k] = plane[0] >= 0.5 - 1e-9
+            continue
         plane = _reduce_axis(slab, first, 0, reduce)
         for axis in range(1, volume.ndim):
             plane = _reduce_axis(plane, blocks[axis], axis, reduce)

@@ -855,12 +855,62 @@ def _load_and_crop_volume(settings: dict, input_format: str):
             settings, image.shape, io.voxel_size_zyx_from_xyz(tuple(float(v) for v in resolved))
         )
         if downsample is not None:
-            image = downsample_volume(
-                image, downsample, reduce="max", description="segmented image",
+            # Binarised first: reduced as read, a 1/2-labelled mask (ilastik's)
+            # kept a coarse voxel as vessel only where the whole block was --
+            # every vessel came out eroded and the thin ones gone.
+            binary = _to_binary_volume_for_skeletonization(
+                image,
                 use_memmap=settings["use_memmap_loading"],
                 memmap_directory=settings["memmap_directory"],
             )
+            reduced = downsample_volume(
+                binary, downsample, reduce="majority", description="segmented image",
+                use_memmap=settings["use_memmap_loading"],
+                memmap_directory=settings["memmap_directory"],
+            )
+            if binary is not image and isinstance(binary, np.memmap):
+                preprocessing.release_memmap_array(binary)
+            image = reduced
     return image, metadata_voxel_size, voxel_meta_status, crop, downsample
+
+
+#: Skeleton clean-up settings counted in voxels of the finest axis -- each a
+#: physical length of that many voxels of the image as read.
+SKELETON_VOXEL_SETTINGS: tuple[str, ...] = (
+    "skeleton_closing_radius",
+    "skeleton_bridge_gap_size",
+    "skeleton_min_branch_length",
+    "skeleton_max_bridge_distance",
+    "skeleton_bundle_scan_size",
+    "skeleton_bundle_hub_min_spacing",
+)
+
+
+def skeleton_voxel_settings_on_grid(settings: Mapping[str, Any], downsample: Downsample | None) -> dict:
+    """The :data:`SKELETON_VOXEL_SETTINGS` a run on *downsample*'s grid uses:
+    each the same physical length as on the image as read, so divided by the
+    reduction of the finest axis, rounded half up and never below 1 where it
+    was set. Empty without a reduction. Counted on the coarse grid as set, a
+    downsampled run bridged gaps and dropped pieces twice as long (at 2x): on
+    E14.5 it built 2.5 points less of the full-resolution network and half
+    again as many false junctions (2026-10-19)."""
+    if downsample is None or downsample.is_identity:
+        return {}
+    finest = int(np.argmin(downsample.source_voxel_size_zyx))
+    factor = float(downsample.axis_factors_zyx[finest])
+    scaled = {}
+    for name in SKELETON_VOXEL_SETTINGS:
+        value = settings.get(name)
+        if value is None or isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            continue
+        scaled[name] = max(1, int(np.floor(value / factor + 0.5)))
+    if scaled:
+        logger.info(
+            "Downsample on import: skeleton clean-up voxel counts kept at their physical size "
+            "on the %gx grid: %s.",
+            factor, ", ".join(f"{name} {settings[name]} -> {v}" for name, v in scaled.items()),
+        )
+    return scaled
 
 
 def _run_voxel_size_on_grid(voxel_size_xyz, downsample: Downsample | None):
@@ -1332,7 +1382,7 @@ def skeletonise(settings: dict, inputs: SegmentedInputs):
         skeleton = preprocessing.preprocess_skeleton_for_graph(
             raw_skeleton,
             **prefixed_arguments(
-                settings,
+                {**settings, **skeleton_voxel_settings_on_grid(settings, downsample)},
                 "skeleton_",
                 parameters_of(preprocessing.preprocess_skeleton_for_graph),
             ),

@@ -94,6 +94,92 @@ def test_block_max_keeps_a_lone_vessel_voxel_and_nothing_appears_from_nowhere():
     assert reduced[0, 0, 0] and reduced.sum() == 1
 
 
+def test_block_majority_keeps_a_block_at_least_half_vessel_and_no_less():
+    mask = np.zeros((2, 2, 8), dtype=bool)
+    mask[:, :, 0:4] = True  # block 0 whole
+    mask[:, 0, 2:4] = True
+    mask[:, :, 4] = True  # block 2: 4 of 8, exactly half -- kept
+    mask[0, 0, 6] = True  # block 3: 1 of 8 -- not
+    reduced = block_reduce_volume(mask, (2, 2, 2), "majority")
+    assert reduced.dtype == bool
+    assert reduced[0, 0].tolist() == [True, True, True, False]
+
+
+def test_block_majority_keeps_a_vessels_width_where_block_max_widens_it():
+    """A rod 4 x 4 voxels across, starting on an odd index, straddles 3 x 3
+    blocks of 2: its edge blocks are half filled, its corner blocks a quarter.
+    Max keeps all nine (36 um^2 against the rod's 16); the majority keeps the
+    middle and the four edges (20 um^2), never a quarter-filled corner."""
+    rod = np.zeros((12, 12, 8), dtype=bool)
+    rod[3:7, 3:7, :] = True
+    by_max = block_reduce_volume(rod, (2, 2, 2), "max")[:, :, 0]
+    by_majority = block_reduce_volume(rod, (2, 2, 2), "majority")[:, :, 0]
+    assert by_max.sum() == 9
+    assert by_majority.sum() == 5
+    assert not by_majority[1, 1] and not by_majority[3, 3]  # corners
+    assert by_majority[2, 1] and by_majority[1, 2] and by_majority[2, 2]
+
+
+def test_block_majority_keeps_apart_neighbours_that_block_max_joins():
+    """Two vessels whose edges each reach a quarter into the blocks between
+    them: max fills both blocks and joins them, the majority keeps the gap."""
+    mask = np.zeros((2, 2, 8), dtype=bool)
+    mask[:, :, 0:2] = True
+    mask[:, 0, 2] = True  # a quarter of block 1: the edge of one vessel
+    mask[:, 0, 5] = True  # a quarter of block 2: the edge of the other
+    mask[:, :, 6:8] = True
+    assert block_reduce_volume(mask, (2, 2, 2), "max")[0, 0].tolist() == [True, True, True, True]
+    assert block_reduce_volume(mask, (2, 2, 2), "majority")[0, 0].tolist() == [True, False, False, True]
+
+
+def test_block_majority_loses_a_vessel_thinner_than_half_a_block():
+    """What the majority costs: a strand one voxel thick fills a quarter of
+    every 2x2x2 block it runs through, and is gone; block max kept it."""
+    strand = np.zeros((4, 4, 8), dtype=bool)
+    strand[1, 1, :] = True
+    assert not block_reduce_volume(strand, (2, 2, 2), "majority").any()
+    assert block_reduce_volume(strand, (2, 2, 2), "max")[0, 0].all()
+
+
+def test_block_majority_reads_a_partial_edge_block_over_the_voxels_it_has():
+    mask = np.zeros((1, 1, 5), dtype=bool)
+    mask[0, 0, 4] = True  # the last block is that one voxel: all of it vessel
+    mask[0, 0, 2] = True  # block 1 half
+    assert block_reduce_volume(mask, (1, 1, 2), "majority")[0, 0].tolist() == [False, True, True]
+    # A third block of three voxels, one of them vessel, is a third: not kept.
+    thirds = np.zeros((1, 1, 3), dtype=bool)
+    thirds[0, 0, 0] = True
+    assert not block_reduce_volume(thirds, (1, 1, 3), "majority").any()
+    # Halves made of thirds are still halves.
+    six = np.zeros((1, 2, 3), dtype=bool)
+    six[0, 0, :] = True
+    assert block_reduce_volume(six, (1, 2, 3), "majority").tolist() == [[[True]]]
+
+
+def test_block_majority_on_blocks_of_one_is_the_mask_as_booleans():
+    labels = np.array([[[0, 3, 0]]], dtype=np.uint8)
+    assert block_reduce_volume(labels, (1, 1, 1), "majority").tolist() == [[[False, True, False]]]
+    as_bool = labels != 0
+    assert block_reduce_volume(as_bool, (1, 1, 1), "majority") is as_bool
+
+
+def test_block_majority_with_the_low_ram_option_is_disk_backed_and_identical(tmp_path):
+    rng = np.random.default_rng(2)
+    mask = rng.random((7, 9, 11)) < 0.4
+    in_ram = block_reduce_volume(mask, (2, 3, 2), "majority")
+    on_disk = block_reduce_volume(mask, (2, 3, 2), "majority", use_memmap=True, memmap_directory=str(tmp_path))
+    assert isinstance(on_disk, np.memmap) and on_disk.dtype == bool
+    assert np.array_equal(np.asarray(on_disk), in_ram)
+    # Each coarse voxel is its own block's fraction, at least a half.
+    expected = np.zeros_like(in_ram)
+    for k in range(4):
+        for j in range(3):
+            for i in range(6):
+                block = mask[2 * k:2 * k + 2, 3 * j:3 * j + 3, 2 * i:2 * i + 2]
+                expected[k, j, i] = block.mean() >= 0.5
+    assert np.array_equal(in_ram, expected)
+
+
 def test_block_mean_is_the_exact_mean_of_each_block_in_the_images_dtype():
     image = np.arange(4 * 4 * 4, dtype=np.uint16).reshape(4, 4, 4)
     reduced = block_reduce_volume(image, (2, 2, 2), "mean")
@@ -214,8 +300,9 @@ def test_without_a_grid_a_raw_factor_alone_is_refused_and_no_factor_changes_noth
 # --- the run: the image and every volume beside it, on one grid ----------------------
 
 #: (z, y, x): a stack of 1 um voxels with one rod along x, 5 voxels thick: odd
-#: as read and, its blocks of 2 starting on an even index, 3 thick reduced 2x --
-#: Lee thinning leaves nothing of an even-width rod.
+#: as read and, its blocks of 2 starting on an even index, 3 thick reduced 2x
+#: (its last half-filled blocks kept by the majority, the corner block a quarter
+#: filled not) -- Lee thinning leaves nothing of an even-width rod.
 STACK = (12, 40, 72)
 
 
@@ -251,13 +338,103 @@ def test_the_run_is_on_the_reduced_grid_in_the_same_microns(tmp_path):
     volume = stages.skeletonise(settings, stages.segment(settings))
 
     assert volume.image.shape == (6, 20, 36)
-    assert np.array_equal(volume.image != 0, block_reduce_volume(_rod(), (2, 2, 2), "max"))
+    assert np.array_equal(volume.image != 0, block_reduce_volume(_rod(), (2, 2, 2), "majority"))
     assert volume.skeleton.shape == (6, 20, 36)
     assert volume.skeleton.any()
     assert volume.voxel_size_xyz == (2.0, 2.0, 2.0)
     assert volume.voxel_size_zyx == (2.0, 2.0, 2.0)
     assert volume.downsample == Downsample(2, (2, 2, 2), STACK, (1.0, 1.0, 1.0))
     assert volume.crop is None
+
+
+def test_a_one_two_labelled_segmentation_is_binarised_before_it_is_reduced(tmp_path):
+    """ilastik writes 1 = vessel, 2 = background. Reduced as read, block max
+    let background win every block the vessel did not fill, so the vessel came
+    out eroded: here the rod lost its half-filled edge blocks, and a rod 3
+    voxels thick vanished (2026-10-19). Binarised first, the 1/2 file reduces
+    exactly as the 0/255 one does."""
+    labels = np.where(_rod(), 1, 2).astype(np.uint8)
+    tifffile.imwrite(tmp_path / "labels.tif", labels)
+    settings = _run_settings(tmp_path, input_path=str(tmp_path / "labels.tif"))
+
+    volume = stages.skeletonise(settings, stages.segment(settings))
+
+    assert np.array_equal(volume.image != 0, block_reduce_volume(_rod(), (2, 2, 2), "majority"))
+    # What the old order made of it: only whole blocks of vessel.
+    eroded = block_reduce_volume(labels, (2, 2, 2), "max") == 1
+    assert eroded.sum() < (volume.image != 0).sum()
+
+    # A rod 2 x 3 across, straddling the z blocks: no block is wholly vessel,
+    # so the old order lost it outright; half of each block it crosses is.
+    thin = np.zeros(STACK, dtype=bool)
+    thin[5:7, 20:23, 6:66] = True
+    tifffile.imwrite(tmp_path / "thin.tif", np.where(thin, 1, 2).astype(np.uint8))
+    thin_settings = _run_settings(tmp_path, input_path=str(tmp_path / "thin.tif"))
+    thin_volume = stages.skeletonise(thin_settings, stages.segment(thin_settings))
+    assert not (block_reduce_volume(np.where(thin, 1, 2).astype(np.uint8), (2, 2, 2), "max") == 1).any()
+    assert np.array_equal(thin_volume.image != 0, block_reduce_volume(thin, (2, 2, 2), "majority"))
+    assert (thin_volume.image != 0).sum() == 2 * 30
+
+
+def test_the_skeleton_voxel_counts_keep_their_physical_size_on_the_reduced_grid():
+    down = downsample_for(2, STACK, (1.0, 1.0, 1.0))
+    settings = {
+        "skeleton_closing_radius": 1,
+        "skeleton_bridge_gap_size": 3,
+        "skeleton_min_branch_length": 3,
+        "skeleton_max_bridge_distance": 4,
+        "skeleton_bundle_scan_size": 9,
+        "skeleton_bundle_hub_min_spacing": None,
+    }
+    scaled = stages.skeleton_voxel_settings_on_grid(settings, down)
+    # Halved, rounded half up, never below 1 where set; unset or 0 left alone.
+    assert scaled == {
+        "skeleton_closing_radius": 1,
+        "skeleton_bridge_gap_size": 2,
+        "skeleton_min_branch_length": 2,
+        "skeleton_max_bridge_distance": 2,
+        "skeleton_bundle_scan_size": 5,
+    }
+    assert stages.skeleton_voxel_settings_on_grid({**settings, "skeleton_bridge_gap_size": 0}, down)[
+        "skeleton_closing_radius"
+    ] == 1
+    assert "skeleton_bridge_gap_size" not in stages.skeleton_voxel_settings_on_grid(
+        {**settings, "skeleton_bridge_gap_size": 0}, down
+    )
+    assert stages.skeleton_voxel_settings_on_grid(settings, None) == {}
+    assert stages.skeleton_voxel_settings_on_grid(settings, downsample_for(1, STACK, (1.0, 1.0, 1.0))) == {}
+    # The finest axis's reduction counts: 0.5 x 0.5 x 2 um voxels at 4x reduce
+    # x and y by 4 (z by 1), so 9 voxels of 0.5 um become 2 of 2 um.
+    anisotropic = downsample_for(4, STACK, (2.0, 0.5, 0.5))
+    assert anisotropic.axis_factors_zyx == (1, 4, 4)
+    assert stages.skeleton_voxel_settings_on_grid(settings, anisotropic)["skeleton_bundle_scan_size"] == 2
+
+
+def test_the_skeleton_clean_up_runs_with_the_counts_on_the_reduced_grid(tmp_path, monkeypatch):
+    import functools
+
+    seen = {}
+    original = stages.preprocessing.preprocess_skeleton_for_graph
+
+    @functools.wraps(original)  # the stage passes the settings its signature names
+    def spy(skeleton, **kwargs):
+        seen.update(kwargs)
+        return original(skeleton, **kwargs)
+
+    monkeypatch.setattr(stages.preprocessing, "preprocess_skeleton_for_graph", spy)
+    settings = _run_settings(
+        tmp_path, skeleton_min_branch_length=3, skeleton_max_bridge_distance=4, skeleton_bridge_gap_size=3
+    )
+    stages.skeletonise(settings, stages.segment(settings))
+    assert (seen["min_branch_length"], seen["max_bridge_distance"], seen["bridge_gap_size"]) == (2, 2, 2)
+
+    seen.clear()
+    as_read = _run_settings(
+        tmp_path, skeleton_min_branch_length=3, skeleton_max_bridge_distance=4, skeleton_bridge_gap_size=3,
+        **{SEGMENTED_SETTING: "none"},
+    )
+    stages.skeletonise(as_read, stages.segment(as_read))
+    assert (seen["min_branch_length"], seen["max_bridge_distance"], seen["bridge_gap_size"]) == (3, 4, 3)
 
 
 def test_without_the_choice_the_same_stack_is_analysed_as_read(tmp_path):
@@ -294,7 +471,7 @@ def test_the_crop_box_is_cut_first_then_the_box_is_reduced(tmp_path):
 
     assert volume.crop == CropBox((0, 10, 0), (12, 30, 36), STACK)
     assert volume.image.shape == (6, 10, 18)
-    assert np.array_equal(volume.image != 0, block_reduce_volume(_rod()[:, 10:30, :36], (2, 2, 2), "max"))
+    assert np.array_equal(volume.image != 0, block_reduce_volume(_rod()[:, 10:30, :36], (2, 2, 2), "majority"))
     assert volume.downsample.source_shape_zyx == (12, 20, 36)
 
 
@@ -369,9 +546,9 @@ def test_the_vessel_masks_are_reduced_by_the_same_blocks_as_the_image(tmp_path):
         clear_vessel_mask_cache()
 
     # The arteriole mask lies exactly on the image's rod, as it did unreduced.
-    assert np.array_equal(network.large_arteriole_mask, block_reduce_volume(arteriole, (2, 2, 2), "max"))
+    assert np.array_equal(network.large_arteriole_mask, block_reduce_volume(arteriole, (2, 2, 2), "majority"))
     assert np.array_equal(network.large_arteriole_mask, volume.image != 0)
-    assert np.array_equal(network.large_venule_mask, block_reduce_volume(venule, (2, 2, 2), "max"))
+    assert np.array_equal(network.large_venule_mask, block_reduce_volume(venule, (2, 2, 2), "majority"))
     # A mask without a voxel size of its own took the image's as read, and
     # is now on the run's grid.
     assert network.graph.graph["large_arteriole_mask_voxel_size_xyz"] == (2.0, 2.0, 2.0)
@@ -400,7 +577,7 @@ def test_the_small_vessel_masks_are_reduced_the_same_way(tmp_path):
         clear_vessel_mask_cache()
 
     assert np.array_equal(network.small_arteriole_mask, volume.image != 0)
-    assert np.array_equal(network.small_venule_mask, block_reduce_volume(venule, (2, 2, 2), "max"))
+    assert np.array_equal(network.small_venule_mask, block_reduce_volume(venule, (2, 2, 2), "majority"))
 
 
 def _mask_arguments(tmp_path, arteriole, venule, downsample) -> dict:
@@ -446,7 +623,7 @@ def test_masks_remembered_at_one_factor_are_not_handed_out_for_another(tmp_path)
         clear_vessel_mask_cache()
 
     assert a2.shape == (6, 20, 36) and a4.shape == (3, 10, 18)
-    assert np.array_equal(a4, block_reduce_volume(arteriole, (4, 4, 4), "max"))
+    assert np.array_equal(a4, block_reduce_volume(arteriole, (4, 4, 4), "majority"))
 
 
 def test_a_saved_skeleton_from_another_factor_is_not_reused(tmp_path):
