@@ -122,46 +122,247 @@ class Retrace:
         return self.reason is None
 
 
-class _Centrelines:
-    """Every edge's centreline sampled every half micron: all of them for what
-    the graph reaches, vessels alone (no thick-vessel bridge) to join to."""
+def _edge_list(G: nx.MultiGraph) -> list:
+    """``(edge id, u, v, data)`` of every edge of *G*, in its order."""
+    return [(edge_id(u, v, key), u, v, data) for u, v, key, data in G.edges(keys=True, data=True)]
+
+
+def _trial_copy(G: nx.MultiGraph) -> nx.MultiGraph:
+    """``G.copy()`` -- the same nodes, edges, keys and data, in the same order
+    (so the same shortest paths) -- written straight into its adjacency:
+    ``add_edges_from`` made most of the cost of a copy taken per piece judged,
+    about a second a copy on a 36,000-edge graph."""
+    H = G.__class__()
+    H.graph.update(G.graph)
+    H._node.update((n, d.copy()) for n, d in G._node.items())
+    adj = H._adj
+    for n in H._node:
+        adj[n] = H.adjlist_inner_dict_factory()
+    for u, neighbours in G._adj.items():
+        mine = adj[u]
+        for v, keydict in neighbours.items():
+            if v not in mine:
+                copied = H.edge_key_dict_factory()
+                for key, data in keydict.items():
+                    copied[key] = data.copy()
+                mine[v] = adj[v][u] = copied
+    return H
+
+
+class _LiveSamples:
+    """The centreline samples (*sample*: an edge's polyline -> its points) of
+    every edge of a graph *keep* (``data -> bool``) accepts, kept up to date by
+    :meth:`update` as edges are split and drawn. Rebuilt whole after every
+    piece and join, they were 98% of the step's time on a 36,000-edge graph
+    (28_3_d contra patella, 2026-10-19: 110 pieces drawn in 9 hours). The
+    graph's samples as first read stay in one KD-tree, those of edges removed
+    since are skipped, and those of edges added since sit in a small tree of
+    their own: the same samples a tree built over the graph as it stands holds,
+    so the same nearest distances (an exact tie may name the other sample)."""
+
+    #: Added samples past this share of the first tree's, at least
+    #: ``_COMPACT_MIN``, are merged into it (no edge sampled again).
+    _COMPACT_SHARE = 0.125
+    _COMPACT_MIN = 50_000
+
+    def __init__(self, G: nx.MultiGraph, sample, keep=None):
+        self._sample, self._keep = sample, keep
+        self._data: dict = {}  # edge id -> its data dict, for every edge seen
+        self._rows: dict = {}  # edge id -> (start, stop) of its samples, None when not sampled
+        self._points = np.empty((0, 3))
+        self._owners: list = []
+        self._dead = np.zeros(0, dtype=bool)
+        self._n = 0
+        self._append(self._sampled(G, self._changes(G)[1]))
+        self._compact()
+
+    @property
+    def points(self) -> np.ndarray:
+        """Every sample, live or not, by row (:meth:`query`'s rows)."""
+        return self._points[: self._n]
+
+    @property
+    def owners(self) -> list:
+        return self._owners
+
+    @property
+    def empty(self) -> bool:
+        return self._base_tree is None and self._added_tree is None
+
+    def _changes(self, G: nx.MultiGraph, edges: list | None = None) -> tuple[set, list]:
+        """``(every edge id in G, (id, u, v, data) of each not sampled as it is)``;
+        *edges* is :func:`_edge_list` of *G*, when the caller has it."""
+        edges = _edge_list(G) if edges is None else edges
+        current = {e for e, *_rest in edges}
+        return current, [(e, u, v, data) for e, u, v, data in edges if self._data.get(e) is not data]
+
+    def _sampled(self, G: nx.MultiGraph, new: list) -> list:
+        out = []
+        for e, u, v, data in new:
+            pos = {n: G.nodes[n].get("pos") for n in (u, v)}
+            path = None
+            if all(p is not None for p in pos.values()) and (self._keep is None or self._keep(data)):
+                path = self._sample(edge_sample_points(u, v, data, pos))
+            out.append((e, data, path))
+        return out
+
+    def _append(self, new: list) -> None:
+        for e, data, path in new:
+            self._data[e], self._rows[e] = data, None
+            if path is None or not len(path):
+                continue
+            stop = self._n + len(path)
+            if stop > len(self._points):
+                grown = np.empty((max(stop, 2 * len(self._points)), 3))
+                grown[: self._n] = self._points[: self._n]
+                self._points = grown
+                self._dead = np.concatenate([self._dead, np.zeros(len(grown) - len(self._dead), dtype=bool)])
+            self._points[self._n:stop] = path
+            self._owners.extend([e] * len(path))
+            self._rows[e] = (self._n, stop)
+            self._n = stop
+
+    def _compact(self) -> None:
+        """One tree over every live sample, in row order; none added."""
+        alive = ~self._dead[: self._n]
+        live = np.flatnonzero(alive)
+        moved_to = np.cumsum(alive) - 1  # an edge's samples stay contiguous
+        self._rows = {
+            e: None if span is None else (int(moved_to[span[0]]), int(moved_to[span[0]]) + span[1] - span[0])
+            for e, span in self._rows.items()
+        }
+        self._points = self._points[live]
+        self._owners = [self._owners[i] for i in live]
+        self._n = self._base = len(live)
+        self._dead = np.zeros(self._n, dtype=bool)
+        self._base_tree = cKDTree(self._points) if self._n else None
+        self._added_tree, self._added_rows = None, np.empty(0, dtype=np.intp)
+
+    def update(self, G: nx.MultiGraph, edges: list | None = None) -> None:
+        """Follow *G*: drop the samples of edges no longer in it (or whose
+        data was replaced), sample the edges added."""
+        current, new = self._changes(G, edges)
+        gone = [e for e in self._data if e not in current]
+        gone += [e for e, *_rest in new if e in self._data]  # same id, new data
+        if not gone and not new:
+            return
+        for e in gone:
+            span = self._rows.pop(e)
+            del self._data[e]
+            if span is not None:
+                self._dead[span[0]:span[1]] = True
+        self._append(self._sampled(G, new))
+        added = np.flatnonzero(~self._dead[self._base: self._n]) + self._base
+        if len(added) > max(self._COMPACT_MIN, self._COMPACT_SHARE * self._base):
+            self._compact()
+            return
+        self._added_rows = added
+        self._added_tree = cKDTree(self._points[added]) if len(added) else None
+
+    def _live_base(self, point: np.ndarray, k: int, bound: float = np.inf):
+        """``(distances, rows)`` of up to *k* live samples of the first tree
+        nearest *point*, closer than *bound*, nearest first."""
+        tree, n = self._base_tree, self._base
+        if tree is None:
+            return np.empty(0), np.empty(0, dtype=np.intp)
+        ask = min(max(k, 8), n)
+        while True:
+            dist, rows = tree.query(point, k=ask, distance_upper_bound=bound)
+            dist, rows = np.atleast_1d(dist), np.atleast_1d(rows)
+            found = np.isfinite(dist)
+            live = found.copy()
+            live[found] = ~self._dead[rows[found]]
+            if live.sum() >= k or not found.all() or ask == n:
+                return dist[live][:k], rows[live][:k]
+            ask = min(8 * ask, n)
+
+    def query(self, points_um):
+        """``(distance, row)`` of the live sample nearest each point, as
+        ``cKDTree.query`` answers (row ``len(points)`` and ``inf`` with none)."""
+        x = np.asarray(points_um, dtype=float)
+        single = x.ndim == 1
+        x = x.reshape(-1, 3)
+        dist, rows = np.full(len(x), np.inf), np.full(len(x), self._n, dtype=np.intp)
+        if self._added_tree is not None:
+            dist, j = self._added_tree.query(x)
+            rows = self._added_rows[j]
+        if self._base_tree is not None:
+            base_dist, base_rows = self._base_tree.query(x)
+            for i in np.flatnonzero(self._dead[base_rows]):
+                d, r = self._live_base(x[i], 1, bound=dist[i])
+                base_dist[i], base_rows[i] = (d[0], r[0]) if len(d) else (np.inf, self._n)
+            take = base_dist <= dist
+            dist[take], rows[take] = base_dist[take], base_rows[take]
+        return (dist[0], rows[0]) if single else (dist, rows)
+
+    def nearest_rows(self, point_um, k: int) -> np.ndarray:
+        """The rows of the *k* live samples nearest *point_um*, nearest first."""
+        point = np.asarray(point_um, dtype=float).reshape(3)
+        dist, rows = self._live_base(point, k)
+        if self._added_tree is not None:
+            d, j = self._added_tree.query(point, k=min(k, len(self._added_rows)))
+            dist = np.concatenate([dist, np.atleast_1d(d)])
+            rows = np.concatenate([rows, self._added_rows[np.atleast_1d(j)]])
+        return rows[np.argsort(dist, kind="stable")[:k]]
+
+
+class _LiveIndex:
+    """What :func:`duplicates_existing_vessel` reads of an
+    :class:`EdgeSampleIndex` (every edge sampled every micron), kept up to
+    date with :meth:`update` rather than built again."""
+
+    added: tuple = ()
 
     def __init__(self, G: nx.MultiGraph):
-        pos = {n: np.asarray(d["pos"], dtype=float) for n, d in G.nodes(data=True) if "pos" in d}
-        points, vessel_points, owners = [], [], []
-        for u, v, key, data in G.edges(keys=True, data=True):
-            if u not in pos or v not in pos:
-                continue
-            path = densify_polyline(edge_sample_points(u, v, data, pos), max_step_um=_STEP_UM)
-            points.append(path)
-            if not data.get(IS_ZERO_RESISTANCE):
-                vessel_points.append(path)
-                owners.extend([edge_id(u, v, key)] * len(path))
-        self.points = np.vstack(points) if points else np.empty((0, 3))
-        self.tree = cKDTree(self.points) if len(self.points) else None
-        self.vessel_points = np.vstack(vessel_points) if vessel_points else np.empty((0, 3))
-        self.vessel_tree = cKDTree(self.vessel_points) if len(self.vessel_points) else None
-        self.owners = owners
+        from haemolynx.preprocessing.bridge_mask_support import _densify
+
+        self._samples = _LiveSamples(G, lambda path: _densify(path, 1.0))
+
+    @property
+    def tree(self):
+        return None if self._samples.empty else self._samples
+
+    @property
+    def points(self) -> np.ndarray:
+        return self._samples.points
+
+    def update(self, G: nx.MultiGraph, edges: list | None = None) -> None:
+        self._samples.update(G, edges)
+
+
+class _Centrelines:
+    """Every edge's centreline sampled every half micron: all of them for what
+    the graph reaches, vessels alone (no thick-vessel bridge) to join to. Kept
+    up to date with :meth:`update`."""
+
+    def __init__(self, G: nx.MultiGraph):
+        sample = lambda path: densify_polyline(path, max_step_um=_STEP_UM)  # noqa: E731
+        self._all = _LiveSamples(G, sample)
+        self._vessels = _LiveSamples(G, sample, keep=lambda data: not data.get(IS_ZERO_RESISTANCE))
+
+    def update(self, G: nx.MultiGraph, edges: list | None = None) -> None:
+        edges = _edge_list(G) if edges is None else edges
+        self._all.update(G, edges)
+        self._vessels.update(G, edges)
 
     def distance(self, points_um: np.ndarray) -> np.ndarray:
-        if self.tree is None:
+        if self._all.empty:
             return np.full(len(points_um), np.inf)
-        return self.tree.query(points_um)[0]
+        return self._all.query(points_um)[0]
 
     def nearest_vessel(self, point_um: np.ndarray, skip=None):
         """``(point, (u, v, key))`` of the vessel centreline sample nearest
         *point_um* -- the nearest whose owner *skip* (``owner -> bool``) does
         not refuse, among the closest :data:`_NEAREST_CANDIDATES`."""
-        if self.vessel_tree is None:
+        vessels = self._vessels
+        if vessels.empty:
             return None, None
         if skip is None:
-            _, i = self.vessel_tree.query(point_um)
-            return self.vessel_points[i], self.owners[i]
-        k = min(_NEAREST_CANDIDATES, len(self.vessel_points))
-        _, near = self.vessel_tree.query(point_um, k=k)
-        for i in np.atleast_1d(near):
-            if not skip(self.owners[i]):
-                return self.vessel_points[i], self.owners[i]
+            _, i = vessels.query(point_um)
+            return vessels.points[i], vessels.owners[i]
+        for i in vessels.nearest_rows(point_um, _NEAREST_CANDIDATES):
+            if not skip(vessels.owners[i]):
+                return vessels.points[i], vessels.owners[i]
         return None, None
 
 
@@ -389,7 +590,7 @@ def _judge(
     if start is None or end is None:
         return Retrace(**verdict, **nothing, reason=REFUSED_ONE_END), None
     # Tried on a copy: the loop it would close is read with both ends joined.
-    trial = G.copy()
+    trial = _trial_copy(G)
     made: list = []
     a = _split_at(trial, start, start_owner, made)
     b = _split_at(trial, end, end_owner, made)
@@ -460,7 +661,7 @@ def _join_place(
         branch_um[-1], skip=lambda e: not G.has_edge(*e) or G.edges[e].get(_PIECE) == tag)
     if start is None or end is None:
         return REFUSED_ONE_END
-    trial = G.copy()
+    trial = _trial_copy(G)
     made: list = []
     a = _split_at(trial, start, start_owner, made)
     b = _split_at(trial, end, end_owner, made)
@@ -503,11 +704,17 @@ def judge_lost_skeleton(
     first. Pieces drawn back one by one change what the next is judged
     against, so the run itself may draw a different set."""
     spacing = np.asarray(support.voxel_size_zyx, dtype=float)
-    centrelines, index = _Centrelines(G), EdgeSampleIndex(G)
+    centrelines, index = _Centrelines(G), _LiveIndex(G)
     return [
         _judge(G, piece, support, centrelines, index, spacing, keep_hole_over_um)[0]
         for piece in lost_skeleton_pieces(G, skeleton, spacing, reach_um=reach_um, centrelines=centrelines)
     ]
+
+
+def _follow(G: nx.MultiGraph, centrelines: _Centrelines, index: _LiveIndex) -> None:
+    edges = _edge_list(G)
+    centrelines.update(G, edges)
+    index.update(G, edges)
 
 
 def retrace_lost_skeleton(
@@ -536,7 +743,7 @@ def retrace_lost_skeleton(
     is the skeleton's staircase, for the caller to smooth.
     """
     spacing = np.asarray(support.voxel_size_zyx, dtype=float)
-    centrelines, index = _Centrelines(G), EdgeSampleIndex(G)
+    centrelines, index = _Centrelines(G), _LiveIndex(G)
     pieces = lost_skeleton_pieces(G, skeleton, spacing, reach_um=reach_um, centrelines=centrelines)
     drawn = joins = 0
     joins_refused: dict[str, int] = {}
@@ -558,17 +765,16 @@ def retrace_lost_skeleton(
             **{RETRACED: True, RETRACED_HOLE_UM: round(float(verdict.hole_um), 2), _PIECE: drawn},
         )
         # the route, and the vessels its ends split
-        centrelines, index = _Centrelines(G), EdgeSampleIndex(G)
+        _follow(G, centrelines, index)
         for branch in _other_places(piece, route, spacing):
             why = _join_place(G, branch, drawn, support, spacing, keep_hole_over_um, centrelines, index)
             if why is None:
                 joins += 1
                 # its split took a vessel the indexes still name
-                centrelines, index = _Centrelines(G), EdgeSampleIndex(G)
+                _follow(G, centrelines, index)
             else:
                 joins_refused[why] = joins_refused.get(why, 0) + 1
         drawn += 1
-        centrelines, index = _Centrelines(G), EdgeSampleIndex(G)
     for *_e, data in G.edges(data=True):
         data.pop(_PIECE, None)
     if pieces:

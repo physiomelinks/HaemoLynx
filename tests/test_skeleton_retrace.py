@@ -286,3 +286,130 @@ def test_a_lost_stretch_through_dropouts_in_the_mask_is_drawn_back():
 
     (edge,) = R.retraced_edges(scene.G)
     assert {edge[0], edge[1]} == {"A", "D"}
+
+
+def _lattice(cells=6, missing_share=0.3, seed=1, side=40.0):
+    """A square lattice of tube, each side in the graph or (a *missing_share*
+    of them) skeleton only, with every degree-2 node merged away -- so a lost
+    side mostly ends part-way along a kept vessel and is joined by splitting it."""
+    from haemolynx.graph._helpers import edge_sample_points
+
+    rng = np.random.default_rng(seed)
+    lo, hi, mid = 16.0, 16.0 + cells * side, 6.0
+    scene = Scene((13, int(hi + 15), int(hi + 15)))
+    at = lambda i, j: (mid, lo + i * side, lo + j * side)  # noqa: E731
+    for i in range(cells + 1):
+        for j in range(cells + 1):
+            for di, dj in ((0, 1), (1, 0)):
+                if i + di <= cells and j + dj <= cells:
+                    scene.line(at(i, j), at(i + di, j + dj), in_graph=rng.random() >= missing_share,
+                               node_names=(1000 * i + j, 1000 * (i + di) + j + dj))
+    G = scene.G
+    for n in list(G.nodes):
+        if G.degree(n) != 2:
+            continue
+        (a, da), (b, db) = [(o, d) for _, o, d in G.edges(n, data=True)]
+        if n in (a, b) or a == b:
+            continue
+        pos = {x: G.nodes[x]["pos"] for x in (a, b, n)}
+        path = np.vstack([edge_sample_points(a, n, da, pos), edge_sample_points(n, b, db, pos)[1:]])
+        G.remove_node(n)
+        G.add_edge(a, b, voxels=[tuple(p) for p in path], length=R._length(path))
+    return scene
+
+
+def test_the_sample_indexes_are_built_once_and_followed_as_pieces_are_drawn(monkeypatch):
+    """Rebuilt over the whole graph after every piece and join, they took 98% of
+    the step on a 36,000-edge graph (28_3_d contra patella, 2026-10-19: 9 hours
+    for 110 pieces). Each is built once; the result is the lattice's every lost
+    side drawn back, the vessels its ends met split and kept whole."""
+    scene = _lattice()
+    G = scene.G
+    lost = len(R.lost_skeleton_pieces(G, scene.skeleton, scene.spacing))
+    total = sum(d["length"] for *_e, d in G.edges(data=True))
+    lattice_nodes = set(G.nodes)
+    built = []
+    real_init = R._LiveSamples.__init__
+
+    def counting_init(self, *args, **kwargs):
+        built.append(1)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(R._LiveSamples, "__init__", counting_init)
+
+    R.retrace_lost_skeleton(G, scene.skeleton, scene.support())
+
+    drawn = R.retraced_edges(G)
+    assert len(built) == 3  # every edge, the vessels, and the duplicate check's
+    assert len(drawn) >= 10
+    assert sum(n not in lattice_nodes for e in drawn for n in e[:2]) >= 5  # joined by splitting a vessel
+    kept = sum(d["length"] for u, v, d in G.edges(data=True) if not d.get(R.RETRACED))
+    assert kept == pytest.approx(total, abs=1e-6)
+    assert len(R.lost_skeleton_pieces(G, scene.skeleton, scene.spacing)) <= lost - 10
+
+
+def _fresh_distances(G, points, step_um=R._STEP_UM, vessels_only=False):
+    from scipy.spatial import cKDTree
+
+    from haemolynx.graph._helpers import densify_polyline, edge_sample_points
+
+    pos = {n: d["pos"] for n, d in G.nodes(data=True)}
+    samples = [densify_polyline(edge_sample_points(u, v, d, pos), max_step_um=step_um)
+               for u, v, d in G.edges(data=True) if not (vessels_only and d.get(R.IS_ZERO_RESISTANCE))]
+    return cKDTree(np.vstack(samples)).query(points)
+
+
+@pytest.mark.parametrize("compact_every_update", [False, True])
+def test_the_followed_samples_answer_as_ones_built_over_the_graph_as_it_stands(monkeypatch, compact_every_update):
+    """Split vessels, a drawn one, a bridge: the samples followed through every
+    change give the nearest distance a tree built afresh over the graph gives,
+    exactly, whether the edges added sit in a tree of their own or are merged in."""
+    from haemolynx.graph._helpers import edge_sample_points
+    from haemolynx.graph.edit import insert_node_on_edge
+
+    if compact_every_update:
+        monkeypatch.setattr(R._LiveSamples, "_COMPACT_MIN", 0)
+        monkeypatch.setattr(R._LiveSamples, "_COMPACT_SHARE", 0.0)
+    scene = _lattice(cells=4, missing_share=0.0, seed=3)
+    G = scene.G
+    centrelines = R._Centrelines(G)
+    rng = np.random.default_rng(0)
+    queries = rng.uniform((0, 0, 0), (13, 190, 190), size=(400, 3))
+    for step in range(6):
+        u, v, key = sorted(G.edges(keys=True))[step * 3 % G.number_of_edges()]
+        pos = {n: G.nodes[n]["pos"] for n in (u, v)}
+        path = edge_sample_points(u, v, G.edges[u, v, key], pos)  # from u
+        a = insert_node_on_edge(G, u, v, key, path[len(path) // 3])
+        b = insert_node_on_edge(G, u, a, next(iter(G[u][a])), path[len(path) // 6])
+        drawn = np.array([G.nodes[a]["pos"], (6.0, 100.0 + step, 100.0), G.nodes[b]["pos"]])
+        G.add_edge(a, b, voxels=drawn.tolist(), length=R._length(drawn), **{R.IS_ZERO_RESISTANCE: step % 2 == 0})
+        centrelines.update(G)
+
+        assert np.array_equal(centrelines.distance(queries), _fresh_distances(G, queries)[0])
+        for q in queries[:40]:
+            point, owner = centrelines.nearest_vessel(q)
+            assert G.has_edge(*owner) and not G.edges[owner].get(R.IS_ZERO_RESISTANCE)
+            assert np.linalg.norm(point - q) == _fresh_distances(G, q[None], vessels_only=True)[0][0]
+            skipped, skipped_owner = centrelines.nearest_vessel(q, skip=lambda e: e == owner)
+            assert skipped_owner != owner and np.linalg.norm(skipped - q) >= np.linalg.norm(point - q)
+
+
+def test_the_trial_copy_is_the_graphs_copy_in_order():
+    G = nx.MultiGraph()
+    G.graph["kept"] = 1
+    G.add_node("c", pos=(0.0, 0.0, 0.0))
+    G.add_edge("a", "b", voxels=[(0, 0, 0)], length=1.0)
+    G.add_edge("b", "a", length=2.0)
+    G.add_edge("c", "a", length=3.0)
+    G.add_edge("c", "c", length=4.0)
+    G.add_edge("b", "c", key="k", length=5.0)
+
+    H, reference = R._trial_copy(G), G.copy()
+
+    assert H.graph == reference.graph and list(H.nodes(data=True)) == list(reference.nodes(data=True))
+    assert {n: list(H.adj[n]) for n in H} == {n: list(reference.adj[n]) for n in reference}
+    assert list(H.edges(keys=True, data=True)) == list(reference.edges(keys=True, data=True))
+    H.edges["a", "b", 0]["length"] = 9.0
+    H.nodes["c"]["pos"] = None
+    assert G.edges["a", "b", 0]["length"] == 1.0 and G.nodes["c"]["pos"] == (0.0, 0.0, 0.0)
+    assert H.edges["b", "a", 0] is H.edges["a", "b", 0]
