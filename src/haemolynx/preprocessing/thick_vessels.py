@@ -1621,9 +1621,10 @@ def drawn_voxels(drawn: list[np.ndarray], shape) -> np.ndarray:
     """The voxels of the *drawn* pieces (each ``(n, ndim)``) once each, in C
     order: ``np.argwhere`` of a volume they were drawn into."""
     if not drawn:
-        return np.empty((0, len(shape)), dtype=np.intp)
+        return np.transpose(np.unravel_index(np.empty(0, np.intp), shape))
     keys = np.unique(np.concatenate([np.ravel_multi_index(tuple(v.T), shape) for v in drawn]))
-    return np.column_stack(np.unravel_index(keys, shape)).astype(np.intp)
+    # Laid out as np.argwhere lays its answer out (Fortran order).
+    return np.transpose(np.unravel_index(keys, shape))
 
 
 def _any(volume: np.ndarray) -> bool:

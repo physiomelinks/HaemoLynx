@@ -100,11 +100,9 @@ class _SlabComponents:
             components, keys, self.labels = slab_labels.voxels_by_component(
                 self._planes, shape, structure=structure
             )
-            self.coords = (
-                np.column_stack(np.unravel_index(keys, shape)).astype(np.intp)
-                if len(keys)
-                else np.empty((0, len(shape)), dtype=np.intp)
-            )
+            # np.argwhere's own layout (Fortran order): products of these
+            # coordinates round by it.
+            self.coords = np.transpose(np.unravel_index(keys, shape))
             self.components = components
             self.sizes = np.bincount(self.labels, minlength=components.count + 1)
         else:

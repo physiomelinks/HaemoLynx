@@ -685,3 +685,40 @@ def test_mask_recovery_shares_its_bits_through_the_runs_memmap_directory(tmp_pat
 
     assert seen == [tmp_path, tmp_path]
     assert np.array_equal(in_workers.reach, in_process.reach)
+
+
+# --- coordinates laid out as np.argwhere lays them out ----------------------------
+
+
+def test_coordinates_standing_in_for_argwhere_have_its_layout():
+    """np.argwhere's answer is Fortran-ordered, and a BLAS product of it (a
+    covariance, x.T @ x) rounds by the layout: rows picked out of it come
+    back C-ordered, and a piece's principal axis then differed in its last
+    bits -- once in sign, moving a small-mask continuity bridge."""
+    from scipy.ndimage import find_objects, label
+
+    from haemolynx.preprocessing.skeleton import _SlabComponents
+    from haemolynx.preprocessing.slab_labels import ForegroundLabels
+    from haemolynx.preprocessing.thick_vessels import drawn_voxels
+
+    def layout(a):
+        return (a.dtype, a.flags["C_CONTIGUOUS"], a.flags["F_CONTIGUOUS"])
+
+    mask = _blobs((14, 22, 25), 0.08, 1.0, 9)
+    structure = np.ones((3, 3, 3), bool)
+    labels, count = label(mask, structure=structure)
+    found = ForegroundLabels(mask, structure, block_voxels=900)
+    assert count > 3
+    assert layout(found.coords()) == layout(np.argwhere(labels))
+    for number, box in enumerate(find_objects(labels), start=1):
+        old = np.argwhere(labels[box] == number) + np.asarray([s.start for s in box]).reshape(1, 3)
+        new = found.component_coords(number)
+        assert np.array_equal(new, old) and layout(new) == layout(old)
+        if len(old) >= 3:
+            spacing = np.array([[0.98, 0.98, 0.98]])
+            assert np.cov((new * spacing).T).tobytes() == np.cov((old * spacing).T).tobytes()
+    assert layout(_SlabComponents(mask, structure, voxels=True).coords) == layout(np.argwhere(labels))
+    keys = [np.argwhere(labels == 1), np.argwhere(labels == 2)]
+    both = (labels == 1) | (labels == 2)
+    assert np.array_equal(drawn_voxels(keys, mask.shape), np.argwhere(both))
+    assert layout(drawn_voxels(keys, mask.shape)) == layout(np.argwhere(both))

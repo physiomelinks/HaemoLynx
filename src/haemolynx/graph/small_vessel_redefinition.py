@@ -256,12 +256,10 @@ def _tangential_pass(
         for name, mask in large.items()
         if mask is not None and np.any(mask)
     }
-    coords = labels.coords()
-    members = [labels.members(component_id) for component_id in range(1, int(count) + 1)]
-
     def judge(component_id: int) -> tuple[int, np.ndarray, _Verdict]:
-        # Its voxels in C order, as np.argwhere of its box lists them.
-        voxels = coords[members[component_id - 1]]
+        # Its voxels in C order, as np.argwhere of its box lists them, and
+        # laid out as that does (the piece's axis is a BLAS product of them).
+        voxels = labels.component_coords(component_id)
         return component_id, voxels, _judge_piece(voxels, surfaces, spacing, limits)
 
     ids = range(1, int(count) + 1)

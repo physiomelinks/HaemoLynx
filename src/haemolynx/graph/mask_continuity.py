@@ -118,10 +118,10 @@ def _component_descriptors(
         from haemolynx.preprocessing.slab_labels import ForegroundLabels
 
         labeled = ForegroundLabels(labeled > 0, np.ones((3, 3, 3), dtype=bool))
-    all_coords = labeled.coords()
     for component_id in range(1, int(count) + 1):
-        # Its voxels in C order, as np.argwhere of its box lists them.
-        coords = all_coords[labeled.members(component_id)].astype(int)
+        # Its voxels in C order, as np.argwhere of its box lists them, and
+        # laid out as that does: the covariance below rounds by the layout.
+        coords = labeled.component_coords(component_id)
         if coords.size == 0:
             continue
         centroid = np.mean(coords.astype(float), axis=0)

@@ -394,10 +394,17 @@ class ForegroundLabels:
         return self._boxes[int(number) - 1]
 
     def coords(self) -> np.ndarray:
-        """``np.argwhere(labels)``: the foreground voxels in C order."""
-        if not len(self.keys):
-            return np.empty((0, len(self.shape)), dtype=np.intp)
-        return np.column_stack(np.unravel_index(self.keys, self.shape)).astype(np.intp)
+        """``np.argwhere(labels)``: the foreground voxels in C order -- and
+        laid out as ``np.argwhere`` lays them out (Fortran order, the
+        transpose of the index arrays), since a BLAS product of them (a
+        covariance, ``x.T @ x``) rounds by their layout."""
+        return np.transpose(np.unravel_index(self.keys, self.shape))
+
+    def component_coords(self, number: int) -> np.ndarray:
+        """``np.argwhere(labels[box] == number) + box start``: component
+        *number*'s voxels in C order, laid out as that expression gives them
+        (see :meth:`coords`)."""
+        return np.transpose(np.unravel_index(self.keys[self.members(number)], self.shape))
 
     def at(self, voxels) -> np.ndarray:
         """``labels[voxels]`` for a tuple of index arrays (in range)."""
