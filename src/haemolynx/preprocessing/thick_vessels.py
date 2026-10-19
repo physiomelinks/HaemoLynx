@@ -2079,6 +2079,42 @@ def _bounded_structure_path(
         pad *= 2
 
 
+#: The thin-arm join logs its progress every this many arms (and every 30 s).
+_JOIN_PROGRESS_EVERY = 200
+
+
+class _JoinTimes:
+    """Seconds and calls the thin-arm join spends in each of its parts, and
+    how many arms ended each way, for its closing log line: on the patella
+    (Harvey's batch, 2026-10-19) one stretch of 5,459 arms took 411 s while
+    17,000 more took 20 s, and the log could not say where."""
+
+    def __init__(self):
+        self.seconds: dict[str, float] = {}
+        self.calls: dict[str, int] = {}
+        self.arms: dict[str, int] = {}
+
+    @contextmanager
+    def timing(self, part: str):
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.seconds[part] = self.seconds.get(part, 0.0) + time.perf_counter() - start
+            self.calls[part] = self.calls.get(part, 0) + 1
+
+    def arm(self, outcome: str) -> None:
+        self.arms[outcome] = self.arms.get(outcome, 0) + 1
+
+    def summary(self) -> str:
+        arms = ", ".join(f"{n} {k}" for k, n in self.arms.items()) or "none"
+        parts = ", ".join(
+            f"{k} {self.seconds[k]:.1f}s ({self.calls[k]} calls)"
+            for k in sorted(self.seconds, key=lambda k: -self.seconds[k])
+        ) or "nothing timed"
+        return f"arms: {arms}; time in: {parts}"
+
+
 def _join_thin_arms_to_fat_ridge(
     skeleton: np.ndarray,
     thick: np.ndarray,
@@ -2378,12 +2414,17 @@ def _join_thin_arms_to_fat_ridge(
         cached = graph_cache.get(label_key)
         if cached is not None:
             return cached
-        if use_memmap:
-            built = _structure_graph(label_key)
-        else:
-            local_edt = distance_transform_edt(local_mask, sampling=tuple(relative_scale))
-            cost = np.where(local_mask, 1.0 / (np.square(local_edt) + 1e-6), np.inf)
-            built = _build_dijkstra_graph(local_mask, cost, relative_scale)
+        with times.timing("last-resort graph"):
+            if use_memmap:
+                built = _structure_graph(label_key)
+            else:
+                local_edt = distance_transform_edt(local_mask, sampling=tuple(relative_scale))
+                cost = np.where(local_mask, 1.0 / (np.square(local_edt) + 1e-6), np.inf)
+                built = _build_dijkstra_graph(local_mask, cost, relative_scale)
+        logger.info(
+            "_join_thin_arms_to_fat_ridge: last-resort graph over a structure of %d voxels",
+            int(built[1].shape[0]),
+        )
         graph_cache[label_key] = built
         return built
 
@@ -2411,14 +2452,16 @@ def _join_thin_arms_to_fat_ridge(
         return _build_dijkstra_graph_from_coords(coords - origin, box_shape, cost, relative_scale)
 
     unjoined_by_bound: list[tuple[int, int, int]] = []
+    times = _JoinTimes()
 
     def _bounded_join(label_key: int, local_start, local_end) -> list:
         """The last resort under *bounded_fallback*, in the coordinates of
         the structure's box; an arm it cannot join is noted and logged."""
         box = allowed_components.box(label_key)
-        path, reason = _bounded_structure_path(
-            allowed_b, box, local_start, local_end, relative_scale, structure
-        )
+        with times.timing("bounded last resort"):
+            path, reason = _bounded_structure_path(
+                allowed_b, box, local_start, local_end, relative_scale, structure
+            )
         if path:
             return path
         origin = np.array([int(s.start) for s in box], dtype=np.int64)
@@ -2517,7 +2560,8 @@ def _join_thin_arms_to_fat_ridge(
         cap and the radius multiple there, None when neither is set."""
         cap = max_bridge_distance_um
         if max_bridge_radius_multiple is not None:
-            radius_cap = float(max_bridge_radius_multiple) * _local_fat_radius_um_at(end)
+            with times.timing("cap radius"):
+                radius_cap = float(max_bridge_radius_multiple) * _local_fat_radius_um_at(end)
             cap = radius_cap if cap is None else min(cap, radius_cap)
         return cap
 
@@ -2528,15 +2572,34 @@ def _join_thin_arms_to_fat_ridge(
     )
     join_step_start = time.perf_counter()
     last_log_time = join_step_start
+
+    def _checkpoint(arm_index: int, outcome: str) -> None:
+        """Count the arm's outcome and log progress, whichever way it ended."""
+        nonlocal last_log_time
+        times.arm(outcome)
+        now = time.perf_counter()
+        if arm_index % _JOIN_PROGRESS_EVERY == 0 or now - last_log_time > 30.0:
+            logger.info(
+                "_join_thin_arms_to_fat_ridge: %d/%d arm components processed "
+                "(%.2fs since last checkpoint, %.2fs total)",
+                arm_index,
+                int(arm_ids.size),
+                now - last_log_time,
+                now - join_step_start,
+            )
+            last_log_time = now
+
     for arm_index, component_id in enumerate(arm_ids, start=1):
         pts = thin_coords[by_arm[arm_bounds[component_id - 1]:arm_bounds[component_id]]]
         if pts.size == 0:
+            _checkpoint(arm_index, "empty")
             continue
         padded = _expand_slices(thin_components.box(int(component_id)), shape, pad=1)
         origin_p = np.array([int(s.start) for s in padded], dtype=int)
         component = np.zeros(tuple(int(s.stop) - int(s.start) for s in padded), dtype=bool)
         component[tuple((pts - origin_p).T)] = True
         if (binary_dilation(component, structure=structure) & fat_now[padded]).any():
+            _checkpoint(arm_index, "already touching")
             continue
         arm_component_label = int(allowed_at[tuple(pts[0])])
         same_component = fat_component_labels == arm_component_label
@@ -2547,6 +2610,7 @@ def _join_thin_arms_to_fat_ridge(
             # no joining) or genuinely isolated. Either way there is nothing
             # to join it to -- keep it as already-drawn Lee output, and do
             # not manufacture a connection to an unrelated nearby network.
+            _checkpoint(arm_index, "no fat in its structure")
             continue
         arm_points_um = pts.astype(np.float64, copy=False) * scale
         # The ridge first; the nearest of everything already connected (the
@@ -2559,11 +2623,11 @@ def _join_thin_arms_to_fat_ridge(
             effective_cap = _bridge_cap_um(end)
         if ridge is None or (effective_cap is not None and nearest_distance > effective_cap):
             scoped_fat_coords = fat_coords[same_component]
-            scoped_kdt = (
-                fat_kdt
-                if same_component.all()
-                else cKDTree(scoped_fat_coords.astype(np.float64, copy=False) * scale)
-            )
+            if same_component.all():
+                scoped_kdt = fat_kdt
+            else:
+                with times.timing("nearest-fat tree of the structure"):
+                    scoped_kdt = cKDTree(scoped_fat_coords.astype(np.float64, copy=False) * scale)
             nearest, nearest_distance, end = _nearest_point(
                 arm_points_um, scoped_fat_coords, scoped_kdt
             )
@@ -2580,6 +2644,7 @@ def _join_thin_arms_to_fat_ridge(
                 nearest_distance,
                 effective_cap,
             )
+            _checkpoint(arm_index, "past the cap")
             continue
         # Search only this arm's own physically connected structure, not the
         # whole image: _path_through_mask's own local searches are already
@@ -2593,20 +2658,21 @@ def _join_thin_arms_to_fat_ridge(
         local_allowed = allowed_b[component_slc]
         local_start = tuple(int(v) for v in (np.array(start) - component_origin))
         local_end = tuple(int(v) for v in (np.array(end) - component_origin))
-        local_path = _path_through_mask(
-            local_start,
-            local_end,
-            local_allowed,
-            fallback_graph_fn=lambda: _fallback_graph_for(
-                arm_component_label, local_allowed
-            ),
-            fallback_path_fn=(
-                (lambda a, b, key=arm_component_label: _bounded_join(key, a, b))
-                if bounded_fallback
-                else None
-            ),
-            relative_spacing=relative_scale,
-        )
+        with times.timing("path through the mask"):
+            local_path = _path_through_mask(
+                local_start,
+                local_end,
+                local_allowed,
+                fallback_graph_fn=lambda: _fallback_graph_for(
+                    arm_component_label, local_allowed
+                ),
+                fallback_path_fn=(
+                    (lambda a, b, key=arm_component_label: _bounded_join(key, a, b))
+                    if bounded_fallback
+                    else None
+                ),
+                relative_spacing=relative_scale,
+            )
         path = [
             tuple(int(v) for v in (np.array(voxel) + component_origin))
             for voxel in local_path
@@ -2641,18 +2707,15 @@ def _join_thin_arms_to_fat_ridge(
             fat_component_labels = np.concatenate(
                 [fat_component_labels, allowed_at[tuple(new_coords.T)]]
             )
-            fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
-        if arm_index % 200 == 0 or time.perf_counter() - last_log_time > 30.0:
-            now = time.perf_counter()
-            logger.info(
-                "_join_thin_arms_to_fat_ridge: %d/%d arm components processed "
-                "(%.2fs since last checkpoint, %.2fs total)",
-                arm_index,
-                int(arm_ids.size),
-                now - last_log_time,
-                now - join_step_start,
-            )
-            last_log_time = now
+            with times.timing("nearest-fat tree rebuilt"):
+                fat_kdt = cKDTree(fat_coords.astype(np.float64, copy=False) * scale)
+        _checkpoint(arm_index, "joined" if drawn else "nothing drawn")
+    logger.info(
+        "_join_thin_arms_to_fat_ridge: %d arm components in %.1fs; %s",
+        int(arm_ids.size),
+        time.perf_counter() - join_step_start,
+        times.summary(),
+    )
     if unjoined_by_bound:
         logger.warning(
             "_join_thin_arms_to_fat_ridge: %d thin arm(s) left unjoined by the bounded "

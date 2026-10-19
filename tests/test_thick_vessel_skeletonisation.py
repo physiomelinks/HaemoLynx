@@ -2256,6 +2256,40 @@ def test_two_arms_entering_side_by_side_each_run_to_the_ridge():
     assert not np.any((bridges[:, 2] >= 19) & (bridges[:, 2] <= 20) & (bridges[:, 1] <= 12))
 
 
+@pytest.mark.parametrize("use_memmap", [False, True])
+def test_the_join_logs_every_arm_and_where_its_time_went(monkeypatch, caplog, use_memmap):
+    """Progress is logged whichever way an arm ends -- an arm already
+    touching the ridge used to skip it, so on the patella one log stretch
+    held 5,459 arms and could not say which -- and the join ends with each
+    outcome's count and the seconds spent in each of its parts. What it
+    draws does not change."""
+    import logging
+
+    import haemolynx.preprocessing.thick_vessels as thick_vessels_module
+
+    skeleton, thick, allowed = _two_arms_into_a_fat_band((18, 21))
+    skeleton[0, 10, 35] = True  # a ridge voxel at the wall, and an arm onto it
+    skeleton[0, 0:10, 35] = True
+    allowed = thick | skeleton
+    expected = _join_thin_arms_to_fat_ridge(
+        skeleton, thick, allowed, min_arm_extent_um=0.0, use_memmap=use_memmap
+    )
+
+    monkeypatch.setattr(thick_vessels_module, "_JOIN_PROGRESS_EVERY", 1)
+    with caplog.at_level(logging.INFO, logger=thick_vessels_module.logger.name):
+        joined = _join_thin_arms_to_fat_ridge(
+            skeleton, thick, allowed, min_arm_extent_um=0.0, use_memmap=use_memmap
+        )
+
+    assert np.array_equal(joined, expected)
+    progress = [r.getMessage() for r in caplog.records if "arm components processed" in r.getMessage()]
+    assert [m.split()[1] for m in progress] == ["1/3", "2/3", "3/3"]
+    summary = [r.getMessage() for r in caplog.records if "arm components in" in r.getMessage()]
+    assert len(summary) == 1
+    assert "2 joined" in summary[0] and "1 already touching" in summary[0]
+    assert "path through the mask" in summary[0] and "(2 calls)" in summary[0]
+
+
 def test_an_arm_whose_ridge_is_past_the_cap_still_joins_an_earlier_bridge_within_it():
     """The ridge ends at x = 15. The arm at x = 12 reaches it within the cap
     (11 um); the arm at x = 19 does not (11.7 um), but the first arm's bridge
