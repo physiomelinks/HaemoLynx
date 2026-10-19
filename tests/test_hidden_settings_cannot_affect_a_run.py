@@ -72,6 +72,7 @@ from haemolynx.pipeline.stages import (
     solve,
 )
 
+from synthetic_fixtures import write_fixture_run  # noqa: E402
 from test_diameter_assignment import _network as _diameter_line_graph  # noqa: E402
 from test_pipeline_schema_api import (  # noqa: E402
     _first_unmet_prerequisite,
@@ -196,8 +197,17 @@ def _write_mask(path: Path, shape=(6, 6, 6)) -> Path:
 
 
 def _run_segment(overrides: Mapping[str, Any], tmp_dir: Path):
+    # The image-only Input rows are unmet under network_source=synthetic, and
+    # a synthetic run reads its template where an image run reads the image:
+    # with none, segment refuses the run whatever the probed setting holds.
+    extra = {}
+    if overrides.get("network_source") == "synthetic" and "synthetic_template_path" not in overrides:
+        template = tmp_dir / "template.haemorun"
+        if not template.exists():
+            write_fixture_run(tmp_dir)
+        extra["synthetic_template_path"] = template
     mask_path = _write_mask(tmp_dir / "input.tif")
-    settings = _settings_for(tmp_dir, overrides, input_path=mask_path)
+    settings = _settings_for(tmp_dir, overrides, input_path=mask_path, **extra)
     return segment(settings)
 
 

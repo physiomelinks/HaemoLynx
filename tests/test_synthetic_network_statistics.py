@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import csv
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -35,6 +36,10 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 DEMO_OUTPUT_DIR = REPO_ROOT / "examples" / "outputs" / "synthetic_network_statistics"
+#: Set when the file is run as a script, which is when the demo copy is wanted.
+#: Under pytest it is not written: the repository may sit deep enough (a
+#: snapshot in a scratchpad) that its longest name passes Windows' 260 characters.
+WRITE_DEMO_COPY_ENV = "HAEMOLYNX_WRITE_DEMO_OUTPUTS"
 
 from haemolynx.graph import assign_hierarchical_branch_orders, calculate_edge_length
 from haemolynx.statistics import (
@@ -444,17 +449,18 @@ def test_synthetic_network_statistics(tmp_path: Path) -> None:
 
     # Also emit a stable demo copy under examples/outputs for easy inspection
     # when running this test file directly.
-    DEMO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    demo_stats_csv = DEMO_OUTPUT_DIR / f"{image_stem}_statistics.csv"
-    demo_branch_csv = DEMO_OUTPUT_DIR / f"{image_stem}_branch_statistics.csv"
-    demo_gt_stats_csv = DEMO_OUTPUT_DIR / f"{image_stem}_statistics_ground_truth.csv"
-    demo_gt_branch_csv = DEMO_OUTPUT_DIR / f"{image_stem}_branch_statistics_ground_truth.csv"
-    demo_html_path = DEMO_OUTPUT_DIR / f"{image_stem}_branch_labelled_3d.html"
-    export_statistics_to_csv(stats, demo_stats_csv)
-    export_branch_order_statistics_to_csv(branch_stats, demo_branch_csv)
-    _write_ground_truth_statistics_csv(expected_stats, demo_gt_stats_csv)
-    _write_ground_truth_branch_csv(expected_branch_stats, demo_gt_branch_csv)
-    assert _write_branch_labelled_3d_html(G, demo_html_path)
+    if os.environ.get(WRITE_DEMO_COPY_ENV):
+        DEMO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        demo_stats_csv = DEMO_OUTPUT_DIR / f"{image_stem}_statistics.csv"
+        demo_branch_csv = DEMO_OUTPUT_DIR / f"{image_stem}_branch_statistics.csv"
+        demo_gt_stats_csv = DEMO_OUTPUT_DIR / f"{image_stem}_statistics_ground_truth.csv"
+        demo_gt_branch_csv = DEMO_OUTPUT_DIR / f"{image_stem}_branch_statistics_ground_truth.csv"
+        demo_html_path = DEMO_OUTPUT_DIR / f"{image_stem}_branch_labelled_3d.html"
+        export_statistics_to_csv(stats, demo_stats_csv)
+        export_branch_order_statistics_to_csv(branch_stats, demo_branch_csv)
+        _write_ground_truth_statistics_csv(expected_stats, demo_gt_stats_csv)
+        _write_ground_truth_branch_csv(expected_branch_stats, demo_gt_branch_csv)
+        assert _write_branch_labelled_3d_html(G, demo_html_path)
 
     # Ensure all expected output artifacts were generated.
     for p in [stats_csv, branch_csv, gt_stats_csv, gt_branch_csv, html_path]:
@@ -463,4 +469,5 @@ def test_synthetic_network_statistics(tmp_path: Path) -> None:
 
 
 if __name__ == "__main__":
+    os.environ[WRITE_DEMO_COPY_ENV] = "1"
     raise SystemExit(pytest.main([__file__, "-q"]))

@@ -136,7 +136,8 @@ haemolynx/
 │   │                       #   vessel_mask_search.py (when the panel looks for vessel
 │   │                       #   masks and which rows it fills, pure),
 │   │                       #   batch_run.py (a batch: one run and .haemorun per image,
-│   │                       #   no Qt; `python -m haemolynx.gui.batch_run`),
+│   │                       #   no Qt; `python -m haemolynx.gui.batch_run`) + batch_run_cli.py
+│   │                       #   (its command line: the one gui module allowed to print),
 │   │                       #   _widget.py (the panel), napari.yaml (npe2 manifest)
 │   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py,
 │   │                       #   geometry.py (an edge -> a drawable polyline),
