@@ -722,3 +722,287 @@ def test_coordinates_standing_in_for_argwhere_have_its_layout():
     both = (labels == 1) | (labels == 2)
     assert np.array_equal(drawn_voxels(keys, mask.shape), np.argwhere(both))
     assert layout(drawn_voxels(keys, mask.shape)) == layout(np.argwhere(both))
+
+
+# --- vessel-mask dilation without a distance volume ------------------------------
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_low_ram_mask_dilation_is_the_distance_transforms(tmp_path, monkeypatch, seed):
+    from haemolynx.graph.large_vessels import dilate_binary_mask_by_microns
+
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 3_000)
+    rng = np.random.default_rng(seed)
+    mask = _blobs((14, 26, 30), rng.uniform(0.005, 0.2), 1.0, seed)
+    spacing = [(1.0, 1.0, 1.0), (0.98, 0.98, 0.98), (2.0, 0.41, 0.41)][seed % 3]
+    for dilation in (0.5, 0.98, 1.96, 3.0, 4.9):
+        plain = dilate_binary_mask_by_microns(mask, dilation, spacing)
+        low = dilate_binary_mask_by_microns(mask, dilation, spacing, low_memory=True, memmap_directory=tmp_path)
+        assert isinstance(low, np.memmap)
+        assert np.array_equal(low, plain)
+
+
+def test_low_ram_dilation_of_an_empty_or_full_mask_is_scipys(tmp_path):
+    """scipy reads a volume with no feature as that far from one at (-1, 0, 0):
+    an empty mask "dilates" into a corner, and the same here."""
+    from haemolynx.graph.large_vessels import dilate_binary_mask_by_microns
+
+    for mask in (np.zeros((6, 9, 10), bool), np.ones((6, 9, 10), bool)):
+        plain = dilate_binary_mask_by_microns(mask, 1.6, (1.0, 0.5, 0.5))
+        low = dilate_binary_mask_by_microns(mask, 1.6, (1.0, 0.5, 0.5), low_memory=True, memmap_directory=tmp_path)
+        assert np.array_equal(low, plain)
+    assert dilate_binary_mask_by_microns(np.zeros((6, 9, 10), bool), 1.6, (1.0, 0.5, 0.5)).any()
+
+
+def test_low_ram_mask_dilation_holds_no_volume(tmp_path, monkeypatch):
+    from haemolynx.graph.large_vessels import dilate_binary_mask_by_microns
+
+    """Four times the stack, the same vessels: the same peak (a block's
+    feature transform), where the whole transform's grows with it."""
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 60_000)
+
+    def peaks(depth):
+        mask = np.zeros((depth, 120, 120), dtype=bool)
+        _capsule_into(mask, (1.0, 0.6, 0.6), (5.0, 10.0, 10.0), (30.0, 60.0, 60.0), 3.0)
+        measured = []
+        for kwargs in ({}, dict(low_memory=True, memmap_directory=tmp_path)):
+            tracemalloc.start()
+            try:
+                dilate_binary_mask_by_microns(mask, 2.0, (1.0, 0.6, 0.6), **kwargs)
+                measured.append(tracemalloc.get_traced_memory()[1])
+            finally:
+                tracemalloc.stop()
+        return mask.size, measured
+
+    _small, (_whole, small_low) = peaks(40)
+    big, (big_whole, big_low) = peaks(160)
+    assert big_whole >= 8 * big  # a float64 distance volume
+    assert big_low < 1.5 * small_low
+    assert big_low < 0.1 * big_whole
+
+
+def test_low_ram_confidence_assignment_dilates_as_before(tmp_path, monkeypatch):
+    import networkx as nx
+
+    from haemolynx.graph import (
+        select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidence as select,
+    )
+
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 2_000)
+    G = nx.MultiGraph()
+    positions = [(4.0, 3.0, 2.0), (4.0, 3.0, 9.0), (4.0, 3.0, 16.0), (4.0, 12.0, 9.0), (4.0, 18.0, 9.0)]
+    for node, pos in enumerate(positions):
+        G.add_node(node, pos=np.array(pos))
+    for u, v in ((0, 1), (1, 2), (1, 3), (3, 4)):
+        G.add_edge(u, v, voxels=[positions[u], positions[v]], length=1.0)
+    arteriole = np.zeros((9, 22, 20), bool)
+    venule = np.zeros((9, 22, 20), bool)
+    arteriole[2:7, 1:5, 0:3] = True
+    venule[2:7, 17:21, 7:12] = True
+    kwargs = dict(
+        voxel_size_zyx=(1.0, 1.0, 1.0), max_dilation_microns=10.0, dilation_step_microns=2.0,
+        confidence_margin=0.02, minimum_confidence=0.02, topology_penalty=0.0,
+    )
+    plain = select(G, large_arteriole_mask=arteriole, large_venule_mask=venule, **kwargs)
+    low = select(
+        G, large_arteriole_mask=arteriole, large_venule_mask=venule, low_memory=True,
+        memmap_directory=tmp_path, **kwargs,
+    )
+    assert plain["input_nodes"] or plain["output_nodes"]
+    for key in ("input_nodes", "output_nodes", "unresolved_nodes", "node_confidence"):
+        assert repr(low[key]) == repr(plain[key])
+
+
+# --- small-mask continuity, read at the voxels it asks about ----------------------
+
+
+def _broken_tubes(shape, rng, count, radius, spacing):
+    mask = np.zeros(shape, bool)
+    points = np.indices(shape, dtype=float).reshape(3, -1).T * spacing
+    extent = np.asarray(shape) * spacing
+    for _ in range(count):
+        start = rng.uniform(0.1, 0.9, 3) * extent
+        direction = rng.normal(size=3)
+        direction /= np.linalg.norm(direction)
+        offset = points - start
+        along = offset @ direction
+        t = np.clip(along, 0.0, rng.uniform(5.0, 0.6 * extent.max()))
+        radial = np.linalg.norm(offset - t[:, None] * direction, axis=1)
+        gap = np.abs((along % 9.0) - 4.5) < 0.8
+        mask |= ((radial <= radius) & ~gap).reshape(shape)
+    return mask
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_low_ram_small_mask_continuity_is_the_in_ram_one(tmp_path, monkeypatch, seed):
+    from haemolynx.graph import enforce_small_vessel_mask_continuity
+
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 4_000)
+    rng = np.random.default_rng(seed)
+    spacing = np.array([[1.5, 0.5, 0.5], [0.98, 0.98, 0.98], [1.0, 1.0, 1.0]][seed % 3])
+    shape = (14, 40, 44)
+    small_art = _broken_tubes(shape, rng, 4, 1.4, spacing)
+    small_ven = _broken_tubes(shape, rng, 4, 1.4, spacing) & ~small_art
+    large_art = _broken_tubes(shape, rng, 1, 2.6, spacing) & ~small_art & ~small_ven
+    large_ven = _broken_tubes(shape, rng, 1, 2.6, spacing) & ~small_art & ~small_ven & ~large_art
+    kwargs = dict(
+        small_arteriole_mask=small_art, small_venule_mask=small_ven,
+        large_arteriole_mask=large_art if seed % 2 else None, large_venule_mask=large_ven,
+        voxel_size_zyx=tuple(spacing), enforce_cylinder_only=bool(seed % 2), min_cylindricality=0.3,
+        max_bridge_distance_microns=12.0, corridor_max_distance_microns=6.0,
+        opposite_exclusion_distance_microns=1.5, min_facing_cosine=0.5, max_axis_angle_degrees=60.0,
+        max_radius_ratio=4.0,
+    )
+    plain = enforce_small_vessel_mask_continuity(**kwargs)
+    low = enforce_small_vessel_mask_continuity(low_memory=True, memmap_directory=tmp_path, **kwargs)
+
+    assert sum(plain["stats"][kind]["accepted_bridges"] for kind in ("arteriole", "venule")) > 0
+    for key in ("small_arteriole_mask", "small_venule_mask"):
+        assert isinstance(low[key], np.memmap)
+        assert np.array_equal(low[key], plain[key])
+
+    def without_times(stats):
+        return {
+            k: ({kk: vv for kk, vv in v.items() if "elapsed" not in kk} if isinstance(v, dict) else v)
+            for k, v in stats.items()
+        }
+
+    assert without_times(low["stats"]) == without_times(plain["stats"])
+
+
+def test_continuity_distance_reader_is_scipys_transform():
+    from scipy.ndimage import distance_transform_edt
+
+    from haemolynx.graph.mask_continuity import _DistanceAt
+    from haemolynx.preprocessing.memmap_support import MaskUnion
+
+    a = _blobs((10, 18, 20), 0.05, 1.0, 1)
+    b = _blobs((10, 18, 20), 0.05, 1.0, 2)
+    every = tuple(np.indices(a.shape).reshape(3, -1))
+    for spacing in ((1.0, 1.0, 1.0), (1.5, 0.5, 0.5)):
+        inside = _DistanceAt(a, feature_value=False, sampling=spacing)
+        assert np.array_equal(inside[every], distance_transform_edt(a, sampling=spacing)[every])
+        union = _DistanceAt(MaskUnion(a, b), feature_value=True, sampling=spacing)
+        assert np.array_equal(union[every], distance_transform_edt(~(a | b), sampling=spacing)[every])
+        for volume in (np.zeros(a.shape, bool), np.ones(a.shape, bool)):
+            reader = _DistanceAt(volume, feature_value=True, sampling=spacing)
+            assert np.array_equal(reader[every], distance_transform_edt(~volume, sampling=spacing)[every])
+
+
+def test_a_continuity_bridge_drawn_in_its_box_is_the_whole_volumes():
+    from haemolynx.graph.mask_continuity import (
+        _bridge_box_from_line,
+        _bridge_mask_from_line,
+        _line_indices_zyx,
+    )
+
+    rng = np.random.default_rng(4)
+    shape = (9, 20, 24)
+    for _ in range(30):
+        a, b = (rng.integers(-2, np.asarray(shape) + 2) for _ in range(2))
+        line = _line_indices_zyx(a, b)
+        for radius in (0, 1, 3):
+            for spacing in (None, (2.0, 0.5, 0.5)):
+                whole = _bridge_mask_from_line(line, shape, radius_voxels=radius, sampling_zyx=spacing)
+                boxed = _bridge_box_from_line(line, shape, radius_voxels=radius, sampling_zyx=spacing)
+                drawn = np.zeros(shape, bool)
+                if boxed is not None:
+                    drawn[boxed[0]] = boxed[1]
+                assert np.array_equal(drawn, whole)
+
+
+# --- arteriole | venule, read or written without a volume in RAM -----------------
+
+
+def test_mask_union_reads_as_the_union():
+    from haemolynx.graph._helpers import points_inside_mask
+    from haemolynx.preprocessing.memmap_support import MaskUnion
+
+    a = _blobs((10, 18, 20), 0.05, 1.0, 1)
+    b = _blobs((10, 18, 20), 0.05, 1.0, 2)
+    union = MaskUnion(a, None, b)
+    assert union.shape == a.shape and np.array_equal(union[...], a | b)
+    assert np.array_equal(union[2:7, ::3, 5], (a | b)[2:7, ::3, 5])
+    points = np.random.default_rng(0).uniform(-1, 19, (300, 3))
+    assert np.array_equal(
+        points_inside_mask(points, union, voxel_size_zyx=(1.0, 1.0, 1.0)),
+        points_inside_mask(points, a | b, voxel_size_zyx=(1.0, 1.0, 1.0)),
+    )
+    with pytest.raises(ValueError):
+        MaskUnion(a, np.zeros((3, 3, 3), bool))
+
+
+def test_low_ram_global_mask_is_the_union_on_disk(tmp_path, monkeypatch):
+    from haemolynx.io import as_global_vessel_mask
+
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 700)
+    a = _blobs((10, 18, 20), 0.05, 1.0, 1)
+    b = _blobs((10, 18, 20), 0.05, 1.0, 2)
+    union = as_global_vessel_mask(a, b, use_memmap=True, memmap_directory=tmp_path)
+    assert isinstance(union, np.memmap) and np.array_equal(union, a | b)
+    assert np.array_equal(as_global_vessel_mask(None, b, use_memmap=True), b)
+
+
+def test_low_ram_restriction_union_is_the_in_ram_one(tmp_path, monkeypatch):
+    from haemolynx.pipeline import default_schema, stages
+
+    a = _blobs((10, 18, 20), 0.05, 1.0, 1)
+    b = _blobs((10, 18, 20), 0.05, 1.0, 2)
+    c = _blobs((10, 18, 20), 0.05, 1.0, 3)
+
+    def fake_load(**kwargs):
+        if kwargs["mask_role"] == "large":
+            return a, b, (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)
+        return c, None, (1.0, 1.0, 1.0), None
+
+    monkeypatch.setattr(stages.io, "load_and_validate_vessel_masks", fake_load)
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 700)
+    settings = default_schema().defaults()
+    settings.update(
+        skeleton_thick_vessel_restrict_to_mask="both",
+        skeleton_thick_vessel_restrict_to_mask_warn_below=0.0,
+        use_large_vessel_masks=True,
+        use_small_vessel_masks_for_boundary_assignment=True,
+        automated_vessel_assignment=True,
+    )
+    image = a | b | c
+    plain = stages._thick_vessel_restriction_mask(
+        image, dict(settings, use_memmap_loading=False, memmap_directory=None), (1.0, 1.0, 1.0)
+    )
+    low = stages._thick_vessel_restriction_mask(
+        image, dict(settings, use_memmap_loading=True, memmap_directory=str(tmp_path)), (1.0, 1.0, 1.0)
+    )
+    assert isinstance(low, np.memmap)
+    assert np.array_equal(low, plain) and np.array_equal(plain, image)
+
+
+# --- segmentation cleanup's reconnect: labels at the mask's voxels ----------------
+
+
+def test_low_ram_cleanup_reconnect_labels_no_volume(tmp_path, monkeypatch):
+    from haemolynx.preprocessing import segmentation_cleanup as cleanup
+
+    monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 3_000)
+    zz, yy, xx = np.indices((12, 24, 44), dtype=float)
+    mask = np.zeros((12, 24, 44), dtype=bool)
+    for z, y, pieces in ((4, 5, ((0, 14), (20, 34))), (8, 16, ((2, 12), (17, 30), (35, 43)))):
+        tube = (zz - z) ** 2 + (yy - y) ** 2 <= 1.0
+        for x0, x1 in pieces:
+            mask |= tube & (xx >= x0) & (xx <= x1)
+    made = []
+    real = cleanup.new_memmap_array
+
+    def recording(shape, dtype, **kwargs):
+        made.append(np.dtype(dtype))
+        return real(shape, dtype, **kwargs)
+
+    monkeypatch.setattr(cleanup, "new_memmap_array", recording)
+    args = dict(voxel_size_zyx=(1.0, 1.0, 1.0), max_bridge_distance_um=10.0)
+    plain, plain_stats = cleanup.reconnect_vessel_like_components(mask, **args)
+    low, low_stats = cleanup.reconnect_vessel_like_components(
+        mask, use_memmap=True, memmap_directory=tmp_path, **args
+    )
+
+    assert plain_stats["accepted_bridges"] > 0
+    assert np.array_equal(np.asarray(low), plain) and low_stats == plain_stats
+    assert np.dtype(np.int32) not in made

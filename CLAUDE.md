@@ -750,6 +750,26 @@ are only caught locally.
   367 MB and 1.3 s; the projection 344 -> 367 MB (no smaller at this size, constant past it).
   The gated skeleton (1 B a voxel) and the join's lookups (16 B a fat voxel, twice: 4.6 GB on
   the patella's 144 M) are gone from RAM by construction.
+  Coordinates that stand in for `np.argwhere` (`ForegroundLabels.coords` / `component_coords`,
+  the skeleton's slab components, the thick tree's voxels) are laid out as it lays them out,
+  Fortran order (the transpose of the index arrays): a BLAS product of them rounds by the
+  layout, and C-ordered rows moved a small-mask continuity bridge (one piece's principal axis
+  flipped sign; fixed in `b6c602a`, pinned in the volume-copies tests). Since then, also under
+  the low-RAM option: small-mask continuity reads its four distance transforms at the voxels
+  its gates ask about (`mask_continuity._DistanceAt`: the lumen radius's tiles, and scipy's
+  "no feature" reading -- every voxel that far from one at index (-1, 0, 0) -- where a mask is
+  empty), draws a bridge in its own box (`_bridge_box_from_line`; a rejected candidate used to
+  come with a volume of zeros) and reads the other type's masks together where asked; the
+  arteriole | venule unions are read where asked (`memmap_support.MaskUnion`: the large-vessel
+  cut, the small-mask redefinition's labelling) or written on disk a slab at a time
+  (`as_global_vessel_mask(use_memmap=)`, the thick-vessel restriction), and the quality gate
+  counts its overlap a slab at a time; a vessel mask's dilation is compared with its radius a
+  block at a time (`dilate_binary_mask_by_microns(low_memory=)`, through the loader and each
+  step of the confidence assignment) -- scipy's own transform also "dilates" an empty mask into
+  the volume's corner, and so does this; and segmentation cleanup's reconnect labels its
+  components a slab at a time (`ForegroundLabels`, read by boxes) instead of an int32 label
+  file. Identical to `a82c7e9` on random fixtures (`outputs/lvc/continuity_check.py`,
+  `union_check.py`). FOLLOWUP_PEAKS_PLACEHOLDER
 - **`graph/facing_ends.py`** — `join_facing_dead_ends`, its own step after mask recovery
   (`join_facing_dead_ends`, run with a mask and `bridge_require_mask_support`;
   `facing_dead_end_max_gap_um`, 10 µm, 0 off): two dead ends pointing at each other -- the

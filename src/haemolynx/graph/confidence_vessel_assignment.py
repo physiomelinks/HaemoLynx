@@ -63,11 +63,19 @@ def assess_large_vessel_assignment_quality(
         )
     art_mask = large_arteriole_mask.astype(bool, copy=False)
     ven_mask = large_venule_mask.astype(bool, copy=False)
-    overlap = np.logical_and(art_mask, ven_mask)
-    union = np.logical_or(art_mask, ven_mask)
+    # Counted a slab of planes at a time: the overlap and the union were
+    # each a volume.
+    from haemolynx.preprocessing.memmap_support import slab_step
+
+    overlap_count = union_count = 0
+    step = slab_step(art_mask.shape)
+    for z0 in range(0, art_mask.shape[0], step):
+        a, v = np.asarray(art_mask[z0:z0 + step]), np.asarray(ven_mask[z0:z0 + step])
+        overlap_count += int(np.count_nonzero(a & v))
+        union_count += int(np.count_nonzero(a | v))
     overlap_fraction = 0.0
-    if np.any(union):
-        overlap_fraction = float(np.count_nonzero(overlap)) / float(np.count_nonzero(union))
+    if union_count:
+        overlap_fraction = float(overlap_count) / float(union_count)
 
     art_components = _mask_component_metrics(art_mask)
     ven_components = _mask_component_metrics(ven_mask)
@@ -208,8 +216,15 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidenc
     quality_min_terminal_coverage: float = 0.20,
     quality_max_component_count: int = 12,
     conservative_max_dilation_microns: float = 15.0,
+    low_memory: bool = False,
+    memmap_directory=None,
 ) -> dict[str, Any]:
-    """Confidence-based progressive terminal I/O assignment with unresolved nodes."""
+    """Confidence-based progressive terminal I/O assignment with unresolved nodes.
+
+    *low_memory* (the low-RAM option) makes each step's dilated masks a block
+    at a time on disk (``large_vessels.dilate_binary_mask_by_microns``), with
+    no distance volume of either mask (a float64 each, kept for every step).
+    The same masks, so the same assignment."""
     if large_arteriole_mask.shape != large_venule_mask.shape:
         raise ValueError(
             "large_arteriole_mask and large_venule_mask must share a shape. "
@@ -263,8 +278,20 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidenc
 
     base_art = large_arteriole_mask.astype(bool, copy=False)
     base_ven = large_venule_mask.astype(bool, copy=False)
-    art_distance = _distance_from_mask_microns(base_art, voxel_size_zyx=voxel_size_zyx)
-    ven_distance = _distance_from_mask_microns(base_ven, voxel_size_zyx=voxel_size_zyx)
+    if low_memory:
+        from .large_vessels import dilate_binary_mask_by_microns
+
+        def dilated(base, _distance, *, dilation_microns):
+            return dilate_binary_mask_by_microns(
+                base, float(dilation_microns), voxel_size_zyx,
+                low_memory=True, memmap_directory=memmap_directory,
+            )
+
+        art_distance = ven_distance = None
+    else:
+        dilated = _dilated_mask_from_cached_distance
+        art_distance = _distance_from_mask_microns(base_art, voxel_size_zyx=voxel_size_zyx)
+        ven_distance = _distance_from_mask_microns(base_ven, voxel_size_zyx=voxel_size_zyx)
 
     assigned_inputs: set[Any] = set()
     assigned_outputs: set[Any] = set()
@@ -276,12 +303,12 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation_confidenc
     for dilation_microns in schedule:
         if not remaining_ids:
             break
-        step_art = _dilated_mask_from_cached_distance(
+        step_art = dilated(
             base_art,
             art_distance,
             dilation_microns=float(dilation_microns),
         )
-        step_ven = _dilated_mask_from_cached_distance(
+        step_ven = dilated(
             base_ven,
             ven_distance,
             dilation_microns=float(dilation_microns),

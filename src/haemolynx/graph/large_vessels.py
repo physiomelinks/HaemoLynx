@@ -45,6 +45,9 @@ def dilate_binary_mask_by_microns(
     mask: np.ndarray,
     dilation_microns: float,
     voxel_size_zyx: tuple[float, float, float],
+    *,
+    low_memory: bool = False,
+    memmap_directory=None,
 ) -> np.ndarray:
     """Dilate a binary mask by a physical radius in microns.
 
@@ -52,13 +55,78 @@ def dilate_binary_mask_by_microns(
     is typically faster than repeated binary dilation for larger radii.
     *voxel_size_zyx* is the spacing of each array axis in canonical ``(z, y, x)``
     order, not the ``(x, y, z)`` order reported by image metadata.
+
+    *low_memory* (the low-RAM option) makes no distance map of the volume:
+    each block is transformed with a halo holding every mask voxel within
+    the radius (``preprocessing.blockwise_edt.near_distances_by_block``),
+    which compares with the radius as the whole transform does, and the mask
+    returned is on disk in *memmap_directory*. The whole transform was a
+    float64 volume, and scipy ~70 bytes a voxel making it.
     """
     if dilation_microns <= 0:
         return mask.astype(bool, copy=False)
 
     binary_mask = mask.astype(bool, copy=False)
+    if low_memory and binary_mask.ndim == 3:
+        return _dilate_by_block(binary_mask, float(dilation_microns), voxel_size_zyx, memmap_directory)
     distance_from_mask = distance_transform_edt(~binary_mask, sampling=voxel_size_zyx)
     return binary_mask | (distance_from_mask <= float(dilation_microns))
+
+
+def _dilate_by_block(
+    mask: np.ndarray, dilation_microns: float, voxel_size_zyx, memmap_directory
+) -> np.ndarray:
+    """:func:`dilate_binary_mask_by_microns` a block at a time, on disk."""
+    from haemolynx.preprocessing import blockwise_edt
+    from haemolynx.preprocessing.memmap_support import combine_by_slab
+
+    sampling = tuple(float(v) for v in voxel_size_zyx)
+    out = combine_by_slab(lambda m: m.astype(bool), mask, directory=memmap_directory)
+    if not _any_by_slab(mask):
+        # scipy's transform of a volume with no feature reads every voxel as
+        # that far from one at index (-1, 0, 0), so the whole transform
+        # "dilates" an empty mask into a corner of the volume: the same here.
+        reach = np.minimum(blockwise_edt.reach_voxels(dilation_microns, sampling), mask.shape)
+        index = np.indices(tuple(int(r) for r in reach)).reshape(3, -1).T
+        displacement = np.column_stack([-1 - index[:, 0], -index[:, 1], -index[:, 2]])
+        near = blockwise_edt.displacement_distances(displacement, sampling) <= dilation_microns
+        out[tuple(slice(0, int(r)) for r in reach)] = near.reshape(tuple(int(r) for r in reach))
+        return out
+
+    from scipy.ndimage import maximum_filter1d
+
+    halo = blockwise_edt.reach_voxels(dilation_microns, sampling)
+
+    def outside(box):
+        return ~np.asarray(mask[box], dtype=bool)
+
+    def within_reach(box):
+        # Only a voxel with mask inside the reach's box round it can be within
+        # the reach of the mask; the rest stay out without being measured.
+        padded = tuple(
+            slice(max(0, c.start - int(h)), min(int(n), c.stop + int(h)))
+            for c, h, n in zip(box, halo, mask.shape)
+        )
+        near = np.asarray(mask[padded], dtype=np.uint8)
+        for axis, h in enumerate(halo):
+            near = maximum_filter1d(near, size=2 * int(h) + 1, axis=axis, mode="constant", cval=0)
+        inner = tuple(slice(c.start - p.start, c.stop - p.start) for c, p in zip(box, padded))
+        return near[inner].astype(bool) & outside(box)
+
+    for core, where, distance in blockwise_edt.near_distances_by_block(
+        outside, within_reach, mask.shape, sampling=sampling, reach=dilation_microns
+    ):
+        near = np.zeros(where.shape, dtype=bool)
+        near[where] = distance <= dilation_microns
+        out[core] = np.asarray(mask[core], dtype=bool) | near
+    return out
+
+
+def _any_by_slab(mask: np.ndarray) -> bool:
+    from haemolynx.preprocessing.memmap_support import slab_step
+
+    step = slab_step(mask.shape)
+    return any(bool(np.asarray(mask[z:z + step]).any()) for z in range(0, mask.shape[0], step))
 
 
 def dilate_large_vessel_masks_by_microns(
@@ -66,8 +134,12 @@ def dilate_large_vessel_masks_by_microns(
     large_venule_mask: np.ndarray | None,
     dilation_microns: float,
     voxel_size_zyx: tuple[float, float, float],
+    *,
+    low_memory: bool = False,
+    memmap_directory=None,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
-    """Dilate optional arteriole/venule masks by a micron distance."""
+    """Dilate optional arteriole/venule masks by a micron distance (on disk,
+    a block at a time, under *low_memory*: :func:`dilate_binary_mask_by_microns`)."""
     if large_arteriole_mask is None or large_venule_mask is None:
         return large_arteriole_mask, large_venule_mask
 
@@ -82,11 +154,15 @@ def dilate_large_vessel_masks_by_microns(
             large_arteriole_mask,
             dilation_microns=dilation_microns,
             voxel_size_zyx=voxel_size_zyx,
+            low_memory=low_memory,
+            memmap_directory=memmap_directory,
         ),
         dilate_binary_mask_by_microns(
             large_venule_mask,
             dilation_microns=dilation_microns,
             voxel_size_zyx=voxel_size_zyx,
+            low_memory=low_memory,
+            memmap_directory=memmap_directory,
         ),
     )
 

@@ -855,6 +855,7 @@ def tag_edges_in_large_vessel_masks(
     *,
     voxel_size_zyx: tuple[float, float, float],
     minimum_overlap_fraction: float = 0.5,
+    low_memory: bool = False,
 ) -> dict[str, int]:
     """Tag *edges* (``(u, v, key)``, the ones a hand edit made) with the large
     mask each lies in, ``graph.LARGE_MASK_VESSEL_TYPE``, by the rule
@@ -876,6 +877,7 @@ def tag_edges_in_large_vessel_masks(
         voxel_size_zyx=voxel_size_zyx,
         minimum_overlap_fraction=minimum_overlap_fraction,
         schedule=[0.0],
+        low_memory=low_memory,
     )
 
 
@@ -889,6 +891,7 @@ def tag_edges_in_small_vessel_masks(
     minimum_overlap_fraction: float = 0.5,
     max_dilation_microns: float = 0.0,
     dilation_step_microns: float = 5.0,
+    low_memory: bool = False,
 ) -> dict[str, int]:
     """Tag *edges* (``(u, v, key)``, the ones a hand edit made) with the small
     mask each lies in, ``graph.SMALL_MASK_VESSEL_TYPE``, by the rule
@@ -911,6 +914,7 @@ def tag_edges_in_small_vessel_masks(
         voxel_size_zyx=voxel_size_zyx,
         minimum_overlap_fraction=minimum_overlap_fraction,
         schedule=_progressive_dilation_schedule(max_dilation_microns, dilation_step_microns),
+        low_memory=low_memory,
     )
 
 
@@ -924,6 +928,7 @@ def _tag_chosen_edges(
     voxel_size_zyx: tuple[float, float, float],
     minimum_overlap_fraction: float,
     schedule: list[float],
+    low_memory: bool = False,
 ) -> dict[str, int]:
     """Write *attribute* (``"arteriole"``/``"venule"``) on *edges* alone, by
     the masks' labelling rule over the dilation *schedule* (``[0.0]``: the
@@ -952,11 +957,11 @@ def _tag_chosen_edges(
         stacked = np.concatenate([voxels[edge_id] for edge_id in edge_ids]).reshape(-1, 3)
         splits = np.cumsum([len(voxels[edge_id]) for edge_id in edge_ids])[:-1]
         to_arteriole = np.split(
-            _distances_to_mask_microns(arteriole_mask, stacked, voxel_size_zyx=voxel_size_zyx),
+            _distances_to_mask_microns(arteriole_mask, stacked, voxel_size_zyx=voxel_size_zyx, low_memory=low_memory),
             splits,
         )
         to_venule = np.split(
-            _distances_to_mask_microns(venule_mask, stacked, voxel_size_zyx=voxel_size_zyx),
+            _distances_to_mask_microns(venule_mask, stacked, voxel_size_zyx=voxel_size_zyx, low_memory=low_memory),
             splits,
         )
         distances = dict(zip(edge_ids, zip(to_arteriole, to_venule)))
@@ -1119,6 +1124,7 @@ def _distances_to_mask_microns(
     indices: np.ndarray,
     *,
     voxel_size_zyx: tuple[float, float, float],
+    low_memory: bool = False,
 ) -> np.ndarray:
     """Each of *indices*' distance to the nearest voxel of *mask*, in microns
     (0 inside it; ``inf`` when the mask is empty).
@@ -1126,6 +1132,9 @@ def _distances_to_mask_microns(
     Read point by point from the mask's surface (a KD-tree over it), not from
     a whole-volume distance transform: the same values
     ``distance_transform_edt(~mask, sampling=voxel_size_zyx)`` gives there.
+    *low_memory* (the low-RAM option) reads it from tiles of the surface
+    instead of one tree over all of it (``FeatureDistance(by_block=True)``,
+    ~69 B a surface voxel otherwise): the same distances.
     """
     from haemolynx.preprocessing.pointwise_distance import FeatureDistance
 
@@ -1136,7 +1145,7 @@ def _distances_to_mask_microns(
         return np.full(len(indices), np.inf)
     if binary.all():
         return np.zeros(len(indices), dtype=float)
-    distance = FeatureDistance(binary, feature_value=True, sampling=voxel_size_zyx)
+    distance = FeatureDistance(binary, feature_value=True, sampling=voxel_size_zyx, by_block=low_memory)
     return distance.at(np.asarray(indices, dtype=np.intp))
 
 
@@ -1157,6 +1166,7 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
     dilation_step_microns: float = 5.0,
     allow_overlap: bool = False,
     exclude_smaller_overlapping_volumes: bool = False,
+    low_memory: bool = False,
 ) -> tuple[list[Any], list[Any]]:
     """Assign I/O nodes over progressive dilation steps without reassignment.
 
@@ -1210,8 +1220,12 @@ def select_terminal_nodes_from_large_vessel_masks_progressive_dilation(
         if index is not None:
             inside.append((node_id, index))
     indices = np.asarray([index for _node, index in inside], dtype=np.intp).reshape(-1, 3)
-    to_arteriole = _distances_to_mask_microns(arteriole_mask, indices, voxel_size_zyx=voxel_size_zyx)
-    to_venule = _distances_to_mask_microns(venule_mask, indices, voxel_size_zyx=voxel_size_zyx)
+    to_arteriole = _distances_to_mask_microns(
+        arteriole_mask, indices, voxel_size_zyx=voxel_size_zyx, low_memory=low_memory
+    )
+    to_venule = _distances_to_mask_microns(
+        venule_mask, indices, voxel_size_zyx=voxel_size_zyx, low_memory=low_memory
+    )
     for position, (node_id, _index) in enumerate(inside):
         cut = _cut_from(G, node_id)
         if cut == "arteriole":
@@ -1319,6 +1333,7 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
     minimum_overlap_fraction: float = 0.5,
     allow_overlap: bool = False,
     exclude_smaller_overlapping_volumes: bool = False,
+    low_memory: bool = False,
 ) -> dict[str, Any]:
     """Infer boundary nodes over progressive dilation steps without reassignment.
 
@@ -1379,11 +1394,11 @@ def infer_boundary_nodes_from_small_vessel_masks_progressive_dilation(
             else np.empty((0, 3), dtype=np.intp)
         )
         to_arteriole = np.split(
-            _distances_to_mask_microns(arteriole_mask, stacked, voxel_size_zyx=voxel_size_zyx),
+            _distances_to_mask_microns(arteriole_mask, stacked, voxel_size_zyx=voxel_size_zyx, low_memory=low_memory),
             splits,
         )
         to_venule = np.split(
-            _distances_to_mask_microns(venule_mask, stacked, voxel_size_zyx=voxel_size_zyx),
+            _distances_to_mask_microns(venule_mask, stacked, voxel_size_zyx=voxel_size_zyx, low_memory=low_memory),
             splits,
         )
         distances = {

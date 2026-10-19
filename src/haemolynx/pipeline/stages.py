@@ -916,7 +916,26 @@ def _thick_vessel_restriction_mask(
     if choice == "off":
         return None
     image_shape = binary_image.shape
-    restriction = np.zeros(image_shape, dtype=bool)
+    # Under low-RAM the union is made on disk, a slab of planes at a time.
+    restriction = (
+        preprocessing.new_memmap_array(image_shape, bool, directory=settings["memmap_directory"])
+        if settings["use_memmap_loading"]
+        else np.zeros(image_shape, dtype=bool)
+    )
+
+    def add(mask: np.ndarray) -> None:
+        nonlocal restriction
+        if not settings["use_memmap_loading"]:
+            restriction |= mask
+            return
+        from haemolynx.preprocessing.memmap_support import slab_step
+
+        step = slab_step(image_shape)
+        for z0 in range(0, image_shape[0], step):
+            restriction[z0:z0 + step] = np.asarray(restriction[z0:z0 + step]) | np.asarray(
+                mask[z0:z0 + step], dtype=bool
+            )
+
     role_masks: dict[str, np.ndarray] = {}
     if choice in ("large", "both"):
         large_arteriole_mask, large_venule_mask, *_ = io.load_and_validate_vessel_masks(
@@ -927,10 +946,10 @@ def _thick_vessel_restriction_mask(
             downsample=downsample,
         )
         if large_arteriole_mask is not None:
-            restriction |= large_arteriole_mask
+            add(large_arteriole_mask)
             role_masks["large_arteriole_mask"] = large_arteriole_mask
         if large_venule_mask is not None:
-            restriction |= large_venule_mask
+            add(large_venule_mask)
             role_masks["large_venule_mask"] = large_venule_mask
     if choice in ("small", "both"):
         small_arteriole_mask, small_venule_mask, *_ = io.load_and_validate_vessel_masks(
@@ -941,10 +960,10 @@ def _thick_vessel_restriction_mask(
             downsample=downsample,
         )
         if small_arteriole_mask is not None:
-            restriction |= small_arteriole_mask
+            add(small_arteriole_mask)
             role_masks["small_arteriole_mask"] = small_arteriole_mask
         if small_venule_mask is not None:
-            restriction |= small_venule_mask
+            add(small_venule_mask)
             role_masks["small_venule_mask"] = small_venule_mask
 
     warn_below = float(settings["skeleton_thick_vessel_restrict_to_mask_warn_below"])
@@ -1775,8 +1794,9 @@ def build_network(
                     f"global {role}-vessel mask: the other role's mask is global, so "
                     "no vessel is classed arteriole or venule."
                 )
-        large_arteriole_mask = io.as_global_vessel_mask(large_arteriole_mask, large_venule_mask)
-        small_arteriole_mask = io.as_global_vessel_mask(small_arteriole_mask, small_venule_mask)
+        on_disk = dict(use_memmap=settings["use_memmap_loading"], memmap_directory=settings["memmap_directory"])
+        large_arteriole_mask = io.as_global_vessel_mask(large_arteriole_mask, large_venule_mask, **on_disk)
+        small_arteriole_mask = io.as_global_vessel_mask(small_arteriole_mask, small_venule_mask, **on_disk)
         large_venule_mask = small_venule_mask = None
         large_venule_mask_voxel_size = None
 
@@ -2683,6 +2703,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     ),
                     dilation_step_microns=5.0,
                     allow_overlap=False,
+                    low_memory=bool(settings["use_memmap_loading"]),
                     exclude_smaller_overlapping_volumes=(
                         apply_overlap_cleanup_prepass and not effective_assignment_fast_mode
                     ),
@@ -2718,6 +2739,8 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                     conservative_max_dilation_microns=float(
                         settings["automated_vessel_conservative_max_dilation_microns"]
                     ),
+                    low_memory=bool(settings["use_memmap_loading"]),
+                    memmap_directory=settings["memmap_directory"],
                 )
             )
             auto_inlet_nodes = list(robust_assignment["input_nodes"])
@@ -3010,11 +3033,13 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 use_gpu_acceleration=bool(
                     settings["use_gpu_mask_continuity_acceleration"]
                 ),
+                low_memory=bool(settings["use_memmap_loading"]),
+                memmap_directory=settings["memmap_directory"],
             )
-            assignment_small_arteriole_mask = np.asarray(
+            assignment_small_arteriole_mask = np.asanyarray(
                 continuity_result["small_arteriole_mask"], dtype=bool
             )
-            assignment_small_venule_mask = np.asarray(
+            assignment_small_venule_mask = np.asanyarray(
                 continuity_result["small_venule_mask"], dtype=bool
             )
             continuity_stats = continuity_result["stats"]
@@ -3040,6 +3065,7 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
                 ),
                 allow_overlap=False,
                 exclude_smaller_overlapping_volumes=False,
+                low_memory=bool(settings["use_memmap_loading"]),
             )
         )
         small_arteriole_mask = assignment_small_arteriole_mask
@@ -3132,8 +3158,14 @@ def assign_boundaries(settings: dict, network: VesselNetwork):
         _tag_vessels_in_global_masks(
             settings,
             G,
-            large_mask=io.as_global_vessel_mask(large_arteriole_mask, large_venule_mask),
-            small_mask=io.as_global_vessel_mask(small_arteriole_mask, small_venule_mask),
+            large_mask=io.as_global_vessel_mask(
+                large_arteriole_mask, large_venule_mask,
+                use_memmap=settings["use_memmap_loading"], memmap_directory=settings["memmap_directory"],
+            ),
+            small_mask=io.as_global_vessel_mask(
+                small_arteriole_mask, small_venule_mask,
+                use_memmap=settings["use_memmap_loading"], memmap_directory=settings["memmap_directory"],
+            ),
             voxel_size_zyx=voxel_size_zyx,
         )
     if io_from_masks:
@@ -3437,6 +3469,7 @@ def _tag_edited_vessels_in_large_masks(
         edited,
         voxel_size_zyx=voxel_size_zyx,
         minimum_overlap_fraction=float(settings["large_vessel_mask_min_overlap_fraction"]),
+        low_memory=bool(settings.get("use_memmap_loading")),
     )
     logger.info(
         "Post processing: %d of %d edited vessel(s) lie in the large arteriole mask and "
@@ -3561,6 +3594,7 @@ def _reassign_small_vessel_boundaries(
         voxel_size_zyx=voxel_size_zyx,
         minimum_overlap_fraction=float(settings["small_vessel_mask_min_overlap_fraction"]),
         max_dilation_microns=float(settings["small_vessel_mask_dilation_microns"]),
+        low_memory=bool(settings.get("use_memmap_loading")),
     )
     logger.info(
         "Post processing: %d of %d edited vessel(s) lie in the small arteriole mask and "
@@ -4293,10 +4327,14 @@ def post_process(
             settings,
             G,
             large_mask=io.as_global_vessel_mask(
-                boundaries.large_arteriole_mask, boundaries.large_venule_mask
+                boundaries.large_arteriole_mask, boundaries.large_venule_mask,
+                use_memmap=bool(settings.get("use_memmap_loading")),
+                memmap_directory=settings.get("memmap_directory"),
             ) if in_use["large"] else None,
             small_mask=io.as_global_vessel_mask(
-                boundaries.small_arteriole_mask, boundaries.small_venule_mask
+                boundaries.small_arteriole_mask, boundaries.small_venule_mask,
+                use_memmap=bool(settings.get("use_memmap_loading")),
+                memmap_directory=settings.get("memmap_directory"),
             ) if in_use["small"] else None,
             voxel_size_zyx=voxel_size_zyx,
             edges=edited,

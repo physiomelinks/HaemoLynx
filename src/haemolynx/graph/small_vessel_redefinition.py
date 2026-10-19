@@ -243,7 +243,10 @@ def _tangential_pass(
     # The pieces labelled a slab of planes at a time and held at their voxels
     # (``preprocessing.slab_labels.ForegroundLabels``), not in a label volume
     # (8 bytes a voxel once a stack has 2**31 voxels).
-    labels = ForegroundLabels(art | ven, _FULL_STRUCTURE)
+    from haemolynx.preprocessing.memmap_support import MaskUnion
+
+    # art | ven read where the labelling asks, not made as a volume.
+    labels = ForegroundLabels(MaskUnion(art, ven), _FULL_STRUCTURE)
     count = labels.count
     stats = _empty_tangential_stats(int(count))
     if count == 0:

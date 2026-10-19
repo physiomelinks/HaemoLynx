@@ -653,6 +653,7 @@ def load_and_validate_vessel_masks(
             large_venule_mask=venule_mask,
             dilation_microns=dilation_microns,
             voxel_size_zyx=voxel_size_zyx_from_xyz(main_voxel_size_xyz),
+            **low_ram,
         )
         logger.info(
             f"Dilated {scale_label}-vessel masks by {float(dilation_microns):.3f} microns."
@@ -903,6 +904,8 @@ def _load_global_vessel_mask(
             mask,
             dilation_microns=dilation_microns,
             voxel_size_zyx=voxel_size_zyx_from_xyz(main_voxel_size_xyz),
+            low_memory=bool(use_memmap),
+            memmap_directory=memmap_directory,
         )
         logger.info(
             f"Dilated the {mask_role}-vessel global mask by {float(dilation_microns):.3f} microns."
@@ -978,14 +981,25 @@ def vessel_masks_are_global(settings: Mapping[str, object]) -> bool:
 
 
 def as_global_vessel_mask(
-    arteriole_mask: np.ndarray | None, venule_mask: np.ndarray | None
+    arteriole_mask: np.ndarray | None,
+    venule_mask: np.ndarray | None,
+    *,
+    use_memmap: bool = False,
+    memmap_directory: str | Path | None = None,
 ) -> np.ndarray | None:
     """A role's masks as one global mask: the arteriole/global mask, with the
-    venule mask added to it when there is one."""
+    venule mask added to it when there is one. *use_memmap* (the low-RAM
+    option) writes the union on disk a slab at a time, not into RAM."""
     if arteriole_mask is None:
-        return None if venule_mask is None else np.asarray(venule_mask, dtype=bool)
+        return None if venule_mask is None else np.asanyarray(venule_mask, dtype=bool)
     if venule_mask is None:
-        return np.asarray(arteriole_mask, dtype=bool)
+        return np.asanyarray(arteriole_mask, dtype=bool)
+    if use_memmap:
+        from haemolynx.preprocessing.memmap_support import combine_by_slab
+
+        return combine_by_slab(
+            lambda a, b: a.astype(bool) | b.astype(bool), arteriole_mask, venule_mask, directory=memmap_directory
+        )
     return np.asarray(arteriole_mask, dtype=bool) | np.asarray(venule_mask, dtype=bool)
 
 

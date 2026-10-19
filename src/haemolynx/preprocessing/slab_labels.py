@@ -519,7 +519,8 @@ class ForegroundLabels:
     def __init__(self, mask: np.ndarray, structure: np.ndarray | None = None, *, block_voxels: int | None = None):
         from scipy.ndimage import generate_binary_structure
 
-        mask = np.asanyarray(mask)
+        if not (hasattr(mask, "shape") and hasattr(mask, "__getitem__")):
+            mask = np.asanyarray(mask)  # else read in place (a memmap_support.MaskUnion, say)
         self.shape = tuple(int(s) for s in mask.shape)
         structure = (
             generate_binary_structure(mask.ndim, 1) if structure is None else np.asarray(structure, dtype=bool)
@@ -532,7 +533,7 @@ class ForegroundLabels:
             self.count = int(components.count)
             self._boxes = [components.box(n) for n in range(1, self.count + 1)]
         else:
-            labels, count = label(np.asarray(mask, dtype=bool), structure=structure)
+            labels, count = label(np.asarray(mask[...], dtype=bool), structure=structure)
             flat = labels.reshape(-1)
             keys = np.flatnonzero(flat).astype(np.int64)
             numbers = flat[keys]
@@ -577,6 +578,21 @@ class ForegroundLabels:
             found = self.keys[at] == keys
             out[found] = self.numbers[at[found]]
         return out
+
+    def __getitem__(self, box) -> np.ndarray:
+        """``labels[box]`` for a box of step-1 slices: :meth:`read`, so a
+        reader of boxes of a label volume can be handed this instead."""
+        box = box if isinstance(box, tuple) else (box,)
+        box = box + (slice(None),) * (len(self.shape) - len(box))
+        bounds = []
+        for s, n in zip(box, self.shape):
+            if not isinstance(s, slice):
+                raise TypeError("ForegroundLabels is read by boxes of slices")
+            start, stop, step = s.indices(n)
+            if step != 1:
+                raise ValueError("ForegroundLabels is read by step-1 slices")
+            bounds.append(slice(start, max(start, stop)))
+        return self.read(tuple(bounds))
 
     def read(self, box: tuple[slice, ...]) -> np.ndarray:
         """``labels[box]`` (in-range slices, step 1), from the voxels in it."""

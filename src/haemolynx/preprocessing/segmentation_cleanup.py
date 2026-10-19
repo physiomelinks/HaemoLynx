@@ -385,7 +385,9 @@ def _component_descriptors(
     descriptors: dict[int, dict[str, Any]] = {}
     if count <= 0:
         return descriptors
-    slices = find_objects(labeled, max_label=count)
+    # A label volume, or the low-RAM option's labels at the mask's voxels
+    # (``slab_labels.ForegroundLabels``, read by boxes the same way).
+    slices = labeled.find_objects() if hasattr(labeled, "find_objects") else find_objects(labeled, max_label=count)
     min_separation = 2.0 * _TIP_NEIGHBOURHOOD_MIN_VOXELS * float(spacing.max())
     for component_id in range(1, count + 1):
         component_slice = slices[component_id - 1] if slices else None
@@ -568,9 +570,12 @@ def reconnect_vessel_like_components(
     ``accepted_bridges`` and ``rejected_reasons`` (a ``dict[str, int]``
     counting why each rejected candidate failed).
 
-    *use_memmap* (the low-RAM option) keeps every volume-sized array on
-    disk: the component labels, ``edt_inside`` -- computed one padded block
-    at a time (:func:`haemolynx.preprocessing.pointwise_distance.
+    *use_memmap* (the low-RAM option) labels the components a slab of
+    planes at a time and keeps each label only at the mask's voxels
+    (``slab_labels.ForegroundLabels``, 12 bytes a mask voxel, where an int32
+    label volume on disk was 4 bytes a voxel of the stack), and keeps the
+    other volume-sized arrays on disk: ``edt_inside`` -- computed one padded
+    block at a time (:func:`haemolynx.preprocessing.pointwise_distance.
     distance_transform_edt_blockwise`), since scipy's own transform needs
     ~70 bytes of RAM per voxel whatever it writes into -- and the returned
     mask. *memmap_directory* is forwarded to :func:`new_memmap_array`.
@@ -585,9 +590,10 @@ def reconnect_vessel_like_components(
     owned: list[np.ndarray] = []
     try:
         if use_memmap:
-            labeled = new_memmap_array(mask.shape, np.int32, directory=memmap_directory)
-            owned.append(labeled)
-            count = int(label(mask, structure=_STRUCTURE_26, output=labeled))
+            from .slab_labels import ForegroundLabels
+
+            labeled = ForegroundLabels(mask, _STRUCTURE_26)
+            count = labeled.count
         else:
             labeled, count = _connected_components(mask)
         if count < 2:
