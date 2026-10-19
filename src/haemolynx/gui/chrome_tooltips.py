@@ -406,6 +406,20 @@ BATCH_RUN_TOOLTIPS = {
     ),
     "match": "Read the folders again and match every image",
     "check": "Run every ticked image's pre-run checks and show what they say",
+    "condition_a": (
+        "One condition's images: a phrase their file names hold (ignoring case; "
+        "several, comma-separated, for either). Each condition, and all images, "
+        "is summarised once the batch is done"
+    ),
+    "condition_b": (
+        "The other condition's phrase: with both set, every statistic is tested "
+        "between the two (Mann-Whitney U, Benjamini-Hochberg q-values) into "
+        "batch_condition_comparison.csv"
+    ),
+    "compare": (
+        "Write the batch statistics from the ticked images already run in the "
+        "output folder, by the conditions as they are now, without running anything"
+    ),
     "use": "Close this window and let Run pipeline run the batch",
     "leave": "Go back to running the one image the Input tab names",
 }

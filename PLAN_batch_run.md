@@ -8,6 +8,8 @@
 > panel's Check segmented image, optimisers and Save run are not greyed in batch mode (they
 > act on the Input tab's one image as before); the ilastik batch and the extra per-image
 > masks under "Later".
+> Since (2026-10-19): two conditions read from the file names, and the batch's statistics side
+> by side and tested between them (`statistics/batch_comparison.py`; `CLAUDE.md`, "Batch run").
 
 A **Batch run** button on the Input tab opens a window where the user gives up to four folders:
 segmented images, raw images, large vessel masks, small vessel masks. The panel matches each

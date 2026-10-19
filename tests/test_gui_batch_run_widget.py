@@ -170,3 +170,53 @@ def test_run_pipeline_refuses_a_batch_an_image_of_which_fails_its_checks(panel, 
     panel._haemolynx_run()
     assert started == []
     assert "Checks failed for 1 image(s)" in panel._haemolynx_report()
+
+
+def test_conditions_typed_in_the_window_class_each_image_and_compare(panel, tmp_path):
+    from haemolynx.gui.batch_run import TABLE_COLUMNS
+    from haemolynx.statistics import export_statistics_to_csv
+
+    batch = panel._haemolynx_batch
+    _images(tmp_path / "seg", "WT_1", "WT_2", "KO_1", "KO_2")
+    batch.open()
+    window = batch.window[0]
+    window.fields["segmented"].setText(str(tmp_path / "seg"))
+    window.fields["output"].setText(str(tmp_path / "out"))
+    assert window.match()
+    column = TABLE_COLUMNS.index("Condition")
+    assert [window.table.item(row, column).text() for row in range(4)] == ["", "", "", ""]
+    window.condition_fields["condition_a"].setText("WT")
+    window.condition_fields["condition_b"].setText("KO")
+    assert [window.table.item(row, column).text() for row in range(4)] == ["KO", "KO", "WT", "WT"]
+    assert window.status.text() == "Conditions: 2 in WT, 2 in KO."
+
+    # Compare: the statistics of the images already run in the output folder.
+    for stem, length in (("WT_1", 1.0), ("WT_2", 2.0), ("KO_1", 5.0), ("KO_2", 6.0)):
+        export_statistics_to_csv(
+            {"Total Edge Length (microns)": length},
+            tmp_path / "out" / stem / f"{stem}_statistics.csv",
+        )
+    window.compare()
+    assert (tmp_path / "out" / "batch_condition_comparison.csv").is_file()
+    assert "KO against WT" in window.status.text()
+
+    window.use()
+    assert batch.mode.setup.conditions.compares
+    # Reopened, the window shows the batch's conditions.
+    window.condition_fields["condition_b"].setText("")
+    batch.open()
+    assert window.condition_fields["condition_b"].text() == "KO"
+
+
+def test_two_conditions_alike_are_not_used(panel, tmp_path):
+    batch = panel._haemolynx_batch
+    _images(tmp_path / "seg", "WT_1")
+    batch.open()
+    window = batch.window[0]
+    window.fields["segmented"].setText(str(tmp_path / "seg"))
+    window.fields["output"].setText(str(tmp_path / "out"))
+    window.condition_fields["condition_a"].setText("WT")
+    window.condition_fields["condition_b"].setText("wt")
+    window.use()
+    assert batch.mode.setup is None
+    assert "Both conditions" in window.status.text()

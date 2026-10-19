@@ -15,11 +15,17 @@ is rewritten after every image, so a batch that dies leaves it current, and
 ``batch_settings.yaml`` beside it holds the settings and folders the batch
 ran with.
 
-Nothing here imports Qt: :func:`main` runs a batch from a command line.
+Once the images have run (or been skipped as done before), their statistics
+are read back from their folders and written side by side beside the summary
+(:func:`haemolynx.statistics.batch_comparison.write_batch_statistics`): every
+image, each condition's summary and, given two conditions (phrases in the
+images' file names), the two tested against each other.
+
+Nothing here imports Qt: :func:`main` runs a batch from a command line
+(:mod:`haemolynx.gui.batch_run_cli`).
 """
 from __future__ import annotations
 
-import argparse
 import csv
 import json
 import logging
@@ -30,14 +36,17 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from haemolynx.io.batch_matching import BatchFolders, BatchMatch, match_batch
+from haemolynx.io.batch_matching import BatchFolders, BatchMatch
 from haemolynx.parsers import Schema
 from haemolynx.pipeline.batch import (
-    batch_mask_sizes,
     batch_preflight,
-    default_output_root,
     image_output_folder,
     item_settings,
+)
+from haemolynx.statistics.batch_comparison import (
+    BatchConditions,
+    BatchStatisticsFiles,
+    write_batch_statistics,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +63,7 @@ NOT_RUN = "not run"
 SUMMARY_COLUMNS = (
     "stem",
     "status",
+    "condition",
     "segmented",
     "raw",
     "large_arteriole_mask",
@@ -82,6 +92,8 @@ class BatchResult:
 
     match: BatchMatch
     status: str = NOT_RUN
+    #: The condition the image's file name puts it in ("" for none).
+    condition: str = ""
     haemorun: Path | None = None
     nodes: int | None = None
     vessels: int | None = None
@@ -99,6 +111,7 @@ class BatchResult:
         return {
             "stem": self.match.stem,
             "status": self.status,
+            "condition": self.condition,
             "segmented": str(self.match.segmented),
             "raw": text("raw_image_path"),
             "large_arteriole_mask": text("large_arteriole_mask_path"),
@@ -120,6 +133,8 @@ class BatchSummary:
 
     output_root: Path
     results: list[BatchResult] = field(default_factory=list)
+    #: The batch's statistics, written once its images are done.
+    statistics: BatchStatisticsFiles | None = None
 
     @property
     def csv_path(self) -> Path:
@@ -133,7 +148,10 @@ class BatchSummary:
         for status in (FAILED, SKIPPED, CANCELLED, NOT_RUN):
             if self.count(status):
                 parts.append(f"{self.count(status)} {status}")
-        return f"Batch: {', '.join(parts)}. Summary: {self.csv_path}"
+        message = f"Batch: {', '.join(parts)}. Summary: {self.csv_path}"
+        if self.statistics is not None and self.statistics.message:
+            message += "\n" + self.statistics.message
+        return message
 
     def write(self) -> Path | None:
         """Write the summary; never raises, so a summary file held open by
@@ -251,8 +269,10 @@ def write_batch_settings(
     schema: Schema,
     folders: BatchFolders,
     output_root: Path,
+    conditions: BatchConditions | None = None,
 ) -> Path:
-    """``batch_settings.yaml``: the settings the batch ran with, then its folders."""
+    """``batch_settings.yaml``: the settings the batch ran with, then its
+    folders and conditions."""
     from haemolynx.pipeline.provenance import write_settings_yaml
 
     path = output_root / SETTINGS_FILENAME
@@ -262,6 +282,9 @@ def write_batch_settings(
         value = getattr(folders, name)
         lines.append(f"# batch_{name}: {'' if value is None else Path(value).as_posix()}")
     lines.append(f"# batch_output: {Path(output_root).as_posix()}")
+    for name in ("a", "b"):
+        condition = getattr(conditions, name) if conditions is not None else None
+        lines.append(f"# batch_condition_{name}: {'' if condition is None else condition.label}")
     with path.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
     return path
@@ -278,6 +301,7 @@ def run_batch(
     on_item: Callable[[int, int, BatchResult], None] | None = None,
     check_cancelled: Callable[[], None] | None = None,
     skip_done: bool = True,
+    conditions: BatchConditions | None = None,
 ) -> BatchSummary:
     """Run *values* (the panel's form values) on each of *matches*, in order.
 
@@ -287,16 +311,24 @@ def run_batch(
     batch; the image running stops at its next stage and is recorded as
     cancelled, the rest as not run. With *skip_done*, an image whose
     ``.haemorun`` is already there is not run again.
+
+    Once the images are done (or the batch is cancelled), the statistics of
+    every image that ran or was skipped as done are written side by side,
+    by *conditions* when given (:func:`write_statistics`).
     """
     from haemolynx.gui.run_state import RunCancelled
     from haemolynx.io import clear_vessel_mask_cache
 
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
-    summary = BatchSummary(output_root, [BatchResult(match) for match in matches])
+    conditions = conditions or BatchConditions()
+    summary = BatchSummary(
+        output_root,
+        [BatchResult(match, condition=conditions.condition_of(match.stem)) for match in matches],
+    )
     if folders is not None:
         try:
-            write_batch_settings(values, schema, folders, output_root)
+            write_batch_settings(values, schema, folders, output_root, conditions)
         except Exception:  # noqa: BLE001 - a record of the batch must not stop it
             logger.exception("could not write %s", SETTINGS_FILENAME)
     summary.write()
@@ -350,8 +382,27 @@ def run_batch(
         summary.write()
         if on_item is not None:
             on_item(index, total, result)
+    summary.statistics = write_statistics(
+        output_root,
+        [result.match.stem for result in summary.results if result.status in (DONE, SKIPPED)],
+        conditions,
+    )
     logger.info(summary.message())
     return summary
+
+
+def write_statistics(
+    output_root: Path | str, stems: Sequence[str], conditions: BatchConditions | None = None
+) -> BatchStatisticsFiles | None:
+    """The batch's statistics for *stems*; never raises, so a batch that ran
+    is never reported as failed for its statistics."""
+    if not stems:
+        return None
+    try:
+        return write_batch_statistics(output_root, stems, conditions)
+    except Exception as error:  # noqa: BLE001 - the images' own outputs stand
+        logger.exception("could not write the batch statistics")
+        return BatchStatisticsFiles(message=f"Could not write the batch statistics: {error}")
 
 
 #: The rows a batch fills for each image, shown as :data:`BATCH_ROW_TEXT`
@@ -368,7 +419,9 @@ BATCH_ROW_TEXT = "Batch run"
 BATCH_BUTTON_TEXT = "Batch run"
 
 #: The table's columns.
-TABLE_COLUMNS = ("Run", "Segmented image", "Raw image", "Large masks", "Small masks", "Status")
+TABLE_COLUMNS = (
+    "Run", "Segmented image", "Raw image", "Large masks", "Small masks", "Condition", "Status",
+)
 READY = "ready"
 
 
@@ -386,6 +439,8 @@ class BatchSetup:
     #: Each image's checks (Check, or Run pipeline), by stem: its first error,
     #: or "" when it passed.
     checked: Mapping[str, str] = field(default_factory=dict)
+    #: The conditions the images' file names put them in.
+    conditions: BatchConditions = field(default_factory=BatchConditions)
 
     def selected(self) -> list[BatchMatch]:
         return [match for match in self.matches if match.stem not in self.unticked]
@@ -397,6 +452,10 @@ class BatchSetup:
     def row_tooltip(self, setting: str) -> str:
         folder = self.folders.folder(BATCH_ROW_FOLDERS[setting])
         return f"Set for each image by the batch, from {folder}; open Batch run to change it"
+
+    def condition_counts(self) -> str:
+        """``"3 in WT, 3 in KO, 1 in neither"`` over the ticked images."""
+        return self.conditions.describe(match.stem for match in self.selected())
 
     def choose(self, role: str, path: Path, match: BatchMatch) -> "BatchSetup":
         """Every image's tie in *role* chosen as *path* was for *match*."""
@@ -433,6 +492,14 @@ def match_status(match: BatchMatch, checked: Mapping[str, str] | None = None) ->
     return READY
 
 
+def condition_cell(setup: BatchSetup, match: BatchMatch) -> str:
+    """The table's Condition cell: the condition's label, "both conditions",
+    or "neither" while a condition is set ("" while none is)."""
+    if not setup.conditions.conditions:
+        return ""
+    return setup.conditions.condition_of(match.stem) or "neither"
+
+
 def table_rows(setup: BatchSetup) -> list[tuple[str, ...]]:
     """The table's text, one tuple per image in :data:`TABLE_COLUMNS` order
     (the first column is the tick, "yes"/"no")."""
@@ -449,6 +516,7 @@ def table_rows(setup: BatchSetup) -> list[tuple[str, ...]]:
                 raw,
                 _mask_cell(match.masks.get("large")),
                 _mask_cell(match.masks.get("small")),
+                condition_cell(setup, match),
                 match_status(match, setup.checked),
             )
         )
@@ -477,12 +545,19 @@ def check_setup(
     base = resolve_settings(dict(values), schema=schema, config_path=None)
     checked: dict[str, str] = {}
     lines: list[str] = []
+    problem = setup.conditions.problem()
+    if setup.conditions.conditions:
+        lines.append(f"Conditions: {setup.condition_counts()}.")
+        if problem:
+            lines.append(f"    FAILED: {problem}")
     for match in setup.selected():
         report = batch_preflight(base, match, setup.output_root, schema)
         checked[match.stem] = report.errors[0] if report.errors else ""
         lines.append(f"{'ok' if report.ok else 'FAILED'}: {match.stem}")
         lines.extend(f"    FAILED: {message}" for message in report.errors)
         lines.extend(f"    warning: {message}" for message in report.warnings)
+    if problem:
+        checked = {stem: error or problem for stem, error in checked.items()}
     return replace(setup, checked=checked), lines
 
 
@@ -496,76 +571,12 @@ def selected_matches(
     return [match for match in matches if match.stem.lower() in wanted]
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="python -m haemolynx.gui.batch_run",
-        description=(
-            "Run the HaemoLynx pipeline once per segmented image in a folder, "
-            "matching each image's raw image and vessel masks by file name, and "
-            "save a .haemorun and the run's outputs in {output}/{image stem}/."
-        ),
-    )
-    parser.add_argument("--config", required=True, help="Settings file (a config YAML or a run's _run_settings.yaml).")
-    parser.add_argument("--segmented", required=True, help="Folder of segmented images.")
-    parser.add_argument("--raw", help="Folder of raw images (default: the segmented folder).")
-    parser.add_argument("--large", help="Folder of large vessel masks (default: the segmented folder).")
-    parser.add_argument("--small", help="Folder of small vessel masks (default: the segmented folder).")
-    parser.add_argument("--output", help="Output folder (default: the config's vtk_output_prefix folder).")
-    parser.add_argument("--only", nargs="*", help="Run only these image stems.")
-    parser.add_argument("--rerun", action="store_true", help="Run images whose .haemorun is already there again.")
-    parser.add_argument("--dry-run", action="store_true", help="Match and check every image, run nothing.")
-    return parser
-
-
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run a batch from a command line. Returns the exit status: 0 when every
-    image ran (or, with ``--dry-run``, passed its checks), 1 otherwise."""
-    from haemolynx.parsers.config import load_config
-    from haemolynx.pipeline import default_schema
+    """Run a batch from a command line (:func:`haemolynx.gui.batch_run_cli.main`,
+    which prints, so it lives in a command-line module of its own)."""
+    from haemolynx.gui.batch_run_cli import main as run_command_line
 
-    args = _parser().parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    schema = default_schema()
-    values = load_config(args.config, schema)
-    folders = BatchFolders(args.segmented, raw=args.raw, large=args.large, small=args.small)
-    output_root = Path(args.output) if args.output else default_output_root(values)
-    if output_root is None:
-        print("No output folder: pass --output, or set vtk_output_prefix to a path with a folder.")
-        return 1
-    matches = selected_matches(match_batch(folders, batch_mask_sizes(values)), args.only)
-    if not matches:
-        print(f"No segmented images found in {folders.segmented}.")
-        return 1
-    failing = []
-    for match in matches:
-        report = batch_preflight(values, match, output_root, schema)
-        status = "ok" if report.ok else "FAILED"
-        print(f"\n[{status}] {match.stem}")
-        for name, value in match.settings().items():
-            if value is not None:
-                print(f"    {name}: {value}")
-        for message in report.errors:
-            print(f"    FAILED: {message}")
-        for message in report.warnings:
-            print(f"    warning: {message}")
-        if not report.ok:
-            failing.append(match.stem)
-    if failing:
-        print(f"\nChecks failed for {len(failing)} image(s): {', '.join(failing)}. Nothing was run.")
-        return 1
-    if args.dry_run:
-        print(f"\nAll {len(matches)} image(s) passed their checks.")
-        return 0
-    summary = run_batch(
-        values,
-        schema,
-        matches,
-        output_root,
-        folders=folders,
-        skip_done=not args.rerun,
-    )
-    print(summary.message())
-    return 0 if summary.count(FAILED) == 0 and summary.count(CANCELLED) == 0 else 1
+    return run_command_line(argv)
 
 
 __all__ = [
@@ -582,6 +593,7 @@ __all__ = [
     "SUMMARY_FILENAME",
     "TABLE_COLUMNS",
     "check_setup",
+    "condition_cell",
     "haemorun_path",
     "match_status",
     "main",
@@ -590,6 +602,7 @@ __all__ = [
     "selected_matches",
     "table_rows",
     "tied_cells",
+    "write_statistics",
 ]
 
 

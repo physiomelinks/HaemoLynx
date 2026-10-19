@@ -240,3 +240,144 @@ def test_a_summary_file_held_open_never_stops_the_batch(tmp_path, schema, monkey
         _values(schema, tmp_path), schema, matches, tmp_path / "out2", skip_done=False
     )
     assert [result.status for result in summary.results] == [DONE]
+
+
+def _fake_run_with_statistics(lengths):
+    """A run that writes the statistics CSV an image's export would."""
+    from haemolynx.statistics import export_statistics_to_csv
+
+    def run_image(values, schema, *, progress=None, check_cancelled=None, haemorun=None):
+        stem = Path(values["input_path"]).stem
+        haemorun.parent.mkdir(parents=True, exist_ok=True)
+        haemorun.write_bytes(b"run")
+        export_statistics_to_csv(
+            {"Total Edge Length (microns)": lengths[stem]},
+            haemorun.parent / f"{stem}_statistics.csv",
+        )
+        G = nx.MultiGraph()
+        G.add_edge(0, 1)
+        return G
+
+    return run_image
+
+
+def test_a_batch_with_two_conditions_compares_their_statistics(tmp_path, schema, monkeypatch):
+    from haemolynx.statistics.batch_comparison import BatchConditions
+
+    lengths = {"WT_1": 100.0, "WT_2": 110.0, "KO_1": 200.0, "KO_2": 210.0, "HET_1": 150.0}
+    monkeypatch.setattr(batch_run, "run_image", _fake_run_with_statistics(lengths))
+    folders, matches = _batch(tmp_path, *lengths)
+    out = tmp_path / "out"
+    conditions = BatchConditions.from_text("wt", "ko")
+    summary = run_batch(
+        _values(schema, tmp_path), schema, matches, out, folders=folders, conditions=conditions
+    )
+    rows = {row["stem"]: row["condition"] for row in _summary_rows(summary.csv_path)}
+    assert rows == {"HET_1": "", "KO_1": "ko", "KO_2": "ko", "WT_1": "wt", "WT_2": "wt"}
+    assert summary.statistics.images == 5
+    comparison = _summary_rows(out / "batch_condition_comparison.csv")
+    assert [(row["Metric"], row["Median wt"], row["Median ko"]) for row in comparison] == [
+        ("Total Edge Length", "105", "205")
+    ]
+    assert (out / "batch_statistics_summary.csv").is_file()
+    assert "ko against wt" in summary.message()
+    settings_file = (out / "batch_settings.yaml").read_text(encoding="utf-8")
+    assert "# batch_condition_a: wt" in settings_file
+    assert "# batch_condition_b: ko" in settings_file
+
+
+def test_the_statistics_cover_images_skipped_as_done_and_leave_out_failures(tmp_path, schema, monkeypatch):
+    from haemolynx.statistics import export_statistics_to_csv
+
+    lengths = {"A_seg": 1.0, "B_seg": 2.0, "C_seg": 3.0}
+    fake = _fake_run_with_statistics(lengths)
+
+    def run_image(values, schema, **kwargs):
+        if Path(values["input_path"]).stem == "C_seg":
+            raise ValueError("broken")
+        return fake(values, schema, **kwargs)
+
+    monkeypatch.setattr(batch_run, "run_image", run_image)
+    _folders, matches = _batch(tmp_path, *lengths)
+    out = tmp_path / "out"
+    done = haemorun_path(out, matches[0])
+    done.parent.mkdir(parents=True)
+    done.write_bytes(b"earlier")
+    export_statistics_to_csv({"Total Edge Length (microns)": 1.0}, done.parent / "A_seg_statistics.csv")
+    # C_seg's folder holds statistics from some earlier run: a failed image is left out.
+    export_statistics_to_csv({"Total Edge Length (microns)": 9.0}, out / "C_seg" / "C_seg_statistics.csv")
+    summary = run_batch(_values(schema, tmp_path), schema, matches, out)
+    assert [result.status for result in summary.results] == [SKIPPED, DONE, FAILED]
+    header = next(csv.reader((out / "batch_statistics_by_image.csv").open(encoding="utf-8")))
+    assert header[3:] == ["A_seg", "B_seg"]
+
+
+def test_statistics_that_cannot_be_written_never_fail_the_batch(tmp_path, schema, monkeypatch):
+    monkeypatch.setattr(batch_run, "run_image", _fake_run([]))
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(batch_run, "write_batch_statistics", broken)
+    _folders, matches = _batch(tmp_path, "A_seg")
+    summary = run_batch(_values(schema, tmp_path), schema, matches, tmp_path / "out")
+    assert [result.status for result in summary.results] == [DONE]
+    assert "Could not write the batch statistics: disk full" in summary.message()
+
+
+def test_conditions_show_in_the_table_and_two_alike_fail_the_checks(tmp_path, schema):
+    from dataclasses import replace
+
+    from haemolynx.gui.batch_run import BatchSetup, check_setup, table_rows
+    from haemolynx.statistics.batch_comparison import BatchConditions
+
+    folder = tmp_path / "seg"
+    folder.mkdir()
+    for stem in ("WT_1", "KO_1", "HET_1"):
+        shutil.copy(FIXTURE, folder / f"{stem}.tif")
+    folders = BatchFolders(folder)
+    setup = BatchSetup(folders=folders, output_root=tmp_path / "out", matches=match_batch(folders))
+    assert [row[5] for row in table_rows(setup)] == ["", "", ""]
+    setup = replace(setup, conditions=BatchConditions.from_text("WT", "KO"))
+    assert [(row[1], row[5]) for row in table_rows(setup)] == [
+        ("HET_1.tif", "neither"), ("KO_1.tif", "KO"), ("WT_1.tif", "WT")
+    ]
+    assert setup.condition_counts() == "1 in WT, 1 in KO, 1 in neither"
+    values = _values(schema, tmp_path)
+    checked, lines = check_setup(values, schema, setup)
+    assert set(checked.checked.values()) == {""}
+    assert lines[0] == "Conditions: 1 in WT, 1 in KO, 1 in neither."
+    alike = replace(setup, conditions=BatchConditions.from_text("WT", "wt"))
+    checked, lines = check_setup(values, schema, alike)
+    assert all("Both conditions" in error for error in checked.checked.values())
+
+
+def test_the_command_line_compares_conditions_without_running(tmp_path, schema, monkeypatch, capsys):
+    from haemolynx.pipeline.provenance import write_settings_yaml
+    from haemolynx.statistics import export_statistics_to_csv
+
+    calls = []
+    monkeypatch.setattr(batch_run, "run_image", _fake_run(calls))
+    folder = tmp_path / "seg"
+    folder.mkdir()
+    out = tmp_path / "out"
+    for stem, length in (("WT_1", 1.0), ("WT_2", 2.0), ("KO_1", 5.0), ("KO_2", 6.0)):
+        shutil.copy(FIXTURE, folder / f"{stem}.tif")
+        export_statistics_to_csv(
+            {"Total Edge Length (microns)": length}, out / stem / f"{stem}_statistics.csv"
+        )
+    config = write_settings_yaml(tmp_path / "config.yaml", _values(schema, tmp_path), schema)
+    argv = ["--config", str(config), "--segmented", str(folder), "--output", str(out)]
+
+    assert main(argv + ["--condition-a", "WT", "--condition-b", "KO", "--compare-only"]) == 0
+    printed = capsys.readouterr().out
+    assert "Conditions: 2 in WT, 2 in KO." in printed
+    assert "KO against WT: 1 metrics tested" in printed
+    assert calls == []
+    assert (out / "batch_condition_comparison.csv").is_file()
+
+    assert main(argv + ["--condition-a", "WT", "--condition-b", "wt", "--compare-only"]) == 1
+    assert "Both conditions" in capsys.readouterr().out
+
+    assert main(argv + ["--condition-a", "WT", "--condition-b", "KO", "--dry-run"]) == 0
+    assert "[ok] KO_1 (KO)" in capsys.readouterr().out

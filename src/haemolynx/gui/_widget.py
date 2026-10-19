@@ -6560,6 +6560,7 @@ def _run_batch_in_background(
             on_item=lambda index, total, result: bridge.layers.emit((index, total, result)),
             check_cancelled=lambda: run_state.check(cancel_flag),
             skip_done=setup.skip_done,
+            conditions=setup.conditions,
         )
 
     def finished(summary) -> None:
@@ -9710,8 +9711,9 @@ def _show_batch_row(widget, label, setup, name: str) -> None:
 
 
 class _BatchRunWindow:
-    """The Batch run window: the batch's folders, the images matched in them,
-    Check, Use this batch and Leave batch run.
+    """The Batch run window: the batch's folders, the two conditions read from
+    the images' file names, the images matched in them, Check, Compare
+    statistics, Use this batch and Leave batch run.
 
     Plain Qt glue; what a batch is, and how it is matched, checked and run, is
     :mod:`haemolynx.gui.batch_run` and :mod:`haemolynx.io.batch_matching`.
@@ -9727,6 +9729,10 @@ class _BatchRunWindow:
         ("large", "Large vessel masks"),
         ("small", "Small vessel masks"),
         ("output", "Output folder"),
+    )
+    CONDITION_ROWS = (
+        ("condition_a", "Condition A"),
+        ("condition_b", "Condition B"),
     )
 
     def __init__(self, *, schema, values, on_use, on_leave, on_open=None) -> None:
@@ -9777,6 +9783,18 @@ class _BatchRunWindow:
             self.browse_buttons[key] = browse
         layout.addLayout(grid)
 
+        conditions = QGridLayout()
+        self.condition_fields: dict[str, Any] = {}
+        for column, (key, text) in enumerate(self.CONDITION_ROWS):
+            edit = QLineEdit()
+            edit.setPlaceholderText("phrase in the file names, e.g. WT (blank: none)")
+            edit.setToolTip(tips[key])
+            edit.textChanged.connect(lambda *_: self._conditions_changed())
+            conditions.addWidget(QLabel(text), 0, 2 * column)
+            conditions.addWidget(edit, 0, 2 * column + 1)
+            self.condition_fields[key] = edit
+        layout.addLayout(conditions)
+
         self.skip_done = QCheckBox("Skip images whose folder already has a .haemorun")
         self.skip_done.setChecked(True)
         self.skip_done.setToolTip(tips["skip_done"])
@@ -9805,11 +9823,13 @@ class _BatchRunWindow:
         self.match_button.setToolTip(tips["match"])
         self.check_button = QPushButton("Check")
         self.check_button.setToolTip(tips["check"])
+        self.compare_button = QPushButton("Compare statistics")
+        self.compare_button.setToolTip(tips["compare"])
         self.leave_button = QPushButton("Leave batch run")
         self.leave_button.setToolTip(tips["leave"])
         self.use_button = QPushButton("Use this batch")
         self.use_button.setToolTip(tips["use"])
-        for button in (self.match_button, self.check_button):
+        for button in (self.match_button, self.check_button, self.compare_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
         for button in (self.leave_button, self.use_button):
@@ -9817,6 +9837,7 @@ class _BatchRunWindow:
         layout.addLayout(buttons)
         self.match_button.clicked.connect(lambda *_: self.match())
         self.check_button.clicked.connect(lambda *_: self.check())
+        self.compare_button.clicked.connect(lambda *_: self.compare())
         self.use_button.clicked.connect(lambda *_: self.use())
         self.leave_button.clicked.connect(lambda *_: self.leave())
 
@@ -9857,6 +9878,14 @@ class _BatchRunWindow:
                 self.fields[key].setText("" if value is None else str(value))
             self.fields["output"].setText(str(setup.output_root))
             self.skip_done.setChecked(setup.skip_done)
+            self._filling = True
+            try:
+                for key, condition in zip(
+                    ("condition_a", "condition_b"), (setup.conditions.a, setup.conditions.b)
+                ):
+                    self.condition_fields[key].setText("" if condition is None else condition.label)
+            finally:
+                self._filling = False
         elif not self.fields["output"].text():
             default = default_output_root(self._values())
             if default is not None:
@@ -9865,6 +9894,49 @@ class _BatchRunWindow:
         self._fill_table()
         self.native.show()
         self.native.raise_()
+
+    # -- conditions ------------------------------------------------------
+
+    def _conditions(self):
+        from haemolynx.statistics.batch_comparison import BatchConditions
+
+        return BatchConditions.from_text(
+            self.condition_fields["condition_a"].text(),
+            self.condition_fields["condition_b"].text(),
+        )
+
+    def _conditions_changed(self) -> None:
+        """Each image's condition, again, as the phrases are typed."""
+        from dataclasses import replace
+
+        if self._filling or self.setup is None:
+            return
+        self.setup = replace(self.setup, conditions=self._conditions())
+        self._fill_table()
+        counts = self.setup.condition_counts()
+        problem = self.setup.conditions.problem()
+        self._say(problem or (f"Conditions: {counts}." if counts else ""))
+
+    def compare(self) -> None:
+        """Write the batch statistics from the images already run in the
+        output folder, by the conditions as they are now."""
+        from dataclasses import replace
+
+        from haemolynx.gui.batch_run import write_statistics
+
+        if self.setup is None and not self.match():
+            return
+        self.setup = replace(self.setup, conditions=self._conditions())
+        problem = self.setup.conditions.problem()
+        if problem:
+            self._say(problem)
+            return
+        written = write_statistics(
+            self.setup.output_root,
+            [match.stem for match in self.setup.selected()],
+            self.setup.conditions,
+        )
+        self._say(written.message if written is not None else "No image is ticked.")
 
     # -- matching --------------------------------------------------------
 
@@ -9905,13 +9977,16 @@ class _BatchRunWindow:
             matches=matches,
             unticked=frozenset(unticked) & {match.stem for match in matches},
             skip_done=self.skip_done.isChecked(),
+            conditions=self._conditions(),
         )
         self.setup = setup
         self._fill_table()
         attention = sum(not match.ok for match in matches)
+        counts = setup.condition_counts()
         self._say(
             f"{len(matches)} segmented image(s) in {folders.segmented}"
-            + (f"; {attention} need attention." if attention else ".")
+            + (f"; {attention} need attention" if attention else "")
+            + (f"; {counts}." if counts else ".")
             if matches
             else f"No segmented images found in {folders.segmented}."
         )
@@ -9944,9 +10019,14 @@ class _BatchRunWindow:
 
         if self.setup is None and not self.match():
             return
-        self.setup = replace(self.setup, skip_done=self.skip_done.isChecked())
+        self.setup = replace(
+            self.setup, skip_done=self.skip_done.isChecked(), conditions=self._conditions()
+        )
         if not self.setup.selected():
             self._say("No image is ticked.")
+            return
+        if self.setup.conditions.problem():
+            self._say(self.setup.conditions.problem())
             return
         self._on_use(self.setup)
         self.native.hide()

@@ -21,13 +21,14 @@ from haemolynx.parsers.cli import CONSOLE_LOG_FORMAT
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src" / "haemolynx"
 
-#: The command line is allowed to print: everything these two modules write is
+#: The command line is allowed to print: everything these modules write is
 #: the answer to a flag the user typed (`--list-settings`, `--list-presets`,
-#: the pre-run checklist), so it belongs on stdout whether or not the caller
-#: has configured logging.
+#: the pre-run checklist, a batch's checks and summary), so it belongs on
+#: stdout whether or not the caller has configured logging.
 MODULES_THAT_MAY_PRINT = {
     Path("parsers/cli.py"),
     Path("parsers/checks.py"),
+    Path("gui/batch_run_cli.py"),
 }
 
 
