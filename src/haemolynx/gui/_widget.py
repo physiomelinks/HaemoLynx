@@ -1086,8 +1086,9 @@ def _box_containers(
         if index == 0 and box.title is None:
             lead = []
     if lead:
-        # The first box has a title, so the summary stands above it on its own.
-        made.insert(0, (None, Container(widgets=lead, labels=True)))
+        # The first box has a title, so the summary stands above it on its
+        # own, the full width (a label column would squeeze it into half).
+        made.insert(0, (None, Container(widgets=lead, labels=False)))
     return made
 
 
@@ -13935,8 +13936,13 @@ def settings_widget(napari_viewer=None):
     #: follow the answer.
     stain_reading_label = Label(value="")
     stain_reading_label.visible = False
-    _stain_box = input_boxes.get("input") if input_boxes else None
-    if _stain_box is not None and "raw_image_stain" in rows:
+    def _input_box_holding(name: str):
+        """The Input tab's box the row *name* is drawn in, if any."""
+        row = rows.get(name)
+        return next((box for box in input_boxes.values() if row is not None and row in list(box)), None)
+
+    _stain_box = _input_box_holding("raw_image_stain")
+    if _stain_box is not None:
         _stain_box.insert(list(_stain_box).index(rows["raw_image_stain"]) + 1, stain_reading_label)
 
     #: "Batch run": above the Input row, opens the Batch run window;
@@ -13957,11 +13963,11 @@ def settings_widget(napari_viewer=None):
         batch_row_labels[_name] = _label
     batch_button = PushButton(text=BATCH_BUTTON_TEXT)
     batch_button.tooltip = BATCH_RUN_TOOLTIPS["button"]
-    if _stain_box is not None and "network_source" in rows:
-        try:
-            _stain_box.insert(list(_stain_box).index(rows["network_source"]), batch_button)
-        except ValueError:
-            _stain_box.insert(0, batch_button)
+    _source_box = _input_box_holding("network_source")
+    if _source_box is not None:
+        _source_box.insert(list(_source_box).index(rows["network_source"]), batch_button)
+    elif input_boxes:
+        next(iter(input_boxes.values())).insert(0, batch_button)
     #: The window, made the first time it is asked for.
     batch_window: list[Any] = [None]
 

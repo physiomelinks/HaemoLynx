@@ -715,9 +715,10 @@ def test_the_rows_sit_under_segmentation_source_and_raw_image_stain_on_the_input
 
     (input_tab,) = [tab for tab in tabs_for(SCHEMA) if tab.stage.call == "segment"]
     layout = layout_for("segment", [field.name for field in input_tab.fields], SCHEMA)
-    rows = list(layout.box("input").rows)
-    assert rows[rows.index("segmentation_source") + 1] == SEGMENTED_SETTING
-    assert rows[rows.index("raw_image_stain") + 1] == RAW_SETTING
+    segmented = list(layout.box("segmented_input").rows)
+    assert segmented[segmented.index("segmentation_source") + 1] == SEGMENTED_SETTING
+    raw = list(layout.box("raw_input").rows)
+    assert raw[raw.index("raw_image_stain") + 1] == RAW_SETTING
 
 
 def test_preflight_warns_when_the_raw_choice_differs_and_says_what_happens():

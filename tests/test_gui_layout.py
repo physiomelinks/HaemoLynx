@@ -374,6 +374,35 @@ def test_an_unplaced_boundaries_setting_gets_its_own_button_not_the_node_ids():
     assert "open_end_distance" not in layout.box("boundary_nodes").names
 
 
+def test_the_input_tab_boxes_the_segmented_file_and_the_raw_file_apart():
+    _tab, layout = LAYOUTS["segment"]
+    assert [(b.key, b.title) for b in layout.boxes[:4]] == [
+        ("segmented_input", "Segmented file input"),
+        ("raw_input", "Raw file input"),
+        ("input", None),
+        ("voxel_size", "Voxel size and axes"),
+    ]
+    assert layout.box("segmented_input").rows == (
+        "network_source",
+        "synthetic_template_path",
+        "synthetic_template_source",
+        "input_path",
+        "segmentation_source",
+        "segmented_image_downsample",
+    )
+    assert layout.box("raw_input").rows == (
+        "raw_image_path",
+        "raw_image_channel",
+        "raw_image_stain",
+        "raw_image_downsample",
+    )
+    # The synthetic network's Advanced button stays under the Input choice,
+    # not a loose box-level button among the ilastik rows.
+    synthetic = layout.disclosure_of("synthetic_seed")
+    assert synthetic.anchor == "network_source"
+    assert synthetic in layout.box("segmented_input").disclosures
+
+
 def test_the_input_tab_puts_the_voxel_size_policy_above_its_override():
     _tab, layout = LAYOUTS["segment"]
     box = layout.box("voxel_size")

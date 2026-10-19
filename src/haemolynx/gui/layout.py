@@ -147,20 +147,38 @@ class TabLayout:
 #: schema section, the way the panel has always drawn them.
 TAB_BOXES: Mapping[str, tuple[BoxSpec, ...]] = {
     "segment": (
+        # The synthetic template's rows (and its Advanced button) are listed
+        # here too: they replace the segmented image when the Input choice
+        # asks for a synthetic network.
         BoxSpec(
-            "input",
-            None,
+            "segmented_input",
+            "Segmented file input",
             names=(
                 "network_source",
                 "synthetic_template_path",
                 "synthetic_template_source",
+                "synthetic_seed",
+                "synthetic_scale",
+                "synthetic_interior_dead_ends",
                 "input_path",
                 "segmentation_source",
                 "segmented_image_downsample",
+            ),
+        ),
+        BoxSpec(
+            "raw_input",
+            "Raw file input",
+            names=(
                 "raw_image_path",
                 "raw_image_channel",
                 "raw_image_stain",
                 "raw_image_downsample",
+            ),
+        ),
+        BoxSpec(
+            "input",
+            None,
+            names=(
                 "use_ilastik_segmentation",
                 "ilastik_classifier_path",
                 "mid_run_postprocessing",

@@ -56,7 +56,7 @@ def test_the_button_is_on_the_input_tab_above_the_input_row(panel):
     assert batch.button.text == "Batch run"
     assert batch.button.tooltip.strip()
     assert _on_input_tab(panel, batch.button)
-    box = list(panel._haemolynx_input_boxes["input"])
+    box = list(panel._haemolynx_input_boxes["segmented_input"])
     rows = panel._haemolynx_rows()
     assert box.index(batch.button) + 1 == box.index(rows["network_source"])
 
