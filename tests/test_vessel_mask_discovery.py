@@ -268,6 +268,27 @@ def test_unset_references_and_missing_folders_find_nothing(tmp_path):
     assert not any(result.found_any for result in found.values())
 
 
+def test_given_folders_are_searched_instead_of_the_images_own(tmp_path):
+    """A batch run keeps its masks in folders of their own."""
+    images, masks = tmp_path / "images", tmp_path / "masks"
+    images.mkdir()
+    masks.mkdir()
+    image, beside = _files(images, "E14_seg.tif", "E14_large_arteriole.tif")
+    elsewhere, venule = _files(masks, "E14_large_arteriole.tif", "E14_large_venule.tif")
+    found = find_vessel_masks([image], ["large"], folders=[masks])["large"]
+    assert (found.arteriole, found.venule) == (elsewhere, venule)
+    # Without folders=, the image's own folder, as before.
+    assert find_vessel_masks([image], ["large"])["large"].arteriole == beside
+
+
+def test_excluded_files_are_never_masks(tmp_path):
+    """A batch's other images are not read as this one's masks."""
+    image, other = _files(tmp_path, "small_field_seg.tif", "large_field_seg.tif")
+    assert find_vessel_masks([image], ["large"])["large"].global_mask == other
+    found = find_vessel_masks([image], ["large"], exclude=[other])["large"]
+    assert not found.found_any
+
+
 def test_an_unknown_size_is_refused():
     with pytest.raises(ValueError, match="large' or 'small"):
         find_vessel_masks([], ["medium"])

@@ -28,6 +28,7 @@ from .automated_vessel_assignment import (
     vessel_masks_are_global,
 )
 from .vessel_mask_discovery import FoundVesselMasks, find_vessel_masks
+from .batch_matching import BatchFolders, BatchMatch, batch_inputs, match_batch
 from .downsample import (
     DOWNSAMPLE_CHOICES,
     Downsample,
@@ -81,6 +82,10 @@ __all__ = [
     "vessel_masks_are_global",
     "FoundVesselMasks",
     "find_vessel_masks",
+    "BatchFolders",
+    "BatchMatch",
+    "batch_inputs",
+    "match_batch",
     "validate_voxel_size_xyz",
     "resolve_voxel_size_xyz",
     "CANONICAL_AXIS_ORDER",

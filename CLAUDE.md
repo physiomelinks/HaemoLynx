@@ -22,7 +22,8 @@ haemolynx/
 │   │                       #   raw_volume_cache.py (reuse a memmapped raw volume across runs),
 │   │                       #   automated_vessel_assignment.py (mask loading/validation),
 │   │                       #   vessel_mask_discovery.py (the masks beside the input image,
-│   │                       #   found by file name)
+│   │                       #   found by file name), batch_matching.py (a batch run's
+│   │                       #   images matched to their raw images and masks by name)
 │   ├── preprocessing/      # skeleton.py — skeletonize, bridge, clean, bundle refinement;
 │   │                       #   thick_vessels.py (thickness-gated skeletonisation of fat
 │   │                       #   vessels) + thick_vessel_braid_guard.py + thick_vessel_region_cache.py
@@ -132,6 +133,8 @@ haemolynx/
 │   │                       #   help_view.py (the ? window: directory and text),
 │   │                       #   vessel_mask_search.py (when the panel looks for vessel
 │   │                       #   masks and which rows it fills, pure),
+│   │                       #   batch_run.py (a batch: one run and .haemorun per image,
+│   │                       #   no Qt; `python -m haemolynx.gui.batch_run`),
 │   │                       #   _widget.py (the panel), napari.yaml (npe2 manifest)
 │   ├── visualization/      # plot.py, vtk_io.py, pipeline_artifacts.py,
 │   │                       #   geometry.py (an edge -> a drawable polyline),
@@ -150,7 +153,8 @@ haemolynx/
 │                           #   (the ordered STAGES + the progress callback), citations.py
 │                           #   (what a run used, and how to cite it), provenance.py (the
 │                           #   run manifest beside every run's outputs), naming.py (the
-│                           #   one stem a run's outputs carry: run_stem); public:
+│                           #   one stem a run's outputs carry: run_stem), batch.py (one
+│                           #   image's settings in a batch, and the batch checks); public:
 │                           #   default_schema, write_default_config, preflight
 ├── examples/               # Runnable pipelines and settings (not the core library API surface)
 │   ├── resistance_network_pipeline.py        # Main example: config + CLI over haemolynx.pipeline
@@ -329,7 +333,7 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 
 | Change area | Typical test location |
 |-------------|----------------------|
-| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_downsample_on_import.py` (the two choices, the block reduction, a run on the reduced grid, every volume read beside the image placed on it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name) |
+| `src/haemolynx/io/` (incl. ilastik) | `tests/test_io.py`, `tests/test_load_and_validate_vessel_masks.py`, `test_load_2d.py`, `test_axis_order.py`, `test_voxel_validation.py`, `test_raw_volume_cache.py`, `test_crop_on_import.py` (the box, and every volume a run reads cut to it), `test_downsample_on_import.py` (the two choices, the block reduction, a run on the reduced grid, every volume read beside the image placed on it), `test_global_vessel_masks.py` (one mask and no venule mask: loading, the unknown vessel classes, the stages, a whole run), `test_vessel_mask_discovery.py` (masks found by file name), `test_batch_matching.py` (a batch's images, raw images and masks by name, own mask folders, ties) |
 | `src/haemolynx/preprocessing/` | `tests/test_preprocessing.py`, `test_skeleton_bridging.py`, `test_bridge_mask_support.py`, `test_thick_vessel_skeletonisation.py`, `test_thick_vessel_braid_guard.py`, `test_segmentation_cleanup.py`, `test_segmentation_quality.py`, `test_segmentation_raw_comparison.py`, `test_memmap_*.py`, `test_low_ram_*.py` |
 | `src/haemolynx/graph/` | `tests/test_graph.py`, `test_graph_assemble.py`, `tests/test_branch_order_hierarchy.py`, `test_centreline_smoothing.py`, `test_graph_communities.py`, `test_graph_edit.py`, `test_graph_thick_vessel_junctions.py`, `test_small_vessel_redefinition.py`, `test_vessel_mask_minority_swap.py`, `test_mask_continuity.py`, `test_mask_recovery.py`, `test_lumen_loops.py`, `test_facing_ends.py`, `test_parallel_duplicates.py`, `test_lumen_artefacts.py` (the lumen-artefact report, on one synthetic case of each kind from `tests/lumen_artefact_fixtures.py`), `test_consolidate_lumen.py`, `test_network_review.py` (each review list's finder), `test_dead_ends.py` (the one dead-end definition, every caller agreeing, on one fixture per kind from `tests/dead_end_fixtures.py`), `test_dead_end_extension.py`, `test_skeleton_retrace.py` (square rings of tube, one side skeleton only, and a branch to join), boundary/assignment tests |
 | `src/haemolynx/haemodynamics/` | `tests/test_hemodynamics.py`, `test_viscosity_laws.py`, `test_constriction.py`, `test_haematocrit_distribution.py`, `test_haemodynamics_automated_fwhm.py`, `test_haemodynamics_edt_diameter.py`, `test_raw_section_diameter.py`, `test_fwhm_decoys.py`, `test_fwhm_planted.py`, `test_endothelial_diameter.py`, `test_diameter_benchmark.py` (slow: every lumen method's accuracy on known vessels), `test_open_ends.py` (every open-end model, every solver taking it), FWHM/pericyte integration tests |
@@ -337,8 +341,8 @@ Most modules have a test file named after them (`gui/run_snapshot.py` → `tests
 | `src/haemolynx/statistics/` | `tests/test_statistics.py`, `tests/test_three_dim_distances.py`, `test_network_analyses.py`, `test_capillary_bed_joins.py`, `test_inlet_outlet_routes.py`, `test_occlusion_and_current_flow.py`, `test_statistics_without_haemodynamics.py`, `test_tissue_volume.py` (the measurement, the density it feeds, its stage wiring and preflight), `test_stats_cross_check.py` (the cross-check against skan on the dense capillary bed's design, pinned), `test_vessel_class_statistics.py` (each class's rows against hand-computed values, both labelling schemes, the export) |
 | `src/haemolynx/optimisation/` | `tests/test_optimisation_*.py`, `test_fwhm_optimisation_*.py` |
 | `src/haemolynx/visualization/` | `tests/test_visualization.py`, `tests/test_vtk_io.py`, `tests/test_visualization_geometry.py`, `test_pipeline_artifacts.py`, `test_secomb_io.py` |
-| `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text |
-| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_pipeline_provenance.py` (the run manifest), `test_setting_units.py`, `test_example_configs.py` |
+| `src/haemolynx/gui/` | `tests/test_gui_<module>.py` for the pure modules (`test_gui_form.py`, `test_gui_tabs.py`, `test_gui_progress.py`, `test_gui_results.py`, `test_gui_layers.py`, `test_gui_boundary_picking.py`, `test_gui_view_snap.py`, `test_gui_layout.py`, `test_gui_statistics_view.py`, `test_gui_vessel_mask_search.py`, …); `test_gui_*_widget.py`, `test_gui_widget.py` and `test_gui_view_panel.py` build the real panel; `test_gui_tooltips.py` checks every control has hover text; `test_batch_run.py` (the batch runner and its command line, one real two-image batch) |
+| `src/haemolynx/pipeline/` | `tests/test_pipeline_schema_api.py`, `test_pipeline_progress.py`, `test_pipeline_invariants.py`, `test_segment_stage.py`, `test_skeletonise_stage.py`, `test_build_network_stage.py` (a build that leaves no vessels), `test_post_process_stage.py`, `test_citations.py`, `test_pipeline_provenance.py` (the run manifest), `test_setting_units.py`, `test_example_configs.py`, `test_batch_settings.py` (one image's batch settings, the batch refusals) |
 | `src/haemolynx/parsers/` | `tests/test_parsers_schema.py`, `test_parsers_config.py`, `test_parsers_checks.py` |
 | `src/haemolynx/synthetic/` | `tests/test_synthetic_template.py` (both sources, every refusal, JSON, scaling), `test_synthetic_generate.py` (the graph contract, determinism, the exact counts, the acceptance test against `tests/synthetic_fixtures.py`'s hand-set template, the polyline bender, the bed's arithmetic), `test_synthetic_compare.py`, `test_synthetic_stage.py` (each stage under `network_source=synthetic`, a whole run, preflight), `test_pipeline_naming.py` |
 | Any subpackage's `__all__` | `tests/test_public_api.py` (star-imports every subpackage) |
@@ -1249,6 +1253,25 @@ are only caught locally.
   the session's): `per_vessel` (default) as above, or `uniform`, every vessel `uniform_diameter_um`
   across whatever its `diameter_um`, which stays as it was. That width is the µm box shown beside
   the choice while it is Uniform (`set_tube_uniform_diameter`; 4 µm to start, 0.5-1000 µm).
+- **Batch run** (2026-10-19, `PLAN_batch_run.md`) — the pipeline once per segmented image in a
+  folder. `io/batch_matching.py`'s `match_batch(BatchFolders(segmented, raw=, large=, small=),
+  sizes)`: the images are the segmented folder's image files that are no mask, probability map
+  or raw image of another file there (`batch_inputs`); the raw image is read by the mask rule
+  without role words (its identifying words, channel names such as `C1-` left out, all in the
+  segmented name: `read_raw_name`); masks in the segmented folder by `find_vessel_masks`'s rule
+  (now with `folders=`/`exclude=`); a mask folder of its own says the size, so each file there
+  goes to the image sharing most of its name from the start, global unless it names a vessel
+  type (`mask_owners`: Harvey's `..._Simple Segmentation_intermediate.h5`). A blank folder is
+  the segmented one. Ties are named, never guessed (`BatchMatch.choose`, `choose_alike`).
+  `pipeline/batch.py`: `item_settings` (the image's files, every output folder in
+  `{output}/{segmented stem}/`, no mid-run pause), `check_batch` (refuses node IDs, synthetic,
+  ilastik, a single pericyte/cell/tissue file in effect; warns on coordinates),
+  `batch_preflight`. `gui/batch_run.py`'s `run_batch` runs them in turn with a fresh
+  `ResultLayers` + `StageCheckpoints` each and writes `{stem}/{stem}.haemorun`; a failure is
+  recorded and the batch goes on, `batch_summary.csv` is rewritten after every image,
+  `skip_done` skips an image whose `.haemorun` is there. Headless: `python -m
+  haemolynx.gui.batch_run --config C --segmented D [--raw/--large/--small D] --output D
+  [--dry-run] [--only STEM ...] [--rerun]`; every image passes its checks or nothing runs.
 - **`synthetic/`** (2026-10-18) — a network drawn to a previous run. `template.py`'s
   `NetworkTemplate` is the characteristics a generator draws to and a comparison scores against:
   the box and voxel size, the inlets and outlets by face, the boundary-node counts, per-class and

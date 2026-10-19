@@ -28,9 +28,11 @@ the image's name furthest from its start is taken; a tie is left unchosen.
 """
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Mapping, NamedTuple
 
@@ -86,9 +88,14 @@ _FORMAT = {".tif": "tiff", ".tiff": "tiff", ".h5": "h5"}
 _WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 
 
+@lru_cache(maxsize=1 << 16)
+def _stem_words(stem: str) -> tuple[str, ...]:
+    return tuple(word.lower() for word in _WORD.findall(stem))
+
+
 def file_name_words(stem: str) -> list[str]:
     """The words of a file name (no extension), lower case, in order."""
-    return [word.lower() for word in _WORD.findall(stem)]
+    return list(_stem_words(stem))
 
 
 @dataclass(frozen=True)
@@ -184,6 +191,14 @@ def read_mask_name(candidate: Path | str, reference: Path | str) -> MaskName | N
     candidate, reference = Path(candidate), Path(reference)
     words = file_name_words(candidate.stem)
     reference_words = file_name_words(reference.stem)
+    # What the full reading below would refuse anyway, read cheaply first: a
+    # batch reads every file against every image. A name with no role word
+    # adds none, and every word saying which image it is must be the image's.
+    word_set = set(words)
+    if not word_set & _ROLE_WORDS:
+        return None
+    if not word_set - _ROLE_WORDS - _UNIDENTIFYING_WORDS <= set(reference_words):
+        return None
     added = Counter(words) - Counter(reference_words)
     if added.keys() & _NOT_A_MASK_WORDS:
         return None
@@ -207,58 +222,137 @@ def read_mask_name(candidate: Path | str, reference: Path | str) -> MaskName | N
     return MaskName(size, kind, rank, size_named)
 
 
-def _same_file(first: Path, second: Path) -> bool:
+@lru_cache(maxsize=1 << 16)
+def _mask_name_words(path: Path) -> tuple[bool, frozenset[str]]:
+    """Whether *path*'s name has a role word, and the words in it that say
+    which image it is: :func:`read_mask_name`'s first refusals, kept per file
+    so a batch reading every file against every image does not parse each
+    name again."""
+    words = set(_stem_words(path.stem))
+    return bool(words & _ROLE_WORDS), frozenset(words - _ROLE_WORDS - _UNIDENTIFYING_WORDS)
+
+
+def _resolved(path: Path) -> Path:
     try:
-        return first.resolve() == second.resolve()
+        return path.resolve()
     except OSError:
-        return first == second
+        return path
+
+
+@lru_cache(maxsize=1024)
+def _resolved_folder(folder: Path) -> Path:
+    return _resolved(folder)
+
+
+def file_key(path: Path | str) -> Path:
+    """*path* with its folder resolved: what tells two spellings of one file
+    apart, one resolve per folder rather than per file."""
+    path = Path(path)
+    return _resolved_folder(path.parent) / path.name
+
+
+def _same_file(first: Path, second: Path) -> bool:
+    return _resolved(first) == _resolved(second)
+
+
+def files_in(folder: Path, suffixes: Iterable[str]) -> list[Path]:
+    """The files in *folder* with one of *suffixes*, in name order; none for a
+    folder that cannot be read. One directory scan, no stat per file."""
+    suffixes = tuple(suffixes)
+    try:
+        with os.scandir(folder) as entries:
+            names = [
+                entry.name
+                for entry in entries
+                if os.path.splitext(entry.name)[1].lower() in suffixes and entry.is_file()
+            ]
+    except OSError:
+        return []
+    return [folder / name for name in sorted(names)]
+
+
+def list_mask_files(folders: Iterable[Path | str], exclude: Iterable[Path | str] = ()) -> list[Path]:
+    """The mask files (:data:`MASK_SUFFIXES`) in *folders*, each folder once,
+    in name order per folder, without the files in *exclude*."""
+    excluded = {file_key(path) for path in exclude}
+    seen: set[Path] = set()
+    files: list[Path] = []
+    for folder in folders:
+        if folder in (None, ""):
+            continue
+        folder = Path(folder)
+        key = _resolved(folder)
+        if key in seen:
+            continue
+        seen.add(key)
+        files.extend(
+            candidate
+            for candidate in files_in(folder, MASK_SUFFIXES)
+            if key / candidate.name not in excluded
+        )
+    return files
 
 
 def find_vessel_masks(
     references: Iterable[Path | str | None],
     sizes: Iterable[str] = tuple(SIZE_WORDS),
+    folders: Iterable[Path | str] | None = None,
+    exclude: Iterable[Path | str] = (),
 ) -> dict[str, FoundVesselMasks]:
     """The vessel masks beside the images *references*, for each of *sizes*.
 
     *references* are the run's input images (its segmented image and raw
     image); unset ones are skipped. Every mask file (:data:`MASK_SUFFIXES`) in
-    their folders is read against each of them (:func:`read_mask_name`), at
-    its nearest. The large masks come from the files naming their size, or,
-    with none, from those naming only a vessel type. Returns one
+    their folders -- or in *folders* instead, when given (a batch run's mask
+    folders) -- is read against each of them (:func:`read_mask_name`), at
+    its nearest; files in *exclude* (a batch's other images) are never masks.
+    The large masks come from the files naming their size, or, with none,
+    from those naming only a vessel type. Returns one
     :class:`FoundVesselMasks` per size asked for, empty when nothing was found."""
     sizes = tuple(sizes)
     for size in sizes:
         if size not in SIZE_WORDS:
             raise ValueError(f"size must be 'large' or 'small', got {size!r}.")
     images = [Path(reference) for reference in references if reference not in (None, "")]
-    folders: list[Path] = []
-    for image in images:
-        if not any(_same_file(image.parent, folder) for folder in folders):
-            folders.append(image.parent)
+    if folders is None:
+        folders = [image.parent for image in images]
+    return masks_among(list_mask_files(folders, exclude=[*images, *exclude]), images, sizes)
 
+
+def masks_among(
+    candidates: Iterable[Path],
+    images: Iterable[Path | str],
+    sizes: Iterable[str] = tuple(SIZE_WORDS),
+) -> dict[str, FoundVesselMasks]:
+    """:func:`find_vessel_masks` over files already listed (:func:`list_mask_files`):
+    each of *candidates* read against each of *images*, at its nearest."""
+    sizes = tuple(sizes)
+    for size in sizes:
+        if size not in SIZE_WORDS:
+            raise ValueError(f"size must be 'large' or 'small', got {size!r}.")
+    images = [Path(image) for image in images]
+    image_words = [set(_stem_words(image.stem)) for image in images]
     pools: dict[tuple[str, str, bool], list[tuple[tuple[int, int, int], Path]]] = {}
-    for folder in folders:
-        try:
-            entries = sorted(folder.iterdir())
-        except OSError:
+    for candidate in candidates:
+        role, identifying = _mask_name_words(candidate)
+        if not role:
             continue
-        for candidate in entries:
-            if candidate.suffix.lower() not in MASK_SUFFIXES or not candidate.is_file():
-                continue
-            if any(_same_file(candidate, image) for image in images):
-                continue
-            readings = [
-                reading
-                for reading in (read_mask_name(candidate, image) for image in images)
-                if reading is not None
-            ]
-            if not readings:
-                continue
-            name = max(readings, key=lambda reading: (reading.size_named, reading.rank))
-            if name.size in sizes:
-                pools.setdefault((name.size, name.kind, name.size_named), []).append(
-                    (name.rank, candidate)
-                )
+        readings = [
+            reading
+            for reading in (
+                read_mask_name(candidate, image)
+                for image, held in zip(images, image_words)
+                if identifying <= held
+            )
+            if reading is not None
+        ]
+        if not readings:
+            continue
+        name = max(readings, key=lambda reading: (reading.size_named, reading.rank))
+        if name.size in sizes:
+            pools.setdefault((name.size, name.kind, name.size_named), []).append(
+                (name.rank, candidate)
+            )
 
     found: dict[str, FoundVesselMasks] = {}
     for size in sizes:
