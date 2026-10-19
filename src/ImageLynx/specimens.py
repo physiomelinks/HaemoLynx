@@ -408,8 +408,12 @@ class Specimen:
         return [p for p in wanted if not p.exists()]
 
     def is_ready(self) -> bool:
-        """Whether the mask and distance transform this pipeline consumes both exist."""
-        return self.stage_status()["masked"]
+        """Whether the probability map ``carotid_image_to_model.py`` thresholds exists.
+
+        File existence only: which classifier made the map is ``probability_status()``'s
+        question, and the mask and distance transform are not read by that script.
+        """
+        return self.probabilities_path.exists()
 
 
 #: Voxel sizes and shapes read from each acquisition's own ImageJ metadata, not typed in:
