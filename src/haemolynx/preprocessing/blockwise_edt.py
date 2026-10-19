@@ -191,7 +191,7 @@ def parallel_plan(shape, block_voxels: int | None = None) -> tuple[int, int]:
     *shape*: as many workers as there are cores but one and as half the
     memory free now holds with blocks of :data:`MIN_PARALLEL_BLOCK_VOXELS`
     (at :data:`BLOCK_BYTES_PER_VOXEL`), then blocks as large as that share
-    allows, up to *block_voxels*. One worker -- this process -- below
+    allows, up to *block_voxels* and about two a worker. One worker -- this process -- below
     :data:`PARALLEL_MIN_VOXELS`. The block size changes which blocks there
     are, never the answer."""
     if block_voxels is None:
@@ -208,11 +208,20 @@ def parallel_plan(shape, block_voxels: int | None = None) -> tuple[int, int]:
         return block_voxels, 1
     budget = PARALLEL_MEMORY_FRACTION * float(available)
     smallest = MIN_PARALLEL_BLOCK_VOXELS * BLOCK_BYTES_PER_VOXEL + WORKER_BASE_BYTES
-    workers = int(min(cores, budget // smallest, -(-total // MIN_PARALLEL_BLOCK_VOXELS)))
+    workers = int(min(cores, budget // smallest))
     if workers <= 1:
         return block_voxels, 1
-    block = int(min(block_voxels, (budget / workers - WORKER_BASE_BYTES) // BLOCK_BYTES_PER_VOXEL))
-    return block, workers
+    block = int(
+        min(
+            block_voxels,
+            (budget / workers - WORKER_BASE_BYTES) // BLOCK_BYTES_PER_VOXEL,
+            # About two blocks a worker, so the last ones are not left to few.
+            max(MIN_PARALLEL_BLOCK_VOXELS, -(-total // (2 * workers))),
+        )
+    )
+    # No more workers than blocks of the size they will take.
+    workers = min(workers, -(-total // block))
+    return (block, workers) if workers > 1 else (block_voxels, 1)
 
 
 def near_blocks(

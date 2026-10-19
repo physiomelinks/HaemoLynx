@@ -170,3 +170,38 @@ def test_distances_at_points_with_no_points_is_empty():
         _box(volume), tuple(slice(0, 5) for _ in range(3)), np.empty((0, 3), int), sampling=(1, 1, 1)
     )
     assert read.shape == (0,)
+
+
+def test_the_parallel_plan_follows_cores_free_memory_and_the_volume(monkeypatch):
+    """Workers: one per core but one, as many as half the free memory holds
+    at the smallest block, and no more than there are blocks; blocks as large
+    as that share allows. One process for a small volume, or when the free
+    memory is unknown or too little."""
+    import os
+
+    import haemolynx.haemodynamics.resistance as resistance
+
+    monkeypatch.setattr(os, "cpu_count", lambda: 20)
+    free = {"bytes": 8 << 30}
+    monkeypatch.setattr(resistance, "available_memory_bytes", lambda: free["bytes"])
+    plan = blockwise_edt.parallel_plan
+
+    block, workers = plan((200, 1200, 1250), 32_000_000)
+    budget = blockwise_edt.PARALLEL_MEMORY_FRACTION * free["bytes"]
+    assert 1 < workers <= 19
+    assert blockwise_edt.MIN_PARALLEL_BLOCK_VOXELS <= block <= 32_000_000
+    assert workers * (block * blockwise_edt.BLOCK_BYTES_PER_VOXEL + blockwise_edt.WORKER_BASE_BYTES) <= budget
+
+    free["bytes"] = 64 << 30
+    assert plan((200, 1200, 1250), 32_000_000)[1] == 19, "cores bound it"
+
+    assert plan((40, 150, 150), 32_000_000) == (32_000_000, 1), "a small volume stays here"
+    free["bytes"] = 300 << 20
+    assert plan((200, 1200, 1250), 32_000_000) == (32_000_000, 1), "too little memory"
+    free["bytes"] = None
+    assert plan((200, 1200, 1250), 32_000_000) == (32_000_000, 1), "memory unknown"
+
+    free["bytes"] = 8 << 30
+    monkeypatch.setattr(blockwise_edt, "PARALLEL_MIN_VOXELS", 0)
+    block, workers = plan((10, 40, 60), 6_000)
+    assert block == 6_000 and workers == 4, "no more workers than blocks"

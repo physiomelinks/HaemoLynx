@@ -2011,9 +2011,14 @@ def test_the_low_ram_catchment_in_worker_processes_is_the_one_in_this_process(
     mask, kwargs = _network_case(case)
     plain, plain_thick = skeletonize_thickness_gated(mask, **kwargs)
 
+    import haemolynx.haemodynamics.resistance as resistance
+
     monkeypatch.setattr(memmap_support, "LOW_MEMORY_BLOCK_VOXELS", 30_000)
     monkeypatch.setattr(blockwise_edt, "PARALLEL_MIN_VOXELS", 0)
     monkeypatch.setattr(os, "cpu_count", lambda: 3)
+    # The plan reads the memory free now: fixed here, so whatever else the
+    # machine is running, two workers are what it plans.
+    monkeypatch.setattr(resistance, "available_memory_bytes", lambda: 8 << 30)
     plans = []
     real_plan = blockwise_edt.parallel_plan
     monkeypatch.setattr(
