@@ -9,6 +9,7 @@ exit without running pyflakes or pytest.
 """
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from conftest import TOY_ENV, toy_git
@@ -86,3 +87,24 @@ def test_a_worktree_without_its_own_hook_commits_with_one_line_saying_so(tmp_pat
     assert proc.returncode == 0, proc.stderr
     assert proc.stderr.splitlines() == [
         f"pre-commit: {wt.resolve()} has no scripts/git-hooks/pre-commit, so no hook ran."], proc.stderr
+
+
+def test_the_hook_runs_the_fast_tests_without_git_variables(tmp_path):
+    """Git hands the hook GIT_DIR / GIT_INDEX_FILE; a test that runs `git` in a temp folder
+    would then write into the committing repo (ticket worktree-hygiene/01)."""
+    main, wt = _toy(tmp_path)
+    shutil.copytree(main / "scripts", wt / "scripts")
+    _absolute_hooks_path(main)
+    (wt / "venv" / "bin").mkdir(parents=True)
+    (wt / "venv" / "bin" / "python").symlink_to(Path(sys.prefix) / "bin" / "python")
+    (wt / "tests").mkdir()
+    (wt / "tests" / "test_env.py").write_text(
+        "import os\n\n\ndef test_no_git_variables():\n"
+        "    assert [k for k in os.environ if k.startswith('GIT_')] == []\n")
+    toy_git(wt, "add", "tests/test_env.py")
+    proc = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                           "-m", "env test"], cwd=wt, env=TOY_ENV, capture_output=True, text=True)
+
+    log = wt / toy_git(wt, "rev-parse", "--git-path", "hook-stamp").strip() / "fast-tests.log"
+    assert proc.returncode == 0, proc.stderr
+    assert "1 passed" in log.read_text(), log.read_text()
