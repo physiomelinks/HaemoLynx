@@ -281,10 +281,12 @@ def test_small_runs_route_in_thread(monkeypatch):
     assert made == [0]
 
 
-@pytest.mark.parametrize("cores", [1, 3, 12])
-def test_reconnect_threads_follow_the_core_count(monkeypatch, cores):
+@pytest.mark.parametrize("cores, pairs", [(1, 3), (3, 3), (12, 3), (20, 12)])
+def test_reconnect_threads_follow_the_core_count(monkeypatch, cores, pairs):
     """One thread per core by default (never more than there are pairs), and
-    one routing worker per thread once a run is big enough for workers."""
+    one routing worker per thread once a run is big enough for workers -- at
+    most eight, leaving a core, as the other worker pools: each is a whole
+    interpreter."""
     threads, routers = [], []
     real_pool, real_router = reconnect_mod.ThreadPoolExecutor, reconnect_mod._Router
 
@@ -302,12 +304,58 @@ def test_reconnect_threads_follow_the_core_count(monkeypatch, cores):
     monkeypatch.setattr(reconnect_mod, "ThreadPoolExecutor", RecordingPool)
     monkeypatch.setattr(reconnect_mod, "_Router", RecordingRouter)
     monkeypatch.setattr(reconnect_mod, "ROUTING_PROCESS_MIN_PAIRS", 2)
-    skeleton, G = _rings(count=3)  # three candidate pairs
+    skeleton, G = _rings(count=pairs)  # one candidate pair a ring
 
     reconnect_mod.reconnect_secondary_loop_edges(G.copy(), skeleton, debug=False)
 
-    assert threads == [min(cores, 3)]
-    assert routers == [min(cores, 3)]
+    assert threads == [min(cores, pairs)]
+    assert routers == [min(cores, pairs, 8, max(1, cores - 1))]
+
+
+def test_routing_workers_start_with_one_native_thread(monkeypatch):
+    """threadpoolctl's limit holds only in the parent, so each worker's numpy
+    would start a BLAS thread per core (~659 MB commit each on Windows) unless
+    the workers' environment says one thread."""
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        monkeypatch.setenv(name, "16")
+    started = []
+    real_popen = reconnect_mod.subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        started.append(kwargs.get("env"))
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(reconnect_mod.subprocess, "Popen", recording_popen)
+    router = reconnect_mod._Router(2)
+    try:
+        assert len(started) == 2
+        for env in started:
+            assert env is not None
+            for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+                assert env[name] == "1"
+            assert env["PATH"] == reconnect_mod.os.environ["PATH"]
+        # ...and a worker started that way still routes.
+        cost = 1 + np.random.default_rng(2).random((5, 6, 7))
+        assert router(cost, (0, 0, 0), (4, 5, 6)) == reconnect_mod._route(cost, (0, 0, 0), (4, 5, 6), (1.0, 1.0, 1.0))
+        assert not router._broken
+    finally:
+        router.close()
+    assert reconnect_mod.os.environ["OPENBLAS_NUM_THREADS"] == "16"
+
+
+def test_a_routing_worker_reads_its_thread_limit_from_its_environment():
+    """The limit is what the worker process itself sees, read back from it."""
+    import subprocess
+    import sys
+
+    seen = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.environ.get('OPENBLAS_NUM_THREADS'))"],
+        env=reconnect_mod._routing_environment(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert seen.stdout.strip() == "1"
 
 
 # --- hub selection -------------------------------------------------------------

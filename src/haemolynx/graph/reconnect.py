@@ -289,6 +289,19 @@ def _along_chord(path: np.ndarray, start: np.ndarray, stop: np.ndarray, toleranc
 ROUTING_PROCESS_MIN_PAIRS = 32
 
 
+def _routing_environment() -> dict[str, str]:
+    """This process's environment with one OpenMP/BLAS thread per routing
+    worker. The workers already fill the cores, and threadpoolctl's limit
+    (:func:`nested_native_thread_limit`) holds only in the process that sets
+    it: a worker's numpy otherwise starts OpenBLAS with a thread per core and
+    commits ~659 MB doing it, against ~19 MB with one -- 13 GB for 20 workers,
+    which ran an E14.5 build out of paging file. Routing does no BLAS, so the
+    paths are the same."""
+    from haemolynx.preprocessing.shared_volume_tasks import _NATIVE_THREAD_VARIABLES
+
+    return {**os.environ, **{name: "1" for name in _NATIVE_THREAD_VARIABLES}}
+
+
 #: What a routing worker process runs: it imports skimage and nothing else --
 #: never this package, and never the caller's own script (multiprocessing's
 #: spawn re-imports ``__main__``, which re-runs any script without an
@@ -333,11 +346,13 @@ class _Router:
         if processes <= 1 or getattr(sys, "frozen", False):
             return
         try:
+            environment = _routing_environment()
             for _ in range(int(processes)):
                 worker = subprocess.Popen(
                     [sys.executable, "-c", _ROUTE_WORKER_CODE],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
+                    env=environment,
                 )
                 self._workers.append(worker)
                 self._idle.put(worker)
@@ -438,9 +453,10 @@ def reconnect_secondary_loop_edges(
     *max_workers* is how many threads prepare and route windows: by default
     one per CPU core (never more than there are candidate pairs).
     *routing_processes* is how many worker processes route (see
-    :class:`_Router`): by default one per worker thread, capped at the CPU
-    count, once there are :data:`ROUTING_PROCESS_MIN_PAIRS` candidate pairs;
-    0 or 1 routes in-thread. The same paths either way. Under the low-RAM
+    :class:`_Router`): by default one per worker thread, at most
+    :func:`~haemolynx.preprocessing.shared_volume_tasks.default_worker_count`
+    (eight, leaving a core), once there are :data:`ROUTING_PROCESS_MIN_PAIRS`
+    candidate pairs; 0 or 1 routes in-thread. The same paths either way. Under the low-RAM
     option the threads' windows still share one voxel budget, however many
     there are.
 
@@ -813,8 +829,10 @@ def reconnect_secondary_loop_edges(
     # the routing workers (one per thread) route them.
     max_workers = max_workers or max(1, min(os.cpu_count() or 1, len(pairs)))
     if routing_processes is None:
+        from haemolynx.preprocessing.shared_volume_tasks import default_worker_count
+
         routing_processes = (
-            min(max_workers, os.cpu_count() or 1)
+            min(max_workers, default_worker_count())
             if len(pairs) >= ROUTING_PROCESS_MIN_PAIRS
             else 0
         )
