@@ -452,50 +452,80 @@ def _fill_binary_holes_by_slab(
 ) -> np.ndarray:
     """:func:`fill_binary_holes` of a volume for the low-RAM option, with no
     label volume: the background labelled a slab of planes at a time
-    (:mod:`.slab_labels`, face connectivity as before), each component that
-    reaches one of the volume's six faces marked as the slabs go by, and the
-    slabs labelled again to write the mask with every other background
-    component filled. The whole volume's int32 labels were 20.6 GB on disk
-    for a 5.5 G-voxel stack, and writing them took the memory the rest of
-    the machine was using. Same holes: which background reaches a face does
-    not depend on how it is numbered."""
-    from .slab_labels import label_by_slab
+    (:mod:`.slab_labels`, face connectivity as before) in worker processes,
+    each component that reaches one of the volume's six faces marked, and the
+    mask written out with every other background component filled -- only a
+    slab holding part of a hole labelled a second time, the rest copied. The
+    whole volume's int32 labels were 20.6 GB on disk for a 5.5 G-voxel stack,
+    and writing them took the memory the rest of the machine was using. Same
+    holes: which background reaches a face does not depend on how it is
+    numbered, nor on how many processes labelled it."""
+    from .blockwise_edt import parallel_plan
+    from .shared_volume_tasks import whole_file_spec
+    from .slab_labels import label_by_slab_in_workers, replay_in_workers
 
     shape = tuple(int(s) for s in mask.shape)
-
-    def background(z0: int, z1: int) -> np.ndarray:
-        return ~np.asarray(mask[z0:z1], dtype=bool)
-
-    at_faces: list[np.ndarray] = []
-
-    def visit(z0: int, z1: int, labels: np.ndarray, offset: int) -> None:
-        faces = [labels[:, 0, :], labels[:, -1, :], labels[:, :, 0], labels[:, :, -1]]
-        if z0 == 0:
-            faces.append(labels[0])
-        if z1 == shape[0]:
-            faces.append(labels[-1])
-        found = np.unique(np.concatenate([face.ravel() for face in faces]))
-        found = found[found > 0]
-        if found.size:
-            at_faces.append(found.astype(np.int64) + int(offset))
-
-    components = label_by_slab(
-        background, shape, structure=generate_binary_structure(3, 1), visit=visit
+    block_voxels, workers = parallel_plan(shape)
+    params = dict(depth=shape[0])
+    components, faces = label_by_slab_in_workers(
+        _background_planes, (mask,), shape, structure=generate_binary_structure(3, 1),
+        collect=_labels_on_faces, params=params, block_voxels=block_voxels, workers=workers,
+        memmap_directory=memmap_directory,
     )
     if components.count == 0:
         return mask
     hole = np.ones(components.count + 1, dtype=bool)
     hole[0] = False  # the foreground
-    if at_faces:
-        hole[components.number[np.concatenate(at_faces)]] = False
+    touching = [found + offset for offset, found in faces if len(found)]
+    if touching:
+        hole[components.number[np.concatenate(touching)]] = False
+    hole_at = hole[components.number]  # per slab label, once offset
     result = new_memmap_array(shape, bool, directory=memmap_directory)
     try:
-        for z0, z1, labels, offset in components.replay(background):
-            result[z0:z1] = np.asarray(mask[z0:z1], dtype=bool) | hole[components.numbers(labels, offset)]
+        replay_in_workers(
+            components, _background_planes, _write_filled, (mask, hole_at),
+            relabel=lambda offset, n: bool(hole_at[offset + 1:offset + n + 1].any()),
+            params=dict(params, out=whole_file_spec(result)), workers=workers,
+            memmap_directory=memmap_directory, on_low_memory=result.flush,
+        )
+        result.flush()
     except BaseException:
         release_memmap_array(result)
         raise
     return result
+
+
+# The slab hole fill's reads and writes, module-level so worker processes
+# can be sent them: volumes[0] is the mask, volumes[1] (on the replay) each
+# offset slab label's answer.
+
+
+def _background_planes(volumes, z0: int, z1: int, params) -> np.ndarray:
+    return ~np.asarray(volumes[0][z0:z1], dtype=bool)
+
+
+def _labels_on_faces(volumes, z0: int, z1: int, labels: np.ndarray, params) -> np.ndarray:
+    """The slab's own labels on the volume's faces: its four sides, and the
+    first and last plane of the volume when it holds them."""
+    faces = [labels[:, 0, :], labels[:, -1, :], labels[:, :, 0], labels[:, :, -1]]
+    if z0 == 0:
+        faces.append(labels[0])
+    if z1 == params["depth"]:
+        faces.append(labels[-1])
+    found = np.unique(np.concatenate([face.ravel() for face in faces]))
+    return found[found > 0].astype(np.int64)
+
+
+def _write_filled(volumes, z0: int, z1: int, labels, offset: int, n: int, params) -> None:
+    from .shared_volume_tasks import open_whole_file
+    from .slab_labels import offset_lookup
+
+    planes = np.asarray(volumes[0][z0:z1], dtype=bool)
+    if labels is not None:
+        planes = planes | offset_lookup(labels, offset, volumes[1])
+    out = open_whole_file(params["out"])
+    out[z0:z1] = planes
+    del out
 
 
 def _label_inverted_background(

@@ -55,6 +55,8 @@ class SlabLabels:
     shape: tuple[int, int, int]
     #: Each slab's offset, in z order: what :meth:`label_slab` adds.
     offsets: tuple[int, ...] = ()
+    #: How many labels each slab has, in z order.
+    slab_counts: tuple[int, ...] = ()
 
     def box(self, n: int) -> tuple[slice, slice, slice]:
         """Component *n*'s tight box, as ``find_objects`` gives it."""
@@ -80,6 +82,17 @@ class SlabLabels:
         z1 = min(z0 + self.planes_per_slab, self.shape[0])
         labels, _n = label(np.asarray(foreground(z0, z1), dtype=bool), structure=self.structure)
         return z0, z1, labels, int(self.offsets[index])
+
+    def slabs(self) -> Iterator[tuple[int, int, int, int]]:
+        """``(z0, z1, offset, n)`` per slab: its planes, and its labels'
+        offset and count -- ``offset + 1`` to ``offset + n`` index
+        :attr:`number`. A slab whose components all answer alike needs no
+        labelling again."""
+        offset = 0
+        for i, z0 in enumerate(range(0, self.shape[0], self.planes_per_slab)):
+            n = int(self.slab_counts[i])
+            yield z0, min(z0 + self.planes_per_slab, self.shape[0]), offset, n
+            offset += n
 
     def replay(self, foreground: Planes) -> Iterator[tuple[int, int, np.ndarray, int]]:
         """``(z0, z1, labels, offset)`` per slab, labelled again exactly as
@@ -132,69 +145,218 @@ def label_by_slab(
     offset that makes its labels unique across slabs: ``labels + offset``
     (where ``labels > 0``) indexes :attr:`SlabLabels.number`.
     """
+    shape, structure = _checked(shape, structure)
+    if block_voxels is None:
+        block_voxels = memmap_support.LOW_MEMORY_BLOCK_VOXELS
+    step = memmap_support.slab_step(shape, block_voxels)
+    joined = _Join(shape, structure, step)
+    for z0 in range(0, shape[0], step):
+        z1 = min(z0 + step, shape[0])
+        labels, n = label(np.asarray(foreground(z0, z1), dtype=bool), structure=structure)
+        n = int(n)
+        offset = joined.add(z0, n, _boxes(labels) if n else None, labels[0], labels[-1].copy())
+        if visit is not None:
+            visit(z0, z1, labels, offset)
+    return joined.finish()
+
+
+def _checked(shape, structure) -> tuple[tuple[int, int, int], np.ndarray]:
     shape = tuple(int(s) for s in shape)
     structure = np.asarray(structure, dtype=bool)
     if len(shape) != 3 or structure.shape != (3, 3, 3):
         raise ValueError("label_by_slab labels 3D volumes with a 3x3x3 structure")
+    return shape, structure
+
+
+def _boxes(labels: np.ndarray) -> np.ndarray:
+    """``(n, 6)`` each label's ``find_objects`` box, starts then stops, in the slab."""
+    return np.array(
+        [[s.start for s in box] + [s.stop for s in box] for box in find_objects(labels)],
+        dtype=np.int64,
+    )
+
+
+class _Join:
+    """The slabs' labels joined into components, fed one slab at a time in z
+    order: its label count, boxes, and first and last planes."""
+
+    def __init__(self, shape, structure, step):
+        self.shape, self.structure, self.step = shape, structure, step
+        self.steps = [(int(dy) - 1, int(dx) - 1) for dy, dx in np.argwhere(structure[2])]
+        self.links: list[np.ndarray] = []
+        self.lo_parts: list[np.ndarray] = []
+        self.hi_parts: list[np.ndarray] = []
+        self.counts: list[int] = []
+        self.offset = 0
+        self.previous = None  # the slab before's last plane and offset; None when it had no labels
+
+    def add(self, z0: int, n: int, boxes, first, last) -> int:
+        """Join one slab; returns its labels' offset."""
+        offset = self.offset
+        if n:
+            boxes = np.array(boxes, dtype=np.int64)
+            boxes[:, 0] += z0
+            boxes[:, 3] += z0
+            self.lo_parts.append(boxes[:, :3])
+            self.hi_parts.append(boxes[:, 3:])
+            if self.previous is not None:
+                self.links.append(_face_links(self.previous[0], first, self.previous[1], offset, self.steps))
+        self.previous = (last, offset) if n else None
+        self.counts.append(int(n))
+        self.offset += int(n)
+        return offset
+
+    def finish(self) -> SlabLabels:
+        offset, structure, step, shape = self.offset, self.structure, self.step, self.shape
+        counts = tuple(self.counts)
+        offsets = tuple(int(v) for v in np.cumsum((0,) + counts[:-1])) if counts else ()
+        slabs = dict(offsets=offsets, slab_counts=counts)
+        if offset == 0:
+            empty = np.empty((0, 3), dtype=np.int64)
+            return SlabLabels(0, np.zeros(1, dtype=np.int64), empty, empty, structure, step, shape, **slabs)
+        pairs = np.concatenate(self.links) if self.links else np.empty((0, 2), dtype=np.int64)
+        if len(pairs):
+            graph = coo_matrix(
+                (np.ones(len(pairs), dtype=np.int8), (pairs[:, 0], pairs[:, 1])),
+                shape=(offset + 1, offset + 1),
+            )
+            _n_groups, group = connected_components(graph, directed=False)
+        else:
+            group = np.arange(offset + 1)
+        # Number the groups by their first slab label: slabs come in z order and
+        # ``label`` numbers each slab's in C order, so that is the order in which
+        # their first voxels come -- ``label``'s own numbering of the whole volume.
+        groups, first = np.unique(group[1:], return_index=True)
+        rank = np.empty(len(groups), dtype=np.int64)
+        rank[np.argsort(first, kind="stable")] = np.arange(len(groups))
+        number = np.zeros(offset + 1, dtype=np.int64)
+        number[1:] = rank[np.searchsorted(groups, group[1:])] + 1
+        count = len(groups)
+        lo = np.full((count, 3), np.iinfo(np.int64).max, dtype=np.int64)
+        hi = np.zeros((count, 3), dtype=np.int64)
+        np.minimum.at(lo, number[1:] - 1, np.concatenate(self.lo_parts))
+        np.maximum.at(hi, number[1:] - 1, np.concatenate(self.hi_parts))
+        return SlabLabels(count, number, lo, hi, structure, step, shape, **slabs)
+
+
+#: Bytes of RAM a worker holds per voxel of the slab it labels: the slab
+#: read and as booleans, scipy's int32 labels, and the int64 indexes a
+#: replay looks its answers up with.
+SLAB_BYTES_PER_VOXEL = 24
+
+
+def label_by_slab_in_workers(
+    read,
+    volumes: tuple[np.ndarray, ...],
+    shape: tuple[int, int, int],
+    *,
+    structure: np.ndarray,
+    collect=None,
+    params=None,
+    block_voxels: int | None = None,
+    workers: int = 1,
+    memmap_directory=None,
+    on_low_memory=None,
+) -> tuple[SlabLabels, list[tuple[int, object]]]:
+    """:func:`label_by_slab` with each slab labelled in one of *workers*
+    processes, then joined here in z order -- so the same components,
+    numbered the same way, however many workers there are.
+
+    ``read(volumes, z0, z1, params)`` gives the planes' foreground, and
+    ``collect(volumes, z0, z1, labels, params)``, when given, what the
+    caller keeps of a slab's own labels (what a *visit* would gather); both
+    module-level, so workers can be sent them. Returns the components and,
+    per slab, ``(offset, collected)``: ``labels + offset`` indexes
+    :attr:`SlabLabels.number` as a visit's do. *volumes* are shared as
+    :func:`~.shared_volume_tasks.iter_volume_tasks` shares them.
+    """
+    from .shared_volume_tasks import iter_volume_tasks
+
+    shape, structure = _checked(shape, structure)
     if block_voxels is None:
         block_voxels = memmap_support.LOW_MEMORY_BLOCK_VOXELS
     step = memmap_support.slab_step(shape, block_voxels)
-    steps = [(int(dy) - 1, int(dx) - 1) for dy, dx in np.argwhere(structure[2])]
-    links = []
-    lo_parts = []
-    hi_parts = []
-    offset = 0
-    offsets = []
-    previous = None  # the slab before's last plane and its offset; None when it had no labels
-    for z0 in range(0, shape[0], step):
-        z1 = min(z0 + step, shape[0])
-        offsets.append(offset)
-        labels, n = label(np.asarray(foreground(z0, z1), dtype=bool), structure=structure)
-        n = int(n)
-        if n:
-            boxes = np.array(
-                [[s.start for s in box] + [s.stop for s in box] for box in find_objects(labels)],
-                dtype=np.int64,
-            )
-            boxes[:, 0] += z0
-            boxes[:, 3] += z0
-            lo_parts.append(boxes[:, :3])
-            hi_parts.append(boxes[:, 3:])
-            if previous is not None:
-                links.append(_face_links(previous[0], labels[0], previous[1], offset, steps))
-        if visit is not None:
-            visit(z0, z1, labels, offset)
-        previous = (labels[-1].copy(), offset) if n else None
-        offset += n
+    starts = list(range(0, shape[0], step))
+    payloads = [(read, collect, z0, min(z0 + step, shape[0]), structure, params) for z0 in starts]
+    plane = int(shape[1]) * int(shape[2])
+    joined = _Join(shape, structure, step)
+    collected = []
+    results = iter_volume_tasks(
+        _label_slab, payloads, volume=tuple(volumes), workers=workers,
+        memmap_directory=memmap_directory, task_bytes=step * plane * SLAB_BYTES_PER_VOXEL,
+        on_low_memory=on_low_memory,
+    )
+    for z0, (n, boxes, first, last, kept) in zip(starts, results):
+        collected.append((joined.add(z0, n, boxes, first, last), kept))
+    return joined.finish(), collected
 
-    if offset == 0:
-        empty = np.empty((0, 3), dtype=np.int64)
-        return SlabLabels(
-            0, np.zeros(1, dtype=np.int64), empty, empty, structure, step, shape, tuple(offsets)
+
+def _label_slab(volumes, payload):
+    """One slab of :func:`label_by_slab_in_workers`: its label count, boxes,
+    first and last planes (in the smallest type their labels fit), and what
+    *collect* keeps."""
+    read, collect, z0, z1, structure, params = payload
+    labels, n = label(np.asarray(read(volumes, z0, z1, params), dtype=bool), structure=structure)
+    n = int(n)
+    small = np.min_scalar_type(n)
+    first = labels[0].astype(small)
+    # One plane: the same array twice, which pickling sends once.
+    last = first if z1 - z0 == 1 else labels[-1].astype(small)
+    kept = None if collect is None else collect(volumes, z0, z1, labels, params)
+    return n, (_boxes(labels) if n else None), first, last, kept
+
+
+def replay_in_workers(
+    components: SlabLabels,
+    read,
+    write,
+    volumes: tuple[np.ndarray, ...],
+    *,
+    relabel,
+    params=None,
+    workers: int = 1,
+    memmap_directory=None,
+    on_low_memory=None,
+) -> list:
+    """``write(volumes, z0, z1, labels, offset, n, params)`` for every slab, in
+    *workers* processes, and its results in z order. *labels* is the slab
+    labelled again as :func:`label_by_slab_in_workers` labelled it -- read
+    through the same *read* -- for a slab where ``relabel(offset, n)`` says
+    its components do not all answer alike, else None. *write* writes the
+    slab's own planes of an output (a whole memmap it opens itself, so
+    workers can), so the slabs need nothing from each other."""
+    from .shared_volume_tasks import iter_volume_tasks
+
+    slabs = list(components.slabs())
+    payloads = [
+        (read, write, z0, z1, offset, n, bool(n and relabel(offset, n)), components.structure, params)
+        for z0, z1, offset, n in slabs
+    ]
+    plane = int(components.shape[1]) * int(components.shape[2])
+    return list(
+        iter_volume_tasks(
+            _replay_slab, payloads, volume=tuple(volumes), workers=workers,
+            memmap_directory=memmap_directory,
+            task_bytes=components.planes_per_slab * plane * SLAB_BYTES_PER_VOXEL,
+            on_low_memory=on_low_memory,
         )
-    pairs = np.concatenate(links) if links else np.empty((0, 2), dtype=np.int64)
-    if len(pairs):
-        graph = coo_matrix(
-            (np.ones(len(pairs), dtype=np.int8), (pairs[:, 0], pairs[:, 1])),
-            shape=(offset + 1, offset + 1),
-        )
-        _n_groups, group = connected_components(graph, directed=False)
-    else:
-        group = np.arange(offset + 1)
-    # Number the groups by their first slab label: slabs come in z order and
-    # ``label`` numbers each slab's in C order, so that is the order in which
-    # their first voxels come -- ``label``'s own numbering of the whole volume.
-    groups, first = np.unique(group[1:], return_index=True)
-    rank = np.empty(len(groups), dtype=np.int64)
-    rank[np.argsort(first, kind="stable")] = np.arange(len(groups))
-    number = np.zeros(offset + 1, dtype=np.int64)
-    number[1:] = rank[np.searchsorted(groups, group[1:])] + 1
-    count = len(groups)
-    lo = np.full((count, 3), np.iinfo(np.int64).max, dtype=np.int64)
-    hi = np.zeros((count, 3), dtype=np.int64)
-    np.minimum.at(lo, number[1:] - 1, np.concatenate(lo_parts))
-    np.maximum.at(hi, number[1:] - 1, np.concatenate(hi_parts))
-    return SlabLabels(count, number, lo, hi, structure, step, shape, tuple(offsets))
+    )
+
+
+def _replay_slab(volumes, payload):
+    read, write, z0, z1, offset, n, again, structure, params = payload
+    labels = None
+    if again:
+        labels, _n = label(np.asarray(read(volumes, z0, z1, params), dtype=bool), structure=structure)
+    return write(volumes, z0, z1, labels, offset, n, params)
+
+
+def offset_lookup(labels: np.ndarray, offset: int, table: np.ndarray) -> np.ndarray:
+    """``table[labels + offset]`` where a slab's *labels* are set, ``table[0]``
+    elsewhere: a per-offset-label answer, read off at each voxel."""
+    index = np.array(labels, dtype=np.int64)
+    index[index > 0] += int(offset)
+    return np.asarray(table)[index]
 
 
 def voxels_by_component(

@@ -609,6 +609,7 @@ def _thick_vessel_object_mask_by_block(
             _crop_of, _crop_of, _radius_codes, (mask,), crop.shape,
             sampling=sampling, reach=float(min_radius_um), params=params,
             block_voxels=block_voxels, workers=workers, memmap_directory=memmap_directory,
+            on_low_memory=codes.flush,
         ):
             shape = tuple(c.stop - c.start for c in core)
             codes[core] = (
@@ -624,7 +625,10 @@ def _thick_vessel_object_mask_by_block(
         if n_core == 0:
             return
         t1 = time.perf_counter()
-        n_body = _propagate_core_by_slab(codes)
+        codes.flush()
+        n_body = _propagate_core_by_slab(
+            codes, block_voxels=block_voxels, workers=workers, memmap_directory=memmap_directory
+        )
         logger.info(
             "thick_vessel_object_mask: geodesic body propagation took %.2fs (%d body voxels)",
             time.perf_counter() - t1,
@@ -640,6 +644,7 @@ def _thick_vessel_object_mask_by_block(
             block_voxels=block_voxels,
             workers=workers,
             memmap_directory=memmap_directory,
+            on_low_memory=codes.flush,
         )
         logger.info(
             "thick_vessel_object_mask: wall distance transform took %.2fs (%d fat voxels total)",
@@ -650,36 +655,79 @@ def _thick_vessel_object_mask_by_block(
         memmap_support.release_memmap_array(codes)
 
 
-def _propagate_core_by_slab(codes: np.ndarray) -> int:
+def _propagate_core_by_slab(
+    codes: np.ndarray, *, block_voxels: int | None = None, workers: int = 1, memmap_directory=None
+) -> int:
     """``binary_propagation(codes == 2, mask=codes >= 1)``, written over
-    *codes* as 1 on the result and 0 elsewhere; returns its voxel count.
+    *codes* (a whole memmap) as 1 on the result and 0 elsewhere; returns its
+    voxel count.
 
     Propagation through scipy's default structure reaches exactly the
     face-connected components of the mask that hold a seed, so those are
-    found by labelling a slab at a time and labelling it again to write.
+    found by labelling a slab at a time, in *workers* processes, and written
+    back: a slab whose components are all body, or none, straight from the
+    corridor; only one with both labelled again.
     """
-    structure = generate_binary_structure(3, 1)
-
-    def corridor(z0, z1):
-        return np.asarray(codes[z0:z1]) >= 1
-
-    seeded = []
-
-    def visit(z0, z1, labels, offset):
-        found = labels[np.asarray(codes[z0:z1]) == 2]
-        if found.size:
-            seeded.append(np.unique(found).astype(np.int64) + offset)
-
-    components = slab_labels.label_by_slab(corridor, codes.shape, structure=structure, visit=visit)
+    components, seeded = slab_labels.label_by_slab_in_workers(
+        _corridor_planes, (codes,), codes.shape, structure=generate_binary_structure(3, 1),
+        collect=_seeded_labels, block_voxels=block_voxels, workers=workers,
+        memmap_directory=memmap_directory,
+    )
     keep = np.zeros(components.count + 1, dtype=bool)
-    if seeded:
-        keep[components.number[np.concatenate(seeded)]] = True
-    n_body = 0
-    for z0, z1, labels, offset in components.replay(corridor):
-        body = keep[components.numbers(labels, offset)]
-        codes[z0:z1] = body
-        n_body += int(np.count_nonzero(body))
-    return n_body
+    found = [labels + offset for offset, labels in seeded if labels is not None]
+    if found:
+        keep[components.number[np.concatenate(found)]] = True
+    keep_at = keep[components.number]  # per slab label, once offset
+
+    def mixed(offset, n):
+        here = keep_at[offset + 1:offset + n + 1]
+        return bool(here.any() and not here.all())
+
+    counts = slab_labels.replay_in_workers(
+        components, _corridor_planes, _write_body, (codes, keep_at), relabel=mixed,
+        params=dict(out=_whole_file_spec(codes)), workers=workers,
+        memmap_directory=memmap_directory, on_low_memory=codes.flush,
+    )
+    codes.flush()
+    return int(sum(counts))
+
+
+def _whole_file_spec(array: np.ndarray):
+    from .shared_volume_tasks import whole_file_spec
+
+    return whole_file_spec(array)
+
+
+# The body propagation's reads and writes, for worker processes: volumes[0]
+# is the codes (2 core, 1 corridor), volumes[1] (on the replay) whether each
+# offset slab label is body.
+
+
+def _corridor_planes(volumes, z0: int, z1: int, params) -> np.ndarray:
+    return np.asarray(volumes[0][z0:z1]) >= 1
+
+
+def _seeded_labels(volumes, z0: int, z1: int, labels: np.ndarray, params):
+    found = labels[np.asarray(volumes[0][z0:z1]) == 2]
+    return np.unique(found).astype(np.int64) if found.size else None
+
+
+def _write_body(volumes, z0: int, z1: int, labels, offset: int, n: int, params) -> int:
+    """The slab's body written over its codes; how many voxels it has."""
+    from .shared_volume_tasks import open_whole_file
+
+    if n == 0:
+        return 0  # no corridor here: its codes are all 0 already
+    if labels is not None:
+        body = slab_labels.offset_lookup(labels, offset, volumes[1])
+    elif bool(volumes[1][offset + 1]):
+        body = np.asarray(volumes[0][z0:z1]) >= 1
+    else:
+        body = np.zeros((z1 - z0,) + tuple(volumes[0].shape[1:]), dtype=bool)
+    out = open_whole_file(params["out"])
+    out[z0:z1] = body
+    del out
+    return int(np.count_nonzero(body))
 
 
 def _absorb_wall_by_block(
@@ -692,6 +740,7 @@ def _absorb_wall_by_block(
     block_voxels: int,
     workers: int,
     memmap_directory,
+    on_low_memory=None,
 ) -> None:
     """``out_crop[...] = crop & (distance_transform_edt(~body) <= wall)``, a
     block at a time over *workers* processes: the crop is ``volumes[0]`` at
@@ -702,6 +751,7 @@ def _absorb_wall_by_block(
         outside_body, _crop_of, _within_wall, volumes, out_crop.shape,
         sampling=sampling, reach=float(params["wall"]), params=params,
         block_voxels=block_voxels, workers=workers, memmap_directory=memmap_directory,
+        on_low_memory=on_low_memory,
     ):
         out_crop[core] = blockwise_edt.unpack(bits, tuple(c.stop - c.start for c in core))
 
@@ -2476,6 +2526,9 @@ def _hole_filled_mask(
             owned = memmap_support.new_memmap_array(mask.shape, bool, directory=memmap_directory)
             memmap_support.map_by_slab(mask, lambda slab: slab, owned)
             memmap_support.map_by_slab(filled, lambda slab: slab, owned[bbox])
+            # Written out, so its pages count as free memory again before the
+            # catchment's workers are planned from it.
+            owned.flush()
             mask = owned
         else:
             mask = mask.copy()
@@ -2567,11 +2620,12 @@ def _lee_thin_catchment_by_block(
             sampling=tuple(float(v) for v in voxel_size_zyx), reach=reach,
             params=dict(origin=tuple(int(s.start) for s in bbox), reach=reach),
             block_voxels=block_voxels, workers=workers,
-            memmap_directory=lee_kwargs["memmap_directory"],
+            memmap_directory=lee_kwargs["memmap_directory"], on_low_memory=lee_input.flush,
         ):
             lee_input[core] = blockwise_edt.unpack(bits, tuple(c.stop - c.start for c in core))
             n_thin += n_where
             n_lee += n_reaching
+        lee_input.flush()
         if n_lee:
             skeleton = skeletonize_by_component(lee_input, **lee_kwargs)
             try:

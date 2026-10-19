@@ -404,6 +404,24 @@ def test_fill_binary_holes_with_memmap_on_leaves_a_volume_without_background_alo
     result = fill_binary_holes(empty, use_memmap=True)
     assert not np.asarray(result).any()
     release_memmap_array(result)
+def test_fill_binary_holes_with_memmap_on_labels_its_slabs_in_worker_processes(tmp_path, monkeypatch):
+    """The slabs labelled in two worker processes, then joined here: the same
+    holes, filled whichever process labelled them."""
+    import haemolynx.preprocessing.blockwise_edt as blockwise_edt
+    from scipy.ndimage import binary_fill_holes
+
+    rng = np.random.default_rng(5)
+    shape = (16, 24, 20)
+    mask = rng.random(shape) > 0.5
+    mask[2:14, 4:20, 4:16] = True
+    mask[3:13, 7:12, 7:11] = False  # a cavity through many slabs
+    mask[5:9, 14:17, 0:12] = False  # one reaching the x = 0 face
+    monkeypatch.setattr(blockwise_edt, "parallel_plan", lambda shape, block_voxels=None: (2 * 24 * 20, 2))
+
+    result = fill_binary_holes(mask, use_memmap=True, memmap_directory=tmp_path)
+
+    assert np.array_equal(result, binary_fill_holes(mask))
+    release_memmap_array(result)
 def test_fill_binary_holes_honours_memmap_directory(tmp_path):
     mask = np.zeros((10, 10, 10), dtype=bool)
     mask[2:8, 2:8, 2:8] = True
