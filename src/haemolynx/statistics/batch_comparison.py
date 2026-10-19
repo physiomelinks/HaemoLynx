@@ -111,17 +111,28 @@ INDEPENDENT = "independent"
 PAIRED = "paired"
 DESIGNS = (INDEPENDENT, PAIRED)
 
+#: What a paired comparison does with a subject that has more than one image
+#: in a condition: leave them out (which one pairs would be a guess), or pair
+#: the median or mean of that subject's images in each condition.
+AGGREGATE_NONE = "none"
+AGGREGATES = (AGGREGATE_NONE, "median", "mean")
+
 #: The separators trimmed off a subject ID read from a name.
 _SUBJECT_SEPARATORS = " _-."
 
 
 @dataclass(frozen=True)
 class Pair:
-    """One subject's image in each condition."""
+    """One subject's images in each condition: one each, or, aggregated,
+    every image of the subject in that condition."""
 
     subject: str
-    a: str
-    b: str
+    a: tuple[str, ...]
+    b: tuple[str, ...]
+
+    @property
+    def images(self) -> tuple[str, ...]:
+        return self.a + self.b
 
 
 @dataclass(frozen=True)
@@ -132,17 +143,16 @@ class Pairing:
     pairs: tuple[Pair, ...] = ()
     unpaired: tuple[tuple[str, str, str], ...] = ()
 
-    def partner_of(self, name: str) -> str | None:
+    def pair_of(self, name: str) -> Pair | None:
+        """The pair *name* is one of the images of, or None."""
         for pair in self.pairs:
-            if name == pair.a:
-                return pair.b
-            if name == pair.b:
-                return pair.a
+            if name in pair.images:
+                return pair
         return None
 
     def subject_of(self, name: str) -> str:
         for pair in self.pairs:
-            if name in (pair.a, pair.b):
+            if name in pair.images:
                 return pair.subject
         for unpaired, subject, _reason in self.unpaired:
             if unpaired == name:
@@ -161,17 +171,30 @@ class BatchConditions:
     """Up to two conditions, each read from the images' file names, and
     whether the two are compared as independent images or paired by subject.
 
-    Paired, an image's subject ID is the part of its file name *before* the
-    condition phrase it holds, with separators (space, ``_``, ``-``, ``.``)
-    trimmed and case ignored: ``28_3_d_contra_FITC`` is subject ``28_3_d`` of
-    condition ``contra``. A *subject_pattern* (a regular expression, searched
-    ignoring case; its first group if it has one, else the whole match)
-    replaces that rule, for names whose subject is not what comes first."""
+    Paired, each image is paired with the image of the other condition whose
+    name is most like its own once the condition phrase is taken out of both.
+    An image's subject ID is the part of its file name *before* the condition
+    phrase it holds, separators (space, ``_``, ``-``, ``.``) trimmed and case
+    ignored (``28_3_d_contra_FITC`` is subject ``28_3_d`` of ``contra``), and
+    only images of one subject pair. Within a subject, one image a side pair;
+    with more, the names are matched one to one, closest first: the most words
+    in common from the start of the name (the phrase taken out), then the most
+    words in common anywhere (``E14_WT_1`` with ``E14_KO_1``, ``E14_WT_2`` with
+    ``E14_KO_2``); a tie is left out, not guessed. A *subject_pattern* (a
+    regular expression, searched ignoring case; its first group if it has
+    one, else the whole match) replaces the subject rule, for names whose
+    subject is not what comes first
+    (``^(\\d+_\\d+)`` reads the animal, ``28_3``, from ``28_3_d_contra_FITC``).
+
+    Under *aggregate* ``"median"`` or ``"mean"`` a subject's images are not
+    matched one to one: each of its conditions is the median or mean of all
+    its images there, metric by metric, and those are paired."""
 
     a: Condition | None = None
     b: Condition | None = None
     paired: bool = False
     subject_pattern: str = ""
+    aggregate: str = AGGREGATE_NONE
 
     @classmethod
     def from_text(
@@ -181,40 +204,134 @@ class BatchConditions:
         *,
         paired: bool = False,
         subject_pattern: str | None = None,
+        aggregate: str | None = None,
     ) -> "BatchConditions":
         return cls(
             parse_condition(a),
             parse_condition(b),
             paired=bool(paired),
             subject_pattern=(subject_pattern or "").strip(),
+            aggregate=(aggregate or AGGREGATE_NONE).strip().lower(),
         )
 
     @property
     def design(self) -> str:
         return PAIRED if self.paired else INDEPENDENT
 
+    def _phrase_span(self, name: str) -> tuple[int, int] | None:
+        """Where *name*'s condition phrase is (the earliest of its condition's
+        phrases), as (start, end) in the lowered name, or None."""
+        label = self.condition_of(name)
+        condition = next((c for c in self.conditions if c.label == label), None)
+        if condition is None:
+            return None
+        lowered = name.lower()
+        start, phrase = min(
+            (lowered.find(phrase), phrase) for phrase in condition.phrases if phrase in lowered
+        )
+        return start, start + len(phrase)
+
     def subject_of(self, name: str) -> str:
-        """*name*'s subject ID (lower case), or "" when none can be read."""
+        """*name*'s subject ID (lower case): what comes before its condition
+        phrase, or what *subject_pattern* reads; "" when there is none."""
         if self.subject_pattern:
             found = re.search(self.subject_pattern, name, re.IGNORECASE)
             if found is None:
                 return ""
             subject = found.group(1) if found.re.groups else found.group(0)
             return (subject or "").strip(_SUBJECT_SEPARATORS).lower()
-        label = self.condition_of(name)
-        condition = next((c for c in self.conditions if c.label == label), None)
-        if condition is None:
+        span = self._phrase_span(name)
+        if span is None:
             return ""
+        return name.lower()[: span[0]].strip(_SUBJECT_SEPARATORS)
+
+    def name_words(self, name: str) -> tuple[str, ...]:
+        """*name*'s words (lower case) with its condition phrase taken out:
+        what two images' names are compared on."""
         lowered = name.lower()
-        start = min(lowered.find(phrase) for phrase in condition.phrases if phrase in lowered)
-        return lowered[:start].strip(_SUBJECT_SEPARATORS)
+        span = self._phrase_span(name)
+        if span is not None:
+            lowered = f"{lowered[: span[0]]} {lowered[span[1]:]}"
+        return tuple(re.findall(r"[a-z0-9]+", lowered))
+
+    def _likeness(self, a: str, b: str) -> tuple[int, int]:
+        """How alike two names are: words in common from the start, then
+        words in common anywhere (phrases taken out)."""
+        words_a, words_b = self.name_words(a), self.name_words(b)
+        leading = 0
+        for word_a, word_b in zip(words_a, words_b):
+            if word_a != word_b:
+                break
+            leading += 1
+        shared = sum(min(words_a.count(word), words_b.count(word)) for word in set(words_a))
+        return leading, shared
+
+    def _shared_label(self, subject: str, a: str, b: str) -> str:
+        """A pair's label within a subject of several pairs: the words its two
+        names share from the start."""
+        words_a, words_b = self.name_words(a), self.name_words(b)
+        common = []
+        for word_a, word_b in zip(words_a, words_b):
+            if word_a != word_b:
+                break
+            common.append(word_a)
+        return "_".join(common) or subject
+
+    def _match_by_name(
+        self, subject: str, a_names: list[str], b_names: list[str]
+    ) -> tuple[list[Pair], list[tuple[str, str, str]]]:
+        """One subject's images matched one to one, closest names first; a tie
+        at the closest is left out, never guessed."""
+        where = f"subject {subject}" if subject else "its name"
+        pairs: list[Pair] = []
+        unpaired: list[tuple[str, str, str]] = []
+        a_left, b_left = list(a_names), list(b_names)
+        while a_left and b_left:
+            scores = {(a, b): self._likeness(a, b) for a in a_left for b in b_left}
+            best = max(scores.values())
+            closest = [pair for pair, score in scores.items() if score == best]
+            unique = [
+                (a, b) for a, b in closest
+                if sum(a == other_a for other_a, _ in closest) == 1
+                and sum(b == other_b for _, other_b in closest) == 1
+            ]
+            if unique:
+                for a, b in unique:
+                    pairs.append(Pair(subject, (a,), (b,)))
+                    a_left.remove(a)
+                    b_left.remove(b)
+                continue
+            tied = {name for pair in closest for name in pair}
+            for name in sorted(tied, key=(a_names + b_names).index):
+                unpaired.append(
+                    (name, subject, f"names in {where} equally like each other: which pairs is unclear")
+                )
+            a_left = [name for name in a_left if name not in tied]
+            b_left = [name for name in b_left if name not in tied]
+        for own, other_label, other_names in (
+            (a_left, self.b.label, b_names),
+            (b_left, self.a.label, a_names),
+        ):
+            for name in own:
+                reason = (
+                    f"no {other_label} image of {where} left once the closest names were paired"
+                    if other_names
+                    else f"no {other_label} image of {where}"
+                )
+                unpaired.append((name, subject, reason))
+        if len(pairs) > 1 or not subject:
+            pairs = [
+                Pair(self._shared_label(subject, pair.a[0], pair.b[0]), pair.a, pair.b)
+                for pair in pairs
+            ]
+        return pairs, unpaired
 
     def pairing(self, names: Iterable[str]) -> Pairing:
-        """*names* paired across the two conditions by subject ID. An image is
-        left out, with its reason, when it is in neither condition or both,
-        has no subject ID, has no image of the other condition with its
-        subject, or shares its subject with another image of its condition
-        (which of them pairs would be a guess)."""
+        """*names* paired across the two conditions (see the class). An image
+        is left out, with its reason, when it is in neither condition or both,
+        the subject pattern reads no subject from it, its subject has no image
+        of the other condition, or -- matched one to one -- its closest name
+        is tied or taken."""
         if not self.compares:
             return Pairing()
         unpaired: list[tuple[str, str, str]] = []
@@ -229,40 +346,21 @@ class BatchConditions:
                 unpaired.append((name, "", "in neither condition"))
                 continue
             subject = self.subject_of(name)
-            if not subject:
-                unpaired.append(
-                    (name, "", "no subject ID: "
-                     + ("the subject pattern finds none in the name" if self.subject_pattern
-                        else "the condition phrase begins the name"))
-                )
+            if not subject and self.subject_pattern:
+                unpaired.append((name, "", "no subject ID: the subject pattern finds none in the name"))
                 continue
             by_subject.setdefault(subject, {self.a.label: [], self.b.label: []})[label].append(name)
         pairs: list[Pair] = []
         for subject, sides in by_subject.items():
             a_names, b_names = sides[self.a.label], sides[self.b.label]
-            if len(a_names) == 1 and len(b_names) == 1:
-                pairs.append(Pair(subject, a_names[0], b_names[0]))
+            if self.aggregate != AGGREGATE_NONE and a_names and b_names:
+                pairs.append(Pair(subject, tuple(a_names), tuple(b_names)))
                 continue
-            for label, own, other_label, other in (
-                (self.a.label, a_names, self.b.label, b_names),
-                (self.b.label, b_names, self.a.label, a_names),
-            ):
-                for name in own:
-                    if len(own) > 1:
-                        reason = (
-                            f"subject {subject} has {len(own)} {label} images: "
-                            "which one pairs is unclear"
-                        )
-                    elif not other:
-                        reason = f"no {other_label} image of subject {subject}"
-                    else:
-                        reason = (
-                            f"subject {subject} has {len(other)} {other_label} images: "
-                            "which one pairs is unclear"
-                        )
-                    unpaired.append((name, subject, reason))
+            matched, left_out = self._match_by_name(subject, a_names, b_names)
+            pairs.extend(matched)
+            unpaired.extend(left_out)
         order = {name: index for index, name in enumerate(names)}
-        pairs.sort(key=lambda pair: order[pair.a])
+        pairs.sort(key=lambda pair: order[pair.a[0]])
         unpaired.sort(key=lambda item: order[item[0]])
         return Pairing(tuple(pairs), tuple(unpaired))
 
@@ -284,6 +382,11 @@ class BatchConditions:
             return f"'{ALL_IMAGES}' is the group every image is in: name the condition otherwise."
         if self.paired and not self.compares:
             return "A paired comparison needs both conditions."
+        if self.aggregate not in AGGREGATES:
+            return (
+                f"'{self.aggregate}' is no way to combine a subject's images: "
+                f"choose one of {', '.join(AGGREGATES)}."
+            )
         if self.subject_pattern:
             try:
                 re.compile(self.subject_pattern)
@@ -740,38 +843,65 @@ def _write_paired(
     pairing: Pairing,
     alpha: float,
 ) -> None:
-    """The paired comparison: ``batch_condition_pairs.csv`` (every pair, and
-    every image left out with its reason) and the comparison CSV over the
-    subjects with an image in each condition."""
+    """The paired comparison: ``batch_condition_pairs.csv`` (every pair with
+    the images that make each condition's value, and every image left out
+    with its reason) and the comparison CSV over the subjects with an image
+    in each condition -- a subject's value in a condition the median or mean
+    of its images there when the pairing aggregates, metric by metric over
+    the images that have the metric."""
     label_a, label_b = conditions.a.label, conditions.b.label
     by_stem = {image.stem: image for image in images}
+
+    def value_rule(names: Sequence[str]) -> str:
+        return "the one image" if len(names) == 1 else f"{conditions.aggregate} of {len(names)} images"
+
     files.pairs = _write(
         output_root / PAIRS_FILENAME,
-        ["Subject", f"{label_a} image", f"{label_b} image", "Left out because"],
         [
-            *([pair.subject, pair.a, pair.b, ""] for pair in pairing.pairs),
+            "Subject",
+            f"{label_a} images", f"{label_b} images",
+            f"{label_a} value", f"{label_b} value",
+            "Left out because",
+        ],
+        [
+            *(
+                [
+                    pair.subject, "; ".join(pair.a), "; ".join(pair.b),
+                    value_rule(pair.a), value_rule(pair.b), "",
+                ]
+                for pair in pairing.pairs
+            ),
             *(
                 [
                     subject,
                     name if by_stem[name].condition == label_a else "",
                     name if by_stem[name].condition == label_b else "",
+                    "", "",
                     reason,
                 ]
                 if by_stem[name].condition in (label_a, label_b)
-                else [subject, "", "", f"{name}: {reason}"]
+                else [subject, "", "", "", "", f"{name}: {reason}"]
                 for name, subject, reason in pairing.unpaired
             ),
         ],
     )
     files.pairing = pairing
+    combine = np.median if conditions.aggregate == "median" else np.mean
+
+    def subject_value(names: Sequence[str], key: MetricKey) -> float | None:
+        values = [by_stem[name].values[key] for name in names if key in by_stem[name].values]
+        if not values:
+            return None
+        return values[0] if len(values) == 1 else float(combine(values))
+
     tests: list[PairedTest] = []
     rows = []
     for key in keys:
-        matched = [
-            (by_stem[pair.a].values[key], by_stem[pair.b].values[key])
-            for pair in pairing.pairs
-            if key in by_stem[pair.a].values and key in by_stem[pair.b].values
-        ]
+        matched = []
+        for pair in pairing.pairs:
+            a_value, b_value = subject_value(pair.a, key), subject_value(pair.b, key)
+            if a_value is not None and b_value is not None:
+                matched.append((a_value, b_value))
         a_values = [a for a, _b in matched]
         b_values = [b for _a, b in matched]
         test = compare_paired(a_values, b_values)
@@ -918,8 +1048,13 @@ def write_batch_statistics(
     if files.comparison is not None and conditions.paired:
         left_out = ", ".join(name for name, _subject, _reason in pairing.unpaired)
         parts.append(
-            f"{conditions.b.label} against {conditions.a.label}, paired by subject: "
-            f"{len(pairing.pairs)} pair(s)"
+            f"{conditions.b.label} against {conditions.a.label}, paired by subject"
+            + (
+                f" ({conditions.aggregate} of each subject's images in a condition)"
+                if conditions.aggregate != AGGREGATE_NONE
+                else ""
+            )
+            + f": {len(pairing.pairs)} pair(s)"
             + (f" ({', '.join(pair.subject for pair in pairing.pairs)})" if pairing.pairs else "")
             + f", smallest possible p {smallest_wilcoxon_p(len(pairing.pairs)):.3g}"
             + (f"; left out with no partner: {left_out}" if left_out else "")
@@ -940,6 +1075,8 @@ def write_batch_statistics(
 
 
 __all__ = [
+    "AGGREGATES",
+    "AGGREGATE_NONE",
     "ALL_IMAGES",
     "BOTH_CONDITIONS",
     "BY_IMAGE_FILENAME",

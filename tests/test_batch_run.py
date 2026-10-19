@@ -453,3 +453,41 @@ def test_the_table_names_each_images_subject_or_why_it_has_no_partner(tmp_path):
     path = write_batch_settings(schema.defaults(), schema, folders, out, setup.conditions)
     text = path.read_text(encoding="utf-8")
     assert "# batch_comparison: paired" in text
+
+
+def test_the_command_line_pairs_animals_by_the_median_of_their_images(tmp_path, schema, monkeypatch, capsys):
+    from haemolynx.pipeline.provenance import write_settings_yaml
+    from haemolynx.statistics import export_statistics_to_csv
+
+    monkeypatch.setattr(batch_run, "run_image", _fake_run([]))
+    folder = tmp_path / "seg"
+    folder.mkdir()
+    out = tmp_path / "out"
+    for stem, length in (
+        ("28_3_d_contra_FITC", 1.0), ("28_3_d_ipsi_FITC", 2.0),
+        ("29_1_b_contra_FITC", 3.0), ("29_1_f_contra_FITC", 5.0), ("29_1_f_ipsi_FITC", 6.0),
+        ("29_2_f_contra_FITC", 7.0), ("29_2_c_ipsi_FITC", 8.0), ("29_2_d_ipsi_FITC", 9.0),
+    ):
+        shutil.copy(FIXTURE, folder / f"{stem}.tif")
+        export_statistics_to_csv(
+            {"Total Edge Length (microns)": length}, out / stem / f"{stem}_statistics.csv"
+        )
+    config = write_settings_yaml(tmp_path / "config.yaml", _values(schema, tmp_path), schema)
+    argv = [
+        "--config", str(config), "--segmented", str(folder), "--output", str(out),
+        "--condition-a", "contra", "--condition-b", "ipsi", "--paired",
+        "--subject-pattern", r"^(\d+_\d+)", "--paired-aggregate", "median", "--compare-only",
+    ]
+    assert main(argv) == 0
+    printed = capsys.readouterr().out
+    assert "3 pair(s) by subject (28_3, 29_1, 29_2)" in printed
+    assert "(median of each subject's images in a condition): 3 pair(s)" in printed
+    assert "smallest possible p 0.25" in printed
+    pairs = {row["Subject"]: row for row in _summary_rows(out / "batch_condition_pairs.csv")}
+    assert pairs["29_1"]["contra images"] == "29_1_b_contra_FITC; 29_1_f_contra_FITC"
+    comparison = _summary_rows(out / "batch_condition_comparison.csv")
+    # Pairs (1, 2), (median 4, 6), (7, median 8.5): differences 1, 2, 1.5.
+    assert float(comparison[0]["Median of paired differences (ipsi - contra)"]) == 1.5
+
+    with pytest.raises(SystemExit):  # argparse knows the three ways to combine
+        main(argv[:-3] + ["--paired-aggregate", "sum", "--compare-only"])

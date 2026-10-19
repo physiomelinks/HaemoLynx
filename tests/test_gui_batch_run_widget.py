@@ -265,3 +265,39 @@ def test_the_window_compares_conditions_paired_by_subject(panel, tmp_path):
     window.design.setCurrentIndex(window.design.findData("independent"))
     batch.open()
     assert window.design.currentData() == "paired"
+
+
+def test_the_window_combines_a_subjects_images_by_their_median(panel, tmp_path):
+    from haemolynx.gui.batch_run import TABLE_COLUMNS
+
+    batch = panel._haemolynx_batch
+    _images(tmp_path / "seg", "29_1_b_contra", "29_1_f_contra", "29_1_f_ipsi")
+    batch.open()
+    window = batch.window[0]
+    assert not window.aggregate.isEnabled()
+    window.fields["segmented"].setText(str(tmp_path / "seg"))
+    window.fields["output"].setText(str(tmp_path / "out"))
+    assert window.match()
+    window.condition_fields["condition_a"].setText("contra")
+    window.condition_fields["condition_b"].setText("ipsi")
+    window.design.setCurrentIndex(window.design.findData("paired"))
+    window.subject_pattern.setText(r"^(\d+_\d+)")
+    assert window.aggregate.isEnabled()
+    column = TABLE_COLUMNS.index("Condition")
+    # One to one by name, 29_1_f with 29_1_f: 29_1_b is left out.
+    assert [window.table.item(row, column).text() for row in range(3)] == [
+        "contra: unpaired, no ipsi image of subject 29_1 left once the closest names were paired",
+        "contra, subject 29_1",
+        "ipsi, subject 29_1",
+    ]
+    window.aggregate.setCurrentIndex(window.aggregate.findData("median"))
+    assert [window.table.item(row, column).text() for row in range(3)] == [
+        "contra, subject 29_1 (median of 2)",
+        "contra, subject 29_1 (median of 2)",
+        "ipsi, subject 29_1",
+    ]
+    window.use()
+    assert batch.mode.setup.conditions.aggregate == "median"
+    window.aggregate.setCurrentIndex(window.aggregate.findData("none"))
+    batch.open()
+    assert window.aggregate.currentData() == "median"

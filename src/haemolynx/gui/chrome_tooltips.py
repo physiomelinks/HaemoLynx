@@ -428,14 +428,21 @@ BATCH_RUN_TOOLTIPS = {
     ),
     "design": (
         "Independent images: every image one sample (Mann-Whitney U, Welch t). "
-        "Paired by subject: each subject's image in one condition against its "
-        "image in the other (Wilcoxon signed-rank, paired t); images with no "
-        "partner are left out and listed in batch_condition_pairs.csv"
+        "Paired by subject: each image against the image of the other condition "
+        "whose name is most alike once the condition phrase is taken out "
+        "(Wilcoxon signed-rank, paired t); images with no partner, or a tie, are "
+        "left out and listed in batch_condition_pairs.csv"
     ),
     "subject_pattern": (
         "Paired only: a regular expression whose first group (or whole match) is "
         "an image's subject ID. Blank: the part of the file name before its "
         "condition phrase, so 28_3_d_contra_FITC is subject 28_3_d"
+    ),
+    "aggregate": (
+        "Paired only: a subject with more than one image in a condition is left "
+        "out, or its images there are combined, statistic by statistic, by their "
+        "median or mean, and those are paired. batch_condition_pairs.csv lists "
+        "the images in each subject's value"
     ),
     "compare": (
         "Write the batch statistics from the ticked images already run in the "

@@ -15,7 +15,7 @@ from haemolynx.gui import batch_run
 from haemolynx.io.batch_matching import BatchFolders, match_batch
 from haemolynx.parsers import configure_console_logging
 from haemolynx.pipeline.batch import batch_mask_sizes, batch_preflight, default_output_root
-from haemolynx.statistics.batch_comparison import BatchConditions
+from haemolynx.statistics.batch_comparison import AGGREGATE_NONE, AGGREGATES, BatchConditions
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -53,17 +53,30 @@ def _parser() -> argparse.ArgumentParser:
         "--paired",
         action="store_true",
         help=(
-            "Compare the conditions paired by subject (Wilcoxon signed-rank, paired t) "
-            "rather than as independent images (Mann-Whitney U, Welch t). A subject ID "
-            "is the part of a file name before its condition phrase (28_3_d in "
-            "28_3_d_contra_FITC); images with no partner are left out and listed."
+            "Compare the conditions paired (Wilcoxon signed-rank, paired t) rather than "
+            "as independent images (Mann-Whitney U, Welch t): each image with the image "
+            "of the other condition whose name is most alike once the condition phrase "
+            "is taken out, within its subject (the part of the name before the phrase: "
+            "28_3_d in 28_3_d_contra_FITC). Images with no partner, or a tie, are left "
+            "out and listed."
         ),
     )
     parser.add_argument(
         "--subject-pattern",
         help=(
             "With --paired: a regular expression whose first group (or whole match) "
-            "is the subject ID, in place of the text before the condition phrase."
+            "is the subject ID, in place of the text before the condition phrase; "
+            "'^(\\d+_\\d+)' reads 28_3 from 28_3_d_contra_FITC."
+        ),
+    )
+    parser.add_argument(
+        "--paired-aggregate",
+        choices=AGGREGATES,
+        default=AGGREGATE_NONE,
+        help=(
+            "With --paired: a subject with more than one image in a condition is left "
+            "out (none, the default), or its images there are combined, metric by metric, "
+            "by their median or mean, and those are paired."
         ),
     )
     return parser
@@ -93,6 +106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.condition_b,
         paired=args.paired,
         subject_pattern=args.subject_pattern,
+        aggregate=args.paired_aggregate,
     )
     if conditions.problem():
         print(conditions.problem())

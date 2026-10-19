@@ -9741,6 +9741,11 @@ class _BatchRunWindow:
         ("Independent images", "independent"),
         ("Paired by subject", "paired"),
     )
+    AGGREGATE_CHOICES = (
+        ("Leave the subject out", "none"),
+        ("Median of its images", "median"),
+        ("Mean of its images", "mean"),
+    )
 
     def __init__(self, *, schema, values, on_use, on_leave, on_open=None, parent=None) -> None:
         from qtpy.QtCore import Qt
@@ -9817,6 +9822,13 @@ class _BatchRunWindow:
         conditions.addWidget(self.design, 1, 1)
         conditions.addWidget(QLabel("Subject ID pattern"), 1, 2)
         conditions.addWidget(self.subject_pattern, 1, 3)
+        self.aggregate = QComboBox()
+        for text, aggregate in self.AGGREGATE_CHOICES:
+            self.aggregate.addItem(text, aggregate)
+        self.aggregate.setToolTip(tips["aggregate"])
+        self.aggregate.currentIndexChanged.connect(lambda *_: self._conditions_changed())
+        conditions.addWidget(QLabel("Several images of a subject"), 2, 2)
+        conditions.addWidget(self.aggregate, 2, 3)
         layout.addLayout(conditions)
         self._refresh_design_rows()
 
@@ -9911,6 +9923,7 @@ class _BatchRunWindow:
                     self.condition_fields[key].setText("" if condition is None else condition.label)
                 self.design.setCurrentIndex(self.design.findData(setup.conditions.design))
                 self.subject_pattern.setText(setup.conditions.subject_pattern)
+                self.aggregate.setCurrentIndex(self.aggregate.findData(setup.conditions.aggregate))
             finally:
                 self._filling = False
             self._refresh_design_rows()
@@ -9936,12 +9949,15 @@ class _BatchRunWindow:
             self.condition_fields["condition_b"].text(),
             paired=paired,
             subject_pattern=self.subject_pattern.text() if paired else None,
+            aggregate=self.aggregate.currentData() if paired else None,
         )
 
     def _refresh_design_rows(self) -> None:
         from haemolynx.statistics.batch_comparison import PAIRED
 
-        self.subject_pattern.setEnabled(self.design.currentData() == PAIRED)
+        paired = self.design.currentData() == PAIRED
+        self.subject_pattern.setEnabled(paired)
+        self.aggregate.setEnabled(paired)
 
     def _conditions_changed(self) -> None:
         """Each image's condition, again, as the phrases are typed."""

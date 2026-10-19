@@ -289,6 +289,8 @@ def write_batch_settings(
         lines.append(f"# batch_comparison: {conditions.design}")
         if conditions.subject_pattern:
             lines.append(f"# batch_subject_pattern: {conditions.subject_pattern}")
+        if conditions.paired:
+            lines.append(f"# batch_paired_aggregate: {conditions.aggregate}")
     with path.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
     return path
@@ -507,8 +509,11 @@ def condition_cell(setup: BatchSetup, match: BatchMatch) -> str:
     if not (conditions.paired and conditions.compares) or conditions.problem():
         return label
     pairing = conditions.pairing(selected.stem for selected in setup.selected())
-    if pairing.partner_of(match.stem) is not None:
-        return f"{label}, subject {pairing.subject_of(match.stem)}"
+    pair = pairing.pair_of(match.stem)
+    if pair is not None:
+        own = pair.a if match.stem in pair.a else pair.b
+        shared = f" ({conditions.aggregate} of {len(own)})" if len(own) > 1 else ""
+        return f"{label}, subject {pair.subject}{shared}"
     reason = pairing.reason_left_out(match.stem)
     if not reason:  # unticked: not in the batch's pairing
         return label
