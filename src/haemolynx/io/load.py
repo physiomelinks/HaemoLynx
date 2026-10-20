@@ -12,6 +12,7 @@ import tifffile
 from skimage.util import img_as_bool
 from ..preprocessing.skeleton import fill_binary_holes, skeletonize_by_component
 from ..preprocessing.memmap_support import (
+    LOW_MEMORY_BLOCK_VOXELS,
     new_memmap_array,
     release_memmap_array,
     slab_step,
@@ -22,7 +23,13 @@ try:
 except ImportError:
     h5py = None
 
-from .axis_order import CANONICAL_AXIS_ORDER, apply_axis_order, voxel_size_xyz_from_file_axes
+from .axis_order import (
+    CANONICAL_AXIS_ORDER,
+    apply_axis_order,
+    axis_order_transpose,
+    normalize_axis_order,
+    voxel_size_xyz_from_file_axes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -193,21 +200,18 @@ def _unique_with_counts(arr: np.ndarray, *, use_memmap: bool) -> tuple[np.ndarra
     ever runs). With *use_memmap* False, this is the plain call, unchanged.
     With it True, tallies are accumulated one slab of axis-0 slices at a
     time instead, each slab's own count bounded to that slab's size rather
-    than the whole volume's -- by ``np.bincount`` for 8- and 16-bit integers
-    (linear, no sort), by ``np.unique`` otherwise.
+    than the whole volume's -- for 8- and 16-bit integers without a sort
+    (:func:`_small_integer_tally`), by ``np.unique`` otherwise.
     """
     if not use_memmap:
         return np.unique(arr, return_counts=True)
     tally: dict[object, int] = {}
     small_int = np.issubdtype(arr.dtype, np.integer) and arr.dtype.itemsize <= 2
-    offset = int(np.iinfo(arr.dtype).min) if small_int else 0
     step = slab_step(arr.shape)
     for start in range(0, arr.shape[0], step):
         slab = np.asarray(arr[start:start + step])
         if small_int:
-            counts = np.bincount((slab.astype(np.int32) - offset).ravel())
-            present = np.flatnonzero(counts)
-            slab_values, slab_counts = present + offset, counts[present]
+            slab_values, slab_counts = _small_integer_tally(slab)
         else:
             slab_values, slab_counts = np.unique(slab, return_counts=True)
         for value, count in zip(slab_values.tolist(), slab_counts.tolist()):
@@ -216,6 +220,30 @@ def _unique_with_counts(arr: np.ndarray, *, use_memmap: bool) -> tuple[np.ndarra
     values = np.array(ordered, dtype=arr.dtype)
     counts = np.array([tally[value] for value in ordered], dtype=np.int64)
     return values, counts
+
+
+#: Value spans :func:`_small_integer_tally` counts one comparison at a time:
+#: a label mask's (ilastik's 1/2, a 0/255 mask) rather than a grey image's.
+_TALLY_BY_COMPARISON_SPAN = 16
+
+
+def _small_integer_tally(slab: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The distinct values of *slab* (8- or 16-bit integers), ascending, and
+    how many of each. Where they span a few values, one ``count_nonzero`` per
+    value between the slab's minimum and maximum: a 1/2 mask is counted at
+    ~1.1 G voxels/s, where ``np.bincount`` of an int32 copy managed 113 M
+    (29_2_f's intermediate mask, 2026-10-20). Otherwise that bincount."""
+    if slab.size == 0:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    low, high = int(slab.min()), int(slab.max())
+    if high - low < _TALLY_BY_COMPARISON_SPAN:
+        values = np.arange(low, high + 1, dtype=np.int64)
+        counts = np.array([np.count_nonzero(slab == value) for value in values.tolist()], dtype=np.int64)
+    else:
+        counts = np.bincount((slab.astype(np.int32) - low).ravel())
+        values = np.arange(low, low + len(counts), dtype=np.int64)
+    present = counts > 0
+    return values[present], counts[present]
 
 
 def _finite_range(arr: np.ndarray, *, use_memmap: bool) -> tuple[float, float] | None:
@@ -313,47 +341,55 @@ def _binarization_rule(arr: np.ndarray, *, use_memmap: bool):
     slice at a time.
     """
     if np.issubdtype(arr.dtype, np.integer):
-        values, counts = _unique_with_counts(arr, use_memmap=use_memmap)
-        if values.size == 1:
-            return _single_value_rule(values[0], arr.shape)
-        # Common binary-mask conventions (e.g., 0/1 or 0/255).
-        if values.size == 2 and 0 in values:
-            fg_value = values[values != 0][0]
-            return lambda a: a == fg_value
-        # Two non-zero labels often mean background/foreground without 0.
-        # Use the minority class as foreground (e.g. 1/2 encoded masks).
-        if values.size == 2:
-            fg_value = values[int(np.argmin(counts))]
+        return _integer_rule(*_unique_with_counts(arr, use_memmap=use_memmap), shape=arr.shape)
+    if np.issubdtype(arr.dtype, np.floating):
+        return _floating_rule(_finite_range(arr, use_memmap=use_memmap))
+    return lambda a: a.astype(bool)
+
+
+def _integer_rule(values: np.ndarray, counts: np.ndarray, *, shape: tuple[int, ...]):
+    """:func:`_binarization_rule` of an integer volume of *shape* holding
+    *values* (ascending) *counts* times each."""
+    if values.size == 1:
+        return _single_value_rule(values[0], shape)
+    # Common binary-mask conventions (e.g., 0/1 or 0/255).
+    if values.size == 2 and 0 in values:
+        fg_value = values[values != 0][0]
+        return lambda a: a == fg_value
+    # Two non-zero labels often mean background/foreground without 0.
+    # Use the minority class as foreground (e.g. 1/2 encoded masks).
+    if values.size == 2:
+        fg_value = values[int(np.argmin(counts))]
+        _warn_minority_guess(values, counts, fg_value)
+        return lambda a: a == fg_value
+    # For very small integer label sets, pick the least frequent non-zero
+    # class as foreground and treat zero as background when present.
+    if values.size <= 4:
+        nonzero_values = values[values != 0]
+        if nonzero_values.size > 0:
+            nonzero_counts = np.array(
+                [counts[np.where(values == v)[0][0]] for v in nonzero_values]
+            )
+            fg_value = nonzero_values[int(np.argmin(nonzero_counts))]
             _warn_minority_guess(values, counts, fg_value)
             return lambda a: a == fg_value
-        # For very small integer label sets, pick the least frequent non-zero
-        # class as foreground and treat zero as background when present.
-        if values.size <= 4:
-            nonzero_values = values[values != 0]
-            if nonzero_values.size > 0:
-                nonzero_counts = np.array(
-                    [counts[np.where(values == v)[0][0]] for v in nonzero_values]
-                )
-                fg_value = nonzero_values[int(np.argmin(nonzero_counts))]
-                _warn_minority_guess(values, counts, fg_value)
-                return lambda a: a == fg_value
-        arr_min = int(values.min())
-        arr_max = int(values.max())
-        if arr_min >= 0 and arr_max <= 1:
-            return lambda a: a > 0
-        # A threshold at half the dtype's range -- elementwise and
-        # independent of the data, so it is the same per slice.
-        return img_as_bool
+    arr_min = int(values.min())
+    arr_max = int(values.max())
+    if arr_min >= 0 and arr_max <= 1:
+        return lambda a: a > 0
+    # A threshold at half the dtype's range -- elementwise and
+    # independent of the data, so it is the same per slice.
+    return img_as_bool
 
-    if np.issubdtype(arr.dtype, np.floating):
-        finite_range = _finite_range(arr, use_memmap=use_memmap)
-        if finite_range is None:
-            return lambda a: np.zeros(a.shape, dtype=bool)
-        if finite_range[0] >= 0.0 and finite_range[1] <= 1.0:
-            return lambda a: a > 0.5
-        return lambda a: a > 0.0
 
-    return lambda a: a.astype(bool)
+def _floating_rule(finite_range: tuple[float, float] | None):
+    """:func:`_binarization_rule` of a floating volume whose finite values
+    span *finite_range* (None: it has none)."""
+    if finite_range is None:
+        return lambda a: np.zeros(a.shape, dtype=bool)
+    if finite_range[0] >= 0.0 and finite_range[1] <= 1.0:
+        return lambda a: a > 0.5
+    return lambda a: a > 0.0
 
 
 def _to_binary_volume_for_skeletonization(
@@ -783,6 +819,123 @@ def _h5_axes_to_drop(dataset) -> tuple[int, ...]:
     return tuple(sorted(drop))
 
 
+def _select_h5_dataset(f, filepath, dataset_name: str | None) -> str:
+    """The name of the dataset in the open H5 file *f* (*filepath*) the
+    loader reads: *dataset_name*, or the one it finds by itself."""
+    available = list(f.keys())
+    selected_name = dataset_name
+
+    if selected_name is None:
+        # Robust autodetection for common H5 layouts:
+        # 1) stem-matching dataset, 2) common canonical names,
+        # 3) single top-level dataset fallback.
+        candidates = [Path(filepath).stem, "data", "image", "volume"]
+        for candidate in candidates:
+            if candidate in f:
+                selected_name = candidate
+                break
+        if selected_name is None and len(available) == 1:
+            selected_name = available[0]
+        if selected_name is None:
+            raise KeyError(
+                f"Could not auto-select dataset in {filepath}. "
+                f"Available datasets: {available}. "
+                "Please pass dataset_name explicitly."
+            )
+        logger.debug("Auto-selected H5 dataset name: %s", selected_name)
+
+    if selected_name not in f:
+        raise KeyError(
+            f"Dataset '{selected_name}' not found in {filepath}. "
+            f"Available datasets: {available}"
+        )
+    return selected_name
+
+
+def h5_volume_shape(
+    filepath: str | Path,
+    dataset_name: str | None = None,
+    *,
+    axis_order: str = CANONICAL_AXIS_ORDER,
+) -> tuple[int, ...]:
+    """The shape :func:`load_3d_h5_with_voxel_size` gives the dataset --
+    its size-1 channel and time axes dropped, a 3D one in canonical
+    ``(z, y, x)`` order -- read from the file's header alone."""
+    if h5py is None:
+        raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
+    path = Path(filepath)
+    with h5py.File(path, "r") as f:
+        dataset = f[_select_h5_dataset(f, filepath, dataset_name)]
+        dropped = _h5_axes_to_drop(dataset)
+        shape = tuple(size for axis, size in enumerate(dataset.shape) if axis not in dropped)
+    if len(shape) != 3:
+        return shape
+    order = axis_order_transpose(normalize_axis_order(axis_order))
+    return tuple(shape[axis] for axis in order)
+
+
+def h5_binarization_rule(filepath: str | Path, dataset_name: str | None = None):
+    """The rule :func:`_to_binary_volume_for_skeletonization` gives the H5
+    dataset's whole volume -- decided from its distinct values and counts,
+    or its finite range -- read from the file a block of whole chunks at a
+    time, without a copy of the volume. None for a boolean dataset, which it
+    takes as it is."""
+    if h5py is None:
+        raise ImportError("h5py is required to load .h5 files. Install with `pip install h5py`.")
+    path = Path(filepath)
+    with h5py.File(path, "r") as f:
+        dataset = f[_select_h5_dataset(f, filepath, dataset_name)]
+        dtype = dataset.dtype
+        if dtype == bool:
+            return None
+        integer = np.issubdtype(dtype, np.integer)
+        if not integer and not np.issubdtype(dtype, np.floating):
+            return lambda a: a.astype(bool)
+        dropped = _h5_axes_to_drop(dataset)
+        kept = [axis for axis in range(len(dataset.shape)) if axis not in dropped]
+        kept_shape = tuple(int(dataset.shape[axis]) for axis in kept)
+        selection = [0 if axis in dropped else slice(None) for axis in range(len(dataset.shape))]
+        chunks = dataset.chunks or (1,) * len(dataset.shape)
+        lead, second = kept[0], kept[1] if len(kept) > 1 else None
+        plane = int(np.prod([dataset.shape[axis] for axis in kept[1:]], dtype=np.int64))
+        depth = max(1, int(chunks[lead]))
+        rows = dataset.shape[second] if second is not None else 1
+        if second is not None and depth * plane > LOW_MEMORY_BLOCK_VOXELS:
+            # Whole chunks along the second axis too, as many as fit a block.
+            row_chunk = max(1, int(chunks[second]))
+            fit = LOW_MEMORY_BLOCK_VOXELS // max(1, depth * (plane // max(rows, 1)))
+            rows = max(row_chunk, fit - fit % row_chunk)
+        small_int = integer and dtype.itemsize <= 2
+        tally: dict[object, int] = {}
+        low, high = np.inf, -np.inf
+        for start in range(0, dataset.shape[lead], depth):
+            selection[lead] = slice(start, start + depth)
+            for row in range(0, dataset.shape[second] if second is not None else 1, rows):
+                if second is not None:
+                    selection[second] = slice(row, row + rows)
+                block = np.asarray(dataset[tuple(selection)])
+                if integer:
+                    values, counts = (
+                        _small_integer_tally(block) if small_int
+                        else np.unique(block, return_counts=True)
+                    )
+                    for value, count in zip(values.tolist(), counts.tolist()):
+                        tally[value] = tally.get(value, 0) + count
+                else:
+                    finite = block[np.isfinite(block)]
+                    if finite.size:
+                        low = min(low, float(finite.min()))
+                        high = max(high, float(finite.max()))
+    if integer:
+        ordered = sorted(tally)
+        return _integer_rule(
+            np.array(ordered, dtype=dtype),
+            np.array([tally[v] for v in ordered], dtype=np.int64),
+            shape=kept_shape,
+        )
+    return _floating_rule(None if low > high else (low, high))
+
+
 def load_3d_h5_with_voxel_size(
     filepath: str,
     dataset_name: str | None = None,
@@ -792,8 +945,15 @@ def load_3d_h5_with_voxel_size(
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
     memmap_path: str | Path | None = None,
+    box: tuple[slice, slice, slice] | None = None,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
     """Load 3D H5 image and return image + voxel size (x, y, z) + metadata status.
+
+    *box*, three slices in the canonical ``(z, y, x)`` order with their start
+    and stop given (``io.crop.CropBox.slices``), reads only that box of the
+    volume: the voxels ``image[box]`` would hold, without reading the rest of
+    the file. A crop_on_import box of 1024 x 1024 x 512 is 5% of an AIA
+    stack's 9.4 GB.
 
     *axis_order* names what the dataset's array axes mean (default ``"zyx"``);
     the volume is transposed into the canonical ``(z, y, x)`` order on load.
@@ -826,33 +986,7 @@ def load_3d_h5_with_voxel_size(
         raise ValueError(f"Expected a .h5/.hdf5 file, got: {filepath}")
 
     with h5py.File(filepath, "r") as f:
-        available = list(f.keys())
-        selected_name = dataset_name
-
-        if selected_name is None:
-            # Robust autodetection for common H5 layouts:
-            # 1) stem-matching dataset, 2) common canonical names,
-            # 3) single top-level dataset fallback.
-            candidates = [path.stem, "data", "image", "volume"]
-            for candidate in candidates:
-                if candidate in f:
-                    selected_name = candidate
-                    break
-            if selected_name is None and len(available) == 1:
-                selected_name = available[0]
-            if selected_name is None:
-                raise KeyError(
-                    f"Could not auto-select dataset in {filepath}. "
-                    f"Available datasets: {available}. "
-                    "Please pass dataset_name explicitly."
-                )
-            logger.debug("Auto-selected H5 dataset name: %s", selected_name)
-
-        if selected_name not in f:
-            raise KeyError(
-                f"Dataset '{selected_name}' not found in {filepath}. "
-                f"Available datasets: {available}"
-            )
+        selected_name = _select_h5_dataset(f, filepath, dataset_name)
         dataset = f[selected_name]
         dropped = _h5_axes_to_drop(dataset)
         if dropped:
@@ -862,7 +996,16 @@ def load_3d_h5_with_voxel_size(
             )
         kept = [axis for axis in range(len(dataset.shape)) if axis not in dropped]
         selection = [0 if axis in dropped else slice(None) for axis in range(len(dataset.shape))]
-        shape = tuple(dataset.shape[axis] for axis in kept)
+        if box is not None:
+            if len(kept) != 3:
+                raise ValueError(f"A box can be read only from a 3D dataset, not {dataset.shape}.")
+            # Canonical axis i is the file's kept axis order[i].
+            order = axis_order_transpose(normalize_axis_order(axis_order))
+            for canonical, file_axis in enumerate(order):
+                selection[kept[file_axis]] = box[canonical]
+        shape = tuple(
+            len(range(*selection[axis].indices(dataset.shape[axis]))) for axis in kept
+        )
         if use_memmap:
             if memmap_path:
                 Path(memmap_path).parent.mkdir(parents=True, exist_ok=True)
@@ -879,10 +1022,14 @@ def load_3d_h5_with_voxel_size(
             chunk_depth = int(dataset.chunks[lead]) if dataset.chunks else 1
             step = slab_step(shape)
             step = max(chunk_depth, step - step % chunk_depth)
-            for start in range(0, shape[0], step):
-                selection[lead] = slice(start, start + step)
-                image[start:start + step] = dataset[tuple(selection)]
-        elif dropped:
+            first = selection[lead].indices(dataset.shape[lead])[0]
+            start, end = first, first + shape[0]
+            while start < end:
+                stop = min(end, (start // step + 1) * step)
+                selection[lead] = slice(start, stop)
+                image[start - first:stop - first] = dataset[tuple(selection)]
+                start = stop
+        elif dropped or box is not None:
             image = dataset[tuple(selection)]
         else:
             image = np.array(dataset)

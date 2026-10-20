@@ -13,11 +13,14 @@ from .downsample import Downsample, downsample_volume
 from .ilastik import run_ilastik_headless_segmentation
 from .load import (
     _to_binary_volume_for_skeletonization,
+    h5_binarization_rule,
+    h5_volume_shape,
     load_3d_h5_with_voxel_size,
     load_3d_tif_with_voxel_size,
     resolve_image_path_with_optional_zip,
 )
 from .raw_volume_cache import _modified_too_recently
+from ..preprocessing.memmap_support import release_memmap_array, slab_step
 from .voxel_validation import resolve_voxel_size_xyz
 
 logger = logging.getLogger(__name__)
@@ -29,7 +32,8 @@ def _load_mask_image(
     axis_order: str = CANONICAL_AXIS_ORDER,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
-) -> tuple[np.ndarray, tuple[float, float, float], dict[str, object]]:
+    crop: CropBox | None = None,
+) -> tuple[np.ndarray, tuple[float, float, float], dict[str, object], bool]:
     """Load a vessel mask as a boolean volume in canonical ``(z, y, x)`` order.
 
     Must binarise with the shared mask loader, not a raw intensity read:
@@ -41,10 +45,38 @@ def _load_mask_image(
     status dict so callers can apply the same override policy as the main
     image. *use_memmap* (the low-RAM option) reads it, and binarises it, onto
     disk as the main image is read (``memmap_directory``), not into RAM.
+
+    *crop*, a crop_on_import box: an H5 mask whose whole volume has the shape
+    the box was worked out for is read only within it, binarised by the rule
+    its whole volume gives (:func:`haemolynx.io.load.h5_binarization_rule`) --
+    the mask ``crop_volume`` cuts from the whole one, in RAM as it hands it
+    back. On 29_2_d ipsi's AIA masks (6.9 G voxels each) reading whole,
+    binarising and cutting was 36% of graph building. Last in the returned
+    tuple: whether the mask came back cut.
     """
     path = Path(mask_path)
     suffix = path.suffix.lower()
     low_ram = dict(use_memmap=True, memmap_directory=memmap_directory) if use_memmap else {}
+    if (
+        crop is not None
+        and not crop.is_whole_volume
+        and suffix == ".h5"
+        and h5_volume_shape(path, axis_order=axis_order) == tuple(crop.source_shape_zyx)
+    ):
+        rule = h5_binarization_rule(path)
+        region, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_3d_h5_with_voxel_size(
+            str(path), axis_order=axis_order, box=crop.slices, **low_ram
+        )
+        if rule is None:
+            mask = np.array(region, dtype=bool)
+        else:
+            mask = np.empty(region.shape, dtype=bool)
+            step = slab_step(region.shape)
+            for start in range(0, region.shape[0], step):
+                mask[start:start + step] = rule(np.asarray(region[start:start + step]))
+        if isinstance(region, np.memmap):
+            release_memmap_array(region)
+        return mask, (float(voxel_x), float(voxel_y), float(voxel_z)), voxel_meta_status, True
     if suffix in {".tif", ".tiff"}:
         image, voxel_x, voxel_y, voxel_z, voxel_meta_status = load_3d_tif_with_voxel_size(
             str(path),
@@ -64,7 +96,7 @@ def _load_mask_image(
     if image.ndim != 3:
         raise ValueError(f"Expected a 3D mask, got shape {image.shape}.")
     mask = _to_binary_volume_for_skeletonization(image, **low_ram)
-    return mask, (float(voxel_x), float(voxel_y), float(voxel_z)), voxel_meta_status
+    return mask, (float(voxel_x), float(voxel_y), float(voxel_z)), voxel_meta_status, False
 
 
 def _resolve_mask_voxel_size_xyz(
@@ -126,6 +158,8 @@ def load_large_vessel_masks(
     fallback_voxel_size_xyz: tuple[float, float, float] | None = None,
     use_memmap: bool = False,
     memmap_directory: str | Path | None = None,
+    crop: CropBox | None = None,
+    mask_names: tuple[str, str] = ("large_arteriole_mask", "large_venule_mask"),
 ) -> tuple[
     np.ndarray | None,
     np.ndarray | None,
@@ -165,11 +199,18 @@ def load_large_vessel_masks(
             "global vessel mask on its own, in the arteriole/global row."
         )
 
-    def _load(path) -> tuple[np.ndarray, tuple[float, float, float]]:
-        mask, metadata_xyz, status = _load_mask_image(
+    def _load(path, name) -> tuple[np.ndarray, tuple[float, float, float]]:
+        mask, metadata_xyz, status, cut = _load_mask_image(
             resolve_image_path_with_optional_zip(Path(path)), axis_order=axis_order,
-            use_memmap=use_memmap, memmap_directory=memmap_directory,
+            use_memmap=use_memmap, memmap_directory=memmap_directory, crop=crop,
         )
+        if crop is not None and not crop.is_whole_volume and not cut:
+            if mask.shape != tuple(crop.source_shape_zyx):
+                raise ValueError(
+                    f"{name} shape does not match input image shape before "
+                    f"crop_on_import cut it: {mask.shape} != {tuple(crop.source_shape_zyx)}"
+                )
+            mask = crop_volume(mask, crop)
         voxel_size = _resolve_mask_voxel_size_xyz(
             metadata_xyz,
             status,
@@ -179,10 +220,10 @@ def load_large_vessel_masks(
         )
         return mask, voxel_size
 
-    large_arteriole_mask, large_arteriole_voxel_size = _load(large_arteriole_mask_path)
+    large_arteriole_mask, large_arteriole_voxel_size = _load(large_arteriole_mask_path, mask_names[0])
     if not has_venule:
         return large_arteriole_mask, None, large_arteriole_voxel_size, None
-    large_venule_mask, large_venule_voxel_size = _load(large_venule_mask_path)
+    large_venule_mask, large_venule_voxel_size = _load(large_venule_mask_path, mask_names[1])
     return (
         large_arteriole_mask,
         large_venule_mask,
@@ -589,6 +630,9 @@ def load_and_validate_vessel_masks(
         fallback_voxel_size_xyz=_source_voxel_size_xyz(main_voxel_size_xyz, downsample),
         use_memmap=use_memmap,
         memmap_directory=memmap_directory,
+        # Each mask comes back cut to the box, or the load raises naming it.
+        crop=crop,
+        mask_names=(config["arteriole_mask_attr"], config["venule_mask_attr"]),
     )
 
     if arteriole_mask is None or venule_mask is None:
@@ -596,18 +640,7 @@ def load_and_validate_vessel_masks(
         return None, None, None, None
 
     if crop is not None and not crop.is_whole_volume:
-        for name, mask in (
-            (config["arteriole_mask_attr"], arteriole_mask),
-            (config["venule_mask_attr"], venule_mask),
-        ):
-            if mask.shape != tuple(crop.source_shape_zyx):
-                raise ValueError(
-                    f"{name} shape does not match input image shape before "
-                    f"crop_on_import cut it: {mask.shape} != {tuple(crop.source_shape_zyx)}"
-                )
         logger.info(f"Crop on import, {scale_label}-vessel masks: {crop.describe()}")
-        arteriole_mask = crop_volume(arteriole_mask, crop)
-        venule_mask = crop_volume(venule_mask, crop)
 
     if downsample is not None and not downsample.is_identity:
         for name, mask in (
@@ -876,16 +909,13 @@ def _load_global_vessel_mask(
         fallback_voxel_size_xyz=_source_voxel_size_xyz(main_voxel_size_xyz, downsample),
         use_memmap=use_memmap,
         memmap_directory=memmap_directory,
+        # The mask comes back cut to the box, or the load raises naming it.
+        crop=crop,
+        mask_names=(f"{mask_role}_global_mask", f"{mask_role}_global_mask"),
     )
     name = f"{mask_role}_global_mask"
     if crop is not None and not crop.is_whole_volume:
-        if mask.shape != tuple(crop.source_shape_zyx):
-            raise ValueError(
-                f"{name} shape does not match input image shape before "
-                f"crop_on_import cut it: {mask.shape} != {tuple(crop.source_shape_zyx)}"
-            )
         logger.info(f"Crop on import, {mask_role}-vessel global mask: {crop.describe()}")
-        mask = crop_volume(mask, crop)
     if downsample is not None and not downsample.is_identity:
         if mask.shape != tuple(downsample.source_shape_zyx):
             raise ValueError(

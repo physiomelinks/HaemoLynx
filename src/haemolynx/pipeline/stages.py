@@ -98,6 +98,7 @@ from haemolynx.io.downsample import (
 from haemolynx.io.load import (
     _skeletonize_loaded_volume,
     _to_binary_volume_for_skeletonization,
+    h5_binarization_rule,
     mask_binarization_rule,
 )
 from haemolynx.io.voxel_validation import resolve_voxel_size_xyz
@@ -810,9 +811,11 @@ def run_voxel_size_xyz(
 _SEGMENTED_IMAGE_RULE: dict[str, tuple[tuple, Any]] = {}
 
 
-def _segmented_image_binarization_rule(input_path: Any, image: np.ndarray):
+def _segmented_image_binarization_rule(input_path: Any, image: np.ndarray, *, from_file=None):
     """:func:`io.load.mask_binarization_rule` of the whole segmented *image*
-    read from *input_path*, remembered for the last file."""
+    read from *input_path*, remembered for the last file. *from_file*, when
+    only a box of the image was read, gives the whole file's rule instead
+    (:func:`io.load.h5_binarization_rule`)."""
     try:
         stat = Path(input_path).stat()
         key = (
@@ -824,10 +827,24 @@ def _segmented_image_binarization_rule(input_path: Any, image: np.ndarray):
     cached = _SEGMENTED_IMAGE_RULE.get("rule")
     if key is not None and cached is not None and cached[0] == key:
         return cached[1]
-    rule = mask_binarization_rule(image)
+    rule = from_file() if from_file is not None else mask_binarization_rule(image)
     if key is not None:
         _SEGMENTED_IMAGE_RULE["rule"] = (key, rule)
     return rule
+
+
+def _h5_input_crop_box(settings: dict, input_format: str) -> CropBox | None:
+    """The crop_on_import box a 3D H5 input image is read within, rather than
+    read whole and cut (the AIA stacks: 9.4 GB read for a 5% box); None when
+    it is read whole -- another format, no box or the whole image, or the
+    low-RAM raw cache keeping the whole image for the next run."""
+    if input_format != "h5" or (settings["use_memmap_loading"] and settings["memmap_directory"]):
+        return None
+    shape = io.h5_volume_shape(settings["input_path"], axis_order=settings["image_axis_order"])
+    if len(shape) != 3:
+        return None
+    box = crop_box_from_settings(settings, shape)
+    return None if box is None or box.is_whole_volume else box
 
 
 def _load_and_crop_volume(settings: dict, input_format: str):
@@ -842,7 +859,23 @@ def _load_and_crop_volume(settings: dict, input_format: str):
     A cut box comes back boolean, binarised by the whole image's rule."""
     if input_format not in {"tif", "tiff", "h5"}:
         raise ValueError("INPUT_FORMAT must be 'tif', 'tiff', or 'h5'.")
-    if settings["use_memmap_loading"] and settings["memmap_directory"]:
+    box = _h5_input_crop_box(settings, input_format)
+    if box is not None:
+        # Only the box is read: the voxels cutting the whole image would keep.
+        (
+            image,
+            voxel_size_x,
+            voxel_size_y,
+            voxel_size_z,
+            voxel_meta_status,
+        ) = io.load_3d_h5_with_voxel_size(
+            settings["input_path"],
+            axis_order=settings["image_axis_order"],
+            use_memmap=settings["use_memmap_loading"],
+            memmap_directory=settings["memmap_directory"],
+            box=box.slices,
+        )
+    elif settings["use_memmap_loading"] and settings["memmap_directory"]:
         (
             image,
             voxel_size_x,
@@ -874,13 +907,27 @@ def _load_and_crop_volume(settings: dict, input_format: str):
         float(voxel_size_y),
         float(voxel_size_z),
     )
-    # A box is binarised as the whole image reads: decided on the box alone,
-    # an ilastik 1/2 box holding only background was solid vessel.
-    box = crop_box_from_settings(settings, image.shape)
-    rule = None
-    if box is not None and not box.is_whole_volume:
-        rule = _segmented_image_binarization_rule(settings["input_path"], image)
-    image, crop = crop_volume_and_box(image, settings, description="input image", binarise=rule)
+    if box is not None:
+        # Only the box was read: binarised by the rule the whole file gives,
+        # as a box cut from the whole image is (decided on the box alone, an
+        # ilastik 1/2 box holding only background was solid vessel).
+        logger.info("Crop on import, %s: %s", "input image", box.describe())
+        rule = _segmented_image_binarization_rule(
+            settings["input_path"],
+            image,
+            from_file=lambda: h5_binarization_rule(settings["input_path"]),
+        )
+        if rule is not None:
+            image = np.asarray(rule(np.asarray(image)), dtype=bool)
+        crop = box
+    else:
+        # A box is binarised as the whole image reads: decided on the box alone,
+        # an ilastik 1/2 box holding only background was solid vessel.
+        box = crop_box_from_settings(settings, image.shape)
+        rule = None
+        if box is not None and not box.is_whole_volume:
+            rule = _segmented_image_binarization_rule(settings["input_path"], image)
+        image, crop = crop_volume_and_box(image, settings, description="input image", binarise=rule)
     downsample = None
     if downsample_factor(settings.get("segmented_image_downsample")) > 1:
         resolved, _source = resolve_voxel_size_xyz(
