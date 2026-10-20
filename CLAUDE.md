@@ -1026,7 +1026,11 @@ are only caught locally.
   `graph/network_review.py`'s read-only finders, each returning `ReviewItem`s ranked as the list
   shows them: junctions close together (Merge into one junction, `graph.merge_junctions`),
   hairpin vessels, dead ends by kind (`graph.classify_dead_ends`, the lumen-artefact report's
-  dead ends; Trace on from the tip starts Add vessel there), two vessels in one lumen, facing
+  dead ends; Trace on from the tip starts Add vessel there; a Show filter lists one kind,
+  `gui/post_processing.DEAD_END_SHOW`, and shown pieces with no junction get "Remove all N
+  listed pieces", `remove_listed_pieces`: each deleted through `delete_vessels` with its own
+  decision and CSV row, skipping one a vessel was drawn onto since the scan and refusing one
+  holding a boundary node), two vessels in one lumen, facing
   dead ends the join left open (`facing_ends.facing_dead_end_pairs`, with why; Join the two
   ends), segmented vessels without a centreline (`mask_recovery.uncovered_mask_regions`),
   unsolved pieces (`graph.unsolved_pieces`), flow against the branch orders, flow outliers,

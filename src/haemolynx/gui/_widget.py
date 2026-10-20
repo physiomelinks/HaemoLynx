@@ -10407,7 +10407,14 @@ def _post_processing_controls(
         write_connectivity_csv,
     )
     from haemolynx.graph.lumen_loops import LOOP_SEARCH_UM
-    from haemolynx.graph.network_review import REVIEW_KINDS, UNCOVERED_MASK, flow_reference, within, z_range_around
+    from haemolynx.graph.network_review import (
+        DEAD_ENDS,
+        REVIEW_KINDS,
+        UNCOVERED_MASK,
+        flow_reference,
+        within,
+        z_range_around,
+    )
     from haemolynx.gui.chrome_tooltips import POST_PROCESSING_TOOLTIPS as tips
     from haemolynx.gui.post_processing import (
         ACTION_DELETE_ITEM,
@@ -10421,6 +10428,9 @@ def _post_processing_controls(
         ACTION_MERGE,
         ACTION_SET_DIAMETER,
         ACTION_TRACE_ON,
+        DEAD_END_SHOW,
+        DEAD_END_SHOW_ALL,
+        DEAD_END_SHOW_BY_LABEL,
         NEEDS_MASK,
         REVIEW_JUNCTIONS,
         action_applies,
@@ -10434,7 +10444,11 @@ def _post_processing_controls(
         REVIEW_TABLE_COLUMNS,
         ReviewDecision,
         append_review_record,
+        dead_ends_shown,
         find_review_items,
+        remove_listed_pieces,
+        remove_pieces_label,
+        removes_listed_pieces,
         item_still_there,
         items_to_review,
         network_summary,
@@ -10542,6 +10556,10 @@ def _post_processing_controls(
         #: The decisions made since the list was made: an item acted on stays
         #: off it until the next scan, though a list made again would find it.
         review_acted=[],
+        #: The dead-end list's Show filter (a DEAD_END_SHOW key), and every
+        #: item the list holds before that filter.
+        dead_end_show=DEAD_END_SHOW_ALL,
+        review_unfiltered=[],
         #: "Trace on from the tip"'s decision, written once the trace is
         #: finished (dropped with the trace if it is not).
         pending_review=None,
@@ -10808,9 +10826,27 @@ def _post_processing_controls(
     review_diameter.setDecimals(2)
     review_diameter.setSuffix(" µm")
     review_diameter.setValue(5.0)
+    # The dead-end list's own filter, and the button that acts on every piece
+    # with no junction it lists.
+    dead_end_show = QComboBox()
+    dead_end_show.setObjectName("haemolynx_post_processing_dead_end_show")
+    dead_end_show.setToolTip(tips["dead_end_show"])
+    dead_end_show.addItems([label for _key, label in DEAD_END_SHOW])
+    dead_end_show_row = QWidget()
+    dead_end_show_layout = QHBoxLayout(dead_end_show_row)
+    dead_end_show_layout.setContentsMargins(0, 0, 0, 0)
+    dead_end_show_layout.addWidget(QLabel("Show:"))
+    dead_end_show_layout.addWidget(dead_end_show, 1)
+    dead_end_show_row.setVisible(False)
+    remove_pieces_button = QPushButton(remove_pieces_label(0))
+    remove_pieces_button.setObjectName("haemolynx_post_processing_remove_pieces")
+    remove_pieces_button.setToolTip(tips["remove_pieces"])
+    remove_pieces_button.setVisible(False)
     review_layout.addWidget(review_colours)
     review_layout.addWidget(review_summary)
+    review_layout.addWidget(dead_end_show_row)
     review_layout.addWidget(review_items)
+    review_layout.addWidget(remove_pieces_button)
     review_layout.addWidget(review_why)
     review_layout.addWidget(QLabel("Vessels of the chosen item:"))
     review_layout.addWidget(review_table)
@@ -11635,7 +11671,17 @@ def _post_processing_controls(
                 and action_applies(state.review_item, action)
             )
         review_diameter.setVisible(ACTION_SET_DIAMETER in entry.actions)
+        dead_end_show_row.setVisible(entry.key == DEAD_ENDS)
+        removes = entry.key == state.review_key and removes_listed_pieces(state.review_key, state.dead_end_show)
+        remove_pieces_button.setVisible(removes)
+        remove_pieces_button.setText(remove_pieces_label(len(state.review_items)))
+        remove_pieces_button.setEnabled(removes and bool(state.review_items) and not state.scanning)
         scan_button.setEnabled(not state.scanning)
+
+    def shown(items) -> list:
+        """The items the list shows: the dead ends of the kind Show picks,
+        every item of any other list."""
+        return dead_ends_shown(items, state.dead_end_show) if state.review_key == DEAD_ENDS else list(items)
 
     def show_review_item(item) -> None:
         """List *item*'s vessels in the table (None: an empty table)."""
@@ -11688,6 +11734,7 @@ def _post_processing_controls(
         """Forget the list made last, and take its markers away."""
         state.review_key = None
         state.review_items, state.review_item, state.review_row, state.review_edges = [], None, None, []
+        state.review_unfiltered = []
         state.review_stale = False
         state.review_acted = []
         review_items.blockSignals(True)
@@ -11734,9 +11781,10 @@ def _post_processing_controls(
             refresh_review_buttons()
             return
         state.review_key = key
-        state.review_items = items_to_review(
+        state.review_unfiltered = items_to_review(
             [item for item in items if item_still_there(state.graph, item)], state.review_decisions
         )
+        state.review_items = shown(state.review_unfiltered)
         state.review_stale = False
         state.review_acted = []
         fill_review()
@@ -11802,7 +11850,7 @@ def _post_processing_controls(
             return
         entry = REVIEW_LIST_BY_KEY[state.review_key]
         if entry.uses_mask:
-            items = [item for item in state.review_items if item_still_there(state.graph, item)]
+            items = [item for item in state.review_unfiltered if item_still_there(state.graph, item)]
             state.review_stale = True
         else:
             image = segmented_image()
@@ -11811,8 +11859,21 @@ def _post_processing_controls(
                 scope=state.review_scope, voxel=voxel_size(), support=None,
             )
             items = items_to_review(items, state.review_decisions)
-        state.review_items = [item for item in items if not any(d.matches(item) for d in state.review_acted)]
+        state.review_unfiltered = [item for item in items if not any(d.matches(item) for d in state.review_acted)]
+        state.review_items = shown(state.review_unfiltered)
         fill_review(prefer_row)
+
+    def on_dead_end_show_changed(text: str) -> None:
+        """Show the dead ends of another kind: the list the scan made, less
+        what was decided or taken away since."""
+        state.dead_end_show = DEAD_END_SHOW_BY_LABEL.get(text, DEAD_END_SHOW_ALL)
+        if state.review_key == DEAD_ENDS and state.graph is not None:
+            state.review_items = shown(
+                item for item in state.review_unfiltered
+                if item_still_there(state.graph, item) and not any(d.matches(item) for d in state.review_acted)
+            )
+            fill_review()
+        refresh_review_buttons()
 
     def record_for(item, decision: str):
         """The decision about *item* and its CSV row, read before the edit
@@ -11881,6 +11942,41 @@ def _post_processing_controls(
         written = keep_record(review, row)
         log_edit(f"Deleted {described} ({item.why})")
         after_review_edit(f"deleted {len(edges)} vessel(s)", written)
+
+    def on_remove_listed_pieces() -> None:
+        """Delete every piece with no junction the dead-end list shows, each
+        as Delete all its vessels would, one decision and CSV row per piece."""
+        if state.graph is None or not removes_listed_pieces(state.review_key, state.dead_end_show):
+            return
+        done = remove_listed_pieces(
+            state.graph, state.review_items, protected=state.protected, time=now(), voxel_size_zyx=voxel_size()
+        )
+        written = ""
+        if done.rows:
+            state.review_decisions.extend(done.decisions)
+            path = review_csv_path(read_settings(), DEAD_ENDS)
+            if path is None:
+                written = (
+                    " Not written to a CSV: there is no output folder for the VTK "
+                    "output prefix (10. Export) on this machine yet."
+                )
+            else:
+                try:
+                    for row in done.rows:
+                        append_review_record(path, row)
+                    written = f" Recorded in {path.name}."
+                except OSError as error:
+                    written = f" Could not write {path}: {error.strerror or error}."
+        text = (
+            f"removed {done.pieces} piece(s) with no junction "
+            f"({done.vessels} vessel(s), {done.length_um:.0f} µm)"
+        )
+        if done.refused:
+            text += f"; {len(done.refused)} left because a boundary node is on it"
+        if done.skipped:
+            text += f"; {done.skipped} skipped, no longer a piece with no junction"
+        log_edit(text[0].upper() + text[1:])
+        after_review_edit(text, written)
 
     def on_review_merge() -> None:
         item = chosen_item()
@@ -12652,6 +12748,8 @@ def _post_processing_controls(
         lambda: on_review_mark_dead_end("leaves_image", "leaving the image")
     )
     review_buttons[ACTION_SET_DIAMETER].clicked.connect(on_review_set_diameter)
+    dead_end_show.currentTextChanged.connect(on_dead_end_show_changed)
+    remove_pieces_button.clicked.connect(on_remove_listed_pieces)
     refresh_review_buttons()
     loop_list.currentRowChanged.connect(on_loop_changed)
     loop_table.itemSelectionChanged.connect(recolour)
@@ -12734,6 +12832,8 @@ def _post_processing_controls(
         review_diameter=review_diameter,
         review_why=review_why,
         review_summary=review_summary,
+        dead_end_show=dead_end_show,
+        remove_pieces_button=remove_pieces_button,
         click_delete_button=click_delete_button,
         add_button=add_button,
         trace_source=trace_source,

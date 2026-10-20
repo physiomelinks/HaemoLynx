@@ -600,6 +600,17 @@ POST_PROCESSING_TOOLTIPS: dict[str, str] = {
         "to zoom to it and list its vessels below, or click its ring in the "
         "viewer. Kept items are not listed again"
     ),
+    "dead_end_show": (
+        "List every kind of dead end the scan found, or only one kind; "
+        "pieces with no junction are vessels on their own, both ends dead "
+        "ends"
+    ),
+    "remove_pieces": (
+        "Remove every piece with no junction the list shows, each as Delete "
+        "all its vessels would; a piece with a boundary node on it, or one "
+        "a vessel was drawn onto since the scan, stays. Each is recorded in "
+        "{stem}_dead_ends_review.csv"
+    ),
     "review_table": (
         "The chosen item's vessels; click or shift/ctrl-click rows to select "
         "vessels, drawn yellow in the viewer"
