@@ -393,3 +393,45 @@ def test_one_mask_support_serves_every_step_that_reads_the_mask(tmp_path, monkey
     assert marked == [support]
     assert len(packs) == 1
     assert len(trees) == 1
+
+
+def _cross_and_island() -> np.ndarray:
+    """LONG_CROSS with a 25 um line of its own 12 um from it: farther than
+    the orphan reconnect reaches, and not heading for it."""
+    skeleton = LONG_CROSS.copy()
+    skeleton[8, 5:31, 8] = True
+    return skeleton
+
+
+def test_pieces_without_a_junction_stay_by_default(tmp_path):
+    skeleton = _cross_and_island()
+    network = build_network(_settings(tmp_path), _volume(tmp_path, skeleton, _mask_under(skeleton)), SCHEMA)
+
+    G = network.graph
+    assert G.number_of_edges() == 5
+    assert "pieces_without_junction_removed" not in G.graph
+    assert sum(1 for n in G if G.nodes[n].get("dead_end_kind") == "island_end") == 2
+
+
+def test_pieces_without_a_junction_go_at_the_end_of_graph_building_when_asked(tmp_path):
+    skeleton = _cross_and_island()
+    settings = _settings(tmp_path, remove_pieces_without_junction=True)
+    network = build_network(settings, _volume(tmp_path, skeleton, _mask_under(skeleton)), SCHEMA)
+
+    G = network.graph
+    assert G.number_of_edges() == 4
+    assert all(abs(G.nodes[n]["pos"][1] - 20) < 1e-6 for n in G)    # only the cross is left
+    assert G.graph["pieces_without_junction_removed"] == 1
+    assert G.graph["pieces_without_junction_removed_um"] == pytest.approx(25.0, abs=2.0)
+    assert not any(G.nodes[n].get("dead_end_kind") == "island_end" for n in G)
+    with _graph_path(tmp_path).open("rb") as f:
+        assert pickle.load(f).number_of_edges() == 4    # the saved graph is the trimmed one
+
+
+def test_a_build_left_only_with_pieces_without_a_junction_says_the_setting_took_them(tmp_path):
+    skeleton = np.zeros((40, 40, 40), dtype=bool)
+    skeleton[8, 5:31, 8] = True
+    settings = _settings(tmp_path, remove_pieces_without_junction=True)
+    with pytest.raises(ValueError, match="remove_pieces_without_junction") as caught:
+        build_network(settings, _volume(tmp_path, skeleton, _mask_under(skeleton)), SCHEMA)
+    assert "removal of pieces with no junction step" in str(caught.value)

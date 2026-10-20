@@ -1782,6 +1782,8 @@ def _no_vessels_left_error(
             "the image: edges and stubs lying mostly outside its foreground are removed, so it "
             "must be the segmentation the skeleton was made from"
         )
+    if settings.get("remove_pieces_without_junction"):
+        reasons.append("remove_pieces_without_junction removes every vessel with no junction on it")
     return ValueError(
         f"Graph building left no vessels. {built} Settings to check: " + "; ".join(reasons) + "."
     )
@@ -2114,6 +2116,19 @@ def build_network(
                 max_deviation=settings["centreline_max_deviation"],
                 radius_at=radius_at,
             )
+        # Pieces with no junction (their dead ends are graph.dead_ends'
+        # island ends), taken out last so no step after rejoins or re-makes
+        # one. On Harvey's AIA patella grid P1 (2026-10-20) 11 of 14 were
+        # specks and 3 real vessel the segmentation cut off.
+        if settings.get("remove_pieces_without_junction"):
+            removed = graph.dead_ends.remove_pieces_without_junction(G)
+            G.graph["pieces_without_junction_removed"] = removed["pieces"]
+            G.graph["pieces_without_junction_removed_um"] = removed["length_um"]
+            logger.info(
+                "Removed %d piece(s) with no junction: %d vessel(s), %.0f um of centreline.",
+                removed["pieces"], removed["vessels"], removed["length_um"],
+            )
+            edges_after_step.append(("removal of pieces with no junction", G.number_of_edges()))
 
         # Nothing after this can run on no vessels, and what tried failed on
         # something else (the 3D drawing on no node positions, boundary

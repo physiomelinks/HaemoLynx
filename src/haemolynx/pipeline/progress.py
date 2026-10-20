@@ -203,6 +203,7 @@ STAGES: tuple[Stage, ...] = (
             "trace_on_dead_ends",
             "join_dead_ends_to_vessel_sides",
             "stub_face_protection",
+            "remove_pieces_without_junction",
             "save_step_artifacts",
             # Centreline smoothing is the last thing graph building does.
             "smooth_centrelines",
