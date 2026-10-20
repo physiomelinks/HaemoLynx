@@ -15,6 +15,7 @@ from haemolynx.graph.communities import (
 )
 
 from ._sampling import REPRODUCIBILITY_SEED
+from .exact_betweenness import exact_betweenness_centrality
 
 #: Above this many nodes, betweenness centrality falls back to an
 #: approximate computation (`DEFAULT_BETWEENNESS_APPROX_K` source nodes)
@@ -78,7 +79,7 @@ def compute_betweenness_summary(
         return {"Betweenness Mean": 0.0, "Betweenness Max": 0.0}
 
     if n_nodes <= max_nodes_exact:
-        bet = nx.betweenness_centrality(G)
+        bet = exact_betweenness_centrality(G)
         method = "exact"
     else:
         k = min(approx_k, n_nodes)
@@ -99,8 +100,9 @@ def compute_betweenness(G: nx.Graph):
     # Plain topological betweenness. Weighted betweenness (by resistance,
     # geometry/length, or solved |flow|) is compute_weighted_betweenness_
     # summary, all three reported together by
-    # compute_betweenness_and_community_measurements.
-    return nx.betweenness_centrality(G)
+    # compute_betweenness_and_community_measurements. Exact: on a large
+    # network its searches run in worker processes (exact_betweenness).
+    return exact_betweenness_centrality(G)
 
 
 def compute_weighted_betweenness_summary(
@@ -122,7 +124,7 @@ def compute_weighted_betweenness_summary(
         return {"Betweenness Mean": 0.0, "Betweenness Max": 0.0}
 
     if n_nodes <= max_nodes_exact:
-        bet = nx.betweenness_centrality(G_s, weight="analysis_weight")
+        bet = exact_betweenness_centrality(G_s, weight="analysis_weight")
         method = "exact_weighted"
     else:
         k = min(approx_k, n_nodes)
