@@ -2348,6 +2348,8 @@ def test_the_low_ram_join_chains_arms_through_earlier_bridges_as_in_ram(monkeypa
     assert "nearest-fat tree rebuilt" in in_ram_summary
     assert "nearest-fat tree rebuilt" not in low_ram_summary
     assert "nearest fat of the structure" in low_ram_summary
+    lookups = [r.getMessage() for r in caplog.records if "whole structure tree(s)" in r.getMessage()]
+    assert len(lookups) == 1, "the low-RAM join says how its lookups went"
 
 
 # --- the fat catchment found before (preprocessing/thick_vessel_region_cache.py) ---

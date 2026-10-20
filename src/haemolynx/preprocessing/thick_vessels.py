@@ -3092,6 +3092,15 @@ def _join_thin_arms_to_fat_ridge(
         time.perf_counter() - join_step_start,
         times.summary(),
     )
+    if use_memmap:
+        logger.info(
+            "_join_thin_arms_to_fat_ridge: nearest fat from %d whole structure tree(s) built "
+            "for ties; cap radius from %d box(es) transformed whole and %d fat voxel(s) of "
+            "larger ones measured",
+            fat_by_structure.full_trees_built,
+            box_radii.made,
+            cell_radii.measured,
+        )
     if unjoined_by_bound:
         logger.warning(
             "_join_thin_arms_to_fat_ridge: %d thin arm(s) left unjoined by the bounded "
