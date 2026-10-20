@@ -402,7 +402,10 @@ class Specimen:
         return probability_status(self)
 
     def missing_inputs(self) -> list:
-        """Which files still have to be produced before this specimen can be modelled."""
+        """Which files of the segmentation chain (Ilastik input, probability map, mask, EDT) don't exist yet.
+
+        More than ``is_ready()`` needs: ``carotid_image_to_model.py`` reads only the probability map.
+        """
         wanted = (self.ilastik_input_path, self.probabilities_path,
                   self.mask_path, self.edt_path)
         return [p for p in wanted if not p.exists()]

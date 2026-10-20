@@ -317,6 +317,7 @@ def test_segmentation_status_reports_each_stage_separately(tmp_path, monkeypatch
     no_mask = status["SHR-B"]
     assert no_mask["stages"]["masked"] is False
     assert no_mask["missing_inputs"] == [get_specimen("SHR-B").mask_path.name]
+    assert no_mask["probability_status"] == "unknown"
     assert no_mask["ready"] is True
 
 
