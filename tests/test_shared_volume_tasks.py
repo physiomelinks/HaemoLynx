@@ -122,3 +122,109 @@ def test_free_memory_running_short_holds_back_further_tasks(tmp_path, monkeypatc
     )
     spans = sorted((start, end) for _p, start, end in plenty)
     assert any(later[0] < earlier[1] for earlier, later in zip(spans, spans[1:])), "two at once"
+
+
+def _pid_and_nap(volume, payload):
+    import os
+    import time
+
+    start = time.monotonic()
+    time.sleep(0.3)
+    return payload, os.getpid(), start, time.monotonic(), int(volume[payload].sum())
+
+
+def _most_at_once(spans):
+    edges = sorted([(start, 1) for start, _end in spans] + [(end, -1) for _start, end in spans])
+    most = running = 0
+    for _t, step in edges:
+        running += step
+        most = max(most, running)
+    return most
+
+
+def test_kept_workers_carry_one_pool_through_several_calls(tmp_path):
+    """Inside kept_workers, a second call runs in the processes the first
+    started (they import the whole package as they start); a call wanting
+    fewer runs no more than that at once, one wanting more starts a larger
+    pool; outside the block every call has its own. Same answers throughout."""
+    import psutil
+
+    from haemolynx.preprocessing import shared_volume_tasks
+    from haemolynx.preprocessing.shared_volume_tasks import iter_volume_tasks, kept_workers
+
+    volume = np.arange(24, dtype=np.int32).reshape(6, 4)
+    payloads = list(range(6))
+    expected = [int(volume[p].sum()) for p in payloads]
+
+    def run(workers):
+        out = list(iter_volume_tasks(
+            _pid_and_nap, payloads, volume=volume, workers=workers, memmap_directory=tmp_path,
+        ))
+        assert [p for p, *_ in out] == payloads and [s for *_, s in out] == expected
+        return {pid for _p, pid, *_ in out}, [(start, end) for _p, _pid, start, end, _s in out]
+
+    with kept_workers():
+        first, _spans = run(3)
+        fewer, spans = run(2)
+        more, _spans = run(4)
+        again, _spans = run(4)
+        kept_pids = set(more)
+    assert fewer <= first, "the second call ran in the first call's workers"
+    assert _most_at_once(spans) <= 2, "no more at once than the call asked for"
+    assert not more & first, "a larger pool started in place of the smaller"
+    assert again == more
+    assert shared_volume_tasks._KEPT["pool"] is None, "stopped as the block ended"
+    assert not [pid for pid in kept_pids if psutil.pid_exists(pid) and psutil.Process(pid).is_running()
+                and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE]
+
+    alone, _spans = run(2)
+    assert not alone & more, "outside the block a call starts its own"
+
+
+def test_close_kept_workers_stops_them_before_the_block_ends(tmp_path):
+    from haemolynx.preprocessing import shared_volume_tasks
+    from haemolynx.preprocessing.shared_volume_tasks import close_kept_workers, iter_volume_tasks, kept_workers
+
+    volume = np.ones((4, 4), dtype=bool)
+    with kept_workers():
+        before = {pid for _p, pid, *_ in iter_volume_tasks(
+            _pid_and_nap, list(range(4)), volume=volume, workers=2, memmap_directory=tmp_path,
+        )}
+        close_kept_workers()
+        assert shared_volume_tasks._KEPT["pool"] is None
+        after = {pid for _p, pid, *_ in iter_volume_tasks(
+            _pid_and_nap, list(range(4)), volume=volume, workers=2, memmap_directory=tmp_path,
+        )}
+    assert not before & after
+    assert shared_volume_tasks._KEPT["pool"] is None
+
+
+def test_handing_this_process_s_own_pages_back_can_be_the_room_it_needed(tmp_path, monkeypatch):
+    """Short of memory, a run first hands back its own volumes' pages (on
+    Windows not free memory until then); when that is the room it needed, the
+    next task goes out at once rather than waiting for the one out."""
+    import haemolynx.haemodynamics.resistance as resistance
+    from haemolynx.preprocessing import memmap_support, shared_volume_tasks
+    from haemolynx.preprocessing.shared_volume_tasks import iter_volume_tasks
+
+    volume = memmap_support.new_memmap_array((4, 4), bool, directory=tmp_path)
+    handed_back = []
+    monkeypatch.setattr(memmap_support, "release_resident_pages", lambda *a: handed_back.append(a))
+    monkeypatch.setattr(
+        resistance,
+        "available_memory_bytes",
+        lambda: (64 << 30) if handed_back else shared_volume_tasks.MEMORY_RESERVE_BYTES,
+    )
+
+    out = list(
+        iter_volume_tasks(
+            _timed_nap, list(range(4)), volume=volume, workers=2, memmap_directory=tmp_path,
+            task_bytes=1 << 20,
+        )
+    )
+
+    assert [p for p, _s, _e in out] == list(range(4))
+    assert handed_back and any(each is volume for each in handed_back[0])
+    spans = sorted((start, end) for _p, start, end in out)
+    assert any(later[0] < earlier[1] for earlier, later in zip(spans, spans[1:])), "two at once"
+    memmap_support.release_memmap_array(volume)

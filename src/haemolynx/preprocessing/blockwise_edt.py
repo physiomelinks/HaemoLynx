@@ -193,7 +193,11 @@ def parallel_plan(shape, block_voxels: int | None = None) -> tuple[int, int]:
     (at :data:`BLOCK_BYTES_PER_VOXEL`), then blocks as large as that share
     allows, up to *block_voxels* and about two a worker. One worker -- this process -- below
     :data:`PARALLEL_MIN_VOXELS`. The block size changes which blocks there
-    are, never the answer."""
+    are, never the answer. This process's own disk-backed volumes are
+    written out and their pages handed back first
+    (:func:`~.memmap_support.release_resident_pages`), so they count as free:
+    on a 5.5 G-voxel stack the catchment was planned from 6.4 GB free, with
+    the hole fill's volumes still held, of the 17 GB the machine had."""
     if block_voxels is None:
         block_voxels = memmap_support.LOW_MEMORY_BLOCK_VOXELS
     block_voxels = int(block_voxels)
@@ -203,6 +207,7 @@ def parallel_plan(shape, block_voxels: int | None = None) -> tuple[int, int]:
         return block_voxels, 1
     from haemolynx.haemodynamics.resistance import available_memory_bytes
 
+    memmap_support.release_resident_pages()
     available = available_memory_bytes()
     if available is None:
         return block_voxels, 1

@@ -30,7 +30,9 @@ from __future__ import annotations
 import atexit
 import itertools
 import logging
+import mmap
 import os
+import sys
 import tempfile
 import weakref
 from contextlib import contextmanager
@@ -229,6 +231,60 @@ def release_memmap_array(array: np.memmap) -> Path:
     except OSError:
         logger.warning("Could not remove memmap file %s", path, exc_info=True)
     return path
+
+
+def _mapped_root(array) -> np.memmap | None:
+    """The memmap made straight from the map holding *array*'s bytes, else None."""
+    root = array
+    while root is not None and not (isinstance(root, np.memmap) and isinstance(root.base, mmap.mmap)):
+        root = root.base if isinstance(root, np.ndarray) else None
+    return root
+
+
+def release_resident_pages(*arrays) -> None:
+    """Write out every live :func:`new_memmap_array` volume, and *arrays*
+    (disk-backed ones; any other is skipped), and hand their pages back from
+    this process's memory.
+
+    On Windows a mapped file's pages stay in the process's working set once
+    read or written, flushed or not, and are not available memory until
+    Windows trims it: writing 1 GB through a memmap took 1 GB off the
+    available memory, flushing it gave none back, and unlocking it gave the
+    1 GB back in 0.15 s (``VirtualUnlock`` of pages never locked takes them
+    out of the working set). A low-RAM thick region writes or reads three
+    5.5 GB volumes on a 5.5 G-voxel stack, so it read up to 17 GB less free
+    memory than it had, planned fewer workers by it, and its re-check held
+    them back to one task at a time. Unlocked, written pages wait on the
+    standby list, still cached: reading them again took 1.1 s a GB. Elsewhere
+    this only writes them out -- Linux counts a mapped file's clean pages
+    available already.
+    """
+    roots = {}
+    for finaliser in list(_FINALISERS.values()):
+        live = finaliser.peek()
+        if live is not None:
+            roots[id(live[0])] = live[0]
+    for array in arrays:
+        root = _mapped_root(array)
+        if root is not None:
+            roots[id(root)] = root
+    for root in roots.values():
+        try:
+            root.flush()
+            if sys.platform == "win32" and root.nbytes:
+                _unlock(root.ctypes.data, root.nbytes)
+        except (ValueError, OSError):  # its map closed meanwhile
+            continue
+
+
+def _unlock(address: int, size: int) -> None:
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.VirtualUnlock.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    # FALSE with ERROR_NOT_LOCKED: the pages were never locked, and are out
+    # of the working set now.
+    kernel32.VirtualUnlock(ctypes.c_void_p(address), ctypes.c_size_t(size))
 
 
 @contextmanager

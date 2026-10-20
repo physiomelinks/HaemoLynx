@@ -461,37 +461,38 @@ def _fill_binary_holes_by_slab(
     holes: which background reaches a face does not depend on how it is
     numbered, nor on how many processes labelled it."""
     from .blockwise_edt import parallel_plan
-    from .shared_volume_tasks import whole_file_spec
+    from .shared_volume_tasks import kept_workers, whole_file_spec
     from .slab_labels import label_by_slab_in_workers, replay_in_workers
 
     shape = tuple(int(s) for s in mask.shape)
     block_voxels, workers = parallel_plan(shape)
     params = dict(depth=shape[0])
-    components, faces = label_by_slab_in_workers(
-        _background_planes, (mask,), shape, structure=generate_binary_structure(3, 1),
-        collect=_labels_on_faces, params=params, block_voxels=block_voxels, workers=workers,
-        memmap_directory=memmap_directory,
-    )
-    if components.count == 0:
-        return mask
-    hole = np.ones(components.count + 1, dtype=bool)
-    hole[0] = False  # the foreground
-    touching = [found + offset for offset, found in faces if len(found)]
-    if touching:
-        hole[components.number[np.concatenate(touching)]] = False
-    hole_at = hole[components.number]  # per slab label, once offset
-    result = new_memmap_array(shape, bool, directory=memmap_directory)
-    try:
-        replay_in_workers(
-            components, _background_planes, _write_filled, (mask, hole_at),
-            relabel=lambda offset, n: bool(hole_at[offset + 1:offset + n + 1].any()),
-            params=dict(params, out=whole_file_spec(result)), workers=workers,
-            memmap_directory=memmap_directory, on_low_memory=result.flush,
+    with kept_workers():  # the same workers label and write
+        components, faces = label_by_slab_in_workers(
+            _background_planes, (mask,), shape, structure=generate_binary_structure(3, 1),
+            collect=_labels_on_faces, params=params, block_voxels=block_voxels, workers=workers,
+            memmap_directory=memmap_directory,
         )
-        result.flush()
-    except BaseException:
-        release_memmap_array(result)
-        raise
+        if components.count == 0:
+            return mask
+        hole = np.ones(components.count + 1, dtype=bool)
+        hole[0] = False  # the foreground
+        touching = [found + offset for offset, found in faces if len(found)]
+        if touching:
+            hole[components.number[np.concatenate(touching)]] = False
+        hole_at = hole[components.number]  # per slab label, once offset
+        result = new_memmap_array(shape, bool, directory=memmap_directory)
+        try:
+            replay_in_workers(
+                components, _background_planes, _write_filled, (mask, hole_at),
+                relabel=lambda offset, n: bool(hole_at[offset + 1:offset + n + 1].any()),
+                params=dict(params, out=whole_file_spec(result)), workers=workers,
+                memmap_directory=memmap_directory,
+            )
+            result.flush()
+        except BaseException:
+            release_memmap_array(result)
+            raise
     return result
 
 
@@ -517,15 +518,13 @@ def _labels_on_faces(volumes, z0: int, z1: int, labels: np.ndarray, params) -> n
 
 
 def _write_filled(volumes, z0: int, z1: int, labels, offset: int, n: int, params) -> None:
-    from .shared_volume_tasks import open_whole_file
+    from .shared_volume_tasks import write_whole_file_part
     from .slab_labels import offset_lookup
 
     planes = np.asarray(volumes[0][z0:z1], dtype=bool)
     if labels is not None:
         planes = planes | offset_lookup(labels, offset, volumes[1])
-    out = open_whole_file(params["out"])
-    out[z0:z1] = planes
-    del out
+    write_whole_file_part(params["out"], slice(z0, z1), planes)
 
 
 def _label_inverted_background(

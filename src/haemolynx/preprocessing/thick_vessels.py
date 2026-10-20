@@ -25,7 +25,7 @@ import gc
 import itertools
 import logging
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from typing import Any, Iterable, Iterator, Mapping
 
 import numpy as np
@@ -448,7 +448,11 @@ def thick_vessel_object_mask(
         restrict_to_mask=restrict_to_mask,
     )
     if use_memmap:
-        _thick_vessel_object_mask_by_block(out, mask, **arguments, memmap_directory=memmap_directory)
+        from .shared_volume_tasks import kept_workers
+
+        # The radius map, both propagation passes and the wall in one set of workers.
+        with kept_workers():
+            _thick_vessel_object_mask_by_block(out, mask, **arguments, memmap_directory=memmap_directory)
     else:
         sampling = tuple(float(v) for v in voxel_size_zyx)
         _thick_vessel_object_mask_into(
@@ -637,7 +641,6 @@ def _thick_vessel_object_mask_by_block(
             _crop_of, _crop_of, _radius_codes, (mask,), crop.shape,
             sampling=sampling, reach=float(min_radius_um), params=params,
             block_voxels=block_voxels, workers=workers, memmap_directory=memmap_directory,
-            on_low_memory=codes.flush,
         ):
             shape = tuple(c.stop - c.start for c in core)
             codes[core] = (
@@ -672,7 +675,6 @@ def _thick_vessel_object_mask_by_block(
             block_voxels=block_voxels,
             workers=workers,
             memmap_directory=memmap_directory,
-            on_low_memory=codes.flush,
         )
         logger.info(
             "thick_vessel_object_mask: wall distance transform took %.2fs (%d fat voxels total)",
@@ -714,7 +716,7 @@ def _propagate_core_by_slab(
     counts = slab_labels.replay_in_workers(
         components, _corridor_planes, _write_body, (codes, keep_at), relabel=mixed,
         params=dict(out=_whole_file_spec(codes)), workers=workers,
-        memmap_directory=memmap_directory, on_low_memory=codes.flush,
+        memmap_directory=memmap_directory,
     )
     codes.flush()
     return int(sum(counts))
@@ -742,7 +744,7 @@ def _seeded_labels(volumes, z0: int, z1: int, labels: np.ndarray, params):
 
 def _write_body(volumes, z0: int, z1: int, labels, offset: int, n: int, params) -> int:
     """The slab's body written over its codes; how many voxels it has."""
-    from .shared_volume_tasks import open_whole_file
+    from .shared_volume_tasks import write_whole_file_part
 
     if n == 0:
         return 0  # no corridor here: its codes are all 0 already
@@ -752,9 +754,7 @@ def _write_body(volumes, z0: int, z1: int, labels, offset: int, n: int, params) 
         body = np.asarray(volumes[0][z0:z1]) >= 1
     else:
         body = np.zeros((z1 - z0,) + tuple(volumes[0].shape[1:]), dtype=bool)
-    out = open_whole_file(params["out"])
-    out[z0:z1] = body
-    del out
+    write_whole_file_part(params["out"], slice(z0, z1), body)
     return int(np.count_nonzero(body))
 
 
@@ -768,7 +768,6 @@ def _absorb_wall_by_block(
     block_voxels: int,
     workers: int,
     memmap_directory,
-    on_low_memory=None,
 ) -> None:
     """``out_crop[...] = crop & (distance_transform_edt(~body) <= wall)``, a
     block at a time over *workers* processes: the crop is ``volumes[0]`` at
@@ -779,7 +778,6 @@ def _absorb_wall_by_block(
         outside_body, _crop_of, _within_wall, volumes, out_crop.shape,
         sampling=sampling, reach=float(params["wall"]), params=params,
         block_voxels=block_voxels, workers=workers, memmap_directory=memmap_directory,
-        on_low_memory=on_low_memory,
     ):
         out_crop[core] = blockwise_edt.unpack(bits, tuple(c.stop - c.start for c in core))
 
@@ -3134,9 +3132,6 @@ def _hole_filled_mask(
             owned = memmap_support.new_memmap_array(mask.shape, bool, directory=memmap_directory)
             memmap_support.map_by_slab(mask, lambda slab: slab, owned)
             memmap_support.map_by_slab(filled, lambda slab: slab, owned[bbox])
-            # Written out, so its pages count as free memory again before the
-            # catchment's workers are planned from it.
-            owned.flush()
             mask = owned
         else:
             mask = mask.copy()
@@ -3177,7 +3172,10 @@ def thick_vessel_region(
     """
     if float(min_radius_um) <= 0.0:
         return None
-    with _hole_filled_mask(
+    from .shared_volume_tasks import kept_workers
+
+    # Under low-RAM the hole fill's workers go on to find the region.
+    with kept_workers() if use_memmap else nullcontext(), _hole_filled_mask(
         binary, fill_mask_holes, use_memmap=use_memmap, memmap_directory=memmap_directory
     ) as mask:
         thick = thick_vessel_object_mask(
@@ -3200,12 +3198,14 @@ def _lee_thin_catchment_by_block(
     voxel_size_zyx: tuple[float, float, float],
     min_arm_extent_um: float,
     lee_kwargs: dict,
+    before_thinning=None,
 ) -> int:
     """For the low-RAM option, :func:`skeletonize_thickness_gated`'s Lee step:
     the thin catchment's voxels at least *min_arm_extent_um* from the fat
     region -- each decided from its block's own distance transform with that
     much context -- written to disk, Lee-thinned, and drawn into *result*.
-    Returns how many voxels the thin catchment has."""
+    Returns how many voxels the thin catchment has. *before_thinning* is
+    called once the catchment is cut (stopping kept workers, say)."""
     shape = mask.shape
     bbox = _foreground_bbox_by_slab(
         lambda z0, z1: np.asarray(mask[z0:z1], dtype=bool) | np.asarray(thick[z0:z1], dtype=bool),
@@ -3228,12 +3228,14 @@ def _lee_thin_catchment_by_block(
             sampling=tuple(float(v) for v in voxel_size_zyx), reach=reach,
             params=dict(origin=tuple(int(s.start) for s in bbox), reach=reach),
             block_voxels=block_voxels, workers=workers,
-            memmap_directory=lee_kwargs["memmap_directory"], on_low_memory=lee_input.flush,
+            memmap_directory=lee_kwargs["memmap_directory"],
         ):
             lee_input[core] = blockwise_edt.unpack(bits, tuple(c.stop - c.start for c in core))
             n_thin += n_where
             n_lee += n_reaching
         lee_input.flush()
+        if before_thinning is not None:
+            before_thinning()
         if n_lee:
             skeleton = skeletonize_by_component(lee_input, **lee_kwargs)
             try:
@@ -3375,10 +3377,18 @@ def skeletonize_thickness_gated(
     }
     # Tiling only applies under use_memmap (see skeletonize_by_component).
     low_ram = bool(use_memmap)
+    # Under low-RAM one set of workers fills the holes, finds the region and
+    # cuts the Lee step's catchment; they stop before anything thins here.
+    workers_kept = ExitStack()
+    if low_ram:
+        from .shared_volume_tasks import kept_workers
+
+        workers_kept.enter_context(kept_workers())
 
     def lee(volume: np.ndarray) -> np.ndarray:
         if not low_ram:
             return _skeletonize_foreground(volume)
+        workers_kept.close()
         return skeletonize_by_component(volume, **lee_kwargs)
 
     def whole_lee(volume: np.ndarray) -> np.ndarray:
@@ -3386,7 +3396,7 @@ def skeletonize_thickness_gated(
         ``skeletonize_by_component`` wrote on disk, not a copy in RAM."""
         return lee(volume) if low_ram else skeletonize_volume(volume).astype(bool)
 
-    with _hole_filled_mask(
+    with workers_kept, _hole_filled_mask(
         binary, fill_mask_holes, use_memmap=use_memmap, memmap_directory=memmap_directory
     ) as mask:
         if float(min_radius_um) <= 0.0:
@@ -3468,7 +3478,9 @@ def skeletonize_thickness_gated(
                 voxel_size_zyx=voxel_size_zyx,
                 min_arm_extent_um=min_arm_extent_um,
                 lee_kwargs=lee_kwargs,
+                before_thinning=workers_kept.close,
             )
+            workers_kept.close()
         else:
             thin = mask & ~thick
             n_thin = int(thin.sum())
