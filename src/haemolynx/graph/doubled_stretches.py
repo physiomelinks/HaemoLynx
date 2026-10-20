@@ -48,7 +48,9 @@ from haemolynx.preprocessing.bridge_mask_support import (
     _sample_step,
 )
 
-from ._helpers import EdgeSampleIndex, calculate_path_length, edge_id, edge_sample_points, next_node_id
+from ._helpers import (
+    EdgeSampleIndex, calculate_path_length, edge_id, edge_sample_points, next_node_id, points_within,
+)
 from .thick_vessel_junctions import IS_ZERO_RESISTANCE, THICK_TAPER
 
 logger = logging.getLogger(__name__)
@@ -188,8 +190,7 @@ def _judge_edge(u, v, key, path, dense, reach, own, index, owners, edge_of, brid
                 step, gap_samples, min_run_um, min_run_radii) -> list[DoubledStretch]:
     """The doubled stretches of one edge: its judged samples against every
     other centreline's points within *reach* of its path."""
-    found = index.tree.query_ball_point(dense, r=reach)
-    near = np.unique(np.concatenate([np.asarray(f, dtype=np.intp) for f in found]))
+    near = points_within(index.tree, dense, reach)
     near = near[(owners[near] != own) & ~np.isin(owners[near], bridge_ids)]
     if not len(near):
         return []
