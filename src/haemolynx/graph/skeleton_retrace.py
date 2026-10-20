@@ -155,11 +155,13 @@ class _Edits:
     """How the re-trace edits *G*, and tries edits on its trial copy: cheaper,
     with the same graphs as before.
 
-    - :meth:`trial` hands out the trial copy (:func:`_trial_copy`), taken once
-      and again only after *G* changed, and puts every split a judgement makes
-      on it back as it was, dict order and all: each judgement reads the copy
-      a fresh ``_trial_copy`` would give. A copy per judged piece and join was
-      half the step (29_2_f contra replay, 2026-10-20).
+    - :meth:`trial` hands out the trial copy (:func:`_trial_copy`), taken once,
+      and puts every split a judgement makes on it back as it was, dict order
+      and all; each edit of *G* is made on the copy too, where ``_trial_copy``
+      would put it (:func:`_copy_split`, :func:`_copy_added_edge`). Each
+      judgement reads the copy a fresh ``_trial_copy`` would give. A copy per
+      judged piece and join was half the step (29_2_f contra replay,
+      2026-10-20); one per drawn piece and join was still 30% of it.
     - a node it adds takes the id ``next_node_id`` would have scanned the
       graph for, counted on instead.
     - :meth:`piece_edges` reads the edges of the piece being drawn at its own
@@ -177,19 +179,23 @@ class _Edits:
         self.piece_nodes: set = set()
 
     def split(self, point_um: np.ndarray, owner, made: list) -> Any:
-        """:func:`_split_at` on *G*."""
-        node = _split_at(self.G, point_um, owner, made, node_id=self.next_id)
+        """:func:`_split_at` on *G*, and on the trial copy."""
+        done: list = []
+        node = _split_at(self.G, point_um, owner, made, node_id=self.next_id, record=done)
         if node == self.next_id:
             self.order[node] = len(self.order)
             self.next_id += 1
+            if self._copy is not None:
+                u, v, key = done[0][:3]
+                _copy_split(self._copy, self.G, u, v, key, node, self.order)
         self.piece_nodes.add(node)
-        self._copy = None
         return node
 
     def add_edge(self, a: Any, b: Any, **attributes) -> None:
-        self.G.add_edge(a, b, **attributes)
+        key = self.G.add_edge(a, b, **attributes)
+        if self._copy is not None:
+            _copy_added_edge(self._copy, self.G, a, b, key, self.order)
         self.piece_nodes.update((a, b))
-        self._copy = None
 
     @contextmanager
     def trial(self):
@@ -234,6 +240,65 @@ class _Edits:
         return [(u, v, key, found[(u, v, key)]) for u, v, key in sorted(found, key=place)]
 
 
+def _copy_split(H: nx.MultiGraph, G: nx.MultiGraph, u: Any, v: Any, key: Any, node: Any, order: dict) -> None:
+    """Make on the trial copy *H* the split *G* has just had -- edge
+    ``(u, v, key)`` into two at the new *node* -- as ``_trial_copy`` would
+    copy *G* now. ``_trial_copy`` lists a node's neighbours earlier in *G*'s
+    node *order* first, by that order, then its later ones in *G*'s own
+    order: the new node, the last of all, goes last at *u* and *v*, and lists
+    them by their order."""
+    adj = H._adj
+    keys = adj[u][v]
+    del keys[key]
+    if not keys:
+        del adj[u][v]
+        if v != u:
+            del adj[v][u]
+    H._node[node] = G._node[node].copy()
+    adj[node] = H.adjlist_inner_dict_factory()
+    for other in sorted(G._adj[node], key=order.__getitem__):
+        copied = H.edge_key_dict_factory()
+        for k, data in G._adj[node][other].items():
+            copied[k] = data.copy()
+        adj[node][other] = adj[other][node] = copied
+    _forget(H)
+
+
+def _copy_added_edge(H: nx.MultiGraph, G: nx.MultiGraph, a: Any, b: Any, key: Any, order: dict) -> None:
+    """Add to the trial copy *H* the edge ``(a, b, key)`` *G* has just gained,
+    where ``_trial_copy`` would put it (:func:`_copy_split`)."""
+    adj = H._adj
+    data = G._adj[a][b][key].copy()
+    if b in adj[a]:
+        adj[a][b][key] = data  # beside a parallel edge: its key last, as in G
+    else:
+        keys = H.edge_key_dict_factory()
+        keys[key] = data
+        _place(adj[a], b, keys, order, order[a])
+        if b != a:
+            _place(adj[b], a, keys, order, order[b])
+    _forget(H)
+
+
+def _place(neighbours: dict, other: Any, keys: dict, order: dict, own: int) -> None:
+    """Put *other* among one node's *neighbours* (its order *own*) where
+    ``_trial_copy`` would: among the earlier ones by order, else last."""
+    if order[other] >= own:
+        neighbours[other] = keys
+        return
+    items = list(neighbours.items())
+    items.insert(sum(1 for n, _keys in items if order[n] < order[other]), (other, keys))
+    neighbours.clear()
+    neighbours.update(items)
+
+
+def _forget(H: nx.MultiGraph) -> None:
+    """Drop what networkx keeps of *H* after its dicts were edited directly."""
+    clear_cache = getattr(nx, "_clear_cache", None)
+    if clear_cache is not None:
+        clear_cache(H)
+
+
 def _put_back(H: nx.MultiGraph, splits: list) -> None:
     """Undo, newest first, the *splits* :func:`_split_at` recorded on *H*: the
     nodes they added go, and the adjacency of the vessels they split is as it
@@ -251,9 +316,7 @@ def _put_back(H: nx.MultiGraph, splits: list) -> None:
         keys.clear()
         keys.update(keyed)
     splits.clear()
-    clear_cache = getattr(nx, "_clear_cache", None)
-    if clear_cache is not None:
-        clear_cache(H)
+    _forget(H)
 
 
 class _LiveSamples:
