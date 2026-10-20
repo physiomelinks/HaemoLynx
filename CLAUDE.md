@@ -1214,7 +1214,14 @@ are only caught locally.
   region read back): labelling 120 s, 5,644 small components 330 s, the big one's radius
   119 s, its shortest paths 740 s (~6.6 us a voxel; threads gave nothing there), arms 8 s;
   peak 22.2 GB commit, 9.7 GB above the region and skeleton buffer (6 GB unthreaded), during the radius
-  (four block transforms and the domain's surface tree at once). **It draws the same arms,
+  (four block transforms and the domain's surface tree at once). The whole
+  `skeletonize_thickness_gated` under it (`e375545b`, region read back, skeleton on disk,
+  2026-10-20): Lee 343 s, tree 1,079 s, the thin-arm join 2,383 s for 43,254 arms (5,800
+  joined, 4,215 past the cap, 33,239 with no fat in their structure, 41 left unjoined by the
+  bounded search), 4,031 s in all at 10.25 GB peak commit; the join's own parts are in its
+  closing log line (paths 907 s, the nearest-fat tree rebuilt per bridge 552 s, the cap's radius
+  465 s, the bounded search 360 s). Before the bridge numbers were carried it ran 5.6 arms/s
+  against 20. **It draws the same arms,
   so it does not keep a network's narrower vessels**: arms aim only at voxels of at least 0.4
   of the component's widest radius, so the patella's 111 M-voxel component got its main path
   and 2 arms (263,706 tree voxels in all; 68% of fat voxels over 20 um from the tree, against
